@@ -127,12 +127,13 @@ static int bench_sparse_volumes(void) {
 }
 
 /* --bench-sparse-texture: what a 2D sparse texture costs, made through NVN the way a game makes one. First the device
-   memory and the time making it takes with a few MiB of its large levels mapped (as a game streams in a region of
-   an 8192x8192 RGBA8 or a 16384x16384 BC7 texture), with memory only where it is mapped and made whole (the device
-   told it has no sparse residency of 2D images, as main had it). Then the GPU's time to read each texel of a
-   4096x4096 RGBA8 texture once, in order and at hashed places, from an image made whole, from one with memory where
-   it is mapped bound tile after tile in order, and from one bound in a shuffled order, its blocks' memory away from
-   their neighbours': what the GPU's address translation and prefetching cost a texture in many pieces */
+   memory and the time making it takes with a few MiB of its large levels mapped (as a game streams in a region of an
+   8192x8192 RGBA8, a 16384x16384 BC7 or an 8192x8192 ASTC 4x4 texture, held as BC7 where the GPU samples BCn and not
+   ASTC), with memory only where it is mapped and made whole (the device told it has no sparse residency of 2D images,
+   as main had it). Then the GPU's time to read each texel of a 4096x4096 RGBA8 texture once, in order and at hashed
+   places, from an image made whole, from one with memory where it is mapped bound tile after tile in order, and from
+   one bound in a shuffled order, its blocks' memory away from their neighbours': what the GPU's address translation and
+   prefetching cost a texture in many pieces */
 #include "common/utilities/spirv_emit.h"
 /* tile (x, y) of level l of a sparse 2D texture as a page of its layout: its rows are whole tiles */
 static u64 sb_tile(const NvnTexDesc* d, const u32 tile[3], u32 bw, u32 l, u32 x, u32 y) {
@@ -466,6 +467,12 @@ static int bench_sparse_textures(void) {
         CHECK(!bench_texture_memory(NVN_FORMAT_RGBA8, "RGBA8", 1, 8192, at, HEAP_BASE + 0x1200000, round));
         CHECK(!bench_texture_memory(NVN_FORMAT_BPTC_UNORM, "BC7", 4, 16384, at + 0x400000000ull, HEAP_BASE + 0x1200000,
                                     round));
+        const int had = g_settings.astc_bc;
+        g_settings.astc_bc = 1; /* held as BC7 where the GPU samples BCn and not ASTC */
+        const int failed = bench_texture_memory(NVN_FORMAT_RGBA_ASTC_4x4, "ASTC 4x4", 4, 8192, at + 0x800000000ull,
+                                                HEAP_BASE + 0x1200000, round);
+        g_settings.astc_bc = had;
+        CHECK(!failed);
     }
     CHECK(!bench_texture_reads());
     return 0;

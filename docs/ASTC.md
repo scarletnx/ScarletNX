@@ -9,6 +9,7 @@
 * [The upload path](#the-upload-path)
 * [Encoded again as BC7](#encoded-again-as-bc7)
 * [Textures bigger than one allocation](#textures-bigger-than-one-allocation)
+* [Sparse textures](#sparse-textures)
 * [Building the shader](#building-the-shader)
 * [Tests](#tests)
 
@@ -236,6 +237,16 @@ FreeBSD), and a texture can be bigger once decoded: a 2D ASTC texture of 11584x1
 - VMA's own blocks stay within the cap.
 
 The `[Debug]` setting `vk_max_allocation_mb` (`--vk_max_allocation_mb=4` for a run) lowers the cap, to test the pieces on a driver that accepts anything (lavapipe).
+
+## Sparse textures
+
+A sparse texture's memory is mapped a 64 KiB tile at a time; for blocks of 16 bytes a tile is 64x64 of them. Where the
+device has sparse residency of 2D images and reads what isn't bound as zeros, `texture.c` gives such a texture's image
+memory only for its mapped tiles. An ASTC 4x4 one held as BC7 (`astc_bc=1`) takes part: BC7's sparse block is 256x256
+texels, 64x64 blocks of 16 bytes too, so each mapped tile is one block of the image, decoded and encoded on its own as
+a texture's changed runs are. Other footprints (an 8x8 tile is 2x2 BC7 blocks) and ASTC held as RGBA8 (blocks of
+128x128 texels) keep the whole image, and the log line saying so names the format and the device's block in the
+layout's terms.
 
 ## Building the shader
 

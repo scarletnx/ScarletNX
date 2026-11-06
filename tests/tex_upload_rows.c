@@ -8,6 +8,8 @@
    whose rows are whole tiles. No level takes a buffer of its size on the CPU. Levels past the allocation cap go in
    strips, each region checked where it lands, and an ASTC level's block rows reach vk_astc_upload strip by strip,
    deswizzled */
+#include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 static size_t g_watch, g_big; /* allocations of g_watch bytes or more, while watched */
@@ -158,7 +160,14 @@ void rec_CmdClearDepthStencilImage(VkCommandBuffer cb, VkImage img, VkImageLayou
 VkState g_vk;
 _Atomic int g_cs_any;
 u32 g_vk_present;
-void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }
+static char g_log[1024]; /* the last line logged */
+void logf_(int lvl, const char* fmt, ...) {
+    va_list ap;
+    (void)lvl;
+    va_start(ap, fmt);
+    vsnprintf(g_log, sizeof g_log, fmt, ap);
+    va_end(ap);
+}
 int vk_ok_(VkResult r, const char* what, const char* file, int line) {
     (void)what, (void)file, (void)line;
     return r == VK_SUCCESS;
@@ -178,7 +187,7 @@ VkImageAspectFlags vk_aspect(const VkFmt* f) {
 /* the ASTC upload asks for its block rows in strips of 3: they land in astc_out, slice after slice. While astc_append
    is set, each call's after the last one's, from astc_used on, its region and where its blocks start in astc_calls
    (the first ASTC_CALLS of them) */
-static u8 astc_out[128 << 10];
+static u8 astc_out[256 << 10];
 #define ASTC_CALLS 16
 static struct {
     u32 x, y, w, h, level, layer;
@@ -1044,6 +1053,106 @@ static void check_resident_layers(void) {
     g_map.count = 0;
     g_res.shape = (VkResidentShape){{0, 0, 0}, 0, 0};
 }
+/* call c of the ASTC upload (astc_calls) is the region w x h at (x, y) of level l of t, layer 0, and its blocks in
+   astc_out those of that region in guest memory, laid out as the level is */
+static void check_astc_call(const Surf* t, u32 c, u32 x, u32 y, u32 w, u32 h, u32 l) {
+    const u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1, th = (lh + 3) / 4, nx = (w + 3) / 4;
+    u32 lbh, lbd;
+    u64 at = 0;
+    CHECK(c < nastc && astc_calls[c].x == x && astc_calls[c].y == y && astc_calls[c].w == w && astc_calls[c].h == h &&
+          astc_calls[c].level == l && astc_calls[c].layer == 0);
+    for (u32 j = 0; j < l; j++) at += bl_level_size(t->w, t->h, 1, &t->f, t->bh, t->bd, t->tile_w, j, NULL, NULL);
+    bl_level_blocks(t->h, 1, &t->f, t->bh, t->bd, l, &lbh, &lbd);
+    const u32 gobs = level_gobs(t, (lw + 3) / 4 * 16, th, 1);
+    for (u32 by = 0; by < (h + 3) / 4; by++)
+        for (u32 b = 0; b < nx * 16; b++)
+            CHECK(astc_out[astc_calls[c].at + (u64)by * nx * 16 + b] ==
+                  guest[at + bl_offset_g(x / 4 * 16 + b, y / 4 + by, 0, gobs, th, lbh, 0)]);
+}
+/* An ASTC 4x4 texture held as BC7 with memory only where it is mapped: 1024x1024, 11 levels, in tiles of 64x64
+   blocks (16 GOBs across, blocks 8 high), the device's blocks BC7's 256x256 texels, a tile each, its mip tail from
+   level 3: 16 bricks of level 0, 4 of level 1, 1 of level 2, then the tail. Tile (1, 0) of level 0, (1, 1) of level 1
+   and the tail mapped: its whole upload decodes (and encodes) each bound tile's blocks into its 256x256 texels, and
+   the tail's levels, and copies none of their bytes into the image as they are. Then 16 bytes of tile (1, 0) written:
+   the run of blocks they lie in decoded again, and nothing for 16 of a hole; a tile of level 0 mapped: bound, and
+   decoded whole. An ASTC 8x8 one, the device's blocks 4 GOBs high in its layout where its blocks are 8, a 6x6 one,
+   whose blocks aren't whole in 256 texels, and one the device makes no sparse image of are made whole, the log line
+   saying the format and why */
+static void check_resident_astc(void) {
+    Surf t = tex(1024, 1024, 1, 11, 16, 3, 0, 1);
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    t.f.bw = t.f.bh = 4;
+    t.f.conv = VKC_ASTC;
+    t.f.vk = VK_FORMAT_BC7_UNORM_BLOCK;
+    t.tile_w = 4;
+    t.layer_size = bl_layer_size(1024, 1024, 1, &t.f, 3, 0, 4, 11);
+    for (u32 l = 0; l < 11; l++) t.size += bl_level_size(1024, 1024, 1, &t.f, 3, 0, 4, l, NULL, NULL);
+    CHECK(t.layer_size == 22 * 0x10000ull);
+    g_res.shape = (VkResidentShape){{256, 256, 1}, 3, 1};
+    CHECK(resident_image(&t, &ii) && t.bricks == 21 && t.tail_first == 3 && t.tails == 1 && t.brick_bytes == 0x10000);
+    g_map.count = 3;
+    g_map.gva[0] = GVA + 0x10000, g_map.n[0] = 0x10000;  /* tile (1, 0) of level 0 */
+    g_map.gva[1] = GVA + 0x130000, g_map.n[1] = 0x10000; /* (1, 1) of level 1, after level 0's 16 tiles */
+    g_map.gva[2] = GVA + 0x150000, g_map.n[2] = 0x10000; /* the tail */
+    copy_bpp = 16, copy_bw = copy_bh = 4;
+    stage_used = copied_used = nregs = 0;
+    nastc = 0, astc_used = 0, astc_append = 1;
+    CHECK(tex_upload(&t) && g_res.pages == 22);
+    for (u32 i = 0; i < 22; i++) CHECK(g_res.bound[i] == (i == 1 || i == 19 || i == 21));
+    CHECK(nregs == 0 && nastc == 2 + 8); /* the two tiles, then the tail's 8 levels */
+    check_astc_call(&t, 0, 256, 0, 256, 256, 0);
+    check_astc_call(&t, 1, 256, 256, 256, 256, 1);
+    for (u32 l = 3; l < 11; l++) check_astc_call(&t, 2 + l - 3, 0, 0, 1024 >> l, 1024 >> l, l);
+    /* 16 bytes of tile (1, 0), in its third column of GOBs, and 16 of tile (2, 0), a hole */
+    TexPieces p = {.count = 2};
+    p.piece[0].at = 0x12000, p.piece[0].n = 16;
+    p.piece[1].at = 0x20100, p.piece[1].n = 16;
+    t.upload_valid = 1;
+    stage_used = copied_used = nregs = 0;
+    nastc = 0, astc_used = 0;
+    CHECK(tex_patch(&t, &p) && nregs == 0 && nastc == 1);
+    check_astc_call(&t, 0, 288, 0, 16, 256, 0);
+    /* tile (2, 0) mapped, the GPU's records naming its 64 KiB */
+    g_map.count = 4;
+    g_map.gva[3] = GVA + 0x20000, g_map.n[3] = 0x10000;
+    p.count = 1, p.piece[0].at = 0x20000, p.piece[0].n = 0x10000;
+    stage_used = copied_used = nregs = 0;
+    nastc = 0, astc_used = 0;
+    CHECK(tex_patch(&t, &p) && g_res.bound[2] && nregs == 0 && nastc == 1);
+    check_astc_call(&t, 0, 512, 0, 256, 256, 0);
+    g_map.count = 0;
+    astc_append = 0;
+    /* made whole, saying why */
+    Surf e = tex(2048, 2048, 1, 12, 16, 3, 0, 1), s = tex(1536, 1536, 1, 11, 16, 3, 0, 1), n = t;
+    e.f = s.f = t.f;
+    e.f.bw = e.f.bh = 8;
+    s.f.bw = s.f.bh = 6;
+    e.tile_w = s.tile_w = 4;
+    e.layer_size = e.size = bl_layer_size(2048, 2048, 1, &e.f, 3, 0, 4, 12);
+    s.layer_size = s.size = bl_layer_size(1536, 1536, 1, &s.f, 3, 0, 4, 11);
+    g_res.shape = (VkResidentShape){{256, 256, 1}, 4, 1};
+    g_log[0] = 0;
+    CHECK(!resident_image(&e, &ii) && !e.bricks);
+    CHECK(
+        strstr(g_log, "2048x2048x1 texture of 12 levels in ASTC 8x8 as BC7 with holes in its mapping is made whole") &&
+        strstr(g_log,
+               "blocks of 256x256x1 texels, 8 GOBs across and 4 high in its layout, its mip tail from level 4") &&
+        strstr(g_log, "level 0 has blocks 8 GOBs high and 1 deep"));
+    g_log[0] = 0;
+    CHECK(!resident_image(&s, &ii) && !s.bricks);
+    CHECK(strstr(g_log, "in ASTC 6x6 as BC7 with holes") && strstr(g_log, "256x256x1 texels, not whole 6x6 blocks,"));
+    g_res.shape = (VkResidentShape){{0, 0, 0}, 0, 0};
+    g_vk.resident = 1;
+    g_vk.feat.sparseResidencyImage2D = VK_TRUE;
+    n.bricks = 0;
+    g_log[0] = 0;
+    CHECK(!resident_image(&n, &ii) && !n.bricks);
+    CHECK(strstr(g_log, "1024x1024x1 texture of 11 levels in ASTC 4x4 as BC7 with holes in its mapping is made whole: "
+                        "the device has no sparse images of format 145"));
+    g_vk.resident = 0;
+    g_vk.feat.sparseResidencyImage2D = VK_FALSE;
+    copy_bpp = 4, copy_bw = copy_bh = 1;
+}
 
 int main(void) {
     fill();
@@ -1347,6 +1456,7 @@ int main(void) {
     check_pitch_linear_changes();
     check_astc_changes();
     check_resident_layers();
+    check_resident_astc();
     printf("tex_upload_rows: %u checks passed\n", checks);
     return 0;
 }

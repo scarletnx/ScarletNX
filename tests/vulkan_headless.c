@@ -2700,24 +2700,37 @@ static int check_sparse_pieces_batched(void) {
    tail from the first level smaller than one, and reads what isn't bound as zeros, the texture takes memory for its
    mapped tiles and mip tails alone */
 #define RS_TILE 0x10000u
+/* the format such a texture is made in: NVN's, its tile's texels across and down, and its image's blocks (texels
+   across and bytes): RGBA8, or ASTC 4x4 held as BC7 (astc_bc=1), whose image is compared with the same texture made
+   whole, not with memory */
+typedef struct {
+    const char* name;
+    u16 format;
+    u32 tile, bw, bpb;
+    int astc;
+} RsFmt;
+static const RsFmt RS_RGBA8 = {"RGBA8", NVN_FORMAT_RGBA8, 128, 1, 4, 0};
+static const RsFmt RS_ASTC4 = {"ASTC 4x4 as BC7", NVN_FORMAT_RGBA_ASTC_4x4, 256, 4, 16, 1};
 typedef struct {
     NvnTexture tex;
     NvnTexLayout lay;
     u32 tic[8];
     u32 size, levels, layers, tiled; /* tiled: its levels at least a tile in size */
+    RsFmt as;
 } RsTex;
 /* a tile of the texture: level == tiled for the mip tail of its layer */
 typedef struct {
     u32 layer, level, x, y;
 } RsAt;
-static void rs_make(RsTex* r, u32 size, u32 layers, u64 gva) {
+static void rs_make(RsTex* r, const RsFmt* as, u32 size, u32 layers, u64 gva) {
     memset(r, 0, sizeof *r);
+    r->as = *as;
     r->size = size;
     r->layers = layers;
     while (size >> r->levels) r->levels++;
-    while (size >> r->tiled >= 128) r->tiled++;
+    while (size >> r->tiled >= as->tile) r->tiled++;
     r->tex.d.target = layers > 1 ? NVN_TEXTURE_TARGET_2D_ARRAY : NVN_TEXTURE_TARGET_2D;
-    r->tex.d.format = NVN_FORMAT_RGBA8;
+    r->tex.d.format = as->format;
     r->tex.d.flags = NVN_TEXTURE_FLAGS_SPARSE;
     r->tex.d.levels = (u8)r->levels;
     r->tex.d.width = r->tex.d.height = size;
@@ -2728,13 +2741,18 @@ static void rs_make(RsTex* r, u32 size, u32 layers, u64 gva) {
 }
 /* the 64 KiB page of the texture's layout a tile is */
 static u64 rs_page(const RsTex* r, RsAt a) {
-    u32 across = a.level < r->tiled ? (r->size >> a.level) / 128 : 1;
+    u32 across = a.level < r->tiled ? (r->size >> a.level) / r->as.tile : 1;
     return (a.layer * r->lay.layer_size + nvn_tex_level_offset(&r->tex.d, a.level)) / RS_TILE + (u64)a.y * across + a.x;
 }
-/* the texels of all its levels and layers, level after level, layer after layer */
+/* the image's bytes of level l of a layer */
+static u64 rs_level_bytes(const RsTex* r, u32 l) {
+    const u64 blocks = ((r->size >> l) + r->as.bw - 1) / r->as.bw;
+    return blocks * blocks * r->as.bpb;
+}
+/* the texels (or blocks) of all its levels and layers, level after level, layer after layer */
 static u64 rs_bytes(const RsTex* r) {
     u64 n = 0;
-    for (u32 l = 0; l < r->levels; l++) n += (u64)(r->size >> l) * (r->size >> l) * 4;
+    for (u32 l = 0; l < r->levels; l++) n += rs_level_bytes(r, l);
     return n * r->layers;
 }
 /* whether the device binds the texture's image in blocks of a tile, its mip tail from its first level smaller than
@@ -2747,10 +2765,11 @@ static int rs_device_can(const RsTex* r, u32* tails, u64* tail_size) {
     VkSparseImageMemoryRequirements2 sr[2] = {{.sType = VK_STRUCTURE_TYPE_SPARSE_IMAGE_MEMORY_REQUIREMENTS_2},
                                               {.sType = VK_STRUCTURE_TYPE_SPARSE_IMAGE_MEMORY_REQUIREMENTS_2}};
     u32 n = 2;
+    if (r->as.astc) views[0] = VK_FORMAT_BC7_UNORM_BLOCK, views[1] = VK_FORMAT_BC7_SRGB_BLOCK;
     vkGetPhysicalDeviceFeatures(g_vk.phys, &have);
     if (!g_vk.sparse || !have.sparseResidencyImage2D || !g_vk.props.sparseProperties.residencyNonResidentStrict)
         return 0;
-    vkGetPhysicalDeviceFormatProperties(g_vk.phys, VK_FORMAT_R8G8B8A8_UNORM, &fp);
+    vkGetPhysicalDeviceFormatProperties(g_vk.phys, views[0], &fp);
     VkImageFormatListCreateInfo list = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO, .viewFormatCount = 2, .pViewFormats = views};
     VkImageCreateInfo ii = {
@@ -2759,7 +2778,7 @@ static int rs_device_can(const RsTex* r, u32* tails, u64* tail_size) {
         .flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_SPARSE_BINDING_BIT |
                  VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT,
         .imageType = VK_IMAGE_TYPE_2D,
-        .format = VK_FORMAT_R8G8B8A8_UNORM,
+        .format = views[0],
         .extent = {r->size, r->size, 1},
         .mipLevels = r->levels,
         .arrayLayers = r->layers,
@@ -2773,9 +2792,9 @@ static int rs_device_can(const RsTex* r, u32* tails, u64* tail_size) {
     const VkSparseImageMemoryRequirements* m = &sr[0].memoryRequirements;
     *tails = m->formatProperties.flags & VK_SPARSE_IMAGE_FORMAT_SINGLE_MIPTAIL_BIT ? 1 : r->layers;
     *tail_size = m->imageMipTailSize;
-    return n == 1 && m->formatProperties.imageGranularity.width == 128 &&
-           m->formatProperties.imageGranularity.height == 128 && m->formatProperties.imageGranularity.depth == 1 &&
-           m->imageMipTailFirstLod == r->tiled;
+    return n == 1 && m->formatProperties.imageGranularity.width == r->as.tile &&
+           m->formatProperties.imageGranularity.height == r->as.tile &&
+           m->formatProperties.imageGranularity.depth == 1 && m->imageMipTailFirstLod == r->tiled;
 }
 /* every level of every layer of t's image read back (rs_bytes), malloc'd; NULL when it couldn't be */
 static u8* rs_image(Surf* t, const RsTex* r) {
@@ -2789,7 +2808,7 @@ static u8* rs_image(Surf* t, const RsTex* r) {
             c[n++] = (VkBufferImageCopy){.bufferOffset = at,
                                          .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, layer, 1},
                                          .imageExtent = {d, d, 1}};
-            at += (u64)d * d * 4;
+            at += rs_level_bytes(r, l);
         }
     vk_lock();
     u8* back = vk_readback_buffer(at, &buffer);
@@ -2832,9 +2851,47 @@ static u8* rs_memory(const RsTex* r) {
     free(layer);
     return out;
 }
+/* An ASTC one's image, held as BC7, against the same texture made whole (ref), which decodes the holes' zero bytes:
+   where memory maps any byte of a tile (or of a mip tail), its blocks are ref's, elsewhere zeros; t made whole too is
+   ref's everywhere. 1 when it differs, said with the first block that does, or when no block compared is ref's
+   decode of anything but zeros */
+static int rs_differ_astc(const char* when, Surf* t, Surf* ref, const RsTex* r) {
+    static const u8 zero[16];
+    u8 *image = rs_image(t, r), *whole = rs_image(ref, r), mapped[512] = {0};
+    const u64 pages = r->lay.size / RS_TILE;
+    u64 o = 0, cpu, decoded = 0;
+    int bad = !image || !whole || pages > sizeof mapped;
+    for (u64 k = 0; !bad && k < pages; k++)
+        for (u64 b = 0; b < RS_TILE && !mapped[k]; b += 0x1000)
+            mapped[k] = gmmu_run(r->tex.gpu + k * RS_TILE + b, 1, &cpu) != 0;
+    for (u32 layer = 0; layer < r->layers && !bad; layer++)
+        for (u32 l = 0; l < r->levels && !bad; l++) {
+            const u32 nb = ((r->size >> l) + 3) / 4;
+            for (u32 by = 0; by < nb && !bad; by++)
+                for (u32 bx = 0; bx < nb && !bad; bx++, o += 16) {
+                    const RsAt a = {layer, l < r->tiled ? l : r->tiled, l < r->tiled ? bx * 4 / r->as.tile : 0,
+                                    l < r->tiled ? by * 4 / r->as.tile : 0};
+                    const int in = !t->bricks || mapped[rs_page(r, a)];
+                    decoded += in && memcmp(whole + o, zero, 16) != 0;
+                    if (!memcmp(image + o, in ? whole + o : zero, 16)) continue;
+                    fprintf(stderr,
+                            "resident texture %ux%ux%u %s, %s: block (%u, %u) of level %u, layer %u differs from %s\n",
+                            r->size, r->size, r->layers, r->as.name, when, bx, by, l, layer,
+                            in ? "the texture made whole" : "zeros (a hole)");
+                    bad = 1;
+                }
+        }
+    if (!bad && !decoded)
+        fprintf(stderr, "resident texture %ux%ux%u %s, %s: no block compared holds texels\n", r->size, r->size,
+                r->layers, r->as.name, when);
+    free(image);
+    free(whole);
+    return bad || !decoded;
+}
 /* t's image against memory, and against the same texture made whole (ref): 1 when either differs, said with the first
    texel that does */
 static int rs_differ(const char* when, Surf* t, Surf* ref, const RsTex* r) {
+    if (r->as.astc) return rs_differ_astc(when, t, ref, r);
     u8 *image = rs_image(t, r), *whole = rs_image(ref, r), *memory = rs_memory(r);
     const u64 n = rs_bytes(r);
     int bad = !image || !whole || !memory;
@@ -2857,6 +2914,17 @@ static int rs_differ(const char* when, Surf* t, Surf* ref, const RsTex* r) {
     free(whole);
     free(memory);
     return bad;
+}
+/* page k of the texture's memory: its bytes, or for an ASTC one blocks that each decode to a color of their own (void
+   extent blocks, red the page's number, green and blue the block's in it), so a block decoded in the wrong place
+   shows */
+static void rs_fill(const RsTex* r, u8* page, u32 k) {
+    for (u32 i = 0; i < RS_TILE; i++) page[i] = rv_byte(k, i);
+    for (u32 i = 0; r->as.astc && i < RS_TILE / 16; i++) {
+        snx_st_le64(page + i * 16, 0xFFFFFFFFFFFFFDFCull); /* void extent, LDR, no extent */
+        snx_st_le64(page + i * 16 + 8,
+                    (u64)(k & 0xFF) << 8 | (u64)(i & 0xFF) << 24 | (u64)(i >> 8 & 0xFF) << 40 | 0xFFull << 56);
+    }
 }
 /* the bytes t's bricks and mip tails would take with the tiles at[0..n) mapped */
 static u64 rs_bound(const RsTex* r, const RsAt* at, u32 n, u32 tails, u64 block, u64 tail_size) {
@@ -2882,26 +2950,25 @@ static int rs_frames(const RsTex* r, const RsTex* ref, Surf* t, Surf* whole, int
    at[made] mapped, at[made + 1] unmapped, and the first mip tail mapped (the last of them) unmapped and mapped again
    by 4 KiB of it alone, over memory just freed. Each time its image holds memory's texels, zeros in the holes, as the
    whole one does, its memory that of its mapped tiles and mip tails, and it loads the tiles that changed */
-static int resident_texture(u32 size, u32 layers, u64 gva, u64 ref_gva, u64 ref2_gva, u64 cpu, const RsAt* at,
-                            u32 made) {
+static int resident_texture(const RsFmt* as, u32 size, u32 layers, u64 gva, u64 ref_gva, u64 ref2_gva, u64 cpu,
+                            const RsAt* at, u32 made) {
     RsTex r, ref, ref2;
     u32 tails;
     u64 tail_size, uploads, bytes[2], took[2];
-    rs_make(&r, size, layers, gva);
-    rs_make(&ref, size, layers, ref_gva);
-    rs_make(&ref2, size, layers, ref2_gva);
+    rs_make(&r, as, size, layers, gva);
+    rs_make(&ref, as, size, layers, ref_gva);
+    rs_make(&ref2, as, size, layers, ref2_gva);
     if (!rs_device_can(&r, &tails, &tail_size)) {
-        printf("resident texture %ux%ux%u: the device doesn't bind it in blocks of a tile with its mip tail from level "
-               "%u, the rest reading as zeros, skipped\n",
-               size, size, layers, r.tiled);
+        printf("resident texture %ux%ux%u %s: the device doesn't bind it in blocks of a tile with its mip tail from "
+               "level %u, the rest reading as zeros, skipped\n",
+               size, size, layers, as->name, r.tiled);
         return 0;
     }
     u32 bricks = 0, tail = 0; /* the bricks of a layer; the first mip tail mapped */
-    for (u32 l = 0; l < r.tiled; l++) bricks += (size >> l) / 128 * ((size >> l) / 128);
+    for (u32 l = 0; l < r.tiled; l++) bricks += (size >> l) / as->tile * ((size >> l) / as->tile);
     while (tail < made && at[tail].level < r.tiled) tail++;
     CHECK(tail < made && mem_map(cpu, (made + 3) * (u64)RS_TILE, MS_NORMAL, PERM_RW) == 0);
-    for (u32 k = 0; k < made + 3; k++)
-        for (u32 b = 0; b < RS_TILE; b++) GP(cpu + (u64)k * RS_TILE)[b] = rv_byte(k + 7, b);
+    for (u32 k = 0; k < made + 3; k++) rs_fill(&r, GP(cpu + (u64)k * RS_TILE), k + 7);
     for (u32 k = 0; k < made; k++)
         for (u32 j = 0; j < 3; j++)
             gmmu_map((j ? j == 1 ? ref_gva : ref2_gva : gva) + rs_page(&r, at[k]) * RS_TILE, cpu + (u64)k * RS_TILE,
@@ -2928,9 +2995,9 @@ static int resident_texture(u32 size, u32 layers, u64 gva, u64 ref_gva, u64 ref2
     VkMemoryRequirements req;
     vkGetImageMemoryRequirements(g_vk.dev, t->img, &req);
     const u64 block = req.alignment, want = rs_bound(&r, at, made, tails, block, tail_size);
-    printf("resident texture %ux%ux%u, %u levels (%u in tiles), %u mip tails of %llu KiB: made with %u tiles mapped, "
-           "its image %llu KiB, %llu KiB more allocated, %llu KiB loaded; made whole %llu KiB, %llu KiB\n",
-           size, size, layers, r.levels, r.tiled, tails, (unsigned long long)(tail_size >> 10), made,
+    printf("resident texture %ux%ux%u %s, %u levels (%u in tiles), %u mip tails of %llu KiB: made with %u tiles "
+           "mapped, its image %llu KiB, %llu KiB more allocated, %llu KiB loaded; made whole %llu KiB, %llu KiB\n",
+           size, size, layers, as->name, r.levels, r.tiled, tails, (unsigned long long)(tail_size >> 10), made,
            (unsigned long long)(t->bytes >> 10), (unsigned long long)((took[1] - took[0]) >> 10),
            (unsigned long long)((bytes[1] - bytes[0]) >> 10), (unsigned long long)(whole->bytes >> 10),
            (unsigned long long)(whole2->bytes >> 10));
@@ -2946,10 +3013,12 @@ static int resident_texture(u32 size, u32 layers, u64 gva, u64 ref_gva, u64 ref2
     for (u32 j = 0; j < 2; j++)
         gmmu_map((j ? ref_gva : gva) + rs_page(&r, at[made]) * RS_TILE, cpu + (u64)made * RS_TILE, RS_TILE);
     vk_tex_stats(&uploads, &bytes[0]);
-    CHECK(!rs_frames(&r, &ref, t, whole, 1));
+    CHECK(sv_frame(r.tic) == t);
     vk_tex_stats(&uploads, &bytes[1]);
+    CHECK(sv_frame(ref.tic) == whole);
     CHECK(t->bytes == want + block && !rs_differ("a tile mapped", t, whole, &r));
-    CHECK(bytes[1] - bytes[0] == 2 * (u64)RS_TILE); /* the tile, in each */
+    CHECK(bytes[1] - bytes[0] == RS_TILE); /* the tile alone (an ASTC one made whole, its memory no longer with
+                                               holes, is checked by its hash) */
     /* a tile unmapped: its memory goes, it reads zeros */
     for (u32 j = 0; j < 2; j++) gmmu_space_unmap((j ? ref_gva : gva) + rs_page(&r, at[made + 1]) * RS_TILE, RS_TILE);
     CHECK(!rs_frames(&r, &ref, t, whole, 1));
@@ -2987,8 +3056,10 @@ static int check_resident_texture(void) {
     /* 1024x1024 of 2 layers, 11 levels, levels 0 to 3 in tiles: a tile of level 0 of layer 1, one of level 2 of layer
        0, the mip tail of layer 1; then a tile of level 0 of layer 0 mapped, the one of layer 1 unmapped */
     static const RsAt two[5] = {{1, 0, 1, 1}, {0, 2, 1, 0}, {1, 4, 0, 0}, {0, 0, 3, 2}, {1, 0, 1, 1}};
-    CHECK(!resident_texture(2048, 1, 0x900000000ull, 0x910000000ull, 0x920000000ull, HEAP_BASE + 0x1200000, one, 5));
-    CHECK(!resident_texture(1024, 2, 0x930000000ull, 0x940000000ull, 0x950000000ull, HEAP_BASE + 0x1280000, two, 3));
+    CHECK(!resident_texture(&RS_RGBA8, 2048, 1, 0x900000000ull, 0x910000000ull, 0x920000000ull, HEAP_BASE + 0x1200000,
+                            one, 5));
+    CHECK(!resident_texture(&RS_RGBA8, 1024, 2, 0x930000000ull, 0x940000000ull, 0x950000000ull, HEAP_BASE + 0x1280000,
+                            two, 3));
     /* 512x512, 10 levels, levels 0 to 2 in tiles: all its tiles but (3, 3) of level 0 and (1, 1) of level 1, more than
        half of it, which loads whole, a brick at a time into its level; then (3, 3) mapped, (0, 0) of level 1 unmapped */
     RsAt most[22];
@@ -3004,49 +3075,121 @@ static int check_resident_texture(void) {
     most[n] = (RsAt){0, 0, 3, 3};
     most[n + 1] = (RsAt){0, 1, 0, 0};
     CHECK(n == 20);
-    CHECK(!resident_texture(512, 1, 0x970000000ull, 0x980000000ull, 0x990000000ull, HEAP_BASE + 0x1300000, most, n));
+    CHECK(!resident_texture(&RS_RGBA8, 512, 1, 0x970000000ull, 0x980000000ull, 0x990000000ull, HEAP_BASE + 0x1300000,
+                            most, n));
     return 0;
 }
+/* the same for an ASTC 4x4 texture held as BC7 (astc_bc=1), whose tiles of 64x64 blocks are BC7's 256x256 texels:
+   its bound tiles are decoded where they lie, its image the same texture's made whole there and zeros elsewhere */
+static int check_resident_astc(void) {
+    const int had = g_settings.astc_bc;
+    RsTex probe;
+    g_settings.astc_bc = 1;
+    rs_make(&probe, &RS_ASTC4, 256, 1, 0xA10000000ull);
+    const VkFmt f = vk_tic_format(probe.tic[0], 0);
+    if (f.conv != VKC_ASTC || f.vk != VK_FORMAT_BC7_UNORM_BLOCK) {
+        printf("resident texture ASTC: the GPU %s, skipped\n",
+               f.conv != VKC_ASTC ? "samples ASTC as it is" : "holds no ASTC texture as BC7");
+        g_settings.astc_bc = had;
+        return 0;
+    }
+    /* the decoder's buffers made first, by a texture of its own mapped whole: what the textures below allocate is
+       counted without them */
+    CHECK(mem_map(HEAP_BASE + 0x1200000, probe.lay.size, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(probe.tex.gpu, HEAP_BASE + 0x1200000, probe.lay.size);
+    vk_lock();
+    CHECK(vk_tex_from_tic(probe.tic));
+    vk_finish();
+    vk_unlock();
+    gmmu_space_unmap(probe.tex.gpu, probe.lay.size);
+    CHECK(mem_unmap(HEAP_BASE + 0x1200000, probe.lay.size) == 0);
+    /* 2048x2048, 12 levels, levels 0 to 3 in tiles: two tiles of level 0, one of level 1 and of level 3, the mip tail;
+       then a tile of level 2 mapped, the one of level 1 unmapped */
+    static const RsAt one[7] = {{0, 0, 1, 1}, {0, 0, 6, 5}, {0, 1, 1, 1}, {0, 3, 0, 0},
+                                {0, 4, 0, 0}, {0, 2, 1, 0}, {0, 1, 1, 1}};
+    /* 512x512, 10 levels, levels 0 and 1 in tiles: all its tiles but (1, 1) of level 0, and the mip tail, more than
+       half of it, which loads whole, a tile at a time; then (1, 1) mapped, level 1's unmapped */
+    static const RsAt most[7] = {{0, 0, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}, {0, 1, 0, 0},
+                                 {0, 2, 0, 0}, {0, 0, 1, 1}, {0, 1, 0, 0}};
+    int failed = resident_texture(&RS_ASTC4, 2048, 1, 0xA10000000ull, 0xA20000000ull, 0xA30000000ull,
+                                  HEAP_BASE + 0x1200000, one, 5);
+    failed |= resident_texture(&RS_ASTC4, 512, 1, 0xA40000000ull, 0xA50000000ull, 0xA60000000ull, HEAP_BASE + 0x1200000,
+                               most, 5);
+    g_settings.astc_bc = had;
+    return failed;
+}
 
-/* A tile of a resident 2D texture (512x512 RGBA8, 3 levels in tiles) unmapped while a copy that reads it waits at a
+/* the block of level 0 of t's image at (x, 0) copied into buf at at: a texel, or a 4x4 block of a BC7 image */
+static void rs_copy(VkBuffer buf, u64 at, Surf* t, u32 x) {
+    const u32 bw = t->f.vk == VK_FORMAT_BC7_UNORM_BLOCK || t->f.vk == VK_FORMAT_BC7_SRGB_BLOCK ? 4 : 1;
+    VkBufferImageCopy r = {.bufferOffset = at,
+                           .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                           .imageOffset = {(i32)x, 0, 0},
+                           .imageExtent = {bw, bw, 1}};
+    rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &r);
+}
+/* what that block of the texture holds: memory's texel, or an ASTC one's block of the same texture made whole */
+static int rs_want(const RsTex* r, Surf* whole, u32 x, u8* out) {
+    u8* all = r->as.astc ? rs_image(whole, r) : rs_memory(r);
+    if (!all) return 0;
+    memcpy(out, all + (u64)x / r->as.bw * r->as.bpb, r->as.bpb);
+    free(all);
+    return 1;
+}
+/* A tile of a resident 2D texture (4x4 tiles wide, 3 levels in tiles) unmapped while a copy that reads it waits at a
    gate on the GPU: the texture's next check releases the tile's block without a host wait, after the copy, which
    reads the tile's texels; a copy after it reads zeros, and the block's memory is freed once the GPU is done. Then the
    tile mapped again from another page while the work before waits at a gate: the bind waits for that work, the
-   tile's texels are loaded after it, and a read after them sees the new ones */
-static int check_resident_texture_in_flight(void) {
-    const u64 gva = 0x960000000ull, cpu = HEAP_BASE + 0x1300000;
-    const RsAt a = {0, 0, 1, 0}, b = {0, 0, 2, 0}; /* texels 128 to 255 and 256 to 383 of rows 0 to 127 */
-    RsTex r;
+   tile's texels are loaded after it, and a read after them sees the new ones. An ASTC one's texels are the same
+   texture's made whole (at ref_gva) */
+static int resident_in_flight(const RsFmt* as, u64 gva, u64 ref_gva, u64 cpu) {
+    const RsAt a = {0, 0, 1, 0}, b = {0, 0, 2, 0}; /* tiles 1 and 2 of row 0 */
+    const u32 xa = as->tile + 2 * as->bw, xb = 2 * as->tile + 4 * as->bw, n = as->bpb;
+    static const u8 zero[16];
+    RsTex r, ref;
     u32 tails;
     u64 tail_size, sub, done;
     VkBuffer rb;
-    u8 got[5][4], want[3][4];
-    rs_make(&r, 512, 1, gva);
+    u8 got[5][16], want[3][16];
+    Surf* whole = NULL;
+    rs_make(&r, as, 4 * as->tile, 1, gva);
+    rs_make(&ref, as, 4 * as->tile, 1, ref_gva);
+    const VkFmt f = vk_tic_format(r.tic[0], 0);
+    if (as->astc && (f.conv != VKC_ASTC || f.vk != VK_FORMAT_BC7_UNORM_BLOCK)) {
+        printf("resident texture in flight %s: the GPU %s, skipped\n", as->name,
+               f.conv != VKC_ASTC ? "samples ASTC as it is" : "holds no ASTC texture as BC7");
+        return 0;
+    }
     if (!rs_device_can(&r, &tails, &tail_size)) {
-        puts("resident texture in flight: the device doesn't bind a 2D RGBA8 texture in blocks of a tile, skipped");
+        printf("resident texture in flight: the device doesn't bind a 2D %s texture in blocks of a tile, skipped\n",
+               as->name);
         return 0;
     }
     sc_install();
     CHECK(mem_map(cpu, 3 * (u64)RS_TILE, MS_NORMAL, PERM_RW) == 0);
-    for (u32 k = 0; k < 3; k++)
-        for (u32 i = 0; i < RS_TILE; i++) GP(cpu + (u64)k * RS_TILE)[i] = rv_byte(k + 20, i);
-    gmmu_map(gva + rs_page(&r, a) * RS_TILE, cpu, RS_TILE);
-    gmmu_map(gva + rs_page(&r, b) * RS_TILE, cpu + RS_TILE, RS_TILE);
+    for (u32 k = 0; k < 3; k++) rs_fill(&r, GP(cpu + (u64)k * RS_TILE), k + 20);
+    for (u32 j = 0; j < 1u + (u32)as->astc; j++) {
+        gmmu_map((j ? ref_gva : gva) + rs_page(&r, a) * RS_TILE, cpu, RS_TILE);
+        gmmu_map((j ? ref_gva : gva) + rs_page(&r, b) * RS_TILE, cpu + RS_TILE, RS_TILE);
+    }
     vk_lock();
     Surf* t = vk_tex_from_tic(r.tic);
+    if (as->astc) {
+        const VkBool32 had2d = g_vk.feat.sparseResidencyImage2D;
+        g_vk.feat.sparseResidencyImage2D = VK_FALSE;
+        whole = vk_tex_from_tic(ref.tic);
+        g_vk.feat.sparseResidencyImage2D = had2d;
+    }
     vk_unlock();
-    u8* memory = rs_memory(&r);
-    CHECK(t && t->bricks && memory);
-    memcpy(want[0], memory + 130 * 4, 4);
-    memcpy(want[1], memory + 260 * 4, 4);
-    free(memory);
+    CHECK(t && t->bricks && (!as->astc || (whole && !whole->bricks)));
+    CHECK(rs_want(&r, whole, xa, want[0]) && rs_want(&r, whole, xb, want[1]));
     vk_lock();
     u8* back = vk_readback_buffer(256, &rb);
     CHECK(back);
     vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
-    sparse_copy(rb, 0, t->img, 130);
-    sparse_copy(rb, 16, t->img, 260);
+    rs_copy(rb, 0, t, xa);
+    rs_copy(rb, 16, t, xb);
     Gate gate = {gate_semaphore(), 1, 0, 0};
     CHECK(gate.sem && !plat_thread(gate_watch, &gate, 1u << 16));
     vk_submit_after(gate.sem, 1, 2); /* the submission of the copies waits at the gate */
@@ -3064,8 +3207,8 @@ static int check_resident_texture_in_flight(void) {
     const int reading = done < reader;
     vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
-    sparse_copy(rb, 32, t->img, 130);
-    sparse_copy(rb, 48, t->img, 260);
+    rs_copy(rb, 32, t, xa);
+    rs_copy(rb, 48, t, xb);
     vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE); /* the unbind, then these copies */
     u64 held2 = rv_allocated(), deferred2 = vk_deferred_bytes();
     sc_now();
@@ -3077,17 +3220,17 @@ static int check_resident_texture_in_flight(void) {
     vk_lock();
     vk_finish();
     vk_readback_ready();
-    for (u32 i = 0; i < 4; i++) memcpy(got[i], back + 16 * i, 4);
+    for (u32 i = 0; i < 4; i++) memcpy(got[i], back + 16 * i, n);
     for (int i = 0; i < VK_FRAMES; i++) {
         vk_frame_next();
         vk_cmd();
     }
     u64 held3 = rv_allocated();
     vk_unlock();
-    printf("resident texture in flight: a tile unmapped under a copy reading it, the release took %.3f ms, %llu host "
-           "waits, the GPU %s reading; %llu KiB of %llu freed at once, %llu KiB deferred, %llu KiB freed once the "
+    printf("resident texture in flight %s: a tile unmapped under a copy reading it, the release took %.3f ms, %llu "
+           "host waits, the GPU %s reading; %llu KiB of %llu freed at once, %llu KiB deferred, %llu KiB freed once the "
            "frames were done\n",
-           (t1 - t0) / 1e6, (unsigned long long)(c1.waits - c0.waits), reading ? "still" : "no longer",
+           as->name, (t1 - t0) / 1e6, (unsigned long long)(c1.waits - c0.waits), reading ? "still" : "no longer",
            (unsigned long long)((i64)(held0 - held1) >> 10), (unsigned long long)(bytes0 >> 10),
            (unsigned long long)((deferred2 - deferred0) >> 10), (unsigned long long)((i64)(held0 - held3) >> 10));
     CHECK(now == t && t->bytes == bytes0 - RS_TILE);
@@ -3095,8 +3238,8 @@ static int check_resident_texture_in_flight(void) {
     CHECK(held1 == held0 && held2 == held0 && deferred2 - deferred0 == RS_TILE); /* nothing freed under the copy */
     CHECK(held3 + RS_TILE <= held0);                                             /* freed once it is done */
     CHECK(unbind.gfx >= reader && unbind.followed); /* after the copy, and before the copies after it */
-    CHECK(!memcmp(got[0], want[0], 4) && !memcmp(got[1], want[1], 4));      /* the copy read the tile bound */
-    CHECK(!memcmp(got[2], SPARSE_ZERO8, 4) && !memcmp(got[3], want[1], 4)); /* the one after, released */
+    CHECK(!memcmp(got[0], want[0], n) && !memcmp(got[1], want[1], n)); /* the copy read the tile bound */
+    CHECK(!memcmp(got[2], zero, n) && !memcmp(got[3], want[1], n));    /* the one after, released */
 
     /* tile a mapped again from page 2 while the work before waits at a gate */
     gate = (Gate){gate.sem, 3, 0, 0};
@@ -3112,14 +3255,10 @@ static int check_resident_texture_in_flight(void) {
     now = sv_frame(r.tic);
     t1 = plat_ns();
     c1 = sc_now();
-    memory = rs_memory(&r);
-    CHECK(memory);
-    memcpy(want[2], memory + 130 * 4, 4);
-    free(memory);
     vk_lock();
     vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
-    sparse_copy(rb, 64, t->img, 130);
+    rs_copy(rb, 64, t, xa);
     vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
     sc_now();
     const ScBind rebind = g_sc.last;
@@ -3129,21 +3268,36 @@ static int check_resident_texture_in_flight(void) {
     vk_lock();
     vk_finish();
     vk_readback_ready();
-    memcpy(got[4], back + 64, 4);
+    memcpy(got[4], back + 64, n);
     vk_unlock();
+    if (as->astc) { /* the texture made whole over the same pages, for what the tile holds now */
+        gmmu_map(ref_gva + rs_page(&r, a) * RS_TILE, cpu + 2 * (u64)RS_TILE, RS_TILE);
+        CHECK(sv_frame(ref.tic) == whole);
+    }
+    CHECK(rs_want(&r, whole, xa, want[2]));
     vkDestroySemaphore(g_vk.dev, gate.sem, NULL);
     gmmu_space_unmap(gva, r.lay.size);
+    if (as->astc) gmmu_space_unmap(ref_gva, r.lay.size);
     CHECK(mem_unmap(cpu, 3 * (u64)RS_TILE) == 0);
-    printf("resident texture in flight, mapped again: %.3f ms, %llu host waits; the read after it %02x%02x%02x%02x, "
-           "memory %02x%02x%02x%02x\n",
-           (t1 - t0) / 1e6, (unsigned long long)(c1.waits - c0.waits), got[4][0], got[4][1], got[4][2], got[4][3],
-           want[2][0], want[2][1], want[2][2], want[2][3]);
+    printf("resident texture in flight %s, mapped again: %.3f ms, %llu host waits; the read after it "
+           "%02x%02x%02x%02x, the texel %02x%02x%02x%02x\n",
+           as->name, (t1 - t0) / 1e6, (unsigned long long)(c1.waits - c0.waits), got[4][0], got[4][1], got[4][2],
+           got[4][3], want[2][0], want[2][1], want[2][2], want[2][3]);
     CHECK(now == t && t->bytes == bytes0 && c1.waits == c0.waits && t1 - t0 < 100000000ull);
     CHECK(rebind.gfx >= gated && rebind.followed); /* after the work before it, and before the tile's load */
-    CHECK(!memcmp(got[4], want[2], 4) && memcmp(want[2], want[0], 4));
-    puts("resident texture in flight: a tile unmapped under a copy still reading it, without a host wait, its memory "
-         "freed after the GPU; a tile mapped again loaded after the work before it, read at once");
+    CHECK(!memcmp(got[4], want[2], n) && memcmp(want[2], want[0], n));
+    printf("resident texture in flight %s: a tile unmapped under a copy still reading it, without a host wait, its "
+           "memory freed after the GPU; a tile mapped again loaded after the work before it, read at once\n",
+           as->name);
     return 0;
+}
+static int check_resident_texture_in_flight(void) {
+    const int had = g_settings.astc_bc;
+    CHECK(!resident_in_flight(&RS_RGBA8, 0x960000000ull, 0, HEAP_BASE + 0x1300000));
+    g_settings.astc_bc = 1; /* held as BC7 where the GPU samples BCn and not ASTC; rs_device_can skips it elsewhere */
+    int failed = resident_in_flight(&RS_ASTC4, 0xA70000000ull, 0xA80000000ull, HEAP_BASE + 0x1300000);
+    g_settings.astc_bc = had;
+    return failed;
 }
 static int check_dma(void) {
     GpuDmaOp o;
@@ -4700,6 +4854,7 @@ int main(int argc, char** argv) {
     CHECK(!check_sparse_unbind_in_flight());
     CHECK(!check_sparse_resident_batched());
     CHECK(!check_resident_texture());
+    CHECK(!check_resident_astc());
     CHECK(!check_resident_texture_in_flight());
     CHECK(!check_sparse_pieces_batched());
     CHECK(!check_dma_untracked_source());
