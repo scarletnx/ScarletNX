@@ -3173,6 +3173,60 @@ static int dma_tiles_case(const char* what, const GpuDmaOp* ops, const int* alia
     }
     return 0;
 }
+/* A block linear source copied again and again from the buffer cache's copy of it, in later submissions: unchanged, it
+   is neither read again on the CPU nor compared, the write tracking vouching for it (vk_buf_copy_src_read); written
+   by the CPU, the next copy takes the new bytes. Only its tiles are moved. On twins of its own, which no engine wrote
+   (pages an engine's result was published over become pool pages, compared by contents) */
+static int dma_reused_source(void) {
+    const u64 cpu = HEAP_BASE + 0x2400000, ga = 0x270000000ull, gb = 0x280000000ull, span = 0x100000;
+    GpuDmaOp o = {0};
+    u64 c0, b0, m0, c1, b1, m1, read[4];
+    CHECK(mem_map(cpu, 2 * span, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(ga, cpu, span);
+    gmmu_map(gb, cpu + span, span);
+    vk_lock();
+    int tracked = vk_written_since(gmem_host(ga, 0x80000), 0x80000, 0) >= 0 && !mem_pool_any(cpu, 0x80000);
+    vk_unlock();
+    for (int k = 0; k < 2; k++)
+        for (u32 i = 0; i < span; i++) GP(cpu + k * span)[i] = (u8)(i * 29 + (i >> 9) * 7 + 3);
+    /* 64 lines of 256 bytes from (520, 100) of a 2048 byte wide surface of blocks 16 GOBs high: rows of blocks 0 and
+       1, GOB columns 8 to 12 */
+    o.multi = 1;
+    o.width = o.line_in = o.line_out = 256;
+    o.lines = 64;
+    o.src = bl_side(0, 2048, 256, 4, 520, 100);
+    o.dst = pitch_side(0x80000, 256);
+    vk_dma_stats(&c0, &b0, &m0);
+    for (int pass = 0; pass < 4; pass++) {
+        GpuDmaOp g = o, c = o;
+        g.src.addr += ga, g.dst.addr += ga;
+        c.src.addr += gb, c.dst.addr += gb;
+        if (pass == 3) /* the CPU writes the source's first row of blocks, the copy's lines in it among them */
+            for (int k = 0; k < 2; k++)
+                for (u32 i = 0; i < 0x40000; i++) GP(cpu + k * span)[i] ^= 0x5A;
+        g_renderer->mem_may_have_changed(); /* a later submission */
+        CHECK(g_renderer->dma_copy(&g));
+        dma_copy_ref(&c);
+        read[pass] = vk_buf_copy_src_read();
+        guest_done(cpu, span);
+        if (memcmp(GP(cpu), GP(cpu + span), span)) {
+            fprintf(stderr, "dma tiles, reused source: copy %d differs from the reference\n", pass);
+            return 1;
+        }
+    }
+    vk_dma_stats(&c1, &b1, &m1);
+    /* each copy: the source's 2 x 5 blocks of 8 KiB, the destination's 64 lines of 256 bytes */
+    if (m1 - m0 != 4 * (2 * 5 * 8192 + 64 * 256) || (tracked && (read[1] != read[0] || read[2] != read[0]))) {
+        fprintf(stderr, "dma tiles, reused source: %llu bytes moved, %u meant; read on the CPU %llu, %llu, %llu\n",
+                (unsigned long long)(m1 - m0), 4 * (2 * 5 * 8192 + 64 * 256), (unsigned long long)read[0],
+                (unsigned long long)read[1], (unsigned long long)read[2]);
+        return 1;
+    }
+    if (!tracked)
+        printf("skip: a reused copy source is compared by contents here (no write tracking, or pool pages)\n");
+    CHECK(mem_unmap(cpu, 2 * span) == 0);
+    return 0;
+}
 static int check_dma_tiles(void) {
     GpuDmaOp o[3] = {{0}};
     int alias[3] = {0, 1, 0};
@@ -3201,7 +3255,8 @@ static int check_dma_tiles(void) {
     o[2].dst.ox = 1500, o[2].dst.oy = 140;
     CHECK(!dma_tiles_case("an alias of the destination and a copy within it", o, alias, 3,
                           272 * 63 + 256 + 2 * 5 * 8192 + 400 * 47 + 384 + 2 * 7 * 8192 + 4 * 8192 + 4 * 8192));
-    puts("dma tiles: a copy moves its tiles only, in order and through aliases");
+    CHECK(!dma_reused_source());
+    puts("dma tiles: a copy moves its tiles only, in order, through aliases, and a reused source is not read again");
     return 0;
 }
 

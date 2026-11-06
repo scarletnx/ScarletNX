@@ -134,6 +134,7 @@ static struct {
     u32 head, tail;
     u32 n;
     u64 bytes;
+    u64 copy_src_read; /* vk_buf_copy_src_read */
     /* Pending buffer writes, and the work covered by the last consumer barrier. Read-only draws do not
        advance writes. A writable reuse still needs ordering against intervening readers. */
     struct {
@@ -2332,6 +2333,19 @@ static int written_since_gva(u64 gva, u64 len, u32 since) {
     }
     return any;
 }
+/* whether pool memory is under [gva, gva + len) (mem_pool_any), run by run of the GPU's page table */
+static int pool_pages(u64 gva, u64 len) {
+    for (u64 o = 0; o < len;) {
+        u64 cpu = 0, n = gmmu_run(gva + o, len - o, &cpu);
+        if (!n) {
+            n = 0x1000 - ((gva + o) & 0xFFF);
+            if (n > len - o) n = len - o;
+        } else if (mem_pool_any(cpu, n))
+            return 1;
+        o += n;
+    }
+    return 0;
+}
 /* whether GPU-owned bytes are on [gva, gva + len)'s pages (memory/own.c): reading them on the CPU lands them, a wait
    for the GPU (vk_lock held, as own_hash needs) */
 static int range_owned(u64 gva, u64 len) {
@@ -2431,13 +2445,12 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             use(i, buf, off);
             return 1;
         }
-        /* with write tracking, an own buffer is checked only when its memory was written. Not a copy engine's source
-           (strict 2), which is compared: the tracking can miss a CPU write (one game's upload ring, whose lightmap atlas
-           was then copied with stale bytes), and what a copy lands in keeps them */
-        const u8* host = e->own && strict < 2 ? entry_host(e, gva, len) : NULL;
-        int w = !e->own || strict == 2 ? -1
-                : host                 ? vk_written_since(host, len, e->wseen)
-                                       : written_since_gva(gva, len, e->wseen);
+        /* with write tracking, an own buffer is checked only when its memory was written. A copy engine's source
+           (strict 2) on pool pages is compared instead: they can be written where the tracking doesn't look
+           (mem_pool_any), and what a copy lands in keeps a stale byte for good */
+        int tracked = e->own && !(strict == 2 && pool_pages(gva, len));
+        const u8* host = tracked ? entry_host(e, gva, len) : NULL;
+        int w = !tracked ? -1 : host ? vk_written_since(host, len, e->wseen) : written_since_gva(gva, len, e->wseen);
         if (w == 1 && host && len >= PATCH_MIN) { /* the written pages, not the whole range again */
             u32 wnow = vk_ww_now();
             if (patch_own(i, host, e->wseen)) {
@@ -2506,6 +2519,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
     u32 ncounts;
     const u8* src = draw_bytes(gva, len, counts, 4, &ncounts);
     if (!src) return 0;
+    if (strict == 2) g_buffer.copy_src_read += len;
     if (ncounts && e) drop_own(i); /* the counts are written into this frame's staging, which the draw reads */
     /* Data without a buffer of its own goes into this frame's staging ring whatever its hash says, so it is copied as
        it is hashed and read once: reading it twice, for the hash and then the copy, was half of one game's GPU thread */
@@ -2675,6 +2689,7 @@ int vk_buf_get_uniform(u64 gva, u64 len, VkBuffer* buf, u64* off) {
 int vk_buf_get_copy_src(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     return buf_get(gva, len, buf, off, 2, vk_stage_align(), IN_NO);
 }
+u64 vk_buf_copy_src_read(void) { return g_buffer.copy_src_read; }
 
 u64 vk_buf_reclaim(u32 before, u64 want) {
     u64 freed = 0;

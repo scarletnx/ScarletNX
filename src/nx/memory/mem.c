@@ -1500,6 +1500,14 @@ int mem_unmigrate(u64 a, u64 size) {
     mem_unlock();
     return r;
 }
+int mem_pool_any(u64 a, u64 size) {
+    int r;
+    if (a >= AS_END) return 0;
+    mem_lock();
+    r = any_pool_nl(a, size);
+    mem_unlock();
+    return r;
+}
 int mem_pool_offset(u64 a, u64* off) {
     int r = -1;
     u32 i;
