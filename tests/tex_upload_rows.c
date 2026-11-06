@@ -1154,6 +1154,56 @@ static void check_resident_astc(void) {
     copy_bpp = 4, copy_bw = copy_bh = 1;
 }
 
+/* A texture with holes in its mapping, loaded a piece at a time, checked by its contents (where write tracking can't
+   tell): 512x512 RGBA8, 1 MiB, two runs of 64 KiB mapped. Its hash reads those runs a piece of 4 KiB at a time, 32
+   pieces, not its 1 MiB (256): unchanged, it loads nothing; a run mapped, a run unmapped, a byte of a run and a run
+   moved with its bytes (the same runs in the same order, one at another place) change it; a byte where nothing is
+   mapped (the stubs read guest memory there, a hole reads zeros) doesn't, nor its write-back by the GPU. Loaded whole,
+   its hash reads all of it */
+static void check_hash_runs(void) {
+    Surf t = tex(512, 512, 1, 1, 4, 4, 0, 1);
+    u8* moved = malloc(0x10000);
+    u64 h0;
+    CHECK(moved);
+    memcpy(moved, guest + 0x20000, 0x10000);
+    t.size = t.layer_size = bl_level_size(512, 512, 1, &t.f, 4, 0, 0, 0, NULL, NULL);
+    CHECK(t.size == 1u << 20);
+    t.piecewise = 1;
+    t.upload_valid = 1;
+    g_map.count = 2;
+    g_map.gva[0] = GVA + 0x10000, g_map.n[0] = 0x10000;
+    g_map.gva[1] = GVA + 0x80000, g_map.n[1] = 0x10000;
+    copy_bpp = 4, copy_bw = copy_bh = 1;
+    /* each check: the change before it, then whether it loads */
+    const u32 rehash[9][2] = {{0, 1}, {0, 0}, {1, 1}, {2, 1}, {0, 0}, {3, 1}, {4, 0}, {5, 1}, {0, 0}};
+    for (u32 i = 0; i < 9; i++) {
+        if (rehash[i][0] == 1) g_map.count = 3, g_map.gva[2] = GVA + 0xC0000, g_map.n[2] = 0x10000; /* mapped */
+        if (rehash[i][0] == 2) g_map.count = 2;                                                     /* unmapped */
+        if (rehash[i][0] == 3) guest[0x80005] ^= 0x5A;                                              /* in a run */
+        if (rehash[i][0] == 4) guest[0x40000] ^= 0x5A;                                              /* in a hole */
+        if (rehash[i][0] == 5) { /* run 0's bytes, mapped at 0x20000 instead */
+            memcpy(guest + 0x20000, guest + 0x10000, 0x10000);
+            g_map.gva[0] = GVA + 0x20000;
+        }
+        stage_used = copied_used = nregs = 0;
+        h0 = g_hashes;
+        CHECK(tex_rehash(&t) == (int)rehash[i][1] && g_hashes - h0 == 16u * g_map.count);
+    }
+    vk_tex_note_writeback(&t); /* its memory written by the GPU: the hash it keeps is its runs' */
+    stage_used = copied_used = nregs = 0;
+    CHECK(tex_rehash(&t) == 0);
+    guest[0x80005] ^= 0x5A;
+    guest[0x40000] ^= 0x5A;
+    memcpy(guest + 0x20000, moved, 0x10000);
+    free(moved);
+    t.piecewise = 0;
+    stage_used = copied_used = nregs = 0;
+    h0 = g_hashes;
+    tex_rehash(&t);
+    CHECK(g_hashes - h0 == 256);
+    g_map.count = 0;
+}
+
 int main(void) {
     fill();
     check_take_skip();
@@ -1457,6 +1507,7 @@ int main(void) {
     check_astc_changes();
     check_resident_layers();
     check_resident_astc();
+    check_hash_runs();
     printf("tex_upload_rows: %u checks passed\n", checks);
     return 0;
 }
