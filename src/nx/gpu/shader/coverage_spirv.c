@@ -1,0 +1,116 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+#include "nx/gpu/shader/coverage_spirv.h"
+#include "nx/gpu/shader/advanced_blend_spirv.h"
+#include "nx/gpu/shader/capture_tiles_spirv.h"
+
+uint32_t shader_alpha_coverage_spirv(SpvEmitter* e, uint32_t f32, uint32_t u32_type, uint32_t boolean,
+                                    uint32_t alpha, uint32_t samples, uint32_t guest_mask) {
+    if (!samples || samples > 16 || (samples & (samples - 1))) return 0;
+    uint32_t zero = spv_emit_constant_f32(e, f32, 0), one = spv_emit_constant_f32(e, f32, 1);
+    uint32_t positive = SPV(e, SPV_OP_F_ORD_GREATER_THAN, boolean, alpha, zero);
+    uint32_t nonnegative = spv_emit_select(e, f32, positive, alpha, zero);
+    uint32_t below_one = SPV(e, SPV_OP_F_ORD_LESS_THAN, boolean, nonnegative, one);
+    uint32_t clamped = spv_emit_select(e, f32, below_one, nonnegative, one);
+    /* Clamping precedes conversion: NaNs and infinities never reach OpConvertFToU. Multiplication by a power of
+       two places every k/N threshold exactly; the resulting count is0..N<=16, within a32-bit shift's range. */
+    uint32_t scaled = spv_emit_fmul(e, f32, clamped, spv_emit_constant_f32(e, f32, (float)samples));
+    uint32_t count = spv_emit_convert_f_to_u(e, u32_type, scaled);
+    uint32_t one_bit = spv_emit_constant_u32(e, u32_type, 1);
+    uint32_t bits = SPV(e, SPV_OP_SHIFT_LEFT_LOGICAL, u32_type, one_bit, count);
+    uint32_t mask = SPV(e, SPV_OP_I_SUB, u32_type, bits, one_bit);
+    return guest_mask ? SPV(e, SPV_OP_BITWISE_AND, u32_type, mask, guest_mask) : mask;
+}
+
+uint32_t* shader_coverage_resolve_spirv(uint32_t flags, int signed_target, size_t* words) {
+    uint32_t samples = flags & SH_BLEND_MULTISAMPLE ? (flags >> 8) & 63 : 1;
+    *words = 0;
+    if (!samples || samples > 32 || (samples & (samples - 1))) return NULL;
+    int array = !!(flags & SH_BLEND_ARRAY), multisample = !!(flags & SH_BLEND_MULTISAMPLE);
+    SpvEmitter e;
+    spv_emit_init(&e, 4096);
+    spv_emit_shader_capability(&e);
+    spv_emit_capability(&e, 50); /* ImageQuery */
+    spv_emit_capability(&e, 55); /* StorageImageReadWithoutFormat: validity */
+    spv_emit_capability(&e, 56); /* StorageImageWriteWithoutFormat: integer destination */
+    if (multisample) spv_emit_capability(&e, 27); /* StorageImageMultisample */
+    if (multisample && array) spv_emit_capability(&e, 48); /* ImageMSArray */
+    uint32_t f32 = spv_emit_type_f32(&e), boolean = spv_emit_type_bool(&e), u32 = spv_emit_type_u32(&e);
+    uint32_t integer = signed_target ? spv_emit_type_i32(&e) : u32;
+    uint32_t float4 = spv_emit_type_vec4(&e, f32), integer4 = spv_emit_type_vec4(&e, integer);
+    uint32_t uint3 = spv_emit_type_vec3(&e, u32), coord_type = array ? uint3 : spv_emit_type_vec2(&e, u32);
+    uint32_t validity_type = spv_emit_type_image(&e, f32, SPV_DIM_2D, 0, array, multisample, 2, 0);
+    uint32_t target_type = spv_emit_type_image(&e, integer, SPV_DIM_2D, 0, array, multisample, 2, 0);
+    uint32_t validity_variable = spv_emit_resource(&e, SPV_STORAGE_UNIFORM_CONSTANT, validity_type, 0, 1);
+    uint32_t target_variable = spv_emit_resource(&e, SPV_STORAGE_UNIFORM_CONSTANT, target_type, 0, 2);
+    spv_emit_decorate(&e, validity_variable, SPV_DECORATION_NON_WRITABLE, NULL, 0);
+    spv_emit_decorate(&e, target_variable, 25, NULL, 0); /* NonReadable */
+    int tiled = !!(flags & SH_CAPTURE_TILED);
+    uint32_t invocation = spv_emit_builtin(&e, SPV_STORAGE_INPUT, uint3, tiled ? 26 : 28);
+    uint32_t interfaces[6] = {invocation, validity_variable, target_variable}, interface_count = 3;
+    uint32_t tiles = 0, local = 0;
+    if (tiled) {
+        tiles = shader_capture_tiles_declare(&e, u32, 0, 3);
+        local = spv_emit_builtin(&e, SPV_STORAGE_INPUT, uint3, 27);
+        interfaces[interface_count++] = tiles;
+        interfaces[interface_count++] = local;
+    }
+    uint32_t function = spv_emit_function(&e, 0, spv_emit_type_void(&e), NULL, 0, NULL);
+    uint32_t validity = spv_emit_load(&e, validity_type, validity_variable);
+    uint32_t target = spv_emit_load(&e, target_type, target_variable);
+    uint32_t xyz = spv_emit_load(&e, uint3, invocation);
+    if (tiled)
+        xyz = shader_capture_tile_coordinates(&e, u32, tiles, xyz,
+                                                spv_emit_load(&e, uint3, local), !!(flags & SH_CAPTURE_ADAPTIVE));
+    uint32_t size = SPV(&e, SPV_OP_IMAGE_QUERY_SIZE, coord_type, target);
+    uint32_t inside = 0, component[3];
+    for (uint32_t i = 0; i < (array ? 3u : 2u); i++) {
+        component[i] = spv_emit_vec4_extract(&e, u32, xyz, i);
+        uint32_t limit = spv_emit_vec4_extract(&e, u32, size, i);
+        uint32_t fits = SPV(&e, SPV_OP_U_LESS_THAN, boolean, component[i], limit);
+        inside = i ? SPV(&e, SPV_OP_LOGICAL_AND, boolean, inside, fits) : fits;
+    }
+    uint32_t coordinate = array ? xyz : SPV(&e, SPV_OP_COMPOSITE_CONSTRUCT, coord_type, component[0], component[1]);
+    uint32_t apply = spv_emit_id(&e), done = spv_emit_id(&e);
+    spv_emit_selection_merge(&e, done);
+    spv_emit_branch_conditional(&e, inside, apply, done);
+    spv_emit_label(&e, apply);
+    uint32_t zero = spv_emit_constant_u32(&e, u32, 0), mask = zero, covered[32], sample_id[32];
+    for (uint32_t sample = 0; sample < samples; sample++) {
+        sample_id[sample] = spv_emit_constant_u32(&e, u32, sample);
+        uint32_t value = multisample ? SPV(&e, SPV_OP_IMAGE_READ, float4, validity, coordinate, 64, sample_id[sample])
+                                     : SPV(&e, SPV_OP_IMAGE_READ, float4, validity, coordinate);
+        uint32_t red = spv_emit_vec4_extract(&e, f32, value, 0);
+        uint32_t empty = SPV(&e, SPV_OP_F_ORD_EQUAL, boolean, red, spv_emit_constant_f32(&e, f32, 0));
+        covered[sample] = spv_emit_bool_not(&e, boolean, empty);
+        uint32_t bit = spv_emit_select(&e, u32, covered[sample], spv_emit_constant_u32(&e, u32, 1u << sample), zero);
+        mask = SPV(&e, SPV_OP_BITWISE_OR, u32, mask, bit);
+    }
+    uint32_t red = signed_target ? spv_emit_bitcast(&e, integer, mask) : mask;
+    uint32_t integer_zero = spv_emit_constant_u32(&e, integer, 0);
+    uint32_t result = spv_emit_vec4_construct(&e, integer4, (const uint32_t[4]){red, integer_zero, integer_zero,
+                                                                                            integer_zero});
+    /* The same union is written only after every validity sample has been read, so split host fragment shader
+       invocations cannot narrow the final mask. A validity of zero leaves the destination's old sample intact. */
+    for (uint32_t sample = 0; sample < samples; sample++) {
+        uint32_t write = spv_emit_id(&e), next = spv_emit_id(&e);
+        spv_emit_selection_merge(&e, next);
+        spv_emit_branch_conditional(&e, covered[sample], write, next);
+        spv_emit_label(&e, write);
+        if (multisample)
+            SPV_VOID(&e, SPV_OP_IMAGE_WRITE, target, coordinate, result, 64, sample_id[sample]);
+        else
+            SPV_VOID(&e, SPV_OP_IMAGE_WRITE, target, coordinate, result);
+        spv_emit_branch(&e, next);
+        spv_emit_label(&e, next);
+    }
+    spv_emit_branch(&e, done);
+    spv_emit_label(&e, done);
+    spv_emit_return(&e);
+    spv_emit_function_end(&e);
+    spv_emit_compute_entry_str(&e, function, "main", interfaces, interface_count);
+    spv_emit_local_size(&e, function, 8, 8, 1);
+    uint32_t* code = spv_emit_finish(&e, words);
+    spv_emit_destroy(&e);
+    return code;
+}

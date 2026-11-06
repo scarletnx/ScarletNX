@@ -625,9 +625,8 @@ void vk_compute_mem_need_map(u64 a, u64 n) {
 
 /* the pipeline of a program (80 zero bytes, then the code), by its code and launch parameters, and by the constant
    buffer words its translation read */
-/* A program is translated for the numeric types of its sampled and storage images. Storage stores use
-   rt_int_mask bits 8 and up to switch the bound/bindless default between float and integer, and rt_sint_mask's
-   corresponding bits to select signed stores. Atomics retain their R32ui declaration. */
+/* A program is translated for the numeric types of its sampled and storage images. Image masks select float,
+   unsigned or signed stores independently of the graphics stage's parameters. Atomics retain R32ui declarations. */
 typedef struct {
     u64 tex_int, tex_sint, tex_rect;
     u32 image, image_sint;
@@ -678,8 +677,8 @@ static CsPipe* cs_pipe(const u8* code, u32 flow_base, u32 lx, u32 ly, u32 lz, u3
             (unsigned long long)key, shm, shared_max, reach, shared);
         p->si.shared_size = (int)shared;
     }
-    p->si.rt_int_mask = k.image << 8;
-    p->si.rt_sint_mask = k.image_sint << 8;
+    p->si.img_int_mask = k.image;
+    p->si.img_sint_mask = k.image_sint;
     p->si.tex_int_mask = k.tex_int;
     p->si.tex_sint_mask = k.tex_sint;
     p->si.tex_rect_mask = k.tex_rect;
@@ -1022,8 +1021,8 @@ void vk_dispatch(const DispatchState* d) {
     int queried = 0;
     for (i = 0; i < SH_MAXTEX; i++) queried |= ck.query[i] != 0;
     if (ck.tex_int || ck.image || ck.image_sint || ck.tex_rect || queried) {
-        if (!p->keyed || (p->keyed->si.rt_int_mask >> 8) != ck.image || p->keyed->si.tex_int_mask != ck.tex_int ||
-            p->keyed->si.tex_sint_mask != ck.tex_sint || (p->keyed->si.rt_sint_mask >> 8) != ck.image_sint ||
+        if (!p->keyed || p->keyed->si.img_int_mask != ck.image || p->keyed->si.tex_int_mask != ck.tex_int ||
+            p->keyed->si.tex_sint_mask != ck.tex_sint || p->keyed->si.img_sint_mask != ck.image_sint ||
             p->keyed->si.tex_rect_mask != ck.tex_rect ||
             memcmp(p->keyed->si.tex_query_hint, ck.query, sizeof ck.query) != 0) {
             static u8 keyed_code[0x10000 + 80];

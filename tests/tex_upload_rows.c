@@ -156,6 +156,20 @@ void rec_CmdClearDepthStencilImage(VkCommandBuffer cb, VkImage img, VkImageLayou
 
 /* ------------------------------------------------ what texture.c reaches otherwise, unused here */
 VkState g_vk;
+/* Uploading into the fixture's existing image never creates views or samplers. Keep the registry boundary
+   explicit, and fail if an upload unexpectedly starts exercising object creation. */
+VkResult vk_image_view_create(VkDevice device, const VkImageViewCreateInfo* info,
+                               const VkAllocationCallbacks* allocation, VkImageView* view) {
+    (void)device, (void)info, (void)allocation, (void)view;
+    fputs("tex_upload_rows: unexpected image view creation\n", stderr);
+    abort();
+}
+VkResult vk_sampler_create(VkDevice device, const VkSamplerCreateInfo* info,
+                            const VkAllocationCallbacks* allocation, VkSampler* sampler) {
+    (void)device, (void)info, (void)allocation, (void)sampler;
+    fputs("tex_upload_rows: unexpected sampler creation\n", stderr);
+    abort();
+}
 _Atomic int g_cs_any;
 u32 g_vk_present;
 void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }

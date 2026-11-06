@@ -1349,7 +1349,9 @@ jobs:
         id: macos-build
         if: ${{ !cancelled() && steps.macos-llvm-build.outcome != 'failure' }}
         run: |
+          # Keep the release's SDL3 static when the later shared-library check installs Homebrew's package.
           cmake --preset macos -DLLVM_DIR="$PWD/apple-llvm/lib/cmake/llvm" -DSNX_TEST_VP9_VECTORS=ON \
+            -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build --preset macos --parallel "$(getconf _NPROCESSORS_ONLN)"
       - name: Build the app for iOS
@@ -1410,6 +1412,8 @@ jobs:
           echo "$MOLTENVK_MACOS_SHA256  moltenvk-macos.tar" | shasum -a 256 -c
           mkdir moltenvk-macos && tar -xf moltenvk-macos.tar -C moltenvk-macos
           cmake build/macos -DSNX_MOLTENVK="$PWD/moltenvk-macos"
+          # The executable and the install rules must come from the same dependency configuration.
+          cmake --build --preset macos --target scarletnx --parallel "$(getconf _NPROCESSORS_ONLN)"
           cpack --config build/macos/CPackConfig.cmake -B app-macos \
             -D CPACK_PACKAGE_FILE_NAME=ScarletNX-macos-arm64-${{ steps.commit.outputs.short }}
           mv app-macos/ScarletNX-macos-arm64-${{ steps.commit.outputs.short }}.zip .

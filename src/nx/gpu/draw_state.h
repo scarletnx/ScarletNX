@@ -246,6 +246,12 @@ typedef struct {
 
 /* A draw's own arguments */
 enum { DS_DRAW_DEPTH_BOUNDS = 1u << 0, DS_DRAW_POINT_SIZE = 1u << 1, DS_DRAW_TESS_LEVELS = 1u << 2 };
+enum {
+    DS_MS_A2C_DITHER = 1u << 0,
+    DS_MS_COVERAGE_TO_COLOR = 1u << 1,
+    DS_MS_SAMPLE_LOCATIONS = 1u << 2,
+    DS_MS_SAMPLE_GRID = 1u << 3
+};
 typedef struct {
     u32 topology;     /* the 3D engine's primitive numbers (14 a patch list) */
     u32 indexed;      /* 0 not, 1 from the index buffer, 3 the channel's inline indices */
@@ -270,6 +276,9 @@ typedef struct {
     u32 raster_samples, coverage_mode, coverage_table_enable;
     u8 coverage_table[16];              /* normalized modulation coefficients in units of1/16, inclusive0..16 */
     u64 advanced_blend[DS_TARGETS_MAX]; /* active packed NVN advanced blend state, outside the serialized state */
+    u32 multisample_flags, coverage_to_color_output; /* DS_MS_ flags and the integer color output to update */
+    u32 subpixel_bias_x, subpixel_bias_y; /* extra conservative snap precision, inclusive0..8 */
+    u8 sample_locations[16];            /* x in low4/y in high4, each in units of1/16 pixel */
 } DrawCall;
 
 /* DsState's groups, in its order */
@@ -420,6 +429,8 @@ typedef struct {
     float x0, y0, w, h; /* the destination, y measured as the window origin says */
     double du, dv;      /* source texels per destination pixel */
     float sx0, sy0;     /* the source's origin */
+    DrawCall state;     /* per-fragment state, excluding API-disabled depth/conservative state */
+    DrawOwner owner;    /* the conditional-render predicate, with no transform feedback */
 } DrawTexture;
 
 #endif

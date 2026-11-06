@@ -5,6 +5,7 @@
    is smaller). Others are loaded from guest memory, staged as they are and deswizzled and converted on the GPU
    (vk/blocklinear.c, vk/texconv.c, vk/astc.c), and checked for changes now and then: often at first, rarely once
    they have stayed the same. */
+#include "nx/gpu/vk/descriptor_objects.h"
 #include "common/utilities/bits.h"
 #include "nx/gpu/texture/descriptor.h"
 #include <stdlib.h>
@@ -1613,7 +1614,7 @@ const char* vk_tex_view_refusal(const Surf* s, VkImageViewType type) {
 }
 
 static VkImageView tex_view(Surf* s, VkImageViewType type, int srgb, const VkComponentMapping* map, int stencil,
-                            u32 levels) {
+                            u32 levels, int storage) {
     if (vk_tex_view_refusal(s, type)) return VK_NULL_HANDLE;
     u32 layers = type == VK_IMAGE_VIEW_TYPE_2D_ARRAY     ? s->layers
                  : type == VK_IMAGE_VIEW_TYPE_CUBE       ? 6
@@ -1622,7 +1623,7 @@ static VkImageView tex_view(Surf* s, VkImageViewType type, int srgb, const VkCom
     VkFormat fmt = vk_tex_view_format(s, srgb);
     stencil = stencil && s->f.stencil;
     u64 key = (u64)type | (u64)map->r << 4 | (u64)map->g << 8 | (u64)map->b << 12 | (u64)map->a << 16 | (u64)fmt << 20 |
-              (u64)stencil << 60 | (u64)(levels != s->levels) << 61;
+              (u64)stencil << 60 | (u64)(levels != s->levels) << 61 | (u64)(storage != 0) << 62;
     for (int i = 0; i < s->nsv; i++)
         if (s->sv[i].key == key) return s->sv[i].v;
     VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -1634,12 +1635,12 @@ static VkImageView tex_view(Surf* s, VkImageViewType type, int srgb, const VkCom
                                                      : s->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT
                                                                   : VK_IMAGE_ASPECT_COLOR_BIT,
                                                      0, levels, 0, layers}};
-    /* a view in the image's sRGB twin is sampled only: storage, which a render target may have, has no sRGB format */
+    /* Explicit usage keeps a sampled sRGB view from inheriting the image's linear storage usage. */
     VkImageViewUsageCreateInfo vu = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
-                                     .usage = VK_IMAGE_USAGE_SAMPLED_BIT};
-    if (fmt != s->f.vk) vi.pNext = &vu;
+                                     .usage = storage ? VK_IMAGE_USAGE_STORAGE_BIT : VK_IMAGE_USAGE_SAMPLED_BIT};
+    vi.pNext = &vu;
     VkImageView v;
-    if (!VK_OK(vkCreateImageView(g_vk.dev, &vi, NULL, &v))) return VK_NULL_HANDLE;
+    if (!VK_OK(vk_image_view_create(g_vk.dev, &vi, NULL, &v))) return VK_NULL_HANDLE;
     if (s->nsv == (int)(sizeof s->sv / sizeof s->sv[0])) { /* full: drop the oldest */
         vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, s->sv[0].v, VK_NULL_HANDLE);
         memmove(s->sv, s->sv + 1, sizeof s->sv - sizeof s->sv[0]);
@@ -1650,14 +1651,14 @@ static VkImageView tex_view(Surf* s, VkImageViewType type, int srgb, const VkCom
 }
 
 VkImageView vk_tex_view(Surf* s, VkImageViewType type, int srgb, const VkComponentMapping* map, int stencil) {
-    return tex_view(s, type, srgb, map, stencil, s->levels);
+    return tex_view(s, type, srgb, map, stencil, s->levels, 0);
 }
 
 VkImageView vk_tex_storage_view(Surf* s, VkImageViewType type) {
     const VkComponentMapping identity = {0};
     /* A storage descriptor exposes the first level selected by its TIC, not
        the entire sampled mip chain. Both views share the existing image. */
-    return tex_view(s, type, 0, &identity, 0, 1);
+    return tex_view(s, type, 0, &identity, 0, 1, 1);
 }
 
 /* empty textures for slots whose texture is missing or doesn't match the shader: zero, or depth 1.0 for shadow
@@ -1852,7 +1853,7 @@ VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
         si.pNext = &rm;
     }
     VkSampler s;
-    if (!VK_OK(vkCreateSampler(g_vk.dev, &si, NULL, &s))) return VK_NULL_HANDLE;
+    if (!VK_OK(vk_sampler_create(g_vk.dev, &si, NULL, &s))) return VK_NULL_HANDLE;
     memcpy(tab[j].tsc, tsc, 32);
     tab[j].raise = raise;
     tab[j].integer = integer;

@@ -87,7 +87,7 @@ u32 shader_half_pair_result(DirectCtx* c, u32 vec2, u32 pair, u32 old, u32 merge
             shader_float_saturate(c, spv_emit_vec4_extract(&c->emit, c->f32_type, pair, 1), 1));
     if (merge == 1)
         return spv_emit_bitcast(&c->emit, c->u32_type, spv_emit_vec4_extract(&c->emit, c->f32_type, pair, 0));
-    u32 packed = spv_emit_glsl_unary(&c->emit, c->u32_type, c->glsl, SPV_GLSL_PACK_HALF2X16, pair);
+    u32 packed = shader_pack_half_rte(c, pair);
     if (merge == 2 || merge == 3) {
         u32 mask = spv_emit_constant_u32(&c->emit, c->u32_type, merge == 2 ? 0xffffu : 0xffff0000u);
         return spv_emit_bitwise_or_u32(
@@ -126,6 +126,141 @@ u32 shader_double_source(DirectCtx* c, u32 vec2_u32, u64 w, int kind) {
     return spv_emit_bitcast(&c->emit, c->f64_type, spv_emit_vec2_construct(&c->emit, vec2_u32, low, high));
 }
 
+static u32 conversion_constant(DirectCtx* c, u32 value) { return spv_emit_constant_u32(&c->emit, c->u32_type, value); }
+static u32 conversion_select(DirectCtx* c, u32 condition, u32 yes, u32 no) {
+    return spv_emit_select(&c->emit, c->u32_type, condition, yes, no);
+}
+static u32 conversion_nonzero(DirectCtx* c, u32 value) {
+    return spv_emit_i_not_equal(&c->emit, c->bool_type, value, c->zero);
+}
+static u32 conversion_and(DirectCtx* c, u32 a, u32 b) { return spv_emit_bitwise_and_u32(&c->emit, c->u32_type, a, b); }
+static u32 conversion_or(DirectCtx* c, u32 a, u32 b) { return spv_emit_bitwise_or_u32(&c->emit, c->u32_type, a, b); }
+/* The caller declares RTE16 and DenormPreserve16 from the device's float controls. A two-half vector bitcast
+   avoids an Int16 capability just to move the scalar half's bits into its32-bit register. */
+static u32 conversion_native_half(DirectCtx* c, u32 value) {
+    u32 half = spv_emit_fconvert(&c->emit, c->f16_type, value);
+    u32 zero = spv_emit_constant_u32(&c->emit, c->f16_type, 0);
+    u32 pair = spv_emit_vec2_construct(&c->emit, spv_emit_type_vec2(&c->emit, c->f16_type), half, zero);
+    return spv_emit_bitcast(&c->emit, c->u32_type, pair);
+}
+/* Round a split unsigned significand after a right shift. Every SPIR-V shift stays in0..31, even for a source
+   smaller than the destination's minimum subnormal. The discarded bits drive ties-to-even or directed rounding. */
+static u32 conversion_significand(DirectCtx* c, u32 high, u32 low, u32 shift, u32 negative, u32 mode) {
+    u32 one = conversion_constant(c, 1), thirty_two = conversion_constant(c, 32);
+    u32 mask = conversion_constant(c, 31), sixty_four = conversion_constant(c, 64);
+    u32 small = spv_emit_u_less(&c->emit, c->bool_type, shift, thirty_two);
+    u32 below64 = spv_emit_u_less(&c->emit, c->bool_type, shift, sixty_four);
+    u32 low_shift = conversion_and(c, shift, mask);
+    u32 inverse = conversion_and(c, spv_emit_isub_u32(&c->emit, c->u32_type, c->zero, shift), mask);
+    u32 joined = conversion_or(c, spv_emit_shift_right_u32(&c->emit, c->u32_type, low, low_shift),
+                               spv_emit_shift_left_u32(&c->emit, c->u32_type, high, inverse));
+    u32 upper = spv_emit_shift_right_u32(&c->emit, c->u32_type, high, low_shift);
+    u32 retained = conversion_select(c, below64, conversion_select(c, small, joined, upper), c->zero);
+    u32 prior = conversion_and(c, spv_emit_isub_u32(&c->emit, c->u32_type, shift, one), mask);
+    u32 source = conversion_select(c, spv_emit_u_less(&c->emit, c->bool_type, thirty_two, shift), high, low);
+    u32 guard = conversion_and(c, spv_emit_shift_right_u32(&c->emit, c->u32_type, source, prior), one);
+    u32 sticky_mask =
+        spv_emit_isub_u32(&c->emit, c->u32_type, spv_emit_shift_left_u32(&c->emit, c->u32_type, one, prior), one);
+    u32 sticky_bits = conversion_and(c, source, sticky_mask);
+    sticky_bits = conversion_select(c, spv_emit_u_less(&c->emit, c->bool_type, thirty_two, shift),
+                                    conversion_or(c, sticky_bits, low), sticky_bits);
+    u32 beyond64 = spv_emit_u_less(&c->emit, c->bool_type, sixty_four, shift);
+    guard = conversion_select(c, beyond64, c->zero, guard);
+    sticky_bits = conversion_select(c, beyond64, conversion_or(c, high, low), sticky_bits);
+    u32 discarded = conversion_nonzero(c, conversion_or(c, guard, sticky_bits)), increment;
+    if (!mode) {
+        u32 tie = conversion_nonzero(c, conversion_or(c, sticky_bits, conversion_and(c, retained, one)));
+        increment = spv_emit_bool_binary(&c->emit, c->bool_type, 0, conversion_nonzero(c, guard), tie);
+    } else if (mode == 3)
+        increment = c->false_value;
+    else {
+        u32 directed = conversion_nonzero(c, negative);
+        if (mode == 2) directed = spv_emit_bool_not(&c->emit, c->bool_type, directed);
+        increment = spv_emit_bool_binary(&c->emit, c->bool_type, 0, discarded, directed);
+    }
+    return spv_emit_iadd_u32(&c->emit, c->u32_type, retained, conversion_select(c, increment, one, c->zero));
+}
+
+/* IEEE finite float narrowing with one rounding, including F64→F16. Host pack-half after F64→F32 rounds twice.
+   The normal significand loses13/29/42 bits. A subnormal loses more, with the same guard and sticky-bit decision.
+   Nonfinite encodings retain the existing host conversion, whose NaN payload is not a portable shader promise. */
+static u32 conversion_narrow(DirectCtx* c, u32 low, u32 high, u32 source_format, u32 destination_format, u32 mode,
+                             u32 nonfinite) {
+    u32 fraction = source_format == 3 ? 52 : 23, exponent_bits = source_format == 3 ? 11 : 8;
+    u32 destination_fraction = destination_format == 1 ? 10 : 23,
+        destination_exponent = destination_format == 1 ? 5 : 8;
+    u32 exponent_word = source_format == 3 ? high : low, word_fraction = source_format == 3 ? 20 : 23;
+    u32 exponent = conversion_and(
+        c, spv_emit_shift_right_u32(&c->emit, c->u32_type, exponent_word, conversion_constant(c, word_fraction)),
+        conversion_constant(c, (1u << exponent_bits) - 1));
+    u32 negative = spv_emit_shift_right_u32(&c->emit, c->u32_type, exponent_word, conversion_constant(c, 31));
+    u32 high_mantissa = source_format == 3 ? conversion_and(c, high, conversion_constant(c, 0xfffff)) : c->zero;
+    u32 low_mantissa = source_format == 3 ? low : conversion_and(c, low, conversion_constant(c, 0x7fffff));
+    u32 implicit =
+        conversion_select(c, conversion_nonzero(c, exponent), conversion_constant(c, 1u << word_fraction), c->zero);
+    if (source_format == 3)
+        high_mantissa = conversion_or(c, high_mantissa, implicit);
+    else
+        low_mantissa = conversion_or(c, low_mantissa, implicit);
+    u32 effective = conversion_select(c, conversion_nonzero(c, exponent), exponent, conversion_constant(c, 1));
+    u32 destination_bias = (1u << (destination_exponent - 1)) - 1;
+    u32 source_bias = (1u << (exponent_bits - 1)) - 1;
+    u32 output_exponent =
+        spv_emit_iadd_u32(&c->emit, c->u32_type, effective, conversion_constant(c, destination_bias - source_bias));
+    u32 normal = spv_emit_s_greater(&c->emit, c->bool_type,
+                                    spv_emit_bitcast(&c->emit, spv_emit_type_i32(&c->emit), output_exponent),
+                                    spv_emit_constant_u32(&c->emit, spv_emit_type_i32(&c->emit), 0));
+    u32 extra = conversion_select(c, normal, c->zero,
+                                  spv_emit_isub_u32(&c->emit, c->u32_type, conversion_constant(c, 1), output_exponent));
+    u32 shift =
+        spv_emit_iadd_u32(&c->emit, c->u32_type, conversion_constant(c, fraction - destination_fraction), extra);
+    u32 significand = conversion_significand(c, high_mantissa, low_mantissa, shift, negative, mode);
+    u32 base = spv_emit_shift_left_u32(
+        &c->emit, c->u32_type, spv_emit_isub_u32(&c->emit, c->u32_type, output_exponent, conversion_constant(c, 1)),
+        conversion_constant(c, destination_fraction));
+    u32 result = spv_emit_iadd_u32(&c->emit, c->u32_type, conversion_select(c, normal, base, c->zero), significand);
+    u32 infinity = ((1u << destination_exponent) - 1) << destination_fraction;
+    u32 overflow = spv_emit_bool_binary(
+        &c->emit, c->bool_type, 1,
+        spv_emit_s_greater(
+            &c->emit, c->bool_type, spv_emit_bitcast(&c->emit, spv_emit_type_i32(&c->emit), output_exponent),
+            spv_emit_constant_u32(&c->emit, spv_emit_type_i32(&c->emit), (1u << destination_exponent) - 2)),
+        spv_emit_bool_not(&c->emit, c->bool_type,
+                          spv_emit_u_less(&c->emit, c->bool_type, result, conversion_constant(c, infinity))));
+    u32 outward = mode == 0   ? c->true_value
+                  : mode == 3 ? c->false_value
+                  : mode == 1 ? conversion_nonzero(c, negative)
+                              : spv_emit_bool_not(&c->emit, c->bool_type, conversion_nonzero(c, negative));
+    result = conversion_select(
+        c, overflow,
+        conversion_select(c, outward, conversion_constant(c, infinity), conversion_constant(c, infinity - 1)), result);
+    result =
+        conversion_or(c, result,
+                      spv_emit_shift_left_u32(&c->emit, c->u32_type, negative,
+                                              conversion_constant(c, destination_fraction + destination_exponent)));
+    return conversion_select(
+        c, spv_emit_i_equal(&c->emit, c->bool_type, exponent, conversion_constant(c, (1u << exponent_bits) - 1)),
+        nonfinite, result);
+}
+
+/* Native float16 is used only with the declared RTE and denormal controls. PackHalf2x16 alone can round toward
+   zero on a conformant host, so the32-bit fallback rounds each finite lane's original significand exactly once. */
+u32 shader_pack_half_rte(DirectCtx* c, u32 pair) {
+    if ((g_shader_half_rounding & 1) && c->f16_type)
+        return spv_emit_bitcast(&c->emit, c->u32_type,
+                                spv_emit_fconvert(&c->emit, spv_emit_type_vec2(&c->emit, c->f16_type), pair));
+    u32 nonfinite = spv_emit_glsl_unary(&c->emit, c->u32_type, c->glsl, SPV_GLSL_PACK_HALF2X16, pair), lanes[2];
+    for (u32 lane = 0; lane < 2; lane++) {
+        u32 value = spv_emit_vec4_extract(&c->emit, c->f32_type, pair, lane);
+        u32 bits = spv_emit_bitcast(&c->emit, c->u32_type, value);
+        u32 fallback = lane ? spv_emit_shift_right_u32(&c->emit, c->u32_type, nonfinite, conversion_constant(c, 16))
+                            : conversion_and(c, nonfinite, conversion_constant(c, 0xffff));
+        lanes[lane] = conversion_narrow(c, bits, c->zero, 2, 1, 0, fallback);
+    }
+    return conversion_or(c, lanes[0],
+                         spv_emit_shift_left_u32(&c->emit, c->u32_type, lanes[1], conversion_constant(c, 16)));
+}
+
 /* the float, half, double and conversion instructions */
 void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     const u64* insn = t->insn;
@@ -147,9 +282,8 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 test = spv_emit_fcompare(&c->emit, c->bool_type, B(w, 48, 4), comparison, zero_f);
         reg_write(c, d, spv_emit_select(&c->emit, c->u32_type, test, reg_read(c, a), alternative));
     } else if (op == O_F2F_R || op == O_F2F_C || op == O_F2F_I) {
-        /* Formats 1 F16, 2 F32 and 3 F64 (a register pair, or a constant buffer's or the immediate's double). An
-           F64 on either side converts with the default rounding and no saturation, as Eden translates it.
-           F64 to F16 passes through F32 and can round twice. */
+        /* Formats1 F16,2 F32 and3 F64. Narrowing honors the encoded direction. F64→F16 rounds the original
+           significand once, rather than passing through an F32 approximation. */
         u32 dst_format = B(w, 8, 2), src_format = B(w, 10, 2);
         if (src_format == 3 || dst_format == 3) {
             u32 value;
@@ -166,27 +300,61 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 else if (B(w, 42, 1))
                     value = spv_emit_glsl_unary(&c->emit, c->f64_type, c->glsl, conversion_rounds[B(w, 39, 2)], value);
                 shader_double_write(c, vec2_u32, d, value);
+            } else if (dst_format == 1 && !B(w, 39, 2) && g_shader_half_rounding && c->f16_type) {
+                u32 result = conversion_native_half(c, value);
+                /* Some native double-to-half implementations turn large finite values into NaNs. RNE half
+                   overflow starts at65520; select its exact signed infinity from the original double bits. */
+                u32 bits = spv_emit_bitcast(&c->emit, vec2_u32, value);
+                u32 low = spv_emit_vec4_extract(&c->emit, c->u32_type, bits, 0);
+                u32 high = spv_emit_vec4_extract(&c->emit, c->u32_type, bits, 1);
+                u32 magnitude = conversion_and(c, high, conversion_constant(c, 0x7fffffffu));
+                u32 overflow = SPV(&c->emit, SPV_OP_U_GREATER_THAN_EQUAL, c->bool_type, magnitude,
+                                   conversion_constant(c, 0x40effe00u));
+                u32 infinity_high = spv_emit_i_equal(&c->emit, c->bool_type,
+                                                     conversion_and(c, magnitude, conversion_constant(c, 0x7ff00000u)),
+                                                     conversion_constant(c, 0x7ff00000u));
+                u32 fraction = conversion_or(c, low, conversion_and(c, high, conversion_constant(c, 0xfffffu)));
+                u32 nan = SPV(&c->emit, SPV_OP_LOGICAL_AND, c->bool_type, infinity_high,
+                              spv_emit_i_not_equal(&c->emit, c->bool_type, fraction, c->zero));
+                u32 sign =
+                    conversion_and(c, spv_emit_shift_right_u32(&c->emit, c->u32_type, high, conversion_constant(c, 16)),
+                                   conversion_constant(c, 0x8000u));
+                u32 overflow_result = conversion_or(c, sign, conversion_constant(c, 0x7c00u));
+                overflow = SPV(&c->emit, SPV_OP_LOGICAL_AND, c->bool_type, overflow,
+                               spv_emit_bool_not(&c->emit, c->bool_type, nan));
+                reg_write(c, d, spv_emit_select(&c->emit, c->u32_type, overflow, overflow_result, result));
             } else {
+                u32 original = value;
                 value = spv_emit_fconvert(&c->emit, c->f32_type, value);
-                reg_write(c, d,
-                          dst_format == 1 ? spv_emit_glsl_unary(&c->emit, c->u32_type, c->glsl, SPV_GLSL_PACK_HALF2X16,
-                                                                spv_emit_vec2_construct(&c->emit, vec2, value, zero_f))
-                                          : spv_emit_bitcast(&c->emit, c->u32_type, value));
+                u32 result = dst_format == 1
+                                 ? spv_emit_glsl_unary(&c->emit, c->u32_type, c->glsl, SPV_GLSL_PACK_HALF2X16,
+                                                       spv_emit_vec2_construct(&c->emit, vec2, value, zero_f))
+                                 : spv_emit_bitcast(&c->emit, c->u32_type, value);
+                u32 bits = spv_emit_bitcast(&c->emit, vec2_u32, original);
+                result = conversion_narrow(c, spv_emit_vec4_extract(&c->emit, c->u32_type, bits, 0),
+                                           spv_emit_vec4_extract(&c->emit, c->u32_type, bits, 1), 3, dst_format,
+                                           B(w, 39, 2), result);
+                reg_write(c, d, result);
             }
         } else {
             u32 src = shader_conversion_source_f32(c, vec2, w, op - O_F2F_R, src_format);
             src = shader_float_mod(c, src, B(w, 49, 1), B(w, 45, 1));
             /* Between two floats of one size, bit 42 makes it an integer rounding (39-40: even, floor, ceil,
                trunc), F16 as well as F32: Unity's half-precision frac() is an F2F.F16.F16.FLOOR. Between sizes,
-               39-40 is the conversion's rounding, which this translation leaves to the host */
+               39-40 selects the conversion's rounding direction. Widening is exact. */
             if (dst_format == src_format && B(w, 42, 1))
                 src = spv_emit_glsl_unary(&c->emit, c->f32_type, c->glsl, conversion_rounds[B(w, 39, 2)], src);
             src = shader_float_saturate(c, src, B(w, 50, 1));
             u32 result;
-            if (dst_format == 1) {
+            if (dst_format == 1 && src_format == 2 && !B(w, 39, 2) && g_shader_half_rounding && c->f16_type)
+                result = conversion_native_half(c, src);
+            else if (dst_format == 1) {
                 u32 pair =
                     spv_emit_vec2_construct(&c->emit, vec2, src, spv_emit_constant_f32(&c->emit, c->f32_type, 0.0f));
                 result = spv_emit_glsl_unary(&c->emit, c->u32_type, c->glsl, SPV_GLSL_PACK_HALF2X16, pair);
+                if (src_format == 2)
+                    result = conversion_narrow(c, spv_emit_bitcast(&c->emit, c->u32_type, src), c->zero, 2, 1,
+                                               B(w, 39, 2), result);
             } else
                 result = spv_emit_bitcast(&c->emit, c->u32_type, src);
             reg_write(c, d, result);
@@ -280,7 +448,7 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     } else if (op == O_I2F_R || op == O_I2F_C || op == O_I2F_I) {
         /* As Eden converts: abs on the integer at its source width (the most negative value stays), then neg on
            the floating result except for that value. A 64-bit source (format 3) is a register pair, a constant
-           buffer's two words or the immediate sign-extended. F16 output passes through F32 and can round twice. */
+           buffer's two words or the immediate sign-extended. Integers in the finite F16 range are exact in F32. */
         u32 size = B(w, 10, 2), dst_format = B(w, 8, 2);
         int is_signed = (int)B(w, 13, 1), absolute = (int)B(w, 49, 1), negate = (int)B(w, 45, 1);
         u32 target_type = dst_format == 3 ? c->f64_type : c->f32_type, result, least = 0;
@@ -347,10 +515,15 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         }
         if (dst_format == 3)
             shader_double_write(c, vec2_u32, d, result);
+        else if (dst_format == 1 && !B(w, 39, 2) && g_shader_half_rounding && c->f16_type)
+            reg_write(c, d, conversion_native_half(c, result));
         else if (dst_format == 1) {
             u32 pair =
                 spv_emit_vec2_construct(&c->emit, vec2, result, spv_emit_constant_f32(&c->emit, c->f32_type, 0.0f));
-            reg_write(c, d, spv_emit_glsl_unary(&c->emit, c->u32_type, c->glsl, SPV_GLSL_PACK_HALF2X16, pair));
+            u32 packed = spv_emit_glsl_unary(&c->emit, c->u32_type, c->glsl, SPV_GLSL_PACK_HALF2X16, pair);
+            packed = conversion_narrow(c, spv_emit_bitcast(&c->emit, c->u32_type, result), c->zero, 2, 1, B(w, 39, 2),
+                                       packed);
+            reg_write(c, d, packed);
         } else
             reg_write_as(c, d, result, c->f32_type);
     } else if (op == O_FADD_R || op == O_FADD_C || op == O_FADD_I || op == O_FADD32I || op == O_FMUL_R ||

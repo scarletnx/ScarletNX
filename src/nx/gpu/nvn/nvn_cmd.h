@@ -39,6 +39,7 @@ typedef struct {
     u64 cb; /* 0: a free slot */
     u64 start, cursor, limit, seen, rec;
     u32 seen_serial, block, pending, grow;
+    u32 command_callback; /* independent of the control-memory callback switch */
 } NvnCtl;
 #define NVN_CTL_SLOTS     4096
 #define NVN_SPILL_SEGS    4096   /* 256 MiB: a segment waits for the GPU thread, which runs seconds late at loads */

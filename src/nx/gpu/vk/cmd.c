@@ -6,6 +6,7 @@
    buffers), a ring its storage results are copied back into for the CPU, descriptor pools, and the resources to
    destroy once its work is done; none of them is reused before its last submission has finished. Ending a frame at a
    submit would reset them mid-draw, and wait for the GPU at every submit. */
+#include "nx/gpu/vk/descriptor_objects.h"
 #include <stdlib.h>
 #include <string.h>
 #include "nx/runtime/platform/log.h"
@@ -150,8 +151,8 @@ static void dead_push(Frame* f, Dead d) {
 static void dead_free(Frame* f) {
     for (int i = 0; i < f->ndead; i++) {
         Dead* d = &f->dead[i];
-        if (d->v1) vkDestroyImageView(g_vk.dev, d->v1, NULL);
-        if (d->v2) vkDestroyImageView(g_vk.dev, d->v2, NULL);
+        if (d->v1) vk_image_view_destroy(g_vk.dev, d->v1, NULL);
+        if (d->v2) vk_image_view_destroy(g_vk.dev, d->v2, NULL);
         if (d->view) vkDestroyBufferView(g_vk.dev, d->view, NULL);
         if (d->img) vk_image_destroy(d->img, d->mem);
         if (d->buf) {

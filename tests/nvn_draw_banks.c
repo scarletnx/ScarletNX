@@ -798,6 +798,30 @@ static void test_fixed_state(void) {
     nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
     check(!fixed_call.raster_samples && !fixed_call.coverage_table_enable,
           "equal raster and color sample counts need no mixed-sample metadata");
+    d.ms.flags = NVN_MS_GRID;
+    d.ms.cov_to_color_out = 7;
+    memset(d.ms.location, 0x12, sizeof d.ms.location);
+    NvnPConservative precision = {.which = 2, .on = 3, .dilate = 8};
+    memcpy(GP(0xb200), &precision, sizeof precision);
+    nvn_draw_record(&d, OP_CONSERVATIVE, 0xb200, sizeof precision);
+    nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+    check(!fixed_call.multisample_flags && !fixed_call.coverage_to_color_output &&
+              !fixed_call.subpixel_bias_x && !fixed_call.subpixel_bias_y &&
+              !memcmp(fixed_call.sample_locations, (const u8[16]){0}, sizeof fixed_call.sample_locations),
+          "disabled sample features and conservative rasterization keep dormant state out of draws");
+    d.conservative = 1;
+    d.ms.flags = NVN_MS_A2C_DITHER | NVN_MS_COV_TO_COLOR | NVN_MS_LOCATIONS | NVN_MS_GRID;
+    nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+    check(fixed_call.multisample_flags ==
+                  (DS_MS_A2C_DITHER | DS_MS_COVERAGE_TO_COLOR | DS_MS_SAMPLE_LOCATIONS | DS_MS_SAMPLE_GRID) &&
+              fixed_call.coverage_to_color_output == 7 && fixed_call.subpixel_bias_x == 3 &&
+              fixed_call.subpixel_bias_y == 8 &&
+              !memcmp(fixed_call.sample_locations, d.ms.location, sizeof fixed_call.sample_locations),
+          "active sample and conservative precision state reaches direct draws");
+    precision.on = -1;
+    memcpy(GP(0xb200), &precision, sizeof precision);
+    nvn_draw_record(&d, OP_CONSERVATIVE, 0xb200, sizeof precision);
+    check(d.subpixel_bias_x == 3 && d.subpixel_bias_y == 8, "invalid replay precision values preserve state");
     d.xfb.stride[0] = 20;
     for (u32 what = 0; what < 4; what++) {
         NvnPTfState tf = {.what = (i32)what, .control = what < 2 ? 0x70000 : 0};

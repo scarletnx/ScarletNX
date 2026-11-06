@@ -12,6 +12,7 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/vertex_input.h"
 #include "nx/gpu/vk/descriptors.h"
+#include "nx/gpu/vk/descriptor_heaps.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
 
@@ -365,6 +366,9 @@ static int create_device(void) {
     WANT(shaderStorageImageExtendedFormats);
     WANT(shaderStorageImageWriteWithoutFormat);
     WANT(shaderStorageImageReadWithoutFormat);
+    WANT(shaderStorageImageMultisample);
+    WANT(shaderResourceMinLod);
+    g_shader_resource_min_lod = want->shaderResourceMinLod != 0;
     WANT(shaderClipDistance);
     WANT(shaderCullDistance);
     WANT(shaderFloat64);
@@ -398,7 +402,8 @@ static int create_device(void) {
     int has_calibrated = 0, has_present_id = 0, has_present_wait = 0, has_present_v2 = 0, has_calibrated_khr = 0;
     int has_google_timing = 0;
     int has_host_import = 0, has_ahb = 0, has_placed = 0, has_map2 = 0, has_dmabuf = 0;
-    int has_descriptor_buffer = 0;
+    int has_descriptor_buffer = 0, has_descriptor_heap = 0, has_extended_flags = 0, has_maintenance5 = 0;
+    int has_maintenance8 = 0;
     int has_vertex_input = 0;
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
@@ -409,11 +414,18 @@ static int create_device(void) {
         has_vertex_input = snx_vk_extensions_has(&e, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
         g_vk.has_xfb = snx_vk_extensions_has(&e, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
         g_vk.has_mixed_samples = snx_vk_extensions_has(&e, VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME);
+        g_vk.has_coverage_to_color = snx_vk_extensions_has(&e, VK_NV_FRAGMENT_COVERAGE_TO_COLOR_EXTENSION_NAME);
+        g_vk.has_post_depth_coverage = snx_vk_extensions_has(&e, VK_EXT_POST_DEPTH_COVERAGE_EXTENSION_NAME);
+        g_vk.sample_locations.available = snx_vk_extensions_has(&e, VK_EXT_SAMPLE_LOCATIONS_EXTENSION_NAME);
         g_vk.advanced_blend_caps.available = snx_vk_extensions_has(&e, VK_EXT_BLEND_OPERATION_ADVANCED_EXTENSION_NAME);
         g_vk.has_fragment_interlock = snx_vk_extensions_has(&e, VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME);
         g_vk.has_border_color = snx_vk_extensions_has(&e, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
         has_shader_clock = snx_vk_extensions_has(&e, VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
         has_descriptor_buffer = snx_vk_extensions_has(&e, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
+        has_descriptor_heap = snx_vk_extensions_has(&e, VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
+        has_extended_flags = snx_vk_extensions_has(&e, VK_KHR_EXTENDED_FLAGS_EXTENSION_NAME);
+        has_maintenance5 = snx_vk_extensions_has(&e, VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
+        has_maintenance8 = snx_vk_extensions_has(&e, VK_KHR_MAINTENANCE_8_EXTENSION_NAME);
         has_reconvergence = snx_vk_extensions_has(&e, VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME);
         g_vk.has_feedback = snx_vk_extensions_has(&e, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME);
         has_feedback_dynamic = snx_vk_extensions_has(&e, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_EXTENSION_NAME);
@@ -462,6 +474,26 @@ static int create_device(void) {
     if (uma_with == VK_UMA_WITH_AHB) ext[next++] = "VK_ANDROID_external_memory_android_hardware_buffer";
     if (has_budget) ext[next++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
     if (g_vk.has_mixed_samples) ext[next++] = VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME;
+    if (g_vk.has_coverage_to_color) ext[next++] = VK_NV_FRAGMENT_COVERAGE_TO_COLOR_EXTENSION_NAME;
+    if (g_vk.has_post_depth_coverage) ext[next++] = VK_EXT_POST_DEPTH_COVERAGE_EXTENSION_NAME;
+    if (g_vk.sample_locations.available) {
+        ext[next++] = VK_EXT_SAMPLE_LOCATIONS_EXTENSION_NAME;
+        VkPhysicalDeviceSampleLocationsPropertiesEXT locations = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLE_LOCATIONS_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                                  .pNext = &locations};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &properties);
+        g_vk.sample_locations.counts = locations.sampleLocationSampleCounts;
+        g_vk.sample_locations.subpixel_bits = locations.sampleLocationSubPixelBits;
+        g_vk.sample_locations.variable = locations.variableSampleLocations;
+        g_vk.sample_locations.coordinate_min = locations.sampleLocationCoordinateRange[0];
+        g_vk.sample_locations.coordinate_max = locations.sampleLocationCoordinateRange[1];
+        for (u32 i = 0; i < 5; i++) {
+            VkMultisamplePropertiesEXT multisample = {.sType = VK_STRUCTURE_TYPE_MULTISAMPLE_PROPERTIES_EXT};
+            vkGetPhysicalDeviceMultisamplePropertiesEXT(g_vk.phys, (VkSampleCountFlagBits)(1u << i), &multisample);
+            g_vk.sample_locations.grid[i] = multisample.maxSampleLocationGridSize;
+        }
+    }
     /* the extension only with a host time domain among the calibrateable ones: CLOCK_MONOTONIC_RAW is the clock
        the Tracy client keeps its own time in, so the two domains' pair maps the GPU's timestamps onto it */
     if (has_calibrated) {
@@ -511,6 +543,14 @@ static int create_device(void) {
     VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     VkPhysicalDeviceDescriptorBufferFeaturesEXT qdesc = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
+    VkPhysicalDeviceDescriptorHeapFeaturesEXT qheap = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT};
+    VkPhysicalDeviceExtendedFlagsFeaturesKHR qflags = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_FLAGS_FEATURES_KHR};
+    VkPhysicalDeviceMaintenance5FeaturesKHR qmaintenance5 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR};
+    VkPhysicalDeviceMaintenance8FeaturesKHR qmaintenance8 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_8_FEATURES_KHR};
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT qloop = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT};
     VkPhysicalDeviceAttachmentFeedbackLoopDynamicStateFeaturesEXT qloop_dyn = {
@@ -541,6 +581,10 @@ static int create_device(void) {
     int robustness = has_pipeline_robustness && has_robustness2;
     void* const query[] = {&f2,
                            has_descriptor_buffer ? &qdesc : NULL,
+                           has_descriptor_heap ? &qheap : NULL,
+                           has_extended_flags ? &qflags : NULL,
+                           has_maintenance5 ? &qmaintenance5 : NULL,
+                           has_maintenance8 ? &qmaintenance8 : NULL,
                            &q11,
                            &q12,
                            g_vk.has_divisor ? &fdiv : NULL,
@@ -612,6 +656,18 @@ static int create_device(void) {
         has_shader_clock ? (qclock.shaderSubgroupClock ? 1 : 0) | (qclock.shaderDeviceClock ? 2 : 0) : 0;
     g_vk.has_divisor = g_vk.has_divisor && fdiv.vertexAttributeInstanceRateDivisor;
     g_vk.has_xfb = g_vk.has_xfb && fxfb.transformFeedback;
+    g_vk.has_geometry_streams = g_vk.has_xfb && fxfb.geometryStreams;
+    g_shader_geometry_streams = g_vk.has_geometry_streams;
+    if (g_vk.has_geometry_streams) {
+        VkPhysicalDeviceTransformFeedbackPropertiesEXT properties = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 query = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                               .pNext = &properties};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &query);
+        g_vk.geometry_streams_lines_triangles = properties.transformFeedbackStreamsLinesTriangles;
+    }
+    g_shader_geometry_streams_lines_triangles = g_vk.geometry_streams_lines_triangles;
+    g_vk.has_sample_interlock = g_vk.has_fragment_interlock && qinterlock.fragmentShaderSampleInterlock;
     g_vk.has_fragment_interlock = g_vk.has_fragment_interlock && qinterlock.fragmentShaderPixelInterlock;
     if (g_vk.advanced_blend_caps.available) {
         VkPhysicalDeviceBlendOperationAdvancedPropertiesEXT advanced = {
@@ -647,16 +703,27 @@ static int create_device(void) {
             g_vk.descriptor_props.resourceDescriptorBufferAddressSpaceSize >= (VK_FRAMES * (64ull << 20)) &&
             g_vk.descriptor_props.descriptorBufferAddressSpaceSize >= (VK_FRAMES * (64ull << 20));
     }
-    LOG("vulkan: graphics descriptor buffers %s\n",
-        g_vk.has_descriptor_buffers ? (g_settings.descriptor_buffers ? "supported, enabled" : "supported, disabled")
-                                    : "unavailable, using sets");
     g_vk.has_descriptor_buffers = g_vk.has_descriptor_buffers && g_settings.descriptor_buffers;
     if (g_vk.has_descriptor_buffers && !vk_descriptors_memory(g_vk.phys)) {
         WARN("vulkan: descriptor buffers need host-visible, coherent and cached memory, which this device has not: "
              "graphics descriptors use sets\n");
         g_vk.has_descriptor_buffers = 0;
     }
+    g_vk.has_descriptor_heap_support = has_descriptor_heap && qheap.descriptorHeap && q12.bufferDeviceAddress &&
+        ((has_extended_flags && qflags.extendedFlags) || (has_maintenance5 && qmaintenance5.maintenance5)) &&
+        g_settings.descriptor_buffers >= 2;
+    g_vk.has_descriptor_heaps = g_vk.has_descriptor_heap_support;
+    if (g_vk.has_descriptor_heap_support) {
+        g_vk.descriptor_heap_props = (VkPhysicalDeviceDescriptorHeapPropertiesEXT){
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                             .pNext = &g_vk.descriptor_heap_props};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &props);
+    }
     /* FFmpeg's decoder makes views of its two plane pictures */
+    g_shader_dynamic_texture_offsets = has_maintenance8 && qmaintenance8.maintenance8 && want->shaderImageGatherExtended;
+    LOG("vulkan: dynamic texture offsets use %s\n",
+        g_shader_dynamic_texture_offsets ? "native maintenance8 sampling" : "portable dispatch");
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
                                             .shaderDrawParameters = q11.shaderDrawParameters,
                                             .samplerYcbcrConversion =
@@ -671,7 +738,7 @@ static int create_device(void) {
                                             .samplerMirrorClampToEdge = q12.samplerMirrorClampToEdge,
                                             .samplerFilterMinmax = q12.samplerFilterMinmax,
                                             .timelineSemaphore = VK_TRUE,
-                                            .bufferDeviceAddress = g_vk.has_descriptor_buffers,
+                                            .bufferDeviceAddress = g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support,
                                             .shaderFloat16 = q12.shaderFloat16,
                                             .shaderOutputViewportIndex = q12.shaderOutputViewportIndex,
                                             .shaderOutputLayer = q12.shaderOutputLayer,
@@ -681,6 +748,17 @@ static int create_device(void) {
     /* shaders pick an indexed texture per invocation from an array (SNX_VKB_TEXARRAY) */
     g_shader_texture_arrays = q12.shaderSampledImageArrayNonUniformIndexing != 0;
     g_shader_float16 = q12.shaderFloat16 != 0;
+    g_shader_half_rounding = 0;
+    if (q12.shaderFloat16 && p12.shaderRoundingModeRTEFloat16 && p12.shaderDenormPreserveFloat16 &&
+        p12.shaderSignedZeroInfNanPreserveFloat16 &&
+        p12.denormBehaviorIndependence != VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE &&
+        p12.roundingModeIndependence != VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE) {
+        int linked = p12.denormBehaviorIndependence == VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY ||
+                     p12.roundingModeIndependence == VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY;
+        if (!linked || (have.shaderFloat64 && p12.shaderRoundingModeRTEFloat64 && p12.shaderDenormPreserveFloat64 &&
+                        p12.shaderSignedZeroInfNanPreserveFloat64))
+            g_shader_half_rounding = linked ? 3 : 1;
+    }
     g_shader_output_layer = q12.shaderOutputLayer != 0; /* ShaderLayer: a vertex or tessellation program's layer */
     g_shader_viewport_index = have.multiViewport ? 2 | (q12.shaderOutputViewportIndex ? 1 : 0) : 0;
     VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
@@ -690,6 +768,13 @@ static int create_device(void) {
                                             /* KIL demotes the lane; S2R queries its helper status */
                                             .shaderDemoteToHelperInvocation = VK_TRUE};
     void* chain = &f13;
+    VkPhysicalDeviceMaintenance8FeaturesKHR fmaintenance8 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_8_FEATURES_KHR, .maintenance8 = VK_TRUE};
+    if (g_shader_dynamic_texture_offsets) {
+        fmaintenance8.pNext = chain;
+        chain = &fmaintenance8;
+        ext[next++] = VK_KHR_MAINTENANCE_8_EXTENSION_NAME;
+    }
     VkPhysicalDeviceDescriptorBufferFeaturesEXT fdesc = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT,
         .pNext = chain,
@@ -697,6 +782,26 @@ static int create_device(void) {
     if (g_vk.has_descriptor_buffers) {
         chain = &fdesc;
         ext[next++] = VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME;
+    }
+    VkPhysicalDeviceDescriptorHeapFeaturesEXT fheap = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT, .descriptorHeap = VK_TRUE};
+    VkPhysicalDeviceExtendedFlagsFeaturesKHR fflags = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_FLAGS_FEATURES_KHR, .extendedFlags = VK_TRUE};
+    VkPhysicalDeviceMaintenance5FeaturesKHR fmaintenance5 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR, .maintenance5 = VK_TRUE};
+    if (g_vk.has_descriptor_heap_support) {
+        if (has_maintenance5 && qmaintenance5.maintenance5) {
+            fmaintenance5.pNext = chain;
+            chain = &fmaintenance5;
+            ext[next++] = VK_KHR_MAINTENANCE_5_EXTENSION_NAME;
+        } else {
+            fflags.pNext = chain;
+            chain = &fflags;
+            ext[next++] = VK_KHR_EXTENDED_FLAGS_EXTENSION_NAME;
+        }
+        fheap.pNext = chain;
+        chain = &fheap;
+        ext[next++] = VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME;
     }
     if (g_vk.has_divisor) {
         fdiv = (VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT){
@@ -719,7 +824,8 @@ static int create_device(void) {
         fxfb = (VkPhysicalDeviceTransformFeedbackFeaturesEXT){
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT,
             .pNext = chain,
-            .transformFeedback = VK_TRUE};
+            .transformFeedback = VK_TRUE,
+            .geometryStreams = g_vk.has_geometry_streams};
         chain = &fxfb;
         ext[next++] = VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME;
     }
@@ -795,7 +901,8 @@ static int create_device(void) {
     VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT finterlock = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT,
         .pNext = chain,
-        .fragmentShaderPixelInterlock = VK_TRUE};
+        .fragmentShaderPixelInterlock = VK_TRUE,
+        .fragmentShaderSampleInterlock = g_vk.has_sample_interlock};
     if (g_vk.has_fragment_interlock) {
         chain = &finterlock;
         ext[next++] = VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME;
@@ -922,9 +1029,17 @@ static int create_device(void) {
                                   .vulkanApiVersion = VK_API_VERSION_1_3,
                                   .pVulkanFunctions = &vf,
                                   .flags = has_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0};
-    if (g_vk.has_descriptor_buffers) vai.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    if (g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support)
+        vai.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
     if (!VK_OK(vmaCreateAllocator(&vai, &g_vk.vma))) return 0;
     __atomic_store_n(&g_vma_ready, 1, __ATOMIC_RELEASE);
+    if (g_vk.has_descriptor_heaps && !vk_descriptor_heaps_init(&g_vk.descriptor_heap_props)) {
+        g_vk.has_descriptor_heaps = 0;
+        g_vk.has_descriptor_heap_support = 0;
+    }
+    LOG("vulkan: graphics descriptors use %s%s\n", g_vk.has_descriptor_heaps ? "heaps" :
+        g_vk.has_descriptor_buffers ? "buffers" : "sets",
+        g_vk.has_descriptor_heaps ? (g_vk.has_descriptor_buffers ? " with buffer fallback" : " with set fallback") : "");
     vk_uma_init();
     {
         /* which driver runs, by its own name: the system's, or a package's (gpu_driver) */
