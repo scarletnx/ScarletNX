@@ -5,7 +5,9 @@
    something waits for it. A draw over an image whose write-back is recorded and not landed goes on from it, with no
    read of guest memory and no wait: the write-backs land in order, the later one over the bytes the earlier one left.
    A read of the bytes before then lands both in order; another surface's write-back over the same bytes, a GPU-side
-   write since the copy or another size reads guest memory instead, as before */
+   write since the copy or another size reads guest memory instead, as before. A kept image (vk_surf_keep_begin) reads
+   nothing before its draws and copies nothing back: the release publishes it; where the CPU touched its span, it
+   becomes a write-back with the bytes from before its draws its owner kept */
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/vk/vk.h"
@@ -27,7 +29,8 @@ static struct {
     u8 ring[1 << 16];
     u64 ring_at;
     u64 recording, done; /* the submit being recorded, the last one done */
-    int waits, reads, syncs, dirty;
+    int waits, reads, syncs, dirty, published, touched, refs;
+    u8 before[SIZE]; /* the kept span's owner: the image's bytes from before its draws */
     u64 gen;
     char order[16]; /* each landing's surface, by its index as a letter */
     int landed;
@@ -107,14 +110,36 @@ void vk_surf_flush_land(Surf* s, const u8* p, const u8* original, u64 wgen, u8**
         *keep_size = SIZE;
     }
 }
-/* the copy recorded, submitted and waited for at once */
+/* the copy recorded, submitted and waited for at once; a kept image's (original NULL) over memory whole, as write
+   tracking finds no CPU write in this stand-in */
 void vk_surf_flush(Surf* s, const u8* original) {
     const u8* p = image_of(s);
     for (u32 i = 0; i < SIZE; i++)
-        if (p[i] != original[i]) g.guest[i] = p[i];
+        if (!original || p[i] != original[i]) g.guest[i] = p[i];
     s->mem_wgen = s->wgen;
-    note_landing(s, original);
+    if (original) note_landing(s, original);
     g.syncs++;
+}
+/* the held owner's reference */
+void vk_own_res_unref(VkOwnRes* r) {
+    (void)r;
+    g.refs--;
+}
+/* published GPU-owned: the stand-in lands it over memory now, as a CPU read would later. Where the CPU touched the
+   span (g.touched), the owner's bytes from before the draws */
+int vk_surf_keep_end(Surf* s, const VkImageKeep* k, u8** original) {
+    vk_own_res_unref(k->held);
+    *original = NULL;
+    if (g.touched) {
+        *original = malloc(SIZE);
+        if (!*original) exit(2);
+        memcpy(*original, g.before, SIZE);
+        return 0;
+    }
+    memcpy(g.guest, image_of(s), SIZE);
+    s->mem_wgen = s->wgen;
+    g.published++;
+    return 1;
 }
 void logf_(int level, const char* fmt, ...) {
     va_list ap;
@@ -142,7 +167,22 @@ static void draw(Surf* s, u32 size, u32 at, u8 value) {
     }
     image_of(s)[at] = value;
     s->wgen++;
-    if (original || after) vk_gfx_image_record(s, original, size, after);
+    if (original || after) vk_gfx_image_record(s, original, size, after, NULL);
+}
+/* a draw whose image vk_surf_keep_begin kept on the GPU: no bytes from before it, its span's owner held */
+static void keep_draw(Surf* s, u32 at, u8 value) {
+    static VkOwnRes owner;
+    VkImageKeep k = {&owner, 0, 0};
+    if (!vk_gfx_image_unrecorded(s)) {
+        memcpy(g.before, g.guest, SIZE);
+        g.refs++;
+        image_of(s)[at] = value;
+        s->wgen++;
+        vk_gfx_image_record(s, NULL, SIZE, 0, &k);
+        return;
+    }
+    image_of(s)[at] = value;
+    s->wgen++;
 }
 static void release(void) {
     vk_gfx_image_put_aside();
@@ -160,6 +200,11 @@ static void start(void) {
     g.surf[0].gva = g.surf[1].gva = BASE;
 }
 static int failures;
+static u64 stat(int which) {
+    u64 v[3];
+    vk_gfx_image_stats(&v[0], &v[1], &v[2]);
+    return v[which];
+}
 static void check(int ok, const char* what) {
     if (!ok) {
         fprintf(stderr, "FAIL: %s\n", what);
@@ -172,6 +217,7 @@ int main(void) {
     Surf* b = &g.surf[1];
 
     /* three draws a release apart: one read of guest memory, no wait, landed in order, each over the last's bytes */
+    u64 copied = stat(0), back = stat(1);
     start();
     draw(a, SIZE, 1, 0x11);
     release();
@@ -186,6 +232,8 @@ int main(void) {
     check(g.last_original[1] == 0x11 && g.last_original[2] == 0x22 && !g.last_original[3],
           "the last over the bytes the one before it left");
     check(g.waits == 0 && g.syncs == 0 && !g_gfx_img_any, "and none is left");
+    check(stat(0) - copied == SIZE && stat(1) - back == 3 * SIZE,
+          "one surface copied before the draws, three copied back");
 
     /* a read before the first lands: it waits for that copy, then the draw after it is copied at once */
     start();
@@ -246,8 +294,46 @@ int main(void) {
     frame_done();
     check(!strcmp(g.order, "AA") && g.guest[2] == 0x22 && g.last_original[1] == 0x11, "the second with the next");
 
+    /* kept on the GPU: two draws, nothing read before them, the release publishes them with nothing copied back */
+    u64 published = stat(2);
+    copied = stat(0), back = stat(1);
+    start();
+    keep_draw(a, 1, 0x11);
+    keep_draw(a, 2, 0x22);
+    check(g.reads == 0 && g_gfx_img_any, "a kept image reads no guest memory before its draws");
+    release();
+    check(g.published == 1 && g.ring_at == 0 && g.waits == 0 && g.syncs == 0 && !g_gfx_img_any && !g.refs,
+          "the release publishes a kept image, copying nothing back, waiting for nothing, its owner let go");
+    check(g.guest[1] == 0x11 && g.guest[2] == 0x22, "with both draws' writes");
+    check(stat(0) == copied && stat(1) == back && stat(2) - published == 1,
+          "counted as published, with no byte copied");
+
+    /* a read before the release: a kept image is published then, the read landing it from its owner */
+    start();
+    keep_draw(a, 1, 0x11);
+    {
+        u8 seen[SIZE];
+        gmem_read(BASE, seen, SIZE);
+        check(seen[1] == 0x11 && g.published == 1 && !g.syncs && !g_gfx_img_any && !g.refs,
+              "a read before the release publishes a kept image");
+    }
+
+    /* the CPU touched the span between the draw and the release: a write-back from there, over the owner's bytes from
+       before the draw, which keeps the CPU's byte beside the store */
+    start();
+    back = stat(1);
+    keep_draw(a, 1, 0x11);
+    g.guest[2] = 0x77;
+    g.touched = 1;
+    release();
+    check(g.published == 0 && g.ring_at == SIZE && !g.refs && g_gfx_img_any, "the release records its copy back");
+    frame_done();
+    check(g.guest[1] == 0x11 && g.guest[2] == 0x77 && !g_gfx_img_any, "it lands over the CPU's byte beside it");
+    check(stat(1) - back == 2 * SIZE, "counted as two copies back: the bytes from before the draw, and the image");
+
     vk_gfx_image_land();
     if (failures) return 1;
-    printf("graphics storage image write-backs: in order, over the last one's bytes, with no wait\n");
+    printf("graphics storage image write-backs: in order, over the last one's bytes, with no wait; kept ones "
+           "published\n");
     return 0;
 }

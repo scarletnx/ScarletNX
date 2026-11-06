@@ -722,9 +722,22 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
 #define VK_SAMPLED_STAGES (VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
 VkImageView vk_rt_attachment(Surf* s, int srgb_write);
 void vk_rt_flush(u64 gva);
+/* A draw's storage image kept on the GPU (vk_surf_keep_begin): held, the owner of its span from the bind on, with a
+   reference, its bytes from before the draw from off on; made: the bind made it, the CPU staging the span */
+typedef struct {
+    struct VkOwnRes* held;
+    u64 off;
+    int made;
+} VkImageKeep;
 /* a draw's writes to s's storage image, size bytes, to write back over original, s's bytes from before the draw
-   (the queue frees it), or over the bytes the write-back after leaves */
-void vk_gfx_image_record(Surf* s, u8* original, u32 size, u64 after);
+   (the queue frees it), or over the bytes the write-back after leaves; or kept (keep, its held reference the
+   queue's), published at the release */
+void vk_gfx_image_record(Surf* s, u8* original, u32 size, u64 after, const VkImageKeep* keep);
+/* statistics: guest bytes copied on the CPU for draws' storage images to merge with (the bytes from before a draw),
+   their bytes copied back from the GPU to land, and the images published over their bytes GPU-owned instead, since the
+   start; the report LOGs them since the last one */
+void vk_gfx_image_stats(u64* copied, u64* read_back, u64* published);
+void vk_gfx_image_report(void);
 /* the write-back a draw's writes to s go on from (its landed bytes become their original, NULL until then), 0: none */
 u64 vk_gfx_image_after(Surf* s, u32 size);
 int vk_gfx_image_unrecorded(const Surf* s); /* s has a write-back whose copy isn't recorded: a draw's writes join it */
@@ -748,6 +761,13 @@ int vk_surf_can_writeback(const Surf* s);
 void vk_surf_flush(Surf* s, const u8* original); /* original preserves newer guest writes for storage images */
 /* s's pixels published over its guest bytes, GPU-owned and not waited for: 1, or 0 when only vk_surf_flush can */
 int vk_surf_publish(Surf* s);
+/* a draw's storage image s kept on the GPU until the CPU touches its bytes, its span GPU-owned from the bind on: 1
+   with k filled, 0 when it takes the write-back (surface.c says when). vk_surf_keep_end, at the release or when
+   something needs its bytes sooner, takes k's reference: 1 when s is published, its span untouched since the bind;
+   0 when the CPU touched it, *original then the bytes from before the draw for the write-back's merge (malloc'd, or
+   NULL when they couldn't be read back) */
+int vk_surf_keep_begin(Surf* s, VkImageKeep* k);
+int vk_surf_keep_end(Surf* s, const VkImageKeep* k, u8** original);
 /* a release: the pitch-linear color targets drawn since the last one published, for the CPU to read */
 void vk_rt_publish_linear(void);
 void vk_surf_wrote(Surf* s); /* its image changed: its copies are out of date (wgen), and it is the newest (wseq) */
@@ -867,9 +887,12 @@ typedef struct VkOwnRes {
     u32 refs;    /* the creator's, and one an owned range */
 } VkOwnRes;
 int vk_own_init(void);
-/* whether the CPU made GPU-owned bytes of guest memory [cpu, cpu + size) land within the last presents presents */
+/* whether the CPU made GPU-owned bytes of guest memory [cpu, cpu + size) land within the last presents presents, or
+   touched them under a draw's storage image kept on the GPU (vk_own_cpu_touched) */
 int vk_own_cpu_read(u64 cpu, u64 size, u32 presents);
+void vk_own_cpu_touched(u64 cpu, u64 size);
 VkOwnRes* vk_own_res_new(u64 size); /* with the caller's reference; NULL when out of memory */
+void vk_own_res_ref(VkOwnRes* r);
 void vk_own_res_unref(VkOwnRes* r);
 /* r's bytes are written by work recorded in the submission being recorded: a landing of them waits for that
    submission (owned.c own_land). vk_own_publish does it. A writer that keeps an owned range in place, with no new

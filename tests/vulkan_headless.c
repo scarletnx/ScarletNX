@@ -3486,6 +3486,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_vertex_restride.inc"
 #include "vulkan_msaa.inc"
 #include "vulkan_targetless_stores.inc"
+#include "vulkan_storage_image_keep.inc"
 #include "vulkan_uma_imports.inc"
 #include "vulkan_write_tracking.inc"
 #include "vulkan_tex_partial.inc"
@@ -3528,6 +3529,7 @@ int main(int argc, char** argv) {
     CHECK(!snx_startup_options(argc, argv));
     int nvn_benchmark = -1;
     u32 benchmark_sets = 0, benchmark_count = 16, benchmark_images = 0, benchmark_sparse = 0, benchmark_storage = 0;
+    u32 benchmark_image = 0;
     /* the runtime's startup flags (-H), its settings as it takes them (--vk_memory=2, --memory_traps=2,
        --vertex_input_dynamic_state=off), and the benchmarks'. Any other argument stops the run: one dropped unsaid ran
        the checks without it */
@@ -3561,6 +3563,10 @@ int main(int argc, char** argv) {
             benchmark_storage = 1;
             continue;
         }
+        if (!strcmp(argv[i], "--bench-storage-image")) {
+            benchmark_image = 1;
+            continue;
+        }
         if (!strncmp(argv[i], "--", 2) && eq && (size_t)(eq - argv[i] - 2) < sizeof key) {
             snprintf(key, sizeof key, "%.*s", (int)(eq - argv[i] - 2), argv[i] + 2);
             o = setting_row(key);
@@ -3569,7 +3575,7 @@ int main(int argc, char** argv) {
             fprintf(
                 stderr,
                 "snx-test-vulkan: %s is not an option it takes: -H, --KEY=VALUE of the runtime's settings, "
-                "--bench-descriptors=N, --descriptor-images=N, --descriptor-count=N, --bench-sparse-volume, --bench-storage-lookup, --nvn-draw-bench=N\n",
+                "--bench-descriptors=N, --descriptor-images=N, --descriptor-count=N, --bench-sparse-volume, --bench-storage-lookup, --bench-storage-image, --nvn-draw-bench=N\n",
                 argv[i]);
             return 2;
         }
@@ -3610,6 +3616,15 @@ int main(int argc, char** argv) {
     if (nvn_benchmark >= 0) {
         CHECK(nvn_benchmark <= 2);
         int result = bench_nvn_storage(nvn_benchmark, 256, 8);
+        vk_pipeline_quiesce();
+        CHECK(!snx_remove_tree(root));
+        free(root);
+        free(shot);
+        free(ppm);
+        return result;
+    }
+    if (benchmark_image) {
+        int result = bench_storage_image();
         vk_pipeline_quiesce();
         CHECK(!snx_remove_tree(root));
         free(root);
@@ -3801,6 +3816,7 @@ int main(int argc, char** argv) {
     CHECK(!check_vertex_input_layouts());
     CHECK(!check_vertex_input_file_key());
     CHECK(!check_targetless_stores());
+    CHECK(!check_storage_image_keep());
     CHECK(!check_packed_depth());
     CHECK(!check_depth_array());
     CHECK(!check_depth_writeback());

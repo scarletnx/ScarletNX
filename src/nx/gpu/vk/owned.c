@@ -85,6 +85,7 @@ static void res_release(void* res) {
     vk_unlock();
     free(r);
 }
+void vk_own_res_ref(VkOwnRes* r) { res_retain(r); }
 void vk_own_res_unref(VkOwnRes* r) { res_release(r); }
 
 /* every write the GPU did so far visible to copies (before), the copies' writes to the host (after) */
@@ -121,6 +122,9 @@ static void cpu_read_note(u64 cpu, u64 size) {
         g_owned.cpu_read[slot].granule = g + 1;
         g_owned.cpu_read[slot].present = g_vk_present;
     }
+}
+void vk_own_cpu_touched(u64 cpu, u64 size) {
+    if (size) cpu_read_note(cpu, size);
 }
 int vk_own_cpu_read(u64 cpu, u64 size, u32 presents) {
     for (u64 g = cpu >> 16, e = (cpu + size - 1) >> 16, k = 0; g <= e && k < 256; g++, k++) {

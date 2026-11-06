@@ -1511,17 +1511,22 @@ typedef struct { /* the vertex and fragment programs' images, 8 each */
     u8* original[16];
     u32 size[16];
     u64 after[16]; /* vk_gfx_image_after's entry, with original NULL */
+    VkImageKeep keep[16]; /* kept on the GPU (vk_surf_keep_begin) where keep.held is, with original NULL, after 0 */
     int n;
 } DrawImages;
 static void draw_images_discard(DrawImages* images) {
-    for (int i = 0; i < images->n; i++) free(images->original[i]);
+    for (int i = 0; i < images->n; i++) {
+        free(images->original[i]);
+        if (images->keep[i].held) vk_own_res_unref(images->keep[i].held);
+    }
     images->n = 0;
 }
 static void draw_images_commit(DrawImages* images) {
     for (int i = 0; i < images->n; i++) {
         vk_surf_wrote(images->surf[i]);
-        if (images->original[i] || images->after[i])
-            vk_gfx_image_record(images->surf[i], images->original[i], images->size[i], images->after[i]);
+        if (images->original[i] || images->after[i] || images->keep[i].held)
+            vk_gfx_image_record(images->surf[i], images->original[i], images->size[i], images->after[i],
+                                &images->keep[i]);
     }
     images->n = 0;
 }
@@ -2096,16 +2101,20 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
            takes this draw's writes too, over the same bytes from before them. Reading guest memory for this draw's own
            would land those writes first, waiting for the GPU (once a frame in one game). One whose copy is recorded
            gives this draw those bytes as it lands (vk_gfx_image_after). A landing during the setup submits, and the
-           setup starts over */
+           setup starts over. One no other write-back is over stays on the GPU where it can (vk_surf_keep_begin), with
+           no copy of its bytes from before the draw */
         images->after[images->n] = 0;
+        images->keep[images->n] = (VkImageKeep){0};
+        images->original[images->n] = NULL;
         if (!seen && !vk_gfx_image_unrecorded(surf) &&
             !(images->after[images->n] = vk_gfx_image_after(surf, (u32)size))) {
-            u8* original = malloc((size_t)size);
-            if (!original) return VK_NULL_HANDLE;
-            gmem_read(surf->gva, original, size);
-            images->original[images->n] = original;
-        } else
-            images->original[images->n] = NULL;
+            if (vk_gfx_image_pending(surf->gva, size) || !vk_surf_keep_begin(surf, &images->keep[images->n])) {
+                u8* original = malloc((size_t)size);
+                if (!original) return VK_NULL_HANDLE;
+                gmem_read(surf->gva, original, size);
+                images->original[images->n] = original;
+            }
+        }
         images->surf[images->n] = surf;
         images->size[images->n] = (u32)size;
         images->n++;

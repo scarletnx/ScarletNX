@@ -1156,6 +1156,10 @@ static void rt_retire_over(u64 gva, u64 size) {
    each, a fifth of the run. A pitch-linear one's rows go at the guest's pitch, over the bytes between them as the
    guest has them. 0 when it can't be (pitch-linear rows of part texels, or layers not a pitch's rows apart, no room):
    the caller flushes at once */
+static int surf_publishable(const Surf* s) {
+    return s->bl || (!(s->pitch % s->f.bpp) && s->type != VK_IMAGE_VIEW_TYPE_3D &&
+                     (s->layers == 1 || s->layer_size == (u64)s->pitch * guest_h(s)));
+}
 int vk_surf_publish(Surf* s) {
     u64 size = flush_bytes(s), off = 0;
     u32 mem_wgen = s ? s->mem_wgen : 0;
@@ -1163,9 +1167,7 @@ int vk_surf_publish(Surf* s) {
     VkCommandBuffer cb;
     if (!size || (s->gva >> 63)) return 0;
     if (!s->bl) {
-        if (s->pitch % s->f.bpp || s->type == VK_IMAGE_VIEW_TYPE_3D ||
-            (s->layers > 1 && s->layer_size != (u64)s->pitch * guest_h(s)))
-            return 0;
+        if (!surf_publishable(s)) return 0;
         size = rt_bytes(s);
     }
     vk_render_end();
@@ -1237,6 +1239,91 @@ int vk_surf_publish(Surf* s) {
     vk_surf_relist(s);
     if (!s->is_rt) vk_tex_note_writeback(s);
     return 1;
+}
+/* A draw's storage image kept on the GPU until the CPU touches its bytes, where the write-back read all of them on the
+   CPU before the draw, and copied the image back after it, to merge the two with what the CPU wrote between. Here
+   the span is GPU-owned from the bind on: by the owner a release published there before, or by one made now from
+   memory, which holds the image as the texture check before the bind left it. That owner is the span's bytes from
+   before the draw, and the host's trap tells whether the CPU touched them: at the release, a span it still owns whole
+   gets the image published over it, exactly what the merge would give, and one the CPU touched gets the merge, with
+   the owner's bytes read back as the ones from before the draw. It takes the host's traps, a span of whole pages that
+   is one run of guest memory (a page shared with other bytes would trap at each of their writes), and a span the CPU
+   hasn't touched lately: one it reads or writes every frame would trap and wait for the GPU each time, which the
+   write-back's copies never do */
+#define KEEP_CPU_PRESENTS 1200 /* as long as compute.c's storage buffers stay off the GPU once the CPU read them */
+/* the one owner of all of [cpu, cpu + size), the span at *off of it, or NULL (vk_lock) */
+static VkOwnRes* span_owner(u64 cpu, u64 size, u64* off) {
+    OwnRange r[2];
+    if (own_lookup(cpu, size, r, 2) != 1 || r[0].addr != cpu || r[0].size != size) return NULL;
+    *off = r[0].res_off;
+    return (VkOwnRes*)r[0].res;
+}
+int vk_surf_keep_begin(Surf* s, VkImageKeep* k) {
+    u64 size = rt_bytes(s), cpu = 0;
+    VkOwnRes* r;
+    *k = (VkImageKeep){0};
+    if (!own_traps() || !size || (s->gva >> 63) || ((s->gva | size) & 0xFFF) || !surf_publishable(s) ||
+        gmmu_run(s->gva, size, &cpu) != size || vk_own_cpu_read(cpu, size, KEEP_CPU_PRESENTS))
+        return 0;
+    if ((r = span_owner(cpu, size, &k->off)))
+        vk_own_res_ref(r);
+    else { /* memory's bytes, with the targets pending over them, as a release's publish stages them */
+        u32 mem_wgen = s->mem_wgen;
+        if (!(r = vk_own_res_new(size))) return 0;
+        if (!vk_guest_read_device(s->gva, size, r->buf, 0)) {
+            vk_own_res_unref(r);
+            return 0;
+        }
+        s->mem_wgen = s->wgen; /* a target goes over nothing of its own */
+        if (vk_rt_overlay(s->gva, size, r->buf, 0)) vk_all_barrier(vk_cmd());
+        s->mem_wgen = mem_wgen;
+        rt_retire_over(s->gva, size);
+        vk_own_publish(cpu, size, r, 0);
+        if (span_owner(cpu, size, &k->off) != r) { /* landed instead (unified memory over it) */
+            vk_own_res_unref(r);
+            return 0;
+        }
+        k->made = 1;
+        if (!s->is_rt) vk_tex_note_writeback(s); /* its image is memory's bytes, by their owner */
+        s->gw = gpu_mem_generation();
+    }
+    k->held = r;
+    mem_baseline(s); /* a write-back's merge (cpu_newer) counts the CPU's writes from the bind on */
+    return 1;
+}
+/* held's bytes from off on, size of them, read back (a wait for the GPU), malloc'd: NULL when they can't be */
+static u8* keep_original(VkOwnRes* held, u64 off, u64 size) {
+    VkBuffer buf;
+    const u8* p = size <= g_vk.alloc_cap ? vk_readback_buffer(size, &buf) : NULL;
+    u8* original = p ? (u8*)malloc(size) : NULL;
+    if (!original) {
+        LOG_LIMIT(4,
+                  "vulkan: a storage image's %llu bytes from before its draw found no room to be read back: the CPU's "
+                  "pages written since keep their bytes over the image's there\n",
+                  (unsigned long long)size);
+        return NULL;
+    }
+    vk_render_end();
+    VkCommandBuffer cb = vk_cmd();
+    vk_all_barrier(cb);
+    VkBufferCopy c = {off, 0, size};
+    rec_CmdCopyBuffer(cb, held->buf, buf, 1, &c);
+    flush_wait(cb);
+    memcpy(original, p, size);
+    return original;
+}
+int vk_surf_keep_end(Surf* s, const VkImageKeep* k, u8** original) {
+    u64 size = rt_bytes(s), cpu = 0, off = 0;
+    int whole = gmmu_run(s->gva, size, &cpu) == size;
+    *original = NULL;
+    if (whole && span_owner(cpu, size, &off) == k->held && off == k->off && vk_surf_publish(s)) {
+        vk_own_res_unref(k->held);
+        return 1;
+    }
+    if (whole) vk_own_cpu_touched(cpu, size); /* its next draws take the write-back */
+    *original = keep_original(k->held, k->off, size);
+    vk_own_res_unref(k->held);
+    return 0;
 }
 
 u64 g_vk_rt_readbacks; /* render targets written back to guest memory because the GPU's copy couldn't take them */
