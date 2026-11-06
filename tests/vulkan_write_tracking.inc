@@ -10,6 +10,8 @@
    - the runtime's own writes: a system call's, a decommit's, a GPU engine's, a landing's
    - a range the GPU owns (memory traps) written by the CPU in the middle of an epoch
    - a render target's write-back and freshness over pages a scan reports written at every scan (hot pages)
+   - what the caches check by contents where the tracking answers for them: a texture over several pieces of guest
+     memory
    Each case runs in a 4 MiB leaf of the tracking's table of its own. SNX_TEST_WW_ONLY=1 runs them alone */
 #if !defined(_WIN32)
 #include <unistd.h>
@@ -978,6 +980,78 @@ static int check_wt_hot_rt_take_in(void) {
     return 0;
 }
 
+/* the texel (x, y) of tic's texture as its image holds it (vk_lock held); 0 without it */
+static u32 wt_texel_at(const u32 tic[8], u32 x, u32 y) {
+    Surf* t = vk_tex_from_tic(tic);
+    return t ? dma_texel(t, x, y) : 0;
+}
+/* A texture over two pieces of guest memory, its GPU pages mapping runs that don't follow each other: write tracking
+   answers for it piece by piece, as for one run. Untouched over epochs, its checks hash nothing; the CPU writing the
+   second piece, and a DMA copy over the first through another GPU address of it, each reach it in the next epoch.
+   Without write tracking its checks hash it instead (vulkan_write_tracking_off) */
+static int check_wt_pieces(void) {
+    const u64 cpu = WT_CPU + 17 * WT_LEAF, a = cpu, b = cpu + 0x8000, src = cpu + 0xC000;
+    const u64 gva = WT_GVA + 0x10000000, other = WT_GVA + 0x10100000, gsrc = WT_GVA + 0x10200000;
+    const int epochs = 8;
+    u32 tic[8];
+    CHECK(mem_map(cpu, 0x10000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva, a, 0x2000);
+    gmmu_map(gva + 0x2000, b, 0x2000); /* 64 by 64 block linear, 16 KiB: rows 32 to 63 in the second piece */
+    gmmu_map(other, a, 0x2000);
+    gmmu_map(gsrc, src, 0x2000);
+    wt_tic(tic, gva, 64, 64);
+    memset(GP(a), 0x11, 0x2000);
+    memset(GP(b), 0x11, 0x2000);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    int tracking = wt_tracking(cpu);
+    u32 first = wt_texel_at(tic, 0, 0), last = wt_texel_at(tic, 0, 63);
+    vk_unlock();
+    CHECK(first == wt_fill(0x11) && last == wt_fill(0x11));
+    u64 hashes = vk_tex_hashes();
+    for (int k = 0; k < epochs; k++) {
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        last = wt_texel_at(tic, 0, 63);
+        vk_unlock();
+        CHECK(last == wt_fill(0x11));
+    }
+    u64 untouched = vk_tex_hashes() - hashes;
+    memset(GP(b), 0x22, 0x2000); /* the CPU writes the second piece */
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    u32 cpu_first = wt_texel_at(tic, 0, 0), cpu_last = wt_texel_at(tic, 0, 63);
+    vk_unlock();
+    /* a DMA copy of 0x33 over the first piece, through the other GPU address of its pages */
+    memset(GP(src), 0x33, 0x2000);
+    GpuDmaOp o = {0};
+    o.width = o.line_in = o.line_out = 0x1000;
+    o.lines = 2;
+    o.src = pitch_side(gsrc, 0x1000);
+    o.dst = pitch_side(other, 0x1000);
+    g_renderer->mem_may_have_changed();
+    CHECK(g_renderer->dma_copy(&o));
+    vk_lock();
+    u32 dma_first = wt_texel_at(tic, 0, 0), dma_last = wt_texel_at(tic, 0, 63);
+    vk_unlock();
+    guest_done(a, 0x2000);
+    own_acquire(a, 0x2000);
+    CHECK(mem_unmap(cpu, 0x10000) == 0);
+    int cpu_seen = cpu_first == wt_fill(0x11) && cpu_last == wt_fill(0x22);
+    int dma_seen = dma_first == wt_fill(0x33) && dma_last == wt_fill(0x22);
+    if (!cpu_seen || !dma_seen || (tracking ? untouched != 0 : !untouched))
+        fprintf(
+            stderr,
+            "pieces: untouched over %d epochs its checks hashed it %llu times (write tracking %s); after the CPU wrote "
+            "0x22 over the second piece rows 0 and 63 hold %08x %08x, after a DMA copy of 0x33 over the first "
+            "through another address %08x %08x\n",
+            epochs, (unsigned long long)untouched, tracking ? "on" : "off", cpu_first, cpu_last, dma_first, dma_last);
+    CHECK(cpu_seen && dma_seen && (tracking ? untouched == 0 : untouched > 0));
+    printf("write tracking: a texture over two pieces of guest memory, %llu hashes over %d untouched epochs (tracking "
+           "%s), the CPU's write and a DMA copy through another address each seen\n",
+           (unsigned long long)untouched, epochs, tracking ? "on" : "off");
+    return 0;
+}
 /* the cases by name, for SNX_TEST_WW_ONLY=NAME */
 static const struct {
     const char* name;
@@ -997,6 +1071,7 @@ static const struct {
     {"hot_alias", check_wt_hot_alias},
     {"hot_same_frame", check_wt_hot_same_frame},
     {"hot_rt_take_in", check_wt_hot_rt_take_in},
+    {"pieces", check_wt_pieces},
 };
 /* whether the tracking answers, asked at a leaf no case maps */
 static int wt_on(void) {
@@ -1029,12 +1104,11 @@ static int check_write_tracking(void) {
         failed += r != 0;
     }
     if (!ran) {
-        fprintf(
-            stderr,
-            "SNX_TEST_WW_ONLY=%s names no case: 1, each, two_consumers, concurrent, record_submit, runtime_writes, "
-            "owned, alias, shared, mixed_leaf, hot_page, hot_rt_overlap, hot_rt_fresh, hot_alias, hot_same_frame or "
-            "hot_rt_take_in\n",
-            only);
+        fprintf(stderr,
+                "SNX_TEST_WW_ONLY=%s names no case: 1, each, two_consumers, concurrent, record_submit, runtime_writes, "
+                "owned, alias, shared, mixed_leaf, hot_page, hot_rt_overlap, hot_rt_fresh, hot_alias, hot_same_frame, "
+                "hot_rt_take_in or pieces\n",
+                only);
         return 2;
     }
     return failed ? 1 : 0;

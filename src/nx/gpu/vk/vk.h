@@ -1344,6 +1344,7 @@ VkPipeline vk_pipeline_now(VkPipeline h, int* pending);
    waited for new ones, shaders translated, ms translating them */
 void vk_pipeline_stats(u64* pipes, u64* hits, u64* make_ms, u64* wait_ms, u64* shaders, u64* shader_ms);
 void vk_tex_stats(u64* uploads, u64* bytes); /* texture uploads from guest memory so far, and their bytes */
+u64 vk_tex_hashes(void); /* texture memory hashed so far, whole or sampled, to learn whether it changed */
 u64 vk_rt_made(void);                        /* render targets made so far */
 VkPipelineCache vk_pipeline_cache(void);     /* for pipelines made elsewhere (compute) */
 void vk_pipeline_save(int at_exit);
