@@ -3,11 +3,12 @@
 /* The VIC composition as a compute shader (gpu/video/vic.comp), and its picture kept on the GPU (docs/GPU_OWNERSHIP.md).
    gpu/video/vic.c hands over the job's planes and its slots' parameters. A job's buffer is device-local and its own:
    the parameters (gpu/video/vic.c's vic_gpu_params) as a uniform buffer at its start, the slots' input planes, then
-   the output planes, each byte for byte as it lies in guest memory (the shader's address math matches the CPU's,
-   bl_offset included). What the CPU holds of the planes comes through staging, read without touching what the GPU
-   holds (own_stage); what the GPU holds (NVDEC's pictures, the last job's output) is copied in on the GPU. The output
-   planes come in too: the shader writes whole words, one owning invocation each, and the bytes it doesn't own
-   (outside the target rectangle, past the width) keep their values.
+   the output planes, each the rows the job reads or writes byte for byte as they lie in guest memory (the shader's
+   address math matches the CPU's, bl_offset included). What the CPU holds of the planes comes through staging, read
+   without touching what the GPU holds (own_stage); what the GPU holds (NVDEC's pictures, the last job's output) is
+   copied in on the GPU. The output planes come in too: the shader writes whole words, one owning invocation each, and
+   the bytes it doesn't own (outside the target rectangle, past the width) keep their values. A job bigger than one
+   buffer goes in bands of the target's rows, each a job of its own (compose_bands).
 
    The job is recorded into the frame's command buffer under vk_lock, in order with the draws and copies that read
    its picture, and nothing waits for it: the output planes are published over the guest's (vk_own_publish), so a
@@ -124,34 +125,94 @@ static u64 plane_stage(const VicPlane* pl, u8* host, u64 at, u64 done, Copies* c
     return at + pl->lim;
 }
 
-static int compose(const VicJob* j) {
-    u64 al = vk_stage_align();
-    /* the buffer's layout: the parameters, every slot's input planes, then the two output planes */
-    u64 at = sizeof(VicGpuParams);
-    u32 in_offs[16] = {0}; /* slot s's luma plane at 2s, its chroma at 2s + 1 */
-    for (int s = 0; s < 8; s++) {
+static u64 up(u64 v, u64 a) { return (v + a - 1) / a * a; }
+
+/* the bytes [*lo, *hi) of plane pl that its rows [a, b) lie in: a pitch linear plane's rows, a block linear one's
+   rows of blocks, within the bytes it may touch */
+static void plane_rows(const VicPlane* pl, i64 a, i64 b, u64* lo, u64* hi) {
+    *lo = *hi = 0;
+    if (!pl->p || !pl->lim) return;
+    if (a < 0) a = 0;
+    if (b <= a) return;
+    if (pl->blk) {
+        u64 stride = (u64)((pl->pitch + 63) / 64) << (9 + pl->bh);
+        u32 sh = 3 + pl->bh;
+        *lo = ((u64)a >> sh) * stride;
+        *hi = (((u64)(b - 1) >> sh) + 1) * stride;
+    } else {
+        *lo = (u64)a * pl->pitch;
+        *hi = (u64)b * pl->pitch;
+    }
+    if (*hi > pl->lim) *hi = pl->lim;
+    if (*lo > *hi) *lo = *hi;
+}
+
+/* What the band of the target's rows [r0, r1) reads and writes: the bytes [lo, hi) of each plane (16 slot planes, 2s
+   the luma and 2s + 1 the chroma of slot s, then the output's luma and chroma at 16 and 17) and where they lie in the
+   job's buffer. The buffer: the parameters, the slots' planes, a word past them (the unaligned build's funnel loads
+   it, in_end), the output's. A slot's rows are taken from the even row its first block of 4x2 pixels starts on to the
+   row after its last, which a block reads and leaves out */
+typedef struct {
+    u64 lo[18], hi[18], at[18];
+    u64 in_end, total;
+} VicBand;
+static void band_layout(const VicJob* j, u32 r0, u32 r1, VicBand* v) {
+    u64 al = vk_stage_align(), at = sizeof(VicGpuParams);
+    memset(v, 0, sizeof *v);
+    for (u32 s = 0; s < 8; s++) {
         const VicSlot* sl = &j->slots[s];
         if (!sl->on) continue;
-        u64 lims[2] = {sl->iy.lim, sl->ic.lim};
-        for (int k = 0; k < 2; k++) {
-            at = (at + al - 1) & ~(al - 1);
-            in_offs[2 * s + k] = (u32)at;
-            at += lims[k];
+        i64 a = r0 > sl->dy0 ? r0 : sl->dy0, b = r1 < sl->dy0 + sl->h ? r1 : sl->dy0 + sl->h;
+        if (b > a) {
+            i64 sy = (a - (a & 1)) + (i64)sl->sy0 - (i64)sl->dy0, ey = b + 1 + (i64)sl->sy0 - (i64)sl->dy0;
+            if (sy < 0) sy = 0;
+            plane_rows(&sl->iy, sy, ey, &v->lo[2 * s], &v->hi[2 * s]);
+            plane_rows(&sl->ic, sy / 2, ey / 2 + 1, &v->lo[2 * s + 1], &v->hi[2 * s + 1]);
+        }
+        for (u32 k = 2 * s; k < 2 * s + 2; k++) {
+            at = up(at, al);
+            v->at[k] = at;
+            at += v->hi[k] - v->lo[k];
         }
     }
-    at = ((at + 3) & ~3ull) + 4; /* a word past the last plane: the unaligned build's funnel loads it */
-    u64 ol_off = (at + al - 1) & ~(al - 1), ol_size = (j->oy.lim + 3) & ~3ull;
-    /* every binding offset, the chroma's too, is storage aligned */
-    u64 oc_off = (ol_off + ol_size + al - 1) & ~(al - 1), oc_size = (j->oc.lim + 3) & ~3ull;
-    if (oc_size < 4) oc_size = 4;
-    u64 total = oc_off + oc_size;
-    u64 range_max = g_vk.props.limits.maxStorageBufferRange;
-    if (total - ol_off > range_max || at > range_max || total > g_vk.alloc_cap) {
-        LOG_LIMIT(4, "video: a VIC job of %llu bytes exceeds the device's limits, skipped\n", (unsigned long long)total);
-        return 0;
-    }
+    v->in_end = up(at, 4) + 4;
+    plane_rows(&j->oy, r0 & ~1u, up(r1, 2), &v->lo[16], &v->hi[16]);
+    plane_rows(&j->oc, (r0 & ~1u) / 2, up(r1, 2) / 2, &v->lo[17], &v->hi[17]);
+    /* every binding offset, the chroma's too, is storage aligned; the shader writes whole words */
+    v->at[16] = up(v->in_end, al);
+    v->at[17] = up(v->at[16] + up(v->hi[16] - v->lo[16], 4), al);
+    v->total = v->at[17] + (v->hi[17] > v->lo[17] ? up(v->hi[17] - v->lo[17], 4) : 4);
+}
+
+/* the band of rows that could not be composed, and the bytes it lacked them for */
+static int band_fail(const VicJob* j, u32 r0, u32 r1, const char* what, u64 bytes) {
+    LOG_LIMIT(4, "video: a VIC job of %ux%u pixels, its rows %u to %u, %s %llu bytes: those rows are not composed\n",
+              j->tw, j->th, r0, r1 - 1, what, (unsigned long long)bytes);
+    return 0;
+}
+
+/* the target's rows [r0, r1) as v lays them out */
+static int compose(const VicJob* j, u32 r0, u32 r1, const VicBand* v) {
+    u64 al = vk_stage_align(), total = v->total;
+    u32 in_offs[16] = {0};
     VicGpuParams p;
-    vic_gpu_params(j, &p, in_offs, (u32)(oc_off - ol_off));
+    /* a plane's base is where its byte 0 would be: its window's first byte lo at its place, modulo 2^32 as the shader
+       adds them. Its lim is the window's end, so no load or store leaves it */
+    for (u32 k = 0; k < 16; k++) in_offs[k] = (u32)(v->at[k] - v->lo[k]);
+    vic_gpu_params(j, &p, in_offs, (u32)(v->at[17] - v->at[16] - v->lo[17]));
+    for (u32 s = 0, n = 0; s < 8; s++)
+        if (j->slots[s].on) {
+            if (p.slots[n].iy.lim) p.slots[n].iy.lim = (u32)v->hi[2 * s];
+            if (p.slots[n].ic.lim) p.slots[n].ic.lim = (u32)v->hi[2 * s + 1];
+            n++;
+        }
+    p.job.ol.base = (u32)(0 - v->lo[16]);
+    if (p.job.ol.lim) p.job.ol.lim = (u32)v->hi[16];
+    if (p.job.oc.lim) p.job.oc.lim = (u32)v->hi[17];
+    /* the band's rows of the target, from the even row its blocks of 4x2 pixels start on */
+    p.job.ty0 = r0;
+    p.job.th = r1 - r0;
+    p.job.gy0 = r0 & ~1u;
 
     vic_init();
     vk_render_end(); /* compute and copies happen outside rendering passes */
@@ -161,33 +222,38 @@ static int compose(const VicJob* j) {
     u8* host = w ? vk_stage(total, al, &staged, &soff) : NULL;
     VkDescriptorSet set = host ? vk_desc_alloc(g_vic_ds) : VK_NULL_HANDLE;
     if (!set) {
-        LOG_LIMIT(4, "video: no GPU memory for a VIC job, skipped\n");
         if (w) vk_own_res_unref(w);
-        return 0;
+        return band_fail(j, r0, r1, "found no GPU memory for its", total);
     }
     Copies cp;
     cp.n = 0;
     memcpy(host, &p, sizeof p);
     snx_le32_array(host, sizeof p / 4); /* host numbers, all 32 bit words (vic_params.glsl), read little-endian */
-    /* every plane's bytes are staged whole, so only the padding between them is cleared: the shader may load it and
-       never uses it (a whole frame cleared and then copied over was most of a video's CPU time) */
+    /* every window is staged whole, so only the padding between them is cleared: the shader may load it and never
+       uses it (a whole frame cleared and then copied over was most of a video's CPU time) */
     u64 done = sizeof p;
-    for (int s = 0; s < 8; s++) {
+    for (u32 s = 0; s < 8; s++) {
         const VicSlot* sl = &j->slots[s];
         if (!sl->on) continue;
-        done = plane_stage(&sl->iy, host, in_offs[2 * s], done, &cp);
-        done = plane_stage(&sl->ic, host, in_offs[2 * s + 1], done, &cp);
+        VicPlane y = sl->iy, c = sl->ic;
+        y.p += v->lo[2 * s], y.lim = v->hi[2 * s] - v->lo[2 * s];
+        c.p += v->lo[2 * s + 1], c.lim = v->hi[2 * s + 1] - v->lo[2 * s + 1];
+        done = plane_stage(&y, host, v->at[2 * s], done, &cp);
+        done = plane_stage(&c, host, v->at[2 * s + 1], done, &cp);
     }
-    /* the output planes come in: the shader owns whole words and leaves the other bytes as they are */
-    done = plane_stage(&j->oy, host, ol_off, done, &cp);
-    done = plane_stage(&j->oc, host, oc_off, done, &cp);
+    /* the output's windows come in: the shader owns whole words and leaves the other bytes as they are */
+    VicPlane oy = j->oy, oc = j->oc;
+    oy.p += v->lo[16], oy.lim = v->hi[16] - v->lo[16];
+    if (oc.p) oc.p += v->lo[17], oc.lim = v->hi[17] - v->lo[17];
+    done = plane_stage(&oy, host, v->at[16], done, &cp);
+    done = plane_stage(&oc, host, v->at[17], done, &cp);
     memset(host + done, 0, total - done);
 
     VkDescriptorBufferInfo buffers[3] = {{w->buf, 0, sizeof(VicGpuParams)},
                                          /* from 0: in_offs count from the start of the buffer */
-                                         {w->buf, 0, at},
-                                         /* both output planes: the chroma's base is oc_off - ol_off */
-                                         {w->buf, ol_off, total - ol_off}};
+                                         {w->buf, 0, v->in_end},
+                                         /* both output planes: the chroma's base counts from the luma's place */
+                                         {w->buf, v->at[16], total - v->at[16]}};
     VkWriteDescriptorSet writes[3];
     for (u32 i = 0; i < 3; i++)
         writes[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -221,15 +287,41 @@ static int compose(const VicJob* j) {
     /* what reads the picture next (a copy into a texture or the display, a landing) sees the shader's writes */
     job_barrier(cb, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                 VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT);
-    /* the picture is the guest's output planes from now on */
-    vk_own_publish((u64)(j->oy.p - g_mem), j->oy.lim, w, ol_off);
-    if (j->oc.p && j->oc.lim) vk_own_publish((u64)(j->oc.p - g_mem), j->oc.lim, w, oc_off);
+    /* the windows are the guest's output planes from now on */
+    if (oy.lim) vk_own_publish((u64)(oy.p - g_mem), oy.lim, w, v->at[16]);
+    if (oc.p && oc.lim) vk_own_publish((u64)(oc.p - g_mem), oc.lim, w, v->at[17]);
     vk_own_res_unref(w); /* the owned ranges hold it */
+    return 1;
+}
+
+/* A job too big for one buffer (one allocation, or a storage binding: maxStorageBufferRange) goes in bands of the
+   target's rows (vk_band), each a job of its own that stages the rows of each plane its rows read. A band ends on
+   the output planes' rows of blocks, so each block is read and written back by one band */
+static u64 band_need(const void* user, u32 y, u32 n) {
+    const VicJob* j = (const VicJob*)user;
+    VicBand v;
+    band_layout(j, j->ty0 + y, j->ty0 + y + n, &v);
+    return v.total;
+}
+static int compose_bands(const VicJob* j) {
+    u64 range = g_vk.props.limits.maxStorageBufferRange;
+    u32 unit = 2;
+    if (j->oy.blk && 8u << j->oy.bh > unit) unit = 8u << j->oy.bh;
+    if (j->oc.p && j->oc.blk && 16u << j->oc.bh > unit) unit = 16u << j->oc.bh; /* a chroma row is two of luma */
+    VkBands bands = {range < g_vk.alloc_cap ? range : g_vk.alloc_cap, unit, j->ty0, band_need, j};
+    for (u32 y = 0, n; y < j->th; y += n) {
+        u64 most = 0;
+        n = vk_band(&bands, y, j->th - y, &most);
+        if (most > bands.cap) return band_fail(j, j->ty0 + y, j->ty0 + y + n, "needs more than a buffer may be:", most);
+        VicBand v;
+        band_layout(j, j->ty0 + y, j->ty0 + y + n, &v);
+        if (!compose(j, j->ty0 + y, j->ty0 + y + n, &v)) return 0;
+    }
     return 1;
 }
 int vk_vic_compose(const VicJob* j) {
     vk_lock();
-    int r = compose(j);
+    int r = compose_bands(j);
     vk_unlock();
     /* with unified memory the planes are copied in on the GPU and no trap lands them: host1x increments the job's
        syncpoint once this returns, and the guest reads them then */
