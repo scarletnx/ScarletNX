@@ -4,6 +4,9 @@
    all of it or over its left or right half, their colors a vertex stream:
    - a range that held still for three checks gets a buffer of its own (buffer.c make_own) at the second draw of a
      pass: a copy of the CPU's bytes into a buffer nothing before it reads, so it need not end the pass
+   - a range two copy engine results hold, read by the second draw (buffer.c buf_get_owned): written in an earlier
+     submission, the copy of them need not end the pass either; written in this one, it has to come after their
+     writes, and the pass ends there
    - a write of the guest between two draws over a big buffer of its own, which takes the written pages (patch_own):
      the first draw reads the old bytes and the second the new, so that copy stays between them and the pass ends */
 #define PB_GVA   0x4f4000000ull
@@ -118,6 +121,49 @@ static int pb_own_case(GpuChannel* ch, u64 target, u64 red, u64 green) {
     printf("pass breaks: a range %s at the second draw of a pass, %s\n",
            own1 > own0 ? "took a buffer of its own" : "read in place",
            begun ? "which kept the pass" : "a submit between the draws (their passes not counted)");
+    return 0;
+}
+
+/* Green colors a copy engine wrote in two halves, two owners the GPU holds, drawn over the right half after the red
+   draw began the pass. apart: the copies were submitted before the draws, so the copy of their bytes for the draw can
+   run before the pass; otherwise it follows them, and the pass ends before the green draw */
+static int pb_owners_case(GpuChannel* ch, u64 target, u64 red, u64 staged, u64 copy, u64 copy_cpu, int apart) {
+    GpuDmaOp o;
+    char half[2];
+    u64 begun = 0;
+    CHECK(!pb_colors(staged, PB_GREEN, 0, PB_VERTS));
+    vk_lock();
+    int inplace = vk_uma_held(copy_cpu, PB_LEN), owned = own_traps() && !inplace;
+    vk_unlock();
+    for (u32 k = 0; k < 2; k++) {
+        memset(&o, 0, sizeof o);
+        o.width = o.line_in = o.line_out = (u32)(PB_LEN / 2);
+        o.lines = 1;
+        o.src = pitch_side(staged + k * (PB_LEN / 2), 0);
+        o.dst = pitch_side(copy + k * (PB_LEN / 2), 0);
+        CHECK(g_renderer->dma_copy(&o));
+    }
+    if (owned) CHECK(own_lookup(copy_cpu, PB_LEN, NULL, 0) == 2);
+    if (apart) {
+        vk_lock();
+        vk_submit_recorded();
+        vk_unlock();
+    }
+    u64 landings = own_landings();
+    CHECK(!pb_frame(ch, target, red, copy, &begun, half));
+    u64 want = owned && !apart ? 2 : 1;
+    if (half[0] != 'r' || half[1] != 'g' || (owned && begun && begun != want))
+        fprintf(stderr, "two owners%s: left %c, right %c (r, g wanted), %llu passes (%llu wanted)\n",
+                apart ? " submitted before" : "", half[0], half[1], (unsigned long long)begun,
+                (unsigned long long)want);
+    CHECK(half[0] == 'r' && half[1] == 'g');
+    if (owned) CHECK((!begun || begun == want) && own_landings() == landings);
+    printf("pass breaks: a range two copy engine results hold, %s, read %s%s\n",
+           apart ? "written in an earlier submission" : "written in this one",
+           !owned  ? (inplace ? "in guest memory" : "landed (no traps here)")
+           : apart ? "inside the pass"
+                   : "after their writes, in a pass of its own",
+           begun ? "" : " (a submit between the draws: their passes not counted)");
     return 0;
 }
 
@@ -251,6 +297,8 @@ static int check_pass_breaks(void) {
     GpuChannel* ch = pb_channel();
     CHECK(ch);
     CHECK(!pb_own_case(ch, target, PB_GVA + 0x13000, PB_GVA + 0x14000));
+    CHECK(!pb_owners_case(ch, target, PB_GVA + 0x13000, PB_GVA + 0x17000, PB_GVA + 0x15000, PB_CPU + 0x15000, 1));
+    CHECK(!pb_owners_case(ch, target, PB_GVA + 0x13000, PB_GVA + 0x17000, PB_GVA + 0x16000, PB_CPU + 0x16000, 0));
     CHECK(!pb_patch_case(ch, target));
     vk_lock();
     vk_finish();

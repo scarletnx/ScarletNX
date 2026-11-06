@@ -949,6 +949,9 @@ void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at);
 void vk_cpu_read(u64 cpu, u64 size, u8* host, VkBuffer buf, u64 at);
 /* the same into device memory (buf, which the CPU doesn't map): 0 when staging has no room */
 int vk_guest_read_device(u64 gva, u64 size, VkBuffer buf, u64 at);
+/* the same in the submission's upload command buffer (vk_cmd_upload), ahead of its rendering passes, when every byte
+   was written before this submission; 0 with nothing recorded otherwise, or when staging has no room */
+int vk_guest_read_ahead(u64 gva, u64 size, VkBuffer buf, u64 at);
 /* guest bytes [gva, gva + size) into device memory as the GPU sees them: vk_guest_read_device, with the render targets
    drawn over them (vk_rt_overlay). 0 when there is no room */
 int vk_guest_read_seen(u64 gva, u64 size, VkBuffer buf, u64 at);

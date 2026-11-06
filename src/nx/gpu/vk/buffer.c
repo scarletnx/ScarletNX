@@ -2703,8 +2703,9 @@ u64 vk_buf_ahead(void) { return g_buffer.ahead; }
    stored and loaded again. Any other range is copied into this frame's device ring, the CPU's bytes staged by the CPU
    and the owned ones from their owners by the GPU (vk_guest_read_device). Neither is hashed (the CPU's copy of the
    owned bytes is stale) or given a buffer of its own: it is bound or copied again when the GPU writes those bytes
-   again (gpu_mem_dirty_since) or a later submit reads it. Draws over the results of the GPU's engines landed them, a
-   wait for the GPU each */
+   again (gpu_mem_dirty_since) or a later submit reads it. Bytes all written before this submission are copied ahead
+   of its work (vk_guest_read_ahead), and the pass goes on; bytes it writes are copied after those writes, outside the
+   pass. Draws over the results of the GPU's engines landed them, a wait for the GPU each */
 static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, u32 epoch, u64 align, VkBuffer* buf, u64* off) {
     VkBuffer sb;
     u64 so, cpu = 0;
@@ -2725,10 +2726,15 @@ static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, u32 epoch, 
         ((VkOwnRes*)o[0].res)->read = ++g_buffer.order.owner_reads;
         if (copy_stats_on()) g_owned_bound += len;
     } else {
-        vk_render_end(); /* the GPU's copies happen outside rendering passes */
         /* in device memory, where the GPU's bytes stay on the GPU and the draws read all of it: in staging, the GPU
            copied its own bytes out over PCIe and every draw read them back over it */
-        if (!vk_stage_device(len, vk_stage_align(), &sb, &so) || !vk_guest_read_device(gva, len, sb, so)) return 0;
+        if (!vk_stage_device(len, vk_stage_align(), &sb, &so)) return 0;
+        if (vk_guest_read_ahead(gva, len, sb, so))
+            g_buffer.ahead++;
+        else {
+            vk_render_end(); /* the GPU's copies happen outside rendering passes */
+            if (!vk_guest_read_device(gva, len, sb, so)) return 0;
+        }
         if (copy_stats_on()) g_copy_stage += len;
     }
     e->buf = sb;
