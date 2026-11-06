@@ -835,6 +835,73 @@ static void check_untracked_runs(void) {
     memset(&g_tracking, 0, sizeof g_tracking);
 }
 
+/* A pitch linear texture loaded whole takes a write as the rows it lies in (tex_patch_pitch): of a row, the texels its
+   pages cover, and rows after one another that cover the same texels as one region. RGBA8 3000x300 in rows of 12288
+   bytes (three pages): a 64x64 region at (1100, 50), whose bytes are in the second page of each row, is one region of
+   texels 1024 to 2047 of its 64 rows. A byte in each of its 300 rows, more pieces than a check keeps: the closest
+   join, rows 0 to 44 whole, and the others' first page each as one region. 1000x100 in rows of 4352 bytes, which pages
+   cut: a byte of the second page loads rows 0 and 1 whole. 2000x200 in rows of 8448 bytes: a byte at the start of
+   each of rows 10 to 29, each in a page of its own that it shares with the row before, loads rows 9 to 29 once, in
+   three regions (row 16 starts a page). Without write tracking a write loads all of it */
+static void check_pitch_linear_changes(void) {
+    Surf t = tex(3000, 300, 1, 1, 4, 0, 0, 0), c = tex(1000, 100, 1, 1, 4, 0, 0, 0);
+    u64 bytes, partial;
+    t.pitch = 12288;
+    t.layer_size = t.size = 12288 * 300;
+    loaded(&t);
+    g_tracking.pending = 1;
+    g_tracking.nruns = 64;
+    for (u32 k = 0; k < 64; k++) {
+        u64 o = (u64)(50 + k) * 12288 + 1100 * 4;
+        for (u32 i = 0; i < 256; i++) guest[o + i] ^= 0x5A;
+        g_tracking.run[k].at = o, g_tracking.run[k].len = 256;
+    }
+    check_after(&t, &bytes, &partial);
+    CHECK(partial == 1 && nregs == 1 && bytes == 64 * 4096);
+    CHECK(regs[0].imageOffset.x == 1024 && regs[0].imageOffset.y == 50 && regs[0].imageExtent.width == 1024 &&
+          regs[0].imageExtent.height == 64);
+    check_quiet(&t);
+    g_tracking.pending = 1;
+    g_tracking.nruns = 300;
+    for (u32 k = 0; k < 300; k++) {
+        guest[k * 12288 + 100] ^= 0x5A;
+        g_tracking.run[k].at = k * 12288 + 100, g_tracking.run[k].len = 1;
+    }
+    check_after(&t, &bytes, &partial);
+    CHECK(partial == 1 && nregs == 2 && bytes == 45 * 12000 + 255 * 4096);
+    CHECK(regs[0].imageExtent.width == 3000 && regs[0].imageExtent.height == 45 && regs[1].imageOffset.y == 45 &&
+          regs[1].imageExtent.width == 1024 && regs[1].imageExtent.height == 255);
+    check_quiet(&t);
+    c.pitch = 4352;
+    c.layer_size = c.size = 4352 * 100;
+    loaded(&c);
+    cpu_write(4096 + 100, 1);
+    check_after(&c, &bytes, &partial);
+    CHECK(partial == 1 && nregs == 1 && bytes == 2 * 4000 && regs[0].imageOffset.y == 0 &&
+          regs[0].imageExtent.height == 2 && regs[0].imageExtent.width == 1000);
+    check_quiet(&c);
+    Surf d = tex(2000, 200, 1, 1, 4, 0, 0, 0);
+    d.pitch = 8448;
+    d.layer_size = d.size = 8448 * 200;
+    loaded(&d);
+    g_tracking.pending = 1;
+    g_tracking.nruns = 20;
+    for (u32 k = 0; k < 20; k++) {
+        guest[(10 + k) * 8448] ^= 0x5A;
+        g_tracking.run[k].at = (10 + k) * 8448, g_tracking.run[k].len = 1;
+    }
+    check_after(&d, &bytes, &partial);
+    CHECK(partial == 1 && nregs == 3 && bytes == 7 * 8000 + 4096 + 14 * 8000);
+    CHECK(regs[0].imageOffset.y == 9 && regs[0].imageExtent.height == 7 && regs[2].imageOffset.y == 16 &&
+          regs[2].imageExtent.height == 14);
+    check_quiet(&d);
+    memset(&g_tracking, 0, sizeof g_tracking);
+    t.stable = 0;
+    guest[100] ^= 0x5A;
+    check_after(&t, &bytes, &partial);
+    CHECK(bytes == t.size && partial == 0);
+}
+
 int main(void) {
     fill();
     check_take_skip();
@@ -1134,6 +1201,7 @@ int main(void) {
     }
     check_block_linear_changes();
     check_untracked_runs();
+    check_pitch_linear_changes();
     printf("tex_upload_rows: %u checks passed\n", checks);
     return 0;
 }

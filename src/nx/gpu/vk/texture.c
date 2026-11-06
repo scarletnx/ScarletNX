@@ -942,11 +942,13 @@ static void tex_dirty_piece(void* ctx, u64 at, u64 n) {
     r->mapped += n;
     pieces_add(r->p, at - r->gva, n);
 }
-/* loaded a piece at a time: block linear, one sample, in a format the GPU takes as it is, whose texels or blocks lie
-   whole in a GOB's 64-byte rows */
+/* loaded a piece at a time: one sample, in a format the GPU takes as it is, block linear with texels or blocks whole
+   in a GOB's 64-byte rows, or pitch linear with texels or blocks of 1 to 16 bytes, a power of two (a row staged
+   anywhere in staging is where a copy can read it) */
 static int tex_can_piece(const Surf* t) {
     const VkFmt* f = &t->f;
-    return t->bl && !t->msaa && f->conv == VKC_NONE && !vk_tc_converts(f) && !f->depth && f->bpp && 64 % f->bpp == 0;
+    return !t->msaa && f->conv == VKC_NONE && !vk_tc_converts(f) && !f->depth && f->bpp &&
+           (t->bl ? 64 % f->bpp == 0 : 16 % f->bpp == 0);
 }
 
 /* the blocks of one level of one layer (lsz bytes at gva) that its bytes [a, b) lie in, loaded a run of blocks of one
@@ -984,6 +986,92 @@ static int level_patch_bl(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u32 lb
         k = e;
     }
     return 1;
+}
+/* rows r0 to r1 of a layer of a pitch linear texture (of texels, or of blocks; its slices' rows after one another),
+   bytes x0 to x1 of each */
+typedef struct {
+    u32 layer, x0, x1;
+    u64 r0, r1;
+} PitchRect;
+/* bytes [a, b) of a layer of a pitch linear texture as its rows: of one row, the texels or blocks they cover; of rows
+   they run across, all of each row. 0 when they are none of its texels (a row's pitch past them, or past its rows) */
+static int pitch_rect(const Surf* t, u32 layer, u64 a, u64 b, PitchRect* r) {
+    const VkFmt* f = &t->f;
+    u32 gp = t->pitch, rowb = (t->w + f->bw - 1) / f->bw * f->bpp;
+    u64 rows = (u64)((t->h + f->bh - 1) / f->bh) * (t->type == VK_IMAGE_VIEW_TYPE_3D ? t->depth3d : 1);
+    if (b > rows * gp) b = rows * gp;
+    if (a >= b) return 0;
+    r->layer = layer;
+    r->r0 = a / gp;
+    r->r1 = (b - 1) / gp + 1;
+    r->x0 = 0;
+    r->x1 = rowb;
+    if (r->r1 - r->r0 == 1) {
+        r->x0 = (u32)(a % gp) / f->bpp * f->bpp;
+        r->x1 = ((u32)((b - 1) % gp) / f->bpp + 1) * f->bpp;
+        if (r->x0 >= rowb) return 0;
+        if (r->x1 > rowb) r->x1 = rowb;
+    }
+    return 1;
+}
+/* r loaded again: its rows staged as they are when they are whole (pitch and all), else their bytes a row at a time,
+   in strips of a slice that staging takes */
+static int pitch_patch(Upload* u, const PitchRect* r) {
+    const Surf* t = u->t;
+    const VkFmt* f = &t->f;
+    u32 gp = t->pitch, th = (t->h + f->bh - 1) / f->bh, rowb = (t->w + f->bw - 1) / f->bw * f->bpp, w = r->x1 - r->x0;
+    u32 d3 = t->type == VK_IMAGE_VIEW_TYPE_3D ? t->depth3d : 1;
+    int as_is = r->x0 == 0 && w == rowb && gp % f->bpp == 0;
+    u32 in_pitch = as_is ? gp : w;
+    u64 band = g_vk.alloc_cap < TEX_BAND ? g_vk.alloc_cap : TEX_BAND, lsz = (u64)gp * th * d3;
+    u64 gva = t->gva + (u64)r->layer * t->layer_size;
+    UpLevel lv = {0, r->layer, t->w, t->h, d3, rowb, th, 0};
+    lv.x = r->x0 / f->bpp * f->bw;
+    lv.cols = w / f->bpp * f->bw;
+    for (u64 row = r->r0; row < r->r1;) {
+        u32 z = (u32)(row / th), y = (u32)(row % th);
+        u64 n = r->r1 - row < th - y ? r->r1 - row : th - y, first = row * gp + r->x0;
+        if (n * in_pitch > band) n = band / in_pitch ? band / in_pitch : 1;
+        VkBuffer staged;
+        u64 at;
+        u8* p = vk_stage(n * in_pitch, vk_stage_align(), &staged, &at);
+        if (!p) return 0;
+        if (as_is) { /* the rows are one range of guest memory */
+            u64 size = n * in_pitch, have = first + size <= lsz ? size : lsz - first;
+            vk_guest_read(gva + first, have, p, staged, at);
+            memset(p + have, 0, size - have);
+        } else
+            for (u64 k = 0; k < n; k++) vk_guest_read(gva + first + k * gp, w, p + k * w, staged, at + k * w);
+        if (!up_reserve(u, 0) || !up_rows(u, &lv, staged, at, in_pitch, z, 1, y, (u32)n)) return 0;
+        g_tex_loads.bytes += n * w;
+        row += n;
+    }
+    return 1;
+}
+/* a pitch linear texture's pieces p loaded again, as the rows they lie in (pitch_rect): rows after one another, or
+   the same rows, that cover the same texels go as one, so a region of a big texture's rows written a page a row is
+   one copy, and rows two pieces share (pages that cut rows) load once */
+static int tex_patch_pitch(Upload* u, const TexPieces* p) {
+    const Surf* t = u->t;
+    PitchRect run = {0}, next;
+    int have = 0;
+    for (u32 i = 0; i < p->count; i++)
+        for (u64 a = p->piece[i].at, b = a + p->piece[i].n; a < b;) {
+            u32 layer = (u32)(a / t->layer_size);
+            u64 lo = (u64)layer * t->layer_size, hi = lo + t->layer_size;
+            if (layer >= t->layers) break;
+            if (pitch_rect(t, layer, a - lo, (b < hi ? b : hi) - lo, &next)) {
+                if (have && run.layer == next.layer && run.x0 == next.x0 && run.x1 == next.x1 && next.r0 <= run.r1) {
+                    if (next.r1 > run.r1) run.r1 = next.r1;
+                } else {
+                    if (have && !pitch_patch(u, &run)) return 0;
+                    run = next;
+                    have = 1;
+                }
+            }
+            a = hi;
+        }
+    return !have || pitch_patch(u, &run);
 }
 /* bytes [a, b) of the texture loaded again: the blocks of each level of each layer they lie in */
 static int tex_patch_range(Upload* u, u64 a, u64 b) {
@@ -1065,7 +1153,9 @@ static int tex_patch(Surf* t, const TexPieces* p) {
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
     Upload u = {.cb = cb, .t = t};
     int ok = 1;
-    for (u32 i = 0; i < p->count && ok; i++) ok = tex_patch_range(&u, p->piece[i].at, p->piece[i].at + p->piece[i].n);
+    if (!t->bl) ok = tex_patch_pitch(&u, p);
+    for (u32 i = 0; i < p->count && ok && t->bl; i++)
+        ok = tex_patch_range(&u, p->piece[i].at, p->piece[i].at + p->piece[i].n);
     ok = up_flush(&u) && ok;
     g_tex_loads.partial++;
     g_tex_loads.partial_bytes += g_tex_loads.bytes - bytes;
@@ -1445,7 +1535,8 @@ texture_from_memory:
     Surf* t = tex_create(gva, w, h, layers, d3, levels, vt, f, fkey, bl, bh, bd, tile_w, pitch, stride, msaa, holes);
     if (!t) return NULL;
     t->size = sz;
-    t->piecewise = holes && tex_can_piece(t);
+    /* loaded whole, a pitch linear one takes its changes in pieces */
+    t->piecewise = holes && t->bl && tex_can_piece(t);
     t->ww_epoch = vk_ww_epoch(); /* checked in this epoch: read before the hash, or the piecewise one's load */
     t->wseen = vk_ww_now();
     tex_written_since(t, gva, NULL); /* starts tracking it */
