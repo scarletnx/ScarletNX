@@ -616,14 +616,30 @@ static void write_threads(u64 second) {
 
 /* the host threads blocked on a mutex or waiting on a condition variable: the caller as an offset from pm_lock and the
    mutex as one from pm_wait_base, which the runtime's symbols name (nm, addr2line). The watchdog's own report of a
-   deadlock, where no thread notes what it waits for in game terms */
+   deadlock, where no thread notes what it waits for in game terms. Waits of one mutex and caller that many threads
+   share (the guest threads' kernel waits) are one line with their count, so the few others are not lost in them */
+#define LOCK_WAITS 512
+#define LOCK_WAITS_GROUP 4
 static void report_lock_waits(void) {
-    PmWait w[64];
-    int n = pm_waits(w, 64), i;
-    for (i = 0; i < n; i++)
-        WARN("  host thread %llu %s mutex base%+lld, called from pm_lock%+lld\n", (unsigned long long)w[i].tid,
-             w[i].cond ? "waits on a condition with" : "waits for", (long long)((intptr_t)w[i].m - (intptr_t)pm_wait_base()),
-             (long long)((intptr_t)w[i].at - (intptr_t)pm_lock));
+    PmWait w[LOCK_WAITS]; /* 16 KB of the frontend thread's stack */
+    int n = pm_waits(w, LOCK_WAITS);
+    for (int i = 0; i < n; i++) {
+        int same = 0, first = 1;
+        char who[64];
+        for (int j = 0; j < n; j++)
+            if (w[j].m == w[i].m && w[j].at == w[i].at && w[j].cond == w[i].cond) {
+                same++;
+                if (j < i) first = 0;
+            }
+        if (same > LOCK_WAITS_GROUP && !first) continue;
+        if (same > LOCK_WAITS_GROUP)
+            snprintf(who, sizeof who, "%d host threads %s", same, w[i].cond ? "wait on a condition with" : "wait for");
+        else
+            snprintf(who, sizeof who, "host thread %llu %s", (unsigned long long)w[i].tid,
+                     w[i].cond ? "waits on a condition with" : "waits for");
+        WARN("  %s mutex base%+lld, called from pm_lock%+lld\n", who,
+             (long long)((intptr_t)w[i].m - (intptr_t)pm_wait_base()), (long long)((intptr_t)w[i].at - (intptr_t)pm_lock));
+    }
 }
 static void frontend_loop(void) {
     const u64 period = 1000000000u / VI_REFRESH_HZ;
@@ -663,6 +679,7 @@ static void frontend_loop(void) {
 #endif
         pause_unattended();
         state_poll();
+        if (!paused) kernel_core_watch();
         /* here and not on the GPU thread, where writing the pipeline cache would hold up every channel */
         if (tick % 300 == 0) {
             save_hints();
@@ -1149,6 +1166,7 @@ int snx_main(int argc, char** argv) {
         mem_fit(snx_memory_available(&available) && footprint, available, footprint);
     }
     kernel_init();
+    plat_trap_waiting(kthread_fault_lend);
     dispatch_init();
     if (g_arm_mod) arm_dispatch_init();
     load_hints();

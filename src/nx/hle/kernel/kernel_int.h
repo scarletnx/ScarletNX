@@ -237,6 +237,13 @@ typedef struct {
     /* for kernel_core_report, under core_lk: when each core's holder took it (plat_ns), and per core the time it was
        held and the time threads waited for it */
     u64 core_since[NCORES], core_held_ns[NCORES], core_wait_ns[NCORES];
+    /* how late holders let go for a waiter of better priority, under core_lk: when the waiter flagged core k's holder
+       (plat_ns, 0 for none), and per core the hand-offs over 10 ms late, the latest one and its holder (kt_ix) */
+    u64 preempt_since[NCORES], preempt_late[NCORES], preempt_max_ns[NCORES];
+    u32 preempt_max_by[NCORES];
+    /* kernel_core_watch's, on the frontend's thread: the flag time it last told of per core, and its lines so far */
+    u64 preempt_said[NCORES];
+    u32 preempt_lines;
     /* a save state's load (thread.c): the guest threads' host threads running, retire asking them to end, and the
        service wait each is in (kthread_wait), where it is woken to */
     int nhost, retire;
@@ -251,6 +258,11 @@ typedef struct {
        on a mutex came to it (MWAIT_*) */
     u8 handed[KTHREAD_MAX];
     u8 mwait_how[KTHREAD_MAX];
+    /* for the thread dump, each written by its own thread with relaxed stores: when it last left an SVC (plat_ns),
+       how often its game code called the poll (a waiter flagged its core), and its host thread */
+    u64 svc_ns[KTHREAD_MAX];
+    u32 polls[KTHREAD_MAX];
+    u32 host_tid[KTHREAD_MAX]; /* its host thread (plat_tid), to find it in a debugger */
 } HostThread;
 /* thread's thread state, t_hle.thread (hle.h's) */
 enum { KT_LATER = 16 };

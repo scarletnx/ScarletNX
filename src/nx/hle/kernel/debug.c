@@ -371,6 +371,14 @@ void kernel_core_report(void) {
         if (j < TOP) top[j] = t;
     }
     LOG("kernel: over %.1f s, cores%s\n", (double)run / 1e9, line);
+    for (k = 0; k < NCORES; k++) { /* how late holders let go for a waiter of better priority */
+        const KThread* by = kt_at(g_host.thread.preempt_max_by[k]);
+        if (!g_host.thread.preempt_max_ns[k]) continue;
+        LOG("kernel:   core %d: %llu hand-offs to a waiter of better priority over 10 ms late, the latest %.1f ms by thread "
+            "%llu\n",
+            k, (unsigned long long)g_host.thread.preempt_late[k], (double)g_host.thread.preempt_max_ns[k] / 1e6,
+            (unsigned long long)(by ? by->id : 0));
+    }
     for (k = 0; k < NCORES; k++) { /* each core's main holders: who the waiters waited behind */
         const KThread* h[3] = {0};
         for (i = 0; i < KTHREAD_MAX; i++) {
@@ -402,6 +410,32 @@ u64 kernel_thread_name(u32 ix, char* out, int n) {
     if (!sdk_name(t, out, n)) snprintf(out, (size_t)n, "%s", t->name);
     return t->id;
 }
+/* each emulated core: its holder, with the holder's poll flag and how long it held the core, and its waiters. Read
+   without core_lk, as the threads are */
+static void dump_cores(void) {
+    if (!g_settings.emulated_cores) return;
+    u64 now = plat_ns();
+    for (int k = 0; k < NCORES; k++) {
+        u32 h = __atomic_load_n(&g_hle.thread.core_owner[k], __ATOMIC_RELAXED);
+        const KThread* o = kt_at(h);
+        char line[400];
+        int len = 0;
+        if (o) {
+            u64 since = g_host.thread.core_since[k];
+            len = snprintf(line, sizeof line, "  core %d: held by thread %llu (prio %d, on_core %d, poll %u) for %llu ms",
+                           k, (unsigned long long)o->id, o->prio, o->on_core,
+                           __atomic_load_n(&o->cpu.poll, __ATOMIC_RELAXED),
+                           (unsigned long long)(now > since ? (now - since) / 1000000u : 0));
+        } else
+            len = snprintf(line, sizeof line, "  core %d: free", k);
+        len += snprintf(line + len, sizeof line - (size_t)len, ", best waiter prio %d, waiters:", g_hle.thread.core_best[k]);
+        int n = 0;
+        for (const KThread* w = kt_at(__atomic_load_n(&g_hle.thread.core_wait[k], __ATOMIC_RELAXED));
+             w && n < KTHREAD_MAX && len < (int)sizeof line - 24; w = kt_at(w->core_next), n++)
+            len += snprintf(line + len, sizeof line - (size_t)len, " %llu", (unsigned long long)w->id);
+        LOG("%s%s\n", line, n ? "" : " none");
+    }
+}
 /* Read without g_klock or the pool's lock: the dump is how a hang is diagnosed, and a hang may be a thread that keeps
    the lock. The values can be a moment stale or mid-change (a slot freed or taken meanwhile), which is all a dump
    needs. Mutex owners are named from the thread a waiter recorded, which needs no handle lookup: the waiter holds a
@@ -428,6 +462,13 @@ void kernel_dump_threads(void) {
             g_hle.debug.sleeps[i].n = 0;
         }
         if (t->state == 0) continue;
+        if (t->on_core >= 0 && !t->in_svc) { /* in game code: how long since it last let the kernel see it */
+            u64 now = plat_ns(), left = __atomic_load_n(&g_host.thread.svc_ns[i], __ATOMIC_RELAXED);
+            LOG("    out of an SVC for %llu ms, poll %u, %u polls, host thread %u\n",
+                (unsigned long long)(left && now > left ? (now - left) / 1000000u : 0),
+                __atomic_load_n(&t->cpu.poll, __ATOMIC_RELAXED), __atomic_load_n(&g_host.thread.polls[i], __ATOMIC_RELAXED),
+                __atomic_load_n(&g_host.thread.host_tid[i], __ATOMIC_RELAXED));
+        }
         pc = wide ? t->cpu.pc : t->arm.r[15];
         lr = wide ? t->cpu.x[30] : t->arm.r[14];
         sp = wide ? t->cpu.x[31] : t->arm.r[13];
@@ -453,5 +494,6 @@ void kernel_dump_threads(void) {
         if (t->sleep_n - g_hle.debug.sleeps[i].n >= 100) dump_sleeps(t, t->sleep_n - g_hle.debug.sleeps[i].n);
         g_hle.debug.sleeps[i].n = t->sleep_n;
     }
+    dump_cores();
     dump_rings(1);
 }

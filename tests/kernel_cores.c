@@ -101,6 +101,11 @@ int plat_address_space(u64* mapped, u64* largest_free) {
     return 1;
 }
 void plat_thread_exit(void) { pthread_exit(NULL); }
+/* kernel_core_watch's question: unknown here */
+void plat_thread_where(u32 tid, char* out, size_t n) {
+    (void)tid;
+    snprintf(out, n, "?");
+}
 /* a game pause's clock, and its report of a thread that didn't stop */
 u64 plat_ns(void) {
     struct timespec t;
@@ -266,6 +271,12 @@ static void* game_body(void* p) {
         if (g->mode == 0 && __atomic_load_n(&g->t->cpu.poll, __ATOMIC_RELAXED)) core_poll(g->t);
     }
     core_leave(g->t);
+    return NULL;
+}
+/* a thread's next poll in game code (a backward branch with its poll set) */
+static void* poll_body(void* p) {
+    snx_kct_who = (int)((KThread*)p - snx_kct_thread);
+    core_poll((KThread*)p);
     return NULL;
 }
 typedef struct {
@@ -709,6 +720,54 @@ int main(void) {
         CHECK(snx_kct_woken[1] == was[1] + 1 && snx_kct_woken[16] == was[16] + 1 && snx_kct_woken[17] == was[17] + 1,
               "the rest at the unlock");
     }
+    /* A holder blocked in a fault on memory the GPU holds lets go of its core while the page lands, which can take
+       seconds: the core's waiter of better priority runs at once, as on the console, where the access takes no time.
+       Back in game code, the faulting thread takes a core again at its next poll, here behind that waiter */
+    reset();
+    a = thread(2, 44, 0, 1), w = thread(3, 31, 0, 1);
+    a->o.type = KO_THREAD; /* a live thread: a slot whose thread exited keeps its host thread's number */
+    a->state = 1;
+    g_host.thread.host_tid[2] = 4242;
+    g_host.thread.host_tid[1] = 4242; /* an exited thread's slot, whose number the system gave again */
+    core_enter(a);
+    pthread_create(&h, NULL, enter_body, w);
+    CHECK(settle(w, -2) == -2, "31 waits for core 0 behind 44: on core %d", on_core(w));
+    kthread_fault_lend(4242);
+    pthread_join(h, NULL);
+    CHECK(on_core(w) == 0 && on_core(a) == -1 && __atomic_load_n(&a->cpu.poll, __ATOMIC_RELAXED) == 1,
+          "the fault let core 0 go: 31 on %d, 44 on %d with poll %u", on_core(w), on_core(a), a->cpu.poll);
+    pthread_create(&h, NULL, poll_body, a);
+    CHECK(settle(a, -2) == -2 && a->core == 0, "44's poll waits behind 31: on core %d", on_core(a));
+    core_leave(w);
+    pthread_join(h, NULL);
+    CHECK(on_core(a) == 0 && !a->cpu.poll, "44 back on core %d, poll %u", on_core(a), a->cpu.poll);
+    core_leave(a);
+    /* with an idle core in its mask, its poll takes that one; a thread of the runtime's own, or one that holds no
+       core, changes nothing */
+    reset();
+    a->o.type = 0;
+    g_host.thread.host_tid[1] = g_host.thread.host_tid[2] = 0;
+    a = thread(0, 44, 0, 3), w = thread(3, 31, 0, 1);
+    a->o.type = KO_THREAD;
+    a->state = 1;
+    g_host.thread.host_tid[0] = 4242;
+    core_enter(a);
+    pthread_create(&h, NULL, enter_body, w);
+    CHECK(settle(w, -2) == -2, "31 waits for core 0: on core %d", on_core(w));
+    kthread_fault_lend(4343);
+    CHECK(on_core(a) == 0 && on_core(w) == -2, "another thread's fault moved core 0: 44 on %d, 31 on %d", on_core(a),
+          on_core(w));
+    kthread_fault_lend(4242);
+    pthread_join(h, NULL);
+    core_poll(a);
+    CHECK(on_core(a) == 1 && on_core(w) == 0, "44 took idle core %d, 31 is on %d", on_core(a), on_core(w));
+    core_leave(w);
+    core_leave(a);
+    kthread_fault_lend(4242);
+    CHECK(on_core(a) == -1 && !a->cpu.poll, "a fault off its core: on %d, poll %u", on_core(a), a->cpu.poll);
+    g_host.thread.host_tid[0] = 0;
+    a->o.type = 0;
+
     /* The Ounce's NPDM can permit six cores. Its last guest core gets its own share of host CPUs. */
     host(twelve, 12);
     g_hle.svcmem.core_mask = 0x3f;

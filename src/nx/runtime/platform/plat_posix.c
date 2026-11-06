@@ -785,6 +785,7 @@ static int wp_reserve(u64 n) {
    again if its page is still held. The callback lands the page through the mirror and calls plat_trap_continue, which
    opens the pages. Nothing but atomics, mprotect and futexes runs in the handler */
 static int g_trap_signal; /* plat_trap_* are this backend's */
+static void (*g_trap_told)(u32 tid); /* plat_trap_waiting's */
 static void (*g_trap_cb)(u8* p, int write, u32 tid);
 #define TRAP_RING 256u
 typedef struct {
@@ -859,6 +860,8 @@ static void* trap_signal_thread(void* arg) {
             got = *m;
             __atomic_store_n(&m->seq, g_trap_tail + TRAP_RING, __ATOMIC_RELEASE);
             g_trap_tail++;
+            void (*told)(u32) = __atomic_load_n(&g_trap_told, __ATOMIC_ACQUIRE);
+            if (told) told(got.tid);
             g_trap_cb(got.p, got.write, got.tid);
         }
         trap_futex_wait(&g_trap_posted, seen);
@@ -1634,6 +1637,31 @@ u32 plat_tid(void) {
     return (u32)(uintptr_t)pthread_self();
 #endif
 }
+void plat_thread_where(u32 tid, char* out, size_t n) {
+    snprintf(out, n, "?");
+#if defined(__linux__)
+    char path[64], buf[256], chan[64] = "";
+    ssize_t len;
+    int fd;
+    snprintf(path, sizeof path, "/proc/self/task/%u/stat", (unsigned)tid);
+    if ((fd = open(path, O_RDONLY | O_CLOEXEC)) < 0) return;
+    len = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (len <= 0) return;
+    buf[len] = 0;
+    const char* state = strrchr(buf, ')'); /* after the name, which may hold anything */
+    if (!state || state[1] != ' ' || !state[2]) return;
+    snprintf(path, sizeof path, "/proc/self/task/%u/wchan", (unsigned)tid);
+    if ((fd = open(path, O_RDONLY | O_CLOEXEC)) >= 0) {
+        len = read(fd, chan, sizeof chan - 1);
+        close(fd);
+        chan[len > 0 ? len : 0] = 0;
+    }
+    snprintf(out, n, "%c%s%s", state[2], chan[0] && strcmp(chan, "0") ? " " : "", strcmp(chan, "0") ? chan : "");
+#else
+    (void)tid;
+#endif
+}
 /* /proc's view of the thread: running (R) is no wait, and a sleep's wait channel names the kernel function it sleeps
    in, handle_userfault for a trap. "0" or nothing when the kernel won't name it (no kallsyms): unknown */
 int plat_thread_in_fault(u32 tid) {
@@ -1816,9 +1844,23 @@ u8* plat_alias_mirror(void) {
     return (u8*)v;
 }
 
-/* ---- traps: userfaultfd minor faults on the pool's pages, answered on a thread of their own */
+void plat_trap_waiting(void (*waiting)(u32 tid)) { __atomic_store_n(&g_trap_told, waiting, __ATOMIC_RELEASE); }
+
+/* ---- traps: userfaultfd minor faults on the pool's pages, answered on a thread of their own. A reader takes each
+   fault from the userfaultfd as it comes, tells of its thread (plat_trap_waiting), and queues it for the landing
+   thread: a landing can wait for the GPU for seconds, and a fault read only after it kept its thread's emulated core
+   all that time */
 #if SNX_UFFD_MINOR
+#define TRAP_QUEUE 1024u
 static void (*g_trap_fault)(u8* p, int write, u32 tid);
+static struct {
+    u8* p;
+    u32 tid;
+    int write;
+} g_trap_queue[TRAP_QUEUE];
+static u32 g_trap_qhead, g_trap_qtail; /* under g_trap_qlk: the reader adds at head, the landing thread takes at tail */
+static pthread_mutex_t g_trap_qlk = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_trap_qmore = PTHREAD_COND_INITIALIZER, g_trap_qroom = PTHREAD_COND_INITIALIZER;
 static void* trap_thread(void* arg) {
     struct uffd_msg msg[16];
     u64 page = (u64)sysconf(_SC_PAGESIZE);
@@ -1833,11 +1875,35 @@ static void* trap_thread(void* arg) {
         if (poll(&pf, 1, -1) <= 0) continue;
         n = read(g_uffd, msg, sizeof msg);
         if (n <= 0) continue;
-        for (i = 0; i < (int)(n / (ssize_t)sizeof *msg); i++)
-            if (msg[i].event == UFFD_EVENT_PAGEFAULT)
-                g_trap_fault((u8*)(uintptr_t)(msg[i].arg.pagefault.address & ~(page - 1)),
-                             (msg[i].arg.pagefault.flags & UFFD_PAGEFAULT_FLAG_WRITE) != 0,
-                             msg[i].arg.pagefault.feat.ptid);
+        for (i = 0; i < (int)(n / (ssize_t)sizeof *msg); i++) {
+            if (msg[i].event != UFFD_EVENT_PAGEFAULT) continue;
+            u32 tid = msg[i].arg.pagefault.feat.ptid;
+            void (*told)(u32) = __atomic_load_n(&g_trap_told, __ATOMIC_ACQUIRE);
+            if (told) told(tid);
+            pthread_mutex_lock(&g_trap_qlk);
+            while (g_trap_qhead - g_trap_qtail == TRAP_QUEUE) pthread_cond_wait(&g_trap_qroom, &g_trap_qlk);
+            g_trap_queue[g_trap_qhead % TRAP_QUEUE].p = (u8*)(uintptr_t)(msg[i].arg.pagefault.address & ~(page - 1));
+            g_trap_queue[g_trap_qhead % TRAP_QUEUE].write = (msg[i].arg.pagefault.flags & UFFD_PAGEFAULT_FLAG_WRITE) != 0;
+            g_trap_queue[g_trap_qhead % TRAP_QUEUE].tid = tid;
+            g_trap_qhead++;
+            pthread_cond_signal(&g_trap_qmore);
+            pthread_mutex_unlock(&g_trap_qlk);
+        }
+    }
+    return NULL;
+}
+static void* trap_land_thread(void* arg) {
+    (void)arg;
+    for (;;) {
+        pthread_mutex_lock(&g_trap_qlk);
+        while (g_trap_qhead == g_trap_qtail) pthread_cond_wait(&g_trap_qmore, &g_trap_qlk);
+        u8* p = g_trap_queue[g_trap_qtail % TRAP_QUEUE].p;
+        int write = g_trap_queue[g_trap_qtail % TRAP_QUEUE].write;
+        u32 tid = g_trap_queue[g_trap_qtail % TRAP_QUEUE].tid;
+        g_trap_qtail++;
+        pthread_cond_signal(&g_trap_qroom);
+        pthread_mutex_unlock(&g_trap_qlk);
+        g_trap_fault(p, write, tid);
     }
     return NULL;
 }
@@ -1903,9 +1969,9 @@ int plat_trap_init(void (*fault)(u8* p, int write, u32 tid)) {
     g_trap_fault = fault;
     pthread_attr_init(&a);
     pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
-    if (pthread_create(&t, &a, trap_thread, NULL)) {
+    if (pthread_create(&t, &a, trap_land_thread, NULL) || pthread_create(&t, &a, trap_thread, NULL)) {
         pthread_attr_destroy(&a);
-        return -1;
+        return -1; /* a landing thread without its reader waits for nothing */
     }
     pthread_attr_destroy(&a);
     return 0;
