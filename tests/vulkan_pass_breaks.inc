@@ -5,8 +5,9 @@
    - a range that held still for three checks gets a buffer of its own (buffer.c make_own) at the second draw of a
      pass: a copy of the CPU's bytes into a buffer nothing before it reads, so it need not end the pass
    - a range two copy engine results hold, read by the second draw (buffer.c buf_get_owned): written in an earlier
-     submission, the copy of them need not end the pass either; written in this one, it has to come after their
-     writes, and the pass ends there
+     submission, the copy of them need not end the pass either, whether the test submitted them or the first draw's
+     frame check did after a millisecond of recording; written in this one, it has to come after their writes, and
+     the pass ends there
    - a write of the guest between two draws over a big buffer of its own, which takes the written pages (patch_own):
      the first draw reads the old bytes and the second the new, so that copy stays between them and the pass ends */
 #define PB_GVA   0x4f4000000ull
@@ -82,10 +83,11 @@ static int pb_halves(u64 target, char half[2]) {
     return 0;
 }
 /* a frame: a new epoch (the guest's submission), the target cleared, red over its left half and the colors at second
-   over its right half; the halves' colors, and the passes the two draws took. 0 passes when a submit came between the
-   draws, which ends the pass whatever they do: the GPU thread's own after a millisecond of recording (cmd.c
-   frame_check), which a slow driver or a validation layer reaches */
-static int pb_frame(GpuChannel* ch, u64 target, u64 red, u64 second, u64* begun, char half[2]) {
+   over its right half; the halves' colors, the passes the two draws took, and the submission the first was recorded
+   in (first, unless NULL). 0 passes when a submit came between the draws, which ends the pass whatever they do: the
+   GPU thread's own after a millisecond of recording (cmd.c frame_check), which a slow driver or a validation layer
+   reaches */
+static int pb_frame(GpuChannel* ch, u64 target, u64 red, u64 second, u64* begun, u64* first, char half[2]) {
     g_renderer->mem_may_have_changed();
     rt_clear(ch, target, 4, 4, 0, 1);
     vk_lock();
@@ -93,6 +95,7 @@ static int pb_frame(GpuChannel* ch, u64 target, u64 red, u64 second, u64* begun,
     pb_stream(ch, red, PB_LEN);
     pb_draw(ch, PB_LEFT);
     u64 submit = vk_submit_number();
+    if (first) *first = submit;
     pb_stream(ch, second, PB_LEN);
     pb_draw(ch, PB_RIGHT);
     *begun = vk_submit_number() == submit ? g_vk_passes - passes : 0;
@@ -113,9 +116,9 @@ static int pb_own_case(GpuChannel* ch, u64 target, u64 red, u64 green) {
     u32 own0, own1;
     CHECK(!pb_colors(red, PB_RED, 0, PB_VERTS) && !pb_colors(green, PB_GREEN, 0, PB_VERTS));
     /* the red range and the positions their own buffers first: red over both halves */
-    for (u32 f = 0; f < 3; f++) CHECK(!pb_frame(ch, target, red, red, &begun, half));
+    for (u32 f = 0; f < 3; f++) CHECK(!pb_frame(ch, target, red, red, &begun, NULL, half));
     for (u32 f = 0; f < 2; f++) { /* the green range's first two checks: read from the frame's staging */
-        CHECK(!pb_frame(ch, target, red, green, &begun, half));
+        CHECK(!pb_frame(ch, target, red, green, &begun, NULL, half));
         if (half[0] != 'r' || half[1] != 'g')
             fprintf(stderr, "own buffer, check %u from staging: left %c, right %c (r, g wanted)\n", f + 1, half[0],
                     half[1]);
@@ -124,7 +127,7 @@ static int pb_own_case(GpuChannel* ch, u64 target, u64 red, u64 green) {
     vk_lock();
     vk_buf_stats(&own0, &bytes0);
     vk_unlock();
-    CHECK(!pb_frame(ch, target, red, green, &begun, half));
+    CHECK(!pb_frame(ch, target, red, green, &begun, NULL, half));
     vk_lock();
     vk_buf_stats(&own1, &bytes1);
     vk_unlock();
@@ -138,13 +141,17 @@ static int pb_own_case(GpuChannel* ch, u64 target, u64 red, u64 green) {
     return 0;
 }
 
+/* how pb_owners_case's copies reach the GPU: with the draws' submission, submitted before the draws, or sent by the
+   first draw's frame check after a wait of over a millisecond of recording (cmd.c frame_check) */
+enum { PB_WITH_DRAWS, PB_SUBMITTED, PB_FRAME_CHECK };
+#define PB_WAIT_NS 1500000 /* over the millisecond of recording a submission holds at most (cmd.c SUBMIT_EVERY_NS) */
 /* Green colors a copy engine wrote in two halves, two owners the GPU holds, drawn over the right half after the red
-   draw began the pass. apart: the copies were submitted before the draws, so the copy of their bytes for the draw can
-   run before the pass; otherwise it follows them, and the pass ends before the green draw */
-static int pb_owners_case(GpuChannel* ch, u64 target, u64 red, u64 staged, u64 copy, u64 copy_cpu, int apart) {
+   draw began the pass. Copies submitted before the draws were recorded, whatever submitted them, let the copy of their
+   bytes for the draw run before the pass; otherwise it follows them, and the pass ends before the green draw */
+static int pb_owners_case(GpuChannel* ch, u64 target, u64 red, u64 staged, u64 copy, u64 copy_cpu, int how) {
     GpuDmaOp o;
     char half[2];
-    u64 begun = 0;
+    u64 begun = 0, copied, first;
     CHECK(!pb_colors(staged, PB_GREEN, 0, PB_VERTS));
     vk_lock();
     int inplace = vk_uma_held(copy_cpu, PB_LEN), owned = own_traps() && !inplace;
@@ -158,25 +165,41 @@ static int pb_owners_case(GpuChannel* ch, u64 target, u64 red, u64 staged, u64 c
         CHECK(g_renderer->dma_copy(&o));
     }
     if (owned) CHECK(own_lookup(copy_cpu, PB_LEN, NULL, 0) == 2);
-    if (apart) {
-        vk_lock();
-        vk_submit_recorded();
-        vk_unlock();
-    }
+    vk_lock();
+    copied = vk_submit_number(); /* the submission the copies were recorded in */
+    if (how == PB_SUBMITTED) vk_submit_recorded();
+    vk_unlock();
+    if (how == PB_FRAME_CHECK) plat_sleep_ns(PB_WAIT_NS);
     u64 landings = own_landings();
-    CHECK(!pb_frame(ch, target, red, copy, &begun, half));
-    u64 want = owned && !apart ? 2 : 1;
+    CHECK(!pb_frame(ch, target, red, copy, &begun, &first, half));
+    /* the first draw's frame check sends the copies without the wait too, where a slow driver or a validation layer
+       takes a millisecond from the last submit to it */
+    int before = first != copied;
+    if (owned && how == PB_SUBMITTED && !before)
+        fprintf(stderr,
+                "two owners: the copies' submission %llu was still recording at the first draw, after "
+                "vk_submit_recorded\n",
+                (unsigned long long)copied);
+    if (owned && how == PB_FRAME_CHECK && !before)
+        fprintf(stderr,
+                "two owners: the copies' submission %llu was still recording at the first draw, after a wait "
+                "of %u us (cmd.c frame_check submits after 1000)\n",
+                (unsigned long long)copied, PB_WAIT_NS / 1000);
+    CHECK(!owned || how == PB_WITH_DRAWS || before);
+    u64 want = owned && !before ? 2 : 1;
     if (half[0] != 'r' || half[1] != 'g' || (owned && begun && begun != want))
         fprintf(stderr, "two owners%s: left %c, right %c (r, g wanted), %llu passes (%llu wanted)\n",
-                apart ? " submitted before" : "", half[0], half[1], (unsigned long long)begun,
+                before ? " submitted before the draws" : "", half[0], half[1], (unsigned long long)begun,
                 (unsigned long long)want);
     CHECK(half[0] == 'r' && half[1] == 'g');
     if (owned) CHECK((!begun || begun == want) && own_landings() == landings);
     printf("pass breaks: a range two copy engine results hold, %s, read %s%s\n",
-           apart ? "written in an earlier submission" : "written in this one",
-           !owned  ? (inplace ? "in guest memory" : "landed (no traps here)")
-           : apart ? "inside the pass"
-                   : "after their writes, in a pass of its own",
+           how == PB_SUBMITTED ? "written in an earlier submission"
+           : before            ? "written in a submission the first draw's frame check sent"
+                               : "written in this one",
+           !owned   ? (inplace ? "in guest memory" : "landed (no traps here)")
+           : before ? "inside the pass"
+                    : "after their writes, in a pass of its own",
            begun ? "" : " (a submit between the draws: their passes not counted)");
     return 0;
 }
@@ -311,8 +334,12 @@ static int check_pass_breaks(void) {
     GpuChannel* ch = pb_channel();
     CHECK(ch);
     CHECK(!pb_own_case(ch, target, PB_GVA + 0x13000, PB_GVA + 0x14000));
-    CHECK(!pb_owners_case(ch, target, PB_GVA + 0x13000, PB_GVA + 0x17000, PB_GVA + 0x15000, PB_CPU + 0x15000, 1));
-    CHECK(!pb_owners_case(ch, target, PB_GVA + 0x13000, PB_GVA + 0x17000, PB_GVA + 0x16000, PB_CPU + 0x16000, 0));
+    CHECK(!pb_owners_case(ch, target, PB_GVA + 0x13000, PB_GVA + 0x17000, PB_GVA + 0x15000, PB_CPU + 0x15000,
+                          PB_SUBMITTED));
+    CHECK(!pb_owners_case(ch, target, PB_GVA + 0x13000, PB_GVA + 0x17000, PB_GVA + 0x16000, PB_CPU + 0x16000,
+                          PB_WITH_DRAWS));
+    CHECK(!pb_owners_case(ch, target, PB_GVA + 0x13000, PB_GVA + 0x17000, PB_GVA + 0x1A000, PB_CPU + 0x1A000,
+                          PB_FRAME_CHECK));
     CHECK(!pb_patch_case(ch, target));
     vk_lock();
     vk_finish();
