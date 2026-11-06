@@ -855,7 +855,8 @@ int vk_blit2d_filter(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, i
    does; the move takes rows y0 to y0 + rows of slices z0 to z0 + slices. Its linear rows are lin_pitch bytes apart
    (a multiple of 16, at least row_bytes rounded up to 16: whole 16 byte pieces move, so a row's last one carries
    padding along), a slice's rows after another's. gobs_x: the GOBs across a row of blocks when there are more than
-   row_bytes takes (a sparse texture's rows of whole tiles), else 0 */
+   row_bytes takes (a sparse texture's rows of whole tiles, or some of a row's GOB columns, the move's bl_at then
+   at the first one's block), else 0 */
 typedef struct {
     u32 row_bytes, height, bh, bd;
     u32 y0, rows, z0, slices;
@@ -1015,7 +1016,8 @@ int vk_nvdec_write(const NvdecPic* p);
 void* vk_nvdec_hw_device(void);
 /* dma.c: a launch of the DMA copy engine on the GPU (gpu.h's GpuDmaOp), its destination published: 1 when done, 0
    when it could not be (said, with the bytes it lacked). A launch bigger than one allocation goes in bands of lines.
-   Takes vk_lock. vk_dma_stats: the launches so far, the bands the big ones took, the bytes they read and wrote */
+   Takes vk_lock. vk_dma_stats: the launches so far, the bands the big ones took, and the guest bytes they read and
+   wrote: a pitch linear side's lines, a block linear one's tiles (the blocks of its lines' GOB columns) */
 int vk_dma_copy(const GpuDmaOp* o);
 void vk_dma_stats(u64* copies, u64* bands, u64* bytes);
 /* A transfer that may be more than one buffer can hold (cap: g_vk.alloc_cap, or less), taken in bands of lines: the

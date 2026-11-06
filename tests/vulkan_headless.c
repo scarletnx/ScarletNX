@@ -3143,6 +3143,68 @@ static int check_stream_epoch(void) {
     return 0;
 }
 
+/* A copy into a block linear surface moves its tiles only, the blocks of its lines' GOB columns in each row of blocks:
+   the rest of the surface keeps its bytes and their owner. vk_dma_stats counts what each copy reads and writes. On
+   the DMA test's twins, against the CPU reference, ops one after another from the same bytes; alias[i]: op i writes
+   through a second GPU address of the GPU's twin */
+#define DMA_GA2 0x260000000ull
+static int dma_tiles_case(const char* what, const GpuDmaOp* ops, const int* alias, u32 n, u64 want) {
+    u64 c0, b0, m0, c1, b1, m1;
+    for (int k = 0; k < 2; k++) {
+        u8* t = GP(k ? DMA_B : DMA_A);
+        for (u32 i = 0; i < DMA_SPAN; i++) t[i] = (u8)(i * 37 + (i >> 9) * 11 + 7);
+    }
+    vk_dma_stats(&c0, &b0, &m0);
+    for (u32 i = 0; i < n; i++) {
+        GpuDmaOp g = ops[i], c = ops[i];
+        g.src.addr += DMA_GA, g.dst.addr += alias && alias[i] ? DMA_GA2 : DMA_GA;
+        c.src.addr += DMA_GB, c.dst.addr += DMA_GB;
+        CHECK(g_renderer->dma_copy(&g));
+        dma_copy_ref(&c);
+    }
+    vk_dma_stats(&c1, &b1, &m1);
+    guest_done(DMA_A, DMA_SPAN);
+    if (memcmp(GP(DMA_A), GP(DMA_B), DMA_SPAN) || m1 - m0 != want) {
+        u32 i = 0;
+        while (i < DMA_SPAN && GP(DMA_A)[i] == GP(DMA_B)[i]) i++;
+        fprintf(stderr, "dma tiles, %s: %llu bytes moved, %llu meant; first byte apart %#x of %#x\n", what,
+                (unsigned long long)(m1 - m0), (unsigned long long)want, i, DMA_SPAN);
+        return 1;
+    }
+    return 0;
+}
+static int check_dma_tiles(void) {
+    GpuDmaOp o[3] = {{0}};
+    int alias[3] = {0, 1, 0};
+    gmmu_map(DMA_GA2, DMA_A, DMA_SPAN);
+    /* 64 lines of 256 bytes into (520, 100) of a 2048 byte wide surface of blocks 16 GOBs high (8 KiB): its rows of
+       blocks 0 and 1, GOB columns 8 to 12, 80 KiB of its 512 KiB; the source 63 lines of 272 bytes and one of 256 */
+    o[0].multi = 1;
+    o[0].width = o[0].line_in = o[0].line_out = 256;
+    o[0].lines = 64;
+    o[0].src = pitch_side(0x1000, 272);
+    o[0].dst = bl_side(0x80000, 2048, 256, 4, 520, 100);
+    CHECK(!dma_tiles_case("a small copy into a big surface", o, NULL, 1, 272 * 63 + 256 + 2 * 5 * 8192));
+    /* then 48 lines of 384 bytes into (600, 120), over part of the first's: GOB columns 9 to 15, both rows of blocks */
+    o[1] = o[0];
+    o[1].width = o[1].line_in = o[1].line_out = 384;
+    o[1].lines = 48;
+    o[1].src = pitch_side(0x8000, 400);
+    o[1].dst.ox = 600, o[1].dst.oy = 120;
+    CHECK(!dma_tiles_case("two copies over one destination in order", o, NULL, 2,
+                          272 * 63 + 256 + 2 * 5 * 8192 + 400 * 47 + 384 + 2 * 7 * 8192));
+    /* the second through another GPU address of the same memory, and a third within the surface: 64 lines of 200
+       bytes from (0, 0), the first's tiles beside them, to (1500, 140), GOB columns 23 to 26 of row of blocks 1 */
+    o[2] = o[0];
+    o[2].width = o[2].line_in = o[2].line_out = 200;
+    o[2].src = bl_side(0x80000, 2048, 256, 4, 0, 0);
+    o[2].dst.ox = 1500, o[2].dst.oy = 140;
+    CHECK(!dma_tiles_case("an alias of the destination and a copy within it", o, alias, 3,
+                          272 * 63 + 256 + 2 * 5 * 8192 + 400 * 47 + 384 + 2 * 7 * 8192 + 4 * 8192 + 4 * 8192));
+    puts("dma tiles: a copy moves its tiles only, in order and through aliases");
+    return 0;
+}
+
 /* Render targets over one another in the DMA test's region, as when a program frees an image and makes a bigger one
    there: a red 64 by 64 target 64 KiB into a blue 160 by 128 one cleared after it is its block columns 8 and 9 (pixels
    128 to 159 of every row). The newer one's pixels are on top in a DMA copy of it, and in guest memory once both are
@@ -3892,6 +3954,7 @@ int main(int argc, char** argv) {
     CHECK(!check_sparse_resident_batched());
     CHECK(!check_sparse_pieces_batched());
     CHECK(!check_dma_untracked_source());
+    CHECK(!check_dma_tiles());
     CHECK(!check_blit());
     CHECK(!check_blit_bands());
     CHECK(!check_take_after_writes());

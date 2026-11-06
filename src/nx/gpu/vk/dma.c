@@ -1,11 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The DMA copy engine on the GPU (maxwell/dma.c hands a launch over), its destination kept there
-   (docs/GPU_OWNERSHIP.md). The destination's span is copied as it is now (guest bytes, what the GPU holds of them,
-   render targets drawn over them) into a buffer of its own; the source's span is staged the same way (or from the
-   copy made at submission). Block linear sides are taken apart into rows (blocklinear.comp) and the lines go between
-   rows: copied, or remapped component by component (texconv.comp), exactly a line's bytes each, so what surrounds
-   them keeps its bytes. The destination's rows go back into its layout, and the buffer is published over its span.
+   (docs/GPU_OWNERSHIP.md). The destination's bytes the lines lie in (a pitch linear side's lines, a block linear one's
+   tiles: the blocks of the lines' GOB columns, a run a row of blocks) are copied as they are now (guest bytes, what
+   the GPU holds of them, render targets drawn over them) into a buffer of their own; the source's span is staged the
+   same way (or from the copy made at submission, or the buffer cache's). Block linear sides' GOB columns are taken
+   apart into rows (blocklinear.comp) and the lines go between rows: copied, or remapped component by component
+   (texconv.comp), exactly a line's bytes each, so what surrounds them keeps its bytes. The destination's rows go back
+   into its layout, and the buffer is published over the runs it was read from.
    A launch bigger than one allocation goes in bands of lines, each a copy of its own (dma_bands).
    Under vk_lock, in the frame's command buffer: the semaphore after the copy is the renderer's queued release, which
    comes after it */
@@ -41,7 +43,7 @@ static struct {
     PMutex lk;
     SnapChunk c[SNAP_CHUNKS];
     u64 bytes;                /* held, for the test */
-    u64 copies, bands, moved; /* vk_dma_stats: the launches, the bands of big ones, the bytes read and written */
+    u64 copies, bands, moved; /* vk_dma_stats: the launches, the bands of big ones, the bytes moved (vk.h) */
 } g_dma = {PMUTEX_INIT, {{0}}, 0, 0, 0, 0};
 
 static int snap_chunk_new(SnapChunk* c) {
@@ -115,36 +117,70 @@ static int stage_range(u64 gva, u64 span, VkBuffer* buf, u64* at) {
     return vk_stage_device(span, vk_stage_align(), buf, at) && vk_guest_read_seen(gva, span, *buf, *at);
 }
 
-/* What a copy reads and writes: the source's bytes from src.addr + slo (sspan of them), the destination's from
-   dst.addr + dlo (dlen), each a pitch linear side's lines or a block linear one's rows of blocks the lines lie in, as
-   the rest of a surface keeps its bytes and their owner; and the scratch, the source's rows (block linear) at 0, the
-   destination's (block linear) at at_b and the remapped lines at at_c */
+/* A block linear side's GOB columns its lines' bytes lie in: the first, *x0, and how many, *n. Blocks are a GOB wide,
+   so these are the blocks of each row of blocks the copy reads or writes, its tiles; the rest keep their bytes */
+static void side_cols(const GpuDmaSide* s, u32 bytes, u32* x0, u32* n) {
+    u32 g = (s->wb + 63) / 64, a = s->ox / 64, b = (s->ox + bytes + 63) / 64;
+    if (b > g) b = g;
+    *x0 = a;
+    *n = b > a ? b - a : 0;
+}
+/* a block linear side's bytes a block */
+static u64 block_bytes(const GpuDmaSide* s) { return 512ull << (s->bh + s->bd); }
+
+/* What a copy reads and writes. The source's bytes from src.addr + slo, sspan of them: a pitch linear side's lines,
+   or a block linear one's rows of blocks the lines lie in, of which its GOB columns sx0 to sx0 + sgobs are taken apart
+   (stiles bytes). The destination's: a pitch linear side's lines from dst.addr + dlo, or a block linear one's tiles,
+   the blocks of the lines' GOB columns dx0 to dx0 + dgobs in each of its rows of blocks (drows of them from the one
+   at dlo), druns runs of drun bytes, dstride apart in guest memory and packed one after another in the copy's buffer
+   (dlen bytes): a surface of their own, dgobs GOBs wide, which the rest of the surface and its owner don't take part
+   in. The scratch: the source's rows (block linear) at 0, the destination's (block linear) at at_b and the remapped
+   lines at at_c */
 typedef struct {
     u32 sv, dv; /* the lines in each side: a block linear side's rows past its surface aren't */
-    u64 slo, sspan, dlo, dlen, at_b, at_c, scratch;
+    u32 sx0, sgobs, dx0, dgobs, drows, druns;
+    u64 slo, sspan, stiles, dlo, dlen, drun, dstride, at_b, at_c, scratch;
 } DmaNeeds;
 static DmaNeeds dma_needs(const GpuDmaOp* o) {
     DmaNeeds n = {0};
-    u32 lines = o->lines, pa = (u32)up(o->src.wb, 16), pb = (u32)up(o->dst.wb, 16), pc = (u32)up(o->line_out, 4);
+    u32 lines = o->lines, pc = (u32)up(o->line_out, 4);
     u64 hi;
     n.sv = o->src.bl ? side_rows(&o->src, lines) : lines;
     n.dv = o->dst.bl ? side_rows(&o->dst, lines) : lines;
     if (!o->fill && !o->src.bl)
         n.sspan = (u64)o->src.pitch * (lines - 1) + o->line_in;
-    else if (!o->fill && n.sv) {
-        VkBlMove m = {o->src.wb, o->src.h, o->src.bh, o->src.bd, o->src.oy, n.sv, o->src.z, 1, pa};
-        vk_bl_range(&m, &n.slo, &hi);
-        n.sspan = hi - n.slo;
+    else if (!o->fill) { /* its columns even with no line in the surface: those read as zeros, as wide */
+        side_cols(&o->src, o->line_in, &n.sx0, &n.sgobs);
+        if (n.sv) {
+            VkBlMove m = {o->src.wb, o->src.h, o->src.bh, o->src.bd, o->src.oy, n.sv, o->src.z, 1, 16};
+            u64 row = (u64)((o->src.wb + 63) / 64) * block_bytes(&o->src);
+            vk_bl_range(&m, &n.slo, &hi);
+            n.sspan = hi - n.slo;
+            n.stiles = n.sspan / row * n.sgobs * block_bytes(&o->src);
+        }
     }
-    if (!o->dst.bl)
-        n.dlen = (u64)o->dst.pitch * (lines - 1) + o->line_out;
-    else if (n.dv) {
-        VkBlMove m = {o->dst.wb, o->dst.h, o->dst.bh, o->dst.bd, o->dst.oy, n.dv, o->dst.z, 1, pb};
+    if (!o->dst.bl) {
+        n.dlen = n.drun = (u64)o->dst.pitch * (lines - 1) + o->line_out;
+        n.druns = 1;
+    } else if (n.dv) {
+        VkBlMove m = {o->dst.wb, o->dst.h, o->dst.bh, o->dst.bd, o->dst.oy, n.dv, o->dst.z, 1, 16};
+        u32 g = (o->dst.wb + 63) / 64;
+        u64 bb = block_bytes(&o->dst);
         vk_bl_range(&m, &n.dlo, &hi);
-        n.dlen = hi - n.dlo;
+        side_cols(&o->dst, o->line_out, &n.dx0, &n.dgobs);
+        n.dstride = (u64)g * bb;
+        n.drows = (u32)((hi - n.dlo) / n.dstride);
+        n.dlo += (u64)n.dx0 * bb;
+        n.drun = (u64)n.dgobs * bb;
+        n.druns = n.drows;
+        if (n.dgobs == g) { /* whole rows of blocks: one run */
+            n.drun *= n.drows;
+            n.druns = 1;
+        }
+        n.dlen = n.drun * n.druns;
     }
-    n.at_b = up(o->src.bl ? (u64)pa * lines : 0, 16);
-    n.at_c = n.at_b + up(o->dst.bl ? (u64)pb * lines : 0, 16);
+    n.at_b = up(o->src.bl ? (u64)n.sgobs * 64 * lines : 0, 16);
+    n.at_c = n.at_b + up(o->dst.bl ? (u64)n.dgobs * 64 * lines : 0, 16);
     n.scratch = n.at_c + (o->remap && (o->fill || o->shuffle) ? (u64)pc * lines : 0) + 16;
     return n;
 }
@@ -166,14 +202,16 @@ static int dma_fail(const GpuDmaOp* o, const char* what, u64 bytes) {
 /* o's lines as need says; a pitch linear source made at submission read from snap_skip bytes into its copy */
 static int dma(const GpuDmaOp* o, const DmaNeeds* need, u64 snap_skip) {
     u32 lines = o->lines, sv = need->sv, dv = need->dv;
-    u32 pa = (u32)up(o->src.wb, 16), pb = (u32)up(o->dst.wb, 16), pc = (u32)up(o->line_out, 4);
+    u32 pa = need->sgobs * 64, pb = need->dgobs * 64, pc = (u32)up(o->line_out, 4);
     int remap = o->remap && (o->fill || o->shuffle);
-    u64 at_a = 0, at_b = need->at_b, at_c = need->at_c, sspan = need->sspan, dlo = need->dlo, dlen = need->dlen;
+    u64 at_a = 0, at_b = need->at_b, at_c = need->at_c, sspan = need->sspan, dlen = need->dlen;
     u64 cap, sat = 0;
     VkBuffer sb = VK_NULL_HANDLE, scr;
     VkCommandBuffer cb;
     VkOwnRes* d;
-    VkBlMove md = {o->dst.wb, o->dst.h, o->dst.bh, o->dst.bd, o->dst.oy, dv, o->dst.z, 1, pb};
+    /* the destination's tiles as a surface of their own: drows rows of blocks, the lines from the first one's top */
+    u32 dsh = 3 + o->dst.bh, dy = o->dst.oy & ((1u << dsh) - 1), dz = o->dst.z & ((1u << o->dst.bd) - 1);
+    VkBlMove md = {pb, need->drows << dsh, o->dst.bh, o->dst.bd, dy, dv, dz, 1, pb};
     if (o->dst.bl && !dv) return 1; /* every line past the surface: nothing lands */
     vk_render_end();
     if (!(scr = vk_bl_scratch(need->scratch, &cap))) return dma_fail(o, "found no scratch buffer of", need->scratch);
@@ -197,23 +235,26 @@ static int dma(const GpuDmaOp* o, const DmaNeeds* need, u64 snap_skip) {
             got = stage_range(sgva, sspan, &sb, &sat);
         if (!got) return dma_fail(o, "could not stage its source's", sspan);
     }
-    /* those bytes as they are, read straight into the buffer that becomes their owner */
+    /* those bytes as they are, read straight into the buffer that becomes their owner, run by run */
     d = vk_own_res_new(dlen);
-    if (!d || !vk_guest_read_seen(o->dst.addr + dlo, dlen, d->buf, 0)) {
-        if (d) vk_own_res_unref(d);
-        return dma_fail(o, "could not read its destination's", dlen);
-    }
+    for (u32 r = 0; d && r < need->druns; r++)
+        if (!vk_guest_read_seen(o->dst.addr + need->dlo + r * need->dstride, need->drun, d->buf, r * need->drun)) {
+            vk_own_res_unref(d);
+            d = NULL;
+        }
+    if (!d) return dma_fail(o, "could not read its destination's", dlen);
     cb = vk_cmd();
     vk_all_barrier(cb);
-    /* the lines in: the source's rows (block linear: taken apart, rows past its surface zero) */
+    /* the lines in: the source's rows (block linear: their GOB columns taken apart, rows past its surface zero) */
     VkBuffer ib = sb;
     u64 iat = sat;
     u32 ip = o->src.pitch;
     int ok = 1;
     if (!o->fill && o->src.bl) {
-        VkBlMove m = {o->src.wb, o->src.h, o->src.bh, o->src.bd, o->src.oy, sv, o->src.z, 1, pa};
-        if (sv) ok = vk_bl_move(cb, &m, 0, sb, sat, scr, at_a); /* sb holds its rows of blocks from sat */
-        if (sv < lines) {                                       /* zeros, from staging */
+        VkBlMove m = {pa, o->src.h, o->src.bh, o->src.bd, o->src.oy, sv, o->src.z, 1, pa, (o->src.wb + 63) / 64};
+        /* sb holds its rows of blocks from sat: the columns from the block sx0 of the first */
+        if (sv) ok = vk_bl_move(cb, &m, 0, sb, sat + need->sx0 * block_bytes(&o->src), scr, at_a);
+        if (sv < lines) { /* zeros, from staging */
             VkBuffer zb;
             u64 zat;
             u8* z = vk_stage((u64)pa * (lines - sv), vk_stage_align(), &zb, &zat);
@@ -226,21 +267,21 @@ static int dma(const GpuDmaOp* o, const DmaNeeds* need, u64 snap_skip) {
             rec_CmdCopyBuffer(cb, zb, scr, 1, &c);
         }
         ib = scr;
-        iat = at_a + o->src.ox;
+        iat = at_a + o->src.ox - need->sx0 * 64;
         ip = pa;
     } else if (o->fill) { /* nothing is read: any bound range */
         ib = scr;
         iat = at_c;
         ip = 0;
     }
-    /* where the lines out go: the destination's rows (block linear: taken apart) */
+    /* where the lines out go: the destination's rows (block linear: its tiles taken apart) */
     VkBuffer tb = d->buf;
     u64 tat = 0;
     u32 tp = o->dst.pitch, tl = dv;
     if (o->dst.bl) {
         ok = ok && vk_bl_move(cb, &md, 0, d->buf, 0, scr, at_b);
         tb = scr;
-        tat = at_b + o->dst.ox;
+        tat = at_b + o->dst.ox - need->dx0 * 64;
         tp = pb;
     }
     vk_all_barrier(cb);
@@ -260,23 +301,25 @@ static int dma(const GpuDmaOp* o, const DmaNeeds* need, u64 snap_skip) {
     /* the textures over a block linear destination take its rows now in scratch */
     Surf* hit[8];
     int hits = ok && tl && o->dst.bl && !o->dst.bd && !o->dst.z
-                   ? vk_tex_dma_rows(o->dst.addr, o->dst.wb, o->dst.bh, o->dst.ox, o->dst.oy, o->line_out, dv, scr,
-                                     at_b + o->dst.ox, pb, hit, 8)
+                   ? vk_tex_dma_rows(o->dst.addr, o->dst.wb, o->dst.bh, o->dst.ox, o->dst.oy, o->line_out, dv, scr, tat,
+                                     pb, hit, 8)
                    : 0;
     if (ok) { /* those bytes are the buffer's from now on, run by run of guest memory */
-        u64 off = 0;
-        while (off < dlen) {
-            u64 cpu = 0, n = gmmu_run(o->dst.addr + dlo + off, dlen - off, &cpu);
-            if (!n) { /* an unmapped page takes no write */
-                n = 0x1000 - ((o->dst.addr + dlo + off) & 0xFFF);
-                if (n > dlen - off) n = dlen - off;
-            } else
-                vk_own_publish(cpu, n, d, off);
-            off += n;
+        for (u32 r = 0; r < need->druns; r++) {
+            u64 at = o->dst.addr + need->dlo + r * need->dstride, off = 0;
+            while (off < need->drun) {
+                u64 cpu = 0, n = gmmu_run(at + off, need->drun - off, &cpu);
+                if (!n) { /* an unmapped page takes no write */
+                    n = 0x1000 - ((at + off) & 0xFFF);
+                    if (n > need->drun - off) n = need->drun - off;
+                } else
+                    vk_own_publish(cpu, n, d, r * need->drun + off);
+                off += n;
+            }
+            gpu_mem_written(at, need->drun);
         }
-        gpu_mem_written(o->dst.addr + dlo, dlen);
         vk_tex_dma_seen(hit, hits);
-        g_dma.moved += sspan + dlen;
+        g_dma.moved += (o->src.bl ? need->stiles : sspan) + dlen;
     } else
         dma_fail(o, "takes moves past the device's limits (said above) over", dlen);
     vk_own_res_unref(d);
