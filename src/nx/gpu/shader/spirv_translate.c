@@ -126,6 +126,7 @@ static void advanced_blend_epilogue(DirectCtx* c, const ShaderInfo* si, u32 vec4
 }
 
 int g_shader_texture_arrays;
+u32 g_shader_uniform_cbufs = 18;
 int g_shader_stage_point_size;
 int g_shader_output_layer = 1;
 int g_shader_viewport_index = 3;
@@ -2060,8 +2061,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     }
     for (u32 i = 0; i < 18; i++) {
         if (!cbuf_used[i]) continue;
-        c->cbuf[i] = spv_emit_uniform_vec4_array(&c->emit, vec4_u32, c->u32_type, c->u32_type, shader_vk_set(stage), i,
-                                                 4096, &c->cbuf_pointer[i]);
+        c->cbuf[i] = (i < g_shader_uniform_cbufs ? spv_emit_uniform_vec4_array : spv_emit_readonly_vec4_array)(
+            &c->emit, vec4_u32, c->u32_type, c->u32_type, shader_vk_set(stage), i, 4096, &c->cbuf_pointer[i]);
         interfaces[count++] = c->cbuf[i];
     }
     if (indexed_shadow) {

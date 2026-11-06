@@ -191,6 +191,9 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 /* Device capabilities the renderer sets before translating: */
 /* sampled image arrays indexed per invocation (non-uniform indexing) */
 extern int g_shader_texture_arrays;
+/* constant buffers from this slot up are read-only storage buffers, on a device with fewer uniform buffers a stage
+   than the 18 slots and the renderer's own need (18: none) */
+extern u32 g_shader_uniform_cbufs;
 /* tessellation and geometry programs may write the point size (shaderTessellationAndGeometryPointSize) */
 extern int g_shader_stage_point_size;
 /* vertex and tessellation programs may write the layer (shaderOutputLayer, the ShaderLayer capability); without it

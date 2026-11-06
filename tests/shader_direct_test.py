@@ -163,6 +163,7 @@ def main():
             *(Path(directory) / f'structured_{i}.spv' for i in range(2)),
             Path(directory) / 'fswzadd.spv',
             Path(directory) / 'saturate.spv',
+            Path(directory) / 'cbuf_storage.spv',
             *(Path(directory) / f'surface_op_{i}.spv' for i in range(7)),
             *(Path(directory) / f'legacy_{i}.spv' for i in range(4)),
             *(Path(directory) / f'rect_{i}.spv' for i in range(3)),

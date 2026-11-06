@@ -431,6 +431,10 @@ uint32_t spv_emit_storage_buffer(SpvEmitter* e, uint32_t struct_type, uint32_t s
 uint32_t spv_emit_uniform_vec4_array(SpvEmitter* e, uint32_t vec4_type, uint32_t component_type, uint32_t u32_type,
                                      uint32_t set, uint32_t binding, uint32_t elements,
                                      uint32_t* component_pointer_type);
+/* the same array in a storage buffer that the shader only reads */
+uint32_t spv_emit_readonly_vec4_array(SpvEmitter* e, uint32_t vec4_type, uint32_t component_type, uint32_t u32_type,
+                                      uint32_t set, uint32_t binding, uint32_t elements,
+                                      uint32_t* component_pointer_type);
 uint32_t spv_emit_uniform_component(SpvEmitter* e, uint32_t pointer_type, uint32_t buffer, uint32_t member,
                                     uint32_t element, uint32_t component, uint32_t component_type);
 /* a push constant block: a vec4 at offset, then a 16-byte member of second_type unless it is 0 */

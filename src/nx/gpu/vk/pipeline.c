@@ -218,13 +218,35 @@ int vk_cb_reads_hold(const VkCbReads* reads, VkCbReader read) {
 
 u32 g_vk_buffer_image_slots;
 
+VkDescriptorType vk_cbuf_type(u32 slot) {
+    return slot < g_shader_uniform_cbufs ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+}
+/* Each stage sees one set, with the 18 constant buffer slots and the uniform buffers of the renderer in it, and
+   GeForce devices give a stage 15. The slots past what a device's limits hold are storage buffers, over the same
+   memory, which those devices allow many more of */
+static void cbufs_fit_limits(void) {
+    const VkPhysicalDeviceLimits* l = &g_vk.props.limits;
+    u32 fit = l->maxPerStageDescriptorUniformBuffers, set = l->maxDescriptorSetUniformBuffers / g_vk_stage_sets;
+    /* SNX_VKB_RS and SNX_VKB_FMT, and SNX_VKB_TEXFUNCS and SNX_VKB_TEXMAP with the texture arrays */
+    u32 own = g_shader_texture_arrays ? 4 : 2;
+    if (set < fit) fit = set;
+    fit = fit > own ? fit - own : 0;
+    if (fit >= 18) return;
+    /* a constant buffer's offset meets the uniform buffers' alignment: it must meet the storage buffers' too */
+    if (l->minUniformBufferOffsetAlignment % l->minStorageBufferOffsetAlignment) return;
+    g_shader_uniform_cbufs = fit;
+    LOG("vulkan: this device's limits hold %u of the 18 constant buffers as uniform buffers, the others are storage "
+        "buffers\n",
+        fit);
+}
+
 /* descriptors of each type in one set: the binding ranges in shader.h */
 static VkDescriptorType binding_type(u32 i) {
     if (i == SNX_VKB_SMAP || i == SNX_VKB_CAPTURE) return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     if (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     if (i == SNX_VKB_TEXFUNCS || i == SNX_VKB_TEXMAP) return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     if (i >= SNX_VKB_IMGBUF) return VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
-    return i < SNX_VKB_SSBO  ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+    return i < SNX_VKB_SSBO  ? vk_cbuf_type(i - SNX_VKB_CB)
            : i < SNX_VKB_TEX ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
            : i < SNX_VKB_IMG ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
            : i < SNX_VKB_RS  ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
@@ -284,6 +306,13 @@ void vk_pipeline_init(void) {
                                               VK_SHADER_STAGE_GEOMETRY_BIT};
     /* the tessellation and geometry stages' sets come after the first two, where the device binds that many */
     g_vk_stage_sets = g_vk.props.limits.maxBoundDescriptorSets >= 5 ? 5 : 2;
+    /* A compact array holds the unique handles selected by all indexed tables. */
+    if (g_vk.props.limits.maxPerStageDescriptorSamplers < SH_MAXTEX + 2 * SNX_TEX_ARRAY ||
+        g_vk.props.limits.maxPerStageDescriptorSampledImages < SH_MAXTEX + 2 * SNX_TEX_ARRAY ||
+        g_vk.props.limits.maxDescriptorSetSamplers < 5 * (SH_MAXTEX + 2 * SNX_TEX_ARRAY) ||
+        g_vk.props.limits.maxDescriptorSetSampledImages < 5 * (SH_MAXTEX + 2 * SNX_TEX_ARRAY))
+        g_shader_texture_arrays = 0;
+    cbufs_fit_limits();
     for (int s = 0; s < 5; s++) {
         VkDescriptorSetLayoutBinding b[SNX_VKB_END];
         u32 count = 0;
@@ -299,7 +328,7 @@ void vk_pipeline_init(void) {
         buffer_slots = image_slots;
         if (image_slots > SNX_VKB_RS - SNX_VKB_IMG) image_slots = SNX_VKB_RS - SNX_VKB_IMG;
         buffer_slots -= image_slots;
-        if (buffer_slots > SNX_VKB_CAPTURE - SNX_VKB_IMGBUF) buffer_slots = SNX_VKB_CAPTURE - SNX_VKB_IMGBUF;
+        if (buffer_slots > SNX_VKB_TEXARRAY - SNX_VKB_IMGBUF) buffer_slots = SNX_VKB_TEXARRAY - SNX_VKB_IMGBUF;
         static const int shader_stage[5] = {ST_VS, ST_FS, ST_TCS, ST_TES, ST_GS};
         g_vk.image_slots[shader_stage[s]] = image_slots;
         g_vk.buffer_image_slots[shader_stage[s]] = buffer_slots;
@@ -1771,6 +1800,7 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                   (u32)g_vk.has_conservative,
                   g_vk_stage_sets,
                   g_vk_buffer_image_slots,
+                  g_shader_uniform_cbufs,
                   d->limits.maxPerStageDescriptorStorageImages,
                   d->limits.maxDescriptorSetStorageImages,
                   (u32)g_vk.has_mixed_samples,

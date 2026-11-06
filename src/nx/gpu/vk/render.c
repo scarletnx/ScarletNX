@@ -1986,7 +1986,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         VkBuffer b;
         u64 o;
         if (!cb_get(ds, stage, i, sz, &b, &o)) return VK_NULL_HANDLE;
-        dw_buffer(&d, set, SNX_VKB_CB + i, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, b, o, sz);
+        dw_buffer(&d, set, SNX_VKB_CB + i, vk_cbuf_type((u32)i), b, o, sz);
     }
     int ordered = !(ds->owner & 0x80000000u) || !g_settings.nvn_storage_ordering;
     for (int i = 0; i < s->si.ngbuf && i < 16; i++) {
