@@ -53,17 +53,18 @@
 typedef struct {
     u64 hash, qh, qh_a;
     u32 stage, clen, clen_a, ncbr, nspv, flags;
-    u32 mask[24];
+    u32 mask[26];
     ShaderInfo si;
 } PfShader;
 /* a source record: this, then ncbr constant buffer reads ({idx, off, ok, v}), ncode bytes of the program as the
    translator read it (both parts merged, for VertexA and VertexB) and, with PF_SRC_XFB, the ShXfb it was translated
    with. Of a build-independent layout: no ShaderInfo, whose layout the build decides */
 #define PF_SRC_XFB 1u
+#define PF_SRC_TESS_PASS 2u /* six little-endian words describe a generated control program */
 typedef struct {
     u64 hash, qh, qh_a;
     u32 stage, clen, clen_a, ncbr, ncode, flags;
-    u32 mask[24];
+    u32 mask[26];
 } PfSource;
 /* a pipeline record: this, then keylen bytes of the PipeKey with its module handles zeroed. sh: the shaders' record
    numbers (from 1; 0 for none) in the order vs, tcs, tes, gs, fs, and check: those records' checks */

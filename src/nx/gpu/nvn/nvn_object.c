@@ -1620,8 +1620,7 @@ static void xfb_of(u64 control, u64 serial) {
     e.serial = serial;
     for (u32 i = 0; i < 4; i++) {
         u32 stride = gr16(control + 0x6dc + 2 * (u64)i), groups = c[0x6e8 + i], n = 0;
-        if (c[0x6e4 + i])
-            LOG_LIMIT(1, "nvn: transform feedback into stream %u is captured as stream 0\n", c[0x6e4 + i]);
+        e.x.stream[i] = c[0x6e4 + i];
         e.x.stride[i] = (u16)stride;
         e.x.count[i] = (u8)(stride / 4 > 128 ? 128 : stride / 4);
         for (u32 j = 0; j < groups && j < 0x80; j++) {
@@ -2199,9 +2198,8 @@ void nvn_ChannelMaskStateSetChannelMask(CPU* c, u64 s, i32 i, int r, int g, int 
 }
 
 void nvn_MultisampleStateSetDefaults(CPU* c, u64 s) {
-    NvnMultisample o = {0};
+    NvnMultisample o = nvn_multisample_defaults();
     (void)c;
-    o.enable = 1;
     memcpy(GP(s), &o, sizeof o);
 }
 void nvn_MultisampleStateSetMultisampleEnable(CPU* c, u64 s, int enable) {
@@ -2210,6 +2208,7 @@ void nvn_MultisampleStateSetMultisampleEnable(CPU* c, u64 s, int enable) {
 }
 void nvn_MultisampleStateSetSamples(CPU* c, u64 s, i32 n) {
     (void)c;
+    if (n != 0 && n != 1 && n != 2 && n != 4 && n != 8 && n != 16) return;
     NVN_OBJ(NvnMultisample, s)->samples = (u8)n;
 }
 void nvn_MultisampleStateSetAlphaToCoverageEnable(CPU* c, u64 s, int enable) {
@@ -2453,6 +2452,7 @@ int nvn_MultisampleStateGetAlphaToCoverageDither(CPU* c, u64 s) {
 }
 void nvn_MultisampleStateSetRasterSamples(CPU* c, u64 s, i32 n) {
     (void)c;
+    if (n != 0 && n != 2 && n != 4 && n != 8 && n != 16) return;
     MS(s)->raster_samples = (u8)n;
 }
 i32 nvn_MultisampleStateGetRasterSamples(CPU* c, u64 s) {
@@ -2461,6 +2461,7 @@ i32 nvn_MultisampleStateGetRasterSamples(CPU* c, u64 s) {
 }
 void nvn_MultisampleStateSetCoverageModulationMode(CPU* c, u64 s, i32 mode) {
     (void)c;
+    if ((u32)mode > 3) return;
     MS(s)->coverage_mod = (u8)mode;
 }
 i32 nvn_MultisampleStateGetCoverageModulationMode(CPU* c, u64 s) {
@@ -2477,6 +2478,7 @@ int nvn_MultisampleStateGetCoverageToColorEnable(CPU* c, u64 s) {
 }
 void nvn_MultisampleStateSetCoverageToColorOutput(CPU* c, u64 s, i32 output) {
     (void)c;
+    if ((u32)output >= DS_TARGETS_MAX) return;
     MS(s)->cov_to_color_out = (u8)output;
 }
 i32 nvn_MultisampleStateGetCoverageToColorOutput(CPU* c, u64 s) {
@@ -2517,18 +2519,17 @@ void nvn_MultisampleStateGetSampleLocationsGrid(CPU* c, u64 s, u64 w, u64 h) {
     gw32(w, gw);
     gw32(h, gh);
 }
-/* n locations from first on, x and y each in [0, 1] of a pixel: kept as the game's driver keeps them, in sixteenths
-   (clamped to [0, 1], a NaN taken as 0, rounded to the nearest, at most 15). The renderer draws at the standard locations: Vulkan's are programmable only with
-   VK_EXT_sample_locations, which it doesn't use, and a pixel's samples are averaged alike by a resolve */
+/* Location pairs use sixteenths of a pixel. Clamp each component, take NaN as0 and round to nearest, at most15.
+   Reject an invalid range before reading values or changing state. */
 void nvn_MultisampleStateSetSampleLocations(CPU* c, u64 s, i32 first, i32 n, u64 xy) {
     NvnMultisample* o = MS(s);
     i32 i;
     (void)c;
+    if ((u32)first > 16 || n < 0 || (u32)n > 16 - (u32)first || (n && !xy)) return;
     for (i = 0; i < n; i++) {
         f32 v[2];
         u8 q[2];
         int k;
-        if (first + i < 0 || first + i >= 16) continue;
         memcpy(v, GP(xy + 8 * (u64)i), sizeof v);
         for (k = 0; k < 2; k++) {
             f32 t = v[k] >= 0.0f ? v[k] : 0.0f; /* a NaN takes 0 */

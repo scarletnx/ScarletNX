@@ -118,6 +118,36 @@ static int check_nvn_default_tessellation(void) {
         for (u32 i = 0; i < 6; i++) call.tess_levels[i] = 2;
         CHECK(!nvn_tess_pixels(&channel->ds, &call, &channel->owner, target, vertex_index, 1));
     }
+    if (g_vk.feat.shaderClipDistance && g_vk.feat.shaderTessellationAndGeometryPointSize) {
+        /* Different producer/consumer clip indices must still have matching eight-element interfaces. */
+        for (u32 read_last = 0; read_last < 2; read_last++)
+            for (u32 negative = 0; negative < 2; negative++) {
+                u64 builtins_vertex[10];
+                memcpy(builtins_vertex, vertex, 4 * sizeof *vertex);
+                builtins_vertex[4] = storage_mov(8, negative ? 0xbf800000u : 0x3f800000u);
+                builtins_vertex[5] = 0xeff000000007ff08ull | (0x2dcull << 20);
+                builtins_vertex[6] = storage_mov(8, 0x3f800000u);
+                builtins_vertex[7] = 0xeff000000007ff08ull | (0x6cull << 20);
+                builtins_vertex[8] = 0xe30000000007000full;
+                u64 builtins_evaluation[] = {
+                    storage_mov(4, 0), evaluation[1], evaluation[2], evaluation[3], evaluation[4],
+                    0xefd800000007ff08ull | (4ull << 39) | (0x6cull << 20),
+                    0xeff000000007ff08ull | (0x6cull << 20),
+                    0xefd800000007ff08ull | (4ull << 39) | ((read_last ? 0x2dcull : 0x2c0ull) << 20),
+                    0xeff000000007ff08ull | (0x2c0ull << 20), 0xe30000000007000full};
+                CHECK(mesh_program(gpu, builtins_vertex, 9, 0));
+                CHECK(mesh_program(gpu + 0x5000, builtins_evaluation, 10, 0));
+                g_renderer->method_barrier(5);
+                r[0x831] = 0x5000;
+                channel->r3d_dirty = ~0u;
+                mx_draw_state_sync(channel);
+                channel->ds.prog.clip_enable = 1;
+                channel->ds.gen[DS_PROGRAMS] = ds_generation_next();
+                for (u32 i = 0; i < 6; i++) call.tess_levels[i] = 1;
+                CHECK(!nvn_tess_pixels(&channel->ds, &call, &channel->owner, target, 0,
+                                      !(read_last && negative)));
+            }
+    }
     vk_unlock();
     free(channel);
     puts("PASS NVN evaluation-only tessellation: position/generic forwarding and fixed levels exact=1");

@@ -24,6 +24,7 @@ struct NvnDraw {
     float blend_color[4], bias[3];    /* the polygon offset's factor, units and clamp */
     u8 discard, depth_clamp, restart, render_off;
     u8 provoking_last, conservative, dilate; /* SetProvokingVertexMode's last vertex, conservative rasterization */
+    u8 subpixel_bias_x, subpixel_bias_y;
     u8 sample_shading;                       /* the bound fragment program's SetSampleShading mode */
     u8 flip;                                 /* the window origin's flip, taken as the queue was initialized */
     float line_width, alpha_ref;

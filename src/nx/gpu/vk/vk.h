@@ -36,6 +36,7 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/draw_state.h"
 #include "nx/gpu/vk/coverage.h"
+#include "nx/gpu/vk/sample_locations.h"
 #include "nx/gpu/vk/advanced_blend.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
@@ -112,8 +113,14 @@ typedef struct {
                                 the client's, one driver call (gpuprof.c's calibration) */
     int has_xfb;                /* VK_EXT_transform_feedback: draws capture their outputs into guest memory */
     int has_mixed_samples;      /* VK_NV_framebuffer_mixed_samples: coverage at more samples than color storage */
+    int has_coverage_to_color, has_post_depth_coverage;
+    VkSampleLocationCaps sample_locations;
     VkAdvancedBlendCaps advanced_blend_caps;
     int has_fragment_interlock; /* ordered pixel storage-image read/modify/write */
+    int has_sample_interlock;
+    int has_geometry_streams;
+    int geometry_streams_lines_triangles;
+    u32 image_slots[5], buffer_image_slots[5]; /* descriptor capacity by shader stage, after the pipeline-wide limit */
     int has_border_color;       /* VK_EXT_custom_border_color */
     u32 border_color_max;       /* maxCustomBorderColorSamplers: past it, samplers take the nearest built-in color */
     int has_mirror_clamp;       /* samplerMirrorClampToEdge: VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE */
@@ -613,6 +620,8 @@ typedef struct Surf {
     u64 rt_size;           /* a render target's guest bytes, all layers (its shape is fixed when it is made) */
     int is_rt;
     int storage_capable;  /* image was created with VK_IMAGE_USAGE_STORAGE_BIT */
+    int sample_locations_compatible; /* depth image carries sample-location layout metadata */
+    VkSampleLocations sample_locations;
     int volume;           /* render target layers use 3D block-linear memory rather than array strides */
     u8 msaa;              /* DS_MSAA_: a multisampled image's sample layout. w and h count its pixels, the guest's
                              memory its samples (w << ds_msaa_log2_x(msaa) by h << ds_msaa_log2_y(msaa) texels) */
@@ -1155,6 +1164,8 @@ typedef struct {
 int vk_release_read_counts(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 max, u32* n);
 extern u64 g_vk_release_forwards;           /* statistics: reads vk_release_read answered */
 extern u64 g_vk_dset_new, g_vk_dset_reused; /* statistics: descriptor sets written, reused for the same contents */
+extern u64 g_vk_itable_uploads, g_vk_itable_reused, g_vk_itable_bytes; /* indexed uniform staging statistics */
+void vk_render_upload_cache_reset(void); /* renderer start: invalidate staging addresses from an earlier device */
 u32 vk_release_value(u32 id);
 /* the event slots the syncpoint increments this thread performed under vk_lock reached, signaled (nvdrv.c's
    syncpt_events): the outermost vk_unlock's, after the lock goes */
@@ -1252,6 +1263,8 @@ typedef struct {
     u32 n;
 } VkCbReads;
 typedef int (*VkCbReader)(u32 idx, u32 off, u32* out);
+/* Read/hash a program into a zero-padded128KiB buffer, without cohering unrelated trailing data. Holds vk_lock. */
+void vk_shader_read_code(u64 gva, u8* code, u32* len, VkCbReader read);
 u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, size_t* words, VkCbReader read,
                         VkCbReads* reads);
 /* why the device can't take the module: a capability it declares (Float64, Int64) whose feature is off, or NULL */
@@ -1263,7 +1276,7 @@ const char* vk_corpus_dir(void);
 int vk_cb_reads_hold(const VkCbReads* reads, VkCbReader read);
 typedef struct VkSh {
     u64 hash;
-    u32 mask[24]; /* vk_shader_get's masks, including the geometry passthrough skip mask */
+    u32 mask[26]; /* vk_shader_get's masks, including the geometry passthrough skip mask */
     int stage;
     VkCbReads cbr;
     ShaderInfo si;
@@ -1275,6 +1288,10 @@ typedef struct VkSh {
     u64 qh, qh_a;
     struct VkSh* next;
 } VkSh;
+/* Generated graphics modules share the persistent shader/pipeline ownership and cache. Caller holds vk_lock. */
+VkSh* vk_shader_generated_find(u64 hash, int stage, const u32 mask[26]);
+void vk_shader_generated_record(VkSh* shader, const u32* spv, size_t words, const u8* source, u32 bytes);
+
 /* the pipeline layout whose sets have no texture array bindings: compute's, and the one push constants go through
    (every layout has the same push constant range) */
 extern VkPipelineLayout g_vk_playout;
@@ -1311,7 +1328,7 @@ void vk_pipeline_init(void);
    samples whose headers take unnormalized coordinates (ShaderInfo.tex_rect_mask) */
 VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
                     u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
-                    const u8* query_hint, u64 advanced_blend, u32 advanced_mask);
+                    const u8* query_hint, u64 advanced_blend, u32 advanced_mask, u32 img_int, u32 img_sint);
 /* whether the constant buffer words s's translation read still hold in ds's bound buffers (vk_shader_get's check on
    a hit, for a caller that kept s) */
 int vk_shader_cb_hold(const DsState* ds, const VkSh* s);
@@ -1352,6 +1369,8 @@ typedef struct {
     u32 arrays;          /* the sets with texture arrays: its layout, vk_playout(arrays) */
     u32 samples;         /* the targets' VkSampleCountFlagBits (0 taken as 1) */
     VkCoverage coverage; /* color-only target-independent rasterization, all zero for ordinary multisampling */
+    VkSampleLocations sample_locations;
+    u32 coverage_to_color; /* zero off, else the integer color attachment index+1 */
     /* with several samples, DsRasterKey's: the samples the sample mask leaves out, alpha to coverage and to one */
     u32 sample_off, alpha_to_coverage, alpha_to_one;
     u32 sample_shading; /* every sample is shaded (sampleRateShading), with several samples */

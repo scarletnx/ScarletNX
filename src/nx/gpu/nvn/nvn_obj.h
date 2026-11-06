@@ -350,6 +350,11 @@ typedef struct {
 #define NVN_MS_LOCATIONS    0x04u /* SetSampleLocationsEnable */
 #define NVN_MS_GRID         0x08u /* SetSampleLocationsGridEnable */
 NVN_FITS(NvnMultisample, 0x18);
+static inline NvnMultisample nvn_multisample_defaults(void) {
+    NvnMultisample state = {.enable = 1, .flags = NVN_MS_A2C_DITHER};
+    for (u32 i = 0; i < 16; i++) state.location[i] = 0x88;
+    return state;
+}
 /* NVNvertexStreamState (8 bytes) */
 typedef struct {
     u32 stride, divisor;
@@ -604,8 +609,8 @@ typedef struct {
 typedef struct {
     i32 mode;
 } NvnPProvoking;
-/* SetConservativeRasterEnable and SetConservativeRasterDilate: which: 0 the enable, 1 the dilation; dilate: quarter
-   pixels, 0 to 3, as the game's driver rounds it (up, from a dilation in pixels) */
+/* which0: conservative enable in on. which1: dilation in quarter pixels, inclusive0..3. which2: additional
+   subpixel precision, X in on and Y in dilate, inclusive0..8. The variants retain one fixed wire layout. */
 typedef struct {
     i32 which, on, dilate, pad;
 } NvnPConservative;

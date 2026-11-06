@@ -470,6 +470,17 @@ static void test_guest_memory(const char* dir) {
         CHECK(!plat_vm_unshare(g, 2u << 20) && g[12345] == 0x5A && g[778] == 0x22, "guest memory did not move back");
         g[999] = 0x33;
         CHECK(v[999] != 0x33, "guest memory moved back is still the buffer's");
+        u8* alias = g + 0x10000;
+        g[0xffff] = 0x55;
+        g[0x12000] = 0x66;
+        v[0x3011] = 0x77;
+        CHECK(!plat_vm_map_fd(alias, 0x2000, fd, 0x3000, 2u << 20) && alias[17] == 0x77,
+              "a file range did not map its source offset");
+        alias[18] = 0x88;
+        CHECK(v[0x3012] == 0x88 && g[0xffff] == 0x55 && g[0x12000] == 0x66,
+              "a file range did not share its pages or changed its neighbors");
+        CHECK(plat_vm_map_fd(alias, 0x2000, fd, (2u << 20) - 0x1000, 2u << 20) == -1 && alias[18] == 0x88,
+              "an out-of-bounds file range replaced the destination");
         plat_vm_decommit(g, 2u << 20);
         plat_gpu_buffer_free(fd, handle, 2u << 20);
 #elif !defined(__ANDROID__)

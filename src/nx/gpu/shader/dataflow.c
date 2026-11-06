@@ -699,6 +699,48 @@ int shader_direct_track_const(const u64* insn, u32 n, u32 index, u32 reg, u32* v
     return 0;
 }
 
+/* A fixed constant-buffer word, for TXD's uniform offset specialization. Unlike the descriptor tracker below,
+   LDC must have a proven address: a varying table index cannot select a translation-time texture offset. */
+int shader_direct_track_cbuf_word(const u64* insn, u32 n, u32 index, u32 reg, u32* bank, u32* off, int depth) {
+    int j = depth > 6 ? -1 : direct_reaching_def(insn, n, index, reg);
+    if (j < 0 && depth <= 6 && reg && reg < 255) {
+        /* The general tracker accepts only an instruction's first destination. For LDC.B64's high word, prove
+           that its low-word definition dominates this use and that nothing has overwritten the high word. */
+        int low = direct_reaching_def(insn, n, index, reg - 1);
+        if (low >= 0 && decode(insn[low])->id == O_LDC && B(insn[low], 48, 3) == 5) {
+            int unchanged = 1;
+            for (u32 at = (u32)low + 1; at < index; at++) {
+                if (!IDX_OK(at)) continue;
+                const Op* op = decode(insn[at]);
+                if (!op || shader_writes_reg(insn[at], op->id, reg)) unchanged = 0;
+            }
+            if (unchanged) j = low;
+        }
+    }
+    if (j < 0) return 0;
+    u64 w = insn[j];
+    int op = decode(w)->id;
+    if (op == O_MOV_C) {
+        *bank = B(w, 34, 5);
+        *off = B(w, 20, 14);
+        return *bank < 18;
+    }
+    if (op == O_MOV_R) return shader_direct_track_cbuf_word(insn, n, (u32)j, B(w, 20, 8), bank, off, depth + 1);
+    if (op != O_LDC || B(w, 48, 3) < 4 || B(w, 48, 3) > 5) return 0;
+    u32 source = 0, address_reg = B(w, 8, 8);
+    if (address_reg != 255 && !shader_direct_track_const(insn, n, (u32)j, address_reg, &source, depth + 1)) return 0;
+    *bank = B(w, 36, 5);
+    if (B(w, 44, 1)) {
+        *bank += source >> 16;
+        source &= 0xffff;
+    }
+    u32 address = source + (u32)(i32)(i16)B(w, 20, 16);
+    if (B(w, 48, 3) == 5 && reg != B(w, 0, 8)) address += 4;
+    if (*bank >= 18 || address > 65532 || (address & 3)) return 0;
+    *off = address / 4;
+    return 1;
+}
+
 /* Resolve a register supplied image handle to the constant buffer word read in this basic block. */
 int shader_direct_track_image_handle(const u64* insn, u32 n, u32 index, u32 reg, u32* bank, u32* off, int depth) {
     int j = depth > 6 ? -1 : direct_reaching_def(insn, n, index, reg);
@@ -715,6 +757,12 @@ int shader_direct_track_image_handle(const u64* insn, u32 n, u32 index, u32 reg,
     if (op == O_LDC && B(w, 48, 3) >= 4 && B(w, 48, 3) <= 5) {
         i32 byte_off = (i16)B(w, 20, 16);
         *bank = B(w, 36, 5);
+        if (B(w, 44, 1)) {
+            u32 source;
+            if (!shader_direct_track_const(insn, n, (u32)j, B(w, 8, 8), &source, depth + 1)) return 0;
+            *bank += source >> 16;
+            byte_off += (i32)(source & 0xffff);
+        }
         *off = (u32)byte_off / 4;
         /* Keep the legacy first-descriptor behavior for indexed handles.
            Runtime descriptor selection for arbitrary indices needs a separate path. */
@@ -741,6 +789,12 @@ static int direct_handle_definition(const u64* insn, u32 n, u32 j, u32* bank, u3
     if (op == O_LDC && B(w, 48, 3) >= 4 && B(w, 48, 3) <= 5) {
         i32 byte_off = (i16)B(w, 20, 16);
         *bank = B(w, 36, 5);
+        if (B(w, 44, 1)) {
+            u32 source;
+            if (!shader_direct_track_const(insn, n, j, B(w, 8, 8), &source, depth + 1)) return 0;
+            *bank += source >> 16;
+            byte_off += (i32)(source & 0xffff);
+        }
         *off = (u32)byte_off / 4;
         return *bank < 18 && byte_off >= 0 && !(byte_off & 3);
     }
@@ -951,7 +1005,7 @@ u32 shader_direct_indexed_handle(const u64* insn, u32 n, u32 index, u32 reg, int
         index = (u32)j;
         reg = B(w, 20, 8);
     }
-    if (depth == 6 || op != O_LDC || B(w, 8, 8) == 255 || B(w, 48, 3) != 4) return 0;
+    if (depth == 6 || op != O_LDC || B(w, 8, 8) == 255 || B(w, 48, 3) != 4 || B(w, 44, 1)) return 0;
     k = direct_reaching_def(insn, n, (u32)j, B(w, 8, 8));
     if (k >= 0 && decode(insn[k])->id == O_SHL_I && B(insn[k], 20, 5) >= 2 && B(insn[k], 20, 5) <= 15)
         shift = B(insn[k], 20, 5);

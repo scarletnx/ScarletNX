@@ -17,6 +17,17 @@ def gpu_output():
     return '\n'.join([harness.GPU_MARKER] + [passed + ' exact=1' for _, passed, _ in harness.GPU_FEATURES[1:]])
 
 
+class NativePaths(unittest.TestCase):
+    def test_shader_targets_use_nx_build_directory(self):
+        paths = harness.native_paths(Path('/build'))
+        self.assertEqual(len(paths), len(harness.NATIVE) + len(harness.SHADER_NATIVE))
+        for name in harness.NATIVE:
+            self.assertIn(Path('/build/tests/snx-test-' + name), paths)
+        for name in harness.SHADER_NATIVE:
+            self.assertIn(Path('/build/src/nx/snx-test-' + name), paths)
+        self.assertEqual(len(paths), len(set(paths)))
+
+
 class SourceSnapshot(unittest.TestCase):
     def test_gpu_files_have_relative_paths_and_content_hashes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -71,6 +82,19 @@ class Classification(unittest.TestCase):
         self.assertEqual(len(row['features']), len(harness.GPU_FEATURES))
         self.assertTrue(harness.all_features_passed([row]))
 
+    def test_checked_comparison_result_is_accepted(self):
+        lines = gpu_output().splitlines()
+        text = '\n'.join([lines[0]] + [line.replace(' exact=1', ' checked=1') for line in lines[1:]])
+        self.assertEqual(harness.classify(text, 0, gpu=True)['status'], 'pass')
+
+    def test_pass_marker_requires_exact_result(self):
+        for _, marker, _ in harness.GPU_FEATURES:
+            with self.subTest(marker=marker):
+                text = gpu_output().replace(marker + ' exact=1', marker + ' measured only')
+                if text == gpu_output():
+                    continue  # The array-copy marker includes its complete result text.
+                self.assertEqual(harness.classify(text, 0, gpu=True)['status'], 'fail')
+
     def test_each_missing_feature_fails(self):
         for _, marker, _ in harness.GPU_FEATURES:
             with self.subTest(marker=marker):
@@ -90,6 +114,15 @@ class Classification(unittest.TestCase):
                 self.assertEqual(next(item['status'] for item in row['features'] if item['name'] == feature), 'skip')
                 self.assertEqual(row['skip_messages'], [skipped + ' unavailable'])
                 self.assertFalse(harness.all_features_passed([row]))
+
+    def test_known_cube_edge_discrepancy_stays_incomplete(self):
+        text = gpu_output().replace('PASS NVN cube minified edge probe: exact=1',
+            'SKIP NVN cube minified edge probe: NVIDIA615.78.08, expected2002, observed2001')
+        row = harness.classify(text, 0, gpu=True)
+        self.assertEqual(row['status'], 'pass')
+        probe = next(item for item in row['features'] if item['name'] == 'cube_minified_edge_probe')
+        self.assertEqual(probe['status'], 'skip')
+        self.assertFalse(harness.all_features_passed([row]))
 
     def test_driver_exit77_is_skip_only_for_gpu(self):
         row = harness.classify('No device', 77, gpu=True)

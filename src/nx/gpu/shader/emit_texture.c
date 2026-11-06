@@ -230,8 +230,7 @@ u32 shader_texture_float_component(DirectCtx* c, u32 value, u32 scalar, u32 i32_
 }
 
 u32 shader_pack_texture_halves(DirectCtx* c, u32 vec2, u32 first, u32 second) {
-    return spv_emit_glsl_unary(&c->emit, c->u32_type, c->glsl, SPV_GLSL_PACK_HALF2X16,
-                               spv_emit_vec2_construct(&c->emit, vec2, first, second));
+    return shader_pack_half_rte(c, spv_emit_vec2_construct(&c->emit, vec2, first, second));
 }
 
 /* Sampling with a register offset uses normalized coordinates because SPIR-V requires a constant sample Offset. */
@@ -323,7 +322,6 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     u32 vec4_u32 = t->vec4_u32;
     u32 vec4_i32 = t->vec4_i32;
     u32 vec2 = t->vec2;
-    u32 vec2f16 = t->vec2f16;
     u32 vec2_u32 = t->vec2_u32;
     u32 vec2_i32 = t->vec2_i32;
     u32 vec3 = t->vec3;
@@ -530,12 +528,12 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 halves[k] = spv_emit_vec4_extract(&c->emit, c->f32_type, sample, comps[k]);
             u32 lo = spv_emit_vec2_construct(&c->emit, vec2, outputs > 0 ? halves[0] : zero_f,
                                              outputs > 1 ? halves[1] : zero_f);
-            lo = spv_emit_bitcast(&c->emit, c->u32_type, spv_emit_convert_f_to_f(&c->emit, vec2f16, lo));
+            lo = shader_pack_half_rte(c, lo);
             if (d < 255) reg_write(c, d, lo);
             if (outputs > 2) {
                 u32 db = B(w, 28, 8);
                 u32 hi = spv_emit_vec2_construct(&c->emit, vec2, halves[2], outputs > 3 ? halves[3] : zero_f);
-                hi = spv_emit_bitcast(&c->emit, c->u32_type, spv_emit_convert_f_to_f(&c->emit, vec2f16, hi));
+                hi = shader_pack_half_rte(c, hi);
                 if (db < 255) reg_write(c, db, hi);
             }
         } else {
@@ -710,7 +708,15 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 offset = 0;
         if (B(w, 35, 1)) { /* signed 4-bit offsets from bit 16 of the packed register */
             u32 packed = 0, o[3];
-            if (shader_direct_track_const(insn, n, i, packed_reg, &packed, 0)) {
+            int known = shader_direct_track_const(insn, n, i, packed_reg, &packed, 0);
+            if (!known && g_shader_cb_read) {
+                u32 offset_bank, offset_word;
+                /* The shader cache records this word and makes another variant when it changes. A ConstOffset
+                   applies in the selected mip's texels; moving normalized coordinates by the base size does not. */
+                if (shader_direct_track_cbuf_word(insn, n, i, packed_reg, &offset_bank, &offset_word, 0))
+                    known = g_shader_cb_read(offset_bank, offset_word * 4, &packed);
+            }
+            if (known) {
                 for (k = 0; k < 3; k++)
                     o[k] = spv_emit_constant_u32(&c->emit, i32_type,
                                                  k < count ? (u32)((i32)(packed << (12 - 4 * k)) >> 28) : 0);

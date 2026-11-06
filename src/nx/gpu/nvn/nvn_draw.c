@@ -121,6 +121,7 @@ void nvn_draw_init(NvnDraw* d, u32 owner) {
     d->dss =
         nvn_set_field(nvn_set_field(nvn_set_field(d->dss, NVN_DS_FAIL_B, 1), NVN_DS_ZFAIL_B, 1), NVN_DS_ZPASS_B, 1);
     d->svalue[0] = d->svalue[1] = d->smask[0] = d->smask[1] = 0xff;
+    d->ms = nvn_multisample_defaults();
     d->provoking_last = 1; /* NVN's default, as GL's */
     d->line_width = 1.0f;
     d->point_size = 1.0f;
@@ -623,6 +624,20 @@ static void draw_fixed_state(const NvnDraw* d, DrawCall* call) {
     if (d->fixed_flags & DS_DRAW_POINT_SIZE) call->point_size = d->point_size;
     if (d->fixed_flags & DS_DRAW_DEPTH_BOUNDS) memcpy(call->depth_bounds, d->depth_bounds, sizeof call->depth_bounds);
     if (d->fixed_flags & DS_DRAW_TESS_LEVELS) memcpy(call->tess_levels, d->tess_levels, sizeof call->tess_levels);
+    if (d->ms.flags & NVN_MS_A2C_DITHER) call->multisample_flags |= DS_MS_A2C_DITHER;
+    if (d->ms.flags & NVN_MS_COV_TO_COLOR) {
+        call->multisample_flags |= DS_MS_COVERAGE_TO_COLOR;
+        call->coverage_to_color_output = d->ms.cov_to_color_out;
+    }
+    if (d->ms.flags & NVN_MS_LOCATIONS) {
+        call->multisample_flags |= DS_MS_SAMPLE_LOCATIONS;
+        if (d->ms.flags & NVN_MS_GRID) call->multisample_flags |= DS_MS_SAMPLE_GRID;
+        memcpy(call->sample_locations, d->ms.location, sizeof call->sample_locations);
+    }
+    if (d->conservative) {
+        call->subpixel_bias_x = d->subpixel_bias_x;
+        call->subpixel_bias_y = d->subpixel_bias_y;
+    }
     if (d->ms.raster_samples > d->ms.samples) {
         call->raster_samples = d->ms.raster_samples;
         call->coverage_mode = d->ms.coverage_mod;
@@ -1002,6 +1017,10 @@ static void draw_texture(NvnDraw* d, u64 payload) {
     t.dv = floor((double)(r.src[3] - r.src[1]) / (y1 - y0) * 4294967296.0 + 0.5) / 4294967296.0;
     t.sx0 = (float)draw_texture_fixed(r.src[0]);
     t.sy0 = (float)draw_texture_fixed(r.src[1]);
+    draw_fixed_state(d, &t.state);
+    t.state.state_flags = 0;
+    t.state.subpixel_bias_x = t.state.subpixel_bias_y = 0;
+    t.owner.pred = d->own.pred;
     sync(d, 0, 0);
     g_renderer->draw_texture(&d->ds, &t);
 }
@@ -1183,10 +1202,19 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
             return 1;
         case OP_CONSERVATIVE: {
             const NvnPConservative* r = NVN_OBJ(const NvnPConservative, payload);
-            if (r->which)
+            if (size < sizeof *r) return 1;
+            if (r->which == 2) {
+                if ((u32)r->on <= 8 && (u32)r->dilate <= 8) {
+                    d->subpixel_bias_x = (u8)r->on;
+                    d->subpixel_bias_y = (u8)r->dilate;
+                }
+                return 1;
+            }
+            if (r->which == 1)
                 d->dilate = (u8)r->dilate;
-            else
+            else if (!r->which)
                 d->conservative = r->on != 0;
+            else return 1;
             d->dirty |= D_RASTER;
             return 1;
         }

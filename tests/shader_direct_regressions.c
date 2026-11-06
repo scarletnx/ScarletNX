@@ -33,6 +33,8 @@ static const char* stage_paths[3];
 static const char* query_paths[2];
 static const char* opcode_paths[3];
 static const char* gradient_paths[3];
+static const char* gradient_cube_path;
+static const char* draw_buffer_paths[10];
 static const char* texture_paths[6];
 static const char* arithmetic_path;
 static const char* beyond_paths[3];
@@ -47,16 +49,39 @@ static const char* surface_op_paths[7];
 static const char* legacy_paths[4];
 static const char* rect_paths[3];
 static const char* window_paths[3];
-static char* fixture_paths[112];
-static size_t fixture_count;
+static struct {
+    char** paths;
+    size_t count, capacity;
+    int failed;
+} g_fixtures;
 
 static const char* fixture_path(const char* directory, const char* name) {
     size_t dir_len = strlen(directory), name_len = strlen(name);
-    if (fixture_count == sizeof fixture_paths / sizeof *fixture_paths || dir_len > SIZE_MAX - name_len - 6) return NULL;
+    if (name_len > SIZE_MAX - 6 || dir_len > SIZE_MAX - name_len - 6) {
+        g_fixtures.failed = 1;
+        return NULL;
+    }
+    if (g_fixtures.count == g_fixtures.capacity) {
+        size_t capacity = g_fixtures.capacity ? g_fixtures.capacity * 2 : 128;
+        if (g_fixtures.capacity > SIZE_MAX / 2 || capacity > SIZE_MAX / sizeof *g_fixtures.paths) {
+            g_fixtures.failed = 1;
+            return NULL;
+        }
+        char** paths = realloc(g_fixtures.paths, capacity * sizeof *paths);
+        if (!paths) {
+            g_fixtures.failed = 1;
+            return NULL;
+        }
+        g_fixtures.paths = paths;
+        g_fixtures.capacity = capacity;
+    }
     char* path = malloc(dir_len + name_len + 6);
-    if (!path) return NULL;
+    if (!path) {
+        g_fixtures.failed = 1;
+        return NULL;
+    }
     snprintf(path, dir_len + name_len + 6, "%s/%s.spv", directory, name);
-    fixture_paths[fixture_count++] = path;
+    g_fixtures.paths[g_fixtures.count++] = path;
     return path;
 }
 static void check(int condition, const char* what) {
@@ -135,6 +160,8 @@ static u32* translate_with_rt_masks(const u64* instructions, int count, int stag
     memset(info, 0, sizeof *info);
     info->rt_int_mask = rt_mask;
     info->rt_sint_mask = rt_signed;
+    info->img_int_mask = rt_mask >> 8;
+    info->img_sint_mask = rt_signed >> 8;
     if (stage == ST_VS) info->clip_enable = rt_mask;
     if (stage == ST_CS) {
         info->cs_local[0] = info->cs_local[1] = info->cs_local[2] = 1;
@@ -151,6 +178,8 @@ static u32* translate_with_rt_mask(const u64* instructions, int count, int stage
 static u32* translate(const u64* instructions, int count, int stage, ShaderInfo* info, size_t* words, int flush) {
     return translate_with_rt_mask(instructions, count, stage, info, words, flush, 0);
 }
+static u32* translate_stage(const u64* instructions, int count, int stage, const u32 sph[3], u32 primitive,
+                            ShaderInfo* info, size_t* words);
 
 static int count_opcode(const u32* code, size_t words, u32 opcode, u32 operand) {
     int found = 0;
@@ -249,7 +278,7 @@ static int has_storage_image_format(const u32* code, size_t words, u32 format) {
 }
 
 static int has_image_operands(const u32* code, size_t words, u32 opcode, u32 mask) {
-    u32 at = opcode == 95 ? 5 : 6;
+    u32 at = opcode == 88 || opcode == 95 ? 5 : 6;
     for (size_t i = 5; i < words;) {
         u32 width = code[i] >> 16;
         if (!width || i + width > words) return 0;
@@ -279,26 +308,47 @@ static int has_conditional_emit(const u32* code, size_t words) {
     return 0;
 }
 
-static int emit_only_on_zero_stream(const u32* code, size_t words) {
-    u32 label = 0, emit_label = 0;
-    for (size_t i = 5; i < words;) {
-        u32 width = code[i] >> 16;
-        if (!width || i + width > words) return 0;
-        if ((code[i] & 0xffff) == 248 && width == 2) label = code[i + 1];
-        if ((code[i] & 0xffff) == 218) emit_label = label;
-        i += width;
-    }
-    if (!emit_label) return 0;
-    for (size_t i = 5; i < words;) {
-        u32 width = code[i] >> 16;
-        if (!width || i + width > words) return 0;
-        if ((code[i] & 0xffff) == 250 && width == 4 && code[i + 3] == emit_label && code[i + 2] != emit_label) return 1;
-        i += width;
-    }
-    return 0;
-}
-
 static int is_constant_value(const u32* code, size_t words, u32 id, u32 value);
+
+static int emit_only_on_zero_stream(const u32* code, size_t words) {
+    u32 found = 0;
+    for (size_t i = 5; i < words;) {
+        u32 width = code[i] >> 16;
+        if (!width || i + width > words) return 0;
+        if ((code[i] & 0xffff) == 218) {
+            int selected = 0;
+            for (size_t branch = 5; branch < words;) {
+                u32 length = code[branch] >> 16;
+                if (!length || branch + length > words) return 0;
+                if ((code[branch] & 0xffff) == 250 && length == 4) {
+                    u32 condition = code[branch + 1];
+                    int zero_test = 0;
+                    size_t body = words, merge = 0;
+                    for (size_t test = 5; test < words;) {
+                        u32 span = code[test] >> 16;
+                        if (!span || test + span > words) return 0;
+                        if ((code[test] & 0xffff) == 170 && span == 5 && code[test + 2] == condition &&
+                            is_constant_value(code, words, code[test + 4], 0))
+                            zero_test = 1;
+                        if ((code[test] & 0xffff) == 248 && span == 2) {
+                            if (code[test + 1] == code[branch + 2]) body = test;
+                            if (code[test + 1] == code[branch + 3]) merge = test;
+                        }
+                        test += span;
+                    }
+                    /* Position fixup can insert its own selection inside this block. The vertex must remain
+                       inside the enclosing stream-zero selection, before its false/merge target. */
+                    if (zero_test && body < i && i < merge) selected = 1;
+                }
+                branch += length;
+            }
+            if (!selected) return 0;
+            found++;
+        }
+        i += width;
+    }
+    return found != 0;
+}
 
 static int shift_uses_amount(const u32* code, size_t words, u32 amount) {
     for (size_t i = 5; i < words;) {
@@ -1336,45 +1386,31 @@ static void surface_atomic_operations(void) {
     }
 }
 
-/* A fragment program storing into a buffer surface, as a base pass writes its texture feedback: SUST.P.RGBA on
-   dimension 1, the handle MOV R28, c[0x2][0x120]. Vertex programs store through it too; their loads and the
-   geometry stage stay refused, as for other surfaces */
+/* SUST.P.RGBA feedback stores and SULD.D.32 buffer loads use storage images in every graphics stage. Only fragment
+   stages have helper invocations to guard. */
 static void draw_buffer_surfaces(void) {
     const u64 store[] = {0x4c9807880487001cull, unguarded(0xeb200e0200f00f18ull, 24, 15, 28)};
     /* SULD.D.32 on the handle MOV R4, c[0x2][0x128], as Ender Magnolia's compute loads it */
     const u64 load[] = {0x4c98078804a70004ull, unguarded(0xeb10020200480370ull, 8, 0, 4)};
-    const int stages[] = {ST_FS, ST_VS};
-    for (int i = 0; i < 2; i++) {
-        ShaderInfo info;
-        size_t words = 0;
-        u32* code = translate(store, 2, stages[i], &info, &words, 1);
-        check_translated(code, &info, "a draw's buffer surface store translates");
-        if (code)
-            check(info.nimg == 1 && info.img[0].type == 1 && has_storage_image_dim(code, words, 5) &&
-                      count_opcode(code, words, 99, 0xffffffffu) == 1,
-                  "a draw's buffer surface store writes one texel buffer");
-        free(code);
-    }
-    {
-        ShaderInfo info;
-        size_t words = 0;
-        u32* code = translate(load, 2, ST_FS, &info, &words, 1);
-        check_translated(code, &info, "a fragment program's buffer surface load translates");
-        if (code)
-            check(info.nimg == 1 && info.img[0].type == 1 && count_opcode(code, words, 98, 0xffffffffu) == 1,
-                  "a fragment program's buffer surface load reads the texel buffer");
-        free(code);
-    }
-    const u64* refused[] = {load, store};
-    const int refused_stages[] = {ST_VS, ST_GS};
-    for (int i = 0; i < 2; i++) {
-        ShaderInfo info;
-        size_t words = 0;
-        u32* code = translate(refused[i], 2, refused_stages[i], &info, &words, 1);
-        check_refused(code, &info, "surface operation outside supported stage",
-                      "vertex buffer surface loads and geometry stores stay refused");
-        free(code);
-    }
+    for (int stage = ST_VS; stage <= ST_FS; stage++)
+        for (int write = 0; write < 2; write++) {
+            u32 header[3] = {stage == ST_TCS ? 3u << 24 : 1u << 24, 7u << 24, 3};
+            ShaderInfo info;
+            size_t words = 0;
+            u32* code = translate_stage(write ? store : load, 2, stage, header, stage == ST_GS ? 3 : 0, &info, &words);
+            check_translated(code, &info, "a graphics stage's buffer surface operation translates");
+            if (code) {
+                check(info.nimg == 1 && info.img[0].type == 1 && has_storage_image_dim(code, words, 5) &&
+                          count_opcode(code, words, write ? 99 : 98, 0xffffffffu) == 1,
+                      "a graphics stage reads or writes exactly one storage texel buffer");
+                check(info.img[0].kind == (write ? 2 : 1) && has_storage_image_format(code, words, write ? 0 : 33),
+                      "buffer loads keep R32UI while formatted stores retain the descriptor format");
+                check(count_opcode(code, words, 5381, 0xffffffffu) == (write && stage == ST_FS),
+                      "only fragment stores guard helper invocations");
+                save_fixture(draw_buffer_paths[stage * 2 + write], code, words);
+            }
+            free(code);
+        }
 }
 
 static void layered_surface_loads(void) {
@@ -2404,7 +2440,8 @@ static void eden_forms(void) {
     code = translate_stage(geometry, 5, ST_GS, geometry_sph, 3, &info, &words);
     check_translated(code, &info, "OUT translates with a register, constant buffer or immediate stream");
     if (code) {
-        check(count_opcode(code, words, 218, 0xffffffffu) == 1, "only the stream that may be 0 emits a vertex");
+        check(count_opcode(code, words, 218, 0xffffffffu) == 2 && emit_only_on_zero_stream(code, words),
+              "every rasterized OUT.EMIT is guarded by a zero-stream comparison");
         check(count_opcode(code, words, 219, 0xffffffffu) == 1, "OUT.CUT ends the primitive");
         save_fixture(opcode_paths[1], code, words);
     }
@@ -2570,11 +2607,26 @@ static void gradients(void) {
                   seeded_gradient_component(derivative_code, derivative_words, 0x4444, 1, 1),
               "TXD builds gradients from alternating X and Y registers");
     free(derivative_code);
-    u64 invalid_cube[] = {array_2d[0], (array_2d[1] & ~(7ull << 28)) | 7ull << 28};
+    u64 cube_array[] = {
+        array_2d[0],        mov32i(12, 0x1111), mov32i(13, 0x2222), mov32i(14, 0x3333),
+        mov32i(15, 0x4444), mov32i(16, 0x5555), mov32i(17, 0x6666), (array_2d[1] & ~(7ull << 28)) | 7ull << 28};
     ShaderInfo info;
     size_t words = 0;
-    u32* code = translate(invalid_cube, 2, ST_FS, &info, &words, 0);
-    check_refused(code, &info, "TXD", "TXD.B refuses cube arrays");
+    u32* code = translate(cube_array, sizeof cube_array / sizeof *cube_array, ST_FS, &info, &words, 0);
+    check_translated(code, &info, "TXD.B cube arrays translate");
+    if (code) {
+        check(info.ntex == 1 && info.tex[0].type == 3 && info.tex[0].array && info.tex[0].bindless &&
+                  has_image_operands(code, words, 88, 4),
+              "TXD.B retains the cube-array texture and gradient image operands");
+        check(seeded_gradient_component(code, words, 0x1111, 0, 0) &&
+                  seeded_gradient_component(code, words, 0x3333, 0, 1) &&
+                  seeded_gradient_component(code, words, 0x5555, 0, 2) &&
+                  seeded_gradient_component(code, words, 0x2222, 1, 0) &&
+                  seeded_gradient_component(code, words, 0x4444, 1, 1) &&
+                  seeded_gradient_component(code, words, 0x6666, 1, 2),
+              "TXD.B cube gradients retain all three alternating derivative components");
+        save_fixture(gradient_cube_path, code, words);
+    }
     free(code);
 }
 
@@ -3493,15 +3545,37 @@ static void audit_shader_regressions(void) {
 static void tlds_fp16(void) {
     static const u64 words[] = {0xD244012030570A02ull, 0xD252010040570A18ull, 0xD252014000570A1Aull,
                                 0xD25200E000B70A17ull, 0xD252014010B70A06ull};
-    for (size_t i = 0; i < sizeof words / sizeof *words; i++) {
-        ShaderInfo info;
-        size_t size = 0;
-        u32* code = translate(&words[i], 1, ST_FS, &info, &size, 1);
-        if (!code || info.unsupported) fprintf(stderr, "tlds fp16 %zu: %s\n", i, info.first_unsupported);
-        check(code && !info.unsupported, "TLDS fp16 translates");
-        if (code) check(count_opcode(code, size, 115, 0xffffffffu) >= 1, "TLDS fp16 converts to halves");
-        free(code);
+    int saved = g_shader_half_rounding;
+    for (u32 backend = 0; backend < 3; backend++) {
+        g_shader_half_rounding = backend == 2 ? 3 : (int)backend;
+        for (size_t i = 0; i < sizeof words / sizeof *words; i++) {
+            ShaderInfo info;
+            size_t size = 0;
+            u32* code = translate(&words[i], 1, ST_FS, &info, &size, 1);
+            if (!code || info.unsupported)
+                fprintf(stderr, "tlds fp16 backend%u case%zu: %s\n", backend, i, info.first_unsupported);
+            check_translated(code, &info, "TLDS fp16 translates with native or software rounding");
+            if (code) {
+                check(count_opcode(code, size, 95, 0xffffffffu) == 1,
+                      "TLDS fp16 retains its texel fetch before packing");
+                check(count_opcode(code, size, 17, 9) == !!backend,
+                      "TLDS fp16 requires Float16 only on the controlled native path");
+                if (backend) {
+                    check(count_opcode(code, size, 115, 0xffffffffu) == 2 &&
+                              count_opcode(code, size, 16, 4462) == (backend == 2 ? 2 : 1) &&
+                              !has_glsl_instruction(code, size, 58),
+                          "TLDS packs both pairs with native conversion and explicit RTE modes");
+                } else {
+                    check(count_opcode(code, size, 115, 0xffffffffu) == 0 && count_opcode(code, size, 16, 4462) == 0 &&
+                              has_glsl_instruction(code, size, 58) && count_opcode(code, size, 194, 0xffffffffu) >= 4 &&
+                              count_opcode(code, size, 197, 0xffffffffu) >= 2,
+                          "TLDS software packing rounds both pairs with integer guard and sticky bits");
+                }
+            }
+            free(code);
+        }
     }
+    g_shader_half_rounding = saved;
 }
 
 /* OpTypeImage declarations of that dimensionality (0 1D, 1 2D, 2 3D, 3 cube) */
@@ -3928,6 +4002,31 @@ static void shfl_quad_forms(void) {
     g_shader_quad = 1;
 }
 
+/* Real TCS builtins and nonzero geometry streams use distinct typed interfaces. */
+static void rendering_stage_features(const char* directory) {
+    int point_size_available = g_shader_stage_point_size;
+    g_shader_stage_point_size = 1;
+    const u32 control_header[3] = {3u << 24, 0, 0};
+    const u64 control[] = {0x01000003f807f000ull, 0xeff000000007ff00ull | (0x6cull << 20),
+                           0xeff000000007ff00ull | (0x2c0ull << 20), 0xe30000000007000full};
+    ShaderInfo info;
+    size_t words;
+    u32* code = translate_stage(control, 4, ST_TCS, control_header, 0, &info, &words);
+    check_translated(code, &info, "TCS point size and clip-distance outputs translate");
+    check(code && info.writes_point_size && info.uses_clip_mask == 1, "TCS builtin output metadata is retained");
+    if (code && directory) save_fixture(fixture_path(directory, "tcs_builtin_outputs"), code, words);
+    free(code);
+    const u64 evaluation[] = {0xefd800000007ff00ull | (0xffull << 39) | (0x6cull << 20),
+                              0xefd800000007ff01ull | (0xffull << 39) | (0x2c0ull << 20), 0xe30000000007000full};
+    const u32 empty_header[3] = {0};
+    code = translate_stage(evaluation, 3, ST_TES, empty_header, 1, &info, &words);
+    check_translated(code, &info, "TES per-vertex point size and clip-distance inputs translate");
+    check(code && info.reads_point_size && info.clip_input_mask == 1, "TES builtin input metadata is retained");
+    if (code && directory) save_fixture(fixture_path(directory, "tes_builtin_inputs"), code, words);
+    free(code);
+    g_shader_stage_point_size = point_size_available;
+}
+
 int main(int argc, char** argv) {
     g_shader_clock_scopes = 3; /* Exercise both optional Vulkan clock scopes in offline SPIR-V fixtures. */
     if (argc != 1 && argc != 2) {
@@ -3977,6 +4076,11 @@ int main(int argc, char** argv) {
             snprintf(name, sizeof name, "gradient_%d", i);
             gradient_paths[i] = fixture_path(argv[1], name);
         }
+        gradient_cube_path = fixture_path(argv[1], "gradient_cube_array");
+        for (int i = 0; i < 10; i++) {
+            snprintf(name, sizeof name, "draw_buffer_%d", i);
+            draw_buffer_paths[i] = fixture_path(argv[1], name);
+        }
         for (int i = 0; i < 6; i++) {
             snprintf(name, sizeof name, "texture_%d", i);
             texture_paths[i] = fixture_path(argv[1], name);
@@ -4025,7 +4129,7 @@ int main(int argc, char** argv) {
             snprintf(name, sizeof name, "window_%d", i);
             window_paths[i] = fixture_path(argv[1], name);
         }
-        if (fixture_count != sizeof fixture_paths / sizeof *fixture_paths) {
+        if (g_fixtures.failed) {
             fprintf(stderr, "failed to allocate fixture paths\n");
             return 2;
         }
@@ -4064,6 +4168,7 @@ int main(int argc, char** argv) {
     nro_shader_modes();
     issue126_shader_modes();
     between_stages();
+    rendering_stage_features(argc == 2 ? argv[1] : NULL);
     layer_capabilities();
     viewport_capabilities();
     window_positions();
@@ -4085,6 +4190,8 @@ int main(int argc, char** argv) {
     shfl_quad_forms();
     shfl_predicate();
     feedback_own_pixel();
-    for (size_t i = 0; i < fixture_count; i++) free(fixture_paths[i]);
+    check(!g_fixtures.failed, "shader fixture paths allocated");
+    for (size_t i = 0; i < g_fixtures.count; i++) free(g_fixtures.paths[i]);
+    free(g_fixtures.paths);
     return failures ? 1 : 0;
 }

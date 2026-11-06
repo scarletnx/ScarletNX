@@ -272,7 +272,9 @@ static int owned_stream_case(GpuChannel* channel, u64 target, u64 colors, u64 co
     rt_clear(channel, target, 4, 4, 0, 1);
     channel->r3d_dirty = ~0u; /* the registers were set directly */
     mx_draw_state_sync(channel);
-    u64 passes = g_vk_passes;
+    u64 passes = g_vk_passes, submits = vk_submit_number(), finishes = g_vk_finishes;
+    u64 waits = 0;
+    for (u32 i = 0; i < VK_WAIT_N; i++) waits += g_vk_waits[i];
     DrawCall red = {.topology = 6, .count = 4, .instances = 1},
              green = {.topology = 6, .first = 4, .count = 4, .instances = 1};
     vk_render_draw(&channel->ds, &red, &channel->owner);
@@ -284,7 +286,10 @@ static int owned_stream_case(GpuChannel* channel, u64 target, u64 colors, u64 co
     channel->r3d_dirty = ~0u;
     mx_draw_state_sync(channel);
     vk_render_draw(&channel->ds, &green, &channel->owner);
-    u64 begun = g_vk_passes - passes;
+    u64 begun = g_vk_passes - passes, submitted = vk_submit_number() - submits;
+    u64 waited = 0;
+    for (u32 i = 0; i < VK_WAIT_N; i++) waited += g_vk_waits[i];
+    int no_wait = g_vk_finishes == finishes && waited == waits;
     CHECK(!index_pixels(target, &px));
     r[0x705] = (u32)(colors >> 32);
     r[0x706] = (u32)colors;
@@ -294,8 +299,12 @@ static int owned_stream_case(GpuChannel* channel, u64 target, u64 colors, u64 co
     if (!index_all_green(&px)) fprintf(stderr, "owned colors: %u green, %u red\n", px.green, px.red);
     CHECK(index_all_green(&px));
     if (owned || inplace) {
-        if (begun != 1) fprintf(stderr, "owned colors: the two draws took %llu passes\n", (unsigned long long)begun);
-        CHECK(begun == 1);
+        /* Periodic asynchronous submissions can split the pass. The draws must still cause no CPU wait, and each
+           extra pass must have a submission that explains it. */
+        if (begun > 1 + submitted || !no_wait)
+            fprintf(stderr, "owned colors: %llu passes, %llu submissions, no-wait=%d\n",
+                    (unsigned long long)begun, (unsigned long long)submitted, no_wait);
+        CHECK(begun >= 1 && begun <= 1 + submitted && no_wait);
         CHECK(own_landings() == landings && own_lookup(copy_cpu, bytes, NULL, 0) == owned);
     }
     printf("owned colors: a draw read vertex colors the GPU holds %s\n",
@@ -342,21 +351,28 @@ static int owned_index_case(GpuChannel* channel, u64 target, u64 indices, u64 in
     rt_clear(channel, target, 4, 4, 0, 1);
     channel->r3d_dirty = ~0u; /* the registers were set directly */
     mx_draw_state_sync(channel);
-    u64 passes = g_vk_passes;
+    u64 passes = g_vk_passes, submits = vk_submit_number(), finishes = g_vk_finishes;
+    u64 waits = 0;
+    for (u32 i = 0; i < VK_WAIT_N; i++) waits += g_vk_waits[i];
     DrawCall red = {.topology = 6, .count = 4, .instances = 1},
              green = {.topology = 4, .indexed = 1, .count = 6, .instances = 1};
     vk_render_draw(&channel->ds, &red, &channel->owner);
     vk_render_draw(&channel->ds, &green, &channel->owner);
-    u64 begun = g_vk_passes - passes;
+    u64 begun = g_vk_passes - passes, submitted = vk_submit_number() - submits;
+    u64 waited = 0;
+    for (u32 i = 0; i < VK_WAIT_N; i++) waited += g_vk_waits[i];
+    int no_wait = g_vk_finishes == finishes && waited == waits;
     CHECK(!index_pixels(target, &px));
     vk_unlock();
     if (!index_all_green(&px)) fprintf(stderr, "owned indices: %u green, %u red\n", px.green, px.red);
     CHECK(index_all_green(&px));
     if (owned || inplace) {
-        if (begun != 1 || own_landings() != landings)
-            fprintf(stderr, "owned indices: the two draws took %llu passes, %llu landings\n", (unsigned long long)begun,
-                    (unsigned long long)(own_landings() - landings));
-        CHECK(begun == 1 && own_landings() == landings);
+        /* As above, periodic submissions are allowed; a CPU index read or an unexplained pass break is not. */
+        if (begun > 1 + submitted || !no_wait || own_landings() != landings)
+            fprintf(stderr, "owned indices: %llu passes, %llu submissions, %llu landings, no-wait=%d\n",
+                    (unsigned long long)begun, (unsigned long long)submitted,
+                    (unsigned long long)(own_landings() - landings), no_wait);
+        CHECK(begun >= 1 && begun <= 1 + submitted && no_wait && own_landings() == landings);
         CHECK(own_lookup(indices_cpu, sizeof bytes, NULL, 0) == owned);
     }
     printf("owned indices: a draw read the indices the GPU holds %s\n",

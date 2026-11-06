@@ -365,6 +365,8 @@ static int create_device(void) {
     WANT(shaderStorageImageExtendedFormats);
     WANT(shaderStorageImageWriteWithoutFormat);
     WANT(shaderStorageImageReadWithoutFormat);
+    WANT(shaderStorageImageMultisample);
+    WANT(shaderResourceMinLod);
     WANT(shaderClipDistance);
     WANT(shaderCullDistance);
     WANT(shaderFloat64);
@@ -409,6 +411,9 @@ static int create_device(void) {
         has_vertex_input = snx_vk_extensions_has(&e, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
         g_vk.has_xfb = snx_vk_extensions_has(&e, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
         g_vk.has_mixed_samples = snx_vk_extensions_has(&e, VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME);
+        g_vk.has_coverage_to_color = snx_vk_extensions_has(&e, VK_NV_FRAGMENT_COVERAGE_TO_COLOR_EXTENSION_NAME);
+        g_vk.has_post_depth_coverage = snx_vk_extensions_has(&e, VK_EXT_POST_DEPTH_COVERAGE_EXTENSION_NAME);
+        g_vk.sample_locations.available = snx_vk_extensions_has(&e, VK_EXT_SAMPLE_LOCATIONS_EXTENSION_NAME);
         g_vk.advanced_blend_caps.available = snx_vk_extensions_has(&e, VK_EXT_BLEND_OPERATION_ADVANCED_EXTENSION_NAME);
         g_vk.has_fragment_interlock = snx_vk_extensions_has(&e, VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME);
         g_vk.has_border_color = snx_vk_extensions_has(&e, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
@@ -462,6 +467,26 @@ static int create_device(void) {
     if (uma_with == VK_UMA_WITH_AHB) ext[next++] = "VK_ANDROID_external_memory_android_hardware_buffer";
     if (has_budget) ext[next++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
     if (g_vk.has_mixed_samples) ext[next++] = VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME;
+    if (g_vk.has_coverage_to_color) ext[next++] = VK_NV_FRAGMENT_COVERAGE_TO_COLOR_EXTENSION_NAME;
+    if (g_vk.has_post_depth_coverage) ext[next++] = VK_EXT_POST_DEPTH_COVERAGE_EXTENSION_NAME;
+    if (g_vk.sample_locations.available) {
+        ext[next++] = VK_EXT_SAMPLE_LOCATIONS_EXTENSION_NAME;
+        VkPhysicalDeviceSampleLocationsPropertiesEXT locations = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLE_LOCATIONS_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                                  .pNext = &locations};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &properties);
+        g_vk.sample_locations.counts = locations.sampleLocationSampleCounts;
+        g_vk.sample_locations.subpixel_bits = locations.sampleLocationSubPixelBits;
+        g_vk.sample_locations.variable = locations.variableSampleLocations;
+        g_vk.sample_locations.coordinate_min = locations.sampleLocationCoordinateRange[0];
+        g_vk.sample_locations.coordinate_max = locations.sampleLocationCoordinateRange[1];
+        for (u32 i = 0; i < 5; i++) {
+            VkMultisamplePropertiesEXT multisample = {.sType = VK_STRUCTURE_TYPE_MULTISAMPLE_PROPERTIES_EXT};
+            vkGetPhysicalDeviceMultisamplePropertiesEXT(g_vk.phys, (VkSampleCountFlagBits)(1u << i), &multisample);
+            g_vk.sample_locations.grid[i] = multisample.maxSampleLocationGridSize;
+        }
+    }
     /* the extension only with a host time domain among the calibrateable ones: CLOCK_MONOTONIC_RAW is the clock
        the Tracy client keeps its own time in, so the two domains' pair maps the GPU's timestamps onto it */
     if (has_calibrated) {
@@ -612,6 +637,18 @@ static int create_device(void) {
         has_shader_clock ? (qclock.shaderSubgroupClock ? 1 : 0) | (qclock.shaderDeviceClock ? 2 : 0) : 0;
     g_vk.has_divisor = g_vk.has_divisor && fdiv.vertexAttributeInstanceRateDivisor;
     g_vk.has_xfb = g_vk.has_xfb && fxfb.transformFeedback;
+    g_vk.has_geometry_streams = g_vk.has_xfb && fxfb.geometryStreams;
+    g_shader_geometry_streams = g_vk.has_geometry_streams;
+    if (g_vk.has_geometry_streams) {
+        VkPhysicalDeviceTransformFeedbackPropertiesEXT properties = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 query = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                               .pNext = &properties};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &query);
+        g_vk.geometry_streams_lines_triangles = properties.transformFeedbackStreamsLinesTriangles;
+    }
+    g_shader_geometry_streams_lines_triangles = g_vk.geometry_streams_lines_triangles;
+    g_vk.has_sample_interlock = g_vk.has_fragment_interlock && qinterlock.fragmentShaderSampleInterlock;
     g_vk.has_fragment_interlock = g_vk.has_fragment_interlock && qinterlock.fragmentShaderPixelInterlock;
     if (g_vk.advanced_blend_caps.available) {
         VkPhysicalDeviceBlendOperationAdvancedPropertiesEXT advanced = {
@@ -681,6 +718,17 @@ static int create_device(void) {
     /* shaders pick an indexed texture per invocation from an array (SNX_VKB_TEXARRAY) */
     g_shader_texture_arrays = q12.shaderSampledImageArrayNonUniformIndexing != 0;
     g_shader_float16 = q12.shaderFloat16 != 0;
+    g_shader_half_rounding = 0;
+    if (q12.shaderFloat16 && p12.shaderRoundingModeRTEFloat16 && p12.shaderDenormPreserveFloat16 &&
+        p12.shaderSignedZeroInfNanPreserveFloat16 &&
+        p12.denormBehaviorIndependence != VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE &&
+        p12.roundingModeIndependence != VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE) {
+        int linked = p12.denormBehaviorIndependence == VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY ||
+                     p12.roundingModeIndependence == VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY;
+        if (!linked || (have.shaderFloat64 && p12.shaderRoundingModeRTEFloat64 && p12.shaderDenormPreserveFloat64 &&
+                        p12.shaderSignedZeroInfNanPreserveFloat64))
+            g_shader_half_rounding = linked ? 3 : 1;
+    }
     g_shader_output_layer = q12.shaderOutputLayer != 0; /* ShaderLayer: a vertex or tessellation program's layer */
     g_shader_viewport_index = have.multiViewport ? 2 | (q12.shaderOutputViewportIndex ? 1 : 0) : 0;
     VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
@@ -719,7 +767,8 @@ static int create_device(void) {
         fxfb = (VkPhysicalDeviceTransformFeedbackFeaturesEXT){
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT,
             .pNext = chain,
-            .transformFeedback = VK_TRUE};
+            .transformFeedback = VK_TRUE,
+            .geometryStreams = g_vk.has_geometry_streams};
         chain = &fxfb;
         ext[next++] = VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME;
     }
@@ -795,7 +844,8 @@ static int create_device(void) {
     VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT finterlock = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT,
         .pNext = chain,
-        .fragmentShaderPixelInterlock = VK_TRUE};
+        .fragmentShaderPixelInterlock = VK_TRUE,
+        .fragmentShaderSampleInterlock = g_vk.has_sample_interlock};
     if (g_vk.has_fragment_interlock) {
         chain = &finterlock;
         ext[next++] = VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME;

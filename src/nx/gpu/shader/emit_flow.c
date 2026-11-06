@@ -413,6 +413,16 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 u32 color = spv_emit_vec4_construct(&c->emit, color_type, components);
                 spv_emit_store(&c->emit, outputs[output++], color);
             }
+            if (t->coverage_output) {
+                u32 bits = spv_emit_load(
+                    &c->emit, c->u32_type,
+                    spv_emit_interface_scalar_pointer(&c->emit, 1, c->u32_type, t->coverage, 0, c->zero));
+                u32 values[4] = {bits, c->zero, c->zero, c->zero};
+                u32 color = spv_emit_vec4_construct(&c->emit, vec4_u32, values);
+                if (si->rt_sint_mask & (1u << (si->coverage_to_color - 1)))
+                    color = spv_emit_bitcast(&c->emit, vec4_i32, color);
+                spv_emit_store(&c->emit, t->coverage_output, color);
+            }
             if (sample_mask_output)
                 spv_emit_store(
                     &c->emit,

@@ -1638,10 +1638,24 @@ int plat_alias_unmap(u8* p, u64 size) {
     ww_remapped(p, size); /* the anonymous mapping is a new one too */
     return 0;
 }
-int plat_vm_map_fd(u8* p, u64 size, int fd, u64 off) {
+int plat_vm_map_fd(u8* p, u64 size, int fd, u64 off, u64 allocation_size) {
     int r;
+    if (!size || off > allocation_size || size > allocation_size - off || allocation_size > SIZE_MAX) return -1;
     wp_hold(p, size, WP_MAPPED);
     r = mmap(p, (size_t)size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, (off_t)off) == MAP_FAILED;
+#if defined(__linux__)
+    if (r) {
+        /* NVIDIA's dma-buf mmap rejects a nonzero offset. mremap moves a subrange of a full zero-offset mapping,
+           preserving the same pages at both guest addresses. A copy cannot preserve writes through either alias. */
+        void* base = mmap(NULL, (size_t)allocation_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (base != MAP_FAILED) {
+            uintptr_t a = (uintptr_t)base, b = (uintptr_t)p;
+            if (b >= a ? b - a >= allocation_size : a - b >= size)
+                r = mremap((u8*)base + off, (size_t)size, (size_t)size, MREMAP_MAYMOVE | MREMAP_FIXED, p) == MAP_FAILED;
+            munmap(base, (size_t)allocation_size); /* includes the hole left by the moved pages */
+        }
+    }
+#endif
     wp_let(p, size, WP_MAPPED, !r);
     return r ? -1 : 0;
 }

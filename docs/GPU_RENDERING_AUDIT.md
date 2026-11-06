@@ -6,6 +6,7 @@
 
 * [Scope and fixes](#scope-and-fixes)
 * [Additional rendering support](#additional-rendering-support)
+* [API inventory](#api-inventory)
 * [Follow-up support and restrictions](#follow-up-support-and-restrictions)
   * [GPU event waits](#gpu-event-waits)
   * [Shader subroutines](#shader-subroutines)
@@ -43,17 +44,48 @@ untouched padding. Reading the image independently prevents matching upload/down
 | Partial stencil clears | A masked stencil draw preserves unselected bits. Depth clears, scissors, array layers and zero masks retain their separate effects. | Exact D24S8/D32FS8 depth/stencil aspect copies on both GPUs. Undefined X8 padding is excluded. |
 | Copy transforms | GPU paths support valid X/Y/Z mirrors, nearest scaling and supported linear image blits. Logical bounds exclude GOB padding. Ordinary copies retain their existing DMA path. | Buffer/image copies, layer offsets, transform combinations, nearest scaling, linear filtering and untouched padding. |
 | Fixed state | Record/replay alpha reference, point size, depth bounds and default tessellation levels. Setters snapshot their inputs. | Frontend state assertions and exact RGBA32F point, alpha-test and depth-bound output. |
-| Evaluation-only tessellation | A generated control shader forwards patch positions and generic float attributes, then writes fixed levels. NVN program control metadata selects the domain, spacing and output primitive. | Exact positions and colors for selected input vertices 0/1/2, level-zero patch rejection, patch sizes 1/3/4/32 SPIR-V validation and program metadata lifetime tests. |
+| Graphics storage images | Vertex, tessellation control/evaluation, geometry and fragment stages have their own image and buffer-image bindings and integer format variants. Graphics layouts share the whole-pipeline descriptor budget. Compute retains an independent layout and its full per-stage budget. | Frontend bank tests, generated modules and per-stage load/store fixtures. |
+| Indexed multisample textures | Dynamic handle tables retain multisample image types and explicit sample operands for 2D and 2D-array textures. Integer and floating-point view types stay distinct. | Six compiler fixtures and a two-texture, four-sample GPU fetch fixture. |
+| Texture gradients and offsets | 3D and cube-array gradient samples retain dimensions, faces and layers. Proven uniform texel offsets become exact `ConstOffset` operands; changed words select another shader variant. | 170 strict samples, a separate minified cube-edge probe, and 24 changed-offset/mip samples. |
+| Half texture results | Texture and half-arithmetic result packing uses exact nearest-even conversion. Native float16 conversion requires explicit host rounding, denormal and signed-zero controls; other devices use integer significand rounding. | 128 real R32F TEXS/TLDS/TLD4S/HADD2 cases, plus independent conversion checks. |
+| Cross-stage image aliases | A draw uses compatible sampled/storage layouts across all stages and retains its complete write access until the next dependency. Target snapshots finish before the programmable blend transition. | TES stores with FS sampling and TES/GS target snapshots across consecutive draws, without host waits. |
+| Shader code reads | Coherence requests grow from a short prefix instead of landing unrelated GPU results in a fixed 128 KiB window. BRX retains the full-window path because its proof inspects later branches. | Nine hash/length differential cases and a regression that rejects a forced full-window GPU wait. |
+| DrawTexture | A generated vertex/fragment pair rasterizes the rectangle with the bound sampler, component masks, blending and alpha tests. Depth/stencil tests and conservative rasterization follow the API's DrawTexture rules. | Dedicated sampler, edge clamp, blend, alpha-test, write-mask and MSAA fixtures. |
+| Evaluation-only tessellation | A generated control shader forwards patch positions, generic attributes, point size and clip distances, then writes fixed levels. Clip interfaces use eight elements across stages. Earlier layer/viewport outputs are inert before evaluation. | Selected input vertices, fixed levels, point/clip payloads, opposite producer/consumer clip indices, interface bounds and generated-module fixtures. |
 | Transform feedback | Save, pause, resume and restore GPU counter controls per owner. A GPU shader converts captured bytes and stride into indirect draw arguments. | Exact counter data, owner isolation, control padding and a capture/redraw round trip. No CPU counter readback in the runtime. |
 | Advanced blending | Exact ordinary-blend reductions, native advanced operations and an ordered shader path. Each path has separate device and draw restrictions, described below. | Independent numerical references, pipeline capability tests and Vulkan equation, overlap, mask and discard checks. |
 | Coverage modulation | On native mixed-sample hardware, color-only coverage supports NONE/RGB/ALPHA/RGBA, linear modulation and the 16-entry custom table. Pipeline keys retain active coverage state. | NVIDIA checks all 17 representable coefficients with 2x/4x raster sampling. AMD explicitly skips this feature. |
+| Custom sample positions | Exact sample grids, sixteenth-pixel coordinates and lower-left grid phase enter the pipeline key. Repeated grids reduce only when their patterns are identical. Depth images retain compatible sample-location state. | CPU keys and GPU custom-raster fixtures, with explicit device limits. |
+| Coverage to color | Native coverage output or a safe post-depth shader path writes signed/unsigned single-component integer masks. The shader path retains the early-test and output restrictions described below. | Per-sample depth rejection and signed/unsigned mask fixtures. |
+| Presentation rotation | A GPU quad handles 90-degree rotation together with crop and flip coordinates. | Presentation rotation, crop and flip fixtures. |
+| Linux placed-memory aliases | When a DMA buffer rejects a nonzero mmap offset, map the whole allocation at offset zero and move the requested subrange with `mremap`. This preserves shared backing without a CPU copy. | POSIX mapping and placed-view coherence fixtures. |
 
 The fixed-state payloads share one opcode and remain outside the serialized draw-state ABI. Per-draw state only
 copies the enabled fixed-state arrays. Pipeline keys separate host capabilities and effective coverage state.
-Generated tessellation modules stay cached by patch size and interface mask for repeated draws.
+Generated tessellation modules stay cached by patch size and interface mask for repeated draws. The persistent
+shader file owns their modules and retains a small source description for regeneration after a cache rebuild.
+Generated DrawTexture modules also use the shader cache.
 Program metadata tables grow instead of crashing after 1,024 shader updates. Their shared binary lookup retains
 immutable declarations and capture layouts for old command recordings. Insertions also handle shader threads that
 finish out of serial order. A 1,153-update regression checks growth, every saved serial and old/new recordings.
+
+## API inventory
+
+`tools/check_nvn_contracts.py` indexes API declarations, runtime resolver routes, lookup hooks and handler bodies.
+The current inventory contains 699 declaration names across 562 canonical APIs, including 137 inline fastpath
+variants. All ordinary core API names have a runtime lookup. The 24 unmatched declarations comprise 21 vendor
+extensions and three internal debug validators.
+
+The report separates empty bodies, constant returns and explicit limitation signals. It also identifies reviewed
+contexts such as debug operations, compression hints, memory coherence and runtime-owned metadata. These findings
+do not prove a missing rendering feature. A nontrivial handler also does not prove that every shader, format or
+recorded command path works. The inventory reports no compatibility percentage or inferred performance gain.
+
+Reference-only identifiers use stable IDs by default. `--include-reference-names` enables names for local review.
+Reports omit reference source text and paths. Priority labels use documented API-name and dependency heuristics.
+
+The command-memory callback switch now retains its setting independently of the control-memory callback switch.
+Its regression fixture checks suppression, re-enable and control-memory callback independence.
 
 ## Follow-up support and restrictions
 
@@ -122,13 +154,15 @@ shader floating-point operations. Its tests allow `1e-6` linear error and one en
 
 Two-dimensional copies can use bilinear filtering through the compute path when both format descriptors support it.
 Coordinates use texel centers and clamp to logical image bounds, excluding padded GOB columns. Volume filtering
-remains unsupported. The compute converter does not handle integer, compressed or three-component RGB16F/RGB32F
-conversion. RGBA4 can use exact same-format nearest transforms, but it has no descriptor for numeric conversion.
+with linear filtering is invalid NVN input. Integer/compressed cross-format conversion and arbitrary depth/stencil
+format conversion also fall outside the copy contract. These combinations are not renderer feature gaps.
+Three-component RGB16F/RGB32F texture formats have no COPY2D conversion support. Non-renderable COPY2D formats,
+including RGBA4 and packed RGB16 formats, retain exact byte-preserving nearest transforms.
 
 Same-format depth/stencil transforms use the host image blit when available. Otherwise the GPU copies each aspect to
 scratch memory, gathers the requested nearest texels and copies each aspect back. This supports D32FS8 mirrors and
 scaling without host blit support. It preserves depth and stencil independently. It does not add linear depth/stencil
-filtering or arbitrary conversion between depth/stencil formats.
+filtering or arbitrary conversion between depth/stencil formats, which are invalid copy requests.
 
 `vulkan_nvn_copy_conversions.inc` checks volume UNORM and float conversion, packed nearest/bilinear transforms,
 sRGB transfer, rendered depth/stencil transforms and untouched row padding. `nvn_copy_formats` checks frontend format
@@ -137,19 +171,26 @@ selection and rejects unsupported conversion rather than copying incompatible by
 ### Advanced blend paths
 
 The renderer uses three GPU paths for advanced state on color target 0. Blend enable and ordinary logic-op state
-still control whether that state applies. Other color targets must have no active writes for the native and shader
-paths. Shader and pipeline keys retain the effective equation and its parameters.
+still control whether that state applies. NVN advanced blending supports one color target, target 0. Multiple active
+color targets have undefined API behavior and are not a missing MRT feature. Shader and pipeline keys retain the
+effective equation and its parameters.
 
 | Path | Supported behavior | Restrictions |
 | --- | --- | --- |
 | Ordinary blend reduction | PLUS, MINUS and RED/GREEN/BLUE selectors. With normalized destination values: ZERO/SRC/DST, premultiplied uncorrelated Porter-Duff modes and SCREEN, plus nonpremultiplied SRC and SRC_OVER. | Only the parameter combinations with an exact fixed-function equation qualify. Other correlated Porter-Duff and artistic equations need another path. |
 | Native advanced blend | Maps all 46 NVN advanced modes to `VK_EXT_blend_operation_advanced`, including artistic/HSL operations and disjoint/conjoint overlap. | The device must provide coherent operations. Its limits must permit the attachment count, operation, source premultiplication and overlap. Without `advancedBlendAllOperations`, only the extension's required operation subset qualifies. |
-| Ordered shader blend | Computes the 46 equations with an ordered destination read/modify/write under fragment shader interlock. Supports source premultiplication, all three overlap modes, component masks and alpha-test discard. | Requires pixel interlock, fragment storage writes and storage-image reads/writes without format. The target must be a single-layer, storage-capable, non-sRGB 2D color image without MSAA. No depth/stencil attachment, mixed-sample coverage, alpha-to-coverage or alpha-to-one. |
+| Ordered shader blend | Computes the 46 equations with an ordered destination read/modify/write under fragment shader interlock. Supports source premultiplication, all three overlap modes, component masks, array layers, sRGB transfer and multisample storage images. Guest storage images use separate bindings. Indexed texture tables retain target-feedback checks. | Requires pixel interlock, fragment storage writes and storage-image reads/writes without format. The target must be storage-capable. MSAA also requires multisample storage images and a supported raster sample count. Depth/stencil requires safe early tests, with PostDepthCoverage for multisample masks. Mixed-sample coverage, alpha-to-coverage and alpha-to-one remain outside this shader path. |
 
-The shader path also rejects integer targets, additional fragment outputs, depth/sample-mask outputs, indexed texture
-tables, shader image accesses, layer/viewport outputs and texture reads that alias the destination. It uses the
-existing destination image directly, without a CPU composite or an extra whole-draw blend pass. Ordered interlock
-preserves overlap between primitives within one draw.
+The shader path rejects integer targets, volume targets, additional fragment outputs and depth/sample-mask outputs.
+The blend attachment occupies the image binding after the guest storage images, so both must fit the same stage
+budget. A pipeline without blending retains its ordinary guest image capacity. Indexed tables resolve their entries
+before applying target-feedback snapshots and ordering. The shader path uses the destination image directly.
+Ordered interlock preserves overlap between primitives within one draw.
+
+Safe early tests mean that the guest program explicitly requests early tests, or that moving tests earlier cannot
+change discard, alpha-test or storage side effects. A general late-depth program with discard cannot use this shortcut.
+Forcing early tests can update depth/stencil for a fragment that later discards. PostDepthCoverage does not remove
+that semantic difference. Native advanced blending remains available for supported device and format combinations.
 
 Unpremultiplied sources retain their original RGB values. Premultiplied color normalization preserves exact zero
 and one endpoints, and HARDMIX compares its threshold before division. This avoids large discontinuous errors from
@@ -159,8 +200,8 @@ the division accuracy permitted by the [Vulkan SPIR-V environment](https://docs.
 the advanced equations' premultiplied destination interpretation for either value of the hint. The ordinary reduction
 path requires the hint only for equations that depend on normalized destination values.
 
-States outside these gates retain ordinary blend behavior. They do not have an exact advanced implementation.
-The native GPU fixture checks only combinations that the device advertises. The shader fixture disables the native
+States outside these gates do not have an exact ordered-shader implementation. The native GPU fixture checks only
+combinations that the device advertises. The shader fixture disables the native
 path to exercise interlock, including two overlapping primitives, component masks and discarded fragments. Numerical
 checks use a tolerance of `0.003` for native operations and `0.00005` for the shader path. These account for device
 arithmetic precision and do not permit missing equations or ordering errors.
@@ -175,7 +216,11 @@ its run. Supply a new output directory for each run.
 cmake --build build --target snx-test-nvn-descriptors snx-test-nvn-tex-storage \
   snx-test-nvn-commands snx-test-nvn-draw-banks snx-test-nvn-copy-formats snx-test-nvn-names \
   snx-test-nvn-advanced-blend snx-test-vk-coverage snx-test-vk-tess-passthrough \
+  snx-test-vk-sample-locations snx-test-shader-indexed-ms snx-test-shader-tcs-dead-outputs \
+  snx-test-shader-direct-regressions snx-test-shader-float-rounding snx-test-shader-integer-half snx-test-shader-blend-images \
+  snx-test-shader-half-native snx-test-shader-half-packing snx-test-shader-txd-uniform \
   snx-test-nvn-queue-lifetime snx-test-vk-advanced-blend snx-test-vulkan -j6
+ctest --test-dir build -R 'nvn_contracts|vk_sample_locations|vk_tess_passthrough|shader_(indexed_ms|tcs_dead_outputs|float_rounding|integer_half|blend_images|half_native|half_packing|txd_uniform)'
 python3 tools/check_nvn_rendering.py --validation --record both --out .cache/nvn-render-check-new
 ```
 
@@ -191,76 +236,76 @@ The output contains runtime source hashes in `sources.json`, binary hashes, per-
 It checks binary hashes before/after each process and source hashes after the suite. These detect changes during a
 run. They do not prove that a binary was built from the captured sources. Build first.
 
-Before these follow-up features, the suite passed all 13 selected checks: nine native fixtures and both descriptor
-paths on the NVIDIA RTX 5050 Laptop GPU and AMD Radeon 780M. Only AMD coverage modulation reported a feature skip.
-Thus `all_selected_passed` was true and `all_gpu_features_passed` was false. Source and per-run binary hashes stayed
-unchanged.
+The earlier follow-up revision passed 19 selected checks across the NVIDIA RTX 5050 Laptop GPU and AMD Radeon
+780M, descriptor sets/buffers and synchronous/threaded recording. That validation result applies to that revision.
+AMD explicitly skipped native advanced blending and mixed-sample coverage, while its ordered shader blend path
+passed. Earlier mutation checks exercised transform-feedback counts, coverage indexing, tessellation input selection,
+retained metadata, subroutine addresses, sRGB transfer and blend endpoints.
 
-For that earlier revision, related native and Python checks passed. ASan/UBSan checks passed for draw state, copy
-formats and frontend/program metadata. All four generated control-stage SPIR-V variants passed
-`spirv-val --target-env vulkan1.3`. Expanded compiler warnings on 17 changed runtime translation units showed no new
-warnings. Four existing warnings remained.
+The current revision passed all 29 selected checks: 21 native fixtures and eight complete Vulkan runs across
+NVIDIA RTX 5050 Laptop and AMD Radeon 780M, descriptor sets/buffers and synchronous/threaded recording. Source
+and executable hashes remained unchanged during the matrix. Both descriptor paths also passed the forced-UMA
+suite after the new fixtures received isolated guest-memory ranges.
 
-The full 450-test run on this host passed 444 tests and skipped three. `gamepad` failed its SDL dummy-driver
-keyboard-focus assertion. `vulkan_headless_uma` and `vulkan_headless_descriptor_buffers_uma` failed the placed-view
-coherence assertion. Both UMA failures also reproduce on unchanged upstream. The two-driver matrix above uses
-staging memory (`--vk_memory=1`).
+Each GPU run checks nine shader-read cases, 8,192 integer-to-half results, 768 floating-point narrowing results, 128 half texture/arithmetic
+results, 170 strict gradient samples and 24 uniform-offset samples, in addition to the existing rendering suite.
+The native conversion path and software fallback have separate tests. Disabling map invalidation makes the
+changed-table regression fail. Restoring the old full-window shader read makes the no-host-wait regression fail.
+Both mutations were restored byte for byte before rebuilding.
 
-Earlier mutation checks deliberately broke the transform-feedback count, coverage coefficient index and tessellation
-input vertex index. Their respective tests failed. The sources were restored before that hardware matrix.
+AMD explicitly skips native advanced blending and native mixed-sample coverage. NVIDIA 615.78.08 returns mip 1
+for a separate cross-face cube-gradient probe whose analytic result is mip 2. That exact driver/result combination
+is reported as a skip; every other mismatch fails. The 170 strict center and magnification-edge cases remain
+mandatory. The report's `all_gpu_features_passed` is false when any feature is skipped.
 
-The follow-up passed all 19 selected checks: 11 native fixtures and eight Vulkan runs across the same two GPUs,
-descriptor sets/buffers and synchronous/threaded recording. Validation was enabled. No VUID or threading errors were
-reported. AMD explicitly skipped native advanced blending and mixed-sample coverage; its ordered shader blend path
-passed. Source and per-run binary hashes stayed unchanged.
-
-Each Vulkan run checked 79,764 blend equation cases. All 276 generated equation modules passed
-`spirv-val --target-env vulkan1.3`. ASan/UBSan passed for queue lifetime, frontend/program metadata and copy formats.
-Four mutations broke retained texture pointers, absolute subroutine addresses, sRGB decoding and blend endpoints;
-the respective native or Vulkan checks rejected each mutation. The source bytes were restored and rebuilt.
-
-The full Clang build passed. Expanded warnings on 18 runtime files found the same four existing warnings. All 17
-Python harness tests and the documentation checks passed. The full 469-test run passed 463 tests and skipped three.
-The gamepad focus assertion and the two forced-UMA placed-view assertions listed above remained the three failures.
+Validation used an unmodified upstream Khronos layer at revision
+[0eb481b](https://github.com/KhronosGroup/Vulkan-ValidationLayers/commit/0eb481b2d48ea4697d0aa49bb3f39e6c0123f569),
+version 1.4.367. The installed 1.4.363 layer incorrectly sums clip-distance inputs and outputs; the newer layer checks
+each interface separately. No validation errors were filtered. Use a current layer for the clip-forwarding checks.
 
 ## Remaining gaps
 
-These rendering gaps need further work:
+These valid rendering combinations still need broader support or exact device behavior:
 
-* Advanced blend states outside the native, ordinary-reduction and interlock gates above retain the ordinary blend
-  fallback. In particular, the shader path does not cover depth/stencil, multisampling, sRGB targets or general MRT.
-* Coverage modulation needs a portable implementation on AMD and other devices without native mixed-sample
-  coverage. Mixed depth/color sample counts, sample shading and fragment SampleId use are not implemented by this path.
-* Evaluation-only tessellation rejects explicit per-vertex point size, layer, viewport and clip-distance forwarding.
-  Persisting its generated control modules in the startup pipeline cache needs separate support.
-* Copy conversion still excludes integer/compressed conversion, volume linear filtering and arbitrary depth/stencil
-  format changes. Invalid NVN flag combinations are rejected rather than counted as missing features.
-* Host features such as tessellation, depth bounds, large points and transform feedback still require device
-  support. Synthetic tests on two devices do not establish behavior on every driver.
+* General late-depth advanced blending with discard, alpha tests or storage side effects needs native support or
+  an exact GPU implementation of depth/stencil and blending. Forcing early tests is not equivalent.
+* Mixed-sample coverage needs a portable path on devices without native support. Separate depth/color sample
+  counts and shader invocation frequency must retain their semantics. A final whole-draw resolve cannot preserve
+  overlap-dependent primitive blending. NVN requires the raster count to match depth/stencil samples when those
+  tests run, and to be at least the color sample count.
+* Alpha-to-coverage uses the host's coverage pattern and dither behavior. The NVN dither switch is retained, but
+  exact programmable dither behavior still needs an implementation.
+* Conservative subpixel precision bias is retained in draw state. The renderer currently uses the host's raster
+  precision instead of an exact implementation of the requested bias.
+* Shader forms that require minimum-LOD operands need exact translation and the corresponding host feature gates.
+* Per-invocation TXD texel offsets still shift normalized coordinates using the base-level texture size. Under
+  minification this differs from a selected-mip offset. Literal and proven uniform `ConstOffset` operands are exact.
+* The NVIDIA minified cube-edge probe above remains a driver-specific discrepancy, distinct from strict center
+  and magnification-edge coverage.
+
+Custom sample grids must fit the device's exact grid, coordinate precision and compatible depth-image support.
+Geometry streams also depend on `geometryStreams` and the separate `transformFeedbackStreamsLinesTriangles`
+property. Tessellation, depth bounds, large points, descriptor budgets and storage image formats retain their
+device limits. These limits are distinct from undefined API inputs and from incomplete shader translation.
 
 ## Performance limits
 
-The fixes retain GPU copies, swizzles and conversions. Z mirroring changes the slice index inside existing loops,
-without adding GPU launches. Empty direct draws now avoid submission entirely. Indexed setters batch their selected
-state in one record. Dirty-bank spans, equal-bind checks, selective replay, descriptor address reuse and recent
-storage-result lookup reduce CPU preparation work.
+Copies, swizzles, conversions and composition remain GPU operations. The Linux alias change preserves shared pages
+without a CPU copy. Generated shader caches avoid repeated module construction, and indexed tables reuse unchanged
+uniform data within a frame. These mechanisms do not establish an overall CPU reduction or a frame-rate gain.
 
-The changing-channel-mask control exposed a regression from rebuilding unrelated blend factors and equations.
-Channel-mask-only updates now compare and apply their eight bytes, advancing the same blend generation only when
-needed. A draw with no dirty groups returns after checking draw parameters and device depth mode. Tests compare
-every final draw-state byte, all eight target masks, and mixed mask/blend changes in either record order.
+The measured optimization packs and stages only the active indexed-table map rows. Seven serial, shuffled paired
+rounds with exact-output gates produced these component timings:
 
-Seven serial shuffled paired rounds of one million operations on the Ryzen 9 270 produced these CPU medians:
+| Active indexed tables | Baseline median, ns/operation | Candidate median, ns/operation | CPU time reduction | Faster paired rounds |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 1432.545 | 97.147 | 93.2% | 7/7 |
+| 2 | 912.284 | 195.201 | 78.6% | 7/7 |
+| 5 | 1325.394 | 463.639 | 65.0% | 7/7 |
+| 10 | 910.251 | 915.035 | -0.5% | 3/7 |
 
-| Synthetic workload | Original baseline, ns/operation | Final, ns/operation | CPU time reduction |
-| --- | ---: | ---: | ---: |
-| Change channel masks for every draw | 49.921 | 16.441 | 67.1% |
-| Rebind equal packed state | 73.869 | 31.561 | 57.3% |
-| Rebind equal UBO, SSBO and texture | 39.938 | 24.451 | 38.8% |
-
-The baseline is the saved binary from before the earlier equal-bind optimization. These figures include that
-earlier work. The candidate wins all seven paired rounds for each workload, with exact output gates on every sample.
-Absolute timings vary with host conditions. This serial comparison measures the CPU preparation routines.
-Keep raw samples and binary hashes for each local run.
+These synthetic results measure map preparation and staging, not the full renderer, GPU time, total CPU use or game
+FPS. The maximum-size case shows no measured improvement. Absolute timings depend on the host and run conditions.
+Keep the paired raw samples, workload parameters and binary hashes with each local comparison.
 
 Use [the paired CPU harness](GPU_HOTPATH_BENCH.md) to compare the selected CPU workloads with matched fixtures.

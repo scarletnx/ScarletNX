@@ -159,6 +159,7 @@ u32 shader_legacy_base(u32 g);
 /* dataflow.c */
 int shader_direct_own_pixel_fetch(const u64* insn, u32 n, u32 index);
 int shader_direct_track_const(const u64* insn, u32 n, u32 index, u32 reg, u32* value, int depth);
+int shader_direct_track_cbuf_word(const u64* insn, u32 n, u32 index, u32 reg, u32* bank, u32* off, int depth);
 int shader_direct_track_image_handle(const u64* insn, u32 n, u32 index, u32 reg, u32* bank, u32* off, int depth);
 int shader_direct_track_image_handle_pair(const u64* insn, u32 n, u32 index, u32 reg, u32* bank, u32* off, u32* bank2,
                                           u32* off2, int depth);
@@ -195,6 +196,7 @@ u32 shader_half_immediate(DirectCtx* c, u64 w);
 u32 shader_half_fmz(DirectCtx* c, u32 vec2, u32 pair, u32 lhs, u32 rhs, u32 zero_value);
 u32 shader_float_saturate(DirectCtx* c, u32 value, int saturate);
 u32 shader_half_pair_result(DirectCtx* c, u32 vec2, u32 pair, u32 old, u32 merge, int saturate);
+u32 shader_pack_half_rte(DirectCtx* c, u32 pair);
 u32 shader_float_imm20(DirectCtx* c, u64 w);
 u32 shader_float_imm32(DirectCtx* c, u64 w);
 u32 shader_conversion_source_f32(DirectCtx* c, u32 vec2, u64 w, int kind, u32 format);
@@ -408,7 +410,10 @@ typedef struct {
     u32* input_vec_type;
     u32 position;
     u32* output_attrs;
+    u32 (*stream_capture)[128];
+    u32 stream_mask;
     u32 point_size;
+    u32 point_size_in, clip_input;
     u32 default_point_size;
     u32 layer_output;
     u32 layer_input;
@@ -432,6 +437,7 @@ typedef struct {
     u32 sample_mask_output;
     u32 sample_id;
     u32 coverage;
+    u32 coverage_output;
     u32 fragcoord;
     u32 frontface;
     u32 point_coord;

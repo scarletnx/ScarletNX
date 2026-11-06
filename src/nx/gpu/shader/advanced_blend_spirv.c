@@ -31,6 +31,24 @@ static u32 unpremultiply(BlendEmit* c, u32 color, u32 alpha) {
 }
 static u32 complement(BlendEmit* c, u32 a) { return subtract(c, c->one, a); }
 static u32 clamp(BlendEmit* c, u32 a) { return minimum(c, c->one, maximum(c, c->zero, a)); }
+u32 shader_blend_srgb(SpvEmitter* e, u32 f32, u32 boolean, u32 vec4, u32 color, int encode) {
+    BlendEmit context = {e, f32, boolean, spv_emit_constant_f32(e, f32, 0), spv_emit_constant_f32(e, f32, 1)};
+    BlendEmit* c = &context;
+    u32 result[4];
+    for (u32 i = 0; i < 3; i++) {
+        u32 x = clamp(c, spv_emit_vec4_extract(e, f32, color, i));
+        u32 low = encode ? multiply(c, constant(c, 12.92f), x) : divide(c, x, constant(c, 12.92f));
+        u32 high = encode
+                       ? subtract(c, multiply(c, constant(c, 1.055f),
+                                              SPV_EXT(e, f32, SPV_GLSL_POW, x, constant(c, 1.0f / 2.4f))),
+                                  constant(c, 0.055f))
+                       : SPV_EXT(e, f32, SPV_GLSL_POW,
+                                 divide(c, add(c, x, constant(c, 0.055f)), constant(c, 1.055f)), constant(c, 2.4f));
+        result[i] = choose(c, less(c, constant(c, encode ? 0.0031308f : 0.04045f), x), high, low);
+    }
+    result[3] = spv_emit_vec4_extract(e, f32, color, 3);
+    return spv_emit_vec4_construct(e, vec4, result);
+}
 static u32 dodge(BlendEmit* c, u32 s, u32 d) {
     return choose(c, less(c, c->zero, d),
                   choose(c, less(c, s, c->one), minimum(c, c->one, divide(c, d, complement(c, s))), c->one), c->zero);

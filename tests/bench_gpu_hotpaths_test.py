@@ -127,7 +127,9 @@ class Execution(unittest.TestCase):
             exe.write_bytes(b'executable stub; never run')
             exe.chmod(0o755)
             index = root / 'index.json'
-            index.write_text(json.dumps({'api_coverage': {'hooks': 539}}))
+            index.write_text(json.dumps({'api_coverage': {'hooks': 539},
+                'classification': 'static_contract_and_api_evidence', 'counts': {'contracts': 18},
+                'api_inventory': {'counts': {'canonical_api_names': 562}, 'apis': ['local-reference-only']}}))
             calls = []
 
             def execute(binary, arguments, directory, timeout):
@@ -144,6 +146,9 @@ class Execution(unittest.TestCase):
             self.assertEqual(len(one['measurements']), 6)
             self.assertEqual(one['status'], 'complete')
             self.assertEqual(one['reference_index']['api_coverage']['hooks'], 539)
+            self.assertEqual(one['reference_index']['api_inventory_counts']['canonical_api_names'], 562)
+            self.assertEqual(one['reference_index']['contract_counts']['contracts'], 18)
+            self.assertNotIn('apis', one['reference_index'])
             self.assertTrue(any(args == ['--bench', '--baseline'] for _, args in calls))
             self.assertIn('not game FPS', (root / 'one/report.md').read_text())
             with mock.patch.object(bench, 'execute', side_effect=RuntimeError('exact output failed')), \

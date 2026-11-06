@@ -158,6 +158,8 @@ static int ms_fetch(GpuChannel* ch, u64 base, const u32 tic[8], const u8* sample
     return 0;
 }
 
+#include "vulkan_indexed_ms.inc"
+
 /* base: where the programs and ms_fetch's tables are */
 static int ms_case(GpuChannel* ch, u64 base, u64 target, u64 resolved, u64 loaded, int bl) {
     u32* r = ch->r3d;
@@ -254,6 +256,7 @@ static int ms_case(GpuChannel* ch, u64 base, u64 target, u64 resolved, u64 loade
     CHECK(t == s);
     /* a program reads each sample */
     CHECK(!ms_fetch(ch, base, tic, pattern));
+    CHECK(!ms_indexed_fetch(ch, base, tic, pattern));
     /* one over other memory loads its samples from there */
     CHECK(!gmem_write(loaded, lay, bl ? 512 : 256));
     tic[1] = (u32)loaded;

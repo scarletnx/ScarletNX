@@ -3,11 +3,13 @@
 /* Force ordered programmable blending on RGBA32F, including primitive overlap, masks and discarded fragments. */
 #include "nx/gpu/nvn/nvn_blend.h"
 #include "support/nvn_advanced_blend_ref.h"
+#include "vulkan_nvn_advanced_targets.inc"
 
 static int check_nvn_advanced_shader(void) {
     if (!g_vk.has_fragment_interlock || !g_vk.feat.fragmentStoresAndAtomics ||
         !g_vk.feat.shaderStorageImageReadWithoutFormat ||
         !g_vk.feat.shaderStorageImageWriteWithoutFormat) {
+        puts("SKIP shader advanced targets: ordered storage-image blending is unavailable");
         puts("SKIP NVN shader advanced blend: ordered storage-image blending is unavailable");
         return 0;
     }
@@ -166,6 +168,10 @@ static int check_nvn_advanced_shader(void) {
         }
         for (u32 i = 0; i < 4; i++) CHECK(fabsf(pixel[i] - expected[i]) < 0.00005f);
     }
+    for (u32 i = 0; i < 6; i++) memcpy(vertices + i * 8 + 4, colors[0], 16);
+    CHECK(!gmem_write(stream, vertices, sizeof vertices));
+    g_renderer->method_barrier(2);
+    CHECK(!advanced_target_variants(channel, target));
     vk_unlock();
     g_vk.advanced_blend_caps.available = native_available;
     free(channel);

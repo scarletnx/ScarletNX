@@ -391,6 +391,15 @@ done:
     return h;
 }
 
+int shader_code_full_window(const u8* code, u32 bytes) {
+    for (u32 i = 11; i < bytes / 8; i++) {
+        if (!IDX_OK(i)) continue;
+        const Op* op = decode(snx_ld_le64(code + (size_t)i * 8));
+        if (op && op->id == O_BRX) return 1;
+    }
+    return 0;
+}
+
 /* Absolute calls/jumps need their shader-pool base in the module key. Relative-only programs keep a zero base. */
 int shader_absolute_flow(const u8* code, u32 bytes) {
     for (u32 i = 11; i < bytes / 8; i++) {

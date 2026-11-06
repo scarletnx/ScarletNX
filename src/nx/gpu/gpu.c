@@ -1353,7 +1353,7 @@ void gpu_release_retire(u32 channel) {
    their offsets, the words fetched at submission and late, and where it stopped; a call (vi's present of a queued
    buffer, a closed channel's retire) by its function and argument. The submission scans and the copy snapshots go
    with them, so the jobs run as they would have */
-#define GPU_STATE_VERSION 1
+#define GPU_STATE_VERSION 2
 static u64 job_words_total(const GpuItem* j) {
     u64 w = 0;
     u32 e;
