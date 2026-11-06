@@ -621,8 +621,11 @@ static void sets_run(const void* p) {
         if (!(real[i] = rec_set_real(sets[i]))) return; /* a set the pools had no room for: not bound */
     vkCmdBindDescriptorSets(x->cb, x->bp, x->layout, x->first, x->n, real, x->ndyn, x->ndyn ? dyn : NULL);
 }
+static u64 g_set_binds;
+u64 vk_rec_set_binds(void) { return __atomic_load_n(&g_set_binds, __ATOMIC_RELAXED); }
 void rec_CmdBindDescriptorSets(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout layout, u32 first, u32 n,
                                const VkDescriptorSet* sets, u32 ndyn, const u32* dyn) {
+    __atomic_add_fetch(&g_set_binds, 1, __ATOMIC_RELAXED);
     if (!rec_on(cb)) {
         vkCmdBindDescriptorSets(cb, bp, layout, first, n, sets, ndyn, dyn);
         return;

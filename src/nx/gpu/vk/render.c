@@ -2148,6 +2148,7 @@ static struct {
     VkPipeline pipe;
     VkPipelineLayout layout; /* the one sets were bound through: another may disturb them */
     VkDescriptorSet sets[5];
+    u64 set_binds; /* vk_rec_set_binds when sets were: a set bound the old way since unbinds descriptor buffers */
     u32 fb, cull, front, topo, restart, discard, bias_on, dt, dw, dcmp, dbounds, st;
     VkViewport vp[GUEST_VIEWPORTS];
     VkRect2D sc[GUEST_VIEWPORTS];
@@ -3582,6 +3583,10 @@ retry:
     if (fresh) {
         memset(&g_dyn, 0, sizeof g_dyn);
         g_dyn.cb = vk_cb_begun();
+    }
+    if (g_vk.has_descriptor_buffers && g_dyn.set_binds != vk_rec_set_binds()) { /* the sets go again */
+        memset(g_dyn.sets, 0, sizeof g_dyn.sets);
+        g_dyn.set_binds = vk_rec_set_binds();
     }
     if (fresh || g_dyn.pipe != pipe) {
         g_dyn.pipe = pipe;
