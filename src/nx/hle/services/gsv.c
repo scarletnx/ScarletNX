@@ -562,6 +562,16 @@ typedef struct {
 static u32 vi2_event;            /* the notification event's kobj id */
 static u32 vi2_notifications[32]; /* the notification bitmask */
 static u32 vi2_display_refs;     /* OpenDisplay references on "default" */
+/* the GameShare displays "player1" to "player3" (Eden-NS2's GetPlayerDisplayIndex, graphics_supervisor.cpp,
+   GPL-3.0-or-later): one game's streamplay opens "player1" at boot. They keep their own references and show nothing on
+   the default display. -1 for another name */
+static u32 vi2_player_refs[3];
+static int vi2_player(u64 name) {
+    u32 player = (u32)(name >> 48) & 0xff;
+    if ((name & 0xffffffffffffull) != 0x726579616c70ull /* "player" */ || (name >> 56) || player < '1' || player > '3')
+        return -1;
+    return (int)(player - '1');
+}
 static u32 vi2_endpoint;         /* 0, or the default endpoint's token */
 static u32 vi2_group_events[8];  /* the request group events' kobj ids */
 static u32 vi2_group_vsync[8];   /* 1 while a group is registered for the display's vsync (kind 0) */
@@ -656,6 +666,10 @@ static int nn_vi2_IVi2Session_OpenDisplay(SvcObj* self, const u8* request) {
     u64 name = snx_ld_le64(request);
     u32 flags = snx_ld_le32(request + 8);
     (void)self;
+    if (vi2_player(name) >= 0) {
+        vi2_player_refs[vi2_player(name)]++;
+        R_SUCCEED();
+    }
     R_UNLESS(name == VI2_DEFAULT_DISPLAY && flags == 1, VI2_NOT_FOUND);
     vi2_display_refs++;
     R_SUCCEED();
@@ -663,6 +677,11 @@ static int nn_vi2_IVi2Session_OpenDisplay(SvcObj* self, const u8* request) {
 static int nn_vi2_IVi2Session_CloseDisplay(SvcObj* self, const u8* request) {
     u64 name = snx_ld_le64(request);
     (void)self;
+    if (vi2_player(name) >= 0) {
+        R_UNLESS(vi2_player_refs[vi2_player(name)], VI2_NOT_FOUND);
+        vi2_player_refs[vi2_player(name)]--;
+        R_SUCCEED();
+    }
     R_UNLESS(name == VI2_DEFAULT_DISPLAY && vi2_display_refs, VI2_NOT_FOUND);
     vi2_display_refs--;
     R_SUCCEED();

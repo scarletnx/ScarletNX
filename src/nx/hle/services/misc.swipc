@@ -457,3 +457,12 @@ interface nn::ngct::detail::IService is ngct:u {
     [0] Match(buffer<u8, 9> text) -> b8 matched;
     [1] Filter(buffer<u8, 9> text, buffer<u8, 0xa> filtered);
 }
+
+# The Switch 2's streamplay service. nn::streamplay::detail::GetUserService sends command 0 with 0x12, keeps the
+# object in a global and calls it at once: with no object it read address 0. The commands of the object are not
+# known yet, so each answers success with zeros, and the log names them
+interface nn::streamplay::detail::IServiceCreator is stpl:u {
+    [0] CreateUserService(u32 version) -> object<nn::streamplay::detail::IUserService> service;
+}
+interface nn::streamplay::detail::IUserService {
+}

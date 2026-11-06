@@ -93,6 +93,7 @@ SvcObj* new_apm(void);
 SvcObj* new_lm(void);
 SvcObj* new_pctl(void);
 SvcObj* new_friend(void);
+SvcObj* new_streamplay(void);
 SvcObj* new_chat(void);
 SvcObj* new_ns(void);
 SvcObj* new_prepo(void);

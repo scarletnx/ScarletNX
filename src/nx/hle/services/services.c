@@ -85,6 +85,7 @@ void svc_core_init(void) {
     nn_lm_ILogService_register(new_lm);
     nn_pctl_detail_ipc_IParentalControlServiceFactory_register(new_pctl);
     nn_friends_detail_ipc_IServiceCreator_register(new_friend);
+    nn_streamplay_detail_IServiceCreator_register(new_streamplay);
     nn_chat_IUserService_register(new_chat);
     nn_ns_detail_IServiceGetterInterface_register(new_ns);
     nn_prepo_detail_ipc_IPrepoService_register(new_prepo);

@@ -1320,6 +1320,12 @@ SvcObj* new_apm(void) { return nn_apm_IManager_new(); }
 SvcObj* new_lm(void) { return nn_lm_ILogService_new(); }
 SvcObj* new_pctl(void) { return nn_pctl_detail_ipc_IParentalControlServiceFactory_new(); }
 SvcObj* new_friend(void) { return nn_friends_detail_ipc_IServiceCreator_new(); }
+static int nn_streamplay_detail_IServiceCreator_CreateUserService(SvcObj* self, u32 version, SvcObj** service) {
+    (void)self, (void)version;
+    *service = nn_streamplay_detail_IUserService_new();
+    R_SUCCEED();
+}
+SvcObj* new_streamplay(void) { return nn_streamplay_detail_IServiceCreator_new(); }
 SvcObj* new_chat(void) { return nn_chat_IUserService_new(); }
 SvcObj* new_ns(void) { return nn_ns_detail_IServiceGetterInterface_new(); }
 SvcObj* new_prepo(void) { return nn_prepo_detail_ipc_IPrepoService_new(); }
