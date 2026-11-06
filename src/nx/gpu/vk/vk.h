@@ -1174,6 +1174,10 @@ void vk_buf_mem_need(u64 gva, u64 len);
    (their ranges are copied again when next read). Returns the bytes */
 u64 vk_buf_reclaim(u32 before, u64 want);
 void vk_buf_stats(u32* count, u64* bytes);
+/* writable storage bindings since the start: guest bytes copied for them before their draws (their original bytes and
+   their output's fill), their results' bytes copied back from the GPU to land, and the results landed by comparing
+   them with their original bytes. buffer_copy_stats LOGs them every 600 presents */
+void vk_buf_writable_stats(u64* copied, u64* read_back, u64* merged);
 /* guest memory checked by its contents so far: compared with a pending result's original bytes, hashed whole, and
    sampled (tests count them: write tracking's answers stand in for them) */
 void vk_buf_checks(u64* compares, u64* hashes, u64* samples);
