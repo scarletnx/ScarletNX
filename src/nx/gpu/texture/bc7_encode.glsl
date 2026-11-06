@@ -154,10 +154,13 @@ bool IsAnchor(uint k) {
     return k == 0u || k == sh_anchor1 || k == sh_anchor2;
 }
 
-/* the weight of index i: BC7's 2, 3 and 4-bit tables (0 21 43 64; 0 9 18 27 37 46 55 64; 0 4 9 13 ... 60 64) */
+/* the weight of index i: BC7's 2, 3 and 4-bit tables (0 21 43 64; 0 9 18 27 37 46 55 64; 0 4 9 13 ... 60 64), a byte
+   each of constant words. They are (i * 64 + top / 2) / top for top = 2^bits - 1, a division by a value that is no
+   constant where the encoder calls this, for every texel of every line it tries */
 uint Weight(uint i) {
-    const uint top = (1u << sh_ib) - 1u;
-    return (i * 64u + top / 2u) / top;
+    const uint w4 = i < 8u ? (i < 4u ? 0x0D090400u : 0x1E1A1511u) : (i < 12u ? 0x2F2B2622u : 0x403C3733u);
+    const uint w = sh_ib == 4u ? w4 : sh_ib == 3u ? (i < 4u ? 0x1B120900u : 0x40372E25u) : 0x402B1500u;
+    return (w >> ((i & 3u) * 8u)) & 0xFFu;
 }
 
 uint Index(uint lo, uint hi, uint k) {
