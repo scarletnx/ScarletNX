@@ -380,6 +380,10 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         target_link_libraries(snx-test-vulkan PRIVATE m)
     endif()
     target_link_libraries(snx-test-vulkan PRIVATE SDL3::SDL3)
+    if(SNX_JEMALLOC AND NOT ANDROID)
+        # the renderer reads the heap jemalloc's mallctl keeps (common/memory/jemalloc.c)
+        target_link_libraries(snx-test-vulkan PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,snx_jemalloc>")
+    endif()
     add_test(NAME vulkan_headless COMMAND snx-test-vulkan -H)
     # a save state of a game whose NVN the runtime runs, saved and loaded through state.c: the frame before the save
     # comes back after the load (tests/vulkan_nvn_savestate.inc). Alone, as the load replaces the guest memory
