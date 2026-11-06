@@ -102,13 +102,17 @@ void nce_crash_context(const void* context, const void* fault) {
     (void)context;
     (void)fault;
 }
-static int g_reports;     /* crash reports made */
+#if defined(__linux__)
+static int g_reports; /* crash reports made: only the checks of signals sent to a thread read them */
+#endif
 static int g_report_exit; /* a child's: a report ends it with 42, which its parent checks */
 void crash_report(void* host_pc, void* fault, int sig) {
     (void)host_pc;
     (void)fault;
     (void)sig;
+#if defined(__linux__)
     g_reports++;
+#endif
     if (g_report_exit) _exit(42);
 }
 
