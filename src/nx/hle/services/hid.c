@@ -28,7 +28,14 @@
 #define STYLE_JOY_DUAL  (1u << 2)
 #define STYLE_JOY_LEFT  (1u << 3)
 #define STYLE_JOY_RIGHT (1u << 4)
-#define STYLE_ALL       0x7fu
+/* An Ounce's Joy-Con 2 as a pair and as a left one (a game asks for them alone in its mouse mode, and tests them with
+   their Joy-Con styles): they read and report as those */
+#define STYLE_JOY_DUAL2 (1u << 12)
+#define STYLE_JOY_LEFT2 (1u << 13)
+#define STYLE_ALL       (0x7fu | STYLE_JOY_DUAL2 | STYLE_JOY_LEFT2)
+static u32 hid_classic_style(u32 style) {
+    return style == STYLE_JOY_DUAL2 ? STYLE_JOY_DUAL : style == STYLE_JOY_LEFT2 ? STYLE_JOY_LEFT : style;
+}
 
 /* the buttons of each half of a pair of Joy-Cons (nn::hid::NpadButton) */
 #define BUTTONS_LEFT  0x30ff950ull /* StickL, L, ZL, Minus, the d-pad, the left stick's directions, Left SL/SR */
@@ -100,10 +107,10 @@ static u32 hid_style_of(int e, const HidSource* s) {
     case SRC_PAD:
         for (i = 0; i < 3; i++)
             if (prefer[g_hle.hid.pad[s->p].kind][i] & ok) return prefer[g_hle.hid.pad[s->p].kind][i];
-        return 0;
-    case SRC_LEFT_HALF: return ok & STYLE_JOY_LEFT;
+        return ok & STYLE_JOY_DUAL2;
+    case SRC_LEFT_HALF: return ok & STYLE_JOY_LEFT ? STYLE_JOY_LEFT : ok & STYLE_JOY_LEFT2;
     case SRC_RIGHT_HALF: return ok & STYLE_JOY_RIGHT;
-    case SRC_MERGED: return ok & STYLE_JOY_DUAL;
+    case SRC_MERGED: return ok & STYLE_JOY_DUAL ? STYLE_JOY_DUAL : ok & STYLE_JOY_DUAL2;
     case SRC_HANDHELD: return ok & STYLE_HANDHELD;
     default: return 0;
     }
@@ -126,6 +133,7 @@ static void hid_write_header(int e, u32 style) {
     int vertical = g_hle.hid.hold != 1; /* NpadJoyHoldType: Vertical 0, Horizontal 1 */
     static const u32 body = 0xff323232u, buttons = 0xffe6e6e6u;
     w32(n + HO_HidNpadInternalState_style_set, style);
+    style = hid_classic_style(style);
     w32(n + HO_HidNpadInternalState_joy_assignment_mode, (style & (STYLE_JOY_LEFT | STYLE_JOY_RIGHT)) ? 1 : 0);
     memset(n + HO_HidNpadInternalState_full_key_color, 0, HS_HidNpadFullKeyColorState + HS_HidNpadJoyColorState);
     w32(n + HO_HidNpadInternalState_full_key_color, style ? 0 : 2); /* ColorAttribute: Ok, NoController */
@@ -209,7 +217,7 @@ static void hid_layout(void) {
         style = hid_style_of(e, &src[e]);
         if (style == g_hle.hid.style[e]) {
             /* a single Joy-Con's header follows the hold type; its style stays, and the game isn't told */
-            if (rehold && (style & (STYLE_JOY_LEFT | STYLE_JOY_RIGHT))) hid_write_header(e, style);
+            if (rehold && (hid_classic_style(style) & (STYLE_JOY_LEFT | STYLE_JOY_RIGHT))) hid_write_header(e, style);
             continue;
         }
         g_hle.hid.style[e] = style;
@@ -310,6 +318,12 @@ static void hid_npad_state(const HidSource* s, u32 style, u8* out) {
     default: return;
     }
     buttons |= stick_buttons(st[0], st[1], 16) | stick_buttons(st[2], st[3], 20);
+    /* a Joy-Con in mouse mode clicks with its shoulder buttons: R the mouse's left button, ZR its right */
+    if (s->p == 0 && hid_mouse_mode()) {
+        u32 mouse = __atomic_load_n(&g_hle.hid.mouse.buttons, __ATOMIC_RELAXED);
+        if (mouse & 1) buttons |= 1ull << 7;
+        if (mouse & 2) buttons |= 1ull << 9;
+    }
     /* NpadAttribute: connected, wired, and each Joy-Con's */
     switch (style) {
     case STYLE_HANDHELD: attr = 0x3f; break;
@@ -379,6 +393,7 @@ static void hid_take_input(TouchState* touch) {
     }
 }
 
+static void hid_mouse_update(u64 now);
 void hid_update(void) {
     static const u32 lifos[5] = {HO_HidNpadInternalState_full_key_lifo, HO_HidNpadInternalState_handheld_lifo,
                                  HO_HidNpadInternalState_joy_dual_lifo, HO_HidNpadInternalState_joy_left_lifo,
@@ -398,7 +413,7 @@ void hid_update(void) {
     g_hle.hid.last_ns = now;
     shm = shm_ptr(g_hle.hid.shm);
     for (e = 0; e < HID_ENTRIES; e++) {
-        u32 style = g_hle.hid.style[e];
+        u32 style = hid_classic_style(g_hle.hid.style[e]);
         u8* n = hid_npad(e);
         hid_npad_state(&src[e], style, state);
         memset(none, 0, sizeof none);
@@ -443,7 +458,225 @@ void hid_update(void) {
                   HS_HidMouseState);
     hid_lifo_push(shm + HO_HidSharedMemory_keyboard + HO_HidKeyboardSharedMemoryFormat_lifo, 8 + HS_HidKeyboardState,
                   other, HS_HidKeyboardState);
+    hid_mouse_update(now);
     pm_unlock(&g_host.hid.lock);
+}
+
+/* ---- an Ounce's mouse mode. The SDK reads both memories itself (nn::hid::detail::GetJcmsStates,
+   NmouseTransferMemoryAccessor), so their layouts are its reads. A Jcms is a Joy-Con's sensor: the memory holds a LIFO of
+   32-byte states for each, by index type + 2 * Npad, the deltas at 0x10 and 0x14 and two flags at 0x18. An Nmouse is a
+   mouse of the merged kind or of one Joy-Con: a table of handles, a LIFO of 0x70-byte states for each, then a table
+   of what each is. The game takes its handles by Npad and type, 2 the left Joy-Con and 4 the right, and the merged by
+   type 1. The host's one mouse is the right Joy-Con's and the merged */
+#define JCMS_ENTRY      0x2c8u
+#define JCMS_INDEXES    16u
+#define NMOUSE_LIFO     0x220u
+#define NMOUSE_ENTRY    0x818u
+#define NMOUSE_INFO     0x8c40u
+#define NMOUSE_INFO_N   0x1cu
+#define NMOUSE_CURSOR   0x8e68u
+#define NMOUSE_MERGED   1u
+#define NMOUSE_LEFT     2u
+#define NMOUSE_RIGHT    4u
+#define MOUSE_CONNECTED 3u /* the attributes: transferable and connected, as a mouse's */
+#define NPAD_HANDHELD   0x20u
+static const struct {
+    u32 type, npad;
+} g_nmice[] = {{NMOUSE_MERGED, 0},
+               {NMOUSE_LEFT, 0},
+               {NMOUSE_RIGHT, 0},
+               {NMOUSE_LEFT, NPAD_HANDHELD},
+               {NMOUSE_RIGHT, NPAD_HANDHELD}};
+#define NMICE (sizeof g_nmice / sizeof *g_nmice)
+static u64 nmouse_handle(u32 i) { return 0x4e4d000000000000ull | (i + 1); }
+/* the mouse's states since the last update, to the memories the game gave. Under hid's lock */
+static void hid_mouse_update(u64 now) {
+    HidMouse* m = &g_hle.hid.mouse;
+    i32 dx, dy, wheel;
+    u32 buttons;
+    pm_lock(&g_host.hid.input_lock);
+    dx = (i32)m->dx;
+    dy = (i32)m->dy;
+    wheel = (i32)m->wheel;
+    m->dx -= (float)dx;
+    m->dy -= (float)dy;
+    m->wheel -= (float)wheel;
+    buttons = m->buttons;
+    pm_unlock(&g_host.hid.input_lock);
+    if (m->jcms)
+        for (u32 i = 0; i < JCMS_INDEXES; i++) {
+            u8 state[0x20] = {0};
+            if (!(m->jcms_on >> i & 1)) continue;
+            snx_st_le64(state + 8, g_hle.hid.samp);
+            snx_st_le32(state + 0x10, i & 1 ? (u32)dx : 0);
+            snx_st_le32(state + 0x14, i & 1 ? (u32)dy : 0);
+            snx_st_le32(state + 0x18, MOUSE_CONNECTED);
+            hid_lifo_push(GP(m->jcms + i * JCMS_ENTRY), 8 + sizeof state, state, sizeof state);
+        }
+    if (!m->nmouse) return;
+    m->x += dx;
+    m->y += dy;
+    if (m->x < 0) m->x = 0;
+    if (m->y < 0) m->y = 0;
+    if (m->x >= m->width) m->x = m->width > 0 ? m->width - 1 : 0;
+    if (m->y >= m->height) m->y = m->height > 0 ? m->height - 1 : 0;
+    for (u32 i = 0; i < NMICE; i++) {
+        u8 state[0x70] = {0};
+        int moves = g_nmice[i].type != NMOUSE_LEFT;
+        snx_st_le64(state, g_hle.hid.samp);
+        snx_st_le64(state + 8, now);
+        snx_st_le32(state + 0x10, moves ? (u32)m->x : 0);
+        snx_st_le32(state + 0x14, moves ? (u32)m->y : 0);
+        snx_st_le32(state + 0x18, moves ? (u32)dx : 0);
+        snx_st_le32(state + 0x1c, moves ? (u32)dy : 0);
+        snx_st_le32(state + 0x28, moves ? buttons : 0);
+        snx_st_le32(state + 0x2c, MOUSE_CONNECTED);
+        snx_st_le32(state + 0x30, moves ? (u32)wheel : 0);
+        hid_lifo_push(GP(m->nmouse + NMOUSE_LIFO + i * NMOUSE_ENTRY), 8 + sizeof state, state, sizeof state);
+    }
+}
+static int hid_mouse_memory(u32 handle, u64 size, u64 need, u32* object, u64* guest, const char* what) {
+    KTmem* t = (KTmem*)h_get_ref(handle, KO_TMEM);
+    R_UNLESS(t, RC(1, 114)); /* the kernel's InvalidHandle */
+    LOG("hid: %s at %llx, %llu bytes\n", what, (unsigned long long)t->addr, (unsigned long long)size);
+    if (size < need || t->size < need) {
+        WARN("hid: %s's memory has %llu bytes, %llu are written\n", what, (unsigned long long)t->size,
+             (unsigned long long)need);
+        kobj_unref(&t->o);
+        R_THROW(RC(202, 1));
+    }
+    memset(GP(t->addr), 0, need);
+    *object = kobj_id(&t->o);
+    *guest = t->addr;
+    R_SUCCEED();
+}
+static void hid_mouse_release(u32* object, u64* guest) {
+    if (*object) kobj_unref(kobj_at(*object));
+    *object = 0;
+    *guest = 0;
+}
+/* the game reads a Joy-Con's sensor and takes only Joy-Con 2: it is playing with the mouse. Read on the frontend's thread */
+int hid_mouse_mode(void) {
+    u32 styles = __atomic_load_n(&g_hle.hid.supported_styles, __ATOMIC_RELAXED);
+    return __atomic_load_n(&g_hle.hid.mouse.jcms_on, __ATOMIC_RELAXED) && styles &&
+           !(styles & ~(STYLE_JOY_DUAL2 | STYLE_JOY_LEFT2));
+}
+static int nn_hid_IHidServer_InitializeJcms(SvcObj* self, u64 aruid, u64 size, u32 tmem) {
+    HidMouse* m = &g_hle.hid.mouse;
+    (void)self, (void)aruid;
+    pm_lock(&g_host.hid.lock);
+    hid_mouse_release(&m->jcms_tmem, &m->jcms);
+    int r = hid_mouse_memory(tmem, size, JCMS_INDEXES * JCMS_ENTRY, &m->jcms_tmem, &m->jcms, "Jcms");
+    pm_unlock(&g_host.hid.lock);
+    return r;
+}
+static int nn_hid_IHidServer_FinalizeJcms(SvcObj* self, u64 aruid) {
+    HidMouse* m = &g_hle.hid.mouse;
+    (void)self, (void)aruid;
+    pm_lock(&g_host.hid.lock);
+    hid_mouse_release(&m->jcms_tmem, &m->jcms);
+    m->jcms_on = 0;
+    pm_unlock(&g_host.hid.lock);
+    R_SUCCEED();
+}
+/* the handle: the Npad, then the type (nn::hid::utility::MakeJcmsHandle) */
+static u32 jcms_bit(u32 handle) {
+    u32 index = (handle >> 8 & 0xff) + 2 * (handle & 0xff);
+    return index < JCMS_INDEXES ? 1u << index : 0;
+}
+static int nn_hid_IHidServer_StartJcms(SvcObj* self, u32 handle, u64 aruid) {
+    (void)self, (void)aruid;
+    pm_lock(&g_host.hid.lock);
+    g_hle.hid.mouse.jcms_on |= jcms_bit(handle);
+    pm_unlock(&g_host.hid.lock);
+    R_SUCCEED();
+}
+static int nn_hid_IHidServer_StopJcms(SvcObj* self, u32 handle, u64 aruid) {
+    (void)self, (void)aruid;
+    pm_lock(&g_host.hid.lock);
+    g_hle.hid.mouse.jcms_on &= ~jcms_bit(handle);
+    pm_unlock(&g_host.hid.lock);
+    R_SUCCEED();
+}
+static int hid_nmouse_start(i32 width, i32 height, u64 size, u32 tmem) {
+    HidMouse* m = &g_hle.hid.mouse;
+    pm_lock(&g_host.hid.lock);
+    hid_mouse_release(&m->nmouse_tmem, &m->nmouse);
+    int r = hid_mouse_memory(tmem, size, NMOUSE_CURSOR + 1, &m->nmouse_tmem, &m->nmouse, "Nmouse");
+    if (!r) {
+        m->width = width;
+        m->height = height;
+        m->x = width / 2;
+        m->y = height / 2;
+        for (u32 i = 0; i < NMICE; i++) {
+            u8 *entry = GP(m->nmouse + i * 0x10), *info = GP(m->nmouse + NMOUSE_INFO + i * NMOUSE_INFO_N);
+            snx_st_le64(entry, nmouse_handle(i));
+            entry[8] = 1;
+            snx_st_le32(info, g_nmice[i].type);
+            info[4] = 1;
+            snx_st_le32(info + 8, g_nmice[i].npad);
+            info[0xc] = g_nmice[i].type != NMOUSE_MERGED;
+            info[0x10] = 1; /* its pointer is enabled */
+        }
+    }
+    pm_unlock(&g_host.hid.lock);
+    return r;
+}
+static int nn_hid_IHidServer_InitializeNmouse(SvcObj* self, u8 unknown, i32 width, i32 height, u64 aruid, u64 size,
+                                              u32 tmem) {
+    (void)self, (void)unknown, (void)aruid;
+    return hid_nmouse_start(width, height, size, tmem);
+}
+static int nn_hid_IHidServer_InitializeNmouse2(SvcObj* self, u8 pointer_type, i32 width, i32 height, u32 unknown,
+                                               u64 aruid, u64 size, u32 tmem) {
+    (void)self, (void)pointer_type, (void)unknown, (void)aruid;
+    return hid_nmouse_start(width, height, size, tmem);
+}
+static int nn_hid_IHidServer_FinalizeNmouse(SvcObj* self, u64 aruid) {
+    HidMouse* m = &g_hle.hid.mouse;
+    (void)self, (void)aruid;
+    pm_lock(&g_host.hid.lock);
+    hid_mouse_release(&m->nmouse_tmem, &m->nmouse);
+    pm_unlock(&g_host.hid.lock);
+    R_SUCCEED();
+}
+static int nn_hid_IHidServer_SetNmousePointerRanges(SvcObj* self, i32 width, i32 height, u64 aruid) {
+    (void)self, (void)aruid;
+    pm_lock(&g_host.hid.lock);
+    g_hle.hid.mouse.width = width;
+    g_hle.hid.mouse.height = height;
+    pm_unlock(&g_host.hid.lock);
+    R_SUCCEED();
+}
+static int nn_hid_IHidServer_GetNmousePointerRanges(SvcObj* self, u64 aruid, i32* width, i32* height) {
+    (void)self, (void)aruid;
+    *width = g_hle.hid.mouse.width;
+    *height = g_hle.hid.mouse.height;
+    R_SUCCEED();
+}
+static int nn_hid_IHidServer_EnableShowingCursor(SvcObj* self, u8 enable, u64 aruid) {
+    (void)self, (void)aruid;
+    pm_lock(&g_host.hid.lock);
+    if (g_hle.hid.mouse.nmouse) *GP(g_hle.hid.mouse.nmouse + NMOUSE_CURSOR) = enable != 0;
+    pm_unlock(&g_host.hid.lock);
+    R_SUCCEED();
+}
+static int nn_hid_IHidServer_SetNmousePointerPosition(SvcObj* self, i32 x, i32 y, u64 aruid, u64 handle) {
+    (void)self, (void)aruid, (void)handle;
+    pm_lock(&g_host.hid.lock);
+    g_hle.hid.mouse.x = x;
+    g_hle.hid.mouse.y = y;
+    pm_unlock(&g_host.hid.lock);
+    R_SUCCEED();
+}
+static int nn_hid_IHidServer_EnableNmousePointer(SvcObj* self, u8 enable, u64 aruid, u64 handle) {
+    HidMouse* m = &g_hle.hid.mouse;
+    (void)self, (void)aruid;
+    pm_lock(&g_host.hid.lock);
+    for (u32 i = 0; m->nmouse && i < NMICE; i++)
+        if (nmouse_handle(i) == handle) *GP(m->nmouse + NMOUSE_INFO + i * NMOUSE_INFO_N + 0x10) = enable != 0;
+    pm_unlock(&g_host.hid.lock);
+    R_SUCCEED();
 }
 
 /* the Npads the game sees among No1 to No8 (the controller applet's player count), and the first it sees of all */
