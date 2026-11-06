@@ -4283,6 +4283,31 @@ static const IniOpt* setting_row(const char* key) {
     return NULL;
 }
 
+/* A change of guest memory lands the pending buffer results only when one covers a guest page of it
+   (vkr_mapping_begin): a change elsewhere leaves a result pending, as it changes none of its bytes, and a change over
+   its guest page lands it first */
+static int check_map_lands_covered(void) {
+    const u64 gva = 0xab00000, cpu = HEAP_BASE + 0x5c00000;
+    VkBuffer out;
+    u64 at;
+    if (vk_uma()) return 0;
+    CHECK(mem_map(cpu, 0x1000, MS_NORMAL, PERM_RW) == 0); /* a result counts the guest pages memory holds */
+    gmmu_map(gva, cpu, 0x1000);
+    vk_lock();
+    CHECK(vk_buf_copy_writable(gva, 0x1000, &out, &at, 1));
+    vk_buf_writable_commit();
+    vk_unlock();
+    CHECK(vk_buf_pending(gva, 0x1000));
+    g_gpu_mapping_begin(cpu + 0x10000, 0x10000, 1); /* fresh memory past it, as svcMapPhysicalMemory maps */
+    g_gpu_mapping_end();
+    CHECK(vk_buf_pending(gva, 0x1000));
+    g_gpu_mapping_begin(cpu, 0x1000, 1);
+    g_gpu_mapping_end();
+    CHECK(!vk_buf_pending(gva, 0x1000));
+    puts("A change of guest memory lands the buffer results over its pages, and only those");
+    return 0;
+}
+
 int main(int argc, char** argv) {
     nvn_init();
     const u32 w = 32, h = 16;
@@ -4633,6 +4658,7 @@ int main(int argc, char** argv) {
     CHECK(!check_sparse_pieces_batched());
     CHECK(!check_dma_untracked_source());
     CHECK(!check_dma_tiles());
+    CHECK(!check_map_lands_covered());
     CHECK(!check_blit());
     CHECK(!check_blit_bands());
     CHECK(!check_take_after_writes());

@@ -38,6 +38,8 @@ void pend_add(PendPages* t, u64 gva, u64 size, int delta);
 /* nonzero when a result covers a guest page behind [gva, gva + size), read from the GPU pages. It may also answer yes
    for guest memory freed under the mapping, which the GMMU reads as unmapped and the index doesn't */
 int pend_hit(const PendPages* t, u64 gva, u64 size);
+/* nonzero when a result covers a guest page of guest memory [a, a + size), read from the guest pages (size ~0: any) */
+int pend_hit_guest(const PendPages* t, u64 a, u64 size);
 /* the GMMU changed the pages of [gva, gva + size): their counts become those of the guest pages they show now, in every
    table that counts guest pages. In the renderer's mapping bracket, after the change. A result added before only gained
    the GPU pages that showed its guest pages then, and a new mapping of them must count it too: the change lands only
