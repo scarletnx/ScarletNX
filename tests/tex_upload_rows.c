@@ -70,7 +70,9 @@ static struct {
     u64 gva[8], n[8];
     u32 count;
 } g_map;
+static u32 g_walks; /* gmmu_pieces' calls */
 void gmmu_pieces(u64 gva, u64 size, void (*fn)(void* ctx, u64 gva, u64 cpu, u64 n), void* ctx) {
+    g_walks++;
     for (u32 i = 0; i < g_map.count; i++)
         if (g_map.gva[i] < gva + size && g_map.gva[i] + g_map.n[i] > gva)
             fn(ctx, g_map.gva[i], g_map.gva[i] - GVA, g_map.n[i]);
@@ -355,16 +357,22 @@ VkImage vk_ms_unpack(VkCommandBuffer cb, Surf* s, u32 layer) {
     (void)cb, (void)s, (void)layer;
     return VK_NULL_HANDLE;
 }
-/* write tracking: the stamp is on guest's bytes [at, at + len), all of them when len is 0. As buffer.c's, it answers
-   only for a host range */
+/* write tracking: the stamp is on guest's bytes [at, at + len), all of them when len is 0, or on the runs listed in
+   run (nruns of them, in order, on pages apart) when there are any. As buffer.c's, it answers only for a host range */
 static struct {
     int on, pending; /* pending: written, and taken in by the next check, which marks it with the clock's next value */
     u32 clock, stamp, epoch;
     u64 at, len;
+    u32 nruns;
+    struct {
+        u64 at, len;
+    } run[320];
 } g_tracking;
 static int stamped(u64 o, u64 n, u32 since) {
-    return g_tracking.stamp > since &&
-           (!g_tracking.len || (o < g_tracking.at + g_tracking.len && g_tracking.at < o + n));
+    if (g_tracking.stamp <= since) return 0;
+    for (u32 i = 0; i < g_tracking.nruns; i++)
+        if (o < g_tracking.run[i].at + g_tracking.run[i].len && g_tracking.run[i].at < o + n) return 1;
+    return !g_tracking.nruns && (!g_tracking.len || (o < g_tracking.at + g_tracking.len && g_tracking.at < o + n));
 }
 int vk_written_since(const u8* host, u64 len, u32 since) {
     if (!g_tracking.on || !host || !len) return -1;
@@ -380,6 +388,13 @@ u32 vk_ww_epoch(void) { return g_tracking.epoch; }
 void vk_written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user) {
     u64 o = (u64)(host - guest), lo = g_tracking.at & ~4095ull, hi = (g_tracking.at + g_tracking.len + 4095) & ~4095ull;
     if (!stamped(o, len, since)) return;
+    for (u32 i = 0; i < g_tracking.nruns; i++) {
+        lo = g_tracking.run[i].at & ~4095ull, hi = (g_tracking.run[i].at + g_tracking.run[i].len + 4095) & ~4095ull;
+        if (lo < o) lo = o;
+        if (hi > o + len) hi = o + len;
+        if (lo < hi) fn(user, lo - o, hi - lo);
+    }
+    if (g_tracking.nruns) return;
     if (!g_tracking.len || lo < o) lo = o;
     if (!g_tracking.len || hi > o + len) hi = o + len;
     fn(user, lo - o, hi - lo);
@@ -637,6 +652,187 @@ static void check_take_skip(void) {
     g_drawn_target = NULL;
     g_drawn_fresh = 0;
     vkCmdCopyImage = NULL;
+}
+
+/* the regions recorded since nregs was cleared, each against memory: the texels or blocks of level l of layer
+   `layer` of t it holds, where it puts them, through the layout walked byte by byte. 1 when (layer, l, u, v), a texel
+   or block of a level, is in one of them */
+static int region_has(u32 layer, u32 l, u32 u, u32 v, u32 bw, u32 bh) {
+    for (u32 i = 0; i < nregs; i++) {
+        const VkBufferImageCopy* r = &regs[i];
+        u32 x0 = (u32)r->imageOffset.x / bw, y0 = (u32)r->imageOffset.y / bh;
+        if (r->imageSubresource.mipLevel == l && r->imageSubresource.baseArrayLayer == layer &&
+            u - x0 < (r->imageExtent.width + bw - 1) / bw && v - y0 < (r->imageExtent.height + bh - 1) / bh)
+            return 1;
+    }
+    return 0;
+}
+static void regions_match(const Surf* t) {
+    const VkFmt* f = &t->f;
+    u32 d3 = t->type == VK_IMAGE_VIEW_TYPE_3D ? t->depth3d : 1;
+    for (u32 i = 0; i < nregs; i++) {
+        const VkBufferImageCopy* r = &regs[i];
+        u32 l = r->imageSubresource.mipLevel, layer = r->imageSubresource.baseArrayLayer, lbh = 0, lbd = 0;
+        u64 at = (u64)layer * t->layer_size;
+        for (u32 k = 0; k < l; k++) at += bl_level_size(t->w, t->h, d3, f, t->bh, t->bd, t->tile_w, k, NULL, NULL);
+        u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1, ld = d3 >> l ? d3 >> l : 1;
+        u32 tw = (lw + f->bw - 1) / f->bw, th = (lh + f->bh - 1) / f->bh, rowb = tw * f->bpp;
+        if (t->bl) bl_level_size(t->w, t->h, d3, f, t->bh, t->bd, t->tile_w, l, &lbh, &lbd);
+        u32 gw = level_gobs(t, rowb, th, ld), u0 = (u32)r->imageOffset.x / f->bw, v0 = (u32)r->imageOffset.y / f->bh;
+        u32 z0 = (u32)r->imageOffset.z, uw = (r->imageExtent.width + f->bw - 1) / f->bw;
+        u32 uh = (r->imageExtent.height + f->bh - 1) / f->bh;
+        u64 rl = (u64)(r->bufferRowLength ? r->bufferRowLength : r->imageExtent.width) / f->bw * f->bpp;
+        u64 ih = (r->bufferImageHeight ? r->bufferImageHeight : r->imageExtent.height) / f->bh;
+        CHECK(layer < t->layers && u0 + uw <= tw && v0 + uh <= th && z0 + r->imageExtent.depth <= ld &&
+              rl >= uw * f->bpp);
+        for (u32 z = 0; z < r->imageExtent.depth; z++)
+            for (u32 y = 0; y < uh; y++)
+                for (u32 x = 0; x < uw * f->bpp; x++) {
+                    u64 o = t->bl ? bl_offset_g(u0 * f->bpp + x, v0 + y, z0 + z, gw, th, lbh, lbd)
+                                  : ((u64)(z0 + z) * th + v0 + y) * t->pitch + u0 * f->bpp + x;
+                    CHECK(copied[r->bufferOffset + ((u64)z * ih + y) * rl + x] == guest[at + o]);
+                }
+    }
+}
+/* the check that follows a write: a new frame and epoch, the regions recorded from none, and the loads it made
+   (vk_tex_stats, vk_tex_partial_stats) as bytes loaded, and how many of them some blocks alone */
+static void check_after(Surf* t, u64* bytes, u64* partial) {
+    u64 loads, b0, b1, p0, p1, pb;
+    g_vk_present++;
+    g_tracking.epoch++;
+    stage_used = copied_used = nregs = 0;
+    vk_tex_stats(&loads, &b0);
+    vk_tex_partial_stats(&p0, &pb);
+    CHECK(tex_check(t, t->gva) == t);
+    vk_tex_stats(&loads, &b1);
+    vk_tex_partial_stats(&p1, &pb);
+    *bytes = b1 - b0;
+    *partial = p1 - p0;
+    regions_match(t);
+}
+/* the CPU writes n bytes of guest at o (each xored with 0x5A), which the next check takes in */
+static void cpu_write(u64 o, u32 n) {
+    for (u32 i = 0; i < n; i++) guest[o + i] ^= 0x5A;
+    g_tracking.pending = 1;
+    g_tracking.at = o, g_tracking.len = n;
+    g_tracking.nruns = 0;
+}
+/* a check that finds nothing loads nothing */
+static void check_quiet(Surf* t) {
+    u64 bytes, partial;
+    check_after(t, &bytes, &partial);
+    CHECK(bytes == 0 && partial == 0 && nregs == 0);
+}
+/* a texture loaded whole: write tracking answers for it from its clock as it is now (40 when it starts) */
+static void loaded(Surf* t) {
+    copy_bpp = t->f.bpp, copy_bw = t->f.bw, copy_bh = t->f.bh;
+    stage_used = copied_used = nregs = 0;
+    CHECK(tex_upload(t) && t->upload_valid);
+    t->hash = mem_hash(t->gva, t->size);
+    t->checked = g_vk_present;
+    t->gw = gpu_mem_generation();
+    if (!g_tracking.on) g_tracking.clock = 40;
+    g_tracking.on = 1;
+    t->wseen = g_tracking.clock;
+    t->ww_epoch = g_tracking.epoch;
+}
+/* A block linear texture loaded whole takes the CPU's and the GPU's writes a block at a time (tex_check_pieces,
+   tex_patch): RGBA8 256x256 of 9 levels in 2 layers, its big levels in blocks 16 GOBs high (8 KiB, two pages). Each
+   write loads the blocks of its pages, which hold memory's bytes, and nothing else: 16 bytes in a block's second page
+   load the block (both pages); a write across levels 3 and 4 the blocks of both pages, levels 4 to 8 in the second (the
+   mip tail); the GPU's write and the CPU's in one check both. More pages than a check keeps load less than the whole
+   texture of 512x1536. Every page written with the bytes it had is more than half the texture: hashed while the hash
+   is the image's, which loads nothing, else loaded whole. Without write tracking a write loads all of it, found by
+   its hash */
+static void check_block_linear_changes(void) {
+    Surf t = tex(256, 256, 1, 9, 4, 4, 0, 1);
+    u64 lvl[10] = {0}, bytes, partial;
+    t.layers = 2;
+    t.type = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+    t.layer_size = bl_layer_size(256, 256, 1, &t.f, 4, 0, 0, 9);
+    for (u32 l = 0; l < 9; l++) lvl[l + 1] = lvl[l] + bl_level_size(256, 256, 1, &t.f, 4, 0, 0, l, NULL, NULL);
+    t.size = t.layer_size + lvl[9];
+    CHECK(lvl[3] == 0x54000 && lvl[4] == 0x55000 && lvl[9] - lvl[4] == 3 * 1024 && t.layer_size == 0x56000);
+    loaded(&t);
+    /* every page written with the bytes it had: more than half the texture, which its hash finds unchanged */
+    g_tracking.pending = 1;
+    g_tracking.at = 0, g_tracking.len = t.size;
+    g_hashes = 0;
+    check_after(&t, &bytes, &partial);
+    CHECK(bytes == 0 && partial == 0 && nregs == 0 && g_hashes);
+    /* 16 bytes of texel (100, 200) of level 0 of layer 1: GOB column 6, the second row of blocks, its second page */
+    const u64 a = t.layer_size + bl_offset(400, 200, 0, 1024, 256, 4, 0);
+    CHECK(a % 8192 >= 4096);
+    cpu_write(a, 16);
+    check_after(&t, &bytes, &partial);
+    CHECK(bytes == 8192 && partial == 1 && nregs == 1 && region_has(1, 0, 100, 200, 1, 1));
+    CHECK(regs[0].imageOffset.x == 96 && regs[0].imageOffset.y == 128 && regs[0].imageExtent.width == 16 &&
+          regs[0].imageExtent.height == 128);
+    check_quiet(&t);
+    /* 32 bytes across levels 3 and 4 of layer 0: all of level 3 (its two blocks, a run of a row of blocks) and levels 4
+       to 8, each a region */
+    cpu_write(lvl[4] - 16, 32);
+    check_after(&t, &bytes, &partial);
+    CHECK(bytes == 4096 + 3 * 1024 && partial == 1 && nregs == 6);
+    for (u32 l = 3; l < 9; l++) CHECK(region_has(0, l, 0, 0, 1, 1));
+    check_quiet(&t);
+    /* the GPU writes 64 bytes of level 1 of layer 1 and the CPU 4 of level 0 of layer 0 before one check */
+    g_gpu_writes.gen = gpu_mem_generation() + 1;
+    g_gpu_writes.at = GVA + t.layer_size + lvl[1] + bl_offset(64, 100, 0, 512, 128, 4, 0), g_gpu_writes.len = 64;
+    for (u32 i = 0; i < 64; i++) guest[g_gpu_writes.at - GVA + i] ^= 0x33;
+    cpu_write(bl_offset(1000, 3, 0, 1024, 256, 4, 0), 4);
+    check_after(&t, &bytes, &partial);
+    CHECK(bytes == 2 * 8192 && partial == 1 && nregs == 2 && region_has(1, 1, 16, 100, 1, 1) &&
+          region_has(0, 0, 250, 3, 1, 1));
+    check_quiet(&t);
+    /* 260 pages apart, each a byte written: more than the 256 pieces a check keeps. The closest go as one, over the
+       pages between them (the first 5 written, a run of 5 blocks), the others a block each: less than the whole */
+    Surf big = tex(512, 1536, 1, 1, 4, 4, 0, 1);
+    big.size = bl_level_size(512, 1536, 1, &big.f, 4, 0, 0, 0, NULL, NULL);
+    CHECK(big.size == 3u << 20);
+    loaded(&big);
+    g_tracking.pending = 1;
+    g_tracking.nruns = 260;
+    for (u32 k = 0; k < 260; k++) {
+        guest[k * 0x2000 + 0x123] ^= 0x5A;
+        g_tracking.run[k].at = k * 0x2000 + 0x123, g_tracking.run[k].len = 1;
+    }
+    check_after(&big, &bytes, &partial);
+    CHECK(partial == 1 && bytes == 260 * 8192 && nregs == 256);
+    for (u32 k = 0; k < 260; k++) {
+        u32 b = k * 0x2000 / 8192; /* the block, a GOB across and 128 rows */
+        CHECK(region_has(0, 0, b % 32 * 16, b / 32 * 128, 1, 1));
+    }
+    check_quiet(&big);
+    /* every page written with the bytes it had again, with the hash no longer the image's: loaded whole, unhashed */
+    g_tracking.pending = 1;
+    g_tracking.at = 0, g_tracking.len = t.size;
+    g_hashes = 0;
+    check_after(&t, &bytes, &partial);
+    CHECK(bytes == t.size && partial == 0 && g_hashes == 0);
+    /* without write tracking the same texture's write is found by its hash, which loads all of it */
+    memset(&g_tracking, 0, sizeof g_tracking);
+    t.stable = 0;
+    guest[a] ^= 0x5A;
+    check_after(&t, &bytes, &partial);
+    CHECK(bytes == t.size && partial == 0);
+    memset(&g_gpu_writes, 0, sizeof g_gpu_writes);
+}
+/* A texture loaded whole in two runs of host memory and no holes, for which write tracking can't tell: one walk of its
+   runs finds that (tex_check_pieces), and its contents are checked, without a second walk to ask again */
+static void check_untracked_runs(void) {
+    Surf t = tex(64, 64, 1, 1, 4, 2, 0, 1);
+    u64 bytes, partial;
+    t.size = bl_level_size(64, 64, 1, &t.f, 2, 0, 0, 0, NULL, NULL);
+    loaded(&t);
+    g_map.count = 2;
+    g_map.gva[0] = GVA, g_map.n[0] = 8192;
+    g_map.gva[1] = GVA + 8192, g_map.n[1] = t.size - 8192;
+    g_walks = 0;
+    check_after(&t, &bytes, &partial);
+    CHECK(g_walks == 1 && bytes == 0);
+    g_map.count = 0;
+    memset(&g_tracking, 0, sizeof g_tracking);
 }
 
 int main(void) {
@@ -936,6 +1132,8 @@ int main(void) {
         g_map.count = 0;
         memset(&g_tracking, 0, sizeof g_tracking);
     }
+    check_block_linear_changes();
+    check_untracked_runs();
     printf("tex_upload_rows: %u checks passed\n", checks);
     return 0;
 }

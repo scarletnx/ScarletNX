@@ -580,16 +580,18 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 (unsigned long long)g_vk_draw_kept, (unsigned long long)g_vk_draw_checked,
                 (unsigned long long)g_vk_targets_kept);
             {
-                u64 pipes, hits, make_ms, pipe_ms, shaders, shader_ms, uploads, upload_bytes;
+                u64 pipes, hits, make_ms, pipe_ms, shaders, shader_ms, uploads, upload_bytes, partial, partial_bytes;
                 vk_pipeline_stats(&pipes, &hits, &make_ms, &pipe_ms, &shaders, &shader_ms);
                 vk_tex_stats(&uploads, &upload_bytes);
+                vk_tex_partial_stats(&partial, &partial_bytes);
                 LOG("vulkan: %llu shaders translated (%llu ms), %llu pipelines made (%llu from the cache, %llu ms "
-                    "making, %llu ms waited for), %llu render targets made, %llu texture uploads (%llu MB); %llu "
-                    "frames over 50 ms in the last 600, the slowest %llu ms\n",
+                    "making, %llu ms waited for), %llu render targets made, %llu texture uploads (%llu MB), %llu of "
+                    "them some blocks alone (%llu MB); %llu frames over 50 ms in the last 600, the slowest %llu ms\n",
                     (unsigned long long)shaders, (unsigned long long)shader_ms, (unsigned long long)pipes,
                     (unsigned long long)hits, (unsigned long long)make_ms, (unsigned long long)pipe_ms,
                     (unsigned long long)vk_rt_made(), (unsigned long long)uploads,
-                    (unsigned long long)(upload_bytes >> 20), (unsigned long long)slow_frames,
+                    (unsigned long long)(upload_bytes >> 20), (unsigned long long)partial,
+                    (unsigned long long)(partial_bytes >> 20), (unsigned long long)slow_frames,
                     (unsigned long long)(slowest_ns / 1000000));
                 slow_frames = slowest_ns = 0;
                 u64 bc7_levels, bc7_bytes, bc7_rgba8;
