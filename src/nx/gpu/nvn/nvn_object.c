@@ -23,6 +23,7 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/shader/sm86.h"
 #include "nx/hle/services/nvdrv.h"
+#include "nx/hle/services/native_video.h"
 #include "nx/runtime/clock.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/runtime/arm.h"
@@ -317,6 +318,24 @@ int nvn_DeviceRegisterFastClearDepth(CPU* c, u64 d, f32 depth) {
     (void)depth;
     return 1;
 }
+int nvn_DeviceRegisterFastClearStencil(CPU* c, u64 d, i32 stencil) {
+    (void)c;
+    (void)d;
+    (void)stencil;
+    return 1;
+}
+/* No ray tracing yet. These sizes are made up, for a game that sizes its structures at boot: the driver works them out
+   from info, and nothing has measured that */
+void nvn_DeviceCalculateAccelerationStructureMemoryRequirements(CPU* c, u64 d, u64 info, u64 size, u64 scratch,
+                                                                u64 update_scratch) {
+    (void)c;
+    (void)d;
+    (void)info;
+    LOG_LIMIT(1, "nvn: an acceleration structure's sizes asked for, and made up: no ray tracing yet\n");
+    gw64(size, 0x10000);
+    gw64(scratch, 0x10000);
+    gw64(update_scratch, 0x10000);
+}
 
 /* ============================================================ memory pools */
 void nvn_MemoryPoolBuilderSetDefaults(CPU* c, u64 b) {
@@ -332,6 +351,16 @@ void nvn_MemoryPoolBuilderSetStorage(CPU* c, u64 b, u64 memory, u64 size) {
     (void)c;
     o->memory = memory;
     o->size = size;
+    o->native = 0;
+}
+/* The SDK's nvnNativeImageInitialize builds a pool over a native image's memory with this: as the driver, it clears the
+   storage, and the other way round in SetStorage */
+void nvn_MemoryPoolBuilderSetNativeHandleNVX(CPU* c, u64 b, i32 handle) {
+    NvnPoolBuilder* o = NVN_OBJ(NvnPoolBuilder, b);
+    (void)c;
+    o->memory = 0;
+    o->size = 0;
+    o->native = (u32)handle;
 }
 void nvn_MemoryPoolBuilderSetFlags(CPU* c, u64 b, i32 flags) {
     (void)c;
@@ -356,6 +385,13 @@ int nvn_MemoryPoolInitialize(CPU* c, u64 p, u64 b) {
     o.flags = s->flags;
     o.memory = s->memory;
     o.size = s->size;
+    if (s->native) {
+        int bound = gsv_native_memory_cpu(s->native, &o.memory, &o.size);
+        LOG_LIMIT(8, "nvn: memory pool %llx over native memory %u: %s %llx, %llx bytes\n", (unsigned long long)p,
+                  s->native, bound ? "bound at" : "NOT bound", (unsigned long long)o.memory,
+                  (unsigned long long)o.size);
+        o.linear_pitch = native_video_memory_pitch(s->native);
+    }
     if (!o.memory && !(o.flags & NVN_POOL_VIRTUAL))
         LOG_LIMIT(8, "nvn: memory pool %llx has no storage (flags %#x)\n", (unsigned long long)p, o.flags);
     lead = o.memory & 0xfff;
@@ -959,10 +995,16 @@ int nvn_TextureInitialize(CPU* c, u64 t, u64 b) {
     NvnTexLayout l;
     u64 memory = nvn_pool_memory(s->pool), gpu = nvn_pool_gpu(s->pool);
     (void)c;
-    nvn_tex_layout(&s->d, &l);
+    o.d = s->d;
+    /* The SDK's nvnTextureInitializeFromNativeImage builds a block linear texture over a video image. Its layout is
+       between the runtime's decoder and this texture, as the game never reads the bytes: the decoder writes rows */
+    if (s->pool && NVN_OBJ(NvnPool, s->pool)->linear_pitch) {
+        o.d.flags |= NVN_TEXTURE_FLAGS_LINEAR;
+        o.d.stride = NVN_OBJ(NvnPool, s->pool)->linear_pitch;
+    }
+    nvn_tex_layout(&o.d, &l);
     o.magic = NVN_MAGIC('T', 'E', 'X', 0);
     o.gpu = gpu ? gpu + (u64)s->offset : 0;
-    o.d = s->d;
     o.pool = s->pool;
     o.offset = s->offset;
     o.memory = memory ? memory + (u64)s->offset : 0;
@@ -2025,6 +2067,19 @@ void nvn_ProgramSetSampleShading(CPU* c, u64 p, i32 mode) {
     NvnProgram* o = NVN_OBJ(NvnProgram, p);
     (void)c;
     o->sample_shading = (u16)((o->sample_shading & 0xff00) | ((u32)mode & 0x3f));
+}
+/* No ray tracing yet. A game takes the largest of these to size memory, and a size of 0 stops it there: this one is
+   made up. The group handles stay what the caller's memory holds, as nothing dispatches rays */
+u64 nvn_ProgramGetScratchBytesPerWarp(CPU* c, u64 p) {
+    (void)c;
+    (void)p;
+    LOG_LIMIT(1, "nvn: a program's scratch bytes asked for, and made up: no ray tracing yet\n");
+    return 0x1000;
+}
+void nvn_ProgramGetShaderGroupHandle(CPU* c, u64 p) {
+    (void)c;
+    (void)p;
+    LOG_LIMIT(1, "nvn: a program's shader group handles asked for: no ray tracing yet\n");
 }
 /* the tiled cache's subtile size a program asks for: the game's driver's SetShaders sets it to 0 and nothing in the
    API sets it otherwise (NVN 55.15). The renderer has no tiled cache */
