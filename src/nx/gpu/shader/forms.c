@@ -510,11 +510,11 @@ static int texture_sample_supported(u64 w, int bindless) {
     u32 type = B(w, 28, 3);
     u32 offset = B(w, bindless ? 36 : 54, 1);
     u32 mode = B(w, bindless ? 37 : 55, 3);
-    /* Type 5 denotes a 3D array, which Vulkan cannot sample. LC is a packed 4.8 minimum LOD in the high half of
-       the layer register (Mesa nak_nir_lower_tex.c, lower_tex_to_nak); this translator does not decode it, so refuse
-       bit 58 (TEX.B bit 40). */
+    u32 clamp = B(w, bindless ? 40 : 58, 1);
+    /* Type 5 denotes a 3D array, which Vulkan cannot sample. LC combines with automatic LOD or bias. The
+       explicit-LOD combinations have no proven operand contract (Mesa nak_nir_lower_tex.c). */
     return type != 5 && mode != 4 && mode != 5 && !(type == 4 && B(w, 50, 1)) && (!offset || type <= 4) &&
-           !B(w, bindless ? 40 : 58, 1);
+           (!clamp || mode == 0 || mode == 2 || mode == 6);
 }
 
 /* SHFL within a fragment program's 2x2 quad (the immediate mask 0x1c03: segments of 4 lanes, clamped to the last)
@@ -699,6 +699,7 @@ int shader_supported(u64 w, int op) {
             if (B(w, 8, 8) != 255) return !B(w, 31, 1) && !B(w, 32, 1);
             if (B(w, 31, 1)) return addr + count * 4 <= 0x200;
             return (addr >= 0x70 && addr + count * 4 <= 0x280) ||
+                   (addr == 0x6c && count == 1) || (addr >= 0x2c0 && addr + count * 4 <= 0x2e0) ||
                    ((addr == 0x60 || addr == 0x2f4 || addr == 0x2f8 || addr == 0x2fc) && count == 1) ||
                    (addr == 0x2f0 && count <= 2);
         }
@@ -793,9 +794,9 @@ int shader_supported(u64 w, int op) {
         case O_XMAD_I: return B(w, 50, 3) <= 2 || B(w, 50, 3) == 4;
         case O_XMAD_RC:
         case O_XMAD_CR: return B(w, 50, 2) <= 2;
-        /* the plain addressing mode: IS, IL and ISL (bits 44-45) take the bank or address from the register */
+        /* IS and ISL add the register's high half to the bank and use its low half as the byte address. */
         case O_LDC:
-            return B(w, 48, 3) <= 5 && B(w, 36, 5) < 18 && (B(w, 48, 3) != 5 || B(w, 0, 8) < 254) && !B(w, 44, 2);
+            return B(w, 48, 3) <= 5 && B(w, 36, 5) < 18 && (B(w, 48, 3) != 5 || B(w, 0, 8) < 254);
         case O_SHF_LR:
         case O_SHF_LI:
         case O_SHF_RR:
@@ -976,9 +977,9 @@ int shader_supported(u64 w, int op) {
         /* every type but a 3D array, which doesn't exist */
         case O_TMML:
         case O_TMML_B: return B(w, 28, 3) != 5;
-        /* TXD supports 1D and 2D textures and their arrays, without a LOD clamp (bit 50). */
+        /* Gradients have one pair per spatial coordinate. A cube uses three pairs, as a volume does. */
         case O_TXD:
-        case O_TXD_B: return B(w, 28, 3) < 4 && !B(w, 50, 1);
+        case O_TXD_B: return B(w, 28, 3) != 5 && !B(w, 50, 1) && (!B(w, 35, 1) || B(w, 28, 3) < 6);
         case O_FSETP_R:
         case O_FSETP_C:
         case O_FSETP_I: return 1;
@@ -1000,14 +1001,13 @@ int shader_stage_has(u64 w, int op, int stage) {
         if (stage == ST_FS || stage == ST_CS) return 0;
         if (B(w, 8, 8) != 255) return 1; /* indexed: the stage's generic inputs */
         if (B(w, 31, 1)) return stage == ST_TCS || stage == ST_TES;
-        if (stage == ST_TCS && B(w, 32, 1) && addr < 0x70) return 0;
+        if (stage == ST_TCS && B(w, 32, 1) && addr < 0x70 && addr != 0x6c) return 0;
         if (addr == 0x2f8 || addr == 0x2fc) return stage == ST_VS;
         if (addr == 0x2f0 || addr == 0x2f4) return stage == ST_TES;
         return addr >= 0x80 || between;
     }
     if (op == O_AST) {
         if (stage == ST_FS || stage == ST_CS || (B(w, 31, 1) && stage != ST_TCS)) return 0;
-        if (stage == ST_TCS && !B(w, 31, 1) && (addr == 0x64 || addr == 0x6c || addr >= 0x2c0)) return 0;
         return 1;
     }
     if (op == O_OUT_R || op == O_OUT_C || op == O_OUT_I) return stage == ST_GS;

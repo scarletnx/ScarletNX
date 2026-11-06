@@ -48,7 +48,8 @@ static int check_targetless_stores(void) {
     CHECK(!storage_write_words(cbuf + 0x510, descriptor, 3));
     CHECK(!storage_write_words(stored, (const u32[1]){0xdeadbeef}, 1));
     CHECK(mesh_program(address, vertex, 3, 0));
-    CHECK(mesh_program(address + 0x1000, store, 5, 1));
+    /* These fragment programs have no inputs or color outputs: their effects are only storage writes. */
+    CHECK(mesh_program(address + 0x1000, store, 5, 0));
     u32* r = channel->r3d;
     r[0x582] = (u32)(address >> 32);
     r[0x583] = (u32)address;
@@ -86,7 +87,7 @@ static int check_targetless_stores(void) {
         fprintf(stderr, "targetless store: drawn %d, skipped %d, the buffer holds %08x, expected 00005eed\n", drawn,
                 skipped, snx_ld_le32(word));
     CHECK(drawn && !skipped && snx_ld_le32(word) == 0x5eed);
-    CHECK(mesh_program(address + 0x1000, nothing, 1, 1));
+    CHECK(mesh_program(address + 0x1000, nothing, 1, 0));
     maxwell3d_method(channel, 0x369, 1, 1); /* the program's memory changed */
     channel->r3d_dirty = ~0u;
     targetless_draw(channel, &drawn, &skipped);
@@ -107,7 +108,7 @@ static int check_targetless_stores(void) {
     CHECK(!storage_write_words(pool, header, 8));
     CHECK(!storage_write_words(cbuf + 0x120, (const u32[1]){0}, 1));
     CHECK(!storage_write_words(texels, before, 8));
-    CHECK(mesh_program(address + 0x1000, buffer_store, 5, 1));
+    CHECK(mesh_program(address + 0x1000, buffer_store, 5, 0));
     maxwell3d_method(channel, 0x369, 1, 1);
     r[0x55D] = (u32)(pool >> 32), r[0x55E] = (u32)pool, r[0x55F] = 0;
     channel->r3d_dirty = ~0u;

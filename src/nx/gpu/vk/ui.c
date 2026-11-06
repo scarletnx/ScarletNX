@@ -3,6 +3,7 @@
 /* The on-screen controls, the game's menu (runtime/platform/ui.h) and the shader loading screen before the game
    (runtime/platform/prepare_screen.h) over a presented frame: the quads they give, blended onto the swapchain image
    in a pass of their own after the frame's blit. Nothing is recorded while none shows */
+#include "nx/gpu/vk/descriptor_objects.h"
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
@@ -78,7 +79,7 @@ static int layout_make(void) {
                                    .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                                    .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                                    .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
-        if (!VK_OK(vkCreateSampler(g_vk.dev, &sci, NULL, &g_samplers[i]))) return 0;
+        if (!VK_OK(vk_sampler_create(g_vk.dev, &sci, NULL, &g_samplers[i]))) return 0;
     }
     return 1;
 }
@@ -200,7 +201,7 @@ static void atlas_upload(VkCommandBuffer cb) {
     }
     vk_mem_track(g_atlas_mem);
     vci.image = g_atlas;
-    if (!VK_OK(vkCreateImageView(g_vk.dev, &vci, NULL, &g_atlas_view))) {
+    if (!VK_OK(vk_image_view_create(g_vk.dev, &vci, NULL, &g_atlas_view))) {
         vk_mem_untrack(g_atlas_mem);
         vmaDestroyImage(g_vk.vma, g_atlas, g_atlas_mem);
         g_atlas = VK_NULL_HANDLE;
@@ -266,7 +267,7 @@ static void image_upload(VkCommandBuffer cb) {
             return;
         }
         vci.image = g_image;
-        if (!VK_OK(vkCreateImageView(g_vk.dev, &vci, NULL, &g_image_view))) {
+        if (!VK_OK(vk_image_view_create(g_vk.dev, &vci, NULL, &g_image_view))) {
             vmaDestroyImage(g_vk.vma, g_image, g_image_mem);
             g_image = VK_NULL_HANDLE;
             return;
@@ -301,7 +302,7 @@ static VkImageView sc_view(VkImage sc) {
                                          .viewType = VK_IMAGE_VIEW_TYPE_2D,
                                          .format = g_vk.sc_format,
                                          .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
-            if (!VK_OK(vkCreateImageView(g_vk.dev, &vci, NULL, &g_sc_view[i]))) return VK_NULL_HANDLE;
+            if (!VK_OK(vk_image_view_create(g_vk.dev, &vci, NULL, &g_sc_view[i]))) return VK_NULL_HANDLE;
             g_sc_img[i] = sc;
             return g_sc_view[i];
         }
@@ -310,7 +311,7 @@ static VkImageView sc_view(VkImage sc) {
 void vk_ui_swapchain_gone(void) {
     u32 i;
     for (i = 0; i < VK_SC_MAX; ++i) {
-        if (g_sc_view[i]) vkDestroyImageView(g_vk.dev, g_sc_view[i], NULL);
+        if (g_sc_view[i]) vk_image_view_destroy(g_vk.dev, g_sc_view[i], NULL);
         g_sc_view[i] = VK_NULL_HANDLE;
         g_sc_img[i] = VK_NULL_HANDLE;
     }

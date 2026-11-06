@@ -333,6 +333,12 @@ static void test_command_buffer(void) {
     nvn_CommandBufferSetLineWidth(NULL, CMDBUF, 3.0f);
     nvn_CommandBufferSetProvokingVertexMode(NULL, CMDBUF, 0);
     nvn_CommandBufferSetPatchSize(NULL, CMDBUF, 3);
+    u64 patch_free = nvn_CommandBufferGetCommandMemoryFree(NULL, CMDBUF);
+    nvn_CommandBufferSetPatchSize(NULL, CMDBUF, 0);
+    nvn_CommandBufferSetPatchSize(NULL, CMDBUF, -1);
+    nvn_CommandBufferSetPatchSize(NULL, CMDBUF, 33);
+    check(nvn_CommandBufferGetCommandMemoryFree(NULL, CMDBUF) == patch_free,
+          "patch sizes outside1..32 record nothing");
     nvn_CommandBufferSetAlphaRef(NULL, CMDBUF, 0.375f);
     nvn_CommandBufferSetPointSize(NULL, CMDBUF, 3.0f);
     nvn_CommandBufferSetDepthBounds(NULL, CMDBUF, 1, 0.125f, 0.875f);
@@ -362,6 +368,14 @@ static void test_command_buffer(void) {
     memset(GP(SCRATCH + 0x340), 0, sizeof depths);
     nvn_CommandBufferSetConservativeRasterEnable(NULL, CMDBUF, 1);
     nvn_CommandBufferSetConservativeRasterDilate(NULL, CMDBUF, 0.3f);
+    memory_before = nvn_CommandBufferGetCommandMemoryFree(NULL, CMDBUF);
+    nvn_CommandBufferSetSubpixelPrecisionBias(NULL, CMDBUF, 3, 8);
+    check(memory_before - nvn_CommandBufferGetCommandMemoryFree(NULL, CMDBUF) == 128,
+          "precision bias accounts for all16 viewport commands");
+    nvn_CommandBufferSetSubpixelPrecisionBias(NULL, CMDBUF, 9, 0);
+    nvn_CommandBufferSetSubpixelPrecisionBias(NULL, CMDBUF, 0, -1);
+    check(memory_before - nvn_CommandBufferGetCommandMemoryFree(NULL, CMDBUF) == 128,
+          "precision bias outside0..8 records nothing");
     check(nvn_ProgramInitialize(NULL, PROGRAM, DEVICE), "a program");
     nvn_ProgramSetSampleShading(NULL, PROGRAM, 1);
     nvn_CommandBufferBindProgram(NULL, CMDBUF, PROGRAM, NVN_SHADER_STAGE_FRAGMENT_BIT);
@@ -399,7 +413,6 @@ static void test_command_buffer(void) {
     nvn_CommandBufferResolveDepthBuffer(NULL, CMDBUF);
     nvn_CommandBufferSetZCullZF32CompressionEnable(NULL, CMDBUF, 1);
     nvn_CommandBufferOverrideSubtileSize(NULL, CMDBUF, 1, 16);
-    nvn_CommandBufferSetSubpixelPrecisionBias(NULL, CMDBUF, 1, 1);
     h = nvn_CommandBufferEndRecording(NULL, CMDBUF);
     /* the deferred binds read what is there at the replay */
     gw64(ranges + 16, 0x444000);
@@ -411,6 +424,8 @@ static void test_command_buffer(void) {
     check(g_ds.dyn.line_width == 3.0f, "the line width reaches the draw state");
     check(g_ds.rkey.provoking_last == 0, "the first vertex provokes");
     check(g_ds.rkey.conservative == 3, "conservative rasterization with 2 quarter pixels of dilation");
+    check(g_call.subpixel_bias_x == 3 && g_call.subpixel_bias_y == 8,
+          "recorded conservative precision bias reaches every draw form");
     check(g_ds.rkey.sample_shading == 1, "the program's sample shading, as its SetShaders applied it");
     check(g_ds.rkey.patch_vertices == 3, "the recorded patch size reaches the renderer key");
     check(g_ds.dyn.alpha_ref == 0.375f &&
@@ -585,6 +600,42 @@ static void test_tessellation_metadata(void) {
     check(g_ds.xfb.count[0] == 4 && g_ds.xfb.stride[0] == 16 &&
               !memcmp(g_ds.xfb.layout[0], (const u8[4]){36, 37, 38, 39}, 4),
           "the newest transform feedback layout remains available after metadata growth");
+}
+
+static void test_geometry_stream_metadata(void) {
+    const u64 control = 0xa000, pairs = 0xc000;
+    tess_control(control, NVN_SHADER_STAGE_GEOMETRY, 16, (const u32[4]){0}, 0);
+    GP(control)[0x6ec] = 1;
+    for (u32 i = 0; i < 4; i++) {
+        gw16(control + 0x6dc + 2 * i, 16);
+        GP(control)[0x6e4 + i] = (u8)i;
+        GP(control)[0x6e8 + i] = 1;
+        GP(control)[0xdc + 0x80 * i] = (u8)(0x20 + i);
+        GP(control)[0x4dc + 0x80 * i] = 4;
+    }
+    gw64(pairs, 0x900000);
+    gw64(pairs + 8, control);
+    check(nvn_ProgramSetShaders(NULL, PROGRAM, 1, pairs), "a geometry program with four output streams");
+    u64 serial = NVN_OBJ(const NvnProgram, PROGRAM)->serial;
+    ShXfb layout = {0};
+    check(nvn_program_xfb(serial, &layout), "geometry capture metadata exists");
+    nvn_CommandBufferInitialize(NULL, CMDBUF, DEVICE);
+    nvn_CommandBufferAddCommandMemory(NULL, CMDBUF, POOL, 0x9000, 0x8000);
+    nvn_CommandBufferAddControlMemory(NULL, CMDBUF, SCRATCH + 0x1000, 0x400);
+    nvn_CommandBufferBeginRecording(NULL, CMDBUF);
+    nvn_CommandBufferBindProgram(NULL, CMDBUF, PROGRAM, NVN_SHADER_STAGE_GEOMETRY_BIT);
+    nvn_CommandBufferDrawArrays(NULL, CMDBUF, NVN_DRAW_PRIMITIVE_POINTS, 0, 1);
+    u64 handle = nvn_CommandBufferEndRecording(NULL, CMDBUF);
+    memset(GP(control), 0, 0x900);
+    check(nvn_ProgramSetShaders(NULL, PROGRAM, 0, 0), "the program can replace its geometry stage before replay");
+    static NvnDraw draw;
+    nvn_draw_init(&draw, 0x80000001u);
+    check(replay(&draw, handle, OP_DRAW) == 1, "a geometry recording survives program replacement");
+    for (u32 i = 0; i < 4; i++)
+        check(layout.stream[i] == i && g_ds.xfb.stream[i] == i && g_ds.xfb.count[i] == 4 &&
+                  g_ds.xfb.stride[i] == 16 && g_ds.xfb.layout[i][0] == 32 + 4 * i,
+              "each immutable geometry capture buffer retains its own stream and attribute layout");
+    nvn_CommandBufferFinalize(NULL, CMDBUF);
 }
 
 /* ---- the device and its debug API */
@@ -972,6 +1023,9 @@ static void test_state(void) {
               !nvn_BlendStateGetAdvancedPremultipliedSrc(NULL, s) && nvn_BlendStateGetAdvancedNormalizedDst(NULL, s),
           "the advanced blend setters");
     nvn_MultisampleStateSetDefaults(NULL, s);
+    check(nvn_MultisampleStateGetAlphaToCoverageDither(NULL, s), "alpha-to-coverage dither defaults to enabled");
+    for (u32 i = 0; i < 16; i++)
+        check(NVN_OBJ(NvnMultisample, s)->location[i] == 0x88, "all default sample locations use pixel centers");
     nvn_MultisampleStateGetSampleLocationsGrid(NULL, s, xy, xy + 4);
     check(gr32(xy) == 4 && gr32(xy + 4) == 4, "one sample: a 4x4 grid");
     nvn_MultisampleStateSetSamples(NULL, s, 4);
@@ -989,8 +1043,58 @@ static void test_state(void) {
     nvn_MultisampleStateSetCoverageToColorEnable(NULL, s, 1);
     check(nvn_MultisampleStateGetSampleLocationsEnable(NULL, s) &&
               nvn_MultisampleStateGetCoverageToColorEnable(NULL, s) &&
-              !nvn_MultisampleStateGetAlphaToCoverageDither(NULL, s),
+              nvn_MultisampleStateGetAlphaToCoverageDither(NULL, s),
           "the multisample state's flags");
+    NvnMultisample saved = *NVN_OBJ(const NvnMultisample, s);
+    nvn_MultisampleStateSetSamples(NULL, s, 3);
+    nvn_MultisampleStateSetRasterSamples(NULL, s, 1);
+    nvn_MultisampleStateSetRasterSamples(NULL, s, 32);
+    nvn_MultisampleStateSetCoverageModulationMode(NULL, s, -1);
+    nvn_MultisampleStateSetCoverageToColorOutput(NULL, s, 8);
+    nvn_MultisampleStateSetCoverageToColorOutput(NULL, s, -1);
+    nvn_MultisampleStateSetSampleLocations(NULL, s, 15, 2, 0);
+    nvn_MultisampleStateSetSampleLocations(NULL, s, 0x7fffffff, 0x7fffffff, 0);
+    nvn_MultisampleStateSetSampleLocations(NULL, s, -1, 2, 0);
+    nvn_MultisampleStateSetSampleLocations(NULL, s, 0, -1, 0);
+    nvn_MultisampleStateSetSampleLocations(NULL, s, 0, 1, 0);
+    check(!memcmp(&saved, GP(s), sizeof saved), "invalid multisample arguments preserve the whole state");
+    nvn_MultisampleStateSetCoverageToColorOutput(NULL, s, 7);
+    nvn_MultisampleStateSetSampleLocationsGridEnable(NULL, s, 1);
+    nvn_MultisampleStateSetAlphaToCoverageEnable(NULL, s, 1);
+    nvn_MultisampleStateSetAlphaToCoverageDither(NULL, s, 0);
+    nvn_MultisampleStateSetCoverageModulationMode(NULL, s, 3);
+    saved = *NVN_OBJ(const NvnMultisample, s);
+    nvn_CommandBufferInitialize(NULL, CMDBUF, DEVICE);
+    nvn_CommandBufferAddCommandMemory(NULL, CMDBUF, POOL, 0x9000, 0x8000);
+    nvn_CommandBufferAddControlMemory(NULL, CMDBUF, SCRATCH + 0x1000, 0x400);
+    nvn_CommandBufferBeginRecording(NULL, CMDBUF);
+    nvn_CommandBufferBindMultisampleState(NULL, CMDBUF, s);
+    nvn_CommandBufferSetConservativeRasterEnable(NULL, CMDBUF, 1);
+    nvn_CommandBufferSetSubpixelPrecisionBias(NULL, CMDBUF, 3, 8);
+    nvn_CommandBufferSetDepthBounds(NULL, CMDBUF, 1, 0.25f, 0.75f);
+    nvn_CommandBufferDrawArrays(NULL, CMDBUF, NVN_DRAW_PRIMITIVE_TRIANGLES, 0, 3);
+    memcpy(GP(SCRATCH + 0x300), (const float[4]){0, 0, 4, 4}, 16);
+    nvn_CommandBufferDrawTexture(NULL, CMDBUF, 7, SCRATCH + 0x300, SCRATCH + 0x300);
+    u64 handle = nvn_CommandBufferEndRecording(NULL, CMDBUF);
+    memset(GP(s), 0, sizeof saved);
+    static NvnDraw draw;
+    nvn_draw_init(&draw, 0x80000001u);
+    draw.own.pred = 0x4321;
+    g_test_renderer.draw = r_draw;
+    g_test_renderer.draw_texture = r_draw_texture;
+    check(replay(&draw, handle, OP_DRAW) == 1 &&
+              g_call.multisample_flags == (DS_MS_COVERAGE_TO_COLOR | DS_MS_SAMPLE_LOCATIONS | DS_MS_SAMPLE_GRID) &&
+              g_call.coverage_to_color_output == 7 && g_call.raster_samples == 8 && g_call.coverage_mode == 3 &&
+              !memcmp(g_call.sample_locations, saved.location, sizeof saved.location) &&
+              g_ds.rkey.alpha_to_coverage,
+          "multisample recordings retain sample grids, dither selection and coverage output after caller reuse");
+    check(g_tex.state.multisample_flags == g_call.multisample_flags &&
+              g_tex.state.coverage_to_color_output == 7 && g_tex.state.raster_samples == 8 &&
+              !memcmp(g_tex.state.sample_locations, saved.location, sizeof saved.location) &&
+              !g_tex.state.state_flags && !g_tex.state.subpixel_bias_x && !g_tex.state.subpixel_bias_y &&
+              g_tex.owner.pred == 0x4321 && !g_tex.owner.xfb_started,
+          "DrawTexture retains per-fragment state and the predicate while excluding depth and conservative state");
+    nvn_CommandBufferFinalize(NULL, CMDBUF);
 }
 
 /* ---- the queue and the window */
@@ -1060,12 +1164,15 @@ static void test_sync_never_fenced(void) {
     }
 }
 
+#include "nvn_discard.inc"
+
 int main(void) {
     nvn_init();
     test_device();
     pool_init();
     test_command_buffer();
     test_tessellation_metadata();
+    test_geometry_stream_metadata();
     test_subroutines();
     test_texture();
     test_array_surface();
@@ -1074,6 +1181,7 @@ int main(void) {
     test_state();
     test_queue_window();
     test_sync_never_fenced();
+    test_discard_commands();
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;

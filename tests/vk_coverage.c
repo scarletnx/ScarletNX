@@ -14,20 +14,18 @@ int main(void) {
     for (u32 color = 1; color <= 8; color *= 2)
         for (u32 raster = 2; raster <= 16; raster *= 2)
             for (u32 device = 0; device < 2; device++)
-                for (u32 depth = 0; depth < 2; depth++) {
+                for (u32 depth = 0; depth < 3; depth++) {
+                    u32 depth_samples = depth == 0 ? 0 : depth == 1 ? raster : 32;
                     DrawCall call = {.raster_samples = raster, .coverage_mode = 3, .coverage_table_enable = 1};
                     for (u32 i = 0; i < 16; i++) call.coverage_table[i] = (u8)(i + 1);
                     VkCoverage key;
-                    int made = vk_coverage_key(&key, &call, color, 1, (int)depth, (int)device, 31);
-                    check(made == (raster <= color || (device && !depth)), "native feature and attachment gates");
+                    int made = vk_coverage_key(&key, &call, color, 1, depth_samples, (int)device, 31);
+                    check(made == (raster >= color && (device || raster == color) && depth != 2),
+                          "native reduction or equal-count shader gates");
                     if (!made) continue;
-                    if (raster <= color) {
-                        const VkCoverage zero = {0};
-                        check(!memcmp(&key, &zero, sizeof key), "ordinary multisampling has no coverage key");
-                        continue;
-                    }
                     check(key.raster_samples == raster && key.mode == 3 && key.table_enable == 1 &&
-                              !memcmp(key.table, call.coverage_table, sizeof key.table),
+                              (raster == color ? key.table[0] == call.coverage_table[0]
+                                               : !memcmp(key.table, call.coverage_table, sizeof key.table)),
                           "active coverage state preserved");
                     float table[16];
                     for (u32 i = 0; i < 16; i++) table[i] = -1;
@@ -60,6 +58,20 @@ int main(void) {
     check(!vk_coverage_key(&key, &call, 1, 1, 0, 1, 31), "non-power-of-two sample count is rejected");
     call.raster_samples = 32;
     check(!vk_coverage_key(&key, &call, 1, 1, 0, 1, 63), "NVN raster counts stop at16");
+    call = (DrawCall){.raster_samples = 4, .coverage_mode = 3, .coverage_table_enable = 1, .coverage_table = {5}};
+    check(vk_coverage_key(&key, &call, 4, 1, 4, 1, 31) && key.raster_samples == 4 && key.table[0] == 5 &&
+              vk_coverage_factor16(&key, 4, 1) == 5, "ratio-one custom modulation consumes table entry zero");
+    call.coverage_table[0] = 16;
+    check(vk_coverage_key(&key, &call, 4, 1, 4, 0, 31) && !key.raster_samples,
+          "ratio-one unit modulation needs no native extension or distinct pipeline");
+    call.coverage_table_enable = 0;
+    check(vk_coverage_key(&key, &call, 4, 1, 4, 0, 31) && !key.raster_samples,
+          "ratio-one linear modulation is inert");
+    check(vk_coverage_key(&key, &call, 4, 0, 4, 0, 31) && !key.raster_samples,
+          "equal-count depth-only rasterization needs no color modulation");
+    check(!vk_coverage_key(&key, &call, 4, 1, 2, 1, 31), "bound depth must use the raster count");
+    call.raster_samples = 0;
+    check(!vk_coverage_key(&key, &call, 1, 1, 4, 1, 31), "unlike attachments require explicit raster samples");
     printf("vk coverage: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }

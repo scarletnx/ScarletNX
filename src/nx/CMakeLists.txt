@@ -109,14 +109,14 @@ snx_component(shader gpu/shader/shader.c gpu/shader/decode.c gpu/shader/corpus.c
                      gpu/shader/spirv_translate.c gpu/shader/spirv_compute.c gpu/shader/structure.c
                      gpu/shader/shared_reach.c gpu/shader/registers.c gpu/shader/forms.c gpu/shader/dataflow.c
                      gpu/shader/emit_int.c gpu/shader/emit_float.c gpu/shader/emit_memory.c gpu/shader/emit_texture.c
-                     gpu/shader/emit_io.c gpu/shader/emit_flow.c gpu/shader/emit_thread.c gpu/shader/advanced_blend_spirv.c)
+                     gpu/shader/emit_io.c gpu/shader/emit_flow.c gpu/shader/emit_thread.c gpu/shader/advanced_blend_spirv.c gpu/shader/coverage_spirv.c gpu/shader/capture_tiles_spirv.c)
 # the opcode enum and decoder, generated from gpu/shader/maxwell_opcodes.def
 include("${PROJECT_SOURCE_DIR}/cmake/shaderdec.cmake")
 snx_shaderdec(snx_shader)
-snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/descriptors.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
+snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/descriptors.c gpu/vk/descriptor_heaps.c gpu/vk/descriptor_objects.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
                  gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/pipeline.c gpu/vk/pipeline_file.c gpu/vk/render.c gpu/vk/release.c gpu/vk/query.c gpu/vk/xfb.c gpu/vk/display.c gpu/vk/compute.c
                  gpu/vk/pending_pages.c gpu/vk/image_out.c gpu/vk/depth_pack.c gpu/vk/memory.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/msaa.c gpu/vk/ui.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c gpu/vk/uma.c
-                 gpu/vk/ftz_probe.c gpu/vk/vertex_input.c gpu/vk/draw_texture.c gpu/vk/tess_passthrough.c
+                 gpu/vk/ftz_probe.c gpu/vk/vertex_input.c gpu/vk/draw_texture.c gpu/vk/draw_texture_shader.c gpu/vk/tess_passthrough.c gpu/vk/present_quad.c gpu/vk/capture.c
                  "${volk_SOURCE_DIR}/volk.c")
 # the ASTC decoder's, the block linear deswizzle and swizzle's, the texture conversions', the VIC composition's and
 # the render enable predicates' SPIR-V, compiled from their GLSL at build time (cmake/glsl.cmake). The VIC shader is
@@ -142,6 +142,8 @@ snx_glsl_spirv(snx_vk SOURCE gpu/vk/query_compare.comp NAME query_compare_spv
                HEADER nx/gpu/vk/query_compare_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/ftz_probe.comp NAME ftz_probe_spv HEADER nx/gpu/vk/ftz_probe_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/msaa.vert NAME msaa_vert_spv HEADER nx/gpu/vk/msaa_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/present_quad.vert NAME present_quad_vert_spv HEADER nx/gpu/vk/present_quad_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/present_quad.frag NAME present_quad_frag_spv HEADER nx/gpu/vk/present_quad_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/msaa.frag NAME msaa_unpack_spv HEADER nx/gpu/vk/msaa_spv.h DEFINES MS_UNPACK)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/msaa.frag NAME msaa_unpack_depth_spv HEADER nx/gpu/vk/msaa_spv.h
                DEFINES MS_UNPACK_DEPTH)
@@ -217,6 +219,79 @@ if(BUILD_TESTING)
         target_link_libraries(snx-test-shader-direct-regressions PRIVATE Threads::Threads m)
     endif()
     add_test(NAME shader_direct_regressions COMMAND $<TARGET_FILE:snx-test-shader-direct-regressions>)
+    add_executable(snx-test-shader-mixed-sample-safe "${PROJECT_SOURCE_DIR}/tests/shader_mixed_sample_safe.c")
+    snx_test_target(snx-test-shader-mixed-sample-safe 11)
+    target_link_libraries(snx-test-shader-mixed-sample-safe PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-mixed-sample-safe PRIVATE Threads::Threads m)
+    endif()
+    add_test(NAME shader_mixed_sample_safe COMMAND $<TARGET_FILE:snx-test-shader-mixed-sample-safe>)
+    add_executable(snx-test-shader-float-rounding "${PROJECT_SOURCE_DIR}/tests/shader_float_rounding.c")
+    snx_test_target(snx-test-shader-float-rounding 11)
+    target_link_libraries(snx-test-shader-float-rounding PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-float-rounding PRIVATE Threads::Threads m)
+    endif()
+    add_test(NAME shader_float_rounding COMMAND $<TARGET_FILE:snx-test-shader-float-rounding>)
+    add_executable(snx-test-shader-indexed-ms "${PROJECT_SOURCE_DIR}/tests/shader_indexed_ms.c")
+    snx_test_target(snx-test-shader-indexed-ms 11)
+    target_link_libraries(snx-test-shader-indexed-ms PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-indexed-ms PRIVATE Threads::Threads m)
+    endif()
+    add_test(NAME shader_indexed_ms COMMAND $<TARGET_FILE:snx-test-shader-indexed-ms>)
+    add_executable(snx-test-shader-integer-half "${PROJECT_SOURCE_DIR}/tests/shader_integer_half.c")
+    snx_test_target(snx-test-shader-integer-half 11)
+    target_link_libraries(snx-test-shader-integer-half PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-integer-half PRIVATE Threads::Threads m)
+    endif()
+    add_test(NAME shader_integer_half COMMAND $<TARGET_FILE:snx-test-shader-integer-half>)
+    add_executable(snx-test-shader-tcs-dead-outputs "${PROJECT_SOURCE_DIR}/tests/shader_tcs_dead_outputs.c")
+    snx_test_target(snx-test-shader-tcs-dead-outputs 11)
+    target_link_libraries(snx-test-shader-tcs-dead-outputs PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-tcs-dead-outputs PRIVATE Threads::Threads m)
+    endif()
+    add_test(NAME shader_tcs_dead_outputs COMMAND $<TARGET_FILE:snx-test-shader-tcs-dead-outputs>)
+    add_executable(snx-test-shader-blend-images "${PROJECT_SOURCE_DIR}/tests/shader_blend_images.c")
+    snx_test_target(snx-test-shader-blend-images 11)
+    target_link_libraries(snx-test-shader-blend-images PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-blend-images PRIVATE Threads::Threads m)
+    endif()
+    add_test(NAME shader_blend_images COMMAND $<TARGET_FILE:snx-test-shader-blend-images>)
+    add_executable(snx-test-shader-half-native "${PROJECT_SOURCE_DIR}/tests/shader_half_native.c")
+    snx_test_target(snx-test-shader-half-native 11)
+    target_link_libraries(snx-test-shader-half-native PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-half-native PRIVATE Threads::Threads m)
+    endif()
+    add_test(NAME shader_half_native COMMAND $<TARGET_FILE:snx-test-shader-half-native>)
+    add_executable(snx-test-shader-txd-uniform "${PROJECT_SOURCE_DIR}/tests/shader_txd_uniform.c")
+    snx_test_target(snx-test-shader-txd-uniform 11)
+    target_link_libraries(snx-test-shader-txd-uniform PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-txd-uniform PRIVATE Threads::Threads m)
+    endif()
+    add_test(NAME shader_txd_uniform COMMAND $<TARGET_FILE:snx-test-shader-txd-uniform>)
+    add_executable(snx-test-shader-half-packing "${PROJECT_SOURCE_DIR}/tests/shader_half_packing.c")
+    snx_test_target(snx-test-shader-half-packing 11)
+    target_link_libraries(snx-test-shader-half-packing PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-half-packing PRIVATE Threads::Threads m)
+    endif()
+    add_test(NAME shader_half_packing COMMAND $<TARGET_FILE:snx-test-shader-half-packing>)
+    foreach(fixture texture_limits alpha_coverage coverage_resolve blend_resolve known_bits capture_tiles fragment_mask mixed_coverage)
+        string(REPLACE "_" "-" name "${fixture}")
+        add_executable(snx-test-shader-${name} "${PROJECT_SOURCE_DIR}/tests/shader_${fixture}.c")
+        snx_test_target(snx-test-shader-${name} 11)
+        target_link_libraries(snx-test-shader-${name} PRIVATE snx_shader)
+        if(NOT WIN32)
+            target_link_libraries(snx-test-shader-${name} PRIVATE Threads::Threads m)
+        endif()
+        add_test(NAME shader_${fixture} COMMAND $<TARGET_FILE:snx-test-shader-${name}>)
+    endforeach()
     add_executable(snx-test-shader-shared-reach "${PROJECT_SOURCE_DIR}/tests/shader_shared_reach.c")
     snx_test_target(snx-test-shader-shared-reach 11)
     target_link_libraries(snx-test-shader-shared-reach PRIVATE snx_shader)
@@ -360,7 +435,8 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "${PROJECT_SOURCE_DIR}/tests/support/astc.c" gpu/vk/astc.c
         gpu/vk/blocklinear.c gpu/texture/blocklinear.c gpu/vk/texconv.c "${PROJECT_SOURCE_DIR}/tests/support/etc2.c"
         "${PROJECT_SOURCE_DIR}/tests/support/bcn.c"
-        gpu/vk/cmd.c gpu/vk/descriptors.c gpu/vk/memory.c gpu/vk/record.c gpu/vk/vma.cpp ${snx_astc_plat} "${volk_SOURCE_DIR}/volk.c"
+        gpu/vk/cmd.c gpu/vk/descriptors.c gpu/vk/descriptor_heaps.c gpu/vk/descriptor_objects.c
+        gpu/vk/memory.c gpu/vk/record.c gpu/vk/vma.cpp ${snx_astc_plat} "${volk_SOURCE_DIR}/volk.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/blocklinear_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/bc7_spv.c"
         "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp")

@@ -3,6 +3,7 @@
 /* The mode and coverage parameters are fixed for a translated variant. All divisions select a nonzero denominator
    before evaluation, including color dodge/burn and HSL endpoints. No branch diverges inside an interlock. */
 #include "nx/gpu/shader/advanced_blend_spirv.h"
+#include "nx/gpu/shader/capture_tiles_spirv.h"
 #include "nx/gpu/nvn/nvn.h"
 
 typedef struct {
@@ -31,6 +32,24 @@ static u32 unpremultiply(BlendEmit* c, u32 color, u32 alpha) {
 }
 static u32 complement(BlendEmit* c, u32 a) { return subtract(c, c->one, a); }
 static u32 clamp(BlendEmit* c, u32 a) { return minimum(c, c->one, maximum(c, c->zero, a)); }
+u32 shader_blend_srgb(SpvEmitter* e, u32 f32, u32 boolean, u32 vec4, u32 color, int encode) {
+    BlendEmit context = {e, f32, boolean, spv_emit_constant_f32(e, f32, 0), spv_emit_constant_f32(e, f32, 1)};
+    BlendEmit* c = &context;
+    u32 result[4];
+    for (u32 i = 0; i < 3; i++) {
+        u32 x = clamp(c, spv_emit_vec4_extract(e, f32, color, i));
+        u32 low = encode ? multiply(c, constant(c, 12.92f), x) : divide(c, x, constant(c, 12.92f));
+        u32 high = encode
+                       ? subtract(c, multiply(c, constant(c, 1.055f),
+                                              SPV_EXT(e, f32, SPV_GLSL_POW, x, constant(c, 1.0f / 2.4f))),
+                                  constant(c, 0.055f))
+                       : SPV_EXT(e, f32, SPV_GLSL_POW,
+                                 divide(c, add(c, x, constant(c, 0.055f)), constant(c, 1.055f)), constant(c, 2.4f));
+        result[i] = choose(c, less(c, constant(c, encode ? 0.0031308f : 0.04045f), x), high, low);
+    }
+    result[3] = spv_emit_vec4_extract(e, f32, color, 3);
+    return spv_emit_vec4_construct(e, vec4, result);
+}
 static u32 dodge(BlendEmit* c, u32 s, u32 d) {
     return choose(c, less(c, c->zero, d),
                   choose(c, less(c, s, c->one), minimum(c, c->one, divide(c, d, complement(c, s))), c->one), c->zero);
@@ -236,4 +255,118 @@ u32 shader_advanced_blend_spirv(SpvEmitter* e, u32 f32, u32 boolean, u32 vec4, u
     if (y) result[3] = add(c, result[3], source_only);
     if (z) result[3] = add(c, result[3], destination_only);
     return spv_emit_vec4_construct(e, vec4, result);
+}
+
+/* A capture pass writes both attachments only after the original shader's discard and native depth/stencil
+   tests. A separate validity attachment preserves source alpha0 and every source RGB bit. It is cleared for
+   each primitive; a whole-draw capture would lose earlier overlapping fragments. */
+static void blend_resolve_sample(SpvEmitter* e, u32 f, u32 b, u32 vec4, const u32 images[3],
+                                  u32 coordinate, u32 sample, u64 packed, u32 flags) {
+    u32 valid = sample ? SPV(e, SPV_OP_IMAGE_READ, vec4, images[1], coordinate, 64, sample)
+                       : SPV(e, SPV_OP_IMAGE_READ, vec4, images[1], coordinate);
+    u32 valid_red = spv_emit_vec4_extract(e, f, valid, 0);
+    u32 covered = spv_emit_bool_not(e, b, SPV(e, SPV_OP_F_ORD_EQUAL, b, valid_red, spv_emit_constant_f32(e, f, 0)));
+    u32 write = spv_emit_id(e), done = spv_emit_id(e);
+    spv_emit_selection_merge(e, done);
+    spv_emit_branch_conditional(e, covered, write, done);
+    spv_emit_label(e, write);
+    u32 source = sample ? SPV(e, SPV_OP_IMAGE_READ, vec4, images[0], coordinate, 64, sample)
+                        : SPV(e, SPV_OP_IMAGE_READ, vec4, images[0], coordinate);
+    u32 destination = sample ? SPV(e, SPV_OP_IMAGE_READ, vec4, images[2], coordinate, 64, sample)
+                             : SPV(e, SPV_OP_IMAGE_READ, vec4, images[2], coordinate);
+    u32 linear = flags & SH_BLEND_SRGB ? shader_blend_srgb(e, f, b, vec4, destination, 0) : destination;
+    u32 result = shader_advanced_blend_spirv(e, f, b, vec4, source, linear, (u32)(packed >> 37) & 63,
+                                             (int)(packed >> 46 & 1), (u32)(packed >> 44) & 3);
+    if (flags & SH_BLEND_SRGB) result = shader_blend_srgb(e, f, b, vec4, result, 1);
+    if ((flags & SH_BLEND_MASK) != SH_BLEND_MASK) {
+        u32 component[4];
+        for (u32 i = 0; i < 4; i++)
+            component[i] = spv_emit_vec4_extract(e, f, flags & (1u << i) ? result : destination, i);
+        result = spv_emit_vec4_construct(e, vec4, component);
+    }
+    if (sample) {
+        u32 operands[] = {images[2], coordinate, result, 64, sample};
+        spv_emit_void_op(e, 99, operands, 5);
+    } else {
+        u32 operands[] = {images[2], coordinate, result};
+        spv_emit_void_op(e, 99, operands, 3);
+    }
+    spv_emit_branch(e, done);
+    spv_emit_label(e, done);
+}
+
+u32* shader_blend_resolve_spirv(u64 packed, u32 flags, size_t* words) {
+    u32 mode = (u32)(packed >> 37) & 63, overlap = (u32)(packed >> 44) & 3;
+    u32 samples = flags & SH_BLEND_MULTISAMPLE ? flags >> 8 & 63 : 1;
+    *words = 0;
+    if (mode < NVN_BLEND_ADVANCED_MODE_ZERO || mode > NVN_BLEND_ADVANCED_MODE_HSL_LUMINOSITY || overlap > 2 ||
+        !samples || samples > 32 || (samples & (samples - 1)))
+        return NULL;
+    SpvEmitter e;
+    spv_emit_init(&e, 8192);
+    spv_emit_shader_capability(&e);
+    spv_emit_capability(&e, 50); /* ImageQuery */
+    spv_emit_capability(&e, 55); /* StorageImageReadWithoutFormat */
+    spv_emit_capability(&e, 56); /* StorageImageWriteWithoutFormat */
+    if (flags & SH_BLEND_MULTISAMPLE) spv_emit_capability(&e, 27); /* StorageImageMultisample */
+    if ((flags & (SH_BLEND_MULTISAMPLE | SH_BLEND_ARRAY)) == (SH_BLEND_MULTISAMPLE | SH_BLEND_ARRAY))
+        spv_emit_capability(&e, 48); /* ImageMSArray */
+    u32 f = spv_emit_type_f32(&e), b = spv_emit_type_bool(&e), u = spv_emit_type_u32(&e);
+    u32 vec4 = spv_emit_type_vec4(&e, f), uv3 = spv_emit_type_vec3(&e, u);
+    int array = !!(flags & SH_BLEND_ARRAY), multisample = !!(flags & SH_BLEND_MULTISAMPLE);
+    u32 coord_type = array ? uv3 : spv_emit_type_vec2(&e, u);
+    u32 image_type = spv_emit_type_image(&e, f, SPV_DIM_2D, 0, array, multisample, 2, 0);
+    u32 image_variable[3], images[3];
+    for (u32 i = 0; i < 3; i++) {
+        image_variable[i] = spv_emit_variable(&e, 0, image_type);
+        u32 set = 0;
+        spv_emit_decorate(&e, image_variable[i], 34, &set, 1);
+        spv_emit_decorate(&e, image_variable[i], 33, &i, 1);
+        spv_emit_decorate(&e, image_variable[i], i == 2 ? 23 : 24, NULL, 0); /* Coherent or NonWritable */
+    }
+    u32 invocation = spv_emit_variable(&e, 1, uv3), builtin = flags & SH_CAPTURE_TILED ? 26 : 28;
+    spv_emit_decorate(&e, invocation, 11, &builtin, 1);
+    u32 fn = spv_emit_id(&e), interfaces[6] = {invocation, image_variable[0], image_variable[1], image_variable[2]};
+    u32 interface_count = 4, tile_buffer = 0, local = 0;
+    if (flags & SH_CAPTURE_TILED) {
+        tile_buffer = shader_capture_tiles_declare(&e, u, 0, 3);
+        local = spv_emit_variable(&e, 1, uv3);
+        builtin = 27; /* LocalInvocationId */
+        spv_emit_decorate(&e, local, 11, &builtin, 1);
+        interfaces[interface_count++] = tile_buffer;
+        interfaces[interface_count++] = local;
+    }
+    u32 v = spv_emit_type_void(&e), ft = spv_emit_type_function_void(&e, v);
+    spv_emit_compute_entry_str(&e, fn, "main", interfaces, interface_count);
+    spv_emit_local_size(&e, fn, 8, 8, 1);
+    spv_emit_function_void(&e, v, fn, ft);
+    spv_emit_label(&e, spv_emit_id(&e));
+    for (u32 i = 0; i < 3; i++) images[i] = spv_emit_load(&e, image_type, image_variable[i]);
+    u32 xyz = spv_emit_load(&e, uv3, invocation);
+    if (flags & SH_CAPTURE_TILED)
+        xyz = shader_capture_tile_coordinates(&e, u, tile_buffer, xyz,
+                                               spv_emit_load(&e, uv3, local), !!(flags & SH_CAPTURE_ADAPTIVE));
+    u32 size = SPV(&e, 104, coord_type, images[2]); /* OpImageQuerySize, no Lod for storage images */
+    u32 inside = 0, coordinates[3];
+    for (u32 i = 0; i < (array ? 3u : 2u); i++) {
+        coordinates[i] = spv_emit_vec4_extract(&e, u, xyz, i);
+        u32 limit = spv_emit_vec4_extract(&e, u, size, i);
+        u32 fits = SPV(&e, SPV_OP_U_LESS_THAN, b, coordinates[i], limit);
+        inside = i ? SPV(&e, SPV_OP_LOGICAL_AND, b, inside, fits) : fits;
+    }
+    u32 coordinate = array ? xyz : SPV(&e, SPV_OP_COMPOSITE_CONSTRUCT, coord_type, coordinates[0], coordinates[1]);
+    u32 apply = spv_emit_id(&e), done = spv_emit_id(&e);
+    spv_emit_selection_merge(&e, done);
+    spv_emit_branch_conditional(&e, inside, apply, done);
+    spv_emit_label(&e, apply);
+    for (u32 sample = 0; sample < samples; sample++)
+        blend_resolve_sample(&e, f, b, vec4, images, coordinate,
+                              multisample ? spv_emit_constant_u32(&e, u, sample) : 0, packed, flags);
+    spv_emit_branch(&e, done);
+    spv_emit_label(&e, done);
+    spv_emit_return(&e);
+    spv_emit_function_end(&e);
+    u32* code = spv_emit_finish(&e, words);
+    spv_emit_destroy(&e);
+    return code;
 }
