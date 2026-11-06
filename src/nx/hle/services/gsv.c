@@ -825,6 +825,11 @@ static int nn_vi2_IVi2Session_BindClientDisplay(SvcObj* self, const u8* request)
     u64 name = snx_ld_le64(request + 8);
     Vi2Client* c = vi2_client(token);
     (void)self;
+    if (token && c && vi2_player(name) >= 0) { /* a GameShare display, as Eden-NS2 binds it */
+        R_UNLESS(vi2_player_refs[vi2_player(name)], VI2_NOT_FOUND);
+        c->display = name;
+        R_SUCCEED();
+    }
     R_UNLESS(token && c && name == VI2_DEFAULT_DISPLAY && vi2_display_refs, VI2_NOT_FOUND);
     c->display = name;
     R_SUCCEED();
