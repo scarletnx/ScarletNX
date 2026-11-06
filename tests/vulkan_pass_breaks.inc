@@ -345,6 +345,7 @@ static int check_pass_breaks(void) {
     vk_finish();
     vk_unlock();
     free(ch);
+    CHECK(mem_unmap(PB_CPU, PB_SPAN) == 0); /* the later checks of this process map in that range */
     return 0;
 }
 
