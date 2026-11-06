@@ -113,6 +113,21 @@ static int nn_gsv_UserSession_InitializeSyncptContext(SvcObj* self, u32* session
 }
 /* the syncpoint cache: the game's request page (RW) and the value page (RO) it polls, bound by command 204 */
 static u64 gsv_sync_rw, gsv_sync_ro;
+static u32 gsv_sync_request_event, gsv_sync_completed_event;
+/* The SDK finds a syncpoint short of a threshold in the value page (TryWaitSyncPoint) and asks for it again: it makes
+   the syncpoint's bit in the request page differ from the acknowledge page, the word's bit in their summaries likewise,
+   signals the request event and waits for the completed event until the two agree. The value page is kept as syncpoints
+   change (gsv_syncpt_changed), so answering is acknowledging. Without an answer the first fence it polled that hadn't
+   passed failed: the end this service gave it was not one it could signal. 1 when event is that event */
+int gsv_syncpoint_request(u32 event) {
+    u32 i;
+    if (!event || event != gsv_sync_request_event) return 0;
+    for (i = 0; i < 192; i++) gw64(gsv_sync_ro + 0x40 + (u64)i * 8, syncpt_read(i));
+    for (i = 0; i < 3; i++) gw64(gsv_sync_ro + 0x648 + (u64)i * 8, gr64(gsv_sync_rw + 8 + (u64)i * 8));
+    gw64(gsv_sync_ro + 0x640, gr64(gsv_sync_rw));
+    ev_signal(gsv_sync_completed_event);
+    return 1;
+}
 static int nn_gsv_UserSession_BindSyncpointMemory(SvcObj* self, u32 rw, u32 ro, const u8* request,
                                                   u32* request_event, u32* completed_event) {
     KTmem* rwt = (KTmem*)h_get_ref(rw, KO_TMEM);
@@ -130,11 +145,11 @@ static int nn_gsv_UserSession_BindSyncpointMemory(SvcObj* self, u32 rw, u32 ro, 
     for (i = 0; i < 192; i++) gw64(gsv_sync_ro + 0x40 + (u64)i * 8, ~0ull); /* Unallocated */
     LOG("gsv: BindSyncpointMemory(rw %#llx, ro %#llx)\n", (unsigned long long)gsv_sync_rw,
         (unsigned long long)gsv_sync_ro);
-    *request_event = 0;
-    *completed_event = 0;
-    R_UNLESS(!new_event(request_event, "gsv:syncpoint request", 0) &&
-                 !new_event(completed_event, "gsv:syncpoint completed", 0),
-             SNX_RC_SVC_OUT_OF_HANDLES);
+    gsv_sync_request_event = owned_event("gsv:syncpoint request");
+    gsv_sync_completed_event = owned_event("gsv:syncpoint completed");
+    *request_event = ev_handle(gsv_sync_request_event);
+    *completed_event = ev_handle(gsv_sync_completed_event);
+    R_UNLESS(*request_event && *completed_event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_gsv_UserSession_CreateDisplayContext(SvcObj* self) {

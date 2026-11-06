@@ -9,6 +9,7 @@
 /* the SVC dispatch: each SVC's registers in the 64-bit ABI (and the 32-bit one's, through snx_svc32), the thread's
    entry and exit (its core, pausing), and the SVCs that aren't memory or synchronization */
 #include "nx/hle/kernel/kernel_int.h"
+#include "nx/hle/services/nvdrv.h"
 #include "nx/hle/hle.h"
 #include "nx/runtime/arm.h"
 #include "nx/runtime/clock.h"
@@ -381,11 +382,16 @@ static u32 create_event(u32* wh, u32* rh) {
     R_SUCCEED();
 }
 static u32 signal_event(u32 h) {
-    KWEvent* w = (KWEvent*)h_get_ref(h, KO_WEVENT);
-    R_UNLESS(w, SNX_RC_SVC_INVALID_HANDLE);
-    kevent_signal((KEvent*)kobj_at(w->r));
-    kobj_unref(&w->o);
-    R_SUCCEED();
+    KObj* o = h_get_ref(h, 0);
+    u32 r = SNX_RC_SVC_INVALID_HANDLE;
+    if (o && o->type == KO_WEVENT) {
+        kevent_signal((KEvent*)kobj_at(((KWEvent*)o)->r));
+        r = 0;
+    } else if (o && o->type == KO_EVENT && gsv_syncpoint_request(kobj_id(o))) {
+        r = 0; /* the end a service gave the game to signal it with: the service's work is done by then */
+    }
+    kobj_unref(o);
+    return r;
 }
 /* ClearEvent takes either end; ResetSignal the readable end (or the process), and fails on one that isn't signaled */
 static u32 clear_event(u32 h, int reset) {

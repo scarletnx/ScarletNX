@@ -84,6 +84,8 @@ u32 syncpt_promise(u32 id, u32 n);
 int syncpt_wait(u32 id, u32 thresh, i64 timeout_ns);
 /* gsv.c: the syncpoint supervisor's armed waits, signaled when a syncpoint moves (called from syncpt_add) */
 void gsv_syncpt_changed(void);
+/* the game signaled event: whether it was the syncpoint cache's request event, answered by now */
+int gsv_syncpoint_request(u32 event);
 /* gsv.c: the VI2 display session's vsync (called from vi_vsync_tick at 60 Hz) */
 void gsv_vsync_tick(void);
 /* the syncpoint shim's guest CPU page (GET_SYNC_RO_MAP), 0 until bound: the game reads syncpoint values there */
