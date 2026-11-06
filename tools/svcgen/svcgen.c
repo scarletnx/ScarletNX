@@ -414,9 +414,11 @@ static void wrapper(const Svc* s, int abi) {
     for (i = 0; i < s->nargs; i++)
         if (is_output(&s->args[i])) out("    %s %s = 0;\n", ctype(s->args[i].type), s->args[i].name);
     if (s->nret_regs[abi]) out("    %s ret;\n", ctype(s->ret));
+    /* the zone spans the whole SVC, the register record and the handler both: its begin and end are the call's, so a
+       frame's SVCs add up to the time it spent in them */
+    if (svc_zones(s)) out("    SNX_ZONE(svc_zone, \"%s\");\n", s->name);
     out("    u32 n = svc_begin%d(t, &in, imm, %s, %s);\n", abi == A64 ? 64 : 32, abi == A64 ? "c" : "a",
         flag_names(s->flags));
-    if (svc_zones(s)) out("    SNX_ZONE(svc_zone, \"%s\");\n", s->name);
     out("    %ssvc_%s(", s->nret_regs[abi] ? "ret = " : "", s->name);
     for (i = 0; i < s->nargs; i++) {
         const Arg* a = &s->args[i];
@@ -433,9 +435,15 @@ static void wrapper(const Svc* s, int abi) {
         const Arg* a = &s->args[i];
         if (is_output(a)) scatter(a->name, types[a->type].size[abi], a->regs[abi], a->nregs[abi], abi);
     }
-    if (svc_zones(s)) out("    SNX_ZONE_END(svc_zone);\n");
-    out("    svc_end(t, &in, n, %s, %s->%s[0], %s->%s[1]);\n}\n", flag_names(s->flags), abi == A64 ? "c" : "a", w,
+    /* the result on error only, after the outputs are written back: a horizon result is 32 bits and 0 is success, so
+       the success path pays one compare. Its handlers already say what the error was; the trace's zone says it too */
+    if (svc_zones(s))
+        out("    if ((u32)%s->%s[0]) SNX_ZONE_VALUE(svc_zone, (u32)%s->%s[0]);\n", abi == A64 ? "c" : "a", w,
+            abi == A64 ? "c" : "a", w);
+    out("    svc_end(t, &in, n, %s, %s->%s[0], %s->%s[1]);\n", flag_names(s->flags), abi == A64 ? "c" : "a", w,
         abi == A64 ? "c" : "a", w);
+    if (svc_zones(s)) out("    SNX_ZONE_END(svc_zone);\n");
+    out("}\n");
 }
 
 static void table(const char* decl, const char* prefix, const char* unknown) {
