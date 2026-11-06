@@ -203,26 +203,27 @@ typedef struct {
 typedef struct {
     u32 value, declared;
 } NvnTessStage;
-/* st: by NVN shader stage (NVN_SHADER_STAGE_*). off_a: a dual vertex program's VertexA (0 for none), or a compute
-   program's shared memory bytes; block: a compute program's workgroup size */
+/* st: by NVN shader stage (NVN_SHADER_STAGE_*, the Ounce's task and mesh stages too). off_a: a dual vertex
+   program's VertexA (0 for none), or a compute program's shared memory bytes; block: a compute program's workgroup
+   size */
 /* sample_shading: SetSampleShading's mode (NVN_SAMPLE_SHADING_*), which the program's draws take */
+#define NVN_STAGES (NVN_SHADER_STAGE_MESH + 1)
 typedef struct {
     u32 magic, off_a;
-    NvnStage st[6];
+    NvnStage st[NVN_STAGES];
     u64 serial;
     u16 block[3], sample_shading;
 } NvnProgram;
-NVN_FITS(NvnProgram, 0x78);
+NVN_FITS(NvnProgram, 0x98);
 /* The Ounce's compute program (API 231) and the driver's record of its c[0], bytes 0xa8-0xbb of its format 11
    control section, which its macro 0xeac reads: [0] the kind, 1 for the packed c[0] below; [1-8] the words of root
    table 0-7 (push constants); [9] uniform buffers; [10] storage buffers; [11] textures; [12] separate textures;
    [13] separate samplers; [14] images; [15] addresses; [17] bit 0: 16 bytes more at the end; [18-19] c[0]'s bytes.
    The packed c[0]: its bytes rounded up to 16, the grid, the root tables' words (each table padded to 16 bytes),
    uniform and storage buffers {address, size, 0}, then the handles' low words {handle, 0} in the order above. Kept
-   in the guest's program past NvnProgram, for API 231 */
+   by the program's SetShaders (nvn_program_c0), not in its object: the Ounce's program object is 0xa0 bytes (the
+   driver's nvnProgramInitialize zeroes that many) and NvnProgram takes 0x98 of them */
 #define NVN_C0_RECORD 0x14
-#define NVN_PROG_C0(p) GP((p) + 0x78)
-typedef char nvn_fits_NvnProgramC0[0x78 + NVN_C0_RECORD <= 0xc0 ? 1 : -1];
 /* the Ounce's program builder (API 231+): a program is built with this, then nvnProgramInitializeFromBuilder
    turns it into a program. The shader list is the Ounce shader-data array (0x18-byte entries); its parsing is
    deferred to the mesh-shader work */
@@ -510,6 +511,7 @@ enum {
     OP_PATCH_SIZE,
     OP_SET_STATE,
     OP_PUSH_CONSTANTS,
+    OP_DRAW_MESH,
     OP_COUNT_
 };
 typedef char NvnOpcodeMaskFits[(OP_COUNT_ <= 64) ? 1 : -1];
@@ -577,13 +579,14 @@ typedef struct {
 typedef struct {
     i32 stages;
     u32 off_a;
-    NvnStage st[6];
     u64 serial; /* the program's SetShaders (nvn_program_xfb) */
     u16 block[3], sample_shading;
-    u8 c0[NVN_C0_RECORD]; /* an Ounce compute program's c[0] record (NVN_PROG_C0), not recorded for others */
+    NvnStage st[NVN_STAGES]; /* the Ounce's task and mesh stages last, not recorded for others */
 } NvnPBindProgram;
-/* a record without c0, with its header, fits in the 128 bytes the driver writes (nvn_CommandBufferBindProgram) */
-typedef char nvn_fits_NvnPBindProgram[8 + offsetof(NvnPBindProgram, c0) <= 128 ? 1 : -1];
+/* the stages that a game other than an Ounce one has: its record stops after them */
+#define NVN_PBIND_SWITCH_BYTES (offsetof(NvnPBindProgram, st) + NVN_SHADER_STAGE_TASK * sizeof(NvnStage))
+/* such a record, with its header, fits in the 128 bytes the driver writes (nvn_CommandBufferBindProgram) */
+typedef char nvn_fits_NvnPBindProgram[8 + NVN_PBIND_SWITCH_BYTES <= 128 ? 1 : -1];
 /* kind: 0 blend 1 color 2 channel mask 3 multisample 4 polygon 5 depth-stencil; the object's bytes */
 typedef struct {
     i32 kind;
@@ -632,6 +635,18 @@ typedef struct {
     u64 ind, mdi_count;
     i32 mdi_max, mdi_stride;
 } NvnPDraw;
+/* OP_DRAW_MESH, an Ounce's mesh draw: count workgroups from first (DrawMeshTasks, and DrawMeshTasks3D's x y z, which
+   the hardware draws as that many in a row from 0). An indirect one (ind not 0) has its records at ind, which the GPU
+   reads, mdi_max of them mdi_stride bytes apart, as many as the 32-bit count at mdi_count says when that isn't 0:
+   x, y and z with NVN_MESH_3D, else two words, as the driver gives the GPU (docs/OUNCE.md). A direct one stops
+   before ind */
+#define NVN_MESH_3D 1u
+typedef struct {
+    i32 first, count;
+    u64 ind, mdi_count;
+    i32 mdi_max, mdi_stride;
+    u32 form, pad;
+} NvnPDrawMesh;
 typedef struct {
     i32 prim, index_type, count, base_vertex, base_instance, instances;
     u64 index_buffer, ind, mdi_count;

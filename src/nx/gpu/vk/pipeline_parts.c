@@ -152,6 +152,7 @@ u32 vk_pipe_dynamic(u32 parts, const PipeDynIn* in, VkDynamicState* out) {
                  : when == DYN_VERTEX_INPUT ? in->vertex_input
                  : when == DYN_PR           ? (in->dyn_pr & bit) != 0
                                             : (in->dyn_pr & bit) && in->tess;
+        if (in->mesh && g_dyn_states[i].part == VK_PART_VI) on = 0; /* a mesh pipeline has no vertex input state */
         if (on && (g_dyn_states[i].part & parts)) out[n++] = g_dyn_states[i].state;
     }
     return n;

@@ -43,10 +43,11 @@ int vk_gpl_choose(const VkGplDevice* d, u32* dyn_pr, char* line, size_t n);
 #define VK_PART_ALL 15u /* a whole pipeline */
 #define VK_PIPE_DYN_MAX 32 /* the most dynamic states a draw pipeline has */
 /* what decides a draw pipeline's dynamic states: dyn_pr (VK_DYN_PR_*), the feedback loop's dynamic state, a binding
-   stride (a vertex layout with bindings and has_dynamic_stride), dynamic vertex input and tessellation */
+   stride (a vertex layout with bindings and has_dynamic_stride), dynamic vertex input and tessellation. A mesh
+   pipeline has no input assembly or vertex input: its topology, primitive restart, strides and layout aren't states */
 typedef struct {
     u32 dyn_pr;
-    int feedback_dynamic, stride, vertex_input, tess;
+    int feedback_dynamic, stride, vertex_input, tess, mesh;
 } PipeDynIn;
 /* the dynamic states of the parts in parts (VK_PART_*) into out, in the order a whole pipeline lists them: how many */
 u32 vk_pipe_dynamic(u32 parts, const PipeDynIn* in, VkDynamicState* out);

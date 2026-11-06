@@ -16,6 +16,7 @@
 #include "nx/gpu/maxwell/draw_state.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/shader/shader.h"
+#include "nx/gpu/shader/sm86.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
@@ -1168,6 +1169,7 @@ static u32 vs_tex_variant(const DsState* ds, const VkSh* s, u32* signed_textures
 typedef struct {
     u64 tm, ts, dm, rect;
     u32 rm, rs, df, unfed;
+    u32 prim;            /* the generics a mesh program writes per primitive (ShaderInfo.prim_mask), as fs0's key */
     u8 query[SH_MAXTEX]; /* the dimensions of the textures only a TXQ names (ShaderInfo.tex_query_hint) */
     int queried;         /* any of them */
 } FsKey;
@@ -1227,8 +1229,8 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
 /* the fragment shader at addr in the variant fk names, s0 when it names none */
 static VkSh* fs_variant(const DsState* ds, u64 addr, VkSh* s0, const FsKey* fk) {
     if (!fk->tm && !fk->rm && !fk->rs && !fk->dm && !fk->unfed && !fk->rect && !fk->queried) return s0;
-    return vk_shader_get(ds, addr, 0, ST_FS, fk->tm, fk->ts, fk->rm, fk->rs, 0, fk->dm, fk->df, fk->unfed, fk->rect,
-                         NULL, fk->queried ? fk->query : NULL);
+    return vk_shader_get(ds, addr, 0, ST_FS, fk->tm, fk->ts, fk->rm, fk->rs, fk->prim, fk->dm, fk->df, fk->unfed,
+                         fk->rect, NULL, fk->queried ? fk->query : NULL);
 }
 /* whether slots a and b read their handles from the same words (tex_handle) */
 static int tex_same_handle(const ShTex* a, const ShTex* b) {
@@ -1403,7 +1405,7 @@ static int root_get(const DsState* ds, u32 sz, VkBuffer* buf, u64* off) {
     return 1;
 }
 static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u64* off) {
-    static CbEntry c[5][18];
+    static CbEntry c[DS_GFX_STAGES][18];
     static CbEntry by_addr[1024];
     DsCbBlock in = ds_cb_inline(ds, stage, (u32)i);
     if (in.bytes) {
@@ -1823,7 +1825,7 @@ static void draw_storage_read(const DsState* ds, VkDrawStorage* draw, VkSh* cons
             if (cb) vk_gmem_words(cb + SH_GBUF_OFFSET(desc), v, SH_GBUF_BANK(desc) ? 2 : 3);
             for (u32 w = 0; in.bytes && w < (SH_GBUF_BANK(desc) ? 2u : 3u); w++)
                 v[w] = ds_inline_word(in, SH_GBUF_OFFSET(desc) + 4 * w);
-            b->size = vk_gbuf_desc(stage, desc, v, &b->addr);
+            b->size = vk_gbuf_desc(sh[s]->stage, desc, v, &b->addr);
             b->bare = SH_GBUF_BANK(desc) != 0;
             b->writable = (sh[s]->si.gbuf_wmask >> i) & 1;
         }
@@ -1883,7 +1885,7 @@ static VkDescriptorSet stage_set(const DsState* ds, int stage, VkSh* s, Surf** r
 }
 static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro,
                                   u32* fb, u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images) {
-    VkDescriptorSetLayout layout = g_vk_dslayout[s->indexed][shader_vk_set(stage)];
+    VkDescriptorSetLayout layout = g_vk_dslayout[s->indexed][shader_vk_set(s->stage)];
     VkDescriptorSet set = VK_NULL_HANDLE; /* the writes take it once their contents are known (desc_set_cached) */
     DescWrites d;
     d.n = 0;
@@ -2193,7 +2195,7 @@ static void pr_dynamic(VkCommandBuffer cb, const PipeKey* k, int fresh) {
         });
     if ((d & VK_DYN_PR_PATCH) && k->tes) DYN(patch, k->patch, rec_CmdSetPatchControlPointsEXT(cb, k->patch));
 }
-u64 g_vk_drawn, g_vk_skipped;
+u64 g_vk_drawn, g_vk_skipped, g_vk_mesh_draws, g_vk_mesh_drawn;
 
 /* The viewport's size with the transform off: the surface clip's, at most the device's viewport dimensions at the
    resolution scale (a game's driver leaves the clip at 16384 x 16384, past every target). The last stage divides
@@ -2298,6 +2300,10 @@ typedef struct {
     u32 topology;              /* the draw's, every primitive a patch with tessellation */
     int xfb_on;                /* transform feedback captures */
     int window_xy;             /* the viewport transform is off: the last stage keyed SNX_SH_WINDOW_XY */
+    /* an Ounce's mesh draw (DrawCall.mesh): vs is the mesh program and tcs its task program (NULL for none), and prim
+       the generics the mesh program writes per primitive, which key fs0 */
+    int mesh;
+    u32 prim;
 } DrawShaders;
 /* a draw's vertex layout (vi, which the pipeline key holds too without dynamic vertex input) and its bindings, for
    finding their buffers each draw: binding b reads guest stream key[b] & 31 from its base offset key[b] >> 5 on, with
@@ -2404,18 +2410,18 @@ static int vertex_format_holds(const DsVertexFormat* f, const DrawShaders* s) {
     return 1;
 }
 /* whether the state kept in g_draw holds for this draw of ch, as far as what is checked before drawing tells */
-static int draw_kept(const DsState* ds, u32 topology, u32 epoch) {
+static int draw_kept(const DsState* ds, u32 topology, int mesh, u32 epoch) {
     const DrawShaders* s = &g_draw.sh;
-	if (g_draw.shader_generation != g_vk.shader_generation)
-		return 0;
-        if (!s->vs || g_draw.ch_id != ds->owner || g_draw.topology != topology || g_draw.epoch != epoch) return 0;
-        for (u32 i = 0; i < sizeof g_draw_groups; i++)
-            if (g_draw.gen[g_draw_groups[i]] != ds->gen[g_draw_groups[i]]) return 0;
-        if (g_draw.gen[DS_VFORMAT] !=
-            ds->gen[DS_VFORMAT]) { /* the vertex format changed: what the state read may not have */
-            if (!vertex_format_holds(&ds->vfmt, s)) return 0;
-            g_draw.gen[DS_VFORMAT] = ds->gen[DS_VFORMAT];
-        }
+    if (s->mesh != mesh) return 0;
+    if (g_draw.shader_generation != g_vk.shader_generation) return 0;
+    if (!s->vs || g_draw.ch_id != ds->owner || g_draw.topology != topology || g_draw.epoch != epoch) return 0;
+    for (u32 i = 0; i < sizeof g_draw_groups; i++)
+        if (g_draw.gen[g_draw_groups[i]] != ds->gen[g_draw_groups[i]]) return 0;
+    if (g_draw.gen[DS_VFORMAT] !=
+        ds->gen[DS_VFORMAT]) { /* the vertex format changed: what the state read may not have */
+        if (!vertex_format_holds(&ds->vfmt, s)) return 0;
+        g_draw.gen[DS_VFORMAT] = ds->gen[DS_VFORMAT];
+    }
     if (s->xfb_on != (g_vk.has_xfb && ds->prog.xfb_on && xfb_counters())) return 0; /* the counters were made since */
     if (s->window_xy != !ds->vp.transform_on) return 0; /* the viewports' group keys no shader otherwise */
     const VkSh* used[6] = {s->vs, s->tcs, s->tes, s->gs, s->fs0, g_draw.fs};
@@ -2427,12 +2433,56 @@ static int draw_shaders_same(const DrawShaders* a, const DrawShaders* b) {
     return a->vs == b->vs && a->tcs == b->tcs && a->tes == b->tes && a->gs == b->gs && a->fs0 == b->fs0 &&
            a->attr_int == b->attr_int && a->attr_sint == b->attr_sint && a->rt_int == b->rt_int &&
            a->rt_sint == b->rt_sint && a->topology == b->topology && a->xfb_on == b->xfb_on &&
-           a->window_xy == b->window_xy;
+           a->window_xy == b->window_xy && a->mesh == b->mesh && a->prim == b->prim;
+}
+/* An Ounce's mesh draw's shaders (DrawCall.mesh): the mesh program in vs, its task program in tcs, and the fragment
+   program keyed on the generics the mesh program writes per primitive. 0 when the draw is skipped, the reason logged
+   once for each */
+static int mesh_shaders(const DsState* ds, DrawShaders* o) {
+    const DsPrograms* p = &ds->prog;
+    const DsMeshKey* k = &p->mesh_key;
+    *o = (DrawShaders){.mesh = 1, .topology = 4, .attr_int = ds->vfmt.is_int, .attr_sint = ds->vfmt.is_sint};
+    if (!g_vk.has_mesh) return 0; /* device.c's mesh_choose said why */
+    if (!p->mesh || k->has_task != (p->task != 0)) {
+        LOG_LIMIT(4, "vulkan: a mesh draw with %s mesh program and %s task program (skipped)\n", p->mesh ? "a" : "no",
+                  p->task ? "a" : "no");
+        return 0;
+    }
+    if (p->task && (!g_vk.has_task || g_vk_stage_sets <= (u32)shader_vk_set(ST_TS))) {
+        LOG_LIMIT(1, "vulkan: this GPU has no task shaders, or too few descriptor sets for them: mesh draws with a "
+                     "task program are skipped\n");
+        return 0;
+    }
+    o->vs = vk_shader_mesh(ds, p->mesh, ST_MS, k);
+    o->tcs = p->task ? vk_shader_mesh(ds, p->task, ST_TS, k) : NULL;
+    int bad = !o->vs || o->vs->failed ? 1 : p->task && (!o->tcs || o->tcs->failed) ? 2 : 0;
+    if (bad) {
+        const VkSh* s = bad == 1 ? o->vs : o->tcs;
+        LOG_LIMIT(
+            16,
+            "vulkan: a mesh draw skipped: its %s program at %llx (%u and %u invocations, payload %#x, %u vertices "
+            "and %u primitives, per-primitive SPH at %#x) %s%s\n",
+            bad == 1 ? "mesh" : "task", (unsigned long long)(bad == 1 ? p->mesh : p->task), k->task_threads,
+            k->mesh_threads, k->mesh_payload, k->max_vertices, k->max_primitives, k->prim_sph,
+            s ? "isn't translated: " : "has no shader",
+            !s                           ? ""
+            : s->si.first_unsupported[0] ? s->si.first_unsupported
+                                         : "unsupported feature");
+        return 0;
+    }
+    o->prim = o->vs->si.prim_mask;
+    o->fs0 =
+        (p->on >> 5 & 1) ? vk_shader_get(ds, p->code[5], 0, ST_FS, 0, 0, 0, 0, o->prim, 0, 0, 0, 0, NULL, NULL) : NULL;
+    rt_int_targets(&ds->tgt, &o->rt_int, &o->rt_sint);
+    return 1;
 }
 /* the shaders of the programs, the vertex format and the targets of ds for a draw of topology: 0 when the draw is
    skipped */
-static int draw_shaders(const DsState* ds, u32 topology, DrawShaders* o) {
+static int draw_shaders(const DsState* ds, u32 topology, int mesh, DrawShaders* o) {
     const DsPrograms* p = &ds->prog;
+    if (mesh) return mesh_shaders(ds, o);
+    o->mesh = 0;
+    o->prim = 0;
     const DsVertexFormat* vf = &ds->vfmt;
     /* shaders: VertexB always runs (after VertexA when that is on), the fragment stage when enabled */
     u32 attr_int = vf->is_int, attr_sint = vf->is_sint, clip;
@@ -2440,6 +2490,9 @@ static int draw_shaders(const DsState* ds, u32 topology, DrawShaders* o) {
     /* the stages between: tessellation control and evaluation (program slots 2 and 3), geometry (slot 4) */
     tcs_on = p->on >> 2 & 1;
     tes_on = p->on >> 3 & 1;
+    /* an SM86 tessellation control program that runs no invocation is the driver's stand-in for none: the
+       passthrough below takes its place (sm86_tcs_empty) */
+    if (tcs_on && g_shader_sm86 && sm86_tcs_empty(gmem_r32(p->code[2] + 8))) tcs_on = 0;
     gs_on = p->on >> 4 & 1;
     if ((tcs_on || tes_on || gs_on) && g_vk_stage_sets < 5) {
         LOG_LIMIT(1, "vulkan: this GPU binds too few descriptor sets for tessellation and geometry (draw skipped)\n");
@@ -2584,6 +2637,11 @@ static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Su
                                                                            : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     k->tcs = sh->tcs ? sh->tcs->mod : VK_NULL_HANDLE;
     k->tes = sh->tes ? sh->tes->mod : VK_NULL_HANDLE;
+    if (sh->mesh) { /* no input assembly: the mesh program's triangles, and no vertex input (it reads none) */
+        k->topo_class = 0;
+        k->mesh = 1u | (vs->si.mesh.threads % 32 ? 0 : PIPE_MESH_WHOLE(ST_MS)) |
+                  (sh->tcs && !(sh->tcs->si.mesh.threads % 32) ? PIPE_MESH_WHOLE(ST_TS) : 0);
+    }
     k->gs = sh->gs ? sh->gs->mod : VK_NULL_HANDLE;
     {
         const VkSh* stages[5] = {vs, fs, sh->tcs, sh->tes, sh->gs};
@@ -3049,6 +3107,20 @@ static void render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
     VkDescriptorSet bset[3];
     if (!count || !instances) return;
     vk_frame_check();
+    /* an Ounce's mesh draw: the mesh program reads the vertex stage's set and push constants and has bindings of its
+       own, the task program the tessellation control stage's set (shader_vk_set) */
+    int mesh = dc->mesh != 0, vs_bind = mesh ? DS_MESH : 0;
+    if (mesh) {
+        g_vk_mesh_draws++;
+        if (dc->indirect || count > g_vk.mesh_groups_max) {
+            if (g_vk.has_mesh)
+                LOG_LIMIT(1, "vulkan: %s (skipped)\n",
+                          dc->indirect ? "an indirect mesh draw, whose records the renderer doesn't read yet"
+                                       : "a mesh draw of more workgroups than this GPU launches");
+            g_vk_skipped++;
+            return;
+        }
+    }
     if (g_draw.check < 0) {
         g_draw.check = g_settings.draw_state_check != 0;
         if (g_draw.check)
@@ -3066,13 +3138,13 @@ retry:
     u32 epoch = vk_ww_epoch();
     /* kept: the state the last draw made holds for this one, as far as each check below tells. Each part is made
        here when it doesn't (and when draw_state_check compares) */
-    int kept = draw_kept(ds, draw_topo, epoch);
+    int kept = draw_kept(ds, draw_topo, mesh, epoch);
     if (kept && g_draw.check) g_vk_draw_checked++;
     DrawShaders sh;
     if (kept) sh = g_draw.sh;
     if (!kept || g_draw.check) {
         DrawShaders made;
-        if (!draw_shaders(ds, draw_topo, &made)) {
+        if (!draw_shaders(ds, draw_topo, mesh, &made)) {
             if (kept) {
                 draw_differs("shaders");
                 g_draw.sh.vs = NULL;
@@ -3102,6 +3174,7 @@ retry:
     FsKey fk = {0};
     if (sh.fs0) {
         fs_key(ds, sh.fs0, fres, last->si.out_mask, sh.rt_int, sh.rt_sint, &fk);
+        fk.prim = sh.prim;
         if (kept && memcmp(&fk, &g_draw.fkey, sizeof fk)) kept = 0;
         if (kept) fs = g_draw.fs;
         if (!kept || g_draw.check) {
@@ -3120,9 +3193,9 @@ retry:
         }
         if (fs && fs != sh.fs0) res = fs_slot_res(ds, sh.fs0, fres, fs, vres);
     }
-    cb_prefetch(ds, 0, vs, 0);
+    cb_prefetch(ds, vs_bind, vs, 0);
     if (fs) cb_prefetch(ds, 4, fs, 0);
-    if (!dc->indirect) draw_indices_prefetch(&ds->index, indexed, first, count, 0);
+    if (!dc->indirect && !mesh) draw_indices_prefetch(&ds->index, indexed, first, count, 0);
     Surf* rt[8];
     Surf* zt;
     u32 n;
@@ -3315,11 +3388,15 @@ retry:
     VkPrimitiveTopology topo = topology_vk(topology);
 
     /* descriptor sets (may record uploads and barriers, so before the pass opens) */
-    cb_prefetch(ds, 0, vs, 1);
+    cb_prefetch(ds, vs_bind, vs, 1);
     if (fs) cb_prefetch(ds, 4, fs, 1);
-    if (!dc->indirect) draw_indices_prefetch(&ds->index, indexed, first, count, 1);
+    if (!dc->indirect && !mesh) draw_indices_prefetch(&ds->index, indexed, first, count, 1);
     VkDrawStorage storage;
-    VkSh* const staged[VK_DRAW_STAGES] = {vs, tcs, tes, gs, fs};
+    VkSh* staged[VK_DRAW_STAGES] = {mesh ? NULL : vs, mesh ? NULL : tcs, tes, gs, fs};
+    if (mesh) {
+        staged[DS_MESH] = vs;
+        staged[DS_TASK] = tcs;
+    }
     draw_storage_read(ds, &storage, staged);
     int alias = vk_draw_storage_any(&storage) ? vk_buf_draw_has_alias(&storage) : 0;
     if (alias < 0) {
@@ -3334,7 +3411,7 @@ retry:
     u32 fb = 0;
     u64 scaled = 0;
     DrawImages images = {0};
-    VkDescriptorSet vset = stage_set(ds, 0, vs, rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, &images);
+    VkDescriptorSet vset = stage_set(ds, vs_bind, vs, rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, &images);
     VkDescriptorSet fset =
         fs ? stage_set(ds, 4, fs, rt, zt, n, &zt_ro, &fb, &scaled, res, &storage, &images) : VK_NULL_HANDLE;
     /* the sets of the stages between, at their stage's index (shader_vk_set) */
@@ -3354,7 +3431,8 @@ retry:
             bset_ok = 0;
             break;
         }
-        bset[b] = stage_set(ds, b + 1, between[b], rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, NULL);
+        bset[b] =
+            stage_set(ds, mesh ? DS_TASK : b + 1, between[b], rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, NULL);
         if (!bset[b]) bset_ok = 0;
     }
     if (!vset || (fs && !fset) || !bset_ok) {
@@ -3572,6 +3650,12 @@ retry:
     if (fresh || g_dyn.pipe != pipe) {
         g_dyn.pipe = pipe;
         rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+        /* a mesh pipeline has no topology, restart or vertex input state: the next draw's pipeline that has them
+           dynamic takes them again after it (dynamic state set before a pipeline that has it static is lost) */
+        if (mesh) {
+            g_dyn.topo = g_dyn.restart = ~0u;
+            g_dyn.vi_set = 0;
+        }
     }
     if (g_vk.dyn_pr) pr_dynamic(cb, k, fresh);
     if (g_vk.has_feedback_dynamic)
@@ -3593,7 +3677,7 @@ retry:
             g_dyn.sets[2 + b] = bset[b];
             vk_descriptors_bind(cb, layout, (u32)b + 2, 1, &bset[b]);
         }
-    if (g_vk.vertex_input_dynamic) vertex_input_set(cb, pl, fresh);
+    if (g_vk.vertex_input_dynamic && !mesh) vertex_input_set(cb, pl, fresh);
     /* the strides: the layout's with dynamic vertex input, else dynamic state of their own where the device has it */
     if (pl->vi.nbind)
         rec_CmdBindVertexBuffers2(cb, 0, pl->vi.nbind, vbuf, voff, vsize,
@@ -3666,8 +3750,10 @@ retry:
         u32 prim_restart = restart && (indexed == 1 || indexed == 3);
         DYN(cull, cull, rec_CmdSetCullMode(cb, cull));
         DYN(front, front, rec_CmdSetFrontFace(cb, front));
-        DYN(topo, topo, rec_CmdSetPrimitiveTopology(cb, topo));
-        DYN(restart, prim_restart, rec_CmdSetPrimitiveRestartEnable(cb, prim_restart));
+        if (!mesh) {
+            DYN(topo, topo, rec_CmdSetPrimitiveTopology(cb, topo));
+            DYN(restart, prim_restart, rec_CmdSetPrimitiveRestartEnable(cb, prim_restart));
+        }
         /* RASTERIZE_ENABLE (0xDF) off discards the primitives, after a capture or the vertex program's stores. One game
            draws points whose vertex program only stores to memory and writes no position: rasterized, they all lit
            the pixel in the middle of the screen. A channel starts with it on (reset_3d, as Eden's register defaults)
@@ -3750,9 +3836,10 @@ retry:
        with draw parameters less BaseInstance plus what the draw's first instance adds to the base instance: the
        3D engine's instanced draws continue from an earlier draw's instances, and an indirect draw's base instance is
        the GPU's */
-    u32 pc0 = !g_vk.has_shader_draw_parameters ? ds->dyn.depth_word
-              : dc->indirect                    ? 0
-                                                : base_instance - ds->dyn.depth_word;
+    u32 pc0 = mesh                               ? first /* a mesh draw's first workgroup (sm86.h) */
+              : !g_vk.has_shader_draw_parameters ? ds->dyn.depth_word
+              : dc->indirect                     ? 0
+                                                 : base_instance - ds->dyn.depth_word;
     memcpy(&pc[0], &pc0, sizeof(u32));
     /* an indirect draw's draw parameters that the vertex program takes from its record (DrawCall.params) */
     u32 params = dc->indirect ? dc->params : 0;
@@ -3801,7 +3888,9 @@ retry:
         rec_CmdBeginTransformFeedbackEXT(cb, 0, xcount, from, counter_offs);
     }
     pred_begin(cb, o->pred);
-    if (dc->indirect) {
+    if (mesh)
+        rec_CmdDrawMeshTasks(cb, count);
+    else if (dc->indirect) {
         if (indexed) rec_CmdBindIndexBuffer(cb, ibuf, ioff, itype);
         draw_indirect(cb, indexed, abuf, aoff, cntbuf, cntoff, dc->draw_count, dc->stride);
     } else if (indexed) {
@@ -3828,6 +3917,7 @@ retry:
         zt_written(zt, o->pred, zt_undefined))
         target_written(zt);
     g_vk_drawn++;
+    if (mesh) g_vk_mesh_drawn++;
 }
 
 /* DRAW_TEXTURE (3D 0x420-0x42B, drawn when 0x42B is written): a texture's rectangle blitted onto color target 0, as

@@ -892,47 +892,51 @@ void nvn_CommandBufferSetShadingRatePaletteMode(CPU* c, u64 cb, i32 mode) {
     (void)mode;
 }
 /* the Ounce's geometry processing mode, which the game's driver writes to method 0xe26 of the 3D engine (and 0 to
-   0xe3e). Mode 0 is the vertex pipeline, which the runtime draws with: the mesh pipeline has its own draws
-   (DrawMeshTasks*), which the runtime doesn't take yet */
+   0xe3e). The game sets mode 2 before its mesh draws, which take the mesh pipeline whatever the mode says
+   (DrawMeshTasks*) */
 void nvn_CommandBufferSetGeometryProcessingMode(CPU* c, u64 cb, i32 mode) {
     (void)c;
     (void)cb;
-    if (mode) LOG_LIMIT(1, "nvn: geometry processing mode %d, and the runtime has the vertex pipeline only\n", mode);
+    if (mode) LOG_LIMIT(1, "nvn: geometry processing mode %d\n", mode);
 }
-/* The Ounce's mesh draws: the runtime has no mesh pipeline yet (VK_EXT_mesh_shader, and a translator for the
-   the Ounce's shaders), so it skips them, as it skips a draw whose shaders it can't translate */
-static void mesh_skipped(const char* name) { LOG_LIMIT(1, "nvn: the game draws with mesh shaders (%s): skipped\n", name); }
-void nvn_CommandBufferDrawMeshTasks(CPU* c, u64 cb, i32 first, i32 count) {
-    (void)c, (void)cb, (void)first, (void)count;
-    mesh_skipped("DrawMeshTasks");
+/* The Ounce's mesh draws (OP_DRAW_MESH). cost: the bytes of the driver's macro call (docs/OUNCE.md) */
+static void draw_mesh(CPU* c, u64 cb, i32 first, i32 count, u32 cost) {
+    NvnPDrawMesh d = {0};
+    d.first = first;
+    d.count = count;
+    memcpy(GP(rec(c, cb, OP_DRAW_MESH, offsetof(NvnPDrawMesh, ind), cost)), &d, offsetof(NvnPDrawMesh, ind));
 }
+static void draw_mesh_indirect(CPU* c, u64 cb, u32 form, u64 ind, u64 count, i32 max, i64 stride, u32 cost) {
+    NvnPDrawMesh d = {0};
+    LOG_LIMIT(1, "nvn: the game records indirect mesh draws\n");
+    d.form = form;
+    d.ind = ind;
+    d.mdi_count = count;
+    d.mdi_max = max;
+    d.mdi_stride = stride > 0 && stride <= 0x7fffffff ? (i32)stride : 0;
+    memcpy(GP(rec(c, cb, OP_DRAW_MESH, sizeof d, cost)), &d, sizeof d);
+}
+void nvn_CommandBufferDrawMeshTasks(CPU* c, u64 cb, i32 first, i32 count) { draw_mesh(c, cb, first, count, 12); }
+/* the hardware draws x y z groups in a row, and the program finds its own index in them */
 void nvn_CommandBufferDrawMeshTasks3D(CPU* c, u64 cb, i32 x, i32 y, i32 z) {
-    (void)c, (void)cb, (void)x, (void)y, (void)z;
-    mesh_skipped("DrawMeshTasks3D");
+    u64 n = x > 0 && y > 0 && z > 0 ? (u64)x * (u64)y * (u64)z : 0;
+    draw_mesh(c, cb, 0, n > 0x7fffffffu ? 0x7fffffff : (i32)n, 16);
 }
-void nvn_CommandBufferDrawMeshTasksIndirect(CPU* c, u64 cb, u64 ind) {
-    (void)c, (void)cb, (void)ind;
-    mesh_skipped("DrawMeshTasksIndirect");
-}
+void nvn_CommandBufferDrawMeshTasksIndirect(CPU* c, u64 cb, u64 ind) { draw_mesh_indirect(c, cb, 0, ind, 0, 1, 8, 12); }
 void nvn_CommandBufferDrawMeshTasks3DIndirect(CPU* c, u64 cb, u64 ind) {
-    (void)c, (void)cb, (void)ind;
-    mesh_skipped("DrawMeshTasks3DIndirect");
+    draw_mesh_indirect(c, cb, NVN_MESH_3D, ind, 0, 1, 12, 12);
 }
 void nvn_CommandBufferMultiDrawMeshTasksIndirect(CPU* c, u64 cb, u64 ind, i32 n, i64 stride) {
-    (void)c, (void)cb, (void)ind, (void)n, (void)stride;
-    mesh_skipped("MultiDrawMeshTasksIndirect");
+    draw_mesh_indirect(c, cb, 0, ind, 0, n, stride, COST_RECORD);
 }
 void nvn_CommandBufferMultiDrawMeshTasks3DIndirect(CPU* c, u64 cb, u64 ind, i32 n, i64 stride) {
-    (void)c, (void)cb, (void)ind, (void)n, (void)stride;
-    mesh_skipped("MultiDrawMeshTasks3DIndirect");
+    draw_mesh_indirect(c, cb, NVN_MESH_3D, ind, 0, n, stride, COST_RECORD);
 }
 void nvn_CommandBufferMultiDrawMeshTasksIndirectCount(CPU* c, u64 cb, u64 ind, u64 count, i32 max, i64 stride) {
-    (void)c, (void)cb, (void)ind, (void)count, (void)max, (void)stride;
-    mesh_skipped("MultiDrawMeshTasksIndirectCount");
+    draw_mesh_indirect(c, cb, 0, ind, count, max, stride, COST_RECORD);
 }
 void nvn_CommandBufferMultiDrawMeshTasks3DIndirectCount(CPU* c, u64 cb, u64 ind, u64 count, i32 max, i64 stride) {
-    (void)c, (void)cb, (void)ind, (void)count, (void)max, (void)stride;
-    mesh_skipped("MultiDrawMeshTasks3DIndirectCount");
+    draw_mesh_indirect(c, cb, NVN_MESH_3D, ind, count, max, stride, COST_RECORD);
 }
 /* a recording starts with its first command, as in NVN */
 void nvn_CommandBufferBeginRecording(CPU* c, u64 cb) {
@@ -1642,20 +1646,18 @@ void nvn_CommandBufferWaitSync(CPU* c, u64 cb, u64 sync) {
 /* ============================================================ binds */
 /* the program's stages as they are now: the game may set new shaders in it before it submits */
 void nvn_CommandBufferBindProgram(CPU* c, u64 cb, u64 program, i32 stages) {
-    /* an Ounce game's record ends with its program's c[0] record. Another's stops before it, in the 128 bytes the
-       driver writes, so that its records stay in the game's command memory */
+    /* an Ounce game's record ends with its task and mesh stages. Another's stops before them, in the 128 bytes the driver writes, so that its records stay in the game's command memory */
     const int ounce = g_nvn.loader.api >= 231u << 16;
     NvnPBindProgram* r = (NvnPBindProgram*)(void*)GP(
-        rec(c, cb, OP_BIND_PROGRAM, ounce ? sizeof(NvnPBindProgram) : offsetof(NvnPBindProgram, c0), 128));
+        rec(c, cb, OP_BIND_PROGRAM, ounce ? sizeof(NvnPBindProgram) : NVN_PBIND_SWITCH_BYTES, 128));
     const NvnProgram* p = program ? NVN_OBJ(const NvnProgram, program) : NULL;
     r->stages = stages;
     if (p && p->magic == NVN_MAGIC('P', 'R', 'O', 'G')) {
         r->off_a = p->off_a;
-        memcpy(r->st, p->st, sizeof r->st);
+        memcpy(r->st, p->st, (ounce ? NVN_STAGES : NVN_SHADER_STAGE_TASK) * sizeof r->st[0]);
         r->serial = p->serial;
         memcpy(r->block, p->block, sizeof r->block);
         r->sample_shading = p->sample_shading;
-        if (ounce) memcpy(r->c0, NVN_PROG_C0(program), NVN_C0_RECORD);
     } else if (program &&
                g_settings.log_level >= 2) /* every one: when they stop says whether the game binds it again */
         LOGV("nvn: program %llx isn't initialized as it is bound (stages %#x, called from %llx)\n",

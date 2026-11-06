@@ -54,6 +54,11 @@ typedef struct {
     u32 cur;         /* the instruction being written */
     u32 branch_cond; /* the condition of the BRA that ends the body before, 0 for always */
     u32 branch_target; /* the instruction that the BRX which ends the body before goes to */
+    /* a task or mesh program's ISBE (isbe_var): a mesh program's attribute area and map (Workgroup), a task
+       payload (TaskPayloadWorkgroupEXT), their words, and LocalInvocationIndex */
+    u32 isbe_attr, isbe_map, payload, isbe_attr_words, isbe_map_words, payload_words, local_index;
+    u32 vertex_words, primitive_words; /* the output words of a vertex and of a primitive (omap_words) */
+    u32 prim_attr[32];                 /* a mesh program's per-primitive generic outputs */
     int soft_ftz;      /* FTZ instructions flush their operands and results here (sm86_to_spirv_ftz) */
     int failed;
 } Ctx;
@@ -457,6 +462,10 @@ static u32 interp_mode(Ctx* c, u32 input) {
     }
     return 2;
 }
+static void mesh_capability(Ctx* c) {
+    spv_emit_capability(&c->e, 5283 /* MeshShadingEXT */);
+    spv_emit_extension(&c->e, "SPV_EXT_mesh_shader");
+}
 static u32 input_var(Ctx* c, u32 i) {
     if (!c->in_attr[i]) {
         int interpolation = 0;
@@ -469,12 +478,21 @@ static u32 input_var(Ctx* c, u32 i) {
             type = c->si->attr_sint_mask & (1u << i) ? spv_emit_type_vec4(&c->e, c->t_i32) : c->t_v4u;
         c->in_attr[i] = spv_emit_input_vec4(&c->e, type, i, interpolation);
         add_interface(c, c->in_attr[i]);
+        if (c->stage == ST_FS && (c->si->prim_mask >> i & 1)) { /* a mesh program's output per primitive */
+            mesh_capability(c);
+            spv_emit_decorate(&c->e, c->in_attr[i], 5271 /* PerPrimitiveEXT */, NULL, 0);
+        }
         c->si->in_mask |= 1u << i;
     }
     return c->in_attr[i];
 }
-/* the bits of component k of generic input i */
+/* the bits of component k of generic input i. A fragment program's input that no output of the stage before writes
+   (in_unfed_mask) reads 0, 0, 0, 1, as the Maxwell translator reads it, with no Input for the stage before to match */
 static u32 input_load(Ctx* c, u32 i, u32 k) {
+    if (c->stage == ST_FS && (c->si->in_unfed_mask >> i & 1)) {
+        c->si->in_mask |= 1u << i;
+        return to_u(c, cf(c, k == 3 ? 1.0f : 0.0f));
+    }
     u32 var = input_var(c, i);
     int integer = c->stage == ST_VS && (c->si->attr_int_mask & (1u << i));
     u32 scalar = integer ? (c->si->attr_sint_mask & (1u << i) ? c->t_i32 : c->t_u32) : c->t_f32;
@@ -661,6 +679,68 @@ static u32 global_address(Ctx* c, const Sm86Insn* in, int uniform_form, int writ
     *offset = spv_emit_isub_u32(&c->e, c->t_u32, at, base);
     c->gkey = key;
     return gbuf_slot(c, key, write);
+}
+/* An LDG or STG whose address is a pointer that the program loaded from memory, which no constant buffer word holds, as one
+   game's vertex program that clears the indirect draws a table of pointers names. As the Maxwell translator does
+   (shader_global_dynamic, after Eden's DefineGlobalMemoryFunctions), its 64-bit address is compared with each global
+   buffer of the program when it runs, and the first that holds it takes the access. A buffer is the 16 MiB that the
+   renderer binds from the address its word holds (vk_gbuf_desc). A load from none of them reads 0 and a store there
+   is dropped, where the console's GPU reaches all of its address space. The address: a register, a pair with bit 90
+   in the uniform form or bit 72 in the other, plus the uniform register (a pair with bit 72) of the uniform form,
+   plus the signed 24-bit offset */
+static void mem_load(Ctx* c, u32 buffer, u32 address, u32 type, u32 dst, int uniform_dst);
+static void mem_store(Ctx* c, u32 buffer, u32 address, u32 type, u32 data);
+static void global_dynamic(Ctx* c, const Sm86Insn* in, int uniform_form, int load) {
+    u32 type = sm86_field(in, 73, 3), words = type == 5 ? 2 : type == 6 ? 4 : 1;
+    u32 reg = sm86_field(in, 24, 8), imm = sm86_field(in, 40, 24);
+    u32 hi = sm86_field(in, uniform_form ? 90 : 72, 1) && reg < SM86_RZ ? rd(c, reg + 1) : c->zero;
+    u32 address = pair64(c, rd(c, reg), hi);
+    u64 bias = imm & 0x800000u ? (u64)imm | 0xffffffffff000000ull : imm;
+    address = op2(c, SPV_OP_I_ADD, u64_type(c), address, c64(c, bias));
+    if (uniform_form) {
+        u32 ur = sm86_field(in, in->op == SM86_LDG ? 32 : 64, 6);
+        if (ur < SM86_URZ) {
+            u32 uhi = sm86_field(in, 72, 1) && ur + 1 < SM86_URZ ? urd(c, ur + 1) : c->zero;
+            address = op2(c, SPV_OP_I_ADD, u64_type(c), address, pair64(c, urd(c, ur), uhi));
+        }
+    }
+    if (load)
+        for (u32 k = 0; k < words && in->dst + k < SM86_RZ; k++) wr(c, in->dst + k, c->zero);
+    /* the program's buffers, each key once, in the order of their first access */
+    u32 keys[16], nkeys = 0;
+    for (u32 i = 0; i < c->n; i++) {
+        u32 key = c->addr_key[i], seen = 0;
+        if (!key || SH_GBUF_BANK(key - 1) >= 18) continue;
+        for (u32 k = 0; k < nkeys; k++) seen |= keys[k] == key - 1;
+        if (!seen && nkeys < 16) keys[nkeys++] = key - 1;
+    }
+    u32 merges[16];
+    for (u32 k = 0; k < nkeys; k++) {
+        u32 buffer = gbuf_slot(c, keys[k], !load);
+        if (!buffer) return;
+        u32 base = pair64(c, cbuf_load(c, SH_GBUF_BANK(keys[k]), SH_GBUF_OFFSET(keys[k]), 0),
+                          cbuf_load(c, SH_GBUF_BANK(keys[k]), SH_GBUF_OFFSET(keys[k]) + 4, 0));
+        u32 relative = op2(c, SPV_OP_I_SUB, u64_type(c), address, base);
+        u32 inside = spv_emit_u_less(&c->e, c->t_bool, relative, c64(c, 16u << 20));
+        u32 then = spv_emit_id(&c->e), other = spv_emit_id(&c->e);
+        merges[k] = spv_emit_id(&c->e);
+        spv_emit_selection_merge(&c->e, merges[k]);
+        spv_emit_branch_conditional(&c->e, inside, then, other);
+        spv_emit_label(&c->e, then);
+        u32 offset = lo32(c, relative);
+        if (load)
+            mem_load(c, buffer, offset, type, in->dst, 0);
+        else {
+            mark_written(c, keys[k], offset, type < 2 ? 1 : type < 4 ? 2 : type == 4 ? 4 : type == 5 ? 8 : 16);
+            mem_store(c, buffer, offset, type, sm86_field(in, 32, 8));
+        }
+        spv_emit_branch(&c->e, merges[k]);
+        spv_emit_label(&c->e, other);
+    }
+    for (u32 k = nkeys; k-- > 0;) {
+        spv_emit_branch(&c->e, merges[k]);
+        spv_emit_label(&c->e, merges[k]);
+    }
 }
 /* what track_globals follows at an instruction: each register's key, then the opcode that last wrote it (for the
    message of an address without one). The keys first: the flow settles on them */
@@ -899,6 +979,132 @@ static void mem_store(Ctx* c, u32 buffer, u32 address, u32 type, u32 data) {
         spv_emit_store(&c->e, mem_ptr(c, buffer, address, k), rd(c, data >= SM86_RZ ? data : data + k));
 }
 
+/* ---- task and mesh programs ---- */
+
+/* A task or mesh program reads and writes its stage's memory, the ISBE ("internal stage buffer entry"), with ISBERD
+   and ISBEWR at byte offsets (docs/OUNCE.md, "Mesh shaders"). The translation keeps it in arrays of words that the
+   program's own addressing indexes, so that no offset needs a decode:
+   - a mesh program's attribute area (Workgroup): its per-vertex outputs, then its per-primitive outputs, in groups of
+     32 (the SKEW form). Word k of vertex v is at byte (v / 32) * G + (v % 32) * 4 + k * 0x80, G 0x80 times the words
+     of a vertex, in the order of the SPH's output map. The primitives' area starts after the vertex groups.
+   - a mesh program's map (Workgroup), a byte to a word: the primitive count at byte 3 and the indices of primitive p
+     at bytes 4 + 3 p on.
+   - a task program's payload (TaskPayloadWorkgroupEXT): the count of mesh groups to launch at byte 4, and what its
+     mesh programs read from byte 0x10 on, which a mesh program after a task program reads in the same array.
+   The program's body is a function of its own (mesh_entry): after a workgroup barrier, main launches the mesh groups
+   or writes the outputs from these arrays */
+#define SM86_OMAP_FIRST    400u /* an SPH's output map (vertex, tessellation and geometry): bits 400 to 639 */
+#define SM86_OMAP_END      640u
+#define SM86_OMAP_POSITION 428u /* the position's x, y, z and w */
+#define SM86_OMAP_GENERIC  432u /* component k of generic i at 432 + 4 i + k */
+static int omap_bit(const u32* sph, u32 b) { return sph[b >> 5] >> (b & 31) & 1; }
+/* the output words of an SPH's output map, in their ISBE order. Every bit must be a generic's, or the position's when
+   position is set, else the program is refused: the facts of the game's programs give no other */
+static u32 omap_words(Ctx* c, const u32* sph, int position, const char* what) {
+    u32 n = 0;
+    for (u32 b = SM86_OMAP_FIRST; b < SM86_OMAP_END; b++) {
+        if (!omap_bit(sph, b)) continue;
+        if (b >= SM86_OMAP_GENERIC + 128 || b < (position ? SM86_OMAP_POSITION : SM86_OMAP_GENERIC))
+            fail(c, "a %s output of SPH output map bit %u", what, b);
+        n++;
+    }
+    return n;
+}
+/* one of the ISBE arrays, made on its first use: words long in storage (4 Workgroup, 5402 TaskPayloadWorkgroupEXT) */
+#define SPV_STORAGE_TASK_PAYLOAD 5402u
+static u32 isbe_var(Ctx* c, u32* var, u32 storage, u32 words) {
+    if (!*var) {
+        *var = spv_emit_variable(&c->e, storage, spv_emit_type_array_u32(&c->e, c->t_u32, words));
+        add_interface(c, *var);
+    }
+    return *var;
+}
+static u32 isbe_ptr(Ctx* c, u32 var, u32 storage, u32 index) {
+    return SPV(&c->e, SPV_OP_ACCESS_CHAIN, spv_emit_type_pointer(&c->e, storage, c->t_u32), var, index);
+}
+/* word index of an ISBE array of words, or 0 past its end */
+static u32 isbe_load(Ctx* c, u32 var, u32 storage, u32 words, u32 index) {
+    u32 last = cu(c, words - 1);
+    u32 inside = spv_emit_u_less(&c->e, c->t_bool, index, cu(c, words));
+    u32 v = spv_emit_load(&c->e, c->t_u32,
+                          isbe_ptr(c, var, storage, spv_emit_select(&c->e, c->t_u32, inside, index, last)));
+    return spv_emit_select(&c->e, c->t_u32, inside, v, c->zero);
+}
+/* value into word index of an ISBE array of words: a store past its end goes nowhere */
+static void isbe_store(Ctx* c, u32 var, u32 storage, u32 words, u32 index, u32 value) {
+    u32 inside = spv_emit_u_less(&c->e, c->t_bool, index, cu(c, words));
+    u32 then = spv_emit_id(&c->e), merge = spv_emit_id(&c->e);
+    spv_emit_selection_merge(&c->e, merge);
+    spv_emit_branch_conditional(&c->e, inside, then, merge);
+    spv_emit_label(&c->e, then);
+    spv_emit_store(&c->e, isbe_ptr(c, var, storage, index), value);
+    spv_emit_branch(&c->e, merge);
+    spv_emit_label(&c->e, merge);
+}
+static u32 payload_var(Ctx* c) { return isbe_var(c, &c->payload, SPV_STORAGE_TASK_PAYLOAD, c->payload_words); }
+static u32 map_var(Ctx* c) { return isbe_var(c, &c->isbe_map, SPV_STORAGE_WORKGROUP, c->isbe_map_words); }
+/* The workgroup index that ISBERD.ATTR [RZ+0x0] reads: the vertex ID of the hardware's point draw for a task
+   program, or a mesh program without one, which counts from the draw's first group (the push constant's x, as bits).
+   A mesh program after a task program reads its index in its task's launch */
+static u32 workgroup_index(Ctx* c) {
+    u32 id = builtin_vec3(c, &c->group_id, 26, 0);
+    if (c->stage == ST_MS && c->si->mesh.has_task) return id;
+    return spv_emit_iadd_u32(&c->e, c->t_u32, id, to_u(c, push_component(c, 0)));
+}
+/* ISBERD and ISBEWR (NAK's sm70_encode.rs): the offset register at 24-31, the data register at 32-39 (ISBEWR), the
+   immediate offset at 40-55, the size at 74-75 (U8 0, U16 1, B32 2), the access at 76-77 (MAP 0, PATCH 1, PRIM 2,
+   ATTR 3), SKEW at 78 and the output bit at 79. Only the forms of the game's programs translate */
+static void isbe(Ctx* c, const Sm86Insn* in) {
+    int write = in->op == SM86_ISBEWR, task = c->stage == ST_TS, mesh = c->stage == ST_MS;
+    u32 base = sm86_field(in, 24, 8), imm = sm86_field(in, 40, 16), size = sm86_field(in, 74, 2),
+        access = sm86_field(in, 76, 2), skew = sm86_field(in, 78, 1), output = sm86_field(in, 79, 1);
+    int fixed = base == SM86_RZ, b32 = size == 2, attr = access == 3;
+    const ShMesh* m = &c->si->mesh;
+    if (!task && !mesh) {
+        fail(c, "%s outside a task or mesh program", sm86_ops[in->op].name);
+        return;
+    }
+    if (b32 && fixed && (imm & 3) && !(write && access == 0 && imm == 3)) {
+        fail(c, "%s.B32 at the byte offset 0x%x", sm86_ops[in->op].name, imm);
+        return;
+    }
+    u32 address = fixed ? cu(c, imm) : spv_emit_iadd_u32(&c->e, c->t_u32, rd(c, base), cu(c, imm));
+    u32 word = spv_emit_shift_right_u32(&c->e, c->t_u32, address, cu(c, 2));
+    if (!write && attr && !output && b32 && fixed && !imm && skew == (u32)(task || !m->has_task)) {
+        wr(c, in->dst, workgroup_index(c));
+        return;
+    }
+    if (!write && mesh && m->has_task && attr && !skew && !output && b32) {
+        wr(c, in->dst, isbe_load(c, payload_var(c), SPV_STORAGE_TASK_PAYLOAD, c->payload_words, word));
+        return;
+    }
+    u32 data = write ? rd(c, sm86_field(in, 32, 8)) : 0;
+    if (write && task && attr && !skew && output && b32) {
+        isbe_store(c, payload_var(c), SPV_STORAGE_TASK_PAYLOAD, c->payload_words, word, data);
+        return;
+    }
+    if (write && mesh && attr && skew && output && b32 && c->isbe_attr_words) {
+        isbe_store(c, isbe_var(c, &c->isbe_attr, SPV_STORAGE_WORKGROUP, c->isbe_attr_words), SPV_STORAGE_WORKGROUP,
+                   c->isbe_attr_words, word, data);
+        return;
+    }
+    if (write && mesh && access == 0 && !skew && output && size == 0) {
+        isbe_store(c, map_var(c), SPV_STORAGE_WORKGROUP, c->isbe_map_words, address,
+                   spv_emit_bitwise_and_u32(&c->e, c->t_u32, data, cu(c, 0xff)));
+        return;
+    }
+    if (write && mesh && access == 0 && !skew && output && b32 && fixed && imm == 3) {
+        isbe_store(c, map_var(c), SPV_STORAGE_WORKGROUP, c->isbe_map_words, cu(c, 3), data);
+        return;
+    }
+    static const char* const accesses[] = {"MAP", "PATCH", "PRIM", "ATTR"};
+    static const char* const sizes[] = {"U8", "U16", "B32", "size 3"};
+    char reg[8] = "RZ";
+    if (!fixed) snprintf(reg, sizeof reg, "R%u", base);
+    fail(c, "%s.%s%s%s.%s [%s+0x%x] in a %s program", sm86_ops[in->op].name, accesses[access], skew ? ".SKEW" : "",
+         output ? ".O" : "", sizes[size], reg, imm, task ? "task" : "mesh");
+}
+
 /* ---- textures and surfaces ---- */
 
 /* whether the instruction at k goes on to k + 1: not after a BRA, BRX or EXIT that always leaves, nor a RET */
@@ -967,7 +1173,7 @@ static int may_write(const Sm86Insn* in, u32 r) {
         case SM86_RED: case SM86_AST: case SM86_SUST_P: case SM86_SUST_D: case SM86_SUST_P_B: case SM86_SUST_D_B:
         case SM86_ULDC: case SM86_ULDC_IDX: case SM86_ULDCG: case SM86_S2UR: case SM86_R2UR: case SM86_PLOP3:
         case SM86_UPLOP3: case SM86_UVOTE: case SM86_ISETP: case SM86_FSETP: case SM86_DSETP: case SM86_HSETP2:
-        case SM86_R2P: case SM86_BMOV_B:
+        case SM86_R2P: case SM86_BMOV_B: case SM86_BMOV_BI: case SM86_BMOV_BL: case SM86_ISBEWR:
             return 0;
         case SM86_TEX: case SM86_TEX_B: case SM86_TLD: case SM86_TLD_B: case SM86_TLD4: case SM86_TLD4_B:
         case SM86_TMML: case SM86_TMML_B: case SM86_TXD: case SM86_TXD_B: case SM86_TXQ: case SM86_TXQ_B: {
@@ -1549,15 +1755,166 @@ static u32 system_value(Ctx* c, u32 sr) {
         default: fail(c, "S2R system register 0x%x", sr); return c->zero;
     }
 }
+/* for (i = start; i < end; i += step) in a structured loop, i in the Function variable counter: loop_begin gives i in
+   the loop's body, and loop_end closes it with the labels it set */
+typedef struct {
+    u32 counter, step, header, cont, merge;
+} MeshLoop;
+static u32 loop_begin(Ctx* c, MeshLoop* l, u32 start, u32 end) {
+    SpvEmitter* e = &c->e;
+    u32 body = spv_emit_id(e);
+    l->header = spv_emit_id(e), l->cont = spv_emit_id(e), l->merge = spv_emit_id(e);
+    spv_emit_store(e, l->counter, start);
+    spv_emit_branch(e, l->header);
+    spv_emit_label(e, l->header);
+    u32 i = spv_emit_load(e, c->t_u32, l->counter);
+    u32 more = spv_emit_u_less(e, c->t_bool, i, end);
+    spv_emit_loop_merge(e, l->merge, l->cont);
+    spv_emit_branch_conditional(e, more, body, l->merge);
+    spv_emit_label(e, body);
+    return i;
+}
+static void loop_end(Ctx* c, const MeshLoop* l, u32 i) {
+    SpvEmitter* e = &c->e;
+    spv_emit_branch(e, l->cont);
+    spv_emit_label(e, l->cont);
+    spv_emit_store(e, l->counter, spv_emit_iadd_u32(e, c->t_u32, i, l->step));
+    spv_emit_branch(e, l->header);
+    spv_emit_label(e, l->merge);
+}
+/* the words of an output map from base on, a vec4 for each generic it names into its Output array (generic[i], made
+   here, of count elements) at element, and the position's into position: the words k from first on, word k at
+   base + 32 k of the attribute area. A component the map does not name is the 0, 0, 0, 1 of a vertex program's
+   output. Returns the words read */
+static u32 mesh_outputs(Ctx* c, const u32* sph, u32 base, u32 element, u32 count, int per_primitive, u32* generic) {
+    SpvEmitter* e = &c->e;
+    u32 k = 0, area = isbe_var(c, &c->isbe_attr, SPV_STORAGE_WORKGROUP, c->isbe_attr_words);
+    u32 pointer = spv_emit_type_pointer(e, SPV_STORAGE_OUTPUT, c->t_v4f);
+    for (u32 slot = 0; slot < 33; slot++) { /* the position (slot 0), then generic slot - 1 */
+        u32 first = slot ? SM86_OMAP_GENERIC + 4 * (slot - 1) : SM86_OMAP_POSITION;
+        if (!((sph[first >> 5] >> (first & 31)) & 15)) continue;
+        u32 v[4];
+        for (u32 comp = 0; comp < 4; comp++)
+            if (omap_bit(sph, first + comp)) {
+                u32 index = spv_emit_iadd_u32(e, c->t_u32, base, cu(c, 32 * k++));
+                v[comp] = to_f(c, isbe_load(c, area, SPV_STORAGE_WORKGROUP, c->isbe_attr_words, index));
+            } else
+                v[comp] = cf(c, comp == 3 ? 1.0f : 0.0f);
+        u32 var;
+        if (!slot) {
+            /* the depth fix of vertex_depth_fix: z becomes (z + w) / 2 when the push constant's y is not 0 */
+            u32 on = spv_emit_fcompare(e, c->t_bool, 5, push_component(c, 1), cf(c, 0.0f)); /* 5: != */
+            u32 sum = nocontract(c, spv_emit_fadd(e, c->t_f32, v[2], v[3]));
+            v[2] = spv_emit_select(e, c->t_f32, on, nocontract(c, spv_emit_fmul(e, c->t_f32, sum, cf(c, 0.5f))), v[2]);
+            if (!c->position) {
+                c->position = spv_emit_interface_variable(e, SPV_STORAGE_OUTPUT, c->t_v4f, c->t_u32, count,
+                                                          SPV_BUILT_IN_POSITION, 0, 0);
+                add_interface(c, c->position);
+            }
+            var = c->position;
+        } else {
+            u32 i = slot - 1;
+            if (!generic[i]) {
+                generic[i] = spv_emit_interface_variable(e, SPV_STORAGE_OUTPUT, c->t_v4f, c->t_u32, count,
+                                                         SPV_NOT_BUILTIN, i, 0);
+                if (per_primitive) spv_emit_decorate(e, generic[i], 5271 /* PerPrimitiveEXT */, NULL, 0);
+                add_interface(c, generic[i]);
+            }
+            var = generic[i];
+        }
+        spv_emit_store(e, SPV(e, SPV_OP_ACCESS_CHAIN, pointer, var, element), spv_emit_vec4_construct(e, c->t_v4f, v));
+    }
+    return k;
+}
+/* A task or mesh program's entry point: the counts that the program writes start at 0, then the program's body (the
+   function body), a workgroup barrier, and what the hardware does with the ISBE after the program:
+   - a task program launches the count of mesh groups at payload byte 4 (x only, as the hardware launches one list
+     of groups) with the payload.
+   - a mesh program sets its outputs: its most vertices (no program writes a vertex count) and the primitive count at
+     map byte 3, then each invocation writes every threads-th vertex and primitive: the position and generics from
+     the attribute area, the per-primitive generics (PerPrimitiveEXT) and the triangles' indices from the map.
+   Returns the entry point's function */
+static u32 mesh_entry(Ctx* c, u32 body) {
+    SpvEmitter* e = &c->e;
+    const ShMesh* m = &c->si->mesh;
+    u32 fn = spv_emit_id(e);
+    spv_emit_function_void(e, c->t_void, fn, spv_emit_type_function_void(e, c->t_void));
+    spv_emit_label(e, spv_emit_id(e));
+    MeshLoop loop = {0};
+    if (c->stage == ST_MS) loop.counter = spv_emit_function_variable(e, spv_emit_type_function_pointer(e, c->t_u32));
+    loop.step = cu(c, m->threads);
+    u32 invocation = builtin_u32(c, &c->local_index, 29); /* LocalInvocationIndex */
+    u32 first = spv_emit_i_equal(e, c->t_bool, invocation, c->zero);
+    u32 then = spv_emit_id(e), merge = spv_emit_id(e);
+    spv_emit_selection_merge(e, merge);
+    spv_emit_branch_conditional(e, first, then, merge);
+    spv_emit_label(e, then);
+    if (c->stage == ST_TS)
+        spv_emit_store(e, isbe_ptr(c, payload_var(c), SPV_STORAGE_TASK_PAYLOAD, cu(c, 1)), c->zero);
+    else
+        spv_emit_store(e, isbe_ptr(c, map_var(c), SPV_STORAGE_WORKGROUP, cu(c, 3)), c->zero);
+    spv_emit_branch(e, merge);
+    spv_emit_label(e, merge);
+    spv_emit_control_barrier(e, c->t_u32);
+    SPV(e, SPV_OP_FUNCTION_CALL, c->t_void, body);
+    spv_emit_control_barrier(e, c->t_u32);
+    if (c->stage == ST_TS) {
+        u32 count = spv_emit_load(e, c->t_u32, isbe_ptr(c, payload_var(c), SPV_STORAGE_TASK_PAYLOAD, cu(c, 1)));
+        SPV_VOID(e, 5294 /* OpEmitMeshTasksEXT */, count, cu(c, 1), cu(c, 1), payload_var(c));
+        spv_emit_function_end(e);
+        return fn;
+    }
+    u32 map = map_var(c);
+    u32 written = spv_emit_load(e, c->t_u32, isbe_ptr(c, map, SPV_STORAGE_WORKGROUP, cu(c, 3)));
+    u32 primitives = spv_emit_glsl_binary(e, c->t_u32, c->glsl, SPV_GLSL_U_MIN, written, cu(c, m->max_primitives));
+    SPV_VOID(e, 5295 /* OpSetMeshOutputsEXT */, cu(c, m->max_vertices), primitives);
+    /* the vertices */
+    if (c->vertex_words) {
+        u32 v = loop_begin(c, &loop, invocation, cu(c, m->max_vertices));
+        u32 group = spv_emit_imul_u32(e, c->t_u32, spv_emit_shift_right_u32(e, c->t_u32, v, cu(c, 5)),
+                                      cu(c, 32 * c->vertex_words));
+        u32 base = spv_emit_iadd_u32(e, c->t_u32, group, spv_emit_bitwise_and_u32(e, c->t_u32, v, cu(c, 31)));
+        mesh_outputs(c, c->sph, base, v, m->max_vertices, 0, c->out_attr);
+        loop_end(c, &loop, v);
+    }
+    /* the primitives */
+    u32 p = loop_begin(c, &loop, invocation, primitives);
+    u32 pointer = spv_emit_type_pointer(e, SPV_STORAGE_OUTPUT, c->t_v3u);
+    u32 indices = spv_emit_interface_variable(e, SPV_STORAGE_OUTPUT, c->t_v3u, c->t_u32, m->max_primitives,
+                                              5296 /* PrimitiveTriangleIndicesEXT */, 0, 0);
+    add_interface(c, indices);
+    u32 at = spv_emit_iadd_u32(e, c->t_u32, spv_emit_imul_u32(e, c->t_u32, p, cu(c, 3)), cu(c, 4)), index[3];
+    for (u32 k = 0; k < 3; k++)
+        index[k] = isbe_load(c, map, SPV_STORAGE_WORKGROUP, c->isbe_map_words,
+                             spv_emit_iadd_u32(e, c->t_u32, at, cu(c, k)));
+    spv_emit_store(e, SPV(e, SPV_OP_ACCESS_CHAIN, pointer, indices, p),
+                   SPV(e, SPV_OP_COMPOSITE_CONSTRUCT, c->t_v3u, index[0], index[1], index[2]));
+    if (c->primitive_words) {
+        u32 groups = (m->max_vertices + 31) / 32;
+        u32 group = spv_emit_imul_u32(e, c->t_u32, spv_emit_shift_right_u32(e, c->t_u32, p, cu(c, 5)),
+                                      cu(c, 32 * c->primitive_words));
+        u32 base = spv_emit_iadd_u32(e, c->t_u32, group, spv_emit_bitwise_and_u32(e, c->t_u32, p, cu(c, 31)));
+        base = spv_emit_iadd_u32(e, c->t_u32, base, cu(c, 32 * c->vertex_words * groups));
+        mesh_outputs(c, m->prim_sph, base, p, m->max_primitives, 1, c->prim_attr);
+    }
+    loop_end(c, &loop, p);
+    spv_emit_return(e);
+    spv_emit_function_end(e);
+    return fn;
+}
 static int stage_ok(Ctx* c, const Sm86Insn* in) {
     int op = in->op;
     int compute =
         op == SM86_S2R || op == SM86_S2UR || op == SM86_LDS || op == SM86_STS || op == SM86_STS_NOU || op == SM86_BAR;
     int fragment = op == SM86_IPA || op == SM86_IPA_U || op == SM86_KILL || op == SM86_TMML;
     /* the thread and block ids (TID 0x21-0x23, CTAID 0x25-0x27) are a compute program's. The lane and its masks
-       (LANEID 0x00, EQMASK to GEMASK 0x38-0x3c) are every stage's, as a fragment program's LTMASK before a VOTE shows */
-    if (compute && (op == SM86_S2R || op == SM86_S2UR))
-        compute = sm86_field(in, 72, 8) >= 0x20 && sm86_field(in, 72, 8) <= 0x27;
+       (LANEID 0x00, EQMASK to GEMASK 0x38-0x3c) are every stage's, as a fragment program's LTMASK before a VOTE shows.
+       A task or mesh workgroup has thread ids too, but its index comes from the ISBE (workgroup_index) */
+    if (compute && (op == SM86_S2R || op == SM86_S2UR)) {
+        u32 sr = sm86_field(in, 72, 8);
+        compute = sr >= 0x20 && sr <= 0x27;
+        if (op == SM86_S2R && sr >= 0x21 && sr <= 0x23 && (c->stage == ST_TS || c->stage == ST_MS)) return 1;
+    }
     if (compute && c->stage != ST_CS) return 0;
     if (fragment && c->stage != ST_FS) return 0;
     return 1;
@@ -1597,6 +1954,17 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                BMOV.32.CLEAR RZ, B0 before the BSSY B0 of an NVN vertex program) it changes nothing computed */
             if (in->dst != SM86_RZ) fail(c, "BMOV (to register) into R%u", in->dst);
             return;
+        case SM86_BMOV_BI:
+        case SM86_BMOV_BL: {
+            /* A write of a convergence barrier, whose value the structured translation does not keep (BSSY's writes
+               neither), and which no translated instruction reads: BMOV into a register other than RZ is refused.
+               The debug variants of the driver's programs start with BMOV.32 B0, 0xffffffff, BMOV.32 B1, B0 to
+               BMOV.32 B15, B14 and BMOV.32 B15, 0x0. A state register (28-29 set, for BMOV.32 B, B at 16-23) is
+               refused */
+            u32 to = op == SM86_BMOV_BI ? sm86_field(in, 24, 8) : sm86_field(in, 16, 8);
+            if (to >= 16) fail(c, "%s into state register %u", sm86_ops[op].name, to);
+            return;
+        }
         case SM86_MOV: wr(c, in->dst, src_bits(c, &in->b)); return;
         case SM86_FADD:
         case SM86_FMUL:
@@ -2274,6 +2642,25 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             dwr(c, in, v);
             return;
         }
+        case SM86_HFMA2_MMA: {
+            /* Only a product of RZ: it is a signed zero (the sign of a's and b's negations), and the sum with the
+               two halves of c, in floats, is exact. ptxas loads two halves with HFMA2.MMA R, -RZ, RZ, imm, imm. Other
+               modifiers (73-91 but b's negation at 75) are refused */
+            int zero = (in->a.kind == SM86_SRC_REG && in->a.reg == SM86_RZ) ||
+                       (in->b.kind == SM86_SRC_REG && in->b.reg == SM86_RZ);
+            if (!zero || (sm86_field(in, 73, 19) & ~(1u << 2))) {
+                fail(c, "HFMA2.MMA of a product other than RZ, or with modifiers 0x%x", sm86_field(in, 73, 19));
+                return;
+            }
+            u32 sign = in->a.neg ^ in->b.neg ? 0x80000000u : 0;
+            u32 p = spv_emit_vec2_construct(&c->e, c->t_v2f, to_f(c, cu(c, sign)), to_f(c, cu(c, sign)));
+            u32 cpair = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_UNPACK_HALF2X16, src_bits(c, &in->c));
+            if (in->c.kind == SM86_SRC_REG && in->c.abs) cpair = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_F_ABS, cpair);
+            if (in->c.kind == SM86_SRC_REG && in->c.neg) cpair = SPV(&c->e, SPV_OP_F_NEGATE, c->t_v2f, cpair);
+            u32 sum = nocontract(c, op2(c, SPV_OP_F_ADD, c->t_v2f, p, cpair));
+            dwr(c, in, SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, sum));
+            return;
+        }
         case SM86_HADD2: {
             /* two halves added: bit 77 saturate, 78 a float result, 80 FTZ. The swizzles: a's at 74-75, b's at 60-61
                (NAK: 0 none, 2 the low half twice, 3 the high one twice) */
@@ -2361,6 +2748,12 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         case SM86_LDG_NOU:
         case SM86_STG_NOU: {
             int load = op == SM86_LDG || op == SM86_LDG_NOU;
+            u32 from = c->addr_key[c->n + 1 + c->cur];
+            if (!c->addr_key[c->cur] && (from == SM86_LDG || from == SM86_LDG_NOU || from == SM86_LDS ||
+                                         from == SM86_LDL)) { /* a pointer from memory */
+                global_dynamic(c, in, op == SM86_LDG || op == SM86_STG, load);
+                return;
+            }
             u32 address, buffer = global_address(c, in, op == SM86_LDG || op == SM86_STG, !load, &address);
             if (!buffer) return;
             u32 type = sm86_field(in, 73, 3);
@@ -2489,6 +2882,8 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             spv_emit_capability(&c->e, SPV_CAPABILITY_DEMOTE_TO_HELPER_INVOCATION);
             spv_emit_demote(&c->e);
             return;
+        case SM86_ISBERD:
+        case SM86_ISBEWR: isbe(c, in); return;
         case SM86_BAR:
             if (sm86_field(in, 77, 2) || in->hi & 0xfffffffull) {
                 fail(c, "BAR other than BAR.SYNC 0");
@@ -3017,14 +3412,66 @@ static u32 max_register(const Sm86Insn* in) {
     return top;
 }
 
+/* a task or mesh program's key (ShaderInfo.mesh) checked against the limits of VK_EXT_mesh_shader and the facts of
+   the game's programs, and the sizes of its ISBE arrays. A mesh program's out_mask gets its generic outputs, and its
+   prim_mask the per-primitive ones */
+static void mesh_layout(Ctx* c) {
+    const ShMesh* m = &c->si->mesh;
+    if (!m->threads || m->threads > 32) {
+        fail(c, "a task or mesh workgroup of %u invocations, not one warp", m->threads);
+        return;
+    }
+    if (c->stage == ST_TS || m->has_task) {
+        /* the launch count at byte 4, and 16 KiB, the least maxTaskPayloadSize */
+        if (m->payload < 8 || m->payload > 16384 || (m->payload & 3)) {
+            fail(c, "a task payload of 0x%x bytes", m->payload);
+            return;
+        }
+        c->payload_words = m->payload / 4u;
+    }
+    if (c->stage == ST_TS) return;
+    if (m->primitive_vertices != 3) {
+        fail(c, "a mesh program's primitives of %u vertices", m->primitive_vertices);
+        return;
+    }
+    if (!m->max_vertices || m->max_vertices > 256 || !m->max_primitives || m->max_primitives > 256) {
+        fail(c, "a mesh program of %u vertices and %u primitives", m->max_vertices, m->max_primitives);
+        return;
+    }
+    /* the per-primitive outputs' header is a geometry program's (shader type 4) */
+    if (m->prim_sph[0] && (m->prim_sph[0] & 31) != 1) {
+        fail(c, "a per-primitive SPH %08x", m->prim_sph[0]);
+        return;
+    }
+    if (m->prim_sph[0] && (m->prim_sph[0] >> 10 & 15) != 4) {
+        fail(c, "a per-primitive SPH of shader type %u", m->prim_sph[0] >> 10 & 15);
+        return;
+    }
+    c->vertex_words = omap_words(c, c->sph, 1, "per-vertex");
+    c->primitive_words = m->prim_sph[0] ? omap_words(c, m->prim_sph, 0, "per-primitive") : 0;
+    u32 vertex = sm86_omap_generics(c->sph), primitive = sm86_mesh_primitive_mask(m);
+    if (vertex & primitive) fail(c, "generics 0x%x both per vertex and per primitive", vertex & primitive);
+    c->si->out_mask = vertex | primitive;
+    c->si->prim_mask = primitive;
+    c->isbe_attr_words =
+        32 * (c->vertex_words * ((m->max_vertices + 31u) / 32) + c->primitive_words * ((m->max_primitives + 31u) / 32));
+    c->isbe_map_words = 4 + 3u * m->max_primitives;
+}
+
 u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderInfo* si, size_t* word_count) {
     return sm86_to_spirv_ftz(code, bytes, stage, sph, si, word_count, SH_FTZ_EMULATE);
 }
 u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, ShaderInfo* si, size_t* word_count,
                        int can_flush) {
-    if (!code || !si || !word_count || stage < ST_VS || stage > ST_CS || bytes < 16) return NULL;
+    if (!code || !si || !word_count || stage < ST_VS || stage > ST_MS || bytes < 16) return NULL;
     if (stage != ST_CS && !sph) return NULL;
-    if (stage != ST_VS && stage != ST_FS && stage != ST_CS) {
+    if (stage == ST_TCS && sm86_tcs_empty(sph[2])) {
+        si->unsupported = 1;
+        snprintf(si->first_unsupported, sizeof si->first_unsupported,
+                 "a tessellation control program with no invocation (the passthrough takes its place)");
+        return NULL;
+    }
+    if (stage != ST_VS && stage != ST_FS && stage != ST_CS && stage != ST_TS && stage != ST_MS) {
         si->unsupported++;
         snprintf(si->first_unsupported, sizeof si->first_unsupported, "stage %d", stage);
         return NULL;
@@ -3048,6 +3495,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
     si->stage = stage;
     if (sph)
         for (u32 i = 0; i < 20; i++) si->sph[i] = sph[i];
+    if (stage == ST_TS || stage == ST_MS) mesh_layout(c);
     sm86_load(code, n, words);
     u32 top = 0;
     for (u32 i = 0; i < n; i++) {
@@ -3230,8 +3678,23 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
         }
         spv_emit_function_end(e);
         free(se.label);
+        int mesh = stage == ST_TS || stage == ST_MS;
+        if (!c->failed && mesh) {
+            /* the program is the body of an entry point of its own */
+            mesh_capability(c);
+            fn = mesh_entry(c, fn);
+            spv_emit_local_size(e, fn, si->mesh.threads, 1, 1);
+            if (stage == ST_MS) {
+                spv_emit_execution_mode(e, fn, 26 /* OutputVertices */, 1, si->mesh.max_vertices);
+                spv_emit_execution_mode(e, fn, 5270 /* OutputPrimitivesEXT */, 1, si->mesh.max_primitives);
+                spv_emit_execution_mode(e, fn, 5298 /* OutputTrianglesEXT */, 0, 0);
+            }
+        }
         if (!c->failed) {
-            spv_emit_entry_str(e, (SpvShaderStage)stage, fn, "main", c->interfaces, c->ninterfaces);
+            SpvShaderStage model = stage == ST_TS   ? SPV_STAGE_TASK
+                                   : stage == ST_MS ? SPV_STAGE_MESH
+                                                    : (SpvShaderStage)stage;
+            spv_emit_entry_str(e, model, fn, "main", c->interfaces, c->ninterfaces);
             if (stage == ST_FS) spv_emit_fragment_origin_upper_left(e, fn);
             if (stage == ST_FS && c->depth) spv_emit_fragment_depth_replacing(e, fn);
             if (stage == ST_CS) {

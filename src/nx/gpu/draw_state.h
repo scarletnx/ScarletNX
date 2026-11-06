@@ -15,13 +15,15 @@
 #define DS_ATTRS         32
 #define DS_STREAMS       32
 #define DS_TARGETS_MAX   8
-#define DS_GFX_STAGES    5     /* VS, TCS, TES, GS, FS: shader_vk_set's order */
+#define DS_GFX_STAGES    7     /* VS, TCS, TES, GS, FS (shader_vk_set's order), then DS_TASK and DS_MESH */
+#define DS_TASK          5     /* the bindings of an Ounce's task programs, which NVN binds apart from the others */
+#define DS_MESH          6     /* and of its mesh programs */
 #define DS_CBUFS         18    /* constant buffer slots of a stage */
 /* the bytes of the inline constant buffer blocks (DsInline), as NVN's driver lays out its banks: bank 0 holds the
-   storage buffer tables (from 0x110 for the vertex stage, 0x310 compute, 0x510 fragment, 16 bytes an entry), the
-   largest point size at 0x610 and the base instance at 0x644; bank 2 the handles of textures from 0x20, images from
+   storage buffer tables (from 0x110 for the vertex stage, 0x310 compute, 0x510 fragment, 0x670 an Ounce's task stage
+   and 0x770 its mesh stage, 16 bytes an entry), the largest point size at 0x610 and the base instance at 0x644; bank 2 the handles of textures from 0x20, images from
    0x120, separate textures from 0x168 and separate samplers from 0x568 + 8 r, up to 0x968 */
-#define DS_INLINE_BANK0  0x650
+#define DS_INLINE_BANK0  0x870
 #define DS_INLINE_BANK2  0xA00
 #define DS_ROOT_BYTES    SH_ROOT_BYTES /* an Ounce engine's root tables, as its programs read them */
 
@@ -129,6 +131,17 @@ typedef struct {
     u32 scissor_x[DS_VIEWPORTS_MAX], scissor_y[DS_VIEWPORTS_MAX]; /* min in bits 0-15, max in 16-31 */
 } DsViewports;
 
+/* The fields of an Ounce's task and mesh programs that their NVN control sections give (gpu/nvn/nvn_section.h), and
+   that key their translation (ShaderInfo.mesh): the task program's, and the mesh program's with the offset of its
+   per-primitive SPH from its code, after its own SPH (0 for none). All zero where a program has no such stage */
+typedef struct {
+    u16 task_threads, task_payload;
+    u16 mesh_threads, mesh_payload, max_vertices, max_primitives;
+    u8 has_task, primitive_vertices;
+    u16 pad;
+    u32 prim_sph;
+} DsMeshKey;
+
 /* The programs and what keys their translation */
 typedef struct {
     u64 code[DS_PROGRAM_SLOTS]; /* each slot's program address */
@@ -139,6 +152,11 @@ typedef struct {
     u8 early_z;                 /* fragment tests run before the fragment program */
     u8 xfb_on;                  /* transform feedback asked for (its layout: the front end's) */
     u8 pad[2];
+    /* an Ounce's mesh pipeline, which its mesh draws (DrawCall.mesh) take in place of the slots above but the
+       fragment program's: its task and mesh programs' addresses (0 for none) and their translation's key */
+    u64 task, mesh;
+    DsMeshKey mesh_key;
+    u32 pad_mesh;
 } DsPrograms;
 
 /* The vertex attributes and streams, struct of arrays. Formats are the 3D engine's codes (vk/'s attr_format) */
@@ -264,6 +282,10 @@ typedef struct {
     /* an indirect draw's record values that the vertex program reads where NVN's driver writes them in constant buffer
        0 (shader.h SH_CB0_): bit 0 the base vertex, bit 1 the base instance (SH_PUSH_GPU_). 0 for none */
     u32 params;
+    /* 1: an Ounce's mesh draw (DrawMeshTasks), count workgroups of DsPrograms' task program (of its mesh program when
+       it has none) from workgroup first, instances 1. No vertex or index is read, and topology is 4, the triangles a
+       mesh program writes */
+    u32 mesh;
     /* Fixed-function NVN state that accompanies a draw, outside the serialized DsState ABI. Zero flags keep the
        existing Maxwell/default behavior. Tessellation levels are outer[4], then inner[2]. */
     u32 state_flags;
