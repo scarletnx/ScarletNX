@@ -69,8 +69,13 @@ static int tp_differ(const TpTex* x, Surf* t, u32 first[4], u32* image_has, u32*
     for (u32 layer = 0; layer < x->layers && n >= 0; layer++)
         for (u32 l = 0; l < x->tex.d.levels && n >= 0; l++) {
             u32 w = c->w >> l ? c->w >> l : 1, h = c->h >> l ? c->h >> l : 1;
-            u32 across = (w + c->bw - 1) / c->bw, rows = (h + c->bw - 1) / c->bw;
-            u64 bytes = (u64)across * rows * c->eb;
+            u32 across = (w + c->bw - 1) / c->bw, rows = (h + c->bw - 1) / c->bw, gobs = 0;
+            u64 bytes = (u64)across * rows * c->eb, base = c->pitch ? 0 : tp_level(x, layer, l);
+            unsigned th = 0, td = 0; /* the level's layout, once: tp_at works it out from NVN's for every texel */
+            if (!c->pitch) {
+                nvn_tex_level_tiles(&x->tex.d, l, &th, &td);
+                gobs = nvn_tex_level_gobs(&x->tex.d, l);
+            }
             VkBuffer buffer;
             VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, layer, 1},
                                       .imageExtent = {w, h, 1}};
@@ -91,7 +96,9 @@ static int tp_differ(const TpTex* x, Surf* t, u32 first[4], u32* image_has, u32*
             }
             for (u32 v = 0; v < rows; v++)
                 for (u32 u = 0; u < across; u++) {
-                    const u8 *in = level + ((u64)v * across + u) * c->eb, *mem = GP(x->cpu + tp_at(x, layer, l, u, v));
+                    u64 at = c->pitch ? (u64)v * c->pitch + (u64)u * c->eb
+                                      : base + bl_offset(u * c->eb, v, 0, gobs * 64, rows, th, td);
+                    const u8 *in = level + ((u64)v * across + u) * c->eb, *mem = GP(x->cpu + at);
                     if (!memcmp(in, mem, c->eb)) continue;
                     if (!n++) {
                         first[0] = layer, first[1] = l, first[2] = u, first[3] = v;
@@ -218,7 +225,9 @@ static int tex_partial(const TpCase* c, u32 index) {
         return 0;
     }
     CHECK(mem_map(x.cpu, TP_SPAN, MS_NORMAL, PERM_RW) == 0);
-    for (u64 i = 0; i < TP_SPAN; i++) GP(x.cpu)[i] = (u8)(i * 29 + (i >> 12) * 71 + 3);
+    for (u32 r = 0; r < 2; r++) /* the texture, then the copies' source page */
+        for (u64 i = r ? TP_SPAN - 0x1000 : 0; i < (r ? TP_SPAN : x.lay.size); i++)
+            GP(x.cpu)[i] = (u8)(i * 29 + (i >> 12) * 71 + 3);
     gmmu_map(x.gva, x.cpu, TP_SPAN);
     if (mem_pool_active() && !mem_alias_begin(x.cpu, TP_SPAN)) {
         CHECK(mem_alias_map(x.cpu + TP_VIEW, x.cpu, TP_SPAN, MS_NORMAL, PERM_RW) == 0);
@@ -366,10 +375,11 @@ static int tex_partial_astc(const TaCase* a, u32 index) {
     }
     CHECK(mem_map(x.cpu, TP_SPAN, MS_NORMAL, PERM_RW) == 0);
     /* blocks of every mode, as random words with their mode bits stepped through (astc_vulkan's blocks_new) */
-    for (u64 i = 0; i < TP_SPAN / 4; i++) {
-        rng ^= rng << 13, rng ^= rng >> 17, rng ^= rng << 5;
-        snx_st_le32(GP(x.cpu) + i * 4, i % 4 ? rng : (rng & ~2047u) | (u32)(i / 4 & 2047));
-    }
+    for (u32 r = 0; r < 2; r++) /* the texture, then the copies' source page */
+        for (u64 i = r ? (TP_SPAN - 0x1000) / 4 : 0; i < (r ? TP_SPAN : x.lay.size) / 4; i++) {
+            rng ^= rng << 13, rng ^= rng >> 17, rng ^= rng << 5;
+            snx_st_le32(GP(x.cpu) + i * 4, i % 4 ? rng : (rng & ~2047u) | (u32)(i / 4 & 2047));
+        }
     gmmu_map(x.gva, x.cpu, TP_SPAN);
     for (u32 step = 0; step < TA_STEPS; step++) gmmu_map(ta_ref(&x, step), x.cpu, TP_SPAN);
     vk_lock();
