@@ -10,6 +10,7 @@
 #include "nx/hle/services/audren_dsp.h"
 #include "nx/hle/hle.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 #include <math.h>
 #include <stdarg.h>
@@ -2067,6 +2068,7 @@ int audren_frame(ARState* s, i16* stereo) {
     u32 n = s->frame;
     u32 played = 0;
     SNX_FRAME_SCOPED(f_audio, "audio"); /* the tick's own frame set: discontinuous, one of them now and then */
+    [[maybe_unused]] u64 t0 = plat_ns();
     SNX_ZONE(z_frame, "audio frame");
     memset(s->buf, 0, (size_t)(s->buffers + SNX_AUDREN_CHANNELS) * n * sizeof *s->buf);
     u32 nsorted = sort_mixes(s);
@@ -2074,11 +2076,24 @@ int audren_frame(ARState* s, i16* stereo) {
         ARVoice* v = &s->voice[i];
         if (!v->in_use || !v->wave_count) continue;
         if (voice_prepare(s, v)) {
+#if defined(SNX_TRACY)
+            /* one zone a playing voice: the DSP frame's own work, split by voice, with the voice's index in its
+               text and the samples it wrote in its value */
+            SNX_ZONE_TV(z_voice, "audio voice", n, "voice %u mix %u", i, v->mix_id);
+#endif
             play_voice(s, v);
             played++;
+#if defined(SNX_TRACY)
+            SNX_ZONE_END(z_voice);
+#endif
         }
     }
     SNX_ZONE_VALUE(z_frame, played);
+#if defined(SNX_TRACY)
+    /* the DSP frame's own time: the renderer's frame is what a game's audio thread asks for, so what it takes of the
+       audio clock's 5 ms is the number a hitch in a run's audio is */
+    SNX_PLOT("audio frame ms", (double)(plat_ns() - t0) / 1e6);
+#endif
     (void)played;
     for (j = 0; j < s->ndest; j++) { /* the destinations voices sent through ramp from here next frame */
         ARDest* d = &s->dest[j];

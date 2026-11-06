@@ -427,8 +427,6 @@ second tool. The cost of each is one atomic load per emission, and each goes out
 
 The two GPU-queue idle plots are apart on purpose: `gpu thread idle` is the GPU thread's own job-queue wait, and
 `gpu idle:` are the graphics queue's execution idle, which the frame's own work and its waits between them give.
-A zone deeper than the 64 a thread nests is dropped rather than leaked, and counted: `tracy dropped zones` is that
-count, plotted when a thread polls, so a hole where the innermost work should be says it was this.
 
 ### What the profiler's client leaves out, and the deep build
 

@@ -32,6 +32,14 @@
       }
     },
     {
+      "name": "tracy-deep",
+      "displayName": "The tracy preset with the code transfer, zone verification and wait stacks on",
+      "inherits": "tracy",
+      "cacheVariables": {
+        "SNX_TRACY_DEEP": "ON"
+      }
+    },
+    {
       "name": "windows-cross",
       "displayName": "Windows, cross-built with llvm-mingw",
       "inherits": "base",
@@ -321,6 +329,10 @@
     {
       "name": "tracy",
       "configurePreset": "tracy"
+    },
+    {
+      "name": "tracy-deep",
+      "configurePreset": "tracy-deep"
     },
     {
       "name": "windows-cross",

@@ -11,6 +11,10 @@
 #include <stdio.h>
 
 u8* g_mem;
+/* the DSP's own time, for the frame's plot: the clock runs, the frames take what they take */
+static u64 t_ns;
+u64 plat_ns(void) { return t_ns += 240000; } /* a 48 kHz frame's time each call, audren_render's own */
+
 static char logged[4096]; /* what was logged since the test emptied it */
 void logf_(int lvl, const char* fmt, ...) {
     size_t used = strlen(logged);

@@ -288,9 +288,10 @@ static void run_words(H1Ch* ch, const u32* w, u32 n) {
         }
     }
 }
-/* a queued job: its command buffers under the engines' lock, then its syncpoint increments */
-static void run_job(H1Ch* ch, const u32* job) {
-    u32 ncb = job[0], ninc = job[1], k = 2, c;
+/* a queued job: its command buffers under the engines' lock, then its syncpoint increments. The value its first
+   syncpoint reaches, which the guest waits on when it waits for the job */
+static u32 run_job(H1Ch* ch, const u32* job) {
+    u32 ncb = job[0], ninc = job[1], k = 2, c, value = 0;
     pm_lock(&g_host1x.engine_lk);
     for (c = 0; c < ncb; c++) {
         u32 len = job[k++];
@@ -298,7 +299,11 @@ static void run_job(H1Ch* ch, const u32* job) {
         k += len;
     }
     pm_unlock(&g_host1x.engine_lk);
-    for (c = 0; c < ninc; c++, k += 2) syncpt_add(job[k], job[k + 1]);
+    for (c = 0; c < ninc; c++, k += 2) {
+        syncpt_add(job[k], job[k + 1]);
+        if (!c) value = syncpt_read(job[k]);
+    }
+    return value;
 }
 static void worker(void* arg) {
     H1Ch* ch = arg;
@@ -310,8 +315,12 @@ static void worker(void* arg) {
         if (!ch->count) break; /* closing, and every queued job ran */
         job = ch->queue[ch->head];
         pm_unlock(&ch->lk);
-        SNX_ZONE(z_job, "host1x job");
-        run_job(ch, job);
+        /* the engine and the class the stream addresses: two channels differ only in those, and their jobs' syncpoint
+           value is what a game thread waits for. A value, not a text: the timeline's zone holds one number */
+        SNX_ZONE_T(z_job, "host1x job", "%s class %04x syncpt %u", ch->is_vic ? "vic" : "nvdec", ch->cls,
+                   ch->syncpt[0]);
+        u32 spval = run_job(ch, job);
+        if (spval) SNX_ZONE_VALUE(z_job, spval); /* what the guest's wait for the job looks for */
         SNX_ZONE_END(z_job);
         free(job);
         __atomic_sub_fetch(&g_host1x.jobs, 1, __ATOMIC_RELEASE);
