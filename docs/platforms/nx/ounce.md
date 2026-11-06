@@ -241,6 +241,14 @@ stage is 0x870 bytes.
 Vulkan's indirect mesh draw reads three, x, y and z, and has no first workgroup, so the renderer skips the indirect
 forms and logs it once.
 
+With `mesh_draws` on, an RTX 2080 faulted in most menu runs: Xid 31 (`GPCCLIENT_GCC`, reads of addresses that no
+memory backs), then Xid 109 and a lost device. NV diagnostic checkpoints put each hang in a draw with a task program,
+and the device fault data put the faulting instruction in the task program, at the same address in each run. A task
+program that does nothing launched no fault. A task program that reads no constant buffer still faulted. Every
+program's outputs are within `maxMeshOutputMemorySize`. The faults stopped when the two mesh stages saw the
+descriptor sets of both, the vertex stage's (the mesh program's) and the tessellation control stage's (the task
+program's): `vk_set_stages` in `gpu/vk/pipeline.c`. The mechanism inside the driver is not known.
+
 The driver writes Turing macro calls (method 0xe00 + 2 n is `CALL_MME_MACRO(n)`), not 3D methods:
 
 | Function (sdk offset from 0xbd0c000) | Push buffer |

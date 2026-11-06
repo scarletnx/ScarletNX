@@ -1631,6 +1631,7 @@ void vk_shader_generated_record(VkSh* shader, const u32* spv, size_t words, cons
 extern VkPipelineLayout g_vk_playout;
 VkPipelineLayout vk_playout(u32 arrays); /* arrays: a bit per set (shader_vk_set) that has them */
 int vk_graphics_playout_is(VkPipelineLayout layout);
+VkShaderStageFlags vk_set_stages(int set); /* the stages that see descriptor set set (pipeline.c) */
 extern int g_vk_preserve_infnan;
 extern int g_vk_preserve_infnan64;
 extern int g_vk_flush_denorm;
