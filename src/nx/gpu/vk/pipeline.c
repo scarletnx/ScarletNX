@@ -1320,12 +1320,22 @@ static VkPipeline pipe_wait_here(Pipe* p) {
 }
 /* k's entry, found or added (NULL with no memory): *found says whether it was there */
 static Pipe* pipe_entry(const PipeKey* k, int* found) {
+    /* The last entries looked up: a draw that changes pipeline mostly goes back to one of a few, and the hash of a key
+       this size was two thirds of the hashes of one game's draws. A pipe is never freed */
+    static Pipe* recent[4];
+    static u32 recent_next;
     pf_merge();
+    for (u32 i = 0; i < 4 && recent[i]; i++)
+        if (!memcmp(&recent[i]->k, k, sizeof *k)) {
+            *found = 1;
+            return recent[i];
+        }
     u64 h = vk_hash(k, sizeof *k);
     u32 b = (u32)(h ^ (h >> 32)) & (PIPEH - 1);
     for (Pipe* p = g_pipeh[b]; p; p = p->next)
         if (p->h == h && !memcmp(&p->k, k, sizeof *k)) {
             *found = 1;
+            recent[recent_next++ & 3] = p;
             return p;
         }
     Pipe* p = calloc(1, sizeof *p);
@@ -1338,6 +1348,7 @@ static Pipe* pipe_entry(const PipeKey* k, int* found) {
     p->next = g_pipeh[b];
     g_pipeh[b] = p;
     g_pipes_new++;
+    recent[recent_next++ & 3] = p;
     return p;
 }
 /* the pipeline for k: made here when new, waited for when one of the file's is still being made */
