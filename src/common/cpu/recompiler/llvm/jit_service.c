@@ -1233,6 +1233,9 @@ static size_t take(SnxJitService* s, SnxU64* pcs, SnxU64* taken, int* queue) {
    for them */
 static void worker(SnxJitService* s) {
     SnxU64* pcs = (SnxU64*)malloc(s->config.batch * sizeof(*pcs));
+    /* the system's name, which the log's threads line, a debugger and a crash report read; the profiler's name for
+       the thread goes out with its first batch (its callers, the guest threads' misses) */
+    snx_thread_name("jit compile");
     /* below the guest threads: when the host has no idle CPU, a compile waits, not the game */
 #if defined(__linux__)
     setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), 10);
