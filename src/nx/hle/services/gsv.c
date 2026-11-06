@@ -32,6 +32,19 @@ static int gsv_kuser_unknown(SvcObj* self, IpcCtx* c) {
     }
     return ipc_unknown(self, c);
 }
+/* The camera context's session, with no camera behind it: every command answers the camera service's result of module
+   452 and description 6, whose name nobody documents. One game's main lets it pass when it opens the camera "Default" */
+static int gsv_camera_none(SvcObj* self, IpcCtx* c) {
+    u32 i;
+    (void)self;
+    LOG_LIMIT(16, "gsv: camera session cmd %u, raw size %#x, and there is no camera\n", c->cmd, c->raw_size);
+    for (i = 0; i < c->raw_size && i < 0x20; i += 8) {
+        u64 word = 0;
+        memcpy(&word, c->raw + i, c->raw_size - i < 8 ? c->raw_size - i : 8);
+        LOG_LIMIT(16, "gsv:   raw +%#x = %#llx\n", i, (unsigned long long)word);
+    }
+    R_THROW(RC(452, 6));
+}
 #include "hle/services/gsv.swipc.inc"
 #include "hle/services/nvdrv.swipc.h"
 #include "nx/hle/services/nvdrv.h"
@@ -62,6 +75,62 @@ static int nn_gsv_UserSession_SetCurrentProcessHandle(SvcObj* self, u32 process)
 static int nn_gsv_UserSession_CreateContext(SvcObj* self) {
     (void)self;
     R_SUCCEED();
+}
+/* nn::camera::sdk::CreateCameraContext sends 601, then 602 with a 1, and a game stops if they fail: the context exists
+   whether or not a camera does */
+static int nn_gsv_UserSession_CreateCameraContext(SvcObj* self) {
+    (void)self;
+    R_SUCCEED();
+}
+static int nn_gsv_UserSession_InitializeCameraContext(SvcObj* self, u64 version, u32* session) {
+    (void)self, (void)version;
+    *session = session_new(nn_gsv_CameraSession_new());
+    R_UNLESS(*session, 0xD201); /* OutOfHandles */
+    R_SUCCEED();
+}
+static int nn_gsv_UserSession_DestroyCameraContext(SvcObj* self) {
+    (void)self;
+    R_SUCCEED();
+}
+static int nn_gsv_UserSession_OpenGraphicsFrameSession(SvcObj* self, u32* session) {
+    (void)self;
+    *session = session_new(nn_gsv_GraphicsFrameSession_new());
+    R_UNLESS(*session, 0xD201); /* OutOfHandles */
+    R_SUCCEED();
+}
+static int nn_gsv_GraphicsFrameSession_Ping(SvcObj* self, u64 token, u64* echo) {
+    (void)self;
+    *echo = token;
+    R_SUCCEED();
+}
+/* the GPU time the application has used between two points, which nothing here measures: none */
+static int nn_gsv_GraphicsFrameSession_QueryApplicationGpuTimeSpan(SvcObj* self, u64 first, u64 second, u64* span) {
+    (void)self, (void)first, (void)second;
+    *span = 0;
+    R_SUCCEED();
+}
+static int nn_gsv_UserSession_CreateChatContext(SvcObj* self) {
+    (void)self;
+    R_SUCCEED();
+}
+static int nn_gsv_UserSession_InitializeChatContext(SvcObj* self, u32* session) {
+    (void)self;
+    *session = session_new(nn_gsv_ChatSession_new());
+    R_UNLESS(*session, 0xD201); /* OutOfHandles */
+    R_SUCCEED();
+}
+static int nn_gsv_UserSession_DestroyChatContext(SvcObj* self) {
+    (void)self;
+    R_SUCCEED();
+}
+static int nn_gsv_ChatSession_GetEventId(SvcObj* self, u32* id) {
+    (void)self;
+    *id = 0;
+    R_SUCCEED();
+}
+static int nn_gsv_ChatSession_GetEvent(SvcObj* self, u32 id, u32* event) {
+    (void)self, (void)id;
+    return new_event(event, "gsv chat", 0);
 }
 static u64 native_memory_size[4096];
 static u64 native_memory_cpu[4096]; /* the guest CPU address BindNativeMemory binds the memory to, 0 for none */

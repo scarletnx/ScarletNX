@@ -61,6 +61,18 @@ type nn::friends::detail::ipc::SizedNotificationInfo = bytes<0x10, 8>;
 type nn::friends::detail::FriendImpl = bytes<0x200>;
 type nn::friends::PlayHistoryRegistrationKey = bytes<0x40>;
 
+# GameChat, which an Ounce game's SDK starts at boot (Switchbrew's Switch 2: Chat services). No chat runs: what else a
+# game asks of these answers as an undeclared command does
+@fallback(stub_ok)
+interface nn::chat::IUserService is chat:u {
+    [0] OpenUserShim() -> object<nn::chat::IUserShimScopedObject> shim;
+}
+@fallback(stub_ok)
+interface nn::chat::IUserShimScopedObject {
+    # the event official software's IsChatting uses
+    [1] GetChattingEvent() -> handle<copy, event> event;
+}
+
 interface nn::friends::detail::ipc::IServiceCreator is friend:u, friend:v, friend:a {
     [0] CreateFriendService() -> object<nn::friends::detail::ipc::IFriendService> service;
     [1] CreateNotificationService(nn::account::Uid uid)
