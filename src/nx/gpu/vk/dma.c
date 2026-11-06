@@ -8,7 +8,8 @@
    apart into rows (blocklinear.comp) and the lines go between rows: copied, or remapped component by component
    (texconv.comp), exactly a line's bytes each, so what surrounds them keeps its bytes. The destination's rows go back
    into its layout, and the buffer is published over the runs it was read from.
-   A launch bigger than one allocation goes in bands of lines, each a copy of its own (dma_bands).
+   A launch bigger than one allocation, or whose scratch is bigger than a quarter of one, goes in bands of lines, each
+   a copy of its own (dma_bands).
    Under vk_lock, in the frame's command buffer: the semaphore after the copy is the renderer's queued release, which
    comes after it */
 #include <stdlib.h>
@@ -332,7 +333,7 @@ static int dma(const GpuDmaOp* o, const DmaNeeds* need, u64 snap_skip) {
 u32 vk_band(const VkBands* b, u32 y, u32 left, u64* most) {
     u64 limit = b->cap / VK_PART_SHARE, m = b->need(b->user, y, left);
     u32 n = left, row = b->base + y;
-    if (!y && m <= b->cap) { /* in one piece */
+    if (!y && !b->split && m <= b->cap) { /* all of them */
         *most = m;
         return n;
     }
@@ -375,8 +376,16 @@ static u64 dma_need(const void* user, u32 y, u32 lines) {
     DmaNeeds n = dma_needs(&b);
     return most_of(&n);
 }
+/* The scratch buffer stays as big as the most a copy asked of it, rounded up to a power of two (vk_bl_scratch): a copy
+   whose scratch needs more than VK_PART_SHARE of the cap goes in bands too, each asking for that share at most */
 static int dma_bands(const GpuDmaOp* o) {
-    VkBands bands = {g_vk.alloc_cap, o->dst.bl ? 8u << o->dst.bh : 1, o->dst.bl ? o->dst.oy : 0, dma_need, o};
+    DmaNeeds whole = dma_needs(o);
+    VkBands bands = {g_vk.alloc_cap,
+                     o->dst.bl ? 8u << o->dst.bh : 1,
+                     o->dst.bl ? o->dst.oy : 0,
+                     dma_need,
+                     o,
+                     whole.scratch > g_vk.alloc_cap / VK_PART_SHARE};
     for (u32 y = 0, lines; y < o->lines; y += lines) {
         u64 most = 0;
         lines = vk_band(&bands, y, o->lines - y, &most);

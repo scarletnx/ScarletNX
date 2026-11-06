@@ -16,14 +16,15 @@ typedef struct {
     u32 tail_mask[4];
 } BlParams;
 
-/* the moves' pipeline, and the scratch buffer with its memory and size */
+/* the moves' pipeline, and the scratch buffer with its memory and size, and the most asked of it since
+   vk_bl_scratch_asked last read it */
 static struct {
     VkDescriptorSetLayout ds;
     VkPipelineLayout layout;
     VkPipeline pipe;
     VkBuffer scratch;
     VmaAllocation mem;
-    u64 cap;
+    u64 cap, asked;
 } g_blocklinear;
 
 static void bl_init(void) {
@@ -59,7 +60,13 @@ static void bl_init(void) {
     vkDestroyShaderModule(g_vk.dev, module, NULL); /* the pipeline doesn't need it once made */
 }
 
+u64 vk_bl_scratch_asked(void) {
+    u64 asked = g_blocklinear.asked;
+    g_blocklinear.asked = 0;
+    return asked;
+}
 VkBuffer vk_bl_scratch(u64 size, u64* cap_out) {
+    if (size > g_blocklinear.asked) g_blocklinear.asked = size;
     *cap_out = g_blocklinear.cap;
     if (size <= g_blocklinear.cap) return g_blocklinear.scratch;
     if (size > g_vk.alloc_cap) return VK_NULL_HANDLE;
