@@ -50,6 +50,50 @@ GuiMenuDo gui_menu_key(GuiMenu* menu, GuiKey key) {
     }
     return GUI_MENU_STAY;
 }
+const char* gui_driver_name(int item) {
+    switch (item) {
+        case GUI_SWITCH: return "scarletnx-switch";
+        case GUI_LINUX: return "scarletnx-gnuabi";
+        case GUI_3DS: return "scarletnx-3ds";
+        case GUI_VITA: return "scarletnx-vita";
+        case GUI_GBA: return "scarletnx-agb";
+        default: return NULL;
+    }
+}
+unsigned gui_drivers_held(const char* names) {
+    unsigned held = 0;
+    for (const char* word = names + strspn(names, " "); *word; word += strspn(word, " ")) {
+        size_t n = strcspn(word, " ");
+        for (int item = GUI_SWITCH; item <= GUI_GBA; ++item)
+            if (strlen(gui_driver_name(item)) == n && !strncmp(word, gui_driver_name(item), n)) held |= 1u << item;
+        word += n;
+    }
+    return held;
+}
+bool gui_driver_run(GuiDriversWay way, int item, bool self, unsigned held, GuiDriverRun* run) {
+    const char* name = gui_driver_name(item);
+    bool has = name && (held >> item & 1u);
+    run->file = run->first = NULL;
+    if (!name) return false;
+    if (way == GUI_DRIVERS_APP) {
+        if (!has) return false;
+        run->file = "libscarletnx-run.so";
+        run->first = item == GUI_SWITCH ? NULL : name;
+    } else if (item == GUI_SWITCH)
+        run->file = self ? NULL : "scarletnx";
+    else if (self && has)
+        run->first = name;
+    else
+        run->file = name;
+    return true;
+}
+void gui_driver_absent(int item, const char* load, const char* file, char* out, size_t size) {
+    const char* name = gui_driver_name(item) ? gui_driver_name(item) : "?";
+    if (file)
+        snprintf(out, size, snx_tr("%s opens with %s, whose driver %s this app does not include."), file, load, name);
+    else
+        snprintf(out, size, snx_tr("%s needs the driver %s, which this app does not include."), load, name);
+}
 void gui_confirm_open(GuiConfirm* confirm, GuiAsk ask, bool twice) {
     confirm->shown = true;
     confirm->ask = ask;

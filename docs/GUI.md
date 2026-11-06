@@ -65,7 +65,8 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   **Folders**, and **Exit**. The games, and the recent ones, are the Games tab's. A load whose driver
   is neither beside ScarletNX nor on PATH, as those an app leaves out ([APPLE](APPLE.md)), is greyed out, still there,
   and Enter or a tap on it says which driver it misses rather than opening its screen; the drivers are looked for
-  again each second, and with F5.
+  again each second, and with F5. On Android the drivers are the ones the app's build put in `libscarletnx.so`
+  ([ANDROID](ANDROID.md)): one it left out says that the app does not include it.
 - Space, Enter or a left click explicitly activates an item, marking it bright
   pink. Activation is tracked separately from hover/focus, so the activated item
   stays pink while another item is hovered in yellow. Mouse controls also work

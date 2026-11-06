@@ -14,6 +14,60 @@
 /* gui_browser_key_skip's skip: the items the bools mark */
 static bool is_heading(size_t item, const void* user) { return ((const bool*)user)[item]; }
 
+/* the program each load's driver runs as, and what it takes first: Android's app, a computer, Windows (main.c's
+   find_driver and launch's argv) */
+static void drivers(void) {
+    /* Android's build: libscarletnx.so has no Linux driver (scripts/android-apk.sh) */
+    unsigned app = gui_drivers_held("scarletnx-switch scarletnx-3ds scarletnx-vita scarletnx-agb");
+    GuiDriverRun run;
+    char said[256];
+    assert(app == (1u << GUI_SWITCH | 1u << GUI_3DS | 1u << GUI_VITA | 1u << GUI_GBA));
+    /* the app's drivers run as libscarletnx-run.so, which runs libscarletnx.so's main: the driver's name first, as no
+       file of its own is in the app; the Switch's needs none */
+    assert(gui_driver_run(GUI_DRIVERS_APP, GUI_3DS, false, app, &run));
+    assert(!strcmp(run.file, "libscarletnx-run.so") && !strcmp(run.first, "scarletnx-3ds"));
+    assert(gui_driver_run(GUI_DRIVERS_APP, GUI_VITA, false, app, &run));
+    assert(!strcmp(run.file, "libscarletnx-run.so") && !strcmp(run.first, "scarletnx-vita"));
+    assert(gui_driver_run(GUI_DRIVERS_APP, GUI_GBA, false, app, &run));
+    assert(!strcmp(run.file, "libscarletnx-run.so") && !strcmp(run.first, "scarletnx-agb"));
+    assert(gui_driver_run(GUI_DRIVERS_APP, GUI_SWITCH, false, app, &run));
+    assert(!strcmp(run.file, "libscarletnx-run.so") && !run.first);
+    /* the one its build left out is looked for nowhere, and said so by its name, not a library's */
+    run.file = run.first = "stale";
+    assert(!gui_driver_run(GUI_DRIVERS_APP, GUI_LINUX, false, app, &run) && !run.file && !run.first);
+    gui_driver_absent(GUI_LINUX, "Load Linux ARM ELF", NULL, said, sizeof said);
+    assert(!strcmp(said, "Load Linux ARM ELF needs the driver scarletnx-gnuabi, which this app does not include."));
+    gui_driver_absent(GUI_LINUX, "Load Linux ARM ELF", "hello.elf", said, sizeof said);
+    assert(!strcmp(said, "hello.elf opens with Load Linux ARM ELF, whose driver scarletnx-gnuabi this app does not "
+                         "include."));
+    /* a build with the Switch's alone */
+    assert(!gui_driver_run(GUI_DRIVERS_APP, GUI_3DS, false, 1u << GUI_SWITCH, &run));
+    /* a computer: the program the menu is part of for the Switch, else scarletnx; each other driver a program of its
+       own (a link to scarletnx on Linux and macOS), whatever the build */
+    assert(gui_driver_run(GUI_DRIVERS_PROGRAMS, GUI_SWITCH, true, 0, &run) && !run.file && !run.first);
+    assert(gui_driver_run(GUI_DRIVERS_PROGRAMS, GUI_SWITCH, false, 0, &run) && !strcmp(run.file, "scarletnx"));
+    assert(!run.first);
+    assert(gui_driver_run(GUI_DRIVERS_PROGRAMS, GUI_3DS, true, 0, &run) && !strcmp(run.file, "scarletnx-3ds"));
+    assert(!run.first);
+    assert(gui_driver_run(GUI_DRIVERS_PROGRAMS, GUI_LINUX, false, 0, &run) && !strcmp(run.file, "scarletnx-gnuabi"));
+    /* Windows: the menu's program, the driver's name first, for one it has; the driver's own program for the others,
+       and for every one where the menu is a program alone */
+    assert(gui_driver_run(GUI_DRIVERS_PROGRAMS, GUI_VITA, true, app, &run) && !run.file);
+    assert(!strcmp(run.first, "scarletnx-vita"));
+    assert(gui_driver_run(GUI_DRIVERS_PROGRAMS, GUI_LINUX, true, app, &run) && !strcmp(run.file, "scarletnx-gnuabi"));
+    assert(!run.first);
+    assert(gui_driver_run(GUI_DRIVERS_PROGRAMS, GUI_VITA, false, app, &run) && !strcmp(run.file, "scarletnx-vita"));
+    assert(!run.first);
+    assert(gui_driver_run(GUI_DRIVERS_PROGRAMS, GUI_SWITCH, true, app, &run) && !run.file && !run.first);
+    /* an item that is no load has no driver */
+    assert(!gui_driver_run(GUI_DRIVERS_PROGRAMS, GUI_KEYS, true, app, &run) && !gui_driver_name(GUI_KEYS));
+    assert(!gui_driver_run(GUI_DRIVERS_APP, GUI_EXIT, false, app, &run));
+    /* the build's list: whole names, any spaces between them, a driver no load runs adding none */
+    assert(gui_drivers_held("") == 0 && gui_drivers_held("   ") == 0);
+    assert(gui_drivers_held("scarletnx-3dsx scarletnx-3d scarletnx") == 0);
+    assert(gui_drivers_held("  scarletnx-gnuabi   scarletnx-psp scarletnx-agb ") == (1u << GUI_LINUX | 1u << GUI_GBA));
+}
+
 int main(void) {
     GuiMenu menu = {0};
     GuiConfirm confirm = {0};
@@ -594,6 +648,7 @@ int main(void) {
     gui_confirm_focus(&confirm, GUI_CONFIRM_ABORT);
     assert(!gui_confirm_key(&confirm, GUI_SELECT) && confirm.armed);
     assert(!gui_confirm_key(&confirm, GUI_CANCEL) && !confirm.shown); /* Back while armed takes nothing */
-    puts("GUI menu, bounded console, UTF-8 and file drops passed");
+    drivers();
+    puts("GUI menu, bounded console, UTF-8, file drops and drivers passed");
     return 0;
 }

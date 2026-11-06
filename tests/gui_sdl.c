@@ -603,6 +603,8 @@ static void compiled_by(App* app, const char* driver, const char* file, int stat
            !has_arg(argv, "--fullscreen=1", NULL));
     free(argv);
 }
+/* snx_menu_has_driver of a program that has the 3DS driver alone */
+static int has_ctr(const char* name) { return !strcmp(name, "scarletnx-3ds"); }
 /* the stamp this build's driver leaves in the game name's folder (<folder>/<name>.abi), as a game it made with no mod has:
    the launcher plays that game as it is (made_here) */
 static void stamp_here(const char* folder, const char* name) {
@@ -7686,6 +7688,18 @@ int main(int argc, char** argv) {
         key(&app, SDLK_RETURN);
         assert(launched(&app) && !app.native && app.menu.selected == GUI_3DS);
         compiled_by(&app, "scarletnx-3ds", cia, 3);
+        /* a driver the program the menu is part of has: that program runs it, the driver's name right after it, as on
+           Windows (no links) and through Android's libscarletnx-run.so */
+        snx_menu_has_driver = has_ctr;
+        open_recent(&app, 0, false);
+        {
+            char *kept = ran(&app, 3), *end = strchr(kept, '\n');
+            assert(end && strstr(kept, "runtime") && strstr(kept, "runtime") < end); /* app.self */
+            assert(!strncmp(end, "\nscarletnx-3ds\n-r\n", 18) && has_arg(kept, "-r", cia));
+            assert(has_arg(kept, "--data", app.data_dir));
+            free(kept);
+        }
+        snx_menu_has_driver = NULL;
         driver_will(NULL, 0, NULL);
         free(got);
         app.recent = (GuiRecent){0};

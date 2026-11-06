@@ -1615,11 +1615,6 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "Cannot find %s beside ScarletNX or on PATH."
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
 msgid "The dumps' icons are not asked for (%s)"
 msgstr "Os ícones dos dumps não são pedidos (%s)"
 
@@ -2363,6 +2358,15 @@ msgstr ""
 #: src/gui/main.c
 msgid "Queue"
 msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Cannot find %s beside ScarletNX or on PATH."
+msgstr ""
+
+#: src/gui/main.c
+msgid "the selected driver"
+msgstr "o driver escolhido"
 
 #: src/gui/main.c
 msgid "Theme"
@@ -4061,10 +4065,6 @@ msgid "%s is compiling (%d%%): the game plays once the queue ends"
 msgstr ""
 
 #: src/gui/main.c
-msgid "the selected driver"
-msgstr "o driver escolhido"
-
-#: src/gui/main.c
 msgid "The Recompiled Library's Main is off and no Extra of it can take a game: Add to Library on its Main, or add a folder to it, in Settings > App > Folders"
 msgstr ""
 
@@ -4282,13 +4282,13 @@ msgstr "Escolha o arquivo no armazenamento deste computador (%s)."
 
 #: src/gui/main.c
 #, c-format
-msgid "%s opens with %s: cannot find %s beside ScarletNX or on PATH."
-msgstr "%s abre em %s: não há %s ao lado do ScarletNX nem no PATH."
+msgid "%s opens with %s, not %s."
+msgstr "%s abre em %s, não em %s."
 
 #: src/gui/main.c
 #, c-format
-msgid "%s opens with %s, not %s."
-msgstr "%s abre em %s, não em %s."
+msgid "%s opens with %s: cannot find %s beside ScarletNX or on PATH."
+msgstr "%s abre em %s: não há %s ao lado do ScarletNX nem no PATH."
 
 #: src/gui/main.c
 msgid "Drop one local file path, not a list or remote URL."
@@ -4694,6 +4694,16 @@ msgstr "Nenhum usuário mostrado: sem memória"
 #, c-format
 msgid "%d to move, %d staying: --migrate=yes moves them"
 msgstr "%d a mover, %d ficando: --migrate=yes os move"
+
+#: src/gui/model.c
+#, c-format
+msgid "%s opens with %s, whose driver %s this app does not include."
+msgstr "%s abre em %s, cujo driver %s este app não inclui."
+
+#: src/gui/model.c
+#, c-format
+msgid "%s needs the driver %s, which this app does not include."
+msgstr "%s precisa do driver %s, que este app não inclui."
 
 #: src/gui/model.c
 msgid "RAM and CPU: unavailable"

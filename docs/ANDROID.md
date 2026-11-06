@@ -35,6 +35,9 @@ recompiles on the phone, then the game opens.
 - **The driver** runs as a child of the menu, as on a desktop, from `libscarletnx-run.so`: an executable named so
   that Android installs it with the libraries, the only files of its own an app may execute. It loads the runtime,
   `libscarletnx.so`, beside it. It cannot open a window there, so it ends at `Ready <game>` and the menu opens it.
+  `libscarletnx.so` holds every driver the app's build has, the 3DS, Vita and GBA ones too: the menu runs those
+  through `libscarletnx-run.so` with the driver's name first (`scarletnx-3ds`), as Windows does. The app has no Linux
+  driver; *Load Linux ARM ELF* is greyed, and Enter on it says so.
   A game of *Games* goes through it too, recompiled first when another version of the app made it.
 - **Behind other apps** the driver keeps going: a notification shows the game, its step and a bar, and a tap on it
   returns to the menu. A run that ends there leaves a notification saying so, and its game opens once the menu shows.
