@@ -10,8 +10,10 @@
 #include "nx/hle/services/native_video.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/renderer.h"
+#include "nx/gpu/video/vic_regs.h"
 #include <libavcodec/avcodec.h>
 #include <limits.h>
+#include <math.h>
 
 static int nvideo_context_dispatch(SvcObj* self, IpcCtx* c);
 static int nvideo_codec_dispatch(SvcObj* self, IpcCtx* c);
@@ -61,6 +63,15 @@ int native_video_pool_create(const u32 pref[16], u32 count, u32 memory, u32* ima
     LOG("gsv: video pool %u..%u in memory %u at %#llx, %u bytes an image\n", p.first, p.first + count - 1, memory,
         (unsigned long long)p.cpu, p.layout.image_bytes);
     R_SUCCEED();
+}
+u32 native_video_memory_pitch(u32 memory) {
+    u32 pitch = 0;
+    pm_lock(&g_host.native_video.lock);
+    for (u32 i = 0; i < NVIDEO_POOLS && !pitch; i++)
+        if (NV->pools[i].first && NV->pools[i].memory == memory && !nvideo_kind_nv12(NV->pools[i].layout.kind))
+            pitch = NV->pools[i].layout.pitch;
+    pm_unlock(&g_host.native_video.lock);
+    return pitch;
 }
 /* The SDK destroys the native memory right after, with the images maybe still mapped for the GPU: the mappings stay
    until 427, and a codec skips an image whose pool went */
@@ -167,6 +178,29 @@ static void submission_event(NativeVideoCodec* s) {
     else
         ev_clear(s->event);
 }
+/* VIC's colour matrix from a picture's YUV to RGB, by the colour space and range FFmpeg read: each channel is
+   ((Y*c0 + U*c1 + V*c2) >> shift + c3) >> 8, of samples of 10 bits (gpu/video/vic.c) */
+static void rgb_matrix(VicSlot* s, const AVFrame* f) {
+    double kr = 0.2126, kb = 0.0722; /* BT.709, also when the stream doesn't say */
+    if (f->colorspace == AVCOL_SPC_BT470BG || f->colorspace == AVCOL_SPC_SMPTE170M)
+        kr = 0.299, kb = 0.114;
+    else if (f->colorspace == AVCOL_SPC_BT2020_NCL)
+        kr = 0.2627, kb = 0.0593;
+    int full = f->color_range == AVCOL_RANGE_JPEG;
+    double kg = 1 - kr - kb, ys = full ? 1 : 255.0 / 219, cs = full ? 1 : 255.0 / 224, y0 = full ? 0 : 64;
+    const double m[3][3] = {{ys, 0, cs * 2 * (1 - kr)},
+                            {ys, -cs * 2 * kb * (1 - kb) / kg, -cs * 2 * kr * (1 - kr) / kg},
+                            {ys, cs * 2 * (1 - kb), 0}};
+    for (int i = 0; i < 3; i++) {
+        for (int k = 0; k < 3; k++) s->mat[i][k] = (int)lround(m[i][k] * 256);
+        s->mat[i][3] = (int)lround(-(ys * y0 + (m[i][1] + m[i][2]) * 512) * 256);
+    }
+    s->mat_shift = 0;
+    s->mat_enable = 1;
+    s->alpha = 1023;
+    s->clamp_lo = 0;
+    s->clamp_hi = 1023;
+}
 /* the picture written into its image on the GPU, as NVDEC's pictures are (the renderer's nvdec_write, pitch linear):
    FFmpeg's planar rows are staged, the GPU interleaves the chroma, and the image is published over guest memory, which
    the game's CPU reads (ReadDecoderOutputImageNv12) land. 1 when written */
@@ -174,18 +208,23 @@ static int image_write(const NativeVideoPool* p, u32 id, const AVFrame* f) {
     const NativeVideoLayout* l = &p->layout;
     u32 w = (u32)f->width, h = (u32)f->height;
     u64 cpu = p->cpu + (u64)(id - p->first) * l->image_bytes;
+    /* an image of four bytes a pixel takes its picture through VIC, as NV12 in its own first bytes, where it fits: VIC
+       copies its inputs before it composes (vk/vic.c), so composing over them is safe */
+    int nv12 = nvideo_kind_nv12(l->kind);
+    u32 pitch = nv12 ? l->pitch : (u32)snx_align_up(w, 256);
+    u64 ext_y = (u64)pitch * l->rows, ext_c = ext_y / 2;
     NvdecPic pic = {.w = w,
                     .h = h,
                     .luma = cpu,
-                    .chroma = cpu + l->chroma_offset,
-                    .ext_y = (u64)l->pitch * l->rows,
-                    .ext_c = (u64)l->pitch * l->chroma_rows,
-                    .pitch_y = l->pitch,
-                    .pitch_c = l->pitch,
+                    .chroma = cpu + (nv12 ? l->chroma_offset : ext_y),
+                    .ext_y = ext_y,
+                    .ext_c = nv12 ? (u64)l->pitch * l->chroma_rows : ext_c,
+                    .pitch_y = pitch,
+                    .pitch_c = pitch,
                     .surf_h = l->rows,
                     .pitch_linear = 1};
-    if ((f->format != AV_PIX_FMT_YUV420P && f->format != AV_PIX_FMT_YUVJ420P) || !nvideo_kind_nv12(l->kind) ||
-        w > (l->extent & 0xffff) + 1u || h > (l->extent >> 16) + 1u) {
+    if ((f->format != AV_PIX_FMT_YUV420P && f->format != AV_PIX_FMT_YUVJ420P) ||
+        (!nv12 && ext_y + ext_c > l->image_bytes) || w > (l->extent & 0xffff) + 1u || h > (l->extent >> 16) + 1u) {
         WARN_LIMIT(4, "gsv: a %ux%u picture (format %d) doesn't fit video image %u (kind %u, extent %#x)\n", w, h,
                    f->format, id, l->kind, l->extent);
         return 0;
@@ -202,7 +241,29 @@ static int image_write(const NativeVideoPool* p, u32 id, const AVFrame* f) {
         pic.plane[i] = f->data[i];
         pic.stride[i] = f->linesize[i];
     }
-    return g_renderer->nvdec_write(&pic);
+    if (!g_renderer->nvdec_write(&pic)) return 0;
+    if (nv12) return 1;
+    if (!g_renderer->vic_compose) {
+        WARN_LIMIT(4, "gsv: this renderer can't compose video image %u\n", id);
+        return 0;
+    }
+    /* kinds 2 and 5 have 0x9 in their CPU descriptor (nvideo_cpu_descriptor), 3 and 6 0x8. Which channel order each
+       means is read from the SDK's names only, and not checked against a picture on the console */
+    VicJob j = {.fmt = l->kind == 2 || l->kind == 5 ? VIC_PIXEL_A8B8G8R8 : VIC_PIXEL_A8R8G8B8,
+                .sw = w,
+                .sh = h,
+                .tw = w,
+                .th = h,
+                .bg = {0, 0, 0, 1023}};
+    j.oy = (VicPlane){.p = GP(cpu), .lim = l->image_bytes, .pitch = l->pitch, .h = l->rows};
+    VicSlot* s = &j.slots[0];
+    s->on = 1;
+    s->w = w;
+    s->h = h;
+    s->iy = (VicPlane){.p = GP(cpu), .lim = ext_y, .pitch = pitch, .h = l->rows};
+    s->ic = (VicPlane){.p = GP(cpu + ext_y), .lim = ext_c, .pitch = pitch, .h = l->rows / 2};
+    rgb_matrix(s, f);
+    return g_renderer->vic_compose(&j);
 }
 /* the image filled with the frame (NULL: the end of the stream, no picture), its output queued and its fence reached */
 static void codec_output(NativeVideoCodec* s, NativeVideoImage* image, const AVFrame* f, u64 timestamp) {
@@ -299,6 +360,12 @@ static int nn_gsv_INativeVideoCodec_InitializeWithTransferMemory(SvcObj* self, u
     }
     return codec_initialize(s, kobj_id(&m->o), size, codec, input_format, output_format);
 }
+static int nn_gsv_INativeVideoCodec_InitializeH264WithTransferMemory(SvcObj* self, u32 memory, u64 size, u32 codec,
+                                                                     u32 input_format, u32 output_format, u32 extra) {
+    (void)extra;
+    return nn_gsv_INativeVideoCodec_InitializeWithTransferMemory(self, memory, size, codec, input_format,
+                                                                 output_format);
+}
 static int nn_gsv_INativeVideoCodec_InitializeWithProcess(SvcObj* self, u32 process, u64 size, u32 codec,
                                                           u32 input_format, u32 output_format) {
     (void)process;
@@ -315,6 +382,17 @@ static int nn_gsv_INativeVideoCodec_Configure(SvcObj* self, IpcBuf mime, const n
     enum AVCodecID id = kind == NVIDEO_MIME_VP9 ? AV_CODEC_ID_VP9
                         : kind == NVIDEO_MIME_VP8 ? AV_CODEC_ID_VP8
                         : kind == NVIDEO_MIME_H264 ? AV_CODEC_ID_H264 : AV_CODEC_ID_NONE;
+    /* The SDK's H.264 decoder (command 201, codec 0) passes down its caller's buffer here, not a fixed MIME type: read
+       as the stream's configuration, which starts with a NUL where it has start codes */
+    int h264_config = id == AV_CODEC_ID_NONE && s->codec == 0;
+    if (h264_config) {
+        const u8* b = GP(mime.addr);
+        LOG("gsv: video codec %u: H.264 configuration of %llu bytes: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+            codec_index(s), (unsigned long long)mime.size, b[0], mime.size > 1 ? b[1] : 0, mime.size > 2 ? b[2] : 0,
+            mime.size > 3 ? b[3] : 0, mime.size > 4 ? b[4] : 0, mime.size > 5 ? b[5] : 0, mime.size > 6 ? b[6] : 0,
+            mime.size > 7 ? b[7] : 0);
+        id = AV_CODEC_ID_H264;
+    }
     if (id == AV_CODEC_ID_NONE) {
         char name[65] = {0};
         memcpy(name, GP(mime.addr), (size_t)mime.size);
@@ -329,6 +407,10 @@ static int nn_gsv_INativeVideoCodec_Configure(SvcObj* self, IpcBuf mime, const n
         dec->thread_count = 4;
         dec->thread_type = FF_THREAD_SLICE; /* no frame threads: each packet's picture comes out at once */
         dec->pkt_timebase = (AVRational){1, 1000000};
+        if (h264_config && (dec->extradata = av_mallocz((size_t)mime.size + AV_INPUT_BUFFER_PADDING_SIZE))) {
+            memcpy(dec->extradata, GP(mime.addr), (size_t)mime.size);
+            dec->extradata_size = (int)mime.size;
+        }
         ok = avcodec_open2(dec, codec, NULL) >= 0;
     }
     HOST(s)->decoder = dec;
