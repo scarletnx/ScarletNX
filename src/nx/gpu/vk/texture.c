@@ -1862,7 +1862,7 @@ static void tex_take_drawn(Surf* t) {
             vk_render_end();
             VkCommandBuffer cb = vk_cmd();
             for (u32 k = 0; k < count; k++) {
-                VkImage grid = vk_ms_unpack(cb, s, k);
+                VkImage grid = vk_ms_unpack(cb, s, k, 0, t->h);
                 if (!grid) {
                     settled = 0;
                     break;

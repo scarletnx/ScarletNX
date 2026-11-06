@@ -2740,10 +2740,12 @@ static int check_dma_bands(void) {
 
 /* Targets bigger than one allocation (g_vk.alloc_cap, lowered to 64 KiB for the write-back) read back in parts: a
    block linear 256x128 RGBA8 one and a pitch linear one of the same size in bands of rows, a pitch linear array of
-   12 layers of 64x32 two layers a part, and a multisampled block linear one of 256x128 samples. Each is loaded from
-   guest memory holding a pattern and drawn red only (a masked clear), so memory gets red 128 in every pixel's first
-   byte and keeps the pattern in the others, each where the guest's layout has it. They used to stay on the GPU,
-   memory unchanged */
+   12 layers of 64x32 two layers a part, and multisampled ones, block linear of 256x128 samples and pitch linear of
+   192x128 (bands of 21 rows: a part ends between a pixel's two rows of samples), each part's samples unpacked alone:
+   every sample once, into an image no bigger than the part (an image past the cap goes in pieces, which lavapipe draws
+   into in another layout than it copies from). Each is loaded from guest memory holding a pattern and drawn red only
+   (a masked clear), so memory gets red 128 in every pixel's first byte and keeps the pattern in the others, each where
+   the guest's layout has it. They used to stay on the GPU, memory unchanged */
 static int flush_parts_case(u64 gva, u64 cpu, u32 width_reg, u32 h, u32 layout, u32 layers, u32 layer_bytes, u32 msaa) {
     GpuChannel* ch = calloc(1, sizeof *ch);
     const u64 cap = g_vk.alloc_cap, size = (u64)layer_bytes * layers;
@@ -2767,10 +2769,14 @@ static int flush_parts_case(u64 gva, u64 cpu, u32 width_reg, u32 h, u32 layout, 
     memcpy(&r[0x360], red, sizeof red);
     for (u32 l = 0; l < layers; l++) engine_clear(ch, (1 << 2) | (l << 10));
     vk_render_end();
-    CHECK(vk_rt_find(gva) && vk_rt_find(gva)->msaa == msaa);
+    const Surf* s = vk_rt_find(gva);
+    CHECK(s && s->msaa == msaa);
+    u64 samples = msaa ? (u64)(s->w << ds_msaa_log2_x(msaa)) * (s->h << ds_msaa_log2_y(msaa)) * layers : 0;
+    u64 unpacked = vk_ms_unpacked();
     g_vk.alloc_cap = 64 << 10;
     vk_rt_flush(gva);
     g_vk.alloc_cap = cap;
+    unpacked = vk_ms_unpacked() - unpacked;
     CHECK(!gmem_read(gva, got, size));
     for (u64 i = 0; i < size; i++) {
         u8 want = (u8)(i % 4 ? i * 7 + (i >> 10) * 3 + 1 : 128);
@@ -2784,6 +2790,11 @@ static int flush_parts_case(u64 gva, u64 cpu, u32 width_reg, u32 h, u32 layout, 
     }
     free(got);
     free(ch);
+    if (unpacked != samples) {
+        fprintf(stderr, "write-back in parts of layout %#x, %u layers, msaa %u: %llu samples unpacked, not %llu\n",
+                layout, layers, msaa, (unsigned long long)unpacked, (unsigned long long)samples);
+        return 1;
+    }
     return 0;
 }
 static int check_flush_parts(void) {
@@ -2793,6 +2804,9 @@ static int check_flush_parts(void) {
     CHECK(!flush_parts_case(gva, cpu, 256, 128, 0, 1, 256 * 128 * 4, 0)); /* block linear, 1 GOB high */
     CHECK(!flush_parts_case(gva + 0x40000, cpu + 0x40000, 1024, 128, 0x1000, 1, 1024 * 128, 0)); /* pitch linear */
     CHECK(!flush_parts_case(gva + 0x80000, cpu + 0x80000, 256, 32, 0x1000, 12, 256 * 32, 0));    /* 12 layers */
+    /* 2x2 samples a pixel (registers in samples): each band of rows' samples drawn into the guest's layout of them */
+    CHECK(!flush_parts_case(gva + 0xC0000, cpu + 0xC0000, 256, 128, 0, 1, 256 * 128 * 4, DS_MSAA_2X2));
+    CHECK(!flush_parts_case(gva + 0xE0000, cpu + 0xE0000, 768, 128, 0x1000, 1, 768 * 128, DS_MSAA_2X2));
     CHECK(mem_unmap(cpu, 0x100000) == 0);
     return 0;
 }

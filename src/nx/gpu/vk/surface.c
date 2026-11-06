@@ -701,15 +701,14 @@ static FlushPart flush_whole(const Surf* s) {
 static void flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pitch, const FlushPart* part) {
     u64 slice = (u64)pitch * part->rows;
     u32 depth = s->type == VK_IMAGE_VIEW_TYPE_3D ? s->depth3d : 1; /* a 3D image's slices in one copy */
-    if (s->msaa) { /* the samples drawn into the guest's layout of them a layer at a time, and copied from there */
+    if (s->msaa) { /* the part's samples drawn into the guest's layout of them a layer at a time, copied from there */
         for (u32 layer = part->layer; layer < part->layer + part->layers; layer++) {
-            VkImage grid = vk_ms_unpack(cb, s, layer);
+            VkImage grid = vk_ms_unpack(cb, s, layer, part->y, part->rows);
             if (!grid) continue;
             VkBufferImageCopy c = {
                 .bufferOffset = at + (u64)(layer - part->layer) * slice,
                 .bufferRowLength = pitch / s->f.bpp,
                 .imageSubresource = {s->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                .imageOffset = {0, (i32)part->y, 0},
                 .imageExtent = {guest_w(s), part->rows, 1}};
             rec_CmdCopyImageToBuffer(cb, grid, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &c);
         }
