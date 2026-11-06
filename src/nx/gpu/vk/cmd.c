@@ -295,10 +295,24 @@ static void land_through(u64 value) {
     g_rec_unsafe--;
 }
 
+/* the submission the current slot's recycling waits for, set when the slot becomes the current one and fresh, 0 once
+   it is recycled: the GPU thread waits for it with no lock held (vk_frame_ready). It waited in frame_recycle with
+   vk_lock held, up to 3.1 s at a time in one game's menus, and the game's threads that landed results, changed
+   memory or performed releases waited for vk_lock behind it */
+static u64 g_recycle_at;
+void vk_frame_ready(void) {
+    u64 at = __atomic_load_n(&g_recycle_at, __ATOMIC_ACQUIRE), submitted = 0, done = 0;
+    if (!at || vk_lock_held()) return;
+    vk_submit_progress(&submitted, &done);
+    if (at > submitted || at <= done) return; /* not handed to the GPU yet (frame_recycle waits then), or done */
+    SNX_ZONE(z, "vk frame ready");
+    timeline_wait(at, VK_WAIT_RECYCLE);
+}
 /* the frame's previous use is done, its results landed and what it held freed, before it records again */
 static void frame_recycle(Frame* f) {
     u64 done = f->last > f->hold ? f->last : f->hold;
     SNX_ZONE(z, "vk frame recycle");
+    __atomic_store_n(&g_recycle_at, 0, __ATOMIC_RELEASE);
     if (done) {
         timeline_wait(done, VK_WAIT_RECYCLE);
         land_through(done);
@@ -604,8 +618,11 @@ void vk_submit(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore s
    open command buffer: starting/recycling a frame or landing completed results
    here could acquire those same ranges and wait for this thread itself. */
 void vk_submit_for_readback(void) {
-    if (g_fr[g_cur].recording) submit(NULL, NULL, 0, VK_SUB_READBACK);
+    vk_submit_open();
     vk_rec_sync(); /* the immediate copy must follow the recorder's queue calls */
+}
+void vk_submit_open(void) {
+    if (g_fr[g_cur].recording) submit(NULL, NULL, 0, VK_SUB_READBACK);
 }
 void vk_submit_after(VkSemaphore sem, u64 wait, u64 signal) {
     g_after[0] = (VkSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = sem,
@@ -631,6 +648,8 @@ void vk_frame_next(void) {
     g_cur = (g_cur + 1) % VK_FRAMES;
     g_fr[g_cur].fresh = 1;
     g_frame_id++;
+    const Frame* f = &g_fr[g_cur];
+    __atomic_store_n(&g_recycle_at, f->last > f->hold ? f->last : f->hold, __ATOMIC_RELEASE);
 }
 /* the GPU thread's recording time a submission holds at most */
 #define SUBMIT_EVERY_NS 1000000
