@@ -7,8 +7,12 @@ on:
     branches: [main]
     tags: ['v*'] # a version's release (publish.yml)
   pull_request:
-    # a draft builds and tests as much as a pull request ready for review, so leaving draft starts nothing
-    types: [opened, synchronize, reopened]
+    # A draft builds the x86-64 jobs, which the organization's 20 runners can take at once beside the others' pull
+    # requests: Linux with edenprobe, ASan and UBSan, the AppImage, Windows and Android. Marking it ready for review builds
+    # what the draft left out, on the same commit, and nothing it built already: AArch64, macOS and iOS, and the
+    # cross-built AppImages, which take the x86-64 Linux job's QEMU reference from the draft's run. A push out of draft
+    # builds everything
+    types: [opened, synchronize, reopened, ready_for_review]
     # skipped when the change is only in files that no build or test reads. tracked_material.py reads them all and runs
     # on its own (pr-checks.yml). docs/ARCHITECTURE.md, DEPRECATIONS.md and GUI.md are test inputs: they build
     paths:
@@ -28,10 +32,12 @@ permissions:
   contents: read
 
 # a push to a pull request cancels that pull request's build still running, and a push to main main's: only the newest
-# commit is built, and publish.yml publishes the newest that built everywhere. A tag and a run by hand build every time
+# commit is built, and publish.yml publishes the newest that built everywhere. Marking a draft ready runs in a group of
+# its own, so the draft's run of the same commit goes on beside it. A tag and a run by hand build every time
 concurrency:
   group: >-
-    build-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number)
+    build-${{ github.event_name == 'pull_request' && format('pr-{0}{1}', github.event.pull_request.number,
+    github.event.action == 'ready_for_review' && '-ready' || '')
     || github.event_name == 'push' && github.ref == 'refs/heads/main' && 'main' || format('run-{0}', github.run_id) }}
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request' || github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -55,7 +61,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [x86_64, aarch64]
+        arch: ${{ fromJSON(github.event.action == 'ready_for_review' && '["aarch64"]' || github.event.pull_request.draft && '["x86_64"]' || '["x86_64", "aarch64"]') }}
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
       - name: Name the commit
@@ -235,6 +241,7 @@ jobs:
   # CPM sources and FFmpeg and OpenSSL builds, which the sanitizers leave as they are, are read and never saved here
   linux-sanitizers:
     name: Linux (x86_64, ASan + UBSan)
+    if: github.event.action != 'ready_for_review' # the draft built it
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     container: archlinux:latest
@@ -326,7 +333,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [x86_64, aarch64]
+        arch: ${{ fromJSON(github.event.action == 'ready_for_review' && '["aarch64"]' || github.event.pull_request.draft && '["x86_64"]' || '["x86_64", "aarch64"]') }}
     # pkgforge's Arch image and tools (https://github.com/pkgforge-dev/Anylinux-AppImages), see scripts/make-appimage.sh
     container: ghcr.io/pkgforge-dev/archlinux:latest
     steps:
@@ -497,6 +504,10 @@ jobs:
   appimage-cross:
     name: Linux AppImage (${{ matrix.arch }})
     needs: linux
+    if: ${{ !github.event.pull_request.draft }} # not a draft's: marking it ready builds it
+    permissions:
+      contents: read
+      actions: read # the draft's run, whose QEMU reference a ready run takes
     runs-on: ubuntu-26.04
     # LLVM's cross build (scripts/linux-llvm.sh) adds about half an hour where its cache misses
     timeout-minutes: 180
@@ -539,11 +550,41 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      # A ready run has no x86-64 linux job (its draft built it): the reference comes from the newest earlier run of
+      # this commit that uploaded it, waited for while one of them still runs (ready marked right after a push). None
+      # is an error that says so, and pushing again builds it all
+      - name: Find the draft run's QEMU reference
+        id: reference
+        if: github.event.action == 'ready_for_review'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          NAME: ScarletNX-llvm-qemu-reference-${{ steps.commit.outputs.short }}
+        run: |
+          for minute in $(seq 0 60); do
+            runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/build.yml/runs?head_sha=$SHA&per_page=50" \
+              --jq ".workflow_runs[] | select(.id != $GITHUB_RUN_ID) | \"\(.id) \(.status)\"")
+            for run in $(cut -d' ' -f1 <<< "$runs"); do
+              if [ "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?name=$NAME" --jq .total_count)" -gt 0 ]; then
+                echo "run=$run" >> "$GITHUB_OUTPUT"
+                echo "$NAME from run $run, after $minute minutes"
+                exit 0
+              fi
+            done
+            [ -n "$runs" ] && grep -qvE ' completed$' <<< "$runs" || break # no run, or every one ended without it
+            sleep 60
+          done
+          echo "::error::no earlier Build of $SHA uploaded $NAME (runs: $(paste -sd, <<< "${runs:-none}")): its draft run failed, was cancelled or still runs after an hour; push again to build every job"
+          exit 1
       # The linux job's recorded QEMU side of the A64 differential, run here against the cross-built test
       - uses: actions/download-artifact@v8
         with:
           name: ScarletNX-llvm-qemu-reference-${{ steps.commit.outputs.short }}
           path: reference
+          # the draft's run in a ready run, else this one
+          run-id: ${{ steps.reference.outputs.run || github.run_id }}
+          github-token: ${{ steps.reference.outputs.run && github.token || '' }}
       # The four cross builds run on x86-64 and fetch the same sources, SDL3's from the pinned archive among them
       # (the linux job takes it from its package). ppc64 has no GUI, so no miniz: one cache either way only costs the
       # others that package. The first to finish saves it, and the second restore key reads the caches from before
@@ -847,6 +888,7 @@ jobs:
 
   windows:
     name: Windows (Clang + LLVM)
+    if: github.event.action != 'ready_for_review' # the draft built it
     runs-on: windows-2025-vs2026
     timeout-minutes: 90
     defaults:
@@ -1065,6 +1107,7 @@ jobs:
   # Each ABI packs an APK of its own, then one APK holds both
   android:
     name: Android APK
+    if: github.event.action != 'ready_for_review' # the draft built it
     runs-on: ubuntu-26.04
     timeout-minutes: 240
     env:
@@ -1261,6 +1304,7 @@ jobs:
   # tars, their SHA-256 the ones GitHub lists for them
   apple:
     name: macOS and iOS (arm64)
+    if: ${{ !github.event.pull_request.draft }} # not a draft's: marking it ready builds it
     runs-on: macos-26
     timeout-minutes: 240
     continue-on-error: true
@@ -1450,7 +1494,7 @@ jobs:
       fail-fast: false
       matrix:
         # the AppImages the appimage job made
-        arch: [x86_64, aarch64]
+        arch: ${{ fromJSON(github.event.action == 'ready_for_review' && '["aarch64"]' || github.event.pull_request.draft && '["x86_64"]' || '["x86_64", "aarch64"]') }}
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
       - name: Name the commit
@@ -1475,6 +1519,7 @@ jobs:
   appimage-cross-check:
     name: Linux AppImage (${{ matrix.arch }}), as installed
     needs: appimage-cross
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     continue-on-error: true
@@ -1555,6 +1600,7 @@ jobs:
 
   windows-check:
     name: Windows zip, as installed
+    if: github.event.action != 'ready_for_review' # the draft built it
     needs: windows
     runs-on: windows-2025-vs2026
     timeout-minutes: 20
@@ -1585,6 +1631,7 @@ jobs:
   # longer passes fails the job. Another release or other mode words want that file written again
   edenprobe:
     name: edenprobe (Linux x86_64, lavapipe)
+    if: github.event.action != 'ready_for_review' # the draft built it
     needs: linux
     runs-on: ubuntu-26.04
     timeout-minutes: 30

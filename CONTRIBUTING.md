@@ -59,9 +59,10 @@ workflow rewrites one comment on it, marked `<!-- scarletnx-builds -->`, that li
 Android builds of the head commit and names any job that did not build (`scripts/pr-builds.sh`). A pull request from a
 fork gets no comment, since its Build ran the fork's own workflow.
 
-A pull request, a draft as one ready for review, is built and tested on every platform: Linux on x86-64 and AArch64
-(with edenprobe, and ASan and UBSan), Windows, Android, macOS and iOS, and the cross-built AppImages (PowerPC64,
-RISC-V, LoongArch).
+A draft pull request is built and tested on x86-64: Linux (with edenprobe, and ASan and UBSan), its AppImage, Windows
+and Android. Marking it ready for review builds the rest on the same commit, and nothing the draft built: Linux on
+AArch64, macOS and iOS, and the cross-built AppImages (PowerPC64, RISC-V, LoongArch). A push to a pull request out of
+draft builds every platform.
 
 A pull request leaves draft when someone with write access to the repository marks it ready for review. One opened,
 reopened or marked ready by anyone else goes back to a draft, with one comment saying so, unless a maintainer marked it
