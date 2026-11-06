@@ -752,6 +752,56 @@ static int check_chunks_both_slots(void) {
     return 0;
 }
 
+/* A ring with no chunk left in the pool hands out of a pooled big buffer: after a frame of big requests, as a
+   texture's bands make, a frame of more requests of a chunk than the pool kept chunks for, as an ASTC texture's strips
+   make, writes the big buffers again instead of new chunks, whose first writes cost several times as much. No buffer
+   is made, the copies read their bytes, and frames without either then let the pool give the big buffers up */
+static int check_chunks_from_big(void) {
+    const u32 bigs = 4, parts = 8;
+    u64 saved_cap = g_vk.alloc_cap, chunk, made, before, after, offset;
+    VkBuffer rb, buffer;
+    u8* result;
+    vk_finish();
+    vk_frame_next();
+    g_vk.alloc_cap = 64ull << 20;
+    chunk = vk_stage_chunk();
+    result = vk_readback_buffer(parts * 16ull, &rb);
+    CHECK(result && chunk * 5 / 2 <= g_vk.alloc_cap);
+    for (u32 i = 0; i < VK_POOL_FRAMES + VK_FRAMES; i++) CHECK(!staging_light_frame(rb));
+    vk_finish();
+    before = vk_ring_bytes();
+    vk_frame_next();
+    for (u32 i = 0; i < bigs; i++) CHECK(vk_stage_upload(chunk * 5 / 2, vk_stage_align(), &buffer, &offset));
+    vk_frame_next();
+    CHECK(!staging_light_frame(rb)); /* the other slot's */
+    vk_finish();                     /* its copies done before these, and the big buffers' slot taken again */
+    made = vk_ring_made();
+    for (u32 i = 0; i < parts; i++) {
+        u8* data = vk_stage_upload(chunk, vk_stage_align(), &buffer, &offset);
+        CHECK(data);
+        memset(data + chunk - 16, (int)(i + 1), 16);
+        VkBufferCopy copy = {offset + chunk - 16, i * 16ull, 16};
+        rec_CmdCopyBuffer(vk_cmd(), buffer, rb, 1, &copy);
+    }
+    vk_finish();
+    vk_readback_ready();
+    made = vk_ring_made() - made;
+    for (u32 i = 0; i < parts * 16; i++) CHECK(result[i] == i / 16 + 1);
+    vk_frame_next();
+    for (u32 i = 0; i < VK_POOL_FRAMES + VK_FRAMES; i++) CHECK(!staging_light_frame(rb));
+    vk_finish();
+    after = vk_ring_bytes();
+    g_vk.alloc_cap = saved_cap;
+    vk_frame_next();
+    printf("%u requests of %llu MiB after a frame of %u big ones: %llu ring buffers made; the rings held %llu MiB %u "
+           "frames later, %llu before\n",
+           parts, (unsigned long long)(chunk >> 20), bigs, (unsigned long long)made, (unsigned long long)(after >> 20),
+           VK_POOL_FRAMES + VK_FRAMES, (unsigned long long)(before >> 20));
+    CHECK(made == 0);
+    CHECK(after <= before);
+    return 0;
+}
+
 /* the renderer's viewport index and its first viewport's facing for the registers r, through the draw state */
 static VkViewport viewport_of(const u32* r, u32 index) {
     DsDynamic d;
@@ -5068,6 +5118,7 @@ int main(int argc, char** argv) {
     CHECK(!check_big_uploads());
     CHECK(!check_big_reuse());
     CHECK(!check_chunks_both_slots());
+    CHECK(!check_chunks_from_big());
     CHECK(!check_stream_epoch());
     CHECK(!check_owned_readback());
     CHECK(!check_owned_writable());
