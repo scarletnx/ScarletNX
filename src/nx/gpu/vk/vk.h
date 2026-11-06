@@ -151,6 +151,7 @@ typedef struct {
     int has_present_timing;
     int has_calibrated_mono; /* CLOCK_MONOTONIC among the calibrateable time domains */
     int has_surface_caps2;   /* the instance's VK_KHR_get_surface_capabilities2, which present timing is asked by */
+    u32 gfx_timestamp_bits;  /* the graphics queue family's timestampValidBits: 0 where it writes no timestamps */
     /* VK_GOOGLE_display_timing, enabled without present waits (Android): presents carry ids and times to be shown at,
        and the swapchain tells when each was */
     int has_display_timing;
@@ -1608,6 +1609,14 @@ void vk_gpuprof_cb_begin(VkCommandBuffer cb);
 void vk_gpuprof_cb_end(VkCommandBuffer cb, int why, u64 value);
 void vk_gpuprof_waited(u64 value, int kind);
 void vk_gpuprof_frame_done(u32 slot);
+/* The stats box's GPU line (runtime/platform/stats.c): while stats is on, each command buffer of the frame gets a
+   timestamp at its begin and its end, and no pass does unless the profile asks. vk_gpuprof_timed: whether the graphics
+   queue can be timed. vk_gpuprof_busy_ns: the time it was busy with the frames timed, summed, read when each frame
+   slot is reused (its work is done then: no wait). g_vk_timestamps: the timestamps written, none while stats and the
+   profile are off */
+int vk_gpuprof_timed(void);
+u64 vk_gpuprof_busy_ns(void);
+extern u64 g_vk_timestamps;
 /* the device's timestamps next to the client's clock (VK_EXT_calibrated_timestamps with a host time domain) */
 int vk_gpuprof_calibrated(void);
 /* a fresh pair of the GPU's clock and the client's, for the track's calibration (0 without the extension) */
