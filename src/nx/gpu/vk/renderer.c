@@ -660,9 +660,10 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 (unsigned long long)g_vk_fb_draws, (unsigned long long)g_vk_fb_barriers,
                 (unsigned long long)g_vk_fb_restarts, (unsigned long long)g_vk_rt_copies);
             LOG("vulkan: %llu rendering passes, %llu clear commands, %llu attachments cleared and %llu left undefined "
-                "by their load op\n",
+                "by their load op; %llu buffers filled ahead of the passes\n",
                 (unsigned long long)g_vk_passes, (unsigned long long)g_vk_clear_cmds,
-                (unsigned long long)g_vk_clear_loads, (unsigned long long)g_vk_dontcare_loads);
+                (unsigned long long)g_vk_clear_loads, (unsigned long long)g_vk_dontcare_loads,
+                (unsigned long long)vk_buf_ahead());
             vk_pass_ends_log();
             vk_descriptors_stats();
             /* what the GPU engines keep on the GPU (docs/GPU_OWNERSHIP.md), and what the CPU had to wait for */

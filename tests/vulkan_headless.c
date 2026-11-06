@@ -4236,6 +4236,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_shader_invalidate.inc"
 #include "vulkan_shared_clamp.inc"
 #include "vulkan_index_draws.inc"
+#include "vulkan_pass_breaks.inc"
 #include "vulkan_storage_formats.inc"
 #include "vulkan_storage_atomics.inc"
 #include "vulkan_surface_loads.inc"
@@ -4321,6 +4322,7 @@ int main(int argc, char** argv) {
     u32 benchmark_sets = 0, benchmark_count = 16, benchmark_images = 0, benchmark_sparse = 0, benchmark_storage = 0;
     u32 benchmark_image = 0;
     u32 benchmark_buffer = 0;
+    u32 benchmark_passes = 0;
     /* the runtime's startup flags (-H), its settings as it takes them (--vk_memory=2, --memory_traps=2,
        --vertex_input_dynamic_state=off), and the benchmarks'. Any other argument stops the run: one dropped unsaid ran
        the checks without it */
@@ -4366,6 +4368,10 @@ int main(int argc, char** argv) {
             benchmark_buffer = 1;
             continue;
         }
+        if (!strncmp(argv[i], "--bench-pass-breaks=", 20)) {
+            benchmark_passes = (u32)strtoul(argv[i] + 20, NULL, 10);
+            continue;
+        }
         if (!strncmp(argv[i], "--", 2) && eq && (size_t)(eq - argv[i] - 2) < sizeof key) {
             snprintf(key, sizeof key, "%.*s", (int)(eq - argv[i] - 2), argv[i] + 2);
             o = setting_row(key);
@@ -4374,7 +4380,7 @@ int main(int argc, char** argv) {
             fprintf(
                 stderr,
                 "snx-test-vulkan: %s is not an option it takes: -H, --KEY=VALUE of the runtime's settings, "
-                "--bench-descriptors=N, --descriptor-images=N, --descriptor-count=N, --bench-sparse-volume, --bench-sparse-texture, --bench-storage-lookup, --bench-storage-image, --bench-storage-buffer, --nvn-draw-bench=N\n",
+                "--bench-descriptors=N, --descriptor-images=N, --descriptor-count=N, --bench-sparse-volume, --bench-sparse-texture, --bench-storage-lookup, --bench-storage-image, --bench-storage-buffer, --bench-pass-breaks=N, --nvn-draw-bench=N\n",
                 argv[i]);
             return 2;
         }
@@ -4458,6 +4464,15 @@ int main(int argc, char** argv) {
         free(ppm);
         return result;
     }
+    if (benchmark_passes) {
+        int result = bench_pass_breaks(120, benchmark_passes);
+        vk_pipeline_quiesce();
+        CHECK(!snx_remove_tree(root));
+        free(root);
+        free(shot);
+        free(ppm);
+        return result;
+    }
     if (benchmark_sparse) {
         int result = benchmark_sparse == 2 ? bench_sparse_textures() : bench_sparse_volumes();
         vk_pipeline_quiesce();
@@ -4519,6 +4534,12 @@ int main(int argc, char** argv) {
         vk_pipeline_quiesce();
         CHECK(!viw_report());
         printf("PASS headless Vulkan vertex input only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
+    if (getenv("SNX_TEST_PASS_BREAKS_ONLY")) { /* vulkan_pass_breaks.inc's checks alone */
+        CHECK(!check_pass_breaks());
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan pass breaks only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
     if (getenv("SNX_TEST_TEX_PARTIAL_ONLY")) { /* vulkan_tex_partial.inc's checks, which run only so */
@@ -4636,6 +4657,7 @@ int main(int argc, char** argv) {
     CHECK(!check_rect_textures());
     CHECK(!check_viewport_orientation());
     CHECK(!check_index_draws());
+    CHECK(!check_pass_breaks());
     CHECK(!check_mesh_inputs());
     CHECK(!check_frag_coord_origin());
     CHECK(!check_vertex_restride());

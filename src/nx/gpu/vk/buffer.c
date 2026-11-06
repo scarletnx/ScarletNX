@@ -135,6 +135,7 @@ static struct {
     u32 n;
     u64 bytes;
     u64 copy_src_read; /* vk_buf_copy_src_read */
+    u64 ahead; /* fills recorded ahead of the submission's rendering passes (vk_cmd_upload) */
     /* Pending buffer writes, and the work covered by the last consumer barrier. Read-only draws do not
        advance writes. A writable reuse still needs ordering against intervening readers. */
     struct {
@@ -2586,7 +2587,9 @@ static int patch_dirty(u32 i, u64 gva, const u8* host, u64 gw, u32 ws) {
    memory for it is the BAR's window on most GPUs (256 MB, which VMA prefers for host writes), and thousands of own
    buffers there crowded out the staging rings: one game's rings, made again in the window as they grew after loading,
    took writes at a twentieth of their speed for minutes (18 to 25 fps against 43). sb at so is the entry's bytes, in
-   the staging ring already */
+   the staging ring already. Nothing before the copy reads the new buffer and the CPU wrote its bytes, so it runs ahead
+   of the submission's work (vk_cmd_upload), and the rendering pass a draw before it opened goes on: on a tiling GPU an
+   end stores every target of the pass, and its next begin loads them again */
 static int make_own_(u32 i, VkBuffer sb, u64 so);
 /* a buffer of its own being made, as a profiler zone (SNX_TRACY builds) */
 static int make_own(u32 i, VkBuffer sb, u64 so) {
@@ -2613,11 +2616,9 @@ static int make_own_(u32 i, VkBuffer sb, u64 so) {
     if (vk_buffer_create(g_vk.vma, &bci, &aci, &b, &m, NULL) != VK_SUCCESS) return 0;
     vk_mem_track(m);
     if (copy_stats_on()) g_copy_owned += len;
-    vk_render_end(); /* copies happen outside rendering passes */
     VkBufferCopy r = {so, 0, len};
-    rec_CmdCopyBuffer(vk_cmd(), sb, b, 1, &r);
-    copy_barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                 VK_ACCESS_2_MEMORY_READ_BIT);
+    rec_CmdCopyBuffer(vk_cmd_upload(0), sb, b, 1, &r);
+    g_buffer.ahead++;
     drop_own(i);
     e->own = 1;
     e->buf = b;
@@ -2694,6 +2695,7 @@ static int range_owned(u64 gva, u64 len) {
     return 0;
 }
 int vk_buf_owned(u64 gva, u64 len) { return range_owned(gva, len); }
+u64 vk_buf_ahead(void) { return g_buffer.ahead; }
 /* A range over bytes the GPU holds, with nothing landed. One owner holding it whole is bound where it is, as a dispatch
    binds it (compute.c res_bind): every write to an owner's buffer is recorded outside rendering passes and followed by
    a barrier before the next one begins (vk_own_res_wrote), so a draw reads it inside the pass it is in. Copied, each
