@@ -38,7 +38,7 @@ typedef struct {
     u32 reg[256], ureg[64], pred[8], upred[8];
     /* resources, made when first used */
     u32 cbuf[18], cbuf_ptr, root;
-    u32 gbuf[16], gbuf_ptr;
+    u32 gbuf[16], gbuf_ptr, smap;
     u32 wpages, mbase; /* SNX_VKB_WPAGES and SNX_VKB_MBASE, once a store logs its bytes (mark_written) */
     u32 gkey;   /* the global buffer the last global_address named */
     u32 shared, shared_ptr, shared_words;
@@ -922,6 +922,37 @@ static u32 shared_var(Ctx* c) {
 }
 /* the buffer that names local memory to mem_ptr, mem_load and mem_store */
 #define MEM_LOCAL 0xffffffffu
+static u32 smap_word(Ctx* c, u32 index) {
+    return spv_emit_load(&c->e, c->t_u32, spv_emit_storage_access_u32(&c->e, c->gbuf_ptr, c->smap, c->zero, index));
+}
+/* Where a word of a global buffer is in what is bound. A draw whose writable storage shares a page with another of its
+   buffers has them all bound as one atlas of pages (vk_buf_draw_prepare), and a table (SNX_VKB_SMAP) gives each buffer's
+   pages, as shader_gbuf_word_index reads it for Maxwell's programs. One game's culling programs have their counters
+   in the last page of their instances every other frame, and read unmapped there, whole objects came and went. A
+   dispatch binds each buffer whole, and has no table */
+static u32 gbuf_word_index(Ctx* c, u32 buffer, u32 word) {
+    if (c->stage == ST_CS) return word;
+    u32 slot = 0;
+    while (slot < 15 && c->gbuf[slot] != buffer) slot++;
+    if (!c->smap) {
+        c->smap = spv_emit_storage_buffer(
+            &c->e, spv_emit_type_struct_one(&c->e, spv_emit_type_runtime_array(&c->e, c->t_u32, 4)),
+            (u32)shader_vk_set(c->stage), SNX_VKB_SMAP);
+        add_interface(c, c->smap);
+    }
+    u32 first = smap_word(c, cu(c, slot)), offset = smap_word(c, cu(c, 16 + slot)),
+        count = smap_word(c, cu(c, 32 + slot));
+    u32 none = spv_emit_i_equal(&c->e, c->t_bool, first, cu(c, ~0u));
+    u32 at = spv_emit_iadd_u32(&c->e, c->t_u32, word, offset);
+    u32 page = spv_emit_shift_right_u32(&c->e, c->t_u32, at, cu(c, 10));
+    u32 entry = spv_emit_iadd_u32(&c->e, c->t_u32, spv_emit_select(&c->e, c->t_u32, none, c->zero, first),
+                                  spv_emit_select(&c->e, c->t_u32, none, c->zero, page));
+    u32 mapped = spv_emit_bitwise_or_u32(&c->e, c->t_u32,
+                                         spv_emit_shift_left_u32(&c->e, c->t_u32, smap_word(c, entry), cu(c, 10)),
+                                         spv_emit_bitwise_and_u32(&c->e, c->t_u32, at, cu(c, 1023)));
+    mapped = spv_emit_select(&c->e, c->t_u32, spv_emit_u_less(&c->e, c->t_bool, word, count), mapped, cu(c, ~0u));
+    return spv_emit_select(&c->e, c->t_u32, none, word, mapped);
+}
 /* a word of global (buffer), shared (buffer 0) or local (MEM_LOCAL) memory at the byte address. An address past
    the local memory wraps in it, as spirv_translate.c keeps Maxwell's LDL and STL in theirs */
 static u32 mem_ptr(Ctx* c, u32 buffer, u32 address, u32 word) {
@@ -930,7 +961,8 @@ static u32 mem_ptr(Ctx* c, u32 buffer, u32 address, u32 word) {
     if (buffer == MEM_LOCAL)
         return spv_emit_function_element_pointer(
             &c->e, c->local_ptr, c->local, spv_emit_bitwise_and_u32(&c->e, c->t_u32, index, cu(c, c->local_words - 1)));
-    if (buffer) return spv_emit_storage_access_u32(&c->e, c->gbuf_ptr, buffer, c->zero, index);
+    if (buffer)
+        return spv_emit_storage_access_u32(&c->e, c->gbuf_ptr, buffer, c->zero, gbuf_word_index(c, buffer, index));
     u32 last = cu(c, c->shared_words - 1);
     index = spv_emit_select(&c->e, c->t_u32, spv_emit_u_less(&c->e, c->t_bool, last, index), last, index);
     return SPV(&c->e, SPV_OP_ACCESS_CHAIN, c->shared_ptr, shared_var(c), index);
