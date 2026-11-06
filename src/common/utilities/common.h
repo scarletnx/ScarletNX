@@ -262,6 +262,9 @@ int snx_threads(SnxThreadInfo* out, int max);
    it, the memory available on Linux and Android (MemAvailable), on macOS (free, inactive and purgeable pages), on
    FreeBSD (free and inactive pages) and on Windows (available physical memory); whether the system told it */
 int snx_memory_available(SnxU64* bytes);
+/* the machine's physical memory, in bytes, into *bytes: what the system counts as installed (sysconf's _SC_PHYS_PAGES
+   on Linux, Android, FreeBSD, macOS and iOS, GlobalMemoryStatusEx on Windows); whether the system told it */
+int snx_memory_total(SnxU64* bytes);
 void* snx_vm_reserve(size_t size); /* NULL when the system refuses */
 int snx_vm_protect(void* p, size_t size, int access);
 void snx_vm_release(void* p, size_t size);

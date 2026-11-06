@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Stats (settings.txt's stats): the game's frames a second and its last frame's time, the processor and the memory
-   the process takes, the GPU's busy share and time a frame, the video memory it uses of the driver's budget, and a
-   graph of the times of its last STATS_FRAMES frames, in stats_corner's corner over the game; in showcase's own corner
+/* Stats (settings.txt's stats): the game's frames a second and its last frame's time, the processor's share the
+   process takes beside the GPU's busy share and time a frame, the memory it takes of the machine's, the video memory it
+   uses of the driver's budget, and a graph of the times of its last STATS_FRAMES frames under its title, its guides
+   labelled, in stats_corner's corner over the game; in showcase's own corner
    beside showcase's box, toward the picture's middle. On every system: a value it does not tell shows as ? */
 #ifndef SNX_STATS_H
 #define SNX_STATS_H
@@ -10,8 +11,10 @@
 #include "nx/runtime/ini.h"
 
 #define STATS_FRAMES 120   /* the frames the graph shows */
-#define STATS_COLS   27    /* the box's width, in letters: a line's icon and space take three */
-#define STATS_LINES  4     /* its lines of text, each after its icon, above the graph */
+#define STATS_COLS   36    /* the box's width, in letters: a line's icon and space take three */
+#define STATS_LINES  5     /* its lines of text, each after its icon, the last the graph's title */
+#define STATS_GPU_AT 14    /* the letter the GPU's icon starts at, beside the processor's line */
+#define STATS_AXIS   8     /* the letters at the graph's right for its guides' labels */
 #define STATS_TOP_MS 50.0f /* the graph's top; a longer frame reaches it */
 /* the graph's two guides, a frame of a 60 FPS game and of a 30 FPS one; a frame past the second draws in the failure
    colour */
@@ -27,11 +30,11 @@ typedef struct {
     u64 vram, vram_budget;
 } SnxStatsGpu;
 /* what the measured lines say. cpu: the processor's share of the machine in percent, -1 unknown; memory in bytes, 0
-   unknown. gpu: the graphics queue's busy share of the time in percent, -1 unknown; gpu_ns its busy time a frame.
+   unknown; memory_total the machine's physical memory, 0 unknown. gpu: the graphics queue's busy share of the time in percent, -1 unknown; gpu_ns its busy time a frame.
    vram and vram_budget as SnxStatsGpu's */
 typedef struct {
     int cpu;
-    u64 memory;
+    u64 memory, memory_total;
     int gpu;
     u64 gpu_ns;
     u64 vram, vram_budget;
