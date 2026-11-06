@@ -4,7 +4,7 @@
    file maps, replace, folders, timed waits and threads, the watch of the system's memory pressure. Written-page
    tracking needs Linux 6.7 for userfaultfd's; write_tracking=1 (and every host without it) tracks by protection, and
    write_tracking=2 must make the scan say -1. The arguments: the folder for its files, then Debug settings as the
-   runtime takes them, --key=value */
+   runtime takes them, --key=value; --bench-ww runs the tracking's benchmark alone (bench_ww) */
 #include "nx/runtime/platform/plat_posix.c"
 #include "nx/runtime/ini.h"
 #include <stdarg.h>
@@ -687,6 +687,153 @@ static void test_memory_watch(void) {
     g_log_on = 0;
 }
 
+/* ---- --bench-ww: what the written-page tracking costs on this host, with no game: page protection without and with
+   hot pages (write_tracking_hot, #1237), through the real scan and fault handler, or the host's own way where it has
+   one. A region of BENCH_PAGES pages; each epoch writes a byte on each of hot pages (the same ones every epoch, every
+   other page, so each is a run of its own to protect) and on cold ones picked anew, then one scan of the region takes
+   in what was written, as a cache's check does. Per pattern and arm: the faults the handler took and its time (a
+   handler around the process's own counts and times them), the kernel's minor faults, the writes' and the scans' time,
+   per epoch and per second of the run. The timings are the host's at that moment, printed and not checked; what is
+   checked is that each scan reported every page written before it, and that hot pages took fewer faults */
+#define BENCH_PAGES 4096u
+static struct {
+    struct sigaction segv, bus; /* the process's own, which bench_signal calls */
+    u64 faults, handler_ns;
+    u8* lo;
+    u8 seen[BENCH_PAGES], written[BENCH_PAGES];
+} g_bench;
+static void bench_signal(int sig, siginfo_t* si, void* ctx) {
+    struct timespec a, b;
+    clock_gettime(CLOCK_MONOTONIC, &a);
+    (sig == SIGBUS ? g_bench.bus : g_bench.segv).sa_sigaction(sig, si, ctx);
+    clock_gettime(CLOCK_MONOTONIC, &b);
+    g_bench.faults++;
+    g_bench.handler_ns += (u64)(b.tv_sec - a.tv_sec) * 1000000000ull + (u64)b.tv_nsec - (u64)a.tv_nsec;
+}
+static void bench_seen(u8* p, u64 size) {
+    for (u64 a = (u64)(p - g_bench.lo) >> 12, e = (u64)(p - g_bench.lo + size) >> 12; a < e && a < BENCH_PAGES; a++)
+        g_bench.seen[a] = 1;
+}
+typedef struct {
+    u64 faults, handler_ns, minflt, write_ns, scan_ns, reported, missed, ns;
+} BenchArm;
+static void bench_arm(BenchArm* r, u32 hot, u32 cold, u32 epochs) {
+    struct rusage ru0, ru1;
+    u32 x = 0x2545f491u; /* the same cold pages in each arm */
+    memset(r, 0, sizeof *r);
+    plat_ww_scan(g_bench.lo, BENCH_PAGES * 4096ull, bench_seen); /* everything taken in: the arm starts clean */
+    g_bench.faults = g_bench.handler_ns = 0;
+    getrusage(RUSAGE_SELF, &ru0);
+    u64 start = plat_ns();
+    for (u32 e = 0; e < epochs; e++) {
+        memset(g_bench.written, 0, sizeof g_bench.written);
+        u64 t0 = plat_ns();
+        for (u32 i = 0; i < hot; i++) {
+            g_bench.lo[2 * i * 4096ull + (e & 4095)]++;
+            g_bench.written[2 * i] = 1;
+        }
+        for (u32 i = 0; i < cold; i++) {
+            x = x * 1664525u + 1013904223u;
+            u32 pg = 2 * hot + (x >> 8) % (BENCH_PAGES - 2 * hot);
+            g_bench.lo[pg * 4096ull + (e & 4095)]++;
+            g_bench.written[pg] = 1;
+        }
+        u64 t1 = plat_ns();
+        memset(g_bench.seen, 0, sizeof g_bench.seen);
+        plat_ww_scan(g_bench.lo, BENCH_PAGES * 4096ull, bench_seen);
+        u64 t2 = plat_ns();
+        r->write_ns += t1 - t0;
+        r->scan_ns += t2 - t1;
+        for (u32 p = 0; p < BENCH_PAGES; p++) {
+            r->missed += g_bench.written[p] && !g_bench.seen[p];
+            r->reported += g_bench.seen[p];
+        }
+    }
+    r->ns = plat_ns() - start;
+    getrusage(RUSAGE_SELF, &ru1);
+    r->minflt = (u64)(ru1.ru_minflt - ru0.ru_minflt);
+    r->faults = g_bench.faults;
+    r->handler_ns = g_bench.handler_ns;
+}
+static void bench_print(const char* arm, u32 hot, u32 cold, u32 epochs, const BenchArm* r) {
+    double sec = (double)r->ns / 1e9;
+    printf(
+        "  %-7s hot %4u cold %2u: an epoch %6.1f faults (handler %4.0f ns each), %6.1f minor faults, writes %7.1f us, "
+        "scan %6.1f us, %6.1f pages reported; a second: %7.0f faults, handler %5.1f ms, %5.0f scans taking %5.1f ms\n",
+        arm, hot, cold, (double)r->faults / epochs, r->faults ? (double)r->handler_ns / (double)r->faults : 0.0,
+        (double)r->minflt / epochs, (double)r->write_ns / epochs / 1e3, (double)r->scan_ns / epochs / 1e3,
+        (double)r->reported / epochs, (double)r->faults / sec, (double)r->handler_ns / sec / 1e6, epochs / sec,
+        (double)r->scan_ns / sec / 1e6);
+}
+static void bench_ww(void) {
+    static const u32 patterns[][2] = {{64, 16}, {256, 64}, {1024, 64}}; /* hot, cold pages an epoch */
+    const u32 epochs = 200;
+    struct sigaction mine;
+    u8 *hot_table = g_wp_hot, *own = NULL;
+    int wrapped = 0;
+    printf("written-page tracking, benchmarked: %u epochs a pattern over %u pages\n", epochs, BENCH_PAGES);
+    u8* base = plat_vm_reserve((u64)1 << 30);
+    CHECK(base != NULL, "no reservation");
+    if (!base) return;
+    plat_vm_track(base, (u64)1 << 30);
+    CHECK(!plat_vm_commit(base, BENCH_PAGES * 4096ull), "commit failed");
+    g_bench.lo = base;
+    if (g_settings.write_tracking == 2 || plat_ww_scan(base, 4096, bench_seen) < 0) {
+        printf("  no written-page tracking here (write_tracking=%d): nothing to measure\n", g_settings.write_tracking);
+        return;
+    }
+    /* where the tracking protects pages its faults go through the process's handler (fault_signal), which a handler
+       of the bench's own wraps; userfaultfd's stay in the kernel, and the minor faults count them */
+    sigaction(SIGSEGV, NULL, &g_bench.segv);
+    sigaction(SIGBUS, NULL, &g_bench.bus);
+    if ((g_bench.segv.sa_flags & SA_SIGINFO) && (g_bench.bus.sa_flags & SA_SIGINFO)) {
+        mine = g_bench.segv;
+        mine.sa_sigaction = bench_signal;
+        sigaction(SIGSEGV, &mine, NULL);
+        mine = g_bench.bus;
+        mine.sa_sigaction = bench_signal;
+        sigaction(SIGBUS, &mine, NULL);
+        wrapped = 1;
+    }
+    if (g_wp_track && !hot_table) {
+        own = (u8*)mmap(NULL, (size_t)g_wp_pages, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+                        -1, 0);
+        CHECK(own != MAP_FAILED, "no table of counts");
+        if (own == MAP_FAILED) own = NULL;
+        hot_table = own;
+    }
+    printf("  %s\n", g_wp_track ? "page protection: arm protect is write_tracking_hot=0, arm hot is 1"
+                                : "the host's own tracking (userfaultfd): hot pages are protection's alone");
+    for (size_t k = 0; k < sizeof patterns / sizeof *patterns; k++) {
+        u32 hot = patterns[k][0], cold = patterns[k][1];
+        BenchArm prot, warm;
+        g_wp_hot = NULL;
+        bench_arm(&prot, hot, cold, epochs);
+        bench_print(g_wp_track ? "protect" : "own", hot, cold, epochs, &prot);
+        CHECK(prot.missed == 0, "a scan missed a page written before it");
+        if (!g_wp_track || !hot_table) continue;
+        memset(hot_table, 0, (size_t)g_wp_pages); /* counted from zero */
+        __atomic_store_n(&g_wp_hot_n, 0, __ATOMIC_RELAXED);
+        g_wp_hot = hot_table;
+        bench_arm(&warm, hot, cold, epochs);
+        g_wp_hot = NULL;
+        bench_print("hot", hot, cold, epochs, &warm);
+        CHECK(warm.missed == 0, "a scan missed a page written before it, with hot pages");
+        CHECK(warm.faults < prot.faults, "hot pages took no fewer faults than protection alone");
+        printf("  hot against protect: %.0f%% of the faults, %.0f%% of the run's time\n",
+               100.0 * (double)warm.faults / (double)(prot.faults ? prot.faults : 1),
+               100.0 * (double)warm.ns / (double)(prot.ns ? prot.ns : 1));
+    }
+    if (hot_table) memset(hot_table, 0, (size_t)g_wp_pages);
+    __atomic_store_n(&g_wp_hot_n, 0, __ATOMIC_RELAXED);
+    g_wp_hot = own ? NULL : hot_table; /* the setting's table, if any, counted from zero */
+    if (own) munmap(own, (size_t)g_wp_pages);
+    if (wrapped) {
+        sigaction(SIGSEGV, &g_bench.segv, NULL);
+        sigaction(SIGBUS, &g_bench.bus, NULL);
+    }
+}
+
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
     char path[1200], tmp[1200], sub[1200];
@@ -696,13 +843,17 @@ int main(int argc, char** argv) {
     struct stat st;
     PCond c;
     PMutex mu = PMUTEX_INIT;
-    int i, arg = 7;
+    int i, arg = 7, bench = 0;
     u64 t;
 
     setvbuf(stdout, NULL, _IONBF, 0); /* each section says it started, so a crash shows where it happened */
     for (i = 2; i < argc; i++) {
         const char* eq = strchr(argv[i], '=');
         char key[64];
+        if (!strcmp(argv[i], "--bench-ww")) { /* the benchmark alone (bench_ww) */
+            bench = 1;
+            continue;
+        }
         if (strncmp(argv[i], "--", 2) || !eq || (size_t)(eq - argv[i] - 2) >= sizeof key) {
             printf("not --key=value: %s\n", argv[i]);
             return 2;
@@ -713,6 +864,14 @@ int main(int argc, char** argv) {
             return 2;
         }
         ini_read(ini_find(g_debug_ini, key), eq + 1);
+    }
+    if (bench) {
+        if (sysconf(_SC_PAGESIZE) == 4096)
+            bench_ww();
+        else
+            printf("benchmark skipped: this host's pages are %ld bytes, guest memory's 4096\n", sysconf(_SC_PAGESIZE));
+        printf("%u checks, %u failed\n", checks, failures);
+        return failures != 0;
     }
     test_host_page();
     test_foreign();
