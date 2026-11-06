@@ -74,6 +74,19 @@ void gpu_mem_written(u64 gva, u64 size) {
     __atomic_store_n(&g_wgen, gen, __ATOMIC_RELEASE);
     pm_unlock(&g_wlk);
 }
+/* A mapping change writes no guest memory: only the GPU pages that show other memory now read as written. Treated as a
+   write of the guest memory behind them, each change stamped every other GPU page showing it, through the index of
+   mappings by guest address, which each change leaves to be rebuilt and sorted again: a game that maps its sparse
+   textures a tile at a time rebuilt it 12,000 times in 70 seconds, 7 seconds of the mapping threads' time */
+void gpu_mem_remapped(u64 gva, u64 size) {
+    u64 gen;
+    if (!size) return;
+    pm_lock(&g_wlk);
+    gen = g_wgen + 1;
+    write_pages_stamp(&g_wgpu, gva, size, gen);
+    __atomic_store_n(&g_wgen, gen, __ATOMIC_RELEASE);
+    pm_unlock(&g_wlk);
+}
 void gpu_mem_written_shader(u64 gva, u64 size) { gpu_mem_written(gva, size); }
 void gpu_mem_written_cpu(u64 cpu, u64 size) {
     u64 gen;
