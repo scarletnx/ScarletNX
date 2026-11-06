@@ -252,10 +252,9 @@ static u64 arena_alloc(u64 size) {
    own two-query pool, so a landed batch's results survive the batches recorded after it */
 static VkQueryPool g_cqpool;
 static u16 g_cq0, g_cq1;
-static u64 g_cq_ep;       /* the connection the batch's begin went out on */
-static i64 g_cs_cal_prev; /* the client's clock at the track's last calibration pair */
-static u64 g_cs_cal_conn; /* the connection that baseline was taken on */
-static int g_cs_cal_ok;   /* the context was announced calibrated, so calibration events are for it */
+static u64 g_cq_ep;             /* the connection the batch's begin went out on */
+static SnxTracyGpuCal g_cs_cal; /* the announcement's anchor, and whether it was calibrated */
+static u64 g_cs_cal_conn;       /* the connection that anchor was announced on */
 /* the landed batch's timestamps onto the track: the context announced at its first read-back (with the calibration
    clock's pair for its anchor when it has one), then calibrated or anchored, then the pair of timestamps its zone
    went out with */
@@ -270,8 +269,7 @@ static void cs_times(VkQueryPool pool, u16 q0, u16 q1, u64 ep) {
     u64 conn = snx_tracy_connection_id();
     if (conn != g_cs_cal_conn) { /* a new connection's server re-anchored at the replayed context */
         g_cs_cal_conn = conn;
-        g_cs_cal_prev = 0;
-        g_cs_cal_ok = 0; /* its announcement sets this again, as the client replays the context */
+        snx_tracy_gpu_cal_reconnect(&g_cs_cal);
     }
     /* A context is announced calibrated only with a pair in hand: without one the server has no anchor and
        applies no calibration to the times sent after it, which shows as times far from the CPU's. The flag
@@ -279,15 +277,11 @@ static void cs_times(VkQueryPool pool, u16 q0, u16 q1, u64 ep) {
        server would assert on a context it was told is uncalibrated. */
     if (snx_tracy_gpu_context(VK_GPU_CTX_COMPUTE, have ? gpu : ts2[1], g_vk.props.limits.timestampPeriod, have,
                               "compute")) {
-        g_cs_cal_prev = have ? cpu : 0; /* the anchor is the announcement's own pair */
-        g_cs_cal_ok = have;
+        snx_tracy_gpu_cal_announce(&g_cs_cal, have, have ? cpu : 0); /* the anchor is the announcement's pair */
     }
     if (have) {
-        if (g_cs_cal_ok && g_cs_cal_prev) {
-            i64 delta = cpu - g_cs_cal_prev;
-            if (delta > 0) snx_tracy_gpu_calibrate(gpu, delta, VK_GPU_CTX_COMPUTE);
-        }
-        g_cs_cal_prev = cpu;
+        i64 delta = snx_tracy_gpu_cal_delta(&g_cs_cal, cpu);
+        if (delta > 0) snx_tracy_gpu_calibrate(gpu, delta, VK_GPU_CTX_COMPUTE);
     } else
         snx_tracy_gpu_sync(ts2[1], VK_GPU_CTX_COMPUTE);
     if (q0 && q1) {
