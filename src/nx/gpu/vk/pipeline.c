@@ -18,6 +18,7 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/pipeline_file.h"
+#include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/gpu/vk/internal_spv.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/shader/shipped.h"
@@ -869,6 +870,12 @@ static struct {
 } g_pf;
 static void pf_pipe_record(const PipeKey* k);
 
+/* conservative rasterization overestimates, as the 3D engine's does, by the dilation asked for (PipeKey.conservative:
+   1 plus quarter pixels) up to the device's most */
+float vk_conservative_extra(u32 conservative) {
+    float extra = conservative > 1 ? (float)(conservative - 1) * 0.25f : 0.0f;
+    return extra < g_vk.conservative_extra ? extra : g_vk.conservative_extra;
+}
 static VkPipeline pipe_create(const Pipe* e, int* hit) {
     const PipeKey* k = &e->k;
     VkPipelineShaderStageCreateInfo st[5];
@@ -925,13 +932,10 @@ static VkPipeline pipe_create(const Pipe* e, int* hit) {
     VkPipelineInputAssemblyStateCreateInfo ia = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
                                                  .topology = (VkPrimitiveTopology)k->topo_class};
     VkPipelineViewportStateCreateInfo vp = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
-    /* conservative rasterization overestimates, as the 3D engine's does, by the dilation asked for (in quarter pixels)
-       up to the device's most */
-    float extra = k->conservative > 1 ? (float)(k->conservative - 1) * 0.25f : 0.0f;
     VkPipelineRasterizationConservativeStateCreateInfoEXT conservative = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_CONSERVATIVE_STATE_CREATE_INFO_EXT,
         .conservativeRasterizationMode = VK_CONSERVATIVE_RASTERIZATION_MODE_OVERESTIMATE_EXT,
-        .extraPrimitiveOverestimationSize = extra < g_vk.conservative_extra ? extra : g_vk.conservative_extra};
+        .extraPrimitiveOverestimationSize = vk_conservative_extra(k->conservative)};
     VkPipelineRasterizationProvokingVertexStateCreateInfoEXT provoking = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_PROVOKING_VERTEX_STATE_CREATE_INFO_EXT,
         .pNext = k->conservative ? &conservative : NULL,
@@ -1008,34 +1012,17 @@ static VkPipeline pipe_create(const Pipe* e, int* hit) {
                                               .logicOp = k->logic_op ? (VkLogicOp)(k->logic_op - 1) : VK_LOGIC_OP_COPY,
                                               .attachmentCount = k->ncolor,
                                               .pAttachments = cba};
-    VkDynamicState dyn[21 + 3] = {VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT,
-                                  VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT,
-                                  VK_DYNAMIC_STATE_CULL_MODE,
-                                  VK_DYNAMIC_STATE_FRONT_FACE,
-                                  VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY,
-                                  VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE,
-                                  VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
-                                  VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
-                                  VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE,
-                                  VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE,
-                                  VK_DYNAMIC_STATE_STENCIL_OP,
-                                  VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE,
-                                  VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE,
-                                  VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE,
-                                  VK_DYNAMIC_STATE_LINE_WIDTH,
-                                  VK_DYNAMIC_STATE_DEPTH_BIAS,
-                                  VK_DYNAMIC_STATE_BLEND_CONSTANTS,
-                                  VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK,
-                                  VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
-                                  VK_DYNAMIC_STATE_STENCIL_REFERENCE,
-                                  VK_DYNAMIC_STATE_DEPTH_BOUNDS};
-    u32 ndyn = 21; /* the states above, which every pipeline has */
-    /* without the feedback loop's dynamic state, a pipeline enables the loop with a flag (k->feedback) instead */
-    if (g_vk.has_feedback_dynamic) dyn[ndyn++] = VK_DYNAMIC_STATE_ATTACHMENT_FEEDBACK_LOOP_ENABLE_EXT;
-    /* the stride is set by vkCmdBindVertexBuffers2, which a draw without vertex buffers never calls: a pipeline without
-       bindings leaves it out. With dynamic vertex input the draw's layout holds its strides */
-    if (l->nbind && g_vk.has_dynamic_stride) dyn[ndyn++] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE;
-    if (g_vk.vertex_input_dynamic) dyn[ndyn++] = VK_DYNAMIC_STATE_VERTEX_INPUT_EXT;
+    /* the states every draw pipeline takes as dynamic, and those of the device and the key (pipeline_parts.c): the
+       feedback loop's without its pipeline flag (k->feedback), a binding's stride where vkCmdBindVertexBuffers2 sets
+       it (a draw without vertex buffers never calls it, so a pipeline without bindings leaves it out), the vertex
+       layout with dynamic vertex input, and with pipeline libraries the pre-rasterization state of g_vk.dyn_pr */
+    PipeDynIn dyn_in = {.dyn_pr = g_vk.dyn_pr,
+                        .feedback_dynamic = g_vk.has_feedback_dynamic,
+                        .stride = l->nbind && g_vk.has_dynamic_stride,
+                        .vertex_input = g_vk.vertex_input_dynamic,
+                        .tess = k->tes != VK_NULL_HANDLE};
+    VkDynamicState dyn[VK_PIPE_DYN_MAX];
+    u32 ndyn = vk_pipe_dynamic(VK_PART_ALL, &dyn_in, dyn);
     VkPipelineDynamicStateCreateInfo dy = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                            .dynamicStateCount = ndyn,
                                            .pDynamicStates = dyn};

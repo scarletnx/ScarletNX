@@ -19,6 +19,7 @@
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/descriptor_key.h"
 #include "nx/gpu/vk/indexed_handles.h"
@@ -443,6 +444,7 @@ static void feedback_done(u32 read, u32 write) {
 }
 
 /* every dynamic state at a neutral value, for draws of our own */
+static void pr_dynamic(VkCommandBuffer cb, const PipeKey* k, int fresh);
 static void plain_state(VkCommandBuffer cb, VkRect2D sc) {
     vk_render_forget_state(); /* every state set here, differently from a draw */
     VkViewport vp = {0, 0, (float)g_rp.ext.width, (float)g_rp.ext.height, 0, 1};
@@ -471,6 +473,8 @@ static void plain_state(VkCommandBuffer cb, VkRect2D sc) {
     rec_CmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0);
     if (g_vk.has_feedback_dynamic) rec_CmdSetAttachmentFeedbackLoopEnableEXT(cb, VK_IMAGE_ASPECT_NONE);
     if (g_vk.vertex_input_dynamic) rec_CmdSetVertexInputEXT(cb, 0, NULL, 0, NULL); /* our draws read no vertices */
+    const PipeKey plain = {.polygon = VK_POLYGON_MODE_FILL}; /* the clears' keys: fill, no clamp, no tessellation */
+    pr_dynamic(cb, &plain, 1);
 }
 
 /* a channel's render enable predicate (gpu.h render_pred, 0 none) around one of its draws or clears, inside the
@@ -2143,6 +2147,7 @@ static struct {
     VkPipelineLayout layout; /* the one sets were bound through: another may disturb them */
     VkDescriptorSet sets[5];
     u32 fb, cull, front, topo, restart, discard, bias_on, dt, dw, dcmp, dbounds, st;
+    u32 polygon, clamp, provoking, conservative, patch; /* g_vk.dyn_pr's, as PipeKey holds them */
     VkViewport vp[GUEST_VIEWPORTS];
     VkRect2D sc[GUEST_VIEWPORTS];
     u32 viewports;
@@ -2168,6 +2173,26 @@ static struct {
         }                                                                                                              \
     } while (0)
 void vk_render_forget_state(void) { g_dyn.cb = 0; }
+/* the pre-rasterization state a pipeline of libraries takes as dynamic (g_vk.dyn_pr), from the key it was made for:
+   what a whole pipeline holds of k, the draw sets (fresh: all of it) */
+static void pr_dynamic(VkCommandBuffer cb, const PipeKey* k, int fresh) {
+    u32 d = g_vk.dyn_pr;
+    if (d & VK_DYN_PR_POLYGON) DYN(polygon, k->polygon, rec_CmdSetPolygonModeEXT(cb, (VkPolygonMode)k->polygon));
+    if (d & VK_DYN_PR_DEPTH_CLAMP)
+        DYN(clamp, k->depth_clamp, rec_CmdSetDepthClampEnableEXT(cb, k->depth_clamp ? VK_TRUE : VK_FALSE));
+    if (d & VK_DYN_PR_PROVOKING)
+        DYN(provoking, k->provoking_last,
+            rec_CmdSetProvokingVertexModeEXT(cb, k->provoking_last ? VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT
+                                                                   : VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT));
+    if (d & VK_DYN_PR_CONSERVATIVE)
+        DYN(conservative, k->conservative, {
+            rec_CmdSetConservativeRasterizationModeEXT(cb, k->conservative
+                                                               ? VK_CONSERVATIVE_RASTERIZATION_MODE_OVERESTIMATE_EXT
+                                                               : VK_CONSERVATIVE_RASTERIZATION_MODE_DISABLED_EXT);
+            rec_CmdSetExtraPrimitiveOverestimationSizeEXT(cb, vk_conservative_extra(k->conservative));
+        });
+    if ((d & VK_DYN_PR_PATCH) && k->tes) DYN(patch, k->patch, rec_CmdSetPatchControlPointsEXT(cb, k->patch));
+}
 u64 g_vk_drawn, g_vk_skipped;
 
 /* The viewport's size with the transform off: the surface clip's, at most the device's viewport dimensions at the
@@ -3548,6 +3573,7 @@ retry:
         g_dyn.pipe = pipe;
         rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
     }
+    if (g_vk.dyn_pr) pr_dynamic(cb, k, fresh);
     if (g_vk.has_feedback_dynamic)
         DYN(fb, fb ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_NONE,
             rec_CmdSetAttachmentFeedbackLoopEnableEXT(cb, fb ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_NONE));

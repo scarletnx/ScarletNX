@@ -7,6 +7,7 @@
 #define SNX_VK_PIPELINE_PARTS_H
 #include <stddef.h>
 #include "common/cpu/aarch64/cpu.h"
+#include "volk.h"
 
 /* the pre-rasterization state a pipeline made of libraries takes as dynamic state (g_vk.dyn_pr), so that one
    pre-rasterization part serves every value of it: a bit each */
@@ -32,4 +33,20 @@ typedef struct {
 /* whether pipelines are made from libraries on d: 1 or 0, the dynamic pre-rasterization state (VK_DYN_PR_*) in
    *dyn_pr (0 when they aren't), and the log line that says so into line */
 int vk_gpl_choose(const VkGplDevice* d, u32* dyn_pr, char* line, size_t n);
+
+/* the parts of a pipeline made of libraries, a bit each (docs/PIPELINE_LIBRARIES.md, "The four parts") */
+#define VK_PART_VI  1u  /* vertex input interface */
+#define VK_PART_PR  2u  /* pre-rasterization shaders */
+#define VK_PART_FS  4u  /* fragment shader */
+#define VK_PART_FO  8u  /* fragment output interface */
+#define VK_PART_ALL 15u /* a whole pipeline */
+#define VK_PIPE_DYN_MAX 32 /* the most dynamic states a draw pipeline has */
+/* what decides a draw pipeline's dynamic states: dyn_pr (VK_DYN_PR_*), the feedback loop's dynamic state, a binding
+   stride (a vertex layout with bindings and has_dynamic_stride), dynamic vertex input and tessellation */
+typedef struct {
+    u32 dyn_pr;
+    int feedback_dynamic, stride, vertex_input, tess;
+} PipeDynIn;
+/* the dynamic states of the parts in parts (VK_PART_*) into out, in the order a whole pipeline lists them: how many */
+u32 vk_pipe_dynamic(u32 parts, const PipeDynIn* in, VkDynamicState* out);
 #endif

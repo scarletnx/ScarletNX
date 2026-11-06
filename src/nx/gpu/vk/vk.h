@@ -490,6 +490,13 @@ void rec_CmdSetStencilReference(VkCommandBuffer cb, VkStencilFaceFlags face, u32
 void rec_CmdSetStencilCompareMask(VkCommandBuffer cb, VkStencilFaceFlags face, u32 v);
 void rec_CmdSetStencilWriteMask(VkCommandBuffer cb, VkStencilFaceFlags face, u32 v);
 void rec_CmdSetAttachmentFeedbackLoopEnableEXT(VkCommandBuffer cb, VkImageAspectFlags aspect);
+/* the pre-rasterization state pipelines of libraries take as dynamic state (g_vk.dyn_pr) */
+void rec_CmdSetPolygonModeEXT(VkCommandBuffer cb, VkPolygonMode mode);
+void rec_CmdSetDepthClampEnableEXT(VkCommandBuffer cb, VkBool32 on);
+void rec_CmdSetProvokingVertexModeEXT(VkCommandBuffer cb, VkProvokingVertexModeEXT mode);
+void rec_CmdSetConservativeRasterizationModeEXT(VkCommandBuffer cb, VkConservativeRasterizationModeEXT mode);
+void rec_CmdSetExtraPrimitiveOverestimationSizeEXT(VkCommandBuffer cb, float size);
+void rec_CmdSetPatchControlPointsEXT(VkCommandBuffer cb, u32 points);
 void rec_CmdResetQueryPool(VkCommandBuffer cb, VkQueryPool pool, u32 first, u32 count);
 void rec_CmdWriteTimestamp2(VkCommandBuffer cb, VkPipelineStageFlags2 stage, VkQueryPool pool, u32 query);
 void rec_CmdBeginQuery(VkCommandBuffer cb, VkQueryPool pool, u32 query, VkQueryControlFlags flags);
@@ -1472,6 +1479,8 @@ typedef struct {
     u32 sample_shading; /* every sample is shaded (sampleRateShading), with several samples */
     u32 conservative;   /* DsRasterKey's (has_conservative): 0 off, else 1 plus the dilation in quarter pixels */
 } PipeKey;
+/* the overestimation of conservative rasterization of a PipeKey.conservative, within the device's most (pipeline.c) */
+float vk_conservative_extra(u32 conservative);
 /* the pipeline for k, made when new and waited for while a worker makes it: NULL only when it can't be made */
 VkPipeline vk_pipeline_get(const PipeKey* k);
 /* the threads making new pipelines: setting (pipeline_threads) when it is one or more, else a quarter of cpus, two
