@@ -11,7 +11,7 @@
    - a range the GPU owns (memory traps) written by the CPU in the middle of an epoch
    - a render target's write-back and freshness over pages a scan reports written at every scan (hot pages)
    - what the caches check by contents where the tracking answers for them: a texture over several pieces of guest
-     memory
+     memory, a buffer rewritten with its own bytes
    Each case runs in a 4 MiB leaf of the tracking's table of its own. SNX_TEST_WW_ONLY=1 runs them alone */
 #if !defined(_WIN32)
 #include <unistd.h>
@@ -1052,6 +1052,68 @@ static int check_wt_pieces(void) {
            (unsigned long long)untouched, epochs, tracking ? "on" : "off");
     return 0;
 }
+/* A buffer of its own the CPU rewrites with the same bytes in every epoch: write tracking calls it written each time,
+   each check hashes it whole and finds it unchanged, and none takes the samples' hash, which only the checks the
+   tracking can't answer use (they were taken from the 63rd unchanged check on, at every write). Untouched first, its
+   checks hash nothing; new bytes then reach it */
+static int check_wt_sampled(void) {
+    const u64 cpu = WT_CPU + 18 * WT_LEAF, gva = WT_GVA + 0x10400000, size = 0x10000; /* patched whole, not by page */
+    const u64 rounds = 80, idle = 8;
+    VkBuffer b;
+    u64 off, c, h0, s0, h1, s1, h2, s2;
+    u8 got = 0;
+    CHECK(mem_map(cpu, size, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva, cpu, size);
+    memset(GP(cpu), 0x11, size);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    if (!wt_tracking(cpu)) {
+        vk_unlock();
+        printf("skip: a buffer rewritten with its own bytes needs write tracking to call it written\n");
+        CHECK(mem_unmap(cpu, size) == 0);
+        return 0;
+    }
+    for (int k = 0; k < 3; k++) { /* new, then the same twice: a buffer of its own */
+        CHECK(vk_buf_get(gva, size, &b, &off));
+        vk_unlock();
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+    }
+    vk_buf_checks(&c, &h0, &s0);
+    for (u64 k = 0; k < idle; k++) { /* untouched */
+        CHECK(vk_buf_get(gva, size, &b, &off));
+        vk_unlock();
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+    }
+    vk_buf_checks(&c, &h1, &s1);
+    for (u64 k = 0; k < rounds; k++) { /* the same bytes written again */
+        vk_unlock();
+        memset(GP(cpu), 0x11, size);
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        CHECK(vk_buf_get(gva, size, &b, &off));
+    }
+    vk_buf_checks(&c, &h2, &s2);
+    vk_unlock();
+    memset(GP(cpu), 0x22, size);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    int seen = strict_bytes(gva, size, 0x22, &got);
+    vk_unlock();
+    CHECK(mem_unmap(cpu, size) == 0);
+    if (h1 != h0 || s1 != s0 || h2 - h1 != rounds || s2 != s1 || !seen)
+        fprintf(
+            stderr,
+            "sampled: untouched over %llu epochs %llu hashes and %llu samples; rewritten the same in %llu epochs %llu "
+            "hashes and %llu samples; new bytes 0x22 read as %#x\n",
+            (unsigned long long)idle, (unsigned long long)(h1 - h0), (unsigned long long)(s1 - s0),
+            (unsigned long long)rounds, (unsigned long long)(h2 - h1), (unsigned long long)(s2 - s1), got);
+    CHECK(h1 == h0 && s1 == s0 && h2 - h1 == rounds && s2 == s1 && seen);
+    printf("write tracking: a buffer rewritten with its own bytes %llu times, hashed each time and never sampled\n",
+           (unsigned long long)rounds);
+    return 0;
+}
 /* the cases by name, for SNX_TEST_WW_ONLY=NAME */
 static const struct {
     const char* name;
@@ -1072,6 +1134,7 @@ static const struct {
     {"hot_same_frame", check_wt_hot_same_frame},
     {"hot_rt_take_in", check_wt_hot_rt_take_in},
     {"pieces", check_wt_pieces},
+    {"sampled", check_wt_sampled},
 };
 /* whether the tracking answers, asked at a leaf no case maps */
 static int wt_on(void) {
@@ -1107,7 +1170,7 @@ static int check_write_tracking(void) {
         fprintf(stderr,
                 "SNX_TEST_WW_ONLY=%s names no case: 1, each, two_consumers, concurrent, record_submit, runtime_writes, "
                 "owned, alias, shared, mixed_leaf, hot_page, hot_rt_overlap, hot_rt_fresh, hot_alias, hot_same_frame, "
-                "hot_rt_take_in or pieces\n",
+                "hot_rt_take_in, pieces or sampled\n",
                 only);
         return 2;
     }

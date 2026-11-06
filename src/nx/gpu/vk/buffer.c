@@ -171,6 +171,20 @@ static u64 g_alias_draws, g_alias_pages;
 enum { WB_DRAW, WB_READ, WB_WRITE, WB_SIGNAL, WB_SYNCWAIT, WB_MAP, WB_REASON_N };
 static u64 g_wb_reason[WB_REASON_N], g_wb_reason_ns[WB_REASON_N], g_wb_draw_miss[4];
 static int copy_stats_on(void) { return g_settings.buffer_copy_stats; }
+/* guest memory checked by its contents (vk_buf_checks): compared with a pending result's original bytes, hashed whole,
+   and sampled */
+static struct {
+    u64 compares, hashes, samples;
+} g_checks;
+void vk_buf_checks(u64* compares, u64* hashes, u64* samples) {
+    *compares = g_checks.compares;
+    *hashes = g_checks.hashes;
+    *samples = g_checks.samples;
+}
+static u64 buf_sample_hash(u64 gva, u64 len) {
+    g_checks.samples++;
+    return vk_sample_hash(gva, len);
+}
 /* Why buf_get copied a range into staging: no entry yet, its copy gone, a newer submit than its copy's, a GPU write
    over it, a newer guest submit with nothing written, or (with a buffer of its own) a write the tracking saw. Each by
    whether the bytes had changed, with the copies' sizes and the ranges that copied most */
@@ -843,6 +857,7 @@ static int out_copyable(const GfxOut* o, u64 lo, u64 hi) {
     if (vk_written_since(host, hi - lo, o->wseen) == 0) return 1;
     if (o->initial) return 0; /* the baseline is still being produced by the GPU */
     host = gmem_ptr_untracked(lo, hi - lo);
+    if (host) g_checks.compares++;
     return host && !memcmp(host, o->org + (lo - o->addr), hi - lo);
 }
 /* the same for each run of o's bytes in [gva, gva + len), through whichever GPU address maps them (out_spans) */
@@ -868,6 +883,7 @@ static void copyable_span(void* user, u64 at, u64 from, u64 n) {
         return;
     }
     host = gmem_ptr_untracked(c->gva + at, n);
+    if (host) g_checks.compares++;
     if (!host || memcmp(host, c->o->org + from, n)) c->ok = 0;
 }
 /* A composition takes each byte from the newest pending result over it: that result was made over the ones before it
@@ -2426,6 +2442,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
     /* valid: the data is where draws can read it this frame */
     /* not while an in-place write is pending over it: a copy from before the write would be read */
     int valid = e && e->buf && (e->own || e->frame == vk_submit_number()) && !vk_uma_pending(gva, len);
+    int told = 0; /* write tracking answered for the range (it was written): its checks need no samples */
     if (valid && !gpu_mem_dirty_since(e->gw, gva, len)) {
         if (e->epoch == epoch && (!strict || e->strict_epoch == epoch)) {
             use(i, buf, off);
@@ -2451,6 +2468,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             use(i, buf, off);
             return 1;
         }
+        told = w > 0;
         /* without it: own buffers that stayed the same for long are checked every few submits, big ones sampled in
            between. A CPU write in between shows that many submits late; writes of the GPU front end always show at
            once (gpu_mem_dirty_since above) */
@@ -2464,9 +2482,9 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             use(i, buf, off);
             return 1;
         }
-        if (!strict && w < 0 && e->own && e->stable >= 64 && len >= 4096 &&
+        if (!strict && w < 0 && e->own && e->stable >= 64 && len >= 4096 && e->shash &&
             epoch - e->chk_epoch < (e->stable >= 256 ? 240u : 64u)) {
-            if (epoch - e->schk < 4 || vk_sample_hash(gva, len) == e->shash) {
+            if (epoch - e->schk < 4 || buf_sample_hash(gva, len) == e->shash) {
                 if (epoch - e->schk >= 4) e->schk = epoch;
                 e->epoch = epoch;
                 use(i, buf, off);
@@ -2518,6 +2536,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
         h = vk_hash_copy(staged, src, len);
     } else
         h = vk_hash(src, len);
+    g_checks.hashes++;
     if (!e) {
         if (!(i = vb_new(gva, (u32)len))) return 0;
         e = &g_vb[i];
@@ -2537,8 +2556,13 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
     if (strict) e->strict_epoch = epoch;
     e->gw = gpu_mem_generation();
     e->wseen = wnow;
-    if (e->stable >= 63 && len >= 4096) {
-        e->shash = vk_sample_hash(gva, len);
+    /* the samples serve only the checks above that write tracking can't answer: where it answered none is kept (0),
+       so a stable range the CPU rewrites with the same bytes takes none at each write, and should the tracking stop
+       answering for it, its next check hashes it whole first */
+    if (told)
+        e->shash = 0;
+    else if (e->stable >= 63 && len >= 4096) {
+        e->shash = buf_sample_hash(gva, len);
         e->schk = epoch;
     }
     if (!e->own) {
