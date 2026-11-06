@@ -46,8 +46,8 @@
 #define VK_FRAMES          2  /* frames in flight */
 #define VK_FRAME_RING_CAPS 4  /* a frame ends once it has written this many allocations to its rings (vk_frame_check) */
 #define VK_SC_MAX          16 /* swapchain images */
-/* a transfer bigger than one allocation (g_vk.alloc_cap) goes in parts of at most this share of it: the rows a DMA
-   band or a readback part needs on both sides and in scratch fit the cap together (dma.c, surface.c) */
+/* a transfer bigger than one allocation (g_vk.alloc_cap) goes in parts of at most this share of it: the rows a band
+   or a readback part needs on both sides and in scratch fit the cap together (vk_band, surface.c) */
 #define VK_PART_SHARE      4
 
 typedef struct {
@@ -991,12 +991,28 @@ void* vk_nvdec_hw_device(void);
    Takes vk_lock. vk_dma_stats: the launches so far, the bands the big ones took, the bytes they read and wrote */
 int vk_dma_copy(const GpuDmaOp* o);
 void vk_dma_stats(u64* copies, u64* bands, u64* bytes);
+/* A transfer that may be more than one buffer can hold (cap: g_vk.alloc_cap, or less), taken in bands of lines: the
+   DMA's copies, the 2D engine's blits (blit.c), VIC's jobs (vic.c). need(user, y, n): the most bytes one of the
+   buffers of lines [y, y + n) takes. A band ends where its end, counted from base, is a multiple of unit (a block
+   linear side's rows of blocks) */
+typedef struct {
+    u64 cap;
+    u32 unit, base;
+    u64 (*need)(const void* user, u32 y, u32 n);
+    const void* user;
+} VkBands;
+/* the lines from y on (left of them) the next band takes: all of them when they are the first and fit the cap, else
+   as many as fit VK_PART_SHARE of it, at least a unit. *most: the bytes the band needs, more than the cap when even a
+   unit is */
+u32 vk_band(const VkBands* b, u32 y, u32 left, u64* most);
 /* memory for the DMA engine's copies of sources at submission, which the copy reads in place (Renderer.snap_alloc and
    snap_free, from any thread), and the bytes it holds */
 u8* vk_snap_alloc(u64 len, u64* id);
 void vk_snap_free(u64 id);
 u64 vk_snap_bytes(void);
-/* blit.c: a 2D blit from memory on the GPU (gpu.h's GpuBlit), its destination published: 1 when done. Takes vk_lock */
+/* blit.c: a 2D blit from memory on the GPU (gpu.h's GpuBlit), its destination published: 1 when done, 0 when rows of
+   it could not be (said, with the bytes they lacked). A blit bigger than one allocation goes in bands of rows. Takes
+   vk_lock */
 int vk_blit_mem(const GpuBlit* b);
 /* msaa.c: a multisampled surface's samples moved between its image and the guest's layout of them (sample i of pixel
    (x, y) at texel (x X + i % X, y Y + i / X) of a surface X by Y times its size, DS_MSAA_), through a single-sampled
