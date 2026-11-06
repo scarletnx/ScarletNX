@@ -294,7 +294,14 @@ and the device fault data put the faulting instruction in the task program, at t
 program that does nothing launched no fault. A task program that reads no constant buffer still faulted. Every
 program's outputs are within `maxMeshOutputMemorySize`. The faults stopped when the two mesh stages saw the
 descriptor sets of both, the vertex stage's (the mesh program's) and the tessellation control stage's (the task
-program's): `vk_set_stages` in `gpu/vk/pipeline.c`. The mechanism inside the driver is not known.
+program's): `vk_set_stages` in `gpu/vk/pipeline.c`. The mechanism inside the driver is not known. After that change,
+no run had Xid 31, but 2 of 7 menu runs still hung with Xid 109 alone. That hang also came once with the task
+programs emptied, and the checkpoints of that run put it in a draw without a mesh program, so it has another cause.
+
+No mesh draw of 16 menu runs (184,239 draws) goes to a cascade of the shadow map (depth only, 3072 by 3072). Each has
+one color target. The programs after a task program draw into the scene's color and depth targets (832 by 466 to 1280
+by 720), and the others into a color target alone. The mesh program of 128 vertices after a task program samples a
+depth array texture with a compare (`TEX.DC`), as a program that receives shadows does.
 
 The driver writes Turing macro calls (method 0xe00 + 2 n is `CALL_MME_MACRO(n)`), not 3D methods:
 
