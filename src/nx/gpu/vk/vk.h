@@ -1131,6 +1131,9 @@ int vk_buf_owned(u64 gva, u64 len);
 u64 vk_buf_adds(void);                /* graphics results committed so far: as vk_compute_adds */
 int vk_buf_pending_any(void);         /* any graphics result is pending */
 int vk_buf_pending_unsubmitted(void); /* one is in the commands recorded since the last submit */
+/* graphics results that searches for the ones over a range gave their callers to compare so far: each search looks at
+   the results on the range's pages alone (tests count them) */
+u64 vk_buf_pending_inspected(void);
 /* renderdoc.c: with renderdoc set, RenderDoc loaded before the instance exists (load) and the frames
    renderdoc_frames names captured (present, at each present under vk_lock) */
 void vk_renderdoc_load(void);
