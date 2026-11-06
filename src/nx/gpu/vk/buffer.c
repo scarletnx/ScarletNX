@@ -2956,6 +2956,7 @@ void vk_buf_frame(void) {
             "slots\n",
             (unsigned long long)g_alias_draws, (unsigned long long)g_alias_pages, g_vblive,
             (unsigned long long)g_vb_lookups, (unsigned long long)g_vb_probes);
+        vk_gfx_image_report();
         g_vb_lookups = g_vb_probes = 0;
         g_copy_uncached = g_copy_stage = g_copy_owned = g_copy_zero = g_copy_calls = g_copy_peak = g_read_bound =
             g_owned_bound = 0;
