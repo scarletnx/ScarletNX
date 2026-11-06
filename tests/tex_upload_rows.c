@@ -99,6 +99,8 @@ u8* vk_stage(u64 size, u64 align, VkBuffer* buf, u64* off) {
     return stage + at;
 }
 u64 vk_stage_align(void) { return 64; }
+/* the staging chunk, as cmd.c sizes it: the most a strip of a level takes */
+u64 vk_stage_chunk(void) { return g_vk.alloc_cap < (16ull << 20) ? g_vk.alloc_cap : 16ull << 20; }
 /* the scratch buffer the GPU deswizzles and converts into, which a CPU model of those dispatches writes here */
 #define SCRATCH (8u << 20)
 static u8 scratch[SCRATCH];

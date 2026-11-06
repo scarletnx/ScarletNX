@@ -375,10 +375,6 @@ static int level_upload_pitch(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u6
     return 1;
 }
 
-/* the most staging one piece of a level takes: a bigger level is staged in strips, as no allocation may be bigger
-   than g_vk.alloc_cap (memory.c) */
-#define TEX_BAND (64ull << 20)
-
 /* for the stats line: every load and its bytes, and those of some blocks alone (tex_patch) */
 static struct {
     u64 uploads, bytes, partial, partial_bytes;
@@ -534,7 +530,7 @@ static int tex_upload_(Surf* t) {
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
     int is3d = t->type == VK_IMAGE_VIEW_TYPE_3D;
     u32 layers = t->layers, d3 = is3d ? t->depth3d : 1;
-    u64 band = g_vk.alloc_cap < TEX_BAND ? g_vk.alloc_cap : TEX_BAND;
+    u64 band = vk_stage_chunk(); /* the most staging one piece of a level takes: a bigger level goes in strips */
     int complete = 1;
     Upload u = {.cb = cb, .t = t};
     for (u32 layer = 0; layer < layers && complete; layer++) {
