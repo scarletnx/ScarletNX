@@ -53,6 +53,7 @@ u32 vk_frame_slot(void);
 u64 vk_frame_id(void);
 void vk_frame_next(void);
 u32 vk_cb_begun(void);
+u64 vk_rec_set_binds(void);
 void fatal(const char*, ...);
 void logf_(int, const char*, ...);
 void rec_CmdBindDescriptorSets(VkCommandBuffer, VkPipelineBindPoint, VkPipelineLayout, u32, u32, const VkDescriptorSet*,
@@ -80,6 +81,7 @@ u32 vk_frame_slot(void) { return 0; }
 u64 vk_frame_id(void) { return 0; }
 void vk_frame_next(void) { abort(); }
 u32 vk_cb_begun(void) { return 1; }
+u64 vk_rec_set_binds(void) { return 0; }
 void fatal(const char* fmt, ...) {
     (void)fmt;
     abort();

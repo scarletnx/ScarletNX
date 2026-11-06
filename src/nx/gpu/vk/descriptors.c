@@ -41,6 +41,7 @@ static struct {
         VkDeviceSize used, capacity;
     } frame[VK_FRAMES];
     u32 bound_cb;
+    u64 bound_sets; /* vk_rec_set_binds when they were bound */
     u64 written, bytes;
     u8* images;
     size_t image_stride;
@@ -228,9 +229,13 @@ void vk_descriptors_bind(VkCommandBuffer cb, VkPipelineLayout layout, u32 first,
     }
     if (count > 5) fatal("vulkan: too many graphics descriptor stages");
     u32 begun = vk_cb_begun();
-    if (g_descriptors.bound_cb != begun) {
+    u64 binds = vk_rec_set_binds();
+    /* in this command buffer, and no descriptor set bound since: a compute pass's (a copy's, a conversion's) between
+       two draws unbinds them, and the second draw's offsets went unbound */
+    if (g_descriptors.bound_cb != begun || g_descriptors.bound_sets != binds) {
         rec_CmdBindDescriptorBuffersEXT(cb, g_descriptors.frame[vk_frame_slot()].address);
         g_descriptors.bound_cb = begun;
+        g_descriptors.bound_sets = binds;
     }
     VkDeviceSize offsets[5];
     for (u32 i = 0; i < count; i++) offsets[i] = (u64)(uintptr_t)sets[i] - 1;
