@@ -383,16 +383,30 @@ void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) {
 /* Device memory's side of vk_guest_read: the guest bytes [gva, gva + size) into buf at at, which the CPU doesn't map.
    The CPU's bytes are staged and copied, the owned ones copied from their owners, unmapped pages read as zero. Staged
    into host memory and read there by the GPU, a copy engine's spans went over PCIe several times: the GPU copied its
-   own results and render targets out to host memory and read them back, about 34 MB a frame in one game's menu */
+   own results and render targets out to host memory and read them back, about 34 MB a frame in one game's menu.
+   Staging is taken at the range's first CPU byte, so a range its owners hold whole takes none: in a texture test 60% of
+   the copy engine's destinations were such, and the pooled staging chunks they took and never wrote cost the CPU a
+   page fault per page when it first wrote there, 7 ms for an 8 MiB copy source */
 typedef struct {
     VkBuffer sb, buf; /* the staging copied from, holding the range's byte o at so + o */
-    u64 so, at;
+    u64 so, at, size;
+    u8* p; /* the staging, NULL until a CPU byte needs it */
     VkBufferCopy r[64];
     u32 n;
     int ahead; /* recorded in the submission's upload command buffer (vk_guest_read_ahead) */
 } DevRead;
 /* where a read's copies go: ahead of the submission's work, after the writes of earlier submissions, or here */
 static VkCommandBuffer dev_cmd(int ahead) { return ahead ? vk_cmd_upload(1) : vk_cmd(); }
+static u8* dev_staging(DevRead* d) {
+    if (!d->p) d->p = vk_stage_upload(d->size, 16, &d->sb, &d->so);
+    return d->p;
+}
+/* the bytes of a run own_lookup's k owners hold, sorted, apart and clipped to it */
+static u64 owned_bytes(const OwnRange* r, u32 k) {
+    u64 n = 0;
+    for (u32 i = 0; i < k; i++) n += r[i].size;
+    return n;
+}
 static void dev_flush(DevRead* d) {
     if (d->n) rec_CmdCopyBuffer(dev_cmd(d->ahead), d->sb, d->buf, d->n, d->r);
     d->n = 0;
@@ -433,13 +447,11 @@ static int read_settled(u64 gva, u64 size) {
 /* vk_guest_read_device, and with ahead its copies in the submission's upload command buffer: 0 then, with nothing
    recorded, when a byte was written in this submission, which those copies would run before */
 static int guest_read(u64 gva, u64 size, VkBuffer buf, u64 at, int ahead) {
-    DevRead d = {.buf = buf, .at = at, .ahead = ahead};
-    u8* p;
+    DevRead d = {.buf = buf, .at = at, .size = size, .ahead = ahead};
     u64 o = 0;
     int any = ahead; /* the upload command buffer waits for earlier submissions' writes itself */
     if (!size) return 1;
     if (ahead && !read_settled(gva, size)) return 0;
-    if (!(p = vk_stage_upload(size, 16, &d.sb, &d.so))) return 0;
     if (!ahead) vk_render_end(); /* the copies happen outside rendering passes */
     vk_uma_gpu_reads(1);  /* the in-place writes there are copied below, not waited for */
     gmem_need(gva, size); /* results the renderer has pending there land first, as gmem_read has them */
@@ -461,19 +473,26 @@ static int guest_read(u64 gva, u64 size, VkBuffer buf, u64 at, int ahead) {
         } else if (!n) { /* an unmapped page reads as zero */
             n = 0x1000 - ((gva + o) & 0xFFF);
             if (n > size - o) n = size - o;
-            memset(p + o, 0, (size_t)n);
+            if (!dev_staging(&d)) return 0;
+            memset(d.p + o, 0, (size_t)n);
             dev_gap(&d, o, n);
         } else if (!own_any()) {
-            memcpy(p + o, GP(cpu), (size_t)n);
+            if (!dev_staging(&d)) return 0;
+            memcpy(d.p + o, GP(cpu), (size_t)n);
             dev_gap(&d, o, n);
         } else /* the owners as many at a time as r holds: landing the range when it had more waits for the GPU and
-                  reads all its results back (a copy engine's tiles cut a surface into many owners) */
+                  reads all its results back (a copy engine's tiles cut a surface into many owners). Staging only
+                  where CPU bytes lie among them: a part its owners hold whole is copied from them alone */
             for (u64 c = cpu, part; c < cpu + n; c += part) {
                 const u32 max = sizeof r / sizeof *r;
                 part = cpu + n - c;
-                if ((k = own_stage(c, part, p + o + (c - cpu), r, max)) > max) { /* to the last noted one's end */
+                if ((k = own_lookup(c, part, r, max)) > max) { /* to the last noted one's end */
                     part = r[max - 1].addr + r[max - 1].size - c;
-                    k = own_stage(c, part, p + o + (c - cpu), r, max);
+                    k = own_lookup(c, part, r, max);
+                }
+                if (owned_bytes(r, k) != part) { /* CPU bytes among the owners': staged */
+                    if (!dev_staging(&d)) return 0;
+                    k = own_stage(c, part, d.p + o + (c - cpu), r, max);
                 }
                 u64 from = c; /* the CPU's bytes between the owners, which own_stage staged; the owners' from them */
                 for (i = 0; i < k; i++) {
