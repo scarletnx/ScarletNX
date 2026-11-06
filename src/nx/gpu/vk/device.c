@@ -11,6 +11,7 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/vertex_input.h"
+#include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
@@ -345,6 +346,7 @@ static int create_device(void) {
     int has_host_import = 0, has_ahb = 0, has_placed = 0, has_map2 = 0, has_dmabuf = 0;
     int has_descriptor_buffer = 0;
     int has_vertex_input = 0;
+    int has_gpl = 0, has_eds2 = 0, has_eds3 = 0; /* the extensions of pipeline libraries and their dynamic state */
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     {
@@ -352,6 +354,10 @@ static int create_device(void) {
         snx_vk_device_extensions(g_vk.phys, &e);
         g_vk.has_divisor = snx_vk_extensions_has(&e, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
         has_vertex_input = snx_vk_extensions_has(&e, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
+        has_gpl = snx_vk_extensions_has(&e, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME) &&
+                  snx_vk_extensions_has(&e, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
+        has_eds2 = snx_vk_extensions_has(&e, VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME);
+        has_eds3 = snx_vk_extensions_has(&e, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
         g_vk.has_xfb = snx_vk_extensions_has(&e, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
         g_vk.has_mixed_samples = snx_vk_extensions_has(&e, VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME);
         g_vk.has_border_color = snx_vk_extensions_has(&e, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
@@ -463,6 +469,12 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR};
     VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT qvertex_input = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT};
+    VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT qgpl = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT};
+    VkPhysicalDeviceExtendedDynamicState2FeaturesEXT qeds2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT};
+    VkPhysicalDeviceExtendedDynamicState3FeaturesEXT qeds3 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT};
     /* with the subset enabled, each of its features is off until the device asks for it: a view's swizzle, for one */
     PortabilityFeatures qport = {.sType = PORTABILITY_FEATURES_STYPE};
     VkPhysicalDevicePresentIdFeaturesKHR qpid = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
@@ -491,6 +503,9 @@ static int create_device(void) {
                            has_provoking ? &qprov : NULL,
                            index8_ext ? &qindex8 : NULL,
                            has_vertex_input ? &qvertex_input : NULL,
+                           has_gpl ? &qgpl : NULL,
+                           has_eds2 ? &qeds2 : NULL,
+                           has_eds3 ? &qeds3 : NULL,
                            has_portability ? &qport : NULL,
                            has_reconvergence ? &qreconv : NULL,
                            robustness ? &qpipeline : NULL,
@@ -547,6 +562,31 @@ static int create_device(void) {
     g_shader_clock_scopes =
         has_shader_clock ? (qclock.shaderSubgroupClock ? 1 : 0) | (qclock.shaderDeviceClock ? 2 : 0) : 0;
     g_vk.has_divisor = g_vk.has_divisor && fdiv.vertexAttributeInstanceRateDivisor;
+    {
+        /* pipelines from libraries (pipeline_parts.h), and the pre-rasterization state they take as dynamic state */
+        VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT gp = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_PROPERTIES_EXT};
+        if (has_gpl) {
+            VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &gp};
+            vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
+        }
+        VkGplDevice gd = {.setting = g_settings.pipeline_libraries,
+                          .has_ext = has_gpl,
+                          .library = qgpl.graphicsPipelineLibrary,
+                          .fast_link = gp.graphicsPipelineLibraryFastLinking,
+                          .independent_interpolation = gp.graphicsPipelineLibraryIndependentInterpolationDecoration,
+                          .polygon = qeds3.extendedDynamicState3PolygonMode,
+                          .depth_clamp = qeds3.extendedDynamicState3DepthClampEnable,
+                          .provoking = qeds3.extendedDynamicState3ProvokingVertexMode,
+                          .conservative_mode = qeds3.extendedDynamicState3ConservativeRasterizationMode,
+                          .conservative_size = qeds3.extendedDynamicState3ExtraPrimitiveOverestimationSize,
+                          .patch = qeds2.extendedDynamicState2PatchControlPoints,
+                          .has_provoking_last = g_vk.has_provoking_last,
+                          .has_conservative = g_vk.has_conservative};
+        char line[400];
+        g_vk.has_gpl = vk_gpl_choose(&gd, &g_vk.dyn_pr, line, sizeof line);
+        LOG("%s\n", line);
+    }
     g_vk.has_xfb = g_vk.has_xfb && fxfb.transformFeedback;
     g_vk.has_border_color = g_vk.has_border_color && fbc.customBorderColors && fbc.customBorderColorWithoutFormat;
     if (g_vk.has_border_color) { /* how many samplers may have a custom border color: as few as 32 */
@@ -739,6 +779,35 @@ static int create_device(void) {
     if (g_vk.vertex_input_dynamic) {
         chain = &fvertex_input;
         ext[next++] = VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME;
+    }
+    VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT fgpl = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT,
+        .pNext = chain,
+        .graphicsPipelineLibrary = VK_TRUE};
+    VkPhysicalDeviceExtendedDynamicState2FeaturesEXT feds2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT,
+        .extendedDynamicState2PatchControlPoints = VK_TRUE};
+    VkPhysicalDeviceExtendedDynamicState3FeaturesEXT feds3 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT,
+        .extendedDynamicState3PolygonMode = (g_vk.dyn_pr & VK_DYN_PR_POLYGON) != 0,
+        .extendedDynamicState3DepthClampEnable = (g_vk.dyn_pr & VK_DYN_PR_DEPTH_CLAMP) != 0,
+        .extendedDynamicState3ProvokingVertexMode = (g_vk.dyn_pr & VK_DYN_PR_PROVOKING) != 0,
+        .extendedDynamicState3ConservativeRasterizationMode = (g_vk.dyn_pr & VK_DYN_PR_CONSERVATIVE) != 0,
+        .extendedDynamicState3ExtraPrimitiveOverestimationSize = (g_vk.dyn_pr & VK_DYN_PR_CONSERVATIVE) != 0};
+    if (g_vk.has_gpl) {
+        chain = &fgpl;
+        ext[next++] = VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME;
+        ext[next++] = VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME;
+        if (g_vk.dyn_pr & VK_DYN_PR_PATCH) {
+            feds2.pNext = chain;
+            chain = &feds2;
+            ext[next++] = VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME;
+        }
+        if (g_vk.dyn_pr & ~VK_DYN_PR_PATCH) {
+            feds3.pNext = chain;
+            chain = &feds3;
+            ext[next++] = VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME;
+        }
     }
     VkPhysicalDeviceIndexTypeUint8FeaturesKHR findex8 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR, .pNext = chain, .indexTypeUint8 = VK_TRUE};

@@ -115,7 +115,7 @@ snx_shaderdec(snx_shader)
 snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/descriptors.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
                  gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/writelog.c gpu/vk/mirror.c gpu/vk/pipeline.c gpu/vk/pipeline_file.c gpu/vk/render.c gpu/vk/release.c gpu/vk/query.c gpu/vk/xfb.c gpu/vk/display.c gpu/vk/compute.c
                  gpu/vk/pending_pages.c gpu/vk/image_out.c gpu/vk/depth_pack.c gpu/vk/memory.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/bc7_cache.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/msaa.c gpu/vk/ui.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c gpu/vk/uma.c
-                 gpu/vk/ftz_probe.c gpu/vk/vertex_input.c gpu/vk/draw_texture.c gpu/vk/tess_passthrough.c
+                 gpu/vk/ftz_probe.c gpu/vk/vertex_input.c gpu/vk/pipeline_parts.c gpu/vk/draw_texture.c gpu/vk/tess_passthrough.c
                  "${volk_SOURCE_DIR}/volk.c")
 # the ASTC decoder's, the block linear deswizzle and swizzle's, the texture conversions', the VIC composition's and
 # the render enable predicates' SPIR-V, compiled from their GLSL at build time (cmake/glsl.cmake). The VIC shader is
@@ -304,6 +304,12 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     # every check again with each vertex layout in its pipeline: the default run sets it as dynamic state where the
     # device has VK_EXT_vertex_input_dynamic_state (gpu/vk/vertex_input.c), and both find each draw's own layout
     add_test(NAME vulkan_headless_vertex_input_off COMMAND snx-test-vulkan -H --vertex_input_dynamic_state=off)
+    # every check again under the validation layer with graphics pipeline libraries (pipeline_libraries=1, where the
+    # device has them) and without them: the parts, their layouts and their dynamic state checked by the layer
+    add_test(NAME vulkan_headless_libraries COMMAND snx-test-vulkan -H --pipeline_libraries=1 --vk_validation=1)
+    add_test(NAME vulkan_headless_libraries_off COMMAND snx-test-vulkan -H --pipeline_libraries=0 --vk_validation=1)
+    set_tests_properties(vulkan_headless_libraries vulkan_headless_libraries_off PROPERTIES TIMEOUT 120
+        ENVIRONMENT "VK_KHRONOS_VALIDATION_REPORT_FLAGS=error" FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     set_tests_properties(vulkan_headless_vertex_input_off PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again with guest memory read in place where the device can import it (gpu/vk/uma.c)

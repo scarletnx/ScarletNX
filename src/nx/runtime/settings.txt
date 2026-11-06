@@ -338,6 +338,15 @@ setting Async pipelines
     words Off|On
     help 1 = what a new shader draws is skipped while its pipeline is made, instead of the game waiting for it: no
     help pause where a new shader first appears, and the things it draws show up a few frames late
+setting Pipeline libraries
+    key pipeline_libraries
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = where the GPU has graphics pipeline libraries, a new pipeline links parts of its shaders that compile
+    help once, and an optimized one is made in the background: a new state of a known shader no longer stalls the
+    help game for a compile. 0 = each pipeline compiles its shaders whole
 setting Prepare shaders
     key prepare_shaders
     int 0 2

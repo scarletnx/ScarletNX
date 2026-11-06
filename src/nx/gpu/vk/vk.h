@@ -69,7 +69,7 @@ typedef struct {
        asks for it (experimental): FFmpeg's Vulkan decoder decodes on it (vk/nvdec.c), told of the device by the
        extensions and features enabled */
     u32 video_family;
-    const char* dev_ext[40];
+    const char* dev_ext[48];
     u32 dev_ext_n;
     VkPhysicalDeviceFeatures2 feat2; /* feat, with the 1.1 to 1.3 features enabled chained */
     VkPhysicalDeviceVulkan11Features feat11;
@@ -138,6 +138,10 @@ typedef struct {
        conservative_extra pixels (maxExtraPrimitiveOverestimationSize) */
     int has_conservative;
     float conservative_extra;
+    /* VK_EXT_graphics_pipeline_library with fast linking (pipeline_parts.h's vk_gpl_choose): a new pipeline links
+       parts of its shaders that compile once, and an optimized one is made after it (pipeline.c) */
+    int has_gpl;
+    u32 dyn_pr; /* VK_DYN_PR_*: the pre-rasterization state those pipelines take as dynamic state */
     /* VK_KHR_index_type_uint8 (or the EXT before it): 8-bit index buffers bound as they are */
     int has_index8;
     /* VK_KHR_present_id and VK_KHR_present_wait: presents carry ids, and display.c learns when each is displayed */

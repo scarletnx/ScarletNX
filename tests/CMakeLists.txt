@@ -1845,6 +1845,12 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-vertex-input 99)
     target_link_libraries(snx-test-vk-vertex-input PRIVATE snx_nx_flags)
     add_test(NAME vk_vertex_input COMMAND snx-test-vk-vertex-input)
+    # graphics pipeline libraries (gpu/vk/pipeline_parts.c): the choice from the setting and stand-in devices, each
+    # condition that turns them off named, and the dynamic pre-rasterization state each device member gives
+    add_executable(snx-test-vk-pipeline-parts vk_pipeline_parts.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pipeline_parts.c")
+    snx_test_target(snx-test-vk-pipeline-parts 99)
+    target_link_libraries(snx-test-vk-pipeline-parts PRIVATE snx_nx_flags)
+    add_test(NAME vk_pipeline_parts COMMAND snx-test-vk-pipeline-parts)
     # the GPU driver a run asks for (nx/runtime/platform/gpu_driver_load.c) where none loads: Freedreno's variables set,
     # a wrong one, a package asked for here and a folder name that is none stopping the run with why, a run a case
     add_executable(snx-test-gpu-driver-load gpu_driver_load.c
