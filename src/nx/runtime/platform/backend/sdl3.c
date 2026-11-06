@@ -1590,17 +1590,20 @@ void video_poll(void) {
             g_hle.hid.pad_extra[i].buttons &= ~g_menu_held_extra[i];
         }
     }
+    st[0] = lx;
+    st[1] = ly;
+    st[2] = rx;
+    st[3] = ry;
+    /* a paused game takes no input (main.c's hid_update): a record holds none of it, and a replay waits */
+    if (!game_paused()) unattended_pad(&b, st);
     g_hle.hid.pad1.buttons = b;
-    g_hle.hid.pad1.lx = lx;
-    g_hle.hid.pad1.ly = ly;
-    g_hle.hid.pad1.rx = rx;
-    g_hle.hid.pad1.ry = ry;
-    {
-        i32 shown[4] = {lx, ly, rx, ry};
-        ui_lock();
-        vpad_showcase_input(b, shown);
-        ui_unlock();
-    }
+    g_hle.hid.pad1.lx = st[0];
+    g_hle.hid.pad1.ly = st[1];
+    g_hle.hid.pad1.rx = st[2];
+    g_hle.hid.pad1.ry = st[3];
+    ui_lock();
+    vpad_showcase_input(b, st); /* what the game takes, a replay's included */
+    ui_unlock();
     pm_unlock(&g_host.hid.input_lock);
     keyboard_sync();
 }
