@@ -454,18 +454,35 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocati
     (void)ii, (void)img, (void)mem, (void)bytes;
     return 0;
 }
-/* images with memory only where it is bound: none here */
-int vk_resident_block(VkFormat f, VkImageUsageFlags usage, VkExtent3D* block) {
-    (void)f, (void)usage, (void)block;
-    return 0;
+/* images with memory only where it is bound: of the shape g_res.shape gives (none while its block is 0 texels), their
+   pages bound as vk_image_resident is asked, each 64 KiB, those it gives memory marked 2 as memory.c marks them */
+static struct {
+    VkResidentShape shape;
+    u8 bound[64];
+    u32 pages;
+} g_res;
+int vk_resident_shape(const VkImageCreateInfo* ii, VkResidentShape* s) {
+    (void)ii;
+    *s = g_res.shape;
+    return g_res.shape.block.width != 0;
 }
-int vk_image_create_resident(const VkImageCreateInfo* ii, const VkExtent3D* block, VkImage* img) {
-    (void)ii, (void)block, (void)img;
-    return 0;
+int vk_image_create_resident(const VkImageCreateInfo* ii, const VkResidentShape* s, VkImage* img) {
+    (void)ii, (void)s;
+    memset(g_res.bound, 0, sizeof g_res.bound);
+    *img = (VkImage)(uintptr_t)0x5E5;
+    return g_res.shape.block.width != 0;
 }
-int vk_image_resident(VkImage img, const u8* want, u32 n, u64* bytes) {
-    (void)img, (void)want, (void)n, (void)bytes;
-    return 0;
+int vk_image_resident(VkImage img, u8* want, u32 n, u64* bytes) {
+    (void)img;
+    *bytes = 0;
+    if (n > sizeof g_res.bound) return 0;
+    g_res.pages = n;
+    for (u32 i = 0; i < n; i++) {
+        if (want[i] && !g_res.bound[i]) want[i] = 2;
+        g_res.bound[i] = want[i] != 0;
+        *bytes += g_res.bound[i] ? 0x10000 : 0;
+    }
+    return 1;
 }
 void vk_surf_bytes(Surf* s, u64 bytes) { s->bytes = bytes; }
 void vk_mem_trim(u64 extra, int force) { (void)extra, (void)force; }
@@ -958,6 +975,76 @@ static void check_astc_changes(void) {
     memset(&g_tracking, 0, sizeof g_tracking);
 }
 
+/* the regions recorded into a texture of 4-byte texels with layers (rows of whole tiles where tile_w says) against
+   guest's layout: every texel each copies where the layout has it in its level and layer. The texels each copied of
+   each level of each layer go in covered */
+static void check_layer_regions(const Surf* t, u32 covered[2][16]) {
+    memset(covered, 0, 2 * 16 * sizeof(u32));
+    for (u32 i = 0; i < nregs; i++) {
+        const VkBufferImageCopy* r = &regs[i];
+        const u32 l = r->imageSubresource.mipLevel, k = r->imageSubresource.baseArrayLayer;
+        const u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1;
+        const u32 rl = r->bufferRowLength ? r->bufferRowLength : r->imageExtent.width;
+        u32 lbh, lbd;
+        u64 at = k * t->layer_size;
+        CHECK(k < 2 && l < t->levels && r->imageExtent.depth == 1);
+        for (u32 j = 0; j < l; j++) at += bl_level_size(t->w, t->h, 1, &t->f, t->bh, t->bd, t->tile_w, j, NULL, NULL);
+        bl_level_blocks(t->h, 1, &t->f, t->bh, t->bd, l, &lbh, &lbd);
+        const u32 gobs = level_gobs(t, lw * 4, lh, 1);
+        for (u32 y = 0; y < r->imageExtent.height; y++)
+            for (u32 x = 0; x < r->imageExtent.width; x++) {
+                const u32 tx = (u32)r->imageOffset.x + x, ty = (u32)r->imageOffset.y + y;
+                CHECK(tx < lw && ty < lh);
+                CHECK(!memcmp(copied + r->bufferOffset + ((u64)y * rl + x) * 4,
+                              guest + at + bl_offset_g(tx * 4, ty, 0, gobs, lh, lbh, 0), 4));
+            }
+        covered[k][l] += r->imageExtent.width * r->imageExtent.height;
+    }
+}
+/* A texture with memory only where it is mapped, of 2 layers: 256x256 RGBA8 in tiles of 128x128 texels (8 GOBs
+   across, blocks 16 high), 9 levels, the device's blocks a tile, its mip tail from level 2 and one a layer. Each layer
+   is 4 bricks of level 0, 1 of level 1, then the tail's levels in a tile of their own: 6 tiles. Mapped: tile 1 of
+   level 0 of layer 0, level 1 of layer 1 and layer 1's mip tail, which take memory and are loaded, each texel in its
+   level and layer and nothing else. Then 4 KiB of layer 0's mip tail mapped: the tail gets memory and is loaded whole,
+   its texels undefined until then */
+static void check_resident_layers(void) {
+    Surf t = tex(256, 256, 1, 9, 4, 4, 0, 1);
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    u32 covered[2][16];
+    t.tile_w = 3;
+    t.layers = 2;
+    t.layer_size = bl_layer_size(256, 256, 1, &t.f, 4, 0, 3, 9);
+    CHECK(t.layer_size == 6 * 0x10000ull);
+    for (u32 l = 0; l < 9; l++) t.size += bl_level_size(256, 256, 1, &t.f, 4, 0, 3, l, NULL, NULL);
+    t.size += t.layer_size;
+    g_res.shape = (VkResidentShape){{128, 128, 1}, 2, 2};
+    CHECK(resident_image(&t, &ii) && t.bricks == 5 && t.tail_first == 2 && t.tails == 2 && t.brick_bytes == 0x10000);
+    g_map.count = 3;
+    g_map.gva[0] = GVA + 0x10000, g_map.n[0] = 0x10000;
+    g_map.gva[1] = GVA + 0xA0000, g_map.n[1] = 0x10000;
+    g_map.gva[2] = GVA + 0xB0000, g_map.n[2] = 0x10000;
+    copy_bpp = 4, copy_bw = copy_bh = 1;
+    stage_used = copied_used = nregs = 0;
+    CHECK(tex_upload(&t) && g_res.pages == 12);
+    static const u8 bound[12] = {0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1};
+    CHECK(!memcmp(g_res.bound, bound, 12));
+    check_layer_regions(&t, covered);
+    CHECK(covered[0][0] == 128 * 128 && covered[1][1] == 128 * 128 && !covered[1][0] && !covered[0][1]);
+    for (u32 l = 2; l < 9; l++) CHECK(!covered[0][l] && covered[1][l] == (256u >> l) * (256u >> l));
+    /* layer 0's tail mapped by 4 KiB of it: a piece of 4 KiB, its tail bound and loaded whole */
+    TexPieces p = {.count = 1};
+    p.piece[0].at = 0x50000, p.piece[0].n = 0x1000;
+    g_map.count = 4;
+    g_map.gva[3] = GVA + 0x50000, g_map.n[3] = 0x1000;
+    t.upload_valid = 1;
+    stage_used = copied_used = nregs = 0;
+    CHECK(tex_patch(&t, &p) && g_res.bound[10] && g_res.bound[11]);
+    check_layer_regions(&t, covered);
+    for (u32 l = 0; l < 9; l++) CHECK(!covered[1][l] && covered[0][l] == (l < 2 ? 0 : (256u >> l) * (256u >> l)));
+    g_map.count = 0;
+    g_res.shape = (VkResidentShape){{0, 0, 0}, 0, 0};
+}
+
 int main(void) {
     fill();
     check_take_skip();
@@ -1259,6 +1346,7 @@ int main(void) {
     check_untracked_runs();
     check_pitch_linear_changes();
     check_astc_changes();
+    check_resident_layers();
     printf("tex_upload_rows: %u checks passed\n", checks);
     return 0;
 }

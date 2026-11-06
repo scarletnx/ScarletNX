@@ -124,8 +124,8 @@ typedef struct {
     int has_draw_indirect_count;    /* drawIndirectCount: an indirect draw's count from the GPU's memory */
     u64 alloc_cap;                  /* the most one device memory allocation may be (memory.c) */
     int sparse; /* sparseBinding on the graphics queue: images bigger than alloc_cap are bound in pieces */
-    /* sparse residency of 3D images too, what isn't bound reading as zeros: a 3D texture with holes in its mapping has
-       memory only where it is mapped */
+    /* sparse residency of 2D or 3D images too, what isn't bound reading as zeros: a texture with holes in its mapping
+       has memory only where it is mapped (memory.c vk_resident_shape says for which) */
     int resident;
     /* VK_EXT_attachment_feedback_loop_layout: a draw samples a color target it renders to in place (gpu/vk/render.c),
        with the loop enabled per draw by dynamic state (VK_EXT_attachment_feedback_loop_dynamic_state) or else by a
@@ -200,16 +200,24 @@ int vk_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* me
 /* the same, with the result of the call that failed in res (VK_ERROR_OUT_OF_DEVICE_MEMORY: no memory for it) */
 int vk_image_create_r(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, VkResult* res);
 void vk_image_destroy(VkImage img, VmaAllocation mem);
-/* A 3D image with memory only where it is bound, what isn't reading as zeros (g_vk.resident). vk_resident_block: the
-   texels of the blocks the device binds 3D images of format f in, 0 when it can't. vk_image_create_resident: such an
-   image of one level and one layer, in those blocks (block, which it is refused without), with none bound; destroyed
-   with vk_image_destroy. vk_image_resident binds memory to its blocks whose want[] is set and releases it from the
-   others (n: all of them, x first, then y, then z), after the work recorded before, which it submits; the commands
-   recorded after it see the new bindings, and the memory released goes once the GPU is done with it. *bytes gets the
-   memory bound. 0 when memory ran out: the blocks that got memory are bound, the others as they were */
-int vk_resident_block(VkFormat f, VkImageUsageFlags usage, VkExtent3D* block);
-int vk_image_create_resident(const VkImageCreateInfo* ii, const VkExtent3D* block, VkImage* img);
-int vk_image_resident(VkImage img, const u8* want, u32 n, u64* bytes);
+/* An image with memory only where it is bound, what isn't reading as zeros (g_vk.resident). vk_resident_shape: how the
+   device would bind an image made as ii that way (the texels of its blocks, its first level in the mip tail, its mip
+   tails), 0 when it can't. vk_image_create_resident: such an image, of that shape (which it is refused without), with
+   none bound; destroyed with vk_image_destroy. Its blocks, each a page, go layer by layer, in a layer level by level
+   up to the mip tail, in a level x first, then y, then z; after them its mip tails, each a page bound whole.
+   vk_image_resident binds memory to its pages whose want[] is set and releases it from the others (n: all of them),
+   after the work recorded before, which it submits; the commands recorded after it see the new bindings, and the
+   memory released goes once the GPU is done with it. A page that got memory has its want[] made 2: its texels are
+   undefined until they are loaded. *bytes gets the memory bound. 0 when memory ran out: the pages that got memory
+   are bound, the others as they were */
+typedef struct {
+    VkExtent3D block; /* the texels of a block */
+    u32 tail_first;   /* the first level in the mip tail, the image's levels when there is none */
+    u32 tails;        /* mip tails: 0, 1 for all the layers, or one a layer */
+} VkResidentShape;
+int vk_resident_shape(const VkImageCreateInfo* ii, VkResidentShape* s);
+int vk_image_create_resident(const VkImageCreateInfo* ii, const VkResidentShape* s, VkImage* img);
+int vk_image_resident(VkImage img, u8* want, u32 n, u64* bytes);
 /* the sparse binds made since the last submission, to the graphics queue in one batch before it (cmd.c's submit). 1
    when the submission has to wait for one, which *wait then holds */
 int vk_sparse_flush(VkSemaphoreSubmitInfo* wait);
@@ -682,9 +690,11 @@ typedef struct Surf {
        nothing it could take: it searches again only once either moved */
     u64 take_gen;
     u32 take_wgen;
-    /* textures whose image has memory only where they are mapped (vk_image_create_resident): bricks of grain texels,
-       each brick_bytes of the guest's layout in one range, x first, then y, then z. 0 bricks for every other image */
-    u32 bricks, brick_bytes;
+    /* textures whose image has memory only where they are mapped (vk_image_create_resident): in each layer, bricks of
+       grain texels, each brick_bytes of the guest's layout in one range, level by level up to tail_first, x first,
+       then y, then z; bricks of them a layer, 0 for every other image. The levels from tail_first on are in mip tails,
+       tails of them: 0, 1 for all the layers, or one a layer */
+    u32 bricks, brick_bytes, tail_first, tails;
     VkExtent3D grain;
     /* depth targets: undefined but for draws and clears predicated on the GPU, which may not have run, so they count
        as no draw (render.c zt_written) */

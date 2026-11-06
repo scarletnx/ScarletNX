@@ -2357,20 +2357,23 @@ static void sparse_copy(VkBuffer buf, u64 at, VkImage img, u32 x) {
 }
 /* a 3D RGBA8 image two blocks wide with memory only where it is bound, none bound: 0 when the device can't */
 static int sparse_resident_image(VkImage* img, VkExtent3D* g) {
-    const VkImageUsageFlags usage =
-        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    if (!vk_resident_block(VK_FORMAT_R8G8B8A8_UNORM, usage, g)) return 0;
+    VkResidentShape s;
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                             .imageType = VK_IMAGE_TYPE_3D,
                             .format = VK_FORMAT_R8G8B8A8_UNORM,
-                            .extent = {g->width * 2, g->height, g->depth},
+                            .extent = {1, 1, 1},
                             .mipLevels = 1,
                             .arrayLayers = 1,
                             .samples = VK_SAMPLE_COUNT_1_BIT,
                             .tiling = VK_IMAGE_TILING_OPTIMAL,
-                            .usage = usage,
+                            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    return vk_image_create_resident(&ii, g, img);
+    if (!vk_resident_shape(&ii, &s)) return 0; /* its block, then the shape of an image two of them wide */
+    ii.extent = (VkExtent3D){s.block.width * 2, s.block.height, s.block.depth};
+    if (!vk_resident_shape(&ii, &s)) return 0;
+    *g = s.block;
+    return vk_image_create_resident(&ii, &s, img);
 }
 static const float SPARSE_RED[4] = {1, 0, 0, 1}, SPARSE_GREEN[4] = {0, 1, 0, 1};
 static const u8 SPARSE_RED8[4] = {255, 0, 0, 255}, SPARSE_GREEN8[4] = {0, 255, 0, 255}, SPARSE_ZERO8[4] = {0};
@@ -2381,7 +2384,7 @@ static const u8 SPARSE_RED8[4] = {255, 0, 0, 255}, SPARSE_GREEN8[4] = {0, 255, 0
    stays allocated until the frame's work is done. Then the block bound again while the work before the bind waits at
    the gate, and cleared and read at once: the read sees the new memory, as the submission after a bind waits for it */
 static int check_sparse_unbind_in_flight(void) {
-    const u8 both[2] = {1, 1}, second[2] = {0, 1};
+    u8 both[2] = {1, 1}, second[2] = {0, 1};
     VkExtent3D g;
     VkImage img;
     VkBuffer rb;
@@ -2491,7 +2494,7 @@ static int check_sparse_unbind_in_flight(void) {
 /* Binds made between two submissions go to the queue in one batch, with no host wait: two images with memory only
    where it is bound, bound one after the other, read at once */
 static int check_sparse_resident_batched(void) {
-    const u8 both[2] = {1, 1}, second[2] = {0, 1};
+    u8 both[2] = {1, 1}, second[2] = {0, 1};
     VkExtent3D g;
     VkImage a, b;
     VkBuffer rb;
@@ -2589,6 +2592,457 @@ static int check_sparse_pieces_batched(void) {
            (unsigned long long)(c2.binds - c0.binds), (unsigned long long)(c1.waits - c0.waits), wrong);
     CHECK(!wrong && c2.binds - c0.binds == 1 && c1.waits == c0.waits);
     puts("sparse binds batched: the binds made between two submissions go in one batch, without a host wait");
+    return 0;
+}
+/* A sparse 2D texture as a game makes one through NVN (nvn_tex_layout, nvn_tic_encode): RGBA8 in tiles of 128x128
+   texels, each a 64 KiB page, its levels at least a tile in size in rows of whole tiles and the smaller ones after
+   them in the layer's last tile, its mip tail. Where the device binds such an image in blocks of a tile, with its mip
+   tail from the first level smaller than one, and reads what isn't bound as zeros, the texture takes memory for its
+   mapped tiles and mip tails alone */
+#define RS_TILE 0x10000u
+typedef struct {
+    NvnTexture tex;
+    NvnTexLayout lay;
+    u32 tic[8];
+    u32 size, levels, layers, tiled; /* tiled: its levels at least a tile in size */
+} RsTex;
+/* a tile of the texture: level == tiled for the mip tail of its layer */
+typedef struct {
+    u32 layer, level, x, y;
+} RsAt;
+static void rs_make(RsTex* r, u32 size, u32 layers, u64 gva) {
+    memset(r, 0, sizeof *r);
+    r->size = size;
+    r->layers = layers;
+    while (size >> r->levels) r->levels++;
+    while (size >> r->tiled >= 128) r->tiled++;
+    r->tex.d.target = layers > 1 ? NVN_TEXTURE_TARGET_2D_ARRAY : NVN_TEXTURE_TARGET_2D;
+    r->tex.d.format = NVN_FORMAT_RGBA8;
+    r->tex.d.flags = NVN_TEXTURE_FLAGS_SPARSE;
+    r->tex.d.levels = (u8)r->levels;
+    r->tex.d.width = r->tex.d.height = size;
+    r->tex.d.depth = layers;
+    r->tex.gpu = gva;
+    nvn_tex_layout(&r->tex.d, &r->lay);
+    nvn_tic_encode(&r->tex, NULL, 0, 0, r->tic);
+}
+/* the 64 KiB page of the texture's layout a tile is */
+static u64 rs_page(const RsTex* r, RsAt a) {
+    u32 across = a.level < r->tiled ? (r->size >> a.level) / 128 : 1;
+    return (a.layer * r->lay.layer_size + nvn_tex_level_offset(&r->tex.d, a.level)) / RS_TILE + (u64)a.y * across + a.x;
+}
+/* the texels of all its levels and layers, level after level, layer after layer */
+static u64 rs_bytes(const RsTex* r) {
+    u64 n = 0;
+    for (u32 l = 0; l < r->levels; l++) n += (u64)(r->size >> l) * (r->size >> l) * 4;
+    return n * r->layers;
+}
+/* whether the device binds the texture's image in blocks of a tile, its mip tail from its first level smaller than
+   one, what isn't bound reading as zeros (made as tex_create makes it); its mip tails (one for all the layers or one
+   a layer) and their size */
+static int rs_device_can(const RsTex* r, u32* tails, u64* tail_size) {
+    VkPhysicalDeviceFeatures have;
+    VkFormatProperties fp;
+    VkFormat views[2] = {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB};
+    VkSparseImageMemoryRequirements2 sr[2] = {{.sType = VK_STRUCTURE_TYPE_SPARSE_IMAGE_MEMORY_REQUIREMENTS_2},
+                                              {.sType = VK_STRUCTURE_TYPE_SPARSE_IMAGE_MEMORY_REQUIREMENTS_2}};
+    u32 n = 2;
+    vkGetPhysicalDeviceFeatures(g_vk.phys, &have);
+    if (!g_vk.sparse || !have.sparseResidencyImage2D || !g_vk.props.sparseProperties.residencyNonResidentStrict)
+        return 0;
+    vkGetPhysicalDeviceFormatProperties(g_vk.phys, VK_FORMAT_R8G8B8A8_UNORM, &fp);
+    VkImageFormatListCreateInfo list = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO, .viewFormatCount = 2, .pViewFormats = views};
+    VkImageCreateInfo ii = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .pNext = &list,
+        .flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_SPARSE_BINDING_BIT |
+                 VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = VK_FORMAT_R8G8B8A8_UNORM,
+        .extent = {r->size, r->size, 1},
+        .mipLevels = r->levels,
+        .arrayLayers = r->layers,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                 (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT ? VK_IMAGE_USAGE_STORAGE_BIT : 0)};
+    VkDeviceImageMemoryRequirements q = {.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS,
+                                         .pCreateInfo = &ii};
+    vkGetDeviceImageSparseMemoryRequirements(g_vk.dev, &q, &n, sr);
+    const VkSparseImageMemoryRequirements* m = &sr[0].memoryRequirements;
+    *tails = m->formatProperties.flags & VK_SPARSE_IMAGE_FORMAT_SINGLE_MIPTAIL_BIT ? 1 : r->layers;
+    *tail_size = m->imageMipTailSize;
+    return n == 1 && m->formatProperties.imageGranularity.width == 128 &&
+           m->formatProperties.imageGranularity.height == 128 && m->formatProperties.imageGranularity.depth == 1 &&
+           m->imageMipTailFirstLod == r->tiled;
+}
+/* every level of every layer of t's image read back (rs_bytes), malloc'd; NULL when it couldn't be */
+static u8* rs_image(Surf* t, const RsTex* r) {
+    VkBufferImageCopy c[64];
+    VkBuffer buffer;
+    u64 at = 0;
+    u32 n = 0;
+    for (u32 layer = 0; layer < r->layers; layer++)
+        for (u32 l = 0; l < r->levels && n < 64; l++) {
+            const u32 d = r->size >> l;
+            c[n++] = (VkBufferImageCopy){.bufferOffset = at,
+                                         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, layer, 1},
+                                         .imageExtent = {d, d, 1}};
+            at += (u64)d * d * 4;
+        }
+    vk_lock();
+    u8* back = vk_readback_buffer(at, &buffer);
+    u8* out = back ? malloc((size_t)at) : NULL;
+    if (out) {
+        vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT);
+        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, n, c);
+        vk_finish();
+        vk_readback_ready();
+        memcpy(out, back, (size_t)at);
+    }
+    vk_unlock();
+    return out;
+}
+/* the same from guest memory, laid out as the hardware does it (nvn_tex_layout), the holes zeros */
+static u8* rs_memory(const RsTex* r) {
+    const u64 ls = r->lay.layer_size;
+    u8 *layer = malloc((size_t)ls), *out = malloc((size_t)rs_bytes(r));
+    u64 at = 0;
+    if (!layer || !out) {
+        free(layer);
+        free(out);
+        return NULL;
+    }
+    for (u32 k = 0; k < r->layers; k++) {
+        gmem_read(r->tex.gpu + k * ls, layer, ls); /* -1 for the holes, which read as zeros */
+        for (u32 l = 0; l < r->levels; l++) {
+            const u32 d = r->size >> l, gy = (d + 7) / 8, tw = 1u << r->lay.tile_w;
+            u32 gobs = (d * 4 + 63) / 64, bh = r->lay.tile_h;
+            if (l < r->tiled) gobs = (gobs + tw - 1) / tw * tw; /* rows of whole tiles */
+            while (bh > 0 && gy <= 1u << (bh - 1)) bh--;        /* the block shrunk to a small level */
+            const u8* lv = layer + nvn_tex_level_offset(&r->tex.d, l);
+            for (u32 y = 0; y < d; y++)
+                for (u32 x = 0; x < d; x++)
+                    memcpy(out + at + ((u64)y * d + x) * 4, lv + bl_offset(x * 4, y, 0, gobs * 64, d, bh, 0), 4);
+            at += (u64)d * d * 4;
+        }
+    }
+    free(layer);
+    return out;
+}
+/* t's image against memory, and against the same texture made whole (ref): 1 when either differs, said with the first
+   texel that does */
+static int rs_differ(const char* when, Surf* t, Surf* ref, const RsTex* r) {
+    u8 *image = rs_image(t, r), *whole = rs_image(ref, r), *memory = rs_memory(r);
+    const u64 n = rs_bytes(r);
+    int bad = !image || !whole || !memory;
+    for (u64 o = 0; !bad && o < n; o += 4) {
+        if (!memcmp(image + o, memory + o, 4) && !memcmp(whole + o, memory + o, 4)) continue;
+        u64 left = o / 4;
+        u32 layer = 0, l = 0;
+        while (left >= (u64)(r->size >> l) * (r->size >> l)) {
+            left -= (u64)(r->size >> l) * (r->size >> l);
+            if (++l == r->levels) l = 0, layer++;
+        }
+        fprintf(stderr,
+                "resident texture %ux%ux%u, %s: texel (%u, %u) of level %u, layer %u is %08x, %08x made whole, %08x in "
+                "memory\n",
+                r->size, r->size, r->layers, when, (u32)(left % (r->size >> l)), (u32)(left / (r->size >> l)), l, layer,
+                snx_ld_le32(image + o), snx_ld_le32(whole + o), snx_ld_le32(memory + o));
+        bad = 1;
+    }
+    free(image);
+    free(whole);
+    free(memory);
+    return bad;
+}
+/* the bytes t's bricks and mip tails would take with the tiles at[0..n) mapped */
+static u64 rs_bound(const RsTex* r, const RsAt* at, u32 n, u32 tails, u64 block, u64 tail_size) {
+    u64 bytes = 0;
+    u32 tail_of = 0; /* the layers whose mip tail is mapped, a bit each */
+    for (u32 i = 0; i < n; i++)
+        if (at[i].level < r->tiled)
+            bytes += block;
+        else
+            tail_of |= 1u << at[i].layer;
+    for (u32 k = 0; k < r->layers; k++)
+        if (tail_of >> k & 1) bytes += tails == 1 ? 0 : tail_size;
+    return bytes + (tails == 1 && tail_of ? tail_size : 0);
+}
+/* one frame of both textures (sv_frame): the same ones, each loaded where its memory changed */
+static int rs_frames(const RsTex* r, const RsTex* ref, Surf* t, Surf* whole, int n) {
+    for (int i = 0; i < n; i++)
+        if (sv_frame(r->tic) != t || sv_frame(ref->tic) != whole) return 1;
+    return 0;
+}
+/* The texture made with its tiles at[0..made) mapped, the same pages mapped at ref_gva behind a header the device
+   makes whole (no sparse residency of 2D images), and at ref2_gva with holes that don't read as zeros: then the tile
+   at[made] mapped, at[made + 1] unmapped, and the first mip tail mapped (the last of them) unmapped and mapped again
+   by 4 KiB of it alone, over memory just freed. Each time its image holds memory's texels, zeros in the holes, as the
+   whole one does, its memory that of its mapped tiles and mip tails, and it loads the tiles that changed */
+static int resident_texture(u32 size, u32 layers, u64 gva, u64 ref_gva, u64 ref2_gva, u64 cpu, const RsAt* at,
+                            u32 made) {
+    RsTex r, ref, ref2;
+    u32 tails;
+    u64 tail_size, uploads, bytes[2], took[2];
+    rs_make(&r, size, layers, gva);
+    rs_make(&ref, size, layers, ref_gva);
+    rs_make(&ref2, size, layers, ref2_gva);
+    if (!rs_device_can(&r, &tails, &tail_size)) {
+        printf("resident texture %ux%ux%u: the device doesn't bind it in blocks of a tile with its mip tail from level "
+               "%u, the rest reading as zeros, skipped\n",
+               size, size, layers, r.tiled);
+        return 0;
+    }
+    u32 bricks = 0, tail = 0; /* the bricks of a layer; the first mip tail mapped */
+    for (u32 l = 0; l < r.tiled; l++) bricks += (size >> l) / 128 * ((size >> l) / 128);
+    while (tail < made && at[tail].level < r.tiled) tail++;
+    CHECK(tail < made && mem_map(cpu, (made + 3) * (u64)RS_TILE, MS_NORMAL, PERM_RW) == 0);
+    for (u32 k = 0; k < made + 3; k++)
+        for (u32 b = 0; b < RS_TILE; b++) GP(cpu + (u64)k * RS_TILE)[b] = rv_byte(k + 7, b);
+    for (u32 k = 0; k < made; k++)
+        for (u32 j = 0; j < 3; j++)
+            gmmu_map((j ? j == 1 ? ref_gva : ref2_gva : gva) + rs_page(&r, at[k]) * RS_TILE, cpu + (u64)k * RS_TILE,
+                     RS_TILE);
+    took[0] = rv_allocated();
+    vk_tex_stats(&uploads, &bytes[0]);
+    vk_lock();
+    Surf* t = vk_tex_from_tic(r.tic);
+    vk_unlock();
+    took[1] = rv_allocated();
+    vk_tex_stats(&uploads, &bytes[1]);
+    /* a device without sparse residency of 2D images, and one whose holes don't read as zeros: made whole */
+    const VkBool32 had2d = g_vk.feat.sparseResidencyImage2D;
+    const int had_resident = g_vk.resident;
+    vk_lock();
+    g_vk.feat.sparseResidencyImage2D = VK_FALSE;
+    Surf* whole = vk_tex_from_tic(ref.tic);
+    g_vk.feat.sparseResidencyImage2D = had2d;
+    g_vk.resident = 0;
+    Surf* whole2 = vk_tex_from_tic(ref2.tic);
+    g_vk.resident = had_resident;
+    vk_unlock();
+    CHECK(t && whole && whole2 && t->levels == r.levels && t->layers == layers);
+    VkMemoryRequirements req;
+    vkGetImageMemoryRequirements(g_vk.dev, t->img, &req);
+    const u64 block = req.alignment, want = rs_bound(&r, at, made, tails, block, tail_size);
+    printf("resident texture %ux%ux%u, %u levels (%u in tiles), %u mip tails of %llu KiB: made with %u tiles mapped, "
+           "its image %llu KiB, %llu KiB more allocated, %llu KiB loaded; made whole %llu KiB, %llu KiB\n",
+           size, size, layers, r.levels, r.tiled, tails, (unsigned long long)(tail_size >> 10), made,
+           (unsigned long long)(t->bytes >> 10), (unsigned long long)((took[1] - took[0]) >> 10),
+           (unsigned long long)((bytes[1] - bytes[0]) >> 10), (unsigned long long)(whole->bytes >> 10),
+           (unsigned long long)(whole2->bytes >> 10));
+    /* its memory that of its mapped tiles and tails, what was allocated nearer that than the whole image */
+    CHECK(t->bricks == bricks && t->bytes == want && block == RS_TILE && want < whole->bytes);
+    CHECK(took[1] - took[0] <= want + (whole->bytes - want) / 2);
+    CHECK(!whole->bricks && !whole2->bricks && whole->bytes == whole2->bytes);
+    /* each mapped tile once, whole; the mip tail's levels alone */
+    CHECK(bytes[1] - bytes[0] <= (u64)made * RS_TILE && bytes[1] - bytes[0] > (u64)(made - 1) * RS_TILE);
+    CHECK(!rs_differ("made", t, whole, &r) && !rs_differ("made", whole2, whole, &ref2));
+    CHECK(!rs_frames(&r, &ref, t, whole, 60)); /* write tracking's scans take in what was written before */
+    /* a tile mapped: memory for it, and its texels */
+    for (u32 j = 0; j < 2; j++)
+        gmmu_map((j ? ref_gva : gva) + rs_page(&r, at[made]) * RS_TILE, cpu + (u64)made * RS_TILE, RS_TILE);
+    vk_tex_stats(&uploads, &bytes[0]);
+    CHECK(!rs_frames(&r, &ref, t, whole, 1));
+    vk_tex_stats(&uploads, &bytes[1]);
+    CHECK(t->bytes == want + block && !rs_differ("a tile mapped", t, whole, &r));
+    CHECK(bytes[1] - bytes[0] == 2 * (u64)RS_TILE); /* the tile, in each */
+    /* a tile unmapped: its memory goes, it reads zeros */
+    for (u32 j = 0; j < 2; j++) gmmu_space_unmap((j ? ref_gva : gva) + rs_page(&r, at[made + 1]) * RS_TILE, RS_TILE);
+    CHECK(!rs_frames(&r, &ref, t, whole, 1));
+    CHECK(t->bytes == want && !rs_differ("a tile unmapped", t, whole, &r));
+    /* a mip tail unmapped, its memory released and freed once the frames are done; then 4 KiB of it mapped again from
+       another page: the tail bound again, likely over the memory it had, and loaded whole, the rest of it zeros */
+    for (u32 j = 0; j < 2; j++) gmmu_space_unmap((j ? ref_gva : gva) + rs_page(&r, at[tail]) * RS_TILE, RS_TILE);
+    CHECK(!rs_frames(&r, &ref, t, whole, 1));
+    const u64 untailed = t->bytes;
+    CHECK(untailed + tail_size == want && !rs_differ("a mip tail unmapped", t, whole, &r));
+    vk_lock();
+    for (int i = 0; i < VK_FRAMES; i++) {
+        vk_frame_next();
+        vk_cmd();
+    }
+    vk_unlock();
+    for (u32 j = 0; j < 2; j++)
+        gmmu_map((j ? ref_gva : gva) + rs_page(&r, at[tail]) * RS_TILE, cpu + (u64)(made + 2) * RS_TILE, 0x1000);
+    CHECK(!rs_frames(&r, &ref, t, whole, 1));
+    CHECK(t->bytes == want && !rs_differ("4 KiB of a mip tail mapped", t, whole, &r));
+    CHECK(!rs_frames(&r, &ref, t, whole, 60));
+    CHECK(!rs_differ("frames later", t, whole, &r));
+    for (u32 j = 0; j < 3; j++) gmmu_space_unmap(j ? j == 1 ? ref_gva : ref2_gva : gva, r.lay.size);
+    CHECK(mem_unmap(cpu, (made + 3) * (u64)RS_TILE) == 0);
+    printf("resident texture %ux%ux%u: memory for its mapped tiles and mip tails alone, their texels and zeros in the "
+           "holes in each level, as made whole, bound and released as tiles are mapped and unmapped\n",
+           size, size, layers);
+    return 0;
+}
+static int check_resident_texture(void) {
+    /* 2048x2048, 12 levels, levels 0 to 4 in tiles: two tiles of level 0, one of level 1 and of level 4, the mip tail;
+       then a tile of level 2 mapped, the one of level 1 unmapped */
+    static const RsAt one[7] = {{0, 0, 1, 1}, {0, 0, 12, 5}, {0, 1, 1, 1}, {0, 4, 0, 0},
+                                {0, 5, 0, 0}, {0, 2, 3, 2},  {0, 1, 1, 1}};
+    /* 1024x1024 of 2 layers, 11 levels, levels 0 to 3 in tiles: a tile of level 0 of layer 1, one of level 2 of layer
+       0, the mip tail of layer 1; then a tile of level 0 of layer 0 mapped, the one of layer 1 unmapped */
+    static const RsAt two[5] = {{1, 0, 1, 1}, {0, 2, 1, 0}, {1, 4, 0, 0}, {0, 0, 3, 2}, {1, 0, 1, 1}};
+    CHECK(!resident_texture(2048, 1, 0x900000000ull, 0x910000000ull, 0x920000000ull, HEAP_BASE + 0x1200000, one, 5));
+    CHECK(!resident_texture(1024, 2, 0x930000000ull, 0x940000000ull, 0x950000000ull, HEAP_BASE + 0x1280000, two, 3));
+    /* 512x512, 10 levels, levels 0 to 2 in tiles: all its tiles but (3, 3) of level 0 and (1, 1) of level 1, more than
+       half of it, which loads whole, a brick at a time into its level; then (3, 3) mapped, (0, 0) of level 1 unmapped */
+    RsAt most[22];
+    u32 n = 0;
+    for (u32 y = 0; y < 4; y++)
+        for (u32 x = 0; x < 4; x++)
+            if (x != 3 || y != 3) most[n++] = (RsAt){0, 0, x, y};
+    for (u32 y = 0; y < 2; y++)
+        for (u32 x = 0; x < 2; x++)
+            if (x != 1 || y != 1) most[n++] = (RsAt){0, 1, x, y};
+    most[n++] = (RsAt){0, 2, 0, 0};
+    most[n++] = (RsAt){0, 3, 0, 0};
+    most[n] = (RsAt){0, 0, 3, 3};
+    most[n + 1] = (RsAt){0, 1, 0, 0};
+    CHECK(n == 20);
+    CHECK(!resident_texture(512, 1, 0x970000000ull, 0x980000000ull, 0x990000000ull, HEAP_BASE + 0x1300000, most, n));
+    return 0;
+}
+
+/* A tile of a resident 2D texture (512x512 RGBA8, 3 levels in tiles) unmapped while a copy that reads it waits at a
+   gate on the GPU: the texture's next check releases the tile's block without a host wait, after the copy, which
+   reads the tile's texels; a copy after it reads zeros, and the block's memory is freed once the GPU is done. Then the
+   tile mapped again from another page while the work before waits at a gate: the bind waits for that work, the
+   tile's texels are loaded after it, and a read after them sees the new ones */
+static int check_resident_texture_in_flight(void) {
+    const u64 gva = 0x960000000ull, cpu = HEAP_BASE + 0x1300000;
+    const RsAt a = {0, 0, 1, 0}, b = {0, 0, 2, 0}; /* texels 128 to 255 and 256 to 383 of rows 0 to 127 */
+    RsTex r;
+    u32 tails;
+    u64 tail_size, sub, done;
+    VkBuffer rb;
+    u8 got[5][4], want[3][4];
+    rs_make(&r, 512, 1, gva);
+    if (!rs_device_can(&r, &tails, &tail_size)) {
+        puts("resident texture in flight: the device doesn't bind a 2D RGBA8 texture in blocks of a tile, skipped");
+        return 0;
+    }
+    sc_install();
+    CHECK(mem_map(cpu, 3 * (u64)RS_TILE, MS_NORMAL, PERM_RW) == 0);
+    for (u32 k = 0; k < 3; k++)
+        for (u32 i = 0; i < RS_TILE; i++) GP(cpu + (u64)k * RS_TILE)[i] = rv_byte(k + 20, i);
+    gmmu_map(gva + rs_page(&r, a) * RS_TILE, cpu, RS_TILE);
+    gmmu_map(gva + rs_page(&r, b) * RS_TILE, cpu + RS_TILE, RS_TILE);
+    vk_lock();
+    Surf* t = vk_tex_from_tic(r.tic);
+    vk_unlock();
+    u8* memory = rs_memory(&r);
+    CHECK(t && t->bricks && memory);
+    memcpy(want[0], memory + 130 * 4, 4);
+    memcpy(want[1], memory + 260 * 4, 4);
+    free(memory);
+    vk_lock();
+    u8* back = vk_readback_buffer(256, &rb);
+    CHECK(back);
+    vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    sparse_copy(rb, 0, t->img, 130);
+    sparse_copy(rb, 16, t->img, 260);
+    Gate gate = {gate_semaphore(), 1, 0, 0};
+    CHECK(gate.sem && !plat_thread(gate_watch, &gate, 1u << 16));
+    vk_submit_after(gate.sem, 1, 2); /* the submission of the copies waits at the gate */
+    vk_unlock();
+    /* tile a unmapped: the next frame's check releases its block */
+    ScCount c0 = sc_now();
+    u64 held0 = rv_allocated(), deferred0 = vk_deferred_bytes(), bytes0 = t->bytes, t0 = plat_ns();
+    gmmu_space_unmap(gva + rs_page(&r, a) * RS_TILE, RS_TILE);
+    Surf* now = sv_frame(r.tic);
+    u64 t1 = plat_ns(), held1 = rv_allocated();
+    ScCount c1 = sc_now();
+    vk_lock();
+    const u64 reader = vk_last_submit(); /* the copies' */
+    vk_submit_progress(&sub, &done);
+    const int reading = done < reader;
+    vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    sparse_copy(rb, 32, t->img, 130);
+    sparse_copy(rb, 48, t->img, 260);
+    vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE); /* the unbind, then these copies */
+    u64 held2 = rv_allocated(), deferred2 = vk_deferred_bytes();
+    sc_now();
+    const ScBind unbind = g_sc.last;
+    vk_submit_progress(&sub, &done);
+    const int still = done < reader;
+    vk_unlock();
+    gate_end(&gate);
+    vk_lock();
+    vk_finish();
+    vk_readback_ready();
+    for (u32 i = 0; i < 4; i++) memcpy(got[i], back + 16 * i, 4);
+    for (int i = 0; i < VK_FRAMES; i++) {
+        vk_frame_next();
+        vk_cmd();
+    }
+    u64 held3 = rv_allocated();
+    vk_unlock();
+    printf("resident texture in flight: a tile unmapped under a copy reading it, the release took %.3f ms, %llu host "
+           "waits, the GPU %s reading; %llu KiB of %llu freed at once, %llu KiB deferred, %llu KiB freed once the "
+           "frames were done\n",
+           (t1 - t0) / 1e6, (unsigned long long)(c1.waits - c0.waits), reading ? "still" : "no longer",
+           (unsigned long long)((i64)(held0 - held1) >> 10), (unsigned long long)(bytes0 >> 10),
+           (unsigned long long)((deferred2 - deferred0) >> 10), (unsigned long long)((i64)(held0 - held3) >> 10));
+    CHECK(now == t && t->bytes == bytes0 - RS_TILE);
+    CHECK(reading && still && c1.waits == c0.waits && t1 - t0 < 100000000ull);   /* no wait for the GPU */
+    CHECK(held1 == held0 && held2 == held0 && deferred2 - deferred0 == RS_TILE); /* nothing freed under the copy */
+    CHECK(held3 + RS_TILE <= held0);                                             /* freed once it is done */
+    CHECK(unbind.gfx >= reader && unbind.followed); /* after the copy, and before the copies after it */
+    CHECK(!memcmp(got[0], want[0], 4) && !memcmp(got[1], want[1], 4));      /* the copy read the tile bound */
+    CHECK(!memcmp(got[2], SPARSE_ZERO8, 4) && !memcmp(got[3], want[1], 4)); /* the one after, released */
+
+    /* tile a mapped again from page 2 while the work before waits at a gate */
+    gate = (Gate){gate.sem, 3, 0, 0};
+    CHECK(!plat_thread(gate_watch, &gate, 1u << 16));
+    vk_lock();
+    vk_submit_after(gate.sem, 3, 4);
+    vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    const u64 gated = vk_last_submit();
+    vk_unlock();
+    c0 = sc_now();
+    t0 = plat_ns();
+    gmmu_map(gva + rs_page(&r, a) * RS_TILE, cpu + 2 * (u64)RS_TILE, RS_TILE);
+    now = sv_frame(r.tic);
+    t1 = plat_ns();
+    c1 = sc_now();
+    memory = rs_memory(&r);
+    CHECK(memory);
+    memcpy(want[2], memory + 130 * 4, 4);
+    free(memory);
+    vk_lock();
+    vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    sparse_copy(rb, 64, t->img, 130);
+    vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    sc_now();
+    const ScBind rebind = g_sc.last;
+    vk_unlock();
+    plat_sleep_ns(20000000); /* the GPU idle at the gate: the bind, the tile's load and the read are what is left */
+    gate_end(&gate);
+    vk_lock();
+    vk_finish();
+    vk_readback_ready();
+    memcpy(got[4], back + 64, 4);
+    vk_unlock();
+    vkDestroySemaphore(g_vk.dev, gate.sem, NULL);
+    gmmu_space_unmap(gva, r.lay.size);
+    CHECK(mem_unmap(cpu, 3 * (u64)RS_TILE) == 0);
+    printf("resident texture in flight, mapped again: %.3f ms, %llu host waits; the read after it %02x%02x%02x%02x, "
+           "memory %02x%02x%02x%02x\n",
+           (t1 - t0) / 1e6, (unsigned long long)(c1.waits - c0.waits), got[4][0], got[4][1], got[4][2], got[4][3],
+           want[2][0], want[2][1], want[2][2], want[2][3]);
+    CHECK(now == t && t->bytes == bytes0 && c1.waits == c0.waits && t1 - t0 < 100000000ull);
+    CHECK(rebind.gfx >= gated && rebind.followed); /* after the work before it, and before the tile's load */
+    CHECK(!memcmp(got[4], want[2], 4) && memcmp(want[2], want[0], 4));
+    puts("resident texture in flight: a tile unmapped under a copy still reading it, without a host wait, its memory "
+         "freed after the GPU; a tile mapped again loaded after the work before it, read at once");
     return 0;
 }
 static int check_dma(void) {
@@ -3769,6 +4223,10 @@ int main(int argc, char** argv) {
             benchmark_sparse = 1;
             continue;
         }
+        if (!strcmp(argv[i], "--bench-sparse-texture")) {
+            benchmark_sparse = 2;
+            continue;
+        }
         if (!strcmp(argv[i], "--bench-storage-lookup")) {
             benchmark_storage = 1;
             continue;
@@ -3785,7 +4243,7 @@ int main(int argc, char** argv) {
             fprintf(
                 stderr,
                 "snx-test-vulkan: %s is not an option it takes: -H, --KEY=VALUE of the runtime's settings, "
-                "--bench-descriptors=N, --descriptor-images=N, --descriptor-count=N, --bench-sparse-volume, --bench-storage-lookup, --bench-storage-image, --nvn-draw-bench=N\n",
+                "--bench-descriptors=N, --descriptor-images=N, --descriptor-count=N, --bench-sparse-volume, --bench-sparse-texture, --bench-storage-lookup, --bench-storage-image, --nvn-draw-bench=N\n",
                 argv[i]);
             return 2;
         }
@@ -3861,7 +4319,7 @@ int main(int argc, char** argv) {
         return result;
     }
     if (benchmark_sparse) {
-        int result = bench_sparse_volumes();
+        int result = benchmark_sparse == 2 ? bench_sparse_textures() : bench_sparse_volumes();
         vk_pipeline_quiesce();
         CHECK(!snx_remove_tree(root));
         free(root);
@@ -4069,6 +4527,8 @@ int main(int argc, char** argv) {
     CHECK(!check_resident_volume());
     CHECK(!check_sparse_unbind_in_flight());
     CHECK(!check_sparse_resident_batched());
+    CHECK(!check_resident_texture());
+    CHECK(!check_resident_texture_in_flight());
     CHECK(!check_sparse_pieces_batched());
     CHECK(!check_dma_untracked_source());
     CHECK(!check_dma_tiles());

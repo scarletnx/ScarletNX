@@ -390,74 +390,114 @@ void vk_tex_partial_stats(u64* loads, u64* bytes) {
     *loads = g_tex_loads.partial;
     *bytes = g_tex_loads.partial_bytes;
 }
-/* the bricks of a texture whose image has memory only where it is mapped (resident_image) that memory maps any byte of */
-typedef struct {
-    u8* want;
-    u64 gva, brick_bytes;
-    u32 bricks;
-} Mapped;
-static void brick_mapped(void* ctx, u64 gva, u64 cpu, u64 n) {
-    Mapped* m = ctx;
-    (void)cpu;
-    for (u64 b = (gva - m->gva) / m->brick_bytes; b <= (gva + n - 1 - m->gva) / m->brick_bytes && b < m->bricks; b++)
-        m->want[b] = 1;
+/* A texture whose image has memory only where it is mapped (resident_image): its pages, as vk_image_resident takes
+   them, are the bricks of each layer, then its mip tails */
+static u32 resident_pages(const Surf* t) { return t->layers * t->bricks + t->tails; }
+/* the bytes of a layer's bricks, and of all its levels */
+static u64 resident_bricks_end(const Surf* t) { return (u64)t->bricks * t->brick_bytes; }
+static u64 resident_levels_end(const Surf* t) { return t->size - (u64)(t->layers - 1) * t->layer_size; }
+/* the page byte o of such a texture lies in: a brick, or the mip tail of its layer's levels from tail_first on; -1 in
+   the padding after a layer's levels. *end gets where that page's bytes there end */
+static i64 resident_page(const Surf* t, u64 o, u64* end) {
+    const u64 layer = o / t->layer_size, in = o % t->layer_size, base = layer * t->layer_size;
+    if (in < resident_bricks_end(t)) {
+        *end = base + (in / t->brick_bytes + 1) * t->brick_bytes;
+        return (i64)(layer * t->bricks + in / t->brick_bytes);
+    }
+    if (in < resident_levels_end(t)) {
+        *end = base + resident_levels_end(t);
+        return (i64)((u64)t->layers * t->bricks + (t->tails == 1 ? 0 : layer));
+    }
+    *end = base + t->layer_size;
+    return -1;
 }
-/* such a texture's bricks bound where memory maps any of their bytes and released where it maps none
-   (vk_image_resident: what isn't bound reads as zeros, as the holes do), the ones bound set in want (t->bricks of
-   them, zeroed). 1 when they all are */
+/* the pages of such a texture that memory maps any byte of */
+typedef struct {
+    const Surf* t;
+    u8* want;
+} Mapped;
+static void page_mapped(void* ctx, u64 gva, u64 cpu, u64 n) {
+    Mapped* m = ctx;
+    u64 end;
+    (void)cpu;
+    for (u64 o = gva - m->t->gva; o < gva + n - m->t->gva; o = end) {
+        i64 k = resident_page(m->t, o, &end);
+        if (k >= 0) m->want[k] = 1;
+    }
+}
+/* such a texture's pages bound where memory maps any of their bytes and released where it maps none
+   (vk_image_resident: what isn't bound reads as zeros, as the holes do), the ones bound set in want (resident_pages of
+   them, zeroed; 2 where the memory is new). 1 when they all are */
 static int resident_bind_mapped(Surf* t, u8* want) {
-    Mapped m = {want, t->gva, t->brick_bytes, t->bricks};
-    u32 n = 0;
+    Mapped m = {t, want};
+    u32 n = 0, pages = resident_pages(t);
     u64 bytes;
-    gmmu_pieces(t->gva, t->size, brick_mapped, &m);
-    for (u32 i = 0; i < t->bricks; i++) n += want[i];
+    gmmu_pieces(t->gva, t->size, page_mapped, &m);
+    for (u32 i = 0; i < pages; i++) n += want[i];
+    /* room made under the budget, a mip tail counted as a brick */
     if ((u64)n * t->brick_bytes > t->bytes) vk_mem_trim((u64)n * t->brick_bytes - t->bytes, 0);
-    int ok = vk_image_resident(t->img, want, t->bricks, &bytes);
+    int ok = vk_image_resident(t->img, want, pages, &bytes);
     vk_surf_bytes(t, bytes);
     return ok;
 }
-/* such a texture's upload: its bricks bound where it is mapped (resident_bind_mapped), then each bound brick staged as
-   it is and deswizzled on the GPU as a surface of one row of blocks, into its place in the image */
+static int tex_patch_range(Upload* u, u64 a, u64 b);
+/* such a texture's upload: its pages bound where it is mapped (resident_bind_mapped), then each bound brick staged as
+   it is and deswizzled on the GPU as a surface of one row of blocks, into its place in its level and layer, and the
+   levels of each bound mip tail as a texture's pieces are (tex_patch_range) */
 static int resident_upload(Surf* t) {
     const VkFmt* f = &t->f;
     const VkExtent3D g = t->grain;
-    u8* want = calloc(t->bricks, 1);
-    u32 lbh, lbd;
+    const u32 pages = resident_pages(t), d3 = t->type == VK_IMAGE_VIEW_TYPE_3D ? t->depth3d : 1,
+              across = g.width / f->bw * f->bpp;
+    u8* want = calloc(pages, 1);
     if (!want) return 0;
     int ok = resident_bind_mapped(t, want);
-    bl_level_blocks(t->h, t->depth3d, f, t->bh, t->bd, 0, &lbh, &lbd);
-    const u32 across = g.width / f->bw * f->bpp, bx = (t->w + g.width - 1) / g.width,
-              by = (t->h + g.height - 1) / g.height;
     Upload u = {.cb = vk_cmd(), .t = t};
     vk_surf_use(u.cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    for (u32 i = 0; i < t->bricks && ok; i++) {
-        if (!want[i]) continue;
-        u32 x = i % bx * g.width, y = i / bx % by * g.height, z = i / (bx * by) * g.depth;
-        VkBlMove mv = {across, 8u << lbh, lbh, lbd, 0, 8u << lbh, 0, 1u << lbd, across};
-        u64 lin = (u64)mv.slices * mv.rows * mv.lin_pitch, staged_at, at;
-        VkBuffer staged;
-        ok =
-            stage_bl(&mv, t->gva + (u64)i * t->brick_bytes, t->brick_bytes, &staged, &staged_at) && up_reserve(&u, lin);
-        if (!ok) break;
-        at = up_space(&u, lin, bl_lin_align(f->bpp));
-        up_open(&u);
-        if (!(ok = vk_bl_move(u.cb, &mv, 0, staged, staged_at, u.scratch, at))) break;
-        u.moves++;
-        u.src[u.nreg] = u.scratch;
-        u.reg[u.nreg++] = (VkBufferImageCopy){.bufferOffset = at,
-                                              .bufferRowLength = g.width,
-                                              .bufferImageHeight = g.height,
-                                              .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                                              .imageOffset = {(i32)x, (i32)y, (i32)z},
-                                              .imageExtent = {t->w - x < g.width ? t->w - x : g.width,
-                                                              t->h - y < g.height ? t->h - y : g.height,
-                                                              t->depth3d - z < g.depth ? t->depth3d - z : g.depth}};
-        g_tex_loads.bytes += t->brick_bytes;
-    }
+    u32 i = 0;
+    for (u32 layer = 0; layer < t->layers && ok; layer++)
+        for (u32 l = 0; l < t->tail_first && ok; l++) {
+            const u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1, ld = d3 >> l ? d3 >> l : 1;
+            u32 lbh, lbd;
+            bl_level_blocks(t->h, d3, f, t->bh, t->bd, l, &lbh, &lbd);
+            for (u32 z = 0; z < ld && ok; z += g.depth)
+                for (u32 y = 0; y < lh && ok; y += g.height)
+                    for (u32 x = 0; x < lw && ok; x += g.width, i++) {
+                        if (!want[i]) continue;
+                        VkBlMove mv = {across, 8u << lbh, lbh, lbd, 0, 8u << lbh, 0, 1u << lbd, across};
+                        const u64 lin = (u64)mv.slices * mv.rows * mv.lin_pitch,
+                                  from = layer * t->layer_size + (u64)(i - layer * t->bricks) * t->brick_bytes;
+                        u64 staged_at, at;
+                        VkBuffer staged;
+                        ok = stage_bl(&mv, t->gva + from, t->brick_bytes, &staged, &staged_at) && up_reserve(&u, lin);
+                        if (!ok) break;
+                        at = up_space(&u, lin, bl_lin_align(f->bpp));
+                        up_open(&u);
+                        if (!(ok = vk_bl_move(u.cb, &mv, 0, staged, staged_at, u.scratch, at))) break;
+                        u.moves++;
+                        u.src[u.nreg] = u.scratch;
+                        u.reg[u.nreg++] = (VkBufferImageCopy){
+                            .bufferOffset = at,
+                            .bufferRowLength = g.width,
+                            .bufferImageHeight = g.height,
+                            .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, layer, 1},
+                            .imageOffset = {(i32)x, (i32)y, (i32)z},
+                            .imageExtent = {lw - x < g.width ? lw - x : g.width, lh - y < g.height ? lh - y : g.height,
+                                            ld - z < g.depth ? ld - z : g.depth}};
+                        g_tex_loads.bytes += t->brick_bytes;
+                    }
+        }
+    for (u32 k = 0; k < t->tails && ok; k++)
+        if (want[t->layers * t->bricks + k])
+            for (u32 layer = 0; layer < t->layers && ok; layer++)
+                if (t->tails == 1 || layer == k)
+                    ok = tex_patch_range(&u, layer * t->layer_size + resident_bricks_end(t),
+                                         layer * t->layer_size + resident_levels_end(t));
     ok = up_flush(&u) && ok;
     if (!ok)
-        LOG_LIMIT(1, "vulkan: out of memory or staging loading a %ux%ux%u texture's bricks\n", t->w, t->h, t->depth3d);
+        LOG_LIMIT(1, "vulkan: out of memory or staging loading a %ux%ux%u texture's bricks\n", t->w, t->h,
+                  t->layers * d3);
     free(want);
     return ok;
 }
@@ -632,33 +672,53 @@ static int format_samples(VkFormat f) {
     return r;
 }
 
-/* t's image with memory only where it is mapped (vk_image_create_resident), when the device binds 3D images of its
-   format in bricks that are each one range of the guest's layout: whole blocks of GOBs side by side in one row of
-   them, as a sparse texture's 64 KiB tile is (nvn_tex_layout), its rows a whole number of bricks. Then the brick the
-   guest's n-th range of brick_bytes holds is the device's n-th block, and tex_upload binds a brick where memory maps
-   any of its range */
+static int tex_can_piece(const Surf* t);
+/* level l of t's layout: the GOBs across its rows, and the block of GOBs it is laid out in (log2 high and deep) */
+static u32 level_layout(const Surf* t, u32 l, u32* lbh, u32* lbd) {
+    const VkFmt* f = &t->f;
+    const u32 d3 = t->type == VK_IMAGE_VIEW_TYPE_3D ? t->depth3d : 1, lw = t->w >> l ? t->w >> l : 1,
+              lh = t->h >> l ? t->h >> l : 1, ld = d3 >> l ? d3 >> l : 1;
+    bl_level_blocks(t->h, d3, f, t->bh, t->bd, l, lbh, lbd);
+    return bl_level_gobs_x((lw + f->bw - 1) / f->bw * f->bpp, (lh + f->bh - 1) / f->bh, ld, t->bh, t->bd, t->tile_w);
+}
+/* t's image with memory only where it is mapped (vk_image_create_resident), when the device binds it in bricks that
+   are each one range of the guest's layout: whole blocks of GOBs side by side in one row of them, as a sparse
+   texture's 64 KiB tile is (nvn_tex_layout). Each level before the device's mip tail is then rows of whole bricks, the
+   n-th brick_bytes of a layer the device's n-th block of it, and the levels from the mip tail on the rest of the
+   layer. tex_upload binds a brick or a mip tail where memory maps any of its bytes */
 static int resident_image(Surf* t, const VkImageCreateInfo* ii) {
     const VkFmt* f = &t->f;
-    VkExtent3D g;
-    u32 lbh, lbd;
-    if (t->type != VK_IMAGE_VIEW_TYPE_3D || t->levels != 1 || t->layers != 1 || t->msaa || !t->bl || f->depth ||
-        f->conv == VKC_ASTC || vk_tc_converts(f) || !vk_resident_block(ii->format, ii->usage, &g))
-        return 0;
-    bl_level_blocks(t->h, t->depth3d, f, t->bh, t->bd, 0, &lbh, &lbd);
-    u32 across = g.width % f->bw ? 0 : g.width / f->bw * f->bpp, rows = g.height % f->bh ? 0 : g.height / f->bh;
-    u32 row_gobs = ((t->w + f->bw - 1) / f->bw * f->bpp + 63) / 64;
-    if (!across || across % 64 || rows != 8u << lbh || g.depth != 1u << lbd || row_gobs % (across / 64)) {
+    const u32 d3 = t->type == VK_IMAGE_VIEW_TYPE_3D ? t->depth3d : 1;
+    VkResidentShape s;
+    if (!tex_can_piece(t) || !vk_resident_shape(ii, &s)) return 0;
+    const VkExtent3D g = s.block;
+    const u32 across = g.width % f->bw ? 0 : g.width / f->bw * f->bpp, rows = g.height % f->bh ? 0 : g.height / f->bh;
+    const u64 brick_bytes = (u64)across / 64 * (rows / 8) * g.depth * 512;
+    u32 l = 0, lbh, lbd, bricks = 0;
+    for (; l < s.tail_first; l++) {
+        const u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1, ld = d3 >> l ? d3 >> l : 1;
+        const u32 bx = (lw + g.width - 1) / g.width, gobs = level_layout(t, l, &lbh, &lbd);
+        if (!across || across % 64 || rows != 8u << lbh || g.depth != 1u << lbd || gobs != bx * (across / 64)) break;
+        bricks += bx * ((lh + g.height - 1) / g.height) * ((ld + g.depth - 1) / g.depth);
+    }
+    if (!s.tail_first || l < s.tail_first || (t->layers > 1 && t->layer_size % brick_bytes)) {
+        /* the level that isn't whole bricks, else the last one before the mip tail */
+        const u32 at = l < s.tail_first || !l ? l : l - 1, lw = t->w >> at ? t->w >> at : 1,
+                  gobs = level_layout(t, at, &lbh, &lbd);
         LOG_LIMIT(4,
-                  "vulkan: a %ux%ux%u texture with holes in its mapping is made whole: the device binds blocks of "
-                  "%ux%ux%u texels, its layout's are %u GOBs high and %u deep, %u GOBs a row\n",
-                  t->w, t->h, t->depth3d, g.width, g.height, g.depth, 1u << lbh, 1u << lbd, row_gobs);
+                  "vulkan: a %ux%ux%u texture of %u levels with holes in its mapping is made whole: the device binds "
+                  "blocks of %ux%ux%u texels, its mip tail from level %u; the layout's level %u has blocks %u GOBs "
+                  "high and %u deep, %u GOBs a row (%u in whole blocks), its layers %llu bytes apart\n",
+                  t->w, t->h, t->layers * d3, t->levels, g.width, g.height, g.depth, s.tail_first, at, 1u << lbh,
+                  1u << lbd, gobs, (lw + g.width - 1) / g.width * (across / 64), (unsigned long long)t->layer_size);
         return 0;
     }
-    if (!vk_image_create_resident(ii, &g, &t->img)) return 0;
+    if (!vk_image_create_resident(ii, &s, &t->img)) return 0;
     t->grain = g;
-    t->brick_bytes = across / 64 * (512u << (lbh + lbd));
-    t->bricks =
-        (t->w + g.width - 1) / g.width * ((t->h + g.height - 1) / g.height) * ((t->depth3d + g.depth - 1) / g.depth);
+    t->brick_bytes = (u32)brick_bytes;
+    t->bricks = bricks;
+    t->tail_first = s.tail_first;
+    t->tails = s.tails;
     t->bytes = 0;
     return 1;
 }
@@ -894,6 +954,18 @@ static void pieces_add(TexPieces* p, u64 at, u64 n) {
         memmove(p->piece + k + 1, p->piece + k + 2, (p->count - k - 2) * sizeof *p->piece);
         p->count--;
     }
+}
+
+/* page k of a texture with memory only where it is mapped (resident_page), all of it, in each layer it has bytes in */
+static void resident_page_add(const Surf* t, u32 k, TexPieces* p) {
+    if (k < t->layers * t->bricks) {
+        pieces_add(p, (u64)(k / t->bricks) * t->layer_size + (u64)(k % t->bricks) * t->brick_bytes, t->brick_bytes);
+        return;
+    }
+    for (u32 layer = 0; layer < t->layers; layer++)
+        if (t->tails == 1 || k - t->layers * t->bricks == layer)
+            pieces_add(p, layer * t->layer_size + resident_bricks_end(t),
+                       resident_levels_end(t) - resident_bricks_end(t));
 }
 
 /* a texture's memory where it isn't one host run, over the runs the GPU's page table maps of it (gmmu_pieces, which
@@ -1153,24 +1225,28 @@ static int tex_patch(Surf* t, const TexPieces* p) {
     vk_render_end(); /* copies, and a bind's submission, happen outside rendering passes */
     TexPieces bound;
     if (t->bricks) {
-        /* memory for the bricks mapped now, before their bytes go in, and only the pieces' parts in those: the others
-           read as zeros (a tile unmapped) */
-        u8* want = calloc(t->bricks, 1);
+        /* memory for the bricks and mip tails mapped now, before their bytes go in, and only the pieces' parts in
+           those: the others read as zeros (a tile unmapped). One given memory now is loaded whole: its texels are
+           undefined, and its bytes the pieces miss are zeros or what memory maps there */
+        const u32 pages = resident_pages(t);
+        u8* want = calloc(pages, 1);
         int ok = want && resident_bind_mapped(t, want);
         bound.count = 0, bound.all = 0;
         for (u32 i = 0; i < p->count && ok; i++) {
-            u64 at = p->piece[i].at, end = at + p->piece[i].n, bb = t->brick_bytes;
-            for (u64 b = at / bb; b < t->bricks && b * bb < end; b++)
-                if (want[b])
-                    pieces_add(&bound, b * bb > at ? b * bb : at,
-                               ((b + 1) * bb < end ? (b + 1) * bb : end) - (b * bb > at ? b * bb : at));
+            u64 end = p->piece[i].at + p->piece[i].n, e;
+            for (u64 o = p->piece[i].at; o < end; o = e) {
+                i64 k = resident_page(t, o, &e);
+                if (k >= 0 && want[k] == 1) pieces_add(&bound, o, (e < end ? e : end) - o);
+            }
         }
+        for (u32 k = 0; k < pages && ok; k++)
+            if (want[k] == 2) resident_page_add(t, k, &bound);
         free(want);
         if (!ok) {
             LOG_LIMIT(1,
                       "vulkan: no memory to bind a %ux%ux%u texture's mapped bricks: it loads again in the next "
                       "frame\n",
-                      t->w, t->h, t->depth3d);
+                      t->w, t->h, t->layers * t->depth3d);
             return t->upload_valid = 0;
         }
         if (bound.all) return tex_upload(t);
