@@ -26,6 +26,7 @@ static struct {
     PFN_vkBeginCommandBuffer begin;
     PFN_vkCmdBindPipeline bind;
     PFN_vkCmdSetVertexInputEXT set;
+    PFN_vkDestroyPipeline destroy;
     PFN_vkCmdDraw draw;
     PFN_vkCmdDrawIndexed draw_indexed;
     PFN_vkCmdDrawIndirect draw_indirect;
@@ -44,6 +45,12 @@ static struct {
     /* every draw so far: those with a dynamic layout, those of them without one set (wrong), the sets, the sets of the
        layout the command buffer already had, and the binds of a graphics pipeline made before the watch */
     u64 draws, dynamic_draws, unset, sets, redundant, unknown_binds;
+    /* the graphics pipelines destroyed while the checks run: none is, as render.c keeps the handles of the pipelines
+       it drew with (g_draw) and the driver gives a freed handle to the next pipeline it makes. One link destroyed
+       once its optimized pipeline was there gave its handle to another pipeline, which the watch then read as the
+       link: a draw "with none set" in one run of three */
+    u64 destroyed;
+    u64 reused; /* pipelines made with the handle of one the watch knows already: it can't tell the two apart */
     /* the draws while capture is on, as each found the vertex input */
     int capture;
     u32 ncap;
@@ -89,6 +96,11 @@ static VKAPI_ATTR VkResult VKAPI_CALL viw_create(VkDevice dev, VkPipelineCache c
             g_viw.pipes_over++;
             continue;
         }
+        for (u32 j = 0; j < g_viw.npipes; j++)
+            if (g_viw.pipes[j].p == out[i]) {
+                g_viw.reused++;
+                break;
+            }
         u32 format1 =
             dynamic || !vi ? 0 : viw_format1(vi->vertexAttributeDescriptionCount, vi->pVertexAttributeDescriptions);
         /* a link of pipeline libraries (pipeline.c's gpl_link): the vertex input its vertex input library holds */
@@ -108,6 +120,16 @@ static VKAPI_ATTR VkResult VKAPI_CALL viw_create(VkDevice dev, VkPipelineCache c
     }
     pm_unlock(&g_viw.lock);
     return r;
+}
+static VKAPI_ATTR void VKAPI_CALL viw_destroy(VkDevice dev, VkPipeline p, const VkAllocationCallbacks* alloc) {
+    pm_lock(&g_viw.lock);
+    for (u32 i = 0; p && i < g_viw.npipes; i++)
+        if (g_viw.pipes[i].p == p) {
+            g_viw.destroyed++;
+            break;
+        }
+    pm_unlock(&g_viw.lock);
+    g_viw.destroy(dev, p, alloc);
 }
 static VKAPI_ATTR VkResult VKAPI_CALL viw_begin(VkCommandBuffer cb, const VkCommandBufferBeginInfo* info) {
     pm_lock(&g_viw.lock);
@@ -215,6 +237,7 @@ static void viw_install(void) {
     g_viw.create = vkCreateGraphicsPipelines;
     g_viw.begin = vkBeginCommandBuffer;
     g_viw.bind = vkCmdBindPipeline;
+    g_viw.destroy = vkDestroyPipeline;
     g_viw.set = vkCmdSetVertexInputEXT;
     g_viw.draw = vkCmdDraw;
     g_viw.draw_indexed = vkCmdDrawIndexed;
@@ -225,6 +248,7 @@ static void viw_install(void) {
     vkCreateGraphicsPipelines = viw_create;
     vkBeginCommandBuffer = viw_begin;
     vkCmdBindPipeline = viw_bind;
+    vkDestroyPipeline = viw_destroy;
     if (g_viw.set) vkCmdSetVertexInputEXT = viw_set;
     vkCmdDraw = viw_draw0;
     vkCmdDrawIndexed = viw_draw1;
@@ -236,11 +260,13 @@ static void viw_install(void) {
 /* what the checks' draws found, said and checked once every check ran */
 static int viw_report(void) {
     printf("vertex input: %llu draws, %llu with the layout as dynamic state, %llu layouts set, %llu of them the one "
-           "the command buffer had, %llu draws with none set\n",
+           "the command buffer had, %llu draws with none set, %llu graphics pipelines destroyed, %llu handles given again\n",
            (unsigned long long)g_viw.draws, (unsigned long long)g_viw.dynamic_draws, (unsigned long long)g_viw.sets,
-           (unsigned long long)g_viw.redundant, (unsigned long long)g_viw.unset);
+           (unsigned long long)g_viw.redundant, (unsigned long long)g_viw.unset, (unsigned long long)g_viw.destroyed,
+           (unsigned long long)g_viw.reused);
     CHECK(!g_viw.pipes_over && !g_viw.layouts_over && !g_viw.unknown_binds);
     CHECK(!g_viw.unset);
+    CHECK(!g_viw.destroyed && !g_viw.reused);
     CHECK(g_vk.vertex_input_dynamic ? g_viw.dynamic_draws > 0 : !g_viw.dynamic_draws && !g_viw.sets);
     return 0;
 }

@@ -823,8 +823,10 @@ typedef struct Pipe {
     int ready;         /* set by the worker after p, with release order */
     struct PipeLib* lib[4]; /* with pipeline libraries, its parts (vertex input, pre-rasterization, fragment shader,
                                fragment output: VK_PART_* by bit), else NULL */
-    VkPipeline fast;   /* its parts' link, until the GPU thread frees it once p is the optimized one (opt) */
-    int opt;           /* p is the optimized pipeline (atomic, release after p) */
+    /* p is the optimized pipeline (atomic, release after p). The link it took the place of stays, as every pipeline
+       does for the run: the draws keep the handles they had (render.c's g_draw), and a link freed once gave its handle
+       to a new pipeline, which the headless test's watch then took for the link */
+    int opt;
     VkPipelineLayout layout;
     VkShaderModule fs; /* k.fs, or the empty fragment shader */
     int prewarm;       /* one of the file's, made before a draw asked for it */
@@ -1433,14 +1435,6 @@ static void pipe_optimize(Pipe* e) {
     __atomic_store_n(&e->p, o, __ATOMIC_RELEASE);
     __atomic_store_n(&e->opt, 1, __ATOMIC_RELEASE);
 }
-static void pipe_destroy(void* p) { vkDestroyPipeline(g_vk.dev, (VkPipeline)p, NULL); }
-/* on the GPU thread: e's fast link freed once the optimized pipeline took its place. The binds of it the recording
-   thread made are in this frame or the ones before, which the frame's recycling waits for */
-static void pipe_fast_free(Pipe* e) {
-    if (!e->fast || !__atomic_load_n(&e->opt, __ATOMIC_ACQUIRE)) return;
-    vk_defer_call(pipe_destroy, (void*)e->fast);
-    e->fast = VK_NULL_HANDLE;
-}
 void vk_pipeline_lib_stats(u64 made[4], u64 hits[4], u64 make_ms[4], u64* links, u64* link_ms, u64* opts,
                            u64* opt_ms) {
     for (int i = 0; i < 4; i++) {
@@ -1507,7 +1501,6 @@ static void pipe_worker(void* arg) {
         p = pipe_make(e, 0);
         pm_lock(&g_pj_lock);
         g_pj_busy--;
-        if (e->lib[0]) e->fast = p;
         __atomic_store_n(&e->p, p, __ATOMIC_RELEASE);
         __atomic_store_n(&e->ready, 1, __ATOMIC_RELEASE);
         if (p && e->lib[0]) pipe_queue(e, 3);
@@ -1651,7 +1644,6 @@ static Pipe* pipe_entry(const PipeKey* k, int* found) {
 static VkPipeline pipe_make_here(Pipe* p, int record) {
     u64 t0 = plat_ns();
     VkPipeline made = pipe_make(p, record);
-    if (p->lib[0]) p->fast = made;
     __atomic_store_n(&p->p, made, __ATOMIC_RELEASE);
     __atomic_store_n(&p->ready, 1, __ATOMIC_RELEASE);
     __atomic_add_fetch(&g_pipe_wait_ns, plat_ns() - t0, __ATOMIC_RELAXED);
@@ -1671,7 +1663,6 @@ VkPipeline vk_pipeline_get(const PipeKey* k) {
     if (!p) return VK_NULL_HANDLE;
     if (found) {
         if (__atomic_load_n(&p->ready, __ATOMIC_ACQUIRE)) {
-            pipe_fast_free(p);
             return __atomic_load_n(&p->p, __ATOMIC_ACQUIRE);
         }
         if (p->prewarm) pipe_promote(p);
@@ -1694,9 +1685,8 @@ VkPipeline vk_pipeline_get_deferred(const PipeKey* k) {
     if (!p) return VK_NULL_HANDLE;
     if (found) {
         if (__atomic_load_n(&p->ready, __ATOMIC_ACQUIRE)) {
-            pipe_fast_free(p);
-            if (!p->lib[0] || __atomic_load_n(&p->opt, __ATOMIC_ACQUIRE) || !p->fast)
-                return __atomic_load_n(&p->p, __ATOMIC_ACQUIRE);
+            VkPipeline made = __atomic_load_n(&p->p, __ATOMIC_ACQUIRE);
+            if (!p->lib[0] || !made || __atomic_load_n(&p->opt, __ATOMIC_ACQUIRE)) return made;
         } else if (p->prewarm)
             pipe_promote(p);
     } else {
