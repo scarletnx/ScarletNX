@@ -50,14 +50,18 @@ static int ro_register_nrr(RoState* s, u64 a, u64 size, int kind) {
         if (!s->nrr[i].address && !slot) slot = &s->nrr[i];
     }
     R_UNLESS(slot, RO_ERROR(8));
-    R_UNLESS(size >= 0x350 && size <= 0xFFFFFFFFull && ro_readable(a, size), RO_ERROR(6));
-    u8 header[0x350];
-    memcpy(header, GP(a), sizeof header);
-    u32 off = ro_u32(header + 0x340), count = ro_u32(header + 0x344);
-    if (memcmp(header, "NRR0", 4) || ro_u32(header + 0x338) != size || ro_u64(header + 0x330) != g_hle.kernel.title_id ||
-        off < sizeof header || off > size || count > (size - off) / 32)
+    /* An Ounce NRR's fields lie 0x180 bytes further on than a Switch's, past longer keys and signatures (read in one
+       game's file: the first hash at 0x4d0, the size at 0x4b8) */
+    u32 shift = g_ounce ? 0x180 : 0, header_size = 0x350 + shift;
+    R_UNLESS(size >= header_size && size <= 0xFFFFFFFFull && ro_readable(a, size), RO_ERROR(6));
+    u8 header[0x350 + 0x180];
+    memcpy(header, GP(a), header_size);
+    u32 off = ro_u32(header + 0x340 + shift), count = ro_u32(header + 0x344 + shift);
+    if (memcmp(header, "NRR0", 4) || ro_u32(header + 0x338 + shift) != size ||
+        ro_u64(header + 0x330 + shift) != g_hle.kernel.title_id || off < header_size || off > size ||
+        count > (size - off) / 32)
         R_THROW(RO_ERROR(6));
-    R_UNLESS(header[0x33c] == kind, RO_ERROR(10));
+    R_UNLESS(header[0x33c + shift] == kind, RO_ERROR(10));
     /* Like Eden, no RSA trust-chain verification. Snapshot the hashes, not pointers to mutable guest storage. */
     u8* hashes = malloc(count ? (size_t)count * 32 : 1);
     R_UNLESS(hashes, RO_ERROR(1023));
