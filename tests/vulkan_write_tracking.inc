@@ -990,7 +990,7 @@ static u32 wt_texel_at(const u32 tic[8], u32 x, u32 y) {
    second piece, and a DMA copy over the first through another GPU address of it, each reach it in the next epoch.
    Without write tracking its checks hash it instead (vulkan_write_tracking_off) */
 static int check_wt_pieces(void) {
-    const u64 cpu = WT_CPU + 17 * WT_LEAF, a = cpu, b = cpu + 0x8000, src = cpu + 0xC000;
+    const u64 cpu = WT_CPU + 24 * WT_LEAF, a = cpu, b = cpu + 0x8000, src = cpu + 0xC000;
     const u64 gva = WT_GVA + 0x10000000, other = WT_GVA + 0x10100000, gsrc = WT_GVA + 0x10200000;
     const int epochs = 8;
     u32 tic[8];
@@ -1057,7 +1057,7 @@ static int check_wt_pieces(void) {
    tracking can't answer use (they were taken from the 63rd unchanged check on, at every write). Untouched first, its
    checks hash nothing; new bytes then reach it */
 static int check_wt_sampled(void) {
-    const u64 cpu = WT_CPU + 18 * WT_LEAF, gva = WT_GVA + 0x10400000, size = 0x10000; /* patched whole, not by page */
+    const u64 cpu = WT_CPU + 25 * WT_LEAF, gva = WT_GVA + 0x10400000, size = 0x10000; /* patched whole, not by page */
     const u64 rounds = 80, idle = 8;
     VkBuffer b;
     u64 off, c, h0, s0, h1, s1, h2, s2;
@@ -1119,7 +1119,7 @@ static int check_wt_sampled(void) {
    is compared, and the result is still read where it is; new bytes are compared, and the result lands before the read.
    Without write tracking every read compares (vulkan_write_tracking_off) */
 static int check_wt_compares(void) {
-    const u64 cpu = WT_CPU + 19 * WT_LEAF, gva = WT_GVA + 0x10800000, size = 0x1000;
+    const u64 cpu = WT_CPU + 26 * WT_LEAF, gva = WT_GVA + 0x10800000, size = 0x1000;
     const int epochs = 4;
     VkBuffer out, b;
     u64 at, off, c0, c1, c2, c3, h, s;
