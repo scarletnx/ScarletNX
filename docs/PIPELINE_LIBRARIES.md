@@ -26,6 +26,7 @@ programs that a game ships (step 8) is not.
 * [Interactions](#interactions)
 * [Without the extension](#without-the-extension)
 * [Measurement](#measurement)
+  * [Results](#results)
 * [Commits](#commits)
 * [Rejected alternatives](#rejected-alternatives)
 * [What comes from vkd3d-proton](#what-comes-from-vkd3d-proton)
@@ -431,6 +432,31 @@ validation layer for times.
   frame time (`gpuprof.c`) over a scene after the optimized pipelines are ready. It must be the same as the build
   before.
 
+### Results
+
+The menus of an Ounce game, 760 frames with one press each 20 frames, on the RTX 2080 (NVIDIA 615.78.08). Each
+build had a warm-up run first. The runs are few and the game's path through the menus changes from run to run, so
+the numbers show the mechanism, not a mean.
+
+- **Parts with cold caches** (the first run of the library build, under the validation layer): 245
+  pre-rasterization parts (40.8 s in all) and 339 fragment shader parts (47.9 s) for 469 pipelines. The 469 links
+  took 122 ms in all. The 469 optimized pipelines took 85.8 s, on the workers, which no draw waited for.
+- **The large vertex programs** (1,716 to 1,736 KB of SPIR-V) took 4.2 to 6.8 s each as a part, one time each. Two
+  pipelines of one of them waited for its one part (4.2 and 4.3 s) and then linked. On feat/ounce each such
+  pipeline compiled the program again (3.9 s for one with a warm cache of everything else). The optimized pipeline
+  of each compiles it again in the background (4.0 to 5.0 s each).
+- **Warm caches** (the measured run after the warm-up): 237 of 240 and 339 of 346 parts from the pipeline cache;
+  478 links in 20 ms (Tracy "pipeline link": mean 39 us, max 3.9 ms); 552 optimized pipelines (Tracy "pipeline
+  optimize": mean 17 ms, max 238 ms). "pipeline wait" was 70 waits, 5.8 s in all, of which 3.5 s were one new
+  pre-rasterization part (608 KB) that the warm-up run had not met.
+- **feat/ounce with warm caches**: one whole pipeline of a 1,721 KB vertex program took 3,909 ms in one measured
+  run, and none in another. Its traced run had 2 "pipeline wait" zones (19 ms), on a shorter path through the menus.
+- **Frames over 1 s**: 10 to 12 in a measured run on both builds (the longest 6.4 s with the libraries, 11.7 s
+  without). They come mostly from texture uploads and loads, not from pipelines.
+- **Validation**: no new kind of message from the dynamic state. The library path adds two messages of
+  VUID-RuntimeSpirv-OpEntryPoint-08743 at a link (see the open questions).
+- **GPU frame time**: not measured. The Tracy tools here do not read the GPU zones.
+
 ## Commits
 
 What landed, in order. Each commit ran the full ctest. The commits that change a pipeline or a layout also ran the
@@ -516,6 +542,14 @@ licenses that the project can port (CLAUDE.md).
   GPL on and off over a long run.
 - **Robustness on parts**: check under the layer that `VkPipelineRobustnessCreateInfoEXT` on each part and on the link
   is valid, and that vertex fetch stays robust on the fast link.
+- **VUID-RuntimeSpirv-OpEntryPoint-08743 at a link**: with the libraries on, the layer reports two times that a
+  fragment input at location 4 has no vertex output. The same build with `pipeline_libraries=0` and feat/ounce report
+  none on the same menus, with the same modules. Check if the pre-rasterization part of that link has a geometry or
+  tessellation stage: if it does, the layer takes the vertex stage as the last one before the fragment stage of a
+  library. Log the stages of the link that the message names, and read the two interfaces with `spirv-dis`.
+- **The optimized pipeline compiles the large programs again**: LTO costs a full compile of each pipeline in the
+  background (4 to 5 s for each pipeline of a 1.7 MB vertex program). The workers then have less time for the
+  parts of new shaders. A queue that makes the optimized pipelines only for pipelines that draw often can cut that.
 
 ## Risks
 
