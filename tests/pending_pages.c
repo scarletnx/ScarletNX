@@ -101,6 +101,16 @@ int main(void) {
     pend_add(t, 0x107000, 0x3000, -1);
     check(pend_empty(t), "and its removal");
 
+    /* by guest address: the guest pages behind the result's GPU range, and nothing beside them (vkr_mapping_begin's
+       question for a change of guest memory) */
+    pend_add(t, 0x104000, 0x2000, 1);
+    check(pend_hit_guest(t, 0x80004000ull, 0x1000) && pend_hit_guest(t, 0x80005FFFull, 1), "a result's guest pages");
+    check(!pend_hit_guest(t, 0x80006000ull, 0x10000) && !pend_hit_guest(t, 0x80000000ull, 0x4000),
+          "the guest pages beside them");
+    check(pend_hit_guest(t, 0x80000000ull, ~0ull) && !pend_hit_guest(t, 0x80004000ull, 0), "any page, and no bytes");
+    pend_add(t, 0x104000, 0x2000, -1);
+    check(!pend_hit_guest(t, 0x80004000ull, 0x2000), "and their removal");
+
     /* a large range: the first group and leaf are skipped, a page at the far end is found */
     pend_add(t, 0x600000 + 0x3FFF000, 0x1000, 1);
     check(pend_hit(t, 0x600000, 0x4000000), "the last page of 64 MiB");
@@ -112,7 +122,8 @@ int main(void) {
     /* past the table's 2^40 bytes of guest pages: read as everywhere until removed */
     map(0x200000, 0x20000000000ull, 0x1000);
     pend_add(t, 0x200000, 0x1000, 1);
-    check(pend_hit(t, 0x600000, 0x1000), "a page past 2^40 covers every page");
+    check(pend_hit(t, 0x600000, 0x1000) && pend_hit_guest(t, 0x90000000ull, 0x1000),
+          "a page past 2^40 covers every page");
     pend_add(t, 0x200000, 0x1000, -1);
     check(pend_empty(t) && !pend_hit(t, 0x600000, 0x1000), "until it is removed");
 

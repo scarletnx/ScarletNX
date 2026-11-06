@@ -335,7 +335,12 @@ void nvn_MemoryPoolBuilderSetFlags(CPU* c, u64 b, i32 flags) {
 }
 /* A pool takes GPU addresses of its own, as NVIDIA's driver maps it through nvhost-as-gpu: from the same allocator,
    its pages showing its storage. A virtual pool (flags 0x200, no storage) only reserves its range: its mapping
-   requests fill it. The storage's page offset carries over, so each byte keeps one GPU address */
+   requests fill it. The storage's page offset carries over, so each byte keeps one GPU address.
+
+   The map's changes wait for the GPU thread's lock (vkr_mapping_begin), which it holds while its recorder submits. The
+   console's driver makes the same changes with nvhost-as-gpu ioctls, where the thread lets go of its core. So the
+   changes run off the core (nvn_wait_begin): one game's thread waited here for the lock with its core held, and the
+   threads of that core waited behind it for most of a run */
 #define NVN_POOL_VIRTUAL 0x200u
 #define NVN_POOL_ALIGN   0x20000u /* the GPU address alignment: a big page, as compressible kinds want */
 int nvn_MemoryPoolInitialize(CPU* c, u64 p, u64 b) {
@@ -350,9 +355,11 @@ int nvn_MemoryPoolInitialize(CPU* c, u64 p, u64 b) {
     if (!o.memory && !(o.flags & NVN_POOL_VIRTUAL))
         LOG_LIMIT(8, "nvn: memory pool %llx has no storage (flags %#x)\n", (unsigned long long)p, o.flags);
     lead = o.memory & 0xfff;
+    nvn_wait_begin();
     va = gmmu_space_alloc(lead + o.size, NVN_POOL_ALIGN);
+    if (va && o.memory) gmmu_space_map(va, o.memory - lead, lead + o.size);
+    nvn_wait_end();
     if (!va) fatal("nvn: no GPU address space left for a memory pool of %llx bytes", (unsigned long long)o.size);
-    if (o.memory) gmmu_space_map(va, o.memory - lead, lead + o.size);
     o.gpu = va + lead;
     memcpy(GP(p), &o, sizeof o);
     LOGV("nvn: memory pool %llx: %llx, %llx bytes at GPU %llx, flags %#x\n", (unsigned long long)p,
@@ -363,7 +370,11 @@ void nvn_MemoryPoolFinalize(CPU* c, u64 p) {
     NvnPool* o = NVN_OBJ(NvnPool, p);
     u64 lead = o->gpu & 0xfff;
     (void)c;
-    if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L') && o->gpu) gmmu_space_free(o->gpu - lead, lead + o->size);
+    if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L') && o->gpu) {
+        nvn_wait_begin(); /* off the core, as nvn_MemoryPoolInitialize's map changes */
+        gmmu_space_free(o->gpu - lead, lead + o->size);
+        nvn_wait_end();
+    }
     if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L') && o->memory) nvn_cmd_memory_back(o->memory, o->size);
     if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L'))
         nvmap_handle_drop(__atomic_exchange_n(&o->nvmap, 0, __ATOMIC_ACQ_REL));
@@ -409,10 +420,9 @@ void nvn_MemoryPoolInvalidateMappedRange(CPU* c, u64 p, i64 offset, u64 size) {
 /* A virtual pool's pages show what its mapping requests put there, as the GPU's page table does: each request maps
    size bytes of a physical pool's storage from its offset at the virtual pool's offset, or unmaps them (no physical
    pool). Sparse requests at offsets of their own are just more pages */
-int nvn_MemoryPoolMapVirtual(CPU* c, u64 p, i32 n, u64 requests) {
+static int map_virtual(u64 p, i32 n, u64 requests) {
     const NvnPool* o = NVN_OBJ(const NvnPool, p);
     i32 i;
-    (void)c;
     for (i = 0; i < n; i++) {
         const NvnMapRequest* r = NVN_OBJ(const NvnMapRequest, requests + (u64)i * sizeof(NvnMapRequest));
         /* the pool pointer is a word in a 32-bit game, the next one padding: the offsets are where they are in a
@@ -439,6 +449,14 @@ int nvn_MemoryPoolMapVirtual(CPU* c, u64 p, i32 n, u64 requests) {
     LOG_LIMIT(16, "nvn: virtual pool %llx (%llx bytes at GPU %llx): %d requests mapped\n", (unsigned long long)p,
               (unsigned long long)o->size, (unsigned long long)o->gpu, n);
     return 1;
+}
+/* off the core, as nvn_MemoryPoolInitialize's map changes */
+int nvn_MemoryPoolMapVirtual(CPU* c, u64 p, i32 n, u64 requests) {
+    (void)c;
+    nvn_wait_begin();
+    int ok = map_virtual(p, n, requests);
+    nvn_wait_end();
+    return ok;
 }
 u64 nvn_MemoryPoolGetBufferAddress(CPU* c, u64 p) {
     (void)c;

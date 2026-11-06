@@ -72,9 +72,14 @@ static void vkr_mapping_begin(u64 gva, u64 size, int full) {
     g_mapping_size = full ? 0 : size;
     vk_release_drain();
     if (full) {
-        vk_buf_land_map();
+        /* A change of guest memory changes only its own guest pages, and a result pending elsewhere lands there as
+           before. So the buffer and compute results land, all of them as before, only when one covers a page of the
+           change. svcMapPhysicalMemory maps fresh memory, where none is pending: landing every result made each map
+           wait for all of the GPU's work, and one game's memory thread waited so with its core held */
+        int hit = pend_hit_guest(&g_pend_any, gva, size);
+        if (hit) vk_buf_land_map();
         vk_gfx_image_land();
-        vk_compute_land();
+        if (hit) vk_compute_land();
         /* last, as the landings may submit: mem.c's change of guest memory [gva, gva + size), whose in-place readers
            run and reach the driver first */
         vk_uma_mapping_begin(gva, size);
