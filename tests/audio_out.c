@@ -677,6 +677,17 @@ static void test_device(void) {
     auto_descriptors(&c, 1, 0);
     c.x[0] = buffer(0x1000, 0x100);
     CHECK(d->dispatch(d, &c) == 0 && (got = reply_f(&c, 0)) == 0.25f);
+    /* SetAudioDeviceOutputVolumeAutoTuneEnabled (19) and IsAudioDeviceOutputVolumeAutoTuneEnabled (20), of 18.0.0 and
+       later: the getter answers what was set, and neither fails, which would stop the game's SDK */
+    const u8 on = 1, off = 0;
+    c = request(19, &on, 1);
+    CHECK(d->dispatch(d, &c) == 0 && c.out_size == 0);
+    c = request(20, NULL, 0);
+    CHECK(d->dispatch(d, &c) == 0 && c.out_size >= 1 && c.out[0] == 1);
+    c = request(19, &off, 1);
+    CHECK(d->dispatch(d, &c) == 0);
+    c = request(20, NULL, 0);
+    CHECK(d->dispatch(d, &c) == 0 && c.out_size >= 1 && c.out[0] == 0);
     svcobj_unref(d);
     svcobj_unref(manager);
 }
