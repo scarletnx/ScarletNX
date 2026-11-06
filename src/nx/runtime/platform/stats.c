@@ -4,6 +4,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/vpad.h"
 #include "common/utilities/common.h"
+#include "gui/icons.h"
 #include "gui_theme_colors.h"
 #include "snx_settings.h"
 #include <stdio.h>
@@ -135,6 +136,7 @@ void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
     int scale = stats_scale(menu_scale);
     float cw = 8.0f * (float)scale, ch = 16.0f * (float)scale, box[4], gx, gy, gw, gh, bw;
     char fps[16], ms[16], share[16], used[24], budget[24], line[STATS_LINES][STATS_COLS + 1];
+    static const unsigned icons[STATS_LINES] = {GUI_ICON_GAUGE, GUI_ICON_CPU, GUI_ICON_GPU, GUI_ICON_MEMORY_STICK};
     unsigned j;
     if (!__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)) return;
     if (!g_stats.since_ns) { /* the first half second starts at the first draw */
@@ -169,8 +171,10 @@ void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
     snprintf(line[3], sizeof line[3], "vram %s/%s MiB", used, budget);
     stats_box(safe, scale, box);
     ui_fill(l, box[0], box[1], box[2], box[3], STATS_BACK);
-    for (j = 0; j < STATS_LINES; ++j)
-        ui_text(l, box[0] + cw, box[1] + ch / 4 + (float)j * ch, scale, line[j], STATS_TEXT);
+    for (j = 0; j < STATS_LINES; ++j) { /* the icon's two cells and one, then the line, as the menu's items */
+        ui_icon(l, box[0] + cw, box[1] + ch / 4 + (float)j * ch, scale, icons[j], STATS_TEXT);
+        ui_text(l, box[0] + 4 * cw, box[1] + ch / 4 + (float)j * ch, scale, line[j], STATS_TEXT);
+    }
     /* the graph: each frame's time a bar up from its foot, the newest at the right, over the two guides */
     gx = box[0] + cw;
     gw = box[2] - 2 * cw;

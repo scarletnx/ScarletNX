@@ -10,8 +10,8 @@
 #include "nx/runtime/ini.h"
 
 #define STATS_FRAMES 120   /* the frames the graph shows */
-#define STATS_COLS   24    /* the box's width, in letters */
-#define STATS_LINES  4     /* its lines of text, above the graph */
+#define STATS_COLS   27    /* the box's width, in letters: a line's icon and space take three */
+#define STATS_LINES  4     /* its lines of text, each after its icon, above the graph */
 #define STATS_TOP_MS 50.0f /* the graph's top; a longer frame reaches it */
 /* the graph's two guides, a frame of a 60 FPS game and of a 30 FPS one; a frame past the second draws in the failure
    colour */
