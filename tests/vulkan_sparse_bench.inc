@@ -467,11 +467,11 @@ static int bench_sparse_textures(void) {
         CHECK(!bench_texture_memory(NVN_FORMAT_RGBA8, "RGBA8", 1, 8192, at, HEAP_BASE + 0x1200000, round));
         CHECK(!bench_texture_memory(NVN_FORMAT_BPTC_UNORM, "BC7", 4, 16384, at + 0x400000000ull, HEAP_BASE + 0x1200000,
                                     round));
-        const int had = g_settings.astc_bc;
-        g_settings.astc_bc = 1; /* held as BC7 where the GPU samples BCn and not ASTC */
+        const int had = g_settings.astc_mode;
+        g_settings.astc_mode = 0; /* held as BC7 where the GPU samples BCn and not ASTC */
         const int failed = bench_texture_memory(NVN_FORMAT_RGBA_ASTC_4x4, "ASTC 4x4", 4, 8192, at + 0x800000000ull,
                                                 HEAP_BASE + 0x1200000, round);
-        g_settings.astc_bc = had;
+        g_settings.astc_mode = had;
         CHECK(!failed);
     }
     CHECK(!bench_texture_reads());

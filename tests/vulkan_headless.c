@@ -2701,7 +2701,7 @@ static int check_sparse_pieces_batched(void) {
    mapped tiles and mip tails alone */
 #define RS_TILE 0x10000u
 /* the format such a texture is made in: NVN's, its tile's texels across and down, and its image's blocks (texels
-   across and bytes): RGBA8, or ASTC 4x4 held as BC7 (astc_bc=1), whose image is compared with the same texture made
+   across and bytes): RGBA8, or ASTC 4x4 held as BC7 (astc_mode=0, Auto), whose image is compared with the same texture made
    whole, not with memory */
 typedef struct {
     const char* name;
@@ -3079,18 +3079,18 @@ static int check_resident_texture(void) {
                             most, n));
     return 0;
 }
-/* the same for an ASTC 4x4 texture held as BC7 (astc_bc=1), whose tiles of 64x64 blocks are BC7's 256x256 texels:
+/* the same for an ASTC 4x4 texture held as BC7 (astc_mode=0, Auto), whose tiles of 64x64 blocks are BC7's 256x256 texels:
    its bound tiles are decoded where they lie, its image the same texture's made whole there and zeros elsewhere */
 static int check_resident_astc(void) {
-    const int had = g_settings.astc_bc;
+    const int had = g_settings.astc_mode;
     RsTex probe;
-    g_settings.astc_bc = 1;
+    g_settings.astc_mode = 0;
     rs_make(&probe, &RS_ASTC4, 256, 1, 0xA10000000ull);
     const VkFmt f = vk_tic_format(probe.tic[0], 0);
     if (f.conv != VKC_ASTC || f.vk != VK_FORMAT_BC7_UNORM_BLOCK) {
         printf("resident texture ASTC: the GPU %s, skipped\n",
                f.conv != VKC_ASTC ? "samples ASTC as it is" : "holds no ASTC texture as BC7");
-        g_settings.astc_bc = had;
+        g_settings.astc_mode = had;
         return 0;
     }
     /* the decoder's buffers made first, by a texture of its own mapped whole: what the textures below allocate is
@@ -3115,7 +3115,7 @@ static int check_resident_astc(void) {
                                   HEAP_BASE + 0x1200000, one, 5);
     failed |= resident_texture(&RS_ASTC4, 512, 1, 0xA40000000ull, 0xA50000000ull, 0xA60000000ull, HEAP_BASE + 0x1200000,
                                most, 5);
-    g_settings.astc_bc = had;
+    g_settings.astc_mode = had;
     return failed;
 }
 
@@ -3292,11 +3292,11 @@ static int resident_in_flight(const RsFmt* as, u64 gva, u64 ref_gva, u64 cpu) {
     return 0;
 }
 static int check_resident_texture_in_flight(void) {
-    const int had = g_settings.astc_bc;
+    const int had = g_settings.astc_mode;
     CHECK(!resident_in_flight(&RS_RGBA8, 0x960000000ull, 0, HEAP_BASE + 0x1300000));
-    g_settings.astc_bc = 1; /* held as BC7 where the GPU samples BCn and not ASTC; rs_device_can skips it elsewhere */
+    g_settings.astc_mode = 0; /* held as BC7 where the GPU samples BCn and not ASTC; rs_device_can skips it elsewhere */
     int failed = resident_in_flight(&RS_ASTC4, 0xA70000000ull, 0xA80000000ull, HEAP_BASE + 0x1300000);
-    g_settings.astc_bc = had;
+    g_settings.astc_mode = had;
     return failed;
 }
 static int check_dma(void) {
