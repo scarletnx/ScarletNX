@@ -166,7 +166,7 @@ void unattended_record_set(const IniOpt* o, const char* v) {
     snprintf(g_tas.record_path, sizeof g_tas.record_path, "%s", v);
     if (!*v) return;
     LOG("input_record: player 1's input goes to %s from frame %d\n", v, frame);
-    g_tas.record = snx_fopen(v, "wx"); /* a recording is never written over: someone played it */
+    g_tas.record = snx_fopen(v, "wbx"); /* a recording is never written over: someone played it */
     if (!g_tas.record) {
         e = errno;
         fatal("input_record: its file could not be made: %s%s", strerror(e),
