@@ -683,6 +683,52 @@ static int check_big_uploads(void) {
     return 0;
 }
 
+/* A big request after a bigger one's frame takes the pooled bigger buffer, whose pages the CPU wrote before, rather
+   than a new buffer of its own size class, whose first writes cost several times as much: no buffer is made, the copy
+   reads its bytes, and frames without one then let the pool give it up */
+static int check_big_reuse(void) {
+    u64 saved_cap = g_vk.alloc_cap, chunk, made, before, after;
+    VkBuffer rb, buffer;
+    u64 offset;
+    u8 *result, *data;
+    vk_finish();
+    vk_frame_next();
+    g_vk.alloc_cap = 128ull << 20;
+    chunk = vk_stage_chunk();
+    result = vk_readback_buffer(32, &rb);
+    CHECK(result);
+    for (u32 i = 0; i < VK_POOL_FRAMES + VK_FRAMES; i++) CHECK(!staging_light_frame(rb));
+    vk_finish();
+    before = vk_ring_bytes();
+    CHECK(vk_stage_upload(chunk * 6, vk_stage_align(), &buffer, &offset)); /* a big buffer of 8 chunks */
+    vk_frame_next();
+    for (u32 i = 0; i < VK_FRAMES; i++) CHECK(!staging_light_frame(rb)); /* its slot's work done: pooled */
+    vk_finish();
+    made = vk_ring_made();
+    data = vk_stage_upload(chunk * 3 / 2, vk_stage_align(), &buffer, &offset); /* of the 2 chunk class */
+    CHECK(data);
+    memset(data, 0x6c, 16);
+    VkBufferCopy copy = {offset, 0, 16};
+    rec_CmdCopyBuffer(vk_cmd(), buffer, rb, 1, &copy);
+    vk_finish();
+    vk_readback_ready();
+    made = vk_ring_made() - made;
+    for (u32 i = 0; i < 16; i++) CHECK(result[i] == 0x6c);
+    vk_frame_next();
+    for (u32 i = 0; i < VK_POOL_FRAMES + VK_FRAMES; i++) CHECK(!staging_light_frame(rb));
+    vk_finish();
+    after = vk_ring_bytes();
+    g_vk.alloc_cap = saved_cap;
+    vk_frame_next();
+    printf("a %llu MiB request after a %llu MiB one: %llu ring buffers made; the rings held %llu MiB %u frames later, "
+           "%llu before\n",
+           (unsigned long long)(chunk * 3 / 2 >> 20), (unsigned long long)(chunk * 6 >> 20), (unsigned long long)made,
+           (unsigned long long)(after >> 20), VK_POOL_FRAMES + VK_FRAMES, (unsigned long long)(before >> 20));
+    CHECK(made == 0);
+    CHECK(after <= before);
+    return 0;
+}
+
 /* the renderer's viewport index and its first viewport's facing for the registers r, through the draw state */
 static VkViewport viewport_of(const u32* r, u32 index) {
     DsDynamic d;
@@ -4997,6 +5043,7 @@ int main(int argc, char** argv) {
     CHECK(!check_chunk_after_done());
     CHECK(!check_small_uploads());
     CHECK(!check_big_uploads());
+    CHECK(!check_big_reuse());
     CHECK(!check_stream_epoch());
     CHECK(!check_owned_readback());
     CHECK(!check_owned_writable());
