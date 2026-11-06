@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Runs with nobody at the screen (unattended.c), the same for the windowed and the headless backend: a time or frame
-   limit, screenshots, scripted button presses. The options are seconds, frames, shot, shot_every, press_len and
-   script, given as --key=value or in the .ini's [Other] section, and never written back. Also the
-   stick handling the backends share. */
+   limit, screenshots, scripted button presses, player 1's input recorded and played back. The options are seconds,
+   frames, shot, shot_every, press_len, script, input_record and input_replay, given as --key=value or in the .ini's
+   [Other] section, and never written back. Also the stick handling the backends share. */
 #ifndef SNX_UNATTENDED_H
 #define SNX_UNATTENDED_H
 #include "common/cpu/aarch64/cpu.h"
@@ -24,6 +24,11 @@ u64 unattended_buttons(void);
 /* a scripted press of this bit is Home: it opens the game's menu and closes it, and while it is open the scripted
    buttons move it as a pad's do (so a run can test the menu) */
 #define SNX_SCRIPT_HOME (1ull << 48)
+/* input_replay and input_record on player 1's input, buttons and st = {lx, ly, rx, ry}, as it is about to reach the
+   game: a replay sets them to its last line whose frame is at or before this present's (neutral before its first line)
+   until the present after its last line's, then a record writes them as a line when they changed, a line a present at
+   most. The backend calls it once a poll whose input the game takes (not while it is paused) */
+void unattended_pad(u64* buttons, i32 st[4]);
 const char* unattended_shot(void); /* the shot path without its extension, or NULL */
 /* 1 when shot_every asks for a numbered screenshot now, its path (no extension) written into path */
 int unattended_periodic_shot(char* path, size_t n);

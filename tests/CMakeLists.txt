@@ -2757,8 +2757,8 @@ target_include_directories(snx-test-quad-indices PRIVATE "${PROJECT_SOURCE_DIR}/
 add_test(NAME quad_indices COMMAND snx-test-quad-indices)
 add_executable(snx-test-unattended-script unattended_script.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-unattended-script 11)
-target_link_libraries(snx-test-unattended-script PRIVATE m)
-add_test(NAME unattended_script COMMAND snx-test-unattended-script)
+target_link_libraries(snx-test-unattended-script PRIVATE m scarletnx-common) # snx_read_file, snx_fopen
+add_test(NAME unattended_script COMMAND snx-test-unattended-script "${CMAKE_CURRENT_BINARY_DIR}")
 # the environment variables an older runtime read, this run's values for their settings and said with them
 add_executable(snx-test-deprecated-env deprecated_env.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/deprecated_env.c")
 snx_test_target(snx-test-deprecated-env 11)
