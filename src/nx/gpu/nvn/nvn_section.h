@@ -9,8 +9,8 @@
    - 0x5e (byte): 1 when a task program launches the mesh program. 0x5f (byte): the vertices of a primitive (3).
    - 0x60 and 0x62 (halfwords): the mesh program's most vertices and primitives.
    - 0x64: the offset of the header of the per-primitive outputs (a geometry SPH with passthrough on) from the
-     program's code, after its own header: the last 128 bytes of the code area (0x44). 0 for none. 0x68: that
-     header's bytes (0x80).
+     start of the program's code area, its own header included: 0xd00 in a code area (0x44) of 0xe00 bytes, whose
+     last 128 bytes are zero. 0 for none. 0x68: that header's bytes (0x80).
    The SPH cannot tell these stages: a task program, and a mesh program without one, have the header of a vertex
    program, and a mesh program after a task program has the header of a tessellation evaluation program, as Mesa's
    NAK writes them (nak/sph.rs). */

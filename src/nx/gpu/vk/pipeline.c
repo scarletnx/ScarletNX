@@ -556,11 +556,11 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[20], const ShX
     }
 }
 /* a mesh program's per-primitive SPH, at the offset that its key's word 3 gives (vk_shader_mesh), into si. The offset
-   counts from the program's code, after its own SPH (a code area of 0xe00 bytes has it at 0xd00, its last 128 bytes),
-   and code holds the program from its SPH on */
+   counts from the start of the program's code area, its own SPH included, as code holds it: a code area of 0xe00
+   bytes has it at 0xd00, one of 0x4900 bytes at 0x4800 (docs/OUNCE.md) */
 static void sh_mesh_sph(ShaderInfo* si, int stage, const u8* code, const u32 mask[20]) {
-    if (stage != ST_MS || !mask[3] || mask[3] > SH_CODE - SM86_SPH_BYTES - sizeof si->mesh.prim_sph) return;
-    const u8* at = code + SM86_SPH_BYTES + mask[3];
+    if (stage != ST_MS || !mask[3] || mask[3] > SH_CODE - sizeof si->mesh.prim_sph) return;
+    const u8* at = code + mask[3];
     for (u32 i = 0; i < sizeof si->mesh.prim_sph / 4; i++) si->mesh.prim_sph[i] = snx_ld_le32(at + 4 * i);
 }
 /* s for its key, from code (SH_CODE bytes: the merged program, for VertexA and VertexB) whose whole code hashes to h,

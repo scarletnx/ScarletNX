@@ -132,9 +132,30 @@ static int check_mesh_draws(void) {
     vk_render_end();
     CHECK(g_vk_mesh_drawn == drawn + 3);
     CHECK(!mesh_draw_depths(target, 0.25f, "a task program that launches one mesh group"));
+    /* a mesh program's per-primitive SPH at the offset that its section gives, counted from the start of its code
+       area (its own SPH included): generic 0.x per primitive */
+    const u64 primitive = gpu + 0x3000, header = 0x200;
+    n = mesh_draw_triangle(code, 0.5f);
+    CHECK(!mesh_draw_program(primitive, 0x000c0481u, position, code, n));
+    u8 sph[SM86_SPH_BYTES] = {0};
+    snx_st_le32(sph, 0x010c1081u);
+    snx_st_le32(sph + 13 * 4, 1u << 16);
+    CHECK(!gmem_write(primitive + header, sph, sizeof sph));
+    DsMeshKey key = {.mesh_threads = 1,
+                     .mesh_payload = 0x80,
+                     .max_vertices = 3,
+                     .max_primitives = 1,
+                     .primitive_vertices = 3,
+                     .prim_sph = (u32)header};
+    VkSh* shader = vk_shader_mesh(state, primitive, ST_MS, &key);
+    CHECK(shader && !shader->failed && shader->si.prim_mask == 1 && shader->si.out_mask == 1);
+    if (shader && shader->si.prim_mask != 1)
+        fprintf(stderr, "vulkan_headless: a per-primitive SPH at %#llx: generics %#x per primitive, not 1\n",
+                (unsigned long long)header, shader->si.prim_mask);
     vk_unlock();
     g_shader_sm86 = sm86;
     free(state);
-    puts("PASS mesh draws: a mesh program alone, and task programs from their first workgroup exact=1");
+    puts("PASS mesh draws: a mesh program alone, task programs from their first workgroup, and a per-primitive SPH "
+         "exact=1");
     return 0;
 }
