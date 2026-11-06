@@ -522,9 +522,9 @@ uint32_t spv_emit_storage_buffer(SpvEmitter* e, uint32_t struct_type, uint32_t s
     return id;
 }
 
-uint32_t spv_emit_uniform_vec4_array(SpvEmitter* e, uint32_t vec4_type, uint32_t component_type, uint32_t u32_type,
-                                     uint32_t set, uint32_t binding, uint32_t elements,
-                                     uint32_t* component_pointer_type) {
+static uint32_t emit_vec4_array(SpvEmitter* e, uint32_t vec4_type, uint32_t component_type, uint32_t u32_type,
+                                uint32_t set, uint32_t binding, uint32_t elements, uint32_t storage_class,
+                                uint32_t* component_pointer_type) {
     assert(elements && component_pointer_type);
     uint32_t length = spv_emit_constant_u32(e, u32_type, elements);
     uint32_t array = spv_emit_id(e);
@@ -537,7 +537,7 @@ uint32_t spv_emit_uniform_vec4_array(SpvEmitter* e, uint32_t vec4_type, uint32_t
     put(&e->types, vec4_type);
     put(&e->types, length);
     uint32_t structure = spv_emit_type_struct_one(e, array);
-    uint32_t struct_pointer = spv_emit_type_pointer(e, 2, structure); /* Uniform */
+    uint32_t struct_pointer = spv_emit_type_pointer(e, storage_class, structure);
     uint32_t variable = spv_emit_id(e);
     instruction(&e->decorations, SPV_OP_DECORATE, 4);
     put(&e->decorations, variable);
@@ -547,12 +547,30 @@ uint32_t spv_emit_uniform_vec4_array(SpvEmitter* e, uint32_t vec4_type, uint32_t
     put(&e->decorations, variable);
     put(&e->decorations, 33); /* Binding */
     put(&e->decorations, binding);
+    if (storage_class == 12) {
+        /* a device need not let the vertex stages write storage buffers, and these are never written */
+        instruction(&e->decorations, SPV_OP_DECORATE, 3);
+        put(&e->decorations, variable);
+        put(&e->decorations, 24); /* NonWritable */
+    }
     instruction(&e->types, SPV_OP_VARIABLE, 4);
     put(&e->types, struct_pointer);
     put(&e->types, variable);
-    put(&e->types, 2); /* Uniform */
-    *component_pointer_type = spv_emit_type_pointer(e, 2, component_type);
+    put(&e->types, storage_class);
+    *component_pointer_type = spv_emit_type_pointer(e, storage_class, component_type);
     return variable;
+}
+uint32_t spv_emit_uniform_vec4_array(SpvEmitter* e, uint32_t vec4_type, uint32_t component_type, uint32_t u32_type,
+                                     uint32_t set, uint32_t binding, uint32_t elements,
+                                     uint32_t* component_pointer_type) {
+    return emit_vec4_array(e, vec4_type, component_type, u32_type, set, binding, elements, 2, /* Uniform */
+                           component_pointer_type);
+}
+uint32_t spv_emit_readonly_vec4_array(SpvEmitter* e, uint32_t vec4_type, uint32_t component_type, uint32_t u32_type,
+                                      uint32_t set, uint32_t binding, uint32_t elements,
+                                      uint32_t* component_pointer_type) {
+    return emit_vec4_array(e, vec4_type, component_type, u32_type, set, binding, elements, 12, /* StorageBuffer */
+                           component_pointer_type);
 }
 
 uint32_t spv_emit_uniform_component(SpvEmitter* e, uint32_t pointer_type, uint32_t buffer, uint32_t member,

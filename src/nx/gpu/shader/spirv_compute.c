@@ -246,7 +246,8 @@ static u32* compute_to_spirv(const u8* code, const u64* words, u32 max_bytes, Sh
     if (needs_local) interfaces[ninterface++] = c->local = spv_emit_builtin_input_vec3(&c->e, v3, 27);
     for (u32 i = 0; i < 18; i++)
         if (cb_used[i]) {
-            c->cb[i] = spv_emit_uniform_vec4_array(&c->e, v4, c->u, c->u, 0, i, 4096, &c->cbptr[i]);
+            c->cb[i] = (i < g_shader_uniform_cbufs ? spv_emit_uniform_vec4_array : spv_emit_readonly_vec4_array)(
+                &c->e, v4, c->u, c->u, 0, i, 4096, &c->cbptr[i]);
             interfaces[ninterface++] = c->cb[i];
             meta.cbuf_mask |= 1u << i;
             meta.cbuf_max[i] = cb_max[i];

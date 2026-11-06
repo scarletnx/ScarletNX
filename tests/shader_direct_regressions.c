@@ -1012,6 +1012,47 @@ static void saturate_guards(const u32* code, size_t words, int* clamps, int* gua
     }
 }
 static const char* saturate_path;
+static const char* cbuf_storage_path;
+/* the OpVariables of a storage class, and the NonWritable decorations */
+static int count_variables(const u32* code, size_t words, u32 storage_class) {
+    int found = 0;
+    for (size_t i = 5; i < words && code[i] >> 16; i += code[i] >> 16)
+        if ((code[i] & 0xffff) == 59 && code[i + 3] == storage_class) found++;
+    return found;
+}
+static int count_nonwritable(const u32* code, size_t words) {
+    int found = 0;
+    for (size_t i = 5; i < words && code[i] >> 16; i += code[i] >> 16)
+        if ((code[i] & 0xffff) == 71 && code[i + 2] == 24) found++;
+    return found;
+}
+/* A device with fewer uniform buffers a stage than the 18 slots: a slot past them is a read-only storage buffer, which
+   only the descriptor's type tells the renderer. The fixture goes through spirv-val */
+static void constant_buffers_past_the_limit(void) {
+    const u64 ops[] = {0x4c9807880e070002ull}; /* MOV R2, c[0x2][0x380] */
+    ShaderInfo info;
+    size_t words = 0;
+    u32* code = translate(ops, 1, ST_FS, &info, &words, 1);
+    check_translated(code, &info, "a constant buffer read translates");
+    int uniform = code ? count_variables(code, words, 2) : 0;
+    if (code) {
+        check(uniform >= 1 && !count_variables(code, words, 12) && !count_nonwritable(code, words),
+              "a constant buffer below the limit is a uniform buffer");
+    }
+    free(code);
+    g_shader_uniform_cbufs = 2;
+    code = translate(ops, 1, ST_FS, &info, &words, 1);
+    g_shader_uniform_cbufs = 18;
+    check_translated(code, &info, "a constant buffer past the limit translates");
+    if (code) {
+        check(count_variables(code, words, 2) == uniform - 1 && count_variables(code, words, 12) == 1 &&
+                  count_nonwritable(code, words) == 1,
+              "a constant buffer past the limit is a read-only storage buffer");
+        check(info.cbuf_mask == 1u << 2, "a constant buffer past the limit still reports its slot");
+        save_fixture(cbuf_storage_path, code, words);
+    }
+    free(code);
+}
 /* Every float .SAT (FADD, FMUL, FFMA, MUFU, F2F, IPA and each half of HADD2) gives +0 for a NaN, with or without the
    module keeping NaNs (SignedZeroInfNanPreserve), and an instruction without .SAT clamps nothing (issue #865) */
 static void saturate_nan(void) {
@@ -4135,6 +4176,7 @@ int main(int argc, char** argv) {
         }
         fswzadd_path = fixture_path(argv[1], "fswzadd");
         saturate_path = fixture_path(argv[1], "saturate");
+        cbuf_storage_path = fixture_path(argv[1], "cbuf_storage");
         for (int i = 0; i < 7; i++) {
             snprintf(name, sizeof name, "surface_op_%d", i);
             surface_op_paths[i] = fixture_path(argv[1], name);
@@ -4181,6 +4223,7 @@ int main(int argc, char** argv) {
     fragment_storage_images();
     buffer_formatted_loads();
     immediate_sampler_handle();
+    constant_buffers_past_the_limit();
     guarded_handle_merges();
     volume_surface_atomics();
     surface_atomic_operations();

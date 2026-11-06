@@ -1336,7 +1336,7 @@ rebind:
                                            .dstSet = set,
                                            .dstBinding = SNX_VKB_CB + i,
                                            .descriptorCount = 1,
-                                           .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                           .descriptorType = vk_cbuf_type((u32)i),
                                            .pBufferInfo = &bi[nw]};
             nw++;
         }
