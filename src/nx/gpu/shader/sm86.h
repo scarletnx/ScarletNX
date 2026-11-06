@@ -19,6 +19,7 @@
    bytes have the layout of Maxwell's SPH (ShaderInfo.sph). A compute program has no header. */
 #ifndef SNX_SM86_H
 #define SNX_SM86_H
+#include "common/utilities/bits.h"
 #include "nx/gpu/shader/shader.h"
 #include <stddef.h>
 
@@ -156,6 +157,18 @@ static inline u32 sm86_omap_generics(const u32* sph) {
 }
 static inline u32 sm86_mesh_primitive_mask(const ShMesh* mesh) {
     return mesh->prim_sph[0] ? sm86_omap_generics(mesh->prim_sph) : 0;
+}
+/* the bytes of a mesh program's outputs (sph its SPH) as VK_EXT_mesh_shader counts them against
+   maxMeshOutputMemorySize ("Mesh Shader Output"): four scalars for each location that the translation declares, the
+   position (bits 428-431) and each generic per vertex, each generic per primitive, the indices not counted.
+   Vertices and primitives count in whole granules of the device's meshOutputPer...Granularity */
+static inline u64 sm86_mesh_output_bytes(const u32* sph, const ShMesh* mesh, u32 vertex_granule,
+                                         u32 primitive_granule) {
+    u32 vertex = snx_popcount64(sm86_omap_generics(sph)) + ((sph[428 >> 5] >> (428 & 31) & 15) != 0);
+    u32 primitive = snx_popcount64(sm86_mesh_primitive_mask(mesh));
+    u64 vertices = snx_align_up(mesh->max_vertices, vertex_granule ? vertex_granule : 1);
+    u64 primitives = snx_align_up(mesh->max_primitives, primitive_granule ? primitive_granule : 1);
+    return 16u * (vertex * vertices + primitive * primitives);
 }
 /* Debug: with g_shader_sm86_dump (the sm86_dump setting) naming a folder, the bytes (and the 32 SPH words, NULL for
    none) go to DIR/sm86_<kind>_<hash>.bin (and .sph), and why to DIR/sm86_<kind>_<hash>.txt. sm86_to_spirv writes each

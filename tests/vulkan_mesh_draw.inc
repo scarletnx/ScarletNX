@@ -152,10 +152,25 @@ static int check_mesh_draws(void) {
     if (shader && shader->si.prim_mask != 1)
         fprintf(stderr, "vulkan_headless: a per-primitive SPH at %#llx: generics %#x per primitive, not 1\n",
                 (unsigned long long)header, shader->si.prim_mask);
+    /* a mesh program of 256 vertices with the position and all 32 generics: 33 locations of 16 bytes for each
+       vertex, past the 32 KiB of maxMeshOutputMemorySize that a device has at least. It fails with the reason */
+    const u64 large = gpu + 0x4000;
+    CHECK(!mesh_draw_program(large, 0x000c0481u, 0xfffff000u, code, n));
+    u8 omap[16];
+    memset(omap, 0xff, sizeof omap);
+    snx_st_le32(omap + 12, 0xffffu); /* generics 4 to 31: output map words 14 to 16, and bits 0 to 15 of word 17 */
+    CHECK(!gmem_write(large + 14 * 4, omap, sizeof omap));
+    key = (DsMeshKey){.mesh_threads = 1, .mesh_payload = 0x80, .max_vertices = 256, .max_primitives = 1,
+                      .primitive_vertices = 3};
+    shader = vk_shader_mesh(state, large, ST_MS, &key);
+    CHECK(shader && shader->failed && strstr(shader->si.first_unsupported, "maxMeshOutputMemorySize"));
+    if (shader && !strstr(shader->si.first_unsupported, "maxMeshOutputMemorySize"))
+        fprintf(stderr, "vulkan_headless: a mesh program past the output limit: failed %d, \"%s\"\n", shader->failed,
+                shader->si.first_unsupported);
     vk_unlock();
     g_shader_sm86 = sm86;
     free(state);
-    puts("PASS mesh draws: a mesh program alone, task programs from their first workgroup, and a per-primitive SPH "
-         "exact=1");
+    puts("PASS mesh draws: a mesh program alone, task programs from their first workgroup, a per-primitive SPH, and "
+         "outputs past maxMeshOutputMemorySize exact=1");
     return 0;
 }

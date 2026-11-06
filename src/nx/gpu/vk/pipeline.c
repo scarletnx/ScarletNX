@@ -639,6 +639,23 @@ static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[
         free(spv);
     } else
         s->failed = 1;
+    /* a mesh program's outputs against maxMeshOutputMemorySize, which a pipeline must not go past: such a program
+       fails, and its draws are skipped with the reason (mesh_shaders) */
+    if (stage == ST_MS && !s->failed) {
+        ShaderInfo* si = &s->si;
+        u64 bytes = sm86_mesh_output_bytes(si->sph, &si->mesh, g_vk.mesh_vertex_granule, g_vk.mesh_primitive_granule);
+        int over = g_vk.mesh_output_bytes_max && bytes > g_vk.mesh_output_bytes_max;
+        LOG("vulkan: mesh program %016llx: %u vertices, %u primitives, generics %#x (%#x per primitive), %llu "
+            "output bytes of %u%s\n",
+            (unsigned long long)h, si->mesh.max_vertices, si->mesh.max_primitives, si->out_mask, si->prim_mask,
+            (unsigned long long)bytes, g_vk.mesh_output_bytes_max, over ? ": too many, its draws are skipped" : "");
+        if (over) {
+            s->failed = 1;
+            snprintf(si->first_unsupported, sizeof si->first_unsupported,
+                     "%llu bytes of mesh outputs, past the device's maxMeshOutputMemorySize of %u",
+                     (unsigned long long)bytes, g_vk.mesh_output_bytes_max);
+        }
+    }
     return s;
 }
 VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
