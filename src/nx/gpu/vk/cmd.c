@@ -295,7 +295,10 @@ static void timeline_wait(u64 value, int kind) {
     int mine = gpu_wait_note("a graphics submission", value);
     if (mine) vk_gpuprof_waited(value, kind);
     SNX_ZONE_V(z, "timeline wait", value);
-    VK_OK(vkWaitSemaphores(g_vk.dev, &wi, UINT64_MAX));
+    VkResult waited = vkWaitSemaphores(g_vk.dev, &wi, UINT64_MAX);
+    /* going on would take the wait as done: the next Vulkan call crashes in the driver, and the log blames the game */
+    if (waited == VK_ERROR_DEVICE_LOST) fatal("vulkan: the GPU device was lost (driver reset or crash)");
+    VK_OK(waited);
     SNX_ZONE_END(z);
     gpu_wait_note(NULL, 0);
     if (mine) {
