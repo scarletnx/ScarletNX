@@ -3,6 +3,7 @@
 /* Graphics pipeline libraries: the choice and the dynamic pre-rasterization state (pipeline_parts.h) */
 #include "nx/gpu/vk/pipeline_parts.h"
 #include <stdio.h>
+#include <string.h>
 
 int vk_gpl_choose(const VkGplDevice* d, u32* dyn_pr, char* line, size_t n) {
     /* a link without fast linking compiles, so it would save nothing; without independent interpolation the
@@ -39,6 +40,64 @@ int vk_gpl_choose(const VkGplDevice* d, u32* dyn_pr, char* line, size_t n) {
              "once, and is optimized in the background; dynamic pre-rasterization state: %s",
              at ? dyn : "none");
     return 1;
+}
+
+void vk_pipe_part_src(u32 part, const void* key, PipeKey* out) {
+    memset(out, 0, sizeof *out); /* PipeKey's bytes are compared and hashed */
+    if (part == VK_PART_VI) {
+        const PipeViKey* vi = key;
+        out->topo_class = vi->topo_class;
+        out->vi = vi->vi;
+    } else if (part == VK_PART_PR) {
+        const PipePrKey* pr = key;
+        out->vs = pr->vs;
+        out->tcs = pr->tcs;
+        out->tes = pr->tes;
+        out->gs = pr->gs;
+        out->arrays = pr->arrays;
+        out->patch = pr->patch;
+        out->polygon = pr->polygon;
+        out->depth_clamp = pr->depth_clamp;
+        out->provoking_last = pr->provoking_last;
+        out->conservative = pr->conservative;
+    } else if (part == VK_PART_FS) {
+        const PipeFsKey* f = key;
+        out->fs = f->fs;
+        out->arrays = f->arrays;
+        out->feedback = f->feedback;
+        out->sample_shading = f->sample_shading;
+        out->samples = f->samples;
+        out->sample_off = f->sample_off;
+        out->alpha_to_coverage = f->alpha_to_coverage;
+        out->alpha_to_one = f->alpha_to_one;
+        out->coverage = f->coverage;
+    } else {
+        const PipeFoKey* fo = key;
+        out->ncolor = fo->ncolor;
+        for (u32 i = 0; i < 8; i++) {
+            out->color[i] = fo->color[i];
+            out->blend[i].en = fo->blend[i].en;
+            out->blend[i].sc = fo->blend[i].sc;
+            out->blend[i].dc = fo->blend[i].dc;
+            out->blend[i].cop = fo->blend[i].cop;
+            out->blend[i].sa = fo->blend[i].sa;
+            out->blend[i].da = fo->blend[i].da;
+            out->blend[i].aop = fo->blend[i].aop;
+            out->blend[i].mask = fo->blend[i].mask;
+        }
+        out->depth = fo->depth;
+        out->stencil = fo->stencil;
+        out->logic_op = fo->logic_op;
+        out->samples = fo->samples;
+        out->sample_off = fo->sample_off;
+        out->alpha_to_coverage = fo->alpha_to_coverage;
+        out->alpha_to_one = fo->alpha_to_one;
+        out->sample_shading = fo->sample_shading;
+        out->feedback = fo->feedback;
+        out->coverage = fo->coverage;
+        /* the masks hold already whether there is a fragment program: any one passes them through */
+        out->fs = (VkShaderModule)(uintptr_t)1;
+    }
 }
 
 /* every dynamic state a draw pipeline can have, in the order pipe_create always listed them (a pipeline cache entry

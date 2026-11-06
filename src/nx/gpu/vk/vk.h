@@ -1501,6 +1501,11 @@ VkPipeline vk_pipeline_now(VkPipeline h, int* pending);
 /* so far: pipelines made, how many of them the pipeline cache had, ms the workers took making them, ms the GPU thread
    waited for new ones, shaders translated, ms translating them */
 void vk_pipeline_stats(u64* pipes, u64* hits, u64* make_ms, u64* wait_ms, u64* shaders, u64* shader_ms);
+/* with pipeline libraries, so far: the parts made by part (vertex input, pre-rasterization, fragment shader,
+   fragment output), how many of them the pipeline cache had and ms making them; the fast links and their ms; the
+   optimized pipelines made in the background and their ms */
+void vk_pipeline_lib_stats(u64 made[4], u64 hits[4], u64 make_ms[4], u64* links, u64* link_ms, u64* opts,
+                           u64* opt_ms);
 void vk_tex_stats(u64* uploads, u64* bytes); /* texture uploads from guest memory so far, and their bytes */
 u64 vk_rt_made(void);                        /* render targets made so far */
 VkPipelineCache vk_pipeline_cache(void);     /* for pipelines made elsewhere (compute) */

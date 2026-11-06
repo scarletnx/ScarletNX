@@ -7,7 +7,8 @@ shader stage compiles once, as a library. A draw links the libraries with its st
 then builds the optimized pipeline in the background, and the draws switch to it when it is ready. On a device
 without GPL the renderer works as it does now.
 
-Status: design. Nothing in this file is implemented yet.
+Status: steps 1 to 7 are implemented (see [Commits](#commits) for what differs from the plan). The warm-up of the
+programs that a game ships (step 8) is not.
 
 ## Index
 
@@ -234,18 +235,19 @@ the other parts.
 
 The caches:
 
-- Four tables of `PipeLib` entries, one table for each part. An entry holds the key, its hash, the `VkPipeline` of
-  the library, a ready flag, and a queued flag, as `Pipe` does now. The tables live in a new file,
-  `src/nx/gpu/vk/pipeline_lib.c`, with one global (`g_plib`), by the rule of `snx-code-quality`. pipeline.c is 2,200
-  lines now. The new file keeps the parts apart from the whole pipelines.
-- The GPU thread looks up and adds entries, as it does for `g_pipeh` now (`pipe_entry` runs under `vk_lock` on the
-  GPU thread). The workers read an entry only through its ready flag, with release and acquire order, as
-  `Pipe.ready` does now. The reading thread of the pipeline file adds its entries to its own table, and
-  `pf_merge` puts them in on the GPU thread, as it does for `g_pf.pipes` now.
+- One table of `PipeLib` entries for the four parts, in `g_plib` in `pipeline.c`. The parts share the workers, their
+  queues and their lock with the whole pipelines, so they stay in the same file. The pure functions (the choice, the
+  split, the dynamic state lists) are in `pipeline_parts.c`, which the test compiles alone. An entry holds the part's
+  key, its hash, the `VkPipeline` of the library and its state (to make, being made, made, under `g_pj_lock`).
+- Each part is made from a whole key that holds its own state alone (`vk_pipe_part_src`), not from the key of the
+  first pipeline that needed it. So one part has one create info, and a part made without a draw is the one that a
+  draw makes.
+- The GPU thread and the reading thread of the pipeline file both add entries, under the lock `g_plib.lock`. A
+  worker or the GPU thread that needs a part makes it, or waits on `g_pj_done` while another thread makes it.
 - The library pipelines live as long as the run, as the shader modules and the pipelines do now. A count is
   thousands of PR and FS parts at most, and tens of VI and FO parts.
-- `Pipe` gets the indices of its four parts, a `fast` pipeline (the link) and an `opt` pipeline (the optimized one).
-  `Pipe.p` stays as "the best one now", for the code that reads it.
+- `Pipe` gets pointers to its four parts, the `fast` pipeline (the link) and an `opt` flag. `Pipe.p` stays as "the
+  best one now", for the code that reads it, with atomic loads and stores.
 
 PR and FS parts use `g_pcache`, so the driver keeps their compiled code across runs in `vk_pipelines.bin`. VI and FO
 parts and the links use no cache: they are cheap, and a link with LTO off gives no data worth a cache entry.
@@ -431,39 +433,23 @@ validation layer for times.
 
 ## Commits
 
-Each commit keeps the renderer working, and each runs under the validation layer (with
-`VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true`) against the same scene on the build before it. A commit adds no
-validation message.
+What landed, in order. Each commit ran the full ctest. The commits that change a pipeline or a layout also ran the
+menus of an Ounce game under `--vk_validation=1` against the same run on feat/ounce.
 
-1. **`[gpu] Query graphics pipeline libraries and extended dynamic state 3`**. `device.c` queries and enables
-   `VK_EXT_graphics_pipeline_library`, `VK_EXT_extended_dynamic_state3` and the EDS2 patch control points, and sets
-   `g_vk.has_gpl` and `g_vk.dyn_pr`. The new setting `pipeline_libraries`, with its row in `docs/SETTINGS.md`. Nothing
-   uses them yet. Test: the log line of the device choice, `ctest -R 'vulkan_headless|docs_check'`, the headless test
-   under the layer.
-2. **`[gpu] Make the graphics layouts with independent sets for pipeline libraries`**. The flagged layouts, the
-   null-set layouts of the PR and FS parts, and a compute layout apart. Whole pipelines use the flagged layouts when
-   `has_gpl`. Test: the headless test under the layer with descriptor buffers on and off (`descriptor_buffers`), and a
-   game scene with the same screenshot hash as the build before.
-3. **`[gpu] Set pre-rasterization state dynamically on the library path`**. The `rec_CmdSet...` wrappers, the `DYN`
-   entries in `render.c`, and the dynamic states in whole pipelines when `has_gpl`. Test: the edenprobe cases for
-   polygon mode, depth clamp, provoking vertex and conservative rasterization, and the headless test.
-4. **`[gpu] Split a pipeline key into its four library parts`**. `vk_pipe_split` and the key types, with a test in
-   `tests/` that runs with no device. Test: the new ctest.
-5. **`[gpu] Link a draw's pipeline from graphics pipeline libraries`**. `pipeline_lib.c`: the four tables, the part
-   makes on the workers, the fast link, the stand-in that resolves to the link. Test: the headless test under the
-   layer, a game run through a scene with new shaders, and the stats line (links made, wait ms).
-6. **`[gpu] Make the optimized pipeline in the background and switch to it`**. The third queue, the LTO link, the
-   swap and the deferred destroy of the fast link. Test: a Tracy capture that shows "pipeline optimize" on the workers
-   and no "pipeline wait" for it, and the GPU frame time against the build before.
-7. **`[gpu] Make the pipeline file's library parts at startup`**. `pf_load_pipe` queues the parts, then the links,
-   then the optimized pipelines. Test: a second run with warm files makes no part that is not a cache hit
-   (the stats line).
-8. **`[gpu] Warm the driver cache with the parts of the programs a game ships`**. The make and destroy of the PR and
-   FS parts after the pass, on the lowest queue. Test: a run with empty caches, then a run with warm files on the
-   Ounce game. The second run must show no library line over one second for a shipped vertex program.
-9. **`[docs] Record the measured stalls of pipeline libraries`**. This file gets the numbers of the measurement above.
-
-Commits 1 to 3 change no draw result. They can land first, and each one can be checked alone.
+1. **`[gpu] Query graphics pipeline libraries and their dynamic state`**: `vk_gpl_choose` in `pipeline_parts.c`, the
+   device query and enable, the setting `pipeline_libraries`, and the tests `vk_pipeline_parts`,
+   `vulkan_headless_libraries` and `vulkan_headless_libraries_off` (every headless check under the layer, with the
+   setting on and off).
+2. **`[gpu] Set pre-rasterization state as dynamic state with pipeline libraries`**: the dynamic state table with the
+   part of each state (`vk_pipe_dynamic`), and the draws and the clears that set the states. This was step 3 of the
+   plan. The layouts (step 2) went into the link commit, because they change nothing without a link.
+3. **`[gpu] Split a pipeline key into the keys of its four library parts`**: `vk_pipe_split` and its test (step 4).
+4. **`[gpu] Link new pipelines from libraries and optimize them in the background`**: the layouts with independent
+   sets, the part table, the fast link, the optimized pipeline on a third queue and the swap (steps 2, 5 and 6). The
+   pipeline file needed no change for step 7: its pipelines take the same path, so their parts are made at startup.
+5. Not done: step 8, the warm-up of the parts of the programs that a game ships. It makes thousands of parts into
+   `vk_pipelines.bin`, and the size of that file and the time of the warm-up must be measured first (see the open
+   questions).
 
 ## Rejected alternatives
 

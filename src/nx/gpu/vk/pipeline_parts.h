@@ -90,4 +90,8 @@ typedef struct {
 /* k's parts: fs is the fragment program the pipeline gets (k->fs, or the empty one for none) */
 void vk_pipe_split(const PipeKey* k, VkShaderModule fs, const PipeSplitDevice* d, PipeViKey* vi, PipePrKey* pr,
                    PipeFsKey* f, PipeFoKey* fo);
+/* the whole key a part (VK_PART_*) of key is made from: what the part's key holds and nothing else, so that one part
+   is made the same whatever pipeline needed it first, and a part made without a draw (the programs a game ships)
+   is the one a draw makes. Its split gives key back for that part */
+void vk_pipe_part_src(u32 part, const void* key, PipeKey* out);
 #endif

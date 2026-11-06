@@ -257,6 +257,29 @@ static void check_split(void) {
                          g_fields[f], dynamic, shading);
                 CHECK(parts_differ(&base, &k, &d) == want, what);
             }
+            /* each part made from its own key alone (vk_pipe_part_src) splits back into that key */
+            for (int f = 0; f < F_COUNT; f++) {
+                PipeKey k = base, src;
+                mutate(&k, f);
+                PipeViKey vi[2];
+                PipePrKey pr[2];
+                PipeFsKey fs[2];
+                PipeFoKey fo[2];
+                VkShaderModule m = k.fs ? k.fs : (VkShaderModule)(uintptr_t)0x9090;
+                vk_pipe_split(&k, m, &d, &vi[0], &pr[0], &fs[0], &fo[0]);
+                vk_pipe_part_src(VK_PART_VI, &vi[0], &src);
+                vk_pipe_split(&src, m, &d, &vi[1], &pr[1], &fs[1], &fo[1]);
+                CHECK(!memcmp(&vi[0], &vi[1], sizeof *vi), "the vertex input part's own key");
+                vk_pipe_part_src(VK_PART_PR, &pr[0], &src);
+                vk_pipe_split(&src, m, &d, &vi[1], &pr[1], &fs[1], &fo[1]);
+                CHECK(!memcmp(&pr[0], &pr[1], sizeof *pr), "the pre-rasterization part's own key");
+                vk_pipe_part_src(VK_PART_FS, &fs[0], &src);
+                vk_pipe_split(&src, fs[0].fs, &d, &vi[1], &pr[1], &fs[1], &fo[1]);
+                CHECK(!memcmp(&fs[0], &fs[1], sizeof *fs), "the fragment shader part's own key");
+                vk_pipe_part_src(VK_PART_FO, &fo[0], &src);
+                vk_pipe_split(&src, m, &d, &vi[1], &pr[1], &fs[1], &fo[1]);
+                CHECK(!memcmp(&fo[0], &fo[1], sizeof *fo), "the fragment output part's own key");
+            }
             /* without a fragment program the write masks are off, so a mask is no output part of its own then */
             PipeKey a = base, b = base;
             a.fs = b.fs = VK_NULL_HANDLE;

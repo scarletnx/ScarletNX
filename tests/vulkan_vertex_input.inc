@@ -89,10 +89,22 @@ static VKAPI_ATTR VkResult VKAPI_CALL viw_create(VkDevice dev, VkPipelineCache c
             g_viw.pipes_over++;
             continue;
         }
+        u32 format1 =
+            dynamic || !vi ? 0 : viw_format1(vi->vertexAttributeDescriptionCount, vi->pVertexAttributeDescriptions);
+        /* a link of pipeline libraries (pipeline.c's gpl_link): the vertex input its vertex input library holds */
+        for (const VkBaseInStructure* s = info[i].pNext; s; s = s->pNext) {
+            if (s->sType != VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR) continue;
+            const VkPipelineLibraryCreateInfoKHR* li = (const VkPipelineLibraryCreateInfoKHR*)s;
+            for (u32 l = 0; l < li->libraryCount; l++)
+                for (u32 j = 0; j < g_viw.npipes; j++)
+                    if (g_viw.pipes[j].p == li->pLibraries[l]) {
+                        dynamic |= g_viw.pipes[j].dynamic;
+                        if (g_viw.pipes[j].format1) format1 = g_viw.pipes[j].format1;
+                    }
+        }
         g_viw.pipes[g_viw.npipes].p = out[i];
         g_viw.pipes[g_viw.npipes].dynamic = dynamic;
-        g_viw.pipes[g_viw.npipes++].format1 =
-            dynamic || !vi ? 0 : viw_format1(vi->vertexAttributeDescriptionCount, vi->pVertexAttributeDescriptions);
+        g_viw.pipes[g_viw.npipes++].format1 = dynamic ? 0 : format1;
     }
     pm_unlock(&g_viw.lock);
     return r;

@@ -652,6 +652,18 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                     (unsigned long long)(upload_bytes >> 20), (unsigned long long)slow_frames,
                     (unsigned long long)(slowest_ns / 1000000));
                 slow_frames = slowest_ns = 0;
+                if (g_vk.has_gpl) {
+                    u64 made[4], hits[4], make_ms[4], links, link_ms, opts, opt_ms;
+                    vk_pipeline_lib_stats(made, hits, make_ms, &links, &link_ms, &opts, &opt_ms);
+                    LOG("vulkan: pipeline libraries: %llu pre-rasterization and %llu fragment shader parts made (%llu "
+                        "and %llu from the cache, %llu and %llu ms), %llu vertex input and %llu fragment output parts "
+                        "(%llu ms); %llu links (%llu ms); %llu optimized pipelines made in the background (%llu ms)\n",
+                        (unsigned long long)made[1], (unsigned long long)made[2], (unsigned long long)hits[1],
+                        (unsigned long long)hits[2], (unsigned long long)make_ms[1], (unsigned long long)make_ms[2],
+                        (unsigned long long)made[0], (unsigned long long)made[3],
+                        (unsigned long long)(make_ms[0] + make_ms[3]), (unsigned long long)links,
+                        (unsigned long long)link_ms, (unsigned long long)opts, (unsigned long long)opt_ms);
+                }
                 u64 bc7_levels, bc7_hits, bc7_bytes, bc7_rgba8, reads, stored, restarts, file;
                 vk_astc_stats(&bc7_levels, &bc7_hits, &bc7_bytes, &bc7_rgba8);
                 vk_bc7_cache_stats(&reads, &stored, &restarts, &file);
