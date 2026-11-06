@@ -6,13 +6,15 @@
    (i % X, i / X) in the block (gpu/draw_state.h DS_MSAA_, as Ryujinx's ColorCopyToNonMs shaders take them), X and Y
    powers of two given by their log2 in pc.lg. Color moves through views in the unsigned format of the texels' bytes
    (vk_raw_format), so every bit goes as it is. One source, built with one of:
-     MS_UNPACK        the image's samples (src) to that surface's texels: the render target is the surface
+     MS_UNPACK        the image's samples (src) to that surface's texels: the render target is its rows from
+                      pc.y0 (all of them, or the band of rows a readback in parts takes)
      MS_UNPACK_DEPTH  the same for a depth image, into a depth target of its format
      MS_PACK          that surface's texels (src) to the image's samples: the render target is the image, shaded per
                       sample (gl_SampleID), each invocation writing its own sample
    CMake compiles each into SPIR-V at build time (cmake/glsl.cmake). */
 layout(push_constant) uniform Params {
     ivec2 lg; /* log2 of X and Y */
+    int y0;   /* the surface's row the render target's first row is (unpack) */
 } pc;
 
 #if defined(MS_UNPACK) || defined(MS_UNPACK_DEPTH)
@@ -23,7 +25,7 @@ layout(location = 0) out uvec4 o;
 layout(set = 0, binding = 0) uniform sampler2DMS src;
 #endif
 void main() {
-    ivec2 t = ivec2(gl_FragCoord.xy); /* the texel, at its center: its integer part */
+    ivec2 t = ivec2(gl_FragCoord.xy) + ivec2(0, pc.y0); /* the texel, at its center: its integer part */
     ivec2 m = (ivec2(1) << pc.lg) - 1;
     int s = (t.x & m.x) | ((t.y & m.y) << pc.lg.x);
 #ifdef MS_UNPACK

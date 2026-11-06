@@ -1047,9 +1047,11 @@ int vk_blit_mem(const GpuBlit* b);
    (x, y) at texel (x X + i % X, y Y + i / X) of a surface X by Y times its size, DS_MSAA_), through a single-sampled
    image of that size (the grid), by draws. Under vk_lock, outside a rendering pass (they end an open one) */
 int vk_ms_moves(const Surf* s); /* s's samples can move: multisampled, unscaled, with a raw view (Surf.ms_raw) */
-/* layer's samples drawn into a new grid of s's move format, left in TRANSFER_SRC_OPTIMAL for copies recorded in this
-   frame (it is freed with it): VK_NULL_HANDLE when they can't be */
-VkImage vk_ms_unpack(VkCommandBuffer cb, Surf* s, u32 layer);
+/* rows of layer's samples from the guest's row y0 drawn into a new grid of s's move format, rows high (its row 0 is
+   row y0), left in TRANSFER_SRC_OPTIMAL for copies recorded in this frame (it is freed with it): VK_NULL_HANDLE when
+   they can't be */
+VkImage vk_ms_unpack(VkCommandBuffer cb, Surf* s, u32 layer, u32 y0, u32 rows);
+u64 vk_ms_unpacked(void); /* the grid texels vk_ms_unpack has drawn so far (tests) */
 /* layer's samples drawn from a grid loaded with rows of pitch bytes from off in buf: 0 when they can't be (a depth
    surface's never are) */
 int vk_ms_pack(VkCommandBuffer cb, Surf* s, u32 layer, VkBuffer buf, u64 off, u32 pitch);

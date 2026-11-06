@@ -7,7 +7,9 @@
    same order. Copies can't reach a multisampled image's samples, so a draw moves them through a single-sampled image
    of the guest's size (the grid), which the copies to and from guest memory take as they take any target
    (surface.c's flush_copy and rt_load_copy):
-     unpack  each grid texel takes its sample from the image (msaa.frag MS_UNPACK, MS_UNPACK_DEPTH)
+     unpack  each grid texel takes its sample from the image (msaa.frag MS_UNPACK, MS_UNPACK_DEPTH). The grid may be
+             a band of the guest's rows: a readback in parts unpacks each part's alone, into an image no bigger than
+             the part
      pack    each sample of the image takes its grid texel, shaded per sample (MS_PACK)
    Color goes through views in the unsigned format of the texels' bytes (vk_raw_format), so no bit changes on the way.
    One pipeline per kind, format and sample count, made on first use and kept for the device's lifetime as the other
@@ -33,6 +35,7 @@ static struct {
     VkShaderModule vs, fs[MS_KINDS];
     MsPipe pipe[MS_PIPES];
     u32 npipe;
+    u64 unpacked; /* grid texels unpacked, for vk_ms_unpacked */
 } g_msaa;
 
 static VkShaderModule ms_module(const u32* code, u64 size) {
@@ -50,7 +53,7 @@ static void ms_init(void) {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &b};
     if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &di, NULL, &g_msaa.dsl)))
         fatal("vulkan: cannot create the multisample moves' descriptor layout");
-    VkPushConstantRange push = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 8};
+    VkPushConstantRange push = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 12}; /* msaa.frag's Params */
     VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                      .setLayoutCount = 1,
                                      .pSetLayouts = &g_msaa.dsl,
@@ -158,9 +161,10 @@ static VkImageView ms_view(VkImage img, VkFormat format, VkImageAspectFlags aspe
 static VkFormat ms_format(const Surf* s) { return s->f.depth ? s->f.vk : vk_raw_format(s->f.bpp); }
 
 /* a draw of kind over the w by h target view (its format and samples), its fragments reading src in SHADER_READ_ONLY
-   layout. The target is in its attachment layout, its contents replaced */
+   layout, the target's first row the surface's row y0 (an unpack's). The target is in its attachment layout, its
+   contents replaced */
 static int ms_draw(VkCommandBuffer cb, u32 kind, VkImageView target, VkFormat format, VkSampleCountFlagBits samples,
-                   u32 w, u32 h, VkImageView src, u32 msaa) {
+                   u32 w, u32 h, u32 y0, VkImageView src, u32 msaa) {
     ms_init();
     VkPipeline p = ms_pipe(kind, format, samples);
     VkDescriptorSet set = p ? vk_desc_alloc(g_msaa.dsl) : VK_NULL_HANDLE;
@@ -187,13 +191,13 @@ static int ms_draw(VkCommandBuffer cb, u32 kind, VkImageView target, VkFormat fo
                           .pDepthAttachment = depth ? &att : NULL};
     VkViewport vp = {0, 0, (float)w, (float)h, 0, 1};
     VkRect2D sc = {{0, 0}, {w, h}};
-    i32 lg[2] = {(i32)ds_msaa_log2_x(msaa), (i32)ds_msaa_log2_y(msaa)};
+    i32 pc[3] = {(i32)ds_msaa_log2_x(msaa), (i32)ds_msaa_log2_y(msaa), (i32)y0};
     rec_CmdBeginRendering(cb, &ri);
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
     rec_CmdSetViewport(cb, 0, 1, &vp);
     rec_CmdSetScissor(cb, 0, 1, &sc);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_msaa.layout, 0, 1, &set, 0, NULL);
-    rec_CmdPushConstants(cb, g_msaa.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof lg, lg);
+    rec_CmdPushConstants(cb, g_msaa.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, pc);
     rec_CmdDraw(cb, 3, 1, 0, 0);
     rec_CmdEndRendering(cb);
     vk_render_forget_state(); /* the renderer's next draw sets its pipeline and state again */
@@ -205,12 +209,13 @@ int vk_ms_moves(const Surf* s) {
     return s->sw == s->w && s->sh == s->h; /* a scaled image's samples are other pixels than the guest's */
 }
 
-/* the single-sampled image of s's guest size in its move format, for usage: VK_NULL_HANDLE when it can't be made */
-static VkImage ms_grid(const Surf* s, VkImageUsageFlags usage, VmaAllocation* mem) {
+/* the single-sampled image of rows of s's guest rows, at its guest width, in its move format, for usage:
+   VK_NULL_HANDLE when it can't be made */
+static VkImage ms_grid(const Surf* s, u32 rows, VkImageUsageFlags usage, VmaAllocation* mem) {
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                             .imageType = VK_IMAGE_TYPE_2D,
                             .format = ms_format(s),
-                            .extent = {s->w << ds_msaa_log2_x(s->msaa), s->h << ds_msaa_log2_y(s->msaa), 1},
+                            .extent = {s->w << ds_msaa_log2_x(s->msaa), rows, 1},
                             .mipLevels = 1,
                             .arrayLayers = 1,
                             .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -221,12 +226,15 @@ static VkImage ms_grid(const Surf* s, VkImageUsageFlags usage, VmaAllocation* me
     return vk_image_create(&ii, &img, mem) ? img : VK_NULL_HANDLE;
 }
 
-VkImage vk_ms_unpack(VkCommandBuffer cb, Surf* s, u32 layer) {
-    if (!vk_ms_moves(s) || layer >= s->layers || s->layout == VK_IMAGE_LAYOUT_UNDEFINED) return VK_NULL_HANDLE;
+VkImage vk_ms_unpack(VkCommandBuffer cb, Surf* s, u32 layer, u32 y0, u32 rows) {
+    u32 gw = s->w << ds_msaa_log2_x(s->msaa), gh = s->h << ds_msaa_log2_y(s->msaa);
+    if (!vk_ms_moves(s) || layer >= s->layers || s->layout == VK_IMAGE_LAYOUT_UNDEFINED || !rows || y0 >= gh ||
+        rows > gh - y0)
+        return VK_NULL_HANDLE;
     int depth = s->f.depth;
     VkImageAspectFlags aspect = depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
     VmaAllocation mem;
-    VkImage grid = ms_grid(s,
+    VkImage grid = ms_grid(s, rows,
                            (depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) |
                                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                            &mem);
@@ -247,9 +255,9 @@ VkImage vk_ms_unpack(VkCommandBuffer cb, Surf* s, u32 layer) {
     /* a depth grid holds only depth: a packed format's stencil aspect goes along in the layouts it is moved through */
     VkImageAspectFlags grid_aspect = vk_aspect(&s->f);
     vk_barrier(cb, grid, grid_aspect, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0, VK_IMAGE_LAYOUT_UNDEFINED, out, wr, al);
-    if (!ms_draw(cb, depth ? MS_UNPACK_DEPTH : MS_UNPACK, dst, f, VK_SAMPLE_COUNT_1_BIT,
-                 s->w << ds_msaa_log2_x(s->msaa), s->h << ds_msaa_log2_y(s->msaa), src, s->msaa))
+    if (!ms_draw(cb, depth ? MS_UNPACK_DEPTH : MS_UNPACK, dst, f, VK_SAMPLE_COUNT_1_BIT, gw, rows, y0, src, s->msaa))
         return VK_NULL_HANDLE;
+    g_msaa.unpacked += (u64)gw * rows;
     vk_barrier(cb, grid, grid_aspect, out, wr, al, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     return grid;
@@ -258,7 +266,8 @@ VkImage vk_ms_unpack(VkCommandBuffer cb, Surf* s, u32 layer) {
 int vk_ms_pack(VkCommandBuffer cb, Surf* s, u32 layer, VkBuffer buf, u64 off, u32 pitch) {
     if (!vk_ms_moves(s) || s->f.depth || layer >= s->layers || !g_vk.feat.sampleRateShading) return 0;
     VmaAllocation mem;
-    VkImage grid = ms_grid(s, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, &mem);
+    u32 gw = s->w << ds_msaa_log2_x(s->msaa), gh = s->h << ds_msaa_log2_y(s->msaa);
+    VkImage grid = ms_grid(s, gh, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, &mem);
     if (!grid) return 0;
     VkFormat f = ms_format(s);
     VkImageView src = ms_view(grid, f, VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_IMAGE_USAGE_SAMPLED_BIT);
@@ -266,7 +275,6 @@ int vk_ms_pack(VkCommandBuffer cb, Surf* s, u32 layer, VkBuffer buf, u64 off, u3
     vk_defer_image(grid, mem, src, dst);
     if (!src || !dst) return 0;
     vk_render_end();
-    u32 gw = s->w << ds_msaa_log2_x(s->msaa), gh = s->h << ds_msaa_log2_y(s->msaa);
     vk_barrier(cb, grid, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0, VK_IMAGE_LAYOUT_UNDEFINED,
                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     VkBufferImageCopy c = {.bufferOffset = off,
@@ -279,5 +287,7 @@ int vk_ms_pack(VkCommandBuffer cb, Surf* s, u32 layer, VkBuffer buf, u64 off, u3
                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     vk_surf_use(cb, s, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-    return ms_draw(cb, MS_PACK, dst, f, vk_surf_samples(s), s->w, s->h, src, s->msaa);
+    return ms_draw(cb, MS_PACK, dst, f, vk_surf_samples(s), s->w, s->h, 0, src, s->msaa);
 }
+
+u64 vk_ms_unpacked(void) { return g_msaa.unpacked; }

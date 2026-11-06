@@ -353,8 +353,8 @@ int vk_ms_load(Surf* s) {
     (void)s;
     return 0;
 }
-VkImage vk_ms_unpack(VkCommandBuffer cb, Surf* s, u32 layer) {
-    (void)cb, (void)s, (void)layer;
+VkImage vk_ms_unpack(VkCommandBuffer cb, Surf* s, u32 layer, u32 y0, u32 rows) {
+    (void)cb, (void)s, (void)layer, (void)y0, (void)rows;
     return VK_NULL_HANDLE;
 }
 /* write tracking: the stamp is on guest's bytes [at, at + len), all of them when len is 0, or on the runs listed in
