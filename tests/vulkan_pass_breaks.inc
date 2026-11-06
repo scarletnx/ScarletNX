@@ -71,6 +71,13 @@ static int pb_halves(u64 target, char half[2]) {
                 c = !c || c == k ? k : '?';
             }
         half[h] = c;
+        if (c == '?')
+            for (u32 y = 0; y < 4; y++)
+                fprintf(stderr,
+                        "pass breaks: row %u: %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n", y,
+                        d[y * 16 + 0], d[y * 16 + 1], d[y * 16 + 2], d[y * 16 + 3], d[y * 16 + 4], d[y * 16 + 5],
+                        d[y * 16 + 6], d[y * 16 + 7], d[y * 16 + 8], d[y * 16 + 9], d[y * 16 + 10], d[y * 16 + 11],
+                        d[y * 16 + 12], d[y * 16 + 13], d[y * 16 + 14], d[y * 16 + 15]);
     }
     return 0;
 }
@@ -82,13 +89,17 @@ static int pb_frame(GpuChannel* ch, u64 target, u64 red, u64 second, u64* begun,
     g_renderer->mem_may_have_changed();
     rt_clear(ch, target, 4, 4, 0, 1);
     vk_lock();
-    u64 passes = g_vk_passes;
+    u64 passes = g_vk_passes, drawn = g_vk_drawn, skipped = g_vk_skipped;
     pb_stream(ch, red, PB_LEN);
     pb_draw(ch, PB_LEFT);
     u64 submit = vk_submit_number();
     pb_stream(ch, second, PB_LEN);
     pb_draw(ch, PB_RIGHT);
     *begun = vk_submit_number() == submit ? g_vk_passes - passes : 0;
+    if (g_vk_drawn != drawn + 2)
+        fprintf(stderr, "pass breaks: %llu of the frame's 2 draws recorded, %llu skipped\n",
+                (unsigned long long)(g_vk_drawn - drawn), (unsigned long long)(g_vk_skipped - skipped));
+    CHECK(g_vk_drawn == drawn + 2);
     CHECK(!pb_halves(target, half));
     vk_unlock();
     return 0;
@@ -105,6 +116,9 @@ static int pb_own_case(GpuChannel* ch, u64 target, u64 red, u64 green) {
     for (u32 f = 0; f < 3; f++) CHECK(!pb_frame(ch, target, red, red, &begun, half));
     for (u32 f = 0; f < 2; f++) { /* the green range's first two checks: read from the frame's staging */
         CHECK(!pb_frame(ch, target, red, green, &begun, half));
+        if (half[0] != 'r' || half[1] != 'g')
+            fprintf(stderr, "own buffer, check %u from staging: left %c, right %c (r, g wanted)\n", f + 1, half[0],
+                    half[1]);
         CHECK(half[0] == 'r' && half[1] == 'g');
     }
     vk_lock();
