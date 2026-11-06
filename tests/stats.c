@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The stats box over the game (runtime/platform/stats.c): nothing while off; its letters a step below the menu's; each
-   line after its icon; its lines as the frames and the measures say them, the longest inside the box; ? for what is
-   not known; the GPU's share and time a frame from its busy time over a second, ? where the renderer can't time it or
-   wasn't at the second before; the graph's bars, a slow frame's in the failure colour; its corner, and beside
+   line after its icon, the GPU's beside the processor's; its lines as the frames and the measures say them, the
+   longest inside the box; ? for what is not known; the GPU's share and time a frame from its busy time over a second,
+   ? where the renderer can't time it or wasn't at the second before; the graph's title and its guides' labels; the
+   graph's bars, a slow frame's in the failure colour; its corner, and beside
    showcase's box in showcase's corner; a word that is no corner; and off forgetting what it had */
 #include "nx/runtime/platform/stats.h"
 #include "nx/runtime/platform/vpad.h"
@@ -69,11 +70,11 @@ static void draw(u64 now) {
     g_test.l.max = 4096;
     stats_draw(&g_test.l, safe, g_test.menu, now);
 }
-/* the line of letters drawn at x, y in the box's letters, its spaces back, trimmed */
-static const char* line_at(float x, float y) {
+/* the line of letters drawn at x, y in the box's letters over cols of them, its spaces back, trimmed */
+static const char* line_at(float x, float y, int cols) {
     int k, i, end = 0;
     float cw = 8.0f * (float)stats_scale(g_test.menu);
-    for (k = 0; k < STATS_COLS; ++k) {
+    for (k = 0; k < cols; ++k) {
         g_test.line[k] = ' ';
         for (i = 0; i < g_test.l.n; ++i)
             if (g_test.quads[i].uw == 8 && g_test.quads[i].vh == 16 && g_test.quads[i].x == x + (float)k * cw &&
@@ -85,28 +86,46 @@ static const char* line_at(float x, float y) {
     g_test.line[end] = 0;
     return g_test.line;
 }
-/* the box's line k from the top */
+/* the box's line k from the top; the processor's (line 1) up to the GPU's icon */
 static const char* text(int k) {
     int s = stats_scale(g_test.menu);
     float box[4], cw = 8.0f * (float)s, ch = 16.0f * (float)s;
     stats_box(safe, s, box);
-    return line_at(box[0] + 4 * cw, box[1] + ch / 4 + (float)k * ch);
+    return line_at(box[0] + 4 * cw, box[1] + ch / 4 + (float)k * ch, k == 1 ? STATS_GPU_AT - 4 : STATS_COLS - 4);
 }
-/* the menus' icon drawn before the box's line k, two of its letters wide in the text's colour, sharp: GUI_ICON_NONE
-   for none */
-static unsigned icon(int k) {
+/* the GPU's text, after its icon beside the processor's line */
+static const char* gpu_text(void) {
+    int s = stats_scale(g_test.menu);
+    float box[4], cw = 8.0f * (float)s, ch = 16.0f * (float)s;
+    stats_box(safe, s, box);
+    return line_at(box[0] + (STATS_GPU_AT + 3) * cw, box[1] + ch / 4 + ch, STATS_COLS - STATS_GPU_AT - 3);
+}
+/* the label at the graph's right of its guide of ms */
+static const char* guide_label(float ms) {
+    int s = stats_scale(g_test.menu);
+    float box[4], cw = 8.0f * (float)s, ch = 16.0f * (float)s, gw, gy, gh = 3 * ch;
+    stats_box(safe, s, box);
+    gw = box[2] - 2 * cw - STATS_AXIS * cw;
+    gy = box[1] + STATS_LINES * ch + ch / 2;
+    return line_at(box[0] + cw + gw + cw, gy + gh - gh * ms / STATS_TOP_MS - ch / 2, STATS_AXIS);
+}
+/* the menus' icon drawn at the box's cell `at` of line k, two of its letters wide in the text's colour, sharp:
+   GUI_ICON_NONE for none */
+static unsigned icon_at(int k, int at) {
     int s = stats_scale(g_test.menu), i;
     float box[4], cw = 8.0f * (float)s, ch = 16.0f * (float)s;
     stats_box(safe, s, box);
     for (i = 0; i < g_test.l.n; ++i) {
         const SnxUiQuad* q = &g_test.quads[i];
-        if (q->uw == 16 && q->vh == 16 && q->v == SNX_CONTROLS_ATLAS_HEIGHT && q->x == box[0] + cw &&
+        if (q->uw == 16 && q->vh == 16 && q->v == SNX_CONTROLS_ATLAS_HEIGHT && q->x == box[0] + (float)at * cw &&
             q->y == box[1] + ch / 4 + (float)k * ch && q->w == 2 * cw && q->h == ch && q->rgba == TEXT &&
             q->sample == UI_SHARP)
             return GUI_ICON_FIRST + (unsigned)(q->u - SNX_UI_ICONS_X) / 16;
     }
     return GUI_ICON_NONE;
 }
+/* the icon before the box's line k */
+static unsigned icon(int k) { return icon_at(k, 1); }
 /* the icons and letters drawn past a cell in from the box's sides: 0 when they all keep it */
 static int past_margin(void) {
     int s = stats_scale(g_test.menu), i, n = 0;
@@ -136,7 +155,8 @@ static int bars(const SnxUiQuad** newest) {
     stats_box(safe, stats_scale(g_test.menu), box);
     *newest = NULL;
     for (i = 1; i < g_test.l.n; ++i)
-        if (g_test.quads[i].uw == 2 && g_test.quads[i].w < box[2] - 16.0f * (float)stats_scale(g_test.menu)) {
+        if (g_test.quads[i].uw == 2 &&
+            g_test.quads[i].w < box[2] - (2 + STATS_AXIS) * 8.0f * (float)stats_scale(g_test.menu)) {
             if (!*newest || g_test.quads[i].x > (*newest)->x) *newest = &g_test.quads[i];
             ++n;
         }
@@ -167,10 +187,12 @@ int main(void) {
     /* on, in its default corner, top left: half a line in from the safe area's; ? before a frame or a measure */
     g_settings.stats = 1;
     stats_box(safe, 2, box);
-    assert(box[0] == 100 + 16 && box[1] == 50 + 16 && box[2] == STATS_COLS * 16 && box[3] == 7 * 32 + 24);
+    assert(box[0] == 100 + 16 && box[1] == 50 + 16 && box[2] == STATS_COLS * 16 && box[3] == 8 * 32 + 24);
     draw(t);
-    assert(!strcmp(text(0), "? fps  ? ms") && !strcmp(text(1), "cpu ?  ? MiB"));
-    assert(!strcmp(text(2), "gpu ?  ? ms") && !strcmp(text(3), "vram ?/? MiB"));
+    assert(!strcmp(text(0), "? fps  ? ms") && !strcmp(text(1), "cpu ?") && !strcmp(gpu_text(), "gpu ?  ? ms"));
+    assert(!strcmp(text(2), "ram ?/? MiB") && !strcmp(text(3), "vram ?/? MiB") && !strcmp(text(4), "frame time"));
+    /* the graph's guides labelled with their times at its right */
+    assert(!strcmp(guide_label(STATS_60_MS), "16.7 ms") && !strcmp(guide_label(STATS_30_MS), "33.3 ms"));
     /* its letters a step below the menu's, 1 at least: the box and each letter at that scale, the lines where it puts
        them */
     assert(stats_scale(1) == 1 && stats_scale(2) == 1 && stats_scale(3) == 2 && stats_scale(4) == 3);
@@ -181,14 +203,16 @@ int main(void) {
                     drawn_scale(), stats_scale(g_test.menu), text(0));
             return 1;
         }
-        /* each line after its icon: the frames' gauge, the processor, the GPU, the video memory's stick */
-        if (icon(0) != GUI_ICON_GAUGE || icon(1) != GUI_ICON_CPU || icon(2) != GUI_ICON_GPU ||
-            icon(3) != GUI_ICON_MEMORY_STICK) {
-            fprintf(stderr,
-                    "the menu at %d: the lines' icons U+%04X U+%04X U+%04X U+%04X, not gauge U+%04X, cpu U+%04X, "
-                    "gpu U+%04X, memory-stick U+%04X\n",
-                    g_test.menu, icon(0), icon(1), icon(2), icon(3), GUI_ICON_GAUGE, GUI_ICON_CPU, GUI_ICON_GPU,
-                    GUI_ICON_MEMORY_STICK);
+        /* each line after its icon: the frames' gauge, the processor (the GPU's chip beside it), the memory's stick,
+           the video memory's layers, the graph's pulse */
+        if (icon(0) != GUI_ICON_GAUGE || icon(1) != GUI_ICON_CPU || icon_at(1, STATS_GPU_AT) != GUI_ICON_GPU ||
+            icon(2) != GUI_ICON_MEMORY_STICK || icon(3) != GUI_ICON_LAYERS || icon(4) != GUI_ICON_ACTIVITY) {
+            fprintf(
+                stderr,
+                "the menu at %d: the icons U+%04X U+%04X U+%04X U+%04X U+%04X U+%04X, not gauge U+%04X, cpu U+%04X, "
+                "gpu U+%04X, memory-stick U+%04X, layers U+%04X, activity U+%04X\n",
+                g_test.menu, icon(0), icon(1), icon_at(1, STATS_GPU_AT), icon(2), icon(3), icon(4), GUI_ICON_GAUGE,
+                GUI_ICON_CPU, GUI_ICON_GPU, GUI_ICON_MEMORY_STICK, GUI_ICON_LAYERS, GUI_ICON_ACTIVITY);
             return 1;
         }
     }
@@ -201,35 +225,40 @@ int main(void) {
     /* the processor's share and the memory as measured, and ? for one not told */
     stats_measured(&(SnxStatsMeasure){.cpu = 25, .memory = 512ull << 20, .gpu = -1});
     draw(t + 600 * MS);
-    assert(!strcmp(text(1), "cpu 25%  512 MiB"));
+    assert(!strcmp(text(1), "cpu 25%") && !strcmp(text(2), "ram 512/? MiB"));
     stats_measured(&(SnxStatsMeasure){.cpu = -1, .memory = 512ull << 20, .gpu = -1});
     draw(t + 600 * MS);
-    assert(!strcmp(text(1), "cpu ?  512 MiB"));
+    assert(!strcmp(text(1), "cpu ?") && !strcmp(text(2), "ram 512/? MiB"));
+    stats_measured(&(SnxStatsMeasure){.cpu = 25, .memory = 512ull << 20, .memory_total = 31500ull << 20, .gpu = -1});
+    draw(t + 600 * MS);
+    assert(!strcmp(text(2), "ram 512/31500 MiB"));
     stats_measured(&(SnxStatsMeasure){.cpu = 7, .gpu = -1});
     draw(t + 600 * MS);
-    assert(!strcmp(text(1), "cpu 7%  ? MiB"));
+    assert(!strcmp(text(1), "cpu 7%") && !strcmp(text(2), "ram ?/? MiB"));
     /* the GPU's share and its time a frame, in tenths of a millisecond rounded, and the video memory's use and
        budget, as measured; ? for one not told */
     stats_measured(&(SnxStatsMeasure){
         .cpu = 7, .gpu = 63, .gpu_ns = 10450000, .vram = 3120ull << 20, .vram_budget = 7980ull << 20});
     draw(t + 600 * MS);
-    assert(!strcmp(text(1), "cpu 7%  ? MiB"));
-    assert(!strcmp(text(2), "gpu 63%  10.5 ms") && !strcmp(text(3), "vram 3120/7980 MiB"));
+    assert(!strcmp(text(1), "cpu 7%"));
+    assert(!strcmp(gpu_text(), "gpu 63%  10.5 ms") && !strcmp(text(3), "vram 3120/7980 MiB"));
     stats_measured(&(SnxStatsMeasure){.cpu = 7, .gpu = -1, .vram = 3120ull << 20});
     draw(t + 600 * MS);
-    assert(!strcmp(text(2), "gpu ?  ? ms") && !strcmp(text(3), "vram 3120/? MiB"));
+    assert(!strcmp(gpu_text(), "gpu ?  ? ms") && !strcmp(text(3), "vram 3120/? MiB"));
     stats_measured(&(SnxStatsMeasure){.cpu = 7, .gpu = 0, .gpu_ns = 40000, .vram_budget = 7980ull << 20});
     draw(t + 600 * MS);
-    assert(!strcmp(text(2), "gpu 0%  0.0 ms") && !strcmp(text(3), "vram ?/7980 MiB"));
+    assert(!strcmp(gpu_text(), "gpu 0%  0.0 ms") && !strcmp(text(3), "vram ?/7980 MiB"));
     /* the longest lines, a 24 GiB card full and a slow GPU, inside the box with a cell to spare */
     stats_measured(&(SnxStatsMeasure){.cpu = 100,
                                       .memory = 65535ull << 20,
+                                      .memory_total = 65535ull << 20,
                                       .gpu = 100,
                                       .gpu_ns = 100000000,
                                       .vram = 24564ull << 20,
                                       .vram_budget = 24564ull << 20});
     draw(t + 600 * MS);
-    assert(!strcmp(text(1), "cpu 100%  65535 MiB") && !strcmp(text(2), "gpu 100%  100.0 ms"));
+    assert(!strcmp(text(1), "cpu 100%") && !strcmp(gpu_text(), "gpu 100%  100.0 ms"));
+    assert(!strcmp(text(2), "ram 65535/65535 MiB"));
     assert(!strcmp(text(3), "vram 24564/24564 MiB") && past_margin() == 0);
     /* a 40 ms frame in the failure colour, then an 80 ms one as tall as the graph */
     stats_frame(at += 40 * MS, &g_test.gpu);
@@ -256,27 +285,27 @@ int main(void) {
     stats_frame(at += 20 * MS, &g_test.gpu);
     at = frames(at, 49, 20, 12);
     draw(at);
-    assert(!strcmp(text(2), "gpu ?  ? ms") && !strcmp(text(3), "vram ?/? MiB")); /* 980 ms: not a second yet */
+    assert(!strcmp(gpu_text(), "gpu ?  ? ms") && !strcmp(text(3), "vram ?/? MiB")); /* 980 ms: not a second yet */
     at = frames(at, 1, 20, 12);
     draw(at);
-    assert(!strcmp(text(2), "gpu 60%  12.0 ms") && !strcmp(text(3), "vram 2048/8192 MiB"));
+    assert(!strcmp(gpu_text(), "gpu 60%  12.0 ms") && !strcmp(text(3), "vram 2048/8192 MiB"));
     /* a second the renderer couldn't time: ?, and the next too, which has no start; then 5 ms of each 20 again */
     g_test.gpu.timed = 0;
     at = frames(at, 50, 20, 12);
     draw(at);
-    assert(!strcmp(text(2), "gpu ?  ? ms") && !strcmp(text(3), "vram 2048/8192 MiB"));
+    assert(!strcmp(gpu_text(), "gpu ?  ? ms") && !strcmp(text(3), "vram 2048/8192 MiB"));
     g_test.gpu.timed = 1;
     at = frames(at, 50, 20, 5);
     draw(at);
-    assert(!strcmp(text(2), "gpu ?  ? ms"));
+    assert(!strcmp(gpu_text(), "gpu ?  ? ms"));
     at = frames(at, 50, 20, 5);
     draw(at);
-    assert(!strcmp(text(2), "gpu 25%  5.0 ms"));
+    assert(!strcmp(gpu_text(), "gpu 25%  5.0 ms"));
     /* a busy GPU at 30 frames a second: 33 ms of each 34; the video memory no longer told */
     g_test.gpu.vram = g_test.gpu.vram_budget = 0;
     at = frames(at, 30, 34, 33);
     draw(at);
-    assert(!strcmp(text(2), "gpu 97%  33.0 ms") && !strcmp(text(3), "vram ?/? MiB"));
+    assert(!strcmp(gpu_text(), "gpu 97%  33.0 ms") && !strcmp(text(3), "vram ?/? MiB"));
     /* bottom right; beside showcase's box in showcase's own corner, above it there, below it in a top one; showcase in
        another corner leaves it in its own */
     stats_corner_set(corner, "br");
@@ -306,8 +335,9 @@ int main(void) {
     assert(g_test.l.n == 0);
     g_settings.stats = 1;
     draw(at);
-    assert(!strcmp(text(0), "? fps  ? ms") && !strcmp(text(1), "cpu ?  ? MiB") && !bars(&newest));
-    assert(!strcmp(text(2), "gpu ?  ? ms") && !strcmp(text(3), "vram ?/? MiB"));
+    assert(!strcmp(text(0), "? fps  ? ms") && !strcmp(text(1), "cpu ?") && !strcmp(text(2), "ram ?/? MiB") &&
+           !bars(&newest));
+    assert(!strcmp(gpu_text(), "gpu ?  ? ms") && !strcmp(text(3), "vram ?/? MiB"));
     puts("stats passed");
     return 0;
 }

@@ -50,7 +50,7 @@ void stats_measured(const SnxStatsMeasure* m) {
     ui_unlock();
 }
 void stats_frame(u64 now_ns, const SnxStatsGpu* gpu) {
-    u64 cpu_ns;
+    u64 cpu_ns, total;
     unsigned cores;
     if (!__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)) {
         if (g_stats.frames || g_stats.sampled_ns) { /* the next turn on starts from nothing */
@@ -72,11 +72,13 @@ void stats_frame(u64 now_ns, const SnxStatsGpu* gpu) {
     if (g_stats.sampled_ns && now_ns - g_stats.sampled_ns < STATS_SAMPLE_NS) return;
     cpu_ns = snx_process_cpu_ns();
     cores = snx_cpu_count();
+    total = 0;
     if (g_stats.sampled_ns) {
         u64 wall = now_ns - g_stats.sampled_ns;
         SnxStatsMeasure m = {
             .cpu = cpu_ns && g_stats.cpu_ns && cores ? (int)((cpu_ns - g_stats.cpu_ns) * 100 / (wall * cores)) : -1,
             .memory = snx_footprint(),
+            .memory_total = snx_memory_total(&total) ? total : 0,
             .gpu = -1,
             .vram = gpu->vram,
             .vram_budget = gpu->vram_budget};
@@ -103,7 +105,7 @@ void stats_box(const int safe[4], int scale, float box[4]) {
     box[2] = (float)STATS_COLS * cw;
     /* the lines and the graph, a quarter line around each */
     box[3] = (STATS_LINES + STATS_GRAPH_LINES) * ch + 3 * ch / 4;
-    if (vpad_showcase_box(safe, showcase) == corner) {  /* beside showcase's box, toward the picture's middle */
+    if (vpad_showcase_box(safe, showcase) == corner) { /* beside showcase's box, toward the picture's middle */
         box[0] = corner & 1 ? showcase[0] + showcase[2] - box[2] : showcase[0];
         box[1] = corner & 2 ? showcase[1] - gap - box[3] : showcase[1] + showcase[3] + gap;
         return;
@@ -134,9 +136,16 @@ static void stats_mib(char* s, size_t n, u64 bytes) {
 }
 void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
     int scale = stats_scale(menu_scale);
-    float cw = 8.0f * (float)scale, ch = 16.0f * (float)scale, box[4], gx, gy, gw, gh, bw;
-    char fps[16], ms[16], share[16], used[24], budget[24], line[STATS_LINES][STATS_COLS + 1];
-    static const unsigned icons[STATS_LINES] = {GUI_ICON_GAUGE, GUI_ICON_CPU, GUI_ICON_GPU, GUI_ICON_MEMORY_STICK};
+    float cw = 8.0f * (float)scale, ch = 16.0f * (float)scale, box[4], gx, gy, gw, gh, bw, top;
+    char fps[16], ms[16], share[16], used[24], total[24], gpu[STATS_COLS + 1], line[STATS_LINES][STATS_COLS + 1];
+    /* the frames' gauge, the processor (the GPU's chip beside it), the memory's stick, the video memory's layers, the
+       graph's pulse */
+    static const unsigned icons[STATS_LINES] = {GUI_ICON_GAUGE, GUI_ICON_CPU, GUI_ICON_MEMORY_STICK, GUI_ICON_LAYERS,
+                                                GUI_ICON_ACTIVITY};
+    static const struct {
+        float ms;
+        const char* label;
+    } guides[2] = {{STATS_60_MS, "16.7 ms"}, {STATS_30_MS, "33.3 ms"}};
     unsigned j;
     if (!__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)) return;
     if (!g_stats.since_ns) { /* the first half second starts at the first draw */
@@ -159,30 +168,39 @@ void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
         snprintf(ms, sizeof ms, "? ms");
     snprintf(line[0], sizeof line[0], "%s  %s", fps, ms);
     stats_percent(share, sizeof share, g_stats.shown.cpu);
-    stats_mib(used, sizeof used, g_stats.shown.memory);
-    snprintf(line[1], sizeof line[1], "cpu %s  %s MiB", share, used);
+    snprintf(line[1], sizeof line[1], "cpu %s", share);
     if (g_stats.shown.gpu >= 0) { /* the busy time a frame in tenths of a millisecond, as the frame's own */
         unsigned long long tenths = (g_stats.shown.gpu_ns + 50000) / 100000;
-        snprintf(line[2], sizeof line[2], "gpu %d%%  %llu.%llu ms", g_stats.shown.gpu, tenths / 10, tenths % 10);
+        snprintf(gpu, sizeof gpu, "gpu %d%%  %llu.%llu ms", g_stats.shown.gpu, tenths / 10, tenths % 10);
     } else
-        snprintf(line[2], sizeof line[2], "gpu ?  ? ms");
+        snprintf(gpu, sizeof gpu, "gpu ?  ? ms");
+    stats_mib(used, sizeof used, g_stats.shown.memory);
+    stats_mib(total, sizeof total, g_stats.shown.memory_total);
+    snprintf(line[2], sizeof line[2], "ram %s/%s MiB", used, total);
     stats_mib(used, sizeof used, g_stats.shown.vram);
-    stats_mib(budget, sizeof budget, g_stats.shown.vram_budget);
-    snprintf(line[3], sizeof line[3], "vram %s/%s MiB", used, budget);
+    stats_mib(total, sizeof total, g_stats.shown.vram_budget);
+    snprintf(line[3], sizeof line[3], "vram %s/%s MiB", used, total);
+    snprintf(line[4], sizeof line[4], "frame time");
     stats_box(safe, scale, box);
     ui_fill(l, box[0], box[1], box[2], box[3], STATS_BACK);
     for (j = 0; j < STATS_LINES; ++j) { /* the icon's two cells and one, then the line, as the menu's items */
         ui_icon(l, box[0] + cw, box[1] + ch / 4 + (float)j * ch, scale, icons[j], STATS_TEXT);
         ui_text(l, box[0] + 4 * cw, box[1] + ch / 4 + (float)j * ch, scale, line[j], STATS_TEXT);
     }
-    /* the graph: each frame's time a bar up from its foot, the newest at the right, over the two guides */
+    ui_icon(l, box[0] + STATS_GPU_AT * cw, box[1] + ch / 4 + ch, scale, GUI_ICON_GPU, STATS_TEXT);
+    ui_text(l, box[0] + (STATS_GPU_AT + 3) * cw, box[1] + ch / 4 + ch, scale, gpu, STATS_TEXT);
+    /* the graph: each frame's time a bar up from its foot, the newest at the right, over the two guides, each labelled
+       with its time at the graph's right */
     gx = box[0] + cw;
-    gw = box[2] - 2 * cw;
+    gw = box[2] - 2 * cw - STATS_AXIS * cw;
     gy = box[1] + STATS_LINES * ch + ch / 2;
     gh = STATS_GRAPH_LINES * ch;
     bw = gw / (STATS_FRAMES - 1);
-    ui_fill(l, gx, gy + gh - gh * STATS_60_MS / STATS_TOP_MS, gw, (float)scale, STATS_GUIDE);
-    ui_fill(l, gx, gy + gh - gh * STATS_30_MS / STATS_TOP_MS, gw, (float)scale, STATS_GUIDE);
+    for (j = 0; j < 2; ++j) {
+        top = gy + gh - gh * guides[j].ms / STATS_TOP_MS;
+        ui_fill(l, gx, top, gw, (float)scale, STATS_GUIDE);
+        ui_text(l, gx + gw + cw, top - ch / 2, scale, guides[j].label, STATS_GUIDE);
+    }
     for (j = 0; j + 1 < g_stats.count; ++j) {
         float t = frame_ms(j), bh = gh * (t < STATS_TOP_MS ? t : STATS_TOP_MS) / STATS_TOP_MS;
         ui_fill(l, gx + gw - (float)(j + 1) * bw, gy + gh - bh, bw, bh, t > STATS_30_MS ? STATS_SLOW : STATS_TEXT);

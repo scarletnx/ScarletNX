@@ -1886,6 +1886,20 @@ int snx_memory_available(SnxU64* bytes) {
     return 0;
 #endif
 }
+int snx_memory_total(SnxU64* bytes) {
+#ifdef _WIN32
+    MEMORYSTATUSEX status;
+    status.dwLength = sizeof status;
+    if (!GlobalMemoryStatusEx(&status) || !status.ullTotalPhys) return 0;
+    *bytes = status.ullTotalPhys;
+    return 1;
+#else
+    long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGESIZE);
+    if (pages <= 0 || page <= 0) return 0;
+    *bytes = (SnxU64)pages * (SnxU64)page;
+    return 1;
+#endif
+}
 void* snx_vm_reserve(size_t size) {
 #ifdef _WIN32
     return VirtualAlloc(NULL, size, MEM_RESERVE, PAGE_NOACCESS);
