@@ -95,6 +95,7 @@ void stats_frame(u64 now_ns, const SnxStatsGpu* gpu) {
     g_stats.busy_timed = gpu->timed;
 }
 
+int stats_scale(int menu_scale) { return menu_scale > 1 ? menu_scale - 1 : 1; }
 void stats_box(const int safe[4], int scale, float box[4]) {
     float cw = 8.0f * (float)scale, ch = 16.0f * (float)scale, gap = ch / 2, showcase[4];
     int corner = __atomic_load_n(&g_stats.corner, __ATOMIC_RELAXED);
@@ -130,7 +131,8 @@ static void stats_mib(char* s, size_t n, u64 bytes) {
     else
         snprintf(s, n, "?");
 }
-void stats_draw(SnxUiList* l, const int safe[4], int scale, u64 now_ns) {
+void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
+    int scale = stats_scale(menu_scale);
     float cw = 8.0f * (float)scale, ch = 16.0f * (float)scale, box[4], gx, gy, gw, gh, bw;
     char fps[16], ms[16], share[16], used[24], budget[24], line[STATS_LINES][STATS_COLS + 1];
     unsigned j;
