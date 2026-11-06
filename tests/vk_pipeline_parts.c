@@ -164,10 +164,112 @@ static void check_states(void) {
     CHECK(np[3] == 2 && has(part[3], np[3], VK_DYNAMIC_STATE_BLEND_CONSTANTS), "the output part holds the blend constants");
 }
 
+
+/* ---- the key split (vk_pipe_split): a change of a whole pipeline's key changes the keys of the parts that hold that
+   state and no other, so a new state of known shaders reuses the parts that compile shaders */
+enum { F_VS, F_TCS, F_TES, F_GS, F_PATCH, F_POLYGON, F_CLAMP, F_PROVOKING, F_CONSERVATIVE, F_TOPO, F_VI, F_NCOLOR,
+       F_COLOR, F_DEPTH, F_STENCIL, F_BLEND, F_MASK, F_LOGIC, F_SAMPLES, F_SAMPLE_OFF, F_A2C, F_A2O, F_COVERAGE,
+       F_SHADING, F_FEEDBACK, F_ARRAYS_VS, F_ARRAYS_FS, F_ARRAYS_GS, F_FS, F_COUNT };
+static const char* const g_fields[F_COUNT] = {
+    "vs", "tcs", "tes", "gs", "patch", "polygon", "depth_clamp", "provoking_last", "conservative", "topo_class", "vi",
+    "ncolor", "color", "depth", "stencil", "blend", "blend mask", "logic_op", "samples", "sample_off",
+    "alpha_to_coverage", "alpha_to_one", "coverage", "sample_shading", "feedback", "arrays (vertex)",
+    "arrays (fragment)", "arrays (geometry)", "fs"};
+static void mutate(PipeKey* k, int f) {
+    switch (f) {
+    case F_VS: k->vs = (VkShaderModule)(uintptr_t)0x1010; break;
+    case F_TCS: k->tcs = (VkShaderModule)(uintptr_t)0x1020; break;
+    case F_TES: k->tes = (VkShaderModule)(uintptr_t)0x1030; break;
+    case F_GS: k->gs = (VkShaderModule)(uintptr_t)0x1040; break;
+    case F_PATCH: k->patch = 4; break;
+    case F_POLYGON: k->polygon = VK_POLYGON_MODE_LINE; break;
+    case F_CLAMP: k->depth_clamp = 1; break;
+    case F_PROVOKING: k->provoking_last = 1; break;
+    case F_CONSERVATIVE: k->conservative = 3; break;
+    case F_TOPO: k->topo_class = VK_PRIMITIVE_TOPOLOGY_LINE_LIST; break;
+    case F_VI: k->vi.attr[0].format = VK_FORMAT_R8G8B8A8_UNORM; break;
+    case F_NCOLOR: k->ncolor = 2; break;
+    case F_COLOR: k->color[0] = VK_FORMAT_R16G16B16A16_SFLOAT; break;
+    case F_DEPTH: k->depth = VK_FORMAT_D32_SFLOAT; break;
+    case F_STENCIL: k->stencil = VK_FORMAT_D24_UNORM_S8_UINT; break;
+    case F_BLEND: k->blend[0].en = 1; break;
+    case F_MASK: k->blend[0].mask = 7; break;
+    case F_LOGIC: k->logic_op = 1 + VK_LOGIC_OP_XOR; break;
+    case F_SAMPLES: k->samples = 4; break;
+    case F_SAMPLE_OFF: k->sample_off = 2; break;
+    case F_A2C: k->alpha_to_coverage = 1; break;
+    case F_A2O: k->alpha_to_one = 1; break;
+    case F_COVERAGE: k->coverage.raster_samples = 8; break;
+    case F_SHADING: k->sample_shading = 1; break;
+    case F_FEEDBACK: k->feedback = 1; break;
+    case F_ARRAYS_VS: k->arrays |= 1u; break;
+    case F_ARRAYS_FS: k->arrays |= 2u; break;
+    case F_ARRAYS_GS: k->arrays |= 16u; break;
+    default: k->fs = (VkShaderModule)(uintptr_t)0x2020; break;
+    }
+}
+/* the parts (VK_PART_*) whose keys differ between a and b */
+static u32 parts_differ(const PipeKey* a, const PipeKey* b, const PipeSplitDevice* d) {
+    PipeViKey vi[2];
+    PipePrKey pr[2];
+    PipeFsKey fs[2];
+    PipeFoKey fo[2];
+    vk_pipe_split(a, a->fs ? a->fs : (VkShaderModule)(uintptr_t)0x9090, d, &vi[0], &pr[0], &fs[0], &fo[0]);
+    vk_pipe_split(b, b->fs ? b->fs : (VkShaderModule)(uintptr_t)0x9090, d, &vi[1], &pr[1], &fs[1], &fo[1]);
+    return (memcmp(&vi[0], &vi[1], sizeof *vi) ? VK_PART_VI : 0) | (memcmp(&pr[0], &pr[1], sizeof *pr) ? VK_PART_PR : 0) |
+           (memcmp(&fs[0], &fs[1], sizeof *fs) ? VK_PART_FS : 0) | (memcmp(&fo[0], &fo[1], sizeof *fo) ? VK_PART_FO : 0);
+}
+static void check_split(void) {
+    for (int dynamic = 0; dynamic < 2; dynamic++)
+        for (int shading = 0; shading < 2; shading++) {
+            const PipeSplitDevice d = {.dyn_pr = dynamic ? 31u : 0u, .feedback_dynamic = dynamic};
+            PipeKey base;
+            memset(&base, 0, sizeof base);
+            base.vs = (VkShaderModule)(uintptr_t)0x1000;
+            base.fs = (VkShaderModule)(uintptr_t)0x2000;
+            base.topo_class = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+            base.ncolor = 1;
+            base.color[0] = VK_FORMAT_R8G8B8A8_UNORM;
+            base.blend[0].mask = 15;
+            base.samples = 1;
+            base.sample_shading = (u32)shading;
+            for (int f = 0; f < F_COUNT; f++) {
+                if (shading && f == F_SHADING) continue; /* set already */
+                PipeKey k = base;
+                mutate(&k, f);
+                u32 want;
+                switch (f) {
+                case F_VS: case F_TCS: case F_TES: case F_GS: case F_ARRAYS_VS: case F_ARRAYS_GS: want = VK_PART_PR; break;
+                case F_PATCH: case F_POLYGON: case F_CLAMP: case F_PROVOKING: case F_CONSERVATIVE:
+                    want = dynamic ? 0 : VK_PART_PR;
+                    break;
+                case F_TOPO: case F_VI: want = VK_PART_VI; break;
+                case F_SAMPLES: case F_SAMPLE_OFF: case F_A2C: case F_A2O: case F_COVERAGE:
+                    want = shading ? VK_PART_FS | VK_PART_FO : VK_PART_FO;
+                    break;
+                case F_SHADING: want = VK_PART_FS | VK_PART_FO; break;
+                case F_FEEDBACK: want = dynamic ? 0 : VK_PART_FS | VK_PART_FO; break;
+                case F_ARRAYS_FS: case F_FS: want = VK_PART_FS; break;
+                default: want = VK_PART_FO; break;
+                }
+                char what[160];
+                snprintf(what, sizeof what, "%s changes the parts that hold it (dynamic %d, sample shading %d)",
+                         g_fields[f], dynamic, shading);
+                CHECK(parts_differ(&base, &k, &d) == want, what);
+            }
+            /* without a fragment program the write masks are off, so a mask is no output part of its own then */
+            PipeKey a = base, b = base;
+            a.fs = b.fs = VK_NULL_HANDLE;
+            b.blend[0].mask = 1;
+            CHECK(parts_differ(&a, &b, &d) == 0, "a write mask without a fragment program is no new part");
+        }
+}
+
 int main(void) {
     check_off();
     check_dynamic();
     check_states();
+    check_split();
     printf("%s: %u checks, %u failed\n", g_test.failures ? "FAIL" : "PASS", g_test.checks, g_test.failures);
     return g_test.failures != 0;
 }

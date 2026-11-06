@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include "common/cpu/aarch64/cpu.h"
 #include "volk.h"
+#include "nx/gpu/vk/vk.h"
 
 /* the pre-rasterization state a pipeline made of libraries takes as dynamic state (g_vk.dyn_pr), so that one
    pre-rasterization part serves every value of it: a bit each */
@@ -49,4 +50,44 @@ typedef struct {
 } PipeDynIn;
 /* the dynamic states of the parts in parts (VK_PART_*) into out, in the order a whole pipeline lists them: how many */
 u32 vk_pipe_dynamic(u32 parts, const PipeDynIn* in, VkDynamicState* out);
+/* ---- the four parts of a pipeline (docs/PIPELINE_LIBRARIES.md, "The four parts") */
+/* the bits of PipeKey.arrays (a bit per set, shader_vk_set) of the fragment stage and of the stages before it */
+#define VK_ARRAYS_FS 2u
+#define VK_ARRAYS_PR 29u
+/* each part's key, made by vk_pipe_split from a whole pipeline's: zeroed first and compared with memcmp, so no padding
+   (u32 and handle members only) */
+typedef struct {
+    u32 topo_class;
+    VertexLayout vi;
+} PipeViKey;
+typedef struct {
+    VkShaderModule vs, tcs, tes, gs;
+    u32 arrays; /* PipeKey.arrays' bits of the vertex, tessellation and geometry sets */
+    /* 0 where dyn_pr makes them dynamic */
+    u32 patch, polygon, depth_clamp, provoking_last, conservative;
+} PipePrKey;
+typedef struct {
+    VkShaderModule fs; /* the fragment program, or the empty one */
+    u32 arrays;        /* PipeKey.arrays' bit of the fragment set */
+    u32 feedback;      /* 0 with the feedback loop's dynamic state */
+    /* with sample shading, the multisample state the fragment output part has too (they must be the same) */
+    u32 sample_shading, samples, sample_off, alpha_to_coverage, alpha_to_one;
+    VkCoverage coverage;
+} PipeFsKey;
+typedef struct {
+    u32 ncolor, color[8], depth, stencil;
+    struct {
+        u32 en, sc, dc, cop, sa, da, aop, mask;
+    } blend[8]; /* the write masks 0 without a fragment program, as its outputs are undefined */
+    u32 logic_op, samples, sample_off, alpha_to_coverage, alpha_to_one, sample_shading, feedback;
+    VkCoverage coverage;
+} PipeFoKey;
+/* the device state the split reads, g_vk.dyn_pr and has_feedback_dynamic, as arguments so a test gives its own */
+typedef struct {
+    u32 dyn_pr;
+    int feedback_dynamic;
+} PipeSplitDevice;
+/* k's parts: fs is the fragment program the pipeline gets (k->fs, or the empty one for none) */
+void vk_pipe_split(const PipeKey* k, VkShaderModule fs, const PipeSplitDevice* d, PipeViKey* vi, PipePrKey* pr,
+                   PipeFsKey* f, PipeFoKey* fo);
 #endif

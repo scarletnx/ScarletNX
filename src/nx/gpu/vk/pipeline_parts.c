@@ -97,3 +97,61 @@ u32 vk_pipe_dynamic(u32 parts, const PipeDynIn* in, VkDynamicState* out) {
     }
     return n;
 }
+
+
+void vk_pipe_split(const PipeKey* k, VkShaderModule fs, const PipeSplitDevice* d, PipeViKey* vi, PipePrKey* pr,
+                   PipeFsKey* f, PipeFoKey* fo) {
+    *vi = (PipeViKey){0};
+    vi->topo_class = k->topo_class;
+    vi->vi = k->vi;
+
+    *pr = (PipePrKey){0};
+    pr->vs = k->vs;
+    pr->tcs = k->tcs;
+    pr->tes = k->tes;
+    pr->gs = k->gs;
+    pr->arrays = k->arrays & VK_ARRAYS_PR;
+    if (!(d->dyn_pr & VK_DYN_PR_PATCH)) pr->patch = k->patch;
+    if (!(d->dyn_pr & VK_DYN_PR_POLYGON)) pr->polygon = k->polygon;
+    if (!(d->dyn_pr & VK_DYN_PR_DEPTH_CLAMP)) pr->depth_clamp = k->depth_clamp;
+    if (!(d->dyn_pr & VK_DYN_PR_PROVOKING)) pr->provoking_last = k->provoking_last;
+    if (!(d->dyn_pr & VK_DYN_PR_CONSERVATIVE)) pr->conservative = k->conservative;
+
+    *f = (PipeFsKey){0};
+    f->fs = fs;
+    f->arrays = k->arrays & VK_ARRAYS_FS;
+    if (!d->feedback_dynamic) f->feedback = k->feedback;
+    if (k->sample_shading) {
+        f->sample_shading = k->sample_shading;
+        f->samples = k->samples;
+        f->sample_off = k->sample_off;
+        f->alpha_to_coverage = k->alpha_to_coverage;
+        f->alpha_to_one = k->alpha_to_one;
+        f->coverage = k->coverage;
+    }
+
+    *fo = (PipeFoKey){0};
+    fo->ncolor = k->ncolor;
+    for (u32 i = 0; i < 8; i++) fo->color[i] = k->color[i];
+    fo->depth = k->depth;
+    fo->stencil = k->stencil;
+    for (u32 i = 0; i < 8; i++) {
+        fo->blend[i].en = k->blend[i].en;
+        fo->blend[i].sc = k->blend[i].sc;
+        fo->blend[i].dc = k->blend[i].dc;
+        fo->blend[i].cop = k->blend[i].cop;
+        fo->blend[i].sa = k->blend[i].sa;
+        fo->blend[i].da = k->blend[i].da;
+        fo->blend[i].aop = k->blend[i].aop;
+        fo->blend[i].mask = k->fs ? k->blend[i].mask : 0;
+    }
+    fo->logic_op = k->logic_op;
+    fo->samples = k->samples;
+    fo->sample_off = k->sample_off;
+    fo->alpha_to_coverage = k->alpha_to_coverage;
+    fo->alpha_to_one = k->alpha_to_one;
+    fo->sample_shading = k->sample_shading;
+    if (!d->feedback_dynamic) fo->feedback = k->feedback;
+    fo->coverage = k->coverage;
+}
+
