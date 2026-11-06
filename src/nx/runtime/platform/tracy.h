@@ -7,6 +7,18 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* The calibration anchor a caller keeps for one GPU context, with the connection it was announced on. The context
+   is announced once, and a new connection's server re-anchored at the replayed context's original pair, so the
+   client's CPU delta is measured from the announcement again, not from the last calibration event (which is what
+   a zeroing reset would do). A context announced without a clock pair never gets a delta: the server asserts on
+   calibration for a context it was told is uncalibrated. */
+typedef struct {
+    int calibrated;     /* the context was announced calibrated */
+    int64_t cpu_anchor; /* the client's clock at the announcement, 0 without one */
+    int64_t cpu_prev;   /* that anchor, or the last calibration's clock */
+    uint64_t conn;      /* the connection this anchor belongs to: a new one re-anchors it */
+} SnxTracyGpuCal;
+
 #if defined(SNX_TRACY)
 #include <tracy/TracyC.h>
 
@@ -63,7 +75,7 @@ typedef struct {
 /* The GPU track: a context per queue, the zones' query ids paired with their timestamps at the read-back, the two
    clocks' calibration. A query id of 0 means the emission did not go out: the caller keeps the pair and sends only
    what it got. The context is announced at the caller's first read-back (snx_tracy_gpu_context, which returns 1
-   then, so the caller can reset its own calibration anchor); a zone goes out only after its context did. Each
+   then, so the caller can take its calibration anchor); a zone goes out only after its context did. Each
    emission carries the connection it belongs to (*ep at the begin): the client's deferred queue replays the
    contexts at a new connection, and an end or a time from another one than the begin's is dropped, where the
    server would fault on a query it never saw. */
@@ -73,8 +85,12 @@ uint16_t snx_tracy_gpu_zone_end(uint16_t query, int ctx, uint64_t ep);
 void snx_tracy_gpu_time(int64_t gpu_time, uint16_t query, int ctx, uint64_t ep);
 void snx_tracy_gpu_sync(int64_t gpu_time, int ctx);
 void snx_tracy_gpu_calibrate(int64_t gpu_time, int64_t cpu_delta, int ctx);
-/* The connection's id, 0 when nothing is attached: a calibration baseline and an in-flight pair's epoch are keyed
-   on it (a new connection re-anchors both). */
+void snx_tracy_gpu_cal_announce(SnxTracyGpuCal* c, int calibrated, int64_t cpu);
+void snx_tracy_gpu_cal_reconnect(SnxTracyGpuCal* c);
+int64_t snx_tracy_gpu_cal_delta(SnxTracyGpuCal* c, int64_t cpu);
+/* The connection's id: a new connection's server replays the deferred contexts, so a calibration anchor and an
+   in-flight pair's epoch are keyed on it (both re-anchor at it). A run whose client never started a server, or
+   whose server never reconnected, has 1. */
 uint64_t snx_tracy_connection_id(void);
 /* 1 when the client is up and a server is attached. TracyCIsConnected reads the client's own data, which a run
    that never started one (or one that has shut down) has none of, so the code that asks per frame asks this. */
@@ -130,7 +146,33 @@ static inline void snx_tracy_gpu_sync(int64_t gpu_time, int ctx) { (void)gpu_tim
 static inline void snx_tracy_gpu_calibrate(int64_t gpu_time, int64_t cpu_delta, int ctx) {
     (void)gpu_time, (void)cpu_delta, (void)ctx;
 }
+static inline void snx_tracy_gpu_cal_announce(SnxTracyGpuCal* c, int calibrated, int64_t cpu) {
+    c->calibrated = calibrated;
+    c->cpu_anchor = calibrated ? cpu : 0;
+    c->cpu_prev = c->cpu_anchor;
+}
 static inline uint64_t snx_tracy_connection_id(void) { return 1; }
+/* A new connection's server re-anchored at the replayed context's original pair, so the CPU delta is measured
+   from the announcement again. The caller asks at each read-back: the compare is the anchor's, and no caller
+   keeps a connection of its own for it. */
+static inline void snx_tracy_gpu_cal_reconnect(SnxTracyGpuCal* c) {
+    uint64_t conn = snx_tracy_connection_id();
+    if (conn == c->conn) return;
+    c->conn = conn;
+    c->cpu_prev = c->cpu_anchor;
+}
+static inline int64_t snx_tracy_gpu_cal_delta(SnxTracyGpuCal* c, int64_t cpu) {
+    int64_t d;
+    if (!c->calibrated) return 0;
+    if (!c->cpu_prev) {
+        c->cpu_prev = cpu;
+        return 0;
+    }
+    d = cpu - c->cpu_prev;
+    if (d <= 0) return 0;
+    c->cpu_prev = cpu;
+    return d;
+}
 static inline int snx_tracy_attached(void) { return 0; }
 static inline int snx_tracy_gate_open(void) { return 0; }
 typedef struct SnxTracyLock SnxTracyLock;

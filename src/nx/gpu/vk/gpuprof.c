@@ -131,11 +131,9 @@ static struct {
 #if defined(SNX_TRACY)
 /* Tracy's GPU track: the passes as zones on the GPU's clock, their timestamps read back with the frame's results,
    the emissions themselves in the platform layer (tracy.c). A profiling run asks for them: the setting, or the
-   client being up. The calibration baseline is reset at a new connection, whose server re-anchored at the replayed
-   context's original pair. */
-static i64 g_cal_cpu_prev; /* the client's clock at the track's last calibration pair */
-static u64 g_cal_conn;     /* the connection that baseline was taken on */
-static int g_cal_ok;       /* the context was announced calibrated, so calibration events are for it */
+   client being up. A new connection's server re-anchors at the replayed context's original pair, so the caller's
+   CPU delta is measured from that pair again (SnxTracyGpuCal). */
+static SnxTracyGpuCal g_cal; /* the announcement's anchor, and the connection it belongs to */
 #endif
 
 int vk_gpuprof_calibrated(void) {
@@ -441,30 +439,21 @@ void vk_gpuprof_frame_done(u32 slot) {
        that very pair; else the GPU clock is anchored at this moment: the last timestamp was written before
        timeline_wait returned, so this is its CPU time. */
     if (snx_tracy_attached()) {
-        u64 conn = snx_tracy_connection_id();
         int cal = vk_gpuprof_calibrated();
         i64 cpu = 0, gpu = 0;
         int have = cal && vk_gpuprof_clock(&cpu, &gpu);
-        if (conn != g_cal_conn) { /* a new connection's server re-anchored at the replayed context */
-            g_cal_conn = conn;
-            g_cal_cpu_prev = 0;
-            g_cal_ok = 0; /* its announcement sets this again, as the client replays the context */
-        }
+        snx_tracy_gpu_cal_reconnect(&g_cal);
         /* A context is announced calibrated only with a pair in hand: without one the server has no anchor and
            applies no calibration to the times sent after it, which shows as times far from the CPU's. The flag
            latches at the announcement, so a context announced without one is never sent calibration events:
            the server would assert on a context it was told is uncalibrated. */
         if (snx_tracy_gpu_context(VK_GPU_CTX_GRAPHICS, have ? gpu : (i64)ts[g->used - 1],
                                   g_vk.props.limits.timestampPeriod, have, "graphics")) {
-            g_cal_cpu_prev = have ? cpu : 0; /* the anchor is the announcement's own pair */
-            g_cal_ok = have;
+            snx_tracy_gpu_cal_announce(&g_cal, have, have ? cpu : 0); /* the anchor is the announcement's pair */
         }
         if (have) {
-            if (g_cal_ok && g_cal_cpu_prev) {
-                i64 delta = cpu - g_cal_cpu_prev;
-                if (delta > 0) snx_tracy_gpu_calibrate(gpu, delta, VK_GPU_CTX_GRAPHICS);
-            }
-            g_cal_cpu_prev = cpu;
+            i64 delta = snx_tracy_gpu_cal_delta(&g_cal, cpu);
+            if (delta > 0) snx_tracy_gpu_calibrate(gpu, delta, VK_GPU_CTX_GRAPHICS);
         } else
             snx_tracy_gpu_sync((i64)ts[g->used - 1], VK_GPU_CTX_GRAPHICS);
         for (u32 i = 0; i < g->npass; i++) {

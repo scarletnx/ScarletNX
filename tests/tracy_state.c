@@ -2,13 +2,16 @@
    Copyright 2026 the ScarletNX contributors */
 /* The Tracy client's lifetime (src/nx/runtime/platform/tracy.c) over a stand-in client: the emissions' gate shut
    before the client starts, open while it runs and shut for good once shutdown has run; the client started and shut
-   down once each, the zone shutdown finds open ended once, and a capture asked for after the shutdown starts nothing */
+   down once each, the zone shutdown finds open ended once, and a capture asked for after the shutdown starts nothing.
+   The GPU calibration anchor is kept across a connection: the context is announced once, so a new connection replays
+   that announcement and the caller's delta starts from it again. */
 #include "nx/runtime/platform/tracy.c"
 
 /* the checks failed, and what tracy.c asked of the stand-in client */
 static struct {
     int failures;
     int startups, shutdowns, connected, zones, zone_ends, captures, logs;
+    uint64_t conn;
 } g_test;
 #define CHECK(x)                                                                                                       \
     do {                                                                                                               \
@@ -76,7 +79,7 @@ void ___tracy_after_unlock_lockable_ctx(struct __tracy_lockable_context_data* l)
 void ___tracy_after_try_lock_lockable_ctx(struct __tracy_lockable_context_data* l, int32_t acquired) {
     (void)l, (void)acquired;
 }
-uint64_t snx_tracy_connection_id(void) { return 1; }
+uint64_t snx_tracy_connection_id(void) { return g_test.conn ? g_test.conn : 1; }
 
 /* the runtime around it */
 char g_datadir[1024], g_exename[256], g_exedir[1024];
@@ -85,14 +88,6 @@ void logf_(int lvl, const char* fmt, ...) {
     (void)lvl, (void)fmt;
     g_test.logs++;
 }
-void pc_init(PCond* c) { (void)c; }
-void pc_broadcast(PCond* c) { (void)c; }
-int pc_wait(PCond* c, PMutex* m, i64 timeout_ns) {
-    (void)c, (void)m, (void)timeout_ns;
-    return 1;
-}
-u64 plat_ns(void) { return 0; }
-u32 plat_tid(void) { return 1; }
 int plat_setenv(const char* name, const char* value) {
     (void)name, (void)value;
     return 0;
@@ -131,6 +126,35 @@ int main(void) {
     CHECK(g_test.zone_ends == 1 && g_tracy_pending == 0);
     snx_tracy_capture_now(); /* the GUI is attached: no capture, and the client is not started again */
     CHECK(g_test.startups == 1 && g_test.captures == 0);
+    /* a GPU context is announced once for the client's lifetime: a new connection replays that announcement instead
+       of a second one, so the caller keeps the anchor it took at the first (SnxTracyGpuCal) */
+    g_test.conn = 1;
+    CHECK(snx_tracy_gpu_context(0, 100, 1.0f, 1, "graphics") == 1);
+    g_test.conn = 2;
+    CHECK(snx_tracy_gpu_context(0, 100, 1.0f, 1, "graphics") == 0);
+    /* the anchor is the announcement's pair, and a reconnect measures from it again rather than from the last event */
+    {
+        SnxTracyGpuCal cal;
+        snx_tracy_gpu_cal_announce(&cal, 1, 1000);
+        CHECK(cal.calibrated && cal.cpu_anchor == 1000 && cal.cpu_prev == 1000);
+        CHECK(snx_tracy_gpu_cal_delta(&cal, 1200) == 200 && cal.cpu_prev == 1200);
+        g_test.conn = 3; /* a new connection: its server is back at the replayed announcement's pair */
+        snx_tracy_gpu_cal_reconnect(&cal);
+        CHECK(cal.cpu_prev == 1000);
+        CHECK(snx_tracy_gpu_cal_delta(&cal, 1300) == 300 && cal.cpu_prev == 1300);
+        CHECK(snx_tracy_gpu_cal_delta(&cal, 1300) == 0 && cal.cpu_prev == 1300); /* a clock that stands still */
+        snx_tracy_gpu_cal_reconnect(&cal); /* the same connection leaves the anchor where the last event put it */
+        CHECK(cal.cpu_prev == 1300);
+        /* an announcement without a clock pair latches uncalibrated: a delta would trip the server's assert */
+        snx_tracy_gpu_cal_announce(&cal, 0, 0);
+        snx_tracy_gpu_cal_reconnect(&cal);
+        CHECK(!cal.calibrated && cal.cpu_anchor == 0 && cal.cpu_prev == 0);
+        CHECK(snx_tracy_gpu_cal_delta(&cal, 5000) == 0 && cal.cpu_prev == 0);
+        /* a calibrated context whose clock read 0 at the announcement starts at the next pair */
+        snx_tracy_gpu_cal_announce(&cal, 1, 0);
+        CHECK(snx_tracy_gpu_cal_delta(&cal, 700) == 0 && cal.cpu_prev == 700);
+        CHECK(snx_tracy_gpu_cal_delta(&cal, 900) == 200);
+    }
     /* shut down with a zone open: the zone ended once, the gate shut, the client shut down once */
     ctx = snx_tracy_zone_begin(&where);
     CHECK(ctx.active && g_tracy_pending == 1);
@@ -147,6 +171,7 @@ int main(void) {
     CHECK(g_test.shutdowns == 1 && g_test.startups == 1 && g_test.captures == 0 && g_test.logs == logs);
     CHECK(!snx_tracy_gate_open());
     if (g_test.failures) return 1;
-    printf("tracy_state: the gate shut before the start and after the stop, the client started and stopped once\n");
+    printf("tracy_state: the gate shut before the start and after the stop, the client started and stopped once, "
+           "the GPU calibration anchor survived a reconnect\n");
     return 0;
 }
