@@ -604,10 +604,27 @@ static u64 mem_hash(u64 gva, u64 size) {
     }
     return h;
 }
+/* the hash of t's memory: of all of it, or for one with holes in its mapping loaded a piece at a time, of each run the
+   GPU's page table maps of it with where it lies, as its holes read as zeros (a 2D sparse texture can be hundreds of
+   megabytes of them) and a run mapped or unmapped changes the runs */
+typedef struct {
+    u64 gva, h;
+} RunsHash;
+static void runs_hash(void* ctx, u64 gva, u64 cpu, u64 n) {
+    RunsHash* r = ctx;
+    (void)cpu;
+    r->h = snx_fnv_step(snx_fnv_step(r->h, gva - r->gva), mem_hash(gva, n));
+}
+static u64 tex_hash(const Surf* t) {
+    RunsHash r = {t->gva, 1469598103934665603ull};
+    if (!t->piecewise) return mem_hash(t->gva, t->size);
+    gmmu_pieces(t->gva, t->size, runs_hash, &r);
+    return r.h;
+}
 /* the texture's memory hashed again, and loaded again when that changed: 1 if it did */
 static int tex_rehash(Surf* t) {
     t->gw = gpu_mem_generation();
-    u64 hh = mem_hash(t->gva, t->size);
+    u64 hh = tex_hash(t);
     if (hh == t->hash && t->upload_valid) return 0;
     if (tex_upload(t)) t->hash = hh; /* an incomplete upload keeps the old hash, so the next check retries it */
     return 1;
@@ -653,7 +670,7 @@ void vk_tex_dma_seen(Surf** hit, int n) {
 }
 
 void vk_tex_note_writeback(Surf* t) {
-    t->hash = mem_hash(t->gva, t->size);
+    t->hash = tex_hash(t);
     t->gw = gpu_mem_generation();
     t->wseen = vk_ww_now();
     t->checked = g_vk_present;
