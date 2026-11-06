@@ -2,9 +2,11 @@
    Copyright 2026 the ScarletNX contributors */
 /* --bench-sparse-volume: what a sparse volume costs the renderer, made the way a game makes one through NVN
    (nvn_tex_layout, nvn_tic_encode) at the size of one game's light volumes, a few of its 64 KiB tiles mapped: the
-   texture made, a frame with nothing changed, tiles mapped (the game's MapVirtual), the CPU writing a tile. Each step
-   is timed on the calling thread's CPU clock and on the wall clock to the end of the GPU's work for it (vk_finish),
-   with the bytes the texture loaded (vk_tex_stats). The checks of the ordinary run say the image is right */
+   texture made, a frame with nothing changed, tiles mapped (the game's MapVirtual), the CPU writing a tile, a tile
+   unmapped while copies submitted before it still run. Each step is timed on the calling thread's CPU clock and on
+   the wall clock to the end of the GPU's work for it (vk_finish), with the bytes the texture loaded (vk_tex_stats),
+   the sparse binds it made on the queue and the host's waits for the GPU before that end (sc_now). The checks of the
+   ordinary run say the image is right */
 #include <time.h>
 static u64 sb_cpu_ns(void) {
     struct timespec ts;
@@ -13,22 +15,29 @@ static u64 sb_cpu_ns(void) {
 }
 typedef struct {
     u64 cpu0, wall0, bytes0;
+    ScCount c0;
 } SbStep;
 static void sb_begin(SbStep* s) {
     u64 uploads;
     vk_tex_stats(&uploads, &s->bytes0);
+    s->c0 = sc_now();
     s->cpu0 = sb_cpu_ns();
     s->wall0 = plat_ns();
 }
-/* the step's times and bytes, said after what */
+/* the step's times, bytes, binds and waits, said after what */
 static void sb_end(const SbStep* s, const char* name, const char* what) {
     u64 uploads, bytes, cpu = sb_cpu_ns() - s->cpu0;
     vk_lock();
+    ScCount c1 = sc_now(); /* before the step's own wait for the GPU's end */
     vk_finish();
+    ScCount c2 = sc_now();
     vk_unlock();
     vk_tex_stats(&uploads, &bytes);
-    printf("bench sparse volume %s, %s: %.3f ms CPU, %.3f ms to the GPU's end, %llu KB loaded\n", name, what, cpu / 1e6,
-           (plat_ns() - s->wall0) / 1e6, (unsigned long long)((bytes - s->bytes0) >> 10));
+    printf("bench sparse volume %s, %s: %.3f ms CPU, %.3f ms to the GPU's end, %llu KB loaded, %llu queue binds, %llu "
+           "host waits (%.3f ms)\n",
+           name, what, cpu / 1e6, (plat_ns() - s->wall0) / 1e6, (unsigned long long)((bytes - s->bytes0) >> 10),
+           (unsigned long long)(c2.binds - s->c0.binds), (unsigned long long)(c1.waits - s->c0.waits),
+           (c1.wait_ns - s->c0.wait_ns) / 1e6);
 }
 static Surf* sb_frame(const u32* tic) {
     g_renderer->mem_may_have_changed();
@@ -93,9 +102,25 @@ static int bench_sparse_volume(int format, const char* name, u64 gva, u64 cpu) {
     gmmu_map(gva + at[12], cpu + 12 * 0x10000, 0x10000);
     CHECK(sb_frame(tic) == t);
     sb_end(&s, name, "1 tile mapped");
+    /* a tile unmapped while the GPU is still busy with work submitted before: 32 copies of 64 MiB */
+    VkBuffer from, to;
+    u64 at_from, at_to;
+    vk_lock();
+    CHECK(vk_stage_device(64u << 20, 256, &from, &at_from) && vk_stage_device(64u << 20, 256, &to, &at_to));
+    for (int i = 0; i < 32; i++) {
+        VkBufferCopy c = {at_from, at_to, 64u << 20};
+        rec_CmdCopyBuffer(vk_cmd(), from, to, 1, &c);
+    }
+    vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    vk_unlock();
+    sb_begin(&s);
+    gmmu_space_unmap(gva + at[12], 0x10000);
+    CHECK(sb_frame(tic) == t);
+    sb_end(&s, name, "1 tile unmapped, 2 GiB of copies in flight");
     return 0;
 }
 static int bench_sparse_volumes(void) {
+    sc_install();
     CHECK(!bench_sparse_volume(NVN_FORMAT_RGBA_DXT1, "BC1", 0x600000000ull, HEAP_BASE + 0x1000000));
     CHECK(!bench_sparse_volume(NVN_FORMAT_BPTC_UFLOAT, "BC6H", 0x680000000ull, HEAP_BASE + 0x1100000));
     return 0;

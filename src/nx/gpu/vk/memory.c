@@ -9,17 +9,28 @@
    and an image whose memory is bigger is created with sparse binding and bound to several allocations, each at most
    the cap. Shaders and views see one ordinary image: only its memory is in pieces.
 
-   The pieces are dedicated allocations, so the cap is also what the driver is asked for. They are bound on the
-   graphics queue, and the bind is waited for on the host before the image is used: a bind is not ordered with
-   command buffers submitted after it, on that queue or on the compute queue, without a semaphore each of them would
-   have to wait on, and an image this big is made once.
+   The pieces are dedicated allocations, so the cap is also what the driver is asked for.
 
    A 3D image may also have memory only where it is bound (sparse residency): a texture in a virtual pool the guest
    maps a 64 KiB tile at a time, whose holes read as zeros on the console as they do here (residencyNonResidentStrict).
    Its blocks of the device's granularity are bound and released one by one, each to an allocation of its own, and
    the memory it takes is that of its bound blocks alone: a 1664x448x1344 BC1 volume is 477 MB whole and 384 KiB with
-   the 6 tiles a game maps of it. */
+   the 6 tiles a game maps of it.
+
+   Both are bound on the graphics queue, in batches: the binds made since the last submission go in one
+   vkQueueBindSparse just before the next (vk_sparse_flush), and nothing waits for them on the host. A sparse bind is
+   not ordered with command buffers, even on its own queue (the Vulkan spec, "Binding Resource Memory"): a batch
+   signals a timeline semaphore of its own, and the submission after it waits for that value, which holds back every
+   later command of the queue too (vkQueueSubmit2's waits take the commands later in submission order). A batch that
+   changes blocks of an image in use waits for the last graphics submission, so no command reads a block while its
+   binding changes; the commands recorded before it are submitted first. The compute queue's batches read no image (a
+   dispatch with textures or images records into the frame's commands), so they neither wait for a batch nor a batch
+   for them. The memory a block lets go is freed with the frame of the submission after the batch (vk_defer_call),
+   once the GPU is past both. The bind is called on the recording thread, in order after the submission it waits
+   for: queued ahead of it on the same queue, its wait could hold that submission back where a driver takes a queue's
+   batches in order. */
 #include <stdlib.h>
+#include <string.h>
 #if defined(__ANDROID__)
 #include <unistd.h>
 #include "common/utilities/common.h"
@@ -41,10 +52,37 @@ typedef struct {
     VkExtent3D block, extent;
     VkMemoryRequirements req;
     u64 bound; /* the bytes of its bound blocks */
+    u64 batch; /* the bind batch its last binds are in, 0 none */
     VmaAllocation pages[];
 } Pieces;
 static Pieces** g_pieces;
 static u32 g_npieces, g_cappieces;
+
+/* The batch as the recording thread takes it: its head, then each image's BindOne and binds, VkSparseMemoryBind for
+   an image in pieces, VkSparseImageMemoryBind for blocks */
+typedef struct {
+    u64 gfx;   /* the graphics timeline value it waits for, 0 none */
+    u64 after; /* the batch before it, 0 none */
+    u64 value; /* its own on the bind timeline */
+    u32 nimg, nopaque;
+} BindHead;
+typedef struct {
+    VkImage img;
+    u32 n, opaque;
+} BindOne;
+/* a batch's bytes at most, a quarter of the recording thread's ring: the 7644 blocks of a volume in one batch */
+#define BIND_CAP (1u << 20)
+#define GONE_CAP (BIND_CAP / sizeof(VkSparseImageMemoryBind)) /* at most one released block for each bind */
+static struct {
+    VkSemaphore sem; /* the bind timeline: batch n signals n */
+    u64 issued;      /* the last batch handed to the queue */
+    u64 waited;      /* the last batch a submission waits for */
+    u8* buf;         /* BIND_CAP bytes of the batch, then GONE_CAP allocations its blocks let go */
+    u64 used, last;  /* the batch's bytes, 0 none; where its last BindOne is */
+    u32 ngone;
+    u64 gone_bytes;
+    int readers; /* it changes blocks of an image in use: after the work submitted before it */
+} g_bind;
 
 /* VMA allocations as Tracy memory events. */
 #if defined(SNX_TRACY)
@@ -69,6 +107,12 @@ void vk_mem_init(int sparse_queue) {
     if (m3.maxMemoryAllocationSize && cap > m3.maxMemoryAllocationSize) cap = m3.maxMemoryAllocationSize;
     g_vk.alloc_cap = cap;
     g_vk.sparse = sparse_queue && g_vk.feat.sparseBinding;
+    if (g_vk.sparse) {
+        VkSemaphoreTypeCreateInfo tci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                                         .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE};
+        VkSemaphoreCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &tci};
+        g_vk.sparse = VK_OK(vkCreateSemaphore(g_vk.dev, &sci, NULL, &g_bind.sem));
+    }
     g_vk.resident =
         g_vk.sparse && g_vk.feat.sparseResidencyImage3D && g_vk.props.sparseProperties.residencyNonResidentStrict;
     LOG("vulkan: allocations of at most %llu MiB, bigger images %s, a 3D texture with holes in its mapping %s\n",
@@ -79,9 +123,161 @@ void vk_mem_init(int sparse_queue) {
                                             : "whole (sparse residency, but holes don't read as zeros)");
 }
 
+/* ------------------------------------------------------------ binds in batches */
+/* the batch, on the recording thread: one vkQueueBindSparse. A batch the driver refuses ends the run: the memory its
+   blocks let go is freed once the submission after it is done, and would still be the image's */
+static void bind_run(const void* arg) {
+    const BindHead* h = arg;
+    const u8* at = (const u8*)(h + 1);
+    VkSparseImageMemoryBindInfo* img = calloc(h->nimg + 1, sizeof *img);
+    VkSparseImageOpaqueMemoryBindInfo* opaque = calloc(h->nopaque + 1, sizeof *opaque);
+    u32 ni = 0, no = 0, binds = 0;
+    if (!img || !opaque) fatal("vulkan: out of memory for a batch of %u sparse binds", h->nimg + h->nopaque);
+    for (u32 k = 0; k < h->nimg + h->nopaque; k++) {
+        BindOne one;
+        memcpy(&one, at, sizeof one);
+        at += sizeof one;
+        if (one.opaque)
+            opaque[no++] = (VkSparseImageOpaqueMemoryBindInfo){one.img, one.n, (const VkSparseMemoryBind*)at};
+        else
+            img[ni++] = (VkSparseImageMemoryBindInfo){one.img, one.n, (const VkSparseImageMemoryBind*)at};
+        at += (u64)one.n * (one.opaque ? sizeof(VkSparseMemoryBind) : sizeof(VkSparseImageMemoryBind));
+        binds += one.n;
+    }
+    VkSemaphore wait[2];
+    u64 values[2];
+    u32 nw = 0;
+    if (h->gfx) wait[nw] = vk_gfx_timeline(), values[nw++] = h->gfx;
+    if (h->after) wait[nw] = g_bind.sem, values[nw++] = h->after;
+    VkTimelineSemaphoreSubmitInfo ts = {.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+                                        .waitSemaphoreValueCount = nw,
+                                        .pWaitSemaphoreValues = values,
+                                        .signalSemaphoreValueCount = 1,
+                                        .pSignalSemaphoreValues = &h->value};
+    VkBindSparseInfo bi = {.sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO,
+                           .pNext = &ts,
+                           .waitSemaphoreCount = nw,
+                           .pWaitSemaphores = wait,
+                           .imageOpaqueBindCount = no,
+                           .pImageOpaqueBinds = opaque,
+                           .imageBindCount = ni,
+                           .pImageBinds = img,
+                           .signalSemaphoreCount = 1,
+                           .pSignalSemaphores = &g_bind.sem};
+    vk_queue_lock(g_vk.gfx);
+    VkResult r = vkQueueBindSparse(g_vk.gfx, 1, &bi, VK_NULL_HANDLE);
+    vk_queue_unlock(g_vk.gfx);
+    free(img);
+    free(opaque);
+    if (!VK_OK(r))
+        fatal("vulkan: sparse bind batch %llu of %u binds failed (%d)", (unsigned long long)h->value, binds, (int)r);
+}
+
+static VmaAllocation* bind_gone(void) { return (VmaAllocation*)(void*)(g_bind.buf + BIND_CAP); }
+static void gone_free(void* a) {
+    vk_mem_untrack(a);
+    vmaFreeMemory(g_vk.vma, a);
+}
+
+/* the batch to the graphics queue, after the work submitted before it when it changes blocks of an image in use. The
+   memory its blocks let go waits in the frame being recorded, whose next submission waits for the batch */
+static void bind_flush(void) {
+    if (!g_bind.used && !g_bind.ngone) return; /* at every submission */
+    vk_cmd(); /* that frame begun first: beginning it may destroy images (vk_image_destroy), and their binds leave */
+    if (g_bind.used) {
+        BindHead* h = (BindHead*)(void*)g_bind.buf;
+        h->gfx = g_bind.readers ? vk_last_submit() : 0;
+        h->after = g_bind.issued;
+        h->value = ++g_bind.issued;
+        vk_rec_call(bind_run, g_bind.buf, g_bind.used);
+    }
+    for (u32 i = 0; i < g_bind.ngone; i++) vk_defer_call(gone_free, bind_gone()[i]);
+    vk_defer_bytes(g_bind.gone_bytes);
+    g_bind.used = g_bind.last = 0;
+    g_bind.ngone = 0;
+    g_bind.gone_bytes = 0;
+    g_bind.readers = 0;
+}
+
+int vk_sparse_flush(VkSemaphoreSubmitInfo* wait) {
+    bind_flush();
+    if (g_bind.waited == g_bind.issued) return 0;
+    g_bind.waited = g_bind.issued;
+    *wait = (VkSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                    .semaphore = g_bind.sem,
+                                    .value = g_bind.issued,
+                                    .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+    return 1;
+}
+
+/* 0 when there is no memory for a batch */
+static int bind_ready(void) {
+    if (!g_bind.buf) g_bind.buf = malloc(BIND_CAP + GONE_CAP * sizeof(VmaAllocation));
+    return g_bind.buf != NULL;
+}
+/* one bind of img into the batch, after the others of img: a VkSparseMemoryBind when opaque, else a
+   VkSparseImageMemoryBind, each bytes. gone: the memory it lets go (VK_NULL_HANDLE none), size bytes, freed after
+   the batch. readers: the batch waits for the work submitted before it. The batch it went into */
+static u64 bind_add(VkImage img, int opaque, const void* bind, u64 each, VmaAllocation gone, u64 size, int readers) {
+    if (g_bind.used + sizeof(BindOne) + each > BIND_CAP || g_bind.ngone == GONE_CAP) bind_flush();
+    if (!g_bind.used) {
+        memset(g_bind.buf, 0, sizeof(BindHead));
+        g_bind.used = sizeof(BindHead);
+    }
+    BindHead* h = (BindHead*)(void*)g_bind.buf;
+    BindOne one;
+    if (g_bind.last) memcpy(&one, g_bind.buf + g_bind.last, sizeof one);
+    if (!g_bind.last || one.img != img || one.opaque != (u32)opaque) {
+        one = (BindOne){img, 0, (u32)opaque};
+        g_bind.last = g_bind.used;
+        g_bind.used += sizeof one;
+        if (opaque)
+            h->nopaque++;
+        else
+            h->nimg++;
+    }
+    one.n++;
+    memcpy(g_bind.buf + g_bind.last, &one, sizeof one);
+    memcpy(g_bind.buf + g_bind.used, bind, each);
+    g_bind.used += each;
+    if (gone) {
+        bind_gone()[g_bind.ngone++] = gone;
+        g_bind.gone_bytes += size;
+    }
+    g_bind.readers |= readers;
+    return g_bind.issued + 1;
+}
+
+/* an image going: its binds still in the batch leave it (the memory they let go is still freed after the batch). One
+   whose batch went to the queue is destroyed once the frames' work is done (vk_defer_image), the batch with it */
+static void bind_drop(const Pieces* p) {
+    if (p->batch <= g_bind.issued || !g_bind.used) return;
+    BindHead* h = (BindHead*)(void*)g_bind.buf;
+    u64 at = sizeof *h, to = at;
+    while (at < g_bind.used) {
+        BindOne one;
+        memcpy(&one, g_bind.buf + at, sizeof one);
+        u64 len = sizeof one + (u64)one.n * (one.opaque ? sizeof(VkSparseMemoryBind) : sizeof(VkSparseImageMemoryBind));
+        if (one.img != p->img) {
+            memmove(g_bind.buf + to, g_bind.buf + at, len);
+            to += len;
+        } else if (one.opaque)
+            h->nopaque--;
+        else
+            h->nimg--;
+        at += len;
+    }
+    g_bind.used = h->nimg + h->nopaque ? to : 0;
+    g_bind.last = 0; /* the next bind starts an entry of its own */
+}
+
 static int pieces_bind(VkImage img, const VkMemoryRequirements* req, Pieces* p, VkResult* res) {
     u64 chunk = g_vk.alloc_cap / req->alignment * req->alignment;
     if (!chunk) return 0;
+    if (!bind_ready()) {
+        *res = VK_ERROR_OUT_OF_HOST_MEMORY;
+        return 0;
+    }
     u32 n = (u32)((req->size + chunk - 1) / chunk);
     VkSparseMemoryBind* binds = calloc(n, sizeof *binds);
     if (!binds) return 0;
@@ -102,22 +298,8 @@ static int pieces_bind(VkImage img, const VkMemoryRequirements* req, Pieces* p, 
         binds[i] = (VkSparseMemoryBind){
             .resourceOffset = at, .size = size, .memory = info.deviceMemory, .memoryOffset = info.offset};
     }
-    if (ok) {
-        VkSparseImageOpaqueMemoryBindInfo opaque = {.image = img, .bindCount = n, .pBinds = binds};
-        VkBindSparseInfo bi = {.sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO, .imageOpaqueBindCount = 1,
-                               .pImageOpaqueBinds = &opaque};
-        VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-        VkFence fence;
-        ok = VK_OK(vkCreateFence(g_vk.dev, &fi, NULL, &fence));
-        if (ok) {
-            /* on the graphics queue, which the recording thread submits to meanwhile */
-            vk_queue_lock(g_vk.gfx);
-            ok = VK_OK(vkQueueBindSparse(g_vk.gfx, 1, &bi, fence));
-            vk_queue_unlock(g_vk.gfx);
-            ok = ok && VK_OK(vkWaitForFences(g_vk.dev, 1, &fence, VK_TRUE, UINT64_MAX));
-            vkDestroyFence(g_vk.dev, fence, NULL);
-        }
-    }
+    /* a new image: nothing reads it yet, and its commands are recorded after this, so the batch waits for no work */
+    for (u32 i = 0; i < n && ok; i++) p->batch = bind_add(img, 1, &binds[i], sizeof *binds, VK_NULL_HANDLE, 0, 0);
     free(binds);
     return ok;
 }
@@ -204,6 +386,7 @@ void vk_image_destroy(VkImage img, VmaAllocation mem) {
     }
     for (u32 i = 0; i < g_npieces; i++)
         if (g_pieces[i]->img == img) {
+            bind_drop(g_pieces[i]);
             vkDestroyImage(g_vk.dev, img, NULL);
             pieces_free(g_pieces[i]);
             g_pieces[i] = g_pieces[--g_npieces];
@@ -271,38 +454,6 @@ int vk_image_create_resident(const VkImageCreateInfo* ii, const VkExtent3D* bloc
     return 1;
 }
 
-/* the binds on the graphics queue, after everything recorded before them and the compute queue's batches submitted:
-   no command may read a block while its binding changes. Waited for on the host, so the commands recorded after it
-   see the new bindings, and released memory is no command's any more */
-static int resident_bind(VkImage img, const VkSparseImageMemoryBind* binds, u32 n) {
-    u64 cs = 0, cs_done = 0;
-    VkFence fence;
-    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
-    vk_rec_queue(g_vk.gfx);
-    if (g_vk_csem) vk_compute_progress(&cs, &cs_done);
-    VkSemaphore sems[2] = {vk_gfx_timeline(), g_vk_csem};
-    u64 values[2] = {vk_last_submit(), cs};
-    u32 nsem = cs > cs_done ? 2 : 1;
-    VkTimelineSemaphoreSubmitInfo ts = {.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
-                                        .waitSemaphoreValueCount = nsem,
-                                        .pWaitSemaphoreValues = values};
-    VkSparseImageMemoryBindInfo ib = {.image = img, .bindCount = n, .pBinds = binds};
-    VkBindSparseInfo bi = {.sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO,
-                           .pNext = &ts,
-                           .waitSemaphoreCount = nsem,
-                           .pWaitSemaphores = sems,
-                           .imageBindCount = 1,
-                           .pImageBinds = &ib};
-    if (!VK_OK(vkCreateFence(g_vk.dev, &fi, NULL, &fence))) return 0;
-    vk_queue_lock(g_vk.gfx);
-    int ok = VK_OK(vkQueueBindSparse(g_vk.gfx, 1, &bi, fence));
-    vk_queue_unlock(g_vk.gfx);
-    ok = ok && VK_OK(vkWaitForFences(g_vk.dev, 1, &fence, VK_TRUE, UINT64_MAX));
-    vkDestroyFence(g_vk.dev, fence, NULL);
-    return ok;
-}
-
 int vk_image_resident(VkImage img, const u8* want, u32 n, u64* bytes) {
     Pieces* p = pieces_of(img);
     *bytes = p ? p->bound : 0;
@@ -310,15 +461,11 @@ int vk_image_resident(VkImage img, const u8* want, u32 n, u64* bytes) {
     u32 changes = 0;
     for (u32 i = 0; i < n; i++) changes += !want[i] != !p->pages[i];
     if (!changes) return 1;
-    VkSparseImageMemoryBind* binds = calloc(changes, sizeof *binds);
-    u32* which = calloc(changes, sizeof *which);
-    VmaAllocation* had = calloc(changes, sizeof *had);
-    if (!binds || !which || !had) {
-        free(binds);
-        free(which);
-        free(had);
-        return 0;
-    }
+    if (!bind_ready()) return 0;
+    /* the commands recorded so far read the blocks as they are: submitted, so the batch can wait for them. One of
+       this image's binds still in the batch goes before, as a batch may bind a block only once */
+    vk_submit_recorded();
+    if (p->batch > g_bind.issued) bind_flush();
     const VkExtent3D g = p->block;
     const VkMemoryRequirements one = {
         .size = p->req.alignment, .alignment = p->req.alignment, .memoryTypeBits = p->req.memoryTypeBits};
@@ -333,7 +480,7 @@ int vk_image_resident(VkImage img, const u8* want, u32 n, u64* bytes) {
                                      .extent = {p->extent.width - x < g.width ? p->extent.width - x : g.width,
                                                 p->extent.height - y < g.height ? p->extent.height - y : g.height,
                                                 p->extent.depth - z < g.depth ? p->extent.depth - z : g.depth}};
-        had[nb] = p->pages[i];
+        VmaAllocation had = p->pages[i];
         if (want[i]) {
             VmaAllocationInfo info;
             res = vmaAllocateMemory(g_vk.vma, &one, &aci, &p->pages[i], &info);
@@ -341,34 +488,20 @@ int vk_image_resident(VkImage img, const u8* want, u32 n, u64* bytes) {
             vk_mem_track(p->pages[i]);
             b.memory = info.deviceMemory;
             b.memoryOffset = info.offset;
-        } else
-            p->pages[i] = VK_NULL_HANDLE;
-        which[nb] = i;
-        binds[nb++] = b;
-    }
-    int ok = nb && resident_bind(img, binds, nb);
-    /* bound: the released blocks' memory goes. Not bound: the blocks keep what they had */
-    for (u32 k = 0; k < nb; k++) {
-        VmaAllocation gone = ok ? had[k] : p->pages[which[k]];
-        if (!ok) p->pages[which[k]] = had[k];
-        if (gone) {
-            vk_mem_untrack(gone);
-            vmaFreeMemory(g_vk.vma, gone);
-        }
-        if (ok && had[k])
-            p->bound -= one.size;
-        else if (ok)
             p->bound += one.size;
+        } else {
+            p->pages[i] = VK_NULL_HANDLE;
+            p->bound -= one.size;
+        }
+        p->batch = bind_add(img, 0, &b, sizeof b, had, one.size, 1);
+        nb++;
     }
-    if (!ok || !VK_OK(res))
-        WARN("vulkan: %u of %u blocks of a %ux%ux%u image with memory where it is bound changed (%s): %llu KiB bound\n",
-             ok ? nb : 0, changes, p->extent.width, p->extent.height, p->extent.depth,
-             !VK_OK(res) ? "out of memory" : "the bind failed", (unsigned long long)(p->bound >> 10));
+    if (res != VK_SUCCESS)
+        WARN("vulkan: %u of %u blocks of a %ux%ux%u image with memory where it is bound changed (out of memory): %llu "
+             "KiB bound\n",
+             nb, changes, p->extent.width, p->extent.height, p->extent.depth, (unsigned long long)(p->bound >> 10));
     *bytes = p->bound;
-    free(binds);
-    free(which);
-    free(had);
-    return ok && VK_OK(res);
+    return res == VK_SUCCESS;
 }
 
 /* ------------------------------------------------------------ the budget */

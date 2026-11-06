@@ -539,7 +539,7 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
     /* staging memory may not be host coherent: the host writes are made visible to the GPU here */
     if (f->stage.mem) vmaFlushAllocation(g_vk.vma, f->stage.mem, 0, VK_WHOLE_SIZE);
     if (f->output.mem) vmaFlushAllocation(g_vk.vma, f->output.mem, 0, VK_WHOLE_SIZE);
-    VkSemaphoreSubmitInfo w[2];
+    VkSemaphoreSubmitInfo w[3];
     u32 nw = 0;
     if (g_after[0].semaphore) { /* at most one of the two: vk_submit_after's comes with no other */
         xw = &g_after[0];
@@ -553,6 +553,7 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
                                           .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
         g_vk_cs_wait_value = 0;
     }
+    if (vk_sparse_flush(&w[nw])) nw++; /* after the sparse binds made since the last submission (memory.c) */
     VkSemaphoreSubmitInfo s[2] = {{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                                    .semaphore = g_gsem,
                                    .value = g_gval + 1,
@@ -593,6 +594,9 @@ void vk_submit(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore s
 void vk_submit_for_readback(void) {
     if (g_fr[g_cur].recording) submit(NULL, NULL, 0, VK_SUB_READBACK);
     vk_rec_sync(); /* the immediate copy must follow the recorder's queue calls */
+}
+void vk_submit_recorded(void) {
+    if (g_fr[g_cur].recording) submit_why(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_SUB_OTHER);
 }
 void vk_submit_after(VkSemaphore sem, u64 wait, u64 signal) {
     g_after[0] = (VkSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = sem,

@@ -167,9 +167,9 @@ void vk_rec_queue(VkQueue q) {
     if (q == g_vk.gfx) vk_rec_sync();
 }
 
-/* The graphics and the compute queue's locks (vk_queue_lock): this thread submits and presents on the graphics queue
-   while the GPU thread may bind an image's pieces on it (memory.c). The compute queue's is the graphics queue's when
-   they are one queue */
+/* The graphics and the compute queue's locks (vk_queue_lock): this thread submits, presents and binds sparse memory
+   (memory.c) on the graphics queue while the GPU thread may submit compute on it. The compute queue's is the graphics
+   queue's when they are one queue */
 static PMutex g_gfx_qlock = PMUTEX_INIT, g_compute_qlock = PMUTEX_INIT;
 static PMutex* queue_mutex(VkQueue q) { return q == g_vk.gfx ? &g_gfx_qlock : &g_compute_qlock; }
 void vk_queue_lock(VkQueue q) { pm_lock(queue_mutex(q)); }
@@ -192,7 +192,7 @@ void vk_rec_begin(VkCommandBuffer cb) {
 
 typedef struct {
     VkCommandBuffer cb;
-    VkSemaphoreSubmitInfo w[2], s[2];
+    VkSemaphoreSubmitInfo w[3], s[2];
     u32 nw, ns;
     VkSemaphore timeline;
     u64 value;
@@ -235,6 +235,15 @@ void vk_rec_submit(VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw, c
     }
     *(Submit*)rec_push(submit_run, sizeof x) = x;
     publish(); /* the timeline value is waited for by whoever needs the work done */
+}
+
+void vk_rec_call(void (*fn)(const void* arg), const void* arg, u64 size) {
+    if (!rec_enabled()) {
+        fn(arg);
+        return;
+    }
+    memcpy(rec_push(fn, size), arg, size);
+    rec_commit();
 }
 
 /* A present, after the frame's submission. The GPU thread waited for the ring to drain before presenting, and so
