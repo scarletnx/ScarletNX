@@ -96,6 +96,8 @@ typedef struct {
     u32 slot;   /* the frame slot it is handed out to, plus one; 0 while in the pool */
     u32 flush;  /* written by the CPU and not flushed since (flushed at the next submit) */
     u32 big;    /* a buffer for a request bigger than a chunk */
+    u32 bar;    /* made for the output ring's share of the window (bar_room) and in device memory the CPU maps: on a
+                   GPU that shares system memory every buffer is in such memory, asked for there or not */
 } Chunk;
 static struct {
     Chunk* chunk;
@@ -430,7 +432,8 @@ static u32 chunk_new(u32 ring, u64 size, int bar, u32 slot) {
                              .size = size,
                              .ring = ring,
                              .in = xfer_where(&info),
-                             .slot = slot};
+                             .slot = slot,
+                             .bar = bar && xfer_where(&info) == XFER_MAPPED};
     g_cmd.made++;
     return i + 1;
 }
@@ -465,7 +468,7 @@ static u32 chunk_take(u32 ring, u64 size, int big, int bar, u32 slot) {
         const Chunk* c = &g_cmd.chunk[i];
         u32* pick;
         if (!c->buf || c->slot || c->ring != ring || c->size != size || (int)c->big != big) continue;
-        pick = ring != XRING_OUTPUT || (c->in == XFER_MAPPED) == bar ? &here : &other;
+        pick = (int)c->bar == bar ? &here : &other;
         if (!*pick || c->freed >= g_cmd.chunk[*pick - 1].freed) *pick = i + 1;
     }
     if (!here && bar) {
@@ -503,8 +506,7 @@ static void pool_recycle(Frame* f) {
     for (u32 i = 0; i < g_cmd.nchunk; i++) {
         Chunk* c = &g_cmd.chunk[i];
         if (!c->buf || (c->slot && c->slot != slot)) continue;
-        if ((!c->big && c->size != size) ||
-            (c->ring == XRING_OUTPUT && c->in == XFER_MAPPED && !bar_room(budget, 0, 0)))
+        if ((!c->big && c->size != size) || (c->bar && !bar_room(budget, 0, 0)))
             chunk_destroy(c);
         else {
             if (c->slot) c->freed = g_frame_id;
