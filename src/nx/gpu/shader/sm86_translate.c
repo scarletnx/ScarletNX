@@ -2104,11 +2104,21 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             return;
         }
         case SM86_MUFU: {
-            u32 x = src_f(c, &in->b), v = 0, fn = sm86_field(in, 74, 6);
-            if (sm86_field(in, 73, 1)) {
-                fail(c, "MUFU.F16");
+            /* .F16 (bit 73): the operand is the half bit 60 names, with b's modifiers, and the result the low half */
+            int half = (int)sm86_field(in, 73, 1);
+            u32 v = 0, fn = sm86_field(in, 74, 6), x;
+            if (half && sm86_field(in, 61, 1)) {
+                fail(c, "MUFU.F16 with a swizzle");
                 return;
             }
+            if (half) {
+                x = spv_emit_vec4_extract(&c->e, c->t_f32,
+                                          SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_UNPACK_HALF2X16, src_bits(c, &in->b)),
+                                          sm86_field(in, 60, 1));
+                if (in->b.abs) x = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, SPV_GLSL_F_ABS, x);
+                if (in->b.neg) x = spv_emit_fnegate(&c->e, c->t_f32, x);
+            } else
+                x = src_f(c, &in->b);
             switch (fn) {
                 case 0:
                 case 1: /* the argument in turns, as the hardware takes it */
@@ -2123,17 +2133,44 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 case 9: v = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, (SpvGlsl450Op)21 /* Tanh */, x); break;
                 default: fail(c, "MUFU function %u", fn); return;
             }
-            dwr(c, in, to_u(c, v));
+            dwr(c, in,
+                half ? SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16,
+                               spv_emit_vec2_construct(&c->e, c->t_v2f, v, cf(c, 0.0f)))
+                     : to_u(c, v));
+            return;
+        }
+        case SM86_F2F: {
+            /* NAK: log2 of the destination's bytes at 75, of the source's at 84, the rounding at 78 and FTZ at 80. One
+               game's programs only narrow a float to the low half, rounding to nearest */
+            u32 dsize = sm86_field(in, 75, 2), ssize = sm86_field(in, 84, 2), rnd = sm86_field(in, 78, 2);
+            if (dsize != 1 || ssize != 2 || rnd) {
+                fail(c, "F2F from %u to %u bytes, rounding %u", 1u << ssize, 1u << dsize, rnd);
+                return;
+            }
+            dwr(c, in,
+                SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16,
+                        spv_emit_vec2_construct(&c->e, c->t_v2f, src_f(c, &in->b), cf(c, 0.0f))));
             return;
         }
         case SM86_F2I: {
             u32 dsize = sm86_field(in, 75, 2); /* NAK: log2 of the destination's bytes */
-            if (dsize == 3 || sm86_field(in, 84, 2) != 2) {
-                fail(c, "F2I of sizes %u, %u", sm86_field(in, 84, 2), dsize);
+            u32 ssize = sm86_field(in, 84, 2);
+            if (dsize == 3 || (ssize != 1 && ssize != 2)) {
+                fail(c, "F2I of sizes %u, %u", ssize, dsize);
                 return;
             }
+            /* a half's source: the one bit 60 names, with b's modifiers, as MUFU.F16's */
+            u32 from;
+            if (ssize == 1) {
+                from = spv_emit_vec4_extract(&c->e, c->t_f32,
+                                             SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_UNPACK_HALF2X16, src_bits(c, &in->b)),
+                                             sm86_field(in, 60, 1));
+                if (in->b.abs) from = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, SPV_GLSL_F_ABS, from);
+                if (in->b.neg) from = spv_emit_fnegate(&c->e, c->t_f32, from);
+            } else
+                from = src_f(c, &in->b);
             static const u16 rounding[4] = {SPV_GLSL_ROUND_EVEN, SPV_GLSL_FLOOR, SPV_GLSL_CEIL, SPV_GLSL_TRUNC};
-            u32 x = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, rounding[sm86_field(in, 78, 2)], src_f(c, &in->b));
+            u32 x = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, rounding[sm86_field(in, 78, 2)], from);
             int is_signed = (int)sm86_field(in, 72, 1);
             /* the hardware saturates, and a NaN gives 0 */
             u32 nan = spv_emit_isnan(&c->e, c->t_bool, x), v;
@@ -2285,7 +2322,15 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             /* F2FP.PACK_AB Rd, Ra, Rb: a in the high half, b in the low one, as PTX's cvt.rn.f16x2.f32; bit 76
                BF16 (CuAssembler sm_86). The halves round to nearest */
             if (sm86_field(in, 78, 1)) {
-                fail(c, "F2FP.MERGE_C");
+                /* .MERGE_C (NAK's note): b converted in the low half, c's low half (its high one with .H1, bit 72) in
+                   the high half, a unused */
+                u32 keep = src_bits(c, &in->c);
+                if (sm86_field(in, 72, 1)) keep = spv_emit_shift_right_u32(&c->e, c->t_u32, keep, cu(c, 16));
+                u32 low = SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16,
+                                  spv_emit_vec2_construct(&c->e, c->t_v2f, src_f(c, &in->b), cf(c, 0.0f)));
+                dwr(c, in,
+                    spv_emit_bitwise_or_u32(&c->e, c->t_u32, spv_emit_shift_left_u32(&c->e, c->t_u32, keep, cu(c, 16)),
+                                            low));
                 return;
             }
             u32 hi = src_f(c, &in->a), lo = src_f(c, second(in));
@@ -2659,6 +2704,94 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             if (in->c.kind == SM86_SRC_REG && in->c.neg) cpair = SPV(&c->e, SPV_OP_F_NEGATE, c->t_v2f, cpair);
             u32 sum = nocontract(c, op2(c, SPV_OP_F_ADD, c->t_v2f, p, cpair));
             dwr(c, in, SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, sum));
+            return;
+        }
+        case SM86_HFMA2: {
+            /* a * b + c by halves. a as HADD2's. The operand in the register at 64 keeps its swizzle at 81-82 and its
+               modifiers at 83 (abs) and 84 (neg), not where a three-source float's are. Bit 79 is .RELU, 86 .H0_NH1, and
+               none of one game's programs has them. A product of two halves is exact in a float of 32 bits */
+            if (sm86_field(in, 78, 2) || sm86_field(in, 85, 2)) {
+                fail(c, "HFMA2 with modes 0x%x, 0x%x", sm86_field(in, 78, 2), sm86_field(in, 85, 2));
+                return;
+            }
+            int b_at_64 = in->form == 2 || in->form == 3 || in->form == 7;
+            const Sm86Src* src[3] = {&in->a, &in->b, &in->c};
+            u32 v[3];
+            for (u32 k = 0; k < 3; k++) {
+                const Sm86Src* s = src[k];
+                int at_64 = k && (k == 1) == b_at_64, imm = s->kind == SM86_SRC_IMM;
+                u32 sw = imm      ? 0
+                         : k == 0 ? sm86_field(in, 74, 2)
+                         : at_64  ? sm86_field(in, 81, 2)
+                                  : sm86_field(in, 60, 2);
+                int abs = imm ? 0 : at_64 ? (int)sm86_field(in, 83, 1) : s->abs;
+                int neg = imm ? 0 : at_64 ? (int)sm86_field(in, 84, 1) : s->neg;
+                if (sw == 1) {
+                    fail(c, "HFMA2 with a float operand");
+                    return;
+                }
+                u32 pair = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_UNPACK_HALF2X16, src_bits(c, s));
+                if (sw >= 2) {
+                    u32 h = spv_emit_vec4_extract(&c->e, c->t_f32, pair, sw - 2);
+                    pair = spv_emit_vec2_construct(&c->e, c->t_v2f, h, h);
+                }
+                if (abs) pair = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_F_ABS, pair);
+                if (neg) pair = SPV(&c->e, SPV_OP_F_NEGATE, c->t_v2f, pair);
+                v[k] = pair;
+            }
+            u32 r = nocontract(
+                c, op2(c, SPV_OP_F_ADD, c->t_v2f, nocontract(c, spv_emit_fmul(&c->e, c->t_v2f, v[0], v[1])), v[2]));
+            if (sm86_field(in, 77, 1))
+                r = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_N_CLAMP, r,
+                            spv_emit_vec2_construct(&c->e, c->t_v2f, cf(c, 0.0f), cf(c, 0.0f)),
+                            spv_emit_vec2_construct(&c->e, c->t_v2f, cf(c, 1.0f), cf(c, 1.0f)));
+            dwr(c, in, SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, r));
+            return;
+        }
+        case SM86_HMUL2:
+        case SM86_HMNMX2: {
+            /* two halves multiplied, or the smaller or larger of each pair by the predicate at 87 (FMNMX's). The operands
+               as HADD2's. HMUL2: bit 77 saturate, 76 and 80 the handling of zeros and denormals, which floats of 32 bits
+               don't lose here */
+            const Sm86Src* b = second(in);
+            u32 sw[2] = {sm86_field(in, 74, 2), b->kind == SM86_SRC_IMM ? 0 : sm86_field(in, 60, 2)};
+            const Sm86Src* src[2] = {&in->a, b};
+            u32 v[2];
+            if (op == SM86_HMUL2 && sm86_field(in, 78, 2)) {
+                fail(c, "HMUL2 with mode 0x%x", sm86_field(in, 78, 2));
+                return;
+            }
+            for (u32 k = 0; k < 2; k++) {
+                if (sw[k] == 1) {
+                    fail(c, "%s with a float operand", sm86_ops[op].name);
+                    return;
+                }
+                u32 pair = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_UNPACK_HALF2X16, src_bits(c, src[k]));
+                if (sw[k] >= 2) {
+                    u32 h = spv_emit_vec4_extract(&c->e, c->t_f32, pair, sw[k] - 2);
+                    pair = spv_emit_vec2_construct(&c->e, c->t_v2f, h, h);
+                }
+                if (src[k]->kind != SM86_SRC_IMM && src[k]->abs) pair = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_F_ABS, pair);
+                if (src[k]->kind != SM86_SRC_IMM && src[k]->neg) pair = SPV(&c->e, SPV_OP_F_NEGATE, c->t_v2f, pair);
+                v[k] = pair;
+            }
+            u32 r;
+            if (op == SM86_HMUL2) {
+                r = nocontract(c, spv_emit_fmul(&c->e, c->t_v2f, v[0], v[1]));
+                if (sm86_field(in, 77, 1))
+                    r = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_N_CLAMP, r,
+                                spv_emit_vec2_construct(&c->e, c->t_v2f, cf(c, 0.0f), cf(c, 0.0f)),
+                                spv_emit_vec2_construct(&c->e, c->t_v2f, cf(c, 1.0f), cf(c, 1.0f)));
+            } else {
+                u32 min = prd(c, sm86_field(in, 87, 3), sm86_field(in, 90, 1), 0), lane[2];
+                u32 lo = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_N_MIN, v[0], v[1]);
+                u32 hi = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_N_MAX, v[0], v[1]);
+                for (u32 k = 0; k < 2; k++)
+                    lane[k] = spv_emit_select(&c->e, c->t_f32, min, spv_emit_vec4_extract(&c->e, c->t_f32, lo, k),
+                                              spv_emit_vec4_extract(&c->e, c->t_f32, hi, k));
+                r = spv_emit_vec2_construct(&c->e, c->t_v2f, lane[0], lane[1]);
+            }
+            dwr(c, in, SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, r));
             return;
         }
         case SM86_HADD2: {
