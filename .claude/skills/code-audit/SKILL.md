@@ -566,6 +566,9 @@ If an answer is "no," "skipped," "I assumed," or "partially," go back to step 9 
 
 ### 12. Final Report
 
+When the work goes to a pull request, use the `snx-work-mark` skill for the title and the body. The verdict is the
+evidence section. A known failure that remains goes in `Risks:`.
+
 ```
 ## Code Audit — Final (Pass N)
 

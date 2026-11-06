@@ -30,15 +30,10 @@ applies the fixes.
 - Report format: one line for each finding, `file:line — description — suggested fix — severity`. The severity is
   one of CRITICAL/HIGH/MEDIUM/LOW/NIT. If a file is clean, say so clearly. Return the raw findings, not prose for a
   human.
-- A driver-gated Vulkan workaround is allowed (CLAUDE.md) and passes the audit only on all of these. The defect is
-  reproduced on that driver, and its version is named rather than inferred from a difference in the output. A
-  conformant path does not exist, because the driver lacks an extension or feature or mishandles a format or an
-  enum, and the specification and the validation layer were checked first. The gate is `driverID`, or the missing
-  extension or feature, and nothing else, with no branch that is on by default and no change to the path of another
-  driver. It sits in the Vulkan renderer (`src/nx/gpu/vk/`) and leaves guest-visible behaviour, Maxwell decoding and
-  shader translation alone. Both sides were checked, the affected driver and lavapipe or a desktop driver, or the
   review says which side could not run. Report a workaround that misses one of these. Do not report its existence
   alone.
+- Mark each finding as a handoff: the result, the evidence at `file:line`, and what you did not check. The
+  `snx-work-mark` skill gives the shape.
 - **Send the report with `SendMessage`, or the orchestrator never gets it.** You run as a background teammate, and
   the orchestrator does NOT get your plain-text output. When your analysis is complete, you MUST call the
   `SendMessage` tool with `to: "main"` and the full list of findings as `message`. If you end your turn without that

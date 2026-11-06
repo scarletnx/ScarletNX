@@ -31,3 +31,6 @@ Method:
 Report what the code expects, as a list with the addresses that show each point. Then report the differences from
 the runtime, with `file:line`. Mark each thing that you inferred and did not read as `HYPOTHESIS`. You can mention
 the behavior of Ryujinx (MIT) and the yuzu family (GPL), with where it comes from.
+
+Mark the report for the handoff: the result, the evidence, what you did not read, and the next step. The
+`snx-work-mark` skill gives the shape.

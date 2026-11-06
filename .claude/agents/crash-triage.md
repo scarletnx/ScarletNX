@@ -30,3 +30,6 @@ Report:
 - The runtime behavior at the end of the chain, with `file:line`. If you can find it from what the SDK code expects,
   give also what the console does in its place.
 - Each thing that you could not confirm, with the label `HYPOTHESIS`. A plausible story is not a mechanism.
+
+Mark the report for the handoff: the result, the evidence, what you could not check, and the next step. The
+`snx-work-mark` skill gives the shape.
