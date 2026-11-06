@@ -4,12 +4,17 @@ add_library(scarletnx-common STATIC
     utilities/common.c utilities/process.c utilities/font.c utilities/ini_lines.c utilities/game_ini.c utilities/pad_map.c
     utilities/pad_screen.c utilities/users.c utilities/mii_model.c utilities/mii_gltf.c utilities/mii_db.c utilities/logscan.c utilities/language_tag.c utilities/mods.c utilities/patches.c utilities/cheat_list.c utilities/state_header.c
     utilities/gpu_driver.c utilities/run_mark.c
-    utilities/spirv_emit.c utilities/script.c memory/host.c
+    utilities/spirv_emit.c utilities/script.c memory/host.c memory/jemalloc.c
     cpu/aarch64/a64_decoder.c cpu/recompiler/codegen.c cpu/recompiler/variants.c runtime/cas128.c runtime/linux_signal.c)
 target_compile_definitions(scarletnx-common PRIVATE _CRT_SECURE_NO_WARNINGS
     SNX_HOST_COMPILER="${CMAKE_C_COMPILER}"
     SNX_CPU_INCLUDE="${CMAKE_CURRENT_SOURCE_DIR}/cpu/aarch64"
     SNX_SOURCE_INCLUDE="${PROJECT_SOURCE_DIR}/src")
+# memory/jemalloc.c reads the heap jemalloc's mallctl keeps (SNX_JEMALLOC, cmake/jemalloc.cmake): the program links it,
+# the unit tests do not, and the object comes in only where snx_heap_used is called
+if(SNX_JEMALLOC AND NOT ANDROID)
+    target_compile_definitions(scarletnx-common PRIVATE SNX_JEMALLOC=1)
+endif()
 target_compile_options(scarletnx-common PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 # RtAPI.cas128's compare-and-swap is cmpxchg16b with cx16, and a libatomic call without, which nothing here links
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")

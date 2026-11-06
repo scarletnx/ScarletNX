@@ -6,6 +6,7 @@
 #include "nx/hle/kernel/kernel.h"
 #include "nx/runtime/nce/nce.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -182,6 +183,26 @@ static unsigned largest(const u64* v, u32 count, u32* top, unsigned n) {
 static double percent(u64 ns, u64 of) { return (double)ns * 100.0 / (double)of; }
 static double seconds(u64 ns) { return (double)ns / 1e9; }
 
+/* the window's counts as plots: what the log lines above give, on the timeline. The window is the renderer's 600-present
+   cadence, which is the cadence the log has; the sums are the same */
+static void guest_stats_plot(const GstatWindow* w) {
+    [[maybe_unused]] u32 top[1];
+    [[maybe_unused]] double secs;
+    if (!w->ns) return; /* never 0 for the log's (guest_stats_window), and no seconds to divide by */
+    secs = seconds(w->ns);
+    SNX_PLOT("guest cpu", percent(w->cpu_ns, w->ns));
+    SNX_PLOT("process cpu", percent(w->process_ns, w->ns));
+    SNX_PLOT("guest threads", (double)w->threads);
+    SNX_PLOT("svc/s", (double)w->svcs / secs);
+    SNX_PLOT("svc miss/s", (double)w->count[GSTAT_MISS] / secs);
+    SNX_PLOT("nce outcalls/s", (double)(w->count[GSTAT_NCE_SVC] + w->hooks + w->count[GSTAT_NCE_TRAP]) / secs);
+    SNX_PLOT("nce hooks/s", (double)w->hooks / secs);
+    SNX_PLOT("nce kicks/s", (double)w->count[GSTAT_NCE_KICK] / secs);
+    /* one aggregate of the busiest thread: a plot per slot would grow the client's name table without a use */
+    SNX_PLOT("guest top thread ms",
+             largest(w->thread_ns, GSTAT_SLOTS, top, 1) ? (double)w->thread_ns[top[0]] / 1e6 : 0.0);
+}
+
 void guest_stats_log(u64 now_ns, u64 presents) {
     GstatWindow w;
     u32 top[GSTAT_FAMILIES]; /* the longest list a line gives */
@@ -189,6 +210,7 @@ void guest_stats_log(u64 now_ns, u64 presents) {
     size_t at = 0;
     unsigned n;
     if (guest_stats_window(now_ns, presents, &w)) return;
+    guest_stats_plot(&w);
     n = largest(w.thread_ns, GSTAT_SLOTS, top, GSTAT_TOP_THREADS);
     for (unsigned i = 0; i < n && at < sizeof list; i++) {
         char name[64];

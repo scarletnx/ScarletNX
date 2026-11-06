@@ -1068,9 +1068,9 @@ static void gpu_thread(void* arg) {
         if (run_pass(&wake)) continue;
         /* A whole pass ran nothing: sleep until a new item, a kick, or the next look at a wait. A plot, not a zone:
            this wait can last the rest of the run. */
-        SNX_PLOT("gpu idle", 1);
+        SNX_PLOT("gpu thread idle", 1);
         if (gen == g_qgen) pc_wait(&g_qcv, &g_qlk, wake);
-        SNX_PLOT("gpu idle", 0);
+        SNX_PLOT("gpu thread idle", 0);
     }
 }
 static void queue_init(void) {

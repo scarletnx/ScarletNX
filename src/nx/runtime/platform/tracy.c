@@ -409,14 +409,26 @@ void snx_tracy_thread_name(const char* name) {
     snx_tracy_leave();
 }
 
-/* The plots' formats: the byte counts as sizes, the idle mark as steps. */
+/* The plots' formats: the byte counts as sizes, the shares as percent, the idle mark as steps. */
 static void tracy_plots_send(void) {
     static const struct {
         const char* name;
         int type, step, fill;
     } cfg[] = {
-        {"gpu memory", 1, 0, 1},   {"gpu memory budget", 1, 0, 1}, {"texture uploads", 0, 0, 1},
-        {"guest memory", 1, 0, 1}, {"compute cpu reads", 0, 0, 1}, {"gpu idle", 0, 1, 0},
+        {"gpu memory", 1, 0, 1},       {"gpu memory budget", 1, 0, 1},  {"texture uploads", 0, 0, 1},
+        {"guest memory", 1, 0, 1},     {"compute cpu reads", 0, 0, 1},  {"gpu thread idle", 0, 1, 0},
+        {"frame ms", 0, 0, 1},         {"draws", 0, 0, 1},              {"dispatches", 0, 0, 1},
+        {"shaders", 0, 0, 1},          {"host heap", 1, 0, 1},          {"host rss", 1, 0, 1},
+        {"host free", 1, 0, 1},        {"guest cpu", 2, 0, 1},          {"process cpu", 2, 0, 1},
+        {"guest threads", 0, 0, 1},    {"svc/s", 0, 0, 1},              {"svc miss/s", 0, 0, 1},
+        {"nce outcalls/s", 0, 0, 1},   {"nce hooks/s", 0, 0, 1},        {"nce kicks/s", 0, 0, 1},
+        {"guest top thread ms", 0, 0, 1}, {"gpu gap: dispatches", 0, 0, 1}, {"gpu gap: copies", 0, 0, 1},
+        {"gpu gap: barriers", 0, 0, 1}, {"gpu gap: nothing", 0, 0, 1},  {"gpu idle: waited", 0, 0, 1},
+        {"gpu idle: frame", 0, 0, 1},  {"gpu idle: recording", 0, 0, 1}, {"gpu idle: queued", 0, 0, 1},
+        {"gpu busy", 2, 0, 1},         {"gpu submissions/frame", 0, 0, 1},
+        {"submits pending", 0, 0, 1},    {"compute pending", 0, 0, 1},    {"pipelines", 0, 0, 1},
+        {"pipeline make ms", 0, 0, 1},   {"pipeline wait ms", 0, 0, 1},   {"pipeline cache hits", 0, 0, 1},
+        {"io read MB/s", 0, 0, 1},       {"io write MB/s", 0, 0, 1},
     };
     if (!snx_tracy_enter()) return;
     if (TracyCIsConnected)
