@@ -1654,6 +1654,43 @@ static void texture(Ctx* c, const Sm86Insn* in) {
     }
     tex_results(c, in, result, c->t_f32);
 }
+/* TXD: a sample with explicit gradients. Unlike TEX's, its registers are in the order of Maxwell's TXD: from a the
+   coordinates and then the layer, from b each coordinate's change along x and along y in turn */
+static void texture_grad(Ctx* c, const Sm86Insn* in) {
+    u32 type, array, coords;
+    if (!tex_dim(sm86_field(in, 61, 3), &type, &array, &coords)) {
+        fail(c, "TXD dimension 6");
+        return;
+    }
+    if (sm86_field(in, 76, 1)) {
+        fail(c, "TXD with a texel offset");
+        return;
+    }
+    u32 handle = sm86_field(in, 40, 19);
+    int slot = tex_slot(c, (handle >> 14) & 31, (handle & 0x3fff) * 4, type, array, 0, 0);
+    if (slot < 0) return;
+    u32 a = sm86_field(in, 24, 8), b = sm86_field(in, 32, 8), f[4], dx[3], dy[3], count = 0;
+#define TXD_REG(base, k) ((base) < SM86_RZ ? (base) + (k) : SM86_RZ)
+    for (u32 k = 0; k < coords; k++, count++) {
+        f[count] = to_f(c, rd(c, TXD_REG(a, k)));
+        dx[count] = to_f(c, rd(c, TXD_REG(b, 2 * k)));
+        dy[count] = to_f(c, rd(c, TXD_REG(b, 2 * k + 1)));
+    }
+    /* a 1D texture is bound as a 2D one, with no change along its height */
+    if (type == 0) {
+        f[count] = dx[count] = dy[count] = cf(c, 0.0f);
+        count++;
+    }
+    u32 gx = coord_vector(c, dx, count), gy = coord_vector(c, dy, count);
+    if (array)
+        f[count++] = spv_emit_convert_u_to_f(
+            &c->e, c->t_f32, spv_emit_bitwise_and_u32(&c->e, c->t_u32, rd(c, TXD_REG(a, coords)), cu(c, 0xffff)));
+#undef TXD_REG
+    tex_results(
+        c, in,
+        spv_emit_sample_grad(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord_vector(c, f, count), gx, gy, 0),
+        c->t_f32);
+}
 /* TLD: a texel at integer coordinates and an explicit level (bits 87-89, NAK's TexLodMode: 1 the base level, 3 a
    level register). Its operands: the layer and the coordinates, then the level (nak_nir_lower_tex.c) */
 static void texel_fetch(Ctx* c, const Sm86Insn* in) {
@@ -3217,6 +3254,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         case SM86_TEX_B:
         case SM86_TLD4:
         case SM86_TMML: texture(c, in); return;
+        case SM86_TXD: texture_grad(c, in); return;
         case SM86_TLD: texel_fetch(c, in); return;
         case SM86_TXQ: texture_query(c, in); return;
         case SM86_SULD_P:
