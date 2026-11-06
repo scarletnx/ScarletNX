@@ -389,9 +389,12 @@ typedef struct {
     u64 so, at;
     VkBufferCopy r[64];
     u32 n;
+    int ahead; /* recorded in the submission's upload command buffer (vk_guest_read_ahead) */
 } DevRead;
+/* where a read's copies go: ahead of the submission's work, after the writes of earlier submissions, or here */
+static VkCommandBuffer dev_cmd(int ahead) { return ahead ? vk_cmd_upload(1) : vk_cmd(); }
 static void dev_flush(DevRead* d) {
-    if (d->n) rec_CmdCopyBuffer(vk_cmd(), d->sb, d->buf, d->n, d->r);
+    if (d->n) rec_CmdCopyBuffer(dev_cmd(d->ahead), d->sb, d->buf, d->n, d->r);
     d->n = 0;
 }
 /* the staged bytes [o, o + n) of the range go to buf */
@@ -404,14 +407,40 @@ static void dev_gap(DevRead* d, u64 o, u64 n) {
     if (d->n == sizeof d->r / sizeof *d->r) dev_flush(d);
     d->r[d->n++] = (VkBufferCopy){d->so + o, d->at + o, n};
 }
-int vk_guest_read_device(u64 gva, u64 size, VkBuffer buf, u64 at) {
-    DevRead d = {.buf = buf, .at = at};
+/* whether every byte of guest [gva, gva + size) was written before the submission being recorded: none by an in-place
+   write of a submit not done yet (uma.c), and the owners' last writes recorded in earlier submissions
+   (VkOwnRes.written), no more of them than guest_read notes at a time */
+static int read_settled(u64 gva, u64 size) {
+    u64 now = vk_submit_number();
+    for (u64 o = 0; o < size;) {
+        u64 cpu = 0, n = gmmu_run(gva + o, size - o, &cpu);
+        OwnRange r[16];
+        u32 k;
+        if (!n) {
+            n = 0x1000 - ((gva + o) & 0xFFF);
+            if (n > size - o) n = size - o;
+        } else if (vk_uma_pending_cpu(cpu, n))
+            return 0;
+        else if (own_any() && (k = own_lookup(cpu, n, r, sizeof r / sizeof *r)) > 0) {
+            if (k > sizeof r / sizeof *r) return 0;
+            for (u32 i = 0; i < k; i++)
+                if (((const VkOwnRes*)r[i].res)->written >= now) return 0;
+        }
+        o += n;
+    }
+    return 1;
+}
+/* vk_guest_read_device, and with ahead its copies in the submission's upload command buffer: 0 then, with nothing
+   recorded, when a byte was written in this submission, which those copies would run before */
+static int guest_read(u64 gva, u64 size, VkBuffer buf, u64 at, int ahead) {
+    DevRead d = {.buf = buf, .at = at, .ahead = ahead};
     u8* p;
     u64 o = 0;
-    int any = 0;
+    int any = ahead; /* the upload command buffer waits for earlier submissions' writes itself */
     if (!size) return 1;
+    if (ahead && !read_settled(gva, size)) return 0;
     if (!(p = vk_stage_upload(size, 16, &d.sb, &d.so))) return 0;
-    vk_render_end(); /* the copies happen outside rendering passes */
+    if (!ahead) vk_render_end(); /* the copies happen outside rendering passes */
     vk_uma_gpu_reads(1);  /* the in-place writes there are copied below, not waited for */
     gmem_need(gva, size); /* results the renderer has pending there land first, as gmem_read has them */
     vk_uma_gpu_reads(0);
@@ -428,7 +457,7 @@ int vk_guest_read_device(u64 gva, u64 size, VkBuffer buf, u64 at) {
             VkBufferCopy c = {io, at + o, n};
             if (!any) read_barrier(vk_cmd(), 1);
             any = 1;
-            rec_CmdCopyBuffer(vk_cmd(), ib, buf, 1, &c);
+            rec_CmdCopyBuffer(dev_cmd(ahead), ib, buf, 1, &c);
         } else if (!n) { /* an unmapped page reads as zero */
             n = 0x1000 - ((gva + o) & 0xFFF);
             if (n > size - o) n = size - o;
@@ -453,13 +482,14 @@ int vk_guest_read_device(u64 gva, u64 size, VkBuffer buf, u64 at) {
                     from = r[i].addr + r[i].size;
                     if (!any) read_barrier(vk_cmd(), 1);
                     any = 1;
-                    rec_CmdCopyBuffer(vk_cmd(), ((const VkOwnRes*)r[i].res)->buf, buf, 1, &cp);
+                    rec_CmdCopyBuffer(dev_cmd(ahead), ((const VkOwnRes*)r[i].res)->buf, buf, 1, &cp);
                 }
                 dev_gap(&d, o + (from - cpu), c + part - from);
             }
         o += n;
     }
     dev_flush(&d);
+    if (ahead) return 1; /* the submission's work waits for the upload command buffer's copies (cmd.c submit) */
     /* before what reads the range, and what writes over it (render targets drawn over the bytes, vk_rt_overlay) */
     VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                           .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
@@ -470,6 +500,8 @@ int vk_guest_read_device(u64 gva, u64 size, VkBuffer buf, u64 at) {
     rec_CmdPipelineBarrier2(vk_cmd(), &dep);
     return 1;
 }
+int vk_guest_read_device(u64 gva, u64 size, VkBuffer buf, u64 at) { return guest_read(gva, size, buf, at, 0); }
+int vk_guest_read_ahead(u64 gva, u64 size, VkBuffer buf, u64 at) { return guest_read(gva, size, buf, at, 1); }
 int vk_guest_read_seen(u64 gva, u64 size, VkBuffer buf, u64 at) {
     if (!vk_guest_read_device(gva, size, buf, at)) return 0;
     vk_rt_overlay(gva, size, buf, at);
