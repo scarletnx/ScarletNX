@@ -22,7 +22,9 @@ interface nn::gsv::UserSession {
     [126] GetPostBootMode() -> u32 mode;
     [201] CreateSyncptContext();
     [202] InitializeSyncptContext() -> handle<copy, session> session;
-    [204] BindSyncpointMemory(handle<copy, transfer_memory> rw, handle<copy, transfer_memory> ro, bytes<0x24> request)
+    # request: one game's SDK sends 0x24 bytes, another's 0x18 (u32 1, u32 0x1ff, u64 rw's size, u64 ro's size). The
+    # dispatcher wants at least the bytes declared, and the handler reads none of them
+    [204] BindSyncpointMemory(handle<copy, transfer_memory> rw, handle<copy, transfer_memory> ro, bytes<0x18> request)
         -> (handle<move, event> request_event, handle<move, event> completed_event);
     [301] CreateDisplayContext();
     [303] FinalizeDisplayContext();
@@ -41,6 +43,9 @@ interface nn::gsv::UserSession {
     [434] ExistsAddressSpace(u32 address_space);
     [435] CalculateNativeImageSize(bytes<0x44> preference) -> u64 size;
     [497] CreateGpuSessionWithRemoteMemory(u64 version) -> handle<copy, session> session;
+    [601] CreateCameraContext();
+    [602] InitializeCameraContext(u64 version) -> handle<copy, session> session;
+    [603] DestroyCameraContext();
     # nn::codec::video::detail::ipc::Initialize and Finalize (native_video.c): the decoder's and the encoder's contexts.
     # 905 takes Initialize's bool (the unlimited resolution mode)
     [901] InitializeVideoDecoder();
@@ -59,9 +64,40 @@ interface nn::gsv::UserSession {
     [1001] InitializeVideoEncoder();
     [1002] OpenVideoEncoderContext() -> handle<move, session> context;
     [1003] FinalizeVideoEncoder();
+    [1201] CreateChatContext();
+    [1202] InitializeChatContext() -> handle<copy, session> session;
+    [1203] DestroyChatContext();
     [1101] CreateGraphicsFrameContext();
     [1102] InitializeGraphicsFrameContext();
+    # how the console's GPU schedules a frame, which the host's doesn't take
+    @stub [1111] SetGraphicsFrameLengthMode(u32 mode);
+    @stub [1112] SetGraphicsFrameRestartMode(u32 mode);
+    @stub [1113] SetGraphicsFrameGpuTimesliceMode(u32 mode);
+    # nn::gs::sdk::QueryApplicationGpuTimeSpan's session
+    [1121] OpenGraphicsFrameSession() -> handle<move, session> session;
     [1402] CreateNvDrv2UserSessionWithRemoteMemory() -> handle<copy, session> session;
+    # Switchbrew's names. gsv1's 1501 tests bit 6 of the session's permissions (byte 0x10) and does no more. Its 1502 tests
+    # bit 7 and then reads the session's state under a lock, which the runtime has no use for yet
+    @stub [1501] CreateInterModuleImageContext();
+    @stub [1502] InitializeInterModuleImageContext();
+}
+
+@fallback(gsv_camera_none)
+interface nn::gsv::CameraSession {
+}
+
+# The SDK sends the current tick to 0 and aborts unless it comes back. The other names are guesses from the SDK's code
+@fallback(stub_ok)
+interface nn::gsv::GraphicsFrameSession {
+    [0] Ping(u64 token) -> u64 echo;
+    [11] QueryApplicationGpuTimeSpan(u64 first, u64 second) -> u64 span;
+}
+
+# nn::chat::gsv's session: the names are guesses from what the SDK does with them. It aborts on an id past 0x3ff
+@fallback(stub_ok)
+interface nn::gsv::ChatSession {
+    [1] GetEventId() -> u32 id;
+    [11] GetEvent(u32 id) -> handle<copy, event> event;
 }
 
 @fallback(ipc_unknown)
