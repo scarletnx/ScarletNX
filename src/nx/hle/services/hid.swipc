@@ -145,6 +145,22 @@ interface nn::hid::IHidServer is hid {
     @stub [1002] SetTouchScreenConfiguration(nn::hid::TouchScreenConfigurationForNx config, aruid aruid);
     @stub [1003] IsFirmwareUpdateNeededForNotification(i32 unknown, aruid aruid) -> b8 needed;
     @stub [1004] SetTouchScreenResolution(i32 width, i32 height, aruid aruid);
+    [3110] InitializeJcms(aruid aruid, u64 size, handle<copy, transfer_memory> tmem);
+    [3111] FinalizeJcms(aruid aruid);
+    [3112] StartJcms(u32 handle, aruid aruid);
+    [3113] StopJcms(u32 handle, aruid aruid);
+    [3130] InitializeNmouse(u8 unknown, i32 width, i32 height, aruid aruid, u64 size, handle<copy, transfer_memory> tmem);
+    [3131] FinalizeNmouse(aruid aruid);
+    [3132] SetNmousePointerRanges(i32 width, i32 height, aruid aruid);
+    [3133] GetNmousePointerRanges(aruid aruid) -> (i32 width, i32 height);
+    [3135] EnableShowingCursor(b8 enable, aruid aruid);
+    @stub [3136] SetNmouseButtonConfigJoyLeftJcms(aruid aruid, u64 config);
+    @stub [3137] SetNmouseButtonConfigJoyRightJcms(aruid aruid, u64 config);
+    @stub [3138] SetMergedNmouseSourceTypes(u32 types, aruid aruid);
+    [3139] InitializeNmouse2(u8 pointer_type, i32 width, i32 height, u32 unknown, aruid aruid, u64 size,
+                             handle<copy, transfer_memory> tmem);
+    [3140] SetNmousePointerPosition(i32 x, i32 y, aruid aruid, u64 handle);
+    [3141] EnableNmousePointer(b8 enable, aruid aruid, u64 handle);
 }
 
 interface nn::hid::IAppletResource {
