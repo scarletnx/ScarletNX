@@ -472,11 +472,15 @@ static void serve(IpcCtx* c, SvcObj* o, u32 seq) {
     ring_set(seq, IPC_REC_RUNNING, o->name, c->type, c->cmd, in, 0, NULL);
     LOGV("IPC %s cmd %u\n", o->name, c->cmd);
     c->rc = (u32)o->dispatch(o, c);
+    /* the command's result on error only: one compare on the path that matters, and the zone a failed command leaves
+       carries what it failed with */
+    if (c->rc) SNX_ZONE_VALUE(z_ipc, c->rc);
     ring_set(seq, IPC_REC_SERVED, o->name, c->type, c->cmd, in, c->rc, NULL);
     respond(c);
 }
 /* a request sf answers without the service: a refusal, or a control request */
 static void answer(IpcCtx* c, u32 rc, u32 seq, const char* name, const char* what) {
+    SNX_ZONE_TV(z_answer, "ipc answer", rc, "%s %s %x", name, what, rc);
     c->rc = rc;
     ring_set(seq, IPC_REC_ANSWERED, name, c->type, c->cmd, NULL, rc, what);
     if (rc && strcmp(what, "control")) WARN_LIMIT(16, "ipc: %s: a request refused (%x)\n", name, rc);
@@ -488,6 +492,7 @@ static void answer(IpcCtx* c, u32 rc, u32 seq, const char* name, const char* wha
 static u32 control(IpcCtx* c, KSession* s) {
     Domain* d = __atomic_load_n(&s->domain, __ATOMIC_ACQUIRE);
     u32 id = 0;
+    SNX_ZONE(z_control, "ipc control");
     switch (c->cmd) {
         case 0:
             if (!d) {
