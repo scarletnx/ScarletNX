@@ -53,7 +53,7 @@ bool snx_vk_has_instance_extension(const char* name) {
 VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* out) {
     *out = (SnxVkInstance){0};
     /* the window's, then debug utils and portability enumeration */
-    const char** ext = calloc((size_t)info->extension_count + 2, sizeof *ext);
+    const char** ext = calloc((size_t)info->extension_count + 3, sizeof *ext);
     if (!ext) return VK_ERROR_OUT_OF_HOST_MEMORY;
     uint32_t next = 0;
     bool asked = false; /* the window system may ask for portability enumeration itself (SDL does on Apple systems) */
@@ -66,6 +66,8 @@ VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* ou
     if (info->validation && snx_vk_has_layer("VK_LAYER_KHRONOS_validation")) {
         layers[nlayers++] = "VK_LAYER_KHRONOS_validation";
         ext[next++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+        if (snx_vk_has_instance_extension(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME))
+            ext[next++] = VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME; /* GPU-assisted validation finds bad accesses */
         out->validation = true;
     }
     out->portability = asked;
@@ -77,8 +79,15 @@ VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* ou
                              .pApplicationName = info->app_name,
                              .pEngineName = "ScarletNX",
                              .apiVersion = info->api_version ? info->api_version : VK_API_VERSION_1_3};
+    /* GPU-assisted validation (VK_EXT_validation_features) instruments the shaders to report out-of-bounds and
+       uninitialized descriptor accesses, which the plain layer can't see: the way a GPU fault is pinned to an access */
+    VkValidationFeatureEnableEXT vf_enable = VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT;
+    VkValidationFeaturesEXT vf = {.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
+                                  .enabledValidationFeatureCount = 1,
+                                  .pEnabledValidationFeatures = &vf_enable};
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
                                .flags = out->portability ? VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0,
+                               .pNext = out->validation ? &vf : NULL,
                                .pApplicationInfo = &app,
                                .enabledLayerCount = nlayers,
                                .ppEnabledLayerNames = nlayers ? layers : NULL,
