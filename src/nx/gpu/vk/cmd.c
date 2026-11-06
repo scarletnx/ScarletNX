@@ -80,22 +80,22 @@ typedef struct {
 } Frame;
 
 /* The rings' memory: chunks of one size, made as the rings need them and pooled, by ring, between the frame slots. A
-   request bigger than a chunk gets a buffer of its own, of the chunk size doubled until it fits (its size class), pooled
-   apart. A slot's chunks and big buffers go back to the pool once its work is done (frame_recycle), and the pool keeps
-   as many of each as the most any of the last VK_POOL_FRAMES frames took (a chunk at least): a steady stream reuses
-   them, a copy of the same big size every frame takes its buffer back, and a burst's go a few frames after it, where a
-   ring that doubled up to the allocation limit stayed there for 300 frames */
+   request bigger than a chunk gets a big buffer of its own, of the chunk size doubled until it fits (its size class).
+   A ring hands out of any buffer of its pool that holds a chunk, a big one too, and a big request takes the smallest
+   that fits. A slot's buffers go back to the pool once its work is done (frame_recycle), and the pool keeps as many
+   bytes of a ring as the most any of the last VK_POOL_FRAMES frames took (a chunk at least): a steady stream reuses
+   them, and a burst's go a few frames after it, where a ring that doubled up to the allocation limit stayed there for
+   300 frames */
 typedef struct {
     VkBuffer buf; /* VK_NULL_HANDLE: an entry no buffer holds */
     VmaAllocation mem;
     u8* ptr;    /* where the CPU maps it, NULL in device memory */
-    u64 size;   /* the chunk size it was made at (chunk_size), or a big buffer's size class (big_size) */
+    u64 size;   /* the chunk size it was made at (chunk_size), or a big request's size class (big_size) */
     u64 freed;  /* the frame it went back to the pool at */
     u32 ring;   /* the ring it serves: an XRING_ index */
     u32 in;     /* where its memory is: an XFER_ index */
     u32 slot;   /* the frame slot it is handed out to, plus one; 0 while in the pool */
     u32 flush;  /* written by the CPU and not flushed since (flushed at the next submit) */
-    u32 big;    /* a buffer for a request bigger than a chunk */
     u32 bar;    /* made for the output ring's share of the window (bar_room) and in device memory the CPU maps: on a
                    GPU that shares system memory every buffer is in such memory, asked for there or not */
 } Chunk;
@@ -103,10 +103,10 @@ static struct {
     Chunk* chunk;
     u32 nchunk, capchunk;
     u32 unflushed;                         /* chunks with flush set */
-    u32 took[VK_POOL_FRAMES][FRAME_RINGS][2]; /* chunks ([0]) and big buffers the last frames took, by ring: [itook]
-                                                 the one being recorded */
+    u64 took[VK_POOL_FRAMES][FRAME_RINGS]; /* bytes of buffers the last frames took, by ring: [itook] the one being
+                                              recorded */
     u32 itook;
-    u64 made; /* chunks and big buffers made since the start (statistics, tests) */
+    u64 made; /* buffers made since the start (statistics, tests) */
 } g_cmd;
 
 static Frame g_fr[VK_FRAMES];
@@ -457,20 +457,18 @@ static u64 big_size(u64 size) {
     while (s < size) s *= 2;
     return s < g_vk.alloc_cap ? s : g_vk.alloc_cap;
 }
-/* A chunk of size bytes for ring, or a big buffer of that size class or more (big), handed out to slot (a frame slot
-   plus one): the one of the pool given back last that suits, of big buffers the smallest, else a new one. Memory the
-   CPU wrote before takes its writes several times faster than a new buffer's: an 8192x8192 texture's copy engine
-   upload took 43 ms in a new 32 MiB buffer, 28 ms in a 256 MiB ring written before. bar: the output ring's first
-   BAR_RING_MAX of a frame, in device memory the CPU maps when it has room (bar_room): one there, or a new one there,
-   else one in host memory, which a new one there replaces only below the room a ring coming back from host memory
-   needs. 0 when none could be made */
-static u32 chunk_take(u32 ring, u64 size, int big, int bar, u32 slot) {
+/* A buffer of size bytes or more for ring, handed out to slot (a frame slot plus one): the smallest of the pool that
+   holds it, the one given back last of those, else a new one of size bytes. Memory the CPU wrote before takes its
+   writes several times faster than a new buffer's: an 8192x8192 texture's copy engine upload took 43 ms in a new 32
+   MiB buffer, 28 ms in a 256 MiB ring written before. bar: the output ring's first BAR_RING_MAX of a frame, in device
+   memory the CPU maps when it has room (bar_room): one there, or a new one there, else one in host memory, which a
+   new one there replaces only below the room a ring coming back from host memory needs. 0 when none could be made */
+static u32 chunk_take(u32 ring, u64 size, int bar, u32 slot) {
     u32 here = 0, other = 0; /* the chunks of the pool in the memory wanted, and in the other memory */
     for (u32 i = 0; i < g_cmd.nchunk; i++) {
         const Chunk* c = &g_cmd.chunk[i];
         u32* pick;
-        if (!c->buf || c->slot || c->ring != ring || (int)c->big != big || (big ? c->size < size : c->size != size))
-            continue;
+        if (!c->buf || c->slot || c->ring != ring || c->size < size) continue;
         pick = (int)c->bar == bar ? &here : &other;
         if (!*pick || c->size < g_cmd.chunk[*pick - 1].size ||
             (c->size == g_cmd.chunk[*pick - 1].size && c->freed >= g_cmd.chunk[*pick - 1].freed))
@@ -484,53 +482,50 @@ static u32 chunk_take(u32 ring, u64 size, int big, int bar, u32 slot) {
             bar = 0;
         }
     }
-    if (!here) {
-        if ((here = chunk_new(ring, size, bar, slot))) g_cmd.chunk[here - 1].big = (u32)big;
-        return here;
-    }
+    if (!here) return chunk_new(ring, size, bar, slot);
     g_cmd.chunk[here - 1].slot = slot;
     return here;
 }
-/* The slot's chunks and big buffers back to the pool, once its work is done; the pool then keeps no more of a ring's
-   chunks, and of its big buffers, than the most a frame of the last VK_POOL_FRAMES took (a chunk at least, as a ring
-   kept its smallest size), the longest unused going first. A chunk of the window whose heap has no room for it anymore
-   goes too: the next frame that wants one there makes it again where chunk_take finds room */
+/* The slot's buffers back to the pool, once its work is done; the pool then keeps no more bytes of a ring than the
+   most a frame of the last VK_POOL_FRAMES took (a chunk at least, as a ring kept its smallest size), the biggest
+   going first, the longest unused of those. A chunk of the window whose heap has no room for it anymore goes too: the
+   next frame that wants one there makes it again where chunk_take finds room */
 static void pool_recycle(Frame* f) {
-    u32 slot = (u32)(f - g_fr) + 1, keep[FRAME_RINGS][2], pooled[FRAME_RINGS][2] = {{0}};
-    u64 size = chunk_size();
+    u32 slot = (u32)(f - g_fr) + 1;
+    u64 size = chunk_size(), keep[FRAME_RINGS], pooled[FRAME_RINGS] = {0};
     VmaBudget budget[VK_MAX_MEMORY_HEAPS];
     vmaGetHeapBudgets(g_vk.vma, budget);
-    for (u32 r = 0; r < FRAME_RINGS; r++)
-        for (u32 big = 0; big < 2; big++) {
-            keep[r][big] = !big;
-            for (u32 k = 0; k < VK_POOL_FRAMES; k++)
-                if (g_cmd.took[k][r][big] > keep[r][big]) keep[r][big] = g_cmd.took[k][r][big];
-        }
+    for (u32 r = 0; r < FRAME_RINGS; r++) {
+        keep[r] = size;
+        for (u32 k = 0; k < VK_POOL_FRAMES; k++)
+            if (g_cmd.took[k][r] > keep[r]) keep[r] = g_cmd.took[k][r];
+    }
     g_cmd.itook = (g_cmd.itook + 1) % VK_POOL_FRAMES;
     memset(g_cmd.took[g_cmd.itook], 0, sizeof g_cmd.took[g_cmd.itook]);
     for (u32 i = 0; i < g_cmd.nchunk; i++) {
         Chunk* c = &g_cmd.chunk[i];
         if (!c->buf || (c->slot && c->slot != slot)) continue;
-        if ((!c->big && c->size != size) || (c->bar && !bar_room(budget, 0, 0)))
+        if (c->size < size || (c->bar && !bar_room(budget, 0, 0)))
             chunk_destroy(c);
         else {
             if (c->slot) c->freed = g_frame_id;
             c->slot = 0;
-            pooled[c->ring][c->big]++;
+            pooled[c->ring] += c->size;
         }
     }
     for (u32 r = 0; r < FRAME_RINGS; r++)
-        for (u32 big = 0; big < 2; big++)
-            for (; pooled[r][big] > keep[r][big]; pooled[r][big]--) {
-                u32 oldest = 0;
-                for (u32 i = 0; i < g_cmd.nchunk; i++) {
-                    const Chunk* c = &g_cmd.chunk[i];
-                    if (c->buf && !c->slot && c->ring == r && c->big == big &&
-                        (!oldest || c->freed < g_cmd.chunk[oldest - 1].freed))
-                        oldest = i + 1;
-                }
-                chunk_destroy(&g_cmd.chunk[oldest - 1]);
+        while (pooled[r] > keep[r]) {
+            u32 drop = 0;
+            for (u32 i = 0; i < g_cmd.nchunk; i++) {
+                const Chunk* c = &g_cmd.chunk[i];
+                const Chunk* d = drop ? &g_cmd.chunk[drop - 1] : NULL;
+                if (c->buf && !c->slot && c->ring == r &&
+                    (!d || c->size > d->size || (c->size == d->size && c->freed < d->freed)))
+                    drop = i + 1;
             }
+            pooled[r] -= g_cmd.chunk[drop - 1].size;
+            chunk_destroy(&g_cmd.chunk[drop - 1]);
+        }
     memset(f->ring, 0, sizeof f->ring);
     f->filled = 0;
 }
@@ -546,10 +541,10 @@ static const Chunk* ring_take(Frame* f, u32 ring, u64 size, u64 align, VkBuffer*
     if (align < 16) align = 16;
     if (size > g_vk.alloc_cap) return NULL; /* no allocation is bigger (memory.c) */
     if (size > chunk_size()) {              /* in host memory, past the window's share (BAR_RING_MAX) */
-        u32 big = chunk_take(ring, big_size(size), 1, 0, slot);
+        u32 big = chunk_take(ring, big_size(size), 0, slot);
         if (!big) return NULL;
-        g_cmd.took[g_cmd.itook][ring][1]++;
         c = &g_cmd.chunk[big - 1];
+        g_cmd.took[g_cmd.itook][ring] += c->size;
         chunk_written(c);
         f->filled += c->size;
         at = 0;
@@ -561,11 +556,11 @@ static const Chunk* ring_take(Frame* f, u32 ring, u64 size, u64 align, VkBuffer*
                 f->filled += g_cmd.chunk[r->cur - 1].size;
             }
             r->used = 0;
-            r->cur = chunk_take(ring, chunk_size(), 0,
-                                ring == XRING_OUTPUT && (r->n + 1) * chunk_size() <= BAR_RING_MAX, slot);
+            r->cur =
+                chunk_take(ring, chunk_size(), ring == XRING_OUTPUT && (r->n + 1) * chunk_size() <= BAR_RING_MAX, slot);
             if (!r->cur) return NULL;
             r->n++;
-            g_cmd.took[g_cmd.itook][ring][0]++;
+            g_cmd.took[g_cmd.itook][ring] += g_cmd.chunk[r->cur - 1].size;
             at = 0;
         }
         c = &g_cmd.chunk[r->cur - 1];
