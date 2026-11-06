@@ -2034,6 +2034,22 @@ void nvn_CommandBufferDrawElementsInstanced(CPU* c, u64 cb, i32 prim, i32 type, 
 void nvn_CommandBufferDrawElementsBaseVertex(CPU* c, u64 cb, i32 prim, i32 type, i32 count, u64 ib, i32 base_vertex) {
     draw_idx(c, cb, prim, type, count, ib, base_vertex, 0, 1, 48);
 }
+/* No ray tracing yet: what a game records of its acceleration structures does nothing */
+void nvn_CommandBufferBindAccelerationStructure(CPU* c, u64 cb) {
+    (void)c;
+    (void)cb;
+    LOG_LIMIT(1, "nvn: an acceleration structure bound: no ray tracing yet\n");
+}
+void nvn_CommandBufferBuildAccelerationStructures(CPU* c, u64 cb) {
+    (void)c;
+    (void)cb;
+    LOG_LIMIT(1, "nvn: acceleration structures built: no ray tracing yet\n");
+}
+void nvn_CommandBufferCompactAccelerationStructure(CPU* c, u64 cb) {
+    (void)c;
+    (void)cb;
+    LOG_LIMIT(1, "nvn: an acceleration structure compacted: no ray tracing yet\n");
+}
 /* caller: the game's call site, which names the dispatcher */
 void nvn_CommandBufferDispatchCompute(CPU* c, u64 cb, i32 x, i32 y, i32 z) {
     u64 caller = nvn_caller(c);

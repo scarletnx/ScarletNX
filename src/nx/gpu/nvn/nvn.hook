@@ -52,6 +52,8 @@ hook nvnDeviceGetTimestampInNanoseconds(const NVNdevice* d, const NVNcounterData
 hook nvnDeviceInitialize(NVNdevice* d, const NVNdeviceBuilder* b) -> bool
 hook nvnDeviceRegisterFastClearColor(NVNdevice* d, const f32* color, NVNformat format) -> bool
 hook nvnDeviceRegisterFastClearDepth(NVNdevice* d, f32 depth) -> bool
+hook nvnDeviceRegisterFastClearStencil(NVNdevice* d, i32 stencil) -> bool
+hook nvnDeviceCalculateAccelerationStructureMemoryRequirements(NVNdevice* d, const void* info, u64* size, u64* scratch, u64* update_scratch)
 hook nvnDeviceSetDepthMode(NVNdevice* d, NVNdepthMode mode)
 hook nvnDeviceSetWindowOriginMode(NVNdevice* d, NVNwindowOriginMode mode)
 # the Ounce's device command buffers and device messages (API 231)
@@ -75,6 +77,7 @@ hook nvnMemoryPoolBuilderSetDefaults(NVNmemoryPoolBuilder* b)
 hook nvnMemoryPoolBuilderSetDevice(NVNmemoryPoolBuilder* b, NVNdevice* d)
 hook nvnMemoryPoolBuilderSetFlags(NVNmemoryPoolBuilder* b, i32 flags)
 hook nvnMemoryPoolBuilderSetStorage(NVNmemoryPoolBuilder* b, void* memory, usize size)
+hook nvnMemoryPoolBuilderSetNativeHandleNVX(NVNmemoryPoolBuilder* b, i32 handle)
 hook nvnMemoryPoolFinalize(NVNmemoryPool* p)
 hook nvnMemoryPoolFlushMappedRange(const NVNmemoryPool* p, isize offset, usize size)
 hook nvnMemoryPoolGetBufferAddress(const NVNmemoryPool* p) -> u64
@@ -257,6 +260,8 @@ hook nvnSamplerSetDebugLabel(NVNsampler* s, const char* label)
 
 family program
 hook nvnProgramGetSubtileSize(const NVNprogram* p) -> i32
+hook nvnProgramGetScratchBytesPerWarp(const NVNprogram* p) -> u64
+hook nvnProgramGetShaderGroupHandle(const NVNprogram* p)
 hook nvnProgramSetSampleShading(NVNprogram* p, i32 mode)
 hook nvnProgramSetSubroutineLinkage(NVNprogram* p, i32 n, const NVNsubroutineLinkageMapPtr* maps) -> bool
 hook nvnProgramFinalize(NVNprogram* p)
@@ -486,6 +491,9 @@ hook nvnCommandBufferCopyTextureToBuffer(NVNcommandBuffer* cb, const NVNtexture*
 hook nvnCommandBufferCopyTextureToTexture(NVNcommandBuffer* cb, const NVNtexture* s, const NVNtextureView* sv, const NVNcopyRegion* sr, const NVNtexture* d, const NVNtextureView* dv, const NVNcopyRegion* dr, i32 flags)
 hook nvnCommandBufferDiscardColor(NVNcommandBuffer* cb, i32 index)
 hook nvnCommandBufferDiscardDepthStencil(NVNcommandBuffer* cb)
+hook nvnCommandBufferBindAccelerationStructure(NVNcommandBuffer* cb)
+hook nvnCommandBufferBuildAccelerationStructures(NVNcommandBuffer* cb)
+hook nvnCommandBufferCompactAccelerationStructure(NVNcommandBuffer* cb)
 hook nvnCommandBufferDispatchCompute(NVNcommandBuffer* cb, i32 x, i32 y, i32 z)
 hook nvnCommandBufferDispatchComputeIndirect(NVNcommandBuffer* cb, u64 ind)
 hook nvnCommandBufferDownsample(NVNcommandBuffer* cb, const NVNtexture* s, const NVNtexture* d)
