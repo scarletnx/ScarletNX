@@ -2187,6 +2187,386 @@ static int check_resident_volume(void) {
          "tiles are mapped and unmapped");
     return 0;
 }
+
+/* The sparse binds' calls on the queue and the host's waits for the GPU (fences and timeline semaphores, with a
+   timeout), counted on every thread through the device's entry points (volk's). And what the Vulkan spec asks of a
+   bind ("Binding Resource Memory": binds are not ordered with command buffers, even on one queue), as the last two
+   binds and the graphics submission after the last show it: what each waits for on the graphics timeline and on the
+   binds' own, what it signals, and whether that submission waits for it. Some drivers order binds with the work
+   around them anyway (RADV's queue takes its batches in order), so a missing wait shows only here there */
+typedef struct {
+    u64 binds, waits, wait_ns;
+} ScCount;
+typedef struct {
+    u64 gfx;         /* its wait on the graphics timeline, 0 none */
+    u64 after;       /* its wait on the semaphore it signals, the binds' own timeline: 0 none */
+    VkSemaphore sem; /* what it signals, VK_NULL_HANDLE none */
+    u64 value;
+    int followed; /* the first graphics submission after it waits for that */
+    int pending;  /* no graphics submission since it */
+} ScBind;
+static struct {
+    PFN_vkQueueBindSparse bind; /* the device's own entry points */
+    PFN_vkQueueSubmit2 submit;
+    PFN_vkWaitForFences fences;
+    PFN_vkWaitSemaphores sems;
+    ScCount n;
+    ScBind last, prev; /* written on the recording thread, read after sc_now */
+} g_sc;
+static VKAPI_ATTR VkResult VKAPI_CALL sc_bind(VkQueue q, u32 n, const VkBindSparseInfo* b, VkFence f) {
+    ScBind x = {.pending = 1};
+    const VkTimelineSemaphoreSubmitInfo* ts = NULL;
+    for (const VkBaseInStructure* c = b[0].pNext; c; c = c->pNext)
+        if (c->sType == VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO) ts = (const void*)c;
+    if (b[0].signalSemaphoreCount) {
+        x.sem = b[0].pSignalSemaphores[0];
+        x.value = ts && ts->signalSemaphoreValueCount ? ts->pSignalSemaphoreValues[0] : 0;
+    }
+    for (u32 i = 0; i < b[0].waitSemaphoreCount; i++) {
+        u64 v = ts && i < ts->waitSemaphoreValueCount ? ts->pWaitSemaphoreValues[i] : 0;
+        if (b[0].pWaitSemaphores[i] == vk_gfx_timeline()) x.gfx = v;
+        if (x.sem && b[0].pWaitSemaphores[i] == x.sem) x.after = v;
+    }
+    g_sc.prev = g_sc.last;
+    g_sc.last = x;
+    __atomic_add_fetch(&g_sc.n.binds, 1, __ATOMIC_RELAXED);
+    return g_sc.bind(q, n, b, f);
+}
+static VKAPI_ATTR VkResult VKAPI_CALL sc_submit(VkQueue q, u32 n, const VkSubmitInfo2* s, VkFence f) {
+    if (q == g_vk.gfx && g_sc.last.pending) {
+        for (u32 k = 0; k < n; k++)
+            for (u32 i = 0; i < s[k].waitSemaphoreInfoCount; i++)
+                if (g_sc.last.sem && s[k].pWaitSemaphoreInfos[i].semaphore == g_sc.last.sem &&
+                    s[k].pWaitSemaphoreInfos[i].value >= g_sc.last.value)
+                    g_sc.last.followed = 1;
+        g_sc.last.pending = 0;
+    }
+    return g_sc.submit(q, n, s, f);
+}
+static void sc_waited(u64 t0, u64 timeout) {
+    if (!timeout) return; /* a look, no wait */
+    __atomic_add_fetch(&g_sc.n.waits, 1, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&g_sc.n.wait_ns, plat_ns() - t0, __ATOMIC_RELAXED);
+}
+static VKAPI_ATTR VkResult VKAPI_CALL sc_fences(VkDevice d, u32 n, const VkFence* f, VkBool32 all, u64 timeout) {
+    u64 t0 = plat_ns();
+    VkResult r = g_sc.fences(d, n, f, all, timeout);
+    sc_waited(t0, timeout);
+    return r;
+}
+static VKAPI_ATTR VkResult VKAPI_CALL sc_sems(VkDevice d, const VkSemaphoreWaitInfo* w, u64 timeout) {
+    u64 t0 = plat_ns();
+    VkResult r = g_sc.sems(d, w, timeout);
+    sc_waited(t0, timeout);
+    return r;
+}
+static ScCount sc_now(void) {
+    vk_rec_sync(); /* the recording thread's calls so far */
+    return (ScCount){__atomic_load_n(&g_sc.n.binds, __ATOMIC_RELAXED), __atomic_load_n(&g_sc.n.waits, __ATOMIC_RELAXED),
+                     __atomic_load_n(&g_sc.n.wait_ns, __ATOMIC_RELAXED)};
+}
+static void sc_install(void) {
+    if (g_sc.bind) return;
+    g_sc.bind = vkQueueBindSparse;
+    g_sc.submit = vkQueueSubmit2;
+    g_sc.fences = vkWaitForFences;
+    g_sc.sems = vkWaitSemaphores;
+    vkQueueBindSparse = sc_bind;
+    vkQueueSubmit2 = sc_submit;
+    vkWaitForFences = sc_fences;
+    vkWaitSemaphores = sc_sems;
+}
+
+/* A gate the test's GPU work waits at: a timeline semaphore the host signals to value. A watchdog thread opens it after
+   400 ms, so a renderer that waits for that work on the host goes on (and the check says how long it waited) */
+typedef struct {
+    VkSemaphore sem;
+    u64 value;
+    int opened, ended;
+} Gate;
+static void gate_open(Gate* g) {
+    VkSemaphoreSignalInfo si = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO, .semaphore = g->sem, .value = g->value};
+    if (!__atomic_exchange_n(&g->opened, 1, __ATOMIC_SEQ_CST)) VK_OK(vkSignalSemaphore(g_vk.dev, &si));
+}
+static void gate_watch(void* arg) {
+    Gate* g = arg;
+    for (int i = 0; i < 40 && !__atomic_load_n(&g->opened, __ATOMIC_SEQ_CST); i++) plat_sleep_ns(10000000);
+    gate_open(g);
+    __atomic_store_n(&g->ended, 1, __ATOMIC_SEQ_CST);
+}
+/* the gate opened, and its watchdog gone */
+static void gate_end(Gate* g) {
+    gate_open(g);
+    while (!__atomic_load_n(&g->ended, __ATOMIC_SEQ_CST)) plat_sleep_ns(1000000);
+}
+static VkSemaphore gate_semaphore(void) {
+    VkSemaphoreTypeCreateInfo tci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                                     .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE};
+    VkSemaphoreCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &tci};
+    VkSemaphore s = VK_NULL_HANDLE;
+    VK_OK(vkCreateSemaphore(g_vk.dev, &sci, NULL, &s));
+    return s;
+}
+
+/* an image of the sparse checks cleared whole to rgba (from its layout from), then left to be read by copies */
+static void sparse_clear(VkImage img, VkImageLayout from, const float rgba[4]) {
+    VkCommandBuffer cb = vk_cmd();
+    VkClearColorValue c;
+    VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    memcpy(c.float32, rgba, sizeof c.float32);
+    vk_barrier(cb, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+               from, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    rec_CmdClearColorImage(cb, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &c, 1, &range);
+    vk_barrier(cb, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+               VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+}
+/* a copy of the texel at (x, 0, 0) of img into buf at at */
+static void sparse_copy(VkBuffer buf, u64 at, VkImage img, u32 x) {
+    VkBufferImageCopy r = {.bufferOffset = at,
+                           .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                           .imageOffset = {(i32)x, 0, 0},
+                           .imageExtent = {1, 1, 1}};
+    rec_CmdCopyImageToBuffer(vk_cmd(), img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &r);
+}
+/* a 3D RGBA8 image two blocks wide with memory only where it is bound, none bound: 0 when the device can't */
+static int sparse_resident_image(VkImage* img, VkExtent3D* g) {
+    const VkImageUsageFlags usage =
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    if (!vk_resident_block(VK_FORMAT_R8G8B8A8_UNORM, usage, g)) return 0;
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .imageType = VK_IMAGE_TYPE_3D,
+                            .format = VK_FORMAT_R8G8B8A8_UNORM,
+                            .extent = {g->width * 2, g->height, g->depth},
+                            .mipLevels = 1,
+                            .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = usage,
+                            .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    return vk_image_create_resident(&ii, g, img);
+}
+static const float SPARSE_RED[4] = {1, 0, 0, 1}, SPARSE_GREEN[4] = {0, 1, 0, 1};
+static const u8 SPARSE_RED8[4] = {255, 0, 0, 255}, SPARSE_GREEN8[4] = {0, 255, 0, 255}, SPARSE_ZERO8[4] = {0};
+
+/* A block of a 3D image with memory only where it is bound, released after a copy that reads it was recorded: the
+   release submits the copy, which waits on the GPU at a gate the test opens later, and returns without waiting for
+   the GPU. The copy reads what the block held, a copy recorded after the release reads zeros, and the block's memory
+   stays allocated until the frame's work is done. Then the block bound again while the work before the bind waits at
+   the gate, and cleared and read at once: the read sees the new memory, as the submission after a bind waits for it */
+static int check_sparse_unbind_in_flight(void) {
+    const u8 both[2] = {1, 1}, second[2] = {0, 1};
+    VkExtent3D g;
+    VkImage img;
+    VkBuffer rb;
+    u64 whole, bytes, sub, done;
+    u8 got[6][4];
+    sc_install();
+    vk_lock();
+    if (!sparse_resident_image(&img, &g)) {
+        vk_unlock();
+        puts(
+            "sparse unbind in flight: the device can't keep a 3D RGBA8 image's memory only where it is bound, skipped");
+        return 0;
+    }
+    CHECK(vk_image_resident(img, both, 2, &whole) && whole);
+    u8* back = vk_readback_buffer(256, &rb);
+    CHECK(back);
+    sparse_clear(img, VK_IMAGE_LAYOUT_UNDEFINED, SPARSE_RED);
+    sparse_copy(rb, 0, img, 0);
+    sparse_copy(rb, 16, img, g.width);
+    Gate gate = {gate_semaphore(), 1, 0, 0};
+    CHECK(gate.sem && !plat_thread(gate_watch, &gate, 1u << 16));
+    vk_submit_after(gate.sem, 1, 2); /* the submission of the copies waits at the gate */
+    /* block 0 released */
+    ScCount c0 = sc_now();
+    u64 held0 = rv_allocated(), deferred0 = vk_deferred_bytes(), t0 = plat_ns();
+    int ok = vk_image_resident(img, second, 2, &bytes);
+    u64 t1 = plat_ns(), held1 = rv_allocated();
+    ScCount c1 = sc_now();
+    const u64 reader = vk_last_submit(); /* the copies' */
+    vk_submit_progress(&sub, &done);
+    const int reading = done < reader;
+    sparse_copy(rb, 32, img, 0);
+    sparse_copy(rb, 48, img, g.width);
+    vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE); /* the bind, then these copies */
+    u64 held2 = rv_allocated(), deferred2 = vk_deferred_bytes();
+    sc_now();
+    const ScBind unbind = g_sc.last;
+    vk_submit_progress(&sub, &done);
+    const int still = done < reader;
+    gate_end(&gate);
+    vk_finish();
+    vk_readback_ready();
+    memcpy(got[0], back, 4);
+    memcpy(got[1], back + 16, 4);
+    memcpy(got[2], back + 32, 4);
+    memcpy(got[3], back + 48, 4);
+    /* both frame slots used again: the released block's memory goes with the frame that waited for its bind */
+    for (int i = 0; i < VK_FRAMES; i++) {
+        vk_frame_next();
+        vk_cmd();
+    }
+    u64 held3 = rv_allocated();
+    vk_unlock();
+    printf("sparse unbind in flight: the release took %.3f ms, %llu host waits, the GPU %s reading; %llu KiB of %llu "
+           "freed at once, %llu KiB deferred, %llu KiB freed once the frames were done\n",
+           (t1 - t0) / 1e6, (unsigned long long)(c1.waits - c0.waits), reading ? "still" : "no longer",
+           (unsigned long long)((i64)(held0 - held1) >> 10), (unsigned long long)(whole >> 10),
+           (unsigned long long)((deferred2 - deferred0) >> 10), (unsigned long long)((held0 - held3) >> 10));
+    CHECK(ok && bytes == whole / 2);
+    CHECK(reading && still && c1.waits == c0.waits && t1 - t0 < 100000000ull);     /* no wait for the GPU */
+    CHECK(held1 == held0 && held2 == held0 && deferred2 - deferred0 == whole / 2); /* nothing freed under the copy */
+    CHECK(held3 + whole / 2 <= held0);                                             /* freed once it is done */
+    CHECK(unbind.gfx >= reader && unbind.followed); /* after the copy, and before the copies after it */
+    CHECK(!memcmp(got[0], SPARSE_RED8, 4) && !memcmp(got[1], SPARSE_RED8, 4));  /* the copy read it bound */
+    CHECK(!memcmp(got[2], SPARSE_ZERO8, 4) && !memcmp(got[3], SPARSE_RED8, 4)); /* and the one after, released */
+
+    /* block 0 bound again while the work before the bind waits at the gate, then cleared and read */
+    gate = (Gate){gate.sem, 3, 0, 0};
+    CHECK(!plat_thread(gate_watch, &gate, 1u << 16));
+    vk_lock();
+    vk_submit_after(gate.sem, 3, 4);
+    vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    const u64 gated = vk_last_submit();
+    c0 = sc_now();
+    t0 = plat_ns();
+    ok = vk_image_resident(img, both, 2, &bytes);
+    t1 = plat_ns();
+    c1 = sc_now();
+    sparse_clear(img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, SPARSE_GREEN);
+    sparse_copy(rb, 64, img, 0);
+    sparse_copy(rb, 80, img, g.width);
+    vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    sc_now();
+    const ScBind rebind = g_sc.last;
+    plat_sleep_ns(20000000); /* the GPU idle at the gate: the bind and the clear after it are what is left */
+    gate_end(&gate);
+    vk_finish();
+    vk_readback_ready();
+    memcpy(got[4], back + 64, 4);
+    memcpy(got[5], back + 80, 4);
+    vk_defer_image(img, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    vk_unlock();
+    vkDestroySemaphore(g_vk.dev, gate.sem, NULL);
+    printf(
+        "sparse unbind in flight, bound again: the bind took %.3f ms, %llu host waits; the read after it %02x%02x%02x%02x "
+        "and %02x%02x%02x%02x\n",
+        (t1 - t0) / 1e6, (unsigned long long)(c1.waits - c0.waits), got[4][0], got[4][1], got[4][2], got[4][3],
+        got[5][0], got[5][1], got[5][2], got[5][3]);
+    CHECK(ok && bytes == whole && c1.waits == c0.waits && t1 - t0 < 100000000ull);
+    CHECK(rebind.gfx >= gated && rebind.followed); /* after the work before it, and before the clear */
+    CHECK(!memcmp(got[4], SPARSE_GREEN8, 4) && !memcmp(got[5], SPARSE_GREEN8, 4));
+    puts("sparse unbind in flight: a block released under a copy still reading it, without a host wait, its memory "
+         "freed after the GPU; a block bound again read at once");
+    return 0;
+}
+
+/* Binds made between two submissions go to the queue in one batch, with no host wait: two images with memory only
+   where it is bound, bound one after the other, read at once */
+static int check_sparse_resident_batched(void) {
+    const u8 both[2] = {1, 1}, second[2] = {0, 1};
+    VkExtent3D g;
+    VkImage a, b;
+    VkBuffer rb;
+    u64 bytes;
+    sc_install();
+    vk_lock();
+    if (!sparse_resident_image(&a, &g)) {
+        vk_unlock();
+        puts("sparse binds batched: the device can't keep a 3D RGBA8 image's memory only where it is bound, skipped");
+        return 0;
+    }
+    CHECK(sparse_resident_image(&b, &g));
+    u8* back = vk_readback_buffer(256, &rb);
+    CHECK(back);
+    vk_finish();
+    ScCount c0 = sc_now();
+    CHECK(vk_image_resident(a, both, 2, &bytes) && vk_image_resident(b, both, 2, &bytes));
+    sparse_clear(a, VK_IMAGE_LAYOUT_UNDEFINED, SPARSE_RED);
+    sparse_clear(b, VK_IMAGE_LAYOUT_UNDEFINED, SPARSE_GREEN);
+    sparse_copy(rb, 0, a, g.width);
+    sparse_copy(rb, 16, b, g.width);
+    ScCount c1 = sc_now();
+    vk_finish();
+    ScCount c2 = sc_now();
+    vk_readback_ready();
+    int right = !memcmp(back, SPARSE_RED8, 4) && !memcmp(back + 16, SPARSE_GREEN8, 4);
+    /* a block of one image released and bound again with no submission between: a batch binds a block once, so
+       these are two batches, the second after the first, and the read after them sees the second */
+    ScCount c3 = sc_now();
+    CHECK(vk_image_resident(a, second, 2, &bytes) && vk_image_resident(a, both, 2, &bytes));
+    sparse_clear(a, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, SPARSE_GREEN);
+    sparse_copy(rb, 32, a, 0);
+    vk_finish();
+    ScCount c4 = sc_now();
+    const ScBind first = g_sc.prev, then = g_sc.last;
+    vk_readback_ready();
+    int again = !memcmp(back + 32, SPARSE_GREEN8, 4);
+    vk_defer_image(a, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    vk_defer_image(b, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    vk_unlock();
+    printf("sparse binds batched: 2 images bound one after the other, %llu queue binds, %llu host waits before the "
+           "frame's end; a block released and bound again, %llu queue binds, the second after the first: %s\n",
+           (unsigned long long)(c2.binds - c0.binds), (unsigned long long)(c1.waits - c0.waits),
+           (unsigned long long)(c4.binds - c3.binds), first.value && then.after == first.value ? "yes" : "no");
+    CHECK(right && c2.binds - c0.binds == 1 && c1.waits == c0.waits);
+    CHECK(again && c4.binds - c3.binds == 2 && first.value && then.after == first.value && then.followed);
+    return 0;
+}
+/* The same for three images in pieces made in one frame, each cleared and read whole */
+static int check_sparse_pieces_batched(void) {
+    VkImage pieces[3];
+    VmaAllocation none[3];
+    VkBuffer rb;
+    if (!g_vk.sparse) {
+        puts("sparse binds batched: no sparse binding, images in pieces skipped");
+        return 0;
+    }
+    sc_install();
+    vk_lock();
+    /* RGBA8 256x256, 256 KiB: four pieces of 64 KiB each */
+    const u64 size = 256 * 256 * 4, saved_cap = g_vk.alloc_cap;
+    u8* back = vk_readback_buffer(3 * size, &rb); /* before the cap, which a readback buffer keeps within */
+    CHECK(back);
+    vk_finish();
+    ScCount c0 = sc_now();
+    g_vk.alloc_cap = 64u << 10;
+    for (u32 i = 0; i < 3; i++) {
+        VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                .imageType = VK_IMAGE_TYPE_2D,
+                                .format = VK_FORMAT_R8G8B8A8_UNORM,
+                                .extent = {256, 256, 1},
+                                .mipLevels = 1,
+                                .arrayLayers = 1,
+                                .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+        CHECK(vk_image_create(&ii, &pieces[i], &none[i]) && !none[i]);
+        sparse_clear(pieces[i], VK_IMAGE_LAYOUT_UNDEFINED, i == 1 ? SPARSE_GREEN : SPARSE_RED);
+        VkBufferImageCopy r = {.bufferOffset = i * size,
+                               .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                               .imageExtent = {256, 256, 1}};
+        rec_CmdCopyImageToBuffer(vk_cmd(), pieces[i], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rb, 1, &r);
+    }
+    g_vk.alloc_cap = saved_cap;
+    ScCount c1 = sc_now();
+    vk_finish();
+    ScCount c2 = sc_now();
+    vk_readback_ready();
+    u32 wrong = 0;
+    for (u64 at = 0; at < 3 * size; at += 4)
+        wrong += !!memcmp(back + at, at / size == 1 ? SPARSE_GREEN8 : SPARSE_RED8, 4);
+    for (u32 i = 0; i < 3; i++) vk_defer_image(pieces[i], VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    vk_unlock();
+    printf("sparse binds batched: 3 images of 4 pieces made in one frame, %llu queue binds, %llu host waits before the "
+           "frame's end, %u texels not their color\n",
+           (unsigned long long)(c2.binds - c0.binds), (unsigned long long)(c1.waits - c0.waits), wrong);
+    CHECK(!wrong && c2.binds - c0.binds == 1 && c1.waits == c0.waits);
+    puts("sparse binds batched: the binds made between two submissions go in one batch, without a host wait");
+    return 0;
+}
 static int check_dma(void) {
     GpuDmaOp o;
     gmmu_map(DMA_GA, DMA_A, DMA_SPAN);
@@ -3192,6 +3572,9 @@ int main(int argc, char** argv) {
     CHECK(!check_sparse_tiles());
     CHECK(!check_sparse_copy());
     CHECK(!check_resident_volume());
+    CHECK(!check_sparse_unbind_in_flight());
+    CHECK(!check_sparse_resident_batched());
+    CHECK(!check_sparse_pieces_batched());
     CHECK(!check_dma_untracked_source());
     CHECK(!check_blit());
     CHECK(!check_take_after_writes());

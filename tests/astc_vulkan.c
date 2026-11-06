@@ -29,9 +29,7 @@ VkState g_vk;
 VkSemaphore g_vk_csem;
 u64 g_vk_cs_wait_value;
 static unsigned errors;
-/* compute.c isn't here: no compute batches for memory.c's binds to wait for */
-void vk_compute_progress(u64* submitted, u64* done) { *submitted = *done = 0; }
-/* nor uma.c: no guest memory read in place for cmd.c's draws to settle */
+/* uma.c isn't here: no guest memory read in place for cmd.c's draws to settle */
 void vk_uma_settle(u64 ended) { (void)ended; }
 
 /* Only the window/game and guest pipeline services are stubbed. cmd.c and

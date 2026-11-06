@@ -201,12 +201,15 @@ void vk_image_destroy(VkImage img, VmaAllocation mem);
    texels of the blocks the device binds 3D images of format f in, 0 when it can't. vk_image_create_resident: such an
    image of one level and one layer, in those blocks (block, which it is refused without), with none bound; destroyed
    with vk_image_destroy. vk_image_resident binds memory to its blocks whose want[] is set and releases it from the
-   others (n: all of them, x first, then y, then z), after the work recorded before, which it submits; *bytes gets the
-   memory bound. 0 when memory ran out or the bind failed: the blocks that got memory are bound, the others as they
-   were */
+   others (n: all of them, x first, then y, then z), after the work recorded before, which it submits; the commands
+   recorded after it see the new bindings, and the memory released goes once the GPU is done with it. *bytes gets the
+   memory bound. 0 when memory ran out: the blocks that got memory are bound, the others as they were */
 int vk_resident_block(VkFormat f, VkImageUsageFlags usage, VkExtent3D* block);
 int vk_image_create_resident(const VkImageCreateInfo* ii, const VkExtent3D* block, VkImage* img);
 int vk_image_resident(VkImage img, const u8* want, u32 n, u64* bytes);
+/* the sparse binds made since the last submission, to the graphics queue in one batch before it (cmd.c's submit). 1
+   when the submission has to wait for one, which *wait then holds */
+int vk_sparse_flush(VkSemaphoreSubmitInfo* wait);
 /* Tracy memory events for VMA allocations. */
 #if defined(SNX_TRACY)
 void vk_mem_track(VmaAllocation a);
@@ -311,6 +314,9 @@ void vk_stage_report(void);
    Either semaphore may be VK_NULL_HANDLE */
 void vk_submit(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore signal);
 void vk_submit_for_readback(void);
+/* the commands recorded since the last submission submitted, when a command buffer is begun: what a change of an
+   image's sparse binding has to follow (memory.c) */
+void vk_submit_recorded(void);
 /* the next submission waits for a timeline semaphore of someone else's (FFmpeg's picture's) at one value and signals
    it at another: whichever submit comes next takes them, so commands recorded from now on never run before the wait */
 void vk_submit_after(VkSemaphore sem, u64 wait, u64 signal);
@@ -414,10 +420,13 @@ void vk_rec_sync(void);       /* until everything queued is recorded and submitt
    once (vk_rec_sync), so fn would run after it: the caller is another thread */
 void vk_rec_run(void (*fn)(void*), void* arg);
 void vk_rec_queue(VkQueue q); /* before submitting to or presenting on q outside the ring (vk_lock) */
+/* fn with a copy of size bytes of arg (a quarter of the ring at most), on the recording thread in order with the
+   commands, submissions and presents queued around it (vk_lock); at once without that thread */
+void vk_rec_call(void (*fn)(const void* arg), const void* arg, u64 size);
 /* Around every call on the graphics or the compute queue: a submit, a sparse bind, a present, a device wait. Vulkan
    requires a queue's calls to be externally synchronized, and they come from more than one thread: the recording
-   thread submits and presents the frames (record.c) without vk_lock, which the GPU thread holds while it binds an
-   image's pieces (memory.c) or submits compute. A leaf lock: taken with vk_lock held or not, never the other way */
+   thread submits and presents the frames and binds sparse memory (record.c, memory.c) without vk_lock, which the GPU
+   thread holds while it submits compute. A leaf lock: taken with vk_lock held or not, never the other way */
 void vk_queue_lock(VkQueue q);
 void vk_queue_unlock(VkQueue q);
 /* presents image idx of sc once wait is signaled, in order after the submissions queued before it (vk_lock). The
