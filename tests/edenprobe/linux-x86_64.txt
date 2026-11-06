@@ -279,6 +279,16 @@ reference: sqdmlal, sqdmlsl and sqdmull lanes worked out by hand
 reference: sqrshl and uqrshl lanes worked out by hand
 reference: sqrshrn, uqrshrn and sqrshrun scalars worked out by hand
 reference: sqshlu's lanes and saturation the cpu suite uses
+reference: tex8k's ASTC texels are the picture's, from the block their tile shifts in
+reference: tex8k's ASTC tiles and frames take other blocks of the picture
+reference: tex8k's BC1 blocks are one colour, the bytes and texels Pillow decodes
+reference: tex8k's BC1 takes either way a five or six bit code becomes eight
+reference: tex8k's BC7 bound a region is the worst texel measured there
+reference: tex8k's BC7 mode 6 blocks are the bytes and texels Pillow decodes
+reference: tex8k's RGBA8 texels are their place and salt, filled a word at a time
+reference: tex8k's percentile is numpy's and its distance the worst channel's
+reference: tex8k's raw copies into the BC7 texture cover the blocks its judge expects
+reference: tex8k's regions, levels, samples and copy-out sit where its judge says
 reference: the 11-bit value 2047 is 255 either way
 reference: the 16-bit texel 0x7f80 is 127 either way to eight bits
 reference: the 16-bit texel 0x8000 is 128 either way to eight bits
@@ -451,6 +461,7 @@ support: a case known to hang is skipped until hang asks, and retry does not run
 support: a case name becomes the file name it reads like
 support: a case named after another's expected picture does not land on it
 support: a case on the crash list is skipped as crashed until retry asks for it
+support: a case reads the work it has done so far, outside the timed passes too
 support: a case that ended this run is skipped even under retry
 support: a case that ended without starting, or started over another, is counted
 support: a case that put nothing on the graphics unit reports no time
