@@ -857,16 +857,11 @@ static void flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pi
         }
     }
 }
-/* part of s's pixels into buf at at as flush_bytes says: tightly packed rows, or the guest's block linear layout, the
-   image copied into the scratch buffer and swizzled from there into buf, a layer at layer_size from the last (a band
-   of rows: its rows of blocks, from the first, vk_bl_range). 0 when that can't be done (said) */
-static int flush_record(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, const FlushPart* part) {
-    u32 row = guest_w(s) * s->f.bpp;
-    if (!s->bl) {
-        flush_copy(cb, s, buf, at, row, part);
-        return 1;
-    }
-    u32 pitch = (row + 15) & ~15u, moves = surf_volume(s) ? 1 : part->layers;
+/* part of a block linear target's pixels into buf at at in the guest's layout: the image copied into the scratch
+   buffer and swizzled from there into buf, a layer at layer_size from the last (a band of rows: its rows of blocks,
+   from the first, vk_bl_range). 0 when that can't be done (said) */
+static int flush_swizzle(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, const FlushPart* part) {
+    u32 pitch = (guest_w(s) * s->f.bpp + 15) & ~15u, moves = surf_volume(s) ? 1 : part->layers;
     u64 cap, need = (u64)pitch * part->rows * (surf_volume(s) ? surf_slices(s) : part->layers);
     VkBlMove m = rt_bl_move(s, pitch);
     m.y0 = part->y;
@@ -882,6 +877,38 @@ static int flush_record(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, const
     for (u32 i = 0; i < moves; i++)
         if (!vk_bl_move(cb, &m, 1, buf, at + (u64)i * s->layer_size, scratch, (u64)i * pitch * part->rows)) return 0;
     vk_bl_barrier(cb, 0);
+    return 1;
+}
+/* part of s's pixels into buf at at as flush_bytes says: tightly packed rows, or the guest's block linear layout
+   (flush_swizzle). Rows that need more than VK_PART_SHARE of the cap in scratch go a layer's band at a time, as the
+   scratch buffer stays as big as the most asked of it: whole rows of blocks, each band's bytes where the part's layout
+   has them, the next band's copy into the scratch buffer after the moves out of it (vk_bl_barrier). A volume and a
+   packed depth layer go whole, as flush_parts takes them, and a scaled target too: each band would blit its layer */
+static int flush_record(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, const FlushPart* part) {
+    u32 row = guest_w(s) * s->f.bpp, pitch = (row + 15) & ~15u;
+    u64 limit = g_vk.alloc_cap / VK_PART_SHARE, first, lo, hi;
+    if (!s->bl) {
+        flush_copy(cb, s, buf, at, row, part);
+        return 1;
+    }
+    if ((u64)pitch * part->rows * part->layers <= limit || surf_volume(s) || depth_packs(s) ||
+        (!s->msaa && (s->sw != s->w || s->sh != s->h)))
+        return flush_swizzle(cb, s, buf, at, part);
+    u32 band = 8u << bl_height(guest_h(s), s->bh), rows = (u32)(limit / pitch) / band * band,
+        end = part->y + part->rows;
+    VkBlMove m = rt_bl_move(s, pitch);
+    if (!rows) rows = band;
+    m.y0 = part->y;
+    m.rows = part->rows;
+    vk_bl_range(&m, &first, &hi); /* the part's bytes in buf start at its first row of blocks */
+    for (u32 i = 0; i < part->layers; i++)
+        for (u32 y = part->y; y < end; y += rows) {
+            FlushPart b = {part->layer + i, 1, y, end - y < rows ? end - y : rows};
+            m.y0 = y;
+            m.rows = b.rows;
+            vk_bl_range(&m, &lo, &hi);
+            if (!flush_swizzle(cb, s, buf, at + (u64)i * s->layer_size + (lo - first), &b)) return 0;
+        }
     return 1;
 }
 /* the copies recorded so far done, and their bytes readable by the host */
