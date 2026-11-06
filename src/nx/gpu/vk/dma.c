@@ -283,11 +283,28 @@ static int dma(const GpuDmaOp* o, const DmaNeeds* need, u64 snap_skip) {
     return ok;
 }
 
-/* A copy too big for one allocation (g_vk.alloc_cap) goes in bands of lines, each a copy of its own whose needs fit
-   VK_PART_SHARE of the cap. A block linear destination's bands end on its rows of blocks (8 << bh rows), so each
-   block is read and written back by one band */
-static int fits(const DmaNeeds* n, u64 limit) { return n->sspan <= limit && n->dlen <= limit && n->scratch <= limit; }
-/* lines [y, y + lines) of o as a copy of their own: a pitch linear side's start y lines on, a block linear one's
+u32 vk_band(const VkBands* b, u32 y, u32 left, u64* most) {
+    u64 limit = b->cap / VK_PART_SHARE, m = b->need(b->user, y, left);
+    u32 n = left, row = b->base + y;
+    if (!y && m <= b->cap) { /* in one piece */
+        *most = m;
+        return n;
+    }
+    while (m > limit) { /* half as many, the band's end on a unit */
+        u32 end = row + n / 2;
+        end -= end % b->unit;
+        if (end <= row) end = row - row % b->unit + b->unit;
+        if (end - row >= n) break; /* a unit is the least a band takes */
+        n = end - row;
+        m = b->need(b->user, y, n);
+    }
+    *most = m;
+    return n;
+}
+
+/* A copy too big for one allocation goes in bands of lines (vk_band), each a copy of its own. A block linear
+   destination's bands end on its rows of blocks (8 << bh rows), so each block is read and written back by one band.
+   Lines [y, y + lines) of o as a copy of their own: a pitch linear side's start y lines on, a block linear one's
    origin y rows down */
 static GpuDmaOp dma_band(const GpuDmaOp* o, u32 y, u32 lines) {
     GpuDmaOp b = *o;
@@ -303,29 +320,25 @@ static GpuDmaOp dma_band(const GpuDmaOp* o, u32 y, u32 lines) {
     if (o->snap) b.snap = o->snap + (u64)y * o->src.pitch;
     return b;
 }
+static u64 most_of(const DmaNeeds* n) {
+    u64 m = n->sspan > n->dlen ? n->sspan : n->dlen;
+    return m > n->scratch ? m : n->scratch;
+}
+static u64 dma_need(const void* user, u32 y, u32 lines) {
+    GpuDmaOp b = dma_band((const GpuDmaOp*)user, y, lines);
+    DmaNeeds n = dma_needs(&b);
+    return most_of(&n);
+}
 static int dma_bands(const GpuDmaOp* o) {
-    DmaNeeds n = dma_needs(o);
-    if (fits(&n, g_vk.alloc_cap)) return dma(o, &n, 0);
-    u64 limit = g_vk.alloc_cap / VK_PART_SHARE;
-    u32 unit = o->dst.bl ? 8u << o->dst.bh : 1, base = o->dst.bl ? o->dst.oy : 0, lines;
-    for (u32 y = 0; y < o->lines; y += lines) {
-        u32 row = base + y;
-        GpuDmaOp b = dma_band(o, y, lines = o->lines - y);
-        n = dma_needs(&b);
-        while (!fits(&n, limit)) { /* half as many, the band's end on a row of blocks */
-            u32 end = row + lines / 2;
-            end -= end % unit;
-            if (end <= row) end = row - row % unit + unit;
-            if (end - row >= lines) break; /* a row of blocks is the least a band takes */
-            b = dma_band(o, y, lines = end - row);
-            n = dma_needs(&b);
-        }
-        if (!fits(&n, g_vk.alloc_cap)) {
-            u64 most = n.sspan > n.dlen ? n.sspan : n.dlen;
-            return dma_fail(&b, "needs more than an allocation may be:", most > n.scratch ? most : n.scratch);
-        }
+    VkBands bands = {g_vk.alloc_cap, o->dst.bl ? 8u << o->dst.bh : 1, o->dst.bl ? o->dst.oy : 0, dma_need, o};
+    for (u32 y = 0, lines; y < o->lines; y += lines) {
+        u64 most = 0;
+        lines = vk_band(&bands, y, o->lines - y, &most);
+        GpuDmaOp b = dma_band(o, y, lines);
+        if (most > bands.cap) return dma_fail(&b, "needs more than an allocation may be:", most);
+        DmaNeeds n = dma_needs(&b);
         if (!dma(&b, &n, o->fill || o->src.bl ? 0 : (u64)y * o->src.pitch)) return 0;
-        g_dma.bands++;
+        if (lines < o->lines) g_dma.bands++;
     }
     return 1;
 }

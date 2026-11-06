@@ -2429,6 +2429,26 @@ static int check_blit(void) {
     return 0;
 }
 
+/* Blits bigger than one allocation (g_vk.alloc_cap, lowered to 64 KiB here) go in bands of the rectangle's rows,
+   each reading the source rows its rows sample, against the CPU reference: block linear scaled down into block
+   linear, bands of 16 rows sampling the source's rows of blocks of 32 anywhere in them; pitch linear scaled up into
+   pitch linear; RGBA32F pitch linear into RGBA16F block linear from a row inside a row of blocks, a row of blocks
+   more than a quarter of the cap. They used to be refused, the destination left with the bytes it had */
+static int check_blit_bands(void) {
+    const u64 cap = g_vk.alloc_cap;
+    int failed = 0;
+    g_vk.alloc_cap = 64 << 10;
+    failed |= blit_case(bl_side(0x1000, 128 * 4, 256, 2, 0, 0), bl_side(0x80000, 128 * 4, 256, 1, 0, 0), 4, 9, 30, 100,
+                        200, 128, 256, 0);
+    failed |= blit_case(pitch_plane(0x101, 300, 75 * 4, 150), pitch_plane(0x60001, 520, 120 * 4, 240), 4, 3, 2, 110,
+                        230, 75, 150, 0);
+    failed |= blit_case(pitch_plane(0x3000, 64 * 16, 64 * 16, 100), bl_side(0x80000, 64 * 8, 128, 1, 0, 0), 16, 0, 5,
+                        64, 120, 64, 100, GPU_BLIT_FLOAT(4, 4, 4, 2, 0));
+    g_vk.alloc_cap = cap;
+    CHECK(!failed);
+    return 0;
+}
+
 /* a block linear A8B8G8R8 target of w by h at gva (blocks 2^bh GOBs high) cleared to red or blue */
 static void rt_clear_format(GpuChannel* ch, u64 gva, u32 w, u32 h, u32 bh, int blue, u32 format) {
     u32* r = ch->r3d;
@@ -3306,6 +3326,7 @@ int main(int argc, char** argv) {
     CHECK(!check_resident_volume());
     CHECK(!check_dma_untracked_source());
     CHECK(!check_blit());
+    CHECK(!check_blit_bands());
     CHECK(!check_take_after_writes());
     CHECK(!check_targets_kept());
     CHECK(!check_uma_in_flight());
