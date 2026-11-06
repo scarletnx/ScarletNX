@@ -537,6 +537,31 @@ void snx_tracy_gpu_calibrate(int64_t gpu_time, int64_t cpu_delta, int ctx) {
     snx_tracy_leave();
 }
 
+/* The caller's anchor: the context announcement's own pair, which a new connection replays. The server
+   measures its GPU delta from that pair and takes the CPU delta from the events the caller sends, so both
+   sides must count from the same point after a reconnect. */
+void snx_tracy_gpu_cal_announce(SnxTracyGpuCal* c, int calibrated, int64_t cpu) {
+    c->calibrated = calibrated;
+    c->cpu_anchor = calibrated ? cpu : 0;
+    c->cpu_prev = c->cpu_anchor;
+}
+
+void snx_tracy_gpu_cal_reconnect(SnxTracyGpuCal* c) { c->cpu_prev = c->cpu_anchor; }
+
+int64_t snx_tracy_gpu_cal_delta(SnxTracyGpuCal* c, int64_t cpu) {
+    int64_t d;
+    if (!c->calibrated) return 0;
+    if (!c->cpu_prev) { /* no anchor was taken: the next pair starts one */
+        c->cpu_prev = cpu;
+        return 0;
+    }
+    d = cpu - c->cpu_prev;
+    /* a clock that does not advance sends none, and keeps the anchor the server still has */
+    if (d <= 0) return 0;
+    c->cpu_prev = cpu;
+    return d;
+}
+
 /* The named locks' events: each PMutex that pm_lock_announce named reports its waits, takes and releases here, and
    the pane shows who held it and who waited how long. The announce goes out even before a server attaches (the
    client defers it); the events are single items and drop when nobody is connected. */
