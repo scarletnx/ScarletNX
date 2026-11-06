@@ -32,6 +32,9 @@ interface nn::gsv::INativeVideoCodec {
     # the work memory as a transfer memory (InitializeVp9Decoder with a buffer), or in the process (without one)
     @unsorted [200] InitializeWithTransferMemory(handle<copy, transfer_memory> memory, u64 size, u32 codec,
                                                  u32 input_format, u32 output_format);
+    # the SDK's H.264 decoder's form of 200: codec 0, and one more word, whose meaning nobody read
+    @unsorted [201] InitializeH264WithTransferMemory(handle<copy, transfer_memory> memory, u64 size, u32 codec,
+                                                     u32 input_format, u32 output_format, u32 extra);
     [207] Stop();
     @unsorted [210] InitializeWithProcess(handle<copy, process> process, u64 size, u32 codec, u32 input_format,
                                           u32 output_format);
