@@ -2072,6 +2072,43 @@ static void test_mesh_after_task(const char* dir) {
     CHECK(generic0[0] == 2);
 }
 
+/* sm86_mesh_output_bytes against the outputs that the translation declares: four scalars for each Output location,
+   the per-primitive ones (PerPrimitiveEXT) in granules of primitives, the others in granules of vertices, the
+   triangle indices not counted ("Mesh Shader Output" of the Vulkan spec). mesh_info's program: the position and
+   generic 1 for 40 vertices, generic 0 for 2 primitives */
+static void test_mesh_output_bytes(void) {
+    u8 code[16 * 40] = {0};
+    u32 n = mesh_program(code), sph[32] = {0};
+    ShaderInfo si = mesh_info(sph);
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_MS, sph, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) return;
+    u32 vars[64], decorations[512], vertex = 0, primitive = 0;
+    u32 nv = spv_find(spv, count, 59 /* OpVariable */, vars, 64);
+    u32 nd = spv_find(spv, count, 71 /* OpDecorate */, decorations, 512);
+    for (u32 i = 0; i < nv; i++) {
+        if (spv[vars[i] + 3] != 3 /* Output */) continue;
+        u32 id = spv[vars[i] + 2];
+        int per_primitive = 0, indices = 0;
+        for (u32 k = 0; k < nd; k++) {
+            const u32* d = spv + decorations[k];
+            if (d[1] != id) continue;
+            per_primitive |= d[2] == 5271; /* PerPrimitiveEXT */
+            indices |= d[2] == 11 /* BuiltIn */ && d[3] == 5296; /* PrimitiveTriangleIndicesEXT */
+        }
+        if (!indices) *(per_primitive ? &primitive : &vertex) += 1;
+    }
+    free(spv);
+    u64 declared = 16ull * (vertex * 64 + primitive * 32); /* 40 vertices in granules of 32, 2 primitives */
+    u64 bytes = sm86_mesh_output_bytes(sph, &si.mesh, 32, 32);
+    CHECK(vertex == 2 && primitive == 1 && bytes == declared && bytes == 2560);
+    if (bytes != declared)
+        fprintf(stderr, "mesh output bytes: %llu, the module declares %llu (%u and %u locations)\n",
+                (unsigned long long)bytes, (unsigned long long)declared, vertex, primitive);
+    CHECK(sm86_mesh_output_bytes(sph, &si.mesh, 1, 1) == 16u * (2 * 40 + 1 * 2));
+}
+
 /* the forms and keys that the facts of the game's programs do not cover are refused, with their reason */
 static void refused(const u8* code, u32 n, int stage, const u32* sph, ShaderInfo si, const char* reason) {
     size_t count = 0;
@@ -2203,6 +2240,7 @@ int main(int argc, char** argv) {
     test_mesh(dir);
     test_task(dir);
     test_mesh_after_task(dir);
+    test_mesh_output_bytes();
     test_mesh_refused();
     test_fragment_per_primitive(dir);
     test_uses_isbe();

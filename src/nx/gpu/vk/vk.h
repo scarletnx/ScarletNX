@@ -176,6 +176,8 @@ typedef struct {
     int has_mesh, has_task;
     VkShaderStageFlags mesh_stages;
     u32 mesh_groups_max; /* the most workgroups a mesh draw launches: maxTaskWorkGroupCount[0], with maxMesh...'s */
+    /* maxMeshOutputMemorySize and the granules that sm86_mesh_output_bytes counts vertices and primitives in */
+    u32 mesh_output_bytes_max, mesh_vertex_granule, mesh_primitive_granule;
     /* VK_EXT_conservative_rasterization: conservative rasterization (CONSERVATIVE_RASTER, 0x452), dilated by at most
        conservative_extra pixels (maxExtraPrimitiveOverestimationSize) */
     int has_conservative;
