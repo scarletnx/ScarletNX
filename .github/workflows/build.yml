@@ -55,6 +55,10 @@ concurrency:
 jobs:
   linux:
     name: Linux (${{ matrix.arch }})
+    # a ready run is a maintainer's: one an author without write access marked goes back to draft (pr-ready.yml),
+    # and a maintainer's later Ready builds it then
+    if: ${{ (github.event.action != 'ready_for_review' || github.event.sender.login != github.event.pull_request.user.login ||
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)) }}
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-26.04' }}
     timeout-minutes: 60
     # Arch's image is x86-64 only; pkgforge's (the AppImage's) is Arch Linux ARM on AArch64, with the same LLVM
@@ -328,6 +332,8 @@ jobs:
 
   appimage:
     name: Linux AppImage (${{ matrix.arch }})
+    if: ${{ (github.event.action != 'ready_for_review' || github.event.sender.login != github.event.pull_request.user.login ||
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)) }} # a maintainer's ready run only (the linux job)
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-26.04' }}
     # LLVM's build (scripts/linux-llvm.sh) adds about half an hour where its cache misses
     timeout-minutes: 120
@@ -1301,7 +1307,9 @@ jobs:
   # tars, their SHA-256 the ones GitHub lists for them
   apple:
     name: macOS and iOS (arm64)
-    if: ${{ !github.event.pull_request.draft }} # not a draft's: marking it ready builds it
+    # not a draft's: marking it ready builds it, a maintainer's ready run only (the linux job)
+    if: ${{ !github.event.pull_request.draft && (github.event.action != 'ready_for_review' || github.event.sender.login != github.event.pull_request.user.login ||
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)) }}
     runs-on: macos-26
     timeout-minutes: 240
     continue-on-error: true
