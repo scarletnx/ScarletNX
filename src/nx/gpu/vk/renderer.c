@@ -8,6 +8,7 @@
    presents on the GPU thread (gpu/gpu.c), the menu's refresh on the main thread (vkr_refresh), screenshots on the
    thread asking, and shader results landing on whichever thread reads their memory first. Acquiring a swapchain image
    never waits for the display: with every image still on it or queued for it, that frame isn't shown (counted). */
+#include "common/memory/jemalloc.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/common.h"
 #include <stdio.h>
@@ -460,6 +461,17 @@ static void gpu_memory_plots(void) {
     SNX_PLOT("gpu memory", used);
     SNX_PLOT("gpu memory budget", budget);
 }
+/* the host's heap, its footprint and the memory the system can still give: once a second, as the footprint reads a
+   file on Linux and the available memory a whole /proc/meminfo. What a leak or a GC shows is here, not in the GPU's */
+static void host_memory_plots(void) {
+    static u64 last;
+    u64 now = plat_ns(), free;
+    if (last && now - last < 1000000000ull) return;
+    last = now;
+    SNX_PLOT("host heap", snx_heap_used());
+    SNX_PLOT("host rss", snx_footprint());
+    if (snx_memory_available(&free)) SNX_PLOT("host free", free);
+}
 #endif
 
 /* The window's image: src's g_last_ rectangle (a frame of fw x fh, flipped by transform) letterboxed on black, or
@@ -595,6 +607,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
             SNX_PLOT("frame ms", (double)d / 1e6);
 #if defined(SNX_TRACY)
             gpu_memory_plots();
+            host_memory_plots();
             /* what the CPU has put in the queues and the GPU hasn't got through: the CPU running ahead of the GPU
                (a submit backlog), and the compute batches waiting to land */
             {
