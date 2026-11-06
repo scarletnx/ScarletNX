@@ -17,6 +17,7 @@ typedef struct {
     u32 reset;         /* the serial of the last piece cut when it was last cut from its start again */
     u64 quiet;         /* the submissions made when its pieces last all came back: it is cut from its start again
                           once the GPU thread has read that many (nvn_replay_walked) */
+    u32 cutter;        /* the control slot + 1 of the command buffer that last cut from it (NvnCmdBuf.ctl) */
 } NvnSpillSeg;
 /* a piece in use: where its recording starts in the game's command memory as the driver counts it (anchor) and in its
    control memory (canchor, 0 none), its segment, the order it was cut in, the next piece of its bucket by anchor (or
@@ -34,17 +35,21 @@ typedef struct {
 /* A command buffer's control memory as the game's driver counts it: the memory last added [start, limit + 0x10), the
    cursor, the cursor at the last look, where the open recording's entries start, the serial at the last look, whether
    a block of command ranges is open, whether commands were counted since the last range entry, and whether the game
-   lets the driver call its callback when the memory is full (SetControlMemoryCallbackEnabled) */
+   lets the driver call its callback when the memory is full (SetControlMemoryCallbackEnabled). The slot also keeps what
+   NvnCmdBuf has no room for, about the command memory last added (nvn_cmd.c's ring_look): the recordings ended in it,
+   the bytes it looked at, and the serial at its last look; and the segment its last piece came from */
 typedef struct {
     u64 cb; /* 0: a free slot */
     u64 start, cursor, limit, seen, rec;
     u32 seen_serial, block, pending, grow;
+    u64 ring_seen;
+    u32 ring_recordings, ring_serial, seg_hint;
 } NvnCtl;
 #define NVN_CTL_SLOTS     4096
 #define NVN_SPILL_SEGS    4096   /* 256 MiB: a segment waits for the GPU thread, which runs seconds late at loads */
 #define NVN_SPILL_PIECES  262144 /* one game keeps over 23,000 short recordings in the runtime's memory at once */
 #define NVN_SPILL_SMALL   NVN_SPILL_SEGS /* NvnSpillPiece.seg of a block of the small store's first class */
-#define NVN_SMALL_CLASSES 5              /* blocks of 64 to 1024 bytes */
+#define NVN_SMALL_CLASSES 9              /* blocks of 64 to 16384 bytes */
 /* a block of the small store given back, and the submissions made when it came back (its quiet) */
 typedef struct {
     u64 at, quiet;
