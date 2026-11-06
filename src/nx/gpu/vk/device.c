@@ -448,6 +448,9 @@ static void mesh_choose(int has_ext, const VkPhysicalDeviceMeshShaderFeaturesEXT
     g_vk.mesh_stages = g_vk.has_mesh ? VK_SHADER_STAGE_MESH_BIT_EXT | (g_vk.has_task ? both : 0) : 0;
     u32 groups = g_vk.has_task ? mp.maxTaskWorkGroupCount[0] : mp.maxMeshWorkGroupCount[0];
     g_vk.mesh_groups_max = g_vk.has_mesh ? groups : 0;
+    g_vk.mesh_output_bytes_max = mp.maxMeshOutputMemorySize;
+    g_vk.mesh_vertex_granule = mp.meshOutputPerVertexGranularity;
+    g_vk.mesh_primitive_granule = mp.meshOutputPerPrimitiveGranularity;
     if (why)
         LOG("vulkan: mesh draws are skipped: %s%s\n", g_settings.mesh_draws ? "this GPU has " : "", why);
     else
