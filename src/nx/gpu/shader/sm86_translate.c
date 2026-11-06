@@ -3515,14 +3515,17 @@ static int writer_before(Ctx* c, u32 k, u32 r) {
     return -1;
 }
 /* The entries of the jump table that the LDC at k indexes with register r, as ptxas bounds a switch's index: an
-   unsigned IMNMX with an immediate, then an IMAD by 4 into r (index = min(x, last) * 4). 0 when it isn't that */
+   unsigned IMNMX with an immediate, then an IMAD by 4 or a 32-bit SHF.L by 2 into r (index = min(x, last) * 4). 0 when
+   it isn't that */
 static u32 jump_table_entries(Ctx* c, u32 k, u32 r) {
     int m = writer_before(c, k, r);
     if (m < 0) return 0;
     const Sm86Insn* mul = &c->in[m];
-    if (mul->op != SM86_IMAD || mul->pred != SM86_PT || mul->pred_not || sm86_field(mul, 74, 1) ||
-        mul->a.kind != SM86_SRC_REG || mul->b.kind != SM86_SRC_IMM || mul->b.value != 4 ||
-        mul->c.kind != SM86_SRC_REG || mul->c.reg != SM86_RZ)
+    int times_4 = (mul->op == SM86_IMAD && !sm86_field(mul, 74, 1) && mul->b.value == 4) ||
+                  (mul->op == SM86_SHF && !sm86_field(mul, 76, 1) && !sm86_field(mul, 80, 1) &&
+                   sm86_field(mul, 73, 2) >= 2 && mul->b.value == 2);
+    if (!times_4 || mul->pred != SM86_PT || mul->pred_not || mul->a.kind != SM86_SRC_REG ||
+        mul->b.kind != SM86_SRC_IMM || mul->c.kind != SM86_SRC_REG || mul->c.reg != SM86_RZ)
         return 0;
     int b = writer_before(c, (u32)m, mul->a.reg);
     if (b < 0) return 0;
