@@ -407,7 +407,7 @@ static void both_modes(u32 bw, u32 bh) {
     free(srgb);
 }
 
-/* uploads random blocks into a BC7 image, as texture.c does where the GPU samples BCn but not ASTC (astc_bc), and
+/* uploads random blocks into a BC7 image, as texture.c does where the GPU samples BCn but not ASTC (astc_mode=0), and
    compares each level's blocks with the CPU decoder's texels encoded by the same encoder run on the CPU
    (tests/glsl/bc7_cpu.cpp): the strips that start on whole 4x4 blocks, the second dispatch and the copy of the
    blocks, byte for byte */

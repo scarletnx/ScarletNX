@@ -1740,8 +1740,8 @@ u64 vk_rt_reclaim_superseded(u32 before, u64 want) {
 }
 
 /* ------------------------------------------------------------ the budget */
-/* A trim that found the images short of memory, where ASTC textures were decoded to RGBA8 on a GPU that samples BCn
-   but not ASTC: the log suggests astc_bc=1 once a run, with the numbers, and never turns it on (snx_astc_bc_suggest).
+/* A trim that found the images short of memory, where ASTC textures were decoded to RGBA8 (astc_mode=1, Exact) on a
+   GPU that samples BCn but not ASTC: the log suggests astc_mode=0 once a run, with the numbers (snx_astc_bc_suggest).
    Short: an image allocation found no memory (force), the caches left past their budget once all that could go went,
    or the working set evicted (what the last two presents used, the trim's second step), which the next frames load
    again: a game held slow by eviction */
@@ -1752,7 +1752,7 @@ static void astc_bc_suggest(int force, u64 extra, u64 usage, u64 budget, u64 fre
               : working       ? SNX_ASTC_SHORT_WORKING_SET
                               : SNX_ASTC_SHORT_NONE;
     char said[128];
-    if (!snx_astc_bc_suggest(g_settings.astc_bc, g_vk.astc_bc7_could, 0, astc, why)) return;
+    if (!snx_astc_bc_suggest(!g_settings.astc_mode, g_vk.astc_bc7_could, 0, astc, why)) return;
     if (why == SNX_ASTC_SHORT_NO_MEMORY)
         snprintf(said, sizeof said, "an image of %llu MB found no memory", (unsigned long long)(extra >> 20));
     else if (why == SNX_ASTC_SHORT_PAST_BUDGET)
@@ -1761,11 +1761,11 @@ static void astc_bc_suggest(int force, u64 extra, u64 usage, u64 budget, u64 fre
     else
         snprintf(said, sizeof said, "a trim took %llu MB of textures and targets the last two presents used",
                  (unsigned long long)(working >> 20));
-    LOG_LIMIT(1,
-              "vulkan: %s, %llu of %llu MB budgeted in use: astc_bc=1 (Settings > Graphics) would hold the %llu MB of "
-              "ASTC textures decoded to RGBA8 in a quarter, as BC7\n",
-              said, (unsigned long long)(usage >> 20), (unsigned long long)(budget >> 20),
-              (unsigned long long)(astc >> 20));
+    LOG_LIMIT(
+        1,
+        "vulkan: %s, %llu of %llu MB budgeted in use: astc_mode=0 (Settings > Graphics) would hold the %llu MB of "
+        "ASTC textures decoded to RGBA8 in a quarter, as BC7\n",
+        said, (unsigned long long)(usage >> 20), (unsigned long long)(budget >> 20), (unsigned long long)(astc >> 20));
 }
 static u64 g_trimmed;   /* statistics: bytes freed for the budget */
 static u32 g_trim_dry;  /* the present a trim last found too little to free (+1: 0 is none) */

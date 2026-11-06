@@ -10,7 +10,7 @@
    slice, or whole slices when they fit, so a 3D texture's thin slices share a
    dispatch and a copy instead of taking one each.
 
-   A BC7 image (format.c's TA, the astc_bc setting, on a GPU that samples BCn but not ASTC) takes a second
+   A BC7 image (format.c's TA, astc_mode's Auto, on a GPU that samples BCn but not ASTC) takes a second
    dispatch: bc7.comp encodes the decoded texels into BC7 blocks, a quarter of RGBA8's bytes, and those are what
    the copy writes. Its strips then start on whole 4x4 blocks. */
 #include <string.h>

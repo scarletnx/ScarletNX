@@ -43,6 +43,9 @@ int options_settings(char* out, size_t n);
    else -1, memory_fit_mode's default, as 0 was then memory_fit's own, which every game's .ini had written; -2 for
    any other value */
 int options_memory_fit_old(const char* old, int ios);
+/* astc_bc's value old as astc_mode's (0 Auto, 1 Exact): 1 is 0; 0 is -1, astc_mode's default, as 0 was astc_bc's own,
+   which every game's .ini had written; -2 for any other value */
+int options_astc_bc_old(const char* old);
 /* the path ini_open read, "" before it */
 const char* ini_file(void);
 /* about once a second, from the main loop. final: at exit, where an edit still being saved is left for the next start
