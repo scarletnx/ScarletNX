@@ -10,8 +10,8 @@ on:
     # A draft builds the x86-64 jobs, which the organization's 20 runners can take at once beside the others' pull
     # requests: Linux with edenprobe, ASan and UBSan, the AppImage, Windows and Android. Marking it ready for review builds
     # what the draft left out, on the same commit, and nothing it built already: AArch64, macOS and iOS, and the
-    # cross-built AppImages, which take the x86-64 Linux job's QEMU reference from the draft's run. A push out of draft
-    # builds everything
+    # cross-built AppImages, which take the x86-64 Linux job's QEMU reference from the draft's run. A ready run waits for
+    # the draft's to end (concurrency, below). A push out of draft builds everything
     types: [opened, synchronize, reopened, ready_for_review]
     # skipped when the change is only in files that no build or test reads. tracked_material.py reads them all and runs
     # on its own (pr-checks.yml). docs/ARCHITECTURE.md, DEPRECATIONS.md and GUI.md are test inputs: they build
@@ -32,15 +32,16 @@ permissions:
   contents: read
 
 # a push to a pull request cancels that pull request's build still running, and a push to main main's: only the newest
-# commit is built, and publish.yml publishes the newest that built everywhere. Marking a draft ready runs in a group of
-# its own, so the draft's run of the same commit goes on beside it. A tag and a run by hand build every time
+# commit is built, and publish.yml publishes the newest that built everywhere. Marking a draft ready cancels nothing:
+# its run waits in the group, holding no runner, until the draft's run of the same commit ends, and a push cancels
+# both. A tag and a run by hand build every time
 concurrency:
   group: >-
-    build-${{ github.event_name == 'pull_request' && format('pr-{0}{1}', github.event.pull_request.number,
-    github.event.action == 'ready_for_review' && '-ready' || '')
+    build-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number)
     || github.event_name == 'push' && github.ref == 'refs/heads/main' && 'main' || format('run-{0}', github.run_id) }}
   cancel-in-progress: >-
-    ${{ github.event_name == 'pull_request' || github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    ${{ github.event_name == 'pull_request' && github.event.action != 'ready_for_review'
+    || github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
 # Linux jobs run in Arch Linux, which has the same Clang 23 and clang-format 23 as development, and its LLVM 23 for the
 # recompiler's code generator (required, cmake/llvm.cmake). Windows uses MSYS2 CLANG64 so Clang, the MinGW/UCRT runtime
@@ -551,8 +552,8 @@ jobs:
         with:
           fetch-depth: 0
       # A ready run has no x86-64 linux job (its draft built it): the reference comes from the newest earlier run of
-      # this commit that uploaded it, waited for while one of them still runs (ready marked right after a push). None
-      # is an error that says so, and pushing again builds it all
+      # this commit that uploaded it, every one of which has ended (the ready run waited for them in its concurrency
+      # group). None is an error that says so, and pushing again builds it all
       - name: Find the draft run's QEMU reference
         id: reference
         if: github.event.action == 'ready_for_review'
@@ -562,20 +563,16 @@ jobs:
           SHA: ${{ github.event.pull_request.head.sha }}
           NAME: ScarletNX-llvm-qemu-reference-${{ steps.commit.outputs.short }}
         run: |
-          for minute in $(seq 0 60); do
-            runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/build.yml/runs?head_sha=$SHA&per_page=50" \
-              --jq ".workflow_runs[] | select(.id != $GITHUB_RUN_ID) | \"\(.id) \(.status)\"")
-            for run in $(cut -d' ' -f1 <<< "$runs"); do
-              if [ "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?name=$NAME" --jq .total_count)" -gt 0 ]; then
-                echo "run=$run" >> "$GITHUB_OUTPUT"
-                echo "$NAME from run $run, after $minute minutes"
-                exit 0
-              fi
-            done
-            [ -n "$runs" ] && grep -qvE ' completed$' <<< "$runs" || break # no run, or every one ended without it
-            sleep 60
+          runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/build.yml/runs?head_sha=$SHA&per_page=50" \
+            --jq ".workflow_runs[] | select(.id != $GITHUB_RUN_ID) | .id")
+          for run in $runs; do
+            if [ "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?name=$NAME" --jq .total_count)" -gt 0 ]; then
+              echo "run=$run" >> "$GITHUB_OUTPUT"
+              echo "$NAME from run $run"
+              exit 0
+            fi
           done
-          echo "::error::no earlier Build of $SHA uploaded $NAME (runs: $(paste -sd, <<< "${runs:-none}")): its draft run failed, was cancelled or still runs after an hour; push again to build every job"
+          echo "::error::no earlier Build of $SHA uploaded $NAME (runs: $(paste -sd, <<< "${runs:-none}")): its draft run failed before recording it or was cancelled; push again to build every job"
           exit 1
       # The linux job's recorded QEMU side of the A64 differential, run here against the cross-built test
       - uses: actions/download-artifact@v8
