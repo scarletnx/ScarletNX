@@ -349,7 +349,7 @@ static int tex_partial_astc(const TaCase* a, u32 index) {
     x.layers = TP_LAYERS;
     x.tex.d.target = NVN_TEXTURE_TARGET_2D_ARRAY;
     x.tex.d.format = (u16)a->format;
-    x.tex.d.levels = (u8)(32u - (u32)__builtin_clz(a->size));
+    x.tex.d.levels = (u8)(32u - snx_clz32(a->size));
     x.tex.d.width = x.tex.d.height = a->size;
     x.tex.d.depth = TP_LAYERS;
     x.tex.gpu = x.gva;
