@@ -113,7 +113,7 @@ static void log_keep_run(const char* path, char* why, size_t size) {
 /* The log is made once the game's code module is loaded (g_mod), so a run that never gets that far (a mistyped
    --game, a dump given instead of a game) leaves no log behind */
 static void log_create_nl(void) {
-    char path[1400], why[1700], out[LINE_MAX_ + 32];
+    char path[1400], why[1700], out[LINE_MAX_ + 32], *full, *where;
     FILE* file;
     if (g_log || g_log_gave_up || !g_mod) return;
     snprintf(path, sizeof path, "%s%s.log", g_statedir, g_exename);
@@ -131,6 +131,17 @@ static void log_create_nl(void) {
             fputs(out, file);
             fputs(why, stderr);
         }
+        /* whatever the log level: the launcher's Share Log reads it from the run's output */
+        full = snx_absolute(path);
+        where = snx_format(SNX_LOG_WRITTEN "%s\n", full ? full : path);
+        if (where) {
+            g_log_size += log_compose(out, sizeof out, where);
+            fputs(out, file);
+            fputs(where, stderr);
+            fflush(stderr);
+        }
+        free(where);
+        free(full);
         fflush(file);
 #if !defined(_WIN32)
         __atomic_store_n(&g_log_fd, fileno(file), __ATOMIC_RELEASE);
@@ -311,6 +322,30 @@ void logf_(int lvl, const char* fmt, ...) {
         }
     }
     pm_unlock(&g_log_lock);
+}
+
+void log_sync(void) {
+    if (__atomic_load_n(&g_crashing, __ATOMIC_SEQ_CST)) return; /* crash mode's lines skip stdio, and its locks */
+    pm_lock(&g_log_lock);
+    if (g_log) fflush(g_log); /* logf_ flushed each line already */
+    pm_unlock(&g_log_lock);
+    fflush(stdout); /* line buffered, so only a line not ended yet waits in it */
+    fflush(stderr);
+#if defined(_WIN32)
+    {
+        /* FlushFileBuffers, outside the lock as below; the log stays open to the end of the run */
+        FILE* file = __atomic_load_n(&g_log, __ATOMIC_ACQUIRE);
+        if (file) (void)_commit(_fileno(file));
+    }
+#else
+    {
+        /* outside the lock, since the disk can take a while. A pipe or a terminal refuses, which is no matter */
+        int fd = __atomic_load_n(&g_log_fd, __ATOMIC_ACQUIRE);
+        if (fd >= 0) (void)fsync(fd);
+        (void)fsync(1);
+        (void)fsync(2);
+    }
+#endif
 }
 
 void log_error_line(const char* line) {

@@ -151,19 +151,31 @@ void crash_report(void* host_pc, void* fault, int sig) {
     else
         WARN(" ***\n");
     WARN("  %s\n", kind);
+    /* the header gives a fault in the reservation its game address; past its end is a layout smaller than the
+       console's, and under NCE, where g_mem is 0, the guest's addresses are the host's and only this places them */
+    if (fault && !in_guest && mem_reserved()) {
+        char place[256];
+        mem_place(fault, place, sizeof place);
+        WARN("  %s\n", place);
+    }
     report_place(host_pc);
     /* the low pages are never mapped: a pointer the game failed to get (an allocation it ran out of memory for) plus
        a field's offset lands there */
     if (fault && in_guest && guest < ((u64)16 << 20) && g_settings.memory_gb < 6)
         WARN("  a null pointer plus an offset: a game short of memory does this, memory_gb=6 in its .ini may help\n");
+    fs_save_report(); /* a save a newer version wrote, which a game often crashes on */
     if (t) {
         WARN("  thread %llu (%s)\n", (unsigned long long)t->id, t->name);
         kernel_dump_regs(&t->cpu);
     } else
         WARN("  on one of the runtime's threads, not the game's\n");
-    if (g_mem) {
+    if (mem_reserved()) {
+        char foreign[512];
         mem_report(memory, sizeof memory);
         WARN("  memory: %s\n", memory);
+        /* under NCE another owner's mapping over guest memory makes a crash of its own */
+        if (mem_foreign(foreign, sizeof foreign) > 0)
+            WARN("  the guest's addresses hold what is not the game's: %s\n", foreign);
     }
     fatal("The game crashed (%s). See the .log for details.", kind);
 }

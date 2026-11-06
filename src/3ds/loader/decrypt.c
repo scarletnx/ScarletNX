@@ -11,7 +11,10 @@
      0x1B). Both keys' KeyY is the first 16 bytes of the NCCH's signature; each section's counter starts from the
      partition ID and the section's type (1 ExHeader, 2 ExeFS, 3 RomFS), or for NCCH version 1 its byte offset.
    A normal key is the console's key scrambler of KeyX and KeyY: ((KeyX <<< 2) ^ KeyY) + C <<< 87, C the generator
-   constant. Every key and the constant come from the user's aes_keys.txt (Azahar's format), none is in this code.
+   constant. Every key and the constant come from the user's aes_keys.txt (Azahar's format, or the plain key dumps
+   that name the constant generator= rather than generatorConstant=), none is in this code. A file that holds two
+   consoles' blocks keeps the first value of each name, the retail block that leads it, so a dev block further down
+   cannot replace the keys of the console the game came from.
    The decrypted CIA's NCCHs say NoCrypto, and its TMD the contents' new hashes, so the loader checks it as any other
    decrypted CIA. A cartridge image (a CCI or a .3ds) and a bare NCCH (.cxi, an .app, homebrew's .hbb) have no CIA
    layer: their NCCHs' own is the same layer a CIA's contents carry, and it is taken off where each NCCH lies, the
@@ -27,7 +30,9 @@ typedef struct {
     uint64_t have_x, have_y;
     unsigned have_common, have_generator;
 } Keys;
-/* name=32 hex digits; anything else on the line (comments, :AES sections, RSA moduli) is not a key read here */
+/* name=32 hex digits; anything else on the line (comments, :AES sections, RSA moduli) is not a key read here. A name
+   met twice keeps its first value: a file that holds more than one console's keys (a retail block, then a dev one)
+   names the console to use first, and its later blocks must not quietly replace those keys */
 static void key_line(Keys* k, const char* line) {
     const char* equals = strchr(line, '=');
     if (!equals) return;
@@ -40,17 +45,21 @@ static void key_line(Keys* k, const char* line) {
     if (digits != 32) return;
     unsigned slot;
     char kind[5];
-    if (name == 17 && !strncmp(line, "generatorConstant", 17)) {
+    if ((name == 17 && !strncmp(line, "generatorConstant", 17)) || (name == 9 && !strncmp(line, "generator", 9))) {
+        if (k->have_generator) return;
         memcpy(k->generator, key, 16);
         k->have_generator = 1;
     } else if (name == 7 && !strncmp(line, "common", 6) && line[6] >= '0' && line[6] <= '5') {
+        if (k->have_common >> (line[6] - '0') & 1) return;
         memcpy(k->common[line[6] - '0'], key, 16);
         k->have_common |= 1u << (line[6] - '0');
     } else if (name == 12 && sscanf(line, "slot0x%2x%4[KeyXY]", &slot, kind) == 2 && slot < 0x40 &&
                (!strcmp(kind, "KeyX") || !strcmp(kind, "KeyY"))) {
         bool x = kind[3] == 'X';
+        uint64_t* have = x ? &k->have_x : &k->have_y;
+        if (*have >> slot & 1) return;
         memcpy(x ? k->x[slot] : k->y[slot], key, 16);
-        *(x ? &k->have_x : &k->have_y) |= UINT64_C(1) << slot;
+        *have |= UINT64_C(1) << slot;
     }
 }
 static bool keys_load(CtrReader* r, const char* path, Keys* k) {
@@ -63,7 +72,8 @@ static bool keys_load(CtrReader* r, const char* path, Keys* k) {
     char line[1024];
     while (fgets(line, sizeof line, f)) key_line(k, line);
     fclose(f);
-    if (!k->have_generator) return ctr_fail(r, SNX_CTR_EXTRACT_UNSUPPORTED, "%s has no generatorConstant", path);
+    if (!k->have_generator) return ctr_fail(r, SNX_CTR_EXTRACT_UNSUPPORTED, "%s has no generator (generator= or "
+                                                                             "generatorConstant=)", path);
     return true;
 }
 /* 128-bit big-endian rotate left by n (0 < n < 128) */
@@ -330,6 +340,22 @@ static bool ncch_image(CtrReader* r, const char* keys_path, const char* output, 
             layers[count].span = (CtrSpan){at, size};
             ++count;
         }
+    }
+    /* The boot NCCH — the game partition, or the bare NCCH, the first NCCH here — decides whether a layer is taken off
+       at all. A tool that decrypted a game can leave its manual's partition as it was, and that partition is never
+       read: its content does not make the game need keys */
+    size_t boot = count;
+    for (size_t i = 0; i < count; ++i)
+        if (!memcmp(layers[i].header + 0x100, "NCCH", 4)) {
+            boot = i;
+            break;
+        }
+    if (boot < count && !(layers[boot].header[0x18f] & 4) &&
+        ctr_ncch_plain(r, layers[boot].span, layers[boot].header)) {
+        layers[boot].header[0x18f] |= 4; /* what the boot NCCH is, for the loader that reads it */
+        *encrypted = false;              /* decrypted already, its flag left behind: no key, no copy */
+        ok = true;
+        goto done;
     }
     for (size_t i = 0; i < count; ++i)
         if (!memcmp(layers[i].header + 0x100, "NCCH", 4) && !(layers[i].header[0x18f] & 4)) ++encrypted_count;

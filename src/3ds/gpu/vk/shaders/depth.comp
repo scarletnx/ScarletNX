@@ -3,7 +3,8 @@
 // A depth (and stencil) render target loaded from, or stored to, the tiled buffer the guest has in memory, through
 // the layouts Vulkan's buffer-image copies use for its aspects: depth as one 32-bit word a pixel (24-bit unorm in the
 // low bits, or a float for a D32 image), stencil as one byte. Formats: 0 D16, 2 D24, 3 D24S8 (stencil in the high
-// byte). Rows as color.comp has them.
+// byte). Rows as color.comp has them. A render scale above 1 repeats a guest texel into each image block on a load
+// and keeps the block's first texel on a store.
 #version 450
 #extension GL_EXT_shader_8bit_storage : require
 layout(local_size_x = 8, local_size_y = 8) in;
@@ -11,7 +12,7 @@ layout(std430, set = 0, binding = 0) buffer Memory { uint8_t MEM[]; };
 layout(std430, set = 0, binding = 1) buffer Depth { uint DEPTH[]; };
 layout(std430, set = 0, binding = 2) buffer Stencil { uint8_t STENCIL[]; };
 layout(push_constant) uniform Target {
-    uint offset, width, height, format, flip, store, float_depth;
+    uint offset, width, height, format, flip, store, float_depth, scale;
 };
 uint morton(uint x, uint y, uint bpp) {
     uint i = (x & 1u) | ((y & 1u) << 1) | ((x & 2u) << 1) | ((y & 2u) << 2) | ((x & 4u) << 2) | ((y & 4u) << 3);
@@ -19,10 +20,25 @@ uint morton(uint x, uint y, uint bpp) {
 }
 void main() {
     uint x = gl_GlobalInvocationID.x, r = gl_GlobalInvocationID.y;
-    if (x >= width || r >= height) return;
-    uint y = flip != 0u ? r : height - 1u - r, bpp = format == 0u ? 2u : format == 2u ? 3u : 4u;
-    uint at = offset + morton(x, y, bpp) + (y & ~7u) * width * bpp, pixel = r * width + x;
-    if (store == 0u) {
+    uint s = scale != 0u ? scale : 1u, image_width = width * s, image_height = height * s;
+    if (store != 0u) {
+        if (x >= width || r >= height) return;
+        uint y = flip != 0u ? r : height - 1u - r, bpp = format == 0u ? 2u : format == 2u ? 3u : 4u;
+        uint at = offset + morton(x, y, bpp) + (y & ~7u) * width * bpp;
+        uint pixel = (r * s) * image_width + x * s;
+        float depth = float_depth != 0u ? uintBitsToFloat(DEPTH[pixel])
+                                        : float(DEPTH[pixel] & 0xffffffu) / 16777215.0;
+        uint value = format == 0u ? uint(round(clamp(depth, 0.0, 1.0) * 65535.0))
+                     : float_depth != 0u ? uint(round(clamp(depth, 0.0, 1.0) * 16777215.0))
+                                         : DEPTH[pixel] & 0xffffffu;
+        MEM[at] = uint8_t(value), MEM[at + 1u] = uint8_t(value >> 8);
+        if (format != 0u) MEM[at + 2u] = uint8_t(value >> 16);
+        if (format == 3u) MEM[at + 3u] = STENCIL[pixel];
+    } else {
+        if (x >= image_width || r >= image_height) return;
+        uint nx = x / s, nr = r / s;
+        uint y = flip != 0u ? nr : height - 1u - nr, bpp = format == 0u ? 2u : format == 2u ? 3u : 4u;
+        uint at = offset + morton(nx, y, bpp) + (y & ~7u) * width * bpp, pixel = r * image_width + x;
         uint d16 = uint(MEM[at]) | (uint(MEM[at + 1u]) << 8);
         uint d24 = format == 0u ? 0u : d16 | (uint(MEM[at + 2u]) << 16);
         float depth = format == 0u ? float(d16) / 65535.0 : float(d24) / 16777215.0;
@@ -30,13 +46,5 @@ void main() {
                        : format == 0u    ? uint(round(depth * 16777215.0))
                                          : d24;
         STENCIL[pixel] = format == 3u ? MEM[at + 3u] : uint8_t(0u);
-    } else {
-        float depth = float_depth != 0u ? uintBitsToFloat(DEPTH[pixel]) : float(DEPTH[pixel] & 0xffffffu) / 16777215.0;
-        uint value = format == 0u ? uint(round(clamp(depth, 0.0, 1.0) * 65535.0))
-                     : float_depth != 0u ? uint(round(clamp(depth, 0.0, 1.0) * 16777215.0))
-                                         : DEPTH[pixel] & 0xffffffu;
-        MEM[at] = uint8_t(value), MEM[at + 1u] = uint8_t(value >> 8);
-        if (format != 0u) MEM[at + 2u] = uint8_t(value >> 16);
-        if (format == 3u) MEM[at + 3u] = STENCIL[pixel];
     }
 }

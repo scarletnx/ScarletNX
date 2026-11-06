@@ -61,16 +61,26 @@ enum {
 };
 
 /* Instruction set extensions the generated code may use. The host's are read once per process (snx_ir_init, from
-   LLVM's CPUID-based host detection) into snx_ir_host; an SnxIr for another triple (tests) gets none of them. The
-   x86 fields are only ever set when the target is x86-64 and the arm ones when it is AArch64, so an emitter gated
-   on them is gated on the architecture */
+   LLVM's host detection) into snx_ir_host; an SnxIr for another triple (tests) gets none of them. The x86 fields are
+   only ever set when the target is x86-64 and the arm ones when it is AArch64, so an emitter gated on them is gated
+   on the architecture; the others are set the same way, one group per host architecture */
 typedef struct {
     unsigned x86 : 1; /* x86-64 target: x86 intrinsics are available at all */
-    unsigned sse42 : 1, crc32 : 1, pclmul : 1, aes : 1, sha_ni : 1, gfni : 1, fma : 1, f16c : 1; /* x86 extensions */
-    unsigned avx2 : 1, avx512bw : 1, avx512vl : 1, avx512bitalg : 1;
+    unsigned ssse3 : 1, sse42 : 1, crc32 : 1, pclmul : 1, aes : 1, sha_ni : 1, gfni : 1, fma : 1, f16c : 1;
+    unsigned avx2 : 1;
+    /* AVX-512: F's unsigned scalar conversions, VL's on 128-bit vectors (DQ's of 64-bit lanes), VBMI's two-table byte
+       permute (VPERMI2B, VL for 128 bits). LLVM picks the rest of it (masks, VPTERNLOG, BW's per-lane word shifts,
+       BITALG's VPOPCNTB) from plain IR, since the target machine has the host's features */
+    unsigned avx512f : 1, avx512dq : 1, avx512vl : 1, avx512vbmi : 1;
     unsigned aarch64 : 1;                /* AArch64 target: AArch64 intrinsics are available at all */
     unsigned arm_aes : 1, arm_sha2 : 1; /* AArch64 crypto extensions (PMULL comes with AES) */
     unsigned arm_crc : 1;                /* AArch64 CRC32 extension */
+    unsigned ppc : 1, ppc_vsx : 1;       /* PowerPC64 target, and its VSX: AltiVec alone flushes single-precision
+                                            denormals and has no vector double arithmetic */
+    unsigned riscv : 1, riscv_v : 1;     /* RISC-V target, and the V extension: per-lane variable shifts, gathers */
+    unsigned loongarch : 1, la_lsx : 1;  /* LoongArch target, and LSX: 128-bit vectors */
+    unsigned mips64 : 1, mips_msa : 1;   /* MIPS64 target, and MSA: 128-bit vectors (not "mips", which GNU C on
+                                            MIPS predefines as 1) */
 } SnxIrFeatures;
 extern SnxIrFeatures snx_ir_host;
 
@@ -134,6 +144,8 @@ typedef struct {
     unsigned enabled : 1; /* the setting ir_stats (snx_ir_diagnostics) */
     SnxU64 functions, promoted_functions, call_sites, fp_calls, vector_calls, guest_calls, indirect_calls;
     SnxU64 sync_stores, sync_reloads, call_stores, store_bytes, reload_bytes;
+    SnxU64 edge_stores; /* stores of a block's first site made on the ways in the register is dirty on */
+    SnxU64 promoted_slots, memory_slots; /* registers a function accesses: made locals, left in the CPU structure */
     SnxU64 lookups, polls, stale_checks, return_checks;
 } SnxIrStats;
 
@@ -149,9 +161,21 @@ typedef struct SnxIr {
     SnxIrStats stats;
     SnxU64 dump_pc, dump_instruction_pc;
     unsigned dump_function : 1, dump_active : 1; /* the setting ir_dump_pc's host diagnostics, never generated code */
+    /* tests and tools: snx_ir_emit runs ir_check_promoted on each function it promotes, which counts the problems it
+       finds in check_failures and describes the first in check_why */
+    unsigned check : 1;
+    unsigned long check_failures;
+    char check_why[256];
+    /* ir_promote.c's summaries of the guest functions this SnxIr promoted (an open-addressed table of summary_cap,
+       keyed by the function: one deleted from mod would have to leave it first, or a new function could take its
+       address), and the block of the function being emitted a direct call never runs (its entry at another address) */
+    void* summaries;
+    size_t summary_count, summary_cap;
+    LLVMBasicBlockRef entry_mismatch;
     LLVMTypeRef t_void, t_i1, t_i8, t_i16, t_i32, t_i64, t_i128, t_ptr, t_guest;
     /* the function being emitted: its CPU* and the guest memory base (u8* const M=c->mem) */
     LLVMValueRef fn, c, M;
+    LLVMValueRef fp_lanes_scratch; /* one lazy, non-escaping byte array for this function, at most 48 bytes */
     LLVMValueRef helpers[SNX_IR_HELPER_COUNT];
     SnxIrBlockState state;
     /* alias scopes: guest memory (through M) and the CPU structure never overlap */
@@ -174,8 +198,9 @@ typedef struct SnxIr {
     /* the target stores values big-endian (ppc64): guest memory and the vector registers hold the guest's
        little-endian bytes, so the accesses that read them as numbers swap (ir_rd, ir_vd and their siblings) */
     int big_endian;
-    /* PowerPC64's ABI is ELFv2, else ELFv1 (new_ir): what a function pointer is, where the TOC is saved */
-    int elfv2;
+    /* the target is PowerPC64, whatever features says; its ABI is ELFv2, else ELFv1 (new_ir): what a function pointer
+       is, where the TOC is saved */
+    int ppc, elfv2;
     /* the guest's features (snx_a64_features) for the function being emitted: what its system registers keep */
     SnxU64 guest_features;
 } SnxIr;
@@ -193,6 +218,14 @@ LLVMValueRef ir_flags_cond(SnxIr* ir, unsigned cond);
 
 /* Once per process, before any other call; threads may then each own SnxIrs. 0, or -1 with the reason */
 int snx_ir_init(char* error, size_t error_size);
+/* Tests': takes every host feature whose name begins with prefix out of what snx_ir_init reads into snx_ir_host and
+   of the target machines snx_ir_new and snx_ir_new_jit make, so the host runs as one without them (prefix "avx512":
+   an x86-64 with AVX2 and no AVX-512). prefix names a whole family, as "avx512" does: a feature left in that needs
+   one taken out would keep it. Before snx_ir_init; -1 with the reason in error after it, or for an empty prefix */
+int snx_ir_host_drop(const char* prefix, char* error, size_t error_size);
+/* The host's CPU features as the target machines get them, LLVMGetHostCPUFeatures's less snx_ir_host_drop's, which
+   the caches' keys hold. LLVMDisposeMessage frees it */
+char* snx_ir_host_features(void);
 /* LLVM's SLP vectorizer on or off for every module this process makes (the setting slp_vectorizer): an option of
    LLVM's command line, so once per process, from one thread, before any module is made */
 void snx_ir_slp_vectorizer(int on);
@@ -233,12 +266,16 @@ int snx_ir_object(SnxIr* ir, char opt, unsigned char** data, size_t* size, char*
 /* What makes an object of a module besides its IR, LLVM, the target machine's triple, CPU and features, the -O letter
    and the tuning: new_ir's other target machine settings and what snx_ir_module_object does around LLVM's passes. The
    unit cache's key holds it (unit_cache.c), so a change there that changes the object of the same IR bumps it */
-#define SNX_IR_OBJECT_VERSION 4
+#define SNX_IR_OBJECT_VERSION 5
 /* The same for another module of the SnxIr's context, made with its target and data layout (the A32 executor's
    blocks, common/cpu/arm/exec.c): verified, optimized and compiled with its target machine. The module stays the
    caller's */
 int snx_ir_module_object(SnxIr* ir, LLVMModuleRef module, char opt, unsigned char** data, size_t* size, char* error,
                          size_t error_size);
+/* snx_ir_module_object's passes alone: the module verified and optimized as its object would be, and no code made
+   (tests/llvm_lowering.c reads what the emitters' IR becomes on targets this LLVM can't make code for with their
+   features). 0, or -1 with the reason in error */
+int snx_ir_module_optimize(SnxIr* ir, LLVMModuleRef module, char opt, char* error, size_t error_size);
 /* The runtime library (rtlib.c) as a host object file (malloc'd): its bitcode, embedded when the recompiler was
    built, compiled for this machine like the generated code */
 int snx_ir_rtlib_object(char opt, unsigned char** data, size_t* size, char* error, size_t error_size);
@@ -257,6 +294,12 @@ LLVMValueRef snx_ir_static_step(SnxIr* ir, SnxU32 word, SnxU64 pc, SnxU64 featur
 /* the emitted function's accesses to the registers in the CPU structure onto locals, which the CPU structure gets
    back around every call and return (ir_promote.c). snx_ir_emit runs it at O1 and above */
 void ir_promote_registers(SnxIr* ir, LLVMValueRef fn);
+/* Checks a function ir_promote_registers promoted, before its cleanup (the locals still allocas), along every path:
+   every site finds each register it can see held in the CPU structure, and every read of a register finds its value
+   (ir_promote.c). Counts the problems in ir->check_failures, the first described in ir->check_why */
+void ir_check_promoted(SnxIr* ir, LLVMValueRef fn);
+/* the summaries ir_promote_registers made, freed (snx_ir_free does it) */
+void ir_summaries_free(SnxIr* ir);
 /* the promoted function's slots made SSA values and what that leaves trivial removed, as it is emitted (ir.c) */
 void ir_clean_function(SnxIr* ir, LLVMValueRef fn);
 /* Accumulates one emitted function's call counts when stats.enabled is set. */
@@ -343,6 +386,9 @@ void ir_yield(SnxIr* ir);                         /* YIELD() */
 /* Optional offline branch profile: entries are keyed by guest PC and exact word.
    No profile means the existing LLVM branch prediction stays unchanged. */
 void ir_profile_branch(SnxIr* ir, LLVMValueRef branch, SnxU64 pc, SnxU32 word);
+/* the setting ir_branch_profile: the file ir_profile_branch reads, once, at the first branch of a module made after
+   (NULL or "": none). Before any module is made */
+void snx_ir_branch_profile(const char* path);
 void ir_unlikely(SnxIr* ir, LLVMValueRef branch);
 void ir_likely(SnxIr* ir, LLVMValueRef branch);
 /* a call to an LLVM intrinsic, overloaded on type (NULL: not overloaded) */
@@ -356,6 +402,9 @@ void ir_no_memory(SnxIr* ir, LLVMValueRef function);
 /* a helper that takes c but touches none of its registers (X, SP, NZCV, V), only FPCR, FPSR or the exclusive
    monitor: ir_promote_registers needs the CPU structure to hold none of them around its calls */
 void ir_noregs(SnxIr* ir, LLVMValueRef function);
+/* a helper that is not given c and reaches no part of the CPU structure, only guest memory through M (DC ZVA's):
+   ir_promote_registers makes no site of its calls, as of a guest store */
+void ir_nocpu(SnxIr* ir, LLVMValueRef function);
 /* if (condition) { then() } else { otherwise() }: blocks positioned by the caller */
 LLVMBasicBlockRef ir_block(SnxIr* ir, const char* name);
 /* a stack slot in the entry block, as a C local whose address is taken */

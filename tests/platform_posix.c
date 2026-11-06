@@ -1,16 +1,31 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The POSIX platform layer (platform/plat_posix.c, with plat_sdl.c): written-page tracking, decommit zeroing, pread,
-   file maps, replace, folders, timed waits and threads. Written-page tracking needs Linux 6.7 for userfaultfd's;
-   SNX_WW=signal (and every host without it) tracks by protection, and SNX_NO_WW must make the scan say -1 */
+   file maps, replace, folders, timed waits and threads, the watch of the system's memory pressure. Written-page
+   tracking needs Linux 6.7 for userfaultfd's; write_tracking=1 (and every host without it) tracks by protection, and
+   write_tracking=2 must make the scan say -1. The arguments: the folder for its files, then Debug settings as the
+   runtime takes them, --key=value */
 #include "nx/runtime/platform/plat_posix.c"
+#include "nx/runtime/ini.h"
 #include <stdarg.h>
 #include <stdio.h>
+#include <sys/resource.h> /* RLIMIT_NPROC: a thread the system refuses */
 #include <sys/wait.h>
+#if defined(__linux__)
+#include <sys/prctl.h> /* PR_SET_VMA_ANON_NAME, for test_foreign */
+#endif
 
+static char g_log[1024]; /* the log's lines while g_log_on, as far as they fit */
+static int g_log_on;
 void logf_(int lvl, const char* fmt, ...) {
     va_list ap;
+    size_t n = g_log_on ? strlen(g_log) : 0;
     (void)lvl;
+    if (g_log_on) {
+        va_start(ap, fmt);
+        vsnprintf(g_log + n, sizeof g_log - n, fmt, ap);
+        va_end(ap);
+    }
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
     va_end(ap);
@@ -23,6 +38,11 @@ void fatal(const char* fmt, ...) {
     exit(2);
 }
 void log_crash_mode(void) {}
+/* nce.c, whose NCE no game here is of: the crash handler gives it the signal's context */
+void nce_crash_context(const void* context, const void* fault) {
+    (void)context;
+    (void)fault;
+}
 static int g_reports;     /* crash reports made */
 static int g_report_exit; /* a child's: a report ends it with 42, which its parent checks */
 void crash_report(void* host_pc, void* fault, int sig) {
@@ -227,6 +247,138 @@ static void test_protection_tracking(void) {
            (unsigned long long)iter, (unsigned long long)missed);
 }
 
+/* page n's hot count, and whether the tracking holds it read only */
+static u8 hot_count(u64 n) { return __atomic_load_n(&g_wp_hot[n], __ATOMIC_RELAXED); }
+static int held(u64 n) { return (__atomic_load_n(&g_wp[n], __ATOMIC_RELAXED) & WP_PROT) != 0; }
+/* page n written, then scanned, k times: 1 when every scan reported it */
+static int written_scans(u64 n, int k) {
+    int all = 1;
+    while (k--) {
+        g_base[n * 4096 + 1]++;
+        all &= (scan() >> n & 1) != 0;
+    }
+    return all;
+}
+/* ---- hot pages (write_tracking_hot=1): a page written in WP_HOT_AFTER scans in a row stays writable and is reported
+   at each scan, until its WP_HOT_AFTER + WP_HOT_FOR-th report; plat_ww_cool makes its reports exact again. Run on a
+   table of counts of its own when the setting left none */
+static void test_hot_pages(void) {
+    static u8 before[32 * 4096];
+    u8* own = NULL;
+    pthread_t t[WRITERS];
+    u64 missed = 0, inexact = 0, scans = 0, cools = 0, most_hot = 0, iter, k;
+    int i;
+    printf("hot pages%s\n", g_wp_hot ? "" : " (on a table of counts of the test's own)");
+    if (!g_wp_hot) {
+        own = (u8*)mmap(NULL, (size_t)g_wp_pages, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+                        -1, 0);
+        CHECK(own != MAP_FAILED, "no table of counts");
+        if (own == MAP_FAILED) return;
+        g_wp_hot = own;
+    }
+    scan();
+    CHECK(scan() == 0, "pages reported written before the hot pages' checks");
+    /* reported once: protected; twice in a row: left writable, and reported with no write */
+    CHECK(written_scans(6, 1) && hot_count(6) == 1 && held(6), "a page written once was not protected");
+    CHECK(written_scans(6, 1) && hot_count(6) == WP_HOT_AFTER && !held(6), "a page written twice did not go hot");
+    CHECK(scan() == 1ull << 6, "a hot page was not reported by a scan with no write");
+    CHECK(plat_ww_hot_in(g_base + 6 * 4096, 4096) && !plat_ww_hot_in(g_base + 7 * 4096, 4096) &&
+              plat_ww_hot_in(g_base, 64 * 4096),
+          "plat_ww_hot_in did not find the one hot page");
+    /* cooled: reported, protected, and exact from then on */
+    g_written = 0;
+    plat_ww_cool(g_base, 64 * 4096, on_written);
+    CHECK(g_written == 1ull << 6, "the cool did not report the hot page alone");
+    CHECK(hot_count(6) == 0 && held(6) && !plat_ww_hot_in(g_base, 64 * 4096), "the cool left the page hot");
+    CHECK(scan() == 0, "a cooled page was reported with no write");
+    CHECK(written_scans(6, 1) && held(6), "a write after the cool was not reported, or the page went hot at once");
+    /* a scan that finds it unwritten starts its count over */
+    CHECK(written_scans(8, 1) && scan() == 0 && written_scans(8, 1) && hot_count(8) == 1 && held(8),
+          "a page written in two scans not in a row went hot");
+    /* written at each scan: hot until its WP_HOT_AFTER + WP_HOT_FOR-th report, then protected and counted over */
+    CHECK(written_scans(9, WP_HOT_AFTER + WP_HOT_FOR - 1) && hot_count(9) == WP_HOT_AFTER + WP_HOT_FOR - 1 && !held(9),
+          "a page written at each scan did not stay hot");
+    CHECK(written_scans(9, 1) && hot_count(9) == 0 && held(9), "a hot page was not protected again after its run");
+    CHECK(scan() == 0, "a page protected again after its run was reported with no write");
+    /* hot, then left alone: reported until its run ends, then quiet */
+    CHECK(written_scans(11, WP_HOT_AFTER), "page 11 not reported");
+    for (k = 0; k < WP_HOT_FOR + 1 && scan() >> 11 & 1; k++) {}
+    CHECK(k == WP_HOT_FOR && held(11) && scan() == 0, "a hot page left alone did not go quiet after its run");
+    /* a mapping change starts its count over; so does a trap's arming (wp_armed), which scans skip */
+    CHECK(written_scans(13, WP_HOT_AFTER) && hot_count(13) == WP_HOT_AFTER, "page 13 did not go hot");
+    plat_vm_decommit(g_base + 13 * 4096, 4096);
+    CHECK(!plat_vm_commit(g_base + 13 * 4096, 4096) && hot_count(13) == 0, "a decommit left the page's count");
+    CHECK(scan() == 1ull << 13 && scan() == 0, "a page committed again was not reported once");
+    CHECK(written_scans(14, WP_HOT_AFTER), "page 14 not reported");
+    wp_armed(g_base + 14 * 4096, 4096, 1);
+    CHECK(scan() == 0 && hot_count(14) == 0, "a page armed for a trap kept its count, or was reported");
+    wp_armed(g_base + 14 * 4096, 4096, 0);
+    CHECK(scan() == 1ull << 14 && held(14), "a page let go by its trap was not reported once and protected");
+    /* the kernel writing a hot page: the scans and the cool leave it writable until plat_ww_close, then a scan
+       reports it */
+    CHECK(written_scans(15, WP_HOT_AFTER) && !held(15), "page 15 did not go hot");
+    scan();
+    plat_ww_open(g_base + 15 * 4096, 100);
+    CHECK(!(scan() >> 15 & 1), "a page the kernel is writing was reported");
+    g_written = 0;
+    plat_ww_cool(g_base + 15 * 4096, 4096, on_written);
+    CHECK(!g_written && !held(15), "the cool protected a page the kernel is writing");
+    memset(g_base + 15 * 4096, 0x5a, 100); /* as the system call would */
+    plat_ww_close(g_base + 15 * 4096, 100);
+    CHECK(scan() >> 15 & 1, "a page the kernel wrote was not reported after it was done");
+    scan();
+    /* writers race scans and cools: no write is lost, and right after a cool with the writers held a scan reports
+       nothing (what a target's baseline needs) */
+    memcpy(before, g_base + 32 * 4096, sizeof before);
+    g_seen = 0;
+    __atomic_store_n(&g_writers_stop, 0, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&g_writers_run, 1, __ATOMIC_SEQ_CST);
+    for (i = 0; i < WRITERS; i++) { /* the last writers ended idle */
+        __atomic_store_n(&g_writer_idle[i], 0, __ATOMIC_SEQ_CST);
+        CHECK(!pthread_create(&t[i], NULL, writer, (void*)(intptr_t)i), "no writer");
+    }
+    for (iter = 0; iter < 200; iter++) {
+        u64 from = __atomic_load_n(&g_writes, __ATOMIC_RELAXED), hot;
+        while (__atomic_load_n(&g_writes, __ATOMIC_RELAXED) - from < 4000) {
+            plat_ww_scan(g_base + 32 * 4096, 32 * 4096, on_seen);
+            if (++scans % 8 == 0) { /* a target's baseline over them, with the writers going */
+                plat_ww_cool(g_base + 32 * 4096, 32 * 4096, on_seen);
+                cools++;
+            }
+            hot = __atomic_load_n(&g_wp_hot_n, __ATOMIC_RELAXED);
+            if (hot > most_hot) most_hot = hot;
+        }
+        writers_pause();
+        plat_ww_scan(g_base + 32 * 4096, 32 * 4096, on_seen);
+        for (k = 0; k < 32; k++)
+            if (memcmp(before + k * 4096, g_base + (32 + k) * 4096, 4096) && !(g_seen >> (32 + k) & 1)) missed++;
+        plat_ww_cool(g_base + 32 * 4096, 32 * 4096, on_seen);
+        g_written = 0;
+        plat_ww_scan(g_base + 32 * 4096, 32 * 4096, on_written);
+        if (g_written) inexact++;
+        memcpy(before, g_base + 32 * 4096, sizeof before);
+        g_seen = 0;
+        __atomic_store_n(&g_writers_run, 1, __ATOMIC_SEQ_CST);
+        for (i = 0; i < WRITERS; i++)
+            while (__atomic_load_n(&g_writer_idle[i], __ATOMIC_SEQ_CST)) sched_yield();
+    }
+    __atomic_store_n(&g_writers_stop, 1, __ATOMIC_SEQ_CST);
+    for (i = 0; i < WRITERS; i++) pthread_join(t[i], NULL);
+    CHECK(missed == 0, "a scan or a cool missed a page another thread wrote, with hot pages");
+    CHECK(inexact == 0, "a scan right after a cool, with the writers held, reported pages");
+    CHECK(most_hot > 0, "the writers' pages never went hot");
+    printf("  %llu scans and %llu cools while the writers wrote, up to %llu pages hot at once, %llu checks: %llu pages "
+           "missed, %llu scans after a cool not exact\n",
+           (unsigned long long)scans, (unsigned long long)cools, (unsigned long long)most_hot, (unsigned long long)iter,
+           (unsigned long long)missed, (unsigned long long)inexact);
+    plat_ww_cool(g_base, 64 * 4096, on_written); /* exact again for what follows */
+    if (own) {
+        g_wp_hot = NULL;
+        __atomic_store_n(&g_wp_hot_n, 0, __ATOMIC_RELAXED);
+        munmap(own, (size_t)g_wp_pages);
+    }
+}
+
 static int g_ran; /* the sum of what the threads read: both must finish before main returns, since they read its arg */
 static void thread_fn(void* arg) { __atomic_fetch_add(&g_ran, *(int*)arg, __ATOMIC_RELEASE); }
 
@@ -239,11 +391,28 @@ static void test_guest_memory(const char* dir) {
     printf("written-page tracking\n");
     g_base = plat_vm_reserve((u64)1 << 30);
     CHECK(g_base != NULL, "no reservation");
+    CHECK(!((uintptr_t)g_base & (SNX_PLAT_PAGE_MAX - 1)), "the reservation is not aligned to SNX_PLAT_PAGE_MAX");
+    g_log[0] = 0;
+    g_log_on = 1;
+    plat_vm_track(g_base, (u64)1 << 30);
+    g_log_on = 0;
+    /* write_tracking_hot=1 reaches the tracking by protection, and is said to do nothing elsewhere */
+    if (g_settings.write_tracking_hot_pages == 1 && g_wp_track)
+        CHECK(g_wp_hot != NULL, "write_tracking_hot=1 left the tracking by protection without hot pages");
+    else if (g_settings.write_tracking_hot_pages == 1)
+        CHECK(strstr(g_log, "memory: write_tracking_hot=1 leaves pages hot only where page protection tracks the "
+                            "writes, and ") &&
+                  strstr(g_log, ": no page is hot this run\n"),
+              "write_tracking_hot=1 where nothing protects pages for the tracking was not said");
+    else
+        CHECK(g_wp_hot == NULL, "hot pages without write_tracking_hot=1");
     CHECK(!plat_vm_commit(g_base, 64 * 4096), "commit failed");
-    if (getenv("SNX_NO_WW") || plat_ww_scan(g_base, 4096, on_written) < 0) {
+    if (g_settings.write_tracking == 2 || plat_ww_scan(g_base, 4096, on_written) < 0) {
         printf("written-page tracking unavailable here: only checking that it says so\n");
         CHECK(scan() == ~0ull, "a scan without tracking did not fail");
     } else {
+        u8* hot = g_wp_hot; /* the checks below are of exact reports: hot pages have theirs (test_hot_pages) */
+        g_wp_hot = NULL;
         scan();
         CHECK(scan() == 0, "pages reported written twice");
         g_base[3 * 4096] = 1;
@@ -272,11 +441,250 @@ static void test_guest_memory(const char* dir) {
             test_open_frozen();
             test_shed();
         }
+        if (hot) { /* back, counted from zero: the scans without it left its counts behind */
+            memset(hot, 0, (size_t)g_wp_pages);
+            __atomic_store_n(&g_wp_hot_n, 0, __ATOMIC_RELAXED);
+            g_wp_hot = hot;
+        }
+        if (g_wp && g_wp_track) test_hot_pages();
     }
     printf("decommit\n");
     g_base[9 * 4096] = 9;
     plat_vm_decommit(g_base, 64 * 4096);
     CHECK(!plat_vm_commit(g_base, 64 * 4096) && g_base[9 * 4096] == 0, "memory not zero after decommit");
+
+    printf("a GPU's buffer\n");
+    {
+        void* handle;
+#if defined(__linux__) && !defined(__ANDROID__) /* a memfd, and its pages mapped: what a driver imports here */
+        u8* g = g_base + (1u << 20);
+        CHECK(!plat_gpu_buffer(2u << 20, &fd, &handle) && fd >= 0 && handle, "no memfd buffer");
+        u8* v = (u8*)handle;
+        CHECK(lseek(fd, 0, SEEK_END) == 2 << 20, "the buffer isn't 2 MiB");
+        CHECK(!plat_vm_commit(g, 2u << 20), "commit failed");
+        g[12345] = 0x5A;
+        CHECK(!plat_vm_share(g, fd, 2u << 20) && v[12345] == 0x5A, "guest memory did not move into it with its bytes");
+        g[777] = 0x11;
+        v[778] = 0x22;
+        CHECK(v[777] == 0x11 && g[778] == 0x22, "guest memory moved into it and its mapping aren't one memory");
+        CHECK(!plat_vm_unshare(g, 2u << 20) && g[12345] == 0x5A && g[778] == 0x22, "guest memory did not move back");
+        g[999] = 0x33;
+        CHECK(v[999] != 0x33, "guest memory moved back is still the buffer's");
+        plat_vm_decommit(g, 2u << 20);
+        plat_gpu_buffer_free(fd, handle, 2u << 20);
+#elif !defined(__ANDROID__)
+        CHECK(plat_gpu_buffer(2u << 20, &fd, &handle) == -1 && errno == ENOSYS && fd == -1 && !handle,
+              "a buffer this host can't make");
+#endif
+    }
+}
+
+#if defined(__linux__)
+static struct {
+    u64 lo, hi;
+} g_own; /* the range test_foreign's caller claims as its own */
+static int own_claims(u64 a, u64 b) { return g_own.lo <= a && b <= g_own.hi; }
+/* a memfd named name, size bytes, written with text when there is one and read from its start: -1 when not */
+static int memfd_with(const char* name, u64 size, const char* text) {
+    int fd = (int)syscall(SYS_memfd_create, name, 1u /* MFD_CLOEXEC */);
+    size_t n = text ? strlen(text) : 0;
+    if (fd < 0) return -1;
+    if ((size && ftruncate(fd, (off_t)size)) || (n && write(fd, text, n) != (ssize_t)n) || lseek(fd, 0, SEEK_SET)) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+#endif
+/* plat_vm_foreign over a reservation of its own: its own pages and the alias pool's are the guest's, and so is a
+   mapping the caller claims (a GPU's buffer guest memory moved into); another owner's memfd mapped over it (as a JIT's
+   code cache would be), a run given back and a named anonymous mapping (as ART and the allocator name theirs) are not,
+   each named with its addresses. A failed read of the maps is no answer, and a run they list as empty that is mapped
+   now (it changed while they were read) is no gap. Linux, where /proc/self/maps says; elsewhere -1 */
+static void test_foreign(void) {
+    char out[512];
+    printf("what is not the guest's in its range\n");
+#if defined(__linux__)
+    const u64 pg = (u64)sysconf(_SC_PAGESIZE);
+    u8* r = (u8*)mmap(NULL, 64 * pg, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    u64 lo = (u64)(uintptr_t)r, hi = lo + 64 * pg;
+    char want[256], small[24];
+    int alias, jit, gpu, maps, dir, n;
+    if (r == (u8*)MAP_FAILED) {
+        CHECK(0, "no reservation for the foreign mappings");
+        return;
+    }
+    CHECK(plat_vm_foreign(lo, hi, NULL, out, sizeof out) == 0 && !out[0], "a bare reservation held something");
+    CHECK(!mprotect(r, 4 * pg, PROT_READ | PROT_WRITE), "four pages not committed");
+    r[0] = 1;
+    CHECK(plat_vm_foreign(lo, hi, NULL, out, sizeof out) == 0, "its committed pages were not its own");
+    alias = memfd_with("snx-alias", 2 * pg, NULL);
+    jit = memfd_with("jit-cache", 2 * pg, NULL);
+    gpu = memfd_with("gpu-buffer", 2 * pg, NULL);
+    CHECK(alias >= 0 && jit >= 0 && gpu >= 0, "no memfds");
+    CHECK(mmap(r + 8 * pg, 2 * pg, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, alias, 0) == r + 8 * pg &&
+              plat_vm_foreign(lo, hi, NULL, out, sizeof out) == 0,
+          "the alias pool's pages were not the guest's");
+    g_own.lo = lo + 24 * pg, g_own.hi = lo + 26 * pg;
+    CHECK(mmap(r + 24 * pg, 2 * pg, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, gpu, 0) == r + 24 * pg &&
+              plat_vm_foreign(lo, hi, own_claims, out, sizeof out) == 0,
+          "a mapping its caller claims was named");
+    CHECK(plat_vm_foreign(lo, hi, NULL, out, sizeof out) == 1 && strstr(out, " rw-s /memfd:gpu-buffer (deleted)"),
+          "the same mapping, which no caller claims, was not named");
+    CHECK(mmap(r + 24 * pg, 2 * pg, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0) ==
+              r + 24 * pg,
+          "the reservation not mapped back");
+    CHECK(mmap(r + 16 * pg, 2 * pg, PROT_READ | PROT_EXEC, MAP_SHARED | MAP_FIXED, jit, 0) == r + 16 * pg,
+          "no memfd of another owner over it");
+    n = plat_vm_foreign(lo, hi, own_claims, out, sizeof out);
+    snprintf(want, sizeof want, "mapped at %#llx-%#llx r-xs /memfd:jit-cache (deleted)",
+             (unsigned long long)(lo + 16 * pg), (unsigned long long)(lo + 18 * pg));
+    CHECK(n == 1 && !strcmp(out, want), "another owner's mapping not named with its range, permissions and name");
+    CHECK(!munmap(r + 32 * pg, 2 * pg), "no run given back");
+    n = plat_vm_foreign(lo, hi, own_claims, out, sizeof out);
+    snprintf(want, sizeof want, "; nothing mapped at %#llx-%#llx", (unsigned long long)(lo + 32 * pg),
+             (unsigned long long)(lo + 34 * pg));
+    CHECK(n == 2 && strstr(out, want), "the run given back not named with its range");
+    CHECK(plat_vm_foreign(lo + 18 * pg, lo + 32 * pg, NULL, out, sizeof out) == 0, "a range read past its ends");
+    snprintf(want, sizeof want, "nothing mapped at %#llx-%#llx", (unsigned long long)(lo + 33 * pg),
+             (unsigned long long)(lo + 34 * pg));
+    CHECK(plat_vm_foreign(lo + 33 * pg, lo + 34 * pg, NULL, out, sizeof out) == 1 && !strcmp(out, want),
+          "a run the range lies in not cut to the range");
+    CHECK(plat_vm_foreign(lo, hi, NULL, small, sizeof small) == 2 && strlen(small) == sizeof small - 1,
+          "a small buffer did not get the whole count and the names cut where it was full");
+#if defined(PR_SET_VMA) && defined(PR_SET_VMA_ANON_NAME)
+    if (!prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, (unsigned long)(uintptr_t)(r + 40 * pg), (unsigned long)(2 * pg),
+               (unsigned long)(uintptr_t)"dalvik-jit-code-cache")) {
+        n = plat_vm_foreign(lo, hi, NULL, out, sizeof out);
+        CHECK(n == 3 && strstr(out, " [anon:dalvik-jit-code-cache]"), "a named anonymous mapping not named");
+    } else
+        printf("  a named anonymous mapping skipped: this kernel names none (%s)\n", strerror(errno));
+#endif
+    /* a read that fails is no answer, not the end of the maps: nothing past it reads as unmapped */
+    dir = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    errno = 0;
+    CHECK(dir >= 0 && foreign_scan(dir, lo, hi, NULL, out, sizeof out) == -1 && errno == EISDIR && !out[0],
+          "a failed read of the maps read as a run nothing maps");
+    if (dir >= 0) close(dir);
+    /* maps read while another thread changed the range: they list [4, 8) empty, which is the reservation's, and
+       [32, 34), which is given back. Only that one is named */
+    snprintf(want, sizeof want,
+             "%llx-%llx rw-p 00000000 00:00 0\n%llx-%llx ---p 00000000 00:00 0\n%llx-%llx ---p 00000000 00:00 0\n",
+             (unsigned long long)lo, (unsigned long long)(lo + 4 * pg), (unsigned long long)(lo + 8 * pg),
+             (unsigned long long)(lo + 32 * pg), (unsigned long long)(lo + 34 * pg), (unsigned long long)hi);
+    maps = memfd_with("maps", 0, want);
+    CHECK(maps >= 0, "no copy of the maps");
+    n = maps >= 0 ? foreign_scan(maps, lo, hi, NULL, out, sizeof out) : -1;
+    snprintf(want, sizeof want, "nothing mapped at %#llx-%#llx", (unsigned long long)(lo + 32 * pg),
+             (unsigned long long)(lo + 34 * pg));
+    CHECK(n == 1 && !strcmp(out, want), "a run the maps listed empty, mapped when asked again, was named");
+    if (maps >= 0) close(maps);
+    munmap(r, 64 * pg);
+    close(alias);
+    close(jit);
+    close(gpu);
+#else
+    errno = 0;
+    CHECK(plat_vm_foreign(0x1000, 0x2000, NULL, out, sizeof out) == -1 && errno == ENOSYS && !out[0],
+          "a system with no /proc/self/maps said what lies in a range");
+#endif
+}
+
+/* host_page: the host's page, or a larger power of two up to SNX_PLAT_PAGE_MAX; another value is said once, with the
+   page the runtime works in instead */
+static void test_host_page(void) {
+    u64 host = (u64)sysconf(_SC_PAGESIZE);
+    int given = g_settings.host_page_size;
+    char want[256];
+    printf("host_page\n");
+    g_settings.host_page_size = 0;
+    CHECK(plat_vm_page() == host, "host_page=0 is not the host's page");
+    g_settings.host_page_size = (int)host;
+    CHECK(plat_vm_page() == host, "host_page as the host's page is not that page");
+    if (host * 16 <= SNX_PLAT_PAGE_MAX) {
+        g_settings.host_page_size = (int)(host * 16);
+        CHECK(plat_vm_page() == host * 16, "a larger power of two is not the page");
+    }
+    g_log_on = 1;
+    g_settings.host_page_size = (int)(host * 3);
+    CHECK(plat_vm_page() == host, "a page of three host pages is taken");
+    snprintf(want, sizeof want,
+             "memory: host_page=%llu is not a power of two from the host's page, %llu bytes, to 1048576: the runtime "
+             "works in %llu-byte pages\n",
+             (unsigned long long)host * 3, (unsigned long long)host, (unsigned long long)host);
+    CHECK(!strcmp(g_log, want), "host_page's refusal does not name the value given and the page in effect");
+    g_log[0] = 0;
+    CHECK(plat_vm_page() == host && !g_log[0], "host_page's refusal is said again");
+    g_log_on = 0;
+    g_settings.host_page_size = given;
+}
+
+/* the system's warnings of low memory: on Linux the watch starts when this process may set the pressure trigger itself
+   (a kernel with PSI, from 6.5 for one without privileges), and the log says why it does not; elsewhere it does not
+   start here (macOS's comes from the backend, FreeBSD has none). A watch whose thread the system refused (past
+   RLIMIT_NPROC, which root does not have) says so and starts at the next call */
+static int test_say(const char* why) {
+    (void)why;
+    return 1;
+}
+#if defined(__linux__) && !defined(__ANDROID__)
+static void* test_no_op(void* unused) { return unused; } /* a thread for the refusal's probe */
+#endif
+static void test_memory_watch(void) {
+    int can = 0;
+    printf("memory watch\n");
+#if defined(__linux__) && !defined(__ANDROID__)
+    {
+        int fd = open(PSI_FILE, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+        can = fd >= 0 && write(fd, PSI_TRIGGER, sizeof PSI_TRIGGER) > 0;
+        if (fd >= 0) close(fd);
+    }
+#endif
+    g_log[0] = 0;
+    g_log_on = 1;
+#if defined(__linux__) && !defined(__ANDROID__)
+    if (can) {
+        struct rlimit was, none;
+        pthread_t probe;
+        int refused = 0;
+        CHECK(!getrlimit(RLIMIT_NPROC, &was), "RLIMIT_NPROC");
+        none = was;
+        none.rlim_cur = 0;
+        CHECK(!setrlimit(RLIMIT_NPROC, &none), "RLIMIT_NPROC down");
+        refused = pthread_create(&probe, NULL, test_no_op, NULL) != 0;
+        if (!refused) pthread_join(probe, NULL);
+        if (refused)
+            CHECK(plat_memory_watch(test_say) == -1 &&
+                      strstr(g_log, "memory: no watch of the system's memory pressure: its thread does not start: "),
+                  "a memory watch whose thread did not start");
+        CHECK(!setrlimit(RLIMIT_NPROC, &was), "RLIMIT_NPROC back");
+        printf("memory watch: %s\n", refused ? "a refused thread said" : "no thread refused here (root)");
+        g_log[0] = 0;
+    }
+#endif
+    CHECK(plat_memory_watch(test_say) == (can ? 0 : -1), "the memory watch does not start as the trigger allows");
+#if defined(__linux__) && !defined(__ANDROID__)
+    CHECK(can ? !g_log[0] : strstr(g_log, "memory: no watch of the system's memory pressure: " PSI_FILE) != NULL,
+          "the memory watch's log line");
+    CHECK(plat_memory_watch(test_say) == (can ? 0 : -1), "a second start of the memory watch");
+    if (can) {
+        /* one thread runs, by its name: a refused start before left nothing that keeps the watch from starting, and
+           the second start started none. Each names itself as it starts, so the count waits a little for them */
+        static SnxThreadInfo list[256];
+        struct timespec pause = {0, 10000000};
+        int running = 0;
+        for (int tries = 0; tries < 300 && (tries < 20 || !running); tries++) {
+            int n = snx_threads(list, 256);
+            running = 0;
+            for (int i = 0; i < n && i < 256; i++) running += !strcmp(list[i].name, "memory pressure");
+            nanosleep(&pause, NULL);
+        }
+        if (running != 1) printf("memory watch: %d threads named \"memory pressure\"\n", running);
+        CHECK(running == 1, "the memory watch does not run one thread");
+    }
+#endif
+    printf("memory watch: %s\n", can ? "started" : "none here");
+    g_log_on = 0;
 }
 
 int main(int argc, char** argv) {
@@ -292,6 +700,23 @@ int main(int argc, char** argv) {
     u64 t;
 
     setvbuf(stdout, NULL, _IONBF, 0); /* each section says it started, so a crash shows where it happened */
+    for (i = 2; i < argc; i++) {
+        const char* eq = strchr(argv[i], '=');
+        char key[64];
+        if (strncmp(argv[i], "--", 2) || !eq || (size_t)(eq - argv[i] - 2) >= sizeof key) {
+            printf("not --key=value: %s\n", argv[i]);
+            return 2;
+        }
+        snprintf(key, sizeof key, "%.*s", (int)(eq - argv[i] - 2), argv[i] + 2);
+        if (!ini_find(g_debug_ini, key)) {
+            printf("not a Debug setting: %s\n", argv[i]);
+            return 2;
+        }
+        ini_read(ini_find(g_debug_ini, key), eq + 1);
+    }
+    test_host_page();
+    test_foreign();
+    test_memory_watch();
     if (sysconf(_SC_PAGESIZE) == 4096)
         test_guest_memory(dir);
     else /* plat_vm_reserve refuses the host: guest memory needs 4 KiB pages, and Apple silicon's are 16 KiB */

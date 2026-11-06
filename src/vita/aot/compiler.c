@@ -262,7 +262,7 @@ static void* worker_main(void* w) {
 }
 #endif
 static bool compile_chunks(Work* w) {
-    unsigned jobs = snx_cpu_count(), created = 0;
+    unsigned jobs = snx_build_threads(), created = 0;
     if (jobs > w->chunks) jobs = w->chunks;
     if (jobs < 1) jobs = 1;
 #ifdef _WIN32

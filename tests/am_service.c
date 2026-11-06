@@ -288,9 +288,71 @@ static void test_user_channel(void) {
     svcobj_unref(b);
     CHECK(test_objects == 0);
 }
+extern const u64 test_playing_uid[2]; /* the user playing, as the stubs' acc_playing answers it */
+/* PreselectedUser (2): AccountPreselectedUser with the uid of the user playing, which acc answers, popped once */
+static void test_preselected(void) {
+    SvcObj* s = NULL;
+    const u8* d;
+    CHECK(nn_am_service_IApplicationFunctions_PopLaunchParameter(NULL, 2, &s) == 0);
+    d = am_storage_bytes(s);
+    CHECK(((StorageData*)s->data)->size == 0x88 && get32(d) == 0xc79497cau && get32(d + 4) == 1);
+    CHECK(snx_ld_le64(d + 8) == test_playing_uid[0] && snx_ld_le64(d + 16) == test_playing_uid[1]);
+    svcobj_unref(s);
+    s = NULL;
+    CHECK(nn_am_service_IApplicationFunctions_PopLaunchParameter(NULL, 2, &s) == AM_NO_DATA);
+}
 static void test_previous_program(void) {
     i32 index = 0;
     CHECK(nn_am_service_IApplicationFunctions_GetPreviousProgramIndex(NULL, &index) == 0 && index == -1);
+}
+extern unsigned g_test_program_ends; /* am_service_stubs.c's snx_program_end, counted */
+/* ExecuteProgram (120): ExecuteProgram (kind 0) asks for program value once this one ends, which it ends at once,
+   RestartProgram (2) this one again; the hand-over carries this program's index, the user channel bottom first and
+   whether acc stored the open user. The program it starts answers GetPreviousProgramIndex with the caller's index and
+   pops the channel's top first; one the system starts, -1 and none. The jump to another application (1) and an index
+   no program has are refused, said with their values, and end nothing */
+static void test_execute_program(void) {
+    SvcObj *a = am_storage_new(3, "ab"), *b = am_storage_new(5, "wxyz"), *s = NULL;
+    SnxNext next = {0};
+    i32 index = 0;
+    am_handover_in(1, NULL); /* program 1, which the player started */
+    CHECK(am_handover_out(&next) == -1 && next.count == 0);
+    CHECK(nn_am_service_IApplicationFunctions_GetPreviousProgramIndex(NULL, &index) == 0 && index == -1);
+    CHECK(nn_am_service_IApplicationFunctions_UnpopToUserChannel(NULL, a) == 0);
+    CHECK(nn_am_service_IApplicationFunctions_UnpopToUserChannel(NULL, b) == 0);
+    g_hle.acc.context_stored = 1;
+    CHECK(nn_am_service_IApplicationFunctions_ExecuteProgram(NULL, 1, 4096) == AM_NO_APPLICATION);
+    CHECK(log_has("am: ExecuteProgram kind 1 value 4096: a development jump to another application"));
+    CHECK(nn_am_service_IApplicationFunctions_ExecuteProgram(NULL, 0, 300) == AM_NO_APPLICATION);
+    CHECK(log_has("am: ExecuteProgram kind 0 value 300: no program of an application has that index"));
+    CHECK(g_test_program_ends == 0 && am_handover_out(&next) == -1);
+    CHECK(nn_am_service_IApplicationFunctions_ExecuteProgram(NULL, 2, 77) == 0 && g_test_program_ends == 1);
+    CHECK(log_has("am: program 1 starts program 1 (ExecuteProgram kind 2)"));
+    CHECK(nn_am_service_IApplicationFunctions_ExecuteProgram(NULL, 0, 3) == 0 && g_test_program_ends == 2);
+    CHECK(log_has("am: program 1 starts program 3 (ExecuteProgram kind 0), once it has ended"));
+    CHECK(am_handover_out(&next) == 3 && next.index == 3 && next.previous == 1 && next.context == 1);
+    CHECK(next.count == 2 && next.size[0] == 3 && !memcmp(next.storage[0], "ab", 3));
+    CHECK(next.size[1] == 5 && !memcmp(next.storage[1], "wxyz", 5));
+    /* program 3, which program 1 started: this process's am as a new one's */
+    CHECK(nn_am_service_IApplicationFunctions_ClearUserChannel(NULL) == 0);
+    g_hle.am.execute = 0;
+    g_hle.acc.context_stored = 0;
+    am_handover_in(3, &next);
+    CHECK(nn_am_service_IApplicationFunctions_GetPreviousProgramIndex(NULL, &index) == 0 && index == 1);
+    CHECK(g_hle.am.program == 3 && g_hle.acc.context_stored == 1);
+    CHECK(nn_am_service_IApplicationFunctions_PopLaunchParameter(NULL, 1, &s) == 0);
+    CHECK(((StorageData*)s->data)->size == 5 && !memcmp(am_storage_bytes(s), "wxyz", 5));
+    svcobj_unref(s);
+    CHECK(nn_am_service_IApplicationFunctions_PopLaunchParameter(NULL, 1, &s) == 0);
+    CHECK(((StorageData*)s->data)->size == 3 && !memcmp(am_storage_bytes(s), "ab", 3));
+    svcobj_unref(s);
+    CHECK(nn_am_service_IApplicationFunctions_PopLaunchParameter(NULL, 1, &s) == AM_NO_DATA);
+    snx_next_free(&next);
+    am_handover_in(0, NULL); /* back as the game's own program, the system's */
+    g_hle.acc.context_stored = 0;
+    svcobj_unref(a);
+    svcobj_unref(b);
+    CHECK(test_objects == 0);
 }
 /* IStorageAccessor's Read: the whole buffer within the storage, or InvalidOffset */
 static void test_storage_read(void) {
@@ -689,6 +751,13 @@ static void test_applets(void) {
     out = offline_page("missing.htdocs/index.html");
     CHECK(get32(((StorageData*)out->data)->d) == 0);
     svcobj_unref(out);
+    out = run_applet(0x10, in, 0); /* the user selector: the user playing, as acc answers it */
+    {
+        const u8* d = ((StorageData*)out->data)->d;
+        CHECK(((StorageData*)out->data)->size == 0x18 && get32(d) == 0 && snx_ld_le64(d + 8) == test_playing_uid[0] &&
+              snx_ld_le64(d + 16) == test_playing_uid[1]);
+    }
+    svcobj_unref(out);
     out = run_applet(0x0e, in, 0); /* the error applet */
     CHECK(((StorageData*)out->data)->size == 0x10 && get32(((StorageData*)out->data)->d) == 0);
     svcobj_unref(out);
@@ -716,6 +785,20 @@ static void test_messages(void) {
     CHECK(nn_am_service_ISelfController_GetLibraryAppletLaunchableEvent(NULL, &h) == 0);
     CHECK(test_handles[h - 0x100] == &kev(g_hle.am.launchable_event)->o && kev(g_hle.am.launchable_event)->signaled);
     close_handles();
+    am_events_release();
+}
+/* the display resolution change event, and the performance mode message, when docked's Auto changes the TV mode */
+static void test_display_mode_changed(void) {
+    nn_am_AppletMessage m = 0;
+    am_init();
+    while (nn_am_service_ICommonStateGetter_ReceiveMessage(NULL, &m) == 0) continue;
+    CHECK(!kev(g_hle.am.msg_event)->signaled);
+    CHECK(!kev(g_hle.am.resolution_event)->signaled);
+    am_display_mode_changed();
+    CHECK(kev(g_hle.am.resolution_event)->signaled);
+    CHECK(kev(g_hle.am.msg_event)->signaled);
+    CHECK(nn_am_service_ICommonStateGetter_ReceiveMessage(NULL, &m) == 0 && m == 31);
+    CHECK(!kev(g_hle.am.msg_event)->signaled);
     am_events_release();
 }
 /* the Mii editor (0x12), which a game opens with nn::mii::AppendMii: with no editor here, appending is
@@ -819,7 +902,9 @@ int main(void) {
     test_mii_edit();
     test_audio_controller();
     test_user_channel();
+    test_preselected();
     test_previous_program();
+    test_execute_program();
     test_storage_read();
     test_vr_mode();
     test_inline();
@@ -833,6 +918,7 @@ int main(void) {
     test_applets();
     CHECK(test_objects == 0 && test_kobjs == 0);
     test_messages();
+    test_display_mode_changed();
     test_state_getter();
     test_self_settings();
     CHECK(test_kobjs == 0);

@@ -2,6 +2,14 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # edenprobe
 
+## Index
+
+* [Running it](#running-it)
+* [The mode words](#the-mode-words)
+* [In CI](#in-ci)
+* [The baseline](#the-baseline)
+* [A case from a game report](#a-case-from-a-game-report)
+
 [edenprobe](https://github.com/scarletnx/edenprobe) is a homebrew program of hardware probes: suites of cases, each
 asking the machine one question and judging the answer against the console's. A run leaves `report.jsonl`, a line per
 case (`pass`, `fail` or `skip`, with a detail) and a summary. `scripts/edenprobe.py` recompiles it, runs it headless and

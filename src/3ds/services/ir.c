@@ -1,119 +1,161 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
-   Copyright 2026 the ScarletNX contributors
-   Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project
-   ir:rst: the New 3DS's ZL, ZR and C-stick, in the shared memory a game polls and with an event at each sample. The
-   commands, the layout (3dbrew's IR Shared Memory: the tick of the last index wrap and the one before it, the index
-   last written, then eight entries of the pad state, what it gained and lost and the C-stick's position) and the pace
-   are ported from Azahar's service/ir/ir_rst.cpp (GPL-2.0-or-later). The input is the player's (input/input.c). Like
-   Azahar, it gives the C-stick as a cooked position (raw_c_stick, the raw form, is not modelled) */
+   Copyright 2026 the ScarletNX contributors */
+/* ir:USER with no IR accessory in range, as Azahar answers then (core/hle/service/ir/ir_user.cpp at azahar-emu/azahar
+   6e42de8). InitializeIrNopShared writes the shared block's header and its empty receive queue, the three events are
+   real kernel events, and a connection request only marks the header as trying to connect. The status event is never
+   signaled, so a game that waits on it times out and goes on without the accessory. */
 #include "3ds/services/ir.h"
-#include "3ds/input/input.h"
 #include "3ds/runtime/internal.h"
-#include "3ds/services/hid.h"
-#include "common/utilities/common.h"
-#include "common/utilities/endian.h"
-#include "services/ir.swipc.inc"
-#include <math.h>
+#include "3ds/services/system.h"
 
-/* the shared memory's layout */
-#define IR_INDEX  0x10u /* the index last written */
-#define IR_ENTRY  0x18u /* entries[8] of 0x10 bytes: state, additions, removals, then the C-stick's x and y as s16 */
-#define IR_RIM    0x9c  /* the C-stick's rim, in the position */
-#define IR_MEMORY 4096u /* the block's size (the structure is 0x98) */
+#define IR_HEADER_SIZE      0x10u /* SharedMemoryHeader: two words and eight bytes */
+#define IR_BUFFER_INFO_SIZE 0x10u /* the receive BufferInfo has four words */
+#define IR_METADATA_SIZE    (IR_HEADER_SIZE + IR_BUFFER_INFO_SIZE)
+#define IR_WRONG_PERMISSION 0xd900182eu /* ResultWrongPermission */
+/* the bytes of SharedMemoryHeader after its two result words */
+enum { IR_CONNECTION_STATUS = 8, IR_TRYING_TO_CONNECT = 9, IR_CONNECTED = 12, IR_INITIALIZED = 14 };
+#define IR_NOT_CONNECTED 0xc8a10c0du /* InvalidState, as SendIrNop answers with nothing connected */
+#define IR_NO_DATA       0xc8810fefu /* NotFound, NoData: the receive queue never holds a packet */
+#define IR_COMMANDS      0x1au       /* the last command ir:USER has (SetOwnMachineId) */
 
-static uint32_t shared_physical(const SnxCtrProcess* p) {
-    return p->ir_objects[0] ? p->objects[p->ir_objects[0]].data.shared.physical : 0;
+static uint32_t shared_address(SnxCtrProcess* p, uint32_t object) {
+    uint32_t address = p->objects[object].data.shared.address;
+    if (address) return address;
+    for (unsigned i = 0; i < sizeof p->shared_maps / sizeof *p->shared_maps; ++i)
+        if (p->shared_maps[i].object == object && p->shared_maps[i].va) return p->shared_maps[i].va;
+    return 0;
 }
-static void put32(SnxCtrProcess* p, uint32_t offset, uint32_t v) {
-    unsigned char b[4];
-    snx_st_le32(b, v);
-    (void)snx_ctr_phys_write(p->memory, shared_physical(p) + offset, b, 4);
-}
-static void put16(SnxCtrProcess* p, uint32_t offset, uint16_t v) {
-    unsigned char b[2];
-    snx_st_le16(b, v);
-    (void)snx_ctr_phys_write(p->memory, shared_physical(p) + offset, b, 2);
-}
-static uint32_t get32(SnxCtrProcess* p, uint32_t offset) {
-    unsigned char b[4] = {0};
-    (void)snx_ctr_phys_read(p->memory, shared_physical(p) + offset, b, 4);
-    return snx_ld_le32(b);
-}
-/* one sample: the entry after the last, with what changed since the one before it, the index moved on (at a wrap to 0
-   the ticks too, the current one becoming the previous), then the update event */
-static void sample(SnxCtrProcess* p) {
-    SnxCtrInput input;
-    snx_ctr_input_read(&input);
-    int32_t x = (int32_t)roundf(input.cstick[0] * IR_RIM), y = (int32_t)roundf(input.cstick[1] * IR_RIM);
-    /* the C-stick's four directions are the circle pad's four, 4 bits down */
-    uint32_t state = (input.buttons & SNX_CTR_PAD_NEW) | snx_ctr_stick_directions(x, y) >> 4;
-    uint32_t index = p->ir.index, entry = IR_ENTRY + index * 0x10;
-    uint32_t old = get32(p, IR_ENTRY + ((index + 7) & 7) * 0x10), changed = state ^ old;
-    put32(p, entry, state);
-    put32(p, entry + 4, changed & state);
-    put32(p, entry + 8, changed & old);
-    put16(p, entry + 12, (uint16_t)(int16_t)x);
-    put16(p, entry + 14, (uint16_t)(int16_t)y);
-    if (!index) {
-        put32(p, 8, get32(p, 0));
-        put32(p, 12, get32(p, 4));
-        double elapsed = snx_ctr_seconds() - p->clock_origin;
-        uint64_t now = elapsed > 0 ? (uint64_t)(elapsed * (double)SNX_CTR_BASE_CLOCK_HZ) : 0;
-        put32(p, 0, (uint32_t)now);
-        put32(p, 4, (uint32_t)(now >> 32));
+/* The service is another process: it writes the block's header with the block's other-process permission, which can
+   exceed the owner's own mapping (libctru makes the IR block read-only for the owner and writable for the service).
+   The single guest mapping cannot carry both rights, so the write goes through the physical pages it maps. */
+static bool write_shared(SnxCtrProcess* p, uint32_t va, const unsigned char* bytes, size_t size) {
+    for (size_t done = 0; done < size;) {
+        uint32_t at = va + (uint32_t)done, pa = 0;
+        size_t run = 4096 - (at & 4095);
+        if (run > size - done) run = size - done;
+        if (snx_ctr_query(p->space, at, &pa, NULL) != SNX_CTR_MEM_OK ||
+            snx_ctr_phys_write(p->memory, pa, bytes + done, run) != SNX_CTR_MEM_OK)
+            return false;
+        done += run;
     }
-    put32(p, IR_INDEX, index);
-    p->ir.index = (index + 1) & 7;
-    uint32_t event = p->ir_objects[1];
-    if (event) {
-        p->objects[event].data.event.signaled = 1;
-        snx_ctr_wake_waiters(p, event);
+    return true;
+}
+static void reply(SnxCtrIpc* c, unsigned normal, unsigned translated) {
+    c->out[0] = (c->in[0] & 0xffff0000u) | normal << 6 | translated;
+    c->out[1] = 0;
+}
+static uint32_t make_event(SnxCtrProcess* p, uint32_t* event) {
+    if (*event) return 0;
+    uint32_t handle = 0, result = snx_ctr_object_create(p, CTR_OBJ_EVENT, &handle);
+    if (result) return result;
+    *event = snx_ctr_handle_object(p, handle);
+    ++p->objects[*event].refs; /* the service's own, while the process lives */
+    return snx_ctr_handle_close(p, handle);
+}
+static void get_event(SnxCtrIpc* c, uint32_t* event) {
+    if (!snx_ctr_ipc_expect(c, 0, 0)) return;
+    uint32_t handle = 0, result = make_event(c->process, event);
+    if (!result) result = snx_ctr_handle_add(c->process, *event, &handle);
+    if (result) {
+        snx_ctr_ipc_error_reply(c, result);
+        return;
     }
+    reply(c, 1, 2);
+    c->out[2] = 0; /* one copied handle */
+    snx_ctr_ipc_output_handle(c, 3, handle);
+    if (c->state != SNX_CTR_IPC_RETURN) snx_ctr_ipc_drop_handle(c, handle);
 }
-void snx_ctr_ir_update(SnxCtrProcess* p, uint64_t now_ns) {
-    SnxCtrIr* ir = &p->ir;
-    if (!ir->next_ns || now_ns < ir->next_ns) return;
-    if (p->ir_objects[0]) sample(p);
-    /* one more than a period behind the host (a slow slice) starts again from now instead of delivering the missed
-       samples back to back, as hid's do */
-    uint64_t period = (uint64_t)ir->period_ms * 1000000u;
-    ir->next_ns += period;
-    if (ir->next_ns + period < now_ns) ir->next_ns = now_ns + period;
-}
-uint64_t snx_ctr_ir_deadline(const SnxCtrProcess* p) { return p->ir.next_ns ? p->ir.next_ns : UINT64_MAX; }
-static uint32_t snx_ctr_ir_GetHandles(SnxCtrIpc* c, uint32_t* memory, uint32_t* event) {
+static void initialize(SnxCtrIpc* c) {
+    if (!snx_ctr_ipc_expect(c, 6, 2)) return;
     SnxCtrProcess* p = c->process;
-    uint32_t* out[] = {memory, event};
-    for (unsigned i = 0; i < 2; ++i) {
-        uint32_t result = p->ir_objects[0] ? snx_ctr_handle_add(p, p->ir_objects[i], out[i])
-                                           : snx_ctr_object_create(p, i ? CTR_OBJ_EVENT : CTR_OBJ_SHARED, out[i]);
-        if (result) return result; /* generated output cleanup is transactional */
+    if (c->handle_count != 1) {
+        c->state = SNX_CTR_IPC_UNSUPPORTED;
+        return;
     }
-    if (!p->ir_objects[0]) {
-        uint32_t physical = snx_ctr_shared_pages(p, IR_MEMORY);
-        if (!physical) return 0xd86007f3u;
-        for (unsigned i = 0; i < 2; ++i) {
-            p->ir_objects[i] = snx_ctr_handle_object(p, *out[i]);
-            ++p->objects[p->ir_objects[i]].refs;
-        }
-        /* a system-pool page outside the application's accounting, zeroed as board RAM is, the game's to read only */
-        CtrObject* shared = &p->objects[p->ir_objects[0]];
-        shared->data.shared.physical = physical;
-        shared->data.shared.size = IR_MEMORY;
-        shared->data.shared.permissions = SNX_CTR_READ;
+    uint32_t object = snx_ctr_handle_object(p, c->handle_in[0]);
+    if (!object || p->objects[object].type != CTR_OBJ_SHARED) {
+        c->state = SNX_CTR_IPC_UNSUPPORTED;
+        return;
     }
-    return 0;
+    /* Only the 32 startup bytes are published, so the declared receive size must leave room for them and stay inside
+       the block the application actually lent; no packet is modelled and no byte beyond the metadata is touched */
+    CtrObject* block = &p->objects[object];
+    if (c->in[1] < IR_METADATA_SIZE || c->in[1] > block->data.shared.size) {
+        c->state = SNX_CTR_IPC_UNSUPPORTED;
+        return;
+    }
+    /* the block's other-process permission is the service's: don't care grants no write */
+    if (!(block->data.shared.other_permissions & SNX_CTR_WRITE)) {
+        snx_ctr_ipc_error_reply(c, IR_WRONG_PERMISSION);
+        return;
+    }
+    uint32_t address = shared_address(p, object);
+    unsigned char metadata[IR_METADATA_SIZE] = {0}; /* header, then the empty receive BufferInfo */
+    metadata[IR_INITIALIZED] = 1;
+    if (!address || !write_shared(p, address, metadata, sizeof metadata)) {
+        c->transport_result = 0xe0e01bf5u; /* the block's pages are not there to write */
+        return;
+    }
+    if (p->ir.shared != object) {
+        if (p->ir.shared) snx_ctr_object_release(p, p->ir.shared);
+        p->ir.shared = object;
+        ++block->refs; /* the service's own, while it serves the session */
+    }
+    reply(c, 1, 0);
 }
-static uint32_t snx_ctr_ir_Initialize(SnxCtrIpc* c, uint32_t update_period, uint32_t raw_c_stick) {
-    (void)raw_c_stick;
-    SnxCtrIr* ir = &c->process->ir;
-    /* a period of 0 would sample with no pause between: it samples every millisecond */
-    ir->period_ms = update_period ? update_period : 1;
-    ir->index = 0;
-    ir->next_ns = snx_ctr_now_ns() + (uint64_t)ir->period_ms * 1000000u;
-    return 0;
+static void finalize(SnxCtrIpc* c) {
+    if (!snx_ctr_ipc_expect(c, 0, 0)) return;
+    SnxCtrProcess* p = c->process;
+    if (p->ir.shared) {
+        snx_ctr_object_release(p, p->ir.shared);
+        p->ir.shared = 0;
+    }
+    reply(c, 1, 0);
 }
-static uint32_t snx_ctr_ir_Shutdown(SnxCtrIpc* c) {
-    c->process->ir.next_ns = 0;
-    return 0;
+/* a byte of the adopted block's header; nothing before InitializeIrNopShared gave a block */
+static void set_header(SnxCtrProcess* p, unsigned offset, unsigned char value) {
+    uint32_t address = p->ir.shared ? shared_address(p, p->ir.shared) : 0;
+    if (address) (void)write_shared(p, address + offset, &value, 1);
+}
+static void require_connection(SnxCtrIpc* c) {
+    if (!snx_ctr_ipc_expect(c, 1, 0)) return;
+    set_header(c->process, IR_CONNECTION_STATUS, 1);
+    set_header(c->process, IR_TRYING_TO_CONNECT, 2);
+    reply(c, 1, 0);
+}
+static void disconnect(SnxCtrIpc* c) {
+    if (!snx_ctr_ipc_expect(c, 0, 0)) return;
+    set_header(c->process, IR_CONNECTION_STATUS, 0);
+    set_header(c->process, IR_CONNECTED, 0);
+    reply(c, 1, 0);
+}
+static void send_nop(SnxCtrIpc* c) {
+    if (snx_ctr_ipc_expect(c, 1, 2)) snx_ctr_ipc_error_reply(c, IR_NOT_CONNECTED);
+}
+static void release_received(SnxCtrIpc* c) {
+    if (!snx_ctr_ipc_expect(c, 1, 0)) return;
+    if (c->in[1])
+        snx_ctr_ipc_error_reply(c, IR_NO_DATA);
+    else
+        reply(c, 1, 0);
+}
+void snx_ctr_ir_dispatch(SnxCtrIpc* c) {
+    uint32_t command = c->in[0] >> 16;
+    switch (command) {
+        case 0x0002: finalize(c); break;
+        case 0x0006: require_connection(c); break;
+        case 0x0009: disconnect(c); break;
+        case 0x000a: get_event(c, &c->process->ir.receive_event); break;
+        case 0x000b: get_event(c, &c->process->ir.send_event); break;
+        case 0x000c: get_event(c, &c->process->ir.status_event); break;
+        case 0x000d: send_nop(c); break;
+        case 0x0018: initialize(c); break;
+        case 0x0019: release_received(c); break;
+        default:
+            if (command && command <= IR_COMMANDS)
+                snx_ctr_system_unmodeled(c, "ir:USER", (uint32_t)SNX_CTR_SERVICE_IR << 16 | command);
+            else
+                c->state = SNX_CTR_IPC_UNKNOWN;
+            break;
+    }
 }

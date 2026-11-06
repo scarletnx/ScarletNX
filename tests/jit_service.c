@@ -49,7 +49,7 @@ static int failures;
 static unsigned char* memory;
 static GuestFn dispatch[(CODE_HI - CODE_LO) / 4];
 static SnxJitService* service;
-static RtAPI rt;
+static RtAPI rt = {.cas128 = snx_runtime_cas128};
 static unsigned misses, wrapped;
 /* the batches the report saw, and the first after which 0x3800 had code */
 static unsigned batch_count, live_batch;

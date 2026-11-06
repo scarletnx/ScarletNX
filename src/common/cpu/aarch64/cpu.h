@@ -489,7 +489,8 @@ SnxFpReply snx_fp_host_compare(u64 a, u64 b, int width, int signal, u32 fpcr);
 SnxFpReply snx_fp_host_minmax(u64 a, u64 b, int width, int minimum, int numeric, u32 fpcr);
 /* a vector's lanes through one of them in one call: desc's nibbles the helper (0 binary, 1 fma x + y * z, 2 unary,
    3 minmax), the width in bytes, the lane count, the operation and minmax's numeric. It touches only the memory of
-   its pointers, and returns FPSR after the lanes (fpsr in, for snx_fp_host_binary's lanes) */
+   its pointers, and returns FPSR after the lanes (fpsr in, for snx_fp_host_binary's lanes). It does not retain the
+   pointers. out may alias x: each lane consumes its input before writing, and the vector path reads all inputs first. */
 u32 snx_fp_host_lanes(void* out, const void* x, const void* y, const void* z, u32 desc, u32 fpcr, u32 fpsr);
 
 /* the same against a CPU structure, for the tests that drive them directly */
@@ -569,7 +570,7 @@ SNX_INLINE u32 snx_cas8(u8* p, u8 expected, u8 desired) {
     return __atomic_compare_exchange_n(p, &expected, desired, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
 }
 /* one atomic 16-byte compare-and-swap of both halves (p[0] the low one): cmpxchg16b on x86-64, lqarx/stqcx. on
-   POWER8, c->rt->cas128 on RISC-V, LoongArch and PowerPC64 builds for an older baseline */
+   POWER8, c->rt->cas128 on RISC-V, LoongArch, MIPS64 and PowerPC64 builds for an older baseline */
 u32 snx_cas128(CPU* c, u64* p, u64 o0, u64 o1, u64 n0, u64 n1);
 /* ABI 3 made these and snx_cas128 atomic, so modules from before are refused */
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__

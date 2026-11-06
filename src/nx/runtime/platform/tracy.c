@@ -17,14 +17,16 @@
 
 #if defined(SNX_TRACY)
 #include <SDL3/SDL_process.h>
-/* g_tracy_emit gates the emissions, g_tracy_pending counts them in flight. t_tracy is this thread's: the zones
-   it has open, its zone tick, whether it mirrors a connection, and the name it goes by. */
+/* g_tracy_state is the client's, and the emissions' gate is it being SNX_TRACY_ON; g_tracy_pending counts them in
+   flight. t_tracy is this thread's: the zones it has open, its zone tick, whether it mirrors a connection, and the
+   name it goes by. */
 #define SNX_TRACY_ZONE_MAX 64
 #define SNX_TRACY_POLL     4096
-static int g_tracy_emit;
+#define SNX_TRACY_OFF      0 /* not started */
+#define SNX_TRACY_ON       1
+#define SNX_TRACY_STOPPED  2 /* shut down, for good */
+static int g_tracy_state;
 static int g_tracy_pending;
-static int g_tracy_started;
-static int g_tracy_stopped;
 /* zones wanted deeper than SNX_TRACY_ZONE_MAX: dropped rather than leaked, and counted so a hole in a trace
    where the innermost work should be says it was this */
 static uint32_t g_tracy_dropped;
@@ -227,10 +229,9 @@ static const PmTracy g_pm_tracy_snx = {pm_tracy_make, pm_tracy_free,   pm_tracy_
 static void tracy_start_client(void) {
     char info[512];
     int n;
-    if (__atomic_load_n(&g_tracy_started, __ATOMIC_ACQUIRE)) return;
+    if (__atomic_load_n(&g_tracy_state, __ATOMIC_ACQUIRE) != SNX_TRACY_OFF) return;
     ___tracy_startup_profiler();
-    __atomic_store_n(&g_tracy_started, 1, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_tracy_emit, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_tracy_state, SNX_TRACY_ON, __ATOMIC_RELEASE);
     pm_tracy_register(&g_pm_tracy_snx); /* safe again: each lock keeps its single context */
     n = snprintf(info, sizeof info, "%s\n%s", snx_build_info(), g_tracy_title);
     __atomic_add_fetch(&g_tracy_pending, 1, __ATOMIC_ACQ_REL);
@@ -282,11 +283,11 @@ static void tracy_capture_connected(void) {
 }
 
 void snx_tracy_capture_now(void) {
-    int status = 0;
+    int status = 0, state;
     tracy_capture_lock();
-    if (__atomic_load_n(&g_tracy_started, __ATOMIC_ACQUIRE) && !__atomic_load_n(&g_tracy_emit, __ATOMIC_ACQUIRE))
-        goto out;
-    if (!__atomic_load_n(&g_tracy_started, __ATOMIC_ACQUIRE)) {
+    state = __atomic_load_n(&g_tracy_state, __ATOMIC_ACQUIRE);
+    if (state == SNX_TRACY_STOPPED) goto out;
+    if (state == SNX_TRACY_OFF) {
         tracy_port_setup(1); /* before the client reads it, which is when it starts */
         tracy_start_client();
         if (!tracy_capture_start(SNX_TRACY_NOW_SECONDS, 0)) goto out;
@@ -312,14 +313,14 @@ out:
 
 /* 1 while the client's emissions are allowed: closed before it starts and, again, before it shuts down. tracy_conn
    reads it so TracyCIsConnected is never reached while the client has no data to read (an assert). */
-int snx_tracy_gate_open(void) { return __atomic_load_n(&g_tracy_emit, __ATOMIC_ACQUIRE); }
+int snx_tracy_gate_open(void) { return __atomic_load_n(&g_tracy_state, __ATOMIC_ACQUIRE) == SNX_TRACY_ON; }
 
 int snx_tracy_enter(void) {
-    /* The count comes before the second gate read, and both are sequenced with the store shutdown closes with, so a
-       thread that is about to emit is either counted before shutdown looks or sees the gate closed. */
-    if (!__atomic_load_n(&g_tracy_emit, __ATOMIC_ACQUIRE)) return 0;
+    /* The count comes before the second gate read, and both are sequenced with the exchange shutdown closes it with,
+       so a thread that is about to emit is either counted before shutdown looks or sees the gate closed. */
+    if (__atomic_load_n(&g_tracy_state, __ATOMIC_ACQUIRE) != SNX_TRACY_ON) return 0;
     __atomic_add_fetch(&g_tracy_pending, 1, __ATOMIC_SEQ_CST);
-    if (!__atomic_load_n(&g_tracy_emit, __ATOMIC_SEQ_CST)) {
+    if (__atomic_load_n(&g_tracy_state, __ATOMIC_SEQ_CST) != SNX_TRACY_ON) {
         snx_tracy_leave();
         return 0;
     }
@@ -347,7 +348,7 @@ static void tracy_announce(void) {
 TracyCZoneCtx snx_tracy_zone_begin(const struct ___tracy_source_location_data* srcloc) {
     TracyCZoneCtx ctx = {0};
     uint64_t conn;
-    if (!__atomic_load_n(&g_tracy_emit, __ATOMIC_ACQUIRE)) return ctx;
+    if (__atomic_load_n(&g_tracy_state, __ATOMIC_ACQUIRE) != SNX_TRACY_ON) return ctx;
     /* No room to track a deeper zone: drop it rather than leak a begin. */
     if (t_tracy.zone_depth >= SNX_TRACY_ZONE_MAX) {
         __atomic_add_fetch(&g_tracy_dropped, 1, __ATOMIC_RELAXED);
@@ -401,6 +402,7 @@ void snx_tracy_zone_end(TracyCZoneCtx ctx) {
 /* Remembers the name for a later attach, and sends it now when a server can see it. */
 void snx_tracy_thread_name(const char* name) {
     if (!name || !*name) return;
+    snx_thread_name(name); /* the system's name too, as the build without Tracy gives it (tracy.h) */
     snprintf(t_tracy.name, sizeof t_tracy.name, "%s", name);
     if (!snx_tracy_enter()) return;
     if (TracyCIsConnected) TracyCSetThreadName(t_tracy.name);
@@ -605,10 +607,11 @@ void snx_tracy_log(int lvl, const char* text) {
 
 void snx_tracy_shutdown(void) {
     u64 until;
-    if (!__atomic_load_n(&g_tracy_started, __ATOMIC_ACQUIRE)) return;
-    if (__atomic_exchange_n(&g_tracy_stopped, 1, __ATOMIC_ACQ_REL)) return;
-    /* Close the gate; the store is sequenced with the counts, so a thread that passed it is already counted. */
-    __atomic_store_n(&g_tracy_emit, 0, __ATOMIC_SEQ_CST);
+    int on = SNX_TRACY_ON;
+    /* Close the gate, once and only on a running client; the exchange is sequenced with the counts, so a thread that
+       passed it is already counted. */
+    if (!__atomic_compare_exchange_n(&g_tracy_state, &on, SNX_TRACY_STOPPED, 0, __ATOMIC_SEQ_CST, __ATOMIC_ACQUIRE))
+        return;
     tracy_sampling_stop();
     /* End this thread's nested zones, each releasing its own count. */
     while (t_tracy.zone_depth > 0) snx_tracy_zone_end(t_tracy.zones[t_tracy.zone_depth - 1]);

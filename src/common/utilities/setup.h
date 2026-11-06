@@ -26,7 +26,7 @@ typedef struct {
     const char *what, *before, *now, *row;
     int systems;
 } SnxNotice;
-#define SNX_NOTICES 17
+#define SNX_NOTICES 21
 extern const SnxNotice snx_notices[SNX_NOTICES]; /* the oldest first */
 int snx_notice_here(int notice);                 /* 1 for one of this system's */
 
@@ -53,11 +53,12 @@ int snx_setup_options(int argc, char** argv, char* why, size_t why_size);
 /* a new user's uid: 16 bytes of the system's generator (RAND_bytes), its text (users.h) a UUID's of RFC 4122's version
    4 and variant. 0, else -1 */
 int snx_setup_uid(uint64_t uid[2]);
-/* the folders of games with Account saves of the fixed uid (users.h), which user 1 with another uid does not see */
-int snx_setup_first_saves(const char* games);
-/* the uid of a new users.ini's first user: the fixed one while games has saves of it, else snx_setup_uid's. How many
-   games have them, else -1 when the generator failed */
-int snx_setup_first_uid(const char* games, uint64_t uid[2]);
+/* the games with Account saves of the fixed uid (users.h), which user 1 with another uid does not see: those of games
+   in their own folders, and those in the data folder data's save/ (save_layout=global's, user.<uid>/<title ID>) */
+int snx_setup_first_saves(const char* games, const char* data);
+/* the uid of a new users.ini's first user: the fixed one while games or data has saves of it, else snx_setup_uid's. How
+   many games have them, else -1 when the generator failed */
+int snx_setup_first_uid(const char* games, const char* data, uint64_t uid[2]);
 
 /* 1 for text as a prod.keys or a title.keys has it: no NUL byte, and a line "name = hex" at least */
 int snx_keys_text(const char* data, size_t size);
@@ -79,6 +80,12 @@ char* snx_keys_dir(const char* data);
 int snx_keys_put(const char* path, const void* data, size_t size, char* why, size_t why_size);
 /* folder's prod.keys installed in dir, and its title.keys when it has one (*titles says so): 0, else -1 with why */
 int snx_keys_install(const char* folder, const char* dir, int* titles, char* why, size_t why_size);
+/* the 3DS keys' file, ~/.3ds/aes_keys.txt (%USERPROFILE%\.3ds on Windows) where the 3DS driver reads them, as the
+   Switch's are in ~/.switch; NULL with no home. found: it, if it is there */
+char* snx_ctr_keys_path(void);
+char* snx_ctr_keys_found(void);
+/* the folder's aes_keys.txt installed at that path: 0, 1 when the folder has none, else -1 with why */
+int snx_ctr_keys_install(const char* folder, char* why, size_t why_size);
 
 /* path as the setup shows it: ~/ for the home folder at its start (not on Windows) */
 void snx_home_short(const char* path, char* out, size_t size);

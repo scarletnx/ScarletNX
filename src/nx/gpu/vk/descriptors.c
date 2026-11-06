@@ -172,6 +172,10 @@ VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, co
     g_descriptors.frame[slot].used += size;
     g_descriptors.written++;
     g_descriptors.bytes += size;
+    /* Constant buffers usually share one staging buffer. Its address is fixed throughout these writes, so ask the
+       driver only when the buffer changes. Keep this local: a later call may use a recycled Vulkan handle. */
+    VkBuffer previous_buffer = VK_NULL_HANDLE;
+    VkDeviceAddress previous_address = 0;
     for (u32 i = 0; i < count; i++) {
         const VkWriteDescriptorSet* w = &writes[i];
         /* a texel buffer's write carries its view's create info, which names the buffer, range and format (render.c) */
@@ -190,12 +194,20 @@ VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, co
             VkDescriptorAddressInfoEXT buffer = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT};
             if (w->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || w->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
                 const VkDescriptorBufferInfo* b = &w->pBufferInfo[j];
-                buffer.address = address(b->buffer) + b->offset;
+                if (b->buffer != previous_buffer) {
+                    previous_buffer = b->buffer;
+                    previous_address = address(b->buffer);
+                }
+                buffer.address = previous_address + b->offset;
                 buffer.range = b->range;
                 if (w->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) info.data.pUniformBuffer = &buffer;
                 else info.data.pStorageBuffer = &buffer;
             } else if (texel) {
-                buffer.address = address(view->buffer) + view->offset;
+                if (view->buffer != previous_buffer) {
+                    previous_buffer = view->buffer;
+                    previous_address = address(view->buffer);
+                }
+                buffer.address = previous_address + view->offset;
                 buffer.range = view->range;
                 buffer.format = view->format;
                 info.data.pStorageTexelBuffer = &buffer;

@@ -55,6 +55,15 @@ FsTreeResult fs_tree_init_skipping(FsTree* tree, const char* directory, const ch
 /* Startup only: name, a child of the data directory it doesn't have, indexed from another host directory, as
    fs_tree_init indexes its own and with the same rejections, and readonly. The game's RomFS kept in tmpfs */
 FsTreeResult fs_tree_graft(FsTree* tree, const char* name, const char* directory);
+/* fs_tree_graft, writable: the folder's entries are the guest's to change, as the data directory's own (a save kept
+   in a folder of all the games') */
+FsTreeResult fs_tree_graft_writable(FsTree* tree, const char* name, const char* directory);
+/* Any time: path and everything under it out of the index, the host's files left as they are, for the caller to move:
+   a handle still open on one of them reads and writes nothing more. A save of a user deleted, taken to the Trash */
+FsTreeResult fs_tree_forget(FsTree* tree, const char* path);
+/* Any time: directory made on the host (its parent there, it not) and grafted as name, empty and writable. Nothing is
+   enumerated: a folder that is already there is FS_TREE_EXISTS, as only a scan at startup could index it */
+FsTreeResult fs_tree_graft_new(FsTree* tree, const char* name, const char* directory);
 /* Startup only: directory's entries laid over the data directory's, read-only, as another folder's: a file over the
    entry of its name, a folder's entries over the folder of its name. Of its top-level entries, only those named in
    whole or merged (each NULL-terminated, or NULL) are taken: one in whole replaces the data directory's and

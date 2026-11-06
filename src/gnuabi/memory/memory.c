@@ -67,6 +67,10 @@ static void code_changes(GnuMemory* m, uint64_t a, uint64_t n) {
             return;
         }
 }
+static struct {
+    uint64_t host_page; /* gnu_memory_host_page's */
+} g_memory;
+void gnu_memory_host_page(uint64_t page) { g_memory.host_page = page; }
 int gnu_memory_init(GnuMemory* m) {
     memset(m, 0, sizeof *m);
     m->size = GNU_ADDRESS_LIMIT;
@@ -75,15 +79,11 @@ int gnu_memory_init(GnuMemory* m) {
     m->base = VirtualAlloc(NULL, (SIZE_T)m->size, MEM_RESERVE, PAGE_NOACCESS);
 #else
     {
-        /* SNX_HOST_PAGE, a larger power of two up to 1 MiB, works as a host with those pages (tests) */
+        /* --host-page's larger power of two works as a host with those pages (tests) */
         long host = sysconf(_SC_PAGESIZE);
-        const char* forced = getenv("SNX_HOST_PAGE");
         uint64_t extra, head;
         if (host > (long)GNU_PAGE_SIZE) m->host_page = (uint64_t)host;
-        if (forced) {
-            uint64_t v = strtoull(forced, NULL, 0);
-            if (v > m->host_page && v <= (1ull << 20) && !(v & (v - 1))) m->host_page = v;
-        }
+        if (g_memory.host_page > m->host_page) m->host_page = g_memory.host_page;
         extra = m->host_page - (host > 0 ? (uint64_t)host : GNU_PAGE_SIZE);
         m->base = mmap(NULL, (size_t)(m->size + extra), PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         if (m->base == MAP_FAILED) {

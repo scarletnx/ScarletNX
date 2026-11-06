@@ -639,13 +639,22 @@ static void compressed_storage_destroy(storage_t *storage) {
     bucket_tree_free(s->tree);
 }
 
+/* Each read failure says the entry, its kind, the image bytes it gives and the stored bytes it takes, so that a
+   game's log tells a damaged block from a table this port reads otherwise than the console. */
 static int compressed_storage_block(compressed_storage_t *s, uint32_t i, uint64_t block_size) {
     if (s->cache_valid && s->cache_entry == i) return 1;
     const unsigned char *entry = bucket_tree_entry(s->tree, i);
+    uint64_t virtual_offset = read_u64(entry);
     uint64_t physical_offset = read_u64(entry + 8);
     uint32_t physical_size = read_u32(entry + 0x14);
     if (block_size > LZ4_MAX_INPUT_SIZE || physical_size > LZ4_MAX_INPUT_SIZE) {
-        fprintf(stderr, "Compressed block too large!\n");
+        fprintf(stderr, "Compressed storage entry %"PRIu32" (LZ4, image 0x%"PRIx64"+0x%"PRIx64", stored at 0x%"PRIx64"+0x%"PRIx32") is past LZ4's 0x%x bytes!\n",
+                i, virtual_offset, block_size, physical_offset, physical_size, (unsigned int)LZ4_MAX_INPUT_SIZE);
+        return 0;
+    }
+    if (physical_offset > s->data->size || physical_size > s->data->size - physical_offset) {
+        fprintf(stderr, "Compressed storage entry %"PRIu32" (LZ4, image 0x%"PRIx64"+0x%"PRIx64") is stored at 0x%"PRIx64"+0x%"PRIx32", past the stored data's 0x%"PRIx64" bytes!\n",
+                i, virtual_offset, block_size, physical_offset, physical_size, s->data->size);
         return 0;
     }
     if (s->cache_capacity < block_size + physical_size) {
@@ -659,8 +668,11 @@ static int compressed_storage_block(compressed_storage_t *s, uint32_t i, uint64_
     s->cache_valid = 0;
     unsigned char *compressed = s->cache + block_size;
     if (!storage_read(s->data, physical_offset, compressed, physical_size)) return 0;
-    if (LZ4_decompress_safe((const char *)compressed, (char *)s->cache, (int)physical_size, (int)block_size) != (int)block_size) {
-        fprintf(stderr, "Failed to decompress block at 0x%"PRIx64"!\n", read_u64(entry));
+    int decoded = LZ4_decompress_safe((const char *)compressed, (char *)s->cache, (int)physical_size, (int)block_size);
+    if (decoded != (int)block_size) {
+        /* A negative count is LZ4's error, at that many bytes into the stored block. */
+        fprintf(stderr, "Compressed storage entry %"PRIu32" (LZ4, image 0x%"PRIx64"+0x%"PRIx64", stored at 0x%"PRIx64"+0x%"PRIx32"): LZ4_decompress_safe returns %d!\n",
+                i, virtual_offset, block_size, physical_offset, physical_size, decoded);
         return 0;
     }
     s->cache_entry = i;
@@ -678,13 +690,20 @@ static int compressed_storage_read(storage_t *storage, uint64_t offset, void *bu
         uint64_t physical_offset = read_u64(entry + 8);
         uint64_t end = bucket_tree_entry_end(s->tree, i);
         if (offset >= end) {
-            fprintf(stderr, "Invalid compressed storage entry!\n");
+            fprintf(stderr, "Compressed storage entry %"PRIu32" (image 0x%"PRIx64" to 0x%"PRIx64") does not hold 0x%"PRIx64"!\n",
+                    i, virtual_offset, end, offset);
             return 0;
         }
         uint64_t within = offset - virtual_offset;
         uint64_t length = end - offset < size ? end - offset : size;
         switch (entry[0x10]) {
             case COMPRESSION_NONE:
+                if (physical_offset > s->data->size || within > s->data->size - physical_offset ||
+                    length > s->data->size - physical_offset - within) {
+                    fprintf(stderr, "Compressed storage entry %"PRIu32" (NONE, image 0x%"PRIx64"+0x%"PRIx64", stored at 0x%"PRIx64") reads stored bytes 0x%"PRIx64"+0x%"PRIx64", past the stored data's 0x%"PRIx64"!\n",
+                            i, virtual_offset, end - virtual_offset, physical_offset, physical_offset + within, length, s->data->size);
+                    return 0;
+                }
                 if (!storage_read(s->data, physical_offset + within, out, length)) return 0;
                 break;
             case COMPRESSION_ZEROED:
@@ -695,7 +714,8 @@ static int compressed_storage_read(storage_t *storage, uint64_t offset, void *bu
                 memcpy(out, s->cache + within, length);
                 break;
             default:
-                fprintf(stderr, "Unsupported compression type %"PRIu8"!\n", entry[0x10]);
+                fprintf(stderr, "Compressed storage entry %"PRIu32" (image 0x%"PRIx64"+0x%"PRIx64", stored at 0x%"PRIx64"+0x%"PRIx32") has compression type %"PRIu8", not NONE (0), ZEROED (1) or LZ4 (3)!\n",
+                        i, virtual_offset, end - virtual_offset, physical_offset, read_u32(entry + 0x14), entry[0x10]);
                 return 0;
         }
         out += length;

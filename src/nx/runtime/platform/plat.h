@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The operating system under the runtime. plat_sdl.c implements what SDL does the same way everywhere (the clocks,
-   sleeping, libraries, path queries), and one of plat_posix.c and plat_win32.c the rest (threads, condition variables,
-   the guest's address space, file maps, the crash handler); profiler_win32.c samples threads on Windows, and the host
-   audio output lives in the window backend. Paths are UTF-8 everywhere. */
+   sleeping, libraries, path queries and the host's power state), and one of plat_posix.c and plat_win32.c the rest
+   (threads, condition variables, the guest's address space, file maps, the crash handler); profiler_win32.c samples
+   threads on Windows, and the host audio output lives in the window backend. Paths are UTF-8 everywhere. */
 #ifndef SNX_PLAT_H
 #define SNX_PLAT_H
 #include "common/cpu/aarch64/cpu.h"
@@ -74,24 +74,73 @@ u64 plat_monotonic_ns(void);
 i64 plat_unix_time(void); /* seconds since 1970 UTC */
 i64 plat_tz_offset(void); /* local time minus UTC, in seconds */
 
+/* ---- power */
+/* Whether the host runs from its charger: 1 plugged in, 0 on its battery, -1 when that cannot be read. Call it on the
+   main thread: SDL's power query is not thread safe */
+int plat_power_on_charger(void);
+/* Starts the watcher of the host's power source, where the platform has one: a change marks the flag that
+   plat_power_take_change reports. 0 when watching, -1 when this host has no watcher (the caller polls) */
+int plat_power_watch(void);
+/* Starts the watcher of the system's warnings of low memory where the platform has one, on a thread of its own: Linux's
+   pressure stall trigger, Windows' low memory notification. Each warning calls say with what the system said, until
+   say returns 0. 0 when watching; -1 when this system has none here (Android's comes as SDL's event, iOS's and macOS's
+   are the backend's) or it refused, with the reason in the log */
+int plat_memory_watch(int (*say)(const char* why));
+/* 1 when the watcher saw the host's power source change since the last call, and clears it */
+int plat_power_take_change(void);
+/* marks a change from a platform watcher's callback (Android's receiver, Apple's notification) */
+void plat_power_mark_changed(void);
+
 /* ---- the guest's address space */
 /* The host's page, which the reservation is committed, decommitted and aliased in: 4 KiB, the Switch's own, on x86-64
    and most AArch64 systems, 16 KiB on Apple silicon and some Android kernels, 64 KiB on most PowerPC64 and some
-   AArch64 distributions (mem.c). SNX_HOST_PAGE in the environment, a larger power of two up to 1 MiB, makes a host
-   with smaller pages work in those, to test the larger pages' paths on any machine */
+   AArch64 distributions (mem.c). The setting host_page, a larger power of two up to 1 MiB, makes a host with smaller
+   pages work in those, to test the larger pages' paths on any machine; another value is said once */
 u64 plat_vm_page(void);
-u8* plat_vm_reserve(u64 size); /* aligned to plat_vm_page, inaccessible until committed; NULL, the reason in errno */
+#define SNX_PLAT_PAGE_MAX ((u64)1 << 20) /* the largest page plat_vm_page works in */
+/* Inaccessible until committed; NULL, the reason in errno. Aligned to SNX_PLAT_PAGE_MAX, so it can be made before the
+   settings say which page the runtime works in (Windows: its 64 KiB allocation granularity, as it commits any 4 KiB
+   page). Windows makes it with its write watch (plat_ww_scan), or not at all */
+u8* plat_vm_reserve(u64 size);
+/* plat_vm_reserve without the write watch, where the system gives no reservation of that size with it (Windows). NULL
+   with ENOSYS elsewhere: the written-page tracking comes after the reservation there (plat_vm_track) */
+u8* plat_vm_reserve_unwatched(u64 size);
+/* The written-page tracking (plat_ww_scan) and the traps' page states (plat_trap_init) of the reservation [p, p +
+   size): once, after the settings are read and before a page of it is committed (mem_init) */
+void plat_vm_track(u8* p, u64 size);
 /* The process's address space now: what is mapped or reserved in all, and its largest free run between them, for a
    run that fails for want of it (a thread's stack, a mapping). Whether the system told it (Linux, macOS, iOS and
    Windows do) */
 int plat_address_space(u64* mapped, u64* largest_free);
+/* plat_vm_reserve at the host address addr, where the guest's addresses are the host's (NCE): all of the guest's
+   memory is then executable too. POSIX only. NULL when the range is taken, the reason in errno */
+u8* plat_vm_reserve_at(u64 addr, u64 size);
 int plat_vm_commit(u8* p, u64 size);       /* readable and writable; 0, or -1 */
 void plat_vm_decommit(u8* p, u64 size);    /* inaccessible again, and zero when committed next */
+/* committed [p, p + size) becomes the pages of fd (a buffer a GPU shares, that large), shared, readable and writable,
+   holding what it held; and back to fresh private pages holding what it held. 0; -1 with p as it was (ENOSYS but on
+   Linux and Android); -2 when p couldn't be put back either. The caller keeps writers out meanwhile (plat_freeze) */
+int plat_vm_share(u8* p, int fd, u64 size);
+int plat_vm_unshare(u8* p, u64 size);
+/* A buffer of size bytes a GPU takes in place, which guest memory moves into where the driver can't import host
+   memory (gpu/vk/uma.c): the descriptor its pages are mapped from, and what the driver imports. On Android an
+   AHardwareBuffer blob (*handle); on Linux a memfd, *handle a mapping of its pages, which a driver imports as host
+   memory (the tests' way). 0, or -1 with errno (ENOSYS elsewhere, and on Android before 8) */
+int plat_gpu_buffer(u64 size, int* fd, void** handle);
+void plat_gpu_buffer_free(int fd, void* handle, u64 size);
+/* What of the process lies in its address space's [lo, hi) and is not the guest's: a mapping with a name (a file, a
+   device, a named anonymous mapping such as ART's or the allocator's, a memfd other than the alias pool's) that own
+   does not claim (own(a, b): 1 when [a, b) is the caller's; NULL claims none), and a run that nothing maps, which any
+   mmap of the process may then be given. Their count, each one named in out (its range, permissions and name) as far
+   as it fits; 0 when the range is the guest's alone; -1 where the system does not say (errno: ENOSYS but on Linux and
+   Android, or the maps could not be read), which tells nothing of the range. A plain anonymous mapping of another
+   owner reads as the guest's. It reads with read(2) into a buffer of its own, so a crash handler may call it */
+int plat_vm_foreign(u64 lo, u64 hi, int (*own)(u64 a, u64 b), char* out, size_t size);
 /* Calls cb for each run of pages in [p, p + size) written since they were last scanned, and watches them again.
    -1 when the host can't tell (the caller then compares contents). Linux 6.7 and later use userfaultfd's asynchronous
    write protection with PAGEMAP_SCAN, Windows the write watch of the reservation. The other POSIX hosts (macOS,
    FreeBSD, Android, older Linux) protect what a scan reported and take the first write to it in the fault handler;
-   SNX_WW=signal takes that path on any Linux, and SNX_NO_WW in the environment turns all of them off */
+   write_tracking=1 takes that path on any Linux, and write_tracking=2 turns all of them off */
 int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size));
 /* [p, p + size) of the reservation is about to be written by the kernel (a system call given guest memory to fill),
    which the protection plat_ww_scan uses on some hosts would fail with EFAULT: the pages open, written, and no scan
@@ -100,6 +149,13 @@ int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size));
    Windows' write watch) */
 void plat_ww_open(u8* p, u64 size);
 void plat_ww_close(u8* p, u64 size);
+/* Hot pages (write_tracking_hot=1, with page protection only): a page the scans found written in a row is left
+   writable and reported written by every scan, so a scan may report one nothing wrote. plat_ww_hot_in says whether
+   [p, p + size) has one; plat_ww_cool protects its hot pages again and reports them to cb as written, as a scan
+   would, so from then on a report of one stands for a write. A consumer whose "written" must be exact (a render
+   target's baseline) cools its pages after it took their writes in. Nothing where no page is hot */
+int plat_ww_hot_in(const u8* p, u64 size);
+void plat_ww_cool(u8* p, u64 size, void (*cb)(u8* p, u64 size));
 /* The alias pool: one host memory object whose pages can be mapped at several addresses of the reservation at once,
    and outside it, so two guest addresses (MapMemory's view and its source, code memory's owner and slave, shared
    memory and its service) are the same pages. Linux and Android (a memfd); elsewhere plat_alias_init says -1 and
@@ -111,6 +167,12 @@ int plat_alias_init(u64 size); /* 0, or -1 when the host has no pool */
 int plat_alias_map(u8* p, u64 off, u64 size);
 /* p back to the reservation's own memory, decommitted as plat_vm_decommit leaves it: 0, or -1 */
 int plat_alias_unmap(u8* p, u64 size);
+/* [off, off + size) of the file fd (a GPU memory object's dma-buf) at p in the reservation, shared, readable and
+   writable: 0, or -1 (and p as a failed MAP_FIXED leaves it: plat_alias_unmap gives the reservation back). No write
+   tracking registers it, as userfaultfd refuses a driver's mapping: the caller keeps it from the scans. Linux and
+   Android; -1 elsewhere */
+int plat_vm_map_fd(u8* p, u64 size, int fd, u64 off);
+void plat_vm_fd_close(int fd);
 /* copies between host memory and the pool: 0, or -1 */
 int plat_alias_write(u64 off, const void* src, u64 size);
 int plat_alias_read(u64 off, void* dst, u64 size);
@@ -125,7 +187,7 @@ u8* plat_alias_mirror(void);
 /* Traps on pool pages of the reservation (memory/own.c, docs/GPU_OWNERSHIP.md): an access to an armed page, by any
    thread, waits while fault (on a thread of the trap's own, never in a signal handler) gets the page's contents into
    the pool and lets it go on with plat_trap_continue. Linux 5.13 and later use userfaultfd's minor faults on shared
-   memory. Other hosts with the pool (older Linux, Android, or SNX_TRAPS=signal on any Linux) make the pages
+   memory. Other hosts with the pool (older Linux, Android, or memory_traps=1 on any Linux) make the pages
    inaccessible, and the faulting thread waits in the signal handler while the trap's thread lands them. Without the
    pool plat_trap_init says -1. An access from the kernel (a system call given a pointer into an armed
    page) fails with EFAULT instead of waiting, so the runtime opens a range before it hands it to the kernel. tid is
@@ -136,7 +198,8 @@ u32 plat_tid(void); /* the calling thread's id, as the system numbers threads */
 int plat_thread_in_fault(u32 tid);
 /* Best-effort fatal diagnostics for the blocked thread, not the trap handler. Never resumes it. */
 void plat_dump_fault_thread(u32 tid);
-/* every page of [p, p + size), whole host pages of pool memory, armed / let go (0, or -1) */
+/* every page of [p, p + size), whole host pages of pool memory, armed / let go (0, or -1). A page let go reads as
+   written to plat_ww_scan, as does what any thread writes on it from then on */
 int plat_trap_arm(u8* p, u64 size);
 int plat_trap_continue(u8* p, u64 size);
 /* [p, p + size) not trapped any more: a page not yet let go reads the pool's contents when it is touched */
@@ -186,6 +249,11 @@ void plat_audio_volume(PAudio* a, float volume);
 
 /* ---- crash reports and profiling */
 void plat_install_crash_handler(void);
+/* The game's code module, by any address in it: a fault in its code is reported first, whatever else the process
+   installed since. Windows only; elsewhere the signal handler sees every fault, and this does nothing */
+void plat_crash_code_module(const void* inside);
+/* The runtime's crash filter back where another part of the process replaced it, said once. Windows only */
+void plat_crash_handler_check(void);
 void plat_prof_start(void); /* starts the sampling profiler (the profile option): Windows only */
 #if defined(_WIN32)
 void plat_prof_add_thread(HANDLE h); /* a thread to sample; the profiler keeps its own handle */

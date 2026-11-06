@@ -11,7 +11,7 @@
 
 The supplied SuperTux CIA **reaches and executes `main`**, at `0x00167d88`
 after **50,569 native blocks**. It reads its RomFS through NX's shared indexed
-host filesystem. As of 2026-10-16 it also draws its title and loading screens
+host filesystem. It also draws its title and loading screens
 with the software PICA pipeline and plays its title music through the HLE DSP.
 It is **not playable**: it has no input, only the top screen is shown, and the
 music gaps after each rendered frame (see the [parity roadmap](3DS.md#parity-roadmap-azahar)).

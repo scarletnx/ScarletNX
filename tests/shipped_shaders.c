@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* gpu/shader/shipped.c on containers built here: NVN's program wrapper and SPH, a bare NVN shader file, a SARC that
-   names its entries, and Yaz0 streams of literals and of copies that overlap what they write */
+/* gpu/shader/shipped.c on containers built here: NVN's program wrapper and SPH, a bare NVN shader file, a BNSH's code
+   records that name programs' constants, a SARC that names its entries, and Yaz0 streams of literals and of copies
+   that overlap what they write */
 #include "nx/gpu/shader/shipped.h"
 #include "nx/gpu/shader/shader.h"
 #include <stdio.h>
@@ -41,18 +42,26 @@ static void program(u8* d, size_t at, u32 word) {
     put32(d + at + 0x30, word);
 }
 
+static void put64(u8* p, u64 v) {
+    put32(p, (u32)v);
+    put32(p + 4, (u32)(v >> 32));
+}
+
+/* each program's stage, SPH offset, and constants (their offset, 0 for none, and size) */
 typedef struct {
     int n, stage[8];
-    size_t at[8];
+    size_t at[8], consts[8], nconsts[8];
     const u8* base;
     int stop_after;
 } Seen;
-static int seen(void* ctx, const u8* p, size_t avail, int stage) {
+static int seen(void* ctx, const u8* p, size_t avail, int stage, const u8* consts, size_t nconsts) {
     Seen* s = ctx;
     (void)avail;
     if (s->n < 8) {
         s->stage[s->n] = stage;
         s->at[s->n] = (size_t)(p - s->base);
+        s->consts[s->n] = consts ? (size_t)(consts - s->base) : 0;
+        s->nconsts[s->n] = nconsts;
     }
     s->n++;
     return s->stop_after && s->n >= s->stop_after;
@@ -101,6 +110,40 @@ static void bare_file(void) {
     CHECK(shipped_kind(d, SHIPPED_HEAD) == SHIPPED_SCAN);
     CHECK(shipped_programs(d, sizeof d, seen, &s) == 1);
     CHECK(s.n == 1 && s.stage[0] == ST_FS && s.at[0] == 0xB50);
+}
+
+/* A BNSH at 0x100 of 0x3000 bytes: a code record names the program at 0x1000 (0x200 bytes of code area, its control
+   section at 0x200 puts its constants at 0x100 of them), another names the one at 0x1200 with a control section whose
+   code area size disagrees, and the one at 0x1400 has no record. Only the first is handed its constants */
+static void bnsh(void) {
+    static u8 d[0x3100];
+    const size_t b = 0x100;
+    Seen s = {0};
+    memset(d, 0, sizeof d);
+    memcpy(d + b, "BNSH", 4);
+    put32(d + b + 0x1C, 0x3000);
+    put64(d + b + 0x108, 0x200); /* the record at 0x100: control section, code area, its bytes */
+    put64(d + b + 0x110, 0x1000);
+    put32(d + b + 0x118, 0x200);
+    put32(d + b + 0x200, 0x98761234u);
+    put32(d + b + 0x200 + 0x700, 0x100);
+    put32(d + b + 0x200 + 0x704, 0x200);
+    put32(d + b + 0x200 + 0x708, 0x30);
+    put64(d + b + 0x148, 0xA00); /* the record at 0x140 */
+    put64(d + b + 0x150, 0x1200);
+    put32(d + b + 0x158, 0x200);
+    put32(d + b + 0xA00, 0x98761234u);
+    put32(d + b + 0xA00 + 0x700, 0x100);
+    put32(d + b + 0xA00 + 0x704, 0x300);
+    put32(d + b + 0xA00 + 0x708, 0x30);
+    program(d, b + 0x1000, sph(1, 1));
+    program(d, b + 0x1200, sph(2, 5));
+    program(d, b + 0x1400, sph(2, 5));
+    s.base = d;
+    CHECK(shipped_programs(d, sizeof d, seen, &s) == 3);
+    CHECK(s.at[0] == b + 0x1030 && s.consts[0] == b + 0x1100 && s.nconsts[0] == 0x100);
+    CHECK(s.at[1] == b + 0x1230 && !s.consts[1] && !s.nconsts[1]);
+    CHECK(s.at[2] == b + 0x1430 && !s.consts[2] && !s.nconsts[2]);
 }
 
 /* a SARC of two entries: a.bfres (no shaders) and b.bnsh, aligned to 0x100 past the data offset */
@@ -211,6 +254,7 @@ int main(void) {
     names();
     programs();
     bare_file();
+    bnsh();
     archive();
     yaz0();
     if (failures) return 1;

@@ -82,7 +82,7 @@ int gnu_runtime_run(GnuProcess* p) {
     struct sigaction guard;
     memset(&guard, 0, sizeof guard);
     /* Specific fix for FreeBSD whom doesn't expose the sa_sigaction macro */
-#if !defined(__linux__) && !defined(__XSI_VISIBLE)
+#if !defined(__linux__) && !defined(__NetBSD__) && !defined(__XSI_VISIBLE)
     guard.__sigaction_u.__sa_sigaction = access_fault;
 #else
     guard.sa_sigaction = access_fault;

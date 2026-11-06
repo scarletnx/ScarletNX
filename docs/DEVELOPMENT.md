@@ -2,6 +2,20 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # Development
 
+## Index
+
+* [Measure NVN storage ordering](#measure-nvn-storage-ordering)
+* [Measure descriptor submission](#measure-descriptor-submission)
+* [Search for faster GPU settings](#search-for-faster-gpu-settings)
+* [Rebuild / checks](#rebuild--checks)
+* [Run / diagnose](#run--diagnose)
+* [CPU sampling without perf](#cpu-sampling-without-perf)
+* [Profiling](#profiling)
+* [Shaders](#shaders)
+* [Vertex input](#vertex-input)
+* [SVCs](#svcs)
+* [Provenance](#provenance)
+
 [Architecture](ARCHITECTURE.md) · [build/toolchains](BUILD.md) · [usage](USAGE.md) · [agent rules](../CLAUDE.md) · [contributing](../CONTRIBUTING.md).
 Run from checkout. POSIX examples: Windows uses `python`, `.exe`, PowerShell env syntax.
 The build tree's drivers work in the user's data folder, as an installed copy does ([Folders](USAGE.md#folders));
@@ -10,6 +24,41 @@ the examples name its folders on Linux, and `--data DIR` keeps a run's files in 
 ```sh
 games=~/.local/share/scarletnx/recompiled work=~/.cache/scarletnx/work
 ```
+
+## Measure NVN storage ordering
+
+`nvn_storage_order=2` is the default. It defers each storage-order requirement until a dependent buffer use.
+Mode 1 emits the required barriers at their command-stream points. Mode 0 retains conservative per-draw storage
+dependencies for controlled comparisons or older command recordings. NVN permits draws to overlap until an explicit
+ordering command. A writable storage view can cover the same buffer in many draws even when each draw writes a
+different word. Treating that view alone as a dependency ended the render pass at each reuse. NVN graphics draws now use the command stream's execution and shader-data barriers for that
+ordering. Barrier flags survive recording and command copies. Shader instruction invalidation remains separate.
+
+Maxwell draws, compute bindings and transform feedback retain conservative write ordering. Read-only consumers,
+internal copies, submission boundaries and CPU readbacks keep their visibility and lifetime checks.
+Upstream fragment and texture barriers remain in the NVN command path. The descriptor-buffer setting retains its
+existing choice of whether those barriers can be omitted.
+
+```sh
+cmake --build build --target snx-test-vulkan
+python3 tools/bench_nvn_draws.py --out /local/scratch/nvn-draw-search
+```
+
+The Python search checks descriptor sets and descriptor buffers, each with and without the recording thread.
+Every supported backend first runs the exact headless renderer checks. The fixture also checks a dependent GPU read
+and a read followed by an in-place overwrite, with no host wait between the operations. Then shuffled serial rounds
+compare the conservative, immediate explicit and deferred explicit ordering paths on identical synthetic draws. One
+vertex writes one distinct word per draw through overlapping storage views. The fixture checks every output byte
+and records render-pass counts.
+It warms pipelines before timing and includes GPU completion in each batch's time.
+
+A candidate must run the requested backend and pass every output check. The explicit path must beat its matching
+conservative baseline by at least 3 percent in every paired round to qualify. Logs and the binary fingerprint go
+into the output folder. The result is specific to this workload and does not establish a game FPS improvement.
+
+When the upstream ABI changes, build a matching AOT module before the gameplay comparison. A cold JIT-only boot
+that compiles guest code but submits no GPU work has not exercised draw barriers. A successful exit without presented
+frames does not verify the renderer.
 
 ## Measure descriptor submission
 
@@ -34,8 +83,9 @@ configurations. This is a CPU submission benchmark, not a prediction of game FPS
 ## Search for faster GPU settings
 
 `tools/tune_gpu.py` tests execution strategies and then tries combinations around the fastest candidates.
-It searches descriptor sets versus descriptor buffers, Vulkan recording, guest thread scheduling and buffer memory paths. It searches compiler worker counts
-when the logs show compilation. Resolution, shadows, filtering and effects stay fixed. Async pipelines stay off,
+It searches NVN storage ordering, descriptor sets versus descriptor buffers, Vulkan recording, guest thread scheduling
+and buffer memory paths. Storage ordering only competes when the log confirms that the NVN loader is active.
+It searches compiler worker counts when the logs show compilation. Resolution, shadows, filtering and effects stay fixed. Async pipelines stay off,
 so a candidate cannot win by skipping draws. It does not edit source code or apply settings.
 
 ```sh
@@ -85,7 +135,8 @@ FS tests use production tree/HLE + synthetic temp data; `--only tree|service` se
 
 CI: Linux/Windows builds, ABI syntax, native tool/FS regressions, optional Python diagnostics, the Linux AppImages
 and the Windows zip (each then run as installed), the Android APK, and [edenprobe](EDENPROBE.md)'s probes on lavapipe
-against the cases that passed before (`scripts/edenprobe.py`). `.github/workflows/publish.yml` publishes what
+against the cases that passed before (`scripts/edenprobe.py`). A push to `main` cancels the build of the one before it
+still running, as a push to a pull request does that pull request's. `.github/workflows/publish.yml` publishes what
 builds everywhere, each said on Discord (`scripts/publish-builds.py`): a version tag pushed (`v1.0.0`; `v1.0.0-rc1` a
 prerelease) as this repository's release of it, the latest, its notes listing the changes since the version before;
 each push to `main` as a release of [scarletnx/nightly](https://github.com/scarletnx/nightly/releases), the newest 30
@@ -93,7 +144,7 @@ kept (this repository's `nightly` prerelease shows the latest's notes); each pul
 `pr-<number>`. The notes and the messages link each download with its size and list what changed (a pull request's
 commits). A fork's pull request is published once someone of the team labels it `publish builds`, after each
 push. The Discord cards of each pull request, each issue and each push to `main` are ReiWimsy's, the bot of
-[scarletnx/discord-bots](https://github.com/scarletnx/discord-bots), which asks GitHub what changed every 30 s: no job
+[scarletnx/wimsy-core](https://github.com/scarletnx/wimsy-core), which asks GitHub what changed every 30 s: no job
 of this repository draws them. The secrets: `NIGHTLY_TOKEN` (writes that repository's contents) and
 `DISCORD_WEBHOOK_RELEASES` (a version's message).
 Verify affected scenes manually, repeat intermittent failures, record evidence/scope.
@@ -111,10 +162,11 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
 ```
 
 - `--scan-log` (`src/common/utilities/logscan.c`, also built as `build/snx-logscan`): a log, or the launcher's Share
-  log file (the game log in it), as a summary: the build, title ID, game version and GPU from the log's header, how
-  the run ended, the game function it is pinned on (for `svcBreak`, the first frame past the SDK's abort), the service
-  commands the runtime doesn't implement, warnings, the frames over 50 ms (how many, the slowest, and what the
-  slowest did, from the renderer's frame lines), and a signature that is the same for every log failing the same way.
+  log file (the game log in it), as a summary: the build (with the day its commit was made, when the log says it),
+  title ID, game version and GPU from the log's header, how the run ended, the game function it is pinned on (for
+  `svcBreak`, the first frame past the SDK's abort), the service commands the runtime doesn't implement, warnings, the
+  frames over 50 ms (how many, the slowest, and what the slowest did, from the renderer's frame lines), and a signature
+  that is the same for every log failing the same way.
   JSON (a line a log, versioned by `schema`) or a markdown summary for an issue. Paths are shortened to `~`, and the
   crash report's code and memory dumps are left out. The launcher's Share Log puts the same summary at the top of
   `scarletnx.log`. A log is read once, a line at a time, in fixed memory: a gigabyte takes about two seconds.
@@ -135,9 +187,12 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   each issue and comment. An issue with a log attached (`.log`, `.txt`, `.gz`, `.zip`) or pasted in a fenced block gets
   one comment with the summary of each, edited as logs are added, the labels `game report` and `log: <how it ended>`,
   and the other reports with the same signature named. `triage --issue N --dry-run --logscan build/snx-logscan` shows
-  what it would post. `scripts/game-reports.py index [--title-id ID] [--signature TEXT]` lists the reports and their
-  logs as JSON lines. A maintainer's `status: confirmed` label on a report gets one comment: ready for an edenprobe
-  case, with the steps.
+  what it would post, and `gh workflow run game-reports.yml -f issue=N` runs the workflow for that issue (one whose run
+  failed), failing on a pull request or an issue without a log. `scripts/game-reports.py index [--title-id ID]
+  [--signature TEXT]` lists the reports and their logs as JSON lines. A maintainer's `status: confirmed` label on a
+  report gets one comment: ready for an edenprobe case, with the steps. The ctest `game_reports_workflow` runs the
+  workflow's build step on the files its sparse checkout lists alone, so a file the log summary comes to include fails a
+  pull request until the list has it.
 
 - Runtime: `--seconds=N` / `--frames=N`, counted from the game's start, after the shader loading screen
   (`prepare_shaders=2`, which the first run after a rebuild spends translating the game's shaders again);
@@ -159,7 +214,7 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   `~/.cache/scarletnx/module-dumps`. The dump's format is described in `src/nx/loader/loader.h`.
   `--log=2`: verbose; Windows `--profile=1`: `profile.txt` every 10 s.
 
-The game's `[Debug]` settings ([USAGE.md](USAGE.md#settings--input)) are for investigating. Each is also given for one run as
+The game's `[Debug]` settings ([Settings](SETTINGS.md#debug)) are for investigating. Each is also given for one run as
 `--key=value` on the game's command line. One not at its default, and the GDB stub, is said at the top of the game's
 picture while it runs (`Debug on: log=2, gdbstub`, a text setting by its key alone), in the log's header
 (`debug: log=2 (default 1), gdbstub`), and in the launcher, as `(Debug on)` on the game's row and its Play and the list
@@ -169,6 +224,18 @@ beside it:
   64 KiB) and its last lines, half of `log_max` in all, with a line saying how much went between them
   (`log: reached log_max=16 MiB: 7.4 MiB of lines between the run's start and here cut`), and the first time the
   game's picture says so for 3 s. `--log=2` with a long run is what fills it.
+- `--log=2` also logs the process's resources, alike on every system. Each second a `resources:` line: the
+  footprint, what the system still gives the process (`?` where it tells none) and the renderer's VMA blocks; on iOS
+  Metal's memory, the thermal state and low power mode too. Every 5 s a `threads:` line: the three threads with the
+  most time on the processors, by the names the runtime gives them (Linux and Android keep 15 bytes of a name,
+  FreeBSD 19). A `memory: under N MiB free` line, with each GPU heap, the first time what the system still gives
+  falls under 1024, 512, 256 and 128 MiB: on iOS the app's own room, elsewhere the system's free memory.
+- On every log level, a warning of low memory from the system logs a `memory:` line with the same values and each
+  GPU heap, 6 in a run at most: the memory pressure of iOS and macOS, SDL's low memory event (iOS; Android up to 13,
+  and from 14 only as the app goes to the background), Linux's pressure stall trigger (tasks waiting for memory
+  0.2 s of 2 s; a kernel from 6.5 with PSI, else a line says why there is none) and Windows' low memory
+  notification. FreeBSD tells a process none. A Vulkan out-of-memory logs each heap and the descriptor pools, at
+  the first 3.
 - `--gpu_trace_target=0x5acf62e00[:bytes]`: logs (`gpu-trace-target:`, at most 64 lines of each kind) the clears
   and draws that write a render target starting in that GPU address range, with its size, vertex or index count and
   shader addresses. A color clear lists every bound target in the range. Write the address with `0x`; without a size
@@ -176,6 +243,38 @@ beside it:
 - The log names each NVN function the game resolves that the runtime does not implement (`nvn: the game resolved
   NAME, which nvn doesn't implement`), and the game stops with its name when it calls one. [NVN_HLE.md](NVN_HLE.md)
   has what the SDK does.
+
+## CPU sampling without perf
+
+On Linux x86-64 and AArch64, `tools/profile_cpu.py` can sample a process without perf permissions. It builds a
+local preload library and uses each thread's CPU clock. Sleeping threads generate no samples. The signal handler
+writes a per-thread ring, and one collector writes the trace. No sampler code enters the ordinary runtime.
+
+```sh
+python3 tools/profile_cpu.py tune --out /local/scratch/sample-search
+python3 tools/profile_cpu.py run --config /local/scratch/sample-search/winner.json \
+    --out /local/scratch/capture -- /absolute/path/to/program arguments
+python3 tests/cpu_sample.py
+```
+
+The search starts at one slot and doubles capacity until calibration passes. It then measures shuffled paired
+rounds and uses bootstrap confidence intervals to select the smallest aligned footprint within two percent of the
+fastest candidate. An overflow restarts the measurement batch with a larger buffer. A small native workload cannot
+establish a sufficient buffer for every game. Check `samples.bin.json` after each real capture and increase capacity
+if it reports drops. Keep the CPU interval separate from the collector's polling period.
+
+`samples.bin` contains little-endian records: monotonic timestamp and host PC as two 64-bit integers, then TID and
+sample weight as two 32-bit integers. Weight includes coalesced timer expirations. Report timer overruns separately
+from ring overflow. Weighted samples estimate CPU cost, not instruction counts or exact guest PCs. Resolve PCs
+against `capture/maps.txt` and the exact matching binaries. The wrapper also records per-thread scheduler CPU time,
+run-queue wait and context-switch counts in `sched.jsonl`.
+
+The parent recovers pending records after process exit, including `_exit`, and deduplicates a collector write whose
+tail publication was interrupted. Failed and timed-out commands retain their trace, and `capture.json` records the
+exit code. The wrapper still returns failure for those commands. One unpublished signal attempt per exiting thread
+is reported separately. Recovery tests cover partial writes, duplicate recovery and invalid accounting. The sampler
+uses SIGPROF and is intended for programs that do not install their own SIGPROF handler. Keep game captures and symbolized profiles local. Measure
+throughput with unprofiled runs of the same scene.
 
 ## Profiling
 
@@ -311,6 +410,33 @@ that one is tried first. A new opcode is a row there (its `O_` name then exists 
 `ctest -R 'shaderdec|shader_decode'` checks the spec and decodes every row back to itself.
 `[Debug] shader_corpus=` in the game's INI does the same for every run. Where the game gets no command line
 (Android), its INI's `[Debug] diag=1` keeps each shader's entry in `captures/shaders` beside the game, for the same `snx-shaderc`.
+
+## Vertex input
+
+A pipeline is made per key (`src/nx/gpu/vk/pipeline.c`, `PipeKey`), and the vertex layout a program is drawn with,
+its attributes' formats and offsets and its bindings' strides and divisors, is part of the key unless it is dynamic
+state. Where the GPU's driver has `VK_EXT_vertex_input_dynamic_state` and its `vertexInputDynamicState` feature,
+each draw sets its layout in the command buffer instead (`vkCmdSetVertexInputEXT`), and one pipeline serves every layout
+of a program: the pipelines kept across runs of one game, 1984 with the layout in the key, come to 1218. The setting
+is `vertex_input_dynamic_state` ([Settings](SETTINGS.md#graphics)): `auto`, `on` or `off`, with the drivers known to
+draw it wrong (`src/nx/gpu/vk/vertex_input.c`) taking the layout in the key under `auto`. The log's
+`vulkan: vertex_input_dynamic_state=` line says which a run takes, with the device, its driver and version.
+
+A draw sets the layout when it differs from the one its command buffer has. A new command buffer, a pipeline that
+holds its own layout (the multisample resolves, the on-screen controls) and the renderer's own draws (a clear of some
+color components, which reads no vertices) leave the next draw to set it again. The pipelines kept for the next run
+(`<id>.vkshaders`) are made again when the choice changes: the file's key holds it.
+
+```sh
+"$games/Game/Game" --vertex_input_dynamic_state=off   # a pipeline per layout, to compare
+ctest --test-dir build -R 'vk_vertex_input|vulkan_headless'
+```
+
+`vk_vertex_input` checks the setting's values, its row read from a game's `.ini` written before it, the bans against
+stand-in devices and the log line of each case. `vulkan_headless` (`-DSNX_TEST_VULKAN=ON`) watches what every draw
+of its checks finds in its command buffer: a draw with a dynamic layout and none set fails it. Its vertex input check
+draws one program with three layouts in one command buffer, and `vulkan_headless_vertex_input_off` runs every check
+again with the layout in the key.
 
 ## SVCs
 

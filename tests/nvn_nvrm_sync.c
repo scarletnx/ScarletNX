@@ -4,6 +4,7 @@
    in its own layout (kind at 0x08, fence count at 0x0c, fences {syncpoint, value} from 0x10, 0x40 bytes). The driver's
    code is a stub that sees the sync nvn_object.c built in guest memory */
 #include "nx/gpu/nvn/nvn_object.h"
+#include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_loader.h"
 #include "nx/gpu/nvn/nvn_replay.h"
 #include "nx/gpu/nvn/nvn_draw.h"
@@ -23,6 +24,18 @@
 
 static u8 memory[1 << 16];
 u8* g_mem = memory; /* guest address a is memory + a */
+u64 mem_mapped_run(u64 address, u64 size) {
+    (void)address;
+    (void)size;
+    abort();
+}
+int gmem_write(u64 address, const void* data, u64 size) {
+    (void)address;
+    (void)data;
+    (void)size;
+    abort();
+}
+void gpu_kick(void) { abort(); }
 
 /* ---- the driver stub: what it was called with, the sync it saw, and what it answers */
 static struct {
@@ -160,6 +173,11 @@ void nvn_tex_level_tiles(const NvnTexDesc* d, unsigned level, unsigned* tile_h, 
     (void)d;
     (void)level;
     *tile_h = *tile_d = 0;
+}
+int nvn_tex_sparse_tile(const NvnTexDesc* d, u32 tile[3]) {
+    (void)d;
+    tile[0] = tile[1] = tile[2] = 0;
+    return 0;
 }
 int nvn_tic_encode(const NvnTexture* t, const NvnView* v, int image, u32 api, u32 out[8]) {
     (void)t;

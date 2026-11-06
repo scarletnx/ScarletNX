@@ -27,18 +27,8 @@ typedef struct {
     u32 green, blue, red;
 } IndexPixels;
 
-/* the render predicate index_draw's draw runs on (its clear doesn't), 0 for none */
-static u32 g_index_pred;
-static int index_draw(GpuChannel* channel, u64 target, const DrawCall* call, IndexPixels* px) {
-    u64 drawn = g_vk_drawn;
-    vk_lock();
-    rt_clear(channel, target, 4, 4, 0, 1);
-    channel->r3d_dirty = ~0u; /* the registers were set directly */
-    mx_draw_state_sync(channel);
-    channel->owner.pred = g_index_pred;
-    vk_render_draw(&channel->ds, call, &channel->owner);
-    channel->owner.pred = 0;
-    CHECK(g_vk_drawn == drawn + 1);
+/* the 4x4 target's pixels once the work recorded so far is done (the rendering pass ended), under vk_lock */
+static int index_pixels(u64 target, IndexPixels* px) {
     vk_render_end();
     Surf* surface = vk_rt_find(target);
     VkBuffer buffer;
@@ -57,6 +47,44 @@ static int index_draw(GpuChannel* channel, u64 target, const DrawCall* call, Ind
         px->blue += !p[0] && !p[1] && p[2] == 255;
         px->red += p[0] != 0;
     }
+    return 0;
+}
+
+/* the 4x4 target's first pixel, for a failure's message */
+static int index_first_pixel(u64 target, u8 out[4]) {
+    Surf* surface = vk_rt_find(target);
+    VkBuffer buffer;
+    u8* data;
+    vk_lock();
+    vk_render_end();
+    data = vk_readback_buffer(64, &buffer);
+    if (!surface || !data) {
+        vk_unlock();
+        return -1;
+    }
+    vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {4, 4, 1}};
+    rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    vk_finish();
+    vk_readback_ready();
+    memcpy(out, data, 4);
+    vk_unlock();
+    return 0;
+}
+/* the render predicate index_draw's draw runs on (its clear doesn't), 0 for none */
+static u32 g_index_pred;
+static int index_draw(GpuChannel* channel, u64 target, const DrawCall* call, IndexPixels* px) {
+    u64 drawn = g_vk_drawn;
+    vk_lock();
+    rt_clear(channel, target, 4, 4, 0, 1);
+    channel->r3d_dirty = ~0u; /* the registers were set directly */
+    mx_draw_state_sync(channel);
+    channel->owner.pred = g_index_pred;
+    vk_render_draw(&channel->ds, call, &channel->owner);
+    channel->owner.pred = 0;
+    CHECK(g_vk_drawn == drawn + 1);
+    CHECK(!index_pixels(target, px));
     vk_unlock();
     return 0;
 }
@@ -218,6 +246,126 @@ static int indirect_cases(GpuChannel* channel, u64 target, u64 indices, u64 args
     return 0;
 }
 
+/* Vertex colors a copy engine wrote, which the GPU holds (docs/GPU_OWNERSHIP.md), read by a draw after another in
+   the same pass: the red quad from the colors the CPU wrote, then the green one from the copy's. The second draw reads
+   them where their owner holds them, inside the pass the first one opened, and nothing lands. Copied into staging,
+   they ended the pass and a second one began over the same target */
+static int owned_stream_case(GpuChannel* channel, u64 target, u64 colors, u64 copy, u64 copy_cpu) {
+    const u32 bytes = 8 * 16;
+    GpuDmaOp o;
+    IndexPixels px;
+    u32* r = channel->r3d;
+    memset(&o, 0, sizeof o);
+    o.width = o.line_in = o.line_out = bytes;
+    o.lines = 1;
+    o.src = pitch_side(colors, 0);
+    o.dst = pitch_side(copy, 0);
+    /* GPU-owned where the host traps; with unified memory, over an import, copied there on the GPU (vk_uma_publish) */
+    vk_lock();
+    int inplace = vk_uma_held(copy_cpu, bytes), owned = own_traps() && !inplace;
+    vk_unlock();
+    CHECK(g_renderer->dma_copy(&o));
+    if (owned) CHECK(own_lookup(copy_cpu, bytes, NULL, 0) == 1);
+    if (inplace) CHECK(own_lookup(copy_cpu, bytes, NULL, 0) == 0 && vk_uma_pending_cpu(copy_cpu, bytes));
+    u64 landings = own_landings();
+    vk_lock();
+    rt_clear(channel, target, 4, 4, 0, 1);
+    channel->r3d_dirty = ~0u; /* the registers were set directly */
+    mx_draw_state_sync(channel);
+    u64 passes = g_vk_passes;
+    DrawCall red = {.topology = 6, .count = 4, .instances = 1},
+             green = {.topology = 6, .first = 4, .count = 4, .instances = 1};
+    vk_render_draw(&channel->ds, &red, &channel->owner);
+    /* the color stream from the copy, which the CPU doesn't read: that would land it */
+    r[0x705] = (u32)(copy >> 32);
+    r[0x706] = (u32)copy;
+    r[0x7c2] = (u32)((copy + bytes - 1) >> 32);
+    r[0x7c3] = (u32)(copy + bytes - 1);
+    channel->r3d_dirty = ~0u;
+    mx_draw_state_sync(channel);
+    vk_render_draw(&channel->ds, &green, &channel->owner);
+    u64 begun = g_vk_passes - passes;
+    CHECK(!index_pixels(target, &px));
+    r[0x705] = (u32)(colors >> 32);
+    r[0x706] = (u32)colors;
+    r[0x7c2] = (u32)((colors + bytes - 1) >> 32);
+    r[0x7c3] = (u32)(colors + bytes - 1);
+    vk_unlock();
+    if (!index_all_green(&px)) fprintf(stderr, "owned colors: %u green, %u red\n", px.green, px.red);
+    CHECK(index_all_green(&px));
+    if (owned || inplace) {
+        if (begun != 1) fprintf(stderr, "owned colors: the two draws took %llu passes\n", (unsigned long long)begun);
+        CHECK(begun == 1);
+        CHECK(own_landings() == landings && own_lookup(copy_cpu, bytes, NULL, 0) == owned);
+    }
+    printf("owned colors: a draw read vertex colors the GPU holds %s\n",
+           owned     ? "where their owner holds them, inside the pass"
+           : inplace ? "in guest memory, copied there on the GPU, inside the pass"
+                     : "landed (no traps here)");
+    return 0;
+}
+
+/* Indices a copy engine wrote, which the GPU holds, drawn after the red quad in the same pass: the green quad through
+   them. The draw neither reads them on the CPU for the vertices they reach (render.c draw_last_vertex, which then
+   takes the streams' limits) nor copies them: it reads them where their owner holds them, and nothing lands. Read on
+   the CPU, they landed, a submit and a wait for the GPU, and the pass ended */
+static int owned_index_case(GpuChannel* channel, u64 target, u64 indices, u64 indices_cpu, u64 staged) {
+    const u32 list[6] = {4, 5, 6, 4, 6, 7};
+    u8 bytes[12];
+    GpuDmaOp o;
+    IndexPixels px;
+    u32* r = channel->r3d;
+    for (u32 i = 0; i < 6; i++) snx_st_le16(bytes + i * 2, (u16)list[i]);
+    CHECK(!gmem_write(staged, bytes, sizeof bytes));
+    memset(&o, 0, sizeof o);
+    o.width = o.line_in = o.line_out = sizeof bytes;
+    o.lines = 1;
+    o.src = pitch_side(staged, 0);
+    o.dst = pitch_side(indices, 0);
+    vk_lock();
+    int inplace = vk_uma_held(indices_cpu, sizeof bytes), owned = own_traps() && !inplace;
+    vk_unlock();
+    CHECK(g_renderer->dma_copy(&o));
+    /* the index registers over the copy's bytes, which the CPU doesn't read: that would land them, or wait for them
+       with unified memory */
+    r[0x5F2] = (u32)(indices >> 32);
+    r[0x5F3] = (u32)indices;
+    r[0x5F4] = (u32)((indices + sizeof bytes - 1) >> 32);
+    r[0x5F5] = (u32)(indices + sizeof bytes - 1);
+    r[0x5F6] = 1; /* 16-bit */
+    r[0x591] = 0;
+    if (owned) CHECK(own_lookup(indices_cpu, sizeof bytes, NULL, 0) == 1);
+    if (inplace)
+        CHECK(own_lookup(indices_cpu, sizeof bytes, NULL, 0) == 0 && vk_uma_pending_cpu(indices_cpu, sizeof bytes));
+    u64 landings = own_landings();
+    vk_lock();
+    rt_clear(channel, target, 4, 4, 0, 1);
+    channel->r3d_dirty = ~0u; /* the registers were set directly */
+    mx_draw_state_sync(channel);
+    u64 passes = g_vk_passes;
+    DrawCall red = {.topology = 6, .count = 4, .instances = 1},
+             green = {.topology = 4, .indexed = 1, .count = 6, .instances = 1};
+    vk_render_draw(&channel->ds, &red, &channel->owner);
+    vk_render_draw(&channel->ds, &green, &channel->owner);
+    u64 begun = g_vk_passes - passes;
+    CHECK(!index_pixels(target, &px));
+    vk_unlock();
+    if (!index_all_green(&px)) fprintf(stderr, "owned indices: %u green, %u red\n", px.green, px.red);
+    CHECK(index_all_green(&px));
+    if (owned || inplace) {
+        if (begun != 1 || own_landings() != landings)
+            fprintf(stderr, "owned indices: the two draws took %llu passes, %llu landings\n", (unsigned long long)begun,
+                    (unsigned long long)(own_landings() - landings));
+        CHECK(begun == 1 && own_landings() == landings);
+        CHECK(own_lookup(indices_cpu, sizeof bytes, NULL, 0) == owned);
+    }
+    printf("owned indices: a draw read the indices the GPU holds %s\n",
+           owned     ? "where their owner holds them, inside the pass"
+           : inplace ? "in guest memory, copied there on the GPU, inside the pass"
+                     : "landed (no traps here)");
+    return 0;
+}
+
 /* NVN's draw parameters in an indirect draw (DrawCall.params): the game's driver writes each draw's base vertex and
    base instance into constant buffer 0 at 0x640 and 0x644 from the record, on the GPU, and instanced vertex programs
    add the base instance to their instance ID to find their instance's data. nvn's bank 0 holds 0 there for an
@@ -254,6 +402,184 @@ static int draw_params_case(GpuChannel* channel, u64 target, u64 indices, u64 ad
     channel->ds.bind.cb_size[0][0] = 0;
     CHECK(ok);
     puts("indirect draws: a vertex program's read of the base instance in bank 0 takes the record's");
+    return 0;
+}
+
+/* A texture only a TXQ names has no type of its own: the program's variant takes it from the header (a racing
+   game's lightmap programs query a volume through a bound handle and fetch it through a bindless one). Without
+   that, the query is a 2D one, whose third component is the constant 1: a 4x2x2 volume's depth less one is then 0
+   instead of 1, and the quad drawn with it as its green is black. Vertex programs and fragment programs alike */
+static const u32 g_query_volume_tic_words = 1 | 1u << 16 | 1u << 31; /* height 2, depth 2, normalized */
+static int query_volume_header(u64 pool, u64 samplers, u64 cbuf, u64 texels) {
+    const u32 tic[8] = {0x08 /* A8B8G8R8 */ | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16 | 2u << 19 | 3u << 22 |
+                            4u << 25 | 5u << 28,
+                        (u32)texels,
+                        (u32)(texels >> 32) | 3u << 21, /* block linear */
+                        2u << 28,
+                        3 | 2u << 23, /* width 4, 3D */
+                        g_query_volume_tic_words,
+                        0,
+                        2u << 4};
+    u8 bytes[256] = {0};
+    for (u32 i = 0; i < 8; i++) snx_st_le32(bytes + i * 4, tic[i]);
+    CHECK(!gmem_write(pool, bytes, 32));
+    memset(bytes, 0, 256);
+    CHECK(!gmem_write(samplers, bytes, 32)); /* a sampler of zeros */
+    CHECK(!gmem_write(cbuf, bytes, 256));    /* the handle at 0x70: 0, the header above; an offset no other program
+                                                of this test queries or samples, which would type the query */
+    CHECK(!gmem_write(texels, bytes, 256));  /* 4x2x2 texels of nothing: only the size is asked */
+    return 0;
+}
+static int vertex_query_volume_case(GpuChannel* channel, u64 target, u64 address) {
+    const u64 program = address + 0x3800, pool = address + 0x1F000, samplers = pool + 0x100, cbuf = pool + 0x200,
+              texels = pool + 0x400;
+    const u64 vertex[] = {0xefd9ff800807ff00ull, /* ALD R0..3, a[0x80] */
+                          0xeff1ff800707ff00ull, /* position */
+                          0xefd9ff800907ff08ull, /* ALD R8..11, a[0x90]: the green quad's 0, 1, 0, 1 */
+                          0x0100000000071005ull, /* MOV32I R5, 0: the level */
+                          0x010ffffffff7f006ull, /* MOV32I R6, -1 */
+                          0xdf48010200470500ull | 0xcull << 36, /* TXQ.DIMENSION R0, R5, 0x1c, depth only */
+                          0x5c10000000670009ull, /* IADD R9, R0, R6 */
+                          0x5cb8000000970a09ull, /* I2F.F32.U32 R9, R9: the green */
+                          0xeff1ff800807ff08ull, /* color varying from R8..11 */
+                          0xe30000000007000full};
+    IndexPixels px;
+    CHECK(!query_volume_header(pool, samplers, cbuf, texels));
+    CHECK(index_program(program, vertex, 10, 0));
+    u32* r = channel->r3d;
+    r[0x55D] = (u32)(pool >> 32), r[0x55E] = (u32)pool, r[0x55F] = 0;
+    r[0x557] = (u32)(samplers >> 32), r[0x558] = (u32)samplers, r[0x559] = 0;
+    r[0x48D] = 0;
+    r[0x982] = 2;
+    r[0x811] = (u32)(program - address); /* VertexB's offset */
+    channel->ds.bind.cb_addr[0][2] = cbuf;
+    channel->ds.bind.cb_size[0][2] = 256;
+    DrawCall call = {.topology = 7, .first = 4, .count = 4, .instances = 1};
+    int ok = !index_draw(channel, target, &call, &px) && index_all_green(&px);
+    if (!ok) {
+        u8 first[4] = {0};
+        index_first_pixel(target, first);
+        fprintf(stderr, "vertex volume query: %u green, %u blue, %u red; first pixel %u %u %u %u\n", px.green, px.blue,
+                px.red, first[0], first[1], first[2], first[3]);
+    }
+    r[0x811] = 0;
+    channel->ds.bind.cb_addr[0][2] = 0;
+    channel->ds.bind.cb_size[0][2] = 0;
+    CHECK(ok);
+    puts("vertex textures: a vertex program's size query of a volume it reads nowhere else answers its depth");
+    return 0;
+}
+static int fragment_query_volume_case(GpuChannel* channel, u64 target, u64 address) {
+    const u64 program = address + 0x3C00, pool = address + 0x1F000, samplers = pool + 0x100, cbuf = pool + 0x200,
+              texels = pool + 0x400;
+    u64 fragment[11];
+    IndexPixels px;
+    /* the varyings, then red = depth - 1 and no green: a quad the harness's own program (green) or a 2D query
+       (black) can't draw */
+    for (u32 i = 0; i < 4; i++) fragment[i] = 0xe000000000070000ull | (0x20ull + i) << 30 | i;
+    fragment[4] = 0x0100000000071005ull; /* MOV32I R5, 0: the level */
+    fragment[5] = 0x010ffffffff7f006ull; /* MOV32I R6, -1 */
+    fragment[6] = 0x0100000000071001ull; /* MOV32I R1, 0: no green */
+    fragment[7] = 0xdf48010200470504ull | 0xcull << 36; /* TXQ.DIMENSION R4, R5, 0x1c, depth only */
+    fragment[8] = 0x5c10000000670400ull; /* IADD R0, R4, R6 */
+    fragment[9] = 0x5cb8000000070a00ull; /* I2F.F32.U32 R0, R0: the red */
+    fragment[10] = 0xe30000000007000full;
+    CHECK(!query_volume_header(pool, samplers, cbuf, texels));
+    u32* r = channel->r3d;
+    r[0x55D] = (u32)(pool >> 32), r[0x55E] = (u32)pool, r[0x55F] = 0;
+    r[0x557] = (u32)(samplers >> 32), r[0x558] = (u32)samplers, r[0x559] = 0;
+    r[0x48D] = 0;
+    r[0x982] = 2;
+    channel->ds.bind.cb_addr[4][2] = cbuf;
+    channel->ds.bind.cb_size[4][2] = 256;
+    DrawCall call = {.topology = 7, .first = 4, .count = 4, .instances = 1};
+    CHECK(index_program(program, fragment, 11, 1));
+    r[0x851] = (u32)(program - address); /* the fragment program's offset */
+    int ok = !index_draw(channel, target, &call, &px) && px.red == 16 && !px.green;
+    if (!ok) {
+        u8 first[4] = {0};
+        index_first_pixel(target, first);
+        fprintf(stderr, "fragment volume query: %u green, %u blue, %u red; first pixel %u %u %u %u (%llu draws, %llu skipped)\n",
+                px.green, px.blue, px.red, first[0], first[1], first[2], first[3], (unsigned long long)g_vk_drawn,
+                (unsigned long long)g_vk_skipped);
+    }
+    r[0x851] = 0x10000; /* the harness's fragment program again */
+    channel->ds.bind.cb_addr[4][2] = 0;
+    channel->ds.bind.cb_size[4][2] = 0;
+    CHECK(ok);
+    puts("fragment textures: a fragment program's size query of a volume it reads nowhere else answers its depth");
+    return 0;
+}
+
+/* A fragment program that queries a volume, samples it, then samples a 2D texture through another handle: its own
+   slots are the query's (2D until the header says otherwise), the volume's and the 2D texture's, and its variant
+   keyed on the volume's header samples and queries the volume through one slot, so the 2D texture's slot is the
+   second there. The variant's second slot took the program's second texture, the volume, which a 2D sample can't view
+   (zeros: one game's dungeon lost its light mask so, and drew dark). Here the 2D texture is green, its green is the
+   quad's green, and the query's depth less 2 its blue: the quad is green only when each slot reads its own texture */
+static int fragment_query_slots_case(GpuChannel* channel, u64 target, u64 address) {
+    const u64 program = address + 0x4000, pool = address + 0x1F000, samplers = pool + 0x100, cbuf = pool + 0x200,
+              texels = pool + 0x400, green = pool + 0x600;
+    const u64 fragment[] = {0x0100000000071005ull,                /* MOV32I R5, 0: the level */
+                            0x010fffffffe71006ull,                /* MOV32I R6, -2 */
+                            0x0100000000071008ull,                /* MOV32I R8, 0: the coordinates */
+                            0x0100000000071009ull,                /* MOV32I R9, 0 */
+                            0x010000000007100aull,                /* MOV32I R10, 0 */
+                            0xdf48010200470504ull | 0xcull << 36, /* TXQ.DIMENSION R4, R5, 0x1c, depth only */
+                            /* TEXS 3D R0 (red), R8, R10: the volume, handle at 0x70 */
+                            0xd000000000000000ull | 1ull << 59 | 10ull << 53 | 0x1cull << 36 | 0xffull << 28 |
+                                10ull << 20 | 7ull << 16 | 8ull << 8,
+                            /* TEXS 2D.LZ R1 (green), R8, R9: the 2D texture, handle at 0x74 */
+                            0xd000000000000000ull | 1ull << 59 | 2ull << 53 | 1ull << 50 | 0x1dull << 36 |
+                                0xffull << 28 | 9ull << 20 | 7ull << 16 | 8ull << 8 | 1,
+                            0x5c10000000670402ull, /* IADD R2, R4, R6 */
+                            0x5cb8000000270a02ull, /* I2F.F32.U32 R2, R2: the blue */
+                            0x0103f80000071003ull, /* MOV32I R3, 1.0 */
+                            0xe30000000007000full};
+    /* the 2D texture: header 1, 1x1 A8B8G8R8, block linear, its texel green */
+    const u32 tic[8] = {0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16 | 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28,
+                        (u32)green,
+                        (u32)(green >> 32) | 3u << 21,
+                        0,
+                        1u << 23, /* width 1, 2D */
+                        1u << 31, /* height 1, depth 1, normalized */
+                        0,
+                        0};
+    u8 bytes[512] = {0};
+    IndexPixels px;
+    CHECK(!query_volume_header(pool, samplers, cbuf, texels));
+    for (u32 i = 0; i < 8; i++) snx_st_le32(bytes + i * 4, tic[i]);
+    CHECK(!gmem_write(pool + 32, bytes, 32));
+    memset(bytes, 0, sizeof bytes);
+    bytes[1] = bytes[3] = 0xFF;
+    CHECK(!gmem_write(green, bytes, sizeof bytes));
+    memset(bytes, 0, sizeof bytes);
+    snx_st_le32(bytes, 1); /* the 2D texture's handle at 0x74: header 1, sampler 0 */
+    CHECK(!gmem_write(cbuf + 0x74, bytes, 4));
+    u32* r = channel->r3d;
+    r[0x55D] = (u32)(pool >> 32), r[0x55E] = (u32)pool, r[0x55F] = 1;
+    r[0x557] = (u32)(samplers >> 32), r[0x558] = (u32)samplers, r[0x559] = 0;
+    r[0x48D] = 0;
+    r[0x982] = 2;
+    channel->ds.bind.cb_addr[4][2] = cbuf;
+    channel->ds.bind.cb_size[4][2] = 256;
+    DrawCall call = {.topology = 7, .first = 4, .count = 4, .instances = 1};
+    CHECK(index_program(program, fragment, sizeof fragment / sizeof fragment[0], 1));
+    r[0x851] = (u32)(program - address);
+    int ok = !index_draw(channel, target, &call, &px) && index_all_green(&px);
+    if (!ok) {
+        u8 first[4] = {0};
+        index_first_pixel(target, first);
+        fprintf(stderr, "fragment query slots: %u green, %u blue, %u red; first pixel %u %u %u %u\n", px.green, px.blue,
+                px.red, first[0], first[1], first[2], first[3]);
+    }
+    r[0x851] = 0x10000;
+    r[0x55F] = 0;
+    channel->ds.bind.cb_addr[4][2] = 0;
+    channel->ds.bind.cb_size[4][2] = 0;
+    CHECK(ok);
+    puts("fragment textures: a variant that samples and queries a volume through one slot reads its next texture "
+         "from that texture's own handle");
     return 0;
 }
 
@@ -422,8 +748,13 @@ static int check_index_draws(void) {
     CHECK(!index_cases(channel, target, indices));
     g_vk.has_index8 = had8;
     CHECK(!indirect_cases(channel, target, indices, address + 0x16000));
+    CHECK(!owned_stream_case(channel, target, colors, address + 0x15000, cpu + 0x15000));
+    CHECK(!owned_index_case(channel, target, indices, cpu + 0x14000, address + 0x11000));
     if (g_vk.has_shader_draw_parameters) CHECK(!draw_params_case(channel, target, indices, address));
     CHECK(!vertex_int_texture_case(channel, target, address));
+    CHECK(!vertex_query_volume_case(channel, target, address));
+    CHECK(!fragment_query_volume_case(channel, target, address));
+    CHECK(!fragment_query_slots_case(channel, target, address));
     CHECK(!index_bound_cases(channel, target, indices, address + 0x1A000, address + 0x1C000));
     printf("index draws: quads, widened and native 8-bit indices, restart indices and rewritten indices' bounds checked "
            "(8-bit indices %s)\n",

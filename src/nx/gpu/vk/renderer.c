@@ -20,6 +20,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/stats.h"
+#include "nx/runtime/guest_stats.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/memory/mem.h"
@@ -39,6 +40,7 @@ static void vkr_before_write(u64 gva, u64 size) {
     vk_lock();
     if (size) vk_release_need(gva, size);
     vk_buf_before_write(gva, size);
+    if (size) vk_uma_before_write(gva, size); /* what reads it in place runs first */
     if (size)
         vk_gfx_image_mem_need(gva, size);
     else
@@ -59,6 +61,7 @@ static int vkr_mem_pending(u64 gva, u64 size) {
 }
 static void vkr_gfx_mem_need(u64 gva, u64 size) {
     vk_buf_mem_need(gva, size);
+    vk_uma_mem_need(gva, size); /* the in-place writes there done */
     vk_gfx_image_mem_need(gva, size);
 }
 /* the GPU range a mapping change is changing, from its begin to its end (size 0 for a change of guest memory) */
@@ -67,12 +70,14 @@ static void vkr_mapping_begin(u64 gva, u64 size, int full) {
     vk_lock();
     g_mapping_gva = full ? 0 : gva;
     g_mapping_size = full ? 0 : size;
-    if (full) vk_uma_quiesce(gva, size); /* mem.c's change of guest memory [gva, gva + size): its in-place readers run */
     vk_release_drain();
     if (full) {
         vk_buf_land_map();
         vk_gfx_image_land();
         vk_compute_land();
+        /* last, as the landings may submit: mem.c's change of guest memory [gva, gva + size), whose in-place readers
+           run and reach the driver first */
+        vk_uma_mapping_begin(gva, size);
     } else {
         vk_buf_mem_need_map(gva, size);
         vk_gfx_image_mem_need(gva, size);
@@ -84,6 +89,7 @@ static void vkr_mapping_begin(u64 gva, u64 size, int full) {
 /* the pages changed count what is pending at the guest pages they show now. A change of guest memory (full) leaves
    the GMMU as it was: pending pages are compared by address, and freed memory is landed first */
 static void vkr_mapping_end(void) {
+    vk_uma_mapping_end(); /* first: what follows may submit */
     vk_buf_mapping_changed();
     pend_remap(g_mapping_gva, g_mapping_size);
     g_mapping_size = 0;
@@ -115,10 +121,7 @@ static int vkr_start(void) {
 
 /* ------------------------------------------------------------ the front end's calls */
 /* a new epoch: the caches that trust what they checked in this one (buffers, constant buffers, shaders) check again */
-static void vkr_mem_may_have_changed(void) {
-    __atomic_add_fetch(&g_vk_epoch, 1, __ATOMIC_RELAXED);
-    vk_ww_new_epoch();
-}
+static void vkr_mem_may_have_changed(void) { vk_ww_new_epoch(); }
 static void vkr_draw_texture(const DsState* ds, const DrawTexture* t) {
     vk_lock();
     vk_render_draw_texture(ds, t);
@@ -147,6 +150,12 @@ static void vkr_samples_reset(u32 owner) {
     vk_lock();
     vk_query_reset(owner);
     vk_unlock();
+}
+static int vkr_xfb_control(u32 owner_id, u64 control, u32 what, u32 stride, DrawOwner* owner) {
+    vk_lock();
+    int result = vk_render_xfb_control(owner_id, control, what, stride, owner);
+    vk_unlock();
+    return result;
 }
 static void vkr_samples_enable(u32 owner, int on) {
     vk_lock();
@@ -191,6 +200,17 @@ static void vkr_method_barrier(int kind)
 		return;
 
 	vk_lock();
+	if ((kind == 6 || kind == 7) && g_settings.nvn_storage_ordering == 2) {
+		vk_buf_order_request(kind == 7);
+		vk_unlock();
+		return;
+	}
+	/* Surface and copy consumers retain their own dependencies. NVN's points need an additional buffer
+	 * barrier only after a shader write or a pending read that a later in-place writer could overwrite. */
+	if ((kind == 6 || kind == 7) && !vk_buf_order_pending(kind == 7)) {
+		vk_unlock();
+		return;
+	}
 	if (kind == 5) {
 		/* Content caches keep their modules. Only address shortcuts expire. */
 		g_vk.shader_generation++;
@@ -200,6 +220,7 @@ static void vkr_method_barrier(int kind)
 	vk_render_end();
 	/* CPU-visible releases wait for completion in the release path. */
 	rec_CmdPipelineBarrier2(vk_cmd(), &di);
+	vk_buf_ordered();
 	vk_unlock();
 }
 static int vkr_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
@@ -208,6 +229,13 @@ static int vkr_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, in
     int r = vk_blit2d(s, d, dx, dy, dw, dh, sx, sy, sdx, sdy);
     vk_unlock();
     return r; /* 0: the front end copies through memory, with the renderer's rt_flush and rt_reload around it */
+}
+static int vkr_blit_filter(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy,
+                           double sdx, double sdy, int linear) {
+    vk_lock();
+    int result = vk_blit2d_filter(s, d, dx, dy, dw, dh, sx, sy, sdx, sdy, linear);
+    vk_unlock();
+    return result;
 }
 static int vkr_vic_compose(const VicJob* j) { return vk_vic_compose(j); } /* it takes vk_lock */
 static int vkr_nvdec_write(const NvdecPic* p) { return vk_nvdec_write(p); }   /* it takes vk_lock */
@@ -528,6 +556,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
         last_present_ns = now_ns;
         g_vk_present++;
         stats_frame(now_ns);
+        if (g_vk_present == 1 || g_vk_present % 600 == 0) guest_stats_log(now_ns, g_vk_present);
         vk_mem_present();
         if (g_last) vk_surf_touch(g_last); /* what screenshots read stays */
         vk_tex_frame();
@@ -539,7 +568,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
             LOG("vulkan: %llu draws, %llu skipped; %llu dispatches in %llu batches (%llu ms waiting), %llu skipped%s; "
                 "%llu finishes (%llu ms); %llu reads past queued releases (%llu samples counts written on the GPU); "
                 "%llu descriptor sets written, %llu reused; "
-                "%llu draws kept the last one's shaders and pipeline (%llu checked)\n",
+                "%llu draws kept the last one's shaders and pipeline (%llu checked), %llu its targets\n",
                 (unsigned long long)g_vk_drawn, (unsigned long long)g_vk_skipped, (unsigned long long)g_vk_dispatches,
                 (unsigned long long)g_vk_cs_batches,
                 (unsigned long long)(__atomic_load_n(&g_vk_cs_wait_ns, __ATOMIC_RELAXED) / 1000000),
@@ -548,7 +577,8 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 (unsigned long long)__atomic_load_n(&g_vk_release_forwards, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&g_vk_counts_on_gpu, __ATOMIC_RELAXED),
                 (unsigned long long)g_vk_dset_new, (unsigned long long)g_vk_dset_reused,
-                (unsigned long long)g_vk_draw_kept, (unsigned long long)g_vk_draw_checked);
+                (unsigned long long)g_vk_draw_kept, (unsigned long long)g_vk_draw_checked,
+                (unsigned long long)g_vk_targets_kept);
             {
                 u64 pipes, hits, make_ms, pipe_ms, shaders, shader_ms, uploads, upload_bytes;
                 vk_pipeline_stats(&pipes, &hits, &make_ms, &pipe_ms, &shaders, &shader_ms);
@@ -884,8 +914,10 @@ const Renderer vk_renderer = {
     .draw_texture = vkr_draw_texture,
     .discard = vkr_discard,
     .draw = vkr_draw,
+    .xfb_control = vkr_xfb_control,
     .method_barrier = vkr_method_barrier,
     .blit = vkr_blit,
+    .blit_filter = vkr_blit_filter,
     .vic_compose = vkr_vic_compose,
     .nvdec_write = vkr_nvdec_write,
     .nvdec_hw_device = vkr_nvdec_hw_device,
@@ -909,6 +941,8 @@ const Renderer vk_renderer = {
     .render_predicate_drop = vk_render_predicate_drop,
     .release_retire = vk_release_retire,
     .report_stall = vk_report_stall,
+    .memory_text = vk_memory_text,
+    .memory_blocks = vk_memory_blocks,
     .idle = vkr_idle,
     .reset = vkr_reset,
     .flush_targets = vkr_flush_targets,

@@ -105,14 +105,18 @@ def main():
         put(notapp, 0x200 + 0x18D, '<B', 0)  # the game NCCH is data, not an executable application
         status, text = both(bytes(notapp), 'not-app')
         assert status == 3 and 'holds no game' in text, text
-        encrypted = bytearray(ncsd())
-        put(encrypted, 0x200 + 0x18F, '<B', 0)  # the game NCCH's NoCrypto off: encrypted, refused as yet
-        status, text = both(bytes(encrypted), 'encrypted')
-        assert status == 3 and 'encrypted' in text, text
+        # a tool that decrypted an image but left its flag saying encrypted: the ExHeader is plain, which the header's
+        # hash of it says, so the image is read as it is, with no keys, and the driver says what it found
+        flagged = bytearray(ncsd())
+        put(flagged, 0x200 + 0x18F, '<B', 0)  # the game NCCH's NoCrypto off
+        status, text = both(bytes(flagged), 'plain-flagged')
+        assert status == 0 and 'ExHeader is plain' in text, text
+        # a seed bit on content that is already plain is no crypto at all: the image is read as the plain one it is
+        # (an image that really is seed-encrypted is refused, as 3ds_decrypt.py's case shows)
         seed = bytearray(ncsd())
-        put(seed, 0x200 + 0x18F, '<B', 0x20)  # seed crypto, which no keys of this loader's take off
-        status, text = both(bytes(seed), 'seed')
-        assert status == 3, text
+        put(seed, 0x200 + 0x18F, '<B', 0x20)
+        status, text = both(bytes(seed), 'plain-seed')
+        assert status == 0 and 'ExHeader is plain' in text, text
         short = bytearray(ncsd())
         put(short, 0x200 + 0x104, '<I', 3)  # a game NCCH claiming three media units, too few for its sections
         assert both(bytes(short), 'size')[0] == 1

@@ -145,7 +145,7 @@ static int hold(Walk* w, u64 n) { /* 0, or -1 when n more bytes would pass HELD_
 static void unhold(Walk* w, u64 n) { w->held -= n; }
 
 /* each program found: counted, or handed to the sink */
-static int each_program(void* ctx, const u8* sph, size_t avail, int stage) {
+static int each_program(void* ctx, const u8* sph, size_t avail, int stage, const u8* consts, size_t nconsts) {
     Walk* w = ctx;
     if (stopped(w)) return 1;
     w->found++;
@@ -154,7 +154,7 @@ static int each_program(void* ctx, const u8* sph, size_t avail, int stage) {
         return 0;
     }
     __atomic_add_fetch(&w->progress->programs_done, 1, __ATOMIC_RELAXED);
-    switch (w->sink->program(w->sink->ctx, sph, avail, stage)) {
+    switch (w->sink->program(w->sink->ctx, sph, avail, stage, consts, nconsts)) {
         case SHIP_NEW: w->made++; break;
         case SHIP_KNOWN: w->known++; break;
         case SHIP_SKIPPED:

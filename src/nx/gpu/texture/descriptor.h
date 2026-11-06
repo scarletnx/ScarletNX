@@ -16,6 +16,8 @@ typedef struct {
     u32 type;               /* 0 1D, 1 2D, 2 3D, 3 cube, 4 1D array, 5 2D array, 6 buffer, 7 2D no mipmap, 8 cube array */
     u32 srgb, levels;       /* levels: the header's max level plus one */
     u32 block_h, block_d;   /* block height and depth, log2 of the GOBs */
+    u32 tile_w;             /* a sparse texture's tile width, log2 of the GOBs: a level at least a tile wide, high and
+                               deep has rows of whole tiles (the hardware's TILE_WIDTH_IN_GOBS) */
     u32 pitch;              /* a pitch-linear texture's row bytes */
     u32 msaa;               /* the multisample mode, 0 for one sample */
     u32 base_level, max_level; /* the levels the view shows */
@@ -34,6 +36,7 @@ static inline void tic_decode(const u32* tic, TicFields* f) {
     f->levels = ((tic[3] >> 28) & 0xF) + 1;
     f->block_h = (tic[3] >> 3) & 7;
     f->block_d = (tic[3] >> 6) & 7;
+    f->tile_w = (tic[3] >> 10) & 7;
     f->pitch = (tic[3] & 0xFFFF) << 5;
     f->msaa = (tic[7] >> 8) & 0xF;
     f->base_level = tic[7] & 0xF;

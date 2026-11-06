@@ -514,7 +514,9 @@ static int read_queued(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 ma
             sgate = q->gate;
     }
     pm_unlock(&g_rlock);
-    if (r > 0 && (vk_compute_pending(gva, len) || vk_buf_pending(gva, len) || vk_gfx_image_pending(gva, len))) r = -1;
+    if (r > 0 && (vk_compute_pending(gva, len) || vk_buf_pending(gva, len) || vk_gfx_image_pending(gva, len) ||
+                  vk_uma_pending(gva, len)))
+        r = -1;
     if (r > 0 && sgate) {
         /* the releases are needed now, as release_match has them: the stream holds them no longer, and the release
            thread performs them (and lands the results before them) while the stream goes on. Held to the stream's end,
@@ -558,6 +560,13 @@ static int read_queued(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 ma
         *n = 0;
     vk_unlock();
     return r;
+}
+int vk_release_pending(u64 gva, u64 len) {
+    int hit;
+    vk_lock();
+    hit = len && pend_hit(&g_rpages, gva, len);
+    vk_unlock();
+    return hit;
 }
 int vk_release_read(u64 gva, void* dst, u64 len) {
     u32 n;

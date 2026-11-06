@@ -4,6 +4,7 @@
    and its GPU thread, and the structures the 2D engine and VIC hand the renderer */
 #ifndef SNX_GPU_H
 #define SNX_GPU_H
+#include "nx/gpu/texture/pixel_format.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "nx/gpu/pushbuffer.h"
 #include "nx/gpu/draw_state.h"
@@ -25,24 +26,24 @@ int gpu_class_known(u32 cls);
 /* The macro engine (mme.c) of a channel, kept between steps: a method a macro sends can make the stream wait
    (gpu_park), and the macro goes on from here (mme_resume) once the wait ends */
 typedef struct {
-    u32 regs[8];     /* r0 reads as 0 */
-    u32 carry;       /* of the last add or subtract */
-    u32 method;      /* where the next send goes */
-    u32 incr;        /* how far the method moves after a send */
-    u32 pc;          /* the next instruction, a word index into the channel's macro memory */
-    u32 target;      /* where a taken branch goes once its delay slot has run */
-    u32 np, next;    /* the parameters of the call (in the channel's mme_params) and the next one to fetch */
-    u32 steps;       /* instructions run in this call, against a macro that never ends */
-    int running;     /* a call started and not ended: a wait stopped it */
-    int branch;      /* a branch was taken: after the next instruction, its delay slot, pc becomes target */
-    int slot;        /* the next instruction is a delay slot, whose exit bit doesn't count */
-    int exiting;     /* the call ends after the next instruction, the exit's delay slot */
+    u32 regs[8];  /* r0 reads as 0 */
+    u32 carry;    /* of the last add or subtract */
+    u32 method;   /* where the next send goes */
+    u32 incr;     /* how far the method moves after a send */
+    u32 pc;       /* the next instruction, a word index into the channel's macro memory */
+    u32 target;   /* where a taken branch goes once its delay slot has run */
+    u32 np, next; /* the parameters of the call (in the channel's mme_params) and the next one to fetch */
+    u32 steps;    /* instructions run in this call, against a macro that never ends */
+    int running;  /* a call started and not ended: a wait stopped it */
+    int branch;   /* a branch was taken: after the next instruction, its delay slot, pc becomes target */
+    int slot;     /* the next instruction is a delay slot, whose exit bit doesn't count */
+    int exiting;  /* the call ends after the next instruction, the exit's delay slot */
 } GpuMme;
 
 /* Inline-to-memory (Eden's engine_upload.h): the methods at 0x60-0x6D of the 3D, compute and inline-to-memory
    classes (maxwell/inline_to_memory_regs.h). A launch (exec_upload, i2m_launch) latches the registers' destination,
    and the data words (data_upload, i2m_data) fill the buffer; the last byte writes it to memory */
-typedef struct { /* Eden's Upload::Registers, as the launch found them */
+typedef struct {                    /* Eden's Upload::Registers, as the launch found them */
     u32 line_length_in, line_count; /* bytes a line, and lines */
     struct {
         u64 address;
@@ -62,13 +63,13 @@ typedef struct { /* Eden's Upload::State */
 } GpuI2m;
 
 /* The register files a channel keeps of each engine, by method index (byte offset / 4) */
-#define GPU_ENGINE_METHODS 0x1000 /* a command header's 12-bit method (pushbuffer.h) reaches all of them */
-#define PULLER_NUM_REGS PULLER_NON_PULLER_METHODS /* Eden's Puller::Regs::NUM_REGS */
-#define MAXWELL3D_NUM_REGS 0xE00 /* Eden's Maxwell3D::Regs::NUM_REGS: the registers, and the macro calls above */
+#define GPU_ENGINE_METHODS     0x1000 /* a command header's 12-bit method (pushbuffer.h) reaches all of them */
+#define PULLER_NUM_REGS        PULLER_NON_PULLER_METHODS /* Eden's Puller::Regs::NUM_REGS */
+#define MAXWELL3D_NUM_REGS     0xE00 /* Eden's Maxwell3D::Regs::NUM_REGS: the registers, and the macro calls above */
 #define KEPLER_COMPUTE_METHODS GPU_ENGINE_METHODS /* Eden's NUM_REGS is 0xCF8: compute_method takes all 12 bits */
-#define FERMI2D_METHODS 0x400 /* the 2D engine's methods kept (Eden's Fermi2D::Regs::NUM_REGS is 0x258) */
-#define MAXWELL_DMA_METHODS 0x200 /* the copy engine's methods kept (its registers end below 0x1D0) */
-#define KEPLER_I2M_METHODS 0x80   /* the inline-to-memory class's (Eden's KeplerMemory::Regs::NUM_REGS is 0x7F) */
+#define FERMI2D_METHODS        0x400 /* the 2D engine's methods kept (Eden's Fermi2D::Regs::NUM_REGS is 0x258) */
+#define MAXWELL_DMA_METHODS    0x200 /* the copy engine's methods kept (its registers end below 0x1D0) */
+#define KEPLER_I2M_METHODS     0x80  /* the inline-to-memory class's (Eden's KeplerMemory::Regs::NUM_REGS is 0x7F) */
 #define GPU_CHANNELS 128 /* channels, one per syncpoint id: nvdrv hands out ids below 128 (NvRmStream's tables) */
 
 /* Groups of the 3D engine's registers, a bit each in GpuChannel.r3d_dirty: maxwell3d_method sets a group's bit when
@@ -119,8 +120,8 @@ typedef struct GpuChannel {
     u32 r3d_dirty;
     DsState ds; /* what a draw reads of the registers, for the renderer (maxwell/draw_state.c mx_draw_state_sync) */
     u32 r3d_shadow[MAXWELL3D_NUM_REGS]; /* the MME shadow RAM (SET_MME_SHADOW_RAM_CONTROL, 3D 0x49) */
-    u32 shadow_mode;       /* 0 or 1 track, 2 passthrough, 3 replay */
-    u32 rcomp[KEPLER_COMPUTE_METHODS]; /* compute's (maxwell/kepler_compute_regs.h) */
+    u32 shadow_mode;                    /* 0 or 1 track, 2 passthrough, 3 replay */
+    u32 rcomp[KEPLER_COMPUTE_METHODS];  /* compute's (maxwell/kepler_compute_regs.h) */
     u32 r2d[FERMI2D_METHODS];
     u32 rdma[MAXWELL_DMA_METHODS];
     u32 ri2m[KEPLER_I2M_METHODS];
@@ -149,7 +150,7 @@ typedef struct GpuChannel {
     /* counter reports (3D 0x6C3 operation 2): g_draws at each selector's last reset, and the selectors reset */
     u64 counter_base[32];
     u32 counter_reset;
-    u32 instance_count; /* the instance the next draw is: BEGIN's next-instance bit and the SUBSEQUENT methods count */
+    u32 instance_count;  /* the instance the next draw is: BEGIN's next-instance bit and the SUBSEQUENT methods count */
     u32* inline_indices; /* the 3D inline index methods' indices, widened to u32 (host numbers), until END draws them */
     u32 inline_n, inline_cap;
     /* the copy engine's launches of the job running: a submission-time copy of a linear source belongs to one */
@@ -260,7 +261,10 @@ typedef struct {
    bpp is the source's pixel, sn * sb bytes. texconv.glsl's TC_BLIT_FLOAT takes it as it is */
 #define GPU_BLIT_FLOAT(sn, sb, dn, db, sx) ((sn) | (sb) << 4 | (dn) << 8 | (db) << 12 | (u32)(sx) << 16)
 /* the bytes of a blit's destination pixel */
-#define GPU_BLIT_DST_BPP(b)                ((b)->fmt ? ((b)->fmt >> 8 & 15) * ((b)->fmt >> 12 & 15) : (b)->bpp)
+#define GPU_BLIT_DST_BPP(b)                                                                                            \
+    (((b)->fmt & GPU_BLIT_CONVERT_BIT) ? GPU_PIXEL_BYTES((b)->fmt >> 16)                                               \
+     : (b)->fmt                        ? ((b)->fmt >> 8 & 15) * ((b)->fmt >> 12 & 15)                                  \
+                                       : (b)->bpp)
 
 /* ---- gpu.c: guest memory through the GPU's address space. A read lands the renderer's pending results over the
    range first, a write lets it land what would overwrite the write later, and records the write (gpu_mem_written).
@@ -347,9 +351,12 @@ void gpu_mem_written_shader(u64 gva, u64 size); /* a shader's result landing in 
 void gpu_mem_written_cpu(u64 cpu, u64 size);
 /* fn(cpu, n) for each run of guest memory that a GPU-side write above changes (gpu/vk/uma.c's hazard count) */
 void gpu_set_write_watch(void (*fn)(u64 cpu, u64 n));
-u64 gpu_mem_generation(void);                   /* the last generation fully published */
+u64 gpu_mem_generation(void);   /* the last generation fully published */
 void gpu_mem_written_all(void); /* a save state's load: every page written, after anything asked before */
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz); /* a GPU-side write after since touched [a, a + sz) */
+/* fn(ctx, at, n) for each run of [a, a + sz) on the GPU pages a GPU-side write after since touched, in order: what
+   gpu_mem_dirty_since finds by GPU address (not its SNX_ALIAS_CHECK answers) */
+void gpu_mem_dirty_runs(u64 since, u64 a, u64 sz, void (*fn)(void* ctx, u64 at, u64 n), void* ctx);
 
 /* ---- gpu.c: GPFIFO submission and the GPU thread's queue */
 void gpu_init(void);
@@ -361,6 +368,9 @@ void gpu_submit(const void* entries, u32 n, u32 channel, u32 incs, u32 wait_id, 
 /* calls fn(arg) on the GPU thread in order with the other calls, once the jobs queued before it on channels
    chans[0..nchans) (n at most 4) are done. Other channels' jobs, queued before or after it, don't hold it back */
 void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans);
+/* Cooperative calls return 0 while waiting and 1 when complete. A lane's calls stay ordered; other lanes and
+   ordinary calls can run while it waits. The callback owns its resume cursor. Lane is in [0,63]. */
+void gpu_call_poll(int (*fn)(void*), void* arg, u32 lane);
 /* a verify channel with its id (from GPU_VERIFY_ID), reset as a new channel is, and freed; and a word of its stream,
    decoded at once: its 3D engine's methods only, the puller's binds, and the 3D engine's held constants and draw
    flushed before any other engine's method, as method_call does. On the GPU thread */

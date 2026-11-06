@@ -41,6 +41,12 @@
 #define SNX_ARCH "ppc64 (ELFv2)"
 #elif defined(__powerpc64__)
 #define SNX_ARCH "ppc64"
+#elif defined(__mips64) && defined(__MIPSEL__)
+#define SNX_ARCH "mips64el"
+#elif defined(__mips64)
+#define SNX_ARCH "mips64"
+#elif defined(__s390x__)
+#define SNX_ARCH "s390x"
 #elif defined(__alpha__)
 #define SNX_ARCH "alpha"
 #else
@@ -49,5 +55,9 @@
 
 const char* snx_build_info(void) {
     return "ScarletNX " SNX_BRANCH " " SNX_COMMIT " (" SNX_COMPILER ", " SNX_OS " " SNX_ARCH ")";
+}
+const char* snx_build_log_line(void) {
+    return "ScarletNX " SNX_BRANCH " " SNX_COMMIT ", committed " SNX_COMMIT_DATE " (" SNX_COMPILER ", " SNX_OS
+           " " SNX_ARCH ")";
 }
 const char* snx_build_commit(void) { return SNX_COMMIT; }

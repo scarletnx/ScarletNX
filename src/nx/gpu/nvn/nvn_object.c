@@ -9,6 +9,7 @@
    Where nxnative and the game's own driver disagree, the driver wins: nvnDeviceGetInteger answers from the driver's
    table (its API version is the SDK's, 55.8 in one game) rather than nxnative's 55.15 */
 #include "nx/gpu/nvn/nvn_object.h"
+#include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_replay.h"
 #include "nx/gpu/nvn/nvn_loader.h"
 #include "nx/gpu/nvn/nvn_state.h"
@@ -25,6 +26,7 @@
 #include "nx/runtime/loader.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include <stdlib.h>
 #include <string.h>
 
 u64 nvn_serial(void) { return __atomic_add_fetch(&g_nvn.object.serial, 1, __ATOMIC_RELAXED); }
@@ -64,24 +66,24 @@ void nvn_SetExternalDebuggerEnabledNVX(CPU* c, int enabled) {
    device's fields (0x17, 0x18, 0x2b, 0x2d, 0x37, 0x38, 0x3a, 0x3b, 0x3d-0x41). 0x62 reads device state nobody
    measured: 0, logged */
 static const i32 device_info[NVN_DEVICE_INFO_ITEMS] = {
-    [0x00] = 55,      [0x01] = 15,      [0x02] = 14,      [0x03] = 65536,   [0x04] = 256,     [0x05] = 8,
-    [0x06] = 16,      [0x07] = 4,       [0x08] = 16,      [0x09] = 32,      [0x0a] = 16,      [0x0b] = 4,
-    [0x0c] = 4,       [0x0d] = 4,       [0x0e] = 16,      [0x0f] = 32,      [0x10] = 32,      [0x11] = 256,
-    [0x12] = 256,     [0x13] = 4,       [0x14] = 8,       [0x15] = 512,     [0x16] = 256,     [0x17] = 2,
-    [0x18] = 256,     [0x19] = 4096,    [0x1a] = 131072,  [0x1b] = 16,      [0x1c] = 1536,    [0x1d] = 1024,
-    [0x1e] = 64,      [0x1f] = 1536,    [0x20] = 65535,   [0x21] = 65535,   [0x22] = 65535,   [0x23] = 8,
-    [0x24] = 1048576, [0x25] = 4096,    [0x26] = 16,      [0x27] = 4096,    [0x28] = 1,       [0x29] = 1,
-    [0x2a] = 1,       [0x2b] = 262144,  [0x2c] = 15,      [0x2d] = 2048,    [0x2e] = 1,       [0x2f] = 1,
-    [0x30] = 16,      [0x31] = 5,       [0x32] = 1,       [0x33] = 8,       [0x34] = 8,       [0x35] = 4,
-    [0x36] = 32,      [0x37] = 128,     [0x38] = 32,      [0x39] = 128,     [0x3a] = 65536,   [0x3b] = 1,
-    [0x3c] = 4,       [0x3d] = 16384,   [0x3e] = 134217728, [0x3f] = 2048,  [0x40] = 16384,   [0x41] = 16384,
-    [0x42] = 1,       [0x43] = 1,       [0x44] = 1,       [0x45] = 1,       [0x46] = 5,       [0x47] = 1,
-    [0x48] = 1,       [0x49] = 1,       [0x4a] = 1,       [0x4b] = 1,       [0x4c] = 1,       [0x4d] = 16,
-    [0x4e] = 1024,    [0x4f] = 32,      [0x50] = 4096,    [0x51] = 65536,   [0x52] = 65536,   [0x53] = 256,
-    [0x54] = 16384,   [0x55] = 262144,  [0x56] = 4096,    [0x57] = 1,       [0x58] = 4,       [0x59] = 2,
-    [0x5a] = 0,       [0x5b] = 4096,    [0x5c] = 16384,   [0x5d] = 4096,    [0x5e] = 128,     [0x5f] = 32,
-    [0x60] = 65535,   [0x61] = 1,       [0x62] = 0,       [0x63] = 256,     [0x64] = 16,      [0x65] = 65535,
-    [0x66] = 65535,   [0x67] = 256,     [0x68] = 16383,
+    [0x00] = 55,      [0x01] = 15,     [0x02] = 14,        [0x03] = 65536, [0x04] = 256,   [0x05] = 8,
+    [0x06] = 16,      [0x07] = 4,      [0x08] = 16,        [0x09] = 32,    [0x0a] = 16,    [0x0b] = 4,
+    [0x0c] = 4,       [0x0d] = 4,      [0x0e] = 16,        [0x0f] = 32,    [0x10] = 32,    [0x11] = 256,
+    [0x12] = 256,     [0x13] = 4,      [0x14] = 8,         [0x15] = 512,   [0x16] = 256,   [0x17] = 2,
+    [0x18] = 256,     [0x19] = 4096,   [0x1a] = 131072,    [0x1b] = 16,    [0x1c] = 1536,  [0x1d] = 1024,
+    [0x1e] = 64,      [0x1f] = 1536,   [0x20] = 65535,     [0x21] = 65535, [0x22] = 65535, [0x23] = 8,
+    [0x24] = 1048576, [0x25] = 4096,   [0x26] = 16,        [0x27] = 4096,  [0x28] = 1,     [0x29] = 1,
+    [0x2a] = 1,       [0x2b] = 262144, [0x2c] = 15,        [0x2d] = 2048,  [0x2e] = 1,     [0x2f] = 1,
+    [0x30] = 16,      [0x31] = 5,      [0x32] = 1,         [0x33] = 8,     [0x34] = 8,     [0x35] = 4,
+    [0x36] = 32,      [0x37] = 128,    [0x38] = 32,        [0x39] = 128,   [0x3a] = 65536, [0x3b] = 1,
+    [0x3c] = 4,       [0x3d] = 16384,  [0x3e] = 134217728, [0x3f] = 2048,  [0x40] = 16384, [0x41] = 16384,
+    [0x42] = 1,       [0x43] = 1,      [0x44] = 1,         [0x45] = 1,     [0x46] = 5,     [0x47] = 1,
+    [0x48] = 1,       [0x49] = 1,      [0x4a] = 1,         [0x4b] = 1,     [0x4c] = 1,     [0x4d] = 16,
+    [0x4e] = 1024,    [0x4f] = 32,     [0x50] = 4096,      [0x51] = 65536, [0x52] = 65536, [0x53] = 256,
+    [0x54] = 16384,   [0x55] = 262144, [0x56] = 4096,      [0x57] = 1,     [0x58] = 4,     [0x59] = 2,
+    [0x5a] = 0,       [0x5b] = 4096,   [0x5c] = 16384,     [0x5d] = 4096,  [0x5e] = 128,   [0x5f] = 32,
+    [0x60] = 65535,   [0x61] = 1,      [0x62] = 0,         [0x63] = 256,   [0x64] = 16,    [0x65] = 65535,
+    [0x66] = 65535,   [0x67] = 256,    [0x68] = 16383,
 };
 
 void nvn_DeviceBuilderSetDefaults(CPU* c, u64 b) {
@@ -241,7 +243,8 @@ void nvn_DeviceGetInteger(CPU* c, u64 d, i32 what, u64 out) {
     (void)c;
     (void)d;
     if (w >= NVN_DEVICE_INFO_ITEMS || w == 0x62)
-        LOG_LIMIT(16, "nvn: nvnDeviceGetInteger of item %#x, which the driver reads from state nobody measured: 0\n", w);
+        LOG_LIMIT(16, "nvn: nvnDeviceGetInteger of item %#x, which the driver reads from state nobody measured: 0\n",
+                  w);
     gw32(out, (u32)v);
 }
 void nvn_DeviceSetWindowOriginMode(CPU* c, u64 d, i32 mode) {
@@ -348,8 +351,7 @@ int nvn_MemoryPoolInitialize(CPU* c, u64 p, u64 b) {
         LOG_LIMIT(8, "nvn: memory pool %llx has no storage (flags %#x)\n", (unsigned long long)p, o.flags);
     lead = o.memory & 0xfff;
     va = gmmu_space_alloc(lead + o.size, NVN_POOL_ALIGN);
-    if (!va)
-        fatal("nvn: no GPU address space left for a memory pool of %llx bytes", (unsigned long long)o.size);
+    if (!va) fatal("nvn: no GPU address space left for a memory pool of %llx bytes", (unsigned long long)o.size);
     if (o.memory) gmmu_space_map(va, o.memory - lead, lead + o.size);
     o.gpu = va + lead;
     memcpy(GP(p), &o, sizeof o);
@@ -363,7 +365,8 @@ void nvn_MemoryPoolFinalize(CPU* c, u64 p) {
     (void)c;
     if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L') && o->gpu) gmmu_space_free(o->gpu - lead, lead + o->size);
     if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L') && o->memory) nvn_cmd_memory_back(o->memory, o->size);
-    if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L')) nvmap_handle_drop(__atomic_exchange_n(&o->nvmap, 0, __ATOMIC_ACQ_REL));
+    if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L'))
+        nvmap_handle_drop(__atomic_exchange_n(&o->nvmap, 0, __ATOMIC_ACQ_REL));
     o->magic = 0;
     o->gpu = 0;
 }
@@ -570,8 +573,8 @@ static u64 desc_slot(u64 dp, i32 id, const char* kind) {
     const NvnDescPool* p = NVN_OBJ(NvnDescPool, dp);
     u64 memory = nvn_pool_memory(p->pool);
     if (id < 0 || id >= p->count || !memory) {
-        LOG_LIMIT(8, "nvn: %s %d registered outside its pool %llx (%d descriptors)\n", kind, id,
-                  (unsigned long long)dp, p->count);
+        LOG_LIMIT(8, "nvn: %s %d registered outside its pool %llx (%d descriptors)\n", kind, id, (unsigned long long)dp,
+                  p->count);
         return 0;
     }
     return memory + p->offset + (u64)id * NVN_DESCRIPTOR_SIZE;
@@ -588,9 +591,38 @@ int nvn_TexturePoolInitialize(CPU* c, u64 tp, u64 pool, i64 offset, i32 count) {
     (void)c;
     return desc_pool_init(tp, pool, offset, count, "texture");
 }
+/* The driver's own samplers, which its nvnSamplerPoolInitialize writes into a new pool's descriptors 0 and 1 (read in
+   an API 53.313 driver): linear filters without mipmaps, every coordinate clamped to its edge, LODs 0 to 1000, no
+   compare, and an anisotropy of 1 in descriptor 0 and 2 in descriptor 1. Games sample with them by those IDs without
+   registering them; an empty descriptor reads the nearest texel and wraps */
+static void reserved_samplers(u64 sp) {
+    const NvnDescPool* p = NVN_OBJ(const NvnDescPool, sp);
+    u64 memory = nvn_pool_memory(p->pool);
+    NvnSamplerPar par = {0};
+    u32 tsc[8], i;
+    if (!memory || p->count < 2) {
+        LOG("nvn: sampler pool %llx has %d descriptors and memory %llx: the driver's samplers 0 and 1 aren't written\n",
+            (unsigned long long)sp, p->count, (unsigned long long)memory);
+        return;
+    }
+    par.min_filter = NVN_MIN_FILTER_LINEAR;
+    par.mag_filter = NVN_MAG_FILTER_LINEAR;
+    par.wrap_s = par.wrap_t = par.wrap_r = NVN_WRAP_MODE_CLAMP_TO_EDGE;
+    par.compare_mode = NVN_COMPARE_MODE_NONE;
+    par.compare_func = NVN_COMPARE_FUNC_LESS;
+    par.reduction = NVN_SAMPLER_REDUCTION_AVERAGE;
+    par.lod_max = 1000.0f;
+    for (i = 0; i < 2; i++) {
+        par.anisotropy = (f32)(i + 1);
+        nvn_tsc_encode(&par, tsc);
+        memcpy(GP(memory + p->offset + i * NVN_DESCRIPTOR_SIZE), tsc, sizeof tsc);
+    }
+}
 int nvn_SamplerPoolInitialize(CPU* c, u64 sp, u64 pool, i64 offset, i32 count) {
     (void)c;
-    return desc_pool_init(sp, pool, offset, count, "sampler");
+    if (!desc_pool_init(sp, pool, offset, count, "sampler")) return 0;
+    reserved_samplers(sp);
+    return 1;
 }
 /* what a descriptor pool was initialized with */
 u64 nvn_TexturePoolGetMemoryPool(CPU* c, u64 tp) {
@@ -624,7 +656,7 @@ static void register_texture(u64 tp, i32 id, u64 t, u64 v, int image) {
     NvnView view;
     u32 tic[8];
     if (!slot) return;
-    if (!t) { /* no texture: an empty descriptor */
+    if (!t) {                            /* no texture: an empty descriptor */
         memset(GP(slot), 0, sizeof tic); /* guest memory: every byte the game sees */
         return;
     }
@@ -712,7 +744,7 @@ void nvn_TextureBuilderSetStride(CPU* c, u64 b, i64 stride) {
 void nvn_TextureBuilderSetPackagedTextureLayout(CPU* c, u64 b, u64 layout) {
     NvnTexBuilder* o = TB(b);
     (void)c;
-    o->d.bits &= (u8)~(NVN_TEX_HAS_LAYOUT | NVN_TEX_BLOCK_H);
+    o->d.bits &= (u8) ~(NVN_TEX_HAS_LAYOUT | NVN_TEX_BLOCK_H);
     memset(o->layout, 0, sizeof o->layout); /* guest memory: every byte the game sees */
     if (!layout) return;
     memcpy(o->layout, GP(layout), sizeof o->layout);
@@ -829,8 +861,8 @@ u64 nvn_TextureBuilderGetStorageSize(CPU* c, u64 b) {
     NvnTexStorage st;
     (void)c;
     nvn_tex_storage(&TB(b)->d, &st);
-    if (!st.size) LOG_LIMIT(8, "nvn: the storage size of a texture of format %#x, which nvn doesn't know\n",
-                            TB(b)->d.format);
+    if (!st.size)
+        LOG_LIMIT(8, "nvn: the storage size of a texture of format %#x, which nvn doesn't know\n", TB(b)->d.format);
     return st.size;
 }
 u64 nvn_TextureBuilderGetStorageAlignment(CPU* c, u64 b) {
@@ -858,8 +890,7 @@ int nvn_TextureInitialize(CPU* c, u64 t, u64 b) {
     if (o.d.format < 256 &&
         !(__atomic_fetch_or(&g_nvn.object.formats[o.d.format >> 5], 1u << (o.d.format & 31), __ATOMIC_RELAXED) &
           1u << (o.d.format & 31)))
-        LOG("nvn: the first texture of format %#x (target %u, %ux%u)\n", o.d.format, o.d.target, o.d.width,
-            o.d.height);
+        LOG("nvn: the first texture of format %#x (target %u, %ux%u)\n", o.d.format, o.d.target, o.d.width, o.d.height);
     if (o.d.samples > 1)
         LOG_LIMIT(4, "nvn: a %u-sample texture of format %#x, %ux%u\n", (unsigned)o.d.samples, o.d.format, o.d.width,
                   o.d.height);
@@ -980,7 +1011,9 @@ void nvn_TextureWriteTexels(CPU* c, u64 t, u64 v, u64 region, u64 src) {
     nvn_write_texels(t, v, region, src, 0, 0);
 }
 /* the channel mapping SetSwizzle gave the builder, R G B A when it gave none */
-static u32 tex_swizzle(const NvnTexDesc* d) { return d->swizzle & NVN_TEX_SWIZZLE_SET ? d->swizzle : 2u | 3u << 3 | 4u << 6 | 5u << 9; }
+static u32 tex_swizzle(const NvnTexDesc* d) {
+    return d->swizzle & NVN_TEX_SWIZZLE_SET ? d->swizzle : 2u | 3u << 3 | 4u << 6 | 5u << 9;
+}
 void nvn_TextureGetSwizzle(CPU* c, u64 t, u64 r, u64 g, u64 b, u64 a) {
     u32 w = tex_swizzle(&CT(t)->d);
     (void)c;
@@ -1060,21 +1093,17 @@ i32 nvn_TextureGetRawStorageClass(CPU* c, u64 t) {
     return raw_storage_class(&CT(t)->d);
 }
 /* A sparse texture's tile: the texels of one 64 KiB page of its block-linear layout, as the game's driver answers
-   (a 2D tile of 1, 2, 4, 8 or 16 bytes a block is 256x256, 256x128, 128x128, 128x64 or 64x64 blocks, a 3D one
-   64x32x32, 32x32x32, 32x32x16, 32x16x16 or 16x16x16), and the levels at least a tile in each dimension, before the
-   mip tail. A texture that isn't sparse, or a target or format that can't be, has all zeros */
+   (nvn_tex_sparse_tile's shape in blocks, times the block's texels), and the levels at least a tile in each
+   dimension, before the mip tail. A texture that isn't sparse, or a target or format that can't be, has all zeros */
 static void sparse_tile_layout(const NvnTexDesc* d, u64 out) {
-    static const u16 tile2d[5][2] = {{256, 256}, {256, 128}, {128, 128}, {128, 64}, {64, 64}};
-    static const u16 tile3d[5][3] = {{64, 32, 32}, {32, 32, 32}, {32, 32, 16}, {32, 16, 16}, {16, 16, 16}};
-    i32 v[4] = {0, 0, 0, 0}, bw = 1, bh = 1, b = nvn_fmt_bpb(d->format, &bw, &bh), k = 0, level;
+    i32 v[4] = {0, 0, 0, 0}, bw = 1, bh = 1, level;
+    u32 tile[3];
     int is3d = d->target == NVN_TEXTURE_TARGET_3D;
-    while (k < 5 && (1 << k) != b) k++;
-    if ((d->flags & NVN_TEXTURE_FLAGS_SPARSE) && !(d->flags & NVN_TEX_LINEAR) && k < 5 &&
-        (is3d || d->target == NVN_TEXTURE_TARGET_2D || d->target == NVN_TEXTURE_TARGET_2D_ARRAY ||
-         d->target == NVN_TEXTURE_TARGET_CUBEMAP || d->target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY)) {
-        v[1] = (is3d ? tile3d[k][0] : tile2d[k][0]) * bw;
-        v[2] = (is3d ? tile3d[k][1] : tile2d[k][1]) * bh;
-        v[3] = is3d ? tile3d[k][2] : 1;
+    if (nvn_tex_sparse_tile(d, tile)) {
+        nvn_fmt_bpb(d->format, &bw, &bh);
+        v[1] = (i32)tile[0] * bw;
+        v[2] = (i32)tile[1] * bh;
+        v[3] = (i32)tile[2];
         for (level = 0; level < (i32)d->levels; level++) {
             u32 w = d->width >> level, h = d->height >> level, z = is3d ? d->depth >> level : 1;
             if (w < (u32)v[1] || h < (u32)v[2] || z < (u32)v[3]) break;
@@ -1087,37 +1116,39 @@ void nvn_TextureGetSparseTileLayout(CPU* c, u64 t, u64 out) {
     (void)c;
     sparse_tile_layout(&CT(t)->d, out);
 }
-/* The surface description NVIDIA's NvRm library keeps of the texture (NvRmSurface, 0x58 bytes), which one movie
-   player takes to have its decoder write into the texture, as the game's driver fills it (NVN 55.12 and 55.15, read
-   from their code): 0x00 the width and height of level 0, 0x08 the color format (NvColorFormat: the driver knows nine
-   NVN formats, others are 0; from 55.15 on its codes hold bits 16 to 31 doubled), 0x10 the layout (1 pitch linear, 3 block linear), 0x14 the pitch in bytes, 0x18 the nvmap handle of
-   the texture's pool, 0x1c the texture's offset in it, 0x20 the GMMU kind (0 pitch, 0xfe block linear), 0x24 the block
-   height (log2 of the GOBs), 0x30 bit 63 once the size is known, 0x38 the size. A block-linear pitch is the row's
-   bytes rounded up to the 64-byte GOB (NvRmSurfaceComputePitch), the size the pitch times the rows rounded up to whole
-   blocks (NvRmSurfaceComputeSize). The second argument is unused, as in the driver */
+/* The surface description NVIDIA's NvRm library keeps of the texture (NvRmSurface, 0x58 bytes), which one movie player
+   takes to have its decoder write into the texture, as the game's driver fills it (NVN 53.312, 55.12 and 55.15, read
+   from their code): 0x00 the width and height of level 0, 0x08 the color format (NvColorFormat, in the codes of the
+   game's NvRm library: the driver knows nine NVN formats, others are 0; the color space in bits 32 up counts from 1 up
+   to 53.312 and from 2 from 53.314 on, 53.313 unread; from 55.15 on bits 16 to 31 are doubled), 0x10 the layout (1
+   pitch linear, 3 block linear), 0x14 the pitch in bytes, 0x18 the nvmap handle of the texture's pool, 0x1c the
+   texture's offset in it, 0x20 the GMMU kind (0 pitch, 0xfe block linear), 0x24 the block height (log2 of the GOBs),
+   0x30 bit 63 once the size is known, 0x38 the size. A block-linear pitch is the row's bytes rounded up to the 64-byte
+   GOB (NvRmSurfaceComputePitch), the size the pitch times the rows rounded up to whole blocks (NvRmSurfaceComputeSize).
+   The second argument is unused, as in the driver */
 void nvn_TextureGetNvRmSurfaceNVX(CPU* c, u64 t, u64 unused, u64 surface) {
     static const struct {
         u16 format;
-        u64 color[2]; /* the 55.12 driver's, the 55.15 one's */
+        u64 color[3]; /* the 53.312 driver's, the 55.12 one's, the 55.15 one's */
     } colors[] = {
-        {NVN_FORMAT_R8, {0xf09200408ull, 0xf12400408ull}},
-        {NVN_FORMAT_RG8, {0xf08440710ull, 0xf10880710ull}},
-        {NVN_FORMAT_RGBA8, {0x200532120ull, 0x200a62120ull}},
-        {NVN_FORMAT_RGBX8_SRGB, {0x20a532120ull, 0x214a62120ull}},
-        {NVN_FORMAT_RGBA8_SRGB, {0x200532120ull, 0x200a62120ull}},
-        {NVN_FORMAT_RGB565, {0x20a881210ull, 0x215101210ull}},
-        {NVN_FORMAT_RGBX8, {0x20a532120ull, 0x214a62120ull}},
-        {NVN_FORMAT_BGRA8, {0x200d12120ull, 0x201a22120ull}},
-        {NVN_FORMAT_BGRA8_SRGB, {0x200d12120ull, 0x201a22120ull}},
+        {NVN_FORMAT_R8, {0xe09200408ull, 0xf09200408ull, 0xf12400408ull}},
+        {NVN_FORMAT_RG8, {0xe08440710ull, 0xf08440710ull, 0xf10880710ull}},
+        {NVN_FORMAT_RGBA8, {0x100532120ull, 0x200532120ull, 0x200a62120ull}},
+        {NVN_FORMAT_RGBX8_SRGB, {0x10a532120ull, 0x20a532120ull, 0x214a62120ull}},
+        {NVN_FORMAT_RGBA8_SRGB, {0x100532120ull, 0x200532120ull, 0x200a62120ull}},
+        {NVN_FORMAT_RGB565, {0x10a881210ull, 0x20a881210ull, 0x215101210ull}},
+        {NVN_FORMAT_RGBX8, {0x10a532120ull, 0x20a532120ull, 0x214a62120ull}},
+        {NVN_FORMAT_BGRA8, {0x100d12120ull, 0x200d12120ull, 0x201a22120ull}},
+        {NVN_FORMAT_BGRA8_SRGB, {0x100d12120ull, 0x200d12120ull, 0x201a22120ull}},
     };
     const NvnTexture* o = CT(t);
     u64 color = 0, size = 0, flags = 0;
-    u32 width = o->d.width, height = o->d.height, layout, pitch, kind, block_h = 0;
-    int v55_15 = g_nvn.loader.api >= (55u << 16 | 15);
+    u32 width = o->d.width, height = o->d.height, layout, pitch, kind, block_h = 0, api = g_nvn.loader.api;
+    int nvrm = api >= (55u << 16 | 15) ? 2 : api && api < (53u << 16 | 313) ? 0 : 1;
     (void)c;
     (void)unused;
     for (size_t i = 0; i < sizeof colors / sizeof *colors; i++)
-        if (colors[i].format == o->d.format) color = colors[i].color[v55_15];
+        if (colors[i].format == o->d.format) color = colors[i].color[nvrm];
     u32 bits = (u32)(color & 0xff); /* the format's bits per pixel */
     if (o->d.flags & NVN_TEX_LINEAR) {
         layout = 1;
@@ -1254,12 +1285,12 @@ void nvn_TextureViewSetSwizzle(CPU* c, u64 v, i32 r, i32 g, i32 b, i32 a) {
 void nvn_SamplerBuilderSetDefaults(CPU* c, u64 b) {
     NvnSamplerPar* o = SB(b);
     (void)c;
-    memset(GP(b), 0, sizeof(NvnSamplerBuilder));          /* guest memory: every byte the game sees */
-    o->min_filter = NVN_MIN_FILTER_NEAREST_MIPMAP_LINEAR; /* GL's defaults */
+    memset(GP(b), 0, sizeof(NvnSamplerBuilder)); /* guest memory: every byte the game sees */
+    o->min_filter = NVN_MIN_FILTER_LINEAR;
     o->mag_filter = NVN_MAG_FILTER_LINEAR;
     o->wrap_s = o->wrap_t = o->wrap_r = NVN_WRAP_MODE_REPEAT;
     o->compare_func = NVN_COMPARE_FUNC_LESS;
-    o->lod_min = -1000.f;
+    o->lod_min = 0.f;
     o->lod_max = 1000.f;
     o->anisotropy = 1.f;
 }
@@ -1433,8 +1464,7 @@ int nvn_SamplerCompare(CPU* c, u64 a, u64 b) {
            x->wrap_t == y->wrap_t && x->wrap_r == y->wrap_r && x->compare_mode == y->compare_mode &&
            x->compare_func == y->compare_func && x->reduction == y->reduction && x->lod_min == y->lod_min &&
            x->lod_max == y->lod_max && x->lod_bias == y->lod_bias && x->anisotropy == y->anisotropy &&
-           x->lod_snap == y->lod_snap &&
-           !memcmp(x->border, y->border, sizeof x->border);
+           x->lod_snap == y->lod_snap && !memcmp(x->border, y->border, sizeof x->border);
 }
 void nvn_SamplerFinalize(CPU* c, u64 s) {
     (void)c;
@@ -1442,16 +1472,17 @@ void nvn_SamplerFinalize(CPU* c, u64 s) {
 }
 
 /* ============================================================ programs */
+/* a program's life at log level 2, with the game's call: which thread made or ended a program before another bound it */
 int nvn_ProgramInitialize(CPU* c, u64 p, u64 d) {
-    (void)c;
     (void)d;
     memset(GP(p), 0, sizeof(NvnProgram)); /* guest memory: every byte the game sees */
     NVN_OBJ(NvnProgram, p)->magic = NVN_MAGIC('P', 'R', 'O', 'G');
+    LOGV("nvn: program %llx initialized (called from %llx)\n", (unsigned long long)p, (unsigned long long)c->x[30]);
     return 1;
 }
 void nvn_ProgramFinalize(CPU* c, u64 p) {
-    (void)c;
     NVN_OBJ(NvnProgram, p)->magic = 0;
+    LOGV("nvn: program %llx finalized (called from %llx)\n", (unsigned long long)p, (unsigned long long)c->x[30]);
 }
 /* A stage's control section, as the game's driver reads it (its accessor for the newest format, which one game's
    format 8 sections share): 0x00 the magic, 0x04 1, 0x08 the format, 0x700 the constants' offset in the code area,
@@ -1468,10 +1499,11 @@ static int stage_of(NvnProgram* o, u64 data, u64 control) {
        SetShaders failing, one game's effects system went on to read the program's interface table, which the
        failure left out, and crashed */
     if (magic != 0x98761234u || one != 1 || format < 5 || format > 16 || stage > 5 ||
-        (off < 0x30 && stage != NVN_SHADER_STAGE_COMPUTE) || cb < off ||
-        size < cb || (cb & 0xff) || (size & 0xff) || size >> 24 || !data) {
-        LOG_LIMIT(8, "nvn: a shader's control section at %llx isn't one the runtime reads (magic %x, format %u, stage %u, "
-                     "program at %#x, constants %#x of %#x)\n",
+        (off < 0x30 && stage != NVN_SHADER_STAGE_COMPUTE) || cb < off || size < cb || (cb & 0xff) || (size & 0xff) ||
+        size >> 24 || !data) {
+        LOG_LIMIT(8,
+                  "nvn: a shader's control section at %llx isn't one the runtime reads (magic %x, format %u, stage %u, "
+                  "program at %#x, constants %#x of %#x)\n",
                   (unsigned long long)control, magic, format, stage, off, cb, size);
         return 0;
     }
@@ -1489,24 +1521,88 @@ static int stage_of(NvnProgram* o, u64 data, u64 control) {
         o->off_a = gr32(control + 0x754);
         st->cb_size = (u16)((gr32(control + 0x6fc) + 0xff) >> 8);
     } else if (stage == NVN_SHADER_STAGE_VERTEX && gr32(control + 0x74c) && gr32(control + 0x758)) {
-        o->off_a = gr32(control + 0x748);
+        /* Subroutine-enabled vertex programs run their complete VertexB path. The optional cull-before-fetch
+           VertexA program cannot share its dynamically patched register/call state. */
+        o->off_a = format >= 7 && GP(control)[0x7c0] ? 0 : gr32(control + 0x748);
         st->off = gr32(control + 0x754);
     }
     return 1;
 }
-/* ---- transform feedback layouts: the programs whose last stage before rasterization captures, by serial (their
-   128-byte layouts don't fit the program object). Programs that capture are few, and their entries stay */
+/* Under xfb_lock, find a serial or its insertion point. Both metadata entry types start with their serial.
+   Shader creation can finish out of serial order. Callers receive copies, so the arrays can grow or move. */
+static u32 program_metadata_index(const void* entries, u32 count, size_t stride, u64 serial) {
+    u32 lo = 0, hi = count;
+    while (lo < hi) {
+        u32 mid = lo + (hi - lo) / 2;
+        u64 found;
+        memcpy(&found, (const u8*)entries + (size_t)mid * stride, sizeof found);
+        if (found < serial)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return lo;
+}
+/* Layouts stay immutable after SetShaders because recorded commands can retain any earlier program serial. */
 int nvn_program_xfb(u64 serial, ShXfb* x) {
-    u32 i;
-    int found = 0;
     pm_lock(&g_nvn.object.xfb_lock);
-    for (i = g_nvn.object.nxfb; i-- > 0 && !found;)
-        if (g_nvn.object.xfb[i].serial == serial) {
-            *x = g_nvn.object.xfb[i].x;
-            found = 1;
-        }
+    u32 i = program_metadata_index(g_nvn.object.xfb, g_nvn.object.nxfb, sizeof *g_nvn.object.xfb, serial);
+    int found = i < g_nvn.object.nxfb && g_nvn.object.xfb[i].serial == serial;
+    if (found) *x = g_nvn.object.xfb[i].x;
     pm_unlock(&g_nvn.object.xfb_lock);
     return found;
+}
+int nvn_program_tess(u64 serial, NvnTessStage stages[2]) {
+    pm_lock(&g_nvn.object.xfb_lock);
+    u32 i = program_metadata_index(g_nvn.object.tess, g_nvn.object.ntess, sizeof *g_nvn.object.tess, serial);
+    int found = i < g_nvn.object.ntess && g_nvn.object.tess[i].serial == serial;
+    if (found) {
+        stages[0] = g_nvn.object.tess[i].stage[0];
+        stages[1] = g_nvn.object.tess[i].stage[1];
+    }
+    pm_unlock(&g_nvn.object.xfb_lock);
+    return found;
+}
+/* The control-section ABI has fixed evaluation values at0x738..744. Format16 adds control values at0x848 and
+   independent declaration flags at0x858/868. Earlier evaluation binaries declare all four fields implicitly. */
+static void tess_of(const u64 controls[2], u64 serial) {
+    if (!controls[0] && !controls[1]) return;
+    NvnTessEntry entry = {.serial = serial};
+    for (u32 stage = 0; stage < 2; stage++) {
+        u64 control = controls[stage];
+        if (!control) continue;
+        u32 format = gr32(control + 8);
+        if (!stage && format < 16) continue;
+        u32 base = stage ? 0x738 : 0x848, flags = stage ? 0x868 : 0x858;
+        u32 raw[4], declared = format < 16 ? 15 : 0;
+        for (u32 field = 0; field < 4; field++) {
+            raw[field] = gr32(control + base + 4 * field);
+            if (format >= 16 && gr32(control + flags + 4 * field)) declared |= 1u << field;
+        }
+        u32 domain = raw[0] == 4 ? 1 : raw[0] == 7 ? 2 : 0;
+        u32 spacing = raw[1] == 0x8e7b ? 1 : raw[1] == 0x8e7c ? 2 : 0;
+        u32 winding = raw[3] == 0x900 ? 3 : 2;
+        if (raw[0] != 4 && raw[0] != 7 && raw[0] != 0x8e7a) declared &= ~1u;
+        if (raw[1] != 0x202 && raw[1] != 0x8e7b && raw[1] != 0x8e7c) declared &= ~2u;
+        if (raw[3] != 0x900 && raw[3] != 0x901) declared &= ~8u;
+        entry.stage[stage] = (NvnTessStage){domain | spacing << 4 | (u32)(raw[2] != 0) << 8 | winding << 12, declared};
+    }
+    pm_lock(&g_nvn.object.xfb_lock);
+    if (g_nvn.object.ntess == g_nvn.object.tess_capacity) {
+        u32 capacity = g_nvn.object.tess_capacity ? g_nvn.object.tess_capacity * 2 : 32;
+        if (capacity < g_nvn.object.tess_capacity || (size_t)capacity > SIZE_MAX / sizeof *g_nvn.object.tess)
+            fatal("nvn: tessellation program declarations exceed the address space");
+        NvnTessEntry* grown = realloc(g_nvn.object.tess, (size_t)capacity * sizeof *grown);
+        if (!grown) fatal("nvn: no memory for %u tessellation program declarations", capacity);
+        g_nvn.object.tess = grown;
+        g_nvn.object.tess_capacity = capacity;
+    }
+    u32 at = program_metadata_index(g_nvn.object.tess, g_nvn.object.ntess, sizeof *g_nvn.object.tess, serial);
+    memmove(g_nvn.object.tess + at + 1, g_nvn.object.tess + at,
+            (size_t)(g_nvn.object.ntess - at) * sizeof *g_nvn.object.tess);
+    g_nvn.object.tess[at] = entry;
+    g_nvn.object.ntess++;
+    pm_unlock(&g_nvn.object.xfb_lock);
 }
 /* The capture layout a stage's control section gives, as the game's driver reads it into the 3D engine's
    transform feedback registers: 0x6ec set when it captures; per buffer i, its stream at 0x6e4 + i, its stride
@@ -1537,9 +1633,42 @@ static void xfb_of(u64 control, u64 serial) {
         }
     }
     pm_lock(&g_nvn.object.xfb_lock);
-    if (g_nvn.object.nxfb == NVN_XFB_MAX)
-        fatal("nvn: more than %u programs that capture transform feedback, the layouts nvn holds", NVN_XFB_MAX);
-    g_nvn.object.xfb[g_nvn.object.nxfb++] = e;
+    if (g_nvn.object.nxfb == g_nvn.object.xfb_capacity) {
+        u32 capacity = g_nvn.object.xfb_capacity ? g_nvn.object.xfb_capacity * 2 : 32;
+        if (capacity < g_nvn.object.xfb_capacity || (size_t)capacity > SIZE_MAX / sizeof *g_nvn.object.xfb)
+            fatal("nvn: transform feedback program layouts exceed the address space");
+        NvnXfbEntry* grown = realloc(g_nvn.object.xfb, (size_t)capacity * sizeof *grown);
+        if (!grown) fatal("nvn: no memory for %u transform feedback program layouts", capacity);
+        g_nvn.object.xfb = grown;
+        g_nvn.object.xfb_capacity = capacity;
+    }
+    u32 at = program_metadata_index(g_nvn.object.xfb, g_nvn.object.nxfb, sizeof *g_nvn.object.xfb, serial);
+    memmove(g_nvn.object.xfb + at + 1, g_nvn.object.xfb + at,
+            (size_t)(g_nvn.object.nxfb - at) * sizeof *g_nvn.object.xfb);
+    g_nvn.object.xfb[at] = e;
+    g_nvn.object.nxfb++;
+    pm_unlock(&g_nvn.object.xfb_lock);
+}
+
+static void sub_program(u64 serial, u32 required) {
+    if (!required) return;
+    pm_lock(&g_nvn.object.xfb_lock);
+    if (g_nvn.object.nsubprogram == g_nvn.object.subprogram_capacity) {
+        u32 capacity = g_nvn.object.subprogram_capacity ? g_nvn.object.subprogram_capacity * 2 : 32;
+        if (capacity < g_nvn.object.subprogram_capacity ||
+            (size_t)capacity > SIZE_MAX / sizeof *g_nvn.object.subprogram)
+            fatal("nvn: subroutine program metadata exceeds the address space");
+        NvnSubProgram* grown = realloc(g_nvn.object.subprogram, (size_t)capacity * sizeof *grown);
+        if (!grown) fatal("nvn: no memory for %u subroutine programs", capacity);
+        g_nvn.object.subprogram = grown;
+        g_nvn.object.subprogram_capacity = capacity;
+    }
+    u32 at = program_metadata_index(g_nvn.object.subprogram, g_nvn.object.nsubprogram, sizeof *g_nvn.object.subprogram,
+                                    serial);
+    memmove(g_nvn.object.subprogram + at + 1, g_nvn.object.subprogram + at,
+            (size_t)(g_nvn.object.nsubprogram - at) * sizeof *g_nvn.object.subprogram);
+    g_nvn.object.subprogram[at] = (NvnSubProgram){.serial = serial, .required = required};
+    g_nvn.object.nsubprogram++;
     pm_unlock(&g_nvn.object.xfb_lock);
 }
 
@@ -1547,6 +1676,8 @@ static void xfb_of(u64 control, u64 serial) {
 static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
     NvnProgram* o = NVN_OBJ(NvnProgram, p);
     u64 last = 0; /* the control section of the last stage before rasterization */
+    u64 tess_controls[2] = {0};
+    u32 subroutine_mask = 0;
     i32 i, last_rank = -1;
     if (n < 0 || n > 6) {
         LOG_LIMIT(8, "nvn: nvnProgramSetShaders with %d stages\n", n);
@@ -1563,6 +1694,9 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
         if (!stage_of(o, gr64(sd + stride * (u64)i), control)) return 0;
         /* geometry, else tessellation evaluation, else control, else vertex: the driver's order */
         stage = gr32(control + 0x714);
+        if (gr32(control + 8) >= 7 && GP(control)[0x7c0]) subroutine_mask |= 1u << stage;
+        if (stage == NVN_SHADER_STAGE_TESS_CONTROL) tess_controls[0] = control;
+        if (stage == NVN_SHADER_STAGE_TESS_EVALUATION) tess_controls[1] = control;
         rank = stage == NVN_SHADER_STAGE_GEOMETRY          ? 3
                : stage == NVN_SHADER_STAGE_TESS_EVALUATION ? 2
                : stage == NVN_SHADER_STAGE_TESS_CONTROL    ? 1
@@ -1577,17 +1711,23 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
     /* the sample shading SetSampleShading asked for takes effect here, as the game's driver applies it in SetShaders */
     o->sample_shading = (u16)((o->sample_shading & 0xff) | (o->sample_shading & 0xff) << 8);
     if (last) xfb_of(last, o->serial);
+    tess_of(tess_controls, o->serial);
+    sub_program(o->serial, subroutine_mask);
     return 1;
 }
 int nvn_ProgramSetShaders(CPU* c, u64 p, i32 n, u64 sd) {
-    (void)c;
-    return set_shaders(p, n, sd, sizeof(NVNshaderData));
+    int ok = set_shaders(p, n, sd, sizeof(NVNshaderData));
+    LOGV("nvn: program %llx: %d stages set%s (called from %llx)\n", (unsigned long long)p, n, ok ? "" : ", refused",
+         (unsigned long long)c->x[30]);
+    return ok;
 }
 
 /* NVN 55's SetShaders: 0x18 bytes a stage, NVNshaderData and an 8-byte extension, which nxnative doesn't use either */
 int nvn_ProgramSetShadersExt(CPU* c, u64 p, i32 n, u64 sd) {
-    (void)c;
-    return set_shaders(p, n, sd, 0x18);
+    int ok = set_shaders(p, n, sd, 0x18);
+    LOGV("nvn: program %llx: %d stages set%s (called from %llx)\n", (unsigned long long)p, n, ok ? "" : ", refused",
+         (unsigned long long)c->x[30]);
+    return ok;
 }
 
 /* the sample shading of the program's next SetShaders: NVN_SAMPLE_SHADING_* (0 as the program says, 1 every sample, 2
@@ -1604,15 +1744,188 @@ i32 nvn_ProgramGetSubtileSize(CPU* c, u64 p) {
     (void)p;
     return 0;
 }
-/* Subroutine linkage maps the program's subroutine uniforms to their functions. The game's driver answers false for
-   a program whose stages have none, which is every program here: the translator runs no subroutines, so a program
-   with them couldn't draw as the game asks */
+/* A linkage map's fixed header is 80 bytes. Every payload offset is relative to its first byte. Bounds are
+   checked before the snapshot is installed, so malformed maps never become command-record handles. */
+static int sub_span(u32 bytes, u32 offset, u32 count, u32 width) {
+    return !(offset & 3) && offset >= 80 && offset <= bytes && count <= (bytes - offset) / width;
+}
+static NvnSubLinkage* sub_linkage(u64 address, const NvnProgram* program, u32* mask) {
+    if (address > ~0ull - 80 || mem_mapped_run(address, 80) < 80) return NULL;
+    const u8* data = GP(address);
+    u32 bytes = snx_ld_le32(data + 20), stage = snx_ld_le32(data + 4);
+    if (snx_ld_le32(data) != 0xfabffabcu || stage > 5 || (*mask & (1u << stage)) || bytes < 80 || bytes > 16u << 20)
+        return NULL;
+    if (address > ~0ull - bytes || mem_mapped_run(address, bytes) < bytes) return NULL;
+    const NvnStage* shader = &program->st[stage];
+    u32 absolute = snx_ld_le32(data + 28), table = snx_ld_le32(data + 36);
+    u32 labels = snx_ld_le32(data + 40), code = snx_ld_le32(data + 48), calls = snx_ld_le32(data + 56);
+    u32 call_offset = snx_ld_le32(data + 60), functions = snx_ld_le32(data + 64), targets = snx_ld_le32(data + 68);
+    u32 entries = snx_ld_le32(data + 76);
+    /* Compiler constants are bank1. Maxwell table entries are one32-bit byte offset each. */
+    u32 capacity = (u32)shader->cb_size * 64;
+    if (capacity > 16384) capacity = 16384; /* Maxwell constant banks contain at most64 KiB. */
+    if (!shader->data || ((u32)shader->cb << 8) < shader->off || absolute > 1 || !labels || !calls || !entries ||
+        table > capacity || entries > capacity - table || !sub_span(bytes, code, labels, 4) ||
+        !sub_span(bytes, call_offset, calls, 16))
+        return NULL;
+    u32 major = snx_ld_le32(data + 8), minor = snx_ld_le32(data + 12);
+    int sorted = major > 1 || (major == 1 && minor >= 9);
+    u32 summed = 0;
+    for (u32 i = 0; i < calls; i++) {
+        const u8* call = data + call_offset + (size_t)i * 16;
+        u32 n = snx_ld_le32(call), array = snx_ld_le32(call + 4), at = snx_ld_le32(call + 8);
+        u32 uniform = snx_ld_le32(call + 12);
+        if (!n || !array || array > entries - summed || uniform > 0x7fffffffu || array > 0x80000000u - uniform ||
+            at > 0x3fffffffu || n > 0x40000000u - at || !sub_span(bytes, functions, at + n, 4) ||
+            !sub_span(bytes, targets, at + n, 4))
+            return NULL;
+        for (u32 j = 0; j < n; j++) {
+            if (sorted && j &&
+                snx_ld_le32(data + functions + ((size_t)at + j - 1) * 4) >
+                    snx_ld_le32(data + functions + ((size_t)at + j) * 4))
+                return NULL;
+            u32 label = snx_ld_le32(data + targets + ((size_t)at + j) * 4);
+            if (label >= labels) return NULL;
+            u32 offset = snx_ld_le32(data + code + (size_t)label * 4);
+            u32 extent = ((u32)shader->cb << 8) - shader->off;
+            u32 magnitude = !absolute && (offset & 0x80000000u) ? 0u - offset : offset;
+            if (offset != ~0u && ((offset & 7) || magnitude >= extent)) return NULL;
+        }
+        summed += array;
+    }
+    if (summed != entries) return NULL;
+    NvnSubLinkage* result = malloc(sizeof *result + bytes);
+    if (!result) return NULL;
+    *result = (NvnSubLinkage){.shader = *shader,
+                              .stage = stage,
+                              .absolute = absolute,
+                              .table = table,
+                              .calls = calls,
+                              .entries = entries,
+                              .labels = labels,
+                              .call_offset = call_offset,
+                              .code_offset = code,
+                              .function_offset = functions,
+                              .label_offset = targets,
+                              .bytes = bytes};
+    memcpy(result->data, data, bytes);
+    *mask |= 1u << stage;
+    return result;
+}
 int nvn_ProgramSetSubroutineLinkage(CPU* c, u64 p, i32 n, u64 maps) {
     (void)c;
-    if (n > 0 && maps)
-        LOG_LIMIT(1, "nvn: program %llx's subroutine linkage (%d stages): the runtime's programs have no subroutines\n",
-                  (unsigned long long)p, n);
+    if (!p || !maps || n <= 0 || n > 6) return 0;
+    NvnProgram program = *NVN_OBJ(const NvnProgram, p);
+    if (program.magic != NVN_MAGIC('P', 'R', 'O', 'G')) return 0;
+    NvnSubLinkage* made[6] = {0};
+    u32 mask = 0;
+    for (i32 i = 0; i < n; i++) {
+        u64 address = nvn_gptr(maps + (g_nvn.loader.a32 ? 4 : 8) * (u64)i);
+        if (!address || !(made[i] = sub_linkage(address, &program, &mask))) goto fail;
+    }
+    pm_lock(&g_nvn.object.xfb_lock);
+    u32 at = program_metadata_index(g_nvn.object.subprogram, g_nvn.object.nsubprogram, sizeof *g_nvn.object.subprogram,
+                                    program.serial);
+    if (at == g_nvn.object.nsubprogram || g_nvn.object.subprogram[at].serial != program.serial ||
+        g_nvn.object.subprogram[at].required != mask) {
+        pm_unlock(&g_nvn.object.xfb_lock);
+        goto fail;
+    }
+    if ((u32)n > g_nvn.object.sublinkage_capacity - g_nvn.object.nsublinkage) {
+        u32 capacity = g_nvn.object.sublinkage_capacity ? g_nvn.object.sublinkage_capacity * 2 : 32;
+        if (capacity < g_nvn.object.sublinkage_capacity ||
+            (size_t)capacity > SIZE_MAX / sizeof *g_nvn.object.sublinkage)
+            fatal("nvn: subroutine linkage handles exceed the address space");
+        NvnSubLinkage** grown = realloc(g_nvn.object.sublinkage, (size_t)capacity * sizeof *grown);
+        if (!grown) fatal("nvn: no memory for %u subroutine linkage maps", capacity);
+        g_nvn.object.sublinkage = grown;
+        g_nvn.object.sublinkage_capacity = capacity;
+    }
+    for (i32 i = 0; i < n; i++) {
+        g_nvn.object.sublinkage[g_nvn.object.nsublinkage++] = made[i];
+        g_nvn.object.subprogram[at].linkage[made[i]->stage] = g_nvn.object.nsublinkage;
+    }
+    pm_unlock(&g_nvn.object.xfb_lock);
+    return 1;
+fail:
+    for (i32 i = 0; i < n; i++) free(made[i]);
     return 0;
+}
+u32 nvn_program_subroutine(u64 program, i32 stage) {
+    if (!program || (u32)stage > 5) return 0;
+    const NvnProgram* object = NVN_OBJ(const NvnProgram, program);
+    if (object->magic != NVN_MAGIC('P', 'R', 'O', 'G')) return 0;
+    u64 serial = object->serial;
+    pm_lock(&g_nvn.object.xfb_lock);
+    u32 at = program_metadata_index(g_nvn.object.subprogram, g_nvn.object.nsubprogram, sizeof *g_nvn.object.subprogram,
+                                    serial);
+    u32 result = at < g_nvn.object.nsubprogram && g_nvn.object.subprogram[at].serial == serial
+                     ? g_nvn.object.subprogram[at].linkage[stage]
+                     : 0;
+    pm_unlock(&g_nvn.object.xfb_lock);
+    return result;
+}
+int nvn_subroutine_apply(u32 handle, i32 first, i32 count, const i32* values) {
+    if (!handle || first < 0 || count < 0 || (u32)count > 0x80000000u - (u32)first || (count && !values)) return 0;
+    pm_lock(&g_nvn.object.xfb_lock);
+    const NvnSubLinkage* linkage = handle <= g_nvn.object.nsublinkage ? g_nvn.object.sublinkage[handle - 1] : NULL;
+    pm_unlock(&g_nvn.object.xfb_lock);
+    if (!linkage) return 0;
+    /* Validate the whole update before any write. Patches retain table order, so adjacent changed entries share
+       one write while untouched locations require no read of pending GPU constants. */
+    u32* patch = malloc((size_t)linkage->entries * 8);
+    if (!patch) fatal("nvn: no memory for subroutine table updates");
+    u32* index = patch + linkage->entries;
+    u32 major = snx_ld_le32(linkage->data + 8), minor = snx_ld_le32(linkage->data + 12);
+    int sorted = major > 1 || (major == 1 && minor >= 9);
+    u32 changed = 0, entry = 0;
+    for (u32 i = 0; i < linkage->calls; i++) {
+        const u8* call = linkage->data + linkage->call_offset + (size_t)i * 16;
+        u32 targets = snx_ld_le32(call), array = snx_ld_le32(call + 4), start = snx_ld_le32(call + 8);
+        u32 uniform = snx_ld_le32(call + 12);
+        for (u32 j = 0; j < array; j++, entry++) {
+            u32 location = uniform + j;
+            if (location < (u32)first || location - (u32)first >= (u32)count) continue;
+            u32 function = snx_ld_le32((const u8*)values + (size_t)(location - (u32)first) * 4);
+            u32 k = 0;
+            if (sorted) {
+                u32 end = targets;
+                while (k < end) {
+                    u32 middle = k + (end - k) / 2;
+                    u32 found = snx_ld_le32(linkage->data + linkage->function_offset + ((size_t)start + middle) * 4);
+                    if (found < function)
+                        k = middle + 1;
+                    else
+                        end = middle;
+                }
+            } else
+                for (; k < targets; k++)
+                    if (snx_ld_le32(linkage->data + linkage->function_offset + ((size_t)start + k) * 4) == function)
+                        break;
+            if (k == targets ||
+                snx_ld_le32(linkage->data + linkage->function_offset + ((size_t)start + k) * 4) != function) {
+                free(patch);
+                return 0;
+            }
+            u32 label = snx_ld_le32(linkage->data + linkage->label_offset + ((size_t)start + k) * 4);
+            u32 offset = snx_ld_le32(linkage->data + linkage->code_offset + (size_t)label * 4);
+            u32 base = linkage->absolute ? (u32)(linkage->shader.data + linkage->shader.off) +
+                                               (linkage->stage == NVN_SHADER_STAGE_COMPUTE ? 0 : 80)
+                                         : 0;
+            snx_st_le32((u8*)patch + (size_t)changed * 4, base + offset);
+            index[changed++] = entry;
+        }
+    }
+    int ok = 1;
+    for (u32 i = 0; i < changed;) {
+        u32 end = i + 1;
+        while (end < changed && index[end] == index[end - 1] + 1) end++;
+        u64 destination = linkage->shader.data + ((u64)linkage->shader.cb << 8) + ((u64)linkage->table + index[i]) * 4;
+        if (gmem_write(destination, patch + i, (u64)(end - i) * 4)) ok = 0;
+        i = end;
+    }
+    free(patch);
+    return ok;
 }
 
 /* ============================================================ syncs */
@@ -1748,7 +2061,9 @@ u32 nvn_EventGetValue(CPU* c, u64 e) {
 void nvn_EventSignal(CPU* c, u64 e, i32 mode, u32 value) {
     u64 a = NVN_OBJ(NvnEvent, e)->value;
     (void)c;
+    __atomic_thread_fence(__ATOMIC_RELEASE);
     gw32(a, mode == NVN_EVENT_SIGNAL_MODE_ADD ? gr32(a) + value : value);
+    gpu_kick();
 }
 u64 nvn_EventBuilderGetMemoryPool(CPU* c, u64 b) {
     (void)c;

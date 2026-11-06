@@ -3,22 +3,15 @@
    Serialized, bounded single-core thread contexts; no host threads or JIT.
    SVC register layout from Azahar kernel/svc_wrapper.h (revision in 3DS.md). */
 #include "3ds/runtime/internal.h"
-#include "snx_settings.h"
 #include "common/utilities/endian.h"
-#include "3ds/audio/dsp.h"
-#include "3ds/audio/output.h"
 #include "3ds/services/gsp.h"
 #include "3ds/services/dsp.h"
 #include "3ds/services/y2r.h"
 #include "3ds/services/file.h"
 #include "3ds/services/hid.h"
-#include "3ds/services/cam.h"
-#include "3ds/services/ir.h"
 #include "3ds/services/uds.h"
 #include "common/utilities/common.h"
 #include <string.h>
-/* the frames (4.9 ms each) the output device's queue is kept stocked with once the DSP makes audio: about 60 ms */
-#define DSP_LEAD_FRAMES 12u
 #if defined(_WIN32)
 #include <windows.h>
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
@@ -47,15 +40,7 @@ void snx_ctr_thread_block(SnxCtrProcess* p, uint32_t id, uint32_t address) {
     ++p->objects[id].refs;
 }
 void snx_ctr_thread_ready(SnxCtrProcess* p, uint32_t id) { p->objects[id].data.thread.ready_seq = ++p->sched_seq; }
-/* The guest's clock: the host's, run at ctr_speed_limit percent of the console's, and for the unlimited speed with the
-   time the host would have slept moved over (sleep_until). Every time the guest reads comes from here */
-static double g_skipped; /* seconds the unlimited speed has not waited */
-static double speed_scale(void) {
-    int limit = g_settings.ctr_speed_limit;
-    return limit > 0 ? limit / 100.0 : 1.0;
-}
-double snx_ctr_seconds(void) { return snx_seconds() * speed_scale() + g_skipped; }
-uint64_t snx_ctr_now_ns(void) { return (uint64_t)(snx_ctr_seconds() * 1e9); }
+uint64_t snx_ctr_now_ns(void) { return (uint64_t)(snx_seconds() * 1e9); }
 /* Every thread's effective priority: its own, improved to the best effective priority of the threads waiting on a
    mutex it holds, transitively (Azahar Mutex::UpdatePriority and Thread::UpdatePriority). A chain is at most as long
    as the threads, and each round that changes nothing ends it. */
@@ -358,13 +343,6 @@ SnxCtrSvcResult snx_ctr_thread_exit(SnxCtrProcess* p) {
 static void sleep_until(uint64_t deadline) {
     uint64_t now = now_ns();
     if (deadline <= now) return;
-    if (!g_settings.ctr_speed_limit) {
-        /* unlimited: the wait passes at once */
-        g_skipped += (double)(deadline - now) / 1e9;
-        return;
-    }
-    /* the host waits the guest's time at the speed it runs */
-    deadline = now + (uint64_t)((double)(deadline - now) / speed_scale());
 #if defined(_WIN32)
     /* Sleep() rounds to the system tick (15.6 ms unless raised), far longer than a 4.9 ms audio frame: a high-resolution
        waitable timer (Windows 10 1803 and later) waits the exact time, Sleep() remains where it is missing */
@@ -415,20 +393,9 @@ SnxCtrSchedule snx_ctr_schedule(SnxCtrProcess* p) {
         uint64_t now = now_ns(), earliest = UINT64_MAX;
         snx_ctr_uds_poll(p);
         if (p->gsp.shared_object && now >= p->gsp.next_vblank_ns) snx_ctr_gsp_vblank(p);
-        /* The DSP's frames come on the host clock until one has audio. Then the device's queue sets the pace: frames
-           come while less than DSP_LEAD_FRAMES wait in it, so a render in the guest's GSP call that holds the
-           scheduler for tens of milliseconds does not run the device dry (the music gap). Frames that are late on the
-           host clock also come back to back, up to a few */
-        for (unsigned burst = 0; p->dsp.core && burst < 8; ++burst) {
-            bool hungry = p->dsp.producing && snx_ctr_audio_queued_frames() < DSP_LEAD_FRAMES;
-            if (!hungry && now < p->dsp.next_frame_ns) break;
-            snx_ctr_dsp_frame(p, now);
-            if (hungry) p->dsp.next_frame_ns = now + SNX_CTR_DSP_FRAME_NS;
-        }
+        if (p->dsp.core && now >= p->dsp.next_frame_ns) snx_ctr_dsp_frame(p, now);
         if (p->y2r.done_ns && now >= p->y2r.done_ns) snx_ctr_y2r_done(p);
         if (now >= snx_ctr_hid_deadline(p)) snx_ctr_hid_update(p, now);
-        if (now >= snx_ctr_ir_deadline(p)) snx_ctr_ir_update(p, now);
-        if (now >= snx_ctr_cam_deadline(p)) snx_ctr_cam_update(p, now);
         if (now >= p->time_update_ns) snx_ctr_shared_page_time(p);
         for (uint32_t i = 1; i < CTR_OBJECTS; ++i) {
             CtrObject* o = &p->objects[i];
@@ -498,8 +465,6 @@ SnxCtrSchedule snx_ctr_schedule(SnxCtrProcess* p) {
         if (p->dsp.core && p->dsp.next_frame_ns < deadline) deadline = p->dsp.next_frame_ns;
         if (p->y2r.done_ns && p->y2r.done_ns < deadline) deadline = p->y2r.done_ns;
         if (snx_ctr_hid_deadline(p) < deadline) deadline = snx_ctr_hid_deadline(p);
-        if (snx_ctr_ir_deadline(p) < deadline) deadline = snx_ctr_ir_deadline(p);
-        if (snx_ctr_cam_deadline(p) < deadline) deadline = snx_ctr_cam_deadline(p);
         /* nothing to wake for (a thread sleeping forever included) */
         if (deadline >= UINT64_MAX - 1) return SNX_CTR_SCHED_BLOCKED;
         slept_for_device = deadline < earliest;

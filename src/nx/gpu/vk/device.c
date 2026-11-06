@@ -10,6 +10,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/vertex_input.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
@@ -52,9 +53,75 @@ int vk_trylock(void) {
 }
 u32 vk_lock_owner(void) { return __atomic_load_n(&g_vk_owner, __ATOMIC_RELAXED); }
 
+/* What held the memory at an out-of-memory, at the first ones: each heap as VMA counts it, and the descriptor pools,
+   which MoltenVK backs with Metal memory that VMA's blocks do not hold (cmd.c). The heap's use less its blocks is
+   what the driver and the other allocations of the process took. Any thread can fail, and VMA's statistics take its
+   own lock */
+/* set once the allocator exists, which lives to the end of the process: vk_memory_text's threads read g_vk.vma only
+   after they see it, atomic */
+static int g_vma_ready;
+#define OOM_REPORTS 3
+static void oom_report(VkResult r) {
+    static u32 reports;
+    VmaBudget b[VK_MAX_MEMORY_HEAPS];
+    const VkPhysicalDeviceMemoryProperties* mp;
+    if (r != VK_ERROR_OUT_OF_DEVICE_MEMORY && r != VK_ERROR_OUT_OF_HOST_MEMORY) return;
+    if (!__atomic_load_n(&g_vma_ready, __ATOMIC_ACQUIRE) ||
+        __atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) >= OOM_REPORTS)
+        return;
+    vmaGetHeapBudgets(g_vk.vma, b);
+    vmaGetMemoryProperties(g_vk.vma, &mp);
+    for (u32 h = 0; h < mp->memoryHeapCount; h++)
+        LOG("vulkan: out of memory, heap %u%s: use %llu MiB, budget %llu MiB, VMA blocks %u (%llu MiB), allocations "
+            "%u (%llu MiB), heap size %llu MiB\n",
+            h, mp->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT ? " (device local)" : "",
+            (unsigned long long)(b[h].usage >> 20), (unsigned long long)(b[h].budget >> 20), b[h].statistics.blockCount,
+            (unsigned long long)(b[h].statistics.blockBytes >> 20), b[h].statistics.allocationCount,
+            (unsigned long long)(b[h].statistics.allocationBytes >> 20),
+            (unsigned long long)(mp->memoryHeaps[h].size >> 20));
+    LOG("vulkan: out of memory with %u descriptor pools\n", vk_desc_pools());
+}
+
+/* Each heap and the descriptor pools in one part of a line, for a low memory warning from a thread that never calls
+   Vulkan. VMA's functions are safe on any thread (its own locks), and the budget it fetches again now and then comes
+   from vkGetPhysicalDeviceMemoryProperties2, which needs no external synchronization */
+u64 vk_memory_blocks(void) {
+    VmaBudget b[VK_MAX_MEMORY_HEAPS];
+    const VkPhysicalDeviceMemoryProperties* mp;
+    u64 sum = 0;
+    if (!__atomic_load_n(&g_vma_ready, __ATOMIC_ACQUIRE)) return 0;
+    vmaGetHeapBudgets(g_vk.vma, b);
+    vmaGetMemoryProperties(g_vk.vma, &mp);
+    for (u32 h = 0; h < mp->memoryHeapCount; h++) sum += b[h].statistics.blockBytes;
+    return sum;
+}
+void vk_memory_text(char* out, size_t size) {
+    VmaBudget b[VK_MAX_MEMORY_HEAPS];
+    const VkPhysicalDeviceMemoryProperties* mp;
+    size_t n = 0;
+    if (!size) return;
+    out[0] = 0;
+    if (!__atomic_load_n(&g_vma_ready, __ATOMIC_ACQUIRE)) {
+        snprintf(out, size, "no GPU heaps yet, %u descriptor pools", vk_desc_pools());
+        return;
+    }
+    vmaGetHeapBudgets(g_vk.vma, b);
+    vmaGetMemoryProperties(g_vk.vma, &mp);
+    for (u32 h = 0; h < mp->memoryHeapCount && n < size; h++) {
+        int w = snprintf(out + n, size - n, "GPU heap %u%s use %llu of %llu MiB (VMA blocks %llu MiB), ", h,
+                         mp->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT ? " (device local)" : "",
+                         (unsigned long long)(b[h].usage >> 20), (unsigned long long)(b[h].budget >> 20),
+                         (unsigned long long)(b[h].statistics.blockBytes >> 20));
+        if (w < 0) return;
+        n += (size_t)w;
+    }
+    if (n < size) snprintf(out + n, size - n, "%u descriptor pools", vk_desc_pools());
+}
+
 int vk_ok_(VkResult r, const char* what, const char* file, int line) {
     if (r >= 0) return 1;
     WARN("vulkan: %s failed: %s (%d) at %s:%d\n", what, snx_vk_result_str(r), (int)r, file, line);
+    oom_report(r);
     return 0;
 }
 
@@ -274,6 +341,7 @@ static int create_device(void) {
        decoded on the GPU as they are uploaded; ASTC decoded so is encoded again as BC7 where the GPU samples BCn and
        astc_bc asks for it */
     if (g_settings.native_bc || g_settings.astc_bc) WANT(textureCompressionBC);
+    g_vk.astc_bc7_could = have.textureCompressionBC && !have.textureCompressionASTC_LDR;
     if (g_settings.native_astc) WANT(textureCompressionASTC_LDR);
     if (g_settings.native_etc2) WANT(textureCompressionETC2);
     if (g_settings.native_bc && !want->textureCompressionBC)
@@ -314,6 +382,8 @@ static int create_device(void) {
         free(q);
     }
     if (sparse_queue) WANT(sparseBinding);
+    /* and 3D textures with holes in their mapping given memory only where it is mapped (memory.c) */
+    if (sparse_queue) WANT(sparseResidencyImage3D);
 #undef WANT
     /* points out of tessellation and geometry programs take the size those write, as the vertex program's do */
     g_shader_stage_point_size = want->shaderTessellationAndGeometryPointSize != 0;
@@ -327,15 +397,20 @@ static int create_device(void) {
     int has_portability = 0, has_reconvergence = 0;
     int has_calibrated = 0, has_present_id = 0, has_present_wait = 0, has_present_v2 = 0, has_calibrated_khr = 0;
     int has_google_timing = 0;
-    int has_host_import = 0, has_placed = 0;
+    int has_host_import = 0, has_ahb = 0, has_placed = 0, has_map2 = 0, has_dmabuf = 0;
     int has_descriptor_buffer = 0;
+    int has_vertex_input = 0;
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     {
         SnxVkExtensions e;
         snx_vk_device_extensions(g_vk.phys, &e);
         g_vk.has_divisor = snx_vk_extensions_has(&e, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
+        has_vertex_input = snx_vk_extensions_has(&e, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
         g_vk.has_xfb = snx_vk_extensions_has(&e, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
+        g_vk.has_mixed_samples = snx_vk_extensions_has(&e, VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME);
+        g_vk.advanced_blend_caps.available = snx_vk_extensions_has(&e, VK_EXT_BLEND_OPERATION_ADVANCED_EXTENSION_NAME);
+        g_vk.has_fragment_interlock = snx_vk_extensions_has(&e, VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME);
         g_vk.has_border_color = snx_vk_extensions_has(&e, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
         has_shader_clock = snx_vk_extensions_has(&e, VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
         has_descriptor_buffer = snx_vk_extensions_has(&e, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
@@ -373,11 +448,20 @@ static int create_device(void) {
         has_google_timing = !g_opt_headless && snx_vk_extensions_has(&e, VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
         has_host_import = snx_vk_extensions_has(&e, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
         has_placed = snx_vk_extensions_has(&e, VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME);
+        has_map2 = snx_vk_extensions_has(&e, VK_KHR_MAP_MEMORY_2_EXTENSION_NAME);
+        has_dmabuf = snx_vk_extensions_has(&e, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) &&
+                     snx_vk_extensions_has(&e, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
+#if defined(__ANDROID__) /* every driver there takes AHardwareBuffers, which guest memory can move into (uma.c) */
+        has_ahb = snx_vk_extensions_has(&e, "VK_ANDROID_external_memory_android_hardware_buffer");
+#endif
         snx_vk_extensions_free(&e);
     }
     /* guest memory the GPU reads in place (uma.c) */
-    if (vk_uma_choose(has_host_import, has_placed)) ext[next++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
+    int uma_with = vk_uma_choose(has_host_import, has_ahb, has_placed && has_map2);
+    if (uma_with == VK_UMA_WITH_HOST) ext[next++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
+    if (uma_with == VK_UMA_WITH_AHB) ext[next++] = "VK_ANDROID_external_memory_android_hardware_buffer";
     if (has_budget) ext[next++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
+    if (g_vk.has_mixed_samples) ext[next++] = VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME;
     /* the extension only with a host time domain among the calibrateable ones: CLOCK_MONOTONIC_RAW is the clock
        the Tracy client keeps its own time in, so the two domains' pair maps the GPU's timestamps onto it */
     if (has_calibrated) {
@@ -410,18 +494,23 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT};
     VkPhysicalDeviceTransformFeedbackFeaturesEXT fxfb = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT};
+    VkPhysicalDeviceBlendOperationAdvancedFeaturesEXT qadvanced = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BLEND_OPERATION_ADVANCED_FEATURES_EXT};
+    VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT qinterlock = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT};
     VkPhysicalDeviceShaderClockFeaturesKHR qclock = {.sType =
                                                          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR};
     VkPhysicalDeviceShaderMaximalReconvergenceFeaturesKHR qreconv = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MAXIMAL_RECONVERGENCE_FEATURES_KHR};
     VkPhysicalDevicePipelineRobustnessFeaturesEXT qpipeline = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_ROBUSTNESS_FEATURES_EXT};
-    VkPhysicalDeviceRobustness2FeaturesEXT qrobust = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
+    VkPhysicalDeviceRobustness2FeaturesEXT qrobust = {.sType =
+                                                          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
     VkPhysicalDeviceVulkan12Features q12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     VkPhysicalDeviceVulkan11Features q11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
     VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-    VkPhysicalDeviceDescriptorBufferFeaturesEXT qdesc = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
+    VkPhysicalDeviceDescriptorBufferFeaturesEXT qdesc = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT qloop = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT};
     VkPhysicalDeviceAttachmentFeedbackLoopDynamicStateFeaturesEXT qloop_dyn = {
@@ -434,6 +523,8 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
     VkPhysicalDeviceIndexTypeUint8FeaturesKHR qindex8 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR};
+    VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT qvertex_input = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT};
     /* with the subset enabled, each of its features is off until the device asks for it: a view's swizzle, for one */
     PortabilityFeatures qport = {.sType = PORTABILITY_FEATURES_STYPE};
     VkPhysicalDevicePresentIdFeaturesKHR qpid = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
@@ -455,12 +546,15 @@ static int create_device(void) {
                            g_vk.has_divisor ? &fdiv : NULL,
                            g_vk.has_border_color ? &fbc : NULL,
                            g_vk.has_xfb ? &fxfb : NULL,
+                           g_vk.advanced_blend_caps.available ? &qadvanced : NULL,
+                           g_vk.has_fragment_interlock ? &qinterlock : NULL,
                            g_vk.has_feedback ? &qloop : NULL,
                            has_feedback_dynamic ? &qloop_dyn : NULL,
                            g_vk.has_local_read ? &qlocal : NULL,
                            has_cond ? &qcond : NULL,
                            has_provoking ? &qprov : NULL,
                            index8_ext ? &qindex8 : NULL,
+                           has_vertex_input ? &qvertex_input : NULL,
                            has_portability ? &qport : NULL,
                            has_reconvergence ? &qreconv : NULL,
                            robustness ? &qpipeline : NULL,
@@ -481,6 +575,33 @@ static int create_device(void) {
     g_vk.has_cond_render = has_cond && qcond.conditionalRendering;
     g_vk.has_provoking_last = has_provoking && qprov.provokingVertexLast;
     g_vk.has_index8 = index8_ext && qindex8.indexTypeUint8;
+    {
+        /* each draw's vertex layout as dynamic state, or a pipeline per layout: the setting, then the device and the
+           drivers known to draw it wrong (vertex_input.h). A value the setting doesn't take stops the game here, as
+           a player who wrote vertex_input_dynamic_state=of would otherwise play with what they meant to turn off */
+        int mode = vk_vi_mode(g_settings.vertex_input_dynamic_state), warn;
+        char line[1024];
+        if (mode < 0)
+            fatal("settings: vertex_input_dynamic_state=%s is not auto, on or off",
+                  g_settings.vertex_input_dynamic_state);
+#if defined(__ANDROID__)
+        int android = 1;
+#else
+        int android = 0;
+#endif
+        VkViDevice vd = {g_vk.props.deviceName,
+                         p12.driverName,
+                         p12.driverInfo,
+                         (u32)p12.driverID,
+                         g_vk.props.driverVersion,
+                         has_vertex_input ? (qvertex_input.vertexInputDynamicState ? 2 : 1) : 0,
+                         android};
+        g_vk.vertex_input_dynamic = vk_vi_choose(mode, &vd, line, sizeof line, &warn);
+        if (warn)
+            WARN("%s\n", line);
+        else
+            LOG("%s\n", line);
+    }
     /* the dynamic state and the barriers within a pass only serve feedback loops */
     g_vk.has_feedback = g_vk.has_feedback && qloop.attachmentFeedbackLoopLayout;
     g_vk.has_feedback_dynamic =
@@ -491,6 +612,19 @@ static int create_device(void) {
         has_shader_clock ? (qclock.shaderSubgroupClock ? 1 : 0) | (qclock.shaderDeviceClock ? 2 : 0) : 0;
     g_vk.has_divisor = g_vk.has_divisor && fdiv.vertexAttributeInstanceRateDivisor;
     g_vk.has_xfb = g_vk.has_xfb && fxfb.transformFeedback;
+    g_vk.has_fragment_interlock = g_vk.has_fragment_interlock && qinterlock.fragmentShaderPixelInterlock;
+    if (g_vk.advanced_blend_caps.available) {
+        VkPhysicalDeviceBlendOperationAdvancedPropertiesEXT advanced = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BLEND_OPERATION_ADVANCED_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                                  .pNext = &advanced};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &properties);
+        g_vk.advanced_blend_caps.coherent = qadvanced.advancedBlendCoherentOperations;
+        g_vk.advanced_blend_caps.max_attachments = advanced.advancedBlendMaxColorAttachments;
+        g_vk.advanced_blend_caps.nonpremultiplied_source = advanced.advancedBlendNonPremultipliedSrcColor;
+        g_vk.advanced_blend_caps.correlated_overlap = advanced.advancedBlendCorrelatedOverlap;
+        g_vk.advanced_blend_caps.all_operations = advanced.advancedBlendAllOperations;
+    }
     g_vk.has_border_color = g_vk.has_border_color && fbc.customBorderColors && fbc.customBorderColorWithoutFormat;
     if (g_vk.has_border_color) { /* how many samplers may have a custom border color: as few as 32 */
         VkPhysicalDeviceCustomBorderColorPropertiesEXT cbp = {
@@ -503,17 +637,19 @@ static int create_device(void) {
         g_vk.descriptor_props = (VkPhysicalDeviceDescriptorBufferPropertiesEXT){
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
         VkPhysicalDeviceProperties2 desc = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-                                             .pNext = &g_vk.descriptor_props};
+                                            .pNext = &g_vk.descriptor_props};
         vkGetPhysicalDeviceProperties2(g_vk.phys, &desc);
-        g_vk.has_descriptor_buffers = g_vk.descriptor_props.combinedImageSamplerDescriptorSingleArray &&
+        g_vk.has_descriptor_buffers =
+            g_vk.descriptor_props.combinedImageSamplerDescriptorSingleArray &&
             g_vk.descriptor_props.maxSamplerDescriptorBufferRange >= (64ull << 20) &&
             g_vk.descriptor_props.maxResourceDescriptorBufferRange >= (64ull << 20) &&
             g_vk.descriptor_props.samplerDescriptorBufferAddressSpaceSize >= (VK_FRAMES * (64ull << 20)) &&
             g_vk.descriptor_props.resourceDescriptorBufferAddressSpaceSize >= (VK_FRAMES * (64ull << 20)) &&
             g_vk.descriptor_props.descriptorBufferAddressSpaceSize >= (VK_FRAMES * (64ull << 20));
     }
-    LOG("vulkan: graphics descriptor buffers %s\n", g_vk.has_descriptor_buffers
-        ? (g_settings.descriptor_buffers ? "supported, enabled" : "supported, disabled") : "unavailable, using sets");
+    LOG("vulkan: graphics descriptor buffers %s\n",
+        g_vk.has_descriptor_buffers ? (g_settings.descriptor_buffers ? "supported, enabled" : "supported, disabled")
+                                    : "unavailable, using sets");
     g_vk.has_descriptor_buffers = g_vk.has_descriptor_buffers && g_settings.descriptor_buffers;
     if (g_vk.has_descriptor_buffers && !vk_descriptors_memory(g_vk.phys)) {
         WARN("vulkan: descriptor buffers need host-visible, coherent and cached memory, which this device has not: "
@@ -521,10 +657,10 @@ static int create_device(void) {
         g_vk.has_descriptor_buffers = 0;
     }
     /* FFmpeg's decoder makes views of its two plane pictures */
-    VkPhysicalDeviceVulkan11Features f11 = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-        .shaderDrawParameters = q11.shaderDrawParameters,
-        .samplerYcbcrConversion = g_vk.video_family != ~0u && q11.samplerYcbcrConversion};
+    VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+                                            .shaderDrawParameters = q11.shaderDrawParameters,
+                                            .samplerYcbcrConversion =
+                                                g_vk.video_family != ~0u && q11.samplerYcbcrConversion};
     g_vk.has_shader_draw_parameters = q11.shaderDrawParameters != 0;
     g_shader_draw_parameters = g_vk.has_shader_draw_parameters;
     g_vk.has_draw_indirect_count = q12.drawIndirectCount != 0;
@@ -556,7 +692,8 @@ static int create_device(void) {
     void* chain = &f13;
     VkPhysicalDeviceDescriptorBufferFeaturesEXT fdesc = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT,
-        .pNext = chain, .descriptorBuffer = VK_TRUE};
+        .pNext = chain,
+        .descriptorBuffer = VK_TRUE};
     if (g_vk.has_descriptor_buffers) {
         chain = &fdesc;
         ext[next++] = VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME;
@@ -585,6 +722,22 @@ static int create_device(void) {
             .transformFeedback = VK_TRUE};
         chain = &fxfb;
         ext[next++] = VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME;
+    }
+    /* the heap as GPU memory where it is (uma.c's placed maps) */
+    VkPhysicalDeviceMapMemoryPlacedFeaturesEXT fplaced = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAP_MEMORY_PLACED_FEATURES_EXT,
+        .pNext = chain,
+        .memoryMapPlaced = VK_TRUE,
+        .memoryUnmapReserve = VK_TRUE};
+    if (vk_uma_can_place()) {
+        chain = &fplaced;
+        ext[next++] = VK_KHR_MAP_MEMORY_2_EXTENSION_NAME;
+        ext[next++] = VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME;
+        vk_uma_dmabuf(has_dmabuf); /* a view of it maps the same memory again, through a dma-buf */
+        if (vk_uma_can_view()) {
+            ext[next++] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
+            ext[next++] = VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME;
+        }
     }
     VkPhysicalDeviceShaderClockFeaturesKHR fclock = {.sType =
                                                          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR,
@@ -631,6 +784,22 @@ static int create_device(void) {
         chain = &flocal;
         ext[next++] = VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME;
     }
+    VkPhysicalDeviceBlendOperationAdvancedFeaturesEXT fadvanced = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BLEND_OPERATION_ADVANCED_FEATURES_EXT,
+        .pNext = chain,
+        .advancedBlendCoherentOperations = g_vk.advanced_blend_caps.coherent};
+    if (g_vk.advanced_blend_caps.available) {
+        chain = &fadvanced;
+        ext[next++] = VK_EXT_BLEND_OPERATION_ADVANCED_EXTENSION_NAME;
+    }
+    VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT finterlock = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT,
+        .pNext = chain,
+        .fragmentShaderPixelInterlock = VK_TRUE};
+    if (g_vk.has_fragment_interlock) {
+        chain = &finterlock;
+        ext[next++] = VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME;
+    }
     /* the render enable's comparison of an occlusion query's count, made on the GPU (gpu/vk/query.c) */
     VkPhysicalDeviceConditionalRenderingFeaturesEXT fcond = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CONDITIONAL_RENDERING_FEATURES_EXT,
@@ -659,8 +828,18 @@ static int create_device(void) {
         ext[next++] = VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME;
     }
     /* the 3D engine's 8-bit indices, read as they are (render.c); without it they are widened on the GPU */
+    VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT fvertex_input = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT,
+        .pNext = chain,
+        .vertexInputDynamicState = VK_TRUE};
+    if (g_vk.vertex_input_dynamic) {
+        chain = &fvertex_input;
+        ext[next++] = VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME;
+    }
     VkPhysicalDeviceIndexTypeUint8FeaturesKHR findex8 = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR, .pNext = chain, .indexTypeUint8 = VK_TRUE};
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR,
+        .pNext = chain,
+        .indexTypeUint8 = VK_TRUE};
     if (g_vk.has_index8) {
         chain = &findex8;
         ext[next++] = index8_ext;
@@ -745,6 +924,7 @@ static int create_device(void) {
                                   .flags = has_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0};
     if (g_vk.has_descriptor_buffers) vai.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
     if (!VK_OK(vmaCreateAllocator(&vai, &g_vk.vma))) return 0;
+    __atomic_store_n(&g_vma_ready, 1, __ATOMIC_RELEASE);
     vk_uma_init();
     {
         /* which driver runs, by its own name: the system's, or a package's (gpu_driver) */
@@ -1038,8 +1218,10 @@ int vk_init(void) {
         /* Load libvulkan/vulkan-1 directly, or the driver the program's folders carry (an Apple app's MoltenVK): no SDL
            video driver or headless-surface extension is needed. */
         void* own = backend_vk_driver();
-        if (own) volkInitializeCustom((PFN_vkGetInstanceProcAddr)own);
-        else if (!VK_OK(volkInitialize())) return 0;
+        if (own)
+            volkInitializeCustom((PFN_vkGetInstanceProcAddr)own);
+        else if (!VK_OK(volkInitialize()))
+            return 0;
     } else {
         PFN_vkGetInstanceProcAddr gipa = (PFN_vkGetInstanceProcAddr)backend_vk_loader();
         if (!gipa) {

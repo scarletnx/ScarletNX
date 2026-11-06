@@ -6,12 +6,12 @@
 # with FFmpeg's own configure and make, which it has instead of a CMake build. NVDEC's VP9 jobs need a change to its VP9
 # decoder (cmake/ffmpeg-vp9-nvdec.patch), so it builds from a patched copy of the release in the build tree. Only the
 # decoders NVDEC handles are in (H.264, VP8, VP9), Opus for hwopus (FFmpeg's Opus decoder resamples its SILK layer with
-# libswresample, which is why that library is in), and for the Vita AAC, ATRAC9, the MP4 demuxer and H.264's Annex B
-# filter: no programs, other formats, filters, devices, network or autodetected system libraries, so the result needs
-# nothing but libc and builds the same everywhere. All of it is LGPL (no --enable-gpl). It needs a POSIX shell and make
-# (gmake on the BSDs), and NASM for the x86-64 assembly. macOS and iOS build it with Xcode's Clang and SDK
-# (cmake/apple.cmake), iOS as a cross build. This file is included into the top-level scope: its variables carry the
-# snx_ffmpeg_ prefix.
+# libswresample, which is why that library is in), for the 3DS DSP's AAC, and for the Vita AAC, ATRAC9, the MP4 demuxer
+# and H.264's Annex B filter: no programs, other formats, filters, devices, network or autodetected system libraries, so
+# the result needs nothing but libc and builds the same everywhere. All of it is LGPL (no --enable-gpl). It needs a
+# POSIX shell and make (gmake on the BSDs), and NASM for the x86-64 assembly. macOS and iOS build it with Xcode's Clang
+# and SDK (cmake/apple.cmake), iOS as a cross build. This file is included into the top-level scope: its variables carry
+# the snx_ffmpeg_ prefix.
 set(snx_ffmpeg_src "${PROJECT_BINARY_DIR}/_deps/ffmpeg-patched")
 set(snx_ffmpeg_prefix "${PROJECT_BINARY_DIR}/ffmpeg")
 # FFmpeg's configure stops on a source path with a space in it, which would only show at build time

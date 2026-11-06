@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
-   The PICA200's draws in software: vertex loading, the vertex shader and primitive assembly, the triangles going to
-   the back end (raster.c). Ported from Azahar video_core/pica/pica_core.cpp (DrawArrays, LoadVertices,
-   DrawImmediate), vertex_loader.cpp, primitive_assembly.cpp and output_vertex.cpp (GPL-2.0-or-later, Copyright
-   2014-2026 Citra Emulator Project / Azahar Emulator Project) at azahar-emu/azahar a4b335e, and geometry_pipeline.cpp. */
-
+   The PICA200's draws in software: vertex loading, the vertex shader, the geometry pipeline and shader, and primitive
+   assembly, each triangle going to the caller (raster.c's back end in the software renderer). Ported from Azahar
+   video_core/pica/pica_core.cpp (DrawArrays, LoadVertices, DrawImmediate), vertex_loader.cpp, geometry_pipeline.cpp,
+   shader_unit.cpp (GeometryEmitter), primitive_assembly.cpp and output_vertex.cpp (GPL-2.0-or-later, Copyright
+   2014-2026 Citra Emulator Project / Azahar Emulator Project) at azahar-emu/azahar a4b335e. */
 #include "3ds/gpu/pica.h"
 #include "3ds/gpu/shader.h"
 #include "common/utilities/endian.h"
@@ -20,11 +20,20 @@ enum {
     ATTR_LOADERS = 0x203,   /* 12 loaders of 3 words: data_offset; components 0-7; 8-11, byte_count, count */
     INDEX_ARRAY = 0x227,    /* offset (bits 0..27) from the base, format bit 31: 16-bit indices */
     NUM_VERTICES = 0x228,
-    VERTEX_OFFSET = 0x22a
+    VERTEX_OFFSET = 0x22a,
+    VS_OUTPUTS = 0x24a,      /* vs_outmap_total_minus_1_a */
+    VS_OUTPUTS_B = 0x251,    /* vs_outmap_total_minus_1_b */
+    GS_CONFIG = 0x252,       /* mode (bits 0..7), vertices - 1 (8..11), stride - 1 (12..15), first uniform (16..23) */
+    GS_MAIN_VERTICES = 0x254 /* variable_vertex_main_num_minus_1 */
 };
 enum { FMT_BYTE, FMT_UBYTE, FMT_SHORT, FMT_FLOAT };
+/* the geometry pipeline Reconfigure set up: none, or GSMode + 1 */
+enum { GS_NONE, GS_POINT, GS_VARIABLE, GS_FIXED };
+enum { UNIT_GS = 0x08 }; /* ShaderMode::GS, in bits 24..31 of a unit's input buffer configuration */
 
-void snx_ctr_output_vertex(const uint32_t* regs, const float (*output)[4], SnxCtrVertex* vertex) {
+/* OutputVertex(regs, output): the vertex shader's output registers through the output map, colours clamped to
+   |c| <= 1 */
+static void output_vertex(const uint32_t* regs, const float (*output)[4], SnxCtrVertex* vertex) {
     float slots[32];
     unsigned total = regs[0x4f] & 7;
     for (unsigned i = 0; i < 32; ++i) slots[i] = 1.0f;
@@ -108,31 +117,17 @@ static void load_vertex(const SnxCtrPica* p, SnxCtrMemory* m, const Loader* l, u
     }
 }
 
-/* a triangle of the assembler: to the sink's back end, or kept for the renderer that draws it */
-static void triangle(SnxCtrPica* p, SnxCtrMemory* m, const SnxCtrVertex* a, const SnxCtrVertex* b, const SnxCtrVertex* c) {
-    if (p->sink) {
-        p->sink->triangle(p, m, a, b, c);
-        return;
-    }
-    if (p->captured_count + 3 > p->captured_capacity) {
-        size_t n = p->captured_capacity ? p->captured_capacity * 2 : 384;
-        SnxCtrVertex* grown = realloc(p->captured, n * sizeof *grown);
-        if (!grown) {
-            p->capture_failed = true;
-            return;
-        }
-        p->captured = grown;
-        p->captured_capacity = n;
-    }
-    p->captured[p->captured_count++] = *a;
-    p->captured[p->captured_count++] = *b;
-    p->captured[p->captured_count++] = *c;
-}
+/* where a draw's triangles go, and the PICA it runs on */
+typedef struct {
+    SnxCtrPica* pica;
+    SnxCtrTriangle triangle;
+    void* context;
+} Sink;
 
 /* PrimitiveAssembler::SubmitVertex: lists (and the geometry shader's topology) every three vertices, strips and
    fans from the third on */
-static void assemble(SnxCtrPica* p, SnxCtrMemory* m, const SnxCtrVertex* v) {
-    SnxCtrAssembler* a = &p->assembler;
+static void assemble(Sink* s, const SnxCtrVertex* v) {
+    SnxCtrAssembler* a = &s->pica->assembler;
     switch (a->topology) {
         case 0: /* List */
         case 3: /* Shader */
@@ -142,163 +137,139 @@ static void assemble(SnxCtrPica* p, SnxCtrMemory* m, const SnxCtrVertex* v) {
             }
             a->index = 0;
             if (a->topology == 3 && a->winding) {
-                triangle(p, m, &a->buffer[1], &a->buffer[0], v);
+                s->triangle(s->context, &a->buffer[1], &a->buffer[0], v);
                 a->winding = false;
             } else
-                triangle(p, m, &a->buffer[0], &a->buffer[1], v);
+                s->triangle(s->context, &a->buffer[0], &a->buffer[1], v);
             break;
         default: /* Strip, Fan */
-            if (a->strip_ready) triangle(p, m, &a->buffer[0], &a->buffer[1], v);
+            if (a->strip_ready) s->triangle(s->context, &a->buffer[0], &a->buffer[1], v);
             a->buffer[a->index] = *v;
             a->strip_ready |= a->index == 1;
             a->index = a->topology == 1 ? !a->index : 1;
             break;
     }
 }
-static void submit(SnxCtrPica* p, SnxCtrMemory* m, const float (*output)[4]) {
+static void submit(Sink* s, const float (*output)[4]) {
     SnxCtrVertex v;
-    snx_ctr_output_vertex(p->regs, output, &v);
-    assemble(p, m, &v);
+    output_vertex(s->pica->regs, output, &v);
+    assemble(s, &v);
 }
 
-/* GeometryPipeline (Azahar video_core/pica/geometry_pipeline.cpp): the vertex shader's outputs gather into the
-   geometry shader's inputs (its input registers in Point mode, float uniforms in the two primitive modes), the shader
-   runs when a batch is complete, and what it EMITs goes to the primitive assembler three vertices at a time */
-enum { PIPE_REGS_USE_GS_VARIABLE = 31, GS_VS_OUTMAP_A = 0x24a, GS_VS_OUTMAP_B = 0x251, GS_CONFIG = 0x252,
-       GS_VARIABLE_MAIN = 0x254, GS_MODE_POINT = 0, GS_MODE_VARIABLE = 1, GS_MODE_FIXED = 2, GS_SHADER_MODE = 0x08 };
-struct SnxCtrGsPipe {
-    SnxCtrShaderUnit unit;
-    SnxCtrEmitter emitter;
-    SnxCtrPica* pica;
-    SnxCtrMemory* memory;
-    float emitted[3][16][4]; /* GeometryEmitter's buffer */
-    float inputs[16][4];     /* Point mode's input registers' values */
-    unsigned mode, vs_outputs, gs_inputs, start, filled, uniform_at, main_remaining, total_remaining, batch;
-    bool need_index;
-};
-static bool gs_used(const SnxCtrPica* p) { return (p->regs[SNX_PICA_USE_GS] & 3) == 2; }
-/* GeometryEmitter::Emit: the shader's output registers are the vertex SETEMIT numbered, and a primitive-completing
-   EMIT sends the three of them on, the winding SETEMIT asked for set first */
-static void gs_emit(void* context, unsigned vertex_id, bool prim_emit, bool winding, float (*output)[4]) {
-    struct SnxCtrGsPipe* g = context;
-    if (vertex_id >= 3) return;
-    memcpy(g->emitted[vertex_id], output, sizeof g->emitted[vertex_id]);
-    if (!prim_emit) return;
-    if (winding) g->pica->assembler.winding = true;
-    for (unsigned i = 0; i < 3; ++i) submit(g->pica, g->memory, (const float (*)[4])g->emitted[i]);
-}
-/* GeometryPipeline::Reconfigure: NULL for a configuration the pipeline takes, else what it does not */
-static const char* gs_reconfigure(SnxCtrPica* p) {
+/* GeometryPipeline::Reconfigure: the geometry pipeline of what is drawn next, its inputs emptied. NULL when it is one
+   Azahar runs, else a sentence naming what it is not */
+static const char* geometry_reconfigure(SnxCtrPica* p) {
     const uint32_t* r = p->regs;
-    if (!p->gs_pipe) {
-        p->gs_pipe = calloc(1, sizeof *p->gs_pipe);
-        if (!p->gs_pipe) return "the host is out of memory";
-        p->gs_pipe->emitter = (SnxCtrEmitter){.context = p->gs_pipe, .emit = gs_emit};
+    SnxCtrGeometry* g = &p->geometry;
+    uint32_t use = r[SNX_PICA_USE_GS], input = r[SNX_PICA_GS + SNX_PICA_SH_INPUT_CONFIG], config = r[GS_CONFIG];
+    uint32_t outputs = (r[VS_OUTPUTS] & 15) + 1, inputs = (input & 15) + 1, to_uniform = input >> 8 & 0xff;
+    uint32_t mode = (config & 0xff) + 1;
+    bool variable = use >> 31;
+    g->mode = GS_NONE;
+    g->at = 0;
+    g->need_index = 0;
+    if (!(use & 3)) return NULL;
+    if ((use & 3) != 2) return "a geometry shader setting the PICA does not have";
+    if (input >> 24 != UNIT_GS) return "a geometry shader on a unit not set up for one";
+    if ((r[VS_OUTPUTS_B] & 15) + 1 != outputs) return "a geometry shader given two vertex output counts";
+    switch (mode) {
+        case GS_POINT:
+            if (variable || to_uniform != 0) return "a point mode geometry shader set up inconsistently";
+            if (inputs % outputs) return "a point mode geometry shader whose inputs are not whole vertices";
+            g->end = (uint16_t)inputs;
+            break;
+        case GS_VARIABLE:
+            if (!variable || to_uniform != 1) return "a variable primitive geometry shader set up inconsistently";
+            g->need_index = 1;
+            break;
+        case GS_FIXED:
+            if (variable || to_uniform != 1 || outputs != (config >> 12 & 15) + 1)
+                return "a fixed primitive geometry shader set up inconsistently";
+            g->begin = (uint16_t)(config >> 16 & 0xff);
+            g->end = (uint16_t)(g->begin + outputs * ((config >> 8 & 15) + 1));
+            g->at = g->begin;
+            break;
+        default: return "a geometry shader mode the PICA does not have";
     }
-    struct SnxCtrGsPipe* g = p->gs_pipe;
-    uint32_t input = r[SNX_PICA_GS + SNX_PICA_SH_INPUT_CONFIG], config = r[GS_CONFIG];
-    bool variable = r[SNX_PICA_USE_GS] >> PIPE_REGS_USE_GS_VARIABLE & 1, to_uniform = (input >> 8 & 0xff) != 0;
-    *g = (struct SnxCtrGsPipe){.unit = g->unit, .emitter = g->emitter, .pica = p, .mode = config & 0xff,
-                                .vs_outputs = (r[GS_VS_OUTMAP_A] & 15) + 1, .gs_inputs = (input & 15) + 1,
-                                .start = config >> 16 & 0xff, .need_index = variable};
-    if ((input >> 24) != GS_SHADER_MODE) return "the geometry shader's unit is not in geometry mode";
-    if ((r[GS_VS_OUTMAP_A] & 15) != (r[GS_VS_OUTMAP_B] & 15)) return "the vertex outputs are counted two ways";
-    switch (g->mode) {
-        case GS_MODE_POINT:
-            if (variable || to_uniform || g->gs_inputs % g->vs_outputs)
-                return "a point-mode geometry shader with inputs the pipeline does not take";
-            break;
-        case GS_MODE_VARIABLE:
-            if (!variable || !to_uniform) return "a variable-primitive geometry shader without uniform input";
-            break;
-        case GS_MODE_FIXED:
-            g->batch = (config >> 8 & 15) + 1;
-            if (variable || !to_uniform || g->vs_outputs != (config >> 12 & 15) + 1 ||
-                g->start + g->vs_outputs * g->batch > 96)
-                return "a fixed-primitive geometry shader with a layout the pipeline does not take";
-            break;
-        default: return "an unknown geometry shader mode";
-    }
+    g->mode = (uint8_t)mode;
+    g->outputs = (uint8_t)outputs;
     return NULL;
 }
-static void gs_uniforms(SnxCtrPica* p, unsigned at, const float (*vectors)[4], unsigned count) {
-    for (unsigned i = 0; i < count && at + i < 96; ++i) memcpy(p->gs.f[at + i], vectors[i], 16);
+/* GeometryPipeline_VariablePrimitive::SubmitIndex: the first index of a batch is its vertex count, put in c0, and its
+   vertices go to the uniforms from c1 on */
+static void geometry_index(SnxCtrPica* p, uint32_t index) {
+    SnxCtrGeometry* g = &p->geometry;
+    for (unsigned c = 0; c < 4; ++c) p->gs.f[0][c] = (float)index;
+    g->at = 1;
+    g->main_left = p->regs[GS_MAIN_VERTICES] + 1;
+    g->total_left = index;
+    g->need_index = 0;
 }
-/* GeometryPipeline::SubmitIndex, for variable-primitive mode: the vertex count that opens a batch */
-static void gs_index(SnxCtrPica* p, struct SnxCtrGsPipe* g, uint32_t count) {
-    if (!count) return; /* a batch of no vertices has nothing to run */
-    const float v = (float)count, vector[4] = {v, v, v, v};
-    gs_uniforms(p, 0, &vector, 1);
-    g->uniform_at = 1;
-    g->main_remaining = p->regs[GS_VARIABLE_MAIN] + 1;
-    g->total_remaining = count;
-    g->need_index = false;
+/* the next geometry shader input in the uniforms; one past c95 is dropped, as an upload past it is */
+static void geometry_uniform(SnxCtrPica* p, const float v[4]) {
+    SnxCtrGeometry* g = &p->geometry;
+    if (g->at < 96) memcpy(p->gs.f[g->at], v, 16);
+    ++g->at;
 }
-/* GeometryPipeline::SubmitVertex: the vertex shader's outputs (compacted by its mask) in, the shader run when the
-   batch is whole */
-static void gs_vertex(SnxCtrPica* p, SnxCtrMemory* m, const float (*output)[4]) {
-    struct SnxCtrGsPipe* g = p->gs_pipe;
-    bool ready = false;
+/* GeometryEmitter::Emit: the output registers the geometry shader's output mask enables, into the vertex SETEMIT
+   names (there is no vertex 3: Azahar asserts it never comes). With the primitive flag, the three vertices go to the
+   primitive assembler, after the winding flag */
+static void emit(void* context, unsigned vertex_id, bool prim_emit, bool winding, float (*output)[4]) {
+    Sink* s = context;
+    SnxCtrGeometry* g = &s->pica->geometry;
+    uint32_t mask = s->pica->regs[SNX_PICA_GS + SNX_PICA_SH_OUTPUT_MASK] & 0xffff;
+    unsigned n = 0;
+    if (vertex_id < 3)
+        for (unsigned reg = 0; reg < 16; ++reg)
+            if (mask >> reg & 1) memcpy(g->emitted[vertex_id][n++], output[reg], 16);
+    if (!prim_emit) return;
+    if (winding) s->pica->assembler.winding = true;
+    for (unsigned i = 0; i < 3; ++i) submit(s, (const float (*)[4])g->emitted[i]);
+}
+/* GeometryPipeline::SubmitVertex: a vertex shader's outputs go to the primitive assembler, or to the geometry shader's
+   inputs, which run it once they are complete. b15 is set after each run, so a program that clears it knows its
+   first run of a batch */
+static void geometry_vertex(Sink* s, const float (*output)[4]) {
+    SnxCtrPica* p = s->pica;
+    SnxCtrGeometry* g = &p->geometry;
+    bool run;
     switch (g->mode) {
-        case GS_MODE_POINT:
-            memcpy(&g->inputs[g->filled], output, g->vs_outputs * 16);
-            g->filled += g->vs_outputs;
-            if (g->filled == g->gs_inputs) {
-                g->filled = 0;
+        case GS_NONE: submit(s, output); return;
+        case GS_POINT:
+            for (unsigned i = 0; i < g->outputs; ++i) memcpy(g->inputs[g->at++], output[i], 16);
+            run = g->at == g->end;
+            if (run) {
+                g->at = 0;
                 snx_ctr_shader_load(p->regs, SNX_PICA_GS, &g->unit, (const float (*)[4])g->inputs);
-                ready = true;
             }
             break;
-        case GS_MODE_VARIABLE:
-            if (g->main_remaining) { /* the first vertices of the batch bring every output, the rest only the position */
-                gs_uniforms(p, g->uniform_at, output, g->vs_outputs);
-                g->uniform_at += g->vs_outputs;
-                --g->main_remaining;
-            } else
-                gs_uniforms(p, g->uniform_at++, output, 1);
-            if (!--g->total_remaining) {
-                g->need_index = true;
-                ready = true;
-            }
+        case GS_VARIABLE: {
+            /* main vertices give every output, the others their first (usually the position) */
+            unsigned count = g->main_left ? g->outputs : 1u;
+            for (unsigned i = 0; i < count; ++i) geometry_uniform(p, output[i]);
+            if (g->main_left) --g->main_left;
+            run = --g->total_left == 0;
+            g->need_index = run;
             break;
-        default:
-            gs_uniforms(p, g->start + g->filled, output, g->vs_outputs);
-            g->filled += g->vs_outputs;
-            if (g->filled == g->vs_outputs * g->batch) {
-                g->filled = 0;
-                ready = true;
-            }
+        }
+        default: /* GS_FIXED */
+            for (unsigned i = 0; i < g->outputs; ++i) geometry_uniform(p, output[i]);
+            run = g->at == g->end;
+            if (run) g->at = g->begin;
             break;
     }
-    if (!ready) return;
-    g->memory = m;
-    snx_ctr_shader_run(&p->gs, &g->unit, p->regs[SNX_PICA_GS + SNX_PICA_SH_MAIN_OFFSET] & 0xffff, &g->emitter);
-    p->gs.b |= 1u << 15; /* b15: set after the first run of a batch, for the shader to tell its first */
-}
-/* a vertex shader's outputs on their way to the assembler: through the geometry shader when one is in use */
-static void vertex_out(SnxCtrPica* p, SnxCtrMemory* m, const float (*output)[4]) {
-    if (gs_used(p))
-        gs_vertex(p, m, output);
-    else
-        submit(p, m, output);
+    if (!run) return;
+    SnxCtrEmitter e = {s, emit, g->vertex_id, g->prim_emit, g->winding};
+    snx_ctr_shader_run(&p->gs, &g->unit, p->regs[SNX_PICA_GS + SNX_PICA_SH_MAIN_OFFSET] & 0xffff, &e);
+    g->vertex_id = e.vertex_id & 3;
+    g->prim_emit = e.prim_emit;
+    g->winding = e.winding;
+    p->gs.b |= 1u << 15;
 }
 
-static SnxCtrPicaResult drawable(SnxCtrPica* p, bool reconfigure) {
-    const char* missing = NULL;
-    if ((p->regs[SNX_PICA_USE_GS] & 3) && !gs_used(p))
-        missing = "an unknown geometry shader setting";
-    else if (gs_used(p) && (reconfigure || !p->gs_pipe))
-        missing = gs_reconfigure(p);
-    if (!missing && p->sink) missing = p->sink->check(p);
-    if (!missing) return SNX_CTR_PICA_OK;
-    p->stop_reason = missing;
-    return SNX_CTR_PICA_UNSUPPORTED;
-}
-
-SnxCtrPicaResult snx_ctr_pica_draw(SnxCtrPica* p, SnxCtrMemory* m, bool indexed) {
+SnxCtrPicaResult snx_ctr_pica_triangles(SnxCtrPica* p, SnxCtrMemory* m, bool indexed, SnxCtrTriangle triangle,
+                                        void* context) {
     enum { CACHE = 64 }; /* Azahar's circular-replacement vertex cache for indexed draws */
-    SnxCtrPicaResult r = drawable(p, true);
-    if (r != SNX_CTR_PICA_OK) return r;
     Loader l;
     loader_setup(p->regs, &l);
     uint32_t base = ((p->regs[ATTR_BASE] >> 1) & 0x0fffffff) * 16, index_info = p->regs[INDEX_ARRAY];
@@ -307,6 +278,13 @@ SnxCtrPicaResult snx_ctr_pica_draw(SnxCtrPica* p, SnxCtrMemory* m, bool indexed)
     unsigned char probe;
     /* an invalid base address draws nothing (Mario & Luigi: Superstar Saga sets one) */
     if (snx_ctr_phys_read(m, index_address, &probe, 1) != SNX_CTR_MEM_OK) return SNX_CTR_PICA_OK;
+    const char* why = geometry_reconfigure(p);
+    if (!why && p->geometry.need_index && !indexed)
+        why = "a variable primitive geometry shader in a draw without indices";
+    if (why) {
+        p->stop_reason = why;
+        return SNX_CTR_PICA_UNSUPPORTED;
+    }
     SnxCtrShaderUnit* unit = calloc(1, sizeof *unit);
     struct {
         bool valid;
@@ -319,6 +297,7 @@ SnxCtrPicaResult snx_ctr_pica_draw(SnxCtrPica* p, SnxCtrMemory* m, bool indexed)
         p->stop_reason = "the host is out of memory";
         return SNX_CTR_PICA_UNSUPPORTED;
     }
+    Sink s = {p, triangle, context};
     float output[16][4] = {{0}};
     unsigned cache_at = 0, entry = p->regs[SNX_PICA_VS + SNX_PICA_SH_MAIN_OFFSET] & 0xffff;
     for (uint32_t i = 0; i < p->regs[NUM_VERTICES]; ++i) {
@@ -328,13 +307,10 @@ SnxCtrPicaResult snx_ctr_pica_draw(SnxCtrPica* p, SnxCtrMemory* m, bool indexed)
             unsigned char b[2] = {0, 0};
             (void)snx_ctr_phys_read(m, index_address + i * (wide ? 2 : 1), b, wide ? 2 : 1);
             vertex = wide ? (uint32_t)(b[0] | (b[1] << 8)) : b[0];
-        }
-        /* a variable-primitive geometry shader takes the vertex that opens a batch as its vertex count */
-        if (gs_used(p) && p->gs_pipe->need_index) {
-            gs_index(p, p->gs_pipe, vertex);
-            continue;
-        }
-        if (indexed) {
+            if (p->geometry.need_index) {
+                geometry_index(p, vertex);
+                continue;
+            }
             for (unsigned c = 0; c < CACHE; ++c)
                 if (cache[c].valid && cache[c].id == vertex) {
                     memcpy(output, cache[c].output, sizeof output);
@@ -355,16 +331,14 @@ SnxCtrPicaResult snx_ctr_pica_draw(SnxCtrPica* p, SnxCtrMemory* m, bool indexed)
                 cache_at = (cache_at + 1) % CACHE;
             }
         }
-        vertex_out(p, m, (const float (*)[4])output);
+        geometry_vertex(&s, (const float (*)[4])output);
     }
     free(unit);
     free(cache);
     return SNX_CTR_PICA_OK;
 }
 
-SnxCtrPicaResult snx_ctr_pica_draw_immediate(SnxCtrPica* p, SnxCtrMemory* m) {
-    SnxCtrPicaResult r = drawable(p, p->immediate_reset);
-    if (r != SNX_CTR_PICA_OK) return r;
+SnxCtrPicaResult snx_ctr_pica_triangles_immediate(SnxCtrPica* p, SnxCtrTriangle triangle, void* context) {
     SnxCtrShaderUnit* unit = calloc(1, sizeof *unit);
     float output[16][4] = {{0}};
     if (!unit) {
@@ -375,7 +349,18 @@ SnxCtrPicaResult snx_ctr_pica_draw_immediate(SnxCtrPica* p, SnxCtrMemory* m) {
     snx_ctr_shader_run(&p->vs, unit, p->regs[SNX_PICA_VS + SNX_PICA_SH_MAIN_OFFSET] & 0xffff, NULL);
     snx_ctr_shader_store(p->regs, SNX_PICA_VS, unit, output);
     free(unit);
-    p->immediate_reset = false;
-    vertex_out(p, m, (const float (*)[4])output);
+    /* the first vertex after a default attribute index write sets the geometry pipeline up again */
+    const char* why = NULL;
+    if (p->immediate_reset) {
+        why = geometry_reconfigure(p);
+        p->immediate_reset = false;
+    }
+    if (!why && p->geometry.need_index) why = "a variable primitive geometry shader in immediate mode";
+    if (why) {
+        p->stop_reason = why;
+        return SNX_CTR_PICA_UNSUPPORTED;
+    }
+    Sink s = {p, triangle, context};
+    geometry_vertex(&s, (const float (*)[4])output);
     return SNX_CTR_PICA_OK;
 }

@@ -208,6 +208,51 @@ int main(void) {
                strstr(list, "log_max=64 (default 16)"));
         g_settings.log_size_limit = 16;
     }
+    /* ASTC as BC7 is a Graphics setting: astc_bc=1 is not said at the top of the picture with the Debug ones, and the
+       Graphics settings past their default say it */
+    {
+        char list[2048];
+        assert(ini_find(g_graphics_ini, "astc_bc") && !ini_find(g_debug_ini, "astc_bc"));
+        g_settings.astc_bc = 1;
+        ini_changed(g_debug_ini, INI_CHANGED_NO_TEXT, list, sizeof list);
+        assert(!strstr(list, "astc_bc"));
+        assert(ini_changed(g_graphics_ini, INI_CHANGED_DEFAULT, list, sizeof list) >= 1 &&
+               strstr(list, "astc_bc=1 (default 0)"));
+        g_settings.astc_bc = 0;
+    }
+    /* NCE's look at its addresses is a Debug setting, its seconds: nce_foreign_scan=10, read from a line as a .ini gives
+       it, is said at the top of the picture ("Debug on: ...") and in the log's header, and 0 (off) is not; a value past
+       0 to 3600 is refused with the value given and the one it keeps */
+    {
+        char list[2048];
+        const IniOpt* o = ini_find(g_debug_ini, "nce_foreign_scan");
+        assert(o && !g_settings.nce_foreign_scan);
+        ini_changed(g_debug_ini, INI_CHANGED_NO_TEXT, list, sizeof list);
+        assert(!strstr(list, "nce_foreign_scan"));
+        ini_read(o, "10");
+        assert(g_settings.nce_foreign_scan == 10);
+        assert(ini_changed(g_debug_ini, INI_CHANGED_NO_TEXT, list, sizeof list) >= 1 &&
+               strstr(list, "nce_foreign_scan=10"));
+        assert(ini_changed(g_debug_ini, INI_CHANGED_DEFAULT, list, sizeof list) >= 1 &&
+               strstr(list, "nce_foreign_scan=10 (default 0)"));
+        ini_read(o, "1");
+        assert(g_settings.nce_foreign_scan == 1);
+        ini_read(o, "3600");
+        assert(g_settings.nce_foreign_scan == 3600);
+        ini_set_say(catch_said);
+        line_said[0] = 0;
+        ini_read(o, "3601");
+        assert(
+            g_settings.nce_foreign_scan == 3600 &&
+            !strcmp(line_said, "settings: nce_foreign_scan=3601 is not a whole number from 0 to 3600: it keeps 3600"));
+        ini_read(o, "-1");
+        assert(g_settings.nce_foreign_scan == 0 &&
+               !strcmp(line_said, "settings: nce_foreign_scan=-1 is not a whole number from 0 to 3600: it keeps 0"));
+        ini_set_say(NULL);
+        ini_read(o, "0");
+        ini_changed(g_debug_ini, INI_CHANGED_NO_TEXT, list, sizeof list);
+        assert(!g_settings.nce_foreign_scan && !strstr(list, "nce_foreign_scan"));
+    }
     puts("ini passed");
     return 0;
 }

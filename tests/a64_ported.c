@@ -68,14 +68,12 @@ static void on_brk(CPU* c, u64 pc, u32 imm) {
 }
 static u64 on_ticks(void) { return 0; }
 
-static void reset(CPU* c, RtAPI* rt) {
-    memset(rt, 0, sizeof(*rt));
-    rt->undef = on_undef;
-    rt->svc = on_svc;
-    rt->brk = on_brk;
-    rt->ticks = on_ticks;
+static const RtAPI runtime = {
+    .undef = on_undef, .svc = on_svc, .brk = on_brk, .ticks = on_ticks, .cas128 = snx_runtime_cas128};
+
+static void reset(CPU* c) {
     memset(c, 0, sizeof(*c));
-    c->rt = rt;
+    c->rt = &runtime;
     g.traps = 0;
 }
 
@@ -151,11 +149,10 @@ static int script(void) {
     static u32 words[SNX_QREF_MAX_CODE / 4];
     size_t i, first = 0, count = 0;
     CPU c, want;
-    RtAPI rt;
     u64 pc = 0;
     int cases = 0;
     char what[64];
-    reset(&c, &rt);
+    reset(&c);
     memset(&want, 0, sizeof(want));
     for (i = 0; snx_a64p_script[i].op != SNX_A64P_OP_END; ++i) {
         const SnxA64pOp* op = &snx_a64p_script[i];
@@ -163,7 +160,7 @@ static int script(void) {
         switch (op->op) {
             case SNX_A64P_OP_CASE:
                 g.name = op->text;
-                reset(&c, &rt);
+                reset(&c);
                 memory(&c, 0, SNX_QREF_SEED_ADDRESS);
                 first = i + 1;
                 count = 0;
@@ -315,7 +312,6 @@ static int minmax(void) {
     int dn, swap, runs = 0;
     char what[96];
     CPU c;
-    RtAPI rt;
     for (w = 0; w < words; ++w) {
         const SnxA64pMinMaxWord* word = &snx_a64p_minmax_words[w];
         g.name = word->text;
@@ -328,7 +324,7 @@ static int minmax(void) {
                         Run* run;
                         u64 pc;
                         if (dn && is_nan32(want)) want = 0x7FC00000u;
-                        reset(&c, &rt);
+                        reset(&c);
                         memory(&c, 0, SNX_QREF_SEED_ZERO);
                         c.fpcr = bases[b] | (dn ? DN : 0);
                         vset(&c.v[0], 42, 0);
@@ -359,13 +355,12 @@ static int fixed(void) {
     size_t r;
     char what[96];
     CPU c;
-    RtAPI rt;
     g.name = "FPToFixed";
     for (r = 0; r < rows; ++r) {
         const SnxA64pFixed* f = &snx_a64p_fixed[r];
         Run* run;
         u64 pc;
-        reset(&c, &rt);
+        reset(&c);
         memory(&c, 0, SNX_QREF_SEED_ZERO);
         vset(&c.v[0], f->input, 0);
         run = record("FPToFixed", &g_fixed_words[r], 1, CODE, 1, &c, 0);

@@ -10,8 +10,8 @@ extern "C" {
 #endif
 /* program stages; the values index tables and are stored in the corpus */
 enum { ST_VS = 0, ST_TCS = 1, ST_TES = 2, ST_GS = 3, ST_FS = 4, ST_CS = 5 };
-#define SH_MAXTEX         64 /* texture slots per program */
-#define SH_INDEXED_TABLES 10 /* indexed texture tables per program */
+#define SH_MAXTEX          64 /* texture slots per program */
+#define SH_INDEXED_TABLES  10 /* indexed texture tables per program */
 /* A 1D texture is bound as a 2D image, and a buffer texture longer than a row of one as rows of 2^SH_TEXEL_ROW_SHIFT
    texels (texture.c): a 1D texel fetch at x reads (x mod row, x / row) of it, which is (x, 0) for every texture that
    fits one row */
@@ -35,6 +35,14 @@ static inline int shader_same_indexed_table(const ShTex* a, const ShTex* b) {
     return a->bl_cbuf == b->bl_cbuf && a->cbuf_off == b->cbuf_off && a->flags == b->flags && a->type == b->type &&
            a->array == b->array && a->shadow == b->shadow;
 }
+/* Whether two indexed slots view their elements as the same kind of image, with the integer and signed integer
+   texture masks. Each kind has its own SPIR-V array, all of them on SNX_VKB_TEXARRAY (and the shadow kinds' also on
+   SNX_VKB_TEXDEPTH). An element is read only through the array of its own kind, so its view always matches the type
+   of the array that reads it. */
+static inline int shader_same_indexed_kind(const ShTex* tex, u64 int_mask, u64 sint_mask, int a, int b) {
+    return tex[a].type == tex[b].type && tex[a].array == tex[b].array && tex[a].shadow == tex[b].shadow &&
+           ((int_mask >> a) & 1) == ((int_mask >> b) & 1) && ((sint_mask >> a) & 1) == ((sint_mask >> b) & 1);
+}
 /* A global buffer (ShaderInfo.gbuf_cbuf_off) is named by where its 64-bit address is: the constant buffer in bits 16-20,
    the byte offset in it in bits 0-15. NVN's storage buffer descriptors, in cbuf 0 from 0x110 to 0x410 (compute) or
    0x830, follow the address with the buffer's size (shader_gbuf_sized). A graphics program may also keep a bare
@@ -57,24 +65,28 @@ typedef struct {
    whole, so a corpus file only loads into a build where this struct has the same size. */
 typedef struct {
     int stage;
-    u32 sph[20];      /* the shader program header, 80 bytes */
-    u32 cbuf_mask;    /* constant buffers read */
-    u32 cbuf_max[18]; /* bytes read of each, so only those are bound */
+    u32 flow_base;           /* key: low32 GPU address represented by word0, for absolute Maxwell call/jump targets */
+    u64 advanced_blend;      /* key: packed NVN advanced state for an ordered storage-image epilogue, zero when off */
+    u32 advanced_blend_mask; /* key: components the epilogue writes */
+    u32 sph[20];             /* the shader program header, 80 bytes */
+    u32 cbuf_mask;           /* constant buffers read */
+    u32 cbuf_max[18];        /* bytes read of each, so only those are bound */
     ShTex tex[SH_MAXTEX];
     int ntex;
     u32 in_mask;       /* generic attributes 0-31 read */
     u32 attr_int_mask; /* key: vertex attributes of integer formats, and of those the signed ones */
     u32 attr_sint_mask;
-    u32 clip_enable; /* key: the clip distances the 3D engine enables (SetUserClipEnable), the only ones written, and
-                        SNX_SH_NOT_LAST */
+    u32 clip_enable; /* key: the clip distances the 3D engine enables (SetUserClipEnable), the only ones written,
+                        SNX_SH_NOT_LAST and SNX_SH_WINDOW_XY */
     int uses_position_in, uses_clip_mask, writes_layer, writes_point_size;
+    int uses_sample_id; /* SampleId requires sample shading, which native mixed-sample coverage cannot combine */
     /* FP32 arithmetic asking to flush denormals (FTZ/FMZ), and FP32 arithmetic that doesn't. Only flush in every
        FADD, FMUL and FFMA lets the module declare flushing, as Eden declares DenormFlushToZero */
     int fp32_flush, fp32_preserve;
     u32 gbuf_cbuf_off[16]; /* the global buffers found, by where a constant buffer holds their address (SH_GBUF_*) */
     int ngbuf;
-    int unsupported; /* instructions or forms translation refused */
-    char first_unsupported[96]; /* the longest: an untracked global memory base with its writer */
+    int unsupported;            /* instructions or forms translation refused */
+    char first_unsupported[96]; /* the longest: an untracked handle with its writer's constant (93 bytes) */
     u32 cs_local[3];
     int shared_size;
     u32 gbuf_wmask; /* global buffers the program writes */
@@ -88,7 +100,7 @@ typedef struct {
        primitive's vertex count */
     u64 tex_int_mask, tex_sint_mask;
     u32 rt_int_mask, rt_sint_mask; /* FS/CS bits 8-15 also key storage image stores' integer and signed types */
-    u32 gp_skip_mask[8]; /* GS key: POST_VTG_SHADER_ATTRIB_SKIP_MASK, a bit per scalar attribute */
+    u32 gp_skip_mask[8];           /* GS key: POST_VTG_SHADER_ATTRIB_SKIP_MASK, a bit per scalar attribute */
     /* FS key: color textures sampled with a depth compare (TEX.DC compares their first component, which a Vulkan
        compare sampler can't do on a color format): the slots, and their compare functions, 3 bits each in slot
        order */
@@ -107,9 +119,41 @@ typedef struct {
        force_early_z has them: a program that stores to images or buffers then leaves no trace for fragments they
        reject */
     u32 early_fragment_tests;
-    ShXfb xfb; /* key: transform feedback's capture of this program's outputs */
+    ShXfb xfb;           /* key: transform feedback's capture of this program's outputs */
     int writes_viewport; /* the last vertex stage selects one of the 16 viewport/scissor pairs */
+    /* key (fragment, vertex and compute programs): texture slots whose header takes unnormalized coordinates (TIC
+       word 5 bit 31 clear, NVN's rectangle textures, 2D): their sample coordinates are texels, divided here by the
+       size, as Ryujinx's TexturePass and Eden's texture_pass do */
+    u64 tex_rect_mask;
+    /* key (fragment, vertex and compute programs): the dimension of the texture slots only a TXQ names (tex_query_mask, set by the
+       translation: no TEX or TLD of the program reads the same handle, so TXQ, which doesn't say, is translated as a
+       2D query; a bound query's texture may be read bindlessly in the same program). Each the header's: 1 + its
+       ShTex type (0 1D, 1 2D, 2 3D, 3 cube), + 4 for an array; 0 when nothing is known yet */
+    u8 tex_query_hint[SH_MAXTEX];
+    u64 tex_query_mask;
 } ShaderInfo;
+/* ShaderInfo.tex_query_hint in a graphics key's words (vk_shader_get's mask words 14 to 19: 3 bits a slot, the 64
+   slots in 6 words), and back. A 1D header's hint (1) goes as none: its query is the 2D slot's, a texel high, as the
+   translation binds 1D textures */
+#define SH_QUERY_WORDS 6
+static inline void shader_query_hint_pack(const u8 hint[SH_MAXTEX], u32 words[SH_QUERY_WORDS]) {
+    for (int i = 0; i < SH_QUERY_WORDS; i++) words[i] = 0;
+    for (int k = 0; k < SH_MAXTEX; k++) {                       /* a slot's 3 bits may straddle two words */
+        u64 v = hint[k] > 1 && hint[k] <= 8 ? hint[k] - 1u : 0; /* 1 to 7: hints 2 to 8 */
+        int at = 3 * k;
+        v <<= at % 32;
+        words[at / 32] |= (u32)v;
+        if (at / 32 + 1 < SH_QUERY_WORDS) words[at / 32 + 1] |= (u32)(v >> 32);
+    }
+}
+static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 hint[SH_MAXTEX]) {
+    for (int k = 0; k < SH_MAXTEX; k++) {
+        int at = 3 * k;
+        u64 w = words[at / 32] | (at / 32 + 1 < SH_QUERY_WORDS ? (u64)words[at / 32 + 1] << 32 : 0);
+        u32 v = (u32)(w >> (at % 32)) & 7;
+        hint[k] = v ? (u8)(v + 1) : 0;
+    }
+}
 #define SH_DC_COLOR_MAX  10 /* slots tex_dc_color_funcs has room for */
 /* Each stage has a descriptor set (shader_vk_set), its bindings grouped by kind. */
 #define SNX_VKB_CB       0                         /* 18 constant buffers */
@@ -120,11 +164,12 @@ typedef struct {
 #define SNX_VKB_FMT      (SNX_VKB_RS + 1)          /* compute: the images' format classes (SNX_FMT) */
 #define SNX_VKB_SMAP     (SNX_VKB_FMT + 1)         /* graphics: storage buffer page indices for aliased bindings */
 #define SNX_VKB_IMGBUF   (SNX_VKB_SMAP + 1)        /* 8 buffer images (compute, vertex, fragment) */
-#define SNX_VKB_TEXARRAY (SNX_VKB_IMGBUF + 8)      /* up to SNX_TEX_ARRAY distinct indexed handles */
-#define SNX_VKB_TEXFUNCS (SNX_VKB_TEXARRAY + 1)    /* their depth compare functions */
-#define SNX_VKB_TEXDEPTH (SNX_VKB_TEXFUNCS + 1)    /* their depth views */
-#define SNX_VKB_TEXMAP   (SNX_VKB_TEXDEPTH + 1)    /* table and element to compact descriptor index */
-#define SNX_VKB_END      (SNX_VKB_TEXMAP + 1)      /* one past the last binding */
+#define SNX_VKB_BLEND    SNX_VKB_IMG            /* fragment: ordered blend uses image0 when no guest image is bound */
+#define SNX_VKB_TEXARRAY (SNX_VKB_IMGBUF + 8)   /* up to SNX_TEX_ARRAY distinct indexed handles */
+#define SNX_VKB_TEXFUNCS (SNX_VKB_TEXARRAY + 1) /* their depth compare functions */
+#define SNX_VKB_TEXDEPTH (SNX_VKB_TEXFUNCS + 1) /* their depth views */
+#define SNX_VKB_TEXMAP   (SNX_VKB_TEXDEPTH + 1) /* table and element to compact descriptor index */
+#define SNX_VKB_END      (SNX_VKB_TEXMAP + 1)   /* one past the last binding */
 /* An indexed texture loads its handle with an LDC whose address has a register in it: one of SNX_TEX_ARRAY handles
    from cbuf_off on, each (1 << shift) bytes after the last, with the shift in bits 4-7 of ShTex.flags. */
 #define SNX_TEX_ARRAY    256
@@ -151,9 +196,9 @@ extern int g_shader_draw_parameters;
    draw's are in its record, on the GPU: with draw parameters, a vertex program's reads of these words take
    BaseVertex and BaseInstance where the push constant's z has SH_PUSH_GPU_BASE_VERTEX and SH_PUSH_GPU_BASE_INSTANCE
    set (render.c) */
-#define SH_CB0_BASE_VERTEX 0x640u
-#define SH_CB0_BASE_INSTANCE 0x644u
-#define SH_PUSH_GPU_BASE_VERTEX 1u
+#define SH_CB0_BASE_VERTEX        0x640u
+#define SH_CB0_BASE_INSTANCE      0x644u
+#define SH_PUSH_GPU_BASE_VERTEX   1u
 #define SH_PUSH_GPU_BASE_INSTANCE 2u
 /* quad operations in fragment programs (the subgroup's QUAD bit): SHFL within a quad reads its helper lanes. 1 offline */
 extern int g_shader_quad;
@@ -166,7 +211,11 @@ extern int g_shader_clock_scopes;
 extern int g_shader_maximal_reconvergence;
 /* in clip_enable: a later stage before rasterization (tessellation or geometry) follows, and the last one applies
    the depth mode and the clip distances */
-#define SNX_SH_NOT_LAST (1u << 31)
+#define SNX_SH_NOT_LAST  (1u << 31)
+/* in clip_enable, the last stage's: the viewport transform is off (3D register 0x64B), so the position's x and y are
+   pixels of the surface clip, which the stage takes to clip space by its width and height (the push constant's w,
+   vk/render.c) */
+#define SNX_SH_WINDOW_XY (1u << 30)
 /* the descriptor set of a stage's bindings */
 int shader_vk_set(int stage);
 /* can_flush: how the module gets the console's FP32 flush to zero (FTZ on FADD, FMUL and FFMA). SH_FTZ_EMULATE: a
@@ -181,6 +230,17 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
                      int can_preserve, int can_preserve_f64, int can_subgroup);
 u32* shader_compute_to_spirv(const u8* code, u32 max_bytes, ShaderInfo* si, size_t* word_count, int can_flush,
                              int can_preserve);
+/* shared_reach.c: one past the highest byte of shared memory a compute program (code, readable up to max_bytes, of
+   blocks local[0] x local[1] x local[2]) can touch with LDS, STS, ATOMS and ATOMS.CAS as its translation runs it, 0
+   for none, and SH_SHARED_ANY when an address has no bound the walk proves: a value from memory or a constant buffer,
+   a loop's counter, a 32-bit product of registers, a call, a jump table or more than 4096 blocks */
+#define SH_SHARED_ANY 0xFFFFFFFFu
+u32 shader_shared_reach(const u8* code, u32 max_bytes, const u32 local[3]);
+/* the shared memory a compute program declares on a device that gives a block device_max bytes, for a launch asking
+   for shm: 1 with shm in *size when it fits, or device_max when shader_shared_reach (in *reach) proves no access goes
+   past that; 0 when one may, the dispatch then left out */
+int shader_shared_fit(const u8* code, u32 max_bytes, const u32 local[3], u32 shm, u32 device_max, u32* size,
+                      u32* reach);
 /* reads word off (bytes) of constant buffer idx for jump tables, into *out as a host number: 1 when it could. Set by
    whoever translates, NULL offline */
 extern int (*g_shader_cb_read)(u32 idx, u32 off, u32* out);
@@ -188,6 +248,7 @@ extern int (*g_shader_cb_read)(u32 idx, u32 off, u32* out);
 int shader_brx_targets(const u64* words, u32 index, u32 count, u32* targets, int max_targets);
 /* the program's hash, and its length in bytes in out_len */
 u64 shader_hash(const u8* code, u32 max_bytes, u32* out_len);
+int shader_absolute_flow(const u8* code, u32 bytes);
 /* The shader corpus (shader_corpus=dir): each translated program's code and ShaderInfo, so tools/snx_shaderc.c
    can translate it again offline. A file only loads into a build with the same ShaderInfo. */
 int shader_corpus_save(const char* dir, const u8* code, u32 len, u32 max_bytes, int stage, const ShaderInfo* si,

@@ -506,8 +506,9 @@ static int nn_ldn_detail_IUserLocalCommunicationService_Connect(SvcObj* self, co
     pm_unlock(&d->lk);
     R_UNLESS(ok, LDN_BAD_STATE);
     R_UNLESS(n.node_count, LDN_INVALID_NODE_COUNT);
-    LOG("ldn: connecting to %u.%u.%u.%u (%s)\n", n.nodes[0].ipv4[3], n.nodes[0].ipv4[2], n.nodes[0].ipv4[1],
-        n.nodes[0].ipv4[0], n.nodes[0].user_name);
+    /* the host by its address: its user_name can name the player, and players attach the log to public reports */
+    LOG("ldn: connecting to the host at %u.%u.%u.%u\n", n.nodes[0].ipv4[3], n.nodes[0].ipv4[2], n.nodes[0].ipv4[1],
+        n.nodes[0].ipv4[0]);
     /* the wait is the transport's, without the lock: the state stays StationOpened until the host answers */
     r = snx_ldn_connect(d->lan, &n, data->v + CFG_USER_NAME, (i16)version, LDN_CONNECT_MS);
     pm_lock(&d->lk);

@@ -144,9 +144,19 @@ static void test_saves(const char* root) {
     path = join(games, "0100D/0100D_data/save/user." FIRST);
     put(path, "a file, not a folder of saves");
     free(path);
-    assert(snx_setup_first_saves(games) == 1);
+    assert(snx_setup_first_saves(games, NULL) == 1);
     path = join(root, "nothing here");
-    assert(snx_setup_first_saves(path) == 0 && snx_setup_first_saves(NULL) == 0);
+    assert(snx_setup_first_saves(path, path) == 0 && snx_setup_first_saves(NULL, NULL) == 0);
+    free(path);
+    /* and the data folder's save/, save_layout=global's: a title's folder each, a file there none */
+    path = join(root, "global data/save/user." FIRST "/0100000000AB0000");
+    assert(!snx_mkdirs(path));
+    free(path);
+    path = join(root, "global data/save/user." FIRST "/stray");
+    put(path, "a file, not a game's saves");
+    free(path);
+    path = join(root, "global data");
+    assert(snx_setup_first_saves(NULL, path) == 1 && snx_setup_first_saves(games, path) == 2);
     free(path);
     free(games);
     puts("PASS the games with saves of the fixed uid");

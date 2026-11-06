@@ -166,7 +166,21 @@ static void run_theme(void) {
     assert(!strcmp(out.name, gui_theme_builtin("yorha")->name) && out.ink != out.page);
     app_ini(config, "[app]\ntheme = gone\n");
     gui_run_theme(game, &out);
-    assert(!strcmp(out.name, gui_theme_builtin("yorha")->name));
+    assert(!strcmp(out.name, gui_theme_builtin("yorha")->name) && out.text_size == 0); /* none: its Auto */
+    /* the launcher's UI scale, as it reads it: ui_scale, text_size as an older version named it; Auto, a word an
+       older version wrote, or past its 4x read as none */
+    app_ini(config, "[app]\ntheme = mine\nui_scale = 3\n");
+    gui_run_theme(game, &out);
+    assert(!strcmp(out.name, "Mine") && out.text_size == 3);
+    app_ini(config, "[app]\ntext_size = 1\n");
+    gui_run_theme(game, &out);
+    assert(out.text_size == 1);
+    app_ini(config, "[app]\nui_scale = auto\n");
+    gui_run_theme(game, &out);
+    assert(out.text_size == 0);
+    app_ini(config, "[app]\nui_scale = 5\n");
+    gui_run_theme(game, &out);
+    assert(out.text_size == 0);
     assert(!snx_remove_tree(root));
     free(picked_themes);
     free(picked);
@@ -364,8 +378,8 @@ int main(void) {
     memset(longer + strlen(longer), 'x', 40);
     parse(&theme, longer);
     assert(!strcmp(theme.marker, def->marker) && same(theme.page, def->page));
-    assert(strstr(said, "[theme] base = elsewhere is not a built-in theme (default or yorha): it starts from default; "
-                        "[body] marker = xxxx"));
+    assert(strstr(said, "[theme] base = elsewhere is not a built-in theme (default, fuddles, fuddles-dark, sepia-dark, "
+                        "wimsy, wimsy-dark, yorha): it starts from default; [body] marker = xxxx"));
     assert(strstr(said, "x is not one line of at most 15 characters: it keeps - "));
 
     dir = snx_temp_dir(NULL);
@@ -382,8 +396,9 @@ int main(void) {
     dirs[2] = second;
     memset(&themes, 0, sizeof themes);
     gui_themes_scan(&themes, dirs, 3);
-    assert(themes.count == 4 && !strcmp(themes.ids[0], "default") && !strcmp(themes.ids[1], "yorha") &&
-           !strcmp(themes.ids[2], "alpha") && !strcmp(themes.ids[3], "gamma"));
+    /* the built-ins first, default first and the others by name; then the folders' */
+    assert(themes.count == 9 && !strcmp(themes.ids[0], "default") && !strcmp(themes.ids[1], "fuddles") &&
+           !strcmp(themes.ids[6], "yorha") && !strcmp(themes.ids[7], "alpha") && !strcmp(themes.ids[8], "gamma"));
     gui_theme_load(&theme, dirs, 3, "alpha", said, sizeof said);
     assert(!strcmp(theme.name, "Alpha") && same(theme.page, yorha->page) && !said[0]);
     gui_theme_load(&theme, dirs, 3, "gamma", said, sizeof said);
@@ -408,7 +423,7 @@ int main(void) {
     missing = snx_path_join(dir, "missing");
     none[0] = missing;
     gui_themes_scan(&themes, none, 1); /* no themes/ folder: the built-ins */
-    assert(themes.count == 2);
+    assert(themes.count == 7);
     gui_themes_free(&themes);
     free(missing);
     assert(!snx_remove_tree(dir) && !snx_remove_tree(second));

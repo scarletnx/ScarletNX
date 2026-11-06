@@ -8,11 +8,15 @@ summary's data read back by index, and pull requests skipped. Offline.
 
     tests/game_reports_test.py PROGRAM [ARGS...]   (the log summary: build/snx-logscan)"""
 
+import argparse
 import gzip
 import importlib.util
 import io
 import json
+import shlex
+import subprocess
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -74,6 +78,8 @@ class FakeGitHub:
         self.comment_list[number].append({'id': self.next, 'body': body, 'user': {'login': user}})
 
     def issue(self, number):
+        if number not in self.issues:
+            raise RuntimeError(f'gh api GET repos/o/r/issues/{number}: Not Found (HTTP 404)')
         return json.loads(json.dumps(self.issues[number]))
 
     def comments(self, number):
@@ -143,6 +149,67 @@ def check(cond, what):
 
 def event(number):
     return {'issue': {'number': number}}
+
+
+# gh as it fails: its message on stderr, GitHub's answer on stdout, exit 1. A label named "game report" exists already,
+# another is refused for its colour; a REST read finds nothing, and so does a GraphQL query
+FAKE_GH = r"""
+import json, sys
+args = sys.argv[1:]
+def fail(message, answer):
+    print(json.dumps(answer))
+    sys.stderr.write(f'gh: {message}\n')
+    sys.exit(1)
+if args[1] == 'graphql':
+    missing = "Could not resolve to a Repository with the name 'o/r'."
+    fail(missing, {'data': {'repository': None}, 'errors': [
+        {'type': 'NOT_FOUND', 'path': ['repository'], 'message': missing}]})
+method, path = args[args.index('-X') + 1], args[args.index('-X') + 2]
+if method == 'POST' and path == 'repos/o/r/labels':
+    exists = json.load(sys.stdin)['name'] == 'game report'
+    code, field = ('already_exists', 'name') if exists else ('invalid', 'color')
+    fail('Validation Failed (HTTP 422)', {'message': 'Validation Failed', 'errors': [
+        {'resource': 'Label', 'code': code, 'field': field}],
+        'documentation_url': 'https://docs.github.com/rest/issues/labels#create-a-label', 'status': '422'})
+fail('Not Found (HTTP 404)', {'message': 'Not Found',
+    'documentation_url': 'https://docs.github.com/rest/issues/issues#get-an-issue', 'status': '404'})
+"""
+
+
+def gh_errors():
+    """GitHub through a gh that fails as the real one does: an existing label is taken, and every other error says
+    gh's message, then GitHub's answer"""
+    with tempfile.TemporaryDirectory() as tmp:
+        fake = Path(tmp) / 'gh.py'
+        fake.write_text(FAKE_GH, encoding='utf-8')
+        github = reports.GitHub('o/r', gh=(sys.executable, str(fake)))
+        try:
+            github.label(reports.LABEL, reports.LABEL_COLOR, 'exists already')
+        except RuntimeError as error:
+            check(False, f'an existing label is taken, not refused: {error}')
+        for call, args, message, answer in (
+            (github.label, ('log: crash', 'nope', ''), 'gh: Validation Failed (HTTP 422)', '"code": "invalid"'),
+            (github.issue, (404,), 'gh: Not Found (HTTP 404)', 'get-an-issue'),
+            (github.reports, (), "gh: Could not resolve to a Repository with the name 'o/r'.", '"NOT_FOUND"'),
+        ):
+            try:
+                call(*args)
+                check(False, f'{call.__name__}{args} returns')
+            except RuntimeError as error:
+                text = str(error)
+                check(
+                    message in text and answer in text and text.index(message) < text.index(answer),
+                    f"{call.__name__}{args}: gh's message, then GitHub's answer: {text}",
+                )
+
+
+def refusal(call, *args):
+    """The message call(*args) exits with, None when it returns"""
+    try:
+        call(*args)
+    except SystemExit as error:
+        return str(error)
+    return None
 
 
 def bot_comments(gh, number):
@@ -247,6 +314,44 @@ def main():
     check('posted already' in reports.triage(gh, labeled, SCAN, fetch), 'labeled again, no second comment')
     check(len([c for c in bot_comments(gh, 2) if reports.CONFIRMED_MARK in c['body']]) == 1, 'one confirmed comment')
     check(reports.CONFIRMED in gh.labels, 'the confirmed label is made for maintainers')
+
+    # one issue asked for by its number (the workflow's run by hand): its number checked, then refused unless it is an
+    # issue with a log
+    check(reports.issue_number('1238') == 1238, 'an issue number')
+    for text in ('abc', '0', '-3', '1.5', '', ' 7', '07', '1e3'):
+        try:
+            reports.issue_number(text)
+            check(False, f'{text!r} taken as an issue number')
+        except argparse.ArgumentTypeError as error:
+            check(repr(text) in str(error), f'the refusal of {text!r} names it: {error}')
+    cli = subprocess.run(
+        [sys.executable, str(ROOT / 'scripts' / 'game-reports.py'), 'triage', '--issue', 'abc', '--repo', 'o/r'],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    check(cli.returncode == 2 and "'abc' is not an issue number" in cli.stderr, f'--issue abc: {cli.stderr}')
+    for number, why in ((1, 'issue #1 has no log'), (5, '#5 is a pull request'), (99, 'issue #99 cannot be read')):
+        calls = len(gh.calls)
+        message = refusal(reports.triage_issue, gh, number, SCAN, fetch)
+        check(message and why in message and len(gh.calls) == calls, f'#{number} refused with: {message}')
+    gh.add_issue(7, f'Stops at the logos {url(1, "Some%20Game.log")}')
+    check('svcBreak' in reports.triage_issue(gh, 7, SCAN, fetch), 'an issue with a log asked for by its number')
+    check(len(bot_comments(gh, 7)) == 1, 'its summary posted once')
+    # main's --issue, as the workflow runs it: a pasted log, so nothing is downloaded
+    gh.add_issue(8, '~~~\n' + CRASH + '~~~\n')
+    github, argv = reports.GitHub, sys.argv
+    reports.GitHub = lambda repo: gh
+    try:
+        for number in (1, 8):
+            sys.argv = ['game-reports.py', 'triage', '--issue', str(number), '--repo', 'o/r']
+            sys.argv += ['--logscan', shlex.join(SCAN.program)]
+            message = refusal(reports.main)
+            check((message is None) == (number == 8), f'triage --issue {number} ends with: {message}')
+    finally:
+        reports.GitHub, sys.argv = github, argv
+    check(len(bot_comments(gh, 8)) == 1, 'triage --issue 8 summarizes issue 8')
+    gh_errors()
     print('game_reports_test: ok')
 
 

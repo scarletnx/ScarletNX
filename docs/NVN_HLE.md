@@ -2,6 +2,31 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # NVN reference
 
+## Index
+
+* [Status and direction](#status-and-direction)
+  * [Why the first replay was abandoned](#why-the-first-replay-was-abandoned)
+* [What remains in the tree](#what-remains-in-the-tree)
+  * [GPU compatibility coverage](#gpu-compatibility-coverage)
+* [Measured against the game's driver](#measured-against-the-games-driver)
+  * [Texture storage answers](#texture-storage-answers)
+  * [What the first runs found (one game, SDK NVN 55.15)](#what-the-first-runs-found-one-game-sdk-nvn-5515)
+* [32-bit games](#32-bit-games)
+* [A recording written over while it is submitted](#a-recording-written-over-while-it-is-submitted)
+* [Control memory, counted as the driver writes it](#control-memory-counted-as-the-driver-writes-it)
+* [Observing NVN calls](#observing-nvn-calls)
+* [Queue and submission observations](#queue-and-submission-observations)
+* [Command buffer layout (two games' SDK observations)](#command-buffer-layout-two-games-sdk-observations)
+* [Other SDK object layouts](#other-sdk-object-layouts)
+* [Shader blobs](#shader-blobs)
+* [Constant buffer banks](#constant-buffer-banks)
+* [Maxwell methods and macros observed](#maxwell-methods-and-macros-observed)
+* [NVN formats](#nvn-formats)
+* [Per-device and per-submission state](#per-device-and-per-submission-state)
+* [Emulator fixes kept from the investigation](#emulator-fixes-kept-from-the-investigation)
+* [Techniques and pitfalls](#techniques-and-pitfalls)
+* [References](#references)
+
 Switch games draw through NVN, NVIDIA's graphics API, which runs as guest code. On the console it writes Maxwell
 pushbuffers and submits them through nvdrv. ScarletNX runs the game's NVN calls itself (`src/nx/gpu/nvn/`): the loader
 (`nvn_loader.c`) takes every NVN function the game resolves, the queue replays its recordings on the GPU thread
@@ -68,6 +93,16 @@ Repeated invalidations flush any held draw before advancing the generation. The 
 from are documented in NVIDIA's public [3D class](https://github.com/NVIDIA/open-gpu-doc/blob/master/classes/3d/clb197.h)
 and [compute class](https://github.com/NVIDIA/open-gpu-doc/blob/master/classes/compute/clb1c0.h) headers.
 
+GPU event waits yield only their queue's replay job until EQUAL or GEQUAL_WRAP succeeds. Other queues can release
+the event. Recorded shader subroutine selections update validated compiler-constant linkage tables, with relative
+and absolute calls in the shader translator. Copy conversions include supported volume color formats, sRGB transfer
+and GPU depth/stencil gathers when native image blits are unavailable.
+
+Advanced blending uses exact ordinary-blend reductions, coherent native advanced operations or a fragment-interlock
+shader path. Each path has explicit format, attachment and device restrictions. These features do not imply full
+NVN compatibility. [The rendering audit](GPU_RENDERING_AUDIT.md#follow-up-support-and-restrictions) lists their current
+behavior, restrictions and synthetic checks.
+
 | File | What it is | Built into |
 | --- | --- | --- |
 | `tests/support/nvn_control.c` | decoders for the 12-word macro 38 indexed draw and the macro 12 program bind | `tests/nvn_control.c` |
@@ -96,6 +131,12 @@ drivers' code (NVN 12.3 and 55.15, the same rules):
 - The ZCull area: 0 for a format without depth bits (stencil only counts with ZCULL_SUPPORT_STENCIL). Else 0x20 bytes
   for each 32x32 tile of each layer, plus 0xE0 of headers (nvdrv's ZCULL_GET_INFO answer).
 - A multisampled or rectangle texture has one level, whatever the builder says.
+- A SPARSE block-linear texture is mapped in 64 KiB tiles of the standard shapes (2D 256x256 to 64x64 blocks, 3D
+  64x32x32 to 16x16x16, by the block's bytes): its blocks are as high and deep as the tile, a level at least a tile
+  wide, high and deep has rows of whole tiles, and the storage is whole tiles. Each page is then one tile, the tiles
+  across, down and deep, where the game maps it, whether or not the texture ends inside its last tile across. Its
+  texture header gives the tile's GOBs across (word 3 bits 10-12, log2), as the driver writes it, and the renderer
+  pads the same rows with it.
 
 The layout (`nvn_tex_layout`) stays the texture's extent, which `tests/nvn_tex_storage.c` keeps inside the answered
 size over targets, formats, sizes, levels, samples and flags. The verify mode's storage sweep ran the driver's
@@ -196,8 +237,10 @@ called the recordings made there. The counts, from one NVN 55 driver's code:
 | a recording still open when the game adds control memory | 0x10, the link to the new memory |
 
 The driver keeps the last 0x10 bytes of the memory for that link. When the entries don't fit, it calls the memory
-callback with event 1 and 0x100 bytes at least, and stops the game if there is still no room: nvn counts nothing
-more then. It merges a range with the one before it when the two touch, which nvn doesn't model, so its count can be
+callback with event 1 and 0x100 bytes, and stops the game if there is still no room: nvn counts nothing
+more then. The room it checks is the entry's own bytes (0x20 for a range entry, also one of 0x18). The 0x100 is only
+what it asks the callback for, so a game that gives 0x100 bytes records there without a callback (the NVN drivers of
+SDK 6.5 and 19.3 both do this). It merges a range with the one before it when the two touch, which nvn doesn't model, so its count can be
 higher. A call also copies the callee's other entries (its compute binds), which nvn doesn't count: the handles of
 recordings in the runtime's memory are used again once their pieces come back, so a count kept by handle went to the
 wrong recording (a recording that calls the one before it at the same handle counted 0x18 more each frame, and one
@@ -255,7 +298,7 @@ segments, then a 58-word queue tail that writes the window origin. The queue pac
 backing, not from the command pool the game supplied. The recorded segments' GPU addresses follow from the command
 buffer's chunk fields (next section).
 
-## Command buffer layout (Catherine USA v2.0 and TotK v1.0.0 SDK observations)
+## Command buffer layout (two games' SDK observations)
 
 `NVNcommandBuffer` fields, from disassembly of the two SDKs:
 

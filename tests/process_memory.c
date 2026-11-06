@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The process's memory as common.c reads it (snx_footprint, snx_memory_available), which memory_fit and the stats
    take: the footprint told on Linux, Android, macOS, iOS, Windows and FreeBSD, growing with the pages the process
-   touches, the memory available on all but FreeBSD; neither elsewhere. And its processor time (snx_process_cpu_ns),
+   touches, and the memory available; neither elsewhere. And its processor time (snx_process_cpu_ns),
    which grows with the work it does */
 #include "common/utilities/common.h"
 #include <assert.h>
@@ -23,7 +23,7 @@ int main(void) {
 #else
     assert(!before && !after);
 #endif
-#if defined(__linux__) || defined(__APPLE__) || defined(_WIN32)
+#if defined(__linux__) || defined(__APPLE__) || defined(_WIN32) || defined(__FreeBSD__)
     assert(snx_memory_available(&available) && available > 0);
 #else
     assert(!snx_memory_available(&available));

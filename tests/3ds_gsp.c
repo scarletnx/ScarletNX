@@ -8,9 +8,11 @@
 #include "3ds/ipc/ctr_ipc.h"
 #include "3ds/services/gsp.h"
 #include "3ds/gpu/present.h"
+#include "3ds/gpu/vk/vk.h"
 #include "common/filesystem/host.h"
 #include "common/utilities/common.h"
 #include "support/3ds_guest.h"
+#include "support/3ds_vk_path.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,7 +63,52 @@ static void fill_rgba8(SnxCtrProcess* p, uint32_t address, unsigned char r, unsi
     assert(snx_ctr_write_ram(p->space, address, pixels, 240u * 400 * 4) == SNX_CTR_MEM_OK);
     free(pixels);
 }
+/* With no Vulkan device, the first GX command that needs one ends the run (a failed request) at once, saying why:
+   the reason the device did not start, which the run's last line is (aot/run.c) */
+static void gx_without_device(const SnxCtrImage* image) {
+    assert(!snx_ctr_vk());
+    SnxCtrProcess* p = snx_ctr_process_new(image, SNX_CTR_OLD);
+    assert(p);
+    uint32_t gsp, event = 0, target = 0;
+    assert(!snx_ctr_session_create(p, SNX_CTR_SERVICE_GSP, &gsp));
+    assert(!snx_ctr_object_create(p, CTR_OBJ_EVENT, &event));
+    uint32_t acquire[] = {0x00160042, 0, 0, CTR_PROCESS_HANDLE};
+    ctr_call(p, gsp, acquire, 4, SNX_CTR_SVC_RETURN, 0);
+    uint32_t register_relay[] = {0x00130042, 1, 0, event};
+    ctr_call(p, gsp, register_relay, 4, SNX_CTR_SVC_RETURN, 0);
+    p->cpu.state.cpu.r[0] = ctr_command_word(p, 4);
+    p->cpu.state.cpu.r[1] = QUEUE;
+    p->cpu.state.cpu.r[2] = 3;
+    p->cpu.state.cpu.r[3] = 0x10000000;
+    assert(snx_ctr_svc(p, 0x1f) == SNX_CTR_SVC_RETURN && !p->cpu.state.cpu.r[0]);
+    /* a DMA needs no device and runs; the MemoryFill after it is the queue's last command */
+    assert(!snx_ctr_kernel_memory(p, 0x10003, 0, 0, 0x2000, 3, &target) && target);
+    ctr_put(p, target, 0xa5a5a5a5);
+    ctr_put(p, QUEUE + 0x800, 0x200); /* two commands queued */
+    ctr_put(p, QUEUE + 0x820, 0);     /* RequestDma: 4 bytes from target to target + 0x1000 */
+    ctr_put(p, QUEUE + 0x824, target);
+    ctr_put(p, QUEUE + 0x828, target + 0x1000);
+    ctr_put(p, QUEUE + 0x82c, 4);
+    ctr_put(p, QUEUE + 0x840, 2); /* MemoryFill, triggered */
+    ctr_put(p, QUEUE + 0x844, target);
+    ctr_put(p, QUEUE + 0x848, 0x11223344);
+    ctr_put(p, QUEUE + 0x84c, target + 0x1000);
+    ctr_put(p, QUEUE + 0x85c, 0x0201);
+    uint32_t trigger[] = {0x000c0000};
+    ctr_call(p, gsp, trigger, 1, SNX_CTR_SVC_UNSUPPORTED, 0);
+    assert(ctr_word(p, target + 0x1000) == 0xa5a5a5a5 && ctr_word(p, target) == 0xa5a5a5a5);
+    char want[sizeof p->stopped];
+    const char* why = snx_ctr_vk_error();
+    snprintf(want, sizeof want, "GX command 0x02 needs the 3DS GPU, which did not start%s%s", why[0] ? ": " : "", why);
+    if (strcmp(p->stopped, want)) {
+        fprintf(stderr, "stopped: %s\nwant:    %s\n", p->stopped, want);
+        abort();
+    }
+    printf("no device: %s\n", p->stopped);
+    snx_ctr_process_free(p);
+}
 int main(int argc, char** argv) {
+    int vk_memory = test_ctr_vk_memory(&argc, argv);
     assert(argc == 2);
 
     (void)plat_mkdir(argv[1]);
@@ -74,15 +121,18 @@ int main(int argc, char** argv) {
         }
     unsigned char code[0x3000] = {0};
     SnxCtrImage image = ctr_image(code, sizeof code, 0x3000);
+    gx_without_device(&image); /* before any start: the device was not tried */
     for (unsigned model = 0; model < 2; ++model) {
         SnxCtrProcess* p = snx_ctr_process_new(&image, (SnxCtrModel)model);
         assert(p);
         if (!snx_ctr_present_init(p->memory, argv[1])) {
             assert(!model);
-            printf("no Vulkan device: presentation checks skipped\n");
             snx_ctr_process_free(p);
+            gx_without_device(&image); /* and with the reason this host's start gave */
+            printf("no Vulkan device: presentation checks skipped\n");
             return 77;
         }
+        test_ctr_vk_memory_taken(vk_memory);
         uint32_t gsp;
         assert(!snx_ctr_session_create(p, SNX_CTR_SERVICE_GSP, &gsp));
         uint32_t event = 0;
@@ -173,6 +223,52 @@ int main(int argc, char** argv) {
         assert(ctr_command_word(p, 1) == 0xd8202a06);
         ctr_call(p, gsp, acquire, 4, SNX_CTR_SVC_RETURN, 0);
         assert(!ctr_command_word(p, 1));
+        /* screen capture info, and the VRAM system area for a registered session and for one that never registered */
+        uint32_t top_swap[] = {0x00050200, 0, 1, 0x300200, 0x300400, 960, 0x42, 1, 0};
+        ctr_call(p, gsp, top_swap, 9, SNX_CTR_SVC_RETURN, 0);
+        assert(!ctr_command_word(p, 1));
+        uint32_t bottom_swap[] = {0x00050200, 1, 0, 0x300600, 0x300800, 480, 0x43, 0, 0};
+        ctr_call(p, gsp, bottom_swap, 9, SNX_CTR_SVC_RETURN, 0);
+        assert(!ctr_command_word(p, 1));
+        uint32_t capture[] = {0x00180000};
+        ctr_call(p, gsp, capture, 1, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 0) == 0x00180240 && !ctr_command_word(p, 1));
+        assert(ctr_command_word(p, 2) == 0x300200 && ctr_command_word(p, 3) == 0x300200 &&
+               ctr_command_word(p, 4) == 0x42 && ctr_command_word(p, 5) == 960);
+        assert(ctr_command_word(p, 6) == 0x300600 && ctr_command_word(p, 7) == 0x300600);
+        assert(ctr_command_word(p, 8) == 0x43 && ctr_command_word(p, 9) == 480);
+        /* active_fb 0 writes at another address while shown_fb 1 keeps the pair top_swap wrote on screen */
+        uint32_t split_swap[] = {0x00050200, 0, 0, 0x300a00, 0x300a00, 960, 0x42, 1, 0};
+        ctr_call(p, gsp, split_swap, 9, SNX_CTR_SVC_RETURN, 0);
+        assert(!ctr_command_word(p, 1));
+        ctr_call(p, gsp, capture, 1, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 0) == 0x00180240 && !ctr_command_word(p, 1));
+        assert(ctr_command_word(p, 2) == 0x300200 && ctr_command_word(p, 3) == 0x300200);
+        uint32_t save_vram[] = {0x00190000};
+        ctr_call(p, gsp, save_vram, 1, SNX_CTR_SVC_RETURN, 0);
+        assert(!ctr_command_word(p, 1));
+        uint32_t restore_vram[] = {0x001a0000};
+        ctr_call(p, gsp, restore_vram, 1, SNX_CTR_SVC_RETURN, 0);
+        assert(!ctr_command_word(p, 1));
+        uint32_t other = 0;
+        assert(!snx_ctr_session_create(p, SNX_CTR_SERVICE_GSP, &other));
+        ctr_call(p, other, save_vram, 1, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 1) == 0xd8202a06);
+        ctr_call(p, other, restore_vram, 1, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 1) == 0xd8202a06);
+        assert(!snx_ctr_handle_close(p, other));
+        /* a session registered with flags 0 (thread 1) is refused the same way */
+        uint32_t unflagged = 0, unflagged_event = 0;
+        assert(!snx_ctr_session_create(p, SNX_CTR_SERVICE_GSP, &unflagged));
+        assert(!snx_ctr_object_create(p, CTR_OBJ_EVENT, &unflagged_event));
+        uint32_t unflagged_relay[] = {0x00130042, 0, 0, unflagged_event};
+        ctr_call(p, unflagged, unflagged_relay, 4, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 0) == 0x00130082 && !ctr_command_word(p, 1) && ctr_command_word(p, 2) == 1);
+        ctr_call(p, unflagged, save_vram, 1, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 1) == 0xd8202a06);
+        ctr_call(p, unflagged, restore_vram, 1, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 1) == 0xd8202a06);
+        assert(!snx_ctr_handle_close(p, unflagged));
         /* the process handle must come in a handle descriptor */
         acquire[2] = 0x20;
         ctr_call(p, gsp, acquire, 4, SNX_CTR_SVC_RETURN, SNX_CTR_IPC_BAD_DESCRIPTOR);
@@ -296,14 +392,16 @@ int main(int argc, char** argv) {
         assert(!ctr_command_word(p, 1));
         assert((ctr_word(p, QUEUE + 0x800) & 0xffff) == 2);
         assert((ctr_word(p, QUEUE) & 0xffff) == 0x0200 && (ctr_word(p, QUEUE + 12) & 0xffff) == 0x0505);
-        /* a draw needing a part not ported yet (a geometry shader) stops the run */
-        ctr_put(p, target + 0x800, 2);
-        ctr_put(p, target + 0x804, 0x000f0229u); /* use_gs */
-        ctr_put(p, target + 0x808, 1);
-        ctr_put(p, target + 0x80c, 0x000f022eu); /* trigger_draw */
+        /* a draw the runtime does not run (a geometry shader on a unit set up for vertices) stops the run */
+        ctr_put(p, target + 0x800, 0x20000000u >> 3);
+        ctr_put(p, target + 0x804, 0x000f0200u); /* vertex arrays in FCRAM */
+        ctr_put(p, target + 0x808, 2);
+        ctr_put(p, target + 0x80c, 0x000f0229u); /* use_gs */
+        ctr_put(p, target + 0x810, 1);
+        ctr_put(p, target + 0x814, 0x000f022eu); /* trigger_draw */
         ctr_put(p, QUEUE + 0x800, 0x100);
         ctr_put(p, QUEUE + 0x820, 1);
-        ctr_put(p, QUEUE + 0x828, 16);
+        ctr_put(p, QUEUE + 0x828, 24);
         ctr_call(p, gsp, trigger, 1, SNX_CTR_SVC_UNSUPPORTED, 0);
         ctr_put(p, QUEUE + 0x800, 0);
         /* vblanks reach the relay queue's slots at 0xc (libctru's popInterrupt), are dropped with ignore_pdc set,

@@ -37,7 +37,7 @@ PERF = re.compile(r'perf: [0-9.]+ frames a second over ([0-9.]+) s \((\d+) shown
 SLOW = re.compile(r'vulkan: a (\d+) ms frame:')
 FAIL = re.compile(r'\*\*\* Crash|svcBreak|FATAL|No new frame for|unknown option:|not implemented', re.I)
 # These change execution strategy without removing graphics work or reducing quality.
-AXES = {'vk_descriptors': ['0', '1'], 'vk_record': ['1', '0'], 'emulated_cores': ['1', '0'],
+AXES = {'nvn_storage_order': ['2', '1', '0'], 'vk_descriptors': ['0', '1'], 'vk_record': ['1', '0'], 'emulated_cores': ['1', '0'],
         'vk_memory': ['0', '1', '2'], 'pipeline_threads': ['0', '1', '2'],
         'jit_threads': ['0', '1', '4']}
 FIXED = {'async_pipelines': '0', 'compute': '1', 'vk_gpu_profile': '0',
@@ -146,6 +146,8 @@ def candidates(seed, active_axes=AXES):
 
 def active_axes(text, baseline):
     axes = dict(AXES)
+    if not re.search(r'nvn: (?:nvn_direct: )?the runtime implements ', text):
+        axes.pop('nvn_storage_order')
     if 'graphics descriptor buffers unavailable' in text:
         axes.pop('vk_descriptors')
     if not re.search(r'vulkan: [1-9]\d* shaders translated|[1-9]\d* pipelines made', text):

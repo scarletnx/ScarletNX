@@ -74,6 +74,10 @@ void nvn_replay_fence(u32 queue, u64 sync, u64 ready, u32 shown) {
     (void)shown;
 }
 void nvn_replay_finish(u32 queue) { (void)queue; }
+void nvn_replay_wait(u32 queue, const NvnSync* sync) {
+    (void)queue;
+    (void)sync;
+}
 u32 nvn_replay_syncpt(u32 queue) {
     (void)queue;
     return 1;

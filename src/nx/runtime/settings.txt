@@ -120,15 +120,26 @@ setting Save state backup
     default 1
     words Off|On
     help 1 = the game is saved to the auto slot before each save state is loaded over it, so a load can be undone
+setting Save layout
+    key save_layout
+    text 8
+    default global
+    startup
+    words global=Global|game=Per game
+    help Where the saves are: global = one folder of every game's, save/ of the data folder, as the console keeps
+    help them (an Account save in user.<uid>/<title ID>/); game = each game's own, save/ in its <id>_data/. A save the
+    help other one holds is played where it is, said once a run, until Settings > App > Move Old Files moves it
 
 table g_display_ini
 setting TV mode
     key docked
-    int 0 1
+    int 0 2
     default 1
     startup
-    words Off|On
-    help 1 = TV mode (the console in its dock), 0 = handheld mode (1280x720)
+    set options_tv_mode_set
+    words Off|On|Auto
+    help 1 = TV mode (the console in its dock), 0 = handheld mode (1280x720), 2 = Auto: TV mode while the
+    help host is on its charger, handheld mode on its battery. Auto switches while the game runs
 setting Fullscreen
     key fullscreen
     int 0 1
@@ -224,6 +235,28 @@ setting Vulkan Video decode
     help 1 = H.264 movies decode on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), where the GPU and its driver
     help have an H.264 decode queue. Experimental and untested. 0 = FFmpeg decodes them on the CPU. VP9 movies always
     help decode on the CPU
+setting Vertex input dynamic state
+    key vertex_input_dynamic_state
+    text 16
+    default auto
+    startup
+    words auto=Auto|on=On|off=Off
+    help How a draw gives the GPU its vertex layout. auto = as dynamic state (VK_EXT_vertex_input_dynamic_state) where
+    help the GPU's driver has it, but NVIDIA's before 580.119.02 and Intel's Windows driver before 27.20.100.0, which
+    help draw it wrong, and on Android, as Eden; on = as dynamic state wherever the driver has it, those too; off = in
+    help the pipeline. Dynamic,
+    help one pipeline serves every layout a program is drawn with, so fewer pipelines are made; in the pipeline, each
+    help layout takes one of its own. Any other value stops the game, saying so
+setting ASTC BC
+    label ASTC as BC7
+    key astc_bc
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 0 = ASTC textures are decoded to RGBA8, exactly as the game's blocks decode. 1 = on a GPU that samples BCn
+    help but not ASTC (most desktop ones), they are decoded and then encoded again as BC7, in a quarter of RGBA8's
+    help memory, close to what the blocks decode to but not always the same. Where the GPU samples ASTC it does nothing
 
 table g_performance_ini
 setting FPS limit
@@ -240,15 +273,17 @@ setting Memory (GB)
     startup
     help The memory the game sees: below 6 the console's 3.2 GB, 6 = 4.8 GB, 8 = 6.8 GB. A game that runs out on
     help the console's amount needs 6
-setting Memory fit
-    key memory_fit
+setting Memory fit mode
+    label Memory fit
+    key memory_fit_mode
     int 0 1
     default 0
-    default-if SNX_IOS 1
     startup
-    words Off|On
-    help On = the game sees no more of Memory (GB) than the device can still give it, measured as it starts, less what
-    help the rest of ScarletNX takes: a device with less than the console's is not run out of memory. Off = all of it
+    words Auto|Off
+    help Auto = the game sees no more of Memory (GB) than the device can still give it, measured as it starts, less
+    help what the rest of ScarletNX takes: a device with less than the console's is not run out of memory, and one that
+    help can give it all shows the game all of it. Off = all of it, whatever the device can give. It takes the place of
+    help memory_fit, whose 0 was Off (docs/DEPRECATIONS.md)
 setting Heap limit (MB)
     key heap_max_mb
     text 32
@@ -311,6 +346,36 @@ setting Prepare shaders
     help background, used once all are ready. Before starting = a loading screen waits for them and for the shader cache
     help of earlier sessions. Any key, button or tap starts the game at once and the rest is prepared while you play.
     help Esc quits (on Android, back opens the menu)
+setting Compress shader cache
+    key compress_shader_cache
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = the shaders and pipelines saved from earlier sessions are packed with zstd, about 70 shaders at a time:
+    help about a quarter of the space, a few milliseconds more to read when the game starts, and up to 7 ms on the
+    help thread that made the last of each 70 new shaders. 0 = saved as they are made. What is packed is read either way
+setting Compress prepared shaders
+    key compress_prepared_shaders
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = each shader Prepare shaders makes is packed with zstd on its own: about a quarter of the space, about
+    help 50 microseconds more for each as it is prepared and 15 the first time a draw uses it. 0 = saved as they are
+    help made. What is packed is read either way
+setting NCE
+    key nce
+    int 0 1
+    default 1
+    startup
+    recompile
+    words Off|On
+    help On an AArch64 Linux host or Android 10 and later on arm64, 1 = the game's 64-bit code runs natively on the
+    help host's CPU (native code execution), with the words patched that cannot run as they are: SVCs, the TLS
+    help registers, the counter registers, and the exclusives made ordered, as Eden patches them. The recompile then
+    help makes no code ahead of time. 0 = the code is recompiled. Other hosts, 32-bit games and, on Android, games of
+    help the 36-bit address space always recompile, whatever this says
 setting JIT threads
     key jit_threads
     int 0 4
@@ -562,13 +627,13 @@ setting Eden room
     help and a room's password is room_password in users/online.ini
 
 table g_user_ini
-setting User
-    key user
-    int 1 SNX_USERS_MAX
-    default 1
+setting User uid
+    key user_uid
+    text 33
+    default ""
     startup
-    help The console's user the game plays as: 1 to 8, as users/users.ini of the data folder lists them (1, "Player",
-    help without one). A number with no user stops the game
+    help The console's user the game plays as, by its uid: 32 hex digits, as users/users.ini of the data folder lists
+    help them; empty is its [user1] ("Player" without one). A uid no user has stops the game
 
 table g_debug_ini
 setting Log level
@@ -623,16 +688,6 @@ setting Native ASTC
     help 1 = ASTC textures are sampled as the game's blocks where the GPU samples ASTC (most phone and tablet GPUs),
     help in a quarter to a 36th of the memory. 0 = they are decoded to RGBA8 on the GPU, as they are on GPUs without
     help ASTC (most desktop ones), to compare the two. On such a GPU 1 is a warning at start
-setting ASTC BC
-    label ASTC as BC7
-    key astc_bc
-    int 0 1
-    default 0
-    startup
-    words Off|On
-    help 0 = ASTC textures are decoded to RGBA8, exactly as the game's blocks decode. 1 = on a GPU that samples BCn
-    help but not ASTC (most desktop ones), they are decoded and then encoded again as BC7, in a quarter of RGBA8's
-    help memory, close to what the blocks decode to but not always the same. Where the GPU samples ASTC it does nothing
 setting Native BC
     label Native BCn
     key native_bc
@@ -702,6 +757,15 @@ setting IR dump PC
     recompile
     help The address in hex (100000) of a function the recompiler found: it prints the function's leaders, where its
     help flags come from, the registers it promoted and its IR before and after the promotion. Empty: none
+setting IR branch profile
+    key ir_branch_profile
+    text 1024
+    default ""
+    startup
+    recompile
+    help A file of branch counts, a line each: the branch's address and instruction word in hex, then how many times
+    help it was taken and not taken. The recompiler gives LLVM those odds for each branch whose address and word
+    help match. Empty: none. It applies to the next recompile, and to the JIT's next run
 setting GDB JIT symbols
     key gdb_jit
     int 0 1
@@ -721,6 +785,76 @@ setting Alias pool
     help host pages, as the console's do, where the host's pages are 4 KiB (Linux and Android). 0 = every view is a
     help copy: a write through it reaches the source at its unmap, or at a flushed line (IC IVAU, DC CVAC) after the
     help write, as hosts without a pool run (Windows among them). For tests of that path, and a diagnosis
+setting Write tracking
+    key write_tracking
+    int 0 2
+    default 0
+    startup
+    words Auto|Protection|Off
+    help How the runtime finds the guest pages written since the caches last looked (docs/ARCHITECTURE.md). 0 = the
+    help host's own: userfaultfd's write protection on Linux 6.7 and later, the reservation's write watch on Windows,
+    help page protection on the other hosts. 1 = page protection and the fault handler, as macOS, FreeBSD, Android
+    help and older Linux track (not on Windows, which says so at start). 2 = none: the caches compare guest memory's
+    help contents, to measure and test that path
+setting Write tracking hot pages
+    key write_tracking_hot
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = with page protection (write_tracking=1, or the host's own on macOS, iOS, FreeBSD, Android and Linux
+    help before 6.7), a page the scans find written twice in a row stays writable, without its fault, and reads as
+    help written at each scan, for 32 scans; then it is protected again. A render target protects its pages again
+    help before each baseline, so its write-back keeps the GPU's pixels. 0 = every written page is protected again at
+    help each scan. Nothing where userfaultfd or Windows' write watch tracks the writes, which say so at start
+setting Memory traps
+    key memory_traps
+    int 0 2
+    default 0
+    startup
+    words Auto|Protection|Off
+    help How the runtime traps guest memory the GPU owns until the CPU touches it (docs/GPU_OWNERSHIP.md). 0 =
+    help userfaultfd's minor faults where Linux has them, else page protection; none yet on Windows, macOS and
+    help FreeBSD. 1 = page protection and the fault handler, as Android and Linux before 5.13 trap (Linux and Android
+    help only: elsewhere it says so at start). 2 = none: a GPU result lands in guest memory at its fence, to measure
+    help and test that path
+setting Host page size
+    key host_page
+    int 0 1048576
+    default 0
+    startup
+    help The page size the runtime works in, in bytes: a power of two larger than the host's own, up to 1 MiB.
+    help 16384 or 65536 run as a host with 16 or 64 KiB pages does (views copy, a host page holds several guest
+    help pages: docs/PPC64.md). 0 = the host's own. Any other value runs with the host's own, said at start
+setting NCE foreign scan
+    label NCE address scan
+    key nce_foreign_scan
+    int 0 3600
+    default 0
+    startup
+    words Off|# s
+    help Under NCE, the seconds between two looks at the game's addresses for what of the host's process is not the
+    help game's (another owner's mapping over its memory, a run nothing maps), 1 to 3600, each new finding logged once.
+    help 0 = off: only as the game's code starts and in a crash report. Each look reads /proc/self/maps, a few
+    help milliseconds
+setting GPU page check
+    key gpu_page_check
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = the GPU's written pages (gpu/writes.c) and the renderer's pending results (gpu/vk/pending_pages.c), which
+    help the runtime counts by GPU page, are also counted by guest address, and each lookup translates its range
+    help through the GMMU too: the log warns of each write or result only that finds. Slow: for checking those tables
+setting Draw state check
+    key draw_state_check
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = a draw that keeps the last draw's shaders and pipeline makes them again to compare, and the log names
+    help each difference (a register missing from a group, an input that is not compared). Slow: for checking what
+    help a draw keeps
 setting Profiler
     key profile
     int 0 1
@@ -780,10 +914,13 @@ setting Guest memory
     default 0
     startup
     words Auto|Copy|UMA
-    help How the GPU reads guest buffers (vertices, indices, read-only storage; docs/GPU_OWNERSHIP.md). 1 = copied into
-    help the renderer's buffers when they change. 2 = read where they are in guest memory (VK_EXT_external_memory_host),
-    help as the console's GPU reads them: for a GPU that shares system memory. On a discrete GPU it reads them across
-    help the bus, which is slow, but it shows that the path is correct. 0 = 2 on a GPU that shares system memory, else 1
+    help How the GPU reads and writes guest buffers (vertices, indices, storage, the engines' results;
+    help docs/GPU_OWNERSHIP.md). 1 = copied into the renderer's buffers when they change, and back. 2 = read and written
+    help where they are in guest memory (VK_EXT_external_memory_host; on Android without it, guest memory moves into
+    help AHardwareBuffers), as the console's GPU does: for a GPU that shares system memory. On a discrete GPU it goes
+    help across the bus, which is slow, but it shows that the path is correct. 0 = 2 on a GPU that shares system memory,
+    help but never the moves into AHardwareBuffers, else 1. A 3DS game takes it too, for the board's RAM: 1 = the GPU
+    help works on a copy of it in its own memory, 2 = on the RAM in place (docs/3DS.md)
 setting Buffer copy stats
     key vk_buffer_stats
     int 0 1
@@ -791,6 +928,15 @@ setting Buffer copy stats
     startup
     words Off|On
     help 1 = logs what the renderer copies between guest memory and its buffers, and why it waits for their results
+setting NVN storage ordering
+    key nvn_storage_order
+    int 0 2
+    default 2
+    startup
+    words Conservative|Explicit|Deferred
+    help NVN draws use their explicit storage barriers, allowing independent writes through overlapping views.
+    help Deferred records the ordering requirement and emits a Vulkan barrier at the next dependent buffer use.
+    help 0 keeps conservative per-draw dependencies for comparisons or command recordings from older builds.
 setting Descriptor buffers
     key vk_descriptors
     int 0 1
@@ -957,6 +1103,35 @@ setting State checks
     help Save state round trips, a comma between: at saves the game at that many ms of the scripted input's clock into
     help the check slot, loads it back at once, and logs whether guest memory and guest time came back the same
 
+# ---- the 3DS driver's display ----
+
+table g_ctr_display_ini
+setting CTR separate screens
+    key ctr_separate_windows
+    label Separate screens
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = the top and bottom screens each have a window of their own, each taking its whole window, instead of the
+    help top screen above the bottom one in one window
+setting CTR top resolution
+    key ctr_top_resolution
+    label Top screen resolution
+    int 1 16
+    default 1
+    startup
+    help The scale of the top screen's 3D rendering, 1 to 16: 1 = the console's 400x240, 2 = 800x480. The screen is
+    help scaled to its window
+setting CTR bottom resolution
+    key ctr_bottom_resolution
+    label Bottom screen resolution
+    int 1 16
+    default 1
+    startup
+    help The scale of the bottom screen's 3D rendering, 1 to 16: 1 = the console's 320x240, 2 = 640x480. The screen
+    help is scaled to its window
+
 # ---- the 3DS driver's (scarletnx-3ds --key=value), in no section of the game's .ini ----
 
 table g_ctr_debug_ini
@@ -979,16 +1154,13 @@ setting CTR GPU trace
     default 0
     words Off|On
     help 1 = logs each GX command the 3DS game queues, and each framebuffer swap the display takes or drops (and why)
-setting CTR async pipelines
-    key ctr_async_pipelines
-    int 0 2
-    default 1
-    words Off|On|Uber shader only
-    help 1 = a draw whose shaders are new waits up to 1 ms for worker threads to build them, and then draws with
-    help the uber shader (a texture environment as one shader, without lighting, fog and the procedural texture)
-    help or, where that cannot draw it or the device has no shader objects, is skipped until they are ready (no
-    help frame stalls, an object can look plainer or be missing for a few frames);
-    help 0 = the draw waits for the build, however long it takes; 2 = every draw uses the uber shader (for tests)
+setting CTR UDS trace
+    key ctr_uds_trace
+    int 0 1
+    default 0
+    words Off|On
+    help 1 = logs each local wireless packet of the 3DS game that goes through an Eden room (sent, received,
+    help delivered): its direction, the time, its size and its first 96 bytes in hex
 setting CTR run-time compile trace
     key ctr_jit_trace
     int 0 1
@@ -1011,118 +1183,6 @@ setting CTR script
     help The 3DS game's scripted input (--script= too): when:buttons, comma between, when in ms from the start and
     help buttons in hex as hid:USER's pad has them (1 A, 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down,
     help 100 R, 200 L, 400 X, 800 Y), each held for press_len ms
-
-# ---- the 3DS driver's play settings (<title ID>.ini, or --key=value), in no section of the Switch game's .ini ----
-
-table g_ctr_ini
-setting CTR keyboard map
-    key ctr_keyboard_map
-    text 512
-    default ""
-    help The keys of a 3DS game, button:key with a comma between a button's keys and a space between buttons, as
-    help "a:X,Space zl:1 cpad_up:W". Buttons a b x y l r zl zr start select up down left right, and the directions
-    help cpad_up cpad_down cpad_left cpad_right cstick_up cstick_down cstick_left cstick_right. Keys by SDL's names,
-    help an _ for a space. A button named has exactly the keys listed (none unbinds it), the others keep theirs
-setting CTR anisotropic filtering
-    key ctr_anisotropy
-    int 0 16
-    default 0
-    startup
-    words Game's|#x
-    help 0 = textures filtered as the game asks, 2 to 16 = sharper surfaces seen at an angle (the filtering samplers)
-setting CTR gamepad map
-    key ctr_gamepad_map
-    text 192
-    default ""
-    help A gamepad control by where it sits and the 3DS button it sends, as south:B east:A. Controls south east west
-    help north lb rb lt rt ls rs back start up down left right; buttons A B X Y L R ZL ZR Plus (Start) Minus (Select)
-    help Up Down Left Right None. One left out sends the button in its place. The left stick is the circle pad and the
-    help right stick the C-stick
-setting CTR swap A/B
-    key ctr_gamepad_swap_ab
-    int 0 1
-    default 0
-    words Off|On
-    help 1 = a gamepad's A and B swapped: 0 = where the console's are (A right, B bottom)
-setting CTR stick dead zone
-    key ctr_gamepad_deadzone
-    int 0 90
-    default 20
-    words #%
-    step 5
-    help The sticks' dead zone, in percent of their travel
-setting CTR vsync
-    key ctr_vsync
-    int 0 1
-    default 1
-    startup
-    words Off|On
-    help 1 = the window shows a picture at the display's refresh, 0 = at once (can tear)
-setting CTR fullscreen
-    key ctr_fullscreen
-    int 0 1
-    default 0
-    startup
-    words Off|On
-    help 1 = the window starts fullscreen
-setting CTR speed limit
-    key ctr_speed
-    int 0 500
-    default 100
-    words Unlimited|#%
-    step 10
-    help The game's speed in percent of the console's, 100 = as fast as the console. 0 = as fast as the host can
-setting CTR resolution scale
-    key ctr_resolution_scale
-    int 1 4
-    default 1
-    startup
-    words #x
-    help The 3D picture drawn at this many times the console's resolution (1 = the console's own). Costs the GPU
-    help that many squared
-setting CTR target memory
-    key ctr_target_memory
-    int 0 1048576
-    default 0
-    startup
-    words Automatic|#MB
-    help The video memory, in megabytes, that the 3D pictures kept between frames may take together. 0 = half of the
-    help video memory. When they take more, the least used are stored in the console's memory and drawn again from
-    help there on their next use. A higher resolution scale takes the square of the scale
-setting CTR screen layout
-    key ctr_screen_layout
-    int 0 5
-    default 0
-    words Stacked|Side by side|Large top|Large bottom|Top only|Bottom only
-    help How the window shows the two screens (F10 goes to the next). The touch screen follows the bottom one
-setting CTR anti-aliasing
-    key ctr_anti_aliasing
-    int 0 1
-    default 0
-    words Off|FXAA
-    help Smooths the jagged edges of the window's picture. FXAA is a filter on the final picture, and costs little.
-    help A higher resolution scale smooths the edges of the 3D picture itself
-setting CTR multisampling
-    key ctr_msaa
-    int 0 3
-    default 0
-    startup
-    words Off|2x|4x|8x
-    help The 3D picture drawn with this many samples to a pixel, which smooths the edges of the polygons. It takes the
-    help most the video card can draw and resolve (a card with fewer takes its own most). Memory and drawing cost
-    help grow with the samples, and the resolution scale multiplies them
-setting CTR scaling filter
-    key ctr_scaling_filter
-    int 0 1
-    default 0
-    words Nearest|Linear
-    help How the screens are stretched to the window: 0 = sharp pixels, 1 = smoothed
-setting CTR integer scale
-    key ctr_integer_scale
-    int 0 1
-    default 0
-    words Off|On
-    help 1 = the screens are drawn at a whole number of window pixels to each console pixel (black bars around)
 
 # ---- the Vita driver's (scarletnx-vita --key=value), in no section of the game's .ini ----
 
@@ -1172,10 +1232,26 @@ setting Vita screenshot interval
     default 0
     help With --shot=PATH, also a screenshot every this many vblanks (60 a second), PATH_0000.ppm on; 0 = only the
     help last frame's
+setting Vita lockstep
+    key vita_lockstep
+    int -1 INT_MAX
+    default -1
+    words Off|#
+    help From this import call on (0 = the first), every instruction group of the Vita game also runs in Unicorn, and
+    help the first difference in registers, flags or written memory stops the run with both states (docs/VITA.md).
+    help Only in a build configured with -DSNX_VITA_LOCKSTEP=ON: another build says so at start. -1 = off
+setting Vita lockstep steps
+    key vita_lockstep_steps
+    int 0 INT_MAX
+    default 0
+    words No limit|#
+    help With vita_lockstep, how many instruction groups are compared before the game runs on without Unicorn.
+    help 0 = no limit
 
 section Game: g_game_ini
 section Display: g_display_ini
 section Graphics: g_graphics_ini
+section 3DS: g_ctr_display_ini
 section Performance: g_performance_ini
 section On-screen controls: g_vpad_ini, g_backend_ini, g_vpad_shown_ini/Buttons    backend
 section Controllers: g_gamepad_ini, g_gamepad_map_ini/Button map, g_gamepad_players_ini/Player    backend
@@ -1242,7 +1318,8 @@ setting AOT threads
     int 0 1024
     default 0
     words Auto|#
-    help The threads compiling the game's code when it is recompiled: 0 = one for each of the computer's cores
+    help The threads compiling the game's code when it is recompiled: 0 (Auto) = the cores with the last quarter
+    help left free, so the machine stays responsive; N = that many
 setting Unit size
     key unit_instructions
     int 1 INT_MAX
@@ -1261,7 +1338,7 @@ setting Unit cache limit
     words No limit|# GB
     help The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile
     help finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either
-    help way the cache always leaves a tenth of its disk free, removing its oldest units for a new one
+    help way the cache always leaves a tenth of its disk free, at most 10 GB, removing its oldest units for a new one
 
 # LLVM's own: every pass of its pipelines for -O0 to -Oz, on unless turned off, and each option LLVM's C API sets on the
 # pass builder and the target machine, LLVM's own value until it is set
@@ -1317,5 +1394,3 @@ setting @InlinerThreshold
     help (LLVMPassBuilderOptionsSetInlinerThreshold)
 
 section Launch: g_launch_ini, g_recompile_ini, g_llvm_ini/LLVM Internals    launcher
-
-section 3DS: g_ctr_ini    launcher

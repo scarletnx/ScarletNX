@@ -2,14 +2,16 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 """The log summary (src/common/utilities/logscan.c, as snx-logscan or scarletnx --scan-log, the program given) on
-made-up logs in the runtime's formats: the header lines, each kind of failure and the
-function it is pinned on (past the SDK's abort for svcBreak), the place a crash is put (the game, the runtime, a
-library), the older nightlies' svcBreak line and header, service commands counted, signatures that agree across runs,
-paths shortened and the dumps left out, invalid UTF-8, long lines, the markdown's escaping. Offline.
+made-up logs in the runtime's formats: the header lines (a build line with its commit's day, and one before it), each
+kind of failure and the function it is pinned on (past the SDK's abort for svcBreak), the place a crash is put (the
+game, the runtime, a library), the older nightlies' svcBreak line and header, service commands counted, signatures
+that agree across runs, paths shortened and the dumps left out, invalid UTF-8, long lines, the markdown's escaping.
+Offline.
 
     tests/logscan_test.py PROGRAM [ARGS...]   (build/snx-logscan, or build/scarletnx --scan-log)"""
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -127,6 +129,23 @@ UNDEFINED = (
 """
 )
 
+# a call through a pointer that holds 0 (runtime/rtapi.c's rt_miss): pinned on its caller, the code at lr kept out
+MISSED_CALL = (
+    HEADER
+    + """[   4.00]
+*** The game's thread 80 stopped at 0: code the recompiler missed (0) ***
+[   4.00]   the AOT pack has no code for it, and the JIT could not compile it
+[   4.00]   thread 80 (MainThread)
+[   4.00]   x8 = 0000000000000000  x9 = 0000000008000180  x10= 0000000000000000  x11= 0000000000000000
+[   4.00]   pc=0 lr=8012344 sp=1300101000 fp=1300100ff0 tls=1380000000
+[   4.00]   pc   lr <_ZN4Game4Boot4StepEv+44>
+[   4.00]    #0 8012344 <_ZN4Game4Boot4StepEv+44>
+[   4.00]   code at lr 8012324: 10000809  f9400128  d63f0100 [f9400be0] d4200000
+[   4.01] FATAL: The game reached code at 0 that the recompiler missed, and the AOT pack has no code for it, and the JIT \
+could not compile it. See the .log for details.
+"""
+)
+
 # the launcher's Share Log file: its build, its message, the run's output (the game's warnings again, on stderr), then
 # the newest game log, one without a build: line
 LAUNCHER = (
@@ -136,6 +155,43 @@ LAUNCHER = (
     '  [undeclared] nn::audio::detail::IAudioDevice cmd 7 -> ok\n'
     '*** Crash (signal 11) at host pc=0x1 ***\n'
     '\n== C:\\Users\\someone\\state\\Some Game.log ==\n' + OLD_SVC_BREAK
+)
+
+# a Share Log whose newest game log is another game's, played before: the last run stands for itself
+LAUNCHER_OTHER = (
+    'ScarletNX main 9999fff (clang 23.1.3, Windows x86_64)\n'
+    'Message: \n'
+    '\n== the last run: C:\\Users\\someone\\run.log ==\n'
+    + re.sub(r'(?m)^\[ *[0-9.]+\] ?', '', SVC_BREAK).replace('0100aaaabbbb0000', '0100cccc00000000')
+    + '\n== C:\\Users\\someone\\state\\Other Game.log ==\n'
+    + HEADER.replace('Some Game', 'Other Game')
+)
+
+# the other frontends' header on one line: the 3DS's with its title ID (3ds/aot/run.c), the Vita's without
+THREEDS = (
+    '$ /tmp/.mount_x/bin/scarletnx-3ds --game=/home/someone/Games/0004000000179400\n'
+    "The title's folder is /home/someone/Games/0004000000179400\n"
+    'Game: Some 3DS Game (0004000000179400) - ScarletNX main d22bbab (clang 23.1.4, Linux x86_64)\n'
+    '3ds gpu: the driver cannot import the VRAM region\n'
+    'No Vulkan device: no frames will be drawn, shown or saved\n'
+)
+# and how it stopped: its service calls the runtime has no model of (3ds/ipc/ipc.c, services/system.c), and the stop
+# (3ds/aot/run.c), whose counts after the pc differ from run to run
+THREEDS_STOP = THREEDS + (
+    '3ds ipc: stub answered apt command 0x000e (header 0x000e0080)\n'
+    '3ds ipc: stub answered apt command 0x000e (header 0x000e0080)\n'
+    '3ds ipc: ndm:u command 0x0014 (header 0x00140040) answered success\n'
+    '3ds ipc: gsp command 0x000c has a form the runtime does not take: 000c0000\n'
+    'scarletnx-3ds: unsupported guest operation or missing static entry: pc=0x0013be3c exit=4 syndrome=0x00000032 '
+    'blocks=351846 svcs=192 last_svc=0x32 ipc_service=7 ipc_header=0x000c0000 wait_service=\n'
+    '\n[ended, status 3]\n'
+)
+VITA = 'Game: Some Vita Game - ScarletNX main 1234abc (clang 23.1.3, Linux x86_64)\n'
+# the GBA's: its title and console on the Switch's header line, its build, and its game code (agb/runtime/main.c)
+GBA = (
+    'ScarletNX - SOME GBA GAME (GBA)\n'
+    'build: ScarletNX main 1234abc (clang 23.1.3, Linux x86_64)\n'
+    'cartridge: bpee\n'
 )
 
 # the renderer's frame lines (gpu/vk/renderer.c): each frame over 50 ms, and every 600 presents the counts with the
@@ -162,6 +218,14 @@ FATAL_ONLY = (
 """
 )
 
+# a Share Log of a game log alone, without the last run's output before it
+LAUNCHER_GAME_ONLY = (
+    'ScarletNX main 9999fff (clang 23.1.3, Windows x86_64)\n'
+    'Message: The game reached code at 0 that the recompiler missed\n'
+    '\n== D:\\games\\0100aaaabbbb0000\\0100aaaabbbb0000.log ==\n' + HEADER + FATAL_ONLY
+)
+
+
 # what the runtime missed, in its own formats: shaders (vk/pipeline.c, compute.c), the GPU's methods and operations
 # (gpu.c, maxwell/), the macros (maxwell/mme.c, mme_jit.c), SVCs (svc.c, svc_mem.c) and the JIT (guest_jit.c), with
 # the time stamp a comma locale writes
@@ -170,6 +234,12 @@ MISSED = HEADER.replace('[   0.', '[   0,') + (
     'earlier runs queued\n'
     '[   2,00] vulkan: shader 0123456789abcdef (stage 4) not translated: TEXS encoding 3, fp32 1\n'
     '[   2,10] vulkan: shader 1111456789abcdef (stage 4) not translated: TEXS encoding 3, fp32 1\n'
+    '[   2,11] vulkan: vertex 3333456789abcdef not translated: a jump table outside the program constants\n'
+    '[   2,12] vulkan: paired vertex 4444456789abcdef not translated: a jump table outside the program constants\n'
+    '[   2,13] vulkan: fragment 5555456789abcdef not translated: TEXS encoding 3, fp32 1\n'
+    '[   2,14] vulkan: unsupported render target format c4, drawn as RGBA8\n'
+    '[   2,15] vulkan: unsupported depth format 11, using D32F\n'
+    "[   2,16] vulkan: a 4-sample texture of format 52 can't be loaded from memory (not drawn)\n"
     '[   2,20] vulkan: compute 2222456789abcdef not translated: global memory base R4 not tracked at 1a0: no write '
     'before\n'
     '[   2,30] gpu: method 100 for class b1c0 on subchannel 2: no engine here runs that class\n'
@@ -223,7 +293,11 @@ def main():
         },
         f'ipc: {ipc}',
     )
-    check(any('texture format' in w['message'] for w in r['warnings']), 'warnings')
+    check(
+        [(g['area'], g['kind'], g['what']) for g in r['missed']] == [('gpu', 'texture format', '3f')],
+        f"a texture format the runtime doesn't map is missed: {r['missed']}",
+    )
+    check(not any('texture format' in w['message'] for w in r['warnings']), 'and is not a warning')
     check(r['game_output'] == ['loading ~/save.bin'], f'game output, its path shortened: {r["game_output"]}')
 
     old = scan(OLD_SVC_BREAK)
@@ -246,12 +320,43 @@ def main():
 
     rt = scan(CRASH_IN_RUNTIME)
     check(rt['signature'] == 'crash (invalid memory access) in the runtime 1234abc +1a2b3c', rt['signature'])
+
+    # a build that says the day its commit was made: the commit is the hash still, the runtime's offsets keep their
+    # signature, and the markdown says the day; a log read as text has no run time, so no days before it (the Share
+    # Log's: tests/gui_sdl.c and tests/logscan_age.c)
+    dated = CRASH_IN_RUNTIME.replace('1234abc (clang', '1234abc, committed 2026-11-02 (clang')
+    d = scan(dated)
+    check(
+        (d['commit'], d['branch'], d['build'])
+        == ('1234abc', 'main', 'ScarletNX main 1234abc, committed 2026-11-02 (clang 23.1.3, Linux x86_64)'),
+        f'a dated build line: {d["commit"]!r} {d["branch"]!r} {d["build"]!r}',
+    )
+    check(d['signature'] == rt['signature'], f"a dated build's runtime crash: {d['signature']}")
+    md = run(['-', '--format', 'markdown'], dated.encode())
+    check('\n- **Build:** `main 1234abc`, committed 2026-11-02\n' in md, f'the markdown of a dated build:\n{md}')
+    md = run(['-', '--format', 'markdown'], CRASH_IN_RUNTIME.encode())
+    check(
+        '\n- **Build:** `ScarletNX main 1234abc (clang 23.1.3, Linux x86_64)`\n' in md,
+        f'the markdown of a build before the day:\n{md}',
+    )
+    tarball = scan(HEADER.replace('main 1234abc (clang', 'unknown unknown, committed unknown (clang'))
+    check((tarball['commit'], tarball['branch']) == ('unknown', 'unknown'), f'no git: {tarball["commit"]!r}')
     lib = scan(CRASH_IN_LIBRARY)
     check(lib['signature'] == 'crash (invalid memory access) in libnvidia-glcore.so.580 ?', lib['signature'])
 
     u = scan(UNDEFINED)
     check(u['outcome'] == 'unsupported instruction' and u['failure']['set'] == 'A64', 'A64 undefined instruction')
     check(u['signature'] == 'unsupported A64 instruction ce62c820', u['signature'])
+
+    m = scan(MISSED_CALL)
+    check(
+        m['outcome'] == 'thread stopped'
+        and m['failure']['what'] == 'code the recompiler missed'
+        and m['failure']['address'] == '0',
+        f'a call to 0: {m["failure"]}',
+    )
+    check(m['signature'] == 'code the recompiler missed in _ZN4Game4Boot4StepEv', m['signature'])
+    check('d63f0100' not in json.dumps(m), 'the code at lr is never copied out')
 
     f = scan(FATAL_ONLY)
     check(
@@ -284,8 +389,14 @@ def main():
         missed
         == {
             ('gpu', 'shader', 'TEXS encoding 3, fp32 1'): 2,
+            ('gpu', 'shipped shader', 'a jump table outside the program constants'): 2,
+            ('gpu', 'shipped shader', 'TEXS encoding 3, fp32 1'): 1,
             ('gpu', 'compute shader', 'global memory base R4 not tracked at 1a0: no write before'): 1,
             ('gpu', 'class', 'b1c0'): 2,
+            ('gpu', 'texture format', '3f'): 1,
+            ('gpu', 'target format', 'c4'): 1,
+            ('gpu', 'depth format', '11'): 1,
+            ('gpu', 'gpu', "a 4-sample texture of format 52 can't be loaded from memory"): 1,
             ('gpu', 'gpu', 'semaphore operation 3a400040 is unknown'): 1,
             ('gpu', 'gpu', "a 2D blit from format c0 to ca isn't done"): 1,
             ('mme', 'macro', 'bcbf04909857a72f'): 1,
@@ -309,7 +420,11 @@ def main():
     for want in (
         '**What else the runtime missed:**',
         '- **GPU:**\n  - shader not translated: `TEXS encoding 3, fp32 1` (2 shaders)',
+        "  - a program in the game's files not translated before it ran: `a jump table outside the program constants` (2 shaders)",
         '  - methods of class `b1c0`, which no engine runs (2x)',
+        "  - texture format `3f`, which the runtime doesn't map (not drawn)",
+        "  - render target format `c4`, which the runtime doesn't map (drawn as RGBA8)",
+        "  - depth format `11`, which the runtime doesn't map (drawn as D32F)",
         '  - macro with no native form: `bcbf04909857a72f`',
         '  - interpreted most, by hash: `bcbf04909857a72f 100000`',
         '  - `svc 7f (CallSecureMonitor)` not implemented (2x)',
@@ -317,15 +432,83 @@ def main():
     ):
         check(want in md, f'markdown missed: {want!r} not in\n{md}')
     check('someone' not in md, 'the JIT cache path is not quoted')
+    # a table of what was missed full of shaders' reasons still takes a texture format that comes after them
+    crowded = scan(
+        HEADER
+        + ''.join(f'[ 2.00] vulkan: vertex {i:016x} not translated: unknown opcode {i:016x}\n' for i in range(80))
+        + '[ 3.00] vulkan: unsupported texture format 72, header word 0 00000072 (not drawn)\n'
+    )
+    kinds = [g['kind'] for g in crowded['missed']]
+    check(
+        len(kinds) == 64 and kinds.count('texture format') == 2 and kinds.count('shipped shader') == 62,
+        f'a full table of shaders keeps room for a texture format: {kinds.count("texture format")}',
+    )
     native = scan(HEADER + '[ 4.00] mme: 1000000 macro calls, 1000000 native, 0 compiled and 0 interpreted\n')
-    check(native['mme'] is None and native['missed'] == [], f'every macro native: {native["mme"]}')
+    check(
+        native['mme'] is None and not [g for g in native['missed'] if g['area'] == 'mme'],
+        f'every macro native: {native["mme"]}',
+    )
 
     la = scan(LAUNCHER)
     check(
         la['build'] == 'ScarletNX main 9999fff (clang 23.1.3, Windows x86_64)' and la['commit'] == '9999fff',
         f"the launcher's build: {la['build']}",
     )
+    dated_launcher = scan(LAUNCHER.replace('9999fff (clang', '9999fff, committed 2026-11-02 (clang'))
+    check(dated_launcher['commit'] == '9999fff', f"the launcher's dated build: {dated_launcher['commit']!r}")
     check(la['signature'] == r['signature'] and la['ipc'] == [], "only the game log's section is scanned")
+    t3 = scan(THREEDS)
+    check(
+        (t3['title'], t3['title_id'], t3['console'], t3['commit'], t3['branch'])
+        == ('Some 3DS Game', '0004000000179400', '3DS', 'd22bbab', 'main'),
+        f"the 3DS's header: {t3['title']} {t3['title_id']} {t3['console']} {t3['commit']}",
+    )
+    check('- **Console:** 3DS' in run(['-', '--format', 'markdown'], THREEDS.encode()), "the 3DS's console in markdown")
+    t3d = scan(THREEDS.replace('d22bbab (clang', 'd22bbab, committed 2026-11-02 (clang'))
+    check((t3d['title'], t3d['commit']) == ('Some 3DS Game', 'd22bbab'), f"the 3DS's dated header: {t3d['commit']!r}")
+    gb = scan(GBA)
+    check(
+        (gb['title'], gb['title_id'], gb['console'], gb['commit']) == ('SOME GBA GAME', 'BPEE', 'GBA', '1234abc'),
+        f"the GBA's header: {gb['title']} {gb['title_id']} {gb['console']} {gb['commit']}",
+    )
+    check(scan(SVC_BREAK)['console'] == 'Switch' and scan(LAUNCHER)['console'] == 'Switch', "the Switch's console")
+    st = scan(THREEDS_STOP)
+    check(
+        st['outcome'] == 'fatal'
+        and st['failure']['fatal'] == 'unsupported guest operation or missing static entry: pc=0x0013be3c'
+        and st['signature'] == 'fatal unsupported guest operation or missing static entry: pc=N',
+        f"the 3DS's stop: {st['outcome']} {st['signature']}",
+    )
+    calls = {(i['kind'], i['interface'], i['command']): i['count'] for i in st['ipc']}
+    check(
+        calls == {('undeclared', 'apt', 0xE): 2, ('undeclared', 'ndm:u', 0x14): 1, ('bad request', 'gsp', 0xC): 1},
+        f"the 3DS's service calls: {calls}",
+    )
+    vstop = scan(VITA + 'scarletnx-vita: cannot resolve the game\'s folder for X\n')
+    check(vstop['outcome'] == 'fatal' and vstop['failure']['fatal'] == "cannot resolve the game's folder for X", 'the Vita')
+    check(scan(HEADER + 'scarletnx: Game failed (exit status 1).\n')['outcome'] == 'no failure logged', "not a frontend's")
+    vi = scan(VITA)
+    check(
+        (vi['title'], vi['title_id'], vi['console'], vi['commit']) == ('Some Vita Game', None, 'Vita', '1234abc'),
+        f"the Vita's header: {vi['title']} {vi['title_id']} {vi['commit']}",
+    )
+    go = scan(LAUNCHER_GAME_ONLY)
+    check(
+        go['title'] == 'Some Game' and go['outcome'] == scan(HEADER + FATAL_ONLY)['outcome'] and go['tail'],
+        f"a game log alone in a Share Log: {go['title']} {go['outcome']} {len(go['tail'])} last lines",
+    )
+    lo = scan(LAUNCHER_OTHER)
+    check(
+        lo['title'] == 'Some Game' and lo['title_id'] == '0100CCCC00000000' and lo['outcome'] == 'svcBreak',
+        f"another game's log does not stand for the run: {lo['title']} {lo['title_id']} {lo['outcome']}",
+    )
+    check(lo['signature'] == r['signature'], f"the run's own failure: {lo['signature']}")
+    # a game log long enough that the pool grows while it is read, the run's scan kept from before
+    long_other = LAUNCHER_OTHER + ''.join(
+        f'[ 3.00] vulkan: vertex {i:016x} not translated: reason {i} ' + 'x' * 200 + '\n' for i in range(60)
+    )
+    lo = scan(long_other)
+    check(lo['title_id'] == '0100CCCC00000000', f"the run's title ID after the pool grew: {lo['title_id']}")
     check(
         la['launcher']['message'] == 'The game stopped (svcBreak). See ~\\AppData\\x.log',
         f"the launcher's message, shortened: {la['launcher']['message']}",
@@ -354,7 +537,7 @@ def main():
     heading = md.splitlines()[0]
     check(heading.startswith('### `' + title.replace('`', "'") + '` ('), f'the title is a code span:\n{heading}')
     for line in md.splitlines():
-        if line.startswith('- **'):
+        if line.startswith('- **') and not line.endswith(':**'):  # an area of what the runtime missed has no value
             value = line.split(':** ', 1)[1]
             check(value.startswith('`') or value.split(' ')[0].isalpha(), f'a value outside a code span: {line}')
     check('\n```\n```' not in md and "'" in md, 'a fence in a line is broken')
@@ -381,6 +564,29 @@ def main():
         + '[game] a /run/media/someone/Games/x b /media/someone/y c /var/home/someone/z d C:\\users\\someone\\w\n'
     )
     check(homes['game_output'][-1] == 'a ~/Games/x b ~/y c ~/z d ~\\w', f'home folders: {homes["game_output"][-1]}')
+
+    # an account's name whole on each system, spaces, accents and brackets in it: up to the separator after it, and
+    # with no separator after it, to the line's end or a byte no account name holds
+    for given, shown in [
+        ('/home/John Smith/games/x.nsp', '~/games/x.nsp'),
+        ('/usr/home/John Smith/x', '~/x'),
+        ('/Users/Ana Maria/Library/x', '~/Library/x'),
+        ('/Volumes/Data/Users/Ana Maria/x', '/Volumes/Data~/x'),
+        ('C:\\Users\\John Smith\\AppData\\x', '~\\AppData\\x'),
+        ('C:/Users/John Smith/AppData/x', '~/AppData/x'),
+        ('d:\\USERS/José (Trabalho) Ñandú\\x', '~\\x'),
+        ('\\\\pc\\C$\\Users\\John Smith\\x', '\\\\pc\\C$~\\x'),
+        ('/mnt/c/Users/John Smith/x', '~/x'),
+        ('/data/user/10/org.scarletnx/files/x', '~/files/x'),
+        ('saved in C:\\Users\\John Smith', 'saved in ~'),
+        ('"C:\\Users\\John Smith", then /home/Jane Doe: done', '"~", then ~: done'),
+        ('C:\\Users\\John Smith D:\\x and /home/Jane Doe /tmp/y', '~ D:\\x and ~ /tmp/y'),
+        # names nobody: the shared storage (where it is tells it from the app's own folder), the data folder's users/
+        ('/storage/emulated/0/Games/x', '/storage/emulated/0/Games/x'),
+        ('/home/John Smith/.local/share/scarletnx/users/online.ini', '~/.local/share/scarletnx/users/online.ini'),
+    ]:
+        out = scan(HEADER + '[game] ' + given + '\n')['game_output'][-1]
+        check(out == shown, f'home folder {given!r}: {out!r}, not {shown!r}')
 
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / 'game.log'

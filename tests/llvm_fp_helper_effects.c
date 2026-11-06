@@ -26,14 +26,14 @@ int main(void) {
     ir->stats.enabled = 1;
     /* Exercise the helper classification independently of the host's inline estimate support. */
     SnxIrFeatures plain = *ir->features;
-    plain.avx2 = 0;
+    plain.x86 = plain.aarch64 = 0;
     ir->features = &plain;
     LLVMTypeRef params[] = {ir->t_ptr, ir->t_i64};
     LLVMValueRef fn = LLVMAddFunction(ir->mod, "effects", LLVMFunctionType(ir->t_void, params, 2, 0));
     snx_ir_begin(ir, fn);
     ir_set_x(ir, 4, ir_i64(ir, 0xc0ffee));
     SnxA64Insn insn;
-    u32 word = 0x4EA1D820u; /* FRECPE V0.4S,V1.4S: without AVX2, one call of the lane helper for the vector */
+    u32 word = 0x4EA1D820u; /* FRECPE V0.4S,V1.4S: a generic emitter uses one lane helper call for the vector */
     snx_a64_decode_word(word, 0, &insn);
     snx_ir_vec(ir, &insn, word, 0x1000);
     ir_set_x(ir, 5, ir_x(ir, 4));
@@ -43,17 +43,30 @@ int main(void) {
     unsigned reloads = (unsigned)ir->stats.sync_reloads, call_stores = (unsigned)ir->stats.call_stores;
     LLVMValueRef lanes = LLVMGetNamedFunction(ir->mod, "snx_fp_host_lanes");
     int marked = memory(lanes) == 3 && !noregs(lanes); /* its arguments' memory alone */
+    unsigned capture = LLVMGetEnumAttributeKindForName("captures", 8);
+    if (!capture) capture = LLVMGetEnumAttributeKindForName("nocapture", 9);
+    for (unsigned i = 1; i <= 4; i++) {
+        LLVMAttributeRef attribute = LLVMGetEnumAttributeAtIndex(lanes, i, capture);
+        marked = marked && attribute && LLVMGetEnumAttributeValue(attribute) == 0;
+    }
     LLVMValueRef other = LLVMAddFunction(ir->mod, "writes_vectors", LLVMFunctionType(ir->t_void, params, 2, 0));
     snx_ir_begin(ir, other);
+    if (ir->fp_lanes_scratch) return snx_error("scratch storage leaked from the previous function");
     LLVMValueRef operands[] = {ir_i32(ir, 0), ir_i32(ir, 1), ir_i32(ir, 2), ir_i32(ir, 0)};
     ir_vec_call(ir, "snx_vec_shl", ir->t_void, operands, 4);
     LLVMBuildRetVoid(ir->b);
     int unsafe = memory(LLVMGetNamedFunction(ir->mod, "snx_vec_shl")) == 0 ||
                  noregs(LLVMGetNamedFunction(ir->mod, "snx_vec_shl"));
-    /* the vector's one lanes call and the entry's snx_fp_env; the stores are X4, X5, V0 and the accumulated FPSR */
+    /* The vector has one lanes call plus the entry's snx_fp_env. Promotion writes X4, X5, V0 and FPSR:
+       8 + 8 + 16 + 4 bytes. The straight generic path promotes FPCR/FPSR and leaves no memory slots. */
     int counts = ir->stats.functions == 1 && ir->stats.promoted_functions == 1 && ir->stats.fp_calls == 2 &&
                  ir->stats.call_sites == 2 && ir->stats.sync_stores == 4 && ir->stats.call_stores == 0 &&
-                 ir->stats.store_bytes == 36 && ir->stats.sync_reloads == 0;
+                 ir->stats.store_bytes == 36 && ir->stats.sync_reloads == 0 && ir->stats.memory_slots == 0;
+    if (!counts) fprintf(stderr, "first function: functions=%llu promoted=%llu fp=%llu calls=%llu stores=%llu bytes=%llu slots=%llu\n",
+        (unsigned long long)ir->stats.functions, (unsigned long long)ir->stats.promoted_functions,
+        (unsigned long long)ir->stats.fp_calls, (unsigned long long)ir->stats.call_sites,
+        (unsigned long long)ir->stats.sync_stores, (unsigned long long)ir->stats.store_bytes,
+        (unsigned long long)ir->stats.memory_slots);
     ir_stats_function(ir, other);
     LLVMValueRef calls = LLVMAddFunction(ir->mod, "calls", LLVMFunctionType(ir->t_void, params, 2, 0));
     snx_ir_begin(ir, calls);

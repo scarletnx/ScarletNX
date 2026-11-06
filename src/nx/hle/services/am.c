@@ -27,6 +27,7 @@
 #define AM_INVALID_OFFSET  RC(128, 503) /* ResultInvalidOffset */
 #define AM_INVALID_STORAGE RC(128, 511) /* ResultInvalidStorageType */
 #define AM_OUT_OF_MEMORY   RC(128, 600)
+#define AM_NO_APPLICATION  RC(128, 37) /* ResultApplicationRecordNotFound: no application, or no program, of the ID */
 
 /* nn::am::AppletMessage */
 #define AM_MSG_FOCUS_STATE_CHANGED      15
@@ -69,6 +70,18 @@ void am_init(void) {
     g_hle.am.count = 2;
     ev_signal(g_hle.am.msg_event);
     ev_signal(g_hle.am.launchable_event);
+}
+
+/* The TV mode changed while the game runs (docked's Auto): the display resolution change event is signaled, and the
+   applet is told the performance mode changed, as a console that was put in its dock or taken out of it */
+void am_display_mode_changed(void) {
+    pm_lock(&g_host.am.lock);
+    if (g_hle.am.count < AM_MESSAGES) {
+        g_hle.am.msgs[(g_hle.am.head + g_hle.am.count++) % AM_MESSAGES] = AM_MSG_PERFORMANCE_MODE_CHANGED;
+        ev_signal(g_hle.am.msg_event);
+    }
+    pm_unlock(&g_host.am.lock);
+    ev_signal(g_hle.am.resolution_event);
 }
 
 /* ============================================================ storages */
@@ -254,12 +267,12 @@ static int nn_am_service_ICommonStateGetter_ReceiveMessage(SvcObj* self, nn_am_A
 }
 static int nn_am_service_ICommonStateGetter_GetOperationMode(SvcObj* self, u8* mode) {
     (void)self;
-    *mode = g_settings.tv_mode ? 1 : 0; /* nn::oe::OperationMode: Handheld, Console */
+    *mode = snx_tv_mode() ? 1 : 0; /* nn::oe::OperationMode: Handheld, Console */
     R_SUCCEED();
 }
 static int nn_am_service_ICommonStateGetter_GetPerformanceMode(SvcObj* self, u32* mode) {
     (void)self;
-    *mode = g_settings.tv_mode ? 1 : 0; /* Boost when docked, as apm says */
+    *mode = snx_tv_mode() ? 1 : 0; /* Boost when docked, as apm says */
     R_SUCCEED();
 }
 static int nn_am_service_ICommonStateGetter_GetCurrentFocusState(SvcObj* self, u8* state) {
@@ -362,8 +375,8 @@ static int nn_am_service_ICommonStateGetter_EndVrModeEx(SvcObj* self) {
 
 static int nn_am_service_ICommonStateGetter_GetDefaultDisplayResolution(SvcObj* self, i32* width, i32* height) {
     (void)self;
-    *width = g_settings.tv_mode ? 1920 : 1280;
-    *height = g_settings.tv_mode ? 1080 : 720;
+    *width = snx_tv_mode() ? 1920 : 1280;
+    *height = snx_tv_mode() ? 1080 : 720;
     R_SUCCEED();
 }
 static int nn_am_service_ICommonStateGetter_GetDefaultDisplayResolutionChangeEvent(SvcObj* self, u32* event) {
@@ -385,7 +398,7 @@ static int nn_am_service_ICommonStateGetter_GetHdcpAuthenticationState(SvcObj* s
 /* apm's configuration of the mode the console runs in */
 static int nn_am_service_ICommonStateGetter_GetCurrentPerformanceConfiguration(SvcObj* self, u32* configuration) {
     (void)self;
-    *configuration = apm_configuration(g_settings.tv_mode ? 1 : 0);
+    *configuration = apm_configuration(snx_tv_mode() ? 1 : 0);
     R_SUCCEED();
 }
 /* the clocks a game asks for around its loading screens, which apm keeps as Boost mode's configuration */
@@ -534,6 +547,7 @@ static int nn_am_service_IAudioController_ChangeMainAppletMasterVolume(SvcObj* s
 /* ============================================================ IApplicationFunctions */
 static int nn_am_service_IApplicationFunctions_PopLaunchParameter(SvcObj* self, u32 kind, SvcObj** storage) {
     u8* d;
+    u64 uid[2];
     u32 v;
     (void)self;
     if (kind == 1) { /* UserChannel: the last storage unpopped, which the channel's reference goes with */
@@ -550,11 +564,12 @@ static int nn_am_service_IApplicationFunctions_PopLaunchParameter(SvcObj* self, 
     pm_unlock(&g_host.am.lock);
     R_UNLESS(!v, AM_NO_DATA);
     /* AccountPreselectedUser: the user the game plays as, selected */
+    acc_playing(uid, NULL, 0);
     *storage = am_storage_new(0x88, NULL);
     d = am_storage_bytes(*storage);
     am_put32(d, AM_PRESELECTED_USER_MAGIC);
     am_put32(d + 4, 1);
-    am_put_uid(d + 8, snx_users_selected()->uid);
+    am_put_uid(d + 8, uid);
     R_SUCCEED();
 }
 
@@ -589,16 +604,81 @@ static int nn_am_service_IApplicationFunctions_UnpopToUserChannel(SvcObj* self, 
     R_THROW(AM_OUT_OF_MEMORY);
 }
 
-/* nn::oe::ExecuteProgram (am's command 120) switches to another program of the same application: on the console the
-   process manager launches the program the game names, and the previous one waits for it. Eden follows it by loading
-   the program at the index it is given and restarting its emulation (core.cpp's Load with program_index). ScarletNX
-   builds one program per game folder, so the command is a stub, GetPreviousProgramIndex answers -1, and a launcher
-   that starts its sub-games through it stays on the loading screen it shows meanwhile. */
-/* -1: the game was launched by the system, not by another of its programs */
+/* nn::oe::ExecuteProgram (am's 120) starts another program of the application: ExecuteProgram (kind 0) the one whose
+   index value is, RestartProgram (2) this one again. On the console the process manager starts it once this one has
+   ended, and the SDK sleeps meanwhile; Eden ends the emulation and loads the program at that index from the same file
+   (core.cpp's Load with program_index). Here the program ends as a quit does (snx_program_end), and its launcher starts
+   the one named by the hand-over main.c writes then (am_handover_out). JumpToSubApplicationProgramForDevelopment (1)
+   names another application, which no recompiled game has */
+static int nn_am_service_IApplicationFunctions_ExecuteProgram(SvcObj* self, u32 kind, u64 value) {
+    int index;
+    (void)self;
+    if (kind == 0 && value < SNX_PROGRAMS_MAX)
+        index = (int)value;
+    else if (kind == 2)
+        index = g_hle.am.program;
+    else {
+        WARN("am: ExecuteProgram kind %u value %llu: %s; program %d goes on\n", (unsigned)kind,
+             (unsigned long long)value,
+             kind == 0   ? "no program of an application has that index (0 to 255)"
+             : kind == 1 ? "a development jump to another application, which a recompiled game has none of"
+                         : "a kind that is none of ExecuteProgram (0), the jump (1) and RestartProgram (2)",
+             g_hle.am.program);
+        R_THROW(AM_NO_APPLICATION);
+    }
+    pm_lock(&g_host.am.lock);
+    g_hle.am.execute = index + 1;
+    pm_unlock(&g_host.am.lock);
+    LOG("am: program %d starts program %d (ExecuteProgram kind %u), once it has ended\n", g_hle.am.program, index,
+        (unsigned)kind);
+    snx_program_end();
+    R_SUCCEED();
+}
+/* the program that started this one (ExecuteProgram), -1 when the system did */
 static int nn_am_service_IApplicationFunctions_GetPreviousProgramIndex(SvcObj* self, i32* index) {
     (void)self;
-    *index = -1;
+    *index = g_hle.am.started_by - 1;
     R_SUCCEED();
+}
+int am_handover_out(SnxNext* next) {
+    u32 i;
+    int index;
+    pm_lock(&g_host.am.lock);
+    index = g_hle.am.execute - 1;
+    if (index >= 0) {
+        next->index = index;
+        next->previous = g_hle.am.program;
+        next->context = g_hle.acc.context_stored != 0;
+        next->count = 0;
+        for (i = 0; i < g_hle.am.user_count && next->count < SNX_NEXT_STORAGES; i++) { /* the bottom first */
+            StorageData* d = (StorageData*)g_hle.am.user_channel[i]->data;
+            size_t size = d->size < SNX_NEXT_STORAGE_MAX ? (size_t)d->size : SNX_NEXT_STORAGE_MAX;
+            if (d->size > SNX_NEXT_STORAGE_MAX)
+                WARN(
+                    "am: the user channel's storage %u is %llu bytes, past the %d the hand-over takes: the next program "
+                    "gets its first %d\n",
+                    i, (unsigned long long)d->size, SNX_NEXT_STORAGE_MAX, SNX_NEXT_STORAGE_MAX);
+            next->storage[next->count] = (unsigned char*)snx_alloc(size ? size : 1);
+            memcpy(next->storage[next->count], am_storage_bytes(g_hle.am.user_channel[i]), size);
+            next->size[next->count++] = size;
+        }
+    }
+    pm_unlock(&g_host.am.lock);
+    return index;
+}
+void am_handover_in(int program, const SnxNext* next) {
+    SvcObj* made[AM_USER_CHANNEL];
+    size_t i, n = 0;
+    for (i = 0; next && i < next->count && n < AM_USER_CHANNEL; i++) /* made before the lock, as UnpopToUserChannel */
+        if ((made[n] = am_storage_new(next->size[i], next->storage[i])) != NULL) n++;
+    pm_lock(&g_host.am.lock);
+    g_hle.am.program = program;
+    g_hle.am.started_by = next ? next->previous + 1 : 0;
+    for (i = 0; i < n && g_hle.am.user_count < AM_USER_CHANNEL; i++)
+        g_hle.am.user_channel[g_hle.am.user_count++] = made[i];
+    if (next) g_hle.acc.context_stored = next->context;
+    pm_unlock(&g_host.am.lock);
+    for (; i < n; i++) svcobj_unref(made[i]); /* past a user channel the game filled already */
 }
 
 /* the game's control.nacp (nn::ns::ApplicationControlProperty), as the recompiler staged it beside the game's data:
@@ -1064,7 +1144,9 @@ static int am_kb_given(const char* where, const char* text, u32 min, u32 max, ch
    am_kb_given takes it. 0 with the answer in out, 1 cancelled */
 static int am_kb_unasked(const char* what, const OverlayKeyboard* k, char* out, size_t size) {
     const char* where = k->text[0] ? "the game's text" : "the user's nickname";
-    const char* text = k->text[0] ? k->text : snx_users_selected()->nickname;
+    char nickname[SNX_USERS_NICKNAME + 1];
+    const char* text = k->text[0] ? k->text : nickname;
+    if (!k->text[0]) acc_playing(NULL, nickname, sizeof nickname);
     LOG("am: no window to show the %s's box in: it answers %s \"%s\"\n", what, where, text);
     return am_kb_given(where, text, k->min, k->max, out, size);
 }
@@ -1537,10 +1619,13 @@ static int nn_am_service_ILibraryAppletAccessor_PopOutData(SvcObj* self, SvcObj*
         }
         break;
     }
-    case AM_APPLET_PROFILE_SELECT: /* UiReturnArg: success, the user the game plays as */
+    case AM_APPLET_PROFILE_SELECT: { /* UiReturnArg: success, the user the game plays as */
+        u64 uid[2];
+        acc_playing(uid, NULL, 0);
         *storage = am_storage_new(0x18, NULL);
-        am_put_uid(am_storage_bytes(*storage) + 8, snx_users_selected()->uid);
+        am_put_uid(am_storage_bytes(*storage) + 8, uid);
         break;
+    }
     case AM_APPLET_SWKBD: *storage = am_swkbd(a); break;
     case AM_APPLET_MII_EDIT: *storage = am_mii_edit(a); break;
     case AM_APPLET_WEB:

@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 
-def make_nro():
+def make_nro(code=None):
     image = bytearray(0x200)
 
     def word(offset, value):
@@ -26,12 +26,81 @@ def make_nro():
         word(offset, value)
     marker = b'NX runtime smoke\n'
     image[0x100 : 0x100 + len(marker)] = marker
-    word(0x80, 0x10000400)  # ADR X0, +0x80 (the marker in .rodata).
-    word(0x84, 0xD2800001 | len(marker) << 5)  # MOV X1, marker length.
-    word(0x88, 0xD40004E1)  # SVC #0x27: OutputDebugString.
-    word(0x8C, 0xD40000E1)  # SVC #7: ExitProcess.
-    word(0x90, 0xD4200000)  # Unreachable BRK if exit dispatch is broken.
+    for i, value in enumerate((code or smoke_code)(len(marker))):
+        word(0x80 + 4 * i, value)
     return image
+
+
+def smoke_code(length):
+    return (
+        0x10000400,  # ADR X0, +0x80 (the marker in .rodata).
+        0xD2800001 | length << 5,  # MOV X1, marker length.
+        0xD40004E1,  # SVC #0x27: OutputDebugString.
+        0xD40000E1,  # SVC #7: ExitProcess.
+        0xD4200000,  # Unreachable BRK if exit dispatch is broken.
+    )
+
+
+# a call through a pointer that holds 0, which no code answers: the run stops with the caller in its report. Where it
+# would return is a NOP, a word NCE runs as it is (it patches an SVC there), so the report's code at lr holds it on
+# every host
+NULL_CALL_LR = 0xD503201F
+
+
+def null_call_code(length):
+    return (
+        0x10000809,  # ADR X9, +0x100 (.data, all zeros).
+        0xF9400128,  # LDR X8, [X9].
+        0xD63F0100,  # BLR X8: to 0.
+        NULL_CALL_LR,  # NOP, where it would return.
+        0xD40000E1,  # SVC #7: ExitProcess.
+        0xD4200000,  # BRK.
+    )
+
+
+def recompile(runtime, repo, fixture, name, output, scratch, env, timeout):
+    """the program's folder, once it is recompiled; its launcher has the folder's name"""
+    compiled = subprocess.run(
+        [str(runtime), '--repo', str(repo), '-r', str(fixture), name, '--runtime', str(runtime), '--jobs', '2']
+        + ['--outdir', str(output)],
+        cwd=scratch,
+        env=env,
+        capture_output=True,
+        timeout=timeout,
+        check=False,
+    )
+    (scratch / f'compile {name}.stdout').write_bytes(compiled.stdout)
+    (scratch / f'compile {name}.stderr').write_bytes(compiled.stderr)
+    if compiled.returncode:
+        raise RuntimeError(f'NRO recompilation of {name} returned {compiled.returncode}')
+    return output / name
+
+
+def run(folder, name, arguments, scratch, env, timeout):
+    """the run's exit status and its log"""
+    log = folder / f'{name}.log'
+    log.unlink(missing_ok=True)  # each run judged on its own log
+    launcher = folder / (f'{name}.exe' if os.name == 'nt' else name)
+    result = subprocess.run(
+        [str(launcher), '-H', *arguments], cwd=folder, env=env, capture_output=True, timeout=timeout, check=False
+    )
+    label = ' '.join([name, *arguments])
+    (scratch / f'runtime {label}.stdout').write_bytes(result.stdout)
+    (scratch / f'runtime {label}.stderr').write_bytes(result.stderr)
+    text = log.read_text(encoding='utf-8', errors='replace') if log.is_file() else ''
+    (scratch / f'runtime {label}.log').write_text(text, encoding='utf-8')
+    return result.returncode, text
+
+
+def null_call(text):
+    """what a report of a call to 0 lacks, or None: the stop, the caller's call marked at lr, the fatal"""
+    if "*** The game's thread " not in text or 'stopped at 0: code the recompiler missed (0) ***' not in text:
+        return "the report's header"
+    if not any('code at lr ' in line and f' d63f0100 [{NULL_CALL_LR:08x}]' in line for line in text.splitlines()):
+        return 'the BLR before lr in the code at lr'
+    if 'FATAL: The game reached code at 0 that the recompiler missed' not in text:
+        return 'the fatal line'
+    return None
 
 
 def main():
@@ -40,68 +109,51 @@ def main():
     parser.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument('--timeout', type=float, default=30)
     parser.add_argument('--artifact-dir', type=Path, default=Path('build/nx-smoke-failures'))
+    parser.add_argument(
+        '--runtime-arg', action='append', default=[], help="an argument of the game's runs (--host_page=65536)"
+    )
+    parser.add_argument('--log-has', action='append', default=[], help="a line each run's log must hold")
     args = parser.parse_args()
     runtime, repo, artifacts = args.runtime.resolve(), args.repo.resolve(), args.artifact_dir.resolve()
     with tempfile.TemporaryDirectory(prefix='scarletnx-nx-smoke-') as temporary:
         scratch = Path(temporary)
         fixture, output = scratch / 'homebrew with spaces.nro', scratch / 'output with spaces'
-        fixture.write_bytes(make_nro())
+        fixture.write_bytes(make_nro(smoke_code))
         env = os.environ.copy()
         env.pop('SNX_GAME', None)
         try:
-            compile_command = [
-                str(runtime),
-                '--repo',
-                str(repo),
-                '-r',
-                str(fixture),
-                'NX Smoke',
-                '--runtime',
-                str(runtime),
-                '--jobs',
-                '2',
-                '--outdir',
-                str(output),
-            ]
-            compiled = subprocess.run(
-                compile_command, cwd=scratch, env=env, capture_output=True, timeout=args.timeout, check=False
-            )
-            (scratch / 'compile.stdout').write_bytes(compiled.stdout)
-            (scratch / 'compile.stderr').write_bytes(compiled.stderr)
-            if compiled.returncode:
-                raise RuntimeError(f'NRO recompilation returned {compiled.returncode}')
-            folder = output / 'NX Smoke'  # the game's own
-            launcher = folder / ('NX Smoke.exe' if os.name == 'nt' else 'NX Smoke')
+            folder = recompile(runtime, repo, fixture, 'NX Smoke', output, scratch, env, args.timeout)
             # each way of making the game's shaders: before it starts (the default, which the pass's line says ended
             # before the game ran), none, and in the background, which the game's exit may cut short
-            log = folder / 'NX Smoke.log'
             for mode in ('2', '0', '1'):
-                log.unlink(missing_ok=True)  # each mode judged on its own log
-                result = subprocess.run(
-                    [str(launcher), '-H', f'--prepare_shaders={mode}'],
-                    cwd=folder,
-                    env=env,
-                    capture_output=True,
-                    timeout=args.timeout,
-                    check=False,
+                code, text = run(
+                    folder, 'NX Smoke', [f'--prepare_shaders={mode}', *args.runtime_arg], scratch, env, args.timeout
                 )
-                (scratch / f'runtime{mode}.stdout').write_bytes(result.stdout)
-                (scratch / f'runtime{mode}.stderr').write_bytes(result.stderr)
-                text = log.read_text(encoding='utf-8', errors='replace') if log.is_file() else ''
-                (scratch / f'runtime{mode}.log').write_text(text, encoding='utf-8')
-                if result.returncode or '[game] NX runtime smoke' not in text or 'The game exited (code 0)' not in text:
+                if code or '[game] NX runtime smoke' not in text or 'The game exited (code 0)' not in text:
                     raise RuntimeError(
-                        f'NX runtime returned {result.returncode} or did not execute the Horizon SVC markers'
+                        f'NX runtime returned {code} or did not execute the Horizon SVC markers'
                         f' (prepare_shaders={mode})'
                     )
+                for line in args.log_has:
+                    if line not in text:
+                        raise RuntimeError(f'the log of prepare_shaders={mode} lacks {line!r}')
                 passed = "vulkan: the game's own shaders:" in text
                 if mode == '2' and (not passed or text.index("the game's own shaders:") > text.index('[game] NX')):
                     raise RuntimeError("prepare_shaders=2: the shader pass didn't end before the game ran")
                 if mode == '0' and passed:
                     raise RuntimeError('prepare_shaders=0: the shader pass ran')
+            fixture = scratch / 'null call.nro'
+            fixture.write_bytes(make_nro(null_call_code))
+            folder = recompile(runtime, repo, fixture, 'NX Null Call', output, scratch, env, args.timeout)
+            code, text = run(
+                folder, 'NX Null Call', ['--prepare_shaders=0', *args.runtime_arg], scratch, env, args.timeout
+            )
+            lacks = null_call(text)
+            if not code or lacks:
+                raise RuntimeError(f'a call to 0 returned {code}, and its log lacks {lacks}')
             print(
                 'Synthetic NRO recompiled and ran Horizon OutputDebugString/ExitProcess with headless Vulkan, '
-                'with each prepare_shaders mode.'
+                'with each prepare_shaders mode; a call to 0 stopped with its caller in the report.'
             )
             return 0
         except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:

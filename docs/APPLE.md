@@ -2,6 +2,16 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # macOS and iOS
 
+## Index
+
+* [The frontend](#the-frontend)
+  * [macOS](#macos)
+  * [iOS](#ios)
+  * [Running a game on iOS](#running-a-game-on-ios)
+  * [Installing from a Mac](#installing-from-a-mac)
+* [What is missing](#what-is-missing)
+* [Building](#building)
+
 Both build on a Mac with Xcode, for Apple silicon (arm64), with Xcode's Clang, and the CI builds both on every push
 (`.github/workflows/build.yml`). They are new. On a Mac, one game's module loads and runs as far as its title
 background, without the logo or the menu. On an iPhone, one game has been prepared on the device and played with JIT on.
@@ -36,6 +46,12 @@ game plays as `<data folder>/recompiled/<id>/<id>`, outside the bundle, where SD
 checkout has no library to deploy and no bundle around it, so it uses the system's Vulkan loader (Homebrew's
 `molten-vk` and `vulkan-loader`).
 
+The 3DS and the Vita's windows open through `common/gpu/vk/window.c`, which names the same library to SDL and takes
+its own entry points from it. One process must hold one copy of MoltenVK: a second copy's `MVKInstance` is a
+different type, so the surface call hands one copy's instance to the other's `vkGetInstanceProcAddr` and the process
+segfaults. That is what a Mac with Homebrew's `molten-vk` in the loader's ICD folders saw when volk took the system
+loader and SDL took the bundle's library.
+
 ### iOS
 
 An iOS app runs one process and may not start another, so the iOS app works like Android's game activity without its
@@ -57,6 +73,12 @@ menu's driver:
   device, the system and the limits the app has, with the menu's own lines ([GUI](GUI.md)), and a fatal error, the
   menu's or a game's, is also written to `logs/scarletnx-error.log`. A phone shows no console, so these are what to read
   when a run fails; Share Log sends both.
+- **MetricKit.** The app subscribes to MetricKit at its start. Each payload that the system gives (a diagnostic
+  payload with crashes, hangs, CPU and disk write exceptions, or a metric payload with the counts of exits for memory)
+  goes as JSON to `logs/metrickit-<date>_<time>.json`, named by the end of the time that it covers. The console log
+  gets one line for each payload, with its file (or the file and why it was not written) and what it holds. The
+  payloads that the system gave before this start are read again at each start, and a file that already holds one is
+  not written again.
 
 The IPA is unsigned: AltStore, SideStore or a developer account signs it for the device (a Mac can too:
 [Installing from a Mac](#installing-from-a-mac)), with
@@ -101,7 +123,7 @@ A Mac still prepares a game the same way (`scarletnx -x "Game.nsp" --name Game`,
 `scarletnx -r work/Game --target ios --outdir recompiled`), and its `recompiled/<id>/` can be copied into the app.
 
 Limits found on an iPhone 14 Pro (iOS 26.6.1): without the paid extended-virtual-addressing entitlement the app has
-about 13 GiB of address space and about 3 GB of memory, so the runtime takes the largest free run it can (128 GiB
+about 13 GiB of address space and about 3 GB of memory, so the runtime takes the largest free run it can (512 GiB
 down to 5 GiB) and lays the guest out to fit, with no alias region below 12 GiB.
 
 ### Installing from a Mac

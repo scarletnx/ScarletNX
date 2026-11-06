@@ -11,11 +11,21 @@
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
-#include "renderdoc_app.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/unattended.h"
+
+#if defined(__NetBSD__)
+/* RenderDoc has no build for NetBSD, and renderdoc_app.h stops on a system it doesn't name */
+void vk_renderdoc_load(void) {
+    if (*g_settings.render_doc_captures)
+        WARN("renderdoc: renderdoc=%s is set, but RenderDoc has no build for NetBSD: no frame is captured\n",
+             g_settings.render_doc_captures);
+}
+void vk_renderdoc_present(u64 present) { (void)present; }
+#else
+#include "renderdoc_app.h"
 
 #define RD_FRAMES 64 /* frames to capture at most */
 
@@ -108,3 +118,4 @@ void vk_renderdoc_present(u64 present) {
         g_rd_open = 1;
     }
 }
+#endif

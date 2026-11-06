@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* What a fatal error's box says (runtime/platform/fatal_screen.c): the hint for each known error, the text cut into
    the box's rows at spaces, a long word cut, UTF-8 counted as characters, those in the font's bytes, and Share Log's
-   file */
+   file, its homes as ~ */
 #include "nx/runtime/platform/fatal_screen.h"
 #include "common/utilities/common.h"
 #include <assert.h>
@@ -11,6 +11,17 @@
 #include <string.h>
 
 static char rows[8][FATAL_ROW];
+
+/* size bytes of lines of 128 ('a's, then a line break), the last ending in "end\n"; malloc'd */
+static char* lines(size_t size) {
+    char* text = (char*)malloc(size);
+    size_t i;
+    assert(text && size >= 4);
+    memset(text, 'a', size);
+    for (i = 127; i < size; i += 128) text[i] = '\n';
+    memcpy(text + size - 4, "end\n", 4);
+    return text;
+}
 
 int main(void) {
     int n;
@@ -58,10 +69,11 @@ int main(void) {
         fatal_cp437("abcdef", out, 4);
         assert(!strcmp(out, "abc"));
     }
-    /* Share Log's file, as the launcher's: the build, the error and the game's log, its last 4 MiB of a bigger one; a
-       log not there yet says so, and a folder that cannot take it fails with the path it tried */
+    /* Share Log's file, as the launcher's: the build, the error and the game's log, its last 4 MiB of a bigger one
+       from a line's start; a log not there yet says so, and a folder that cannot take it fails with the path it
+       tried and why; each home folder as ~ */
     {
-        enum { BIG = (4 << 20) + 100 };
+        enum { BIG = (4 << 20) + 128, CUT = (4 << 20) + 100 }; /* the cut at a line's start, then inside one */
         char *root = snx_temp_dir(NULL), *log = snx_path_join(root, "0100ABCD12345000.log"), saved[1024], *big;
         char* text;
         size_t n = 0;
@@ -78,10 +90,8 @@ int main(void) {
         text = (char*)snx_read_file(saved, &n);
         assert(text && strstr(text, "(not written yet)"));
         free(text);
-        big = (char*)malloc(BIG);
-        assert(big);
-        memset(big, 'a', BIG);
-        memcpy(big + BIG - 4, "end\n", 4);
+        /* the last 4 MiB from a line's start: cut where a line starts, all of them */
+        big = lines(BIG);
         big[99] = 'b'; /* the head that goes */
         assert(!snx_write_file(log, big, BIG));
         assert(!fatal_share_log(root, "build", "message", log, saved, sizeof saved));
@@ -91,10 +101,62 @@ int main(void) {
                strstr(text, " ==\n") && !strchr(strstr(text, " ==\n"), 'b'));
         free(text);
         free(big);
+        /* cut inside a line: from the next one, to the log's end, nothing of the line cut */
+        big = lines(CUT);
+        big[110] = 'b'; /* after the cut, in the line it cuts */
+        assert(!snx_write_file(log, big, CUT));
+        assert(!fatal_share_log(root, "build", "message", log, saved, sizeof saved));
+        text = (char*)snx_read_file(saved, &n);
+        {
+            const char* body = text ? strstr(text, " ==\n") : NULL;
+            assert(body);
+            body += 4;
+            assert((size_t)(text + n - body) == CUT - 128 + 1 && !memcmp(body, big + 128, CUT - 128) &&
+                   !strcmp(body + CUT - 128, "\n") && !strchr(body, 'b'));
+        }
+        free(text);
+        free(big);
+        /* a home folder's path the cut runs through goes whole, the account's name with it: "sers\Some One\" is no
+           home to the tilde */
+        {
+            static const char home[] = "[  0.30] fs: sdmc in C:\\Users\\Some One\\AppData\\Roaming\\scarletnx\\sdmc\n";
+            size_t at = (size_t)(strstr(home, "sers\\") - home), size = at + (4 << 20);
+            const char* body;
+            big = lines(size);
+            memcpy(big, home, sizeof home - 1);
+            assert(!snx_write_file(log, big, size));
+            assert(!fatal_share_log(root, "build", "message", log, saved, sizeof saved));
+            text = (char*)snx_read_file(saved, &n);
+            body = text ? strstr(text, " ==\n") : NULL;
+            assert(body && !strstr(text, "Some One") && !strstr(text, "sers\\") &&
+                   !memcmp(body + 4, big + sizeof home - 1, size - (sizeof home - 1)));
+            free(text);
+            free(big);
+        }
+        /* each home folder as ~, in the game's log and in the error: the account's name, spaces and all, is the
+           player's, Windows' and a POSIX system's alike */
+        {
+            static const char homes[] =
+                "[  0.20] fs: sdmc in C:\\Users\\Some One\\AppData\\Roaming\\scarletnx\\sdmc\r\n"
+                "[  0.20] fs: saves in /home/some one/.local/share/scarletnx/saves\n";
+            assert(!snx_write_file(log, homes, sizeof homes - 1));
+            assert(!fatal_share_log(root, "build", "Cannot open /home/some one/.local/share/scarletnx/keys", log, saved,
+                                    sizeof saved));
+            text = (char*)snx_read_file(saved, &n);
+            assert(text && strstr(text, "\nMessage: Cannot open ~/.local/share/scarletnx/keys\n") &&
+                   strstr(text, "] fs: sdmc in ~\\AppData\\Roaming\\scarletnx\\sdmc\r\n") &&
+                   strstr(text, "] fs: saves in ~/.local/share/scarletnx/saves\n") && !strstr(text, "Some One") &&
+                   !strstr(text, "some one"));
+            free(text);
+        }
         free(log);
         log = snx_path_join(root, "no/such/folder");
         text = snx_path_join("no", "such/folder"); /* in the system's separators, as the folder said is */
         assert(fatal_share_log(log, "build", "message", NULL, saved, sizeof saved) && strstr(saved, text));
+        free(text);
+        text = snx_path_join(log, "scarletnx.log"); /* and why after it, the system's reason */
+        assert(!strncmp(saved, text, strlen(text)) && !strncmp(saved + strlen(text), ": ", 2) &&
+               saved[strlen(text) + 2]);
         assert(fatal_share_log(NULL, "build", "message", NULL, saved, sizeof saved));
         free(text);
         free(log);

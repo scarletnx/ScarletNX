@@ -16,6 +16,8 @@
      with input_size[n] components (the rest are read as 0, 0, 0, 1); unused registers are not declared
    - outputs, the fragment shader's inputs (vk/fsgen.h): primary_color 0, texcoord0 1, texcoord1 2, texcoord2 3,
      texcoord0_w 4, normquat 5, view 6; gl_Position, and gl_ClipDistance[2] when clip_planes is set
+   - with passthrough set, no program runs: inputs 0-5 are a vertex the CPU made (pica.h's SnxCtrVertex, its 24 semantic
+     slots in order as six vec4s), passed on as above (Azahar's GenerateTrivialVertexShader)
    - the entry point "main", and SignedZeroInfNanPreserve 32 (SPV_KHR_float_controls) when asked for */
 enum { SNX_CTR_VS_UNUSED, SNX_CTR_VS_FLOAT, SNX_CTR_VS_SINT, SNX_CTR_VS_UINT };
 /* what picks a vertex shader: plain data, zeroed before it is filled (padding too), compared with memcmp */
@@ -28,8 +30,7 @@ typedef struct {
     uint32_t vs_output_attributes[7]; /* the rasterizer's semantic map words */
     uint8_t input_type[16], input_size[16];
     uint8_t clip_planes;
-    uint8_t passthrough; /* the vertices are the host's (a geometry shader's): the 24 semantic slots in six vec4 inputs,
-                            locations 0 to 5, with no program; every other member but clip_planes is then zero */
+    uint8_t passthrough; /* the vertex is made on the CPU: no program (above) */
     uint8_t pad[2];
 } SnxCtrVsConfig;
 typedef struct {

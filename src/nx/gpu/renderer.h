@@ -56,17 +56,23 @@ typedef struct Renderer {
        thread */
     void (*clear)(const DsState* ds, const DrawClear* c, const DrawOwner* o);
     void (*draw)(const DsState* ds, const DrawCall* dc, DrawOwner* o);
+    /* NVN capture control: Begin 0, End 1, Pause 2, Resume 3. Save/import the GPU byte counters without a host read. */
+    int (*xfb_control)(u32 owner, u64 control, u32 what, u32 stride, DrawOwner* o);
     void (*draw_texture)(const DsState* ds, const DrawTexture* t);
     /* the contents of the targets ds names in targets (bit i color slot i, bit 8 depth and stencil) no longer matter
        (NVN's DiscardColor and DiscardDepthStencil): the renderer may leave them undefined, at the latest when they are
        next loaded. NULL: they are kept */
     void (*discard)(const DsState* ds, u32 targets);
     /* Maxwell ordering methods: 0 texture barrier, 1 tiled barrier, 2 data-cache invalidate,
-       3 descriptor-cache invalidate, 4 wait for idle, 5 shader instruction invalidate. */
+       3 descriptor-cache invalidate, 4 wait for idle, 5 shader instruction invalidate.
+       6 explicit execution and memory order, 7 shader-data visibility when pending shader writes exist. */
     void (*method_barrier)(int kind);
     /* the 2D engine: 1 when the renderer did the blit on the GPU, 0 to do it in guest memory */
     int (*blit)(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
                 double sdy);
+    /* NVN copies choose their filter explicitly; source steps can be negative to mirror an axis. */
+    int (*blit_filter)(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy,
+                       double sdx, double sdy, int linear);
     /* the VIC composition (gpu/video/vic.c), on the GPU, its picture kept there (docs/GPU_OWNERSHIP.md): 0 when
        the job exceeds the device (it is skipped) */
     int (*vic_compose)(const VicJob* j);
@@ -136,6 +142,11 @@ typedef struct Renderer {
     void (*stream_end)(void);
     void (*release_retire)(u32 id); /* finish this syncpoint's queued releases before its id is reused */
     void (*report_stall)(void); /* the stall watchdog: what the renderer holds back. Any thread, unlocked */
+    /* what the renderer's memory holds, as text for the line of a low memory warning. Any thread, also one that never
+       calls Vulkan, unlocked */
+    void (*memory_text)(char* out, size_t size);
+    /* the bytes of the renderer's memory blocks in all heaps, 0 before they exist. Any thread, unlocked */
+    u64 (*memory_blocks)(void);
     /* a game pause (gpu_hold): everything recorded is submitted and done on the GPU, its results landed and every queued
        release performed, so nothing of the renderer's writes guest memory until the next job. The GPU thread, between
        jobs. NULL when the renderer has nothing in flight */
@@ -197,5 +208,6 @@ extern u64 g_draws;
 extern _Atomic int g_cs_any;      /* compute results are pending somewhere */
 extern _Atomic int g_gfx_any;     /* graphics storage-buffer results are pending somewhere */
 extern _Atomic int g_gfx_img_any; /* graphics storage-image results are pending somewhere */
+extern _Atomic int g_uma_any;     /* writes into guest memory in place are pending somewhere (gpu/vk/uma.c) */
 
 #endif

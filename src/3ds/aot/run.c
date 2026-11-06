@@ -10,12 +10,10 @@
 #include "3ds/runtime/internal.h"
 #include "common/utilities/endian.h"
 #include "3ds/gpu/present.h"
-#include "3ds/gpu/vk/vk.h"
 #include "common/utilities/build_info.h"
 #include "3ds/audio/output.h"
 #include "3ds/input/input.h"
 #include "common/filesystem/host.h"
-#include "snx_settings.h"
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,8 +27,6 @@ static const char* event_owner(const SnxCtrProcess* p, uint32_t id) {
     if (id == p->apt_parameter) return "APT's parameter";
     for (unsigned i = 0; i < sizeof p->hid_objects / sizeof *p->hid_objects; ++i)
         if (id == p->hid_objects[i]) return "HID's";
-    for (unsigned i = 0; i < sizeof p->ir_objects / sizeof *p->ir_objects; ++i)
-        if (id == p->ir_objects[i]) return "ir:rst's";
     for (unsigned i = 0; i < CTR_GSP_THREADS; ++i)
         if (id == p->gsp.event_object[i]) return "GSP's interrupt";
     for (unsigned i = 0; i < sizeof p->dsp.interrupt / sizeof *p->dsp.interrupt; ++i)
@@ -115,6 +111,7 @@ static void report_threads(SnxCtrProcess* p) {
         printf(" 0x%02x x%" PRIu64, best, p->svc_counts[best]);
     }
     putchar('\n');
+    snx_ctr_present_report();
 }
 /* The game folder's copy of the runtime, named after it, which plays the game as a Switch game's copy does
    (snx_place_runtime). Nothing when runtime is the copy itself */
@@ -173,7 +170,6 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
         result = 0;
         goto done;
     }
-    if (model == SNX_CTR_AUTO) model = image.new_features || image.new_mode ? SNX_CTR_NEW : SNX_CTR_OLD;
     process = snx_ctr_process_new(&image, model);
     if (!process) {
         snprintf(error, error_size, "cannot create checked ARM11 process mappings");
@@ -199,20 +195,14 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
        is loaded) */
     char id[17];
     snprintf(id, sizeof id, "%016llX", (unsigned long long)process->title_id);
-    printf("Game: %s (%s) - %s\n", process->title[0] ? process->title : id, id, snx_build_info());
-    char* pipelines = snx_path_join(directory, "pipelines.cache");
-    snx_ctr_vk_cache_file(pipelines);
-    free(pipelines);
-    char* shaders = snx_path_join(directory, "shaders.cache");
-    snx_ctr_vk_shader_cache_file(shaders);
-    free(shaders);
+    printf("Game: %s (%s) - %s\n", process->title[0] ? process->title : id, id, snx_build_log_line());
     if (!snx_ctr_present_init(process->memory, frames))
         printf("No Vulkan device: no frames will be drawn, shown or saved\n");
     else
         snx_ctr_present_title(process->title[0] ? process->title : id, "");
     /* the DSP's output plays on the default device, and its first two minutes go to <output>/audio.wav */
     wav = snx_path_join(directory, "audio.wav");
-    if (!snx_ctr_audio_init(wav, (unsigned)g_settings.ctr_speed_limit)) printf("No audio output: the DSP's frames will not be heard or saved\n");
+    if (!snx_ctr_audio_init(wav)) printf("No audio output: the DSP's frames will not be heard or saved\n");
     snx_ctr_input_init(); /* the scripted presses count from here */
     /* Runs until the game exits or its window is closed, as a Switch game does, or for the --max-blocks budget. The
        dispatch goes in slices so the window's events are seen between them */
@@ -245,6 +235,9 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
         printf("%s: blocks=%" PRIu64 "\n", closed ? "Closed" : "Ran its time", executed);
         report_threads(process);
         result = 0;
+    } else if (process->stopped[0]) { /* a service ended it, and says why */
+        snprintf(error, error_size, "%s", process->stopped);
+        result = 3;
     } else {
         snprintf(error, error_size,
                  "%s: pc=0x%08" PRIx32 " exit=%u syndrome=0x%08" PRIx32 " blocks=%" PRIu64 " svcs=%" PRIu64

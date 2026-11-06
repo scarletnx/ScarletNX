@@ -1,11 +1,24 @@
 # The AGB board
 
+## Index
+
+* [Playing](#playing)
+* [Status](#status)
+* [The display device](#the-display-device)
+* [The sound hardware](#the-sound-hardware)
+* [The memory map](#the-memory-map)
+* [The HLE BIOS](#the-hle-bios)
+* [The recompiled ROM](#the-recompiled-rom)
+* [The ROM header](#the-rom-header)
+* [Tests](#tests)
+
 `scarletnx-agb` is the Game Boy Advance system type. It loads a GBA ROM image
 (`.gba`) onto an emulated AGB board, the codename of the console's hardware, and
 runs it with the same static recompiler the other system types use. The board
 library under `src/agb/` is CPU-only: it links `scarletnx-common` and nothing of
 `src/nx/` or `src/gnuabi/`, so the board builds without the Switch runtime's
-graphics and media packages.
+graphics and media packages. Its files whose header names the mGBA contributors
+are MPL-2.0 ([Licenses and credits](CREDITS.md)).
 
 ```sh
 cmake -S . -B build/agb -DSNX_BUILD_NX=OFF -DSNX_BUILD_AGB=ON
@@ -107,19 +120,20 @@ The console's BIOS is not shipped with the emulator. The software interrupts run
 as board routines (`bios/bios.c`), the way the Switch runtime turns SVC calls
 into HLE and the GNU ABI runtime turns `SVC #0` into Linux system calls. Div,
 Sqrt, ArcTan and ArcTan2 compute in fixed point, CpuSet and CpuFastSet move
-memory, the LZ77, run length and difference calls decompress, BitUnPack widens
-packed fields, and BgAffineSet and ObjAffineSet build the rotation matrices.
+memory, the LZ77, Huffman, run length and difference calls decompress,
+BitUnPack widens packed fields, and BgAffineSet and ObjAffineSet build the
+rotation matrices.
 RegisterRamReset clears the memories it is asked to and puts the registers back
 to the BIOS's values (RCNT 0x8000, SOUNDBIAS 0x200, the affine identities), and
 SoftReset starts the machine again from EWRAM or the cartridge, as the byte at
 0x03007FFA says. Halt and Stop halt the machine until an interrupt, and
 IntrWait and VBlankIntrWait until the game's handler flags it in the BIOS's
-flags at 0x03007FF8. HuffUnComp, SoundBias and the sound driver's calls are
-known stubs.
+flags at 0x03007FF8. SoundBias and the sound driver's calls are known stubs.
 
 Angles are turns in 16 bits, the way the BIOS counts them, and the affine matrix
 drops the low byte of the rotation angle, giving 256 steps around the circle.
-The trigonometry rounds to 1.14 fixed point like the BIOS's own tables.
+The trigonometry cuts its sines toward zero in 1.14 fixed point, as the BIOS's
+own table has them, and BgAffineSet's start point comes from that matrix.
 
 ## The recompiled ROM
 

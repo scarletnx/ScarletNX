@@ -198,6 +198,7 @@ static VkResult past_timing(const DPresent* p, u64* at) {
 
 static void display_thread(void* arg) {
     (void)arg;
+    SNX_THREAD_NAME("Vulkan display");
     for (;;) {
         DPresent p;
         pm_lock(&g_dc.lock);

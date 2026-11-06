@@ -658,9 +658,6 @@ const char* snx_ctr_raster_check(const SnxCtrPica* p) {
     return NULL;
 }
 
-static const SnxCtrTriangleSink sink = {snx_ctr_raster_triangle, snx_ctr_raster_check};
-void snx_ctr_raster_attach(SnxCtrPica* p) { p->sink = &sink; }
-
 void snx_ctr_raster_triangle(const SnxCtrPica* p, SnxCtrMemory* m, const SnxCtrVertex* a, const SnxCtrVertex* b,
                              const SnxCtrVertex* c) {
     Vertex buffers[2][MAX_VERTICES] = {0};
@@ -698,4 +695,34 @@ void snx_ctr_raster_triangle(const SnxCtrPica* p, SnxCtrMemory* m, const SnxCtrV
         make_screen(p, &out[i + 2]);
         process(p, m, &out[0], &out[i + 1], &out[i + 2], false);
     }
+}
+
+/* the software renderer's draws: draw.c's triangles, rasterized here */
+typedef struct {
+    const SnxCtrPica* pica;
+    SnxCtrMemory* memory;
+} Raster;
+static void raster(void* context, const SnxCtrVertex* v0, const SnxCtrVertex* v1, const SnxCtrVertex* v2) {
+    const Raster* r = context;
+    snx_ctr_raster_triangle(r->pica, r->memory, v0, v1, v2);
+}
+static SnxCtrPicaResult drawable(SnxCtrPica* p) {
+    const char* missing = snx_ctr_raster_check(p);
+    if (!missing) return SNX_CTR_PICA_OK;
+    p->stop_reason = missing;
+    return SNX_CTR_PICA_UNSUPPORTED;
+}
+
+SnxCtrPicaResult snx_ctr_pica_draw(SnxCtrPica* p, SnxCtrMemory* m, bool indexed) {
+    SnxCtrPicaResult r = drawable(p);
+    if (r != SNX_CTR_PICA_OK) return r;
+    Raster context = {p, m};
+    return snx_ctr_pica_triangles(p, m, indexed, raster, &context);
+}
+
+SnxCtrPicaResult snx_ctr_pica_draw_immediate(SnxCtrPica* p, SnxCtrMemory* m) {
+    SnxCtrPicaResult r = drawable(p);
+    if (r != SNX_CTR_PICA_OK) return r;
+    Raster context = {p, m};
+    return snx_ctr_pica_triangles_immediate(p, raster, &context);
 }

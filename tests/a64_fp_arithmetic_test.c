@@ -200,7 +200,7 @@ static void vector_and_state(void) {
     check(ursqrte32(0x40000000u), 0xFF800000u, "URSQRTE first estimate bin");
     check(ursqrte32(0xFFFFFFFFu), 0x80000000u, "URSQRTE strict boundary");
     CPU c = state(0);
-    RtAPI rt = {0};
+    RtAPI rt = {.cas128 = snx_runtime_cas128};
     c.rt = &rt;
     snx_msr(&c, 0x5A20, ~0ull);
     /* the helper keeps FEAT_FP16's FZ16 too: the generated code clears it first for a guest without FEAT_FP16 */

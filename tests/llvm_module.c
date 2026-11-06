@@ -189,7 +189,7 @@ static int run(const char* path, const unsigned char* image, u64 watch_at, u64 s
     typedef const SnxModule* (*ModuleFn)(void);
     ModuleFn get;
     const SnxModule* mod;
-    RtAPI rt;
+    RtAPI rt = {.cas128 = snx_runtime_cas128};
     unsigned char* memory;
     size_t i;
 #ifdef _WIN32
@@ -205,7 +205,6 @@ static int run(const char* path, const unsigned char* image, u64 watch_at, u64 s
     g_running = mod;
     memset(out, 0, sizeof(*out));
     out->stale_when = stale_when;
-    memset(&rt, 0, sizeof(rt));
     rt.svc = svc;
     rt.undef = undefined;
     rt.poll = on_poll;
@@ -363,8 +362,9 @@ static void layout(const char* scarletnx, const char* repo, const char* root, co
                    const unsigned char* image, const Run* plain) {
     char *dir = snx_path_join(root, "layout"), *file = snx_path_join(root, "order.layout"), *text = NULL;
     char *module = snx_path_join(dir, "Program/Program_code.so"), *order;
+    /* the code made ahead of time, as main's builds (--nce=0) */
     const char* args[16] = {scarletnx,   "--repo", repo,      "-r", input,      "Program", "--outdir", dir,
-                            "--runtime", self,     "--chunk", "4",  "--layout", file,      NULL};
+                            "--runtime", self,     "--chunk", "4",  "--layout", file,      "--nce=0",  NULL};
     unsigned char* elf;
     size_t size = 0;
     u64 func_at, entry_at, library_at;
@@ -394,6 +394,73 @@ static void layout(const char* scarletnx, const char* repo, const char* root, co
     free(dir);
 }
 #endif
+
+/* Hand counts of complete CLI modules. The first writes X0/X1/X2 and returns through X30. Its dynamic return
+   contributes a lookup/tail call and the dispatch poll. The second has a root and a leaf. The root synchronizes X0
+   before BL and at RET, and reloads it after BL. The leaf synchronizes X0 at RET. X28/X30 in the root stay in CPU
+   memory and are not promoted synchronization stores. Splitting units must not change these totals. */
+static void stats_fixture(const char* cli, const char* repo, const char* root, const char* self,
+                          const unsigned char* header) {
+    static const char* const names[] = {
+        "functions", "promoted", "locals", "memory slots", "calls", "FP calls", "vector calls", "guest calls",
+        "indirect calls", "sync stores", "call stores", "edge stores", "store bytes", "reloads", "reload bytes",
+        "lookups", "polls", "stale checks", "return checks"
+    };
+    static const unsigned long long expected[][19] = {
+        {1, 1, 4, 0, 4, 1, 0, 0, 2, 3, 0, 0, 24, 1, 8, 1, 1, 1, 0},
+        {2, 2, 3, 2, 8, 2, 0, 1, 3, 3, 1, 0, 24, 1, 8, 2, 1, 3, 1}
+    };
+    static const u32 leafless[] = {0xd28000e0, 0xd2800121, 0x8b010002, 0xd65f03c0};
+    static const u32 caller[] = {0xaa1e03fc, 0xd28000e0, 0x9400001e, 0x91000400, 0xaa1c03fe, 0xd65f03c0};
+    for (unsigned variant = 0; variant < 2; variant++) {
+        unsigned char image[IMAGE] = {0};
+        memcpy(image, header, 0x80);
+        const u32* words = variant ? caller : leafless;
+        unsigned count = variant ? sizeof caller / sizeof *caller : sizeof leafless / sizeof *leafless;
+        for (unsigned i = 0; i < count; i++) put32(image, 0x80 + 4 * i, words[i]);
+        if (variant) {
+            put32(image, 0x100, 0x91000400); /* ADD X0,X0,#1 */
+            put32(image, 0x104, 0xd65f03c0); /* RET */
+        }
+        char* input = snx_format("%s/counts%u.nro", root, variant);
+        check(!snx_write_file(input, image, sizeof image), "write hand-count module");
+        for (unsigned split = 0; split < 2; split++) {
+            char* dir = snx_format("%s/counts%u-%u", root, variant, split), *text = NULL;
+            const char* args[] = {cli, "--repo", repo, "-r", input, "Counts", "--outdir", dir, "--runtime", self,
+                "--nce=0", "-O2", "--ir_stats=1", split ? "--unit_instructions=1" : "--unit_instructions=1000000", NULL};
+            check(!snx_run(args, root, NULL, &text), "compile hand-count module");
+            unsigned long long total[19] = {0};
+            unsigned units = 0;
+            const char* line = text;
+            while (line && (line = strstr(line, "IR stats code_"))) {
+                line = strchr(line, ':');
+                if (!line) break;
+                unsigned long long n[19] = {0};
+                int fields = sscanf(line + 1,
+                    " %llu functions (%llu promoted), %llu registers made locals (%llu left in the CPU structure), "
+                    "%llu calls (%llu FP, %llu vector, %llu guest, %llu indirect), "
+                    "%llu sync stores (%llu at calls, %llu on edges, %llu bytes), %llu reloads (%llu bytes), "
+                    "%llu lookups, %llu polls, %llu stale checks, %llu return checks",
+                    &n[0], &n[1], &n[2], &n[3], &n[4], &n[5], &n[6], &n[7], &n[8], &n[9],
+                    &n[10], &n[11], &n[12], &n[13], &n[14], &n[15], &n[16], &n[17], &n[18]);
+                check(fields == 19, "parse every statistics field");
+                for (unsigned i = 0; i < 19; i++) total[i] += n[i];
+                units++;
+                line++;
+            }
+            check(units == (split && variant ? 2u : 1u), "one count per emitted code unit");
+            for (unsigned i = 0; i < 19; i++) {
+                if (total[i] != expected[variant][i])
+                    fprintf(stderr, "hand-count module %u split %u %s: %llu, expected %llu\n",
+                            variant, split, names[i], total[i], expected[variant][i]);
+                check(total[i] == expected[variant][i], "whole-module statistics match the hand count");
+            }
+            free(text);
+            free(dir);
+        }
+        free(input);
+    }
+}
 
 int main(int argc, char** argv) {
     static Run runs[1], want, hooked, unhooked, stale, stale_polling, stale_running;
@@ -443,6 +510,9 @@ int main(int argc, char** argv) {
         args[k++] = self;
         args[k++] = "--chunk";
         args[k++] = "4";
+        /* the code made ahead of time is what runs here: an NCE recompile (nce=1, the default where the runtime runs
+           NCE) has none */
+        args[k++] = "--nce=0";
         if (b) args[k++] = "--hook-direct-calls";
         args[k++] = "-q";
         args[k] = NULL;
@@ -512,7 +582,11 @@ int main(int argc, char** argv) {
         args[k++] = "--runtime";
         args[k++] = self;
         args[k++] = b ? "--unit_instructions=1000000" : "--unit_instructions=1";
-        if (stats) args[k++] = "--ir_stats=1"; /* the setting, as -r takes a recompile setting */
+        args[k++] = "--nce=0";                 /* code units, which an NCE recompile makes none of */
+        if (stats) {
+            args[k++] = "--ir_stats=1";
+            if (b) args[k++] = "--ir_dump_pc=8000000";
+        }
         args[k] = NULL;
         check(!snx_run(args, root, NULL, &text), "a build sized by unit_instructions");
         if (text && !strstr(text, b ? "LLVM: 1 code unit and" : "code units and")) fprintf(stderr, "%s\n", text);
@@ -522,11 +596,19 @@ int main(int argc, char** argv) {
             const char* line = text ? strstr(text, "IR stats code_000:") : NULL;
             check(line != NULL, "the CLI prints enabled per-unit IR statistics");
             if (line) printf("%.*s\n", (int)strcspn(line, "\r\n"), line);
+            if (b) {
+                check(text && strstr(text, "IR function 8000000 leaders:"), "the CLI dumps function leaders");
+                check(text && strstr(text, "IR flags pc "), "the CLI dumps flag origins");
+                check(text && strstr(text, "IR promote slot "), "the CLI dumps promoted registers");
+                check(text && strstr(text, "IR before promotion:") && strstr(text, "IR after promotion:"),
+                      "the CLI dumps IR on both sides of promotion");
+            }
         }
         free(text);
         text = NULL;
         free(dir);
     }
+    if (stats) stats_fixture(argv[1], argv[2], root, self, image);
     if (g_stepper.ready) llvm_steps_end(&g_stepper.steps);
     check(!snx_remove_tree(root), "fixture cleanup");
     for (b = 0; b < 2; ++b) {

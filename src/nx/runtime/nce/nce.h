@@ -1,0 +1,61 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* NCE (native code execution) in the runtime: on an AArch64 Linux host, the game's 64-bit code runs on the host's
+   CPU, at the guest's own addresses (mem_identity). An NCE recompile (the setting nce) makes a module with no code
+   made ahead of time, and <game>.nce beside it: the words of the code to patch and the pools for their stubs
+   (nce_patch.h). The runtime patches them after the load. The stubs call the runtime through the machine layer
+   (nce_host.h), and the runtime answers them through RtAPI, as it answers the recompiled code: an SVC, the counter,
+   CPU.poll.
+
+   The hooks and NVN take a function as they do in the recompiled code: they put a handler in its dispatch slot
+   (g_disp). Native code does not read the slots, so the function's first word branches to an outcall
+   (nce_slot_taken), which runs what the slot holds. An empty slot is the function's own native code (nce_slot) */
+#ifndef SNX_NCE_H
+#define SNX_NCE_H
+#include "common/cpu/aarch64/cpu.h"
+
+struct KThread;
+struct SnxModule;
+
+/* whether the game is of an NCE recompile on a host that runs it natively: its .nce file is there. mem_reserve asks
+   it first, before the settings are read */
+int nce_wanted(void);
+/* after the executables are loaded, before the hooks: the setting nce, the pools and the patches. The game's code
+   runs natively from here when nce_on() */
+void nce_init(void);
+int nce_on(void);
+/* thread_run's loop under NCE: t runs from pc with the state of its CPU, until its entry function returns */
+void nce_thread_run(struct KThread* t, u64 pc);
+/* t's CPU.poll was set: guest code that t runs stops at once and calls RtAPI.poll. Any thread */
+void nce_kick(struct KThread* t);
+/* the code of a dispatch slot: f, or under NCE the function's own native code for an empty slot */
+GuestFn nce_slot(GuestFn f);
+/* a handler took the dispatch slot of the function at addr: under NCE, its first word now branches to the runtime, and
+   the log counts those calls by family (a hook's family, or NVN's object's) */
+void nce_slot_taken(u64 addr, const char* family);
+/* code that the game mapped (an NRO of ldr:ro), with text_size bytes of text at base: under NCE, its words are
+   patched as Eden patches them, each word of the encodings that the flow does not prove to be data */
+void nce_code_added(u64 base, u64 text_size);
+/* the game module's descriptor as the runtime uses it: m, or a copy whose guest addresses (each module's base, the
+   dispatch entries, the code range, the functions) moved up with the layout (mem_moved). The caller takes it in m's
+   place, so nothing reads an address from before the move; *entry: where the main thread starts, the first module's
+   text, in it */
+const struct SnxModule* nce_module(const struct SnxModule* m, u64* entry);
+/* how often the kicks' thread goes again to a thread whose CPU.poll is still set (a kick may land in the outcall's own
+   code), and so its rounds in a second, which nce_foreign_look counts its seconds in */
+#define NCE_KICK_AGAIN_NS 2000000ull
+#define NCE_KICKS_PER_S   (1000000000ull / NCE_KICK_AGAIN_NS)
+/* The kicks' thread's round number round (from 1): with nce_foreign_scan=N (1 to 3600), every N seconds of rounds,
+   what lies in the guest's addresses and is not the game's (mem_foreign), each new finding logged once. 1 when it
+   looked; 0 when not, with nothing read but the setting when it is 0. Any host, so a test runs it */
+int nce_foreign_look(u64 round);
+/* How the game sees a pool of stubs in its memory (mem.h's state and permission): code it has no permission on, as
+   Eden reprotects its patch sections to none. The host's pages stay executable. rtld walks the address space with
+   QueryMemory and takes each region of code that is readable and executable for a module, whose word at +4 gives the
+   offset of its MOD0 header: a pool seen so would be read as one */
+#define NCE_POOL_STATE MS_CODE
+#define NCE_POOL_PERM  PERM_NONE
+/* the crash handler's signal context and the address that faulted: the guest's registers into the crashing thread's
+   CPU, when it ran guest code. A branch of the guest's to where nothing is ends there, reported as rt_miss reports it */
+void nce_crash_context(const void* context, const void* fault);
+#endif

@@ -6,6 +6,7 @@
    the game's dump read in place), save data, the SD card and the system archives */
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/filesystem/fs_tree.h"
+#include "common/utilities/mii_model.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/state_io.h"
 #include "nx/runtime/options.h"
@@ -25,6 +26,7 @@
 #include "common/utilities/game_ini.h"
 #include "common/utilities/mods.h"
 #include "common/utilities/patches.h"
+#include "common/utilities/ini_lines.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -103,14 +105,20 @@ static SnxU64 game_title(void) {
     SnxU64 id = 0;
     return snx_title_parse(g_gamename, &id) ? id : 0;
 }
-/* dump opened as snx_dump_open takes it (base, addon, either NULL) and each container mapped read-only for the whole
-   run: the base's into base_map, the add-on's into addon_map. Ends the run on a dump that cannot be read */
+/* dump opened as snx_dump_open takes it (base, addon, either NULL; index the program of the application this is,
+   g_program) and each container mapped read-only for the whole
+   run: the base's into base_map, the add-on's into addon_map. Ends the run on a dump that cannot be read, and on one
+   whose keys the keys file lacks, which would read as garbage: no ExeFS, its modules missing */
 static void dump_map(SnxDump* dump, PFileMap* base_map, PFileMap* addon_map, const char* base, const char* addon,
-                     const char* keys, const char* title_keys, const char* repo) {
+                     int index, const char* keys, const char* title_keys, const char* repo) {
     snx_hac_on_exit(dump_exit, NULL);
-    if (snx_dump_open(dump, base, addon, keys, title_keys, repo, 0))
+    if (snx_dump_open(dump, base, addon, index, keys, title_keys, repo, 0))
         fatal("Could not read the game's dump %s, which it reads its files from: the line before says why",
               addon ? addon : base);
+    if ((dump->program.found && snx_nca_keys(dump, &dump->program, "The game's Program NCA")) ||
+        (dump->patch.found && snx_nca_keys(dump, &dump->patch, "The update's Program NCA")) ||
+        (dump->aoc.found && snx_nca_keys(dump, &dump->aoc, "The DLC's Data NCA")))
+        fatal("A dump the game reads in place needs keys its keys file does not have: the line before says which");
     if (base && (plat_file_map_sized(base_map, base, snx_file_size(base)) ||
                  snx_hac_map(dump->hac, dump->base, base_map->data, base_map->size)))
         fatal("Could not map the game's dump %s", base);
@@ -118,6 +126,21 @@ static void dump_map(SnxDump* dump, PFileMap* base_map, PFileMap* addon_map, con
                   snx_hac_map(dump->hac, dump->update, addon_map->data, addon_map->size)))
         fatal("Could not map the add-on's dump %s", addon);
     snx_hac_on_exit(NULL, NULL);
+}
+
+/* the folder games/ is in, where the driver looks for the keys: g_datadir is <repo>/games/<name>/<name>_data/. In
+   repo, of g_datadir's size, which holds it: on the stack, so a fatal() while a dump is read leaves nothing allocated
+   that only the caller's frame points at */
+static void data_repo(char* repo, size_t size) {
+    char *path = snx_strdup(g_datadir), *up;
+    int i;
+    for (i = 0; i < 3; ++i) {
+        up = snx_dirname(path);
+        free(path);
+        path = up;
+    }
+    snprintf(repo, size, "%s", path);
+    free(path);
 }
 
 /* Extract dump off: a data folder without an ExeFS of its own reads its ExeFS and RomFS from the dump the
@@ -130,14 +153,14 @@ static void dump_map(SnxDump* dump, PFileMap* base_map, PFileMap* addon_map, con
    is made of the game's), and a DLC's RomFS image beside the game's files (dump_aoc). At startup, under tree.lock */
 static void dump_open(const char* keys, const char* title_keys) {
     FsNode* node;
-    char *data, *source, *folder, *games, *repo, *ini, *addon = NULL, *own, *at;
+    char *data, *source, *ini, *addon = NULL, *own, *at, repo[sizeof g_datadir];
     size_t n = strlen(g_datadir);
     int kind = g_addon ? SNX_ADDON_UPDATE : SNX_ADDON_NONE, extracted = 0;
     if (kind != SNX_ADDON_NONE) { /* its extraction, laid over the game's (fs_init), else its dump */
         at = snx_format("%sexefs", g_addondir);
         extracted = snx_is_dir(at);
         free(at);
-        own = snx_format("%s%s.ini", g_confdir, g_exename);
+        own = snx_format("%s%s.ini", g_confdir, g_addonrec); /* the update's own record, its programs' too */
         addon = extracted ? NULL : snx_ini_value(own, "source");
         if (!extracted && (!addon || !snx_is_file(addon)))
             fatal("The update %s can't be read: its settings %s name %s. Play its dump again to record it", g_exename,
@@ -155,10 +178,7 @@ static void dump_open(const char* keys, const char* title_keys) {
     }
     data[n - 5] = 0;
     source = g_settings.game_dump[0] ? snx_strdup(g_settings.game_dump) : snx_format("%s.source", data);
-    folder = snx_dirname(data);
     free(data);
-    games = snx_dirname(folder);
-    repo = snx_dirname(games);
     if (!snx_is_file(source)) {
         ini = snx_absolute(ini_file()); /* a game beside its .ini runs in its folder: "./Game.ini" */
         /* the loader also takes the main module from the data folder's root, as older versions put it */
@@ -176,19 +196,21 @@ static void dump_open(const char* keys, const char* title_keys) {
                  g_datadir, ini ? ini : ini_file(), source);
         free(ini);
         free(source);
-        free(folder);
-        free(games);
-        free(repo);
         goto done;
     }
+    data_repo(repo, sizeof repo);
     /* an update over the game: both in one hactool, its Patch RomFS reading the game's */
-    dump_map(&g_hle.fs.dump, &g_hle.fs.dmap, &g_hle.fs.amap, source,
-             kind == SNX_ADDON_UPDATE ? addon : NULL, keys, title_keys, repo);
+    dump_map(&g_hle.fs.dump, &g_hle.fs.dmap, &g_hle.fs.amap, source, kind == SNX_ADDON_UPDATE ? addon : NULL, g_program,
+             keys, title_keys, repo);
     snx_hac_on_exit(dump_exit, NULL);
     g_hle.fs.dfs = snx_dump_fs(&g_hle.fs.dump);
     if (!g_hle.fs.dfs) fatal("Could not read the game's program in its dump %s: the line before says why", source);
     snx_hac_on_exit(NULL, NULL);
     pm_init(&g_host.fs.dlock);
+    if (g_program)
+        LOG("fs: program %d of the application read from the dump%s %s (its %d programs; %.1f MB mapped)\n", g_program,
+            kind == SNX_ADDON_UPDATE ? ", its update's patch of it over the game's," : "", source,
+            g_hle.fs.dump.programs, (double)(g_hle.fs.dmap.size + g_hle.fs.amap.size) / 1048576.0);
     if (kind == SNX_ADDON_UPDATE) {
         LOG("fs: ExeFS and RomFS read from the update %s over the game's dump %s (%.1f MB mapped)\n", addon, source,
             (double)(g_hle.fs.dmap.size + g_hle.fs.amap.size) / 1048576.0);
@@ -198,9 +220,6 @@ static void dump_open(const char* keys, const char* title_keys) {
         LOG("fs: ExeFS and RomFS read from the dump %s (%.1f MB mapped)\n", source,
             (double)g_hle.fs.dmap.size / 1048576.0);
     free(source);
-    free(folder);
-    free(games);
-    free(repo);
 done:
     free(addon);
 }
@@ -213,13 +232,8 @@ done:
 static void dlcs_open(const char* keys, const char* title_keys) {
     SnxAddon* ids = malloc(SNX_ADDONS_MAX * sizeof *ids);
     size_t count, i;
-    char *data = snx_strdup(g_datadir), *folder, *games, *repo;
-    size_t n = strlen(data);
-    /* g_datadir is <repo>/games/<name>/<name>_data/ */
-    while (n > 1 && (data[n - 1] == '/' || data[n - 1] == '\\')) data[--n] = 0;
-    folder = snx_dirname(data);
-    games = snx_dirname(folder);
-    repo = snx_dirname(games);
+    char repo[sizeof g_datadir];
+    data_repo(repo, sizeof repo);
     if (!ids) fatal("Out of memory for the game's DLCs");
     count = snx_addons_parse(g_settings.game_addons, g_gamename, ids, SNX_ADDONS_MAX);
     g_hle.fs.aocs = calloc(count ? count : 1, sizeof *g_hle.fs.aocs);
@@ -247,7 +261,7 @@ static void dlcs_open(const char* keys, const char* title_keys) {
                  "again to record it\n",
                  text, ini, dump ? "a dump that is not there" : "no dump (source=)");
         else {
-            dump_map(&aoc->dump, NULL, &aoc->map, NULL, dump, keys, title_keys, repo);
+            dump_map(&aoc->dump, NULL, &aoc->map, NULL, dump, 0, keys, title_keys, repo);
             snx_hac_on_exit(dump_exit, NULL);
             aoc->fs = snx_dump_aoc_fs(&aoc->dump);
             if (!aoc->fs) fatal("Could not read the DLC in its dump %s: the line before says why", dump);
@@ -266,10 +280,6 @@ static void dlcs_open(const char* keys, const char* title_keys) {
     }
     if (g_hle.fs.naocs && !g_hle.fs.dfs) pm_init(&g_host.fs.dlock); /* dump_open, before this, made it for the game */
     free(ids);
-    free(data);
-    free(folder);
-    free(games);
-    free(repo);
 }
 
 /* The mods played (common/utilities/mods.h), from the game's mods folder, which the data folder's index leaves out:
@@ -279,7 +289,9 @@ static void dlcs_open(const char* keys, const char* title_keys) {
    ExeFS, which its code was made from, a line saying so. A mod whose files can't be indexed is left out, said. At
    startup, under tree.lock */
 static void mods_open(void) {
-    char *folder = snx_mods_folder(g_datadir), *stamp = snx_mods_stamp(folder, g_settings.game_mods_off), **romfs;
+    char *folder = snx_mods_folder(g_datadir), **romfs;
+    char* own = snx_program_own_mods(g_exedir[0] ? g_exedir : ".", g_gamename, g_program); /* Eden's load/<its ID>/ */
+    char* stamp = snx_mods_stamp_of(folder, own, g_settings.game_mods_off);
     char path[sizeof g_exedir + sizeof g_exename + 8], *built, *recorded;
     size_t count, i, size = 0;
     snprintf(path, sizeof path, "%s%s.abi", g_exedir, g_exename);
@@ -289,10 +301,10 @@ static void mods_open(void) {
     recorded = recorded ? recorded + 6 : "";
     if (!strcmp(recorded, stamp)) {
         g_hle.fs.nmexefs =
-            snx_mods_exefs(folder, g_settings.game_mods_off, &g_hle.fs.mexefs_names, &g_hle.fs.mexefs_paths);
+            snx_mods_exefs_of(folder, own, g_settings.game_mods_off, &g_hle.fs.mexefs_names, &g_hle.fs.mexefs_paths);
         for (i = 0; i < g_hle.fs.nmexefs; i++)
             LOG("fs: exefs/%s from the mod's %s\n", g_hle.fs.mexefs_names[i], g_hle.fs.mexefs_paths[i]);
-        g_hle.fs.npatches = snx_mods_patches(folder, g_settings.game_mods_off, &g_hle.fs.patches);
+        g_hle.fs.npatches = snx_mods_patches_of(folder, own, g_settings.game_mods_off, &g_hle.fs.patches);
     } else if (stamp[0])
         WARN("fs: the mods played replace ExeFS files, and the program was recompiled with %s: it runs the ExeFS it "
              "was made from until it is recompiled, which playing it from the launcher does\n",
@@ -300,7 +312,7 @@ static void mods_open(void) {
     else
         WARN("fs: the program was recompiled with ExeFS files of mods not played now: recompile it, which playing it "
              "from the launcher does\n");
-    count = snx_mods_played(folder, g_settings.game_mods_off, "romfs", &romfs);
+    count = snx_mods_played_of(folder, own, g_settings.game_mods_off, "romfs", &romfs);
     for (i = 0; i < count; i++) {
         char name[32];
         FsTreeResult r;
@@ -317,6 +329,7 @@ static void mods_open(void) {
     snx_free_strings(romfs, count);
     free(built);
     free(stamp);
+    free(own);
     free(folder);
 }
 
@@ -340,6 +353,7 @@ static u8* dump_exefs(const char* path, u64* size) {
     size_t count, i;
     u8* data;
     int failed;
+    char why[256] = {0};
     if (!g_hle.fs.dfs || strncmp(path, "exefs/", 6)) return NULL;
     count = snx_hac_fs_files(g_hle.fs.dfs, &files);
     for (i = 0; i < count && strcmp(files[i].name, path + 6); i++) continue;
@@ -348,9 +362,10 @@ static u8* dump_exefs(const char* path, u64* size) {
     if (!data) return NULL;
     pm_lock(&g_host.fs.dlock);
     failed = snx_hac_fs_read(g_hle.fs.dfs, i, 0, data, (size_t)files[i].size);
+    if (failed) snprintf(why, sizeof why, "%s", snx_hac_message());
     pm_unlock(&g_host.fs.dlock);
     if (failed) {
-        WARN("fs: could not read %s from the game's dump\n", path);
+        WARN("fs: could not read %s from the game's dump (hactool: %s)\n", path, why[0] ? why : "no reason given");
         free(data);
         return NULL;
     }
@@ -397,9 +412,19 @@ static void overlays(void) {
         free(folder);
     }
     free(ids);
-    if (g_addon && snx_is_dir(g_addondir)) { /* the update's, on top */
+    if (g_program) { /* another program of the application: the game's own program's files are none of its */
+        for (i = 0; whole[i]; i++) {
+            char* own = snx_format("%s%s", g_addondir, whole[i]);
+            FsNode* node;
+            if (!snx_path_exists(own) && !fs_tree_lookup(&g_hle.fs.tree, NULL, whole[i], &node))
+                fs_tree_forget(&g_hle.fs.tree, whole[i]);
+            free(own);
+        }
+    }
+    if ((g_addon || g_program) && snx_is_dir(g_addondir)) { /* the update's or the program's, on top */
         r = fs_tree_overlay(&g_hle.fs.tree, g_addondir, whole, merged);
-        if (r != FS_TREE_OK) fatal("Could not index the update's files %s (error %d)", g_addondir, r);
+        if (r != FS_TREE_OK)
+            fatal("Could not index the %s's files %s (error %d)", g_addon ? "update" : "program", g_addondir, r);
     }
 }
 
@@ -795,14 +820,17 @@ static int image_read(u64 off, void* dst, u64 size, int locked, int quiet) {
         return 0;
     }
     if (g_hle.fs.dfs) {
+        char why[256] = {0};
         pm_lock(&g_host.fs.dlock);
         rc = size > SIZE_MAX ? -1 : snx_hac_fs_read_romfs(g_hle.fs.dfs, off, out, (size_t)size);
+        if (rc) snprintf(why, sizeof why, "%s", snx_hac_message()); /* hactool's, which the next read clears */
         pm_unlock(&g_host.fs.dlock);
         if (rc) {
             memset(out, 0, (size_t)size);
             if (!quiet)
-                WARN("RomFS: could not read the dump at %llx (%llx bytes): the game gets zeros\n",
-                     (unsigned long long)off, (unsigned long long)size);
+                WARN("RomFS: could not read the dump at %llx (%llx bytes; hactool: %s): the read fails, its buffer "
+                     "zeroed\n",
+                     (unsigned long long)off, (unsigned long long)size, why[0] ? why : "no reason given");
         }
         return rc;
     }
@@ -918,6 +946,25 @@ static int rnode_image(RNode* root, u64 total) {
     return rc;
 }
 
+/* The dump's RomFS image read to its last byte at startup, which a dump cut short or damaged can't give: said here, not
+   first where the game reads there. The image's size against the dump's tells nothing alone: compressed blocks and
+   blocks of zeros make an image bigger than its dump */
+static void dump_romfs_end(void) {
+    char image[32], dump[32];
+    u8 last;
+    int rc;
+    pm_lock(&g_host.fs.dlock);
+    rc = snx_hac_fs_read_romfs(g_hle.fs.dfs, g_hle.fs.rtotal - 1, &last, 1);
+    pm_unlock(&g_host.fs.dlock);
+    if (!rc) return;
+    snx_size_text(g_hle.fs.rtotal, image, sizeof image);
+    snx_size_text(g_hle.fs.dmap.size + g_hle.fs.amap.size, dump, sizeof dump);
+    WARN("RomFS: the dump's image is %s, and its last byte, at %llx, can't be read from the dump's %s (hactool: %s): "
+         "the dump is incomplete or damaged\n",
+         image, (unsigned long long)(g_hle.fs.rtotal - 1), dump,
+         snx_hac_message()[0] ? snx_hac_message() : "no reason given");
+}
+
 /* The RomFS the game reads: the game's own image, else the image made up from its romfs/ folder; with mods played, made
    up from either with the mods' romfs/ folders laid over it (mods_open grafts them as mods.<i>) */
 void romfs_init(void) {
@@ -945,12 +992,14 @@ void romfs_init(void) {
         image = 1;
         LOG("RomFS: the update's over the game's dump, read in place (%.1f MB)\n",
             (double)g_hle.fs.rtotal / 1048576.0);
+        dump_romfs_end();
     } else if (!fs_tree_lookup(&g_hle.fs.tree, NULL, "romfs:/", &node) && node->is_dir) {
         folder = node;
     } else if (g_hle.fs.dfs && snx_hac_fs_romfs_size(g_hle.fs.dfs)) {
         g_hle.fs.rtotal = snx_hac_fs_romfs_size(g_hle.fs.dfs);
         image = 1;
         LOG("RomFS: the dump's, read in place (%.1f MB)\n", (double)g_hle.fs.rtotal / 1048576.0);
+        dump_romfs_end();
     } else if (g_hle.fs.dfs) {
         LOG("RomFS: none in the game's dump\n");
     } else {
@@ -1243,9 +1292,16 @@ static int istorage_read(SvcObj* self, u64 off, u64 sz, u64 a) {
         u64 total = snx_hac_fs_romfs_size(fs);
         R_UNLESS(sz <= (u64)INT64_MAX - off && off <= total && sz <= total - off, FS_OUT_OF_RANGE);
         R_UNLESS(buffer_valid(a, sz) && sz <= SIZE_MAX, FS_OUT_OF_RANGE);
+        char why[256] = {0};
         pm_lock(&g_host.fs.dlock);
         rc = snx_hac_fs_read_romfs(fs, off, GP(a), (size_t)sz);
+        if (rc) snprintf(why, sizeof why, "%s", snx_hac_message());
         pm_unlock(&g_host.fs.dlock);
+        if (rc)
+            WARN("fs: could not read the RomFS of the DLC %016llx in its dump at %llx (%llx bytes; hactool: %s): the "
+                 "read answers 2002-3005\n",
+                 (unsigned long long)g_hle.fs.aocs[self->u[1]].dump.aoc.title_id, (unsigned long long)off,
+                 (unsigned long long)sz, why[0] ? why : "no reason given");
         return rc ? FS_OUT_OF_RANGE : 0;
     }
     if (!data) { /* the RomFS */
@@ -1610,6 +1666,14 @@ static int nn_fssrv_sf_IFileSystem_OpenDirectory(SvcObj* self, IpcBuf path, u32 
     *directory = dir;
     R_SUCCEED();
 }
+static void save_note_write(FsNode* root);
+/* Commit: what the game writes lands on the host as it writes it, so a save's note is all there is to do (save_note).
+   tree.lock held, as fs_disp holds it around every command */
+static int nn_fssrv_sf_IFileSystem_Commit(SvcObj* self) {
+    FsData* data = self->data;
+    if (data->noted) save_note_write(data->root);
+    R_SUCCEED();
+}
 static int nn_fssrv_sf_IFileSystem_GetFreeSpaceSize(SvcObj* self, IpcBuf path, i64* size) {
     *size = 4ll << 30;
     R_SUCCEED();
@@ -1693,140 +1757,62 @@ static void ngword2_name(u32 i, char name[32]) {
         snprintf(name, 32, "version.dat");
 }
 static u32 ngword2_file_size(u32 i) { return i < NGWORD2_AC_COUNT ? NGWORD2_AC_SIZE : 4; }
-static void ngword2_file_write(u32 i, u8* out) {
+static u32 ngword2_file_write(u32 i, u8* out) {
     memcpy(out, i < NGWORD2_AC_COUNT ? ngword2_ac : ngword2_version, ngword2_file_size(i));
+    return ngword2_file_size(i);
 }
 
-/* MiiModel, the Mii parts' shapes and textures, as a placeholder with no textures in it and every shape one degenerate
-   triangle, ported from nxnative's dm/host/hle_mii.c. The SDK's resource loader (as a game links it, nn::mii::detail)
-   reads each file whole and indexes it from its start, checking nothing of its header: the first 0xc bytes are a magic
-   (NFTR for the textures, NFSR for the shapes), then a version, then two arrays of a u32 per part kind, each kind's
-   largest decompressed part and its alignment, then a table of entries, then the hair and faceline transforms. A part
-   whose decompressed size is 0 is absent and skipped, so nought tables hold no texture; the shapes may not all be
-   absent, because a model draws its faceline without checking that it has one (a null buffer read), and the largest
-   sizes may not be 0 either, since they size the model's memory pool and its first alignment is the pool's.
-   The textures may not all be absent either: a game composes a Mii's face into textures of its own from them and
-   registers those in its texture pool, a null one when there is no part to compose (a crash at a null texture).
-   The firmware's own files are not ours to ship, so every texture is one blank image and every shape one degenerate
-   triangle: it builds, and draws nothing */
-#define MIIMODEL_DATA_ID      0x0100000000000802ull
-#define MIIMODEL_FILES        6
-/* a texture file: 0xc bytes of header, then 11 largest sizes (a page each) and their alignments from +0xc, then one
-   0x1c-byte entry per part from +0x64: 327 entries of texture (hats 132, eyes 62, eyebrows 24, beards 2, wrinkles 12,
-   make-up 12, glasses 20, moles 2, mouths 37, mustaches 6, noselines 18) */
-#define MIIMODEL_TEXTURE_TABLES (0x64u + 0x1cu * 327u)
-/* the one image every texture entry names: 8 by 8, one mip level, 0x200 bytes of zeros (transparent) in a zlib block,
-   past the tables on its own 16-byte alignment; zlib's header, a stored block (BFINAL, the length 0x200 and its
-   complement), then the Adler-32 of 0x200 zeros, 0x02000001, big-endian */
-#define MIIMODEL_IMAGE_AT       0x2430u
-#define MIIMODEL_IMAGE          0x200u
-#define MIIMODEL_IMAGE_Z_SIZE   (7u + MIIMODEL_IMAGE + 4u)
-#define MIIMODEL_TEXTURE_SIZE   (MIIMODEL_IMAGE_AT + MIIMODEL_IMAGE_Z_SIZE)
-/* a shape file: 0xc bytes of header, then 12 largest sizes and their alignments from +0xc, then from +0x6c one 0x58-byte
-   entry per part: offset, inflated size, stored size, a u32 of zlib parameters, the five vertex attribute offsets and
-   their sizes, the index offset and its byte size, and a bounding box. 857 entries of shape (beards 4, facelines 12,
-   masks 12, hats, foreheads and hair in normal and cap form 132 each, glasses 1, noses 18, noselines 18), then the hair
-   transforms (132 of 72 bytes) and the faceline transforms (12 of 36) */
-#define MIIMODEL_SHAPE_TABLES (0x6cu + 0x58u * 857u + 0x48u * 132u + 0x24u * 12u)
-/* the one mesh every shape entry names: one vertex at the origin (attribute 0, four halves) and the triangle (0, 0, 0)
-   (three u16 indices at +0x10), 32 bytes of zeros in a zlib block, past the tables on its own 16-byte alignment */
-#define MIIMODEL_MESH_AT      0x14de0u
-#define MIIMODEL_MESH         0x20u
-/* zlib of 32 zero bytes: its header, then a stored block of them (BFINAL, the length 32 and its complement), then the
-   Adler-32 of 32 zeros, 0x00200001, in the big-endian order the format gives it */
-#define MIIMODEL_MESH_Z_SIZE  (7u + MIIMODEL_MESH + 4u)
-#define MIIMODEL_SHAPE_SIZE   (MIIMODEL_MESH_AT + MIIMODEL_MESH_Z_SIZE)
-_Static_assert(MIIMODEL_TEXTURE_TABLES == 0x2428u, "the MiiModel texture stand-in's tables");
-_Static_assert(MIIMODEL_SHAPE_TABLES == 0x14dd4u, "the MiiModel shape stand-in's tables");
-static void miimodel_name(u32 i, char name[32]) {
-    static const char* const names[MIIMODEL_FILES] = {"NXTextureLowLinear.dat", "NXTextureLowSRGB.dat",
-                                                      "NXTextureMidLinear.dat", "NXTextureMidSRGB.dat",
-                                                      "ShapeMid.dat",           "ShapeHigh.dat"};
-    snprintf(name, 32, "%s", names[i]);
-}
-static u32 miimodel_file_size(u32 i) { return i < 4 ? MIIMODEL_TEXTURE_SIZE : MIIMODEL_SHAPE_SIZE; }
-/* every shape entry names the one mesh: its offset and sizes, attribute 0 as one 8-byte vertex, and the three indices.
-   The entries are zero to begin with, so only these fields need setting and the others keep their absent value */
-static void miimodel_shapes(u8* b) {
-    u32 i;
-    for (i = 0; i < 857; i++) {
-        u32* e = (u32*)(void*)(b + 0x6c + 0x58 * i);
-        e[0] = MIIMODEL_MESH_AT;                /* the data's offset in the file */
-        e[1] = MIIMODEL_MESH;                   /* its inflated size */
-        e[2] = MIIMODEL_MESH_Z_SIZE;            /* its stored size */
-        e[9] = 8;                               /* attribute 0's size: one vertex, the others absent */
-        e[14] = 0x10;                           /* the indices' offset in the mesh */
-        e[15] = 6;                              /* their byte size: three of them */
-    }
-}
-/* every texture entry names the one image: its offset and sizes, the alignment the console's parts take, 8 by 8, one
-   mip level, in the format its kind's parts are in on the console, which the model's shaders read them as */
-static void miimodel_textures(u8* b) {
-    static const struct {
-        u16 count;
-        u8 format;
-    } kinds[11] = {{132, 4}, {62, 8}, {24, 8}, {2, 10}, {12, 10}, {12, 10}, {20, 1}, {2, 8}, {37, 8}, {6, 9}, {18, 1}};
-    u32 k, i, n = 0;
-    for (k = 0; k < 11; k++)
-        for (i = 0; i < kinds[k].count; i++, n++) {
-            u8* e = b + 0x64 + 0x1c * n;
-            put32(e, MIIMODEL_IMAGE_AT);         /* the data's offset in the file */
-            put32(e + 4, MIIMODEL_IMAGE);        /* its inflated size */
-            put32(e + 8, MIIMODEL_IMAGE_Z_SIZE); /* its stored size */
-            put32(e + 0x10, 0x200);              /* its alignment */
-            snx_st_le16(e + 0x14, 8);            /* width */
-            snx_st_le16(e + 0x16, 8);            /* height */
-            e[0x18] = 1;                         /* mip levels */
-            e[0x19] = kinds[k].format;
-        }
-}
-static void miimodel_file_write(u32 i, u8* out) {
-    static const u8 mesh[] = {
-        0x78, 0x01,                                     /* zlib's header */
-        0x01, 0x20, 0x00, 0xdf, 0xff,                   /* a stored block of 32 bytes: final, the length, its complement */
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* the vertex: four halves at the origin */
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* and 16 more bytes of it, the indices among them */
-        0x00, 0x20, 0x00, 0x01,                         /* the Adler-32 of 32 zeros, big-endian */
-    };
-    u32 kinds = i < 4 ? 11 : 12, k;
-    memcpy(out, i < 4 ? "NFTR" : "NFSR", 4);
-    put32(out + 4, 1);
-    for (k = 0; k < kinds; k++) {
-        put32(out + 0xc + 4 * k, 0x1000);                /* each kind's largest decompressed part */
-        put32(out + 0xc + 4 * kinds + 4 * k, 0x1000);    /* and its alignment, which the pool takes from the first */
-    }
-    if (i >= 4) {
-        miimodel_shapes(out);
-        memcpy(out + MIIMODEL_MESH_AT, mesh, sizeof mesh);
-        return;
-    }
-    miimodel_textures(out);
-    memcpy(out + MIIMODEL_IMAGE_AT, "\x78\x01\x01\x00\x02\xff\xfd", 7); /* the image's zeros nought already */
-    memcpy(out + MIIMODEL_IMAGE_AT + 7 + MIIMODEL_IMAGE, "\x02\x00\x00\x01", 4);
-}
+/* MiiModel (0100000000000802) when the game's data folder has none of the player's in system/archives: the one
+   mii_model.c draws, its six files about 1 MB, made on the game's first open of it so that a game without Miis never
+   makes it */
+static u32 miimodel_file_room(u32 i) { return snx_mii_model_write(i, NULL); }
+static u32 miimodel_file_write(u32 i, u8* out) { return snx_mii_model_write(i, out); }
 
 /* a synthesized archive's files, in a RomFS laid out like romfs_build's with every file in its root folder, into m
-   (cap bytes, nought where a file's writer leaves it); gives the bytes used */
-static u64 filesrom_init(u8* m, size_t cap, u32 count, void (*file_name)(u32, char[32]), u32 (*file_size)(u32),
-                         void (*file_write)(u32, u8*), const char* what) {
+   (cap bytes, nought where a file's writer leaves it); gives the bytes used. file_room(i) is the most bytes file i
+   takes, and file_write(i, out) writes it and gives its bytes, 0 when it could not be made. A file file_same names an
+   earlier one for (file_same NULL: none) has that one's bytes, and shares them */
+#define FILESROM_MAX 64u
+static u64 filesrom_init(u8* m, size_t cap, u32 count, void (*file_name)(u32, char[32]), u32 (*file_room)(u32),
+                         u32 (*file_write)(u32, u8*), u32 (*file_same)(u32), const char* what) {
     u32 dbuckets = hcount(1), fbuckets = hcount(count);
     u64 dhash = 0x50;
     u64 dtab = dhash + (u64)dbuckets * 4;
     u64 fhash = dtab + ROM_DIR_ENTRY;
     u64 ftab = fhash + (u64)fbuckets * 4;
-    u64 fsize = 0, dsize = 0, fdata, data = 0, off = 0;
+    u64 fsize = 0, room = 0, dsize = 0, fdata, off = 0, at[FILESROM_MAX], sizes[FILESROM_MAX];
     u32 i;
     char name[32];
 
+    if (count > FILESROM_MAX)
+        fatal("%s: %u files, more than a synthesized archive holds (%u)\n", what, count, FILESROM_MAX);
     for (i = 0; i < count; i++) {
         file_name(i, name);
         fsize += entry_size(ROM_FILE_ENTRY, name);
-        dsize = (dsize + 15) & ~(u64)15;
-        dsize += file_size(i);
+        if (!file_same || file_same(i) == i) room = ((room + 15) & ~(u64)15) + file_room(i);
     }
     fdata = (ftab + fsize + 0x1FF) & ~(u64)0x1FF;
-    if (fdata + dsize > cap) fatal("%s: the synthesized archive does not fit\n", what);
-    memset(m, 0, cap);
+    if (fdata + room > cap)
+        fatal("%s: the synthesized archive takes up to %llu bytes, and has room for %llu\n", what,
+              (unsigned long long)(fdata + room), (unsigned long long)cap);
+    memset(m, 0, (size_t)(fdata + room));
+    /* the files' bytes, each right after the one before: as none takes more than its room, they fit the rooms' sum */
+    for (i = 0; i < count; i++) {
+        u32 same = file_same ? file_same(i) : i;
+        if (same != i) {
+            at[i] = at[same];
+            sizes[i] = sizes[same];
+            continue;
+        }
+        dsize = (dsize + 15) & ~(u64)15;
+        at[i] = dsize;
+        sizes[i] = file_write(i, m + fdata + at[i]);
+        if (!sizes[i]) {
+            file_name(i, name);
+            fatal("%s: %s could not be made: no memory for it\n", what, name);
+        }
+        dsize += sizes[i];
+    }
     memset(m + dhash, 0xFF, (size_t)dbuckets * 4);
     memset(m + fhash, 0xFF, (size_t)fbuckets * 4);
     /* the root folder, its files starting at table offset 0 */
@@ -1839,23 +1825,19 @@ static u64 filesrom_init(u8* m, size_t cap, u32 count, void (*file_name)(u32, ch
     put32(m + dtab + 20, 0);
     for (i = 0; i < count; i++) {
         u32 len, b;
-        u64 size = file_size(i);
         u8* e;
         file_name(i, name);
         len = (u32)strlen(name);
-        data = (data + 15) & ~(u64)15;
         e = m + ftab + off;
         put32(e, 0); /* the root folder */
         put32(e + 4, i + 1 < count ? (u32)(off + entry_size(ROM_FILE_ENTRY, name)) : ROM_NONE);
-        put64(e + 8, data);
-        put64(e + 16, size);
+        put64(e + 8, at[i]);
+        put64(e + 16, sizes[i]);
         b = rhash(0, name) % fbuckets;
         memcpy(e + 24, m + fhash + (u64)b * 4, 4);
         put32(m + fhash + (u64)b * 4, (u32)off);
         put32(e + 28, len);
         memcpy(e + ROM_FILE_ENTRY, name, len);
-        file_write(i, m + fdata + data);
-        data += size;
         off += entry_size(ROM_FILE_ENTRY, name);
     }
     put64(m, 0x50);
@@ -1868,10 +1850,18 @@ static u64 filesrom_init(u8* m, size_t cap, u32 count, void (*file_name)(u32, ch
     put64(m + 56, ftab);
     put64(m + 64, fsize);
     put64(m + 72, fdata);
-    return fdata + data;
+    return fdata + dsize;
 }
 /* save data folders, by SaveDataType */
 static const char* const g_save_kinds[] = {"system", "user", "bcat", "device", "temp", "cache", "sysbcat"};
+/* the title ID the saves are kept by: the program's own, and a collection's other program (g_program) its
+   application's, which fs_saves_init found */
+static u64 save_title(void) { return g_program ? g_host.fs.save_title : g_hle.kernel.title_id; }
+/* save_layout=global is in effect: its folder is known (fs_saves_init) and the program has a title ID of its own */
+static int save_layout_global(void) {
+    char title[17];
+    return g_host.fs.save_root[0] && strcmp(g_settings.save_layout, "game") && snx_title_text(save_title(), title);
+}
 /* An Account save is save/user.<uid>, the folder of its user (users.c). The fixed uid's (am.c's g_user_id, user 1's
    when users.ini gives it none), while it has none, is the one an older version left, played where it is and said once
    a run (docs/DEPRECATIONS.md): save/user, from before there were other users, else a nonempty save/system (earlier
@@ -1900,10 +1890,11 @@ static u32 save_user(const nn_fs_SaveDataAttribute* attribute, char* p, size_t n
         *both = 1;
         R_THROW(FS_EXISTS);
     }
-    WARN_LIMIT(1,
-               "fs: %s%s, the first user's saves, was left by an older version: this one keeps them in %s%s. The game "
-               "plays them where they are until you move the folder there (docs/DEPRECATIONS.md)\n",
-               g_datadir, old, g_datadir, p);
+    if (!save_layout_global()) /* save_layout=global says where it goes itself (save_folder) */
+        WARN_LIMIT(1,
+                   "fs: %s%s, the first user's saves, was left by an older version: this one keeps them in %s%s. The "
+                   "game plays them where they are until you move the folder there (docs/DEPRECATIONS.md)\n",
+                   g_datadir, old, g_datadir, p);
     snprintf(p, n, "%s", old);
     R_SUCCEED();
 }
@@ -1938,10 +1929,11 @@ static int nn_fssrv_sf_IFileSystemProxy_OpenDataStorageByPath(SvcObj* self, IpcB
                                                               SvcObj** storage) {
     R_THROW(RC(2, 1001));
 }
-/* index 0 is this program, the only one GetProgramIndexForAccessLog reports: its data filesystem is not here either */
+/* this program's own index (g_program, which GetProgramIndexForAccessLog reports): its data filesystem is not here
+   either; another program's is TargetNotFound */
 static int nn_fssrv_sf_IFileSystemProxy_OpenDataFileSystemWithProgramIndex(SvcObj* self, u8 program_index,
                                                                            SvcObj** filesystem) {
-    R_THROW(program_index ? RC(2, 1002) : RC(2, 1001));
+    R_THROW(program_index != g_program ? RC(2, 1002) : RC(2, 1001));
 }
 static int nn_fssrv_sf_IFileSystemProxy_OpenFileSystemWithPatch(SvcObj* self, nn_ncm_ProgramId program_id,
                                                                 nn_fs_FileSystemProxyType type, SvcObj** filesystem) {
@@ -1985,28 +1977,348 @@ static int nn_fssrv_sf_IFileSystemProxy_IsSdCardAccessible(SvcObj* self, u8* acc
     *accessible = 1;
     R_SUCCEED();
 }
-/* one program, the first: a program count of 0 doesn't happen on the console */
+/* this program's index and its application's programs: those of the dump read in place, else as many as reach its
+   index (a program count of 0 doesn't happen on the console) */
 static int nn_fssrv_sf_IFileSystemProxy_GetProgramIndexForAccessLog(SvcObj* self, u32* program_index,
                                                                     u32* program_count) {
-    *program_count = 1;
+    (void)self;
+    *program_index = (u32)g_program;
+    *program_count = (u32)(g_hle.fs.dfs && g_hle.fs.dump.programs > g_program ? g_hle.fs.dump.programs : g_program + 1);
     R_SUCCEED();
 }
-/* save/<kind>, by the attribute's SaveDataType, and an Account save its user's (save_user) */
-static int open_save(const nn_fs_SaveDataAttribute* attribute, SvcObj** filesystem) {
-    char p[64];
+/* save_layout=global: each save in one folder of every game's, the data folder's save/ (g_host.fs.save_root), apart
+   from the games as the console keeps them: an Account save in user.<uid>/<title ID>/, Device's in device/<title ID>/,
+   BCAT's in bcat/<title ID>/, cache storage in cache/<title ID>/<index>/, the system's in system/<save ID>/ and
+   sysbcat/<save ID>/. Temporary storage stays the game's, which every start empties, and so do the saves of a program
+   with no title ID of its own (a homebrew's), which would share one. Each folder is a graft of the tree: name, of host;
+   the save is in it, or in its folder sub (an index, a save ID). 0 when the save has none */
+static int save_global(const nn_fs_SaveDataAttribute* attribute, char* name, size_t name_size, char* host,
+                       size_t host_size, char* sub, size_t sub_size) {
+    char title[17], uid_text[33];
+    u8 type = attribute->type;
+    u64 uid[2];
+    sub[0] = 0;
+    if (type == 4 || !g_host.fs.save_root[0] || !snx_title_text(save_title(), title)) return 0;
+    if (type == 1) {
+        uid[0] = snx_ld_le64(attribute->uid.v);
+        uid[1] = snx_ld_le64(attribute->uid.v + 8);
+        snx_users_uid_text(uid, uid_text);
+        snprintf(name, name_size, "global-user.%s", uid_text);
+        snprintf(host, host_size, "%s/user.%s/%s", g_host.fs.save_root, uid_text, title);
+    } else if (type == 2 || type == 3 || type == 5) {
+        const char* kind = g_save_kinds[type];
+        snprintf(name, name_size, "global-%s", kind);
+        snprintf(host, host_size, "%s/%s/%s", g_host.fs.save_root, kind, title);
+        if (type == 5) snprintf(sub, sub_size, "%u", (unsigned)attribute->index);
+    } else { /* System, SystemBcat and the types sf doesn't name, which go as System */
+        const char* kind = type == 6 ? "sysbcat" : "system";
+        snprintf(name, name_size, "global-%s", kind);
+        snprintf(host, host_size, "%s/%s", g_host.fs.save_root, kind);
+        snprintf(sub, sub_size, "%016llX", (unsigned long long)attribute->system_save_data_id);
+    }
+    return 1;
+}
+/* path in the tree is a folder with something in it: a save, not one a mount made and nothing wrote */
+static int save_there(const char* path) { /* tree.lock held */
+    FsNode* node;
+    return !fs_tree_lookup(&g_hle.fs.tree, NULL, path, &node) && node->is_dir && node->children;
+}
+/* save_layout=global's folders of this title there now, grafted: a save is found then without enumerating anything
+   later. Called at startup, after the users are known */
+/* A collection's other program keeps the saves of its application, by the ID its control.nacp names their owner
+   (SaveDataOwnerId, at 0x3078), else its game's: the console's fs keeps the saves of a program of several by its
+   main program (ProgramIndexMapInfo), and every program of such an application names that one owner, so they all
+   play one save. Eden keeps one by each program's own ID */
+static void save_title_find(void) {
+    u64 size = 0, owner = 0;
+    u8* nacp;
+    if (!g_program) return;
+    nacp = fs_read_file("control.nacp", &size);
+    if (nacp && size >= 0x3080) owner = snx_ld_le64(nacp + 0x3078);
+    free(nacp);
+    g_host.fs.save_title = owner ? owner : game_title();
+    LOG("fs: program %d keeps its saves as %016llx, %s\n", g_program, (unsigned long long)g_host.fs.save_title,
+        owner ? "the owner its control.nacp names (SaveDataOwnerId)" : "its game's: its control.nacp names no owner");
+}
+void fs_saves_init(const char* root) {
+    static const u8 types[] = {2, 3, 5, 0, 6};
+    nn_fs_SaveDataAttribute a;
+    char name[64], host[FS_TREE_PATH_MAX], sub[24];
+    int i;
+    save_title_find();
+    snprintf(g_host.fs.save_root, sizeof g_host.fs.save_root, "%s", root ? root : "");
+    pm_lock(&g_hle.fs.tree.lock);
+    for (i = 0; i < g_user_count + (int)sizeof types; i++) {
+        memset(&a, 0, sizeof a);
+        if (i < g_user_count) {
+            a.type = 1;
+            snx_st_le64(a.uid.v, g_users[i].uid[0]);
+            snx_st_le64(a.uid.v + 8, g_users[i].uid[1]);
+        } else
+            a.type = types[i - g_user_count];
+        if (!save_global(&a, name, sizeof name, host, sizeof host, sub, sizeof sub) || !snx_is_dir(host)) continue;
+        FsTreeResult r = fs_tree_graft_writable(&g_hle.fs.tree, name, host);
+        if (r != FS_TREE_OK && r != FS_TREE_EXISTS) fatal("Could not index the saves in %s (error %d)", host, r);
+    }
+    pm_unlock(&g_hle.fs.tree.lock);
+}
+int fs_user_saves_take(const u64 uid[2], char (*paths)[FS_TREE_PATH_MAX], int max) {
+    char text[33], name[64], game[64];
+    FsNode* node;
+    int n = 0;
+    snx_users_uid_text(uid, text);
+    snprintf(name, sizeof name, "global-user.%s", text);
+    snprintf(game, sizeof game, "save/user.%s", text);
+    pm_lock(&g_hle.fs.tree.lock);
+    if (g_host.fs.save_root[0] && n < max) {
+        snprintf(paths[n], FS_TREE_PATH_MAX, "%s/user.%s", g_host.fs.save_root, text);
+        if (snx_is_dir(paths[n])) {
+            if (!fs_tree_lookup(&g_hle.fs.tree, NULL, name, &node)) fs_tree_forget(&g_hle.fs.tree, name);
+            n++;
+        }
+    }
+    if (n < max && !fs_tree_lookup(&g_hle.fs.tree, NULL, game, &node) && node->is_dir &&
+        !fs_tree_path(&g_hle.fs.tree, node, paths[n], FS_TREE_PATH_MAX) && !fs_tree_forget(&g_hle.fs.tree, game))
+        n++;
+    pm_unlock(&g_hle.fs.tree.lock);
+    return n;
+}
+/* The folder of the attribute's save in the tree, into p, as save_layout says: global's (save_global), game's
+   save/<kind> of the game's data folder, an Account save its user's (save_user). The other layout's while only it
+   holds the save, played where it is and said once a run; both holding one is two saves of it, which stop says and
+   the game stops for, leaving both */
+static u32 save_folder(const nn_fs_SaveDataAttribute* attribute, char* p, size_t n, char* stop, size_t stop_size) {
+    char name[64], host[FS_TREE_PATH_MAX], sub[24], global[96], game[64];
     u8 type = attribute->type;
     const char* kind = type < sizeof g_save_kinds / sizeof g_save_kinds[0] ? g_save_kinds[type] : "system";
-    int both = 0;
+    int both = 0, mine = strcmp(g_settings.save_layout, "game"), in_global, in_game;
+    FsNode* node;
     u32 rc = 0;
-    snprintf(p, sizeof p, "save/%s", kind);
+    stop[0] = 0;
+    snprintf(game, sizeof game, "save/%s", kind);
+    if (type == 1) rc = save_user(attribute, game, sizeof game, &both);
+    if (both) {
+        snprintf(stop, stop_size,
+                 "Two saves of the first user: %ssave/user, from before there were other users, and %s%s. Keep the "
+                 "one you play and move the other out of %ssave/, then start the game again",
+                 g_datadir, g_datadir, game, g_datadir);
+        return rc;
+    }
+    if (R_FAILED(rc)) return rc;
+    if (!save_global(attribute, name, sizeof name, host, sizeof host, sub, sizeof sub)) {
+        snprintf(p, n, "%s", game);
+        R_SUCCEED();
+    }
+    snprintf(global, sizeof global, "%s%s%s", name, sub[0] ? "/" : "", sub);
+    in_global = save_there(global);
+    in_game = save_there(game);
+    if (in_global && in_game) {
+        snprintf(stop, stop_size,
+                 "Two saves of this game's %s save: %s%s, each game's own, and %s%s%s, the one of every game's "
+                 "(save_layout). Keep the one you play and move the other out, then start the game again",
+                 kind, g_datadir, game, host, sub[0] ? "/" : "", sub);
+        R_SUCCEED();
+    }
+    if (mine ? in_game : in_global) {
+        unsigned bit = type < 8 ? type : 0;
+        if (!(g_host.fs.save_told >> bit & 1)) {
+            g_host.fs.save_told |= 1u << bit;
+            if (mine)
+                WARN("fs: %s%s holds this game's %s save, which save_layout=global keeps in %s%s%s. The game plays it "
+                     "where it is until you move the folder there (Settings > App > Move Old Files, "
+                     "docs/DEPRECATIONS.md)\n",
+                     g_datadir, game, kind, host, sub[0] ? "/" : "", sub);
+            else
+                WARN("fs: %s%s%s holds this game's %s save, which save_layout=game keeps in %s%s. The game plays it "
+                     "where it is until you move the folder there\n",
+                     host, sub[0] ? "/" : "", sub, kind, g_datadir, game);
+        }
+        snprintf(p, n, "%s", mine ? game : global);
+        R_SUCCEED();
+    }
+    if (!mine) {
+        snprintf(p, n, "%s", game);
+        R_SUCCEED();
+    }
+    /* global's, made now when it is not there: the folder above it first, then the graft */
+    if (fs_tree_lookup(&g_hle.fs.tree, NULL, name, &node)) {
+        char* parent = snx_strdup(host);
+        char* cut = strrchr(parent, '/');
+        if (cut) *cut = 0;
+        if (cut && snx_mkdirs(parent)) {
+            WARN("fs: could not make %s for this game's %s save\n", parent, kind);
+            free(parent);
+            R_THROW(RC(2, 1)); /* PathNotFound */
+        }
+        free(parent);
+        FsTreeResult r = fs_tree_graft_new(&g_hle.fs.tree, name, host);
+        if (r != FS_TREE_OK) {
+            WARN("fs: could not make %s for this game's %s save (error %d)\n", host, kind, r);
+            return tree_result(r);
+        }
+    }
+    snprintf(p, n, "%s", global);
+    R_SUCCEED();
+}
+/* A save's note: the program that last committed it, in <the save's folder>.version (SNX_SAVE_NOTE) beside it on the
+   host, where none of the game's mounts reaches. A game may not read a save a newer version of it wrote (an older one crashes on it),
+   so opening a save whose note names a newer version says both, and the crash reports say it again (fs_save_report).
+   An Account, Device and BCAT save have one; temporary and cache storage, the system's and the saves of a program with
+   no title ID of its own (a homebrew's) none. A save with no note says nothing until its first commit writes one */
+typedef struct {
+    u64 program;      /* the title ID that ran, an update's own */
+    u64 version;      /* its content meta's: 0 for the game's own program, SNX_NO_VERSION when not known */
+    char display[16]; /* its control data's display version */
+} SaveNote;
+/* the program that runs, as its note names it. The version: an update's from its program's name (main.c's
+   addon_init); the update's in the dump the game's program reads in place when the dump holds one, else 0; not known
+   for the game's own program extracted (an update applied to it says its version nowhere). 0 for a program with no
+   title ID of its own */
+static int save_note_now(SaveNote* note) {
+    char title[17], *c;
+    size_t k = strlen(g_gamename);
+    memset(note, 0, sizeof *note);
+    if (!snx_title_text(g_hle.kernel.title_id, title)) return 0;
+    if (g_addon) {
+        note->program = g_addon;
+        note->version = !strncmp(g_exename, g_gamename, k) && g_exename[k] == '_' ? snx_addon_version(g_exename + k + 1)
+                                                                                  : SNX_NO_VERSION;
+    } else {
+        note->program = g_hle.kernel.title_id;
+        note->version = !g_hle.fs.dfs ? SNX_NO_VERSION : g_hle.fs.dump.patch.found ? g_hle.fs.dump.version : 0;
+    }
+    am_display_version(note->display);
+    for (c = note->display; *c; c++)
+        if ((unsigned char)*c < 32 || (unsigned char)*c > 126) *c = '?'; /* one line of the note */
+    return 1;
+}
+/* the note of the save whose folder is root: its host path into path. 0, or nonzero for one past size */
+static int save_note_path(FsNode* root, char* path, size_t size) { /* tree.lock held */
+    size_t n;
+    if (fs_tree_path(&g_hle.fs.tree, root, path, size)) return 1;
+    n = strlen(path);
+    while (n > 1 && (path[n - 1] == '/' || path[n - 1] == '\\')) path[--n] = 0;
+    if (size - n < sizeof SNX_SAVE_NOTE) return 1;
+    memcpy(path + n, SNX_SAVE_NOTE, sizeof SNX_SAVE_NOTE);
+    return 0;
+}
+/* the note at path into note: 1 when it is there and names a program, else 0 */
+static int save_note_read(const char* path, SaveNote* note) {
+    size_t size;
+    char* text = (char*)snx_read_file(path, &size);
+    char *key, *value, *end;
+    SnxIni ini;
+    memset(note, 0, sizeof *note);
+    note->version = SNX_NO_VERSION;
+    if (!text) return 0;
+    snx_ini_start(&ini, text);
+    while (snx_ini_next(&ini, &key, &value)) {
+        if (!strcmp(key, "program"))
+            snx_title_parse(value, &note->program);
+        else if (!strcmp(key, "version") && *value >= '0' && *value <= '9') {
+            unsigned long long v = strtoull(value, &end, 10);
+            if (!*end) note->version = v;
+        } else if (!strcmp(key, "display"))
+            snprintf(note->display, sizeof note->display, "%s", value);
+    }
+    free(text);
+    return note->program != 0;
+}
+/* the numbers of a display version, a run of digits each, compared in turn, a missing one as 0: 1 when a's are
+   greater than b's (1.10.0 after 1.9.2), 0 when they are the same or either has none */
+static int save_display_newer(const char* a, const char* b) {
+    char* end;
+    if (!strpbrk(a, "0123456789") || !strpbrk(b, "0123456789")) return 0;
+    for (;;) {
+        unsigned long long x = 0, y = 0;
+        a += strcspn(a, "0123456789");
+        b += strcspn(b, "0123456789");
+        if (!*a && !*b) return 0;
+        if (*a) {
+            x = strtoull(a, &end, 10);
+            a = end;
+        }
+        if (*b) {
+            y = strtoull(b, &end, 10);
+            b = end;
+        }
+        if (x != y) return x > y;
+    }
+}
+/* 1 when a is a newer version than b: by their content meta versions when both are known, else by their display
+   versions' numbers; 0 when they are the same or neither tells */
+static int save_note_newer(const SaveNote* a, const SaveNote* b) {
+    if (a->version != SNX_NO_VERSION && b->version != SNX_NO_VERSION) return a->version > b->version;
+    return save_display_newer(a->display, b->display);
+}
+/* a version as a message names it: its display version, its content meta's after it when known */
+static void save_note_name(const SaveNote* note, char* out, size_t size) {
+    if (note->version != SNX_NO_VERSION)
+        snprintf(out, size, "%s (%llu, program %016llX)", note->display, (unsigned long long)note->version,
+                 (unsigned long long)note->program);
+    else
+        snprintf(out, size, "%s (program %016llX)", note->display, (unsigned long long)note->program);
+}
+/* a save opened: said when its note names a newer version of the game than this program, once for each save and
+   version (a game opens its save again and again), and kept for the crash reports */
+static void save_note_check(FsNode* root, const char* kind) { /* tree.lock held */
+    SaveNote now, was;
+    char path[FS_TREE_PATH_MAX + sizeof SNX_SAVE_NOTE], line[sizeof g_host.fs.save_newer], a[64], b[64];
+    if (!save_note_now(&now) || save_note_path(root, path, sizeof path) || !save_note_read(path, &was)) return;
+    /* the game's, its update's, or one of its application's other programs, which play the same save */
+    if (snx_program_index(save_title(), was.program) < 0) {
+        LOG_LIMIT(4, "fs: %s names the program %016llX, not this game's %016llX: its version is not compared\n", path,
+                  (unsigned long long)was.program, (unsigned long long)save_title());
+        return;
+    }
+    if (!save_note_newer(&was, &now)) return;
+    save_note_name(&was, a, sizeof a);
+    save_note_name(&now, b, sizeof b);
+    snprintf(line, sizeof line,
+             "%.*s, this game's %s save, was last written by version %s; this program is %s: a game may not read a "
+             "save a newer version of it wrote",
+             (int)(strlen(path) - (sizeof SNX_SAVE_NOTE - 1)), path, kind, a, b);
+    if (!strcmp(line, g_host.fs.save_newer)) return;
+    snprintf(g_host.fs.save_newer, sizeof g_host.fs.save_newer, "%s", line);
+    WARN("fs: %s\n", line);
+}
+/* a save committed: its note names this program from then on (written when it named another) */
+static void save_note_write(FsNode* root) { /* tree.lock held */
+    SaveNote now;
+    char path[FS_TREE_PATH_MAX + sizeof SNX_SAVE_NOTE], text[128], why[256];
+    int n;
+    if (!save_note_now(&now)) return;
+    if (save_note_path(root, path, sizeof path)) {
+        WARN_LIMIT(4, "fs: a save's folder has a path too long for its note beside it: no note of which version wrote "
+                      "it\n");
+        return;
+    }
+    n = snprintf(text, sizeof text, "program=%016llX\n", (unsigned long long)now.program);
+    if (now.version != SNX_NO_VERSION)
+        n += snprintf(text + n, sizeof text - (size_t)n, "version=%llu\n", (unsigned long long)now.version);
+    snprintf(text + n, sizeof text - (size_t)n, "display=%s\n", now.display);
+    if (snx_write_changed(path, text, strlen(text)))
+        WARN_LIMIT(4, "fs: could not write %s, the note of which version wrote the save beside it: %s\n", path,
+                   snx_os_error(why, sizeof why));
+}
+void fs_save_report(void) {
+    if (g_host.fs.save_newer[0]) WARN("  %s\n", g_host.fs.save_newer);
+}
+/* the attribute's save, where save_folder says; an Account, BCAT or Device save noted (save_note) */
+static int open_save(const nn_fs_SaveDataAttribute* attribute, SvcObj** filesystem) {
+    char p[96], stop[FS_TREE_PATH_MAX * 2 + 512];
+    u32 rc;
+    u8 type = attribute->type;
     pm_lock(&g_hle.fs.tree.lock);
-    if (type == 1) rc = save_user(attribute, p, sizeof p, &both);
-    *filesystem = R_FAILED(rc) ? NULL : hostfs_new(p, &rc);
+    rc = save_folder(attribute, p, sizeof p, stop, sizeof stop);
+    *filesystem = R_FAILED(rc) || stop[0] ? NULL : hostfs_new(p, &rc);
+    if (*filesystem && type >= 1 && type <= 3) {
+        FsData* data = (*filesystem)->data;
+        data->noted = 1;
+        save_note_check(data->root, g_save_kinds[type]);
+    }
     pm_unlock(&g_hle.fs.tree.lock);
-    if (both)
-        fatal("Two saves of the first user: %ssave/user, from before there were other users, and %s%s. Keep the one "
-              "you play and move the other out of %ssave/, then start the game again",
-              g_datadir, g_datadir, p, g_datadir);
+    if (stop[0]) fatal("%s", stop);
     return (int)rc;
 }
 static int nn_fssrv_sf_IFileSystemProxy_OpenSaveDataFileSystem(SvcObj* self, nn_fs_SaveDataSpaceId space_id,
@@ -2046,12 +2358,15 @@ static int nn_fssrv_sf_IFileSystemProxy_OpenDataStorageByCurrentProcess(SvcObj* 
     R_SUCCEED();
 }
 /* nn::fs::QueryMountRomCacheSize(size_t*, int) and MountRom's program index overloads, which a game calls.
-   Index 0 is this program, the only one GetProgramIndexForAccessLog reports. Any other index names a program
-   the application doesn't have: TargetNotFound, never a success without a storage, which the SDK wraps as a
-   storage with a null backend and calls through. */
+   This program's own index (g_program, which GetProgramIndexForAccessLog reports) is its RomFS. Another program's
+   is not read here: TargetNotFound, never a success without a storage, which the SDK wraps as a storage with a null
+   backend and calls through. */
 static int nn_fssrv_sf_IFileSystemProxy_OpenDataStorageWithProgramIndex(SvcObj* self, u8 program_index,
                                                                         SvcObj** storage) {
-    R_UNLESS(!program_index, RC(2, 1002));
+    if (program_index != g_program)
+        WARN_LIMIT(4, "fs: program %d opens the RomFS of program %u, which is not read here: TargetNotFound\n",
+                   g_program, (unsigned)program_index);
+    R_UNLESS(program_index == g_program, RC(2, 1002));
     return nn_fssrv_sf_IFileSystemProxy_OpenDataStorageByCurrentProcess(self, storage);
 }
 /* this program's id is the only one there is: another program's is TargetNotFound */
@@ -2077,11 +2392,16 @@ static int nn_fssrv_sf_IFileSystemProxy_OpenDataStorageByDataId(SvcObj* self, nn
         if (data_id == NGWORD2_DATA_ID) {
             r = fs_tree_add_virtual(&g_hle.fs.tree, p, g_hle.fs.ngword2rom, g_hle.fs.ngword2rom_size, &node);
             if (!r) LOG("fs: provided synthesized NgWord2 system archive %016llx\n", (unsigned long long)data_id);
-        } else if (data_id == MIIMODEL_DATA_ID) {
+        } else if (data_id == SNX_MII_MODEL_DATA_ID) {
+            if (!g_hle.fs.miimodelrom_size)
+                g_hle.fs.miimodelrom_size = filesrom_init(g_hle.fs.miimodelrom, sizeof g_hle.fs.miimodelrom,
+                                                          SNX_MII_MODEL_FILES, snx_mii_model_name, miimodel_file_room,
+                                                          miimodel_file_write, snx_mii_model_same, "MiiModel");
             r = fs_tree_add_virtual(&g_hle.fs.tree, p, g_hle.fs.miimodelrom, g_hle.fs.miimodelrom_size, &node);
             if (!r)
-                LOG("fs: provided placeholder MiiModel system archive %016llx: its Mii parts are blank, so Miis draw "
-                    "without faces (your firmware's goes in system/archives)\n",
+                LOG("fs: provided generated MiiModel system archive %016llx (%.1f MB): ScarletNX's own Mii parts, "
+                    "not the console's (the player's firmware's goes in system/archives/%016llx.romfs)\n",
+                    (unsigned long long)data_id, (double)g_hle.fs.miimodelrom_size / 1048576.0,
                     (unsigned long long)data_id);
         } else {
             r = fs_tree_add_virtual(&g_hle.fs.tree, p, g_hle.fs.emptyrom, sizeof g_hle.fs.emptyrom, &node);
@@ -2141,9 +2461,7 @@ static SvcObj* new_fspldr(void) { return nn_fssrv_sf_IFileSystemProxyForLoader_n
 void svc_fs_init(void) {
     emptyrom_init();
     g_hle.fs.ngword2rom_size = filesrom_init(g_hle.fs.ngword2rom, sizeof g_hle.fs.ngword2rom, NGWORD2_FILES,
-                                             ngword2_name, ngword2_file_size, ngword2_file_write, "NgWord2");
-    g_hle.fs.miimodelrom_size = filesrom_init(g_hle.fs.miimodelrom, sizeof g_hle.fs.miimodelrom, MIIMODEL_FILES,
-                                              miimodel_name, miimodel_file_size, miimodel_file_write, "MiiModel");
+                                             ngword2_name, ngword2_file_size, ngword2_file_write, NULL, "NgWord2");
     nn_fssrv_sf_IFileSystemProxy_register(new_fsp);
     nn_fssrv_sf_IProgramRegistry_register(new_fsppr);
     nn_fssrv_sf_IFileSystemProxyForLoader_register(new_fspldr);

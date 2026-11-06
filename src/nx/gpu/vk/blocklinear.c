@@ -84,7 +84,9 @@ VkBuffer vk_bl_scratch(u64 size, u64* cap_out) {
 }
 
 /* bytes from a row of blocks to the next, and from 2^bd slices to the next (gpu.c's bl_yz) */
-static u64 block_row_bytes(const VkBlMove* m) { return (u64)((m->row_bytes + 63) >> 6) << (9 + m->bh + m->bd); }
+static u64 block_row_bytes(const VkBlMove* m) {
+    return (m->gobs_x ? (u64)m->gobs_x : (u64)(m->row_bytes + 63) >> 6) << (9 + m->bh + m->bd);
+}
 static u64 slab_bytes(const VkBlMove* m) {
     return (((((u64)m->height + 7) >> 3) + (1u << m->bh) - 1) >> m->bh) * block_row_bytes(m);
 }

@@ -538,6 +538,9 @@ uint32_t spv_emit_select(SpvEmitter* e, uint32_t result_type, uint32_t condition
    when the module preserves signed zeros (SignedZeroInfNanPreserve), else on its bits */
 uint32_t spv_emit_flush_subnormal(SpvEmitter* e, uint32_t f32_type, uint32_t u32_type, uint32_t bool_type, uint32_t glsl,
                                   uint32_t value, int signed_zeros);
+/* a 32-bit float saturated as the console's .SAT does it: clamped to [0, 1], and +0 for a NaN */
+uint32_t spv_emit_saturate(SpvEmitter* e, uint32_t f32_type, uint32_t u32_type, uint32_t bool_type, uint32_t glsl,
+                           uint32_t value);
 uint32_t spv_emit_vec4_extract(SpvEmitter* e, uint32_t component_type, uint32_t vector, uint32_t component);
 uint32_t spv_emit_subgroup_ballot(SpvEmitter* e, uint32_t vec4_type, uint32_t u32_type, uint32_t predicate);
 uint32_t spv_emit_subgroup_umin_u32(SpvEmitter* e, uint32_t u32_type, uint32_t value);

@@ -545,8 +545,8 @@ H1Iova* host1x_iova_parse(StateIo* io) {
             io_get32(io, &m->handle))
             goto bad;
         /* sorted, apart, inside the IOVA space and the guest's, each one inside its span */
-        if (m->iova < end || m->span > IOVA_END - m->iova || m->size > m->span || m->addr > AS_MAX ||
-            m->size > AS_MAX - m->addr)
+        if (m->iova < end || m->span > IOVA_END - m->iova || m->size > m->span || m->addr > AS_TOP ||
+            m->size > AS_TOP - m->addr)
             goto bad;
         end = m->iova + m->span;
     }

@@ -62,12 +62,27 @@ elseif(CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
         set(snx_openssl_target linux64-riscv64)
     elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "loongarch64")
         set(snx_openssl_target linux64-loongarch64)
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(mips64|mips64el)$")
+        set(snx_openssl_target linux64-mips64) # n64, in the compiler's byte order
+    elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "s390x")
+        set(snx_openssl_target linux64-s390x)
     else()
         message(FATAL_ERROR "OpenSSL's Linux cross build has no target for ${CMAKE_SYSTEM_PROCESSOR} "
                             "(cmake/openssl.cmake)")
     endif()
+elseif(CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_NAME STREQUAL "NetBSD")
+    # Configure's BSD targets, which NetBSD's are
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
+        set(snx_openssl_target BSD-x86_64)
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+        set(snx_openssl_target BSD-aarch64)
+    else()
+        message(FATAL_ERROR "OpenSSL's NetBSD cross build has no target for ${CMAKE_SYSTEM_PROCESSOR} "
+                            "(cmake/openssl.cmake)")
+    endif()
 elseif(CMAKE_CROSSCOMPILING)
-    message(FATAL_ERROR "Cross-building OpenSSL is only set up for Windows, Linux, Android and iOS (cmake/openssl.cmake)")
+    message(FATAL_ERROR "Cross-building OpenSSL is only set up for Windows, Linux, NetBSD, Android and iOS "
+                        "(cmake/openssl.cmake)")
 endif()
 set(snx_openssl_args
     ${snx_openssl_target}

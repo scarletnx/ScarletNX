@@ -7,17 +7,16 @@
    against the host's rules) and round interpolated values differently, so a pixel may differ by a few steps, a depth
    by a thousandth of its range, and a few pixels on edges by more. */
 #include "3ds/gpu/pica.h"
-#include "3ds/gpu/raster.h"
 #include "3ds/gpu/present.h"
 #include "3ds/gpu/texture.h"
 #include "3ds/gpu/transfer.h"
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vk_render.h"
-#include "snx_settings.h"
 #include "3ds/gpu/vk/vk_transfer.h"
 #include "3ds/gpu/vk/vk_y2r.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
+#include "support/3ds_vk_path.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,9 +52,6 @@
 #define VERTEX_OFFSET 0x22a
 
 static int failures;
-static bool uber_pass; /* the draws use the uber shader (shaders/uber.frag) instead of the generated ones */
-static unsigned scaled;  /* the resolution scale of the pass, 0 for the console's own */
-static bool multisampled; /* the pass draws with multisampling: the edges are smoothed, only the interiors are compared */
 static uint32_t seed = 0x3d5u;
 static uint32_t next(void) {
     seed = seed * 1664525u + 1013904223u;
@@ -139,6 +135,30 @@ static void base(List* l, unsigned color_format) {
     put(l, 0x205, 3u << 28 | (uint32_t)sizeof(Vertex) << 16);
     put(l, SNX_PICA_TOPOLOGY, 0);
 }
+/* geometry shader instructions: SETEMIT's vertex (bits 24..25), primitive (23) and winding (22) flags, and EMIT */
+static uint32_t setemit(unsigned vertex, bool primitive, bool winding) {
+    return 0x2bu << 26 | vertex << 24 | (primitive ? 1u << 23 : 0) | (winding ? 1u << 22 : 0);
+}
+#define EMIT (0x2au << 26)
+/* a geometry shader on the base's three outputs a vertex: use (0x229), config (0x252) and the unit's input buffer
+   configuration (attributes - 1, input_to_uniform), its inputs mapped in order, its three outputs enabled */
+static void geometry_shader(List* l, uint32_t use, uint32_t config, uint32_t input, const uint32_t* program,
+                            unsigned words) {
+    put(l, SNX_PICA_USE_GS, use);
+    put(l, 0x24a, 2); /* vs_outmap_total_minus_1_a and _b */
+    put(l, 0x251, 2);
+    put(l, 0x252, config);
+    put(l, SNX_PICA_TOPOLOGY, 3u << 8);
+    put(l, SNX_PICA_GS + SNX_PICA_SH_INPUT_CONFIG, input | 0x08u << 24);
+    put(l, SNX_PICA_GS + SNX_PICA_SH_ATTR_MAP_LOW, 0x76543210u);
+    put(l, SNX_PICA_GS + SNX_PICA_SH_ATTR_MAP_HIGH, 0xfedcba98u);
+    put(l, SNX_PICA_GS + SNX_PICA_SH_OUTPUT_MASK, 7);
+    put(l, SNX_PICA_GS + SNX_PICA_SH_MAIN_OFFSET, 0);
+    put(l, SNX_PICA_GS + SNX_PICA_SH_PROGRAM_OFFSET, 0);
+    for (unsigned i = 0; i < words; ++i) put(l, SNX_PICA_GS + SNX_PICA_SH_PROGRAM_WORD, program[i]);
+    put(l, SNX_PICA_GS + SNX_PICA_SH_SWIZZLE_OFFSET, 0);
+    put(l, SNX_PICA_GS + SNX_PICA_SH_SWIZZLE_WORD, XYZW);
+}
 static void depth_target(List* l, unsigned format) {
     put(l, 0x11c, DEPTH / 8);
     put(l, 0x116, format);
@@ -192,7 +212,6 @@ static bool drew(const Scene* s, bool cpu, bool gpu) {
 static bool record(SnxCtrMemory* m, const Scene* s, const SnxCtrPicaHost* host) {
     SnxCtrPica* p = calloc(1, sizeof *p);
     snx_ctr_pica_init(p);
-    snx_ctr_raster_attach(p);
     SnxCtrPicaResult r = snx_ctr_pica_run(p, m, LIST, s->list.n * 4, host);
     if (r != SNX_CTR_PICA_OK)
         fprintf(stderr, "%s: the list stopped at 0x%03x: %s\n", s->name, p->stop_register,
@@ -209,17 +228,6 @@ static bool draw(SnxCtrMemory* m, const Scene* s, const SnxCtrPicaHost* host, un
     return ok;
 }
 
-/* pixel i of the reference differs from one of its eight neighbours: on an edge, which multisampling smooths */
-static bool on_edge(const unsigned char* image, unsigned bpp, unsigned i) {
-    int x = (int)(i % W), y = (int)(i / W);
-    for (int dy = -1; dy <= 1; ++dy)
-        for (int dx = -1; dx <= 1; ++dx) {
-            int nx = x + dx, ny = y + dy;
-            if (nx < 0 || ny < 0 || nx >= (int)W || ny >= (int)H) continue;
-            if (memcmp(image + i * bpp, image + ((unsigned)ny * W + (unsigned)nx) * bpp, bpp)) return true;
-        }
-    return false;
-}
 static void compare(const Scene* s, const unsigned char* sw, const unsigned char* gpu, const unsigned char* sw_depth,
                     const unsigned char* gpu_depth) {
     static const unsigned formats[5] = {SNX_CTR_PIX_RGBA8, SNX_CTR_PIX_RGB8, SNX_CTR_PIX_RGB5A1, SNX_CTR_PIX_RGB565,
@@ -233,7 +241,6 @@ static void compare(const Scene* s, const unsigned char* sw, const unsigned char
         snx_ctr_pixel_decode(format, sw + i * bpp, a);
         snx_ctr_pixel_decode(format, gpu + i * bpp, b);
         unsigned d = 0;
-        if (multisampled && on_edge(sw, bpp, i)) continue;
         for (unsigned c = 0; c < 4; ++c) {
             unsigned e = a[c] > b[c] ? a[c] - b[c] : b[c] - a[c];
             if (e > d) d = e;
@@ -248,7 +255,6 @@ static void compare(const Scene* s, const unsigned char* sw, const unsigned char
             for (unsigned k = 0; k < (dbpp == 4 ? 3u : dbpp); ++k)
                 a |= (uint32_t)sw_depth[i * dbpp + k] << (8 * k), b |= (uint32_t)gpu_depth[i * dbpp + k] << (8 * k);
             uint32_t e = a > b ? a - b : b - a;
-            if (multisampled && on_edge(sw_depth, dbpp, i)) continue;
             bool stencil = dbpp == 4 && sw_depth[i * 4 + 3] != gpu_depth[i * 4 + 3];
             /* the reference snaps positions to 12.4 fixed point, the host to its own subpixel grid: depths differ by
                their slope times a fraction of a pixel */
@@ -260,9 +266,9 @@ static void compare(const Scene* s, const unsigned char* sw, const unsigned char
         }
     }
     /* edges: a pixel's worth of the target's outline and the triangles' */
-    bool ok = multisampled ? off <= W * H / 100 && depth_off <= W * H / 100 : off <= W * H / 25 && depth_off <= W * H / 25;
-    printf("%s%s%-24s %4u pixels off by more than %u (largest %u), %4u depth or stencil values off: %s\n",
-           multisampled ? "msaa: " : "", uber_pass ? "uber: " : scaled ? (scaled == 2 ? "x2: " : "x3: ") : "", s->name, off, tolerance, worst, depth_off, ok ? "ok" : "FAIL");
+    bool ok = off <= W * H / 25 && depth_off <= W * H / 25;
+    printf("%-24s %4u pixels off by more than %u (largest %u), %4u depth or stencil values off: %s\n", s->name, off,
+           tolerance, worst, depth_off, ok ? "ok" : "FAIL");
     if (!ok) ++failures;
 }
 
@@ -309,6 +315,23 @@ static Scene* scene(const char* name, unsigned color_format, unsigned depth_form
 static void array_draw(Scene* s) {
     put(&s->list, 0x228, s->vertex_count);
     put(&s->list, SNX_PICA_TRIGGER_DRAW, 1);
+}
+/* count immediate-mode vertices of a random position and colour, each attribute float24 w, z, y, x packed big-end
+   first */
+static void immediate_vertices(List* l, unsigned count) {
+    put(l, SNX_PICA_DEFAULT_ATTR_INDEX, 15);
+    for (unsigned t = 0; t < count; ++t) {
+        float v[3][4] = {
+            {(float)(next() % 2001) / 1000.0f - 1.0f, (float)(next() % 2001) / 1000.0f - 1.0f, -0.5f, 1.0f},
+            {(float)(next() % 256) / 255.0f, (float)(next() % 256) / 255.0f, (float)(next() % 256) / 255.0f, 1.0f},
+            {0, 0, 0, 1}};
+        for (unsigned a = 0; a < 3; ++a) {
+            uint32_t x = f24(v[a][0]), y = f24(v[a][1]), z = f24(v[a][2]), w = f24(v[a][3]);
+            put(l, SNX_PICA_DEFAULT_ATTR_VALUE, w << 8 | z >> 16);
+            put(l, SNX_PICA_DEFAULT_ATTR_VALUE, (z & 0xffff) << 16 | y >> 8);
+            put(l, SNX_PICA_DEFAULT_ATTR_VALUE, (y & 0xff) << 24 | x);
+        }
+    }
 }
 
 /* one check: the bytes that the GPU left against the CPU reference's, after every step before them worked */
@@ -673,51 +696,12 @@ static void all_scenes(SnxCtrMemory* m) {
         run(m, s);
         free(s);
     }
-    {
+    if (!snx_ctr_vk()->logic_op)
+        printf("logic op xor: the driver has no logic ops, not compared\n");
+    else {
         Scene* s = scene("logic op xor", 0, 0xff);
         put(&s->list, 0x102, 11);
         triangles(s, 4);
-        array_draw(s);
-        run(m, s);
-        free(s);
-    }
-    {
-        /* a geometry shader in point mode makes a triangle of each vertex: it adds three corner offsets (c0 to c2) to the
-           position and passes the colour and texture coordinate through. The host runs it; the GPU draws what it emits */
-        Scene* s = scene("geometry shader", 0, 0xff);
-        enum { EMIT = 0x2au << 26 };
-#define SETEMIT(vertex, prim) (0x2bu << 26 | (vertex) << 24 | (prim) << 23)
-        const uint32_t program[] = {
-            SETEMIT(0, 0), op1(0x00, 0, 0x20, 0, 0), op1(0x13, 1, 1, 0, 0), op1(0x13, 2, 2, 0, 0), EMIT,
-            SETEMIT(1, 0), op1(0x00, 0, 0x21, 0, 0), op1(0x13, 1, 1, 0, 0), op1(0x13, 2, 2, 0, 0), EMIT,
-            SETEMIT(2, 1), op1(0x00, 0, 0x22, 0, 0), op1(0x13, 1, 1, 0, 0), op1(0x13, 2, 2, 0, 0), EMIT, END};
-#undef SETEMIT
-        const float corners[3][2] = {{-0.3f, -0.3f}, {0.3f, -0.3f}, {0.0f, 0.3f}};
-        put(&s->list, SNX_PICA_GS_EXCLUSIVE, 1);
-        put(&s->list, SNX_PICA_USE_GS, 2);
-        put(&s->list, SNX_PICA_GS + SNX_PICA_SH_PROGRAM_OFFSET, 0);
-        for (unsigned i = 0; i < sizeof program / sizeof *program; ++i)
-            put(&s->list, SNX_PICA_GS + SNX_PICA_SH_PROGRAM_WORD, program[i]);
-        put(&s->list, SNX_PICA_GS + SNX_PICA_SH_SWIZZLE_OFFSET, 0);
-        put(&s->list, SNX_PICA_GS + SNX_PICA_SH_SWIZZLE_WORD, XYZW);
-        for (unsigned c = 0; c < 3; ++c) { /* the corner offsets: float uniforms c0 to c2 */
-            uint32_t x = f24(corners[c][0]), y = f24(corners[c][1]), z = f24(0.0f), w = f24(0.0f);
-            put(&s->list, SNX_PICA_GS + SNX_PICA_SH_UNIFORM_SETUP, c);
-            put(&s->list, SNX_PICA_GS + SNX_PICA_SH_UNIFORM_VALUE, w << 8 | z >> 16);
-            put(&s->list, SNX_PICA_GS + SNX_PICA_SH_UNIFORM_VALUE, (z & 0xffff) << 16 | y >> 8);
-            put(&s->list, SNX_PICA_GS + SNX_PICA_SH_UNIFORM_VALUE, (y & 0xff) << 24 | x);
-        }
-        put(&s->list, SNX_PICA_GS + SNX_PICA_SH_INPUT_CONFIG, 2 | 0x08u << 24); /* three inputs: one vertex of three outputs */
-        put(&s->list, SNX_PICA_GS + SNX_PICA_SH_ATTR_MAP_LOW, 0x210);
-        put(&s->list, SNX_PICA_GS + SNX_PICA_SH_OUTPUT_MASK, 7);
-        put(&s->list, 0x24a, 2); /* vertex outputs minus one, counted twice */
-        put(&s->list, 0x251, 2);
-        put(&s->list, 0x252, 0); /* point mode */
-        put(&s->list, SNX_PICA_TOPOLOGY, 3u << 8); /* the geometry shader's primitives */
-        s->vertices[0] = vertex(-0.5f, -0.4f, -0.5f, 0xff4020ffu, 0, 0);
-        s->vertices[1] = vertex(0.4f, 0.1f, -0.6f, 0x20ff40ffu, 0, 0);
-        s->vertices[2] = vertex(-0.1f, 0.5f, -0.4f, 0x4020ffffu, 0, 0);
-        s->vertex_count = 3;
         array_draw(s);
         run(m, s);
         free(s);
@@ -791,24 +775,115 @@ static void all_scenes(SnxCtrMemory* m) {
     }
     {
         Scene* s = scene("immediate mode", 0, 0xff);
-        put(&s->list, SNX_PICA_DEFAULT_ATTR_INDEX, 15);
-        for (unsigned t = 0; t < 9; ++t) {
-            float v[3][4] = {{(float)(next() % 2001) / 1000.0f - 1.0f, (float)(next() % 2001) / 1000.0f - 1.0f,
-                              -0.5f, 1.0f},
-                             {(float)(next() % 256) / 255.0f, (float)(next() % 256) / 255.0f,
-                              (float)(next() % 256) / 255.0f, 1.0f},
-                             {0, 0, 0, 1}};
-            for (unsigned a = 0; a < 3; ++a) { /* float24 w, z, y, x packed big-end first */
-                uint32_t x = f24(v[a][0]), y = f24(v[a][1]), z = f24(v[a][2]), w = f24(v[a][3]);
-                put(&s->list, SNX_PICA_DEFAULT_ATTR_VALUE, w << 8 | z >> 16);
-                put(&s->list, SNX_PICA_DEFAULT_ATTR_VALUE, (z & 0xffff) << 16 | y >> 8);
-                put(&s->list, SNX_PICA_DEFAULT_ATTR_VALUE, (y & 0xff) << 24 | x);
-            }
-        }
+        immediate_vertices(&s->list, 9);
         run(m, s);
         free(s);
     }
-    if (!uber_pass) { /* the uber shader has no lighting: a lit surface shows its vertex colour */
+    {
+        /* point mode, three vertices a run: their triangle, then the same one (vertex 1 kept) with the winding flag */
+        const uint32_t point[26] = {setemit(0, false, false),
+                                    op1(0x13, 0, 0, 0, 0),
+                                    op1(0x13, 1, 1, 0, 0),
+                                    op1(0x13, 2, 2, 0, 0),
+                                    EMIT,
+                                    setemit(1, false, false),
+                                    op1(0x13, 0, 3, 0, 0),
+                                    op1(0x13, 1, 4, 0, 0),
+                                    op1(0x13, 2, 5, 0, 0),
+                                    EMIT,
+                                    setemit(2, true, false),
+                                    op1(0x13, 0, 6, 0, 0),
+                                    op1(0x13, 1, 7, 0, 0),
+                                    op1(0x13, 2, 8, 0, 0),
+                                    EMIT,
+                                    setemit(0, false, false),
+                                    op1(0x13, 0, 6, 0, 0),
+                                    op1(0x13, 1, 7, 0, 0),
+                                    op1(0x13, 2, 8, 0, 0),
+                                    EMIT,
+                                    setemit(2, true, true),
+                                    op1(0x13, 0, 0, 0, 0),
+                                    op1(0x13, 1, 1, 0, 0),
+                                    op1(0x13, 2, 2, 0, 0),
+                                    EMIT,
+                                    END};
+        /* fixed primitive mode: three vertices of three outputs into c16 to c24 */
+        const uint32_t fixed[16] = {setemit(0, false, false),
+                                    op1(0x13, 0, 0x30, 0, 0),
+                                    op1(0x13, 1, 0x31, 0, 0),
+                                    op1(0x13, 2, 0x32, 0, 0),
+                                    EMIT,
+                                    setemit(1, false, false),
+                                    op1(0x13, 0, 0x33, 0, 0),
+                                    op1(0x13, 1, 0x34, 0, 0),
+                                    op1(0x13, 2, 0x35, 0, 0),
+                                    EMIT,
+                                    setemit(2, true, false),
+                                    op1(0x13, 0, 0x36, 0, 0),
+                                    op1(0x13, 1, 0x37, 0, 0),
+                                    op1(0x13, 2, 0x38, 0, 0),
+                                    EMIT,
+                                    END};
+        Scene* s = scene("geometry shader, points", 0, 0xff);
+        geometry_shader(&s->list, 2, 0, 8, point, 26);
+        triangles(s, 4);
+        array_draw(s);
+        run(m, s);
+        free(s);
+        s = scene("geometry shader, culled", 0, 0xff);
+        put(&s->list, 0x040, 1);
+        geometry_shader(&s->list, 2, 0, 8, point, 26);
+        triangles(s, 10);
+        array_draw(s);
+        run(m, s);
+        free(s);
+        s = scene("geometry shader, fixed", 0, 0xff);
+        geometry_shader(&s->list, 2, 2u | 2u << 8 | 2u << 12 | 16u << 16, 1u << 8, fixed, 16);
+        triangles(s, 8);
+        for (unsigned i = 0; i < 30; ++i) snx_st_le16(s->indices + i * 2, (uint16_t)(next() % s->vertex_count));
+        put(&s->list, 0x227, (INDICES - VERTICES) | 1u << 31);
+        put(&s->list, 0x228, 30);
+        put(&s->list, SNX_PICA_TRIGGER_DRAW_INDEXED, 1);
+        run(m, s);
+        free(s);
+        s = scene("geometry shader, immediate", 0, 0xff);
+        geometry_shader(&s->list, 2, 0, 8, point, 26);
+        immediate_vertices(&s->list, 9);
+        run(m, s);
+        free(s);
+        /* one run that emits a small triangle 180 * 180 times, more than one recording's uploads hold */
+        const uint32_t many[19] = {0x29u << 26 | 17u << 10,            /* loop i0, to 17 */
+                                   0x29u << 26 | 1u << 22 | 16u << 10, /* loop i1, to 16 */
+                                   setemit(0, false, false),
+                                   op1(0x13, 0, 0, 0, 0),
+                                   op1(0x13, 1, 1, 0, 0),
+                                   op1(0x13, 2, 2, 0, 0),
+                                   EMIT,
+                                   setemit(1, false, false),
+                                   op1(0x13, 0, 3, 0, 0),
+                                   op1(0x13, 1, 4, 0, 0),
+                                   op1(0x13, 2, 5, 0, 0),
+                                   EMIT,
+                                   setemit(2, true, false),
+                                   op1(0x13, 0, 6, 0, 0),
+                                   op1(0x13, 1, 7, 0, 0),
+                                   op1(0x13, 2, 8, 0, 0),
+                                   EMIT,
+                                   0x21u << 26, /* nop: the two loops end apart */
+                                   END};
+        s = scene("geometry shader, many triangles", 0, 0xff);
+        geometry_shader(&s->list, 2, 0, 8, many, 19);
+        put(&s->list, SNX_PICA_GS + SNX_PICA_SH_INT, 179u | 1u << 16); /* 180 passes, step 1 */
+        put(&s->list, SNX_PICA_GS + SNX_PICA_SH_INT + 1, 179u | 1u << 16);
+        s->vertices[0] = vertex(-0.1f, -0.1f, -0.5f, 0xff8040ffu, 0, 0);
+        s->vertices[1] = vertex(0.1f, -0.1f, -0.5f, 0x40ff80ffu, 1, 0);
+        s->vertices[2] = vertex(0.0f, 0.1f, -0.5f, 0x8040ffffu, 0, 1);
+        s->vertex_count = 3;
+        array_draw(s);
+        run(m, s);
+        free(s);
+    }
+    {
         Scene* s = scene("lighting, one light", 0, 0xff);
         put(&s->list, 0x140 + 2, 1023u << 20 | 512u << 10 | 1023u);
         put(&s->list, 0x140 + 3, 100u << 20 | 50u << 10 | 20u);
@@ -840,14 +915,8 @@ static const Mode modes[] = {{"--present", "the presented screens", screens},
                              {"--texture-after-draw", "the textures after a draw", texture_after_draw},
                              {"--draw-after-index-copy", "the indices copied before a draw", draw_after_index_copy}};
 
-/* everything that holds the device's objects goes before the device does, so that the next one starts clean */
-static void vk_reset(void) {
-    snx_ctr_vk_transfer_free();
-    snx_ctr_vk_y2r_free();
-    snx_ctr_present_free();
-    snx_ctr_vk_free();
-}
 int main(int argc, char** argv) {
+    int vk_memory = test_ctr_vk_memory(&argc, argv);
     const Mode* mode = &scenes;
     if (argc > 1) {
         mode = NULL;
@@ -870,45 +939,12 @@ int main(int argc, char** argv) {
         snx_ctr_memory_free(m);
         return 77;
     }
-    g_settings.ctr_async_pipelines = 0; /* every draw waits for its own shaders */
+    test_ctr_vk_memory_taken(vk_memory);
     mode->run(m);
-    if (snx_ctr_vk()->shader_object) { /* the same scenes drawn with the uber shader */
-        g_settings.ctr_async_pipelines = 2;
-        uber_pass = true;
-        mode->run(m);
-    }
-    /* the same scenes drawn at the resolution scale, stored down to the guest's own pixels */
-    for (scaled = 2; scaled <= 3; ++scaled) {
-        vk_reset();
-        if (!snx_ctr_vk_init(m, why, sizeof why)) break;
-        g_settings.ctr_resolution_scale = (int)scaled;
-        g_settings.ctr_async_pipelines = 0;
-        uber_pass = false;
-        mode->run(m);
-    }
-    /* and with a budget that holds a few targets at most: the least used are stored and let go of, the scenes agree */
-    scaled = 2;
-    vk_reset();
-    if (snx_ctr_vk_init(m, why, sizeof why)) {
-        g_settings.ctr_resolution_scale = 2;
-        g_settings.ctr_target_memory = 1;
-        mode->run(m);
-        g_settings.ctr_target_memory = 0;
-    }
-    /* and with multisampling, at the console's resolution and at 2x: the interiors of the polygons agree, their edges are
-       smoothed (the tolerance of the edge pixels) */
-    for (scaled = 0; scaled <= 2; scaled += 2) {
-        vk_reset();
-        if (!snx_ctr_vk_init(m, why, sizeof why)) break;
-        g_settings.ctr_resolution_scale = scaled ? (int)scaled : 1;
-        g_settings.ctr_multisampling = 2;
-        multisampled = true;
-        mode->run(m);
-    }
-    multisampled = false;
-    g_settings.ctr_multisampling = 0;
-    g_settings.ctr_resolution_scale = 1;
-    vk_reset();
+    snx_ctr_vk_transfer_free();
+    snx_ctr_vk_y2r_free();
+    snx_ctr_present_free();
+    snx_ctr_vk_free();
     snx_ctr_memory_free(m);
     printf("3ds vk draw: %s %s the CPU reference\n", mode->what, failures ? "differ from" : "agree with");
     return failures != 0;

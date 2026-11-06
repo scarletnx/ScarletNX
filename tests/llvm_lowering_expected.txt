@@ -1,0 +1,3775 @@
+# snx-test-llvm-lowering's summary (llvm_lowering.c says how it is made): each A64 SIMD, FP and crypto op
+# the Switch target decodes, on each emitter path, as inline, guarded (inline with a helper when a guard
+# fails) or helper (always), and the helpers it calls. --update rewrites it.
+# op               path      class    helpers
+ABS_s              aarch64   inline
+ABS_s              generic   inline
+ABS_s              la64-lsx  inline
+ABS_s              mips-msa  inline
+ABS_s              ppc64le   inline
+ABS_s              riscv64-v inline
+ABS_s              x86       inline
+ABS_s              x86-avx2  inline
+ABS_s              x86-base  inline
+ABS_v              aarch64   inline
+ABS_v              generic   inline
+ABS_v              la64-lsx  inline
+ABS_v              mips-msa  inline
+ABS_v              ppc64le   inline
+ABS_v              riscv64-v inline
+ABS_v              x86       inline
+ABS_v              x86-avx2  inline
+ABS_v              x86-base  inline
+ADDHN              aarch64   inline
+ADDHN              generic   inline
+ADDHN              la64-lsx  inline
+ADDHN              mips-msa  inline
+ADDHN              ppc64le   inline
+ADDHN              riscv64-v inline
+ADDHN              x86       inline
+ADDHN              x86-avx2  inline
+ADDHN              x86-base  inline
+ADDP_s             aarch64   inline
+ADDP_s             generic   inline
+ADDP_s             la64-lsx  inline
+ADDP_s             mips-msa  inline
+ADDP_s             ppc64le   inline
+ADDP_s             riscv64-v inline
+ADDP_s             x86       inline
+ADDP_s             x86-avx2  inline
+ADDP_s             x86-base  inline
+ADDP_v             aarch64   inline
+ADDP_v             generic   inline
+ADDP_v             la64-lsx  inline
+ADDP_v             mips-msa  inline
+ADDP_v             ppc64le   inline
+ADDP_v             riscv64-v inline
+ADDP_v             x86       inline
+ADDP_v             x86-avx2  inline
+ADDP_v             x86-base  inline
+ADDV               aarch64   inline
+ADDV               generic   inline
+ADDV               la64-lsx  inline
+ADDV               mips-msa  inline
+ADDV               ppc64le   inline
+ADDV               riscv64-v inline
+ADDV               x86       inline
+ADDV               x86-avx2  inline
+ADDV               x86-base  inline
+ADD_s              aarch64   inline
+ADD_s              generic   inline
+ADD_s              la64-lsx  inline
+ADD_s              mips-msa  inline
+ADD_s              ppc64le   inline
+ADD_s              riscv64-v inline
+ADD_s              x86       inline
+ADD_s              x86-avx2  inline
+ADD_s              x86-base  inline
+ADD_v              aarch64   inline
+ADD_v              generic   inline
+ADD_v              la64-lsx  inline
+ADD_v              mips-msa  inline
+ADD_v              ppc64le   inline
+ADD_v              riscv64-v inline
+ADD_v              x86       inline
+ADD_v              x86-avx2  inline
+ADD_v              x86-base  inline
+AESD               aarch64   inline
+AESD               generic   helper   v_aes
+AESD               la64-lsx  helper   v_aes
+AESD               mips-msa  helper   v_aes
+AESD               ppc64le   helper   v_aes
+AESD               riscv64-v helper   v_aes
+AESD               x86       inline
+AESD               x86-avx2  inline
+AESD               x86-base  helper   v_aes
+AESE               aarch64   inline
+AESE               generic   helper   v_aes
+AESE               la64-lsx  helper   v_aes
+AESE               mips-msa  helper   v_aes
+AESE               ppc64le   helper   v_aes
+AESE               riscv64-v helper   v_aes
+AESE               x86       inline
+AESE               x86-avx2  inline
+AESE               x86-base  helper   v_aes
+AESIMC             aarch64   inline
+AESIMC             generic   helper   v_aesmc
+AESIMC             la64-lsx  helper   v_aesmc
+AESIMC             mips-msa  helper   v_aesmc
+AESIMC             ppc64le   helper   v_aesmc
+AESIMC             riscv64-v helper   v_aesmc
+AESIMC             x86       inline
+AESIMC             x86-avx2  inline
+AESIMC             x86-base  helper   v_aesmc
+AESMC              aarch64   inline
+AESMC              generic   helper   v_aesmc
+AESMC              la64-lsx  helper   v_aesmc
+AESMC              mips-msa  helper   v_aesmc
+AESMC              ppc64le   helper   v_aesmc
+AESMC              riscv64-v helper   v_aesmc
+AESMC              x86       inline
+AESMC              x86-avx2  inline
+AESMC              x86-base  helper   v_aesmc
+AND_v              aarch64   inline
+AND_v              generic   inline
+AND_v              la64-lsx  inline
+AND_v              mips-msa  inline
+AND_v              ppc64le   inline
+AND_v              riscv64-v inline
+AND_v              x86       inline
+AND_v              x86-avx2  inline
+AND_v              x86-base  inline
+BIC_v              aarch64   inline
+BIC_v              generic   inline
+BIC_v              la64-lsx  inline
+BIC_v              mips-msa  inline
+BIC_v              ppc64le   inline
+BIC_v              riscv64-v inline
+BIC_v              x86       inline
+BIC_v              x86-avx2  inline
+BIC_v              x86-base  inline
+BIF_v              aarch64   inline
+BIF_v              generic   inline
+BIF_v              la64-lsx  inline
+BIF_v              mips-msa  inline
+BIF_v              ppc64le   inline
+BIF_v              riscv64-v inline
+BIF_v              x86       inline
+BIF_v              x86-avx2  inline
+BIF_v              x86-base  inline
+BIT_v              aarch64   inline
+BIT_v              generic   inline
+BIT_v              la64-lsx  inline
+BIT_v              mips-msa  inline
+BIT_v              ppc64le   inline
+BIT_v              riscv64-v inline
+BIT_v              x86       inline
+BIT_v              x86-avx2  inline
+BIT_v              x86-base  inline
+BSL_v              aarch64   inline
+BSL_v              generic   inline
+BSL_v              la64-lsx  inline
+BSL_v              mips-msa  inline
+BSL_v              ppc64le   inline
+BSL_v              riscv64-v inline
+BSL_v              x86       inline
+BSL_v              x86-avx2  inline
+BSL_v              x86-base  inline
+CLS_v              aarch64   inline
+CLS_v              generic   inline
+CLS_v              la64-lsx  inline
+CLS_v              mips-msa  inline
+CLS_v              ppc64le   inline
+CLS_v              riscv64-v inline
+CLS_v              x86       inline
+CLS_v              x86-avx2  inline
+CLS_v              x86-base  inline
+CLZ_v              aarch64   inline
+CLZ_v              generic   inline
+CLZ_v              la64-lsx  inline
+CLZ_v              mips-msa  inline
+CLZ_v              ppc64le   inline
+CLZ_v              riscv64-v inline
+CLZ_v              x86       inline
+CLZ_v              x86-avx2  inline
+CLZ_v              x86-base  inline
+CMEQ0_s            aarch64   inline
+CMEQ0_s            generic   inline
+CMEQ0_s            la64-lsx  inline
+CMEQ0_s            mips-msa  inline
+CMEQ0_s            ppc64le   inline
+CMEQ0_s            riscv64-v inline
+CMEQ0_s            x86       inline
+CMEQ0_s            x86-avx2  inline
+CMEQ0_s            x86-base  inline
+CMEQ0_v            aarch64   inline
+CMEQ0_v            generic   inline
+CMEQ0_v            la64-lsx  inline
+CMEQ0_v            mips-msa  inline
+CMEQ0_v            ppc64le   inline
+CMEQ0_v            riscv64-v inline
+CMEQ0_v            x86       inline
+CMEQ0_v            x86-avx2  inline
+CMEQ0_v            x86-base  inline
+CMEQ_s             aarch64   inline
+CMEQ_s             generic   inline
+CMEQ_s             la64-lsx  inline
+CMEQ_s             mips-msa  inline
+CMEQ_s             ppc64le   inline
+CMEQ_s             riscv64-v inline
+CMEQ_s             x86       inline
+CMEQ_s             x86-avx2  inline
+CMEQ_s             x86-base  inline
+CMEQ_v             aarch64   inline
+CMEQ_v             generic   inline
+CMEQ_v             la64-lsx  inline
+CMEQ_v             mips-msa  inline
+CMEQ_v             ppc64le   inline
+CMEQ_v             riscv64-v inline
+CMEQ_v             x86       inline
+CMEQ_v             x86-avx2  inline
+CMEQ_v             x86-base  inline
+CMGE0_s            aarch64   inline
+CMGE0_s            generic   inline
+CMGE0_s            la64-lsx  inline
+CMGE0_s            mips-msa  inline
+CMGE0_s            ppc64le   inline
+CMGE0_s            riscv64-v inline
+CMGE0_s            x86       inline
+CMGE0_s            x86-avx2  inline
+CMGE0_s            x86-base  inline
+CMGE0_v            aarch64   inline
+CMGE0_v            generic   inline
+CMGE0_v            la64-lsx  inline
+CMGE0_v            mips-msa  inline
+CMGE0_v            ppc64le   inline
+CMGE0_v            riscv64-v inline
+CMGE0_v            x86       inline
+CMGE0_v            x86-avx2  inline
+CMGE0_v            x86-base  inline
+CMGE_s             aarch64   inline
+CMGE_s             generic   inline
+CMGE_s             la64-lsx  inline
+CMGE_s             mips-msa  inline
+CMGE_s             ppc64le   inline
+CMGE_s             riscv64-v inline
+CMGE_s             x86       inline
+CMGE_s             x86-avx2  inline
+CMGE_s             x86-base  inline
+CMGE_v             aarch64   inline
+CMGE_v             generic   inline
+CMGE_v             la64-lsx  inline
+CMGE_v             mips-msa  inline
+CMGE_v             ppc64le   inline
+CMGE_v             riscv64-v inline
+CMGE_v             x86       inline
+CMGE_v             x86-avx2  inline
+CMGE_v             x86-base  inline
+CMGT0_s            aarch64   inline
+CMGT0_s            generic   inline
+CMGT0_s            la64-lsx  inline
+CMGT0_s            mips-msa  inline
+CMGT0_s            ppc64le   inline
+CMGT0_s            riscv64-v inline
+CMGT0_s            x86       inline
+CMGT0_s            x86-avx2  inline
+CMGT0_s            x86-base  inline
+CMGT0_v            aarch64   inline
+CMGT0_v            generic   inline
+CMGT0_v            la64-lsx  inline
+CMGT0_v            mips-msa  inline
+CMGT0_v            ppc64le   inline
+CMGT0_v            riscv64-v inline
+CMGT0_v            x86       inline
+CMGT0_v            x86-avx2  inline
+CMGT0_v            x86-base  inline
+CMGT_s             aarch64   inline
+CMGT_s             generic   inline
+CMGT_s             la64-lsx  inline
+CMGT_s             mips-msa  inline
+CMGT_s             ppc64le   inline
+CMGT_s             riscv64-v inline
+CMGT_s             x86       inline
+CMGT_s             x86-avx2  inline
+CMGT_s             x86-base  inline
+CMGT_v             aarch64   inline
+CMGT_v             generic   inline
+CMGT_v             la64-lsx  inline
+CMGT_v             mips-msa  inline
+CMGT_v             ppc64le   inline
+CMGT_v             riscv64-v inline
+CMGT_v             x86       inline
+CMGT_v             x86-avx2  inline
+CMGT_v             x86-base  inline
+CMHI_s             aarch64   inline
+CMHI_s             generic   inline
+CMHI_s             la64-lsx  inline
+CMHI_s             mips-msa  inline
+CMHI_s             ppc64le   inline
+CMHI_s             riscv64-v inline
+CMHI_s             x86       inline
+CMHI_s             x86-avx2  inline
+CMHI_s             x86-base  inline
+CMHI_v             aarch64   inline
+CMHI_v             generic   inline
+CMHI_v             la64-lsx  inline
+CMHI_v             mips-msa  inline
+CMHI_v             ppc64le   inline
+CMHI_v             riscv64-v inline
+CMHI_v             x86       inline
+CMHI_v             x86-avx2  inline
+CMHI_v             x86-base  inline
+CMHS_s             aarch64   inline
+CMHS_s             generic   inline
+CMHS_s             la64-lsx  inline
+CMHS_s             mips-msa  inline
+CMHS_s             ppc64le   inline
+CMHS_s             riscv64-v inline
+CMHS_s             x86       inline
+CMHS_s             x86-avx2  inline
+CMHS_s             x86-base  inline
+CMHS_v             aarch64   inline
+CMHS_v             generic   inline
+CMHS_v             la64-lsx  inline
+CMHS_v             mips-msa  inline
+CMHS_v             ppc64le   inline
+CMHS_v             riscv64-v inline
+CMHS_v             x86       inline
+CMHS_v             x86-avx2  inline
+CMHS_v             x86-base  inline
+CMLE0_s            aarch64   inline
+CMLE0_s            generic   inline
+CMLE0_s            la64-lsx  inline
+CMLE0_s            mips-msa  inline
+CMLE0_s            ppc64le   inline
+CMLE0_s            riscv64-v inline
+CMLE0_s            x86       inline
+CMLE0_s            x86-avx2  inline
+CMLE0_s            x86-base  inline
+CMLE0_v            aarch64   inline
+CMLE0_v            generic   inline
+CMLE0_v            la64-lsx  inline
+CMLE0_v            mips-msa  inline
+CMLE0_v            ppc64le   inline
+CMLE0_v            riscv64-v inline
+CMLE0_v            x86       inline
+CMLE0_v            x86-avx2  inline
+CMLE0_v            x86-base  inline
+CMLT0_s            aarch64   inline
+CMLT0_s            generic   inline
+CMLT0_s            la64-lsx  inline
+CMLT0_s            mips-msa  inline
+CMLT0_s            ppc64le   inline
+CMLT0_s            riscv64-v inline
+CMLT0_s            x86       inline
+CMLT0_s            x86-avx2  inline
+CMLT0_s            x86-base  inline
+CMLT0_v            aarch64   inline
+CMLT0_v            generic   inline
+CMLT0_v            la64-lsx  inline
+CMLT0_v            mips-msa  inline
+CMLT0_v            ppc64le   inline
+CMLT0_v            riscv64-v inline
+CMLT0_v            x86       inline
+CMLT0_v            x86-avx2  inline
+CMLT0_v            x86-base  inline
+CMTST_s            aarch64   inline
+CMTST_s            generic   inline
+CMTST_s            la64-lsx  inline
+CMTST_s            mips-msa  inline
+CMTST_s            ppc64le   inline
+CMTST_s            riscv64-v inline
+CMTST_s            x86       inline
+CMTST_s            x86-avx2  inline
+CMTST_s            x86-base  inline
+CMTST_v            aarch64   inline
+CMTST_v            generic   inline
+CMTST_v            la64-lsx  inline
+CMTST_v            mips-msa  inline
+CMTST_v            ppc64le   inline
+CMTST_v            riscv64-v inline
+CMTST_v            x86       inline
+CMTST_v            x86-avx2  inline
+CMTST_v            x86-base  inline
+CNT_v              aarch64   inline
+CNT_v              generic   inline
+CNT_v              la64-lsx  inline
+CNT_v              mips-msa  inline
+CNT_v              ppc64le   inline
+CNT_v              riscv64-v inline
+CNT_v              x86       inline
+CNT_v              x86-avx2  inline
+CNT_v              x86-base  inline
+DUP_element_s      aarch64   inline
+DUP_element_s      generic   inline
+DUP_element_s      la64-lsx  inline
+DUP_element_s      mips-msa  inline
+DUP_element_s      ppc64le   inline
+DUP_element_s      riscv64-v inline
+DUP_element_s      x86       inline
+DUP_element_s      x86-avx2  inline
+DUP_element_s      x86-base  inline
+DUP_element_v      aarch64   inline
+DUP_element_v      generic   inline
+DUP_element_v      la64-lsx  inline
+DUP_element_v      mips-msa  inline
+DUP_element_v      ppc64le   inline
+DUP_element_v      riscv64-v inline
+DUP_element_v      x86       inline
+DUP_element_v      x86-avx2  inline
+DUP_element_v      x86-base  inline
+DUP_general        aarch64   inline
+DUP_general        generic   inline
+DUP_general        la64-lsx  inline
+DUP_general        mips-msa  inline
+DUP_general        ppc64le   inline
+DUP_general        riscv64-v inline
+DUP_general        x86       inline
+DUP_general        x86-avx2  inline
+DUP_general        x86-base  inline
+EOR_v              aarch64   inline
+EOR_v              generic   inline
+EOR_v              la64-lsx  inline
+EOR_v              mips-msa  inline
+EOR_v              ppc64le   inline
+EOR_v              riscv64-v inline
+EOR_v              x86       inline
+EOR_v              x86-avx2  inline
+EOR_v              x86-base  inline
+EXT_d              aarch64   inline
+EXT_d              generic   inline
+EXT_d              la64-lsx  inline
+EXT_d              mips-msa  inline
+EXT_d              ppc64le   inline
+EXT_d              riscv64-v inline
+EXT_d              x86       inline
+EXT_d              x86-avx2  inline
+EXT_d              x86-base  inline
+EXT_q              aarch64   inline
+EXT_q              generic   inline
+EXT_q              la64-lsx  inline
+EXT_q              mips-msa  inline
+EXT_q              ppc64le   inline
+EXT_q              riscv64-v inline
+EXT_q              x86       inline
+EXT_q              x86-avx2  inline
+EXT_q              x86-base  inline
+FABD_s             aarch64   guarded  snx_fp_host_binary
+FABD_s             generic   guarded  snx_fp_host_binary
+FABD_s             la64-lsx  guarded  snx_fp_host_binary
+FABD_s             mips-msa  guarded  snx_fp_host_binary
+FABD_s             ppc64le   guarded  snx_fp_host_binary
+FABD_s             riscv64-v guarded  snx_fp_host_binary
+FABD_s             x86       guarded  snx_fp_host_binary
+FABD_s             x86-avx2  guarded  snx_fp_host_binary
+FABD_s             x86-base  guarded  snx_fp_host_binary
+FABD_v             aarch64   guarded  snx_fp_host_lanes
+FABD_v             generic   guarded  snx_fp_host_lanes
+FABD_v             la64-lsx  guarded  snx_fp_host_lanes
+FABD_v             mips-msa  guarded  snx_fp_host_lanes
+FABD_v             ppc64le   guarded  snx_fp_host_lanes
+FABD_v             riscv64-v guarded  snx_fp_host_lanes
+FABD_v             x86       guarded  snx_fp_host_lanes
+FABD_v             x86-avx2  guarded  snx_fp_host_lanes
+FABD_v             x86-base  guarded  snx_fp_host_lanes
+FABS_s             aarch64   inline
+FABS_s             generic   inline
+FABS_s             la64-lsx  inline
+FABS_s             mips-msa  inline
+FABS_s             ppc64le   inline
+FABS_s             riscv64-v inline
+FABS_s             x86       inline
+FABS_s             x86-avx2  inline
+FABS_s             x86-base  inline
+FABS_v             aarch64   inline
+FABS_v             generic   inline
+FABS_v             la64-lsx  inline
+FABS_v             mips-msa  inline
+FABS_v             ppc64le   inline
+FABS_v             riscv64-v inline
+FABS_v             x86       inline
+FABS_v             x86-avx2  inline
+FABS_v             x86-base  inline
+FACGE_s            aarch64   inline
+FACGE_s            generic   inline
+FACGE_s            la64-lsx  inline
+FACGE_s            mips-msa  inline
+FACGE_s            ppc64le   inline
+FACGE_s            riscv64-v inline
+FACGE_s            x86       inline
+FACGE_s            x86-avx2  inline
+FACGE_s            x86-base  inline
+FACGE_v            aarch64   inline
+FACGE_v            generic   inline
+FACGE_v            la64-lsx  inline
+FACGE_v            mips-msa  inline
+FACGE_v            ppc64le   inline
+FACGE_v            riscv64-v inline
+FACGE_v            x86       inline
+FACGE_v            x86-avx2  inline
+FACGE_v            x86-base  inline
+FACGT_s            aarch64   inline
+FACGT_s            generic   inline
+FACGT_s            la64-lsx  inline
+FACGT_s            mips-msa  inline
+FACGT_s            ppc64le   inline
+FACGT_s            riscv64-v inline
+FACGT_s            x86       inline
+FACGT_s            x86-avx2  inline
+FACGT_s            x86-base  inline
+FACGT_v            aarch64   inline
+FACGT_v            generic   inline
+FACGT_v            la64-lsx  inline
+FACGT_v            mips-msa  inline
+FACGT_v            ppc64le   inline
+FACGT_v            riscv64-v inline
+FACGT_v            x86       inline
+FACGT_v            x86-avx2  inline
+FACGT_v            x86-base  inline
+FADDP_s            aarch64   guarded  snx_fp_host_binary
+FADDP_s            generic   guarded  snx_fp_host_binary
+FADDP_s            la64-lsx  guarded  snx_fp_host_binary
+FADDP_s            mips-msa  guarded  snx_fp_host_binary
+FADDP_s            ppc64le   guarded  snx_fp_host_binary
+FADDP_s            riscv64-v guarded  snx_fp_host_binary
+FADDP_s            x86       guarded  snx_fp_host_binary
+FADDP_s            x86-avx2  guarded  snx_fp_host_binary
+FADDP_s            x86-base  guarded  snx_fp_host_binary
+FADDP_v            aarch64   guarded  snx_fp_host_lanes
+FADDP_v            generic   guarded  snx_fp_host_lanes
+FADDP_v            la64-lsx  guarded  snx_fp_host_lanes
+FADDP_v            mips-msa  guarded  snx_fp_host_lanes
+FADDP_v            ppc64le   guarded  snx_fp_host_lanes
+FADDP_v            riscv64-v guarded  snx_fp_host_lanes
+FADDP_v            x86       guarded  snx_fp_host_lanes
+FADDP_v            x86-avx2  guarded  snx_fp_host_lanes
+FADDP_v            x86-base  guarded  snx_fp_host_lanes
+FADD_s             aarch64   guarded  snx_fp_host_binary
+FADD_s             generic   guarded  snx_fp_host_binary
+FADD_s             la64-lsx  guarded  snx_fp_host_binary
+FADD_s             mips-msa  guarded  snx_fp_host_binary
+FADD_s             ppc64le   guarded  snx_fp_host_binary
+FADD_s             riscv64-v guarded  snx_fp_host_binary
+FADD_s             x86       guarded  snx_fp_host_binary
+FADD_s             x86-avx2  guarded  snx_fp_host_binary
+FADD_s             x86-base  guarded  snx_fp_host_binary
+FADD_v             aarch64   guarded  snx_fp_host_lanes
+FADD_v             generic   guarded  snx_fp_host_lanes
+FADD_v             la64-lsx  guarded  snx_fp_host_lanes
+FADD_v             mips-msa  guarded  snx_fp_host_lanes
+FADD_v             ppc64le   guarded  snx_fp_host_lanes
+FADD_v             riscv64-v guarded  snx_fp_host_lanes
+FADD_v             x86       guarded  snx_fp_host_lanes
+FADD_v             x86-avx2  guarded  snx_fp_host_lanes
+FADD_v             x86-base  guarded  snx_fp_host_lanes
+FCCMP              aarch64   guarded  snx_fp_host_compare
+FCCMP              generic   guarded  snx_fp_host_compare
+FCCMP              la64-lsx  guarded  snx_fp_host_compare
+FCCMP              mips-msa  guarded  snx_fp_host_compare
+FCCMP              ppc64le   guarded  snx_fp_host_compare
+FCCMP              riscv64-v guarded  snx_fp_host_compare
+FCCMP              x86       guarded  snx_fp_host_compare
+FCCMP              x86-avx2  guarded  snx_fp_host_compare
+FCCMP              x86-base  guarded  snx_fp_host_compare
+FCMEQ0_s           aarch64   inline
+FCMEQ0_s           generic   inline
+FCMEQ0_s           la64-lsx  inline
+FCMEQ0_s           mips-msa  inline
+FCMEQ0_s           ppc64le   inline
+FCMEQ0_s           riscv64-v inline
+FCMEQ0_s           x86       inline
+FCMEQ0_s           x86-avx2  inline
+FCMEQ0_s           x86-base  inline
+FCMEQ0_v           aarch64   inline
+FCMEQ0_v           generic   inline
+FCMEQ0_v           la64-lsx  inline
+FCMEQ0_v           mips-msa  inline
+FCMEQ0_v           ppc64le   inline
+FCMEQ0_v           riscv64-v inline
+FCMEQ0_v           x86       inline
+FCMEQ0_v           x86-avx2  inline
+FCMEQ0_v           x86-base  inline
+FCMEQ_s            aarch64   inline
+FCMEQ_s            generic   inline
+FCMEQ_s            la64-lsx  inline
+FCMEQ_s            mips-msa  inline
+FCMEQ_s            ppc64le   inline
+FCMEQ_s            riscv64-v inline
+FCMEQ_s            x86       inline
+FCMEQ_s            x86-avx2  inline
+FCMEQ_s            x86-base  inline
+FCMEQ_v            aarch64   inline
+FCMEQ_v            generic   inline
+FCMEQ_v            la64-lsx  inline
+FCMEQ_v            mips-msa  inline
+FCMEQ_v            ppc64le   inline
+FCMEQ_v            riscv64-v inline
+FCMEQ_v            x86       inline
+FCMEQ_v            x86-avx2  inline
+FCMEQ_v            x86-base  inline
+FCMGE0_s           aarch64   inline
+FCMGE0_s           generic   inline
+FCMGE0_s           la64-lsx  inline
+FCMGE0_s           mips-msa  inline
+FCMGE0_s           ppc64le   inline
+FCMGE0_s           riscv64-v inline
+FCMGE0_s           x86       inline
+FCMGE0_s           x86-avx2  inline
+FCMGE0_s           x86-base  inline
+FCMGE0_v           aarch64   inline
+FCMGE0_v           generic   inline
+FCMGE0_v           la64-lsx  inline
+FCMGE0_v           mips-msa  inline
+FCMGE0_v           ppc64le   inline
+FCMGE0_v           riscv64-v inline
+FCMGE0_v           x86       inline
+FCMGE0_v           x86-avx2  inline
+FCMGE0_v           x86-base  inline
+FCMGE_s            aarch64   inline
+FCMGE_s            generic   inline
+FCMGE_s            la64-lsx  inline
+FCMGE_s            mips-msa  inline
+FCMGE_s            ppc64le   inline
+FCMGE_s            riscv64-v inline
+FCMGE_s            x86       inline
+FCMGE_s            x86-avx2  inline
+FCMGE_s            x86-base  inline
+FCMGE_v            aarch64   inline
+FCMGE_v            generic   inline
+FCMGE_v            la64-lsx  inline
+FCMGE_v            mips-msa  inline
+FCMGE_v            ppc64le   inline
+FCMGE_v            riscv64-v inline
+FCMGE_v            x86       inline
+FCMGE_v            x86-avx2  inline
+FCMGE_v            x86-base  inline
+FCMGT0_s           aarch64   inline
+FCMGT0_s           generic   inline
+FCMGT0_s           la64-lsx  inline
+FCMGT0_s           mips-msa  inline
+FCMGT0_s           ppc64le   inline
+FCMGT0_s           riscv64-v inline
+FCMGT0_s           x86       inline
+FCMGT0_s           x86-avx2  inline
+FCMGT0_s           x86-base  inline
+FCMGT0_v           aarch64   inline
+FCMGT0_v           generic   inline
+FCMGT0_v           la64-lsx  inline
+FCMGT0_v           mips-msa  inline
+FCMGT0_v           ppc64le   inline
+FCMGT0_v           riscv64-v inline
+FCMGT0_v           x86       inline
+FCMGT0_v           x86-avx2  inline
+FCMGT0_v           x86-base  inline
+FCMGT_s            aarch64   inline
+FCMGT_s            generic   inline
+FCMGT_s            la64-lsx  inline
+FCMGT_s            mips-msa  inline
+FCMGT_s            ppc64le   inline
+FCMGT_s            riscv64-v inline
+FCMGT_s            x86       inline
+FCMGT_s            x86-avx2  inline
+FCMGT_s            x86-base  inline
+FCMGT_v            aarch64   inline
+FCMGT_v            generic   inline
+FCMGT_v            la64-lsx  inline
+FCMGT_v            mips-msa  inline
+FCMGT_v            ppc64le   inline
+FCMGT_v            riscv64-v inline
+FCMGT_v            x86       inline
+FCMGT_v            x86-avx2  inline
+FCMGT_v            x86-base  inline
+FCMLE0_s           aarch64   inline
+FCMLE0_s           generic   inline
+FCMLE0_s           la64-lsx  inline
+FCMLE0_s           mips-msa  inline
+FCMLE0_s           ppc64le   inline
+FCMLE0_s           riscv64-v inline
+FCMLE0_s           x86       inline
+FCMLE0_s           x86-avx2  inline
+FCMLE0_s           x86-base  inline
+FCMLE0_v           aarch64   inline
+FCMLE0_v           generic   inline
+FCMLE0_v           la64-lsx  inline
+FCMLE0_v           mips-msa  inline
+FCMLE0_v           ppc64le   inline
+FCMLE0_v           riscv64-v inline
+FCMLE0_v           x86       inline
+FCMLE0_v           x86-avx2  inline
+FCMLE0_v           x86-base  inline
+FCMLT0_s           aarch64   inline
+FCMLT0_s           generic   inline
+FCMLT0_s           la64-lsx  inline
+FCMLT0_s           mips-msa  inline
+FCMLT0_s           ppc64le   inline
+FCMLT0_s           riscv64-v inline
+FCMLT0_s           x86       inline
+FCMLT0_s           x86-avx2  inline
+FCMLT0_s           x86-base  inline
+FCMLT0_v           aarch64   inline
+FCMLT0_v           generic   inline
+FCMLT0_v           la64-lsx  inline
+FCMLT0_v           mips-msa  inline
+FCMLT0_v           ppc64le   inline
+FCMLT0_v           riscv64-v inline
+FCMLT0_v           x86       inline
+FCMLT0_v           x86-avx2  inline
+FCMLT0_v           x86-base  inline
+FCMP               aarch64   guarded  snx_fp_host_compare
+FCMP               generic   guarded  snx_fp_host_compare
+FCMP               la64-lsx  guarded  snx_fp_host_compare
+FCMP               mips-msa  guarded  snx_fp_host_compare
+FCMP               ppc64le   guarded  snx_fp_host_compare
+FCMP               riscv64-v guarded  snx_fp_host_compare
+FCMP               x86       guarded  snx_fp_host_compare
+FCMP               x86-avx2  guarded  snx_fp_host_compare
+FCMP               x86-base  guarded  snx_fp_host_compare
+FCSEL              aarch64   inline
+FCSEL              generic   inline
+FCSEL              la64-lsx  inline
+FCSEL              mips-msa  inline
+FCSEL              ppc64le   inline
+FCSEL              riscv64-v inline
+FCSEL              x86       inline
+FCSEL              x86-avx2  inline
+FCSEL              x86-base  inline
+FCVTAS_f           aarch64   guarded  snx_fp_to_int
+FCVTAS_f           generic   helper   snx_fp_to_int
+FCVTAS_f           la64-lsx  guarded  snx_fp_to_int
+FCVTAS_f           mips-msa  helper   snx_fp_to_int
+FCVTAS_f           ppc64le   guarded  snx_fp_to_int
+FCVTAS_f           riscv64-v guarded  snx_fp_to_int
+FCVTAS_f           x86       guarded  snx_fp_to_int
+FCVTAS_f           x86-avx2  guarded  snx_fp_to_int
+FCVTAS_f           x86-base  helper   snx_fp_to_int
+FCVTAS_g           aarch64   guarded  snx_fp_to_int
+FCVTAS_g           generic   helper   snx_fp_to_int
+FCVTAS_g           la64-lsx  guarded  snx_fp_to_int
+FCVTAS_g           mips-msa  helper   snx_fp_to_int
+FCVTAS_g           ppc64le   guarded  snx_fp_to_int
+FCVTAS_g           riscv64-v guarded  snx_fp_to_int
+FCVTAS_g           x86       guarded  snx_fp_to_int
+FCVTAS_g           x86-avx2  guarded  snx_fp_to_int
+FCVTAS_g           x86-base  helper   snx_fp_to_int
+FCVTAS_vi          aarch64   guarded  snx_fp_to_int
+FCVTAS_vi          generic   helper   snx_fp_to_int
+FCVTAS_vi          la64-lsx  guarded  snx_fp_to_int
+FCVTAS_vi          mips-msa  helper   snx_fp_to_int
+FCVTAS_vi          ppc64le   guarded  snx_fp_to_int
+FCVTAS_vi          riscv64-v guarded  snx_fp_to_int
+FCVTAS_vi          x86       guarded  snx_fp_to_int
+FCVTAS_vi          x86-avx2  guarded  snx_fp_to_int
+FCVTAS_vi          x86-base  helper   snx_fp_to_int
+FCVTAU_f           aarch64   guarded  snx_fp_to_int
+FCVTAU_f           generic   helper   snx_fp_to_int
+FCVTAU_f           la64-lsx  guarded  snx_fp_to_int
+FCVTAU_f           mips-msa  helper   snx_fp_to_int
+FCVTAU_f           ppc64le   guarded  snx_fp_to_int
+FCVTAU_f           riscv64-v guarded  snx_fp_to_int
+FCVTAU_f           x86       guarded  snx_fp_to_int
+FCVTAU_f           x86-avx2  guarded  snx_fp_to_int
+FCVTAU_f           x86-base  helper   snx_fp_to_int
+FCVTAU_g           aarch64   guarded  snx_fp_to_int
+FCVTAU_g           generic   helper   snx_fp_to_int
+FCVTAU_g           la64-lsx  guarded  snx_fp_to_int
+FCVTAU_g           mips-msa  helper   snx_fp_to_int
+FCVTAU_g           ppc64le   guarded  snx_fp_to_int
+FCVTAU_g           riscv64-v guarded  snx_fp_to_int
+FCVTAU_g           x86       guarded  snx_fp_to_int
+FCVTAU_g           x86-avx2  guarded  snx_fp_to_int
+FCVTAU_g           x86-base  helper   snx_fp_to_int
+FCVTAU_vi          aarch64   guarded  snx_fp_to_int
+FCVTAU_vi          generic   helper   snx_fp_to_int
+FCVTAU_vi          la64-lsx  guarded  snx_fp_to_int
+FCVTAU_vi          mips-msa  helper   snx_fp_to_int
+FCVTAU_vi          ppc64le   guarded  snx_fp_to_int
+FCVTAU_vi          riscv64-v guarded  snx_fp_to_int
+FCVTAU_vi          x86       guarded  snx_fp_to_int
+FCVTAU_vi          x86-avx2  guarded  snx_fp_to_int
+FCVTAU_vi          x86-base  helper   snx_fp_to_int
+FCVTL_v            aarch64   guarded  snx_fp_convert
+FCVTL_v            generic   guarded  snx_fp_convert
+FCVTL_v            la64-lsx  guarded  snx_fp_convert
+FCVTL_v            mips-msa  guarded  snx_fp_convert
+FCVTL_v            ppc64le   guarded  snx_fp_convert
+FCVTL_v            riscv64-v guarded  snx_fp_convert
+FCVTL_v            x86       guarded  snx_fp_convert
+FCVTL_v            x86-avx2  guarded  snx_fp_convert
+FCVTL_v            x86-base  guarded  snx_fp_convert
+FCVTMS_f           aarch64   guarded  snx_fp_to_int
+FCVTMS_f           generic   helper   snx_fp_to_int
+FCVTMS_f           la64-lsx  guarded  snx_fp_to_int
+FCVTMS_f           mips-msa  helper   snx_fp_to_int
+FCVTMS_f           ppc64le   guarded  snx_fp_to_int
+FCVTMS_f           riscv64-v guarded  snx_fp_to_int
+FCVTMS_f           x86       guarded  snx_fp_to_int
+FCVTMS_f           x86-avx2  guarded  snx_fp_to_int
+FCVTMS_f           x86-base  helper   snx_fp_to_int
+FCVTMS_g           aarch64   guarded  snx_fp_to_int
+FCVTMS_g           generic   helper   snx_fp_to_int
+FCVTMS_g           la64-lsx  guarded  snx_fp_to_int
+FCVTMS_g           mips-msa  helper   snx_fp_to_int
+FCVTMS_g           ppc64le   guarded  snx_fp_to_int
+FCVTMS_g           riscv64-v guarded  snx_fp_to_int
+FCVTMS_g           x86       guarded  snx_fp_to_int
+FCVTMS_g           x86-avx2  guarded  snx_fp_to_int
+FCVTMS_g           x86-base  helper   snx_fp_to_int
+FCVTMS_vi          aarch64   guarded  snx_fp_to_int
+FCVTMS_vi          generic   helper   snx_fp_to_int
+FCVTMS_vi          la64-lsx  guarded  snx_fp_to_int
+FCVTMS_vi          mips-msa  helper   snx_fp_to_int
+FCVTMS_vi          ppc64le   guarded  snx_fp_to_int
+FCVTMS_vi          riscv64-v guarded  snx_fp_to_int
+FCVTMS_vi          x86       guarded  snx_fp_to_int
+FCVTMS_vi          x86-avx2  guarded  snx_fp_to_int
+FCVTMS_vi          x86-base  helper   snx_fp_to_int
+FCVTMU_f           aarch64   guarded  snx_fp_to_int
+FCVTMU_f           generic   helper   snx_fp_to_int
+FCVTMU_f           la64-lsx  guarded  snx_fp_to_int
+FCVTMU_f           mips-msa  helper   snx_fp_to_int
+FCVTMU_f           ppc64le   guarded  snx_fp_to_int
+FCVTMU_f           riscv64-v guarded  snx_fp_to_int
+FCVTMU_f           x86       guarded  snx_fp_to_int
+FCVTMU_f           x86-avx2  guarded  snx_fp_to_int
+FCVTMU_f           x86-base  helper   snx_fp_to_int
+FCVTMU_g           aarch64   guarded  snx_fp_to_int
+FCVTMU_g           generic   helper   snx_fp_to_int
+FCVTMU_g           la64-lsx  guarded  snx_fp_to_int
+FCVTMU_g           mips-msa  helper   snx_fp_to_int
+FCVTMU_g           ppc64le   guarded  snx_fp_to_int
+FCVTMU_g           riscv64-v guarded  snx_fp_to_int
+FCVTMU_g           x86       guarded  snx_fp_to_int
+FCVTMU_g           x86-avx2  guarded  snx_fp_to_int
+FCVTMU_g           x86-base  helper   snx_fp_to_int
+FCVTMU_vi          aarch64   guarded  snx_fp_to_int
+FCVTMU_vi          generic   helper   snx_fp_to_int
+FCVTMU_vi          la64-lsx  guarded  snx_fp_to_int
+FCVTMU_vi          mips-msa  helper   snx_fp_to_int
+FCVTMU_vi          ppc64le   guarded  snx_fp_to_int
+FCVTMU_vi          riscv64-v guarded  snx_fp_to_int
+FCVTMU_vi          x86       guarded  snx_fp_to_int
+FCVTMU_vi          x86-avx2  guarded  snx_fp_to_int
+FCVTMU_vi          x86-base  helper   snx_fp_to_int
+FCVTNS_f           aarch64   guarded  snx_fp_to_int
+FCVTNS_f           generic   helper   snx_fp_to_int
+FCVTNS_f           la64-lsx  guarded  snx_fp_to_int
+FCVTNS_f           mips-msa  helper   snx_fp_to_int
+FCVTNS_f           ppc64le   helper   snx_fp_to_int
+FCVTNS_f           riscv64-v guarded  snx_fp_to_int
+FCVTNS_f           x86       guarded  snx_fp_to_int
+FCVTNS_f           x86-avx2  guarded  snx_fp_to_int
+FCVTNS_f           x86-base  helper   snx_fp_to_int
+FCVTNS_g           aarch64   guarded  snx_fp_to_int
+FCVTNS_g           generic   helper   snx_fp_to_int
+FCVTNS_g           la64-lsx  guarded  snx_fp_to_int
+FCVTNS_g           mips-msa  helper   snx_fp_to_int
+FCVTNS_g           ppc64le   helper   snx_fp_to_int
+FCVTNS_g           riscv64-v guarded  snx_fp_to_int
+FCVTNS_g           x86       guarded  snx_fp_to_int
+FCVTNS_g           x86-avx2  guarded  snx_fp_to_int
+FCVTNS_g           x86-base  helper   snx_fp_to_int
+FCVTNS_vi          aarch64   guarded  snx_fp_to_int
+FCVTNS_vi          generic   helper   snx_fp_to_int
+FCVTNS_vi          la64-lsx  guarded  snx_fp_to_int
+FCVTNS_vi          mips-msa  helper   snx_fp_to_int
+FCVTNS_vi          ppc64le   helper   snx_fp_to_int
+FCVTNS_vi          riscv64-v guarded  snx_fp_to_int
+FCVTNS_vi          x86       guarded  snx_fp_to_int
+FCVTNS_vi          x86-avx2  guarded  snx_fp_to_int
+FCVTNS_vi          x86-base  helper   snx_fp_to_int
+FCVTNU_f           aarch64   guarded  snx_fp_to_int
+FCVTNU_f           generic   helper   snx_fp_to_int
+FCVTNU_f           la64-lsx  guarded  snx_fp_to_int
+FCVTNU_f           mips-msa  helper   snx_fp_to_int
+FCVTNU_f           ppc64le   helper   snx_fp_to_int
+FCVTNU_f           riscv64-v guarded  snx_fp_to_int
+FCVTNU_f           x86       guarded  snx_fp_to_int
+FCVTNU_f           x86-avx2  guarded  snx_fp_to_int
+FCVTNU_f           x86-base  helper   snx_fp_to_int
+FCVTNU_g           aarch64   guarded  snx_fp_to_int
+FCVTNU_g           generic   helper   snx_fp_to_int
+FCVTNU_g           la64-lsx  guarded  snx_fp_to_int
+FCVTNU_g           mips-msa  helper   snx_fp_to_int
+FCVTNU_g           ppc64le   helper   snx_fp_to_int
+FCVTNU_g           riscv64-v guarded  snx_fp_to_int
+FCVTNU_g           x86       guarded  snx_fp_to_int
+FCVTNU_g           x86-avx2  guarded  snx_fp_to_int
+FCVTNU_g           x86-base  helper   snx_fp_to_int
+FCVTNU_vi          aarch64   guarded  snx_fp_to_int
+FCVTNU_vi          generic   helper   snx_fp_to_int
+FCVTNU_vi          la64-lsx  guarded  snx_fp_to_int
+FCVTNU_vi          mips-msa  helper   snx_fp_to_int
+FCVTNU_vi          ppc64le   helper   snx_fp_to_int
+FCVTNU_vi          riscv64-v guarded  snx_fp_to_int
+FCVTNU_vi          x86       guarded  snx_fp_to_int
+FCVTNU_vi          x86-avx2  guarded  snx_fp_to_int
+FCVTNU_vi          x86-base  helper   snx_fp_to_int
+FCVTN_v            aarch64   guarded  snx_fp_convert
+FCVTN_v            generic   guarded  snx_fp_convert
+FCVTN_v            la64-lsx  guarded  snx_fp_convert
+FCVTN_v            mips-msa  guarded  snx_fp_convert
+FCVTN_v            ppc64le   guarded  snx_fp_convert
+FCVTN_v            riscv64-v guarded  snx_fp_convert
+FCVTN_v            x86       guarded  snx_fp_convert
+FCVTN_v            x86-avx2  guarded  snx_fp_convert
+FCVTN_v            x86-base  guarded  snx_fp_convert
+FCVTPS_f           aarch64   guarded  snx_fp_to_int
+FCVTPS_f           generic   helper   snx_fp_to_int
+FCVTPS_f           la64-lsx  guarded  snx_fp_to_int
+FCVTPS_f           mips-msa  helper   snx_fp_to_int
+FCVTPS_f           ppc64le   guarded  snx_fp_to_int
+FCVTPS_f           riscv64-v guarded  snx_fp_to_int
+FCVTPS_f           x86       guarded  snx_fp_to_int
+FCVTPS_f           x86-avx2  guarded  snx_fp_to_int
+FCVTPS_f           x86-base  helper   snx_fp_to_int
+FCVTPS_g           aarch64   guarded  snx_fp_to_int
+FCVTPS_g           generic   helper   snx_fp_to_int
+FCVTPS_g           la64-lsx  guarded  snx_fp_to_int
+FCVTPS_g           mips-msa  helper   snx_fp_to_int
+FCVTPS_g           ppc64le   guarded  snx_fp_to_int
+FCVTPS_g           riscv64-v guarded  snx_fp_to_int
+FCVTPS_g           x86       guarded  snx_fp_to_int
+FCVTPS_g           x86-avx2  guarded  snx_fp_to_int
+FCVTPS_g           x86-base  helper   snx_fp_to_int
+FCVTPS_vi          aarch64   guarded  snx_fp_to_int
+FCVTPS_vi          generic   helper   snx_fp_to_int
+FCVTPS_vi          la64-lsx  guarded  snx_fp_to_int
+FCVTPS_vi          mips-msa  helper   snx_fp_to_int
+FCVTPS_vi          ppc64le   guarded  snx_fp_to_int
+FCVTPS_vi          riscv64-v guarded  snx_fp_to_int
+FCVTPS_vi          x86       guarded  snx_fp_to_int
+FCVTPS_vi          x86-avx2  guarded  snx_fp_to_int
+FCVTPS_vi          x86-base  helper   snx_fp_to_int
+FCVTPU_f           aarch64   guarded  snx_fp_to_int
+FCVTPU_f           generic   helper   snx_fp_to_int
+FCVTPU_f           la64-lsx  guarded  snx_fp_to_int
+FCVTPU_f           mips-msa  helper   snx_fp_to_int
+FCVTPU_f           ppc64le   guarded  snx_fp_to_int
+FCVTPU_f           riscv64-v guarded  snx_fp_to_int
+FCVTPU_f           x86       guarded  snx_fp_to_int
+FCVTPU_f           x86-avx2  guarded  snx_fp_to_int
+FCVTPU_f           x86-base  helper   snx_fp_to_int
+FCVTPU_g           aarch64   guarded  snx_fp_to_int
+FCVTPU_g           generic   helper   snx_fp_to_int
+FCVTPU_g           la64-lsx  guarded  snx_fp_to_int
+FCVTPU_g           mips-msa  helper   snx_fp_to_int
+FCVTPU_g           ppc64le   guarded  snx_fp_to_int
+FCVTPU_g           riscv64-v guarded  snx_fp_to_int
+FCVTPU_g           x86       guarded  snx_fp_to_int
+FCVTPU_g           x86-avx2  guarded  snx_fp_to_int
+FCVTPU_g           x86-base  helper   snx_fp_to_int
+FCVTPU_vi          aarch64   guarded  snx_fp_to_int
+FCVTPU_vi          generic   helper   snx_fp_to_int
+FCVTPU_vi          la64-lsx  guarded  snx_fp_to_int
+FCVTPU_vi          mips-msa  helper   snx_fp_to_int
+FCVTPU_vi          ppc64le   guarded  snx_fp_to_int
+FCVTPU_vi          riscv64-v guarded  snx_fp_to_int
+FCVTPU_vi          x86       guarded  snx_fp_to_int
+FCVTPU_vi          x86-avx2  guarded  snx_fp_to_int
+FCVTPU_vi          x86-base  helper   snx_fp_to_int
+FCVTXN_s           aarch64   helper   snx_fp_convert
+FCVTXN_s           generic   helper   snx_fp_convert
+FCVTXN_s           la64-lsx  helper   snx_fp_convert
+FCVTXN_s           mips-msa  helper   snx_fp_convert
+FCVTXN_s           ppc64le   helper   snx_fp_convert
+FCVTXN_s           riscv64-v helper   snx_fp_convert
+FCVTXN_s           x86       helper   snx_fp_convert
+FCVTXN_s           x86-avx2  helper   snx_fp_convert
+FCVTXN_s           x86-base  helper   snx_fp_convert
+FCVTXN_v           aarch64   helper   snx_fp_convert
+FCVTXN_v           generic   helper   snx_fp_convert
+FCVTXN_v           la64-lsx  helper   snx_fp_convert
+FCVTXN_v           mips-msa  helper   snx_fp_convert
+FCVTXN_v           ppc64le   helper   snx_fp_convert
+FCVTXN_v           riscv64-v helper   snx_fp_convert
+FCVTXN_v           x86       helper   snx_fp_convert
+FCVTXN_v           x86-avx2  helper   snx_fp_convert
+FCVTXN_v           x86-base  helper   snx_fp_convert
+FCVTZS_f           aarch64   guarded  snx_fp_to_int
+FCVTZS_f           generic   guarded  snx_fp_to_int
+FCVTZS_f           la64-lsx  guarded  snx_fp_to_int
+FCVTZS_f           mips-msa  guarded  snx_fp_to_int
+FCVTZS_f           ppc64le   guarded  snx_fp_to_int
+FCVTZS_f           riscv64-v guarded  snx_fp_to_int
+FCVTZS_f           x86       guarded  snx_fp_to_int
+FCVTZS_f           x86-avx2  guarded  snx_fp_to_int
+FCVTZS_f           x86-base  guarded  snx_fp_to_int
+FCVTZS_g           aarch64   guarded  snx_fp_to_int
+FCVTZS_g           generic   guarded  snx_fp_to_int
+FCVTZS_g           la64-lsx  guarded  snx_fp_to_int
+FCVTZS_g           mips-msa  guarded  snx_fp_to_int
+FCVTZS_g           ppc64le   guarded  snx_fp_to_int
+FCVTZS_g           riscv64-v guarded  snx_fp_to_int
+FCVTZS_g           x86       guarded  snx_fp_to_int
+FCVTZS_g           x86-avx2  guarded  snx_fp_to_int
+FCVTZS_g           x86-base  guarded  snx_fp_to_int
+FCVTZS_vf          aarch64   guarded  snx_fp_to_int
+FCVTZS_vf          generic   guarded  snx_fp_to_int
+FCVTZS_vf          la64-lsx  guarded  snx_fp_to_int
+FCVTZS_vf          mips-msa  guarded  snx_fp_to_int
+FCVTZS_vf          ppc64le   guarded  snx_fp_to_int
+FCVTZS_vf          riscv64-v guarded  snx_fp_to_int
+FCVTZS_vf          x86       guarded  snx_fp_to_int
+FCVTZS_vf          x86-avx2  guarded  snx_fp_to_int
+FCVTZS_vf          x86-base  guarded  snx_fp_to_int
+FCVTZS_vi          aarch64   guarded  snx_fp_to_int
+FCVTZS_vi          generic   guarded  snx_fp_to_int
+FCVTZS_vi          la64-lsx  guarded  snx_fp_to_int
+FCVTZS_vi          mips-msa  guarded  snx_fp_to_int
+FCVTZS_vi          ppc64le   guarded  snx_fp_to_int
+FCVTZS_vi          riscv64-v guarded  snx_fp_to_int
+FCVTZS_vi          x86       guarded  snx_fp_to_int
+FCVTZS_vi          x86-avx2  guarded  snx_fp_to_int
+FCVTZS_vi          x86-base  guarded  snx_fp_to_int
+FCVTZU_f           aarch64   guarded  snx_fp_to_int
+FCVTZU_f           generic   guarded  snx_fp_to_int
+FCVTZU_f           la64-lsx  guarded  snx_fp_to_int
+FCVTZU_f           mips-msa  guarded  snx_fp_to_int
+FCVTZU_f           ppc64le   guarded  snx_fp_to_int
+FCVTZU_f           riscv64-v guarded  snx_fp_to_int
+FCVTZU_f           x86       guarded  snx_fp_to_int
+FCVTZU_f           x86-avx2  guarded  snx_fp_to_int
+FCVTZU_f           x86-base  guarded  snx_fp_to_int
+FCVTZU_g           aarch64   guarded  snx_fp_to_int
+FCVTZU_g           generic   guarded  snx_fp_to_int
+FCVTZU_g           la64-lsx  guarded  snx_fp_to_int
+FCVTZU_g           mips-msa  guarded  snx_fp_to_int
+FCVTZU_g           ppc64le   guarded  snx_fp_to_int
+FCVTZU_g           riscv64-v guarded  snx_fp_to_int
+FCVTZU_g           x86       guarded  snx_fp_to_int
+FCVTZU_g           x86-avx2  guarded  snx_fp_to_int
+FCVTZU_g           x86-base  guarded  snx_fp_to_int
+FCVTZU_vf          aarch64   guarded  snx_fp_to_int
+FCVTZU_vf          generic   guarded  snx_fp_to_int
+FCVTZU_vf          la64-lsx  guarded  snx_fp_to_int
+FCVTZU_vf          mips-msa  guarded  snx_fp_to_int
+FCVTZU_vf          ppc64le   guarded  snx_fp_to_int
+FCVTZU_vf          riscv64-v guarded  snx_fp_to_int
+FCVTZU_vf          x86       guarded  snx_fp_to_int
+FCVTZU_vf          x86-avx2  guarded  snx_fp_to_int
+FCVTZU_vf          x86-base  guarded  snx_fp_to_int
+FCVTZU_vi          aarch64   guarded  snx_fp_to_int
+FCVTZU_vi          generic   guarded  snx_fp_to_int
+FCVTZU_vi          la64-lsx  guarded  snx_fp_to_int
+FCVTZU_vi          mips-msa  guarded  snx_fp_to_int
+FCVTZU_vi          ppc64le   guarded  snx_fp_to_int
+FCVTZU_vi          riscv64-v guarded  snx_fp_to_int
+FCVTZU_vi          x86       guarded  snx_fp_to_int
+FCVTZU_vi          x86-avx2  guarded  snx_fp_to_int
+FCVTZU_vi          x86-base  guarded  snx_fp_to_int
+FCVT_s_dh          aarch64   helper   snx_fp_convert
+FCVT_s_dh          generic   helper   snx_fp_convert
+FCVT_s_dh          la64-lsx  helper   snx_fp_convert
+FCVT_s_dh          mips-msa  helper   snx_fp_convert
+FCVT_s_dh          ppc64le   helper   snx_fp_convert
+FCVT_s_dh          riscv64-v helper   snx_fp_convert
+FCVT_s_dh          x86       guarded  snx_fp_convert
+FCVT_s_dh          x86-avx2  guarded  snx_fp_convert
+FCVT_s_dh          x86-base  helper   snx_fp_convert
+FCVT_s_ds          aarch64   guarded  snx_fp_convert
+FCVT_s_ds          generic   guarded  snx_fp_convert
+FCVT_s_ds          la64-lsx  guarded  snx_fp_convert
+FCVT_s_ds          mips-msa  guarded  snx_fp_convert
+FCVT_s_ds          ppc64le   guarded  snx_fp_convert
+FCVT_s_ds          riscv64-v guarded  snx_fp_convert
+FCVT_s_ds          x86       guarded  snx_fp_convert
+FCVT_s_ds          x86-avx2  guarded  snx_fp_convert
+FCVT_s_ds          x86-base  guarded  snx_fp_convert
+FCVT_s_hd          aarch64   helper   snx_fp_convert
+FCVT_s_hd          generic   helper   snx_fp_convert
+FCVT_s_hd          la64-lsx  helper   snx_fp_convert
+FCVT_s_hd          mips-msa  helper   snx_fp_convert
+FCVT_s_hd          ppc64le   helper   snx_fp_convert
+FCVT_s_hd          riscv64-v helper   snx_fp_convert
+FCVT_s_hd          x86       helper   snx_fp_convert
+FCVT_s_hd          x86-avx2  helper   snx_fp_convert
+FCVT_s_hd          x86-base  helper   snx_fp_convert
+FCVT_s_hs          aarch64   helper   snx_fp_convert
+FCVT_s_hs          generic   helper   snx_fp_convert
+FCVT_s_hs          la64-lsx  helper   snx_fp_convert
+FCVT_s_hs          mips-msa  helper   snx_fp_convert
+FCVT_s_hs          ppc64le   helper   snx_fp_convert
+FCVT_s_hs          riscv64-v helper   snx_fp_convert
+FCVT_s_hs          x86       guarded  snx_fp_convert
+FCVT_s_hs          x86-avx2  guarded  snx_fp_convert
+FCVT_s_hs          x86-base  helper   snx_fp_convert
+FCVT_s_sd          aarch64   guarded  snx_fp_convert
+FCVT_s_sd          generic   guarded  snx_fp_convert
+FCVT_s_sd          la64-lsx  guarded  snx_fp_convert
+FCVT_s_sd          mips-msa  guarded  snx_fp_convert
+FCVT_s_sd          ppc64le   guarded  snx_fp_convert
+FCVT_s_sd          riscv64-v guarded  snx_fp_convert
+FCVT_s_sd          x86       guarded  snx_fp_convert
+FCVT_s_sd          x86-avx2  guarded  snx_fp_convert
+FCVT_s_sd          x86-base  guarded  snx_fp_convert
+FCVT_s_sh          aarch64   helper   snx_fp_convert
+FCVT_s_sh          generic   helper   snx_fp_convert
+FCVT_s_sh          la64-lsx  helper   snx_fp_convert
+FCVT_s_sh          mips-msa  helper   snx_fp_convert
+FCVT_s_sh          ppc64le   helper   snx_fp_convert
+FCVT_s_sh          riscv64-v helper   snx_fp_convert
+FCVT_s_sh          x86       guarded  snx_fp_convert
+FCVT_s_sh          x86-avx2  guarded  snx_fp_convert
+FCVT_s_sh          x86-base  helper   snx_fp_convert
+FDIV_s             aarch64   guarded  snx_fp_host_binary
+FDIV_s             generic   guarded  snx_fp_host_binary
+FDIV_s             la64-lsx  guarded  snx_fp_host_binary
+FDIV_s             mips-msa  guarded  snx_fp_host_binary
+FDIV_s             ppc64le   guarded  snx_fp_host_binary
+FDIV_s             riscv64-v guarded  snx_fp_host_binary
+FDIV_s             x86       guarded  snx_fp_host_binary
+FDIV_s             x86-avx2  guarded  snx_fp_host_binary
+FDIV_s             x86-base  guarded  snx_fp_host_binary
+FDIV_v             aarch64   guarded  snx_fp_host_lanes
+FDIV_v             generic   guarded  snx_fp_host_lanes
+FDIV_v             la64-lsx  guarded  snx_fp_host_lanes
+FDIV_v             mips-msa  guarded  snx_fp_host_lanes
+FDIV_v             ppc64le   guarded  snx_fp_host_lanes
+FDIV_v             riscv64-v guarded  snx_fp_host_lanes
+FDIV_v             x86       guarded  snx_fp_host_lanes
+FDIV_v             x86-avx2  guarded  snx_fp_host_lanes
+FDIV_v             x86-base  guarded  snx_fp_host_lanes
+FMADD              aarch64   guarded  snx_fp_host_fma
+FMADD              generic   helper   snx_fp_host_fma
+FMADD              la64-lsx  guarded  snx_fp_host_fma
+FMADD              mips-msa  helper   snx_fp_host_fma
+FMADD              ppc64le   guarded  snx_fp_host_fma
+FMADD              riscv64-v guarded  snx_fp_host_fma
+FMADD              x86       guarded  snx_fp_host_fma
+FMADD              x86-avx2  guarded  snx_fp_host_fma
+FMADD              x86-base  helper   snx_fp_host_fma
+FMAXNMP_s          aarch64   guarded  snx_fp_cold_minmax_32_4_13_0_1_1 snx_fp_cold_minmax_64_2_13_0_1_1
+FMAXNMP_s          generic   inline
+FMAXNMP_s          la64-lsx  inline
+FMAXNMP_s          mips-msa  inline
+FMAXNMP_s          ppc64le   inline
+FMAXNMP_s          riscv64-v inline
+FMAXNMP_s          x86       guarded  snx_fp_host_minmax
+FMAXNMP_s          x86-avx2  guarded  snx_fp_host_minmax
+FMAXNMP_s          x86-base  guarded  snx_fp_host_minmax
+FMAXNMP_v          aarch64   guarded  snx_fp_cold_minmax_32_4_13_0_1_1
+FMAXNMP_v          generic   inline
+FMAXNMP_v          la64-lsx  inline
+FMAXNMP_v          mips-msa  inline
+FMAXNMP_v          ppc64le   inline
+FMAXNMP_v          riscv64-v inline
+FMAXNMP_v          x86       guarded  snx_fp_cold_minmax_32_4_13_0_1_1 snx_fp_host_lanes
+FMAXNMP_v          x86-avx2  guarded  snx_fp_cold_minmax_32_4_13_0_1_1 snx_fp_host_lanes
+FMAXNMP_v          x86-base  guarded  snx_fp_cold_minmax_32_4_13_0_1_1 snx_fp_host_lanes
+FMAXNMV_s          aarch64   guarded  snx_fp_cold_minmax_32_4_13_0_1_1
+FMAXNMV_s          generic   inline
+FMAXNMV_s          la64-lsx  inline
+FMAXNMV_s          mips-msa  inline
+FMAXNMV_s          ppc64le   inline
+FMAXNMV_s          riscv64-v inline
+FMAXNMV_s          x86       guarded  snx_fp_host_lanes snx_fp_host_minmax
+FMAXNMV_s          x86-avx2  guarded  snx_fp_host_lanes snx_fp_host_minmax
+FMAXNMV_s          x86-base  guarded  snx_fp_host_lanes snx_fp_host_minmax
+FMAXNM_s           aarch64   guarded  snx_fp_host_minmax
+FMAXNM_s           generic   guarded  snx_fp_host_minmax
+FMAXNM_s           la64-lsx  guarded  snx_fp_host_minmax
+FMAXNM_s           mips-msa  guarded  snx_fp_host_minmax
+FMAXNM_s           ppc64le   guarded  snx_fp_host_minmax
+FMAXNM_s           riscv64-v guarded  snx_fp_host_minmax
+FMAXNM_s           x86       guarded  snx_fp_host_minmax
+FMAXNM_s           x86-avx2  guarded  snx_fp_host_minmax
+FMAXNM_s           x86-base  guarded  snx_fp_host_minmax
+FMAXNM_v           aarch64   guarded  snx_fp_cold_minmax_32_4_13_0_1_1
+FMAXNM_v           generic   inline
+FMAXNM_v           la64-lsx  inline
+FMAXNM_v           mips-msa  inline
+FMAXNM_v           ppc64le   inline
+FMAXNM_v           riscv64-v inline
+FMAXNM_v           x86       guarded  snx_fp_cold_minmax_32_4_13_0_1_1 snx_fp_host_lanes
+FMAXNM_v           x86-avx2  guarded  snx_fp_cold_minmax_32_4_13_0_1_1 snx_fp_host_lanes
+FMAXNM_v           x86-base  guarded  snx_fp_cold_minmax_32_4_13_0_1_1 snx_fp_host_lanes
+FMAXP_s            aarch64   guarded  snx_fp_cold_minmax_32_4_13_0_0_1 snx_fp_cold_minmax_64_2_13_0_0_1
+FMAXP_s            generic   inline
+FMAXP_s            la64-lsx  inline
+FMAXP_s            mips-msa  inline
+FMAXP_s            ppc64le   inline
+FMAXP_s            riscv64-v inline
+FMAXP_s            x86       guarded  snx_fp_host_minmax
+FMAXP_s            x86-avx2  guarded  snx_fp_host_minmax
+FMAXP_s            x86-base  guarded  snx_fp_host_minmax
+FMAXP_v            aarch64   guarded  snx_fp_cold_minmax_32_4_13_0_0_1
+FMAXP_v            generic   inline
+FMAXP_v            la64-lsx  inline
+FMAXP_v            mips-msa  inline
+FMAXP_v            ppc64le   inline
+FMAXP_v            riscv64-v inline
+FMAXP_v            x86       guarded  snx_fp_cold_minmax_32_4_13_0_0_1 snx_fp_host_lanes
+FMAXP_v            x86-avx2  guarded  snx_fp_cold_minmax_32_4_13_0_0_1 snx_fp_host_lanes
+FMAXP_v            x86-base  guarded  snx_fp_cold_minmax_32_4_13_0_0_1 snx_fp_host_lanes
+FMAXV_s            aarch64   guarded  snx_fp_cold_minmax_32_4_13_0_0_1
+FMAXV_s            generic   inline
+FMAXV_s            la64-lsx  inline
+FMAXV_s            mips-msa  inline
+FMAXV_s            ppc64le   inline
+FMAXV_s            riscv64-v inline
+FMAXV_s            x86       guarded  snx_fp_host_lanes snx_fp_host_minmax
+FMAXV_s            x86-avx2  guarded  snx_fp_host_lanes snx_fp_host_minmax
+FMAXV_s            x86-base  guarded  snx_fp_host_lanes snx_fp_host_minmax
+FMAX_s             aarch64   guarded  snx_fp_host_minmax
+FMAX_s             generic   guarded  snx_fp_host_minmax
+FMAX_s             la64-lsx  guarded  snx_fp_host_minmax
+FMAX_s             mips-msa  guarded  snx_fp_host_minmax
+FMAX_s             ppc64le   guarded  snx_fp_host_minmax
+FMAX_s             riscv64-v guarded  snx_fp_host_minmax
+FMAX_s             x86       guarded  snx_fp_host_minmax
+FMAX_s             x86-avx2  guarded  snx_fp_host_minmax
+FMAX_s             x86-base  guarded  snx_fp_host_minmax
+FMAX_v             aarch64   guarded  snx_fp_cold_minmax_32_4_13_0_0_1
+FMAX_v             generic   inline
+FMAX_v             la64-lsx  inline
+FMAX_v             mips-msa  inline
+FMAX_v             ppc64le   inline
+FMAX_v             riscv64-v inline
+FMAX_v             x86       guarded  snx_fp_cold_minmax_32_4_13_0_0_1 snx_fp_host_lanes
+FMAX_v             x86-avx2  guarded  snx_fp_cold_minmax_32_4_13_0_0_1 snx_fp_host_lanes
+FMAX_v             x86-base  guarded  snx_fp_cold_minmax_32_4_13_0_0_1 snx_fp_host_lanes
+FMINNMP_s          aarch64   guarded  snx_fp_cold_minmax_32_4_13_1_1_1 snx_fp_cold_minmax_64_2_13_1_1_1
+FMINNMP_s          generic   inline
+FMINNMP_s          la64-lsx  inline
+FMINNMP_s          mips-msa  inline
+FMINNMP_s          ppc64le   inline
+FMINNMP_s          riscv64-v inline
+FMINNMP_s          x86       guarded  snx_fp_host_minmax
+FMINNMP_s          x86-avx2  guarded  snx_fp_host_minmax
+FMINNMP_s          x86-base  guarded  snx_fp_host_minmax
+FMINNMP_v          aarch64   guarded  snx_fp_cold_minmax_32_4_13_1_1_1
+FMINNMP_v          generic   inline
+FMINNMP_v          la64-lsx  inline
+FMINNMP_v          mips-msa  inline
+FMINNMP_v          ppc64le   inline
+FMINNMP_v          riscv64-v inline
+FMINNMP_v          x86       guarded  snx_fp_cold_minmax_32_4_13_1_1_1 snx_fp_host_lanes
+FMINNMP_v          x86-avx2  guarded  snx_fp_cold_minmax_32_4_13_1_1_1 snx_fp_host_lanes
+FMINNMP_v          x86-base  guarded  snx_fp_cold_minmax_32_4_13_1_1_1 snx_fp_host_lanes
+FMINNMV_s          aarch64   guarded  snx_fp_cold_minmax_32_4_13_1_1_1
+FMINNMV_s          generic   inline
+FMINNMV_s          la64-lsx  inline
+FMINNMV_s          mips-msa  inline
+FMINNMV_s          ppc64le   inline
+FMINNMV_s          riscv64-v inline
+FMINNMV_s          x86       guarded  snx_fp_host_lanes snx_fp_host_minmax
+FMINNMV_s          x86-avx2  guarded  snx_fp_host_lanes snx_fp_host_minmax
+FMINNMV_s          x86-base  guarded  snx_fp_host_lanes snx_fp_host_minmax
+FMINNM_s           aarch64   guarded  snx_fp_host_minmax
+FMINNM_s           generic   guarded  snx_fp_host_minmax
+FMINNM_s           la64-lsx  guarded  snx_fp_host_minmax
+FMINNM_s           mips-msa  guarded  snx_fp_host_minmax
+FMINNM_s           ppc64le   guarded  snx_fp_host_minmax
+FMINNM_s           riscv64-v guarded  snx_fp_host_minmax
+FMINNM_s           x86       guarded  snx_fp_host_minmax
+FMINNM_s           x86-avx2  guarded  snx_fp_host_minmax
+FMINNM_s           x86-base  guarded  snx_fp_host_minmax
+FMINNM_v           aarch64   guarded  snx_fp_cold_minmax_32_4_13_1_1_1
+FMINNM_v           generic   inline
+FMINNM_v           la64-lsx  inline
+FMINNM_v           mips-msa  inline
+FMINNM_v           ppc64le   inline
+FMINNM_v           riscv64-v inline
+FMINNM_v           x86       guarded  snx_fp_cold_minmax_32_4_13_1_1_1 snx_fp_host_lanes
+FMINNM_v           x86-avx2  guarded  snx_fp_cold_minmax_32_4_13_1_1_1 snx_fp_host_lanes
+FMINNM_v           x86-base  guarded  snx_fp_cold_minmax_32_4_13_1_1_1 snx_fp_host_lanes
+FMINP_s            aarch64   guarded  snx_fp_cold_minmax_32_4_13_1_0_1 snx_fp_cold_minmax_64_2_13_1_0_1
+FMINP_s            generic   inline
+FMINP_s            la64-lsx  inline
+FMINP_s            mips-msa  inline
+FMINP_s            ppc64le   inline
+FMINP_s            riscv64-v inline
+FMINP_s            x86       guarded  snx_fp_host_minmax
+FMINP_s            x86-avx2  guarded  snx_fp_host_minmax
+FMINP_s            x86-base  guarded  snx_fp_host_minmax
+FMINP_v            aarch64   guarded  snx_fp_cold_minmax_32_4_13_1_0_1
+FMINP_v            generic   inline
+FMINP_v            la64-lsx  inline
+FMINP_v            mips-msa  inline
+FMINP_v            ppc64le   inline
+FMINP_v            riscv64-v inline
+FMINP_v            x86       guarded  snx_fp_cold_minmax_32_4_13_1_0_1 snx_fp_host_lanes
+FMINP_v            x86-avx2  guarded  snx_fp_cold_minmax_32_4_13_1_0_1 snx_fp_host_lanes
+FMINP_v            x86-base  guarded  snx_fp_cold_minmax_32_4_13_1_0_1 snx_fp_host_lanes
+FMINV_s            aarch64   guarded  snx_fp_cold_minmax_32_4_13_1_0_1
+FMINV_s            generic   inline
+FMINV_s            la64-lsx  inline
+FMINV_s            mips-msa  inline
+FMINV_s            ppc64le   inline
+FMINV_s            riscv64-v inline
+FMINV_s            x86       guarded  snx_fp_host_lanes snx_fp_host_minmax
+FMINV_s            x86-avx2  guarded  snx_fp_host_lanes snx_fp_host_minmax
+FMINV_s            x86-base  guarded  snx_fp_host_lanes snx_fp_host_minmax
+FMIN_s             aarch64   guarded  snx_fp_host_minmax
+FMIN_s             generic   guarded  snx_fp_host_minmax
+FMIN_s             la64-lsx  guarded  snx_fp_host_minmax
+FMIN_s             mips-msa  guarded  snx_fp_host_minmax
+FMIN_s             ppc64le   guarded  snx_fp_host_minmax
+FMIN_s             riscv64-v guarded  snx_fp_host_minmax
+FMIN_s             x86       guarded  snx_fp_host_minmax
+FMIN_s             x86-avx2  guarded  snx_fp_host_minmax
+FMIN_s             x86-base  guarded  snx_fp_host_minmax
+FMIN_v             aarch64   guarded  snx_fp_cold_minmax_32_4_13_1_0_1
+FMIN_v             generic   inline
+FMIN_v             la64-lsx  inline
+FMIN_v             mips-msa  inline
+FMIN_v             ppc64le   inline
+FMIN_v             riscv64-v inline
+FMIN_v             x86       guarded  snx_fp_cold_minmax_32_4_13_1_0_1 snx_fp_host_lanes
+FMIN_v             x86-avx2  guarded  snx_fp_cold_minmax_32_4_13_1_0_1 snx_fp_host_lanes
+FMIN_v             x86-base  guarded  snx_fp_cold_minmax_32_4_13_1_0_1 snx_fp_host_lanes
+FMLA_si            aarch64   guarded  snx_fp_host_fma
+FMLA_si            generic   helper   snx_fp_host_fma
+FMLA_si            la64-lsx  guarded  snx_fp_host_fma
+FMLA_si            mips-msa  helper   snx_fp_host_fma
+FMLA_si            ppc64le   guarded  snx_fp_host_fma
+FMLA_si            riscv64-v guarded  snx_fp_host_fma
+FMLA_si            x86       guarded  snx_fp_host_fma
+FMLA_si            x86-avx2  guarded  snx_fp_host_fma
+FMLA_si            x86-base  helper   snx_fp_host_fma
+FMLA_v             aarch64   guarded  snx_fp_host_lanes
+FMLA_v             generic   helper   snx_fp_host_lanes
+FMLA_v             la64-lsx  guarded  snx_fp_host_lanes
+FMLA_v             mips-msa  helper   snx_fp_host_lanes
+FMLA_v             ppc64le   guarded  snx_fp_host_lanes
+FMLA_v             riscv64-v guarded  snx_fp_host_lanes
+FMLA_v             x86       guarded  snx_fp_host_lanes
+FMLA_v             x86-avx2  guarded  snx_fp_host_lanes
+FMLA_v             x86-base  helper   snx_fp_host_lanes
+FMLA_vi            aarch64   guarded  snx_fp_host_lanes
+FMLA_vi            generic   helper   snx_fp_host_lanes
+FMLA_vi            la64-lsx  guarded  snx_fp_host_lanes
+FMLA_vi            mips-msa  helper   snx_fp_host_lanes
+FMLA_vi            ppc64le   guarded  snx_fp_host_lanes
+FMLA_vi            riscv64-v guarded  snx_fp_host_lanes
+FMLA_vi            x86       guarded  snx_fp_host_lanes
+FMLA_vi            x86-avx2  guarded  snx_fp_host_lanes
+FMLA_vi            x86-base  helper   snx_fp_host_lanes
+FMLS_si            aarch64   guarded  snx_fp_host_fma
+FMLS_si            generic   helper   snx_fp_host_fma
+FMLS_si            la64-lsx  guarded  snx_fp_host_fma
+FMLS_si            mips-msa  helper   snx_fp_host_fma
+FMLS_si            ppc64le   guarded  snx_fp_host_fma
+FMLS_si            riscv64-v guarded  snx_fp_host_fma
+FMLS_si            x86       guarded  snx_fp_host_fma
+FMLS_si            x86-avx2  guarded  snx_fp_host_fma
+FMLS_si            x86-base  helper   snx_fp_host_fma
+FMLS_v             aarch64   guarded  snx_fp_host_lanes
+FMLS_v             generic   helper   snx_fp_host_lanes
+FMLS_v             la64-lsx  guarded  snx_fp_host_lanes
+FMLS_v             mips-msa  helper   snx_fp_host_lanes
+FMLS_v             ppc64le   guarded  snx_fp_host_lanes
+FMLS_v             riscv64-v guarded  snx_fp_host_lanes
+FMLS_v             x86       guarded  snx_fp_host_lanes
+FMLS_v             x86-avx2  guarded  snx_fp_host_lanes
+FMLS_v             x86-base  helper   snx_fp_host_lanes
+FMLS_vi            aarch64   guarded  snx_fp_host_lanes
+FMLS_vi            generic   helper   snx_fp_host_lanes
+FMLS_vi            la64-lsx  guarded  snx_fp_host_lanes
+FMLS_vi            mips-msa  helper   snx_fp_host_lanes
+FMLS_vi            ppc64le   guarded  snx_fp_host_lanes
+FMLS_vi            riscv64-v guarded  snx_fp_host_lanes
+FMLS_vi            x86       guarded  snx_fp_host_lanes
+FMLS_vi            x86-avx2  guarded  snx_fp_host_lanes
+FMLS_vi            x86-base  helper   snx_fp_host_lanes
+FMOVI_s            aarch64   inline
+FMOVI_s            generic   inline
+FMOVI_s            la64-lsx  inline
+FMOVI_s            mips-msa  inline
+FMOVI_s            ppc64le   inline
+FMOVI_s            riscv64-v inline
+FMOVI_s            x86       inline
+FMOVI_s            x86-avx2  inline
+FMOVI_s            x86-base  inline
+FMOV_dx            aarch64   inline
+FMOV_dx            generic   inline
+FMOV_dx            la64-lsx  inline
+FMOV_dx            mips-msa  inline
+FMOV_dx            ppc64le   inline
+FMOV_dx            riscv64-v inline
+FMOV_dx            x86       inline
+FMOV_dx            x86-avx2  inline
+FMOV_dx            x86-base  inline
+FMOV_s             aarch64   inline
+FMOV_s             generic   inline
+FMOV_s             la64-lsx  inline
+FMOV_s             mips-msa  inline
+FMOV_s             ppc64le   inline
+FMOV_s             riscv64-v inline
+FMOV_s             x86       inline
+FMOV_s             x86-avx2  inline
+FMOV_s             x86-base  inline
+FMOV_sw            aarch64   inline
+FMOV_sw            generic   inline
+FMOV_sw            la64-lsx  inline
+FMOV_sw            mips-msa  inline
+FMOV_sw            ppc64le   inline
+FMOV_sw            riscv64-v inline
+FMOV_sw            x86       inline
+FMOV_sw            x86-avx2  inline
+FMOV_sw            x86-base  inline
+FMOV_ux            aarch64   inline
+FMOV_ux            generic   inline
+FMOV_ux            la64-lsx  inline
+FMOV_ux            mips-msa  inline
+FMOV_ux            ppc64le   inline
+FMOV_ux            riscv64-v inline
+FMOV_ux            x86       inline
+FMOV_ux            x86-avx2  inline
+FMOV_ux            x86-base  inline
+FMOV_ws            aarch64   inline
+FMOV_ws            generic   inline
+FMOV_ws            la64-lsx  inline
+FMOV_ws            mips-msa  inline
+FMOV_ws            ppc64le   inline
+FMOV_ws            riscv64-v inline
+FMOV_ws            x86       inline
+FMOV_ws            x86-avx2  inline
+FMOV_ws            x86-base  inline
+FMOV_xd            aarch64   inline
+FMOV_xd            generic   inline
+FMOV_xd            la64-lsx  inline
+FMOV_xd            mips-msa  inline
+FMOV_xd            ppc64le   inline
+FMOV_xd            riscv64-v inline
+FMOV_xd            x86       inline
+FMOV_xd            x86-avx2  inline
+FMOV_xd            x86-base  inline
+FMOV_xu            aarch64   inline
+FMOV_xu            generic   inline
+FMOV_xu            la64-lsx  inline
+FMOV_xu            mips-msa  inline
+FMOV_xu            ppc64le   inline
+FMOV_xu            riscv64-v inline
+FMOV_xu            x86       inline
+FMOV_xu            x86-avx2  inline
+FMOV_xu            x86-base  inline
+FMSUB              aarch64   guarded  snx_fp_host_fma
+FMSUB              generic   helper   snx_fp_host_fma
+FMSUB              la64-lsx  guarded  snx_fp_host_fma
+FMSUB              mips-msa  helper   snx_fp_host_fma
+FMSUB              ppc64le   guarded  snx_fp_host_fma
+FMSUB              riscv64-v guarded  snx_fp_host_fma
+FMSUB              x86       guarded  snx_fp_host_fma
+FMSUB              x86-avx2  guarded  snx_fp_host_fma
+FMSUB              x86-base  helper   snx_fp_host_fma
+FMULX_s            aarch64   guarded  snx_fp_host_binary
+FMULX_s            generic   guarded  snx_fp_host_binary
+FMULX_s            la64-lsx  guarded  snx_fp_host_binary
+FMULX_s            mips-msa  guarded  snx_fp_host_binary
+FMULX_s            ppc64le   guarded  snx_fp_host_binary
+FMULX_s            riscv64-v guarded  snx_fp_host_binary
+FMULX_s            x86       guarded  snx_fp_host_binary
+FMULX_s            x86-avx2  guarded  snx_fp_host_binary
+FMULX_s            x86-base  guarded  snx_fp_host_binary
+FMULX_si           aarch64   guarded  snx_fp_host_binary
+FMULX_si           generic   guarded  snx_fp_host_binary
+FMULX_si           la64-lsx  guarded  snx_fp_host_binary
+FMULX_si           mips-msa  guarded  snx_fp_host_binary
+FMULX_si           ppc64le   guarded  snx_fp_host_binary
+FMULX_si           riscv64-v guarded  snx_fp_host_binary
+FMULX_si           x86       guarded  snx_fp_host_binary
+FMULX_si           x86-avx2  guarded  snx_fp_host_binary
+FMULX_si           x86-base  guarded  snx_fp_host_binary
+FMULX_v            aarch64   guarded  snx_fp_host_lanes
+FMULX_v            generic   guarded  snx_fp_host_lanes
+FMULX_v            la64-lsx  guarded  snx_fp_host_lanes
+FMULX_v            mips-msa  guarded  snx_fp_host_lanes
+FMULX_v            ppc64le   guarded  snx_fp_host_lanes
+FMULX_v            riscv64-v guarded  snx_fp_host_lanes
+FMULX_v            x86       guarded  snx_fp_host_lanes
+FMULX_v            x86-avx2  guarded  snx_fp_host_lanes
+FMULX_v            x86-base  guarded  snx_fp_host_lanes
+FMULX_vi           aarch64   guarded  snx_fp_host_lanes
+FMULX_vi           generic   guarded  snx_fp_host_lanes
+FMULX_vi           la64-lsx  guarded  snx_fp_host_lanes
+FMULX_vi           mips-msa  guarded  snx_fp_host_lanes
+FMULX_vi           ppc64le   guarded  snx_fp_host_lanes
+FMULX_vi           riscv64-v guarded  snx_fp_host_lanes
+FMULX_vi           x86       guarded  snx_fp_host_lanes
+FMULX_vi           x86-avx2  guarded  snx_fp_host_lanes
+FMULX_vi           x86-base  guarded  snx_fp_host_lanes
+FMUL_s             aarch64   guarded  snx_fp_host_binary
+FMUL_s             generic   guarded  snx_fp_host_binary
+FMUL_s             la64-lsx  guarded  snx_fp_host_binary
+FMUL_s             mips-msa  guarded  snx_fp_host_binary
+FMUL_s             ppc64le   guarded  snx_fp_host_binary
+FMUL_s             riscv64-v guarded  snx_fp_host_binary
+FMUL_s             x86       guarded  snx_fp_host_binary
+FMUL_s             x86-avx2  guarded  snx_fp_host_binary
+FMUL_s             x86-base  guarded  snx_fp_host_binary
+FMUL_si            aarch64   guarded  snx_fp_host_binary
+FMUL_si            generic   guarded  snx_fp_host_binary
+FMUL_si            la64-lsx  guarded  snx_fp_host_binary
+FMUL_si            mips-msa  guarded  snx_fp_host_binary
+FMUL_si            ppc64le   guarded  snx_fp_host_binary
+FMUL_si            riscv64-v guarded  snx_fp_host_binary
+FMUL_si            x86       guarded  snx_fp_host_binary
+FMUL_si            x86-avx2  guarded  snx_fp_host_binary
+FMUL_si            x86-base  guarded  snx_fp_host_binary
+FMUL_v             aarch64   guarded  snx_fp_host_lanes
+FMUL_v             generic   guarded  snx_fp_host_lanes
+FMUL_v             la64-lsx  guarded  snx_fp_host_lanes
+FMUL_v             mips-msa  guarded  snx_fp_host_lanes
+FMUL_v             ppc64le   guarded  snx_fp_host_lanes
+FMUL_v             riscv64-v guarded  snx_fp_host_lanes
+FMUL_v             x86       guarded  snx_fp_host_lanes
+FMUL_v             x86-avx2  guarded  snx_fp_host_lanes
+FMUL_v             x86-base  guarded  snx_fp_host_lanes
+FMUL_vi            aarch64   guarded  snx_fp_host_lanes
+FMUL_vi            generic   guarded  snx_fp_host_lanes
+FMUL_vi            la64-lsx  guarded  snx_fp_host_lanes
+FMUL_vi            mips-msa  guarded  snx_fp_host_lanes
+FMUL_vi            ppc64le   guarded  snx_fp_host_lanes
+FMUL_vi            riscv64-v guarded  snx_fp_host_lanes
+FMUL_vi            x86       guarded  snx_fp_host_lanes
+FMUL_vi            x86-avx2  guarded  snx_fp_host_lanes
+FMUL_vi            x86-base  guarded  snx_fp_host_lanes
+FNEG_s             aarch64   inline
+FNEG_s             generic   inline
+FNEG_s             la64-lsx  inline
+FNEG_s             mips-msa  inline
+FNEG_s             ppc64le   inline
+FNEG_s             riscv64-v inline
+FNEG_s             x86       inline
+FNEG_s             x86-avx2  inline
+FNEG_s             x86-base  inline
+FNEG_v             aarch64   inline
+FNEG_v             generic   inline
+FNEG_v             la64-lsx  inline
+FNEG_v             mips-msa  inline
+FNEG_v             ppc64le   inline
+FNEG_v             riscv64-v inline
+FNEG_v             x86       inline
+FNEG_v             x86-avx2  inline
+FNEG_v             x86-base  inline
+FNMADD             aarch64   guarded  snx_fp_host_fma
+FNMADD             generic   helper   snx_fp_host_fma
+FNMADD             la64-lsx  guarded  snx_fp_host_fma
+FNMADD             mips-msa  helper   snx_fp_host_fma
+FNMADD             ppc64le   guarded  snx_fp_host_fma
+FNMADD             riscv64-v guarded  snx_fp_host_fma
+FNMADD             x86       guarded  snx_fp_host_fma
+FNMADD             x86-avx2  guarded  snx_fp_host_fma
+FNMADD             x86-base  helper   snx_fp_host_fma
+FNMSUB             aarch64   guarded  snx_fp_host_fma
+FNMSUB             generic   helper   snx_fp_host_fma
+FNMSUB             la64-lsx  guarded  snx_fp_host_fma
+FNMSUB             mips-msa  helper   snx_fp_host_fma
+FNMSUB             ppc64le   guarded  snx_fp_host_fma
+FNMSUB             riscv64-v guarded  snx_fp_host_fma
+FNMSUB             x86       guarded  snx_fp_host_fma
+FNMSUB             x86-avx2  guarded  snx_fp_host_fma
+FNMSUB             x86-base  helper   snx_fp_host_fma
+FNMUL_s            aarch64   guarded  snx_fp_host_binary
+FNMUL_s            generic   guarded  snx_fp_host_binary
+FNMUL_s            la64-lsx  guarded  snx_fp_host_binary
+FNMUL_s            mips-msa  guarded  snx_fp_host_binary
+FNMUL_s            ppc64le   guarded  snx_fp_host_binary
+FNMUL_s            riscv64-v guarded  snx_fp_host_binary
+FNMUL_s            x86       guarded  snx_fp_host_binary
+FNMUL_s            x86-avx2  guarded  snx_fp_host_binary
+FNMUL_s            x86-base  guarded  snx_fp_host_binary
+FRECPE_s           aarch64   inline
+FRECPE_s           generic   helper   snx_fp_host_unary
+FRECPE_s           la64-lsx  guarded  snx_fp_host_unary
+FRECPE_s           mips-msa  helper   snx_fp_host_unary
+FRECPE_s           ppc64le   guarded  snx_fp_host_unary
+FRECPE_s           riscv64-v guarded  snx_fp_host_unary
+FRECPE_s           x86       inline
+FRECPE_s           x86-avx2  inline
+FRECPE_s           x86-base  inline
+FRECPE_v           aarch64   inline
+FRECPE_v           generic   helper   snx_fp_host_lanes
+FRECPE_v           la64-lsx  guarded  snx_fp_host_lanes
+FRECPE_v           mips-msa  helper   snx_fp_host_lanes
+FRECPE_v           ppc64le   guarded  snx_fp_host_lanes
+FRECPE_v           riscv64-v guarded  snx_fp_host_lanes
+FRECPE_v           x86       inline
+FRECPE_v           x86-avx2  inline
+FRECPE_v           x86-base  inline
+FRECPS_s           aarch64   guarded  snx_fp_host_binary
+FRECPS_s           generic   helper   snx_fp_host_binary
+FRECPS_s           la64-lsx  guarded  snx_fp_host_binary
+FRECPS_s           mips-msa  helper   snx_fp_host_binary
+FRECPS_s           ppc64le   guarded  snx_fp_host_binary
+FRECPS_s           riscv64-v guarded  snx_fp_host_binary
+FRECPS_s           x86       guarded  snx_fp_host_binary
+FRECPS_s           x86-avx2  guarded  snx_fp_host_binary
+FRECPS_s           x86-base  helper   snx_fp_host_binary
+FRECPS_v           aarch64   guarded  snx_fp_host_lanes
+FRECPS_v           generic   helper   snx_fp_host_lanes
+FRECPS_v           la64-lsx  guarded  snx_fp_host_lanes
+FRECPS_v           mips-msa  helper   snx_fp_host_lanes
+FRECPS_v           ppc64le   guarded  snx_fp_host_lanes
+FRECPS_v           riscv64-v guarded  snx_fp_host_lanes
+FRECPS_v           x86       guarded  snx_fp_host_lanes
+FRECPS_v           x86-avx2  guarded  snx_fp_host_lanes
+FRECPS_v           x86-base  helper   snx_fp_host_lanes
+FRECPX_s           aarch64   inline
+FRECPX_s           generic   inline
+FRECPX_s           la64-lsx  inline
+FRECPX_s           mips-msa  inline
+FRECPX_s           ppc64le   inline
+FRECPX_s           riscv64-v inline
+FRECPX_s           x86       inline
+FRECPX_s           x86-avx2  inline
+FRECPX_s           x86-base  inline
+FRINTA_s           aarch64   guarded  snx_fp_round
+FRINTA_s           generic   helper   snx_fp_round
+FRINTA_s           la64-lsx  guarded  snx_fp_round
+FRINTA_s           mips-msa  helper   snx_fp_round
+FRINTA_s           ppc64le   guarded  snx_fp_round
+FRINTA_s           riscv64-v guarded  snx_fp_round
+FRINTA_s           x86       guarded  snx_fp_round
+FRINTA_s           x86-avx2  guarded  snx_fp_round
+FRINTA_s           x86-base  helper   snx_fp_round
+FRINTA_v           aarch64   guarded  snx_fp_cold_round_32_4_13_4_0_1
+FRINTA_v           generic   helper   snx_fp_round
+FRINTA_v           la64-lsx  guarded  snx_fp_cold_round_32_4_13_4_0_1
+FRINTA_v           mips-msa  helper   snx_fp_round
+FRINTA_v           ppc64le   guarded  snx_fp_cold_round_32_4_13_4_0_1
+FRINTA_v           riscv64-v guarded  snx_fp_cold_round_32_4_13_4_0_1
+FRINTA_v           x86       guarded  snx_fp_cold_round_32_4_13_4_0_1 snx_fp_round
+FRINTA_v           x86-avx2  guarded  snx_fp_cold_round_32_4_13_4_0_1 snx_fp_round
+FRINTA_v           x86-base  helper   snx_fp_round
+FRINTI_s           aarch64   guarded  snx_fp_round
+FRINTI_s           generic   helper   snx_fp_round
+FRINTI_s           la64-lsx  guarded  snx_fp_round
+FRINTI_s           mips-msa  helper   snx_fp_round
+FRINTI_s           ppc64le   helper   snx_fp_round
+FRINTI_s           riscv64-v guarded  snx_fp_round
+FRINTI_s           x86       guarded  snx_fp_round
+FRINTI_s           x86-avx2  guarded  snx_fp_round
+FRINTI_s           x86-base  helper   snx_fp_round
+FRINTI_v           aarch64   guarded  snx_fp_cold_round_32_4_13_5_0_1
+FRINTI_v           generic   helper   snx_fp_round
+FRINTI_v           la64-lsx  guarded  snx_fp_cold_round_32_4_13_5_0_1
+FRINTI_v           mips-msa  helper   snx_fp_round
+FRINTI_v           ppc64le   helper   snx_fp_round
+FRINTI_v           riscv64-v guarded  snx_fp_cold_round_32_4_13_5_0_1
+FRINTI_v           x86       guarded  snx_fp_cold_round_32_4_13_5_0_1 snx_fp_round
+FRINTI_v           x86-avx2  guarded  snx_fp_cold_round_32_4_13_5_0_1 snx_fp_round
+FRINTI_v           x86-base  helper   snx_fp_round
+FRINTM_s           aarch64   guarded  snx_fp_round
+FRINTM_s           generic   helper   snx_fp_round
+FRINTM_s           la64-lsx  guarded  snx_fp_round
+FRINTM_s           mips-msa  helper   snx_fp_round
+FRINTM_s           ppc64le   guarded  snx_fp_round
+FRINTM_s           riscv64-v guarded  snx_fp_round
+FRINTM_s           x86       guarded  snx_fp_round
+FRINTM_s           x86-avx2  guarded  snx_fp_round
+FRINTM_s           x86-base  helper   snx_fp_round
+FRINTM_v           aarch64   guarded  snx_fp_cold_round_32_4_13_2_0_1
+FRINTM_v           generic   helper   snx_fp_round
+FRINTM_v           la64-lsx  guarded  snx_fp_cold_round_32_4_13_2_0_1
+FRINTM_v           mips-msa  helper   snx_fp_round
+FRINTM_v           ppc64le   guarded  snx_fp_cold_round_32_4_13_2_0_1
+FRINTM_v           riscv64-v guarded  snx_fp_cold_round_32_4_13_2_0_1
+FRINTM_v           x86       guarded  snx_fp_cold_round_32_4_13_2_0_1 snx_fp_round
+FRINTM_v           x86-avx2  guarded  snx_fp_cold_round_32_4_13_2_0_1 snx_fp_round
+FRINTM_v           x86-base  helper   snx_fp_round
+FRINTN_s           aarch64   guarded  snx_fp_round
+FRINTN_s           generic   helper   snx_fp_round
+FRINTN_s           la64-lsx  guarded  snx_fp_round
+FRINTN_s           mips-msa  helper   snx_fp_round
+FRINTN_s           ppc64le   helper   snx_fp_round
+FRINTN_s           riscv64-v guarded  snx_fp_round
+FRINTN_s           x86       guarded  snx_fp_round
+FRINTN_s           x86-avx2  guarded  snx_fp_round
+FRINTN_s           x86-base  helper   snx_fp_round
+FRINTN_v           aarch64   guarded  snx_fp_cold_round_32_4_13_0_0_1
+FRINTN_v           generic   helper   snx_fp_round
+FRINTN_v           la64-lsx  guarded  snx_fp_cold_round_32_4_13_0_0_1
+FRINTN_v           mips-msa  helper   snx_fp_round
+FRINTN_v           ppc64le   helper   snx_fp_round
+FRINTN_v           riscv64-v guarded  snx_fp_cold_round_32_4_13_0_0_1
+FRINTN_v           x86       guarded  snx_fp_cold_round_32_4_13_0_0_1 snx_fp_round
+FRINTN_v           x86-avx2  guarded  snx_fp_cold_round_32_4_13_0_0_1 snx_fp_round
+FRINTN_v           x86-base  helper   snx_fp_round
+FRINTP_s           aarch64   guarded  snx_fp_round
+FRINTP_s           generic   helper   snx_fp_round
+FRINTP_s           la64-lsx  guarded  snx_fp_round
+FRINTP_s           mips-msa  helper   snx_fp_round
+FRINTP_s           ppc64le   guarded  snx_fp_round
+FRINTP_s           riscv64-v guarded  snx_fp_round
+FRINTP_s           x86       guarded  snx_fp_round
+FRINTP_s           x86-avx2  guarded  snx_fp_round
+FRINTP_s           x86-base  helper   snx_fp_round
+FRINTP_v           aarch64   guarded  snx_fp_cold_round_32_4_13_1_0_1
+FRINTP_v           generic   helper   snx_fp_round
+FRINTP_v           la64-lsx  guarded  snx_fp_cold_round_32_4_13_1_0_1
+FRINTP_v           mips-msa  helper   snx_fp_round
+FRINTP_v           ppc64le   guarded  snx_fp_cold_round_32_4_13_1_0_1
+FRINTP_v           riscv64-v guarded  snx_fp_cold_round_32_4_13_1_0_1
+FRINTP_v           x86       guarded  snx_fp_cold_round_32_4_13_1_0_1 snx_fp_round
+FRINTP_v           x86-avx2  guarded  snx_fp_cold_round_32_4_13_1_0_1 snx_fp_round
+FRINTP_v           x86-base  helper   snx_fp_round
+FRINTX_s           aarch64   guarded  snx_fp_round
+FRINTX_s           generic   helper   snx_fp_round
+FRINTX_s           la64-lsx  guarded  snx_fp_round
+FRINTX_s           mips-msa  helper   snx_fp_round
+FRINTX_s           ppc64le   helper   snx_fp_round
+FRINTX_s           riscv64-v guarded  snx_fp_round
+FRINTX_s           x86       guarded  snx_fp_round
+FRINTX_s           x86-avx2  guarded  snx_fp_round
+FRINTX_s           x86-base  helper   snx_fp_round
+FRINTX_v           aarch64   guarded  snx_fp_cold_round_32_4_13_5_1_1
+FRINTX_v           generic   helper   snx_fp_round
+FRINTX_v           la64-lsx  guarded  snx_fp_cold_round_32_4_13_5_1_1
+FRINTX_v           mips-msa  helper   snx_fp_round
+FRINTX_v           ppc64le   helper   snx_fp_round
+FRINTX_v           riscv64-v guarded  snx_fp_cold_round_32_4_13_5_1_1
+FRINTX_v           x86       guarded  snx_fp_cold_round_32_4_13_5_1_1 snx_fp_round
+FRINTX_v           x86-avx2  guarded  snx_fp_cold_round_32_4_13_5_1_1 snx_fp_round
+FRINTX_v           x86-base  helper   snx_fp_round
+FRINTZ_s           aarch64   guarded  snx_fp_round
+FRINTZ_s           generic   helper   snx_fp_round
+FRINTZ_s           la64-lsx  guarded  snx_fp_round
+FRINTZ_s           mips-msa  helper   snx_fp_round
+FRINTZ_s           ppc64le   guarded  snx_fp_round
+FRINTZ_s           riscv64-v guarded  snx_fp_round
+FRINTZ_s           x86       guarded  snx_fp_round
+FRINTZ_s           x86-avx2  guarded  snx_fp_round
+FRINTZ_s           x86-base  helper   snx_fp_round
+FRINTZ_v           aarch64   guarded  snx_fp_cold_round_32_4_13_3_0_1
+FRINTZ_v           generic   helper   snx_fp_round
+FRINTZ_v           la64-lsx  guarded  snx_fp_cold_round_32_4_13_3_0_1
+FRINTZ_v           mips-msa  helper   snx_fp_round
+FRINTZ_v           ppc64le   guarded  snx_fp_cold_round_32_4_13_3_0_1
+FRINTZ_v           riscv64-v guarded  snx_fp_cold_round_32_4_13_3_0_1
+FRINTZ_v           x86       guarded  snx_fp_cold_round_32_4_13_3_0_1 snx_fp_round
+FRINTZ_v           x86-avx2  guarded  snx_fp_cold_round_32_4_13_3_0_1 snx_fp_round
+FRINTZ_v           x86-base  helper   snx_fp_round
+FRSQRTE_s          aarch64   inline
+FRSQRTE_s          generic   helper   snx_fp_host_unary
+FRSQRTE_s          la64-lsx  guarded  snx_fp_host_unary
+FRSQRTE_s          mips-msa  helper   snx_fp_host_unary
+FRSQRTE_s          ppc64le   guarded  snx_fp_host_unary
+FRSQRTE_s          riscv64-v guarded  snx_fp_host_unary
+FRSQRTE_s          x86       inline
+FRSQRTE_s          x86-avx2  inline
+FRSQRTE_s          x86-base  inline
+FRSQRTE_v          aarch64   inline
+FRSQRTE_v          generic   helper   snx_fp_host_lanes
+FRSQRTE_v          la64-lsx  guarded  snx_fp_host_lanes
+FRSQRTE_v          mips-msa  helper   snx_fp_host_lanes
+FRSQRTE_v          ppc64le   guarded  snx_fp_host_lanes
+FRSQRTE_v          riscv64-v guarded  snx_fp_host_lanes
+FRSQRTE_v          x86       inline
+FRSQRTE_v          x86-avx2  inline
+FRSQRTE_v          x86-base  inline
+FRSQRTS_s          aarch64   guarded  snx_fp_host_binary
+FRSQRTS_s          generic   helper   snx_fp_host_binary
+FRSQRTS_s          la64-lsx  guarded  snx_fp_host_binary
+FRSQRTS_s          mips-msa  helper   snx_fp_host_binary
+FRSQRTS_s          ppc64le   guarded  snx_fp_host_binary
+FRSQRTS_s          riscv64-v guarded  snx_fp_host_binary
+FRSQRTS_s          x86       guarded  snx_fp_host_binary
+FRSQRTS_s          x86-avx2  guarded  snx_fp_host_binary
+FRSQRTS_s          x86-base  helper   snx_fp_host_binary
+FRSQRTS_v          aarch64   guarded  snx_fp_host_lanes
+FRSQRTS_v          generic   helper   snx_fp_host_lanes
+FRSQRTS_v          la64-lsx  guarded  snx_fp_host_lanes
+FRSQRTS_v          mips-msa  helper   snx_fp_host_lanes
+FRSQRTS_v          ppc64le   guarded  snx_fp_host_lanes
+FRSQRTS_v          riscv64-v guarded  snx_fp_host_lanes
+FRSQRTS_v          x86       guarded  snx_fp_host_lanes
+FRSQRTS_v          x86-avx2  guarded  snx_fp_host_lanes
+FRSQRTS_v          x86-base  helper   snx_fp_host_lanes
+FSQRT_s            aarch64   guarded  snx_fp_host_unary
+FSQRT_s            generic   helper   snx_fp_host_unary
+FSQRT_s            la64-lsx  guarded  snx_fp_host_unary
+FSQRT_s            mips-msa  helper   snx_fp_host_unary
+FSQRT_s            ppc64le   guarded  snx_fp_host_unary
+FSQRT_s            riscv64-v guarded  snx_fp_host_unary
+FSQRT_s            x86       guarded  snx_fp_host_unary
+FSQRT_s            x86-avx2  guarded  snx_fp_host_unary
+FSQRT_s            x86-base  guarded  snx_fp_host_unary
+FSQRT_v            aarch64   guarded  snx_fp_host_lanes
+FSQRT_v            generic   helper   snx_fp_host_lanes
+FSQRT_v            la64-lsx  guarded  snx_fp_host_lanes
+FSQRT_v            mips-msa  helper   snx_fp_host_lanes
+FSQRT_v            ppc64le   guarded  snx_fp_host_lanes
+FSQRT_v            riscv64-v guarded  snx_fp_host_lanes
+FSQRT_v            x86       guarded  snx_fp_host_lanes
+FSQRT_v            x86-avx2  guarded  snx_fp_host_lanes
+FSQRT_v            x86-base  guarded  snx_fp_host_lanes
+FSUB_s             aarch64   guarded  snx_fp_host_binary
+FSUB_s             generic   guarded  snx_fp_host_binary
+FSUB_s             la64-lsx  guarded  snx_fp_host_binary
+FSUB_s             mips-msa  guarded  snx_fp_host_binary
+FSUB_s             ppc64le   guarded  snx_fp_host_binary
+FSUB_s             riscv64-v guarded  snx_fp_host_binary
+FSUB_s             x86       guarded  snx_fp_host_binary
+FSUB_s             x86-avx2  guarded  snx_fp_host_binary
+FSUB_s             x86-base  guarded  snx_fp_host_binary
+FSUB_v             aarch64   guarded  snx_fp_host_lanes
+FSUB_v             generic   guarded  snx_fp_host_lanes
+FSUB_v             la64-lsx  guarded  snx_fp_host_lanes
+FSUB_v             mips-msa  guarded  snx_fp_host_lanes
+FSUB_v             ppc64le   guarded  snx_fp_host_lanes
+FSUB_v             riscv64-v guarded  snx_fp_host_lanes
+FSUB_v             x86       guarded  snx_fp_host_lanes
+FSUB_v             x86-avx2  guarded  snx_fp_host_lanes
+FSUB_v             x86-base  guarded  snx_fp_host_lanes
+INS_element        aarch64   inline
+INS_element        generic   inline
+INS_element        la64-lsx  inline
+INS_element        mips-msa  inline
+INS_element        ppc64le   inline
+INS_element        riscv64-v inline
+INS_element        x86       inline
+INS_element        x86-avx2  inline
+INS_element        x86-base  inline
+INS_general        aarch64   inline
+INS_general        generic   inline
+INS_general        la64-lsx  inline
+INS_general        mips-msa  inline
+INS_general        ppc64le   inline
+INS_general        riscv64-v inline
+INS_general        x86       inline
+INS_general        x86-avx2  inline
+INS_general        x86-base  inline
+LDP_v              aarch64   inline
+LDP_v              generic   inline
+LDP_v              la64-lsx  inline
+LDP_v              mips-msa  inline
+LDP_v              ppc64le   inline
+LDP_v              riscv64-v inline
+LDP_v              x86       inline
+LDP_v              x86-avx2  inline
+LDP_v              x86-base  inline
+LDR_v              aarch64   inline
+LDR_v              generic   inline
+LDR_v              la64-lsx  inline
+LDR_v              mips-msa  inline
+LDR_v              ppc64le   inline
+LDR_v              riscv64-v inline
+LDR_v              x86       inline
+LDR_v              x86-avx2  inline
+LDR_v              x86-base  inline
+LDR_v_i            aarch64   inline
+LDR_v_i            generic   inline
+LDR_v_i            la64-lsx  inline
+LDR_v_i            mips-msa  inline
+LDR_v_i            ppc64le   inline
+LDR_v_i            riscv64-v inline
+LDR_v_i            x86       inline
+LDR_v_i            x86-avx2  inline
+LDR_v_i            x86-base  inline
+LD_lit_v           aarch64   inline
+LD_lit_v           generic   inline
+LD_lit_v           la64-lsx  inline
+LD_lit_v           mips-msa  inline
+LD_lit_v           ppc64le   inline
+LD_lit_v           riscv64-v inline
+LD_lit_v           x86       inline
+LD_lit_v           x86-avx2  inline
+LD_lit_v           x86-base  inline
+LD_mult            aarch64   inline
+LD_mult            generic   inline
+LD_mult            la64-lsx  inline
+LD_mult            mips-msa  inline
+LD_mult            ppc64le   inline
+LD_mult            riscv64-v inline
+LD_mult            x86       inline
+LD_mult            x86-avx2  inline
+LD_mult            x86-base  inline
+LD_single          aarch64   inline
+LD_single          generic   inline
+LD_single          la64-lsx  inline
+LD_single          mips-msa  inline
+LD_single          ppc64le   inline
+LD_single          riscv64-v inline
+LD_single          x86       inline
+LD_single          x86-avx2  inline
+LD_single          x86-base  inline
+LD_single_repl     aarch64   inline
+LD_single_repl     generic   inline
+LD_single_repl     la64-lsx  inline
+LD_single_repl     mips-msa  inline
+LD_single_repl     ppc64le   inline
+LD_single_repl     riscv64-v inline
+LD_single_repl     x86       inline
+LD_single_repl     x86-avx2  inline
+LD_single_repl     x86-base  inline
+MLA_v              aarch64   inline
+MLA_v              generic   inline
+MLA_v              la64-lsx  inline
+MLA_v              mips-msa  inline
+MLA_v              ppc64le   inline
+MLA_v              riscv64-v inline
+MLA_v              x86       inline
+MLA_v              x86-avx2  inline
+MLA_v              x86-base  inline
+MLA_vi             aarch64   inline
+MLA_vi             generic   inline
+MLA_vi             la64-lsx  inline
+MLA_vi             mips-msa  inline
+MLA_vi             ppc64le   inline
+MLA_vi             riscv64-v inline
+MLA_vi             x86       inline
+MLA_vi             x86-avx2  inline
+MLA_vi             x86-base  inline
+MLS_v              aarch64   inline
+MLS_v              generic   inline
+MLS_v              la64-lsx  inline
+MLS_v              mips-msa  inline
+MLS_v              ppc64le   inline
+MLS_v              riscv64-v inline
+MLS_v              x86       inline
+MLS_v              x86-avx2  inline
+MLS_v              x86-base  inline
+MLS_vi             aarch64   inline
+MLS_vi             generic   inline
+MLS_vi             la64-lsx  inline
+MLS_vi             mips-msa  inline
+MLS_vi             ppc64le   inline
+MLS_vi             riscv64-v inline
+MLS_vi             x86       inline
+MLS_vi             x86-avx2  inline
+MLS_vi             x86-base  inline
+MUL_v              aarch64   inline
+MUL_v              generic   inline
+MUL_v              la64-lsx  inline
+MUL_v              mips-msa  inline
+MUL_v              ppc64le   inline
+MUL_v              riscv64-v inline
+MUL_v              x86       inline
+MUL_v              x86-avx2  inline
+MUL_v              x86-base  inline
+MUL_vi             aarch64   inline
+MUL_vi             generic   inline
+MUL_vi             la64-lsx  inline
+MUL_vi             mips-msa  inline
+MUL_vi             ppc64le   inline
+MUL_vi             riscv64-v inline
+MUL_vi             x86       inline
+MUL_vi             x86-avx2  inline
+MUL_vi             x86-base  inline
+NEG_s              aarch64   inline
+NEG_s              generic   inline
+NEG_s              la64-lsx  inline
+NEG_s              mips-msa  inline
+NEG_s              ppc64le   inline
+NEG_s              riscv64-v inline
+NEG_s              x86       inline
+NEG_s              x86-avx2  inline
+NEG_s              x86-base  inline
+NEG_v              aarch64   inline
+NEG_v              generic   inline
+NEG_v              la64-lsx  inline
+NEG_v              mips-msa  inline
+NEG_v              ppc64le   inline
+NEG_v              riscv64-v inline
+NEG_v              x86       inline
+NEG_v              x86-avx2  inline
+NEG_v              x86-base  inline
+NOT_v              aarch64   inline
+NOT_v              generic   inline
+NOT_v              la64-lsx  inline
+NOT_v              mips-msa  inline
+NOT_v              ppc64le   inline
+NOT_v              riscv64-v inline
+NOT_v              x86       inline
+NOT_v              x86-avx2  inline
+NOT_v              x86-base  inline
+ORN_v              aarch64   inline
+ORN_v              generic   inline
+ORN_v              la64-lsx  inline
+ORN_v              mips-msa  inline
+ORN_v              ppc64le   inline
+ORN_v              riscv64-v inline
+ORN_v              x86       inline
+ORN_v              x86-avx2  inline
+ORN_v              x86-base  inline
+ORR_v              aarch64   inline
+ORR_v              generic   inline
+ORR_v              la64-lsx  inline
+ORR_v              mips-msa  inline
+ORR_v              ppc64le   inline
+ORR_v              riscv64-v inline
+ORR_v              x86       inline
+ORR_v              x86-avx2  inline
+ORR_v              x86-base  inline
+PMULL_p64          aarch64   inline
+PMULL_p64          generic   helper   v_pmull
+PMULL_p64          la64-lsx  helper   v_pmull
+PMULL_p64          mips-msa  helper   v_pmull
+PMULL_p64          ppc64le   helper   v_pmull
+PMULL_p64          riscv64-v helper   v_pmull
+PMULL_p64          x86       inline
+PMULL_p64          x86-avx2  inline
+PMULL_p64          x86-base  helper   v_pmull
+PMULL_p8           aarch64   inline
+PMULL_p8           generic   inline
+PMULL_p8           la64-lsx  inline
+PMULL_p8           mips-msa  inline
+PMULL_p8           ppc64le   inline
+PMULL_p8           riscv64-v inline
+PMULL_p8           x86       inline
+PMULL_p8           x86-avx2  inline
+PMULL_p8           x86-base  inline
+PMUL_v             aarch64   inline
+PMUL_v             generic   inline
+PMUL_v             la64-lsx  inline
+PMUL_v             mips-msa  inline
+PMUL_v             ppc64le   inline
+PMUL_v             riscv64-v inline
+PMUL_v             x86       inline
+PMUL_v             x86-avx2  inline
+PMUL_v             x86-base  inline
+RADDHN             aarch64   inline
+RADDHN             generic   inline
+RADDHN             la64-lsx  inline
+RADDHN             mips-msa  inline
+RADDHN             ppc64le   inline
+RADDHN             riscv64-v inline
+RADDHN             x86       inline
+RADDHN             x86-avx2  inline
+RADDHN             x86-base  inline
+RBIT_v             aarch64   inline
+RBIT_v             generic   inline
+RBIT_v             la64-lsx  inline
+RBIT_v             mips-msa  inline
+RBIT_v             ppc64le   inline
+RBIT_v             riscv64-v inline
+RBIT_v             x86       inline
+RBIT_v             x86-avx2  inline
+RBIT_v             x86-base  inline
+REV16_v            aarch64   inline
+REV16_v            generic   inline
+REV16_v            la64-lsx  inline
+REV16_v            mips-msa  inline
+REV16_v            ppc64le   inline
+REV16_v            riscv64-v inline
+REV16_v            x86       inline
+REV16_v            x86-avx2  inline
+REV16_v            x86-base  inline
+REV32_v            aarch64   inline
+REV32_v            generic   inline
+REV32_v            la64-lsx  inline
+REV32_v            mips-msa  inline
+REV32_v            ppc64le   inline
+REV32_v            riscv64-v inline
+REV32_v            x86       inline
+REV32_v            x86-avx2  inline
+REV32_v            x86-base  inline
+REV64_v            aarch64   inline
+REV64_v            generic   inline
+REV64_v            la64-lsx  inline
+REV64_v            mips-msa  inline
+REV64_v            ppc64le   inline
+REV64_v            riscv64-v inline
+REV64_v            x86       inline
+REV64_v            x86-avx2  inline
+REV64_v            x86-base  inline
+RSHRN_v            aarch64   inline
+RSHRN_v            generic   inline
+RSHRN_v            la64-lsx  inline
+RSHRN_v            mips-msa  inline
+RSHRN_v            ppc64le   inline
+RSHRN_v            riscv64-v inline
+RSHRN_v            x86       inline
+RSHRN_v            x86-avx2  inline
+RSHRN_v            x86-base  inline
+RSUBHN             aarch64   inline
+RSUBHN             generic   inline
+RSUBHN             la64-lsx  inline
+RSUBHN             mips-msa  inline
+RSUBHN             ppc64le   inline
+RSUBHN             riscv64-v inline
+RSUBHN             x86       inline
+RSUBHN             x86-avx2  inline
+RSUBHN             x86-base  inline
+SABAL_v            aarch64   inline
+SABAL_v            generic   inline
+SABAL_v            la64-lsx  inline
+SABAL_v            mips-msa  inline
+SABAL_v            ppc64le   inline
+SABAL_v            riscv64-v inline
+SABAL_v            x86       inline
+SABAL_v            x86-avx2  inline
+SABAL_v            x86-base  inline
+SABA_v             aarch64   inline
+SABA_v             generic   inline
+SABA_v             la64-lsx  inline
+SABA_v             mips-msa  inline
+SABA_v             ppc64le   inline
+SABA_v             riscv64-v inline
+SABA_v             x86       inline
+SABA_v             x86-avx2  inline
+SABA_v             x86-base  inline
+SABDL_v            aarch64   inline
+SABDL_v            generic   inline
+SABDL_v            la64-lsx  inline
+SABDL_v            mips-msa  inline
+SABDL_v            ppc64le   inline
+SABDL_v            riscv64-v inline
+SABDL_v            x86       inline
+SABDL_v            x86-avx2  inline
+SABDL_v            x86-base  inline
+SABD_v             aarch64   inline
+SABD_v             generic   inline
+SABD_v             la64-lsx  inline
+SABD_v             mips-msa  inline
+SABD_v             ppc64le   inline
+SABD_v             riscv64-v inline
+SABD_v             x86       inline
+SABD_v             x86-avx2  inline
+SABD_v             x86-base  inline
+SADALP_v           aarch64   inline
+SADALP_v           generic   inline
+SADALP_v           la64-lsx  inline
+SADALP_v           mips-msa  inline
+SADALP_v           ppc64le   inline
+SADALP_v           riscv64-v inline
+SADALP_v           x86       inline
+SADALP_v           x86-avx2  inline
+SADALP_v           x86-base  inline
+SADDLP_v           aarch64   inline
+SADDLP_v           generic   inline
+SADDLP_v           la64-lsx  inline
+SADDLP_v           mips-msa  inline
+SADDLP_v           ppc64le   inline
+SADDLP_v           riscv64-v inline
+SADDLP_v           x86       inline
+SADDLP_v           x86-avx2  inline
+SADDLP_v           x86-base  inline
+SADDLV             aarch64   inline
+SADDLV             generic   inline
+SADDLV             la64-lsx  inline
+SADDLV             mips-msa  inline
+SADDLV             ppc64le   inline
+SADDLV             riscv64-v inline
+SADDLV             x86       inline
+SADDLV             x86-avx2  inline
+SADDLV             x86-base  inline
+SADDL_v            aarch64   inline
+SADDL_v            generic   inline
+SADDL_v            la64-lsx  inline
+SADDL_v            mips-msa  inline
+SADDL_v            ppc64le   inline
+SADDL_v            riscv64-v inline
+SADDL_v            x86       inline
+SADDL_v            x86-avx2  inline
+SADDL_v            x86-base  inline
+SADDW              aarch64   inline
+SADDW              generic   inline
+SADDW              la64-lsx  inline
+SADDW              mips-msa  inline
+SADDW              ppc64le   inline
+SADDW              riscv64-v inline
+SADDW              x86       inline
+SADDW              x86-avx2  inline
+SADDW              x86-base  inline
+SCVTF_f            aarch64   guarded  snx_fp_from_int
+SCVTF_f            generic   guarded  snx_fp_from_int
+SCVTF_f            la64-lsx  guarded  snx_fp_from_int
+SCVTF_f            mips-msa  guarded  snx_fp_from_int
+SCVTF_f            ppc64le   guarded  snx_fp_from_int
+SCVTF_f            riscv64-v guarded  snx_fp_from_int
+SCVTF_f            x86       guarded  snx_fp_from_int
+SCVTF_f            x86-avx2  guarded  snx_fp_from_int
+SCVTF_f            x86-base  guarded  snx_fp_from_int
+SCVTF_g            aarch64   guarded  snx_fp_from_int
+SCVTF_g            generic   guarded  snx_fp_from_int
+SCVTF_g            la64-lsx  guarded  snx_fp_from_int
+SCVTF_g            mips-msa  guarded  snx_fp_from_int
+SCVTF_g            ppc64le   guarded  snx_fp_from_int
+SCVTF_g            riscv64-v guarded  snx_fp_from_int
+SCVTF_g            x86       guarded  snx_fp_from_int
+SCVTF_g            x86-avx2  guarded  snx_fp_from_int
+SCVTF_g            x86-base  guarded  snx_fp_from_int
+SCVTF_vf           aarch64   guarded  snx_fp_from_int
+SCVTF_vf           generic   guarded  snx_fp_from_int
+SCVTF_vf           la64-lsx  guarded  snx_fp_from_int
+SCVTF_vf           mips-msa  guarded  snx_fp_from_int
+SCVTF_vf           ppc64le   guarded  snx_fp_from_int
+SCVTF_vf           riscv64-v guarded  snx_fp_from_int
+SCVTF_vf           x86       guarded  snx_fp_from_int
+SCVTF_vf           x86-avx2  guarded  snx_fp_from_int
+SCVTF_vf           x86-base  guarded  snx_fp_from_int
+SCVTF_vi           aarch64   guarded  snx_fp_from_int
+SCVTF_vi           generic   guarded  snx_fp_from_int
+SCVTF_vi           la64-lsx  guarded  snx_fp_from_int
+SCVTF_vi           mips-msa  guarded  snx_fp_from_int
+SCVTF_vi           ppc64le   guarded  snx_fp_from_int
+SCVTF_vi           riscv64-v guarded  snx_fp_from_int
+SCVTF_vi           x86       guarded  snx_fp_from_int
+SCVTF_vi           x86-avx2  guarded  snx_fp_from_int
+SCVTF_vi           x86-base  guarded  snx_fp_from_int
+SHA1C              aarch64   inline
+SHA1C              generic   helper   v_sha1
+SHA1C              la64-lsx  helper   v_sha1
+SHA1C              mips-msa  helper   v_sha1
+SHA1C              ppc64le   helper   v_sha1
+SHA1C              riscv64-v helper   v_sha1
+SHA1C              x86       helper   v_sha1
+SHA1C              x86-avx2  helper   v_sha1
+SHA1C              x86-base  helper   v_sha1
+SHA1H              aarch64   inline
+SHA1H              generic   helper   v_sha1
+SHA1H              la64-lsx  helper   v_sha1
+SHA1H              mips-msa  helper   v_sha1
+SHA1H              ppc64le   helper   v_sha1
+SHA1H              riscv64-v helper   v_sha1
+SHA1H              x86       helper   v_sha1
+SHA1H              x86-avx2  helper   v_sha1
+SHA1H              x86-base  helper   v_sha1
+SHA1M              aarch64   inline
+SHA1M              generic   helper   v_sha1
+SHA1M              la64-lsx  helper   v_sha1
+SHA1M              mips-msa  helper   v_sha1
+SHA1M              ppc64le   helper   v_sha1
+SHA1M              riscv64-v helper   v_sha1
+SHA1M              x86       helper   v_sha1
+SHA1M              x86-avx2  helper   v_sha1
+SHA1M              x86-base  helper   v_sha1
+SHA1P              aarch64   inline
+SHA1P              generic   helper   v_sha1
+SHA1P              la64-lsx  helper   v_sha1
+SHA1P              mips-msa  helper   v_sha1
+SHA1P              ppc64le   helper   v_sha1
+SHA1P              riscv64-v helper   v_sha1
+SHA1P              x86       helper   v_sha1
+SHA1P              x86-avx2  helper   v_sha1
+SHA1P              x86-base  helper   v_sha1
+SHA1SU0            aarch64   inline
+SHA1SU0            generic   helper   v_sha1
+SHA1SU0            la64-lsx  helper   v_sha1
+SHA1SU0            mips-msa  helper   v_sha1
+SHA1SU0            ppc64le   helper   v_sha1
+SHA1SU0            riscv64-v helper   v_sha1
+SHA1SU0            x86       helper   v_sha1
+SHA1SU0            x86-avx2  helper   v_sha1
+SHA1SU0            x86-base  helper   v_sha1
+SHA1SU1            aarch64   inline
+SHA1SU1            generic   helper   v_sha1
+SHA1SU1            la64-lsx  helper   v_sha1
+SHA1SU1            mips-msa  helper   v_sha1
+SHA1SU1            ppc64le   helper   v_sha1
+SHA1SU1            riscv64-v helper   v_sha1
+SHA1SU1            x86       helper   v_sha1
+SHA1SU1            x86-avx2  helper   v_sha1
+SHA1SU1            x86-base  helper   v_sha1
+SHA256H            aarch64   inline
+SHA256H            generic   helper   v_sha256
+SHA256H            la64-lsx  helper   v_sha256
+SHA256H            mips-msa  helper   v_sha256
+SHA256H            ppc64le   helper   v_sha256
+SHA256H            riscv64-v helper   v_sha256
+SHA256H            x86       inline
+SHA256H            x86-avx2  inline
+SHA256H            x86-base  helper   v_sha256
+SHA256H2           aarch64   inline
+SHA256H2           generic   helper   v_sha256
+SHA256H2           la64-lsx  helper   v_sha256
+SHA256H2           mips-msa  helper   v_sha256
+SHA256H2           ppc64le   helper   v_sha256
+SHA256H2           riscv64-v helper   v_sha256
+SHA256H2           x86       inline
+SHA256H2           x86-avx2  inline
+SHA256H2           x86-base  helper   v_sha256
+SHA256SU0          aarch64   inline
+SHA256SU0          generic   helper   v_sha256
+SHA256SU0          la64-lsx  helper   v_sha256
+SHA256SU0          mips-msa  helper   v_sha256
+SHA256SU0          ppc64le   helper   v_sha256
+SHA256SU0          riscv64-v helper   v_sha256
+SHA256SU0          x86       inline
+SHA256SU0          x86-avx2  inline
+SHA256SU0          x86-base  helper   v_sha256
+SHA256SU1          aarch64   inline
+SHA256SU1          generic   helper   v_sha256
+SHA256SU1          la64-lsx  helper   v_sha256
+SHA256SU1          mips-msa  helper   v_sha256
+SHA256SU1          ppc64le   helper   v_sha256
+SHA256SU1          riscv64-v helper   v_sha256
+SHA256SU1          x86       inline
+SHA256SU1          x86-avx2  inline
+SHA256SU1          x86-base  helper   v_sha256
+SHADD_v            aarch64   inline
+SHADD_v            generic   inline
+SHADD_v            la64-lsx  inline
+SHADD_v            mips-msa  inline
+SHADD_v            ppc64le   inline
+SHADD_v            riscv64-v inline
+SHADD_v            x86       inline
+SHADD_v            x86-avx2  inline
+SHADD_v            x86-base  inline
+SHLL_v             aarch64   inline
+SHLL_v             generic   inline
+SHLL_v             la64-lsx  inline
+SHLL_v             mips-msa  inline
+SHLL_v             ppc64le   inline
+SHLL_v             riscv64-v inline
+SHLL_v             x86       inline
+SHLL_v             x86-avx2  inline
+SHLL_v             x86-base  inline
+SHL_s              aarch64   inline
+SHL_s              generic   inline
+SHL_s              la64-lsx  inline
+SHL_s              mips-msa  inline
+SHL_s              ppc64le   inline
+SHL_s              riscv64-v inline
+SHL_s              x86       inline
+SHL_s              x86-avx2  inline
+SHL_s              x86-base  inline
+SHL_v              aarch64   inline
+SHL_v              generic   inline
+SHL_v              la64-lsx  inline
+SHL_v              mips-msa  inline
+SHL_v              ppc64le   inline
+SHL_v              riscv64-v inline
+SHL_v              x86       inline
+SHL_v              x86-avx2  inline
+SHL_v              x86-base  inline
+SHRN_v             aarch64   inline
+SHRN_v             generic   inline
+SHRN_v             la64-lsx  inline
+SHRN_v             mips-msa  inline
+SHRN_v             ppc64le   inline
+SHRN_v             riscv64-v inline
+SHRN_v             x86       inline
+SHRN_v             x86-avx2  inline
+SHRN_v             x86-base  inline
+SHSUB_v            aarch64   inline
+SHSUB_v            generic   inline
+SHSUB_v            la64-lsx  inline
+SHSUB_v            mips-msa  inline
+SHSUB_v            ppc64le   inline
+SHSUB_v            riscv64-v inline
+SHSUB_v            x86       inline
+SHSUB_v            x86-avx2  inline
+SHSUB_v            x86-base  inline
+SLI_s              aarch64   inline
+SLI_s              generic   inline
+SLI_s              la64-lsx  inline
+SLI_s              mips-msa  inline
+SLI_s              ppc64le   inline
+SLI_s              riscv64-v inline
+SLI_s              x86       inline
+SLI_s              x86-avx2  inline
+SLI_s              x86-base  inline
+SLI_v              aarch64   inline
+SLI_v              generic   inline
+SLI_v              la64-lsx  inline
+SLI_v              mips-msa  inline
+SLI_v              ppc64le   inline
+SLI_v              riscv64-v inline
+SLI_v              x86       inline
+SLI_v              x86-avx2  inline
+SLI_v              x86-base  inline
+SMAXP_v            aarch64   inline
+SMAXP_v            generic   inline
+SMAXP_v            la64-lsx  inline
+SMAXP_v            mips-msa  inline
+SMAXP_v            ppc64le   inline
+SMAXP_v            riscv64-v inline
+SMAXP_v            x86       inline
+SMAXP_v            x86-avx2  inline
+SMAXP_v            x86-base  inline
+SMAXV              aarch64   inline
+SMAXV              generic   inline
+SMAXV              la64-lsx  inline
+SMAXV              mips-msa  inline
+SMAXV              ppc64le   inline
+SMAXV              riscv64-v inline
+SMAXV              x86       inline
+SMAXV              x86-avx2  inline
+SMAXV              x86-base  inline
+SMAX_v             aarch64   inline
+SMAX_v             generic   inline
+SMAX_v             la64-lsx  inline
+SMAX_v             mips-msa  inline
+SMAX_v             ppc64le   inline
+SMAX_v             riscv64-v inline
+SMAX_v             x86       inline
+SMAX_v             x86-avx2  inline
+SMAX_v             x86-base  inline
+SMINP_v            aarch64   inline
+SMINP_v            generic   inline
+SMINP_v            la64-lsx  inline
+SMINP_v            mips-msa  inline
+SMINP_v            ppc64le   inline
+SMINP_v            riscv64-v inline
+SMINP_v            x86       inline
+SMINP_v            x86-avx2  inline
+SMINP_v            x86-base  inline
+SMINV              aarch64   inline
+SMINV              generic   inline
+SMINV              la64-lsx  inline
+SMINV              mips-msa  inline
+SMINV              ppc64le   inline
+SMINV              riscv64-v inline
+SMINV              x86       inline
+SMINV              x86-avx2  inline
+SMINV              x86-base  inline
+SMIN_v             aarch64   inline
+SMIN_v             generic   inline
+SMIN_v             la64-lsx  inline
+SMIN_v             mips-msa  inline
+SMIN_v             ppc64le   inline
+SMIN_v             riscv64-v inline
+SMIN_v             x86       inline
+SMIN_v             x86-avx2  inline
+SMIN_v             x86-base  inline
+SMLAL_v            aarch64   inline
+SMLAL_v            generic   inline
+SMLAL_v            la64-lsx  inline
+SMLAL_v            mips-msa  inline
+SMLAL_v            ppc64le   inline
+SMLAL_v            riscv64-v inline
+SMLAL_v            x86       inline
+SMLAL_v            x86-avx2  inline
+SMLAL_v            x86-base  inline
+SMLAL_vi           aarch64   inline
+SMLAL_vi           generic   inline
+SMLAL_vi           la64-lsx  inline
+SMLAL_vi           mips-msa  inline
+SMLAL_vi           ppc64le   inline
+SMLAL_vi           riscv64-v inline
+SMLAL_vi           x86       inline
+SMLAL_vi           x86-avx2  inline
+SMLAL_vi           x86-base  inline
+SMLSL_v            aarch64   inline
+SMLSL_v            generic   inline
+SMLSL_v            la64-lsx  inline
+SMLSL_v            mips-msa  inline
+SMLSL_v            ppc64le   inline
+SMLSL_v            riscv64-v inline
+SMLSL_v            x86       inline
+SMLSL_v            x86-avx2  inline
+SMLSL_v            x86-base  inline
+SMLSL_vi           aarch64   inline
+SMLSL_vi           generic   inline
+SMLSL_vi           la64-lsx  inline
+SMLSL_vi           mips-msa  inline
+SMLSL_vi           ppc64le   inline
+SMLSL_vi           riscv64-v inline
+SMLSL_vi           x86       inline
+SMLSL_vi           x86-avx2  inline
+SMLSL_vi           x86-base  inline
+SMOV               aarch64   inline
+SMOV               generic   inline
+SMOV               la64-lsx  inline
+SMOV               mips-msa  inline
+SMOV               ppc64le   inline
+SMOV               riscv64-v inline
+SMOV               x86       inline
+SMOV               x86-avx2  inline
+SMOV               x86-base  inline
+SMULL_v            aarch64   inline
+SMULL_v            generic   inline
+SMULL_v            la64-lsx  inline
+SMULL_v            mips-msa  inline
+SMULL_v            ppc64le   inline
+SMULL_v            riscv64-v inline
+SMULL_v            x86       inline
+SMULL_v            x86-avx2  inline
+SMULL_v            x86-base  inline
+SMULL_vi           aarch64   inline
+SMULL_vi           generic   inline
+SMULL_vi           la64-lsx  inline
+SMULL_vi           mips-msa  inline
+SMULL_vi           ppc64le   inline
+SMULL_vi           riscv64-v inline
+SMULL_vi           x86       inline
+SMULL_vi           x86-avx2  inline
+SMULL_vi           x86-base  inline
+SQABS_s            aarch64   inline
+SQABS_s            generic   inline
+SQABS_s            la64-lsx  inline
+SQABS_s            mips-msa  inline
+SQABS_s            ppc64le   inline
+SQABS_s            riscv64-v inline
+SQABS_s            x86       inline
+SQABS_s            x86-avx2  inline
+SQABS_s            x86-base  inline
+SQABS_v            aarch64   inline
+SQABS_v            generic   inline
+SQABS_v            la64-lsx  inline
+SQABS_v            mips-msa  inline
+SQABS_v            ppc64le   inline
+SQABS_v            riscv64-v inline
+SQABS_v            x86       inline
+SQABS_v            x86-avx2  inline
+SQABS_v            x86-base  inline
+SQADD_s            aarch64   inline
+SQADD_s            generic   inline
+SQADD_s            la64-lsx  inline
+SQADD_s            mips-msa  inline
+SQADD_s            ppc64le   inline
+SQADD_s            riscv64-v inline
+SQADD_s            x86       inline
+SQADD_s            x86-avx2  inline
+SQADD_s            x86-base  inline
+SQADD_v            aarch64   inline
+SQADD_v            generic   inline
+SQADD_v            la64-lsx  inline
+SQADD_v            mips-msa  inline
+SQADD_v            ppc64le   inline
+SQADD_v            riscv64-v inline
+SQADD_v            x86       inline
+SQADD_v            x86-avx2  inline
+SQADD_v            x86-base  inline
+SQDMLAL_si         aarch64   inline
+SQDMLAL_si         generic   inline
+SQDMLAL_si         la64-lsx  inline
+SQDMLAL_si         mips-msa  inline
+SQDMLAL_si         ppc64le   inline
+SQDMLAL_si         riscv64-v inline
+SQDMLAL_si         x86       inline
+SQDMLAL_si         x86-avx2  inline
+SQDMLAL_si         x86-base  inline
+SQDMLAL_v          aarch64   inline
+SQDMLAL_v          generic   inline
+SQDMLAL_v          la64-lsx  inline
+SQDMLAL_v          mips-msa  inline
+SQDMLAL_v          ppc64le   inline
+SQDMLAL_v          riscv64-v inline
+SQDMLAL_v          x86       inline
+SQDMLAL_v          x86-avx2  inline
+SQDMLAL_v          x86-base  inline
+SQDMLAL_vi         aarch64   inline
+SQDMLAL_vi         generic   inline
+SQDMLAL_vi         la64-lsx  inline
+SQDMLAL_vi         mips-msa  inline
+SQDMLAL_vi         ppc64le   inline
+SQDMLAL_vi         riscv64-v inline
+SQDMLAL_vi         x86       inline
+SQDMLAL_vi         x86-avx2  inline
+SQDMLAL_vi         x86-base  inline
+SQDMLSL_si         aarch64   inline
+SQDMLSL_si         generic   inline
+SQDMLSL_si         la64-lsx  inline
+SQDMLSL_si         mips-msa  inline
+SQDMLSL_si         ppc64le   inline
+SQDMLSL_si         riscv64-v inline
+SQDMLSL_si         x86       inline
+SQDMLSL_si         x86-avx2  inline
+SQDMLSL_si         x86-base  inline
+SQDMLSL_v          aarch64   inline
+SQDMLSL_v          generic   inline
+SQDMLSL_v          la64-lsx  inline
+SQDMLSL_v          mips-msa  inline
+SQDMLSL_v          ppc64le   inline
+SQDMLSL_v          riscv64-v inline
+SQDMLSL_v          x86       inline
+SQDMLSL_v          x86-avx2  inline
+SQDMLSL_v          x86-base  inline
+SQDMLSL_vi         aarch64   inline
+SQDMLSL_vi         generic   inline
+SQDMLSL_vi         la64-lsx  inline
+SQDMLSL_vi         mips-msa  inline
+SQDMLSL_vi         ppc64le   inline
+SQDMLSL_vi         riscv64-v inline
+SQDMLSL_vi         x86       inline
+SQDMLSL_vi         x86-avx2  inline
+SQDMLSL_vi         x86-base  inline
+SQDMULH_s          aarch64   inline
+SQDMULH_s          generic   inline
+SQDMULH_s          la64-lsx  inline
+SQDMULH_s          mips-msa  inline
+SQDMULH_s          ppc64le   inline
+SQDMULH_s          riscv64-v inline
+SQDMULH_s          x86       inline
+SQDMULH_s          x86-avx2  inline
+SQDMULH_s          x86-base  inline
+SQDMULH_si         aarch64   inline
+SQDMULH_si         generic   inline
+SQDMULH_si         la64-lsx  inline
+SQDMULH_si         mips-msa  inline
+SQDMULH_si         ppc64le   inline
+SQDMULH_si         riscv64-v inline
+SQDMULH_si         x86       inline
+SQDMULH_si         x86-avx2  inline
+SQDMULH_si         x86-base  inline
+SQDMULH_v          aarch64   inline
+SQDMULH_v          generic   inline
+SQDMULH_v          la64-lsx  inline
+SQDMULH_v          mips-msa  inline
+SQDMULH_v          ppc64le   inline
+SQDMULH_v          riscv64-v inline
+SQDMULH_v          x86       inline
+SQDMULH_v          x86-avx2  inline
+SQDMULH_v          x86-base  inline
+SQDMULH_vi         aarch64   inline
+SQDMULH_vi         generic   inline
+SQDMULH_vi         la64-lsx  inline
+SQDMULH_vi         mips-msa  inline
+SQDMULH_vi         ppc64le   inline
+SQDMULH_vi         riscv64-v inline
+SQDMULH_vi         x86       inline
+SQDMULH_vi         x86-avx2  inline
+SQDMULH_vi         x86-base  inline
+SQDMULL_si         aarch64   inline
+SQDMULL_si         generic   inline
+SQDMULL_si         la64-lsx  inline
+SQDMULL_si         mips-msa  inline
+SQDMULL_si         ppc64le   inline
+SQDMULL_si         riscv64-v inline
+SQDMULL_si         x86       inline
+SQDMULL_si         x86-avx2  inline
+SQDMULL_si         x86-base  inline
+SQDMULL_v          aarch64   inline
+SQDMULL_v          generic   inline
+SQDMULL_v          la64-lsx  inline
+SQDMULL_v          mips-msa  inline
+SQDMULL_v          ppc64le   inline
+SQDMULL_v          riscv64-v inline
+SQDMULL_v          x86       inline
+SQDMULL_v          x86-avx2  inline
+SQDMULL_v          x86-base  inline
+SQDMULL_vi         aarch64   inline
+SQDMULL_vi         generic   inline
+SQDMULL_vi         la64-lsx  inline
+SQDMULL_vi         mips-msa  inline
+SQDMULL_vi         ppc64le   inline
+SQDMULL_vi         riscv64-v inline
+SQDMULL_vi         x86       inline
+SQDMULL_vi         x86-avx2  inline
+SQDMULL_vi         x86-base  inline
+SQNEG_s            aarch64   inline
+SQNEG_s            generic   inline
+SQNEG_s            la64-lsx  inline
+SQNEG_s            mips-msa  inline
+SQNEG_s            ppc64le   inline
+SQNEG_s            riscv64-v inline
+SQNEG_s            x86       inline
+SQNEG_s            x86-avx2  inline
+SQNEG_s            x86-base  inline
+SQNEG_v            aarch64   inline
+SQNEG_v            generic   inline
+SQNEG_v            la64-lsx  inline
+SQNEG_v            mips-msa  inline
+SQNEG_v            ppc64le   inline
+SQNEG_v            riscv64-v inline
+SQNEG_v            x86       inline
+SQNEG_v            x86-avx2  inline
+SQNEG_v            x86-base  inline
+SQRDMULH_s         aarch64   inline
+SQRDMULH_s         generic   inline
+SQRDMULH_s         la64-lsx  inline
+SQRDMULH_s         mips-msa  inline
+SQRDMULH_s         ppc64le   inline
+SQRDMULH_s         riscv64-v inline
+SQRDMULH_s         x86       inline
+SQRDMULH_s         x86-avx2  inline
+SQRDMULH_s         x86-base  inline
+SQRDMULH_si        aarch64   inline
+SQRDMULH_si        generic   inline
+SQRDMULH_si        la64-lsx  inline
+SQRDMULH_si        mips-msa  inline
+SQRDMULH_si        ppc64le   inline
+SQRDMULH_si        riscv64-v inline
+SQRDMULH_si        x86       inline
+SQRDMULH_si        x86-avx2  inline
+SQRDMULH_si        x86-base  inline
+SQRDMULH_v         aarch64   inline
+SQRDMULH_v         generic   inline
+SQRDMULH_v         la64-lsx  inline
+SQRDMULH_v         mips-msa  inline
+SQRDMULH_v         ppc64le   inline
+SQRDMULH_v         riscv64-v inline
+SQRDMULH_v         x86       inline
+SQRDMULH_v         x86-avx2  inline
+SQRDMULH_v         x86-base  inline
+SQRDMULH_vi        aarch64   inline
+SQRDMULH_vi        generic   inline
+SQRDMULH_vi        la64-lsx  inline
+SQRDMULH_vi        mips-msa  inline
+SQRDMULH_vi        ppc64le   inline
+SQRDMULH_vi        riscv64-v inline
+SQRDMULH_vi        x86       inline
+SQRDMULH_vi        x86-avx2  inline
+SQRDMULH_vi        x86-base  inline
+SQRSHL_s           aarch64   inline
+SQRSHL_s           generic   helper   snx_vec_shl
+SQRSHL_s           la64-lsx  inline
+SQRSHL_s           mips-msa  inline
+SQRSHL_s           ppc64le   inline
+SQRSHL_s           riscv64-v inline
+SQRSHL_s           x86       inline
+SQRSHL_s           x86-avx2  inline
+SQRSHL_s           x86-base  inline
+SQRSHL_v           aarch64   inline
+SQRSHL_v           generic   helper   snx_vec_shl
+SQRSHL_v           la64-lsx  inline
+SQRSHL_v           mips-msa  inline
+SQRSHL_v           ppc64le   inline
+SQRSHL_v           riscv64-v inline
+SQRSHL_v           x86       inline
+SQRSHL_v           x86-avx2  inline
+SQRSHL_v           x86-base  inline
+SQRSHRN_si         aarch64   inline
+SQRSHRN_si         generic   inline
+SQRSHRN_si         la64-lsx  inline
+SQRSHRN_si         mips-msa  inline
+SQRSHRN_si         ppc64le   inline
+SQRSHRN_si         riscv64-v inline
+SQRSHRN_si         x86       inline
+SQRSHRN_si         x86-avx2  inline
+SQRSHRN_si         x86-base  inline
+SQRSHRN_v          aarch64   inline
+SQRSHRN_v          generic   inline
+SQRSHRN_v          la64-lsx  inline
+SQRSHRN_v          mips-msa  inline
+SQRSHRN_v          ppc64le   inline
+SQRSHRN_v          riscv64-v inline
+SQRSHRN_v          x86       inline
+SQRSHRN_v          x86-avx2  inline
+SQRSHRN_v          x86-base  inline
+SQRSHRUN_si        aarch64   inline
+SQRSHRUN_si        generic   inline
+SQRSHRUN_si        la64-lsx  inline
+SQRSHRUN_si        mips-msa  inline
+SQRSHRUN_si        ppc64le   inline
+SQRSHRUN_si        riscv64-v inline
+SQRSHRUN_si        x86       inline
+SQRSHRUN_si        x86-avx2  inline
+SQRSHRUN_si        x86-base  inline
+SQRSHRUN_v         aarch64   inline
+SQRSHRUN_v         generic   inline
+SQRSHRUN_v         la64-lsx  inline
+SQRSHRUN_v         mips-msa  inline
+SQRSHRUN_v         ppc64le   inline
+SQRSHRUN_v         riscv64-v inline
+SQRSHRUN_v         x86       inline
+SQRSHRUN_v         x86-avx2  inline
+SQRSHRUN_v         x86-base  inline
+SQSHLU_si          aarch64   inline
+SQSHLU_si          generic   inline
+SQSHLU_si          la64-lsx  inline
+SQSHLU_si          mips-msa  inline
+SQSHLU_si          ppc64le   inline
+SQSHLU_si          riscv64-v inline
+SQSHLU_si          x86       inline
+SQSHLU_si          x86-avx2  inline
+SQSHLU_si          x86-base  inline
+SQSHLU_vi          aarch64   inline
+SQSHLU_vi          generic   inline
+SQSHLU_vi          la64-lsx  inline
+SQSHLU_vi          mips-msa  inline
+SQSHLU_vi          ppc64le   inline
+SQSHLU_vi          riscv64-v inline
+SQSHLU_vi          x86       inline
+SQSHLU_vi          x86-avx2  inline
+SQSHLU_vi          x86-base  inline
+SQSHL_s            aarch64   inline
+SQSHL_s            generic   helper   snx_vec_shl
+SQSHL_s            la64-lsx  inline
+SQSHL_s            mips-msa  inline
+SQSHL_s            ppc64le   inline
+SQSHL_s            riscv64-v inline
+SQSHL_s            x86       inline
+SQSHL_s            x86-avx2  inline
+SQSHL_s            x86-base  inline
+SQSHL_si           aarch64   inline
+SQSHL_si           generic   inline
+SQSHL_si           la64-lsx  inline
+SQSHL_si           mips-msa  inline
+SQSHL_si           ppc64le   inline
+SQSHL_si           riscv64-v inline
+SQSHL_si           x86       inline
+SQSHL_si           x86-avx2  inline
+SQSHL_si           x86-base  inline
+SQSHL_v            aarch64   inline
+SQSHL_v            generic   helper   snx_vec_shl
+SQSHL_v            la64-lsx  inline
+SQSHL_v            mips-msa  inline
+SQSHL_v            ppc64le   inline
+SQSHL_v            riscv64-v inline
+SQSHL_v            x86       inline
+SQSHL_v            x86-avx2  inline
+SQSHL_v            x86-base  inline
+SQSHL_vi           aarch64   inline
+SQSHL_vi           generic   inline
+SQSHL_vi           la64-lsx  inline
+SQSHL_vi           mips-msa  inline
+SQSHL_vi           ppc64le   inline
+SQSHL_vi           riscv64-v inline
+SQSHL_vi           x86       inline
+SQSHL_vi           x86-avx2  inline
+SQSHL_vi           x86-base  inline
+SQSHRN_si          aarch64   inline
+SQSHRN_si          generic   inline
+SQSHRN_si          la64-lsx  inline
+SQSHRN_si          mips-msa  inline
+SQSHRN_si          ppc64le   inline
+SQSHRN_si          riscv64-v inline
+SQSHRN_si          x86       inline
+SQSHRN_si          x86-avx2  inline
+SQSHRN_si          x86-base  inline
+SQSHRN_v           aarch64   inline
+SQSHRN_v           generic   inline
+SQSHRN_v           la64-lsx  inline
+SQSHRN_v           mips-msa  inline
+SQSHRN_v           ppc64le   inline
+SQSHRN_v           riscv64-v inline
+SQSHRN_v           x86       inline
+SQSHRN_v           x86-avx2  inline
+SQSHRN_v           x86-base  inline
+SQSHRUN_si         aarch64   inline
+SQSHRUN_si         generic   inline
+SQSHRUN_si         la64-lsx  inline
+SQSHRUN_si         mips-msa  inline
+SQSHRUN_si         ppc64le   inline
+SQSHRUN_si         riscv64-v inline
+SQSHRUN_si         x86       inline
+SQSHRUN_si         x86-avx2  inline
+SQSHRUN_si         x86-base  inline
+SQSHRUN_v          aarch64   inline
+SQSHRUN_v          generic   inline
+SQSHRUN_v          la64-lsx  inline
+SQSHRUN_v          mips-msa  inline
+SQSHRUN_v          ppc64le   inline
+SQSHRUN_v          riscv64-v inline
+SQSHRUN_v          x86       inline
+SQSHRUN_v          x86-avx2  inline
+SQSHRUN_v          x86-base  inline
+SQSUB_s            aarch64   inline
+SQSUB_s            generic   inline
+SQSUB_s            la64-lsx  inline
+SQSUB_s            mips-msa  inline
+SQSUB_s            ppc64le   inline
+SQSUB_s            riscv64-v inline
+SQSUB_s            x86       inline
+SQSUB_s            x86-avx2  inline
+SQSUB_s            x86-base  inline
+SQSUB_v            aarch64   inline
+SQSUB_v            generic   inline
+SQSUB_v            la64-lsx  inline
+SQSUB_v            mips-msa  inline
+SQSUB_v            ppc64le   inline
+SQSUB_v            riscv64-v inline
+SQSUB_v            x86       inline
+SQSUB_v            x86-avx2  inline
+SQSUB_v            x86-base  inline
+SQXTN_s            aarch64   inline
+SQXTN_s            generic   inline
+SQXTN_s            la64-lsx  inline
+SQXTN_s            mips-msa  inline
+SQXTN_s            ppc64le   inline
+SQXTN_s            riscv64-v inline
+SQXTN_s            x86       inline
+SQXTN_s            x86-avx2  inline
+SQXTN_s            x86-base  inline
+SQXTN_v            aarch64   inline
+SQXTN_v            generic   inline
+SQXTN_v            la64-lsx  inline
+SQXTN_v            mips-msa  inline
+SQXTN_v            ppc64le   inline
+SQXTN_v            riscv64-v inline
+SQXTN_v            x86       inline
+SQXTN_v            x86-avx2  inline
+SQXTN_v            x86-base  inline
+SQXTUN_s           aarch64   inline
+SQXTUN_s           generic   inline
+SQXTUN_s           la64-lsx  inline
+SQXTUN_s           mips-msa  inline
+SQXTUN_s           ppc64le   inline
+SQXTUN_s           riscv64-v inline
+SQXTUN_s           x86       inline
+SQXTUN_s           x86-avx2  inline
+SQXTUN_s           x86-base  inline
+SQXTUN_v           aarch64   inline
+SQXTUN_v           generic   inline
+SQXTUN_v           la64-lsx  inline
+SQXTUN_v           mips-msa  inline
+SQXTUN_v           ppc64le   inline
+SQXTUN_v           riscv64-v inline
+SQXTUN_v           x86       inline
+SQXTUN_v           x86-avx2  inline
+SQXTUN_v           x86-base  inline
+SRHADD_v           aarch64   inline
+SRHADD_v           generic   inline
+SRHADD_v           la64-lsx  inline
+SRHADD_v           mips-msa  inline
+SRHADD_v           ppc64le   inline
+SRHADD_v           riscv64-v inline
+SRHADD_v           x86       inline
+SRHADD_v           x86-avx2  inline
+SRHADD_v           x86-base  inline
+SRI_s              aarch64   inline
+SRI_s              generic   inline
+SRI_s              la64-lsx  inline
+SRI_s              mips-msa  inline
+SRI_s              ppc64le   inline
+SRI_s              riscv64-v inline
+SRI_s              x86       inline
+SRI_s              x86-avx2  inline
+SRI_s              x86-base  inline
+SRI_v              aarch64   inline
+SRI_v              generic   inline
+SRI_v              la64-lsx  inline
+SRI_v              mips-msa  inline
+SRI_v              ppc64le   inline
+SRI_v              riscv64-v inline
+SRI_v              x86       inline
+SRI_v              x86-avx2  inline
+SRI_v              x86-base  inline
+SRSHL_s            aarch64   inline
+SRSHL_s            generic   helper   snx_vec_shl
+SRSHL_s            la64-lsx  inline
+SRSHL_s            mips-msa  inline
+SRSHL_s            ppc64le   inline
+SRSHL_s            riscv64-v inline
+SRSHL_s            x86       inline
+SRSHL_s            x86-avx2  inline
+SRSHL_s            x86-base  inline
+SRSHL_v            aarch64   inline
+SRSHL_v            generic   helper   snx_vec_shl
+SRSHL_v            la64-lsx  inline
+SRSHL_v            mips-msa  inline
+SRSHL_v            ppc64le   inline
+SRSHL_v            riscv64-v inline
+SRSHL_v            x86       inline
+SRSHL_v            x86-avx2  inline
+SRSHL_v            x86-base  inline
+SRSHR_s            aarch64   inline
+SRSHR_s            generic   inline
+SRSHR_s            la64-lsx  inline
+SRSHR_s            mips-msa  inline
+SRSHR_s            ppc64le   inline
+SRSHR_s            riscv64-v inline
+SRSHR_s            x86       inline
+SRSHR_s            x86-avx2  inline
+SRSHR_s            x86-base  inline
+SRSHR_v            aarch64   inline
+SRSHR_v            generic   inline
+SRSHR_v            la64-lsx  inline
+SRSHR_v            mips-msa  inline
+SRSHR_v            ppc64le   inline
+SRSHR_v            riscv64-v inline
+SRSHR_v            x86       inline
+SRSHR_v            x86-avx2  inline
+SRSHR_v            x86-base  inline
+SRSRA_s            aarch64   inline
+SRSRA_s            generic   inline
+SRSRA_s            la64-lsx  inline
+SRSRA_s            mips-msa  inline
+SRSRA_s            ppc64le   inline
+SRSRA_s            riscv64-v inline
+SRSRA_s            x86       inline
+SRSRA_s            x86-avx2  inline
+SRSRA_s            x86-base  inline
+SRSRA_v            aarch64   inline
+SRSRA_v            generic   inline
+SRSRA_v            la64-lsx  inline
+SRSRA_v            mips-msa  inline
+SRSRA_v            ppc64le   inline
+SRSRA_v            riscv64-v inline
+SRSRA_v            x86       inline
+SRSRA_v            x86-avx2  inline
+SRSRA_v            x86-base  inline
+SSHLL_v            aarch64   inline
+SSHLL_v            generic   inline
+SSHLL_v            la64-lsx  inline
+SSHLL_v            mips-msa  inline
+SSHLL_v            ppc64le   inline
+SSHLL_v            riscv64-v inline
+SSHLL_v            x86       inline
+SSHLL_v            x86-avx2  inline
+SSHLL_v            x86-base  inline
+SSHL_s             aarch64   inline
+SSHL_s             generic   inline
+SSHL_s             la64-lsx  inline
+SSHL_s             mips-msa  inline
+SSHL_s             ppc64le   inline
+SSHL_s             riscv64-v inline
+SSHL_s             x86       inline
+SSHL_s             x86-avx2  inline
+SSHL_s             x86-base  inline
+SSHL_v             aarch64   inline
+SSHL_v             generic   inline
+SSHL_v             la64-lsx  inline
+SSHL_v             mips-msa  inline
+SSHL_v             ppc64le   inline
+SSHL_v             riscv64-v inline
+SSHL_v             x86       inline
+SSHL_v             x86-avx2  inline
+SSHL_v             x86-base  inline
+SSHR_s             aarch64   inline
+SSHR_s             generic   inline
+SSHR_s             la64-lsx  inline
+SSHR_s             mips-msa  inline
+SSHR_s             ppc64le   inline
+SSHR_s             riscv64-v inline
+SSHR_s             x86       inline
+SSHR_s             x86-avx2  inline
+SSHR_s             x86-base  inline
+SSHR_v             aarch64   inline
+SSHR_v             generic   inline
+SSHR_v             la64-lsx  inline
+SSHR_v             mips-msa  inline
+SSHR_v             ppc64le   inline
+SSHR_v             riscv64-v inline
+SSHR_v             x86       inline
+SSHR_v             x86-avx2  inline
+SSHR_v             x86-base  inline
+SSRA_s             aarch64   inline
+SSRA_s             generic   inline
+SSRA_s             la64-lsx  inline
+SSRA_s             mips-msa  inline
+SSRA_s             ppc64le   inline
+SSRA_s             riscv64-v inline
+SSRA_s             x86       inline
+SSRA_s             x86-avx2  inline
+SSRA_s             x86-base  inline
+SSRA_v             aarch64   inline
+SSRA_v             generic   inline
+SSRA_v             la64-lsx  inline
+SSRA_v             mips-msa  inline
+SSRA_v             ppc64le   inline
+SSRA_v             riscv64-v inline
+SSRA_v             x86       inline
+SSRA_v             x86-avx2  inline
+SSRA_v             x86-base  inline
+SSUBL_v            aarch64   inline
+SSUBL_v            generic   inline
+SSUBL_v            la64-lsx  inline
+SSUBL_v            mips-msa  inline
+SSUBL_v            ppc64le   inline
+SSUBL_v            riscv64-v inline
+SSUBL_v            x86       inline
+SSUBL_v            x86-avx2  inline
+SSUBL_v            x86-base  inline
+SSUBW              aarch64   inline
+SSUBW              generic   inline
+SSUBW              la64-lsx  inline
+SSUBW              mips-msa  inline
+SSUBW              ppc64le   inline
+SSUBW              riscv64-v inline
+SSUBW              x86       inline
+SSUBW              x86-avx2  inline
+SSUBW              x86-base  inline
+STP_v              aarch64   inline
+STP_v              generic   inline
+STP_v              la64-lsx  inline
+STP_v              mips-msa  inline
+STP_v              ppc64le   inline
+STP_v              riscv64-v inline
+STP_v              x86       inline
+STP_v              x86-avx2  inline
+STP_v              x86-base  inline
+STR_v              aarch64   inline
+STR_v              generic   inline
+STR_v              la64-lsx  inline
+STR_v              mips-msa  inline
+STR_v              ppc64le   inline
+STR_v              riscv64-v inline
+STR_v              x86       inline
+STR_v              x86-avx2  inline
+STR_v              x86-base  inline
+STR_v_i            aarch64   inline
+STR_v_i            generic   inline
+STR_v_i            la64-lsx  inline
+STR_v_i            mips-msa  inline
+STR_v_i            ppc64le   inline
+STR_v_i            riscv64-v inline
+STR_v_i            x86       inline
+STR_v_i            x86-avx2  inline
+STR_v_i            x86-base  inline
+ST_mult            aarch64   inline
+ST_mult            generic   inline
+ST_mult            la64-lsx  inline
+ST_mult            mips-msa  inline
+ST_mult            ppc64le   inline
+ST_mult            riscv64-v inline
+ST_mult            x86       inline
+ST_mult            x86-avx2  inline
+ST_mult            x86-base  inline
+ST_single          aarch64   inline
+ST_single          generic   inline
+ST_single          la64-lsx  inline
+ST_single          mips-msa  inline
+ST_single          ppc64le   inline
+ST_single          riscv64-v inline
+ST_single          x86       inline
+ST_single          x86-avx2  inline
+ST_single          x86-base  inline
+SUBHN              aarch64   inline
+SUBHN              generic   inline
+SUBHN              la64-lsx  inline
+SUBHN              mips-msa  inline
+SUBHN              ppc64le   inline
+SUBHN              riscv64-v inline
+SUBHN              x86       inline
+SUBHN              x86-avx2  inline
+SUBHN              x86-base  inline
+SUB_s              aarch64   inline
+SUB_s              generic   inline
+SUB_s              la64-lsx  inline
+SUB_s              mips-msa  inline
+SUB_s              ppc64le   inline
+SUB_s              riscv64-v inline
+SUB_s              x86       inline
+SUB_s              x86-avx2  inline
+SUB_s              x86-base  inline
+SUB_v              aarch64   inline
+SUB_v              generic   inline
+SUB_v              la64-lsx  inline
+SUB_v              mips-msa  inline
+SUB_v              ppc64le   inline
+SUB_v              riscv64-v inline
+SUB_v              x86       inline
+SUB_v              x86-avx2  inline
+SUB_v              x86-base  inline
+SUQADD_s           aarch64   inline
+SUQADD_s           generic   inline
+SUQADD_s           la64-lsx  inline
+SUQADD_s           mips-msa  inline
+SUQADD_s           ppc64le   inline
+SUQADD_s           riscv64-v inline
+SUQADD_s           x86       inline
+SUQADD_s           x86-avx2  inline
+SUQADD_s           x86-base  inline
+SUQADD_v           aarch64   inline
+SUQADD_v           generic   inline
+SUQADD_v           la64-lsx  inline
+SUQADD_v           mips-msa  inline
+SUQADD_v           ppc64le   inline
+SUQADD_v           riscv64-v inline
+SUQADD_v           x86       inline
+SUQADD_v           x86-avx2  inline
+SUQADD_v           x86-base  inline
+TBL_TBX            aarch64   inline
+TBL_TBX            generic   inline
+TBL_TBX            la64-lsx  inline
+TBL_TBX            mips-msa  inline
+TBL_TBX            ppc64le   inline
+TBL_TBX            riscv64-v inline
+TBL_TBX            x86       inline
+TBL_TBX            x86-avx2  inline
+TBL_TBX            x86-base  inline
+TRN1               aarch64   inline
+TRN1               generic   inline
+TRN1               la64-lsx  inline
+TRN1               mips-msa  inline
+TRN1               ppc64le   inline
+TRN1               riscv64-v inline
+TRN1               x86       inline
+TRN1               x86-avx2  inline
+TRN1               x86-base  inline
+TRN2               aarch64   inline
+TRN2               generic   inline
+TRN2               la64-lsx  inline
+TRN2               mips-msa  inline
+TRN2               ppc64le   inline
+TRN2               riscv64-v inline
+TRN2               x86       inline
+TRN2               x86-avx2  inline
+TRN2               x86-base  inline
+UABAL_v            aarch64   inline
+UABAL_v            generic   inline
+UABAL_v            la64-lsx  inline
+UABAL_v            mips-msa  inline
+UABAL_v            ppc64le   inline
+UABAL_v            riscv64-v inline
+UABAL_v            x86       inline
+UABAL_v            x86-avx2  inline
+UABAL_v            x86-base  inline
+UABA_v             aarch64   inline
+UABA_v             generic   inline
+UABA_v             la64-lsx  inline
+UABA_v             mips-msa  inline
+UABA_v             ppc64le   inline
+UABA_v             riscv64-v inline
+UABA_v             x86       inline
+UABA_v             x86-avx2  inline
+UABA_v             x86-base  inline
+UABDL_v            aarch64   inline
+UABDL_v            generic   inline
+UABDL_v            la64-lsx  inline
+UABDL_v            mips-msa  inline
+UABDL_v            ppc64le   inline
+UABDL_v            riscv64-v inline
+UABDL_v            x86       inline
+UABDL_v            x86-avx2  inline
+UABDL_v            x86-base  inline
+UABD_v             aarch64   inline
+UABD_v             generic   inline
+UABD_v             la64-lsx  inline
+UABD_v             mips-msa  inline
+UABD_v             ppc64le   inline
+UABD_v             riscv64-v inline
+UABD_v             x86       inline
+UABD_v             x86-avx2  inline
+UABD_v             x86-base  inline
+UADALP_v           aarch64   inline
+UADALP_v           generic   inline
+UADALP_v           la64-lsx  inline
+UADALP_v           mips-msa  inline
+UADALP_v           ppc64le   inline
+UADALP_v           riscv64-v inline
+UADALP_v           x86       inline
+UADALP_v           x86-avx2  inline
+UADALP_v           x86-base  inline
+UADDLP_v           aarch64   inline
+UADDLP_v           generic   inline
+UADDLP_v           la64-lsx  inline
+UADDLP_v           mips-msa  inline
+UADDLP_v           ppc64le   inline
+UADDLP_v           riscv64-v inline
+UADDLP_v           x86       inline
+UADDLP_v           x86-avx2  inline
+UADDLP_v           x86-base  inline
+UADDLV             aarch64   inline
+UADDLV             generic   inline
+UADDLV             la64-lsx  inline
+UADDLV             mips-msa  inline
+UADDLV             ppc64le   inline
+UADDLV             riscv64-v inline
+UADDLV             x86       inline
+UADDLV             x86-avx2  inline
+UADDLV             x86-base  inline
+UADDL_v            aarch64   inline
+UADDL_v            generic   inline
+UADDL_v            la64-lsx  inline
+UADDL_v            mips-msa  inline
+UADDL_v            ppc64le   inline
+UADDL_v            riscv64-v inline
+UADDL_v            x86       inline
+UADDL_v            x86-avx2  inline
+UADDL_v            x86-base  inline
+UADDW              aarch64   inline
+UADDW              generic   inline
+UADDW              la64-lsx  inline
+UADDW              mips-msa  inline
+UADDW              ppc64le   inline
+UADDW              riscv64-v inline
+UADDW              x86       inline
+UADDW              x86-avx2  inline
+UADDW              x86-base  inline
+UCVTF_f            aarch64   guarded  snx_fp_from_int
+UCVTF_f            generic   guarded  snx_fp_from_int
+UCVTF_f            la64-lsx  guarded  snx_fp_from_int
+UCVTF_f            mips-msa  guarded  snx_fp_from_int
+UCVTF_f            ppc64le   guarded  snx_fp_from_int
+UCVTF_f            riscv64-v guarded  snx_fp_from_int
+UCVTF_f            x86       guarded  snx_fp_from_int
+UCVTF_f            x86-avx2  guarded  snx_fp_from_int
+UCVTF_f            x86-base  guarded  snx_fp_from_int
+UCVTF_g            aarch64   guarded  snx_fp_from_int
+UCVTF_g            generic   guarded  snx_fp_from_int
+UCVTF_g            la64-lsx  guarded  snx_fp_from_int
+UCVTF_g            mips-msa  guarded  snx_fp_from_int
+UCVTF_g            ppc64le   guarded  snx_fp_from_int
+UCVTF_g            riscv64-v guarded  snx_fp_from_int
+UCVTF_g            x86       guarded  snx_fp_from_int
+UCVTF_g            x86-avx2  guarded  snx_fp_from_int
+UCVTF_g            x86-base  guarded  snx_fp_from_int
+UCVTF_vf           aarch64   guarded  snx_fp_from_int
+UCVTF_vf           generic   guarded  snx_fp_from_int
+UCVTF_vf           la64-lsx  guarded  snx_fp_from_int
+UCVTF_vf           mips-msa  guarded  snx_fp_from_int
+UCVTF_vf           ppc64le   guarded  snx_fp_from_int
+UCVTF_vf           riscv64-v guarded  snx_fp_from_int
+UCVTF_vf           x86       guarded  snx_fp_from_int
+UCVTF_vf           x86-avx2  guarded  snx_fp_from_int
+UCVTF_vf           x86-base  guarded  snx_fp_from_int
+UCVTF_vi           aarch64   guarded  snx_fp_from_int
+UCVTF_vi           generic   guarded  snx_fp_from_int
+UCVTF_vi           la64-lsx  guarded  snx_fp_from_int
+UCVTF_vi           mips-msa  guarded  snx_fp_from_int
+UCVTF_vi           ppc64le   guarded  snx_fp_from_int
+UCVTF_vi           riscv64-v guarded  snx_fp_from_int
+UCVTF_vi           x86       guarded  snx_fp_from_int
+UCVTF_vi           x86-avx2  guarded  snx_fp_from_int
+UCVTF_vi           x86-base  guarded  snx_fp_from_int
+UHADD_v            aarch64   inline
+UHADD_v            generic   inline
+UHADD_v            la64-lsx  inline
+UHADD_v            mips-msa  inline
+UHADD_v            ppc64le   inline
+UHADD_v            riscv64-v inline
+UHADD_v            x86       inline
+UHADD_v            x86-avx2  inline
+UHADD_v            x86-base  inline
+UHSUB_v            aarch64   inline
+UHSUB_v            generic   inline
+UHSUB_v            la64-lsx  inline
+UHSUB_v            mips-msa  inline
+UHSUB_v            ppc64le   inline
+UHSUB_v            riscv64-v inline
+UHSUB_v            x86       inline
+UHSUB_v            x86-avx2  inline
+UHSUB_v            x86-base  inline
+UMAXP_v            aarch64   inline
+UMAXP_v            generic   inline
+UMAXP_v            la64-lsx  inline
+UMAXP_v            mips-msa  inline
+UMAXP_v            ppc64le   inline
+UMAXP_v            riscv64-v inline
+UMAXP_v            x86       inline
+UMAXP_v            x86-avx2  inline
+UMAXP_v            x86-base  inline
+UMAXV              aarch64   inline
+UMAXV              generic   inline
+UMAXV              la64-lsx  inline
+UMAXV              mips-msa  inline
+UMAXV              ppc64le   inline
+UMAXV              riscv64-v inline
+UMAXV              x86       inline
+UMAXV              x86-avx2  inline
+UMAXV              x86-base  inline
+UMAX_v             aarch64   inline
+UMAX_v             generic   inline
+UMAX_v             la64-lsx  inline
+UMAX_v             mips-msa  inline
+UMAX_v             ppc64le   inline
+UMAX_v             riscv64-v inline
+UMAX_v             x86       inline
+UMAX_v             x86-avx2  inline
+UMAX_v             x86-base  inline
+UMINP_v            aarch64   inline
+UMINP_v            generic   inline
+UMINP_v            la64-lsx  inline
+UMINP_v            mips-msa  inline
+UMINP_v            ppc64le   inline
+UMINP_v            riscv64-v inline
+UMINP_v            x86       inline
+UMINP_v            x86-avx2  inline
+UMINP_v            x86-base  inline
+UMINV              aarch64   inline
+UMINV              generic   inline
+UMINV              la64-lsx  inline
+UMINV              mips-msa  inline
+UMINV              ppc64le   inline
+UMINV              riscv64-v inline
+UMINV              x86       inline
+UMINV              x86-avx2  inline
+UMINV              x86-base  inline
+UMIN_v             aarch64   inline
+UMIN_v             generic   inline
+UMIN_v             la64-lsx  inline
+UMIN_v             mips-msa  inline
+UMIN_v             ppc64le   inline
+UMIN_v             riscv64-v inline
+UMIN_v             x86       inline
+UMIN_v             x86-avx2  inline
+UMIN_v             x86-base  inline
+UMLAL_v            aarch64   inline
+UMLAL_v            generic   inline
+UMLAL_v            la64-lsx  inline
+UMLAL_v            mips-msa  inline
+UMLAL_v            ppc64le   inline
+UMLAL_v            riscv64-v inline
+UMLAL_v            x86       inline
+UMLAL_v            x86-avx2  inline
+UMLAL_v            x86-base  inline
+UMLAL_vi           aarch64   inline
+UMLAL_vi           generic   inline
+UMLAL_vi           la64-lsx  inline
+UMLAL_vi           mips-msa  inline
+UMLAL_vi           ppc64le   inline
+UMLAL_vi           riscv64-v inline
+UMLAL_vi           x86       inline
+UMLAL_vi           x86-avx2  inline
+UMLAL_vi           x86-base  inline
+UMLSL_v            aarch64   inline
+UMLSL_v            generic   inline
+UMLSL_v            la64-lsx  inline
+UMLSL_v            mips-msa  inline
+UMLSL_v            ppc64le   inline
+UMLSL_v            riscv64-v inline
+UMLSL_v            x86       inline
+UMLSL_v            x86-avx2  inline
+UMLSL_v            x86-base  inline
+UMLSL_vi           aarch64   inline
+UMLSL_vi           generic   inline
+UMLSL_vi           la64-lsx  inline
+UMLSL_vi           mips-msa  inline
+UMLSL_vi           ppc64le   inline
+UMLSL_vi           riscv64-v inline
+UMLSL_vi           x86       inline
+UMLSL_vi           x86-avx2  inline
+UMLSL_vi           x86-base  inline
+UMOV               aarch64   inline
+UMOV               generic   inline
+UMOV               la64-lsx  inline
+UMOV               mips-msa  inline
+UMOV               ppc64le   inline
+UMOV               riscv64-v inline
+UMOV               x86       inline
+UMOV               x86-avx2  inline
+UMOV               x86-base  inline
+UMULL_v            aarch64   inline
+UMULL_v            generic   inline
+UMULL_v            la64-lsx  inline
+UMULL_v            mips-msa  inline
+UMULL_v            ppc64le   inline
+UMULL_v            riscv64-v inline
+UMULL_v            x86       inline
+UMULL_v            x86-avx2  inline
+UMULL_v            x86-base  inline
+UMULL_vi           aarch64   inline
+UMULL_vi           generic   inline
+UMULL_vi           la64-lsx  inline
+UMULL_vi           mips-msa  inline
+UMULL_vi           ppc64le   inline
+UMULL_vi           riscv64-v inline
+UMULL_vi           x86       inline
+UMULL_vi           x86-avx2  inline
+UMULL_vi           x86-base  inline
+UQADD_s            aarch64   inline
+UQADD_s            generic   inline
+UQADD_s            la64-lsx  inline
+UQADD_s            mips-msa  inline
+UQADD_s            ppc64le   inline
+UQADD_s            riscv64-v inline
+UQADD_s            x86       inline
+UQADD_s            x86-avx2  inline
+UQADD_s            x86-base  inline
+UQADD_v            aarch64   inline
+UQADD_v            generic   inline
+UQADD_v            la64-lsx  inline
+UQADD_v            mips-msa  inline
+UQADD_v            ppc64le   inline
+UQADD_v            riscv64-v inline
+UQADD_v            x86       inline
+UQADD_v            x86-avx2  inline
+UQADD_v            x86-base  inline
+UQRSHL_s           aarch64   inline
+UQRSHL_s           generic   helper   snx_vec_shl
+UQRSHL_s           la64-lsx  inline
+UQRSHL_s           mips-msa  inline
+UQRSHL_s           ppc64le   inline
+UQRSHL_s           riscv64-v inline
+UQRSHL_s           x86       inline
+UQRSHL_s           x86-avx2  inline
+UQRSHL_s           x86-base  inline
+UQRSHL_v           aarch64   inline
+UQRSHL_v           generic   helper   snx_vec_shl
+UQRSHL_v           la64-lsx  inline
+UQRSHL_v           mips-msa  inline
+UQRSHL_v           ppc64le   inline
+UQRSHL_v           riscv64-v inline
+UQRSHL_v           x86       inline
+UQRSHL_v           x86-avx2  inline
+UQRSHL_v           x86-base  inline
+UQRSHRN_si         aarch64   inline
+UQRSHRN_si         generic   inline
+UQRSHRN_si         la64-lsx  inline
+UQRSHRN_si         mips-msa  inline
+UQRSHRN_si         ppc64le   inline
+UQRSHRN_si         riscv64-v inline
+UQRSHRN_si         x86       inline
+UQRSHRN_si         x86-avx2  inline
+UQRSHRN_si         x86-base  inline
+UQRSHRN_v          aarch64   inline
+UQRSHRN_v          generic   inline
+UQRSHRN_v          la64-lsx  inline
+UQRSHRN_v          mips-msa  inline
+UQRSHRN_v          ppc64le   inline
+UQRSHRN_v          riscv64-v inline
+UQRSHRN_v          x86       inline
+UQRSHRN_v          x86-avx2  inline
+UQRSHRN_v          x86-base  inline
+UQSHL_s            aarch64   inline
+UQSHL_s            generic   helper   snx_vec_shl
+UQSHL_s            la64-lsx  inline
+UQSHL_s            mips-msa  inline
+UQSHL_s            ppc64le   inline
+UQSHL_s            riscv64-v inline
+UQSHL_s            x86       inline
+UQSHL_s            x86-avx2  inline
+UQSHL_s            x86-base  inline
+UQSHL_si           aarch64   inline
+UQSHL_si           generic   inline
+UQSHL_si           la64-lsx  inline
+UQSHL_si           mips-msa  inline
+UQSHL_si           ppc64le   inline
+UQSHL_si           riscv64-v inline
+UQSHL_si           x86       inline
+UQSHL_si           x86-avx2  inline
+UQSHL_si           x86-base  inline
+UQSHL_v            aarch64   inline
+UQSHL_v            generic   helper   snx_vec_shl
+UQSHL_v            la64-lsx  inline
+UQSHL_v            mips-msa  inline
+UQSHL_v            ppc64le   inline
+UQSHL_v            riscv64-v inline
+UQSHL_v            x86       inline
+UQSHL_v            x86-avx2  inline
+UQSHL_v            x86-base  inline
+UQSHL_vi           aarch64   inline
+UQSHL_vi           generic   inline
+UQSHL_vi           la64-lsx  inline
+UQSHL_vi           mips-msa  inline
+UQSHL_vi           ppc64le   inline
+UQSHL_vi           riscv64-v inline
+UQSHL_vi           x86       inline
+UQSHL_vi           x86-avx2  inline
+UQSHL_vi           x86-base  inline
+UQSHRN_si          aarch64   inline
+UQSHRN_si          generic   inline
+UQSHRN_si          la64-lsx  inline
+UQSHRN_si          mips-msa  inline
+UQSHRN_si          ppc64le   inline
+UQSHRN_si          riscv64-v inline
+UQSHRN_si          x86       inline
+UQSHRN_si          x86-avx2  inline
+UQSHRN_si          x86-base  inline
+UQSHRN_v           aarch64   inline
+UQSHRN_v           generic   inline
+UQSHRN_v           la64-lsx  inline
+UQSHRN_v           mips-msa  inline
+UQSHRN_v           ppc64le   inline
+UQSHRN_v           riscv64-v inline
+UQSHRN_v           x86       inline
+UQSHRN_v           x86-avx2  inline
+UQSHRN_v           x86-base  inline
+UQSUB_s            aarch64   inline
+UQSUB_s            generic   inline
+UQSUB_s            la64-lsx  inline
+UQSUB_s            mips-msa  inline
+UQSUB_s            ppc64le   inline
+UQSUB_s            riscv64-v inline
+UQSUB_s            x86       inline
+UQSUB_s            x86-avx2  inline
+UQSUB_s            x86-base  inline
+UQSUB_v            aarch64   inline
+UQSUB_v            generic   inline
+UQSUB_v            la64-lsx  inline
+UQSUB_v            mips-msa  inline
+UQSUB_v            ppc64le   inline
+UQSUB_v            riscv64-v inline
+UQSUB_v            x86       inline
+UQSUB_v            x86-avx2  inline
+UQSUB_v            x86-base  inline
+UQXTN_s            aarch64   inline
+UQXTN_s            generic   inline
+UQXTN_s            la64-lsx  inline
+UQXTN_s            mips-msa  inline
+UQXTN_s            ppc64le   inline
+UQXTN_s            riscv64-v inline
+UQXTN_s            x86       inline
+UQXTN_s            x86-avx2  inline
+UQXTN_s            x86-base  inline
+UQXTN_v            aarch64   inline
+UQXTN_v            generic   inline
+UQXTN_v            la64-lsx  inline
+UQXTN_v            mips-msa  inline
+UQXTN_v            ppc64le   inline
+UQXTN_v            riscv64-v inline
+UQXTN_v            x86       inline
+UQXTN_v            x86-avx2  inline
+UQXTN_v            x86-base  inline
+URECPE_v           aarch64   helper   urecpe32
+URECPE_v           generic   helper   urecpe32
+URECPE_v           la64-lsx  helper   urecpe32
+URECPE_v           mips-msa  helper   urecpe32
+URECPE_v           ppc64le   helper   urecpe32
+URECPE_v           riscv64-v helper   urecpe32
+URECPE_v           x86       inline
+URECPE_v           x86-avx2  inline
+URECPE_v           x86-base  helper   urecpe32
+URHADD_v           aarch64   inline
+URHADD_v           generic   inline
+URHADD_v           la64-lsx  inline
+URHADD_v           mips-msa  inline
+URHADD_v           ppc64le   inline
+URHADD_v           riscv64-v inline
+URHADD_v           x86       inline
+URHADD_v           x86-avx2  inline
+URHADD_v           x86-base  inline
+URSHL_s            aarch64   inline
+URSHL_s            generic   helper   snx_vec_shl
+URSHL_s            la64-lsx  inline
+URSHL_s            mips-msa  inline
+URSHL_s            ppc64le   inline
+URSHL_s            riscv64-v inline
+URSHL_s            x86       inline
+URSHL_s            x86-avx2  inline
+URSHL_s            x86-base  inline
+URSHL_v            aarch64   inline
+URSHL_v            generic   helper   snx_vec_shl
+URSHL_v            la64-lsx  inline
+URSHL_v            mips-msa  inline
+URSHL_v            ppc64le   inline
+URSHL_v            riscv64-v inline
+URSHL_v            x86       inline
+URSHL_v            x86-avx2  inline
+URSHL_v            x86-base  inline
+URSHR_s            aarch64   inline
+URSHR_s            generic   inline
+URSHR_s            la64-lsx  inline
+URSHR_s            mips-msa  inline
+URSHR_s            ppc64le   inline
+URSHR_s            riscv64-v inline
+URSHR_s            x86       inline
+URSHR_s            x86-avx2  inline
+URSHR_s            x86-base  inline
+URSHR_v            aarch64   inline
+URSHR_v            generic   inline
+URSHR_v            la64-lsx  inline
+URSHR_v            mips-msa  inline
+URSHR_v            ppc64le   inline
+URSHR_v            riscv64-v inline
+URSHR_v            x86       inline
+URSHR_v            x86-avx2  inline
+URSHR_v            x86-base  inline
+URSQRTE_v          aarch64   helper   ursqrte32
+URSQRTE_v          generic   helper   ursqrte32
+URSQRTE_v          la64-lsx  helper   ursqrte32
+URSQRTE_v          mips-msa  helper   ursqrte32
+URSQRTE_v          ppc64le   helper   ursqrte32
+URSQRTE_v          riscv64-v helper   ursqrte32
+URSQRTE_v          x86       inline
+URSQRTE_v          x86-avx2  inline
+URSQRTE_v          x86-base  helper   ursqrte32
+URSRA_s            aarch64   inline
+URSRA_s            generic   inline
+URSRA_s            la64-lsx  inline
+URSRA_s            mips-msa  inline
+URSRA_s            ppc64le   inline
+URSRA_s            riscv64-v inline
+URSRA_s            x86       inline
+URSRA_s            x86-avx2  inline
+URSRA_s            x86-base  inline
+URSRA_v            aarch64   inline
+URSRA_v            generic   inline
+URSRA_v            la64-lsx  inline
+URSRA_v            mips-msa  inline
+URSRA_v            ppc64le   inline
+URSRA_v            riscv64-v inline
+URSRA_v            x86       inline
+URSRA_v            x86-avx2  inline
+URSRA_v            x86-base  inline
+USHLL_v            aarch64   inline
+USHLL_v            generic   inline
+USHLL_v            la64-lsx  inline
+USHLL_v            mips-msa  inline
+USHLL_v            ppc64le   inline
+USHLL_v            riscv64-v inline
+USHLL_v            x86       inline
+USHLL_v            x86-avx2  inline
+USHLL_v            x86-base  inline
+USHL_s             aarch64   inline
+USHL_s             generic   inline
+USHL_s             la64-lsx  inline
+USHL_s             mips-msa  inline
+USHL_s             ppc64le   inline
+USHL_s             riscv64-v inline
+USHL_s             x86       inline
+USHL_s             x86-avx2  inline
+USHL_s             x86-base  inline
+USHL_v             aarch64   inline
+USHL_v             generic   inline
+USHL_v             la64-lsx  inline
+USHL_v             mips-msa  inline
+USHL_v             ppc64le   inline
+USHL_v             riscv64-v inline
+USHL_v             x86       inline
+USHL_v             x86-avx2  inline
+USHL_v             x86-base  inline
+USHR_s             aarch64   inline
+USHR_s             generic   inline
+USHR_s             la64-lsx  inline
+USHR_s             mips-msa  inline
+USHR_s             ppc64le   inline
+USHR_s             riscv64-v inline
+USHR_s             x86       inline
+USHR_s             x86-avx2  inline
+USHR_s             x86-base  inline
+USHR_v             aarch64   inline
+USHR_v             generic   inline
+USHR_v             la64-lsx  inline
+USHR_v             mips-msa  inline
+USHR_v             ppc64le   inline
+USHR_v             riscv64-v inline
+USHR_v             x86       inline
+USHR_v             x86-avx2  inline
+USHR_v             x86-base  inline
+USQADD_s           aarch64   inline
+USQADD_s           generic   inline
+USQADD_s           la64-lsx  inline
+USQADD_s           mips-msa  inline
+USQADD_s           ppc64le   inline
+USQADD_s           riscv64-v inline
+USQADD_s           x86       inline
+USQADD_s           x86-avx2  inline
+USQADD_s           x86-base  inline
+USQADD_v           aarch64   inline
+USQADD_v           generic   inline
+USQADD_v           la64-lsx  inline
+USQADD_v           mips-msa  inline
+USQADD_v           ppc64le   inline
+USQADD_v           riscv64-v inline
+USQADD_v           x86       inline
+USQADD_v           x86-avx2  inline
+USQADD_v           x86-base  inline
+USRA_s             aarch64   inline
+USRA_s             generic   inline
+USRA_s             la64-lsx  inline
+USRA_s             mips-msa  inline
+USRA_s             ppc64le   inline
+USRA_s             riscv64-v inline
+USRA_s             x86       inline
+USRA_s             x86-avx2  inline
+USRA_s             x86-base  inline
+USRA_v             aarch64   inline
+USRA_v             generic   inline
+USRA_v             la64-lsx  inline
+USRA_v             mips-msa  inline
+USRA_v             ppc64le   inline
+USRA_v             riscv64-v inline
+USRA_v             x86       inline
+USRA_v             x86-avx2  inline
+USRA_v             x86-base  inline
+USUBL_v            aarch64   inline
+USUBL_v            generic   inline
+USUBL_v            la64-lsx  inline
+USUBL_v            mips-msa  inline
+USUBL_v            ppc64le   inline
+USUBL_v            riscv64-v inline
+USUBL_v            x86       inline
+USUBL_v            x86-avx2  inline
+USUBL_v            x86-base  inline
+USUBW              aarch64   inline
+USUBW              generic   inline
+USUBW              la64-lsx  inline
+USUBW              mips-msa  inline
+USUBW              ppc64le   inline
+USUBW              riscv64-v inline
+USUBW              x86       inline
+USUBW              x86-avx2  inline
+USUBW              x86-base  inline
+UZP1               aarch64   inline
+UZP1               generic   inline
+UZP1               la64-lsx  inline
+UZP1               mips-msa  inline
+UZP1               ppc64le   inline
+UZP1               riscv64-v inline
+UZP1               x86       inline
+UZP1               x86-avx2  inline
+UZP1               x86-base  inline
+UZP2               aarch64   inline
+UZP2               generic   inline
+UZP2               la64-lsx  inline
+UZP2               mips-msa  inline
+UZP2               ppc64le   inline
+UZP2               riscv64-v inline
+UZP2               x86       inline
+UZP2               x86-avx2  inline
+UZP2               x86-base  inline
+Vimm               aarch64   inline
+Vimm               generic   inline
+Vimm               la64-lsx  inline
+Vimm               mips-msa  inline
+Vimm               ppc64le   inline
+Vimm               riscv64-v inline
+Vimm               x86       inline
+Vimm               x86-avx2  inline
+Vimm               x86-base  inline
+XTN                aarch64   inline
+XTN                generic   inline
+XTN                la64-lsx  inline
+XTN                mips-msa  inline
+XTN                ppc64le   inline
+XTN                riscv64-v inline
+XTN                x86       inline
+XTN                x86-avx2  inline
+XTN                x86-base  inline
+ZIP1               aarch64   inline
+ZIP1               generic   inline
+ZIP1               la64-lsx  inline
+ZIP1               mips-msa  inline
+ZIP1               ppc64le   inline
+ZIP1               riscv64-v inline
+ZIP1               x86       inline
+ZIP1               x86-avx2  inline
+ZIP1               x86-base  inline
+ZIP2               aarch64   inline
+ZIP2               generic   inline
+ZIP2               la64-lsx  inline
+ZIP2               mips-msa  inline
+ZIP2               ppc64le   inline
+ZIP2               riscv64-v inline
+ZIP2               x86       inline
+ZIP2               x86-avx2  inline
+ZIP2               x86-base  inline

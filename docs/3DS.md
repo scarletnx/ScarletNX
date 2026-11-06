@@ -8,17 +8,18 @@
   * [Kernel-bootstrap subset (2b4)](#kernel-bootstrap-subset-2b4)
   * [Initial CTR IPC/services (3a)](#initial-ctr-ipcservices-3a)
   * [Current limits and trust](#current-limits-and-trust)
-  * [Play settings](#play-settings)
   * [Build and test](#build-and-test)
 * [Source provenance and licensing](#source-provenance-and-licensing)
 * [Boundaries and prerequisites for stage 2b](#boundaries-and-prerequisites-for-stage-2b)
 * [Parity roadmap (Azahar)](#parity-roadmap-azahar)
+  * [Gaps the F0/F1 audit left to later phases](#gaps-the-f0f1-audit-left-to-later-phases)
 * [Staged roadmap (stages 2–6, superseded by the parity roadmap)](#staged-roadmap-stages-26-superseded-by-the-parity-roadmap)
   * [2. CIA extraction, memory controller and static execution](#2-cia-extraction-memory-controller-and-static-execution)
   * [3. Basic HLE OS and a SwIPC-derived generator](#3-basic-hle-os-and-a-swipc-derived-generator)
   * [4. Audio DSP](#4-audio-dsp)
   * [5. Video graphics](#5-video-graphics)
   * [6. HID and remaining peripherals](#6-hid-and-remaining-peripherals)
+  * [Experimental local wireless over rooms](#experimental-local-wireless-over-rooms)
 
 ## Status: stage 1 + stage 2a + stages 2b1–2b4 + initial 3a/3b/FS
 
@@ -84,9 +85,13 @@ content is.
 
 An encrypted CIA, as a console dump is, is decrypted once with the user's own keys
 into a copy beside the title's folder (`<folder>.decrypted.cia`, published only
-complete), which is read from then on (`src/3ds/loader/decrypt.c`). The keys are an `aes_keys.txt` in Azahar's
-format, looked for in `~/.3ds/aes_keys.txt` (`%USERPROFILE%\.3ds` on Windows) as
-the Switch driver looks in `~/.switch`, or named with `--keys FILE`. They are
+complete), which is read from then on (`src/3ds/loader/decrypt.c`). The keys are an `aes_keys.txt` (Azahar's format,
+or the plain key dumps that call the constant `generator=` rather than `generatorConstant=`; GodMode9 itself keeps
+its keys in a binary `aeskeydb.bin` and writes no `aes_keys.txt`), looked for in
+`~/.3ds/aes_keys.txt` (`%USERPROFILE%\.3ds` on Windows) as
+the Switch driver looks in `~/.switch`, or named with `--keys FILE`; the launcher's
+**Install Keys** installs it there too (docs/GUI.md). Only encrypted 3DS files need it: a decrypted or homebrew 3DS
+game runs without an `aes_keys.txt`. The keys are
 never part of ScarletNX. Both layers come off: each content's AES-CBC under the
 ticket's title key (itself under the common key), and the NCCH's AES-CTR under
 the primary key (slot 0x2C) and the secondary one its crypto method names (0x2C,
@@ -107,15 +112,18 @@ recompile (`-r`) seeds discovery with, so it is static from then on. A
 commercial title's 7 MiB of text compiles to about 340000 blocks in about six
 and a half minutes on six cores (the chunks compile in parallel).
 
-Since 2026-10-21 a commercial title, decrypted this way, runs its startup
+A commercial title, decrypted this way, runs its startup
 (cfg, FS with its save data, APT, and the system services the runtime answers
 generically), creates its save data and stops at its first prompt for the A
 button, drawn through the PICA renderer. Input is the next gap.
 
 The GPU's work runs on one Vulkan device (`src/3ds/gpu/vk/`), which needs Vulkan
-1.3, 8-bit storage buffers and `VK_EXT_external_memory_host`: the board's RAM
-regions are imported as buffers, so the GPU reads and writes the guest's memory
-in place and nothing of it is copied by the CPU. Memory fills, display transfers
+1.3, 8-bit storage buffers and `VK_EXT_external_memory_host` or
+`VK_EXT_external_memory_dma_buf`: the board's RAM regions are its buffers, imported
+or, where the driver will not import them, the device's own memory (below), so a GPU
+that shares the system's memory reads and writes the guest's memory in place and nothing
+of it is copied by the CPU; a discrete GPU works on a copy of it in its own memory
+(below). Memory fills, display transfers
 and texture copies are compute shaders (`gpu/vk/shaders/`), held byte for byte to
 the CPU reference `gpu/transfer.c` by `tests/3ds_vk_transfer.c`. The Y2R engine (`y2r:u`, `services/y2r.c`), which
 turns a video's YUV frames to RGB, converts on the GPU too (`gpu/vk/y2r.c`). Its streams
@@ -126,28 +134,12 @@ on the GPU too (`gpu/vk/render.c`). The vertex program is decompiled (`gpu/vk/vs
 and the fragment pipeline generated (`gpu/vk/fsgen.c`), both ported from Azahar's
 shader generators and both written as SPIR-V words directly (`src/common/utilities/spirv_emit.c`, shared with NX), with no
 shader compiler at run time. The output merger is the pipeline's fixed state. Vertex and
-index data are read in place. `tests/3ds_vk_draw.c` holds the draws to the software
-renderer they replaced, which stays only as that reference. The shown
+index data are read where the GPU works (in place, or its copy), except in a draw with a geometry shader, whose vertex and
+geometry shaders run on the CPU (see below). `tests/3ds_vk_draw.c` holds the draws to the
+software renderer they replaced, which stays as their reference. The shown
 framebuffers are decoded and turned to the landscape screen by a compute shader
 straight from guest memory into the window's swapchain; the frame dumps are the
 one readback.
-
-Building shaders must not stall a frame, so the renderer builds them off the draw
-thread. The `ctr_async_pipelines` setting picks the mode: 0 builds on the draw
-thread, 1 (the default) uses worker threads, 2 draws with the stand-in fragment
-shader only (the tests use it). With `VK_EXT_shader_object` there are no pipelines: a vertex
-and a fragment shader object are bound per draw, and depth, stencil and the rest of
-the state are dynamic. A draw whose fragment shader is still compiling uses
-`shaders/uber.frag`, which reads the TEV setup from push constants. It leaves out
-lighting, fog and the procedural texture, and cube, shadow and gas draws wait for the
-real shader. A vertex shader has no stand-in, so its draws are skipped until a worker
-has built it. A logic op cannot be set dynamically on some devices, so those draws
-keep the pipeline path (built on a worker, with the draw skipped meanwhile). The
-driver's pipeline cache is kept in `pipelines.cache` of the game's folder, and the
-shader objects' binaries in `shaders.cache`, so a shader seen in an earlier run is
-created without compiling. The log reports builds over 2 ms and the draws skipped for
-a build. `VK_EXT_graphics_pipeline_library` is not used: on one AMD driver, enabling
-it made compute shaders with 8-bit storage writes give wrong bytes.
 
 What the GPU makes stays on it, and guest memory catches up only when something
 reads it. A render target's images are kept, and loaded from guest memory by a compute
@@ -163,20 +155,50 @@ audio.
 
 Write tracking keeps the guest from seeing any of this unfinished
 (`snx_ctr_track_*` in `memory/ctr_memory.h`). Each physical page has a level:
-the CPU's; watched, when the GPU keeps something made from it or a submission not done
-reads it, so a write traps; or the GPU's, when a target there is newer or a submission
-not done writes it, so every access traps. Every guest view of the page is protected
+the CPU's; watched, when the GPU keeps something made from it, a submission not done
+reads it or the GPU's copy of it holds the same bytes, so a write traps; or the GPU's,
+when a target there is newer, a submission not done writes it or the GPU's copy of it
+is newer, so every access traps. Every guest view of the page is protected
 to its level, and so are the memory API's accesses and a bus master's by physical
 address. A trap is resolved by the renderer, on the faulting thread:
-- the GPU's page has its targets stored and its writes waited for, and is watched
-  after;
-- a watched page has the GPU's reads of it waited for and what was made of it dropped,
-  and is the CPU's after.
+- the GPU's page has its targets stored and its writes waited for, or its copy copied
+  back, and is watched after;
+- a watched page has the GPU's reads of it waited for, what was made of it dropped and
+  its copy stale, and is the CPU's after.
 
 A guest fault (`memory/host.h`) is taken by SIGSEGV or SIGBUS on Linux, FreeBSD and the
 other POSIX hosts, on an alternate stack large enough to wait for the GPU, and by a
 vectored exception handler on Windows. `tests/3ds_memory_track.c` checks the levels
 through the flat space and the API with a stand-in renderer.
+
+A discrete GPU reads and writes each byte of guest memory it works on in place across the
+bus, every time: a draw's vertices each frame, a target stored and the display transfer that
+reads it back, the framebuffer the presenter decodes. There the GPU works on a copy of the
+RAM in its own memory instead (`gpu/vk/device.c`), kept in step with the RAM by page
+(`gpu/vk/render.c`), and the bus carries only what changes hands. A page the CPU wrote since
+is copied in before the GPU reads or writes it, by uploads that run before everything their
+submission holds (`snx_vk_ring_uploads`, so no rendering pass ends for them), and is watched
+from then on. A page the GPU wrote is the GPU's until the CPU's first access, which copies it
+back with the pages the GPU wrote around it (up to 256 on each side) and waits for that. A
+write copies its stale pages in first even where it covers them, as one need not write a whole
+page and a page goes back whole; when the device goes, what the GPU wrote goes back. The copy
+is taken as the Switch's setting `vk_memory` says, with its meaning (`--vk_memory=N`, which the
+launcher passes from its Debug settings): `0`, the default, the copy unless the device shares
+the system's memory (`snx_vk_memory_model`), `1` the copy, `2` the RAM in place. The device says
+on the standard error which it took and the value, and when its memory cannot hold the copy,
+what refused it and that the run takes `vk_memory=2`. Its cost is the
+CPU's writes: a page the CPU rewrites after the GPU read it traps at each rewrite, where in
+place it traps only while a read is not done. The run's summary has a `gpu:` line: each
+screen's frames, what the GPU's work read and wrote, what was copied in and back, and the
+CPU's accesses that trapped. The pinned homebrew's title screen ([its target](3DS-SUPERTUX.md))
+on an RX 6700 XT (RADV, resizable BAR), three 60 s runs each, by that line: what crosses the bus
+falls to 6.1 MiB a second, 245 KiB a frame, all of it copied in, from 76.6 in place (3018 KiB a
+frame: 36.8 MiB a second read, 39.8 written); amdgpu has the GPU busy 14.4 ms a second against
+17.8; the CPU's time is the same, 323 and 325 ms a second, though its writes trap 61 times a
+frame against 0.2.
+`tests/3ds_vk_copies.c` checks which pages are copied in and back and when, and every GPU
+test runs again on each path (`_copy`, `_in_place`: `--vk_memory=1` and `2`), so lavapipe
+checks the copy too.
 
 Compiled code addresses the guest flat: a 4 GiB host reservation where guest
 address `va` is `base + va`, each mapping a view of the board's RAM held in one
@@ -204,17 +226,17 @@ block compiled at run time. A run ended by `--seconds` (or a stop) reports each
 thread's core, priority, pc, what it waits on (whose event it is) and the return
 addresses on its stack, how long the process sat idle, and its most frequent SVCs.
 
-Since 2026-10-16, SuperTux runs past `main` and its RomFS reads. It draws its title and loading
+SuperTux runs past `main` and its RomFS reads. It draws its title and loading
 screens through a software port of Azahar's PICA pipeline (command processor,
 shader interpreter, rasterizer, texturing, combiners, lighting) and plays its
 title music through a port of Azahar's HLE DSP. A run of about 2 billion native
 blocks presented frames until it was ended. It is **not playable** yet:
 
-- Input is the pad and the touch screen (the mouse's left button or a finger on
-  the window's bottom screen). The sensors are a gamepad's accelerometer and
-  gyroscope when one has them, else at rest (`hid:USER`, below).
-- The music gap after each rendered frame (rendering and presenting run inside the guest's GSP call) is addressed by pacing the DSP from the output device's queue once it has audio (`kernel/thread.c`, about 60 ms kept queued, up to eight frames at once). That is untested with a real game or device: only the unchanged tests ran.
-- Geometry shaders run on the CPU (the reference pipeline, all three modes tested) and the triangles they make are drawn by the GPU, through a pass-through vertex shader. Procedural textures and shadows still stop the run explicitly.
+- Input is the pad and the mouse's left button on the touch screen. The sensors
+  are at rest (`hid:USER`, below).
+- The music has a gap after every rendered frame, because rendering and presenting
+  run inside the guest's GSP call.
+- Procedural textures and shadows still stop the run explicitly.
 
 The [parity roadmap](#parity-roadmap-azahar) lists the remaining work, and the
 [SuperTux integration target](3DS-SUPERTUX.md) holds the pinned input.
@@ -321,9 +343,12 @@ Implemented:
   last thread.
 - Read-only configuration page at `0x1ff80000`, backed by board AXI WRAM rather
   than charged to application FCRAM. The limited kernel personality reports
-  version 2.58 and memory mode 0 (Old, 64 MiB application) or 6 (New, 124 MiB).
-  Other ExHeader memory modes, resource-limit capabilities and kernel/firmware
-  configuration fields are not fully modeled.
+  version 2.58 and the memory mode the title runs in, with its regions' sizes: an
+  Old 3DS takes the mode the ExHeader names (0, 64 MiB for the application; 2, 96;
+  3, 80; 4, 72; 5, 32) and a New 3DS mode 6 (124 MiB) for every title, as Azahar
+  launches them. An ExHeader naming mode 1 or one above 5 is refused. The New 3DS's
+  178 MiB mode, resource-limit capabilities and kernel/firmware configuration
+  fields are not modeled.
 - ControlMemory (`0x01`) validates page ranges/permissions and supports commit,
   free and protect of owned heap/linear allocations. Normal heap uses explicit
   VAs in `0x08000000..0x10000000` and may span discontiguous physical holes.
@@ -375,7 +400,8 @@ indexing, immutable file mappings and fallback opens, not their IPC protocols or
 RomFS metadata. Only extracted `romfs/` is exposed, with no original container reads.
 Save data (4) and ExtSaveData (6, in `sdmc/Nintendo 3DS/<id0>/<id1>/extdata/`, and the
 shared 7, in `nand/data/<id0>/extdata/`, as the console lays them out) are on the
-title's folder too. SelfNCCH also serves the
+title's folder too, and so is another title's save data (0x567890B2 and 0x567890B4, in
+`sdmc/Nintendo 3DS/<id0>/<id1>/title/`). SelfNCCH also serves the
 ExeFS icon, logo and banner. The NCCH archive (0x2345678A) serves the title's own
 RomFS, and in place of the system titles no console here has, the open stand-ins
 Azahar carries (`cmake/ctr_system_archives.cmake`, generated by
@@ -411,48 +437,17 @@ Enter Start, Backspace Select, the arrows the D-pad and WASD the circle pad, or 
 gamepad's buttons by position (`gamepad_swap_ab`) with its left stick, and the
 scripted presses of `--script=ms:hex,...` (`ctr_script`), in the pad's bits (1 A,
 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down, 100 R, 200 L, 400 X,
-800 Y), each held for `press_len` ms. A press of the mouse's left button (or a
-finger) on the window's bottom screen is a touch at that pixel, and a drag moves
-it, held inside the screen (the `touch` setting: `0` off, `1` fingers, `2` fingers
-and the mouse, the default). The first gamepad with an accelerometer and a gyroscope
-gives the sensors, in the axes and units of Azahar's motion device (512 raw a g,
-14.375 raw a degree a second). Without one they give a console held still. ZL, ZR
-and the C-stick are the New 3DS's `ir:rst` (`services/ir.c`, ported from Azahar's
-`ir_rst.cpp`): its shared memory gets a sample every `update_period` ms between
-Initialize and Shutdown, with the update event signalled. ZL and ZR are `1` and `3`
-or a gamepad's triggers (or bits `4000` and `8000` of a script's presses), and the
-C-stick is `IJKL` or a gamepad's right stick. The raw C-stick form (`raw_c_stick`)
-and `WriteToTwoFields` are not modelled, as in Azahar. Any model gets the service,
-as Azahar's does.
+800 Y), each held for `press_len` ms. The touch entries follow the pointer's press
+on the bottom screen, and the sensors give a console lying still. ZL, ZR and the
+C-stick are the New 3DS's `ir:rst`, which the runtime does not have yet.
 
-`mic:u` (`services/mic.c`, from Azahar's `mic_u.cpp` with its "None" input) takes
-every command, keeps the settings a game stores (gain, power, clamp, rate) and
-starts and stops sampling, but no sample reaches the game's memory. Its buffer
-full event is real and is never signalled. `cam:u` (`services/cam.c`, from
-Azahar's `cam.cpp`) has no camera: its commands check their arguments and keep
-the settings, the transfer arithmetic (`GetMaxLines`, `GetMaxBytes`) is
-Azahar's, and a receiving ends one frame time after the capture starts with a
-black (zero) frame in the game's buffer and its event signalled. The vsync event
-comes once a frame. `GetLatestVsyncTiming` and `GetStereoCameraCalibrationData`,
-which answer in static buffers, are left to the unknown-command path. Nothing of
-either is tried with a game: only the tests (`3ds_mic`, `3ds_cam`) exercise them.
-
-`csnd:SND` (`services/csnd.c`, from Azahar's `csnd_snd.cpp`) makes the shared
-memory and mutex of Initialize, hands out channels 8 to 31 and two capture units,
-walks the command lists of ExecuteCommands and writes the states UpdateState
-gives back (masks, whether a channel plays, its ADPCM state). It makes no sound
-and emulates no capture, as Azahar's. Unlike Azahar's, a stop or a pause takes
-effect at once, without the fade of some milliseconds, and the commands that set
-volumes, addresses, timers and loops are accepted and ignored. The test is
-`3ds_csnd`.
-
-`APT:GetSharedFont` (`services/font.c`, from Azahar's `apt.cpp` and
-`bcfnt.cpp`) makes the shared font block at its first call: the font of the
-stand-in archive (`cbf_std.bcfnt.lz`) decompressed, with its section offsets made
-absolute for the address of the block in the old linear heap region, and a
-shared block for the game to map with `MapMemoryBlock` at address 0. A RomFS
-image of more than 1 GiB (a cartridge with a large RomFS) mounts, as it is read
-where it lies.
+`ir:USER` (`services/ir.c`) answers as Azahar does with no IR accessory in range.
+InitializeIrNopShared writes the shared block's header and empty receive queue, the
+receive, send and connection-status events are real kernel events, and RequireConnection
+only marks the header as trying to connect, so the status event never fires and a game
+that waits on it goes on without the accessory. SendIrNop answers that nothing is
+connected. The commands with no model answer success with zeros, as the other system
+services do.
 
 `gsp::Gpu` is modeled with real bounded resources: RegisterInterruptRelayQueue
 returns the genuine `0x2a07` first-initialization result, one writable 0x1000
@@ -486,10 +481,12 @@ the lighting, fog and procedural-texture LUTs, default attributes and immediate 
 command buffer jumps and the P3D interrupt request with autostop. A list outside memory
 raises P3D without running. Draws go to the GPU (see above). The software renderer
 ported from Azahar's (`gpu/shader.c`, `gpu/draw.c`, `gpu/raster.c`, `gpu/lighting.c`,
-`gpu/texture.c`) is only built into the tests, as the reference the GPU's draws are
-compared with. It samples the nearest texel only, as Azahar's does, so texture
-filtering has no reference. Shadow textures and rendering are not
-drawn yet: a draw that needs one stops the run and names it. The geometry pipeline (`draw.c`, from Azahar's `geometry_pipeline.cpp`) feeds a geometry shader in point, variable-primitive and fixed-primitive modes; the tests cover all three. The ExHeader's address-mapping capabilities
+`gpu/texture.c`) is the reference the GPU's draws are compared with. Only its shader
+units and vertex processing (`gpu/shader.c`, `gpu/draw.c`) are built into the runtime:
+a draw with a geometry shader runs its vertex and geometry shaders there on the CPU, as
+Azahar does, and the GPU draws the triangles they make. The reference samples the
+nearest texel only, as Azahar's does, so texture filtering has no reference. Shadow
+textures and rendering are not drawn yet: a draw that needs one stops the run and names it. The ExHeader's address-mapping capabilities
 are applied at process creation (VRAM, DSP RAM, New 3DS extra RAM), as Azahar's
 `HandleSpecialMapping` does; MMIO areas stay unmapped. SetBufferSwap and the shared
 FrameBufferUpdate blocks latch real framebuffer descriptors in the five formats
@@ -497,22 +494,64 @@ the presenter converts (RGBA8, RGB8, RGB565, RGB5A1, RGBA4). A swap through
 SetBufferSwap in another format stops rather than being shown with invented
 colors. The LCD shows the left eye of the pair `shown_fb` (one bit) selects. A
 swap whose shown pair has no address, a stride too short for a row or memory the
-guest cannot read is dropped and the screen keeps its last frame. Display timing
-is host-paced 60 Hz: latched frames present at vblank waits and overdue swaps, and
-waits on the relay event complete only at real vblank deliveries. MapMemoryBlock
-maps a block another process owns (an HLE service's) into the application's
-range, or an application's own block as a mirror within the permissions it was
-created with. Each mapping holds a reference to the block. HLE shared pages are
-reserved from board FCRAM past the application pool.
+guest cannot read is dropped and the screen keeps its last frame.
+ImportDisplayCaptureInfo reports the framebuffer each screen shows (its left address
+for both eyes), and SaveVramSysArea and RestoreVramSysArea succeed only on a session
+registered with the flag that allows them (`0xD8202A06` otherwise), copying no VRAM
+because the HLE applets draw nothing. Display timing is host-paced 60 Hz: latched
+frames present at vblank waits and overdue swaps, and waits on the relay event
+complete only at real vblank deliveries. MapMemoryBlock maps a block another process
+owns (an HLE service's) into the application's range, or an application's own block
+as a mirror within the permissions it was created with. A library applet's capture
+block maps as an application's block does, at the address asked, onto its own pages.
+Each mapping holds a reference to the block. HLE shared pages are reserved from
+board FCRAM past the application pool.
 
 Presentation is **Vulkan only** (volk, with no linked Vulkan library):
 the device converts the guest framebuffers to RGBA8 and shows the landscape-
 rotated screens live in an SDL3 Vulkan window through a real swapchain, the top
 screen above the bottom one as on the console, the bottom one centred under it.
-The pair keeps its shape in a window of any size. Bounded
-PPM snapshots land in `<output>/frames` in every mode. Without a display the
-window path is unavailable and frames are only recorded; without a Vulkan
-device the presenter reports unavailability and no frame is fabricated.
+The pair keeps its shape in a window of any size. The 3DS display's Separate
+screens setting gives each screen a window of its own instead, which fills with
+that screen. Top screen resolution and Bottom screen resolution scale the 3D
+rendering of that screen, 1 to 16 times the console's 400x240 and 320x240, and
+the window scales the larger image to its size. Bounded PPM snapshots land in
+`<output>/frames` in every mode. Without a display the window path is
+unavailable and frames are only recorded; without a Vulkan device the presenter
+reports unavailability and no frame is fabricated.
+
+The separate windows and the two render resolutions are checked by `3ds_windows`: each
+screen takes its own setting's scale and no other's, both screens present, and the PPM
+dumps stay the framebuffer's own size whatever the scale. With Separate screens on, that
+test fails unless both windows present, and it skips where the host makes no window (CI).
+A window minimized and restored gets its swapchain back, checked by `3ds_windows_minimized`
+(it skips where the host keeps the swapchain or does not minimize). On Windows a minimized
+window's surface is 0x0 and no swapchain can be made at that size, so the first frame after
+the restore makes one.
+The RAM is one shared mapping (a memfd on Linux), so that every guest view of a page is the
+same memory, and some drivers will not import it (`VK_EXT_external_memory_host`): RADV
+imports a host pointer as an amdgpu user pointer of private anonymous memory only, and its
+`vkAllocateMemory` gives `VK_ERROR_INVALID_EXTERNAL_HANDLE` for the first region, VRAM. There
+the RAM moves into the device's own memory, one allocation of a host-visible, coherent and
+cached type exported as a dma-buf (`VK_EXT_external_memory_dma_buf`), each region's buffer
+bound at the region's offset: before the guest runs, the RAM's bytes are copied into it, and
+the object's view and every flat view of a RAM page are mapped from the dma-buf at the same
+address and protection (`snx_ctr_memory_adopt`). The device says so on the standard error,
+with the import's refusal, the size and the memory type. On an RX 6700 XT the CPU reads that
+memory at 52.7 GB/s and the memfd at 51.0, and a page's first touch costs 0.31 us against
+1.95. A mapping of a dma-buf never merges with its neighbours, though, so each page that
+write tracking protects and opens again stays a mapping of its own: a host with few of them
+(`vm.max_map_count`, 65530 where systemd 256's 1048576 is not set) can run out, and write
+tracking then says, for each view it cannot protect, its address and the system's errno.
+
+When the device's memory cannot hold the RAM either, the 3DS device does not start, and its
+error gives both reasons (which call refused which region, the `VkResult`), then the device
+and driver. The CPU side, the AOT modules and the settings still run; the game ends at its
+first GX command that needs the GPU (a command list, fill, display transfer or texture copy),
+with that error as the run's last line. `3ds_vk_ram` checks the RAM on whatever device there
+is: what the guest wrote reaches the GPU, a GPU fill shows in every guest view, a store through
+the flat space reaches the GPU, and the RAM outlives the device; `3ds_memory_adopt` checks the
+move with a memfd standing in for the dma-buf, on every host.
 
 Audio runs on a high-level DSP (`src/3ds/audio/`, ported from Azahar's HLE audio core):
 dsp::DSP (`services/dsp.c`) takes the application's pipe writes, interrupt events, the
@@ -524,19 +563,13 @@ or linear, polyphase playing as linear as in Azahar), applies their simple and b
 filters and gain ramps, mixes the three intermediate mixes with the aux buses and delay
 effects, writes the statuses and final samples into the other region and raises the
 audio pipe's interrupt. Reverb, the limiter, the compressor and surround output are
-stubs in Azahar too. The binary pipe is the AAC decoder (`audio/aac.c`, from Azahar's
-`aac_decoder.cpp`, on FFmpeg's decoder instead of FAAD2): a 32-byte message of the codec,
-the command and the result, then Decode's source (ADTS frames in FCRAM), size and the
-two channels' destinations. It writes PCM16 for each channel and answers with the stream's
-rate, its channels, the request's size and the samples of a channel. A stream it can't
-decode, or an address outside FCRAM, gets Azahar's fallback answer (48 kHz stereo, 1024
-samples) and writes nothing. The AAC encoder's codec (2) stops the run and names it.
-Frames play on the default device through SDL3 and their first two
-minutes are recorded to `<output>/audio.wav`. libctru's ndsp loads
-`sdmc:/3ds/dspfirm.cdc` and leaves audio off without it, so a stand-in header goes there
-when the title's SD has none: the HLE DSP never runs the component, and a dumped file is
-used as it is. cfg:u, cfg:s and cfg:i (`services/cfg.c`) answer GetConfig for the sound
-output mode (stereo, Azahar's default), which ndsp reads, and stop on any other block.
+stubs in Azahar too. The binary pipe decodes AAC requests with FFmpeg. Frames play on
+the default device through SDL3 and their first two minutes are recorded to
+`<output>/audio.wav`. libctru's ndsp loads `sdmc:/3ds/dspfirm.cdc` and leaves audio off
+without it, so a stand-in header goes there when the title's SD has none: the HLE DSP
+never runs the component, and a dumped file is used as it is. cfg:u, cfg:s and cfg:i
+(`services/cfg.c`) answer GetConfig for the sound output mode (stereo, Azahar's
+default), which ndsp reads, and stop on any other block.
 
 See [CTR IPC](CTR-IPC.md) for the strict generator subset, descriptor/permission
 checks, quotas, malformed-request policy, tests and unimplemented operations.
@@ -586,6 +619,30 @@ it was linked from stay in memory. A failed compile leaves the old module and th
 extracted tree. Once the module is ready the driver copies itself into the folder as the
 game's runtime, unless the copy there is the same program. The GUI uses this same
 driver path, not a separate engine.
+
+The software keyboard (`src/3ds/services/swkbd.c`) and the Mii selector
+(`src/3ds/services/mii_selector.c`) are the library applets the runtime plays, in the
+applets' place as Azahar's HLE ones do. A game that asks for a
+text through the keyboard (a name, a password) is answered at once, with no box over the game to
+ask the player in: `swkbd_text` when it is set, else the game's own initial text, else the
+console's user name (the user's nickname, `Player` without one), cut to the game's most
+characters and checked against its input rule and filters. A text that breaks one is
+answered with Cancel where the keyboard has one. A game that checks the text itself
+(the callback filter) gets it first, and its answer closes the keyboard or lets the text
+through. The log says what was answered and why (`3ds swkbd: ...`), with the user
+name's length in place of the name. APT answers each step a game takes:
+PrepareToStartLibraryApplet, IsRegistered, the Request for the capture block and its
+Response, StartLibraryApplet, the NotifyToWait before the wakeup, and the WakeupByExit
+the game wakes with, which carries the answer. Any other library applet (the error
+display, say) is one the runtime does not have: preparing it answers as an unknown
+command does.
+
+A game that has the player pick a Mii through the Mii selector (its StreetPass Mii,
+say) gets ScarletNX's own Mii at once, as a Mii of the console's database, as Azahar's
+default selector answers with its standard Mii: Baguette, a girl with red curled twin
+tails, made of her own fields in the 3DS's Mii format, no console's Mii; her author is
+the console's user name. The game's configuration (its title, Cancel, the Guest Miis)
+is in the log (`3ds mii selector: ...`); the answer is the same whatever it asks.
 
 A launch runs until the game exits or its window is closed, as a Switch game does.
 `--max-blocks N` stops it after N native blocks instead. A larger-image block may
@@ -679,44 +736,6 @@ are capped at 1 GiB and the linked module at 1 GiB, and only the module is kept 
 `native/`. Tiny-image code uses O2, and larger-image chunks use O1, with 512
 entries per LLVM module, compiled by a worker per host core.
 
-### Play settings
-
-The play settings are keys of the game's `<title ID>.ini` (flat or under `[Game]`) and of the command line
-(`--key=value`, which also applies to that run only). They are the `g_ctr_ini` table of
-`src/nx/runtime/settings.txt`, and `--help` lists them. The launcher shows them in its Settings under 3DS and passes
-the ones that were picked to the 3DS driver as `--key=value` when it starts a game.
-
-| Key | Values | Does |
-| --- | --- | --- |
-| `ctr_keyboard_map` | `a:X,Space zl:1 cpad_up:W` | The keys of each 3DS button and of each direction of the circle pad (`cpad_*`) and the C-stick (`cstick_*`). A button named has exactly the keys listed, the others keep the default layout. Keys have SDL's names, an `_` for a space. |
-| `ctr_gamepad_map`, `ctr_gamepad_swap_ab`, `ctr_gamepad_deadzone` | `south:B east:A`, 0 or 1, 0 to 90 | The gamepad's controls by where they sit, the A and B swap, and the dead zone of the sticks. |
-| `ctr_anisotropy` | 0 to 16 | Anisotropic filtering of the samplers that filter linearly. 0 is as the game asks. |
-| `ctr_resolution_scale` | 1 to 4 | The 3D picture drawn at this multiple of the console's resolution (see below). |
-| `ctr_target_memory` | megabytes, 0 | The video memory that the 3D pictures kept between frames may take together. 0 is half of the video memory. Over that, the least used picture is stored to the console's memory and drawn again from there when a draw needs it. |
-| `ctr_anti_aliasing` | 0 or 1 | 1 filters the window's picture with FXAA. |
-| `ctr_msaa` | 0 to 3 | The 3D picture drawn with 1 (0), 2, 4 or 8 samples to a pixel. The draws go to multisampled images, which are resolved into the single-sample ones at the end of each pass, so the stores and the window see the resolved picture. A device that draws fewer samples takes its own most. The depth that goes back to the console's memory is the first sample's. |
-| `ctr_screen_layout` | 0 to 5 | Stacked, side by side, large top, large bottom, top only, bottom only. F10 goes to the next one. The touch screen follows the bottom screen. |
-| `ctr_scaling_filter`, `ctr_integer_scale` | 0 or 1 | Nearest or linear stretch to the window, and a whole number of window pixels to each console pixel. |
-| `ctr_vsync`, `ctr_fullscreen` | 0 or 1 | Presentation at the display's refresh rate or at once, and the window fullscreen at the start (F11 or Alt and Enter toggles it). |
-| `ctr_speed` | 0 to 500 | The game's speed in percent of the console's. 0 is as fast as the host can run, with no sound. |
-
-**The resolution scale.** A render target's images are the console's times the scale, and the viewport, the
-scissor and the fragment shaders' `FragCoord` follow. The guest's memory keeps the console's resolution: a target is
-stored to it by taking the pixel at the middle of each block, and loaded from it by copying the pixel over the block
-(depth and stencil likewise, through `depth_scale.comp`). An even scale moves the picture by half a scaled pixel, so
-that the stored pixel is where the console's own raster samples. What a game then does with that memory (it reads a
-frame as a texture, for an effect) sees the console's resolution. A display transfer from a kept target to a
-framebuffer is also made at the scale (`display_hires.comp`, with the game's own 2x1 and 2x2 box filters), as the
-landscape image the window shows, and that image is used for as long as the framebuffer in memory is what the
-transfer wrote. A screen that reaches the display another way, or a transfer the shader does not cover (a crop with a
-flip, a linear input), shows the memory at the console's resolution. `tests/3ds_vk_draw.c` draws every scene at the
-scale 2 and 3 and compares the stored result with the CPU reference. The frame dumps keep `frame-<screen>-hires.ppm`
-for such a picture, and `frame-window.ppm` for the window's picture when FXAA is on.
-
-Not done: multisampling. A render target is kept as single-sample images that are loaded from memory and stored to it
-whole, and a multisampled one has no load from memory without drawing it in, so the resolution scale (which gives
-supersampling) and FXAA are the anti-aliasing there is.
-
 ### Build and test
 
 `scarletnx-3ds` holds the AOT compiler, so it links LLVM, and its presenter and
@@ -807,6 +826,14 @@ and Unicorn 2.1.4's ARM11 MPCore model are test references, not runtime engines.
 Stage 2b2 process mappings/BSS policy refer to Azahar `src/core/loader/ncch.cpp`
 and kernel process layout at the same revision; the new image/module/compiler/
 dispatch implementation is project C code, not an adapted Azahar CPU engine.
+The software keyboard, the Mii selector and APT's parameter and library applet commands
+port `hle/applets/{swkbd,mii_selector}.{cpp,h}`, `hle/mii.{cpp,h}`,
+`frontend/applets/{swkbd,mii_selector}.cpp` and
+`hle/service/apt/{apt,applet_manager}.cpp` at Azahar `ac4a97e27723a501fbd79db75e94a5a8b3cbb8b1`
+(GPL-2.0-or-later): the configurations' and the Mii selector's result's layouts, the
+result codes, the Request, Message and Finalize steps, the default keyboard's answer
+with the user name and its checks, the Mii's checksum; the C implementation is new. The
+Mii's fields are laid out as 3dbrew's Mii page gives them.
 Stage 2b4 references GPL-2.0-or-later kernel `svc.cpp`, `errors.h`,
 `handle_table.cpp`, `address_arbiter.cpp`, `config_mem.*`, `memory.cpp` and
 `process.cpp` at the same revision for SVC register/result semantics, object
@@ -821,7 +848,7 @@ The command processor ports `video_core/pica/pica_core.cpp`, `shader_setup.cpp`,
 `packed_attribute.h`, `pica_types.h` and the register layouts of `regs_*.h`
 (GPL-2.0-or-later) at the same revision.
 The software pipeline ports `video_core/shader/shader_interpreter.cpp`,
-`video_core/pica/{shader_unit,vertex_loader,primitive_assembly,output_vertex}.cpp`,
+`video_core/pica/{shader_unit,vertex_loader,primitive_assembly,output_vertex,geometry_pipeline}.cpp`,
 `video_core/renderer_software/{sw_rasterizer,sw_clipper,sw_texturing,sw_framebuffer,sw_lighting}.cpp`
 and `video_core/texture/{texture_decode,etc1}.cpp` (GPL-2.0-or-later), with the shader
 instruction encoding of nihstro's `shader_bytecode.h` (BSD-3-Clause, notice kept in
@@ -907,10 +934,10 @@ recorded under [Source provenance and licensing](#source-provenance-and-licensin
 | F1 Kernel and time (done 2026-10-17, audited 2026-10-19) | The scheduler delivers every deadline (vblank, DSP frame, timers, wait timeouts, sleeps, the shared page's hourly time). The dispatcher reaches it every 4096 blocks, so a thread a deadline wakes with a better priority preempts one that makes no SVC. Priorities are effective ones, with mutex priority inheritance. WaitSynchronization1 and N and the arbiter take finite timeouts. SleepThread 0 yields and -1 sleeps forever. ExitThread ends the process at its last thread. Timers and pulse events exist. CreateThread runs threads on processors -2 to 3 within the APPLICATION limit's priority, and the resource limit's counts are enforced. Also implemented: GetHandleInfo, GetSystemInfo (Luma's queries too), GetProcessInfo, GetThreadInfo, GetProcessIdOfThread, the resource limit SVCs, Break, the cache SVCs and Luma's 0x93 and 0x94, QueryMemory with the console's register layout and memory states, CreateMemoryBlock, UnmapMemoryBlock, MapMemoryBlock of the application's own blocks and ControlMemory MAP and UNMAP. Any well-formed IPC descriptor is translated, buffers are checked against the caller's memory and moved handles are closed. `--ipc-stubs` answers the unknown commands of the services it names. The shared page has its retail, battery, Wi-Fi and hourly local time fields. Guest time stays host time. Subtracting slow HLE work from it waits for the GPU thread (F2), since the audio device plays in host time | `core_timing.*`, `kernel/{svc,thread,timer,mutex,semaphore,address_arbiter,resource_limit,shared_memory,process,shared_page,vm_manager,hle_ipc}.cpp`, `service/service.cpp`, `service/gsp/gsp_gpu.cpp` |
 | F2 SuperTux playable | Presenter without readback or queue waits, on its own thread; both screens and the Default, Single, Large, Side-by-side and Hybrid layouts; keyboard, SDL3 gamepad, touch and motion input; full `hid:USER`/`hid:SPVR` rings and `ir:rst`; GX work on a GPU thread with interrupts delivered by the poll; banded raster threads; audio prebuffer and hold-last-frame | `frontend/framebuffer_layout.cpp`, `frontend/emu_window.cpp`, `service/hid/hid.*`, `service/ir/ir_rst.*`, `renderer_software/sw_rasterizer.cpp`, `audio_core/dsp_interface.cpp` |
 | F3 OS for retail titles | cfg blocks; APT:U/APT:A and the `aptMainLoop` lifecycle; shared font; HLE applets (swkbd first); FS save data, extdata, system save data, the NCCH archive and the SDMC write-only archive; ptm:u, ac:u and registered stubs for the small services; err:f | `service/{cfg,apt,fs,ptm,ac,err}/`, `hle/applets/`, `file_sys/archive_*` |
-| F4 Software GPU | Geometry shaders, procedural textures, shadow textures and rendering, VRAM save and restore, the stereo right eye | `pica/geometry_pipeline.cpp`, `pica/shader_unit.cpp`, `renderer_software/{sw_proctex,sw_framebuffer,sw_rasterizer}.cpp` |
+| F4 Software GPU | Procedural textures, shadow textures and rendering, VRAM save and restore, the stereo right eye | `renderer_software/{sw_proctex,sw_framebuffer,sw_rasterizer}.cpp` |
 | F5 Dynamic code | ldr:ro CROs compiled ahead of time, with a design for their run-time base and relocations; a log of missed targets for a second discovery pass; an explicit result for self-modifying code | `service/ldr_ro/` |
 | F6 Audio | The DSP's AAC pipe on FFmpeg; CSND; time stretching if gaps remain | `audio_core/hle/aac_decoder.cpp`, `audio_core/csnd.cpp`, `service/csnd/`, `audio_core/time_stretch.cpp` |
-| F7 Peripherals and network | y2r, mic, cam (no camera), ir:USER, soc:U, then ssl and http | `service/{cam,mic,ir,soc,ssl,http}/`, `hw/y2r.cpp` |
+| F7 Peripherals and network | y2r, mic, cam (no camera), ir:USER (its startup, events and the no-accessory answers are in place; a Circle Pad Pro is not emulated), soc:U, then ssl and http | `service/{cam,mic,ir,soc,ssl,http}/`, `hw/y2r.cpp` |
 | F8 Loader | Encrypted content with the user's keys; CCI, CXI, 3DSX and ELF; updates and DLC; a complete module cache key | `file_sys/`, `loader/` |
 | F9 Vulkan renderer | A Vulkan device shared with NX; the PICA fragment shader generator on `spirv_emit.c`; the surface cache with page-level coherence in the memory controller; host vertex and geometry shaders. The software renderer stays as the reference and fallback | `renderer_vulkan/`, `rasterizer_cache/`, `shader/generator/` |
 | F10 Performance | Shader JIT if profiles call for it; the syscore CPU limiter; GUI settings for layouts and controls | `shader/shader_jit_*`, `core.cpp` |
@@ -1086,6 +1113,9 @@ The backend implements discovery, host/join, node status, channel bindings, pack
 and disconnect. It uses a private protocol inside the room's datagram transport. It does
 not connect to physical consoles, Citra/Azahar rooms or Switch LDN sessions. With LAN mode
 (the default), Initialize succeeds, scans find no network and hosting works with no peer.
+Command 0x23, which some games send before a scan, answers 0x0421, the value libctru's
+udsScanBeacons puts in its scan input. Read as a mask with bit n for channel n + 1, that is
+channels 1, 6 and 11.
 The 3DS backend has no LAN transport, and ldn_mitm's protocol is for the Switch only. Nothing
 leaves the machine and no room is joined.
 

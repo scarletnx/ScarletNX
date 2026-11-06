@@ -1,0 +1,23 @@
+#version 450
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* An NVN transform-feedback control block holds a vertex stride followed by four byte counters. One invocation
+   makes the first counter's draw arguments where the GPU already holds them. No host read or wait is needed.
+   A zero stride emits an empty draw; otherwise integer division discards an incomplete final vertex. */
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer Control {
+    uint words[];
+};
+layout(std430, set = 0, binding = 1) writeonly buffer Arguments {
+    uint arguments[];
+};
+layout(push_constant) uniform Params {
+    uint first;
+};
+void main() {
+    uint stride = words[first];
+    arguments[0] = stride != 0u ? words[first + 1u] / stride : 0u;
+    arguments[1] = 1u;
+    arguments[2] = 0u;
+    arguments[3] = 0u;
+}

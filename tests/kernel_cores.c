@@ -18,10 +18,17 @@ MemLayout g_layout = {0x08000000ull,   0x2000000000ull, 0x100000000ull, 0x200000
                       0x1000000000ull, 0x1300000000ull, 0x100000000ull, 0x1400000000ull, 0x1800000000ull};
 GuestFn* g_disp;
 u64 g_code_lo, g_code_hi, g_code_memory, g_main_stack_size;
-const RtAPI g_rtapi;
+const RtAPI g_rtapi = {.cas128 = snx_runtime_cas128};
 const SnxArmModule* g_arm_mod; /* a 64-bit game */
 const SnxArmRt g_arm_rt;
 void arm_thread_run(KThread* t) { (void)t; }
+/* nce.c, whose NCE no game here is of: thread_run asks it, and a flagged core kicks its thread */
+int nce_on(void) { return 0; }
+void nce_thread_run(KThread* t, u64 pc) { (void)t, (void)pc; }
+void nce_kick(KThread* t) { (void)t; }
+/* guest_stats.c, which no core here counts for: a thread's start and end */
+void guest_stats_thread_start(u32 ix) { (void)ix; }
+void guest_stats_thread_end(u32 ix) { (void)ix; }
 /* fatal ends the test, but where the test catches it (fatal_jump set): its message kept, back to the test; the last
    line logged kept too */
 static jmp_buf* fatal_jump;
@@ -73,6 +80,8 @@ int mem_map(u64 addr, u64 size, u32 state, u32 perm) {
 u64 mem_total(void) { return 0; }
 u64 used_memory(void) { return 0; }
 void plat_exit_now(int code) { exit(code); }
+/* the system's name for a thread (common.c), which this test does not link */
+void snx_thread_name(const char* name) { (void)name; }
 /* a guest thread's host thread, never run here: the stack it was asked with; thread_fails makes the system refuse
    it, as one out of room does */
 static size_t started_stack;
@@ -581,6 +590,12 @@ int main(void) {
         g[2].signaled = 1;
         pc_broadcast(&g[2].cv);
         pm_unlock(&g[2].m);
+        /* its host thread gets to the hold point once the host runs it, which a loaded host may put off past any fixed
+           wait: it has 2 s. Then 30 ms more for a thread that ran on to show its steps */
+        for (int i = 0; i < 2000 && __atomic_load_n(&g[2].t->stopped, __ATOMIC_SEQ_CST) != 2; i++) {
+            struct timespec pause = {0, 1000000};
+            nanosleep(&pause, NULL);
+        }
         {
             struct timespec pause = {0, 30000000};
             nanosleep(&pause, NULL);
@@ -610,8 +625,9 @@ int main(void) {
         CHECK(settle(g[3].t, 0) == 0, "it runs on core 0: %d", on_core(g[3].t));
         CHECK(kernel_hold(50) == -1 && !g_hle.thread.hold, "the pause gives up and lets go");
         seen[0] = __atomic_load_n(&g[3].steps, __ATOMIC_SEQ_CST);
-        {
-            struct timespec pause = {0, 5000000};
+        /* a loaded host may not run it within any fixed wait: it has 2 s to take a step */
+        for (int i = 0; i < 2000 && __atomic_load_n(&g[3].steps, __ATOMIC_SEQ_CST) == seen[0]; i++) {
+            struct timespec pause = {0, 1000000};
             nanosleep(&pause, NULL);
         }
         CHECK(__atomic_load_n(&g[3].steps, __ATOMIC_SEQ_CST) > seen[0], "it goes on");

@@ -8,7 +8,6 @@
 #include "3ds/services/uds.h"
 #include "common/utilities/ascii.h"
 #include "common/utilities/common.h"
-#include "common/utilities/game_ini.h"
 #include "common/utilities/ini_lines.h"
 #include "snx_settings.h"
 #include <errno.h>
@@ -29,7 +28,7 @@ static void usage(FILE* out) {
         "Usage: scarletnx-3ds [OPTIONS] game\n"
         "       scarletnx-3ds [OPTIONS] --game=recompiled/<title ID>\n"
         "       <title ID> [OPTIONS]   (the game's copy of the runtime, in its folder)\n"
-        "       scarletnx-3ds [--model old|new|auto] --board-info\n"
+        "       scarletnx-3ds [--model old|new] --board-info\n"
         "  game            An application CIA, cartridge image or NCCH read where it lies, recompiled if needed,\n"
         "                  then played: a .cia, a .cci or .3ds cartridge image, or a .cxi, .app or .hbb NCCH. The\n"
         "                  game's folder is recompiled/<its title ID>, as a Switch game's: its module\n"
@@ -40,12 +39,12 @@ static void usage(FILE* out) {
         "                  Extract the game into its folder first and play from the extraction\n"
         "  -x, --extract   Extract only\n"
         "  -r, --recompile Recompile without playing\n"
+        "  --model old|new The console to model (default old)\n"
         "  --update FILE   An update of the game (a CIA of its update title, or a bare update NCCH) to play it with: the\n"
         "                  update's code, ExHeader and RomFS are the game's, as an installed update's are. It is kept\n"
         "                  in the game's .ini (update=) for its own copy of the runtime; a launch without it plays without one\n"
         "  --dlc FILE      A DLC of the game (a CIA of its add-on title), given again for each one (at most 16): the game's\n"
         "                  NCCH archive and am:app serve its contents. Kept in the game's .ini (dlc1=, dlc2=, ...)\n"
-        "  --model old|new|auto The console to model (default auto: the New 3DS for a title that asks for its features)\n"
         "  --keys FILE     The 3DS AES keys, in Azahar's aes_keys.txt format, to decrypt an encrypted game\n"
         "                  with (default ~/.3ds/aes_keys.txt)\n"
         "  --repo DIR      The data folder (default: a portable copy's folder, else the user's data\n"
@@ -58,16 +57,14 @@ static void usage(FILE* out) {
         "  --max-blocks N  Stop after N native blocks (default: run until the game exits or its window\n"
         "                  closes)\n"
         "  --seconds N     Stop after N seconds, reporting where each thread is (--seconds=N too)\n"
-        "  --KEY=VALUE     A setting of the 3DS debug table (g_ctr_debug_ini in src/nx/runtime/settings.txt):\n"
-        "                  --ctr_ipc_trace=1 logs each service request, --ctr_jit_trace=1 each block\n"
-        "                  compiled while the game runs, --script=ms:buttons,... (ctr_script) presses\n"
-        "                  buttons, --ctr_auto_stub_ipc=0 stops at a service command the runtime lacks\n"
-        "  --KEY=VALUE     A play setting (g_ctr_ini), kept in the game's .ini when written there: --ctr_keyboard_map,\n"
-        "                  --ctr_gamepad_map, --ctr_gamepad_swap_ab, --ctr_gamepad_deadzone, --ctr_anisotropy=0..16,\n"
-        "                  --ctr_vsync=0|1, --ctr_fullscreen=0|1 (F11 toggles it), --ctr_speed=PERCENT (0 = unlimited),\n"
-        "                  --ctr_resolution_scale=1..4, --ctr_anti_aliasing=0|1 (FXAA), --ctr_screen_layout=0..5\n"
-        "                  (stacked, side by side, large top, large bottom, top only, bottom only; F10 goes to the\n"
-        "                  next), --ctr_scaling_filter=0|1, --ctr_integer_scale=0|1\n"
+        "  --KEY=VALUE     A setting of the 3DS display or debug table (g_ctr_display_ini, g_ctr_debug_ini in\n"
+        "                  src/nx/runtime/settings.txt): --ctr_separate_windows=1 puts each screen in a window of\n"
+        "                  its own, --ctr_top_resolution=2 and --ctr_bottom_resolution=2 render them at twice the\n"
+        "                  console's, --ctr_ipc_trace=1 logs each service request, --ctr_jit_trace=1 each block\n"
+        "                  compiled while the game runs, --script=ms:buttons,... (ctr_script) presses buttons,\n"
+        "                  --ctr_auto_stub_ipc=0 stops at a service command the runtime lacks. And the Switch's\n"
+        "                  --vk_memory=N, as it means there: 0 has the GPU work on a copy of the RAM in its own\n"
+        "                  memory unless it shares the system's, 1 on the copy, 2 on the RAM in place\n"
         "  --ipc-stubs L   With --ctr_auto_stub_ipc=0, still answer a service command the runtime lacks with\n"
         "                  success for the services in L: all, or a comma list of srv, fs, apt, ptm, hid, gsp,\n"
         "                  cfg, dsp, system. Given more than once, the lists add up\n"
@@ -301,7 +298,7 @@ done:
 static int play(const char* input, SnxCtrSource* source, char* extracted, SnxCtrModel model, uint64_t max_blocks,
                 double seconds, bool recompile, bool extract_only, bool extract_container, uint32_t ipc_stubs,
                 const char* runtime) {
-    char error[512];
+    char error[1024]; /* the run's last line: a GX command's stop carries why the GPU did not start */
     unsigned flags = recompile ? SNX_CTR_RECOMPILE | SNX_CTR_COMPILE_ONLY : 0;
     if (source && !extract_container && !extract_only) { /* the game read where it lies, the folder keeping its state */
         int status =
@@ -372,8 +369,8 @@ static bool read_game_ini(const char* folder, char** source, SnxCtrModel* model)
         if (!strcmp(key, "source") && *value) {
             free(*source);
             *source = snx_strdup(value);
-        } else if (!strcmp(key, "model") && (!strcmp(value, "old") || !strcmp(value, "new") || !strcmp(value, "auto")))
-            *model = !strcmp(value, "old") ? SNX_CTR_OLD : !strcmp(value, "new") ? SNX_CTR_NEW : SNX_CTR_AUTO;
+        } else if (!strcmp(key, "model") && (!strcmp(value, "old") || !strcmp(value, "new")))
+            *model = !strcmp(value, "old") ? SNX_CTR_OLD : SNX_CTR_NEW;
     free(text);
     free(path);
     return read;
@@ -425,59 +422,81 @@ static char* read_update_ini(const char* folder) {
     free(path);
     return update;
 }
-/* dlc1= to dlc16= in the .ini, the ones past the count emptied */
-static bool record_dlc(const char* path, char* const dlc[MAX_DLC], unsigned count) {
-    for (unsigned i = 0; i < MAX_DLC; ++i) {
-        char name[8], *full = i < count ? snx_absolute(dlc[i]) : NULL;
-        snprintf(name, sizeof name, "dlc%u", i + 1);
-        bool ok = (i >= count || full) && !snx_ini_record(path, name, full ? full : "");
-        free(full);
-        if (!ok) return false;
+/* whether a line of the game's .ini sets one of the keys this file writes, which the new values replace */
+static bool game_ini_own_line(const char* line, size_t n) {
+    static const char* const keys[] = {"source", "model", "system", "update"};
+    size_t i;
+    while (n && (*line == ' ' || *line == '\t')) line++, n--;
+    for (i = 0; i < sizeof keys / sizeof keys[0]; ++i) {
+        size_t k = strlen(keys[i]), at;
+        if (n <= k || strncmp(line, keys[i], k)) continue;
+        for (at = k; at < n && (line[at] == ' ' || line[at] == '\t'); ++at) continue;
+        if (at < n && line[at] == '=') return true;
     }
-    return true;
+    /* dlc1= to dlc16= */
+    if (n > 3 && !strncmp(line, "dlc", 3)) {
+        size_t at = 3;
+        while (at < n && line[at] >= '0' && line[at] <= '9') ++at;
+        while (at < n && (line[at] == ' ' || line[at] == '	')) ++at;
+        if (at > 3 && at < n && line[at] == '=') return true;
+    }
+    return false;
 }
+/* text with the line key=value added; the old text is freed, NULL when the new one cannot be made */
+static char* ini_append(char* text, const char* key, const char* value) {
+    char* more = snx_format("%s%s=%s\n", text, key, value);
+    free(text);
+    return more;
+}
+/* The keys this file writes, as they are now. The game's .ini's other lines stay, so a setting a player added by hand is
+   not lost when a game is played again */
 static bool write_game_ini(const char* folder, const char* source, const char* update, char* const dlc[MAX_DLC],
                            unsigned dlc_count, SnxCtrModel model) {
     char *path = snx_ctr_game_file(folder, ".ini"), *full = snx_absolute(source);
+    size_t size = 0, n = 0, tail_n = 0;
+    char* old = path && full ? (char*)snx_read_file(path, &size) : NULL;
     char* patch = update ? snx_absolute(update) : NULL;
-    /* each key in its place, the rest of the file (the play settings) kept */
-    bool written = path && full && (!update || patch) && !snx_ini_record(path, "source", full) &&
-                   !snx_ini_record(path, "update", patch ? patch : "") && record_dlc(path, dlc, dlc_count) &&
-                   !snx_ini_record(path, "model", model == SNX_CTR_OLD ? "old" : model == SNX_CTR_NEW ? "new" : "auto") &&
-                   !snx_ini_record(path, "system", "3ds");
+    char* tail = full && (!update || patch)
+                     ? snx_format("source=%s\nmodel=%s\nsystem=3ds\n", full, model == SNX_CTR_OLD ? "old" : "new")
+                     : NULL;
+    /* the update and each DLC follow the fixed keys, one line each */
+    if (tail && patch) tail = ini_append(tail, "update", patch);
+    for (unsigned i = 0; tail && i < dlc_count; ++i) {
+        char *abs = snx_absolute(dlc[i]), name[8];
+        snprintf(name, sizeof name, "dlc%u", i + 1);
+        tail = abs ? ini_append(tail, name, abs) : (free(tail), NULL);
+        free(abs);
+    }
+    bool read = full && (!path || old || !snx_path_exists(path));
+    char* text = read && tail ? (char*)snx_alloc(size + strlen(tail) + 2) : NULL;
+    if (tail) tail_n = strlen(tail);
+    if (text) {
+        const char* at = old;
+        for (; at && at < old + size;) {
+            const char* end = (const char*)memchr(at, '\n', (size_t)(old + size - at));
+            size_t length = (size_t)((end ? end + 1 : old + size) - at);
+            if (!game_ini_own_line(at, length)) {
+                memcpy(text + n, at, length);
+                n += length;
+            }
+            at += length;
+        }
+        if (n && text[n - 1] != '\n') text[n++] = '\n';
+        memcpy(text + n, tail, tail_n + 1);
+    }
+    bool written = path && text && !snx_write_file(path, text, n + tail_n);
     if (!written) {
         char why[256];
         fprintf(stderr, "scarletnx-3ds: cannot write %s: %s\n", path ? path : "the game's .ini",
                 snx_os_error(why, sizeof why));
     }
+    free(tail);
+    free(text);
+    free(old);
     free(patch);
     free(full);
     free(path);
     return written;
-}
-/* The play settings (g_ctr_ini) the game's .ini holds, in any section, then the ones --key=value gave, which win */
-static struct {
-    const IniOpt* option;
-    char* value;
-} g_given[32];
-static unsigned g_given_count;
-static void apply_play_settings(const char* folder) {
-    char *path = snx_ctr_game_file(folder, ".ini"), *key, *value;
-    size_t size;
-    char* text = path ? (char*)snx_read_file(path, &size) : NULL;
-    SnxIni ini;
-    if (text) snx_ini_start(&ini, text);
-    while (text && snx_ini_next(&ini, &key, &value)) {
-        const IniOpt* o = ini_find(g_ctr_ini, key);
-        if (o) ini_read(o, value);
-    }
-    free(text);
-    free(path);
-    for (unsigned i = 0; i < g_given_count; ++i) {
-        ini_read(g_given[i].option, g_given[i].value);
-        free(g_given[i].value);
-    }
-    g_given_count = 0;
 }
 /* An older version kept the game's state (saves, SD card) in work/3ds/<the game's name>: moved into the game's new
    folder the first time, which is made then */
@@ -516,7 +535,7 @@ static char* own_game(const char* argv0) {
     return dir;
 }
 int snx_ctr_main(int argc, char** argv) {
-    SnxCtrModel model = SNX_CTR_AUTO;
+    SnxCtrModel model = SNX_CTR_OLD;
     const char *input = NULL, *output = NULL, *outdir = NULL, *repo = NULL, *keys = NULL, *game = NULL;
     bool info = false, positional = false, extract_only = false, recompile = false, budget_set = false;
     bool extract_container = false, model_set = false, update_set = false;
@@ -528,6 +547,11 @@ int snx_ctr_main(int argc, char** argv) {
     SnxCtrBoard board;
     snx_tool_console();
     setvbuf(stdout, NULL, _IOLBF, 0);
+    /* SNX_3DS_UDS_PACKET_TRACE, which an older version read (docs/DEPRECATIONS.md): "1" is still ctr_uds_trace=1 for
+       this version, under the command line's --ctr_uds_trace. Removed with tests/architecture.py's ENV_DEPRECATED
+       row */
+    const char* old_trace = getenv("SNX_3DS_UDS_PACKET_TRACE");
+    if (old_trace && !strcmp(old_trace, "1")) g_settings.ctr_uds_trace = 1;
     for (int i = 1; i < argc; ++i) {
         const char* arg = argv[i];
         if (!positional && !strcmp(arg, "--"))
@@ -599,28 +623,25 @@ int snx_ctr_main(int argc, char** argv) {
             }
             dlc_given[dlc_given_count++] = file;
         } else if (!positional && !strcmp(arg, "--model")) {
-            if (++i == argc || (strcmp(argv[i], "old") && strcmp(argv[i], "new") && strcmp(argv[i], "auto"))) {
-                fputs("scarletnx-3ds: --model requires old, new or auto\n", stderr);
+            if (++i == argc || (strcmp(argv[i], "old") && strcmp(argv[i], "new"))) {
+                fputs("scarletnx-3ds: --model requires old or new\n", stderr);
                 return 2;
             }
-            model = !strcmp(argv[i], "old") ? SNX_CTR_OLD : !strcmp(argv[i], "new") ? SNX_CTR_NEW : SNX_CTR_AUTO;
+            model = !strcmp(argv[i], "old") ? SNX_CTR_OLD : SNX_CTR_NEW;
             model_set = true;
         } else if (!positional && !strncmp(arg, "--", 2) && strchr(arg, '=')) {
-            /* a setting of the 3DS debug table (g_ctr_debug_ini, src/nx/runtime/settings.txt), --key=value; --script=
-               is ctr_script, a Switch game's name for it */
+            /* a setting of the 3DS display or debug table (g_ctr_display_ini, g_ctr_debug_ini, in
+               src/nx/runtime/settings.txt), or one of the Switch's the 3DS takes too (snx_ctr_shared_setting),
+               --key=value; --script= is ctr_script, a Switch game's name for it */
             char key[64];
             size_t length = (size_t)(strchr(arg, '=') - arg - 2);
             const IniOpt* o = NULL;
             if (length < sizeof key) {
                 memcpy(key, arg + 2, length);
                 key[length] = 0;
-                o = ini_find(g_ctr_debug_ini, !strcmp(key, "script") ? "ctr_script" : key);
-                const IniOpt* play = o ? NULL : ini_find(g_ctr_ini, key);
-                if (play && g_given_count < sizeof g_given / sizeof *g_given) {
-                    g_given[g_given_count].option = play;
-                    g_given[g_given_count++].value = snx_strdup(strchr(arg, '=') + 1);
-                    continue;
-                }
+                o = ini_find(g_ctr_display_ini, key);
+                if (!o) o = ini_find(g_ctr_debug_ini, !strcmp(key, "script") ? "ctr_script" : key);
+                if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_debug_ini, key);
             }
             if (!o) {
                 fprintf(stderr, "scarletnx-3ds: unknown setting: %s\n", arg);
@@ -634,6 +655,12 @@ int snx_ctr_main(int argc, char** argv) {
         } else
             input = arg;
     }
+    if (old_trace)
+        snx_error("SNX_3DS_UDS_PACKET_TRACE=%s is deprecated, %s: ctr_uds_trace=%d (docs/DEPRECATIONS.md)", old_trace,
+                  strcmp(old_trace, "1")     ? "and only 1 did anything"
+                  : g_settings.ctr_uds_trace ? "and this run reads it as --ctr_uds_trace=1"
+                                             : "and the command line gives ctr_uds_trace first",
+                  g_settings.ctr_uds_trace);
     /* the game's own copy of the runtime plays it, or --game= names it */
     char* folder = game ? snx_strdup(game) : input || info ? NULL : own_game(argv[0]);
     /* --ipc-stubs only changes a run: with an option that does not run the game it is a mistake to report */
@@ -646,7 +673,7 @@ int snx_ctr_main(int argc, char** argv) {
         usage(stderr);
         return 2;
     }
-    if (!snx_ctr_board_init(&board, model == SNX_CTR_AUTO ? SNX_CTR_OLD : model)) {
+    if (!snx_ctr_board_init(&board, model)) {
         free(folder);
         return 1;
     }
@@ -680,7 +707,6 @@ int snx_ctr_main(int argc, char** argv) {
             return 1;
         }
         if (!model_set) model = recorded;
-        apply_play_settings(folder);
         if (holds_extraction(folder))
             extract_container = true;
         else if (!named) {
@@ -692,6 +718,24 @@ int snx_ctr_main(int argc, char** argv) {
             free(folder);
             return 2;
         } else if (!extract_container && !extract_only) {
+            /* the game it names may be an encrypted one: decrypt it as the run that made the folder did, or reuse that
+               run's copy, so the folder plays without the keys being asked for again */
+            char *work = work_folder(repo, argv[0]), *leaf = snx_dump_name(named), *where = NULL, *readable = NULL;
+            if (work && leaf) where = snx_path_join(work, leaf);
+            free(leaf);
+            free(work);
+            int decrypted = where ? readable_game(named, where, keys, &readable) : 1;
+            free(where);
+            if (decrypted != 1) {
+                free(named);
+                if (decrypted) {
+                    free(readable);
+                    free(runtime);
+                    free(folder);
+                    return decrypted;
+                }
+                named = readable;
+            }
             char *patch = read_update_ini(folder), *dlc[MAX_DLC];
             unsigned dlc_count = read_dlc_ini(folder, dlc);
             SnxCtrExtractResult opened = patch ? snx_ctr_source_open_update(named, patch, &source, error, sizeof error)
@@ -816,9 +860,10 @@ int snx_ctr_main(int argc, char** argv) {
         (void)read_game_ini(folder, &recorded, &model);
         free(recorded);
     }
-    if (folder) apply_play_settings(folder);
     bool made = folder && !extract_only && !snx_is_link(folder) && !snx_mkdirs(folder);
-    if (!folder || (made && !write_game_ini(folder, readable, patch, dlc, dlc_count, model))) {
+    /* the folder names the game the player picked, not the decrypted copy an encrypted one leaves in the cache: a
+       launcher asks whether it already made a game from that dump, and the cache's path matches none */
+    if (!folder || (made && !write_game_ini(folder, input, patch, dlc, dlc_count, model))) {
         snx_ctr_source_close(source);
         free_dlc(dlc, dlc_count);
         free(folder);

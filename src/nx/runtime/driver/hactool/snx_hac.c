@@ -239,6 +239,21 @@ size_t snx_hac_entries(SnxHac *hac, int container, const SnxHacEntry **entries) 
     return hac->containers[container].count;
 }
 
+int snx_hac_size(SnxHac *hac, int container, uint64_t *size) {
+    FILE *file = hac->containers[container].file;
+#ifdef _WIN32 /* the size from the open file: Windows tells a link's own size by its path */
+    __int64 at = _ftelli64(file), end = -1;
+    if (at >= 0 && !_fseeki64(file, 0, SEEK_END)) end = _ftelli64(file);
+    if (at >= 0) _fseeki64(file, at, SEEK_SET);
+#else
+    off_t at = ftello(file), end = -1;
+    if (at >= 0 && !fseeko(file, 0, SEEK_END)) end = ftello(file);
+    if (at >= 0) fseeko(file, at, SEEK_SET);
+#endif
+    *size = end < 0 ? 0 : (uint64_t)end;
+    return end < 0 ? -1 : 0;
+}
+
 int snx_hac_read(SnxHac *hac, int container, size_t entry, void *buffer, size_t size) {
     Container *c = &hac->containers[container];
     if (size > c->entries[entry].size || fseeko64(c->file, c->entries[entry].offset, SEEK_SET) ||
@@ -284,6 +299,14 @@ static int patches_romfs(const nca_ctx_t *nca) {
     return 0;
 }
 
+/* 1 when the keyset has the key of generation (below 0x20) that opens nca's title key (rights) or its key area */
+static int has_key(SnxHac *hac, const nca_ctx_t *nca, int rights, int generation) {
+    static const unsigned char zero[0x10];
+    const nca_keyset_t *keys = &hac->tool.settings.keyset;
+    if (rights) return memcmp(keys->titlekeks[generation], zero, 0x10) != 0;
+    return nca->header.kaek_ind < 3 && memcmp(keys->key_area_keys[generation][nca->header.kaek_ind], zero, 0x10) != 0;
+}
+
 int snx_hac_nca(SnxHac *hac, int container, size_t entry, SnxHacNca *out) {
     nca_ctx_t nca;
     memset(out, 0, sizeof *out);
@@ -304,13 +327,10 @@ int snx_hac_nca(SnxHac *hac, int container, size_t entry, SnxHacNca *out) {
     {
         static const unsigned char zero[0x10];
         int rights = memcmp(nca.header.rights_id, zero, 0x10) != 0;
-        const nca_keyset_t *keys = &hac->tool.settings.keyset;
         out->title_key = !rights ? 0 : settings_has_titlekey(&hac->tool.settings, nca.header.rights_id) ? 1 : -1;
-        int generation = out->generation < 0x20 ? out->generation : 0x1F; /* past the keyset's: never given */
-        out->keys = out->generation < 0x20 &&
-                    (rights ? memcmp(keys->titlekeks[generation], zero, 0x10) != 0
-                            : nca.header.kaek_ind < 3 &&
-                                  memcmp(keys->key_area_keys[generation][nca.header.kaek_ind], zero, 0x10) != 0);
+        out->keys = out->generation < 0x20 && has_key(hac, &nca, rights, out->generation); /* past 0x1F: never given */
+        /* how far the keys file reaches, which a generation it lacks is said against */
+        for (out->newest = 0x1F; out->newest >= 0 && !has_key(hac, &nca, rights, out->newest); out->newest--) continue;
     }
     /* a Patch RomFS, as nca_process tells one: BKTR encryption, or a decrypted dump's kept indirect tables */
     out->patch = patches_romfs(&nca);
@@ -512,13 +532,27 @@ size_t snx_hac_fs_files(SnxHacFs *fs, const SnxHacEntry **files) {
 
 int snx_hac_fs_read(SnxHacFs *fs, size_t file, uint64_t offset, void *buffer, size_t size) {
     const SnxHacEntry *e = &fs->files[file];
-    if (offset > e->size || size > e->size - offset) return -1;
+    io.message[0] = 0; /* snx_hac_message says this read's failure, not an earlier one's */
+    if (offset > e->size || size > e->size - offset) {
+        snx_hac_fprintf(stderr, "ExeFS read 0x%"PRIx64"+0x%"PRIx64" is past %s's 0x%"PRIx64" bytes\n", offset,
+                        (uint64_t)size, e->name, e->size);
+        return -1;
+    }
     return storage_read(fs->exefs->storage, e->offset + offset, buffer, size) ? 0 : -1;
 }
 
 uint64_t snx_hac_fs_romfs_size(const SnxHacFs *fs) { return fs->romfs ? fs->romfs_size : 0; }
 
 int snx_hac_fs_read_romfs(SnxHacFs *fs, uint64_t offset, void *buffer, size_t size) {
-    if (!fs->romfs || offset > fs->romfs_size || size > fs->romfs_size - offset) return -1;
+    io.message[0] = 0; /* snx_hac_message says this read's failure, not an earlier one's */
+    if (!fs->romfs) {
+        snx_hac_fprintf(stderr, "The program NCA has no RomFS\n");
+        return -1;
+    }
+    if (offset > fs->romfs_size || size > fs->romfs_size - offset) {
+        snx_hac_fprintf(stderr, "RomFS read 0x%"PRIx64"+0x%"PRIx64" is past the image's 0x%"PRIx64" bytes\n", offset,
+                        (uint64_t)size, fs->romfs_size);
+        return -1;
+    }
     return storage_read(fs->romfs, fs->romfs_offset + offset, buffer, size) ? 0 : -1;
 }

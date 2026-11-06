@@ -29,6 +29,7 @@ int vk_buf_pending_any(void);
 int vk_buf_pending(u64, u64);
 int vk_compute_pending(u64, u64);
 int vk_gfx_image_pending(u64, u64);
+int vk_uma_pending(u64, u64);
 int vk_buf_pending_unsubmitted(void);
 void vk_submit(u64, u64, u64);
 u64 vk_last_submit(void);
@@ -67,6 +68,7 @@ static u8 memory[0x8000];
 /* the guest address space is that memory: vk_write_changed refuses to compare bytes inside it */
 u8* g_mem = memory;
 u64 g_as_size = sizeof memory;
+MemLayout g_layout; /* the space from its start: AS_BASE 0 */
 static u64 mapping = 4096;
 static int writeback_direct;
 void pm_lock(PMutex* m) { (void)m; }
@@ -210,6 +212,11 @@ int vk_buf_pending(u64 a, u64 n) {
     return 0;
 }
 int vk_gfx_image_pending(u64 a, u64 n) {
+    (void)a;
+    (void)n;
+    return 0;
+}
+int vk_uma_pending(u64 a, u64 n) { /* no unified memory here */
     (void)a;
     (void)n;
     return 0;

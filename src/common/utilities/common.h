@@ -46,8 +46,13 @@ void snx_option_renamed(const char* old, const char* now);
    no other way to keep them in), NULL for stderr again. Set before the threads that say errors start */
 void snx_error_sink(void (*sink)(const char* line));
 /* the system's reason for the file or folder call that just failed, into out: strerror(errno), or on Windows the
-   text of GetLastError, which its calls set instead of errno */
+   text of GetLastError, which its calls set instead of errno (snx_windows_reason) */
 char* snx_os_error(char* out, size_t size);
+/* the reason Windows gives for an error code, the n UTF-16 units of text (FormatMessageW's, in the system's language),
+   into out as UTF-8 without the line break and full stop it ends in, the code after it: "<text> (Windows error
+   <code>)", or "Windows error <code>" for no text. A unit that is no character is U+FFFD; a short out keeps whole
+   characters of the text, and the code after them only whole */
+char* snx_windows_reason(const uint16_t* text, size_t n, unsigned long code, char* out, size_t size);
 /* a, then b, a separator between: one path in the system's separators (snx_path_native) */
 char* snx_path_join(const char* a, const char* b);
 char* snx_dirname(const char* path);
@@ -212,6 +217,10 @@ SnxU64 snx_file_time(const char* path);
 int snx_set_file_time(const char* path, SnxU64 seconds);
 int snx_make_executable(const char* path);
 unsigned snx_cpu_count(void);
+/* the threads an AOT pass (a game's recompile) is given when its count is left open: the physical cores where the
+   system says them, else the processors, capped at 75% of that (a reserve of one whole core, or a quarter), so a
+   part of the computer stays free; at least 1, never more than snx_cpu_count() */
+unsigned snx_build_threads(void);
 /* seconds on a monotonic clock, for durations */
 double snx_seconds(void);
 /* Address space for code the process writes and then runs: reserved without access, then given access in whole pages.
@@ -227,9 +236,31 @@ int snx_abort_requested(void);
 SnxU64 snx_footprint(void);
 /* the processor time this process has used, every thread's together, in ns; 0 where the system does not tell */
 SnxU64 snx_process_cpu_ns(void);
+/* a thread's time on the processors, which any thread of the process reads: snx_thread_clock gives the calling
+   thread's clock, never 0, or 0 where the system gives none; snx_thread_cpu_ns the time its thread has run so far, in
+   ns, into *ns, and -1 once the thread has ended; snx_thread_clock_close lets go of the clock (a handle on Windows),
+   after which no thread reads it */
+SnxU64 snx_thread_clock(void);
+int snx_thread_cpu_ns(SnxU64 clock, SnxU64* ns);
+void snx_thread_clock_close(SnxU64 clock);
+/* names the calling thread for the system, which debuggers, crash reports, the system's tools and snx_threads show:
+   Linux and Android keep its first 15 bytes, FreeBSD 19, the others 63 (Windows from 10 1607; earlier ones none) */
+void snx_thread_name(const char* name);
+/* one of the process's threads, as snx_threads reads it */
+typedef struct {
+    /* the system's id for it, with its start where the system gives an ended thread's id to a new one (Linux,
+       Android, Windows), so no later thread of the run has it; FreeBSD's alone */
+    SnxU64 id;
+    SnxU64 cpu_ns; /* its time on the processors so far */
+    char name[64]; /* its name for the system, "" for none */
+} SnxThreadInfo;
+/* the process's threads, into out up to max of them: how many the system listed (more than max when some did not
+   fit), or -1 where it lists none. Linux and Android count the time in the system's ticks (10 ms), FreeBSD in
+   microseconds, the others finer. Any thread; it reads a file for each thread on Linux and Android */
+int snx_threads(SnxThreadInfo* out, int max);
 /* the memory the system can still give this process, in bytes, into *bytes: what iOS lets the app take before it ends
-   it, the memory available on Linux and Android (MemAvailable), on macOS (free, inactive and purgeable pages) and on
-   Windows (available physical memory); whether the system told it */
+   it, the memory available on Linux and Android (MemAvailable), on macOS (free, inactive and purgeable pages), on
+   FreeBSD (free and inactive pages) and on Windows (available physical memory); whether the system told it */
 int snx_memory_available(SnxU64* bytes);
 void* snx_vm_reserve(size_t size); /* NULL when the system refuses */
 int snx_vm_protect(void* p, size_t size, int access);
@@ -246,6 +277,8 @@ char* snx_find_tool(const char* name);
 /* argv is NULL terminated. No shell. Captured output is heap-owned by caller.
    home isolates HOME/USERPROFILE and removes XDG_CONFIG_HOME in the child. */
 int snx_run(const char* const* argv, const char* cwd, const char* home, char** output);
+/* snx_run's, the whole output: snx_run keeps the last megabyte of a long one, a listing needs all of it */
+int snx_run_all(const char* const* argv, const char* cwd, const char* home, char** output);
 /* snx_run calling tick(data) about once a second while the child runs: a long tool can say how far it is */
 int snx_run_ticking(const char* const* argv, const char* cwd, const char* home, char** output, void (*tick)(void*),
                     void* data);
@@ -263,6 +296,9 @@ FILE* snx_fopen(const char* path, const char* mode);
    in the other one too */
 #define SNX_CONSOLE_LOG "scarletnx-console.log"
 #define SNX_ERROR_LOG   "scarletnx-error.log"
+/* The line a game's runtime prints as it makes the game's log, on the console and in the log, before the log's
+   absolute path: the launcher's Share Log takes the last run's game log from it, whatever the program is named */
+#define SNX_LOG_WRITTEN "log: written to "
 /* text appended to the file at path, each of its lines after the local time and this process's id
    ("2026-10-25 11:30:02 [4242] "), in one write: two programs appending at once keep each line whole and named, and a
    text without an ending newline gets one. 0, or -1 with errno set */
@@ -278,9 +314,15 @@ int snx_seek(FILE* f, SnxU64 offset);
 /* f's offset from its start, past 2 GiB too; signed, so that -1 can report an error */
 int64_t snx_tell(FILE* f);
 
+/* 1 when the n bytes at text are well-formed UTF-8 (no overlong form, surrogate, or code point past U+10FFFF), else 0
+   and the first 16 of them in hex into hex ("2a 9c e3", "..." after when there are more), when hex_size is not 0 */
+int snx_utf8_valid(const char* text, size_t n, char* hex, size_t hex_size);
 /* The game's name in a control.nacp: American English's, else the first language's that has one, in UTF-8 without
-   control characters. 1 when it has one, else 0 and "" */
+   control characters, its titles inflated when the NACP keeps them in deflate (TitleCompression). A name whose bytes
+   are not UTF-8 counts as none. 1 when it has one, else 0 and "" */
 int snx_nacp_name(const unsigned char* nacp, size_t size, char* name, size_t name_size);
+/* snx_nacp_name, and when it has no name, why into why (its bytes in hex for a name that is not UTF-8); "" else */
+int snx_nacp_name_why(const unsigned char* nacp, size_t size, char* name, size_t name_size, char* why, size_t why_size);
 /* The title ID of a program without an NPDM (an NRO, an ExeFS without main.npdm): none of its own */
 #define SNX_NPDM_DEFAULT_TITLE 0x0100000000001000ull
 /* The title ID a main.npdm's ACI0 gives its program, as the loader reads it, for one not loaded; SNX_NPDM_DEFAULT_TITLE
@@ -306,12 +348,28 @@ int snx_addon_entry_id(SnxU64 game, const char* entry, SnxU64* id);
 void snx_addon_entry(SnxU64 game, SnxU64 id, SnxU64 version, char entry[32]);
 /* the version an update's entry names, SNX_NO_VERSION for none */
 SnxU64 snx_addon_version(const char* entry);
-enum { SNX_ADDON_NONE, SNX_ADDON_UPDATE, SNX_ADDON_DLC };
+/* a save's note, <its folder> and this beside the folder: which program and version committed the save last (fs.c's
+   save_note). What moves a save's folder moves its note with it */
+#define SNX_SAVE_NOTE ".version"
+enum { SNX_ADDON_NONE, SNX_ADDON_UPDATE, SNX_ADDON_DLC, SNX_ADDON_PROGRAM };
 /* what the title id is to the game: SNX_ADDON_UPDATE for its patch (its ID with 0x800, as the console makes every
-   patch's), SNX_ADDON_DLC for any other, SNX_ADDON_NONE for the game's own (or 0) */
+   patch's), SNX_ADDON_PROGRAM for another program of its application or that program's patch (snx_program_index),
+   SNX_ADDON_DLC for any other, SNX_ADDON_NONE for the game's own (or 0) */
 int snx_addon_kind(SnxU64 game, SnxU64 id);
+/* An application of several programs (a collection whose menu starts each game, nn::oe::ExecuteProgram) numbers them
+   from its own ID, as the console does: program i is the application's ID plus i, and that program's patch the
+   update's ID plus i. The index is a byte (fs's ProgramIndexMapInfo), 0 the application's own program */
+#define SNX_PROGRAMS_MAX 256
+/* id's program index in the application game: 0 for the game or its update, i for its program i or that program's
+   patch, -1 for an ID that is none of its programs (a DLC's) */
+int snx_program_index(SnxU64 game, SnxU64 id);
+/* the program of index of the application game (its title ID as snx_title_text writes it) as the game's folder names
+   it, played with the update whose entry is update (snx_addon_entry, its version in it; NULL or "" for none) into
+   out: <game> or <game>_<update> for 0, <game>_<game + index> or <game>_<the update's ID + index>v<version> for
+   another. 0, or nonzero for an index past SNX_PROGRAMS_MAX or an out too short */
+int snx_program_name(const char* game, const char* update, int index, char* out, size_t size);
 /* the game an add-on's ID would belong to by the usual numbering, for a dump without a content meta to name it: a
-   patch's ID less 0x800, add-on content's below its 0x1000 */
+   patch's ID (a program's too) less its 0x800 and index, add-on content's below its 0x1000 */
 SnxU64 snx_addon_guess(SnxU64 id);
 /* the ID a game's add-on content is numbered from, its control.nacp's AddOnContentBaseId (aoc:u's base ID): a DLC's
    data ID is it plus the DLC's index, 1 to 2047. The SDK's default for application when nacp is NULL or sets none */

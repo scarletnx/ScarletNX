@@ -3,10 +3,12 @@
 from pathlib import Path
 import sys
 src=(Path(__file__).resolve().parents[2]/'src/common/cpu/recompiler/llvm/ir_profile.c').read_text()
-src=src.replace('#include "common/cpu/recompiler/llvm/ir.h"','')
+src=src.replace('#include "common/cpu/recompiler/llvm/ir.h"','').replace('#include "common/utilities/common.h"','')
 source=r'''
+#include <stdarg.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <stdio.h>
 typedef uint64_t SnxU64;
 typedef uint32_t SnxU32;
 typedef void* LLVMValueRef;
@@ -21,6 +23,7 @@ extern LLVMValueRef LLVMMetadataAsValue(LLVMContextRef,LLVMMetadataRef),LLVMCons
 extern void LLVMSetMetadata(LLVMValueRef,unsigned,LLVMValueRef);
 extern unsigned LLVMGetMDKindIDInContext(LLVMContextRef,const char*,unsigned);
 static LLVMValueRef ir_i32(SnxIr* ir,SnxU32 v){return LLVMConstInt(ir->t_i32,v,0);}
+static int snx_error(const char* fmt,...){va_list ap;va_start(ap,fmt);vfprintf(stderr,fmt,ap);va_end(ap);fputc('\n',stderr);return 1;}
 ''' + src + r'''
 extern LLVMContextRef LLVMContextCreate(void);
 extern LLVMModuleRef LLVMModuleCreateWithNameInContext(const char*,LLVMContextRef);
@@ -33,7 +36,7 @@ extern int LLVMVerifyModule(LLVMModuleRef,int,char**);
 extern char* LLVMPrintModuleToString(LLVMModuleRef);
 int main(int argc,char**argv) {
     if(argc!=2)return 1;
-    if(setenv("SNX_LLVM_BRANCH_PROFILE",argv[1],1))return 2;
+    snx_ir_branch_profile(argv[1]);
     SnxIr ir={0};ir.ctx=LLVMContextCreate();ir.mod=LLVMModuleCreateWithNameInContext("profiles",ir.ctx);
     ir.b=LLVMCreateBuilderInContext(ir.ctx);ir.t_i32=LLVMInt32TypeInContext(ir.ctx);
     for(unsigned i=0;i<3;++i){

@@ -29,7 +29,7 @@
 
 #define NVN_MAGIC(a, b, c, d) ((u32)(a) | (u32)(b) << 8 | (u32)(c) << 16 | (u32)(d) << 24)
 /* the fewest bytes any measured SDK's driver writes for the object (footprints: SetDefaults and Initialize) */
-#define NVN_FITS(T, n) typedef char nvn_fits_##T[sizeof(T) <= (n) ? 1 : -1]
+#define NVN_FITS(T, n)        typedef char nvn_fits_##T[sizeof(T) <= (n) ? 1 : -1]
 
 /* ---- device ---- */
 typedef struct {
@@ -169,7 +169,6 @@ NVN_FITS(NvnView, 0x10);
 #define NVN_VIEW_SWIZZLE 0x10u
 #define NVN_VIEW_DSMODE  0x20u /* the depth-stencil mode in bits 6-7 */
 
-
 /* ---- samplers ---- */
 typedef struct {
     u8 min_filter, mag_filter, wrap_s, wrap_t, wrap_r, compare_mode, compare_func, reduction;
@@ -197,6 +196,11 @@ typedef struct {
     u32 off;
     u16 cb, cb_size;
 } NvnStage;
+/* Decoded tessellation declarations kept outside the guest's fixed-size program object. value packs domain,
+   spacing, point mode and winding in successive nibbles; declared has one bit per independently declared field. */
+typedef struct {
+    u32 value, declared;
+} NvnTessStage;
 /* st: by NVN shader stage (NVN_SHADER_STAGE_*). off_a: a dual vertex program's VertexA (0 for none), or a compute
    program's shared memory bytes; block: a compute program's workgroup size */
 /* sample_shading: SetSampleShading's mode (NVN_SAMPLE_SHADING_*), which the program's draws take */
@@ -258,8 +262,8 @@ typedef struct {
     u64 texture[4];
     u64 presents, pace, available[4], released[4], shown_at[4];
     u32 syncpt[4], value[4], on_display[2], shown;
-    i32 active;           /* the textures acquired in turn: the first active ones (SetNumActiveTextures) */
-    u64 native;           /* the native window the builder named */
+    i32 active; /* the textures acquired in turn: the first active ones (SetNumActiveTextures) */
+    u64 native; /* the native window the builder named */
 } NvnWindow;
 NVN_FITS(NvnWindow, 0x148);
 
@@ -281,8 +285,9 @@ typedef struct {
     u64 device, used;
     u32 lent, seen_serial;
     u64 origin;
-    u64 game_end;           /* the end of the memory the game last added (the getters' size and room) */
-    u32 ctl, ctl_pad;       /* its control memory's slot in nvn_cmd.c's g_nvn.cmd.ctl, plus 1 (0 none) */
+    u64 game_end; /* the end of the memory the game last added (the getters' size and room) */
+    u32 ctl;      /* its control memory's slot in nvn_cmd.c's g_nvn.cmd.ctl, plus 1 (0 none) */
+    u32 piece;    /* the piece the open recording starts in (nvn_cmd.c's PIECE_MORE once past it), 0 none */
     i64 row_stride, image_stride; /* SetCopyRowStride's and SetCopyImageStride's, for their getters */
     u64 game_cur, last, seen;
 } NvnCmdBuf;
@@ -296,44 +301,44 @@ static inline u64 nvn_set_field(u64 w, unsigned lo, unsigned n, u64 v) {
     return (w & ~m) | ((v << lo) & m);
 }
 /* NVNblendState (8 bytes, one u64) */
-#define NVN_BLEND_TARGET  0, 3
-#define NVN_BLEND_SRC_RGB 3, 7
-#define NVN_BLEND_DST_RGB 10, 7
-#define NVN_BLEND_SRC_A   17, 7
-#define NVN_BLEND_DST_A   24, 7
-#define NVN_BLEND_EQ_RGB  31, 3
-#define NVN_BLEND_EQ_A    34, 3
-#define NVN_BLEND_ADV     37, 6 /* the advanced mode, 0 none */
-#define NVN_BLEND_ADV_NPM 43, 1 /* the advanced mode's destination is normalized */
-#define NVN_BLEND_ADV_OVL 44, 2
-#define NVN_BLEND_ADV_PMS 46, 1 /* the advanced mode's source is premultiplied */
+#define NVN_BLEND_TARGET     0, 3
+#define NVN_BLEND_SRC_RGB    3, 7
+#define NVN_BLEND_DST_RGB    10, 7
+#define NVN_BLEND_SRC_A      17, 7
+#define NVN_BLEND_DST_A      24, 7
+#define NVN_BLEND_EQ_RGB     31, 3
+#define NVN_BLEND_EQ_A       34, 3
+#define NVN_BLEND_ADV        37, 6 /* the advanced mode, 0 none */
+#define NVN_BLEND_ADV_NPM    43, 1 /* the advanced mode's destination is normalized */
+#define NVN_BLEND_ADV_OVL    44, 2
+#define NVN_BLEND_ADV_PMS    46, 1 /* the advanced mode's source is premultiplied */
 /* NVNcolorState (4 bytes, one u32) */
 #define NVN_COLOR_BLEND_EN   0, 8
 #define NVN_COLOR_LOGIC_OP   8, 4
 #define NVN_COLOR_ALPHA_FUNC 12, 4
 /* NVNchannelMaskState (one u32): 4 bits per target, r 1 g 2 b 4 a 8, set = written */
 /* NVNpolygonState (one u32) */
-#define NVN_POLY_CULL      0, 2
-#define NVN_POLY_FRONT     2, 1
-#define NVN_POLY_MODE      3, 2
-#define NVN_POLY_OFFSET_EN 5, 3
+#define NVN_POLY_CULL        0, 2
+#define NVN_POLY_FRONT       2, 1
+#define NVN_POLY_MODE        3, 2
+#define NVN_POLY_OFFSET_EN   5, 3
 /* NVNdepthStencilState (8 bytes, one u64) */
-#define NVN_DS_TEST       0, 1
-#define NVN_DS_WRITE      1, 1
-#define NVN_DS_FUNC       2, 4
-#define NVN_DS_STENCIL    6, 1
-#define NVN_DS_SFUNC_F    7, 4
-#define NVN_DS_SFUNC_B    11, 4
-#define NVN_DS_FAIL_F     15, 4
-#define NVN_DS_ZFAIL_F    19, 4
-#define NVN_DS_ZPASS_F    23, 4
-#define NVN_DS_FAIL_B     27, 4
-#define NVN_DS_ZFAIL_B    31, 4
-#define NVN_DS_ZPASS_B    35, 4
+#define NVN_DS_TEST          0, 1
+#define NVN_DS_WRITE         1, 1
+#define NVN_DS_FUNC          2, 4
+#define NVN_DS_STENCIL       6, 1
+#define NVN_DS_SFUNC_F       7, 4
+#define NVN_DS_SFUNC_B       11, 4
+#define NVN_DS_FAIL_F        15, 4
+#define NVN_DS_ZFAIL_F       19, 4
+#define NVN_DS_ZPASS_F       23, 4
+#define NVN_DS_FAIL_B        27, 4
+#define NVN_DS_ZFAIL_B       31, 4
+#define NVN_DS_ZPASS_B       35, 4
 /* NVNvertexAttribState (one u32) */
-#define NVN_VA_FORMAT 0, 8
-#define NVN_VA_OFFSET 8, 19
-#define NVN_VA_STREAM 27, 5
+#define NVN_VA_FORMAT        0, 8
+#define NVN_VA_OFFSET        8, 19
+#define NVN_VA_STREAM        27, 5
 /* NVNmultisampleState (0x18 bytes). flags: NVN_MS_*. location[i]: sample i's position in its pixel (or in the grid's
    pixels), x in bits 0-3 and y in 4-7 in sixteenths, as the game's driver keeps them (SetSampleLocations) */
 typedef struct {
@@ -364,17 +369,84 @@ typedef struct {
 #define NVN_REC_COST(w)    (((w) >> NVN_REC_COST_SHIFT) & NVN_REC_COST_MAX)
 #define NVN_REC_LAST       0x80000000u
 enum {
-    OP_END, OP_JUMP, OP_BEGIN, OP_CALL, /* OP_BEGIN isn't recorded: a recording starts with its first command */
-    OP_SIGNAL_EVENT, OP_REPORT_COUNTER, OP_COPY_B2B, OP_UPDATE_UB, /* effects the CPU can see */
-    OP_SET_RT, OP_CLEAR_COLOR, OP_CLEAR_DS, OP_VIEWPORTS, OP_SCISSOR, OP_DEPTH_RANGE,
-    OP_BIND_PROGRAM, OP_BIND_STATE, OP_BIND_VATTR, OP_BIND_VSTREAM, OP_BIND_VBUF,
-    OP_BIND_UBO, OP_BIND_SSBO, OP_BIND_TEX, OP_BIND_SAMP,
-    OP_STENCIL, OP_POLY_OFFSET, OP_DRAW, OP_DRAW_IDX, OP_DISPATCH, OP_BARRIER,
-    OP_SET_TEX_POOL, OP_SET_SAMP_POOL, OP_COPY_B2T, OP_COPY_STRIDE, OP_BLEND_COLOR, OP_COPY_T2B, OP_BIND_IMG,
-    OP_COPY_T2T, OP_RESET_COUNTER, OP_CLEAR_TEX, OP_CLEAR_BUF, OP_DEPTH_CLAMP, OP_RENDER_COND, OP_FENCE_SYNC,
-    OP_TF_BIND, OP_TF_STATE, OP_RAST_DISCARD, OP_VP_SWIZZLE, OP_BIND_TEX1, OP_PRIM_RESTART, OP_WAIT_SYNC,
-    OP_SAMPLE_MASK, OP_LINE_WIDTH, OP_CONSERVATIVE, OP_PROVOKING, OP_DRAW_TEXTURE, OP_BIND_BUFS, OP_COUNT_
+    OP_END,
+    OP_JUMP,
+    OP_BEGIN,
+    OP_CALL, /* OP_BEGIN isn't recorded: a recording starts with its first command */
+    OP_SIGNAL_EVENT,
+    OP_REPORT_COUNTER,
+    OP_COPY_B2B,
+    OP_UPDATE_UB, /* effects the CPU can see */
+    OP_SET_RT,
+    OP_CLEAR_COLOR,
+    OP_CLEAR_DS,
+    OP_VIEWPORTS,
+    OP_SCISSOR,
+    OP_DEPTH_RANGE,
+    OP_BIND_PROGRAM,
+    OP_BIND_STATE,
+    OP_BIND_VATTR,
+    OP_BIND_VSTREAM,
+    OP_BIND_VBUF,
+    OP_BIND_UBO,
+    OP_BIND_SSBO,
+    OP_BIND_TEX,
+    OP_BIND_SAMP,
+    OP_STENCIL,
+    OP_POLY_OFFSET,
+    OP_DRAW,
+    OP_DRAW_IDX,
+    OP_DISPATCH,
+    OP_BARRIER,
+    OP_SET_TEX_POOL,
+    OP_SET_SAMP_POOL,
+    OP_COPY_B2T,
+    OP_COPY_STRIDE,
+    OP_BLEND_COLOR,
+    OP_COPY_T2B,
+    OP_BIND_IMG,
+    OP_COPY_T2T,
+    OP_RESET_COUNTER,
+    OP_CLEAR_TEX,
+    OP_CLEAR_BUF,
+    OP_DEPTH_CLAMP,
+    OP_RENDER_COND,
+    OP_FENCE_SYNC,
+    OP_TF_BIND,
+    OP_TF_STATE,
+    OP_RAST_DISCARD,
+    OP_VP_SWIZZLE,
+    OP_BIND_TEX1,
+    OP_PRIM_RESTART,
+    OP_WAIT_SYNC,
+    OP_SAMPLE_MASK,
+    OP_LINE_WIDTH,
+    OP_CONSERVATIVE,
+    OP_PROVOKING,
+    OP_DRAW_TEXTURE,
+    OP_BIND_BUFS,
+    OP_SCISSORS,
+    OP_DEPTH_RANGES,
+    OP_PATCH_SIZE,
+    OP_SET_STATE,
+    OP_WAIT_EVENT,
+    OP_SUBROUTINES,
+    OP_COUNT_
 };
+typedef char NvnOpcodeMaskFits[(OP_COUNT_ <= 64) ? 1 : -1];
+/* Scalar and small-array fixed-function state share one opcode. This leaves opcode space for draw operations. */
+enum {
+    NVN_SET_ALPHA_REF,
+    NVN_SET_DEPTH_BOUNDS,
+    NVN_SET_POINT_SIZE,
+    NVN_SET_TESS_INNER,
+    NVN_SET_TESS_OUTER,
+    NVN_SET_COVERAGE_TABLE
+};
+typedef struct {
+    u32 kind, enable;
+    f32 value[16];
+} NvnPSetState;
 /* the payloads, right after the header. Where nxnative held a host pointer, these hold a guest address */
 /* OP_JUMP and OP_CALL: u64 target. OP_FENCE_SYNC and OP_WAIT_SYNC: u64 sync. OP_RESET_COUNTER: u64 type.
    OP_BARRIER: i32 bits */
@@ -385,6 +457,15 @@ typedef struct {
     u64 value; /* the u32's GPU address */
     u32 mode, v;
 } NvnPSignalEvent;
+typedef struct {
+    u64 address;
+    u32 mode, value;
+} NvnPWaitEvent;
+typedef struct {
+    u32 linkage;
+    i32 first, count;
+    i32 values[1];
+} NvnPSubroutines;
 /* color[i] and depth: the texture snapshots after the payload (the game may finalize or reuse an object before it
    submits), or the game's object when it wasn't a live texture as recorded */
 typedef struct {
@@ -414,6 +495,14 @@ typedef struct {
 typedef struct {
     f32 n, f;
 } NvnPDepthRange;
+typedef struct {
+    i32 first, count;
+    i32 rect[16][4];
+} NvnPScissors;
+typedef struct {
+    i32 first, count;
+    f32 range[16][2];
+} NvnPDepthRanges;
 /* the stages bound (NVN_SHADER_STAGE_*_BIT) and the program's as they were when recorded */
 typedef struct {
     i32 stages;
@@ -491,9 +580,9 @@ typedef struct {
     i32 index, pad;
     u64 address, size;
 } NvnPTfBind;
-/* what: 0 begin, 1 end, 2 pause, 3 resume; control: the game's 32-byte control buffer */
+/* what: 0 begin, 1 end, 2 pause, 3 resume, 4 draw; control: the game's 32-byte control buffer */
 typedef struct {
-    i32 what, pad;
+    i32 what, prim;
     u64 control;
 } NvnPTfState;
 typedef struct {

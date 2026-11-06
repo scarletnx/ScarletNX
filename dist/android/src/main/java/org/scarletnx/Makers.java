@@ -48,7 +48,12 @@ final class Makers {
 
     /** this device's maker's row, or null for one that adds no limit we know */
     static String[] limits() {
-        String maker = (Build.MANUFACTURER + " " + Build.BRAND).toLowerCase(Locale.ROOT);
+        return limits(Build.MANUFACTURER, Build.BRAND);
+    }
+
+    /** the row of the maker a device's Build names, as its manufacturer or its brand (Xiaomi makes POCO's) */
+    static String[] limits(String manufacturer, String brand) {
+        String maker = (manufacturer + " " + brand).toLowerCase(Locale.ROOT);
         for (String[] row : LIMITS)
             if (maker.contains(row[0])) return row;
         return null;

@@ -49,8 +49,9 @@ enum { CTR_FILE_VIEW, CTR_FILE_HOST, CTR_FILE_DIR };
 typedef struct {
     uint64_t token;
     uint32_t kind; /* 0: SelfNCCH RomFS view (read-only), 1: SDMC host area, 2: SaveData host area (read-write),
-                      3: an ExtSaveData's user folder (read-write, its files' sizes fixed) */
-    FsNode* root;  /* kind 3: the user folder, retained while the archive is open */
+                      3: an ExtSaveData's user folder (read-write, its files' sizes fixed),
+                      4: another title's save data folder (read-write) */
+    FsNode* root;  /* kinds 3 and 4: the folder, retained while the archive is open */
 } CtrSelfArchive;
 typedef struct {
     SnxArmCPU context; /* inactive architectural prefix only; never the checked adapter */
@@ -92,7 +93,8 @@ typedef struct {
             uint32_t physical, size, permissions;
             /* a block the application made with CreateMemoryBlock: its own range at address (heap-backed, Locked
                while the block lives, physical 0) or a new zeroed one (address 0); permissions are then its own and
-               other_permissions everyone else's (0x10000000: don't care) */
+               other_permissions everyone else's (0x10000000: don't care). A block APT made for a library applet has
+               other_permissions too, and MapMemoryBlock checks its rights as it does an application's block */
             uint32_t address, other_permissions, by_application;
         } shared;
         struct {
@@ -147,7 +149,6 @@ typedef struct {
     uint32_t semaphore;        /* the semaphore event (retained), made at its first GetSemaphoreEventHandle */
     uint16_t semaphore_mask;
     uint64_t next_frame_ns; /* host monotonic deadline of the next audio frame */
-    bool producing;         /* the last frame had audio: then the output device's queue paces the frames */
 } SnxCtrDspService;
 /* y2r:u: the Y2R engine's configuration as the application set it, and the conversion running (services/y2r.c) */
 typedef struct {
@@ -160,6 +161,11 @@ typedef struct {
     uint64_t done_ns; /* host monotonic end of the conversion running, 0 when none is */
     uint64_t serial;  /* the GPU submission it runs in: it ends no sooner than that is done */
 } SnxCtrY2rService;
+/* ir:USER: the block whose header it wrote, which it keeps until FinalizeIrNop, and the events it handed out, which
+   live as long as the process (services/ir.c) */
+typedef struct {
+    uint32_t shared, status_event, receive_event, send_event;
+} SnxCtrIrService;
 /* hid:USER's sampling (services/hid.c): each update's next deadline, host monotonic ns (0: not running), the index
    each writes next, how many times the game enabled each sensor, and the circle pad's last two raw positions, which
    each sample averages with */
@@ -169,56 +175,6 @@ typedef struct {
     uint32_t accelerometer_users, gyroscope_users;
     int32_t circle_history[2][2];
 } SnxCtrHid;
-/* ir:rst's sampling (services/ir.c): the next sample's deadline, host monotonic ns (0: not running), the period
-   Initialize gave in ms and the index the next sample is written at */
-typedef struct {
-    uint64_t next_ns;
-    uint32_t period_ms, index;
-} SnxCtrIr;
-/* ir:USER's state (services/iru.c): the retained objects, the game's shared memory then the receive, send and
-   connection status events */
-typedef struct {
-    uint32_t objects[4];
-} SnxCtrIru;
-/* mic:u's state (services/mic.c): the buffer full event (retained), whether sampling runs, the rate and the settings a
-   game stored */
-typedef struct {
-    uint32_t event;
-    uint8_t sampling, sample_rate, gain, power, clamp, allow_shell_closed;
-} SnxCtrMic;
-/* csnd:SND's state (services/csnd.c): the shared memory and mutex (retained objects), the layout the game gave, the
-   masks of the channels and capture units it holds, and what each channel's hardware would show */
-typedef struct {
-    uint32_t adpcm, loop_adpcm;
-    uint8_t enable;
-} SnxCtrCsndChannel;
-typedef struct {
-    uint32_t mutex, shared, size;
-    uint32_t master_offset, channel_offset, capture_offset, direct_offset;
-    uint32_t channel_mask, capture_mask, capture_in_use, mask_register[2];
-    SnxCtrCsndChannel channel[32];
-    uint8_t initialized;
-} SnxCtrCsnd;
-/* cam:u's state (services/cam.c): two ports (the first the outer left and inner cameras', the second the outer right camera's) and the three cameras */
-typedef struct {
-    uint32_t completion_event, error_event, vsync_event; /* event objects (retained), made at the first request */
-    uint64_t done_ns, vsync_ns;                          /* host monotonic ns (0: none) of the receiving's end, the next vsync */
-    uint32_t dest, dest_size;                            /* the receiving buffer in the game's memory */
-    uint16_t transfer_bytes, x0, y0, x1, y1;
-    uint8_t active, receiving, trimming, camera;         /* camera: the one the port takes (Activate) */
-} SnxCtrCamPort;
-typedef struct {
-    uint8_t flip, effect, format, size_preset;
-    uint16_t width, height;
-} SnxCtrCamContext;
-typedef struct {
-    SnxCtrCamPort port[2];
-    struct {
-        uint8_t frame_rate, context;
-        SnxCtrCamContext contexts[2];
-    } camera[3];
-    uint8_t initialized;
-} SnxCtrCam;
 struct SnxCtrProcess {
     SnxCtrRomfs* romfs; /* runtime-owned immutable host filesystem view */
     const SnxCtrSource* source; /* the game read where it lies, with its DLC files; NULL for an extraction */
@@ -247,23 +203,28 @@ struct SnxCtrProcess {
     /* the cores take turns on the one host thread: the one the next scheduling serves, and each one's thread last run */
     uint32_t next_core, core_thread[4];
     uint32_t last_ipc_service, last_ipc_header;
+    /* why a service ended the run, when one did (a GX command with no GPU): the run's last line; "" otherwise */
+    char stopped[832];
     uint32_t apt_lock;         /* manager-owned object index; independent of client sessions */
     uint32_t srv_notification; /* srv:'s notification semaphore (retained), made at the first EnableNotification */
     uint32_t apt_phase, apt_notification, apt_parameter;
     uint32_t apt_font;       /* the shared font's block (services/font.c), made at the first GetSharedFont */
-    uint32_t apt_preloaded[4]; /* the library applets the game preloaded (PreloadLibraryApplet), 0 for a free slot */
-    struct { /* the one parameter an applet has sent the game, the next ReceiveParameter and GlanceParameter answer; 0 for none */
-        uint32_t signal, sender, size, object;
-        unsigned char data[0x100];
-    } apt_message;
+    /* APT's one parameter for the application after its startup (Azahar AppletManager's next_parameter): who sent it,
+       its signal, its object (retained, 0 for none) and its buffer (services/apt.c) */
+    struct {
+        uint32_t pending, sender, signal, object, size;
+        unsigned char buffer[0x1000];
+    } apt_next;
+    uint32_t apt_library; /* the library applet APT registered for the application: its AppletId, 0 for none */
+    uint32_t apt_capture; /* the capture block made at a library applet's first Request (retained), 0 before one */
+    /* the software keyboard the application started (services/swkbd.c): its SoftwareKeyboardConfig and the block its
+       text goes in (retained while it runs) */
+    struct {
+        unsigned char config[0x400];
+        uint32_t text;
+    } swkbd;
     uint32_t hid_objects[6]; /* the shared memory, then the events: pad 1, pad 2, accelerometer, gyroscope, debug pad */
     SnxCtrHid hid;
-    uint32_t ir_objects[2]; /* ir:rst's shared memory, then its update event */
-    SnxCtrIr ir;
-    SnxCtrMic mic;
-    SnxCtrIru iru;
-    SnxCtrCam cam;
-    SnxCtrCsnd csnd;
     uint32_t shell_closed; /* virtual console starts with its shell open */
     double clock_origin;   /* host monotonic origin for the base ARM11 tick domain */
     CtrSelfArchive self_archives[CTR_SELF_ARCHIVES];
@@ -284,6 +245,7 @@ struct SnxCtrProcess {
     SnxCtrDspService dsp;
     struct SnxCtrUds* uds;
     SnxCtrY2rService y2r;
+    SnxCtrIrService ir;
     uint64_t svc_count, svc_counts[256]; /* all, and each SVC's */
     uint64_t idle_ns, idle_waits;        /* the host time the scheduler slept with no thread to run, and how often */
     /* the codeset GetProcessInfo describes: segments as loaded, BSS, title and name (ExHeader) */
@@ -334,8 +296,6 @@ void snx_ctr_thread_priorities(SnxCtrProcess* p, uint32_t* priority);
 bool snx_ctr_waitable(uint32_t type);
 /* host monotonic nanoseconds, the clock every deadline is on */
 uint64_t snx_ctr_now_ns(void);
-/* the same clock in seconds, the one the system tick counts */
-double snx_ctr_seconds(void);
 SnxCtrSvcResult snx_ctr_wait_many(SnxCtrProcess* p, uint32_t* registers);
 void snx_ctr_wake_waiters(SnxCtrProcess* p, uint32_t object);
 /* The current thread's wait or sleep deadline from an SVC's s64 nanoseconds (low, high words): -1 is none, another
@@ -362,7 +322,6 @@ uint32_t snx_ctr_linear_address(uint32_t physical);
 uint32_t snx_ctr_named_connect(SnxCtrProcess* p, uint32_t name_address, uint32_t* out);
 SnxCtrSvcResult snx_ctr_ipc_send(SnxCtrProcess* p, uint32_t handle, uint32_t* transport_result);
 /* SVC helpers use only RAM transactions, never MMIO or a flat pointer. */
-/* ldr:ro's mappings of a library (kernel.c) */
 uint32_t snx_ctr_kernel_memory(SnxCtrProcess* p, uint32_t operation, uint32_t va, uint32_t source, uint32_t size,
                                uint32_t permissions, uint32_t* output);
 /* Loader aliases use private heap or data backing, and the loader registers their lifetime before it returns. */

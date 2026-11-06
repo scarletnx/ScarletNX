@@ -6,7 +6,6 @@
    PackedAttribute's float24 packing, pica_types.h's float24, nihstro's instruction encoding, the tiled framebuffer
    of sw_framebuffer.cpp), worked out by hand here. */
 #include "3ds/gpu/pica.h"
-#include "3ds/gpu/raster.h"
 #include "3ds/gpu/shader.h"
 #include "3ds/gpu/texture.h"
 #include <math.h>
@@ -62,7 +61,6 @@ static void writes(SnxCtrMemory* m) {
     List l = {{0}, 0};
     const uint32_t seq[3] = {0x11, 0x22, 0x33}, oob = 0xffffffffu, masked = 0xaabbccddu;
     snx_ctr_pica_init(p);
-    snx_ctr_raster_attach(p);
     check(p->regs[SNX_PICA_IRQ_AUTOSTOP] == 1 && p->regs[SNX_PICA_IRQ_MASK] == 0xfffffff0u &&
               p->regs[SNX_PICA_IRQ_COMPARE] == 0x12345678u &&
               p->regs[SNX_PICA_GS + SNX_PICA_SH_INPUT_CONFIG] == 0xa0000001u,
@@ -92,7 +90,6 @@ static void uploads(SnxCtrMemory* m) {
     unsigned i;
     for (i = 0; i < 4; ++i) memcpy(&f32[i], &v[i], 4);
     snx_ctr_pica_init(p);
-    snx_ctr_raster_attach(p);
     put(&l, SNX_PICA_VS + SNX_PICA_SH_UNIFORM_SETUP, 5);
     cmd(&l, SNX_PICA_VS + SNX_PICA_SH_UNIFORM_VALUE, 15, false, f24, 3);
     put(&l, SNX_PICA_VS + SNX_PICA_SH_UNIFORM_SETUP, (1u << 31) | 95);
@@ -140,7 +137,6 @@ static void control(SnxCtrMemory* m) {
     List l = {{0}, 0}, sub = {{0}, 0};
     const uint32_t attr[3] = {0x3e0000c0u, 0x00004000u, 0x003f0000u};
     snx_ctr_pica_init(p);
-    snx_ctr_raster_attach(p);
 
     /* P3D: a byte of the request equal to the same byte of the compare value; autostop ends the list */
     put(&l, SNX_PICA_IRQ_REQUEST, 0x00000099u);
@@ -167,14 +163,16 @@ static void control(SnxCtrMemory* m) {
     put(&l, SNX_PICA_CMDBUF_TRIGGER, 1);
     check(run(p, m, FCRAM, &l, &host) == SNX_CTR_PICA_FAULT, "a jump outside memory faults");
 
-    /* a draw with a geometry shader whose unit is not configured as one stops the list and says why */
+    /* a draw Azahar does not run either stops the list and says why: a geometry shader on a unit set up for vertices */
     l.n = 0;
+    put(&l, 0x200, FCRAM >> 3); /* vertex arrays in memory */
     put(&l, SNX_PICA_USE_GS, 2);
     put(&l, SNX_PICA_TRIGGER_DRAW, 1);
     put(&l, SNX_PICA_USE_GS, 0);
     check(run(p, m, FCRAM, &l, &host) == SNX_CTR_PICA_UNSUPPORTED && p->stop_register == SNX_PICA_TRIGGER_DRAW &&
-              !strcmp(p->stop_reason, "the geometry shader's unit is not in geometry mode") && (p->regs[SNX_PICA_USE_GS] & 3) == 2,
-          "a geometry shader draw stops");
+              !strcmp(p->stop_reason, "a geometry shader on a unit not set up for one") &&
+              (p->regs[SNX_PICA_USE_GS] & 3) == 2,
+          "a geometry shader on a unit set up for vertices stops the draw");
     p->regs[SNX_PICA_USE_GS] = 0;
 
     /* default attributes, then immediate mode with two input attributes */
@@ -280,6 +278,32 @@ static void texels(SnxCtrMemory* m) {
     check(c[0] == 0x80 && c[1] == 0x3c && c[2] == 0x1a, "ETC1 negates and selects the large modifier per texel");
 }
 
+/* geometry shader instructions: SETEMIT's vertex (bits 24..25), primitive (23) and winding (22) flags, and EMIT */
+static uint32_t setemit(unsigned vertex, bool primitive, bool winding) {
+    return 0x2bu << 26 | vertex << 24 | (primitive ? 1u << 23 : 0) | (winding ? 1u << 22 : 0);
+}
+#define EMIT (0x2au << 26)
+/* a geometry shader on the given number of vertex shader outputs a vertex: use (0x229), config (0x252) and the
+   unit's input buffer configuration (attributes - 1, input_to_uniform), its inputs mapped in order, as many outputs
+   enabled */
+static void geometry_unit(List* l, unsigned outputs, uint32_t use, uint32_t config, uint32_t input,
+                          const uint32_t* program, unsigned words) {
+    put(l, SNX_PICA_USE_GS, use);
+    put(l, 0x24a, outputs - 1); /* vs_outmap_total_minus_1_a and _b */
+    put(l, 0x251, outputs - 1);
+    put(l, 0x252, config);
+    put(l, SNX_PICA_TOPOLOGY, 3u << 8);
+    put(l, SNX_PICA_GS + SNX_PICA_SH_INPUT_CONFIG, input | 0x08u << 24);
+    put(l, SNX_PICA_GS + SNX_PICA_SH_ATTR_MAP_LOW, 0x76543210u);
+    put(l, SNX_PICA_GS + SNX_PICA_SH_ATTR_MAP_HIGH, 0xfedcba98u);
+    put(l, SNX_PICA_GS + SNX_PICA_SH_OUTPUT_MASK, (1u << outputs) - 1);
+    put(l, SNX_PICA_GS + SNX_PICA_SH_MAIN_OFFSET, 0);
+    put(l, SNX_PICA_GS + SNX_PICA_SH_PROGRAM_OFFSET, 0);
+    cmd(l, SNX_PICA_GS + SNX_PICA_SH_PROGRAM_WORD, 15, false, program, words);
+    put(l, SNX_PICA_GS + SNX_PICA_SH_SWIZZLE_OFFSET, 0);
+    put(l, SNX_PICA_GS + SNX_PICA_SH_SWIZZLE_WORD, XYZW);
+}
+
 /* a full-viewport triangle (clipped down to the square), coloured by its vertices through TEV stage 0 */
 static void render(SnxCtrMemory* m) {
     enum { FB = FCRAM + 0x20000, VERTICES = FCRAM + 0x10000, TEXTURE = FCRAM + 0x30000, W = 16, H = 16 };
@@ -300,7 +324,6 @@ static void render(SnxCtrMemory* m) {
               snx_ctr_phys_write(m, TEXTURE, texture, sizeof texture) == SNX_CTR_MEM_OK,
           "the draw's buffers are written");
     snx_ctr_pica_init(p);
-    snx_ctr_raster_attach(p);
     put(&l, SNX_PICA_VS + SNX_PICA_SH_PROGRAM_OFFSET, 0);
     cmd(&l, SNX_PICA_VS + SNX_PICA_SH_PROGRAM_WORD, 15, false, program, 4);
     put(&l, SNX_PICA_VS + SNX_PICA_SH_SWIZZLE_OFFSET, 0);
@@ -387,149 +410,250 @@ static void render(SnxCtrMemory* m) {
     for (unsigned i = 0; i < W * H; ++i)
         wrong += !(fb[i * 4] == 255 && fb[i * 4 + 1] == 255 && fb[i * 4 + 2] == 0 && fb[i * 4 + 3] == 255);
     check(!wrong, "every pixel gets the saturated diffuse colour");
-    snx_ctr_pica_free(p);
-    free(p);
-}
 
-#define EMIT        (0x2au << 26)
-#define SETEMIT(vertex, prim, winding) (0x2bu << 26 | (vertex) << 24 | (prim) << 23 | (winding) << 22)
-
-/* a geometry shader in point mode turns one vertex into the full-viewport triangle of render(): it adds a corner
-   offset (c0 to c2) to the position and passes the colour and texture coordinate through, one EMIT for each corner,
-   the last completing the primitive */
-static void geometry(SnxCtrMemory* m) {
-    enum { FB = FCRAM + 0x20000, VERTICES = FCRAM + 0x10000, W = 16, H = 16 };
-    SnxCtrPica* p = calloc(1, sizeof *p);
-    unsigned interrupts = 0;
-    SnxCtrPicaHost host = {&interrupts, on_interrupt, snx_ctr_pica_draw, snx_ctr_pica_draw_immediate, NULL};
-    List l = {{0}, 0};
-    float vertex[10] = {0, 0, -0.5f, 1, 1, 0.6f, 0.25f, 1, 0, 0};
-    const uint32_t vs_program[] = {op1(0x13, 0, 0, 0, 0), op1(0x13, 1, 1, 0, 0), op1(0x13, 2, 2, 0, 0), END};
-    const uint32_t gs_program[] = {
-        SETEMIT(0, 0, 0), op1(0x00, 0, 0x20, 0, 0), op1(0x13, 1, 1, 0, 0), op1(0x13, 2, 2, 0, 0), EMIT,
-        SETEMIT(1, 0, 0), op1(0x00, 0, 0x21, 0, 0), op1(0x13, 1, 1, 0, 0), op1(0x13, 2, 2, 0, 0), EMIT,
-        SETEMIT(2, 1, 0), op1(0x00, 0, 0x22, 0, 0), op1(0x13, 1, 1, 0, 0), op1(0x13, 2, 2, 0, 0), EMIT, END};
-    unsigned char fb[W * H * 4];
-    memset(fb, 0xee, sizeof fb);
-    check(snx_ctr_phys_write(m, VERTICES, vertex, sizeof vertex) == SNX_CTR_MEM_OK &&
-              snx_ctr_phys_write(m, FB, fb, sizeof fb) == SNX_CTR_MEM_OK,
-          "the geometry draw's buffers are written");
-    snx_ctr_pica_init(p);
-    snx_ctr_raster_attach(p);
-    p->gs.f[0][0] = -1, p->gs.f[0][1] = -1;
-    p->gs.f[1][0] = 3, p->gs.f[1][1] = -1;
-    p->gs.f[2][0] = -1, p->gs.f[2][1] = 3;
-    put(&l, SNX_PICA_GS_EXCLUSIVE, 1);
-    put(&l, SNX_PICA_USE_GS, 2);
-    put(&l, SNX_PICA_VS + SNX_PICA_SH_PROGRAM_OFFSET, 0);
-    cmd(&l, SNX_PICA_VS + SNX_PICA_SH_PROGRAM_WORD, 15, false, vs_program, 4);
-    put(&l, SNX_PICA_VS + SNX_PICA_SH_SWIZZLE_OFFSET, 0);
-    put(&l, SNX_PICA_VS + SNX_PICA_SH_SWIZZLE_WORD, XYZW);
-    put(&l, SNX_PICA_VS + SNX_PICA_SH_INPUT_CONFIG, 2 | 0xa0u << 24);
-    put(&l, SNX_PICA_VS + SNX_PICA_SH_ATTR_MAP_LOW, 0x210);
-    put(&l, SNX_PICA_VS + SNX_PICA_SH_OUTPUT_MASK, 7);
-    put(&l, SNX_PICA_GS + SNX_PICA_SH_PROGRAM_OFFSET, 0);
-    cmd(&l, SNX_PICA_GS + SNX_PICA_SH_PROGRAM_WORD, 15, false, gs_program, 15);
-    put(&l, SNX_PICA_GS + SNX_PICA_SH_SWIZZLE_OFFSET, 0);
-    put(&l, SNX_PICA_GS + SNX_PICA_SH_SWIZZLE_WORD, XYZW);
-    put(&l, SNX_PICA_GS + SNX_PICA_SH_INPUT_CONFIG, 2 | 0x08u << 24); /* three inputs: one vertex of three outputs */
-    put(&l, SNX_PICA_GS + SNX_PICA_SH_ATTR_MAP_LOW, 0x210);
-    put(&l, SNX_PICA_GS + SNX_PICA_SH_OUTPUT_MASK, 7);
-    put(&l, 0x24a, 2); /* vertex outputs minus one, counted twice */
-    put(&l, 0x251, 2);
-    put(&l, 0x252, 0); /* point mode */
-    put(&l, SNX_PICA_TOPOLOGY, 3u << 8); /* the geometry shader's primitives */
-    put(&l, 0x04f, 3);
-    put(&l, 0x050, 0x03020100u);
-    put(&l, 0x051, 0x0b0a0908u);
-    put(&l, 0x052, 0x1f1f0d0cu);
-    put(&l, 0x041, 0x420000u);
-    put(&l, 0x043, 0x420000u);
-    put(&l, 0x1c6, 1);
-    for (unsigned s = 1; s < 6; ++s) put(&l, s < 4 ? 0x0c0 + s * 8 : 0x0f0 + (s - 4) * 8, 0x000f000fu);
-    put(&l, 0x11d, FB / 8);
-    put(&l, 0x117, 0);
-    put(&l, 0x11e, W | (H - 1) << 12);
-    put(&l, 0x113, 15);
-    put(&l, 0x107, 0xf00);
-    put(&l, 0x102, 3);
-    put(&l, 0x200, VERTICES >> 3);
-    put(&l, 0x201, 0x7ff);
-    put(&l, 0x202, 2u << 28);
-    put(&l, 0x203, 0);
-    put(&l, 0x204, 0x210);
-    put(&l, 0x205, 3u << 28 | 40u << 16);
-    put(&l, 0x228, 1);
+    /* the first draw again, through a point mode geometry shader that passes each run's three vertices on */
+    const uint32_t passthrough[16] = {setemit(0, false, false),
+                                      op1(0x13, 0, 0, 0, 0),
+                                      op1(0x13, 1, 1, 0, 0),
+                                      op1(0x13, 2, 2, 0, 0),
+                                      EMIT,
+                                      setemit(1, false, false),
+                                      op1(0x13, 0, 3, 0, 0),
+                                      op1(0x13, 1, 4, 0, 0),
+                                      op1(0x13, 2, 5, 0, 0),
+                                      EMIT,
+                                      setemit(2, true, false),
+                                      op1(0x13, 0, 6, 0, 0),
+                                      op1(0x13, 1, 7, 0, 0),
+                                      op1(0x13, 2, 8, 0, 0),
+                                      EMIT,
+                                      END};
+    l.n = 0;
+    put(&l, 0x1c6, 1); /* lighting off, TEV stage 0 taking the vertex colour again */
+    put(&l, 0x0c0, 0);
+    geometry_unit(&l, 3, 2, 0, 8, passthrough, 16);
     put(&l, SNX_PICA_TRIGGER_DRAW, 1);
     check(run(p, m, FCRAM, &l, &host) == SNX_CTR_PICA_OK, "a draw through a geometry shader runs");
-    check(snx_ctr_phys_read(m, FB, fb, sizeof fb) == SNX_CTR_MEM_OK, "the geometry draw's framebuffer is read back");
-    unsigned wrong = 0;
-    for (unsigned i = 0; i < W * H; ++i)
-        wrong += !(fb[i * 4] == 255 && fb[i * 4 + 1] == 64 && fb[i * 4 + 2] == 153 && fb[i * 4 + 3] == 255);
-    check(!wrong, "the triangle a geometry shader makes of one vertex covers the viewport with the vertex colour");
-    check(p->gs.b >> 15 & 1, "b15 is set after the geometry shader runs");
-    /* fixed-primitive mode: the vertex shader's outputs land in the uniforms from start_index (c3 to c5), and the same
-       triangle comes out of a program that reads them there */
-    const uint32_t fixed_program[] = {
-        op1(0x13, 0x10, 0x23, 0, 0), /* mov r0, c3 */
-        SETEMIT(0, 0, 0), op1(0x00, 0, 0x20, 0x10, 0), op1(0x13, 1, 0x24, 0, 0), op1(0x13, 2, 0x25, 0, 0), EMIT,
-        SETEMIT(1, 0, 0), op1(0x00, 0, 0x21, 0x10, 0), op1(0x13, 1, 0x24, 0, 0), op1(0x13, 2, 0x25, 0, 0), EMIT,
-        SETEMIT(2, 1, 0), op1(0x00, 0, 0x22, 0x10, 0), op1(0x13, 1, 0x24, 0, 0), op1(0x13, 2, 0x25, 0, 0), EMIT, END};
-    memset(fb, 0xee, sizeof fb);
-    check(snx_ctr_phys_write(m, FB, fb, sizeof fb) == SNX_CTR_MEM_OK, "the framebuffer is cleared");
-    l.n = 0;
-    put(&l, SNX_PICA_GS + SNX_PICA_SH_PROGRAM_OFFSET, 0);
-    cmd(&l, SNX_PICA_GS + SNX_PICA_SH_PROGRAM_WORD, 15, false, fixed_program, 16);
-    put(&l, SNX_PICA_GS + SNX_PICA_SH_INPUT_CONFIG, 2 | 1u << 8 | 0x08u << 24); /* input to uniforms */
-    put(&l, 0x252, 2 | 0u << 8 | 2u << 12 | 3u << 16);                          /* fixed: 1 vertex, stride 3, from c3 */
-    put(&l, SNX_PICA_TRIGGER_DRAW, 1);
-    check(run(p, m, FCRAM, &l, &host) == SNX_CTR_PICA_OK, "a draw through a fixed-primitive geometry shader runs");
     check(snx_ctr_phys_read(m, FB, fb, sizeof fb) == SNX_CTR_MEM_OK, "the framebuffer is read back");
     wrong = 0;
     for (unsigned i = 0; i < W * H; ++i)
         wrong += !(fb[i * 4] == 255 && fb[i * 4 + 1] == 64 && fb[i * 4 + 2] == 153 && fb[i * 4 + 3] == 255);
-    check(!wrong, "a fixed-primitive geometry shader reads the vertex from its uniforms");
-    /* variable-primitive mode: the first vertex of a draw is the count of the vertices after it (vertex_offset 1 makes
-       it 1), the vertex that follows (index 2) fills c1 to c3 and the shader adds the corners held in c10 to c12 */
-    const uint32_t variable_program[] = {
-        op1(0x13, 0x10, 0x21, 0, 0), /* mov r0, c1 */
-        SETEMIT(0, 0, 0), op1(0x00, 0, 0x2a, 0x10, 0), op1(0x13, 1, 0x22, 0, 0), op1(0x13, 2, 0x23, 0, 0), EMIT,
-        SETEMIT(1, 0, 0), op1(0x00, 0, 0x2b, 0x10, 0), op1(0x13, 1, 0x22, 0, 0), op1(0x13, 2, 0x23, 0, 0), EMIT,
-        SETEMIT(2, 1, 0), op1(0x00, 0, 0x2c, 0x10, 0), op1(0x13, 1, 0x22, 0, 0), op1(0x13, 2, 0x23, 0, 0), EMIT, END};
-    float three[30] = {0};
-    memcpy(three + 20, vertex, sizeof vertex);
-    memcpy(p->gs.f[10], p->gs.f[0], 16);
-    memcpy(p->gs.f[11], p->gs.f[1], 16);
-    memcpy(p->gs.f[12], p->gs.f[2], 16);
-    memset(fb, 0xee, sizeof fb);
-    check(snx_ctr_phys_write(m, FB, fb, sizeof fb) == SNX_CTR_MEM_OK &&
-              snx_ctr_phys_write(m, VERTICES, three, sizeof three) == SNX_CTR_MEM_OK,
-          "the variable-primitive draw's buffers are written");
-    l.n = 0;
-    put(&l, SNX_PICA_USE_GS, 2 | 1u << 31);
-    put(&l, SNX_PICA_GS + SNX_PICA_SH_PROGRAM_OFFSET, 0);
-    cmd(&l, SNX_PICA_GS + SNX_PICA_SH_PROGRAM_WORD, 15, false, variable_program, 16);
-    put(&l, 0x252, 1);     /* variable primitive */
-    put(&l, 0x254, 0);     /* the first vertex of a batch brings every output */
-    put(&l, 0x22a, 1);     /* vertex offset */
-    put(&l, 0x228, 2);
-    put(&l, SNX_PICA_TRIGGER_DRAW, 1);
-    check(run(p, m, FCRAM, &l, &host) == SNX_CTR_PICA_OK, "a draw through a variable-primitive geometry shader runs");
-    check(snx_ctr_phys_read(m, FB, fb, sizeof fb) == SNX_CTR_MEM_OK, "the framebuffer is read back");
-    wrong = 0;
-    for (unsigned i = 0; i < W * H; ++i)
-        wrong += !(fb[i * 4] == 255 && fb[i * 4 + 1] == 64 && fb[i * 4 + 2] == 153 && fb[i * 4 + 3] == 255);
-    check(!wrong, "a variable-primitive geometry shader takes its count from the first vertex");
-    check(p->gs.f[0][0] == 1, "the count is in c0");
-    /* an unknown mode, or a layout the pipeline does not take, stops the draw with a reason */
-    l.n = 0;
-    put(&l, 0x252, 3);
-    put(&l, SNX_PICA_TRIGGER_DRAW, 1);
-    check(run(p, m, FCRAM, &l, &host) == SNX_CTR_PICA_UNSUPPORTED && p->stop_reason, "an unknown geometry mode stops");
+    check(!wrong, "the geometry shader's triangle gets the interpolated vertex colour");
     snx_ctr_pica_free(p);
     free(p);
 }
 
+/* the triangles a draw gives, by their vertices' position x */
+static struct {
+    float x[8][3];
+    unsigned count;
+} drawn;
+static void collect(void* context, const SnxCtrVertex* v0, const SnxCtrVertex* v1, const SnxCtrVertex* v2) {
+    (void)context;
+    if (drawn.count == 8) return;
+    drawn.x[drawn.count][0] = v0->pos[0];
+    drawn.x[drawn.count][1] = v1->pos[0];
+    drawn.x[drawn.count][2] = v2->pos[0];
+    ++drawn.count;
+}
+static SnxCtrPicaResult collect_draw(SnxCtrPica* p, SnxCtrMemory* m, bool indexed) {
+    return snx_ctr_pica_triangles(p, m, indexed, collect, NULL);
+}
+static SnxCtrPicaResult collect_vertex(SnxCtrPica* p, SnxCtrMemory* m) {
+    (void)m;
+    return snx_ctr_pica_triangles_immediate(p, collect, NULL);
+}
+static bool drawn_as(const float (*x)[3], unsigned count) {
+    if (drawn.count != count) return false;
+    for (unsigned t = 0; t < count; ++t)
+        for (unsigned k = 0; k < 3; ++k)
+            if (drawn.x[t][k] != x[t][k]) return false;
+    return true;
+}
+/* a list that draws float positions (16-byte vertices at vertices) through the vertex shader o0 = v0, o1 = v0, with
+   the first one or two of those outputs enabled */
+static void geometry_list(List* l, uint32_t vertices, unsigned outputs) {
+    const uint32_t program[3] = {op1(0x13, 0, 0, 0, 0), op1(0x13, 1, 0, 0, 0), END};
+    put(l, SNX_PICA_VS + SNX_PICA_SH_PROGRAM_OFFSET, 0);
+    cmd(l, SNX_PICA_VS + SNX_PICA_SH_PROGRAM_WORD, 15, false, program, 3);
+    put(l, SNX_PICA_VS + SNX_PICA_SH_SWIZZLE_OFFSET, 0);
+    put(l, SNX_PICA_VS + SNX_PICA_SH_SWIZZLE_WORD, XYZW);
+    put(l, SNX_PICA_VS + SNX_PICA_SH_INPUT_CONFIG, 0xa0u << 24); /* one input attribute */
+    put(l, SNX_PICA_VS + SNX_PICA_SH_OUTPUT_MASK, (1u << outputs) - 1);
+    put(l, 0x04f, 1);           /* vs_output_total */
+    put(l, 0x050, 0x03020100u); /* position */
+    put(l, 0x200, vertices >> 3);
+    put(l, 0x201, 0xf); /* attribute 0: four floats */
+    put(l, 0x202, 0);
+    put(l, 0x203, 0);
+    put(l, 0x204, 0);
+    put(l, 0x205, 1u << 28 | 16u << 16);
+}
+
+/* the geometry pipeline's three modes, and setups Azahar asserts against, by the triangles they give */
+static void geometry(SnxCtrMemory* m) {
+    enum { VERTICES = FCRAM + 0x10000, INDICES = FCRAM + 0x11000 };
+    SnxCtrPica* p = calloc(1, sizeof *p);
+    SnxCtrPicaHost host = {NULL, NULL, collect_draw, collect_vertex, NULL};
+    List l = {{0}, 0};
+    float positions[6][4] = {{0}};
+    for (unsigned i = 0; i < 6; ++i) {
+        positions[i][0] = (float)i;
+        positions[i][3] = 1.0f;
+    }
+    const unsigned char indices[4] = {3, 1, 2, 3}; /* a batch's vertex count, then its vertices */
+    check(snx_ctr_phys_write(m, VERTICES, positions, sizeof positions) == SNX_CTR_MEM_OK &&
+              snx_ctr_phys_write(m, INDICES, indices, sizeof indices) == SNX_CTR_MEM_OK,
+          "the vertices and indices are written");
+
+    /* point mode, three vertices a run: their triangle, then o0 = v2 as vertex 0, vertex 1 kept, and o0 = v0 as
+       vertex 2 with the winding flag, which the assembler gives as (v1, v2, v0) */
+    const uint32_t point[16] = {setemit(0, false, false),
+                                op1(0x13, 0, 0, 0, 0),
+                                EMIT,
+                                setemit(1, false, false),
+                                op1(0x13, 0, 1, 0, 0),
+                                EMIT,
+                                setemit(2, true, false),
+                                op1(0x13, 0, 2, 0, 0),
+                                EMIT,
+                                setemit(0, false, false),
+                                op1(0x13, 0, 2, 0, 0),
+                                EMIT,
+                                setemit(2, true, true),
+                                op1(0x13, 0, 0, 0, 0),
+                                EMIT,
+                                END};
+    static const float point_x[4][3] = {{0, 1, 2}, {1, 2, 0}, {3, 4, 5}, {4, 5, 3}};
+    snx_ctr_pica_init(p);
+    geometry_list(&l, VERTICES, 1);
+    geometry_unit(&l, 1, 2, 0, 2, point, 16);
+    put(&l, 0x228, 6);
+    put(&l, SNX_PICA_TRIGGER_DRAW, 1);
+    drawn.count = 0;
+    check(run(p, m, FCRAM, &l, &host) == SNX_CTR_PICA_OK && drawn_as(point_x, 4),
+          "point mode runs once each three vertices, and its winding flag swaps the first two");
+    check(p->gs.b >> 15 & 1, "b15 is set after a run");
+
+    /* the unit keeps its registers from one run and one draw to the next: r0 += v0 each run, emitted as every vertex */
+    const uint32_t counter[11] = {op1(0x00, 0x10, 0x10, 0x00, 0), /* add r0, r0, v0 */
+                                  setemit(0, false, false),
+                                  op1(0x13, 0, 0x10, 0, 0),
+                                  EMIT,
+                                  setemit(1, false, false),
+                                  op1(0x13, 0, 0x10, 0, 0),
+                                  EMIT,
+                                  setemit(2, true, false),
+                                  op1(0x13, 0, 0x10, 0, 0),
+                                  EMIT,
+                                  END};
+    static const float counter_x[4][3] = {{0, 0, 0}, {3, 3, 3}, {3, 3, 3}, {6, 6, 6}};
+    snx_ctr_pica_free(p);
+    snx_ctr_pica_init(p);
+    l.n = 0;
+    geometry_list(&l, VERTICES, 1);
+    geometry_unit(&l, 1, 2, 0, 2, counter, 11);
+    put(&l, 0x228, 6);
+    put(&l, SNX_PICA_TRIGGER_DRAW, 1);
+    put(&l, SNX_PICA_TRIGGER_DRAW, 1);
+    drawn.count = 0;
+    check(run(p, m, FCRAM, &l, &host) == SNX_CTR_PICA_OK && drawn_as(counter_x, 4),
+          "the geometry shader's registers carry over from one run and one draw to the next");
+
+    /* immediate mode: the vertices it forms go through the same pipeline */
+    static const uint32_t immediate_x[3] = {0, 0x3f0000, 0x400000}; /* 0, 1 and 2 in float24 */
+    snx_ctr_pica_free(p);
+    snx_ctr_pica_init(p);
+    l.n = 0;
+    geometry_list(&l, VERTICES, 1);
+    geometry_unit(&l, 1, 2, 0, 2, point, 16);
+    put(&l, SNX_PICA_MAX_INPUT_ATTR, 0);
+    put(&l, SNX_PICA_DEFAULT_ATTR_INDEX, 15);
+    for (unsigned i = 0; i < 3; ++i) { /* w 1, z 0, y 0 and x, float24 packed big-end first */
+        put(&l, SNX_PICA_DEFAULT_ATTR_VALUE, 0x3f0000u << 8);
+        put(&l, SNX_PICA_DEFAULT_ATTR_VALUE, 0);
+        put(&l, SNX_PICA_DEFAULT_ATTR_VALUE, immediate_x[i]);
+    }
+    drawn.count = 0;
+    check(run(p, m, FCRAM, &l, &host) == SNX_CTR_PICA_OK && drawn_as(point_x, 2),
+          "immediate mode vertices run the geometry shader as array vertices do");
+
+    /* fixed primitive mode: three vertices of one output each into c8, c9 and c10, which the program reads */
+    const uint32_t fixed[10] = {setemit(0, false, false),
+                                op1(0x13, 0, 0x28, 0, 0),
+                                EMIT,
+                                setemit(1, false, false),
+                                op1(0x13, 0, 0x29, 0, 0),
+                                EMIT,
+                                setemit(2, true, false),
+                                op1(0x13, 0, 0x2a, 0, 0),
+                                EMIT,
+                                END};
+    static const float fixed_x[1][3] = {{3, 4, 5}};
+    snx_ctr_pica_free(p);
+    snx_ctr_pica_init(p);
+    l.n = 0;
+    geometry_list(&l, VERTICES, 1);
+    geometry_unit(&l, 1, 2, 2u | 2u << 8 | 8u << 16, 1u << 8, fixed, 10);
+    put(&l, 0x22a, 3); /* from vertex 3 */
+    put(&l, 0x228, 3);
+    put(&l, SNX_PICA_TRIGGER_DRAW, 1);
+    drawn.count = 0;
+    check(run(p, m, FCRAM, &l, &host) == SNX_CTR_PICA_OK && drawn_as(fixed_x, 1) && p->gs.f[8][0] == 3 &&
+              p->gs.f[10][0] == 5,
+          "fixed primitive mode fills the uniforms from its first one and runs when they are complete");
+
+    /* variable primitive mode: the first index is the count (c0), the main vertex gives both its outputs (c1, c2),
+       the others their first (c3, c4) */
+    const uint32_t variable[10] = {setemit(0, false, false),
+                                   op1(0x13, 0, 0x21, 0, 0),
+                                   EMIT,
+                                   setemit(1, false, false),
+                                   op1(0x13, 0, 0x23, 0, 0),
+                                   EMIT,
+                                   setemit(2, true, false),
+                                   op1(0x13, 0, 0x24, 0, 0),
+                                   EMIT,
+                                   END};
+    static const float variable_x[1][3] = {{1, 2, 3}};
+    snx_ctr_pica_free(p);
+    snx_ctr_pica_init(p);
+    l.n = 0;
+    geometry_list(&l, VERTICES, 2);
+    geometry_unit(&l, 2, 2u | 1u << 31, 1, 1u << 8, variable, 10);
+    put(&l, 0x254, 0); /* one main vertex */
+    put(&l, 0x227, INDICES - VERTICES);
+    put(&l, 0x228, 4);
+    put(&l, SNX_PICA_TRIGGER_DRAW_INDEXED, 1);
+    drawn.count = 0;
+    check(run(p, m, FCRAM, &l, &host) == SNX_CTR_PICA_OK && drawn_as(variable_x, 1) && p->gs.f[0][0] == 3 &&
+              p->gs.f[2][0] == 1 && p->gs.f[3][0] == 2 && p->gs.f[4][0] == 3,
+          "variable primitive mode takes its count from the first index, and only the main vertices' every output");
+
+    /* the setups Azahar asserts against stop the draw */
+    snx_ctr_pica_free(p);
+    snx_ctr_pica_init(p);
+    l.n = 0;
+    geometry_list(&l, VERTICES, 2);
+    geometry_unit(&l, 2, 2, 0, 2, point, 16);
+    put(&l, 0x228, 6);
+    put(&l, SNX_PICA_TRIGGER_DRAW, 1);
+    check(run(p, m, FCRAM, &l, &host) == SNX_CTR_PICA_UNSUPPORTED &&
+              !strcmp(p->stop_reason, "a point mode geometry shader whose inputs are not whole vertices"),
+          "point mode inputs that are not whole vertices stop the draw");
+    snx_ctr_pica_free(p);
+    snx_ctr_pica_init(p);
+    l.n = 0;
+    geometry_list(&l, VERTICES, 2);
+    geometry_unit(&l, 2, 2u | 1u << 31, 1, 1u << 8, variable, 10);
+    put(&l, 0x228, 4);
+    put(&l, SNX_PICA_TRIGGER_DRAW, 1);
+    check(run(p, m, FCRAM, &l, &host) == SNX_CTR_PICA_UNSUPPORTED &&
+              !strcmp(p->stop_reason, "a variable primitive geometry shader in a draw without indices"),
+          "variable primitive mode in a draw without indices stops the draw");
+    snx_ctr_pica_free(p);
+    free(p);
+}
 
 int main(void) {
     SnxCtrMemory* m = snx_ctr_memory_new(SNX_CTR_OLD);

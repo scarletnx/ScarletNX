@@ -12,6 +12,7 @@
 #define SNX_VK_RING_SLOTS 4
 typedef struct {
     VkCommandBuffer cb;
+    VkCommandBuffer uploads; /* run before cb in its submission, when the recording asked for it */
     VkFence fence;
     VkDescriptorPool descriptors; /* the recording's descriptor sets */
     uint64_t serial;              /* 0: not in flight */
@@ -21,9 +22,9 @@ typedef struct {
     VkQueue queue;
     VkCommandPool pool;
     SnxVkRingSlot slots[SNX_VK_RING_SLOTS];
-    unsigned count; /* slots in use */
-    unsigned slot;  /* the recording's, or the next one's */
-    bool recording;
+    unsigned count;                /* slots in use */
+    unsigned slot;                 /* the recording's, or the next one's */
+    bool recording, uploading;     /* uploading: the recording's uploads are begun */
     uint64_t submitted, completed; /* the last serial submitted, the last one done */
     /* the frontend's, each optional: a recording begun in slot, a recording about to end (a rendering pass closed),
        a submission done and its slot free again */
@@ -39,8 +40,12 @@ bool snx_vk_ring_init(SnxVkRing* ring, VkDevice device, VkQueue queue, uint32_t 
 void snx_vk_ring_free(SnxVkRing* ring);
 /* the open command buffer, begun if none was (in a slot free again, which may wait for its submission) */
 VkCommandBuffer snx_vk_ring_commands(SnxVkRing* ring);
-/* The recording submitted, without waiting, after a barrier that makes everything written the host's to read once
-   its fence is signaled: its serial (the last one's when nothing was recorded and there is no semaphore). wait and
+/* The open recording's uploads, begun if they were not (the recording too): a command buffer that runs before every
+   command the recording holds, in the same submission, with a barrier after it that makes what it wrote visible to
+   them. For copies into memory that nothing the recording holds, nor anything in flight, reads or writes */
+VkCommandBuffer snx_vk_ring_uploads(SnxVkRing* ring);
+/* The recording submitted (its uploads first), without waiting, after a barrier that makes everything written the
+   host's to read once its fence is signaled: its serial (the last one's when nothing was recorded and there is no semaphore). wait and
    signal, when not null, are a swapchain's acquire and present semaphores */
 uint64_t snx_vk_ring_submit(SnxVkRing* ring, VkSemaphore wait, VkSemaphore signal);
 /* the submissions done so far, without waiting: their slots free again. The last serial done */

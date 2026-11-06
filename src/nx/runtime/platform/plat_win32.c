@@ -8,9 +8,12 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 #include <SDL3/SDL_thread.h>
 #include <errno.h>
 #include <io.h>
+#include <powersetting.h>
+#include <powrprof.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -114,6 +117,82 @@ void plat_thread_exit(void) {
     SDL_CleanupTLS();
     ExitThread(0);
 }
+
+/* ================================================================ the system's low memory */
+/* The memory resource notifications: low while the available physical memory is under the system's mark (32 MiB per
+   4 GiB, 64 MiB at most), high once it is about three times that. A line at each fall to the low mark, then a wait for
+   the high one, so memory that stays low makes one line */
+static struct {
+    HANDLE low, high;
+    int (*say)(const char* why);
+} g_memory_watch;
+static void memory_watch_thread(void* arg) {
+    (void)arg;
+    SNX_THREAD_NAME("memory pressure");
+    for (;;) {
+        if (WaitForSingleObject(g_memory_watch.low, INFINITE) != WAIT_OBJECT_0) return;
+        if (!g_memory_watch.say(
+                "the system's available memory fell to its low mark (Windows' low memory notification)"))
+            return;
+        if (WaitForSingleObject(g_memory_watch.high, INFINITE) != WAIT_OBJECT_0) return;
+    }
+}
+int plat_memory_watch(int (*say)(const char* why)) {
+    char why[256];
+    if (g_memory_watch.say) return 0;
+    g_memory_watch.low = CreateMemoryResourceNotification(LowMemoryResourceNotification);
+    g_memory_watch.high = g_memory_watch.low ? CreateMemoryResourceNotification(HighMemoryResourceNotification) : NULL;
+    if (!g_memory_watch.high) {
+        snx_os_error(why, sizeof why);
+        LOG("memory: no watch of the system's low memory: CreateMemoryResourceNotification: %s\n", why);
+        if (g_memory_watch.low) CloseHandle(g_memory_watch.low);
+        g_memory_watch.low = NULL;
+        return -1;
+    }
+    g_memory_watch.say = say;
+    if (plat_thread(memory_watch_thread, NULL, 0)) {
+        snx_os_error(why, sizeof why);
+        LOG("memory: no watch of the system's low memory: its thread does not start: %s\n", why);
+        g_memory_watch.say = NULL;
+        return -1;
+    }
+    return 0;
+}
+
+/* ================================================================ the host's power source */
+/* the notification marks this; the main thread takes it, so only there does the runtime ask SDL for the new state */
+static int g_power_changed;
+void plat_power_mark_changed(void) { __atomic_store_n(&g_power_changed, 1, __ATOMIC_RELEASE); }
+int plat_power_take_change(void) { return __atomic_exchange_n(&g_power_changed, 0, __ATOMIC_ACQ_REL); }
+/* The system's power setting notification for the AC/DC source: the charger in or out calls this on a system thread.
+   The SDK's DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS is not in every _WIN32_WINNT's powrprof.h, so this is the same two
+   pointers, and DEVICE_NOTIFY_CALLBACK is 2 (winuser.h) */
+#ifndef DEVICE_NOTIFY_CALLBACK
+#define DEVICE_NOTIFY_CALLBACK 2
+#endif
+typedef ULONG(CALLBACK* SnxPowerCallback)(PVOID, ULONG, PVOID);
+typedef struct {
+    SnxPowerCallback Callback;
+    PVOID Context;
+} SnxPowerSubscribe;
+static ULONG CALLBACK power_changed(PVOID context, ULONG type, PVOID setting) {
+    (void)context;
+    (void)type;
+    (void)setting;
+    plat_power_mark_changed();
+    return ERROR_SUCCESS;
+}
+static SnxPowerSubscribe g_power_sub = {power_changed, NULL};
+static HPOWERNOTIFY g_power_notify;
+int plat_power_watch(void) {
+    /* GUID_ACDC_POWER_SOURCE: 5D3E9A59-E9D5-4B00-A6BD-FF34FF516548 */
+    static const GUID acdc = {0x5D3E9A59, 0xE9D5, 0x4B00, {0xA6, 0xBD, 0xFF, 0x34, 0xFF, 0x51, 0x65, 0x48}};
+    if (g_power_notify) return 0;
+    if (PowerSettingRegisterNotification(&acdc, DEVICE_NOTIFY_CALLBACK, &g_power_sub, &g_power_notify) !=
+        ERROR_SUCCESS)
+        return -1;
+    return 0;
+}
 int plat_cpus(int* ids, int max) {
     (void)ids;
     (void)max;
@@ -164,21 +243,28 @@ void plat_exit_now(int code) {
 }
 
 /* ================================================================ the guest's address space */
-/* The reservation carries a write watch unless SNX_NO_WW is set: without it the caches hash guest memory to find
-   changes (a third of Super Mario Odyssey's GPU thread) */
+/* The reservation carries a write watch, which plat_ww_scan reads unless write_tracking=2: without it the caches hash
+   guest memory to find changes (a third of Super Mario Odyssey's GPU thread). The watch is chosen as the reservation
+   is made, before the settings are read */
 static u8* g_ww_base;
 static u64 g_ww_size;
+static u8* g_ww_watched; /* plat_vm_reserve's reservation, when it has the watch */
 
+static int g_host_page_said; /* plat_vm_page told why it refused host_page */
 u64 plat_vm_page(void) {
     u64 page = 4096; /* VirtualAlloc commits and protects 4 KiB pages on every Windows system */
-    const char* forced = getenv("SNX_HOST_PAGE");
-    if (forced) { /* a larger power of two only: the host's pages can't be split */
-        u64 v = strtoull(forced, NULL, 0);
-        if (v > page && v <= (1u << 20) && !(v & (v - 1))) page = v;
+    u64 v = g_settings.host_page_size > 0 ? (u64)g_settings.host_page_size : 0;
+    if (!v) return page;
+    if (v >= page && v <= SNX_PLAT_PAGE_MAX && !(v & (v - 1))) return v; /* the host's pages can't be split */
+    if (!g_host_page_said) { /* mem_init asks first, on the main thread at startup */
+        g_host_page_said = 1;
+        WARN("memory: host_page=%llu is not a power of two from the host's page, %llu bytes, to %llu: the runtime "
+             "works in %llu-byte pages\n",
+             (unsigned long long)v, (unsigned long long)page, (unsigned long long)SNX_PLAT_PAGE_MAX,
+             (unsigned long long)page);
     }
     return page;
 }
-/* VirtualAlloc places a reservation at its 64 KiB allocation granularity, which covers SNX_HOST_PAGE up to that */
 int plat_address_space(u64* mapped, u64* largest_free) {
     SYSTEM_INFO system;
     MEMORY_BASIC_INFORMATION region;
@@ -199,20 +285,33 @@ int plat_address_space(u64* mapped, u64* largest_free) {
     *largest_free = hole;
     return 1;
 }
-u8* plat_vm_reserve(u64 size) {
-    void* p = NULL;
-    if (!getenv("SNX_NO_WW")) p = VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_NOACCESS);
-    if (p) {
-        g_ww_base = (u8*)p; /* mem_init runs before any thread that scans */
-        g_ww_size = size;
-        return (u8*)p;
-    }
-    p = VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE, PAGE_NOACCESS);
-    if (!p) { /* the reason in errno, as mmap's */
+/* the reason in errno, as mmap's */
+static u8* vm_reserved(void* p) {
+    if (!p) {
         DWORD why = GetLastError();
         errno = why == ERROR_NOT_ENOUGH_MEMORY || why == ERROR_COMMITMENT_LIMIT ? ENOMEM : EINVAL;
     }
     return (u8*)p;
+}
+u8* plat_vm_reserve(u64 size) {
+    u8* p = vm_reserved(VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_NOACCESS));
+    if (p) g_ww_watched = p;
+    return p;
+}
+u8* plat_vm_reserve_unwatched(u64 size) {
+    return vm_reserved(VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE, PAGE_NOACCESS));
+}
+void plat_vm_track(u8* p, u64 size) {
+    if (g_settings.write_tracking == 1)
+        WARN("memory: write_tracking=1 (page protection) has no Windows version: %s\n",
+             p == g_ww_watched ? "the reservation's write watch tracks writes, as write_tracking=0 does"
+                               : "the reservation has no write watch, so the caches compare contents");
+    if (g_settings.write_tracking_hot_pages == 1)
+        WARN("memory: write_tracking_hot=1 leaves pages hot only where page protection tracks the writes, which has "
+             "no Windows version: no page is hot this run\n");
+    if (p != g_ww_watched || g_settings.write_tracking == 2) return;
+    g_ww_base = p; /* mem_init runs before any thread that scans */
+    g_ww_size = size;
 }
 
 int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
@@ -244,6 +343,17 @@ void plat_ww_close(u8* p, u64 size) {
     (void)p;
     (void)size;
 }
+/* no hot pages: the write watch takes no faults to spare */
+int plat_ww_hot_in(const u8* p, u64 size) {
+    (void)p;
+    (void)size;
+    return 0;
+}
+void plat_ww_cool(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
+    (void)p;
+    (void)size;
+    (void)cb;
+}
 
 int plat_vm_commit(u8* p, u64 size) {
     /* MEM_COMMIT charges the whole range to the commit limit at once */
@@ -253,6 +363,24 @@ int plat_vm_commit(u8* p, u64 size) {
     return -1;
 }
 void plat_vm_decommit(u8* p, u64 size) { VirtualFree(p, (SIZE_T)size, MEM_DECOMMIT); }
+int plat_vm_share(u8* p, int fd, u64 size) {
+    (void)p, (void)fd, (void)size;
+    errno = ENOSYS;
+    return -1;
+}
+int plat_vm_unshare(u8* p, u64 size) {
+    (void)p, (void)size;
+    errno = ENOSYS;
+    return -1;
+}
+int plat_gpu_buffer(u64 size, int* fd, void** handle) {
+    (void)size;
+    *fd = -1;
+    *handle = NULL;
+    errno = ENOSYS;
+    return -1;
+}
+void plat_gpu_buffer_free(int fd, void* handle, u64 size) { (void)fd, (void)handle, (void)size; }
 
 /* No alias pool yet: views of the same pages need the reservation made of placeholders (VirtualAlloc2 and
    MapViewOfFile3, Windows 10 1803), and whether the write watch survives that is untested. mem.c copies instead */
@@ -271,6 +399,14 @@ int plat_alias_unmap(u8* p, u64 size) {
     (void)size;
     return -1;
 }
+int plat_vm_map_fd(u8* p, u64 size, int fd, u64 off) {
+    (void)p;
+    (void)size;
+    (void)fd;
+    (void)off;
+    return -1;
+}
+void plat_vm_fd_close(int fd) { (void)fd; }
 int plat_alias_write(u64 off, const void* src, u64 size) {
     (void)off;
     (void)src;
@@ -410,18 +546,89 @@ void plat_file_unmap(PFileMap* m) {
 /* ================================================================ the crash handler */
 static LONG g_crash_reporting;
 static LONG g_shutdown_said;
+static LONG g_filter_said;
+/* the game's code module, [lo, hi): plat_crash_code_module's, read by the first-chance handler on any thread */
+static u8* g_code_lo;
+static u8* g_code_hi;
 
-static LONG WINAPI crash_filter(EXCEPTION_POINTERS* e) {
+/* the report, once: it ends the process, so another crashing thread waits for that */
+static void crash_once(EXCEPTION_POINTERS* e) {
     EXCEPTION_RECORD* r = e->ExceptionRecord;
     void* fault = NULL;
-    /* one report: it ends the process, so another crashing thread waits for that */
     if (InterlockedCompareExchange(&g_crash_reporting, 1, 0)) Sleep(INFINITE);
     log_crash_mode();
     if ((r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION || r->ExceptionCode == EXCEPTION_IN_PAGE_ERROR) &&
         r->NumberParameters >= 2)
         fault = (void*)r->ExceptionInformation[1];
     crash_report(r->ExceptionAddress, fault, (int)r->ExceptionCode);
+}
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS* e) {
+    crash_once(e);
     return EXCEPTION_EXECUTE_HANDLER;
+}
+
+/* The exceptions a crash report is made of; a stack overflow is shutdown_note's, as there is no stack left for one */
+static int crash_code(DWORD code) {
+    return code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR ||
+           code == EXCEPTION_ILLEGAL_INSTRUCTION || code == EXCEPTION_PRIV_INSTRUCTION ||
+           code == EXCEPTION_INT_DIVIDE_BY_ZERO || code == EXCEPTION_INT_OVERFLOW;
+}
+/* A fault in the game's code module is reported before anything else sees it. The unhandled-exception filter alone is
+   not enough: the process has one, the last SetUnhandledExceptionFilter's, and a driver may set its own after ours
+   (Intel's igdumdim64 does, which hid Breakpad's reports). The runtime takes no exception in the game's code on
+   Windows (the write watch and the traps don't fault there), so nothing else would handle one */
+static LONG WINAPI code_fault(EXCEPTION_POINTERS* e) {
+    const u8* pc = (const u8*)e->ExceptionRecord->ExceptionAddress;
+    const u8* lo = __atomic_load_n(&g_code_lo, __ATOMIC_ACQUIRE);
+    const u8* hi = __atomic_load_n(&g_code_hi, __ATOMIC_ACQUIRE);
+    if (crash_code(e->ExceptionRecord->ExceptionCode) && pc >= lo && pc < hi) crash_once(e);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+/* a module's file name, as UTF-8 without its folder, into out: "?" when Windows doesn't say */
+static void module_name(HMODULE m, char* out, int size) {
+    wchar_t path[MAX_PATH];
+    const wchar_t* name = path;
+    DWORD n = m ? GetModuleFileNameW(m, path, MAX_PATH) : 0;
+    snprintf(out, (size_t)size, "?");
+    if (!n || n >= MAX_PATH) return;
+    for (DWORD i = 0; i < n; i++)
+        if (path[i] == L'\\' || path[i] == L'/') name = path + i + 1;
+    if (!WideCharToMultiByte(CP_UTF8, 0, name, -1, out, size, NULL, NULL)) snprintf(out, (size_t)size, "?");
+}
+
+void plat_crash_code_module(const void* inside) {
+    HMODULE m = NULL;
+    const IMAGE_DOS_HEADER* dos;
+    const IMAGE_NT_HEADERS* nt;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            (LPCWSTR)inside, &m) ||
+        !m) {
+        WARN("crash: no module holds the game's code at %p (Windows error %lu): a fault in it is reported only while "
+             "the crash filter is the runtime's\n",
+             inside, (unsigned long)GetLastError());
+        return;
+    }
+    if (m == GetModuleHandleW(NULL)) return; /* the code linked into the runtime itself: its faults are the filter's */
+    dos = (const IMAGE_DOS_HEADER*)(const void*)m;
+    nt = (const IMAGE_NT_HEADERS*)(const void*)((const u8*)m + dos->e_lfanew);
+    __atomic_store_n(&g_code_hi, (u8*)m + nt->OptionalHeader.SizeOfImage, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_code_lo, (u8*)m, __ATOMIC_RELEASE);
+}
+
+void plat_crash_handler_check(void) {
+    LPTOP_LEVEL_EXCEPTION_FILTER was = SetUnhandledExceptionFilter(crash_filter);
+    void* at;
+    HMODULE m = NULL;
+    char name[MAX_PATH * 3];
+    if (was == crash_filter || InterlockedExchange(&g_filter_said, 1)) return;
+    memcpy(&at, &was, sizeof at); /* ISO C has no conversion from a function pointer to an object's */
+    if (at)
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCWSTR)at, &m);
+    module_name(m, name, (int)sizeof name);
+    WARN("crash: the process's crash filter was %p (in %s), not the runtime's: the runtime's is back\n", at,
+         at ? name : "none, the system's default");
 }
 
 /* Failures that may never reach the filter (the CRT fails fast on a buffer overrun or heap corruption): say so in the
@@ -441,6 +648,7 @@ void plat_install_crash_handler(void) {
     ULONG g = STACK_GUARANTEE; /* the main thread's room for a report after a stack overflow */
     SetThreadStackGuarantee(&g);
     AddVectoredExceptionHandler(1, shutdown_note);
+    AddVectoredExceptionHandler(1, code_fault);
     SetUnhandledExceptionFilter(crash_filter);
 }
 

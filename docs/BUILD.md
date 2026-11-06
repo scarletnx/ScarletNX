@@ -347,9 +347,10 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
 - `-DSNX_FFMPEG_ASM=OFF`: omit x86-64 NASM assembly; slower FFmpeg decoding.
 - `-DCPM_DOWNLOAD_SDL3=ON`: build the pinned SDL3 instead of using a system SDL3 development package.
 - `-DSNX_DEPLOY=OFF`: disable runtime deployment.
-- `-DSNX_JEMALLOC=OFF`: keep the C library's malloc in `scarletnx` instead of the pinned jemalloc (default ON on Linux
-  and FreeBSD, OFF on macOS, where `ON` takes it too; refused elsewhere and with `SNX_TEST_SANITIZERS`). A recompile's
-  LLVM threads spend less time in malloc with jemalloc.
+- `-DSNX_JEMALLOC=OFF`: keep the C library's malloc in `scarletnx` instead of the pinned jemalloc (default ON on Linux,
+  FreeBSD, macOS and Android, where it goes into the driver's executable `libscarletnx-run.so` that runs recompiles;
+  refused elsewhere and with `SNX_TEST_SANITIZERS`). A recompile's LLVM threads spend less time in malloc with
+  jemalloc.
 - `-DSNX_TRACY=ON`: build the runtime with the pinned Tracy profiler client (default OFF). For development builds
   only; not available on iOS. It turns `SNX_DEPLOY` off, since the profiling runtime must not be copied over a
   game; the `tracy` preset sets both. See [profiling](DEVELOPMENT.md#profiling).
@@ -414,7 +415,8 @@ ctest --test-dir build/headless-vk -R vulkan_headless --output-on-failure
 
 The test uses synthetic pixels, not a game. It checks offscreen submissions, frame recycling, cropping,
 readback hashes and PPM contents without WSI. Validation requires the Khronos validation layer to be installed.
-`SNX_TEST_VULKAN` is off by default so ordinary unit tests do not require an ICD.
+It takes the runtime's settings as `--KEY=VALUE` (`--vk_memory=2`, `--memory_traps=2`) and stops on any
+other argument. `SNX_TEST_VULKAN` is off by default so ordinary unit tests do not require an ICD.
 
 A cross-built driver extracts too: hactool is part of it. The recompiler still requires LLVM development
 files for the target. `SNX_LLVM_CONFIG` must run on the build machine and describe that target installation,

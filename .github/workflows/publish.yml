@@ -9,7 +9,7 @@ name: Publish builds
 # labels it "publish builds" after its last push. Nothing of a pull request runs here: the files are its Build run's
 # artifacts, and the checkout is main's. The secrets: NIGHTLY_TOKEN may write scarletnx/nightly's contents;
 # DISCORD_WEBHOOK_RELEASES is the releases channel's webhook (without it, nothing is posted there and the run says so).
-# The nightlies' and the pull requests' cards are ReiWimsy's (scarletnx/discord-bots), which sees the releases change
+# The nightlies' and the pull requests' cards are ReiWimsy's (scarletnx/wimsy-core), which sees the releases change
 on:
   workflow_run:
     workflows: [Build]
@@ -26,9 +26,11 @@ permissions:
 jobs:
   publish:
     name: Publish the builds
-    # a push to the repository's own pull request, or another label, has nothing for it
+    # a push to the repository's own pull request, or another label, has nothing for it. Nor has a Build a newer push
+    # cancelled: waiting in the group below, it would take the place of the one before it that built
     if: >-
-      github.event_name == 'workflow_run' || github.event.action == 'closed' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'cancelled') ||
+      github.event.action == 'closed' ||
       (github.event.action == 'labeled' && github.event.label.name == 'publish builds') ||
       (github.event.action == 'synchronize' && github.event.pull_request.head.repo.full_name != github.repository)
     # One at a time for main's nightlies, each version and each pull request: the nightlies are counted. A group holds

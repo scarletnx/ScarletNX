@@ -2,8 +2,13 @@
    Copyright 2026 the ScarletNX contributors */
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/aarch64/cpu.h"
+#include "common/cpu/recompiler/llvm/link.h"
+#if !defined(_WIN32) && !defined(__APPLE__)
+#include "common/cpu/recompiler/llvm/elf_object.h"
+#endif
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitReader.h>
+#include <llvm-c/Linker.h>
 #include <llvm/Config/llvm-config.h>
 #include <llvm-c/Support.h>
 #include <llvm-c/Transforms/PassBuilder.h>
@@ -21,15 +26,57 @@ static struct {
     int region_budget; /* snx_ir_init's, of the greedy allocator's growRegion */
     int fpsr_loose; /* snx_ir_fpsr_flags(0)'s */
     int volatile_memory; /* snx_ir_volatile_memory's */
+    int mips_tail_calls; /* snx_ir_init's, of LLVM's MIPS tail calls */
     int stats, dump;     /* snx_ir_diagnostics's: ir_stats, and whether ir_dump_pc names a function */
     SnxU64 dump_pc;
+    int initialized;    /* snx_ir_init ran */
+    char host_drop[32]; /* snx_ir_host_drop's prefix */
 } g_ir;
 static const SnxIrFeatures generic_features;
+
+int snx_ir_host_drop(const char* prefix, char* error, size_t error_size) {
+    size_t n = prefix ? strlen(prefix) : 0;
+    if (g_ir.initialized) {
+        snprintf(error, error_size, "host features without %s: snx_ir_init has read the host's already",
+                 prefix ? prefix : "");
+        return -1;
+    }
+    if (!n || n >= sizeof(g_ir.host_drop)) {
+        snprintf(error, error_size, "host features without \"%s\": the prefix takes 1 to %zu characters, not %zu",
+                 prefix ? prefix : "", sizeof(g_ir.host_drop) - 1, n);
+        return -1;
+    }
+    memcpy(g_ir.host_drop, prefix, n + 1);
+    return 0;
+}
+
+char* snx_ir_host_features(void) {
+    char* features = LLVMGetHostCPUFeatures();
+    size_t n = strlen(g_ir.host_drop);
+    /* "+name" becomes "-name" where it stands: a later "+" of one that needs it would turn it on again */
+    for (char* p = features; n && p && *p;) {
+        if (*p == '+' && !strncmp(p + 1, g_ir.host_drop, n)) *p = '-';
+        p = strchr(p, ',');
+        if (p) ++p;
+    }
+    return features;
+}
 
 static int has_feature(const char* features, const char* name) {
     size_t n = strlen(name);
     for (const char* p = features; (p = strstr(p, name)) != NULL; p += n)
         if (p > features && p[-1] == '+' && (p[n] == ',' || !p[n])) return 1;
+    return 0;
+}
+
+/* VSX in the CPU new_ir gives the target machine on a PowerPC64 host: LLVM reads no PowerPC host features (its
+   getHostCPUFeatures has no PowerPC branch), so the CPU's name says it, POWER7 on, and an unknown one is LLVM's
+   triple default, ppc64le (POWER8) on little-endian and ppc64 (the 970's AltiVec) on big-endian */
+static int ppc_cpu_vsx(const char* cpu, int little_endian) {
+    static const char* const vsx[] = {"pwr7", "pwr8", "pwr9", "pwr10", "pwr11", "future", "ppc64le"};
+    if (!cpu || !*cpu || !strcmp(cpu, "generic")) return little_endian;
+    for (size_t i = 0; i < sizeof(vsx) / sizeof(vsx[0]); ++i)
+        if (!strcmp(cpu, vsx[i])) return 1;
     return 0;
 }
 
@@ -61,18 +108,21 @@ int snx_ir_init(char* error, size_t error_size) {
         snprintf(error, error_size, "LLVM has no code generator for this host");
         return -1;
     }
-    /* x86-64, AArch64, PowerPC64, RISC-V and LoongArch hosts: the guest's barriers, acquires, releases and exclusives
-       are fences and seq_cst atomics (cpu.h), so its plain accesses need no ordering of their own from the host. POWER
-       is not multi-copy atomic as ARMv8 is, which only a program ordering plain accesses on three threads without
-       barriers could see; its seq_cst fence (hwsync) is cumulative, as DMB is */
+    /* x86-64, AArch64, PowerPC64, RISC-V, LoongArch, MIPS64 and s390x hosts: the guest's barriers, acquires, releases
+       and exclusives are fences and seq_cst atomics (cpu.h), so its plain accesses need no ordering of their own from
+       the host. POWER is not multi-copy atomic as ARMv8 is, which only a program ordering plain accesses on three
+       threads without barriers could see; its seq_cst fence (hwsync) is cumulative, as DMB is */
     char* triple = LLVMGetDefaultTargetTriple();
     int x86 = !strncmp(triple, "x86_64", 6);
     int arm = !strncmp(triple, "aarch64", 7) || !strncmp(triple, "arm64", 5); /* Apple names AArch64 arm64 */
     int ppc = !strncmp(triple, "powerpc64", 9) || !strncmp(triple, "ppc64", 5);
-    int other = riscv_triple(triple) || loongarch_triple(triple);
+    int ppc_le = !strncmp(triple, "powerpc64le", 11) || !strncmp(triple, "ppc64le", 7);
+    int riscv = riscv_triple(triple), loongarch = loongarch_triple(triple), mips64 = !strncmp(triple, "mips64", 6);
+    int other = riscv || loongarch || mips64 || !strncmp(triple, "s390x", 5);
     if (!x86 && !arm && !ppc && !other)
         snprintf(error, error_size,
-                 "the LLVM backend targets x86-64, AArch64, PowerPC64, RISC-V and LoongArch hosts, this one is %s",
+                 "the LLVM backend targets x86-64, AArch64, PowerPC64, RISC-V, LoongArch, MIPS64 and s390x hosts, this "
+                 "one is %s",
                  triple);
     LLVMDisposeMessage(triple);
     if (x86 && !g_ir.domain_off) {
@@ -83,6 +133,16 @@ int snx_ir_init(char* error, size_t error_size) {
         LLVMParseCommandLineOptions(2, off, NULL);
         g_ir.domain_off = 1;
     }
+#if defined(__mips64)
+    if (!g_ir.mips_tail_calls) {
+        /* LLVM's MIPS backend makes a call a jump only with this option, and a musttail one that it can't make a jump
+           a fatal error: every guest tail call. It jumps to a pointer, or to a function that it may take for the
+           module's own, local or hidden, as mips_tail_callees makes them. Once per process, as the others */
+        static const char* const tail[] = {"scarletnx", "-mips-tail-calls"};
+        LLVMParseCommandLineOptions(2, tail, NULL);
+        g_ir.mips_tail_calls = 1;
+    }
+#endif
     if (!g_ir.region_budget) {
         /* the greedy allocator's growRegion, at LLVM's budget of 10000, did not end on a 4310-block function with a
            cold helper call at each of its 714 vector FP sites; at 2000 that function takes 4 s, and its whole unit 76 s */
@@ -91,7 +151,8 @@ int snx_ir_init(char* error, size_t error_size) {
         g_ir.region_budget = 1;
     }
     if (x86 && !snx_ir_host.x86) {
-        char* f = LLVMGetHostCPUFeatures();
+        char* f = snx_ir_host_features();
+        snx_ir_host.ssse3 = has_feature(f, "ssse3");
         snx_ir_host.sse42 = has_feature(f, "sse4.2");
         snx_ir_host.crc32 = snx_ir_host.sse42 && has_feature(f, "crc32");
         snx_ir_host.pclmul = has_feature(f, "pclmul");
@@ -101,20 +162,47 @@ int snx_ir_init(char* error, size_t error_size) {
         snx_ir_host.fma = has_feature(f, "fma");
         snx_ir_host.f16c = has_feature(f, "f16c");
         snx_ir_host.avx2 = has_feature(f, "avx2");
-        snx_ir_host.avx512bw = has_feature(f, "avx512bw");
+        snx_ir_host.avx512f = has_feature(f, "avx512f");
+        snx_ir_host.avx512dq = has_feature(f, "avx512dq");
         snx_ir_host.avx512vl = has_feature(f, "avx512vl");
-        snx_ir_host.avx512bitalg = has_feature(f, "avx512bitalg");
+        snx_ir_host.avx512vbmi = has_feature(f, "avx512vbmi");
         LLVMDisposeMessage(f);
         snx_ir_host.x86 = 1; /* last: snx_ir_init may run again, the features stay as read */
     }
     if (arm && !snx_ir_host.aarch64) {
-        char* f = LLVMGetHostCPUFeatures();
+        char* f = snx_ir_host_features();
         snx_ir_host.arm_aes = has_feature(f, "aes") || has_feature(f, "crypto");
         snx_ir_host.arm_sha2 = has_feature(f, "sha2") || has_feature(f, "crypto");
         snx_ir_host.arm_crc = has_feature(f, "crc");
         LLVMDisposeMessage(f);
         snx_ir_host.aarch64 = 1; /* last, as x86 above */
     }
+    if (ppc && !snx_ir_host.ppc) {
+        char *f = snx_ir_host_features(), *cpu = LLVMGetHostCPUName();
+        snx_ir_host.ppc_vsx = has_feature(f, "vsx") || ppc_cpu_vsx(cpu, ppc_le);
+        LLVMDisposeMessage(f);
+        LLVMDisposeMessage(cpu);
+        snx_ir_host.ppc = 1;
+    }
+    if (riscv && !snx_ir_host.riscv) {
+        char* f = snx_ir_host_features();
+        snx_ir_host.riscv_v = has_feature(f, "v") || has_feature(f, "zve64x");
+        LLVMDisposeMessage(f);
+        snx_ir_host.riscv = 1;
+    }
+    if (loongarch && !snx_ir_host.loongarch) {
+        char* f = snx_ir_host_features();
+        snx_ir_host.la_lsx = has_feature(f, "lsx");
+        LLVMDisposeMessage(f);
+        snx_ir_host.loongarch = 1;
+    }
+    if (mips64 && !snx_ir_host.mips64) {
+        char* f = snx_ir_host_features();
+        snx_ir_host.mips_msa = has_feature(f, "msa");
+        LLVMDisposeMessage(f);
+        snx_ir_host.mips64 = 1;
+    }
+    g_ir.initialized = 1;
     return x86 || arm || ppc || other ? 0 : -1;
 }
 
@@ -191,7 +279,7 @@ static SnxIr* new_ir(const char* name, char opt, const char* target_triple, int 
     int ppc = !strncmp(triple, "powerpc64", 9) || !strncmp(triple, "ppc64", 5);
     if (!target_triple) {
         cpu = LLVMGetHostCPUName();
-        features = LLVMGetHostCPUFeatures();
+        features = snx_ir_host_features();
     } else if (!strncmp(triple, "x86_64", 6)) {
         cpu = LLVMCreateMessage("x86-64");
         features = LLVMCreateMessage("+cx16");
@@ -216,6 +304,33 @@ static SnxIr* new_ir(const char* name, char opt, const char* target_triple, int 
             cpu = LLVMCreateMessage(riscv_triple(triple) ? "generic-rv64" : "generic-la64");
         }
     }
+#if defined(__mips64)
+    /* MIPS64: MIPS64 Release 2 at least, as cmake/cross.cmake builds the runtime, where LLVM names no CPU (it has no
+       MIPS host detection, and its generic CPU is Release 1). +xgot: a call or an address through a GOT slot takes a
+       32-bit offset from gp (lui, daddu, ld), as a game's calls between its units need more slots than a 16-bit
+       offset reaches (8190); link_elf.c lays the GOT out */
+    if (!target_triple) {
+        char* all = (char*)malloc(strlen(features) + sizeof(",+xgot"));
+        if (all) {
+            sprintf(all, "%s%s+xgot", features, *features ? "," : "");
+            LLVMDisposeMessage(features);
+            features = LLVMCreateMessage(all);
+            free(all);
+        }
+        if (!*cpu || !strcmp(cpu, "generic")) {
+            LLVMDisposeMessage(cpu);
+            cpu = LLVMCreateMessage("mips64r2");
+        }
+    }
+#endif
+#if defined(__s390x__)
+    /* s390x: z13 at least, as cmake/cross.cmake builds the runtime, where LLVM names no CPU (/proc/cpuinfo has no
+       machine number it knows): its generic CPU calls libgcc for 128-bit shifts */
+    if (!target_triple && (!*cpu || !strcmp(cpu, "generic"))) {
+        LLVMDisposeMessage(cpu);
+        cpu = LLVMCreateMessage("z13");
+    }
+#endif
     /* PowerPC64's ABI. The host's code is the runtime's own, which a triple doesn't settle: big-endian glibc is ELFv1
        on Debian's ports and ELFv2 on Arch POWER, and their LLVMs pick each for powerpc64-*-linux-gnu. Another
        triple's is what Clang picks for it: ELFv2 for little-endian and musl, ELFv1 for big-endian glibc */
@@ -254,6 +369,7 @@ static SnxIr* new_ir(const char* name, char opt, const char* target_triple, int 
     LLVMSetTarget(ir->mod, triple);
     LLVMTargetDataRef data = LLVMCreateTargetDataLayout(ir->tm);
     ir->big_endian = LLVMByteOrder(data) == LLVMBigEndian;
+    ir->ppc = ppc;
     char* layout = LLVMCopyStringRepOfTargetData(data);
     LLVMSetDataLayout(ir->mod, layout);
     LLVMDisposeMessage(layout);
@@ -298,6 +414,7 @@ void snx_ir_free(SnxIr* ir) {
     LLVMDisposeModule(ir->mod);
     LLVMContextDispose(ir->ctx);
     LLVMDisposeTargetMachine(ir->tm);
+    ir_summaries_free(ir);
     free(ir);
 }
 
@@ -309,10 +426,6 @@ void snx_ir_free(SnxIr* ir) {
    without touching r2 or the arguments. A declared callee's stub is a branch to it, which the linker points at its
    local entry (ELFv2) or code (ELFv1's descriptor); a pointer's stub repeats snx_lookup (cpu.h) and jumps through the
    count register, with r12 at the global entry as ELFv2 expects, or through the descriptor (ELFv1) */
-static int ppc_target(const SnxIr* ir) {
-    const char* target = LLVMGetTarget(ir->mod);
-    return !strncmp(target, "powerpc64", 9) || !strncmp(target, "ppc64", 5);
-}
 static LLVMValueRef ppc_stub(SnxIr* ir, LLVMTypeRef type, const char* name, const char* text) {
     LLVMValueRef stub = LLVMGetNamedFunction(ir->mod, name);
     if (stub) return stub;
@@ -388,6 +501,99 @@ static void ppc_tail_calls(SnxIr* ir) {
             }
 }
 
+#if defined(__mips64)
+/* ---- MIPS64's guest tail calls ----
+   LLVM's MIPS backend makes a musttail call a jump (snx_ir_init's -mips-tail-calls) to a pointer, or to a function it
+   may take for the module's own: local, or hidden or protected where it is declared, dso_local where it is defined.
+   Guest functions are hidden (snx_ir_guest_function); a callee of default visibility, such as an AArch32 block's
+   successor (module_arm.c), becomes hidden too, as every function a module calls is linked into it (link_elf.c) */
+static void mips_tail_callees(LLVMModuleRef module) {
+    for (LLVMValueRef function = LLVMGetFirstFunction(module); function; function = LLVMGetNextFunction(function))
+        for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(function); block; block = LLVMGetNextBasicBlock(block))
+            for (LLVMValueRef inst = LLVMGetFirstInstruction(block); inst; inst = LLVMGetNextInstruction(inst)) {
+                if (!LLVMIsACallInst(inst) || LLVMGetTailCallKind(inst) != LLVMTailCallKindMustTail) continue;
+                LLVMValueRef callee = LLVMGetCalledValue(inst);
+                LLVMLinkage linkage = LLVMIsAFunction(callee) ? LLVMGetLinkage(callee) : LLVMInternalLinkage;
+                if (linkage != LLVMInternalLinkage && linkage != LLVMPrivateLinkage &&
+                    LLVMGetVisibility(callee) == LLVMDefaultVisibility)
+                    LLVMSetVisibility(callee, LLVMHiddenVisibility);
+            }
+}
+#endif
+
+#if !defined(_WIN32) && !defined(__APPLE__)
+/* What a module's object may name that no IR declares: the linker's own names (PowerPC64's TOC base, the GOT's
+   conventional name), and the C library functions the runtime library defines for the calls LLVM makes of large or
+   variable copies and of 128-bit division (libc.inc) */
+static int provided_symbol(const char* name) {
+    static const char* const names[] = {".TOC.",  "_GLOBAL_OFFSET_TABLE_", "memcpy",    "memmove",
+                                        "memset", "memcmp",                "__udivti3", "__umodti3"};
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
+        if (!strcmp(name, names[i])) return 1;
+    return 0;
+}
+
+/* The names a module declares, which its object may refer to: the runtime library's helpers, and the linker's own
+   names. The set is read before code generation, so a call the backend adds a declaration for is still refused. */
+static void declared_names(LLVMModuleRef module, SnxLinkNames* declared) {
+    for (LLVMValueRef value = LLVMGetFirstGlobal(module); value; value = LLVMGetNextGlobal(value)) {
+        size_t length = 0;
+        const char* name = LLVMGetValueName2(value, &length);
+        if (LLVMIsDeclaration(value) && length) snx_link_insert(declared, name, 1);
+    }
+    for (LLVMValueRef value = LLVMGetFirstFunction(module); value; value = LLVMGetNextFunction(value)) {
+        size_t length = 0;
+        const char* name = LLVMGetValueName2(value, &length);
+        if (LLVMIsDeclaration(value) && length) snx_link_insert(declared, name, 1);
+    }
+}
+
+/* An object may refer to what the module's IR declares (the runtime library's helpers) and to provided_symbol's:
+   anything else is a call LLVM made at code generation, such as the libm ones ir_fp.h's gates exist to avoid. That
+   fails the module's build and its tests here, not the module's load. Windows and Darwin write COFF and Mach-O,
+   which only the linker reads here and whose undefined symbols it already refuses. */
+static int object_refuses(const SnxIr* ir, SnxLinkNames* declared, const unsigned char* data, size_t size, char* error,
+                          size_t error_size) {
+    SnxLinkInput input = {data, size, "module"};
+    SnxElfObject object;
+    unsigned machine = 0, abi = 0;
+    size_t found;
+    if (ir->windows) return 0;
+    if (snx_elf_parse(&object, &input, &machine, &abi, error, error_size)) {
+        snx_elf_free(&object);
+        return -1;
+    }
+    for (size_t i = 1; i < object.nsyms; ++i) {
+        const Elf64_Sym* symbol = &object.syms[i];
+        const char* name;
+        if (symbol->st_shndx != SHN_UNDEF || ELF64_ST_BIND(symbol->st_info) == STB_WEAK) continue;
+        name = snx_elf_symbol_name(&object, symbol);
+        if (!name || !*name || provided_symbol(name) || snx_link_find(declared, name, &found)) continue;
+        snprintf(error, error_size, "the object refers to %s, which the module does not declare", name);
+        snx_elf_free(&object);
+        return -1;
+    }
+    snx_elf_free(&object);
+    return 0;
+}
+#else
+/* COFF and Mach-O objects: only ELF's symbol table is read */
+static void declared_names(LLVMModuleRef module, SnxLinkNames* declared) {
+    (void)module;
+    (void)declared;
+}
+static int object_refuses(const SnxIr* ir, SnxLinkNames* declared, const unsigned char* data, size_t size, char* error,
+                          size_t error_size) {
+    (void)ir;
+    (void)declared;
+    (void)data;
+    (void)size;
+    (void)error;
+    (void)error_size;
+    return 0;
+}
+#endif
+
 int snx_ir_object(SnxIr* ir, char opt, unsigned char** data, size_t* size, char* error, size_t error_size) {
     *data = NULL;
     *size = 0;
@@ -428,6 +634,9 @@ static void size_attributes(LLVMModuleRef module, char opt) {
 void ir_clean_function(SnxIr* ir, LLVMValueRef fn) {
     const char* passes = ir->tuning ? ir->tuning->clean : SNX_IR_CLEAN_PASSES;
     if (!passes) return;
+    /* LLVMRunPassesOnFunction came in LLVM 20 (FreeBSD's llvm package is 19): before it, the unit's pipeline takes the
+       function as emitted, as it does one whose passes fail */
+#if LLVM_VERSION_MAJOR >= 20
     LLVMPassBuilderOptionsRef options = LLVMCreatePassBuilderOptions();
     if (ir->tuning && ir->tuning->builder) ir->tuning->builder(options);
     LLVMErrorRef failure = LLVMRunPassesOnFunction(fn, passes, ir->tm, options);
@@ -438,6 +647,7 @@ void ir_clean_function(SnxIr* ir, LLVMValueRef fn) {
                 LLVMGetValueName(fn), message);
         LLVMDisposeErrorMessage(message);
     }
+#endif
     /* the unit cache keys the bitcode, and a function's names go into it in the order of its symbol table, which the
        names SROA made and numbered (in an order that changes from run to run) leave different: no name stays */
     for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(fn); bb; bb = LLVMGetNextBasicBlock(bb)) {
@@ -453,13 +663,124 @@ void ir_clean_function(SnxIr* ir, LLVMValueRef fn) {
     }
 }
 
-/* a change here, or to new_ir's target machine, that changes the object of the same IR bumps SNX_IR_OBJECT_VERSION */
-int snx_ir_module_object(SnxIr* ir, LLVMModuleRef module, char opt, unsigned char** data, size_t* size, char* error,
-                         size_t error_size) {
+/* rtlib.c as LLVM bitcode (CMakeLists.txt, snx-rtlib-gen embed). Import only the audited entry environment helper.
+   Large arithmetic and exceptional paths stay out of line. The original object still supplies calls at O0. */
+extern const unsigned char snx_rtlib_bitcode[];
+extern const unsigned long snx_rtlib_bitcode_size;
+static int uses_host_fp(LLVMValueRef function) {
+    for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(function); block; block = LLVMGetNextBasicBlock(block))
+        for (LLVMValueRef inst = LLVMGetFirstInstruction(block); inst; inst = LLVMGetNextInstruction(inst)) {
+            switch (LLVMGetInstructionOpcode(inst)) {
+                case LLVMFAdd: case LLVMFSub: case LLVMFMul: case LLVMFDiv: case LLVMFRem: case LLVMFNeg:
+                case LLVMFCmp: case LLVMFPTrunc: case LLVMFPExt: case LLVMFPToUI: case LLVMFPToSI:
+                case LLVMUIToFP: case LLVMSIToFP: return 1;
+                case LLVMCall: {
+                    LLVMTypeRef type = LLVMTypeOf(inst);
+                    if (LLVMGetTypeKind(type) == LLVMVectorTypeKind) type = LLVMGetElementType(type);
+                    LLVMTypeKind kind = LLVMGetTypeKind(type);
+                    if (kind == LLVMHalfTypeKind || kind == LLVMFloatTypeKind || kind == LLVMDoubleTypeKind) return 1;
+                    break;
+                }
+                default: break;
+            }
+        }
+    return 0;
+}
+static int inline_helpers(SnxIr* ir, LLVMModuleRef module, char* error, size_t error_size) {
+    LLVMValueRef call = LLVMGetNamedFunction(module, "snx_fp_env");
+    if (!call || LLVMCountBasicBlocks(call) || !LLVMGetFirstUse(call)) return 0;
+    int needed = 0;
+    for (LLVMUseRef use = LLVMGetFirstUse(call); use; use = LLVMGetNextUse(use)) {
+        LLVMValueRef inst = LLVMGetUser(use);
+        if (LLVMIsACallInst(inst) && uses_host_fp(LLVMGetBasicBlockParent(LLVMGetInstructionParent(inst)))) needed = 1;
+    }
+    if (!needed) return 0;
+    LLVMModuleRef library;
+    LLVMMemoryBufferRef buffer = LLVMCreateMemoryBufferWithMemoryRange((const char*)snx_rtlib_bitcode,
+                                                                      snx_rtlib_bitcode_size, "inline helpers", 0);
+    int failed = LLVMParseBitcodeInContext2(ir->ctx, buffer, &library);
+    LLVMDisposeMemoryBuffer(buffer);
+    if (failed) {
+        snprintf(error, error_size, "cannot read the runtime helper bitcode");
+        return -1;
+    }
+    /* Cross-target compiler tests can emit another architecture. Its native environment helper is unavailable. */
+    const char* target = LLVMGetTarget(module);
+    size_t arch = strcspn(target, "-");
+    if (strcspn(LLVMGetTarget(library), "-") != arch || strncmp(target, LLVMGetTarget(library), arch)) {
+        LLVMDisposeModule(library);
+        return 0;
+    }
+    LLVMValueRef helper = LLVMGetNamedFunction(library, "snx_fp_env");
+    if (!helper || !LLVMCountBasicBlocks(helper)) {
+        LLVMDisposeModule(library);
+        return 0;
+    }
+    /* The allowlist is deliberately a leaf helper. Refuse a changed dependency rather than importing an
+       unaudited arithmetic body or replacing a live callee with undef. Intrinsics and inline asm remain intact. */
+    for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(helper); block; block = LLVMGetNextBasicBlock(block))
+        for (LLVMValueRef inst = LLVMGetFirstInstruction(block); inst; inst = LLVMGetNextInstruction(inst))
+            if (LLVMIsACallInst(inst)) {
+                LLVMValueRef callee = LLVMGetCalledValue(inst);
+                if ((!LLVMIsAFunction(callee) && !LLVMIsAInlineAsm(callee)) ||
+                    (LLVMIsAFunction(callee) && LLVMCountBasicBlocks(callee))) {
+                    LLVMDisposeModule(library);
+                    return 0;
+                }
+            }
+    for (LLVMValueRef fn = LLVMGetFirstFunction(library), next; fn; fn = next) {
+        next = LLVMGetNextFunction(fn);
+        if (fn != helper && LLVMCountBasicBlocks(fn)) {
+            LLVMReplaceAllUsesWith(fn, LLVMGetUndef(LLVMTypeOf(fn)));
+            LLVMDeleteFunction(fn);
+        }
+    }
+    for (LLVMValueRef value = LLVMGetFirstGlobal(library), next; value; value = next) {
+        next = LLVMGetNextGlobal(value);
+        if (!LLVMGetFirstUse(value)) LLVMDeleteGlobal(value);
+    }
+    for (LLVMValueRef fn = LLVMGetFirstFunction(library), next; fn; fn = next) {
+        next = LLVMGetNextFunction(fn);
+        if (fn != helper && !LLVMGetFirstUse(fn)) LLVMDeleteFunction(fn);
+    }
+    static const char* const attributes[] = {"target-cpu", "target-features", "tune-cpu", "probe-stack"};
+    for (unsigned i = 0; i < sizeof attributes / sizeof *attributes; i++)
+        LLVMRemoveStringAttributeAtIndex(helper, LLVMAttributeFunctionIndex, attributes[i], (unsigned)strlen(attributes[i]));
+    unsigned always_inline = LLVMGetEnumAttributeKindForName("alwaysinline", 12);
+    LLVMAddAttributeAtIndex(helper, LLVMAttributeFunctionIndex, LLVMCreateEnumAttribute(ir->ctx, always_inline, 0));
+    LLVMSetValueName2(helper, "snx_fp_env.inline", sizeof "snx_fp_env.inline" - 1);
+    LLVMSetLinkage(helper, LLVMExternalLinkage); /* keep it while the linker has no calls to it yet */
+    LLVMSetTarget(library, target);
+    LLVMSetDataLayout(library, LLVMGetDataLayoutStr(module));
+    if (LLVMLinkModules2(module, library)) {
+        snprintf(error, error_size, "cannot import the runtime entry helper");
+        return -1;
+    }
+    helper = LLVMGetNamedFunction(module, "snx_fp_env.inline");
+    call = LLVMGetNamedFunction(module, "snx_fp_env");
+    LLVMSetLinkage(helper, LLVMInternalLinkage);
+    LLVMBuilderRef builder = LLVMCreateBuilderInContext(ir->ctx);
+    for (LLVMValueRef fn = LLVMGetFirstFunction(module); fn; fn = LLVMGetNextFunction(fn)) {
+        if (fn == helper || !uses_host_fp(fn)) continue;
+        for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(fn); block; block = LLVMGetNextBasicBlock(block))
+            for (LLVMValueRef inst = LLVMGetFirstInstruction(block), next; inst; inst = next) {
+                next = LLVMGetNextInstruction(inst);
+                if (LLVMIsACallInst(inst) && LLVMGetCalledValue(inst) == call) {
+                    LLVMPositionBuilderBefore(builder, inst);
+                    LLVMBuildCall2(builder, LLVMGlobalGetValueType(helper), helper, NULL, 0, "");
+                    LLVMInstructionEraseFromParent(inst);
+                }
+            }
+    }
+    LLVMDisposeBuilder(builder);
+    return 0;
+}
+
+/* a change here or in snx_ir_module_object, or to new_ir's target machine, that changes the object of the same IR bumps
+   SNX_IR_OBJECT_VERSION */
+int snx_ir_module_optimize(SnxIr* ir, LLVMModuleRef module, char opt, char* error, size_t error_size) {
     char pipeline[16], *message = NULL;
-    LLVMMemoryBufferRef buffer;
-    *data = NULL;
-    *size = 0;
+    if (opt != '0' && inline_helpers(ir, module, error, error_size)) return -1;
     if (LLVMVerifyModule(module, LLVMReturnStatusAction, &message)) {
         snprintf(error, error_size, "invalid IR: %.900s", message ? message : "");
         LLVMDisposeMessage(message);
@@ -493,7 +814,21 @@ int snx_ir_module_object(SnxIr* ir, LLVMModuleRef module, char opt, unsigned cha
             return -1;
         }
     }
-    if (ppc_target(ir)) {
+    return 0;
+}
+
+int snx_ir_module_object(SnxIr* ir, LLVMModuleRef module, char opt, unsigned char** data, size_t* size, char* error,
+                         size_t error_size) {
+    char* message;
+    LLVMMemoryBufferRef buffer;
+    LLVMPassBuilderOptionsRef options;
+    LLVMErrorRef failure;
+    SnxLinkNames declared = {0};
+    *data = NULL;
+    *size = 0;
+    if (snx_ir_module_optimize(ir, module, opt, error, error_size)) return -1;
+    declared_names(module, &declared);
+    if (ir->ppc) {
         ppc_tail_calls(ir);
         /* the pointer's load the stub repeats is dead now */
         options = LLVMCreatePassBuilderOptions();
@@ -503,13 +838,18 @@ int snx_ir_module_object(SnxIr* ir, LLVMModuleRef module, char opt, unsigned cha
             message = LLVMGetErrorMessage(failure);
             snprintf(error, error_size, "LLVM passes: %s", message);
             LLVMDisposeErrorMessage(message);
+            snx_link_names_free(&declared);
             return -1;
         }
     }
+#if defined(__mips64)
+    mips_tail_callees(module);
+#endif
     message = NULL;
     if (LLVMTargetMachineEmitToMemoryBuffer(ir->tm, module, LLVMObjectFile, &message, &buffer)) {
         snprintf(error, error_size, "LLVM code generation: %s", message ? message : "");
         LLVMDisposeMessage(message);
+        snx_link_names_free(&declared);
         return -1;
     }
     *size = LLVMGetBufferSize(buffer);
@@ -518,14 +858,21 @@ int snx_ir_module_object(SnxIr* ir, LLVMModuleRef module, char opt, unsigned cha
     LLVMDisposeMemoryBuffer(buffer);
     if (!*data) {
         snprintf(error, error_size, "out of memory");
+        snx_link_names_free(&declared);
         return -1;
     }
+    if (object_refuses(ir, &declared, *data, *size, error, error_size)) {
+        free(*data);
+        *data = NULL;
+        *size = 0;
+        snx_link_names_free(&declared);
+        return -1;
+    }
+    snx_link_names_free(&declared);
     return 0;
 }
 
-/* rtlib.c and armlib.c as LLVM bitcode (CMakeLists.txt, snx-rtlib-gen embed) */
-extern const unsigned char snx_rtlib_bitcode[];
-extern const unsigned long snx_rtlib_bitcode_size;
+/* armlib.c as LLVM bitcode (CMakeLists.txt, snx-rtlib-gen embed) */
 extern const unsigned char snx_armlib_bitcode[];
 extern const unsigned long snx_armlib_bitcode_size;
 

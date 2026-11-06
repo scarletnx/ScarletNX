@@ -18,7 +18,7 @@ static int check_owned_readback(void) {
         VkSemaphoreCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &type};
         CHECK(owner && VK_OK(vkCreateSemaphore(g_vk.dev, &ci, NULL, &gate)));
         memset(GP(cpu), 0x11, 0x1000);
-        CHECK(vk_buf_copy_writable(gva, 256, &output, &offset));
+        CHECK(vk_buf_copy_writable(gva, 256, &output, &offset, 1));
         VkBuffer upload;
         u64 at;
         u8* data = vk_stage_upload(512, 16, &upload, &at);
@@ -38,7 +38,7 @@ static int check_owned_readback(void) {
                                         .semaphore = gate, .value = 1};
         CHECK(VK_OK(vkSignalSemaphore(g_vk.dev, &signal)));
         vk_wait_submit(vk_last_submit());
-        vk_own_publish(cpu + 256, 256, owner, 0);
+        vk_own_publish_owned(cpu + 256, 256, owner, 0);
         CHECK(own_lookup(cpu + 256, 256, NULL, 0) == 1);
         if (fresh) vk_frame_next();
         own_acquire(cpu + 256, 256);
@@ -87,12 +87,12 @@ static int check_owned_writable(void) {
         VkOwnRes* owner = vk_own_res_new(256);
         CHECK(owner);
         CHECK(!owned_test_fill(owner->buf, 0, 256, 0x22));
-        vk_own_publish(cpu + 64, 256, owner, 0);
+        vk_own_publish_owned(cpu + 64, 256, owner, 0);
         CHECK(own_lookup(cpu + 64, 256, NULL, 0) == 1);
         u64 lands = own_landings(), submits = vk_submit_number();
         VkBuffer output;
         u64 at;
-        CHECK(vk_buf_copy_writable(gva, 0x1000, &output, &at));
+        CHECK(vk_buf_copy_writable(gva, 0x1000, &output, &at, 1));
         CHECK(own_landings() == lands && vk_submit_number() == submits);
         vk_buf_writable_commit();
         /* An unchanged second binding reuses the pending buffer without reading
@@ -100,7 +100,7 @@ static int check_owned_writable(void) {
         if (vk_written_since(gmem_host(gva, 0x1000), 0x1000, vk_ww_now()) == 0) {
             VkBuffer reused;
             u64 reused_at;
-            CHECK(vk_buf_copy_writable(gva, 0x1000, &reused, &reused_at));
+            CHECK(vk_buf_copy_writable(gva, 0x1000, &reused, &reused_at, 1));
             CHECK(reused == output && reused_at == at);
             CHECK(own_landings() == lands && vk_submit_number() == submits);
         }
@@ -127,10 +127,10 @@ static int check_owned_writable(void) {
     memset(GP(cpu + 0x4000), 0x66, 0x1000);
     VkOwnRes* owner = vk_own_res_new(256);
     CHECK(owner && !owned_test_fill(owner->buf, 0, 256, 0x22));
-    vk_own_publish(cpu + 0x4000, 256, owner, 0);
+    vk_own_publish_owned(cpu + 0x4000, 256, owner, 0);
     u64 lands = own_landings(), submits = vk_submit_number(), at;
     VkBuffer output;
-    CHECK(vk_buf_copy_writable(gva, 0x3000, &output, &at));
+    CHECK(vk_buf_copy_writable(gva, 0x3000, &output, &at, 1));
     CHECK(own_landings() == lands && vk_submit_number() == submits);
     vk_buf_writable_commit();
     CHECK(!owned_test_fill(output, at + 0x1000, 4, 0x44));
@@ -148,6 +148,38 @@ static int check_owned_writable(void) {
     return 0;
 }
 
+/* A range one GPU-owned range holds whole gives its owner's identity at once (texture hashes, mem_hash: a video's
+   picture each frame): the same while nothing is written, another at another offset of it, after a write in place and
+   for a new owner, and none for bytes past it or once they landed */
+static int check_owned_whole_identity(void) {
+    const u64 cpu = HEAP_BASE + 0x750000, gva = 0xa600000;
+    u64 a, b, c, d;
+    if (!own_traps()) return 0;
+    gmmu_map(gva, cpu, 0x2000);
+    vk_lock();
+    vk_finish();
+    VkOwnRes* owner = vk_own_res_new(0x1000);
+    CHECK(owner && !owned_test_fill(owner->buf, 0, 0x1000, 0x22));
+    vk_own_publish_owned(cpu, 0x1000, owner, 0);
+    CHECK(vk_guest_owned_whole(gva, 0x1000, &a) && vk_guest_owned_whole(gva, 0x1000, &b) && a == b);
+    CHECK(!vk_guest_owned_whole(gva, 0x1800, &c)); /* past it: the CPU's bytes */
+    CHECK(vk_guest_owned_whole(gva + 0x100, 0x200, &c) && c != a);
+    CHECK(!owned_test_fill(owner->buf, 0, 0x1000, 0x55));
+    vk_own_res_wrote(owner);
+    CHECK(vk_guest_owned_whole(gva, 0x1000, &c) && c != a);
+    VkOwnRes* next = vk_own_res_new(0x1000);
+    CHECK(next && !owned_test_fill(next->buf, 0, 0x1000, 0x55));
+    vk_own_publish_owned(cpu, 0x1000, next, 0);
+    CHECK(vk_guest_owned_whole(gva, 0x1000, &d) && d != c && d != a);
+    own_acquire(cpu, 0x1000);
+    CHECK(!vk_guest_owned_whole(gva, 0x1000, &d));
+    vk_own_res_unref(next);
+    vk_own_res_unref(owner);
+    vk_unlock();
+    puts("a range one GPU-owned range holds whole tells its owner's identity, a new one after each write");
+    return 0;
+}
+
 /* GPU-owned bytes peek as their owner's identity (texture hashes, vk_guest_peek): an owner written again in place, or a
    new one at a freed one's address, has to peek otherwise, or a texture over it keeps the texels it had */
 static int check_owned_peek_identity(void) {
@@ -159,7 +191,7 @@ static int check_owned_peek_identity(void) {
     vk_finish();
     VkOwnRes* owner = vk_own_res_new(256);
     CHECK(owner && !owned_test_fill(owner->buf, 0, 256, 0x22));
-    vk_own_publish(cpu, 256, owner, 0);
+    vk_own_publish_owned(cpu, 256, owner, 0);
     vk_guest_peek(gva, before, sizeof before);
     vk_guest_peek(gva, after, sizeof after);
     CHECK(!memcmp(before, after, sizeof before)); /* nothing written: the same */
@@ -170,7 +202,7 @@ static int check_owned_peek_identity(void) {
     memcpy(before, after, sizeof before);
     VkOwnRes* next = vk_own_res_new(256); /* a new owner over the same bytes, as each copy of a whole surface makes */
     CHECK(next && !owned_test_fill(next->buf, 0, 256, 0x55));
-    vk_own_publish(cpu, 256, next, 0);
+    vk_own_publish_owned(cpu, 256, next, 0);
     vk_guest_peek(gva, after, sizeof after);
     CHECK(memcmp(before, after, sizeof before));
     own_acquire(cpu, 256);
@@ -191,7 +223,7 @@ static int check_owned_in_place_write(void) {
     memset(GP(cpu), 0x11, 0x1000);
     VkOwnRes* owner = vk_own_res_new(256);
     CHECK(owner && !owned_test_fill(owner->buf, 0, 256, 0x22));
-    vk_own_publish(cpu, 256, owner, 0);
+    vk_own_publish_owned(cpu, 256, owner, 0);
     vk_finish(); /* the owner's submission is done: a landing now waits for nothing */
     CHECK(own_lookup(cpu, 256, NULL, 0) == 1);
     CHECK(!owned_test_fill(owner->buf, 0, 256, 0x55)); /* recorded in the open command buffer */

@@ -7,6 +7,7 @@
 * [Keys](#keys)
 * [Building](#building)
   * [Signing](#signing)
+  * [Tests](#tests)
 
 The app is the [GUI](GUI.md) and the runtime, each in SDL's activity (`dist/android`): the menu extracts and
 recompiles on the phone, then the game opens.
@@ -37,7 +38,7 @@ recompiles on the phone, then the game opens.
   A game of *Games* goes through it too, recompiled first when another version of the app made it.
 - **Behind other apps** the driver keeps going: a notification shows the game, its step and a bar, and a tap on it
   returns to the menu. A run that ends there leaves a notification saying so, and its game opens once the menu shows.
-  The queue's recompiles (R, B: [GUI](GUI.md#the-recompile-tab)) go on the same way, the notification following the
+  The queue's recompiles (R, B: [GUI](GUI.md#the-compile-tab)) go on the same way, the notification following the
   one running once no run of the menu's does, and saying *Recompiled* or *Failed* at the end; while a game started
   from the menu plays, until the menu shows again, they go gently.
   The first run asks to show it (Android 13) and to lift the battery limit; on a phone whose maker adds its own limit
@@ -62,8 +63,9 @@ recompiles on the phone, then the game opens.
   root certificates the build carries (curl's extract of them, `cmake/cacert.cmake`), as Eden does with its own OpenSSL.
 - **Share Log**, in the menu, asks how; its Share Zip saves the message on the screen, the last run's output (`last-run.log`, which the
   menu keeps on every system), the menu's own log and fatal errors (`scarletnx-console-<date>.log`, `scarletnx-error.log`,
-  [GUI](GUI.md)) and the newest game log as `summary.txt` of `scarletnx-logs-<date>.zip` in the data folder's
-  `state/share/`, the logs themselves beside it, then opens that folder in the Files app, to share from there.
+  [GUI](GUI.md)) and the newest game log, none when it is older than the game played last, as `summary.txt` of
+  `scarletnx-logs-<date>.zip` in the data folder's `state/share/`, the logs themselves beside it, then opens that folder
+  in the Files app, to share from there.
 
 The app runs on arm64 phones and on x86_64 Android (the emulator, some tablets and Chromebooks): the recompiler makes
 the code of the device it runs on. It installs from Android 5.0 (API 21). A game needs Vulkan 1.3: on a device without
@@ -128,3 +130,19 @@ shared storage stays.
 
 The Android emulator runs it on an x86_64 image; `-gpu swiftshader_indirect` gives it SwiftShader's Vulkan 1.3. Its
 ARM translation runs the arm64 build too (an APK with arm64 alone, or an arm64 program from `adb shell`), slowly.
+
+### Tests
+
+The app's unit tests (`dist/android/src/test`) run on the computer, from the stage `android-apk.sh` made: the app's
+classes build against SDL's Java there.
+
+```sh
+gradle -p dist/android testDebugUnitTest -Pscarletnx.stage=$HOME/android-build/stage
+```
+
+JUnit alone checks what needs nothing of Android: the setting a maker's phone gets, that each method the native code
+calls by name is in the app and that each native method is in the native code. Robolectric runs the rest on Android's
+own classes: the data folder's provider, what the menu hands the Files app and the share sheet, a game's arguments and
+the recompile's notification. Its first run fetches those classes for the app's `targetSdk` from Maven Central (about
+210 MB, into `~/.m2`). The CI runs the tests at the end of its Android job: one that fails fails the job, with the APKs
+already uploaded.

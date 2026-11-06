@@ -46,9 +46,36 @@ void own_acquire(u64 addr, u64 size) { (void)addr, (void)size; }
 /* platform/plat_posix.c: no page here is protected for the write tracking */
 void plat_ww_open(u8* p, u64 size) { (void)p, (void)size; }
 void plat_ww_close(u8* p, u64 size) { (void)p, (void)size; }
+/* the log, which players attach to public reports: kept since log_reset for what ldn.c says of the nodes, never their
+   nicknames. The transport's thread may write it too */
+static struct {
+    PMutex lk;
+    char text[4096];
+} g_log;
 void logf_(int level, const char* format, ...) {
+    va_list args;
+    size_t n;
     (void)level;
-    (void)format;
+    pm_lock(&g_log.lk);
+    n = strlen(g_log.text);
+    va_start(args, format);
+    vsnprintf(g_log.text + n, sizeof g_log.text - n, format, args);
+    va_end(args);
+    pm_unlock(&g_log.lk);
+}
+static void log_reset(void) {
+    pm_lock(&g_log.lk);
+    g_log.text[0] = 0;
+    pm_unlock(&g_log.lk);
+}
+/* whether the log since log_reset has text and none of the nodes' nicknames */
+static int logged_unnamed(const char* text) {
+    int ok;
+    pm_lock(&g_log.lk);
+    ok = strstr(g_log.text, text) && !strstr(g_log.text, "Host") && !strstr(g_log.text, "Station");
+    if (!ok) fprintf(stderr, "ldn_service: the log, wanting %s without a nickname:\n%s", text, g_log.text);
+    pm_unlock(&g_log.lk);
+    return ok;
 }
 void fatal(const char* format, ...) {
     va_list args;
@@ -393,6 +420,7 @@ static int take_ports(SnxSocket* taken[254]) {
 
 
 int main(void) {
+    pm_init(&g_log.lk);
     hle_init();
     SvcObj *creator, *a, *b, *bsd;
     KEvent *ev_a, *ev_b;
@@ -671,7 +699,9 @@ int main(void) {
     memcpy(GP(BUF1), &found[0], sizeof found[0]);
     in_x(&r, BUF1, sizeof found[0]);
     CHECK(call(a, &r) == LDN_RC(32)); /* the host isn't a station */
+    log_reset();
     CHECK(call(b, &r) == 0 && get_state(b) == 5 && took_signal(ev_b, 0));
+    CHECK(logged_unnamed("ldn: connecting to the host at 127.0.0.1\n"));
     CHECK(took_signal(ev_a, 2000));
     CHECK(latest_update(a, &info, updates, 8) == 0);
     CHECK(info.node_count == 2 && info.nodes[1].is_connected && !strcmp((char*)info.nodes[1].user_name, "Station"));

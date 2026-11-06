@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The host's side of a flat guest space (common/memory/host.c), on every host the CI builds: one object mapped at two
-   places of a reservation is the same memory, a commit is zeros of its own, and a page unmapped goes back to the
-   reservation, to be mapped again elsewhere in the object */
+   places of a reservation is the same memory, a commit is zeros of its own, a page unmapped goes back to the
+   reservation, to be mapped again elsewhere in the object, and another object filled from it holds its bytes */
 #include "common/memory/host.h"
 #include <assert.h>
 #include <stdio.h>
@@ -43,6 +43,12 @@ int main(void) {
     assert(snx_host_unmap(base, 4 * page, page));
     assert(snx_host_map(&memory, base, 4 * page, page, page, rw));
     assert(v[4 * page] == 9);
+    /* another object filled with this one's bytes, through a mapping of its own */
+    SnxHostMemory copy;
+    assert(snx_host_memory_new(&copy, 2 * page));
+    assert(snx_host_memory_fill(&copy, memory.view));
+    assert(copy.view[5] == 42 && copy.view[page - 1] == 7 && copy.view[page] == 9);
+    snx_host_memory_free(&copy);
     snx_host_release(base, 8 * page);
     snx_host_memory_free(&memory);
     printf("host_memory: ok, %zu byte pages\n", page);

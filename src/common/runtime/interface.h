@@ -27,8 +27,8 @@ typedef struct RtAPI {
        runtime decides what a miss does */
     void (*miss)(struct CPU* c, uint64_t pc);
     /* STXP's 16-byte compare-and-swap of p[0] (the low half) and p[1], 1 when it stored, for the hosts whose
-       modules call it (RISC-V, LoongArch and PowerPC64 before POWER8, which have no such instruction every machine
-       carries): snx_runtime_cas128 (SNX_ABI 12). The values are the host's reads of p[0] and p[1] */
+       modules call it (RISC-V, LoongArch, PowerPC64 before POWER8 and MIPS64, which have no such instruction every
+       machine carries): snx_runtime_cas128 (SNX_ABI 12). The values are the host's reads of p[0] and p[1] */
     uint32_t (*cas128)(uint64_t* p, uint64_t o0, uint64_t o1, uint64_t n0, uint64_t n1);
     /* IC IVAU of the 64-byte cache line at addr: the guest wrote code there and makes it visible, so what was
        compiled from that line is stale (SNX_ABI 14), and the runtime compiles it again. NULL for a runtime that has
@@ -38,8 +38,8 @@ typedef struct RtAPI {
 #define SNX_SVC_COUNT 0x100
 
 /* The 16-byte compare-and-swap every RtAPI's cas128 is (cas128.c): the host's instruction where it has one (amocas.q
-   with Zacas, sc.q from LoongArch v1.1, lqarx/stqcx. from POWER8, and the others' own), else snx_runtime_cas128_locked. One per process, so
-   every STXP of the game goes through the same */
+   with Zacas, sc.q from LoongArch v1.1, lqarx/stqcx. from POWER8, and the others' own), else (MIPS64 always)
+   snx_runtime_cas128_locked. One per process, so every STXP of the game goes through the same */
 uint32_t snx_runtime_cas128(uint64_t* p, uint64_t o0, uint64_t o1, uint64_t n0, uint64_t n1);
 /* the same under a lock of p's stripe: the halves swapped one at a time, each a 64-bit compare-and-swap, the first
    undone when the second finds another value, so that callers of this one see the 16 bytes change at once */

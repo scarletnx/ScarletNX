@@ -19,7 +19,7 @@
    holds the memory lock */
 static int readable(u64 a, u64 n) {
     u64 p = a, end;
-    if (!g_mem || a < AS_BASE || a >= AS_END || n > AS_END - a) return 0;
+    if (!mem_reserved() || a < AS_BASE || a >= AS_END || n > AS_END - a) return 0;
     end = a + n;
     while (p < end) {
         MemBlock b;
@@ -252,6 +252,8 @@ void kernel_dump_regs(CPU* c) {
         WARN("  pc %s  lr %s\n", ps, ls);
         backtrace(0, c->x[30], c->x[29], 1);
         dump_code(0, "code", c->pc - 0x20, c->pc + 0x20, c->pc);
+        if (!readable(c->pc, 4)) /* a branch to where nothing is mapped: the caller's code says through what */
+            dump_code(0, "code at lr", c->x[30] - 0x20, c->x[30] + 0x20, c->x[30]);
         dump_pointees(0, "x", c->x, 31, 4);
     }
     dump_rings(0);
@@ -392,6 +394,13 @@ void kernel_core_report(void) {
             (double)t->core_wait_ns / 1e9, t->core_waits);
     }
     pm_unlock(&g_host.thread.core_lk);
+}
+u64 kernel_thread_name(u32 ix, char* out, int n) {
+    const KThread* t = kt_at(ix);
+    out[0] = 0;
+    if (!t || t->o.type != KO_THREAD) return 0;
+    if (!sdk_name(t, out, n)) snprintf(out, (size_t)n, "%s", t->name);
+    return t->id;
 }
 /* Read without g_klock or the pool's lock: the dump is how a hang is diagnosed, and a hang may be a thread that keeps
    the lock. The values can be a moment stale or mid-change (a slot freed or taken meanwhile), which is all a dump

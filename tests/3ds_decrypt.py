@@ -59,6 +59,19 @@ def keys_file(path, common0=KEYS['common0']):
     )
 
 
+NAMES = (('generator', 'gen'), ('slot0x2CKeyX', 'x2c'), ('slot0x25KeyX', 'x25'), ('slot0x3DKeyX', 'x3d'),
+         ('common0', 'common0'))
+
+
+def keys_block(keys):
+    return ''.join(f'{name}={keys[key].hex().upper()}\n' for name, key in NAMES)
+
+
+def dump_keys_file(path):
+    """a plain key dump names the constant generator= rather than generatorConstant=: the same keys, a generator= line"""
+    path.write_text('Retail 3DS\n' + keys_block(KEYS))
+
+
 def encrypt_ncch(plain):
     """the NCCH's layer, crypto method 1 (secondary key slot 0x25), version 2 counters"""
     n = bytearray(plain)
@@ -157,6 +170,11 @@ def main():
         keys_file(keys)
         decrypted = run('encrypted', encrypted, keys, 0, 'Decrypted')
         same_content(tree(plain), tree(decrypted))
+        # a plain key dump names the constant generator= rather than generatorConstant=: the same keys decrypt with it
+        dump = root / 'dump_keys.txt'
+        dump_keys_file(dump)
+        dump_decrypted = run('encrypted-dump', encrypted, dump, 0, 'Decrypted')
+        same_content(tree(plain), tree(dump_decrypted))
         # A content region ending 16 bytes into a 64-byte block: the decryption pads before the metadata, and the
         # extraction still matches the plain one.
         odd_application = ncch()
@@ -226,6 +244,21 @@ def main():
             capture_output=True, text=True, cwd=root, timeout=60, env=env,
         )
         assert p.returncode == 0 and 'Decrypted' not in p.stdout and not (root / 'plain-card.decrypted.cci').exists(), p.stdout + p.stderr
+        # A tool that decrypted an image but left its flag saying encrypted: the ExHeader's hash in the header matches
+        # the plain text, so the image is read as it is, with no keys and no copy, and the driver says so
+        mislabeled = bytearray(plain_cci)
+        for i in range(8):
+            at = int.from_bytes(mislabeled[0x120 + i * 8:0x124 + i * 8], 'little')
+            if at:
+                mislabeled[at * 0x200 + 0x18F] &= ~0x04
+        run('mislabeled', bytes(mislabeled), None, 0, 'says it is encrypted', extension='cci')
+        got, want = files(root / 'mislabeled'), files(root / 'plain-card')
+        assert set(got) == set(want), set(got) ^ set(want)
+        for entry in got:  # the NCCH header keeps its own flag, and the manifest the input's hash
+            if entry in ('ncch.bin', 'manifest.ini'):
+                continue
+            assert got[entry] == want[entry], entry
+        assert not (root / 'mislabeled.decrypted.cci').exists()
         # without keys, and with seed crypto, and with the wrong ones, an encrypted image is refused and nothing published
         seed = bytearray(ncsd(game=encrypted_game))
         seed[0x200 + 0x18F] |= 0x20  # the seed bit, which no keys of this loader's take off

@@ -1,17 +1,27 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
    APT GetLockHandle facts: Azahar service/apt/{apt,applet_manager}.cpp,
-   GPL-2.0-or-later, revision recorded in docs/3DS.md. */
+   GPL-2.0-or-later, revision recorded in docs/3DS.md. The parameter queue and the library applet's start, as an
+   application drives them for the software keyboard and the Mii selector, and the capture block each answers the
+   application's Request with (each HLE applet's ReceiveParameterImpl): the same files at ac4a97e. */
 #include "3ds/runtime/internal.h"
-#include <stdio.h>
-#include <string.h>
-static bool preloaded(const SnxCtrProcess* p, uint32_t id);
 #include "common/utilities/endian.h"
+#include "3ds/memory/ctr_memory.h"
 #include "3ds/services/apt.h"
 #include "3ds/services/font.h"
-#include <stdlib.h>
+#include "3ds/services/mii_selector.h"
+#include "3ds/services/swkbd.h"
 #include "services/apt.swipc.inc"
-#define APT_NO_SHARED_FONT 0xffffffffu /* Azahar's answer (-1) when it has no font to serve */
+#include <stdio.h>
+#include <string.h>
+#define APT_NO_SHARED_FONT     0xffffffffu /* Azahar's answer (-1) when it has no font to serve */
+#define APT_PARAMETER_PRESENT  0xc8a0cc02u /* ParameterPresent, Applet, InvalidState, Status */
+#define APT_ALREADY_EXISTS     0xc8a0cffcu /* AlreadyExists, Applet, InvalidState, Status */
+#define APT_NO_DATA            0xc8a0cfefu /* NoData, Applet, InvalidState, Status */
+#define APT_ANY_LIBRARY        0x400u      /* AnyLibraryApplet, and AnySysLibraryApplet (0x200) */
+#define APT_PARAMETER_CAPACITY 0x1000u     /* the most a parameter's buffer holds, as Azahar's receive takes it */
+#define APT_CAPTURE_LIMIT      0x200000u   /* the most a Request's capture block may take: both screens, both eyes */
+#define APT_CAPTURE_INFO_SIZE  0x20u       /* CaptureBufferInfo, a Request's buffer */
 static uint32_t snx_ctr_apt_wire_GetLockHandle(SnxCtrIpc* c, uint32_t attributes, uint32_t* corrected, uint32_t* state,
                                                uint32_t* lock) {
     SnxCtrProcess* p = c->process;
@@ -42,7 +52,7 @@ static uint32_t snx_ctr_apt_wire_Initialize(SnxCtrIpc* c, uint32_t app_id, uint3
         c->state = SNX_CTR_IPC_UNSUPPORTED;
         return 0;
     }
-    if (p->apt_phase) return 0xc8a0cffcu; /* occupied application slot */
+    if (p->apt_phase) return APT_ALREADY_EXISTS; /* occupied application slot */
     uint32_t result = snx_ctr_object_create(p, CTR_OBJ_EVENT, notification);
     if (result) return result;
     result = snx_ctr_object_create(p, CTR_OBJ_EVENT, parameter);
@@ -68,22 +78,77 @@ static uint32_t snx_ctr_apt_wire_Enable(SnxCtrIpc* c, uint32_t attributes) {
 }
 static uint32_t snx_ctr_apt_wire_NotifyToWait(SnxCtrIpc* c, uint32_t app_id) {
     SnxCtrProcess* p = c->process;
-    if (app_id != 0x300) { /* a game waiting for a library applet it started, which has already answered */
-        if (!preloaded(p, app_id)) c->state = SNX_CTR_IPC_UNSUPPORTED;
+    if (app_id != 0x300) {
+        c->state = SNX_CTR_IPC_UNSUPPORTED;
         return 0;
     }
     if (!p->apt_phase) return SNX_CTR_IPC_INVALID_STATE;
-    if (p->apt_phase > 2) return 0; /* the game waits for its wakeup again, after a library applet it started */
     /* Record the registered application's startup readiness. This is not a
-       kernel wait completion; the queued parameter must still be received. */
-    p->apt_phase = 2;
+       kernel wait completion; the queued parameter must still be received.
+       Later ones come before each wakeup the application waits for (a library
+       applet's), and Azahar answers them with success alone */
+    if (p->apt_phase < 2) p->apt_phase = 2;
     return 0;
 }
-/* GetTargetPlatform (0x101): 1 for an Old 3DS, 2 for a New 3DS */
-static uint32_t snx_ctr_apt_wire_GetTargetPlatform(SnxCtrIpc* c, uint32_t* platform) {
-    *platform = snx_ctr_memory_profile(c->process->memory)->model == SNX_CTR_NEW ? 2 : 1;
+/* the application from its Initialize on, and the library applet APT registered for it; no other applet runs */
+static uint32_t snx_ctr_apt_wire_IsRegistered(SnxCtrIpc* c, uint32_t app_id, uint32_t* registered) {
+    SnxCtrProcess* p = c->process;
+    uint32_t library = p->apt_library;
+    if (app_id == 0x300)
+        *registered = p->apt_phase != 0;
+    else if (app_id == APT_ANY_LIBRARY || app_id == APT_ANY_LIBRARY >> 1)
+        *registered = library && (library & 0xf00) == app_id;
+    else
+        *registered = library && app_id == library;
     return 0;
 }
+static void parameter_drop(SnxCtrProcess* p) {
+    if (p->apt_next.pending && p->apt_next.object) snx_ctr_object_release(p, p->apt_next.object);
+    p->apt_next.pending = 0;
+    p->apt_next.object = 0;
+}
+/* CancelParameter: the parameter waiting goes when it is from sender and for receiver, each as asked to check */
+static uint32_t snx_ctr_apt_wire_CancelParameter(SnxCtrIpc* c, uint32_t check_sender, uint32_t sender,
+                                                 uint32_t check_receiver, uint32_t receiver, uint32_t* cancelled) {
+    SnxCtrProcess* p = c->process;
+    *cancelled = p->apt_next.pending && (!(check_sender & 0xff) || p->apt_next.sender == sender) &&
+                 (!(check_receiver & 0xff) || receiver == 0x300);
+    if (*cancelled) parameter_drop(p);
+    return 0;
+}
+/* PrepareToStartLibraryApplet: the software keyboard or the Mii selector, which the runtime plays, registered for the
+   application. Any other library applet is one the runtime does not have: the command answers as an unknown one
+   does */
+static uint32_t snx_ctr_apt_wire_PrepareToStartLibraryApplet(SnxCtrIpc* c, uint32_t app_id) {
+    SnxCtrProcess* p = c->process;
+    if (!snx_ctr_swkbd_is(app_id) && !snx_ctr_mii_selector_is(app_id)) {
+        fprintf(stderr,
+                "3ds apt: the game prepares library applet 0x%03x, which the runtime does not have (only the "
+                "software keyboard, 0x401, and the Mii selector, 0x402)\n",
+                (unsigned)app_id);
+        c->state = SNX_CTR_IPC_UNKNOWN;
+        return 0;
+    }
+    if (!p->apt_phase) return SNX_CTR_IPC_INVALID_STATE; /* no application to start it for */
+    if (p->apt_next.pending) return APT_PARAMETER_PRESENT;
+    if (p->apt_library) return APT_ALREADY_EXISTS;
+    p->apt_library = app_id;
+    return 0;
+}
+void snx_ctr_apt_send(struct SnxCtrProcess* p, uint32_t sender, uint32_t signal, uint32_t object,
+                      const unsigned char* buffer, uint32_t size) {
+    parameter_drop(p);
+    p->apt_next.pending = 1;
+    p->apt_next.sender = sender;
+    p->apt_next.signal = signal;
+    p->apt_next.object = object;
+    if (object) ++p->objects[object].refs;
+    p->apt_next.size = size;
+    if (size) memcpy(p->apt_next.buffer, buffer, size);
+    p->objects[p->apt_parameter].data.event.signaled = 1;
+    snx_ctr_wake_waiters(p, p->apt_parameter);
+}
+void snx_ctr_apt_library_closed(struct SnxCtrProcess* p) { p->apt_library = 0; }
 static uint32_t snx_ctr_apt_wire_GetSharedFont(SnxCtrIpc* c, uint32_t* address, uint32_t* font) {
     return snx_ctr_font_shared(c->process, address, font) ? 0 : APT_NO_SHARED_FONT;
 }
@@ -91,21 +156,21 @@ static uint32_t snx_ctr_apt_wire_IsNew3DS(SnxCtrIpc* c, uint32_t* is_new) {
     *is_new = snx_ctr_memory_profile(c->process->memory)->model == SNX_CTR_NEW;
     return 0;
 }
-/* ReceiveParameter (0xd) takes the queued parameter; GlanceParameter (0xe) answers the same and leaves it queued */
-static void receive_parameter(SnxCtrIpc* c, bool consume) {
+/* ReceiveParameter and GlanceParameter (glance: the parameter stays): from Initialize on, the initial Wakeup that
+   Initialize queued; after it, the parameter waiting for the application, its object moved to it */
+static void receive_parameter(SnxCtrIpc* c, int glance) {
     if (!snx_ctr_ipc_expect(c, 2, 0)) return;
     SnxCtrProcess* p = c->process;
-    if (c->in[1] != 0x300 || c->in[2] > 4096) {
+    if (c->in[1] != 0x300 || c->in[2] > APT_PARAMETER_CAPACITY) {
         c->state = SNX_CTR_IPC_UNSUPPORTED;
         return;
     }
-    bool sent = p->apt_message.signal != 0; /* an applet's parameter, not the startup's Wakeup */
-    if (!sent && (consume ? p->apt_phase != 2 : p->apt_phase < 1 || p->apt_phase > 2)) {
-        snx_ctr_ipc_error_reply(c, p->apt_phase >= 3 ? 0xc8a0cfefu : SNX_CTR_IPC_INVALID_STATE);
+    int startup = p->apt_phase == 1 || p->apt_phase == 2;
+    if (!startup && (p->apt_phase < 3 || !p->apt_next.pending)) {
+        snx_ctr_ipc_error_reply(c, p->apt_phase >= 3 ? APT_NO_DATA : SNX_CTR_IPC_INVALID_STATE);
         return;
     }
-    unsigned char descriptor[8], zero[4096] = {0};
-    if (sent) memcpy(zero, p->apt_message.data, p->apt_message.size < c->in[2] ? p->apt_message.size : c->in[2]);
+    unsigned char descriptor[8], buffer[APT_PARAMETER_CAPACITY] = {0};
     uint32_t tls = p->cpu.state.cpu.tpidruro;
     if (snx_ctr_read_ram(p->space, tls + 0x180, descriptor, sizeof descriptor) != SNX_CTR_MEM_OK) {
         c->transport_result = 0xe0e01bf5u;
@@ -116,25 +181,155 @@ static void receive_parameter(SnxCtrIpc* c, bool consume) {
         snx_ctr_ipc_bad(c);
         return;
     }
-    /* APT pads its parameter buffer to the requested length. This initial
-       Wakeup has no payload or object. Whole-range checked RAM write is atomic
-       on a bad address/permission/MMIO; consume only after it succeeds. */
-    if (size && snx_ctr_write_ram(p->space, address, zero, size) != SNX_CTR_MEM_OK) {
+    /* the initial Wakeup has no payload or object */
+    uint32_t sender = 0, signal = 1, actual = 0, object = startup ? 0 : p->apt_next.object, handle = 0;
+    if (!startup) {
+        sender = p->apt_next.sender;
+        signal = p->apt_next.signal;
+        actual = p->apt_next.size < size ? p->apt_next.size : size;
+        memcpy(buffer, p->apt_next.buffer, actual);
+    }
+    /* APT pads its parameter buffer to the requested length. Whole-range
+       checked RAM write is atomic on a bad address/permission/MMIO; consume
+       only after it succeeds. */
+    if (size && snx_ctr_write_ram(p->space, address, buffer, size) != SNX_CTR_MEM_OK) {
         c->transport_result = 0xe0e01bf5u;
         return;
     }
-    c->out[0] = consume ? 0x000d0104 : 0x000e0104;
-    c->out[2] = sent ? p->apt_message.sender : 0; /* none: no Home Menu process is claimed */
-    c->out[3] = sent ? p->apt_message.signal : 1; /* else the queued initial Wakeup, implicit in the startup phase */
-    c->out[4] = sent ? p->apt_message.size : 0;   /* actual payload size */
-    c->out[5] = 0x10;                             /* move descriptor; absent optional object is wire NULL */
-    c->out[6] = sent ? p->apt_message.object : 0;
+    if (object) {
+        uint32_t result = snx_ctr_handle_add(p, object, &handle);
+        if (result) {
+            snx_ctr_ipc_error_reply(c, result);
+            return;
+        }
+    }
+    c->out[0] = (c->in[0] & 0xffff0000u) | 0x104;
+    c->out[2] = sender; /* the initial Wakeup's: none, no Home Menu process is claimed */
+    c->out[3] = signal;
+    c->out[4] = actual;
+    c->out[5] = 0x10; /* move descriptor; absent optional object is wire NULL */
+    c->out[6] = handle;
     c->out[7] = (size << 14) | 2; /* static buffer 0 */
     c->out[8] = address;
-    if (sent && consume)
-        p->apt_message.signal = 0;
-    else if (consume)
+    if (glance) return;
+    if (startup)
         p->apt_phase = 3; /* wakeup received, startup transition not yet released */
+    else
+        parameter_drop(p); /* the object's reference went to the handle */
+}
+/* a static buffer of the request at word i (its descriptor, then its address): the bytes, at most cap. 0 on success,
+   else the transport's result */
+static uint32_t static_input(SnxCtrIpc* c, unsigned i, uint32_t size, unsigned char* out, uint32_t cap) {
+    if ((c->in[i] & 0x3fff) != 2 || (c->in[i] >> 14) != size || size > cap) return SNX_CTR_IPC_BAD_DESCRIPTOR;
+    if (size && snx_ctr_read_ram(c->process->space, c->in[i + 1], out, size) != SNX_CTR_MEM_OK) return 0xe0e01bf5u;
+    return 0;
+}
+/* the one handle a request copies at word i: its object, 0 for none (the zero handle), CTR_OBJECTS for a bad one */
+static uint32_t copied_object(SnxCtrIpc* c, unsigned i) {
+    if (c->in[i] != 0) return CTR_OBJECTS; /* one copied handle */
+    if (!c->in[i + 1]) return 0;
+    uint32_t id = snx_ctr_handle_object(c->process, c->in[i + 1]);
+    return id ? id : CTR_OBJECTS;
+}
+/* the capture block the application copies its screens into for the library applet to show: one, made at the first
+   Request and again when a later one asks for more. 0 when there is no memory left for it */
+static uint32_t capture_block(SnxCtrProcess* p, uint32_t size) {
+    uint32_t pages = (size + 4095) & ~4095u, handle, physical;
+    if (p->apt_capture && p->objects[p->apt_capture].data.shared.size >= pages) return p->apt_capture;
+    if (snx_ctr_object_create(p, CTR_OBJ_SHARED, &handle)) return 0;
+    if (!(physical = snx_ctr_shared_pages(p, pages))) {
+        (void)snx_ctr_handle_close(p, handle);
+        return 0;
+    }
+    uint32_t id = snx_ctr_handle_object(p, handle);
+    CtrObject* o = &p->objects[id];
+    o->data.shared.physical = physical;
+    o->data.shared.size = pages;
+    o->data.shared.permissions = SNX_CTR_READ | SNX_CTR_WRITE;
+    /* Azahar's CreateSharedMemoryForApplet makes the block read-write for its owner and for the others, at a base
+       address of its own: the application maps it where it chooses, with other permissions that cover the block's
+       (SharedMemory::Map) */
+    o->data.shared.other_permissions = SNX_CTR_READ | SNX_CTR_WRITE;
+    ++o->refs; /* APT keeps it for the applets */
+    (void)snx_ctr_handle_close(p, handle);
+    if (p->apt_capture) snx_ctr_object_release(p, p->apt_capture);
+    p->apt_capture = id;
+    return id;
+}
+/* SendParameter: source, destination, signal, size, a copied handle and the buffer. To the library applet APT
+   registered: a Request for the capture block is answered with it (the Response), as each applet of the runtime
+   answers it; any other parameter is the applet's to take. Any other destination is one the runtime does not
+   deliver to */
+static void send_parameter(SnxCtrIpc* c) {
+    if (!snx_ctr_ipc_expect(c, 4, 4)) return;
+    SnxCtrProcess* p = c->process;
+    uint32_t destination = c->in[2], signal = c->in[3], size = c->in[4], object = copied_object(c, 5);
+    unsigned char buffer[APT_PARAMETER_CAPACITY];
+    if (!p->apt_library || destination != p->apt_library) {
+        c->state = SNX_CTR_IPC_UNKNOWN;
+        return;
+    }
+    if (object == CTR_OBJECTS) {
+        snx_ctr_ipc_bad(c);
+        return;
+    }
+    uint32_t transport = static_input(c, 7, size, buffer, sizeof buffer);
+    if (transport) {
+        c->transport_result = transport;
+        return;
+    }
+    c->out[0] = (c->in[0] & 0xffff0000u) | 0x40;
+    c->out[1] = p->apt_next.pending ? APT_PARAMETER_PRESENT : 0;
+    if (c->out[1]) return;
+    if (signal == SNX_CTR_APT_REQUEST && size == APT_CAPTURE_INFO_SIZE && snx_ld_le32(buffer) &&
+        snx_ld_le32(buffer) <= APT_CAPTURE_LIMIT) {
+        uint32_t block = capture_block(p, snx_ld_le32(buffer));
+        if (!block) {
+            fprintf(stderr, "3ds apt: no memory left for library applet 0x%03x's %u-byte capture block\n",
+                    (unsigned)p->apt_library, (unsigned)snx_ld_le32(buffer));
+            c->state = SNX_CTR_IPC_UNSUPPORTED;
+            return;
+        }
+        snx_ctr_apt_send(p, p->apt_library, SNX_CTR_APT_RESPONSE, block, NULL, 0);
+    } else if (snx_ctr_swkbd_is(p->apt_library))
+        snx_ctr_swkbd_parameter(c, signal, buffer, size, object);
+    else {
+        /* the Mii selector answers as soon as it starts: a Request is all it takes (Azahar's ReceiveParameterImpl) */
+        fprintf(stderr,
+                "3ds apt: the game sends the Mii selector signal %u with %u bytes, which it does not take (a "
+                "Request with a 32-byte capture info)\n",
+                (unsigned)signal, (unsigned)size);
+        c->state = SNX_CTR_IPC_UNSUPPORTED;
+    }
+}
+/* StartLibraryApplet: the applet APT registered, its parameter and a copied handle: the software keyboard's
+   configuration and the block its text goes in, or the Mii selector's configuration (it uses no object, as Azahar's
+   takes none) */
+static void start_library_applet(SnxCtrIpc* c) {
+    if (!snx_ctr_ipc_expect(c, 2, 4)) return;
+    SnxCtrProcess* p = c->process;
+    uint32_t app_id = c->in[1], size = c->in[2], object = copied_object(c, 3);
+    unsigned char buffer[APT_PARAMETER_CAPACITY];
+    if (!p->apt_library || app_id != p->apt_library) {
+        c->state = SNX_CTR_IPC_UNKNOWN;
+        return;
+    }
+    if (object == CTR_OBJECTS) {
+        snx_ctr_ipc_bad(c);
+        return;
+    }
+    uint32_t transport = static_input(c, 5, size, buffer, sizeof buffer);
+    if (transport) {
+        c->transport_result = transport;
+        return;
+    }
+    c->out[0] = (c->in[0] & 0xffff0000u) | 0x40;
+    c->out[1] = p->apt_next.pending ? APT_PARAMETER_PRESENT : 0;
+    if (c->out[1]) return;
+    if (snx_ctr_swkbd_is(app_id))
+        snx_ctr_swkbd_start(c, buffer, size, object);
+    else
+        snx_ctr_mii_selector_start(c, buffer, size);
 }
 /* AppletUtility: a utility command, its input in static buffer 1, its output (output_size bytes) in the caller's
    receive buffer 0. As Azahar answers them: success, and an output of zeros, but for TryLockTransition (6), which
@@ -179,147 +374,13 @@ static void applet_utility(SnxCtrIpc* c) {
     c->out[3] = (output_size << 14) | 2;
     c->out[4] = address;
 }
-static bool preloaded(const SnxCtrProcess* p, uint32_t id) {
-    for (unsigned i = 0; i < sizeof p->apt_preloaded / sizeof *p->apt_preloaded; ++i)
-        if (p->apt_preloaded[i] == id) return true;
-    return false;
-}
-/* PreloadLibraryApplet (0x16) and PrepareToStartLibraryApplet (0x18): the applet is ready as soon as it is asked for,
-   as Azahar's HLE applets are, and so registered. The first ask for each is reported: no applet runs */
-static void ask_library_applet(SnxCtrIpc* c, uint32_t header) {
-    if (!snx_ctr_ipc_expect(c, 1, 0)) return;
-    SnxCtrProcess* p = c->process;
-    uint32_t id = c->in[1];
-    for (unsigned i = 0; id && !preloaded(p, id) && i < sizeof p->apt_preloaded / sizeof *p->apt_preloaded; ++i)
-        if (!p->apt_preloaded[i]) {
-            p->apt_preloaded[i] = id;
-            fprintf(stderr, "3ds apt: library applet 0x%x asked for (command 0x%04x); it is only reported ready\n", id,
-                    header >> 16);
-        }
-    c->out[0] = header;
-    c->out[1] = 0;
-}
-/* IsRegistered (0x9): the application itself and each library applet asked for */
-static void is_registered(SnxCtrIpc* c) {
-    if (!snx_ctr_ipc_expect(c, 1, 0)) return;
-    c->out[0] = 0x00090080;
-    c->out[1] = 0;
-    c->out[2] = c->in[1] == 0x300 || preloaded(c->process, c->in[1]);
-}
-/* GetAppletInfo (0x6): a preloaded library applet is registered and loaded (a game polls for that after preloading
-   it); any other applet answers success with nothing set, as the stub did */
-static void get_applet_info(SnxCtrIpc* c) {
-    if (!snx_ctr_ipc_expect(c, 1, 0)) return;
-    if (!preloaded(c->process, c->in[1])) {
-        c->out[0] = 0x00060040;
-        c->out[1] = 0;
-        return;
-    }
-    c->out[0] = 0x000601c0;
-    c->out[1] = 0;
-    c->out[2] = c->out[3] = 0; /* the title: not modelled */
-    c->out[4] = 0;             /* the media type */
-    c->out[5] = 1;             /* registered */
-    c->out[6] = 1;             /* loaded */
-    c->out[7] = 0;             /* the attributes */
-}
-/* The applet's parameter to the game: the next ReceiveParameter answers it, and the parameter event wakes the game's
-   thread that waits for one */
-static void send_to_game(SnxCtrProcess* p, uint32_t sender, uint32_t signal, const void* data, uint32_t size,
-                         uint32_t object) {
-    p->apt_message.signal = signal;
-    p->apt_message.sender = sender;
-    p->apt_message.size = size;
-    p->apt_message.object = object;
-    memset(p->apt_message.data, 0, sizeof p->apt_message.data);
-    if (size) memcpy(p->apt_message.data, data, size);
-    if (p->apt_parameter) {
-        p->objects[p->apt_parameter].data.event.signaled = 1;
-        snx_ctr_wake_waiters(p, p->apt_parameter);
-    }
-}
-/* SendParameter (0xc): the game to an applet. A Request for the capture block, which a library applet answers with
-   its screen: a shared block of the size the request asks, blank (Azahar's applet.cpp ReceiveParameterImpl) */
-static void send_parameter(SnxCtrIpc* c) {
-    if (!snx_ctr_ipc_expect(c, 4, 4)) return;
-    SnxCtrProcess* p = c->process;
-    uint32_t destination = c->in[2], signal = c->in[3], size = c->in[4];
-    c->out[0] = 0x000c0040;
-    c->out[1] = 0;
-    if (!preloaded(p, destination) || signal != 2) return;
-    unsigned char head[4] = {0};
-    uint32_t wanted = size >= 4 && snx_ctr_read_ram(p->space, c->in[8], head, 4) == SNX_CTR_MEM_OK ? snx_ld_le32(head) : 0;
-    if (!wanted || wanted > 0x400000) wanted = 0x100000;
-    uint32_t handle, physical = snx_ctr_shared_pages(p, (wanted + 0xfffu) & ~0xfffu);
-    if (!physical || snx_ctr_object_create(p, CTR_OBJ_SHARED, &handle)) {
-        c->out[1] = 0xd86007f3u;
-        return;
-    }
-    CtrObject* shared = &p->objects[snx_ctr_handle_object(p, handle)];
-    shared->data.shared.physical = physical;
-    shared->data.shared.size = (wanted + 0xfffu) & ~0xfffu;
-    shared->data.shared.permissions = SNX_CTR_READ | SNX_CTR_WRITE;
-    send_to_game(p, destination, 3, NULL, 0, handle); /* Response */
-}
-/* CRC-16/XMODEM (CCITT polynomial 0x1021, from 0, not reflected), which libctru's miiSelectorChecksumIsValid takes */
-static uint16_t crc16(const unsigned char* bytes, uint32_t size) {
-    uint16_t crc = 0;
-    for (uint32_t i = 0; i < size; ++i) {
-        crc ^= (uint16_t)(bytes[i] << 8);
-        for (unsigned bit = 0; bit < 8; ++bit) crc = (uint16_t)(crc & 0x8000 ? crc << 1 ^ 0x1021 : crc << 1);
-    }
-    return crc;
-}
-/* The Mii the selector answers with, as the console's own picker gave it (Azahar's mii_selector.cpp
-   GetStandardMiiResult, GPL-2.0-or-later, from system version 11.8.0): a 0x5c-byte Mii as the system database holds it */
-static void standard_mii(unsigned char mii[0x5c]) {
-    static const unsigned char head[0x1a] = {0x03, 0x00, 0x10, 0x30, 0x0a, 0x85, 0xc8, 0x00, 0xb3, 0xb6, 0x85, 0xd2, 0xe4,
-                                             0x1e, 0x39, 0x98, 0x40, 0xf4, 0x07, 0xb7, 0x37, 0x10, 0x00, 0x00, 0x00, 0xa6};
-    static const unsigned char look[0x1e] = {0x40, 0x40, 0x00, 0x00, 0x21, 0x01, 0x18, 0x44, 0x68, 0x02,
-                                             0x14, 0x46, 0x34, 0x26, 0x12, 0x81, 0x68, 0x17, 0x00, 0x0d,
-                                             0x29, 0x00, 0x52, 0x00, 0x50, 0x48};
-    memset(mii, 0, 0x5c);
-    memcpy(mii, head, sizeof head);
-    static const unsigned char name[] = {'M', 0, 'i', 0, 'i', 0}; /* UTF-16, ten characters of room */
-    memcpy(mii + 0x1a, name, sizeof name);
-    memcpy(mii + 0x2e, look, 26);
-}
-/* StartLibraryApplet (0x1e): runs the applet and ends it at once, with its result for the game as a WakeupByExit. Only
-   the Mii selector has one, and it answers with that standard Mii (MiiSelectorReturn: a Mii chosen, no guest, the
-   checksum of the Mii and the two bytes after it, big-endian) */
-static void start_library_applet(SnxCtrIpc* c) {
-    if (!snx_ctr_ipc_expect(c, 2, 4)) return;
-    SnxCtrProcess* p = c->process;
-    uint32_t id = c->in[1];
-    c->out[0] = 0x001e0040;
-    c->out[1] = 0;
-    if (id != 0x402) {
-        fprintf(stderr, "3ds apt: library applet 0x%x is not emulated; the game waits for it\n", id);
-        return;
-    }
-    unsigned char result[0x84] = {0};
-    snx_st_le32(result + 8, 0xffffffffu);
-    standard_mii(result + 0x0c);
-    uint16_t checksum = crc16(result + 0x0c, 0x5e);
-    result[0x6a] = (unsigned char)(checksum >> 8);
-    result[0x6b] = (unsigned char)checksum;
-    send_to_game(p, id, 10, result, sizeof result, 0);
-}
 void snx_ctr_apt_dispatch(SnxCtrIpc* c) {
-    if (c->in[0] >> 16 == 0xd || c->in[0] >> 16 == 0xe)
-        receive_parameter(c, c->in[0] >> 16 == 0xd);
-    else if (c->in[0] >> 16 == 0x4b)
-        applet_utility(c);
-    else if (c->in[0] >> 16 == 0x16 || c->in[0] >> 16 == 0x18)
-        ask_library_applet(c, c->in[0] >> 16 == 0x16 ? 0x00160040 : 0x00180040);
-    else if (c->in[0] >> 16 == 0x9)
-        is_registered(c);
-    else if (c->in[0] >> 16 == 0xc)
-        send_parameter(c);
-    else if (c->in[0] >> 16 == 0x1e)
-        start_library_applet(c);
-    else if (c->in[0] >> 16 == 0x6)
-        get_applet_info(c);
-    else
-        snx_ctr_apt_wire_dispatch(c);
+    switch (c->in[0] >> 16) {
+        case 0x0c: send_parameter(c); break;
+        case 0x0d:
+        case 0x0e: receive_parameter(c, c->in[0] >> 16 == 0x0e); break;
+        case 0x1e: start_library_applet(c); break;
+        case 0x4b: applet_utility(c); break;
+        default: snx_ctr_apt_wire_dispatch(c); break;
+    }
 }

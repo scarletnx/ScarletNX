@@ -44,16 +44,15 @@ environment (`-E VAR=VALUE` sets a variable and `-U VAR` removes one, as with QE
 
 | Option | Effect |
 | --- | --- |
-| `-L DIR`, `--sysroot=DIR` | The guest's root (see below). `SNX_LINUX_SYSROOT` names it too |
+| `-L DIR`, `--sysroot=DIR` | The guest's root (see below) |
 | `--isolated` | No host files: `/tmp` in memory and the program alone as `/program`, the namespace the unit tests use |
 | `--jit` (default) | Compile the guest's code in process as it runs, the only mode |
 | `--jit-cache=DIR`, `--no-jit-cache` | Where compiled code is kept between runs (default `linux-jit` in the user's cache folder) |
 | `--jit-opt=LEVEL` | The JIT's LLVM optimization level (default 2) |
 | `--verbose-jit` | A line for each piece of code compiled, and how long it took |
-
-`SNX_GNU_STRACE=1` writes every system call, its arguments and its result to stderr,
-prefixed with the process id. `SNX_GNU_SAMPLE=1` writes the guest's program counter
-once a second, for a loop that makes no system call.
+| `--strace` | Every system call, its arguments and its result on stderr, prefixed with the process id |
+| `--sample-pc` | The guest's program counter on stderr once a second, for a loop that makes no system call (not on Windows) |
+| `--host-page=N` | Work as a host with N-byte pages, a power of two from the host's page to 1048576 (not on Windows, tests) |
 
 ## The sysroot
 

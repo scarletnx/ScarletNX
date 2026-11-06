@@ -274,7 +274,7 @@ static int ios_arena(SnxCodeLoader* loader, char* error, size_t error_size) {
 static unsigned char* map_views(unsigned char* at, size_t size, int executable, char* error, size_t error_size) {
     void* write = MAP_FAILED;
     int fd;
-#if defined(__sun__) || defined(__HAIKU__) || defined(__NetBSD__) || defined(__DragonFly__) || defined(__OpenBSD__)
+#if defined(__sun__) || defined(__HAIKU__) || defined(__DragonFly__) || defined(__OpenBSD__)
     fd = shm_open_anon(O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
 #elif defined(__FreeBSD__)
     fd = shm_open(SHM_ANON, O_RDWR, 0600);

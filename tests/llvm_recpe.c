@@ -51,7 +51,7 @@ static int run(int jit, int portable, char opt) {
     }
     llvm_steps_add(&s, 0x4EA1D820u, 0x1000, 0); /* frecpe v0.4s, v1.4s */
     llvm_steps_add(&s, 0x0EA1D820u, 0x1000, 0); /* frecpe v0.2s, v1.2s */
-    if (!portable && s.ir->features->x86 && s.ir->features->avx2 &&
+    if (!s.ir->big_endian && (s.ir->features->x86 || s.ir->features->aarch64) &&
         LLVMGetNamedFunction(s.ir->mod, "snx_fp_unary")) {
         fprintf(stderr, "inline reciprocal still contains a lane helper\n");
         llvm_steps_end(&s);
@@ -117,11 +117,11 @@ static int run(int jit, int portable, char opt) {
     return 0;
 }
 
-static int bench(const char* workload, char opt, const char* dump, int reference) {
+static int bench(const char* workload, char opt, const char* dump, int reference, int rsqrt) {
     char error[1024];
     LlvmSteps s;
     if (llvm_steps_begin_opt(&s, 1, reference, opt, error, sizeof error)) return snx_error("%s", error);
-    llvm_steps_add(&s, 0x4EA1D820u, 0x1000, 0);
+    llvm_steps_add(&s, rsqrt ? 0x6EA1D820u : 0x4EA1D820u, 0x1000, 0);
     if (dump) {
         int failed = llvm_steps_dump(&s, dump, error, sizeof error);
         if (failed) fprintf(stderr, "%s\n", error);
@@ -151,10 +151,16 @@ static int bench(const char* workload, char opt, const char* dump, int reference
 }
 
 int main(int argc, char** argv) {
-    if (argc >= 3 && !strcmp(argv[1], "--bench"))
-        return bench(argv[2], argc > 3 ? argv[3][0] : '0',
-                     argc > 4 && strcmp(argv[4], "--reference") ? argv[4] : NULL,
-                     argc > 4 && !strcmp(argv[4], "--reference"));
+    if (argc >= 3 && !strcmp(argv[1], "--bench")) {
+        int reference = 0, rsqrt = 0;
+        const char* dump = NULL;
+        for (int i = 4; i < argc; i++) {
+            if (!strcmp(argv[i], "--reference")) reference = 1;
+            else if (!strcmp(argv[i], "--rsqrt")) rsqrt = 1;
+            else dump = argv[i];
+        }
+        return bench(argv[2], argc > 3 ? argv[3][0] : '0', dump, reference, rsqrt);
+    }
     for (int jit = 0; jit < 2; jit++)
         for (int portable = 0; portable < 2; portable++)
             for (unsigned level = 0; level < 2; level++)

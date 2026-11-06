@@ -33,6 +33,9 @@
 #include <time.h>
 #include "common/utilities/common.h"
 #include "common/utilities/window_icon.h"
+#ifdef SDL_PLATFORM_IOS
+#include "gui/apple.h" /* gui_apple_share: the share sheet of the app, which the iOS app links */
+#endif
 #include "nx/runtime/platform/controls_png.h"
 #include "common/utilities/build_info.h"
 #ifdef __APPLE__
@@ -40,6 +43,9 @@
 #endif
 #ifdef __ANDROID__
 #include <jni.h>
+#endif
+#ifdef SDL_PLATFORM_APPLE
+#include <dispatch/dispatch.h> /* the system's memory pressure */
 #endif
 
 static SDL_Window* g_win;
@@ -105,9 +111,19 @@ PAudio* plat_audio_open(u32 rate, u32 channels) {
         return NULL;
     }
     a->stream = stream;
-    const char* name = SDL_GetAudioDeviceName(SDL_GetAudioStreamDevice(stream));
-    LOG("audio: SDL %s output opened on %s (%u Hz, %u channels, signed 16-bit PCM)\n", SDL_GetCurrentAudioDriver(),
-        name ? name : "the system default", rate, channels);
+    /* the device by its format, never its name: the system names a headset after its owner ("<name>'s headphones"), and
+       players attach the log to public reports */
+    SDL_AudioSpec device;
+    int frames = 0;
+    if (SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(stream), &device, &frames))
+        LOG("audio: SDL %s output opened on the system default, which plays %s at %d Hz, %d channels, %d-frame "
+            "buffer; the game gives %u Hz, %u channels, signed 16-bit PCM\n",
+            SDL_GetCurrentAudioDriver(), SDL_GetAudioFormatName(device.format), device.freq, device.channels, frames,
+            rate, channels);
+    else
+        LOG("audio: SDL %s output opened on the system default, whose format SDL does not give (%s); the game gives "
+            "%u Hz, %u channels, signed 16-bit PCM\n",
+            SDL_GetCurrentAudioDriver(), SDL_GetError(), rate, channels);
     return a;
 }
 
@@ -261,6 +277,52 @@ void backend_window_safe(int* x, int* y, int* w, int* h) {
         backend_window_size(w, h);
     }
 }
+/* What the memory holds, at a warning of low memory from the system: iOS and Android end a game past their memory
+   limit with no signal and no time to write more, so this line can be the last that the log has. The resources line's
+   (resources_text: the footprint and what the system still gives), each GPU heap and the descriptor pools, and then
+   the log and the console to the files. At most MEMORY_LINES in a run, for a warning that comes again and again. Any
+   thread: the renderer's part takes no lock of Vulkan (vk_memory_text) */
+#define MEMORY_LINES 6
+/* 1 while more lines may come */
+static int memory_line(const char* why) {
+    static u32 said;
+    char stats[320], gpu[1024] = "";
+    u32 n;
+    if (__atomic_load_n(&said, __ATOMIC_RELAXED) >= MEMORY_LINES ||
+        (n = __atomic_fetch_add(&said, 1, __ATOMIC_RELAXED)) >= MEMORY_LINES)
+        return 0;
+    resources_text(stats, sizeof stats);
+    if (g_renderer && g_renderer->memory_text) g_renderer->memory_text(gpu, sizeof gpu);
+    LOG("memory: %s: %s%s%s\n", why, stats, gpu[0] ? ", " : "", gpu);
+    log_sync();
+    return n + 1 < MEMORY_LINES;
+}
+#ifdef SDL_PLATFORM_APPLE
+/* The system's memory pressure on iOS and macOS, on a queue of the system: SDL's low memory event (iOS's alone) comes
+   through the main thread's run loop, which the game's frames can hold up (one came 0.1 s before the kill). The source
+   is kept for the whole run */
+static dispatch_source_t g_pressure;
+static void pressure(void* unused) {
+    unsigned long level = dispatch_source_get_data(g_pressure);
+    (void)unused;
+    if (level & DISPATCH_MEMORYPRESSURE_CRITICAL)
+        memory_line("the system's memory pressure is critical");
+    else if (level & DISPATCH_MEMORYPRESSURE_WARN)
+        memory_line("the system's memory pressure is at its warning level");
+}
+static void pressure_watch(void) {
+    if (g_pressure) return; /* a second game of the menu's */
+    g_pressure = dispatch_source_create(DISPATCH_SOURCE_TYPE_MEMORYPRESSURE, 0,
+                                        DISPATCH_MEMORYPRESSURE_WARN | DISPATCH_MEMORYPRESSURE_CRITICAL,
+                                        dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0));
+    if (!g_pressure) {
+        WARN("memory: no source for the system's memory pressure\n");
+        return;
+    }
+    dispatch_source_set_event_handler_f(g_pressure, pressure);
+    dispatch_resume(g_pressure);
+}
+#endif
 /* as SDL queues each event, from its own thread: on Android the main loop is held while the app is in the
    background, and presenting must stop before that */
 static bool SDLCALL lifecycle(void* unused, SDL_Event* e) {
@@ -272,7 +334,10 @@ static bool SDLCALL lifecycle(void* unused, SDL_Event* e) {
         case SDL_EVENT_DID_ENTER_BACKGROUND: LOG("lifecycle: the app is in the background\n"); break;
         case SDL_EVENT_WILL_ENTER_FOREGROUND: LOG("lifecycle: the app will enter the foreground\n"); break;
         case SDL_EVENT_DID_ENTER_FOREGROUND: LOG("lifecycle: the app is in the foreground\n"); break;
-        case SDL_EVENT_LOW_MEMORY: LOG("lifecycle: the system warns of low memory\n"); break;
+        case SDL_EVENT_LOW_MEMORY:
+            LOG("lifecycle: the system warns of low memory\n");
+            memory_line("SDL's low memory event");
+            break;
         case SDL_EVENT_TERMINATING: LOG("lifecycle: the system is ending the app\n"); break;
         default: break;
     }
@@ -391,6 +456,11 @@ void video_init(const char* title, const char* addons) {
         SDL_VERSIONNUM_MICRO(SDL_GetVersion()), SDL_GetCurrentVideoDriver());
     unattended_start();
     SDL_AddEventWatch(lifecycle, NULL);
+#ifdef SDL_PLATFORM_APPLE
+    pressure_watch();
+#else
+    plat_memory_watch(memory_line); /* Linux, Windows; its log line says why where it cannot */
+#endif
     /* a game runs for minutes with nobody touching the screen: a phone that locks it takes the GPU from the app */
     SDL_DisableScreenSaver();
     int w, h;
@@ -594,16 +664,19 @@ static int android_share(const char* path) {
     return ok;
 }
 #endif
-/* Share Log, as the launcher's: scarletnx.log beside the game's log, sent to the app the player picks on Android; its
-   path in saved once written (else left as it was), what it did in said */
+/* Share Log, as the launcher's: scarletnx.log beside the game's log, sent to the app the player picks on Android and
+   iOS; its path in saved once written (else left as it was), what it did in said */
 static void fatal_share(const char* msg, const char* game_log, char* saved, size_t saved_size, char* said,
                         size_t size) {
     char made[1300], *folder = snx_dirname(game_log);
-    int ok = folder && !fatal_share_log(folder, snx_build_info(), msg, game_log, made, sizeof made);
+    int ok = folder && !fatal_share_log(folder, snx_build_log_line(), msg, game_log, made, sizeof made);
     if (!ok) snprintf(said, size, "The log could not be saved: %s", folder ? made : game_log);
 #ifdef __ANDROID__
     else if (!android_share(made))
         snprintf(said, size, "Log saved to %s, but nothing took it to share.", made);
+#elif defined(SDL_PLATFORM_IOS)
+    else if (!gui_apple_share(g_win, made))
+        snprintf(said, size, "Log saved to %s, but the share sheet did not open.", made);
 #endif
     else
         snprintf(said, size, "Log saved to %s.", made);

@@ -451,18 +451,23 @@ static LLVMValueRef readmem(ArmIR* a, LLVMValueRef addr, unsigned bytes, int sig
     if (bytes > 1) joined = rotated_load(a, joined, addr, bytes);
     return sign && bytes < 4 ? LLVMBuildSExt(a->b, LLVMBuildTrunc(a->b, joined, type, ""), a->i32, "") : joined;
 }
+/* An ordinary store clears the local monitor only where it overlaps the bytes the last exclusive load reserved. One
+   elsewhere, as a compiler's spill to the stack between LDREXD and STREXD, keeps the reservation: clearing it there
+   fails that STREXD every time, and the loop around it never ends */
+static void store_monitor(ArmIR* a, LLVMValueRef addr, unsigned bytes) {
+    LLVMValueRef base = GET(a, exclusive_address);
+    /* two ranges overlap when either starts inside the other, in the 32-bit arithmetic the addresses wrap in */
+    LLVMValueRef overlap = bor(a, cmp(a, LLVMIntULT, sub(a, addr, base), GET(a, exclusive_size)),
+                               cmp(a, LLVMIntULT, sub(a, base, addr), c32(a, bytes)));
+    PUT(a, exclusive_valid, LLVMBuildSelect(a->b, overlap, c32(a, 0), GET(a, exclusive_valid), ""));
+}
 static void writemem(ArmIR* a, LLVMValueRef addr, unsigned bytes, LLVMValueRef value) {
     LLVMTypeRef type = LLVMIntTypeInContext(a->ctx, bytes * 8);
     if (!arm7tdmi(a)) {
         if (bytes < 4) value = LLVMBuildTrunc(a->b, value, type, "");
         LLVMValueRef store = LLVMBuildStore(a->b, host_order(a, value, bytes), memptr(a, addr));
         LLVMSetAlignment(store, 1);
-        /* A store clears the local monitor only when it overlaps the reserved bytes. Clearing on every store
-           would starve a loop that stores to its stack between LDREXD and STREXD, which never succeeds. */
-        LLVMValueRef end = LLVMBuildAdd(a->b, addr, c32(a, bytes), "");
-        LLVMValueRef reserved_end = LLVMBuildAdd(a->b, GET(a, exclusive_address), GET(a, exclusive_size), "");
-        LLVMValueRef overlap = band(a, cmp(a, LLVMIntULT, addr, reserved_end), cmp(a, LLVMIntUGT, end, GET(a, exclusive_address)));
-        PUT(a, exclusive_valid, LLVMBuildSelect(a->b, overlap, c32(a, 0), GET(a, exclusive_valid), ""));
+        store_monitor(a, addr, bytes);
         return;
     }
     LLVMValueRef fn = get(a, offsetof(SnxArmCPU, io), a->ptr);
@@ -773,7 +778,7 @@ static void acquire_release(ArmIR* a) {
         access = LLVMBuildStore(a->b, host_order(a, value, bytes), memptr(a, addr));
         LLVMSetOrdering(access, LLVMAtomicOrderingSequentiallyConsistent);
         LLVMSetAlignment(access, bytes);
-        PUT(a, exclusive_valid, c32(a, 0));
+        store_monitor(a, addr, bytes);
     }
 }
 static void multiply(ArmIR* a, SnxA32Kind kind) {

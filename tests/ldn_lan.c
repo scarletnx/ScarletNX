@@ -4,6 +4,7 @@
    consoles on the host's loopback (127.0.0.1 and 127.0.0.2) finding and joining each other: the scan with its
    filter, the host's nodes, the station's sync, leaving and the host going away */
 #include "common/network/net_ldn.h"
+#include "common/network/net_internal.h"
 #include "common/utilities/endian.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,7 +21,48 @@ static unsigned checks;
     } while (0)
 /* a poll with nothing to poll sleeps */
 static void sleep_ms(int ms) { snx_net_poll(NULL, 0, ms); }
-static void quiet(const char* m) { (void)m; }
+
+/* the log, which players attach to public reports: each line is read for the nodes' nicknames as it comes, and kept
+   since heard_reset for what it says of the nodes instead. Both consoles' transport threads write it */
+static const char* const g_nicknames[] = {"Host", "Station"};
+static struct {
+    SnxLock lk;
+    char lines[4096]; /* since heard_reset */
+    char named[512];  /* the first line that named a node */
+} g_heard;
+static void heard(const char* m) {
+    size_t n, i;
+    snx_lock(&g_heard.lk);
+    for (i = 0; i < sizeof g_nicknames / sizeof g_nicknames[0]; i++)
+        if (strstr(m, g_nicknames[i]) && !g_heard.named[0]) snprintf(g_heard.named, sizeof g_heard.named, "%s", m);
+    n = strlen(g_heard.lines);
+    snprintf(g_heard.lines + n, sizeof g_heard.lines - n, "%s", m);
+    snx_unlock(&g_heard.lk);
+}
+static void heard_reset(void) {
+    snx_lock(&g_heard.lk);
+    g_heard.lines[0] = 0;
+    snx_unlock(&g_heard.lk);
+}
+/* whether a line since heard_reset has text, waiting up to ms for it: the other console's thread may log it later */
+static int heard_of(const char* text, int ms) {
+    int i, has = 0;
+    for (i = 0; i <= ms && !has; i++) {
+        snx_lock(&g_heard.lk);
+        has = strstr(g_heard.lines, text) != NULL;
+        snx_unlock(&g_heard.lk);
+        if (!has) sleep_ms(1);
+    }
+    return has;
+}
+static void unnamed(void) {
+    char named[sizeof g_heard.named];
+    snx_lock(&g_heard.lk);
+    memcpy(named, g_heard.named, sizeof named);
+    snx_unlock(&g_heard.lk);
+    if (named[0]) fprintf(stderr, "ldn_lan: a node's nickname in the log: %s", named);
+    CHECK(!named[0]);
+}
 
 /* ---- the frames */
 static void frames(void) {
@@ -190,9 +232,14 @@ static void two_consoles(void) {
        transport's thread, which may run it after the connect returns) */
     name_of(name, "Station");
     changes_a = changes_b = 0;
+    heard_reset();
     CHECK(snx_ldn_connect(b, &net, name, 4, 2000) == 0);
     CHECK(snx_ldn_connected(b));
     CHECK(wait_for(&changes_a, 1, 2000) && wait_for(&changes_b, 1, 2000));
+    /* the log says each side's join by node and address, never by nickname */
+    CHECK(heard_of("ldn: node 1 joined from 127.0.0.2, 2 of 8 nodes", 2000));
+    CHECK(heard_of("ldn: joined the network of the host at 127.0.0.1, 2 of 8 nodes", 2000));
+    unnamed();
     CHECK(snx_ldn_network_info(a, &info, updates) == 1);
     CHECK(info.node_count == 2 && info.nodes[1].is_connected && info.nodes[1].node_id == 1);
     CHECK(!strcmp((char*)info.nodes[1].user_name, "Station") && (int16_t)snx_le16((uint16_t)info.nodes[1].version) == 4);
@@ -212,12 +259,15 @@ static void two_consoles(void) {
 
     /* the station leaves: the host's node 1 empties */
     changes_a = 0;
+    heard_reset();
     snx_ldn_disconnect(b);
     CHECK(!snx_ldn_connected(b) && snx_ldn_disconnect_reason(b) == SNX_LDN_REASON_DISCONNECTED_BY_USER);
     CHECK(wait_for(&changes_a, 1, 2000));
     CHECK(snx_ldn_network_info(a, &info, updates) == 1);
     CHECK(info.node_count == 1 && !info.nodes[1].is_connected && info.nodes[1].user_name[0] == 0);
     CHECK(updates[1] == SNX_LDN_NODE_DISCONNECT);
+    CHECK(heard_of("ldn: node 1 left", 2000));
+    unnamed();
 
     /* it joins again, and the host goes away: the station is told, with the reason */
     CHECK(snx_ldn_connect(b, &net, name, 4, 2000) == 0);
@@ -247,9 +297,11 @@ static void two_consoles(void) {
 
 int main(void) {
     CHECK(snx_net_init() == 0);
-    snx_net_set_log(quiet);
+    snx_lock_init(&g_heard.lk);
+    snx_net_set_log(heard);
     frames();
     two_consoles();
+    unnamed(); /* the host going away and the joins it refused too */
     printf("ldn_lan: %u checks passed\n", checks);
     return 0;
 }

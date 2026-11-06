@@ -129,7 +129,7 @@ typedef struct KTmem {
 } KTmem;
 
 void kernel_init(void);
-/* memory_fit's measure, as the game starts: what the system can still give the process (available) and what the process
+/* memory_fit_mode's measure, as the game starts: what the system can still give the process (available) and what the process
    holds (footprint), when measured says the system told both. The game is told no more than mem_fit_budget's */
 void mem_fit(int measured, u64 available, u64 footprint);
 u64 mem_fit_budget(u64 available, u64 footprint);
@@ -196,6 +196,8 @@ void kernel_run_main(u64 entry, u64 stack_size, int prio, int core);
 void snx_svc(CPU* c, u32 imm);
 void snx_svc32(SnxArmCPU* a, u32 imm);
 extern void (*const g_svc64[SNX_SVC_COUNT])(CPU* c, u32 imm);
+/* SVC #imm's name in hos.svc (WaitSynchronization), NULL for a number it does not name */
+const char* svc_name(u32 imm);
 
 KShmem* kshmem_new(u64 size, const char* name);
 u8* kshmem_ptr(KShmem* s);
@@ -207,6 +209,9 @@ u64 kernel_find_symbol_exact(const char* name); /* 0 when no loaded module expor
 int kernel_symbol(u32 i, u64* addr, const char** name);
 void kernel_dump_regs(CPU* c);
 void kernel_dump_threads(void);
+/* the guest thread of slot ix (kt_ix): its id, and its name into out as the dump gives it (the SDK's, else the
+   kernel's, "" for none); 0 for a slot with no thread. Read without the locks, as the dump reads them */
+u64 kernel_thread_name(u32 ix, char* out, int n);
 /* how long threads waited for their cores and how busy each core was, logged at exit */
 void kernel_core_report(void);
 void mem_report(char* out, int n);

@@ -16,15 +16,14 @@ target_link_libraries(snx_ctr_loader PUBLIC scarletnx-common scarletnx-filesyste
 target_compile_definitions(snx_ctr_loader PRIVATE _FILE_OFFSET_BITS=64 _CRT_SECURE_NO_WARNINGS)
 add_library(snx_ctr_process STATIC runtime/process.c kernel/kernel.c kernel/thread.c aot/dispatch.c ipc/ipc.c
             services/srv.c services/fs.c services/apt.c services/font.c services/ptm.c services/hid.c services/romfs.c
-            services/file.c services/gsp.c services/dsp.c services/cfg.c services/system.c services/am.c services/y2r.c services/ir.c services/iru.c services/mic.c services/cam.c
-            services/csnd.c
-            services/ldr.c services/cro.c)
+            services/file.c services/gsp.c services/dsp.c services/cfg.c services/system.c services/am.c services/y2r.c
+            services/ldr.c services/cro.c services/swkbd.c services/mii_selector.c services/ir.c)
 # the system archives' stand-ins (cmake/ctr_system_archives.cmake), which services/fs.c serves through the NCCH archive
 target_sources(snx_ctr_process PRIVATE "${PROJECT_BINARY_DIR}/generated/ctr_system_archives.c")
 target_sources(snx_ctr_process PRIVATE services/uds.c)
 target_link_libraries(snx_ctr_process PUBLIC scarletnx-ldn)
 # the player's input lives beside the presenter, whose window's events it reads
-add_library(snx_ctr_gpu STATIC gpu/present.c input/input.c input/map.c gpu/screens.c gpu/transfer.c gpu/y2r.c gpu/vk/y2r.c gpu/vk/device.c gpu/vk/transfer.c
+add_library(snx_ctr_gpu STATIC gpu/present.c input/input.c gpu/transfer.c gpu/y2r.c gpu/vk/y2r.c gpu/vk/device.c gpu/vk/transfer.c
             gpu/vk/vsgen.c gpu/vk/fsgen.c gpu/vk/render.c gpu/pica.c gpu/shader.c gpu/draw.c "${volk_SOURCE_DIR}/volk.c")
 target_include_directories(snx_ctr_gpu PUBLIC "${volk_SOURCE_DIR}")
 target_link_libraries(snx_ctr_gpu PUBLIC snx_ctr_memory scarletnx-common Vulkan::Headers SDL3::SDL3 snx_settings snx_build_info
@@ -32,33 +31,24 @@ target_link_libraries(snx_ctr_gpu PUBLIC snx_ctr_memory scarletnx-common Vulkan:
 set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
 # the GPU's compute shaders, compiled at build time (cmake/glsl.cmake)
 include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
-foreach(shader fill display_transfer display_hires fxaa texture_copy present texture color depth depth_scale y2r)
+foreach(shader fill display_transfer texture_copy present texture color depth y2r)
     snx_glsl_spirv(snx_ctr_gpu SOURCE gpu/vk/shaders/${shader}.comp NAME snx_ctr_${shader}_spv
                    HEADER 3ds/gpu/vk/shaders/${shader}_spv.h)
 endforeach()
-# the draws that fill a multisampled target from its single-sample image (the ctr_msaa setting)
-foreach(shader msaa.vert:msaa_vert msaa_color.frag:msaa_color msaa_depth.frag:msaa_depth msaa_stencil.frag:msaa_stencil)
-    string(REPLACE ":" ";" parts "${shader}")
-    list(GET parts 0 file)
-    list(GET parts 1 name)
-    snx_glsl_spirv(snx_ctr_gpu SOURCE gpu/vk/shaders/${file} NAME snx_ctr_${name}_spv
-                   HEADER 3ds/gpu/vk/shaders/${name}_spv.h)
-endforeach()
-# the texture environment as one fragment shader, for a draw whose exact shader is still being built
-snx_glsl_spirv(snx_ctr_gpu SOURCE gpu/vk/shaders/uber.frag NAME snx_ctr_uber_spv HEADER 3ds/gpu/vk/shaders/uber_spv.h)
-# the PICA's software back end (clipping, rasterizing, texturing), ported from Azahar's: the CPU reference the GPU's
-# draws are tested against, which the runtime does not draw with. Its vertex and geometry shaders and primitive
-# assembler (draw.c) are in snx_ctr_gpu: the renderer runs them for a draw with a geometry shader
+# the PICA's software renderer, ported from Azahar's: the CPU reference the GPU's draws are tested against, which the
+# runtime does not draw with. Its shader units and vertex processing (gpu/shader.c, gpu/draw.c) are the runtime's, which
+# runs a draw with a geometry shader there
 add_library(snx_ctr_gpu_reference STATIC gpu/raster.c gpu/lighting.c gpu/texture.c)
 target_link_libraries(snx_ctr_gpu_reference PUBLIC snx_ctr_gpu m)
-# the HLE DSP and its SDL3 output
-add_library(snx_ctr_audio STATIC audio/dsp.c audio/aac.c audio/source.c audio/mixers.c audio/output.c)
-target_link_libraries(snx_ctr_audio PUBLIC snx_ctr_memory SDL3::SDL3 FFmpeg::avcodec FFmpeg::avutil)
+# the HLE DSP, its SDL3 output and the AAC decoder of its binary pipe
+add_library(snx_ctr_audio STATIC audio/dsp.c audio/source.c audio/mixers.c audio/output.c)
+target_link_libraries(snx_ctr_audio PUBLIC snx_ctr_memory SDL3::SDL3)
+target_link_libraries(snx_ctr_audio PRIVATE FFmpeg::avcodec)
 # snx_settings_runtime: g_settings and the 3DS debug table (g_ctr_debug_ini, src/nx/runtime/settings.txt)
 target_link_libraries(snx_ctr_process PUBLIC snx_ctr_cpu snx_ctr_loader scarletnx-filesystem snx_ctr_gpu snx_ctr_audio
                       snx_settings_runtime)
 include("${PROJECT_SOURCE_DIR}/cmake/swipc.cmake")
-snx_swipc(snx_ctr_process CTR ROOT "${CMAKE_CURRENT_SOURCE_DIR}" FILES services/srv.swipc services/fs.swipc services/apt.swipc services/ptm.swipc services/hid.swipc services/ir.swipc services/file.swipc)
+snx_swipc(snx_ctr_process CTR ROOT "${CMAKE_CURRENT_SOURCE_DIR}" FILES services/srv.swipc services/fs.swipc services/apt.swipc services/ptm.swipc services/hid.swipc services/file.swipc)
 foreach(target snx_ctr_memory snx_ctr_loader snx_ctr_cpu snx_ctr_process snx_ctr_gpu snx_ctr_gpu_reference snx_ctr_audio)
     set_target_properties(${target} PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
     target_compile_options(${target} PRIVATE -Wall -Wextra -Werror=missing-prototypes)
@@ -89,13 +79,14 @@ target_link_libraries(snx_ctr_program PUBLIC snx_arm_llvm snx_llvm)
 # at startup: resolve them without a caller-provided environment. A static
 # LLVM (SNX_LLVM_SHARED off, cmake/llvm.cmake) has none to load.
 if(SNX_LLVM_SHARED)
-    set(ctr_llvm_rpath "${SNX_LLVM_LIBRARY_DIR}")
+    snx_target_path(ctr_llvm_rpath "${SNX_LLVM_LIBRARY_DIR}")
     find_library(SNX_Z3_LIBRARY NAMES z3 libz3.so.4
         HINTS "${SNX_LLVM_LIBRARY_DIR}" "${SNX_LLVM_LIBRARY_DIR}/../.."
         PATH_SUFFIXES lib x86_64-linux-gnu)
     if(SNX_Z3_LIBRARY)
         get_filename_component(ctr_z3_dir "${SNX_Z3_LIBRARY}" DIRECTORY)
-        string(APPEND ctr_llvm_rpath ":${ctr_z3_dir}")
+        snx_target_path(ctr_z3_rpath "${ctr_z3_dir}")
+        string(APPEND ctr_llvm_rpath ":${ctr_z3_rpath}")
         # Forced into the dependency table (--as-needed would drop unreferenced
         # libraries): libLLVM's own z3/xml2 dependencies then resolve through
         # the binary's search path instead of the caller's environment.

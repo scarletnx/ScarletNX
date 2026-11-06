@@ -5,7 +5,10 @@
    a pipeline record waits for its shaders' records and is dropped when one of them couldn't be made again; records
    appended after a reading refer to the shaders read; a record cut short by a crash or changed on disk ends the
    reading, and the file goes on from the last good record; a file of another key starts over; a full file takes no
-   more; a PF_SHIPREF counts as a shader record that pipelines name. A file read as its records are used
+   more; a PF_SHIPREF counts as a shader record that pipelines name. Records are packed into units as they add up,
+   and come back unpacked in their order, pipelines naming shaders of other units; a unit cut short, changed, or that
+   doesn't hold the records it says ends the reading there, before any of its records is handed back; a file of
+   version 2 is rebuilt, one of version 1 started over. A file read as its records are used
    (pf_open_mapped) hands each over with where it starts, checks one when it is read (a payload changed on disk doesn't
    check out), drops a record cut short and maps the file as rewritten, leaves one it can't map as it is and never
    appends to it, and shows what was appended once sealed */
@@ -14,11 +17,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <zstd.h>
 #include "nx/gpu/vk/pipeline_file.c"
 
 Settings g_settings;
+static int cpus = 8; /* the CPUs plat_cpus says there are */
 int plat_cpus(int* ids, int max) {
-    int n = max < 8 ? max : 8;
+    int n = max < cpus ? max : cpus;
     for (int i = 0; i < n; i++) ids[i] = i;
     return n;
 }
@@ -42,13 +47,12 @@ static unsigned checks;
         }                                                                                                              \
     } while (0)
 
-/* the last warning */
-static char warned[1024];
+/* the last warning, and the last log line of any level */
+static char warned[1024], logged[1024];
 void logf_(int lvl, const char* fmt, ...) {
     va_list ap;
-    if (lvl) return;
     va_start(ap, fmt);
-    vsnprintf(warned, sizeof warned, fmt, ap);
+    vsnprintf(lvl ? logged : warned, sizeof warned, fmt, ap);
     va_end(ap);
 }
 
@@ -190,6 +194,7 @@ static void mapped(void) {
     u32 cbr[8], spv[16], len = 0;
     u64 at[2], check = 0;
     const u8* p;
+    u8* owned;
     remove(PATH);
     pm_init(&pf.lock);
     memset(&each_got, 0, sizeof each_got);
@@ -203,25 +208,26 @@ static void mapped(void) {
     make_shader(2, &s, cbr, spv);
     at[1] = pf_shader(&pf, 0, &s, cbr, spv, NULL, NULL, NULL);
     CHECK(at[0] && at[1] > at[0] && pf.nmap == 0); /* no module: nothing for pipelines to name */
-    CHECK(!pf_payload(&pf, at[1], &len, &check));  /* unmapped while appended to */
+    CHECK(!pf_payload(&pf, at[1], &len, &check, &owned)); /* unmapped while appended to */
     pf_seal(&pf);
     CHECK(!pf.f);
-    p = pf_payload(&pf, at[1], &len, &check);
-    CHECK(p && len >= sizeof s && !memcmp(p, &s, sizeof s) && check == pf_get64(p - 8));
-    CHECK(!pf_payload(&pf, at[1] + 8, &len, &check)); /* not a record's start */
+    p = pf_payload(&pf, at[1], &len, &check, &owned);
+    CHECK(p && !owned && len >= sizeof s && !memcmp(p, &s, sizeof s) && check == pf_get64(p - 8)); /* in place */
+    CHECK(!pf_payload(&pf, at[1] + 8, &len, &check, &owned)); /* not a record's start */
     plat_file_unmap(&pf.view);
     /* read again: each record with where it starts, in order */
     memset(&each_got, 0, sizeof each_got);
     pf_open_mapped(&pf, PATH, "mapped key", each_rec, NULL);
     CHECK(!pf.f && each_got.n == 3 && each_got.type[0] == PF_SHADER && each_got.at[0] == at[0] &&
           each_got.type[1] == PF_SCAN && each_got.type[2] == PF_SHADER && each_got.at[2] == at[1]);
-    CHECK(pf_payload(&pf, at[0], &len, &check) != NULL);
+    CHECK(pf_payload(&pf, at[0], &len, &check, &owned) != NULL);
     plat_file_unmap(&pf.view);
     /* a payload changed on disk: handed over unchecked, but it doesn't check out when read */
     rewrite((long)at[0] + PF_REC + 4, 0);
     memset(&each_got, 0, sizeof each_got);
     pf_open_mapped(&pf, PATH, "mapped key", each_rec, NULL);
-    CHECK(each_got.n == 3 && !pf_payload(&pf, at[0], &len, &check) && pf_payload(&pf, at[1], &len, &check));
+    CHECK(each_got.n == 3 && !pf_payload(&pf, at[0], &len, &check, &owned) &&
+          pf_payload(&pf, at[1], &len, &check, &owned));
     plat_file_unmap(&pf.view);
     rewrite((long)at[0] + PF_REC + 4, 0);
     /* the last record cut short: the file goes on without it, mapped as rewritten */
@@ -301,6 +307,7 @@ static void open_file(PFile* pf, const char* key, u64 first_module, int fail_fir
     got.fail_first = fail_first;
     memset(pf, 0, sizeof *pf);
     pm_init(&pf->lock);
+    pf->pack = PF_PACK_UNITS; /* compress_shader_cache's default */
     pf_open(pf, PATH, key, guest_bytes, &load, loaded);
 }
 static void close_file(PFile* pf) {
@@ -454,6 +461,7 @@ static void large_checks(void) {
     remove(PATH);
     guest_bytes = 0;
     open_file(&pf, "parallel", 0x10, 0, loaded);
+    pf.open = 0; /* unpacked, as a file of version 2 was, for the checks to share its 9 MiB of records */
     size_t header = (size_t)pf.size, chunk = 1u << 20;
     u8* payload = calloc(1, chunk);
     CHECK(payload);
@@ -495,6 +503,568 @@ static void large_checks(void) {
     }
     free(original);
     g_settings.prepare_shaders = 0;
+    remove(PATH);
+}
+
+/* ---- records packed into units (PF_UNIT) */
+#define UNIT_SPV 16384 /* the words of a units test shader: 64 KB, so that a unit closes every 32 or so */
+#define UNIT_N   100   /* the shaders a units test writes first */
+/* shader n of the units tests: its fields, reads and words from n, words that repeat as SPIR-V's do */
+static void big_shader(int n, PfShader* s, u32* cbr, u32* spv) {
+    memset(s, 0, sizeof *s);
+    s->hash = 0x9E3779B97F4A7C15ull * (u64)(n + 1);
+    s->stage = n % 2 ? ST_FS : ST_VS;
+    s->clen = 0x200 + (u32)n;
+    s->ncbr = (u32)n % 3;
+    s->nspv = UNIT_SPV + (u32)n % 5;
+    for (int i = 0; i < (int)s->ncbr * 4; i++) cbr[i] = (u32)(n * 1000 + i);
+    for (u32 i = 0; i < s->nspv; i++) spv[i] = i == 0 ? 0x07230203u : (i % 9) * 0x10001u + (u32)n;
+}
+/* pipeline n's key in the units tests: n, then make_key's bytes */
+static void unit_key(int n, u8* key) {
+    make_key(n, key);
+    memcpy(key, &n, sizeof n);
+}
+/* what a units test's reading handed back: the shaders in order, each as big_shader made it, and each pipeline's
+   modules and key number; and the reads and words big_shader makes */
+static struct {
+    int nsh, npipe;
+    u64 first; /* the module the first shader is made into */
+    u64 vs[2 * UNIT_N], fs[2 * UNIT_N];
+    int key[2 * UNIT_N];
+    u32 cbr[8], spv[UNIT_SPV + 8];
+} ug;
+static u64 unit_load_shader(void* ctx, const PfShader* s, const u32* cbr, const u32* spv) {
+    PfShader want;
+    (void)ctx;
+    big_shader(ug.nsh, &want, ug.cbr, ug.spv);
+    CHECK(!memcmp(s, &want, sizeof want) && !memcmp(cbr, ug.cbr, want.ncbr * 16) &&
+          !memcmp(spv, ug.spv, want.nspv * 4));
+    return ug.first + (u64)ug.nsh++;
+}
+static void unit_load_pipe(void* ctx, const u64 modules[5], const void* key, u32 keylen) {
+    u8 want[KEYB];
+    int n;
+    (void)ctx;
+    memcpy(&n, key, sizeof n);
+    unit_key(n, want);
+    CHECK(ug.npipe < 2 * UNIT_N && keylen == KEYB && !memcmp(key, want, KEYB));
+    ug.vs[ug.npipe] = modules[0];
+    ug.fs[ug.npipe] = modules[4];
+    ug.key[ug.npipe] = n;
+    ug.npipe++;
+}
+/* the units tests' file opened, packing as pack says (compress_shader_cache) */
+static void unit_open_as(PFile* pf, u64 first, u32 loaded[2], int pack) {
+    PfLoad load = {unit_load_shader, unit_load_pipe, load_shipref, load_source, NULL, 0};
+    memset(&ug, 0, sizeof ug);
+    ug.first = first;
+    memset(pf, 0, sizeof *pf);
+    pm_init(&pf->lock);
+    pf->pack = pack;
+    pf_open(pf, PATH, "units key", 0, &load, loaded);
+}
+static void unit_open(PFile* pf, u64 first, u32 loaded[2]) { unit_open_as(pf, first, loaded, PF_PACK_UNITS); }
+/* shaders from..to-1, made into modules 0x100000 + n, each with a pipeline of it and the shader before it (key n),
+   the one before from made into module before (0 for none) */
+static void unit_add(PFile* pf, int from, int to, u64 before) {
+    for (int n = from; n < to; n++) {
+        PfShader s;
+        big_shader(n, &s, ug.cbr, ug.spv);
+        pf_shader(pf, 0x100000 + (u64)n, &s, ug.cbr, ug.spv, NULL, NULL, NULL);
+        if (n) {
+            u64 m[5] = {n == from ? before : 0x100000 + (u64)n - 1, 0, 0, 0, 0x100000 + (u64)n};
+            u8 key[KEYB];
+            unit_key(n, key);
+            pf_pipe(pf, m, key, KEYB);
+        }
+    }
+}
+/* a reading of shaders 0..nsh-1 and npipe of their pipelines, in order, each with the modules its shaders were made
+   into (from ug.first) */
+static void unit_check(int nsh, int npipe) {
+    CHECK(ug.nsh == nsh && ug.npipe == npipe);
+    for (int i = 0; i < ug.npipe; i++)
+        CHECK(ug.key[i] > (i ? ug.key[i - 1] : 0) && ug.key[i] < nsh && ug.vs[i] == ug.first + (u64)ug.key[i] - 1 &&
+              ug.fs[i] == ug.first + (u64)ug.key[i]);
+}
+/* the file's bytes, malloc'd, and their count */
+static u8* file_bytes(size_t* n) {
+    long size = file_size();
+    u8* d = size > 0 ? malloc((size_t)size) : NULL;
+    FILE* f = d ? fopen(PATH, "rb") : NULL;
+    CHECK(f && fread(d, 1, (size_t)size, f) == (size_t)size);
+    fclose(f);
+    *n = (size_t)size;
+    return d;
+}
+static void file_write(const u8* d, size_t n) {
+    FILE* f = fopen(PATH, "wb");
+    CHECK(f && fwrite(d, 1, n, f) == n);
+    fclose(f);
+}
+/* the file's units: where each record starts (at most 16) and their count; tail: the shader records after them */
+static int unit_list(const u8* d, size_t n, size_t at, u64* unit, int* tail) {
+    int count = 0;
+    *tail = 0;
+    while (n - at >= PF_REC) {
+        u32 type = pf_get32(d + at), len = pf_get32(d + at + 4);
+        CHECK(len % 8 == 0 && len <= n - at - PF_REC);
+        if (type == PF_UNIT) {
+            CHECK(count < 16 && !*tail);
+            unit[count++] = at;
+            *tail = 0;
+        } else
+            *tail += type == PF_SHADER;
+        at += PF_REC + len;
+    }
+    CHECK(at == n);
+    return count;
+}
+/* the record at at given another check, for its payload as it now is */
+static void recheck(u8* d, size_t at) {
+    u64 h = pf_end(pf_mix(pf_start(pf_get32(d + at), pf_get32(d + at + 4)), d + at + PF_REC, pf_get32(d + at + 4)));
+    memcpy(d + at + 8, &h, 8);
+}
+/* a file of UNIT_N shaders, packed: its bytes, its header's size, its units and the shader and pipeline records each
+   holds */
+static u8* units_file(size_t* n, size_t* header, u64* unit, int* nunit, u32* shaders, u32* pipes) {
+    PFile pf;
+    u32 loaded[2];
+    int tail;
+    remove(PATH);
+    unit_open(&pf, 0x10, loaded);
+    *header = (size_t)pf.size;
+    unit_add(&pf, 0, UNIT_N, 0);
+    close_file(&pf);
+    u8* d = file_bytes(n);
+    *nunit = unit_list(d, *n, *header, unit, &tail);
+    for (int i = 0; i < *nunit; i++) {
+        shaders[i] = pf_get32(d + unit[i] + PF_REC + 12);
+        pipes[i] = pf_get32(d + unit[i] + PF_REC + 8) - shaders[i];
+    }
+    return d;
+}
+
+/* records packed as they add up and read back in their order, unpacked, a pipeline's shaders in two units; what is
+   appended after a reading goes on from the open unit, and is packed and read back so too */
+static void units_round_trip(void) {
+    PFile pf;
+    u32 loaded[2];
+    u64 unit[16];
+    int nunit, tail;
+    size_t n, header, unpacked;
+    u32 shaders[16], pipes[16], sum = 0;
+    /* unpacked first (compress_shader_cache 0), for its size */
+    remove(PATH);
+    unit_open_as(&pf, 0x10, loaded, 0);
+    unit_add(&pf, 0, UNIT_N, 0);
+    close_file(&pf);
+    unpacked = (size_t)file_size();
+    u8* d = units_file(&n, &header, unit, &nunit, shaders, pipes);
+    unit_list(d, n, header, unit, &tail);
+    for (int i = 0; i < nunit; i++) {
+        sum += shaders[i];
+        CHECK(pf_get32(d + unit[i] + PF_REC) >= PF_UNIT_BYTES);
+    }
+    /* units of PF_UNIT_BYTES of records, the shaders after the last still unpacked, the file a fraction of them */
+    CHECK(nunit >= 2 && sum + (u32)tail == UNIT_N && tail < UNIT_N / nunit && n * 4 < unpacked);
+    CHECK(pf_get32(d + 8) == 3); /* the version */
+    size_t last = (size_t)unit[nunit - 1] + PF_REC + pf_get32(d + unit[nunit - 1] + 4);
+    free(d);
+    /* unpacked one unit at a time, two (background preparation's workers) and eight at once (a loading screen's) */
+    for (int way = 0; way < 3; way++) {
+        cpus = way ? 8 : 1;
+        g_settings.prepare_shaders = way == 2 ? 2 : 0;
+        unit_open(&pf, 0x500, loaded);
+        CHECK(loaded[0] == UNIT_N && loaded[1] == UNIT_N - 1 && pf.nsh == UNIT_N && pf.size == n);
+        unit_check(UNIT_N, UNIT_N - 1);
+        if (way < 2) close_file(&pf);
+    }
+    cpus = 8;
+    g_settings.prepare_shaders = 0;
+    CHECK(pf.open == last); /* the open unit: the records after the last */
+    unit_add(&pf, UNIT_N, UNIT_N + 40, ug.first + UNIT_N - 1);
+    close_file(&pf);
+    d = file_bytes(&n);
+    CHECK(unit_list(d, n, header, unit, &tail) > nunit);
+    free(d);
+    unit_open(&pf, 0x900, loaded);
+    CHECK(loaded[0] == UNIT_N + 40 && loaded[1] == UNIT_N + 39);
+    unit_check(UNIT_N + 40, UNIT_N + 39);
+    close_file(&pf);
+    remove(PATH);
+}
+
+/* compress_shader_cache 0: nothing is packed as records add up; a file with units is read whole and what is appended
+   after its units is written as it is; with packing on again, the records after the last unit are packed as more
+   come */
+static void units_off(void) {
+    PFile pf;
+    u32 loaded[2], shaders[16], pipes[16];
+    u64 unit[16];
+    int nunit, tail, tail0;
+    size_t n, header;
+    remove(PATH);
+    unit_open_as(&pf, 0x10, loaded, 0);
+    header = (size_t)pf.size;
+    unit_add(&pf, 0, UNIT_N, 0);
+    CHECK(pf.open == 0);
+    close_file(&pf);
+    u8* d = file_bytes(&n);
+    CHECK(unit_list(d, n, header, unit, &tail) == 0 && tail == UNIT_N);
+    free(d);
+    /* a packed file, read and appended to with packing off */
+    d = units_file(&n, &header, unit, &nunit, shaders, pipes);
+    unit_list(d, n, header, unit, &tail0);
+    free(d);
+    unit_open_as(&pf, 0x500, loaded, 0);
+    CHECK(loaded[0] == UNIT_N && loaded[1] == UNIT_N - 1 && pf.open == 0);
+    unit_check(UNIT_N, UNIT_N - 1);
+    unit_add(&pf, UNIT_N, UNIT_N + 40, ug.first + UNIT_N - 1);
+    close_file(&pf);
+    d = file_bytes(&n);
+    CHECK(unit_list(d, n, header, unit, &tail) == nunit && tail == tail0 + 40);
+    free(d);
+    /* packing on again: everything read, and the records after the last unit packed by the next append */
+    unit_open(&pf, 0x900, loaded);
+    CHECK(loaded[0] == UNIT_N + 40 && loaded[1] == UNIT_N + 39 && pf.open > header);
+    unit_check(UNIT_N + 40, UNIT_N + 39);
+    unit_add(&pf, UNIT_N + 40, UNIT_N + 41, ug.first + UNIT_N + 39);
+    close_file(&pf);
+    d = file_bytes(&n);
+    CHECK(unit_list(d, n, header, unit, &tail) == nunit + 1 && tail == 0);
+    free(d);
+    unit_open(&pf, 0xD00, loaded);
+    CHECK(loaded[0] == UNIT_N + 41 && loaded[1] == UNIT_N + 40);
+    unit_check(UNIT_N + 41, UNIT_N + 40);
+    close_file(&pf);
+    remove(PATH);
+}
+
+/* ---- a shipped file's shaders packed alone (PF_ZSHADER, compress_prepared_shaders) */
+/* the packed record at at of the file's bytes d, its PfZip's raw and packed bytes moved by draw and dpacked and its
+   frame's first byte flipped when flip, given a check made again, so that only the unpacking can tell */
+static void zip_damage(u8* d, u64 at, int draw, int dpacked, int flip) {
+    u8* z = d + at + PF_REC + sizeof(PfShader);
+    u32 raw = pf_get32(z) + (u32)draw, packed = pf_get32(z + 4) + (u32)dpacked;
+    memcpy(z, &raw, 4);
+    memcpy(z + 4, &packed, 4);
+    if (flip) z[sizeof(PfZip)] ^= 0x5A; /* the frame's magic number */
+    recheck(d, (size_t)at);
+}
+/* a shader packed alone and one too small to pack written as it is, read back as they were written, the packed one
+   through a buffer of pf_payload's; a reading hands the packed one over by its type, with its PfShader as it is;
+   a packed one whose sizes or frame are wrong under a check made again doesn't unpack, and one whose bytes changed
+   doesn't check out; with packing off, what is appended is written as it is and the packed one still reads */
+static void zipped(void) {
+    PFile pf = {0};
+    PfShader s, small;
+    u32 cbr[8], spv[16], len = 0, raw;
+    u64 at[3], check = 0;
+    const u8* p;
+    u8 *owned, *d;
+    size_t n;
+    remove(PATH);
+    pm_init(&pf.lock);
+    pf.pack = PF_PACK_SHADERS;
+    pf_open_mapped(&pf, PATH, "zipped key", each_rec, NULL);
+    pf_unseal(&pf);
+    big_shader(3, &s, ug.cbr, ug.spv);
+    raw = s.ncbr * 16 + s.nspv * 4;
+    at[0] = pf_shader(&pf, 0, &s, ug.cbr, ug.spv, NULL, NULL, NULL);
+    make_shader(2, &small, cbr, spv);
+    at[1] = pf_shader(&pf, 0, &small, cbr, spv, NULL, NULL, NULL);
+    pf_seal(&pf);
+    CHECK(at[0] && at[1] > at[0] && pf.view.data);
+    CHECK(pf_get32(pf.view.data + at[0]) == PF_ZSHADER && at[1] - at[0] - PF_REC < (sizeof s + raw) / 4);
+    CHECK(pf_get32(pf.view.data + at[1]) == PF_SHADER); /* the frame would outweigh its few words */
+    p = pf_payload(&pf, at[0], &len, &check, &owned);
+    CHECK(p && owned == p && len == sizeof s + raw && !memcmp(p, &s, sizeof s) &&
+          !memcmp(p + sizeof s, ug.cbr, (size_t)s.ncbr * 16) &&
+          !memcmp(p + sizeof s + (size_t)s.ncbr * 16, ug.spv, (size_t)s.nspv * 4) &&
+          check == pf_get64(pf.view.data + at[0] + 8));
+    free(owned);
+    p = pf_payload(&pf, at[1], &len, &check, &owned);
+    CHECK(p && !owned && !memcmp(p, &small, sizeof small));
+    plat_file_unmap(&pf.view);
+    /* read again: the packed one by its type, its PfShader as it is for the index */
+    memset(&each_got, 0, sizeof each_got);
+    pf_open_mapped(&pf, PATH, "zipped key", each_rec, NULL);
+    CHECK(each_got.n == 2 && each_got.type[0] == PF_ZSHADER && each_got.at[0] == at[0] &&
+          each_got.type[1] == PF_SHADER && pf.size == (u64)file_size() &&
+          !memcmp(pf.view.data + at[0] + PF_REC, &s, sizeof s));
+    /* packing off: appended as it is, and the packed one still reads */
+    pf.pack = 0;
+    pf_unseal(&pf);
+    big_shader(4, &s, ug.cbr, ug.spv);
+    at[2] = pf_shader(&pf, 0, &s, ug.cbr, ug.spv, NULL, NULL, NULL);
+    pf_seal(&pf);
+    CHECK(at[2] > at[1] && pf_get32(pf.view.data + at[2]) == PF_SHADER);
+    p = pf_payload(&pf, at[0], &len, &check, &owned);
+    CHECK(p && owned && len == sizeof s + raw);
+    free(owned);
+    p = pf_payload(&pf, at[2], &len, &check, &owned);
+    CHECK(p && !owned && !memcmp(p, &s, sizeof s));
+    plat_file_unmap(&pf.view);
+    /* sizes or a frame that don't hold, under a check made again: not unpacked, and the log says the sizes it
+       found; bytes changed: no check */
+    u32 packed;
+    for (int way = 0; way < 4; way++) {
+        char want[160];
+        d = file_bytes(&n);
+        packed = pf_get32(d + at[0] + PF_REC + sizeof s + 4);
+        if (way == 0) zip_damage(d, at[0], 8, 0, 0);  /* more bytes than its reads and SPIR-V */
+        if (way == 1) zip_damage(d, at[0], 0, -8, 0); /* the frame cut short */
+        if (way == 2) zip_damage(d, at[0], 0, 0, 1);  /* not a zstd frame */
+        if (way == 3) d[at[0] + PF_REC + sizeof s + sizeof(PfZip) + 16] ^= 0x5A;
+        file_write(d, n);
+        free(d);
+        memset(&each_got, 0, sizeof each_got);
+        pf_open_mapped(&pf, PATH, "zipped key", each_rec, NULL);
+        logged[0] = 0;
+        CHECK(each_got.n == 3 && !pf_payload(&pf, at[0], &len, &check, &owned) && !owned);
+        if (way == 0) snprintf(want, sizeof want, "says %u bytes packed to %u,", raw + 8, packed);
+        if (way == 1) snprintf(want, sizeof want, "says %u bytes packed to %u,", raw, packed - 8);
+        if (way == 2) snprintf(want, sizeof want, "unpacks to 0 bytes, not %u (", raw);
+        CHECK(way == 3 ? !logged[0] : strstr(logged, want) != NULL);
+        CHECK(pf_payload(&pf, at[2], &len, &check, &owned));
+        plat_file_unmap(&pf.view);
+        d = file_bytes(&n); /* put back */
+        if (way == 0) zip_damage(d, at[0], -8, 0, 0);
+        if (way == 1) zip_damage(d, at[0], 0, 8, 0);
+        if (way == 2) zip_damage(d, at[0], 0, 0, 1);
+        if (way == 3) d[at[0] + PF_REC + sizeof s + sizeof(PfZip) + 16] ^= 0x5A;
+        file_write(d, n);
+        free(d);
+    }
+    pf_open_mapped(&pf, PATH, "zipped key", each_rec, NULL);
+    p = pf_payload(&pf, at[0], &len, &check, &owned);
+    CHECK(p && owned); /* put back whole */
+    free(owned);
+    plat_file_unmap(&pf.view);
+    pm_destroy(&pf.lock);
+    remove(PATH);
+}
+
+/* a file cut inside a unit, as by a crash while the unit was written over its records: the reading stops before
+   it, the file goes on from the units before, and what is appended then is read back after them */
+static void units_cut(void) {
+    PFile pf;
+    u32 loaded[2], shaders[16], pipes[16];
+    u64 unit[16];
+    int nunit;
+    size_t n, header;
+    u8* d = units_file(&n, &header, unit, &nunit, shaders, pipes);
+    size_t at = (size_t)unit[1], len = pf_get32(d + at + 4);
+    file_write(d, at + PF_REC + len / 2);
+    unit_open(&pf, 0x20, loaded);
+    CHECK(loaded[0] == shaders[0] && pf.size == at && file_size() == (long)at && pf.open == at);
+    unit_check((int)shaders[0], (int)pipes[0]);
+    unit_add(&pf, (int)shaders[0], UNIT_N, ug.first + shaders[0] - 1);
+    close_file(&pf);
+    unit_open(&pf, 0x30, loaded);
+    CHECK(loaded[0] == UNIT_N);
+    unit_check(UNIT_N, (int)(pipes[0] + UNIT_N - shaders[0]));
+    close_file(&pf);
+    /* the open unit's last record (the last pipeline) cut short: the records before it are back, and are packed with
+       those appended after them */
+    free(d);
+    d = units_file(&n, &header, unit, &nunit, shaders, pipes);
+    file_write(d, n - 8);
+    unit_open(&pf, 0x40, loaded);
+    CHECK(loaded[0] == UNIT_N && loaded[1] == UNIT_N - 2 && pf.size < n && pf.open < pf.size);
+    unit_add(&pf, UNIT_N, UNIT_N + 40, ug.first + UNIT_N - 1);
+    close_file(&pf);
+    free(d);
+    d = file_bytes(&n);
+    int tail;
+    CHECK(unit_list(d, n, header, unit, &tail) > nunit);
+    unit_open(&pf, 0x80, loaded);
+    CHECK(loaded[0] == UNIT_N + 40 && loaded[1] == UNIT_N + 38);
+    unit_check(UNIT_N + 40, UNIT_N + 38);
+    close_file(&pf);
+    free(d);
+    remove(PATH);
+}
+
+/* a unit that doesn't check out or doesn't hold what it says: the reading stops before it, none of its records
+   handed back, and the file is cut there */
+static void units_bad(void) {
+    PFile pf;
+    u32 loaded[2], shaders[16], pipes[16];
+    u64 unit[16];
+    int nunit;
+    size_t n, header;
+    u8* d = units_file(&n, &header, unit, &nunit, shaders, pipes);
+    size_t at = (size_t)unit[1];
+    PfUnit u;
+    memcpy(&u, d + at + PF_REC, sizeof u);
+    for (int how = 0; how < 5; how++) {
+        u8* bad = malloc(n);
+        size_t size = n;
+        CHECK(bad);
+        memcpy(bad, d, n);
+        if (how == 0) /* a byte of the frame changed on disk: its check fails */
+            bad[at + PF_REC + sizeof u + u.packed / 2] ^= 0x10;
+        else if (how == 4) /* its check changed on disk: the frame unpacks, but the record doesn't check out */
+            bad[at + 8] ^= 0x10;
+        else if (how == 1 || how == 2) { /* checks out, but unpacks to fewer bytes, or holds another count */
+            PfUnit v = u;
+            if (how == 1)
+                v.raw += 8;
+            else
+                v.records++;
+            memcpy(bad + at + PF_REC, &v, sizeof v);
+            recheck(bad, at);
+        } else { /* a record in it changed before it was packed: the unit checks out, the record doesn't */
+            u8* raw = malloc(u.raw);
+            size_t bound = ZSTD_compressBound(u.raw), packed, len;
+            CHECK(raw && ZSTD_decompress(raw, u.raw, d + at + PF_REC + sizeof u, u.packed) == u.raw);
+            raw[PF_REC + 8] ^= 1; /* the first record's payload */
+            free(bad);
+            bad = calloc(1, at + PF_REC + sizeof u + bound + 8);
+            CHECK(bad);
+            memcpy(bad, d, at);
+            packed = ZSTD_compress(bad + at + PF_REC + sizeof u, bound, raw, u.raw, 3);
+            CHECK(!ZSTD_isError(packed));
+            PfUnit v = u;
+            v.packed = (u32)packed;
+            memcpy(bad + at + PF_REC, &v, sizeof v);
+            len = sizeof v + ((packed + 7) & ~(size_t)7);
+            u32 type = PF_UNIT, len32 = (u32)len;
+            memcpy(bad + at, &type, 4);
+            memcpy(bad + at + 4, &len32, 4);
+            recheck(bad, at);
+            size = at + PF_REC + len; /* the records after it dropped */
+            free(raw);
+        }
+        file_write(bad, size);
+        free(bad);
+        unit_open(&pf, 0x60, loaded);
+        CHECK(loaded[0] == shaders[0] && ug.nsh == (int)shaders[0] && pf.size == at && file_size() == (long)at);
+        unit_check((int)shaders[0], (int)pipes[0]);
+        close_file(&pf);
+    }
+    free(d);
+    remove(PATH);
+}
+
+/* d (n bytes) with its records in [from, to) packed as one unit, as pf_pack writes one: malloc'd, its bytes in *m */
+static u8* pack_records(const u8* d, size_t n, size_t from, size_t to, size_t* m) {
+    size_t bound = ZSTD_compressBound(to - from), packed;
+    u8* out = calloc(1, n + PF_REC + sizeof(PfUnit) + bound + 8);
+    PfUnit u = {(u32)(to - from), 0, 0, 0};
+    u32 type = PF_UNIT, len;
+    CHECK(out);
+    for (size_t at = from; at < to; at += PF_REC + pf_get32(d + at + 4)) {
+        u.records++;
+        u.shaders += pf_get32(d + at) == PF_SHADER || pf_get32(d + at) == PF_SHIPREF;
+    }
+    memcpy(out, d, from);
+    packed = ZSTD_compress(out + from + PF_REC + sizeof u, bound, d + from, to - from, 3);
+    CHECK(!ZSTD_isError(packed));
+    u.packed = (u32)packed;
+    memcpy(out + from + PF_REC, &u, sizeof u);
+    len = (u32)(sizeof u + ((packed + 7) & ~(size_t)7));
+    memcpy(out + from, &type, 4);
+    memcpy(out + from + 4, &len, 4);
+    recheck(out, from);
+    memcpy(out + from + PF_REC + len, d + to, n - to);
+    *m = from + PF_REC + len + n - to;
+    return out;
+}
+/* units that part a source from the shader record it stands before: a reading and a rebuild pair them across
+   the two */
+static void units_split_source(void) {
+    PFile pf;
+    u32 loaded[2];
+    size_t n, m, at, prev = 0, unit_end;
+    remove(PATH);
+    guest_bytes = 6;
+    open_file(&pf, "guest;build one", 0x10, 0, loaded);
+    pf.open = 0; /* packed by hand below */
+    at = (size_t)pf.size;
+    add_sourced(&pf, 0, 0x8001, 0);
+    add_sourced(&pf, 2, 0x8003, 1);
+    add_pipe(&pf, 0, 0x8001, 0, 0, 0, 0x8003);
+    close_file(&pf);
+    u8* d = file_bytes(&n);
+    size_t header = at;
+    for (int i = 0; i < 3; i++) { /* source 0, shader 0, source 2 */
+        prev = at;
+        at += PF_REC + pf_get32(d + at + 4);
+    }
+    CHECK(pf_get32(d + prev) == PF_SOURCE && pf_get32(d + at) == PF_SHADER);
+    u8* tail = pack_records(d, n, at, n, &m); /* shader 2 and the pipeline */
+    u8* split = pack_records(tail, m, header, at, &m);
+    unit_end = m; /* no records after the units */
+    CHECK(pf_get32(split + header) == PF_UNIT &&
+          pf_get32(split + header + PF_REC + pf_get32(split + header + 4)) == PF_UNIT);
+    file_write(split, m);
+    free(tail);
+    free(split);
+    free(d);
+    open_file(&pf, "guest;build one", 0x20, 0, loaded);
+    CHECK(loaded[0] == 2 && loaded[1] == 1 && pf.open == unit_end && pf.size == m);
+    check_pipe(0, 0, 0x20, 0, 0, 0, 0x21);
+    close_file(&pf);
+    memset(&source_got, 0, sizeof source_got);
+    source_module = 0x30;
+    rebuilding = &pf;
+    open_file(&pf, "guest;build two", 0x90, 0, loaded);
+    CHECK(source_got.n == 2 && source_got.shader[0] == 0 && source_got.shader[1] == 2 && loaded[0] == 2 &&
+          loaded[1] == 1);
+    check_pipe(0, 0, 0x30, 0, 0, 0, 0x31);
+    close_file(&pf);
+    rebuilding = NULL;
+    guest_bytes = 0;
+    remove(PATH);
+}
+
+/* the version before units, whose records are this one's unpacked: rebuilt from its sources into a file of this
+   version, its pipelines made again. Version 1, before the sources: started over */
+static void old_versions(void) {
+    PFile pf;
+    u32 loaded[2], v;
+    size_t n, was;
+    remove(PATH);
+    guest_bytes = 6;
+    open_file(&pf, "guest;build one", 0x10, 0, loaded);
+    pf.open = 0; /* unpacked, as version 2 wrote */
+    add_sourced(&pf, 0, 0x8001, 0);
+    add_sourced(&pf, 2, 0x8003, 1);
+    add_pipe(&pf, 0, 0x8001, 0, 0, 0, 0x8003);
+    close_file(&pf);
+    u8* d = file_bytes(&was);
+    v = 2;
+    memcpy(d + 8, &v, 4);
+    /* the same build's key, and another build's: the version tells the file apart, and it is rebuilt */
+    for (int key = 0; key < 2; key++) {
+        file_write(d, was);
+        memset(&source_got, 0, sizeof source_got);
+        source_module = 0x30;
+        rebuilding = &pf;
+        open_file(&pf, key ? "guest;build two" : "guest;build one", 0x90, 0, loaded);
+        CHECK(source_got.n == 2 && source_got.shader[0] == 0 && source_got.shader[1] == 2 && got.nsh == 0);
+        CHECK(loaded[0] == 2 && loaded[1] == 1 && got.npipe == 1);
+        check_pipe(0, 0, 0x30, 0, 0, 0, 0x31);
+        close_file(&pf);
+        u8* now = file_bytes(&n);
+        CHECK(pf_get32(now + 8) == PF_VERSION);
+        free(now);
+    }
+    rebuilding = NULL;
+    /* version 1: started over, its sources not looked at */
+    v = 1;
+    memcpy(d + 8, &v, 4);
+    file_write(d, was);
+    memset(&source_got, 0, sizeof source_got);
+    open_file(&pf, "guest;build two", 0xA0, 0, loaded);
+    CHECK(source_got.n == 0 && loaded[0] == 0 && loaded[1] == 0 && file_size() == (long)pf.size && pf.size < was);
+    close_file(&pf);
+    free(d);
+    guest_bytes = 0;
     remove(PATH);
 }
 
@@ -631,9 +1201,16 @@ int main(void) {
     }
 #endif
     mapped();
+    zipped();
     shiprefs();
     rebuilds();
     large_checks();
+    units_round_trip();
+    units_off();
+    units_cut();
+    units_bad();
+    units_split_source();
+    old_versions();
     printf("pipeline_file: %u checks passed\n", checks);
     return 0;
 }

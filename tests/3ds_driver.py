@@ -13,8 +13,9 @@ def main():
     # absolute, not resolved: scarletnx-3ds may be a link to scarletnx, which runs the driver its name says
     driver = pathlib.Path(sys.argv[1]).absolute()
 
-    def run(args, status, contains, cwd=None):
-        p = subprocess.run([str(driver), *args], capture_output=True, text=True, cwd=cwd, timeout=10)
+    def run(args, status, contains, cwd=None, env=None):
+        environment = {**os.environ, **env} if env else None
+        p = subprocess.run([str(driver), *args], capture_output=True, text=True, cwd=cwd, env=environment, timeout=10)
         output = p.stdout + p.stderr
         assert p.returncode == status, (args, p.returncode, output)
         assert contains in output, (args, output)
@@ -24,6 +25,8 @@ def main():
     help_text = run(['--help'], 0, 'recompiled if needed,\n                  then played')
     assert '--recomp' in help_text and '--extract' in help_text and 'scarletnx-3ds-aot' not in help_text
     assert '--extract-container' in help_text and 'read where it lies' in help_text
+    assert '--ctr_separate_windows=1' in help_text and '--ctr_top_resolution=2' in help_text
+    assert '--vk_memory=N' in help_text
     run(['--board-info', '--extract-container'], 2, 'Usage:')
     run(['-x', '-r', 'game.cia'], 2, 'Usage:')
     run(['-r', '--max-blocks', '5', 'game.cia'], 2, 'Usage:')
@@ -36,9 +39,29 @@ def main():
     run(['--model'], 2, 'requires old or new')
     run(['--model', 'other', '--board-info'], 2, 'requires old or new')
     run(['--board-info'], 0, 'Old 3DS\nARM11 cores: 2\nBase clock: 268111856 Hz\nFCRAM: 128 MiB')
+    run(['--board-info', '--ctr_separate_windows=1', '--ctr_top_resolution=2', '--ctr_bottom_resolution=2'], 0,
+        'Old 3DS\nARM11 cores: 2')
     run(['--model', 'new', '--board-info'], 0, 'New 3DS\nARM11 cores: 4')
     run(['--board-info', 'game.cia'], 2, 'Usage:')
-    run(['--backend=gcc'], 2, 'unknown setting: --backend=gcc')  # --key=value is the 3DS debug table's
+    run(['--backend=gcc'], 2, 'unknown setting: --backend=gcc')  # --key=value is the 3DS tables'
+    # and the Switch's the 3DS takes too (vk_memory), never another of the Switch's Debug table
+    run(['--board-info', '--vk_memory=1'], 0, 'Old 3DS')
+    run(['--board-info', '--vk_budget_mb=64'], 2, 'unknown setting: --vk_budget_mb=64')
+    # an older version's packet trace (docs/DEPRECATIONS.md): still ctr_uds_trace=1, under the command line's own
+    old = 'SNX_3DS_UDS_PACKET_TRACE'
+    run(
+        ['--board-info'],
+        0,
+        f'{old}=1 is deprecated, and this run reads it as --ctr_uds_trace=1: ctr_uds_trace=1',
+        env={old: '1'},
+    )
+    run(
+        ['--board-info', '--ctr_uds_trace=0'],
+        0,
+        'the command line gives ctr_uds_trace first: ctr_uds_trace=0',
+        env={old: '1'},
+    )
+    run(['--board-info'], 0, f'{old}=yes is deprecated, and only 1 did anything: ctr_uds_trace=0', env={old: 'yes'})
     with tempfile.TemporaryDirectory(prefix='snx-3ds-') as temp:
         root = pathlib.Path(temp)
         for name in ['game with spaces;literal.CIA', 'game.nsp', '--game.cia', 'game.cci']:

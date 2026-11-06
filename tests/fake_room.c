@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The tests' Eden room (fake_room.h), read from Eden's src/network/room.cpp: HandleJoinRequest's checks and answers,
    BroadcastRoomInformation, HandleProxyPacket and HandleLdnPacket (to everyone but the sender for a broadcast, else to
-   the member at the remote address), HandleModKickPacket and the close. Its own thread runs ENet */
+   the member at the remote address), HandleModKickPacket, SendStatusMessage where those send it, HandleChatPacket's
+   relay and the close. Its own thread runs ENet */
 #include "fake_room.h"
 #include "common/network/net_internal.h"
 #include <enet/enet.h>
@@ -30,6 +31,7 @@ struct FakeRoom {
     FakeMember members[SLOTS];
     int stop, done, close_now;
     char kick[64];
+    char chat_from[64], chat[512]; /* a chat message to relay as from that member, once */
     uint8_t last_datagram[64];
     size_t last_datagram_size;
     char last_game[64];
@@ -117,6 +119,19 @@ static void room_information(FakeRoom* f) {
     for (i = 0; i < SLOTS; i++)
         if (f->members[i].peer) room_send(f->members[i].peer, w.b, w.n);
 }
+/* SendStatusMessage: type (IdMemberJoin 1, IdMemberLeave 2, IdMemberKicked 3) of nickname, with no username, to every
+   member in the room */
+static void room_status(FakeRoom* f, uint8_t type, const char* nickname) {
+    Wr w;
+    int i;
+    w.n = 0;
+    wr_be(&w, 14, 1); /* IdStatusMessage */
+    wr_be(&w, type, 1);
+    wr_string(&w, nickname);
+    wr_string(&w, "");
+    for (i = 0; i < SLOTS; i++)
+        if (f->members[i].peer) room_send(f->members[i].peer, w.b, w.n);
+}
 /* IsValidNickname, written apart from users.c's */
 static int nickname_ok(FakeRoom* f, const char* s) {
     size_t n = strlen(s), i;
@@ -158,6 +173,7 @@ static void room_join(FakeRoom* f, ENetPeer* peer, const uint8_t* data, size_t s
         room_send(peer, &answer, 1);
         return;
     }
+    room_status(f, 1, nickname); /* to those already in */
     f->members[free_slot].peer = peer;
     strcpy(f->members[free_slot].nickname, nickname);
     f->members[free_slot].ip[0] = 192; /* GenerateFakeIPAddress: the first free */
@@ -234,7 +250,7 @@ static void room_thread(void* arg) {
     FakeRoom* f = arg;
     for (;;) {
         ENetEvent ev;
-        char kick[64];
+        char kick[64], chat_from[64], chat[512];
         int i, stop, close_now;
         snx_lock(&f->lk);
         stop = f->stop;
@@ -242,6 +258,9 @@ static void room_thread(void* arg) {
         f->close_now = 0;
         strcpy(kick, f->kick);
         f->kick[0] = 0;
+        strcpy(chat_from, f->chat_from);
+        strcpy(chat, f->chat);
+        f->chat_from[0] = 0;
         snx_unlock(&f->lk);
         if (stop) break;
         DelayedDatagram** link = &f->pending;
@@ -267,15 +286,32 @@ static void room_thread(void* arg) {
                 enet_host_flush(f->host);
                 enet_peer_disconnect_later(f->members[i].peer, 0);
                 memset(&f->members[i], 0, sizeof f->members[i]);
+                room_status(f, 3, kick);
                 room_information(f);
             }
+        if (chat_from[0]) { /* HandleChatPacket: to everyone but the sender */
+            Wr w;
+            w.n = 0;
+            wr_be(&w, 7, 1); /* IdChatMessage: the nickname, the username, the message */
+            wr_string(&w, chat_from);
+            wr_string(&w, "");
+            wr_string(&w, chat);
+            for (i = 0; i < SLOTS; i++)
+                if (f->members[i].peer && strcmp(f->members[i].nickname, chat_from))
+                    room_send(f->members[i].peer, w.b, w.n);
+        }
         for (int k = enet_host_service(f->host, &ev, 5); k > 0; k = enet_host_check_events(f->host, &ev)) {
             if (ev.type == ENET_EVENT_TYPE_RECEIVE) {
                 room_message(f, ev.peer, ev.packet->data, ev.packet->dataLength);
                 enet_packet_destroy(ev.packet);
             } else if (ev.type == ENET_EVENT_TYPE_DISCONNECT) {
+                char left[64] = {0}; /* HandleClientDisconnection: a member the room still had */
                 for (i = 0; i < SLOTS; i++)
-                    if (f->members[i].peer == ev.peer) memset(&f->members[i], 0, sizeof f->members[i]);
+                    if (f->members[i].peer == ev.peer) {
+                        strcpy(left, f->members[i].nickname);
+                        memset(&f->members[i], 0, sizeof f->members[i]);
+                    }
+                if (left[0]) room_status(f, 2, left);
                 room_information(f);
             }
         }
@@ -333,6 +369,12 @@ void fake_room_close(FakeRoom* f) {
 void fake_room_kick(FakeRoom* f, const char* nickname) {
     snx_lock(&f->lk);
     snprintf(f->kick, sizeof f->kick, "%s", nickname);
+    snx_unlock(&f->lk);
+}
+void fake_room_chat(FakeRoom* f, const char* nickname, const char* text) {
+    snx_lock(&f->lk);
+    snprintf(f->chat_from, sizeof f->chat_from, "%s", nickname);
+    snprintf(f->chat, sizeof f->chat, "%s", text);
     snx_unlock(&f->lk);
 }
 int fake_room_ldn_count(FakeRoom* f, int type, size_t* last_size) {

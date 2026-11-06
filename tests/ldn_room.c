@@ -25,7 +25,47 @@ static unsigned checks;
         }                                                                                                              \
     } while (0)
 static void sleep_ms(int ms) { snx_net_poll(NULL, 0, ms); }
-static void quiet(const char* m) { (void)m; }
+/* the log, which players attach to public reports: each line is read for the members' nicknames and the chat's words
+   as it comes, and kept since heard_reset for what it says of them instead. Every member's room thread writes it */
+static const char* const g_named_words[] = {"Aogo", "Xuji", "Afugo", "Ada", "bakery"};
+static struct {
+    SnxLock lk;
+    char lines[4096]; /* since heard_reset */
+    char named[512];  /* the first line that named a member */
+} g_heard;
+static void heard(const char* m) {
+    size_t n, i;
+    snx_lock(&g_heard.lk);
+    for (i = 0; i < sizeof g_named_words / sizeof g_named_words[0]; i++)
+        if (strstr(m, g_named_words[i]) && !g_heard.named[0]) snprintf(g_heard.named, sizeof g_heard.named, "%s", m);
+    n = strlen(g_heard.lines);
+    snprintf(g_heard.lines + n, sizeof g_heard.lines - n, "%s", m);
+    snx_unlock(&g_heard.lk);
+}
+static void heard_reset(void) {
+    snx_lock(&g_heard.lk);
+    g_heard.lines[0] = 0;
+    snx_unlock(&g_heard.lk);
+}
+/* whether a line since heard_reset has text, waiting up to ms for it: a member's room thread logs it */
+static int heard_of(const char* text, int ms) {
+    int i, has = 0;
+    for (i = 0; i <= ms && !has; i++) {
+        snx_lock(&g_heard.lk);
+        has = strstr(g_heard.lines, text) != NULL;
+        snx_unlock(&g_heard.lk);
+        if (!has) sleep_ms(1);
+    }
+    return has;
+}
+static void unnamed(void) {
+    char named[sizeof g_heard.named];
+    snx_lock(&g_heard.lk);
+    memcpy(named, g_heard.named, sizeof named);
+    snx_unlock(&g_heard.lk);
+    if (named[0]) fprintf(stderr, "ldn_room: a member's nickname or chat in the log: %s", named);
+    CHECK(!named[0]);
+}
 static SnxLock g_warned_lk;
 static char g_warned[512]; /* the last warning, which the player sees: the room's thread writes it */
 static void warned(const char* m) {
@@ -94,8 +134,12 @@ static void joining(void) {
     SnxRoom *a, *b, *c;
     uint8_t ip[4];
     int why, r;
+    char said[128];
+    heard_reset();
     r = join(&a, "Aogo", "secret", &why);
     CHECK(r == 0 && why == SNX_ROOM_IN && snx_room_state(a) == SNX_ROOM_IN);
+    snprintf(said, sizeof said, "room: joined 127.0.0.1:%u, at 192.168.1.1, 1 member\n", fake_room_port(g_room));
+    CHECK(heard_of(said, 0));
     snx_room_fake_ip(a, ip);
     CHECK(ip[0] == 192 && ip[1] == 168 && ip[2] == 1 && ip[3] == 1 && snx_room_has_member(a, ip));
     {
@@ -110,6 +154,7 @@ static void joining(void) {
     CHECK(join(&b, "Ada", "secret", &why) == -SNX_ECONNREFUSED && why == SNX_ROOM_NAME_COLLISION);
     CHECK(snx_room_why_text(SNX_ROOM_NAME_COLLISION)[0] &&
           strstr(snx_room_why_text(SNX_ROOM_NAME_COLLISION), "4 to 20"));
+    heard_reset();
     r = join(&b, "Xuji", "secret", &why);
     CHECK(r == 0);
     snx_room_fake_ip(b, ip);
@@ -117,6 +162,12 @@ static void joining(void) {
     /* the members each sees: the other one, by the room's information */
     for (r = 0; r < 200 && !snx_room_has_member(a, ip); r++) sleep_ms(5);
     CHECK(snx_room_has_member(a, ip));
+    /* the room says who joins before its information has them: the log says a member did, not who */
+    CHECK(heard_of("room: a member joined\n", 2000));
+    /* chat in the log by size and the sender's address in the room: neither the text nor the nickname */
+    heard_reset();
+    fake_room_chat(g_room, "Aogo", "meet at the bakery");
+    CHECK(heard_of("room: a chat message of 18 bytes from the member at 192.168.1.1\n", 2000));
     /* nobody at that port: given up after the connect's time out */
     CHECK(snx_room_join(&c, "127.0.0.1", 9, "Afugo", "secret", "game", 1, "", &why) == -SNX_ETIMEDOUT);
     CHECK(why == SNX_ROOM_UNREACHABLE);
@@ -130,6 +181,7 @@ static void joining(void) {
     /* both: went_away warns after it sets the state */
     for (r = 0; r < 400 && !(snx_room_state(b) == SNX_ROOM_KICKED && warned_of("kicked")); r++) sleep_ms(5);
     CHECK(snx_room_state(b) == SNX_ROOM_KICKED && warned_of("kicked"));
+    CHECK(heard_of("room: the member at 192.168.1.2 was kicked\n", 2000)); /* still in a's members as it hears it */
     CHECK(snx_room_send_ldn(b, SNX_ROOM_LDN_SCAN, NULL, 1, NULL, 0) == -SNX_ENETDOWN);
     snx_room_leave(b);
     snx_room_fake_ip(a, ip);
@@ -137,6 +189,7 @@ static void joining(void) {
     for (r = 0; r < 200 && snx_room_has_member(a, ip); r++) sleep_ms(5);
     CHECK(!snx_room_has_member(a, ip)); /* the room told the others at once */
     snx_room_leave(a);
+    unnamed();
 }
 
 /* ============================================================ ldn through the room */
@@ -225,8 +278,11 @@ static void networks(void) {
     CHECK(snx_ldn_scan(a, NULL, found, 4, 200) == 0); /* the host doesn't find itself */
     name_of(name, "Xuji");
     changes_a = changes_b = 0;
+    heard_reset();
     CHECK(snx_ldn_connect(b, &found[0], name, 4, 2000) == 0);
     CHECK(wait_for(&changes_a, 1, 2000));
+    CHECK(heard_of("ldn: node 1 joined from 192.168.1.2, 2 of 8 nodes\n", 2000));
+    CHECK(heard_of("ldn: joined the network of the host at 192.168.1.1, 2 of 8 nodes\n", 2000));
     CHECK(snx_ldn_network_info(a, &info, updates) == 1 && info.node_count == 2 && updates[1] == SNX_LDN_NODE_CONNECT);
     CHECK(!strcmp((char*)info.nodes[1].user_name, "Xuji") && info.nodes[1].ipv4[0] == 2 &&
           info.nodes[1].ipv4[3] == 192);
@@ -237,6 +293,7 @@ static void networks(void) {
     CHECK(wait_for(&changes_b, 1, 2000) && advertises(b, "again", 2000));
     /* the station leaves */
     changes_a = 0;
+    heard_reset();
     snx_ldn_disconnect(b);
     {
         size_t node = 0;
@@ -248,6 +305,7 @@ static void networks(void) {
     CHECK(wait_for(&changes_a, 1, 2000));
     CHECK(snx_ldn_network_info(a, &info, updates) == 1 && info.node_count == 1 &&
           updates[1] == SNX_LDN_NODE_DISCONNECT);
+    CHECK(heard_of("ldn: node 1 left\n", 2000));
     /* joins again, and the host destroys the network: the station is told */
     CHECK(snx_ldn_connect(b, &found[0], name, 4, 2000) == 0);
     changes_b = 0;
@@ -271,6 +329,7 @@ static void networks(void) {
     snx_ldn_close(b); /* its goodbyes can't go: out of the room */
     snx_ldn_close(a);
     snx_room_leave(ra);
+    unnamed();
 }
 
 /* ============================================================ datagrams */
@@ -538,7 +597,8 @@ static void closing(void) {
 int main(void) {
     CHECK(snx_net_init() == 0);
     snx_lock_init(&g_warned_lk);
-    snx_net_set_log(quiet);
+    snx_lock_init(&g_heard.lk);
+    snx_net_set_log(heard);
     snx_net_set_warn(warned);
     messages();
     g_room = fake_room_start();
@@ -549,6 +609,7 @@ int main(void) {
     handler();
     closing();
     fake_room_stop(g_room);
+    unnamed(); /* the datagrams, the goodbyes and the room closing too */
     printf("ldn_room: %u checks passed\n", checks);
     return 0;
 }

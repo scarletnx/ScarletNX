@@ -148,7 +148,7 @@ static int parse_record(const unsigned char* body, size_t length, Record* r, cha
 
 char* snx_jit_cache_key(char opt, int hook, int svc, SnxU64 guest) {
     char* cpu = LLVMGetHostCPUName();
-    char* features = LLVMGetHostCPUFeatures();
+    char* features = snx_ir_host_features();
     char* triple = LLVMGetDefaultTargetTriple();
     if (!cpu || !features || !triple) {
         LLVMDisposeMessage(cpu);

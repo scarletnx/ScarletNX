@@ -170,20 +170,22 @@ public class MainActivity extends SDLActivity {
         view(uri, uri.equals(DataProvider.rootUri(this)) ? "vnd.android.document/root" : DocumentsContract.Document.MIME_TYPE_DIR);
     }
 
-    /** the Files app on uri, as the system names it, else its own where it names none (some makers' own) */
+    /** the system's Files app on uri, the one app that reads both providers (they ask for MANAGE_DOCUMENTS): any other
+        that takes a folder, which the chooser would offer (a file manager, a hex editor), opens on a place of its own.
+        Without it, whatever the system names (a maker's own Files app) */
     private void view(Uri uri, String type) {
         Intent view = new Intent(Intent.ACTION_VIEW)
                           .setDataAndType(uri, type)
                           .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-        try {
-            startActivity(view);
-        } catch (ActivityNotFoundException e) {
+        for (String files : new String[] {"com.google.android.documentsui", "com.android.documentsui"}) {
             try {
-                startActivity(view.setPackage("com.google.android.documentsui"));
-            } catch (ActivityNotFoundException again) {
-                startActivity(view.setPackage("com.android.documentsui"));
+                startActivity(new Intent(view).setPackage(files));
+                return;
+            } catch (ActivityNotFoundException e) {
+                // not on this system: the next
             }
         }
+        startActivity(view);
     }
 
     @Override

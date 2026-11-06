@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "gui/theme.h"
 #include "gui/i18n.h"
+#include "gui/model.h" /* GUI_TEXT_MAX */
 #include "gui/steps.h" /* GuiProgress */
 #include "common/utilities/common.h"
 #include "common/utilities/ini_lines.h"
@@ -372,9 +373,13 @@ static void apply(GuiTheme* t, const char* section, const char* key, const char*
         return;
     }
     if (!strcmp(section, "theme") && !strcmp(key, "base")) { /* read before the rest */
-        if (!gui_theme_builtin(value))
-            say(to, snx_tr("[theme] base = %s is not a built-in theme (default or yorha): it starts from %s"), value,
-                to->from);
+        if (!gui_theme_builtin(value)) {
+            char ids[SNX_GUI_THEME_COUNT * 24] = "";
+            size_t i, used = 0;
+            for (i = 0; i < SNX_GUI_THEME_COUNT && used < sizeof ids; ++i)
+                used += (size_t)snprintf(ids + used, sizeof ids - used, "%s%s", i ? ", " : "", snx_gui_theme_ids[i]);
+            say(to, snx_tr("[theme] base = %s is not a built-in theme (%s): it starts from %s"), value, ids, to->from);
+        }
         return;
     }
     if (!strcmp(section, "theme") && !strcmp(key, "layout")) { /* ErET's, read before the rest */
@@ -750,14 +755,19 @@ void gui_run_theme(const char* folder, SnxRunTheme* out) {
     GuiThemes listed = {0};
     SnxIni ini;
     *out = (SnxRunTheme){0};
-    /* as the launcher reads app.ini (src/gui/main.c app_read): its theme, and the data folder Folders picked, a full
-       path or none */
+    /* as the launcher reads app.ini (src/gui/main.c app_read): its theme, its UI scale (ui_scale, text_size as an
+       older version named it: a number it takes, else 0, its Auto), and the data folder Folders picked, a full path
+       or none */
     if (text) {
         snx_ini_start(&ini, text);
         while (snx_ini_next(&ini, &key, &value))
             if (!strcmp(ini.section, "app") && !strcmp(key, "theme") && *value)
                 snprintf(id, sizeof id, "%s", value);
-            else if (!strcmp(ini.section, "folders") && !strcmp(key, "data") && snx_path_is_full(value))
+            else if (!strcmp(ini.section, "app") && (!strcmp(key, "ui_scale") || !strcmp(key, "text_size"))) {
+                char* end;
+                long n = strtol(value, &end, 10);
+                out->text_size = *value && !*end && n >= 1 && n <= GUI_TEXT_MAX ? (int)n : 0;
+            } else if (!strcmp(ini.section, "folders") && !strcmp(key, "data") && snx_path_is_full(value))
                 snprintf(picked, sizeof picked, "%s", value);
     }
     /* the launcher's two folders of themes (themes_dirs): its data folder's, then those shipped beside it (main.c

@@ -9,12 +9,6 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
-static uint32_t connect(SnxCtrProcess* p) {
-    assert(snx_ctr_write_ram(p->space, 0x300100, "srv:", 5) == SNX_CTR_MEM_OK);
-    p->cpu.state.cpu.r[1] = 0x300100;
-    assert(snx_ctr_svc(p, 0x2d) == SNX_CTR_SVC_RETURN && !p->cpu.state.cpu.r[0]);
-    return p->cpu.state.cpu.r[1];
-}
 static void close_handle(SnxCtrProcess* p, uint32_t handle) {
     p->cpu.state.cpu.r[0] = handle;
     assert(snx_ctr_svc(p, 0x23) == SNX_CTR_SVC_RETURN && !p->cpu.state.cpu.r[0]);
@@ -45,7 +39,7 @@ int main(void) {
         assert(snx_ctr_svc(p, 0x35) == SNX_CTR_SVC_RETURN && !r[0] && r[1] == CTR_PROCESS_ID);
         r[1] = CTR_THREAD_HANDLE;
         assert(snx_ctr_svc(p, 0x35) == SNX_CTR_SVC_RETURN && r[0] == 0xd8e007f7 && !r[1]);
-        uint32_t srv = connect(p), id = snx_ctr_handle_object(p, srv);
+        uint32_t srv = ctr_srv(p), id = snx_ctr_handle_object(p, srv);
         assert(id && p->objects[id].type == CTR_OBJ_SESSION && ctr_object_count(p) == 3);
         lookup(p, srv, 1);
         assert(ctr_command_word(p, 0) == 0x00050040 && ctr_command_word(p, 1) == 0xd8e06406);
@@ -169,7 +163,7 @@ int main(void) {
         ctr_send(p, fs, SNX_CTR_SVC_RETURN, 0xd8e007f7);
         assert(ctr_command_word(p, 0) == init[0] && ctr_object_count(p) == 3);
         uint32_t ports[63];
-        for (unsigned i = 0; i < 63; ++i) ports[i] = connect(p);
+        for (unsigned i = 0; i < 63; ++i) ports[i] = ctr_srv(p);
         r[1] = 0x300100;
         assert(snx_ctr_svc(p, 0x2d) == SNX_CTR_SVC_RETURN && r[0] == 0xd0401834 && !r[1]);
         for (unsigned i = 0; i < 63; ++i) close_handle(p, ports[i]);

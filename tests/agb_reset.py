@@ -40,6 +40,12 @@ r9, and spins. The code, assembled with llvm-mc for armv4t at 0x080000C0:
         msr   cpsr_c, #0x1F         @ system mode
     ramspin:
         b     ramspin
+
+The machine starts at the cartridge's first word, as the BIOS jumps there: a second ROM's header branches past a
+word at 0x080000C0 (mov r5, #0xFF) to code at 0x080000C8 that puts 0x5A in r5 and spins.
+
+A software interrupt whose number the BIOS does not have returns at once, as mGBA's HLE BIOS answers it, and the
+runner says which and where: a third ROM calls swi 0xFF0099 at 0x080000C0, then puts 42 in r5 and spins.
 """
 
 import argparse
@@ -59,15 +65,16 @@ CODE = [
 EXPECTED = {'r5': 42, 'r6': 0, 'r7': 0, 'r8': 0x03007FA0, 'r9': 0x03007FE0, 'r13': 0x03007F00, 'cpsr': 0x1F}
 
 
-def rom():
-    """A cartridge the board takes (its branch, fixed byte and complement), its code at 0x080000C0."""
+def rom(code=CODE, branch=0xEA00002E):
+    """A cartridge the board takes (its branch, b 0x080000C0 unless given, fixed byte and complement), its code at
+    0x080000C0."""
     image = bytearray(0xC0)
-    image[0:4] = (0xEA00002E).to_bytes(4, 'little')  # b 0x080000C0
+    image[0:4] = branch.to_bytes(4, 'little')
     image[0xA0:0xAC] = b'RESET'.ljust(12, b'\0')
     image[0xAC:0xB2] = b'ARST01'
     image[0xB2] = 0x96
     image[0xBD] = -(sum(image[0xA0:0xBD]) + 0x19) & 0xFF
-    for word in CODE:
+    for word in code:
         image += word.to_bytes(4, 'little')
     return bytes(image)
 
@@ -95,6 +102,35 @@ def main():
         ]
         if wrong:
             sys.exit('agb_reset: after SoftReset %s\n%s' % (', '.join(wrong), run.stdout))
+        # b 0x080000C8 over mov r5, #0xFF and a spin, to mov r5, #0x5A and a spin
+        (work / 'entry.gba').write_bytes(rom([0xE3A050FF, 0xEAFFFFFE, 0xE3A0505A, 0xEAFFFFFE], 0xEA000030))
+        run = subprocess.run(
+            [args.runner, '--frames=2', '--registers', '--outdir', str(work), str(work / 'entry.gba')],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        found = re.search(r'\br5=([0-9A-F]{8})', run.stdout)
+        if run.returncode or not found or int(found.group(1), 16) != 0x5A:
+            sys.exit(
+                'agb_reset: the header branch to 0x080000C8 was not where the run started (r5 %s, not 0000005A)'
+                '\n%s%s' % (found.group(1) if found else 'missing', run.stdout, run.stderr)
+            )
+        # swi 0xFF0099, mov r5, #42, spin
+        (work / 'unknown.gba').write_bytes(rom([0xEFFF0099, 0xE3A0502A, 0xEAFFFFFE]))
+        run = subprocess.run(
+            [args.runner, '--frames=2', '--registers', '--outdir', str(work), str(work / 'unknown.gba')],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        found = re.search(r'\br5=([0-9A-F]{8})', run.stdout)
+        said = 'The game called BIOS function 0xFF at 0x080000C0, which the BIOS does not have' in run.stdout
+        if run.returncode or not found or int(found.group(1), 16) != 42 or not said:
+            sys.exit(
+                'agb_reset: after swi 0xFF0099 r5 is %s, not 0000002A, or the runner did not name the call 0xFF at '
+                '0x080000C0\n%s%s' % (found.group(1) if found else 'missing', run.stdout, run.stderr)
+            )
     print('agb_reset: passed')
 
 

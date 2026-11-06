@@ -152,12 +152,11 @@ typedef struct {
     u32 nbound, query;
     int stale; /* the runs changed since the index was built */
 } GAlias;
-/* an nvhost-ctrl event slot. ev is made on first use and nvdrv keeps a reference. An armed slot is signaled once
-   syncpoint id reaches thresh; armed changes under nvev_lk */
+/* an nvhost-ctrl event slot. ev is made on first use and nvdrv keeps a reference. An armed slot (its bit in
+   HleNvdrv's armed_mask) is signaled once syncpoint id reaches thresh */
 typedef struct {
     u32 ev; /* its kernel object id */
     u32 id, thresh;
-    int armed;
 } NvEvent;
 /* a ctrl fd's event slots (ctrl_evt, a pool under nvev_lk) */
 typedef struct {
@@ -217,6 +216,11 @@ typedef struct {
     u32 ctrl_ev[NV_FDS];
     NvEventTable ctrl_evt[NV_CTRL_TABLES];
     u32 ctrl_evt_next;
+    /* the event slots armed now, a bit each under nvev_lk, and the tables that have one: syncpt_add skips the scan of
+       every slot while none is, which is the common case for a game that waits on none of them */
+    u64 armed_mask[NV_CTRL_TABLES];
+    /* RFC #142 rule 1's exception, a summary read without the lock: 1 ns a syncpt_add, the 64 words of armed_mask 8 */
+    u64 armed_tables;
     /* a game thread arms a slot while GPU and video threads run nv_events_check after their increments: syncpt_add's
        at once, syncpt_add_quiet's at the outermost vk_unlock, after vk_lock goes (syncpt_events). Arming clears the
        event first and does both in one hold: an increment between a separate arm and clear would signal and then

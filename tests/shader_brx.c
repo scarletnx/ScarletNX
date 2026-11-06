@@ -198,6 +198,27 @@ int main(void) {
           "a loop back to a write before the load leaves the BRX unresolved");
     hoisted[20] = NOP; /* without the loop the write can't be reached */
     check(shader_brx_targets(hoisted, 25, 64, targets, 64) == 2, "the same program without the loop resolves");
+
+    /* an unresolved BRX, then the compiler's end (EXIT and a BRA to itself) and the jump table right after it, as one
+       game's program keeps it: the program ends at that BRA, not at the zero after the table, whose offsets aren't
+       instructions */
+    u64 tail[64] = {0};
+    g_shader_cb_read = NULL;
+    for (u32 i = 10; i < 30; i += 4) tail[i] = SCHED;
+    tail[11] = 0xef94000000070d0dull; /* LDC.B32 R13, c[0][R13]: no table to read */
+    tail[12] = 0xe250000000070d0full; /* BRX R13 */
+    tail[13] = EXIT;
+    tail[15] = EXIT;
+    tail[16] = 0xe2400fffff87000full; /* BRA to itself */
+    tail[17] = NOP;
+    tail[19] = 0x00000318000002e0ull; /* the table's offsets */
+    tail[20] = 0x0000039000000350ull;
+    tail[21] = 0x00000400000003c0ull;
+    hash_words(tail, sizeof tail, &len);
+    check(len == 17 * 8, "the compiler's end ends a program whose BRX is unresolved");
+    tail[15] = NOP; /* a BRA to itself not after an EXIT ends nothing: the zero after the table does */
+    hash_words(tail, sizeof tail, &len);
+    check(len == 22 * 8, "a BRA to itself alone doesn't end an unresolved program");
     g_shader_cb_read = old;
     return failures ? 1 : 0;
 }

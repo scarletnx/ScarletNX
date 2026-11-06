@@ -8,9 +8,20 @@
    block for the same instruction runs from the same registers, and the two are compared. Blocks are compiled one
    instruction each here (an IT instruction with those it covers), cached by address and length */
 #include "vita/runtime/lockstep.h"
+#include "snx_settings.h"
 #ifndef SNX_VITA_LOCKSTEP
+#include "common/utilities/common.h"
+static struct {
+    int said; /* vita_lockstep's refusal */
+} g_lockstep;
 VitaLockstep vita_lockstep_step(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
+    if (g_settings.vita_lockstep >= 0 && !g_lockstep.said) {
+        g_lockstep.said = 1;
+        snx_error("lockstep: vita_lockstep=%d needs a build configured with -DSNX_VITA_LOCKSTEP=ON: this run checks "
+                  "nothing against Unicorn (docs/VITA.md)",
+                  g_settings.vita_lockstep);
+    }
     return VITA_LOCKSTEP_OFF;
 }
 void vita_lockstep_free(void) {}
@@ -165,10 +176,9 @@ static uint32_t get32(int reg) {
 }
 VitaLockstep vita_lockstep_step(VitaProcess* p, VitaThread* t) {
     if (!g.state) {
-        const char* at = getenv("VITA_LOCKSTEP");
-        g.state = at ? 1 : -1;
-        g.start = at ? strtoull(at, NULL, 0) : 0;
-        g.limit = getenv("VITA_LOCKSTEP_STEPS") ? strtoull(getenv("VITA_LOCKSTEP_STEPS"), NULL, 0) : UINT64_MAX;
+        g.state = g_settings.vita_lockstep >= 0 ? 1 : -1;
+        g.start = g_settings.vita_lockstep >= 0 ? (uint64_t)g_settings.vita_lockstep : 0;
+        g.limit = g_settings.vita_lockstep_steps > 0 ? (uint64_t)g_settings.vita_lockstep_steps : UINT64_MAX;
     }
     if (g.state < 0) return VITA_LOCKSTEP_OFF;
     if (g.state == 1) {

@@ -102,6 +102,9 @@ bool ctr_read(CtrReader* r, CtrSpan span, uint64_t at, void* output, size_t size
 bool ctr_hash(CtrReader* r, CtrSpan span, unsigned char hash[32]);
 bool ctr_sha256(CtrReader* r, const void* data, size_t size, unsigned char hash[32]);
 bool ctr_hash_matches(CtrReader* r, CtrSpan span, const unsigned char expected[32]);
+/* an NCCH whose flag says encrypted while its ExHeader is plain, as a tool that decrypted an image and left the
+   flag leaves it: header is its 0x200-byte header, span where it lies */
+bool ctr_ncch_plain(CtrReader* r, CtrSpan span, const unsigned char* header);
 bool ctr_copy(CtrReader* r, CtrSpan span, const char* path, const unsigned char* expected);
 bool ctr_write(CtrReader* r, const char* path, const void* data, size_t size);
 bool ctr_directory(CtrReader* r, const char* path);

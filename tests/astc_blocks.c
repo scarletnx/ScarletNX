@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* ASTC blocks from rEden's decoder tests: within one of the reference, exact with -DSNX_ASTCB_FINDINGS */
+/* ASTC blocks from rEden's decoder tests, each texel exactly the reference's */
 #include "support/astc.h"
 #include <stdio.h>
 #include <string.h>
@@ -100,7 +100,7 @@ static const SnxAstcbExpected snx_astcb_colour_limits = {
     {0xff9707c2, 0xff7a5d50, 0xffd8c697, 0xff7d545c, 0xff68920a, 0xff71782d, 0xffdec3a2, 0xff7d545c, 0xff8f1fa3,
      0xff766940, 0xff786446, 0xff940eb9, 0xff8a2d8f, 0xffedbbc2, 0xff873783, 0xff873783}};
 
-/* mode 1, dual plane: 17 channels where C >> 8 and the nearest byte differ */
+/* mode 1, dual plane: 17 channels where 255 * C / 65536, rounded, is one below the nearest byte */
 static const SnxAstcbExpected snx_astcb_rounding = {
     {4, 4, {0xcf, 0x25, 0x82, 0x11, 0xd3, 0x9e, 0xca, 0x7c, 0x05, 0xc8, 0x1c, 0x0c, 0x6b, 0x99, 0x84, 0x0a}},
     {0xffb2b0b0, 0xffb6b6b6, 0xffb8b6b6, 0xffb8b0b0, 0xffb7b8b8, 0xffb3b5b5, 0xffb2b4b4, 0xffb3b5b5, 0xffb3b3b3,
@@ -170,26 +170,6 @@ static void expect(const SnxAstcbBlock* block, const u32* want, u32 fill, const 
     }
 }
 
-/* the error colour exact, every other channel within one */
-static void expect_near(const SnxAstcbBlock* block, const u32* want, const char* what, unsigned index) {
-    u32 i;
-    u32 got[12 * 12];
-    decode(block, got);
-    ++checks;
-    for (i = 0; i < block->width * block->height; ++i) {
-        u32 c;
-        int near = (got[i] == SNX_ASTCB_MAGENTA) == (want[i] == SNX_ASTCB_MAGENTA);
-        for (c = 0; c < 32 && near; c += 8) {
-            int d = (int)((got[i] >> c) & 0xFF) - (int)((want[i] >> c) & 0xFF);
-            near = d >= -1 && d <= 1;
-        }
-        if (!near) {
-            fail(what, index, i, got[i], want[i]);
-            return;
-        }
-    }
-}
-
 /* a 4x4 LDR void extent: block mode 0xDFC, the four 13-bit coordinates, then the colour */
 static SnxAstcbBlock void_extent(u32 s0, u32 s1, u32 t0, u32 t1) {
     u32 k;
@@ -212,22 +192,14 @@ int main(void) {
         expect(&snx_astcb_illegal_at_each_exit[i], NULL, SNX_ASTCB_MAGENTA, "illegal block", (unsigned)i);
 
     /* an HDR endpoint mode is the error colour on its partition only */
-    for (i = 0; i < sizeof(snx_astcb_hdr_partitions) / sizeof(snx_astcb_hdr_partitions[0]); ++i) {
-        expect_near(&snx_astcb_hdr_partitions[i].block, snx_astcb_hdr_partitions[i].texels, "HDR partition block",
-                    (unsigned)i);
-#ifdef SNX_ASTCB_FINDINGS
+    for (i = 0; i < sizeof(snx_astcb_hdr_partitions) / sizeof(snx_astcb_hdr_partitions[0]); ++i)
         expect(&snx_astcb_hdr_partitions[i].block, snx_astcb_hdr_partitions[i].texels, 0, "HDR partition block",
                (unsigned)i);
-#endif
-    }
 
     /* a trit or quint group cut short reads zeros: any unallocated bits decode the same */
     for (i = 0; i < sizeof(snx_astcb_cut_short) / sizeof(snx_astcb_cut_short[0]); ++i) {
         u32 value;
         const SnxAstcbCutShort* cut = &snx_astcb_cut_short[i];
-        u32 own[16];
-        decode(&cut->expected.block, own);
-        expect_near(&cut->expected.block, cut->expected.texels, "cut-short block", (unsigned)i);
         for (value = 0; value < (1u << cut->unallocated); ++value) {
             u32 k;
             SnxAstcbBlock block = cut->expected.block;
@@ -236,20 +208,14 @@ int main(void) {
                 block.bits[bit / 8] =
                     (u8)((block.bits[bit / 8] & ~(1u << (bit % 8))) | ((value >> k) & 1u) << (bit % 8));
             }
-            expect(&block, own, 0, "cut-short block against its own bits, unallocated bits", (unsigned)(i * 4 + value));
-#ifdef SNX_ASTCB_FINDINGS
             expect(&block, cut->expected.texels, 0, "cut-short block, unallocated bits", (unsigned)(i * 4 + value));
-#endif
         }
     }
 
     /* more than 18 colour values, or too few colour bits, are illegal; exactly enough is legal */
     for (i = 0; i < sizeof(snx_astcb_illegal_colour) / sizeof(snx_astcb_illegal_colour[0]); ++i)
         expect(&snx_astcb_illegal_colour[i], NULL, SNX_ASTCB_MAGENTA, "illegal colour block", (unsigned)i);
-    expect_near(&snx_astcb_colour_limits.block, snx_astcb_colour_limits.texels, "colour limits block", 0);
-#ifdef SNX_ASTCB_FINDINGS
     expect(&snx_astcb_colour_limits.block, snx_astcb_colour_limits.texels, 0, "colour limits block", 0);
-#endif
 
     /* a void extent needs each low coordinate below its high one, unless all four are ones */
     {
@@ -257,12 +223,10 @@ int main(void) {
         static const u32 cases[][5] = {
             {0x1FFF, 0x1FFF, 0x1FFF, 0x1FFF, SNX_ASTCB_VOID_COLOUR}, /* all ones: no extent */
             {0x0100, 0x0200, 0x0300, 0x0400, SNX_ASTCB_VOID_COLOUR},
-#ifdef SNX_ASTCB_FINDINGS
             {0x0200, 0x0200, 0x0300, 0x0400, SNX_ASTCB_MAGENTA},
             {0x0300, 0x0200, 0x0300, 0x0400, SNX_ASTCB_MAGENTA},
             {0x0100, 0x0200, 0x0400, 0x0400, SNX_ASTCB_MAGENTA},
             {0x1FFF, 0x1FFF, 0x1FFF, 0x1FFE, SNX_ASTCB_MAGENTA}, /* not all ones, so an extent out of order */
-#endif
         };
         for (i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
             SnxAstcbBlock block = void_extent(cases[i][0], cases[i][1], cases[i][2], cases[i][3]);
@@ -274,12 +238,8 @@ int main(void) {
     expect(&snx_astcb_rounding.block, snx_astcb_rounding.texels, 0, "rounding block", 0);
 
     /* 4 and 5-bit weights expand by bit replication; colour data cut short inside a trit or quint group reads zeros */
-    for (i = 0; i < sizeof(snx_astcb_astcenc) / sizeof(snx_astcb_astcenc[0]); ++i) {
-        expect_near(&snx_astcb_astcenc[i].block, snx_astcb_astcenc[i].texels, "astcenc block", (unsigned)i);
-#ifdef SNX_ASTCB_FINDINGS
+    for (i = 0; i < sizeof(snx_astcb_astcenc) / sizeof(snx_astcb_astcenc[0]); ++i)
         expect(&snx_astcb_astcenc[i].block, snx_astcb_astcenc[i].texels, 0, "astcenc block", (unsigned)i);
-#endif
-    }
 
     printf("ASTC blocks from rEden's CPU and GPU decoder tests: %d blocks, %d failed\n", checks, failures);
     return failures != 0;

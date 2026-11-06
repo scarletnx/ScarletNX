@@ -8,7 +8,9 @@
 
 /* Default: Cortex-A57, ARMv8-A AArch32 user mode, little-endian guest memory.
    Separate from the A64 module ABI: never cast CPU* to SnxArmCPU*. */
-#define SNX_ARM_ABI 4 /* 2: shared S/D/Q register bank and FPSCR; 3: the backend's rt; 4: the bus hook */
+/* 2: shared S/D/Q register bank and FPSCR; 3: the backend's rt; 4: the bus hook; 5: a store clears the exclusive
+   monitor only where it overlaps the reservation */
+#define SNX_ARM_ABI 5
 #define SNX_ARM_T   (1u << 5)
 #define SNX_ARM_E   (1u << 9)
 #define SNX_ARM_FPSCR_LEN_STRIDE   0x00370000u /* LEN (18:16) and STRIDE (21:20) */

@@ -97,7 +97,7 @@ static bool local_1900_ms(uint64_t* out) {
 void snx_ctr_shared_page_time(SnxCtrProcess* p) {
     /* Azahar's UpdateTimeCallback: the entry the counter's parity does not select gets the time, the tick it was
        taken at and the tick rate; then the counter moves on, so readers (index counter & 1) switch to it whole */
-    uint64_t rtc, ticks = (uint64_t)((snx_ctr_seconds() - p->clock_origin) * 268111856.0), values[4];
+    uint64_t rtc, ticks = (uint64_t)((snx_seconds() - p->clock_origin) * 268111856.0), values[4];
     p->time_update_ns = snx_ctr_now_ns() + UINT64_C(3600000000000);
     unsigned char counter[4];
     if (!local_1900_ms(&rtc) || snx_ctr_phys_read(p->memory, 0x1ff81000, counter, 4) != SNX_CTR_MEM_OK) return;
@@ -123,7 +123,8 @@ void snx_ctr_process_free(SnxCtrProcess* p) {
     /* files still open when the process ends close their host files and release their nodes before the tree goes */
     for (uint32_t i = 1; i < CTR_OBJECTS; ++i)
         if (p->objects[i].type == CTR_OBJ_FILE && !p->objects[i].data.file.closed) snx_ctr_file_release(p, i);
-    for (unsigned i = 0; i < CTR_SELF_ARCHIVES; ++i) /* and so do the ExtSaveData archives still open */
+    /* and so do the archives still open on a folder (an ExtSaveData, another title's save data) */
+    for (unsigned i = 0; i < CTR_SELF_ARCHIVES; ++i)
         if (p->self_archives[i].root) fs_tree_release(p->self_archives[i].root);
     snx_ctr_romfs_free(p->romfs);
     for (unsigned i = 0; i < p->dlc_view_count; ++i) snx_ctr_romfs_free(p->dlc_views[i].view);
@@ -140,14 +141,18 @@ void snx_ctr_process_free(SnxCtrProcess* p) {
 }
 SnxCtrProcess* snx_ctr_process_new(const SnxCtrImage* image, SnxCtrModel model) {
     const SnxCtrProfile* profile = snx_ctr_profile(model);
-    if (!image || !image->code || !profile || !image->stack_size || image->stack_size > 0x800000) return NULL;
-    /* the application region of the system mode the title's ExHeader asks for (Azahar's memory layouts): the Old 3DS
-       modes 0 to 5 (1 is unused), then the New 3DS extended modes 1 to 3 when the console is one. A mode no console has gets the
-       smallest */
-    static const uint32_t old_modes[6] = {0x4000000, 0x4000000, 0x6000000, 0x5000000, 0x4800000, 0x2000000};
-    static const uint32_t new_modes[4] = {0, 0x7c00000, 0xb200000, 0x7c00000};
-    uint32_t app_limit = old_modes[image->old_mode < 6 ? image->old_mode : 0];
-    if (model == SNX_CTR_NEW && image->new_mode && image->new_mode < 4) app_limit = new_modes[image->new_mode];
+    /* The APPLICATION, SYSTEM and BASE regions of FCRAM for each system mode, as Azahar lays them out
+       (kernel/memory.cpp, memory_region_sizes): an Old 3DS launches a title in the mode its ExHeader names, and a New
+       3DS in its mode 6 whatever Old 3DS mode the title names (core.cpp, Load). Mode 1 is none */
+    static const uint32_t old_modes[6][3] = {{0x4000000, 0x2c00000, 0x1400000}, {0, 0, 0},
+                                             {0x6000000, 0x0c00000, 0x1400000}, {0x5000000, 0x1c00000, 0x1400000},
+                                             {0x4800000, 0x2400000, 0x1400000}, {0x2000000, 0x4c00000, 0x1400000}};
+    static const uint32_t new_mode[3] = {0x7c00000, 0x6400000, 0x2000000};
+    if (!image || !image->code || !profile || !image->stack_size || image->stack_size > 0x800000 ||
+        image->system_mode > 5 || !old_modes[image->system_mode][0])
+        return NULL;
+    const uint32_t* regions = model == SNX_CTR_OLD ? old_modes[image->system_mode] : new_mode;
+    uint32_t app_limit = regions[0];
     SnxCtrProcess* p = calloc(1, sizeof *p + app_limit / 4096);
     if (!p) return NULL;
     p->app_limit = app_limit;
@@ -211,12 +216,9 @@ SnxCtrProcess* snx_ctr_process_new(const SnxCtrImage* image, SnxCtrModel model) 
     config[0x10] = config[0x64] = 2;
     config[0x18] = config[0x68] = 0x50;
     config[0x19] = config[0x69] = 0xf4;
-    const uint32_t base = model == SNX_CTR_OLD ? 0x1400000u : 0x2000000u;
-    uint32_t sizes[] = {p->app_limit, snx_ctr_profile(model)->fcram_size - p->app_limit - base, base};
-    bool extended = model == SNX_CTR_NEW && image->new_mode && image->new_mode < 4;
-    config[0x30] = (unsigned char)(extended ? (image->new_mode == 2 ? 7 : 6) : image->old_mode < 6 ? image->old_mode : 0);
+    config[0x30] = model == SNX_CTR_OLD ? (unsigned char)image->system_mode : 6;
     for (unsigned i = 0; i < 3; ++i)
-        for (unsigned j = 0; j < 4; ++j) config[0x40 + i * 4 + j] = (unsigned char)(sizes[i] >> (j * 8));
+        for (unsigned j = 0; j < 4; ++j) config[0x40 + i * 4 + j] = (unsigned char)(regions[i] >> (j * 8));
     if (snx_ctr_write_ram(p->space, CTR_CONFIG, config, sizeof config) != SNX_CTR_MEM_OK ||
         snx_ctr_protect(p->space, CTR_CONFIG, 4096, SNX_CTR_READ) != SNX_CTR_MEM_OK)
         goto fail;
@@ -226,7 +228,7 @@ SnxCtrProcess* snx_ctr_process_new(const SnxCtrImage* image, SnxCtrModel model) 
        Host-paced monotonic ticks, not an instruction/cycle-accuracy claim. */
     uint64_t rtc;
     if (!local_1900_ms(&rtc)) goto fail;
-    p->clock_origin = snx_ctr_seconds();
+    p->clock_origin = snx_seconds();
     unsigned char shared[4096] = {0};
     shared[0x04] = 1;    /* running_hw: product */
     shared[0x66] = 3;    /* wifi_link_level: best */

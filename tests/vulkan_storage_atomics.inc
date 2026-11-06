@@ -15,6 +15,12 @@ static u32 volume_atomic_result(u32 op, u32 before, u32 operand, int signed_comp
 	case 6: return before | operand;
 	case 7: return before ^ (invocations & 1 ? operand : 0);
 	case 8: return operand;
+	case 3: /* INC and DEC wrap at the operand, so each invocation's step is the same whatever their order */
+	case 4:
+		for (u32 i = 0; i < invocations; i++)
+			if (op == 3) before = before >= operand ? 0 : before + 1;
+			else before = before == 0 || before > operand ? operand : before - 1;
+		return before;
 	default: return before;
 	}
 }
@@ -29,7 +35,7 @@ static int check_volume_surface_atomics(void)
 	} cases[] = {
 		{0, 5, 3}, {1, 0x7ffffff0, 0x80000010}, {2, 0x80000010, 0x7ffffff0},
 		{5, 0xf0f0a5a5, 0x0ff00ff0}, {6, 0xf000aa00, 0x00ff0055},
-		{7, 0xabcd1234, 0x55aa55aa}, {8, 1, 0xa5f01234},
+		{7, 0xabcd1234, 0x55aa55aa}, {8, 1, 0xa5f01234}, {3, 5, 40}, {4, 7, 20},
 	};
 	const u64 address = 0x600000000ull;
 	const u64 cbuf = address + 0x20000, descriptors = address + 0x21000;
@@ -72,7 +78,7 @@ static int check_volume_surface_atomics(void)
 						u64 prior_offset = (base ? 2048 : 0) + bl_offset(8, 1, 1, (8u >> base) * 4, 4u >> base, 0, 0);
 						u32 n = 5;
 
-						if (reduction && op > 2) continue;
+						if (reduction && op > 7) continue;
 						if (returned && !g_vk.feat.shaderStorageImageWriteWithoutFormat) continue;
 						if (reduction)
 							atomic = (atomic & ~(7ull << 20 | 7ull << 24)) | (u64)signed_compare << 20 | (u64)op << 24;

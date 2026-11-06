@@ -6,21 +6,48 @@ include("${CMAKE_CURRENT_LIST_DIR}/llvm_components.cmake")
 # scarletnx --mcp's A64 disassembler (src/nx/runtime/driver/disasm.c), where LLVM has the AArch64 target. A release
 # leaves it out: it is for working on the runtime, and a static LLVM then links no AArch64 code into a host of another
 option(SNX_A64_DISASM "Build scarletnx --mcp's A64 disassembler, where LLVM has the AArch64 target" ON)
+# a folder of the sysroot as the program sees it on the target: a cross build's LLVM folder is under CMAKE_SYSROOT,
+# which a run path leaves out (src/3ds, src/vita)
+function(snx_target_path output path)
+    string(LENGTH "${CMAKE_SYSROOT}" length)
+    string(LENGTH "${path}" path_length)
+    if(length AND path_length GREATER length)
+        string(SUBSTRING "${path}" 0 ${length} start)
+        string(SUBSTRING "${path}" ${length} 1 next)
+        if(start STREQUAL CMAKE_SYSROOT AND next STREQUAL "/")
+            string(SUBSTRING "${path}" ${length} -1 path)
+        endif()
+    endif()
+    set(${output} "${path}" PARENT_SCOPE)
+endfunction()
 if(ANDROID OR IOS OR (LLVM_DIR AND NOT SNX_LLVM_CONFIG))
     # Android's and iOS's LLVM (scripts/android-llvm.sh, scripts/apple-llvm.sh) have an llvm-config that only runs on the
     # device, and the Mac's from scripts/apple-llvm.sh and Linux's from scripts/linux-llvm.sh none: their CMake package
-    # instead, named by LLVM_DIR
+    # instead, named by LLVM_DIR, as pkgsrc's in a NetBSD cross build (docs/NETBSD.md), whose llvm-config runs on NetBSD
     find_package(LLVM REQUIRED CONFIG)
-    llvm_map_components_to_libnames(SNX_LLVM_LIBS ${SNX_LLVM_COMPONENTS})
-    if(SNX_A64_DISASM AND "AArch64" IN_LIST LLVM_TARGETS_TO_BUILD AND TARGET LLVMAArch64Disassembler)
-        llvm_map_components_to_libnames(SNX_LLVM_DISASM_LIBS aarch64disassembler aarch64desc aarch64info)
-        set(SNX_LLVM_A64_DISASM ON)
+    if(LLVM_LINK_LLVM_DYLIB)
+        # a package whose own tools link its one shared library (pkgsrc's, a distribution's) built it with every target,
+        # which LLVMInitializeAllTargets (the tests' elf_relocate, llvm_lowering) needs: the program links it, as the
+        # llvm-config route links a distribution's
+        set(SNX_LLVM_LIBS LLVM)
+        set(SNX_LLVM_DISASM_LIBS "")
+        set(SNX_LLVM_A64_DISASM ${SNX_A64_DISASM})
+        if(NOT "AArch64" IN_LIST LLVM_TARGETS_TO_BUILD)
+            set(SNX_LLVM_A64_DISASM OFF)
+        endif()
+        set(SNX_LLVM_SHARED ON)
+    else()
+        llvm_map_components_to_libnames(SNX_LLVM_LIBS ${SNX_LLVM_COMPONENTS})
+        if(SNX_A64_DISASM AND "AArch64" IN_LIST LLVM_TARGETS_TO_BUILD AND TARGET LLVMAArch64Disassembler)
+            llvm_map_components_to_libnames(SNX_LLVM_DISASM_LIBS aarch64disassembler aarch64desc aarch64info)
+            set(SNX_LLVM_A64_DISASM ON)
+        endif()
+        set(SNX_LLVM_SHARED OFF) # their libraries, each static
     endif()
     set(SNX_LLVM_VERSION "${LLVM_PACKAGE_VERSION}")
     set(SNX_LLVM_INCLUDE_DIR "${LLVM_INCLUDE_DIRS}")
     set(SNX_LLVM_LIBRARY_DIR "${LLVM_LIBRARY_DIRS}")
     set(SNX_LLVM_SYSTEM_LIBS "")
-    set(SNX_LLVM_SHARED OFF) # their libraries, each static
     message(STATUS "LLVM backend: LLVM ${SNX_LLVM_VERSION} (${LLVM_DIR})")
     return()
 endif()

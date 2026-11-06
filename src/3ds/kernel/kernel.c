@@ -376,17 +376,25 @@ static bool free_map_slot(const SnxCtrProcess* p) {
    target): the rights asked (r2: read, write or both, never execute or don't-care) within the block's own; the
    rights another process gets (r3) must include the block's own, and don't-care is refused for a heap-backed block
    (ResultWrongPermission, ResultInvalidCombination). The address lies in [0x08000000, 0x14000000). The mapping
-   mirrors the owner's pages. */
+   mirrors the owner's pages. A block APT made for a library applet is marked by a set other_permissions (it has a
+   base address of its own and no owner): it is held to those other permissions instead and maps its own physical
+   pages. */
 static uint32_t map_own_block(SnxCtrProcess* p, uint32_t id, uint32_t address, uint32_t asked, uint32_t other) {
     CtrObject* o = &p->objects[id];
     uint32_t size = o->data.shared.size, own = o->data.shared.permissions == DONT_CARE ? 3 : o->data.shared.permissions;
-    if (!asked || asked > 3 || (asked & ~own) || other == DONT_CARE) return INVALID_COMBINATION;
+    uint32_t allowed = o->data.shared.by_application ? own : o->data.shared.other_permissions;
+    if (!asked || asked > 3 || (asked & ~allowed) || other == DONT_CARE) return INVALID_COMBINATION;
     if (own & ~other) return WRONG_PERMISSION;
     if ((address & 4095) || address < CTR_HEAP || (uint64_t)address + size >= CTR_LINEAR) return INVALID_ADDRESS;
     if (!available(p, address, size)) return INVALID_STATE;
     if (!free_map_slot(p)) return OUT_OF_MEMORY;
-    if (!mirror(p, address, o->data.shared.address, size, asked)) return OUT_OF_MEMORY;
-    return record_map(p, id, address, size);
+    if (o->data.shared.by_application) {
+        if (!mirror(p, address, o->data.shared.address, size, asked)) return OUT_OF_MEMORY;
+        return record_map(p, id, address, size);
+    }
+    SnxCtrMemResult mapped = snx_ctr_map(p->space, address, o->data.shared.physical, size, asked);
+    if (mapped == SNX_CTR_MEM_OK) return record_map(p, id, address, size);
+    return mapped == SNX_CTR_MEM_NOMEM ? OUT_OF_MEMORY : INVALID_STATE;
 }
 /* Heap/linear commit, free and protect, and MAP/UNMAP aliases; no mappings, ownership or accounting change on
    rejected calls. */
@@ -706,45 +714,6 @@ SnxCtrSvcResult snx_ctr_svc(SnxCtrProcess* p, uint32_t number) {
             return SNX_CTR_SVC_RETURN;
         }
         case 0x03: return SNX_CTR_SVC_EXIT;
-        case 0x04:   /* GetProcessAffinityMask: mask r0, process r1, count r2. The application runs on the processor of
-                        its main thread, which the one byte of the mask names */
-        case 0x0d: { /* GetThreadAffinityMask: mask r0, thread r1, count r2 */
-            uint32_t id = snx_ctr_handle_object(p, r[1]);
-            bool thread = number == 0x0d;
-            if (!id || p->objects[id].type != (thread ? CTR_OBJ_THREAD : CTR_OBJ_PROCESS)) {
-                r[0] = INVALID_HANDLE;
-                return SNX_CTR_SVC_RETURN;
-            }
-            uint32_t core = thread ? p->objects[id].data.thread.core : 0, result = OK;
-            for (uint32_t i = 0; i < r[2] && !result; ++i) {
-                unsigned char bit = i == core;
-                result = snx_ctr_write_ram(p->space, r[0] + i, &bit, 1) == SNX_CTR_MEM_OK ? OK : 0xe0e01bf5u;
-            }
-            r[0] = result;
-            return SNX_CTR_SVC_RETURN;
-        }
-        case 0x05:   /* SetProcessAffinityMask: process r0, mask r1, count r2. The processors are fixed, as the idle
-                        scheduling is: the mask is accepted and nothing moves */
-        case 0x07:   /* SetProcessIdealProcessor: process r0, processor r1 */
-        case 0x0e:   /* SetThreadAffinityMask: thread r0, mask r1, count r2 */
-        case 0x10: { /* SetThreadIdealProcessor: thread r0, processor r1 */
-            uint32_t id = snx_ctr_handle_object(p, r[0]);
-            bool thread = number == 0x0e || number == 0x10;
-            r[0] = id && p->objects[id].type == (thread ? CTR_OBJ_THREAD : CTR_OBJ_PROCESS) ? OK : INVALID_HANDLE;
-            return SNX_CTR_SVC_RETURN;
-        }
-        case 0x06:   /* GetProcessIdealProcessor: process r1, the processor out at r1 */
-        case 0x0f: { /* GetThreadIdealProcessor: thread r1, the processor out at r1 */
-            uint32_t id = snx_ctr_handle_object(p, r[1]);
-            bool thread = number == 0x0f;
-            bool good = id && p->objects[id].type == (thread ? CTR_OBJ_THREAD : CTR_OBJ_PROCESS);
-            r[0] = good ? OK : INVALID_HANDLE;
-            r[1] = good && thread ? p->objects[id].data.thread.core : 0;
-            return SNX_CTR_SVC_RETURN;
-        }
-        case 0x11: /* GetCurrentProcessorNumber */
-            r[0] = p->objects[p->current_thread].data.thread.core;
-            return SNX_CTR_SVC_RETURN;
         case 0x0b: { /* GetThreadPriority: handle r1, the priority the thread runs at (inherited included, Azahar's
                         GetPriority) out at r1, 0 on failure (libctru stores r1 either way) */
             uint32_t id = snx_ctr_handle_object(p, r[1]);
@@ -986,7 +955,7 @@ SnxCtrSvcResult snx_ctr_svc(SnxCtrProcess* p, uint32_t number) {
             uint32_t id = snx_ctr_handle_object(p, r[0]);
             if (!id || p->objects[id].type != CTR_OBJ_SHARED)
                 r[0] = INVALID_HANDLE;
-            else if (p->objects[id].data.shared.by_application)
+            else if (p->objects[id].data.shared.by_application || p->objects[id].data.shared.other_permissions)
                 r[0] = map_own_block(p, id, r[1], r[2], r[3]);
             else {
                 CtrObject* o = &p->objects[id];
@@ -1029,7 +998,7 @@ SnxCtrSvcResult snx_ctr_svc(SnxCtrProcess* p, uint32_t number) {
             return SNX_CTR_SVC_RETURN;
         }
         case 0x28: {
-            double elapsed = snx_ctr_seconds() - p->clock_origin;
+            double elapsed = snx_seconds() - p->clock_origin;
             if (!(elapsed >= 0 && elapsed < 0x1p64 / 268111856.0)) return SNX_CTR_SVC_UNSUPPORTED;
             uint64_t ticks = (uint64_t)(elapsed * 268111856.0);
             r[0] = (uint32_t)ticks;

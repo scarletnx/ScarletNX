@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <vector>
 #include "glsl.hpp"
 // tests/support/etc2.h's functions and kinds (its header brings the recompiler's C helpers, which C++ warns about)
@@ -28,6 +29,18 @@ extern "C" uint16_t float_to_half(float f);
 
 namespace texconv_shader {
 using namespace glsl;
+/* The sRGB transfer is the only floating-point part of this shader body. */
+static float uintBitsToFloat(uint bits) {
+    float value;
+    std::memcpy(&value, &bits, sizeof value);
+    return value;
+}
+static uint floatBitsToUint(float value) {
+    uint bits;
+    std::memcpy(&bits, &value, sizeof bits);
+    return bits;
+}
+using std::pow;
 // what texconv.comp declares, under its names
 struct Conv : Invocation {
     uint mode, units, rows, in_pitch, out_pitch, st_pitch, in_bias, out_bias, st_bias, zfloat;
@@ -148,7 +161,9 @@ static void two_byte_texels() {
 }
 
 // present.c's conversion of vi's pixel formats before it moved to the GPU
-static uint32_t expand(uint32_t v, unsigned bits) { return bits == 4 ? v * 17 : bits == 5 ? v << 3 | v >> 2 : v << 2 | v >> 4; }
+static uint32_t expand(uint32_t v, unsigned bits) {
+    return bits == 4 ? v * 17 : bits == 5 ? v << 3 | v >> 2 : v << 2 | v >> 4;
+}
 static uint32_t to_rgba8(uint32_t fmt, uint32_t p) {
     switch (fmt) {
         case 2: return p | 0xFF000000u;
@@ -274,7 +289,12 @@ static void dma_remaps() {
 // with and without their restart index, 16 and 32-bit restart indices made all ones; odd counts, inputs and outputs
 // that start past the bound offset, and more elements than a row of units (gl_GlobalInvocationID.y counts rows; 0: n)
 static void index_case(uint32_t mode, uint32_t remap, uint32_t count, uint32_t units) {
-    uint32_t isz = mode == 34 ? 1 : mode == 35 ? 2 : mode == 36 ? 4 : remap ? remap : 4, in_bias = 4 * (random_word() % 4);
+    uint32_t isz = mode == 34   ? 1
+                   : mode == 35 ? 2
+                   : mode == 36 ? 4
+                   : remap      ? remap
+                                : 4,
+             in_bias = 4 * (random_word() % 4);
     uint32_t n = mode == 37 ? count / 4 : mode == 36 ? count : (count + 1) / 2, out_bias = random_word() % 5;
     std::vector<uint8_t> inb(in_bias + (count * isz + 3) / 4 * 4);
     for (auto& b : inb) b = (uint8_t)(random_word() % 6 == 0 ? 0xFF : random_word() % 12); // restart indices often
@@ -349,7 +369,8 @@ static void restride_case(uint32_t gstride, uint32_t len, uint32_t lead, uint32_
     for (uint32_t i = 0; i < nv; i++) {
         uint32_t at = i * gstride, m = len - at < stride ? len - at : stride;
         std::memcpy(&want[4 * out_bias + i * stride], &inb[lead + at], m);
-        std::memset(&want[4 * out_bias + i * stride + m], 0, stride - m);
+        // the last vertex, when it fills its stride, ends at want's end: a pointer may be there, want[] may not
+        std::memset(want.data() + 4 * out_bias + i * stride + m, 0, stride - m);
     }
     std::vector<glsl::leuint> in(words), out(want.size() / 4, 0xA5A5A5A5u);
     std::memcpy(in.data(), inb.data(), inb.size());
@@ -428,7 +449,8 @@ static void rgb32f() {
     for (uint32_t y = 0; y < rows; y++)
         for (uint32_t x = 0; x < w; x++)
             for (uint32_t k = 0; k < 4; k++)
-                CHECK(out[(y * w + x) * 4 + k] == (k < 3 ? uint32_t(in[y * pitch / 4 + x * 3 + k]) : 0x3F800000u), "rgb32f");
+                CHECK(out[(y * w + x) * 4 + k] == (k < 3 ? uint32_t(in[y * pitch / 4 + x * 3 + k]) : 0x3F800000u),
+                      "rgb32f");
 }
 
 // format.c's vk_depth_unpack before it moved to the GPU: the texel's depth and stencil
@@ -474,8 +496,8 @@ static void random_block(uint8_t* b) {
     for (int i = 0; i < 8; i++) b[i] = (uint8_t)random_word();
     b[3] |= 2;
     uint32_t m = random_word() % 6;
-    if (m == 0) b[0] = 0xFB; // red overflows: T
-    if (m == 1) b[0] = 0x10, b[1] = 0xFB; // green: H
+    if (m == 0) b[0] = 0xFB;                           // red overflows: T
+    if (m == 1) b[0] = 0x10, b[1] = 0xFB;              // green: H
     if (m == 2) b[0] = 0x10, b[1] = 0x10, b[2] = 0xFB; // blue: planar
 }
 static void etc2_kinds() {
@@ -490,15 +512,16 @@ static void etc2_kinds() {
                 if (random_word() % 4 == 0) tight[i * 8 + 3] &= ~2; // individual, or punch-through's see-through
             }
             std::vector<glsl::leuint> in(pitch / 4 * bh);
-            for (uint32_t y = 0; y < bh; y++) std::memcpy((uint8_t*)in.data() + y * pitch, &tight[y * bw * bb], bw * bb);
+            for (uint32_t y = 0; y < bh; y++)
+                std::memcpy((uint8_t*)in.data() + y * pitch, &tight[y * bw * bb], bw * bb);
             std::vector<uint8_t> want((size_t)w * h * pb);
             etc2_decode_image(tight.data(), w, h, kind, want.data());
             std::vector<glsl::leuint> out = convert(8 + kind, 0, w, bh, 1, in, pitch);
             uint32_t ow = bw * 4;
             for (uint32_t y = 0; y < h; y++)
                 for (uint32_t x = 0; x < w; x++)
-                    CHECK(!std::memcmp((const uint8_t*)out.data() + ((size_t)y * ow + x) * pb, &want[((size_t)y * w + x) * pb],
-                                       pb),
+                    CHECK(!std::memcmp((const uint8_t*)out.data() + ((size_t)y * ow + x) * pb,
+                                       &want[((size_t)y * w + x) * pb], pb),
                           "kind %d %ux%u (%u, %u)", kind, w, h, x, y);
         }
 }
@@ -526,20 +549,24 @@ static void bcn_kinds() {
             std::vector<uint8_t> tight((size_t)bw * bh * bb + 16);
             for (uint32_t i = 0; i < bw * bh; i++) random_bc_block(kind, &tight[i * bb]);
             std::vector<glsl::leuint> in(pitch / 4 * bh);
-            for (uint32_t y = 0; y < bh; y++) std::memcpy((uint8_t*)in.data() + y * pitch, &tight[y * bw * bb], bw * bb);
+            for (uint32_t y = 0; y < bh; y++)
+                std::memcpy((uint8_t*)in.data() + y * pitch, &tight[y * bw * bb], bw * bb);
             std::vector<uint8_t> want((size_t)w * h * pb);
             bcn_decode_image(tight.data(), w, h, kind, want.data());
             std::vector<glsl::leuint> out = convert(23 + kind, 0, w, bh, 1, in, pitch);
             uint32_t ow = bw * 4;
             for (uint32_t y = 0; y < h; y++)
                 for (uint32_t x = 0; x < w; x++)
-                    CHECK(!std::memcmp((const uint8_t*)out.data() + ((size_t)y * ow + x) * pb, &want[((size_t)y * w + x) * pb],
-                                       pb),
+                    CHECK(!std::memcmp((const uint8_t*)out.data() + ((size_t)y * ow + x) * pb,
+                                       &want[((size_t)y * w + x) * pb], pb),
                           "BCn kind %d %ux%u (%u, %u)", kind, w, h, x, y);
         }
 }
 
+#include "pixel_convert.inc"
+
 int main() {
+    pixel_conversions();
     two_byte_texels();
     vi_frames();
     nv12_uv();

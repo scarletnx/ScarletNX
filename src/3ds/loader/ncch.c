@@ -18,7 +18,15 @@ static bool parse(CtrReader* r, const CtrSource* s, CtrNcch* n, bool overlay) {
     if (memcmp(h + 0x100, "NCCH", 4)) return ctr_fail(r, SNX_CTR_EXTRACT_UNSUPPORTED, "boot content is not NCCH");
     if (h[0x18e] || h[0x18c] != 1)
         return ctr_fail(r, SNX_CTR_EXTRACT_UNSUPPORTED, "unsupported NCCH media unit/platform");
-    if (!(h[0x18f] & 4)) return ctr_fail(r, SNX_CTR_EXTRACT_UNSUPPORTED, "encrypted NCCH is not supported");
+    if (!(h[0x18f] & 4)) {
+        /* A decryption tool that left the flag: the ExHeader is plain, which the header's own hash of it says. A
+           CIA's contents are decrypted through the ticket, where a flag like that is a broken archive instead */
+        if (s->kind == CTR_KIND_CIA || !ctr_ncch_plain(r, boot, h))
+            return ctr_fail(r, SNX_CTR_EXTRACT_UNSUPPORTED, "encrypted NCCH is not supported");
+        fprintf(stderr,
+                "3ds loader: the NCCH says it is encrypted, but its ExHeader is plain: read as NoCrypto. A tool that "
+                "decrypted this game left the flag; its keys are not needed\n");
+    }
     if (!(h[0x18d] & 2) || ((h[0x18d] >> 2) & 7))
         return ctr_fail(r, SNX_CTR_EXTRACT_UNSUPPORTED, "boot NCCH is not an executable application");
     /* An NCCH's content size and section sizes are in media units of 0x200 bytes, except a proto image's (an early
@@ -131,26 +139,19 @@ static bool parse(CtrReader* r, const CtrSource* s, CtrNcch* n, bool overlay) {
     bool ok = stored && n->code ? ctr_read(r, files[code_index], 0, stored, stored_size)
                                 : ctr_fail(r, SNX_CTR_EXTRACT_LIMIT, "out of memory");
     size_t expanded = stored_size;
-    /* A dump made with a tool that expands .code and leaves the ExHeader's compressed flag set holds plain code: a
-       stream with no BLZ footer is taken as that when it fits the segments, as the console's loader would not have
-       run it either */
-    bool compressed = exheader[0xd] & 1;
-    if (ok && compressed &&
-        (stored_size < 8 || (uint64_t)stored_size + snx_ld_le32(stored + stored_size - 4) > expected ||
-         !snx_ctr_blz(stored, stored_size, n->code, stored_size + snx_ld_le32(stored + stored_size - 4)))) {
-        if (stored_size > expected)
-            ok = ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "invalid ExeFS BLZ stream");
-        else
-            compressed = false;
-    } else if (ok && compressed)
-        expanded += snx_ld_le32(stored + stored_size - 4);
-    if (ok && !compressed) {
+    if (ok && (exheader[0xd] & 1)) {
+        if (stored_size < 8 || (uint64_t)stored_size + snx_ld_le32(stored + stored_size - 4) > expected)
+            ok = ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "BLZ expansion exceeds segment sizes");
+        else {
+            expanded += snx_ld_le32(stored + stored_size - 4);
+            if (!snx_ctr_blz(stored, stored_size, n->code, expanded))
+                ok = ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "invalid ExeFS BLZ stream");
+        }
+    } else if (ok) {
         if (stored_size > expected)
             ok = ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "code exceeds process segment sizes");
-        else {
-            memset(n->code, 0, n->code_size); /* a failed expansion may have written some */
+        else
             memcpy(n->code, stored, stored_size);
-        }
     }
     free(stored);
     if (!ok) return false;

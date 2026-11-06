@@ -27,6 +27,10 @@ extern void (*snx_menu_run_theme)(const char* folder, SnxRunTheme* out);
    the main loop's, the unattended limit's, svcExitProcess. The first caller saves; one that comes while it does waits,
    then does nothing */
 void snx_save_before_exit(void);
+/* the log's "resources: " line, into out: iOS's from the frontend (with Metal and the thermal state), elsewhere the
+   footprint and what the system still gives the process (a ? where it tells none); then the renderer's memory blocks.
+   Any thread */
+void resources_text(char* out, size_t size);
 /* The game's folders, each ending in a separator (g_exedir may be empty), and its name: <g_exedir><g_exename>_code.so
    is its code, <g_exedir><g_exename>_data/ (g_datadir) its files */
 extern char g_datadir[1024], g_exename[256], g_exedir[1024];
@@ -35,10 +39,18 @@ extern char g_datadir[1024], g_exename[256], g_exedir[1024];
    or the one the update is of, and g_datadir its data folder */
 extern u64 g_addon;
 extern char g_addondir[1024], g_gamename[256];
+/* which program of its application this is (common.h's snx_program_index): 0 for the game's own and its update's, i
+   for a collection's program i, which runs as its game with its data folder, <g_exedir><g_exename>_data/
+   (g_addondir), over the game's. g_addonrec names the update's own record, <g_gamename>_<the update's entry>, whose
+   .ini names its dump: g_exename for the update's own program, the update's for its patch of another program */
+extern int g_program;
+extern char g_addonrec[256];
 /* where its settings (config), its log and threads.txt (state) and its caches go: g_exedir, or for a game in an
    installed build's data folder the XDG folders of each kind */
 extern char g_confdir[1024], g_statedir[1024], g_cachedir[1024];
 extern volatile int g_quit; /* set to leave the main loop, which saves and exits */
+/* the program ends as a quit does, for the one ExecuteProgram asked for (am.c), which its hand-over names, to start */
+void snx_program_end(void);
 extern int g_frames;        /* the frames shown so far, atomic: the presenting thread counts them */
 /* the crash handler's report (plat_posix.c, plat_win32.c): the faulting host pc, the address it touched (NULL when not
    a memory fault) and the signal, or the Windows exception code. Ends the process */

@@ -6,14 +6,24 @@
    the memory it changed and how it ended (the next pc, UNDEF, BRK or SVC) must match. A store-exclusive also runs
    after a load-exclusive of its address, so that it can succeed.
      snx-test-llvm-qemu-differential QEMU RUNNER DIR EXPECTED [--sweep] [--states N] [--seed N] [--quiet] [--update]
-                                     [--jit] [--portable]
+                                     [--jit] [--portable | --generic] [--without-avx512] [--record FILE]
+     snx-test-llvm-qemu-differential DIR EXPECTED --reference FILE [--quiet] [--update] [--jit]
+                                     [--portable | --generic] [--without-avx512]
      snx-test-llvm-qemu-differential --skip REASON
+   --record writes the QEMU side of the run (the words, each case's start state, its end state, how it ended and the
+   memory it changed) to FILE. --reference runs the LLVM side alone against such a file, so that the cross-built hosts
+   (PowerPC64, RISC-V, LoongArch), where qemu-aarch64 can't run beside the host, compare against the reference a Linux
+   x86-64 host recorded. The record defines the run: --sweep, --states and --seed do not apply with it.
    The words: samples of every row of the generated decoder's table with every value of each field of 3 bits or
    fewer, directed() words, and the words the other instruction tests hand-check (kept[]). The default run takes 2
    samples of each row, 20 directed rounds and 3 states of each word; --sweep takes 4 samples, 300 rounds and 6
    states. The steps are linked into a module for dlopen, as the AOT path loads a game's; --jit loads them with the
    JIT's loader (code_loader.c) instead, and --portable builds them without the host's extensions (x86's PSHUFB,
    PCLMULQDQ, AES-NI, SSE4.2's CRC32C, AArch64's CRC32 and crypto...), so the emitters' portable forms are compared.
+   --generic builds them without the host's architecture too: the path of the hosts SnxIrFeatures has no bit for
+   (PowerPC64, RISC-V, LoongArch, MIPS64), a byte loop for TBL and helpers for FMA, square roots and rounding.
+   --without-avx512 runs an AVX-512 host as an x86-64 without it (snx_ir_host_drop): the emitters' choices and the
+   target machine both, as a host with AVX2 alone compiles them; on a host without AVX-512 it is skipped (77).
    A word the backend leaves UNDEF (the generated decoder for the Switch target), or decodes without an emitter,
    while QEMU runs it, has no emitter yet: it is listed in DIR/llvm_qemu_coverage.txt, not failed. So is a word that
    differs where the Switch target decodes it as another name (a hint's NOP) or, as the backend does, as UNDEF: what
@@ -23,16 +33,21 @@
    and the sweep: a group missing from it fails the test, and so does a group it lists for this run that no longer
    differs. --update rewrites this run's counts in EXPECTED instead. */
 #include "common/utilities/common.h"
+#include "common/utilities/endian.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/llvm/ir_ldst.h"
 #include "common/cpu/recompiler/llvm/ir_fpu.h"
 #include "common/cpu/recompiler/llvm/ir_vec.h"
+#include "common/runtime/interface.h"
 #include "llvm_qemu_words.h"
 #include "llvm_steps.h"
 #include "qemu_ref/qemu_ref.h"
+#include <fenv.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 typedef u64 (*StepFn)(CPU* c);
 
@@ -56,8 +71,26 @@ typedef struct {
 
 static struct {
     u64 rng;
-    Events* events; /* the step running */
-} g_test = {0x9E3779B97F4A7C15ull, NULL};
+    Events* events;    /* the step running */
+    char running[160]; /* what runs, for on_fatal: the steps' compile, or a case's op, word and state */
+} g_test = {0x9E3779B97F4A7C15ull, NULL, "the start"};
+
+/* a fatal signal (the generated code's or the harness's) names what was running before its default action ends the
+   test, which under --quiet would otherwise print nothing */
+static void on_fatal(int signo) {
+    static const char head[] = "snx-test-llvm-qemu-differential: signal ";
+    char digits[4];
+    size_t n = 0;
+    for (unsigned v = (unsigned)signo; n < sizeof digits && (v || !n); v /= 10)
+        digits[sizeof digits - 1 - n++] = (char)('0' + v % 10);
+    (void)!write(2, head, sizeof head - 1);
+    (void)!write(2, digits + sizeof digits - n, n);
+    (void)!write(2, " in ", 4);
+    (void)!write(2, g_test.running, strlen(g_test.running));
+    (void)!write(2, "\n", 1);
+    signal(signo, SIG_DFL);
+    raise(signo);
+}
 
 static u64 next_random(void) {
     g_test.rng ^= g_test.rng << 13;
@@ -185,6 +218,13 @@ static u64 narrow_edge(unsigned doubles) {
     return doubles ? lane[0] : lane[1] << 32 | lane[0];
 }
 
+/* a V register's two doublewords, numbers, as the CPU holds them: the guest's little-endian bytes, which a big-endian
+   host's generated code reads that way (ir.h's big_endian) */
+static void v_from_numbers(V128* v, u64 low, u64 high) {
+    snx_st_le64(v->b, low);
+    snx_st_le64(v->b + 8, high);
+}
+
 /* a starting state: with addresses, every X register and SP points into the window, 16-byte aligned, so that any
    base, index and offset the word combines stays in it */
 static void random_state(CPU* c, u32 word, int addresses) {
@@ -249,6 +289,8 @@ static void random_state(CPU* c, u32 word, int addresses) {
     }
     /* FPSR's cumulative flags and QC: its AArch32 NZCV bits are not A64 state */
     c->fpsr = next_random() % 4 ? (next_random() % 2 ? 0x10 : 0) : (u32)(next_random() & 0x0800009Fu);
+    /* the V registers, set as numbers above */
+    for (i = 0; i < 32; ++i) v_from_numbers(&c->v[i], c->v[i].d[0], c->v[i].d[1]);
 }
 
 /* directed() words, the encodings random fields rarely produce, unfiltered */
@@ -447,8 +489,8 @@ static void state_of(const CPU* c, SnxQrefState* s) {
     s->fpcr = c->fpcr;
     s->fpsr = c->fpsr;
     for (i = 0; i < 32; ++i) {
-        s->v[i][0] = c->v[i].d[0];
-        s->v[i][1] = c->v[i].d[1];
+        s->v[i][0] = snx_ld_le64(c->v[i].b);
+        s->v[i][1] = snx_ld_le64(c->v[i].b + 8);
     }
 }
 
@@ -616,7 +658,7 @@ static void compare(const Item* it, const SnxQrefState* start, const End* l, con
 }
 
 /* the QEMU case of an item from a state: a word at PC in the seeded window, one step, or a pair at PAIR_PC */
-static int add_case(SnxQrefBatch* b, const Item* it, const CPU* start) {
+static int add_case(SnxQrefBatch* b, const Item* it, const SnxQrefState* start) {
     SnxQrefCase qc;
     snx_qref_case_init(&qc);
     qc.window = WINDOW;
@@ -630,7 +672,7 @@ static int add_case(SnxQrefBatch* b, const Item* it, const CPU* start) {
        writable, as a fault between the two would clear it too */
     qc.steps = it->nwords > 1 ? 0 : 1;
     qc.flags = it->nwords > 1 ? SNX_QREF_FULL_DIFF : 0;
-    state_of(start, &qc.state);
+    qc.state = *start;
     return snx_qref_add(b, &qc, it->words, it->nwords, NULL, 0);
 }
 
@@ -687,18 +729,270 @@ static int write_expected(const char* path, Expected* e, size_t n) {
     return fclose(f);
 }
 
+/* ---- the recorded QEMU reference ----
+   A run's QEMU side, for the hosts where qemu-aarch64 can't run beside the host binary: the items, each case's start
+   state and QEMU's result (its end state, how it ended and the memory it changed). Little-endian u64s on any host.
+   Section one is every item, section two each item's cases, in the order a run adds them; the record defines the run,
+   so --reference takes the sweep, the samples, the rounds, the states and the words from it. */
+#define REF_MAGIC   0x31464944514E5853ull /* "SNXQDIF1" */
+#define REF_VERSION 1
+/* the header, 16 u64s: magic, version, the sweep flag, the samples, the rounds, the states, the words, the items, the
+   seed, WINDOW, WINDOW_SIZE, PC, SEED, SNX_QREF_PAD and two reserved. Then every item (nwords, skip, its two words,
+   op and switch op, 40 bytes each), then each item's cases: its start states, then QEMU's results. */
+
+typedef struct {
+    FILE* f;
+    int failed;
+} RefOut;
+
+typedef struct {
+    const u8* p;
+    size_t size, at;
+    int failed;
+} RefIn;
+
+typedef struct {
+    int sweep;
+    size_t samples, rounds, states, nwords, nitems;
+} RefHeader;
+
+typedef struct {
+    RefIn in;
+    size_t changes, bytes; /* the batch's so far, as ref_get_result counts or reads them */
+} Ref;
+
+static void ref_put64(RefOut* w, u64 v) {
+    unsigned char b[8];
+    unsigned i;
+    for (i = 0; i < 8; ++i) b[i] = (unsigned char)(v >> (8 * i));
+    if (fwrite(b, 1, 8, w->f) != 8) w->failed = 1;
+}
+
+static u64 ref_get64(RefIn* r) {
+    u64 v = 0;
+    unsigned i;
+    if (r->failed || r->size - r->at < 8) {
+        r->failed = 1;
+        return 0;
+    }
+    for (i = 0; i < 8; ++i) v |= (u64)r->p[r->at + i] << (8 * i);
+    r->at += 8;
+    return v;
+}
+
+/* a fixed-size string in whole u64s, the bytes in order */
+static void ref_put_text(RefOut* w, const char* s, size_t n) {
+    size_t i, k;
+    for (i = 0; i < (n + 7) / 8; ++i) {
+        u64 v = 0;
+        for (k = 0; k < 8 && i * 8 + k < n; ++k) v |= (u64)(unsigned char)s[i * 8 + k] << (8 * k);
+        ref_put64(w, v);
+    }
+}
+
+static void ref_get_text(RefIn* r, char* s, size_t n) {
+    size_t i, k;
+    for (i = 0; i < (n + 7) / 8; ++i) {
+        u64 v = ref_get64(r);
+        for (k = 0; k < 8 && i * 8 + k < n; ++k) s[i * 8 + k] = (char)(v >> (8 * k));
+    }
+    if (n) s[n - 1] = 0;
+}
+
+static void ref_put_state(RefOut* w, const SnxQrefState* s) {
+    unsigned i;
+    for (i = 0; i < 31; ++i) ref_put64(w, s->x[i]);
+    ref_put64(w, s->sp);
+    ref_put64(w, s->nzcv);
+    ref_put64(w, s->fpcr);
+    ref_put64(w, s->fpsr);
+    for (i = 0; i < 32; ++i) {
+        ref_put64(w, s->v[i][0]);
+        ref_put64(w, s->v[i][1]);
+    }
+}
+
+static void ref_get_state(RefIn* r, SnxQrefState* s) {
+    unsigned i;
+    for (i = 0; i < 31; ++i) s->x[i] = ref_get64(r);
+    s->sp = ref_get64(r);
+    s->nzcv = (u32)ref_get64(r);
+    s->fpcr = (u32)ref_get64(r);
+    s->fpsr = (u32)ref_get64(r);
+    for (i = 0; i < 32; ++i) {
+        s->v[i][0] = ref_get64(r);
+        s->v[i][1] = ref_get64(r);
+    }
+}
+
+static void ref_put_result(RefOut* w, const SnxQrefResult* r, const SnxQrefBatch* b) {
+    unsigned c, k;
+    ref_put64(w, r->outcome);
+    ref_put64(w, r->signo);
+    ref_put64(w, r->sicode);
+    ref_put64(w, r->pc);
+    ref_put64(w, r->fault);
+    ref_put64(w, r->imm);
+    ref_put64(w, r->steps);
+    ref_put64(w, r->svcs);
+    ref_put64(w, r->pstate);
+    ref_put_state(w, &r->state);
+    ref_put64(w, (u64)r->truncated);
+    ref_put64(w, r->changes);
+    for (c = 0; c < r->changes; ++c) {
+        const SnxQrefChange* ch = &b->changes[r->first_change + c];
+        ref_put64(w, ch->address);
+        ref_put64(w, ch->size);
+        for (k = 0; k < ch->size; k += 8) {
+            u64 v = 0;
+            unsigned j;
+            for (j = 0; j < 8 && k + j < ch->size; ++j) v |= (u64)b->bytes[ch->offset + k + j] << (8 * j);
+            ref_put64(w, v);
+        }
+    }
+}
+
+/* reads one case's result: with b NULL it counts the case's changes and bytes into r, else it reads them into b's
+   block (ref_get_batch) after the ones already there; -1 when the file is malformed */
+static int ref_get_result(Ref* r, SnxQrefBatch* b) {
+    SnxQrefResult counted, *out = b ? &b->results[b->cases] : &counted;
+    u64 truncated, nchanges, i;
+    memset(out, 0, sizeof(*out));
+    out->outcome = (u32)ref_get64(&r->in);
+    out->signo = (u32)ref_get64(&r->in);
+    out->sicode = (u32)ref_get64(&r->in);
+    out->pc = ref_get64(&r->in);
+    out->fault = ref_get64(&r->in);
+    out->imm = ref_get64(&r->in);
+    out->steps = ref_get64(&r->in);
+    out->svcs = ref_get64(&r->in);
+    out->pstate = ref_get64(&r->in);
+    ref_get_state(&r->in, &out->state);
+    truncated = ref_get64(&r->in);
+    nchanges = ref_get64(&r->in);
+    if (r->in.failed || nchanges > SNX_QREF_MAX_CHANGED) return -1;
+    out->truncated = truncated != 0;
+    out->first_change = (u32)r->changes;
+    for (i = 0; i < nchanges; ++i) {
+        u64 address = ref_get64(&r->in), size = ref_get64(&r->in), k;
+        if (r->in.failed || size > SNX_QREF_MAX_CHANGED || r->bytes + size > 0xFFFFFFFFu - 0x10000) return -1;
+        if (b) {
+            SnxQrefChange* ch = &b->changes[r->changes];
+            ch->address = address;
+            ch->offset = (u32)r->bytes;
+            ch->size = (u32)size;
+        }
+        for (k = 0; k < size; k += 8) {
+            u64 v = ref_get64(&r->in);
+            unsigned j;
+            if (b)
+                for (j = 0; j < 8 && k + j < size; ++j) b->bytes[r->bytes + k + j] = (u8)(v >> (8 * j));
+        }
+        r->bytes += size;
+        ++r->changes;
+    }
+    out->changes = (u32)nchanges;
+    if (b) ++b->cases;
+    return r->in.failed ? -1 : 0;
+}
+
+/* a batch of items from the record: their start states into starts, index[item * states + state] the state's case
+   or -1, and QEMU's results into b, whose results, changes and bytes are one block as snx_qref_run makes it
+   (qemu_ref.h): a first pass counts them, a second reads them in. -1 when the record ends inside them */
+static int ref_get_batch(Ref* r, SnxQrefBatch* b, size_t items, size_t states, SnxQrefState* starts, int* index) {
+    const size_t at = r->in.at;
+    size_t cases = 0, changes = 0, bytes = 0, item, s;
+    int fill;
+    for (fill = 0; fill < 2; ++fill) {
+        r->in.at = at;
+        r->changes = r->bytes = 0;
+        if (fill) {
+            const size_t results_size = cases * sizeof(SnxQrefResult);
+            b->results = (SnxQrefResult*)snx_alloc(results_size + changes * sizeof(SnxQrefChange) + bytes);
+            b->changes = (SnxQrefChange*)((u8*)b->results + results_size);
+            b->bytes = (u8*)(b->changes + changes);
+            b->cases = 0;
+        }
+        for (item = 0; item < items; ++item) {
+            const size_t n = (size_t)ref_get64(&r->in);
+            if (r->in.failed || n > states) return -1;
+            for (s = 0; s < states; ++s) {
+                if (fill) index[item * states + s] = s < n ? (int)(b->cases + s) : -1;
+                if (s < n) ref_get_state(&r->in, &starts[item * states + s]);
+            }
+            for (s = 0; s < n; ++s)
+                if (ref_get_result(r, fill ? b : NULL)) return -1;
+            if (!fill) cases += n;
+        }
+        changes = r->changes;
+        bytes = r->bytes;
+    }
+    return 0;
+}
+
+static void ref_put_item(RefOut* w, const Item* it) {
+    ref_put64(w, it->nwords);
+    ref_put64(w, it->skip);
+    ref_put64(w, it->words[0]);
+    ref_put64(w, it->words[1]);
+    ref_put_text(w, it->op, sizeof(it->op));
+    ref_put_text(w, it->switch_op, sizeof(it->switch_op));
+}
+
+static void ref_get_item(RefIn* r, Item* it) {
+    memset(it, 0, sizeof(*it));
+    it->nwords = (u32)ref_get64(r);
+    it->skip = (int)ref_get64(r);
+    it->words[0] = (u32)ref_get64(r);
+    it->words[1] = (u32)ref_get64(r);
+    ref_get_text(r, it->op, sizeof(it->op));
+    ref_get_text(r, it->switch_op, sizeof(it->switch_op));
+}
+
+/* section two: each item's start states and QEMU's results, in item order */
+static void ref_put_cases(RefOut* w, size_t nitems, const SnxQrefState* starts, const int* index, size_t states,
+                          const SnxQrefBatch* b) {
+    size_t i, s;
+    for (i = 0; i < nitems; ++i) {
+        size_t n = 0;
+        for (s = 0; s < states; ++s)
+            if (index[i * states + s] >= 0) ++n;
+        ref_put64(w, n);
+        for (s = 0; s < states; ++s)
+            if (index[i * states + s] >= 0) ref_put_state(w, &starts[i * states + s]);
+        for (s = 0; s < states; ++s)
+            if (index[i * states + s] >= 0) ref_put_result(w, &b->results[index[i * states + s]], b);
+    }
+}
+
 /* ---- the run ---- */
 typedef struct {
     const char *qemu, *runner, *dir;
     int quiet;
 } Qemu;
 
+/* the start state as the step functions see it */
+static void cpu_from_state(CPU* c, const SnxQrefState* s) {
+    unsigned i;
+    memset(c, 0, sizeof(*c));
+    for (i = 0; i < 31; ++i) c->x[i] = s->x[i];
+    c->x[31] = s->sp;
+    c->n = s->nzcv >> 31 & 1;
+    c->z = s->nzcv >> 30 & 1;
+    c->cf = s->nzcv >> 29 & 1;
+    c->vf = s->nzcv >> 28 & 1;
+    c->fpcr = s->fpcr;
+    c->fpsr = s->fpsr;
+    for (i = 0; i < 32; ++i) v_from_numbers(&c->v[i], s->v[i][0], s->v[i][1]);
+}
+
 int main(int argc, char** argv) {
-    Qemu q;
-    const char* expected_path;
+    Qemu q = {0};
+    const char *expected_path, *reference_path = NULL, *record_path = NULL;
     size_t states, samples, rounds, nwords, nitems = 0, i, k, nsteps = 0, compared = 0, mismatched = 0,
                                                     no_emitter = 0, nexpected;
-    int sweep = 0, update = 0, jit = 0, portable = 0, a, failed = 0;
+    int sweep = 0, update = 0, jit = 0, portable = LLVM_STEPS_HOST, a, failed = 0, reference = 0, no_avx512 = 0;
+    static const char* const forms[] = {"host", "portable", "generic"}; /* the emitters', by LLVM_STEPS_ value */
     u32* words = NULL;
     Item* items;
     Groups groups = {0}, missing = {0};
@@ -707,28 +1001,43 @@ int main(int argc, char** argv) {
     LlvmSteps built;
     SnxIr* ir;
     StepFn* steps;
-    RtAPI rt = {0};
-    u8 *initial, *work;
+    RtAPI rt = {.cas128 = snx_runtime_cas128};
+    u8 *initial, *work, *reference_file = NULL;
     SnxQrefBatch batch = {0};
+    RefHeader header = {0};
+    Ref ref = {0};
+    RefOut record = {0};
+    u64 initial_seed;
     double started = snx_seconds();
     FILE* f;
     if (argc == 3 && !strcmp(argv[1], "--skip")) {
         printf("llvm_qemu_differential skipped: %s\n", argv[2]);
         return 77;
     }
-    if (argc < 5) {
+    if (argc >= 5 && !strcmp(argv[3], "--reference")) {
+        reference = 1;
+        q.dir = argv[1];
+        expected_path = argv[2];
+        reference_path = argv[4];
+        a = 5;
+    } else if (argc >= 5) {
+        q.qemu = argv[1];
+        q.runner = argv[2];
+        q.dir = argv[3];
+        expected_path = argv[4];
+        a = 5;
+    } else {
         fputs("usage: snx-test-llvm-qemu-differential QEMU RUNNER DIR EXPECTED [--sweep] [--states N] [--seed N] "
-              "[--quiet] [--update] [--jit] [--portable] | --skip REASON\n",
+              "[--quiet] [--update] [--jit] [--portable | --generic] [--without-avx512] [--record FILE]\n"
+              "       snx-test-llvm-qemu-differential DIR EXPECTED --reference FILE [--quiet] [--update] [--jit] "
+              "[--portable | --generic] [--without-avx512]\n"
+              "       snx-test-llvm-qemu-differential --skip REASON\n",
               stderr);
         return 2;
     }
-    q.qemu = argv[1];
-    q.runner = argv[2];
-    q.dir = argv[3];
-    expected_path = argv[4];
     q.quiet = 0;
     states = 0;
-    for (a = 5; a < argc; ++a) {
+    for (; a < argc; ++a) {
         if (!strcmp(argv[a], "--sweep"))
             sweep = 1;
         else if (!strcmp(argv[a], "--quiet"))
@@ -737,44 +1046,113 @@ int main(int argc, char** argv) {
             update = 1;
         else if (!strcmp(argv[a], "--jit"))
             jit = 1;
-        else if (!strcmp(argv[a], "--portable"))
-            portable = 1;
-        else if (a + 1 < argc && !strcmp(argv[a], "--states"))
+        else if (!strcmp(argv[a], "--without-avx512"))
+            no_avx512 = 1;
+        else if (!strcmp(argv[a], "--portable") || !strcmp(argv[a], "--generic")) {
+            int form = !strcmp(argv[a], "--portable") ? LLVM_STEPS_PORTABLE : LLVM_STEPS_GENERIC;
+            if (portable && portable != form)
+                return snx_error("%s after --%s: the emitters take one form a run", argv[a], forms[portable]);
+            portable = form;
+        } else if (a + 1 < argc && !strcmp(argv[a], "--states"))
             states = strtoul(argv[++a], NULL, 10);
         else if (a + 1 < argc && !strcmp(argv[a], "--seed"))
             g_test.rng = strtoull(argv[++a], NULL, 0) | 1;
+        else if (a + 1 < argc && !strcmp(argv[a], "--record") && !reference)
+            record_path = argv[++a];
         else
             return snx_error("unknown argument %s", argv[a]);
     }
-    if (!states) states = sweep ? 6 : 3;
-    samples = sweep ? 4 : 2;
-    rounds = sweep ? 300 : 20;
-
-    /* the words */
-    nwords = lqd_row_words((unsigned)samples, next_random, &words);
-    words = (u32*)snx_realloc(words, (nwords + DIRECTED * rounds + KEPT) * sizeof(*words));
-    nwords += directed(rounds, words + nwords);
-    memcpy(words + nwords, kept, sizeof(kept));
-    nwords += KEPT;
-    items = (Item*)snx_alloc((2 * nwords) * sizeof(*items));
-    for (i = 0; i < nwords; ++i) {
-        int unrunnable;
-        const char *op = lqd_op_name(words[i], &unrunnable), *sw = lqd_switch_op_name(words[i]);
-        unsigned pairs = store_exclusive(words[i]) ? 2 : 1, p;
-        if (unrunnable) continue;
-        for (p = 0; p < pairs; ++p) {
-            Item* it = &items[nitems++];
-            memset(it, 0, sizeof(*it));
-            snprintf(it->op, sizeof(it->op), "%s", op);
-            snprintf(it->switch_op, sizeof(it->switch_op), "%s", sw ? sw : "");
-            it->nwords = p + 1;
-            it->words[0] = p ? load_exclusive(words[i]) : words[i];
-            it->words[p] = words[i];
+    initial_seed = g_test.rng;
+    if (no_avx512) {
+        char *host, *dropped;
+        int same;
+        if (snx_ir_host_drop("avx512", error, sizeof error)) return snx_error("%s", error);
+        host = LLVMGetHostCPUFeatures();
+        dropped = snx_ir_host_features();
+        same = !strcmp(host, dropped);
+        LLVMDisposeMessage(host);
+        LLVMDisposeMessage(dropped);
+        if (same) {
+            printf("llvm_qemu_differential skipped: --without-avx512 on a host without AVX-512 runs its own path\n");
+            return 77;
         }
     }
-    free(words);
+    if (reference) {
+        size_t size = 0;
+        u64 window, window_size, pc, seed, pad;
+        reference_file = (u8*)snx_read_file(reference_path, &size);
+        if (!reference_file) return snx_error("cannot read %s", reference_path);
+        ref.in.p = reference_file;
+        ref.in.size = size;
+        if (ref_get64(&ref.in) != REF_MAGIC || ref_get64(&ref.in) != REF_VERSION)
+            return snx_error("%s is not a recorded QEMU reference", reference_path);
+        sweep = (int)ref_get64(&ref.in);
+        header.samples = (size_t)ref_get64(&ref.in);
+        header.rounds = (size_t)ref_get64(&ref.in);
+        header.states = (size_t)ref_get64(&ref.in);
+        header.nwords = (size_t)ref_get64(&ref.in);
+        header.nitems = (size_t)ref_get64(&ref.in);
+        (void)ref_get64(&ref.in); /* the seed it was recorded with */
+        window = ref_get64(&ref.in);
+        window_size = ref_get64(&ref.in);
+        pc = ref_get64(&ref.in);
+        seed = ref_get64(&ref.in);
+        pad = ref_get64(&ref.in);
+        (void)ref_get64(&ref.in);
+        (void)ref_get64(&ref.in);
+        if (ref.in.failed || window != WINDOW || window_size != WINDOW_SIZE || pc != PC || seed != SEED ||
+            pad != SNX_QREF_PAD)
+            return snx_error("%s was recorded with other constants; record it again", reference_path);
+        samples = header.samples;
+        rounds = header.rounds;
+        states = header.states;
+        nwords = header.nwords;
+        if (!states || !samples) return snx_error("%s records no states", reference_path);
+    } else {
+        if (!states) states = sweep ? 6 : 3;
+        samples = sweep ? 4 : 2;
+        rounds = sweep ? 300 : 20;
+    }
+
+    if (reference) {
+        /* the record's items, so that its cases line up with the words it ran */
+        items = (Item*)snx_alloc((header.nitems ? header.nitems : 1) * sizeof(*items));
+        for (i = 0; i < header.nitems; ++i) ref_get_item(&ref.in, &items[i]);
+        if (ref.in.failed) return snx_error("%s ends inside its items", reference_path);
+        nitems = header.nitems;
+    } else {
+        /* the words */
+        nwords = lqd_row_words((unsigned)samples, next_random, &words);
+        words = (u32*)snx_realloc(words, (nwords + DIRECTED * rounds + KEPT) * sizeof(*words));
+        nwords += directed(rounds, words + nwords);
+        memcpy(words + nwords, kept, sizeof(kept));
+        nwords += KEPT;
+        items = (Item*)snx_alloc((2 * nwords) * sizeof(*items));
+        for (i = 0; i < nwords; ++i) {
+            int unrunnable;
+            const char *op = lqd_op_name(words[i], &unrunnable), *sw = lqd_switch_op_name(words[i]);
+            unsigned pairs = store_exclusive(words[i]) ? 2 : 1, p;
+            if (unrunnable) continue;
+            for (p = 0; p < pairs; ++p) {
+                Item* it = &items[nitems++];
+                memset(it, 0, sizeof(*it));
+                snprintf(it->op, sizeof(it->op), "%s", op);
+                snprintf(it->switch_op, sizeof(it->switch_op), "%s", sw ? sw : "");
+                it->nwords = p + 1;
+                it->words[0] = p ? load_exclusive(words[i]) : words[i];
+                it->words[p] = words[i];
+            }
+        }
+        free(words);
+    }
 
     /* the LLVM steps, one function a word, at the word's pc; a word without an emitter is noted and left out */
+    {
+        static const int fatal[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE};
+        struct sigaction on = {0};
+        on.sa_handler = on_fatal;
+        for (i = 0; i < sizeof(fatal) / sizeof(fatal[0]); ++i) sigaction(fatal[i], &on, NULL);
+    }
     if (llvm_steps_begin(&built, jit, portable, error, sizeof(error))) return snx_error("%s", error);
     ir = built.ir;
     for (i = 0; i < nitems; ++i) {
@@ -793,6 +1171,8 @@ int main(int argc, char** argv) {
                 features = SNX_A64_TARGET_MAX;
             else if (snx_a64_decode_word(it->words[k], 0, &sw) == SNX_A64_OP_UNDEF)
                 it->skip = 1;
+            snprintf(g_test.running, sizeof(g_test.running), "the IR of word %08x (%s emitters)", it->words[k],
+                     forms[portable]);
             llvm_steps_add(&built, it->words[k], item_pc(it) + 4 * k, features);
             ++nsteps;
             if (ir->fallbacks != before) {
@@ -801,8 +1181,9 @@ int main(int argc, char** argv) {
             }
         }
     }
-    if (!q.quiet) printf("%lu cases of %lu words; compiling %lu LLVM steps\n", (unsigned long)nitems,
-                         (unsigned long)nwords, (unsigned long)nsteps);
+    if (!q.quiet) printf("%zu cases of %zu words; compiling %zu LLVM steps\n", nitems, nwords, nsteps);
+    snprintf(g_test.running, sizeof(g_test.running), "the compile of %zu LLVM steps (%s emitters)", nsteps,
+             forms[portable]);
     if (llvm_steps_load(&built, error, sizeof(error))) return snx_error("%s", error);
     steps = built.steps;
     rt.svc = cb_svc;
@@ -814,6 +1195,30 @@ int main(int argc, char** argv) {
     rt.sev = cb_sev;
     rt.wfe = cb_wfe;
 
+    /* the record's header and items: the cases follow once QEMU has run each batch */
+    if (record_path) {
+        record.f = fopen(record_path, "wb");
+        if (!record.f) return snx_error("cannot write %s", record_path);
+        ref_put64(&record, REF_MAGIC);
+        ref_put64(&record, REF_VERSION);
+        ref_put64(&record, (u64)sweep);
+        ref_put64(&record, samples);
+        ref_put64(&record, rounds);
+        ref_put64(&record, states);
+        ref_put64(&record, nwords);
+        ref_put64(&record, nitems);
+        ref_put64(&record, initial_seed);
+        ref_put64(&record, WINDOW);
+        ref_put64(&record, WINDOW_SIZE);
+        ref_put64(&record, PC);
+        ref_put64(&record, SEED);
+        ref_put64(&record, SNX_QREF_PAD);
+        ref_put64(&record, 0);
+        ref_put64(&record, 0);
+        for (i = 0; i < nitems; ++i) ref_put_item(&record, &items[i]);
+        if (record.failed) return snx_error("cannot write %s", record_path);
+    }
+
     /* the window both sides start from: the seed, and pads in the code region (each case's words go over them) */
     initial = (u8*)snx_alloc(WINDOW_SIZE);
     work = (u8*)snx_alloc(WINDOW_SIZE);
@@ -821,47 +1226,60 @@ int main(int argc, char** argv) {
         u64 v = snx_qref_seed64(SNX_QREF_SEED_RANDOM, SEED, WINDOW, i);
         for (k = 0; k < 8; ++k) initial[i + k] = (u8)(v >> (8 * k));
     }
-    for (i = PC - WINDOW; i < PC - WINDOW + CODE_SIZE; i += 4) memcpy(initial + i, &(u32){SNX_QREF_PAD}, 4);
+    /* guest memory is little-endian on every host, as QEMU's window is: a literal load at PC reads the word itself */
+    for (i = PC - WINDOW; i < PC - WINDOW + CODE_SIZE; i += 4) snx_st_le32(initial + i, SNX_QREF_PAD);
     memcpy(work, initial, WINDOW_SIZE);
 
-    /* in batches: the states, QEMU's run of them, then the LLVM side's of each and the comparison */
+    /* in batches: the states, QEMU's run of them (or the record's), then the LLVM side's of each and the comparison */
     expected = NULL;
     nexpected = read_expected(expected_path, &expected);
     for (i = 0; i < nitems;) {
         size_t first = i, s;
-        CPU* starts;
+        SnxQrefState* starts;
         int* index;
-        u64 batch_seed = next_random();
         size_t end = first;
         while (end < nitems && (end - first) * states < BATCH) ++end;
-        starts = (CPU*)snx_alloc((end - first) * states * sizeof(*starts));
+        starts = (SnxQrefState*)snx_alloc((end - first) * states * sizeof(*starts));
         index = (int*)snx_alloc((end - first) * states * sizeof(*index));
-        g_test.rng = batch_seed;
-        for (k = first; k < end; ++k) {
-            const Item* it = &items[k];
-            int addresses = memory_pattern(it->words[it->nwords - 1]);
-            for (s = 0; s < states; ++s) {
-                CPU* c = &starts[(k - first) * states + s];
-                random_state(c, it->words[it->nwords - 1], addresses);
-                /* a word without an emitter runs its first state only, under QEMU, for the coverage report */
-                index[(k - first) * states + s] = -1;
-                if (it->skip && s) continue;
-                index[(k - first) * states + s] = add_case(&batch, it, c);
-                if (index[(k - first) * states + s] < 0) return snx_error("the runner refuses %08x", it->words[0]);
+        if (reference) {
+            /* the record's start states and results, in the order the live run added them */
+            if (ref_get_batch(&ref, &batch, end - first, states, starts, index))
+                return snx_error("%s ends inside its cases", reference_path);
+        } else {
+            u64 batch_seed = next_random();
+            g_test.rng = batch_seed;
+            for (k = first; k < end; ++k) {
+                const Item* it = &items[k];
+                int addresses = memory_pattern(it->words[it->nwords - 1]);
+                for (s = 0; s < states; ++s) {
+                    CPU c;
+                    SnxQrefState* start = &starts[(k - first) * states + s];
+                    /* a word without an emitter runs its first state only, under QEMU, for the coverage report */
+                    index[(k - first) * states + s] = -1;
+                    if (it->skip && s) continue;
+                    random_state(&c, it->words[it->nwords - 1], addresses);
+                    state_of(&c, start);
+                    index[(k - first) * states + s] = add_case(&batch, it, start);
+                    if (index[(k - first) * states + s] < 0)
+                        return snx_error("the runner refuses %08x", it->words[0]);
+                }
+            }
+            if (snx_qref_run(&batch, q.qemu, q.runner, "max", q.dir, error, sizeof(error)))
+                return snx_error("QEMU: %s (words %08x %08x)", error, items[first].words[0], items[first].words[1]);
+            if (record_path) {
+                ref_put_cases(&record, end - first, starts, index, states, &batch);
+                if (record.failed) return snx_error("cannot write %s", record_path);
             }
         }
-        if (snx_qref_run(&batch, q.qemu, q.runner, "max", q.dir, error, sizeof(error)))
-            return snx_error("QEMU: %s (words %08x %08x)", error, items[first].words[0], items[first].words[1]);
         for (k = first; k < end; ++k) {
             const Item* it = &items[k];
             for (s = 0; s < states; ++s) {
-                const CPU* start = &starts[(k - first) * states + s];
+                const SnxQrefState* start = &starts[(k - first) * states + s];
                 const int at = index[(k - first) * states + s];
                 const SnxQrefResult* r;
                 CPU c;
                 Events ev = {0};
                 End l = {0}, qe;
-                SnxQrefState st;
                 char cause[48], text[1536];
                 u32 w;
                 if (at < 0) continue;
@@ -884,22 +1302,30 @@ int main(int argc, char** argv) {
                         snprintf(g->examples[g->nexamples++], sizeof(text),
                                  "  word %08x (the Switch target decodes it as %s)\n  start x%u=%016llx\n"
                                  "  qemu fault pc %llx (signal %u, fault %llx), not run on the LLVM side\n",
-                                 word, it->switch_op[0] ? it->switch_op : "UNDEF", rn, (unsigned long long)start->x[rn],
-                                 (unsigned long long)r->pc, r->signo, (unsigned long long)r->fault);
+                                 word, it->switch_op[0] ? it->switch_op : "UNDEF", rn,
+                                 (unsigned long long)(rn < 31 ? start->x[rn] : start->sp), (unsigned long long)r->pc,
+                                 r->signo, (unsigned long long)r->fault);
                     ++g->count;
                     ++mismatched;
                     break;
                 }
                 /* the LLVM side */
-                c = *start;
+                snprintf(g_test.running, sizeof(g_test.running),
+                         "the LLVM side of %s, word %08x, state %zu of %zu (%s emitters)", it->op,
+                         it->words[it->nwords - 1], s, states, forms[portable]);
+                cpu_from_state(&c, start);
                 c.rt = &rt;
                 c.mem = work - WINDOW;
-                if (it->nwords == 1) memcpy(work + PC - WINDOW, &it->words[0], 4);
+                if (it->nwords == 1) snx_st_le32(work + PC - WINDOW, it->words[0]);
                 g_test.events = &ev;
+                /* the host FP environment as other code on the thread may leave it, rounding upward: each generated
+                   function's snx_fp_env puts back what its fast paths assume, on every host that has them */
+                fesetround(FE_UPWARD);
                 for (w = 0; w < it->nwords; ++w) {
                     l.pc = steps[it->step + w](&c);
                     if (ev.undef || ev.brk || l.pc != item_pc(it) + 4 * (w + 1)) break;
                 }
+                fesetround(FE_TONEAREST);
                 l.outcome = ev.undef ? SNX_QREF_UNDEF
                             : ev.brk ? SNX_QREF_BRK
                             : ev.svc ? SNX_QREF_SVC
@@ -914,10 +1340,9 @@ int main(int argc, char** argv) {
                 qe.imm = r->imm;
                 qe.state = r->state;
                 /* the window as the case found it: the words over the pads */
-                if (it->nwords == 1) memcpy(initial + PC - WINDOW, &it->words[0], 4);
-                state_of(start, &st);
-                compare(it, &st, &l, &qe, initial, work, &batch, r, cause, sizeof(cause), text, sizeof(text));
-                memcpy(initial + PC - WINDOW, &(u32){SNX_QREF_PAD}, 4);
+                if (it->nwords == 1) snx_st_le32(initial + PC - WINDOW, it->words[0]);
+                compare(it, start, &l, &qe, initial, work, &batch, r, cause, sizeof(cause), text, sizeof(text));
+                snx_st_le32(initial + PC - WINDOW, SNX_QREF_PAD);
                 for (w = 0; w < WINDOW_SIZE; w += SNX_QREF_PAGE)
                     if (memcmp(work + w, initial + w, SNX_QREF_PAGE)) memcpy(work + w, initial + w, SNX_QREF_PAGE);
                 ++compared;
@@ -944,6 +1369,13 @@ int main(int argc, char** argv) {
         i = end;
     }
     snx_qref_free(&batch);
+    if (record.f && fclose(record.f)) record.failed = 1;
+    record.f = NULL;
+    if (record.failed) return snx_error("cannot write %s", record_path);
+    if (reference && ref.in.at != ref.in.size)
+        return snx_error("%s has %zu bytes after its cases", reference_path, ref.in.size - ref.in.at);
+    free(reference_file);
+    reference_file = NULL;
 
     /* the expected-failure list against what differed */
     for (i = 0; i < groups.ngroups; ++i) {
@@ -964,10 +1396,10 @@ int main(int argc, char** argv) {
             g->listed = 1;
         }
     }
-    printf("LLVM against QEMU%s: %lu cases of %lu rows' and directed words, %lu runs compared, %lu without an emitter "
-           "yet, %lu differing in %lu groups\n",
-           sweep ? " (sweep)" : "", (unsigned long)nitems, (unsigned long)lqd_rows(), (unsigned long)compared,
-           (unsigned long)no_emitter, (unsigned long)mismatched, (unsigned long)groups.ngroups);
+    printf("LLVM against %sQEMU%s, %s emitters%s: %zu cases of %zu rows' and directed words, %zu runs compared, %zu "
+           "without an emitter yet, %zu differing in %zu groups\n",
+           reference ? "a recorded " : "", sweep ? " (sweep)" : "", forms[portable],
+           no_avx512 ? " without AVX-512" : "", nitems, lqd_rows(), compared, no_emitter, mismatched, groups.ngroups);
     for (i = 0; i < groups.ngroups; ++i) {
         const Group* g = &groups.groups[i];
         if (!g->listed) failed = 1;
@@ -1011,10 +1443,9 @@ int main(int argc, char** argv) {
         }
         fclose(f);
     }
-    printf("%lu names without an emitter in %s/llvm_qemu_coverage.txt, examples in llvm_qemu_mismatches.txt; "
+    printf("%zu names without an emitter in %s/llvm_qemu_coverage.txt, examples in llvm_qemu_mismatches.txt; "
            "%.1f s: %s\n",
-           (unsigned long)missing.ngroups, q.dir, snx_seconds() - started,
-           failed ? "FAILED" : "passed");
+           missing.ngroups, q.dir, snx_seconds() - started, failed ? "FAILED" : "passed");
     free(path);
     llvm_steps_end(&built);
     free(initial);

@@ -2,9 +2,18 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # First CPU milestone: one measured SIMD improvement
 
+## Index
+
+* [Performance hypothesis](#performance-hypothesis)
+* [1. Find the cost](#1-find-the-cost)
+* [2. Check LLVM before changing the emitter](#2-check-llvm-before-changing-the-emitter)
+* [3. Replace one group exactly](#3-replace-one-group-exactly)
+* [4. Prove results and measure the same scene](#4-prove-results-and-measure-the-same-scene)
+* [Acceptance and handoff](#acceptance-and-handoff)
+
 Profile lane-helper cost in a repeatable game scene, replace one hot instruction group with exact vector code, and
 measure that scene again. Deliver one bounded change with evidence. The [CPU implementation plan](CPU_TRANSLATOR_PLAN.md)
-is the supporting backlog. This is the active scope, refined on 2026-10-30.
+is the supporting backlog. This is the active scope.
 
 Use one available host for the first measured result. Preserve other hosts through the existing exact path and check
 lowering for affected targets. Record which hosts actually ran. The full tooling program is not a prerequisite.

@@ -21,11 +21,11 @@ typedef struct {
     void* ctx;
     int (*scanned)(void* ctx, u32 what, u64 id); /* read by an earlier run */
     void (*mark)(void* ctx, u32 what, u64 id);   /* read now, for the next run */
-    /* a program: its SPH, the bytes from there to the end of what holds it, and its stage (shipped_sph_stage's,
-       SHIPPED_VERTEX_A included). SHIP_NEW, SHIP_KNOWN (translated before), SHIP_SKIPPED (no draw would find it),
+    /* a program: its SPH, the bytes from there to the end of what holds it, its stage (shipped_sph_stage's,
+       SHIPPED_VERTEX_A included), and its constants (shipped_programs', NULL and 0 when unknown). SHIP_NEW, SHIP_KNOWN (translated before), SHIP_SKIPPED (no draw would find it),
        SHIP_FAILED (its translation failed, as it will on every run of this build and driver), SHIP_LACKED (not
        handled for want of memory, for a later run to try again), or SHIP_STOP once the walk is to end */
-    int (*program)(void* ctx, const u8* sph, size_t avail, int stage);
+    int (*program)(void* ctx, const u8* sph, size_t avail, int stage, const u8* consts, size_t nconsts);
     int (*stopped)(void* ctx);
     /* a line of the walk, for the log, and for the screen when shown (the screen's in a player's words, the log's
        with the stages and the failures) */

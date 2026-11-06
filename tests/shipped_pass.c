@@ -80,11 +80,13 @@ static void mark(void* ctx, u32 what, u64 id) {
         g_sink.marked[g_sink.nmarked++] = id;
     }
 }
-static int program_handed(void* ctx, const u8* sph, size_t avail, int stage) {
+static int program_handed(void* ctx, const u8* sph, size_t avail, int stage, const u8* consts, size_t nconsts) {
     (void)ctx;
     (void)sph;
     (void)avail;
     (void)stage;
+    (void)consts;
+    (void)nconsts;
     g_sink.programs++;
     return g_sink.stop_after && g_sink.programs >= g_sink.stop_after ? SHIP_STOP : g_sink.answer;
 }

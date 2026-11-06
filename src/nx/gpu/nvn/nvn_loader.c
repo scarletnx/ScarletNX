@@ -17,6 +17,7 @@
    declaration that holds for it (hle/hook/version.c hook_select). The log says whether the version is one the runtime
    has measured layouts for: the runtime takes the game's NVN calls either way, as the driver has no GPU to run on */
 #include "nx/gpu/nvn/nvn_loader.h"
+#include "nx/runtime/nce/nce.h"
 #include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/nvn/nvn_driver.h"
 #include "nx/gpu/nvn/nvn_object.h"
@@ -161,7 +162,8 @@ static void take32(u64 addr, const char* name, int i, int versioned) {
    names it */
 static void take(u64 addr, const char* name, u32 len) {
     int versioned, i = implemented(name, &versioned);
-    GuestFn fn = i >= 0 ? nvn_fn[i] : unimplemented, *slot;
+    GuestFn fn = i >= 0 ? nvn_fn[i] : unimplemented, *slot, cur;
+    char family[48];
     if (g_nvn.loader.a32) {
         if (!strcmp(name, "nvnDeviceGetInteger")) nvn_device_driver(addr); /* its answers, from its code */
         take32(addr, name, i, versioned);
@@ -173,26 +175,32 @@ static void take(u64 addr, const char* name, u32 len) {
     if (!strcmp(name, "nvnDeviceGetInteger")) nvn_device_driver(addr); /* its answers, from its code */
     pm_lock(&g_nvn.loader.lock);
     slot = &g_disp[(addr - g_code_lo) / 4];
-    if (*slot == getproc || *slot == bootstrap) { /* the resolvers, which a game also looks up by name: still wrapped */
+    cur = nce_slot(*slot); /* under NCE, an empty slot is the driver's own native code */
+    if (cur == getproc || cur == bootstrap) { /* the resolvers, which a game also looks up by name: still wrapped */
         pm_unlock(&g_nvn.loader.lock);
         return;
     }
-    if (*slot != fn && ours(*slot)) {
+    if (cur != fn && ours(cur)) {
         /* two names the driver folded to one address, identical code: the first implemented one keeps it */
         LOG_LIMIT(16, "nvn: %s shares its address with a function resolved before it\n", name);
-        if (*slot != unimplemented || fn == unimplemented) {
+        if (cur != unimplemented || fn == unimplemented) {
             pm_unlock(&g_nvn.loader.lock);
             return;
         }
     }
     /* the NvRm sync conversions run the driver's own code on a sync in its layout (nvn_object.c): it is the slot's
        until the handler takes it */
-    if (!ours(*slot) && !strcmp(name, "nvnSyncGetNvRmSyncNVX"))
-        g_nvn.loader.nvrm_get = *slot, g_nvn.loader.nvrm_get_at = addr;
-    if (!ours(*slot) && !strcmp(name, "nvnSyncInitializeFromNvRmSyncNVX"))
-        g_nvn.loader.nvrm_init = *slot, g_nvn.loader.nvrm_init_at = addr;
+    if (!ours(cur) && !strcmp(name, "nvnSyncGetNvRmSyncNVX"))
+        g_nvn.loader.nvrm_get = cur, g_nvn.loader.nvrm_get_at = addr;
+    if (!ours(cur) && !strcmp(name, "nvnSyncInitializeFromNvRmSyncNVX"))
+        g_nvn.loader.nvrm_init = cur, g_nvn.loader.nvrm_init_at = addr;
     if (fn == unimplemented && !missing_find(addr)) note_missing(addr, name, versioned);
     __atomic_store_n(slot, fn, __ATOMIC_RELEASE);
+    if (i >= 0)
+        snprintf(family, sizeof family, "nvn %s", nvn_family_name[nvn_family[i]]);
+    else
+        snprintf(family, sizeof family, "nvn unimplemented");
+    nce_slot_taken(addr, family);
     pm_unlock(&g_nvn.loader.lock);
 }
 
@@ -292,9 +300,11 @@ static void bootstrap(CPU* c, u64 entry) {
     pm_lock(&g_nvn.loader.lock);
     slot = &g_disp[(c->x[0] - g_code_lo) / 4];
     if (*slot != getproc) {
-        if (!*slot) fatal("nvn: the driver's nvnDeviceGetProcAddress has no recompiled code");
-        g_nvn.loader.getproc_original = *slot;
+        GuestFn own = nce_slot(*slot);
+        if (!own) fatal("nvn: the driver's nvnDeviceGetProcAddress has no recompiled code");
+        g_nvn.loader.getproc_original = own;
         __atomic_store_n(slot, getproc, __ATOMIC_RELEASE);
+        nce_slot_taken(c->x[0], "nvn loader");
     }
     pm_unlock(&g_nvn.loader.lock);
 }
@@ -396,18 +406,19 @@ void nvn_loader_init(void) {
         return;
     }
     entry = kernel_find_symbol_exact("nvnBootstrapLoader");
-    if (!entry || entry < g_code_lo || entry >= g_code_hi || (entry & 3) || !g_disp[(entry - g_code_lo) / 4]) {
+    if (!entry || entry < g_code_lo || entry >= g_code_hi || (entry & 3) || !nce_slot(g_disp[(entry - g_code_lo) / 4])) {
         LOG("nvn: the game has no recompiled nvnBootstrapLoader, so no NVN to take: it draws nothing\n");
         return;
     }
     slot = &g_disp[(entry - g_code_lo) / 4];
-    g_nvn.loader.bootstrap_original = *slot;
+    g_nvn.loader.bootstrap_original = nce_slot(*slot);
     g_nvn.loader.bootstrap_entry = entry;
     g_nvn.loader.flag = kernel_find_symbol_exact("nvnPrivate0");
     if (!hook_routed("nvnBootstrapLoader"))
         WARN("nvn: the module's route list doesn't name nvnBootstrapLoader, so nvn sees only its calls through "
              "the PLT and function pointers. Recompile the game for its direct calls\n");
     *slot = bootstrap; /* before any guest thread runs */
+    nce_slot_taken(entry, "nvn loader");
     g_nvn.loader.active = 1;
     LOG("nvn: the runtime implements %d NVN functions, and the game's NVN driver doesn't run\n", NVN_COUNT);
 }

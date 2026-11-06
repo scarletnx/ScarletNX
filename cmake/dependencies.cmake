@@ -164,24 +164,40 @@ endif()
 
 # jemalloc as the scarletnx program's malloc, the whole process's (cmake/jemalloc.cmake): a recompile's LLVM threads
 # spend less time in malloc and free than with the C library's. On by default where the program's malloc is every
-# library's, Linux and FreeBSD (whose libc's is an older jemalloc); macOS takes it through jemalloc's zone, not by
-# default yet. The sanitizers bring their own malloc
-if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD)$" AND NOT SNX_TEST_SANITIZERS)
+# library's: Linux and FreeBSD (whose libc's is an older jemalloc), and Android's driver, the executable the menu runs
+# recompiles in (libscarletnx-run.so, src/nx), whose C library calls malloc through the program's as glibc does, and
+# macOS through jemalloc's zone, which it puts in front of the system's. Windows' C runtime is a DLL with a heap of its
+# own, which LLVM's DLL and the C runtime's strdup allocate from, and an iOS app keeps the system's. The sanitizers
+# bring their own malloc
+# Android's program is the Switch driver's executable, which a build without the runtime does not make
+if(ANDROID AND (NOT SNX_BUILD_NX OR SNX_TOOLS_ONLY))
+    set(snx_jemalloc_has_program OFF)
+else()
+    set(snx_jemalloc_has_program ON)
+endif()
+if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD|Android|Darwin)$" AND snx_jemalloc_has_program AND
+   NOT SNX_TEST_SANITIZERS)
     set(snx_jemalloc_default ON)
 else()
     set(snx_jemalloc_default OFF)
 endif()
-option(SNX_JEMALLOC "Link jemalloc into scarletnx as its malloc (default ON on Linux and FreeBSD)"
+option(SNX_JEMALLOC "Link jemalloc into scarletnx as its malloc (default ON on Linux, FreeBSD, Android and macOS)"
        ${snx_jemalloc_default})
 if(SNX_JEMALLOC)
     if(SNX_TEST_SANITIZERS)
         message(FATAL_ERROR "SNX_JEMALLOC=ON with SNX_TEST_SANITIZERS=ON: the sanitizers replace malloc themselves. "
                             "Configure with -DSNX_JEMALLOC=OFF.")
     endif()
-    if(NOT CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD|Darwin)$")
+    if(NOT CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD|Darwin|Android)$")
         message(FATAL_ERROR "SNX_JEMALLOC=ON on ${CMAKE_SYSTEM_NAME}: jemalloc takes the program's malloc on Linux, "
-                            "FreeBSD and macOS only. On Windows the LLVM DLL keeps the C runtime's, and an Android or "
-                            "iOS app the system's. Configure with -DSNX_JEMALLOC=OFF.")
+                            "FreeBSD, macOS and Android only. On Windows the C runtime DLL keeps its own heap, which "
+                            "LLVM's DLL and its strdup allocate from, and an iOS app keeps the system's. Configure "
+                            "with -DSNX_JEMALLOC=OFF.")
+    endif()
+    if(NOT snx_jemalloc_has_program)
+        message(FATAL_ERROR "SNX_JEMALLOC=ON on Android goes into libscarletnx-run.so, the Switch driver's executable "
+                            "(src/nx), which this build does not make (SNX_BUILD_NX=${SNX_BUILD_NX}, "
+                            "SNX_TOOLS_ONLY=${SNX_TOOLS_ONLY}). Configure with -DSNX_JEMALLOC=OFF.")
     endif()
     set(snx_jemalloc_version 5.4.0) # also what tests/jemalloc.cmake finds in the program
     set(snx_jemalloc_sha256 200776fac271093e7c2f21edd6d62657ecd2be578d9328633f2a86bfa6ef4f1d)
@@ -232,9 +248,9 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime)
     endif()
 endif()
 
-# FFmpeg for the Switch runtime's NVDEC and hwopus and the Vita's movies. It builds with its own configure and make,
-# which cmake/ffmpeg.cmake runs
-if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR snx_vita_runtime)
+# FFmpeg for the Switch runtime's NVDEC and hwopus, the 3DS DSP's AAC decoder and the Vita's movies. It builds with its
+# own configure and make, which cmake/ffmpeg.cmake runs
+if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime)
     set(snx_ffmpeg_sha256 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e)
     CPMAddPackage(NAME FFmpeg VERSION 9.0.2
                   URL https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
@@ -322,9 +338,10 @@ set(SNX_SDL3_FROM_SOURCE OFF)
 # The system's SDL3 from find_package, or CPM's pinned source build. FreeBSD's ports package lags the pin (3.4.16
 # against 3.4.18), so CPM's version check refuses it and builds SDL3 itself: SNX_SYSTEM_SDL3 takes the native package
 # instead, which needs only 3.4.16, the version every SDL call in the tree is in. It is the default on FreeBSD, whose
-# build installs the sdl3 package (docs/BUILD.md); the pinned source build is had with -DSNX_SYSTEM_SDL3=OFF
+# build installs the sdl3 package (docs/BUILD.md), and on NetBSD, whose pkgsrc SDL3 is 3.4.16 too (docs/NETBSD.md); the
+# pinned source build is had with -DSNX_SYSTEM_SDL3=OFF
 set(snx_sdl3_system_default OFF)
-if(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
+if(CMAKE_SYSTEM_NAME MATCHES "^(FreeBSD|NetBSD)$")
     set(snx_sdl3_system_default ON)
 endif()
 option(SNX_SYSTEM_SDL3 "Use the system's SDL3 from find_package, not CPM's pinned source build"
@@ -333,7 +350,8 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_GUI OR SNX_BUILD_3DS OR sn
     if(SNX_SYSTEM_SDL3)
         find_package(SDL3 3.4.16 CONFIG QUIET)
         if(NOT SDL3_FOUND)
-            message(FATAL_ERROR "SNX_SYSTEM_SDL3: no SDL3 3.4.16 or newer package found (FreeBSD: pkg install sdl3). "
+            message(FATAL_ERROR "SNX_SYSTEM_SDL3: no SDL3 3.4.16 or newer package found (FreeBSD: pkg install sdl3; "
+                                "NetBSD: pkgin install SDL3). "
                                 "Use -DSNX_SYSTEM_SDL3=OFF for CPM's pinned source build.")
         endif()
         if(NOT TARGET SDL3::SDL3)
@@ -361,23 +379,22 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_GUI OR SNX_BUILD_3DS OR sn
     endif()
 endif()
 
-# libdeflate (MIT), every deflate the project writes or reads: the launcher's Share Log (src/gui/logzip.c), the Vita
-# driver's VPK members and compressed eboot segments (src/vita/loader/inflate.c), and their CRC-32. Its library
-# without gzip, from its own sources; it picks the CPU's SIMD loops at run time
-if(SNX_BUILD_GUI OR (SNX_BUILD_VITA AND NOT SNX_TOOLS_ONLY))
-    CPMAddPackage(NAME libdeflate VERSION 1.26
-                  URL https://github.com/ebiggers/libdeflate/archive/refs/tags/v1.26.tar.gz
-                  URL_HASH SHA256=bba03fffc5538576213675ce6968fcff6ce2e67d82e4d5febea2d05f9f13cf85
-                  DOWNLOAD_ONLY YES)
-    add_library(snx_libdeflate STATIC
-        "${libdeflate_SOURCE_DIR}/lib/utils.c" "${libdeflate_SOURCE_DIR}/lib/arm/cpu_features.c"
-        "${libdeflate_SOURCE_DIR}/lib/x86/cpu_features.c" "${libdeflate_SOURCE_DIR}/lib/deflate_compress.c"
-        "${libdeflate_SOURCE_DIR}/lib/deflate_decompress.c" "${libdeflate_SOURCE_DIR}/lib/adler32.c"
-        "${libdeflate_SOURCE_DIR}/lib/zlib_compress.c" "${libdeflate_SOURCE_DIR}/lib/zlib_decompress.c"
-        "${libdeflate_SOURCE_DIR}/lib/crc32.c")
-    target_include_directories(snx_libdeflate SYSTEM PUBLIC "${libdeflate_SOURCE_DIR}")
-    snx_quiet(snx_libdeflate)
-endif()
+# libdeflate (MIT), every deflate the project writes or reads: the titles a control.nacp keeps in deflate
+# (src/common/utilities/common.c, so every build), the launcher's Share Log (src/gui/logzip.c), the Vita driver's VPK
+# members and compressed eboot segments (src/vita/loader/inflate.c), and their CRC-32. Its library without gzip, from
+# its own sources; it picks the CPU's SIMD loops at run time
+CPMAddPackage(NAME libdeflate VERSION 1.26
+              URL https://github.com/ebiggers/libdeflate/archive/refs/tags/v1.26.tar.gz
+              URL_HASH SHA256=bba03fffc5538576213675ce6968fcff6ce2e67d82e4d5febea2d05f9f13cf85
+              DOWNLOAD_ONLY YES)
+add_library(snx_libdeflate STATIC
+    "${libdeflate_SOURCE_DIR}/lib/utils.c" "${libdeflate_SOURCE_DIR}/lib/arm/cpu_features.c"
+    "${libdeflate_SOURCE_DIR}/lib/x86/cpu_features.c" "${libdeflate_SOURCE_DIR}/lib/deflate_compress.c"
+    "${libdeflate_SOURCE_DIR}/lib/deflate_decompress.c" "${libdeflate_SOURCE_DIR}/lib/adler32.c"
+    "${libdeflate_SOURCE_DIR}/lib/zlib_compress.c" "${libdeflate_SOURCE_DIR}/lib/zlib_decompress.c"
+    "${libdeflate_SOURCE_DIR}/lib/crc32.c")
+target_include_directories(snx_libdeflate SYSTEM PUBLIC "${libdeflate_SOURCE_DIR}")
+snx_quiet(snx_libdeflate)
 
 # miniz (MIT) for the launcher's Share Log, the logs in one zip (src/gui/logzip.c): the zip around the deflate
 # libdeflate makes. Its one-file release, miniz.c, built alone, without its stdio functions (the zip is made in memory

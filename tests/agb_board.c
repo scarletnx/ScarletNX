@@ -39,6 +39,12 @@ static void dma3(AgbBoard* board, uint32_t source, uint32_t destination, unsigne
     agb_write16(board, 0x040000DC, (uint16_t)count);
     agb_write16(board, 0x040000DE, 0x8000);
 }
+/* the flash's unlock, 0xAA at 0x5555 and 0x55 at 0x2AAA, then a command's byte at address */
+static void flash_command(AgbBoard* board, uint32_t address, uint8_t command) {
+    agb_write8(board, 0x0E005555, 0xAA);
+    agb_write8(board, 0x0E002AAA, 0x55);
+    agb_write8(board, 0x0E000000 + address, command);
+}
 static void make_rom(uint8_t* rom) {
     memset(rom, 0, ROM_SIZE);
     rom[0] = 0x2E;
@@ -145,6 +151,27 @@ int main(void) {
         for (int i = 0; i < 6; ++i) agb_write8(&board, 0x0E000000 + addresses[i], values[i]);
     }
     CHECK(board.memory.sram[0x00005] == 0xFF && board.memory.sram[0x10005] == 0xFF && board.save.dirty);
+    /* one flash command waits at a time: a reset (0xF0) or another command ends an erase's setup, and a sector's
+       erase is its 0x30 after a new unlock, never a lone 0x30 */
+    agb_save_reset(&board, AGB_SAVE_FLASH64);
+    memset(board.memory.sram, 0x11, 0x10000);
+    flash_command(&board, 0x5555, 0x80);
+    flash_command(&board, 0x5555, 0xF0);
+    agb_write8(&board, 0x0E003000, 0x30);
+    CHECK(board.memory.sram[0x3000] == 0x11);
+    flash_command(&board, 0x5555, 0x80);
+    flash_command(&board, 0x5555, 0xA0);
+    agb_write8(&board, 0x0E001000, 0x10);
+    CHECK(board.memory.sram[0x1000] == 0x10);
+    agb_write8(&board, 0x0E003000, 0x30);
+    CHECK(board.memory.sram[0x3000] == 0x11);
+    flash_command(&board, 0x5555, 0x80);
+    agb_write8(&board, 0x0E003000, 0x30);
+    CHECK(board.memory.sram[0x3000] == 0x11);
+    flash_command(&board, 0x5555, 0x80);
+    flash_command(&board, 0x3000, 0x30);
+    CHECK(board.memory.sram[0x3000] == 0xFF && board.memory.sram[0x3FFF] == 0xFF);
+    CHECK(board.memory.sram[0x2FFF] == 0x11 && board.memory.sram[0x4000] == 0x11);
 
     /* the save kind a ROM's tag names, wherever it is, the image's last bytes too */
     {
@@ -227,6 +254,18 @@ int main(void) {
     board.timer[0].counter = 0xABCD;
     agb_write8(&board, 0x04000100, 0x56);
     CHECK(board.timer[0].reload == 0x1256);
+    /* timer 0 has no timer before it: its count-up bit does nothing and it counts the clock, as a game that sets that
+       bit and plays its sound FIFOs at timer 0's rate needs; timer 1's counts timer 0's overflows */
+    agb_write16(&board, 0x04000100, 0xFF00);
+    agb_write16(&board, 0x04000104, 0xFFFE);
+    agb_write16(&board, 0x04000106, 0x0084); /* timer 1 on, counting up */
+    agb_write16(&board, 0x04000102, 0x0084); /* timer 0 on, its count-up bit set */
+    agb_timer_step(&board, 0x100);
+    CHECK(board.timer[0].counter == 0xFF00 && board.timer[1].counter == 0xFFFF);
+    agb_timer_step(&board, 0x80);
+    CHECK(board.timer[0].counter == 0xFF80 && board.timer[1].counter == 0xFFFF);
+    agb_write16(&board, 0x04000102, 0x0000);
+    agb_write16(&board, 0x04000106, 0x0000);
     agb_write16(&board, 0x040000B0, 0x1234); /* DMA0SAD, write-only */
     agb_write8(&board, 0x040000B1, 0x56);
     CHECK((board.dma[0].source & 0xFFFF) == 0x5634);
@@ -265,6 +304,22 @@ int main(void) {
     CHECK(agb_read32(&board, 0x03000100) == agb_read32(&board, 0x08000000) &&
           agb_read32(&board, 0x03000104) == agb_read32(&board, 0x08000004));
     CHECK(board.dma[3].count == 2 && !(board.dma[3].control & 0x8000)); /* done: the enable bit clears */
+    /* a DMA holds the bus for 2N + 2(n-1)S + 2I: four words from the cartridge (WAITCNT 0x4317: a halfword's first
+       access 4 cycles, the next 2) to IWRAM 2 + (6 + 1) + 3 x (4 + 1) = 24, four halfwords EWRAM to EWRAM
+       2 + 4 x (3 + 3) = 26 */
+    agb_write16(&board, 0x04000204, 0x4317);
+    board.held_cycles = 0;
+    agb_write32(&board, 0x040000D4, 0x08000000);
+    agb_write32(&board, 0x040000D8, 0x03000200);
+    agb_write32(&board, 0x040000DC, 0x84000004);
+    CHECK(board.held_cycles == 24);
+    board.held_cycles = 0;
+    agb_write32(&board, 0x040000D4, 0x02000000);
+    agb_write32(&board, 0x040000D8, 0x02000100);
+    agb_write32(&board, 0x040000DC, 0x80000004);
+    CHECK(board.held_cycles == 26);
+    board.held_cycles = 0;
+    agb_write16(&board, 0x04000204, 0);
     agb_write16(&board, 0x040000C6, 0xB640); /* DMA1CNT_H: the sound FIFO's timing, repeat, 32 bits */
     CHECK(board.dma[1].control == 0xB640 && !board.dma[0].control && !board.dma[2].control);
     CHECK(agb_read16(&board, 0x040000C6) == 0xB640);

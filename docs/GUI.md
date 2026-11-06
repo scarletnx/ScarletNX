@@ -17,7 +17,8 @@
 name beside it, opens its launcher: a small SDL3 menu for the command-line drivers. A copy named
 after a game, without its code, says so and never opens it. It uses an
 embedded public-domain 8x16 VGA BIOS font, with GNU Unifont's 8x16 glyphs fitted to it for the Latin letters its CP437
-lacks and its 16x16 ones, two columns each, for the wide letters a language shows (Chinese), and nearest-neighbor
+lacks and its 16x16 ones, two columns each, for the letters game titles are written in (Chinese, Japanese and Korean)
+and the wide letters a language shows, and nearest-neighbor
 integer scaling; its words are English or a language compiled into it ([Languages](#languages)). An item of a menu
 has an icon beside its name, 16x16 in the font's stroke (`src/gui/icons.hex`): the menu's, the groups of the Settings and
 their rows that open a screen or do something (the others keep its columns), a game's box's actions, the setup's pages
@@ -30,6 +31,8 @@ and the game's menu's. No font files or localization packages are needed.
 The window's title tells which build it is, as `ScarletNX <branch> <commit> (<compiler>, <OS> <arch>)`, for example
 `ScarletNX main 43bf71a (clang 22.1.8, Linux x86_64)`; the commit ends in `-dirty` when the tree had changes, a
 build of a detached checkout outside CI says `detached`, and both read `unknown` outside a git checkout. A game's window carries the same line after the game's name.
+The logs' line adds the day that commit was made (UTC), `ScarletNX main 43bf71a, committed 2026-11-02 (clang 22.1.8,
+Linux x86_64)`, `committed unknown` outside a git checkout.
 
 It opens on a splash: Wimsy, or Fuddles (`dist/splash/`), picked at random each start, a third of the window's
 shorter side on the theme's `[splash] page` for its `ms`; a key, a click or a finger ends it. The drawings are SVGs
@@ -102,12 +105,16 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   the game's folder of `recompiled/` (named after the ROM's file), its module and its copy of the runtime, and plays
   it in a window. See [AGB board](AGB.md).
 - **Install Keys**, immediately after the five load entries, blinks red (the theme's `failure` colour, at its
-  `blink_ms`) while no `prod.keys` is in use. It prompts you to
-  pick `prod.keys` (a click on the blinking **[ Pick or drop prod.keys ]** in the middle of
-  the screen, the theme's `[prompt]`, or Enter), drop it, or paste its path with Ctrl+V. It installs the file to `~/.switch/prod.keys`, or
-  `%USERPROFILE%\.switch\prod.keys` on Windows; on Linux, in the user's data folder, it puts it there
-  instead (`~/.local/share/scarletnx/prod.keys`), which the driver reads before
-  `~/.switch`, and names the keys of `~/.switch` it would use until then. It creates the
+  `blink_ms`) while no keys are in use, the Switch's or the 3DS's. It prompts you to
+  pick a keys file (a click on the blinking **[ Pick or drop a keys file ]** in the middle of
+  the screen, the theme's `[prompt]`, or Enter), drop it, or paste its path with Ctrl+V. The file's name says which
+  console's keys it is: a `prod.keys` is the Switch's and is installed to `~/.switch/prod.keys` (or
+  `%USERPROFILE%\.switch\prod.keys` on Windows; on Linux, in the user's data folder, it is put there
+  instead, `~/.local/share/scarletnx/prod.keys`, which the driver reads before
+  `~/.switch`, and names the keys of `~/.switch` it would use until then), and an `aes_keys.txt` is the 3DS's, installed
+  to `~/.3ds/aes_keys.txt` (`%USERPROFILE%\.3ds` on Windows), where the 3DS driver reads it. The screen shows both
+  destinations, *Installs to* for the Switch's and *3DS keys to* for the 3DS's. Only **encrypted** 3DS files need the
+  3DS keys: a decrypted or homebrew 3DS game runs without an `aes_keys.txt`. It creates the
   folder if needed. Existing keys trigger the bright-red warning
   **Keys already setup. This will overwrite the previous ones**. The screen then says what the try
   did, *Installed* or *Not installed* and why, and goes back to the menu by itself after 3 seconds
@@ -220,15 +227,20 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   takes a letter out; a click off the dialog is Cancel. A phone's keyboard comes up with it, its number pad for a whole
   number never under 0 (SDL's pad has no point and no minus). Nothing changes before OK, and OK takes nothing the
   row does not take whole, a number past its range too: the dialog stays, saying the value typed and what holds
-  (`20 is not a number from 0.25 to 16, two decimals at most`, `Ab is not a nickname: ...`). A setting not picked shows
-  the runtime's default and `[default]` (*Off [default]*):
-  the run takes the game's `.ini`'s, which starts as that; one picked goes to every
-  Switch run as `--key=value`, over the `.ini` ([USAGE](USAGE.md)), and is kept for every game:
+  (`20 is not a number from 0.25 to 16, two decimals at most`, `Ab is not a nickname: ...`). A setting's words are
+  its values alone, the runtime's default marked `[default]` (*Off [default]*, *On*); one typed shows its default and
+  `[default]` while it is empty (*1 [default]*). At its default the run takes the game's `.ini`'s, which starts as
+  that. Where a row's default is none of its words (a control not yet shown or hidden, LLVM's own options),
+  `[default]` is a value of its own, the same way. Another value, and a number typed even as its default (Current
+  user 1 over a game's `.ini` that has another), goes to every Switch run as `--key=value`, over the `.ini`
+  ([USAGE](USAGE.md)), and is kept for every game:
   what was changed, by the `.ini`'s sections and keys, in `settings.ini` of the config folder on
   Linux (`~/.config/scarletnx/`), else the data folder's `config/`. A run takes a setting from what that
   run picks, then from the game's own picks (to come), then from these, and last from the game's
-  `.ini`. Del puts a setting back to its default, and App's **Reset to Defaults** every one. The launcher's own choices start picked: `fullscreen` 0, `controls` 0 (on Android 1,
-  and `fullscreen` puts the launcher itself on the whole screen too).
+  `.ini`. Del puts a setting back to its default, and App's **Reset to Defaults** every one. **Fullscreen** and
+  **Show controls** are the launcher's own choices, Off or On, passed to every run over the `.ini`; `[default]` marks
+  the one the launcher starts with: Off on a computer, On on a phone, where Fullscreen puts the launcher itself on the
+  whole screen too.
   **gdbstub** passes `-S` and `-s`, the
   runtime's stub on port 1234 waiting for the debugger at startup (UNIX only), and **Extract to tmpfs**
   passes `--tmpfs`: a dump's extraction goes to `/tmp/scarletnx/work/<title ID>` (`$TMPDIR` when set, the
@@ -244,7 +256,9 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   is read the same way. On, a dump is extracted as before, into the game's folder or with *Extract to tmpfs* into
   tmpfs, which implies it. Turning it off again takes a game's extraction away on its next run.
   **Optimization level** (0, 1, 2, 3 or z, 2 by default) is LLVM's level for the game's code, **AOT threads** the
-  threads compiling it (0, the default, one for each core), **Unit cache limit** the GB the compiled code units kept
+  threads compiling it (0, the default Auto: the machine's cores with a quarter left free, the physical cores
+  where it says them, at most 75%, so a recompile does not make the computer stutter), **Unit cache limit** the GB
+  the compiled code units kept
   for the next recompile may hold (20 by default, 0 for no limit; [USAGE](USAGE.md)), and the **LLVM Internals** page
   turns each pass of LLVM's pipelines off and sets the options LLVM's C API takes, its **All** stepping every row. They
   are passed as `--key=value` when the game is recompiled: by **R**, or by a run that has to (a dump played the first
@@ -256,8 +270,11 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   the queue runs its tree's RAM and CPU are in the first line, and a last one says how it goes:
   `Background recompile: Full`, `Gentle`, `Gentle, a game plays` or `Gentle until it ends:` and why, the threads it
   was started with when they were halved, and when the taskbar cannot show its progress, SDL's reason.
-- Settings > App's **Theme** switches to the next theme, or the one before: the built-in Default
-  and YoRHa, then each folder of `themes/` (see [Themes](#themes)). The menu opens in YoRHa until one is picked.
+- Settings > App's **Theme** switches to the next theme, or the one before: the built-ins, Default first and the
+  others by their folder's name, then each folder of `themes/` (see [Themes](#themes)). Enter opens them in a box,
+  each by its name, the one shown in focus: the menu shows each theme the focus reaches, Enter keeps it and ESC goes
+  back to the one before. The setup's Appearance step has the same row and the same box. The menu opens in YoRHa until
+  one is picked.
   It is kept for the next start,
   as are UI scale and Language, in `app.ini` beside `settings.ini`: `[app]` with `theme` (a theme's folder
   name), `ui_scale` (1 to 4; a start without it takes twice the display's
@@ -309,10 +326,14 @@ two; left out, none) and `language` (`auto`, `en` or a
   `zh-SG` simplified, `zh-TW`, `zh-HK`, `zh-MO` traditional): a system in one never takes a catalog of the other. The
   words change at once; a phrase the language has not translated stays English.
 - **Share Log** asks how. **Share Zip** saves `scarletnx-logs-2026-10-28_14-05-33.zip`. Its `summary.txt` holds the message on the screen,
-  the newest game log's summary, the last run's output, the queue's recompiles' (`last-recompile.log`), the launcher's
-  own log and its fatal errors (below) and the game log. Beside it, whole, the launcher's logs (`launcher/`) and the
-  games' logs of the last 14 days, each game's runs under `games/<its name> [<its folder>]/` by when each was last
-  written; in every file a home folder is written `~`. **Share Log** saves that summary alone as `scarletnx.log`. Either
+  the summary of the last run's game log (its build line says how many days before the run its commit was made, by
+  when the run wrote that log), the last run's output, the queue's recompiles' (`last-recompile.log`), the
+  launcher's own log and its fatal errors (below) and that game log: the one the run's output names (`log: written to
+  <path>`, which the runtime prints as it makes it), an update's named after its program. A run that names none (it
+  ended before its game's code loaded) shares `== no game log ==` and why, never another game's log; with no run kept,
+  the newest game log. Beside it, whole, the launcher's logs (`launcher/`) and the games' logs of the last 14 days, each
+  game's runs, its updates' too, under `games/<its name> [<its folder>]/` by when each was last written; in every file
+  a home folder is written `~`. **Share Log** saves that summary alone as `scarletnx.log`. Either
   goes in `share/` of Folders' Logs (`~/.local/state/scarletnx/share/`; on iOS Documents' `logs/share/`, which the Files
   app shows), emptied of what was shared before, and that folder opens in the system's file manager, to share from
   there. **Open Logs Folder** opens Folders' Logs, where they all are. After a run or a recompile of the queue that
@@ -396,7 +417,7 @@ they are, Keep, Later, the nickname `Player`), writes `setup.ini` and opens the 
   as its View box has them (Icon size greyed in the list), a row each, and Next (with Skip, on the first page) under
   them. Up/Down go over the rows and Next; Left/Right (or a click, on the left arrow back) change the language among
   the menu's, the theme and the others, at once, the screen with them; UI scale opens App's dialog, the size taken
-  asked about for 15 s as App's is; Enter does as App's (the language or the theme a step on, UI scale's dialog), and on
+  asked about for 15 s as App's is; Enter does as App's (the language a step on, the box of themes, UI scale's dialog), and on
   Next goes on. What was changed is kept in `app.ini` once the setup is done, in the folders Install picks; Auto
   stays Auto while the language is the system's.
 - **Install**: Installed, or Portable, which makes `.scarletnx/` beside the program and moves the menu's own files
@@ -407,8 +428,9 @@ they are, Keep, Later, the nickname `Player`), writes `setup.ini` and opens the 
 - **Folders**: Keep, Change recompiled folder (Settings > App > Folders, the recompiled library's Main) or Add a folder
   (an Extra of Settings > App > Folders), each through the folder picker, the page listing what is there now: Recompiled, Dumps
   (the data folder's `dumps/`, with its subfolders), then the player's folders.
-- **Keys**: `prod.keys` and `title.keys` where the driver reads them; Use these, Choose folder (a folder with
-  `prod.keys`, and `title.keys` if it has one, installed where Install Keys installs them) or Later.
+- **Keys**: `prod.keys` and `title.keys` where the Switch driver reads them, and `aes_keys.txt` in `~/.3ds`, for the
+  encrypted 3DS games; Use these, Choose folder (a folder with `prod.keys`, `title.keys` if it has one, and
+  `aes_keys.txt` if it has one, installed where Install Keys installs them) or Later.
 - **User**: with `users/users.ini` there, its users with their pictures and uids, then Keep or Overwrite; without one,
   or to overwrite it, the nickname typed (`Player` to start with; Backspace takes a letter out) and Enter. A nickname
   the rooms' rule refuses is said, and the page stays.
@@ -478,18 +500,21 @@ cannot be read is named and the others still listed.
   program, or another row, R says why it does nothing. **B** builds the focused game's AOT pack from its JIT cache
   ([AOT packs](AOT_PACKS.md)) through the same queue.
 - **M** (on Android a tap on *Mods* at the foot) opens the box of the recompiled Switch game in focus, recent or on
-  the page, that Enter opens for a game with updates, DLCs, mods or cheats beside it, and for a game with none of them
-  too, whose **Add Mod** and **Add Cheats** copy a folder or a `.txt` the system's picker gives into the game's mods
-  and cheats, **Open Folder** lists the game's folders to open (its dump's, its own, saves, settings, logs, caches; one
+  the page, that Enter opens for a game with updates, DLCs, mods, cheats or other programs beside it, and for a game
+  with none of them too, whose **Add Mod** and **Add Cheats** copy a folder or a `.txt` the system's picker gives
+  into the game's mods and cheats, **Open Folder** lists the game's folders to open (its dump's, its own, saves, settings, logs, caches; one
   not there greyed), **Save States** opens the box of its save states that S opens (greyed for a dump, which has
   none; on a phone the way to them, with a tap on *Save states* at the foot), **Clean Cache** deletes its shader
   and code caches, asked first ([USAGE](USAGE.md#mods)), and **GPU Driver** and **Freedreno Settings** open
   Settings > App's pages for that game alone: GPU Driver's first row, **Global**, follows the launcher's pick, the
   game's own kept as `gpu_driver=` in its `.ini` (nothing: the system's driver); Freedreno Settings with none of its
-  own takes the launcher's. On
+  own takes the launcher's. A collection's game ([USAGE](USAGE.md#collections)) has a **Play Program N** row for
+  each other program it has made, which plays that program directly as Play plays the game's own (its menu, program
+  0), the box's picks kept. On
   another row, a dump, a package or another console's game, it says what it opens. The side panel of a recompiled
   game says how its code was made (`Made with: O2, AOT 81%`, `?` for one an older version made), or, in the failure
-  colour, `Needs Recompile` when Play compiles it first.
+  colour, `Needs Recompile` when Play compiles it first: of the program Play runs, the checked update's when it has
+  one.
 - The list is one page that scrolls, by pixels: past its height a scroll bar at its right, as every list has (below),
   which a click and a finger take. Up/Down move the focus
   and the rows glide to show it (at once with Animations off); Left/Right and PgUp/PgDown move it a screen of rows,
@@ -622,7 +647,8 @@ a box of files. Their rows are 2 pixels apart times the text's size (on Android 
 2x by default, so 96, about 37 dp at a density of 2.6, Android's 48 dp touch target at 3x; the desktop's are 17), the focused one kept in the middle (on a
 group's screen, the group open in the groups' list; Games' grid by its lines) as the keys, a pad or the wheel move
 it, and a list still when the mouse, a pen or a tap moves it, the cursor inside each row, which a click takes
-whole as a tap does. Every list whose rows do not all show, Games' grid too, has a scroll bar a letter wide at its
+whole as a tap does. A row's text too long for it shows its start and ends in `...`, but for the focused row's, which
+slides where the theme slides (`scroll_ms`): one name moves at a time. Every list whose rows do not all show, Games' grid too, has a scroll bar a letter wide at its
 right, the rows beside it: its thumb as tall as the share of the rows shown and where they are, which a click takes
 there and drags, and a finger too from two letters of the bar's right edge; the rows stay where the thumb or a finger
 put them, the focus where it was, until a key, a pad or the wheel moves the focus. Under a box over the screen, only the box's
@@ -651,6 +677,12 @@ what hactool has written, the recompile by its blocks, shows how far it is on it
 `time`, what is left at its pace so far (`01:23 left`). With `layout = console` the
 driver's own row says it, `extracted 1229 of 4096 MB (30%)`, written over itself each second. The menu fades out to black as a run starts and the run fades in from it; ESC
 fades the run out and the menu back in.
+
+`sepia-dark`, `wimsy`, `wimsy-dark`, `fuddles` and `fuddles-dark` are YoRHa's layout in the colours of the sites'
+themes (SWS, wimsy-dist's `docs/SWS.md`), each palette's light and dark: Sepia, YoRHa's own colours with its menus
+dark too; Wimsy's, from `dist/wimsy.svg`; and Fuddles', from `dist/splash/wimsy-fuddles.svg`. Their run screen is
+dark in both. wimsy-dist's `themes/theme.py` writes their `theme.ini` from the same colours as the sites', each held
+to 4.5:1 for text: a colour changes there, not in the files.
 
 The runtime draws a loading screen of its own in the same look while it prepares the shaders before a game starts
 (`prepare_shaders = 2`, the default). It shows steps with their progress, the lines of the work scrolling under
@@ -831,7 +863,8 @@ ErET needs `[theme] layout`, so the built-in files carry one: `debug` and `menu`
 The menu's phrases are English in its code, each through `snx_tr` (`src/gui/i18n.h`), and so are the setup's notices,
 marked in `src/common/utilities/setup.c`, which the terminal shows as they are. `po/scarletnx.pot` lists
 them, made from the code by `scripts/build-languages.py --pot`; the `gui_languages_pot` test fails when it is not what
-the code says. A language is a `po/<tag>.po`, named by its BCP 47 tag as language-Script-REGION, each part only
+the code says, and only warns where a `.po` lags it (a phrase missing or one the code dropped): the menu shows such a
+phrase in English, and `--pot` adds each one untranslated. A language is a `po/<tag>.po`, named by its BCP 47 tag as language-Script-REGION, each part only
 when it tells the language apart (`de.po`, `pt-BR.po`, `zh-Hans-CN.po`), in gettext's format: the build makes each one a
 catalog of gettext's `.mo` format compiled into the menu, which reads it with musl's `__mo_lookup`
 (`src/gui/i18n.c`). A new one starts as a copy of the `.pot` whose header names it, in UTF-8:
@@ -852,13 +885,17 @@ brings a translation up to the code; a phrase it leaves empty, or marks `fuzzy`,
   same file translates it (`#, snx-key`, as `Back`), since a click on the foot finds a key by its word, and a sentence
   greyed (`~`, one its screen cannot do now) stays greyed;
 - has a letter the menu's font does not draw, which would show as `?`: the font is CP437, the Latin letters of
-  U+00A0 to U+024F past it and the wide letters the languages show, GNU Unifont's. `scripts/build-glyphs.py --from`
-  keeps them from a Unifont `.hex` (`unifont-<version>.hex` or `unifont_all-<version>.hex`): the Latin ones in
-  `src/gui/unifont-latin.hex`, which the build draws with the VGA font's stems and baseline, and in
-  `src/gui/unifont-wide.hex` the 16x16 glyphs of every other letter of `po/*.po` and `tests/po/*.po`, as Chinese,
-  which the menu draws two columns wide: every width, cut, wrap and slide of its text counts them so (`src/gui/wide.h`),
-  and a row breaks after one as at a space. A language that shows a new letter runs it again; the `gui_glyphs_kept`
-  test checks the files hold each of them once, and no other;
+  U+00A0 to U+024F past it, the blocks game titles are written in and the wide letters the languages show, GNU
+  Unifont's. `scripts/build-glyphs.py --from` keeps them from a Unifont `.hex` (`unifont-<version>.hex` or
+  `unifont_all-<version>.hex`): the Latin ones in `src/gui/unifont-latin.hex`, which the build draws with the VGA
+  font's stems and baseline; in `src/gui/unifont-titles.hex` every code point of the CJK and Hangul blocks of its
+  `TITLE_RANGES` (CJK Unified Ideographs without Extension A, Hiragana, Katakana, Hangul Syllables, their punctuation
+  and the halfwidth and fullwidth forms), whatever the languages show; and in `src/gui/unifont-wide.hex` the 16x16
+  glyphs of every other letter of `po/*.po` and `tests/po/*.po`. The menu draws a 16x16 one two columns wide: every
+  width, cut, wrap and slide of its text counts them so (`src/gui/wide.h`), and a row breaks after one as at a space.
+  The font's texture holds the others whole and 2048 of the 16x16 ones at a time, those drawn longest ago giving their
+  place to the next. A language that shows a new letter runs it again; the `gui_glyphs_kept` test checks the files
+  hold each of them once, and no other, and `--check --from` the `.hex` compares their glyphs with Unifont's too;
 - has contexts (`msgctxt`), plurals (`msgid_plural`), a phrase twice, or is not UTF-8.
 
 The runtime's settings stay as the runtime names them (their groups, names, help and words come from
@@ -907,10 +944,10 @@ the keys, the first user) and refuses, users.ini kept or overwritten, the fixed 
 alone after an update, `--no-setup`, and the question where `options-dialog` puts it.
 Language tests cover a catalog's search in either byte order, catalogs cut or pointing out of themselves, the language
 Auto picks from the system's locales, English where a language has none, the Language row and `app.ini`'s key, and
-the script's refusals; they use a language of their own, `tests/po/xx.po`. Glyph tests cover the Latin and the wide
-letters' lookup, each way the menu draws a line with them (a wide one's two columns in widths, cuts, wraps, slides, a
-foot's keys and typed text), UTF-8 read with a `?` for each byte no character starts, and the script that keeps
-them.
+the script's refusals; they use a language of their own, `tests/po/xx.po`. Glyph tests cover the Latin, the titles'
+and the wide letters' lookup and rows against Unifont's, each way the menu draws a line with them (a wide one's two
+columns in widths, cuts, wraps, slides, a foot's keys and typed text), more wide letters on a row than the texture's
+slots, UTF-8 read with a `?` for each byte no character starts, and the script that keeps them.
 Settings tests cover the runtime's list read into rows, picks, the options each combination
 passes, and the screens of its groups and App; menu tests cover mouse hover versus explicit
 activation, the menu without the games and Games with its recent games' show-more row and P,

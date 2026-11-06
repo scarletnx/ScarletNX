@@ -32,12 +32,17 @@ class Symbols:
             for value, name in m.syms.items():
                 # a 32-bit program's Thumb functions have bit 0 set: the code starts at the even address
                 address = m.base + (value if is64 else value & ~1)
-                table.append((address, name, m.sizes.get(value, 0), not is64 and value & 1))
+                table.append((address, name, m.sizes.get(value, 0), not is64 and value & 1, ''))
+            # the functions it doesn't export that the loader named by their code (nx/loader/match.h), marked ~
+            for value, (words, name) in m.matched.items():
+                table.append((m.base + value, name, 4 * words, False, '~'))
         table.sort()
-        self.addrs = [a for a, _, _, _ in table]
-        self.sizes = [s for _, _, s, _ in table]
-        self.thumb = [t for _, _, _, t in table]
-        self.names = self._demangle([n for _, n, _, _ in table])
+        self.addrs = [a for a, _, _, _, _ in table]
+        self.sizes = [s for _, _, s, _, _ in table]
+        self.thumb = [t for _, _, _, t, _ in table]
+        self.names = [
+            mark + n for mark, n in zip([k for _, _, _, _, k in table], self._demangle([n for _, n, _, _, _ in table]))
+        ]
 
     @staticmethod
     def _demangle(names):

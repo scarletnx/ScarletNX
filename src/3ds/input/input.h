@@ -22,40 +22,14 @@ enum {
     SNX_CTR_PAD_L = 1u << 9,
     SNX_CTR_PAD_X = 1u << 10,
     SNX_CTR_PAD_Y = 1u << 11,
-    SNX_CTR_PAD_BUTTONS = 0xfffu,
-    /* the New 3DS's ZL and ZR, in ir:rst's pad state (bits 14 and 15, as Azahar's PadState has them), which hid:USER's
-       pad does not carry */
-    SNX_CTR_PAD_ZL = 1u << 14,
-    SNX_CTR_PAD_ZR = 1u << 15,
-    SNX_CTR_PAD_NEW = SNX_CTR_PAD_ZL | SNX_CTR_PAD_ZR
+    SNX_CTR_PAD_BUTTONS = 0xfffu
 };
-#define SNX_CTR_TOUCH_WIDTH  320u /* the bottom screen's pixels, which the touch screen reports in */
-#define SNX_CTR_TOUCH_HEIGHT 240u
 typedef struct {
     uint32_t buttons; /* SNX_CTR_PAD_* held */
     float circle[2];  /* the circle pad, -1 to 1 on each axis, x to the right and y up */
-    float cstick[2];  /* the New 3DS's C-stick, the same */
-    bool touched;     /* the touch screen is pressed, at the bottom screen's pixel touch: x from the left, y from the top */
-    uint16_t touch[2];
-    bool motion;     /* a gamepad with an accelerometer and a gyroscope is connected: accel and gyro are its */
-    float accel[3];  /* in g, in the axes of Azahar's motion device (a console held upright has y at -1) */
-    float gyro[3];   /* in degrees a second, in the same axes */
+    bool touch;       /* the touch screen pressed */
+    uint32_t touch_x, touch_y; /* the last touch position in the screen's 320x240 pixels, kept after a release */
 } SnxCtrInput;
-/* The motion of a gamepad as SDL gives it (acceleration in m/s2 and rotation in rad/s, +x right, +y up, +z toward
-   the player) in the axes of Azahar's motion device (its SDL input: x and z of the acceleration as they are, y
-   negated, and x and z of the rotation negated), as the input's accel and gyro */
-void snx_ctr_input_motion(const float sdl_accel[3], const float sdl_gyro[3], SnxCtrInput* input);
-/* The window's picture as the presenter draws it (gpu/present.c): an image of image_w by image_h pixels with the two
-   screens placed by mode (gpu/screens.h, the top one above the bottom one at 0). The screens' sizes are the frames' */
-typedef struct {
-    unsigned image_w, image_h, top_w, top_h, bottom_w, bottom_h;
-    unsigned mode;  /* the screens' arrangement (gpu/screens.h), 0 the stacked one */
-    bool integer;   /* the scale is a whole number */
-} SnxCtrWindowLayout;
-/* Where the point (x, y) of the window's image is on the bottom screen, as its pixel in px and py, held inside the
-   screen. True when the point is on the screen, false when it is not (px and py are the nearest pixel then, 0 and 0
-   with no picture) */
-bool snx_ctr_touch_locate(const SnxCtrWindowLayout* layout, double x, double y, unsigned* px, unsigned* py);
 union SDL_Event;
 /* The gamepads and the script: from now on scripted presses count their time */
 void snx_ctr_input_init(void);

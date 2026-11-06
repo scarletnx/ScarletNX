@@ -8,6 +8,7 @@
 #include "common/utilities/ini_lines.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
+#include "nx/hle/services/hid.h"
 #include "nx/hle/services/services.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/ini.h"
@@ -34,6 +35,72 @@ void options_language_set(const IniOpt* o, const char* v) {
     long n = strtol(v, &end, 10);
     (void)o;
     if (end != v && (n < 0 || n >= set_language_count())) g_settings.language = 1;
+}
+
+/* ---- TV mode ---- */
+/* docked's choice, which the .ini keeps: 0 Off, 1 On, 2 Auto. g_settings.tv_mode holds the mode in effect, 0 or 1,
+   so every service reads it as it always has */
+static int g_tv_mode_choice = 1;
+static int g_tv_on_charger; /* the host's state at the last update: 1, 0 or -1 */
+static int g_tv_power_logged;
+static int g_tv_watch; /* 1 when the platform watches the power source, 0 when the fallback polls it */
+static int g_tv_first = 1;
+static u64 g_tv_poll_next; /* the fallback's next query, in plat_ns */
+/* a host with no watcher: rarely, since a charger is not a thing that changes every second */
+#define TV_POLL_NS (15ull * 1000000000ull)
+/* Auto picks TV mode unless the host runs on its battery. A host whose state cannot be read is on TV mode */
+static int tv_mode_now(void) {
+    if (g_tv_mode_choice != 2) return g_tv_mode_choice;
+    return plat_power_on_charger() != 0;
+}
+void options_tv_mode_set(const IniOpt* o, const char* v) {
+    char* end;
+    long n = strtol(v, &end, 10);
+    (void)o;
+    if (end == v) return;
+    g_tv_mode_choice = n < 0 ? 0 : n > 2 ? 2 : (int)n;
+    __atomic_store_n(&g_settings.tv_mode, tv_mode_now(), __ATOMIC_RELAXED);
+}
+void options_tv_mode_start(void) {
+    if (g_tv_mode_choice != 2) return; /* fixed On and Off need no watcher */
+    g_tv_watch = plat_power_watch() == 0;
+    g_tv_first = 1;
+    options_tv_mode_update();
+}
+void options_tv_mode_update(void) {
+    int mode, on, was;
+    if (g_tv_mode_choice != 2) return;
+    if (!g_tv_first) {
+        if (g_tv_watch) {
+            if (!plat_power_take_change()) return;
+        } else {
+            /* no watcher on this host: ask rarely, and nowhere else */
+            u64 now = plat_ns();
+            if (now < g_tv_poll_next) return;
+            g_tv_poll_next = now + TV_POLL_NS;
+        }
+    } else if (g_tv_watch) {
+        (void)plat_power_take_change(); /* the watcher's first event, already in the state below */
+    }
+    on = plat_power_on_charger();
+    mode = on != 0;
+    was = __atomic_load_n(&g_settings.tv_mode, __ATOMIC_RELAXED);
+    if (!g_tv_power_logged || on != g_tv_on_charger || mode != was) {
+        if (on > 0)
+            LOG("power: the host is on its charger: TV mode Auto picks %s\n", mode ? "TV mode" : "handheld mode");
+        else if (on == 0)
+            LOG("power: the host is on its battery: TV mode Auto picks %s\n", mode ? "TV mode" : "handheld mode");
+        else
+            LOG("power: the host's power state cannot be read: TV mode Auto picks TV mode\n");
+        g_tv_power_logged = 1;
+    }
+    g_tv_on_charger = on;
+    g_tv_first = 0;
+    if (!g_tv_watch) g_tv_poll_next = plat_ns() + TV_POLL_NS;
+    if (mode == was) return;
+    __atomic_store_n(&g_settings.tv_mode, mode, __ATOMIC_RELAXED);
+    am_display_mode_changed();
+    hid_mode_changed();
 }
 
 /* "game" in any case, or a number: 0 and below 1 unlimited, 10 to 1000 frames a second (clamped), and the values an
@@ -195,12 +262,21 @@ static void store_put(const char* key, const char* value) {
     }
     memcpy(e->value, value, n + 1);
 }
+/* a key the file gives twice takes its last line's value (sections only group the keys), and the file is written back
+   with that one line */
 static void store_parse(char* text) {
     SnxIni ini;
     char *key, *value;
     g_nstore = 0;
     snx_ini_start(&ini, text);
-    while (snx_ini_next(&ini, &key, &value)) store_put(key, value);
+    while (snx_ini_next(&ini, &key, &value)) {
+        const Entry* e = store_find(key);
+        if (e && strcmp(e->value, value))
+            WARN("settings: %s is in the file twice, %s=%s and then %s=%s: it takes %s, the last, and the file keeps "
+                 "that line only\n",
+                 key, key, e->value, key, value, value);
+        store_put(key, value);
+    }
 }
 static const char* value_of(const IniOpt* o) {
     const char* v = override_of(o->key);
@@ -208,6 +284,15 @@ static const char* value_of(const IniOpt* o) {
     if (v) return v;
     e = store_find(o->key);
     return e ? e->value : o->def;
+}
+
+const char* ini_deprecated_value(const char* key) {
+    const char* v = override_of(key);
+    const Entry* e;
+    if (!ini_deprecated(key)) return NULL;
+    if (v) return v;
+    e = store_find(key);
+    return e ? e->value : NULL;
 }
 
 void ini_override(const char* k, const char* v) {
@@ -223,6 +308,8 @@ void ini_override(const char* k, const char* v) {
     if (i == g_nover) memcpy(g_over[g_nover++].key, k, n + 1);
     g_over[i].value = v;
 }
+
+const char* ini_overridden(const char* k) { return override_of(k); }
 
 void ini_set(const char* k, const char* v) {
     size_t kn = strlen(k), vn = strlen(v);
@@ -404,6 +491,37 @@ static int write_file(void) {
 /* ini_read's line about a value clamped or left, in the log */
 static void say_setting(const char* line) { WARN("%s\n", line); }
 
+int options_memory_fit_old(const char* old, int ios) {
+    if (!strcmp(old, "1")) return 0;
+    if (!strcmp(old, "0")) return ios ? 1 : -1;
+    return -2;
+}
+/* memory_fit, deprecated for memory_fit_mode, read while the file and the command line give memory_fit_mode no value:
+   the value it maps to goes in the store, which the file is written with, so the next run reads memory_fit_mode */
+static void memory_fit_old(void) {
+    const char* old = ini_deprecated_value("memory_fit");
+    int now;
+    if (!old || override_of("memory_fit_mode") || store_find("memory_fit_mode")) return;
+#if defined(SNX_IOS)
+    now = options_memory_fit_old(old, 1);
+#else
+    now = options_memory_fit_old(old, 0);
+#endif
+    if (now == -2)
+        WARN("settings: memory_fit=%s, deprecated, is neither 0 nor 1: memory_fit_mode takes its default, 0 (Auto)\n",
+             old);
+    else if (now == -1)
+        WARN(
+            "settings: memory_fit=%s, deprecated, was its default: memory_fit_mode takes its own, 0 (Auto), which fits "
+            "the game to the device (docs/DEPRECATIONS.md)\n",
+            old);
+    else {
+        store_put("memory_fit_mode", now ? "1" : "0");
+        WARN("settings: memory_fit=%s, deprecated, is memory_fit_mode=%d (%s) now (docs/DEPRECATIONS.md)\n", old, now,
+             now ? "Off" : "Auto");
+    }
+}
+
 static void say_deprecated(void) {
     const char* keys[STORE_MAX];
     char line[2048];
@@ -418,6 +536,32 @@ int options_debug(int flags, char* out, size_t n) {
     size_t at = strlen(out);
     if (g_opt_gdb && at < n) snprintf(out + at, n - at, "%sgdbstub", count++ ? ", " : "");
     return count;
+}
+int options_settings(char* out, size_t n) {
+    const IniOpt* const tables[] = {g_display_ini, g_graphics_ini, g_performance_ini};
+    char part[1024];
+    size_t at = 0, t;
+    int count = 0;
+    if (n) out[0] = 0;
+    for (t = 0; t < sizeof tables / sizeof *tables; t++) {
+        int c = ini_changed(tables[t], INI_CHANGED_DEFAULT, part, sizeof part);
+        if (c && at < n) at += (size_t)snprintf(out + at, n - at, "%s%s", count ? ", " : "", part);
+        count += c;
+    }
+    return count;
+}
+/* the Display, Graphics and Performance settings as the log last said them */
+static char g_said[2048];
+/* after a reload, the Display, Graphics and Performance settings again when they changed */
+static void settings_reloaded(void) {
+    char now[sizeof g_said];
+    int n = options_settings(now, sizeof now);
+    if (!strcmp(now, g_said)) return;
+    if (n)
+        LOG("settings: after the reload, %s\n", now);
+    else
+        LOG("settings: after the reload, every Display, Graphics and Performance setting is at its default\n");
+    memcpy(g_said, now, sizeof g_said);
 }
 /* the Debug settings in effect at the top of the picture; after a reload that changes them, in the log too */
 static void debug_shown(int reloaded) {
@@ -440,13 +584,16 @@ void ini_open(const char* path) {
     ini_set_say(say_setting);
     for (i = 0; i < g_nover; i++)
         if (!snx_setting_known(g_over[i].key)) WARN("--%s is not a setting, so it does nothing\n", g_over[i].key);
+    options_old_environment();
     text = snx_read_file(g_path, &size);
     if (!text) snx_os_error(why, sizeof why);
     if (!text && snx_path_exists(g_path)) {
         WARN("settings: cannot read %s (%s): every setting takes its default, and the file is not written over\n",
              g_path, why);
         apply_all();
+        options_old_environment_say();
         debug_shown(0);
+        options_settings(g_said, sizeof g_said);
         g_started = 1;
         return;
     }
@@ -455,10 +602,13 @@ void ini_open(const char* path) {
         g_hash = g_seen = fnv1a(text, size);
         free(text);
     }
+    memory_fit_old();
     n = pending_take(taken);
     say_deprecated();
     apply_all();
+    options_old_environment_say();
     debug_shown(0);
+    options_settings(g_said, sizeof g_said);
     if (!write_file()) pending_written(taken, n);
     g_started = 1;
 }
@@ -494,6 +644,7 @@ void ini_poll(int final) {
         apply_all();
         LOG("settings: %s reloaded\n", g_path);
         debug_shown(1);
+        settings_reloaded();
         if (!write_file()) pending_written(taken, n);
     } else if (h != g_hash)
         g_seen = h; /* changed: maybe still being saved, read at the next poll if it stays so */

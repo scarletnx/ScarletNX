@@ -2,11 +2,23 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # Working on the CPU implementation plan
 
+## Index
+
+* [The job](#the-job)
+* [What you need](#what-you-need)
+* [Get the code and build it](#get-the-code-and-build-it)
+* [What to read, in order](#what-to-read-in-order)
+* [Where the translator lives](#where-the-translator-lives)
+* [Rules that apply to this work](#rules-that-apply-to-this-work)
+* [How to hand work back](#how-to-hand-work-back)
+* [Definition of done](#definition-of-done)
+* [Questions](#questions)
+
 This guide is for whoever implements the [CPU implementation plan](CPU_TRANSLATOR_PLAN.md). The plan
 says what to build. This guide says how to work in this repository: what to set up and what to read, which project
 rules apply, and how each item is proven and handed back.
 
-The plan and this guide were checked against the code at commit `05324b57` on `main` (2026-10-29). If the code has
+The plan and this guide were checked against the code at commit `05324b57` on `main`. If the code has
 moved since, check an item's "Now" against the current code before you start it.
 
 ## The job
@@ -81,6 +93,7 @@ The commands you will use most, from the table in `CLAUDE.md`:
 | Name addresses, disassemble one function | `tools/symbols.py work/Game ADDR...`, `tools/disasm.py work/Game FUNC` |
 | All tests | `ctest --test-dir build --output-on-failure` |
 | The QEMU differential test | `ctest --test-dir build -R llvm_qemu_differential` |
+| What each SIMD, FP and crypto op becomes, per emitter path | `ctest --test-dir build -R llvm_lowering` |
 | The module contract test | `ctest --test-dir build -R module_contract` |
 
 `tools/run_game.py` wraps an unattended run with scripted input and screenshots. The procedure is in
@@ -131,7 +144,7 @@ and at the plan.
 | Guest memory | `src/nx/memory/mem.c`, `src/nx/memory/own.c` |
 | Guest threads | `src/nx/hle/kernel/thread.c` |
 | The GNU ABI runtime | `src/gnuabi/` |
-| Translator tests | `tests/llvm_qemu_differential.c`, `tests/llvm_qemu_expected.txt`, `tests/a64_ported.c`, `tests/llvm_module.c`, `tests/llvm_bench.c`, `tests/module_contract.c`, `tests/qemu_ref/` |
+| Translator tests | `tests/llvm_qemu_differential.c`, `tests/llvm_qemu_expected.txt`, `tests/llvm_lowering.c`, `tests/llvm_lowering_expected.txt`, `tests/a64_ported.c`, `tests/llvm_module.c`, `tests/llvm_bench.c`, `tests/module_contract.c`, `tests/qemu_ref/` |
 
 ## Rules that apply to this work
 
@@ -170,7 +183,15 @@ full recompile of every game, so group bumps where the plan allows it, such as I
 
 **Emitters.** Check every emitter or decoder change against QEMU with `ctest -R llvm_qemu_differential`, and give the
 test binary `--sweep` for more words and states. A group that newly differs fails the test, and so does a group in
-`tests/llvm_qemu_expected.txt` that no longer differs. Update that file in the same change.
+`tests/llvm_qemu_expected.txt` that no longer differs. Update that file in the same change. A change that moves an op
+between inline, guarded and helper on an emitter path fails `llvm_lowering` until
+`build/tests/snx-test-llvm-lowering tests/llvm_lowering_expected.txt --update` rewrites its summary in the same change.
+`--objects DIR --counts FILE` adds each op's target object counts, which `--path NAME --triple TRIPLE` narrows to one
+path on another target: instructions, calls, vector instructions, shuffles and GPR to vector moves, static code with
+the cold paths included, which is code inspection and never a speed claim. An emitter that chooses by a host feature
+runs both ways on one machine: `llvm_qemu_differential_avx2` (`--without-avx512`) compiles for the host as one
+without AVX-512, and the choices table in `tests/llvm_lowering.c` checks the instruction each x86 path picks where
+the class does not show it.
 
 **Settings.** A new setting goes in `src/nx/runtime/settings.txt`, from which `tools/settingsgen` generates the code
 that reads it. A setting that changes generated code must also join the JIT cache key in `jit_cache.c`, as

@@ -16,6 +16,7 @@
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/nvn/nvn_tex.h"
+#include "nx/gpu/nvn/nvn_tic.h"
 #include "nx/gpu/draw_state.h"
 #include "nx/gpu/renderer.h"
 #include "nx/hle/services/nvdrv.h"
@@ -30,9 +31,21 @@ typedef struct {
     u64 base;  /* the level's first layer */
     u64 layer; /* bytes between layers */
     int bl, volume;
-    u32 pitch, wb, rows, depth, bh, bd, bpb;
+    u32 pitch, wb, columns, rows, depth, bh, bd, bpb;
     int bw, bhp; /* a block's texels */
 } TexPlane;
+/* A 1D array's public Y coordinate names a layer, not a texel row. Copies use one-row planes internally, as the
+   descriptor and texture layout do; region height becomes the number of planes copied. */
+static NVNcopyRegion copy_region(const NvnTexture* t, const NVNcopyRegion* region) {
+    NVNcopyRegion r = *region;
+    if (t->d.target == NVN_TEXTURE_TARGET_1D_ARRAY) {
+        r.zoffset = r.yoffset;
+        r.depth = r.height;
+        r.yoffset = 0;
+        r.height = r.height > 0 ? 1 : 0;
+    }
+    return r;
+}
 static int tex_plane(const NvnTexture* t, const NvnView* v, TexPlane* p) {
     unsigned level = v && (v->set & NVN_VIEW_LEVELS) ? v->base_level : 0;
     *p = (TexPlane){0};
@@ -42,8 +55,9 @@ static int tex_plane(const NvnTexture* t, const NvnView* v, TexPlane* p) {
     NvnTexLayout l;
     nvn_tex_layout(&t->d, &l);
     u32 w = t->d.width >> level ? t->d.width >> level : 1;
-    u32 h = t->d.height >> level ? t->d.height >> level : 1;
+    u32 h = t->d.target == NVN_TEXTURE_TARGET_1D_ARRAY ? 1 : (t->d.height >> level ? t->d.height >> level : 1);
     p->bpb = (u32)bpb;
+    p->columns = w;
     p->wb = (w + (u32)p->bw - 1) / (u32)p->bw * (u32)bpb;
     p->rows = (h + (u32)p->bhp - 1) / (u32)p->bhp;
     p->layer = l.layer_size;
@@ -60,6 +74,8 @@ static int tex_plane(const NvnTexture* t, const NvnView* v, TexPlane* p) {
     p->bl = 1;
     p->bh = th;
     p->bd = td;
+    /* a sparse texture's level of rows of whole tiles: the surface is that wide in memory */
+    if (l.tile_w) p->wb = nvn_tex_level_gobs(&t->d, level) * 64;
     return 1;
 }
 /* the plane's side of a copy of the region at texels (x, y) of slice or layer z */
@@ -93,28 +109,65 @@ static void region_lines(const TexPlane* p, i32 w, i32 h, GpuDmaOp* o) {
     o->line_in = o->line_out = o->width;
 }
 
+/* A reversed buffer row order cannot be represented by the DMA interface's unsigned pitch. Gather the same
+   rectangle on the GPU, once per slice, while preserving the destination's bytes outside the rectangle. */
+static void copy_buffer_mirrored(const GpuDmaOp* o, u32 bpb, int to_tex, u32 flags) {
+    GpuBlit b = {.src = o->src, .dst = o->dst, .bpp = bpb};
+    u32 columns = o->width / bpb;
+    if (columns > NVN_BLIT_MAX || o->lines > NVN_BLIT_MAX)
+        fatal("nvn: a mirrored buffer copy exceeds %u columns or rows", NVN_BLIT_MAX);
+    if (to_tex) {
+        b.src.wb = o->width;
+        b.src.h = o->lines;
+        b.x0 = o->dst.ox / bpb;
+        b.y0 = o->dst.oy;
+    } else {
+        b.dst.wb = o->width;
+        b.dst.h = o->lines;
+    }
+    b.x1 = b.x0 + columns;
+    b.y1 = b.y0 + o->lines;
+    u32* table = g_nvn.copy.blit;
+    u32 sx = to_tex ? 0 : o->src.ox / bpb, sy = to_tex ? 0 : o->src.oy;
+    for (u32 i = 0; i < columns; i++) table[i] = sx + (flags & NVN_COPY_FLAGS_MIRROR_X_BIT ? columns - 1 - i : i);
+    for (u32 i = 0; i < o->lines; i++)
+        table[columns + i] = sy + (flags & NVN_COPY_FLAGS_MIRROR_Y_BIT ? o->lines - 1 - i : i);
+    b.src.ox = b.src.oy = b.dst.ox = b.dst.oy = 0;
+    b.scol = table;
+    b.srow = table + columns;
+    if (!g_renderer_up || !g_renderer->blit_mem || !g_renderer->blit_mem(&b))
+        LOG_LIMIT(4, "nvn: the GPU could not mirror a buffer/texture copy\n");
+    else if (g_renderer->rt_reload)
+        g_renderer->rt_reload(b.dst.addr);
+}
+
 /* between a buffer at buf and a texture's region, either way (to_tex: the buffer is the source) */
 static void copy_buffer_texture(const NvnPCopyB2T* r, const NvnTexture* t, int to_tex, const i64 stride[2],
                                 const u8* snap) {
-    i32 depth = r->r.depth > 0 ? r->r.depth : 1;
-    if (r->r.width <= 0 || r->r.height <= 0) return;
+    NVNcopyRegion region = copy_region(t, &r->r);
+    i32 depth = region.depth > 0 ? region.depth : 1;
+    if (region.width <= 0 || region.height <= 0) return;
     TexPlane p;
     if (!tex_plane(t, r->has_view ? &r->view : NULL, &p)) {
         LOG_LIMIT(4, "nvn: a copy of a texture of format %#x, which the runtime can't lay out\n", t->d.format);
         return;
     }
     GpuDmaOp o = {0};
-    region_lines(&p, r->r.width, r->r.height, &o);
+    region_lines(&p, region.width, region.height, &o);
     u64 row = stride[0] ? (u64)stride[0] : o.width;
     u64 image = stride[1] ? (u64)stride[1] : row * o.lines;
     for (i32 k = 0; k < depth; k++) {
+        u64 at = image * (u64)(r->flags & NVN_COPY_FLAGS_MIRROR_Z_BIT ? depth - 1 - k : k);
         GpuDmaSide* b = to_tex ? &o.src : &o.dst;
-        tex_side(&p, r->r.xoffset, r->r.yoffset, r->r.zoffset + k, to_tex ? &o.dst : &o.src);
+        tex_side(&p, region.xoffset, region.yoffset, region.zoffset + k, to_tex ? &o.dst : &o.src);
         *b = (GpuDmaSide){0};
-        b->addr = r->buffer + image * (u64)k;
+        b->addr = r->buffer + at;
         b->pitch = (u32)row;
-        o.snap = snap ? snap + image * (u64)k : NULL;
-        launch(&o);
+        o.snap = snap ? snap + at : NULL;
+        if (r->flags & (NVN_COPY_FLAGS_MIRROR_X_BIT | NVN_COPY_FLAGS_MIRROR_Y_BIT))
+            copy_buffer_mirrored(&o, p.bpb, to_tex, (u32)r->flags);
+        else
+            launch(&o);
     }
 }
 /* The 2D engine's format for a depth or stencil texture, by the zeta format of its target: the color format of the
@@ -146,12 +199,17 @@ static int surf2d(u64 snapshot, const NvnView* v, int has_v, i32 z, Surf2D* o, u
     o->linear = t.mem >> 12 & 1;
     o->bh = t.mem >> 4 & 15;
     o->depth = 1;
-    o->height = t.height;
+    const NvnTexture* texture = NVN_OBJ(const NvnTexture, snapshot);
+    u32 level = has_v && (v->set & NVN_VIEW_LEVELS) ? v->base_level : 0;
+    u32 width = texture->d.width >> level ? texture->d.width >> level : 1;
+    u32 height = texture->d.target == NVN_TEXTURE_TARGET_1D_ARRAY ? 1
+                 : texture->d.height >> level                     ? texture->d.height >> level
+                                                                  : 1;
+    o->height = height << ds_msaa_log2_y(msaa);
     o->addr = t.gva + (u64)z * t.layer_stride;
-    o->width = t.width;
+    o->width = width << ds_msaa_log2_x(msaa);
     if (o->linear) { /* a pitch-linear target's width is its row pitch in bytes */
         o->pitch = t.width;
-        o->width = *bpp ? t.width / *bpp : 0;
     }
     return o->width && o->height;
 }
@@ -166,41 +224,198 @@ static GpuDmaSide blit_plane(const Surf2D* s, u32 bpp) {
     p.bh = s->bh;
     return p;
 }
+/* Mirroring Z reverses source slices; destination slices still advance from the destination origin. */
+static i32 source_slice(const NvnPCopyT2T* r, i32 k) {
+    i32 depth = r->sr.depth > 0 ? r->sr.depth : 1;
+    return r->sr.zoffset + (r->flags & NVN_COPY_FLAGS_MIRROR_Z_BIT ? depth - 1 - k : k);
+}
+/* Formats whose 2D-engine copy converts components. Integer and compressed conversion needs other paths.
+   In particular RGB16F/RGB32F have no COPY2D support, despite being valid vertex/texture formats. */
+static u32 copy_pixel_format(u32 format) {
+    u32 components = 0, index = 0, padding = 0;
+    if (format >= NVN_FORMAT_R8 && format <= NVN_FORMAT_RGBA32I) {
+        components = (format - NVN_FORMAT_R8) / 12 + 1;
+        index = (format - NVN_FORMAT_R8) % 12;
+        if (components == 3) return 0;
+    } else if (format >= NVN_FORMAT_RGBX8 && format <= NVN_FORMAT_RGBX32I) {
+        components = 4;
+        index = format - NVN_FORMAT_RGBX8;
+        padding = GPU_PIXEL_X;
+    }
+    if (components) {
+        u32 type, bytes;
+        switch (index) {
+            case 0:
+                type = GPU_PIXEL_UNORM;
+                bytes = 0;
+                break;
+            case 1:
+                type = GPU_PIXEL_SNORM;
+                bytes = 0;
+                break;
+            case 4:
+                type = GPU_PIXEL_FLOAT;
+                bytes = 1;
+                break;
+            case 5:
+                type = GPU_PIXEL_UNORM;
+                bytes = 1;
+                break;
+            case 6:
+                type = GPU_PIXEL_SNORM;
+                bytes = 1;
+                break;
+            case 9:
+                type = GPU_PIXEL_FLOAT;
+                bytes = 2;
+                break;
+            default: return 0;
+        }
+        return GPU_PIXEL_DESC(bytes, components, type) | padding;
+    }
+    switch (format) {
+        case NVN_FORMAT_RGB5: return GPU_PIXEL_DESC(1, 4, GPU_PIXEL_5551) | GPU_PIXEL_X;
+        case NVN_FORMAT_RGB5A1: return GPU_PIXEL_DESC(1, 4, GPU_PIXEL_5551);
+        case NVN_FORMAT_RGB565: return GPU_PIXEL_DESC(1, 3, GPU_PIXEL_565);
+        case NVN_FORMAT_RGB10A2: return GPU_PIXEL_DESC(2, 4, GPU_PIXEL_1010102);
+        case NVN_FORMAT_R11G11B10F: return GPU_PIXEL_DESC(2, 3, GPU_PIXEL_111110);
+        case NVN_FORMAT_BGR5: return GPU_PIXEL_DESC(1, 4, GPU_PIXEL_5551) | GPU_PIXEL_BGR | GPU_PIXEL_X;
+        case NVN_FORMAT_BGR5A1: return GPU_PIXEL_DESC(1, 4, GPU_PIXEL_5551) | GPU_PIXEL_BGR;
+        case NVN_FORMAT_BGR565: return GPU_PIXEL_DESC(1, 3, GPU_PIXEL_565) | GPU_PIXEL_BGR;
+        case NVN_FORMAT_BGRX8: return GPU_PIXEL_DESC(0, 4, GPU_PIXEL_UNORM) | GPU_PIXEL_BGR | GPU_PIXEL_X;
+        case NVN_FORMAT_BGRA8: return GPU_PIXEL_DESC(0, 4, GPU_PIXEL_UNORM) | GPU_PIXEL_BGR;
+        case NVN_FORMAT_RGBA8_SRGB: return GPU_PIXEL_DESC(0, 4, GPU_PIXEL_UNORM) | GPU_PIXEL_SRGB;
+        case NVN_FORMAT_RGBX8_SRGB: return GPU_PIXEL_DESC(0, 4, GPU_PIXEL_UNORM) | GPU_PIXEL_SRGB | GPU_PIXEL_X;
+        case NVN_FORMAT_BGRA8_SRGB: return GPU_PIXEL_DESC(0, 4, GPU_PIXEL_UNORM) | GPU_PIXEL_SRGB | GPU_PIXEL_BGR;
+        case NVN_FORMAT_BGRX8_SRGB:
+            return GPU_PIXEL_DESC(0, 4, GPU_PIXEL_UNORM) | GPU_PIXEL_SRGB | GPU_PIXEL_BGR | GPU_PIXEL_X;
+    }
+    return 0;
+}
+/* Copies through GPU memory handle volume slices and formats with no render-target representation.
+   Only source/destination coordinate tables run on the CPU. The gather converts texels and preserves row padding.
+   Linear copies use texel-center coordinates clamped to the actual image bounds, not its padded GOB columns. */
+static int copy_memory(const NvnPCopyT2T* r, const TexPlane* source, const TexPlane* destination, u32 source_format,
+                       u32 destination_format) {
+    u32 conversion = 0;
+    int linear = (r->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT) != 0;
+    if ((linear && (source->volume || destination->volume)) || source->bw != 1 || source->bhp != 1 ||
+        destination->bw != 1 || destination->bhp != 1)
+        return 0;
+    if (source_format != destination_format || linear) {
+        u32 sf = copy_pixel_format(source_format), df = copy_pixel_format(destination_format);
+        if (!sf || !df) return 0;
+        conversion = GPU_BLIT_CONVERT(sf, df) | (linear ? GPU_BLIT_LINEAR_BIT : 0);
+    } else if (source->bpb != destination->bpb)
+        return 0;
+    if (r->sr.width <= 0 || r->sr.height <= 0 || r->dr.width <= 0 || r->dr.height <= 0 || r->sr.xoffset < 0 ||
+        r->sr.yoffset < 0 || r->dr.xoffset < 0 || r->dr.yoffset < 0)
+        return 1;
+    u32 columns = (u32)r->dr.width, rows = (u32)r->dr.height;
+    if (columns > NVN_BLIT_MAX || rows > NVN_BLIT_MAX)
+        fatal("nvn: a volume copy exceeds %u columns or rows", NVN_BLIT_MAX);
+    u32* table = g_nvn.copy.blit;
+    for (u32 i = 0; i < columns; i++) {
+        double position = ((double)i + 0.5) * r->sr.width / columns;
+        double x = r->sr.xoffset + (r->flags & NVN_COPY_FLAGS_MIRROR_X_BIT ? r->sr.width - position : position);
+        if (linear) {
+            x -= 0.5;
+            float at = x <= 0 ? 0 : x >= source->columns ? (float)(source->columns - 1) : (float)x;
+            if (at > (float)(source->columns - 1)) at = (float)(source->columns - 1);
+            memcpy(table + i, &at, sizeof at);
+        } else
+            table[i] = (u32)x;
+    }
+    for (u32 i = 0; i < rows; i++) {
+        double position = ((double)i + 0.5) * r->sr.height / rows;
+        double y = r->sr.yoffset + (r->flags & NVN_COPY_FLAGS_MIRROR_Y_BIT ? r->sr.height - position : position);
+        if (linear) {
+            y -= 0.5;
+            float at = y <= 0 ? 0 : y >= source->rows ? (float)(source->rows - 1) : (float)y;
+            if (at > (float)(source->rows - 1)) at = (float)(source->rows - 1);
+            memcpy(table + columns + i, &at, sizeof at);
+        } else
+            table[columns + i] = (u32)y;
+    }
+    i32 depth = r->sr.depth > 0 ? r->sr.depth : 1;
+    for (i32 k = 0; k < depth; k++) {
+        GpuBlit b = {.bpp = source->bpb,
+                     .fmt = conversion,
+                     .x0 = (u32)r->dr.xoffset,
+                     .y0 = (u32)r->dr.yoffset,
+                     .x1 = (u32)r->dr.xoffset + columns,
+                     .y1 = (u32)r->dr.yoffset + rows,
+                     .scol = table,
+                     .srow = table + columns};
+        tex_side(source, 0, 0, source_slice(r, k), &b.src);
+        tex_side(destination, 0, 0, r->dr.zoffset + k, &b.dst);
+        if (!g_renderer_up || !g_renderer->blit_mem || !g_renderer->blit_mem(&b))
+            LOG_LIMIT(4, "nvn: the GPU could not gather a volume copy\n");
+        else if (g_renderer->rt_reload)
+            g_renderer->rt_reload(b.dst.addr);
+    }
+    return 1;
+}
 /* slice k of the copy r as the renderer's image blit, on the GPU, which converts between two formats as the 2D engine
    does: 1 when it did it. 0 when either texture takes no target, or the renderer can't (the source isn't a render
    target): s and d are the slice's surfaces then, with their bytes a pixel in *bs and *bd, else their formats are 0 */
 static int blit_gpu(const NvnPCopyT2T* r, i32 k, Surf2D* s, Surf2D* d, u32* bs, u32* bd) {
     *bs = *bd = 0;
-    if (!surf2d(r->src, &r->sv, r->has_sv, r->sr.zoffset + k, s, bs) ||
+    if (!surf2d(r->src, &r->sv, r->has_sv, source_slice(r, k), s, bs) ||
         !surf2d(r->dst, &r->dv, r->has_dv, r->dr.zoffset + k, d, bd)) {
         s->format = d->format = 0;
         return 0;
     }
     double sdx = (double)r->sr.width / r->dr.width;
     double sdy = (double)r->sr.height / r->dr.height;
-    return g_renderer_up && g_renderer->blit &&
-           g_renderer->blit(s, d, r->dr.xoffset, r->dr.yoffset, r->dr.width, r->dr.height, r->sr.xoffset,
-                            r->sr.yoffset, sdx, sdy);
+    double sx = r->sr.xoffset, sy = r->sr.yoffset;
+    if (r->flags & NVN_COPY_FLAGS_MIRROR_X_BIT) sx += r->sr.width, sdx = -sdx;
+    if (r->flags & NVN_COPY_FLAGS_MIRROR_Y_BIT) sy += r->sr.height, sdy = -sdy;
+    if (!g_renderer_up) return 0;
+    /* Unscaled pixels of the same format retain the existing fast path: use an image already drawn there, else
+       let DMA copy the bytes. Creating an image solely for an ordinary upload/copy would add needless work. */
+    if (sdx == 1.0 && sdy == 1.0 && s->format == d->format && g_renderer->blit)
+        return g_renderer->blit(s, d, r->dr.xoffset, r->dr.yoffset, r->dr.width, r->dr.height, sx, sy, sdx, sdy);
+    if (g_renderer->blit_filter)
+        return g_renderer->blit_filter(s, d, r->dr.xoffset, r->dr.yoffset, r->dr.width, r->dr.height, sx, sy, sdx, sdy,
+                                       !!(r->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT));
+    return g_renderer->blit &&
+           g_renderer->blit(s, d, r->dr.xoffset, r->dr.yoffset, r->dr.width, r->dr.height, sx, sy, sdx, sdy);
 }
-/* A copy between textures' regions of different sizes or formats: NVN's 2D engine blit, done as the 3D engine's
-   channels' blits are (maxwell/fermi2d.c): the renderer's image blit when the source is a render target, filtered when
-   it scales, else its blit from memory, nearest sampled, between formats of the same bytes a pixel */
+/* A copy between textures' regions with scaling, conversion or axis reversal. The renderer's image path applies
+   the explicit filter flag; its memory gather provides nearest sampling when no image path can take the source. */
 static void blit_texture(const NvnPCopyT2T* r) {
     i32 depth = r->sr.depth > 0 ? r->sr.depth : 1;
     if (r->sr.width <= 0 || r->sr.height <= 0 || r->dr.width <= 0 || r->dr.height <= 0) return;
     double sdx = (double)r->sr.width / r->dr.width;
     double sdy = (double)r->sr.height / r->dr.height;
+    const NvnTexture* source = NVN_OBJ(const NvnTexture, r->src);
+    const NvnTexture* destination = NVN_OBJ(const NvnTexture, r->dst);
+    TexPlane ps, pd;
+    int memory =
+        tex_plane(source, r->has_sv ? &r->sv : NULL, &ps) && tex_plane(destination, r->has_dv ? &r->dv : NULL, &pd);
+    u32 source_format = r->has_sv && (r->sv.set & NVN_VIEW_FORMAT) ? r->sv.format : source->d.format;
+    u32 destination_format = r->has_dv && (r->dv.set & NVN_VIEW_FORMAT) ? r->dv.format : destination->d.format;
     LOG_LIMIT(1, "nvn: the first texture blit, %dx%d to %dx%d\n", r->sr.width, r->sr.height, r->dr.width, r->dr.height);
     for (i32 k = 0; k < depth; k++) {
         Surf2D s, d;
         u32 bs, bd;
         /* the destination target holds the pixels: nothing to load from memory (fermi2d.c's too) */
         if (blit_gpu(r, k, &s, &d, &bs, &bd)) continue;
+        if (memory) {
+            NvnPCopyT2T slice = *r;
+            slice.sr.zoffset = source_slice(r, k);
+            slice.dr.zoffset = r->dr.zoffset + k;
+            slice.sr.depth = slice.dr.depth = 1;
+            slice.flags &= ~NVN_COPY_FLAGS_MIRROR_Z_BIT;
+            if (copy_memory(&slice, &ps, &pd, source_format, destination_format)) continue;
+        }
         if (!s.format) {
             LOG_LIMIT(4, "nvn: a texture blit of a texture no render target takes isn't replayed\n");
             return;
         }
-        if (!bs || bs != bd || !g_renderer_up || !g_renderer->blit_mem) {
+        if (!bs || bs != bd || !g_renderer_up || !g_renderer->blit_mem ||
+            (r->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT)) {
             LOG_LIMIT(4, "nvn: a texture blit from format %#x to %#x isn't replayed\n", s.format, d.format);
             continue;
         }
@@ -209,20 +424,21 @@ static void blit_texture(const NvnPCopyT2T* r) {
         b.x0 = r->dr.xoffset > 0 ? (u32)r->dr.xoffset : 0;
         b.y0 = r->dr.yoffset > 0 ? (u32)r->dr.yoffset : 0;
         b.x1 = (u32)((i64)r->dr.xoffset + r->dr.width < (i64)d.width ? (i64)r->dr.xoffset + r->dr.width : d.width);
-        b.y1 = (u32)((i64)r->dr.yoffset + r->dr.height < (i64)d.height ? (i64)r->dr.yoffset + r->dr.height
-                                                                         : d.height);
+        b.y1 = (u32)((i64)r->dr.yoffset + r->dr.height < (i64)d.height ? (i64)r->dr.yoffset + r->dr.height : d.height);
         if (b.x0 >= b.x1 || b.y0 >= b.y1) continue;
         u32 n = b.x1 - b.x0;
         if (n > NVN_BLIT_MAX || b.y1 - b.y0 > NVN_BLIT_MAX)
-            fatal("nvn: a texture blit %u pixels wide and %u high, larger than the %u a side nvn holds", n,
-                  b.y1 - b.y0, NVN_BLIT_MAX);
+            fatal("nvn: a texture blit %u pixels wide and %u high, larger than the %u a side nvn holds", n, b.y1 - b.y0,
+                  NVN_BLIT_MAX);
         u32* tab = g_nvn.copy.blit; /* the GPU thread's: blit_mem copies the tables before it returns */
         for (u32 i = 0; i < n; i++) {
-            double at = r->sr.xoffset + ((double)((i64)b.x0 + i - r->dr.xoffset) + 0.5) * sdx;
+            double position = ((double)((i64)b.x0 + i - r->dr.xoffset) + 0.5) * sdx;
+            double at = r->sr.xoffset + (r->flags & NVN_COPY_FLAGS_MIRROR_X_BIT ? r->sr.width - position : position);
             tab[i] = at <= 0 ? 0 : at >= (double)s.width ? s.width - 1 : (u32)at;
         }
         for (u32 i = b.y0; i < b.y1; i++) {
-            double at = r->sr.yoffset + ((double)((i64)i - r->dr.yoffset) + 0.5) * sdy;
+            double position = ((double)((i64)i - r->dr.yoffset) + 0.5) * sdy;
+            double at = r->sr.yoffset + (r->flags & NVN_COPY_FLAGS_MIRROR_Y_BIT ? r->sr.height - position : position);
             tab[n + i - b.y0] = at <= 0 ? 0 : at >= (double)s.height ? s.height - 1 : (u32)at;
         }
         b.src = blit_plane(&s, bs);
@@ -238,6 +454,10 @@ static void blit_texture(const NvnPCopyT2T* r) {
 }
 /* between two textures' regions of the same size and block bytes */
 static void copy_texture_texture(const NvnPCopyT2T* r, const NvnTexture* s, const NvnTexture* d) {
+    NvnPCopyT2T regions = *r;
+    regions.sr = copy_region(s, &r->sr);
+    regions.dr = copy_region(d, &r->dr);
+    r = &regions;
     i32 depth = r->sr.depth > 0 ? r->sr.depth : 1;
     /* a multisample resolve (Downsample): the 2D engine's blit of the source's samples onto the destination's
        pixels, which the renderer resolves on the GPU when the source is its multisampled target (vk_blit2d) */
@@ -254,8 +474,24 @@ static void copy_texture_texture(const NvnPCopyT2T* r, const NvnTexture* s, cons
     }
     TexPlane ps, pd;
     if (!tex_plane(s, r->has_sv ? &r->sv : NULL, &ps) || !tex_plane(d, r->has_dv ? &r->dv : NULL, &pd)) return;
+    u32 source_format = r->has_sv && (r->sv.set & NVN_VIEW_FORMAT) ? r->sv.format : s->d.format;
+    u32 destination_format = r->has_dv && (r->dv.set & NVN_VIEW_FORMAT) ? r->dv.format : d->d.format;
+    int transform = r->sr.width != r->dr.width || r->sr.height != r->dr.height ||
+                    (r->flags & (NVN_COPY_FLAGS_MIRROR_X_BIT | NVN_COPY_FLAGS_MIRROR_Y_BIT));
+    if ((ps.volume || pd.volume) && (transform || source_format != destination_format) &&
+        copy_memory(r, &ps, &pd, source_format, destination_format)) {
+        return;
+    }
+    /* Non-renderable COPY2D formats (RGBA4 and the RGB16 packed formats) can still be transformed as exact bytes.
+       Color conversion also uses the memory gather when either format has no attachment representation. */
+    int sd = 0, dd = 0;
+    if ((transform || source_format != destination_format) &&
+        (!nvn_rt_format(source_format, &sd) || !nvn_rt_format(destination_format, &dd)) &&
+        copy_memory(r, &ps, &pd, source_format, destination_format))
+        return;
     if (r->sr.width != r->dr.width || r->sr.height != r->dr.height || ps.bpb != pd.bpb || ps.bw != pd.bw ||
-        ps.bhp != pd.bhp) {
+        ps.bhp != pd.bhp ||
+        (r->flags & (NVN_COPY_FLAGS_MIRROR_X_BIT | NVN_COPY_FLAGS_MIRROR_Y_BIT | NVN_COPY_FLAGS_LINEAR_FILTER_BIT))) {
         blit_texture(r);
         return;
     }
@@ -271,7 +507,19 @@ static void copy_texture_texture(const NvnPCopyT2T* r, const NvnTexture* s, cons
         Surf2D s2, d2;
         u32 bs, bd;
         if (blit_gpu(r, k, &s2, &d2, &bs, &bd)) continue;
-        tex_side(&ps, r->sr.xoffset, r->sr.yoffset, r->sr.zoffset + k, &o.src);
+        if (source_format != destination_format) {
+            /* A failed image conversion must not become a raw same-size byte copy. */
+            NvnPCopyT2T slice = *r;
+            slice.sr.zoffset = source_slice(r, k);
+            slice.dr.zoffset = r->dr.zoffset + k;
+            slice.sr.depth = slice.dr.depth = 1;
+            slice.flags &= ~NVN_COPY_FLAGS_MIRROR_Z_BIT;
+            if (!copy_memory(&slice, &ps, &pd, source_format, destination_format))
+                LOG_LIMIT(4, "nvn: a texture conversion from format %#x to %#x is unsupported\n", source_format,
+                          destination_format);
+            continue;
+        }
+        tex_side(&ps, r->sr.xoffset, r->sr.yoffset, source_slice(r, k), &o.src);
         tex_side(&pd, r->dr.xoffset, r->dr.yoffset, r->dr.zoffset + k, &o.dst);
         launch(&o);
     }
@@ -389,9 +637,10 @@ static int texel_copy(u64 t, u64 v, u64 region, i64 row, i64 image, TexelCopy* x
     }
     TexPlane p;
     if (!tex_plane(&x->t, x->r.has_view ? &x->r.view : NULL, &p) || x->r.r.width <= 0 || x->r.r.height <= 0) return 0;
-    u64 width = ((u64)x->r.r.width + (u64)p.bw - 1) / (u64)p.bw * p.bpb;
-    u64 lines = ((u64)x->r.r.height + (u64)p.bhp - 1) / (u64)p.bhp;
-    u64 depth = x->r.r.depth > 0 ? (u64)x->r.r.depth : 1;
+    NVNcopyRegion r = copy_region(&x->t, &x->r.r);
+    u64 width = ((u64)r.width + (u64)p.bw - 1) / (u64)p.bw * p.bpb;
+    u64 lines = ((u64)r.height + (u64)p.bhp - 1) / (u64)p.bhp;
+    u64 depth = r.depth > 0 ? (u64)r.depth : 1;
     x->stride[0] = row ? row : (i64)width;
     x->stride[1] = image ? image : x->stride[0] * (i64)lines;
     *span = (u64)x->stride[1] * (depth - 1) + (u64)x->stride[0] * (lines - 1) + width;
