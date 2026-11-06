@@ -279,6 +279,12 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_recorder COMMAND snx-test-vulkan -H)
     set_tests_properties(vulkan_recorder PROPERTIES TIMEOUT 20 ENVIRONMENT "SNX_TEST_RECORDER_ONLY=1"
         PASS_REGULAR_EXPRESSION "The recording thread's own vk_rec_sync returns")
+    # the writable storage buffers' check (tests/vulkan_storage_buffer_keep.inc) with guest buffers copied: the default
+    # run takes unified memory on an integrated device and on lavapipe, which writes them in guest memory instead of
+    # keeping them on the GPU. A run that hangs fails at the timeout
+    add_test(NAME vulkan_storage_buffer_keep COMMAND snx-test-vulkan -H --vk_memory=1)
+    set_tests_properties(vulkan_storage_buffer_keep PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_BUFFER_KEEP_ONLY=1"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again with graphics descriptors in descriptor buffers (gpu/vk/descriptors.c, vk_descriptors), also
     # with guest memory read in place, under the validation layer when it is installed. A device without
     # VK_EXT_descriptor_buffer skips them (77). The layer reports errors only: the targetless-stores check draws with
