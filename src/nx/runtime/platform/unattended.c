@@ -35,12 +35,35 @@ typedef struct {
     size_t n;
 } Script;
 
-/* the settings are g_settings' (settings.txt's g_unattended_ini): seconds (0: no time limit), frames, screenshot,
-   screenshot_every, press_length, script */
-static Script g_script;
-static u64 g_t0;           /* unattended_start's plat_ns() */
-static int g_shot_bucket;  /* frames / shot_every at the last periodic shot */
-static int g_shot_count;
+/* from this frame (presents since the game's start) on, these buttons (HidNpadButton bits) and sticks */
+typedef struct {
+    u64 buttons;
+    i32 st[4]; /* lx, ly, rx, ry */
+    int frame;
+} TasLine;
+
+/* The record's file and the replay's lines, the main thread's: the backend's poll and the settings' reads use them.
+   The settings are read again whenever the .ini changes, and a read that names the file a record or a replay has
+   already goes on with it: their paths are kept for that */
+typedef struct {
+    FILE* record;    /* NULL when not recording */
+    TasLine written; /* the record's last line: frame -1 and a neutral pad before its first */
+    TasLine* replay; /* the replay's lines, frames rising, one allocation; NULL without one or past its end */
+    size_t lines;    /* how many */
+    size_t next;     /* the first line whose frame no poll reached yet */
+    char record_path[sizeof g_settings.input_record];
+    char replay_path[sizeof g_settings.input_replay];
+} Tas;
+
+/* The file's state. The settings are g_settings' (settings.txt's g_unattended_ini): seconds (0: no time limit), frames,
+   screenshot, screenshot_every, press_length, script, input_record, input_replay */
+static struct {
+    Script script;
+    u64 t0;          /* unattended_start's plat_ns() */
+    int shot_bucket; /* frames / shot_every at the last periodic shot */
+    int shot_count;
+    Tas tas;
+} g_unattended;
 
 static int script_parse_press(const char** s, ScriptPress* p) {
     const char* c = *s;
@@ -71,10 +94,11 @@ void unattended_script_set(const IniOpt* o, const char* v) {
     const char* c;
     ScriptPress* press;
     (void)o;
-    if (g_script.press && !strcmp(g_script.text, v)) return; /* a reload: keep the progress, presses aren't replayed */
+    if (g_unattended.script.press && !strcmp(g_unattended.script.text, v))
+        return; /* a reload: keep the progress, presses aren't replayed */
     if (!*v) {
-        free(g_script.press);
-        memset(&g_script, 0, sizeof g_script);
+        free(g_unattended.script.press);
+        memset(&g_unattended.script, 0, sizeof g_unattended.script);
         return;
     }
     for (c = v; *c; c++) max += *c == ',';
@@ -92,11 +116,11 @@ void unattended_script_set(const IniOpt* o, const char* v) {
             WARN("unattended: the script stops at \"%s\", which is not ms:hex or Nf:hex\n", c);
             break;
         }
-    free(g_script.press);
-    g_script.press = press;
-    g_script.text = (char*)(press + max);
-    memcpy(g_script.text, v, len + 1);
-    g_script.n = n;
+    free(g_unattended.script.press);
+    g_unattended.script.press = press;
+    g_unattended.script.text = (char*)(press + max);
+    memcpy(g_unattended.script.text, v, len + 1);
+    g_unattended.script.n = n;
 }
 
 int unattended_known(const char* k) { return ini_find(g_unattended_ini, k) != NULL; }
@@ -110,70 +134,51 @@ int unattended_ini(const char* k, const char* v) {
 /* the presses start over too: a look at them before (the backend's, during main.c's prepare_wait) began a present
    press, which would end before the game's presents reach it */
 void unattended_start(void) {
-    g_t0 = plat_ns();
-    for (size_t i = 0; i < g_script.n; i++) {
-        g_script.press[i].held_since = 0;
-        g_script.press[i].done = 0;
+    g_unattended.t0 = plat_ns();
+    for (size_t i = 0; i < g_unattended.script.n; i++) {
+        g_unattended.script.press[i].held_since = 0;
+        g_unattended.script.press[i].done = 0;
     }
 }
-u64 unattended_ms(void) { return (plat_ns() - g_t0) / 1000000ull; }
+u64 unattended_ms(void) { return (plat_ns() - g_unattended.t0) / 1000000ull; }
 int unattended_active(void) { return g_settings.seconds > 0 || g_settings.frames >= 0; }
 
 static int frames_now(void) { return __atomic_load_n(&g_frames, __ATOMIC_RELAXED); }
 
 /* ---- input_record and input_replay: player 1's input, a line "frame:buttons:lx,ly,rx,ry" a present it changed */
 
-/* from this frame (presents since the game's start) on, these buttons (HidNpadButton bits) and sticks */
-typedef struct {
-    u64 buttons;
-    i32 st[4]; /* lx, ly, rx, ry */
-    int frame;
-} TasLine;
-
-/* The record's file and the replay's lines, the main thread's: the backend's poll and the settings' reads use them.
-   The settings are read again whenever the .ini changes, and a read that names the file a record or a replay has
-   already goes on with it: their paths are kept for that */
-typedef struct {
-    FILE* record;    /* NULL when not recording */
-    TasLine written; /* the record's last line: frame -1 and a neutral pad before its first */
-    TasLine* replay; /* the replay's lines, frames rising, one allocation; NULL without one or past its end */
-    size_t lines;    /* how many */
-    size_t next;     /* the first line whose frame no poll reached yet */
-    char record_path[sizeof g_settings.input_record];
-    char replay_path[sizeof g_settings.input_replay];
-} Tas;
-static Tas g_tas;
-
 /* the record's lines are in its file as they are written, so a run that ends in a crash keeps them */
 static void tas_flush(int frame) {
+    Tas* t = &g_unattended.tas;
     int e;
-    if (!ferror(g_tas.record) && !fflush(g_tas.record)) return;
+    if (!ferror(t->record) && !fflush(t->record)) return;
     e = errno;
-    LOG("input_record: writing %s failed at frame %d\n", g_tas.record_path, frame);
+    LOG("input_record: writing %s failed at frame %d\n", t->record_path, frame);
     fatal("input_record: writing its file failed at frame %d: %s", frame, strerror(e));
 }
 
 void unattended_record_set(const IniOpt* o, const char* v) {
+    Tas* t = &g_unattended.tas;
     int frame = frames_now(), e;
     (void)o;
-    if (!strcmp(g_tas.record_path, v)) return; /* the file it records to already */
-    if (g_tas.record) {
-        LOG("input_record: %s ends at frame %d\n", g_tas.record_path, frame);
-        e = fclose(g_tas.record) ? errno : 0;
-        g_tas.record = NULL;
+    if (!strcmp(t->record_path, v)) return; /* the file it records to already */
+    if (t->record) {
+        LOG("input_record: %s ends at frame %d\n", t->record_path, frame);
+        e = fclose(t->record) ? errno : 0;
+        t->record = NULL;
         if (e) fatal("input_record: closing its file failed at frame %d: %s", frame, strerror(e));
     }
-    snprintf(g_tas.record_path, sizeof g_tas.record_path, "%s", v);
+    snprintf(t->record_path, sizeof t->record_path, "%s", v);
     if (!*v) return;
     LOG("input_record: player 1's input goes to %s from frame %d\n", v, frame);
-    g_tas.record = snx_fopen(v, "wbx"); /* a recording is never written over: someone played it */
-    if (!g_tas.record) {
+    t->record = snx_fopen(v, "wbx"); /* a recording is never written over: someone played it */
+    if (!t->record) {
         e = errno;
         fatal("input_record: its file could not be made: %s%s", strerror(e),
               e == EEXIST ? "; a recording is never written over, so give a path no file has" : "");
     }
-    g_tas.written = (TasLine){.frame = -1};
-    fprintf(g_tas.record,
+    t->written = (TasLine){.frame = -1};
+    fprintf(t->record,
             "# input_record of %s\n"
             "# frame:buttons:lx,ly,rx,ry each present player 1's input changed: frame the presents since the game's "
             "start, buttons in hex\n",
@@ -268,26 +273,27 @@ static void tas_excerpt(const char* s, size_t len, char* out, size_t n) {
 /* The replay's lines from text, frames rising, past # lines and empty ones (a \r before a \n is the line's end too):
    1, else 0 with the line refused, its number and why in msg, nothing kept */
 static int tas_load(const char* text, size_t size, char* msg, size_t n) {
+    Tas* t = &g_unattended.tas;
     size_t at, max = 1, line = 0, before = 0, len, text_len;
     char why[160], shown[300];
     for (at = 0; at < size; at++) max += text[at] == '\n';
-    if (max > SIZE_MAX / sizeof *g_tas.replay) {
+    if (max > SIZE_MAX / sizeof *t->replay) {
         snprintf(msg, n, "its %zu lines are more than this machine can hold", max);
         return 0;
     }
-    g_tas.replay = snx_alloc(max * sizeof *g_tas.replay);
+    t->replay = snx_alloc(max * sizeof *t->replay);
     for (at = 0; at < size; at += len + 1) {
         const char* s = text + at;
         const char* nl = memchr(s, '\n', size - at);
-        TasLine* l = &g_tas.replay[g_tas.lines];
+        TasLine* l = &t->replay[t->lines];
         len = nl ? (size_t)(nl - s) : size - at;
         line++;
         if (!len || s[0] == '#') continue;
         text_len = len - (s[len - 1] == '\r');
         if (!text_len) continue;
         if (tas_parse(s, text_len, l, why, sizeof why)) {
-            if (!g_tas.lines || l->frame > l[-1].frame) {
-                g_tas.lines++;
+            if (!t->lines || l->frame > l[-1].frame) {
+                t->lines++;
                 before = line;
                 continue;
             }
@@ -296,32 +302,33 @@ static int tas_load(const char* text, size_t size, char* msg, size_t n) {
         }
         tas_excerpt(s, text_len, shown, sizeof shown);
         snprintf(msg, n, "line %zu \"%s\": %s", line, shown, why);
-        free(g_tas.replay);
-        g_tas.replay = NULL;
-        g_tas.lines = 0;
+        free(t->replay);
+        t->replay = NULL;
+        t->lines = 0;
         return 0;
     }
-    if (!g_tas.lines) {
-        free(g_tas.replay);
-        g_tas.replay = NULL;
+    if (!t->lines) {
+        free(t->replay);
+        t->replay = NULL;
     }
     return 1;
 }
 
 void unattended_replay_set(const IniOpt* o, const char* v) {
+    Tas* t = &g_unattended.tas;
     unsigned char* text;
     size_t size;
     int frame = frames_now(), e, ok;
     char msg[600];
     (void)o;
-    if (!strcmp(g_tas.replay_path, v)) return; /* the file it plays already, or played to its end */
-    if (g_tas.replay)
-        LOG("input_replay: %s stops at frame %d, its last line's frame %d\n", g_tas.replay_path, frame,
-            g_tas.replay[g_tas.lines - 1].frame);
-    free(g_tas.replay);
-    g_tas.replay = NULL;
-    g_tas.lines = g_tas.next = 0;
-    snprintf(g_tas.replay_path, sizeof g_tas.replay_path, "%s", v);
+    if (!strcmp(t->replay_path, v)) return; /* the file it plays already, or played to its end */
+    if (t->replay)
+        LOG("input_replay: %s stops at frame %d, its last line's frame %d\n", t->replay_path, frame,
+            t->replay[t->lines - 1].frame);
+    free(t->replay);
+    t->replay = NULL;
+    t->lines = t->next = 0;
+    snprintf(t->replay_path, sizeof t->replay_path, "%s", v);
     if (!*v) return;
     LOG("input_replay: player 1's input from %s\n", v);
     text = snx_read_file(v, &size);
@@ -332,43 +339,44 @@ void unattended_replay_set(const IniOpt* o, const char* v) {
     ok = tas_load((const char*)text, size, msg, sizeof msg);
     free(text);
     if (!ok) fatal("input_replay: %s", msg);
-    if (!g_tas.lines)
+    if (!t->lines)
         LOG("input_replay: %s has no lines, so player 1's input comes from the controls at frame %d already\n", v,
             frame);
     else
         LOG("input_replay: %zu lines, frames %d to %d: player 1's input is neutral before frame %d and comes from "
             "the controls again at frame %d\n",
-            g_tas.lines, g_tas.replay[0].frame, g_tas.replay[g_tas.lines - 1].frame, g_tas.replay[0].frame,
-            g_tas.replay[g_tas.lines - 1].frame + 1);
+            t->lines, t->replay[0].frame, t->replay[t->lines - 1].frame, t->replay[0].frame,
+            t->replay[t->lines - 1].frame + 1);
 }
 
 void unattended_pad(u64* buttons, i32 st[4]) {
+    Tas* t = &g_unattended.tas;
     int frame = frames_now();
-    if (g_tas.replay && frame > g_tas.replay[g_tas.lines - 1].frame) {
+    if (t->replay && frame > t->replay[t->lines - 1].frame) {
         LOG("input_replay: %s ends at frame %d, past its last line's frame %d: player 1's input comes from the "
             "controls again\n",
-            g_tas.replay_path, frame, g_tas.replay[g_tas.lines - 1].frame);
-        free(g_tas.replay);
-        g_tas.replay = NULL;
-        g_tas.lines = g_tas.next = 0;
+            t->replay_path, frame, t->replay[t->lines - 1].frame);
+        free(t->replay);
+        t->replay = NULL;
+        t->lines = t->next = 0;
     }
-    if (g_tas.replay) {
-        while (g_tas.next < g_tas.lines && g_tas.replay[g_tas.next].frame <= frame) g_tas.next++;
-        if (g_tas.next) {
-            *buttons = g_tas.replay[g_tas.next - 1].buttons;
-            memcpy(st, g_tas.replay[g_tas.next - 1].st, sizeof g_tas.replay->st);
+    if (t->replay) {
+        while (t->next < t->lines && t->replay[t->next].frame <= frame) t->next++;
+        if (t->next) {
+            *buttons = t->replay[t->next - 1].buttons;
+            memcpy(st, t->replay[t->next - 1].st, sizeof t->replay->st);
         } else { /* before its first line */
             *buttons = 0;
-            memset(st, 0, sizeof g_tas.replay->st);
+            memset(st, 0, sizeof t->replay->st);
         }
     }
     /* a line a present at most: a change in the present of the last line is written with the next present's */
-    if (g_tas.record && frame > g_tas.written.frame &&
-        (*buttons != g_tas.written.buttons || memcmp(st, g_tas.written.st, sizeof g_tas.written.st))) {
-        g_tas.written.frame = frame;
-        g_tas.written.buttons = *buttons;
-        memcpy(g_tas.written.st, st, sizeof g_tas.written.st);
-        fprintf(g_tas.record, "%d:%llx:%d,%d,%d,%d\n", frame, (unsigned long long)*buttons, (int)st[0], (int)st[1],
+    if (t->record && frame > t->written.frame &&
+        (*buttons != t->written.buttons || memcmp(st, t->written.st, sizeof t->written.st))) {
+        t->written.frame = frame;
+        t->written.buttons = *buttons;
+        memcpy(t->written.st, st, sizeof t->written.st);
+        fprintf(t->record, "%d:%llx:%d,%d,%d,%d\n", frame, (unsigned long long)*buttons, (int)st[0], (int)st[1],
                 (int)st[2], (int)st[3]);
         tas_flush(frame);
     }
@@ -378,10 +386,10 @@ u64 unattended_buttons(void) {
     u64 now = plat_ns(), held = 0, len_ns = (u64)g_settings.press_length * 1000000u, ms;
     int frames = frames_now();
     size_t i;
-    if (!g_t0) g_t0 = now;
-    ms = (now - g_t0) / 1000000u;
-    for (i = 0; i < g_script.n; i++) {
-        ScriptPress* p = &g_script.press[i];
+    if (!g_unattended.t0) g_unattended.t0 = now;
+    ms = (now - g_unattended.t0) / 1000000u;
+    for (i = 0; i < g_unattended.script.n; i++) {
+        ScriptPress* p = &g_unattended.script.press[i];
         if (!p->at_present) {
             if (ms >= p->at && ms - p->at < (u64)g_settings.press_length) held |= p->mask;
             continue;
@@ -406,15 +414,16 @@ int unattended_periodic_shot(char* path, size_t n) {
     if (!g_settings.screenshot[0] || g_settings.screenshot_every <= 0) return 0;
     /* by bucket, not frames % shot_every: frames may move by two between looks */
     bucket = frames_now() / g_settings.screenshot_every;
-    if (bucket == g_shot_bucket) return 0;
-    g_shot_bucket = bucket;
-    snprintf(path, n, "%s_%04d", g_settings.screenshot, g_shot_count++);
+    if (bucket == g_unattended.shot_bucket) return 0;
+    g_unattended.shot_bucket = bucket;
+    snprintf(path, n, "%s_%04d", g_settings.screenshot, g_unattended.shot_count++);
     return 1;
 }
 
 int unattended_done(void) {
     if (g_settings.frames >= 0 && frames_now() >= g_settings.frames) return 1;
-    return g_settings.seconds > 0 && g_t0 && plat_ns() - g_t0 >= (u64)g_settings.seconds * 1000000000u;
+    return g_settings.seconds > 0 && g_unattended.t0 &&
+           plat_ns() - g_unattended.t0 >= (u64)g_settings.seconds * 1000000000u;
 }
 
 void unattended_exit(u64 hash, int w, int h) {
