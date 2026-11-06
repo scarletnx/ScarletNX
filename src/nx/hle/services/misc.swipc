@@ -75,6 +75,23 @@ interface nn::chat::IUserShimScopedObject {
     [1] GetChattingEvent() -> handle<copy, event> event;
 }
 
+# GameShare, which the console's chat module hosts too. A game can ask for its sizes at boot whether it shares or not, and
+# the SDK takes the object from command 0 and the memory from command 300 before any of it. No session ever starts:
+# what else a game asks of these answers as an undeclared command does. The names are guesses from the SDK's callers
+type nn::streamplay::HidSharedMemoryConfig = bytes<0x10, 8>; # the size to map, and where the data starts in it
+
+@fallback(stub_ok)
+interface nn::streamplay::IUserService is stpl:u {
+    [0] OpenUserShim(u32 version) -> object<nn::streamplay::IUserShimScopedObject> shim;
+}
+@fallback(stub_ok)
+interface nn::streamplay::IUserShimScopedObject {
+    [1] GetRequiredMemorySize(u8 type, u8 mode, i32 guests) -> u32 size;
+    # what GetRequiredMemorySize adds up: once, and three for each guest
+    [9] GetWorkBufferSizes(u8 type, u8 mode) -> (u64 common, u64 first, u64 second, u64 third);
+    [300] GetHidSharedMemory() -> (nn::streamplay::HidSharedMemoryConfig config, handle<copy, shared_memory> memory);
+}
+
 interface nn::friends::detail::ipc::IServiceCreator is friend:u, friend:v, friend:a {
     [0] CreateFriendService() -> object<nn::friends::detail::ipc::IFriendService> service;
     [1] CreateNotificationService(nn::account::Uid uid)
