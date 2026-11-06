@@ -401,6 +401,23 @@ void pf_pipe(PFile* pf, const u64 modules[5], const void* key, u32 keylen) {
     pm_unlock(&pf->lock);
 }
 
+/* in one piece padded to 8: pf_mix takes whole words of each piece, and the key and the program are of any size */
+void pf_cspipe(PFile* pf, const PfCsPipe* c, const u32* cbr, const void* key, const u8* code) {
+    size_t at = sizeof *c + (size_t)c->ncbr * 16, n = (at + (c->nkey + 7u) / 8 * 8 + c->ncode + 7u) & ~(size_t)7;
+    u8* payload = calloc(1, n);
+    const void* piece[1] = {payload};
+    size_t len[1] = {n};
+    u64 check;
+    if (!payload) return;
+    memcpy(payload, c, sizeof *c);
+    memcpy(payload + sizeof *c, cbr, (size_t)c->ncbr * 16);
+    memcpy(payload + at, key, c->nkey);
+    memcpy(payload + at + (c->nkey + 7u) / 8 * 8, code, c->ncode);
+    pm_lock(&pf->lock);
+    pf_append(pf, PF_CSPIPE, piece, len, 1, &check);
+    pm_unlock(&pf->lock);
+    free(payload);
+}
 void pf_shipref(PFile* pf, u64 module, u64 at, u64 check) {
     u64 words[2], c;
     const void* piece[1];
@@ -490,6 +507,19 @@ static int pf_pipe_rec(const PfReader* r, const u8* p, u32 len, const PfLoad* lo
     }
     return 0;
 }
+/* a compute pipeline record (len bytes at p) handed to load: 0, or -1 when it isn't one */
+static int pf_cspipe_rec(const u8* p, u32 len, const PfLoad* load) {
+    PfCsPipe c;
+    u64 need;
+    if (len < sizeof c) return -1;
+    memcpy(&c, p, sizeof c);
+    need = sizeof c + (u64)c.ncbr * 16 + ((u64)c.nkey + 7) / 8 * 8 + c.ncode;
+    if (need > len || len - need >= 8) return -1;
+    if (load->cspipe)
+        load->cspipe(load->ctx, &c, (const u32*)(const void*)(p + sizeof c), p + sizeof c + (size_t)c.ncbr * 16,
+                     p + sizeof c + (size_t)c.ncbr * 16 + (c.nkey + 7) / 8 * 8);
+    return 0;
+}
 /* a record (type, len bytes at p, its check h) of a file read to load: 0, or -1 when it ends the reading. Called with
    pf->lock */
 static int pf_take(PFile* pf, PfReader* r, u32 type, const u8* p, u32 len, u64 h, const PfLoad* load, u32 loaded[2]) {
@@ -519,6 +549,7 @@ static int pf_take(PFile* pf, PfReader* r, u32 type, const u8* p, u32 len, u64 h
         return 0;
     }
     if (type == PF_PIPE) return pf_pipe_rec(r, p, len, load, loaded);
+    if (type == PF_CSPIPE) return pf_cspipe_rec(p, len, load);
     return type == PF_SOURCE ? 0 : -1; /* a source matters only to a rebuild (pf_retake) */
 }
 /* pf_take's for a file being rebuilt into a new one of another key, which load->source and load->pipe write to: a
@@ -548,6 +579,7 @@ static int pf_retake(PfReader* r, u32 type, const u8* p, u32 len, u64 h, const P
         r->source = 0;
         return 0;
     }
+    if (type == PF_CSPIPE) return pf_cspipe_rec(p, len, load);
     return type == PF_PIPE ? pf_pipe_rec(r, p, len, load, loaded) : -1;
 }
 /* the unit record at s->at unpacked into s->raw and checked whole, on any thread: its check (unless checked), its

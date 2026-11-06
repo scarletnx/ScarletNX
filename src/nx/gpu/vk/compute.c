@@ -634,23 +634,50 @@ typedef struct {
     u8 query[SH_MAXTEX]; /* the dimension of each texture only a TXQ names (ShaderInfo.tex_query_hint) */
 } CsKey;
 static CsPipe g_cs_alloc_failed = {.failed = 1}; /* out of memory: not cached, retried */
+/* the key of a program (code, its window as cs_read_code makes it), its launch parameters and its variant, its BRX
+   tables read through read; *blen: the bytes of the window the program takes */
+static u64 cs_key(const u8* code, u32 flow_base, u32 lx, u32 ly, u32 lz, u32 shm, const CsKey* k, VkCbReader read,
+                  u32* blen) {
+    u64 key = vk_shader_hash(code, 0x10000 + 80, blen, read) ^ ((u64)lx << 40) ^ ((u64)ly << 48) ^ ((u64)lz << 56) ^
+              ((u64)shm << 20) ^ ((u64)k->image << 32) ^ (u64)k->tex_int * 0x9E3779B97F4A7C15ull ^
+              (u64)k->tex_sint * 0xC2B2AE3D27D4EB4Full ^ (u64)k->image_sint * 0xA24BAED4963EE407ull ^
+              (u64)k->tex_rect * 0x165667B19E3779F9ull;
+    if (shader_absolute_flow(code, 0x10000 + 80)) key ^= (u64)flow_base * 0xD6E8FEB86659FD93ull;
+    for (u32 q = 0; q < SH_MAXTEX; q++) key ^= (u64)k->query[q] * (0x9E3779B97F4A7C15ull + 2 * q + 1) << (q & 15);
+    return key;
+}
+static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k,
+                       VkCbReader read);
+/* p, made from code (blen bytes of its window), kept in the pipeline file for the next run, which makes it before the
+   game asks (vk_cs_pipe_load): the window's bytes the translation reads, with the words after them that a lookahead
+   past its last instruction would read, as a graphics shader's source is kept (pipeline.c) */
+static void cs_keep(const CsPipe* p, const u8* code, u32 blen, u32 flow_base, u32 lx, u32 ly, u32 lz, u32 shm,
+                    const CsKey* k) {
+    const u32 launch[5] = {lx, ly, lz, shm, flow_base};
+    u32 n = ((blen + 7u) & ~7u) + 64u;
+    if (n > 0x10000 + 80) n = 0x10000 + 80;
+    vk_pf_cspipe(p->key, launch, &p->cbr, k, sizeof *k, code, n);
+}
 static CsPipe* cs_pipe(const u8* code, u32 flow_base, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k) {
     u32 blen;
-    u64 key = vk_shader_hash(code, 0x10000 + 80, &blen, cs_cb_read) ^ ((u64)lx << 40) ^ ((u64)ly << 48) ^
-              ((u64)lz << 56) ^ ((u64)shm << 20) ^ ((u64)k.image << 32) ^ (u64)k.tex_int * 0x9E3779B97F4A7C15ull ^
-              (u64)k.tex_sint * 0xC2B2AE3D27D4EB4Full ^ (u64)k.image_sint * 0xA24BAED4963EE407ull ^
-              (u64)k.tex_rect * 0x165667B19E3779F9ull;
-    if (shader_absolute_flow(code, 0x10000 + 80)) key ^= (u64)flow_base * 0xD6E8FEB86659FD93ull;
-    for (u32 q = 0; q < SH_MAXTEX; q++) key ^= (u64)k.query[q] * (0x9E3779B97F4A7C15ull + 2 * q + 1) << (q & 15);
+    u64 key = cs_key(code, flow_base, lx, ly, lz, shm, &k, cs_cb_read, &blen);
     CsPipe* p = g_csp[key & 255];
     while (p && (p->key != key || !vk_cb_reads_hold(&p->cbr, cs_cb_read))) p = p->next;
     if (p) return p;
-    p = calloc(1, sizeof *p);
+    p = cs_make(code, blen, key, flow_base, lx, ly, lz, shm, k, cs_cb_read);
     if (!p) return &g_cs_alloc_failed;
-    p->key = key;
-    p->si.flow_base = flow_base;
     p->next = g_csp[key & 255];
     g_csp[key & 255] = p;
+    if (!p->failed) cs_keep(p, code, blen, flow_base, lx, ly, lz, shm, &k);
+    return p;
+}
+/* the pipeline of a program, made but not in the table: NULL when out of memory */
+static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k,
+                       VkCbReader read) {
+    CsPipe* p = calloc(1, sizeof *p);
+    if (!p) return NULL;
+    p->key = key;
+    p->si.flow_base = flow_base;
     p->si.cs_local[0] = lx;
     p->si.cs_local[1] = ly;
     p->si.cs_local[2] = lz;
@@ -687,7 +714,7 @@ static CsPipe* cs_pipe(const u8* code, u32 flow_base, u32 lx, u32 ly, u32 lz, u3
     const char* corpus = vk_corpus_dir();
     if (corpus) shader_corpus_save(corpus, code, blen, 0x10000 + 80, ST_CS, &p->si, key);
     size_t nw = 0;
-    u32* spv = vk_translate_spirv(code, 0x10000 + 80, ST_CS, &p->si, &nw, cs_cb_read, &p->cbr);
+    u32* spv = vk_translate_spirv(code, 0x10000 + 80, ST_CS, &p->si, &nw, read, &p->cbr);
     if (!spv || p->si.unsupported) {
         p->failed = 1;
         LOG("vulkan: compute %016llx not translated: %s\n", (unsigned long long)key,
@@ -725,6 +752,94 @@ static CsPipe* cs_pipe(const u8* code, u32 flow_base, u32 lx, u32 ly, u32 lz, u3
         LOG_LIMIT(12, "vulkan: compute %016llx ready: block %ux%ux%u, %d global buffers, %d textures, %d images\n",
                   (unsigned long long)key, lx, ly, lz, p->si.ngbuf, p->si.ntex, p->si.nimg);
     return p;
+}
+
+/* a pipeline that isn't in the table, gone */
+static void cs_free(CsPipe* p) {
+    if (p->p) vkDestroyPipeline(g_vk.dev, p->p, NULL);
+    free(p->cbr.r);
+    free(p);
+}
+static int cs_reads_same(const VkCbReads* a, const VkCbReads* b);
+/* the compute pipelines of the pipeline file, made on its reading thread (vk_cs_pipe_load) */
+static struct {
+    PMutex lock;             /* list's */
+    CsPipe* list;            /* made, for the next dispatch to put in the table (cs_take_loaded) */
+    int any;                 /* list holds one: read by every dispatch without the lock, written rarely */
+    const VkCbReads* replay; /* the reads of the one being made, which translating it again answers from */
+} g_cs_load = {.lock = PMUTEX_INIT};
+/* vk_lock held: the loaded pipelines in the table, but those a dispatch made meanwhile (a game started without waiting
+   for the shaders) */
+static void cs_take_loaded(void) {
+    if (!__atomic_load_n(&g_cs_load.any, __ATOMIC_ACQUIRE)) return;
+    pm_lock(&g_cs_load.lock);
+    CsPipe* list = g_cs_load.list;
+    g_cs_load.list = NULL;
+    __atomic_store_n(&g_cs_load.any, 0, __ATOMIC_RELAXED);
+    pm_unlock(&g_cs_load.lock);
+    while (list) {
+        CsPipe *p = list, *q;
+        list = p->next;
+        for (q = g_csp[p->key & 255]; q && (q->key != p->key || !cs_reads_same(&q->cbr, &p->cbr)); q = q->next) {}
+        if (q) {
+            cs_free(p);
+            continue;
+        }
+        p->next = g_csp[p->key & 255];
+        g_csp[p->key & 255] = p;
+    }
+}
+/* a read of a kept pipeline's translation, answered from the reads it was translated with (vk_cs_pipe_load's thread
+   alone). A read it didn't make answers that the buffer isn't bound; a dispatch whose buffers hold more then makes its
+   own (cs_pipe checks every read) */
+static int cs_replay_read(u32 idx, u32 off, u32* out) {
+    const VkCbReads* r = g_cs_load.replay;
+    for (u32 i = 0; i < r->n; i++)
+        if (r->r[i].idx == idx && r->r[i].off == off) {
+            *out = r->r[i].v;
+            return (int)r->r[i].ok;
+        }
+    return 0;
+}
+static int cs_reads_same(const VkCbReads* a, const VkCbReads* b) {
+    return a->n == b->n && (!a->n || !memcmp(a->r, b->r, a->n * sizeof *a->r));
+}
+int vk_cs_pipe_load(const u32 launch[5], const u32* cbr, u32 ncbr, const u8* vkey, u32 nkey, const u8* code, u32 ncode,
+                    int record) {
+    CsKey k;
+    if (nkey != sizeof k || ncode > 0x10000 + 80) return 0;
+    memcpy(&k, vkey, sizeof k);
+    u8* window = calloc(1, 0x10000 + 80);
+    VkCbRead* reads = ncbr ? malloc(ncbr * sizeof *reads) : NULL;
+    if (!window || (ncbr && !reads)) {
+        free(window);
+        free(reads);
+        return 0;
+    }
+    memcpy(window, code, ncode);
+    if (ncbr) memcpy(reads, cbr, ncbr * sizeof *reads);
+    VkCbReads replay = {reads, ncbr};
+    u32 blen;
+    g_cs_load.replay = &replay;
+    u64 key = cs_key(window, launch[4], launch[0], launch[1], launch[2], launch[3], &k, cs_replay_read, &blen);
+    CsPipe* p = cs_make(window, blen, key, launch[4], launch[0], launch[1], launch[2], launch[3], k, cs_replay_read);
+    g_cs_load.replay = NULL;
+    int made = p && !p->failed;
+    if (made) {
+        if (record) cs_keep(p, window, blen, launch[4], launch[0], launch[1], launch[2], launch[3], &k);
+        /* queued for the next dispatch to put in the table (cs_take_loaded): this thread holds the file's lock, which
+           a dispatch recording a pipeline takes under vk_lock, so it can't take vk_lock itself */
+        pm_lock(&g_cs_load.lock);
+        p->next = g_cs_load.list;
+        g_cs_load.list = p;
+        __atomic_store_n(&g_cs_load.any, 1, __ATOMIC_RELEASE);
+        pm_unlock(&g_cs_load.lock);
+        p = NULL;
+    }
+    if (p) cs_free(p);
+    free(window);
+    free(reads);
+    return made;
 }
 
 int vk_buffer_image(const u32* tic, int kind, VkBufImg* out) {
@@ -911,6 +1026,7 @@ void vk_dispatch(const DispatchState* d) {
         return;
     }
     cs_init();
+    cs_take_loaded();
     /* the constant buffers bound (reading them lands results they overlap), or the dispatch's inline blocks */
     for (u32 i = 0; i < QMD_NUM_CONST_BUFFERS; i++) {
         g_cbn[i] = 0;
