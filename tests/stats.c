@@ -1,14 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The stats box over the game (runtime/platform/stats.c): nothing while off; its letters a step below the menu's; its
-   lines as the frames and the measures say them, ? for what is not known; the GPU's share and time a frame from its
-   busy time over a second, ? where the renderer can't time it or wasn't at the second before; the graph's bars, a slow
-   frame's in the failure colour; its corner, and beside showcase's box in showcase's corner; a word that is no
-   corner; and off forgetting what it had */
+/* The stats box over the game (runtime/platform/stats.c): nothing while off; its letters a step below the menu's; each
+   line after its icon; its lines as the frames and the measures say them, the longest inside the box; ? for what is
+   not known; the GPU's share and time a frame from its busy time over a second, ? where the renderer can't time it or
+   wasn't at the second before; the graph's bars, a slow frame's in the failure colour; its corner, and beside
+   showcase's box in showcase's corner; a word that is no corner; and off forgetting what it had */
 #include "nx/runtime/platform/stats.h"
 #include "nx/runtime/platform/vpad.h"
 #include "nx/runtime/platform/controls_atlas.h"
 #include "nx/runtime/platform/plat.h"
+#include "gui/icons.h"
 #include "gui_theme_colors.h"
 #include <assert.h>
 #include <stdarg.h>
@@ -56,6 +57,9 @@ void logf_(int lvl, const char* fmt, ...) {
 #define FAILURE                                                                                                        \
     (0xFFu << 24 | (SNX_GUI_THEME_YORHA_FAILURE & 0xFFu) << 16 | (SNX_GUI_THEME_YORHA_FAILURE & 0xFF00u) |             \
      (SNX_GUI_THEME_YORHA_FAILURE >> 16 & 0xFFu))
+#define TEXT                                                                                                           \
+    (0xFFu << 24 | (SNX_GUI_THEME_YORHA_PAGE & 0xFFu) << 16 | (SNX_GUI_THEME_YORHA_PAGE & 0xFF00u) |                   \
+     (SNX_GUI_THEME_YORHA_PAGE >> 16 & 0xFFu))
 #define MS 1000000ull /* a millisecond, in ns */
 
 static const int safe[4] = {100, 50, 1280, 720};
@@ -86,7 +90,33 @@ static const char* text(int k) {
     int s = stats_scale(g_test.menu);
     float box[4], cw = 8.0f * (float)s, ch = 16.0f * (float)s;
     stats_box(safe, s, box);
-    return line_at(box[0] + cw, box[1] + ch / 4 + (float)k * ch);
+    return line_at(box[0] + 4 * cw, box[1] + ch / 4 + (float)k * ch);
+}
+/* the menus' icon drawn before the box's line k, two of its letters wide in the text's colour, sharp: GUI_ICON_NONE
+   for none */
+static unsigned icon(int k) {
+    int s = stats_scale(g_test.menu), i;
+    float box[4], cw = 8.0f * (float)s, ch = 16.0f * (float)s;
+    stats_box(safe, s, box);
+    for (i = 0; i < g_test.l.n; ++i) {
+        const SnxUiQuad* q = &g_test.quads[i];
+        if (q->uw == 16 && q->vh == 16 && q->v == SNX_CONTROLS_ATLAS_HEIGHT && q->x == box[0] + cw &&
+            q->y == box[1] + ch / 4 + (float)k * ch && q->w == 2 * cw && q->h == ch && q->rgba == TEXT &&
+            q->sample == UI_SHARP)
+            return GUI_ICON_FIRST + (unsigned)(q->u - SNX_UI_ICONS_X) / 16;
+    }
+    return GUI_ICON_NONE;
+}
+/* the icons and letters drawn past a cell in from the box's sides: 0 when they all keep it */
+static int past_margin(void) {
+    int s = stats_scale(g_test.menu), i, n = 0;
+    float box[4], cw = 8.0f * (float)s;
+    stats_box(safe, s, box);
+    for (i = 0; i < g_test.l.n; ++i)
+        if (g_test.quads[i].vh == 16 &&
+            (g_test.quads[i].x < box[0] + cw || g_test.quads[i].x + g_test.quads[i].w > box[0] + box[2] - cw))
+            ++n;
+    return n;
 }
 /* the scale the box and every letter in it were drawn at: the box's width in letters of it, and each letter's 8x16
    texels drawn 8 by 16 times it; 0 where one differs */
@@ -151,6 +181,16 @@ int main(void) {
                     drawn_scale(), stats_scale(g_test.menu), text(0));
             return 1;
         }
+        /* each line after its icon: the frames' gauge, the processor, the GPU, the video memory's stick */
+        if (icon(0) != GUI_ICON_GAUGE || icon(1) != GUI_ICON_CPU || icon(2) != GUI_ICON_GPU ||
+            icon(3) != GUI_ICON_MEMORY_STICK) {
+            fprintf(stderr,
+                    "the menu at %d: the lines' icons U+%04X U+%04X U+%04X U+%04X, not gauge U+%04X, cpu U+%04X, "
+                    "gpu U+%04X, memory-stick U+%04X\n",
+                    g_test.menu, icon(0), icon(1), icon(2), icon(3), GUI_ICON_GAUGE, GUI_ICON_CPU, GUI_ICON_GPU,
+                    GUI_ICON_MEMORY_STICK);
+            return 1;
+        }
     }
     g_test.menu = 3;
     /* 30 frames in half a second: 60.0 frames a second, the last 16.7 ms; 29 bars under the 60 FPS guide */
@@ -181,6 +221,16 @@ int main(void) {
     stats_measured(&(SnxStatsMeasure){.cpu = 7, .gpu = 0, .gpu_ns = 40000, .vram_budget = 7980ull << 20});
     draw(t + 600 * MS);
     assert(!strcmp(text(2), "gpu 0%  0.0 ms") && !strcmp(text(3), "vram ?/7980 MiB"));
+    /* the longest lines, a 24 GiB card full and a slow GPU, inside the box with a cell to spare */
+    stats_measured(&(SnxStatsMeasure){.cpu = 100,
+                                      .memory = 65535ull << 20,
+                                      .gpu = 100,
+                                      .gpu_ns = 100000000,
+                                      .vram = 24564ull << 20,
+                                      .vram_budget = 24564ull << 20});
+    draw(t + 600 * MS);
+    assert(!strcmp(text(1), "cpu 100%  65535 MiB") && !strcmp(text(2), "gpu 100%  100.0 ms"));
+    assert(!strcmp(text(3), "vram 24564/24564 MiB") && past_margin() == 0);
     /* a 40 ms frame in the failure colour, then an 80 ms one as tall as the graph */
     stats_frame(at += 40 * MS, &g_test.gpu);
     draw(t + 700 * MS);
