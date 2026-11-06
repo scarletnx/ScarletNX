@@ -935,6 +935,26 @@ static u32 mem_ptr(Ctx* c, u32 buffer, u32 address, u32 word) {
     index = spv_emit_select(&c->e, c->t_u32, spv_emit_u_less(&c->e, c->t_bool, last, index), last, index);
     return SPV(&c->e, SPV_OP_ACCESS_CHAIN, c->shared_ptr, shared_var(c), index);
 }
+/* an address in shared or local memory: the register at 24 times 1, 4, 8 or 16 (bits 78-79, NAK's OffsetStride), the
+   uniform register ur (SM86_URZ for none) and the signed 24-bit offset */
+static u32 stack_address(Ctx* c, const Sm86Insn* in, u32 ur) {
+    static const u8 shifts[4] = {0, 2, 3, 4};
+    u32 imm = sm86_field(in, 40, 24);
+    u32 bias = imm & 0x800000u ? imm | 0xff000000u : imm;
+    u32 base = rd(c, sm86_field(in, 24, 8)), shift = shifts[sm86_field(in, 78, 2)];
+    if (shift) base = spv_emit_shift_left_u32(&c->e, c->t_u32, base, cu(c, shift));
+    u32 address = spv_emit_iadd_u32(&c->e, c->t_u32, base, cu(c, bias));
+    return ur < SM86_URZ ? spv_emit_iadd_u32(&c->e, c->t_u32, address, urd(c, ur)) : address;
+}
+/* An atomic's operation in SPIR-V, 0 for one it doesn't have: 87-90 the operation (0 add, 1 min, 2 max, 5 and, 6 or,
+   7 xor, 8 exchange), 73-75 the type (0 u32, 1 s32) */
+static u32 atomic_opcode(u32 type, u32 how) {
+    static const u16 ops[2][9] = {{SPV_OP_ATOMIC_I_ADD, SPV_OP_ATOMIC_U_MIN, SPV_OP_ATOMIC_U_MAX, 0, 0,
+                                   SPV_OP_ATOMIC_AND, SPV_OP_ATOMIC_OR, SPV_OP_ATOMIC_XOR, SPV_OP_ATOMIC_EXCHANGE},
+                                  {SPV_OP_ATOMIC_I_ADD, SPV_OP_ATOMIC_S_MIN, SPV_OP_ATOMIC_S_MAX, 0, 0,
+                                   SPV_OP_ATOMIC_AND, SPV_OP_ATOMIC_OR, SPV_OP_ATOMIC_XOR, SPV_OP_ATOMIC_EXCHANGE}};
+    return type > 1 || how > 8 ? 0 : ops[type][how];
+}
 /* a load of mem_type (NAK's MemType) into registers dst on */
 static void mem_load(Ctx* c, u32 buffer, u32 address, u32 type, u32 dst, int uniform_dst) {
     u32 words = type == 5 ? 2 : type == 6 ? 4 : 1;
@@ -2121,8 +2141,8 @@ static u32 mesh_entry(Ctx* c, u32 body) {
 }
 static int stage_ok(Ctx* c, const Sm86Insn* in) {
     int op = in->op;
-    int compute =
-        op == SM86_S2R || op == SM86_S2UR || op == SM86_LDS || op == SM86_STS || op == SM86_STS_NOU || op == SM86_BAR;
+    int compute = op == SM86_S2R || op == SM86_S2UR || op == SM86_LDS || op == SM86_STS || op == SM86_STS_NOU ||
+                  op == SM86_BAR || op == SM86_ATOMS || op == SM86_ATOMS_NOU || op == SM86_ATOMS_POPC_INC;
     int fragment = op == SM86_IPA || op == SM86_IPA_U || op == SM86_KILL || op == SM86_TMML;
     /* the thread and block ids (TID 0x21-0x23, CTAID 0x25-0x27) are a compute program's. The lane and its masks
        (LANEID 0x00, EQMASK to GEMASK 0x38-0x3c) are every stage's, as a fragment program's LTMASK before a VOTE shows.
@@ -2762,24 +2782,41 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         case SM86_ATOMG:
         case SM86_ATOMG_NOU:
         case SM86_RED: {
-            /* NAK's OpAtom on global memory: the operation at 87-90 (0 add, 1 min, 2 max, 5 and, 6 or, 7 xor, 8
-               exchange), the type at 73-75 (0 u32, 1 s32), the data at 32; RED returns nothing */
-            static const u16 ops[2][9] = {
-                {SPV_OP_ATOMIC_I_ADD, SPV_OP_ATOMIC_U_MIN, SPV_OP_ATOMIC_U_MAX, 0, 0, SPV_OP_ATOMIC_AND,
-                 SPV_OP_ATOMIC_OR, SPV_OP_ATOMIC_XOR, SPV_OP_ATOMIC_EXCHANGE},
-                {SPV_OP_ATOMIC_I_ADD, SPV_OP_ATOMIC_S_MIN, SPV_OP_ATOMIC_S_MAX, 0, 0, SPV_OP_ATOMIC_AND,
-                 SPV_OP_ATOMIC_OR, SPV_OP_ATOMIC_XOR, SPV_OP_ATOMIC_EXCHANGE}};
+            /* NAK's OpAtom on global memory: atomic_opcode's operation at 87-90, the data at 32; RED returns nothing */
             u32 how = sm86_field(in, 87, op == SM86_RED ? 3 : 4), type = sm86_field(in, 73, 3);
-            if (type > 1 || how > 8 || !ops[type][how]) {
+            u32 opcode = atomic_opcode(type, how);
+            if (!opcode) {
                 fail(c, "%s of type %u, operation %u", sm86_ops[op].name, type, how);
                 return;
             }
             u32 address, buffer = global_address(c, in, op != SM86_ATOMG_NOU, 1, &address);
             if (!buffer) return;
             mark_written(c, c->gkey, address, 4);
-            u32 old = spv_emit_atomic_u32(&c->e, c->t_u32, ops[type][how], mem_ptr(c, buffer, address, 0),
+            u32 old = spv_emit_atomic_u32(&c->e, c->t_u32, opcode, mem_ptr(c, buffer, address, 0),
                                           rd(c, sm86_field(in, 32, 8)));
             if (op != SM86_RED) wr(c, in->dst, old);
+            return;
+        }
+        case SM86_ATOMS:
+        case SM86_ATOMS_NOU: {
+            /* the same on shared memory, addressed as an LDS or STS is */
+            u32 how = sm86_field(in, 87, 4), type = sm86_field(in, 73, 3), opcode = atomic_opcode(type, how);
+            if (!opcode) {
+                fail(c, "%s of type %u, operation %u", sm86_ops[op].name, type, how);
+                return;
+            }
+            u32 address = stack_address(c, in, sm86_field(in, 91, 1) ? sm86_field(in, 64, 6) : SM86_URZ);
+            shared_var(c);
+            wr(c, in->dst,
+               spv_emit_atomic_shared_u32(&c->e, c->t_u32, opcode, mem_ptr(c, 0, address, 0),
+                                          rd(c, sm86_field(in, 32, 8))));
+            return;
+        }
+        case SM86_ATOMS_POPC_INC: {
+            /* adds the lanes that run it, and returns nothing: one each here, where every lane does its own */
+            u32 address = stack_address(c, in, SM86_URZ);
+            shared_var(c);
+            spv_emit_atomic_shared_u32(&c->e, c->t_u32, SPV_OP_ATOMIC_I_ADD, mem_ptr(c, 0, address, 0), cu(c, 1));
             return;
         }
         case SM86_REDUX: {
@@ -3151,18 +3188,11 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         case SM86_LDL:
         case SM86_STL:
         case SM86_STL_NOU: {
-            /* the register times 1, 4, 8 or 16 (bits 78-79, NAK's OffsetStride), the uniform register and the
-               signed 24-bit offset. The uniform register is there with bit 91 alone, as CuAssembler's sm_86
-               encodings show: at 32 for a load, at 64 for a store, whose data is at 32 */
+            /* The uniform register is there with bit 91 alone, as CuAssembler's sm_86 encodings show: at 32 for a load,
+               at 64 for a store, whose data is at 32 */
             int load = op == SM86_LDS || op == SM86_LDL;
             u32 ur = sm86_field(in, 91, 1) ? sm86_field(in, load ? 32 : 64, 6) : SM86_URZ;
-            static const u8 shifts[4] = {0, 2, 3, 4};
-            u32 imm = sm86_field(in, 40, 24);
-            u32 bias = imm & 0x800000u ? imm | 0xff000000u : imm;
-            u32 base = rd(c, sm86_field(in, 24, 8)), shift = shifts[sm86_field(in, 78, 2)];
-            if (shift) base = spv_emit_shift_left_u32(&c->e, c->t_u32, base, cu(c, shift));
-            u32 address = spv_emit_iadd_u32(&c->e, c->t_u32, base, cu(c, bias));
-            if (ur < SM86_URZ) address = spv_emit_iadd_u32(&c->e, c->t_u32, address, urd(c, ur));
+            u32 address = stack_address(c, in, ur);
             u32 buffer = op == SM86_LDL || op == SM86_STL || op == SM86_STL_NOU ? MEM_LOCAL : 0;
             if (!buffer) shared_var(c);
             if (load)
