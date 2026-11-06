@@ -58,7 +58,7 @@ void logf_(int lvl, const char* fmt, ...) {
 #define FAILURE                                                                                                        \
     (0xFFu << 24 | (SNX_GUI_THEME_YORHA_FAILURE & 0xFFu) << 16 | (SNX_GUI_THEME_YORHA_FAILURE & 0xFF00u) |             \
      (SNX_GUI_THEME_YORHA_FAILURE >> 16 & 0xFFu))
-#define TEXT                                                                                                           \
+#define TEXT_RGBA                                                                                                      \
     (0xFFu << 24 | (SNX_GUI_THEME_YORHA_PAGE & 0xFFu) << 16 | (SNX_GUI_THEME_YORHA_PAGE & 0xFF00u) |                   \
      (SNX_GUI_THEME_YORHA_PAGE >> 16 & 0xFFu))
 #define MS 1000000ull /* a millisecond, in ns */
@@ -118,7 +118,7 @@ static unsigned icon_at(int k, int at) {
     for (i = 0; i < g_test.l.n; ++i) {
         const SnxUiQuad* q = &g_test.quads[i];
         if (q->uw == 16 && q->vh == 16 && q->v == SNX_CONTROLS_ATLAS_HEIGHT && q->x == box[0] + (float)at * cw &&
-            q->y == box[1] + ch / 4 + (float)k * ch && q->w == 2 * cw && q->h == ch && q->rgba == TEXT &&
+            q->y == box[1] + ch / 4 + (float)k * ch && q->w == 2 * cw && q->h == ch && q->rgba == TEXT_RGBA &&
             q->sample == UI_SHARP)
             return GUI_ICON_FIRST + (unsigned)(q->u - SNX_UI_ICONS_X) / 16;
     }
