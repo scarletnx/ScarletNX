@@ -153,13 +153,13 @@ A mesh or task program's section also gives (`gpu/nvn/nvn_section.h`):
 | 0x5e (u8) | 1 when a task program launches the mesh program | |
 | 0x5f (u8) | vertices of a primitive | 3 |
 | 0x60, 0x62 (u16) | most vertices, most primitives | 32/16, 128/64, 256/192 |
-| 0x64, 0x68 | offset from the program's code (after its own SPH) and bytes of the per-primitive SPH (0 for none) | 0xd00, 0x80 |
+| 0x64, 0x68 | offset from the start of the program's code area (its own SPH included) and bytes of the per-primitive SPH (0 for none) | 0xd00, 0x80 |
 
-The per-primitive SPH is the last 128 bytes of the code area (0x44, the code area's bytes, includes it): a code area
-of 0xe00 bytes has its SPH at 0x80 + 0xd00, one of 0x4900 bytes at 0x80 + 0x4800, so the offset counts from the end
-of the program's own SPH. Read from the start of the code area, the offset gave words such as `00000205` and
-`0000ff00`, which no SPH has. Its OMAP gives the per-primitive output words, and the mesh SPH's OMAP the per-vertex
-ones.
+The offset counts from the start of the code area, the program's own SPH included. A code area of 0xe00 bytes (0x44)
+has the per-primitive SPH at 0xd00, and its last 128 bytes are zero. One of 0x4900 bytes has it at 0x4800. The dumps
+of 11 mesh programs show the SPH word `010c1081` (or `010d1081`) there in each program whose offset is not 0. The
+renderer read it at 0x80 + the offset before, where the code area holds zeros, and so it dropped every per-primitive
+output. Its OMAP gives the per-primitive output words, and the mesh SPH's OMAP the per-vertex ones.
 
 The fields do not go in the program object. The Ounce's program object is 0xa0 bytes: the driver's
 `nvnProgramInitialize` (sdk offset `0x5bf2c0`) zeroes that many and uses offsets up to 0x98. The runtime keeps them,
