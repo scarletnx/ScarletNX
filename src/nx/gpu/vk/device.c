@@ -397,7 +397,6 @@ static int create_device(void) {
     g_shader_tessellation = want->tessellationShader != 0;
     const char** ext = g_vk.dev_ext;
     int has_pipeline_robustness = 0, has_robustness2 = 0;
-    int has_budget = 0;
     u32 next = 0;
     int has_shader_clock = 0, has_feedback_dynamic = 0, has_cond = 0, has_provoking = 0, video_exts = 0;
     int has_portability = 0, has_reconvergence = 0;
@@ -431,7 +430,7 @@ static int create_device(void) {
         has_robustness2 = snx_vk_extensions_has(&e, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
         /* the driver's budget for each heap, the other processes' use taken out, for VMA: without it VMA took
            80% of a heap's size as its budget, blind to what the desktop and other programs hold */
-        has_budget = snx_vk_extensions_has(&e, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+        g_vk.has_budget = snx_vk_extensions_has(&e, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
         /* the GPU's clock next to the client's, for the profiler's GPU track (gpuprof.c's calibration) */
         has_calibrated = snx_vk_extensions_has(&e, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
         /* a portability driver's subset must be enabled when it has one (MoltenVK) */
@@ -466,7 +465,7 @@ static int create_device(void) {
     int uma_with = vk_uma_choose(has_host_import, has_ahb, has_placed && has_map2);
     if (uma_with == VK_UMA_WITH_HOST) ext[next++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
     if (uma_with == VK_UMA_WITH_AHB) ext[next++] = "VK_ANDROID_external_memory_android_hardware_buffer";
-    if (has_budget) ext[next++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
+    if (g_vk.has_budget) ext[next++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
     if (g_vk.has_mixed_samples) ext[next++] = VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME;
     /* the extension only with a host time domain among the calibrateable ones: CLOCK_MONOTONIC_RAW is the clock
        the Tracy client keeps its own time in, so the two domains' pair maps the GPU's timestamps onto it */
@@ -927,7 +926,7 @@ static int create_device(void) {
                                   .preferredLargeHeapBlockSize = g_vk.alloc_cap < (256ull << 20) ? g_vk.alloc_cap : 0,
                                   .vulkanApiVersion = VK_API_VERSION_1_3,
                                   .pVulkanFunctions = &vf,
-                                  .flags = has_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0};
+                                  .flags = g_vk.has_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0};
     if (g_vk.has_descriptor_buffers) vai.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
     if (!VK_OK(vmaCreateAllocator(&vai, &g_vk.vma))) return 0;
     __atomic_store_n(&g_vma_ready, 1, __ATOMIC_RELEASE);

@@ -76,7 +76,9 @@ void stats_frame(u64 now_ns, const SnxStatsGpu* gpu) {
         SnxStatsMeasure m = {
             .cpu = cpu_ns && g_stats.cpu_ns && cores ? (int)((cpu_ns - g_stats.cpu_ns) * 100 / (wall * cores)) : -1,
             .memory = snx_footprint(),
-            .gpu = -1};
+            .gpu = -1,
+            .vram = gpu->vram,
+            .vram_budget = gpu->vram_budget};
         /* the GPU's busy time read since the last measure, over its time and its frames: the renderer reads a frame's
            once its slot is reused, two frames on, a shift a second's sum hardly shows */
         if (gpu->timed && g_stats.busy_timed) {
@@ -130,7 +132,7 @@ static void stats_mib(char* s, size_t n, u64 bytes) {
 }
 void stats_draw(SnxUiList* l, const int safe[4], int scale, u64 now_ns) {
     float cw = 8.0f * (float)scale, ch = 16.0f * (float)scale, box[4], gx, gy, gw, gh, bw;
-    char fps[16], ms[16], share[16], used[24], line[STATS_LINES][STATS_COLS + 1];
+    char fps[16], ms[16], share[16], used[24], budget[24], line[STATS_LINES][STATS_COLS + 1];
     unsigned j;
     if (!__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)) return;
     if (!g_stats.since_ns) { /* the first half second starts at the first draw */
@@ -160,6 +162,9 @@ void stats_draw(SnxUiList* l, const int safe[4], int scale, u64 now_ns) {
         snprintf(line[2], sizeof line[2], "gpu %d%%  %llu.%llu ms", g_stats.shown.gpu, tenths / 10, tenths % 10);
     } else
         snprintf(line[2], sizeof line[2], "gpu ?  ? ms");
+    stats_mib(used, sizeof used, g_stats.shown.vram);
+    stats_mib(budget, sizeof budget, g_stats.shown.vram_budget);
+    snprintf(line[3], sizeof line[3], "vram %s/%s MiB", used, budget);
     stats_box(safe, scale, box);
     ui_fill(l, box[0], box[1], box[2], box[3], STATS_BACK);
     for (j = 0; j < STATS_LINES; ++j)

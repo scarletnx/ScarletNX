@@ -392,7 +392,7 @@ static void stats_frames(u32 n, VkBuffer from, VkBuffer to, u64 size) {
    that copy 32 MiB is above 0 and below their time on the clock. Stats turned off within a frame and on again: the slot
    reused while off has its pool reset at its next use, so a frame of empty command buffers doesn't count the copy
    timed before; and a command buffer begun while off isn't closed onto another's begin, so the wait between them
-   isn't counted either */
+   isn't counted either. The device-local heap's use and budget are the driver's where it has VK_EXT_memory_budget */
 static int check_stats_gpu_time(void) {
     const u64 size = 32ull << 20;
     VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -403,7 +403,7 @@ static int check_stats_gpu_time(void) {
     VmaAllocationInfo info;
     VkBuffer buf[2];
     VmaAllocation mem[2];
-    u64 stamps, busy, copied, t0, wall;
+    u64 stamps, busy, copied, t0, wall, vram, budget;
     int was = g_settings.stats;
     for (int i = 0; i < 2; i++) CHECK(vk_buffer_create(g_vk.vma, &bci, &aci, &buf[i], &mem[i], &info) == VK_SUCCESS);
     g_settings.stats = 0;
@@ -457,6 +457,10 @@ static int check_stats_gpu_time(void) {
     busy = vk_gpuprof_busy_ns() - busy;
     printf("stats off and on within a frame, 50 ms between its command buffers: busy %.3f ms\n", (double)busy / 1e6);
     CHECK(busy < 25000000);
+    vk_mem_driver_use(&vram, &budget);
+    printf("stats: video memory %llu of %llu MiB (VK_EXT_memory_budget %s)\n", (unsigned long long)(vram >> 20),
+           (unsigned long long)(budget >> 20), g_vk.has_budget ? "on" : "off");
+    CHECK(g_vk.has_budget ? vram && budget : !vram && !budget);
 done:
     g_settings.stats = was;
     vk_finish();

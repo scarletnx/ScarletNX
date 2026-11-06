@@ -122,10 +122,10 @@ int main(void) {
     /* on, in its default corner, top left: half a line in from the safe area's; ? before a frame or a measure */
     g_settings.stats = 1;
     stats_box(safe, 2, box);
-    assert(box[0] == 100 + 16 && box[1] == 50 + 16 && box[2] == STATS_COLS * 16 && box[3] == 6 * 32 + 24);
+    assert(box[0] == 100 + 16 && box[1] == 50 + 16 && box[2] == STATS_COLS * 16 && box[3] == 7 * 32 + 24);
     draw(t);
     assert(!strcmp(text(0), "? fps  ? ms") && !strcmp(text(1), "cpu ?  ? MiB"));
-    assert(!strcmp(text(2), "gpu ?  ? ms"));
+    assert(!strcmp(text(2), "gpu ?  ? ms") && !strcmp(text(3), "vram ?/? MiB"));
     /* 30 frames in half a second: 60.0 frames a second, the last 16.7 ms; 29 bars under the 60 FPS guide */
     for (k = 1; k <= 30; ++k) stats_frame(at = t + (u64)k * 16666667ull, &g_test.gpu);
     draw(t + 500 * MS);
@@ -141,16 +141,19 @@ int main(void) {
     stats_measured(&(SnxStatsMeasure){.cpu = 7, .gpu = -1});
     draw(t + 600 * MS);
     assert(!strcmp(text(1), "cpu 7%  ? MiB"));
-    /* the GPU's share and its time a frame, in tenths of a millisecond rounded, as measured; ? when not told */
-    stats_measured(&(SnxStatsMeasure){.cpu = 7, .gpu = 63, .gpu_ns = 10450000});
+    /* the GPU's share and its time a frame, in tenths of a millisecond rounded, and the video memory's use and
+       budget, as measured; ? for one not told */
+    stats_measured(&(SnxStatsMeasure){
+        .cpu = 7, .gpu = 63, .gpu_ns = 10450000, .vram = 3120ull << 20, .vram_budget = 7980ull << 20});
     draw(t + 600 * MS);
-    assert(!strcmp(text(1), "cpu 7%  ? MiB") && !strcmp(text(2), "gpu 63%  10.5 ms"));
-    stats_measured(&(SnxStatsMeasure){.cpu = 7, .gpu = -1});
+    assert(!strcmp(text(1), "cpu 7%  ? MiB"));
+    assert(!strcmp(text(2), "gpu 63%  10.5 ms") && !strcmp(text(3), "vram 3120/7980 MiB"));
+    stats_measured(&(SnxStatsMeasure){.cpu = 7, .gpu = -1, .vram = 3120ull << 20});
     draw(t + 600 * MS);
-    assert(!strcmp(text(2), "gpu ?  ? ms"));
-    stats_measured(&(SnxStatsMeasure){.cpu = 7, .gpu = 0, .gpu_ns = 40000});
+    assert(!strcmp(text(2), "gpu ?  ? ms") && !strcmp(text(3), "vram 3120/? MiB"));
+    stats_measured(&(SnxStatsMeasure){.cpu = 7, .gpu = 0, .gpu_ns = 40000, .vram_budget = 7980ull << 20});
     draw(t + 600 * MS);
-    assert(!strcmp(text(2), "gpu 0%  0.0 ms"));
+    assert(!strcmp(text(2), "gpu 0%  0.0 ms") && !strcmp(text(3), "vram ?/7980 MiB"));
     /* a 40 ms frame in the failure colour, then an 80 ms one as tall as the graph */
     stats_frame(at += 40 * MS, &g_test.gpu);
     draw(t + 700 * MS);
@@ -168,23 +171,23 @@ int main(void) {
     draw(at);
     assert(bars(&newest) == STATS_FRAMES - 1);
     /* the GPU's lines from what the renderer reads at each frame, measured once a second from the first frame: 12 ms
-       busy in each 20 ms frame is 60% and 12.0 ms */
+       busy in each 20 ms frame is 60% and 12.0 ms; the video memory as it reads it */
     g_settings.stats = 0;
     stats_frame(at += 20 * MS, &g_test.gpu); /* forgets the measures so far */
     g_settings.stats = 1;
-    g_test.gpu = (SnxStatsGpu){.busy_ns = 5000 * MS, .timed = 1};
+    g_test.gpu = (SnxStatsGpu){.busy_ns = 5000 * MS, .timed = 1, .vram = 2048ull << 20, .vram_budget = 8192ull << 20};
     stats_frame(at += 20 * MS, &g_test.gpu);
     at = frames(at, 49, 20, 12);
     draw(at);
-    assert(!strcmp(text(2), "gpu ?  ? ms")); /* 980 ms: not a second yet */
+    assert(!strcmp(text(2), "gpu ?  ? ms") && !strcmp(text(3), "vram ?/? MiB")); /* 980 ms: not a second yet */
     at = frames(at, 1, 20, 12);
     draw(at);
-    assert(!strcmp(text(2), "gpu 60%  12.0 ms"));
+    assert(!strcmp(text(2), "gpu 60%  12.0 ms") && !strcmp(text(3), "vram 2048/8192 MiB"));
     /* a second the renderer couldn't time: ?, and the next too, which has no start; then 5 ms of each 20 again */
     g_test.gpu.timed = 0;
     at = frames(at, 50, 20, 12);
     draw(at);
-    assert(!strcmp(text(2), "gpu ?  ? ms"));
+    assert(!strcmp(text(2), "gpu ?  ? ms") && !strcmp(text(3), "vram 2048/8192 MiB"));
     g_test.gpu.timed = 1;
     at = frames(at, 50, 20, 5);
     draw(at);
@@ -192,10 +195,11 @@ int main(void) {
     at = frames(at, 50, 20, 5);
     draw(at);
     assert(!strcmp(text(2), "gpu 25%  5.0 ms"));
-    /* a busy GPU at 30 frames a second: 33 ms of each 34 */
+    /* a busy GPU at 30 frames a second: 33 ms of each 34; the video memory no longer told */
+    g_test.gpu.vram = g_test.gpu.vram_budget = 0;
     at = frames(at, 30, 34, 33);
     draw(at);
-    assert(!strcmp(text(2), "gpu 97%  33.0 ms"));
+    assert(!strcmp(text(2), "gpu 97%  33.0 ms") && !strcmp(text(3), "vram ?/? MiB"));
     /* bottom right; beside showcase's box in showcase's own corner, above it there, below it in a top one; showcase in
        another corner leaves it in its own */
     stats_corner_set(corner, "br");
@@ -226,7 +230,7 @@ int main(void) {
     g_settings.stats = 1;
     draw(at);
     assert(!strcmp(text(0), "? fps  ? ms") && !strcmp(text(1), "cpu ?  ? MiB") && !bars(&newest));
-    assert(!strcmp(text(2), "gpu ?  ? ms"));
+    assert(!strcmp(text(2), "gpu ?  ? ms") && !strcmp(text(3), "vram ?/? MiB"));
     puts("stats passed");
     return 0;
 }

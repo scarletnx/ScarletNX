@@ -560,6 +560,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
             if (__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)) { /* read only while the box shows */
                 gpu.busy_ns = vk_gpuprof_busy_ns();
                 gpu.timed = vk_gpuprof_timed();
+                vk_mem_driver_use(&gpu.vram, &gpu.vram_budget);
             }
             stats_frame(now_ns, &gpu);
         }

@@ -178,8 +178,8 @@ setting Stats
     default 0
     words Off|On
     help 1 = the frames a second, the last frame's time, the processor and memory the game takes, the GPU's busy share
-    help and time a frame and a graph of its last 120 frames' times, in a corner over the game. F12 or the game's menu
-    help turns it on and off
+    help and time a frame, the video memory it uses of the driver's budget and a graph of its last 120 frames' times,
+    help in a corner over the game. F12 or the game's menu turns it on and off
 setting Stats corner
     key stats_corner
     text 3
