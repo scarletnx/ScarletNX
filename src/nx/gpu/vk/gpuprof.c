@@ -407,6 +407,8 @@ void vk_gpuprof_frame_done(u32 slot) {
        would otherwise follow this one's in the pool, and be read with them */
     g->reset = 0;
     profile = gp_on();
+    /* the slot's timestamps, read once for the frame: safe as one buffer only while frame_recycle is the one thread
+       that recycles a slot, which vk_lock holds across recording (record.c). A second producer would need its own */
     static u64 ts[GP_QUERIES];
     /* no wait: the slot's submissions are done (frame_recycle waited for them), and a failed one's results aren't
        there, which leaves its frame out */
@@ -577,6 +579,9 @@ static void gp_plots(void) {
     if (g_t0 && wall) SNX_PLOT("gpu busy", 100.0 * (double)g_busy_ns / (double)wall);
     SNX_PLOT("gpu submissions/frame", (double)g_subs / f);
 }
+/* the pass bookkeeping above is file-global: recording is serialized by vk_lock (record.c), so the renderer's one
+   recording thread is its only writer and the CPU thread's frame_done its only reader. A multi-producer record
+   breaks it first */
 /* the targets that took the most GPU time, then a fresh sum */
 static void gp_report(void) {
     if (!g_frames) return;

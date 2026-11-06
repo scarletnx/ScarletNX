@@ -11,6 +11,8 @@
 * [Run / diagnose](#run--diagnose)
 * [CPU sampling without perf](#cpu-sampling-without-perf)
 * [Profiling](#profiling)
+  * [What a trace answers](#what-a-trace-answers)
+  * [What the profiler's client leaves out, and the deep build](#what-the-profilers-client-leaves-out-and-the-deep-build)
 * [Shaders](#shaders)
 * [Vertex input](#vertex-input)
 * [Driver bans](#driver-bans)
@@ -364,7 +366,7 @@ client is left for `_exit` to end: the socket still closes and `tracy-capture` s
 being killed before it has written anything. The SVCs that wait (`SleepThread`, `WaitSynchronization`,
 `ArbitrateLock`, `WaitProcessWideKeyAtomic`, `WaitForAddress`) and the GPU thread's idle wait are deliberately not
 zones: one left open would keep the server from acknowledging the client's Terminate. Source code transfer is off,
-so the GUI has file and line numbers but not the text of the source.
+so the GUI has file and line numbers but not the text of the source (`tracy-deep` below takes it on).
 
 ```sh
 tracy-capture -o trace.tracy -f -s 60 &
@@ -386,9 +388,13 @@ made. The Vulkan lock records a `vk lock wait` zone only when the lock is conten
 work done under it and an uncontended acquisition adds no zone.
 
 The GPU's own track comes with it: the rendering passes of each frame are zones on the GPU's clock, named by the
-target they draw to, and the GPU clock is put on the CPU's timeline once a frame, so a pass that took the GPU long
-shows against the CPU's work that waited for it. The timestamps come from the graphics queue's, which the device
-must have; they are taken when the runtime is profiled (a GUI connected or a capture running) or when
+target they draw to, and each dispatch a compute batch holds. `vk_gpu_draw_profile=1` puts a zone on every draw and
+dispatch as well, named by pipeline, topology and count, so the pass that is unexpectedly expensive says which of its
+draws it was: a timestamp between draws leaves the queue waiting for the one before it on many devices, so it is
+off by default and capped (256 draws a frame, 128 of a batch, and the rest are counted as `gpu untimed draws`).
+Each zone is written outside the predication it draws under, whose region writes no timestamp. The GPU clock is put
+on the CPU's timeline once a frame, so a pass that took the GPU long shows against the CPU's work that waited for it. The timestamps come from the graphics queue's, which the
+device must have; they are taken when the runtime is profiled (a GUI connected or a capture running) or when
 `SNX_VK_GPU_PROFILE=1` asks for them, which also logs what the GPU's time went to every 10 s. The binary is
 not deployed beside every game the way an ordinary build is, so a game it is not run through the profiled driver for
 keeps the runtime it already had: run it through the profiled driver once, and launcher rows work from then.
@@ -397,6 +403,42 @@ keeps the runtime it already had: run it through the profiled driver once, and l
 The guest's own file I/O is in the trace too: a read or a write is a zone with the file's name and the bytes, and
 `io read MB/s` and `io write MB/s` are the rate. The game's assets are not read during a run, though: they are mapped
 from the dump, and the dump is read once, by the driver, before the runtime starts.
+
+### What a trace answers
+
+Every number a run collects is a plot on the same timeline as the zones, so a question has a plot rather than a
+second tool. The cost of each is one atomic load per emission, and each goes out only while a viewer is attached.
+
+| The question | The plot or zone |
+|---|---|
+| Why is this frame slow? | `frame ms`, `jit compile ms` and `jit miss ms` (a compile the game waited for), `pipeline make ms` and `pipeline wait ms`, `texture uploads`, `shaders` |
+| Is the GPU or the CPU the bound? | the GPU track's passes and `gpu gap:` plots beside `frame ms` and the CPU's own zones |
+| Where does the GPU's time go? | the pass zones, `gpu gap: dispatches/copies/barriers/nothing`, `gpu idle: waited/frame/recording/queued`, `gpu busy %`, `gpu submissions/frame`, `copy MB` |
+| Which draw of that pass? | `vk_gpu_draw_profile=1`, and `gpu untimed draws` for the cap |
+| What does the guest cost the host? | `guest cpu` and `process cpu` (of one processor), `guest threads`, `guest top thread ms` |
+| What does the game ask of the kernel? | the SVC zones with their result on error, and `svc/s`, `svc miss/s` |
+| What does the JIT do? | `jit compile ms`, `jit batch size`, `jit batch functions`, `jit compiled pcs`, `jit batches`, `jit cache loads`, `jit queue depth`, `jit failures`, `jit dropped batches` |
+| What does NCE do? | the `nce hook` zones and `nce outcalls/s`, `nce hooks/s`, `nce kicks/s` |
+| Is the audio behind or clipping? | `audio queued ms`, `audio underruns`, `audio frame ms`, and the `audio voice` zones |
+| What does host1x's worker do? | the `host1x job` zones, with the engine, the class and the syncpoint value |
+| Is the host running out of memory? | `host heap` (the allocator's live bytes), `host rss`, `host free` |
+| Is the input and output keeping up? | `io read MB/s`, `io write MB/s`, `guest memory` |
+| Is a frame being dropped or a queue growing? | `submits pending`, `compute pending`, `draws`, `dispatches` |
+
+The two GPU-queue idle plots are apart on purpose: `gpu thread idle` is the GPU thread's own job-queue wait, and
+`gpu idle:` are the graphics queue's execution idle, which the frame's own work and its waits between them give.
+A zone deeper than the 64 a thread nests is dropped rather than leaked, and counted: `tracy dropped zones` is that
+count, plotted when a thread polls, so a hole where the innermost work should be says it was this.
+
+### What the profiler's client leaves out, and the deep build
+
+`cmake --preset tracy-deep` is the same profiler build with what the cheap one leaves out, each at its own cost:
+the code transfer (`TRACY_NO_CODE_TRANSFER` off), so the GUI shows the source of a zone and not only its file and
+line; the zones' own verification (`TRACY_NO_VERIFY` off), so a zone begun and not ended is caught, which in a build
+whose purpose is to observe zones doubles the queue traffic one costs; and the wait stacks
+(`TRACY_NO_WAIT_STACKS` off), which show where a thread waits, and which Linux gives only to root with tracefs.
+Frame images stay out of both: a frame image is a readback and a downsample of the window's image, which the
+runtime does not do, so a trace has no picture of what the screen showed.
 
 The sampler covers every CPU and the threads that start later, so the guest's threads are sampled too. The names come
 from the ELF tables of the loaded objects: the runtime's own code and the game's recompiled code beside the game
