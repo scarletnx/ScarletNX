@@ -235,7 +235,7 @@ static u32 spill_cut(u64 cb, u64 anchor, u32 need, u64* at, u32* piece) {
         fatal("nvn: more than %u pieces of the runtime's memory carry command records at once, which nvn holds",
               NVN_SPILL_PIECES);
     }
-    b = (u32)(anchor >> 12) % NVN_SPILL_BUCKETS;
+    b = NVN_SPILL_BUCKET(anchor);
     st->p[slot].anchor = anchor;
     st->p[slot].canchor = canchor;
     st->p[slot].mark = 0;
@@ -243,7 +243,7 @@ static u32 spill_cut(u64 cb, u64 anchor, u32 need, u64* at, u32* piece) {
     st->p[slot].cnext = 0;
     st->p[slot].ctl = CB(cb)->ctl;
     if (canchor) {
-        u32 cb2 = (u32)(canchor >> 12) % NVN_SPILL_BUCKETS;
+        u32 cb2 = NVN_SPILL_BUCKET(canchor);
         st->p[slot].cnext = st->cbucket[cb2];
         st->cbucket[cb2] = slot;
     }
@@ -317,8 +317,8 @@ static void small_give(NvnCmdState* st, u32 k, u64 at) {
 /* piece slot, out of its chain by canchor (control) or by anchor, comes back */
 static void piece_free(NvnCmdState* st, u32 slot, int control) {
     NvnSpillPiece* q = &st->p[slot];
-    u32* at = control ? &st->bucket[(u32)(q->anchor >> 12) % NVN_SPILL_BUCKETS]
-                      : &st->cbucket[(u32)(q->canchor >> 12) % NVN_SPILL_BUCKETS];
+    u32* at = control ? &st->bucket[NVN_SPILL_BUCKET(q->anchor)]
+                      : &st->cbucket[NVN_SPILL_BUCKET(q->canchor)];
     if (control || q->canchor) { /* out of its other chain */
         while (*at && *at != slot) at = control ? &st->p[*at].next : &st->p[*at].cnext;
         if (*at) *at = control ? q->next : q->cnext;
@@ -338,7 +338,7 @@ static void piece_free(NvnCmdState* st, u32 slot, int control) {
 static void piece_drop(NvnCmdState* st, u32 slot) {
     NvnSpillPiece* q = &st->p[slot];
     if (q->canchor) {
-        u32* at = &st->cbucket[(u32)(q->canchor >> 12) % NVN_SPILL_BUCKETS];
+        u32* at = &st->cbucket[NVN_SPILL_BUCKET(q->canchor)];
         while (*at && *at != slot) at = &st->p[*at].cnext;
         if (*at) *at = q->cnext;
         q->canchor = 0;
@@ -354,18 +354,20 @@ static void piece_drop(NvnCmdState* st, u32 slot) {
    The serial of the last piece cut */
 static u32 spill_back(u64 from, u64 to, u32 before, int control) {
     NvnCmdState* st = &g_nvn.cmd;
-    u64 page, last;
+    u64 part, last;
     u32 serial;
     pm_lock(&st->lock);
     serial = st->serial;
-    page = from >> 12;
-    last = from < to ? (to - 1) >> 12 : 0;
-    if (from < to && last - page >= NVN_SPILL_BUCKETS) { /* every bucket, once */
-        page = 0;
+    part = from >> NVN_SPILL_GRANULE;
+    last = from < to ? (to - 1) >> NVN_SPILL_GRANULE : 0;
+    const int every = from < to && last - part >= NVN_SPILL_BUCKETS;
+    if (every) { /* every bucket, once */
+        part = 0;
         last = NVN_SPILL_BUCKETS - 1;
     }
-    for (; from < to && page <= last; page++) {
-        u32* at = control ? &st->cbucket[page % NVN_SPILL_BUCKETS] : &st->bucket[page % NVN_SPILL_BUCKETS];
+    for (; from < to && part <= last; part++) {
+        u32 b = every ? (u32)part : NVN_SPILL_PART_BUCKET(part);
+        u32* at = control ? &st->cbucket[b] : &st->bucket[b];
         while (*at) {
             NvnSpillPiece* q = &st->p[*at];
             u32 slot = *at;
@@ -582,7 +584,7 @@ static u64 spill_compact(u64 cb) {
     int linked = o->anchor >= o->origin && a <= end && end - a >= 16;
     if (!slot || (slot & PIECE_MORE) || !o->lent || k == NVN_SMALL_CLASSES) return o->begin;
     pm_lock(&st->lock);
-    for (u32 i = st->bucket[(u32)(o->anchor >> 12) % NVN_SPILL_BUCKETS]; !linked && i && !at; i = st->p[i].next) {
+    for (u32 i = st->bucket[NVN_SPILL_BUCKET(o->anchor)]; !linked && i && !at; i = st->p[i].next) {
         NvnSpillPiece* q = &st->p[i];
         if (i != slot && q->anchor == o->anchor && q->seg >= NVN_SPILL_SMALL + k && q->at) {
             at = q->at;
@@ -623,11 +625,14 @@ static u64 spill_link(u64 cb, u64 h) {
     if (small) {
         put_jump(a, h);
         st->p[slot].mark = h;
-        for (u32 i = st->bucket[(u32)(o->anchor >> 12) % NVN_SPILL_BUCKETS], next; i; i = next) {
-            next = st->p[i].next;
-            if (i != slot && st->p[i].mark && st->p[i].mark != h && ((st->p[i].anchor + 7) & ~7ull) == a)
-                piece_drop(st, i); /* the sweep's test, for the JUMP just written */
-        }
+        /* the anchors that align to a, which can lie in two buckets */
+        const u32 chain[2] = {NVN_SPILL_BUCKET(a - 7), NVN_SPILL_BUCKET(a)};
+        for (u32 c = 0; c < (chain[0] == chain[1] ? 1u : 2u); c++)
+            for (u32 i = st->bucket[chain[c]], next; i; i = next) {
+                next = st->p[i].next;
+                if (i != slot && st->p[i].mark && st->p[i].mark != h && ((st->p[i].anchor + 7) & ~7ull) == a)
+                    piece_drop(st, i); /* the sweep's test, for the JUMP just written */
+            }
     }
     pm_unlock(&st->lock);
     return small ? a : h;
@@ -881,7 +886,7 @@ u64 nvn_CommandBufferEndRecording(CPU* c, u64 cb) {
     if (t && t->start && no_command) {
         pm_lock(&g_nvn.cmd.lock);
         /* only its control memory gives its pieces back */
-        for (u32 i = g_nvn.cmd.cbucket[(u32)(t->rec >> 12) % NVN_SPILL_BUCKETS]; i; i = g_nvn.cmd.p[i].cnext)
+        for (u32 i = g_nvn.cmd.cbucket[NVN_SPILL_BUCKET(t->rec)]; i; i = g_nvn.cmd.p[i].cnext)
             if (g_nvn.cmd.p[i].canchor == t->rec) g_nvn.cmd.p[i].flags |= NVN_PIECE_NO_COMMAND;
         pm_unlock(&g_nvn.cmd.lock);
     }
