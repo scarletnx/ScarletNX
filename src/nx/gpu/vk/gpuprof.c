@@ -15,7 +15,11 @@
    splits into the time before the CPU submitted the next one (the GPU had nothing to do) and the time after it (a
    semaphore wait, the recording thread). The first part goes by what the CPU did: it waited for the submission that
    ended (a finish, a readback, a release's gate: a round trip), it was between frames (after the present's
-   submission), or it recorded slower than the GPU ran. */
+   submission), or it recorded slower than the GPU ran.
+
+   The stats box (settings.txt's stats) takes only the command buffers' timestamps, and their sum: the graphics queue's
+   busy time, from the slot's results read at its reuse like the rest. Off with the profile off too, nothing is written
+   or read. */
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
@@ -42,6 +46,9 @@ typedef struct {
     u64 cpu;    /* CLOCK_MONOTONIC at its submit */
     u64 value;  /* its value on the graphics timeline */
     int why;    /* VK_SUB_* */
+    /* the command buffer its begin went in: an end skipped while timing was off (stats turned off and on again
+       within a slot's use) must not close it with a later buffer's end */
+    VkCommandBuffer cb;
 } GpSub;
 typedef struct {
     VkQueryPool pool;
@@ -72,6 +79,13 @@ static const char* const g_mix_name[3] = {"buffer copies only", "with buffer-ima
 static u64 g_mix_ns[3], g_mixes[3], g_mix_bytes[3], g_mix_n[3];
 static int g_in_pass;
 static int g_dead; /* the query pool was refused once: stop asking */
+/* vk_gpuprof_busy_ns's sum, and the device's tick at the latest end counted in it while the slot uses read follow one
+   another (ended) */
+static struct {
+    u64 ns, end;
+    int ended;
+} g_stats_busy;
+u64 g_vk_timestamps;
 /* the graphics queue's idle time between submissions, summed until the report: VK_SUB_* by what the CPU did */
 enum { IDLE_WAITED, IDLE_FRAME, IDLE_RECORDING, IDLE_QUEUED, IDLE_N };
 static const char* const g_idle_name[IDLE_N] = {
@@ -118,6 +132,17 @@ static int gp_on(void) {
 #endif
     return g_on;
 }
+int vk_gpuprof_timed(void) { return g_vk.gfx_timestamp_bits && !g_dead; }
+u64 vk_gpuprof_busy_ns(void) { return __atomic_load_n(&g_stats_busy.ns, __ATOMIC_RELAXED); }
+/* the frame's command buffers timed: for the profile (gp_on), or for the stats box, which shows */
+static int gp_timed(void) {
+    return gp_on() || (__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED) && vk_gpuprof_timed());
+}
+/* a timestamp into the slot's pool, counted */
+static void gp_stamp(VkCommandBuffer cb, VkPipelineStageFlags2 stage, VkQueryPool pool, u32 query) {
+    rec_CmdWriteTimestamp2(cb, stage, pool, query);
+    g_vk_timestamps++;
+}
 static GpSlot* gp_slot(void) {
     u32 s = vk_frame_slot();
     if (!g_slot[s]) {
@@ -133,10 +158,10 @@ static GpSlot* gp_slot(void) {
     }
     return g_slot[s];
 }
-/* the slot's pool, reset by cb if this is its first use since the slot was recycled: outside any pass */
-static GpSlot* gp_slot_reset(VkCommandBuffer cb) {
+/* the slot's pool while on, reset by cb if this is its first use since the slot was recycled: outside any pass */
+static GpSlot* gp_slot_reset(VkCommandBuffer cb, int on) {
     GpSlot* g;
-    if (!gp_on() || !(g = gp_slot())) return NULL;
+    if (!on || !(g = gp_slot())) return NULL;
     if (!g->reset) {
         rec_CmdResetQueryPool(cb, g->pool, 0, GP_QUERIES);
         g->reset = 1;
@@ -146,21 +171,21 @@ static GpSlot* gp_slot_reset(VkCommandBuffer cb) {
 }
 /* a command buffer of the frame begun (cmd.c's vk_cmd) */
 void vk_gpuprof_cb_begin(VkCommandBuffer cb) {
-    GpSlot* g = gp_slot_reset(cb);
+    GpSlot* g = gp_slot_reset(cb, gp_timed());
     if (!g) return;
     if (g->used + 1 > GP_QUERIES || g->nsub >= GP_SUBS) {
         g_lost++;
         return;
     }
-    g->sub[g->nsub] = (GpSub){.q0 = g->used};
-    rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, g->pool, g->used++);
+    g->sub[g->nsub] = (GpSub){.q0 = g->used, .cb = cb};
+    gp_stamp(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, g->pool, g->used++);
     g->nsub++;
 }
 /* the command buffer ends: submitted for why (VK_SUB_*) as the timeline's value */
 void vk_gpuprof_cb_end(VkCommandBuffer cb, int why, u64 value) {
-    GpSlot* g = gp_on() ? g_slot[vk_frame_slot()] : NULL;
+    GpSlot* g = gp_timed() ? g_slot[vk_frame_slot()] : NULL;
     GpSub* s;
-    if (!g || !g->reset || !g->nsub || (s = &g->sub[g->nsub - 1])->q1) return;
+    if (!g || !g->reset || !g->nsub || (s = &g->sub[g->nsub - 1])->q1 || s->cb != cb) return;
     if (g->used + 1 > GP_QUERIES) {
         g_lost++;
         g->nsub--; /* no end: its begin is never read */
@@ -170,7 +195,7 @@ void vk_gpuprof_cb_end(VkCommandBuffer cb, int why, u64 value) {
     s->cpu = plat_monotonic_ns();
     s->value = value;
     s->why = why;
-    rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, g->pool, g->used++);
+    gp_stamp(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, g->pool, g->used++);
 }
 /* the CPU waits for the timeline's value (kind: VK_WAIT_*) */
 void vk_gpuprof_waited(u64 value, int kind) {
@@ -180,7 +205,7 @@ void vk_gpuprof_waited(u64 value, int kind) {
 }
 /* before vkCmdBeginRendering, outside any pass */
 void vk_gpuprof_pass_begin(VkCommandBuffer cb, const Surf* rt, const Surf* zt) {
-    GpSlot* g = gp_slot_reset(cb);
+    GpSlot* g = gp_slot_reset(cb, gp_on());
     if (!g) return;
     if (g->used + 2 > GP_QUERIES || g->npass >= GP_QUERIES / 2) {
         g_lost++;
@@ -198,7 +223,7 @@ void vk_gpuprof_pass_begin(VkCommandBuffer cb, const Surf* rt, const Surf* zt) {
     p->dispatches = (u32)(g_vk_dispatches - g_d_at_end);
     for (int i = 0; i < 3; i++) p->kind[i] = (u32)(g_rec_xfer_kind[i] - g_k_at_end[i]);
     p->bytes = g_rec_buf_bytes - g_bytes_at_end;
-    rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, g->pool, g->used);
+    gp_stamp(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, g->pool, g->used);
     g_draws_at_begin = g_vk_drawn;
     g_in_pass = 1;
 #if defined(SNX_TRACY)
@@ -219,7 +244,7 @@ void vk_gpuprof_pass_end(VkCommandBuffer cb) {
     if (!(g = gp_slot())) return;
     p = &g->pass[g->npass];
     p->draws = (u32)(g_vk_drawn - g_draws_at_begin);
-    rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, g->pool, g->used + 1);
+    gp_stamp(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, g->pool, g->used + 1);
     g->used += 2;
     g->npass++;
     g_x_at_end = g_rec_xfers;
@@ -285,15 +310,55 @@ static GpKey* gp_key(const GpPass* p) {
     }
     return NULL;
 }
+/* to's ticks after from's, below 0 before it, within the graphics queue's valid bits: its counter may wrap */
+static i64 gp_ticks(u64 from, u64 to) {
+    u32 bits = g_vk.gfx_timestamp_bits;
+    u64 mask = bits >= 64 ? ~0ull : (1ull << bits) - 1, d = (to - from) & mask;
+    return d > mask / 2 ? -(i64)((from - to) & mask) : (i64)d;
+}
+/* The graphics queue's busy time in the slot's submissions, into g_stats_busy.ns: the union of their spans from begin
+   to end, on the whole timeline. A command buffer's begin is written once the queue reaches it, which may be before
+   the one before it ended, in this frame or the last (the slots are read in the order they were used): only what runs
+   past the latest end counted is added. The gaps between them, the GPU waiting for the CPU, are left out */
+static void gp_busy(const GpSlot* g, const u64* ts) {
+    u64 ticks = 0;
+    for (u32 i = 0; i < g->nsub; i++) {
+        const GpSub* s = &g->sub[i];
+        u64 b = ts[s->q0], e = ts[s->q1];
+        if (!s->q1 || gp_ticks(b, e) <= 0) continue;
+        if (g_stats_busy.ended) {
+            if (gp_ticks(g_stats_busy.end, e) <= 0) continue; /* within what is counted */
+            if (gp_ticks(g_stats_busy.end, b) < 0) b = g_stats_busy.end;
+        }
+        ticks += (u64)gp_ticks(b, e);
+        g_stats_busy.end = e;
+        g_stats_busy.ended = 1;
+    }
+    __atomic_add_fetch(&g_stats_busy.ns, (u64)((double)ticks * g_vk.props.limits.timestampPeriod), __ATOMIC_RELAXED);
+}
 /* the slot's work is done (frame_recycle, before the slot records again): its times into the sums */
 void vk_gpuprof_frame_done(u32 slot) {
-    GpSlot* g = gp_on() ? g_slot[slot] : NULL;
-    if (!g || !g->reset) return;
-    g->reset = 0;
-    if (!g->used) return;
-    static u64 ts[GP_QUERIES];
-    if (vkGetQueryPoolResults(g_vk.dev, g->pool, 0, g->used, sizeof ts, ts, 8, VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
+    GpSlot* g = g_slot[slot];
+    int profile;
+    /* a use not timed, or not read, comes between: the next spans don't continue from the last end */
+    if (!g || !g->reset) {
+        g_stats_busy.ended = 0;
         return;
+    }
+    /* its reset goes in again at the next use timed even when timing went off in this one: that use's timestamps
+       would otherwise follow this one's in the pool, and be read with them */
+    g->reset = 0;
+    profile = gp_on();
+    static u64 ts[GP_QUERIES];
+    /* no wait: the slot's submissions are done (frame_recycle waited for them), and a failed one's results aren't
+       there, which leaves its frame out */
+    if (!g->used || !gp_timed() ||
+        vkGetQueryPoolResults(g_vk.dev, g->pool, 0, g->used, sizeof ts, ts, 8, VK_QUERY_RESULT_64_BIT) != VK_SUCCESS) {
+        g_stats_busy.ended = 0;
+        return;
+    }
+    gp_busy(g, ts);
+    if (!profile) return;
 #if defined(SNX_TRACY)
     /* the frame's timestamps onto the GPU track. The context is announced calibrated when the device can put its
        clock next to the client's (a fresh pair of the two every frame, vk_gpuprof_clock), with the anchor then

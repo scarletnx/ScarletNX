@@ -373,6 +373,97 @@ static int check_fresh_frame_kept(void) {
     return 0;
 }
 
+/* n frames that each copy size bytes from one device buffer to another (size 0: none), then the slots used again, so
+   each frame's timestamps are read (gpuprof.c, at frame_recycle) */
+static void stats_frames(u32 n, VkBuffer from, VkBuffer to, u64 size) {
+    VkBufferCopy copy = {0, 0, size};
+    for (u32 i = 0; i < n; i++) {
+        VkCommandBuffer cb = vk_cmd();
+        if (size) rec_CmdCopyBuffer(cb, from, to, 1, &copy);
+        vk_frame_next();
+    }
+    for (u32 i = 0; i < VK_FRAMES; i++) {
+        vk_cmd();
+        vk_frame_next();
+    }
+}
+/* The stats box's GPU line (gpuprof.c, settings.txt's stats). Off, with the profile off too, frames write no
+   timestamp and add no busy time. On, each command buffer is timed, and the graphics queue's busy time over frames
+   that copy 32 MiB is above 0 and below their time on the clock. Stats turned off within a frame and on again: the slot
+   reused while off has its pool reset at its next use, so a frame of empty command buffers doesn't count the copy
+   timed before; and a command buffer begun while off isn't closed onto another's begin, so the wait between them
+   isn't counted either */
+static int check_stats_gpu_time(void) {
+    const u64 size = 32ull << 20;
+    VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                              .size = size,
+                              .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    VmaAllocationInfo info;
+    VkBuffer buf[2];
+    VmaAllocation mem[2];
+    u64 stamps, busy, copied, t0, wall;
+    int was = g_settings.stats;
+    for (int i = 0; i < 2; i++) CHECK(vk_buffer_create(g_vk.vma, &bci, &aci, &buf[i], &mem[i], &info) == VK_SUCCESS);
+    g_settings.stats = 0;
+    vk_finish();
+    vk_frame_next();
+    stats_frames(0, buf[0], buf[1], 0); /* what an earlier check timed is read */
+    stamps = g_vk_timestamps;
+    busy = vk_gpuprof_busy_ns();
+    stats_frames(8, buf[0], buf[1], size);
+    printf("stats off: %llu timestamps written, %llu ns of GPU time added over 8 frames\n",
+           (unsigned long long)(g_vk_timestamps - stamps), (unsigned long long)(vk_gpuprof_busy_ns() - busy));
+    CHECK(g_vk_timestamps == stamps && vk_gpuprof_busy_ns() == busy);
+    if (!vk_gpuprof_timed()) {
+        printf("stats: the graphics queue writes no timestamps (timestampValidBits %u): its line says gpu ?\n",
+               g_vk.gfx_timestamp_bits);
+        goto done;
+    }
+    g_settings.stats = 1;
+    t0 = plat_ns();
+    busy = vk_gpuprof_busy_ns();
+    stats_frames(8, buf[0], buf[1], size);
+    wall = plat_ns() - t0;
+    copied = vk_gpuprof_busy_ns() - busy;
+    printf("stats on: 8 frames copying 32 MiB, the graphics queue busy %.3f ms of their %.3f ms, %llu timestamps\n",
+           (double)copied / 1e6, (double)wall / 1e6, (unsigned long long)(g_vk_timestamps - stamps));
+    CHECK(g_vk_timestamps > stamps && copied > 0 && copied < wall);
+    /* a frame's copy timed, then stats off before its slot is used again, and on */
+    rec_CmdCopyBuffer(vk_cmd(), buf[0], buf[1], 1, &(VkBufferCopy){0, 0, size});
+    vk_frame_next();
+    g_settings.stats = 0;
+    stats_frames(0, buf[0], buf[1], 0); /* both slots used again, untimed */
+    g_settings.stats = 1;
+    busy = vk_gpuprof_busy_ns();
+    stats_frames(2, buf[0], buf[1], 0);
+    busy = vk_gpuprof_busy_ns() - busy;
+    printf("stats on again: 2 empty frames busy %.3f ms, against %.3f ms a frame copying\n", (double)busy / 1e6,
+           (double)copied / 8e6);
+    CHECK(busy * 4 < copied / 8);
+    /* within one frame: a command buffer begun and timed, stats off at its end, the next begun while off, a wait,
+       stats on at its end */
+    busy = vk_gpuprof_busy_ns();
+    vk_cmd();
+    g_settings.stats = 0;
+    vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    vk_cmd();
+    plat_sleep_ns(50000000);
+    g_settings.stats = 1;
+    vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    vk_frame_next();
+    stats_frames(0, buf[0], buf[1], 0);
+    busy = vk_gpuprof_busy_ns() - busy;
+    printf("stats off and on within a frame, 50 ms between its command buffers: busy %.3f ms\n", (double)busy / 1e6);
+    CHECK(busy < 25000000);
+done:
+    g_settings.stats = was;
+    vk_finish();
+    for (int i = 0; i < 2; i++) vmaDestroyBuffer(g_vk.vma, buf[i], mem[i]);
+    return 0;
+}
+
 /* the renderer's viewport index and its first viewport's facing for the registers r, through the draw state */
 static VkViewport viewport_of(const u32* r, u32 index) {
     DsDynamic d;
@@ -3763,6 +3854,7 @@ int main(int argc, char** argv) {
     CHECK(!check_staging_overflow()); /* first: it counts the staging blocks of a fresh device */
     CHECK(!check_rings_without_present());
     CHECK(!check_fresh_frame_kept());
+    CHECK(!check_stats_gpu_time());
     CHECK(!check_stream_epoch());
     CHECK(!check_owned_readback());
     CHECK(!check_owned_writable());

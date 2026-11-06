@@ -26,10 +26,12 @@ static struct {
     u64 since, since_ns;    /* the frames and the time the frame rate is counted from */
     int fps10;              /* the frames a second over the last half second, in tenths; -1 for none yet */
     u64 sampled_ns, cpu_ns; /* when the processor's time was read last, and what it was: the renderer's thread's */
-    int cpu;                /* stats_measured's */
-    u64 memory;
-    int corner; /* stats_corner's, as vpad_corner reads it */
-} g_stats = {.fps10 = -1, .cpu = -1};
+    u64 sampled_frames;     /* the frames kept then */
+    u64 busy_ns;            /* and the GPU's busy time read with that frame, if it was timed */
+    int busy_timed;
+    SnxStatsMeasure shown; /* stats_measured's */
+    int corner;            /* stats_corner's, as vpad_corner reads it */
+} g_stats = {.fps10 = -1, .shown = {.cpu = -1, .gpu = -1}};
 
 void stats_corner_set(const IniOpt* o, const char* v) {
     int i = vpad_corner(v);
@@ -41,13 +43,12 @@ void stats_corner_set(const IniOpt* o, const char* v) {
     LOG("settings: stats_corner=%s is not tl, tr, bl or br: it keeps %s\n", v, vpad_corner_word(i));
     snprintf((char*)o->var, o->size, "%s", vpad_corner_word(i));
 }
-void stats_measured(int cpu, u64 memory) {
+void stats_measured(const SnxStatsMeasure* m) {
     ui_lock();
-    g_stats.cpu = cpu;
-    g_stats.memory = memory;
+    g_stats.shown = *m;
     ui_unlock();
 }
-void stats_frame(u64 now_ns) {
+void stats_frame(u64 now_ns, const SnxStatsGpu* gpu) {
     u64 cpu_ns;
     unsigned cores;
     if (!__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)) {
@@ -55,7 +56,7 @@ void stats_frame(u64 now_ns) {
             int corner = g_stats.corner;
             ui_lock();
             memset(&g_stats, 0, sizeof g_stats);
-            g_stats.fps10 = g_stats.cpu = -1;
+            g_stats.fps10 = g_stats.shown.cpu = g_stats.shown.gpu = -1;
             g_stats.corner = corner;
             ui_unlock();
         }
@@ -70,20 +71,34 @@ void stats_frame(u64 now_ns) {
     if (g_stats.sampled_ns && now_ns - g_stats.sampled_ns < STATS_SAMPLE_NS) return;
     cpu_ns = snx_process_cpu_ns();
     cores = snx_cpu_count();
-    if (g_stats.sampled_ns)
-        stats_measured(cpu_ns && g_stats.cpu_ns && cores
-                           ? (int)((cpu_ns - g_stats.cpu_ns) * 100 / ((now_ns - g_stats.sampled_ns) * cores))
-                           : -1,
-                       snx_footprint());
+    if (g_stats.sampled_ns) {
+        u64 wall = now_ns - g_stats.sampled_ns;
+        SnxStatsMeasure m = {
+            .cpu = cpu_ns && g_stats.cpu_ns && cores ? (int)((cpu_ns - g_stats.cpu_ns) * 100 / (wall * cores)) : -1,
+            .memory = snx_footprint(),
+            .gpu = -1};
+        /* the GPU's busy time read since the last measure, over its time and its frames: the renderer reads a frame's
+           once its slot is reused, two frames on, a shift a second's sum hardly shows */
+        if (gpu->timed && g_stats.busy_timed) {
+            u64 busy = gpu->busy_ns - g_stats.busy_ns;
+            m.gpu = (int)(busy * 100 / wall);
+            m.gpu_ns = busy / (g_stats.frames - g_stats.sampled_frames); /* this frame is one of them */
+        }
+        stats_measured(&m);
+    }
     g_stats.sampled_ns = now_ns;
     g_stats.cpu_ns = cpu_ns;
+    g_stats.sampled_frames = g_stats.frames;
+    g_stats.busy_ns = gpu->busy_ns;
+    g_stats.busy_timed = gpu->timed;
 }
 
 void stats_box(const int safe[4], int scale, float box[4]) {
     float cw = 8.0f * (float)scale, ch = 16.0f * (float)scale, gap = ch / 2, showcase[4];
     int corner = __atomic_load_n(&g_stats.corner, __ATOMIC_RELAXED);
     box[2] = (float)STATS_COLS * cw;
-    box[3] = (2 + STATS_GRAPH_LINES) * ch + 3 * ch / 4; /* two lines and the graph, a quarter line around each */
+    /* the lines and the graph, a quarter line around each */
+    box[3] = (STATS_LINES + STATS_GRAPH_LINES) * ch + 3 * ch / 4;
     if (vpad_showcase_box(safe, showcase) == corner) {  /* beside showcase's box, toward the picture's middle */
         box[0] = corner & 1 ? showcase[0] + showcase[2] - box[2] : showcase[0];
         box[1] = corner & 2 ? showcase[1] - gap - box[3] : showcase[1] + showcase[3] + gap;
@@ -99,9 +114,23 @@ static float frame_ms(unsigned j) {
     unsigned older = (newer + STATS_FRAMES - 1) % STATS_FRAMES;
     return (float)(g_stats.at[newer] - g_stats.at[older]) / 1e6f;
 }
+/* a share in percent into s, ? when unknown (below 0) */
+static void stats_percent(char* s, size_t n, int percent) {
+    if (percent >= 0)
+        snprintf(s, n, "%d%%", percent);
+    else
+        snprintf(s, n, "?");
+}
+/* bytes in MiB into s, ? when unknown (0) */
+static void stats_mib(char* s, size_t n, u64 bytes) {
+    if (bytes)
+        snprintf(s, n, "%llu", (unsigned long long)(bytes >> 20));
+    else
+        snprintf(s, n, "?");
+}
 void stats_draw(SnxUiList* l, const int safe[4], int scale, u64 now_ns) {
     float cw = 8.0f * (float)scale, ch = 16.0f * (float)scale, box[4], gx, gy, gw, gh, bw;
-    char fps[16], ms[16], line[2][STATS_COLS + 1];
+    char fps[16], ms[16], share[16], used[24], line[STATS_LINES][STATS_COLS + 1];
     unsigned j;
     if (!__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)) return;
     if (!g_stats.since_ns) { /* the first half second starts at the first draw */
@@ -123,23 +152,22 @@ void stats_draw(SnxUiList* l, const int safe[4], int scale, u64 now_ns) {
     } else
         snprintf(ms, sizeof ms, "? ms");
     snprintf(line[0], sizeof line[0], "%s  %s", fps, ms);
-    if (g_stats.cpu >= 0 && g_stats.memory)
-        snprintf(line[1], sizeof line[1], "cpu %d%%  %llu MiB", g_stats.cpu,
-                 (unsigned long long)(g_stats.memory >> 20));
-    else if (g_stats.cpu >= 0)
-        snprintf(line[1], sizeof line[1], "cpu %d%%  ? MiB", g_stats.cpu);
-    else if (g_stats.memory)
-        snprintf(line[1], sizeof line[1], "cpu ?  %llu MiB", (unsigned long long)(g_stats.memory >> 20));
-    else
-        snprintf(line[1], sizeof line[1], "cpu ?  ? MiB");
+    stats_percent(share, sizeof share, g_stats.shown.cpu);
+    stats_mib(used, sizeof used, g_stats.shown.memory);
+    snprintf(line[1], sizeof line[1], "cpu %s  %s MiB", share, used);
+    if (g_stats.shown.gpu >= 0) { /* the busy time a frame in tenths of a millisecond, as the frame's own */
+        unsigned long long tenths = (g_stats.shown.gpu_ns + 50000) / 100000;
+        snprintf(line[2], sizeof line[2], "gpu %d%%  %llu.%llu ms", g_stats.shown.gpu, tenths / 10, tenths % 10);
+    } else
+        snprintf(line[2], sizeof line[2], "gpu ?  ? ms");
     stats_box(safe, scale, box);
     ui_fill(l, box[0], box[1], box[2], box[3], STATS_BACK);
-    ui_text(l, box[0] + cw, box[1] + ch / 4, scale, line[0], STATS_TEXT);
-    ui_text(l, box[0] + cw, box[1] + ch / 4 + ch, scale, line[1], STATS_TEXT);
+    for (j = 0; j < STATS_LINES; ++j)
+        ui_text(l, box[0] + cw, box[1] + ch / 4 + (float)j * ch, scale, line[j], STATS_TEXT);
     /* the graph: each frame's time a bar up from its foot, the newest at the right, over the two guides */
     gx = box[0] + cw;
     gw = box[2] - 2 * cw;
-    gy = box[1] + 2 * ch + ch / 2;
+    gy = box[1] + STATS_LINES * ch + ch / 2;
     gh = STATS_GRAPH_LINES * ch;
     bw = gw / (STATS_FRAMES - 1);
     ui_fill(l, gx, gy + gh - gh * STATS_60_MS / STATS_TOP_MS, gw, (float)scale, STATS_GUIDE);

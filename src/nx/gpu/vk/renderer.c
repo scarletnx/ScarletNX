@@ -555,7 +555,14 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
         memcpy(was, is, sizeof was);
         last_present_ns = now_ns;
         g_vk_present++;
-        stats_frame(now_ns);
+        {
+            SnxStatsGpu gpu = {0};
+            if (__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)) { /* read only while the box shows */
+                gpu.busy_ns = vk_gpuprof_busy_ns();
+                gpu.timed = vk_gpuprof_timed();
+            }
+            stats_frame(now_ns, &gpu);
+        }
         if (g_vk_present == 1 || g_vk_present % 600 == 0) guest_stats_log(now_ns, g_vk_present);
         vk_mem_present();
         if (g_last) vk_surf_touch(g_last); /* what screenshots read stays */
