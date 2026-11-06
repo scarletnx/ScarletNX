@@ -2778,6 +2778,12 @@ if(NOT WIN32 AND TARGET SDL3::SDL3) # SDL3 is there with a driver that draws (cm
              COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_hot" --write_tracking_hot=1)
     add_test(NAME platform_posix_no_tracking
              COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_no_tracking" --write_tracking=2)
+    # what the tracking costs on this host, with no game (bench_ww): page protection without and with hot pages, and
+    # the host's own way. Its timings are printed; it checks the scans' reports, and that hot pages take fewer faults
+    add_test(NAME platform_posix_bench_ww
+             COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}" --bench-ww --write_tracking=1)
+    add_test(NAME platform_posix_bench_ww_own COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}" --bench-ww)
+    set_tests_properties(platform_posix_bench_ww platform_posix_bench_ww_own PROPERTIES TIMEOUT 60)
 endif()
 if(WIN32 AND TARGET SDL3::SDL3)
     # the write watch of the reservation, the kernel's writes included (platform/plat_win32.c)
