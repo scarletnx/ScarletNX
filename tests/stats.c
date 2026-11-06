@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The stats box over the game (runtime/platform/stats.c): nothing while off; its lines as the frames and the measures
-   say them, ? for what is not known; the GPU's share and time a frame from its busy time over a second, ? where the
-   renderer can't time it or wasn't at the second before; the graph's bars, a slow frame's in the failure colour; its
-   corner, and beside showcase's box in showcase's corner; a word that is no corner; and off forgetting what it had */
+/* The stats box over the game (runtime/platform/stats.c): nothing while off; its letters a step below the menu's; its
+   lines as the frames and the measures say them, ? for what is not known; the GPU's share and time a frame from its
+   busy time over a second, ? where the renderer can't time it or wasn't at the second before; the graph's bars, a slow
+   frame's in the failure colour; its corner, and beside showcase's box in showcase's corner; a word that is no
+   corner; and off forgetting what it had */
 #include "nx/runtime/platform/stats.h"
 #include "nx/runtime/platform/vpad.h"
 #include "nx/runtime/platform/controls_atlas.h"
@@ -34,15 +35,16 @@ void options_tv_mode_set(const IniOpt* o, const char* v) {
     (void)o;
     (void)v;
 }
-/* the test's state: the last line logged, the quads drawn, the line line_at read, and what the renderer reads of the
-   GPU at each frame (nothing, at first) */
+/* the test's state: the last line logged, the quads drawn, the line line_at read, what the renderer reads of the GPU
+   at each frame (nothing, at first), and the menu's scale draw gives (3: the box's letters at 2) */
 static struct {
     char logged[256];
     SnxUiQuad quads[4096];
     SnxUiList l;
     char line[STATS_COLS + 1];
     SnxStatsGpu gpu;
-} g_test;
+    int menu;
+} g_test = {.menu = 3};
 void logf_(int lvl, const char* fmt, ...) {
     va_list ap;
     (void)lvl;
@@ -61,15 +63,16 @@ static void draw(u64 now) {
     g_test.l.q = g_test.quads;
     g_test.l.n = 0;
     g_test.l.max = 4096;
-    stats_draw(&g_test.l, safe, 2, now);
+    stats_draw(&g_test.l, safe, g_test.menu, now);
 }
-/* the line of letters drawn at x, y in scale 2's letters, its spaces back, trimmed */
+/* the line of letters drawn at x, y in the box's letters, its spaces back, trimmed */
 static const char* line_at(float x, float y) {
     int k, i, end = 0;
+    float cw = 8.0f * (float)stats_scale(g_test.menu);
     for (k = 0; k < STATS_COLS; ++k) {
         g_test.line[k] = ' ';
         for (i = 0; i < g_test.l.n; ++i)
-            if (g_test.quads[i].uw == 8 && g_test.quads[i].vh == 16 && g_test.quads[i].x == x + (float)k * 16 &&
+            if (g_test.quads[i].uw == 8 && g_test.quads[i].vh == 16 && g_test.quads[i].x == x + (float)k * cw &&
                 g_test.quads[i].y == y)
                 g_test.line[k] = (char)((g_test.quads[i].v - SNX_CONTROLS_FONT_Y) / 16 * 16 +
                                         (g_test.quads[i].u - SNX_CONTROLS_FONT_X) / 8);
@@ -80,18 +83,30 @@ static const char* line_at(float x, float y) {
 }
 /* the box's line k from the top */
 static const char* text(int k) {
-    float box[4];
-    stats_box(safe, 2, box);
-    return line_at(box[0] + 16, box[1] + 8 + (float)k * 32);
+    int s = stats_scale(g_test.menu);
+    float box[4], cw = 8.0f * (float)s, ch = 16.0f * (float)s;
+    stats_box(safe, s, box);
+    return line_at(box[0] + cw, box[1] + ch / 4 + (float)k * ch);
+}
+/* the scale the box and every letter in it were drawn at: the box's width in letters of it, and each letter's 8x16
+   texels drawn 8 by 16 times it; 0 where one differs */
+static int drawn_scale(void) {
+    int i, s = (int)g_test.quads[0].w / (STATS_COLS * 8);
+    if (g_test.quads[0].w != (float)(STATS_COLS * 8 * s)) return 0;
+    for (i = 1; i < g_test.l.n; ++i)
+        if (g_test.quads[i].uw == 8 && g_test.quads[i].vh == 16 &&
+            (g_test.quads[i].w != (float)(8 * s) || g_test.quads[i].h != (float)(16 * s)))
+            return 0;
+    return s;
 }
 /* the graph's bars: the plain fills narrower than it */
 static int bars(const SnxUiQuad** newest) {
     float box[4];
     int i, n = 0;
-    stats_box(safe, 2, box);
+    stats_box(safe, stats_scale(g_test.menu), box);
     *newest = NULL;
     for (i = 1; i < g_test.l.n; ++i)
-        if (g_test.quads[i].uw == 2 && g_test.quads[i].w < box[2] - 32) {
+        if (g_test.quads[i].uw == 2 && g_test.quads[i].w < box[2] - 16.0f * (float)stats_scale(g_test.menu)) {
             if (!*newest || g_test.quads[i].x > (*newest)->x) *newest = &g_test.quads[i];
             ++n;
         }
@@ -126,6 +141,18 @@ int main(void) {
     draw(t);
     assert(!strcmp(text(0), "? fps  ? ms") && !strcmp(text(1), "cpu ?  ? MiB"));
     assert(!strcmp(text(2), "gpu ?  ? ms") && !strcmp(text(3), "vram ?/? MiB"));
+    /* its letters a step below the menu's, 1 at least: the box and each letter at that scale, the lines where it puts
+       them */
+    assert(stats_scale(1) == 1 && stats_scale(2) == 1 && stats_scale(3) == 2 && stats_scale(4) == 3);
+    for (g_test.menu = 1; g_test.menu <= 4; ++g_test.menu) {
+        draw(t);
+        if (drawn_scale() != stats_scale(g_test.menu) || strcmp(text(0), "? fps  ? ms")) {
+            fprintf(stderr, "the menu at %d: the box drawn at %d, not %d; its first line \"%s\"\n", g_test.menu,
+                    drawn_scale(), stats_scale(g_test.menu), text(0));
+            return 1;
+        }
+    }
+    g_test.menu = 3;
     /* 30 frames in half a second: 60.0 frames a second, the last 16.7 ms; 29 bars under the 60 FPS guide */
     for (k = 1; k <= 30; ++k) stats_frame(at = t + (u64)k * 16666667ull, &g_test.gpu);
     draw(t + 500 * MS);

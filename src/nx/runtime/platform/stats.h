@@ -46,9 +46,12 @@ void stats_corner_set(const IniOpt* o, const char* v);
 void stats_frame(u64 now_ns, const SnxStatsGpu* gpu);
 /* what the measured lines say; stats_frame sets it, the tests too */
 void stats_measured(const SnxStatsMeasure* m);
-/* the box over a picture whose safe area is safe (x, y, w, h), in letters of scale times the 8x16 font (the menu's,
-   overlay_place), at now_ns: nothing while stats is off. Under ui_lock */
-void stats_draw(SnxUiList* l, const int safe[4], int scale, u64 now_ns);
-/* the box's place for that: x, y, w, h into box */
+/* the box's letters' scale, times the 8x16 font, beside the menu's (overlay_place's) menu_scale: a step smaller, 1 at
+   least, so the numbers over the game hide less of it than the menu that stops it */
+int stats_scale(int menu_scale);
+/* the box over a picture whose safe area is safe (x, y, w, h), in stats_scale's letters for the menu's menu_scale, at
+   now_ns: nothing while stats is off. Under ui_lock */
+void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns);
+/* the box's place for that in letters of scale (stats_scale's): x, y, w, h into box */
 void stats_box(const int safe[4], int scale, float box[4]);
 #endif
