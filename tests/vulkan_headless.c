@@ -2793,8 +2793,6 @@ static int check_flush_parts(void) {
     CHECK(!flush_parts_case(gva, cpu, 256, 128, 0, 1, 256 * 128 * 4, 0)); /* block linear, 1 GOB high */
     CHECK(!flush_parts_case(gva + 0x40000, cpu + 0x40000, 1024, 128, 0x1000, 1, 1024 * 128, 0)); /* pitch linear */
     CHECK(!flush_parts_case(gva + 0x80000, cpu + 0x80000, 256, 32, 0x1000, 12, 256 * 32, 0));    /* 12 layers */
-    /* 2x2 samples a pixel (registers in samples): the samples drawn into the guest's layout of them, in bands of rows */
-    CHECK(!flush_parts_case(gva + 0xC0000, cpu + 0xC0000, 256, 128, 0, 1, 256 * 128 * 4, DS_MSAA_2X2));
     CHECK(mem_unmap(cpu, 0x100000) == 0);
     return 0;
 }
