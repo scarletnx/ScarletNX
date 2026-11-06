@@ -521,8 +521,9 @@ static void hid_mouse_update(u64 now) {
     for (u32 i = 0; i < NMICE; i++) {
         u8 state[0x70] = {0};
         int moves = g_nmice[i].type != NMOUSE_LEFT;
-        snx_st_le64(state, g_hle.hid.samp);
-        snx_st_le64(state + 8, now);
+        snx_st_le64(state, now);
+        /* the sampling number: the SDK's reader of two or more states retries until these are consecutive */
+        snx_st_le64(state + 8, g_hle.hid.samp);
         snx_st_le32(state + 0x10, moves ? (u32)m->x : 0);
         snx_st_le32(state + 0x14, moves ? (u32)m->y : 0);
         snx_st_le32(state + 0x18, moves ? (u32)dx : 0);
