@@ -463,14 +463,23 @@ static u64 big_size(u64 size) {
    upload took 43 ms in a new 32 MiB buffer, 28 ms in a 256 MiB ring written before. bar: the output ring's first
    BAR_RING_MAX of a frame, in device memory the CPU maps when it has room (bar_room): one there, or a new one there,
    else one in host memory, which a new one there replaces only below the room a ring coming back from host memory
-   needs. 0 when none could be made */
+   needs. A ring that wants a chunk outside the window with none left in the pool hands out of its smallest pooled big
+   buffer instead, up to that buffer's size: a frame of more small requests than the pool kept chunks for (an ASTC
+   texture's strips after a texture's bands) writes memory written before, not new chunks. 0 when none could be made */
 static u32 chunk_take(u32 ring, u64 size, int big, int bar, u32 slot) {
-    u32 here = 0, other = 0; /* the chunks of the pool in the memory wanted, and in the other memory */
+    u32 here = 0, other = 0, lend = 0; /* the chunks of the pool in the memory wanted, in the other memory, and the
+                                          big buffer a ring with none of them hands out of */
     for (u32 i = 0; i < g_cmd.nchunk; i++) {
         const Chunk* c = &g_cmd.chunk[i];
         u32* pick;
-        if (!c->buf || c->slot || c->ring != ring || (int)c->big != big || (big ? c->size < size : c->size != size))
+        if (!c->buf || c->slot || c->ring != ring) continue;
+        if (!big && c->big) {
+            if (!lend || c->size < g_cmd.chunk[lend - 1].size ||
+                (c->size == g_cmd.chunk[lend - 1].size && c->freed >= g_cmd.chunk[lend - 1].freed))
+                lend = i + 1;
             continue;
+        }
+        if ((int)c->big != big || (big ? c->size < size : c->size != size)) continue;
         pick = (int)c->bar == bar ? &here : &other;
         if (!*pick || c->size < g_cmd.chunk[*pick - 1].size ||
             (c->size == g_cmd.chunk[*pick - 1].size && c->freed >= g_cmd.chunk[*pick - 1].freed))
@@ -484,6 +493,7 @@ static u32 chunk_take(u32 ring, u64 size, int big, int bar, u32 slot) {
             bar = 0;
         }
     }
+    if (!here && !bar) here = lend;
     if (!here) {
         if ((here = chunk_new(ring, size, bar, slot))) g_cmd.chunk[here - 1].big = (u32)big;
         return here;
@@ -541,8 +551,8 @@ static void pool_recycle(Frame* f) {
 }
 
 /* size bytes of the frame's ring at *off of *buf, the chunk's memory in *mem: the chunk, NULL when none could be had.
-   A request no bigger than a chunk is handed out of the ring's chunk, or of the next one when that is full; a bigger
-   one gets a big buffer of its own */
+   A request no bigger than a chunk is handed out of the ring's chunk, or of the next one when that is full (a big
+   buffer chunk_take lent it, counted as a big one); a bigger one gets a big buffer of its own */
 static const Chunk* ring_take(Frame* f, u32 ring, u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocation* mem) {
     Ring* r = &f->ring[ring];
     u32 slot = (u32)(f - g_fr) + 1;
@@ -570,7 +580,7 @@ static const Chunk* ring_take(Frame* f, u32 ring, u64 size, u64 align, VkBuffer*
                                 ring == XRING_OUTPUT && (r->n + 1) * chunk_size() <= BAR_RING_MAX, slot);
             if (!r->cur) return NULL;
             r->n++;
-            g_cmd.took[g_cmd.itook][ring][0]++;
+            g_cmd.took[g_cmd.itook][ring][g_cmd.chunk[r->cur - 1].big]++; /* a big buffer lent counts as one */
             at = 0;
         }
         c = &g_cmd.chunk[r->cur - 1];
