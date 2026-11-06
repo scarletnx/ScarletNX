@@ -206,15 +206,18 @@ static int up_flush(Upload* u) {
     u->used = 0;
     return ok;
 }
-/* room in the batch for a strip: size bytes of the scratch buffer (its pieces each aligned to 16 or less), two
-   copies and a conversion. The batch is flushed first when they don't fit, and the scratch buffer grown when even an
-   empty one wouldn't hold them, so the strip's pieces stay in one batch and one buffer. 0 when memory ran out */
+/* room in the batch for a strip: size bytes of the scratch buffer, two copies and a conversion. After the batch's
+   other pieces the strip's lose less than 64 bytes to alignment (its rows start on bl_lin_align, 48 at most, and their
+   conversion on 16); in an empty batch none, its first piece at 0 and a conversion right after rows, whose pitch is a
+   multiple of 16 (vk_bl_move takes no other). The batch is flushed first when they don't fit, and the scratch buffer
+   grown to size when even an empty one wouldn't hold them, so the strip's pieces stay in one batch and one buffer: no
+   more, as the buffer stays as big as the most asked of it. 0 when memory ran out */
 static int up_reserve(Upload* u, u64 size) {
     if ((!size || u->used + 64 + size <= u->cap) && u->nreg + 2 <= sizeof u->reg / sizeof u->reg[0] &&
         u->nconv < sizeof u->conv / sizeof u->conv[0])
         return 1;
     if (!up_flush(u)) return 0;
-    return !size || size + 64 <= u->cap || (u->scratch = vk_bl_scratch(size + 64, &u->cap)) != VK_NULL_HANDLE;
+    return !size || size <= u->cap || (u->scratch = vk_bl_scratch(size, &u->cap)) != VK_NULL_HANDLE;
 }
 /* size bytes of the scratch buffer at a multiple of align, within what up_reserve made room for */
 static u64 up_space(Upload* u, u64 size, u32 align) {
@@ -535,7 +538,8 @@ static int tex_upload_(Surf* t) {
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
     int is3d = t->type == VK_IMAGE_VIEW_TYPE_3D;
     u32 layers = t->layers, d3 = is3d ? t->depth3d : 1;
-    u64 band = g_vk.alloc_cap < TEX_BAND ? g_vk.alloc_cap : TEX_BAND;
+    /* a strip's scratch rows keep the buffer that big (vk_bl_scratch): VK_PART_SHARE of the cap at most */
+    u64 band = g_vk.alloc_cap / VK_PART_SHARE < TEX_BAND ? g_vk.alloc_cap / VK_PART_SHARE : TEX_BAND;
     int complete = 1;
     Upload u = {.cb = cb, .t = t};
     for (u32 layer = 0; layer < layers && complete; layer++) {

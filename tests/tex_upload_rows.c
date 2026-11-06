@@ -250,7 +250,9 @@ void vk_bl_barrier(VkCommandBuffer cb, int before) {
     bar_state = before ? 1 : 2;
     if (before) batch_moves = 0;
 }
+static u64 g_scratch_most; /* the most asked of the scratch buffer since it was set to 0 */
 VkBuffer vk_bl_scratch(u64 size, u64* cap) {
+    if (size > g_scratch_most) g_scratch_most = size;
     *cap = SCRATCH < g_vk.alloc_cap ? SCRATCH : g_vk.alloc_cap;
     return size <= *cap ? SCRATCH_BUF : VK_NULL_HANDLE;
 }
@@ -1259,19 +1261,39 @@ int main(void) {
             memcpy(&got, copied + regs[0].bufferOffset + (y * 16 + x) * 4, 4);
             CHECK(got == want);
         }
-    /* past the allocation cap, strips: under 64 KiB a row of the picture's blocks (16 GOBs high, 960 KiB) doesn't
-       fit, so it goes a GOB row (8 rows, 7680 bytes each) at a time, each GOB of it gathered from its block, 17 of
-       them; under 16 KiB the pitch-linear level in strips of 13 rows (its second level fits whole), and under 4 KiB
-       the 3D level (blocks of 2 GOBs high and 2 slices deep, 4096 bytes a row of them) a row of blocks of 2 slices
-       at a time */
+    /* no strip asks the scratch buffer for more than a quarter of the cap, as the buffer stays as big as the most
+       asked of it: a 128x128 RGBA8 level of 64 KiB, the cap, in 4 strips of 32 rows, each asking for its 16 KiB alone.
+       The level went whole, asking for 64 bytes more than the cap: no buffer, and no upload */
     g_vk.alloc_cap = 64 << 10;
+    {
+        Surf q = tex(128, 128, 1, 1, 4, 0, 0, 1);
+        const u64 quarter = (64 << 10) / VK_PART_SHARE;
+        stage_used = copied_used = nregs = 0;
+        copy_bpp = 4;
+        g_scratch_most = 0;
+        int ok = tex_upload(&q);
+        if (!ok || nregs != 4 || g_scratch_most > quarter)
+            fprintf(
+                stderr,
+                "a 128x128 RGBA8 level under a cap of 65536 bytes: upload %s in %u strips (4 expected), the scratch "
+                "buffer asked for %llu bytes, %llu at most may stay\n",
+                ok ? "done" : "failed", nregs, (unsigned long long)g_scratch_most, (unsigned long long)quarter);
+        CHECK(ok && nregs == 4 && g_scratch_most <= quarter);
+        upload_and_check(&q, GUEST, 4); /* every texel where the layout has it */
+    }
+    /* past a quarter of the allocation cap, strips: under 64 KiB a row of the picture's blocks (16 GOBs high,
+       960 KiB) doesn't fit, so it goes a GOB row (8 rows, 7680 bytes each) at a time, each GOB of it gathered from its
+       block, 17 of them; under 16 KiB the pitch-linear level in strips of 13 rows (its second level fits whole), and
+       under 4 KiB the 3D level (blocks of 2 GOBs high and 2 slices deep, 4096 bytes a row of them) a row of blocks of
+       2 slices at a time */
+    g_vk.alloc_cap = (64 << 10) * VK_PART_SHARE;
     upload_and_check(&a, GUEST, 17);
-    g_vk.alloc_cap = 16 << 10;
+    g_vk.alloc_cap = (16 << 10) * VK_PART_SHARE;
     Surf g = tex(300, 40, 1, 2, 4, 0, 0, 0);
     upload_and_check(&g, GUEST, 4);
-    g_vk.alloc_cap = 4 << 10;
+    g_vk.alloc_cap = (4 << 10) * VK_PART_SHARE;
     upload_and_check(&c, GUEST, 4);
-    g_vk.alloc_cap = 16 << 10;
+    g_vk.alloc_cap = (16 << 10) * VK_PART_SHARE;
     /* a converted format is deswizzled and converted strip by strip: a row of blocks (32 rows) takes 4 KiB
        deswizzled and 8 KiB converted, so a strip is one, 10 of them */
     stage_used = copied_used = nregs = 0;
@@ -1306,24 +1328,24 @@ int main(void) {
     /* a sparse texture's levels at least a tile in size have rows of whole tiles (tile_w). RGBA8 tiles of 128x128
        texels (8 GOBs across, blocks 16 high): 200 texels across (13 GOBs) take 16 at level 0, and levels 1 and 2 are
        narrower than a tile. Whole, in rows of blocks under 160 KiB (2 of them), and 8 GOB rows at a time under 64 KiB,
-       each gathered from its blocks (4) */
+       each gathered from its blocks (4); the caps 4 times those, as a strip takes a quarter of one */
     Surf sp = tex(200, 256, 1, 3, 4, 4, 0, 1);
     sp.tile_w = 3;
     upload_and_check(&sp, GUEST, 1);
-    g_vk.alloc_cap = 160 << 10;
+    g_vk.alloc_cap = (160 << 10) * VK_PART_SHARE;
     upload_and_check(&sp, GUEST, 2);
-    g_vk.alloc_cap = 64 << 10;
+    g_vk.alloc_cap = (64 << 10) * VK_PART_SHARE;
     upload_and_check(&sp, GUEST, 4);
     /* a volume's: RGBA8 tiles of 32x32x16 (2 GOBs across, blocks 4 high and 16 deep). 80x64x32 (5 GOBs) takes 6, and
        level 1, 40x32x16, a tile high and deep, 4. Whole, in a row of blocks of a slab under 512 KiB (2), and 4 GOB rows
-       of a slice under 64 KiB (64) */
+       of a slice under 64 KiB (64), the caps 4 times those */
     Surf sv = tex(80, 64, 32, 2, 4, 2, 4, 1);
     sv.tile_w = 1;
     g_vk.alloc_cap = 256ull << 20;
     upload_and_check(&sv, GUEST, 1);
-    g_vk.alloc_cap = 512 << 10;
+    g_vk.alloc_cap = (512 << 10) * VK_PART_SHARE;
     upload_and_check(&sv, GUEST, 2);
-    g_vk.alloc_cap = 64 << 10;
+    g_vk.alloc_cap = (64 << 10) * VK_PART_SHARE;
     upload_and_check(&sv, GUEST, 64);
     g_vk.alloc_cap = 256ull << 20;
     /* its layers are whole tiles apart: 320x256 of 3 levels (24, 16 and 5 GOBs across), 544768 bytes of levels in 9
