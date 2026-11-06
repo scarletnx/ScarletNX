@@ -193,6 +193,12 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 #define SNX_VKB_TEXDEPTH (SNX_VKB_TEXFUNCS + 1) /* their depth views */
 #define SNX_VKB_TEXMAP   (SNX_VKB_TEXDEPTH + 1) /* table and element to compact descriptor index */
 #define SNX_VKB_END      (SNX_VKB_TEXMAP + 1)   /* one past the last binding */
+/* Transform feedback by stores (g_shader_xfb_stores), in the global buffer slots after a program's own (at most
+   SNX_XFB_GBUF_MAX): the parameters (first vertex, first instance, vertices an instance and a draw capture), then the
+   4 buffers from where the capture starts */
+#define SNX_XFB_GBUF_MAX   11
+#define SNX_VKB_XFB_PARAMS (SNX_VKB_SSBO + SNX_XFB_GBUF_MAX)
+#define SNX_VKB_XFB        (SNX_VKB_XFB_PARAMS + 1)
 /* An indexed texture loads its handle with an LDC whose address has a register in it: one of SNX_TEX_ARRAY handles
    from cbuf_off on, each (1 << shift) bytes after the last, with the shift in bits 4-7 of ShTex.flags. */
 #define SNX_TEX_ARRAY    256
@@ -225,6 +231,8 @@ extern int g_shader_half_rounding;
 /* shaderDrawParameters: a vertex program's instance ID is InstanceIndex less BaseInstance, which an indirect draw's
    arguments set on the GPU. 1 offline */
 extern int g_shader_draw_parameters;
+/* no VK_EXT_transform_feedback but vertex stores: vertex programs store what is captured (SNX_VKB_XFB). 0 offline */
+extern int g_shader_xfb_stores;
 /* NVN's draw parameters: its driver writes each draw's base vertex and base instance into constant buffer 0 at these
    offsets, which vertex programs read (an instanced program adds the base instance to its instance ID). An indirect
    draw's are in its record, on the GPU: with draw parameters, a vertex program's reads of these words take

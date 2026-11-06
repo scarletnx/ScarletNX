@@ -248,7 +248,21 @@ u32 shader_ipa_interpolation(const u32* sph, u32 input);
 void shader_alpha_test(DirectCtx* c, u32 push, u32 push_pointer, u32 alpha);
 u32 shader_frag_y_origin(DirectCtx* c, u32 push, u32 y);
 void shader_vertex_position_fix(DirectCtx* c, u32 position, u32 push, u32 push_pointer, u32 vec4_type);
-void shader_xfb_store(DirectCtx* c, u32 vec4, const u32* output_attrs, const u8* attr_private, u32 (*components)[4]);
+/* What a program's transform feedback writes at each exit or emitted vertex (shader_xfb_store) */
+typedef struct {
+    int stores; /* by storage buffer stores (g_shader_xfb_stores), else by the extension's decorations */
+    const ShXfb* key;
+    u32 vec4, position;
+    const u32* output_attrs;
+    /* the extension's: the captured outputs' private vec4s and their component outputs */
+    const u8* attr_private;
+    u32 (*components)[4];
+    /* the stores': their storage buffers, a word pointer type, VertexIndex and InstanceIndex */
+    u32 params, buffer[4], pointer, vertex_index, instance_index;
+    const u8* outputs_used;
+    int position_used;
+} XfbOut;
+void shader_xfb_store(DirectCtx* c, const XfbOut* x);
 void shader_geometry_passthrough(DirectCtx* c, const ShaderInfo* si, u32 vertices, u32 vec4, u32 position,
                                  u32 position_in, const u32* outputs, const u32* inputs, u32 point_size, u32 layer,
                                  u32 layer_type, u32 clip, u32 clip_count, u32 primitive_id, u32 primitive_id_out,
@@ -423,7 +437,7 @@ typedef struct {
     u32 layer_input;
     u32 viewport_output;
     u8* attr_private;
-    u32 (*xfb_components)[4];
+    const XfbOut* xfb_out;
     int xfb_on;
     u32 clip_output;
     u32 clip_count;

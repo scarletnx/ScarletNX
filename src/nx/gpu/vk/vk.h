@@ -115,7 +115,7 @@ typedef struct {
     int has_vertex_robustness2; /* exact zero/default components for out-of-range mesh fetches */
     int has_calibrated_host;    /* VK_EXT_calibrated_timestamps with CLOCK_MONOTONIC_RAW: the GPU's clock goes next to
                                 the client's, one driver call (gpuprof.c's calibration) */
-    int has_xfb;                /* VK_EXT_transform_feedback: draws capture their outputs into guest memory */
+    int has_xfb;                /* VK_EXT_transform_feedback (without it, g_shader_xfb_stores) */
     int has_mixed_samples;      /* VK_NV_framebuffer_mixed_samples: coverage at more samples than color storage */
     int has_coverage_to_color, has_post_depth_coverage;
     VkSampleLocationCaps sample_locations;

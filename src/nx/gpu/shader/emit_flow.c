@@ -265,7 +265,6 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     u32 point_size = t->point_size;
     u32 layer_output = t->layer_output;
     u8* attr_private = t->attr_private;
-    u32(*xfb_components)[4] = t->xfb_components;
     int xfb_on = t->xfb_on;
     u32 clip_output = t->clip_output;
     u32 clip_count = t->clip_count;
@@ -393,7 +392,7 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             shader_geometry_passthrough(c, si, in_vertices, vec4, position, position_in, output_attrs, inputs,
                                         point_size, layer_output, i32_type, clip_output, clip_count, primitive_id,
                                         primitive_id_out, position_fix, push, push_pointer);
-        if (xfb_on && stage != ST_GS) shader_xfb_store(c, vec4, output_attrs, attr_private, xfb_components);
+        if (xfb_on && stage != ST_GS) shader_xfb_store(c, t->xfb_out);
         if (position_fix && stage != ST_GS) { /* a geometry program's vertices are fixed as it emits them */
             shader_vertex_position_fix(c, position, push, push_pointer, vec4);
         } else if (stage == ST_FS) {

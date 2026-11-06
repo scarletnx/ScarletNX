@@ -365,10 +365,13 @@ static int render_begin_empty(void) {
 }
 
 /* Transform feedback's byte counters, a word for each of the 4 buffers: where a capture's end left each buffer, which
-   the next draw's capture resumes from (3D 0x1D1; made at the first capture) */
+   the next draw's capture resumes from (3D 0x1D1; made at the first capture). Without the extension the CPU keeps
+   them (end, in bytes from each buffer's start offset, an owner's at its counters' place): a draw in vertex order
+   captures as many vertices as it has, in whole primitives, while they fit in every buffer */
 static struct {
     VkBuffer buf;
     VmaAllocation mem;
+    u32 end[GPU_CHANNELS * 2][4];
 } g_xfb;
 static int xfb_counters(void) {
     if (g_xfb.buf) return 1;
@@ -384,7 +387,20 @@ static int xfb_counters(void) {
 }
 static u64 xfb_counter_offset(u32 owner) { return ((u64)(owner & 0x7fffffff) + (owner >> 31 ? GPU_CHANNELS : 0)) * 16; }
 int vk_render_xfb_control(u32 owner_id, u64 control, u32 what, u32 stride, DrawOwner* owner) {
-    if ((owner_id & 0x7fffffff) >= GPU_CHANNELS || !g_vk.has_xfb || !xfb_counters()) return 0;
+    if ((owner_id & 0x7fffffff) >= GPU_CHANNELS) return 0;
+    if (!g_vk.has_xfb && g_shader_xfb_stores) {
+        /* capture by stores: a begin starts every buffer at 0 again, and a resume goes on from the CPU's ends
+           (g_xfb.end). The control memory gets no byte counts, so a draw of them (DrawAuto) still does nothing */
+        if (!what) {
+            owner->xfb_started = 0;
+            owner->xfb_reload = 15;
+        } else if (what == 3 && control) {
+            owner->xfb_started = 15;
+            owner->xfb_reload = 0;
+        }
+        return 1;
+    }
+    if (!g_vk.has_xfb || !xfb_counters()) return 0;
     vk_render_end(); /* counter transfers occur outside rendering */
     if (!vk_xfb_control_buffer(g_xfb.buf, xfb_counter_offset(owner_id), control, what, stride)) return 0;
     if (!what) {
@@ -395,6 +411,99 @@ int vk_render_xfb_control(u32 owner_id, u64 control, u32 what, u32 stride, DrawO
         owner->xfb_reload = 0;
     }
     return 1;
+}
+/* whether a draw captures its vertices (DsPrograms.xfb_on): by the extension once its counters exist, or by stores */
+static int xfb_wanted(int on) {
+    if (!on) return 0;
+    return g_vk.has_xfb ? xfb_counters() : g_shader_xfb_stores;
+}
+
+/* a draw's capture by stores: the vertex stage's bindings and where each buffer's capture ends */
+typedef struct {
+    VkBuffer buf[5]; /* [4] the parameters */
+    u64 off[5], size[5];
+    u32 declared; /* the buffers the program stores into, bound */
+    u32 bound;    /* those of them the draw captures into */
+    u32 end[4];
+    u32 slot; /* the owner's place in g_xfb.end */
+} XfbBind;
+/* x for a capture by stores, in the hardware's order: direct point, line and triangle lists only (others are logged
+   and skipped). A draw predicated on the GPU counts as drawn. 0 when a buffer can't be had */
+static int xfb_bind(const DsState* ds, const DrawOwner* o, const VkSh* vs, int indexed, int indirect, u32 topology,
+                    u32 first, u32 count, u32 base_instance, u32 instances, XfbBind* x) {
+    const ShXfb* key = &vs->si.xfb;
+    u32 per = topology == 0 ? 1 : topology == 1 ? 2 : topology == 4 ? 3 : 0; /* vertices a primitive */
+    u32 n = per && !indexed && !indirect ? count - count % per : 0, start[4] = {0}, last[4] = {0}, b;
+    u64 limit = (u64)n * instances, addr[4] = {0};
+    memset(x, 0, sizeof *x);
+    x->slot = (u32)(xfb_counter_offset(ds->owner) / 16);
+    if (vs->si.ngbuf > SNX_XFB_GBUF_MAX) { /* the program was translated without stores */
+        LOG_LIMIT(1, "vulkan: a vertex program with %d global buffers can't store what transform feedback captures\n",
+                  vs->si.ngbuf);
+        return 1;
+    }
+    if (!per || indexed || indirect)
+        LOG_LIMIT(4, "vulkan: transform feedback of %s topology %u isn't captured without the extension\n",
+                  indexed ? "an indexed" : indirect ? "an indirect" : "a", topology);
+    if (limit > UINT32_MAX) { /* the program's vertex places are 32-bit */
+        LOG_LIMIT(1, "vulkan: a transform feedback draw of %llu vertices isn't captured\n", (unsigned long long)limit);
+        limit = 0;
+    }
+    if (x->slot >= GPU_CHANNELS * 2) { /* no place for its counters */
+        LOG_LIMIT(1, "vulkan: transform feedback of draw owner %08x isn't captured\n", ds->owner);
+        limit = 0;
+    }
+    for (b = 0; b < 4; b++) {
+        u32 stride = key->stride[b], words = key->count[b], size;
+        if (!words || stride < 4 || (stride & 3)) continue; /* xfb_write stores nothing there */
+        x->declared |= 1u << b;
+        addr[b] = ds->bind.xfb[b].addr;
+        size = ds->bind.xfb[b].size;
+        if (!ds->bind.xfb[b].on || (i32)size <= 0) {
+            /* not written, as the extension's path leaves it: the others still capture */
+            LOG_LIMIT(1, "vulkan: transform feedback into a buffer that isn't enabled (that buffer gets nothing)\n");
+            continue;
+        }
+        if (limit && (o->xfb_started & ~o->xfb_reload & (1u << b)))
+            start[b] = g_xfb.end[x->slot][b] < size ? g_xfb.end[x->slot][b] : size;
+        /* the vertices that fit from there: each takes stride bytes, the last at least its words */
+        u32 room = size - start[b];
+        last[b] = words * 4 > stride ? words * 4 : stride;
+        u64 fit = room >= last[b] ? (room - last[b]) / stride + 1 : 0;
+        fit -= per ? fit % per : 0;
+        if (fit < limit) limit = fit;
+        x->bound |= 1u << b;
+    }
+    if (!x->declared) return 1;
+    u32 params[4] = {first, base_instance, n, (u32)limit};
+    u8* p = vk_stage(sizeof params, vk_stage_align(), &x->buf[4], &x->off[4]);
+    if (!p) return 0;
+    memcpy(p, params, sizeof params);
+    snx_le32_array(p, 4);
+    x->size[4] = sizeof params;
+    for (b = 0; b < 4; b++) {
+        if (!(x->declared >> b & 1)) continue;
+        u32 stride = key->stride[b];
+        u64 used = limit ? (limit - 1) * stride + last[b] : 0;
+        if (!(x->bound >> b & 1) || !used) { /* nothing stored: a buffer for the binding */
+            x->bound &= ~(1u << b);
+            if (!vk_buf_copy(0, 16, &x->buf[b], &x->off[b])) return 0;
+            x->size[b] = 16;
+            continue;
+        }
+        /* a writable copy of guest memory from the capture's start, which later draws read (vk_buf_copy_writable) */
+        if (!vk_buf_copy_writable(addr[b] + start[b], (u32)used, &x->buf[b], &x->off[b], 1)) return 0;
+        x->size[b] = used;
+        x->end[b] = start[b] + (u32)limit * stride;
+    }
+    return 1;
+}
+/* after the draw: each buffer's capture resumes from where it ended, until its write pointer is loaded again */
+static void xfb_bind_done(DrawOwner* o, const XfbBind* x) {
+    for (u32 b = 0; b < 4; b++)
+        if (x->bound >> b & 1) g_xfb.end[x->slot][b] = x->end[b];
+    o->xfb_started = (u8)((o->xfb_started | x->bound) & 15);
+    o->xfb_reload = (u8)(o->xfb_reload & ~x->bound);
 }
 
 /* Feedback loops. A Maxwell draw may sample a color target it renders to: a game may blend in its shaders,
@@ -1966,7 +2075,7 @@ static VkDescriptorSet desc_set_cached(VkDescriptorSetLayout layout, DescWrites*
 }
 static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro,
                                   u32* fb, u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images,
-                                  const VkViewport* screen);
+                                  const VkViewport* screen, const XfbBind* xfb);
 /* Whether the viewport covers the target t whole, so a fragment's position mapped onto [0, 1] is its pixel's centre in
    t: x from 0 over t's width, y from 0 down (a positive height) or up from its bottom (negative), as render_draw
    matched the sign to the vertex program's */
@@ -1977,18 +2086,19 @@ static int screen_covers(const VkViewport* vp, const Surf* t) {
 }
 /* scaled: a bit for each texture slot bound to a scaled render target (shader_scaled_coords in shader/emit_texture.c) */
 /* screen: the draw's viewport when its last stage maps the fragment program's screen generic onto it (render_draw), for
-   the samples at the own pixel's centre (ShaderInfo.tex_screen_mask) */
+   the samples at the own pixel's centre (ShaderInfo.tex_screen_mask).
+   xfb: the vertex stage's transform feedback stores (xfb_bind), NULL for none */
 static VkDescriptorSet stage_set(const DsState* ds, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro, u32* fb,
                                  u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images,
-                                 const VkViewport* screen) {
+                                 const VkViewport* screen, const XfbBind* xfb) {
     SNX_ZONE(z, "stage set");
-    VkDescriptorSet set = stage_set_(ds, stage, s, rt, zt, n, zt_ro, fb, scaled, res, draw, images, screen);
+    VkDescriptorSet set = stage_set_(ds, stage, s, rt, zt, n, zt_ro, fb, scaled, res, draw, images, screen, xfb);
     SNX_ZONE_END(z);
     return set;
 }
 static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro,
                                   u32* fb, u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images,
-                                  const VkViewport* screen) {
+                                  const VkViewport* screen, const XfbBind* xfb) {
     VkDescriptorSetLayout layout = g_vk_dslayout[s->indexed][shader_vk_set(stage)];
     VkDescriptorSet set = VK_NULL_HANDLE; /* the writes take it once their contents are known (desc_set_cached) */
     DescWrites d;
@@ -2020,6 +2130,10 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     if (s->si.ngbuf)
         dw_buffer(&d, set, SNX_VKB_SMAP, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, draw->map_buf[stage], draw->map_off[stage],
                   draw->map_size[stage]);
+    for (u32 b = 0; xfb && xfb->declared && b < 5; b++)
+        if (b == 4 || xfb->declared >> b & 1)
+            dw_buffer(&d, set, b == 4 ? SNX_VKB_XFB_PARAMS : SNX_VKB_XFB + b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                      xfb->buf[b], xfb->off[b], xfb->size[b]);
     VkBuffer cb;
     u64 co;
     if (stage == 4 && frame_consts(&cb, &co))
@@ -2528,7 +2642,7 @@ static int draw_kept(const DsState* ds, u32 topology, u32 epoch) {
         if (!vertex_format_holds(&ds->vfmt, s)) return 0;
         g_draw.gen[DS_VFORMAT] = ds->gen[DS_VFORMAT];
     }
-    if (s->xfb_on != (g_vk.has_xfb && ds->prog.xfb_on && xfb_counters())) return 0; /* the counters were made since */
+    if (s->xfb_on != xfb_wanted(ds->prog.xfb_on)) return 0; /* capture began or ended, or its counters were made */
     if (s->window_xy != !ds->vp.transform_on) return 0; /* the viewports' group keys no shader otherwise */
     const VkSh* used[6] = {s->vs, s->tcs, s->tes, s->gs, s->fs0, g_draw.fs};
     for (int i = 0; i < 6; i++)
@@ -2569,7 +2683,12 @@ static int draw_shaders(const DsState* ds, u32 topology, DrawShaders* o) {
     clip = p->clip_enable | (ds->vp.transform_on ? 0 : SNX_SH_WINDOW_XY);
     /* transform feedback: what the last stage before rasterization captures */
     const ShXfb* xfb = &ds->xfb;
-    int xfb_on = g_vk.has_xfb && p->xfb_on && xfb_counters();
+    int xfb_on = xfb_wanted(p->xfb_on), xfb_key = xfb_on;
+    if (xfb_on && !g_vk.has_xfb && (tes_on || gs_on)) { /* xfb_write stores from the vertex stage */
+        LOG_LIMIT(1,
+                  "vulkan: transform feedback after tessellation or geometry isn't captured without the extension\n");
+        xfb_key = 0;
+    }
     o->topology = topology;
     o->xfb_on = xfb_on;
     o->window_xy = !ds->vp.transform_on;
@@ -2577,7 +2696,7 @@ static int draw_shaders(const DsState* ds, u32 topology, DrawShaders* o) {
     o->attr_sint = attr_sint;
     o->vs = vk_shader_get(ds, p->code[1], (p->on & 1) ? p->code[0] : 0, ST_VS, attr_int, attr_sint, 0, 0,
                           tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0, 0,
-                          xfb_on && !tes_on && !gs_on ? xfb : NULL, NULL, 0, 0, 0, 0);
+                          xfb_key && !tes_on && !gs_on ? xfb : NULL, NULL, 0, 0, 0, 0);
     /* a vertex program's images and integer textures pick its variant as a fragment program's do (fs_key) */
     u32 vs_signed_images = 0, vs_signed_tex = 0;
     u32 vs_images = o->vs && !o->vs->failed && o->vs->si.nimg ? image_variant(ds, 0, o->vs, &vs_signed_images) : 0;
@@ -2590,18 +2709,18 @@ static int draw_shaders(const DsState* ds, u32 topology, DrawShaders* o) {
     if (vs_images || vs_signed_images || vs_tex || vs_rect || vs_queried)
         o->vs = vk_shader_get(ds, p->code[1], (p->on & 1) ? p->code[0] : 0, ST_VS, attr_int, attr_sint, vs_images << 8,
                               vs_signed_images << 8, tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, vs_tex, vs_signed_tex,
-                              vs_rect, xfb_on && !tes_on && !gs_on ? xfb : NULL, vs_queried ? vs_query : NULL, 0, 0, vs_images, vs_signed_images);
+                              vs_rect, xfb_key && !tes_on && !gs_on ? xfb : NULL, vs_queried ? vs_query : NULL, 0, 0, vs_images, vs_signed_images);
     o->tcs = tcs_on
                  ? vk_shader_get(ds, p->code[2], 0, ST_TCS, 0, 0, 0, 0, SNX_SH_NOT_LAST, 0, 0, 0, 0, NULL, NULL, 0, 0, 0, 0)
                  : NULL;
     o->tes = tes_on
                  ? vk_shader_get(ds, p->code[3], 0, ST_TES, 0, 0, p->tess_params & 0x333, 0,
-                                 gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0, 0, xfb_on && !gs_on ? xfb : NULL, NULL, 0, 0, 0, 0)
+                                 gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0, 0, xfb_key && !gs_on ? xfb : NULL, NULL, 0, 0, 0, 0)
                  : NULL;
     if (tes_on && !tcs_on)
         o->tcs = vk_tess_passthrough(ds->rkey.patch_vertices ? ds->rkey.patch_vertices : 1, o->vs, o->tes);
     o->gs = gs_on ? vk_shader_get(ds, p->code[4], 0, ST_GS, 0, 0, gs_input_vertices(topology, tes_on, p->tess_params),
-                                  0, clip, 0, 0, 0, 0, xfb_on ? xfb : NULL, NULL, 0, 0, 0, 0)
+                                  0, clip, 0, 0, 0, 0, xfb_key ? xfb : NULL, NULL, 0, 0, 0, 0)
                   : NULL;
     VkSh** middle[3] = {&o->tcs, &o->tes, &o->gs};
     for (int i = 0; i < 3; i++) {
@@ -3770,6 +3889,14 @@ retry:
     DrawImages images = {0};
     for (u32 i = 0; i < VK_DRAW_STAGES; i++)
         if (staged[i] && staged[i]->si.nimg) images.sampled_general = 1;
+    /* transform feedback without the extension: the buffers the vertex program stores into */
+    XfbBind xfb_stores = {0};
+    if (xfb_on && !g_vk.has_xfb &&
+        !xfb_bind(ds, o, vs, indexed, dc->indirect != 0, topology, first, count, base_instance, instances,
+                  &xfb_stores)) {
+        g_vk_skipped++;
+        return;
+    }
     /* the fragment program's samples at a generic's (x / w, y / w) read the own pixel's centre when the vertex program,
        the last stage, writes that generic as the position mapped onto [0, 1] with the y of the viewport's sign:
        stage_set_ checks the viewport covers the target */
@@ -3780,9 +3907,9 @@ retry:
         screen_vp = vk_viewport_from(&ds->dyn, &ds->vp, 0);
         screen = (vs->si.screen_out_yneg_mask >> fs->si.screen_in & 1) ? screen_vp.height < 0 : screen_vp.height > 0;
     }
-    VkDescriptorSet vset = stage_set(ds, 0, vs, rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, &images, NULL);
+    VkDescriptorSet vset = stage_set(ds, 0, vs, rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, &images, NULL, &xfb_stores);
     VkDescriptorSet fset =
-        fs ? stage_set(ds, 4, fs, rt, zt, n, &zt_ro, &fb, &scaled, res, &storage, &images, screen ? &screen_vp : NULL)
+        fs ? stage_set(ds, 4, fs, rt, zt, n, &zt_ro, &fb, &scaled, res, &storage, &images, screen ? &screen_vp : NULL, NULL)
            : VK_NULL_HANDLE;
     /* the sets of the stages between, at their stage's index (shader_vk_set) */
     between[0] = tcs;
@@ -3792,7 +3919,7 @@ retry:
     for (b = 0; b < 3; b++) {
         bset[b] = VK_NULL_HANDLE;
         if (!between[b]) continue;
-        bset[b] = stage_set(ds, b + 1, between[b], rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, &images, NULL);
+        bset[b] = stage_set(ds, b + 1, between[b], rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, &images, NULL, NULL);
         if (!bset[b]) bset_ok = 0;
     }
     if (!vset || (fs && !fset) || !bset_ok) {
@@ -3911,7 +4038,7 @@ retry:
     VkBuffer xbuf[4];
     VkDeviceSize xoff[4], xsize[4];
     u32 xbound = 0;
-    for (int i = 0; i < 4 && xfb_on; i++) {
+    for (int i = 0; i < 4 && xfb_on && g_vk.has_xfb; i++) {
         i32 size = (i32)ds->bind.xfb[i].size;
         u64 a = ds->bind.xfb[i].addr;
         if (!ds->bind.xfb[i].on || size <= 0) continue;
@@ -4344,6 +4471,7 @@ retry:
         vk_render_end(); /* the next capture's begin waits for this end outside a pass, and readers for its writes */
     }
     if (late_depth) vk_depth_shadow_finish(zt);
+    if (xfb_stores.declared) xfb_bind_done(o, &xfb_stores);
     vk_buf_writable_commit();
     draw_images_commit(&images);
     feedback_done(fb, writes);

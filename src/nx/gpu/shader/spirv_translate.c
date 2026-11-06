@@ -142,6 +142,7 @@ int g_shader_quad = 1;
 int g_shader_tessellation = 1;
 int g_shader_clock_scopes;
 int g_shader_maximal_reconvergence;
+int g_shader_xfb_stores;
 
 /* the family of instructions whose branches take each opcode, FAM_NONE for one no branch takes (refused by
    the prescan, or one that writes nothing): a family's function is the only one with branches for its opcodes */
@@ -1740,7 +1741,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     u16 xfb_off[160] = {0};
     u32 xfb_components[32][4] = {{0}};
     u32 stream_capture[4][128] = {{0}};
-    int xfb_on = 0;
+    int xfb_on = 0, xfb_stores = 0;
+    XfbOut xo = {0};
     memset(xfb_buf, 0xFF, sizeof xfb_buf);
     u32 clip_output = 0, clip_count = 0, point_size_in = 0, clip_input = 0;
     u32 depth_output = 0, interfaces[1024], count = 0;
@@ -1837,12 +1839,17 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                     xfb_off[word] = (u16)(w * 4);
                     xfb_on = 1;
                 }
+        /* without the extension the vertex program stores the capture (xfb_write) */
+        if (xfb_on && g_shader_xfb_stores) {
+            xfb_stores = stage == ST_VS && ngbuf <= SNX_XFB_GBUF_MAX;
+            xfb_on = xfb_stores;
+        }
         if (position_used) {
             position = per_vertex ? spv_emit_interface_variable(&c->emit, 3, vec4, c->u32_type, per_vertex, 0, 0, 0)
                                   : spv_emit_position_output(&c->emit, vec4);
             interfaces[count++] = position;
             /* the position is a built-in: captured only whole, its four words in order in one buffer */
-            if (xfb_buf[28] != 0xFF && xfb_buf[29] == xfb_buf[28] && xfb_buf[30] == xfb_buf[28] &&
+            if (!xfb_stores && xfb_buf[28] != 0xFF && xfb_buf[29] == xfb_buf[28] && xfb_buf[30] == xfb_buf[28] &&
                 xfb_buf[31] == xfb_buf[28] && xfb_off[29] == xfb_off[28] + 4 && xfb_off[30] == xfb_off[28] + 8 &&
                 xfb_off[31] == xfb_off[28] + 12)
                 spv_emit_xfb_capture(&c->emit, position, xfb_buf[28], si->xfb.stride[xfb_buf[28]], xfb_off[28]);
@@ -1852,7 +1859,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 u32 k;
                 int captured = 0;
                 for (k = 0; k < 4; k++) captured |= xfb_buf[32 + 4 * i + k] != 0xFF;
-                if (captured) {
+                if (captured && !xfb_stores) {
                     /* a captured output is written to a private vec4 and copied out a component a variable
                        (shader_xfb_store), so that each captured component has an offset of its own: the next stage's vec4
                        input takes the four at its location */
@@ -2022,12 +2029,12 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         if (stage == ST_FS) spv_emit_flat(&c->emit, c->subgroup_lane_input);
         interfaces[count++] = c->subgroup_lane_input;
     }
-    if (needs_instance) {
+    if (needs_instance || xfb_stores) { /* the stores' vertex places (xfb_write) */
         instance_index = spv_emit_builtin_input_u32(&c->emit, c->u32_type, 43);
         vertex_index = spv_emit_builtin_input_u32(&c->emit, c->u32_type, 42);
         interfaces[count++] = instance_index;
         interfaces[count++] = vertex_index;
-        if (g_shader_draw_parameters && stage == ST_VS) {
+        if (needs_instance && g_shader_draw_parameters && stage == ST_VS) {
             base_instance = spv_emit_builtin_input_u32(&c->emit, c->u32_type, 4425); /* BaseInstance */
             interfaces[count++] = base_instance;
         }
@@ -2155,18 +2162,43 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                                              &c->image_type[i]);
         interfaces[count++] = c->image[i];
     }
-    if (ngbuf) {
+    u32 gbuf_struct = 0;
+    if (ngbuf || xfb_stores) {
         u32 array = spv_emit_type_runtime_array(&c->emit, c->u32_type, 4);
-        u32 structure = spv_emit_type_struct_one(&c->emit, array);
+        gbuf_struct = spv_emit_type_struct_one(&c->emit, array);
         c->gbuf_pointer = spv_emit_type_storage_pointer(&c->emit, c->u32_type);
+    }
+    if (ngbuf) {
         for (int i = 0; i < ngbuf; i++) {
-            c->gbuf[i] = spv_emit_storage_buffer(&c->emit, structure, shader_vk_set(stage), SNX_VKB_SSBO + (u32)i);
+            c->gbuf[i] = spv_emit_storage_buffer(&c->emit, gbuf_struct, shader_vk_set(stage), SNX_VKB_SSBO + (u32)i);
             interfaces[count++] = c->gbuf[i];
         }
         if (stage != ST_CS) {
-            c->smap = spv_emit_storage_buffer(&c->emit, structure, shader_vk_set(stage), SNX_VKB_SMAP);
+            c->smap = spv_emit_storage_buffer(&c->emit, gbuf_struct, shader_vk_set(stage), SNX_VKB_SMAP);
             interfaces[count++] = c->smap;
         }
+    }
+    /* what the program's transform feedback writes (shader_xfb_store): with stores, the buffers it stores into */
+    xo = (XfbOut){.stores = xfb_stores,
+                  .key = &si->xfb,
+                  .vec4 = vec4,
+                  .position = position,
+                  .output_attrs = output_attrs,
+                  .attr_private = attr_private,
+                  .components = xfb_components,
+                  .pointer = c->gbuf_pointer,
+                  .vertex_index = vertex_index,
+                  .instance_index = instance_index,
+                  .outputs_used = outputs_used,
+                  .position_used = position_used};
+    if (xfb_stores) {
+        xo.params = spv_emit_storage_buffer(&c->emit, gbuf_struct, shader_vk_set(stage), SNX_VKB_XFB_PARAMS);
+        interfaces[count++] = xo.params;
+        for (u32 b = 0; b < 4; b++)
+            if (si->xfb.count[b] && si->xfb.stride[b] >= 4 && !(si->xfb.stride[b] & 3)) {
+                xo.buffer[b] = spv_emit_storage_buffer(&c->emit, gbuf_struct, shader_vk_set(stage), SNX_VKB_XFB + b);
+                interfaces[count++] = xo.buffer[b];
+            }
     }
     u32 shared_array = 0, shared_element_pointer = 0, shared_words = 0;
     if (needs_shared) {
@@ -2208,7 +2240,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         c->dp_base_instance = base_instance;
     }
     spv_emit_entry_str(&c->emit, (SpvShaderStage)stage, fn, "main", interfaces, count); /* ST_ is SPIR-V's model */
-    if (xfb_on) {
+    if (xfb_on && !xfb_stores) {
         spv_emit_capability(&c->emit, 53);               /* TransformFeedback */
         spv_emit_execution_mode(&c->emit, fn, 11, 0, 0); /* Xfb */
     }
@@ -2535,7 +2567,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         .layer_input = layer_input,
         .viewport_output = viewport_output,
         .attr_private = attr_private,
-        .xfb_components = xfb_components,
+        .xfb_out = &xo,
         .xfb_on = xfb_on,
         .clip_output = clip_output,
         .clip_count = clip_count,
@@ -2608,7 +2640,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 shader_geometry_passthrough(c, si, in_vertices, vec4, position, position_in, output_attrs, inputs,
                                             point_size, layer_output, i32_type, clip_output, clip_count, primitive_id,
                                             primitive_id_out, position_fix, push, push_pointer);
-            if (xfb_on && stage != ST_GS) shader_xfb_store(c, vec4, output_attrs, attr_private, xfb_components);
+            if (xfb_on && stage != ST_GS) shader_xfb_store(c, &xo);
             if (position_fix && stage != ST_GS) shader_vertex_position_fix(c, position, push, push_pointer, vec4);
             if (c->blend_end)
                 spv_emit_branch(&c->emit, c->blend_end);
@@ -2714,7 +2746,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             shader_geometry_passthrough(c, si, in_vertices, vec4, position, position_in, output_attrs, inputs,
                                         point_size, layer_output, i32_type, clip_output, clip_count, primitive_id,
                                         primitive_id_out, position_fix, push, push_pointer);
-        if (xfb_on && stage != ST_GS) shader_xfb_store(c, vec4, output_attrs, attr_private, xfb_components);
+        if (xfb_on && stage != ST_GS) shader_xfb_store(c, &xo);
         if (position_fix && stage != ST_GS) shader_vertex_position_fix(c, position, push, push_pointer, vec4);
         if (c->blend_end)
             spv_emit_branch(&c->emit, c->blend_end);
@@ -2752,6 +2784,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     next.attr_sint_mask = si->attr_sint_mask;
     next.clip_enable = si->clip_enable;
     memcpy(next.gp_skip_mask, si->gp_skip_mask, sizeof next.gp_skip_mask);
+    if (xfb_stores) next.xfb = si->xfb; /* the renderer binds the buffers the stores name */
     next.uses_clip_mask = clip_used;
     next.clip_input_mask = clip_in_used;
     next.reads_point_size = point_in_used;

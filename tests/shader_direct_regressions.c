@@ -42,6 +42,7 @@ static const char* attribute_paths[7];
 static const char* pexit_path;
 static const char* global_dynamic_path;
 static const char* xfb_path;
+static const char* xfb_stores_path;
 static const char* passthrough_paths[6];
 static const char* structured_paths[2];
 static const char* fswzadd_path;
@@ -3069,6 +3070,52 @@ static void transform_feedback(void) {
     free(spv);
 }
 
+/* whether the module binds a resource at binding (OpDecorate Binding) */
+static int has_binding(const u32* code, size_t words, u32 binding) {
+    for (size_t i = 5; i < words;) {
+        u32 width = code[i] >> 16;
+        if (!width || i + width > words) return 0;
+        if ((code[i] & 0xffff) == 71 && width == 4 && code[i + 2] == 33 && code[i + 3] == binding) return 1;
+        i += width;
+    }
+    return 0;
+}
+/* without the extension (MoltenVK) the vertex program stores the capture into storage buffers after its global
+   buffers, with no TransformFeedback capability, and keeps the key for the renderer */
+static void transform_feedback_stores(void) {
+    const u64 instructions[] = {mov32i(0, 0x3f800000), mov32i(1, 0x40000000), mov32i(2, 0x40400000),
+                                mov32i(3, 0x40800000), 0xeff000000007ff00ull | (0x80ull << 20) | (3ull << 47)};
+    ShaderInfo info;
+    size_t slots, words = 0;
+    u64* code = guest_program(instructions, 5, NULL, &slots);
+    if (!code) return;
+    memset(&info, 0, sizeof info);
+    info.xfb.layout[0][0] = 33;
+    info.xfb.layout[0][1] = 34;
+    info.xfb.count[0] = 2;
+    info.xfb.stride[0] = 8;
+    info.xfb.layout[1][0] = 32;
+    info.xfb.count[1] = 1;
+    info.xfb.stride[1] = 4;
+    g_shader_xfb_stores = 1;
+    u32* spv = spirv_of(code, slots * sizeof *code, ST_VS, &info, &words, 0, 1, 1, 1);
+    g_shader_xfb_stores = 0;
+    free(code);
+    check_translated(spv, &info, "a transform feedback capture by stores translates");
+    if (spv) {
+        check(count_opcode(spv, words, 17, 53) == 0 && count_opcode(spv, words, 16, 11) == 0,
+              "a capture by stores declares no TransformFeedback and no Xfb");
+        check(count_opcode(spv, words, 71, 36) == 0, "a capture by stores decorates no XfbBuffer");
+        check(has_binding(spv, words, SNX_VKB_XFB_PARAMS) && has_binding(spv, words, SNX_VKB_XFB) &&
+                  has_binding(spv, words, SNX_VKB_XFB + 1) && !has_binding(spv, words, SNX_VKB_XFB + 2),
+              "a capture by stores binds its parameters and the buffers it captures into");
+        check(info.xfb.count[0] == 2 && info.xfb.count[1] == 1, "a capture by stores keeps its layout in its info");
+        save_fixture(xfb_stores_path, spv, words);
+    }
+    free(spv);
+}
+
+
 /* how many OpDecorate give decoration (30 Location, 14 Flat) with this literal, or with none when literal is ~0 */
 static int decorations(const u32* code, size_t words, u32 decoration, u32 literal) {
     int found = 0;
@@ -4332,6 +4379,7 @@ int main(int argc, char** argv) {
         pexit_path = fixture_path(argv[1], "pexit");
         global_dynamic_path = fixture_path(argv[1], "global_dynamic");
         xfb_path = fixture_path(argv[1], "xfb");
+        xfb_stores_path = fixture_path(argv[1], "xfb_stores");
         for (int i = 0; i < 6; i++) {
             char name[32];
             snprintf(name, sizeof name, "passthrough_%d", i);
@@ -4402,6 +4450,7 @@ int main(int argc, char** argv) {
     draw_buffer_surfaces();
     layered_surface_loads();
     transform_feedback();
+    transform_feedback_stores();
     nro_shader_modes();
     issue126_shader_modes();
     between_stages();

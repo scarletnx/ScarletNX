@@ -1802,6 +1802,8 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                   (u32)g_shader_geometry_streams,
                   (u32)g_shader_geometry_streams_lines_triangles,
                   (u32)g_shader_tessellation,
+                  (u32)g_shader_xfb_stores,
+                  (u32)g_vk.has_xfb,
                   (u32)g_shader_clock_scopes,
                   (u32)g_vk_flush_denorm,
                   (u32)g_vk_preserve_infnan,
