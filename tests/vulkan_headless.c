@@ -3901,8 +3901,16 @@ int main(int argc, char** argv) {
         printf("PASS headless Vulkan vertex input only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
-    if (getenv("SNX_TEST_TEX_PARTIAL_ONLY")) { /* vulkan_tex_partial.inc's checks alone */
-        CHECK(!check_tex_partial());
+    if (getenv("SNX_TEST_TEX_PARTIAL_ONLY")) { /* vulkan_tex_partial.inc's checks, which run only so */
+        const char* which = getenv("SNX_TEST_TEX_PARTIAL_ONLY");
+        if (strcmp(which, "1") && strcmp(which, "no-astc")) {
+            fprintf(stderr,
+                    "SNX_TEST_TEX_PARTIAL_ONLY=%s names no set: 1 (every case) or no-astc (the ASTC ones left "
+                    "out)\n",
+                    which);
+            return 2;
+        }
+        CHECK(!check_tex_partial(strcmp(which, "no-astc") != 0));
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan texture changes only: %u validation messages\n", g_vk_validation_messages);
         return 0;
@@ -4040,7 +4048,6 @@ int main(int argc, char** argv) {
     CHECK(!check_vic_bands());
     CHECK(!check_dma_texture());
     CHECK(!check_sparse_volume());
-    CHECK(!check_tex_partial());
     CHECK(!check_sparse_view());
     CHECK(!check_sparse_tiles());
     CHECK(!check_sparse_copy());
