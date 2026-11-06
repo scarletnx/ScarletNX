@@ -229,6 +229,10 @@ already has MoltenVK. The app is signed ad hoc, so a downloaded copy may need *O
 time (`xattr -cr ScarletNX.app` clears the quarantine). More on the frontend, the data folder, iOS and what is missing
 in [macOS and iOS](APPLE.md).
 
+   `-DSNX_KOSMICKRISP=<sdk>/macOS` also carries Mesa's KosmicKrisp and its Vulkan loader, from a LunarG Vulkan SDK's
+   macOS folder. It is experimental, and `vulkan_driver=auto` still picks MoltenVK. A game that asks for
+   `vulkan_driver=kosmickrisp` uses it, from the app or from the Mac's own install ([macOS and iOS](APPLE.md)).
+
 ## Windows / PowerShell
 
 ```powershell

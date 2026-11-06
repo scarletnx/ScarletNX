@@ -1476,7 +1476,7 @@ jobs:
             "https://github.com/V380-Ori/Ryujinx.MoltenVK/releases/download/$MOLTENVK_RELEASE/MoltenVK-macos.tar"
           echo "$MOLTENVK_MACOS_SHA256  moltenvk-macos.tar" | shasum -a 256 -c
           mkdir moltenvk-macos && tar -xf moltenvk-macos.tar -C moltenvk-macos
-          cmake build/macos -DSNX_MOLTENVK="$PWD/moltenvk-macos"
+          cmake build/macos -DSNX_MOLTENVK="$PWD/moltenvk-macos" -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON
           cpack --config build/macos/CPackConfig.cmake -B app-macos \
             -D CPACK_PACKAGE_FILE_NAME=ScarletNX-macos-arm64-${{ steps.commit.outputs.short }}
           mv app-macos/ScarletNX-macos-arm64-${{ steps.commit.outputs.short }}.zip .
