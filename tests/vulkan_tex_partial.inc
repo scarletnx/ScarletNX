@@ -147,7 +147,7 @@ static int tp_dma_write(const TpTex* x, u64 off) {
 
 static int tex_partial(const TpCase* c, u32 index) {
     TpTex x = {0};
-    const u32 levels = 32u - (u32)__builtin_clz(c->size); /* down to 1x1 */
+    const u32 levels = 32u - snx_clz32(c->size); /* down to 1x1 */
     x.c = c;
     x.cpu = TP_CPU + index * TP_SPAN;
     x.gva = TP_GVA + index * TP_SPAN;
