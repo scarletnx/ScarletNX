@@ -99,12 +99,21 @@ typedef struct {
 } Res;
 static int g_lands, g_landed_bytes;
 static u32 g_busy_tid;
+/* test_republish_after_landing's order: the thread that lands g_hold_res (once) waits in producer_unlock, after it lets
+   go of the producer's lock, until g_republished. Its own unlock alone: the thread's unlock of a landing begun before,
+   seen after the hold is set, would wait with the reader's fault behind it, which nothing then lands */
+static void* g_hold_res;  /* atomic */
+static u32 g_hold_tid;    /* atomic: the thread that landed it, until that unlock */
+static int g_republished; /* atomic */
 static void land(const OwnRange* r, u8* const* dst, u32 n) {
     u32 i;
     for (i = 0; i < n; i++) {
         const Res* res = (const Res*)r[i].res;
+        void* held = r[i].res;
         memcpy(dst[i], res->data + r[i].res_off, r[i].size);
         __atomic_add_fetch(&g_landed_bytes, (int)r[i].size, __ATOMIC_RELAXED);
+        if (__atomic_compare_exchange_n(&g_hold_res, &held, NULL, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            __atomic_store_n(&g_hold_tid, plat_tid(), __ATOMIC_RELEASE);
     }
     __atomic_add_fetch(&g_lands, 1, __ATOMIC_RELAXED);
 }
@@ -116,15 +125,13 @@ static void release(void* res) {
     if (g_release_touch) g_release_read = *(volatile u8*)GP(g_release_touch);
 }
 static u32 busy_tid(void) { return g_busy_tid; }
-/* the producer's lock: recursive, as the renderer's. g_hold_lander set, the next thread but g_reader to let it go (a
-   landing, on the trap's thread) waits after that until g_republished: test_republish_after_landing's order */
+/* the producer's lock: recursive, as the renderer's */
 static pthread_mutex_t g_producer;
-static int g_hold_lander, g_republished; /* atomic */
-static u32 g_reader;
 static void producer_lock(void) { pthread_mutex_lock(&g_producer); }
 static void producer_unlock(void) {
+    u32 self = plat_tid();
     pthread_mutex_unlock(&g_producer);
-    if (plat_tid() == g_reader || !__atomic_exchange_n(&g_hold_lander, 0, __ATOMIC_ACQ_REL)) return;
+    if (!__atomic_compare_exchange_n(&g_hold_tid, &self, 0, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return;
     for (int waited_ms = 0; !__atomic_load_n(&g_republished, __ATOMIC_ACQUIRE); waited_ms++) {
         if (waited_ms == 10000) test_fail("the reader republished the page within 10 s", __LINE__);
         plat_sleep_ns(1000000);
@@ -436,9 +443,8 @@ static void test_republish_after_landing(void) {
     OwnRange o;
     int lands = g_lands;
     CHECK(own_begin(a, 0x1000, r1, 0) == 0 && own_begin(a + 0x2000, 0x1000, r3, 0) == 0);
-    g_reader = plat_tid();
     __atomic_store_n(&g_republished, 0, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_hold_lander, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_hold_res, r1, __ATOMIC_RELEASE);
     CHECK(GP(a)[5] == 0x25); /* r1 lands on the trap's thread, which then waits in producer_unlock */
     producer_lock();
     CHECK(own_begin(a, 0x1000, r2, 0) == 0); /* its caller holds the producer's lock, as the renderer's do */
@@ -446,9 +452,10 @@ static void test_republish_after_landing(void) {
     __atomic_store_n(&g_republished, 1, __ATOMIC_RELEASE);
     CHECK(GP(a + 0x2000)[7] == 0xC7);
     CHECK(g_lands == lands + 2 && refs(r1) == 0 && refs(r3) == 0);
+    /* r1's lander was the one held, and has let go */
+    CHECK(!__atomic_load_n(&g_hold_res, __ATOMIC_ACQUIRE) && !__atomic_load_n(&g_hold_tid, __ATOMIC_ACQUIRE));
     CHECK(own_lookup(a, 0x1000, &o, 1) == 1 && o.res == r2 && refs(r2) == 1); /* nothing touched r2's bytes */
     CHECK(GP(a)[9] == (u8)(0x80 + 9) && g_lands == lands + 3 && refs(r2) == 0);
-    g_reader = 0;
     CHECK(mem_unmap(a, 0x4000) == 0);
     res_free(r1);
     res_free(r2);
