@@ -190,6 +190,44 @@ static int nn_chat_IUserShimScopedObject_GetChattingEvent(SvcObj* self, u32* eve
     (void)self;
     return new_event(event, "chat chatting", 0);
 }
+
+/* The console asks its video encoder for these sizes, so they can't be read off its code. Nothing here ever writes to
+   the game's work buffers, so they only have to agree: the SDK divides the memory it is given by the three a guest takes,
+   and aborts if that comes to none */
+#define STPL_WORK_BUFFER_SIZE 0x1000
+#define STPL_HID_SHM_SIZE     0x40000 /* a guess, as big as hid's: no guest ever appears in it */
+
+static int nn_streamplay_IUserService_OpenUserShim(SvcObj* self, u32 version, SvcObj** shim) {
+    (void)self, (void)version;
+    *shim = nn_streamplay_IUserShimScopedObject_new();
+    R_SUCCEED();
+}
+static int nn_streamplay_IUserShimScopedObject_GetRequiredMemorySize(SvcObj* self, u8 type, u8 mode, i32 guests,
+                                                                     u32* size) {
+    (void)self, (void)type, (void)mode;
+    *size = (u32)guests * 3 * STPL_WORK_BUFFER_SIZE;
+    R_SUCCEED();
+}
+static int nn_streamplay_IUserShimScopedObject_GetWorkBufferSizes(SvcObj* self, u8 type, u8 mode, u64* common,
+                                                                  u64* first, u64* second, u64* third) {
+    (void)self, (void)type, (void)mode;
+    *common = 0;
+    *first = *second = *third = STPL_WORK_BUFFER_SIZE;
+    R_SUCCEED();
+}
+static int nn_streamplay_IUserShimScopedObject_GetHidSharedMemory(SvcObj* self,
+                                                                  nn_streamplay_HidSharedMemoryConfig* config,
+                                                                  u32* memory) {
+    const u64 c[2] = {STPL_HID_SHM_SIZE, 0};
+    KShmem* s = kshmem_new(STPL_HID_SHM_SIZE, "stpl hid");
+    (void)self;
+    memcpy(config, c, sizeof c);
+    /* as in new_event: the game's handle is the only reference left */
+    kobj_ref(&s->o);
+    *memory = h_new(&s->o);
+    kobj_unref(&s->o);
+    R_SUCCEED();
+}
 static int nn_friends_detail_ipc_IServiceCreator_CreateFriendService(SvcObj* self, SvcObj** service) {
     (void)self;
     *service = nn_friends_detail_ipc_IFriendService_new();
@@ -1321,6 +1359,7 @@ SvcObj* new_lm(void) { return nn_lm_ILogService_new(); }
 SvcObj* new_pctl(void) { return nn_pctl_detail_ipc_IParentalControlServiceFactory_new(); }
 SvcObj* new_friend(void) { return nn_friends_detail_ipc_IServiceCreator_new(); }
 SvcObj* new_chat(void) { return nn_chat_IUserService_new(); }
+SvcObj* new_stpl(void) { return nn_streamplay_IUserService_new(); }
 SvcObj* new_ns(void) { return nn_ns_detail_IServiceGetterInterface_new(); }
 SvcObj* new_prepo(void) { return nn_prepo_detail_ipc_IPrepoService_new(); }
 SvcObj* new_psm(void) { return nn_psm_IPsmServer_new(); }
