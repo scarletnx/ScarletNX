@@ -45,7 +45,7 @@
 
 #define VK_FRAMES          2  /* frames in flight */
 #define VK_FRAME_RING_CAPS 4  /* a frame ends once it has written this many allocations to its rings (vk_frame_check) */
-#define VK_POOL_FRAMES     8  /* the rings' pool keeps the most chunks a frame of the last this many took (cmd.c) */
+#define VK_POOL_FRAMES     8  /* the rings' pool keeps, per slot, the most chunks a frame of the last this many took */
 #define VK_SC_MAX          16 /* swapchain images */
 /* a transfer bigger than one allocation (g_vk.alloc_cap) goes in parts of at most this share of it: the rows a band
    or a readback part needs on both sides and in scratch fit the cap together (vk_band, surface.c) */

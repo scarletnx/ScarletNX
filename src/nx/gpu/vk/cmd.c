@@ -493,10 +493,11 @@ static u32 chunk_take(u32 ring, u64 size, int big, int bar, u32 slot) {
 }
 /* The slot's chunks and big buffers back to the pool, once its work is done; the pool then keeps no more of a ring's
    chunks, and of its big buffers, than the most a frame of the last VK_POOL_FRAMES took (a chunk at least, as a ring
-   kept its smallest size), the longest unused going first. A chunk of the window whose heap has no room for it anymore
-   goes too: the next frame that wants one there makes it again where chunk_take finds room */
+   kept its smallest size) for each slot, less what the other slots hold, the longest unused going first: a slot whose
+   last frame took none still finds them when its next frame does. A chunk of the window whose heap has no room for it
+   anymore goes too: the next frame that wants one there makes it again where chunk_take finds room */
 static void pool_recycle(Frame* f) {
-    u32 slot = (u32)(f - g_fr) + 1, keep[FRAME_RINGS][2], pooled[FRAME_RINGS][2] = {{0}};
+    u32 slot = (u32)(f - g_fr) + 1, keep[FRAME_RINGS][2], pooled[FRAME_RINGS][2] = {{0}}, held[FRAME_RINGS][2] = {{0}};
     u64 size = chunk_size();
     VmaBudget budget[VK_MAX_MEMORY_HEAPS];
     vmaGetHeapBudgets(g_vk.vma, budget);
@@ -510,7 +511,11 @@ static void pool_recycle(Frame* f) {
     memset(g_cmd.took[g_cmd.itook], 0, sizeof g_cmd.took[g_cmd.itook]);
     for (u32 i = 0; i < g_cmd.nchunk; i++) {
         Chunk* c = &g_cmd.chunk[i];
-        if (!c->buf || (c->slot && c->slot != slot)) continue;
+        if (!c->buf) continue;
+        if (c->slot && c->slot != slot) {
+            held[c->ring][c->big]++;
+            continue;
+        }
         if ((!c->big && c->size != size) || (c->bar && !bar_room(budget, 0, 0)))
             chunk_destroy(c);
         else {
@@ -521,7 +526,7 @@ static void pool_recycle(Frame* f) {
     }
     for (u32 r = 0; r < FRAME_RINGS; r++)
         for (u32 big = 0; big < 2; big++)
-            for (; pooled[r][big] > keep[r][big]; pooled[r][big]--) {
+            for (; pooled[r][big] && pooled[r][big] + held[r][big] > VK_FRAMES * keep[r][big]; pooled[r][big]--) {
                 u32 oldest = 0;
                 for (u32 i = 0; i < g_cmd.nchunk; i++) {
                     const Chunk* c = &g_cmd.chunk[i];

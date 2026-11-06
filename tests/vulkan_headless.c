@@ -729,6 +729,29 @@ static int check_big_reuse(void) {
     return 0;
 }
 
+/* A frame that stages nothing hands its slot no chunk back: the frames of small uploads after it find the chunks the
+   pool kept for both slots and make none, where a pool that kept one slot's share gave the other slot's up and its
+   next frame made them again */
+static int check_chunks_both_slots(void) {
+    u64 made;
+    VkBuffer rb;
+    vk_finish();
+    vk_frame_next();
+    CHECK(vk_readback_buffer(32, &rb));
+    for (u32 i = 0; i < VK_POOL_FRAMES + VK_FRAMES; i++) CHECK(!staging_light_frame(rb));
+    made = vk_ring_made();
+    vk_cmd(); /* its slot taken back, and nothing staged */
+    vk_frame_next();
+    for (u32 i = 0; i < 2 * VK_FRAMES; i++) CHECK(!staging_light_frame(rb));
+    vk_finish();
+    made = vk_ring_made() - made;
+    vk_frame_next();
+    printf("%u frames of small uploads after one that staged nothing: %llu ring buffers made\n", 2 * VK_FRAMES,
+           (unsigned long long)made);
+    CHECK(made == 0);
+    return 0;
+}
+
 /* the renderer's viewport index and its first viewport's facing for the registers r, through the draw state */
 static VkViewport viewport_of(const u32* r, u32 index) {
     DsDynamic d;
@@ -5044,6 +5067,7 @@ int main(int argc, char** argv) {
     CHECK(!check_small_uploads());
     CHECK(!check_big_uploads());
     CHECK(!check_big_reuse());
+    CHECK(!check_chunks_both_slots());
     CHECK(!check_stream_epoch());
     CHECK(!check_owned_readback());
     CHECK(!check_owned_writable());
