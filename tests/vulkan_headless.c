@@ -2133,6 +2133,12 @@ static int check_resident_volume(void) {
     for (u32 k = 0; k < 4; k++)
         for (u32 b = 0; b < RV_TILE; b++) GP(cpu + (u64)k * RV_TILE)[b] = rv_byte(k, b);
     for (u32 k = 0; k < 3; k++) gmmu_map(gva + (u64)tiles[k] * RV_TILE, cpu + (u64)k * RV_TILE, RV_TILE);
+    /* the frame's staging made first: what the volume allocates is counted, not the staging its upload goes through */
+    VkBuffer staging;
+    u64 staged;
+    vk_lock();
+    CHECK(vk_stage(4 * RV_TILE, 16, &staging, &staged));
+    vk_unlock();
     took[0] = rv_allocated();
     vk_tex_stats(&loads[0], &bytes[0]);
     at[0] = plat_ns();
