@@ -577,7 +577,7 @@ static void bench(u32 w, u32 h, int runs) {
         for (int r = 0; r < runs; r++) {
             Level lv = {b, (w + 7) / 8, (h + 7) / 8, NULL, 2, 0};
             u64 t0 = plat_ns();
-            if (!vk_astc_upload(vk_cmd(), &t, w, h, 1, 0, 0, level_rows, &lv)) fatal("bench upload failed\n");
+            if (!vk_astc_upload(vk_cmd(), &t, 0, 0, w, h, 1, 0, 0, level_rows, &lv)) fatal("bench upload failed\n");
             vk_finish();
             double s = (plat_ns() - t0) / 1e9;
             printf("BENCH %s %ux%u: %.1f ms, %.0f Mtexels/s\n", fi ? "ASTC 8x8 as BC7" : "ASTC 8x8 as RGBA8", w, h,
