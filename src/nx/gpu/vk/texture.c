@@ -1122,12 +1122,11 @@ static int tex_check_pieces(Surf* t, u64 gva) {
     u32 ww_epoch = vk_ww_epoch();  /* before the check */
     p.count = 0, p.all = 0;        /* each bind checks: the 4 KiB of pieces are written before they are read */
     if (t->checked != g_vk_present || t->ww_epoch != ww_epoch) {
-        u32 wnow = vk_ww_now();
         int wr = tex_written_since(t, gva, &p);
         if (wr < 0) return 0;
         t->ww_epoch = ww_epoch;
         t->checked = g_vk_present;
-        if (wr) t->wseen = wnow;
+        if (wr) t->wseen = vk_ww_now(); /* as tex_check's: the clock after the scans it took in */
     }
     if (gpu_mem_dirty_since(t->gw, gva, t->size)) {
         gpu_mem_dirty_runs(t->gw, gva, t->size, tex_dirty_piece, &r);
@@ -1188,8 +1187,8 @@ static Surf* tex_check(Surf* t, u64 gva) {
        stream's to see (vk_ww_epoch): write tracking proves the memory unchanged without hashing its texels */
     u32 ww_epoch = vk_ww_epoch(); /* before the check */
     if (t->checked != g_vk_present || t->ww_epoch != ww_epoch) {
-        u32 wnow = vk_ww_now();
         int wr = tex_written_since(t, gva, NULL);
+        u32 wnow = vk_ww_now(); /* after the check: the pages it took in are marked with this clock at most */
         int epoch = t->ww_epoch != ww_epoch;
         t->ww_epoch = ww_epoch;
         if (wr >= 0) {

@@ -260,8 +260,10 @@ void vk_compute_mem_need(u64 a, u64 n) { (void)a, (void)n; }
 void vk_defer_image(VkImage img, VmaAllocation a, VkImageView v1, VkImageView v2) {
     (void)img, (void)a, (void)v1, (void)v2;
 }
+static u64 g_hashes;                   /* vk_hash's calls */
 u64 vk_hash(const void* p, u64 size) { /* FNV-1a over the bytes: mem_hash's check below tells contents apart */
     const u8* b = (const u8*)p;
+    g_hashes++;
     u64 h = 1469598103934665603ull;
     for (u64 i = 0; i < size; i++) h = (h ^ b[i]) * 1099511628211ull;
     return h;
@@ -356,7 +358,7 @@ VkImage vk_ms_unpack(VkCommandBuffer cb, Surf* s, u32 layer) {
 /* write tracking: the stamp is on guest's bytes [at, at + len), all of them when len is 0. As buffer.c's, it answers
    only for a host range */
 static struct {
-    int on;
+    int on, pending; /* pending: written, and taken in by the next check, which marks it with the clock's next value */
     u32 clock, stamp, epoch;
     u64 at, len;
 } g_tracking;
@@ -366,6 +368,10 @@ static int stamped(u64 o, u64 n, u32 since) {
 }
 int vk_written_since(const u8* host, u64 len, u32 since) {
     if (!g_tracking.on || !host || !len) return -1;
+    if (g_tracking.pending) { /* buffer.c's ww_take_scanned: what scans found, marked as the check takes it in */
+        g_tracking.stamp = ++g_tracking.clock;
+        g_tracking.pending = 0;
+    }
     return stamped((u64)(host - guest), len, since);
 }
 u32 vk_ww_now(void) { return g_tracking.clock; }
@@ -883,6 +889,52 @@ int main(void) {
         g_map.count = 0;
         memset(&g_tracking, 0, sizeof g_tracking);
         memset(&g_gpu_writes, 0, sizeof g_gpu_writes);
+    }
+    /* What a check takes in is marked with the clock's next value (buffer.c ww_take_scanned), so a written texture's
+       baseline is the clock after its check. Taken before it, the next check takes the same write in again: a texture
+       checked by its hash hashes it once more for nothing, a texture with holes in its mapping loads its blocks again */
+    {
+        Surf t = tex(8, 2, 1, 1, 4, 0, 0, 0);
+        t.size = t.pitch * t.h;
+        copy_bpp = 4;
+        stage_used = copied_used = nregs = 0;
+        CHECK(tex_upload(&t));
+        t.hash = mem_hash(t.gva, t.size);
+        g_tracking.on = 1;
+        g_tracking.clock = t.wseen = 10;
+        for (u32 round = 0; round < 2; round++) {
+            guest[0] ^= 0x5A;
+            g_tracking.pending = 1;
+            g_tracking.at = 0, g_tracking.len = 1;
+            g_vk_present++;
+            g_tracking.epoch++;
+            stage_used = copied_used = nregs = 0;
+            CHECK(tex_check(&t, t.gva) == &t && nregs == 1 && copied[regs[0].bufferOffset] == guest[0]);
+            g_vk_present++;
+            g_tracking.epoch++;
+            stage_used = copied_used = nregs = 0;
+            g_hashes = 0;
+            CHECK(tex_check(&t, t.gva) == &t && nregs == 0 && g_hashes == 0);
+        }
+        Surf v = sparse_volume(1);
+        const u64 o = bl_offset((3 * 16 + 1) * 4, 9, 6, 832, 64, 0, 4); /* tile 2 */
+        v.piecewise = 1;
+        v.hash = 0;
+        CHECK(tex_load_pieces(&v) && v.upload_valid);
+        guest[o] ^= 0x5A;
+        g_tracking.pending = 1;
+        g_tracking.at = o, g_tracking.len = 1;
+        g_vk_present++;
+        g_tracking.epoch++;
+        stage_used = copied_used = nregs = 0;
+        CHECK(tex_check(&v, v.gva) == &v && nregs == 1);
+        g_vk_present++;
+        g_tracking.epoch++;
+        stage_used = copied_used = nregs = 0;
+        CHECK(tex_check(&v, v.gva) == &v && nregs == 0);
+        guest[o] ^= 0x5A;
+        g_map.count = 0;
+        memset(&g_tracking, 0, sizeof g_tracking);
     }
     printf("tex_upload_rows: %u checks passed\n", checks);
     return 0;
