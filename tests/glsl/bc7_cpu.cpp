@@ -37,8 +37,7 @@ extern "C" uint32_t bc7_weight_cpu(uint32_t bits, uint32_t index) {
 extern "C" int bc7_least_squares_cpu(const uint32_t texels[16], const uint8_t index[16], uint32_t bits,
                                      uint32_t subsets, uint32_t partition, uint32_t subset, uint32_t ends[2]) {
     bc7_shader::Encoder e;
-    e.sh_ns = subsets;
-    e.sh_part = partition;
+    e.SetShape(subsets, partition);
     e.sh_ib = bits;
     e.sh_mask = 15u;
     e.fit_lo = 0u;
