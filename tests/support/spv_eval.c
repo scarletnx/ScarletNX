@@ -320,6 +320,8 @@ static uint64_t binary(Ev* e, uint32_t op, uint32_t t, uint32_t ta, uint64_t x, 
 static const char* run(Ev* e, uint32_t entry_at) {
     uint32_t pc = entry_at, prev_label = 0, cur_label = 0, steps = 0,
              max = e->env->steps_max ? e->env->steps_max : 1000000u;
+    /* the calls that run: where each returns to, and its labels (for OpPhi) */
+    uint32_t back[16][3], depth = 0;
     for (;;) {
         if (pc >= e->count || !(e->w[pc] >> 16)) return "ran past the module";
         if (++steps > max) return "too many steps";
@@ -605,7 +607,30 @@ static const char* run(Ev* e, uint32_t entry_at) {
             }
             case 252:
             case 4416: e->env->killed = 1; return NULL;
-            case 253: return NULL;
+            case 253: /* OpReturn */
+                if (!depth) return NULL;
+                depth--;
+                next = back[depth][0], cur_label = back[depth][1], prev_label = back[depth][2];
+                break;
+            case 57: /* OpFunctionCall of a function without parameters */
+                if (len != 4) return "a call with arguments";
+                if (depth == 16) return "calls too deep";
+                if (!e->ids[in[3]].at) return "a call of no function";
+                back[depth][0] = next, back[depth][1] = cur_label, back[depth][2] = prev_label;
+                depth++;
+                next = e->ids[in[3]].at;
+                break;
+            case 224: /* OpControlBarrier, OpMemoryBarrier: the invocation is alone */
+            case 225: break;
+            case 5295: /* OpSetMeshOutputsEXT */
+                e->env->mesh_outputs[0] = (uint32_t)e->ids[in[1]].v.c[0];
+                e->env->mesh_outputs[1] = (uint32_t)e->ids[in[2]].v.c[0];
+                e->env->set_outputs++;
+                break;
+            case 5294: /* OpEmitMeshTasksEXT, which ends the invocation */
+                for (uint32_t k = 0; k < 3; k++) e->env->mesh_tasks[k] = (uint32_t)e->ids[in[1 + k]].v.c[0];
+                e->env->emitted_tasks++;
+                return NULL;
             case 5380: e->env->killed = 1; break; /* demoted: it runs on, its outputs dropped */
             case 333:                             /* Elect */
             case 334:                             /* All */
@@ -745,6 +770,7 @@ const char* spv_eval(const uint32_t* w, size_t count, SpvEvalEnv* env) {
             e->ids[in[1]].at = (uint32_t)pc;
         }
         if (op == 54 && in[2] == entry) entry_at = (uint32_t)(pc + len);
+        if (op == 54 && in[2] < e->bound) e->ids[in[2]].at = (uint32_t)(pc + len); /* a function: its first word */
     }
     for (size_t pc = 5; pc < count && (w[pc] >> 16) && !why; pc += w[pc] >> 16) {
         const uint32_t* in = w + pc;
@@ -770,6 +796,8 @@ const char* spv_eval(const uint32_t* w, size_t count, SpvEvalEnv* env) {
                 memcpy(m, env->builtin[v->builtin - 1], (n < 4 ? n : 4) * 4);
             if (sc == 1 && !v->builtin && v->location && v->location - 1 < 32)
                 memcpy(m, env->in[v->location - 1], (n < 4 ? n : 4) * 4);
+            if (sc == 9) memcpy(m, env->push, (n < 20 ? n : 20) * 4);
+            if (sc == 5402) memcpy(m, env->payload, (n < 1024 ? n : 1024) * 4); /* TaskPayloadWorkgroupEXT */
             b = new_block(e, m, n, 1);
             if (b != 0xffffffffu && len > 4) {
                 Val init = e->ids[in[4]].v;
@@ -796,6 +824,16 @@ const char* spv_eval(const uint32_t* w, size_t count, SpvEvalEnv* env) {
         if (v->builtin == 22 + 1) env->frag_depth = m[0];
         if (v->builtin == 0 + 1)
             for (uint32_t k = 0; k < 4 && k < n; k++) env->position[k] = m[k];
+        /* an array's elements */
+        uint32_t slot = v->location ? v->location - 1 : v->builtin == 1 ? 32 : v->builtin == 5296 + 1 ? 33 : 34;
+        if (e->ids[e->ids[v->type].a].op == 28 && slot < 34 && env->arrays[slot])
+            memcpy(env->arrays[slot], m, (n < env->array_words[slot] ? n : env->array_words[slot]) * 4);
+    }
+    for (uint32_t id = 0; id < e->bound; id++) {
+        Id* v = &e->ids[id];
+        if (v->kind == K_VAR && v->sclass == 5402 && e->blocks[v->block].words)
+            memcpy(env->payload, e->blocks[v->block].words,
+                   (e->blocks[v->block].n < 1024 ? e->blocks[v->block].n : 1024) * 4);
     }
     for (uint32_t id = 0; id < e->bound; id++) {
         Id* v = &e->ids[id];

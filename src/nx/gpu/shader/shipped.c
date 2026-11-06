@@ -155,7 +155,7 @@ const char* shipped_stage_name(int stage) {
     else if (stage != SHIPPED_VERTEX_A)
         stage &= ~SHIPPED_OUNCE;
     static const char* const names[] = {
-        "vertex", "tessellation control", "tessellation evaluation", "geometry", "fragment", "compute"};
+        "vertex", "tessellation control", "tessellation evaluation", "geometry", "fragment", "compute", "task", "mesh"};
     return stage == SHIPPED_VERTEX_A                                   ? "paired vertex"
            : stage >= 0 && stage < (int)(sizeof names / sizeof *names) ? names[stage]
                                                                        : "?";

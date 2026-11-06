@@ -19,6 +19,7 @@
    bytes have the layout of Maxwell's SPH (ShaderInfo.sph). A compute program has no header. */
 #ifndef SNX_SM86_H
 #define SNX_SM86_H
+#include "common/utilities/bits.h"
 #include "nx/gpu/shader/shader.h"
 #include <stddef.h>
 
@@ -91,7 +92,16 @@ void sm86_load(const u8* code, u32 count, u64* words);
 /* the program stage (ST_VS to ST_FS) that an SPH word 0 names, or -1 when the word is not an SPH of version 3 or 4 */
 int sm86_sph_stage(u32 sph0);
 #define SM86_SPH_BYTES 128u
+/* Whether an SM86 tessellation control header's word 2 (sph2) asks for no invocation: 0 threads for each input
+   primitive in its top byte. The driver's own programs of this kind (6 TessFactor words, no outputs, an EXIT) are its
+   stand-in for no tessellation control stage. Mesa's nouveau binds such a program with the stage off (tcp_empty,
+   nvc0_tctlprog_validate): the control points go on as the vertex stage wrote them, and the tessellator takes its
+   levels from the state. That is the renderer's passthrough (vk_tess_passthrough), which a draw takes in its place */
+static inline int sm86_tcs_empty(u32 sph2) { return (sph2 >> 24) == 0; }
 
+/* Whether bytes of program code (a multiple of 16) have an ISBERD or an ISBEWR: a task or mesh program, which has the
+   SPH of a vertex or tessellation evaluation program, or a geometry or tessellation program's ISBE access */
+int sm86_uses_isbe(const u8* code, u32 bytes);
 /* A program in a block of shader memory: where its header and its code are (byte offsets from the block's start),
    the bytes of code up to and with the BRA to itself that follows its last EXIT, and its stage (ST_CS without a
    header). complete is 0 for a program that the block ends before its end */
@@ -114,6 +124,52 @@ u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderI
    a device that flushes by itself, else a flush of each such operand and result. sm86_to_spirv is SH_FTZ_EMULATE */
 u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, ShaderInfo* si, size_t* word_count,
                        int can_flush);
+/* Task and mesh programs (docs/OUNCE.md, "Mesh shaders") translate to the TaskEXT and MeshEXT execution models of
+   VK_EXT_mesh_shader. The caller gives the stage, ST_TS or ST_MS, from the program's NVN control section
+   (nvn_section_stage), as the SPH cannot tell it: sph is the SPH of a vertex program, or of a tessellation evaluation
+   program for a mesh program after a task program. The interface of such a module:
+   - si->mesh: the key, from the section (nvn_section_mesh) and the code area: threads, payload, has_task,
+     primitive_vertices (3 only), max_vertices, max_primitives, and in prim_sph the first 80 bytes of the
+     per-primitive SPH at the section's offset 0x64 from the program's code, after its SPH (all 0 when the offset
+     is 0). A key outside the limits of VK_EXT_mesh_shader, or a form that the game's programs do not show, is
+     refused with its reason.
+   - descriptor sets (shader_vk_set): 0 for a mesh program and 2 for a task program, with the bindings of shader.h.
+   - push constants: the vec4 of a vertex program at offset 0. Its x holds the bits of the draw's first workgroup,
+     which a task program, and a mesh program without one, add to WorkgroupId.x for their workgroup index. Its y is
+     the depth fix of a vertex program (a mesh program's positions), not 0 to take z from -w..w to 0..w.
+   - a workgroup is threads invocations, one warp: the program's lanes (SR_LANEID, its ballots and votes) are its
+     subgroup's. The pipeline must give it a subgroup of 32 (a required subgroup size with full subgroups), else the
+     lanes do not agree with the invocations.
+   - a task program launches the mesh groups with OpEmitMeshTasksEXT(count, 1, 1) and a payload of si->mesh.payload
+     bytes. The draw gives the task count to vkCmdDrawMeshTasksEXT(count, 1, 1).
+   - a mesh program writes max_vertices vertices and triangles: Position, each generic n at Location n (si->out_mask,
+     the per-vertex and the per-primitive ones), the per-primitive ones decorated PerPrimitiveEXT (si->prim_mask).
+   A fragment program takes the generics that the draw's mesh program writes per primitive in si->prim_mask (its key):
+   the mesh program's translated si->prim_mask, which sm86_mesh_primitive_mask gives from its key alone. Its module
+   declares those inputs PerPrimitiveEXT */
+/* the generics with a component in the output map of a vertex, tessellation or geometry SPH (its words 0 to 19):
+   generic i's four components at bits 432 + 4 i on */
+static inline u32 sm86_omap_generics(const u32* sph) {
+    u32 mask = 0;
+    for (u32 i = 0; i < 32; i++)
+        if ((sph[(432 + 4 * i) >> 5] >> ((432 + 4 * i) & 31)) & 15) mask |= 1u << i;
+    return mask;
+}
+static inline u32 sm86_mesh_primitive_mask(const ShMesh* mesh) {
+    return mesh->prim_sph[0] ? sm86_omap_generics(mesh->prim_sph) : 0;
+}
+/* the bytes of a mesh program's outputs (sph its SPH) as VK_EXT_mesh_shader counts them against
+   maxMeshOutputMemorySize ("Mesh Shader Output"): four scalars for each location that the translation declares, the
+   position (bits 428-431) and each generic per vertex, each generic per primitive, the indices not counted.
+   Vertices and primitives count in whole granules of the device's meshOutputPer...Granularity */
+static inline u64 sm86_mesh_output_bytes(const u32* sph, const ShMesh* mesh, u32 vertex_granule,
+                                         u32 primitive_granule) {
+    u32 vertex = snx_popcount64(sm86_omap_generics(sph)) + ((sph[428 >> 5] >> (428 & 31) & 15) != 0);
+    u32 primitive = snx_popcount64(sm86_mesh_primitive_mask(mesh));
+    u64 vertices = snx_align_up(mesh->max_vertices, vertex_granule ? vertex_granule : 1);
+    u64 primitives = snx_align_up(mesh->max_primitives, primitive_granule ? primitive_granule : 1);
+    return 16u * (vertex * vertices + primitive * primitives);
+}
 /* Debug: with g_shader_sm86_dump (the sm86_dump setting) naming a folder, the bytes (and the 32 SPH words, NULL for
    none) go to DIR/sm86_<kind>_<hash>.bin (and .sph), and why to DIR/sm86_<kind>_<hash>.txt. sm86_to_spirv writes each
    program it refuses, sm86_find_programs each block without a complete program. The files are game data: keep

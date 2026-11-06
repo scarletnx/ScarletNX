@@ -225,6 +225,9 @@ static void test_sph(void) {
     CHECK(sm86_sph_stage(sph0(2, 1)) == -1);
     CHECK(sm86_sph_stage(sph0(1, 1) & ~(31u << 5)) == -1);
     CHECK(sm86_sph_stage(3u << 5 | 1u | 1u << 10) == ST_VS); /* version 3, before SM 7.3 */
+    /* a mesh pipeline's programs take the sets of the stages that it does not have */
+    CHECK(shader_vk_set(ST_MS) == shader_vk_set(ST_VS) && shader_vk_set(ST_TS) == shader_vk_set(ST_TCS));
+    CHECK(shader_vk_set(ST_TS) != shader_vk_set(ST_FS) && shader_vk_set(ST_MS) != shader_vk_set(ST_FS));
 }
 
 /* ---- programs ---- */
@@ -1434,6 +1437,55 @@ static void test_bmov(const char* spirv_val, const char* dir) {
     (void)spirv_val, (void)dir;
 }
 
+/* The prologue of the debug variants of the driver's programs: BMOV.32 B0, 0xffffffff, BMOV.32.CLEAR B1, B0 and
+   BMOV.32 B15, 0x0 write only convergence barriers, which change nothing the program computes. HFMA2.MMA R0, -RZ,
+   RZ, imm, imm loads its two halves: R0 is (-2.0, 1.0) as its immediate 0x3c00c000, and R1 with +RZ (+0 + -0) is
+   +0 in its low half. A BMOV into a state register is refused */
+static void test_debug_prologue(const char* spirv_val, const char* dir) {
+    u8 code[16 * 9] = {0};
+    Word bi = fix(0x956);
+    set(&bi, 32, 32, 0xffffffffu);
+    put(code, 0, bi);
+    Word bl = fix(0xf55);
+    set(&bl, 16, 8, 1);
+    set(&bl, 24, 8, 0);
+    set(&bl, 84, 1, 1);
+    put(code, 1, bl);
+    Word b15 = fix(0x956);
+    set(&b15, 24, 8, 15);
+    put(code, 2, b15);
+    Word h = alu(0x035, 2, 0, 255);
+    set(&h, 32, 32, 0x3c00c000u);
+    set(&h, 64, 8, 255);
+    set(&h, 72, 1, 1);
+    put(code, 3, h);
+    Word h2 = alu(0x035, 2, 1, 255);
+    set(&h2, 32, 32, 0x00008000u);
+    set(&h2, 64, 8, 255);
+    put(code, 4, h2);
+    put(code, 5, mov_imm(2, 0));
+    put(code, 6, mov_imm(3, 0));
+    put(code, 7, exit_insn());
+    put(code, 8, bra(8, 8, 7, 0));
+    u32 out[4];
+    int ran = run_fs_at(code, 9, 0, NULL, 0, out);
+    CHECK(ran && out[0] == 0x3c00c000u && out[1] == 0);
+    if (ran && (out[0] != 0x3c00c000u || out[1] != 0)) fprintf(stderr, "debug prologue: %08x %08x\n", out[0], out[1]);
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    set(&bi, 24, 8, 0x1a); /* MACTIVE */
+    put(code, 0, bi);
+    CHECK(!sm86_to_spirv(code, 9 * 16, ST_FS, fsph, &si, &count));
+    put(code, 0, fix(0x918));
+    set(&bl, 16, 8, 0x1a);
+    put(code, 1, bl);
+    CHECK(!sm86_to_spirv(code, 9 * 16, ST_FS, fsph, &si, &count));
+    (void)spirv_val, (void)dir;
+}
+
 /* The first texture coordinate (0x300-0x30f) moves to generic 22 (17 + its group, 5) in both stages: AST a[0x304]
    writes output 22's y, and IPA a[0x300] reads input 22's x, with the interpolation the header's texture coordinate
    map gives it (word 15, constant), not the FragCoord.w that a perspective input takes */
@@ -1805,6 +1857,459 @@ static void test_output_defaults(const char* spirv_val, const char* dir) {
     (void)spirv_val, (void)dir;
 }
 
+/* LDG.E (no uniform) of type 4 (32 bits) or 5 (64 bits) into dst from [addr + imm], and STG.E of data */
+static Word ldg_nou(u32 dst, u32 addr, u32 imm, u32 type) {
+    Word x = fix(0x381);
+    set(&x, 16, 8, dst);
+    set(&x, 24, 8, addr);
+    set(&x, 40, 24, imm);
+    set(&x, 72, 1, 1);
+    set(&x, 73, 3, type);
+    return x;
+}
+static Word stg_nou(u32 addr, u32 imm, u32 data) {
+    Word x = fix(0x386);
+    set(&x, 24, 8, addr);
+    set(&x, 32, 8, data);
+    set(&x, 40, 24, imm);
+    set(&x, 72, 1, 1);
+    set(&x, 73, 3, 4);
+    return x;
+}
+/* Pointers from memory, as one game's vertex program that clears indirect draws: R2 is the buffer that c[0][0x110]
+   holds (0x1_0000_1000), whose words 0-5 are three pointers. The first, base + 0x40, is inside it: the STG through
+   it writes word 0x12 and the LDG reads word 0x10. The second, below the base, and the third, base + 0x1_0000_0040
+   (the same low word of the difference), are in no buffer: the STG is dropped and the LDG reads 0 */
+static void test_global_pointer(const char* spirv_val, const char* dir) {
+    u8 code[16 * 16] = {0};
+    Word m = alu(0x002, 5, 2, 255);
+    cbuf(&m, 0, 0x110);
+    put(code, 0, m);
+    m = alu(0x002, 5, 3, 255);
+    cbuf(&m, 0, 0x114);
+    put(code, 1, m);
+    put(code, 2, ldg_nou(4, 2, 0, 5));
+    put(code, 3, ldg_nou(8, 2, 8, 5));
+    put(code, 4, ldg_nou(12, 2, 16, 5));
+    put(code, 5, mov_imm(6, 7));
+    put(code, 6, mov_imm(7, 9));
+    put(code, 7, mov_imm(11, 5));
+    put(code, 8, stg_nou(4, 8, 6));
+    put(code, 9, stg_nou(12, 0xc, 7));
+    put(code, 10, ldg_nou(10, 4, 0, 4));
+    put(code, 11, ldg_nou(11, 8, 0, 4));
+    put(code, 12, ast(0x70, 10, 2));
+    put(code, 13, exit_insn());
+    put(code, 14, bra(14, 14, 7, 0));
+    u32 vsph[32] = {0};
+    vsph[0] = sph0(1, 1);
+    static u32 bank0[1024], buffer[64];
+    bank0[0x110 / 4] = 0x1000;
+    bank0[0x114 / 4] = 1;
+    buffer[0] = 0x1040, buffer[1] = 1;
+    buffer[2] = 0x0f00, buffer[3] = 1;
+    buffer[4] = 0x1040, buffer[5] = 2;
+    buffer[0x10] = 0x1234;
+    SpvEvalEnv env = {0};
+    env.ubo[SNX_VKB_CB] = bank0;
+    env.ubo_words[SNX_VKB_CB] = 1024;
+    env.ubo[SNX_VKB_SSBO] = buffer;
+    env.ubo_words[SNX_VKB_SSBO] = 64;
+    int ran = run_stage(ST_VS, code, 15, vsph, &env);
+    int ok = ran && buffer[0x12] == 7 && buffer[0x13] == 0 && env.position[0] == 0x1234 && env.position[1] == 0;
+    CHECK(ok);
+    if (!ok)
+        fprintf(stderr, "global pointer: words %x %x, position %x %x\n", buffer[0x12], buffer[0x13], env.position[0],
+                env.position[1]);
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, 15 * 16, ST_VS, vsph, &si, &count);
+    CHECK(spv && si.ngbuf == 1 && si.gbuf_cbuf_off[0] == 0x110 && (si.gbuf_wmask & 1));
+    if (spv) CHECK(validate(spirv_val, dir, "global_pointer", spv, count));
+    free(spv);
+}
+
+/* The driver's tessellation control programs: a header with 6 TessFactor words, no outputs and 0 threads for each
+   input primitive, and an EXIT. It runs no invocation: draws take the passthrough in its place, and the translator
+   gives no module for it. One with 3 threads is a program of its own, which the translator does not take yet */
+/* ---- task and mesh programs ---- */
+
+/* ISBERD (0x923) into reg, or ISBEWR (0x927) of reg, at [base + imm]: the size at 74-75 (U8 0, B32 2), the access
+   at 76-77 (MAP 0, PATCH 1, ATTR 3), SKEW at 78 and the output bit at 79, as NAK's sm70_encode.rs encodes them */
+enum { ISBE_MAP = 0, ISBE_PATCH = 1, ISBE_ATTR = 3, ISBE_U8 = 0, ISBE_B32 = 2 };
+static Word isbe_insn(int write, u32 reg, u32 base, u32 imm, u32 size, u32 access, u32 skew, u32 output) {
+    Word x = fix(write ? 0x927 : 0x923);
+    set(&x, write ? 32 : 16, 8, reg);
+    set(&x, 24, 8, base);
+    set(&x, 40, 16, imm);
+    set(&x, 74, 2, size);
+    set(&x, 76, 2, access);
+    set(&x, 78, 1, skew);
+    set(&x, 79, 1, output);
+    return x;
+}
+/* ISETP.GE.U32.AND P0, PT, R0, imm, PT */
+static Word setp_ge(u32 imm) {
+    Word x = alu(0x00c, 4, 255, 0);
+    set(&x, 32, 32, imm);
+    set(&x, 76, 3, 6);
+    set(&x, 81, 3, 0);
+    set(&x, 84, 3, 7);
+    set(&x, 87, 3, 7);
+    return x;
+}
+/* whether the module decorates an id with decoration, and declares capability */
+static int spv_decorates(const u32* words, size_t count, u32 decoration) {
+    u32 at[512];
+    u32 n = spv_find(words, count, 71 /* OpDecorate */, at, 512);
+    for (u32 k = 0; k < n; k++)
+        if (words[at[k] + 2] == decoration) return 1;
+    return 0;
+}
+static int spv_declares(const u32* words, size_t count, u32 capability) {
+    u32 at[64];
+    u32 n = spv_find(words, count, 17 /* OpCapability */, at, 64);
+    for (u32 k = 0; k < n; k++)
+        if (words[at[k] + 1] == capability) return 1;
+    return 0;
+}
+
+/* A mesh program alone, one invocation, 40 vertices of the position and generic 1.y (5 words: a vertex group of
+   G = 0x280 bytes) and 2 primitives of generic 0.x (after the two vertex groups, at 0x500). It writes vertex 0 and
+   vertex 33 (the second group), generic 1.y of vertex 0 as its workgroup index, primitive 1's generic, the indices of
+   two triangles and the count 2 */
+static u32 mesh_program(u8* code) {
+    u32 n = 0;
+    put(code, n++, isbe_insn(0, 0, 255, 0, ISBE_B32, ISBE_ATTR, 1, 0)); /* ISBERD.ATTR.SKEW R0, [RZ+0x0] */
+    put(code, n++, mov_imm(1, f2u(0.5f)));
+    put(code, n++, mov_imm(2, f2u(0.25f)));
+    put(code, n++, mov_imm(3, f2u(2.0f)));
+    put(code, n++, mov_imm(9, 0x280));
+    put(code, n++, isbe_insn(1, 1, 255, 0x000, ISBE_B32, ISBE_ATTR, 1, 1)); /* vertex 0: x */
+    put(code, n++, isbe_insn(1, 2, 255, 0x080, ISBE_B32, ISBE_ATTR, 1, 1)); /* y */
+    put(code, n++, isbe_insn(1, 3, 255, 0x180, ISBE_B32, ISBE_ATTR, 1, 1)); /* w */
+    put(code, n++, isbe_insn(1, 0, 255, 0x200, ISBE_B32, ISBE_ATTR, 1, 1)); /* generic 1.y */
+    put(code, n++, isbe_insn(1, 2, 9, 0x004, ISBE_B32, ISBE_ATTR, 1, 1));   /* vertex 33: x, at [R9 + 4] */
+    put(code, n++, isbe_insn(1, 1, 255, 0x384, ISBE_B32, ISBE_ATTR, 1, 1)); /* z */
+    put(code, n++, isbe_insn(1, 3, 255, 0x404, ISBE_B32, ISBE_ATTR, 1, 1)); /* w */
+    put(code, n++, mov_imm(4, 7));
+    put(code, n++, mov_imm(5, 9));
+    put(code, n++, mov_imm(6, 33));
+    put(code, n++, mov_imm(7, 0x105));
+    put(code, n++, mov_imm(8, 2));
+    static const u8 index_regs[6] = {255, 6, 4, 4, 6, 7}; /* (0, 33, 7) and (7, 33, 0x105 as a byte) */
+    for (u32 k = 0; k < 6; k++) put(code, n++, isbe_insn(1, index_regs[k], 255, 4 + k, ISBE_U8, ISBE_MAP, 0, 1));
+    put(code, n++, isbe_insn(1, 5, 255, 0x504, ISBE_B32, ISBE_ATTR, 1, 1)); /* primitive 1: generic 0.x */
+    put(code, n++, isbe_insn(1, 8, 255, 3, ISBE_B32, ISBE_MAP, 0, 1));      /* the primitive count */
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    return n + 1;
+}
+static ShaderInfo mesh_info(u32 sph[32]) {
+    ShaderInfo si = {0};
+    sph[0] = sph0(1, 1);
+    sph[13] = 0xfu << 12 | 1u << 21; /* the output map: the position (bits 428-431) and generic 1.y (bit 437) */
+    si.mesh = (ShMesh){1, 0x80, 40, 2, 0, 3, 0, {0}};
+    si.mesh.prim_sph[0] = 0x010c1081u; /* a geometry SPH with passthrough on, generic 0.x (bit 432) */
+    si.mesh.prim_sph[13] = 1u << 16;
+    return si;
+}
+static void test_mesh(const char* spirv_val, const char* dir) {
+    u8 code[16 * 40] = {0};
+    u32 n = mesh_program(code), sph[32] = {0};
+    for (int fix_depth = 0; fix_depth < 2; fix_depth++) {
+        ShaderInfo si = mesh_info(sph);
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_MS, sph, &si, &count);
+        CHECK(spv != NULL);
+        if (!spv) {
+            fprintf(stderr, "mesh: %s\n", si.first_unsupported);
+            return;
+        }
+        CHECK(si.out_mask == 3 && si.prim_mask == 1 && sm86_mesh_primitive_mask(&si.mesh) == 1);
+        CHECK(spv_declares(spv, count, 5283 /* MeshShadingEXT */) && spv_decorates(spv, count, 5271));
+        if (!fix_depth) CHECK(validate(spirv_val, dir, "ms", spv, count));
+        static u32 position[40 * 4], generic1[40 * 4], generic0[2 * 4], indices[2 * 3];
+        memset(position, 0xee, sizeof position);
+        SpvEvalEnv env = {0};
+        env.builtin[26][0] = 2; /* WorkgroupId.x, after the draw's first group 5 */
+        env.push[0] = 5;
+        env.push[1] = fix_depth ? f2u(1.0f) : 0;
+        env.arrays[32] = position, env.array_words[32] = 40 * 4;
+        env.arrays[1] = generic1, env.array_words[1] = 40 * 4;
+        env.arrays[0] = generic0, env.array_words[0] = 2 * 4;
+        env.arrays[33] = indices, env.array_words[33] = 2 * 3;
+        const char* why = spv_eval(spv, count, &env);
+        free(spv);
+        if (why) fprintf(stderr, "mesh: the evaluator stops at %s\n", why);
+        CHECK(!why && env.set_outputs == 1 && env.mesh_outputs[0] == 40 && env.mesh_outputs[1] == 2);
+        const u32 *p0 = position, *p33 = position + 4 * 33, *g = generic1, *q = generic0 + 4;
+        u32 z0 = fix_depth ? f2u(1.0f) : 0, z33 = fix_depth ? f2u(1.25f) : f2u(0.5f); /* (z + w) / 2 */
+        int ok = p0[0] == f2u(0.5f) && p0[1] == f2u(0.25f) && p0[2] == z0 && p0[3] == f2u(2.0f) &&
+                 p33[0] == f2u(0.25f) && p33[1] == 0 && p33[2] == z33 && p33[3] == f2u(2.0f) && position[4] == 0;
+        CHECK(ok);
+        if (!ok)
+            fprintf(stderr, "mesh: vertex 0 %08x %08x %08x %08x, vertex 33 %08x %08x %08x %08x\n", p0[0], p0[1], p0[2],
+                    p0[3], p33[0], p33[1], p33[2], p33[3]);
+        /* generic 1: x, z and w as a vertex program's outputs start, y the workgroup index 2 + 5 */
+        CHECK(g[0] == 0 && g[1] == 7 && g[2] == 0 && g[3] == f2u(1.0f));
+        CHECK(q[0] == 9 && q[1] == 0 && q[3] == f2u(1.0f) && generic0[0] == 0);
+        CHECK(indices[0] == 0 && indices[1] == 33 && indices[2] == 7 && indices[3] == 7 && indices[4] == 33 &&
+              indices[5] == 5);
+    }
+}
+
+/* A task program, one invocation and a payload of 0x20 bytes: R0 the workgroup index, into the payload at 0x10; then
+   an EXIT when R0 >= 5, and else 3 mesh groups to launch. The count starts at 0, whatever the payload held */
+static void test_task(const char* spirv_val, const char* dir) {
+    u8 code[16 * 8] = {0};
+    u32 n = 0;
+    put(code, n++, isbe_insn(0, 0, 255, 0, ISBE_B32, ISBE_ATTR, 1, 0));
+    put(code, n++, isbe_insn(1, 0, 255, 0x10, ISBE_B32, ISBE_ATTR, 0, 1));
+    put(code, n++, setp_ge(5));
+    put(code, n++, predicated(exit_insn(), 0));
+    put(code, n++, mov_imm(1, 3));
+    put(code, n++, isbe_insn(1, 1, 255, 4, ISBE_B32, ISBE_ATTR, 0, 1));
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    u32 sph[32] = {0};
+    sph[0] = sph0(1, 1);
+    for (u32 first = 0; first < 6; first += 5) {
+        ShaderInfo si = {0};
+        si.mesh.threads = 1;
+        si.mesh.payload = 0x20;
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_TS, sph, &si, &count);
+        CHECK(spv != NULL);
+        if (!spv) {
+            fprintf(stderr, "task: %s\n", si.first_unsupported);
+            return;
+        }
+        if (!first) CHECK(validate(spirv_val, dir, "ts", spv, count));
+        SpvEvalEnv env = {0};
+        env.builtin[26][0] = 2;
+        env.push[0] = first;
+        env.payload[1] = 77;
+        const char* why = spv_eval(spv, count, &env);
+        free(spv);
+        if (why) fprintf(stderr, "task: the evaluator stops at %s\n", why);
+        /* index 2: 3 groups; index 7: the EXIT leaves the count at 0 */
+        u32 groups = first ? 0 : 3;
+        CHECK(!why && env.emitted_tasks == 1 && env.mesh_tasks[0] == groups && env.mesh_tasks[1] == 1 &&
+              env.mesh_tasks[2] == 1);
+        CHECK(env.payload[4] == 2 + first && env.payload[1] == groups);
+    }
+}
+
+/* A mesh program after a task program: its workgroup index is ISBERD.ATTR [RZ+0x0] without the draw's first group,
+   and it reads the task's payload from 0x10 on: its one vertex's position.x from payload byte 0x14, its generic 0.x
+   the index. Its count of 9 primitives is more than its most (1), which the outputs keep to */
+static void test_mesh_after_task(const char* spirv_val, const char* dir) {
+    u8 code[16 * 10] = {0};
+    u32 n = 0;
+    put(code, n++, isbe_insn(0, 0, 255, 0, ISBE_B32, ISBE_ATTR, 0, 0));
+    put(code, n++, isbe_insn(0, 1, 255, 0x14, ISBE_B32, ISBE_ATTR, 0, 0));
+    put(code, n++, isbe_insn(1, 1, 255, 0, ISBE_B32, ISBE_ATTR, 1, 1));
+    put(code, n++, isbe_insn(1, 0, 255, 0x80, ISBE_B32, ISBE_ATTR, 1, 1));
+    put(code, n++, mov_imm(2, 9));
+    put(code, n++, isbe_insn(1, 2, 255, 3, ISBE_B32, ISBE_MAP, 0, 1));
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    u32 sph[32] = {0};
+    sph[0] = 0x020c0c81u;          /* a tessellation evaluation SPH, as the hardware runs it */
+    sph[13] = 1u << 12 | 1u << 16; /* position.x and generic 0.x */
+    ShaderInfo si = {0};
+    si.mesh = (ShMesh){1, 0x20, 1, 1, 1, 3, 0, {0}};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_MS, sph, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) {
+        fprintf(stderr, "mesh after a task: %s\n", si.first_unsupported);
+        return;
+    }
+    CHECK(validate(spirv_val, dir, "ms_task", spv, count));
+    static u32 position[4], generic0[4];
+    SpvEvalEnv env = {0};
+    env.builtin[26][0] = 2;
+    env.push[0] = 5;
+    env.payload[5] = f2u(3.0f);
+    env.arrays[32] = position, env.array_words[32] = 4;
+    env.arrays[0] = generic0, env.array_words[0] = 4;
+    const char* why = spv_eval(spv, count, &env);
+    free(spv);
+    if (why) fprintf(stderr, "mesh after a task: the evaluator stops at %s\n", why);
+    CHECK(!why && env.set_outputs == 1 && env.mesh_outputs[0] == 1 && env.mesh_outputs[1] == 1);
+    CHECK(position[0] == f2u(3.0f) && position[1] == 0 && position[2] == 0 && position[3] == f2u(1.0f));
+    CHECK(generic0[0] == 2);
+}
+
+/* sm86_mesh_output_bytes against the outputs that the translation declares: four scalars for each Output location,
+   the per-primitive ones (PerPrimitiveEXT) in granules of primitives, the others in granules of vertices, the
+   triangle indices not counted ("Mesh Shader Output" of the Vulkan spec). mesh_info's program: the position and
+   generic 1 for 40 vertices, generic 0 for 2 primitives */
+static void test_mesh_output_bytes(void) {
+    u8 code[16 * 40] = {0};
+    u32 n = mesh_program(code), sph[32] = {0};
+    ShaderInfo si = mesh_info(sph);
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_MS, sph, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) return;
+    u32 vars[64], decorations[512], vertex = 0, primitive = 0;
+    u32 nv = spv_find(spv, count, 59 /* OpVariable */, vars, 64);
+    u32 nd = spv_find(spv, count, 71 /* OpDecorate */, decorations, 512);
+    for (u32 i = 0; i < nv; i++) {
+        if (spv[vars[i] + 3] != 3 /* Output */) continue;
+        u32 id = spv[vars[i] + 2];
+        int per_primitive = 0, indices = 0;
+        for (u32 k = 0; k < nd; k++) {
+            const u32* d = spv + decorations[k];
+            if (d[1] != id) continue;
+            per_primitive |= d[2] == 5271; /* PerPrimitiveEXT */
+            indices |= d[2] == 11 /* BuiltIn */ && d[3] == 5296; /* PrimitiveTriangleIndicesEXT */
+        }
+        if (!indices) *(per_primitive ? &primitive : &vertex) += 1;
+    }
+    free(spv);
+    u64 declared = 16ull * (vertex * 64 + primitive * 32); /* 40 vertices in granules of 32, 2 primitives */
+    u64 bytes = sm86_mesh_output_bytes(sph, &si.mesh, 32, 32);
+    CHECK(vertex == 2 && primitive == 1 && bytes == declared && bytes == 2560);
+    if (bytes != declared)
+        fprintf(stderr, "mesh output bytes: %llu, the module declares %llu (%u and %u locations)\n",
+                (unsigned long long)bytes, (unsigned long long)declared, vertex, primitive);
+    CHECK(sm86_mesh_output_bytes(sph, &si.mesh, 1, 1) == 16u * (2 * 40 + 1 * 2));
+}
+
+/* the forms and keys that the facts of the game's programs do not cover are refused, with their reason */
+static void refused(const u8* code, u32 n, int stage, const u32* sph, ShaderInfo si, const char* reason) {
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, stage, sph, &si, &count);
+    int ok = !spv && si.unsupported && strstr(si.first_unsupported, reason);
+    CHECK(ok);
+    if (!ok) fprintf(stderr, "refused: \"%s\", not \"%s\"\n", si.first_unsupported, reason);
+    free(spv);
+}
+static void test_mesh_refused(void) {
+    u8 code[16 * 3] = {0};
+    u32 sph[32] = {0};
+    ShaderInfo si = mesh_info(sph);
+    put(code, 0, isbe_insn(1, 1, 255, 0x40, ISBE_B32, ISBE_PATCH, 1, 1));
+    put(code, 1, exit_insn());
+    put(code, 2, bra(2, 2, 7, 0));
+    refused(code, 3, ST_MS, sph, si, "ISBEWR.PATCH.SKEW.O.B32 [RZ+0x40] in a mesh program");
+    put(code, 0, isbe_insn(0, 1, 255, 0, ISBE_B32, ISBE_ATTR, 0, 0)); /* the index after a task, in a mesh alone */
+    refused(code, 3, ST_MS, sph, si, "ISBERD.ATTR.B32 [RZ+0x0] in a mesh program");
+    refused(code, 3, ST_VS, sph, (ShaderInfo){0}, "ISBERD outside a task or mesh program");
+    put(code, 0, isbe_insn(1, 1, 255, 0x6, ISBE_B32, ISBE_ATTR, 1, 1));
+    refused(code, 3, ST_MS, sph, si, "at the byte offset 0x6");
+    put(code, 0, fix(0x918)); /* NOP */
+    ShaderInfo k = si;
+    k.mesh.threads = 64;
+    refused(code, 3, ST_MS, sph, k, "workgroup of 64 invocations");
+    k = si;
+    k.mesh.primitive_vertices = 2;
+    refused(code, 3, ST_MS, sph, k, "primitives of 2 vertices");
+    k = si;
+    k.mesh.max_vertices = 257;
+    refused(code, 3, ST_MS, sph, k, "257 vertices");
+    k = si;
+    k.mesh.prim_sph[13] |= 1u << 21; /* generic 1.y per primitive too */
+    refused(code, 3, ST_MS, sph, k, "both per vertex and per primitive");
+    k = si;
+    k.mesh.prim_sph[13] |= 1u << 12; /* the position, per primitive */
+    refused(code, 3, ST_MS, sph, k, "per-primitive output of SPH output map bit 428");
+    u32 clip[32];
+    memcpy(clip, sph, sizeof clip);
+    clip[18] = 1; /* clip distance 0 (bit 576) */
+    refused(code, 3, ST_MS, clip, si, "per-vertex output of SPH output map bit 576");
+    k = (ShaderInfo){0};
+    k.mesh.threads = 32;
+    k.mesh.payload = 4;
+    refused(code, 3, ST_TS, sph, k, "task payload of 0x4 bytes");
+}
+
+/* A fragment program's inputs that its draw's mesh program writes per primitive (ShaderInfo.prim_mask) are
+   PerPrimitiveEXT, and the others are not */
+static void test_fragment_per_primitive(const char* spirv_val, const char* dir) {
+    u8 code[16 * 8] = {0};
+    u32 n = fragment_program(code), fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[6] = 2;
+    fsph[18] = 0xf;
+    for (u32 mask = 0; mask < 4; mask += 3) {
+        ShaderInfo si = {0};
+        si.prim_mask = mask; /* generic 0 (its input), and generic 1, which it does not read */
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+        CHECK(spv != NULL);
+        if (!spv) return;
+        CHECK(spv_decorates(spv, count, 5271) == (mask != 0) && spv_declares(spv, count, 5283) == (mask != 0));
+        if (mask) CHECK(validate(spirv_val, dir, "fs_per_primitive", spv, count));
+        free(spv);
+    }
+}
+
+/* A fragment program's input that no output of the stage before writes (ShaderInfo.in_unfed_mask) reads 0, 0, 0, 1,
+   as the Maxwell translator's does, and the module declares no Input for it, which the stage before would not match
+   (VUID-RuntimeSpirv-OpEntryPoint-08743: one game's mesh programs write fewer generics than their fragment programs
+   read) */
+static void test_fragment_unfed(const char* spirv_val, const char* dir) {
+    u8 code[16 * 8] = {0};
+    u32 n = fragment_program(code), fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[6] = 2;
+    fsph[18] = 0xf;
+    u32 inputs_of[2] = {0};
+    for (u32 unfed = 0; unfed < 2; unfed++) {
+        ShaderInfo si = {0};
+        si.in_unfed_mask = unfed;
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+        CHECK(spv != NULL);
+        if (!spv) return;
+        u32 at[64], inputs = 0, found = spv_find(spv, count, 59 /* OpVariable */, at, 64);
+        for (u32 k = 0; k < found; k++) inputs += spv[at[k] + 3] == 1 /* Input */;
+        inputs_of[unfed] = inputs;
+        CHECK(si.in_mask == 1);
+        if (unfed) CHECK(validate(spirv_val, dir, "fs_unfed", spv, count));
+        SpvEvalEnv env = {0};
+        env.in[0][0] = f2u(0.75f);
+        env.builtin[15][3] = f2u(1.0f); /* FragCoord.w, which IPA's perspective divides by */
+        const char* why = spv_eval(spv, count, &env);
+        free(spv);
+        if (why) fprintf(stderr, "fragment unfed: the evaluator stops at %s\n", why);
+        CHECK(!why && env.out[0][0] == (unfed ? 0 : f2u(0.75f)));
+    }
+    CHECK(inputs_of[0] == inputs_of[1] + 1); /* the generic's Input, beside FragCoord */
+}
+
+/* the pass over the shipped programs leaves a task or mesh program to its draw: it finds their ISBE accesses */
+static void test_uses_isbe(void) {
+    u8 code[16 * 40] = {0};
+    u32 n = mesh_program(code);
+    CHECK(sm86_uses_isbe(code, n * 16));
+    CHECK(!sm86_uses_isbe(code + 16, 16 * 4)); /* the MOVs after its ISBERD */
+    n = vertex_program(code);
+    CHECK(!sm86_uses_isbe(code, n * 16));
+}
+
+static void test_tcs_empty(void) {
+    u8 code[16 * 2] = {0};
+    put(code, 0, exit_insn());
+    put(code, 1, bra(1, 1, 7, 0));
+    u32 sph[32] = {0x000c0881u, 0x06000000u, 0, 0x60000000u, 0x000ff000u};
+    CHECK(sm86_sph_stage(sph[0]) == ST_TCS && sm86_tcs_empty(sph[2]));
+    ShaderInfo si = {0};
+    size_t count = 0;
+    CHECK(!sm86_to_spirv(code, 2 * 16, ST_TCS, sph, &si, &count) && strstr(si.first_unsupported, "no invocation"));
+    sph[2] = 3u << 24;
+    CHECK(!sm86_tcs_empty(sph[2]));
+    si = (ShaderInfo){0};
+    CHECK(!sm86_to_spirv(code, 2 * 16, ST_TCS, sph, &si, &count) && !strstr(si.first_unsupported, "no invocation"));
+}
+
 int main(int argc, char** argv) {
     const char* spirv_val = argc > 2 ? argv[2] : NULL;
     const char* dir = argc > 1 ? argv[1] : ".";
@@ -1813,6 +2318,7 @@ int main(int argc, char** argv) {
     test_flow();
     test_table();
     test_sph();
+    test_tcs_empty();
     test_programs(spirv_val, dir);
     test_game_forms(spirv_val, dir);
     test_brx(spirv_val, dir);
@@ -1831,12 +2337,22 @@ int main(int argc, char** argv) {
     test_shared_no_uniform(spirv_val, dir);
     test_hsetp2(spirv_val, dir);
     test_bmov(spirv_val, dir);
+    test_debug_prologue(spirv_val, dir);
     test_legacy_varyings(spirv_val, dir);
     test_brxu(spirv_val, dir);
     test_ipa_uniform(spirv_val, dir);
     test_tld_multisample(spirv_val, dir);
     test_tex_f16(spirv_val, dir);
     test_output_defaults(spirv_val, dir);
+    test_global_pointer(spirv_val, dir);
+    test_mesh(spirv_val, dir);
+    test_task(spirv_val, dir);
+    test_mesh_after_task(spirv_val, dir);
+    test_mesh_output_bytes();
+    test_mesh_refused();
+    test_fragment_per_primitive(spirv_val, dir);
+    test_fragment_unfed(spirv_val, dir);
+    test_uses_isbe();
     test_ftz_modes(spirv_val, dir);
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);

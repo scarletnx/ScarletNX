@@ -186,6 +186,16 @@ int sm86_sph_stage(u32 sph0) {
     }
 }
 
+int sm86_uses_isbe(const u8* code, u32 bytes) {
+    for (u32 i = 0; i + 16 <= bytes; i += 16) {
+        Sm86Insn in;
+        if (sm86_decode(snx_ld_le64(code + i), snx_ld_le64(code + i + 8), &in) &&
+            (in.op == SM86_ISBERD || in.op == SM86_ISBEWR))
+            return 1;
+    }
+    return 0;
+}
+
 /* padding between programs: an all-zero instruction or a NOP on PT */
 static int is_padding(u64 lo, u64 hi) { return (!lo && !hi) || (lo & 0xffffu) == 0x7918u; }
 

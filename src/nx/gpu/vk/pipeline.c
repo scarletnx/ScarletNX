@@ -45,7 +45,7 @@ static void pcache_note(void) {
 }
 #if defined(SNX_TRACY)
 /* the stages' names, for the shader translate zone's text */
-static const char* const vk_tracy_stage[6] = {"vert", "tess ctrl", "tess eval", "geom", "frag", "comp"};
+static const char* const vk_tracy_stage[] = {"vert", "tess ctrl", "tess eval", "geom", "frag", "comp", "task", "mesh"};
 #endif
 
 VkPipelineLayout g_vk_playout;
@@ -64,6 +64,10 @@ static VkSh* pf_ship_take(u64 h, int stage, const u32 mask[20], u32 len, u64 qh,
 /* the draw state and stage whose bound constant buffers the translator reads, for the vk_shader_get call running */
 static const DsState* g_sh_ds;
 static int g_sh_bind;
+/* the bindings (DsBindings' stage) a program of stage reads: an Ounce's task and mesh programs have their own */
+static int sh_bind_stage(int stage) {
+    return stage == ST_TS ? DS_TASK : stage == ST_MS ? DS_MESH : stage <= ST_FS ? stage : 0;
+}
 
 static int sh_cb_read(u32 idx, u32 off, u32* out) {
     if (idx >= 18 || !g_sh_ds) return 0;
@@ -126,6 +130,7 @@ const char* vk_spirv_unavailable(const u32* spv, size_t words) {
         if (width == 2 && spv[at + 1] == 4427 && !g_vk.has_shader_draw_parameters)
             return "shaderDrawParameters is unavailable";
         if (width == 2 && spv[at + 1] == 5055 && !g_shader_clock_scopes) return "shaderClock is unavailable";
+        if (width == 2 && spv[at + 1] == 5283 && !g_vk.has_mesh) return "meshShader is unavailable";
         at += width;
     }
     return NULL;
@@ -173,7 +178,9 @@ u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si
                                             VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
                                             VK_SHADER_STAGE_GEOMETRY_BIT,
                                             VK_SHADER_STAGE_FRAGMENT_BIT,
-                                            VK_SHADER_STAGE_COMPUTE_BIT};
+                                            VK_SHADER_STAGE_COMPUTE_BIT,
+                                            VK_SHADER_STAGE_TASK_BIT_EXT,
+                                            VK_SHADER_STAGE_MESH_BIT_EXT};
     VkShaderStageFlagBits shader_stage = stages[stage];
     u32* result = g_shader_sm86 ? sm86_translate(code, max_bytes, stage, si, words)
                                 : shader_to_spirv(code, max_bytes, stage, si, words, g_vk_ftz, g_vk_preserve_infnan,
@@ -265,6 +272,21 @@ void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets) {
     }
 }
 
+/* The stages that see set s: a layout for each set, the same bindings, each visible to the stage that uses the set
+   (shader_vk_set), within the per-stage limits a device has, which all stages seeing every set would multiply by
+   five. A mesh program takes the vertex stage's set and a task program the tessellation control stage's, and the two
+   mesh stages see both sets, where the device has them. With each mesh stage seeing only its own set, one game's task
+   programs on an RTX 2080 read constants at addresses that no memory backs (Xid 31, GPCCLIENT_GCC, at the same task
+   instruction in each run), and the GPU hung (Xid 109) in most runs. Eden's layouts give each binding the stage of
+   its program, in one set */
+VkShaderStageFlags vk_set_stages(int s) {
+    static const VkShaderStageFlags vis[5] = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
+                                              VK_SHADER_STAGE_FRAGMENT_BIT, VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
+                                              VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
+                                              VK_SHADER_STAGE_GEOMETRY_BIT};
+    if (s < 0 || s >= 5) return 0;
+    return vis[s] | (s == shader_vk_set(ST_MS) || s == shader_vk_set(ST_TS) ? g_vk.mesh_stages : 0);
+}
 VkPipelineLayout vk_playout(u32 arrays) {
     VkPipelineLayout* l = &g_playouts[arrays & ((1u << 5) - 1)];
     VkPipelineLayout made = __atomic_load_n(l, __ATOMIC_ACQUIRE);
@@ -296,12 +318,6 @@ void vk_pipeline_init(void) {
     pm_lock_announce(&g_playout_lock, "pipeline layout");
     plib_init();
     pm_lock_announce(&g_xlate_lock, "shader translate");
-    /* a layout per set, the same bindings, each visible to the stage that uses the set (shader_vk_set): within the
-       per-stage limits a device has, which all stages seeing every set would multiply by five */
-    static const VkShaderStageFlags vis[5] = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
-                                              VK_SHADER_STAGE_FRAGMENT_BIT, VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
-                                              VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
-                                              VK_SHADER_STAGE_GEOMETRY_BIT};
     /* the tessellation and geometry stages' sets come after the first two, where the device binds that many */
     g_vk_stage_sets = g_vk.props.limits.maxBoundDescriptorSets >= 5 ? 5 : 2;
     for (int s = 0; s < 5; s++) {
@@ -333,7 +349,7 @@ void vk_pipeline_init(void) {
                 .binding = i,
                 .descriptorType = binding_type(i),
                 .descriptorCount = (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) ? SNX_TEX_ARRAY : 1,
-                .stageFlags = vis[s]};
+                .stageFlags = vk_set_stages(s)};
         }
         for (int arrays = 0; arrays < 2; arrays++) {
             u32 n = count;
@@ -530,6 +546,17 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[20], const ShX
         si->early_fragment_tests = mask[11];
         si->tex_rect_mask = mask[12] | (u64)mask[13] << 32;
         shader_query_hint_unpack(mask + 14, si->tex_query_hint);
+        si->prim_mask = mask[6]; /* the generics the draw's mesh program writes per primitive (vk_shader_mesh) */
+    } else if (stage == ST_TS || stage == ST_MS) {
+        /* vk_shader_mesh's words: the per-primitive SPH (word 3) is read from the code (sh_mesh_sph) */
+        si->mesh.threads = (u16)mask[0];
+        si->mesh.payload = (u16)(mask[0] >> 16);
+        si->mesh.max_vertices = (u16)mask[1];
+        si->mesh.max_primitives = (u16)(mask[1] >> 16);
+        si->mesh.has_task = (u8)mask[2];
+        si->mesh.primitive_vertices = (u8)(mask[2] >> 8);
+        si->tex_rect_mask = mask[12] | (u64)mask[13] << 32;
+        shader_query_hint_unpack(mask + 14, si->tex_query_hint);
     } else {
         si->attr_int_mask = ints;
         si->attr_sint_mask = sints;
@@ -546,6 +573,14 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[20], const ShX
         }
         if (xfb) si->xfb = *xfb;
     }
+}
+/* a mesh program's per-primitive SPH, at the offset that its key's word 3 gives (vk_shader_mesh), into si. The offset
+   counts from the start of the program's code area, its own SPH included, as code holds it: a code area of 0xe00
+   bytes has it at 0xd00, one of 0x4900 bytes at 0x4800 (docs/OUNCE.md) */
+static void sh_mesh_sph(ShaderInfo* si, int stage, const u8* code, const u32 mask[20]) {
+    if (stage != ST_MS || !mask[3] || mask[3] > SH_CODE - sizeof si->mesh.prim_sph) return;
+    const u8* at = code + mask[3];
+    for (u32 i = 0; i < sizeof si->mesh.prim_sph / 4; i++) si->mesh.prim_sph[i] = snx_ld_le32(at + 4 * i);
 }
 /* s for its key, from code (SH_CODE bytes: the merged program, for VertexA and VertexB) whose whole code hashes to h,
    each part with its length and hash, translated: its SPIR-V (malloc'd, nw words), the constant buffers the
@@ -564,9 +599,13 @@ static u32* sh_spirv(VkSh* s, const u8* code, u64 h, int stage, const u32 mask[2
     s->clen_a = len_a;
     s->qh_a = qh_a;
     sh_key_info(&s->si, stage, mask, xfb);
+    sh_mesh_sph(&s->si, stage, code, mask);
     *nw = 0;
     SNX_ZONE(z_translate, "shader translate");
-    SNX_ZONE_TEXT(z_translate, "%s hash %08x", stage < 6 ? vk_tracy_stage[stage] : "stage?", (unsigned)h);
+    SNX_ZONE_TEXT(z_translate, "%s hash %08x",
+                  stage >= 0 && stage < (int)(sizeof vk_tracy_stage / sizeof *vk_tracy_stage) ? vk_tracy_stage[stage]
+                                                                                              : "stage?",
+                  (unsigned)h);
     u32* spv = vk_translate_spirv(code, SH_CODE, stage, &s->si, nw, read, &s->cbr);
     SNX_ZONE_VALUE(z_translate, *nw);
     SNX_ZONE_END(z_translate);
@@ -619,6 +658,23 @@ static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[
         free(spv);
     } else
         s->failed = 1;
+    /* a mesh program's outputs against maxMeshOutputMemorySize, which a pipeline must not go past: such a program
+       fails, and its draws are skipped with the reason (mesh_shaders) */
+    if (stage == ST_MS && !s->failed) {
+        ShaderInfo* si = &s->si;
+        u64 bytes = sm86_mesh_output_bytes(si->sph, &si->mesh, g_vk.mesh_vertex_granule, g_vk.mesh_primitive_granule);
+        int over = g_vk.mesh_output_bytes_max && bytes > g_vk.mesh_output_bytes_max;
+        LOG("vulkan: mesh program %016llx: %u vertices, %u primitives, generics %#x (%#x per primitive), %llu "
+            "output bytes of %u%s\n",
+            (unsigned long long)h, si->mesh.max_vertices, si->mesh.max_primitives, si->out_mask, si->prim_mask,
+            (unsigned long long)bytes, g_vk.mesh_output_bytes_max, over ? ": too many, its draws are skipped" : "");
+        if (over) {
+            s->failed = 1;
+            snprintf(si->first_unsupported, sizeof si->first_unsupported,
+                     "%llu bytes of mesh outputs, past the device's maxMeshOutputMemorySize of %u",
+                     (unsigned long long)bytes, g_vk.mesh_output_bytes_max);
+        }
+    }
     return s;
 }
 VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
@@ -627,7 +683,7 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
     const DsPrograms* p = ds ? &ds->prog : NULL;
     pf_merge();
     g_sh_ds = ds;
-    g_sh_bind = stage <= ST_FS ? stage : 0;
+    g_sh_bind = sh_bind_stage(stage);
     u32 mask[20] = {(u32)int_mask,
                     (u32)(int_mask >> 32),
                     (u32)sint_mask,
@@ -735,6 +791,7 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
         if (vk_corpus_dir()) { /* the key's words as sh_make takes them into si, which the corpus keeps */
             ShaderInfo si;
             sh_key_info(&si, stage, mask, xfb);
+            sh_mesh_sph(&si, stage, code, mask);
             shader_corpus_save(vk_corpus_dir(), code, mlen, SH_CODE, stage, &si, h ^ mix);
         }
         u64 t0 = plat_ns();
@@ -764,11 +821,18 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
     return s;
 }
 
+VkSh* vk_shader_mesh(const DsState* ds, u64 gva, int stage, const DsMeshKey* k) {
+    int mesh = stage == ST_MS;
+    u32 w0 = mesh ? k->mesh_threads | (u32)k->mesh_payload << 16 : k->task_threads | (u32)k->task_payload << 16;
+    u32 w1 = mesh ? k->max_vertices | (u32)k->max_primitives << 16 : 0;
+    u32 w2 = mesh ? k->has_task | (u32)k->primitive_vertices << 8 : 0, w3 = mesh ? k->prim_sph : 0;
+    return vk_shader_get(ds, gva, 0, stage, w0 | (u64)w1 << 32, w2 | (u64)w3 << 32, 0, 0, 0, 0, 0, 0, 0, NULL, NULL);
+}
 /* whether the constant buffer words s's translation read (BRX jump tables) still hold in ds's bound buffers, as
    vk_shader_get checks them on each hit */
 int vk_shader_cb_hold(const DsState* ds, const VkSh* s) {
     g_sh_ds = ds;
-    g_sh_bind = s->stage <= ST_FS ? s->stage : 0;
+    g_sh_bind = sh_bind_stage(s->stage);
     return vk_cb_reads_hold(&s->cbr, sh_cb_read);
 }
 
@@ -905,6 +969,7 @@ float vk_conservative_extra(u32 conservative) {
 typedef struct {
     VkPipelineShaderStageCreateInfo st[5];
     u32 nst, npr; /* the stages, the first npr of them before rasterization and then the fragment one */
+    VkPipelineShaderStageRequiredSubgroupSizeCreateInfo warp; /* a mesh pipeline's mesh and task stages' */
     VkPipelineTessellationStateCreateInfo ts;
     VkVertexInputBindingDescription vb[33];
     VkVertexInputBindingDivisorDescriptionEXT dv[33];
@@ -937,14 +1002,27 @@ static void pipe_info(const PipeKey* k, VkShaderModule fs, PipeInfo* o) {
     static const VkShaderStageFlagBits bits[5] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
                                                   VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
                                                   VK_SHADER_STAGE_GEOMETRY_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
+    /* a mesh pipeline's mesh and task shaders, in the vertex and tessellation control slots: their programs' lanes
+       are a warp's, so their subgroups are 32 invocations, whole (sm86.h) */
+    static const VkShaderStageFlagBits mesh_bits[5] = {VK_SHADER_STAGE_MESH_BIT_EXT, VK_SHADER_STAGE_TASK_BIT_EXT, 0, 0,
+                                                       VK_SHADER_STAGE_FRAGMENT_BIT};
     const VkShaderModule modules[5] = {k->vs, k->tcs, k->tes, k->gs, fs};
     memset(o, 0, sizeof *o);
+    o->warp = (VkPipelineShaderStageRequiredSubgroupSizeCreateInfo){
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO, .requiredSubgroupSize = 32};
     for (u32 s = 0; s < 5; s++) {
         if (!modules[s]) continue;
-        o->st[o->nst++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                            .stage = bits[s],
-                                                            .module = modules[s],
-                                                            .pName = "main"};
+        o->st[o->nst] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                        .stage = k->mesh ? mesh_bits[s] : bits[s],
+                                                        .module = modules[s],
+                                                        .pName = "main"};
+        if (k->mesh && s < 2) {
+            o->st[o->nst].pNext = &o->warp;
+            /* a workgroup of fewer invocations than a warp is one subgroup, its lanes the first ones */
+            if (k->mesh & PIPE_MESH_WHOLE(s ? ST_TS : ST_MS))
+                o->st[o->nst].flags = VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT;
+        }
+        o->nst++;
         if (s < 4) o->npr = o->nst;
     }
     o->ts = (VkPipelineTessellationStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO,
@@ -1086,7 +1164,8 @@ static void pipe_info(const PipeKey* k, VkShaderModule fs, PipeInfo* o) {
                          .feedback_dynamic = g_vk.has_feedback_dynamic,
                          .stride = l->nbind && g_vk.has_dynamic_stride,
                          .vertex_input = g_vk.vertex_input_dynamic,
-                         .tess = k->tes != VK_NULL_HANDLE};
+                         .tess = k->tes != VK_NULL_HANDLE,
+                         .mesh = k->mesh != 0};
     o->flags = (g_vk.has_descriptor_buffers ? VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0) |
                (k->feedback ? VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0);
 }
@@ -1115,9 +1194,9 @@ static VkPipeline pipe_create(const Pipe* e, int* hit) {
                                        .flags = o.flags,
                                        .stageCount = o.nst,
                                        .pStages = o.st,
-                                       .pVertexInputState = &o.vi,
-                                       .pInputAssemblyState = &o.ia,
-                                       .pTessellationState = e->k.tes ? &o.ts : NULL,
+                                       .pVertexInputState = e->k.mesh ? NULL : &o.vi,
+                                       .pInputAssemblyState = e->k.mesh ? NULL : &o.ia,
+                                       .pTessellationState = e->k.tes && !e->k.mesh ? &o.ts : NULL,
                                        .pViewportState = &o.vp,
                                        .pRasterizationState = &o.rs,
                                        .pMultisampleState = &o.ms,
@@ -1222,7 +1301,8 @@ static PipeLib* lib_find(u32 part, const PipePartKey* key, size_t n, const PipeK
 }
 /* p's parts, with pipeline libraries: none when one can't be had, and p is made whole then */
 static void pipe_parts(Pipe* p) {
-    if (!g_vk.has_gpl) return;
+    /* a mesh pipeline is made whole: it has no vertex input part, and the parts take no mesh or task stage yet */
+    if (!g_vk.has_gpl || p->k.mesh) return;
     const PipeSplitDevice d = {.dyn_pr = g_vk.dyn_pr, .feedback_dynamic = g_vk.has_feedback_dynamic};
     PipePartKey k[4];
     memset(k, 0, sizeof k);
@@ -2369,6 +2449,12 @@ static int ship_dual(const u8* sph, size_t avail) {
     free(a);
     return rc;
 }
+/* whether the Ounce program from its header at sph reads or writes the ISBE (sm86_uses_isbe) */
+static int ship_isbe(const u8* sph, size_t avail) {
+    Sm86Program p;
+    u32 size = avail < SH_CODE ? (u32)avail : SH_CODE;
+    return sm86_find_programs(sph, size, &p, 1) == 1 && sm86_uses_isbe(sph + p.code, p.size);
+}
 static int ship_program(void* ctx, const u8* sph, size_t avail, int stage, const u8* consts, size_t nconsts) {
     u8* code;
     u32 len;
@@ -2381,6 +2467,12 @@ static int ship_program(void* ctx, const u8* sph, size_t avail, int stage, const
     /* an Ounce game's (SM86): its programs as a draw reads them, from their header. A VertexA, which no draw of the
        Ounce path pairs, is left to its draws */
     if (stage == SHIPPED_OUNCE_VERTEX_A) return SHIP_SKIPPED;
+    /* a tessellation control program that runs no invocation: draws take the passthrough in its place */
+    if (stage == (ST_TCS | SHIPPED_OUNCE) && sm86_tcs_empty(snx_ld_le32(sph + 8))) return SHIP_SKIPPED;
+    /* a task or mesh program has the SPH of a vertex or evaluation program, and reads and writes the ISBE. Only its
+       draw's control section gives its stage and the fields of its translation (ShaderInfo.mesh) */
+    if ((stage == (ST_VS | SHIPPED_OUNCE) || stage == (ST_TES | SHIPPED_OUNCE)) && ship_isbe(sph, avail))
+        return SHIP_SKIPPED;
     stage &= ~SHIPPED_OUNCE;
     if (stage == SHIPPED_VERTEX_A) return ship_dual(sph, avail);
     /* their keys hold the draw's state (geometry's input primitive and passthrough words, the evaluation's domain), so

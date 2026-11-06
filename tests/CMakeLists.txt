@@ -2452,6 +2452,11 @@ add_executable(snx-test-nvn-control nvn_control.c support/nvn_control.c)
 snx_test_target(snx-test-nvn-control 23)
 add_test(NAME nvn_control COMMAND snx-test-nvn-control)
 
+add_executable(snx-test-nvn-section nvn_section.c)
+snx_test_target(snx-test-nvn-section 99)
+target_include_directories(snx-test-nvn-section PRIVATE "${PROJECT_SOURCE_DIR}/src")
+add_test(NAME nvn_section COMMAND snx-test-nvn-section)
+
 # the shared fonts pl.c hands out when a game folder has none: the stand-ins compiled in (cmake/shared_fonts.cmake)
 if(NOT SNX_TOOLS_ONLY)
     add_executable(snx-test-pl-fonts pl_fonts.c "${PROJECT_SOURCE_DIR}/src/nx/hle/services/pl_font.c" "${PROJECT_BINARY_DIR}/generated/shared_fonts.c")

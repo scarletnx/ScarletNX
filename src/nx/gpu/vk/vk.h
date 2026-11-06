@@ -134,6 +134,14 @@ typedef struct {
     /* VK_EXT_provoking_vertex's provokingVertexLast: flat inputs take a primitive's last vertex, as the 3D engine's
        PROVOKING_VERTEX (0x5A1) can ask */
     int has_provoking_last;
+    /* VK_EXT_mesh_shader's meshShader (and taskShader for has_task), with a required subgroup size of 32 in full
+       subgroups for both stages: an Ounce's mesh draws (render.c). mesh_stages: the stage bits that the sets and the
+       push constants of the graphics pipelines' layouts add for them (VK_PUSH_STAGES), 0 without */
+    int has_mesh, has_task;
+    VkShaderStageFlags mesh_stages;
+    u32 mesh_groups_max; /* the most workgroups a mesh draw launches: maxTaskWorkGroupCount[0], with maxMesh...'s */
+    /* maxMeshOutputMemorySize and the granules that sm86_mesh_output_bytes counts vertices and primitives in */
+    u32 mesh_output_bytes_max, mesh_vertex_granule, mesh_primitive_granule;
     /* VK_EXT_conservative_rasterization: conservative rasterization (CONSERVATIVE_RASTER, 0x452), dilated by at most
        conservative_extra pixels (maxExtraPrimitiveOverestimationSize) */
     int has_conservative;
@@ -462,6 +470,7 @@ void rec_CmdBindPipeline(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline 
 void rec_CmdBindIndexBuffer(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off, VkIndexType type);
 void rec_CmdDraw(VkCommandBuffer cb, u32 count, u32 instances, u32 first, u32 first_instance);
 void rec_CmdDrawIndexed(VkCommandBuffer cb, u32 count, u32 instances, u32 first, i32 vertex_offset, u32 first_instance);
+void rec_CmdDrawMeshTasks(VkCommandBuffer cb, u32 groups); /* vkCmdDrawMeshTasksEXT(groups, 1, 1) */
 /* max draws of the arguments at buf + off, stride bytes apart (vkCmdDraw[Indexed]Indirect), or with count_buf, as
    many as the 32-bit count at count_buf + count_off says (their Count forms) */
 void rec_CmdDrawIndirect(VkCommandBuffer cb, int indexed, VkBuffer buf, VkDeviceSize off, VkBuffer count_buf,
@@ -1211,9 +1220,9 @@ typedef struct {
     VkBuffer buf;
     u64 off, range;
 } VkDrawGbuf;
-/* a draw's global memory, by the stage that reads it: vertex, the two tessellation stages, geometry, fragment (ST_VS
-   to ST_FS) */
-#define VK_DRAW_STAGES 5
+/* a draw's global memory, by the bindings of the stage that reads it (DsBindings'): vertex, the two tessellation
+   stages, geometry, fragment (ST_VS to ST_FS), then an Ounce's task and mesh stages (DS_TASK, DS_MESH) */
+#define VK_DRAW_STAGES DS_GFX_STAGES
 typedef struct {
     VkDrawGbuf b[VK_DRAW_STAGES][16];
     int n[VK_DRAW_STAGES];
@@ -1402,6 +1411,7 @@ typedef struct VkSh {
    (every layout has the same push constant range) */
 extern VkPipelineLayout g_vk_playout;
 VkPipelineLayout vk_playout(u32 arrays); /* arrays: a bit per set (shader_vk_set) that has them */
+VkShaderStageFlags vk_set_stages(int set); /* the stages that see descriptor set set (pipeline.c) */
 extern int g_vk_preserve_infnan;
 extern int g_vk_preserve_infnan64;
 extern int g_vk_flush_denorm;
@@ -1418,10 +1428,12 @@ extern VkDescriptorSetLayout g_vk_dslayout[2][5];
 extern u32 g_vk_stage_sets; /* sets in the pipeline layout: 5, or 2 without the tessellation and geometry stages */
 /* the stages that read the push constants: every graphics stage reads the viewport/depth parameters in pc[0..3]
    (the last one before rasterization applies them); fragment reads the alpha test in pc[4..6] and sprite T flip
-   in pc[7] */
+   in pc[7]. The task and mesh stages, where the device has them (g_vk.mesh_stages), read the first workgroup in
+   pc[0] and the depth fix in pc[1] */
 #define VK_PUSH_STAGES                                                                                                 \
     (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |                                           \
-     VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
+     VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |       \
+     g_vk.mesh_stages)
 void vk_pipeline_init(void);
 /* the shader at gva (after a VertexA program at gva_a, or 0). The masks key integer inputs: attributes for the
    vertex stage, textures and render target outputs for the fragment stage. dc_funcs and unfed, the fragment stage's,
@@ -1435,6 +1447,11 @@ void vk_pipeline_init(void);
 VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
                     u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
                     const u8* query_hint);
+/* An Ounce's task or mesh program at gva (stage ST_TS or ST_MS), with the fields of its key k: vk_shader_get with the
+   fields in the key's words, and the per-primitive SPH that k names read from the program's code area. A fragment
+   program drawn after a mesh program takes the generics that it writes per primitive (ShaderInfo.prim_mask) in the
+   clip word of its key */
+VkSh* vk_shader_mesh(const DsState* ds, u64 gva, int stage, const DsMeshKey* k);
 /* whether the constant buffer words s's translation read still hold in ds's bound buffers (vk_shader_get's check on
    a hit, for a caller that kept s) */
 int vk_shader_cb_hold(const DsState* ds, const VkSh* s);
@@ -1454,6 +1471,10 @@ typedef struct {
     VkShaderModule vs, fs;
     VkShaderModule tcs, tes, gs; /* tessellation control and evaluation, geometry: VK_NULL_HANDLE when off */
     u32 patch;                   /* control points of a patch, with tessellation */
+    /* bit 0: an Ounce's mesh pipeline. vs is its mesh shader and tcs its task shader (VK_NULL_HANDLE for none), and
+       it has no vertex input, input assembly or tessellation state (topo_class and vi stay 0). Bits 1 and 2 (PIPE_
+       MESH_WHOLE): the mesh and the task workgroup are whole subgroups, which the pipeline then requires */
+    u32 mesh;
     /* POINT_LIST, LINE_LIST, TRIANGLE_LIST, their adjacency forms or PATCH_LIST: the topology is dynamic within its
        class */
     u32 topo_class;
@@ -1481,6 +1502,7 @@ typedef struct {
 } PipeKey;
 /* the overestimation of conservative rasterization of a PipeKey.conservative, within the device's most (pipeline.c) */
 float vk_conservative_extra(u32 conservative);
+#define PIPE_MESH_WHOLE(stage) (2u << ((stage) == ST_TS)) /* PipeKey.mesh's bit of a whole stage's workgroup */
 /* the pipeline for k, made when new and waited for while a worker makes it: NULL only when it can't be made */
 VkPipeline vk_pipeline_get(const PipeKey* k);
 /* the threads making new pipelines: setting (pipeline_threads) when it is one or more, else a quarter of cpus, two
@@ -1644,6 +1666,7 @@ u32 vk_gbuf_desc(int stage, u32 off, const u32* v, u64* addr);
    accesses a barrier names see the writes before it */
 #define VK_STORAGE_IMAGE_ACCESS (VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)
 extern u64 g_vk_drawn, g_vk_skipped; /* draws recorded, and draws skipped (unsupported topology, failed shader) */
+extern u64 g_vk_mesh_draws, g_vk_mesh_drawn; /* of them, an Ounce's mesh draws, and those recorded */
 /* draws that kept the last draw's shaders and pipeline key, and those of them draw_state_check made again to compare */
 extern u64 g_vk_draw_kept, g_vk_draw_checked;
 /* draws, clears and the like that kept the last one's render targets, found again through the surface table before */

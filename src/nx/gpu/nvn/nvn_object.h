@@ -4,6 +4,7 @@
    and state objects, and their builders. What the command buffer and queue files share with it */
 #ifndef SNX_NVN_OBJECT_H
 #define SNX_NVN_OBJECT_H
+#include "nx/gpu/draw_state.h"
 #include "nx/gpu/nvn/nvn_obj.h"
 #include "nx/memory/mem.h"
 #include "nx/gpu/shader/shader.h"
@@ -20,6 +21,13 @@ typedef struct {
     u64 serial;
     NvnTessStage stage[2]; /* control, evaluation */
 } NvnTessEntry;
+/* an Ounce program's records that its object has no room for (nvn_obj.h's NVN_C0_RECORD): its compute program's c[0]
+   record, and its task and mesh programs' fields */
+typedef struct {
+    u64 serial;
+    u8 c0[NVN_C0_RECORD];
+    DsMeshKey mesh;
+} NvnOunceEntry;
 /* the file's state, g_nvn.object (gpu/nvn/nvn_state.h): the serials handed out, and nvnDeviceGetInteger's answers
    once read from the game's driver (driver: 1; read_api: its API version among them); the transform feedback layouts
    of the programs that capture, by serial, under their lock: programs that capture are few, and their entries stay */
@@ -36,6 +44,8 @@ typedef struct {
     u32 nxfb, xfb_capacity;
     NvnTessEntry* tess; /* immutable declarations, sorted by serial and copied out under xfb_lock */
     u32 ntess, tess_capacity;
+    NvnOunceEntry* ounce; /* immutable records, sorted by serial and copied out under xfb_lock */
+    u32 nounce, ounce_capacity;
 } NvnObjectState;
 
 /* an NVN object of type T at guest address a, in place in the game's memory */
@@ -61,6 +71,10 @@ void nvn_wait_end(void);
 /* the transform feedback layout of the program SetShaders gave serial, 0 when it captures nothing */
 int nvn_program_xfb(u64 serial, ShXfb* x);
 int nvn_program_tess(u64 serial, NvnTessStage stages[2]);
+/* the c[0] record of the Ounce compute program SetShaders gave serial (NVN_C0_RECORD), all 0 for another program */
+void nvn_program_c0(u64 serial, u8 c0[NVN_C0_RECORD]);
+/* the task and mesh programs' fields of the Ounce program SetShaders gave serial, all 0 for another program */
+DsMeshKey nvn_program_mesh(u64 serial);
 /* the game's driver resolved nvnDeviceGetInteger to func: its answers are read from its code (gpu/nvn/nvn_driver.c)
    before the game can ask */
 void nvn_device_driver(u64 func);
