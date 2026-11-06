@@ -1296,6 +1296,17 @@ typedef struct {
 typedef int (*VkCbReader)(u32 idx, u32 off, u32* out);
 u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, size_t* words, VkCbReader read,
                         VkCbReads* reads);
+/* A compute pipeline kept across runs in the pipeline file (pipeline_file.h's PF_CSPIPE). vk_pf_cspipe (pipeline.c):
+   one made this run, of key, launch (the block's threads x y z, its shared memory bytes, then the program's address
+   less 80, which a program of absolute branches is translated at: CsPipe's flow_base), the reads cbr its
+   translation made, nkey bytes of compute.c's variant key and ncode bytes of its program window. vk_cs_pipe_load
+   (compute.c), on the file's reading thread: one of an earlier run translated again with its reads and made, then put
+   where the dispatches find it; with record, kept in the file again too (a file of another build being rebuilt). 1
+   when it was made */
+void vk_pf_cspipe(u64 key, const u32 launch[5], const VkCbReads* cbr, const void* vkey, u32 nkey, const u8* code,
+                  u32 ncode);
+int vk_cs_pipe_load(const u32 launch[5], const u32* cbr, u32 ncbr, const u8* vkey, u32 nkey, const u8* code, u32 ncode,
+                    int record);
 /* why the device can't take the module: a capability it declares (Float64, Int64) whose feature is off, or NULL */
 const char* vk_spirv_unavailable(const u32* spv, size_t words);
 u64 vk_shader_hash(const u8* code, u32 max_bytes, u32* out_len, VkCbReader read); /* BRX tables through read */
