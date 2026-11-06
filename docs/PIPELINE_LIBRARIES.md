@@ -27,6 +27,8 @@ programs that a game ships (step 8) is not.
 * [Without the extension](#without-the-extension)
 * [Measurement](#measurement)
   * [Results](#results)
+  * [The bound of optimizing workers, measured](#the-bound-of-optimizing-workers-measured)
+  * [The warm-up of the shipped programs, measured](#the-warm-up-of-the-shipped-programs-measured)
 * [Commits](#commits)
 * [Rejected alternatives](#rejected-alternatives)
 * [What comes from vkd3d-proton](#what-comes-from-vkd3d-proton)
@@ -457,6 +459,35 @@ the numbers show the mechanism, not a mean.
   VUID-RuntimeSpirv-OpEntryPoint-08743 at a link (see the open questions).
 - **GPU frame time**: not measured. The Tracy tools here do not read the GPU zones.
 
+### The bound of optimizing workers, measured
+
+The menus with cold pipeline caches (`vk_pipeline_cache=0`, NVIDIA's disk cache off), one run each of 200 s:
+
+| Optimized pipelines | Frames | Frames over 1 s | The draws' new pipelines' waits for a worker |
+| --- | --- | --- | --- |
+| none | 760 | 12 | 385 pipelines, 32.6 s in all, the longest 933 ms |
+| one worker at most | 755 | 12 | 356 pipelines, 40.4 s in all, the longest 911 ms |
+| no bound (six workers) | 529 | 27 | the run ended before its stats line |
+
+With one optimizing worker the cold run behaves like a run with no optimized pipelines. With no bound the game made
+fewer frames and more than twice as many frames over 1 s. The runs take different paths through the menus, so
+these are single runs, not means. The renderer now uses one worker at most (`PIPE_OPT_WORKERS`).
+
+### The warm-up of the shipped programs, measured
+
+- A cache hit of a pre-rasterization part of a 1.7 MB vertex program took 54 to 136 ms (6 hits).
+- A part with no cache entry took 164 ms on average before rasterization (313 parts, 51.5 s) and 128 ms for the
+  fragment stage (379 parts, 48.4 s). The large vertex programs took 3.4 to 4.2 s each.
+- The pipeline cache of a cold run with only parts (no optimized pipelines) held 38.1 MB for 746 parts: about 51 KB
+  for each part.
+- The shared `vk_pipelines.bin` of this game is already 716 MB, and every start reads all of it.
+
+So the warm-up of all 7,403 shipped programs would cost about 18 minutes of worker time in a first run and add about
+380 MB to `vk_pipelines.bin`, for programs that a session mostly does not use (540 of 7,403 in these menus). The
+numbers do not allow it. A warm-up of the large programs only (the few of hundreds of KB of SPIR-V, whose parts take
+seconds) would cost little, and it is the next step: make their pre-rasterization parts from the shipped modules on
+the lowest queue, and keep them in the table of parts, so that a draw links them at once.
+
 ## Commits
 
 What landed, in order. Each commit ran the full ctest. The commits that change a pipeline or a layout also ran the
@@ -473,9 +504,14 @@ menus of an Ounce game under `--vk_validation=1` against the same run on feat/ou
 4. **`[gpu] Link new pipelines from libraries and optimize them in the background`**: the layouts with independent
    sets, the part table, the fast link, the optimized pipeline on a third queue and the swap (steps 2, 5 and 6). The
    pipeline file needed no change for step 7: its pipelines take the same path, so their parts are made at startup.
-5. Not done: step 8, the warm-up of the parts of the programs that a game ships. It makes thousands of parts into
-   `vk_pipelines.bin`, and the size of that file and the time of the warm-up must be measured first (see the open
-   questions).
+5. **`[gpu] Keep the fast link of a pipeline for the run`**: the first version freed a link once its optimized
+   pipeline was there. The driver gave the freed handle to the next pipeline, while `render.c` kept it (`g_draw`), and
+   the headless watch of vertex layouts failed one run in three. The watch now fails on any destroyed graphics
+   pipeline and on any handle given again.
+6. **`[gpu] Let one worker at most make optimized pipelines`**: the bound `PIPE_OPT_WORKERS`, the stats of the draws'
+   waits for a worker, and the setting `vk_pipeline_cache` for cold runs.
+7. Not done: step 8, the warm-up of the parts of the programs that a game ships. See
+   [The warm-up of the shipped programs](#the-warm-up-of-the-shipped-programs-measured).
 
 ## Rejected alternatives
 
@@ -542,14 +578,12 @@ licenses that the project can port (CLAUDE.md).
   GPL on and off over a long run.
 - **Robustness on parts**: check under the layer that `VkPipelineRobustnessCreateInfoEXT` on each part and on the link
   is valid, and that vertex fetch stays robust on the fast link.
-- **VUID-RuntimeSpirv-OpEntryPoint-08743 at a link**: with the libraries on, the layer reports two times that a
-  fragment input at location 4 has no vertex output. The same build with `pipeline_libraries=0` and feat/ounce report
-  none on the same menus, with the same modules. Check if the pre-rasterization part of that link has a geometry or
-  tessellation stage: if it does, the layer takes the vertex stage as the last one before the fragment stage of a
-  library. Log the stages of the link that the message names, and read the two interfaces with `spirv-dis`.
-- **The optimized pipeline compiles the large programs again**: LTO costs a full compile of each pipeline in the
-  background (4 to 5 s for each pipeline of a 1.7 MB vertex program). The workers then have less time for the
-  parts of new shaders. A queue that makes the optimized pipelines only for pipelines that draw often can cut that.
+- **VUID-RuntimeSpirv-OpEntryPoint-08743 at a link**: one run under the layer reported two times that a fragment
+  input at location 4 has no vertex output. Two more runs under the layer, one of them with cold caches, did not
+  report it. A debug build of the second logged the modules of each of its 437 links and wrote out their SPIR-V: no
+  fragment input of any of them lacks an output of the vertex stage, and no pipeline of these menus has a geometry or
+  tessellation stage. The message names no handles, so its link is not known. To find it, run under the layer with a
+  break on that VUID and read the two modules of the link on the stack.
 
 ## Risks
 
