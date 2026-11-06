@@ -204,7 +204,7 @@ static int tex_partial(const TpCase* c, u32 index) {
     x.layers = c->pitch ? 1 : TP_LAYERS;
     x.tex.d.target = c->pitch ? NVN_TEXTURE_TARGET_2D : NVN_TEXTURE_TARGET_2D_ARRAY;
     x.tex.d.format = (u16)c->format;
-    x.tex.d.levels = (u8)(c->pitch ? 1 : 32u - (u32)__builtin_clz(big)); /* down to 1x1 */
+    x.tex.d.levels = (u8)(c->pitch ? 1 : 32u - snx_clz32(big)); /* down to 1x1 */
     x.tex.d.width = c->w;
     x.tex.d.height = c->h;
     x.tex.d.depth = x.layers;
