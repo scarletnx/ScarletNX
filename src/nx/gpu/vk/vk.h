@@ -1122,6 +1122,9 @@ void vk_buf_mem_need(u64 gva, u64 len);
    (their ranges are copied again when next read). Returns the bytes */
 u64 vk_buf_reclaim(u32 before, u64 want);
 void vk_buf_stats(u32* count, u64* bytes);
+/* guest memory checked by its contents so far: compared with a pending result's original bytes, hashed whole, and
+   sampled (tests count them: write tracking's answers stand in for them) */
+void vk_buf_checks(u64* compares, u64* hashes, u64* samples);
 int vk_buf_pending(u64 gva, u64 len); /* a pending graphics result overlaps the range */
 /* GPU-owned bytes are on the range's pages (memory/own.c): reading them on the CPU lands them, a wait for the GPU */
 int vk_buf_owned(u64 gva, u64 len);
