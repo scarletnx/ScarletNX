@@ -28,14 +28,25 @@ typedef struct {
     void* arg;
 } Dead;
 
-/* A per-frame ring of one mapped buffer, reused once the frame's previous work is done. */
+/* What the rings handed out, by ring and by where its memory is, for vk_buffer_stats: a byte in host memory the GPU
+   reads or writes crosses PCIe, once for each time it does. The first four are a frame's rings (Frame.ring) */
+enum { XFER_HOST, XFER_MAPPED, XFER_DEVICE, XFER_N };
+enum {
+    XRING_STAGE,    /* streamed buffer snapshots, written by the CPU and read by the GPU (vk_stage_upload) */
+    XRING_OUTPUT,   /* uploads, draw data and GPU-written storage, near the GPU when its budget allows (vk_stage) */
+    XRING_BACK,     /* storage results the GPU copies back for the CPU to read (vk_stage_back) */
+    XRING_DEVICE,   /* made and read by the GPU alone, in device memory (vk_stage_device) */
+    XRING_READBACK, /* vk_readback_buffer's, no frame's */
+    XRING_N
+};
+#define FRAME_RINGS XRING_READBACK
+
+/* A frame's ring hands out the chunk it holds (g_cmd) and takes another from the pool when that one is full; all of
+   them go back with the frame slot, once its work is done */
 typedef struct {
-    VkBuffer buf;
-    VmaAllocation mem;
-    u8* ptr;
-    u64 cap, used;
-    u32 small; /* frames in a row that used a quarter of it or less */
-    u32 in;    /* where its memory is: an XFER_ index */
+    u32 cur;  /* the chunk it hands out of: its index in g_cmd.chunk, plus one; 0 for none */
+    u32 n;    /* chunks it took in this use of the frame */
+    u64 used; /* bytes of cur handed out */
 } Ring;
 
 #define SPARE_SETS 32
@@ -50,17 +61,12 @@ typedef struct {
     u64 last;             /* the timeline value of the frame's last submission, 0 when it has none */
     u64 hold;             /* the next frame's submission that reads buffers in this one's rings (vk_frame_hold), or 0 */
     int recording, fresh; /* fresh: just ended up current, not yet reset for its new use */
-    Ring stage;           /* uploads and draw data, written by the CPU and read by the GPU */
-    Ring output;          /* GPU-written storage and draw state, near the GPU when its budget allows */
-    Ring back;            /* storage results copied back by the GPU for the CPU to read (vk_stage_back) */
-    Ring dev;             /* made and read by the GPU alone, in device memory (vk_stage_device) */
-    Ring* stage_spare; /* full-size overflow blocks, owned by this frame slot */
-    u32 nstage, capstage, istage;
+    Ring ring[FRAME_RINGS]; /* by XRING_ index */
+    u64 filled;             /* bytes of the chunks its rings filled in this use, and of its big buffers */
     /* destroyed once this frame's work is done */
     Dead* dead;
     int ndead, capdead;
     u64 dead_bytes; /* device memory evicted cache entries among them release (vk_defer_bytes) */
-    u64 outgrown;   /* bytes of the rings this use of the frame outgrew, among its dead */
     /* descriptor pools, reset when the frame is reused and kept */
     VkDescriptorPool pool_d[64];
     int npool, ipool; /* pool_d[ipool] is the one allocating; the ones after it are reset and waiting */
@@ -72,6 +78,34 @@ typedef struct {
         u32 n;
     } spare[SPARE_LAYOUTS];
 } Frame;
+
+/* The rings' memory: chunks of one size, made as the rings need them and pooled, by ring, between the frame slots. A
+   request bigger than a chunk gets a buffer of its own, of the chunk size doubled until it fits (its size class), pooled
+   apart. A slot's chunks and big buffers go back to the pool once its work is done (frame_recycle), and the pool keeps
+   as many of each as the most any of the last VK_POOL_FRAMES frames took (a chunk at least): a steady stream reuses
+   them, a copy of the same big size every frame takes its buffer back, and a burst's go a few frames after it, where a
+   ring that doubled up to the allocation limit stayed there for 300 frames */
+typedef struct {
+    VkBuffer buf; /* VK_NULL_HANDLE: an entry no buffer holds */
+    VmaAllocation mem;
+    u8* ptr;    /* where the CPU maps it, NULL in device memory */
+    u64 size;   /* the chunk size it was made at (chunk_size), or a big buffer's size class (big_size) */
+    u64 freed;  /* the frame it went back to the pool at */
+    u32 ring;   /* the ring it serves: an XRING_ index */
+    u32 in;     /* where its memory is: an XFER_ index */
+    u32 slot;   /* the frame slot it is handed out to, plus one; 0 while in the pool */
+    u32 flush;  /* written by the CPU and not flushed since (flushed at the next submit) */
+    u32 big;    /* a buffer for a request bigger than a chunk */
+} Chunk;
+static struct {
+    Chunk* chunk;
+    u32 nchunk, capchunk;
+    u32 unflushed;                         /* chunks with flush set */
+    u32 took[VK_POOL_FRAMES][FRAME_RINGS][2]; /* chunks ([0]) and big buffers the last frames took, by ring: [itook]
+                                                 the one being recorded */
+    u32 itook;
+    u64 made; /* chunks and big buffers made since the start (statistics, tests) */
+} g_cmd;
 
 static Frame g_fr[VK_FRAMES];
 static u64 g_dead_bytes; /* every frame's dead_bytes */
@@ -181,10 +215,11 @@ void vk_cmd_init(void) {
     vk_rec_init();
 }
 
+/* a ring's chunk, and the readback buffer's smallest size */
 #define STAGE_MIN (16ull << 20)
+static u64 chunk_size(void) { return g_vk.alloc_cap < STAGE_MIN ? g_vk.alloc_cap : STAGE_MIN; }
+u64 vk_stage_chunk(void) { return chunk_size(); }
 
-/* a ring grown for a burst goes once it has been mostly unused for a while (the frame's work is done, nothing reads
-   it); the next allocation makes one of the usual size */
 /* GPU-written storage goes in device-local memory the CPU maps when there is room for it, else in host memory. Without
    resizable BAR that memory is a window of its own heap, 246 MiB on an RTX 2080, which the whole desktop shares, and
    past its room the driver moves the memory: every CPU write to it then faulted in the kernel, and one game crawled at
@@ -198,18 +233,19 @@ void vk_cmd_init(void) {
    time, and each frame's ring was freed at its reuse and made again in the window: a 16 MiB vkAllocateMemory and
    vkFreeMemory every frame, about a millisecond (a menu at 760 frames a second ran at 3200 without it). VMA
    (3.4) checks VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT only when it makes a block, and a ring of over half a block (an
-   eighth of a small heap) gets memory of its own, so the rings didn't move out either. A ring is made there with room
-   for it and a sixteenth of the heap to spare, for the desktop, and stays while the heap is within its budget. Where
-   that memory is in the heap the caches use (resizable BAR, a GPU sharing system memory), the caches keep the heap
-   within its budget, counting the rings, and a ring goes there while the heap's use stays within it.
+   eighth of a small heap) gets memory of its own, so the rings didn't move out either. A ring's chunk is made there
+   with room for it and a sixteenth of the heap to spare, for the desktop, and stays while the heap is within its
+   budget. Where that memory is in the heap the caches use (resizable BAR, a GPU sharing system memory), the caches keep
+   the heap within its budget, counting the rings, and a chunk goes there while the heap's use stays within it.
 
-   A window of its own is also no more than this process's share of it: a ring there is at most BAR_RING_MAX, and
-   this process's memory in the window at most a quarter of it. Within the budget, NVIDIA's driver (615.78, open
+   A window of its own is also no more than this process's share of it: a frame's ring takes at most BAR_RING_MAX of
+   it, and this process's memory in the window is at most a quarter of it. Within the budget, NVIDIA's driver (615.78, open
    module) still failed to map a 64 MiB ring with 86 MiB budgeted ("NVRM: dmaAllocMapping_GM107: can't alloc VA space
    for mapping" in the kernel's log) and reported success: CPU writes to it then ran at 18 MB/s, against 5 GB/s, and
    every frame of that slot took half a second, in two games, in most runs, at a time that changed from run to run. No
    16 or 32 MiB ring failed. The budget can't see what the desktop and the driver itself keep mapped there, so the
-   window is used as a small fast path, as other Vulkan translation layers do, and bigger rings go to host memory */
+   window is used as a small fast path, as other Vulkan translation layers do, and the rest of a bigger ring goes to
+   host memory */
 #define BAR_RING_MAX (32ull << 20)
 static int g_bar_heap = -2; /* the heap of the device-local memory the CPU maps, -1 without one; -2 not looked for */
 static int bar_heap(void) {
@@ -242,26 +278,6 @@ static int bar_room(const VmaBudget* b, u64 add, int back) {
     if (whole) use = 0;                                                           /* the budget is what is left */
     return budget >= use + (add ? add + size / 16 : 0);
 }
-/* Whether the staging ring's memory should move, while it is idle: it is in that heap, which has no room for it
-   anymore, or in host memory while that heap has room for it again. A ring dropped here is made again where
-   ring_alloc finds room */
-static int ring_misplaced(const Ring* r, const VmaBudget* b) {
-    const VkPhysicalDeviceMemoryProperties* mp;
-    VmaAllocationInfo ai;
-    vmaGetAllocationInfo(g_vk.vma, r->mem, &ai);
-    vmaGetMemoryProperties(g_vk.vma, &mp);
-    if ((int)mp->memoryTypes[ai.memoryType].heapIndex == bar_heap()) return !bar_room(b, 0, 0);
-    return bar_room(b, r->cap, 1);
-}
-static void ring_reset(Ring* r, const VmaBudget* budget) {
-    r->small = r->cap > STAGE_MIN && r->used <= r->cap / 4 ? r->small + 1 : 0;
-    if (r->small >= 300 || (budget && r->buf && ring_misplaced(r, budget))) {
-        vk_mem_untrack(r->mem);
-        vmaDestroyBuffer(g_vk.vma, r->buf, r->mem);
-        *r = (Ring){0};
-    }
-    r->used = 0;
-}
 
 u64 g_vk_wait_ns[VK_WAIT_N], g_vk_waits[VK_WAIT_N]; /* the GPU thread's alone, which writes them */
 /* kind: VK_WAIT_*, for the statistics */
@@ -291,6 +307,7 @@ static void land_through(u64 value) {
     }
 }
 
+static void pool_recycle(Frame* f);
 /* the frame's previous use is done, its results landed and what it held freed, before it records again */
 static void frame_recycle(Frame* f) {
     u64 done = f->last > f->hold ? f->last : f->hold;
@@ -305,23 +322,13 @@ static void frame_recycle(Frame* f) {
     dead_free(f);
     g_dead_bytes -= f->dead_bytes;
     f->dead_bytes = 0;
-    f->outgrown = 0;
     vkResetCommandPool(g_vk.dev, f->pool, 0);
     /* the pools stay, reset: a frame's draws fill several, and making them again every frame costs */
     for (int i = 0; i < f->npool; i++) vkResetDescriptorPool(g_vk.dev, f->pool_d[i], 0);
     f->ipool = 0;
     memset(f->spare, 0, sizeof f->spare);
-    {
-        VmaBudget budget[VK_MAX_MEMORY_HEAPS];
-        vmaSetCurrentFrameIndex(g_vk.vma, (u32)g_frame_id); /* VMA asks the driver for its budgets again */
-        vmaGetHeapBudgets(g_vk.vma, budget);
-        ring_reset(&f->stage, NULL);
-        ring_reset(&f->output, budget);
-        for (u32 i = 0; i < f->nstage; i++) ring_reset(&f->stage_spare[i], NULL);
-        f->istage = 0;
-    }
-    ring_reset(&f->back, NULL);
-    ring_reset(&f->dev, NULL);
+    vmaSetCurrentFrameIndex(g_vk.vma, (u32)g_frame_id); /* VMA asks the driver for its budgets again */
+    pool_recycle(f);
     vk_descriptors_reset((u32)(f - g_fr));
     vk_rec_frame_reset((u32)(f - g_fr)); /* the slot's sets made on the recording thread too */
     f->icb = 0;
@@ -354,40 +361,7 @@ VkCommandBuffer vk_cmd(void) {
     return f->cbs[f->icb];
 }
 
-/* A full block at the allocation limit is needed again by the next use of this
- * frame slot. Keep it until that use has passed the slot's completion wait. */
-static int stage_rotate(Frame* f)
-{
-	Ring previous;
-
-	if (f->istage == f->nstage) {
-		if (f->nstage == f->capstage) {
-			u32 cap = f->capstage ? f->capstage * 2 : 4;
-			Ring* spare;
-
-			if (cap < f->capstage || (u64)cap > SIZE_MAX / sizeof *spare)
-				return 0;
-			spare = realloc(f->stage_spare, cap * sizeof *spare);
-			if (!spare)
-				return 0;
-			f->stage_spare = spare;
-			f->capstage = cap;
-		}
-		f->stage_spare[f->nstage++] = (Ring){0};
-	}
-	previous = f->stage;
-	f->stage = f->stage_spare[f->istage];
-	f->stage_spare[f->istage++] = previous;
-	return 1;
-}
-
-/* Where a ring's memory is: host memory, device-local memory the CPU maps when that has room (bar_room) and host
-   memory otherwise, or device memory the CPU doesn't map */
-enum { RING_HOST, RING_BAR, RING_DEVICE };
-/* What the rings handed out, by ring and by where its memory is, for vk_buffer_stats: a byte in host memory the GPU
-   reads or writes crosses PCIe, once for each time it does */
-enum { XFER_HOST, XFER_MAPPED, XFER_DEVICE, XFER_N };
-enum { XRING_STAGE, XRING_OUTPUT, XRING_BACK, XRING_DEVICE, XRING_READBACK, XRING_N };
+/* What the rings handed out, by ring and by where its memory is (above), for vk_buffer_stats */
 static u64 g_xfer[XRING_N][XFER_N];
 static u32 xfer_where(const VmaAllocationInfo* info) {
     const VkPhysicalDeviceMemoryProperties* mp;
@@ -407,69 +381,198 @@ void vk_stage_report(void) {
                        (unsigned long long)(g_xfer[r][XFER_HOST] >> 20),
                        (unsigned long long)(g_xfer[r][XFER_MAPPED] >> 20),
                        (unsigned long long)(g_xfer[r][XFER_DEVICE] >> 20));
-    LOG("vulkan: ring MB over 600 presents (in host/mapped device/device memory):%s\n", line);
+    LOG("vulkan: ring MB over 600 presents (in host/mapped device/device memory):%s; the rings hold %llu MiB, %llu "
+        "buffers made for them in all\n",
+        line, (unsigned long long)(vk_ring_bytes() >> 20), (unsigned long long)g_cmd.made);
     memset(g_xfer, 0, sizeof g_xfer);
 }
-/* size bytes of the ring at *off of *buf: 0 when none could be made. The mapped rings' bytes are at r->ptr + *off */
-static int ring_take(Frame* f, Ring* r, u64 size, u64 align, VkBufferUsageFlags usage, VmaAllocationCreateFlags flags,
-                     int where, VkBuffer* buf, u64* off, VmaAllocation* mem) {
-    if (align < 16) align = 16;
-    u64 at = (r->used + align - 1) & ~(align - 1);
-    if (size > g_vk.alloc_cap) return 0; /* no allocation is bigger (memory.c) */
-    if (r == &f->stage && r->buf && at + size > r->cap && r->cap == g_vk.alloc_cap) {
-        vmaFlushAllocation(g_vk.vma, r->mem, 0, VK_WHOLE_SIZE);
-        if (stage_rotate(f)) at = 0;
+
+/* a new buffer of size bytes for ring, handed out to slot (a frame slot plus one): in device memory the CPU maps when
+   bar, else in host memory (the device ring's in device memory). Its entry's index plus one, 0 when none was made */
+static u32 chunk_new(u32 ring, u64 size, int bar, u32 slot) {
+    VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                              .size = size,
+                              .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                                       VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                       VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
+                                       VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                                       (g_vk.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0),
+                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    VmaAllocationCreateInfo aci = {.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                                            VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                                   .usage = bar ? VMA_MEMORY_USAGE_AUTO : VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
+    VmaAllocationInfo info;
+    VkBuffer buf;
+    VmaAllocation mem;
+    u32 i = 0;
+    if (ring == XRING_BACK) { /* storage: render targets are swizzled into it (vk/blocklinear.c) */
+        bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    } else if (ring == XRING_DEVICE)
+        aci = (VmaAllocationCreateInfo){.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    while (i < g_cmd.nchunk && g_cmd.chunk[i].buf) i++;
+    if (i == g_cmd.capchunk) {
+        u32 cap = g_cmd.capchunk ? g_cmd.capchunk * 2 : 32;
+        Chunk* grown = cap > g_cmd.capchunk && (u64)cap <= SIZE_MAX / sizeof(Chunk)
+                           ? realloc(g_cmd.chunk, cap * sizeof(Chunk))
+                           : NULL;
+        if (!grown) fatal("vulkan: out of memory for the list of %u ring buffers", cap);
+        g_cmd.chunk = grown;
+        g_cmd.capchunk = cap;
     }
-    if (!r->buf || at + size > r->cap) {
-        /* a bigger buffer; the old one stays alive until this frame's work is done */
-        if (r->buf) {
-            /* The submit only flushes the current staging ring. Flush a retired one too: earlier copies and ASTC
-               dispatches still read its host writes (the readback ring has none) */
-            if (r == &f->stage || r == &f->output) vmaFlushAllocation(g_vk.vma, r->mem, 0, VK_WHOLE_SIZE);
-            dead_push(f, (Dead){.buf = r->buf, .mem = r->mem});
-            f->outgrown += r->cap;
-        }
-        u64 cap = r->cap ? r->cap * 2 : STAGE_MIN;
-        if (r == &f->stage && f->istage) cap = g_vk.alloc_cap;
-        while (cap < size) cap *= 2;
-        /* at the cap a full ring is followed by another of the same size: a frame's big uploads take several */
-        if (cap > g_vk.alloc_cap) cap = g_vk.alloc_cap;
-        VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                                  .size = cap,
-                                  .usage = usage,
-                                  .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-        VmaAllocationCreateInfo aci = {.flags = flags | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                                       .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
-        VmaAllocationInfo info;
-        if (where == RING_DEVICE)
-            aci = (VmaAllocationCreateInfo){.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-        else if (where == RING_BAR) {
-            VmaBudget budget[VK_MAX_MEMORY_HEAPS];
-            vmaGetHeapBudgets(g_vk.vma, budget);
-            if (bar_room(budget, cap, 0)) aci.usage = VMA_MEMORY_USAGE_AUTO;
-        }
-        if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &r->buf, &r->mem, &info))) {
-            r->buf = VK_NULL_HANDLE;
-            r->cap = 0;
-            return 0;
-        }
-        vk_mem_track(r->mem);
-        r->ptr = info.pMappedData;
-        r->cap = cap;
-        r->in = xfer_where(&info);
-        at = 0;
-    }
-    g_xfer[r == &f->back ? XRING_BACK : r == &f->dev ? XRING_DEVICE : r == &f->output ? XRING_OUTPUT : XRING_STAGE]
-          [r->in] += size;
-    r->used = at + size;
-    *buf = r->buf;
-    *off = at;
-    if (mem) *mem = r->mem;
-    return 1;
+    if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &buf, &mem, &info))) return 0;
+    vk_mem_track(mem);
+    if (i == g_cmd.nchunk) g_cmd.nchunk++;
+    g_cmd.chunk[i] = (Chunk){.buf = buf,
+                             .mem = mem,
+                             .ptr = info.pMappedData,
+                             .size = size,
+                             .ring = ring,
+                             .in = xfer_where(&info),
+                             .slot = slot};
+    g_cmd.made++;
+    return i + 1;
 }
-static u8* ring_alloc(Frame* f, Ring* r, u64 size, u64 align, VkBufferUsageFlags usage, VmaAllocationCreateFlags flags,
-                      int where, VkBuffer* buf, u64* off, VmaAllocation* mem) {
-    return ring_take(f, r, size, align, usage, flags, where, buf, off, mem) ? r->ptr + *off : NULL;
+static void chunk_destroy(Chunk* c) {
+    if (c->flush) g_cmd.unflushed--;
+    vk_mem_untrack(c->mem);
+    vmaDestroyBuffer(g_vk.vma, c->buf, c->mem);
+    *c = (Chunk){0};
+}
+/* host writes to a chunk of the staging or output ring, made visible to the GPU at the next submit */
+static void chunk_written(Chunk* c) {
+    if ((c->ring == XRING_STAGE || c->ring == XRING_OUTPUT) && !c->flush) {
+        c->flush = 1;
+        g_cmd.unflushed++;
+    }
+}
+/* the size class of a buffer for a request of size bytes, bigger than a chunk: the chunk size doubled until it fits, at
+   most an allocation */
+static u64 big_size(u64 size) {
+    u64 s = chunk_size();
+    while (s < size) s *= 2;
+    return s < g_vk.alloc_cap ? s : g_vk.alloc_cap;
+}
+/* A chunk of size bytes for ring, or a big buffer of that size class (big), handed out to slot (a frame slot plus
+   one): the one of the pool given back last that suits, else a new one. bar: the output ring's first BAR_RING_MAX of
+   a frame, in device memory the CPU maps when it has room (bar_room): one there, or a new one there, else one in host
+   memory, which a new one there replaces only below the room a ring coming back from host memory needs. 0 when none
+   could be made */
+static u32 chunk_take(u32 ring, u64 size, int big, int bar, u32 slot) {
+    u32 near = 0, far = 0; /* the chunks of the pool in the memory wanted, and in the other memory */
+    for (u32 i = 0; i < g_cmd.nchunk; i++) {
+        const Chunk* c = &g_cmd.chunk[i];
+        u32* pick;
+        if (!c->buf || c->slot || c->ring != ring || c->size != size || (int)c->big != big) continue;
+        pick = ring != XRING_OUTPUT || (c->in == XFER_MAPPED) == bar ? &near : &far;
+        if (!*pick || c->freed >= g_cmd.chunk[*pick - 1].freed) *pick = i + 1;
+    }
+    if (!near && bar) {
+        VmaBudget budget[VK_MAX_MEMORY_HEAPS];
+        vmaGetHeapBudgets(g_vk.vma, budget);
+        if (!bar_room(budget, size, far != 0)) {
+            near = far;
+            bar = 0;
+        }
+    }
+    if (!near) {
+        if ((near = chunk_new(ring, size, bar, slot))) g_cmd.chunk[near - 1].big = (u32)big;
+        return near;
+    }
+    g_cmd.chunk[near - 1].slot = slot;
+    return near;
+}
+/* The slot's chunks and big buffers back to the pool, once its work is done; the pool then keeps no more of a ring's
+   chunks, and of its big buffers, than the most a frame of the last VK_POOL_FRAMES took (a chunk at least, as a ring
+   kept its smallest size), the longest unused going first. A chunk of the window whose heap has no room for it anymore
+   goes too: the next frame that wants one there makes it again where chunk_take finds room */
+static void pool_recycle(Frame* f) {
+    u32 slot = (u32)(f - g_fr) + 1, keep[FRAME_RINGS][2], pooled[FRAME_RINGS][2] = {{0}};
+    u64 size = chunk_size();
+    VmaBudget budget[VK_MAX_MEMORY_HEAPS];
+    vmaGetHeapBudgets(g_vk.vma, budget);
+    for (u32 r = 0; r < FRAME_RINGS; r++)
+        for (u32 big = 0; big < 2; big++) {
+            keep[r][big] = !big;
+            for (u32 k = 0; k < VK_POOL_FRAMES; k++)
+                if (g_cmd.took[k][r][big] > keep[r][big]) keep[r][big] = g_cmd.took[k][r][big];
+        }
+    g_cmd.itook = (g_cmd.itook + 1) % VK_POOL_FRAMES;
+    memset(g_cmd.took[g_cmd.itook], 0, sizeof g_cmd.took[g_cmd.itook]);
+    for (u32 i = 0; i < g_cmd.nchunk; i++) {
+        Chunk* c = &g_cmd.chunk[i];
+        if (!c->buf || (c->slot && c->slot != slot)) continue;
+        if ((!c->big && c->size != size) ||
+            (c->ring == XRING_OUTPUT && c->in == XFER_MAPPED && !bar_room(budget, 0, 0)))
+            chunk_destroy(c);
+        else {
+            if (c->slot) c->freed = g_frame_id;
+            c->slot = 0;
+            pooled[c->ring][c->big]++;
+        }
+    }
+    for (u32 r = 0; r < FRAME_RINGS; r++)
+        for (u32 big = 0; big < 2; big++)
+            for (; pooled[r][big] > keep[r][big]; pooled[r][big]--) {
+                u32 oldest = 0;
+                for (u32 i = 0; i < g_cmd.nchunk; i++) {
+                    const Chunk* c = &g_cmd.chunk[i];
+                    if (c->buf && !c->slot && c->ring == r && c->big == big &&
+                        (!oldest || c->freed < g_cmd.chunk[oldest - 1].freed))
+                        oldest = i + 1;
+                }
+                chunk_destroy(&g_cmd.chunk[oldest - 1]);
+            }
+    memset(f->ring, 0, sizeof f->ring);
+    f->filled = 0;
+}
+
+/* size bytes of the frame's ring at *off of *buf, the chunk's memory in *mem: the chunk, NULL when none could be had.
+   A request no bigger than a chunk is handed out of the ring's chunk, or of the next one when that is full; a bigger
+   one gets a big buffer of its own */
+static const Chunk* ring_take(Frame* f, u32 ring, u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocation* mem) {
+    Ring* r = &f->ring[ring];
+    u32 slot = (u32)(f - g_fr) + 1;
+    Chunk* c;
+    u64 at;
+    if (align < 16) align = 16;
+    if (size > g_vk.alloc_cap) return NULL; /* no allocation is bigger (memory.c) */
+    if (size > chunk_size()) {              /* in host memory, past the window's share (BAR_RING_MAX) */
+        u32 big = chunk_take(ring, big_size(size), 1, 0, slot);
+        if (!big) return NULL;
+        g_cmd.took[g_cmd.itook][ring][1]++;
+        c = &g_cmd.chunk[big - 1];
+        chunk_written(c);
+        f->filled += c->size;
+        at = 0;
+    } else {
+        at = (r->used + align - 1) & ~(align - 1);
+        if (!r->cur || at + size > g_cmd.chunk[r->cur - 1].size) {
+            if (r->cur) { /* full: what was written to it is flushed with the next submit */
+                chunk_written(&g_cmd.chunk[r->cur - 1]);
+                f->filled += g_cmd.chunk[r->cur - 1].size;
+            }
+            r->used = 0;
+            r->cur = chunk_take(ring, chunk_size(), 0,
+                                ring == XRING_OUTPUT && (r->n + 1) * chunk_size() <= BAR_RING_MAX, slot);
+            if (!r->cur) return NULL;
+            r->n++;
+            g_cmd.took[g_cmd.itook][ring][0]++;
+            at = 0;
+        }
+        c = &g_cmd.chunk[r->cur - 1];
+        r->used = at + size;
+    }
+    g_xfer[ring][c->in] += size;
+    *buf = c->buf;
+    *off = at;
+    if (mem) *mem = c->mem;
+    return c;
+}
+static u8* ring_alloc(Frame* f, u32 ring, u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocation* mem) {
+    const Chunk* c = ring_take(f, ring, size, align, buf, off, mem);
+    return c ? c->ptr + *off : NULL;
 }
 
 static u8* stage_alloc(u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocation* mem, int output)
@@ -478,13 +581,7 @@ static u8* stage_alloc(u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocati
 
 	vk_cmd(); /* completion of the slot's previous use precedes any reuse */
 	f = &g_fr[g_cur];
-	return ring_alloc(f, output ? &f->output : &f->stage, size, align,
-		VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-		VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-		VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-		VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
-		VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | (g_vk.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0),
-		VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, output ? RING_BAR : RING_HOST, buf, off, mem);
+	return ring_alloc(f, output ? XRING_OUTPUT : XRING_STAGE, size, align, buf, off, mem);
 }
 u8* vk_stage_output(u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocation* mem)
 {
@@ -509,25 +606,27 @@ u8* vk_stage_upload(u64 size, u64 align, VkBuffer* buf, u64* off)
    on the GPU into host-cached memory instead, and read from there. */
 u8* vk_stage_back(u64 size, VkBuffer* buf, u64* off, VmaAllocation* mem) {
     vk_cmd();
-    /* storage: render targets are swizzled into it (vk/blocklinear.c) */
-    return ring_alloc(&g_fr[g_cur], &g_fr[g_cur].back, size, g_vk.props.limits.nonCoherentAtomSize,
-                      VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                      VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT, RING_HOST, buf, off, mem);
+    return ring_alloc(&g_fr[g_cur], XRING_BACK, size, g_vk.props.limits.nonCoherentAtomSize, buf, off, mem);
 }
 
 /* What the GPU makes for itself to read, in the frame's device memory. In host memory, where staging is, each byte
    crossed PCIe twice or more: written there by the GPU and read back by every draw that bound it */
 int vk_stage_device(u64 size, u64 align, VkBuffer* buf, u64* off) {
     vk_cmd();
-    Frame* f = &g_fr[g_cur];
-    return ring_take(f, &f->dev, size, align,
-                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                         VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
-                         VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                         (g_vk.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0),
-                     0, RING_DEVICE, buf, off, NULL);
+    return ring_take(&g_fr[g_cur], XRING_DEVICE, size, align, buf, off, NULL) != NULL;
+}
+
+/* the host writes to the chunks the staging and output rings hand out of, and to those they filled and the frame's
+   big buffers since the last submit, made visible to the GPU */
+static void rings_flush(const Frame* f) {
+    for (u32 r = XRING_STAGE; r <= XRING_OUTPUT; r++)
+        if (f->ring[r].cur) vmaFlushAllocation(g_vk.vma, g_cmd.chunk[f->ring[r].cur - 1].mem, 0, VK_WHOLE_SIZE);
+    for (u32 i = 0; g_cmd.unflushed && i < g_cmd.nchunk; i++)
+        if (g_cmd.chunk[i].flush) {
+            vmaFlushAllocation(g_vk.vma, g_cmd.chunk[i].mem, 0, VK_WHOLE_SIZE);
+            g_cmd.chunk[i].flush = 0;
+            g_cmd.unflushed--;
+        }
 }
 
 static void mem_barrier(VkCommandBuffer cb, VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
@@ -557,8 +656,7 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
         f->up = 0;
     }
     /* staging memory may not be host coherent: the host writes are made visible to the GPU here */
-    if (f->stage.mem) vmaFlushAllocation(g_vk.vma, f->stage.mem, 0, VK_WHOLE_SIZE);
-    if (f->output.mem) vmaFlushAllocation(g_vk.vma, f->output.mem, 0, VK_WHOLE_SIZE);
+    rings_flush(f);
     VkSemaphoreSubmitInfo w[3];
     u32 nw = 0;
     if (g_after[0].semaphore) { /* at most one of the two: vk_submit_after's comes with no other */
@@ -689,15 +787,14 @@ void vk_frame_next(void) {
    buffers are looked up in stay fewer. 2 ms and 0.5 ms were both slower. The limit on submissions leaves room for
    these in a slow frame: one that reaches it records the rest in the other slot, and its present then waits for this
    one's work.
-   A frame's rings, and the ones it outgrew, come back only with its slot, so it also ends once it has written
+   A frame's chunks and big buffers come back only with its slot, so it also ends once it has written
    VK_FRAME_RING_CAPS allocations' worth to them: a game's load that drew without a present for 8 s kept every ring it
-   made, GPU memory went from 270 to 1062 MiB, and a phone's system ended the app at its 4 GiB limit. What a frame
-   wrote counts, not its rings' size: a slot keeps its rings between uses, four of them, each up to an allocation */
-/* the bytes this use of the frame has written to rings: in the current ones, the spares it filled and the rings it
-   outgrew */
+   made, GPU memory went from 270 to 1062 MiB, and a phone's system ended the app at its 4 GiB limit */
+/* the bytes this use of the frame has written to rings: in the chunks they hand out of, the ones they filled and its
+   big buffers */
 static u64 frame_rings(const Frame* f) {
-    u64 n = f->stage.used + f->output.used + f->back.used + f->dev.used + f->outgrown;
-    for (u32 i = 0; i < f->istage; i++) n += f->stage_spare[i].cap;
+    u64 n = f->filled;
+    for (u32 r = 0; r < FRAME_RINGS; r++) n += f->ring[r].used;
     return n;
 }
 static void frame_check(void) {
@@ -723,16 +820,13 @@ void vk_frame_check(void) {
     frame_check();
     vk_uma_settle(ended); /* on every way out: what they looked up is read by submits up to ended */
 }
-/* the bytes of ring memory every frame slot holds, spares and outgrown rings included */
+/* the bytes of ring memory: the chunks and big buffers the frame slots hold and the pool keeps */
 u64 vk_ring_bytes(void) {
     u64 n = 0;
-    for (u32 s = 0; s < VK_FRAMES; s++) {
-        const Frame* f = &g_fr[s];
-        n += f->stage.cap + f->output.cap + f->back.cap + f->dev.cap + f->outgrown;
-        for (u32 i = 0; i < f->nstage; i++) n += f->stage_spare[i].cap;
-    }
+    for (u32 i = 0; i < g_cmd.nchunk; i++) n += g_cmd.chunk[i].size;
     return n;
 }
+u64 vk_ring_made(void) { return g_cmd.made; }
 
 u64 vk_submit_number(void) { return g_gval + 1; }
 u32 vk_cb_begun(void) { return g_cb_begun; }

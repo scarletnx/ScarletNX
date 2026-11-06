@@ -468,6 +468,221 @@ done:
     return 0;
 }
 
+/* a frame that uploads little: 64 bytes through vk_stage and 64 through vk_stage_upload, 16 of each copied into rb */
+static int staging_light_frame(VkBuffer rb) {
+    for (int upload = 0; upload < 2; upload++) {
+        VkBuffer buffer;
+        u64 offset;
+        u8* data = upload ? vk_stage_upload(64, 16, &buffer, &offset) : vk_stage(64, 16, &buffer, &offset);
+        CHECK(data);
+        memset(data, 0x11, 64);
+        VkBufferCopy copy = {offset, 16ull * (u32)upload, 16};
+        rec_CmdCopyBuffer(vk_cmd(), buffer, rb, 1, &copy);
+    }
+    vk_frame_next();
+    return 0;
+}
+
+/* A frame's uploads bigger than a staging chunk: a texture's, in parts of a chunk (vk_stage_chunk), one request of two
+   chunks and a half, and buffer snapshots of a chunk each. The rings take chunks of the pool, and a big buffer for the
+   big request: they grow by little more than the frame asked for, where a ring that doubled made each size on the
+   way, and once frames that upload little have taken their place the rings hold what they held before the burst,
+   where a doubled ring kept the allocation limit for 300 frames. Every copy reads its bytes */
+static int check_staging_burst(void) {
+    const u32 parts = 12, snapshots = 4, marks = parts + 1 + snapshots;
+    u64 saved_cap = g_vk.alloc_cap, chunk, before, grown, held, asked = 0;
+    VkBuffer rb;
+    u8* result;
+    vk_finish();
+    vk_frame_next();
+    g_vk.alloc_cap = 64ull << 20; /* a ring that doubled stopped here */
+    chunk = vk_stage_chunk();
+    result = vk_readback_buffer(marks * 16ull, &rb);
+    CHECK(result && chunk < g_vk.alloc_cap);
+    for (u32 i = 0; i < VK_POOL_FRAMES + VK_FRAMES; i++) CHECK(!staging_light_frame(rb));
+    vk_finish(); /* the light frames' copies into rb done before the burst's, and the slot taken again */
+    before = vk_ring_bytes();
+    for (u32 i = 0; i < marks; i++) {
+        VkBuffer buffer;
+        u64 offset, size = i == parts ? chunk * 5 / 2 : chunk;
+        u8* data = i <= parts ? vk_stage(size, vk_stage_align(), &buffer, &offset)
+                              : vk_stage_upload(size, vk_stage_align(), &buffer, &offset);
+        CHECK(data);
+        memset(data + size - 16, (int)(i + 1), 16);
+        VkBufferCopy copy = {offset + size - 16, i * 16ull, 16};
+        rec_CmdCopyBuffer(vk_cmd(), buffer, rb, 1, &copy);
+        asked += size;
+    }
+    grown = vk_ring_bytes() - before;
+    vk_finish();
+    vk_readback_ready();
+    for (u32 i = 0; i < marks * 16; i++) CHECK(result[i] == i / 16 + 1);
+    vk_frame_next();
+    for (u32 i = 0; i < VK_POOL_FRAMES + VK_FRAMES; i++) CHECK(!staging_light_frame(rb));
+    vk_finish();
+    held = vk_ring_bytes();
+    g_vk.alloc_cap = saved_cap;
+    vk_frame_next();
+    printf("a frame's %llu MiB of uploads in requests of up to %llu MiB: the rings grew by %llu MiB, and held %llu MiB "
+           "%u frames later, %llu before\n",
+           (unsigned long long)(asked >> 20), (unsigned long long)(chunk * 5 / 2 >> 20),
+           (unsigned long long)(grown >> 20), (unsigned long long)(held >> 20), VK_POOL_FRAMES + VK_FRAMES,
+           (unsigned long long)(before >> 20));
+    CHECK(grown <= asked + chunk); /* and the big request's buffer, of its size class */
+    CHECK(held <= before);
+    return 0;
+}
+
+/* A chunk goes back to the pool only once its slot's work is done. A frame fills a chunk and copies from it in a
+   submission that waits for a semaphore the host signals later; the next frame takes chunks of the pool and fills them
+   with other bytes before the host signals: the copy still reads the first frame's bytes */
+static int check_chunk_after_done(void) {
+    VkSemaphoreTypeCreateInfo type = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                                      .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE};
+    VkSemaphoreCreateInfo info = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &type};
+    VkSemaphoreSignalInfo signal = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO, .value = 1};
+    u64 saved_cap = g_vk.alloc_cap, chunk, offset;
+    VkBuffer rb, buffer;
+    VkBufferCopy copy;
+    u8 *result, *data;
+    int taken = 1;
+    CHECK(vkCreateSemaphore(g_vk.dev, &info, NULL, &signal.semaphore) == VK_SUCCESS);
+    vk_finish();
+    vk_frame_next();
+    g_vk.alloc_cap = 1u << 20;
+    chunk = vk_stage_chunk();
+    result = vk_readback_buffer(32, &rb);
+    CHECK(result);
+    for (u32 i = 0; i < VK_POOL_FRAMES + VK_FRAMES; i++) CHECK(!staging_light_frame(rb));
+    vk_finish(); /* the light frames' copies into rb done before these */
+    data = vk_stage(chunk, vk_stage_align(), &buffer, &offset);
+    CHECK(data);
+    memset(data, 0x5a, (size_t)chunk);
+    copy = (VkBufferCopy){offset + chunk - 16, 0, 16};
+    rec_CmdCopyBuffer(vk_cmd(), buffer, rb, 1, &copy);
+    vk_submit_after(signal.semaphore, 1, 2);
+    vk_frame_next(); /* submitted, its copy waiting for the host */
+    for (u32 i = 0; i < 4 && taken; i++) {
+        taken = (data = vk_stage(chunk, vk_stage_align(), &buffer, &offset)) != NULL;
+        if (taken) memset(data, 0xa5, (size_t)chunk);
+    }
+    if (taken) {
+        copy = (VkBufferCopy){offset + chunk - 16, 16, 16};
+        rec_CmdCopyBuffer(vk_cmd(), buffer, rb, 1, &copy);
+    }
+    CHECK(vkSignalSemaphore(g_vk.dev, &signal) == VK_SUCCESS); /* before any check that ends the test */
+    vk_finish();
+    vk_readback_ready();
+    g_vk.alloc_cap = saved_cap;
+    vk_frame_next();
+    vkDestroySemaphore(g_vk.dev, signal.semaphore, NULL);
+    CHECK(taken);
+    for (u32 i = 0; i < 32; i++) CHECK(result[i] == (i < 16 ? 0x5a : 0xa5));
+    return 0;
+}
+
+/* Small requests are handed out of the chunk a ring holds, with no allocation and no lock: frames of many small
+   uploads, a chunk and a half of them each, make no ring buffer once the pool holds the chunks they take, and a copy of
+   each frame's last one reads its bytes. What a request takes is printed */
+static int check_small_uploads(void) {
+    const u32 warm = 2 * VK_FRAMES, frames = 16, requests = 6 * 1024, size = 4096;
+    u64 made = 0, ns = 0;
+    VkBuffer rb;
+    u8* result;
+    vk_finish();
+    vk_frame_next();
+    result = vk_readback_buffer(frames * 16ull, &rb);
+    CHECK(result && (u64)requests * size > vk_stage_chunk());
+    for (u32 frame = 0; frame < warm + frames; frame++) {
+        VkBuffer buffer = VK_NULL_HANDLE;
+        u64 offset = 0, t0;
+        u8* data = NULL;
+        if (frame == warm) made = vk_ring_made();
+        vk_cmd(); /* the slot's previous use waited for first */
+        t0 = plat_ns();
+        for (u32 i = 0; i < requests; i++)
+            if (!(data = vk_stage(size, 16, &buffer, &offset))) break;
+        if (frame >= warm) ns += plat_ns() - t0;
+        CHECK(data);
+        if (frame >= warm) {
+            memset(data, (int)(frame - warm + 1), 16);
+            VkBufferCopy copy = {offset, (frame - warm) * 16ull, 16};
+            rec_CmdCopyBuffer(vk_cmd(), buffer, rb, 1, &copy);
+        }
+        vk_frame_next();
+    }
+    vk_finish();
+    vk_readback_ready();
+    for (u32 i = 0; i < frames * 16; i++) CHECK(result[i] == i / 16 + 1);
+    printf("%u frames of %u uploads of %u bytes: %llu ring buffers made, %.1f ns a request\n", frames, requests, size,
+           (unsigned long long)(vk_ring_made() - made), (double)ns / ((double)frames * requests));
+    CHECK(vk_ring_made() == made);
+    vk_frame_next();
+    return 0;
+}
+
+/* A request bigger than a chunk every frame, as a copy engine's source of the same big surface makes, in the staging
+   and the device ring: each takes the big buffer of its size class back from the pool, so once both slots have theirs
+   no buffer is made, and the copies through them read their bytes; frames without one then let the pool give them up */
+static int check_big_uploads(void) {
+    const u32 warm = 2 * VK_FRAMES, frames = 8;
+    u64 saved_cap = g_vk.alloc_cap, chunk, size, made = 0, big, before, after;
+    VkMemoryBarrier2 written = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                                .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                                .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT};
+    VkDependencyInfo dependency = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &written};
+    VkBuffer rb;
+    u8* result;
+    vk_finish();
+    vk_frame_next();
+    g_vk.alloc_cap = 64ull << 20;
+    chunk = vk_stage_chunk();
+    size = chunk * 5 / 2;
+    result = vk_readback_buffer(frames * 32ull, &rb);
+    CHECK(result && size <= g_vk.alloc_cap);
+    for (u32 i = 0; i < VK_POOL_FRAMES + VK_FRAMES; i++) CHECK(!staging_light_frame(rb));
+    vk_finish();
+    before = vk_ring_bytes();
+    for (u32 frame = 0; frame < warm + frames; frame++) {
+        VkBuffer host, device;
+        u64 at, dat;
+        u8* data;
+        if (frame == warm) made = vk_ring_made();
+        data = vk_stage(size, vk_stage_align(), &host, &at);
+        CHECK(data && vk_stage_device(size, vk_stage_align(), &device, &dat));
+        if (frame >= warm) {
+            u64 n = frame - warm;
+            VkBufferCopy in = {at + size - 16, dat + size - 16, 16}, out = {dat + size - 16, n * 32, 16},
+                         staged = {at + size - 16, n * 32 + 16, 16};
+            memset(data + size - 16, (int)(n + 1), 16);
+            rec_CmdCopyBuffer(vk_cmd(), host, device, 1, &in);
+            rec_CmdPipelineBarrier2(vk_cmd(), &dependency);
+            rec_CmdCopyBuffer(vk_cmd(), device, rb, 1, &out);
+            rec_CmdCopyBuffer(vk_cmd(), host, rb, 1, &staged);
+        }
+        vk_frame_next();
+    }
+    vk_finish();
+    vk_readback_ready();
+    for (u32 i = 0; i < frames * 32; i++) CHECK(result[i] == i / 32 + 1);
+    big = vk_ring_made() - made;
+    for (u32 i = 0; i < VK_POOL_FRAMES + VK_FRAMES; i++) CHECK(!staging_light_frame(rb));
+    vk_finish();
+    after = vk_ring_bytes();
+    g_vk.alloc_cap = saved_cap;
+    vk_frame_next();
+    printf("%u frames of two %llu MiB requests: %llu ring buffers made; the rings held %llu MiB %u frames later, %llu "
+           "before\n",
+           frames, (unsigned long long)(size >> 20), (unsigned long long)big, (unsigned long long)(after >> 20),
+           VK_POOL_FRAMES + VK_FRAMES, (unsigned long long)(before >> 20));
+    CHECK(big == 0);
+    CHECK(after <= before);
+    return 0;
+}
+
 /* the renderer's viewport index and its first viewport's facing for the registers r, through the draw state */
 static VkViewport viewport_of(const u32* r, u32 index) {
     DsDynamic d;
@@ -4778,6 +4993,10 @@ int main(int argc, char** argv) {
     CHECK(!check_rings_without_present());
     CHECK(!check_fresh_frame_kept());
     CHECK(!check_stats_gpu_time());
+    CHECK(!check_staging_burst());
+    CHECK(!check_chunk_after_done());
+    CHECK(!check_small_uploads());
+    CHECK(!check_big_uploads());
     CHECK(!check_stream_epoch());
     CHECK(!check_owned_readback());
     CHECK(!check_owned_writable());

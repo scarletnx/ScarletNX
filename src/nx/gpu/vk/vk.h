@@ -45,6 +45,7 @@
 
 #define VK_FRAMES          2  /* frames in flight */
 #define VK_FRAME_RING_CAPS 4  /* a frame ends once it has written this many allocations to its rings (vk_frame_check) */
+#define VK_POOL_FRAMES     8  /* the rings' pool keeps the most chunks a frame of the last this many took (cmd.c) */
 #define VK_SC_MAX          16 /* swapchain images */
 /* a transfer bigger than one allocation (g_vk.alloc_cap) goes in parts of at most this share of it: the rows a band
    or a readback part needs on both sides and in scratch fit the cap together (vk_band, surface.c) */
@@ -322,6 +323,9 @@ VkCommandBuffer vk_cmd_upload_recording(void); /* that command buffer while it i
 /* size bytes of the current frame's mapped staging memory (flushed when the frame is submitted), valid until
    that frame's work is done. NULL past g_vk.alloc_cap: a big upload stages in parts */
 u8* vk_stage(u64 size, u64 align, VkBuffer* buf, u64* off);
+/* the most a request to a frame ring takes out of a pooled chunk: a bigger one gets a big buffer of its own for the
+   frame, so an upload that can go in parts goes in parts of this */
+u64 vk_stage_chunk(void);
 /* Streamed buffer snapshots in host RAM, with the same frame lifetime as vk_stage. */
 u8* vk_stage_upload(u64 size, u64 align, VkBuffer* buf, u64* off);
 /* GPU-written storage, device-local when host-visible memory and its budget allow;
@@ -360,7 +364,8 @@ void vk_zt_forget(void);
 extern u64 g_vk_finishes, g_vk_finish_ns; /* statistics: vk_finish calls and their wait (the GPU thread idles) */
 void vk_frame_next(void);                 /* ends the frame (a present): the next records in the other slot */
 void vk_frame_check(void);                /* at the start of a draw or dispatch: ends a frame that has grown too big */
-u64 vk_ring_bytes(void);                  /* ring memory every frame slot holds, spares and outgrown ones too */
+u64 vk_ring_bytes(void);                  /* the rings' memory: the slots' chunks and big buffers, the pool's */
+u64 vk_ring_made(void);                   /* the rings' chunks and big buffers made since the start */
 /* a buffer for GPU -> host copies: record the copy into it, vk_finish(), vk_readback_ready(), then read */
 u8* vk_readback_buffer(u64 size, VkBuffer* buf);
 void vk_readback_ready(void);
