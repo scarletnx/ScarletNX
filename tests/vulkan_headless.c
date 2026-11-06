@@ -550,12 +550,16 @@ static int check_packed_depth(void) {
 /* Clear separate shadow cascades through the real register path, then read each depth layer back. */
 /* a clear as the 3D engine hands it to the renderer (maxwell3d.c r3d_clear). The tests set the registers directly,
    not through the engine's methods, so every register group counts as changed */
+/* under vk_lock, as the renderer's clear (vkr_clear) is: a landing of GPU-owned memory meanwhile records in the frame's
+   command buffer too */
 static void engine_clear(GpuChannel* ch, u32 v) {
     DrawClear c;
     ch->r3d_dirty = ~0u;
     mx_draw_state_sync(ch);
     mx_draw_clear(ch->r3d, v, &c);
+    vk_lock();
     vk_render_clear(&ch->ds, &c, &ch->owner);
+    vk_unlock();
 }
 /* Packed depth and stencil targets written back in the guest's layout (vk/depth_pack.c): each zeta format cleared to
    depth 0.25 and stencil 0x5A, written back, and every pixel read from guest memory as its format lays one. They used
@@ -2712,7 +2716,9 @@ static void rt_clear_format(GpuChannel* ch, u64 gva, u32 w, u32 h, u32 bh, int b
     r[0x207] = 0;
     memcpy(&r[0x360], color, sizeof color);
     engine_clear(ch, 15 << 2);
+    vk_lock();
     vk_render_end();
+    vk_unlock();
 }
 static void rt_clear(GpuChannel* ch, u64 gva, u32 w, u32 h, u32 bh, int blue) {
     rt_clear_format(ch, gva, w, h, bh, blue, 0xD5);
