@@ -414,8 +414,8 @@ void vk_pipeline_init(void) {
     snprintf(g_pcache_tmp, sizeof g_pcache_tmp, "%s.%u.tmp", g_pcache_path, pf_pid());
     /* the driver's compiled pipelines from earlier runs; it ignores data from another device or driver version */
     VkPipelineCacheCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
-    PFileMap data;
-    if (!plat_file_map(&data, g_pcache_path) && data.data) {
+    PFileMap data = {0};
+    if (g_settings.vulkan_pipeline_cache && !plat_file_map(&data, g_pcache_path) && data.data) {
         ci.initialDataSize = (size_t)data.size;
         ci.pInitialData = data.data;
     }
@@ -895,6 +895,10 @@ typedef struct Pipe {
     VkShaderModule fs; /* k.fs, or the empty fragment shader */
     int prewarm;       /* one of the file's, made before a draw asked for it */
     int queued;        /* in the workers' queue (g_pj_lock): 1 a draw's, 2 the file's, 3 to optimize */
+    /* a draw's: when it was queued, and whether every worker was busy then with one or more on an optimized
+       pipeline (g_pj_lock), for the stats of its wait for a worker */
+    u64 queued_ns;
+    int behind_opt;
     u32 standin;       /* its index + 1 in the stand-ins' table (vk_pipeline_get_deferred), 0 for none yet */
     struct Pipe *next, *job;
 } Pipe;
@@ -1246,6 +1250,10 @@ static struct {
        pipelines made, their ns, and the optimized ones the cache had */
     u64 made[4], hits[4], ns[4];
     u64 links, link_ns, opts, opt_ns, opt_hits;
+    /* the draws' pipelines' waits for a worker: how many, their ns, the ns of those queued while every worker was
+       busy and one or more made an optimized pipeline, and the longest (g_pj_lock) */
+    u64 job_waits, job_wait_ns, job_behind_opt_ns, job_wait_max_ns;
+    int opt_busy_max; /* the most workers that made optimized pipelines at once (g_pj_lock) */
 } g_plib = {.lock = PMUTEX_INIT};
 static const char* const g_part_names[4] = {"vertex input", "pre-rasterization", "fragment shader", "fragment output"};
 static void plib_init(void) {
@@ -1515,6 +1523,15 @@ static void pipe_optimize(Pipe* e) {
     __atomic_store_n(&e->p, o, __ATOMIC_RELEASE);
     __atomic_store_n(&e->opt, 1, __ATOMIC_RELEASE);
 }
+void vk_pipeline_lib_waits(u64* waits, u64* wait_ms, u64* behind_opt_ms, u64* max_ms, int* opt_workers) {
+    pm_lock(&g_pj_lock);
+    *opt_workers = g_plib.opt_busy_max;
+    *waits = g_plib.job_waits;
+    *wait_ms = g_plib.job_wait_ns / 1000000;
+    *behind_opt_ms = g_plib.job_behind_opt_ns / 1000000;
+    *max_ms = g_plib.job_wait_max_ns / 1000000;
+    pm_unlock(&g_pj_lock);
+}
 void vk_pipeline_lib_stats(u64 made[4], u64 hits[4], u64 make_ms[4], u64* links, u64* link_ms, u64* opts,
                            u64* opt_ms) {
     for (int i = 0; i < 4; i++) {
@@ -1552,6 +1569,12 @@ static VkPipeline pipe_make(const Pipe* e, int record) {
 static Pipe *g_pj_head, *g_pj_tail; /* a draw's */
 static Pipe *g_pw_head, *g_pw_tail; /* the file's */
 static Pipe *g_po_head, *g_po_tail; /* the optimized pipelines to make after their fast links, last */
+static int g_po_busy;               /* the workers making an optimized pipeline now (g_pj_lock) */
+/* The most workers that make optimized pipelines at once. An optimized link compiles every stage again: 4 to 5 s
+   for a pipeline of a 1.7 MB vertex program on NVIDIA, which no draw can take back once a worker has begun it. A
+   first run queues hundreds of them behind the parts, and with no bound they took every worker while a new
+   shader's parts waited (docs/PIPELINE_LIBRARIES.md, "Results"). One worker optimizes, the others stay free */
+#define PIPE_OPT_WORKERS 1
 static void pipe_queue(Pipe* e, int queue);
 static void pipe_worker(void* arg) {
     (void)arg;
@@ -1560,21 +1583,33 @@ static void pipe_worker(void* arg) {
         Pipe* e;
         VkPipeline p;
         pm_lock(&g_pj_lock);
-        while (!g_pj_head && !g_pw_head && !g_po_head) pc_wait(&g_pj_work, &g_pj_lock, -1);
+        while (!g_pj_head && !g_pw_head && !(g_po_head && g_po_busy < PIPE_OPT_WORKERS))
+            pc_wait(&g_pj_work, &g_pj_lock, -1);
         Pipe **head = g_pj_head ? &g_pj_head : g_pw_head ? &g_pw_head : &g_po_head,
              **tail = g_pj_head ? &g_pj_tail : g_pw_head ? &g_pw_tail : &g_po_tail;
         e = *head;
         *head = e->job;
         if (!*head) *tail = NULL;
         int optimize = e->queued == 3;
+        if (e->queued == 1) {
+            u64 waited = plat_ns() - e->queued_ns;
+            g_plib.job_waits++;
+            g_plib.job_wait_ns += waited;
+            if (e->behind_opt) g_plib.job_behind_opt_ns += waited;
+            if (waited > g_plib.job_wait_max_ns) g_plib.job_wait_max_ns = waited;
+        }
         e->queued = 0;
         g_pj_busy++;
+        g_po_busy += optimize;
+        if (g_po_busy > g_plib.opt_busy_max) g_plib.opt_busy_max = g_po_busy;
         pm_unlock(&g_pj_lock);
         if (optimize) {
             pipe_optimize(e);
             pm_lock(&g_pj_lock);
             g_pj_busy--;
+            g_po_busy--;
             pc_broadcast(&g_pj_done);
+            if (g_po_head) pc_signal(&g_pj_work); /* the next optimized pipeline, to a worker that waits */
             pm_unlock(&g_pj_lock);
             continue;
         }
@@ -1635,6 +1670,10 @@ static void pipe_queue(Pipe* e, int queue) {
         *head = e;
     *tail = e;
     e->queued = queue;
+    if (queue == 1) {
+        e->queued_ns = plat_ns();
+        e->behind_opt = g_pj_busy >= g_pj_threads && g_po_busy > 0;
+    }
     pc_signal(&g_pj_work);
 }
 /* a pipeline of the file that a draw asks for before a worker took it goes to the draws' queue: 1 when it did */
@@ -1844,7 +1883,13 @@ void vk_pipeline_save(int at_exit) {
                 g_pf.nidx);
         }
     }
-    if (!g_pcache || !__atomic_exchange_n(&g_pcache_dirty, 0, __ATOMIC_RELAXED)) {
+    /* vk_pipeline_cache=0: the file is not written, as it was not read. At exit the log says what it would hold */
+    if (!g_settings.vulkan_pipeline_cache && at_exit && g_pcache) {
+        size_t n = 0;
+        if (vkGetPipelineCacheData(g_vk.dev, g_pcache, &n, NULL) == VK_SUCCESS)
+            LOG("vulkan: the pipeline cache of this run holds %zu KB (vk_pipeline_cache=0: not written)\n", n >> 10);
+    }
+    if (!g_pcache || !__atomic_exchange_n(&g_pcache_dirty, 0, __ATOMIC_RELAXED) || !g_settings.vulkan_pipeline_cache) {
         pm_unlock(&g_psave);
         return;
     }

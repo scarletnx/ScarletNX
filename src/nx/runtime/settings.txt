@@ -700,6 +700,14 @@ setting Vulkan validation layer
     words Off|On
     help 1 = the Vulkan validation layer (VK_LAYER_KHRONOS_validation, the Vulkan SDK's) checks every Vulkan call and
     help logs what it finds. It slows the game down a lot, and a missing layer is only a warning
+setting Vulkan pipeline cache
+    key vk_pipeline_cache
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = the GPU driver's compiled pipelines are kept between runs (shader_cache/vk_pipelines.bin). 0 = they are
+    help neither read nor written: every pipeline is compiled again, as in a first run, to measure that
 setting Native ASTC
     key native_astc
     int 0 1

@@ -1528,6 +1528,10 @@ void vk_pipeline_stats(u64* pipes, u64* hits, u64* make_ms, u64* wait_ms, u64* s
    optimized pipelines made in the background and their ms */
 void vk_pipeline_lib_stats(u64 made[4], u64 hits[4], u64 make_ms[4], u64* links, u64* link_ms, u64* opts,
                            u64* opt_ms);
+/* so far: the draws' new pipelines that waited in the workers' queue, the ms they waited, the ms of those queued while
+   every worker was busy with one or more on an optimized pipeline, and the longest wait; the most workers that made
+   optimized pipelines at once */
+void vk_pipeline_lib_waits(u64* waits, u64* wait_ms, u64* behind_opt_ms, u64* max_ms, int* opt_workers);
 void vk_tex_stats(u64* uploads, u64* bytes); /* texture uploads from guest memory so far, and their bytes */
 u64 vk_rt_made(void);                        /* render targets made so far */
 VkPipelineCache vk_pipeline_cache(void);     /* for pipelines made elsewhere (compute) */

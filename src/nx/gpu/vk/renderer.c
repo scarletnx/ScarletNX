@@ -665,6 +665,14 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                         (unsigned long long)made[0], (unsigned long long)made[3],
                         (unsigned long long)(make_ms[0] + make_ms[3]), (unsigned long long)links,
                         (unsigned long long)link_ms, (unsigned long long)opts, (unsigned long long)opt_ms);
+                    u64 waits, wait_ms, behind_ms, max_ms;
+                    int opt_workers;
+                    vk_pipeline_lib_waits(&waits, &wait_ms, &behind_ms, &max_ms, &opt_workers);
+                    LOG("vulkan: %llu new pipelines of draws waited %llu ms for a worker (%llu ms of it with every "
+                        "worker busy and one or more on an optimized pipeline), the longest %llu ms; %d worker(s) at "
+                        "most on optimized pipelines\n",
+                        (unsigned long long)waits, (unsigned long long)wait_ms, (unsigned long long)behind_ms,
+                        (unsigned long long)max_ms, opt_workers);
                 }
                 u64 bc7_levels, bc7_hits, bc7_bytes, bc7_rgba8, reads, stored, restarts, file;
                 vk_astc_stats(&bc7_levels, &bc7_hits, &bc7_bytes, &bc7_rgba8);

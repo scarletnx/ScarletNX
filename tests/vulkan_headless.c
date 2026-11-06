@@ -3312,6 +3312,16 @@ int main(int argc, char** argv) {
     vk_finish();
     vk_pipeline_quiesce();
     CHECK(!viw_report());
+    { /* with pipeline libraries, one worker at most made optimized pipelines (pipeline.c's PIPE_OPT_WORKERS): the
+         pipeline file's links queue hundreds of them, which took every worker before */
+        u64 waits, wait_ms, behind_ms, max_ms;
+        int opt_workers;
+        vk_pipeline_lib_waits(&waits, &wait_ms, &behind_ms, &max_ms, &opt_workers);
+        printf("pipeline libraries: %llu new pipelines of draws waited %llu ms for a worker, the longest %llu ms; "
+               "%d worker(s) at most on optimized pipelines\n",
+               (unsigned long long)waits, (unsigned long long)wait_ms, (unsigned long long)max_ms, opt_workers);
+        CHECK(opt_workers <= 1);
+    }
     CHECK(!snx_remove_tree(root));
     free(root);
     free(shot);
