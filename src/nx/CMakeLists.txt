@@ -311,6 +311,14 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     set_tests_properties(vulkan_write_tracking vulkan_write_tracking_protection vulkan_write_tracking_hot
         vulkan_write_tracking_uma PROPERTIES
         TIMEOUT 120 ENVIRONMENT "SNX_TEST_WW_ONLY=1" FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # a texture's changes loaded a block at a time (tests/vulkan_tex_partial.inc), with each way the host tracks writes,
+    # and without write tracking, where they load the whole texture
+    add_test(NAME vulkan_tex_partial COMMAND snx-test-vulkan -H)
+    add_test(NAME vulkan_tex_partial_protection COMMAND snx-test-vulkan -H --write_tracking=1 --memory_traps=1)
+    add_test(NAME vulkan_tex_partial_untracked COMMAND snx-test-vulkan -H --write_tracking=2)
+    set_tests_properties(vulkan_tex_partial vulkan_tex_partial_protection vulkan_tex_partial_untracked PROPERTIES
+        TIMEOUT 120 ENVIRONMENT "SNX_TEST_TEX_PARTIAL_ONLY=1"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # an argument the test doesn't take stops it, named, before any device is made; the setting before it, as
     # the runtime takes it, goes through
     add_test(NAME vulkan_headless_options COMMAND snx-test-vulkan -H --memory_traps=2 --memory_trap=2)

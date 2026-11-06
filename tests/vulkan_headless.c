@@ -3252,6 +3252,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_targetless_stores.inc"
 #include "vulkan_uma_imports.inc"
 #include "vulkan_write_tracking.inc"
+#include "vulkan_tex_partial.inc"
 
 #include "vulkan_descriptor_bench.inc"
 #include "vulkan_nvn_storage.inc"
@@ -3453,6 +3454,12 @@ int main(int argc, char** argv) {
         printf("PASS headless Vulkan vertex input only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
+    if (getenv("SNX_TEST_TEX_PARTIAL_ONLY")) { /* vulkan_tex_partial.inc's checks alone */
+        CHECK(!check_tex_partial());
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan texture changes only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
     if (getenv("SNX_TEST_WW_ONLY")) { /* the write tracking's contract alone (vulkan_write_tracking.inc) */
         CHECK(!check_write_tracking());
         vk_pipeline_quiesce();
@@ -3580,6 +3587,7 @@ int main(int argc, char** argv) {
     CHECK(!check_dma());
     CHECK(!check_dma_texture());
     CHECK(!check_sparse_volume());
+    CHECK(!check_tex_partial());
     CHECK(!check_sparse_view());
     CHECK(!check_sparse_tiles());
     CHECK(!check_sparse_copy());

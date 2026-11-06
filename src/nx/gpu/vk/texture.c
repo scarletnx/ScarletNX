@@ -378,10 +378,17 @@ static int level_upload_pitch(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u6
    than g_vk.alloc_cap (memory.c) */
 #define TEX_BAND (64ull << 20)
 
-static u64 g_tex_uploads, g_tex_upload_bytes; /* for the stats line */
+/* for the stats line: every load and its bytes, and those of some blocks alone (tex_patch) */
+static struct {
+    u64 uploads, bytes, partial, partial_bytes;
+} g_tex_loads;
 void vk_tex_stats(u64* uploads, u64* bytes) {
-    *uploads = g_tex_uploads;
-    *bytes = g_tex_upload_bytes;
+    *uploads = g_tex_loads.uploads;
+    *bytes = g_tex_loads.bytes;
+}
+void vk_tex_partial_stats(u64* loads, u64* bytes) {
+    *loads = g_tex_loads.partial;
+    *bytes = g_tex_loads.partial_bytes;
 }
 /* the bricks of a texture whose image has memory only where it is mapped (resident_image) that memory maps any byte of */
 typedef struct {
@@ -446,7 +453,7 @@ static int resident_upload(Surf* t) {
                                               .imageExtent = {t->w - x < g.width ? t->w - x : g.width,
                                                               t->h - y < g.height ? t->h - y : g.height,
                                                               t->depth3d - z < g.depth ? t->depth3d - z : g.depth}};
-        g_tex_upload_bytes += t->brick_bytes;
+        g_tex_loads.bytes += t->brick_bytes;
     }
     ok = up_flush(&u) && ok;
     if (!ok)
@@ -467,8 +474,8 @@ static int tex_upload_(Surf* t) {
     const VkFmt* f = &t->f;
     SNX_ZONE_T(z_up, "texture upload", "%ux%u", t->w, t->h);
     SNX_ZONE_VALUE(z_up, t->size);
-    g_tex_uploads++;
-    if (!t->bricks) g_tex_upload_bytes += t->size; /* a brick at a time for the others */
+    g_tex_loads.uploads++;
+    if (!t->bricks) g_tex_loads.bytes += t->size; /* a brick at a time for the others */
     t->upload_valid = 0;
     t->wgen = vk_surf_gen(); /* even a new texture at a reused address invalidates an old target's copy */
     t->took_drawn = 0;       /* memory's own texels again, until tex_take_drawn copies targets in */
@@ -832,22 +839,25 @@ static VkImageViewType tic_view_type(u32 type, u32 d) {
     return VK_IMAGE_VIEW_TYPE_2D; /* 1D textures are 2D images one texel high */
 }
 
-/* ---- textures with holes in their mapping, loaded a piece at a time
+/* ---- textures loaded a piece at a time
 
    A virtual pool's texture is mapped a 64 KiB tile at a time, a few of its thousands of tiles (one game's light volumes
    are 477 MB with 384 KiB mapped). Loaded whole, such a texture had all its bytes hashed and staged, holes and all, when
    it was made and again whenever a tile was mapped. Instead its image is cleared, then the blocks its mapped runs lie
    in are loaded, and later only the blocks of the pages the GPU's records (a mapping, an engine's write) and write
-   tracking (the CPU's) name. A run of blocks of one row of blocks is the layout of a surface that row high and that
-   run wide, which the GPU deswizzles into its place in the image */
+   tracking (the CPU's) name. A texture loaded whole takes its changes the same way while write tracking answers for
+   its memory: a write of a page of an 8192x8192 texture loads the blocks of that page, not its 256 MiB. A run of
+   blocks of one row of blocks is the layout of a surface that row high and that run wide, which the GPU deswizzles
+   into its place in the image */
 #define TEX_PIECES 256
-/* bytes of a texture to load, in order, those that meet joined */
+/* bytes of a texture to load, in order, those that meet joined. Past TEX_PIECES of them the two closest are joined
+   over the bytes between them, which loads more than changed and never less */
 typedef struct {
     struct {
         u64 at, n;
-    } piece[TEX_PIECES];
+    } piece[TEX_PIECES + 1]; /* the one added before two are joined */
     u32 count;
-    int all; /* more pieces than that: the whole texture */
+    int all; /* the whole texture */
 } TexPieces;
 static void pieces_add(TexPieces* p, u64 at, u64 n) {
     u32 i = p->count, j;
@@ -859,10 +869,6 @@ static void pieces_add(TexPieces* p, u64 at, u64 n) {
         at = p->piece[i].at;
         if (p->piece[i].n > n) n = p->piece[i].n;
     } else {
-        if (p->count == TEX_PIECES) {
-            p->all = 1;
-            return;
-        }
         memmove(p->piece + i + 1, p->piece + i, (p->count - i) * sizeof *p->piece);
         p->count++;
     }
@@ -871,6 +877,16 @@ static void pieces_add(TexPieces* p, u64 at, u64 n) {
     p->piece[i].at = at, p->piece[i].n = n;
     memmove(p->piece + i + 1, p->piece + j, (p->count - j) * sizeof *p->piece);
     p->count -= j - i - 1;
+    if (p->count > TEX_PIECES) { /* the two with the fewest bytes between them */
+        u32 k = 0;
+        for (j = 1; j + 1 < p->count; j++)
+            if (p->piece[j + 1].at - p->piece[j].at - p->piece[j].n <
+                p->piece[k + 1].at - p->piece[k].at - p->piece[k].n)
+                k = j;
+        p->piece[k].n = p->piece[k + 1].at + p->piece[k + 1].n - p->piece[k].at;
+        memmove(p->piece + k + 1, p->piece + k + 2, (p->count - k - 2) * sizeof *p->piece);
+        p->count--;
+    }
 }
 
 /* a texture's memory where it isn't one host run, over the runs the GPU's page table maps of it (gmmu_pieces, which
@@ -963,7 +979,7 @@ static int level_patch_bl(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u32 lb
             if (!stage_bl(&m, gva + k * block, lsz - k * block, &staged, &at) ||
                 !up_move(u, &run, &m, staged, at, z, y))
                 return 0;
-            g_tex_upload_bytes += (e - k) * block;
+            g_tex_loads.bytes += (e - k) * block;
         }
         k = e;
     }
@@ -999,11 +1015,17 @@ static int tex_patch_range(Upload* u, u64 a, u64 b) {
 }
 /* the pieces p of t loaded again into its image; all of it when they are more than half of it (a whole upload reads
    at most twice their bytes, in fewer moves), or when render targets' pixels were copied into it (tex_take_drawn),
-   which a whole upload takes again. 1 when the image has them */
+   which a whole upload takes again. A texture loaded whole whose hash is still its image's (no blocks loaded alone
+   since) is hashed for that, as a change found by its hash is: its pages written with the bytes they had load
+   nothing. 1 when the image has them */
 static int tex_patch(Surf* t, const TexPieces* p) {
-    u64 sum = 0;
+    u64 sum = 0, bytes = g_tex_loads.bytes;
     for (u32 i = 0; i < p->count; i++) sum += p->piece[i].n;
-    if (p->all || t->took_drawn || sum > t->size / 2) return tex_upload(t);
+    if (p->all || t->took_drawn || sum > t->size / 2) {
+        if (t->piecewise || !t->hash) return tex_upload(t);
+        tex_rehash(t);
+        return t->upload_valid;
+    }
     if (!sum) return 1;
     vk_render_end(); /* copies, and a bind's submission, happen outside rendering passes */
     TexPieces bound;
@@ -1035,7 +1057,7 @@ static int tex_patch(Surf* t, const TexPieces* p) {
         if (!sum) return 1;
     }
     SNX_ZONE_V(z, "texture pieces", sum);
-    g_tex_uploads++;
+    g_tex_loads.uploads++;
     t->wgen = vk_surf_gen(); /* an image that changed, as an upload's */
     t->hash = 0;             /* no longer the image's: a check by contents loads all of it */
     VkCommandBuffer cb = vk_cmd();
@@ -1045,6 +1067,8 @@ static int tex_patch(Surf* t, const TexPieces* p) {
     int ok = 1;
     for (u32 i = 0; i < p->count && ok; i++) ok = tex_patch_range(&u, p->piece[i].at, p->piece[i].at + p->piece[i].n);
     ok = up_flush(&u) && ok;
+    g_tex_loads.partial++;
+    g_tex_loads.partial_bytes += g_tex_loads.bytes - bytes;
     if (!ok) {
         LOG_LIMIT(1,
                   "vulkan: out of memory or staging loading %llu KB of a %ux%ux%u texture: it loads again in the next "
@@ -1113,8 +1137,10 @@ static int tex_load_pieces(Surf* t) {
     t->upload_valid = 1;
     return tex_patch(t, &p);
 }
-/* a piecewise texture's checks: the pages the GPU's records and write tracking name since the last ones, loaded once
-   both were asked, so the image holds what either found. 0 when write tracking can't tell: checked by contents */
+/* the checks of a texture loaded a piece at a time (tex_can_piece; with holes, or loaded whole): the pages the GPU's
+   records and write tracking name since the last ones, loaded once both were asked, so the image holds what either
+   found. 0 when write tracking can't tell: checked by contents (an engine's write after that check in the same epoch
+   is loaded by its pages, and leaves the contents' check a hash that differs, so the next one loads it whole) */
 static int tex_check_pieces(Surf* t, u64 gva) {
     TexPieces p;
     TexRuns r = {0, gva, 0, 0, 0, 0, &p};
@@ -1173,7 +1199,11 @@ static Surf* tex_check(Surf* t, u64 gva) {
         }
         if (!t->upload_valid) return NULL;
     }
-    if (t->piecewise && tex_check_pieces(t, gva)) return t->upload_valid ? t : NULL;
+    int untracked = 0; /* tex_check_pieces asked write tracking, which can't tell: not asked again below */
+    if (t->piecewise || tex_can_piece(t)) {
+        if (tex_check_pieces(t, gva)) return t->upload_valid ? t : NULL;
+        untracked = 1;
+    }
     /* the GPU front end wrote its memory (DMA, I2M, 2D, compute results): checked now, whatever the schedule
        below says, as writes within a frame have to show in the same frame. Not written: it still matches as of
        now, so the next check asks only about later writes */
@@ -1187,7 +1217,7 @@ static Surf* tex_check(Surf* t, u64 gva) {
        stream's to see (vk_ww_epoch): write tracking proves the memory unchanged without hashing its texels */
     u32 ww_epoch = vk_ww_epoch(); /* before the check */
     if (t->checked != g_vk_present || t->ww_epoch != ww_epoch) {
-        int wr = tex_written_since(t, gva, NULL);
+        int wr = untracked ? -1 : tex_written_since(t, gva, NULL);
         u32 wnow = vk_ww_now(); /* after the check: the pages it took in are marked with this clock at most */
         int epoch = t->ww_epoch != ww_epoch;
         t->ww_epoch = ww_epoch;
