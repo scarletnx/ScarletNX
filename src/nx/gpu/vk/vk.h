@@ -530,8 +530,13 @@ void rec_CmdDrawMeshTasks(VkCommandBuffer cb, u32 groups); /* vkCmdDrawMeshTasks
 void rec_CmdDrawIndirect(VkCommandBuffer cb, int indexed, VkBuffer buf, VkDeviceSize off, VkBuffer count_buf,
                          VkDeviceSize count_off, u32 max, u32 stride);
 void rec_CmdDispatch(VkCommandBuffer cb, u32 x, u32 y, u32 z);
-void rec_CmdFillBuffer(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off, VkDeviceSize size, u32 data);
 void rec_CmdDispatchIndirect(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off);
+void rec_CmdDispatchKey(VkCommandBuffer cb, u32 x, u32 y, u32 z, u64 key, u64 addr); /* the game's: names the shader in a fault */
+void rec_CmdDispatchIndirectKey(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off, u64 key, u64 addr);
+void rec_CmdFillBuffer(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off, VkDeviceSize size, u32 data);
+/* NV diagnostic checkpoints: a hang or device-lost names the last draw or dispatch the GPU reached (record.c sets one
+   before each). Reads and logs both queues' checkpoint markers */
+void vk_checkpoint_dump(const char* why);
 void rec_CmdEndRendering(VkCommandBuffer cb);
 void rec_CmdSetCullMode(VkCommandBuffer cb, VkCullModeFlags mode);
 void rec_CmdSetFrontFace(VkCommandBuffer cb, VkFrontFace face);

@@ -123,6 +123,7 @@ void vk_memory_text(char* out, size_t size) {
 int vk_ok_(VkResult r, const char* what, const char* file, int line) {
     if (r >= 0) return 1;
     WARN("vulkan: %s failed: %s (%d) at %s:%d\n", what, snx_vk_result_str(r), (int)r, file, line);
+    if (r == VK_ERROR_DEVICE_LOST) vk_checkpoint_dump("device lost");
     oom_report(r);
     return 0;
 }
@@ -451,6 +452,7 @@ static int create_device(void) {
     int has_mesh = 0;
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    ext[next++] = VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME; /* the hanging draw's marker (vk/owned.c) */
     {
         SnxVkExtensions e;
         snx_vk_device_extensions(g_vk.phys, &e);

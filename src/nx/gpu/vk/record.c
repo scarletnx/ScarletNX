@@ -439,12 +439,65 @@ typedef struct {
     VkCommandBuffer cb;
     u32 a1, a2, a3, a4;
 } DrawArgs;
+/* NV checkpoints name the draw or dispatch that faults. The marker is a small index into a ring of descriptions the
+   recording thread fills, not a string pointer: a string ring of the same size would be overwritten before the GPU (which
+   lags the recorder by up to the 4 MiB command ring) reads it. The ring covers that whole lag, so an entry is intact
+   when the checkpoint dump reads it */
+#define CP_LOG (1u << 17)
+typedef struct {
+    const char* what;
+    u64 key;
+    u64 addr;
+    u32 gx, gy, gz;
+} CpDesc;
+static CpDesc g_cp_desc[CP_LOG];
+static u64 g_cp_seq;
+static void vk_checkpoint(VkCommandBuffer cb, const char* what, u64 key, u64 addr, u32 gx, u32 gy, u32 gz) {
+    u64 seq = __atomic_fetch_add(&g_cp_seq, 1, __ATOMIC_RELAXED) & (CP_LOG - 1);
+    g_cp_desc[seq] = (CpDesc){what, key, addr, gx, gy, gz};
+    vkCmdSetCheckpointNV(cb, (const void*)(uintptr_t)(seq + 1));
+}
+/* A hang or device-lost is usually a GPU fault: read the queues' NV checkpoints (each a draw or dispatch's marker set
+   above) so the log names the one that hung. Dumped once: after a device-lost every later VK call fails too */
+void vk_checkpoint_dump(const char* why) {
+    static int dumped;
+    if (dumped) return;
+    dumped = 1;
+    VkQueue qs[2] = {g_vk.gfx, g_vk.compute};
+    const char* names[2] = {"graphics", "compute"};
+    u32 qi;
+    if (g_vk.compute == g_vk.gfx || !g_vk.compute) { /* one queue: dump it once */
+        qs[1] = VK_NULL_HANDLE;
+    }
+    for (qi = 0; qi < 2 && qs[qi]; qi++) {
+        u32 n = 0, i;
+        vkGetQueueCheckpointDataNV(qs[qi], &n, NULL);
+        if (!n) continue;
+        VkCheckpointDataNV* c = (VkCheckpointDataNV*)calloc(n, sizeof *c);
+        if (!c) continue;
+        vkGetQueueCheckpointDataNV(qs[qi], &n, c);
+        for (i = 0; i < n; i++) {
+            u64 idx = (u64)(uintptr_t)c[i].pCheckpointMarker;
+            if (idx >= 1 && idx <= CP_LOG) {
+                CpDesc d = g_cp_desc[idx - 1];
+                LOG("vulkan: %s (%s) checkpoint[%u] stage %#x: %s %016llx code %llx grid %ux%ux%u\n", why, names[qi], i,
+                    c[i].stage, d.what, (unsigned long long)d.key, (unsigned long long)d.addr, d.gx, d.gy, d.gz);
+            } else {
+                LOG("vulkan: %s (%s) checkpoint[%u] stage %#x: marker %p\n", why, names[qi], i, c[i].stage,
+                    c[i].pCheckpointMarker);
+            }
+        }
+        free(c);
+    }
+}
 static void draw_run(const void* p) {
     const DrawArgs* x = p;
+    vk_checkpoint(x->cb, "draw", 0, 0, 0, 0, 0);
     if (!rec_drop_draw()) vkCmdDraw(x->cb, x->a1, x->a2, x->a3, x->a4);
 }
 void rec_CmdDraw(VkCommandBuffer cb, u32 vertices, u32 instances, u32 first_vertex, u32 first_instance) {
     if (!rec_on(cb)) {
+        vk_checkpoint(cb, "draw", 0, 0, 0, 0, 0);
         vkCmdDraw(cb, vertices, instances, first_vertex, first_instance);
         return;
     }
@@ -460,11 +513,13 @@ typedef struct {
 } DrawIndexedArgs;
 static void draw_indexed_run(const void* p) {
     const DrawIndexedArgs* x = p;
+    vk_checkpoint(x->cb, "draw_indexed", 0, 0, 0, 0, 0);
     if (!rec_drop_draw()) vkCmdDrawIndexed(x->cb, x->a1, x->a2, x->a3, x->a4, x->a5);
 }
 void rec_CmdDrawIndexed(VkCommandBuffer cb, u32 indices, u32 instances, u32 first_index, i32 vertex_offset,
                         u32 first_instance) {
     if (!rec_on(cb)) {
+        vk_checkpoint(cb, "draw_indexed", 0, 0, 0, 0, 0);
         vkCmdDrawIndexed(cb, indices, instances, first_index, vertex_offset, first_instance);
         return;
     }
@@ -479,10 +534,12 @@ typedef struct {
 } DrawMeshArgs;
 static void draw_mesh_run(const void* p) {
     const DrawMeshArgs* x = p;
+    vk_checkpoint(x->cb, "mesh", 0, 0, 0, 0, 0);
     if (!rec_drop_draw()) vkCmdDrawMeshTasksEXT(x->cb, x->groups, 1, 1);
 }
 void rec_CmdDrawMeshTasks(VkCommandBuffer cb, u32 groups) {
     if (!rec_on(cb)) {
+        vk_checkpoint(cb, "mesh", 0, 0, 0, 0, 0);
         vkCmdDrawMeshTasksEXT(cb, groups, 1, 1);
         return;
     }
@@ -498,6 +555,7 @@ typedef struct {
     u32 kind, max, stride;
 } DrawIndirectArgs;
 static void draw_indirect_now(const DrawIndirectArgs* x) {
+    vk_checkpoint(x->cb, "draw_indirect", 0, 0, 0, 0, 0);
     switch (x->kind) {
         case 0: vkCmdDrawIndirect(x->cb, x->buf, x->off, x->max, x->stride); break;
         case 1: vkCmdDrawIndexedIndirect(x->cb, x->buf, x->off, x->max, x->stride); break;
@@ -523,23 +581,68 @@ void rec_CmdDrawIndirect(VkCommandBuffer cb, int indexed, VkBuffer buf, VkDevice
     rec_commit();
 }
 REC3(CmdBindIndexBuffer, VkBuffer, VkDeviceSize, VkIndexType)
-/* generated under other names: the calls go through vk_gpuprof's timing of each dispatch first */
-void rec_CmdDispatch_raw(VkCommandBuffer cb, u32 a1, u32 a2, u32 a3);
-void rec_CmdDispatchIndirect_raw(VkCommandBuffer cb, VkBuffer a1, VkDeviceSize a2);
-#define rec_CmdDispatch         rec_CmdDispatch_raw
-#define rec_CmdDispatchIndirect rec_CmdDispatchIndirect_raw
-REC3(CmdDispatch, u32, u32, u32)
-REC2(CmdDispatchIndirect, VkBuffer, VkDeviceSize)
-#undef rec_CmdDispatch
-#undef rec_CmdDispatchIndirect
+/* generated under other names: the calls go through vk_gpuprof's timing of each dispatch first, and each carries a
+   checkpoint so a hanging dispatch (a Xid 109 CTX SWITCH TIMEOUT) is named in vk/owned.c's queue checkpoint dump */
+typedef struct {
+    VkCommandBuffer cb;
+    u32 a1, a2, a3;
+    u64 key, addr;
+} DispatchArgs;
+static void dispatch_run(const void* p) {
+    const DispatchArgs* x = p;
+    vk_checkpoint(x->cb, "cs", x->key, x->addr, x->a1, x->a2, x->a3);
+    vkCmdDispatch(x->cb, x->a1, x->a2, x->a3);
+}
+static void rec_CmdDispatch_raw(VkCommandBuffer cb, u32 a1, u32 a2, u32 a3, u64 key, u64 addr) {
+    if (!rec_on(cb)) {
+        vk_checkpoint(cb, "cs", key, addr, a1, a2, a3);
+        vkCmdDispatch(cb, a1, a2, a3);
+        return;
+    }
+    DispatchArgs* x = rec_push(dispatch_run, sizeof *x);
+    *x = (DispatchArgs){cb, a1, a2, a3, key, addr};
+    rec_commit();
+}
+typedef struct {
+    VkCommandBuffer cb;
+    VkBuffer a1;
+    VkDeviceSize a2;
+    u64 key, addr;
+} DispatchIndirectArgs;
+static void dispatch_indirect_run(const void* p) {
+    const DispatchIndirectArgs* x = p;
+    vk_checkpoint(x->cb, "cs", x->key, x->addr, 1, 1, 1); /* the grid is in the buffer */
+    vkCmdDispatchIndirect(x->cb, x->a1, x->a2);
+}
+static void rec_CmdDispatchIndirect_raw(VkCommandBuffer cb, VkBuffer a1, VkDeviceSize a2, u64 key, u64 addr) {
+    if (!rec_on(cb)) {
+        vk_checkpoint(cb, "cs", key, addr, 1, 1, 1);
+        vkCmdDispatchIndirect(cb, a1, a2);
+        return;
+    }
+    DispatchIndirectArgs* x = rec_push(dispatch_indirect_run, sizeof *x);
+    *x = (DispatchIndirectArgs){cb, a1, a2, key, addr};
+    rec_commit();
+}
 void rec_CmdDispatch(VkCommandBuffer cb, u32 x, u32 y, u32 z) {
     int timed = vk_gpuprof_dispatch_begin(cb);
-    rec_CmdDispatch_raw(cb, x, y, z);
+    rec_CmdDispatch_raw(cb, x, y, z, 0, 0);
     if (timed) vk_gpuprof_dispatch_end(cb);
 }
 void rec_CmdDispatchIndirect(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off) {
     int timed = vk_gpuprof_dispatch_begin(cb);
-    rec_CmdDispatchIndirect_raw(cb, buf, off);
+    rec_CmdDispatchIndirect_raw(cb, buf, off, 0, 0);
+    if (timed) vk_gpuprof_dispatch_end(cb);
+}
+/* the game's compute dispatches (compute.c) carry the program's key and code address, so a fault names its shader */
+void rec_CmdDispatchKey(VkCommandBuffer cb, u32 x, u32 y, u32 z, u64 key, u64 addr) {
+    int timed = vk_gpuprof_dispatch_begin(cb);
+    rec_CmdDispatch_raw(cb, x, y, z, key, addr);
+    if (timed) vk_gpuprof_dispatch_end(cb);
+}
+void rec_CmdDispatchIndirectKey(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off, u64 key, u64 addr) {
+    int timed = vk_gpuprof_dispatch_begin(cb);
+    rec_CmdDispatchIndirect_raw(cb, buf, off, key, addr);
     if (timed) vk_gpuprof_dispatch_end(cb);
 }
 REC0(CmdEndRendering)

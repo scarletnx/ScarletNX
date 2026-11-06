@@ -1679,9 +1679,9 @@ rebind:
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->p);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_vk.cs_playout, 0, 1, &set, 0, NULL);
     if (d->indirect)
-        rec_CmdDispatchIndirect(cb, grid_buf, grid_off);
+        rec_CmdDispatchIndirectKey(cb, grid_buf, grid_off, p->key, pa);
     else
-        rec_CmdDispatch(cb, gx, gy, gz);
+        rec_CmdDispatchKey(cb, gx, gy, gz, p->key, pa);
     if (resident) {
         vk_all_barrier(cb); /* its writes before what reads them next */
         for (int i = 0; i < ng; i++) {

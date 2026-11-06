@@ -956,6 +956,7 @@ static void vk_report_stall(void) {
          (unsigned long long)n, (unsigned long long)gate, (unsigned long long)cgate, (unsigned long long)gdone,
          (unsigned long long)gsub, (unsigned long long)cdone, (unsigned long long)csub,
          (unsigned long long)vk_rec_behind());
+    if (gdone < gsub || cdone < csub) vk_checkpoint_dump("stall");
 }
 static void vkr_idle(void) {
     vk_lock();
