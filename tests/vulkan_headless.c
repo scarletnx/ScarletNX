@@ -3146,10 +3146,11 @@ static int check_stream_epoch(void) {
 /* A copy into a block linear surface moves its tiles only, the blocks of its lines' GOB columns in each row of blocks:
    the rest of the surface keeps its bytes and their owner. vk_dma_stats counts what each copy reads and writes. On
    the DMA test's twins, against the CPU reference, ops one after another from the same bytes; alias[i]: op i writes
-   through a second GPU address of the GPU's twin */
+   through a second GPU address of the GPU's twin. From op quiet on nothing lands: the GPU's results the copies read
+   are copied on the GPU, however many owners they have */
 #define DMA_GA2 0x260000000ull
-static int dma_tiles_case(const char* what, const GpuDmaOp* ops, const int* alias, u32 n, u64 want) {
-    u64 c0, b0, m0, c1, b1, m1;
+static int dma_tiles_case(const char* what, const GpuDmaOp* ops, const int* alias, u32 n, u64 want, u32 quiet) {
+    u64 c0, b0, m0, c1, b1, m1, lands = 0;
     for (int k = 0; k < 2; k++) {
         u8* t = GP(k ? DMA_B : DMA_A);
         for (u32 i = 0; i < DMA_SPAN; i++) t[i] = (u8)(i * 37 + (i >> 9) * 11 + 7);
@@ -3157,12 +3158,18 @@ static int dma_tiles_case(const char* what, const GpuDmaOp* ops, const int* alia
     vk_dma_stats(&c0, &b0, &m0);
     for (u32 i = 0; i < n; i++) {
         GpuDmaOp g = ops[i], c = ops[i];
+        if (i == quiet) lands = own_landings();
         g.src.addr += DMA_GA, g.dst.addr += alias && alias[i] ? DMA_GA2 : DMA_GA;
         c.src.addr += DMA_GB, c.dst.addr += DMA_GB;
         CHECK(g_renderer->dma_copy(&g));
         dma_copy_ref(&c);
     }
     vk_dma_stats(&c1, &b1, &m1);
+    if (quiet < n && own_landings() != lands) {
+        fprintf(stderr, "dma tiles, %s: %llu landings from copy %u on\n", what,
+                (unsigned long long)(own_landings() - lands), quiet);
+        return 1;
+    }
     guest_done(DMA_A, DMA_SPAN);
     if (memcmp(GP(DMA_A), GP(DMA_B), DMA_SPAN) || m1 - m0 != want) {
         u32 i = 0;
@@ -3238,7 +3245,7 @@ static int check_dma_tiles(void) {
     o[0].lines = 64;
     o[0].src = pitch_side(0x1000, 272);
     o[0].dst = bl_side(0x80000, 2048, 256, 4, 520, 100);
-    CHECK(!dma_tiles_case("a small copy into a big surface", o, NULL, 1, 272 * 63 + 256 + 2 * 5 * 8192));
+    CHECK(!dma_tiles_case("a small copy into a big surface", o, NULL, 1, 272 * 63 + 256 + 2 * 5 * 8192, 1));
     /* then 48 lines of 384 bytes into (600, 120), over part of the first's: GOB columns 9 to 15, both rows of blocks */
     o[1] = o[0];
     o[1].width = o[1].line_in = o[1].line_out = 384;
@@ -3246,7 +3253,7 @@ static int check_dma_tiles(void) {
     o[1].src = pitch_side(0x8000, 400);
     o[1].dst.ox = 600, o[1].dst.oy = 120;
     CHECK(!dma_tiles_case("two copies over one destination in order", o, NULL, 2,
-                          272 * 63 + 256 + 2 * 5 * 8192 + 400 * 47 + 384 + 2 * 7 * 8192));
+                          272 * 63 + 256 + 2 * 5 * 8192 + 400 * 47 + 384 + 2 * 7 * 8192, 1));
     /* the second through another GPU address of the same memory, and a third within the surface: 64 lines of 200
        bytes from (0, 0), the first's tiles beside them, to (1500, 140), GOB columns 23 to 26 of row of blocks 1 */
     o[2] = o[0];
@@ -3254,7 +3261,26 @@ static int check_dma_tiles(void) {
     o[2].src = bl_side(0x80000, 2048, 256, 4, 0, 0);
     o[2].dst.ox = 1500, o[2].dst.oy = 140;
     CHECK(!dma_tiles_case("an alias of the destination and a copy within it", o, alias, 3,
-                          272 * 63 + 256 + 2 * 5 * 8192 + 400 * 47 + 384 + 2 * 7 * 8192 + 4 * 8192 + 4 * 8192));
+                          272 * 63 + 256 + 2 * 5 * 8192 + 400 * 47 + 384 + 2 * 7 * 8192 + 4 * 8192 + 4 * 8192, 1));
+    /* 20 copies of 16 lines of 32 bytes, 96 bytes apart, into row of blocks 0 (GOB columns 0, 1, 3, 4 ... 28), each
+       its owner, then 128 lines of 1984 bytes from (32, 0) over all of them: the owners' bytes it keeps are copied on
+       the GPU, 16 owners at a time */
+    GpuDmaOp many[21];
+    for (u32 i = 0; i < 20; i++) {
+        many[i] = (GpuDmaOp){0};
+        many[i].multi = 1;
+        many[i].width = many[i].line_in = many[i].line_out = 32;
+        many[i].lines = 16;
+        many[i].src = pitch_side(0x50000 + i * 0x200, 32);
+        many[i].dst = bl_side(0x80000, 2048, 256, 4, i * 96, 0);
+    }
+    many[20] = many[0];
+    many[20].width = many[20].line_in = many[20].line_out = 1984;
+    many[20].lines = 128;
+    many[20].src = pitch_side(0x1000, 1984);
+    many[20].dst.ox = 32;
+    CHECK(!dma_tiles_case("a copy over 20 owners", many, NULL, 21,
+                          20 * (15 * 32 + 32 + 8192) + 127 * 1984 + 1984 + 32 * 8192, own_traps() ? 20 : 21));
     CHECK(!dma_reused_source());
     puts("dma tiles: a copy moves its tiles only, in order, through aliases, and a reused source is not read again");
     return 0;
