@@ -936,6 +936,8 @@ static void am_applet_finish(LibApplet* a) {
 /* the applet has finished by the time the game looks, its state changed and its output there; an inline keyboard
    runs until it is finalized */
 static SvcObj* am_applet_new(u32 applet_id, u32 mode) {
+    /* an Ounce's SDK numbers the same applets from 0x01000000, and has a second of some at 0x01010000 */
+    if (applet_id >> 24 == 1) applet_id &= 0xff;
     SvcObj* o = nn_am_service_ILibraryAppletAccessor_new_data(g_hle.am.applets, g_hle.am.applet_next, "library applets");
     LibApplet* a = (LibApplet*)o->data;
     a->applet_id = applet_id;
