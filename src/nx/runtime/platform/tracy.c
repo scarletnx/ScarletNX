@@ -4,6 +4,7 @@
 #include "nx/runtime/platform/tracy.h"
 #include "common/filesystem/host.h"
 #include "common/utilities/build_info.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/common.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/startup.h"
@@ -447,6 +448,12 @@ static void tracy_plots_send(void) {
         {"gpu idle: queued", 0, 0, 1},
         {"gpu busy", 2, 0, 1},
         {"gpu submissions/frame", 0, 0, 1},
+        {"copy MB", 1, 0, 1},
+        {"gpu untimed draws", 0, 0, 1},
+        {"gpu untimed dispatches", 0, 0, 1},
+        {"audio queued ms", 0, 0, 1},
+        {"audio underruns", 0, 1, 0},
+        {"audio frame ms", 0, 0, 1},
         {"jit compile ms", 0, 0, 1},
         {"jit batch size", 0, 0, 1},
         {"jit batch functions", 0, 0, 1},
@@ -498,6 +505,40 @@ static uint16_t g_gpu_query[SNX_TRACY_GPU_CTX];
 
 static int gpu_ctx_ok(int ctx) { return ctx >= 0 && ctx < SNX_TRACY_GPU_CTX; }
 
+/* A GPU zone's source location, cached per name and per connection. The client gives each allocation a block of its
+   own and tells its server of it once, so a zone for a name this connection has already announced takes that one:
+   a render pass's zone would otherwise allocate a block for every pass, and a draw's (vk_gpu_draw_profile) one for
+   every draw. A new connection has a new server, which knows none of the ids before it: the cache is cleared, and
+   the names are announced to it again. */
+#define GPU_NAMES 128
+static struct {
+    char name[64]; /* the zone's name, "" for a slot holding none */
+    uint32_t color;
+    uint64_t srcloc; /* the client's block for it, 0 until one is asked for */
+} g_gpu_name[GPU_NAMES];
+static uint64_t g_gpu_name_conn;
+static uint64_t gpu_zone_srcloc(const char* name, size_t len, uint32_t color, uint64_t conn) {
+    uint64_t srcloc, h;
+    if (conn != g_gpu_name_conn) {
+        g_gpu_name_conn = conn;
+        memset(g_gpu_name, 0, sizeof g_gpu_name);
+    }
+    if (len >= sizeof g_gpu_name[0].name) /* too long to keep: one block, as it was */
+        return ___tracy_alloc_srcloc_name(0, __FILE__, sizeof __FILE__ - 1, __func__, sizeof __func__ - 1, name, len,
+                                          color);
+    h = snx_fnv1a(SNX_FNV_BASIS, name, len) % GPU_NAMES;
+    if (g_gpu_name[h].srcloc && g_gpu_name[h].color == color && !memcmp(g_gpu_name[h].name, name, len + 1))
+        return g_gpu_name[h].srcloc;
+    srcloc =
+        ___tracy_alloc_srcloc_name(0, __FILE__, sizeof __FILE__ - 1, __func__, sizeof __func__ - 1, name, len, color);
+    if (srcloc) { /* a name this slot held before is not the server's any more: this one takes its place */
+        memcpy(g_gpu_name[h].name, name, len + 1);
+        g_gpu_name[h].color = color;
+        g_gpu_name[h].srcloc = srcloc;
+    }
+    return srcloc;
+}
+
 int snx_tracy_gpu_context(int ctx, int64_t gpu_time, float period, int calibrated, const char* name) {
     int announced = 0;
     if (!gpu_ctx_ok(ctx) || !snx_tracy_enter()) return 0;
@@ -520,9 +561,8 @@ uint16_t snx_tracy_gpu_zone_begin(const char* name, uint32_t color, int ctx, uin
     if (ep) *ep = 0;
     if (!gpu_ctx_ok(ctx) || !name || !*name || !snx_tracy_enter()) return 0;
     if (TracyCIsConnected && g_gpu_sent[ctx]) {
-        /* the client copies the name at the allocation, so one srcloc a zone is all it needs */
-        u64 srcloc = ___tracy_alloc_srcloc_name(0, __FILE__, sizeof __FILE__ - 1, __func__, sizeof __func__ - 1, name,
-                                                strlen(name), color);
+        /* the client copies the name at the allocation, so one srcloc a name is all it needs */
+        u64 srcloc = gpu_zone_srcloc(name, strlen(name), color, snx_tracy_connection_id());
         if (srcloc) {
             uint16_t id = (uint16_t)(g_gpu_query[ctx] + 1);
             if (!id) id = 1; /* 0 is the caller's "none" */
@@ -539,8 +579,14 @@ uint16_t snx_tracy_gpu_zone_begin(const char* name, uint32_t color, int ctx, uin
 
 uint16_t snx_tracy_gpu_zone_end(uint16_t query, int ctx, uint64_t ep) {
     uint16_t q = 0;
+    uint64_t conn;
     /* the gate first: the connection's id reads the client's data, which a run that never started it has none of */
-    if (!query || !gpu_ctx_ok(ctx) || !snx_tracy_enter() || ep != snx_tracy_connection_id()) return 0;
+    if (!query || !gpu_ctx_ok(ctx) || !snx_tracy_enter()) return 0;
+    conn = snx_tracy_connection_id();
+    if (ep != conn) { /* another connection's: its query is not this server's, and it is dropped */
+        snx_tracy_leave();
+        return 0;
+    }
     if (TracyCIsConnected && g_gpu_sent[ctx]) {
         uint16_t id = (uint16_t)(g_gpu_query[ctx] + 1);
         if (!id) id = 1;
@@ -554,7 +600,13 @@ uint16_t snx_tracy_gpu_zone_end(uint16_t query, int ctx, uint64_t ep) {
 }
 
 void snx_tracy_gpu_time(int64_t gpu_time, uint16_t query, int ctx, uint64_t ep) {
-    if (!query || !gpu_ctx_ok(ctx) || !snx_tracy_enter() || ep != snx_tracy_connection_id()) return;
+    uint64_t conn;
+    if (!query || !gpu_ctx_ok(ctx) || !snx_tracy_enter()) return;
+    conn = snx_tracy_connection_id();
+    if (ep != conn) { /* another connection's: dropped, as the end it pairs with was */
+        snx_tracy_leave();
+        return;
+    }
     if (TracyCIsConnected && g_gpu_sent[ctx]) {
         struct ___tracy_gpu_time_data t = {gpu_time, query, (uint8_t)ctx};
         ___tracy_emit_gpu_time_serial(t);

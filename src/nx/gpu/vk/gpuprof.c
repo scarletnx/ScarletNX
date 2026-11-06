@@ -27,7 +27,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 
-#define GP_QUERIES 8192 /* timestamps per frame slot: two per pass */
+#define GP_QUERIES 8192 /* timestamps per frame slot: two per pass, and two per draw while profiling them */
 #define GP_KEYS    1024 /* targets summed over 600 presents */
 
 typedef struct {
@@ -57,6 +57,10 @@ typedef struct {
     u32 npass, nsub;
     GpPass pass[GP_QUERIES / 2];
     GpSub sub[GP_SUBS];
+    /* the draws timed on this slot, only while vk_gpu_draw_profile is on: the passes' timestamps are in the same
+       pool, so a frame's passes and draws share the its size */
+    GpDraw draw[GP_DRAWS];
+    u32 ndraw;
 } GpSlot;
 typedef struct {
     u64 gva;
@@ -169,7 +173,7 @@ static GpSlot* gp_slot_reset(VkCommandBuffer cb, int on) {
     if (!g->reset) {
         rec_CmdResetQueryPool(cb, g->pool, 0, GP_QUERIES);
         g->reset = 1;
-        g->used = g->npass = g->nsub = 0;
+        g->used = g->npass = g->nsub = g->ndraw = 0;
     }
     return g;
 }
@@ -207,6 +211,56 @@ void vk_gpuprof_waited(u64 value, int kind) {
     g_waited[value % GP_WAITS].value = value;
     g_waited[value % GP_WAITS].kind = kind + 1;
 }
+#if defined(SNX_TRACY)
+/* vk_gpu_draw_profile: one GPU zone per draw or dispatch, named by what it is. A timestamp between draws leaves the
+   pipeline waiting for the one before it on many devices, so it is opt-in, and capped: past the cap, and past what
+   the slot's pool holds with the passes', the rest are counted (g_draw_lost) and shown in the trace. */
+static int g_draw_on = -1; /* vk_gpu_draw_profile, read once at start */
+static u32 g_draw_lost;    /* draws that went untimed: past the cap, or without room in the pool */
+static GpDraw* g_draw_at;  /* the draw being recorded, for its end timestamp (recording is serialized) */
+int vk_gpuprof_draws_on(void) {
+    if (g_draw_on < 0) {
+        g_draw_on = g_settings.gpu_draw_profile && g_vk.props.limits.timestampComputeAndGraphics;
+        if (g_settings.gpu_draw_profile && !g_draw_on)
+            WARN("vulkan: vk_gpu_draw_profile: the device has no timestamps on its graphics queue\n");
+    }
+    return g_draw_on;
+}
+/* before a draw or dispatch: its zone, and the timestamp the GPU writes as it reaches it */
+void vk_gpuprof_draw_begin(VkCommandBuffer cb, u64 pipeline, u32 topology, u32 count, u32 instances) {
+    GpSlot* g;
+    GpDraw* d;
+    char name[64];
+    g_draw_at = NULL;
+    if (!vk_gpuprof_draws_on() || !g_in_pass) return;
+    /* the draws' timestamps are in the slot's pool with the passes', so the same reset serves them, and the check
+       above has already asked whether the device has them */
+    if (!(g = gp_slot_reset(cb, 1))) return;
+    if (g->used + 2 > GP_QUERIES || g->ndraw >= GP_DRAWS) {
+        g_draw_lost++; /* counted per frame, and reported at the frame's end whether or not a client is attached */
+        return;
+    }
+    d = &g->draw[g->ndraw++];
+    d->qi = g->used;
+    d->q0 = d->q1 = 0;
+    snprintf(name, sizeof name, "gpu draw %llx topo %u %u x %u", (unsigned long long)pipeline, topology, count,
+             instances);
+    if (snx_tracy_attached()) d->q0 = snx_tracy_gpu_zone_begin(name, 0x8f4a3d, VK_GPU_CTX_GRAPHICS, &d->ep);
+    gp_stamp(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, g->pool, g->used);
+    g->used++;
+    g_draw_at = d;
+}
+/* after it: the timestamp the GPU writes as it leaves, which closes the zone the begin opened */
+void vk_gpuprof_draw_end(VkCommandBuffer cb) {
+    GpDraw* d = g_draw_at;
+    GpSlot* g;
+    if (!d || !(g = g_slot[vk_frame_slot()])) return;
+    gp_stamp(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, g->pool, d->qi + 1);
+    g->used++;
+    if (d->q0) d->q1 = snx_tracy_gpu_zone_end(d->q0, VK_GPU_CTX_GRAPHICS, d->ep);
+    g_draw_at = NULL;
+}
+#endif
 /* before vkCmdBeginRendering, outside any pass */
 void vk_gpuprof_pass_begin(VkCommandBuffer cb, const Surf* rt, const Surf* zt) {
     GpSlot* g = gp_slot_reset(cb, gp_on());
@@ -396,7 +450,19 @@ void vk_gpuprof_frame_done(u32 slot) {
             snx_tracy_gpu_time((i64)ts[p->qi], p->q0, VK_GPU_CTX_GRAPHICS, p->ep);
             snx_tracy_gpu_time((i64)ts[p->qi + 1], p->q1, VK_GPU_CTX_GRAPHICS, p->ep);
         }
-    }
+        for (u32 i = 0; i < g->ndraw; i++) {
+            const GpDraw* d = &g->draw[i];
+            if (!d->q0 || !d->q1) continue;
+            snx_tracy_gpu_time((i64)ts[d->qi], d->q0, VK_GPU_CTX_GRAPHICS, d->ep);
+            snx_tracy_gpu_time((i64)ts[d->qi + 1], d->q1, VK_GPU_CTX_GRAPHICS, d->ep);
+        }
+        /* what went untimed in this frame: the cap's, and the pool's with the passes' in it */
+        if (g_draw_lost) {
+            SNX_PLOT("gpu untimed draws", (double)g_draw_lost);
+            g_draw_lost = 0;
+        }
+    } else if (g_draw_lost)
+        g_draw_lost = 0; /* a frame without a client keeps no count */
 #endif
     double period = g_vk.props.limits.timestampPeriod;
     for (u32 i = 0; i < g->npass; i++) {

@@ -4450,6 +4450,12 @@ retry:
         rec_CmdBindTransformFeedbackBuffersEXT(cb, 0, xcount, xbuf, xoff, xsize);
         rec_CmdBeginTransformFeedbackEXT(cb, 0, xcount, from, counter_offs);
     }
+#if defined(SNX_TRACY)
+    /* its zone on the GPU track, opt-in (vk_gpu_draw_profile): a timestamp at each side of the draws, so the timeline
+       says which draw of a pass's took the time. Outside the predication: a predicated region writes no timestamp */
+    u32 draw_count = dc->indirect ? dc->draw_count : indexed ? icount : count;
+    vk_gpuprof_draw_begin(cb, (u64)g_draw.pipe, topology, draw_count, instances);
+#endif
     pred_begin(cb, o->pred);
     if (dc->indirect) {
         if (indexed) rec_CmdBindIndexBuffer(cb, ibuf, ioff, itype);
@@ -4460,6 +4466,9 @@ retry:
     } else
         rec_CmdDraw(cb, count, instances, first, base_instance);
     pred_end(cb, o->pred);
+#if defined(SNX_TRACY)
+    vk_gpuprof_draw_end(cb);
+#endif
     if (xcount) {
         rec_CmdEndTransformFeedbackEXT(cb, 0, xcount, counters, counter_offs);
         o->xfb_started = (u8)((o->xfb_started | xbound) & 15);

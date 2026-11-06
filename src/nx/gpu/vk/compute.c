@@ -78,11 +78,13 @@ typedef struct {
     u64 ar_cap, org_cap, cval;
     CsOut out[256];
     int nout, gfx;
-#if defined(SNX_TRACY)
     VkQueryPool qpool; /* the batch's span on the GPU track, its two timestamps read back when it lands */
     u16 q0, q1;
     u64 ep; /* the connection the begin went out on: an end or a time from another one is dropped */
-#endif
+    /* the dispatches this batch timed (vk_gpu_draw_profile), its own in its own pool: the batch is put aside and
+       landed later, so they travel with it as its zone ids do */
+    GpDraw draw[CS_DISPATCHES];
+    u32 ndraw, used;
 } CsBatch;
 #define CS_PENDING 3
 static CsBatch g_pend[CS_PENDING];
@@ -95,9 +97,7 @@ static u64 g_cval;
 static int g_ar_gfx;
 static u64 g_org_cap;
 u64 g_vk_dispatches, g_vk_cs_batches, g_vk_cs_wait_ns;
-#if defined(SNX_TRACY)
 u64 g_vk_cs_cpu_reads; /* dispatches kept on the compute queue because the CPU reads what they write */
-#endif
 /* the dispatches skipped, by why: most reasons are logged once, so the counts show which one a game's dispatches keep
    hitting (a program that wasn't translated is skipped every time it is dispatched) */
 enum {
@@ -245,7 +245,6 @@ static u64 arena_alloc(u64 size) {
 }
 
 /* submits the batch without waiting; it signals g_vk_csem with the next value */
-#if defined(SNX_TRACY)
 /* the batch's span on the GPU track (VK_GPU_CTX_COMPUTE): a timestamp at each end of its command buffer, with its
    own two-query pool, so a landed batch's results survive the batches recorded after it */
 static VkQueryPool g_cqpool;
@@ -253,14 +252,55 @@ static u16 g_cq0, g_cq1;
 static u64 g_cq_ep;             /* the connection the batch's begin went out on */
 static SnxTracyGpuCal g_cs_cal; /* the announcement's anchor, and whether it was calibrated */
 static u64 g_cs_cal_conn;       /* the connection that anchor was announced on */
+/* vk_gpu_draw_profile on the compute queue: a zone per dispatch, its two timestamps in the batch's own pool after the
+   batch's two. A timestamp between dispatches leaves the queue waiting for the one before it on many devices, so it is
+   opt-in and capped, as the graphics draws' are (gpuprof.c). Recording is serialized, so the dispatch being recorded
+   is one static */
+#define CS_QUERIES (2 + 2 * CS_DISPATCHES)
+static GpDraw g_cs_draw[CS_DISPATCHES];
+static u32 g_cs_ndraw, g_cs_used, g_cs_lost; /* dispatches timed, the pool's queries they took, the untimed */
+static GpDraw* g_cs_at;                      /* the dispatch being recorded, for its end timestamp */
+/* before the dispatch: its zone, and the timestamp the queue writes as it reaches it */
+static void cs_dispatch_zone(VkCommandBuffer cb, u64 pipeline, u32 blocks, u32 threads) {
+    GpDraw* d;
+    char name[64];
+    if (g_cs_used + 2 > 2 * CS_DISPATCHES || g_cs_ndraw >= CS_DISPATCHES) {
+        ++g_cs_lost;
+        return;
+    }
+    d = &g_cs_draw[g_cs_ndraw++];
+    d->qi = g_cs_used; /* its first of the two, counted from the batch's own two on */
+    d->q0 = d->q1 = 0;
+    snprintf(name, sizeof name, "gpu dispatch %llx %u blocks %u threads", (unsigned long long)pipeline, blocks,
+             threads);
+    if (snx_tracy_attached()) d->q0 = snx_tracy_gpu_zone_begin(name, 0x3d8f4a, VK_GPU_CTX_COMPUTE, &d->ep);
+    rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, g_cqpool, 2 + d->qi);
+    g_cs_used += 2;
+    g_cs_at = d;
+}
+/* after it: the timestamp the queue writes as it leaves, which closes the zone the begin opened */
+static void cs_dispatch_end(VkCommandBuffer cb) {
+    GpDraw* d = g_cs_at;
+    g_cs_at = NULL; /* a begin is ended once, or not at all */
+    if (!d) return;
+    rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, g_cqpool, 2 + d->qi + 1);
+    if (d->q0) d->q1 = snx_tracy_gpu_zone_end(d->q0, VK_GPU_CTX_COMPUTE, d->ep);
+}
 /* the landed batch's timestamps onto the track: the context announced at its first read-back (with the calibration
    clock's pair for its anchor when it has one), then calibrated or anchored, then the pair of timestamps its zone
    went out with */
-static void cs_times(VkQueryPool pool, u16 q0, u16 q1, u64 ep) {
+/* the batch's span onto the GPU track: the pool, its two timestamps and its zone ids, and the dispatches it
+   timed (vk_gpu_draw_profile) in the same pool after them, of which *ndraw is how many there are */
+static void cs_times(VkQueryPool pool, u16 q0, u16 q1, u64 ep, const GpDraw* draw, u32* ndraw, u32 used) {
     i64 ts2[2];
+    i64 tsd[2 * CS_DISPATCHES]; /* the dispatch zones' two timestamps each, read only when there are any */
     if (!pool) return;
     if (!VK_OK(vkGetQueryPoolResults(g_vk.dev, pool, 0, 2, sizeof ts2, ts2, 8, VK_QUERY_RESULT_64_BIT))) return;
     if (!snx_tracy_attached()) return;
+    /* the dispatches vk_gpu_draw_profile timed: their timestamps are the batch's own two after, in the same pool */
+    if (*ndraw && !VK_OK(vkGetQueryPoolResults(g_vk.dev, pool, 2, used, sizeof tsd, tsd, sizeof tsd[0],
+                                               VK_QUERY_RESULT_64_BIT)))
+        *ndraw = 0; /* not read: their zones' times are not sent */
     int cal = vk_gpuprof_calibrated();
     i64 cpu = 0, gpu = 0;
     int have = cal && vk_gpuprof_clock(&cpu, &gpu);
@@ -286,19 +326,23 @@ static void cs_times(VkQueryPool pool, u16 q0, u16 q1, u64 ep) {
         snx_tracy_gpu_time(ts2[0], q0, VK_GPU_CTX_COMPUTE, ep);
         snx_tracy_gpu_time(ts2[1], q1, VK_GPU_CTX_COMPUTE, ep);
     }
+    /* the dispatches this batch timed: their zones' query ids, and the two timestamps each */
+    for (u32 i = 0; i < *ndraw; i++) {
+        const GpDraw* d = &draw[i];
+        if (!d->q0 || !d->q1) continue;
+        snx_tracy_gpu_time(tsd[d->qi], d->q0, VK_GPU_CTX_COMPUTE, d->ep);
+        snx_tracy_gpu_time(tsd[d->qi + 1], d->q1, VK_GPU_CTX_COMPUTE, d->ep);
+    }
 }
-#endif
 
 static void cs_submit(void) {
     if (!g_recording) return;
     vmaFlushAllocation(g_vk.vma, g_ar_mem, 0, VK_WHOLE_SIZE); /* the arena may not be host coherent */
-#if defined(SNX_TRACY)
     if (g_cqpool && g_cq0) { /* a begin recorded at the buffer's begin: its end, and the timestamp to pair */
         rec_CmdWriteTimestamp2(g_ccb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, g_cqpool, 1);
         /* the end goes out whenever the begin did: a dropped pair never reaches the server apart */
         g_cq1 = snx_tracy_gpu_zone_end(g_cq0, VK_GPU_CTX_COMPUTE, g_cq_ep);
     }
-#endif
     VK_OK(vkEndCommandBuffer(g_ccb));
     VkCommandBufferSubmitInfo c = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = g_ccb};
     VkSemaphoreSubmitInfo sig = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
@@ -369,9 +413,7 @@ static void cs_land_oldest(void) {
     int was = g_landing;
     cs_wait(b->cval);
     g_landing = 1;
-#if defined(SNX_TRACY)
-    cs_times(b->qpool, b->q0, b->q1, b->ep);
-#endif
+    cs_times(b->qpool, b->q0, b->q1, b->ep, b->draw, &b->ndraw, b->used);
     cs_write_back(b->ar_mem, b->ar_ptr, b->org, b->out, b->nout);
     g_landing = was;
     outs_pages(b->out, b->nout, -1);
@@ -391,9 +433,7 @@ static void cs_put_aside(void) {
     VkDescriptorPool dp;
     u8* org;
     u64 org_cap;
-#if defined(SNX_TRACY)
     VkQueryPool qp;
-#endif
     if (!g_recording) return;
     SNX_ZONE(z, "vk compute put aside");
     cs_submit();
@@ -405,20 +445,19 @@ static void cs_put_aside(void) {
                                           .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
                                           .commandBufferCount = 1};
         VK_OK(vkAllocateCommandBuffers(g_vk.dev, &ai, &b->cb));
-#if defined(SNX_TRACY)
+        /* this pool becomes g_cqpool, which the recording path resets whole: the batch's own two, and every
+           dispatch zone's two */
         VkQueryPoolCreateInfo qi = {
-            .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = 2};
+            .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP,
+            .queryCount = CS_QUERIES};
         VK_OK(vkCreateQueryPool(g_vk.dev, &qi, NULL, &b->qpool));
-#endif
         b->dpool = vk_desc_pool_new();
     }
     cb = b->cb;
     dp = b->dpool;
     org = b->org;
     org_cap = b->org_cap;
-#if defined(SNX_TRACY)
     qp = b->qpool;
-#endif
     b->cb = g_ccb;
     b->dpool = g_dpool;
     b->ar = g_ar;
@@ -429,15 +468,19 @@ static void cs_put_aside(void) {
     b->org_cap = g_org_cap;
     b->cval = g_cval;
     b->gfx = g_ar_gfx;
-#if defined(SNX_TRACY)
     /* the batch's track pool and zone ids swap with its command buffer: the next batch records into this slot's */
     b->qpool = g_cqpool;
     b->q0 = g_cq0;
     b->q1 = g_cq1;
     b->ep = g_cq0 ? g_cq_ep : 0;
+    /* the dispatches it timed are its own to land */
+    for (u32 i = 0; i < CS_DISPATCHES; i++) b->draw[i] = g_cs_draw[i];
+    b->ndraw = g_cs_ndraw;
+    b->used = g_cs_used;
+    g_cs_ndraw = g_cs_used = 0; /* the next batch's dispatches start here */
+    g_cs_at = NULL;
     g_cq0 = g_cq1 = 0;
     g_cqpool = qp;
-#endif
     memcpy(b->out, g_out, (size_t)g_nout * sizeof g_out[0]);
     b->nout = g_nout;
     g_phead++;
@@ -462,10 +505,8 @@ static void cs_land(void) {
     cs_submit();
     cs_wait(g_cval);
     g_inflight = 0;
-#if defined(SNX_TRACY)
-    cs_times(g_cqpool, g_cq0, g_cq1, g_cq0 ? g_cq_ep : 0);
+    cs_times(g_cqpool, g_cq0, g_cq1, g_cq0 ? g_cq_ep : 0, g_cs_draw, &g_cs_ndraw, g_cs_used);
     g_cq0 = g_cq1 = 0;
-#endif
     cs_write_back(g_ar_mem, g_ar_ptr, g_org, g_out, g_nout);
     outs_pages(g_out, g_nout, -1);
     /* only now: until the results are in memory, readers on other threads wait for this landing in
@@ -1222,9 +1263,7 @@ void vk_dispatch(const DispatchState* d) {
         if (!((p->si.gbuf_wmask >> i) & 1) || !sa[i]) continue;
         if ((run = gmmu_run(sa[i], ss[i], &cpu)) && vk_own_cpu_read(cpu, run, CS_CPU_READ_PRESENTS)) {
             resident = 0;
-#if defined(SNX_TRACY)
             g_vk_cs_cpu_reads++; /* the loop exits with it: one a dispatch */
-#endif
         }
     }
     VkOwnRes* made[16] = {0};
@@ -1633,23 +1672,26 @@ rebind:
                                           .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
             VK_OK(vkBeginCommandBuffer(g_ccb, &b));
             g_recording = 1;
-#if defined(SNX_TRACY)
             /* the batch's span on the GPU track: the pool's reset, a timestamp at the top, and the zone's begin,
                whose id its end and the read-back pair with */
+            /* the dispatches the cap or the pool left out of the batch before this one, said as the next batch's
+               zones start: it is the compute track's own "gpu untimed" count */
+            if (g_cs_lost) SNX_PLOT("gpu untimed dispatches", (double)g_cs_lost);
+            g_cs_ndraw = g_cs_used = g_cs_lost = 0;
+            g_cs_at = NULL;
             if (snx_tracy_attached() && g_vk.props.limits.timestampComputeAndGraphics) {
                 if (!g_cqpool) {
                     VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
                                                 .queryType = VK_QUERY_TYPE_TIMESTAMP,
-                                                .queryCount = 2};
+                                                .queryCount = CS_QUERIES};
                     vkCreateQueryPool(g_vk.dev, &qi, NULL, &g_cqpool);
                 }
                 if (g_cqpool) {
-                    rec_CmdResetQueryPool(g_ccb, g_cqpool, 0, 2);
+                    rec_CmdResetQueryPool(g_ccb, g_cqpool, 0, CS_QUERIES);
                     rec_CmdWriteTimestamp2(g_ccb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, g_cqpool, 0);
                     g_cq0 = snx_tracy_gpu_zone_begin("gpu compute batch", 0x2f9e8f, VK_GPU_CTX_COMPUTE, &g_cq_ep);
                 }
             }
-#endif
         }
         cb = g_ccb;
     }
@@ -1674,12 +1716,19 @@ rebind:
     }
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->p);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_vk.cs_playout, 0, 1, &set, 0, NULL);
+    /* its zone on the GPU track (vk_gpu_draw_profile), around a dispatch the compute queue records itself: the
+       pool's is the batch's, which its own land reads back. A dispatch whose results a draw takes is recorded in
+       the frame's command buffer instead, whose submission the land does not wait for, so it takes no zone: its
+       timestamps would be gone from the pool by the time anything reads it */
+    if (vk_gpuprof_draws_on() && g_cqpool && cb == g_ccb)
+        cs_dispatch_zone(cb, (u64)p->p, d->indirect ? 0 : gx * gy * gz, lx * ly * lz);
     if (d->indirect) {
         rec_CmdDispatchIndirect(cb, grid_buf, grid_off);
     } else {
         vk_ck(cb, VK_CK_DISPATCH, gx, gy, gz, 0);
         rec_CmdDispatch(cb, gx, gy, gz);
     }
+    if (g_cs_at) cs_dispatch_end(cb);
     if (resident) {
         vk_all_barrier(cb); /* its writes before what reads them next */
         for (int i = 0; i < ng; i++) {

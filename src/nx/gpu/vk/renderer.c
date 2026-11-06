@@ -539,6 +539,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
         /* the counters as of the last present: a slow frame says what it did, which names what a hitch waited for */
         static u64 was[15];
         static VkResourceStats resource_was;
+        static u64 was_bytes;
         VkResourceStats resource_is = g_vk_resource_stats;
         u64 now_ns = plat_ns(), is[15] = {0};
         vk_pipeline_stats(&is[0], &is[1], &is[2], &is[3], &is[4], &is[5]);
@@ -553,6 +554,10 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
 #if defined(SNX_TRACY)
             gpu_memory_plots();
             host_memory_plots();
+            /* the bytes the frame's passes copied between them: the gap plot says how much of a frame's GPU time
+               the copies' gaps took, this says how much they moved */
+            SNX_PLOT("copy MB", (double)(g_rec_buf_bytes - was_bytes) / 1048576.0);
+            was_bytes = g_rec_buf_bytes;
             /* what the CPU has put in the queues and the GPU hasn't got through: the CPU running ahead of the GPU
                (a submit backlog), and the compute batches waiting to land */
             {
