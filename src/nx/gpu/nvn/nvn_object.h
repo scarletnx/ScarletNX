@@ -31,7 +31,8 @@ static inline void nvn_record_relocate(u64 dst, u64 src, u32 op, u32 size) {
         }
 }
 
-#define NVN_DEVICE_INFO_ITEMS 0x69
+/* the items of nvnDeviceGetInteger an API 231 driver's switches reach. The table in nvn_object.c names those to 0x68 */
+#define NVN_DEVICE_INFO_ITEMS 0xb1
 /* a program whose last stage before rasterization captures: its serial and its transform feedback layout (128 bytes,
    which don't fit the program object) */
 typedef struct {
