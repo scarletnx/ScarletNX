@@ -3879,7 +3879,8 @@ static int check_dma_owners(void) {
    linear from a row inside a row of blocks, block linear to pitch with the source's rows of blocks cut by the bands
    and lines past it reading zero, between block heights 8 and 1 GOBs, the remap, a fill, a kept component, the
    source read at submission, and a slice of a volume. They used to be dropped, the destination left with the bytes
-   it had. Copies that fit the cap, up to the byte, take no bands */
+   it had. Copies that fit the cap, up to the byte, take no bands unless their scratch needs more than a quarter of
+   it */
 static int check_dma_bands(void) {
     const u64 cap = g_vk.alloc_cap;
     u64 copies, bands, bytes, copies0, bands0, bytes0;
@@ -3957,35 +3958,54 @@ static int check_dma_bands(void) {
     failed |= dma_case(o);
     u64 one_copies, one_bands, one_bytes;
     vk_dma_stats(&one_copies, &one_bands, &one_bytes);
-    /* lines that need the cap exactly (64 KiB of source lines, of the destination's tiles and of scratch rows) take
-       no bands either, also read at submission; twice as many go in bands of up to a quarter of the cap, 32 lines,
-       so fewer than 16 bands */
+    /* lines whose scratch rows need more than a quarter of the cap go in bands that ask for that quarter at most, as
+       the scratch buffer stays as big as the most asked of it: half the cap, the cap exactly (64 KiB of source lines,
+       of the destination's tiles and of scratch rows), also read at submission, and twice it, in bands of up to 32
+       lines, so fewer than 16 of them */
+    static const u32 rows_lines[4] = {64, 128, 128, 256};
+    const u64 quarter = (64 << 10) / VK_PART_SHARE;
+    u64 asked[4], took[4], c, m, b0, b1;
+    int over = 0;
     o.multi = 1;
     o.width = o.line_in = o.line_out = 512;
-    o.lines = 128;
     o.src = pitch_side(0x1000, 512);
     o.dst = bl_side(0x40000, 512, 256, 1, 0, 0);
-    failed |= dma_case(o) || dma_snap_case(o);
-    u64 cap_copies, cap_bands, cap_bytes, twice_copies, twice_bands, twice_bytes;
-    vk_dma_stats(&cap_copies, &cap_bands, &cap_bytes);
-    o.lines = 256;
+    for (int i = 0; i < 4; i++) {
+        vk_dma_stats(&c, &b0, &m);
+        o.lines = rows_lines[i];
+        vk_bl_scratch_asked();
+        failed |= i == 2 ? dma_snap_case(o) : dma_case(o);
+        asked[i] = vk_bl_scratch_asked();
+        vk_dma_stats(&c, &b1, &m);
+        took[i] = b1 - b0;
+    }
+    /* the cap exactly with no scratch rows, pitch to pitch: all of it, with no bands */
+    o.dst = pitch_side(0x40000, 512);
+    o.lines = 128;
+    vk_dma_stats(&c, &b0, &m);
     failed |= dma_case(o);
-    vk_dma_stats(&twice_copies, &twice_bands, &twice_bytes);
+    vk_dma_stats(&c, &b1, &m);
     g_vk.alloc_cap = cap;
+    for (int i = 0; i < 4; i++)
+        if (asked[i] > quarter || (i == 3 && took[i] >= 16)) {
+            fprintf(stderr,
+                    "dma bands: %u lines of 512 bytes into block linear asked for %llu bytes of scratch in %llu bands: "
+                    "%llu at most may stay, in fewer than 16 bands for 256 lines\n",
+                    rows_lines[i], (unsigned long long)asked[i], (unsigned long long)took[i],
+                    (unsigned long long)quarter);
+            over = 1;
+        }
     if (failed || copies - copies0 != 9 || bands - bands0 < 9 * 2 || one_copies != copies + 1 || one_bands != bands ||
-        cap_copies != one_copies + 2 || cap_bands != one_bands || twice_copies != cap_copies + 1 ||
-        twice_bands - cap_bands >= 16)
+        b1 != b0)
         fprintf(stderr,
-                "dma bands: failed %d, %llu copies in %llu bands, then %llu copy in %llu bands, %llu copies of the "
-                "cap in %llu bands (0 expected), %llu of twice it in %llu bands (fewer than 16 expected)\n",
+                "dma bands: failed %d, %llu copies in %llu bands, then %llu copy in %llu bands, the cap pitch to pitch "
+                "in %llu bands (0 expected)\n",
                 failed, (unsigned long long)(copies - copies0), (unsigned long long)(bands - bands0),
                 (unsigned long long)(one_copies - copies), (unsigned long long)(one_bands - bands),
-                (unsigned long long)(cap_copies - one_copies), (unsigned long long)(cap_bands - one_bands),
-                (unsigned long long)(twice_copies - cap_copies), (unsigned long long)(twice_bands - cap_bands));
+                (unsigned long long)(b1 - b0));
     CHECK(!failed && copies - copies0 == 9 && bands - bands0 >= 9 * 2);
     CHECK(one_copies == copies + 1 && one_bands == bands && one_bytes > bytes);
-    CHECK(cap_copies == one_copies + 2 && cap_bands == one_bands);
-    CHECK(twice_copies == cap_copies + 1 && twice_bands - cap_bands < 16);
+    CHECK(!over && b1 == b0);
     return 0;
 }
 

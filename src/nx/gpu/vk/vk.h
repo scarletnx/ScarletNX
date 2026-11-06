@@ -945,8 +945,10 @@ int vk_bl_move(VkCommandBuffer cb, const VkBlMove* m, int to_bl, VkBuffer bl, u6
 void vk_bl_barrier(VkCommandBuffer cb, int before);
 /* a device-local buffer of size bytes or more for the linear side, *cap of them, the same one until a bigger one is
    asked for (vk_bl_barrier orders its uses; the old one lives until the frame's work is done); VK_NULL_HANDLE past
-   g_vk.alloc_cap or when memory ran out */
+   g_vk.alloc_cap or when memory ran out. vk_bl_scratch_asked: the most bytes asked of it since the last call, which
+   counts again from 0: what a test sees of a request the buffer already held */
 VkBuffer vk_bl_scratch(u64 size, u64* cap);
+u64 vk_bl_scratch_asked(void);
 
 /* owned.c: guest memory the GPU holds (memory/own.c, docs/GPU_OWNERSHIP.md). An engine's result (VIC's planes, a
    DMA copy's destination, a 2D blit's, inline-to-memory) is a resource: a device-local buffer in the guest's own
@@ -1094,24 +1096,27 @@ int vk_vic_compose(const VicJob* j);
 int vk_nvdec_write(const NvdecPic* p);
 void* vk_nvdec_hw_device(void);
 /* dma.c: a launch of the DMA copy engine on the GPU (gpu.h's GpuDmaOp), its destination published: 1 when done, 0
-   when it could not be (said, with the bytes it lacked). A launch bigger than one allocation goes in bands of lines.
-   Takes vk_lock. vk_dma_stats: the launches so far, the bands the big ones took, and the guest bytes they read and
-   wrote: a pitch linear side's lines, a block linear one's tiles (the blocks of its lines' GOB columns) */
+   when it could not be (said, with the bytes it lacked). A launch bigger than one allocation, or whose scratch is
+   bigger than VK_PART_SHARE of one, goes in bands of lines. Takes vk_lock. vk_dma_stats: the launches so far, the
+   bands the big ones took, and the guest bytes they read and wrote: a pitch linear side's lines, a block linear one's
+   tiles (the blocks of its lines' GOB columns) */
 int vk_dma_copy(const GpuDmaOp* o);
 void vk_dma_stats(u64* copies, u64* bands, u64* bytes);
 /* A transfer that may be more than one buffer can hold (cap: g_vk.alloc_cap, or less), taken in bands of lines: the
    DMA's copies, the 2D engine's blits (blit.c), VIC's jobs (vic.c). need(user, y, n): the most bytes one of the
    buffers of lines [y, y + n) takes. A band ends where its end, counted from base, is a multiple of unit (a block
-   linear side's rows of blocks) */
+   linear side's rows of blocks). split: in bands even when all the lines fit the cap, for a transfer that would grow a
+   buffer which stays (the DMA's scratch) */
 typedef struct {
     u64 cap;
     u32 unit, base;
     u64 (*need)(const void* user, u32 y, u32 n);
     const void* user;
+    int split;
 } VkBands;
-/* the lines from y on (left of them) the next band takes: all of them when they are the first and fit the cap, else
-   as many as fit VK_PART_SHARE of it, at least a unit. *most: the bytes the band needs, more than the cap when even a
-   unit is */
+/* the lines from y on (left of them) the next band takes: all of them when they are the first, fit the cap and b
+   isn't split, else as many as fit VK_PART_SHARE of it, at least a unit. *most: the bytes the band needs, more than
+   the cap when even a unit is */
 u32 vk_band(const VkBands* b, u32 y, u32 left, u64* most);
 /* memory for the DMA engine's copies of sources at submission, which the copy reads in place (Renderer.snap_alloc and
    snap_free, from any thread), and the bytes it holds */
