@@ -142,6 +142,12 @@ static struct {
         u64 barriers, read_reuses, counted_work, explicit_barriers, parallel_writes;
         int reused_write, read_pending, required;
     } order;
+    /* What writable bindings cost since the start (vk_buf_writable_stats), and up to the last report: guest bytes
+       copied for them before their draws (their original bytes and their output's fill), their results' bytes copied
+       back from the GPU to land, and the results landed by comparing them with their original bytes */
+    struct {
+        u64 copied, read_back, merged;
+    } wstat, wstat_seen;
 } g_buffer;
 static void own_link(u32 i) {
     Vb* e = &g_vb[i];
@@ -715,6 +721,7 @@ void vk_buf_frame_done(u64 frame) {
         }
         g_nchg = 0;
         vk_write_changed_runs(o->addr, o->ptr, o->org, o->size, chg_add, o);
+        g_buffer.wstat.merged++;
         out_pages(o, -1);
         out_rebase_later(o, done);
         if (copy_stats_on()) {
@@ -759,6 +766,7 @@ void vk_buf_host_barrier(VkCommandBuffer cb, u64 frame) {
         src = o->buf;
         dst = back;
         regions[n++] = (VkBufferCopy){.srcOffset = o->off, .dstOffset = at, .size = o->size};
+        g_buffer.wstat.read_back += o->size;
         o->ptr = p;
         o->mem = mem;
     }
@@ -1963,6 +1971,8 @@ static int writable_owned(GfxOut* o, u64 gva, u32 len, VkBuffer buf, u64 off) {
     if (!o->initial) return 0;
     vk_render_end();
     vk_guest_read(gva, len, o->ptr, buf, off);
+    g_buffer.wstat.copied += len;
+    g_buffer.wstat.read_back += len;
     copy_barrier(VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
                  VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
     VkBufferCopy copy = {off, at, len};
@@ -1979,6 +1989,7 @@ typedef struct {
 static void gap_copy(void* user, u8* to, u64 a, u64 b) {
     const GapCopy* g = user;
     memcpy(to, g->src + a, b - a);
+    g_buffer.wstat.copied += b - a;
 }
 /* Each writable binding keeps its original bytes until its draw's frame completes. The guest can keep writing RAM:
    vk_write_changed resolves those writes against the GPU result at the fence. */
@@ -2016,6 +2027,7 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered)
     if (pending == 2) { /* guest memory's bytes, with the earlier results copied over them below (out_rebase) */
         read_untracked(gva, o->org, len);
         o->composed = 1;
+        g_buffer.wstat.copied += len;
     } else if (!owned) {
         const u8* src = guest_bytes(gva, len);
         if (!src) {
@@ -2023,6 +2035,7 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered)
             return 0;
         }
         memcpy(o->org, src, len);
+        g_buffer.wstat.copied += len;
     }
     out_map(o, gva);
     u64 align = vk_stage_align();
@@ -2040,8 +2053,10 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered)
     } else if (pending == 2) {
         GapCopy g = {o->org};
         (void)gfx_overlay(gva, len, *buf, *off, o->ptr, gap_copy, &g); /* in place: nothing to stage */
-    } else
+    } else {
         memcpy(o->ptr, o->org, len);
+        g_buffer.wstat.copied += len;
+    }
     o->addr = gva;
     o->size = len;
     o->buf = *buf;
@@ -2164,9 +2179,10 @@ static int draw_output_page(const DrawPage* p, u8* ptr, VkBuffer buf, u64 off, V
        memory behind the BAR, where a CPU read crosses PCIe uncached (this copy was most of the GPU thread's memcpy
        time in one game) */
     page = gmem_ptr_untracked(p->gva, 4096);
-    if (page)
+    if (page) {
         memcpy(o->org, page, 4096);
-    else
+        g_buffer.wstat.copied += 4096;
+    } else
         memset(o->org, 0, 4096);
     o->pages[0] = o->vmap[0] = p->key;
     o->cpu = p->key << 12;
@@ -2232,9 +2248,10 @@ static int atlas_fill(const DrawPage* p, size_t unique, u8* ptr, VkBuffer atlas,
     out_list_free(&l);
     for (i = 0; i < unique; i++) {
         const u8* page = p[i].key & (1ull << 63) ? NULL : gmem_ptr_untracked(p[i].gva, 4096);
-        if (page)
+        if (page) {
             memcpy(ptr + i * 4096, page, 4096);
-        else
+            g_buffer.wstat.copied += 4096;
+        } else
             memset(ptr + i * 4096, 0, 4096);
     }
     memset(&c, 0, sizeof c);
@@ -2939,6 +2956,11 @@ void vk_buf_stats(u32* count, u64* bytes) {
     *count = g_buffer.n;
     *bytes = g_buffer.bytes;
 }
+void vk_buf_writable_stats(u64* copied, u64* read_back, u64* merged) {
+    *copied = g_buffer.wstat.copied;
+    *read_back = g_buffer.wstat.read_back;
+    *merged = g_buffer.wstat.merged;
+}
 
 /* buffers not read for twenty seconds, and in 120 presents, go */
 void vk_buf_frame(void) {
@@ -2967,6 +2989,12 @@ void vk_buf_frame(void) {
             (unsigned long long)g_wb_reason[WB_MAP], (unsigned long long)(g_wb_reason_ns[WB_MAP] / 1000000),
             (unsigned long long)g_wb_draw_miss[0], (unsigned long long)g_wb_draw_miss[2],
             (unsigned long long)g_wb_draw_miss[1], (unsigned long long)g_wb_draw_miss[3]);
+        LOG("vulkan: writable storage over 600 presents: %llu bytes copied before the draws, %llu read back, %llu "
+            "results merged\n",
+            (unsigned long long)(g_buffer.wstat.copied - g_buffer.wstat_seen.copied),
+            (unsigned long long)(g_buffer.wstat.read_back - g_buffer.wstat_seen.read_back),
+            (unsigned long long)(g_buffer.wstat.merged - g_buffer.wstat_seen.merged));
+        g_buffer.wstat_seen = g_buffer.wstat;
         LOG("vulkan: aliased storage draws=%llu pages=%llu; buffer cache entries=%u, lookups=%llu probing %llu more "
             "slots\n",
             (unsigned long long)g_alias_draws, (unsigned long long)g_alias_pages, g_vblive,
