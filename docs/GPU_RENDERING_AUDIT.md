@@ -58,7 +58,7 @@ untouched padding. Reading the image independently prevents matching upload/down
 | Custom sample positions | Exact sample grids, sixteenth-pixel coordinates and lower-left grid phase enter the pipeline key. Repeated grids reduce only when their patterns are identical. Depth images retain compatible sample-location state. | CPU keys and GPU custom-raster fixtures, with explicit device limits. |
 | Coverage to color | Native coverage output or a safe post-depth shader path writes signed/unsigned single-component integer masks. The shader path retains the early-test and output restrictions described below. | Per-sample depth rejection and signed/unsigned mask fixtures. |
 | Presentation rotation | A GPU quad handles 90-degree rotation together with crop and flip coordinates. | Presentation rotation, crop and flip fixtures. |
-| Linux placed-memory aliases | When a DMA buffer rejects a nonzero mmap offset, map the whole allocation at offset zero and move the requested subrange with `mremap`. This preserves shared backing without a CPU copy. | POSIX mapping and placed-view coherence fixtures. |
+| Linux placed-memory aliases | When a DMA buffer rejects a nonzero mmap offset, map the whole allocation at offset zero and move the requested subrange with `mremap`. This preserves shared backing without a CPU copy. | POSIX mapping, concurrent hole reuse and placed-view coherence fixtures. |
 
 The fixed-state payloads share one opcode and remain outside the serialized draw-state ABI. Per-draw state only
 copies the enabled fixed-state arrays. Pipeline keys separate host capabilities and effective coverage state.
@@ -251,7 +251,13 @@ Each GPU run checks nine shader-read cases, 8,192 integer-to-half results, 768 f
 results, 170 strict gradient samples and 24 uniform-offset samples, in addition to the existing rendering suite.
 The native conversion path and software fallback have separate tests. Disabling map invalidation makes the
 changed-table regression fail. Restoring the old full-window shader read makes the no-host-wait regression fail.
-Both mutations were restored byte for byte before rebuilding.
+Both mutations were restored byte for byte before rebuilding. A third regression puts another mapping into the
+source hole left by `mremap`; whole-range cleanup fails it, while prefix/suffix cleanup preserves the mapping.
+
+The integrated 489-test CTest run passed 485 checks and skipped three optional QEMU checks. The SDL keyboard-focus
+check failed under the dummy video driver. All Vulkan checks passed. The five POSIX platform variants also passed
+after the alias cleanup change. All 55 Linux and MinGW syntax checks passed for the changed C sources.
+A full Windows cross-link remains unavailable locally because the target LLVM import library is absent.
 
 AMD explicitly skips native advanced blending and native mixed-sample coverage. NVIDIA 615.78.08 returns mip 1
 for a separate cross-face cube-gradient probe whose analytic result is mip 2. That exact driver/result combination
@@ -299,10 +305,10 @@ rounds with exact-output gates produced these component timings:
 
 | Active indexed tables | Baseline median, ns/operation | Candidate median, ns/operation | CPU time reduction | Faster paired rounds |
 | --- | ---: | ---: | ---: | ---: |
-| 1 | 1432.545 | 97.147 | 93.2% | 7/7 |
-| 2 | 912.284 | 195.201 | 78.6% | 7/7 |
-| 5 | 1325.394 | 463.639 | 65.0% | 7/7 |
-| 10 | 910.251 | 915.035 | -0.5% | 3/7 |
+| 1 | 1857.822 | 98.339 | 94.7% | 7/7 |
+| 2 | 909.439 | 193.923 | 78.7% | 7/7 |
+| 5 | 1004.337 | 462.797 | 53.9% | 7/7 |
+| 10 | 914.208 | 924.648 | -1.1% | 2/7 |
 
 These synthetic results measure map preparation and staging, not the full renderer, GPU time, total CPU use or game
 FPS. The maximum-size case shows no measured improvement. Absolute timings depend on the host and run conditions.
