@@ -5,7 +5,66 @@
    tracking needs Linux 6.7 for userfaultfd's; write_tracking=1 (and every host without it) tracks by protection, and
    write_tracking=2 must make the scan say -1. The arguments: the folder for its files, then Debug settings as the
    runtime takes them, --key=value */
+#if defined(__linux__)
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#include <errno.h>
+#include <stdarg.h>
+#include <string.h>
+#include <sys/mman.h>
+
+/* Intercept only this test's alias operation. Simulate a driver that rejects nonzero mmap offsets, then another
+   thread that immediately maps the hole left by mremap. All other calls reach the real system calls. */
+typedef struct {
+    int armed, fd, rejected, moved, sentinel_error;
+    void* destination;
+    unsigned char* sentinel;
+    size_t sentinel_size;
+} AliasCleanup;
+static AliasCleanup g_alias_cleanup;
+static void* alias_test_mmap(void* address, size_t length, int protection, int flags, int fd, off_t offset) {
+    if (g_alias_cleanup.armed && fd == g_alias_cleanup.fd && address == g_alias_cleanup.destination && offset) {
+        g_alias_cleanup.rejected++;
+        errno = EINVAL;
+        return MAP_FAILED;
+    }
+    return mmap(address, length, protection, flags, fd, offset);
+}
+static void* alias_test_mremap(void* address, size_t old_size, size_t new_size, int flags, ...) {
+    void* destination = NULL;
+    void* result;
+    if (flags & MREMAP_FIXED) {
+        va_list args;
+        va_start(args, flags);
+        destination = va_arg(args, void*);
+        va_end(args);
+        result = mremap(address, old_size, new_size, flags, destination);
+    } else
+        result = mremap(address, old_size, new_size, flags);
+    if (g_alias_cleanup.armed && g_alias_cleanup.rejected && destination == g_alias_cleanup.destination &&
+        result != MAP_FAILED) {
+        g_alias_cleanup.moved++;
+        void* sentinel = mmap(address, old_size, PROT_READ | PROT_WRITE,
+                              MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+        if (sentinel == MAP_FAILED)
+            g_alias_cleanup.sentinel_error = errno;
+        else {
+            memset(sentinel, 0xa7, old_size);
+            g_alias_cleanup.sentinel = sentinel;
+            g_alias_cleanup.sentinel_size = old_size;
+        }
+    }
+    return result;
+}
+#define mmap alias_test_mmap
+#define mremap alias_test_mremap
+#endif
 #include "nx/runtime/platform/plat_posix.c"
+#if defined(__linux__)
+#undef mmap
+#undef mremap
+#endif
 #include "nx/runtime/ini.h"
 #include <stdarg.h>
 #include <stdio.h>
@@ -481,6 +540,26 @@ static void test_guest_memory(const char* dir) {
               "a file range did not share its pages or changed its neighbors");
         CHECK(plat_vm_map_fd(alias, 0x2000, fd, (2u << 20) - 0x1000, 2u << 20) == -1 && alias[18] == 0x88,
               "an out-of-bounds file range replaced the destination");
+        g_alias_cleanup = (AliasCleanup){.armed = 1, .fd = fd, .destination = alias};
+        int remapped = plat_vm_map_fd(alias, 0x2000, fd, 0x3000, 2u << 20);
+        g_alias_cleanup.armed = 0;
+        CHECK(!remapped && g_alias_cleanup.rejected == 1 && g_alias_cleanup.moved == 1 &&
+                  !g_alias_cleanup.sentinel_error && g_alias_cleanup.sentinel,
+              "the alias cleanup race did not reach its forced mmap fallback and sentinel mapping");
+        /* mincore tests the mapping before any read. The old whole-allocation munmap removed this sentinel. */
+        unsigned char residency[2];
+        int retained = g_alias_cleanup.sentinel &&
+                       !mincore(g_alias_cleanup.sentinel, g_alias_cleanup.sentinel_size, residency);
+        CHECK(retained, "alias cleanup removed another thread's mapping in the old mremap hole");
+        if (retained) {
+            CHECK(g_alias_cleanup.sentinel[17] == 0xa7 &&
+                      g_alias_cleanup.sentinel[g_alias_cleanup.sentinel_size - 1] == 0xa7,
+                  "alias cleanup changed another thread's sentinel bytes");
+            munmap(g_alias_cleanup.sentinel, g_alias_cleanup.sentinel_size);
+        }
+        if (!remapped)
+            CHECK(alias[17] == 0x77 && alias[18] == 0x88 && g[0xffff] == 0x55 && g[0x12000] == 0x66,
+                  "the mmap fallback changed its file offset, shared bytes or destination neighbors");
         plat_vm_decommit(g, 2u << 20);
         plat_gpu_buffer_free(fd, handle, 2u << 20);
 #elif !defined(__ANDROID__)

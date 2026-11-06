@@ -1652,7 +1652,14 @@ int plat_vm_map_fd(u8* p, u64 size, int fd, u64 off, u64 allocation_size) {
             uintptr_t a = (uintptr_t)base, b = (uintptr_t)p;
             if (b >= a ? b - a >= allocation_size : a - b >= size)
                 r = mremap((u8*)base + off, (size_t)size, (size_t)size, MREMAP_MAYMOVE | MREMAP_FIXED, p) == MAP_FAILED;
-            munmap(base, (size_t)allocation_size); /* includes the hole left by the moved pages */
+            if (r)
+                munmap(base, (size_t)allocation_size);
+            else {
+                /* The moved range is now a hole that another thread can map. Release only our remaining pages. */
+                if (off) munmap(base, (size_t)off);
+                u64 tail = allocation_size - off - size;
+                if (tail) munmap((u8*)base + off + size, (size_t)tail);
+            }
         }
     }
 #endif
