@@ -2,9 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* --script's presses against a clock and a present count the test sets: one at a time in ms is held press_len ms from
    then, one at present N ("Nf") from the first ask at or after that present, however late it comes, and both mix.
-   Then input_record and input_replay on the backend's polls at the presents the test sets, with files in the folder
-   ctest gives: what a record writes, what a replay gives and when it ends, a record of a replay, and each line a replay
-   refuses */
+   Then input_record and input_replay on the backend's polls at the presents the test sets, with the game's folder the
+   one ctest gives: what a record writes in its slot and what it says of the one it replaces, what a replay gives and
+   when it ends, a record of a replay, and each slot and line refused */
 #define plat_ns test_ns
 #include "nx/runtime/platform/unattended.c"
 #include <setjmp.h>
@@ -15,15 +15,21 @@
 static u64 g_now;
 u64 test_ns(void) { return g_now; }
 int g_frames;
+char g_exedir[1024], g_exename[256]; /* the game's folder and name, the slots' */
 void snx_save_before_exit(void) {}
 void ini_poll(int final) { (void) final; }
 void plat_exit_now(int code) { exit(code); }
+static char g_log[4096]; /* the log's lines since the test last cleared it */
 void logf_(int lvl, const char* fmt, ...) {
+    char line[1024];
+    size_t n = strlen(g_log);
     va_list ap;
     (void)lvl;
     va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
+    vsnprintf(line, sizeof line, fmt, ap);
     va_end(ap);
+    fputs(line, stderr);
+    snprintf(g_log + n, sizeof g_log - n, "%s", line);
 }
 const char* snx_build_info(void) { return "ScarletNX test"; }
 /* fatal's message, and back to where refused asked */
@@ -90,12 +96,25 @@ static void put(const char* path, const char* text) {
     CHECK(ok, "%s not written", path);
 }
 static char g_text[4096];
+/* the file's text, NULL when there is no file */
 static const char* got(const char* path) {
     FILE* f = fopen(path, "rb");
-    size_t n = f ? fread(g_text, 1, sizeof g_text - 1, f) : 0;
+    size_t n;
+    if (!f) return NULL;
+    n = fread(g_text, 1, sizeof g_text - 1, f);
     g_text[n] = 0;
-    if (f) fclose(f);
+    fclose(f);
     return g_text;
+}
+static int same(const char* path, const char* text) {
+    const char* t = got(path);
+    return t && !strcmp(t, text);
+}
+/* a slot's file as the game's folder and name make it: <game folder>/tas/<name>.<slot>.snxtas */
+static const char* slot_file(int slot) {
+    static char path[8][1400];
+    snprintf(path[slot % 8], sizeof path[0], "%stas/%s.%d.snxtas", g_exedir, g_exename, slot);
+    return path[slot % 8];
 }
 
 static void tas(const char* dir) {
@@ -110,8 +129,8 @@ static void tas(const char* dir) {
     static const struct {
         const char *text, *says;
     } bad[] = {
-        {"5:1:0,0,0\n", "input_replay: line 1 \"5:1:0,0,0\": it is not frame:buttons:lx,ly,rx,ry"},
-        {"# a note\n\n5:1:0,0,0,0,0\n", "input_replay: line 3 \"5:1:0,0,0,0,0\": it is not frame:buttons:lx,ly,rx,ry"},
+        {"5:1:0,0,0\n", "input_replay: slot 4, line 1 \"5:1:0,0,0\": it is not frame:buttons:lx,ly,rx,ry"},
+        {"# a note\n\n5:1:0,0,0,0,0\n", "input_replay: slot 4, line 3 \"5:1:0,0,0,0,0\": it is not frame:buttons"},
         {"5;1:0,0,0,0\n", "line 1 \"5;1:0,0,0,0\": it is not frame:buttons:lx,ly,rx,ry"},
         {"x:1:0,0,0,0\n", "line 1 \"x:1:0,0,0,0\": its frame \"x\" is not a whole number from 0 to 2147483647"},
         {"-1:1:0,0,0,0\n", "line 1 \"-1:1:0,0,0,0\": its frame \"-1\" is not a whole number from 0 to 2147483647"},
@@ -132,25 +151,25 @@ static void tas(const char* dir) {
         {"1111111111111111111111111111111111111111111111111111111111111111111111111111111111\n",
          "line 1 \"111111111111111111111111111111111111111111111111111111111111... (82 bytes)\": it is not"},
     };
-    char rec[1100], again[1100], route[1100], none[1100];
+    char want[sizeof header + sizeof lines];
     size_t i;
-    snprintf(rec, sizeof rec, "%s/unattended_script-record.txt", dir);
-    snprintf(again, sizeof again, "%s/unattended_script-again.txt", dir);
-    snprintf(route, sizeof route, "%s/unattended_script-route.txt", dir);
-    snprintf(none, sizeof none, "%s/unattended_script-none.txt", dir);
-    remove(rec);
-    remove(again);
-    remove(none);
+    int s;
+    snprintf(g_exedir, sizeof g_exedir, "%s/", dir);
+    snprintf(g_exename, sizeof g_exename, "testgame");
+    for (s = 0; s <= 9; s++) remove(slot_file(s));
+    snprintf(want, sizeof want, "%s%s", header, lines);
 
-    /* the record: a line a present the input changed, one a present at most, flushed as it goes */
+    /* the record: slot 1's file, made at the first poll; a line a present the input changed, one a present at most,
+       flushed as it goes */
     g_frames = 2;
-    CHECK(!*refused("input_record", rec), "input_record refused: %s", g_fatal);
+    CHECK(!*refused("input_record", "1"), "input_record=1 refused: %s", g_fatal);
+    CHECK(!got(slot_file(1)), "slot 1's file made before the first poll");
     poll(2, 0, 0, 0, 0, 0); /* neutral, as the record starts from: no line */
-    CHECK(!strcmp(got(rec), header), "the header: \"%s\"", g_text);
+    CHECK(same(slot_file(1), header), "the header: \"%s\"", g_text);
     poll(3, 1, 0, 0, 0, 0);
     poll(3, 1, 0, 0, 0, 0);
     poll(3, 3, 0, 0, 0, 0); /* present 3 has its line: this change goes with present 4's */
-    CHECK(!*refused("input_record", rec), "a read of the same input_record refused: %s", g_fatal);
+    CHECK(!*refused("input_record", "1"), "a read of the same input_record refused: %s", g_fatal);
     poll(4, 3, 0, 0, 0, 0);
     poll(5, 3, -32767, 100, 0, 32767);
     poll(6, 3, -32767, 100, 0, 32767);
@@ -158,35 +177,25 @@ static void tas(const char* dir) {
     poll(7, 0, 0, 0, 0, 0); /* let go in present 7: written with present 8 */
     poll(8, 0, 0, 0, 0, 0);
     poll(9, 0, 0, 0, 0, 0);
-    {
-        char want[sizeof header + sizeof lines];
-        snprintf(want, sizeof want, "%s%s", header, lines);
-        CHECK(!strcmp(got(rec), want), "the record wrote \"%s\"", g_text);
-        CHECK(!*refused("input_record", ""), "an empty input_record refused: %s", g_fatal);
-        poll(10, 1, 0, 0, 0, 0);
-        CHECK(!strcmp(got(rec), want), "a line after the record ended: \"%s\"", g_text);
-        /* never over a file there is */
-        CHECK(strstr(refused("input_record", rec), "input_record: its file could not be made: ") &&
-                  strstr(g_fatal, "; a recording is never written over, so give a path no file has"),
-              "input_record over a recording: \"%s\"", g_fatal);
-        CHECK(!strcmp(got(rec), want), "a recording written over: \"%s\"", g_text);
-        CHECK(!*refused("input_record", ""), "an empty input_record refused: %s", g_fatal);
-    }
+    CHECK(same(slot_file(1), want), "the record wrote \"%s\"", g_text);
+    CHECK(!*refused("input_record", "0"), "input_record=0 refused: %s", g_fatal);
+    poll(10, 1, 0, 0, 0, 0);
+    CHECK(same(slot_file(1), want), "a line after the record ended: \"%s\"", g_text);
 
     /* the replay: neutral before its first line, the last line at or before the present, the controls' input after
        its last line's present; # lines, empty ones and a \r before the \n */
-    put(route, "# a route\n\n10:1:0,0,0,0\n12:2:-32767,0,0,32767\r\n15:0:0,0,0,0\n");
+    put(slot_file(3), "# a route\n\n10:1:0,0,0,0\n12:2:-32767,0,0,32767\r\n15:0:0,0,0,0\n");
     g_frames = 0;
-    CHECK(!*refused("input_replay", route), "input_replay refused: %s", g_fatal);
+    CHECK(!*refused("input_replay", "3"), "input_replay=3 refused: %s", g_fatal);
     poll(0, 0x80, 5, 5, 5, 5);
     CHECK(gave(0, 0, 0, 0, 0), "before the first line: " GAVE);
     poll(9, 0x80, 5, 5, 5, 5);
     CHECK(gave(0, 0, 0, 0, 0), "at present 9: " GAVE);
     poll(10, 0x80, 5, 5, 5, 5);
     CHECK(gave(1, 0, 0, 0, 0), "at present 10: " GAVE);
-    /* a read of the settings naming the same file does not read it again, changed or not */
-    put(route, "10:40:0,0,0,0\n99:40:0,0,0,0\n");
-    CHECK(!*refused("input_replay", route), "a read of the same input_replay refused: %s", g_fatal);
+    /* a read of the settings naming the same slot does not read its file again, changed or not */
+    put(slot_file(3), "10:40:0,0,0,0\n99:40:0,0,0,0\n");
+    CHECK(!*refused("input_replay", "3"), "a read of the same input_replay refused: %s", g_fatal);
     poll(11, 0x80, 5, 5, 5, 5);
     CHECK(gave(1, 0, 0, 0, 0), "at present 11, after a read of the same input_replay: " GAVE);
     poll(12, 0x80, 5, 5, 5, 5);
@@ -195,48 +204,94 @@ static void tas(const char* dir) {
     CHECK(gave(0, 0, 0, 0, 0), "at present 15, the last line's: " GAVE);
     poll(16, 0x80, 5, 5, 5, 5);
     CHECK(gave(0x80, 5, 5, 5, 5), "at present 16, past the last line: " GAVE);
-    CHECK(!*refused("input_replay", route), "a read of the same input_replay refused: %s", g_fatal);
+    CHECK(!*refused("input_replay", "3"), "a read of the same input_replay refused: %s", g_fatal);
     poll(17, 0x40, 1, 2, 3, 4);
     CHECK(gave(0x40, 1, 2, 3, 4), "a read of the same input_replay played it again: " GAVE);
     /* presents gone by between two polls: the last line at or before the present */
-    CHECK(!*refused("input_replay", ""), "an empty input_replay refused: %s", g_fatal);
-    put(route, "20:1:0,0,0,0\n30:4:0,0,0,0\n40:0:0,0,0,0\n");
-    CHECK(!*refused("input_replay", route), "input_replay refused: %s", g_fatal);
+    CHECK(!*refused("input_replay", "0"), "input_replay=0 refused: %s", g_fatal);
+    put(slot_file(3), "20:1:0,0,0,0\n30:4:0,0,0,0\n40:0:0,0,0,0\n");
+    CHECK(!*refused("input_replay", "3"), "input_replay=3 refused: %s", g_fatal);
     poll(35, 0x80, 5, 5, 5, 5);
     CHECK(gave(4, 0, 0, 0, 0), "at present 35: " GAVE);
     poll(50, 0x80, 5, 5, 5, 5);
     CHECK(gave(0x80, 5, 5, 5, 5), "at present 50: " GAVE);
-    CHECK(!*refused("input_replay", ""), "an empty input_replay refused: %s", g_fatal);
+    CHECK(!*refused("input_replay", "0"), "input_replay=0 refused: %s", g_fatal);
 
-    /* the recording played back while recording again: the same file, whatever the controls do */
-    CHECK(!*refused("input_replay", rec), "input_replay of a recording refused: %s", g_fatal);
+    /* slot 1 played back while slot 2 records: the same file, whatever the controls do */
+    CHECK(!*refused("input_replay", "1"), "input_replay=1 refused: %s", g_fatal);
     g_frames = 0;
-    CHECK(!*refused("input_record", again), "input_record refused: %s", g_fatal);
+    CHECK(!*refused("input_record", "2"), "input_record=2 refused: %s", g_fatal);
     for (int f = 0; f <= 8; f++) poll(f, 0x80 | (u64)f, f, -f, 3, 4);
-    CHECK(!*refused("input_record", ""), "an empty input_record refused: %s", g_fatal);
-    {
-        char first[sizeof g_text];
-        snprintf(first, sizeof first, "%s", got(rec));
-        CHECK(!strcmp(first, got(again)), "the record of the replay: \"%s\", the recording \"%s\"", g_text, first);
-    }
-    CHECK(!*refused("input_replay", ""), "an empty input_replay refused: %s", g_fatal);
+    CHECK(!*refused("input_record", "0"), "input_record=0 refused: %s", g_fatal);
+    CHECK(!*refused("input_replay", "0"), "input_replay=0 refused: %s", g_fatal);
+    CHECK(same(slot_file(2), want), "slot 2, the record of slot 1's replay: \"%s\"", g_text);
 
-    /* each line a replay refuses, by its number and its text; the controls' input reaches player 1 after */
+    /* recording a slot again replaces its file, and the log says what it held */
+    g_log[0] = 0;
+    CHECK(!*refused("input_record", "2"), "input_record=2 refused: %s", g_fatal);
+    poll(20, 0, 0, 0, 0, 0);
+    CHECK(
+        strstr(g_log, "input_record: slot 2 replaces its old recording of 9 frames (5 lines, the last at frame 8), ") &&
+            strstr(g_log, slot_file(2)),
+        "the log of slot 2 replaced: \"%s\"", g_log);
+    CHECK(same(slot_file(2), header), "slot 2 after it was replaced: \"%s\"", g_text);
+    CHECK(!*refused("input_record", "0"), "input_record=0 refused: %s", g_fatal);
+    g_log[0] = 0;
+    CHECK(!*refused("input_record", "2"), "input_record=2 refused: %s", g_fatal);
+    poll(21, 0, 0, 0, 0, 0);
+    CHECK(strstr(g_log, "input_record: slot 2 replaces its old recording, which has no lines, "),
+          "the log of slot 2 replaced with no lines: \"%s\"", g_log);
+    CHECK(!*refused("input_record", "0"), "input_record=0 refused: %s", g_fatal);
+    put(slot_file(2), "not one\n");
+    g_log[0] = 0;
+    CHECK(!*refused("input_record", "2"), "input_record=2 refused: %s", g_fatal);
+    poll(22, 0, 0, 0, 0, 0);
+    CHECK(strstr(g_log, ", which is no recording: line 1 \"not one\": it is not frame:buttons:lx,ly,rx,ry"),
+          "the log of slot 2 replaced over no recording: \"%s\"", g_log);
+    CHECK(same(slot_file(2), header), "slot 2 after it was replaced: \"%s\"", g_text);
+    CHECK(!*refused("input_record", "0"), "input_record=0 refused: %s", g_fatal);
+
+    /* a slot outside 0 to 9 ends the run with the value given: ini_read would have made it slot 9 or 0 */
+    CHECK(!strcmp(refused("input_record", "12"), "input_record=12 is not a slot: 1 to 9, or 0 for none"),
+          "input_record=12: \"%s\"", g_fatal);
+    poll(30, 1, 0, 0, 0, 0);
+    CHECK(!got(slot_file(9)), "input_record=12 recorded to slot 9");
+    CHECK(!strcmp(refused("input_replay", "-1"), "input_replay=-1 is not a slot: 1 to 9, or 0 for none"),
+          "input_replay=-1: \"%s\"", g_fatal);
+    CHECK(!strcmp(refused("input_record", "2.5"), "input_record=2.5 is not a slot: 1 to 9, or 0 for none"),
+          "input_record=2.5: \"%s\"", g_fatal);
+    poll(31, 1, 0, 0, 0, 0);
+    CHECK(same(slot_file(2), header), "input_record=2.5 recorded to slot 2: \"%s\"", g_text);
+
+    /* one slot both recorded and played, in either order: refused before its file is touched */
+    put(slot_file(6), "3:1:0,0,0,0\n");
+    CHECK(!*refused("input_replay", "6"), "input_replay=6 refused: %s", g_fatal);
+    CHECK(strstr(refused("input_record", "6"), "input_record and input_replay are both slot 6: recording it would "
+                                               "replace the recording it plays; record to another slot"),
+          "input_record=6 while slot 6 plays: \"%s\"", g_fatal);
+    poll(1, 0x80, 5, 5, 5, 5);
+    CHECK(same(slot_file(6), "3:1:0,0,0,0\n"), "slot 6 changed while it played: \"%s\"", g_text);
+    CHECK(!*refused("input_replay", "0"), "input_replay=0 refused: %s", g_fatal);
+    CHECK(!*refused("input_record", "6"), "input_record=6 refused: %s", g_fatal);
+    CHECK(strstr(refused("input_replay", "6"), "input_record and input_replay are both slot 6"),
+          "input_replay=6 while slot 6 is to be recorded: \"%s\"", g_fatal);
+    CHECK(same(slot_file(6), "3:1:0,0,0,0\n"), "slot 6 changed before a poll: \"%s\"", g_text);
+    CHECK(!*refused("input_record", "0"), "input_record=0 refused: %s", g_fatal);
+
+    /* each line a replay refuses, by its slot, its number and its text; the controls' input reaches player 1 after */
     for (i = 0; i < sizeof bad / sizeof *bad; i++) {
-        put(route, bad[i].text);
-        CHECK(strstr(refused("input_replay", route), bad[i].says), "replay %zu: \"%s\", not \"%s\"", i, g_fatal,
+        put(slot_file(4), bad[i].text);
+        CHECK(strstr(refused("input_replay", "4"), bad[i].says), "replay %zu: \"%s\", not \"%s\"", i, g_fatal,
               bad[i].says);
-        CHECK(!*refused("input_replay", ""), "an empty input_replay refused: %s", g_fatal);
+        CHECK(!*refused("input_replay", "0"), "input_replay=0 refused: %s", g_fatal);
         poll(60, 0x80, 5, 5, 5, 5);
         CHECK(gave(0x80, 5, 5, 5, 5), "replay %zu was refused, then the game took %llx:%d,%d,%d,%d", i,
               (unsigned long long)g_b, g_st[0], g_st[1], g_st[2], g_st[3]);
     }
-    CHECK(strstr(refused("input_replay", none), "input_replay: its file could not be read: "),
-          "input_replay of no file: \"%s\"", g_fatal);
-    CHECK(!*refused("input_replay", ""), "an empty input_replay refused: %s", g_fatal);
-    remove(rec);
-    remove(again);
-    remove(route);
+    CHECK(!strcmp(refused("input_replay", "5"), "input_replay: slot 5 has no recording: input_record=5 makes one"),
+          "input_replay of an empty slot: \"%s\"", g_fatal);
+    CHECK(!*refused("input_replay", "0"), "input_replay=0 refused: %s", g_fatal);
+    for (s = 0; s <= 9; s++) remove(slot_file(s));
 }
 
 int main(int argc, char** argv) {
@@ -314,7 +369,7 @@ int main(int argc, char** argv) {
     }
 
     if (argc < 2) {
-        printf("FAIL: no folder for input_record's and input_replay's files (ctest gives its build folder)\n");
+        printf("FAIL: no folder for the game's input_record and input_replay slots (ctest gives its build folder)\n");
         return 1;
     }
     tas(argv[1]);

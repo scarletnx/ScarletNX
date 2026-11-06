@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Unattended runs, for the windowed and the headless backend alike: the run's limit, screenshots, scripted presses,
-   and player 1's input recorded and played back */
+   and player 1's input recorded to the game's slots and played back from them */
 #include "nx/runtime/platform/unattended.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
@@ -43,16 +43,16 @@ typedef struct {
 } TasLine;
 
 /* The record's file and the replay's lines, the main thread's: the backend's poll and the settings' reads use them.
-   The settings are read again whenever the .ini changes, and a read that names the file a record or a replay has
-   already goes on with it: their paths are kept for that */
+   The settings are read again whenever the .ini changes, and a read that gives the slot a record or a replay has
+   already goes on with it: their slots are kept for that */
 typedef struct {
-    FILE* record;    /* NULL when not recording */
+    FILE* record;    /* record_slot's file, made at the first poll after the slot was set; NULL before and without */
     TasLine written; /* the record's last line: frame -1 and a neutral pad before its first */
     TasLine* replay; /* the replay's lines, frames rising, one allocation; NULL without one or past its end */
     size_t lines;    /* how many */
     size_t next;     /* the first line whose frame no poll reached yet */
-    char record_path[sizeof g_settings.input_record];
-    char replay_path[sizeof g_settings.input_replay];
+    int record_slot; /* 1 to 9, 0 none */
+    int replay_slot;
 } Tas;
 
 /* The file's state. The settings are g_settings' (settings.txt's g_unattended_ini): seconds (0: no time limit), frames,
@@ -145,45 +145,27 @@ int unattended_active(void) { return g_settings.seconds > 0 || g_settings.frames
 
 static int frames_now(void) { return __atomic_load_n(&g_frames, __ATOMIC_RELAXED); }
 
-/* ---- input_record and input_replay: player 1's input, a line "frame:buttons:lx,ly,rx,ry" a present it changed */
+/* ---- input_record and input_replay: player 1's input in the game's slots, a line "frame:buttons:lx,ly,rx,ry" a
+   present it changed */
+
+#define SNX_TAS_EXT ".snxtas"
+
+/* slot's file, <g_exedir>tas/<g_exename>.<slot>.snxtas: the game's folder and name, as state_path makes a save
+   state's */
+static void tas_path(char* out, size_t size, int slot) {
+    snprintf(out, size, "%stas/%s.%d" SNX_TAS_EXT, g_exedir, g_exename, slot);
+}
 
 /* the record's lines are in its file as they are written, so a run that ends in a crash keeps them */
 static void tas_flush(int frame) {
     Tas* t = &g_unattended.tas;
+    char path[sizeof g_exedir + sizeof g_exename + 64];
     int e;
     if (!ferror(t->record) && !fflush(t->record)) return;
     e = errno;
-    LOG("input_record: writing %s failed at frame %d\n", t->record_path, frame);
-    fatal("input_record: writing its file failed at frame %d: %s", frame, strerror(e));
-}
-
-void unattended_record_set(const IniOpt* o, const char* v) {
-    Tas* t = &g_unattended.tas;
-    int frame = frames_now(), e;
-    (void)o;
-    if (!strcmp(t->record_path, v)) return; /* the file it records to already */
-    if (t->record) {
-        LOG("input_record: %s ends at frame %d\n", t->record_path, frame);
-        e = fclose(t->record) ? errno : 0;
-        t->record = NULL;
-        if (e) fatal("input_record: closing its file failed at frame %d: %s", frame, strerror(e));
-    }
-    snprintf(t->record_path, sizeof t->record_path, "%s", v);
-    if (!*v) return;
-    LOG("input_record: player 1's input goes to %s from frame %d\n", v, frame);
-    t->record = snx_fopen(v, "wbx"); /* a recording is never written over: someone played it */
-    if (!t->record) {
-        e = errno;
-        fatal("input_record: its file could not be made: %s%s", strerror(e),
-              e == EEXIST ? "; a recording is never written over, so give a path no file has" : "");
-    }
-    t->written = (TasLine){.frame = -1};
-    fprintf(t->record,
-            "# input_record of %s\n"
-            "# frame:buttons:lx,ly,rx,ry each present player 1's input changed: frame the presents since the game's "
-            "start, buttons in hex\n",
-            snx_build_info());
-    tas_flush(frame);
+    tas_path(path, sizeof path, t->record_slot);
+    LOG("input_record: writing %s failed at frame %d\n", path, frame);
+    fatal("input_record: writing slot %d's file failed at frame %d: %s", t->record_slot, frame, strerror(e));
 }
 
 /* the whole number of s[0, len), decimal digits after an optional -: 1 and *v when from lo to hi, else 0 */
@@ -219,7 +201,7 @@ static int tas_hex(const char* s, size_t len, u64* v) {
     return 1;
 }
 
-/* A line of a replay, s[0, len): 1 and *l, else 0 and why in why */
+/* A line of a recording, s[0, len): 1 and *l, else 0 and why in why */
 static int tas_parse(const char* s, size_t len, TasLine* l, char* why, size_t n) {
     static const char* const axis[4] = {"lx", "ly", "rx", "ry"};
     size_t at[7] = {0}, f = 0, i;
@@ -270,92 +252,162 @@ static void tas_excerpt(const char* s, size_t len, char* out, size_t n) {
     if (i < len) snprintf(out + o, n - o, "... (%zu bytes)", len);
 }
 
-/* The replay's lines from text, frames rising, past # lines and empty ones (a \r before a \n is the line's end too):
-   1, else 0 with the line refused, its number and why in msg, nothing kept */
-static int tas_load(const char* text, size_t size, char* msg, size_t n) {
-    Tas* t = &g_unattended.tas;
-    size_t at, max = 1, line = 0, before = 0, len, text_len;
+/* The lines of a recording's text, frames rising, past # lines and empty ones (a \r before a \n ends a line too), into
+   out unless it is NULL (room for a line a \n, and one more): 1 with how many in *count and the last one's frame in
+   *last (-1 with none), else 0 with the line refused, its number and why in msg */
+static int tas_lines(const char* text, size_t size, TasLine* out, size_t* count, int* last, char* msg, size_t n) {
+    size_t at, line = 0, before = 0, len, text_len, k = 0;
+    TasLine l = {0};
+    int prev = -1;
     char why[160], shown[300];
-    for (at = 0; at < size; at++) max += text[at] == '\n';
-    if (max > SIZE_MAX / sizeof *t->replay) {
-        snprintf(msg, n, "its %zu lines are more than this machine can hold", max);
-        return 0;
-    }
-    t->replay = snx_alloc(max * sizeof *t->replay);
     for (at = 0; at < size; at += len + 1) {
         const char* s = text + at;
         const char* nl = memchr(s, '\n', size - at);
-        TasLine* l = &t->replay[t->lines];
         len = nl ? (size_t)(nl - s) : size - at;
         line++;
         if (!len || s[0] == '#') continue;
         text_len = len - (s[len - 1] == '\r');
         if (!text_len) continue;
-        if (tas_parse(s, text_len, l, why, sizeof why)) {
-            if (!t->lines || l->frame > l[-1].frame) {
-                t->lines++;
+        if (tas_parse(s, text_len, &l, why, sizeof why)) {
+            if (l.frame > prev) {
+                if (out) out[k] = l;
+                k++;
+                prev = l.frame;
                 before = line;
                 continue;
             }
-            snprintf(why, sizeof why, "its frame %d is not past frame %d of line %zu, the one before", l->frame,
-                     l[-1].frame, before);
+            snprintf(why, sizeof why, "its frame %d is not past frame %d of line %zu, the one before", l.frame, prev,
+                     before);
         }
         tas_excerpt(s, text_len, shown, sizeof shown);
         snprintf(msg, n, "line %zu \"%s\": %s", line, shown, why);
-        free(t->replay);
-        t->replay = NULL;
-        t->lines = 0;
         return 0;
     }
-    if (!t->lines) {
-        free(t->replay);
-        t->replay = NULL;
-    }
+    *count = k;
+    *last = prev;
     return 1;
+}
+
+/* The slot key=v names. ini_read took v as a whole number from 0 to 9 and made one outside that the nearest end, which
+   is another slot, so it ends the run here; v not a number never comes here, as ini_read keeps the slot it had */
+static int tas_slot(const char* key, const char* v) {
+    long long slot;
+    if (!tas_int(v, strlen(v), 0, 9, &slot)) fatal("%s=%s is not a slot: 1 to 9, or 0 for none", key, v);
+    return (int)slot;
+}
+
+/* a slot recorded while it plays would lose the recording it plays */
+static void tas_apart(int record, int replay) {
+    if (record && record == replay)
+        fatal("input_record and input_replay are both slot %d: recording it would replace the recording it plays; "
+              "record to another slot",
+              record);
+}
+
+/* record_slot's file, made at the first poll after the slot was set (the settings' read has set input_replay too by
+   then): what the slot held is said, then replaced */
+static void tas_record_open(int frame) {
+    Tas* t = &g_unattended.tas;
+    char path[sizeof g_exedir + sizeof g_exename + 64], folder[sizeof g_exedir + 8], msg[600];
+    unsigned char* old;
+    size_t size, count = 0;
+    int last = -1, e;
+    tas_path(path, sizeof path, t->record_slot);
+    old = snx_read_file(path, &size);
+    if (old) {
+        if (!tas_lines((const char*)old, size, NULL, &count, &last, msg, sizeof msg))
+            LOG("input_record: slot %d replaces %s, which is no recording: %s\n", t->record_slot, path, msg);
+        else if (!count)
+            LOG("input_record: slot %d replaces its old recording, which has no lines, %s\n", t->record_slot, path);
+        else
+            LOG("input_record: slot %d replaces its old recording of %d frames (%zu lines, the last at frame %d), %s\n",
+                t->record_slot, last + 1, count, last, path);
+        free(old);
+    }
+    snprintf(folder, sizeof folder, "%stas", g_exedir);
+    plat_mkdir(folder);
+    LOG("input_record: player 1's input goes to slot %d, %s, from frame %d\n", t->record_slot, path, frame);
+    t->record = snx_fopen(path, "wb"); /* binary: Windows' text mode would end each line with a CR */
+    if (!t->record) {
+        e = errno;
+        fatal("input_record: slot %d's file could not be made: %s", t->record_slot, strerror(e));
+    }
+    t->written = (TasLine){.frame = -1};
+    fprintf(t->record,
+            "# input_record of %s\n"
+            "# frame:buttons:lx,ly,rx,ry each present player 1's input changed: frame the presents since the game's "
+            "start, buttons in hex\n",
+            snx_build_info());
+    tas_flush(frame);
+}
+
+void unattended_record_set(const IniOpt* o, const char* v) {
+    Tas* t = &g_unattended.tas;
+    int slot = tas_slot(o->key, v), frame = frames_now(), e;
+    if (slot == t->record_slot) return; /* the slot it records already */
+    tas_apart(slot, t->replay_slot);
+    if (t->record) {
+        LOG("input_record: slot %d ends at frame %d\n", t->record_slot, frame);
+        e = fclose(t->record) ? errno : 0;
+        t->record = NULL;
+        if (e) fatal("input_record: closing slot %d's file failed at frame %d: %s", t->record_slot, frame, strerror(e));
+    }
+    t->record_slot = slot; /* its file is made at the next poll, tas_record_open */
 }
 
 void unattended_replay_set(const IniOpt* o, const char* v) {
     Tas* t = &g_unattended.tas;
+    char path[sizeof g_exedir + sizeof g_exename + 64], msg[600];
     unsigned char* text;
-    size_t size;
-    int frame = frames_now(), e, ok;
-    char msg[600];
-    (void)o;
-    if (!strcmp(t->replay_path, v)) return; /* the file it plays already, or played to its end */
+    size_t size, max = 1, i;
+    int slot = tas_slot(o->key, v), frame = frames_now(), e, last = -1, ok;
+    if (slot == t->replay_slot) return; /* the slot it plays already, or played to its end */
+    tas_apart(t->record_slot, slot);
     if (t->replay)
-        LOG("input_replay: %s stops at frame %d, its last line's frame %d\n", t->replay_path, frame,
+        LOG("input_replay: slot %d stops at frame %d, its last line's frame %d\n", t->replay_slot, frame,
             t->replay[t->lines - 1].frame);
     free(t->replay);
     t->replay = NULL;
     t->lines = t->next = 0;
-    snprintf(t->replay_path, sizeof t->replay_path, "%s", v);
-    if (!*v) return;
-    LOG("input_replay: player 1's input from %s\n", v);
-    text = snx_read_file(v, &size);
+    t->replay_slot = slot;
+    if (!slot) return;
+    tas_path(path, sizeof path, slot);
+    LOG("input_replay: player 1's input from slot %d, %s\n", slot, path);
+    text = snx_read_file(path, &size);
     if (!text) {
         e = errno;
-        fatal("input_replay: its file could not be read: %s", strerror(e));
+        if (e == ENOENT) fatal("input_replay: slot %d has no recording: input_record=%d makes one", slot, slot);
+        fatal("input_replay: slot %d's file could not be read: %s", slot, strerror(e));
     }
-    ok = tas_load((const char*)text, size, msg, sizeof msg);
+    for (i = 0; i < size; i++) max += text[i] == '\n';
+    if (max > SIZE_MAX / sizeof *t->replay) {
+        free(text);
+        fatal("input_replay: slot %d's %zu lines are more than this machine can hold", slot, max);
+    }
+    t->replay = snx_alloc(max * sizeof *t->replay);
+    ok = tas_lines((const char*)text, size, t->replay, &t->lines, &last, msg, sizeof msg);
     free(text);
-    if (!ok) fatal("input_replay: %s", msg);
+    if (!ok || !t->lines) {
+        free(t->replay);
+        t->replay = NULL;
+    }
+    if (!ok) fatal("input_replay: slot %d, %s", slot, msg);
     if (!t->lines)
-        LOG("input_replay: %s has no lines, so player 1's input comes from the controls at frame %d already\n", v,
-            frame);
+        LOG("input_replay: slot %d has no lines, so player 1's input comes from the controls at frame %d already\n",
+            slot, frame);
     else
         LOG("input_replay: %zu lines, frames %d to %d: player 1's input is neutral before frame %d and comes from "
             "the controls again at frame %d\n",
-            t->lines, t->replay[0].frame, t->replay[t->lines - 1].frame, t->replay[0].frame,
-            t->replay[t->lines - 1].frame + 1);
+            t->lines, t->replay[0].frame, last, t->replay[0].frame, last + 1);
 }
 
 void unattended_pad(u64* buttons, i32 st[4]) {
     Tas* t = &g_unattended.tas;
     int frame = frames_now();
     if (t->replay && frame > t->replay[t->lines - 1].frame) {
-        LOG("input_replay: %s ends at frame %d, past its last line's frame %d: player 1's input comes from the "
+        LOG("input_replay: slot %d ends at frame %d, past its last line's frame %d: player 1's input comes from the "
             "controls again\n",
-            t->replay_path, frame, t->replay[t->lines - 1].frame);
+            t->replay_slot, frame, t->replay[t->lines - 1].frame);
         free(t->replay);
         t->replay = NULL;
         t->lines = t->next = 0;
@@ -370,6 +422,7 @@ void unattended_pad(u64* buttons, i32 st[4]) {
             memset(st, 0, sizeof t->replay->st);
         }
     }
+    if (t->record_slot && !t->record) tas_record_open(frame);
     /* a line a present at most: a change in the present of the last line is written with the next present's */
     if (t->record && frame > t->written.frame &&
         (*buttons != t->written.buttons || memcmp(st, t->written.st, sizeof t->written.st))) {

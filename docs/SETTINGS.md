@@ -195,8 +195,8 @@ The unattended runs' settings ([Run / diagnose](DEVELOPMENT.md#run--diagnose)): 
 | `shot_every` | `0` | A screenshot every this many presents; `0`, at the end only |
 | `press_len` | `300` | How long a scripted press is held, in ms |
 | `script` | empty | The scripted input: `when:buttons`, a comma between two, when in ms or a present's number and `f` (`300f`) |
-| `input_record` | empty | Where player 1's input goes as the game runs, for `input_replay`: a new file (never one there is), a line `frame:buttons:lx,ly,rx,ry` each present the input changed (frame the presents since the game's start, buttons in hex as the script's) |
-| `input_replay` | empty | A file `input_record` wrote, played as player 1's input present by present, neutral before its first line; the controls come back at the present after its last line's |
+| `input_record` | `0` | The game's slot player 1's input is recorded to as it runs, `1` to `9` (`0`, none): `tas/<id>.<slot>.snxtas` in the game's folder, replaced, a line `frame:buttons:lx,ly,rx,ry` each present the input changed (frame the presents since the game's start, buttons in hex as the script's) |
+| `input_replay` | `0` | The game's slot whose recording is played as player 1's input present by present, `1` to `9` (`0`, none): neutral before its first line, the controls again at the present after its last line's |
 | `swkbd_text` | empty | The text the software keyboard answers instead of asking (shorter than the game's minimum: cancelled) |
 | `pause` | empty | Pauses of the whole game, a comma between two: `at:length` pauses it at that many ms of the scripted input's clock for `length` ms, and logs whether guest memory changed while it was paused |
 | `state_save` | empty | Save states the run writes, a comma between two: `at:slot` saves to that slot at that many ms of the scripted input's clock |
