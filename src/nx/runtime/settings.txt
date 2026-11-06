@@ -1072,21 +1072,21 @@ setting Script
     help The scripted input: when:buttons, comma between, when in ms or a present's number and f (300f)
 setting Input record
     key input_record
-    text 4096
-    default ""
+    int 0 9
+    default 0
     once
     set unattended_record_set
-    help Where player 1's input goes as the game runs, for input_replay: a new file (never one there is), a line
-    help each present the input changed, frame:buttons:lx,ly,rx,ry (frame the presents since the game's start,
-    help buttons in hex as the script's)
+    help The game's slot player 1's input is recorded to as it runs, 1 to 9, 0 for none: tas/<id>.<slot>.snxtas in
+    help the game's folder, replaced, a line frame:buttons:lx,ly,rx,ry each present the input changed (frame the
+    help presents since the game's start, buttons in hex as the script's)
 setting Input replay
     key input_replay
-    text 4096
-    default ""
+    int 0 9
+    default 0
     once
     set unattended_replay_set
-    help A file input_record wrote, played as player 1's input present by present, neutral before its first line;
-    help the controls come back at the present after its last line's
+    help The game's slot whose recording is played as player 1's input present by present, 1 to 9, 0 for none:
+    help neutral before its first line, the controls again at the present after its last line's
 setting Keyboard text
     key swkbd_text
     text 2004
