@@ -231,6 +231,9 @@ extern int g_shader_viewport_index;
 extern int g_shader_geometry;
 /* shaderFloat16, which fp16 texture results need. 1 offline */
 extern int g_shader_float16;
+/* shaderFloat64, which the SM86 translator uses for exact directed rounding. Without it (Metal) FADD, FMUL, FFMA
+   and I2F round to nearest in floats, at most one unit off in a directed mode. 1 offline */
+extern int g_shader_float64;
 /* shaderDrawParameters: a vertex program's instance ID is InstanceIndex less BaseInstance, which an indirect draw's
    arguments set on the GPU. 1 offline */
 extern int g_shader_draw_parameters;

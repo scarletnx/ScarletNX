@@ -58,6 +58,7 @@ int g_shader_output_layer = 1;
 int g_shader_viewport_index = 3;
 int g_shader_geometry = 1;
 int g_shader_float16 = 1;
+int g_shader_float64 = 1;
 int g_shader_draw_parameters = 1;
 int g_shader_quad = 1;
 int g_shader_tessellation = 1;
