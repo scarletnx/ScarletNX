@@ -91,6 +91,7 @@ typedef struct {
     u8* ptr;    /* where the CPU maps it, NULL in device memory */
     u64 size;   /* the chunk size it was made at (chunk_size), or a big buffer's size class (big_size) */
     u64 freed;  /* the frame it went back to the pool at */
+    u64 handed; /* the most of it handed out from its start since it was made: pages the CPU wrote (chunk_take) */
     u32 ring;   /* the ring it serves: an XRING_ index */
     u32 in;     /* where its memory is: an XFER_ index */
     u32 slot;   /* the frame slot it is handed out to, plus one; 0 while in the pool */
@@ -457,10 +458,19 @@ static u64 big_size(u64 size) {
     while (s < size) s *= 2;
     return s < g_vk.alloc_cap ? s : g_vk.alloc_cap;
 }
+/* whether pooled c is handed out before than: the smaller (a big buffer's size class), then the one handed out the
+   most of, then the one given back last. Memory the CPU wrote before takes its writes several times faster than a new
+   buffer's: an 8192x8192 texture's copy engine upload took 43 ms in a new 32 MiB buffer, 28 ms in a 256 MiB ring
+   written before, and the CPU's first write to each page of a chunk is a page fault. Of the chunks a frame gave back
+   together one it barely filled could come first: an ASTC texture's 16 MiB copy source took 14 ms in a chunk written
+   64 KiB into, where its 8 MiB level took 0.3 ms in one written whole */
+static int pool_before(const Chunk* c, const Chunk* than) {
+    if (c->size != than->size) return c->size < than->size;
+    if (c->handed != than->handed) return c->handed > than->handed;
+    return c->freed >= than->freed;
+}
 /* A chunk of size bytes for ring, or a big buffer of that size class or more (big), handed out to slot (a frame slot
-   plus one): the one of the pool given back last that suits, of big buffers the smallest, else a new one. Memory the
-   CPU wrote before takes its writes several times faster than a new buffer's: an 8192x8192 texture's copy engine
-   upload took 43 ms in a new 32 MiB buffer, 28 ms in a 256 MiB ring written before. bar: the output ring's first
+   plus one): the first of the pool that suits (pool_before), else a new one. bar: the output ring's first
    BAR_RING_MAX of a frame, in device memory the CPU maps when it has room (bar_room): one there, or a new one there,
    else one in host memory, which a new one there replaces only below the room a ring coming back from host memory
    needs. A ring that wants a chunk outside the window with none left in the pool hands out of its smallest pooled big
@@ -474,16 +484,12 @@ static u32 chunk_take(u32 ring, u64 size, int big, int bar, u32 slot) {
         u32* pick;
         if (!c->buf || c->slot || c->ring != ring) continue;
         if (!big && c->big) {
-            if (!lend || c->size < g_cmd.chunk[lend - 1].size ||
-                (c->size == g_cmd.chunk[lend - 1].size && c->freed >= g_cmd.chunk[lend - 1].freed))
-                lend = i + 1;
+            if (!lend || pool_before(c, &g_cmd.chunk[lend - 1])) lend = i + 1;
             continue;
         }
         if ((int)c->big != big || (big ? c->size < size : c->size != size)) continue;
         pick = (int)c->bar == bar ? &here : &other;
-        if (!*pick || c->size < g_cmd.chunk[*pick - 1].size ||
-            (c->size == g_cmd.chunk[*pick - 1].size && c->freed >= g_cmd.chunk[*pick - 1].freed))
-            *pick = i + 1;
+        if (!*pick || pool_before(c, &g_cmd.chunk[*pick - 1])) *pick = i + 1;
     }
     if (!here && bar) {
         VmaBudget budget[VK_MAX_MEMORY_HEAPS];
@@ -586,6 +592,7 @@ static const Chunk* ring_take(Frame* f, u32 ring, u64 size, u64 align, VkBuffer*
         c = &g_cmd.chunk[r->cur - 1];
         r->used = at + size;
     }
+    if (at + size > c->handed) c->handed = at + size;
     g_xfer[ring][c->in] += size;
     *buf = c->buf;
     *off = at;

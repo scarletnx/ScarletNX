@@ -802,6 +802,56 @@ static int check_chunks_from_big(void) {
     return 0;
 }
 
+/* Of the pooled chunks a ring takes the one handed out the most of first: the CPU wrote those pages, and its first
+   write to a page of a chunk faults. A frame writes a chunk whole and the next 64 bytes of another, which goes back
+   to the pool after it; a chunk's request then gets the one written whole, where the one given back last cost the
+   copy engine's source a page fault per page. No buffer is made, and the copy reads its bytes */
+static int check_chunk_written_first(void) {
+    u64 saved_cap = g_vk.alloc_cap, chunk, at, made;
+    VkBuffer rb, whole, little, got;
+    u8 *result, *data;
+    vk_finish();
+    vk_frame_next();
+    g_vk.alloc_cap = 1u << 20;
+    chunk = vk_stage_chunk();
+    result = vk_readback_buffer(16, &rb);
+    CHECK(result);
+    for (u32 i = 0; i < VK_POOL_FRAMES + VK_FRAMES; i++) CHECK(!staging_light_frame(rb));
+    vk_finish();
+    data = vk_stage_upload(chunk, vk_stage_align(), &whole, &at); /* a chunk of its own, written whole */
+    CHECK(data && at == 0);
+    memset(data, 0x3c, (size_t)chunk);
+    vk_frame_next();
+    data = vk_stage_upload(64, 16, &little, &at); /* the other slot's: 64 bytes of another */
+    CHECK(data && little != whole);
+    memset(data, 0x3c, 64);
+    vk_frame_next();
+    vk_cmd(); /* the whole one back to the pool */
+    vk_frame_next();
+    vk_cmd(); /* the other one, after it */
+    made = vk_ring_made();
+    data = vk_stage_upload(chunk, vk_stage_align(), &got, &at);
+    CHECK(data);
+    memset(data + chunk - 16, 0x5d, 16);
+    VkBufferCopy copy = {at + chunk - 16, 0, 16};
+    rec_CmdCopyBuffer(vk_cmd(), got, rb, 1, &copy);
+    vk_finish();
+    vk_readback_ready();
+    made = vk_ring_made() - made;
+    g_vk.alloc_cap = saved_cap;
+    vk_frame_next();
+    printf("a chunk's upload after a chunk written whole and 64 bytes of another: handed the %s one, %llu ring buffers "
+           "made\n",
+           got == whole    ? "whole"
+           : got == little ? "64 byte"
+                           : "new",
+           (unsigned long long)made);
+    CHECK(got == whole);
+    CHECK(made == 0);
+    for (u32 i = 0; i < 16; i++) CHECK(result[i] == 0x5d);
+    return 0;
+}
+
 /* the renderer's viewport index and its first viewport's facing for the registers r, through the draw state */
 static VkViewport viewport_of(const u32* r, u32 index) {
     DsDynamic d;
@@ -5119,6 +5169,7 @@ int main(int argc, char** argv) {
     CHECK(!check_big_reuse());
     CHECK(!check_chunks_both_slots());
     CHECK(!check_chunks_from_big());
+    CHECK(!check_chunk_written_first());
     CHECK(!check_stream_epoch());
     CHECK(!check_owned_readback());
     CHECK(!check_owned_writable());
