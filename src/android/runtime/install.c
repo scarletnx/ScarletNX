@@ -31,6 +31,17 @@ static void manifest_attribute(const AxmlParser* p, const AxmlDocument* doc, con
     if (raw == AXML_NONE || res_string(&doc->strings, raw, out, out_size) < 0) out[0] = 0;
 }
 
+bool android_install_valid_name(const char* name, bool package) {
+    unsigned segments = 0;
+    for (const char* p = name;; ++p) {
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z'))) return false;
+        while ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || *p == '_') ++p;
+        ++segments;
+        if (!*p) return !package || segments >= 2;
+        if (*p != '.') return false;
+    }
+}
+
 /* an APK's package and split name (empty for the base) */
 static bool manifest_of(const char* apk, char* package, size_t package_size, char* split, size_t split_size,
                         char* error, size_t error_size) {
@@ -52,6 +63,14 @@ static bool manifest_of(const char* apk, char* package, size_t package_size, cha
     free(data);
     if (ok && !package[0]) {
         snprintf(error, error_size, "%s: the manifest names no package", apk);
+        ok = false;
+    }
+    if (ok && !android_install_valid_name(package, true)) {
+        snprintf(error, error_size, "%s: the manifest's package \"%s\" is not a package name", apk, package);
+        ok = false;
+    }
+    if (ok && split[0] && !android_install_valid_name(split, false)) {
+        snprintf(error, error_size, "%s: the manifest's split \"%s\" is not a split name", apk, split);
         ok = false;
     }
     return ok;
