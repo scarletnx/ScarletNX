@@ -232,6 +232,18 @@ static void check_textures(const u8* f, u32 size, int mid) {
                         }
                     }
                     CHECK(g > 0 && b > 0 && cn > 0 && cx / cn > w / 2);
+                    /* a catchlight: white (G) with iris (B) to its left and right in its row, not the white around it */
+                    for (p = 0, g = 0; p < bw * h; p++) {
+                        u32 x = p % bw, left = 0, right = 0, d;
+                        if (g_mii_model.px[4 * p + 1] < 200 || g_mii_model.px[4 * p + 2] > 60) continue;
+                        for (d = 1; d <= w / 8; d++) {
+                            left |= x >= d && g_mii_model.px[4 * (p - d) + 2] > 128;
+                            right |= x + d < bw && g_mii_model.px[4 * (p + d) + 2] > 128;
+                        }
+                        g += left && right;
+                    }
+                    if (!g) fprintf(stderr, "%s eye %u: no catchlight in its iris\n", mid ? "Mid" : "Low", i);
+                    CHECK(g > 0);
                 }
                 if (k == 8) /* a mouth: its lips (R) or teeth (G) in some, its outline (A) in all */
                     for (p = 0; p < ((w + 3) / 4 * 4) * h; p++)

@@ -869,7 +869,8 @@ static float speckle(float x, float y) {
     return (float)((h >> 8) & 0xff) / 255.0f;
 }
 
-/* the eye: G its white, B its iris (the pupil in it left black), A all of it with its outline and lashes */
+/* the eye: G its white, B its iris (the pupil in it left black, a catchlight in it white toward the outer corner), A
+   all of it with its outline and lashes */
 static void tex_eye(u32 v, float x, float y, float aa, float c[4]) {
     float cx = 0.73f, cy = 0.52f; /* the eye sits right of the middle, as the SDK places it */
     float rx = 0.31f + 0.04f * (float)(v % 3), ry = 0.18f + 0.03f * (float)((v / 3) % 3);
@@ -877,6 +878,7 @@ static void tex_eye(u32 v, float x, float y, float aa, float c[4]) {
     float d = sd_ellipse(x, y, cx, cy, rx, ry, tilt), lid = cover(d, aa);
     float iris = cover(sd_circle(x, y, cx + 0.02f, cy + 0.01f, ir), aa) * lid;
     float pupil = cover(sd_circle(x, y, cx + 0.02f, cy + 0.01f, ir * 0.42f), aa) * lid;
+    float glint = cover(sd_circle(x, y, cx + 0.02f - 0.4f * ir, cy + 0.01f - 0.4f * ir, ir * 0.26f), aa) * iris;
     /* the outline, its upper lid twice as thick as its lower */
     float all = cover(d - mixf(0.035f, 0.075f, smooth(cy, cy - 0.6f * ry, y)), aa);
     if (v % 2) { /* a lash at the outer corner */
@@ -884,8 +886,8 @@ static void tex_eye(u32 v, float x, float y, float aa, float c[4]) {
         all = fmaxf(all, cover(sd_capsule(x, y, ex + 0.03f, ey, ex - 0.09f, ey - 0.10f, 0.022f), aa));
     }
     c[0] = 0;
-    c[1] = fmaxf(0, lid - iris);
-    c[2] = fmaxf(0, iris - pupil);
+    c[1] = fmaxf(0, lid - iris) + glint;
+    c[2] = fmaxf(0, iris - pupil - glint);
     c[3] = all;
 }
 /* the mouth: R its lips and tongue, G its teeth, A all of it; what A has without R or G is its dark inside and
