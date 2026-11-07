@@ -49,7 +49,12 @@ static void syscall_entry(CPU* c, u32 immediate) {
         gnu_kernel_leave_call(&t->k);
         /* a host call that a host signal stopped: Linux's own result for it, which the signal's action turns into
            EINTR or a restart */
-        if (result == -GNU_EINTR) result = never_restarts(number) ? -GNU_ERESTARTNOHAND : -GNU_ERESTARTSYS;
+        if (result == -GNU_EINTR) {
+            /* the network wake too: a signal that ended a wait of the kernel took the interrupt (gnu_signal_wanted)
+               and left the wake set, which would stop every later network wait of the thread at once */
+            gnu_thread_drain(t);
+            result = never_restarts(number) ? -GNU_ERESTARTNOHAND : -GNU_ERESTARTSYS;
+        }
         if (__atomic_load_n(&t->k.interrupt, __ATOMIC_SEQ_CST)) gnu_thread_drain(t); /* before the kernel looks */
         int delivered = gnu_signal_deliver(&t->k, &result, args[0]);
         if (delivered == GNU_DELIVER_RESTART) continue;

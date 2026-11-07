@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 """Guest threads and signals in the GNU ABI runtime: the freestanding fixtures in tests/gnuabi (threads.c, signals.c,
-restart.c, sigsuspend.c, with thread_start.S), built with Clang for aarch64-linux-gnu and LLD, must each exit 0 and
-print their lines. Without a compiler that targets AArch64 the test is skipped (exit 77).
+restart.c, sigsuspend.c, wake.c, with thread_start.S), built with Clang for aarch64-linux-gnu and LLD, must each exit 0
+and print their lines. Without a compiler that targets AArch64 the test is skipped (exit 77).
 
     gnuabi_threads.py RUNNER [--clang CLANG]
 """
@@ -21,6 +21,7 @@ FIXTURES = {
                 'signals: altstack ok', 'signals: sigqueue ok', 'signals: thread ok'],
     'restart': ['restart: SA_RESTART ok', 'restart: EINTR ok', 'restart: nanosleep ok'],
     'sigsuspend': ['sigsuspend: ok', 'sigtimedwait: ok'],
+    'wake': ['wake: ppoll waits after a signal'],
 }
 
 

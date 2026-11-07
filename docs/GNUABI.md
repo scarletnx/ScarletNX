@@ -309,9 +309,10 @@ suite exercises tmpfs, devfs, procfs, descriptor and metadata calls, clocks,
 random reads, and unsupported-call errors. The PIE suite verifies ET_DYN,
 PC-relative global accesses, and BSS initialization. The optional `libc.c` fixture exercises
 static libc startup, allocation, memory operations, and formatted output.
-The `threads` suite (`threads.c`, `signals.c`, `restart.c` and `sigsuspend.c`, with
-`thread_start.S`) covers threads, futexes, signal frames, `rt_sigreturn`, `SA_RESTART` and
-`rt_sigsuspend`; CTest runs it as `gnuabi_threads` (skipped without Clang and LLD).
+The `threads` suite (`threads.c`, `signals.c`, `restart.c`, `sigsuspend.c` and `wake.c`,
+with `thread_start.S`) covers threads, futexes, signal frames, `rt_sigreturn`, `SA_RESTART`,
+`rt_sigsuspend` and a network wait after a signal; CTest runs it as `gnuabi_threads`
+(skipped without Clang and LLD).
 The standalone `self_modify.S` fixture must exit 42 after replacing a compiled
 instruction, as must `rewrite.S`, which rewrites code that already ran;
 `fetch_fault.S` must fault after removing the executing page's execute permission. These intentional faults should be checked directly rather
