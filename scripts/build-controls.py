@@ -21,6 +21,11 @@ PX_PER_DP = 1.5  # a face button 155 pixels wide: rEden draws it 11% of a phone'
 # the stick buttons' drawables are a fifth of the others' size for a control rEden draws 15.5% of the short side
 DENSITY = {'button_l3': 4.5, 'button_l3_depressed': 4.5, 'button_r3': 4.5, 'button_r3_depressed': 4.5}
 PAD = 2  # transparent pixels around each sprite, so linear filtering never reads a neighbour
+# each sprite's alpha this many times the drawable's, up to opaque: rEden's drawables are 60% opaque at most (their
+# android:alpha), under its own opacity setting. Twice theirs, controls_alpha's 50 (vpad.c) draws them as they looked at
+# the full opacity of controls_opacity, which options.c maps to controls_alpha halved; a texel the drawable has above
+# half (5% of them, 0.6 at most) is opaque here, so it draws at half where it was up to 0.6
+ALPHA = 2
 ATLAS_W = 1024
 # id, drawable: the order of the header's enum
 SPRITES = [
@@ -176,7 +181,9 @@ def main():
             density = DENSITY.get(name, PX_PER_DP)
             w, h = round(width * density), round(height * density)
             subprocess.run(['rsvg-convert', '-w', str(w), '-h', str(h), '-o', str(out), str(source)], check=True)
-            images.append((ident, Image.open(out).convert('RGBA')))
+            image = Image.open(out).convert('RGBA')
+            image.putalpha(image.getchannel('A').point(lambda a: min(255, a * ALPHA)))
+            images.append((ident, image))
     # skyline packing, tallest first: each piece where it lands lowest, then leftmost. The menu's font (16 rows of 16
     # glyphs of 8x16) and a white block for plain fills go in too: the runtime draws them there
     pieces = [(image.width, image.height) for _, image in images] + [(16 * 8, 16 * 16), (4, 4)]

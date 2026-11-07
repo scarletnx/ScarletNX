@@ -546,6 +546,35 @@ static void astc_bc_old(void) {
     }
 }
 
+int options_controls_opacity_old(const char* old) {
+    char* end;
+    long v = strtol(old, &end, 10);
+    if (end == old || *end) return -1;
+    if (v < 0) v = 0;
+    if (v > 100) v = 100;
+    return (int)(v + 1) / 2;
+}
+static void controls_opacity_old(void) {
+    const char* old = ini_deprecated_value("controls_opacity");
+    const IniOpt* o = find_row("controls_alpha", NULL);
+    char now[16];
+    int v;
+    if (!old || !o || override_of("controls_alpha") || store_find("controls_alpha")) return;
+    v = options_controls_opacity_old(old);
+    if (v < 0) {
+        WARN("settings: controls_opacity=%s, deprecated, is not a whole number: controls_alpha takes its default, %s "
+             "(docs/DEPRECATIONS.md)\n",
+             old, o->def);
+        return;
+    }
+    snprintf(now, sizeof now, "%d", v);
+    store_put("controls_alpha", now);
+    WARN(
+        "settings: controls_opacity=%s, deprecated, is controls_alpha=%d now, the same look: the built-in controls' art "
+        "is twice as opaque (docs/DEPRECATIONS.md)\n",
+        old, v);
+}
+
 static void say_deprecated(void) {
     const char* keys[STORE_MAX];
     char line[2048];
@@ -628,6 +657,7 @@ void ini_open(const char* path) {
     }
     memory_fit_old();
     astc_bc_old();
+    controls_opacity_old();
     n = pending_take(taken);
     say_deprecated();
     apply_all();

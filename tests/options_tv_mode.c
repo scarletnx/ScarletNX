@@ -6,7 +6,8 @@
    Off and On never asking the host. And a key the .ini gives twice: the last line's value, and a line that names the
    key and both values; and memory_fit, deprecated, read from an old .ini as memory_fit_mode while the file gives that
    one none, and the file written with memory_fit_mode and memory_fit under [Deprecated]. And controls_skin: a .ini
-   without it opens with line, its default, and one that gives it empty keeps the built-in look */
+   without it opens with line, its default, and one that gives it empty keeps the built-in look. And controls_opacity,
+   deprecated, read from an old .ini as controls_alpha, half of it */
 #include "common/utilities/common.h"
 #include "nx/hle/services/hid.h"
 #include "nx/hle/services/services.h"
@@ -49,6 +50,7 @@ static struct {
     char said[4096]; /* every line, one after the other */
     int write;       /* plat_replace_file replaces the file: ini_open writes it */
     char skin[64];   /* the controls_skin backend_ini was given, which the on-screen controls read (vpad_ini) */
+    char alpha[16];  /* the controls_alpha it was given */
 } g_test;
 
 int plat_power_on_charger(void) {
@@ -101,6 +103,7 @@ int plat_replace_file(const char* tmp, const char* dst) {
 }
 int backend_ini(const char* k, const char* v) {
     if (!strcmp(k, "controls_skin")) snprintf(g_test.skin, sizeof g_test.skin, "%s", v);
+    if (!strcmp(k, "controls_alpha")) snprintf(g_test.alpha, sizeof g_test.alpha, "%s", v);
     return 0;
 }
 int hud_debug_set(const char* text) {
@@ -356,6 +359,45 @@ static void test_controls_skin(void) {
     g_test.write = 0;
 }
 
+/* controls_opacity, deprecated, in an old .ini: read while controls_alpha has no value, as half of it rounded up (the
+   built-in art is twice as opaque now, so the look stays), said once; the file written with controls_alpha and
+   controls_opacity under [Deprecated]. A value that is not a whole number leaves controls_alpha its default, said */
+static void test_controls_opacity_old(void) {
+    char *text, *again;
+    CHECK(options_controls_opacity_old("100") == 50 && options_controls_opacity_old("75") == 38 &&
+          options_controls_opacity_old("0") == 0 && options_controls_opacity_old("150") == 50 &&
+          options_controls_opacity_old("-3") == 0);
+    CHECK(options_controls_opacity_old("most") == -1 && options_controls_opacity_old("50.5") == -1 &&
+          options_controls_opacity_old("") == -1);
+    g_test.write = 1;
+    text = open_ini("[On-screen controls]\ncontrols=1\ncontrols_opacity=100\n");
+    CHECK(!strcmp(g_test.alpha, "50"));
+    CHECK(strstr(g_test.said,
+                 "settings: controls_opacity=100, deprecated, is controls_alpha=50 now, the same look: the "
+                 "built-in controls' art is twice as opaque (docs/DEPRECATIONS.md)\n"));
+    CHECK(text && strstr(text, "\ncontrols_alpha=50\n") && strstr(text, "\n[Deprecated]\n") &&
+          strstr(text, "\n[Deprecated]\n") < strstr(text, "\ncontrols_opacity=100\n"));
+    snprintf(g_test.alpha, sizeof g_test.alpha, "%s", "not given");
+    again = open_ini(text); /* the next run: controls_alpha given, controls_opacity not read again */
+    CHECK(!strstr(g_test.said, "settings: controls_opacity=") && !strcmp(g_test.alpha, "50"));
+    free(again);
+    free(text);
+    text = open_ini("[On-screen controls]\ncontrols_opacity=30\n");
+    CHECK(!strcmp(g_test.alpha, "15") && strstr(g_test.said, "settings: controls_opacity=30, deprecated, is "
+                                                             "controls_alpha=15 now"));
+    free(text);
+    text = open_ini("[On-screen controls]\ncontrols_opacity=most\n");
+    CHECK(!strcmp(g_test.alpha, "50"));
+    CHECK(strstr(g_test.said, "settings: controls_opacity=most, deprecated, is not a whole number: controls_alpha "
+                              "takes its default, 50 (docs/DEPRECATIONS.md)\n"));
+    free(text);
+    /* the new key given, the old one is not read */
+    text = open_ini("[On-screen controls]\ncontrols_opacity=100\ncontrols_alpha=80\n");
+    CHECK(!strstr(g_test.said, "settings: controls_opacity=") && !strcmp(g_test.alpha, "80"));
+    free(text);
+    g_test.write = 0;
+}
+
 int main(void) {
     test_fixed();
     test_auto_watched();
@@ -365,6 +407,7 @@ int main(void) {
     test_memory_fit_old();
     test_astc_bc_old();
     test_controls_skin();
+    test_controls_opacity_old();
     printf("options_tv_mode: ok\n");
     return 0;
 }

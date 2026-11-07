@@ -536,7 +536,7 @@ void vpad_draw(SnxUiList* l, const int safe[4]) {
     placed();
     if (!g_settings.show_controls && !g_edit) return;
     /* in edit mode even a clear pad shows where its controls are */
-    alpha = (u32)(clampi(g_edit && g_settings.controls_opacity < 50 ? 50 : g_settings.controls_opacity, 0, 100) * 255 / 100);
+    alpha = (u32)(clampi(g_edit && g_settings.controls_alpha < 50 ? 50 : g_settings.controls_alpha, 0, 100) * 255 / 100);
     if (g_edit) edit_draw(l, safe);
     for (c = 0; c < SNX_VPAD_COUNT; ++c) {
         const SnxSkinControl* k = vpad_skin(c);
@@ -624,7 +624,7 @@ int vpad_showcase_box(const int safe[4], float box[4]) {
     return corner;
 }
 void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps) {
-    const u32 alpha = 230;
+    const u32 alpha = 115; /* the built-in art is twice as opaque as its drawables (scripts/build-controls.py) */
     float box[4], x0, y0, w, h, r[4];
     int c, scale;
     char text[24];

@@ -732,7 +732,7 @@ int main(void) {
     /* the keys: down from Scale to Opacity, left steps it */
     overlay_move(1);
     overlay_side(-1);
-    assert(g_settings.controls_opacity == 40 && !strcmp(stored, "controls_opacity"));
+    assert(g_settings.controls_alpha == 40 && !strcmp(stored, "controls_alpha"));
     overlay_side(1);
     /* the skin, line by default, goes round the built-in look and the shipped ones (the right arrow up, the rest of its
        row down), kept, and the backend told to apply it; a .cfg's path shows its file's name, and goes up to the
