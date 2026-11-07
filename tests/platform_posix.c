@@ -4,7 +4,8 @@
    file maps, replace, folders, timed waits and threads, the watch of the system's memory pressure. Written-page
    tracking needs Linux 6.7 for userfaultfd's; write_tracking=1 (and every host without it) tracks by protection, and
    write_tracking=2 must make the scan say -1. The arguments: the folder for its files, then Debug settings as the
-   runtime takes them, --key=value; --bench-ww runs the tracking's benchmark alone (bench_ww) */
+   runtime takes them, --key=value; --bench-ww runs the tracking's benchmark alone (bench_ww). And the look for a
+   library the process has loaded already (plat_dl_loaded), with a library of the tests' own, SNX_TEST_DL_PROBE */
 #if defined(__linux__)
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -1032,6 +1033,19 @@ int main(int argc, char** argv) {
     snprintf(sub, sizeof sub, "%s/platform_posix.dir", dir);
     plat_mkdir(sub);
     CHECK(plat_is_dir(sub) && !plat_is_dir(path), "plat_is_dir");
+
+    printf("libraries\n");
+    /* a library the process hasn't loaded isn't found, and isn't loaded by the look (twice: a look that loaded it
+       finds it the second time); once opened it is, and its function through that */
+    CHECK(!plat_dl_loaded(SNX_TEST_DL_PROBE) && !plat_dl_loaded(SNX_TEST_DL_PROBE), "a library not loaded was found");
+    {
+        void* opened = plat_dl_open(SNX_TEST_DL_PROBE);
+        void* found = plat_dl_loaded(SNX_TEST_DL_PROBE);
+        int (*probe)(void) = NULL;
+        void* sym = found ? plat_dl_sym(found, "snx_test_dl_probe") : NULL;
+        memcpy(&probe, &sym, sizeof probe);
+        CHECK(opened && found && probe && probe() == 42, "a library opened was not found, or its function");
+    }
 
     printf("timed waits and threads\n");
     /* a timed wait times out, roughly on time */

@@ -215,6 +215,9 @@ void plat_thaw(void);
 void* plat_dl_open(const char* path);
 void* plat_dl_sym(void* h, const char* name);
 const char* plat_dl_error(void); /* the reason the last plat_dl_open or plat_dl_sym returned NULL */
+/* the library of that name when the process has it loaded already (RenderDoc's program puts its own in the game it
+   starts), NULL when it hasn't: never loads it */
+void* plat_dl_loaded(const char* name);
 int plat_setenv(const char* name, const char* value); /* for this process and what it loads; 0 on success */
 
 /* ---- files */
