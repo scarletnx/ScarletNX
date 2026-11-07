@@ -293,7 +293,8 @@ builds for FreeBSD, macOS and Windows x64, where they differ:
   and `common/network/net_host.h` (the stack's constants as the host's). The adapters in `hle_posix.c` also convert
   the mmap and msync flags, fcntl's commands and `struct flock`, the requests of ioctl, `struct dirent`, `struct
   statfs` and the poll events. `getaddrinfo`, `getnameinfo` and `gethostbyname` are the stack's on every host, whose
-  flags and errors are bionic's.
+  flags and errors are bionic's. Offline (the Network setting), another machine's name is `EAI_NODATA`, as Android
+  answers without a network.
 - **Threads**: FreeBSD's, macOS's and winpthreads' objects differ in size or in their static initializer, so a
   guest mutex, condition variable, rwlock and semaphore keep a host object's address at offset 8, made at the first
   use, and the attributes are bionic's own layout (`hle_thread.c`).
