@@ -27,31 +27,6 @@
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
 
-#define SSLSRV_RC(desc) RC(123, desc)
-enum {
-    SSLSRV_INSUFFICIENT_MEMORY = 102,
-    SSLSRV_NO_SOCKET = 103,
-    SSLSRV_INVALID_SOCKET = 106,
-    SSLSRV_INVALID_OPTION = 126,
-    SSLSRV_CERT_BUFFER_TOO_SMALL = 202,
-    SSLSRV_ALREADY_IN_USE = 203,
-    SSLSRV_WOULD_BLOCK = 204,
-    SSLSRV_TIMEOUT = 205,
-    SSLSRV_IO_ABORTED = 206,
-    SSLSRV_NO_CONNECTION = 208,
-    SSLSRV_CONNECTION_RESET = 209,
-    SSLSRV_CONNECTION_ABORTED = 210,
-    SSLSRV_NETWORK_DOWN = 212,
-    SSLSRV_CLIENT_PKI_ALREADY_REGISTERED = 215,
-    SSLSRV_MAX_SERVER_PKI_REGISTERED = 218,
-    SSLSRV_INVALID_CERT_DOMAIN = 301,
-    SSLSRV_EXPIRED_CERTIFICATE = 303,
-    SSLSRV_REVOKED_CERTIFICATE = 304,
-    SSLSRV_BAD_CERTIFICATE = 307,
-    SSLSRV_UNKNOWN_CA = 308,
-    SSLSRV_INTERNAL_ERROR = 999,
-};
-
 enum {
     /* SslVersion: Auto, or the versions allowed, one bit each from TLS 1.0 at bit 3 */
     VERSION_AUTO = 0x1,
@@ -188,27 +163,59 @@ static int errno_result(int e) {
     switch (e) {
         /* NSPR maps EPIPE to PR_CONNECT_RESET_ERROR */
         case SNX_ECONNRESET:
-        case SNX_EPIPE: return SSLSRV_RC(SSLSRV_CONNECTION_RESET);
-        case SNX_ECONNABORTED: return SSLSRV_RC(SSLSRV_CONNECTION_ABORTED);
-        case SNX_ETIMEDOUT: return SSLSRV_RC(SSLSRV_TIMEOUT);
-        case SNX_EINTR: return SSLSRV_RC(SSLSRV_IO_ABORTED); /* the stack was cancelled: the game is stopping */
-        case SNX_ENOTCONN: return SSLSRV_RC(SSLSRV_NO_CONNECTION);
+        case SNX_EPIPE: return SNX_RC_SSL_CONNECTION_RESET;
+        case SNX_ECONNABORTED: return SNX_RC_SSL_CONNECTION_ABORTED;
+        case SNX_ETIMEDOUT: return SNX_RC_SSL_IO_TIMEOUT;
+        case SNX_EINTR: return SNX_RC_SSL_IO_ABORTED; /* the stack was cancelled: the game is stopping */
+        case SNX_ENOTCONN: return SNX_RC_SSL_NO_CONNECTION;
         case SNX_ENETDOWN:
         case SNX_ENETUNREACH:
-        case SNX_EHOSTUNREACH: return SSLSRV_RC(SSLSRV_NETWORK_DOWN);
-        case SNX_ENOMEM: return SSLSRV_RC(SSLSRV_INSUFFICIENT_MEMORY);
-        default: return SSLSRV_RC(SSLSRV_INTERNAL_ERROR);
+        case SNX_EHOSTUNREACH: return SNX_RC_SSL_NETWORK_DOWN;
+        case SNX_ENOMEM: return SNX_RC_SSL_INSUFFICIENT_MEMORY;
+        default: return SNX_RC_SSL_INTERNAL_ERROR;
     }
 }
-/* a fatal alert from the server: Switchbrew's ResultSslAlert* run 1501 to 1530 in the order of TLS's alerts, without
-   SSL 3's no_certificate (41) */
+/* a fatal alert from the server, by TLS's number for it: its SslAlert result, which SSL 3's no_certificate (41) has
+   none of */
 static int alert_result(int alert) {
-    static const u8 alerts[] = {0,  10, 20, 21, 22, 30, 40, 41, 42, 43,  44,  45,  46,  47,  48,
-                                49, 50, 51, 60, 70, 71, 80, 86, 90, 100, 110, 111, 112, 113, 114};
-    int i;
-    for (i = 0; i < (int)sizeof alerts; i++)
-        if (alerts[i] == alert && alert != 41) return SSLSRV_RC(1501 + i);
-    return SSLSRV_RC(SSLSRV_INTERNAL_ERROR);
+    static const struct {
+        u8 alert;
+        int result;
+    } alerts[] = {
+        {0, SNX_RC_SSL_SSL_ALERT_CLOSE_NOTIFY},
+        {10, SNX_RC_SSL_SSL_ALERT_UNEXPECTED_MESSAGE},
+        {20, SNX_RC_SSL_SSL_ALERT_BAD_RECORD_MAC},
+        {21, SNX_RC_SSL_SSL_ALERT_DECRIPTION_FAILED},
+        {22, SNX_RC_SSL_SSL_ALERT_RECORD_OVERFRLOW},
+        {30, SNX_RC_SSL_SSL_ALERT_DECOMPRESSION_FAILURE},
+        {40, SNX_RC_SSL_SSL_ALERT_HANDSHAKE_FAILURE},
+        {42, SNX_RC_SSL_SSL_ALERT_BAD_CERTIFICATE},
+        {43, SNX_RC_SSL_SSL_ALERT_UNSUPPORTED_CERTIFICATE},
+        {44, SNX_RC_SSL_SSL_ALERT_CERTIFICATE_REVOKED},
+        {45, SNX_RC_SSL_SSL_ALERT_CERTIFICATE_EXPIRED},
+        {46, SNX_RC_SSL_SSL_ALERT_CERTIFICATE_UNKOWN},
+        {47, SNX_RC_SSL_SSL_ALERT_ILLEGAL_PARAMETER},
+        {48, SNX_RC_SSL_SSL_ALERT_UNKNOWN_CA},
+        {49, SNX_RC_SSL_SSL_ALERT_ACCESS_DENIED},
+        {50, SNX_RC_SSL_SSL_ALERT_DECODE_ERROR},
+        {51, SNX_RC_SSL_SSL_ALERT_DECRYPT_ERROR},
+        {60, SNX_RC_SSL_SSL_ALERT_EXPORT_RESTRICTION},
+        {70, SNX_RC_SSL_SSL_ALERT_PROTOCOL_VERSION},
+        {71, SNX_RC_SSL_SSL_ALERT_INSUFFICIENT_SECURITY},
+        {80, SNX_RC_SSL_SSL_ALERT_INTERNAL_ERROR},
+        {86, SNX_RC_SSL_SSL_ALERT_INAPPROPRIATE_FALLBACK},
+        {90, SNX_RC_SSL_SSL_ALERT_USER_CANCELLED},
+        {100, SNX_RC_SSL_SSL_ALERT_NO_RENEGOTIATION},
+        {110, SNX_RC_SSL_SSL_ALERT_UNSUPPORTED_EXTENTION},
+        {111, SNX_RC_SSL_SSL_ALERT_CERTIFICATE_UNOBTAINABLE},
+        {112, SNX_RC_SSL_SSL_ALERT_UNRECOGNIZED_NAME},
+        {113, SNX_RC_SSL_SSL_ALERT_BAD_CERTIFICATE_STATUS_RESPONSE},
+        {114, SNX_RC_SSL_SSL_ALERT_BAD_CERTIFICATE_HASH_VALUE},
+    };
+    size_t i;
+    for (i = 0; i < sizeof alerts / sizeof alerts[0]; i++)
+        if (alerts[i].alert == alert) return alerts[i].result;
+    return SNX_RC_SSL_INTERNAL_ERROR;
 }
 /* the result of a TLS call that failed for another reason than a socket that isn't ready */
 static int conn_error(SslConn* c, int ssl_error) {
@@ -218,9 +225,8 @@ static int conn_error(SslConn* c, int ssl_error) {
     if (c->alert >= 0) return alert_result(c->alert);
     ERR_error_string_n(ERR_peek_last_error(), text, sizeof text);
     LOG_LIMIT(8, "ssl: OpenSSL error %d (%s)\n", ssl_error, text);
-    if (ssl_error == SSL_ERROR_ZERO_RETURN || ssl_error == SSL_ERROR_SYSCALL)
-        return SSLSRV_RC(SSLSRV_CONNECTION_ABORTED);
-    return SSLSRV_RC(SSLSRV_INTERNAL_ERROR);
+    if (ssl_error == SSL_ERROR_ZERO_RETURN || ssl_error == SSL_ERROR_SYSCALL) return SNX_RC_SSL_CONNECTION_ABORTED;
+    return SNX_RC_SSL_INTERNAL_ERROR;
 }
 
 /* ============================================================ the socket under OpenSSL */
@@ -273,30 +279,30 @@ static int verify_cb(int ok, X509_STORE_CTX* store) {
     SSL* ssl = X509_STORE_CTX_get_ex_data(store, SSL_get_ex_data_X509_STORE_CTX_idx());
     SslConn* c = SSL_get_app_data(ssl);
     u32 bit = VERIFY_PEER_CA;
-    int rc = SSLSRV_BAD_CERTIFICATE;
+    int rc = SNX_RC_SSL_SSL_ERROR_BAD_CERTIFICATE;
     if (ok) return 1;
     switch (X509_STORE_CTX_get_error(store)) {
         case X509_V_ERR_HOSTNAME_MISMATCH:
         case X509_V_ERR_IP_ADDRESS_MISMATCH:
             bit = VERIFY_HOST_NAME;
-            rc = SSLSRV_INVALID_CERT_DOMAIN;
+            rc = SNX_RC_SSL_SSL_ERROR_INVALID_CERT_DOMAIN;
             break;
         case X509_V_ERR_CERT_HAS_EXPIRED:
         case X509_V_ERR_CERT_NOT_YET_VALID:
             bit = VERIFY_DATE_CHECK;
-            rc = SSLSRV_EXPIRED_CERTIFICATE;
+            rc = SNX_RC_SSL_SSL_ERROR_EXPIRED_CERTIFICATE;
             break;
-        case X509_V_ERR_CERT_REVOKED: rc = SSLSRV_REVOKED_CERTIFICATE; break;
+        case X509_V_ERR_CERT_REVOKED: rc = SNX_RC_SSL_SSL_ERROR_REVOKED_CERTIFICATE; break;
         case X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT:
         case X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY:
         case X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT:
         case X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN:
         case X509_V_ERR_UNABLE_TO_VERIFY_LEAF_SIGNATURE:
-        case X509_V_ERR_CERT_UNTRUSTED: rc = SSLSRV_UNKNOWN_CA; break;
+        case X509_V_ERR_CERT_UNTRUSTED: rc = SNX_RC_SSL_SSL_ERROR_UNKOWN_CA; break;
         default: break;
     }
     if (!(c->verify & bit)) return 1;
-    if (!c->verify_error) c->verify_error = SSLSRV_RC(rc);
+    if (!c->verify_error) c->verify_error = rc;
     return 0;
 }
 static void info_cb(const SSL* ssl, int where, int ret) {
@@ -331,7 +337,7 @@ enum { OP_HANDSHAKE, OP_READ, OP_PEEK, OP_WRITE };
 static int conn_io(SslConn* c, int op, void* data, size_t size, size_t* done) {
     u64 start = plat_ns();
     *done = 0;
-    R_UNLESS(c->s, SSLSRV_RC(SSLSRV_NO_SOCKET));
+    R_UNLESS(c->s, SNX_RC_SSL_NO_SOCKET);
     if (op != OP_HANDSHAKE && !size) R_SUCCEED();
     if (SSL_in_before(c->ssl)) conn_prepare(c);
     for (;;) {
@@ -351,9 +357,9 @@ static int conn_io(SslConn* c, int op, void* data, size_t size, size_t* done) {
         err = SSL_get_error(c->ssl, r);
         if (err == SSL_ERROR_ZERO_RETURN && op != OP_HANDSHAKE) R_SUCCEED();
         if (err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) return conn_error(c, err);
-        R_UNLESS(c->io_mode == IO_BLOCKING, SSLSRV_RC(SSLSRV_WOULD_BLOCK));
+        R_UNLESS(c->io_mode == IO_BLOCKING, SNX_RC_SSL_IO_WOULD_BLOCK);
         elapsed = (plat_ns() - start) / 1000000;
-        R_UNLESS(elapsed < BLOCKING_MS, SSLSRV_RC(SSLSRV_TIMEOUT));
+        R_UNLESS(elapsed < BLOCKING_MS, SNX_RC_SSL_IO_TIMEOUT);
         e.socket = c->s;
         e.host_fd = -1;
         e.events = err == SSL_ERROR_WANT_READ ? SNX_POLLIN : SNX_POLLOUT;
@@ -410,18 +416,18 @@ static int nn_ssl_sf_ISslConnection_SetSocketDescriptor(SvcObj* self, i32 fd, i3
     SnxSockAddr peer;
     SnxSocket* s;
     BIO* bio;
-    R_UNLESS(!c->s, SSLSRV_RC(SSLSRV_ALREADY_IN_USE));
+    R_UNLESS(!c->s, SNX_RC_SSL_ALREADY_IN_USE);
     s = bsd_client_socket(x->pid, fd);
-    R_UNLESS(s, SSLSRV_RC(SSLSRV_INVALID_SOCKET));
+    R_UNLESS(s, SNX_RC_SSL_INVALID_SOCKET);
     /* the console asks the duplicate for its peer, and fails without one */
     if (snx_socket_peer(s, &peer)) {
         snx_socket_unref(s);
-        R_THROW(SSLSRV_RC(SSLSRV_NO_CONNECTION));
+        R_THROW(SNX_RC_SSL_NO_CONNECTION);
     }
     bio = BIO_new(g_hle.ssl.bio);
     if (!bio) {
         snx_socket_unref(s);
-        R_THROW(SSLSRV_RC(SSLSRV_INSUFFICIENT_MEMORY));
+        R_THROW(SNX_RC_SSL_INSUFFICIENT_MEMORY);
     }
     BIO_set_data(bio, c);
     SSL_set_bio(c->ssl, bio, bio);
@@ -451,14 +457,14 @@ static int nn_ssl_sf_ISslConnection_SetVerifyOption(SvcObj* self, nn_ssl_sf_Veri
 }
 static int nn_ssl_sf_ISslConnection_SetIoMode(SvcObj* self, nn_ssl_sf_IoMode mode) {
     SslConn* c = self->data;
-    R_UNLESS(c->s, SSLSRV_RC(SSLSRV_NO_SOCKET));
-    if (mode != IO_BLOCKING && mode != IO_NONBLOCKING) R_THROW(SSLSRV_RC(SSLSRV_INVALID_OPTION));
+    R_UNLESS(c->s, SNX_RC_SSL_NO_SOCKET);
+    if (mode != IO_BLOCKING && mode != IO_NONBLOCKING) R_THROW(SNX_RC_SSL_INVALID_OPTION);
     c->io_mode = mode;
     R_SUCCEED();
 }
 static int nn_ssl_sf_ISslConnection_GetSocketDescriptor(SvcObj* self, i32* fd) {
     SslConn* c = self->data;
-    R_UNLESS(c->s, SSLSRV_RC(SSLSRV_NO_SOCKET));
+    R_UNLESS(c->s, SNX_RC_SSL_NO_SOCKET);
     *fd = c->fd;
     R_SUCCEED();
 }
@@ -494,7 +500,7 @@ static int nn_ssl_sf_ISslConnection_DoHandshakeGetServerCert(SvcObj* self, IpcBu
     u32 n;
     R_TRY(nn_ssl_sf_ISslConnection_DoHandshake(self));
     n = server_certs(c, NULL, count);
-    R_UNLESS(n <= (certificates.addr ? certificates.size : 0), SSLSRV_RC(SSLSRV_CERT_BUFFER_TOO_SMALL));
+    R_UNLESS(n <= (certificates.addr ? certificates.size : 0), SNX_RC_SSL_CERT_BUFFER_TOO_SMALL);
     if (n) server_certs(c, GP(certificates.addr), count);
     *size = n;
     R_SUCCEED();
@@ -520,7 +526,7 @@ static int nn_ssl_sf_ISslConnection_Write(SvcObj* self, IpcBuf data, u32* size) 
 }
 static int nn_ssl_sf_ISslConnection_Pending(SvcObj* self, i32* size) {
     SslConn* c = self->data;
-    R_UNLESS(c->s, SSLSRV_RC(SSLSRV_NO_SOCKET));
+    R_UNLESS(c->s, SNX_RC_SSL_NO_SOCKET);
     *size = SSL_pending(c->ssl);
     R_SUCCEED();
 }
@@ -537,7 +543,7 @@ static int nn_ssl_sf_ISslConnection_Poll(SvcObj* self, nn_ssl_sf_PollEvent event
     SslConn* c = self->data;
     SnxPollEntry e;
     int pending, r;
-    R_UNLESS(c->s, SSLSRV_RC(SSLSRV_NO_SOCKET));
+    R_UNLESS(c->s, SNX_RC_SSL_NO_SOCKET);
     pending = (events & PEV_READ) && SSL_pending(c->ssl) > 0;
     e.socket = c->s;
     e.host_fd = -1;
@@ -583,13 +589,13 @@ static int nn_ssl_sf_ISslConnection_GetRenegotiationMode(SvcObj* self, nn_ssl_sf
 /* DoNotCloseSocket only before SetSocketDescriptor (Switchbrew) */
 static int nn_ssl_sf_ISslConnection_SetOption(SvcObj* self, u8 value, nn_ssl_sf_OptionType option) {
     SslConn* c = self->data;
-    if (option >= OPT_COUNT || (option == OPT_DO_NOT_CLOSE_SOCKET && c->s)) R_THROW(SSLSRV_RC(SSLSRV_INVALID_OPTION));
+    if (option >= OPT_COUNT || (option == OPT_DO_NOT_CLOSE_SOCKET && c->s)) R_THROW(SNX_RC_SSL_INVALID_OPTION);
     c->option[option] = value != 0;
     R_SUCCEED();
 }
 static int nn_ssl_sf_ISslConnection_GetOption(SvcObj* self, nn_ssl_sf_OptionType option, u8* value) {
     SslConn* c = self->data;
-    R_UNLESS(option < OPT_COUNT, SSLSRV_RC(SSLSRV_INVALID_OPTION));
+    R_UNLESS(option < OPT_COUNT, SNX_RC_SSL_INVALID_OPTION);
     *value = c->option[option];
     R_SUCCEED();
 }
@@ -598,7 +604,7 @@ static int nn_ssl_sf_ISslConnection_GetCipherInfo(SvcObj* self, u32 version, Ipc
     SslConn* c = self->data;
     const SSL_CIPHER* cipher = SSL_get_current_cipher(c->ssl);
     char out[CIPHER_INFO_SIZE];
-    R_UNLESS(c->s, SSLSRV_RC(SSLSRV_NO_SOCKET));
+    R_UNLESS(c->s, SNX_RC_SSL_NO_SOCKET);
     memset(out, 0, sizeof out);
     if (cipher) {
         const char* name = SSL_CIPHER_standard_name(cipher);
@@ -613,20 +619,20 @@ static int nn_ssl_sf_ISslConnection_SetNextAlpnProto(SvcObj* self, IpcBuf protoc
     SslConn* c = self->data;
     const u8* p = protocols.addr ? GP(protocols.addr) : NULL;
     u64 at = 0, n = protocols.addr ? protocols.size : 0;
-    R_UNLESS(c->s, SSLSRV_RC(SSLSRV_NO_SOCKET));
-    R_UNLESS(n >= 2 && n <= UINT_MAX, SSLSRV_RC(SSLSRV_INVALID_OPTION));
+    R_UNLESS(c->s, SNX_RC_SSL_NO_SOCKET);
+    R_UNLESS(n >= 2 && n <= UINT_MAX, SNX_RC_SSL_INVALID_OPTION);
     while (at < n) {
-        R_UNLESS(p[at] && p[at] <= n - at - 1, SSLSRV_RC(SSLSRV_INVALID_OPTION));
+        R_UNLESS(p[at] && p[at] <= n - at - 1, SNX_RC_SSL_INVALID_OPTION);
         at += 1 + (u64)p[at];
     }
-    return SSL_set_alpn_protos(c->ssl, p, (unsigned)n) ? SSLSRV_RC(SSLSRV_INSUFFICIENT_MEMORY) : 0;
+    return SSL_set_alpn_protos(c->ssl, p, (unsigned)n) ? SNX_RC_SSL_INSUFFICIENT_MEMORY : 0;
 }
 static int nn_ssl_sf_ISslConnection_GetNextAlpnProto(SvcObj* self, IpcBuf protocol, nn_ssl_sf_AlpnProtoState* state,
                                                      u32* size) {
     SslConn* c = self->data;
     const unsigned char* p = NULL;
     unsigned n = 0;
-    R_UNLESS(c->s, SSLSRV_RC(SSLSRV_NO_SOCKET));
+    R_UNLESS(c->s, SNX_RC_SSL_NO_SOCKET);
     SSL_get0_alpn_selected(c->ssl, &p, &n);
     if (n) {
         *state = ALPN_NEGOTIATED;
@@ -666,13 +672,13 @@ static void conn_destroy(SvcObj* o) {
 /* ============================================================ ISslContext */
 static int nn_ssl_sf_ISslContext_SetOption(SvcObj* self, nn_ssl_sf_ContextOption option, i32 value) {
     SslContext* x = self->data;
-    R_UNLESS(option == CONTEXT_CRL_IMPORT_DATE_CHECK, SSLSRV_RC(SSLSRV_INVALID_OPTION));
+    R_UNLESS(option == CONTEXT_CRL_IMPORT_DATE_CHECK, SNX_RC_SSL_INVALID_OPTION);
     x->crl_date_check = value;
     R_SUCCEED();
 }
 static int nn_ssl_sf_ISslContext_GetOption(SvcObj* self, nn_ssl_sf_ContextOption option, i32* value) {
     SslContext* x = self->data;
-    R_UNLESS(option == CONTEXT_CRL_IMPORT_DATE_CHECK, SSLSRV_RC(SSLSRV_INVALID_OPTION));
+    R_UNLESS(option == CONTEXT_CRL_IMPORT_DATE_CHECK, SNX_RC_SSL_INVALID_OPTION);
     *value = x->crl_date_check;
     R_SUCCEED();
 }
@@ -682,9 +688,9 @@ static int nn_ssl_sf_ISslContext_CreateConnection(SvcObj* self, SvcObj** connect
     SvcObj* o;
     SslConn* c;
     SSL* ssl;
-    R_UNLESS(x->connections < MAX_CONNECTIONS, SSLSRV_RC(SSLSRV_INSUFFICIENT_MEMORY));
+    R_UNLESS(x->connections < MAX_CONNECTIONS, SNX_RC_SSL_INSUFFICIENT_MEMORY);
     ssl = SSL_new(x->ctx);
-    R_UNLESS(ssl, SSLSRV_RC(SSLSRV_INSUFFICIENT_MEMORY));
+    R_UNLESS(ssl, SNX_RC_SSL_INSUFFICIENT_MEMORY);
     o = SVCOBJ_NEW_DATA("nn::ssl::sf::ISslConnection", conn_disp, g_hle.ssl.conns, g_hle.ssl.conn_next,
                         "ssl connections");
     c = o->data;
@@ -739,13 +745,13 @@ static int nn_ssl_sf_ISslContext_ImportServerPki(SvcObj* self, nn_ssl_sf_Certifi
     SslContext* x = self->data;
     STACK_OF(X509) * certs;
     int i, n;
-    if (format != CERT_PEM && format != CERT_DER) R_THROW(SSLSRV_RC(SSLSRV_INVALID_OPTION));
+    if (format != CERT_PEM && format != CERT_DER) R_THROW(SNX_RC_SSL_INVALID_OPTION);
     certs = read_certs(certificates.addr ? GP(certificates.addr) : NULL, certificates.addr ? certificates.size : 0);
-    R_UNLESS(certs, SSLSRV_RC(SSLSRV_INSUFFICIENT_MEMORY));
+    R_UNLESS(certs, SNX_RC_SSL_INSUFFICIENT_MEMORY);
     n = sk_X509_num(certs);
     if (!n || n > MAX_SERVER_CERTS) {
         sk_X509_pop_free(certs, X509_free);
-        R_THROW(SSLSRV_RC(n ? SSLSRV_MAX_SERVER_PKI_REGISTERED : SSLSRV_BAD_CERTIFICATE));
+        R_THROW(n ? SNX_RC_SSL_MAX_SERVER_PKI_REGISTERED : SNX_RC_SSL_SSL_ERROR_BAD_CERTIFICATE);
     }
     for (i = 0; i < n; i++) X509_STORE_add_cert(x->store, sk_X509_value(certs, i));
     sk_X509_pop_free(certs, X509_free);
@@ -762,12 +768,12 @@ static int nn_ssl_sf_ISslContext_ImportClientPki(SvcObj* self, IpcBuf pkcs12, Ip
     char* pass;
     PKCS12* p12;
     int ok;
-    R_UNLESS(!x->client_id, SSLSRV_RC(SSLSRV_CLIENT_PKI_ALREADY_REGISTERED));
+    R_UNLESS(!x->client_id, SNX_RC_SSL_CLIENT_PKI_ALREADY_REGISTERED);
     p12 = p ? d2i_PKCS12(NULL, &p, pkcs12.size > LONG_MAX ? LONG_MAX : (long)pkcs12.size) : NULL;
     pass = malloc(pn + 1);
     if (!pass) {
         PKCS12_free(p12);
-        R_THROW(SSLSRV_RC(SSLSRV_INSUFFICIENT_MEMORY));
+        R_THROW(SNX_RC_SSL_INSUFFICIENT_MEMORY);
     }
     if (pn) memcpy(pass, GP(password.addr), pn);
     pass[pn] = 0;
@@ -783,7 +789,7 @@ static int nn_ssl_sf_ISslContext_ImportClientPki(SvcObj* self, IpcBuf pkcs12, Ip
         x->client_key = NULL;
         x->client_cert = NULL;
         x->client_chain = NULL;
-        R_THROW(SSLSRV_RC(SSLSRV_BAD_CERTIFICATE));
+        R_THROW(SNX_RC_SSL_SSL_ERROR_BAD_CERTIFICATE);
     }
     *id = x->client_id = ++x->last_id;
     R_SUCCEED();
@@ -791,8 +797,8 @@ static int nn_ssl_sf_ISslContext_ImportClientPki(SvcObj* self, IpcBuf pkcs12, Ip
 /* the console's device certificate, which the runtime doesn't have: the slot is taken, with no certificate in it */
 static int nn_ssl_sf_ISslContext_RegisterInternalPki(SvcObj* self, nn_ssl_sf_InternalPki pki, u64* id) {
     SslContext* x = self->data;
-    R_UNLESS(pki == INTERNAL_PKI_DEVICE_CLIENT_CERT, SSLSRV_RC(SSLSRV_INVALID_OPTION));
-    R_UNLESS(!x->client_id, SSLSRV_RC(SSLSRV_CLIENT_PKI_ALREADY_REGISTERED));
+    R_UNLESS(pki == INTERNAL_PKI_DEVICE_CLIENT_CERT, SNX_RC_SSL_INVALID_OPTION);
+    R_UNLESS(!x->client_id, SNX_RC_SSL_CLIENT_PKI_ALREADY_REGISTERED);
     LOG("ssl: RegisterInternalPki: no device certificate, connections go without a client certificate\n");
     *id = x->client_id = ++x->last_id;
     R_SUCCEED();
@@ -847,7 +853,7 @@ static int nn_ssl_sf_ISslService_CreateContext(SvcObj* self, nn_ssl_sf_SslVersio
         SSL_CTX_free(ctx);
         X509_STORE_free(store);
         ERR_clear_error();
-        R_THROW(SSLSRV_RC(SSLSRV_INSUFFICIENT_MEMORY));
+        R_THROW(SNX_RC_SSL_INSUFFICIENT_MEMORY);
     }
     SSL_CTX_set_mode(ctx, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
     SSL_CTX_set_options(ctx, SSL_OP_IGNORE_UNEXPECTED_EOF);
@@ -873,7 +879,7 @@ static int nn_ssl_sf_ISslService_GetContextCount(SvcObj* self, u32* count) {
 /* No system archive, so no built-in certificates: the buffer holds just the terminating entry {-1, -1, 0, 0} */
 static int nn_ssl_sf_ISslService_GetCertificates(SvcObj* self, IpcBuf certificates, IpcBuf ids, u32* count) {
     u32 end[6] = {0xFFFFFFFFu, 0xFFFFFFFFu, 0, 0, 0, 0};
-    R_UNLESS(certificates.addr && certificates.size >= CERT_INFO_SIZE, SSLSRV_RC(SSLSRV_CERT_BUFFER_TOO_SMALL));
+    R_UNLESS(certificates.addr && certificates.size >= CERT_INFO_SIZE, SNX_RC_SSL_CERT_BUFFER_TOO_SMALL);
     memcpy(GP(certificates.addr), end, CERT_INFO_SIZE);
     *count = 0;
     R_SUCCEED();

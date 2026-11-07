@@ -12,7 +12,6 @@
 #include "hle/services/network/nifm.swipc.inc"
 
 enum { REQ_INVALID = 1, REQ_ON_HOLD = 2, REQ_ACCEPTED = 3 }; /* nn::nifm::RequestState (1 is also NotSubmitted) */
-#define NIFM_NOT_CONNECTED RC(110, 300)
 
 /* IRequest: u[0] the state (an atomic: game threads submit and poll at once), data the two events (NifmRequest) */
 static void nifm_req_destroy(SvcObj* o) {
@@ -24,7 +23,9 @@ static int nn_nifm_detail_IRequest_GetRequestState(SvcObj* self, i32* state) {
     R_SUCCEED();
 }
 static int nn_nifm_detail_IRequest_GetResult(SvcObj* self) {
-    return network_online() && __atomic_load_n(&self->u[0], __ATOMIC_RELAXED) != REQ_INVALID ? 0 : NIFM_NOT_CONNECTED;
+    return network_online() && __atomic_load_n(&self->u[0], __ATOMIC_RELAXED) != REQ_INVALID
+               ? 0
+               : SNX_RC_NIFM_NO_INTERNET_CONNECTION;
 }
 static int nn_nifm_detail_IRequest_GetSystemEventReadableHandles(SvcObj* self, u32* state_event, u32* other_event) {
     NifmRequest* r = self->data;
@@ -117,14 +118,14 @@ static int nn_nifm_detail_IGeneralService_CreateRequest(SvcObj* self, i32 requir
 static int nn_nifm_detail_IGeneralService_GetCurrentNetworkProfile(SvcObj* self, IpcBuf profile) {
     SnxNetInterface i;
     u8 p[0x17C];
-    R_UNLESS(!network_interface(&i), NIFM_NOT_CONNECTED);
+    R_UNLESS(!network_interface(&i), SNX_RC_NIFM_NO_INTERNET_CONNECTION);
     network_profile(&i, p);
     if (profile.addr) memcpy(GP(profile.addr), p, profile.size < sizeof p ? profile.size : sizeof p);
     R_SUCCEED();
 }
 static int nn_nifm_detail_IGeneralService_GetCurrentIpAddress(SvcObj* self, nn_nifm_IpV4Address* address) {
     SnxNetInterface i;
-    R_UNLESS(!network_interface(&i), NIFM_NOT_CONNECTED);
+    R_UNLESS(!network_interface(&i), SNX_RC_NIFM_NO_INTERNET_CONNECTION);
     memcpy(address->v, i.ip, 4);
     R_SUCCEED();
 }
@@ -132,7 +133,7 @@ static int nn_nifm_detail_IGeneralService_GetCurrentIpConfigInfo(SvcObj* self, n
                                                                  nn_nifm_DnsSetting* dns_setting) {
     SnxNetInterface i;
     u8 cfg[0x16];
-    R_UNLESS(!network_interface(&i), NIFM_NOT_CONNECTED);
+    R_UNLESS(!network_interface(&i), SNX_RC_NIFM_NO_INTERNET_CONNECTION);
     ip_config(&i, cfg);
     memcpy(ip_setting->v, cfg, 0xD);
     memcpy(dns_setting->v, cfg + 0xD, 9);
@@ -146,7 +147,7 @@ static int nn_nifm_detail_IGeneralService_IsWirelessCommunicationEnabled(SvcObj*
 static int nn_nifm_detail_IGeneralService_GetInternetConnectionStatus(SvcObj* self, u8* interface_type,
                                                                       u8* wifi_strength, u8* status) {
     SnxNetInterface i;
-    R_UNLESS(!network_interface(&i), NIFM_NOT_CONNECTED);
+    R_UNLESS(!network_interface(&i), SNX_RC_NIFM_NO_INTERNET_CONNECTION);
     *interface_type = i.wireless ? 1 : 2;
     *wifi_strength = 3;
     *status = 4; /* connected */
