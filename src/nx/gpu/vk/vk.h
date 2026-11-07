@@ -1332,7 +1332,9 @@ u32 vk_write_runs(u64 addr, const u8* res, const VkRun* runs, u32 n, u32 since);
 /* the writer vk_buf_copy_writable bound last logs its writes in part of l: the result it writes lands those of all of
    its writers and no other bytes, once its commit gives it a reference to l. A writer that logs nothing (a draw, a
    Switch program, a buffer image) has its result compared with its original bytes as before */
-int vk_buf_copy_writable_logged(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered, VkWriteLog* l, u32 part);
+int vk_buf_copy_writable_logged(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered, VkWriteLog* l, u32 part,
+                                int no_read); /* no_read: the program writes but never reads it, so its input is not
+                                                 copied */
 /* the dispatch's own reference to l, dropped once the submit being recorded is done */
 void vk_buf_log_retire(VkWriteLog* l);
 int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered);

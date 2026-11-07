@@ -274,6 +274,9 @@ typedef struct GfxOut {
        give the bytes they wrote (logs) */
     u8* org;
     int org_alloc; /* org allocated on its own: taken when a writer that logs nothing joined a logged result */
+    /* the writer binds a buffer the program writes but never reads: its input was not copied in, so its staging's
+       bytes are not guest memory and a reader must compose, not read it in place */
+    int no_input;
     /* GPU-owned input snapshotted before shader writes, read only at the frame fence. */
     u8* initial;
     VmaAllocation initial_mem;
@@ -310,6 +313,7 @@ static struct {
 } g_pw[32];
 static u32 g_npw;
 static VkWriteLog* g_bind_log; /* the log of the writer vk_buf_copy_writable is binding, NULL when it logs nothing */
+static int g_bind_no_read;     /* the writer binds a buffer the program writes but never reads: its input is not copied */
 static u32 g_bind_part;
 /* the dispatches' own references to their logs, dropped once the submit that recorded them is done */
 static struct {
@@ -1505,8 +1509,9 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
     if (count == 1 && gva >= match->addr && gva + len <= match->addr + match->size &&
         !((match->off + (gva - match->addr)) & (align - 1)) &&
         /* a logged result, whose original bytes are gone, is written in place only by a writer that logs too: one
-           that doesn't composes a result of its own over it */
-        (!writable || match->org || g_bind_log) &&
+           that doesn't composes a result of its own over it. One whose input was not copied (a write-only binding)
+           has no guest memory in its staging either, so a reader of it composes too */
+        (match->org || !match->no_input) && (!writable || match->org || g_bind_log) &&
         (!writable || match->frame == vk_submit_number() || out_take_into_submit(match))) {
         /* Maxwell bindings retain conservative read/write ordering. NVN permits overlapping draws and supplies
            storage dependencies through explicit barriers; a writable view alone does not create a dependency.
@@ -2380,12 +2385,20 @@ static int copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered)
             (void)gfx_overlay(gva, len, *buf, *off, o->ptr, gap_copy, &g); /* in place: nothing to stage */
         }
     } else if (logged) {
-        const u8* src = guest_bytes(gva, len);
-        if (!src) {
-            free(o);
-            return 0;
+        if (!g_bind_no_read) { /* the program reads the buffer: its bytes are the input */
+            const u8* src = guest_bytes(gva, len);
+            if (!src) {
+                free(o);
+                return 0;
+            }
+            memcpy(o->ptr, src, len);
+        } else {
+            /* write-only: the program only writes it, its bytes (if any) land from the log. But its stores are
+               partial, and the GPU's read-modify-write of the surrounding cache line reads the staging it would
+               have written over: give it zeros, not uninitialized ring memory, which can hang the GPU */
+            memset(o->ptr, 0, len);
+            o->no_input = 1;
         }
-        memcpy(o->ptr, src, len);
     } else {
         memcpy(o->ptr, o->org, len);
         g_buffer.wstat.copied += len;
@@ -2407,11 +2420,14 @@ static int copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered)
 }
 int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered) {
     g_bind_log = NULL;
+    g_bind_no_read = 0;
     return copy_writable(gva, len, buf, off, ordered);
 }
-int vk_buf_copy_writable_logged(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered, VkWriteLog* l, u32 part) {
+int vk_buf_copy_writable_logged(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered, VkWriteLog* l, u32 part,
+                                int no_read) {
     g_bind_log = l;
     g_bind_part = part;
+    g_bind_no_read = no_read;
     int ok = copy_writable(gva, len, buf, off, ordered);
     g_bind_log = NULL;
     return ok;
