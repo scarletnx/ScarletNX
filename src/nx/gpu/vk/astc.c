@@ -330,7 +330,10 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h, u32
                 g_bc7_queued += (u64)cx * ((height + 3) / 4) * nz;
                 if (g_bc7_queued >= BC7_QUEUED_BLOCKS) {
                     g_bc7_queued = 0;
-                    vk_submit_upload_wait(); /* the next strip's rows, and the caller, take the next recording */
+                    vk_submit_upload_wait();
+                    /* This upload continues after the submission too. Rows callbacks may only stage bytes;
+                       do not leave them, or the next strip's barriers, with the ended command buffer. */
+                    cb = vk_cmd();
                 }
             }
         }
