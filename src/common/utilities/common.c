@@ -2535,6 +2535,9 @@ int snx_addon_kind(SnxU64 game, SnxU64 id) {
     if (id == (game | 0x800)) return SNX_ADDON_UPDATE;
     return snx_program_index(game, id) > 0 ? SNX_ADDON_PROGRAM : SNX_ADDON_DLC;
 }
+int snx_addon_own_program(SnxU64 game, SnxU64 id) {
+    return game >> 32 != 0x00040000u && snx_addon_kind(game, id) == SNX_ADDON_UPDATE;
+}
 int snx_program_index(SnxU64 game, SnxU64 id) {
     SnxU64 update = game | 0x800, step;
     if (id == game || id == update) return 0;
