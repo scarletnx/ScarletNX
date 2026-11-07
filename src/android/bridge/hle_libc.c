@@ -513,9 +513,52 @@ static void g_syslog(CPU* c, void* data) {
 
 /* the scanf family: every argument after the format is a pointer, so the host's takes them as they are */
 typedef int (*Scan)(const char*, const char*, ...);
+enum { SCAN_MOST = 24 };
+/* the pointers a scanf format stores through: one for each conversion but %% and the suppressed (%*d), %n's too, or
+   the highest of their positions (%2$d). Only those are read: the guest's stack can end right after the last one */
+static unsigned scan_count(const char* f) {
+    unsigned count = 0, highest = 0;
+    while (*f) {
+        if (*f++ != '%') continue;
+        if (*f == '%') {
+            ++f;
+            continue;
+        }
+        const char* digits = f;
+        unsigned position = 0;
+        while (*f >= '0' && *f <= '9') ++f;
+        if (*f == '$' && f > digits) {
+            position = (unsigned)strtoul(digits, NULL, 10);
+            ++f;
+        } else
+            f = digits;
+        bool stores = *f != '*';
+        if (!stores) ++f;
+        while (*f >= '0' && *f <= '9') ++f;
+        while (*f && strchr("hlLjztqm", *f)) ++f;
+        if (*f == '[') { /* a set, which can hold ']' first and '%' anywhere */
+            ++f;
+            if (*f == '^') ++f;
+            if (*f == ']') ++f;
+            while (*f && *f != ']') ++f;
+        }
+        if (*f) ++f;
+        if (stores && !position) ++count;
+        if (stores && position > highest) highest = position;
+    }
+    return count > highest ? count : highest;
+}
 static int scan_pointers(const char* in, const char* format, GuestArgs* a) {
-    uint64_t p[24];
-    for (int i = 0; i < 24; ++i) p[i] = args_int(a);
+    unsigned count = scan_count(format);
+    if (count > SCAN_MOST) {
+        fprintf(stderr,
+                "scarletnx-android: a scanf format stores through %u pointers, the bridge passes %d at most: "
+                "it returns -1 (EOF) for \"%s\"\n",
+                count, SCAN_MOST, format);
+        return EOF;
+    }
+    uint64_t p[SCAN_MOST] = {0};
+    for (unsigned i = 0; i < count; ++i) p[i] = args_int(a);
     return sscanf(in, format, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11], p[12], p[13],
                   p[14], p[15], p[16], p[17], p[18], p[19], p[20], p[21], p[22], p[23]);
 }
