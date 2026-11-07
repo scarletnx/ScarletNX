@@ -89,6 +89,7 @@ typedef struct {
     bool failed;
     uint32_t push; /* the push constant block (vertex) */
     uint32_t samplers[USSE_TEXTURES];
+    uint8_t sampler_dimensions[USSE_TEXTURES];
     uint32_t buffer;    /* the uniform buffers' storage buffer, 0 for none */
     uint32_t terminated; /* the instruction just translated ended its block (KILL) */
     uint32_t frag_depth; /* gl_FragDepth, for a program that writes depth (DEPTHF) */
@@ -702,7 +703,8 @@ static bool smlsi(T* t, const uint32_t* f) {
 /* ---- the instructions ported second: the ALU (alu.cpp, ialu.cpp), tests (branch_cond.cpp), loads (data.cpp),
    dependent texture reads (texture.cpp) and the special ones (special.cpp) ---- */
 static Type texture_component_type(uint32_t format);
-static uint32_t sampler_of(T* t, unsigned resource);
+static unsigned gxp_sampler_dimension(const T* t, unsigned resource);
+static uint32_t sampler_of(T* t, unsigned resource, unsigned dimension);
 static unsigned texture_components(uint32_t format);
 static Value vector_value(T* t, uint32_t vec, unsigned n, int kind);
 static void store_input(T* t, Bank bank, unsigned offset, Type type, Value v);
@@ -1485,7 +1487,7 @@ static bool gather(T* t, uint32_t sampler, uint32_t coord, uint32_t format, Type
     return !t->failed;
 }
 /* SMP: p s n y m r c e f a d l t b g k h i j o q u v. The texture is the dependent sampler src1 names, read at src0
-   (one or two components), its LOD from src2 when lod_mode says */
+   (one, two, or three components), its LOD from src2 when lod_mode says */
 static bool smp(T* t, const uint32_t* f) {
     unsigned src0_ext = f[5], src1_ext = f[6], src2_ext = f[7], fconv = f[8], dim = f[10] + 1, lod_mode = f[11];
     unsigned use_pa = f[12], sb_mode = f[13], src0_type = f[14], src0_bank = f[15], src1_bank = f[17];
@@ -1496,26 +1498,33 @@ static bool smp(T* t, const uint32_t* f) {
     if (src1.bank != B_SA || src1.num >= BANK_WORDS || !t->dependent[src1.num])
         return fail(t, "an SMP whose sampler isn't a dependent one");
     if (sb_mode == 2) return fail(t, "SMP queries");
-    if (dim == 3) return fail(t, "SMP of cube textures");
+    if (dim > 3) return fail(t, "SMP dimension %u", dim);
     unsigned resource = t->dependent[src1.num] - 1u;
+    if (resource >= USSE_TEXTURES) return fail(t, "SMP sampler %u", resource);
     uint32_t format = t->hints->texture_formats[resource];
     Type type = fconv == 2 ? T_F16 : fconv == 3 ? T_F32 : texture_component_type(format);
-    Value c = load(t, src0, dim == 1 ? 1 : 3, 0);
+    Value c = load(t, src0, dim == 1 ? 1 : dim == 2 ? 3 : 7, 0);
     if (t->failed) return false;
     if (c.kind != K_FLOAT) c = to_float(t, c, src0.type, true);
-    uint32_t coord = SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v2f, c.c[0], dim == 1 ? cf(t, 0) : c.c[1]);
-    uint32_t sampler = sampler_of(t, resource), sampled;
+    uint32_t coord = dim == 3 ? SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v3f, c.c[0], c.c[1], c.c[2])
+                              : SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v2f, c.c[0], dim == 1 ? cf(t, 0) : c.c[1]);
+    unsigned sampler_dim = dim == 3 ? SPV_DIM_CUBE : SPV_DIM_2D;
+    uint32_t sampler = sampler_of(t, resource, sampler_dim), sampled;
     Bank bank = use_pa ? (t->secondary ? B_SA : B_PA) : B_TEMP;
+    if (sb_mode == 3 && dim == 3) return fail(t, "SMP cube gather with UV coefficients");
     if (sb_mode) /* the four texels' components: each component of the four, then the next component's */
         return gather(t, sampler, coord, format, type, bank, dest_n, sb_mode == 3);
     Operand src2 = decode_src12(t, src2_n, src2_bank, src2_ext, true, 8);
     src2.type = src0.type;
     bool implicit = t->fragment && (lod_mode == 0 || lod_mode == 1);
     if (lod_mode == 3) { /* gradients */
-        Value dx = load(t, src2, 3, 0), dy = load(t, src2, 12, 0);
+        Value dx = dim == 3 ? load(t, src2, 7, 0) : load(t, src2, 3, 0);
+        Value dy = dim == 3 ? load(t, src2, 7, 1) : load(t, src2, 12, 0);
         if (t->failed) return false;
-        uint32_t gx = SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v2f, dx.c[0], dx.c[1]);
-        uint32_t gy = SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v2f, dy.c[0], dy.c[1]);
+        uint32_t gx = dim == 3 ? SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v3f, dx.c[0], dx.c[1], dx.c[2])
+                               : SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v2f, dx.c[0], dx.c[1]);
+        uint32_t gy = dim == 3 ? SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v3f, dy.c[0], dy.c[1], dy.c[2])
+                               : SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v2f, dy.c[0], dy.c[1]);
         sampled = SPV(&t->e, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, t->t_v4f, sampler, coord, 4u /* Grad */, gx, gy);
     } else if (lod_mode) {
         uint32_t lod = load(t, src2, 1, 0).c[0];
@@ -1916,14 +1925,30 @@ static Type texture_component_type(uint32_t format) {
         default: return T_U8; /* the 8-bit unsigned ones, palettes, the compressed and YUV formats */
     }
 }
+static unsigned gxp_sampler_dimension(const T* t, unsigned resource) {
+    uint32_t count = snx_ld_le32(t->gxp + GXP_PARAMETER_COUNT);
+    for (uint32_t i = 0; i < count; ++i) {
+        const unsigned char* q = gxp_parameter(t->gxp, i);
+        if (gxp_parameter_category(q) == GXP_CATEGORY_SAMPLER && gxp_parameter_resource(q) == resource)
+            return (gxp_parameter_semantic_index(q) & 0x10) ? SPV_DIM_CUBE : SPV_DIM_2D;
+    }
+    return 0;
+}
 /* texture resource's combined image sampler, loaded (its variable made at its first use) */
-static uint32_t sampler_of(T* t, unsigned resource) {
-    uint32_t image = spv_emit_type_image(&t->e, t->t_f32, SPV_DIM_2D, 0, 0, 0, 1, 0);
+static uint32_t sampler_of(T* t, unsigned resource, unsigned dimension) {
+    if (resource >= USSE_TEXTURES) return fail(t, "sampler %u", resource), cu(t, 0);
+    unsigned declared_dimension = gxp_sampler_dimension(t, resource);
+    if (declared_dimension && declared_dimension != dimension)
+        return fail(t, "sampler %u dimension %u used as %u", resource, declared_dimension, dimension), cu(t, 0);
+    if (t->sampler_dimensions[resource] && t->sampler_dimensions[resource] != dimension)
+        return fail(t, "sampler %u used with multiple dimensions", resource), cu(t, 0);
+    uint32_t image = spv_emit_type_image(&t->e, t->t_f32, dimension, 0, 0, 0, 1, 0);
     uint32_t sampled_type = spv_emit_type_sampled_image(&t->e, image);
     if (!t->samplers[resource]) {
         t->samplers[resource] =
             spv_emit_resource(&t->e, SPV_STORAGE_UNIFORM_CONSTANT, sampled_type, 0, USSE_TEXTURE_BINDING + resource);
         global(t, t->samplers[resource]);
+        t->sampler_dimensions[resource] = (uint8_t)dimension;
     }
     t->out->sampler_mask |= 1u << resource;
     return SPV(&t->e, SPV_OP_LOAD, sampled_type, t->samplers[resource]);
@@ -2027,10 +2052,19 @@ static void fragment_inputs(T* t) {
                 global(t, coords[coord_index]);
             }
             uint32_t coord = SPV(&t->e, SPV_OP_LOAD, t->t_v4f, coords[coord_index]), sampled;
-            uint32_t sampler = sampler_of(t, resource);
+            unsigned dimension = gxp_sampler_dimension(t, resource);
+            if (!dimension) dimension = SPV_DIM_2D;
+            uint32_t sampler = sampler_of(t, resource, dimension);
             if (project >= 0) {
+                if (dimension == SPV_DIM_CUBE) {
+                    fail(t, "projected cube texture inputs");
+                    return;
+                }
                 uint32_t xyp = SPV(&t->e, SPV_OP_VECTOR_SHUFFLE, t->t_v3f, coord, coord, 0, 1, (uint32_t)project);
                 sampled = SPV(&t->e, SPV_OP_IMAGE_SAMPLE_PROJ_IMPLICIT_LOD, t->t_v4f, sampler, xyp);
+            } else if (dimension == SPV_DIM_CUBE) {
+                uint32_t xyz = SPV(&t->e, SPV_OP_VECTOR_SHUFFLE, t->t_v3f, coord, coord, 0, 1, 2);
+                sampled = SPV(&t->e, SPV_OP_IMAGE_SAMPLE_IMPLICIT_LOD, t->t_v4f, sampler, xyz);
             } else {
                 uint32_t xy = SPV(&t->e, SPV_OP_VECTOR_SHUFFLE, t->t_v2f, coord, coord, 0, 1);
                 sampled = SPV(&t->e, SPV_OP_IMAGE_SAMPLE_IMPLICIT_LOD, t->t_v4f, sampler, xy);

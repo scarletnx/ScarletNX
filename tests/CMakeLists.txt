@@ -2545,6 +2545,10 @@ if(TARGET snx_vita_usse)
     snx_test_target(snx-test-vita-usse-vdual 11)
     target_link_libraries(snx-test-vita-usse-vdual PRIVATE snx_vita_usse)
     add_test(NAME vita_usse_vdual COMMAND snx-test-vita-usse-vdual)
+    add_executable(snx-test-vita-usse-cube vita_usse_cube.c)
+    snx_test_target(snx-test-vita-usse-cube 11)
+    target_link_libraries(snx-test-vita-usse-cube PRIVATE snx_vita_usse)
+    add_test(NAME vita_usse_cube COMMAND snx-test-vita-usse-cube)
 endif()
 # the texture conversion shader's GLSL run on the CPU against the CPU's conversions and ETC2 and BCn decoders: no GPU
 # needed
