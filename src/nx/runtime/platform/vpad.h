@@ -48,8 +48,12 @@ typedef struct {
 } SnxVpadConfig;
 /* the layout, its defaults filled in on first use */
 SnxVpadConfig* vpad_config(void);
-#define SNX_VPAD_SIZE_MIN 50
-#define SNX_VPAD_SIZE_MAX 200
+#define SNX_VPAD_SIZE_MIN      50
+#define SNX_VPAD_SIZE_MAX      200
+/* the built-in look's opacity: controls_alpha's p percent draws its art at (p / 100) ^ this, 0.6 at 50 and opaque at
+   100, as the art is rEden's drawables made opaque (scripts/build-controls.py: they are 0.6 opaque at most), so 50 is
+   their own look; log 0.6 / log 0.5. A skin is drawn at p / 100 */
+#define SNX_VPAD_BUILTIN_CURVE 0.7369655941662062
 
 void vpad_defaults(SnxVpadConfig* c); /* the default layout: the skin's places (vpad_skin.h), else the built-in ones */
 /* the skin's controls (vpad_skin_read), copied, under ui_lock: those with pieces take its look, hit area and default

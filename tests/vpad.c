@@ -179,7 +179,7 @@ int main(void) {
     assert(!g_settings.control_shown[SNX_VPAD_X] && !vpad_down(10, mx(SNX_VPAD_X), my(SNX_VPAD_X), safe));
     draw(&l);
     assert(!drawn(&l, SNX_SPRITE_X) && drawn(&l, SNX_SPRITE_Y));
-    assert(drawn(&l, SNX_SPRITE_Y)->rgba >> 24 == 127); /* at half their opacity by default */
+    assert(drawn(&l, SNX_SPRITE_Y)->rgba >> 24 == 153); /* 50 by default, 0.6 on the built-in look's curve */
     vpad_ini("controls_x", "0.870 0.340 100 1");
     assert(vpad_down(10, mx(SNX_VPAD_X), my(SNX_VPAD_X), safe) && buttons(NULL) == 4);
     draw(&l);
@@ -190,7 +190,7 @@ int main(void) {
     /* opacity and scale: the alpha of every sprite, the size of every control */
     vpad_ini("controls_alpha", "30");
     draw(&l);
-    assert(drawn(&l, SNX_SPRITE_A)->rgba >> 24 == 76);
+    assert(drawn(&l, SNX_SPRITE_A)->rgba >> 24 == 105);                           /* 0.3 ^ SNX_VPAD_BUILTIN_CURVE */
     assert(drawn(&l, SNX_SPRITE_A)->w > 109 && drawn(&l, SNX_SPRITE_A)->w < 111); /* 11% of 1000 at 100% */
     vpad_ini("controls_scale", "100");
     draw(&l);
@@ -304,8 +304,8 @@ int main(void) {
         vpad_showcase_input(0, none);
         vpad_showcase_draw(&l, safe, 60);
         assert(l.n > 13 && drawn(&l, SNX_SPRITE_A) && !drawn(&l, SNX_SPRITE_A_PRESSED) && drawn(&l, SNX_SPRITE_DPAD));
-        /* half the 230 it had, over art twice as opaque: the same look */
-        assert(drawn(&l, SNX_SPRITE_A)->rgba >> 24 == 115);
+        /* 0.6 of the 230 it had on rEden's drawables, over the art made opaque: the same look */
+        assert(drawn(&l, SNX_SPRITE_A)->rgba >> 24 == 138);
         assert(!drawn(&l, SNX_SPRITE_HOME) && !drawn(&l, SNX_SPRITE_CAPTURE) && !drawn(&l, SNX_SPRITE_L3) &&
                !drawn(&l, SNX_SPRITE_R3) && !drawn(&l, SNX_SPRITE_STICK_PRESSED));
         /* "60 FPS" at the box's top, in the font */

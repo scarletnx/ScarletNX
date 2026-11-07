@@ -46,8 +46,9 @@ int options_memory_fit_old(const char* old, int ios);
 /* astc_bc's value old as astc_mode's (0 Auto, 1 Exact): 1 is 0; 0 is -1, astc_mode's default, as 0 was astc_bc's own,
    which every game's .ini had written; -2 for any other value */
 int options_astc_bc_old(const char* old);
-/* controls_opacity's value old as controls_alpha's: half of it, rounded up, the same look, as the built-in controls' art
-   is twice as opaque now (scripts/build-controls.py); a whole number past 0 to 100 as the nearer end, as
+/* controls_opacity's value old as controls_alpha's: the built-in look as it was, controls_opacity's p percent of rEden's
+   drawables (0.6 opaque at most) being the art made opaque at 0.6 p / 100, which SNX_VPAD_BUILTIN_CURVE gives at
+   100 (0.006 p) ^ (1 / curve), rounded: 100 is 50. A whole number past 0 to 100 as the nearer end, as
    controls_opacity's reader took it. 50 is -1, controls_alpha's default, as 50 was then controls_opacity's own, which
    the .ini files made since it was had written; -2 for a value that is not a whole number */
 int options_controls_opacity_old(const char* old);
