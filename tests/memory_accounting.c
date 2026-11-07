@@ -294,21 +294,21 @@ static void test_heap(void) {
     CHECK(state(HEAP_BASE) == MS_NORMAL);
     CHECK(svc_set_heap_size(3228 * MIB) == 0);
     int calls = commit_calls;
-    CHECK(svc_set_heap_size(3230 * MIB) == R_LIMIT);
+    CHECK(svc_set_heap_size(3230 * MIB) == SNX_RC_SVC_LIMIT_REACHED);
     CHECK(commit_calls == calls && g_heap_size == 3228 * MIB);
     CHECK(svc_set_heap_size(3228 * MIB) == 0);
     CHECK(commit_calls == calls);
     CHECK(svc_set_heap_size(0) == 0 && g_heap_size == 0);
     CHECK(state(HEAP_BASE) == MS_FREE);
-    CHECK(svc_set_heap_size(3200 * MIB + 1) == R_BADSIZE);
-    CHECK(svc_set_heap_size(8ull << 30) == R_BADSIZE);
-    CHECK(svc_set_heap_size(~0ull) == R_BADSIZE);
+    CHECK(svc_set_heap_size(3200 * MIB + 1) == SNX_RC_SVC_INVALID_SIZE);
+    CHECK(svc_set_heap_size(8ull << 30) == SNX_RC_SVC_INVALID_SIZE);
+    CHECK(svc_set_heap_size(~0ull) == SNX_RC_SVC_INVALID_SIZE);
     g_heap_max = 3000 * MIB;
-    CHECK(svc_set_heap_size(3200 * MIB) == R_OUTOFMEM);
+    CHECK(svc_set_heap_size(3200 * MIB) == SNX_RC_SVC_OUT_OF_MEMORY);
     g_heap_max = 0;
     CHECK(svc_set_heap_size(2 * MIB) == 0);
     fail_commit_after = 1;
-    CHECK(svc_set_heap_size(4 * MIB) == R_OUTOFMEM);
+    CHECK(svc_set_heap_size(4 * MIB) == SNX_RC_SVC_OUT_OF_MEMORY);
     CHECK(g_heap_size == 2 * MIB && state(HEAP_BASE + 2 * MIB) == MS_FREE);
     CHECK(svc_set_heap_size(0) == 0);
     for (int gb = 4; gb <= 8; gb += 2) {
@@ -328,14 +328,14 @@ static void test_heap32(void) {
     CHECK(info(5) == 2ull << 30);
     CHECK(info(6) == 2ull << 30 && info(7) == 23 * MIB);
     CHECK(info(21) == 2ull << 30 && info(22) == 23 * MIB);
-    CHECK(svc_set_heap_size(3260 * MIB) == R_OUTOFMEM); /* the pool's total, more than the heap region */
+    CHECK(svc_set_heap_size(3260 * MIB) == SNX_RC_SVC_OUT_OF_MEMORY); /* the pool's total, more than the heap region */
     CHECK(svc_set_heap_size(2022 * MIB) == 0);          /* what it asks once GetInfo names the heap region */
     CHECK(svc_set_heap_size(0) == 0);
     mem_layout32(1); /* with an alias region the heap is 1 GiB */
     base_process();
     g_code_memory = 22 * MIB;
     CHECK(info(5) == 1ull << 30 && info(6) == 1ull << 30 && info(21) == 1ull << 30);
-    CHECK(svc_set_heap_size(3260 * MIB) == R_OUTOFMEM);
+    CHECK(svc_set_heap_size(3260 * MIB) == SNX_RC_SVC_OUT_OF_MEMORY);
     CHECK(svc_set_heap_size(1000 * MIB) == 0);
     CHECK(svc_set_heap_size(0) == 0);
     g_layout = saved;
@@ -349,7 +349,7 @@ static void test_fit(void) {
     CHECK(mem_fit_budget(100 * MIB, 100 * MIB) == 1024 * MIB);   /* a GiB however little is left */
     mem_fit(1, 2000 * MIB, 300 * MIB);
     CHECK(g_hle.svcmem.fit == 1600 * MIB && mem_total() == 1600 * MIB && info(6) == 1600 * MIB);
-    CHECK(svc_set_heap_size(1546 * MIB) == R_LIMIT); /* 56 MiB used: 1544 is the most */
+    CHECK(svc_set_heap_size(1546 * MIB) == SNX_RC_SVC_LIMIT_REACHED); /* 56 MiB used: 1544 is the most */
     CHECK(svc_set_heap_size(1544 * MIB) == 0 && svc_set_heap_size(0) == 0);
     mem_fit(1, 8000 * MIB, 1000 * MIB); /* more than the console's: the console's */
     CHECK(mem_total() == 3285 * MIB);
@@ -372,15 +372,15 @@ static void test_fit(void) {
 }
 static void test_system_resource(void) {
     base_process();
-    CHECK(svc_map_physical(ALIAS_BASE, 0x1000) == R_BADSTATE);
-    CHECK(svc_unmap_physical(ALIAS_BASE, 0x1000) == R_BADSTATE);
+    CHECK(svc_map_physical(ALIAS_BASE, 0x1000) == SNX_RC_SVC_INVALID_STATE);
+    CHECK(svc_unmap_physical(ALIAS_BASE, 0x1000) == SNX_RC_SVC_INVALID_STATE);
     g_hle.kernel.sysres_size = 64 * MIB;
     CHECK(info(16) == 64 * MIB);
     CHECK(info(6) == 3285 * MIB && info(21) == 3221 * MIB);
     CHECK(info(7) == 120 * MIB && info(22) == 56 * MIB);
-    CHECK(svc_set_heap_size(3200 * MIB) == R_LIMIT);
+    CHECK(svc_set_heap_size(3200 * MIB) == SNX_RC_SVC_LIMIT_REACHED);
     CHECK(svc_set_heap_size(3164 * MIB) == 0);
-    CHECK(svc_map_physical(ALIAS_BASE, 2 * MIB) == R_LIMIT);
+    CHECK(svc_map_physical(ALIAS_BASE, 2 * MIB) == SNX_RC_SVC_LIMIT_REACHED);
     CHECK(g_phys_mapped == 0 && state(ALIAS_BASE) == MS_FREE);
     CHECK(svc_set_heap_size(0) == 0);
     CHECK(svc_map_physical(ALIAS_BASE, 2 * MIB) == 0);
@@ -389,16 +389,16 @@ static void test_system_resource(void) {
     CHECK(g_phys_mapped == 3 * MIB); /* overlap is charged once */
     int calls = commit_calls;
     CHECK(svc_map_physical(ALIAS_BASE, 3 * MIB) == 0 && commit_calls == calls);
-    CHECK(svc_set_heap_size(3164 * MIB) == R_LIMIT);     /* the opposite allocation order */
+    CHECK(svc_set_heap_size(3164 * MIB) == SNX_RC_SVC_LIMIT_REACHED); /* the opposite allocation order */
     CHECK(svc_unmap_physical(ALIAS_BASE, 4 * MIB) == 0); /* includes a free tail */
     CHECK(g_phys_mapped == 0);
     CHECK(svc_unmap_physical(ALIAS_BASE, 4 * MIB) == 0);
-    CHECK(svc_map_physical(ALIAS_BASE + 1, 0x1000) == R_BADADDR);
-    CHECK(svc_map_physical(ALIAS_BASE, 0) == R_BADSIZE);
-    CHECK(svc_map_physical(ALIAS_BASE, 1) == R_BADSIZE);
-    CHECK(svc_map_physical(0xfffffffffffff000ull, 0x2000) == R_BADREGION);
-    CHECK(svc_map_physical(HEAP_BASE, 0x1000) == R_BADREGION);
-    CHECK(svc_map_physical(ALIAS_BASE + ALIAS_SIZE - 0x1000, 0x2000) == R_BADREGION);
+    CHECK(svc_map_physical(ALIAS_BASE + 1, 0x1000) == SNX_RC_SVC_INVALID_ADDRESS);
+    CHECK(svc_map_physical(ALIAS_BASE, 0) == SNX_RC_SVC_INVALID_SIZE);
+    CHECK(svc_map_physical(ALIAS_BASE, 1) == SNX_RC_SVC_INVALID_SIZE);
+    CHECK(svc_map_physical(0xfffffffffffff000ull, 0x2000) == SNX_RC_SVC_INVALID_MEMORY_REGION);
+    CHECK(svc_map_physical(HEAP_BASE, 0x1000) == SNX_RC_SVC_INVALID_MEMORY_REGION);
+    CHECK(svc_map_physical(ALIAS_BASE + ALIAS_SIZE - 0x1000, 0x2000) == SNX_RC_SVC_INVALID_MEMORY_REGION);
 }
 static void test_rollback(void) {
     base_process();
@@ -408,7 +408,7 @@ static void test_rollback(void) {
     gw32(a + 0x1000, 0x12345678);
     int decommits = decommit_calls;
     fail_commit_after = 2; /* first hole succeeds, second fails */
-    CHECK(svc_map_physical(a, 0x3000) == R_OUTOFMEM);
+    CHECK(svc_map_physical(a, 0x3000) == SNX_RC_SVC_OUT_OF_MEMORY);
     /* the first hole given back: decommitted, or zeroed where it shares a host page with a + 0x1000 */
     CHECK(decommit_calls == decommits + (host_page == 0x1000));
     CHECK(g_phys_mapped == 0x1000);
@@ -422,11 +422,11 @@ static void test_rollback(void) {
     /* A failed unmap must not remove either normal pages or an unrelated shared mapping. */
     CHECK(svc_map_physical(a, 0x1000) == 0);
     CHECK(mem_map(a + 0x1000, 0x1000, MS_SHARED, PERM_RW) == 0);
-    CHECK(svc_unmap_physical(a, 0x2000) == R_BADMEMSTATE);
+    CHECK(svc_unmap_physical(a, 0x2000) == SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     CHECK(g_phys_mapped == 0x1000 && state(a) == MS_NORMAL && state(a + 0x1000) == MS_SHARED);
     CHECK(mem_unmap(a + 0x1000, 0x1000) == 0);
     CHECK(mem_set_attr(a, 0x1000, 1, 1) == 0);
-    CHECK(svc_unmap_physical(a, 0x1000) == R_BADMEMSTATE);
+    CHECK(svc_unmap_physical(a, 0x1000) == SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     CHECK(g_phys_mapped == 0x1000);
     CHECK(mem_set_attr(a, 0x1000, 1, 0) == 0);
     /* Unlike a heap shrink, physical unmapping permits a normal page whose permissions changed. */
@@ -438,11 +438,11 @@ static void test_locked_shrink(void) {
     base_process();
     CHECK(svc_set_heap_size(4 * MIB) == 0);
     CHECK(mem_set_attr(HEAP_BASE + 2 * MIB, 0x1000, 1, 1) == 0);
-    CHECK(svc_set_heap_size(2 * MIB) == R_BADMEMSTATE);
+    CHECK(svc_set_heap_size(2 * MIB) == SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     CHECK(g_heap_size == 4 * MIB && state(HEAP_BASE + 3 * MIB) == MS_NORMAL);
     CHECK(mem_set_attr(HEAP_BASE + 2 * MIB, 0x1000, 1, 0) == 0);
     CHECK(mem_set_state(HEAP_BASE + 2 * MIB, 0x1000, MS_NORMAL, PERM_R) == 0);
-    CHECK(svc_set_heap_size(2 * MIB) == R_BADMEMSTATE);
+    CHECK(svc_set_heap_size(2 * MIB) == SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     CHECK(mem_set_state(HEAP_BASE + 2 * MIB, 0x1000, MS_NORMAL, PERM_RW) == 0);
     CHECK(svc_set_heap_size(2 * MIB) == 0);
     CHECK(svc_set_heap_size(0) == 0);
@@ -472,7 +472,8 @@ static void test_shared_budget(void) {
         while (__atomic_load_n(&ready, __ATOMIC_SEQ_CST) != 2) sched_yield();
         __atomic_store_n(&go, 1, __ATOMIC_SEQ_CST);
         CHECK(pthread_join(t[0], NULL) == 0 && pthread_join(t[1], NULL) == 0);
-        CHECK((q[0].result == 0 && q[1].result == R_LIMIT) || (q[0].result == R_LIMIT && q[1].result == 0));
+        CHECK((q[0].result == 0 && q[1].result == SNX_RC_SVC_LIMIT_REACHED) ||
+              (q[0].result == SNX_RC_SVC_LIMIT_REACHED && q[1].result == 0));
         CHECK(used_memory() == mem_total());
         CHECK(svc_set_heap_size(0) == 0);
         CHECK(svc_unmap_physical(ALIAS_BASE, 2 * MIB) == 0);
@@ -503,28 +504,28 @@ static void test_map_memory(void) {
     src = HEAP_BASE + 0x3000;
     CHECK(mem_map(info, 0x1000, MS_STACK, PERM_RW) == 0);
     gw32(src, 0xCAFE);
-    CHECK(svc_map_memory(dst + 1, src, 0x1000) == R_BADADDR);
-    CHECK(svc_map_memory(dst, src, 0) == R_BADSIZE);
-    CHECK(svc_map_memory(HEAP_BASE, src, 0x1000) == R_BADREGION);
+    CHECK(svc_map_memory(dst + 1, src, 0x1000) == SNX_RC_SVC_INVALID_ADDRESS);
+    CHECK(svc_map_memory(dst, src, 0) == SNX_RC_SVC_INVALID_SIZE);
+    CHECK(svc_map_memory(HEAP_BASE, src, 0x1000) == SNX_RC_SVC_INVALID_MEMORY_REGION);
     CHECK(svc_map_memory(dst, src, 0x2000) == 0);
     CHECK(gr32(dst) == 0xCAFE && state(dst) == MS_STACK);
     CHECK(svc_query(info, src) == 0);
     CHECK(gr64(info) == src && gr64(info + 8) == 0x2000 && gr32(info + 16) == (MS_NORMAL & 0xFF));
     CHECK(gr32(info + 20) == 1 && gr32(info + 24) == PERM_NONE); /* locked, no permission */
-    CHECK(svc_map_memory(dst + 0x4000, src, 0x1000) == R_BADMEMSTATE);
-    CHECK(svc_set_heap_size(0) == R_BADMEMSTATE);
+    CHECK(svc_map_memory(dst + 0x4000, src, 0x1000) == SNX_RC_SVC_INVALID_CURRENT_MEMORY);
+    CHECK(svc_set_heap_size(0) == SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     gw32(dst + 0x1000, 0xBEEF);
     CHECK(svc_unmap_memory(dst, src, 0x2000) == 0);
     CHECK(gr32(src + 0x1000) == 0xBEEF && state(dst) == MS_FREE);
     /* the alias region takes the view too, as normal memory */
     CHECK(svc_map_memory(ALIAS_BASE, src, 0x1000) == 0 && state(ALIAS_BASE) == MS_NORMAL && gr32(ALIAS_BASE) == 0xCAFE);
-    CHECK(svc_unmap_memory(dst, src, 0x1000) == R_BADMEMSTATE); /* not where it is mapped */
+    CHECK(svc_unmap_memory(dst, src, 0x1000) == SNX_RC_SVC_INVALID_CURRENT_MEMORY); /* not where it is mapped */
     CHECK(svc_unmap_memory(ALIAS_BASE, src, 0x1000) == 0 && state(ALIAS_BASE) == MS_FREE && state(src) == MS_NORMAL);
     CHECK(svc_query(info, AS_END + 5) == 0 && gr64(info) == AS_END && gr32(info + 16) == MS_INACCESSIBLE);
     CHECK(svc_query(0, HEAP_BASE) == 0xE601);
     CHECK(svc_set_mem_perm(src, 0x1000, PERM_RX) == 0xD801);
     CHECK(svc_set_mem_perm(src, 0x1000, PERM_R) == 0);
-    CHECK(svc_set_mem_attr(src, 0x1000, 1, 1) == R_BADCOMBO);
+    CHECK(svc_set_mem_attr(src, 0x1000, 1, 1) == SNX_RC_SVC_INVALID_COMBINATION);
     CHECK(svc_set_mem_attr(src, 0x1000, 8, 8) == 0);
     CHECK(svc_set_mem_attr(src, 0x1000, 8, 0) == 0);
     CHECK(svc_set_mem_perm(src, 0x1000, PERM_RW) == 0);
@@ -627,17 +628,17 @@ static void test_shared_memory(void) {
     base_process();
     test_handle = &s->o;
     kshmem_ptr(s)[0] = 7;
-    CHECK(svc_map_shm(0x1234, HEAP_BASE, 0x2000, PERM_R) == R_BADREGION);
+    CHECK(svc_map_shm(0x1234, HEAP_BASE, 0x2000, PERM_R) == SNX_RC_SVC_INVALID_MEMORY_REGION);
     /* another size than the object's (InvalidSize on the console) maps the whole object, and unmaps all of it */
     CHECK(svc_map_shm(0x1234, a, 0x1000, PERM_R) == 0 && s->gsize == 0x2000 && state(a + 0x1000) == MS_SHARED);
     CHECK(svc_unmap_shm(0x1234, a, 0x1000) == 0 && state(a) == MS_FREE && state(a + 0x1000) == MS_FREE);
     CHECK(svc_map_shm(0x1234, a, 0x2000, PERM_RX) == 0xD801);
-    CHECK(svc_map_shm(0x1235, a, 0x2000, PERM_R) == R_BADHANDLE);
+    CHECK(svc_map_shm(0x1235, a, 0x2000, PERM_R) == SNX_RC_SVC_INVALID_HANDLE);
     CHECK(svc_map_shm(0x1234, a, 0x2000, PERM_R) == 0);
     CHECK(GP(a)[0] == 7 && kshmem_ptr(s) == GP(a) && state(a) == MS_SHARED);
-    CHECK(svc_map_shm(0x1234, a + 0x10000, 0x2000, PERM_R) == R_BADSTATE);
+    CHECK(svc_map_shm(0x1234, a + 0x10000, 0x2000, PERM_R) == SNX_RC_SVC_INVALID_STATE);
     kshmem_ptr(s)[1] = 9;
-    CHECK(svc_unmap_shm(0x1234, a + 0x1000, 0x2000) == R_BADMEMSTATE);
+    CHECK(svc_unmap_shm(0x1234, a + 0x1000, 0x2000) == SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     CHECK(svc_unmap_shm(0x1234, a, 0x2000) == 0);
     CHECK(kshmem_ptr(s) == s->host && s->host[1] == 9 && state(a) == MS_FREE);
     test_handle = NULL;
@@ -770,9 +771,9 @@ static void test_alias_layouts(void) {
         /* the region's edges */
         CHECK(svc_map_physical(ALIAS_BASE + ALIAS_SIZE - 0x1000, 0x1000) == 0);
         CHECK(g_phys_mapped == 3 * 0x1000 && state(ALIAS_BASE + want - 0x1000) == MS_NORMAL);
-        CHECK(svc_map_physical(ALIAS_BASE + ALIAS_SIZE - 0x1000, 0x2000) == R_BADREGION);
-        CHECK(svc_map_physical(ALIAS_BASE - 0x1000, 0x1000) == R_BADREGION);
-        CHECK(svc_map_physical(HEAP_BASE, 0x1000) == R_BADREGION);
+        CHECK(svc_map_physical(ALIAS_BASE + ALIAS_SIZE - 0x1000, 0x2000) == SNX_RC_SVC_INVALID_MEMORY_REGION);
+        CHECK(svc_map_physical(ALIAS_BASE - 0x1000, 0x1000) == SNX_RC_SVC_INVALID_MEMORY_REGION);
+        CHECK(svc_map_physical(HEAP_BASE, 0x1000) == SNX_RC_SVC_INVALID_MEMORY_REGION);
         CHECK(svc_unmap_physical(ALIAS_BASE, ALIAS_SIZE) == 0 && g_phys_mapped == 0);
         g_hle.kernel.sysres_size = 0;
         CHECK(munmap(reservation, reservation_size) == 0);

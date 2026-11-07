@@ -111,7 +111,7 @@ only read):
   console takes the empty half of a libnx AutoSelect buffer beside the mapped one a command declares), no exchange (W)
   buffer, as many copy handles, and at least the command's raw data. Otherwise it is answered with sf's InvalidCmifRequest, RC(11, 420), before the handler
   runs, and logged as `[bad request]` (`ipc_counts` and `ipc_bad_request`), as Atmosphère's HipcCommandProcessor checks
-  it. C descriptors aren't counted. A domain request with another number of objects is answered InvalidNumInObjects
+  it. C descriptors aren't counted. A domain request with another number of objects is answered InvalidInObjectCount
   (`ipc_objects`), checked before the rest as sf's DomainServiceObjectProcessor does, and a command that takes objects
   answers NotSupported on a plain session, which can't send them. A TIPC request (sm, from newer SDKs) carries its pid
   in the special header only, so its raw data has no pid slot, and the generated code reads its arguments where TIPC

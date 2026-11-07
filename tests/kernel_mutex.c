@@ -271,11 +271,13 @@ int main(void) {
     CHECK(svc_arbitrate_lock(b, handle(a), SNX_KMT_M, handle(b)) == 0 && !g_slept && !g_hle.sync.mwait, "word changed");
     v = 0xFFFF8000u | HANDLE_WAIT;
     snx_st_le32(g_mem + SNX_KMT_M, v);
-    CHECK(svc_arbitrate_lock(b, 0xFFFF8000u, SNX_KMT_M, handle(b)) == R_BADHANDLE && !g_slept, "pseudo-handle owner");
+    CHECK(svc_arbitrate_lock(b, 0xFFFF8000u, SNX_KMT_M, handle(b)) == SNX_RC_SVC_INVALID_HANDLE && !g_slept,
+          "pseudo-handle owner");
     v = 0x999u | HANDLE_WAIT;
     snx_st_le32(g_mem + SNX_KMT_M, v);
-    CHECK(svc_arbitrate_lock(b, 0x999u, SNX_KMT_M, handle(b)) == R_BADHANDLE && !g_slept, "closed handle owner");
-    CHECK(svc_arbitrate_lock(b, handle(a), SNX_KMT_M + 2, handle(b)) == R_BADADDR, "unaligned mutex");
+    CHECK(svc_arbitrate_lock(b, 0x999u, SNX_KMT_M, handle(b)) == SNX_RC_SVC_INVALID_HANDLE && !g_slept,
+          "closed handle owner");
+    CHECK(svc_arbitrate_lock(b, handle(a), SNX_KMT_M + 2, handle(b)) == SNX_RC_SVC_INVALID_ADDRESS, "unaligned mutex");
 
     /* a condition variable waiter signalled into a mutex whose word names no thread is woken with InvalidState */
     t = reset(start_prio);
@@ -288,7 +290,7 @@ int main(void) {
     snx_st_le32(g_mem + SNX_KMT_M, v);
     b->woken = 0;
     svc_signal_cv(SNX_KMT_CV, 1);
-    CHECK(b->woken && b->wait_result == R_BADSTATE && !g_hle.sync.mwait, "woken with %x", b->wait_result);
+    CHECK(b->woken && b->wait_result == SNX_RC_SVC_INVALID_STATE && !g_hle.sync.mwait, "woken with %x", b->wait_result);
 
     /* SignalToAddress type 2 (SignalAndModifyByWaitingCountIfEqual): the new value as the console computes it, by
        whether this signal leaves waiters behind */
@@ -317,7 +319,8 @@ int main(void) {
         snx_st_le32(g_mem + SNX_KMT_ARB, seven);
         CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB, 2, 7, -1) == 0, "wait if equal");
         t[0].woken = 0;
-        CHECK(svc_signal_addr(SNX_KMT_ARB, 2, 5, 1) == R_BADSTATE && !t[0].woken && word(SNX_KMT_ARB) == 7,
+        CHECK(svc_signal_addr(SNX_KMT_ARB, 2, 5, 1) == SNX_RC_SVC_INVALID_STATE && !t[0].woken &&
+                  word(SNX_KMT_ARB) == 7,
               "another value: InvalidState, nobody woken");
     }
 
@@ -329,17 +332,21 @@ int main(void) {
         t = reset(start_prio);
         memset(g_hle.sync.arbwait, 0, sizeof g_hle.sync.arbwait);
         snx_st_le64(g_mem + SNX_KMT_ARB64, word64);
-        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64, 3, 5, -1) == R_BADSTATE && !g_hle.sync.arbwait[bucket(SNX_KMT_ARB64)],
+        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64, 3, 5, -1) == SNX_RC_SVC_INVALID_STATE &&
+                  !g_hle.sync.arbwait[bucket(SNX_KMT_ARB64)],
               "the low half equal, the high half not: InvalidState");
-        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64, 3, 0x100000005ll, 0) == R_TIMEOUT, "equal, no timeout: TimedOut");
-        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64 + 4, 3, 0x100000005ll, -1) == R_BADADDR,
+        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64, 3, 0x100000005ll, 0) == SNX_RC_SVC_TIMED_OUT,
+              "equal, no timeout: TimedOut");
+        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64 + 4, 3, 0x100000005ll, -1) == SNX_RC_SVC_INVALID_ADDRESS,
               "4-byte aligned: InvalidAddress");
         CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64 + 4, 2, 1, -1) == 0, "4-byte aligned is enough for WaitIfEqual");
         memset(g_hle.sync.arbwait, 0, sizeof g_hle.sync.arbwait);
-        CHECK(svc_wait_addr(&t[0], AS_SIZE - 4, 3, 0, -1) == R_BADMEMSTATE,
+        CHECK(svc_wait_addr(&t[0], AS_SIZE - 4, 3, 0, -1) == SNX_RC_SVC_INVALID_CURRENT_MEMORY,
               "past the address space: InvalidCurrentMemory");
-        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64, 4, 0, -1) == R_BADENUM, "type 4: InvalidEnumValue");
-        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64 + 2, 4, 0, -1) == R_BADADDR, "the alignment before the type");
+        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64, 4, 0, -1) == SNX_RC_SVC_INVALID_ENUM_VALUE,
+              "type 4: InvalidEnumValue");
+        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64 + 2, 4, 0, -1) == SNX_RC_SVC_INVALID_ADDRESS,
+              "the alignment before the type");
         CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB64, 3, 0x100000005ll, -1) == 0 && t[0].wait_kind == 4 &&
                   t[0].wait_addr == SNX_KMT_ARB64,
               "equal: it waits on the address (kind %d)", t[0].wait_kind);
