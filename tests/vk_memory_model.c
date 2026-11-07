@@ -5,6 +5,7 @@
    window and with resizable BAR (RADV on an RX 6700 XT), an integrated GPU, a CPU's (lavapipe), and GPUs that are
    neither, which share the system's memory only when the CPU maps their biggest heap and it holds most of it. */
 #include "common/gpu/vk/vk_common.h"
+#include "nx/gpu/vk/descriptor_heaps.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -33,6 +34,15 @@ static void expect(const char* what, VkPhysicalDeviceType type, const VkPhysical
     ++g_model.devices;
     if (got != want) {
         fprintf(stderr, "%s: %s, %s expected\n", what, names[got], names[want]);
+        ++g_model.failures;
+    }
+    /* vk_descriptors=3, Automatic, on the device (descriptor_heaps.h): heaps where it shares the system's memory,
+       sets on memory of its own; 0, 1 and 2 as they are */
+    int automatic = vk_descriptors_auto(3, got == SNX_VK_UMA), wanted = want == SNX_VK_UMA ? 2 : 0;
+    if (automatic != wanted || vk_descriptors_auto(0, got == SNX_VK_UMA) != 0 ||
+        vk_descriptors_auto(1, got == SNX_VK_UMA) != 1 || vk_descriptors_auto(2, got == SNX_VK_UMA) != 2) {
+        fprintf(stderr, "%s: Automatic descriptors are %d, %d expected (%s)\n", what, automatic, wanted,
+                wanted ? "heaps" : "sets");
         ++g_model.failures;
     }
 }

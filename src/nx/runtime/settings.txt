@@ -1102,7 +1102,8 @@ setting Descriptor buffers
     default 3
     startup
     words Sets|Buffers|Heaps|Automatic
-    help 2 and 3 do the same: graphics descriptors in heaps where the device has them, else buffers, else sets.
+    help 3, Automatic, is 2 on a GPU that shares the system's memory (an integrated one, a phone's) and 0 on one with
+    help memory of its own. 2: graphics descriptors in heaps where the device has them, else buffers, else sets.
     help 1 uses descriptor buffers where supported, else sets. A heap draw whose resource cannot be encoded uses
     help buffers or sets. Compute keeps its own descriptor pools. With buffers or heaps in use, the guest's fragment
     help barriers are skipped, which the tracking of targets and buffers orders. 0 = descriptor sets for graphics

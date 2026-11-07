@@ -279,6 +279,12 @@ static inline int vk_descriptor_heap_binding_mapping(VkDescriptorSetAndBindingMa
 }
 
 /* What keeps a device from descriptor heaps, for the log: the first piece missing, NULL when none is */
+/* the vk_descriptors setting a device takes: 3, Automatic, is 2 (heaps, else buffers, else sets) on a GPU that shares
+   the system's memory (uma: vk_common.h's SNX_VK_UMA, an integrated GPU, a CPU's, a phone's) and 0 (sets) on one
+   with memory of its own. On a discrete RX 6700 XT, heaps wrote each draw's descriptors on the GPU thread, 0.75 ms
+   a frame more than sets, whose recording thread writes them, and one open world's frames went from release to
+   present 1.2 to 1.6 ms later. Every other value is taken as it is */
+static inline int vk_descriptors_auto(int setting, int uma) { return setting == 3 ? (uma ? 2 : 0) : setting; }
 static inline const char* vk_descriptor_heap_missing(int extension, int feature, int addresses, int flags) {
     return !extension   ? "no VK_EXT_descriptor_heap"
            : !feature   ? "its descriptorHeap feature is off"
