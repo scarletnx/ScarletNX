@@ -108,11 +108,16 @@ void gnu_thread_drain(GnuThread* thread);
 void gnu_fork_prepare(GnuProcess* process);
 void gnu_fork_parent(GnuProcess* process);
 void gnu_fork_child(GnuThread* thread, uint32_t pid);
-/* the host signal that stops a thread's host call (EINTR), installed once */
+/* the host signal that stops a thread's host call (EINTR), installed once: SIGRTMIN + 2, or SIGUSR2 on a host without
+   real-time signals (macOS); 0 on Windows, which has none */
+int gnu_thread_kick_signal(void);
 void gnu_thread_install_kick(void);
 /* host_signals.c: the host's side of the guest's signals: a disposition mirrored on the host, and the relay of host
    signals the guest handles into the kernel; a fork's child gets a relay of its own */
 void gnu_host_disposition(void* process, int sig, uint64_t handler);
+/* whether a guest's disposition of host signal host goes to the host: not for the ones the runtime keeps (SIGSEGV and
+   SIGBUS, execution.c; the kick) or no disposition changes. The guest's action stays the kernel's either way */
+bool gnu_host_mirrored(int host);
 void gnu_host_signals_forked(void);
 int64_t gnu_syscall(GnuThread* thread, uint64_t number, const uint64_t arguments[6]);
 void gnu_syscall_trace(int on); /* syscalls.c: --strace, each syscall on stderr; before the guest starts */

@@ -239,6 +239,9 @@ Limits:
   QEMU's `safe_syscall` closes it with a check of the pc in the host handler.
 * A real-time signal to another process, and one from another process, goes through the
   host's numbers only for 1 to 31.
+* macOS has no real-time signals, so the runtime's own host signal there is `SIGUSR2`: a
+  `SIGUSR2` from another process does not reach the guest. The guest's own `SIGUSR2`
+  (`kill`, `tgkill` and `rt_sigqueueinfo` of the process) and its `sigaction` work as on Linux.
 * Signals for 32-bit guests (A32, Thumb) are not delivered: their calls that a signal stops
   fail with `EINTR`. They need a frame of AArch32 (`sigframe` with `ucontext` and the VFP
   registers, `sigreturn` 119 and `rt_sigreturn` 173, `SA_RESTORER` or a trampoline in A32
