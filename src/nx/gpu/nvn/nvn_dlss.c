@@ -5,6 +5,7 @@
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_state.h"
 #include "gpu/nvn/nvn.hook.h"
+#include "nx/runtime/platform/log.h"
 #include <string.h>
 
 #define NB(b) NVN_OBJ(NvnDlssNetworkBuilder, b)
@@ -244,4 +245,99 @@ void nvn_DlssParametersSetOverlayShowNans(CPU* c, u64 p, i32 on) {
 void nvn_DlssParametersSetOverlayJitterDebug(CPU* c, u64 p, i32 on) {
     (void)c;
     DP(p)->overlay[3] = on;
+}
+/* the pool SetTextureIDs gave, and its 128 bytes of IDs, as the driver's getters read them back */
+u64 nvn_DlssNetworkBuilderGetTexturePool(CPU* c, u64 b) {
+    (void)c;
+    return NB(b)->pool;
+}
+void nvn_DlssNetworkBuilderGetTextureIDs(CPU* c, u64 b, u64 ids) {
+    (void)c;
+    memcpy(GP(ids), NB(b)->ids, sizeof NB(b)->ids);
+}
+
+/* ============================================================ network: a stand-in for the upscaler */
+/* No network runs: an evaluation is a filtered copy of the input color's subrectangle onto the output's
+   (nvn_cmd.c's nvn_CommandBufferEvaluateDlss). The render sizes the driver answers come from a backend this runtime
+   doesn't have, so they are taken from the method as NGX's quality modes scale the output: the driver's methods are
+   assumed to number them as NGX does (0 performance, 1 balanced, 2 quality, 3 ultra performance, 4 ultra quality,
+   5 DLAA), any other is performance's half. The largest render size is the output's, the smallest a third of it */
+static void render_sizes(i32 width, i32 height, i32 method, i32 out[3][2]) {
+    static const i32 scale[6][2] = {{1, 2}, {58, 100}, {2, 3}, {1, 3}, {77, 100}, {1, 1}};
+    const i32* s = method >= 0 && method < 6 ? scale[method] : scale[0];
+    out[0][0] = (i32)(((i64)width * s[0] + s[1] / 2) / s[1]);
+    out[0][1] = (i32)(((i64)height * s[0] + s[1] / 2) / s[1]);
+    out[1][0] = width;
+    out[1][1] = height;
+    out[2][0] = (width + 2) / 3;
+    out[2][1] = (height + 2) / 3;
+    for (u32 i = 0; i < 3; i++) {
+        if (out[i][0] < 1) out[i][0] = 1;
+        if (out[i][1] < 1) out[i][1] = 1;
+    }
+}
+int nvn_DlssNetworkBuilderGetOptimalSettings(CPU* c, u64 b, u64 width, u64 height, u64 max_width, u64 max_height,
+                                             u64 min_width, u64 min_height) {
+    i32 r[3][2];
+    (void)c;
+    render_sizes(NB(b)->width, NB(b)->height, NB(b)->method, r);
+    if (width) gw32(width, (u32)r[0][0]);
+    if (height) gw32(height, (u32)r[0][1]);
+    if (max_width) gw32(max_width, (u32)r[1][0]);
+    if (max_height) gw32(max_height, (u32)r[1][1]);
+    if (min_width) gw32(min_width, (u32)r[2][0]);
+    if (min_height) gw32(min_height, (u32)r[2][1]);
+    return 1;
+}
+/* the storage the game gives the network (SetStorage): no network uses it, so a small amount, page aligned, with the
+   64 KiB the driver adds for each evaluation entry */
+u64 nvn_DlssNetworkBuilderGetStorageSize(CPU* c, u64 b) {
+    i32 n = NB(b)->max_entries;
+    (void)c;
+    return (1ull << 20) + ((u64)(n > 0 ? n : 1) << 16);
+}
+#define NW(n) NVN_OBJ(NvnDlssNetwork, n)
+static void network_sizes(NvnDlssNetwork* o) {
+    i32 r[3][2];
+    render_sizes(o->output[0], o->output[1], o->method, r);
+    memcpy(o->render, r[0], sizeof o->render);
+    memcpy(o->render_max, r[1], sizeof o->render_max);
+    memcpy(o->render_min, r[2], sizeof o->render_min);
+}
+/* the driver's Initialize: the network cleared, the builder's device, method, preset, flags and output size (the
+   largest Resize may ask for), and the render sizes */
+int nvn_DlssNetworkInitialize(CPU* c, u64 n, u64 b) {
+    const NvnDlssNetworkBuilder* s = NB(b);
+    NvnDlssNetwork* o = NW(n);
+    (void)c;
+    memset(o, 0, sizeof *o);
+    o->device = s->device;
+    o->method = o->method2 = s->method;
+    o->preset = s->preset;
+    o->builder_flags = s->flags;
+    o->flags = s->flags & 0x4e;
+    o->output[0] = o->output_max[0] = o->size[0] = s->width;
+    o->output[1] = o->output_max[1] = o->size[1] = s->height;
+    network_sizes(o);
+    LOG("nvn: DLSS network %llx: output %dx%d, method %d, preset %d, flags %#x; no upscaler runs, an evaluation "
+        "is a filtered copy (render size %dx%d, from %dx%d to %dx%d)\n",
+        (unsigned long long)n, s->width, s->height, s->method, s->preset, (u32)s->flags, o->render[0], o->render[1],
+        o->render_min[0], o->render_min[1], o->render_max[0], o->render_max[1]);
+    return 1;
+}
+void nvn_DlssNetworkFinalize(CPU* c, u64 n) {
+    (void)c;
+    memset(NW(n), 0, sizeof(NvnDlssNetwork));
+}
+/* a new output size, no larger than the builder's (the driver answers false and changes nothing then) */
+int nvn_DlssNetworkResize(CPU* c, u64 n, i32 width, i32 height) {
+    NvnDlssNetwork* o = NW(n);
+    (void)c;
+    if (width > o->output_max[0] || height > o->output_max[1]) return 0;
+    o->output[0] = o->size[0] = width;
+    o->output[1] = o->size[1] = height;
+    network_sizes(o);
+    LOG_LIMIT(8, "nvn: DLSS network %llx resized to %dx%d (render size %dx%d)\n", (unsigned long long)n, width, height,
+              o->render[0], o->render[1]);
+    return 1;
 }

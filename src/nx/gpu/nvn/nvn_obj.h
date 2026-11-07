@@ -264,6 +264,28 @@ typedef struct {
     u64 last; /* +0xc0, which SetDefaults clears */
 } NvnDlssParameters;
 NVN_FITS(NvnDlssParameters, 0xc8);
+/* A network (0x258 bytes, which the driver's Initialize clears): the fields the runtime keeps, at the offsets the
+   driver's Initialize and Resize write them. render: the render sizes its GetOptimalSettings answers (optimal, then the
+   two other pairs, taken to be the largest and the smallest as NGX orders them). output: the size Resize sets,
+   output_max the builder's, which Resize may not exceed */
+typedef struct {
+    u8 pad0[8];
+    u64 device; /* +0x08 */
+    u8 pad1[0x20c - 0x10];
+    i32 method;          /* +0x20c */
+    i32 flags;           /* +0x210 */
+    i32 method2, preset; /* +0x214, +0x218 */
+    i32 render[2];       /* +0x21c, the optimal render size */
+    i32 size[2];         /* +0x224, the output size as the driver keeps it a second time */
+    i32 flag22c;         /* +0x22c, a flag bit of the builder's */
+    i32 render_max[2];   /* +0x230 */
+    i32 render_min[2];   /* +0x238 */
+    i32 output[2];       /* +0x240 */
+    i32 output_max[2];   /* +0x248 */
+    i32 builder_flags;   /* +0x250 */
+    u32 pad2;
+} NvnDlssNetwork;
+NVN_FITS(NvnDlssNetwork, 0x258);
 typedef struct {
     u64 device;
     u64 memory, offset, size; /* SetStorage's */
