@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* A skin for the on-screen controls (vpad.c): a RetroArch overlay, its .cfg and the PNGs it names, as libretro's
-   common-overlays and RetroArch's own overlays are made. Its first page not named portrait is read: each descriptor
-   whose name is one of the controls gives that control its default place, its size, its hit area (radial or rect,
-   range_mod, reach) and its images, which go into rows of the atlas under its picture (ui.h). A two-frame APNG is
+   common-overlays and RetroArch's own overlays are made. Of its pages not named portrait, the one that gives the most
+   controls a look is read (the first of those): each descriptor whose name is one of the controls gives that control
+   its default place, its size, its hit area (radial or rect, range_mod, reach) and its images, which go into rows of
+   the atlas under its picture (ui.h). A two-frame APNG is
    an image and its pressed look, as RetroArch draws one; a one-frame image is drawn pressed at its alpha times
    alpha_mod. Every descriptor left out is logged with why, and the controls the skin has none for keep the built-in
    look. controls_skin (settings.txt) names the skin: a shipped one (dist/controls/skins, compiled in) or a .cfg's
