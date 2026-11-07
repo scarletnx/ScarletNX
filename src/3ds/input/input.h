@@ -31,6 +31,11 @@ typedef struct {
     uint32_t touch_x, touch_y; /* the last touch position in the screen's 320x240 pixels, kept after a release */
 } SnxCtrInput;
 union SDL_Event;
+/* The Switch's gamepad_map for the gamepads, as its text ("south:B east:A ..."): the controls it names send those
+   buttons, the others the button in their place. A map that cannot be read is said with the map kept, and changes
+   nothing; a control sent to a button the 3DS has none of (L3, R3) sends nothing, and is said. It lasts past
+   snx_ctr_input_free, as a setting does */
+void snx_ctr_input_map(const char* text);
 /* The gamepads and the script: from now on scripted presses count their time */
 void snx_ctr_input_init(void);
 /* An event of the presenter's window pump: a gamepad connected or gone */

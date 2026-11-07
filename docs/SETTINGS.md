@@ -108,7 +108,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | Key | Default | Effect |
 | --- | --- | --- |
 | `gamepad_swap_ab` | `0` | `1` swaps a gamepad's A and B. `0` sends A, B, X and Y where the console's are. A 3DS game takes it too (the launcher passes it to `scarletnx-3ds` as `--gamepad_swap_ab=1`) |
-| `gamepad_map` | none | The player's map over that, below |
+| `gamepad_map` | none | The player's map over that, below. A 3DS game takes it too (`--gamepad_map=MAP`), Plus as Start and Minus as Select; a control sent to L3 or R3, which the 3DS has none of, sends nothing, and the log says so |
 | `gamepad_deadzone` | `20` | The sticks' dead zone, in percent of their travel (`0` to `90`). A 3DS game takes it too, for its circle pad (`--gamepad_deadzone=N`) |
 | `gamepad_rumble` | `100` | How strongly gamepads vibrate when the game asks, in percent. `0` is never |
 | `gamepad_background` | `0` | `1` keeps gamepads playing while the window is not focused |

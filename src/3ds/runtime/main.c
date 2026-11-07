@@ -5,6 +5,7 @@
 #include "3ds/aot/ctr_module.h"
 #include "3ds/runtime/main.h"
 #include "3ds/ipc/ctr_ipc.h"
+#include "3ds/input/input.h"
 #include "3ds/services/uds.h"
 #include "common/utilities/ascii.h"
 #include "common/utilities/common.h"
@@ -63,7 +64,8 @@ static void usage(FILE* out) {
         "                  --async_pipelines=1 skips what a new pipeline draws while it is made, on\n"
         "                  --pipeline_threads=N threads (0: all the computer's but two, two to twelve);\n"
         "                  --gamepad_swap_ab=1 swaps a gamepad's A and B, --gamepad_deadzone=N is its sticks'\n"
-        "                  dead zone in percent of their travel (default 20)\n"
+        "                  dead zone in percent of their travel (default 20), --gamepad_map=MAP the buttons its\n"
+        "                  controls send (south:B east:A ..., the Switch's names: Plus is Start, Minus Select)\n"
         "  --ipc-stubs L   With --ctr_auto_stub_ipc=0, still answer a service command the runtime lacks with\n"
         "                  success for the services in L: all, or a comma list of srv, fs, apt, ptm, hid, gsp,\n"
         "                  cfg, dsp, system. Given more than once, the lists add up\n"
@@ -542,10 +544,12 @@ int snx_ctr_main(int argc, char** argv) {
         } else if (!positional && !strncmp(arg, "--", 2) && strchr(arg, '=')) {
             /* a setting of the 3DS display or debug table (g_ctr_display_ini, g_ctr_debug_ini, in
                src/nx/runtime/settings.txt), or one of the Switch's the 3DS takes too (snx_ctr_shared_setting),
-               --key=value; --script= is ctr_script, a Switch game's name for it */
+               --key=value; --script= is ctr_script, a Switch game's name for it. gamepad_map is the input's to read:
+               its row's setter keeps the map for a Switch game's pads */
             char key[64];
             size_t length = (size_t)(strchr(arg, '=') - arg - 2);
             const IniOpt* o = NULL;
+            bool map = false;
             if (length < sizeof key) {
                 memcpy(key, arg + 2, length);
                 key[length] = 0;
@@ -554,12 +558,15 @@ int snx_ctr_main(int argc, char** argv) {
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_debug_ini, key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_performance_ini, key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_gamepad_ini, key);
+                map = !strcmp(key, "gamepad_map");
             }
-            if (!o) {
+            if (map)
+                snx_ctr_input_map(strchr(arg, '=') + 1);
+            else if (!o) {
                 fprintf(stderr, "scarletnx-3ds: unknown setting: %s\n", arg);
                 return 2;
-            }
-            ini_read(o, strchr(arg, '=') + 1);
+            } else
+                ini_read(o, strchr(arg, '=') + 1);
         } else if ((!positional && arg[0] == '-') || input) {
             fprintf(stderr, "scarletnx-3ds: unexpected argument: %s\n", arg);
             usage(stderr);

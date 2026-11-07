@@ -423,8 +423,9 @@ has the buttons, what was pressed and released since the one before, and the cir
 pad's position, averaged over three samples, with its direction bits. The input
 (`src/3ds/input/input.c`) is a Switch game's: X or Space A, Z B, C X, V Y, Q L, E R,
 Enter Start, Backspace Select, the arrows the D-pad and WASD the circle pad, or a
-gamepad's buttons by position (A swapped with B by `gamepad_swap_ab`) with its left
-stick past `gamepad_deadzone`, both the Switch's settings, and the
+gamepad's buttons by position, `gamepad_map` over that (the Switch's button names:
+Plus is Start, Minus Select), A swapped with B by `gamepad_swap_ab`, with its left
+stick past `gamepad_deadzone`, all three the Switch's settings, and the
 scripted presses of `--script=ms:hex,...` (`ctr_script`), in the pad's bits (1 A,
 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down, 100 R, 200 L, 400 X,
 800 Y), each held for `press_len` ms. The touch entries follow the pointer's press
