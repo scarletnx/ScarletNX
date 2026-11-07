@@ -1492,6 +1492,11 @@ add_test(NAME result_macros COMMAND snx-test-result-macros)
 add_executable(snx-test-result-codes result_codes.c)
 snx_test_target(snx-test-result-codes 99)
 add_test(NAME result_codes COMMAND snx-test-result-codes)
+# and none made outside it: no RC() but result.h's, no result written as a number in the HLE
+if(Python3_Interpreter_FOUND)
+    add_test(NAME result_codes_sources COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/result_codes.py"
+                                               --repo "${PROJECT_SOURCE_DIR}")
+endif()
 
 # generated and checked in (the controls' atlas, their shaders): their sources must still make them
 if(Python3_Interpreter_FOUND)
