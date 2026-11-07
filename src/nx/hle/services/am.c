@@ -1176,7 +1176,11 @@ static int am_kb_wait(OverlayKeyboard* k, char* out, size_t size) {
 /* the software keyboard as a whole applet: swkbd_text's answer (--swkbd_text=, for scripted runs), else the box's
    (am_kb_unasked's without a window). KeyboardConfig (SwkbdConfigCommon, the second storage, as Eden's
    applet_software_keyboard_types.h lays it out) gives the texts, the kind, the length limits, whether the answer is
-   UTF-8, and where the initial text is in the work buffer (the third) */
+   UTF-8, and where the initial text is in the work buffer (the third). An Ounce game's SDK sends KbdConfigForGen2
+   instead (nn::swkbd::keyboardConfig2kbdConfig), of this size: its texts, limits and password are in the same place, but
+   the UTF-8 flag and the work buffer's fields aren't. Read where they were, the game that asked for UTF-8 got UTF-16 and
+   took the name a player typed for its first letter */
+#define AM_SWKBD_GEN2  0x530
 #define AM_SWKBD_OUT   0x7d8                       /* SwkbdResult and the 0x7d4 byte string buffer */
 #define AM_SWKBD_UNITS ((AM_SWKBD_OUT - 4) / 2 - 1) /* the UTF-16 text that fits with its terminator */
 static SvcObj* am_swkbd(LibApplet* a) {
@@ -1203,10 +1207,11 @@ static SvcObj* am_swkbd(LibApplet* a) {
             k.min = snx_ld_le32(cfg + 0x3b0); /* min_text_length */
         }
         if (size >= 0x3d4) {
+            int gen2 = size >= AM_SWKBD_GEN2;
             k.password = snx_ld_le32(cfg + 0x3b4) != 0; /* password_mode */
-            utf8 = cfg[0x3bd];
-            off = snx_ld_le32(cfg + 0x3c0); /* initial_string_offset and _length, in the work buffer */
-            len = snx_ld_le32(cfg + 0x3c4);
+            utf8 = cfg[gen2 ? 0x3aa : 0x3bd];
+            off = snx_ld_le32(cfg + (gen2 ? 0x3bc : 0x3c0)); /* initial_string_offset and _length, in the work buffer */
+            len = snx_ld_le32(cfg + (gen2 ? 0x3c0 : 0x3c4));
         }
     }
     am_kb_least(&k);
