@@ -280,7 +280,13 @@ static void sleep_until(uint64_t when) {
     uint64_t now = vita_now_ns();
     if (when <= now) return;
 #ifdef _WIN32
-    Sleep((DWORD)((when - now) / 1000000u));
+    static HANDLE timer;
+    if (!timer) timer = CreateWaitableTimerExW(NULL, NULL, 0x2, TIMER_ALL_ACCESS);
+    if (timer) {
+        LARGE_INTEGER due = {.QuadPart = -(LONGLONG)((when - now) / 100u)};
+        SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE);
+        WaitForSingleObject(timer, INFINITE);
+    } else Sleep((DWORD)((when - now) / 1000000u));
 #else
     struct timespec ts = {(time_t)((when - now) / 1000000000u), (long)((when - now) % 1000000000u)};
     nanosleep(&ts, NULL);
