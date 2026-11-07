@@ -29,6 +29,11 @@ The layer is thin. An app's code runs on a JVM, and the Android system under it 
   runtime does ([GNUABI](../GNUABI.md)), with bionic, libandroid, EGL, GLES and Vulkan as hooks that the runtime answers,
   as the NVN hooks of the Switch runtime do. All drawing goes through Vulkan.
 
+An app runs with the rights of the user who starts it, as a native program does: nothing confines it. Its Java code
+runs on the JVM as any Java program's, its native code in the same process (a guest pointer is a host pointer,
+[NATIVE](NATIVE.md)), and `open`, `java.io` and `getenv` reach the user's files and environment as they are. Run an app
+only where you would run a program from the same source.
+
 ## Running an app
 
 Build it with LLVM 22 (`-DSNX_LLVM_CONFIG=` its `llvm-config`, [Build](../BUILD.md)). The JIT compiles an app's
