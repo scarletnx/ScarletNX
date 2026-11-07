@@ -5186,6 +5186,13 @@ int main(int argc, char** argv) {
         printf("PASS headless Vulkan texture changes only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
+    if (getenv("SNX_TEST_ADVANCED_NATIVE_ONLY")) { /* every native advanced equation, which run only so: a pipeline
+                                                      for each equation and mode, over a minute on lavapipe */
+        CHECK(!check_nvn_advanced_native());
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan native advanced blend only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
     if (getenv("SNX_TEST_WW_ONLY")) { /* the write tracking's contract alone (vulkan_write_tracking.inc) */
         CHECK(!check_write_tracking());
         vk_pipeline_quiesce();
@@ -5295,7 +5302,6 @@ int main(int argc, char** argv) {
     CHECK(!check_nvn_copy_conversions());
     CHECK(!check_nvn_event_order());
     CHECK(!check_nvn_subroutine_calls());
-    CHECK(!check_nvn_advanced_native());
     CHECK(!check_nvn_advanced_shader());
     CHECK(!check_nvn_blend_equations());
     CHECK(!check_storage_image_formats());

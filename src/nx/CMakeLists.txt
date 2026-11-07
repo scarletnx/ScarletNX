@@ -359,6 +359,10 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     # a texture's changes loaded a block at a time (tests/vulkan_tex_partial.inc), apart from vulkan_headless: with
     # each way the host tracks writes, and without write tracking, where they load the whole texture. The ASTC cases,
     # which lavapipe decodes and encodes as BC7 in software, run with the host's own tracking, as long as astc_vulkan
+    # every native advanced blend equation and mode, a pipeline each: over a minute on lavapipe
+    add_test(NAME vulkan_advanced_native COMMAND snx-test-vulkan -H)
+    set_tests_properties(vulkan_advanced_native PROPERTIES TIMEOUT 300 ENVIRONMENT "SNX_TEST_ADVANCED_NATIVE_ONLY=1"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     add_test(NAME vulkan_tex_partial COMMAND snx-test-vulkan -H)
     add_test(NAME vulkan_tex_partial_protection COMMAND snx-test-vulkan -H --write_tracking=1 --memory_traps=1)
     add_test(NAME vulkan_tex_partial_untracked COMMAND snx-test-vulkan -H --write_tracking=2)
