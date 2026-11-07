@@ -32,7 +32,7 @@ static const u8 mii_defaults[6][MII_FIELDS] = {
 /* The database the console keeps in its system save, here pre-baked and never changed: what a game asks of source
    Database is these eleven, before the defaults. Their fields are each in the range CharInfo::Verify takes, and their
    create ids are fixed, so a Mii a game saved is found again on the next run. The first three are ScarletNX's own, as
-   a player would make them: baguette girl (red-magenta twin drills, red eyes), leek girl (long teal twin tails,
+   a player would make them: baguette girl (red twin drills, red eyes), leek girl (long teal twin tails,
    teal eyes) and phone girl (a yellow ponytail on one side, amber eyes). Their colors are the Switch's common colors
    (0 to 99, past the 3DS's eight), the eight after them the defaults' with other parts in the 3DS numbering.
    Baguette girl, the first, is the Mii a game takes when it takes the database's first */
@@ -43,11 +43,11 @@ static const struct {
     char name[11];
     u8 f[MII_FIELDS];
 } mii_database[MII_DATABASE_COUNT] = {
-    /* twin drills (hair 112) in crimson (32), red eyes (15), a lashed round eye (28), an open grin (22) */
+    /* twin drills (hair 112) in a warm red (34), deep red eyes (29), a lashed round eye (28), an open grin (22) */
     {{0xa9, 0x36, 0x9a, 0x34, 0xd9, 0xc5, 0x4e, 0x24, 0xa0, 0xe6, 0xe7, 0x4a, 0x77, 0xf6, 0xcd, 0x59},
      "Baguette",
-     {0,  0, 0, 0,  112, 32, 0,  28, 15, 4, 3, 4, 2,  12, 1, 32, 4,  3,  6,  2, 10, 1, 4, 9, 22,
-      21, 4, 3, 13, 0,   0,  32, 4,  10, 0, 8, 4, 10, 0,  4, 2,  20, 50, 64, 1, 0,  0, 0, 0}},
+     {0,  0, 0, 0,  112, 34, 0,  28, 29, 4, 3, 4, 2,  12, 1, 34, 4,  3,  6,  2, 10, 1, 4, 9, 22,
+      21, 4, 3, 13, 0,   0,  34, 4,  10, 0, 8, 4, 10, 0,  4, 2,  20, 50, 64, 1, 0,  0, 0, 0}},
     /* long twin tails (126) in teal (61), teal eyes (60), wide lashed eyes (35), an open smile (19) */
     {{0x2e, 0x1c, 0x52, 0xad, 0x0a, 0xd9, 0x4a, 0x32, 0x95, 0x2f, 0xc8, 0xf5, 0xb4, 0x62, 0xbf, 0x0a},
      "Leek Girl",
@@ -167,8 +167,8 @@ static const u8 look_mouth[5][3] = {
 static const u8 look_favorite[12][3] = {{0xd0, 0x20, 0x20}, {0xf0, 0x70, 0x20}, {0xf0, 0xd0, 0x20}, {0x90, 0xd0, 0x20},
                                         {0x20, 0xa0, 0x40}, {0x20, 0x50, 0xd0}, {0x40, 0xa8, 0xe8}, {0xf0, 0x70, 0xb0},
                                         {0x80, 0x40, 0xc0}, {0x70, 0x40, 0x20}, {0xf0, 0xf0, 0xf0}, {0x30, 0x30, 0x30}};
-/* our own three's hair and eyes: crimson and red, teal and teal, yellow and amber */
-static const u8 look_own[SNX_MII_DB_OWN][2][3] = {{{0xc8, 0x20, 0x5a}, {0xb0, 0x18, 0x20}},
+/* our own three's hair and eyes: warm red and deep red, teal and teal, yellow and amber */
+static const u8 look_own[SNX_MII_DB_OWN][2][3] = {{{0xd0, 0x68, 0x70}, {0xb8, 0x40, 0x58}},
                                                   {{0x40, 0xb4, 0xb6}, {0x2a, 0x8a, 0x90}},
                                                   {{0xf6, 0xdc, 0x4a}, {0xf0, 0x90, 0x20}}};
 static void look_copy(uint8_t out[3], const u8 in[3]) { memcpy(out, in, 3); }

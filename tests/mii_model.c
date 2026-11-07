@@ -536,9 +536,9 @@ static int pic_count(const u8* rgba, int side, float x0, float y0, float x1, flo
         for (x = x0; x <= x1; x += 0.5f) n += is(pic_at(rgba, side, x, y));
     return n;
 }
-static int is_red_eye(const u8* p) { return p[0] > 110 && p[1] < 60 && p[2] < 60; }
+static int is_red_eye(const u8* p) { return p[0] > 110 && p[0] * 10 > 22 * p[1] && p[0] > p[2] + 50; }
 static int is_white(const u8* p) { return p[0] > 215 && p[1] > 215 && p[2] > 215; }
-static int is_crimson(const u8* p) { return p[0] > 2 * p[1] && p[2] > p[1] && p[0] > 90; }
+static int is_red_hair(const u8* p) { return p[0] > 80 && 2 * p[0] > 3 * p[1] && 5 * p[0] > 7 * p[2]; }
 static int is_teal(const u8* p) { return p[1] > p[0] + 40 && p[2] > p[0] + 30; }
 static const u8* g_pic_corner; /* is_corner's picture */
 static int is_corner(const u8* p) {
@@ -567,22 +567,23 @@ static void check_picture(void) {
     u8 ci[SNX_MII_CHARINFO];
     SnxMiiLook look;
     const u8* p;
-    snx_mii_db_charinfo(0, ci); /* Baguette: crimson twin tails, red eyes, red favorite */
+    snx_mii_db_charinfo(0, ci); /* Baguette: red twin drills, red eyes, red favorite */
     snx_mii_db_look(0, &look);
     CHECK(snx_mii_picture(ci, &look, 15, rgba) == -1 && snx_mii_picture(ci, &look, 1025, rgba) == -1);
     CHECK(snx_mii_picture(ci, &look, 128, rgba) == 0);
     p = rgba; /* a corner: the background, the favorite red lightened */
     CHECK(p[3] == 255 && p[0] > p[1] + 30 && p[0] > 200);
-    CHECK(is_crimson(pic_at(rgba, 128, 0, 64)));                    /* the crown */
-    p = pic_at(rgba, 128, 0, 28);                                   /* between the eyes and the mouth */
-    CHECK(p[0] > 170 && p[1] > 130 && p[2] > 90 && !is_crimson(p)); /* skin */
-    CHECK(pic_count(rgba, 128, -16, 30, -3, 38, is_red_eye) > 3);   /* an eye, red */
-    CHECK(pic_count(rgba, 128, 3, 30, 16, 38, is_red_eye) > 3);     /* the other */
-    CHECK(pic_count(rgba, 128, -16, 30, 16, 38, is_white) > 3);     /* their whites */
-    CHECK(pic_count(rgba, 128, -41, 36, -31, 52, is_crimson) > 20); /* a drill out from each side */
-    CHECK(pic_count(rgba, 128, -4, 69, 8, 75, is_crimson) > 2);     /* the ahoge over the crown */
-    CHECK(pic_count(rgba, 128, 31, 36, 41, 52, is_crimson) > 20);
-    CHECK(pic_count(rgba, 128, -12, 21, 12, 27, is_crimson) == 0); /* no hair over the cheeks, between eyes and mouth */
+    CHECK(is_red_hair(pic_at(rgba, 128, 0, 64)));                    /* the crown */
+    p = pic_at(rgba, 128, 0, 28);                                    /* between the eyes and the mouth */
+    CHECK(p[0] > 170 && p[1] > 130 && p[2] > 90 && !is_red_hair(p)); /* skin */
+    CHECK(pic_count(rgba, 128, -16, 30, -3, 38, is_red_eye) > 3);    /* an eye, red */
+    CHECK(pic_count(rgba, 128, 3, 30, 16, 38, is_red_eye) > 3);      /* the other */
+    CHECK(pic_count(rgba, 128, -16, 30, 16, 38, is_white) > 3);      /* their whites */
+    CHECK(pic_count(rgba, 128, -41, 36, -31, 52, is_red_hair) > 20); /* a drill out from each side */
+    CHECK(pic_count(rgba, 128, -4, 69, 8, 75, is_red_hair) > 2);     /* the ahoge over the crown */
+    CHECK(pic_count(rgba, 128, 31, 36, 41, 52, is_red_hair) > 20);
+    CHECK(pic_count(rgba, 128, -12, 23, 12, 27, is_red_hair) ==
+          0); /* no hair over the cheeks, between eyes and mouth */
     CHECK(snx_mii_picture(ci, &look, 512, rgba) == 0);
     {
         int side, x, y, glints[2] = {0, 0}, shine = 0, edge = 0;
@@ -602,7 +603,7 @@ static void check_picture(void) {
         for (y = (int)((76.0f - 70) * 512 / 84); y <= (int)((76.0f - 40) * 512 / 84); y++) /* the crown */
             for (x = (int)((42.0f - 15) * 512 / 84); x <= (int)((42.0f + 15) * 512 / 84); x++) {
                 const u8* q = rgba + 4 * (y * 512 + x);
-                shine += is_crimson(q) && q[0] >= look.hair[0] + 20 && q[1] >= look.hair[1] + 20 &&
+                shine += is_red_hair(q) && q[0] >= look.hair[0] + 20 && q[1] >= look.hair[1] + 20 &&
                          q[2] >= look.hair[2] + 20;
             }
         /* Alex's outline at the side of the head, darker than the hair beside it; a small picture's outline lighter,
