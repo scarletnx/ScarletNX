@@ -126,9 +126,7 @@ def classify(output, code, stable=True, gpu=False):
             status = 'fail'
     if not stable:
         status = 'fail'
-    if any('vulkan validation:' in line.lower() and
-           any(error in line.lower() for error in ('vuid-', 'threading', 'validation error', 'unassigned-'))
-           for line in lines):
+    if any('vulkan validation:' in line.lower() for line in lines):
         status = 'fail'
     return {'status': status, 'features': features,
             'skip_messages': [line for line in lines if line.startswith('SKIP NVN ') or

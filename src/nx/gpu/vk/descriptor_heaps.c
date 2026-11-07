@@ -39,7 +39,7 @@ typedef struct {
     VkDeviceSize full_size;
     VkDescriptorType type[SNX_VKB_END];
 } HeapLayout;
-static struct {
+typedef struct {
     Heap resource, sampler;
     HeapLayout layouts[10];
     u32 nlayouts;
@@ -57,7 +57,13 @@ static struct {
     size_t scratch_size;
     VkDescriptorHeapStats stats, reported;
     int ready, active;
-} g_heaps;
+    u32 buffer_begun;
+    VkDescriptorSetLayout transition_descriptors;
+    VkPipelineLayout transition_layout;
+    VkDescriptorPool transition_pool;
+    VkDescriptorSet transition_set;
+} HeapState;
+static HeapState g_heaps;
 
 static u64 handle_key(VkBuffer buffer) {
 #if VK_USE_64_BIT_PTR_DEFINES
@@ -115,6 +121,39 @@ static int heap_create(Heap* heap, const VkDescriptorHeapMemoryPlan* plan) {
     heap->allocation_bytes = details.size;
     return 1;
 }
+static void transition_destroy(void) {
+    if (g_heaps.transition_pool) vkDestroyDescriptorPool(g_vk.dev, g_heaps.transition_pool, NULL);
+    if (g_heaps.transition_layout) vkDestroyPipelineLayout(g_vk.dev, g_heaps.transition_layout, NULL);
+    if (g_heaps.transition_descriptors) vkDestroyDescriptorSetLayout(g_vk.dev, g_heaps.transition_descriptors, NULL);
+    g_heaps.transition_set = VK_NULL_HANDLE;
+    g_heaps.transition_pool = VK_NULL_HANDLE;
+    g_heaps.transition_layout = VK_NULL_HANDLE;
+    g_heaps.transition_descriptors = VK_NULL_HANDLE;
+}
+static int transition_create(void) {
+    if (!g_vk.has_descriptor_buffers) return 1;
+    VkDescriptorSetLayoutCreateInfo descriptors = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    VkDescriptorSetLayout made_descriptors = VK_NULL_HANDLE;
+    if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &descriptors, NULL, &made_descriptors))) return 0;
+    g_heaps.transition_descriptors = made_descriptors;
+    VkPipelineLayoutCreateInfo layout = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 1, .pSetLayouts = &g_heaps.transition_descriptors};
+    VkPipelineLayout made_layout = VK_NULL_HANDLE;
+    if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &layout, NULL, &made_layout))) return 0;
+    g_heaps.transition_layout = made_layout;
+    VkDescriptorPoolCreateInfo pool = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1};
+    VkDescriptorPool made_pool = VK_NULL_HANDLE;
+    if (!VK_OK(vkCreateDescriptorPool(g_vk.dev, &pool, NULL, &made_pool))) return 0;
+    g_heaps.transition_pool = made_pool;
+    VkDescriptorSetAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = g_heaps.transition_pool, .descriptorSetCount = 1,
+        .pSetLayouts = &g_heaps.transition_descriptors};
+    VkDescriptorSet made_set = VK_NULL_HANDLE;
+    if (!VK_OK(vkAllocateDescriptorSets(g_vk.dev, &allocate, &made_set))) return 0;
+    g_heaps.transition_set = made_set;
+    return 1;
+}
+
 int vk_descriptor_heaps_init(const VkPhysicalDeviceDescriptorHeapPropertiesEXT* props) {
     if (g_heaps.ready) return 1;
     if (!props || props->maxPushDataSize < VK_DESCRIPTOR_HEAP_PUSH_SIZE || !vkWriteResourceDescriptorsEXT ||
@@ -165,7 +204,9 @@ int vk_descriptor_heaps_init(const VkPhysicalDeviceDescriptorHeapPropertiesEXT* 
     if (!g_heaps.scratch) return 0;
     g_heaps.scratch_size = (size_t)(encoding_bytes + samplers.frame_size);
     g_heaps.sampler_bytes = g_heaps.scratch + encoding_bytes;
-    if (!heap_create(&g_heaps.resource, &resources) || !heap_create(&g_heaps.sampler, &samplers)) {
+    if (!heap_create(&g_heaps.resource, &resources) || !heap_create(&g_heaps.sampler, &samplers) ||
+        !transition_create()) {
+        transition_destroy();
         heap_discard(&g_heaps.resource);
         heap_discard(&g_heaps.sampler);
         free(g_heaps.scratch);
@@ -602,6 +643,17 @@ VkDescriptorSet vk_descriptor_heaps_write(VkDescriptorSetLayout layout, u32 coun
 void vk_descriptor_heaps_bind(VkCommandBuffer cb, u32 first, u32 count, const VkDescriptorSet* sets) {
     if (!g_heaps.ready || first > 5 || count > 5 - first || !count) return;
     u32 begun = vk_cb_begun();
+    if (g_heaps.buffer_begun == begun) {
+        /* Heap binding invalidates all non-heap state by specification. VVL1.4.367 nevertheless retains and
+           validates old buffer offsets against the heap pipeline. An incompatible classic set0 bind
+           explicitly disturbs those slots before the heap bind, without a draw, submission or wait between them.
+           The one immutable empty set is device-owned; ordinary heap draws never take this transition. */
+        int active = g_heaps.active;
+        rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_heaps.transition_layout,
+            0, 1, &g_heaps.transition_set, 0, NULL);
+        g_heaps.active = active; /* the pipeline did not change: subsequent graphics constants still use push data */
+        g_heaps.buffer_begun = 0;
+    }
     if (g_heaps.begun != begun || g_heaps.bound_epoch != g_heaps.epoch) {
         VkBindHeapInfoEXT resource = {.sType = VK_STRUCTURE_TYPE_BIND_HEAP_INFO_EXT,
             .heapRange = {g_heaps.resource.address, g_heaps.resource.plan.range_size},
@@ -660,6 +712,14 @@ void vk_descriptor_heaps_stats(void) {
     g_heaps.reported = *s;
 }
 void vk_descriptor_heaps_invalidate(void) { g_heaps.epoch++; g_heaps.active = 0; }
+void vk_descriptor_heaps_buffer_bound(u32 begun) { if (g_heaps.ready) g_heaps.buffer_begun = begun; }
+void vk_descriptor_heaps_destroy(void) {
+    transition_destroy();
+    heap_discard(&g_heaps.resource);
+    heap_discard(&g_heaps.sampler);
+    free(g_heaps.scratch);
+    g_heaps = (HeapState){.epoch = g_heaps.epoch + 1};
+}
 uint64_t vk_descriptor_heaps_epoch(void) { return g_heaps.epoch; }
 void vk_descriptor_heaps_pipeline_state(int active) { g_heaps.active = active && g_heaps.ready; }
 int vk_descriptor_heaps_active(void) { return g_heaps.active; }

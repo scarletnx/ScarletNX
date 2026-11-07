@@ -89,6 +89,7 @@ void vk_descriptor_heaps_bind(VkCommandBuffer cb, u32 first, u32 count, const Vk
     (void)sets;
     abort();
 }
+void vk_descriptor_heaps_buffer_bound(u32 begun) { (void)begun; abort(); }
 void vk_descriptor_heaps_stats(void) { abort(); }
 void vk_descriptor_heaps_get_stats(VkDescriptorHeapStats* stats) {
     (void)stats;

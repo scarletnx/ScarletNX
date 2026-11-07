@@ -446,13 +446,12 @@ Validation used an unmodified upstream Khronos layer at revision
 version 1.4.367. The installed 1.4.363 layer incorrectly sums clip-distance inputs and outputs; the newer layer checks
 each interface separately. No validation errors were filtered. Use a current layer for the clip-forwarding checks.
 
-The additions were also checked after integrating upstream `3468cf24`. The full Clang build and 67 selected CPU
-tests passed. The rendering harness passed all 37 selected jobs: 25 CPU/shader executables and 12 complete GPU
-runs covering sets, buffers and heaps, with recording off/on, on NVIDIA RTX 5050 Laptop and AMD Radeon 780M.
-Validation layer 1.4.367 reported no messages, executable hashes stayed stable, and the GPU source snapshot did not
-change during the matrix. Capability-dependent cases retain their explicit skips. Four separate storage-buffer
-retention runs passed on those devices and recording modes. All 33 mixed-reduction and 114 fragment-mask/coefficient
-modules exported by the new CPU oracles passed Vulkan 1.3 SPIR-V validation.
+After integrating upstream `f97e460a`, the full Clang build and 69 selected CPU tests passed. The rendering
+harness covers CPU/shader executables and complete GPU runs with sets, buffers and heaps, recording off/on, on
+NVIDIA RTX 5050 Laptop and AMD Radeon 780M. Every validation diagnostic now fails the run, including messages
+whose VUID appears on a later line. The report records executable hashes, the GPU source snapshot and explicit
+capability skips. Four separate storage-buffer retention runs passed on those devices and recording modes.
+All 264 exported coverage/depth modules passed Vulkan 1.3 SPIR-V validation.
 
 Storage-only fixtures declare no unused color outputs. The headless test exits through the runtime's immediate-exit
 helper after its assertions and output flush, preserving every exit status. This avoids unloading the video driver

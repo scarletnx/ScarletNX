@@ -335,6 +335,7 @@ void vk_descriptors_bind(VkCommandBuffer cb, VkPipelineLayout layout, u32 first,
        two draws unbinds them, and the second draw's offsets went unbound */
     if (g_descriptors.bound_cb != begun || g_descriptors.bound_sets != binds) {
         rec_CmdBindDescriptorBuffersEXT(cb, g_descriptors.frame[vk_frame_slot()].address);
+        if (g_vk.has_descriptor_heap_support) vk_descriptor_heaps_buffer_bound(begun);
         g_descriptors.bound_cb = begun;
         g_descriptors.bound_sets = binds;
     }
