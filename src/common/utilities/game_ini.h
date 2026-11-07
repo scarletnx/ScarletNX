@@ -55,6 +55,10 @@ typedef struct {
 size_t snx_addons_parse(const char* text, const char* game, SnxAddon* list, size_t max);
 /* list as addons= writes it, malloc'd */
 char* snx_addons_text(const SnxAddon* list, size_t count);
+/* the add-on of entry checked in the addons= of the game named name in folder, what else is checked kept: an update
+   in place of the one checked, of whichever version (every version of it has the same title ID), so the update
+   installed last is the one played, older or newer. 0, or nonzero with a line saying why */
+int snx_addon_check(const char* folder, const char* name, const char* entry);
 
 /* ---- A collection's programs (common.h's snx_program_index), each made beside its game in the game's folder: its
    code and its stamp, <game>_<its ID>_code.so and .abi, and its data folder, which lies over the game's; it runs on the

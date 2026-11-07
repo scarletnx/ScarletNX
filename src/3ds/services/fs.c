@@ -223,6 +223,47 @@ static const unsigned char* system_archive(uint64_t title, size_t* size) {
         default: return NULL;
     }
 }
+/* A DLC content's RomFS view, made on first open and kept for the process: 1 + its dlc_views entry, 0 when the table
+   is full or the image does not parse */
+static uint32_t dlc_view(SnxCtrProcess* p, uint64_t title, unsigned index, const unsigned char* image, uint64_t size) {
+    for (unsigned i = 0; i < p->dlc_view_count; ++i)
+        if (p->dlc_views[i].title == title && p->dlc_views[i].index == index) return i + 1;
+    if (p->dlc_view_count == sizeof p->dlc_views / sizeof *p->dlc_views) return 0;
+    SnxCtrRomfs* view = NULL;
+    if (!snx_ctr_romfs_open_image(image, size, snx_ctr_source_mtime(p->source), &view)) return 0;
+    p->dlc_views[p->dlc_view_count].title = title;
+    p->dlc_views[p->dlc_view_count].index = index;
+    p->dlc_views[p->dlc_view_count++].view = view;
+    return p->dlc_view_count;
+}
+/* A DLC title's content, its file path the open type (0), the content's place in the TMD and the section (0, the
+   RomFS): its level 3, as the game's own RomFS is given. A content the CIA has not is NotFound, one with no RomFS
+   RomFSNotFound */
+static void open_dlc(SnxCtrIpc* c, uint64_t title, const uint32_t words[3]) {
+    SnxCtrProcess* p = c->process;
+    if (words[0] || words[2]) {
+        c->state = SNX_CTR_IPC_UNSUPPORTED;
+        return;
+    }
+    uint64_t size;
+    bool found;
+    const unsigned char* image = snx_ctr_source_dlc_romfs(p->source, title, words[1], &size, &found);
+    if (!found) {
+        snx_ctr_ipc_error_reply(c, 0xc8804478u); /* NotFound, FS, NotFound, Status */
+        return;
+    }
+    if (!image) {
+        snx_ctr_ipc_error_reply(c, 0xc8804464u); /* RomFSNotFound */
+        return;
+    }
+    uint32_t view = dlc_view(p, title, words[1], image, size);
+    if (!view) {
+        snx_ctr_ipc_error_reply(c, 0xd0401834u);
+        return;
+    }
+    if (snx_ctr_fs_file_object(c, CTR_FILE_VIEW, 0, 0, NULL, NULL))
+        p->objects[snx_ctr_handle_object(p, c->out[3])].data.file.dlc_view = view;
+}
 /* The NCCH archive (0x2345678A): a title's content by its ID, its archive path the title ID, a media type and a
    word, its file path the open type, the content index, the section (0 the RomFS, 1 the code, 2 an ExeFS file) and
    an ExeFS name (Azahar's NCCHArchivePath and NCCHFilePath). This title's own RomFS is its RomFS view. No system title
@@ -259,6 +300,11 @@ static void open_ncch(SnxCtrIpc* c) {
             return;
         }
         snx_ctr_fs_file_object(c, CTR_FILE_VIEW, 0, 0, NULL, NULL);
+        return;
+    }
+    SnxCtrDlcTitle known;
+    if (p->source && snx_ctr_source_dlc_find(p->source, title, &known)) {
+        open_dlc(c, title, words);
         return;
     }
     size_t size = 0;

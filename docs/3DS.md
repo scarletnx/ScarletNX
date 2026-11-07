@@ -63,7 +63,30 @@ update high bits 0x0004000e00000000, in partition 7 or a New 3DS's 6) is played 
 that update: the update NCCH's ExHeader, code, ExeFS sections and RomFS are the
 game's, as Azahar's `overlay_ncch` is, so the process the game runs in is the update
 title's, as the console runs it once an update is applied, while the game's folder
-stays named by the base NCCH's title ID, as the card is one game. A CIA's content
+stays named by the base NCCH's title ID, as the card is one game.
+
+A game's standalone update (a CIA of title type 0x0004000e, or a bare update NCCH) and
+its DLC (a CIA of title type 0x0004008c) are kept as a Switch game's are: each is
+recorded beside the game in its folder, `<title ID>_<its entry>.ini` naming its file
+(`source=`, read where it lies) and its data folder `<title ID>_<its entry>_data`, and
+checked in the game's `addons=` (one update at most). `scarletnx-3ds UPDATE.cia` or
+`scarletnx-3ds DLC.cia`, alone once the game is made, or `scarletnx-3ds GAME.cia
+--update UPDATE.cia --update DLC.cia`, records each and plays the game with them; the
+launcher's box of the game lists them and picks them as a Switch game's. An update's
+title ID is the game's low half under 0x0004000e, as Azahar's `am` makes it, and a
+DLC's the low half's 28 bits under 0x0004008c, as Azahar's game list finds it; another
+game's is refused with both IDs. The game plays with what its `addons=` checks: the
+update's ExHeader, code and RomFS are the game's, its ExeFS files answering by name
+before the base's, and a DLC's contents are read where they lie, served by the NCCH
+archive (0x2345678A) by their place in the TMD, and answered by `am:app` as Azahar
+answers for an installed DLC at 6e42de8: GetDLCContentInfoCount gives the TMD's
+contents, ListDLCContentInfos lists them from the given start (owned, and downloaded
+when the CIA holds the content), GetDLCTitleInfos gives the main content's size, the
+title version and type. A checked update or DLC whose file is not there is said, with
+the path, and the game plays without it; a game played from its extraction plays with
+none, and says which it leaves out. Each is decrypted, when it needs it, as a game is.
+
+A CIA's content
 table, ticket and TMD are parsed as before;
 a cartridge and a bare NCCH have none, and their NCCH is checked as a CIA's boot
 content is.
@@ -722,8 +745,9 @@ status**. When the last thread ends with ExitThread the driver prints
 
 Only application content is supported: a CIA (encrypted ones decrypted with the
 user's keys as above, without seed crypto), a cartridge image's game partition and
-update partition, and a bare NCCH — not a cartridge's manual or DLP partitions as
-content of their own, DLC, system titles or nonstandard NCCH media units/platforms. A
+update partition, a standalone update and a DLC beside their game, and a bare NCCH —
+not a cartridge's manual or DLP partitions as content of their own, system titles or
+nonstandard NCCH media units/platforms. A
 cartridge image may be as large as a card (8 GiB), since it is read where it lies; a
 CIA's input, the total materialized output and a RomFS view are each capped at 4 GiB
 (the runtime's policy, not a format limit); metadata tables at 16 MiB,

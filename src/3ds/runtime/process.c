@@ -128,6 +128,7 @@ void snx_ctr_process_free(SnxCtrProcess* p) {
     for (unsigned i = 0; i < CTR_SELF_ARCHIVES; ++i)
         if (p->self_archives[i].root) fs_tree_release(p->self_archives[i].root);
     snx_ctr_romfs_free(p->romfs);
+    for (unsigned i = 0; i < p->dlc_view_count; ++i) snx_ctr_romfs_free(p->dlc_views[i].view);
     if (p->tree) {
         fs_tree_destroy(p->tree);
         pm_destroy(&p->tree->lock);
@@ -291,6 +292,7 @@ static void smdh_title(const unsigned char* smdh, char out[192]) {
 }
 static bool mount(SnxCtrProcess* p, const char* directory, const SnxCtrSource* game) {
     if (!p || !directory || !*directory || p->tree) return false;
+    p->source = game;
     FsTree* tree = calloc(1, sizeof *tree);
     if (!tree) return false;
     if (fs_tree_init(tree, directory) != FS_TREE_OK) {

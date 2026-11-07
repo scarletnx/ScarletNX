@@ -191,6 +191,30 @@ char* snx_addons_text(const SnxAddon* list, size_t count) {
     }
     return text;
 }
+int snx_addon_check(const char* folder, const char* name, const char* entry) {
+    SnxAddon* list = (SnxAddon*)snx_alloc(SNX_ADDONS_MAX * sizeof *list);
+    char *ini = snx_game_ini(folder, name), *text = snx_ini_value(ini, "addons");
+    size_t count = snx_addons_parse(text, name, list, SNX_ADDONS_MAX), i;
+    SnxU64 game = 0, id = 0;
+    int rc;
+    free(text);
+    if (strlen(name) >= 16) { /* the game's title ID, its name's first 16 digits */
+        char own[17];
+        memcpy(own, name, 16);
+        own[16] = 0;
+        if (!snx_title_parse(own, &game) || (name[16] && name[16] != '_')) game = 0;
+    }
+    snx_addon_entry_id(game, entry, &id);
+    for (i = 0; i < count && list[i].id != id; i++) continue;
+    if (i == count && count < SNX_ADDONS_MAX) list[count++].id = id;
+    if (i < count && strlen(entry) < sizeof list[i].entry) strcpy(list[i].entry, entry);
+    text = snx_addons_text(list, count);
+    rc = snx_ini_record(ini, "addons", text);
+    free(text);
+    free(ini);
+    free(list);
+    return rc;
+}
 
 static const char* const g_system_words[] = {"switch", "3ds", "vita", "gba"};
 const char* snx_system_word(SnxSystem system) { return g_system_words[system]; }

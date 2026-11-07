@@ -366,7 +366,9 @@ SnxU64 snx_addon_version(const char* entry);
 enum { SNX_ADDON_NONE, SNX_ADDON_UPDATE, SNX_ADDON_DLC, SNX_ADDON_PROGRAM };
 /* what the title id is to the game: SNX_ADDON_UPDATE for its patch (its ID with 0x800, as the console makes every
    patch's), SNX_ADDON_PROGRAM for another program of its application or that program's patch (snx_program_index),
-   SNX_ADDON_DLC for any other, SNX_ADDON_NONE for the game's own (or 0) */
+   SNX_ADDON_DLC for any other, SNX_ADDON_NONE for the game's own (or 0). A 3DS application's (0x00040000 its ID's high
+   half) has an update, its ID's low half under 0x0004000E, and a DLC, the low half's 28 bits under 0x0004008C, and
+   nothing else: its update's code is the game's own, run by the game's program, which has no other */
 int snx_addon_kind(SnxU64 game, SnxU64 id);
 /* An application of several programs (a collection whose menu starts each game, nn::oe::ExecuteProgram) numbers them
    from its own ID, as the console does: program i is the application's ID plus i, and that program's patch the
