@@ -130,8 +130,46 @@ interface nn::prepo::detail::ipc::IPrepoService is prepo:u, prepo:a, prepo:a2 {
     [10300] GetTransmissionStatus() -> i32 status;
     @stub [10400] GetSystemSessionId() -> u64 id;
 }
-# caps:u, caps:a, caps:su and caps:ss are four interfaces on the console
-interface nn::capsrv::sf::IAlbumApplicationService is caps:u, caps:a, caps:su, caps:ss {
+# caps:u, caps:a and caps:ss are three interfaces on the console
+interface nn::capsrv::sf::IAlbumApplicationService is caps:u, caps:a, caps:ss {
+}
+
+# ================================================================ caps:su
+# the pictures a game saves to the album, 1280x720 RGBA: written as PPM files in the game's captures folder, where F3
+# puts the window's (misc.c's caps_save). The layouts are the SDK's nn::capsrv client's
+type nn::capsrv::ScreenShotAttribute = bytes<0x40, 4>;
+type nn::capsrv::ApplicationData = bytes<0x404, 4>;
+type nn::capsrv::UserIdList = bytes<0x88, 8>;
+type nn::capsrv::AlbumFileDateTime = struct {
+    i16 year;
+    u8 month;
+    u8 day;
+    u8 hour;
+    u8 minute;
+    u8 second;
+    u8 unique_id;
+};
+type nn::capsrv::ApplicationAlbumEntry = struct {
+    u64 size;
+    u64 hash;
+    nn::capsrv::AlbumFileDateTime datetime;
+    u8 storage;
+    u8 contents;
+    bytes<5> reserved;
+    u8 flags;
+};
+
+interface nn::capsrv::sf::IScreenShotApplicationService is caps:su {
+    @stub [32] SetShimLibraryVersion(u64 version, aruid);
+    [203] SaveScreenShotEx0(nn::capsrv::ScreenShotAttribute attribute, u32 report_option, aruid, buffer<u8, 0x45> image)
+        -> nn::capsrv::ApplicationAlbumEntry entry;
+    [205] SaveScreenShotEx1(nn::capsrv::ScreenShotAttribute attribute, u32 report_option, aruid,
+                            buffer<nn::capsrv::ApplicationData, 0x15> data, buffer<u8, 0x45> image)
+        -> nn::capsrv::ApplicationAlbumEntry entry;
+    # the applet resource user id without the client's pid, as the SDK sends this one
+    [210] SaveScreenShotEx2(nn::capsrv::ScreenShotAttribute attribute, u32 report_option, u64 applet_resource_user_id,
+                            buffer<nn::capsrv::UserIdList, 0x15> users, buffer<u8, 0x45> image)
+        -> nn::capsrv::ApplicationAlbumEntry entry;
 }
 interface nn::err::context::IWriterForApplication is ectx:aw {
     [0] CreateContextRegistrar() -> object<nn::err::context::IContextRegistrar> registrar;

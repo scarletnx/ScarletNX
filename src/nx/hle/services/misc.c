@@ -23,6 +23,7 @@
 #include "common/utilities/users.h"
 #include <openssl/rand.h>
 #include <stdio.h>
+#include <time.h>
 
 #include "hle/services/misc.swipc.inc"
 
@@ -274,6 +275,108 @@ static int nn_err_context_IWriterForApplication_CreateContextRegistrar(SvcObj* s
     (void)self;
     *registrar = nn_err_context_IContextRegistrar_new();
     R_SUCCEED();
+}
+
+/* ============================================================ caps:su: the album is the game's captures folder */
+#define SNX_CAPS_WIDTH        1280
+#define SNX_CAPS_HEIGHT       720
+#define SNX_CAPS_BYTES        ((u64)SNX_CAPS_WIDTH * SNX_CAPS_HEIGHT * 4)
+#define SNX_CAPS_SD           1   /* nn::capsrv::AlbumStorage, where the console's album keeps it */
+#define SNX_CAPS_TRIES        100 /* pictures of one second, each a name of its own */
+/* capsrv's results, as Eden names them (caps_result.h): the image is not 1280x720 RGBA, the album takes no file */
+#define CAPS_OUT_OF_RANGE     RC(206, 8)
+#define CAPS_FILE_COUNT_LIMIT RC(206, 1401)
+
+/* the game's picture, RGBA, in <the game's folder>captures/album_<date>_<time>[_N].ppm, as RGB (the console's album
+   keeps a JPEG); its entry names the file's size, the local time it was taken and its number in that second. Under
+   g_host.misc.caps_lock: a picture is never written over another's name */
+static int caps_save(IpcBuf image, nn_capsrv_ApplicationAlbumEntry* entry) {
+    char dir[1100], path[1200], header[32], why[256];
+    time_t now = time(NULL);
+    struct tm t = {0};
+    u8 *ppm, *rgb;
+    const u8* rgba;
+    size_t head, size;
+    u32 n, i;
+    int failed;
+    if (image.size < SNX_CAPS_BYTES) {
+        WARN("caps: the game's picture has %llu bytes, not the %llu of 1280x720 RGBA: it is not saved, and the game is "
+             "told OutOfRange\n",
+             (unsigned long long)image.size, (unsigned long long)SNX_CAPS_BYTES);
+        R_THROW(CAPS_OUT_OF_RANGE);
+    }
+#ifdef _WIN32
+    localtime_s(&t, &now);
+#else
+    localtime_r(&now, &t);
+#endif
+    snprintf(dir, sizeof dir, "%scaptures", g_exedir);
+    head = (size_t)snprintf(header, sizeof header, "P6\n%d %d\n255\n", SNX_CAPS_WIDTH, SNX_CAPS_HEIGHT);
+    size = head + (size_t)SNX_CAPS_WIDTH * SNX_CAPS_HEIGHT * 3;
+    ppm = (u8*)snx_alloc(size);
+    memcpy(ppm, header, head);
+    rgba = GP(image.addr);
+    for (i = 0, rgb = ppm + head; i < (u32)SNX_CAPS_WIDTH * SNX_CAPS_HEIGHT; i++, rgb += 3)
+        memcpy(rgb, rgba + i * 4, 3);
+    pm_lock(&g_host.misc.caps_lock);
+    failed = snx_mkdirs(dir);
+    if (failed) snx_os_error(why, sizeof why);
+    for (n = 0; !failed; n++) {
+        if (n == SNX_CAPS_TRIES) {
+            snprintf(why, sizeof why, "%d pictures of that second are there already", SNX_CAPS_TRIES);
+            failed = 1;
+            break;
+        }
+        snprintf(path, sizeof path, "%s/album_%04d%02d%02d_%02d%02d%02d", dir, t.tm_year + 1900, t.tm_mon + 1,
+                 t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
+        if (n) snprintf(path + strlen(path), sizeof path - strlen(path), "_%u", (unsigned)n);
+        snprintf(path + strlen(path), sizeof path - strlen(path), ".ppm");
+        if (snx_path_exists(path)) continue;
+        failed = snx_write_file(path, ppm, size);
+        if (failed) snx_os_error(why, sizeof why);
+        break;
+    }
+    pm_unlock(&g_host.misc.caps_lock);
+    free(ppm);
+    if (failed) {
+        WARN("caps: the game's picture could not be written in %s (%s): the game is told FileCountLimit\n", dir, why);
+        R_THROW(CAPS_FILE_COUNT_LIMIT);
+    }
+    LOG("caps: the game saved a picture to %s\n", path);
+    entry->size = (u64)size;
+    entry->datetime.year = (i16)(t.tm_year + 1900);
+    entry->datetime.month = (u8)(t.tm_mon + 1);
+    entry->datetime.day = (u8)t.tm_mday;
+    entry->datetime.hour = (u8)t.tm_hour;
+    entry->datetime.minute = (u8)t.tm_min;
+    entry->datetime.second = (u8)t.tm_sec;
+    entry->datetime.unique_id = (u8)n;
+    entry->storage = SNX_CAPS_SD;
+    entry->flags = 1; /* what the console's software sets (Switchbrew's ApplicationAlbumEntry) */
+    R_SUCCEED();      /* the hash, a MAC over the entry under the console's key, stays 0, as Eden leaves it */
+}
+static int nn_capsrv_sf_IScreenShotApplicationService_SaveScreenShotEx0(SvcObj* self,
+                                                                        const nn_capsrv_ScreenShotAttribute* attribute,
+                                                                        u32 report_option, u64 aruid, IpcBuf image,
+                                                                        nn_capsrv_ApplicationAlbumEntry* entry) {
+    (void)self, (void)attribute, (void)report_option, (void)aruid;
+    return caps_save(image, entry);
+}
+static int nn_capsrv_sf_IScreenShotApplicationService_SaveScreenShotEx1(SvcObj* self,
+                                                                        const nn_capsrv_ScreenShotAttribute* attribute,
+                                                                        u32 report_option, u64 aruid, IpcBuf data,
+                                                                        IpcBuf image,
+                                                                        nn_capsrv_ApplicationAlbumEntry* entry) {
+    (void)self, (void)attribute, (void)report_option, (void)aruid, (void)data;
+    return caps_save(image, entry);
+}
+static int nn_capsrv_sf_IScreenShotApplicationService_SaveScreenShotEx2(SvcObj* self,
+                                                                        const nn_capsrv_ScreenShotAttribute* attribute,
+                                                                        u32 report_option, u64 applet_resource_user_id,
+                                                                        IpcBuf users, IpcBuf image,
+                                                                        nn_capsrv_ApplicationAlbumEntry* entry) {
+    (void)self, (void)attribute, (void)report_option, (void)applet_resource_user_id, (void)users;
+    return caps_save(image, entry);
 }
 
 /* ============================================================ psm: a full battery, on the charger */
@@ -1393,6 +1496,7 @@ SvcObj* new_mm(void) { return nn_mmnv_IRequest_new_data(g_hle.misc.mms, g_hle.mi
 SvcObj* new_nfp(void) { return nn_nfp_detail_IUserManager_new(); }
 SvcObj* new_nfc(void) { return nn_nfc_detail_IUserManager_new(); }
 SvcObj* new_caps(void) { return nn_capsrv_sf_IAlbumApplicationService_new(); }
+SvcObj* new_capssu(void) { return nn_capsrv_sf_IScreenShotApplicationService_new(); }
 SvcObj* new_bcat(void) { return nn_bcat_detail_ipc_IServiceCreator_new(); }
 SvcObj* new_nim(void) { return nn_nim_detail_IShopServiceAccessServerInterface_new(); }
 SvcObj* new_aoc(void) { return nn_aocsrv_detail_IAddOnContentManager_new(); }

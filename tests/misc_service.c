@@ -1531,6 +1531,102 @@ static void test_pctl_play_timer(void) {
     svcobj_unref(factory);
 }
 
+/* caps:su: SaveScreenShotEx1 (205) {attribute 0x40, u32 report option at 0x40, aruid at 0x48, pid}, the application
+   data in A 0 (0x404 bytes) and the 1280x720 RGBA picture in A 1. Ex0 (203) has the picture in A 0, Ex2 (210) the
+   users in A 0 (0x88) and no pid. The picture is a PPM in <the game's folder>captures/, named by the entry's local time
+   and its number in that second; the entry {u64 size, u64 hash, AlbumFileDateTime, u8 storage, u8 contents, 5
+   reserved, u8 flags} names the file's size. A picture smaller than 1280x720 RGBA is OutOfRange, and nothing is
+   written */
+#define TEST_ALBUM_DIR "misc_service_album/"
+#define TEST_PICTURE   0x10000ull
+#define TEST_PIXELS    (1280u * 720u)
+#define TEST_PPM_SIZE  (16u + TEST_PIXELS * 3u) /* "P6\n1280 720\n255\n", then RGB */
+static void caps_picture(u8 seed) {
+    for (u32 i = 0; i < TEST_PIXELS; i++) {
+        u8* p = g_mem + TEST_PICTURE + (u64)i * 4;
+        p[0] = (u8)i;
+        p[1] = (u8)(i >> 8);
+        p[2] = seed;
+        p[3] = 0x80;
+    }
+}
+static void caps_request(Request* r, u32 cmd, u64 picture_size) {
+    request(r, cmd);
+    argument32(r, 4, 1); /* the attribute's orientation */
+    argument32(r, 0xc, 1);
+    argument32(r, 0x40, 1); /* the report option */
+    argument64(r, 0x48, 0x55);
+    r->c.has_pid = cmd != 210;
+    if (cmd == 203) {
+        r->c.a[0] = (IpcBuf){TEST_PICTURE, picture_size, 0};
+        r->c.na = 1;
+    } else {
+        r->c.a[0] = (IpcBuf){0x8000, cmd == 205 ? 0x404 : 0x88, 0};
+        r->c.a[1] = (IpcBuf){TEST_PICTURE, picture_size, 0};
+        r->c.na = 2;
+    }
+}
+/* the file the entry in r's reply names: there, the entry's size, the picture's RGB; removed after. Its name into
+   path, and the entry's date and number into stamp */
+static void caps_check(Request* r, u8 seed, char* path, size_t size, u8 stamp[8]) {
+    const u8* e = r->c.out;
+    size_t got;
+    u8* file;
+    CHECK(r->c.out_size == 0x20);
+    memcpy(stamp, e + 0x10, 8);
+    snprintf(path, size, TEST_ALBUM_DIR "captures/album_%04u%02u%02u_%02u%02u%02u", (unsigned)snx_ld_le16(e + 0x10),
+             e[0x12], e[0x13], e[0x14], e[0x15], e[0x16]);
+    if (e[0x17]) snprintf(path + strlen(path), size - strlen(path), "_%u", e[0x17]);
+    snprintf(path + strlen(path), size - strlen(path), ".ppm");
+    CHECK(snx_ld_le64(e) == TEST_PPM_SIZE && snx_ld_le64(e + 8) == 0);
+    CHECK(snx_ld_le16(e + 0x10) >= 2000 && e[0x12] >= 1 && e[0x12] <= 12 && e[0x13] >= 1 && e[0x13] <= 31);
+    CHECK(e[0x18] == 1 && e[0x19] == 0 && e[0x1f] == 1); /* the SD card's album, a screenshot, flags 1 */
+    file = snx_read_file(path, &got);
+    CHECK(file != NULL && got == TEST_PPM_SIZE && !memcmp(file, "P6\n1280 720\n255\n", 16));
+    CHECK(file[16] == 0 && file[17] == 0 && file[18] == seed); /* the first pixel, its alpha left out */
+    CHECK(file[16 + 300 * 3] == (u8)300 && file[16 + 300 * 3 + 1] == 1 && file[16 + 300 * 3 + 2] == seed);
+    CHECK(file[got - 3] == (u8)(TEST_PIXELS - 1) && file[got - 2] == (u8)((TEST_PIXELS - 1) >> 8));
+    free(file);
+}
+static void test_caps(void) {
+    SvcObj* caps = new_capssu();
+    Request r;
+    char first[256], second[256], third[256];
+    u8 stamp1[8], stamp2[8], stamp3[8];
+    snx_remove_tree(TEST_ALBUM_DIR); /* what a failed run left */
+    snprintf(g_exedir, sizeof g_exedir, "%s", TEST_ALBUM_DIR);
+    request(&r, 32); /* SetShimLibraryVersion {u64 version, aruid, pid} */
+    argument64(&r, 0, 1);
+    argument64(&r, 8, 0x55);
+    r.c.has_pid = 1;
+    call(caps, &r);
+    caps_picture(0x11);
+    caps_request(&r, 205, TEST_PIXELS * 4);
+    call(caps, &r);
+    caps_check(&r, 0x11, first, sizeof first, stamp1);
+    caps_picture(0x22);
+    caps_request(&r, 205, TEST_PIXELS * 4);
+    call(caps, &r);
+    caps_check(&r, 0x22, second, sizeof second, stamp2);
+    CHECK(strcmp(first, second));
+    if (!memcmp(stamp1, stamp2, 7)) CHECK(stamp2[7] == stamp1[7] + 1); /* the same second: the next number */
+    caps_picture(0x33);
+    caps_request(&r, 203, TEST_PIXELS * 4);
+    call(caps, &r);
+    caps_check(&r, 0x33, third, sizeof third, stamp3);
+    CHECK(!remove(first) && !remove(second) && !remove(third));
+    caps_picture(0x44);
+    caps_request(&r, 210, TEST_PIXELS * 4);
+    call(caps, &r);
+    caps_check(&r, 0x44, first, sizeof first, stamp1);
+    CHECK(!remove(first));
+    caps_request(&r, 205, TEST_PIXELS * 4 - 4);
+    CHECK(caps->dispatch(caps, &r.c) == RC(206, 8));
+    CHECK(!snx_remove_empty_dir(TEST_ALBUM_DIR "captures") && !snx_remove_empty_dir(TEST_ALBUM_DIR));
+    g_exedir[0] = 0;
+    svcobj_unref(caps);
+}
+
 /* olsc:u: Initialize (0) {pid}; a user's GetSaveDataBackupSetting (13) {uid} -> u8, SetSaveDataBackupSettingEnabled
    (14) {b8 enabled, uid at 8} and VerifySaveDataBackupLicenseAsync (10) {uid}, NotInitialized before it and
    NullArgument without a user. The license check gives an IAsyncResult done at once: its event signaled, available,
@@ -1616,7 +1712,7 @@ int main(void) {
     g_settings.tv_mode = 0; /* handheld, as the test was written for */
     hle_init();
     g_hle.kernel.title_id = 0x0100BF00112C0000ull; /* the title the test was written for */
-    g_mem = calloc(1, 0x10000);
+    g_mem = calloc(1, 0x400000);                   /* caps' 1280x720 RGBA picture at 0x10000 */
     CHECK(g_mem != NULL);
     test_mm();
     test_hid();
@@ -1641,6 +1737,7 @@ int main(void) {
     test_mii_latest();
     test_pctl_play_timer();
     test_nim();
+    test_caps();
     test_olsc();
     CHECK(test_objects == 0 && test_kobjs == 0);
     free(g_mem);
