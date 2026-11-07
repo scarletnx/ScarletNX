@@ -567,6 +567,17 @@ int main(void) {
     other = new_context(ssl);
     request(1);
     CHECK(call(ssl) == 0 && reply32(0) == 2);
+    /* ssl:s, the system's: SetInterfaceVersion (5) {u32}, and ssl's own commands, the same contexts counted */
+    {
+        SvcObj* system = new_ssl_system();
+        CHECK(!strcmp(system->name, "nn::ssl::sf::ISslServiceForSystem"));
+        request(5);
+        arg32(0, 4);
+        CHECK(call(system) == 0);
+        request(1);
+        CHECK(call(system) == 0 && reply32(0) == 2);
+        svcobj_unref(system);
+    }
     svcobj_unref(other);
     svcobj_unref(c);
 

@@ -882,7 +882,22 @@ static int nn_ssl_sf_ISslService_GetCertificateBufSize(SvcObj* self, IpcBuf ids,
     *size = CERT_INFO_SIZE;
     R_SUCCEED();
 }
+/* ssl:s: ssl's own, on the same contexts */
+static int nn_ssl_sf_ISslServiceForSystem_CreateContext(SvcObj* self, nn_ssl_sf_SslVersion ssl_version, u64 pid,
+                                                        SvcObj** context) {
+    return nn_ssl_sf_ISslService_CreateContext(self, ssl_version, pid, context);
+}
+static int nn_ssl_sf_ISslServiceForSystem_GetContextCount(SvcObj* self, u32* count) {
+    return nn_ssl_sf_ISslService_GetContextCount(self, count);
+}
+static int nn_ssl_sf_ISslServiceForSystem_GetCertificates(SvcObj* self, IpcBuf certificates, IpcBuf ids, u32* count) {
+    return nn_ssl_sf_ISslService_GetCertificates(self, certificates, ids, count);
+}
+static int nn_ssl_sf_ISslServiceForSystem_GetCertificateBufSize(SvcObj* self, IpcBuf ids, u32* size) {
+    return nn_ssl_sf_ISslService_GetCertificateBufSize(self, ids, size);
+}
 SvcObj* new_ssl(void) { return nn_ssl_sf_ISslService_new(); }
+SvcObj* new_ssl_system(void) { return nn_ssl_sf_ISslServiceForSystem_new(); }
 /* the functions a save state may hold of this file (state_fns.h) */
 STATE_FN_TABLE(g_ssl_state_fns,
                STATE_FN("ssl", conn_destroy),
