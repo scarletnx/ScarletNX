@@ -367,7 +367,8 @@ static void test_programs(const char* dir) {
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "compute: %s\n", si.first_unsupported);
     CHECK(si.ngbuf == 1 && si.gbuf_cbuf_off[0] == 0x20 && si.gbuf_wmask == 1 && (si.cbuf_mask & 1));
-    CHECK(si.gbuf_marks == 1); /* its store marks its window (SNX_VKB_WPAGES) */
+    /* its store logs its bytes, in the write log's first part (SNX_VKB_WPAGES, shader.h's SH_WLOG_*) */
+    CHECK(si.gbuf_marks == 1 && si.nmarks == 1 && si.gbuf_mark[0] == 1);
     if (spv) CHECK(keep_module(dir, "cs", spv, count));
     free(spv);
     si = (ShaderInfo){0};
