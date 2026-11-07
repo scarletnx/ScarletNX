@@ -6970,12 +6970,44 @@ int main(int argc, char** argv) {
     char* program = snx_path_join(temporary, "game with spaces;literal");
     assert(!snx_write_file(program, "1", 1));
     char* quoted = snx_format("\"%s\"", program);
+    /* Debug's Log level at 2: the run's start and its end, with its status and time, and the data folder's disk, in
+       the launcher log */
+    char* run_logs = snx_path_join(temporary, "run lines");
+    char* run_lines = console_in(run_logs);
+    char* data_was = app.data_dir; /* a file here: its disk unknown */
+    app.data_dir = snx_strdup(temporary);
+    snx_menu_settings = debug_settings; /* a runtime's list that has the log's level */
+    settings_forget(&app);
+    assert(!snx_mkdirs(run_logs) && gui_settings_set(settings_of(&app), "log", "2"));
+    gui_log_folder(run_logs);
     e.type = SDL_EVENT_DROP_TEXT;
     e.drop.data = quoted;
     event(&app, &e);
     free(quoted);
     assert(app.menu.running);
     finish(&app, 7);
+    {
+        size_t said_size = 0;
+        char *said = (char*)snx_read_file(run_lines, &said_size), *end;
+        unsigned long long room = 0, all = 0;
+        double took = -1;
+        assert(said && strstr(said, "] run: starts; disk: "));
+        end = strstr(said, "] run: ended, status 7, after ");
+        assert(end &&
+               sscanf(end, "] run: ended, status 7, after %lf s; disk: %llu MiB free of %llu MiB\n", &took, &room,
+                      &all) == 3 &&
+               took >= 0 && room <= all && all);
+        free(said);
+    }
+    snx_menu_settings = NULL;
+    settings_forget(&app);
+    assert(settings_of(&app));
+    free(app.data_dir);
+    app.data_dir = data_was;
+    gui_log_folder(NULL);
+    assert(!snx_remove_tree(run_logs));
+    free(run_lines);
+    free(run_logs);
     size_t size;
     unsigned char* runs = snx_read_file(program, &size);
     assert(runs && size == 1 && runs[0] == '2');
@@ -13325,6 +13357,14 @@ int main(int argc, char** argv) {
         expected = snx_path_join(state, "recent.txt");
         assert(!strcmp(app.recent_file, expected) && !snx_path_exists(expected));
         free(expected);
+        { /* the start's line of the data folder's disk: its MiB free and its size, no path */
+            char *console = console_in(state), *said = (char*)snx_read_file(console, &size), *disk;
+            unsigned long long room = 0, all = 0;
+            disk = said ? strstr(said, "] disk: ") : NULL;
+            assert(disk && sscanf(disk, "] disk: %llu MiB free of %llu MiB\n", &room, &all) == 2 && room <= all && all);
+            free(said);
+            free(console);
+        }
         assert(!strcmp(app.theme.id, "default") && app.menu.text_size == text_size && !app.recent.count &&
                app.folder_count == folder_count);
         /* the box: each file with its size, where this one keeps it for Share Log, then how they go */
