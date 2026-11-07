@@ -205,7 +205,7 @@ static void JNICALL bounds(JNIEnv* env, jclass unused, jint handle, jfloat size,
 
 bool android_text_register(JNIEnv* env) {
     static const JNINativeMethod methods[] = {
-        {(char*)"loadFont", (char*)"(Ljava/lang/String;I)I", (void*)load_font},
+        {(char*)"nativeLoadFont", (char*)"(Ljava/lang/String;I)I", (void*)load_font},
         {(char*)"metrics", (char*)"(IF[F)V", (void*)metrics},
         {(char*)"shape", (char*)"(IFFF[CIIIIZ[I[F[F[F)I", (void*)shape},
         {(char*)"hasGlyph", (char*)"(II)Z", (void*)has_glyph},

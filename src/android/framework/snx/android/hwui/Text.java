@@ -10,7 +10,21 @@ public final class Text {
     private Text() {}
 
     /** A font file's face (index for a collection's): its handle, 0 when it can't be read. */
-    public static synchronized native int loadFont(String path, int index);
+    public static synchronized int loadFont(String path, int index) {
+        int font = nativeLoadFont(path, index);
+        if (font != 0) FILES.put(font, new Object[] {path, index});
+        return font;
+    }
+
+    private static native int nativeLoadFont(String path, int index);
+
+    /** Each font's file and face, for a document that carries the font (Pdf) */
+    private static final java.util.HashMap<Integer, Object[]> FILES = new java.util.HashMap<>();
+
+    /** A font's file and its face's index in it, or null for a handle not loaded */
+    public static synchronized Object[] file(int font) {
+        return FILES.get(font);
+    }
 
     /** The metrics of a font at a size: ascent (negative), descent, leading, top, bottom, underline position and
      *  thickness, x-height, cap height. */

@@ -9,17 +9,18 @@ import android.graphics.Canvas;
 import android.graphics.Rect;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
 /**
- * A PDF document of pages. The canvas of a page records for the GPU, and nothing here reads the drawing back, so
- * writeTo writes each page at its size, but blank.
+ * A PDF document of pages. A page's canvas records a display list, as any canvas does, and finishPage makes it the
+ * page's content (snx.android.hwui.Pdf, the HLE of Skia's PDF backend), which writeTo writes with the fonts and images
+ * the pages use.
  */
 public class PdfDocument {
     private final List<PageInfo> pages = new ArrayList<>();
+    private final snx.android.hwui.Pdf pdf = new snx.android.hwui.Pdf();
     private Page current;
     private boolean closed;
 
@@ -37,6 +38,7 @@ public class PdfDocument {
         if (page != current) throw new IllegalStateException("invalid page");
         if (page.finished) throw new IllegalStateException("page already finished");
         page.finished = true;
+        pdf.addPage(page.list, page.info.width, page.info.height);
         pages.add(page.info);
         current = null;
     }
@@ -44,26 +46,7 @@ public class PdfDocument {
         if (closed) throw new IllegalStateException("document is closed!");
         if (current != null) throw new IllegalStateException("Current page not finished!");
         if (out == null) throw new IllegalArgumentException("out cannot be null!");
-        StringBuilder pdf = new StringBuilder("%PDF-1.4\n");
-        List<Integer> offsets = new ArrayList<>();
-        int n = pages.size();
-        StringBuilder kids = new StringBuilder();
-        for (int i = 0; i < n; ++i) kids.append(3 + i).append(" 0 R ");
-        offsets.add(pdf.length());
-        pdf.append("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
-        offsets.add(pdf.length());
-        pdf.append("2 0 obj\n<< /Type /Pages /Kids [").append(kids).append("] /Count ").append(n).append(" >>\nendobj\n");
-        for (int i = 0; i < n; ++i) {
-            PageInfo p = pages.get(i);
-            offsets.add(pdf.length());
-            pdf.append(3 + i).append(" 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ").append(p.width).append(' ')
-                .append(p.height).append("] >>\nendobj\n");
-        }
-        int xref = pdf.length();
-        pdf.append("xref\n0 ").append(n + 3).append("\n0000000000 65535 f \n");
-        for (int off : offsets) pdf.append(String.format("%010d 00000 n \n", off));
-        pdf.append("trailer\n<< /Size ").append(n + 3).append(" /Root 1 0 R >>\nstartxref\n").append(xref).append("\n%%EOF\n");
-        out.write(pdf.toString().getBytes(StandardCharsets.US_ASCII));
+        pdf.writeTo(out);
     }
     public List<PageInfo> getPages() { return Collections.unmodifiableList(pages); }
     public void close() {
@@ -73,12 +56,21 @@ public class PdfDocument {
 
     public static class Page {
         private final PageInfo info;
-        private final Canvas canvas = new Canvas();
+        private final snx.android.hwui.DisplayList list = new snx.android.hwui.DisplayList();
+        private final Canvas canvas;
         private boolean finished;
 
-        private Page(PageInfo info) { this.info = info; }
+        private Page(PageInfo info) {
+            this.info = info;
+            canvas = new PageCanvas(list, info.width, info.height);
+        }
         public Canvas getCanvas() { return canvas; }
         public PageInfo getInfo() { return info; }
+    }
+
+    /** A canvas that records the page's drawing into its list, at the page's size */
+    private static final class PageCanvas extends Canvas {
+        PageCanvas(snx.android.hwui.DisplayList list, int width, int height) { super(list, width, height); }
     }
 
     public static final class PageInfo {

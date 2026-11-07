@@ -5,6 +5,12 @@
 // is a behaviour that Android 16 shows (the androidprobe's cases, run on an Android 16 emulator). Run as a source file
 // over the jar:
 //   java -cp scarletnx-android-framework.jar tests/android_framework.java
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.RectF;
+import android.graphics.pdf.PdfDocument;
 import android.icu.text.PluralRules;
 import android.media.MediaPlayer;
 import android.os.Handler;
@@ -194,12 +200,110 @@ final class AndroidFramework {
                   + entry.invoke(null, bag, "few") + " " + entry.invoke(null, few, "one"));
     }
 
+    /** Every stream of a PDF file, inflated, one after the other */
+    private static String streams(byte[] pdf) throws java.util.zip.DataFormatException {
+        String s = new String(pdf, java.nio.charset.StandardCharsets.ISO_8859_1);
+        StringBuilder all = new StringBuilder();
+        for (int i = s.indexOf(">>\nstream\n"); i >= 0; i = s.indexOf(">>\nstream\n", i + 1)) {
+            int start = i + 10, end = s.indexOf("\nendstream", start);
+            java.util.zip.Inflater z = new java.util.zip.Inflater();
+            z.setInput(pdf, start, end - start);
+            byte[] buf = new byte[1 << 20];
+            int n = z.inflate(buf);
+            z.end();
+            all.append(new String(buf, 0, n, java.nio.charset.StandardCharsets.ISO_8859_1)).append('\n');
+        }
+        return all.toString();
+    }
+
+    /**
+     * PdfDocument writes what a page's canvas drew, as PDF's own operations: a color over the page (a rectangle of
+     * plain numbers: PDF has no exponents), a rectangle (re, filled with its red), a circle as curves (c), a transform
+     * (cm), and a bitmap as an image with its alpha. The file has the page's size.
+     */
+    private static void pdfDraws() throws Exception {
+        PdfDocument doc = new PdfDocument();
+        PdfDocument.Page page = doc.startPage(new PdfDocument.PageInfo.Builder(300, 200, 1).create());
+        Canvas c = page.getCanvas();
+        c.drawColor(0xffffff00);
+        Paint p = new Paint();
+        p.setColor(Color.RED);
+        c.drawRect(20, 20, 180, 80, p);
+        p.setColor(0x800000ff);
+        c.drawCircle(220, 50, 30, p);
+        c.save();
+        c.translate(200, 100);
+        c.drawRect(0, 0, 40, 20, p);
+        c.restore();
+        Bitmap bm = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888);
+        bm.setPixels(new int[] {0xffff0000, 0xff00ff00, 0xff0000ff, 0x80000000}, 0, 2, 0, 0, 2, 2);
+        c.drawBitmap(bm, null, new RectF(250, 120, 290, 160), null);
+        doc.finishPage(page);
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        doc.writeTo(out);
+        doc.close();
+        byte[] pdf = out.toByteArray();
+        String file = new String(pdf, java.nio.charset.StandardCharsets.ISO_8859_1), ops = streams(pdf);
+        String got = "header " + file.substring(0, 5) + ", box " + file.contains("/MediaBox [0 0 300 200]")
+            + ", page color " + ops.contains("1 1 0 rg\n-100000 -100000 200000 200000 re\nf")
+            + ", red rectangle " + ops.contains("1 0 0 rg\n20 20 160 60 re\nf") + ", curves " + ops.contains(" c\n")
+            + ", transform " + ops.contains("1 0 0 1 200 100 cm") + ", image " + ops.contains("/Im1 Do")
+            + " with its alpha " + file.contains("/SMask");
+        check("PdfDocument.writeTo of a page's drawing",
+              "header %PDF-, box true, page color true, red rectangle true, curves true, transform true, image true"
+                  + " with its alpha true",
+              got);
+    }
+
+    /**
+     * A font as a PDF carries it: only the glyphs used keep their outlines, at their own IDs, and the ToUnicode map
+     * gives each its text. The build puts the framework's font beside the jar (android-fonts).
+     */
+    private static void pdfFontSubset() throws Exception {
+        Path font = Path.of(System.getProperty("java.class.path")).toAbsolutePath().getParent()
+            .resolve("android-fonts/NotoSansJP-Subset.ttf");
+        Class<?> tt = Class.forName("snx.android.hwui.TrueType");
+        java.lang.reflect.Constructor<?> make = tt.getDeclaredConstructor(byte[].class, int.class);
+        make.setAccessible(true);
+        Object full = make.newInstance(java.nio.file.Files.readAllBytes(font), 0);
+        java.lang.reflect.Method subset = tt.getDeclaredMethod("subset", java.util.BitSet.class),
+                                 toUnicode = tt.getDeclaredMethod("toUnicode", java.util.BitSet.class),
+                                 codePoints = tt.getDeclaredMethod("codePoints"),
+                                 start = tt.getDeclaredMethod("glyphStart", int.class);
+        for (java.lang.reflect.Method m : new java.lang.reflect.Method[] {subset, toUnicode, codePoints, start})
+            m.setAccessible(true);
+        // the glyphs of A and b used, and z's not
+        java.util.Map<Integer, Integer> glyphOf = new java.util.HashMap<>();
+        for (java.util.Map.Entry<?, ?> e : ((java.util.Map<?, ?>) codePoints.invoke(full)).entrySet())
+            glyphOf.putIfAbsent((Integer) e.getValue(), (Integer) e.getKey());
+        int a = glyphOf.get((int) 'A'), b = glyphOf.get((int) 'b'), z = glyphOf.get((int) 'z');
+        java.util.BitSet used = new java.util.BitSet();
+        used.set(a);
+        used.set(b);
+        Object small = make.newInstance((byte[]) subset.invoke(full, used), 0);
+        // a glyph's outline keeps its bytes, padded to 4
+        boolean keptA = size(start, small, a) - size(start, full, a) < 4 && size(start, full, a) > 0,
+                keptB = size(start, small, b) - size(start, full, b) < 4 && size(start, full, b) > 0;
+        String got = "A's outline kept " + keptA + ", b's " + keptB + ", z's "
+            + size(start, small, z) + " bytes of " + size(start, full, z) + ", text "
+            + ((String) toUnicode.invoke(full, used)).replaceAll("(?s).*beginbfchar\n(.*)endbfchar.*", "$1")
+                  .replaceAll("<[0-9a-f]{4}> <([0-9a-f]+)>\n", "$1 ").trim();
+        check("the font's subset of A and b", "A's outline kept true, b's true, z's 0 bytes of " + size(start, full, z)
+              + ", text " + (a < b ? "0041 0062" : "0062 0041"), got);
+    }
+
+    private static int size(java.lang.reflect.Method start, Object font, int glyph) throws Exception {
+        return (Integer) start.invoke(font, glyph + 1) - (Integer) start.invoke(font, glyph);
+    }
+
     public static void main(String[] args) throws Exception {
         mainLoopEnds();
         logIsLoggable();
         mediaPlayerSources();
         hostsResolve();
         plurals();
+        pdfDraws();
+        pdfFontSubset();
         if (failures != 0) System.exit(1);
         System.out.println("android_framework: ok");
     }
