@@ -18,6 +18,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/resource_stats.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/texture/astc_bc.h"
 #include "nx/gpu/texture/blocklinear.h"
@@ -209,7 +210,7 @@ int vk_rt_same_layout(const Surf* s, u32 w, u32 h, int bl, u32 bh, u32 pitch) {
     return (w * s->f.bpp + 63) / 64 == (s->w * s->f.bpp + 63) / 64 && bl_height(h, bh) == bl_height(s->h, s->bh);
 }
 /* a surface of w by h pixels with the samples of the sample layout msaa (render targets only: textures have one) */
-static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 bh, u32 pitch, int is_rt, u32 layers,
+static Surf* surf_create_(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 bh, u32 pitch, int is_rt, u32 layers,
                          u32 msaa) {
     Surf* s = calloc(1, sizeof *s);
     if (!s) return NULL;
@@ -320,6 +321,13 @@ static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 b
     g_surfh[k] = s;
     surf_changed(gva);
     if (is_rt) lru_add(s, VK_LRU_RT);
+    return s;
+}
+static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 bh, u32 pitch, int is_rt, u32 layers,
+                         u32 msaa) {
+    VkResourceScope scope = vk_resource_begin();
+    Surf* s = surf_create_(gva, w, h, f, fkey, bl, bh, pitch, is_rt, layers, msaa);
+    vk_resource_end(VK_RESOURCE_SURFACE_CREATE, scope);
     return s;
 }
 
@@ -688,9 +696,10 @@ static int load_bands(Surf* s, u32 pitch) {
             m.y0 = y;
             m.rows = h - y < rows ? h - y : rows;
             vk_bl_range(&m, &lo, &hi);
-            u8* p = vk_stage(hi - lo, vk_stage_align(), &staged, &off);
+            u64 from = s->gva + (u64)l * s->layer_size + lo;
+            u8* p = vk_stage_guest_input(from, hi - lo, hi - lo, &staged, &off);
             if (!p) return load_fail(s, l, y, "staging", hi - lo);
-            vk_guest_read(s->gva + (u64)l * s->layer_size + lo, hi - lo, p, staged, off);
+            vk_guest_read(from, hi - lo, p, staged, off);
             /* after the read, which may land GPU results and submit: the command buffer, and the scratch buffer if
                they grew it, are the ones from then */
             VkCommandBuffer cb = vk_cmd();
@@ -717,7 +726,7 @@ static int surf_load_bl(Surf* s) {
     vk_render_end();
     if (lin > g_vk.alloc_cap / VK_PART_SHARE && !s->msaa && s->sw == s->w && s->sh == s->h && !surf_volume(s))
         return load_bands(s, pitch);
-    u8* p = vk_stage(sz, vk_stage_align(), &staged, &off);
+    u8* p = vk_stage_guest_input(s->gva, sz, sz, &staged, &off);
     if (!p) return load_fail(s, 0, 0, "staging", sz);
     if (!(scratch = vk_bl_scratch(lin, &cap))) return load_fail(s, 0, 0, "scratch buffer", lin);
     vk_guest_read(s->gva, sz, p, staged, off); /* what the GPU holds of it copied on the GPU */
@@ -737,7 +746,7 @@ static int surf_load_pitch(Surf* s) {
     VkBuffer buf;
     u64 off;
     vk_render_end();
-    u8* p = vk_stage(as_is ? sz : row * gh * s->layers, vk_stage_align(), &buf, &off);
+    u8* p = vk_stage_guest_input(s->gva, sz, as_is ? sz : row * gh * s->layers, &buf, &off);
     if (!p) return 0;
     if (as_is)
         vk_guest_read(s->gva, sz, p, buf, off);
@@ -752,7 +761,7 @@ static int surf_load_pitch(Surf* s) {
 }
 int vk_ms_load(Surf* s) { return vk_ms_moves(s) && (s->bl ? surf_load_bl(s) : surf_load_pitch(s)); }
 
-void vk_rt_reload(u64 gva) {
+static void rt_reload(u64 gva) {
     Surf* s = vk_rt_find(gva);
     if (!s) return;
     vk_surf_wrote(s); /* the copies of it (crops) are out of date */
@@ -776,6 +785,11 @@ void vk_rt_reload(u64 gva) {
     s->layout = VK_IMAGE_LAYOUT_UNDEFINED;
     s->draw_wseen = 0;
     vk_surf_relist(s);
+}
+void vk_rt_reload(u64 gva) {
+    VkResourceScope scope = vk_resource_begin();
+    rt_reload(gva);
+    vk_resource_end(VK_RESOURCE_RT_RELOAD, scope);
 }
 
 /* a depth target whose Vulkan format holds the guest's bytes (Z32F as D32_SFLOAT, Z16 as D16_UNORM): its depth
@@ -2006,7 +2020,7 @@ static u64 surf_evict(Surf* s) {
     vk_defer_bytes(bytes);
     return bytes;
 }
-u64 vk_surf_reclaim(int kind, u32 before, u64 want, int lossy) {
+static u64 surf_reclaim(int kind, u32 before, u64 want, int lossy) {
     /* A render target goes with its contents: guest memory has them as of its last write-back. They aren't written to
        memory as they go: memory is shared by targets the GPU drew over one another, parked and freed ones among them,
        and by textures and buffers that copied from them on the GPU, and the renderer doesn't know them all. Writing an
@@ -2046,9 +2060,15 @@ u64 vk_surf_reclaim(int kind, u32 before, u64 want, int lossy) {
     }
     return freed;
 }
+u64 vk_surf_reclaim(int kind, u32 before, u64 want, int lossy) {
+    VkResourceScope scope = vk_resource_begin();
+    u64 freed = surf_reclaim(kind, before, want, lossy);
+    vk_resource_end(VK_RESOURCE_SURFACE_RECLAIM, scope);
+    return freed;
+}
 /* the render targets last used before `before` that later ones drew all over (rt_superseded), from either list: the
    aged one holds those that went there with pixels memory lacked, which draws since may have made lossless */
-u64 vk_rt_reclaim_superseded(u32 before, u64 want) {
+static u64 rt_reclaim_superseded(u32 before, u64 want) {
     u64 freed = 0;
     for (int lru = VK_LRU_RT + LRU_AGED; lru >= VK_LRU_RT && freed < want; lru -= LRU_AGED)
         for (Surf *s = g_lru[lru].head, *n; s && freed < want; s = n) {
@@ -2057,6 +2077,12 @@ u64 vk_rt_reclaim_superseded(u32 before, u64 want) {
             if (s->layout != VK_IMAGE_LAYOUT_UNDEFINED && rt_superseded(s) && !vk_gfx_image_holds(s))
                 freed += surf_evict(s);
         }
+    return freed;
+}
+u64 vk_rt_reclaim_superseded(u32 before, u64 want) {
+    VkResourceScope scope = vk_resource_begin();
+    u64 freed = rt_reclaim_superseded(before, want);
+    vk_resource_end(VK_RESOURCE_SURFACE_RECLAIM, scope);
     return freed;
 }
 
@@ -2176,7 +2202,9 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocati
     VkMemoryRequirements2 req = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
     VkResult res;
     SNX_ZONE(z, "vk image create");
+    VkResourceScope query = vk_resource_begin();
     vkGetDeviceImageMemoryRequirements(g_vk.dev, &q, &req);
+    vk_resource_end(VK_RESOURCE_IMAGE_QUERY, query);
     *bytes = req.memoryRequirements.size;
     SNX_ZONE_VALUE(z, *bytes);
     *img = VK_NULL_HANDLE;

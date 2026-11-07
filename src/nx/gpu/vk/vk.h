@@ -340,6 +340,8 @@ u8* vk_stage(u64 size, u64 align, VkBuffer* buf, u64* off);
 u64 vk_stage_chunk(void);
 /* Streamed buffer snapshots in host RAM, with the same frame lifetime as vk_stage. */
 u8* vk_stage_upload(u64 size, u64 align, VkBuffer* buf, u64* off);
+/* One-use guest input: host staging for CPU-only bytes, output staging when GPU-owned or in-place writes cover it. */
+u8* vk_stage_guest_input(u64 gva, u64 source_size, u64 bytes, VkBuffer* buf, u64* off);
 /* GPU-written storage, device-local when host-visible memory and its budget allow;
    includes the allocation for invalidation after its frame fence. */
 u8* vk_stage_output(u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocation* mem);
@@ -1083,6 +1085,10 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y, u32 w, u32 h, u32 
 /* the image levels (or regions of them) uploaded as BC7 so far, their bytes, and the bytes they would have taken as
    RGBA8 */
 void vk_astc_stats(u64* levels, u64* bytes, u64* rgba8_bytes);
+/* Internal ASTC, BC7, block-linear, conversion, multisample and depth-packing pipelines, apart from guest shaders.
+   Both functions run under vk_lock. Cumulative time is in nanoseconds, including time inside the driver. */
+void vk_texture_pipeline_made(u64 ns);
+void vk_texture_pipeline_stats(u64* count, u64* ns);
 /* the bytes of the ASTC textures decoded to RGBA8 so far (astc_mode=1, or a GPU without BCn) */
 u64 vk_astc_rgba8_bytes(void);
 

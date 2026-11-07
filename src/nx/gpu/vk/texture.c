@@ -96,9 +96,9 @@ static u64 bl_layer_size(u32 w, u32 h, u32 d, const VkFmt* f, u32 bh, u32 bd, u3
 static int stage_bl(const VkBlMove* m, u64 gva, u64 lsz, VkBuffer* buf, u64* off) {
     u64 lo, hi;
     vk_bl_range(m, &lo, &hi);
-    u8* p = vk_stage(hi - lo, vk_stage_align(), buf, off);
-    if (!p) return 0;
     u64 n = lo >= lsz ? 0 : hi <= lsz ? hi - lo : lsz - lo;
+    u8* p = vk_stage_guest_input(gva + lo, n, hi - lo, buf, off);
+    if (!p) return 0;
     vk_guest_read(gva + lo, n, p, *buf, *off);
     memset(p + n, 0, hi - lo - n);
     return 1;
@@ -138,7 +138,9 @@ static int astc_rows(void* ctx, VkCommandBuffer* pcb, u32 z, u32 nz, u32 y, u32 
         vk_bl_barrier(cb, 0);
         return ok;
     }
-    u8* p = vk_stage((u64)l->rowb * n * nz, vk_stage_align(), buf, off);
+    u64 first = ((u64)z * l->th + y) * l->t->pitch;
+    u64 end = ((u64)(z + nz - 1) * l->th + y + n - 1) * l->t->pitch + l->rowb;
+    u8* p = vk_stage_guest_input(l->gva + first, end - first, (u64)l->rowb * n * nz, buf, off);
     if (!p) return 0;
     for (u32 k = 0; k < nz; k++)
         for (u32 r = 0; r < n; r++) {
@@ -326,10 +328,12 @@ static int level_upload_bl(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u32 l
     u64 rows_blocks = ((((u64)th + 7) >> 3) + (1u << lbh) - 1) >> lbh, piece = 512ull << k;
     for (u32 z = 0; z < ld; z++)
         for (u32 gy = 0; gy < (th + 7) >> 3; gy += 1u << k) {
-            u8* p = vk_stage(gobs_x * piece, vk_stage_align(), &staged, &staged_at);
-            if (!p) return 0;
             u64 base = (z >> lbd) * rows_blocks * block_row + (gy >> lbh) * block_row +
                        ((((u64)(z & ((1u << lbd) - 1)) << lbh) + (gy & ((1u << lbh) - 1))) << 9);
+            u64 end = base + (gobs_x - 1) * block + piece;
+            u64 have = base >= lsz ? 0 : end <= lsz ? end - base : lsz - base;
+            u8* p = vk_stage_guest_input(gva + base, have, gobs_x * piece, &staged, &staged_at);
+            if (!p) return 0;
             for (u32 gx = 0; gx < gobs_x; gx++) {
                 u64 o = base + gx * block, n = o >= lsz ? 0 : o + piece <= lsz ? piece : lsz - o;
                 vk_guest_read(gva + o, n, p + gx * piece, staged, staged_at + gx * piece);
@@ -358,7 +362,9 @@ static int level_upload_pitch(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u6
             u32 rows = th - y < n ? th - y : n, slices = ld - z < nz ? ld - z : nz;
             VkBuffer staged;
             u64 at, first = ((u64)z * th + y) * gp, size = (u64)rows * slices * pitch;
-            u8* p = vk_stage(size, vk_stage_align(), &staged, &at);
+            u64 end = ((u64)(z + slices - 1) * th + y + rows - 1) * gp + lv->rowb;
+            u64 source_bytes = as_is ? first >= lsz ? 0 : first + size <= lsz ? size : lsz - first : end - first;
+            u8* p = vk_stage_guest_input(gva + first, source_bytes, size, &staged, &at);
             if (!p) return 0;
             if (as_is) { /* the rows, slices after another, are one range of guest memory */
                 u64 have = first >= lsz ? 0 : first + size <= lsz ? size : lsz - first;
@@ -386,7 +392,16 @@ static int level_upload_pitch(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u6
 /* for the stats line: every load and its bytes, and those of some blocks alone (tex_patch) */
 static struct {
     u64 uploads, bytes, partial, partial_bytes;
+    u64 pipelines, pipeline_ns;
 } g_tex_loads;
+void vk_texture_pipeline_made(u64 ns) {
+    g_tex_loads.pipelines++;
+    g_tex_loads.pipeline_ns += ns;
+}
+void vk_texture_pipeline_stats(u64* count, u64* ns) {
+    *count = g_tex_loads.pipelines;
+    *ns = g_tex_loads.pipeline_ns;
+}
 void vk_tex_stats(u64* uploads, u64* bytes) {
     *uploads = g_tex_loads.uploads;
     *bytes = g_tex_loads.bytes;
@@ -1165,7 +1180,7 @@ static int pitch_patch(Upload* u, const PitchRect* r) {
         if (n * in_pitch > band) n = band / in_pitch ? band / in_pitch : 1;
         VkBuffer staged;
         u64 at;
-        u8* p = vk_stage(n * in_pitch, vk_stage_align(), &staged, &at);
+        u8* p = vk_stage_guest_input(gva + first, (n - 1) * gp + (as_is ? gp : w), n * in_pitch, &staged, &at);
         if (!p) return 0;
         if (as_is) { /* the rows are one range of guest memory */
             u64 size = n * in_pitch, have = first + size <= lsz ? size : lsz - first;
@@ -1346,7 +1361,7 @@ static int tex_zero(Surf* t) {
     u64 zeros = t->size < TEX_ZEROS ? t->size : TEX_ZEROS, off;
     VkBuffer buf;
     VkBufferImageCopy r[64];
-    u8* p = vk_stage(zeros, vk_stage_align(), &buf, &off);
+    u8* p = vk_stage_upload(zeros, vk_stage_align(), &buf, &off);
     if (!p) return 0;
     memset(p, 0, zeros);
     vk_render_end();

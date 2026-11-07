@@ -11,6 +11,8 @@
 #include <string.h>
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/gpu.h"
+#include "nx/hle/services/nvdrv.h"
+#include "nx/memory/own.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/runtime/platform/plat.h"
@@ -635,6 +637,27 @@ u8* vk_stage(u64 size, u64 align, VkBuffer* buf, u64* off)
 u8* vk_stage_upload(u64 size, u64 align, VkBuffer* buf, u64* off)
 {
 	return stage_alloc(size, align, buf, off, NULL, 0);
+}
+
+/* Guest input read once by a copy or conversion. Keep GPU-owned bytes near the GPU; CPU-only bytes go through
+   host RAM rather than CPU writes through the device's mapped window. Both rings share the frame's fence. */
+u8* vk_stage_guest_input(u64 gva, u64 source_size, u64 bytes, VkBuffer* buf, u64* off) {
+    int gpu = vk_uma_pending(gva, source_size);
+    if (!gpu && own_any())
+        for (u64 o = 0; o < source_size;) {
+            u64 cpu = 0, n = gmmu_run(gva + o, source_size - o, &cpu);
+            if (n) {
+                if (own_lookup(cpu, n, NULL, 0)) {
+                    gpu = 1;
+                    break;
+                }
+            } else {
+                n = 0x1000 - ((gva + o) & 0xfff);
+                if (n > source_size - o) n = source_size - o;
+            }
+            o += n;
+        }
+    return gpu ? vk_stage(bytes, vk_stage_align(), buf, off) : vk_stage_upload(bytes, vk_stage_align(), buf, off);
 }
 
 /* The staging ring can be device-local memory behind the BAR, where every CPU read crosses PCIe uncached: comparing

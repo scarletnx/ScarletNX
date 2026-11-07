@@ -616,6 +616,190 @@ static void bench_equal_bindings(void) {
            (unsigned long long)((u64)ticks * 1000000000ull / CLOCKS_PER_SEC), exact);
 }
 
+/* Draws often repeat a viewport and vertex layout. Measure that case and a control that changes one viewport.
+   The control returns to its initial coordinates and checks every state byte except the changed generation. */
+static void geometry_records(void) {
+    NvnPViewports views = {.count = 1, .v = {{10, 20, 320, 240}}};
+    NvnPScissor scissor = {0, 0, 640, 480};
+    NvnPDepthRange depth = {0.125f, 0.875f};
+    NvnPBindVAttr attr = {.count = 1, .st = {NVN_FORMAT_RGBA32F}};
+    NvnPBindVStream stream = {.count = 1, .st = {{16, 0}}};
+    NvnPBindVBuf buffer = {.count = 1, .r = {{0x40000, 4096}}};
+    memcpy(GP(0xb000), &views, sizeof views);
+    memcpy(GP(0xb200), &scissor, sizeof scissor);
+    memcpy(GP(0xb240), &depth, sizeof depth);
+    memcpy(GP(0xb280), &attr, sizeof attr);
+    memcpy(GP(0xb300), &stream, sizeof stream);
+    memcpy(GP(0xb400), &buffer, sizeof buffer);
+}
+static void apply_geometry_records(void) {
+    nvn_draw_record(&d, OP_VIEWPORTS, 0xb000, sizeof(NvnPViewports));
+    nvn_draw_record(&d, OP_SCISSOR, 0xb200, sizeof(NvnPScissor));
+    nvn_draw_record(&d, OP_DEPTH_RANGE, 0xb240, sizeof(NvnPDepthRange));
+    nvn_draw_record(&d, OP_BIND_VATTR, 0xb280, sizeof(NvnPBindVAttr));
+    nvn_draw_record(&d, OP_BIND_VSTREAM, 0xb300, sizeof(NvnPBindVStream));
+    nvn_draw_record(&d, OP_BIND_VBUF, 0xb400, sizeof(NvnPBindVBuf));
+}
+static void bench_geometry(void) {
+    const u32 operations = 1000000;
+    for (u32 change = 0; change < 2; change++) {
+        memset(&d, 0, sizeof d);
+        nvn_draw_init(&d, 0);
+        NvnPDraw draw = {.count = 3, .instances = 1};
+        memcpy(GP(DRAW), &draw, sizeof draw);
+        geometry_records();
+        apply_geometry_records();
+        nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+        DsState expected = d.ds;
+        clock_t start = clock();
+        for (u32 i = 1; i <= operations; i++) {
+            if (change) {
+                float x = 10.0f + (float)(i & 1u);
+                memcpy(GP(0xb000 + offsetof(NvnPViewports, v)), &x, sizeof x);
+                nvn_draw_record(&d, OP_VIEWPORTS, 0xb000, sizeof(NvnPViewports));
+            } else
+                apply_geometry_records();
+            nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+        }
+        clock_t ticks = clock() - start;
+        int generation_changed = expected.gen[DS_VIEWPORTS] != d.ds.gen[DS_VIEWPORTS];
+        if (change) expected.gen[DS_VIEWPORTS] = d.ds.gen[DS_VIEWPORTS];
+        int exact = !memcmp(&d.ds, &expected, sizeof expected) && (change ? generation_changed : !generation_changed);
+        check(exact, "geometry benchmark preserves every state byte and the required generations");
+        printf("GPU_HOTPATH_BENCH workload=%s operations=%u ns=%llu exact=%d\n",
+               change ? "changing-viewport" : "equal-geometry", operations,
+               (unsigned long long)((u64)ticks * 1000000000ull / CLOCKS_PER_SEC), exact);
+    }
+}
+
+static void test_equal_geometry(void) {
+    memset(&d, 0, sizeof d);
+    nvn_draw_init(&d, 0);
+    NvnPDraw draw = {.count = 3, .instances = 1};
+    memcpy(GP(DRAW), &draw, sizeof draw);
+    geometry_records();
+    apply_geometry_records();
+    nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+    DsState expected = d.ds;
+    apply_geometry_records();
+    check(!d.dirty && !d.vp_dirty, "equal geometry records need no state conversion");
+    nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+    check(!memcmp(&d.ds, &expected, sizeof expected), "equal geometry preserves every state byte and generation");
+
+    NvnPViewports views = {.first = 15, .count = 1, .v = {{20, 30, 40, 50}}};
+    memcpy(GP(0xb000), &views, sizeof views);
+    nvn_draw_record(&d, OP_VIEWPORTS, 0xb000, sizeof views);
+    apply_geometry_records();
+    check(d.vp_dirty == (1u << 15), "equal records retain an earlier changed viewport");
+    nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+    check(d.ds.vp.scale[15][0] == 20 && d.ds.vp.translate[15][0] == 40,
+          "the pending viewport reaches the next draw");
+
+    NvnPBindVAttr attr = {0};
+    NvnPBindVStream stream = {0};
+    memcpy(GP(0xb280), &attr, sizeof attr);
+    memcpy(GP(0xb300), &stream, sizeof stream);
+    nvn_draw_record(&d, OP_BIND_VATTR, 0xb280, sizeof attr);
+    nvn_draw_record(&d, OP_BIND_VSTREAM, 0xb300, sizeof stream);
+    nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+    check((d.ds.vfmt.constant & 1) && !d.ds.vfmt.stride[0], "zero counts remove the vertex attribute and stream");
+    geometry_records();
+    apply_geometry_records();
+    nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+    check(!(d.ds.vfmt.constant & 1) && d.ds.vfmt.stride[0] == 16,
+          "larger counts restore retained vertex state bytes");
+
+    u32 origin = __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED);
+    u32 depth = __atomic_load_n(&g_nvn.draw.depth_mode, __ATOMIC_RELAXED);
+    u32 other = origin == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT ? NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT
+                                                         : NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT;
+    u64 generation = d.ds.gen[DS_VIEWPORTS];
+    nvn_draw_device(other, depth);
+    apply_geometry_records();
+    nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+    check(d.ds.vp.scale[0][1] == (other == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT ? -120 : 120) &&
+              d.ds.vp.scale[15][1] == (other == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT ? -25 : 25) &&
+              d.ds.gen[DS_VIEWPORTS] != generation,
+          "equal geometry still observes a changed device origin");
+    nvn_draw_device(origin, depth);
+}
+
+/* Compare incremental conversions with a fresh conversion of all sixteen slots after each kind of update. */
+static void test_partial_viewports(void) {
+    static NvnDraw reference;
+    NvnPViewports views = {.count = 16};
+    NvnPScissors scissors = {.count = 16};
+    NvnPDepthRanges ranges = {.count = 16};
+    NvnPVpSwizzle swizzles = {.count = 16};
+    for (u32 i = 0; i < 16; i++) {
+        views.v[i][0] = (float)i - 8.25f;
+        views.v[i][1] = (float)i + 2.5f;
+        views.v[i][2] = 64 + (float)i;
+        views.v[i][3] = 128 - (float)i;
+        scissors.rect[i][0] = (i32)i - 8;
+        scissors.rect[i][1] = (i32)i - 4;
+        scissors.rect[i][2] = 128;
+        scissors.rect[i][3] = 256;
+        ranges.range[i][0] = (float)i / 64;
+        ranges.range[i][1] = 1.0f - (float)i / 64;
+    }
+    NvnPDraw draw = {.count = 3, .instances = 1};
+    memcpy(GP(DRAW), &draw, sizeof draw);
+    memset(&d, 0, sizeof d);
+    nvn_draw_init(&d, 0);
+    for (u32 step = 0; step <= 64; step++) {
+        u32 slot = step / 4 * 7 % 16;
+        if (!step) {
+            memcpy(GP(0xc000), &views, sizeof views);
+            memcpy(GP(0xc400), &scissors, sizeof scissors);
+            memcpy(GP(0xc600), &ranges, sizeof ranges);
+            memcpy(GP(0xc700), &swizzles, sizeof swizzles);
+            nvn_draw_record(&d, OP_VIEWPORTS, 0xc000, sizeof views);
+            nvn_draw_record(&d, OP_SCISSORS, 0xc400, sizeof scissors);
+            nvn_draw_record(&d, OP_DEPTH_RANGES, 0xc600, sizeof ranges);
+            nvn_draw_record(&d, OP_VP_SWIZZLE, 0xc700, sizeof swizzles);
+        } else if (step % 4 == 0) {
+            views.v[slot][0] += 0.25f;
+            NvnPViewports one = {.first = (i32)slot, .count = 1};
+            memcpy(one.v[0], views.v[slot], sizeof one.v[0]);
+            memcpy(GP(0xb000), &one, sizeof one);
+            nvn_draw_record(&d, OP_VIEWPORTS, 0xb000, sizeof one);
+        } else if (step % 4 == 1) {
+            scissors.rect[slot][0]++;
+            NvnPScissors one = {.first = (i32)slot, .count = 1};
+            memcpy(one.rect[0], scissors.rect[slot], sizeof one.rect[0]);
+            memcpy(GP(0xb000), &one, sizeof one);
+            nvn_draw_record(&d, OP_SCISSORS, 0xb000, sizeof one);
+        } else if (step % 4 == 2) {
+            ranges.range[slot][0] += 0.01f;
+            NvnPDepthRanges one = {.first = (i32)slot, .count = 1};
+            memcpy(one.range[0], ranges.range[slot], sizeof one.range[0]);
+            memcpy(GP(0xb000), &one, sizeof one);
+            nvn_draw_record(&d, OP_DEPTH_RANGES, 0xb000, sizeof one);
+        } else {
+            swizzles.sw[slot][step / 4 % 4] ^= 1;
+            NvnPVpSwizzle one = {.first = (i32)slot, .count = 1};
+            memcpy(one.sw[0], swizzles.sw[slot], sizeof one.sw[0]);
+            memcpy(GP(0xb000), &one, sizeof one);
+            nvn_draw_record(&d, OP_VP_SWIZZLE, 0xb000, sizeof one);
+        }
+        nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+        memset(&reference, 0, sizeof reference);
+        nvn_draw_init(&reference, 0);
+        memcpy(GP(0xc000), &views, sizeof views);
+        memcpy(GP(0xc400), &scissors, sizeof scissors);
+        memcpy(GP(0xc600), &ranges, sizeof ranges);
+        memcpy(GP(0xc700), &swizzles, sizeof swizzles);
+        nvn_draw_record(&reference, OP_VIEWPORTS, 0xc000, sizeof views);
+        nvn_draw_record(&reference, OP_SCISSORS, 0xc400, sizeof scissors);
+        nvn_draw_record(&reference, OP_DEPTH_RANGES, 0xc600, sizeof ranges);
+        nvn_draw_record(&reference, OP_VP_SWIZZLE, 0xc700, sizeof swizzles);
+        nvn_draw_record(&reference, OP_DRAW, DRAW, sizeof draw);
+        check(!memcmp(&d.ds.vp, &reference.ds.vp, sizeof d.ds.vp),
+              "partial viewport conversion matches a full conversion at step %u", step);
+    }
+}
+
 /* Compute stores requested UBO sizes in the VPC but rounds the directly bound constant-buffer window to 256 bytes. */
 static void test_compute_uniform_ranges(void) {
     static const u32 sizes[] = {0, 1, 255, 256, 257, 65535, 65536};
@@ -1085,12 +1269,15 @@ int main(int argc, char** argv) {
     test_patch_size();
     test_inline_updates();
     test_equal_bindings();
+    test_equal_geometry();
+    test_partial_viewports();
     test_fixed_state();
     test_channel_masks();
     test_indexed_viewports();
     test_depth_mode_equal_bind();
     if (argc == 2 && !strcmp(argv[1], "--bench")) bench_inline_updates();
     if (argc == 2 && !strcmp(argv[1], "--bench-state")) bench_equal_bindings();
+    if (argc == 2 && !strcmp(argv[1], "--bench-geometry")) bench_geometry();
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;

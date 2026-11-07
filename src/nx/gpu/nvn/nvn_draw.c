@@ -69,6 +69,17 @@ static void keep(void* kept, const void* made, size_t n, u64* gen) {
     memcpy(kept, made, n);
     new_gen(gen);
 }
+/* Recorded state has no side effects until the next draw. Equal bytes need no conversion, and a later equal
+   record must retain the dirty work of an earlier changed one. Compare floats as bytes, including NaNs and -0. */
+static int replace_bytes(void* kept, const void* made, size_t n) {
+    if (!memcmp(kept, made, n)) return 0;
+    memcpy(kept, made, n);
+    return 1;
+}
+static void viewports_dirty(NvnDraw* d, u32 first, u32 count) {
+    d->vp_dirty |= ((1u << count) - 1) << first;
+    d->dirty |= D_VIEWPORTS;
+}
 
 /* Bytes [p, p + n) within one inline bank written: the renderer's copy takes that bank's dirty span at the next
    draw. A base vertex change touches four bytes in each stage's bank 0, not the unchanged bytes between stages. */
@@ -149,6 +160,9 @@ void nvn_draw_init(NvnDraw* d, u32 owner) {
     d->dx.tex_bank = 2;
     for (s = 0; s < 8; s++) snx_st_le32(d->dx.bank2 + 4 * (u32)s, (u32)s);
     d->dirty = ~0u;
+    d->vp_dirty = (1u << DS_VIEWPORTS_MAX) - 1;
+    d->viewport_upper_left =
+        __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED) == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT;
     for (s = 0; s < DS_GFX_STAGES; s++) {
         d->inl_lo[0][s] = d->inl_lo[1][s] = 0;
         d->inl_hi[0][s] = DS_INLINE_BANK0;
@@ -376,7 +390,7 @@ static void set_targets(NvnDraw* d, u64 payload) {
     }
     if (target_formats_differ(&t, &d->ds.tgt)) new_gen(&d->ds.gen[DS_TARGET_FORMATS]);
     keep(&d->ds.tgt, &t, sizeof t, &d->ds.gen[DS_TARGETS]);
-    d->dirty |= D_DYNAMIC | D_VIEWPORTS; /* the surface's height, which a lower-left origin measures from */
+    d->dirty |= D_DYNAMIC; /* the surface's height, which a lower-left origin measures from */
 }
 
 /* ---- the groups, made of the NVN state at a draw */
@@ -562,11 +576,12 @@ static void make_viewports(NvnDraw* d) {
     /* clip space's y points up in both origins: an upper-left window's rows count down, so its scale is negative */
     int upper_left = __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED) == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT;
     DsViewports v;
-    memset(&v, 0, sizeof v); /* every byte: keep compares the bytes */
+    memcpy(&v, &d->ds.vp, sizeof v); /* retain unchanged viewports and their padding for keep */
     /* NVN has no call that turns the viewport transform off */
     v.transform_on = 1;
     v.scissor_on = (1u << DS_VIEWPORTS_MAX) - 1; /* NVN enables all scissors; untouched ones cover the window. */
     for (u32 j = 0; j < DS_VIEWPORTS_MAX; j++) {
+        if (!(d->vp_dirty & (1u << j))) continue;
         float x = d->vp[j][0], y = d->vp[j][1], w = d->vp[j][2], h = d->vp[j][3];
         float n = d->depth[j][0], f = d->depth[j][1];
         v.scale[j][0] = w * 0.5f;
@@ -575,6 +590,7 @@ static void make_viewports(NvnDraw* d) {
         v.translate[j][1] = y + h * 0.5f;
         v.scale[j][2] = near_zero ? f - n : (f - n) * 0.5f;
         v.translate[j][2] = near_zero ? n : (n + f) * 0.5f;
+        v.swizzle[j] = 0;
         for (u32 k = 0; k < 4; k++) v.swizzle[j] |= (u32)((d->swizzle[j][k] ^ (2 * k)) & 7) << (4 * k);
         v.clip_x[j] = viewport_clip(x, w);
         v.clip_y[j] = viewport_clip(y, h);
@@ -584,6 +600,8 @@ static void make_viewports(NvnDraw* d) {
         v.scissor_y[j] = scissor_clip(d->scissor[j][1], d->scissor[j][3]);
     }
     keep(&d->ds.vp, &v, sizeof v, &d->ds.gen[DS_VIEWPORTS]);
+    d->vp_dirty = 0;
+    d->viewport_upper_left = (u8)upper_left;
 }
 static void make_vertex_buffers(NvnDraw* d) {
     DsVertexBuffers b;
@@ -614,7 +632,12 @@ static void sync(NvnDraw* d, i32 base_vertex, u32 base_instance) {
     /* Device state can change without changing a packed depth/stencil object. Equal binds no longer rebuild
        dynamic state incidentally, so refresh the depth convention at the draw that observes it. */
     u32 near_zero = __atomic_load_n(&g_nvn.draw.depth_mode, __ATOMIC_RELAXED) == NVN_DEPTH_MODE_NEAR_IS_ZERO;
-    if (d->ds.dyn.depth_mode != near_zero) d->dirty |= D_DYNAMIC | D_VIEWPORTS;
+    if (d->ds.dyn.depth_mode != near_zero) {
+        d->dirty |= D_DYNAMIC;
+        viewports_dirty(d, 0, DS_VIEWPORTS_MAX);
+    }
+    u32 upper_left = __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED) == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT;
+    if (d->viewport_upper_left != upper_left) viewports_dirty(d, 0, DS_VIEWPORTS_MAX);
     if (!d->dirty) return;
     if (d->dirty & D_PROGRAMS) make_programs(d);
     if (d->dirty & D_VFORMAT) make_vertex_format(d);
@@ -1101,35 +1124,39 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
         case OP_VIEWPORTS: {
             i32 first = NVN_OBJ(const NvnPViewports, payload)->first, n = NVN_OBJ(const NvnPViewports, payload)->count;
             if (first < 0 || first >= DS_VIEWPORTS_MAX || n <= 0 || n > DS_VIEWPORTS_MAX - first) return 1;
-            i32 i;
-            for (i = 0; i < n && first + i < 16; i++)
-                memcpy(d->vp[first + i], GP(payload + offsetof(NvnPViewports, v) + 24 * (u64)i), 16);
-            d->dirty |= D_VIEWPORTS;
+            for (i32 i = 0; i < n; i++)
+                if (replace_bytes(d->vp[first + i], GP(payload + offsetof(NvnPViewports, v) + 24 * (u64)i), 16))
+                    viewports_dirty(d, (u32)(first + i), 1);
             return 1;
         }
-        case OP_SCISSOR: memcpy(d->scissor[0], GP(payload), 16), d->dirty |= D_VIEWPORTS; return 1;
-        case OP_DEPTH_RANGE: memcpy(d->depth[0], GP(payload), 8), d->dirty |= D_VIEWPORTS; return 1;
+        case OP_SCISSOR:
+            if (replace_bytes(d->scissor[0], GP(payload), sizeof d->scissor[0])) viewports_dirty(d, 0, 1);
+            return 1;
+        case OP_DEPTH_RANGE:
+            if (replace_bytes(d->depth[0], GP(payload), sizeof d->depth[0])) viewports_dirty(d, 0, 1);
+            return 1;
         case OP_SCISSORS: {
             const NvnPScissors* r = NVN_OBJ(const NvnPScissors, payload);
             if (r->first < 0 || r->first >= DS_VIEWPORTS_MAX || r->count <= 0 || r->count > DS_VIEWPORTS_MAX - r->first)
                 return 1;
-            memcpy(d->scissor[r->first], r->rect, (size_t)r->count * sizeof r->rect[0]);
-            d->dirty |= D_VIEWPORTS;
+            if (replace_bytes(d->scissor[r->first], r->rect, (size_t)r->count * sizeof r->rect[0]))
+                viewports_dirty(d, (u32)r->first, (u32)r->count);
             return 1;
         }
         case OP_DEPTH_RANGES: {
             const NvnPDepthRanges* r = NVN_OBJ(const NvnPDepthRanges, payload);
             if (r->first < 0 || r->first >= DS_VIEWPORTS_MAX || r->count <= 0 || r->count > DS_VIEWPORTS_MAX - r->first)
                 return 1;
-            memcpy(d->depth[r->first], r->range, (size_t)r->count * sizeof r->range[0]);
-            d->dirty |= D_VIEWPORTS;
+            if (replace_bytes(d->depth[r->first], r->range, (size_t)r->count * sizeof r->range[0]))
+                viewports_dirty(d, (u32)r->first, (u32)r->count);
             return 1;
         }
         case OP_VP_SWIZZLE: {
             const NvnPVpSwizzle* r = NVN_OBJ(const NvnPVpSwizzle, payload);
-            i32 i;
-            for (i = 0; i < r->count && r->first + i < 16; i++) memcpy(d->swizzle[r->first + i], r->sw[i], 4);
-            d->dirty |= D_VIEWPORTS;
+            if (r->first < 0 || r->first >= DS_VIEWPORTS_MAX || r->count <= 0 || r->count > DS_VIEWPORTS_MAX - r->first)
+                return 1;
+            if (replace_bytes(d->swizzle[r->first], r->sw, (size_t)r->count * sizeof r->sw[0]))
+                viewports_dirty(d, (u32)r->first, (u32)r->count);
             return 1;
         }
         case OP_STENCIL: {
@@ -1209,26 +1236,25 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
         case OP_BIND_STATE: bind_state(d, payload); return 1;
         case OP_BIND_VATTR: {
             const NvnPBindVAttr* r = NVN_OBJ(const NvnPBindVAttr, payload);
-            d->nattr = r->count > 0 && r->count <= 16 ? (u32)r->count : 0;
-            memcpy(d->attr, r->st, 4 * (size_t)d->nattr);
-            d->dirty |= D_VFORMAT;
+            u32 count = r->count > 0 && r->count <= 16 ? (u32)r->count : 0;
+            int changed = replace_bytes(d->attr, r->st, sizeof d->attr[0] * count);
+            if (d->nattr != count || changed) d->dirty |= D_VFORMAT;
+            d->nattr = count;
             return 1;
         }
         case OP_BIND_VSTREAM: {
             const NvnPBindVStream* r = NVN_OBJ(const NvnPBindVStream, payload);
-            d->nstream = r->count > 0 && r->count <= 16 ? (u32)r->count : 0;
-            memcpy(d->stream, r->st, sizeof d->stream[0] * d->nstream);
-            d->dirty |= D_VFORMAT;
+            u32 count = r->count > 0 && r->count <= 16 ? (u32)r->count : 0;
+            int changed = replace_bytes(d->stream, r->st, sizeof d->stream[0] * count);
+            if (d->nstream != count || changed) d->dirty |= D_VFORMAT;
+            d->nstream = count;
             return 1;
         }
         case OP_BIND_VBUF: {
             const NvnPBindVBuf* r = NVN_OBJ(const NvnPBindVBuf, payload);
-            i32 i;
-            for (i = 0; i < r->count && r->first + i < 16; i++)
-                memcpy(&d->vbuf[r->first + i],
-                       GP(payload + offsetof(NvnPBindVBuf, r) + sizeof(NVNbufferRange) * (u64)i),
-                       sizeof(NVNbufferRange));
-            d->dirty |= D_VBUF;
+            if (r->first < 0 || r->first >= 16 || r->count <= 0) return 1;
+            u32 count = r->count > 16 - r->first ? (u32)(16 - r->first) : (u32)r->count;
+            if (replace_bytes(&d->vbuf[r->first], r->r, sizeof r->r[0] * count)) d->dirty |= D_VBUF;
             return 1;
         }
         case OP_BIND_UBO:

@@ -7,6 +7,7 @@
 #include "nx/gpu/texture/texconv_spv.h" /* compiled from texconv.comp by the build (cmake/glsl.cmake) */
 #include "nx/gpu/texture/texconv_modes.glsl"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/plat.h"
 
 /* texconv.comp's push constants, member for member */
 typedef struct {
@@ -46,8 +47,10 @@ static void tc_init(void) {
                                                 .module = module,
                                                 .pName = "main"},
                                       .layout = g_tc_layout};
+    u64 started = plat_ns();
     if (!VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, &g_tc_pipe)))
         fatal("vulkan: cannot create the texture conversion compute pipeline");
+    vk_texture_pipeline_made(plat_ns() - started);
     vkDestroyShaderModule(g_vk.dev, module, NULL);
 }
 

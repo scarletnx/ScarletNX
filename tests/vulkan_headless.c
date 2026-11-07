@@ -4968,6 +4968,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_surface_loads.inc"
 #include "vulkan_rect_textures.inc"
 #include "vulkan_owned_readback.inc"
+#include "vulkan_guest_staging.inc"
 #include "vulkan_storage_suffix.inc"
 #include "vulkan_pending_index.inc"
 #include "vulkan_draw_storage_stages.inc"
@@ -4994,6 +4995,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_tex_partial.inc"
 
 #include "vulkan_descriptor_bench.inc"
+#include "vulkan_pipeline_probe.inc"
 #include "vulkan_indexed_map_bench.inc"
 #include "vulkan_nvn_storage.inc"
 #include "vulkan_nvn_compat.inc"
@@ -5072,6 +5074,8 @@ static int run_headless(int argc, char** argv) {
     u32 benchmark_sparse = 0, benchmark_storage = 0, benchmark_image = 0;
     u32 benchmark_buffer = 0;
     u32 benchmark_passes = 0;
+    const char* pipeline_probe = NULL;
+    int pipeline_probe_disable = 0;
     /* the runtime's startup flags (-H), its settings as it takes them (--vk_memory=2, --memory_traps=2,
        --vertex_input_dynamic_state=off), and the benchmarks'. Any other argument stops the run: one dropped unsaid ran
        the checks without it */
@@ -5081,6 +5085,15 @@ static int run_headless(int argc, char** argv) {
         unsigned flags = 0;
         char key[64];
         if (snx_cli_flag(argv[i], &flags) == 1) continue;
+        if (!strncmp(argv[i], "--pipeline-probe=", 17)) {
+            pipeline_probe = argv[i] + 17;
+            continue;
+        }
+        if (!strncmp(argv[i], "--pipeline-probe-disable-opt=", 29)) {
+            CHECK(!strcmp(argv[i] + 29, "0") || !strcmp(argv[i] + 29, "1"));
+            pipeline_probe_disable = argv[i][29] - '0';
+            continue;
+        }
         if (!strncmp(argv[i], "--bench-indexed-map=", 20)) {
             indexed_map_benchmark = (int)strtol(argv[i] + 20, NULL, 10);
             continue;
@@ -5139,7 +5152,8 @@ static int run_headless(int argc, char** argv) {
                 "snx-test-vulkan: %s is not an option it takes: -H, --KEY=VALUE of the runtime's settings, "
                 "--bench-descriptors=N, --descriptor-images=N, --descriptor-indexed=N, --descriptor-count=N, "
                 "--bench-sparse-volume, --bench-sparse-texture, --bench-storage-lookup, --bench-storage-image, "
-                "--bench-storage-buffer, --bench-pass-breaks=N, --nvn-draw-bench=N, --bench-indexed-map=N\n",
+                "--bench-storage-buffer, --bench-pass-breaks=N, --nvn-draw-bench=N, --bench-indexed-map=N, "
+                "--pipeline-probe=FILE, --pipeline-probe-disable-opt=0|1\n",
                 argv[i]);
             return 2;
         }
@@ -5159,6 +5173,13 @@ static int run_headless(int argc, char** argv) {
     g_settings.vulkan_video_decode = 1; /* a Vulkan Video decode queue where the device has one (lavapipe has none) */
     video_init("Headless Vulkan fixture", "");
     CHECK(g_opt_headless && g_renderer_up && g_vk.dev && !g_vk.surface && !g_vk.swapchain && !g_vk.sc_count);
+    if (pipeline_probe) {
+        int result = probe_pipeline_compile(pipeline_probe, pipeline_probe_disable);
+        vk_pipeline_quiesce();
+        CHECK(!snx_remove_tree(root));
+        free(root); free(shot); free(ppm);
+        return result;
+    }
     if (getenv("SNX_TEST_RECORDER_ONLY")) { /* the recording thread's own sync alone, on the driver the loader picks */
         CHECK(!check_recorder_self_sync());
         vk_finish();
@@ -5462,6 +5483,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_chunk_written_first());
     CHECK(!check_stream_epoch());
     CHECK(!check_owned_readback());
+    CHECK(!check_guest_staging());
     CHECK(!check_owned_writable());
     CHECK(!check_owned_in_place_write());
     CHECK(!check_owned_read_device());

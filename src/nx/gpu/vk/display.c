@@ -22,6 +22,7 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/options.h"
+#include "nx/runtime/main.h"
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/log.h"
 #include <math.h>
@@ -103,7 +104,10 @@ static void stats_line(void) {
     u32 uneven = 0, most = 0;
     char held[96] = "";
     if (g_dc.n) {
-        u32 count[8] = {0};
+        /* Keep high-refresh displays' real cadence: the old final bucket was labelled seven even when it held
+           twelve refreshes of a 350 Hz display. The final bucket remains explicit about its overflow. */
+        u32 count[128] = {0};
+        const u32 last = sizeof count / sizeof *count - 1;
         for (u32 i = 0; i < g_dc.n; i++) sum += g_dc.interval[i];
         mean = sum / g_dc.n;
         for (u32 i = 0; i < g_dc.n; i++) {
@@ -114,12 +118,13 @@ static void stats_line(void) {
         if (refresh) {
             for (u32 i = 0; i < g_dc.n; i++) {
                 u64 k = (g_dc.interval[i] + refresh / 2) / refresh;
-                count[k < 8 ? k : 7]++;
+                count[k < last ? k : last]++;
             }
-            for (u32 k = 1; k < 8; k++)
+            for (u32 k = 1; k <= last; k++)
                 if (count[k] > count[most]) most = k;
             uneven = g_dc.n - count[most];
-            snprintf(held, sizeof held, ", %u held for other than %u refresh%s", uneven, most, most == 1 ? "" : "es");
+            snprintf(held, sizeof held, ", %u held for other than %u%s refresh%s", uneven, most,
+                     most == last ? " or more" : "", most == 1 ? "" : "es");
         }
         qsort(g_dc.interval, g_dc.n, sizeof *g_dc.interval, u64_cmp);
     }
@@ -335,7 +340,7 @@ static u64 due_at(u64 seq, u64 period_ns, u64 refresh, u64 now, int* late) {
     /* FIFO shows a frame a refresh at least already: one held for a period of one would only come later. A game
        that keeps its own pace of fewer frames with a swap interval of 1 (one at 30 fps) only came later, by half a
        refresh, while its frames went to the display no more evenly */
-    if (n < 2 || (d > period_ns ? d - period_ns : period_ns - d) > period_ns / 32) return 0;
+    if (n < 2 || present_display_period(period_ns, refresh) != d) return 0;
     due = g_dc.due_last ? g_dc.due_last + d : 0;
     n = seq > g_dc.grid_seq ? seq - g_dc.grid_seq : 1;
     if (due < grid + n * d) due = grid + n * d;

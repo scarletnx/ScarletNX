@@ -24,6 +24,7 @@
 #include "nx/gpu/texture/astc_spv.h" /* compiled from astc.comp by the build (cmake/glsl.cmake) */
 #include "nx/gpu/texture/bc7_spv.h"  /* compiled from bc7.comp */
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/plat.h"
 
 static VkDescriptorSetLayout g_astc_ds;
 static VkPipelineLayout g_astc_layout;
@@ -51,7 +52,11 @@ static u64 g_rgba8_bytes;
    and no fault in the kernel's log. Past this many blocks an upload waits for the GPU to do them. A wait costs little,
    as the game is held by what the GPU has to do anyway. Splitting them over submissions with no wait did not help */
 #define BC7_QUEUED_BLOCKS (1u << 18)
-static u64 g_bc7_queued;
+/* The submission that will include the last counted encoder. Completed uploads do not contribute to the limit:
+   retaining their blocks across frames made a small later upload flush and wait for unrelated graphics work. */
+static struct {
+    u64 blocks, until;
+} g_bc7_queued;
 
 /* astc.comp's push constants: the strip's width and its slices' height in texels and in blocks, and whether to use
    the specification's sRGB decode mode, whose void extents' R, G and B bytes differ from the UNORM mode's. An SRGB
@@ -137,8 +142,10 @@ static void bc7_init(void) {
                                                 .module = g_bc7_module,
                                                 .pName = "main"},
                                       .layout = g_bc7_layout};
+    u64 started = plat_ns();
     if (!VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, &g_bc7_pipe)))
         fatal("vulkan: cannot create the BC7 encoder's pipeline");
+    vk_texture_pipeline_made(plat_ns() - started);
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                              .size = g_astc_cap,
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -169,8 +176,10 @@ static VkPipeline astc_pipeline(u32 bw, u32 bh) {
                                                 .pName = "main",
                                                 .pSpecializationInfo = &spec},
                                       .layout = g_astc_layout};
+    u64 started = plat_ns();
     if (!VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, pipe)))
         fatal("vulkan: cannot create the ASTC compute pipeline");
+    vk_texture_pipeline_made(plat_ns() - started);
     return *pipe;
 }
 
@@ -218,7 +227,14 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h, u32
                    VkAstcRows rows, void* ctx) {
     astc_init();
     const int bc7 = t->f.vk == VK_FORMAT_BC7_UNORM_BLOCK || t->f.vk == VK_FORMAT_BC7_SRGB_BLOCK;
-    if (bc7) bc7_init();
+    if (bc7) {
+        bc7_init();
+        if (g_bc7_queued.blocks && g_bc7_queued.until <= vk_last_submit()) {
+            u64 done = 0;
+            if (VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, vk_gfx_timeline(), &done)) && done >= g_bc7_queued.until)
+                g_bc7_queued.blocks = 0;
+        }
+    }
     const VkPhysicalDeviceLimits* lim = &g_vk.props.limits;
     u32 bw = t->f.bw, bh = t->f.bh;
     /* the region's origin on its blocks, and on BC7's too: on multiples of lcm(bw, 4) and lcm(bh, 4) */
@@ -327,9 +343,10 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h, u32
             rec_CmdCopyBufferToImage(cb, from, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
             vk_ck(cb, VK_CK_STRIP_DONE, w, height, nz, level);
             if (bc7) {
-                g_bc7_queued += (u64)cx * ((height + 3) / 4) * nz;
-                if (g_bc7_queued >= BC7_QUEUED_BLOCKS) {
-                    g_bc7_queued = 0;
+                g_bc7_queued.blocks += (u64)cx * ((height + 3) / 4) * nz;
+                g_bc7_queued.until = vk_last_submit() + 1;
+                if (g_bc7_queued.blocks >= BC7_QUEUED_BLOCKS) {
+                    g_bc7_queued.blocks = 0;
                     vk_submit_upload_wait();
                     /* This upload continues after the submission too. Rows callbacks may only stage bytes;
                        do not leave them, or the next strip's barriers, with the ended command buffer. */

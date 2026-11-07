@@ -10,7 +10,7 @@ PendPages g_pend_any;
 #define TABLE_PAGES ((u64)LEAF_PAGES << 16) /* the pages a table's leaves cover: 2^40 bytes, all of the GPU's */
 struct PendLeaf {
     u32 count[LEAF_PAGES];      /* the results covering each page */
-    u16 group[LEAF_PAGES / 64]; /* each group's pages with a count */
+    u64 group[LEAF_PAGES / 64]; /* one bit for each page with a count */
     u32 pages;                  /* the leaf's pages with a count */
 };
 /* the tables that count guest pages, each listed when it first gains one, for pend_remap to redo their GPU pages; and
@@ -38,16 +38,21 @@ static void leaf_set(PendLeaf** leaf, u64 p, u32 v) {
     before = l->count[i];
     l->count[i] = v;
     if (!before != !v) {
-        int d = v ? 1 : -1;
-        l->group[i / 64] = (u16)(l->group[i / 64] + d);
-        l->pages = (u32)((i64)l->pages + d);
+        u64 bit = 1ull << (i & 63u);
+        if (v)
+            l->group[i / 64] |= bit;
+        else
+            l->group[i / 64] &= ~bit;
+        l->pages = (u32)((i64)l->pages + (v ? 1 : -1));
     }
 }
 /* pages [first, last], below TABLE_PAGES, gain delta each */
 static void leaves_add(PendLeaf** leaf, u64 first, u64 last, int delta) {
     for (u64 p = first; p <= last; p++) leaf_set(leaf, p, (u32)((i64)leaf_count(leaf, p) + delta));
 }
-/* whether a page of [first, last], below TABLE_PAGES, has a count, skipping leaves and groups that have none */
+/* Whether a page of [first, last], below TABLE_PAGES, has a count. The bitmap answers each group with one load,
+   including partial groups: a sparse group used to scan up to 64 individual counters merely to find no overlap.
+   Counts still retain every reference; only transitions between zero and nonzero change a bit. */
 static int leaves_hit(PendLeaf* const* leaf, u64 first, u64 last) {
     for (u64 p = first; p <= last;) {
         u64 li = p / LEAF_PAGES, leaf_end = (li + 1) * LEAF_PAGES - 1, stop = last < leaf_end ? last : leaf_end;
@@ -56,12 +61,9 @@ static int leaves_hit(PendLeaf* const* leaf, u64 first, u64 last) {
             while (p <= stop) {
                 u32 i = (u32)(p % LEAF_PAGES);
                 u64 gstop = p + (63u - (i & 63u)) < stop ? p + (63u - (i & 63u)) : stop;
-                if (!l->group[i / 64]) {
-                    p = gstop + 1;
-                    continue;
-                }
-                for (; p <= gstop; p++)
-                    if (l->count[p % LEAF_PAGES]) return 1;
+                u64 mask = (~0ull << (i & 63u)) & (~0ull >> (63u - (gstop & 63u)));
+                if (l->group[i / 64] & mask) return 1;
+                p = gstop + 1;
             }
         p = stop + 1;
     }

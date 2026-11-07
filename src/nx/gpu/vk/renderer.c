@@ -23,6 +23,7 @@
 #include "nx/runtime/guest_stats.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
+#include "nx/gpu/vk/resource_stats.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
 #include "nx/gpu/vk/pending_pages.h"
@@ -523,12 +524,16 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
         static u64 last_present_ns, slow_frames, slowest_ns;
         [[maybe_unused]] static u64 was_drawn; /* the draws plot's base; only the profiler reads it */
         /* the counters as of the last present: a slow frame says what it did, which names what a hitch waited for */
-        static u64 was[12];
-        u64 now_ns = plat_ns(), is[11];
+        static u64 was[15];
+        static VkResourceStats resource_was;
+        VkResourceStats resource_is = g_vk_resource_stats;
+        u64 now_ns = plat_ns(), is[15] = {0};
         vk_pipeline_stats(&is[0], &is[1], &is[2], &is[3], &is[4], &is[5]);
         vk_tex_stats(&is[6], &is[7]);
         is[8] = vk_rt_made();
         is[9] = g_vk_finish_ns / 1000000;
+        vk_texture_pipeline_stats(&is[10], &is[11]);
+        for (u32 k = 0; k < VK_WAIT_N; k++) is[12 + k] = g_vk_wait_ns[k];
         if (last_present_ns) {
             u64 d = now_ns - last_present_ns;
             SNX_PLOT("frame ms", (double)d / 1e6);
@@ -542,10 +547,11 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 SNX_PLOT("submits pending", (double)(sub - done));
                 vk_compute_progress(&csub, &cdone);
                 SNX_PLOT("compute pending", (double)(csub - cdone));
-                SNX_PLOT("dispatches", (double)(g_vk_dispatches - was[10]));
-                was[10] = g_vk_dispatches;
-                SNX_PLOT("compute cpu reads", (double)(g_vk_cs_cpu_reads - was[11]));
-                was[11] = g_vk_cs_cpu_reads;
+                static u64 was_dispatches, was_reads;
+                SNX_PLOT("dispatches", (double)(g_vk_dispatches - was_dispatches));
+                was_dispatches = g_vk_dispatches;
+                SNX_PLOT("compute cpu reads", (double)(g_vk_cs_cpu_reads - was_reads));
+                was_reads = g_vk_cs_cpu_reads;
             }
 #endif
             SNX_PLOT("draws", (double)(g_vk_drawn - was_drawn));
@@ -560,16 +566,41 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 slow_frames++;
                 LOG_LIMIT(200,
                           "vulkan: a %llu ms frame: %llu shaders translated (%llu ms), %llu pipelines made (%llu ms waited "
-                          "for), %llu render targets made, %llu texture uploads (%llu KB), %llu ms in finishes\n",
+                          "for), %llu render targets made, %llu texture uploads (%llu KB), %llu ms in finishes; "
+                          "%llu internal texture pipelines (%llu ms); GPU waits finish/recycle/submit %llu/%llu/%llu ms\n",
                           (unsigned long long)(d / 1000000), (unsigned long long)(is[4] - was[4]),
                           (unsigned long long)(is[5] - was[5]), (unsigned long long)(is[0] - was[0]),
                           (unsigned long long)(is[3] - was[3]), (unsigned long long)(is[8] - was[8]),
                           (unsigned long long)(is[6] - was[6]), (unsigned long long)((is[7] - was[7]) >> 10),
-                          (unsigned long long)(is[9] - was[9]));
+                          (unsigned long long)(is[9] - was[9]),
+                          (unsigned long long)(is[10] - was[10]),
+                          (unsigned long long)((is[11] - was[11]) / 1000000),
+                          (unsigned long long)((is[12 + VK_WAIT_FINISH] - was[12 + VK_WAIT_FINISH]) / 1000000),
+                          (unsigned long long)((is[12 + VK_WAIT_RECYCLE] - was[12 + VK_WAIT_RECYCLE]) / 1000000),
+                          (unsigned long long)((is[12 + VK_WAIT_SUBMIT] - was[12 + VK_WAIT_SUBMIT]) / 1000000));
+                /* These CPU categories exclude nested resource categories. Pipeline and wait counters above can
+                   overlap them, so the two groups must not be added as independent parts of a frame. */
+                for (u32 k = 0; k < VK_RESOURCE_N; k++) {
+                    static const char* const names[VK_RESOURCE_N] = {
+                        [VK_RESOURCE_IMAGE_QUERY] = "image requirements",
+                        [VK_RESOURCE_IMAGE_CREATE] = "image allocation",
+                        [VK_RESOURCE_IMAGE_DESTROY] = "image destruction",
+                        [VK_RESOURCE_SURFACE_CREATE] = "target setup",
+                        [VK_RESOURCE_RT_RELOAD] = "target reload",
+                        [VK_RESOURCE_SURFACE_RECLAIM] = "surface reclaim",
+                        [VK_RESOURCE_BUFFER_MAINTENANCE] = "buffer maintenance",
+                        [VK_RESOURCE_BUFFER_CACHE_BUILD] = "buffer cache build"};
+                    u64 ns = resource_is.ns[k] - resource_was.ns[k];
+                    if (ns >= 1000000)
+                        LOG_LIMIT(400, "vulkan: frame resource CPU: %s %llu ms (%llu calls)\n", names[k],
+                                  (unsigned long long)(ns / 1000000),
+                                  (unsigned long long)(resource_is.calls[k] - resource_was.calls[k]));
+                }
             }
             if (d > slowest_ns) slowest_ns = d;
         }
         memcpy(was, is, sizeof was);
+        resource_was = resource_is;
         last_present_ns = now_ns;
         g_vk_present++;
         {

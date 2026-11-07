@@ -9,6 +9,7 @@
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/texture/blocklinear_spv.h" /* compiled from blocklinear.comp by the build (cmake/glsl.cmake) */
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/plat.h"
 
 /* blocklinear.comp's push constants, member for member */
 typedef struct {
@@ -55,8 +56,10 @@ static void bl_init(void) {
                                                 .module = module,
                                                 .pName = "main"},
                                       .layout = g_blocklinear.layout};
+    u64 started = plat_ns();
     if (!VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, &g_blocklinear.pipe)))
         fatal("vulkan: cannot create the block linear compute pipeline");
+    vk_texture_pipeline_made(plat_ns() - started);
     vkDestroyShaderModule(g_vk.dev, module, NULL); /* the pipeline doesn't need it once made */
 }
 

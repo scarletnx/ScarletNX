@@ -51,6 +51,8 @@ struct NvnDraw {
     NVNbufferRange tf[4]; /* the transform feedback buffers */
     u8 tf_on;             /* between Begin (or Resume) and End (or Pause) */
     u32 dirty;
+    u32 vp_dirty; /* viewports whose transform, depth range, scissor or swizzle needs conversion */
+    u8 viewport_upper_left; /* device origin used by the last viewport conversion */
     /* The dirty span of each stage's bank 0 and bank 2. Separate spans leave the unchanged banks between writes
        out of the compare and copy at a draw. */
     u16 inl_lo[2][DS_GFX_STAGES], inl_hi[2][DS_GFX_STAGES];
