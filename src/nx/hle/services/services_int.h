@@ -435,8 +435,6 @@ typedef struct {
     PMutex aoc_lock;
     /* irs's shared memory, made at the first ask */
     PMutex irs_lock;
-    /* the album's folder: a picture's name taken and written in one go */
-    PMutex caps_lock;
 } HostMisc;
 
 /* ---- pl.c */

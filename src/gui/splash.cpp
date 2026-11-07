@@ -59,6 +59,24 @@ int snx_splash_jpeg(const char* name, int side, int quality, SnxSplashWrite writ
     return written ? 0 : 1;
 }
 
+int snx_splash_jpeg_rgba(const void* rgba, int width, int height, int quality, SnxSplashWrite write, void* closure) {
+    if (!rgba || !write || width <= 0 || height <= 0) return 1;
+    plutovg_surface_t* surface = plutovg_surface_create(width, height);
+    if (!surface) return 1;
+    /* plutovg's pixels are 32-bit words 0xAARRGGBB: opaque, the alpha a JPEG has no place for */
+    const uint8_t* in = static_cast<const uint8_t*>(rgba);
+    uint8_t* data = plutovg_surface_get_data(surface);
+    const int stride = plutovg_surface_get_stride(surface);
+    for (int y = 0; y < height; y++) {
+        uint32_t* row = reinterpret_cast<uint32_t*>(data + static_cast<size_t>(y) * stride);
+        for (int x = 0; x < width; x++, in += 4)
+            row[x] = 0xFF000000u | static_cast<uint32_t>(in[0]) << 16 | static_cast<uint32_t>(in[1]) << 8 | in[2];
+    }
+    const bool written = plutovg_surface_write_to_jpg_stream(surface, write, closure, quality);
+    plutovg_surface_destroy(surface);
+    return written ? 0 : 1;
+}
+
 int snx_splash_picture(const void* jpeg, size_t size, int side, int round, void* pixels, int stride) {
     if (side <= 0 || !pixels || stride < side * 4 || size > INT_MAX) return 1;
     plutovg_surface_t* source =

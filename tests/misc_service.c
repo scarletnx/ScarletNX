@@ -5,6 +5,7 @@
 #include "nx/hle/services/services_int.h"
 #include <math.h>
 #include <stdarg.h>
+#include <plutovg.h> /* caps' JPEGs read back */
 
 #include "nx/hle/services/acc.c"
 #include "nx/hle/services/users.c"
@@ -61,6 +62,26 @@ FILE* fs_open_read(const char* path, u64* size) {
         }
     }
     return NULL;
+}
+/* fs.c's: the files caps writes on the SD card, kept here by folder and name, a name there already refused */
+#define TEST_SD_FILES 8
+static struct {
+    char dir[64], name[96];
+    u8* data;
+    u64 size;
+} test_sd[TEST_SD_FILES];
+static int test_sd_files;
+int fs_sd_write_new(const char* dir, const char* name, const void* data, u64 size) {
+    for (int i = 0; i < test_sd_files; i++)
+        if (!strcmp(test_sd[i].dir, dir) && !strcmp(test_sd[i].name, name)) return FS_TREE_EXISTS;
+    if (test_sd_files == TEST_SD_FILES) return FS_TREE_IO;
+    snprintf(test_sd[test_sd_files].dir, sizeof test_sd[0].dir, "%s", dir);
+    snprintf(test_sd[test_sd_files].name, sizeof test_sd[0].name, "%s", name);
+    test_sd[test_sd_files].data = malloc((size_t)size);
+    if (!test_sd[test_sd_files].data) return FS_TREE_NOMEM;
+    memcpy(test_sd[test_sd_files].data, data, (size_t)size);
+    test_sd[test_sd_files++].size = size;
+    return FS_TREE_OK;
 }
 /* the base ID the game's control.nacp numbers its DLCs from (am.c's), 0 for the SDK's default */
 static u64 test_aoc_base;
@@ -1581,22 +1602,22 @@ static void test_friend_blocked_and_presence(void) {
 
 /* caps:su: SaveScreenShotEx1 (205) {attribute 0x40, u32 report option at 0x40, aruid at 0x48, pid}, the application
    data in A 0 (0x404 bytes) and the 1280x720 RGBA picture in A 1. Ex0 (203) has the picture in A 0, Ex2 (210) the
-   users in A 0 (0x88) and no pid. The picture is a PPM in <the game's folder>captures/, named by the entry's local time
-   and its number in that second; the entry {u64 size, u64 hash, AlbumFileDateTime, u8 storage, u8 contents, 5
-   reserved, u8 flags} names the file's size. A picture smaller than 1280x720 RGBA is OutOfRange, and nothing is
-   written */
-#define TEST_ALBUM_DIR "misc_service_album/"
-#define TEST_PICTURE   0x10000ull
-#define TEST_PIXELS    (1280u * 720u)
-#define TEST_PPM_SIZE  (16u + TEST_PIXELS * 3u) /* "P6\n1280 720\n255\n", then RGB */
-static void caps_picture(u8 seed) {
-    for (u32 i = 0; i < TEST_PIXELS; i++) {
-        u8* p = g_mem + TEST_PICTURE + (u64)i * 4;
-        p[0] = (u8)i;
-        p[1] = (u8)(i >> 8);
-        p[2] = seed;
-        p[3] = 0x80;
-    }
+   users in A 0 (0x88) and no pid. The picture is a JPEG on the SD card as the console's album keeps it,
+   Nintendo/Album/YYYY/MM/DD/YYYYMMDDHHMMSSII-<the application ID, 16 zeros>.jpg, with an EXIF segment of its time in
+   place of the JFIF one; the entry {u64 size, u64 hash, AlbumFileDateTime, u8 storage, u8 contents, 5 reserved, u8
+   flags} names its size, time and II. A picture smaller than 1280x720 RGBA is OutOfRange, and nothing is written */
+#define TEST_PICTURE 0x10000ull
+#define TEST_PIXELS  (1280u * 720u)
+/* four quarters of one colour each, as a JPEG keeps them near enough */
+static const u8 test_quarters[4][3] = {{200, 30, 30}, {30, 180, 60}, {40, 50, 210}, {128, 128, 128}};
+static void caps_picture(u8 shade) {
+    for (u32 y = 0; y < 720; y++)
+        for (u32 x = 0; x < 1280; x++) {
+            u8* p = g_mem + TEST_PICTURE + ((u64)y * 1280 + x) * 4;
+            memcpy(p, test_quarters[(y >= 360) * 2 + (x >= 640)], 3);
+            p[0] = (u8)(p[0] + shade);
+            p[3] = 0x80; /* the alpha, which a JPEG has no place for */
+        }
 }
 static void caps_request(Request* r, u32 cmd, u64 picture_size) {
     request(r, cmd);
@@ -1614,64 +1635,80 @@ static void caps_request(Request* r, u32 cmd, u64 picture_size) {
         r->c.na = 2;
     }
 }
-/* the file the entry in r's reply names: there, the entry's size, the picture's RGB; removed after. Its name into
-   path, and the entry's date and number into stamp */
-static void caps_check(Request* r, u8 seed, char* path, size_t size, u8 stamp[8]) {
+/* the file the entry in r's reply names, as the SD card got it: its folder and name from the entry's time and II, its
+   size the entry's, the EXIF time the same, and the picture's quarters in it. The entry's time and II into stamp */
+static void caps_check(Request* r, u8 shade, u8 stamp[8]) {
     const u8* e = r->c.out;
-    size_t got;
-    u8* file;
+    char dir[64], name[96], when[20];
+    const u8 *file, *tiff;
+    plutovg_surface_t* picture;
+    int i;
     CHECK(r->c.out_size == 0x20);
     memcpy(stamp, e + 0x10, 8);
-    snprintf(path, size, TEST_ALBUM_DIR "captures/album_%04u%02u%02u_%02u%02u%02u", (unsigned)snx_ld_le16(e + 0x10),
-             e[0x12], e[0x13], e[0x14], e[0x15], e[0x16]);
-    if (e[0x17]) snprintf(path + strlen(path), size - strlen(path), "_%u", e[0x17]);
-    snprintf(path + strlen(path), size - strlen(path), ".ppm");
-    CHECK(snx_ld_le64(e) == TEST_PPM_SIZE && snx_ld_le64(e + 8) == 0);
-    CHECK(snx_ld_le16(e + 0x10) >= 2000 && e[0x12] >= 1 && e[0x12] <= 12 && e[0x13] >= 1 && e[0x13] <= 31);
+    snprintf(dir, sizeof dir, "Nintendo/Album/%04u/%02u/%02u", (unsigned)snx_ld_le16(e + 0x10), e[0x12], e[0x13]);
+    snprintf(name, sizeof name, "%04u%02u%02u%02u%02u%02u%02u-%016llX0000000000000000.jpg",
+             (unsigned)snx_ld_le16(e + 0x10), e[0x12], e[0x13], e[0x14], e[0x15], e[0x16], e[0x17],
+             (unsigned long long)g_hle.kernel.title_id);
+    snprintf(when, sizeof when, "%04u:%02u:%02u %02u:%02u:%02u", (unsigned)snx_ld_le16(e + 0x10), e[0x12], e[0x13],
+             e[0x14], e[0x15], e[0x16]);
+    for (i = 0; i < test_sd_files && (strcmp(test_sd[i].dir, dir) || strcmp(test_sd[i].name, name)); i++) {}
+    CHECK(i < test_sd_files);
+    file = test_sd[i].data;
+    CHECK(snx_ld_le64(e) == test_sd[i].size && snx_ld_le64(e + 8) == 0);
     CHECK(e[0x18] == 1 && e[0x19] == 0 && e[0x1f] == 1); /* the SD card's album, a screenshot, flags 1 */
-    file = snx_read_file(path, &got);
-    CHECK(file != NULL && got == TEST_PPM_SIZE && !memcmp(file, "P6\n1280 720\n255\n", 16));
-    CHECK(file[16] == 0 && file[17] == 0 && file[18] == seed); /* the first pixel, its alpha left out */
-    CHECK(file[16 + 300 * 3] == (u8)300 && file[16 + 300 * 3 + 1] == 1 && file[16 + 300 * 3 + 2] == seed);
-    CHECK(file[got - 3] == (u8)(TEST_PIXELS - 1) && file[got - 2] == (u8)((TEST_PIXELS - 1) >> 8));
-    free(file);
+    /* the start of the image, the EXIF segment and no JFIF one, the end of the image */
+    CHECK(file[0] == 0xFF && file[1] == 0xD8 && file[2] == 0xFF && file[3] == 0xE1 && file[4] == 0 && file[5] == 104);
+    CHECK(!memcmp(file + 6, "Exif\0\0II\x2a\0\x08\0\0\0", 14) && file[108] == 0xFF && file[109] != 0xE0);
+    CHECK(file[test_sd[i].size - 2] == 0xFF && file[test_sd[i].size - 1] == 0xD9);
+    tiff = file + 12;
+    CHECK(snx_ld_le16(tiff + 8) == 2 && snx_ld_le16(tiff + 10) == 0x0132 && snx_ld_le32(tiff + 18) == 38);
+    CHECK(snx_ld_le16(tiff + 22) == 0x8769 && snx_ld_le32(tiff + 30) == 58);
+    CHECK(snx_ld_le16(tiff + 60) == 0x9003 && snx_ld_le32(tiff + 68) == 76);
+    CHECK(!memcmp(tiff + 38, when, 20) && !memcmp(tiff + 76, when, 20));
+    picture = plutovg_surface_load_from_image_data(file, (int)test_sd[i].size);
+    CHECK(picture && plutovg_surface_get_width(picture) == 1280 && plutovg_surface_get_height(picture) == 720);
+    for (i = 0; i < 4; i++) {
+        int x = (i & 1) ? 960 : 320, y = (i & 2) ? 540 : 180;
+        u32 px = ((const u32*)(plutovg_surface_get_data(picture) + (size_t)y * plutovg_surface_get_stride(picture)))[x];
+        int got[3] = {(int)(px >> 16 & 0xFF), (int)(px >> 8 & 0xFF), (int)(px & 0xFF)};
+        for (int k = 0; k < 3; k++) {
+            int want = test_quarters[i][k] + (k ? 0 : shade);
+            CHECK(px >> 24 == 0xFF && got[k] >= want - 6 && got[k] <= want + 6);
+        }
+    }
+    plutovg_surface_destroy(picture);
 }
 static void test_caps(void) {
     SvcObj* caps = new_capssu();
     Request r;
-    char first[256], second[256], third[256];
     u8 stamp1[8], stamp2[8], stamp3[8];
-    snx_remove_tree(TEST_ALBUM_DIR); /* what a failed run left */
-    snprintf(g_exedir, sizeof g_exedir, "%s", TEST_ALBUM_DIR);
     request(&r, 32); /* SetShimLibraryVersion {u64 version, aruid, pid} */
     argument64(&r, 0, 1);
     argument64(&r, 8, 0x55);
     r.c.has_pid = 1;
     call(caps, &r);
-    caps_picture(0x11);
+    caps_picture(0);
     caps_request(&r, 205, TEST_PIXELS * 4);
     call(caps, &r);
-    caps_check(&r, 0x11, first, sizeof first, stamp1);
-    caps_picture(0x22);
+    caps_check(&r, 0, stamp1);
+    caps_picture(10);
     caps_request(&r, 205, TEST_PIXELS * 4);
     call(caps, &r);
-    caps_check(&r, 0x22, second, sizeof second, stamp2);
-    CHECK(strcmp(first, second));
-    if (!memcmp(stamp1, stamp2, 7)) CHECK(stamp2[7] == stamp1[7] + 1); /* the same second: the next number */
-    caps_picture(0x33);
+    caps_check(&r, 10, stamp2);
+    if (!memcmp(stamp1, stamp2, 7)) CHECK(stamp2[7] == stamp1[7] + 1); /* the same second: the next II */
+    caps_picture(20);
     caps_request(&r, 203, TEST_PIXELS * 4);
     call(caps, &r);
-    caps_check(&r, 0x33, third, sizeof third, stamp3);
-    CHECK(!remove(first) && !remove(second) && !remove(third));
-    caps_picture(0x44);
+    caps_check(&r, 20, stamp3);
+    caps_picture(30);
     caps_request(&r, 210, TEST_PIXELS * 4);
     call(caps, &r);
-    caps_check(&r, 0x44, first, sizeof first, stamp1);
-    CHECK(!remove(first));
+    caps_check(&r, 30, stamp3);
+    CHECK(test_sd_files == 4);
     caps_request(&r, 205, TEST_PIXELS * 4 - 4);
-    CHECK(caps->dispatch(caps, &r.c) == RC(206, 8));
-    CHECK(!snx_remove_empty_dir(TEST_ALBUM_DIR "captures") && !snx_remove_empty_dir(TEST_ALBUM_DIR));
-    g_exedir[0] = 0;
+    CHECK(caps->dispatch(caps, &r.c) == RC(206, 8) && test_sd_files == 4);
+    for (int i = 0; i < test_sd_files; i++) free(test_sd[i].data);
+    test_sd_files = 0;
     svcobj_unref(caps);
 }
 
