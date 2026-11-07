@@ -75,6 +75,8 @@ def main():
         'it keeps "", each control sending the button in its place',
     )
     run(['--board-info', '--gamepad_map=ls:L3'], 0, "settings: gamepad_map's ls:L3 sends nothing: the 3DS has no L3")
+    out = run(['--board-info', '--gamepad_map=lb:ZL rb:ZR'], 0, 'Old 3DS')  # ir:rst's, which the runtime has
+    assert 'sends nothing' not in out, out
     # the On-screen controls table's touch screen, as the Switch's (0 to 2), never its on-screen controls
     run(['--board-info', '--touch=1'], 0, 'Old 3DS')
     run(['--board-info', '--touch=5'], 0, 'settings: touch=5 is not a whole number from 0 to 2: it keeps 2')
