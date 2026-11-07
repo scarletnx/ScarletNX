@@ -850,10 +850,45 @@ static uint32_t fios_file_get_size_sync(VitaProcess* p, VitaThread* t) {
     return vita_return64(t, fios_stat(p, vita_arg(p, t, 1), &directory, &size) && !directory ? size : UINT64_MAX);
 }
 
+/* ---- SceFios2User, the kernel half of libfios2.suprx, which a game ships and the runtime runs as guest code (its
+   exports shadow the calls above). The library asks the kernel to resolve each path through the overlays that a
+   process added (the 02 calls, the process id first). Nothing here adds one, so the list is empty and a path resolves
+   to itself. libfios2 uses the output buffer only when the call returns 0 ---- */
+/* sceFiosKernelOverlayResolveWithRangeSync(pid, flags, in, out, capacity, min_order, max_order) */
+static uint32_t fios_overlay_resolve(VitaProcess* p, VitaThread* t) {
+    static unsigned shown;
+    uint32_t out = vita_arg(p, t, 3), capacity = vita_arg(p, t, 4);
+    char path[1024];
+    if (!vita_string(p, vita_arg(p, t, 2), path, sizeof path)) return SCE_KERNEL_ERROR_ERROR;
+    size_t size = strlen(path) + 1;
+    if (size > capacity || !vita_mapped(p, out, (uint32_t)size)) return SCE_KERNEL_ERROR_ERROR;
+    memcpy(vita_ptr(p, out), path, size);
+    if (shown < 8) printf("vita: overlay resolve(\"%s\") -> itself\n", path), ++shown;
+    return 0;
+}
+/* sceFiosKernelOverlayGetList(pid, min_order, max_order, ids, capacity, count*): the count is 0 */
+static uint32_t fios_overlay_get_list(VitaProcess* p, VitaThread* t) {
+    uint32_t count = vita_arg(p, t, 5);
+    if (!count) return 0;
+    if (!vita_mapped(p, count, 4)) return SCE_KERNEL_ERROR_ERROR;
+    vita_write32(p, count, 0);
+    return 0;
+}
+/* sceFiosKernelOverlayGetRecommendedScheduler(type, path, ...): libfios2 takes 1 as "use another scheduler", and
+   with no overlay there is none, so the answer stays 0 */
+static uint32_t fios_overlay_scheduler(VitaProcess* p, VitaThread* t) {
+    (void)p, (void)t;
+    return 0;
+}
+
 const VitaHle vita_hle_io[] = {
     {0xdf3352fcu, "sceFiosArchiveGetMountBufferSizeSync", fios_archive_buffer_size_sync},
     {0xc4822276u, "sceFiosArchiveMountSync", fios_archive_mount_sync},
     {0xb26dc24du, "sceFiosArchiveUnmountSync", fios_archive_unmount_sync},
+    {0x61c4aac4u, "sceFiosOverlayResolveWithRangeSync02", fios_overlay_resolve},
+    {0x1dd808d1u, "sceFiosOverlayGetList02", fios_overlay_get_list},
+    {0xf5c1f928u, "sceFiosOverlayGetRecommendedScheduler02", fios_overlay_scheduler},
+    {0x70321220u, "sceFiosOverlayThreadSetDisabled02", fios_ok},
     {0x774c2c05u, "sceFiosInitialize", fios_ok},
     {0xd55b8555u, "sceFiosIOFilterAdd", fios_ok},
     {0x2904b539u, "sceFiosTerminate", fios_ok},
