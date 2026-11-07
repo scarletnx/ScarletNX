@@ -543,6 +543,16 @@ setting Pair Joy-Cons
     set gamepad_joycon_pair_set
     words Separate|Together
     help 1 = a left and right Joy-Con play together; restart the game after changing this
+setting Controller assignment
+    key gamepad_assign
+    int 0 1
+    default 0
+    label Assignment
+    words Manual|Console
+    help 0 = each player's controller as gamepad_p<N>_device names it, the next to connect where it names none;
+    help 1 = as a console's (Eden's Modern Console): each controller that connects takes the lowest free player, one
+    help that leaves keeps its player 45 s, the game pauses once one has been gone 3 s until it comes back or + is let
+    help go on another controller, and a notice says each that joins or leaves, with its player
 
 table g_gamepad_map_ini
 setting Button map

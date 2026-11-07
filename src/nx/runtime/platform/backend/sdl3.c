@@ -1507,7 +1507,8 @@ void video_poll(void) {
         u64 one_buttons;
         i32 one_sticks[4];
         u32 id = gamepad_slot_id(i);
-        int connected = id != 0;
+        int kept = !id && gamepad_slot_kept(i); /* gamepad_assign=1: the player kept for its controller a while */
+        int connected = id != 0 || kept;
         /* A disconnect and replacement can happen in one poll. Do not send the old player's rumble to the new pad. */
         if (previous_ids[i] != id) {
             __atomic_store_n(&player->rumble[0], 0, __ATOMIC_RELAXED);
@@ -1523,9 +1524,11 @@ void video_poll(void) {
                             __atomic_load_n(&player->rumble[1], __ATOMIC_RELAXED));
         /* each player as its settings say: seen or not, and the kind of controller the game sees */
         __atomic_store_n(&player->connected, (connected && gamepad_player_seen(i)) || i == 0, __ATOMIC_RELAXED);
-        __atomic_store_n(&player->kind,
-                         gamepad_player_kind(i, connected ? gamepad_kind(gamepad_slot_type(i)) : SNX_PAD_FULL_KEY),
-                         __ATOMIC_RELAXED);
+        __atomic_store_n(
+            &player->kind,
+            gamepad_player_kind(i, connected ? gamepad_kind(kept ? gamepad_slot_kept_type(i) : gamepad_slot_type(i))
+                                             : SNX_PAD_FULL_KEY),
+            __ATOMIC_RELAXED);
         player->source_id = id;
         player->buttons = one_buttons;
         player->lx = one_sticks[0];
@@ -1612,6 +1615,7 @@ void video_poll(void) {
     vpad_showcase_input(b, st); /* what the game takes, a replay's included */
     ui_unlock();
     pm_unlock(&g_host.hid.input_lock);
+    gamepad_console(pb >> 10 & 1, SDL_GetTicksNS()); /* out of the input's lock: a pause stops the game's threads */
     keyboard_sync();
 }
 

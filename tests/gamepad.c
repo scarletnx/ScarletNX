@@ -7,6 +7,8 @@
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/runtime/platform/overlay.h"
+#include "nx/runtime/pause.h"
 #include "common/utilities/common.h"
 #include "common/utilities/pad_sdl.h" /* snx_pad_slot */
 #include <SDL3/SDL.h>
@@ -33,6 +35,19 @@ void pm_unlock(PMutex* m) { (void)m; }
 /* the game's .ini: the last setting stored */
 static char stored[64];
 void ini_set(const char* k, const char* v) { snprintf(stored, sizeof stored, "%s=%s", k, v); }
+/* gamepad_assign=1's notices and pauses */
+static char toasted[128];
+void overlay_toast(const char* text, u64 now_ns) {
+    (void)now_ns;
+    snprintf(toasted, sizeof toasted, "%s", text);
+}
+static int paused;
+int game_pause(void) {
+    ++paused;
+    return 0;
+}
+void game_resume(void) { --paused; }
+int game_paused(void) { return paused > 0; }
 
 static int checks;
 #define CHECK(e)                                                                                                       \
@@ -469,6 +484,58 @@ int main(void) {
         twin = attach(SONY);
         CHECK(gamepad_slot_id(0) == SDL_GetJoystickID(twin));
         CHECK(gamepad_ini("gamepad_p3_device", ""));
+    }
+
+    /* gamepad_assign=1, as a console's: the controllers by the order they come, a player kept for one that left and
+       taken back, another going on past it, the pause once one has been gone 3 s, and the notices */
+    {
+        SDL_Joystick *one, *two, *three;
+        u64 t;
+        int i;
+        for (i = 0; i < SNX_GAMEPADS; i++)
+            if (gamepad_slot_id(i)) SDL_DetachVirtualJoystick(gamepad_slot_id(i));
+        pump();
+        CHECK(gamepad_ini("gamepad_assign", "1") && g_settings.controller_assignment == 1);
+        gamepad_console(0, SDL_GetTicksNS()); /* the mode's start: none held */
+        one = attach(XBOX);
+        CHECK(gamepad_slot_id(0) == SDL_GetJoystickID(one) && strstr(toasted, "P1: ") && strstr(toasted, " joined"));
+        two = attach(SONY);
+        CHECK(gamepad_slot_id(1) == SDL_GetJoystickID(two));
+        SDL_DetachVirtualJoystick(SDL_GetJoystickID(two));
+        pump();
+        t = SDL_GetTicksNS();
+        CHECK(!gamepad_slot_connected(1) && gamepad_slot_kept(1) && strstr(toasted, "P2: ") &&
+              strstr(toasted, " left"));
+        CHECK(gamepad_slot_kept_type(1) == SDL_GAMEPAD_TYPE_PS4);
+        three = attach(SWITCH); /* another: past the kept player */
+        CHECK(gamepad_slot_id(2) == SDL_GetJoystickID(three) && !gamepad_slot_connected(1));
+        gamepad_console(0, t + 2000000000ull);
+        CHECK(!paused);
+        gamepad_console(0, t + 3200000000ull);
+        CHECK(paused == 1 && !strcmp(toasted, "P2 disconnected: reconnect, or press + on another controller to go on"));
+        two = attach(SONY); /* back: its player, and the game goes on */
+        CHECK(gamepad_slot_id(1) == SDL_GetJoystickID(two));
+        gamepad_console(0, t + 3300000000ull);
+        CHECK(!paused);
+        /* gone again: + held and let go on another goes on without it, its player no longer kept */
+        SDL_DetachVirtualJoystick(SDL_GetJoystickID(two));
+        pump();
+        t = SDL_GetTicksNS();
+        gamepad_console(0, t + 3200000000ull);
+        CHECK(paused == 1);
+        gamepad_console(1, t + 3300000000ull);
+        CHECK(paused == 1);
+        gamepad_console(0, t + 3400000000ull);
+        CHECK(!paused && !strcmp(toasted, "Going on without P2") && !gamepad_slot_kept(1));
+        /* manual again: what was kept goes, the pads stay where they are */
+        CHECK(gamepad_ini("gamepad_assign", "0"));
+        gamepad_console(0, t + 3500000000ull);
+        CHECK(gamepad_slot_id(0) == SDL_GetJoystickID(one) && gamepad_slot_id(2) == SDL_GetJoystickID(three));
+        SDL_DetachVirtualJoystick(SDL_GetJoystickID(one));
+        pump();
+        CHECK(!gamepad_slot_kept(0));
+        SDL_DetachVirtualJoystick(SDL_GetJoystickID(three));
+        pump();
     }
 
     SDL_DestroyWindow(w);

@@ -114,6 +114,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `gamepad_rumble` | `100` | How strongly gamepads vibrate when the game asks, in percent. `0` is never |
 | `gamepad_background` | `0` | `1` keeps gamepads playing while the window is not focused |
 | `gamepad_joycon_pair` | `1` | `1` plays a left and right Joy-Con together, `0` separately. Restart the game after changing it |
+| `gamepad_assign` | `0` | How controllers take players. `0`, manual: as each player's `gamepad_p<N>_device` names it, the next to connect where it names none. `1`, as a console's (Eden's Modern Console): each controller that connects takes the lowest free player, one that leaves keeps its player 45 seconds and takes it back when it returns, the game pauses once a player's controller has been gone 3 seconds (until it returns, or + is let go on another controller to go on without it), and a notice says each controller that joins or leaves, with its player ([Playing](USAGE.md#playing)) |
 | `gamepad_p<N>_device` (N from 1 to 8) | empty | Player N's controller: empty takes the next to connect, else its SDL GUID as the log names it, `/2` after it for the second of two alike |
 | `gamepad_p<N>_connected` | `1` | `0`: the game never sees player N. It always sees player 1, which the keyboard drives |
 | `gamepad_p<N>_type` | `0` | The controller the game sees for player N: `0` as it is, `1` Pro Controller, `2` two Joy-Cons, `3` a left Joy-Con, `4` a right one |
