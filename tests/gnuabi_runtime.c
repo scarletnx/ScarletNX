@@ -65,6 +65,11 @@ static void executable(unsigned char* bytes, unsigned type) {
     put64(bytes + 112, 4096);
     put32(bytes + 256, 0xd65f03c0);
 }
+/* a system call of thread t with up to five arguments */
+static int64_t sys(GnuThread* t, uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4) {
+    uint64_t a[6] = {a0, a1, a2, a3, a4, 0};
+    return gnu_syscall(t, number, a);
+}
 static void faulting_guest(CPU* cpu, uint64_t entry) {
     (void)entry;
     cpu->x[0] = *(volatile unsigned char*)(cpu->mem + 0x80000);
@@ -187,6 +192,59 @@ int main(int argc, char** argv) {
     CHECK(gnu_syscall(t, 283, a) == (gnu_host_barrier() ? 0x27f : -GNU_ENOSYS));
     a[0] = 8; /* PRIVATE_EXPEDITED, registered above: the host's barrier where it has one */
     CHECK(gnu_syscall(t, 283, a) == (gnu_host_barrier() ? 0 : -GNU_ENOSYS));
+    /* the kernel library's calls that need no loader, with Linux's results (system.c, signals.c) */
+    uint64_t at = (t->cpu.x[31] - 4096) & ~4095ull, unmapped = 16, pair[2];
+    unsigned char zero[32] = {0}, buffer[300];
+    CHECK(gnu_memory_write(&p->memory, at, zero, sizeof zero) == 0);
+    /* rt_sigprocmask and rt_sigaction check the size, then read the new value, then check it */
+    CHECK(sys(t, 135, 99, unmapped, 0, 8, 0) == -GNU_EFAULT);
+    CHECK(sys(t, 135, 99, at, 0, 8, 0) == -GNU_EINVAL);
+    CHECK(sys(t, 135, 99, unmapped, 0, 7, 0) == -GNU_EINVAL);
+    CHECK(sys(t, 134, 0, unmapped, 0, 8, 0) == -GNU_EFAULT);
+    CHECK(sys(t, 134, 0, at, 0, 8, 0) == -GNU_EINVAL);
+    CHECK(sys(t, 134, 9, at, 0, 8, 0) == -GNU_EINVAL); /* SIGKILL's action */
+    /* prctl: the name's first 15 bytes, the flags it keeps, and EINVAL for what it has not */
+    static const char name[] = "a-name-of-20-bytes";
+    CHECK(gnu_memory_write(&p->memory, at + 64, name, sizeof name) == 0);
+    CHECK(sys(t, 167, 15, at + 64, 0, 0, 0) == 0 && sys(t, 167, 16, at + 128, 0, 0, 0) == 0);
+    CHECK(gnu_memory_read(&p->memory, at + 128, buffer, 16) == 0 && !memcmp(buffer, "a-name-of-20-by", 16));
+    CHECK(sys(t, 167, 3, 0, 0, 0, 0) == 1 && sys(t, 167, 4, 2, 0, 0, 0) == -GNU_EINVAL);
+    CHECK(sys(t, 167, 4, 0, 0, 0, 0) == 0 && sys(t, 167, 3, 0, 0, 0, 0) == 0 && sys(t, 167, 4, 1, 0, 0, 0) == 0);
+    CHECK(sys(t, 167, 38, 1, 1, 0, 0) == -GNU_EINVAL && sys(t, 167, 39, 0, 0, 0, 0) == 0);
+    CHECK(sys(t, 167, 38, 1, 0, 0, 0) == 0 && sys(t, 167, 39, 0, 0, 0, 0) == 1);
+    CHECK(sys(t, 167, 23, 0, 0, 0, 0) == 1 && sys(t, 167, 23, 41, 0, 0, 0) == -GNU_EINVAL); /* CAPBSET_READ */
+    CHECK(sys(t, 167, 51, 0, 0, 0, 0) == -GNU_EINVAL && sys(t, 167, 1000, 0, 0, 0, 0) == -GNU_EINVAL);
+    /* getrandom: more than one block of the host's, and its flags */
+    CHECK(sys(t, 278, at + 512, sizeof buffer, 0, 0, 0) == (int64_t)sizeof buffer);
+    CHECK(sys(t, 278, at + 512, 16, 6, 0, 0) == -GNU_EINVAL && sys(t, 278, unmapped, 16, 0, 0, 0) == -GNU_EFAULT);
+    /* prlimit64: a table's 256 descriptors, the 8 MiB stack, and its arguments */
+    CHECK(sys(t, 261, 0, 7, 0, at, 0) == 0 && gnu_memory_read(&p->memory, at, pair, 16) == 0);
+    CHECK(snx_le64(pair[0]) == 256 && snx_le64(pair[1]) == 256);
+    CHECK(sys(t, 261, 0, 3, 0, at, 0) == 0 && gnu_memory_read(&p->memory, at, pair, 16) == 0);
+    CHECK(snx_le64(pair[0]) == 0x800000 && snx_le64(pair[1]) == UINT64_MAX);
+    CHECK(sys(t, 261, 0, 16, 0, at, 0) == -GNU_EINVAL && sys(t, 261, 54321, 7, 0, at, 0) == -GNU_ESRCH);
+    pair[0] = snx_le64(10); /* a soft limit above the hard one */
+    pair[1] = snx_le64(5);
+    CHECK(gnu_memory_write(&p->memory, at, pair, 16) == 0 && sys(t, 261, 0, 7, at, 0, 0) == -GNU_EINVAL);
+    /* sched_getaffinity: at least 8 bytes, the host's processors from the first */
+    CHECK(sys(t, 123, 0, 4, at, 0, 0) == -GNU_EINVAL && sys(t, 123, 0, 8, at, 0, 0) == 8);
+    CHECK(gnu_memory_read(&p->memory, at, pair, 8) == 0 && (snx_le64(pair[0]) & 1));
+    /* clock_getres: 1 ns, the coarse clocks' 4 ms, and EINVAL for a clock Linux doesn't have */
+    CHECK(sys(t, 114, 1, at, 0, 0, 0) == 0 && gnu_memory_read(&p->memory, at, pair, 16) == 0);
+    CHECK(pair[0] == 0 && snx_le64(pair[1]) == 1);
+    CHECK(sys(t, 114, 6, at, 0, 0, 0) == 0 && gnu_memory_read(&p->memory, at, pair, 16) == 0);
+    CHECK(snx_le64(pair[1]) == 4000000 && sys(t, 114, 99, at, 0, 0, 0) == -GNU_EINVAL);
+    /* madvise: page-aligned, Linux's advice only, the privileged ones refused */
+    CHECK(sys(t, 233, at, 4096, 4, 0, 0) == 0 && sys(t, 233, at + 1, 4096, 4, 0, 0) == -GNU_EINVAL);
+    CHECK(sys(t, 233, at, 4096, 5, 0, 0) == -GNU_EINVAL && sys(t, 233, at, 4096, 100, 0, 0) == -GNU_EPERM);
+    /* the scheduler: the real-time policies are root's, and their priorities 1 to 99 */
+    snx_st_le32(buffer, 50);
+    CHECK(gnu_memory_write(&p->memory, at, buffer, 4) == 0 && sys(t, 119, 0, 1, at, 0, 0) == -GNU_EPERM);
+    CHECK(sys(t, 119, 0, 0, at, 0, 0) == -GNU_EINVAL && sys(t, 119, (uint64_t)-1, 0, at, 0, 0) == -GNU_EINVAL);
+    CHECK(sys(t, 125, 1, 0, 0, 0, 0) == 99 && sys(t, 126, 0, 0, 0, 0, 0) == 0 && sys(t, 125, 4, 0, 0, 0, 0) < 0);
+    /* sysinfo: a machine with memory, in units of mem_unit */
+    CHECK(sys(t, 179, at, 0, 0, 0, 0) == 0 && gnu_memory_read(&p->memory, at, buffer, 112) == 0);
+    CHECK(snx_ld_le64(buffer + 32) != 0 && snx_ld_le32(buffer + 104) != 0);
     a[0] = 42;
     gnu_syscall(t, 93, a);
     CHECK(p->exited && p->exit_code == 42);
