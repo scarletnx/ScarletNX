@@ -333,7 +333,19 @@ static void current_frame_cache(void) {
     vk_descriptor_heap_cache_reset(&tag);
     check(vk_descriptor_heap_cache_frame(&tag, 0), "explicit invalidity also handles the first frame ID after reset");
 }
+/* The device's reason for no heaps names the first piece missing, in the order device.c needs them */
+static void missing_pieces(void) {
+    check(!strcmp(vk_descriptor_heap_missing(0, 1, 1, 1), "no VK_EXT_descriptor_heap"), "extension missing");
+    check(!strcmp(vk_descriptor_heap_missing(1, 0, 1, 1), "its descriptorHeap feature is off"), "feature off");
+    check(!strcmp(vk_descriptor_heap_missing(1, 1, 0, 1), "its bufferDeviceAddress feature is off"),
+          "buffer device address off");
+    check(!strcmp(vk_descriptor_heap_missing(1, 1, 1, 0), "neither extendedFlags nor maintenance5"),
+          "extended flags and maintenance5 missing");
+    check(!strcmp(vk_descriptor_heap_missing(0, 0, 0, 0), "no VK_EXT_descriptor_heap"), "the first piece first");
+    check(!vk_descriptor_heap_missing(1, 1, 1, 1), "nothing missing");
+}
 int main(void) {
+    missing_pieces();
     image_runs(); descriptor_alignment(); plans(); constrained_heaps(); table_runs(); mappings(); current_frame_cache();
     printf("descriptor heap geometry: %u checks, %u failures\n", checks, failures);
     return failures != 0;

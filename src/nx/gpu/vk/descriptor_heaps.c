@@ -10,6 +10,7 @@
 #include "nx/gpu/vk/descriptor_heaps.h"
 #include "common/utilities/endian.h"
 #include "nx/runtime/platform/log.h"
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -97,7 +98,20 @@ static void heap_discard(Heap* heap) {
     }
     *heap = (Heap){0};
 }
-static int heap_create(Heap* heap, const VkDescriptorHeapMemoryPlan* plan) {
+/* Heaps refused at setup: what failed, and the graphics backend the device keeps instead (device.c chose buffers
+   or sets before it tried heaps) */
+static int refused(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+static int refused(const char* fmt, ...) {
+    char why[256];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(why, sizeof why, fmt, ap);
+    va_end(ap);
+    WARN("vulkan: descriptor heaps are not used: %s; graphics descriptors use %s\n", why,
+         g_vk.has_descriptor_buffers ? "buffers" : "sets");
+    return 0;
+}
+static int heap_create(Heap* heap, const VkDescriptorHeapMemoryPlan* plan, const char* name) {
     VkBufferCreateInfo create = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = plan->allocation_size,
         .usage = VK_BUFFER_USAGE_DESCRIPTOR_HEAP_BIT_EXT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -107,13 +121,19 @@ static int heap_create(Heap* heap, const VkDescriptorHeapMemoryPlan* plan) {
         .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
         .requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
     VmaAllocationInfo details;
-    if (!VK_OK(vmaCreateBuffer(g_vk.vma, &create, &allocation, &heap->buffer, &heap->memory, &details))) return 0;
+    if (!VK_OK(vmaCreateBuffer(g_vk.vma, &create, &allocation, &heap->buffer, &heap->memory, &details)))
+        return refused("the %s heap's %llu-byte buffer could not be made", name,
+                       (unsigned long long)plan->allocation_size);
     vk_mem_track(heap->memory);
     VkDeviceAddress original = buffer_address(heap->buffer);
     VkDeviceSize padding = snx_align_up(original, plan->alignment) - original;
     if (!original || !details.pMappedData || padding > plan->allocation_size - plan->range_size) {
         heap_discard(heap);
-        return 0;
+        return refused("the %s heap's buffer is at address 0x%llx, %s, and needs %llu bytes of padding to its "
+                       "%llu-byte alignment, %llu at most",
+                       name, (unsigned long long)original, details.pMappedData ? "mapped" : "not mapped",
+                       (unsigned long long)padding, (unsigned long long)plan->alignment,
+                       (unsigned long long)(plan->allocation_size - plan->range_size));
     }
     heap->address = original + padding;
     heap->mapped = (u8*)details.pMappedData + padding;
@@ -130,44 +150,63 @@ static void transition_destroy(void) {
     g_heaps.transition_layout = VK_NULL_HANDLE;
     g_heaps.transition_descriptors = VK_NULL_HANDLE;
 }
+/* Each failed call is logged with its VkResult by VK_OK */
 static int transition_create(void) {
     if (!g_vk.has_descriptor_buffers) return 1;
     VkDescriptorSetLayoutCreateInfo descriptors = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     VkDescriptorSetLayout made_descriptors = VK_NULL_HANDLE;
-    if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &descriptors, NULL, &made_descriptors))) return 0;
+    if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &descriptors, NULL, &made_descriptors)))
+        return refused("the empty descriptor set that leaves descriptor buffers: vkCreateDescriptorSetLayout failed");
     g_heaps.transition_descriptors = made_descriptors;
     VkPipelineLayoutCreateInfo layout = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .setLayoutCount = 1, .pSetLayouts = &g_heaps.transition_descriptors};
     VkPipelineLayout made_layout = VK_NULL_HANDLE;
-    if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &layout, NULL, &made_layout))) return 0;
+    if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &layout, NULL, &made_layout)))
+        return refused("the empty descriptor set that leaves descriptor buffers: vkCreatePipelineLayout failed");
     g_heaps.transition_layout = made_layout;
     VkDescriptorPoolCreateInfo pool = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1};
     VkDescriptorPool made_pool = VK_NULL_HANDLE;
-    if (!VK_OK(vkCreateDescriptorPool(g_vk.dev, &pool, NULL, &made_pool))) return 0;
+    if (!VK_OK(vkCreateDescriptorPool(g_vk.dev, &pool, NULL, &made_pool)))
+        return refused("the empty descriptor set that leaves descriptor buffers: vkCreateDescriptorPool failed");
     g_heaps.transition_pool = made_pool;
     VkDescriptorSetAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .descriptorPool = g_heaps.transition_pool, .descriptorSetCount = 1,
         .pSetLayouts = &g_heaps.transition_descriptors};
     VkDescriptorSet made_set = VK_NULL_HANDLE;
-    if (!VK_OK(vkAllocateDescriptorSets(g_vk.dev, &allocate, &made_set))) return 0;
+    if (!VK_OK(vkAllocateDescriptorSets(g_vk.dev, &allocate, &made_set)))
+        return refused("the empty descriptor set that leaves descriptor buffers: vkAllocateDescriptorSets failed");
     g_heaps.transition_set = made_set;
     return 1;
 }
 
 int vk_descriptor_heaps_init(const VkPhysicalDeviceDescriptorHeapPropertiesEXT* props) {
     if (g_heaps.ready) return 1;
-    if (!props || props->maxPushDataSize < VK_DESCRIPTOR_HEAP_PUSH_SIZE || !vkWriteResourceDescriptorsEXT ||
-        !vkWriteSamplerDescriptorsEXT || !vkGetPhysicalDeviceDescriptorSizeEXT || !vkCmdBindResourceHeapEXT ||
-        !vkCmdBindSamplerHeapEXT || !vkCmdPushDataEXT) return 0;
+    if (!props) return refused("the device gave no descriptor heap properties");
+    const char* missing = !vkWriteResourceDescriptorsEXT          ? "vkWriteResourceDescriptorsEXT"
+                          : !vkWriteSamplerDescriptorsEXT         ? "vkWriteSamplerDescriptorsEXT"
+                          : !vkGetPhysicalDeviceDescriptorSizeEXT ? "vkGetPhysicalDeviceDescriptorSizeEXT"
+                          : !vkCmdBindResourceHeapEXT             ? "vkCmdBindResourceHeapEXT"
+                          : !vkCmdBindSamplerHeapEXT              ? "vkCmdBindSamplerHeapEXT"
+                          : !vkCmdPushDataEXT                     ? "vkCmdPushDataEXT"
+                                                                  : NULL;
+    if (missing) return refused("the driver has no %s", missing);
+    if (props->maxPushDataSize < VK_DESCRIPTOR_HEAP_PUSH_SIZE)
+        return refused("maxPushDataSize is %u bytes, %u needed", (unsigned)props->maxPushDataSize,
+                       (unsigned)VK_DESCRIPTOR_HEAP_PUSH_SIZE);
     static const VkDescriptorType types[HEAP_KINDS] = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
         VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, VK_DESCRIPTOR_TYPE_SAMPLER};
+    static const char* const names[HEAP_KINDS] = {"uniform buffer", "storage buffer",       "sampled image",
+                                                  "storage image",  "storage texel buffer", "sampler"};
     VkDeviceSize largest = 0;
     for (u32 i = 0; i < HEAP_KINDS; i++) {
         g_heaps.sizes[i] = vkGetPhysicalDeviceDescriptorSizeEXT(g_vk.phys, types[i]);
         g_heaps.alignment[i] = vk_descriptor_heap_descriptor_alignment(props, types[i]);
         if (!g_heaps.sizes[i] || !g_heaps.alignment[i] || g_heaps.sizes[i] > UINT32_MAX ||
-            g_heaps.alignment[i] > UINT32_MAX || (g_heaps.alignment[i] & (g_heaps.alignment[i] - 1))) return 0;
+            g_heaps.alignment[i] > UINT32_MAX || (g_heaps.alignment[i] & (g_heaps.alignment[i] - 1)))
+            return refused("a %s descriptor is %llu bytes aligned to %llu: a size and a power of two of 1 to "
+                           "0xffffffff are needed",
+                           names[i], (unsigned long long)g_heaps.sizes[i], (unsigned long long)g_heaps.alignment[i]);
         if (g_heaps.sizes[i] > largest) largest = g_heaps.sizes[i];
     }
     VkDeviceSize resource_alignment = props->imageDescriptorAlignment > props->bufferDescriptorAlignment
@@ -181,31 +220,48 @@ int vk_descriptor_heaps_init(const VkPhysicalDeviceDescriptorHeapPropertiesEXT* 
         sampler_address_alignment = props->samplerDescriptorAlignment;
     if (!props->resourceHeapAlignment || !props->samplerHeapAlignment ||
         (props->resourceHeapAlignment & (props->resourceHeapAlignment - 1)) ||
-        (props->samplerHeapAlignment & (props->samplerHeapAlignment - 1))) return 0;
+        (props->samplerHeapAlignment & (props->samplerHeapAlignment - 1)))
+        return refused("resourceHeapAlignment is %llu and samplerHeapAlignment %llu: powers of two are needed",
+                       (unsigned long long)props->resourceHeapAlignment,
+                       (unsigned long long)props->samplerHeapAlignment);
     VkDescriptorHeapMemoryPlan resources, samplers;
     VkDeviceSize sampler_frame = 5ull * (SH_MAXTEX + 2 * SNX_TEX_ARRAY) *
                                  snx_align_up(g_heaps.sizes[HEAP_SAMPLER], props->samplerDescriptorAlignment);
     if (sampler_frame < HEAP_SAMPLER_FRAME) sampler_frame = HEAP_SAMPLER_FRAME;
     if (!vk_descriptor_heap_memory_plan_fit(&resources, HEAP_RESOURCE_FRAME, VK_FRAMES,
-            props->minResourceHeapReservedRange, resource_address_alignment, resource_alignment,
-            props->maxResourceHeapSize, g_vk.alloc_cap) ||
-        !vk_descriptor_heap_memory_plan_fit(&samplers, sampler_frame, VK_FRAMES,
-            props->minSamplerHeapReservedRange, sampler_address_alignment, props->samplerDescriptorAlignment,
-            props->maxSamplerHeapSize, g_vk.alloc_cap)) return 0;
+                                            props->minResourceHeapReservedRange, resource_address_alignment,
+                                            resource_alignment, props->maxResourceHeapSize, g_vk.alloc_cap))
+        return refused("no resource heap of %u frames fits: %llu bytes reserved, maxResourceHeapSize %llu, "
+                       "allocations of %llu bytes at most",
+                       (unsigned)VK_FRAMES, (unsigned long long)props->minResourceHeapReservedRange,
+                       (unsigned long long)props->maxResourceHeapSize, (unsigned long long)g_vk.alloc_cap);
+    if (!vk_descriptor_heap_memory_plan_fit(&samplers, sampler_frame, VK_FRAMES, props->minSamplerHeapReservedRange,
+                                            sampler_address_alignment, props->samplerDescriptorAlignment,
+                                            props->maxSamplerHeapSize, g_vk.alloc_cap))
+        return refused("no sampler heap of %u frames fits: %llu bytes reserved, maxSamplerHeapSize %llu, "
+                       "allocations of %llu bytes at most",
+                       (unsigned)VK_FRAMES, (unsigned long long)props->minSamplerHeapReservedRange,
+                       (unsigned long long)props->maxSamplerHeapSize, (unsigned long long)g_vk.alloc_cap);
     VkDeviceSize buffer_stride = g_heaps.sizes[HEAP_UBO] > g_heaps.sizes[HEAP_SSBO]
         ? g_heaps.sizes[HEAP_UBO] : g_heaps.sizes[HEAP_SSBO];
-    if (buffer_stride > SIZE_MAX / VK_DESCRIPTOR_HEAP_BUFFER_BATCH) return 0;
+    if (buffer_stride > SIZE_MAX / VK_DESCRIPTOR_HEAP_BUFFER_BATCH)
+        return refused("a buffer descriptor is %llu bytes", (unsigned long long)buffer_stride);
     VkDeviceSize encoding_bytes = buffer_stride * VK_DESCRIPTOR_HEAP_BUFFER_BATCH;
     if (encoding_bytes < largest) encoding_bytes = largest;
-    if (resources.frame_size < 8 + g_heaps.sizes[HEAP_UBO] ||
-        samplers.frame_size < g_heaps.sizes[HEAP_SAMPLER] || encoding_bytes > SIZE_MAX - samplers.frame_size) return 0;
+    if (resources.frame_size < 8 + g_heaps.sizes[HEAP_UBO] || samplers.frame_size < g_heaps.sizes[HEAP_SAMPLER] ||
+        encoding_bytes > SIZE_MAX - samplers.frame_size)
+        return refused("a frame takes %llu resource bytes, %llu needed, and %llu sampler bytes, %llu needed",
+                       (unsigned long long)resources.frame_size, (unsigned long long)(8 + g_heaps.sizes[HEAP_UBO]),
+                       (unsigned long long)samplers.frame_size, (unsigned long long)g_heaps.sizes[HEAP_SAMPLER]);
     /* One CPU allocation owns temporary encoding bytes and the sampler comparison shadow. */
     g_heaps.scratch = calloc(1, (size_t)(encoding_bytes + samplers.frame_size));
-    if (!g_heaps.scratch) return 0;
+    if (!g_heaps.scratch)
+        return refused("%llu bytes of encoding scratch could not be allocated",
+                       (unsigned long long)(encoding_bytes + samplers.frame_size));
     g_heaps.scratch_size = (size_t)(encoding_bytes + samplers.frame_size);
     g_heaps.sampler_bytes = g_heaps.scratch + encoding_bytes;
-    if (!heap_create(&g_heaps.resource, &resources) || !heap_create(&g_heaps.sampler, &samplers) ||
-        !transition_create()) {
+    if (!heap_create(&g_heaps.resource, &resources, "resource") ||
+        !heap_create(&g_heaps.sampler, &samplers, "sampler") || !transition_create()) {
         transition_destroy();
         heap_discard(&g_heaps.resource);
         heap_discard(&g_heaps.sampler);
