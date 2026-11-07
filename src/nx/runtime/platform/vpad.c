@@ -492,6 +492,29 @@ static const float SHOWCASE[SNX_VPAD_COUNT][3] = {
     [SNX_VPAD_B] = {0.80f, 0.72f, 0.13f}};
 #define SHOWCASE_BOX 0.30f /* the box's height, of safe's shorter side; its gap to the corner a fifteenth of that */
 
+/* The showcase's input history, as Eden's controller overlay keeps one (John's, Eden PR 4583): the last inputs of
+   player 1 beside the box, the newest nearest it. A button counts when it goes down, a stick when it leans past
+   STICK_ON and again when it turns another way; presses within HISTORY_TOGETHER_NS of an input's first are that input.
+   Each shows HISTORY_NS, then shrinks away in HISTORY_SHRINK_NS */
+#define HISTORY_INPUTS      10            /* inputs shown, the newest: Eden's default */
+#define HISTORY_PRESSES     64            /* presses kept, several to an input */
+#define HISTORY_NS          5000000000ull /* Eden's default 5 s */
+#define HISTORY_SHRINK_NS   400000000ull
+#define HISTORY_TOGETHER_NS 50000000ull /* about three frames */
+#define HISTORY_BUTTONS     0xFFFFu     /* A to the D-pad's down: HidNpadButton bits 0 to 15 */
+#define STICK_MOVE          16          /* a press past the buttons: STICK_MOVE + stick * 4 + way, left up right down */
+#define STICK_ON            0.6f
+#define STICK_OFF           0.3f
+static struct {
+    struct {
+        u64 at;    /* the input's first press, its plat_ns */
+        u8 button; /* a HidNpadButton bit, or STICK_MOVE + ... */
+    } press[HISTORY_PRESSES];
+    int n;      /* presses, the oldest first */
+    u64 down;   /* the buttons down at the last input */
+    int way[2]; /* each stick's way plus one, 0 near its middle */
+} g_history;
+
 int vpad_corner(const char* word) {
     int i;
     for (i = 0; i < 4; ++i)
@@ -509,8 +532,47 @@ void vpad_showcase_corner_set(const IniOpt* o, const char* v) {
     LOG("settings: showcase_corner=%s is not tl, tr, bl or br: it keeps %s\n", v, CORNERS[i]);
     snprintf((char*)o->var, o->size, "%s", CORNERS[i]);
 }
-void vpad_showcase_input(u64 buttons, const i32 sticks[4]) {
-    int s;
+/* the presses of the oldest input out */
+static void history_drop(void) {
+    int n = 1;
+    while (n < g_history.n && g_history.press[n].at == g_history.press[0].at) ++n;
+    g_history.n -= n;
+    memmove(g_history.press, g_history.press + n, (size_t)g_history.n * sizeof g_history.press[0]);
+}
+static void history_press(int button, u64 now_ns) {
+    u64 at = now_ns;
+    int i;
+    if (g_history.n && now_ns - g_history.press[g_history.n - 1].at <= HISTORY_TOGETHER_NS) {
+        u64 group = g_history.press[g_history.n - 1].at;
+        int again = 0; /* a stick turning again is an input of its own, not a second press */
+        for (i = 0; i < g_history.n; ++i)
+            again |= button >= STICK_MOVE && g_history.press[i].at == group &&
+                     g_history.press[i].button >= STICK_MOVE &&
+                     (g_history.press[i].button - STICK_MOVE) / 4 == (button - STICK_MOVE) / 4;
+        if (!again) at = group;
+    }
+    if (g_history.n == HISTORY_PRESSES) history_drop();
+    g_history.press[g_history.n].at = at;
+    g_history.press[g_history.n++].button = (u8)button;
+}
+void vpad_showcase_input(u64 buttons, const i32 sticks[4], u64 now_ns) {
+    int s, b;
+    u64 pressed = buttons & ~g_history.down & HISTORY_BUTTONS;
+    while (g_history.n && now_ns - g_history.press[0].at > HISTORY_NS + HISTORY_SHRINK_NS) history_drop();
+    for (b = 0; b < 16; ++b)
+        if (pressed >> b & 1) history_press(b, now_ns);
+    g_history.down = buttons;
+    for (s = 0; s < 2; ++s) {
+        float x = (float)sticks[s * 2] / 32767, y = (float)sticks[s * 2 + 1] / 32767, reach = sqrtf(x * x + y * y);
+        if (reach > STICK_ON) {
+            int way = fabsf(x) > fabsf(y) ? (x < 0 ? 0 : 2) : (y > 0 ? 1 : 3);
+            if (way + 1 != g_history.way[s]) {
+                g_history.way[s] = way + 1;
+                history_press(STICK_MOVE + s * 4 + way, now_ns);
+            }
+        } else if (reach < STICK_OFF)
+            g_history.way[s] = 0;
+    }
     g_show_buttons = buttons;
     for (s = 0; s < 2; ++s) {
         float ax = (float)sticks[s * 2] / 32767, ay = -(float)sticks[s * 2 + 1] / 32767, len = sqrtf(ax * ax + ay * ay);
@@ -544,7 +606,92 @@ int vpad_showcase_box(const int safe[4], float box[4]) {
     box[3] = h;
     return corner;
 }
-void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps) {
+/* a press's label (the font's arrows, CP437's 0x18 to 0x1B) and colour, as Eden's chips have them */
+static const char* history_chip(int button, u32* rgba) {
+    static const struct {
+        const char* label;
+        u32 rgba; /* R G B A from the low byte */
+    } CHIPS[16] = {{"A", 0xFF3C4CE7u},    {"B", 0xFF14B4E6u},    {"X", 0xFFDB9834u},    {"Y", 0xFF68B82Eu},
+                   {"L3", 0xFF705A46u},   {"R3", 0xFF705A46u},   {"L", 0xFF8C8478u},    {"R", 0xFF8C8478u},
+                   {"ZL", 0xFF746C62u},   {"ZR", 0xFF746C62u},   {"+", 0xFFB6588Eu},    {"-", 0xFFB6588Eu},
+                   {"\x1B", 0xFF746354u}, {"\x18", 0xFF746354u}, {"\x1A", 0xFF746354u}, {"\x19", 0xFF746354u}};
+    static const char* const MOVES[8] = {"LS\x1B", "LS\x18", "LS\x1A", "LS\x19",
+                                         "RS\x1B", "RS\x18", "RS\x1A", "RS\x19"};
+    if (button >= STICK_MOVE) {
+        *rgba = 0xFF5E4934u;
+        return MOVES[(button - STICK_MOVE) & 7];
+    }
+    *rgba = CHIPS[button & 15].rgba;
+    return CHIPS[button & 15].label;
+}
+/* a chip's width for a label at the font's scale s: the label and a glyph's room, at least as wide as it is tall */
+static float chip_w(const char* label, float s) {
+    float w = (float)strlen(label) * 8 * s + 8 * s;
+    return w > 20 * s ? w : 20 * s;
+}
+/* the history beside the box (x, y, w, h), toward the picture's middle, on the box's row nearest its corner: each
+   input's chips, those pressed together in a band with a + between, older ones fainter, each shrinking away once its
+   time is over */
+static void history_draw(SnxUiList* l, const int safe[4], const float box[4], int corner, int scale, u64 now_ns) {
+    const u32 ink = 0xFFFFFFu;
+    float s = (float)scale, chip_h = 20 * s, gap = 4 * s, pad = 4 * s, row = chip_h + 2 * pad;
+    float room = corner & 1 ? box[0] - (float)safe[0] - gap : (float)(safe[0] + safe[2]) - box[0] - box[2] - gap;
+    float y = corner & 2 ? box[1] + box[3] - row : box[1], width = 2 * pad, x, at;
+    struct {
+        int first, count;
+        float scale, w;
+    } in[HISTORY_INPUTS];
+    int end = g_history.n, n = 0, g, k;
+    while (end > 0 && n < HISTORY_INPUTS) { /* the inputs, newest first, as many as fit */
+        int first = end - 1;
+        u64 over;
+        float w = 0, sc;
+        u32 c;
+        while (first > 0 && g_history.press[first - 1].at == g_history.press[end - 1].at) --first;
+        over = now_ns - g_history.press[first].at;
+        sc = over <= HISTORY_NS ? 1 : 1 - (float)(over - HISTORY_NS) / (float)HISTORY_SHRINK_NS;
+        for (k = first; k < end; ++k) w += chip_w(history_chip(g_history.press[k].button, &c), s);
+        if (end - first > 1) w += 2 * pad + (float)(end - first - 1) * 8 * s; /* the band, a + between */
+        if (sc > 0) {
+            w *= sc;
+            if (width + w + (n ? gap * sc : 0) > room) break;
+            width += w + (n ? gap * sc : 0);
+            in[n].first = first;
+            in[n].count = end - first;
+            in[n].scale = sc;
+            in[n++].w = w;
+        }
+        end = first;
+    }
+    if (!n) return;
+    x = corner & 1 ? box[0] - gap - width : box[0] + box[2] + gap;
+    ui_fill(l, x, y, width, row, 0x80000000u);
+    at = corner & 1 ? x + width - pad : x + pad; /* the newest next to the box, the older ones outward */
+    for (g = 0; g < n; ++g) {
+        float sc = in[g].scale, h = chip_h * sc, cx = corner & 1 ? at - in[g].w : at;
+        u32 alpha = (u32)((float)(255 - g * 12) * sc);
+        if (in[g].count > 1) {
+            ui_fill(l, cx, y + (row - h) / 2 - pad * sc, in[g].w, h + 2 * pad * sc, (40 * alpha / 255) << 24 | ink);
+            cx += pad * sc;
+        }
+        for (k = in[g].first; k < in[g].first + in[g].count; ++k) {
+            u32 c;
+            const char* label = history_chip(g_history.press[k].button, &c);
+            float w = chip_w(label, s) * sc;
+            ui_fill(l, cx, y + (row - h) / 2, w, h, (c & 0xFFFFFFu) | alpha << 24);
+            if (sc >= 1) /* the font draws at whole steps: a shrinking chip has no letters */
+                ui_text(l, cx + (w - (float)strlen(label) * 8 * s) / 2, y + (row - 16 * s) / 2, scale, label,
+                        alpha << 24 | ink);
+            cx += w;
+            if (k + 1 < in[g].first + in[g].count) {
+                if (sc >= 1) ui_text(l, cx, y + (row - 16 * s) / 2, scale, "+", alpha << 24 | ink);
+                cx += 8 * s * sc;
+            }
+        }
+        at += corner & 1 ? -(in[g].w + gap * sc) : in[g].w + gap * sc;
+    }
+}
+void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps, u64 now_ns) {
     const u32 alpha = 230;
     float box[4], x0, y0, w, h, r[4];
     int c, scale;
@@ -572,9 +719,10 @@ void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps) {
         } else
             ui_sprite(l, INFO[c].sprite + (int)(g_show_buttons >> INFO[c].bit & 1), r[0], r[1], r[2], r[3], alpha, 0);
     }
-    if (fps < 0) return;
     scale = (int)(h * 0.11f / 16 + 0.5f);
     if (scale < 1) scale = 1;
+    history_draw(l, safe, box, vpad_showcase_box(safe, box), scale, now_ns);
+    if (fps < 0) return;
     snprintf(text, sizeof text, "%d FPS", fps);
     ui_text(l, x0 + (w - (float)(strlen(text) * 8 * (size_t)scale)) / 2, y0 + h / 25, scale, text, 0xFFFFFFFFu);
 }

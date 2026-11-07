@@ -1602,7 +1602,7 @@ void video_poll(void) {
     g_hle.hid.pad1.rx = st[2];
     g_hle.hid.pad1.ry = st[3];
     ui_lock();
-    vpad_showcase_input(b, st); /* what the game takes, a replay's included */
+    vpad_showcase_input(b, st, plat_ns()); /* what the game takes, a replay's included */
     ui_unlock();
     pm_unlock(&g_host.hid.input_lock);
     keyboard_sync();

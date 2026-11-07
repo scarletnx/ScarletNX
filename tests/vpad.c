@@ -60,6 +60,7 @@ static u64 buttons(i32 sticks[4]) {
     vpad_state(&b, sticks ? sticks : s);
     return b;
 }
+#define T0 1000000000ull /* the showcase's input and draws at 1 s */
 static SnxUiQuad quads[512];
 static int draw(SnxUiList* l) {
     l->q = quads;
@@ -75,6 +76,106 @@ static const SnxUiQuad* drawn(const SnxUiList* l, int sprite) {
         if (l->q[i].u == snx_controls_sprites[sprite][0] && l->q[i].v == snx_controls_sprites[sprite][1])
             return &l->q[i];
     return NULL;
+}
+
+/* the showcase's history: the quads of chips of colour rgb (R G B from the low byte) drawn whole, and the first */
+static int chips(const SnxUiList* l, u32 rgb, const SnxUiQuad** first) {
+    int i, n = 0;
+    for (i = 0; i < l->n; ++i)
+        if ((l->q[i].rgba & 0xFFFFFFu) == rgb && l->q[i].h == 40) {
+            if (!n++ && first) *first = &l->q[i];
+        }
+    return n;
+}
+/* a glyph of the font drawn at x, y; anywhere for x below 0 */
+static int glyph(const SnxUiList* l, int c, float x, float y) {
+    int i;
+    for (i = 0; i < l->n; ++i)
+        if (l->q[i].u == SNX_CONTROLS_FONT_X + c % 16 * 8 && l->q[i].v == SNX_CONTROLS_FONT_Y + c / 16 * 16 &&
+            (x < 0 || (fabsf(l->q[i].x - x) < 0.01f && fabsf(l->q[i].y - y) < 0.01f)))
+            return 1;
+    return 0;
+}
+#define A_RGB  0x3C4CE7u
+#define B_RGB  0x14B4E6u
+#define X_RGB  0xDB9834u
+#define LS_RGB 0x5E4934u
+static void history_at(SnxUiList* l, u64 now) {
+    l->n = 0;
+    vpad_showcase_draw(l, safe, -1, now);
+}
+/* the showcase's input history, as Eden's controller overlay keeps it: on a 2000x1000 picture the box is 500x300 at
+   1480, 680 (bottom right), the font at twice its size, so a chip is 40 high, a band of chips 56 high on the box's
+   bottom row, 8 from it; each input for 5 s, then shrinking for 0.4 s */
+static void test_history(SnxUiList* l) {
+    static const i32 rest[4], lean_right[4] = {32767, 0, 0, 0}, lean_up[4] = {0, 32767, 0, 0},
+                              lean_back[4] = {32767 / 5, 0, 0, 0}, small[4] = {32767 / 2, 0, 0, 0};
+    const SnxUiQuad* q;
+    u64 t = 10 * T0, b_at, last_stick;
+    int i;
+    g_settings.showcase = 1;
+    vpad_showcase_input(0, rest, t);
+    history_at(l, t);
+    assert(!chips(l, A_RGB, NULL) && !chips(l, LS_RGB, NULL));
+    /* A down: one chip, the newest next to the box, its letter in it; held, nothing more */
+    vpad_showcase_input(1, rest, t += T0 / 10);
+    vpad_showcase_input(1, rest, t += T0 / 10);
+    history_at(l, t);
+    assert(chips(l, A_RGB, &q) == 1 && q->x == 1480 - 8 - 8 - 40 && q->y == 980 - 56 + 8 && q->w == 40);
+    assert(glyph(l, 'A', q->x + 12, 980 - 56 + 12));
+    /* let go and pressed again: a second input, the newer nearest the box */
+    vpad_showcase_input(0, rest, t += T0 / 10);
+    vpad_showcase_input(1, rest, t += T0 / 10);
+    history_at(l, t);
+    assert(chips(l, A_RGB, &q) == 2 && q->x == 1480 - 16 - 40 && q->rgba >> 24 == 255);
+    for (i = 0; i < l->n; ++i)
+        if ((l->q[i].rgba & 0xFFFFFFu) == A_RGB && l->q[i].x < 1400) assert(l->q[i].rgba >> 24 == 243); /* older */
+    /* B, and X within 50 ms of it: one input, in a band with a + between */
+    vpad_showcase_input(1 | 2, rest, b_at = t += T0 / 10);
+    vpad_showcase_input(1 | 2 | 4, rest, t += T0 / 50);
+    history_at(l, t);
+    assert(chips(l, B_RGB, &q) == 1 && chips(l, X_RGB, NULL) == 1);
+    assert(glyph(l, '+', q->x + 40, 980 - 56 + 12));
+    /* a stick: leaning past 0.6 is a press, leaning on is not, turning is, back near the middle and out again is */
+    vpad_showcase_input(0, small, t += T0 / 10);
+    vpad_showcase_input(0, lean_right, t += T0 / 10);
+    vpad_showcase_input(0, lean_right, t += T0 / 10);
+    vpad_showcase_input(0, lean_up, t += T0 / 10);
+    vpad_showcase_input(0, lean_back, t += T0 / 10);
+    vpad_showcase_input(0, lean_right, last_stick = t += T0 / 10);
+    history_at(l, t);
+    assert(chips(l, LS_RGB, &q) == 3 && glyph(l, 'L', q->x + 8, 980 - 56 + 12) &&
+           glyph(l, 0x1A, q->x + 40, 980 - 56 + 12));
+    /* ten inputs at most: six more A presses, 0.2 s apart, push the two oldest out */
+    for (i = 0; i < 6; ++i) {
+        vpad_showcase_input(0, rest, t += T0 / 10);
+        vpad_showcase_input(1, rest, t += T0 / 10);
+    }
+    history_at(l, t);
+    assert(chips(l, A_RGB, NULL) == 6 && chips(l, B_RGB, NULL) == 1 && chips(l, LS_RGB, NULL) == 3);
+    /* 5.2 s on, B's input is half way through shrinking, at half its height and with no letters */
+    history_at(l, b_at + 52 * T0 / 10);
+    assert(!chips(l, B_RGB, NULL) && chips(l, A_RGB, NULL) == 6 && chips(l, LS_RGB, NULL) == 3);
+    for (i = 0; i < l->n; ++i)
+        if ((l->q[i].rgba & 0xFFFFFFu) == B_RGB) assert(l->q[i].h > 19.9f && l->q[i].h < 20.1f);
+    assert(!glyph(l, 'B', -1, 0) && glyph(l, 'X', -1, 0) == 0);
+    /* 5.4 s after the last stick's lean, B's and the sticks' are gone, and the first two A presses shrink */
+    vpad_showcase_input(0, rest, last_stick + 541 * T0 / 100);
+    history_at(l, last_stick + 541 * T0 / 100);
+    for (i = 0; i < l->n; ++i) assert((l->q[i].rgba & 0xFFFFFFu) != B_RGB && (l->q[i].rgba & 0xFFFFFFu) != LS_RGB);
+    assert(chips(l, A_RGB, NULL) == 4);
+    vpad_showcase_input(0, rest, t + 541 * T0 / 100);
+    history_at(l, t + 541 * T0 / 100);
+    assert(!chips(l, A_RGB, NULL));
+    t += 6 * T0;
+    /* a left corner: the history to the box's right */
+    ini_read(ini_find(g_display_ini, "showcase_corner"), "bl");
+    vpad_showcase_input(1, rest, t += T0);
+    history_at(l, t);
+    assert(chips(l, A_RGB, &q) == 1 && q->x == 20 + 500 + 8 + 8);
+    vpad_showcase_input(0, rest, t + 6 * T0);
+    ini_read(ini_find(g_display_ini, "showcase_corner"), "br");
+    g_settings.showcase = 0;
 }
 
 int main(void) {
@@ -297,11 +398,11 @@ int main(void) {
         l.max = 512;
         l.n = 0;
         g_settings.showcase = 0;
-        vpad_showcase_draw(&l, safe, 60);
+        vpad_showcase_draw(&l, safe, 60, T0);
         assert(!l.n);
         g_settings.showcase = 1;
-        vpad_showcase_input(0, none);
-        vpad_showcase_draw(&l, safe, 60);
+        vpad_showcase_input(0, none, T0);
+        vpad_showcase_draw(&l, safe, 60, T0);
         assert(l.n > 13 && drawn(&l, SNX_SPRITE_A) && !drawn(&l, SNX_SPRITE_A_PRESSED) && drawn(&l, SNX_SPRITE_DPAD));
         assert(!drawn(&l, SNX_SPRITE_HOME) && !drawn(&l, SNX_SPRITE_CAPTURE) && !drawn(&l, SNX_SPRITE_L3) &&
                !drawn(&l, SNX_SPRITE_R3) && !drawn(&l, SNX_SPRITE_STICK_PRESSED));
@@ -318,7 +419,7 @@ int main(void) {
             static const char* const name[4] = {"tl", "tr", "bl", "br"};
             ini_read(where, name[k]);
             l.n = 0;
-            vpad_showcase_draw(&l, safe, -1);
+            vpad_showcase_draw(&l, safe, -1, T0);
             for (i = 0; i < l.n; ++i)
                 assert(l.q[i].x >= box[k][0] - 0.01f && l.q[i].x + l.q[i].w <= box[k][0] + 500.01f &&
                        l.q[i].y >= box[k][1] - 0.01f && l.q[i].y + l.q[i].h <= box[k][1] + 300.01f);
@@ -334,12 +435,12 @@ int main(void) {
         ini_read(where, "top"); /* longer than the setting holds: ini.c's own refusal, the corner the same */
         assert(!strcmp(g_settings.showcase_corner, "tl"));
         l.n = 0;
-        vpad_showcase_draw(&l, safe, -1);
+        vpad_showcase_draw(&l, safe, -1, T0);
         assert(l.q[0].x == 20 && l.q[0].y == 20);
         /* pressed: A lit, the D-pad's up, the left stick's click and its knob at the ring's edge */
-        vpad_showcase_input(1u << 0 | 1u << 13 | 1u << 4, right);
+        vpad_showcase_input(1u << 0 | 1u << 13 | 1u << 4, right, T0);
         l.n = 0;
-        vpad_showcase_draw(&l, safe, -1);
+        vpad_showcase_draw(&l, safe, -1, T0);
         assert(drawn(&l, SNX_SPRITE_A_PRESSED) && !drawn(&l, SNX_SPRITE_A) && drawn(&l, SNX_SPRITE_B));
         assert((q = drawn(&l, SNX_SPRITE_DPAD_UP)) && q->turn == 0 && !drawn(&l, SNX_SPRITE_DPAD));
         ring = drawn(&l, SNX_SPRITE_STICK_RANGE);
@@ -347,17 +448,17 @@ int main(void) {
         assert(ring && knob && drawn(&l, SNX_SPRITE_STICK)); /* the right stick's knob stays up */
         assert(fabsf(knob->x + knob->w / 2 - (ring->x + ring->w)) < 0.01f);
         assert(fabsf(knob->y + knob->h / 2 - (ring->y + ring->h / 2)) < 0.01f);
-        vpad_showcase_input(1u << 14, up); /* up is positive, as the game reads it: the knob goes up the screen */
+        vpad_showcase_input(1u << 14, up, T0); /* up is positive, as the game reads it: the knob goes up the screen */
         l.n = 0;
-        vpad_showcase_draw(&l, safe, -1);
+        vpad_showcase_draw(&l, safe, -1, T0);
         assert((q = drawn(&l, SNX_SPRITE_DPAD_UP)) && q->turn == 1);
         ring = drawn(&l, SNX_SPRITE_STICK_RANGE);
         knob = drawn(&l, SNX_SPRITE_STICK);
         assert(fabsf(knob->y + knob->h / 2 - ring->y) < 0.01f &&
                fabsf(knob->x + knob->w / 2 - (ring->x + ring->w / 2)) < 0.01f);
-        vpad_showcase_input(0, corner); /* a square of keys: the knob stays on its ring */
+        vpad_showcase_input(0, corner, T0); /* a square of keys: the knob stays on its ring */
         l.n = 0;
-        vpad_showcase_draw(&l, safe, -1);
+        vpad_showcase_draw(&l, safe, -1, T0);
         ring = drawn(&l, SNX_SPRITE_STICK_RANGE);
         knob = drawn(&l, SNX_SPRITE_STICK);
         {
@@ -373,6 +474,7 @@ int main(void) {
         g_settings.showcase = 0;
         ini_read(where, "br");
     }
+    test_history(&l);
     puts("vpad: buttons, D-pad, sticks, actions, edit mode, .ini keys, drawing and the showcase passed");
     return 0;
 }

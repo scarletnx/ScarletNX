@@ -345,8 +345,9 @@ void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
         prepare_screen_draw(&list, sw, sh, safe, overlay_display_percent());
     else {
         int px, py, scale;
+        u64 now = plat_ns();
         vpad_draw(&list, safe);
-        vpad_showcase_draw(&list, safe, vpad_showcase_fps(g_vk_present, plat_ns()));
+        vpad_showcase_draw(&list, safe, vpad_showcase_fps(g_vk_present, now), now);
         overlay_place(sw, sh, &px, &py, &scale); /* the menu's letters */
         stats_draw(&list, safe, scale, plat_ns());
     }
