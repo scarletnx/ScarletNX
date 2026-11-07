@@ -7,6 +7,9 @@ each executable. It runs processes serially in a seeded, shuffled order, compare
 each executable before and after every run. It does not build, install packages, change settings, or apply a winner.
 The result is a workload-specific timing, not game FPS or a fastest configuration for all games.
 
+[Recorded NVN/Vulkan measurements](NVN_VULKAN_OPTIMIZATION_RESULTS.md) include all synthetic samples, the test
+coverage, and the limits of separate GPU and game observations.
+
 Build the baseline and candidate before measuring. Keep both unchanged and stop other builds and timing jobs.
 For the existing NVN inline-bank fixture:
 
