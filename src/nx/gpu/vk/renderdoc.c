@@ -37,14 +37,6 @@ void vk_renderdoc_present(u64 present) { (void)present; }
 #include "renderdoc_app.h"
 
 #define RD_FRAMES 64 /* frames to capture at most */
-/* the library's name, the one RenderDoc's own program puts in a game it starts */
-#if defined(_WIN32)
-#define RD_LIBRARY "renderdoc.dll"
-#elif defined(__ANDROID__)
-#define RD_LIBRARY "libVkLayer_GLES_RenderDoc.so"
-#else
-#define RD_LIBRARY "librenderdoc.so"
-#endif
 
 typedef struct {
     u64 at;   /* the present, or the time in ms; 0 once taken */
@@ -62,18 +54,19 @@ void vk_renderdoc_load(void) {
     const char *prefix = g_settings.render_doc_captures, *frames = g_settings.render_doc_frames, *p;
     pRENDERDOC_GetAPI get_api;
     /* RenderDoc's program started the game: its library is in the process, and renderdoc= needn't load it */
-    void *lib = plat_dl_loaded(RD_LIBRARY), *api = NULL; /* GetAPI stores a void*, which the API's pointer isn't */
+    void* lib = plat_dl_loaded(SNX_VK_RENDERDOC_LIBRARY);
+    void* api = NULL; /* GetAPI stores a void*, which the API's pointer isn't */
     int started = lib != NULL;
     if (!lib && !*prefix) return;
-    if (!lib) lib = plat_dl_open(RD_LIBRARY);
+    if (!lib) lib = plat_dl_open(SNX_VK_RENDERDOC_LIBRARY);
     if (!lib) {
-        WARN("renderdoc: renderdoc=%s is set but RenderDoc's library, %s, didn't load: %s\n", prefix, RD_LIBRARY,
-             plat_dl_error());
+        WARN("renderdoc: renderdoc=%s is set but RenderDoc's library, %s, didn't load: %s\n", prefix,
+             SNX_VK_RENDERDOC_LIBRARY, plat_dl_error());
         return;
     }
     get_api = (pRENDERDOC_GetAPI)plat_dl_sym(lib, "RENDERDOC_GetAPI");
     if (!get_api || !get_api(eRENDERDOC_API_Version_1_1_2, &api) || !api) {
-        WARN("renderdoc: %s has no in-application API 1.1.2: no frame is captured\n", RD_LIBRARY);
+        WARN("renderdoc: %s has no in-application API 1.1.2: no frame is captured\n", SNX_VK_RENDERDOC_LIBRARY);
         return;
     }
     RENDERDOC_API_1_1_2* rd = api;

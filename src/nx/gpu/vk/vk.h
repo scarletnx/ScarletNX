@@ -1230,6 +1230,14 @@ u64 vk_buf_pending_inspected(void);
    started the game (load); the frames renderdoc_frames names and Ctrl+F12 asks for captured (present, at each present
    under vk_lock). capture: whether a capture can be taken (RenderDoc is in the process), and with ask, the next frame
    captured, said in the log either way; the renderer's capture. Any thread */
+/* RenderDoc's library, by the name its own program puts in a game it starts: the one load looks for and opens */
+#if defined(_WIN32)
+#define SNX_VK_RENDERDOC_LIBRARY "renderdoc.dll"
+#elif defined(__ANDROID__)
+#define SNX_VK_RENDERDOC_LIBRARY "libVkLayer_GLES_RenderDoc.so"
+#else
+#define SNX_VK_RENDERDOC_LIBRARY "librenderdoc.so"
+#endif
 void vk_renderdoc_load(void);
 int vk_renderdoc_capture(int ask);
 void vk_renderdoc_present(u64 present);
