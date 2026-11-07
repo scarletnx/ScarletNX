@@ -274,3 +274,7 @@ flourishes. This rule does not apply to code comments. The Claude files follow A
   set of each shader's own bindings did not stop it, and neither did `MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS=0`
   (`docs/APPLE.md` has the rates). Count the draws that a run skips before you trust a workaround. The runs that did
   not lock up skipped the over-limit draws. Measure an intermittent GPU fault over 8 runs of one route on one save.
+- A merge of main into a feature branch can lose a fix of main with no conflict. The merge c74cd575f into
+  feat/ounce kept the branch's `tex_hash` and `land_pages`, and lost b10764611 and 355c0c350 of main. The tests of
+  those fixes then failed on the branch alone. After such a merge, check each commit of main that touched a file
+  that both sides changed. Its added lines must be in the result (`git show C -- F`, then `grep -xF` in the file).

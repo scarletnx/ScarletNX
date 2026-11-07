@@ -94,3 +94,10 @@ an edit. A wrong story becomes a fix that is worse than the bug that it was for.
   JUMP at the anchor, still stayed there, and the game called it later. A small block that the runtime took again at
   once then crashed the replay with "op 0 and size 0". A piece of a segment hid this, because a segment waits for all
   of its pieces. Keep a piece while a handle can still reach it.
+- `pipe_info` filled the `PipeInfo` of its caller, but `o->cb.pNext` pointed to a local
+  `VkPipelineColorBlendAdvancedStateCreateInfoEXT`. After the function returned, `vkCreateGraphicsPipelines` read
+  dead stack, and lavapipe crashed in a pipeline worker. Each struct of a create chain must live in the struct that
+  the create call reads.
+- `gmmu_pieces` gives whole pages, not the range that the caller asked for. `mark_pages` took each piece to start at
+  its mip level, so `gva - at` went below zero for a level that starts inside a page. That level got no sparse
+  memory. A mip tail hides this, and lavapipe has no mip tail. Clip each piece to the range of the caller.
