@@ -10,8 +10,10 @@
 #include "nx/gpu/maxwell/draw_state.h"
 #include "nx/gpu/renderer.h"
 #include "common/gpu/vk/vk_common.h"
+#include "common/utilities/spirv_emit.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
+#include "nx/gpu/vk/extension_bans.h"
 #include "nx/gpu/shader/shader.h"
 #include "nx/gpu/maxwell/kepler_compute_regs.h"
 #include "nx/gpu/maxwell/engines_int.h"
@@ -5218,6 +5220,82 @@ static int check_map_lands_covered(void) {
     return 0;
 }
 
+/* The version the renderer runs at, and on a 1.2 device (--vk-api=1.2 makes one of a newer device) the 1.3 commands
+   under their extensions' names and shaders in SPIR-V 1.5: the checks after this one then run the 1.2 way, and the
+   validation layer, given that version, flags any 1.3 use left. What a 1.2 device lacks keeps it out, named */
+/* the ban lines check_vk12_way's stand-in device takes, as the log would say them */
+static void vk12_ban_say(const char* line, int warn) { printf("%s%s\n", warn ? "warning: " : "", line); }
+static int check_vk12_way(void) {
+    SpvEmitter e;
+    spv_emit_init(&e, 0);
+    u32 version = e.version;
+    spv_emit_destroy(&e);
+    if (g_vk.api_cap) {
+        CHECK(g_vk.api < VK_API_VERSION_1_3 && g_vk.api >= VK_API_VERSION_1_2);
+        CHECK(version == 0x00010500u);
+        CHECK(vkCmdPipelineBarrier2 == vkCmdPipelineBarrier2KHR && vkQueueSubmit2 == vkQueueSubmit2KHR);
+        CHECK(vkCmdBeginRendering == vkCmdBeginRenderingKHR && vkCmdSetCullMode == vkCmdSetCullModeEXT);
+        CHECK(vkCmdSetPrimitiveRestartEnable == vkCmdSetPrimitiveRestartEnableEXT);
+        CHECK(vkGetDeviceImageMemoryRequirements == vkGetDeviceImageMemoryRequirementsKHR);
+        CHECK(g_vk.video_family == ~0u && !g_vk.feat12.pNext && g_vk.feat13.synchronization2 &&
+              g_vk.feat13.dynamicRendering && g_vk.feat13.maintenance4);
+    } else {
+        CHECK(g_vk.api >= VK_API_VERSION_1_3 && version == 0x00010600u && g_vk.feat12.pNext == &g_vk.feat13);
+    }
+    /* a device with all of them but dynamic rendering, its store op NONE from the EXT */
+    VkExtensionProperties list[16] = {{0}};
+    static const char* const have[] = {
+        VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,          VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME,
+        VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME,   VK_KHR_MAINTENANCE_4_EXTENSION_NAME,
+        VK_KHR_FORMAT_FEATURE_FLAGS_2_EXTENSION_NAME,     VK_EXT_SHADER_DEMOTE_TO_HELPER_INVOCATION_EXTENSION_NAME,
+        VK_EXT_PIPELINE_CREATION_FEEDBACK_EXTENSION_NAME, VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME};
+    u32 n = sizeof have / sizeof *have;
+    for (u32 i = 0; i < n; i++) snprintf(list[i].extensionName, sizeof list[i].extensionName, "%s", have[i]);
+    SnxVkExtensions ext = {list, n};
+    char names[256];
+    CHECK(vk_1_2_missing(&ext, names, sizeof names) == 1 && !strcmp(names, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME));
+    snprintf(list[n].extensionName, sizeof list[n].extensionName, "%s", VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+    ext.count = n + 1;
+    CHECK(vk_1_2_missing(&ext, names, sizeof names) == 0 && !names[0]);
+    /* and without a store op NONE, two named */
+    ext.list = list + 1;
+    snprintf(list[n - 1].extensionName, sizeof list[n - 1].extensionName, "VK_EXT_not_this");
+    CHECK(vk_1_2_missing(&ext, names, sizeof names) == 2 &&
+          !strcmp(names, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME ", " VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME));
+    /* all of them on a driver the bans keep from dynamic rendering: the filter create_device runs first takes it out,
+       and the device lacks it by name. The table and the device are put back after */
+    ext.list = list;
+    ext.count = n + 1;
+    snprintf(list[n - 1].extensionName, sizeof list[n - 1].extensionName, "%s",
+             VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME);
+    char err[512];
+    CHECK(vk_bans_load("key | action | driver | versions | system | devices | breaks | source | retest | checked | "
+                       "override\n" VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME
+                       " | off | qualcomm | * | any | * | draws nothing | a test | headless: | never | -\n",
+                       err, sizeof err));
+    VkBanDevice banned = {"Adreno (TM) 640",
+                          "Qualcomm Technologies Inc. Adreno Vulkan Driver",
+                          "",
+                          VK_DRIVER_ID_QUALCOMM_PROPRIETARY,
+                          VK_MAKE_VERSION(512, 530, 0),
+                          0x6040001,
+                          SNX_VK_BAN_ANDROID};
+    vk_bans_device(&banned);
+    CHECK(vk_bans_filter(&ext, vk12_ban_say) == 1 && vk_1_2_missing(&ext, names, sizeof names) == 1 &&
+          !strcmp(names, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME));
+    VkPhysicalDeviceDriverProperties driver = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                              .pNext = &driver};
+    vkGetPhysicalDeviceProperties2(g_vk.phys, &properties);
+    VkBanDevice running = {g_vk.props.deviceName,    driver.driverName,   driver.driverInfo, (uint32_t)driver.driverID,
+                           g_vk.props.driverVersion, g_vk.props.deviceID, vk_ban_system()};
+    CHECK(vk_bans_load(snx_vk_extension_bans_text, err, sizeof err));
+    vk_bans_device(&running);
+    printf("PASS the Vulkan %u.%u way: SPIR-V %u.%u, what a 1.2 device lacks named\n", VK_API_VERSION_MAJOR(g_vk.api),
+           VK_API_VERSION_MINOR(g_vk.api), version >> 16, (version >> 8) & 0xff);
+    return 0;
+}
+
 static int run_headless(int argc, char** argv) {
     nvn_init();
     const u32 w = 32, h = 16;
@@ -5244,6 +5322,10 @@ static int run_headless(int argc, char** argv) {
         if (snx_cli_flag(argv[i], &flags) == 1) continue;
         if (!strncmp(argv[i], "--pipeline-probe=", 17)) {
             pipeline_probe = argv[i] + 17;
+            continue;
+        }
+        if (!strcmp(argv[i], "--vk-api=1.2")) { /* the 1.2 way (device.c vk12_extensions) on a newer device */
+            g_vk.api_cap = VK_API_VERSION_1_2;
             continue;
         }
         if (!strncmp(argv[i], "--pipeline-probe-disable-opt=", 29)) {
@@ -5304,14 +5386,13 @@ static int run_headless(int argc, char** argv) {
             o = setting_row(key);
         }
         if (!o) {
-            fprintf(
-                stderr,
-                "snx-test-vulkan: %s is not an option it takes: -H, --KEY=VALUE of the runtime's settings, "
-                "--bench-descriptors=N, --descriptor-images=N, --descriptor-indexed=N, --descriptor-count=N, "
-                "--bench-sparse-volume, --bench-sparse-texture, --bench-storage-lookup, --bench-storage-image, "
-                "--bench-storage-buffer, --bench-pass-breaks=N, --nvn-draw-bench=N, --bench-indexed-map=N, "
-                "--pipeline-probe=FILE, --pipeline-probe-disable-opt=0|1\n",
-                argv[i]);
+            fprintf(stderr,
+                    "snx-test-vulkan: %s is not an option it takes: -H, --KEY=VALUE of the runtime's settings, "
+                    "--bench-descriptors=N, --descriptor-images=N, --descriptor-indexed=N, --descriptor-count=N, "
+                    "--bench-sparse-volume, --bench-sparse-texture, --bench-storage-lookup, --bench-storage-image, "
+                    "--bench-storage-buffer, --bench-pass-breaks=N, --nvn-draw-bench=N, --bench-indexed-map=N, "
+                    "--pipeline-probe=FILE, --pipeline-probe-disable-opt=0|1, --vk-api=1.2\n",
+                    argv[i]);
             return 2;
         }
         ini_read(o, eq + 1);
@@ -5330,6 +5411,7 @@ static int run_headless(int argc, char** argv) {
     g_settings.vulkan_video_decode = 1; /* a Vulkan Video decode queue where the device has one (lavapipe has none) */
     video_init("Headless Vulkan fixture", "");
     CHECK(g_opt_headless && g_renderer_up && g_vk.dev && !g_vk.surface && !g_vk.swapchain && !g_vk.sc_count);
+    CHECK(!check_vk12_way());
     if (pipeline_probe) {
         int result = probe_pipeline_compile(pipeline_probe, pipeline_probe_disable);
         vk_pipeline_quiesce();

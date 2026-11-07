@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Vulkan instance, device, queues and swapchain. Vulkan 1.3 is required: timeline semaphores (1.2),
-   synchronization2 and dynamic rendering (1.3) are what the renderer is built on. */
+/* Vulkan instance, device, queues and swapchain. The renderer is built on timeline semaphores (1.2), synchronization2
+   and dynamic rendering (1.3): it runs on Vulkan 1.3, or on 1.2 with the extensions 1.3 took in (vk12_extensions). */
 #include <stdlib.h>
 #include <string.h>
 #include "nx/runtime/options.h"
@@ -17,6 +17,7 @@
 #include "nx/gpu/vk/extension_bans.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
+#include "common/utilities/spirv_emit.h"
 
 int g_vk_preserve_infnan;
 int g_vk_preserve_infnan64;
@@ -169,6 +170,7 @@ static int create_instance(void) {
     SnxVkInstanceInfo info = {.app_name = "ScarletNX",
                               .extensions = ext,
                               .extension_count = next,
+                              .api_version = g_vk.api_cap,
                               .validation = g_settings.vulkan_validation_layer != 0,
                               .portability = true,
                               .debug = debug_cb};
@@ -205,14 +207,54 @@ static u32 video_decode_family(void) {
     return found;
 }
 
-/* Vulkan 1.3 and a graphics queue. Only windowed runs need WSI and presentation support.
+/* What the renderer takes from Vulkan 1.3, as a 1.2 device has it: these extensions, their features (create_device)
+   and their commands under the core names (vk12_commands), and SPIR-V 1.5. A read-only depth target's store op NONE
+   comes from VK_KHR_load_store_op_none or the EXT it was promoted from (vk12_store_none) */
+static const char* const vk12_extensions[] = {VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
+                                              VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME,
+                                              VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME,
+                                              VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME,
+                                              VK_KHR_MAINTENANCE_4_EXTENSION_NAME,
+                                              VK_KHR_FORMAT_FEATURE_FLAGS_2_EXTENSION_NAME,
+                                              VK_EXT_SHADER_DEMOTE_TO_HELPER_INVOCATION_EXTENSION_NAME,
+                                              VK_EXT_PIPELINE_CREATION_FEEDBACK_EXTENSION_NAME};
+#define VK12_EXTENSIONS (sizeof vk12_extensions / sizeof *vk12_extensions)
+static const char* vk12_store_none(const SnxVkExtensions* e) {
+    return snx_vk_extensions_has(e, VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME) ? VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME
+           : snx_vk_extensions_has(e, VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME)
+               ? VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME
+               : NULL;
+}
+/* how many of those e lacks, their names in out (size bytes, may be 0), comma separated */
+u32 vk_1_2_missing(const SnxVkExtensions* e, char* out, size_t size) {
+    u32 n = 0;
+    size_t at = 0;
+    if (size) out[0] = 0;
+    for (u32 i = 0; i <= VK12_EXTENSIONS; i++) {
+        const char* name = i < VK12_EXTENSIONS ? vk12_extensions[i] : VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME;
+        if (i < VK12_EXTENSIONS ? snx_vk_extensions_has(e, name) : vk12_store_none(e) != NULL) continue;
+        if (at < size) at += (size_t)snprintf(out + at, size - at, "%s%s", n ? ", " : "", name);
+        n++;
+    }
+    return n;
+}
+/* the version the renderer runs a device of api at: the device's, up to 1.3 (or api_cap) */
+static u32 vk_api_for(u32 api) {
+    u32 most = g_vk.api_cap ? g_vk.api_cap : VK_API_VERSION_1_3;
+    return api < most ? api : most;
+}
+
+/* Vulkan 1.3, or 1.2 with vk12_extensions, and a graphics queue. Only windowed runs need WSI and presentation support.
    *gfx_queues: how many queues the graphics family has */
 static int device_score(VkPhysicalDevice pd, const VkPhysicalDeviceProperties* p, u32* gfx, u32* compute,
                         u32* gfx_queues) {
     SnxVkExtensions e;
-    int swapchain = snx_vk_device_extensions(pd, &e) && snx_vk_extensions_has(&e, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    u32 api = vk_api_for(p->apiVersion);
+    int listed = snx_vk_device_extensions(pd, &e);
+    int swapchain = listed && snx_vk_extensions_has(&e, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    int lacks = api < VK_API_VERSION_1_3 && (!listed || vk_1_2_missing(&e, NULL, 0));
     snx_vk_extensions_free(&e);
-    if (!g_opt_headless && !swapchain) return -1;
+    if ((!g_opt_headless && !swapchain) || api < VK_API_VERSION_1_2 || lacks) return -1;
     u32 nq = 0;
     VkQueueFamilyProperties* q = snx_vk_queue_families(pd, &nq);
     /* ASTC uploads use compute */
@@ -227,9 +269,11 @@ static int device_score(VkPhysicalDevice pd, const VkPhysicalDeviceProperties* p
     *gfx_queues = *gfx < nq ? q[*gfx].queueCount : 0;
     free(q);
     if (*gfx == ~0u) return -1;
-    return p->deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU     ? 3
-           : p->deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 2
-                                                                     : 1;
+    /* of two devices of a kind, the one with 1.3 */
+    return (p->deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU     ? 6
+            : p->deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 4
+                                                                      : 2) +
+           (api >= VK_API_VERSION_1_3);
 }
 /* device_score as snx_vk_best_device rates a device */
 static int device_rating(VkPhysicalDevice pd, const VkPhysicalDeviceProperties* p, void* user) {
@@ -239,7 +283,7 @@ static int device_rating(VkPhysicalDevice pd, const VkPhysicalDeviceProperties* 
 }
 
 /* g_vk.start_failure for no device found: each device with its Vulkan version, which a driver under 1.3 holds back
-   (a GPU driver package may have a newer one: gpu_driver) */
+   (a GPU driver package may have a newer one: gpu_driver), and what a 1.2 one lacks of vk12_extensions */
 static void start_failure_devices(void) {
     VkPhysicalDevice devices[8];
     u32 n = 8;
@@ -247,12 +291,23 @@ static void start_failure_devices(void) {
     if (vkEnumeratePhysicalDevices(g_vk.instance, &n, devices) < 0) n = 0;
     for (u32 i = 0; i < n && at < sizeof g_vk.start_failure; ++i) {
         VkPhysicalDeviceProperties p;
+        char lacks[512] = "";
         vkGetPhysicalDeviceProperties(devices[i], &p);
-        WARN("vulkan: %s has Vulkan %u.%u.%u, driver %08x\n", p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
-             VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion), p.driverVersion);
-        at += (size_t)snprintf(g_vk.start_failure + at, sizeof g_vk.start_failure - at, "%s%s has Vulkan %u.%u.%u",
+        u32 api = vk_api_for(p.apiVersion);
+        if (api >= VK_API_VERSION_1_2 && api < VK_API_VERSION_1_3) {
+            SnxVkExtensions e;
+            char names[400];
+            if (!snx_vk_device_extensions(devices[i], &e))
+                snprintf(lacks, sizeof lacks, " (its extensions could not be listed)");
+            else if (vk_1_2_missing(&e, names, sizeof names))
+                snprintf(lacks, sizeof lacks, " without %s", names);
+            snx_vk_extensions_free(&e);
+        }
+        WARN("vulkan: %s has Vulkan %u.%u.%u%s, driver %08x\n", p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
+             VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion), lacks, p.driverVersion);
+        at += (size_t)snprintf(g_vk.start_failure + at, sizeof g_vk.start_failure - at, "%s%s has Vulkan %u.%u.%u%s",
                                i ? "; " : "", p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
-                               VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion));
+                               VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion), lacks);
     }
 #ifdef __ANDROID__
     const char* hint = n ? ". A GPU driver package may have it (Settings > App > GPU Drivers)" : "";
@@ -261,7 +316,7 @@ static void start_failure_devices(void) {
 #endif
     if (at < sizeof g_vk.start_failure)
         snprintf(g_vk.start_failure + at, sizeof g_vk.start_failure - at,
-                 "%sScarletNX needs Vulkan 1.3 with a %s queue%s",
+                 "%sScarletNX needs Vulkan 1.3, or 1.2 with the extensions 1.3 took in, and a %s queue%s",
                  n ? ", and " : "No Vulkan device: ", g_opt_headless ? "graphics" : "graphics and presentation", hint);
 }
 
@@ -324,14 +379,53 @@ static void log_subgroups(u32 size, VkSubgroupFeatureFlags operations, VkShaderS
             without);
 }
 
+/* the commands of Vulkan 1.3 the renderer calls, as a 1.2 device has them: by the names of its extensions, the same
+   calls (the core names stay unloaded there). 0, with *lacks the first one the driver has not */
+static int vk12_commands(const char** lacks) {
+#define VK12_COMMAND(name, by)                                                                                         \
+    name = name##by;                                                                                                   \
+    if (!name && !*lacks) *lacks = #name #by
+    *lacks = NULL;
+    VK12_COMMAND(vkCmdBeginRendering, KHR);
+    VK12_COMMAND(vkCmdEndRendering, KHR);
+    VK12_COMMAND(vkCmdPipelineBarrier2, KHR);
+    VK12_COMMAND(vkCmdWriteTimestamp2, KHR);
+    VK12_COMMAND(vkQueueSubmit2, KHR);
+    VK12_COMMAND(vkCmdBindVertexBuffers2, EXT);
+    VK12_COMMAND(vkCmdSetCullMode, EXT);
+    VK12_COMMAND(vkCmdSetFrontFace, EXT);
+    VK12_COMMAND(vkCmdSetPrimitiveTopology, EXT);
+    VK12_COMMAND(vkCmdSetViewportWithCount, EXT);
+    VK12_COMMAND(vkCmdSetScissorWithCount, EXT);
+    VK12_COMMAND(vkCmdSetDepthTestEnable, EXT);
+    VK12_COMMAND(vkCmdSetDepthWriteEnable, EXT);
+    VK12_COMMAND(vkCmdSetDepthCompareOp, EXT);
+    VK12_COMMAND(vkCmdSetDepthBoundsTestEnable, EXT);
+    VK12_COMMAND(vkCmdSetStencilTestEnable, EXT);
+    VK12_COMMAND(vkCmdSetStencilOp, EXT);
+    VK12_COMMAND(vkCmdSetDepthBiasEnable, EXT);
+    VK12_COMMAND(vkCmdSetPrimitiveRestartEnable, EXT);
+    VK12_COMMAND(vkCmdSetRasterizerDiscardEnable, EXT);
+    VK12_COMMAND(vkGetDeviceImageMemoryRequirements, KHR);
+    VK12_COMMAND(vkGetDeviceImageSparseMemoryRequirements, KHR);
+#undef VK12_COMMAND
+    return !*lacks;
+}
+
 static int create_device(void) {
-    g_vk.phys = snx_vk_best_device(g_vk.instance, VK_API_VERSION_1_3, device_rating, NULL);
+    g_vk.phys = snx_vk_best_device(g_vk.instance, VK_API_VERSION_1_2, device_rating, NULL);
     if (!g_vk.phys) {
-        WARN("vulkan: no Vulkan 1.3 device with a suitable %s queue\n", g_opt_headless ? "graphics" : "presentation");
+        WARN("vulkan: no Vulkan 1.3 device, or 1.2 with the extensions 1.3 took in, with a suitable %s queue\n",
+             g_opt_headless ? "graphics" : "presentation");
         start_failure_devices();
         return 0;
     }
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
+    g_vk.api = vk_api_for(g_vk.props.apiVersion);
+    const int core13 = g_vk.api >= VK_API_VERSION_1_3;
+    /* SPIR-V 1.6 is Vulkan 1.3's: a 1.2 device takes 1.5, which declares demotion as its extension (the translator
+       does either way) */
+    spv_emit_set_version(core13 ? 0x00010600u : 0x00010500u);
     u32 gfx_queues = 0;
     device_score(g_vk.phys, &g_vk.props, &g_vk.gfx_family, &g_vk.compute_family, &gfx_queues);
     VkPhysicalDeviceSubgroupProperties subgroup = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
@@ -483,12 +577,25 @@ static int create_device(void) {
     int has_maintenance8 = 0;
     int has_vertex_input = 0;
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
+    const char* store_none_ext = NULL; /* a 1.2 device's store op NONE (vk12_store_none) */
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     {
         SnxVkExtensions e;
         snx_vk_device_extensions(g_vk.phys, &e);
         /* the extensions a driver is banned from leave the list before anything below reads it */
         vk_bans_filter(&e, ban_say);
+        store_none_ext = vk12_store_none(&e);
+        /* again on this list, which the bans took out of (each said above): a 1.2 device banned from one of them is
+           refused by its name, as one without it */
+        char lacks12[400];
+        if (!core13 && vk_1_2_missing(&e, lacks12, sizeof lacks12)) {
+            WARN("vulkan: %s has Vulkan 1.2 without %s\n", g_vk.props.deviceName, lacks12);
+            snprintf(g_vk.start_failure, sizeof g_vk.start_failure,
+                     "%s has Vulkan 1.2 without %s. ScarletNX needs Vulkan 1.3, or 1.2 with the extensions 1.3 took in",
+                     g_vk.props.deviceName, lacks12);
+            snx_vk_extensions_free(&e);
+            return 0;
+        }
         g_vk.has_divisor = snx_vk_extensions_has(&e, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
         has_vertex_input = snx_vk_extensions_has(&e, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
         g_vk.has_xfb = snx_vk_extensions_has(&e, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
@@ -593,13 +700,17 @@ static int create_device(void) {
         }
         if (g_vk.has_calibrated_host) ext[next++] = VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME;
     }
-    g_vk.video_family = g_settings.vulkan_video_decode && video_exts == 3 ? video_decode_family() : ~0u;
+    /* FFmpeg's Vulkan decoder loads the 1.3 commands by their core names */
+    g_vk.video_family = g_settings.vulkan_video_decode && video_exts == 3 && core13 ? video_decode_family() : ~0u;
     if (g_vk.video_family != ~0u) {
         ext[next++] = VK_KHR_VIDEO_QUEUE_EXTENSION_NAME;
         ext[next++] = VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME;
         ext[next++] = VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME;
         LOG("vulkan: H.264 movies decode with Vulkan Video, on queue family %u (experimental)\n", g_vk.video_family);
-    } else if (g_settings.vulkan_video_decode)
+    } else if (g_settings.vulkan_video_decode && !core13)
+        WARN("vulkan: Vulkan Video decode was asked for, but FFmpeg's Vulkan decoder needs Vulkan 1.3 and this device "
+             "runs 1.2: FFmpeg decodes movies on the CPU\n");
+    else if (g_settings.vulkan_video_decode)
         WARN("vulkan: Vulkan Video decode was asked for, but the device has no H.264 decode queue: FFmpeg decodes "
              "movies on the CPU\n");
     VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT fdiv = {
@@ -623,6 +734,19 @@ static int create_device(void) {
     VkPhysicalDeviceVulkan12Features q12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     VkPhysicalDeviceVulkan11Features q11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
     VkPhysicalDeviceVulkan13Features q13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    /* a 1.2 device's: those of vk12_extensions, which the 1.3 struct holds on a 1.3 one (and EDS's are core there) */
+    VkPhysicalDeviceSynchronization2Features qsync2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
+    VkPhysicalDeviceDynamicRenderingFeatures qrendering = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
+    VkPhysicalDeviceMaintenance4Features qmaintenance4 = {.sType =
+                                                              VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_FEATURES};
+    VkPhysicalDeviceShaderDemoteToHelperInvocationFeatures qdemote = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DEMOTE_TO_HELPER_INVOCATION_FEATURES};
+    VkPhysicalDeviceExtendedDynamicStateFeaturesEXT qeds = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
+    VkPhysicalDeviceExtendedDynamicState2FeaturesEXT qeds2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT};
     VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     VkPhysicalDeviceDescriptorBufferFeaturesEXT qdesc = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
@@ -672,7 +796,13 @@ static int create_device(void) {
                            has_maintenance8 ? &qmaintenance8 : NULL,
                            &q11,
                            &q12,
-                           &q13,
+                           core13 ? &q13 : NULL,
+                           core13 ? NULL : &qsync2,
+                           core13 ? NULL : &qrendering,
+                           core13 ? NULL : &qmaintenance4,
+                           core13 ? NULL : &qdemote,
+                           core13 ? NULL : &qeds,
+                           core13 ? NULL : &qeds2,
                            g_vk.has_divisor ? &fdiv : NULL,
                            g_vk.has_border_color ? &fbc : NULL,
                            g_vk.has_xfb ? &fxfb : NULL,
@@ -700,6 +830,33 @@ static int create_device(void) {
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &f2);
     /* without it the shaders do their FP16 work in 32 bits */
     if (vk_ban("shaderFloat16", q12.shaderFloat16, ban_say)) q12.shaderFloat16 = VK_FALSE;
+    if (!core13) {
+        q13.synchronization2 = qsync2.synchronization2;
+        q13.dynamicRendering = qrendering.dynamicRendering;
+        q13.maintenance4 = qmaintenance4.maintenance4;
+        q13.shaderDemoteToHelperInvocation = qdemote.shaderDemoteToHelperInvocation;
+        static const char* const names[] = {"synchronization2",     "dynamicRendering",
+                                            "maintenance4",         "shaderDemoteToHelperInvocation",
+                                            "extendedDynamicState", "extendedDynamicState2"};
+        const VkBool32 have12[] = {q13.synchronization2,      q13.dynamicRendering,
+                                   q13.maintenance4,          q13.shaderDemoteToHelperInvocation,
+                                   qeds.extendedDynamicState, qeds2.extendedDynamicState2};
+        char lacks[256] = "";
+        size_t at = 0;
+        for (u32 i = 0; i < sizeof names / sizeof *names; i++)
+            if (!have12[i] && at < sizeof lacks)
+                at += (size_t)snprintf(lacks + at, sizeof lacks - at, "%s%s", at ? ", " : "", names[i]);
+        if (at) {
+            WARN("vulkan: %s has Vulkan 1.2 and the extensions 1.3 took in, but not their features %s\n",
+                 g_vk.props.deviceName, lacks);
+            snprintf(
+                g_vk.start_failure, sizeof g_vk.start_failure,
+                "%s has Vulkan 1.2 without the features %s. ScarletNX needs Vulkan 1.3, or 1.2 with the extensions "
+                "1.3 took in and their features",
+                g_vk.props.deviceName, lacks);
+            return 0;
+        }
+    }
     g_vk.has_present_wait = has_present_id && has_present_wait && qpid.presentId && qpwait.presentWait;
     g_vk.has_present_timing = g_vk.has_present_wait && has_present_v2 && qpid2.presentId2 && qpwait2.presentWait2 &&
                               qtiming.presentTiming && qtiming.presentAtAbsoluteTime;
@@ -885,6 +1042,36 @@ static int create_device(void) {
                                             /* KIL demotes the lane; S2R queries its helper status */
                                             .shaderDemoteToHelperInvocation = VK_TRUE};
     void* chain = &f13;
+    /* a 1.2 device: those features as its extensions' (vk12_extensions), the 1.3 struct left out */
+    VkPhysicalDeviceSynchronization2Features fsync2 = {.sType =
+                                                           VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES,
+                                                       .pNext = &f12,
+                                                       .synchronization2 = VK_TRUE};
+    VkPhysicalDeviceDynamicRenderingFeatures frendering = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES,
+        .pNext = &fsync2,
+        .dynamicRendering = VK_TRUE};
+    VkPhysicalDeviceMaintenance4Features fmaintenance4 = {.sType =
+                                                              VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_FEATURES,
+                                                          .pNext = &frendering,
+                                                          .maintenance4 = VK_TRUE};
+    VkPhysicalDeviceShaderDemoteToHelperInvocationFeatures fdemote = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DEMOTE_TO_HELPER_INVOCATION_FEATURES,
+        .pNext = &fmaintenance4,
+        .shaderDemoteToHelperInvocation = VK_TRUE};
+    VkPhysicalDeviceExtendedDynamicStateFeaturesEXT feds = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT,
+        .pNext = &fdemote,
+        .extendedDynamicState = VK_TRUE};
+    VkPhysicalDeviceExtendedDynamicState2FeaturesEXT feds2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT,
+        .pNext = &feds,
+        .extendedDynamicState2 = VK_TRUE};
+    if (!core13) {
+        chain = &feds2;
+        for (u32 i = 0; i < VK12_EXTENSIONS; i++) ext[next++] = vk12_extensions[i];
+        ext[next++] = store_none_ext;
+    }
     VkPhysicalDeviceMaintenance8FeaturesKHR fmaintenance8 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_8_FEATURES_KHR, .maintenance8 = VK_TRUE};
     if (g_shader_dynamic_texture_offsets) {
@@ -1145,11 +1332,21 @@ static int create_device(void) {
     g_vk.feat12 = f12;
     g_vk.feat13 = f13;
     g_vk.feat11.pNext = &g_vk.feat12;
-    g_vk.feat12.pNext = &g_vk.feat13;
+    g_vk.feat12.pNext = core13 ? &g_vk.feat13 : NULL;
     g_vk.feat13.pNext = NULL;
     g_vk.feat2 = (VkPhysicalDeviceFeatures2){
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &g_vk.feat11, .features = g_vk.feat};
     volkLoadDevice(g_vk.dev);
+    const char* lacks_command = NULL;
+    if (!core13 && !vk12_commands(&lacks_command)) {
+        WARN("vulkan: %s enabled the extensions 1.3 took in, but has no %s\n", g_vk.props.deviceName, lacks_command);
+        snprintf(g_vk.start_failure, sizeof g_vk.start_failure,
+                 "%s has Vulkan 1.2 and the extensions 1.3 took in, but its driver has no %s", g_vk.props.deviceName,
+                 lacks_command);
+        vkDestroyDevice(g_vk.dev, NULL);
+        g_vk.dev = VK_NULL_HANDLE;
+        return 0;
+    }
     if (g_vk.has_checkpoints) vk_ck_init();
     pm_lock_announce(&g_vklock, "vulkan"); /* the device's calls, every thread's */
     vkGetDeviceQueue(g_vk.dev, g_vk.gfx_family, 0, &g_vk.gfx);
@@ -1162,7 +1359,7 @@ static int create_device(void) {
                                   .device = g_vk.dev,
                                   .instance = g_vk.instance,
                                   .preferredLargeHeapBlockSize = g_vk.alloc_cap < (256ull << 20) ? g_vk.alloc_cap : 0,
-                                  .vulkanApiVersion = VK_API_VERSION_1_3,
+                                  .vulkanApiVersion = core13 ? VK_API_VERSION_1_3 : VK_API_VERSION_1_2,
                                   .pVulkanFunctions = &vf,
                                   .flags = g_vk.has_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0};
     if (g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support)
@@ -1184,6 +1381,16 @@ static int create_device(void) {
         VkPhysicalDeviceProperties2 pp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &dp};
         vkGetPhysicalDeviceProperties2(g_vk.phys, &pp);
         LOG("vulkan: the driver that runs: %s, %s (driver ID %d)\n", dp.driverName, dp.driverInfo, (int)dp.driverID);
+    }
+    if (core13)
+        LOG("vulkan: the Vulkan 1.3 way: synchronization2, dynamic rendering and the extended dynamic state are core\n");
+    else {
+        char names[512];
+        size_t at = 0;
+        for (u32 i = 0; i < VK12_EXTENSIONS && at < sizeof names; i++)
+            at += (size_t)snprintf(names + at, sizeof names - at, "%s, ", vk12_extensions[i]);
+        LOG("vulkan: the Vulkan 1.2 way: what 1.3 has from %s%s, shaders in SPIR-V 1.5, no Vulkan Video decode\n",
+            names, store_none_ext);
     }
     LOG("vulkan: %s, Vulkan %u.%u.%u, driver %08x, graphics queue family %u, compute %u%s\n", g_vk.props.deviceName,
         VK_API_VERSION_MAJOR(g_vk.props.apiVersion), VK_API_VERSION_MINOR(g_vk.props.apiVersion),

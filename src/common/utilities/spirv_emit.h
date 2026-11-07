@@ -41,7 +41,7 @@ typedef struct {
     SpvWords locals;   /* the spv_emit_local variables of the function being written */
     size_t body_start; /* where they go in functions: after its first label (0 outside spv_emit_function) */
     uint32_t next_id;
-    uint32_t version; /* the module's SPIR-V version word, 0x00010600 (1.6) from spv_emit_init */
+    uint32_t version; /* the module's SPIR-V version word, spv_emit_set_version's (1.6 unless set) from spv_emit_init */
     uint32_t glsl;    /* the GLSL.std.450 import, 0 until it is made */
     SpvKnown* known;
     size_t known_count, known_capacity;
@@ -356,6 +356,9 @@ typedef enum {
 } SpvGlsl450Op;
 
 void spv_emit_init(SpvEmitter* e, size_t estimated_function_words);
+/* the SPIR-V version of the modules spv_emit_init starts from then on: 0x00010600 (1.6) until it is set. A Vulkan 1.2
+   device takes 1.5 at most */
+void spv_emit_set_version(uint32_t version);
 void spv_emit_destroy(SpvEmitter* e);
 uint32_t spv_emit_id(SpvEmitter* e);
 /* the GLSL.std.450 import, made on the first call */
