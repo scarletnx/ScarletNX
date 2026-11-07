@@ -336,7 +336,11 @@ static int validate(const char* spirv_val, const char* dir, const char* name, co
     if (!f) return 0;
     int ok = fwrite(words, 4, count, f) == count;
     ok &= !fclose(f);
+#ifdef _WIN32 /* cmd.exe drops the first and the last quote of a command that starts with one */
+    snprintf(command, sizeof command, "\"\"%s\" --target-env vulkan1.3 \"%s\"\"", spirv_val, path);
+#else
     snprintf(command, sizeof command, "\"%s\" --target-env vulkan1.3 \"%s\"", spirv_val, path);
+#endif
     ok &= system(command) == 0;
     if (!ok) fprintf(stderr, "spirv-val fails on %s\n", path);
     return ok;
@@ -369,7 +373,7 @@ static void test_programs(const char* spirv_val, const char* dir) {
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "compute: %s\n", si.first_unsupported);
     CHECK(si.ngbuf == 1 && si.gbuf_cbuf_off[0] == 0x20 && si.gbuf_wmask == 1 && (si.cbuf_mask & 1));
-    CHECK(si.gbuf_marks == 1); /* its store marks its window (SNX_VKB_WPAGES) */
+    CHECK(si.gbuf_marks == 0); /* its store logs no bytes: the renderer binds no mask (SNX_VKB_WPAGES) */
     if (spv) CHECK(validate(spirv_val, dir, "cs", spv, count));
     free(spv);
     si = (ShaderInfo){0};
@@ -1915,6 +1919,11 @@ static void test_global_pointer(const char* spirv_val, const char* dir) {
     env.ubo_words[SNX_VKB_CB] = 1024;
     env.ubo[SNX_VKB_SSBO] = buffer;
     env.ubo_words[SNX_VKB_SSBO] = 64;
+    /* a draw's page table of its buffers (SNX_VKB_SMAP): each one bound whole, with no atlas */
+    static u32 smap[48];
+    for (u32 k = 0; k < 16; k++) smap[k] = ~0u;
+    env.ubo[SNX_VKB_SMAP] = smap;
+    env.ubo_words[SNX_VKB_SMAP] = 48;
     int ran = run_stage(ST_VS, code, 15, vsph, &env);
     int ok = ran && buffer[0x12] == 7 && buffer[0x13] == 0 && env.position[0] == 0x1234 && env.position[1] == 0;
     CHECK(ok);

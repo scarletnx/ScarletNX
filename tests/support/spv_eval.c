@@ -785,7 +785,7 @@ const char* spv_eval(const uint32_t* w, size_t count, SpvEvalEnv* env) {
         uint32_t b;
         if ((sc == 2 || sc == 12) && v->binding) { /* Uniform, StorageBuffer */
             uint32_t k = v->binding - 1;
-            b = new_block(e, k < 64 ? env->ubo[k] : NULL, k < 64 ? env->ubo_words[k] : 0, 0);
+            b = new_block(e, k < 128 ? env->ubo[k] : NULL, k < 128 ? env->ubo_words[k] : 0, 0);
         } else {
             uint32_t* m = calloc(n ? n : 1, 4);
             if (!m) {
