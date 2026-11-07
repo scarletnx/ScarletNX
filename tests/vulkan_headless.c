@@ -3588,6 +3588,79 @@ static int check_resident_astc(void) {
     return failed;
 }
 
+/* An ASTC array is uploaded a level at a time over all its layers (vk_astc_upload_layers): a layer and level at a time,
+   each layer's encoder dispatch waited for the one before, and one game's arrays of 118 layers of 128x128 in 8 levels
+   took 667 ms of an RX 6700 XT as BC7 (docs/ASTC.md). The encoder runs once a level, and each layer's image is the one
+   its memory makes as a 2D texture on its own, as BC7 and as RGBA8 */
+static int astc_array_levels(int mode) {
+    static const RsFmt as_rgba8 = {"ASTC 4x4 as RGBA8", NVN_FORMAT_RGBA_ASTC_4x4, 256, 1, 4, 1};
+    const RsFmt* as = mode ? &as_rgba8 : &RS_ASTC4;
+    const u32 layers = 8; /* 7 levels each: rs_image's 64 regions */
+    const u64 cpu = HEAP_BASE + 0x1E000000 + (u64)mode * 0x100000;
+    RsTex arr;
+    g_settings.astc_mode = mode;
+    rs_make(&arr, as, 64, layers, 0xA80000000ull + (u64)mode * 0x1000000);
+    arr.tex.d.flags = 0; /* made whole, as a game's texture is */
+    nvn_tex_layout(&arr.tex.d, &arr.lay);
+    nvn_tic_encode(&arr.tex, NULL, 0, 0, arr.tic);
+    const VkFmt f = vk_tic_format(arr.tic[0], 0);
+    if (f.conv != VKC_ASTC || f.vk != (mode ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_BC7_UNORM_BLOCK)) {
+        printf("ASTC array levels, %s: the GPU %s, skipped\n", as->name,
+               f.conv != VKC_ASTC ? "samples ASTC as it is" : "holds no such image");
+        return 0;
+    }
+    const u64 size = (arr.lay.size + RS_TILE - 1) / RS_TILE * RS_TILE;
+    CHECK(mem_map(cpu, size, MS_NORMAL, PERM_RW) == 0);
+    for (u64 k = 0; k < size / RS_TILE; k++) rs_fill(&arr, GP(cpu + k * RS_TILE), (u32)k + 3); /* a color a block */
+    gmmu_map(arr.tex.gpu, cpu, size);
+    const u64 before = vk_astc_dispatches();
+    vk_lock();
+    Surf* t = vk_tex_from_tic(arr.tic);
+    vk_finish();
+    vk_unlock();
+    const u64 dispatches = vk_astc_dispatches() - before;
+    CHECK(t && t->layers == layers && t->levels == arr.levels);
+    if (dispatches != (mode ? 0 : arr.levels)) {
+        fprintf(stderr, "ASTC array of %u layers in %u levels, %s: %llu encoder dispatches, not %u\n", layers,
+                arr.levels, as->name, (unsigned long long)dispatches, mode ? 0 : arr.levels);
+        return 1;
+    }
+    u8* image = rs_image(t, &arr);
+    CHECK(image);
+    u64 at = 0;
+    for (u32 k = 0; k < layers; k++) {
+        RsTex one;
+        rs_make(&one, as, 64, 1, arr.tex.gpu + k * arr.lay.layer_size);
+        one.tex.d.flags = 0;
+        nvn_tex_layout(&one.tex.d, &one.lay);
+        nvn_tic_encode(&one.tex, NULL, 0, 0, one.tic);
+        vk_lock();
+        Surf* o = vk_tex_from_tic(one.tic);
+        vk_unlock();
+        u8* alone = o ? rs_image(o, &one) : NULL;
+        const u64 bytes = rs_bytes(&one);
+        if (!alone || memcmp(alone, image + at, (size_t)bytes)) {
+            fprintf(stderr, "ASTC array of %u layers, %s: layer %u's image differs from the texture its memory makes\n",
+                    layers, as->name, k);
+            return 1;
+        }
+        free(alone);
+        at += bytes;
+    }
+    free(image);
+    gmmu_space_unmap(arr.tex.gpu, size);
+    CHECK(mem_unmap(cpu, size) == 0);
+    printf("ASTC array of %u layers, %s: %llu encoder dispatches, each layer as its memory alone makes it\n", layers,
+           as->name, (unsigned long long)dispatches);
+    return 0;
+}
+static int check_astc_array_levels(void) {
+    const int had = g_settings.astc_mode;
+    int failed = astc_array_levels(0) || astc_array_levels(1);
+    g_settings.astc_mode = had;
+    return failed;
+}
+
 /* the block of level 0 of t's image at (x, 0) copied into buf at at: a texel, or a 4x4 block of a BC7 image */
 static void rs_copy(VkBuffer buf, u64 at, Surf* t, u32 x) {
     const u32 bw = t->f.vk == VK_FORMAT_BC7_UNORM_BLOCK || t->f.vk == VK_FORMAT_BC7_SRGB_BLOCK ? 4 : 1;
@@ -5587,6 +5660,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_sparse_resident_batched());
     CHECK(!check_resident_texture());
     CHECK(!check_resident_astc());
+    CHECK(!check_astc_array_levels());
     CHECK(!check_resident_texture_in_flight());
     CHECK(!check_sparse_pieces_batched());
     CHECK(!check_dma_untracked_source());
