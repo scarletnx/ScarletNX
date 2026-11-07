@@ -5153,6 +5153,7 @@ static int check_uma_page_changes(void) {
 
 #include "vulkan_descriptor_bench.inc"
 #include "vulkan_pipeline_probe.inc"
+#include "vulkan_pipeline_library.inc"
 #include "vulkan_indexed_map_bench.inc"
 #include "vulkan_nvn_storage.inc"
 #include "vulkan_nvn_compat.inc"
@@ -5448,6 +5449,28 @@ static int run_headless(int argc, char** argv) {
     }
     CHECK(!check_recorder_self_sync());
     viw_install();
+    /* every check with each draw binding the pipeline linked from its parts and never the one made whole
+       (SNX_TEST_GPL=linked), or with each pipeline made whole as on a device without pipeline libraries (whole) */
+    if (getenv("SNX_TEST_GPL")) {
+        const char* gpl = getenv("SNX_TEST_GPL");
+        if (!strcmp(gpl, "linked")) {
+            if (!g_vk.has_gpl) {
+                puts("SKIP pipelines linked from parts: the device doesn't link them");
+                vk_pipeline_quiesce();
+                CHECK(!snx_remove_tree(root));
+                free(root);
+                free(shot);
+                free(ppm);
+                return 77;
+            }
+            g_vk.gpl_hold = 1;
+        } else if (!strcmp(gpl, "whole"))
+            g_vk.has_gpl = 0;
+        else {
+            fprintf(stderr, "SNX_TEST_GPL=%s is not linked or whole\n", gpl);
+            return 2;
+        }
+    }
     if ((g_settings.descriptor_buffers == 1 && !g_vk.has_descriptor_buffers) ||
         (g_settings.descriptor_buffers == 2 && !g_vk.has_descriptor_heaps)) {
         puts("SKIP selected descriptor backend: the device does not support this path");
@@ -5731,6 +5754,7 @@ static int run_headless(int argc, char** argv) {
         return 0;
     }
     CHECK(!check_hash_copy());
+    CHECK(!check_pipeline_library());
     CHECK(!check_tex_view_refusal());
     CHECK(!check_staging_overflow()); /* first: it counts the staging blocks of a fresh device */
     CHECK(!check_rings_without_present());

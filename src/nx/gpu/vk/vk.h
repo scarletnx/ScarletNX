@@ -82,7 +82,7 @@ typedef struct {
        asks for it (experimental): FFmpeg's Vulkan decoder decodes on it (vk/nvdec.c), told of the device by the
        extensions and features enabled */
     u32 video_family;
-    const char* dev_ext[64]; /* create_device enables 59 at most, were every one it can enable there */
+    const char* dev_ext[64]; /* create_device enables 61 at most, were every one it can enable there */
     u32 dev_ext_n;
     VkPhysicalDeviceFeatures2 feat2; /* feat, with the 1.1 to 1.3 features enabled chained (to 1.2 on a 1.2 device) */
     VkPhysicalDeviceVulkan11Features feat11;
@@ -120,6 +120,14 @@ typedef struct {
        pipelines leave out of their keys */
     int vertex_input_dynamic;
     int has_dynamic_stride; /* a binding's stride is dynamic state, which MoltenVK refuses: a pipeline holds it then */
+    /* VK_EXT_graphics_pipeline_library with fast linking (pipeline_library.h's choice): a draw's new pipeline is
+       linked from its parts, and the pipeline made whole replaces it once a worker has made that (pipeline.c) */
+    int has_gpl;
+    /* a linked pipeline is made whole after (a GPU's); on a CPU device (lavapipe) the link is as fast to draw with, and
+       making it again took the CPU the drawing runs on: its parts are made optimized and the link stays */
+    int gpl_whole;
+    /* a test's: linked pipelines are never made whole, so every draw binds the linked one */
+    int gpl_hold;
     int has_vertex_robustness2; /* exact zero/default components for out-of-range mesh fetches */
     int has_calibrated_host;    /* VK_EXT_calibrated_timestamps with CLOCK_MONOTONIC_RAW: the GPU's clock goes next to
                                 the client's, one driver call (gpuprof.c's calibration) */
@@ -1611,6 +1619,12 @@ VkPipeline vk_pipeline_now(VkPipeline h, int* pending);
 /* so far: pipelines made, how many of them the pipeline cache had, ms the workers took making them, ms the GPU thread
    waited for new ones, shaders translated, ms translating them */
 void vk_pipeline_stats(u64* pipes, u64* hits, u64* make_ms, u64* wait_ms, u64* shaders, u64* shader_ms);
+/* so far, with g_vk.has_gpl: the parts made and the ms making them, the pipelines linked from them and the ms
+   linking, the linked pipelines made whole since and the ms that took, and those still to make whole */
+typedef struct {
+    u64 parts, part_ms, links, link_ms, whole, whole_ms, whole_left;
+} VkGplStats;
+void vk_pipeline_library_stats(VkGplStats* s);
 void vk_tex_stats(u64* uploads, u64* bytes); /* texture uploads from guest memory so far, and their bytes */
 u64 vk_tex_hashes(void); /* texture memory hashed so far, whole or sampled, to learn whether it changed */
 u64 vk_rt_made(void);                        /* render targets made so far */

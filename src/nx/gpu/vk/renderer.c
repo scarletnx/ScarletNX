@@ -680,6 +680,16 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                         "still to make\n",
                         (unsigned long long)early_made, (unsigned long long)early_hits,
                         (unsigned long long)early_left);
+                static VkGplStats gpl_said;
+                VkGplStats gpl;
+                vk_pipeline_library_stats(&gpl);
+                if (gpl.parts != gpl_said.parts || gpl.whole != gpl_said.whole || gpl.whole_left)
+                    LOG("vulkan: %llu pipeline parts made (%llu ms), %llu pipelines linked from them (%llu ms), %llu "
+                        "of those made whole in the background (%llu ms), %llu still to make whole\n",
+                        (unsigned long long)gpl.parts, (unsigned long long)gpl.part_ms, (unsigned long long)gpl.links,
+                        (unsigned long long)gpl.link_ms, (unsigned long long)gpl.whole,
+                        (unsigned long long)gpl.whole_ms, (unsigned long long)gpl.whole_left);
+                gpl_said = gpl;
             }
             {
                 /* each memory heap's use and the driver's budget for it (VK_EXT_memory_budget), and our own memory in

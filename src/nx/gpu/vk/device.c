@@ -11,6 +11,7 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/vertex_input.h"
+#include "nx/gpu/vk/pipeline_library.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/descriptor_heaps.h"
 #include "nx/gpu/texture/astc_bc.h"
@@ -584,7 +585,7 @@ static int create_device(void) {
     int has_host_import = 0, has_ahb = 0, has_placed = 0, has_map2 = 0, has_dmabuf = 0;
     int has_descriptor_buffer = 0, has_descriptor_heap = 0, has_extended_flags = 0, has_maintenance5 = 0;
     int has_maintenance8 = 0;
-    int has_vertex_input = 0;
+    int has_vertex_input = 0, has_gpl = 0;
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
     const char* store_none_ext = NULL; /* a 1.2 device's store op NONE (vk12_store_none) */
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
@@ -607,6 +608,8 @@ static int create_device(void) {
         }
         g_vk.has_divisor = snx_vk_extensions_has(&e, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
         has_vertex_input = snx_vk_extensions_has(&e, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
+        has_gpl = snx_vk_extensions_has(&e, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME) &&
+                  snx_vk_extensions_has(&e, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME);
         g_vk.has_xfb = snx_vk_extensions_has(&e, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
         g_vk.has_mixed_samples = snx_vk_extensions_has(&e, VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME);
         g_vk.has_coverage_to_color = snx_vk_extensions_has(&e, VK_NV_FRAGMENT_COVERAGE_TO_COLOR_EXTENSION_NAME);
@@ -783,6 +786,8 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR};
     VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT qvertex_input = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT};
+    VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT qgpl = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT};
     /* with the subset enabled, each of its features is off until the device asks for it: a view's swizzle, for one */
     PortabilityFeatures qport = {.sType = PORTABILITY_FEATURES_STYPE};
     VkPhysicalDevicePresentIdFeaturesKHR qpid = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
@@ -825,6 +830,7 @@ static int create_device(void) {
                            has_list_restart ? &qlist_restart : NULL,
                            index8_ext ? &qindex8 : NULL,
                            has_vertex_input ? &qvertex_input : NULL,
+                           has_gpl ? &qgpl : NULL,
                            has_portability ? &qport : NULL,
                            has_reconvergence ? &qreconv : NULL,
                            robustness ? &qpipeline : NULL,
@@ -912,6 +918,31 @@ static int create_device(void) {
             WARN("%s\n", line);
         else
             LOG("%s\n", line);
+    }
+    {
+        /* a draw's new pipeline linked from its parts (pipeline.c), where the device links them quickly */
+        VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT gpl = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &gpl};
+        if (has_gpl) vkGetPhysicalDeviceProperties2(g_vk.phys, &props);
+        /* a ban that holds took the extension out of the list (vk_bans_filter): its line says why */
+        char ban[1200];
+        uint32_t ban_line = vk_ban_find(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME);
+        if (ban_line) vk_ban_why(ban_line, ban, sizeof ban);
+        VkGplDevice gd = {g_vk.props.deviceName,
+                          p12.driverName,
+                          p12.driverInfo,
+                          (u32)p12.driverID,
+                          g_vk.props.driverVersion,
+                          has_gpl ? (qgpl.graphicsPipelineLibrary ? 2 : 1) : 0,
+                          gpl.graphicsPipelineLibraryFastLinking,
+                          gpl.graphicsPipelineLibraryIndependentInterpolationDecoration,
+                          ban_line ? ban : NULL,
+                          g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU};
+        char line[4096]; /* a ban's text is up to 1200 */
+        g_vk.has_gpl = vk_gpl_choose(&gd, line, sizeof line);
+        g_vk.gpl_whole = !gd.cpu;
+        LOG("%s\n", line);
     }
     /* the dynamic state and the barriers within a pass only serve feedback loops */
     g_vk.has_feedback = g_vk.has_feedback && qloop.attachmentFeedbackLoopLayout;
@@ -1272,6 +1303,15 @@ static int create_device(void) {
     if (g_vk.has_index8) {
         chain = &findex8;
         ext[next++] = index8_ext;
+    }
+    VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT fgpl = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT,
+        .pNext = chain,
+        .graphicsPipelineLibrary = VK_TRUE};
+    if (g_vk.has_gpl) {
+        chain = &fgpl;
+        ext[next++] = VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME;
+        ext[next++] = VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME;
     }
     /* when each present is displayed (display.c), which the game's pace goes by */
     VkPhysicalDevicePresentIdFeaturesKHR fpid = {

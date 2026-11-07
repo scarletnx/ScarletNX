@@ -2080,6 +2080,13 @@ if(NOT SNX_TOOLS_ONLY)
         target_link_libraries(snx-test-vk-bans PRIVATE snx_nx_flags snx_vk_common)
         add_test(NAME vk_extension_bans COMMAND snx-test-vk-bans)
     endif()
+    # pipelines linked from parts (gpu/vk/pipeline_library.c): the device's choice and its log line against stand-in
+    # devices, and each dynamic state's part
+    add_executable(snx-test-vk-pipeline-library vk_pipeline_library.c
+                   "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pipeline_library.c" ${snx_vk_extension_bans_sources})
+    snx_test_target(snx-test-vk-pipeline-library 99)
+    target_link_libraries(snx-test-vk-pipeline-library PRIVATE snx_nx_flags)
+    add_test(NAME vk_pipeline_library COMMAND snx-test-vk-pipeline-library)
     # the GPU driver a run asks for (nx/runtime/platform/gpu_driver_load.c) where none loads: Freedreno's variables set,
     # a wrong one, a package asked for here and a folder name that is none stopping the run with why, a run a case
     add_executable(snx-test-gpu-driver-load gpu_driver_load.c
