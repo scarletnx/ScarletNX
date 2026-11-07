@@ -6,10 +6,12 @@
    range_mod, reach) and its images, which go into rows of the atlas under its picture (ui.h). A two-frame APNG is
    an image and its pressed look, as RetroArch draws one; a one-frame image is drawn pressed at its alpha times
    alpha_mod. Every descriptor left out is logged with why, and the controls the skin has none for keep the built-in
-   look. Loaded before the window opens, as the atlas is made then */
+   look. controls_skin (settings.txt) names the skin: a shipped one (dist/controls/skins, compiled in) or a .cfg's
+   path; the backend applies it when the window opens and again whenever the setting changes (vpad_skin_changed) */
 #ifndef SNX_VPAD_SKIN_H
 #define SNX_VPAD_SKIN_H
 #include "common/cpu/aarch64/cpu.h"
+#include <stddef.h>
 
 #define SNX_SKIN_PIECES   4
 /* a piece's lit: its control held */
@@ -34,7 +36,13 @@ typedef struct {
     SnxSkinPiece piece[SNX_SKIN_PIECES];
 } SnxSkinControl;
 
-/* the overlay at path: 1 read, its controls in place (vpad_skin_set) and its images in the atlas (ui_skin_set); 0
-   when it can't be, said in the log, and the built-in look */
-int vpad_skin_load(const char* path);
+/* the skin a controls_skin value names: empty for the built-in look, a shipped skin's name, else a .cfg's path. Its
+   controls into at (pieces 0 for the built-in look) and its images to ui_skin_set for the next atlas; 1, or 0 when it
+   can't be read, said in the log, and at and the atlas's rows the built-in look's. On the main thread, not under
+   ui_lock */
+int vpad_skin_read(const char* value, SnxSkinControl* at);
+/* controls_skin's skin, read, then the atlas made from sprites (the built-in image, w x h, as ui_atlas_set takes it;
+   NULL for none) with its images, and its controls put in at once, under ui_lock: what vpad_skin_read returned. On the
+   main thread, not under ui_lock */
+int vpad_skin_apply(const u32* sprites, int w, int h);
 #endif

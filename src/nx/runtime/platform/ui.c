@@ -155,11 +155,9 @@ const u8* ui_image_get(u32* version) {
 int ui_skin_y(void) { return UI_SKIN_Y; }
 int ui_skin_room(void) { return UI_ROWS_MAX - UI_SKIN_Y; }
 void ui_skin_set(u32* texels, int rows) {
-    ui_lock();
     free(g_skin);
     g_skin = texels && rows > 0 && rows <= ui_skin_room() ? texels : NULL;
     g_skin_rows = g_skin ? rows : 0;
-    ui_unlock();
     if (texels && !g_skin) free(texels);
 }
 /* premultiplied: a blend between a sprite's edge and the clear texels around it */
@@ -171,12 +169,12 @@ static void premultiply(u32* to, const u32* from, size_t n) {
                 al << 24;
     }
 }
-void ui_atlas_set(const u32* sprites, int w, int h) {
+u32* ui_atlas_make(const u32* sprites, int w, int h, int* out_rows) {
     int x, y, c, rows = h + SNX_UI_PICTURE + g_skin_rows;
     u32* a;
-    if (w != SNX_CONTROLS_ATLAS_WIDTH || h != SNX_CONTROLS_ATLAS_HEIGHT) return; /* not the image the header is for */
+    if (!sprites || w != SNX_CONTROLS_ATLAS_WIDTH || h != SNX_CONTROLS_ATLAS_HEIGHT) return NULL; /* not the header's */
     a = (u32*)calloc((size_t)w * (size_t)rows, 4);
-    if (!a) return;
+    if (!a) return NULL;
     premultiply(a, sprites, (size_t)w * (size_t)h);
     if (g_skin) premultiply(a + (size_t)w * UI_SKIN_Y, g_skin, (size_t)w * (size_t)g_skin_rows);
     for (c = 0; c < 256; ++c)
@@ -194,11 +192,21 @@ void ui_atlas_set(const u32* sprites, int w, int h) {
     user_picture(a, w);
     /* the texels' bytes R G B A, as the GPU reads them */
     snx_le32_array(a, (size_t)w * (size_t)rows);
-    ui_lock();
+    *out_rows = rows;
+    return a;
+}
+void ui_atlas_put(u32* atlas, int rows) {
     free(g_atlas);
-    g_atlas = a;
+    g_atlas = atlas;
     g_atlas_h = rows;
     ++g_version;
+}
+void ui_atlas_set(const u32* sprites, int w, int h) {
+    int rows = 0;
+    u32* a = ui_atlas_make(sprites, w, h, &rows);
+    if (!a) return;
+    ui_lock();
+    ui_atlas_put(a, rows);
     ui_unlock();
 }
 const u32* ui_atlas(int* w, int* h, u32* version) {
