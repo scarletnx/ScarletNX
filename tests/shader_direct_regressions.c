@@ -3110,6 +3110,8 @@ static void transform_feedback_stores(void) {
                   has_binding(spv, words, SNX_VKB_XFB + 1) && !has_binding(spv, words, SNX_VKB_XFB + 2),
               "a capture by stores binds its parameters and the buffers it captures into");
         check(info.xfb.count[0] == 2 && info.xfb.count[1] == 1, "a capture by stores keeps its layout in its info");
+        check(count_opcode(spv, words, 199, 0xffffffffu) >= 2,
+              "a capture by stores tests the bound mask of each buffer it captures into (OpBitwiseAnd)");
         save_fixture(xfb_stores_path, spv, words);
     }
     free(spv);
