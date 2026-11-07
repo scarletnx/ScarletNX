@@ -119,6 +119,45 @@ static int index_half_green(const IndexPixels* px) {
     return px->green >= 6 && px->blue >= 6 && px->green + px->blue == 16 && !px->red;
 }
 
+/* A list whose restart index (3, the red vertex at green vertex 7's corner) comes between its two triangles. Where the
+   device restarts lists (VK_EXT_primitive_topology_list_restart, g_vk.has_list_restart) the index ends the first
+   triangle's run and the second draws: the whole quad green, as the 3D engine draws it. Without it, the way before the
+   extension: the index is a vertex, and the triangle (3, 5, 6) shows red. 8-bit indices without restart are widened
+   with the restart index made 0xFFFF, a vertex out of the buffer, which draws no red: only 16 and 32-bit ones are
+   checked that way */
+static int index_list_restart_cases(GpuChannel* channel, u64 target, u64 indices) {
+    IndexPixels px;
+    const u32 list[7] = {4, 5, 7, 3, 5, 6, 7};
+    const int restarts = g_vk.has_list_restart;
+    for (u32 isz = 1; isz <= 4; isz *= 2) {
+        if (!restarts && isz == 1) continue;
+        CHECK(!index_buffer(channel, indices, list, 7, isz, 3));
+        DrawCall call = {.topology = 4, .indexed = 1, .count = 7, .instances = 1};
+        CHECK(!index_draw(channel, target, &call, &px));
+        if (restarts ? !index_all_green(&px) : !px.red)
+            fprintf(stderr, "list of %u byte indices restarting at 3 (list restart %s): %u green, %u blue, %u red\n",
+                    isz, restarts ? "on" : "off", px.green, px.blue, px.red);
+        CHECK(restarts ? index_all_green(&px) : px.red > 0);
+    }
+    channel->r3d[0x591] = 1;
+    channel->r3d[0x592] = 3;
+    DrawCall call = {.topology = 4, .indexed = 3, .count = 7, .instances = 1, .inline_indices = list};
+    CHECK(!index_draw(channel, target, &call, &px));
+    if (restarts ? !index_all_green(&px) : !px.red)
+        fprintf(stderr, "inline list restarting at 3 (list restart %s): %u green, %u blue, %u red\n",
+                restarts ? "on" : "off", px.green, px.blue, px.red);
+    CHECK(restarts ? index_all_green(&px) : px.red > 0);
+    if (restarts) { /* Vulkan's own restart index, read as it is */
+        const u32 list_ff[7] = {4, 5, 7, 0xFFFF, 5, 6, 7};
+        CHECK(!index_buffer(channel, indices, list_ff, 7, 2, 0xFFFF));
+        call = (DrawCall){.topology = 4, .indexed = 1, .count = 7, .instances = 1};
+        CHECK(!index_draw(channel, target, &call, &px));
+        CHECK(index_all_green(&px));
+    }
+    channel->r3d[0x591] = 0;
+    return 0;
+}
+
 static int index_cases(GpuChannel* channel, u64 target, u64 indices) {
     IndexPixels px;
     const u32 quad[5] = {9, 4, 5, 6, 7}, quad0[4] = {0, 1, 2, 3}, strip[5] = {4, 5, 7, 2, 4};
@@ -168,6 +207,7 @@ static int index_cases(GpuChannel* channel, u64 target, u64 indices) {
     CHECK(!index_draw(channel, target, &call, &px));
     CHECK(index_all_green(&px));
     channel->r3d[0x591] = 0;
+    CHECK(!index_list_restart_cases(channel, target, indices));
     return 0;
 }
 
@@ -763,6 +803,10 @@ static int check_index_draws(void) {
     g_vk.has_index8 = 0; /* the widening on the GPU, which a device without 8-bit indices takes */
     CHECK(!index_cases(channel, target, indices));
     g_vk.has_index8 = had8;
+    int had_list_restart = g_vk.has_list_restart;
+    g_vk.has_list_restart = 0; /* the way a device without VK_EXT_primitive_topology_list_restart takes */
+    CHECK(!index_list_restart_cases(channel, target, indices));
+    g_vk.has_list_restart = had_list_restart;
     CHECK(!indirect_cases(channel, target, indices, address + 0x16000));
     CHECK(!owned_stream_case(channel, target, colors, address + 0x15000, cpu + 0x15000));
     CHECK(!owned_index_case(channel, target, indices, cpu + 0x14000, address + 0x11000));
@@ -772,9 +816,10 @@ static int check_index_draws(void) {
     CHECK(!fragment_query_volume_case(channel, target, address));
     CHECK(!fragment_query_slots_case(channel, target, address));
     CHECK(!index_bound_cases(channel, target, indices, address + 0x1A000, address + 0x1C000));
-    printf("index draws: quads, widened and native 8-bit indices, restart indices and rewritten indices' bounds checked "
-           "(8-bit indices %s)\n",
-           had8 ? "native" : "unavailable");
+    printf(
+        "index draws: quads, widened and native 8-bit indices, restart indices and rewritten indices' bounds checked "
+        "(8-bit indices %s, lists restart %s)\n",
+        had8 ? "native" : "unavailable", had_list_restart ? "where the 3D engine's do" : "nowhere: the device can't");
     free(channel);
     return 0;
 }

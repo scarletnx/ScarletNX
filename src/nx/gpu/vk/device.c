@@ -403,6 +403,7 @@ static int create_device(void) {
     int has_pipeline_robustness = 0, has_robustness2 = 0;
     u32 next = 0;
     int has_shader_clock = 0, has_feedback_dynamic = 0, has_cond = 0, has_provoking = 0, video_exts = 0;
+    int has_list_restart = 0;
     int has_portability = 0, has_reconvergence = 0;
     int has_calibrated = 0, has_present_id = 0, has_present_wait = 0, has_present_v2 = 0, has_calibrated_khr = 0;
     int has_google_timing = 0;
@@ -437,6 +438,7 @@ static int create_device(void) {
         g_vk.has_local_read = snx_vk_extensions_has(&e, VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME);
         has_cond = snx_vk_extensions_has(&e, VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME);
         has_provoking = snx_vk_extensions_has(&e, VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME);
+        has_list_restart = snx_vk_extensions_has(&e, VK_EXT_PRIMITIVE_TOPOLOGY_LIST_RESTART_EXTENSION_NAME);
         g_vk.has_conservative = snx_vk_extensions_has(&e, VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME);
         g_vk.has_depth_range_unrestricted = snx_vk_extensions_has(&e, VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME);
         has_pipeline_robustness = snx_vk_extensions_has(&e, VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME);
@@ -569,6 +571,8 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CONDITIONAL_RENDERING_FEATURES_EXT};
     VkPhysicalDeviceProvokingVertexFeaturesEXT qprov = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
+    VkPhysicalDevicePrimitiveTopologyListRestartFeaturesEXT qlist_restart = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIMITIVE_TOPOLOGY_LIST_RESTART_FEATURES_EXT};
     VkPhysicalDeviceIndexTypeUint8FeaturesKHR qindex8 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR};
     VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT qvertex_input = {
@@ -606,6 +610,7 @@ static int create_device(void) {
                            g_vk.has_local_read ? &qlocal : NULL,
                            has_cond ? &qcond : NULL,
                            has_provoking ? &qprov : NULL,
+                           has_list_restart ? &qlist_restart : NULL,
                            index8_ext ? &qindex8 : NULL,
                            has_vertex_input ? &qvertex_input : NULL,
                            has_portability ? &qport : NULL,
@@ -627,6 +632,15 @@ static int create_device(void) {
     g_vk.has_vertex_robustness2 = qpipeline.pipelineRobustness && qrobust.robustBufferAccess2;
     g_vk.has_cond_render = has_cond && qcond.conditionalRendering;
     g_vk.has_provoking_last = has_provoking && qprov.provokingVertexLast;
+    g_vk.has_list_restart = has_list_restart && qlist_restart.primitiveTopologyListRestart;
+    g_vk.has_patch_list_restart = g_vk.has_list_restart && qlist_restart.primitiveTopologyPatchListRestart;
+    if (g_vk.has_list_restart)
+        LOG("vulkan: the restart index restarts lists as it does strips%s (VK_EXT_primitive_topology_list_restart)\n",
+            g_vk.has_patch_list_restart ? ", and patch lists" : ", not patch lists");
+    else
+        LOG("vulkan: the restart index restarts strips and fans only: it is a vertex in a list, as the device has %s\n",
+            has_list_restart ? "VK_EXT_primitive_topology_list_restart without its list feature"
+                             : "no VK_EXT_primitive_topology_list_restart");
     g_vk.has_index8 = index8_ext && qindex8.indexTypeUint8;
     {
         /* each draw's vertex layout as dynamic state, or a pipeline per layout: the setting, then the device and the
@@ -934,6 +948,15 @@ static int create_device(void) {
     if (g_vk.has_cond_render) {
         chain = &fcond;
         ext[next++] = VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME;
+    }
+    VkPhysicalDevicePrimitiveTopologyListRestartFeaturesEXT flist_restart = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIMITIVE_TOPOLOGY_LIST_RESTART_FEATURES_EXT,
+        .pNext = chain,
+        .primitiveTopologyListRestart = VK_TRUE,
+        .primitiveTopologyPatchListRestart = (VkBool32)g_vk.has_patch_list_restart};
+    if (g_vk.has_list_restart) {
+        chain = &flist_restart;
+        ext[next++] = VK_EXT_PRIMITIVE_TOPOLOGY_LIST_RESTART_EXTENSION_NAME;
     }
     VkPhysicalDeviceProvokingVertexFeaturesEXT fprov = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT,

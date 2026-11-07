@@ -3952,11 +3952,18 @@ retry:
         LOG_LIMIT(1, "vulkan: a draw of %u vertices made into other indices (cut to %u)\n", count, 1u << 24);
         count = 1u << 24;
     }
-    /* Vulkan restarts at all ones of the index type, in strips and fans; the guest's restart index is 0x592 */
+    /* Vulkan restarts at all ones of the index type, in strips and fans, and in lists (patch lists apart) as the 3D
+       engine does where the device has VK_EXT_primitive_topology_list_restart; the guest's restart index is 0x592. An
+       indirect draw's indices are read as they are: there a list restarts at Vulkan's own restart index only, and
+       another one stays a vertex, as it was without the extension */
+    int list = topo == VK_PRIMITIVE_TOPOLOGY_POINT_LIST || topo == VK_PRIMITIVE_TOPOLOGY_LINE_LIST ||
+               topo == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST || topo == VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY ||
+               topo == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY;
+    int list_restart = topo == VK_PRIMITIVE_TOPOLOGY_PATCH_LIST ? g_vk.has_patch_list_restart : g_vk.has_list_restart;
+    u32 vulkan_ri = isz == 1 ? 0xFFu : isz == 2 ? 0xFFFFu : 0xFFFFFFFFu;
     int restart =
-        ds->index.restart && topo != VK_PRIMITIVE_TOPOLOGY_POINT_LIST && topo != VK_PRIMITIVE_TOPOLOGY_LINE_LIST &&
-        topo != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST && topo != VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY &&
-        topo != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY && topo != VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
+        ds->index.restart && ((!list && topo != VK_PRIMITIVE_TOPOLOGY_PATCH_LIST) ||
+                              (list_restart && (!dc->indirect || (ds->index.restart_index & vulkan_ri) == vulkan_ri)));
     u32 icount = count;
     i32 voffset = (i32)base_vertex; /* the draw's vertexOffset */
     if (dc->indirect) {
