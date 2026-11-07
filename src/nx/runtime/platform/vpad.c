@@ -438,12 +438,14 @@ void vpad_edit(int on) {
 int vpad_editing(void) { return g_edit; }
 int vpad_shown(void) { return g_settings.show_controls || g_edit; }
 
-/* the pressed D-pad (dpad, DPAD_ bits): one direction is the up sprite turned, two the up-left one */
+/* the D-pad, and pressed (dpad, DPAD_ bits) its pressed look over it: one direction is the up sprite turned, two the
+   up-left one. The pressed drawables are a dark cross, which alone sank into a dark game, its middle first */
 static void dpad_draw(SnxUiList* l, const float r[4], u32 alpha, u32 dpad) {
     static const u32 one[4] = {DPAD_UP, DPAD_RIGHT, DPAD_DOWN, DPAD_LEFT};
     static const u32 two[4] = {DPAD_UP | DPAD_LEFT, DPAD_UP | DPAD_RIGHT, DPAD_DOWN | DPAD_RIGHT,
                                DPAD_DOWN | DPAD_LEFT};
     int t;
+    ui_sprite(l, SNX_SPRITE_DPAD, r[0], r[1], r[2], r[3], alpha, 0);
     for (t = 0; t < 4; ++t) {
         if (dpad == one[t]) {
             ui_sprite(l, SNX_SPRITE_DPAD_UP, r[0], r[1], r[2], r[3], alpha, t);
@@ -454,7 +456,6 @@ static void dpad_draw(SnxUiList* l, const float r[4], u32 alpha, u32 dpad) {
             return;
         }
     }
-    ui_sprite(l, SNX_SPRITE_DPAD, r[0], r[1], r[2], r[3], alpha, 0);
 }
 /* a stick's ring on r, its knob ax, ay (-1 to 1 right and down) from the middle, the pressed one when pressed */
 static void knob_draw(SnxUiList* l, const float r[4], float ax, float ay, int pressed, u32 alpha) {
