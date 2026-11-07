@@ -24,7 +24,7 @@ u32 nvn_program_subroutine(u64 program, i32 stage) {
     return 0;
 }
 
-static u8 memory[1 << 20];
+static u8 memory[2 << 20]; /* the runtime's memory past 0x80000 (kmem_alloc): each command buffer cuts from its own segments */
 u8* g_mem = memory; /* guest address a is memory + a */
 
 /* the one pool: command memory from 0x10000 on */
@@ -38,6 +38,11 @@ u64 kmem_alloc(u64 size, u32 state, u32 perm) {
     u64 at = g_lent;
     (void)state;
     (void)perm;
+    if (size > sizeof memory - at) { /* past the test's guest memory: fail here, not in a later write */
+        fprintf(stderr, "kmem_alloc: %llu bytes at %llx are past the test's memory\n", (unsigned long long)size,
+                (unsigned long long)at);
+        abort();
+    }
     g_lent += size;
     return at;
 }
