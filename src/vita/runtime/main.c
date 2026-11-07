@@ -215,7 +215,7 @@ static int play(const char* folder, bool recompile, double seconds, const char* 
     /* An existing module that matches is played as it is, else it is compiled first: decided from its file, before it
        is loaded, which happens once */
     bool current = !recompile && vita_module_current(module, &image);
-    if (!current) printf("Compiling the game's code\n");
+    if (!current) printf("Recompiling %s (Vita AArch32)\n", image.name);
     if ((!current && vita_aot_compile(folder, &image, error, sizeof error)) ||
         !vita_native_open(module, &image, &native, error, sizeof error)) {
         fprintf(stderr, "scarletnx-vita: %s\n", error);

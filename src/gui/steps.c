@@ -48,6 +48,12 @@ static void line(GuiSteps* steps, const char* s, uint64_t now) {
         sscanf(block, "compiled block %u/%u", &value, &total) == 2) {
         last->value = value;
         last->total = total;
+    } else if (last && !strcmp(last->label, "RECOMPILE") &&
+               sscanf(s, "Compiled %u/%u chunks of blocks", &value, &total) == 2) {
+        /* Vita compiles its discovered AArch32 blocks in parallel chunks, rather than the Switch driver's
+           per-function progress lines. The completed chunk count is its progress unit. */
+        last->value = value;
+        last->total = total;
     } else if (last && !strcmp(last->label, "EXTRACT") && sscanf(s, " extracted %u of %u MB", &value, &total) == 2) {
         /* the driver's row a second, over itself: the step's own line shows it, no note under it */
         last->value = value;
