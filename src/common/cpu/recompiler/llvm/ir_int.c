@@ -631,6 +631,7 @@ int snx_ir_int_handles(SnxA64Op op) {
         case SNX_A64_OP_AUTIB:
         case SNX_A64_OP_AUTDA:
         case SNX_A64_OP_AUTDB:
+        case SNX_A64_OP_PACGA:
         case SNX_A64_OP_SVC:
         case SNX_A64_OP_BRK:
         case SNX_A64_OP_NOP:
@@ -663,6 +664,19 @@ void snx_ir_int(SnxIr* ir, const SnxA64Insn* insn, SnxU32 word, SnxU64 pc) {
             V upper = LLVMBuildSelect(B, nonzero(ir, LLVMBuildAnd(B, pointer, ir_i64(ir, 1ull << 55), "")),
                                       ir_i64(ir, ~low), ir_i64(ir, 0), "");
             set_reg(ir, rd, LLVMBuildOr(B, LLVMBuildAnd(B, pointer, ir_i64(ir, low), ""), upper, ""));
+            break;
+        }
+        case SNX_A64_OP_PACGA: {
+            /* PACGA has no SCTLR enable: it always answers a code in bits [63:32] under the generic key, the low
+               half zero. No key is modelled, so the code is a fixed mix of Xn and Xm|SP: what a game signs with it
+               (one game's SDK, a fiber's context) it checks later with the same instruction, which answers the same */
+            V t = LLVMBuildXor(B, reg(ir, (unsigned)a->rn, 1),
+                               LLVMBuildMul(B, reg_sp(ir, (unsigned)a->rm, 1), ir_i64(ir, 0x9E3779B97F4A7C15ull), ""),
+                               "");
+            t = LLVMBuildXor(B, t, LLVMBuildLShr(B, t, ir_i64(ir, 29), ""), "");
+            t = LLVMBuildMul(B, t, ir_i64(ir, 0xBF58476D1CE4E5B9ull), "");
+            t = LLVMBuildXor(B, t, LLVMBuildLShr(B, t, ir_i64(ir, 32), ""), "");
+            set_reg(ir, (unsigned)a->rd, LLVMBuildAnd(B, t, ir_i64(ir, 0xFFFFFFFF00000000ull), ""));
             break;
         }
         case SNX_A64_OP_ADR: set_reg(ir, (unsigned)a->rd, ir_i64(ir, pc + (SnxU64)(int64_t)a->imm)); break;
