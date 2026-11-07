@@ -75,7 +75,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 
 | Key | Default | Effect |
 | --- | --- | --- |
-| `fps_limit` | `game` | The pace the game asks for, as on the console: 60 FPS, or 30 for a game made for 30. `0` is unlimited, and `10` to `1000` is that many FPS |
+| `fps_limit` | `game` | The pace the game asks for, as on the console: 60 FPS, or 30 for a game made for 30. `0` is unlimited, and `10` to `1000` is that many FPS. A 3DS game takes it too (`--fps_limit=N`): its clock runs at N/60 of the console's pace (the 3DS shows 60 frames a second), its sound with it; `0` skips every wait, its sound not played. F4 turns it off and on there too |
 | `memory_gb` | `0` | Memory the game sees. Below `6` it is the console's 3.2 GB, `6` gives 4.8 GB and `8` gives 6.8 GB. Games that run out of memory on 3.2 GB need `6` |
 | `memory_fit_mode` | `0` | `0` (Auto) tells the game no more of `memory_gb`'s memory than the device can still give it, measured as the game starts, less what the rest of ScarletNX takes, so a device with less than the console has is not run out of memory, and one that can give it all tells it all of it. The log says what it measured. `1` (Off) tells it all of it. It takes the place of `memory_fit`, whose `0` was Off ([DEPRECATIONS](DEPRECATIONS.md)) |
 | `heap_max_mb` | `0` | The most heap the game can allocate, in MB. `0` is as much as the memory allows |

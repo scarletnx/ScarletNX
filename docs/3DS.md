@@ -400,9 +400,15 @@ B3n30/citra_system_archives): the Mii data, the country list, the shared font
 system title is NotFound. Directory sessions read their entries, and FSFILE has
 Flush, priorities and OpenLinkFile. Reads preflight
 the complete guest destination and stage host IO before publication.
-Host-paced GetSystemTick and the shared page's date and time (the host's local
+GetSystemTick and the shared page's date and time (the host's local
 time, rewritten every hour into the entry the counter does not select, as
-Azahar does) serve time queries, without cycle accuracy. FSUSER ControlArchive
+Azahar does) serve time queries, without cycle accuracy. Every deadline, sleep and
+tick of the runtime is on one clock (`board/clock.c`): the host's at the console's
+pace, which the Switch's `fps_limit` sets as for a Switch game. `N` runs it at N/60
+of the console's pace (the 3DS shows 60 frames a second), the sound with it; `0`
+skips every wait, the clock moving on by it, so the game runs as fast as the host
+does and its sound is not played; F4 turns the limit off and back on. A change of
+pace never moves the clock back. FSUSER ControlArchive
 GET_TIMESTAMP (`0x80d`) resolves a bounded UTF-16 archive path and returns the real
 backing file's host modification time as a 3DS datetime (milliseconds since 1900
 UTC). Missing paths return `0xc8804478` and stale tokens `0xc8804465`.

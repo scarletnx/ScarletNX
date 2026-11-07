@@ -6,6 +6,7 @@
 #include "3ds/runtime/main.h"
 #include "3ds/ipc/ctr_ipc.h"
 #include "3ds/input/input.h"
+#include "3ds/board/clock.h"
 #include "3ds/services/uds.h"
 #include "common/utilities/ascii.h"
 #include "common/utilities/common.h"
@@ -71,7 +72,9 @@ static void usage(FILE* out) {
         "                  refresh, or at once, instead of each in turn at its refresh (the default 1);\n"
         "                  --fullscreen=1 starts the window fullscreen, but for --seconds and --max-blocks runs (F11\n"
         "                  or Alt+Enter switches it while the game runs); --anisotropy=N (2 to 16) filters a\n"
-        "                  mipmapped texture the game filters linearly anisotropically (default 0: as the game asks)\n"
+        "                  mipmapped texture the game filters linearly anisotropically (default 0: as the game asks);\n"
+        "                  --fps_limit=N runs the game at N/60 of the console's pace (the 3DS shows 60 frames a\n"
+        "                  second), 0 as fast as it goes, game the console's (the default); F4 turns it off and on\n"
         "  --ipc-stubs L   With --ctr_auto_stub_ipc=0, still answer a service command the runtime lacks with\n"
         "                  success for the services in L: all, or a comma list of srv, fs, apt, ptm, hid, gsp,\n"
         "                  cfg, dsp, system. Given more than once, the lists add up\n"
@@ -583,6 +586,12 @@ int snx_ctr_main(int argc, char** argv) {
         } else
             input = arg;
     }
+    /* the Switch's fps_limit, its text as the Switch reads it, the game's clock's pace (board/clock.h) */
+    char said[192];
+    int pace = snx_ctr_clock_pace();
+    (void)snx_ctr_clock_parse(g_settings.fps_limit, &pace, said, sizeof said);
+    if (said[0]) fprintf(stderr, "settings: %s\n", said);
+    snx_ctr_clock_set_pace(pace);
     if (old_trace)
         snx_error("SNX_3DS_UDS_PACKET_TRACE=%s is deprecated, %s: ctr_uds_trace=%d (docs/DEPRECATIONS.md)", old_trace,
                   strcmp(old_trace, "1")     ? "and only 1 did anything"

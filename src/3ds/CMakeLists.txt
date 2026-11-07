@@ -2,7 +2,8 @@
 # Copyright 2026 the ScarletNX contributors
 # The board, loader and memory libraries need neither the NX runtime nor an Azahar build tree. The driver links LLVM
 # for its compiler, and its presenter and audio output use SDL3 and the Vulkan headers.
-add_library(snx_ctr_board STATIC board/board.c)
+add_library(snx_ctr_board STATIC board/board.c board/clock.c)
+target_link_libraries(snx_ctr_board PUBLIC scarletnx-common) # the clock's host time (snx_seconds)
 set_target_properties(snx_ctr_board PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_compile_options(snx_ctr_board PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 add_library(snx_ctr_memory STATIC memory/memory.c memory/host.c)

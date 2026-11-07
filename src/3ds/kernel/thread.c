@@ -3,6 +3,7 @@
    Serialized, bounded single-core thread contexts; no host threads or JIT.
    SVC register layout from Azahar kernel/svc_wrapper.h (revision in 3DS.md). */
 #include "3ds/runtime/internal.h"
+#include "3ds/board/clock.h"
 #include "common/utilities/endian.h"
 #include "3ds/services/gsp.h"
 #include "3ds/services/dsp.h"
@@ -41,7 +42,7 @@ void snx_ctr_thread_block(SnxCtrProcess* p, uint32_t id, uint32_t address) {
     ++p->objects[id].refs;
 }
 void snx_ctr_thread_ready(SnxCtrProcess* p, uint32_t id) { p->objects[id].data.thread.ready_seq = ++p->sched_seq; }
-uint64_t snx_ctr_now_ns(void) { return (uint64_t)(snx_seconds() * 1e9); }
+uint64_t snx_ctr_now_ns(void) { return (uint64_t)(snx_ctr_clock_seconds() * 1e9); }
 /* Every thread's effective priority: its own, improved to the best effective priority of the threads waiting on a
    mutex it holds, transitively (Azahar Mutex::UpdatePriority and Thread::UpdatePriority). A chain is at most as long
    as the threads, and each round that changes nothing ends it. */
@@ -341,9 +342,12 @@ SnxCtrSvcResult snx_ctr_thread_exit(SnxCtrProcess* p) {
         if (p->objects[i].type == CTR_OBJ_THREAD && !p->objects[i].data.thread.dead) return SNX_CTR_SVC_BLOCKED;
     return SNX_CTR_SVC_EXIT; /* the process's last thread */
 }
+/* the host sleeps until the clock reaches deadline: for the time it takes at the pace, and not at all with no limit, the
+   clock moving there (board/clock.c) */
 static void sleep_until(uint64_t deadline) {
-    uint64_t now = now_ns();
-    if (deadline <= now) return;
+    double wait = snx_ctr_clock_wait((double)deadline / 1e9);
+    if (!(wait > 0)) return;
+    uint64_t ns = (uint64_t)(wait * 1e9);
 #if defined(_WIN32)
     /* Sleep() rounds to the system tick (15.6 ms unless raised), far longer than a 4.9 ms audio frame: a high-resolution
        waitable timer (Windows 10 1803 and later) waits the exact time, Sleep() remains where it is missing */
@@ -354,13 +358,13 @@ static void sleep_until(uint64_t deadline) {
         timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
     }
     LARGE_INTEGER due;
-    due.QuadPart = -(LONGLONG)((deadline - now) / 100); /* relative, in 100 ns units */
+    due.QuadPart = -(LONGLONG)(ns / 100); /* relative, in 100 ns units */
     if (timer && due.QuadPart && SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE))
         WaitForSingleObject(timer, INFINITE);
     else
-        Sleep((DWORD)((deadline - now) / 1000000 ? (deadline - now) / 1000000 : 1));
+        Sleep((DWORD)(ns / 1000000 ? ns / 1000000 : 1));
 #else
-    struct timespec ts = {(time_t)((deadline - now) / 1000000000), (long)((deadline - now) % 1000000000)};
+    struct timespec ts = {(time_t)(ns / 1000000000), (long)(ns % 1000000000)};
     nanosleep(&ts, NULL);
 #endif
 }

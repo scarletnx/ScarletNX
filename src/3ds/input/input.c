@@ -9,6 +9,7 @@
    gamepad_deadzone. The first pad with motion sensors is the console's accelerometer and gyroscope. The script
    (ctr_script) is unattended.c's for a Switch game: ms:hex presses, each held for press_len ms */
 #include "3ds/input/input.h"
+#include "3ds/board/clock.h"
 #include "common/utilities/common.h"
 #include "common/utilities/pad_sdl.h"
 #include "common/utilities/script.h"
@@ -46,7 +47,7 @@ static struct {
     SDL_Gamepad* pads[INPUT_PADS];
     SnxPress* script; /* ms after snx_ctr_input_init, SNX_CTR_PAD_* */
     size_t presses;
-    double start; /* snx_seconds() at snx_ctr_input_init */
+    double start; /* the clock (board/clock.h) at snx_ctr_input_init: the script is on the game's time */
     bool gamepads;
     bool touch;
     uint32_t touch_x, touch_y;
@@ -75,7 +76,7 @@ void snx_ctr_input_map(const char* text) {
 }
 
 void snx_ctr_input_init(void) {
-    g_input.start = snx_seconds();
+    g_input.start = snx_ctr_clock_seconds();
     g_input.presses = snx_script_parse("scarletnx-3ds", g_settings.ctr_script, SNX_CTR_PAD_BUTTONS, &g_input.script);
     /* SDL sends an added event for each gamepad already connected */
     g_input.gamepads = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
@@ -179,7 +180,7 @@ void snx_ctr_input_read(SnxCtrInput* input) {
         stick(axis(pad, SDL_GAMEPAD_AXIS_RIGHTX), -axis(pad, SDL_GAMEPAD_AXIS_RIGHTY), dead, input->c_stick);
     }
     if (g_input.presses) {
-        double ms = (snx_seconds() - g_input.start) * 1000.0;
+        double ms = (snx_ctr_clock_seconds() - g_input.start) * 1000.0;
         input->buttons |= snx_script_held(g_input.script, g_input.presses, ms, (uint32_t)g_settings.press_length);
     }
 }

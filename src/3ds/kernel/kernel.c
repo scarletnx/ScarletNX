@@ -7,6 +7,7 @@
    vm_manager}.cpp at 987f18405073960622e1043bb44005989135c6e1 (svc.cpp is GPL-3.0-or-later there).
    Independent serialized implementation; no reference runtime dependency. */
 #include "3ds/kernel/ctr_kernel.h"
+#include "3ds/board/clock.h"
 #include "3ds/runtime/internal.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
@@ -998,7 +999,7 @@ SnxCtrSvcResult snx_ctr_svc(SnxCtrProcess* p, uint32_t number) {
             return SNX_CTR_SVC_RETURN;
         }
         case 0x28: {
-            double elapsed = snx_seconds() - p->clock_origin;
+            double elapsed = snx_ctr_clock_seconds() - p->clock_origin;
             if (!(elapsed >= 0 && elapsed < 0x1p64 / 268111856.0)) return SNX_CTR_SVC_UNSUPPORTED;
             uint64_t ticks = (uint64_t)(elapsed * 268111856.0);
             r[0] = (uint32_t)ticks;
