@@ -159,8 +159,10 @@ if(BUILD_TESTING)
     target_compile_options(snx-test-android-host-anon PRIVATE -Wall -Wextra -Werror -UNDEBUG)
     add_test(NAME android_host_anon COMMAND snx-test-android-host-anon)
     # the files of an APK the driver reads before its code runs, broken ones among them
-    add_executable(snx-test-android-inputs "${PROJECT_SOURCE_DIR}/tests/android_inputs.c" res/arsc.c res/axml.c)
+    add_executable(snx-test-android-inputs "${PROJECT_SOURCE_DIR}/tests/android_inputs.c" res/arsc.c res/axml.c
+                                           runtime/install.c)
     target_include_directories(snx-test-android-inputs PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_link_libraries(snx-test-android-inputs PRIVATE snx_zip)
     set_target_properties(snx-test-android-inputs PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_compile_options(snx-test-android-inputs PRIVATE ${snx_android_c_options} -UNDEBUG)
     add_test(NAME android_inputs COMMAND snx-test-android-inputs)

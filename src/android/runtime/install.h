@@ -23,4 +23,8 @@ typedef struct {
 /* the app at path (an APK or a bundle) installed, or found installed already. False with error filled */
 bool android_install(const char* path, AndroidInstall* out, char* error, size_t error_size);
 void android_install_free(AndroidInstall* app);
+/* name, a package's (package true) or a split's, as Android's PackageParser.validateName takes it: segments of
+   [A-Za-z][A-Za-z0-9_]* joined by dots, two or more for a package. The names become folders and files of the data
+   folder, so one with a / or a .. would put them elsewhere: android_install refuses it */
+bool android_install_valid_name(const char* name, bool package);
 #endif
