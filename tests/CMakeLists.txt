@@ -1408,7 +1408,8 @@ target_link_libraries(snx-test-hud PRIVATE scarletnx-common snx_splash m)
 target_include_directories(snx-test-hud PRIVATE "${PROJECT_BINARY_DIR}/generated") # the theme's colours
 add_test(NAME hud COMMAND snx-test-hud)
 
-# F1's text (runtime/platform/help.c): Ctrl+F12 while RenderDoc can capture, the debugger while one traces the game
+# F1's text (runtime/platform/help.c): Ctrl+Shift+F12 while RenderDoc can capture, the debugger while one traces the
+# game
 add_executable(snx-test-help help.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/help.c")
 snx_test_target(snx-test-help 99)
 target_include_directories(snx-test-help PRIVATE "${PROJECT_SOURCE_DIR}/src")
@@ -1947,8 +1948,8 @@ if(NOT SNX_TOOLS_ONLY)
     target_link_libraries(snx-test-vk-image-out PRIVATE snx_nx_flags)
     add_test(NAME vk_image_out COMMAND snx-test-vk-image-out)
     # RenderDoc's captures (gpu/vk/renderdoc.c) against a stand-in RenderDoc: neither renderdoc= nor RenderDoc's program,
-    # renderdoc= without the library, RenderDoc's program that started the game, and renderdoc= loading it; Ctrl+F12's
-    # capture of the next frame and renderdoc_frames', and what the stats box is told. A process each
+    # renderdoc= without the library, RenderDoc's program that started the game, and renderdoc= loading it;
+    # Ctrl+Shift+F12's capture of the next frame and renderdoc_frames', and what the stats box is told. A process each
     add_executable(snx-test-vk-renderdoc vk_renderdoc.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/renderdoc.c")
     snx_test_target(snx-test-vk-renderdoc 23)
     target_link_libraries(snx-test-vk-renderdoc PRIVATE snx_nx_flags)

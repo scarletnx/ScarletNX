@@ -157,7 +157,7 @@ static void notes_make(StatsNotes* s, size_t room) {
     char lead[48];
     s->n = 0;
     s->longest = 0;
-    if (g_stats.capture.ready) note(s, GUI_ICON_IMAGE, STATS_TEXT, room, "RenderDoc: Ctrl+F12 captures", "");
+    if (g_stats.capture.ready) note(s, GUI_ICON_IMAGE, STATS_TEXT, room, "RenderDoc: Ctrl+Shift+F12 captures", "");
     if (g_stats.capture.failed) {
         snprintf(lead, sizeof lead, "capture %u failed", g_stats.capture.taken + 1);
         note(s, GUI_ICON_SAVE, STATS_SLOW, room, lead, "");

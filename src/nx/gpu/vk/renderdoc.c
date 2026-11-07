@@ -3,11 +3,11 @@
 /* RenderDoc captures of frames. RenderDoc's library comes in by renderdoc=PREFIX ([Debug] or --renderdoc=), which loads
    it before the Vulkan instance exists (its capture layer is an implicit one, which the loader enables with
    ENABLE_VULKAN_RENDERDOC_CAPTURE), or is in the process already when RenderDoc's own program started the game. Either
-   way Ctrl+F12 (backend/sdl3.c) captures the next frame, and renderdoc_frames=N,M,... names frames to capture: a number
-   is a present, a number with s a time in seconds on the clock --script counts from (the first frame after it), which
-   a loaded machine doesn't move. A capture holds one guest frame: everything recorded after present N-1 up to present
-   N, written where renderdoc= says (PREFIX_capture.rdc, then PREFIX_capture_2.rdc and on), or where RenderDoc's
-   program keeps its captures when it is empty. Frames that never reach the swapchain (offscreen, headless) are
+   way Ctrl+Shift+F12 (backend/sdl3.c) captures the next frame, and renderdoc_frames=N,M,... names frames to capture: a
+   number is a present, a number with s a time in seconds on the clock --script counts from (the first frame after it),
+   which a loaded machine doesn't move. A capture holds one guest frame: everything recorded after present N-1 up to
+   present N, written where renderdoc= says (PREFIX_capture.rdc, then PREFIX_capture_2.rdc and on), or where
+   RenderDoc's program keeps its captures when it is empty. Frames that never reach the swapchain (offscreen, headless) are
    captured the same way, because the capture starts and ends here rather than at RenderDoc's present hook. RenderDoc's
    own keys and overlay are off, so F12 stays the stats' key: the stats box says when a capture can be taken, and what
    the last one wrote (stats_capture). The in-application API is RenderDoc's renderdoc_app.h (MIT, Baldur Karlsson),
@@ -29,7 +29,7 @@ void vk_renderdoc_load(void) {
              g_settings.render_doc_captures);
 }
 int vk_renderdoc_capture(int ask) {
-    if (ask) LOG("renderdoc: Ctrl+F12 captures nothing: RenderDoc has no build for NetBSD\n");
+    if (ask) LOG("renderdoc: Ctrl+Shift+F12 captures nothing: RenderDoc has no build for NetBSD\n");
     return 0;
 }
 void vk_renderdoc_present(u64 present) { (void)present; }
@@ -47,7 +47,7 @@ static struct {
     RdFrame frames[RD_FRAMES];
     int nframes;
     int open;  /* a capture runs, to end at the next present */
-    int asked; /* Ctrl+F12's: the main thread sets it, the renderer's thread takes it at its next present */
+    int asked; /* Ctrl+Shift+F12's: the main thread sets it, the renderer's thread takes it at its next present */
 } g_renderdoc;
 
 void vk_renderdoc_load(void) {
@@ -91,23 +91,23 @@ void vk_renderdoc_load(void) {
         WARN("renderdoc: renderdoc_frames: \"%s\" is no frame (N, or Ns for seconds): it captures the %d "
              "before it\n",
              p, g_renderdoc.nframes);
-    LOG("renderdoc: %s, Ctrl+F12 captures the next frame, %d frame(s) listed, to %s\n",
+    LOG("renderdoc: %s, Ctrl+Shift+F12 captures the next frame, %d frame(s) listed, to %s\n",
         started ? "in the process (RenderDoc's program started the game)" : "loaded", g_renderdoc.nframes,
         *prefix ? prefix : rd->GetCaptureFilePathTemplate());
-    __atomic_store_n(&g_renderdoc.api, rd, __ATOMIC_RELEASE); /* the main thread's Ctrl+F12 reads it */
+    __atomic_store_n(&g_renderdoc.api, rd, __ATOMIC_RELEASE); /* the main thread's Ctrl+Shift+F12 reads it */
     stats_capture(&(SnxStatsCapture){.ready = 1});
 }
 
 int vk_renderdoc_capture(int ask) {
     if (!__atomic_load_n(&g_renderdoc.api, __ATOMIC_ACQUIRE)) {
         if (ask)
-            LOG("renderdoc: Ctrl+F12 captures nothing: RenderDoc isn't in the process (renderdoc= is empty, and "
-                "RenderDoc's program didn't start the game)\n");
+            LOG("renderdoc: Ctrl+Shift+F12 captures nothing: RenderDoc isn't in the process (renderdoc= is empty, "
+                "and RenderDoc's program didn't start the game)\n");
         return 0;
     }
     if (ask) {
         __atomic_store_n(&g_renderdoc.asked, 1, __ATOMIC_RELEASE);
-        LOG("renderdoc: Ctrl+F12: the next frame is captured\n");
+        LOG("renderdoc: Ctrl+Shift+F12: the next frame is captured\n");
     }
     return 1;
 }

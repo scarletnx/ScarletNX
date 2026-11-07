@@ -1009,9 +1009,9 @@ setting RenderDoc captures
     text 1024
     default ""
     startup
-    help The path's stem of RenderDoc captures (RenderDoc's library is loaded before the Vulkan instance): Ctrl+F12's of
-    help the next frame, and the presents RenderDoc frames names. Empty: RenderDoc isn't loaded, and a game RenderDoc's
-    help program started captures where that program says
+    help The path's stem of RenderDoc captures (RenderDoc's library is loaded before the Vulkan instance):
+    help Ctrl+Shift+F12's of the next frame, and the presents RenderDoc frames names. Empty: RenderDoc isn't loaded, and
+    help a game RenderDoc's program started captures where that program says
 setting RenderDoc frames
     key renderdoc_frames
     text 512

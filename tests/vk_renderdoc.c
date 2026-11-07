@@ -1,17 +1,17 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* RenderDoc's captures (gpu/vk/renderdoc.c) against a stand-in RenderDoc, a case a run, its name the argument:
-   none     neither renderdoc= nor RenderDoc's program: nothing is loaded, Ctrl+F12 captures nothing and says why, and
-            the stats box has no RenderDoc line
+   none     neither renderdoc= nor RenderDoc's program: nothing is loaded, Ctrl+Shift+F12 captures nothing and says
+            why, and the stats box has no RenderDoc line
    missing  renderdoc= set without the library: said with its name and why, nothing captured
    started  RenderDoc's program started the game (its library in the process), renderdoc= empty: its API taken and
             nothing loaded, the captures left where RenderDoc keeps them, its keys and overlay off (F12 is the stats');
-            the stats box told a capture can be taken. A frame is captured only when asked: Ctrl+F12 starts the
+            the stats box told a capture can be taken. A frame is captured only when asked: Ctrl+Shift+F12 starts the
             capture at the next present, after the frame's commands are recorded, and ends it at the one after, the
             stats box told the capture and its file; pressed twice before a present, one frame; a failed capture told
             as failed
    setting  renderdoc= set: the library loaded by its name, the captures at that stem; a frame renderdoc_frames names
-            and Ctrl+F12's together, each once */
+            and Ctrl+Shift+F12's together, each once */
 #include "nx/gpu/vk/vk.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
@@ -142,14 +142,14 @@ static const char* presents(u64 from, u64 to) {
 }
 static int logged(const char* line) { return strstr(g.log, line) != NULL; }
 
-/* neither: nothing taken, and Ctrl+F12 says why */
+/* neither: nothing taken, and Ctrl+Shift+F12 says why */
 static void case_none(void) {
     vk_renderdoc_load();
     assert(!strcmp(g.looked, SNX_VK_RENDERDOC_LIBRARY) && !g.opened[0] && !g.env[0] && !g.told);
     assert(!vk_renderdoc_capture(0) && !g.log[0]);
     assert(!vk_renderdoc_capture(1));
-    assert(logged("renderdoc: Ctrl+F12 captures nothing: RenderDoc isn't in the process (renderdoc= is empty, and "
-                  "RenderDoc's program didn't start the game)\n"));
+    assert(logged("renderdoc: Ctrl+Shift+F12 captures nothing: RenderDoc isn't in the process (renderdoc= is empty, "
+                  "and RenderDoc's program didn't start the game)\n"));
     assert(!strcmp(presents(1, 5), "") && !g.told);
 }
 /* renderdoc= without the library */
@@ -170,13 +170,13 @@ static void case_started(void) {
     assert(!g.opened[0] && !g.path_set && !strcmp(g.path, "/tmp/RenderDoc/scarletnx_2026.11.07"));
     assert(g.keys_set == 1 && g.keys_num == 0 && g.overlay_set == 1 && g.overlay_and == eRENDERDOC_Overlay_None);
     assert(!strcmp(g.env, "ENABLE_VULKAN_RENDERDOC_CAPTURE=1"));
-    assert(logged("renderdoc: in the process (RenderDoc's program started the game), Ctrl+F12 captures the next "
-                  "frame, 0 frame(s) listed, to /tmp/RenderDoc/scarletnx_2026.11.07\n"));
+    assert(logged("renderdoc: in the process (RenderDoc's program started the game), Ctrl+Shift+F12 captures the "
+                  "next frame, 0 frame(s) listed, to /tmp/RenderDoc/scarletnx_2026.11.07\n"));
     assert(g.told == 1 && g.shown.ready && !g.shown.taken && !g.shown.failed && !g.shown.path[0]);
     /* nothing asked: no capture */
     assert(vk_renderdoc_capture(0) && !strcmp(presents(1, 10), "") && g.told == 1);
     /* asked: started at the next present after its frame is recorded, ended at the one after, then nothing */
-    assert(vk_renderdoc_capture(1) && logged("renderdoc: Ctrl+F12: the next frame is captured\n"));
+    assert(vk_renderdoc_capture(1) && logged("renderdoc: Ctrl+Shift+F12: the next frame is captured\n"));
     assert(!strcmp(presents(11, 11), "sb") && g.device == g.dispatch && g.told == 1);
     assert(!strcmp(presents(12, 12), "se") && g.captures == 1);
     assert(g.told == 2 && g.shown.ready && g.shown.taken == 1 && !g.shown.failed);
@@ -193,7 +193,7 @@ static void case_started(void) {
     assert(g.shown.ready && g.shown.failed && g.shown.taken == 2 && !g.shown.path[0]);
     assert(logged("renderdoc: the capture of present 27 failed\n"));
 }
-/* renderdoc= loads it; renderdoc_frames and Ctrl+F12 together */
+/* renderdoc= loads it; renderdoc_frames and Ctrl+Shift+F12 together */
 static void case_setting(void) {
     g.installed = 1;
     g.end_ok = 1;
@@ -202,9 +202,9 @@ static void case_setting(void) {
     vk_renderdoc_load();
     assert(!strcmp(g.looked, SNX_VK_RENDERDOC_LIBRARY) && !strcmp(g.opened, SNX_VK_RENDERDOC_LIBRARY));
     assert(g.path_set == 1 && !strcmp(g.path, "/caps/game") && g.keys_set == 1 && g.keys_num == 0);
-    assert(logged("renderdoc: loaded, Ctrl+F12 captures the next frame, 1 frame(s) listed, to /caps/game\n"));
+    assert(logged("renderdoc: loaded, Ctrl+Shift+F12 captures the next frame, 1 frame(s) listed, to /caps/game\n"));
     assert(g.told == 1 && g.shown.ready);
-    /* Ctrl+F12 for frame 11, and frame 30 as listed: each captured once */
+    /* Ctrl+Shift+F12 for frame 11, and frame 30 as listed: each captured once */
     assert(vk_renderdoc_capture(1) && !strcmp(presents(10, 11), "sbse") && g.captures == 1);
     assert(!strcmp(g.shown.path, "/caps/game_capture.rdc") && g.shown.taken == 1);
     assert(!strcmp(presents(12, 40), "sbse") && g.captures == 2 && !strcmp(g.shown.path, "/caps/game_capture_2.rdc"));

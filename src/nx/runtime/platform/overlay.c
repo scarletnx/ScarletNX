@@ -95,7 +95,7 @@ enum { KEYS_COUNT = sizeof KEYS / sizeof *KEYS };
 static const struct {
     unsigned icon;
     const char *key, *what;
-} KEYS_CAPTURE = {GUI_ICON_IMAGE, "Ctrl+F12", "capture a frame"};
+} KEYS_CAPTURE = {GUI_ICON_IMAGE, "Ctrl+Shift+F12", "capture a frame"};
 static int keys_capture;
 static char keys_debugger[32];
 /* the capture row's place: right after F12's */

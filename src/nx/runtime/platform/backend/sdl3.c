@@ -1448,8 +1448,9 @@ void video_poll(void) {
                     if (!e.key.repeat) set_fullscreen(!g_fullscreen);
                     break;
                 }
-                /* Ctrl+F12: RenderDoc's capture of the next frame, F12 alone the stats' (hotkey) */
-                if (e.key.key == SDLK_F12 && (e.key.mod & SDL_KMOD_CTRL) &&
+                /* Ctrl+Shift+F12: RenderDoc's capture of the next frame, F12 alone the stats' (hotkey). Not Ctrl+F12,
+                   which KDE takes to show the desktop */
+                if (e.key.key == SDLK_F12 && (e.key.mod & SDL_KMOD_CTRL) && (e.key.mod & SDL_KMOD_SHIFT) &&
                     !(e.key.mod & (SDL_KMOD_ALT | SDL_KMOD_GUI))) {
                     if (!e.key.repeat) g_renderer->capture(1);
                     break;

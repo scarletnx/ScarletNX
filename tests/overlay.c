@@ -259,7 +259,7 @@ static void keys_page(void) {
     assert(!shows("capture a frame") && !shows("Debugger"));
     overlay_keys_extra(1, "gdb");
     draw();
-    assert(shows_as("Ctrl+F12", 0, light) && shows("capture a frame") && !shows("Debugger"));
+    assert(shows_as("Ctrl+Shift+F12", 0, light) && shows("capture a frame") && !shows("Debugger"));
     for (i = 0; i < 40; ++i) overlay_move(1);
     draw();
     assert(shows("right stick") && shows_as("Debugger", 0, light) && shows("gdb")); /* the last row, past the keys */
