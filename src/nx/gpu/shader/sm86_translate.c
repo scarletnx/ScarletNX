@@ -625,7 +625,18 @@ static u32 gbuf_slot(Ctx* c, u32 key, int write) {
         add_interface(c, c->gbuf[slot]);
     }
     if (write) c->si->gbuf_wmask |= 1u << slot;
+    else
+        c->si->gbuf_rmask |= 1u << slot;
     return c->gbuf[slot];
+}
+/* a compute program's atomic reads the global buffer it operates on: mark it read, as a load does (gbuf_slot only sees
+   the write side of an atomic) */
+static void mark_read(Ctx* c, u32 key) {
+    for (int i = 0; i < c->si->ngbuf; i++)
+        if (c->si->gbuf_cbuf_off[i] == key) {
+            c->si->gbuf_rmask |= 1u << i;
+            return;
+        }
 }
 /* A compute program's store of bytes bytes (1, 2, 4, 8 or 16) at byte offset into global buffer key records them in
    the write log (ShaderInfo.gbuf_mark, SH_WLOG_*): a plain store of 1 into its window's flag, as every store of a
@@ -2987,6 +2998,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             }
             u32 address, buffer = global_address(c, in, op != SM86_ATOMG_NOU, 1, &address);
             if (!buffer) return;
+            mark_read(c, c->gkey);
             mark_written(c, c->gkey, address, 4);
             u32 old = spv_emit_atomic_u32(&c->e, c->t_u32, opcode, mem_ptr(c, buffer, address, 0),
                                           rd(c, sm86_field(in, 32, 8)));

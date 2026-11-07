@@ -32,7 +32,7 @@ static int logged_mark(VkWriteLog* log, u32 from, u32 n) {
 static int logged_write(u64 gva, u32 len, u32 from, u32 n, u32 logged_n, u8 value, VkBuffer* out, u64* at) {
     VkWriteLog* log = vk_wlog_get(1);
     CHECK(log);
-    CHECK(vk_buf_copy_writable_logged(gva, len, out, at, 1, log, 0));
+    CHECK(vk_buf_copy_writable_logged(gva, len, out, at, 1, log, 0, 0));
     vk_buf_writable_commit();
     if (n) CHECK(!owned_test_fill(*out, *at + from, n, value));
     if (logged_n) CHECK(!logged_mark(log, from, logged_n));
@@ -75,7 +75,7 @@ static int check_storage_logged(void) {
     {
         VkWriteLog* log = vk_wlog_get(1); /* the four bytes at 0x800, by a second writer of the same draw */
         CHECK(log);
-        CHECK(vk_buf_copy_writable_logged(a, alen, &out2, &at2, 1, log, 0));
+        CHECK(vk_buf_copy_writable_logged(a, alen, &out2, &at2, 1, log, 0, 0));
         vk_buf_writable_commit();
         CHECK(out2 == out && at2 == at);
         CHECK(!logged_mark(log, 0x800, 4));
@@ -128,7 +128,7 @@ static int check_storage_logged(void) {
     {
         VkWriteLog* log = vk_wlog_get(1);
         CHECK(log);
-        CHECK(vk_buf_copy_writable_logged(a, alen, &out, &at, 1, log, 0));
+        CHECK(vk_buf_copy_writable_logged(a, alen, &out, &at, 1, log, 0, 0));
         CHECK(vk_buf_copy_writable(a, alen, &out2, &at2, 1));
         CHECK(out2 == out && at2 == at);
         vk_buf_writable_commit();

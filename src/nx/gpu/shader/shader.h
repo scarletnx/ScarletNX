@@ -112,6 +112,7 @@ typedef struct {
     u32 cs_local[3];
     int shared_size;
     u32 gbuf_wmask; /* global buffers the program writes */
+    u32 gbuf_rmask; /* global buffers the program reads (a load or atomic: its input must be copied for them) */
     /* The program's write log (SNX_VKB_WPAGES, SH_WLOG_*): every store and atomic of a compute program to global
        buffer i records the bytes it writes in the log's part gbuf_mark[i] - 1 (0: none), parts numbered in the order
        the program's first store to each buffer was translated, nmarks of them. gbuf_marks has bit i set when
