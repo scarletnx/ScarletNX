@@ -3,18 +3,38 @@
 /* The actual periodic cache saver with a stand-in driver and deterministic interleavings. No GPU is used. A busy
    or queued graphics compile must retain dirty state and never ask the driver to snapshot its cache. Activity that
    starts while a saver takes its mutex must be checked again; a later quiet save and the exit save must persist it. */
-/* Keep the deterministic lock hooks apart from host.c's locks, which the linked common libraries also provide. */
+/* Include only the cache saver. ASan can retain callback tables and their callees in the full pipeline translation
+   unit, so this fixture must not rely on linker garbage collection to discard unrelated shader/driver code.
+   Keep the deterministic lock hooks apart from host.c's locks, which the linked common libraries also provide. */
 #define pm_lock pipeline_test_lock
 #define pm_unlock pipeline_test_unlock
-#include "nx/gpu/vk/pipeline.c"
-#undef pm_lock
-#undef pm_unlock
+#include "nx/gpu/vk/vk.h"
+#include "nx/runtime/platform/log.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 Settings g_settings;
 VkState g_vk;
+/* Only the owner state read by the production cache saver: no shader loader, pipeline worker or callback table. */
+static VkPipelineCache g_pcache;
+static char g_pcache_path[1200], g_pcache_tmp[1230];
+static int g_pcache_dirty;
+static u64 g_pcache_used;
+static PMutex g_pj_lock = PMUTEX_INIT;
+static void *g_pj_head, *g_pw_head;
+static int g_pj_busy;
+static struct {
+    int ship_ready;
+    u32 nidx, ship_used, ship_said;
+} g_pf;
+#include "nx/gpu/vk/pipeline_cache_save.inc"
+#undef pm_lock
+#undef pm_unlock
+
 static u64 now;
 static int snapshots, save_lock_event;
-static Pipe queued;
+static int queued;
 
 u64 plat_ns(void) { return now; }
 void pipeline_test_lock(PMutex* m) {
