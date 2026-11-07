@@ -15,6 +15,10 @@ void vk_result_begin(void) { t_result_depth++; }
 void vk_result_end(void) { t_result_depth--; }
 int vk_result_landing(void) { return t_result_depth != 0; }
 
+/* temporary writeback cost diagnosis: bytes compared (memcmp) vs bytes actually changed and written back */
+static u64 g_wb_cmp_bytes, g_wb_chg_bytes;
+void vk_writeback_diag(u64* cmp, u64* chg) { *cmp = g_wb_cmp_bytes; *chg = g_wb_chg_bytes; }
+
 /* whether [p, p + n) overlaps the guest's address space, where pages the GPU holds fault when read. From AS_BASE:
    under NCE g_mem is 0, and on Android what lies below the moved layout is the app's own (mem.c) */
 static int in_guest(const u8* p, u32 n) {
@@ -50,6 +54,7 @@ void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, VkC
     int begun = 0, changed = 0;
     if (!size) return;
     if (in_guest(res, size) || in_guest(org, size)) fatal("vulkan: a storage result compared in guest memory");
+    g_wb_cmp_bytes += size;
     for (u32 i = 0; i < size;) {
         u32 end = size - i < 1024 ? size - i : 1024;
         end += i;
@@ -96,6 +101,7 @@ void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, VkC
                 if (take == ~0ull) {
                     if (we != k) { /* not where the pending run ends: it is written, and a new one starts */
                         if (we != ws) {
+                            g_wb_chg_bytes += we - ws;
                             if (dst)
                                 memcpy(dst + ws, res + ws, we - ws);
                             else
@@ -112,6 +118,7 @@ void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, VkC
                 if (res[b] == org[b] || cur[b] != org[b]) continue;
                 if (we != b) { /* not where the pending run ends: it is written, and a new one starts */
                     if (we != ws) {
+                        g_wb_chg_bytes += we - ws;
                         if (dst)
                             memcpy(dst + ws, res + ws, we - ws);
                         else
@@ -127,6 +134,7 @@ void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, VkC
     }
     if (run && run_to) run(user, run_from, run_to);
     if (we != ws) {
+        g_wb_chg_bytes += we - ws;
         if (dst)
             memcpy(dst + ws, res + ws, we - ws);
         else
