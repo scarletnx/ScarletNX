@@ -71,8 +71,14 @@ typedef struct {
     u16 idx[SNX_MII_MESH_INDICES];
 } SnxMiiMesh;
 /* where a parts file's meshes come from: item of mesh section into mesh (zeroed by the caller), 1, or 0 when the part
-   is absent; -1 when it cannot be given, which stops the file (the source says why) */
+   is absent, SNX_MII_MESH_OURS for this model's own part; -1 when it cannot be given, which stops the file (the
+   source says why) */
+#define SNX_MII_MESH_OURS 2
 typedef int (*SnxMiiMeshSource)(void* ctx, u32 section, u32 item, SnxMiiMesh* mesh);
+/* file i as snx_mii_model_write makes it, its shapes (a shape file's) from source: each mesh section's item as the
+   Switch's part of that kind (a hat, forehead or hair from item 132 its cap form), no bigger than the console's
+   largest of its kind in that file, nor the file than the console's. 0 when a part or the file does not fit (said) */
+u32 snx_mii_model_write_from(u32 i, SnxMiiMeshSource source, void* ctx, u8* out);
 /* this model's own parts as 3DS meshes: its shapes with as many quads as SNX_MII_CFL_VERTICES hold */
 int snx_mii_ctr_mesh(void* ctx, u32 section, u32 item, SnxMiiMesh* mesh);
 /* CFL_Res.dat from source's meshes and this model's textures into out (room bytes): its size, 0 when it does not fit
