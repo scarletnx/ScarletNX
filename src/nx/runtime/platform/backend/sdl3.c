@@ -1042,6 +1042,10 @@ static void overlay_do(int action) {
         menu_open(0);
         vpad_edit(1);
     }
+    if (action == OVERLAY_CAPTURE) { /* the frame after the menu's: the game's own */
+        menu_open(0);
+        g_renderer->capture(1);
+    }
 }
 /* the keyboard's box, under no menu: the text typed, Backspace, Return and Esc, a paste (Ctrl+V, the system key's V
    on a Mac), and no other key, which would reach the game or a hotkey; Alt+Return still switches fullscreen */
