@@ -282,6 +282,7 @@ void vk_gpuprof_pass_begin(VkCommandBuffer cb, const Surf* rt, const Surf* zt) {
     for (int i = 0; i < 3; i++) p->kind[i] = (u32)(g_rec_xfer_kind[i] - g_k_at_end[i]);
     p->bytes = g_rec_buf_bytes - g_bytes_at_end;
     gp_stamp(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, g->pool, g->used);
+    g->used += 2; /* the pass's own two: its end's is its second, which the draws' in between are not */
     g_draws_at_begin = g_vk_drawn;
     g_in_pass = 1;
 #if defined(SNX_TRACY)
@@ -302,8 +303,7 @@ void vk_gpuprof_pass_end(VkCommandBuffer cb) {
     if (!(g = gp_slot())) return;
     p = &g->pass[g->npass];
     p->draws = (u32)(g_vk_drawn - g_draws_at_begin);
-    gp_stamp(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, g->pool, g->used + 1);
-    g->used += 2;
+    gp_stamp(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, g->pool, p->qi + 1); /* the pass's own second */
     g->npass++;
     g_x_at_end = g_rec_xfers;
     g_b_at_end = g_rec_barriers;
