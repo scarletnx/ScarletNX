@@ -390,8 +390,12 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h, u32
         return 0;
     }
     const int srgb = t->f.vk == VK_FORMAT_R8G8B8A8_SRGB || t->f.vk == VK_FORMAT_BC7_SRGB_BLOCK;
-    /* the encoder's build: the fast one from VK_BC7_FAST_TEXELS, mode 6 alone from VK_BC7_MODE6_TEXELS */
-    const u64 level_texels = (u64)w * h * (as_layers ? 1 : depth);
+    /* the encoder's build, by the level's size and not the region's: the fast one from VK_BC7_FAST_TEXELS, mode 6 alone
+       from VK_BC7_MODE6_TEXELS. A level loaded a piece at a time (a resident texture's bricks, its patches) then
+       encodes each block as its whole upload does, where the full build chose other modes for some of them */
+    const u32 level_w = t->w >> level ? t->w >> level : 1, level_h = t->h >> level ? t->h >> level : 1;
+    const u32 level_d = t->type == VK_IMAGE_VIEW_TYPE_3D && t->depth3d >> level ? t->depth3d >> level : 1;
+    const u64 level_texels = (u64)level_w * level_h * level_d;
     const u32 build = level_texels >= VK_BC7_MODE6_TEXELS ? 2 : level_texels >= VK_BC7_FAST_TEXELS ? 1 : 0;
     /* the BC7 cache: the level's blocks from it, or the encode's copied into the readback ring as well as into the
        image, a strip at a time in their place in the level, for vk_astc_frame_done to put in it */
