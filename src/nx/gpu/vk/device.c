@@ -452,7 +452,6 @@ static int create_device(void) {
     int has_mesh = 0;
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
-    ext[next++] = VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME; /* the hanging draw's marker (vk/owned.c) */
     {
         SnxVkExtensions e;
         snx_vk_device_extensions(g_vk.phys, &e);
@@ -464,6 +463,7 @@ static int create_device(void) {
         has_eds3 = snx_vk_extensions_has(&e, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
         g_vk.has_xfb = snx_vk_extensions_has(&e, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
         g_vk.has_mixed_samples = snx_vk_extensions_has(&e, VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME);
+        g_vk.has_checkpoints = snx_vk_extensions_has(&e, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
         g_vk.advanced_blend_caps.available = snx_vk_extensions_has(&e, VK_EXT_BLEND_OPERATION_ADVANCED_EXTENSION_NAME);
         g_vk.has_fragment_interlock = snx_vk_extensions_has(&e, VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME);
         g_vk.has_border_color = snx_vk_extensions_has(&e, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
@@ -518,6 +518,7 @@ static int create_device(void) {
     if (uma_with == VK_UMA_WITH_AHB) ext[next++] = "VK_ANDROID_external_memory_android_hardware_buffer";
     if (g_vk.has_budget) ext[next++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
     if (g_vk.has_mixed_samples) ext[next++] = VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME;
+    if (g_vk.has_checkpoints) ext[next++] = VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME; /* the hanging draw's marker (vk/owned.c) */
     /* the extension only with a host time domain among the calibrateable ones: CLOCK_MONOTONIC_RAW is the clock
        the Tracy client keeps its own time in, so the two domains' pair maps the GPU's timestamps onto it */
     if (has_calibrated) {
