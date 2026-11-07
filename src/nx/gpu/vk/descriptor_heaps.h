@@ -273,6 +273,8 @@ static inline int vk_descriptor_heap_binding_mapping(VkDescriptorSetAndBindingMa
 
 /* Called after VMA and the extension entry points exist. Failure leaves the legacy backends available. */
 int vk_descriptor_heaps_init(const VkPhysicalDeviceDescriptorHeapPropertiesEXT* props);
+/* The device is idle before destruction; the dedicated transition set remains immutable until then. */
+void vk_descriptor_heaps_destroy(void);
 void vk_descriptor_heaps_layout(VkDescriptorSetLayout layout, const VkDescriptorSetLayoutBinding* bindings,
                                  uint32_t count);
 /* The caller owns maps through pipeline creation. Attach mapping info to the corresponding shader stage. */
@@ -302,6 +304,8 @@ void vk_descriptor_heaps_get_stats(VkDescriptorHeapStats* stats);
 
 /* Any legacy descriptor or push command invalidates heap state across both bind points. */
 void vk_descriptor_heaps_invalidate(void);
+/* Graphics descriptor-buffer offsets were actually bound in this command-buffer generation. */
+void vk_descriptor_heaps_buffer_bound(uint32_t begun);
 uint64_t vk_descriptor_heaps_epoch(void);
 void vk_descriptor_heaps_pipeline_state(int active);
 int vk_descriptor_heaps_active(void);

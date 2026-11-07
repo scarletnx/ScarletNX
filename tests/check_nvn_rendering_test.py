@@ -65,6 +65,14 @@ class Classification(unittest.TestCase):
         self.assertEqual(row['status'], 'fail')
         self.assertFalse(harness.all_features_passed([row]))
 
+    def test_multiline_validation_diagnostic_fails_even_with_all_markers(self):
+        diagnostic = ('vulkan validation: vkCmdDraw(): pipeline requires a descriptor set\n'
+                      'The command buffer is in descriptor heap mode.\n'
+                      'The Vulkan spec states: VUID-vkCmdDraw-None-08117')
+        row = harness.classify(gpu_output() + '\n' + diagnostic, 0, gpu=True)
+        self.assertEqual(row['status'], 'fail')
+        self.assertFalse(harness.all_features_passed([row]))
+
     def test_threading_validation_errors_fail_even_with_all_markers(self):
         for diagnostic in ('vulkan validation: THREADING ERROR: simultaneous object use',
                            'vulkan validation: [THREADING] object used by two threads',
