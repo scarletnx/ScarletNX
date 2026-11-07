@@ -261,7 +261,8 @@ static void check_textures(const u8* f, u32 size, int mid) {
     }
 }
 
-/* vertex n of a hair part made as grids (past its head's grid, on a tail): the middle of its tail at its row */
+/* vertex n of a hair part made as grids (past its head's grid, on a tail or the ahoge): the middle of what that grid
+   draws at its row */
 static void want_tail_axis(const Shape* grids, u32 n, float out[3]) {
     u32 g = 0, row;
     Tail tl;
@@ -269,7 +270,7 @@ static void want_tail_axis(const Shape* grids, u32 n, float out[3]) {
     while (g + 1 < grids->grids && n >= (grids->ns[g] + 1) * (grids->nt[g] + 1))
         n -= (grids->ns[g] + 1) * (grids->nt[g] + 1), g++;
     row = n / (grids->ns[g] + 1);
-    tl = tail_of_style(tail_styles[grids->variant - HAIR_VARIANTS].tail, g - 1);
+    tl = hair_grid_tail(grids->variant, g);
     c = tail_axis(&tl, (float)row / (float)grids->nt[g]);
     out[0] = c.x, out[1] = c.y, out[2] = c.z;
 }
@@ -296,8 +297,8 @@ static void check_hair(const u8* f, u32 q) {
         Shape sh = shape_in(S_HAIR_NORMAL, hair_variant(style), q);
         float edge[4 * HAIR_LOCKS + 1], lo = 1e9f, hi = -1e9f;
         CHECK(want_inflate(f + snx_ld_le32(t), snx_ld_le32(t + 8), g_mii_model.raw, snx_ld_le32(t + 4)));
-        for (g = 1; g < sh.grids; g++) {
-            Tail tl = tail_of_style(tail_styles[sh.variant - HAIR_VARIANTS].tail, g - 1);
+        for (g = 1; g < sh.grids && g <= tail_count(tail_styles[sh.variant - HAIR_VARIANTS].tail); g++) {
+            Tail tl = hair_grid_tail(sh.variant, g);
             u32 drops[2] = {0, 0}, first[2] = {0, 0}, side;
             float thickest = 0;
             for (side = 0; side < 2; side++) { /* the column at angle 0 and the one opposite */
@@ -456,6 +457,8 @@ static void check_shapes(const u8* f, u32 size, int high) {
                 }
                 if (i == 126) CHECK(lo[1] < 0 && left > 20 && right > 20);
                 if (i == 112) CHECK(out_left > 20 && out_right > 20 && out_low == 0 && hi[0] > 38 && lo[0] < -38);
+                if (i == 112) CHECK(hi[1] > 70); /* its ahoge up from the crown */
+                if (i == 29) CHECK(hi[1] < 70);  /* the other drill style, without one */
                 if (i == 84) CHECK((left > 20) != (right > 20));
                 if (i == 0 || i == 33) CHECK(left == 0 && right == 0);
             }
@@ -561,6 +564,7 @@ static void check_picture(void) {
     CHECK(pic_count(rgba, 128, 3, 30, 16, 38, is_red_eye) > 3);     /* the other */
     CHECK(pic_count(rgba, 128, -16, 30, 16, 38, is_white) > 3);     /* their whites */
     CHECK(pic_count(rgba, 128, -41, 36, -31, 52, is_crimson) > 20); /* a drill out from each side */
+    CHECK(pic_count(rgba, 128, -4, 69, 8, 75, is_crimson) > 2);     /* the ahoge over the crown */
     CHECK(pic_count(rgba, 128, 31, 36, 41, 52, is_crimson) > 20);
     CHECK(pic_count(rgba, 128, -12, 21, 12, 27, is_crimson) == 0); /* no hair over the cheeks, between eyes and mouth */
     CHECK(snx_mii_picture(ci, &look, 512, rgba) == 0);
