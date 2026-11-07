@@ -286,10 +286,9 @@ if(TARGET snx_ctr_board)
     snx_test_target(snx-test-3ds-process 11)
     target_link_libraries(snx-test-3ds-process PRIVATE snx_ctr_process)
     add_test(NAME 3ds_process COMMAND snx-test-3ds-process)
-    add_executable(snx-test-3ds-discover 3ds_discover.c "${PROJECT_SOURCE_DIR}/src/3ds/aot/discover.c"
-        "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/a32.c" "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/thumb_decode.c"
-        "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/vector_decode.c" "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/profile.c")
+    add_executable(snx-test-3ds-discover 3ds_discover.c "${PROJECT_SOURCE_DIR}/src/3ds/aot/discover.c")
     snx_test_target(snx-test-3ds-discover 11)
+    target_link_libraries(snx-test-3ds-discover PRIVATE snx_arm_decode)
     add_test(NAME 3ds_static_discovery COMMAND snx-test-3ds-discover)
     add_executable(snx-test-3ds-native 3ds_native.c)
     snx_test_target(snx-test-3ds-native 11)
@@ -541,11 +540,9 @@ if(SNX_TEST_SANITIZERS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     endforeach()
 endif()
 
-add_executable(snx-test-arm-profile arm_profile.c "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/a32.c"
-    "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/thumb_decode.c"
-    "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/vector_decode.c"
-    "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/profile.c")
+add_executable(snx-test-arm-profile arm_profile.c)
 snx_test_target(snx-test-arm-profile 11)
+target_link_libraries(snx-test-arm-profile PRIVATE snx_arm_decode)
 add_test(NAME arm_isa_profiles COMMAND snx-test-arm-profile)
 # a game's cheats by their names, as the launcher lists them and cheats_off= leaves them out
 add_executable(snx-test-cheat-list cheat_list.c)
@@ -715,12 +712,18 @@ if(SNX_BUILD_NX)
     endif()
 endif()
 
-add_executable(snx-test-arm-decode arm_decode.c "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/a32.c"
-    "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/rt_helpers.c"
-    "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/thumb_decode.c"
-    "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/vector_decode.c")
+add_executable(snx-test-arm-decode arm_decode.c "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/rt_helpers.c")
 snx_test_target(snx-test-arm-decode 11)
+target_link_libraries(snx-test-arm-decode PRIVATE snx_arm_decode)
 add_test(NAME arm_decode COMMAND snx-test-arm-decode)
+# the A32 and Thumb decoders from QEMU's .decode files (tools/decodetree) against the hand-written ones they replaced
+# (support/arm_decode_ref_*.c): every T16 halfword and T32 pair, and A32 words by a stride (--full: every word)
+add_executable(snx-test-arm-decode-tree arm_decode_tree.c support/arm_decode_ref_a32.c support/arm_decode_ref_thumb.c)
+snx_test_target(snx-test-arm-decode-tree 11)
+target_include_directories(snx-test-arm-decode-tree PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(snx-test-arm-decode-tree PRIVATE snx_arm_decode)
+add_test(NAME arm_decode_tree COMMAND snx-test-arm-decode-tree)
+set_tests_properties(arm_decode_tree PROPERTIES TIMEOUT 600)
 add_executable(snx-test-arm-fp-host arm_fp_host.c)
 snx_test_target(snx-test-arm-fp-host 11)
 target_link_libraries(snx-test-arm-fp-host PRIVATE snx_arm_rt)

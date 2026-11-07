@@ -8,9 +8,13 @@ The NX runtime runs 32-bit programs with it. The recompiler compiles a 32-bit pr
 
 - `arm.h`: separate, versioned `SnxArmCPU` state and exit reasons, the backend's `SnxArmRt`, plus the Thumb decode model.
 - `rt_helpers.c`: the runtime library's calls into the backend (`snx_arm_undefined`, `snx_arm_coproc`), with the defaults for no backend.
-- `a32.c`: validated A32 decoder. No LLVM dependency. With `thumb_decode.c`, `vector_decode.c` and `profile.c` it
-  forms the `snx_arm_decode` target. `snx_arm_llvm` links it, and the 3DS CPU backend links it alone.
-- `thumb_decode.c`: validated Thumb16/Thumb32 decoder to an explicit operand model.
+- `a32.c` and `thumb.c`: the A32 and Thumb decoders. QEMU's `a32.decode`, `a32-uncond.decode`, `t32.decode` and
+  `t16.decode` (`decode/`, LGPL-2.1-or-later) sort a word into its instruction, through the decoders that
+  `tools/decodetree` generates from them (`cmake/decodetree.cmake`). Each instruction's `trans_` function gives its
+  `SnxA32Kind`, or fills the `SnxThumb` operand model, and refuses the encodings the backend does not run.
+  `decodetree.h` has the helpers the generated files need. No LLVM dependency. With `vector_decode.c` and `profile.c`
+  they form the `snx_arm_decode` target. `snx_arm_llvm` links it, and the 3DS CPU backend links it alone.
+  `tests/arm_decode_tree.c` checks them against the hand-written decoders they replaced (`tests/support/`).
 - `llvm.h`, `llvm.c`, `llvm_vector.inc`, `llvm_thumb.inc`: `snx_arm_llvm_block(module, name, words, count, pc, &consumed)` and `snx_thumb_llvm_block(module, name, halfwords, count, pc, &consumed)` emit `void name(SnxArmCPU*)` into a **host-target** LLVM module.
 - `tests/arm_emit.c`, `tests/thumb_emit.c`: object generators demonstrating module creation, verification, optimization and native object emission.
 - `tests/arm_test.py`, `tests/arm_vector_test.py`, `tests/thumb_test.py`: native execution witnesses and optional independent Unicorn comparisons.
@@ -224,7 +228,7 @@ those natively inline and calls `snx_arm_fp` only when a condition fails (`fp_ca
 helper takes the same path first (`host_fp` in `fp_helpers.c`). `tests/arm_fp_host.c` holds the helper's two paths
 to the same bits and FPSCR; one game spent most of its CPU time in the software path before.
 
-Thumb16 and Thumb32 are supported (see `thumb_decode.c`, `llvm_thumb.inc`): integer data processing, loads/stores (immediate, literal, register, pre/post-indexed, unprivileged), push/pop, LDM/STM, branches (B/Bcc/BL/BLX/BX, CBZ/CBNZ, TBB/TBH), bitfield (SBFX/UBFX/BFI/BFC), extends, MOVW/MOVT/ADDW/SUBW, MUL/MLA/MLS, wide data-processing with shifted and modified-immediate operands, and IT blocks (conditions applied per instruction against current flags, as ARMv8-A specifies). Thumb32 coprocessor (VFP/NEON) shares the A32 vector emitter.
+Thumb16 and Thumb32 are supported (see `thumb.c`, `llvm_thumb.inc`): integer data processing, loads/stores (immediate, literal, register, pre/post-indexed, unprivileged), push/pop, LDM/STM, branches (B/Bcc/BL/BLX/BX, CBZ/CBNZ, TBB/TBH), bitfield (SBFX/UBFX/BFI/BFC), extends, MOVW/MOVT/ADDW/SUBW, MUL/MLA/MLS, wide data-processing with shifted and modified-immediate operands, and IT blocks (conditions applied per instruction against current flags, as ARMv8-A specifies). Thumb32 coprocessor (VFP/NEON) shares the A32 vector emitter.
 
 ## Limits and memory model
 
