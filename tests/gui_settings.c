@@ -82,9 +82,9 @@ int main(int argc, char** argv) {
     /* the launcher's own and the recompiler's (settings.txt's launcher sections), then a row a setting in the list's
        order, the other line left out; a page's row and its All before its settings */
     int tracy = at(&s, "tracy_capture") >= 0; /* the row a runtime without SNX_TRACY does not list */
-    int opt = 3 + tracy;                      /* the optimization level's row, after it */
+    int opt = 4 + tracy;                      /* the optimization level's row, after it */
     assert(s.own > 5 && s.count == s.own + 16 && !strcmp(s.keys[0].key, "GDB stub"));
-    assert(!tracy || at(&s, "tracy_capture") == 3); /* after Extract dump, before the optimization level */
+    assert(!tracy || at(&s, "tracy_capture") == 4); /* after Java home, before the optimization level */
     assert(!strcmp(s.keys[0].section, "Launch") && !strcmp(s.keys[0].about, "Enables gdbstub on port 1234") &&
            words(&s.keys[0]) == 2 && !strcmp(s.values[0].key, "gdbstub"));
     /* shown by its name, kept by its key */
@@ -92,8 +92,15 @@ int main(int argc, char** argv) {
            !strcmp(s.values[1].key, "tmpfs") && words(&s.keys[1]) == 2 && strstr(s.keys[1].about, "RomFS"));
     assert(!strcmp(s.keys[2].section, "Launch") && !strcmp(s.keys[2].key, "Extract dump") &&
            !strcmp(s.values[2].key, "extract") && words(&s.keys[2]) == 2 && strstr(s.keys[2].about, "dump"));
-    assert(!tracy || (!strcmp(s.keys[3].section, "Launch") && !strcmp(s.values[3].key, "tracy_capture") &&
-                      words(&s.keys[3]) == 2 && strstr(s.keys[3].about, "PATH")));
+    /* Java home, a typed folder: --java-home for the Android driver when set, never a recompile option */
+    assert(!strcmp(s.keys[3].section, "Launch") && !strcmp(s.keys[3].key, "Java home") &&
+           !strcmp(s.values[3].key, "java_home") && strstr(s.keys[3].about, "--java-home") &&
+           !gui_settings_java_home(&s, options));
+    assert(gui_settings_set(&s, "java_home", "/opt/jdk") && gui_settings_java_home(&s, options) == 1 &&
+           !strcmp(options[0], "--java-home=/opt/jdk") && !gui_settings_recompile(&s, 0, options) &&
+           gui_settings_set(&s, "java_home", "") && !gui_settings_java_home(&s, options));
+    assert(!tracy || (!strcmp(s.keys[4].section, "Launch") && !strcmp(s.values[4].key, "tracy_capture") &&
+                      words(&s.keys[4]) == 2 && strstr(s.keys[4].about, "PATH")));
     assert(!gui_settings_extract(&s)); /* off: a dump read in place */
     /* the recompiler's: none passed at its default, then --key=value; the optimization level takes 0 to 3 and z, the
        LLVM batch full or ipo, the AOT threads a number (0 the cores), the unit size a number of instructions, the unit

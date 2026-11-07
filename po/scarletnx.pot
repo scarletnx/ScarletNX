@@ -5458,6 +5458,14 @@ msgid "Extract a dump's ExeFS and RomFS into its game's folder. Off, the game re
 msgstr ""
 
 #: src/nx/runtime/settings.txt
+msgid "Java home"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "The JDK, 21 or later, that Android apps run on: the folder that holds its lib/server (bin/server on Windows). Empty = the one the build found. Set, the launcher gives it to scarletnx-android as --java-home"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
 msgid "Tracy capture"
 msgstr ""
 

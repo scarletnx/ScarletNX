@@ -278,6 +278,7 @@ The launcher's own settings, and the recompiler's, which the launcher and the dr
 | `gdbstub` | `off` | `on` starts the game with the GDB stub on port 1234 ([GDB](USAGE.md#gdb-linux)) |
 | `tmpfs` | `off` | `on` extracts to tmpfs, in memory (the temporary folder's `scarletnx/work/<title ID>`), which the game reads its RomFS from (`--tmpfs`) |
 | `extract` | `off` | `on` extracts a dump's ExeFS and RomFS into its game's folder (`--extract-container`). Off, the game reads them from the dump |
+| `java_home` | empty | The JDK, 21 or later, that Android apps run on: the folder that holds its `lib/server` (`bin/server` on Windows). Empty is the one the build found; set, the launcher gives it to `scarletnx-android` as `--java-home` |
 | `tracy_capture` | `off` | `on` records Switch runs to `captures/` beside the game and opens the trace in the profiler when the run ends, in a build with `SNX_TRACY`; `tracy-capture` must be on PATH. Off, the client does not start, and F10 starts a 60-second capture |
 | `opt` | `2` | LLVM's optimization of the game's code when it is recompiled (`-O`): `0` none, `3` the most, `s` or `z` the smallest. A game made already keeps its code until it is recompiled |
 | `llvm_batch` | `full` | What LLVM runs over each code unit once its functions are cleaned, when the game is recompiled: `full`, the passes of the optimization level; `ipo`, only inlining and a cleanup after it, which recompiles in about two thirds of the time for slightly bigger code, up to a third faster or slower than `full`'s. Not at `-O0` |

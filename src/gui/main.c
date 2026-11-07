@@ -14399,6 +14399,7 @@ static void launch(App* app, char* absolute, bool prepared) {
     }
     if (make) argv[n++] = "-r";
     if (!direct) argv[n++] = game_option ? game_option : run ? run : absolute;
+    if (app->menu.selected == GUI_ANDROID) n += gui_settings_java_home(s, argv + n);
     /* Switch options only, never guest argv for the CPU-only Linux driver or the 3DS one; R's recompile takes no
        option of a run but the game's settings it recompiles with (NCE). The drivers work in the menu's data folder,
        so they list the same games */

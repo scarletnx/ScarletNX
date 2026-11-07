@@ -1453,6 +1453,11 @@ setting Extract game container
     default off
     words on=On
     help Extract a dump's ExeFS and RomFS into its game's folder. Off, the game reads them from the dump
+setting Java home
+    key java_home
+    text 192
+    help The JDK, 21 or later, that Android apps run on: the folder that holds its lib/server (bin/server on Windows).
+    help Empty = the one the build found. Set, the launcher gives it to scarletnx-android as --java-home
 # SNX_TRACY_BEGIN
 setting Tracy capture
     key tracy_capture
