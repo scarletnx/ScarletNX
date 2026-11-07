@@ -85,13 +85,28 @@ public class JniContractTest {
         assertTrue("src/gui/android.c calls MainActivity (" + calls + ")", calls >= 6);
     }
 
-    /** the runtime's Share Log, in a game's process: GameActivity */
+    /** src/gui/android.c's ask(): the menu's activity's methods that answer text */
+    @Test
+    public void everyMethodTheMenuAsksIsInMainActivity() throws IOException {
+        Matcher ask = Pattern.compile("ask\\(\"(\\w+)\", \"([^\"]*)\"").matcher(read("gui/android.c"));
+        int asks = 0;
+        while (ask.find()) {
+            assertTrue("src/gui/android.c: " + ask.group(1) + " answers a byte[]", ask.group(2).endsWith(")[B"));
+            assertInstanceMethod(MainActivity.class, ask.group(1), ask.group(2), "src/gui/android.c");
+            ++asks;
+        }
+        assertTrue("src/gui/android.c asks MainActivity (" + asks + ")", asks >= 1);
+    }
+
+    /** the runtime's Share Log and its start mark's reason, in a game's process: GameActivity */
     @Test
     public void theGamesShareLogIsInGameActivity() throws IOException {
         String sdl3 = read("nx/runtime/platform/backend/sdl3.c");
-        Matcher share = Pattern.compile("GetMethodID\\(env, type, \"share\", \"([^\"]+)\"\\)").matcher(sdl3);
-        assertTrue("sdl3.c looks share up", share.find());
-        assertInstanceMethod(GameActivity.class, "share", share.group(1), "src/nx/runtime/platform/backend/sdl3.c");
+        for (String method : new String[] {"share", "exitReason"}) {
+            Matcher at = Pattern.compile("GetMethodID\\(env, type, \"" + method + "\", \"([^\"]+)\"\\)").matcher(sdl3);
+            assertTrue("sdl3.c looks " + method + " up", at.find());
+            assertInstanceMethod(GameActivity.class, method, at.group(1), "src/nx/runtime/platform/backend/sdl3.c");
+        }
     }
 
     private static final Map<String, String> JNI_TYPES = new TreeMap<>();

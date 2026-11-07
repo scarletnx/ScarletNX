@@ -10,6 +10,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.system.ErrnoException;
 import android.system.Os;
+import java.nio.charset.StandardCharsets;
 import org.libsdl.app.SDLActivity;
 import org.libsdl.app.SDLSurface;
 
@@ -80,6 +81,12 @@ public class GameActivity extends SDLActivity {
     /** src/nx/runtime/platform/backend/sdl3.c: a stopped game's Share Log, the saved file to the app the user picks */
     public void share(String path) {
         MainActivity.share(this, path);
+    }
+
+    /** src/nx/runtime/platform/backend/sdl3.c: what Android says of how process pid of the app ended, started at since
+        (ms since 1970, 0 when unknown), as UTF-8 */
+    public byte[] exitReason(int pid, long since) {
+        return Exits.of(this, pid, since).getBytes(StandardCharsets.UTF_8);
     }
 
     /** the runtime starts once per process: the next game gets a new one */

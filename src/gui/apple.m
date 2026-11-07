@@ -33,13 +33,10 @@ extern bool snx_apple_share(void* window, const char* path);
 extern void plat_power_mark_changed(void);
 /* plat_posix.c's weak watcher entry, which this file fills on iOS */
 int snx_apple_power_watch(void);
-/* plat_posix.c's weak call before plat_exit_now's _exit, which this file fills on iOS */
-void snx_apple_exit(void);
 
-/* the launcher log's lines of this file: the start's mark, the last thermal and power states said, the watch on */
+/* the launcher log's lines of this file: the last thermal and power states said, the watch on */
 static struct {
-    char running[1024]; /* logs/.running, there until the exit: one there at a start shows a start with no exit */
-    long thermal;       /* -1 and -1 before the first state line, so a notification with no change says nothing */
+    long thermal; /* -1 and -1 before the first state line, so a notification with no change says nothing */
     int low_power;
     bool watching;
 } g_said = {.thermal = -1, .low_power = -1};
@@ -243,39 +240,6 @@ static void uncaught(NSException* e) {
     for (NSString* frame in e.callStackSymbols) fprintf(stderr, "  %s\n", frame.UTF8String);
     if (g_next_uncaught) g_next_uncaught(e);
 }
-/* a game ends the app's process through plat_exit_now's _exit, which runs no atexit handler */
-void snx_apple_exit(void) {
-    if (g_said.running[0]) unlink(g_said.running);
-}
-/* the last start's mark, said and then made again for this start, with exit() and plat_exit_now removing it */
-static void running_line(NSURL* logs) {
-    const char* path = [logs URLByAppendingPathComponent:@".running"].path.fileSystemRepresentation;
-    char last[128] = {0};
-    if (!path || snprintf(g_said.running, sizeof g_said.running, "%s", path) >= (int)sizeof g_said.running) {
-        g_said.running[0] = 0;
-        return;
-    }
-    FILE* f = fopen(g_said.running, "r");
-    if (f) {
-        if (!fgets(last, sizeof last, f)) last[0] = 0;
-        last[strcspn(last, "\n")] = 0;
-        fclose(f);
-        fprintf(stderr,
-                "last start: %s did not end with an exit. The system ended it: a crash, its memory limit (jetsam), or a "
-                "close from the app switcher\n",
-                last[0] ? last : "(no mark)");
-    } else
-        fprintf(stderr, "last start: ended with an exit, or none before\n");
-    f = fopen(g_said.running, "w");
-    if (!f) return;
-    time_t now = time(NULL);
-    struct tm tm;
-    char when[32] = "at an unknown time";
-    if (localtime_r(&now, &tm)) strftime(when, sizeof when, "%Y-%m-%d %H:%M:%S", &tm);
-    fprintf(f, "pid %ld, started %s\n", (long)getpid(), when);
-    fclose(f);
-    atexit(snx_apple_exit);
-}
 #endif
 
 void gui_apple_log_start(void) {
@@ -361,7 +325,6 @@ void gui_apple_log_start(void) {
         else
             fprintf(stderr, "disk: unknown, %s\n",
                     error.localizedDescription.UTF8String ? error.localizedDescription.UTF8String : "no error given");
-        running_line(logs);
     }
 #endif
 }

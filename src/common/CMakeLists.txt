@@ -3,7 +3,7 @@
 add_library(scarletnx-common STATIC
     utilities/common.c utilities/process.c utilities/font.c utilities/ini_lines.c utilities/game_ini.c utilities/pad_map.c
     utilities/pad_screen.c utilities/users.c utilities/mii_model.c utilities/mii_db.c utilities/logscan.c utilities/language_tag.c utilities/mods.c utilities/patches.c utilities/cheat_list.c utilities/state_header.c
-    utilities/gpu_driver.c
+    utilities/gpu_driver.c utilities/run_mark.c
     utilities/spirv_emit.c utilities/script.c memory/host.c
     cpu/aarch64/a64_decoder.c cpu/recompiler/codegen.c cpu/recompiler/variants.c runtime/cas128.c runtime/linux_signal.c)
 target_compile_definitions(scarletnx-common PRIVATE _CRT_SECURE_NO_WARNINGS

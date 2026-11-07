@@ -330,16 +330,19 @@ int snx_log_lines(const char* path, const char* text) {
     free(out);
     return failed ? -1 : 0;
 }
-int snx_lock_file(const char* path, intptr_t* lock) {
+/* snx_lock_file's lock, on a file made when it is not there with make, else only on one that is */
+static int lock_file(const char* path, int make, intptr_t* lock) {
 #ifdef _WIN32
     wchar_t* p = wide(path);
     OVERLAPPED past = {0}; /* not far: windef.h defines it */
     HANDLE h = p ? CreateFileW(p, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                               NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL)
+                               NULL, make ? OPEN_ALWAYS : OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL)
                  : INVALID_HANDLE_VALUE;
+    DWORD failed = h == INVALID_HANDLE_VALUE ? GetLastError() : 0;
     free(p);
     if (h == INVALID_HANDLE_VALUE) {
-        errno = EACCES;
+        errno = failed == ERROR_FILE_NOT_FOUND || failed == ERROR_PATH_NOT_FOUND ? ENOENT : EACCES;
+        SetLastError(failed); /* snx_os_error's reason */
         return -1;
     }
     past.OffsetHigh = 0x7fffffffu; /* past any end, so the bytes are never what is locked */
@@ -353,7 +356,7 @@ int snx_lock_file(const char* path, intptr_t* lock) {
     *lock = (intptr_t)h;
     return 0;
 #else
-    int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+    int fd = open(path, O_RDWR | O_CLOEXEC | (make ? O_CREAT : 0), 0644);
     if (fd < 0) return -1;
     if (flock(fd, LOCK_EX | LOCK_NB)) {
         int error = errno;
@@ -365,6 +368,8 @@ int snx_lock_file(const char* path, intptr_t* lock) {
     return 0;
 #endif
 }
+int snx_lock_file(const char* path, intptr_t* lock) { return lock_file(path, 1, lock); }
+int snx_lock_existing(const char* path, intptr_t* lock) { return lock_file(path, 0, lock); }
 void snx_unlock_file(intptr_t lock) {
 #ifdef _WIN32
     CloseHandle((HANDLE)lock); /* its lock with it */
