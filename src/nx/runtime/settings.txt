@@ -447,7 +447,7 @@ setting Controls scale
 setting Controls opacity
     key controls_opacity
     int 0 100
-    default 100
+    default 50
     label Opacity
     words #%
     step 10
