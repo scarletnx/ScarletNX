@@ -5,7 +5,10 @@ package android.util;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 
-/** The app's log: "D/Tag: message" lines on the runtime's stderr. SNX_LOG_LEVEL (V, D, I, W, E) filters them. */
+/**
+ * The app's log: "D/Tag: message" lines on the runtime's stderr. The driver's --log-level (snx.android.log_level: V, D,
+ * I, W, E or A) filters them, and sets the level isLoggable answers from, as Android's log.tag property does.
+ */
 public final class Log {
     public static final int VERBOSE = 2;
     public static final int DEBUG = 3;
@@ -14,17 +17,21 @@ public final class Log {
     public static final int ERROR = 6;
     public static final int ASSERT = 7;
     private static final String LETTERS = "??VDIWEA";
-    private static final int LEVEL;
+    /** The least level printed, and the least that isLoggable is true for */
+    private static final int LEVEL, LOGGABLE;
     static {
         String l = System.getProperty("snx.android.log_level");
-        int level = DEBUG;
-        if (l != null && l.length() == 1 && LETTERS.indexOf(l.charAt(0)) >= VERBOSE) level = LETTERS.indexOf(l.charAt(0));
+        // Android prints every level and, with no log.tag property, isLoggable is true from INFO up
+        int level = DEBUG, loggable = INFO;
+        if (l != null && l.length() == 1 && LETTERS.indexOf(l.charAt(0)) >= VERBOSE)
+            level = loggable = LETTERS.indexOf(l.charAt(0));
         LEVEL = level;
+        LOGGABLE = loggable;
     }
 
     private Log() {}
 
-    public static boolean isLoggable(String tag, int level) { return level >= LEVEL; }
+    public static boolean isLoggable(String tag, int level) { return level >= LOGGABLE; }
 
     public static int println(int priority, String tag, String msg) {
         if (priority < LEVEL) return 0;
