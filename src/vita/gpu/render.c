@@ -803,7 +803,7 @@ uint64_t vita_render_finish(VitaProcess* p) {
 }
 bool vita_render_show(VitaProcess* p, uint32_t address, uint32_t pitch, uint32_t width, uint32_t height) {
     struct VitaRender* r = render_of(p);
-    if (!r || r->rendering) return false;
+    if (!r) return false;
     /* nothing new to show: the window keeps it, but for a present every half second (a swapchain made anew) */
     uint32_t bytes = pitch * 4 * height;
     if (address == r->shown && !vita_watch_changed(address, bytes, r->shown_since) && ++r->shown_skips < 30)
@@ -812,8 +812,14 @@ bool vita_render_show(VitaProcess* p, uint32_t address, uint32_t pitch, uint32_t
     const Import* m = buffer_of(r, p, address, bytes, &at);
     if (!m) return false;
     uint64_t since = vita_watch_protect(address, bytes);
-    if (vita_vk_present(m->buffer, at, pitch, width, height))
-        r->shown = address, r->shown_since = since, r->shown_skips = 0;
+    /* the present's own commands (a copy, a blit) can't go inside the next scene's render pass, which the game may
+       already have open (begin_scene) while this, the already-finished frame, is still what gets shown. The present
+       submits, which ends the recording cb points to, so resume takes a fresh one rather than reuse cb (as
+       vita_render_finish does around its own submit) */
+    if (r->rendering) rendering_pause(vita_vk_commands());
+    bool shown = vita_vk_present(m->buffer, at, pitch, width, height);
+    if (r->rendering) rendering_resume(r, vita_vk_commands());
+    if (shown) r->shown = address, r->shown_since = since, r->shown_skips = 0;
     return true;
 }
 uint64_t vita_render_submitted(VitaProcess* p) {
