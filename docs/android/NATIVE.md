@@ -338,7 +338,9 @@ compile with `clang --target=x86_64-w64-mingw32 -fsyntax-only` and the mingw-w64
   that `GetMethodID` recorded. `FindClass` falls back to the app's class loader within the app's native methods and
   the loads of its libraries, as Android's uses the loader of the class whose native method runs; on a thread with
   none (one the app attached) it has the system class loader alone, and an app's class is a ClassNotFoundException,
-  as on ART. `GetVersion` is Android's JNI 1.6, not the host JDK's. `RegisterNatives` records the guest's functions.
+  as on ART. `GetVersion` is Android's JNI 1.6, not the host JDK's. The string functions' modified UTF-8 is ART's:
+  a supplementary character is UTF-8's 4 bytes both ways, where HotSpot's CESU-8 has 6 (and its `NewStringUTF` ends
+  the string at a 4-byte sequence). `RegisterNatives` records the guest's functions.
 - The translator gives each `native` method a body that calls `NativeBridge.invoke*` with its key, the object and its
   parameters (primitives as bits in a `long[]`, references in an `Object[]`). The bridge finds the function by
   `RegisterNatives` or by its JNI name, and passes the parameters as AAPCS64 does.
