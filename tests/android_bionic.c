@@ -8,10 +8,14 @@
 #include "android/bridge/host.h"
 #include <locale.h>
 #include <math.h>
+#if defined(__APPLE__)
+#include <xlocale.h> /* uselocale */
+#endif
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #ifdef _WIN32
 #include <io.h>
 #else
@@ -357,6 +361,81 @@ static void test_bionic_locales(void) {
     expect_int("and EINVAL", *hle_errno_location(), 22);
 }
 
+/* ---- calls from guest code ---- */
+
+/* name called as guest code calls it, through the bridge's export and its host call (bridge_call): the floating
+   arguments in v0 and on, set before */
+static uint64_t guest(const char* name, const uint64_t* x, unsigned n) {
+    uint64_t f = hle_symbol(name);
+    if (!f) {
+        fprintf(stderr, "android_bionic: the HLE has no %s\n", name);
+        exit(1);
+    }
+    return bridge_call(f, x, n);
+}
+#define GUEST(name, ...) guest(name, (uint64_t[]){__VA_ARGS__}, sizeof((uint64_t[]){__VA_ARGS__}) / 8)
+static void set_v(unsigned n, double value) {
+    memset(&bridge_cpu()->v[n], 0, sizeof bridge_cpu()->v[n]);
+    memcpy(&bridge_cpu()->v[n].df[0], &value, sizeof value);
+}
+
+/* the host C library's functions that a guest's call reaches take bionic's C locale, whatever the process's (the
+   user's, which the JVM sets): its numbers, its days' and months' names and UTF-8 characters. The thread's own locale
+   is back once the call returns */
+static void test_guest_locale(void) {
+    char error[256];
+    if (!bridge_init(NULL, error, sizeof error)) {
+        fprintf(stderr, "android_bionic: the bridge does not start: %s\n", error);
+        exit(1);
+    }
+    const char* comma = NULL;
+#ifndef _WIN32
+    static const char* const commas[] = {"pt_BR.UTF-8", "de_DE.UTF-8", "fr_FR.UTF-8", "es_ES.UTF-8",
+                                         "it_IT.UTF-8", "ru_RU.UTF-8", "nl_NL.UTF-8"};
+    for (size_t i = 0; i < sizeof commas / sizeof *commas && !comma; ++i)
+        if (setlocale(LC_ALL, commas[i]) && !strcmp(localeconv()->decimal_point, ",")) comma = commas[i];
+#endif
+    if (!comma) {
+        setlocale(LC_ALL, "C");
+        printf("android_bionic: the host has no locale with a decimal comma: the guest's numbers and names are "
+               "checked in the host's C locale alone\n");
+    }
+    /* multibyte characters of the C locale, ASCII on the host */
+    setlocale(LC_CTYPE, "C");
+
+    char out[64];
+    set_v(0, 3.14159);
+    set_v(1, 12345.678);
+    GUEST("snprintf", P(out), sizeof out, P("%.2f|%e"));
+    expect_text("snprintf of doubles", out, "3.14|1.234568e+04");
+    double d = 0;
+    expect_int("sscanf of a double", (int64_t)GUEST("sscanf", P("3.5 x"), P("%lf"), P(&d)), 1);
+    expect_int("its value times 10", (int64_t)(d * 10), 35);
+    char* end = NULL;
+    GUEST("strtod", P("0x1.8p3"), P(&end));
+    memcpy(&d, &bridge_cpu()->v[0].df[0], sizeof d);
+    expect_int("strtod of a hex float", (int64_t)d, 12);
+    expect_int("to its end", end && !*end, 1);
+    GUEST("strtod", P("1.25"), 0);
+    memcpy(&d, &bridge_cpu()->v[0].df[0], sizeof d);
+    expect_int("strtod of 1.25, times 100", (int64_t)(d * 100), 125);
+    struct tm tm = {.tm_year = 123, .tm_mon = 10, .tm_mday = 14, .tm_wday = 2, .tm_yday = 317}; /* 2023-11-14 */
+    GUEST("strftime", P(out), sizeof out, P("%a %b %A %B"), P(&tm));
+    expect_text("strftime's names", out, "Tue Nov Tuesday November");
+    const char* point = *(const char* const*)(uintptr_t)GUEST("localeconv", 0);
+    expect_text("localeconv's decimal point", point, ".");
+    uint32_t wide = 0;
+    expect_int("mbrtowc of a two-byte character", (int64_t)GUEST("mbrtowc", P(&wide), P("\xc3\xa7"), 2, 0), 2);
+    expect_int("its code point", wide, 0xe7);
+
+    /* the thread's own locale again */
+    expect_text("the host's decimal point after", localeconv()->decimal_point, comma ? "," : ".");
+#ifndef _WIN32
+    expect_int("the thread on the process's locale after", uselocale((locale_t)0) == LC_GLOBAL_LOCALE, 1);
+#endif
+    setlocale(LC_ALL, "C");
+}
+
 int main(void) {
     test_printf_signed();
     test_sscanf_reads_its_pointers();
@@ -366,6 +445,7 @@ int main(void) {
     test_getline();
     test_signal_sets();
     test_bionic_locales();
+    test_guest_locale();
     if (g_t.failures) {
         fprintf(stderr, "android_bionic: %d failed\n", g_t.failures);
         return 1;

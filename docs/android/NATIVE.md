@@ -284,7 +284,10 @@ builds for FreeBSD, macOS and Windows x64, where they differ:
   and `%m` give bionic's texts (`hle_error_text`): the host C library's are other words, in the user's language.
 - **The locale**: bionic's C library has the C locale alone, its multibyte characters UTF-8 whatever the name.
   `setlocale`, `newlocale` and `uselocale` are bionic's (`hle_libc.c`): a name only sets `MB_CUR_MAX`, 4 or 1, a
-  `locale_t` is bionic's struct of it, and the host's locale is never set.
+  `locale_t` is bionic's struct of it, and the host's locale is never set. The host's is the user's, which the JVM
+  sets for the process (a decimal comma, other names of days, other words), so a host call into guest code
+  (`bridge_call`) runs its thread in the C locale until it returns: C.UTF-8 on Linux, whose multibyte functions
+  serve the guest's. Windows' C runtime keeps the C locale, as no part of the process sets another.
 - **Constants and layouts** convert by the GNU ABI's tables and the network stack's: `gnuabi/abi/linux_file.h`
   (struct stat, the open flags), `gnuabi/abi/linux_net.h` (families, flags, options, `sockaddr_in` and `sockaddr_in6`)
   and `common/network/net_host.h` (the stack's constants as the host's). The adapters in `hle_posix.c` also convert
