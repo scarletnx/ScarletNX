@@ -261,6 +261,45 @@ static void check_textures(const u8* f, u32 size, int mid) {
     }
 }
 
+/* a hair part's vertex (column i, row j of grid g) as the SDK reads it, from the inflated part in g_mii_model.raw */
+static void want_hair_at(const Shape* grids, u32 g, u32 i, u32 j, float out[3]) {
+    u32 n = 0, h, c;
+    for (h = 0; h < g; h++) n += (grids->ns[h] + 1) * (grids->nt[h] + 1);
+    n += j * (grids->ns[g] + 1) + i;
+    for (c = 0; c < 3; c++) out[c] = want_half(snx_ld_le16(g_mii_model.raw + 8 * n + 2 * c));
+}
+/* the hair of a shape file (q Q_MID or Q_HIGH) as the SDK reads it: every style's fringe ends in pointed locks, its
+   edge's height going up and down across the front, where an edge without them only rises toward the middle */
+static void check_hair(const u8* f, u32 q) {
+    static const u32 styles[3] = {112, 126, 0};
+    u32 s;
+    for (s = 0; s < 3; s++) {
+        u32 style = styles[s], e = 4 + 12 + 12 + 132 * 4 + style, i, tips = 0;
+        const u8* t = f + 0x6c + 0x58 * e;
+        Shape sh = shape_in(S_HAIR_NORMAL, hair_variant(style), q);
+        float edge[4 * HAIR_LOCKS + 1], lo = 1e9f, hi = -1e9f;
+        CHECK(want_inflate(f + snx_ld_le32(t), snx_ld_le32(t + 8), g_mii_model.raw, snx_ld_le32(t + 4)));
+        /* the edge across the front, an eighth of the way around each side of its middle: its tips (lower than both
+           neighbors) */
+        for (i = 0; i <= sh.ns[0]; i++) {
+            float p[3];
+            want_hair_at(&sh, 0, i, 0, p);
+            edge[i] = p[1];
+        }
+        for (i = 1; i < sh.ns[0]; i++) {
+            float a = fabsf((float)i / (float)sh.ns[0] - 0.5f);
+            if (a > 0.125f) continue;
+            tips += edge[i] < edge[i - 1] && edge[i] < edge[i + 1];
+            if (edge[i] < lo) lo = edge[i];
+            if (edge[i] > hi) hi = edge[i];
+        }
+        if (tips < (q ? 3u : 2u) || hi - lo < 1.0f)
+            fprintf(stderr, "%s hair %u: %u lock tips across the front, its edge from %.2f to %.2f\n",
+                    q ? "High" : "Mid", style, tips, lo, hi);
+        CHECK(tips >= (q ? 3u : 2u) && hi - lo >= 1.0f);
+    }
+}
+
 /* a shape file, high its High quality: the console's largest part of each kind there, which the SDK sizes a Mii
    model's memory with, bounds each of ours */
 static void check_shapes(const u8* f, u32 size, int high) {
@@ -465,12 +504,12 @@ int main(void) {
     /* the console's file of each name, in bytes: the SDK reads a file whole into the game's Mii heap, which a game
        sizes for these, so none of ours is bigger */
     static const u32 console[6] = {0x49e34, 0x4a0b0, 0xa58f0, 0xa5c78, 0xe517c, 0x2bcf40};
-    u32 i, sizes[6];
+    u32 i, sizes[6], rooms[6];
     g_mii_model.inflate = libdeflate_alloc_decompressor();
     if (!g_mii_model.inflate) return 1;
     for (i = 0; i < SNX_MII_MODEL_FILES; i++) {
         char name[32];
-        u32 room = snx_mii_model_write(i, NULL);
+        u32 room = rooms[i] = snx_mii_model_write(i, NULL);
         CHECK(room <= sizeof g_mii_model.files[i]);
         if (room > sizeof g_mii_model.files[i]) return 1;
         sizes[i] = snx_mii_model_write(i, g_mii_model.files[i]);
@@ -494,9 +533,11 @@ int main(void) {
     check_textures(g_mii_model.files[2], sizes[2], 1);
     check_shapes(g_mii_model.files[4], sizes[4], 0);
     check_shapes(g_mii_model.files[5], sizes[5], 1);
+    check_hair(g_mii_model.files[4], Q_MID);
+    check_hair(g_mii_model.files[5], Q_HIGH);
     check_picture();
-    /* the six files with the RomFS's tables fit the room fs.h keeps for them */
-    CHECK(sizes[0] + sizes[2] + sizes[4] + sizes[5] + 0x1000 <= 0x500000);
+    /* the most the four files the copies share take, with the RomFS's tables, fits the room fs.h keeps for them */
+    CHECK(rooms[0] + rooms[2] + rooms[4] + rooms[5] + 0x1000 <= 0x600000);
     libdeflate_free_decompressor(g_mii_model.inflate);
     if (g_mii_model.fails) return 1;
     printf("PASS generated MiiModel: Low %u, Mid %u, shapes Mid %u, High %u bytes\n", sizes[0], sizes[2], sizes[4],
