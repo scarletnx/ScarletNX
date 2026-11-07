@@ -303,6 +303,9 @@ jobs:
       # a block only a stale stack slot or register still points at is a leak, on every machine alike: with them
       # read, what a leak check finds depends on what the stack happened to hold at exit
       LSAN_OPTIONS: use_stacks=0:use_registers=0
+      # the loader keeps a driver loaded past vkDestroyInstance: what the driver made once stays reachable from its
+      # globals, where an unloaded driver's would read as a leak of an unknown module (lavapipe's 128 bytes, 3ds_addons)
+      VK_LOADER_DISABLE_DYNAMIC_LIBRARY_UNLOADING: 1
     steps:
       - name: Name the week
         id: week
