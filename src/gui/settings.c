@@ -455,7 +455,7 @@ size_t gui_settings_recompile(GuiSettings* s, int make, const char** argv) {
         const char* value = s->values[i].kind ? NULL : picked(s, i);
         const char* key = s->values[i].key;
         if (!value || !strcmp(key, "gdbstub") || !strcmp(key, "tmpfs") || !strcmp(key, "extract") ||
-            !strcmp(key, "tracy_capture"))
+            !strcmp(key, "tracy_capture") || !strcmp(key, "java_home"))
             continue;
         snprintf(s->values[i].option, sizeof s->values[i].option, "--%s=%s", key, value);
         argv[n++] = s->values[i].option;
@@ -468,6 +468,14 @@ size_t gui_settings_recompile(GuiSettings* s, int make, const char** argv) {
         argv[n++] = s->values[i].option;
     }
     return n;
+}
+size_t gui_settings_java_home(GuiSettings* s, const char** argv) {
+    int i = find(s, "java_home");
+    const char* value = i < s->own ? picked(s, i) : NULL;
+    if (!value) return 0;
+    snprintf(s->values[i].option, sizeof s->values[i].option, "--java-home=%s", value);
+    argv[0] = s->values[i].option;
+    return 1;
 }
 size_t gui_settings_one(GuiSettings* s, const char* key, const char** argv) {
     int i = find(s, key);

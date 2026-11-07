@@ -106,4 +106,6 @@ const char* gui_settings_extract(const GuiSettings* settings);
 size_t gui_settings_recompile(GuiSettings* settings, int make, const char** argv);
 /* argv's --key=value of the game's setting key when it is picked: its count, 1 or 0 */
 size_t gui_settings_one(GuiSettings* settings, const char* key, const char** argv);
+/* argv's --java-home=DIR for the Android driver when Java home is set: its count, 1 or 0 (empty, the driver's own) */
+size_t gui_settings_java_home(GuiSettings* settings, const char** argv);
 #endif

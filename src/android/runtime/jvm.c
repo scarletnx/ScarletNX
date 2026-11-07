@@ -23,24 +23,28 @@ void android_jvm_set_home(const char* home) {
 }
 
 static void* open_jvm(char* error, size_t error_size) {
-    const char* homes[2] = {java_home, NULL};
+    /* --java-home's alone when it is given: a JDK named that does not load is said, never passed over for the build's */
+    const char* home = java_home && java_home[0] ? java_home : NULL;
 #ifdef SNX_JAVA_HOME
-    homes[1] = SNX_JAVA_HOME;
+    if (!home) home = SNX_JAVA_HOME;
 #endif
-    char tried[1024] = "";
-    for (size_t i = 0; i < 2; ++i) {
-        if (!homes[i] || !homes[i][0]) continue;
-        char* path = snx_path_join(homes[i], jvm_path);
-        if (!path) continue;
-        void* library = snx_is_file(path) ? snx_library_open(path, error, error_size) : NULL;
-        size_t used = strlen(tried);
-        snprintf(tried + used, sizeof tried - used, "%s%s", used ? ", " : "", path);
-        free(path);
-        if (library) return library;
+    static const char where[] =
+        "set the launcher's Settings > Launch > Java home, or give --java-home=DIR, to a JDK 21 "
+        "or later";
+    if (!home) {
+        snprintf(error, error_size, "no JVM: the build found no JDK; %s", where);
+        return NULL;
     }
-    snprintf(error, error_size, "no JVM: give --java-home=DIR, a JDK 21 or later (tried: %s)",
-             tried[0] ? tried : "no --java-home, and the build found none");
-    return NULL;
+    char* path = snx_path_join(home, jvm_path);
+    if (!path) {
+        snprintf(error, error_size, "out of memory");
+        return NULL;
+    }
+    char why[512] = "";
+    void* library = snx_is_file(path) ? snx_library_open(path, why, sizeof why) : NULL;
+    if (!library) snprintf(error, error_size, "no JVM at %s (%s): %s", path, why[0] ? why : "no such file", where);
+    free(path);
+    return library;
 }
 
 bool android_jvm_start(AndroidJvm* jvm, const char* class_path, const char* const* options, size_t option_count,
