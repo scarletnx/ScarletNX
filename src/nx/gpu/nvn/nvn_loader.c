@@ -65,27 +65,37 @@ static void bootstrap32(SnxArmCPU* a);
 
 int nvn_loader_active(void) { return __atomic_load_n(&g_nvn.loader.active, __ATOMIC_ACQUIRE); }
 
-static u32 missing_hash(u64 addr) { return (u32)((addr >> 2) * 2654435761u) & (NVN_MISSING_SLOTS - 1); }
-static const NvnMissing* missing_find(u64 addr) {
-    for (u32 n = 0, i = missing_hash(addr); n < NVN_MISSING_SLOTS; n++, i = (i + 1) & (NVN_MISSING_SLOTS - 1)) {
-        u64 a = __atomic_load_n(&g_nvn.loader.missing[i].addr, __ATOMIC_ACQUIRE);
-        if (a == addr) return &g_nvn.loader.missing[i];
+static u32 resolved_hash(u64 addr) { return (u32)((addr >> 2) * 2654435761u) & (NVN_RESOLVED_SLOTS - 1); }
+static const NvnResolved* resolved_find(u64 addr) {
+    for (u32 n = 0, i = resolved_hash(addr); n < NVN_RESOLVED_SLOTS; n++, i = (i + 1) & (NVN_RESOLVED_SLOTS - 1)) {
+        u64 a = __atomic_load_n(&g_nvn.loader.resolved[i].addr, __ATOMIC_ACQUIRE);
+        if (a == addr) return &g_nvn.loader.resolved[i];
         if (!a) return NULL;
     }
     return NULL;
 }
 
+static int implemented(const char* name, int* versioned);
+/* the function the game called at entry, which has no implementation: its name, with the API version when other
+   versions have one */
+static void unimplemented_at(u64 entry) {
+    const NvnResolved* m = resolved_find(entry);
+    char version[32];
+    int versioned = 0;
+    if (!m)
+        fatal("nvn: the game called an NVN function at %llx, which nvn doesn't implement yet",
+              (unsigned long long)entry);
+    implemented(m->name, &versioned);
+    hook_version_text(version, sizeof version, HOOK_NVN, g_nvn.loader.api);
+    fatal("nvn: the game called %s%s%s, which nvn doesn't implement yet", m->name, versioned ? " for NVN API " : "",
+          versioned ? version : "");
+}
 static void unimplemented(CPU* c, u64 entry) {
-    const NvnMissing* m = missing_find(entry);
     (void)c;
-    fatal("nvn: the game called %s, which nvn doesn't implement yet", m ? m->name : "an NVN function");
+    unimplemented_at(entry);
 }
-
 /* a 32-bit game's: the block at the function's entry, so r15 is its address (bit 0 set in Thumb state) */
-static void unimplemented32(SnxArmCPU* a) {
-    const NvnMissing* m = missing_find(a->r[15] | (a->cpsr & SNX_ARM_T ? 1u : 0u));
-    fatal("nvn: the game called %s, which nvn doesn't implement yet", m ? m->name : "an NVN function");
-}
+static void unimplemented32(SnxArmCPU* a) { unimplemented_at(a->r[15] | (a->cpsr & SNX_ARM_T ? 1u : 0u)); }
 static int ours32(SnxArmBlock fn) {
     int i;
     if (fn == unimplemented32) return 1;
@@ -119,19 +129,22 @@ static int implemented(const char* name, int* versioned) {
     return k >= 0 ? k : -1;
 }
 
-/* addr's name for unimplemented's message, under lock (versioned: it has declarations for other API versions) */
-static void note_missing(u64 addr, const char* name, int versioned) {
-    u32 j = missing_hash(addr);
-    char version[32];
-    while (g_nvn.loader.missing[j].addr) j = (j + 1) & (NVN_MISSING_SLOTS - 1);
-    hook_version_text(version, sizeof version, HOOK_NVN, g_nvn.loader.api);
-    if (versioned)
-        snprintf(g_nvn.loader.missing[j].name, sizeof g_nvn.loader.missing[j].name, "%s for NVN API %s", name, version);
-    else
-        snprintf(g_nvn.loader.missing[j].name, sizeof g_nvn.loader.missing[j].name, "%s", name);
-    LOG("nvn: the game resolved %s, which nvn doesn't implement: it stops if it calls it\n",
-        g_nvn.loader.missing[j].name);
-    __atomic_store_n(&g_nvn.loader.missing[j].addr, addr, __ATOMIC_RELEASE);
+/* addr's slot took name's handler, under lock: its entry, the first or with this name (an implemented function the
+   driver folded to the address of one that isn't takes its slot). The first time of a function that isn't
+   implemented, the log says so (versioned: it has declarations for other API versions) */
+static void note(u64 addr, const char* name, int missing, int versioned) {
+    u32 j = resolved_hash(addr), n;
+    for (n = 0; n < NVN_RESOLVED_SLOTS && g_nvn.loader.resolved[j].addr && g_nvn.loader.resolved[j].addr != addr; n++)
+        j = (j + 1) & (NVN_RESOLVED_SLOTS - 1);
+    if (n == NVN_RESOLVED_SLOTS) fatal("nvn: the game resolved more than %d NVN functions", NVN_RESOLVED_SLOTS);
+    if (missing && !g_nvn.loader.resolved[j].addr) {
+        char version[32];
+        hook_version_text(version, sizeof version, HOOK_NVN, g_nvn.loader.api);
+        LOG("nvn: the game resolved %s%s%s, which nvn doesn't implement: it stops if it calls it\n", name,
+            versioned ? " for NVN API " : "", versioned ? version : "");
+    }
+    snprintf(g_nvn.loader.resolved[j].name, sizeof g_nvn.loader.resolved[j].name, "%s", name);
+    __atomic_store_n(&g_nvn.loader.resolved[j].addr, addr, __ATOMIC_RELEASE);
 }
 
 /* take for a 32-bit game: addr is its A32 address, or its Thumb one with bit 0 set */
@@ -153,7 +166,7 @@ static void take32(u64 addr, const char* name, int i, int versioned) {
             return;
         }
     }
-    if (fn == unimplemented32 && !missing_find(addr)) note_missing(addr, name, versioned);
+    note(addr, name, fn == unimplemented32, versioned);
     __atomic_store_n(slot, fn, __ATOMIC_RELEASE);
     pm_unlock(&g_nvn.loader.lock);
 }
@@ -194,7 +207,7 @@ static void take(u64 addr, const char* name, u32 len) {
         g_nvn.loader.nvrm_get = cur, g_nvn.loader.nvrm_get_at = addr;
     if (!ours(cur) && !strcmp(name, "nvnSyncInitializeFromNvRmSyncNVX"))
         g_nvn.loader.nvrm_init = cur, g_nvn.loader.nvrm_init_at = addr;
-    if (fn == unimplemented && !missing_find(addr)) note_missing(addr, name, versioned);
+    note(addr, name, fn == unimplemented, versioned);
     __atomic_store_n(slot, fn, __ATOMIC_RELEASE);
     if (i >= 0)
         snprintf(family, sizeof family, "nvn %s", nvn_family_name[nvn_family[i]]);
@@ -280,8 +293,23 @@ static void version_read(void) {
             version, described_text);
 }
 
-static void bootstrap(CPU* c, u64 entry) {
+/* the driver's nvnDeviceGetProcAddress at addr (in the game's code) wrapped, so the names it answers are taken too:
+   its own code kept to run under the wrapper */
+static void wrap_getproc(u64 addr) {
     GuestFn* slot;
+    pm_lock(&g_nvn.loader.lock);
+    slot = &g_disp[(addr - g_code_lo) / 4];
+    if (*slot != getproc) {
+        GuestFn own = nce_slot(*slot);
+        if (!own) fatal("nvn: the driver's nvnDeviceGetProcAddress has no recompiled code");
+        g_nvn.loader.getproc_original = own;
+        __atomic_store_n(slot, getproc, __ATOMIC_RELEASE);
+        nce_slot_taken(addr, "nvn loader");
+    }
+    note(addr, "nvnDeviceGetProcAddress", 0, 0);
+    pm_unlock(&g_nvn.loader.lock);
+}
+static void bootstrap(CPU* c, u64 entry) {
     char name[128];
     u32 len = nvn_read_name(c->x[0], name); /* nvnBootstrapLoader(name) */
     pm_lock(&g_nvn.loader.lock);
@@ -297,16 +325,7 @@ static void bootstrap(CPU* c, u64 entry) {
     if (c->x[0] < g_code_lo || c->x[0] >= g_code_hi || (c->x[0] & 3))
         fatal("nvn: the driver's nvnDeviceGetProcAddress is at %llx, outside the game's code",
               (unsigned long long)c->x[0]);
-    pm_lock(&g_nvn.loader.lock);
-    slot = &g_disp[(c->x[0] - g_code_lo) / 4];
-    if (*slot != getproc) {
-        GuestFn own = nce_slot(*slot);
-        if (!own) fatal("nvn: the driver's nvnDeviceGetProcAddress has no recompiled code");
-        g_nvn.loader.getproc_original = own;
-        __atomic_store_n(slot, getproc, __ATOMIC_RELEASE);
-        nce_slot_taken(c->x[0], "nvn loader");
-    }
-    pm_unlock(&g_nvn.loader.lock);
+    wrap_getproc(c->x[0]);
 }
 
 /* ---- a 32-bit game (nx/runtime/arm.c): its driver is A32 code, and its NVN functions are blocks of its code table,
@@ -348,8 +367,21 @@ static void getproc32(SnxArmCPU* a) {
     if (len && a->r[0]) take(a->r[0], name, len);
 }
 
+/* wrap_getproc for a 32-bit game: found is the A32 address, bit 0 set for Thumb */
+static void wrap_getproc32(u32 found) {
+    SnxArmBlock* slot = arm_slot(found & ~1u, found & 1);
+    if (!slot) fatal("nvn: the driver's nvnDeviceGetProcAddress is at %x, outside the game's code", found);
+    pm_lock(&g_nvn.loader.lock);
+    if (*slot != getproc32) {
+        g_nvn.loader.getproc_original32 = arm_block(found & ~1u, found & 1);
+        if (!g_nvn.loader.getproc_original32)
+            fatal("nvn: the driver's nvnDeviceGetProcAddress at %x has no code", found);
+        __atomic_store_n(slot, getproc32, __ATOMIC_RELEASE);
+    }
+    note(found, "nvnDeviceGetProcAddress", 0, 0);
+    pm_unlock(&g_nvn.loader.lock);
+}
 static void bootstrap32(SnxArmCPU* a) {
-    SnxArmBlock* slot;
     char name[128];
     u32 len = nvn_read_name(a->r[0], name), found; /* nvnBootstrapLoader(name) */
     pm_lock(&g_nvn.loader.lock);
@@ -366,17 +398,7 @@ static void bootstrap32(SnxArmCPU* a) {
         take(found, name, len);
         return;
     }
-    /* the resolver: wrapped, so the names it answers are taken too */
-    slot = arm_slot(found & ~1u, found & 1);
-    if (!slot) fatal("nvn: the driver's nvnDeviceGetProcAddress is at %x, outside the game's code", found);
-    pm_lock(&g_nvn.loader.lock);
-    if (*slot != getproc32) {
-        g_nvn.loader.getproc_original32 = arm_block(found & ~1u, found & 1);
-        if (!g_nvn.loader.getproc_original32)
-            fatal("nvn: the driver's nvnDeviceGetProcAddress at %x has no code", found);
-        __atomic_store_n(slot, getproc32, __ATOMIC_RELEASE);
-    }
-    pm_unlock(&g_nvn.loader.lock);
+    wrap_getproc32(found); /* the resolver: wrapped, so the names it answers are taken too */
 }
 
 /* nvn_loader_init for a 32-bit game. Every call to its loader ends a block, so no route list is needed */
@@ -421,4 +443,39 @@ void nvn_loader_init(void) {
     nce_slot_taken(entry, "nvn loader");
     g_nvn.loader.active = 1;
     LOG("nvn: the runtime implements %d NVN functions, and the game's NVN driver doesn't run\n", NVN_COUNT);
+}
+
+/* a saved entry's address: in the game's code, where take finds a slot for it */
+static int in_code(u64 addr) {
+    if (g_nvn.loader.a32) return !(addr >> 32) && arm_slot((u32)addr & ~1u, addr & 1);
+    return addr >= g_code_lo && addr < g_code_hi && !(addr & 3);
+}
+int nvn_loader_state_ok(const NvnLoaderState* saved) {
+    u32 i;
+    if (saved->a32 != g_nvn.loader.a32 || saved->active != g_nvn.loader.active) return 0;
+    for (i = 0; i < NVN_RESOLVED_SLOTS; i++) {
+        const NvnResolved* r = &saved->resolved[i];
+        if (r->addr && (!r->name[0] || !memchr(r->name, 0, sizeof r->name) || !in_code(r->addr))) return 0;
+    }
+    return 1;
+}
+void nvn_loader_state_install(const NvnLoaderState* saved) {
+    u32 i;
+    if (!nvn_loader_active()) return;
+    pm_lock(&g_nvn.loader.lock);
+    if (!g_nvn.loader.decided && saved->decided) { /* the version the state's functions were taken for */
+        g_nvn.loader.api = saved->api;
+        g_nvn.loader.decided = 1;
+    }
+    pm_unlock(&g_nvn.loader.lock);
+    for (i = 0; i < NVN_RESOLVED_SLOTS; i++) {
+        const NvnResolved* r = &saved->resolved[i];
+        if (!r->addr) continue;
+        if (strcmp(r->name, "nvnDeviceGetProcAddress"))
+            take(r->addr, r->name, (u32)strlen(r->name));
+        else if (g_nvn.loader.a32)
+            wrap_getproc32((u32)r->addr);
+        else
+            wrap_getproc(r->addr);
+    }
 }

@@ -260,7 +260,7 @@ NvnStaged* nvn_state_parse(StateIo* io) {
         if (!o->sublinkage[i]) goto bad;
     for (i = 0; i < NVN_SMALL_CLASSES; i++)
         if (n->cmd.small[i].n && !n->cmd.small[i].given) goto bad;
-    if (!cmd_ok(&n->cmd) || !replay_ok(&n->replay)) goto bad;
+    if (!cmd_ok(&n->cmd) || !replay_ok(&n->replay) || !nvn_loader_state_ok(&n->loader)) goto bad;
     return s;
 bad:
     nvn_state_staged_free(s);
@@ -291,7 +291,9 @@ void nvn_state_install(NvnStaged* s) {
             d->scratch.gen[g] = ds_generation_next();
         }
     }
-    /* the running process's: its locks, and its loader, which took the game's NVN functions in this process */
+    /* the running process's: its locks, and its loader, once it has taken the state's game's functions (a process
+       that loads the state as the game starts hasn't) */
+    nvn_loader_state_install(&n->loader);
     n->loader = g_nvn.loader;
     n->object.xfb_lock = g_nvn.object.xfb_lock;
     n->cmd.lock = g_nvn.cmd.lock;
@@ -305,7 +307,7 @@ void nvn_state_install(NvnStaged* s) {
 /* the types nvn_state_save writes as raw bytes: g_nvn, whose walk takes in its structs but not its arrays, and the
    types of those arrays' elements, and of the heap records */
 void nvn_state_schema(int (*dump)(u64* h, const char* fmt, ...), u64* h) {
-    static const NvnMissing missing;
+    static const NvnResolved resolved;
     static const NvnSpillSeg seg;
     static const NvnSpillPiece piece;
     static const NvnCtl ctl;
@@ -322,7 +324,7 @@ void nvn_state_schema(int (*dump)(u64* h, const char* fmt, ...), u64* h) {
     static const NvnVertexStream stream;
     static const NVNbufferRange range;
     __builtin_dump_struct(&g_nvn, dump, h);
-    __builtin_dump_struct(&missing, dump, h);
+    __builtin_dump_struct(&resolved, dump, h);
     __builtin_dump_struct(&seg, dump, h);
     __builtin_dump_struct(&piece, dump, h);
     __builtin_dump_struct(&ctl, dump, h);

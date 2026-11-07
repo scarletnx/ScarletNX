@@ -14,6 +14,7 @@
 #include "common/filesystem/tree.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/services/services_int.h"
+#include "nx/runtime/loader.h"
 #include "gpu/nvn/nvn.hook.h"
 
 /* the hash renderer.h's screenshot gives an 8x8 frame of one RGBA8 pixel value */
@@ -106,8 +107,25 @@ static int check_nvn_state_damage(void) {
                      3) == 0);
     CHECK(nvn_parses(&saved, (NvnChange[]){{offsetof(Nvn, replay.jobs[3].queue), &one, 4}}, 1) == 0);
     CHECK(nvn_parses(&saved, (NvnChange[]){{offsetof(Nvn, replay.q[0].d.ds.owner), &owner, 4}}, 1) == 0);
+    /* a function resolved outside the game's code, which a load would take (gpu/nvn/nvn_loader.c) */
+    const char name[] = "nvnQueueFinish";
+    const u64 inside = g_code_lo, outside = 0x10;
+    CHECK(nvn_parses(&saved,
+                     (NvnChange[]){{offsetof(Nvn, loader.resolved[5].addr), &inside, 8},
+                                   {offsetof(Nvn, loader.resolved[5].name), name, sizeof name}},
+                     2) == 1);
+    CHECK(nvn_parses(&saved,
+                     (NvnChange[]){{offsetof(Nvn, loader.resolved[5].addr), &outside, 8},
+                                   {offsetof(Nvn, loader.resolved[5].name), name, sizeof name}},
+                     2) == 0);
     free(saved.p);
     return 0;
+}
+
+/* the code of the game's NVN driver, which the runtime's functions take the dispatch slots of */
+static void driver_code(CPU* c, u64 entry) {
+    (void)c;
+    (void)entry;
 }
 
 static int check_nvn_savestate(const char* shot) {
@@ -152,6 +170,23 @@ static int check_nvn_savestate(const char* shot) {
     CHECK(nvn_WindowInitialize(NULL, window, wb));
     nvn_CommandBufferInitialize(NULL, cmd, 0);
     nvn_CommandBufferAddControlMemory(NULL, cmd, cpu + 0x2000, 0x1000);
+    /* the game resolves three NVN functions of its driver: one the runtime implements, one it doesn't, and the
+       resolver, which it wraps. Their slots are the runtime's then */
+    static GuestFn code[16];
+    NvnLoaderState* resolved = (NvnLoaderState*)calloc(1, sizeof *resolved);
+    CHECK(resolved);
+    for (u32 i = 0; i < 16; i++) code[i] = driver_code;
+    g_disp = code;
+    g_code_lo = 0x7100000000ull;
+    g_code_hi = g_code_lo + sizeof code / sizeof *code * 4;
+    resolved->active = resolved->decided = 1;
+    resolved->resolved[0] = (NvnResolved){g_code_lo, "nvnQueueFinish"};
+    resolved->resolved[1] = (NvnResolved){g_code_lo + 4, "nvnNoSuchFunction"};
+    resolved->resolved[2] = (NvnResolved){g_code_lo + 8, "nvnDeviceGetProcAddress"};
+    nvn_loader_state_install(resolved);
+    free(resolved);
+    CHECK(code[0] != driver_code && code[1] != driver_code && code[2] != driver_code && code[3] == driver_code);
+    CHECK(g_nvn.loader.getproc_original == driver_code);
 
     /* work waiting on the GPU for an event isn't saved: the state is refused, naming the queue's */
     *NVN_OBJ(NvnEvent, event) =
@@ -187,6 +222,10 @@ static int check_nvn_savestate(const char* shot) {
     CHECK(back == given + 1); /* the premise: a block that the state's recording holds is free here */
     CHECK(!check_nvn_state_damage());
 
+    /* the load as in a process that hasn't resolved them yet (a state loaded as the game starts) */
+    for (u32 i = 0; i < 16; i++) code[i] = driver_code;
+    memset(g_nvn.loader.resolved, 0, sizeof g_nvn.loader.resolved);
+    g_nvn.loader.getproc_original = NULL;
     u64 before = ds_generation_next();
     int loaded = state_load(path, why, sizeof why);
     if (loaded) fprintf(stderr, "NVN state not loaded: %s\n", why);
@@ -199,6 +238,9 @@ static int check_nvn_savestate(const char* shot) {
     u64 t = plat_ns();
     nvn_WindowAcquireTexture(NULL, window, sync, index);
     CHECK(plat_ns() - t < 500000000ull && gr32(index) == 0);
+    /* the state's game's functions are the runtime's again, the resolver wrapped over the driver's own */
+    CHECK(code[0] != driver_code && code[1] != driver_code && code[2] != driver_code && code[3] == driver_code);
+    CHECK(g_nvn.loader.getproc_original == driver_code);
     put_rgba(rgba, 0, 0, 1);
     u64 third = nvn_clear(cmd, pool, 0x400, targets, rgba);
     u64 again = nvn_frame(queue, window, handles, first, shot);
