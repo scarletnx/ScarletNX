@@ -600,6 +600,21 @@ void snx_tracy_gpu_calibrate(int64_t gpu_time, int64_t cpu_delta, int ctx) {
     snx_tracy_leave();
 }
 
+/* A frame's picture: the client's own copy is queued for the server, which puts it on the timeline at the frame's
+   time. Without the frame-image support (the deep build takes it on), the client's own call does nothing. */
+int snx_tracy_frame_images_on(void) {
+#ifdef TRACY_NO_FRAME_IMAGE
+    return 0; /* this client discards the picture: the readback it costs would buy nothing */
+#else
+    return 1;
+#endif
+}
+void snx_tracy_frame_image(const void* image, uint16_t width, uint16_t height) {
+    if (!snx_tracy_enter()) return;
+    if (TracyCIsConnected) TracyCFrameImage(image, width, height, 0, 0);
+    snx_tracy_leave();
+}
+
 /* The caller's anchor: the context announcement's own pair, which a new connection replays. The server
    measures its GPU delta from that pair and takes the CPU delta from the events the caller sends, so both
    sides must count from the same point after a reconnect. */

@@ -11451,8 +11451,14 @@ static int clean_left(App* app) {
                            app_read(app, false, unread, sizeof unread, NULL, 0);
     return app->clean_found;
 }
+/* a Settings row this build has none of what it needs (a profiler row in a build without the client): shown, and
+   picked by nothing */
+static bool setting_needs_build(const App* app, int r) {
+    int row = setting_of(app, r);
+    return row >= 0 && row < app->settings.count && app->settings.values[row].needs_build;
+}
 /* a row of App or Folders with nothing to do now, greyed, whose Enter says why (#614): nothing to clean or move, every
-   setting at its default, no folder picked, a library's Main off it */
+   setting at its default, no folder picked, a library's Main off it, a setting this build cannot do */
 static bool form_row_off(App* app, const GuiEditor* e, int r) {
     int picked = 0;
     if (e->keys == app_keys)
@@ -11463,7 +11469,8 @@ static bool form_row_off(App* app, const GuiEditor* e, int r) {
         return (kind == GUI_ROW_DUMPS && app->dumps_off) ||
                (kind == GUI_ROW_PLACE && at == GUI_PLACE_GAMES && app->recompiled_off);
     }
-    if (app->form != GUI_FORM_FOLDERS || e != &app->editor || r != folder_rows(app)) return false;
+    if (app->form != GUI_FORM_FOLDERS || e != &app->editor || r != folder_rows(app))
+        return e->object == (char*)app->settings.values && setting_needs_build(app, r);
     for (int i = 0; i < GUI_PLACES; ++i) picked += app->place[i] != NULL;
     return !picked;
 }

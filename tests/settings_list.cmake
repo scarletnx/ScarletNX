@@ -1,18 +1,35 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# `scarletnx --settings`: every setting of the game's .ini, by section, a line each of nine fields, the help on one
-# line, the menus' name and values (runtime/options.c's ini_list), as the menu's Settings read them. Run by ctest as
-# runtime_settings_list
+# `scarletnx --settings`: every setting of the game's .ini, by section, a line each of nine fields and a tenth of what
+# the build the row needs is, the help on one line, the menus' name and values (runtime/options.c's ini_list), as the
+# menu's Settings read them. Run by ctest as runtime_settings_list
 execute_process(COMMAND "${RUNTIME}" --settings RESULT_VARIABLE result OUTPUT_VARIABLE list ERROR_VARIABLE errors)
 if(result OR NOT errors STREQUAL "")
     message(FATAL_ERROR "scarletnx --settings ended with ${result}: ${errors}")
 endif()
 set(field "[^\t\r\n]*")
-string(REGEX REPLACE "${field}\t${field}\t${field}\t(int|float|text)\t${field}\t${field}\t${field}\t${field}\t${field}\r?\n"
+string(REGEX REPLACE "${field}\t${field}\t${field}\t(int|float|text)\t${field}\t${field}\t${field}\t${field}\t${field}(\t${field})?\r?\n"
        "" rest "${list}")
 if(NOT rest STREQUAL "" OR list STREQUAL "")
-    message(FATAL_ERROR "lines of scarletnx --settings that are not nine fields:\n${rest}")
+    message(FATAL_ERROR "lines of scarletnx --settings that are not nine or ten fields:\n${rest}")
 endif()
+# the rows this build has none of what they need, named: a menu shows them greyed and picks nothing
+set(needed)
+string(REGEX MATCHALL "\n[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\tneeds-build" rows "${list}")
+foreach(row IN LISTS rows)
+    string(REGEX REPLACE "^\n[^\t]*\t([^\t]*)\t.*" "\\1" key "${row}")
+    list(APPEND needed ${key})
+endforeach()
+# the Debug section's, the ones --settings prints
+foreach(key tracy_profiler tracy_capture tracy_sampling tracy_port tracy_capture_tool tracy_open_trace tracy_frame_images)
+    if(SNX_TRACY)
+        if(key IN_LIST needed)
+            message(FATAL_ERROR "scarletnx --settings: ${key} says it needs a build this one has")
+        endif()
+    elseif(NOT key IN_LIST needed)
+        message(FATAL_ERROR "scarletnx --settings: ${key} does not say that a build without the client has none of it")
+    endif()
+endforeach()
 # the game's menu's settings with its names and words, as the launcher shows them; a whole number of few values with
 # its numbers
 foreach(row "Display\tdocked\t1\tint\t0\t2\t1 = TV mode" "Display\tfullscreen\t0\tint\t0\t1\t"

@@ -168,6 +168,9 @@ the key (with its modifiers held); Esc cancels, Backspace puts the default back,
 
 ## Debug
 
+The profiler's rows (`tracy_`) only do something in a build with `SNX_TRACY` (`cmake --preset tracy`): another build's menu shows them greyed, and picking one does nothing.
+
+
 | Key | Default | Effect |
 | --- | --- | --- |
 | `log` | `1` | Log detail. `2` logs everything, which adds runtime overhead |
@@ -214,7 +217,9 @@ the key (with its modifiers held); Esc cancels, Backspace puts the default back,
 | `vk_max_allocation_mb`, `vk_budget_mb` | `0`, `0` | A smaller cap on each Vulkan allocation and on the GPU memory the caches keep, in MiB, for testing. `0` is the device's |
 | `renderdoc`, `renderdoc_frames` | empty | RenderDoc captures to that path's stem of the presents listed (`500,800`, or `45s` for the first after 45 seconds), and the capture key (`hotkey_capture`) or the game's menu's Capture frame captures the frame after the next present. RenderDoc writes a capture inside the present that ends it, and the game stops meanwhile (a minute for a frame of 1.4 GB): a notice over the game says so as the capture is asked or RenderDoc's program starts its own, the log says how long it has been writing every 5 s, and the log and a notice say how long it took, the file and its size once written, or that it failed. A game RenderDoc's own program started takes them and the presents listed too, its captures where that program keeps them when `renderdoc` is empty; F12 stays the stats' key |
 | `tracy_profiler` | `0` | `1` starts the run with the Tracy client up, in a build with `SNX_TRACY` ([Profiling](DEVELOPMENT.md#profiling)): connect the GUI to `127.0.0.1:8086`. A capture and the GUI cannot both have the run |
+| `tracy_capture` | `0` | `1` records this run to a trace beside the game and opens it in the profiler when the run ends; the client starts for it, so the GUI cannot have the run as well. `tracy-capture` must be on PATH. F10 starts a 60-second capture while a run goes |
 | `tracy_sampling` | `0` | `1` starts the sampler at the first connection, for the trace's flame graphs |
+| `tracy_frame_images` | `0` | Seconds between the pictures of the presented frame the trace gets. A picture is a readback of the frame the GPU has just presented, which stops the frame it lands in for as long as that takes: off unless the trace needs to say which zone a picture goes with |
 | `tracy_port` | empty | The port the client listens on and the capture connects to, `1` to `65535`. Empty is one of the run's own, so an earlier capture or GUI on 8086 is not in the way |
 | `tracy_capture_tool` | empty | The `tracy-capture` to start: a path, or a name on PATH. Empty looks beside the runtime, then on PATH |
 | `tracy_open_trace` | `1` | `1` opens the trace in `tracy-profiler` when the run ends |
@@ -284,7 +289,6 @@ The launcher's own settings, and the recompiler's, which the launcher and the dr
 | `tmpfs` | `off` | `on` extracts to tmpfs, in memory (the temporary folder's `scarletnx/work/<title ID>`), which the game reads its RomFS from (`--tmpfs`) |
 | `extract` | `off` | `on` extracts a dump's ExeFS and RomFS into its game's folder (`--extract-container`). Off, the game reads them from the dump |
 | `java_home` | empty | The JDK, 21 or later, that Android apps run on: the folder that holds its `lib/server` (`bin/server` on Windows). Empty is the one the build found; set, the launcher gives it to `scarletnx-android` as `--java-home` |
-| `tracy_capture` | `off` | `on` records Switch runs to `captures/` beside the game and opens the trace in the profiler when the run ends, in a build with `SNX_TRACY`; `tracy-capture` must be on PATH. Off, the client does not start, and F10 starts a 60-second capture |
 | `opt` | `2` | LLVM's optimization of the game's code when it is recompiled (`-O`): `0` none, `3` the most, `s` or `z` the smallest. A game made already keeps its code until it is recompiled |
 | `llvm_batch` | `full` | What LLVM runs over each code unit once its functions are cleaned, when the game is recompiled: `full`, the passes of the optimization level; `ipo`, only inlining and a cleanup after it, which recompiles in about two thirds of the time for slightly bigger code, up to a third faster or slower than `full`'s. Not at `-O0` |
 | `aot_threads` | `0` | The threads compiling the game's code when it is recompiled (`--jobs`): `0` is one for each of the computer's cores |

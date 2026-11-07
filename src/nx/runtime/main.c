@@ -1171,6 +1171,7 @@ int snx_main(int argc, char** argv) {
     title = game_shown(mod->title && mod->title[0] ? mod->title : g_exename, shown, sizeof shown, why, sizeof why);
 #if defined(SNX_TRACY)
     if (g_settings.tracy_profiler) g_opt_tracy_client = 1; /* the .ini's Debug section asks for the client */
+    if (g_settings.tracy_capture) g_opt_tracy_capture = 1; /* and for a capture of the run */
 #endif
     /* the header the log summary reads (common/utilities/logscan.c): no folder in it, since players attach the log to
        public reports and the folder names their account */

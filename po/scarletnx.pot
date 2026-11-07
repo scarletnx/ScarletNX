@@ -5589,14 +5589,6 @@ msgid "The JDK, 21 or later, that Android apps run on: the folder that holds its
 msgstr ""
 
 #: src/nx/runtime/settings.txt
-msgid "Tracy capture"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Records Switch runs to captures/ beside the game, and opens the trace in the profiler when the run ends. Off, the client does not start; F10 starts a 60-second capture. tracy-capture must be on PATH, and the runtime must be built with SNX_TRACY"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
 msgid "Optimization level"
 msgstr ""
 

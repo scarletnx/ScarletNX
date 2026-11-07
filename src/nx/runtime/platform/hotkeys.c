@@ -30,7 +30,10 @@ static struct {
 } g_hotkeys;
 
 const IniOpt* hotkey_row(int action) {
-    return action >= 0 && action < HOTKEY_COUNT ? ini_find(g_hotkeys_ini, KEYS[action]) : NULL;
+    const IniOpt* o = action >= 0 && action < HOTKEY_COUNT ? ini_find(g_hotkeys_ini, KEYS[action]) : NULL;
+    /* a row this build has none of what it needs (the profiler's in a build without its client) is a row of the
+       settings' list, which a menu greys: it is not a key of this build's */
+    return o && (o->flags & INI_NEEDS_BUILD) ? NULL : o;
 }
 const char* hotkey_text(int action) {
     const IniOpt* o = hotkey_row(action);

@@ -240,6 +240,10 @@ size_t ini_list_text(const IniSection* sections, int count, char* out, size_t si
                 list_help(&l, help);
                 put(&l, "\t%s\t", o->name ? o->name : "");
                 list_values(&l, o);
+                /* the build a row needs (INI_NEEDS_BUILD), as a last column on the rows that need one: a menu of
+                   an older runtime, which prints none, is read as one whose every row is this build's own. The
+                   other way is not covered: an older menu keeps this tab in the row's words */
+                if (o->flags & INI_NEEDS_BUILD) put(&l, "\tneeds-build");
                 put(&l, "\n");
             }
         }

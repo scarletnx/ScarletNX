@@ -28,6 +28,9 @@
 #     text SIZE           text, up to SIZE - 1 bytes
 #     default VALUE       its value until one is read, as the .ini writes it ("" or none for empty text)
 #     default-if MACRO V  its default where MACRO is defined (#if defined): up to four, the first that holds
+#     needs FEATURE ... end
+#                         the settings between do nothing in a build without FEATURE (ini.h's INI_NEEDS_BUILD): the
+#                         menus show them greyed and pick nothing, and a build with it takes them as any others
 #     once                written to the .ini only once it is set (the default stays its value until then)
 #     words W|W...        the menus' words (ini.h): an int's for LO, LO + step..., a text's value=word
 #     step N, shift N     the menus' step and shift (ini.h)
@@ -703,7 +706,7 @@ setting Next slot shortcut
     label Next slot
     set hotkey_set
     help The key that selects the next save state slot, as hotkey_help's
-# SNX_TRACY_DEBUG_BEGIN
+needs tracy
 setting Tracy capture shortcut
     key hotkey_tracy
     text 64
@@ -711,7 +714,7 @@ setting Tracy capture shortcut
     label Tracy capture
     set hotkey_set
     help The key that records a 60-second Tracy capture, as hotkey_help's
-# SNX_TRACY_DEBUG_END
+end
 setting Pause shortcut
     key hotkey_pause
     text 64
@@ -1195,7 +1198,7 @@ setting RenderDoc frames
     startup
     help The presents RenderDoc captures takes, a comma between: N is the Nth present, Ns the first after N seconds of
     help the scripted input's clock. Empty: none
-# SNX_TRACY_DEBUG_BEGIN
+needs tracy
 setting Tracy profiler
     key tracy_profiler
     int 0 1
@@ -1205,6 +1208,15 @@ setting Tracy profiler
     help 1 = starts the run with the Tracy client up; connect the GUI to 127.0.0.1:8086 (discovery is off, so its
     help "connect to the next instrumented process" does not find it). A capture and the GUI cannot both
     help have the run: the capture takes its one connection
+setting Tracy capture
+    key tracy_capture
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = records this run to a trace beside the game and opens it in the profiler when the run ends; the client
+    help starts for it, so the GUI cannot have the run as well. F10 starts a 60-second capture while a run goes.
+    help tracy-capture must be on PATH, and the runtime built with SNX_TRACY
 setting Tracy sampling
     key tracy_sampling
     int 0 1
@@ -1213,6 +1225,15 @@ setting Tracy sampling
     words Off|On
     help 1 = starts the sampler at the first connection, for the trace's flame graphs. With JIT'd guest code and the
     help drivers' own threads, the sample stacks read as [unknown] over the instrumented zones
+setting Tracy frame images
+    key tracy_frame_images
+    int 0 60
+    default 0
+    startup
+    words Off|Seconds
+    help Seconds between the pictures of the presented frame the trace gets, 0 = none. A picture is a readback of the
+    help frame the GPU has just presented, which stops the frame it lands in for as long as that takes, so it is off
+    help unless the trace needs to say which zone a picture goes with
 setting Tracy port
     key tracy_port
     text 6
@@ -1233,7 +1254,7 @@ setting Tracy open trace
     startup
     words Off|On
     help 1 = opens the trace in tracy-profiler when the run ends
-# SNX_TRACY_DEBUG_END
+end
 
 # the unattended runs' (platform/unattended.c): read as the .ini's settings are, from the command line, but in no section,
 # so never written back
@@ -1514,16 +1535,6 @@ setting Java home
     text 192
     help The JDK, 21 or later, that Android apps run on: the folder that holds its lib/server (bin/server on Windows).
     help Empty = the one the build found. Set, the launcher gives it to scarletnx-android as --java-home
-# SNX_TRACY_BEGIN
-setting Tracy capture
-    key tracy_capture
-    text 4
-    default off
-    words on=On
-    help Records Switch runs to captures/ beside the game, and opens the trace in the profiler when the run ends. Off,
-    help the client does not start; F10 starts a 60-second capture. tracy-capture must be on PATH, and the runtime
-    help must be built with SNX_TRACY
-# SNX_TRACY_END
 
 table g_recompile_ini recompile
 setting Optimization level

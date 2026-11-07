@@ -97,7 +97,7 @@ int gui_settings_read(GuiSettings* s, const char* runtime) {
     own_end = text + own;
     memset(s->values, 0, n * sizeof *s->values);
     for (line = text; *line; line = next) {
-        char* field[9];
+        char* field[10];
         if (line >= own_end && !s->own) s->own = s->count; /* the launcher's rows end there */
         const char **words = NULL, **values = NULL;
         int f = 1;
@@ -105,9 +105,9 @@ int gui_settings_read(GuiSettings* s, const char* runtime) {
         if (*next) *next++ = 0;
         line[strcspn(line, "\r")] = 0;
         field[0] = line;
-        while (f < 9 && (field[f] = strchr(field[f - 1], '\t')) != NULL) *field[f++]++ = 0;
+        while (f < 10 && (field[f] = strchr(field[f - 1], '\t')) != NULL) *field[f++]++ = 0;
         if (f < 7) continue;                               /* not a setting: another line the runtime printed */
-        for (; f < 9; ++f) field[f] = line + strlen(line); /* an older runtime's: no name, no words */
+        for (; f < 10; ++f) field[f] = line + strlen(line); /* an older runtime's: no name, no words, no build */
         if (page && strcmp(page, field[0])) page = NULL;
         if (!page && strchr(field[0], '/')) { /* a page: its row in the section, and its All first on it */
             page = field[0];
@@ -135,7 +135,9 @@ int gui_settings_read(GuiSettings* s, const char* runtime) {
             k->hi = strtod(field[5], NULL);
         }
         v->fallback = v->def = field[2];
-        s->keys[s->count - 1].def = v->def; /* what a number's row shows when it is emptied */
+        /* this build has none of what the row needs: the menus show it greyed and pick nothing */
+        v->needs_build = !strcmp(field[9], "needs-build");
+        s->keys[s->count - 1].def = v->def;                /* what a number's row shows when it is emptied */
         for (w = 1; words && words[w]; ++w) /* the word of the default's value, which the row starts on */
             if (!strcmp(values ? values[w] : words[w], field[2])) {
                 v->fallback = words[w];
@@ -173,6 +175,7 @@ static const char* kept(const GuiSettings* s, int i) {
 /* row i's pick, NULL for the .ini's (the launcher's: off) and a plain row's default; an always row's word */
 static const char* picked(const GuiSettings* s, int i) {
     const GuiSetting* v = &s->values[i];
+    if (v->needs_build) return NULL; /* shown greyed: this build does nothing with its value */
     if (s->keys[i].type == GUI_KEY_WORD && v->plain)
         return v->always || !v->def || strcmp(kept(s, i), v->def) ? kept(s, i) : NULL;
     if (s->keys[i].type == GUI_KEY_WORD) return v->word ? kept(s, i) : NULL;
@@ -182,6 +185,7 @@ static const char* picked(const GuiSettings* s, int i) {
 static int set(GuiSettings* s, int i, const char* value) {
     GuiSetting* v = &s->values[i];
     int w;
+    if (v->needs_build) return 0; /* shown greyed: this build does nothing with its value, so it takes none */
     if (s->keys[i].type != GUI_KEY_WORD || !v->values) return gui_theme_set(s->values, &s->keys[i], value);
     for (w = 0; s->keys[i].words[w]; ++w)
         if (!strcmp(value, w || v->plain ? v->values[w] : s->keys[i].words[0])) {
@@ -481,7 +485,7 @@ size_t gui_settings_recompile(GuiSettings* s, int make, const char** argv) {
         const char* value = s->values[i].kind ? NULL : picked(s, i);
         const char* key = s->values[i].key;
         if (!value || !strcmp(key, "gdbstub") || !strcmp(key, "tmpfs") || !strcmp(key, "extract") ||
-            !strcmp(key, "tracy_capture") || !strcmp(key, "java_home"))
+            !strcmp(key, "java_home"))
             continue;
         snprintf(s->values[i].option, sizeof s->values[i].option, "--%s=%s", key, value);
         argv[n++] = s->values[i].option;
@@ -533,7 +537,6 @@ size_t gui_settings_options(GuiSettings* s, int launch, const char** argv) {
         argv[n++] = "-S";
         argv[n++] = "-s";
     }
-    if (launch && own_on(s, "tracy_capture")) argv[n++] = "--tracy-capture";
     return n;
 }
 size_t gui_settings_ctr_options(GuiSettings* s, const char** argv) { return picked_options(s, argv, 1); }

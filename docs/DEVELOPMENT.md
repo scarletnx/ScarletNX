@@ -296,7 +296,8 @@ throughput with unprofiled runs of the same scene.
 The profiler is not part of the ordinary runtime: `SNX_TRACY` defaults to OFF, so `scarletnx` carries the pinned
 Tracy 0.14.1 client only in a build that asks for it — `cmake --preset tracy -B build/tracy && cmake --build
 build/tracy`, or `-DSNX_TRACY=ON` in a build of your own (Android's app leaves it out, and iOS cannot have it).
-The client starts only when profiling is requested: the launcher setting, `--tracy-capture`, `--tracy`, or `F10`.
+The client starts only when profiling is requested: the Settings' Debug rows (`tracy profiler`, `tracy capture`),
+`--tracy-capture`, `--tracy`, or `F10`.
 Without one, a run does not connect.
 
 A game runs profiled from the terminal, the runtime's own flags and nothing else:
@@ -431,12 +432,9 @@ The two GPU-queue idle plots are apart on purpose: `gpu thread idle` is the GPU 
 ### What the profiler's client leaves out, and the deep build
 
 `cmake --preset tracy-deep` is the same profiler build with what the cheap one leaves out, each at its own cost:
-the code transfer (`TRACY_NO_CODE_TRANSFER` off), so the GUI shows the source of a zone and not only its file and
-line; the zones' own verification (`TRACY_NO_VERIFY` off), so a zone begun and not ended is caught, which in a build
-whose purpose is to observe zones doubles the queue traffic one costs; and the wait stacks
-(`TRACY_NO_WAIT_STACKS` off), which show where a thread waits, and which Linux gives only to root with tracefs.
-Frame images stay out of both: a frame image is a readback and a downsample of the window's image, which the
-runtime does not do, so a trace has no picture of what the screen showed.
+the code transfer (the source of a zone, not only its file and line), the zones' own verification (a zone begun and
+not ended is caught), where a thread waits (root and tracefs on Linux), and the frame's picture (a readback and a
+downsample of the window's image, at `tracy_frame_images`' seconds).
 
 The sampler covers every CPU and the threads that start later, so the guest's threads are sampled too. The names come
 from the ELF tables of the loaded objects: the runtime's own code and the game's recompiled code beside the game

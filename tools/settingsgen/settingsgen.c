@@ -40,6 +40,7 @@ typedef struct {
     char *def_if[DEF_IFS], *def_if_value[DEF_IFS]; /* default-if's, the first that holds taken */
     int def_ifs;
     int type, size, once, startup, in_game, recompile, step, shift, list, repeat, block, table, line;
+    char* needs; /* the feature its needs block names, NULL: no build gate on it */
     /* LLVM's: its kind, its ID (a pass's name, a setter's suffix), the pipelines' levels a pass is in (bit per LEVELS
        character), the setter's argument type (LLVMBool, int or unsigned) */
     int llvm, levels;
@@ -324,6 +325,16 @@ static int cut_last(char* s, const char* w) {
     while (n && (s[n - 1] == ' ' || s[n - 1] == '\t')) s[--n] = 0;
     return 1;
 }
+/* a feature's name as the generated macro spells it (needs tracy: INI_NEEDS_TRACY) */
+static const char* feature_macro(const char* feature) {
+    static char upper[64];
+    size_t i;
+    for (i = 0; feature[i] && i < sizeof upper - 1; i++)
+        upper[i] = (char)(feature[i] >= 'a' && feature[i] <= 'z' ? feature[i] - 'a' + 'A' : feature[i]);
+    upper[i] = 0;
+    return upper;
+}
+
 static void parse_section(char* rest, int line) {
     Section* s;
     char *colon = strchr(rest, ':'), *p, *item, *slash;
@@ -384,6 +395,7 @@ static void read_spec(const char* path) {
     char* text = read_file(path, 1);
     char *line, *next, *rest, *word;
     int number = 0, table = -1, repeat = 0, in_repeat = 0, blocks = 0, i;
+    char* needs = NULL; /* the feature the needs block around these settings names */
     Setting* s = NULL;
     Override* o = NULL;
     for (line = text; line && *line; line = next) {
@@ -409,6 +421,25 @@ static void read_spec(const char* path) {
             tables[ntables].name = dup(name);
             tables[ntables].scope = scope_of(rest, number);
             table = ntables++;
+            s = NULL;
+            o = NULL;
+        } else if (!strcmp(word, "needs")) {
+            if (in_repeat) fail(number, "a needs block inside a repeat");
+            if (needs) fail(number, "a needs block inside a needs block");
+            if (!*rest || strchr(rest, ' ') || strchr(rest, '\t')) fail(number, "needs FEATURE");
+            needs = dup(rest);
+            s = NULL;
+            o = NULL;
+        } else if (!strcmp(word, "end")) {
+            if (in_repeat) {
+                in_repeat = 0;
+                repeat = 0;
+            } else if (needs) {
+                free(needs); /* the block's rows carry their own copy; the ones after it none */
+                needs = NULL;
+            }
+            else
+                fail(number, "end without a repeat or a needs block");
             s = NULL;
             o = NULL;
         } else if (!strcmp(word, "repeat")) {
@@ -448,6 +479,7 @@ static void read_spec(const char* path) {
             s->table = table;
             s->repeat = repeat;
             s->block = repeat ? blocks : 0;
+            if (needs) s->needs = dup(needs);
             s->list = -1;
             s->type = -1;
             s->line = number;
@@ -903,11 +935,19 @@ static void out_row(const Setting* s, int index, const char* key, const char* la
         out_string(def);
     outs(", ");
     out_string(index ? NULL : s->help);
-    out(", %s, %s%s%s, ",
-        s->type == T_INT     ? "INI_INT"
-        : s->type == T_FLOAT ? "INI_FLOAT"
-                             : "INI_TEXT",
-        s->startup ? "INI_STARTUP" : "0", s->in_game ? " | INI_IN_GAME" : "", "");
+    /* the flags: INI_STARTUP, INI_IN_GAME and the build the row needs, "0" for none of them */
+    {
+        char flags[160];
+        size_t at = 0;
+        flags[0] = 0;
+        if (s->startup) at += (size_t)snprintf(flags + at, sizeof flags - at, "INI_STARTUP");
+        if (s->in_game) at += (size_t)snprintf(flags + at, sizeof flags - at, "%sINI_IN_GAME", at ? " | " : "");
+        if (s->needs)
+            at += (size_t)snprintf(flags + at, sizeof flags - at, "%sINI_NEEDS_%s", at ? " | " : "",
+                                   feature_macro(s->needs));
+        if (!at) snprintf(flags, sizeof flags, "0");
+        out(", %s, %s, ", s->type == T_INT ? "INI_INT" : s->type == T_FLOAT ? "INI_FLOAT" : "INI_TEXT", flags);
+    }
     if (count_of(s)) {
         if (s->type == T_TEXT)
             out("g_settings.%s[%d]", s->member, index);
