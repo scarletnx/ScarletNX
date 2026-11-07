@@ -46,9 +46,21 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
         public int width, height;
         public android.view.animation.LayoutAnimationController.AnimationParameters layoutAnimationParameters;
 
+        /** android:layout_width and layout_height, by their resource IDs (android.R.attr) */
+        private static final int[] SIZE_ATTRS = {0x010100f4, 0x010100f5};
+
+        /** match_parent, wrap_content, or a dimension in pixels, from the layout or its style */
         public LayoutParams(Context c, AttributeSet attrs) {
-            width = attrs != null ? attrs.getAttributeIntValue("http://schemas.android.com/apk/res/android", "layout_width", WRAP_CONTENT) : WRAP_CONTENT;
-            height = attrs != null ? attrs.getAttributeIntValue("http://schemas.android.com/apk/res/android", "layout_height", WRAP_CONTENT) : WRAP_CONTENT;
+            if (attrs == null) {
+                width = height = WRAP_CONTENT;
+                return;
+            }
+            android.content.res.TypedArray a = c.obtainStyledAttributes(attrs, SIZE_ATTRS);
+            try {
+                setBaseAttributes(a, 0, 1);
+            } finally {
+                a.recycle();
+            }
         }
         public LayoutParams(int width, int height) { this.width = width; this.height = height; }
         public LayoutParams(LayoutParams source) { width = source.width; height = source.height; }
@@ -63,7 +75,38 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
     public static class MarginLayoutParams extends LayoutParams {
         public int leftMargin, topMargin, rightMargin, bottomMargin;
 
-        public MarginLayoutParams(Context c, AttributeSet attrs) { super(c, attrs); }
+        /**
+         * android:layout_margin, layout_marginHorizontal, layout_marginVertical, layout_marginLeft, layout_marginTop,
+         * layout_marginRight, layout_marginBottom, layout_marginStart and layout_marginEnd (android.R.attr)
+         */
+        private static final int[] MARGIN_ATTRS = {0x010100f6, 0x0101053b, 0x0101053c, 0x010100f7, 0x010100f8,
+            0x010100f9, 0x010100fa, 0x010103b5, 0x010103b6};
+
+        /**
+         * The margins as Android reads them: layout_margin sets all four; else the horizontal and vertical forms, else
+         * each side; start and end are left and right, in the left-to-right layout this runtime has
+         */
+        public MarginLayoutParams(Context c, AttributeSet attrs) {
+            super(c, attrs);
+            if (attrs == null) return;
+            android.content.res.TypedArray a = c.obtainStyledAttributes(attrs, MARGIN_ATTRS);
+            try {
+                int all = a.getDimensionPixelSize(0, -1);
+                if (all >= 0) {
+                    leftMargin = topMargin = rightMargin = bottomMargin = all;
+                    return;
+                }
+                int horizontal = a.getDimensionPixelSize(1, -1), vertical = a.getDimensionPixelSize(2, -1);
+                leftMargin = horizontal >= 0 ? horizontal : a.getDimensionPixelSize(3, 0);
+                rightMargin = horizontal >= 0 ? horizontal : a.getDimensionPixelSize(5, 0);
+                topMargin = vertical >= 0 ? vertical : a.getDimensionPixelSize(4, 0);
+                bottomMargin = vertical >= 0 ? vertical : a.getDimensionPixelSize(6, 0);
+                if (a.hasValue(7)) leftMargin = a.getDimensionPixelSize(7, 0);
+                if (a.hasValue(8)) rightMargin = a.getDimensionPixelSize(8, 0);
+            } finally {
+                a.recycle();
+            }
+        }
         public MarginLayoutParams(int width, int height) { super(width, height); }
         public MarginLayoutParams(MarginLayoutParams source) {
             super(source);
