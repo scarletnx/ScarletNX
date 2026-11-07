@@ -774,6 +774,218 @@ static bool vdp(T* t, const uint32_t* f) {
     return !t->failed;
 }
 
+static void dual_swizzle(uint8_t out[4], unsigned swizzle, bool extended, bool vec4) {
+    static const uint8_t v4[2][16][4] = {
+        {S4(X, X, X, X), S4(Y, Y, Y, Y), S4(Z, Z, Z, Z), S4(W, W, W, W), S4(X, Y, Z, W), S4(Y, Z, W, W),
+         S4(X, Y, Z, Z), S4(X, X, Y, Z), S4(X, Y, X, Y), S4(X, Y, W, Z), S4(Z, X, Y, W), S4(Z, W, Z, W),
+         S4(0, 0, 0, 0), S4(H, H, H, H), S4(1, 1, 1, 1), S4(2, 2, 2, 2)},
+        {S4(Y, Z, X, W), S4(Z, W, X, Y), S4(X, Z, W, Y), S4(Y, Y, W, W), S4(W, Y, Z, W), S4(W, Z, W, Z),
+         S4(X, Y, Z, X), S4(Z, Z, W, W), S4(X, W, Z, X), S4(Y, Y, Y, X), S4(Y, Y, Y, Z), S4(Z, W, Z, W),
+         S4(Y, Z, X, Z), S4(X, X, Y, Y), S4(X, Z, W, W), S4(X, Y, Z, 1)}};
+    static const uint8_t v3[2][16][4] = {
+        {S3(X, X, X), S3(Y, Y, Y), S3(Z, Z, Z), S3(W, W, W), S3(X, Y, Z), S3(Y, Z, W), S3(X, X, Y), S3(X, Y, X),
+         S3(Y, Y, X), S3(Y, Y, Z), S3(Z, X, Y), S3(X, Z, Y), S3(0, 0, 0), S3(H, H, H), S3(1, 1, 1), S3(2, 2, 2)},
+        {S3(X, Y, Y), S3(Y, X, Y), S3(X, X, Z), S3(Y, X, X), S3(X, Y, 0), S3(X, 1, 0), S3(X, Z, Y), S3(Y, Z, X),
+         S3(Z, Y, X), S3(Z, Z, Y), S3(X, Y, 1), SU, SU, SU, SU, SU}};
+    memcpy(out, vec4 ? v4[extended][swizzle & 15] : v3[extended][swizzle & 15], 4);
+}
+
+enum { DUAL_INTERNAL0, DUAL_INTERNAL1, DUAL_INTERNAL2, DUAL_UNIFIED, DUAL_NONE };
+typedef struct {
+    unsigned sources;
+    bool vector_load, vector_store;
+} DualInfo;
+static const DualInfo dual_info[14] = {
+    {3, true, true},  {2, true, false}, {1, true, false}, {2, true, true},  {2, true, true},
+    {1, true, true},  {1, false, false}, {1, false, false}, {3, false, false}, {2, false, false},
+    {2, false, false}, {2, false, false}, {1, false, false}, {1, false, false}};
+
+static bool dual_op1_layout(unsigned count, unsigned config, uint8_t out[3]) {
+    static const uint8_t layouts[3][4][3] = {
+        {{DUAL_UNIFIED, DUAL_NONE, DUAL_NONE}, {DUAL_INTERNAL0, DUAL_NONE, DUAL_NONE},
+         {DUAL_INTERNAL1, DUAL_NONE, DUAL_NONE}, {DUAL_INTERNAL2, DUAL_NONE, DUAL_NONE}},
+        {{DUAL_UNIFIED, DUAL_INTERNAL1, DUAL_NONE}, {DUAL_INTERNAL0, DUAL_UNIFIED, DUAL_NONE},
+         {DUAL_INTERNAL0, DUAL_INTERNAL1, DUAL_NONE}, {DUAL_NONE, DUAL_NONE, DUAL_NONE}},
+        {{DUAL_UNIFIED, DUAL_INTERNAL1, DUAL_INTERNAL2}, {DUAL_INTERNAL0, DUAL_UNIFIED, DUAL_INTERNAL2},
+         {DUAL_INTERNAL0, DUAL_INTERNAL1, DUAL_UNIFIED}, {DUAL_INTERNAL0, DUAL_INTERNAL1, DUAL_INTERNAL2}}};
+    if (!count || count > 3 || config > 3) return false;
+    memcpy(out, layouts[count - 1][config], 3);
+    return out[0] != DUAL_NONE;
+}
+
+static bool dual_op2_layout(unsigned first_count, unsigned count, unsigned config, uint8_t out[3]) {
+    if (config > 3) return false;
+    out[1] = out[2] = DUAL_NONE;
+    if (first_count == 1) {
+        if (count == 1) {
+            out[0] = config == 0 ? DUAL_INTERNAL0 : DUAL_UNIFIED;
+            return true;
+        }
+        if (count == 2) {
+            static const uint8_t layouts[4][3] = {
+                {DUAL_INTERNAL0, DUAL_INTERNAL1, DUAL_NONE}, {DUAL_UNIFIED, DUAL_INTERNAL1, DUAL_NONE},
+                {DUAL_INTERNAL0, DUAL_UNIFIED, DUAL_NONE}, {DUAL_INTERNAL1, DUAL_UNIFIED, DUAL_NONE}};
+            memcpy(out, layouts[config], 3);
+            return true;
+        }
+        if (count == 3) {
+            static const uint8_t layouts[4][3] = {
+                {DUAL_INTERNAL0, DUAL_INTERNAL1, DUAL_INTERNAL2}, {DUAL_UNIFIED, DUAL_INTERNAL1, DUAL_INTERNAL2},
+                {DUAL_INTERNAL0, DUAL_UNIFIED, DUAL_INTERNAL2}, {DUAL_INTERNAL0, DUAL_UNIFIED, DUAL_INTERNAL1}};
+            memcpy(out, layouts[config], 3);
+            return true;
+        }
+    } else if (first_count == 2) {
+        if (count == 1 && config < 3) {
+            out[0] = config == 0 ? DUAL_INTERNAL0 : config == 1 ? DUAL_INTERNAL1 : DUAL_UNIFIED;
+            return true;
+        }
+        if (count == 2 && config < 3) {
+            static const uint8_t layouts[3][3] = {
+                {DUAL_INTERNAL0, DUAL_INTERNAL2, DUAL_NONE}, {DUAL_INTERNAL1, DUAL_INTERNAL2, DUAL_NONE},
+                {DUAL_INTERNAL2, DUAL_UNIFIED, DUAL_NONE}};
+            memcpy(out, layouts[config], 3);
+            return true;
+        }
+    } else if (first_count == 3 && count == 1) {
+        out[0] = config == 0 ? DUAL_INTERNAL0 : config == 1 ? DUAL_INTERNAL1 : config == 2 ? DUAL_INTERNAL2 : DUAL_UNIFIED;
+        return true;
+    }
+    return false;
+}
+
+static Operand dual_source(T* t, unsigned id, unsigned first_count, const uint32_t* f, Type type,
+                           bool vector_load) {
+    unsigned swizzle, number;
+    Operand op = {0, B_INTERNAL, 0, {SW_X, SW_Y, SW_Z, SW_W}, type};
+    switch (id) {
+        case DUAL_UNIFIED:
+            op = decode_src12(t, f[25], f[15], false, vector_load, vector_load ? 8 : 7);
+            dual_swizzle(op.swizzle, f[7], first_count < 2 && f[20], f[0]);
+            if (first_count < 2 && f[21]) op.flags |= F_ABS;
+            if (f[8]) op.flags |= F_NEG;
+            break;
+        case DUAL_INTERNAL0:
+            number = f[23], swizzle = f[12];
+            op.num = number;
+            dual_swizzle(op.swizzle, swizzle, false, f[0]);
+            break;
+        case DUAL_INTERNAL1:
+            number = f[22], swizzle = f[13];
+            op.num = number;
+            dual_swizzle(op.swizzle, swizzle, f[6], f[0]);
+            if (f[1]) op.flags |= F_NEG;
+            break;
+        case DUAL_INTERNAL2:
+            op.num = first_count >= 2 ? ((f[20] << 1) | f[21]) : 2;
+            break;
+        default:
+            fail(t, "VDUAL source layout");
+            break;
+    }
+    op.type = type;
+    return op;
+}
+
+static Value dual_alu(T* t, unsigned code, Operand src[3], unsigned source_count, unsigned write_mask,
+                      unsigned comp_count_type) {
+    bool dot = code == 1 || code == 2;
+    unsigned source_mask = dual_info[code].vector_load ? (dot ? (comp_count_type ? 15 : 7) : write_mask) : 1;
+    Value a = load(t, src[0], source_mask, 0);
+    Value b = source_count > 1 ? load(t, src[1], source_mask, 0) : (Value){{0}, 0, K_FLOAT};
+    Value c = source_count > 2 ? load(t, src[2], source_mask, 0) : (Value){{0}, 0, K_FLOAT};
+    Value result = {{0}, a.n, K_FLOAT};
+    if (t->failed) return result;
+    switch (code) {
+        case 0:
+        case 8:
+            for (unsigned i = 0; i < a.n; ++i) {
+                uint32_t product = op2(t, SPV_OP_F_MUL, t->t_f32, a.c[i], b.c[i]);
+                result.c[i] = op2(t, SPV_OP_F_ADD, t->t_f32, product, c.c[i]);
+            }
+            break;
+        case 1:
+        case 2:
+            result = one_value(op2(t, SPV_OP_F_MUL, t->t_f32, a.c[0], code == 1 ? b.c[0] : a.c[0]), K_FLOAT);
+            for (unsigned i = 1; i < a.n; ++i)
+                result.c[0] = ext3(t, t->t_f32, SPV_GLSL_FMA, a.c[i], code == 1 ? b.c[i] : a.c[i], result.c[0]);
+            break;
+        case 3:
+        case 10:
+        case 4:
+        case 9:
+        case 11:
+            for (unsigned i = 0; i < a.n; ++i) {
+                if (code == 3 || code == 10) result.c[i] = op2(t, SPV_OP_F_MUL, t->t_f32, a.c[i], b.c[i]);
+                else if (code == 4 || code == 9) result.c[i] = op2(t, SPV_OP_F_ADD, t->t_f32, a.c[i], b.c[i]);
+                else result.c[i] = op2(t, SPV_OP_F_SUB, t->t_f32, a.c[i], ext1(t, t->t_f32, SPV_GLSL_FLOOR, b.c[i]));
+            }
+            break;
+        case 5: result = a; break;
+        case 6:
+        case 7:
+        case 12:
+        case 13:
+            for (unsigned i = 0; i < a.n; ++i) {
+                if (code == 6) result.c[i] = ext1(t, t->t_f32, SPV_GLSL_INVERSE_SQRT, a.c[i]);
+                else if (code == 7) result.c[i] = op2(t, SPV_OP_F_DIV, t->t_f32, cf(t, 1), a.c[i]);
+                else if (code == 12) {
+                    uint32_t exp = ext1(t, t->t_f32, SPV_GLSL_EXP2, a.c[i]);
+                    result.c[i] = SPV(&t->e, SPV_OP_SELECT, t->t_f32, op1(t, SPV_OP_IS_NAN, t->t_bool, exp),
+                                      cf(t, 1), exp);
+                } else
+                    result.c[i] = ext1(t, t->t_f32, SPV_GLSL_LOG2, a.c[i]);
+            }
+            break;
+        default: fail(t, "VDUAL opcode %u", code); break;
+    }
+    return result;
+}
+
+/* The paired vector/scalar operations share their register reads and commit both destinations after evaluating them. */
+static bool vdual(T* t, const uint32_t* f) {
+    unsigned op1_code = ((!f[0] && f[4]) << 3) | f[9], op2_code = (f[10] << 3) | f[18];
+    if (op1_code >= 14 || !op2_code || op2_code >= 14) return fail(t, "VDUAL opcode");
+    const DualInfo op1_info = dual_info[op1_code], op2_info = dual_info[op2_code];
+    unsigned first_count = op1_info.sources;
+    bool unified_vector = (f[11] && op1_info.vector_store) || (!f[11] && op2_info.vector_store);
+    Type type = f[5] ? T_F16 : T_F32;
+
+    Operand internal_dest = {f[16], B_INTERNAL, 0, {SW_X, SW_Y, SW_Z, SW_W}, type};
+    Operand unified_dest = decode_dest(t, f[17], f[14], false, unified_vector, unified_vector ? 8 : 7);
+    unified_dest.type = type;
+    Operand op1_dest = f[11] ? unified_dest : internal_dest;
+    Operand op2_dest = f[11] ? internal_dest : unified_dest;
+
+    uint8_t layout1[3], layout2[3];
+    if (!dual_op1_layout(op1_info.sources, f[19], layout1) ||
+        !dual_op2_layout(op1_info.sources, op2_info.sources, f[19], layout2))
+        return fail(t, "VDUAL source layout");
+
+    unsigned fixed_mask = f[24] | ((f[0] && f[4]) << 3);
+    unsigned op1_mask = f[11] ? (op1_dest.bank == B_INTERNAL ? (f[0] ? 15 : 7)
+                                                              : op1_info.vector_store ? (f[5] ? 15 : 3)
+                                                                                      : (f[5] ? 3 : 1))
+                              : fixed_mask;
+    unsigned op2_mask = f[11] ? fixed_mask
+                              : (op2_dest.bank == B_INTERNAL ? (f[0] ? 15 : 7)
+                                                             : op2_info.vector_store ? (f[5] ? 15 : 3)
+                                                                                     : (f[5] ? 3 : 1));
+    Operand src1[3], src2[3];
+    for (unsigned i = 0; i < op1_info.sources; ++i)
+        src1[i] = dual_source(t, layout1[i], first_count, f, type, op1_info.vector_load);
+    for (unsigned i = 0; i < op2_info.sources; ++i)
+        src2[i] = dual_source(t, layout2[i], first_count, f, type, op2_info.vector_load);
+    if (t->failed) return false;
+
+    Value result1 = dual_alu(t, op1_code, src1, op1_info.sources, op1_mask, f[0]);
+    Value result2 = dual_alu(t, op2_code, src2, op2_info.sources, op2_mask, f[0]);
+    if (t->failed) return false;
+    store(t, op1_dest, result1, op1_mask, 0);
+    store(t, op2_dest, result2, op2_mask, 0);
+    return !t->failed;
+}
+
 /* VCOMP (the complex unit: one component's reciprocal, reciprocal square root, base 2 logarithm or exponential,
    in each masked one): p s d y e n r a o b c m f t k g h w */
 static bool vcomp(T* t, const uint32_t* f) {
@@ -1359,7 +1571,7 @@ static Pattern patterns[] = {
     {.name = "V16NMAD", .bits = "00010pppsrrydcbawwwwneeeemmoiittkkllffffffzzzzzzzggghhhhhhjjjjjj", .handler = vnmad},
     {.name = "VMAD", .bits = "00011pppsg1oderaaittnwwwwcbfhzkkjjllmmmmmmqqqquuuuvvxyAAAABBBBBB", .handler = vmad},
     {.name = "VDP", .bits = "00011pppsc0oderaagttnwwwwbflllkkhhiijjjjjjzzzzmmmqqqyyyxxxuuuuuu", .handler = vdp},
-    {.name = "VDUAL", .bits = "0010cgsskdtpuuuunaaalriiiiwwwwmmffeebbbbbbbooohhjqvvxxyyyzzzzzzz", .handler = NULL},
+    {.name = "VDUAL", .bits = "0010cgsskdtpuuuunaaalriiiiwwwwmmffeebbbbbbbooohhjqvvxxyyyzzzzzzz", .handler = vdual},
     {.name = "VCOMP", .bits = "00110pppsddyenr-aaaaobbccmmff-ttkk--ggggggg-------hhhhhhh---wwww", .handler = vcomp},
     {.name = "VMOV", .bits = "00111pppstrydecbmmaanoooiwwwwkllffgghhhhjjjjjjqqqqqquuuuuuvvvvvv", .handler = vmov},
     {.name = "VPCK", .bits = "01000pppsnuydercaaaaffftttmmmmbbkkllgggggggoohiijjqqqqqqvwwwwwwx", .handler = vpck},
