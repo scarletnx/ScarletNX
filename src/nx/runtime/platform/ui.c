@@ -22,7 +22,12 @@ static u32 g_version;
 static u8 g_image[SNX_UI_IMAGE_W * SNX_UI_IMAGE_H * 4];
 static int g_image_set;
 static u32 g_image_version;
+static u32* g_skin; /* a skin's rows, R G B A bytes, straight alpha */
+static int g_skin_rows;
+static int g_atlas_h;                          /* g_atlas's rows: the skin's when it was made */
 #define UI_PICTURE_Y SNX_CONTROLS_ATLAS_HEIGHT /* the picture's first row, under the sprites' */
+#define UI_SKIN_Y    (UI_PICTURE_Y + SNX_UI_PICTURE)
+#define UI_ROWS_MAX  4096
 _Static_assert(SNX_UI_ICONS_X + 16 * GUI_ICON_COUNT <= SNX_CONTROLS_ATLAS_WIDTH, "the icons fit beside the picture");
 /* the menu's look's shape for it, GuiPicture's: 0 none, 1 square, 2 round */
 #ifndef SNX_GUI_THEME_YORHA_PICTURE
@@ -52,6 +57,9 @@ static void quad(SnxUiList* l, float x, float y, float w, float h, int u, int v,
 void ui_sprite(SnxUiList* l, int sprite, float x, float y, float w, float h, u32 alpha, int turn) {
     const unsigned short* s = snx_controls_sprites[sprite];
     if (alpha) quad(l, x, y, w, h, s[0], s[1], s[2], s[3], 0x00FFFFFFu | alpha << 24, turn, UI_BLEND);
+}
+void ui_texels(SnxUiList* l, float x, float y, float w, float h, int u, int v, int uw, int vh, u32 rgba) {
+    if (rgba >> 24) quad(l, x, y, w, h, u, v, uw, vh, rgba, 0, UI_BLEND);
 }
 int ui_picture(SnxUiList* l, float x, float y, float side) {
     if (!SNX_GUI_THEME_YORHA_PICTURE) return 0;
@@ -144,17 +152,33 @@ const u8* ui_image_get(u32* version) {
     return g_image_set ? g_image : NULL;
 }
 
+int ui_skin_y(void) { return UI_SKIN_Y; }
+int ui_skin_room(void) { return UI_ROWS_MAX - UI_SKIN_Y; }
+void ui_skin_set(u32* texels, int rows) {
+    ui_lock();
+    free(g_skin);
+    g_skin = texels && rows > 0 && rows <= ui_skin_room() ? texels : NULL;
+    g_skin_rows = g_skin ? rows : 0;
+    ui_unlock();
+    if (texels && !g_skin) free(texels);
+}
+/* premultiplied: a blend between a sprite's edge and the clear texels around it */
+static void premultiply(u32* to, const u32* from, size_t n) {
+    size_t i;
+    for (i = 0; i < n; ++i) {
+        u32 p = snx_le32(from[i]), al = p >> 24;
+        to[i] = ((p & 0xFFu) * al / 255) | ((p >> 8 & 0xFFu) * al / 255) << 8 | ((p >> 16 & 0xFFu) * al / 255) << 16 |
+                al << 24;
+    }
+}
 void ui_atlas_set(const u32* sprites, int w, int h) {
-    int x, y, c, i;
+    int x, y, c, rows = h + SNX_UI_PICTURE + g_skin_rows;
     u32* a;
     if (w != SNX_CONTROLS_ATLAS_WIDTH || h != SNX_CONTROLS_ATLAS_HEIGHT) return; /* not the image the header is for */
-    a = (u32*)calloc((size_t)w * (size_t)(h + SNX_UI_PICTURE), 4);
+    a = (u32*)calloc((size_t)w * (size_t)rows, 4);
     if (!a) return;
-    for (i = 0; i < w * h; ++i) { /* premultiplied: a blend between a sprite's edge and the clear texels around it */
-        u32 p = snx_le32(sprites[i]), al = p >> 24;
-        a[i] = ((p & 0xFFu) * al / 255) | ((p >> 8 & 0xFFu) * al / 255) << 8 | ((p >> 16 & 0xFFu) * al / 255) << 16 |
-               al << 24;
-    }
+    premultiply(a, sprites, (size_t)w * (size_t)h);
+    if (g_skin) premultiply(a + (size_t)w * UI_SKIN_Y, g_skin, (size_t)w * (size_t)g_skin_rows);
     for (c = 0; c < 256; ++c)
         for (y = 0; y < 16; ++y)
             for (x = 0; x < 8; ++x)
@@ -168,16 +192,18 @@ void ui_atlas_set(const u32* sprites, int w, int h) {
                 a[(UI_PICTURE_Y + y) * w + SNX_UI_ICONS_X + c * 16 + x] =
                     gui_icon_font[(c * 2 + x / 8) * 16 + y] & (0x80 >> x % 8) ? 0xFFFFFFFFu : 0;
     user_picture(a, w);
-    snx_le32_array(a, (size_t)w * (size_t)(h + SNX_UI_PICTURE)); /* the texels' bytes R G B A, as the GPU reads them */
+    /* the texels' bytes R G B A, as the GPU reads them */
+    snx_le32_array(a, (size_t)w * (size_t)rows);
     ui_lock();
     free(g_atlas);
     g_atlas = a;
+    g_atlas_h = rows;
     ++g_version;
     ui_unlock();
 }
 const u32* ui_atlas(int* w, int* h, u32* version) {
     *w = SNX_CONTROLS_ATLAS_WIDTH;
-    *h = SNX_CONTROLS_ATLAS_HEIGHT + SNX_UI_PICTURE;
+    *h = g_atlas_h ? g_atlas_h : UI_SKIN_Y;
     *version = g_version;
     return g_atlas;
 }

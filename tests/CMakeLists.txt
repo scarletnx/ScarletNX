@@ -1385,6 +1385,15 @@ snx_test_target(snx-test-vpad 11)
 target_link_libraries(snx-test-vpad PRIVATE scarletnx-common snx_splash m)
 target_include_directories(snx-test-vpad PRIVATE "${PROJECT_BINARY_DIR}/generated") # ui.c's theme
 add_test(NAME vpad COMMAND snx-test-vpad)
+# a RetroArch overlay as the controls' skin, written by the test, then the shipped skins
+add_executable(snx-test-vpad-skin vpad_skin.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad_skin.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
+snx_test_target(snx-test-vpad-skin 11)
+target_link_libraries(snx-test-vpad-skin PRIVATE scarletnx-common snx_splash SDL3::SDL3 m)
+target_include_directories(snx-test-vpad-skin PRIVATE "${PROJECT_BINARY_DIR}/generated") # ui.c's theme
+file(GLOB snx_vpad_skins CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/dist/controls/skins/*/*.cfg")
+add_test(NAME vpad_skin COMMAND snx-test-vpad-skin "${CMAKE_CURRENT_BINARY_DIR}/vpad-skin" ${snx_vpad_skins})
 
 add_executable(snx-test-hud hud.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/hud.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c")
