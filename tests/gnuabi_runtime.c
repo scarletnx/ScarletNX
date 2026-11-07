@@ -172,6 +172,19 @@ int main(int argc, char** argv) {
     a[2] = 0;
     a[3] = 7;
     CHECK(gnu_syscall(t, 134, a) == -GNU_EINVAL);
+    /* membarrier: Linux's answers on a host with a barrier on every thread, ENOSYS for every command without one */
+    CHECK(gnu_kernel_membarrier(&p->kernel, false, 0, 0) == -GNU_ENOSYS);  /* QUERY */
+    CHECK(gnu_kernel_membarrier(&p->kernel, false, 16, 0) == -GNU_ENOSYS); /* REGISTER_PRIVATE_EXPEDITED */
+    CHECK(gnu_kernel_membarrier(&p->kernel, false, 1, 0) == -GNU_ENOSYS);  /* GLOBAL */
+    CHECK(gnu_kernel_membarrier(&p->kernel, true, 0, 0) == 0x27f);         /* the commands it has */
+    CHECK(gnu_kernel_membarrier(&p->kernel, true, 0, 1) == -GNU_EINVAL);
+    CHECK(gnu_kernel_membarrier(&p->kernel, true, 8, 0) == -GNU_EPERM); /* PRIVATE_EXPEDITED before its REGISTER */
+    CHECK(gnu_kernel_membarrier(&p->kernel, true, 16, 0) == 0 && gnu_kernel_membarrier(&p->kernel, true, 512, 0) == 16);
+    a[0] = 0;
+    a[1] = 0;
+    CHECK(gnu_syscall(t, 283, a) == (gnu_host_barrier() ? 0x27f : -GNU_ENOSYS));
+    a[0] = 8; /* PRIVATE_EXPEDITED, registered above: the host's barrier where it has one */
+    CHECK(gnu_syscall(t, 283, a) == (gnu_host_barrier() ? 0 : -GNU_ENOSYS));
     a[0] = 42;
     gnu_syscall(t, 93, a);
     CHECK(p->exited && p->exit_code == 42);

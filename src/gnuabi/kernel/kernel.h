@@ -172,6 +172,12 @@ void gnu_kernel_fork_child(GnuKernelThread* thread, uint32_t pid);
 
 /* system.c: the host thread's name (16 bytes with the NUL), "" where the host has none */
 void gnu_kernel_host_thread_name(char name[16]);
+/* whether the host has a memory barrier on every thread of the process: Linux's membarrier (asked once), Windows'
+   FlushProcessWriteBuffers; macOS and FreeBSD have none */
+bool gnu_host_barrier(void);
+/* membarrier(2) on a host that has that barrier (host, gnu_host_barrier's answer): Linux's results. Without one every
+   command is ENOSYS, as from a kernel without the call, and the guest takes its own way */
+int64_t gnu_kernel_membarrier(GnuKernel* kernel, bool host, uint64_t command, uint64_t flags);
 
 /* ---- system calls (syscall.c) ---- */
 /* the calls the kernel has: exit, exit_group, gettid, set_tid_address, set_robust_list, get_robust_list, futex,

@@ -166,7 +166,9 @@ Linux), `uname`, `getrlimit`, `setrlimit`, `prlimit64`, `prctl` (`PR_SET_NAME`,
 libraries; `EINVAL` for the rest, and for SVE, pointer authentication and tagged
 addresses), `getcpu`, `getpid`, `getppid`, the user and group ids, `getgroups`,
 `setpriority`, `getpriority`, the `sched_*` parameter calls, `madvise` (checked, then the
-runtime's), `getrandom`, `membarrier` (the host's barrier) and `rseq` (`ENOSYS`). The
+runtime's), `getrandom`, `membarrier` (the host's barrier on every thread: Linux's
+`membarrier`, Windows' `FlushProcessWriteBuffers`; `ENOSYS` on macOS, FreeBSD and a Linux
+that refuses it) and `rseq` (`ENOSYS`). The
 Android bridge sends `syscall()` and the bionic functions that are one system call to it.
 
 **Threads.** `clone` with `CLONE_THREAD` (it needs `CLONE_SIGHAND` and `CLONE_VM`) starts

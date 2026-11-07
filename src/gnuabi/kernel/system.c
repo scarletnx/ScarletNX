@@ -27,7 +27,8 @@
 
 #if defined(__linux__) && defined(SYS_membarrier)
 static struct {
-    int membarrier; /* the host's: 1 registered for its private expedited barrier, -1 refused (atomic) */
+    int barrier;   /* the host's membarrier: 1 there, -1 not (atomic) */
+    int expedited; /* 1 registered for its private expedited barrier, -1 refused (atomic) */
 } g_system;
 #endif
 
@@ -181,23 +182,41 @@ enum {
                    MB_REGISTER_PRIVATE_EXPEDITED | MB_PRIVATE_EXPEDITED_SYNC_CORE |
                    MB_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE | MB_GET_REGISTRATIONS,
 };
-/* a memory barrier on every thread of the host process, whose threads are the guest's: the host's membarrier, else
-   Windows' FlushProcessWriteBuffers, else (a host without either) a full barrier on this thread */
-static void barrier_everywhere(void) {
+bool gnu_host_barrier(void) {
 #if defined(_WIN32)
-    FlushProcessWriteBuffers();
+    return true; /* FlushProcessWriteBuffers */
 #elif defined(__linux__) && defined(SYS_membarrier)
-    /* registered once; a host that refuses it gets the slow global barrier */
-    if (!__atomic_load_n(&g_system.membarrier, __ATOMIC_ACQUIRE))
-        __atomic_store_n(&g_system.membarrier, syscall(SYS_membarrier, MB_REGISTER_PRIVATE_EXPEDITED, 0, 0) ? -1 : 1,
-                         __ATOMIC_RELEASE);
-    int how = __atomic_load_n(&g_system.membarrier, __ATOMIC_ACQUIRE) > 0 ? MB_PRIVATE_EXPEDITED : MB_GLOBAL;
-    if (syscall(SYS_membarrier, how, 0, 0)) __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    int barrier = __atomic_load_n(&g_system.barrier, __ATOMIC_ACQUIRE);
+    if (!barrier) { /* asked once: a kernel without it, or a seccomp filter that refuses it, has none */
+        long commands = syscall(SYS_membarrier, MB_QUERY, 0, 0);
+        barrier = commands > 0 && (commands & (MB_GLOBAL | MB_REGISTER_PRIVATE_EXPEDITED)) ? 1 : -1;
+        __atomic_store_n(&g_system.barrier, barrier, __ATOMIC_RELEASE);
+    }
+    return barrier > 0;
 #else
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    return false; /* macOS, FreeBSD: no call puts a barrier on another thread */
 #endif
 }
-static int64_t membarrier_call(GnuKernel* k, uint64_t command, uint64_t flags) {
+/* a memory barrier on every thread of the host process, whose threads are the guest's, where gnu_host_barrier says
+   the host has one: 0, or the host's error */
+static int64_t barrier_everywhere(void) {
+#if defined(_WIN32)
+    FlushProcessWriteBuffers();
+    return 0;
+#elif defined(__linux__) && defined(SYS_membarrier)
+    /* registered once; a host that refuses it gets the slow global barrier */
+    int expedited = __atomic_load_n(&g_system.expedited, __ATOMIC_ACQUIRE);
+    if (!expedited) {
+        expedited = syscall(SYS_membarrier, MB_REGISTER_PRIVATE_EXPEDITED, 0, 0) ? -1 : 1;
+        __atomic_store_n(&g_system.expedited, expedited, __ATOMIC_RELEASE);
+    }
+    return syscall(SYS_membarrier, expedited > 0 ? MB_PRIVATE_EXPEDITED : MB_GLOBAL, 0, 0) ? gnu_host_errno(errno) : 0;
+#else
+    return -GNU_ENOSYS;
+#endif
+}
+int64_t gnu_kernel_membarrier(GnuKernel* k, bool host, uint64_t command, uint64_t flags) {
+    if (!host) return -GNU_ENOSYS;
     if (flags) return -GNU_EINVAL; /* only the RSEQ commands take a flag, and they are not here */
     uint32_t registered = __atomic_load_n(&k->membarrier_registered, __ATOMIC_ACQUIRE);
     switch (command) {
@@ -212,10 +231,9 @@ static int64_t membarrier_call(GnuKernel* k, uint64_t command, uint64_t flags) {
         case MB_PRIVATE_EXPEDITED_SYNC_CORE:
             /* Linux: EPERM before the process registered for it */
             if (!(registered & (uint32_t)(command << 1))) return -GNU_EPERM;
-            barrier_everywhere();
-            return 0;
+            return barrier_everywhere();
         case MB_GLOBAL:
-        case MB_GLOBAL_EXPEDITED: barrier_everywhere(); return 0;
+        case MB_GLOBAL_EXPEDITED: return barrier_everywhere();
     }
     return -GNU_EINVAL;
 }
@@ -440,7 +458,7 @@ bool gnu_kernel_system_call(GnuKernelThread* t, uint64_t number, const uint64_t 
             return true;
         case 233: *result = madvise_call(k, a[0], a[1], a[2]); return true;
         case 278: *result = getrandom_call(k, a[0], a[1], a[2]); return true;
-        case 283: *result = membarrier_call(k, a[0], a[1]); return true;
+        case 283: *result = gnu_kernel_membarrier(k, gnu_host_barrier(), a[0], a[1]); return true;
         case 293: *result = -GNU_ENOSYS; return true; /* rseq: the C library runs without it */
     }
     return false;
