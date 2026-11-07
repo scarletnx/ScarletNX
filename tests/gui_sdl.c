@@ -4308,6 +4308,16 @@ int main(int argc, char** argv) {
     shows(&app, "Reset to Defaults", rgb(app.theme.soft));
     hides(&app, "\x1e", rgb(app.theme.soft)); /* every row shows: no arrows */
     hides(&app, "\x1f", rgb(app.theme.soft));
+    { /* F1's box here: every key every screen has, the groups' none of their own, so no title over them */
+        GuiHelpKeys k;
+        key(&app, SDLK_F1);
+        render(&app);
+        help_keys(&app, &k);
+        assert(app.help_shown && k.own == 0 && k.n >= 5 && help_rows(&k) == k.n);
+        hides(&app, "Every screen", normal);
+        key(&app, SDLK_ESCAPE);
+        assert(!app.help_shown && app.form == GUI_FORM_SETTINGS);
+    }
     key(&app, SDLK_DOWN);
     render(&app);
     shows_half(&app, "GDB stub, Extract to tmpfs", normal); /* a group's help names its settings */
@@ -8686,39 +8696,50 @@ int main(int argc, char** argv) {
 #endif
                 assert(strstr(shown_keys(&app, said, sizeof said), "R: recompile.") && strstr(said, "B: AOT pack.") &&
                        strstr(said, "P: folders.") && strstr(said, "ESC: back."));
-                { /* F1's box of them, the most rows it has: an icon each, the keyboard's and a pad's; a window short of
-                     them shows those that fit, Up/Down, PgUp/PgDn and the wheel going over them as far as the last and
-                     moving nothing under it, any other key closing it and doing nothing else */
+                { /* F1's box of them, the most rows it has: an icon each, the keyboard's and a pad's, Games' own keys
+                     first, then under "Every screen" those every screen has; a window short of them shows those that
+                     fit, Up/Down, PgUp/PgDn and the wheel going over them as far as the last and moving nothing under
+                     it, any other key closing it and doing nothing else */
                     GuiHelpBoxes h;
+                    GuiHelpKeys k;
                     SDL_Event e = {0};
-                    unsigned icons[GUI_HELP_ROWS];
-                    char all[1024];
-                    int w, height, keys, n, shown, i;
+                    char key_[128], what[256];
+                    unsigned icon;
+                    int w, height, rows, shown, i;
                     size_t selected = app.browser.selected;
                     key(&app, SDLK_F1);
                     assert(app.help_shown && app.help_top == 0);
                     render(&app);
-                    n = help_said(&app, all, sizeof all, icons, &keys);
-                    assert(n >= 13 && n <= GUI_HELP_ROWS && keys == gui_text_cols("Left/Right/PgUp/PgDown"));
-                    for (i = 0; i < n; ++i) assert(icons[i] != GUI_ICON_NONE);
+                    help_keys(&app, &k);
+                    rows = help_rows(&k);
+                    assert(k.n >= 13 && k.n <= GUI_HELP_ROWS && k.keys == gui_text_cols("Left/Right/PgUp/PgDown"));
+                    assert(k.own >= 7 && k.own < k.n && rows == k.n + 1 && !strncmp(k.said, "L: play. ", 9));
+                    for (i = 0; i < k.n; ++i) assert(k.icons[i] != GUI_ICON_NONE);
+                    assert(!help_row(&k, k.own, key_, what, sizeof key_, &icon)); /* the title, then every screen's */
+                    assert(help_row(&k, k.own + 1, key_, what, sizeof key_, &icon) && !strcmp(key_, "Up/Down") &&
+                           icon == GUI_ICON_MOVE);
+                    assert(help_row(&k, rows - 1, key_, what, sizeof key_, &icon) && !strcmp(key_, "F2"));
+                    shows(&app, "Every screen", normal);
                     shows(&app, "- " ICON_EYE, normal);
                     shows(&app, "Left/Right/PgUp/PgDown", yellow);
                     help_boxes(&app, &h);
-                    assert((int)ui_help_shown(h.rects, app.scale, UI_HELP_ROWS) == n); /* all of them */
+                    assert((int)ui_help_shown(h.rects, app.scale, UI_HELP_ROWS) == rows); /* all of them */
                     app.pad_driven = true; /* a pad's buttons, with their icons */
                     render(&app);
-                    n = help_said(&app, all, sizeof all, icons, &keys);
-                    assert(strstr(all, "Right stick: play.") && strstr(all, "B: back."));
-                    for (i = 0; i < n; ++i) assert(icons[i] != GUI_ICON_NONE);
+                    help_keys(&app, &k);
+                    assert(strstr(k.said, "Right stick: play.") && strstr(k.said, "B: back."));
+                    for (i = 0; i < k.n; ++i) assert(k.icons[i] != GUI_ICON_NONE);
+                    assert(help_row(&k, k.own + 1, key_, what, sizeof key_, &icon) && !strcmp(key_, "D-pad"));
                     shows(&app, "Right stick", yellow);
                     app.pad_driven = false;
                     assert(SDL_GetWindowSize(app.window, &w, &height));
                     assert(SDL_SetWindowSize(app.window, w, rows_height(GUI_LEAST_ROWS, app.scale)));
                     render(&app);
-                    n = help_said(&app, all, sizeof all, icons, &keys);
+                    help_keys(&app, &k);
+                    rows = help_rows(&k);
                     help_boxes(&app, &h);
                     shown = (int)ui_help_shown(h.rects, app.scale, UI_HELP_ROWS);
-                    assert(shown > 0 && shown < n);
+                    assert(shown > 0 && shown < rows);
                     shows(&app, "play", normal);
                     hides(&app, "side box", normal); /* the last row */
                     key(&app, SDLK_DOWN);
@@ -8726,14 +8747,14 @@ int main(int argc, char** argv) {
                     assert(app.help_shown && app.help_top == 2);
                     key(&app, SDLK_PAGEDOWN);
                     key(&app, SDLK_DOWN); /* past the last: no further */
-                    assert(app.help_shown && app.help_top == n - shown);
+                    assert(app.help_shown && app.help_top == rows - shown);
                     render(&app);
                     shows(&app, "side box", normal);
                     hides(&app, "play", normal);
                     e.type = SDL_EVENT_MOUSE_WHEEL;
                     e.wheel.integer_y = 1; /* a notch up: a row */
                     event(&app, &e);
-                    assert(app.help_top == n - shown - 1 && app.browser.selected == selected);
+                    assert(app.help_top == rows - shown - 1 && app.browser.selected == selected);
                     key(&app, SDLK_RETURN); /* closes it, opening nothing */
                     assert(!app.help_shown && !app.addons_shown && app.browser.selected == selected);
                     key(&app, SDLK_F1); /* again from its first row */
@@ -11690,14 +11711,15 @@ int main(int argc, char** argv) {
                 hides(&app, "Settings", normal);
                 shows(&app, "- " ICON_MOVE, normal);
                 shows(&app, "- OK", yellow);
-                {
-                    static const unsigned menu_icons[] = {GUI_ICON_MOVE,    GUI_ICON_POINTER,    GUI_ICON_REFRESH_CW,
-                                                          GUI_ICON_LOG_OUT, GUI_ICON_APP_WINDOW, GUI_ICON_PANEL_RIGHT};
-                    unsigned icons[GUI_HELP_ROWS];
-                    char all[1024];
-                    int keys;
-                    assert(help_said(&app, all, sizeof all, icons, &keys) == (int)SDL_arraysize(menu_icons));
-                    assert(!memcmp(icons, menu_icons, sizeof menu_icons));
+                { /* the menu's own F5 first, then under "Every screen" the keys every screen has, ESC's exit too */
+                    static const unsigned menu_icons[] = {GUI_ICON_REFRESH_CW, GUI_ICON_MOVE,
+                                                          GUI_ICON_POINTER,    GUI_ICON_LOG_OUT,
+                                                          GUI_ICON_APP_WINDOW, GUI_ICON_PANEL_RIGHT};
+                    GuiHelpKeys k;
+                    help_keys(&app, &k);
+                    assert(k.n == (int)SDL_arraysize(menu_icons) && k.own == 1 && help_rows(&k) == k.n + 1);
+                    assert(!memcmp(k.icons, menu_icons, sizeof menu_icons));
+                    shows(&app, "Every screen", normal);
                 }
                 { /* the wheel over it moves nothing under it, all its rows showing */
                     SDL_Event e = {0};
