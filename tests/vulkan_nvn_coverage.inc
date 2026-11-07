@@ -105,7 +105,7 @@ static int coverage_r1_state_cases(GpuChannel* channel, u64 target, u64 stream, 
         }
         u64 drawn = g_vk_drawn, skipped = g_vk_skipped;
         vk_render_draw(state, &call, &channel->owner);
-        CHECK(g_vk_drawn == drawn + (test != 3) && g_vk_skipped == skipped + (test == 3));
+        CHECK(g_vk_drawn == drawn + 1 && g_vk_skipped == skipped);
         vk_render_end();
         Surf* surface = vk_rt_find(target);
         CHECK(surface);
@@ -118,16 +118,28 @@ static int coverage_r1_state_cases(GpuChannel* channel, u64 target, u64 stream, 
         rec_CmdCopyImageToBuffer(vk_cmd(), grid, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
         vk_finish();
         vk_readback_ready();
-        u32 mask = test == 3 ? 0 : test == 2 ? 7 : 5;
+        u32 mask = test == 2 ? 7 : 5;
         for (u32 y = 0; y < 4; y++)
-            for (u32 x = 0; x < 4; x++)
+            for (u32 x = 0; x < 4; x++) {
+                u32 pixel_mask = mask;
+                if (test == 3) {
+                    static const u8 ranks[4][4] = {
+                        {0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}};
+                    pixel_mask = 0;
+                    for (u32 bit = 0; bit < 4; bit++) {
+                        u32 ordinal = (bit + 4 - x) % 4;
+                        float threshold = ((float)ordinal + (float)(ranks[y][x] + 1) / 16.0f) / 4.0f;
+                        if (source[3] >= threshold) pixel_mask |= 1u << bit;
+                    }
+                    pixel_mask &= state->rkey.sample_mask;
+                }
                 for (u32 sample = 0; sample < 4; sample++) {
                     float pixel[4];
                     memcpy(pixel, bytes + ((2 * y + sample / 2) * 8 + 2 * x + sample % 2) * 16, 16);
                     for (u32 component = 0; component < 4; component++) {
                         float expected = destination[component];
                         int nan = 0;
-                        if (mask >> sample & 1) {
+                        if (pixel_mask >> sample & 1) {
                             expected = component == 3 && state->rkey.alpha_to_one ? 1 : source[component];
                             int scale = component == 3 ? (call.coverage_mode & 2) : (call.coverage_mode & 1);
                             if (scale) expected *= (float)call.coverage_table[0] / 16;
@@ -140,6 +152,7 @@ static int coverage_r1_state_cases(GpuChannel* channel, u64 target, u64 stream, 
                         CHECK(exact);
                     }
                 }
+            }
     }
     CHECK(!gmem_write(stream, vertices, 24 * sizeof *vertices));
     g_renderer->method_barrier(5);

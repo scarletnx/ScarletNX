@@ -17,7 +17,8 @@ NATIVE = ('nvn-descriptors', 'nvn-tex-storage', 'nvn-commands', 'nvn-draw-banks'
 SHADER_NATIVE = ('shader-direct-regressions', 'shader-float-rounding', 'shader-indexed-ms',
                  'shader-integer-half', 'shader-tcs-dead-outputs', 'shader-blend-images',
                  'shader-half-native', 'shader-txd-uniform', 'shader-half-packing',
-                 'shader-texture-limits', 'shader-mixed-sample-safe', 'shader-mixed-coverage', 'shader-fragment-mask')
+                 'shader-texture-limits', 'shader-mixed-sample-safe', 'shader-mixed-coverage', 'shader-fragment-mask',
+                 'shader-depth-stencil')
 GPU_MARKER = 'PASS NVN array copies: image texels, mirrored layers, view offsets and output padding exact=1'
 GPU_FEATURES = (
     ('array_copies', 'PASS NVN array copies:', None),
@@ -34,6 +35,8 @@ GPU_FEATURES = (
     ('mixed_sample_coverage', 'PASS NVN coverage modulation:', 'SKIP NVN coverage modulation:'),
     ('ratio_one_coverage', 'PASS NVN ratio-one coverage:', 'SKIP NVN ratio-one coverage:'),
     ('depth_mixed_coverage', 'PASS NVN depth mixed coverage:', 'SKIP NVN depth mixed coverage:'),
+    ('late_depth_shadow', 'PASS late depth shadow:', 'SKIP late depth shadow:'),
+    ('portable_mixed_mrt', 'PASS portable C1 mixed MRT:', 'SKIP mixed MRT:'),
     ('portable_mixed_coverage', 'PASS portable mixed coverage:', 'SKIP portable mixed coverage:'),
     ('native_advanced_blend', 'PASS NVN native advanced blend:', 'SKIP NVN native advanced blend:'),
     ('event_waits', 'PASS NVN event waits:', None),

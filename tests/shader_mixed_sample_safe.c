@@ -11,7 +11,7 @@
 static u64 immediate(u32 destination, u32 value) {
     return 0x0100000000071000ull | (u64)value << 20 | destination;
 }
-static int proof(const char* name, u64 extra, u32 output, int stage, int expected) {
+static int proof(const char* name, u64 extra, u32 output, int stage, int expected, int split) {
     u64 program[32] = {0};
     program[9] = stage == ST_FS ? 15ull | (u64)output << 32 : 0;
     for (u32 i = 10; i < 32; i += 4) program[i] = 0x001f8000fc0007e0ull;
@@ -28,13 +28,13 @@ static int proof(const char* name, u64 extra, u32 output, int stage, int expecte
     program[at] = 0xe30000000007000full;
     u8 bytes[sizeof program];
     for (u32 i = 0; i < 32; i++) snx_st_le64(bytes + 8 * i, program[i]);
-    ShaderInfo info = {.mixed_sample_invariant = 1};
+    ShaderInfo info = {.mixed_sample_invariant = 1, .primitive_split_safe = 1};
     size_t words = 0;
     u32* module = shader_to_spirv(bytes, sizeof bytes, stage, &info, &words, 0, 1, 1, 1);
-    int good = module && !info.unsupported && info.mixed_sample_invariant == expected;
+    int good = module && !info.unsupported && info.mixed_sample_invariant == expected && info.primitive_split_safe == split;
     if (!good)
-        fprintf(stderr, "%s: module=%d proof=%d expected=%d: %s\n", name, module != NULL,
-                info.mixed_sample_invariant, expected, info.first_unsupported);
+        fprintf(stderr, "%s: module=%d invariant=%d/%d split=%d/%d: %s\n", name, module != NULL,
+                info.mixed_sample_invariant, expected, info.primitive_split_safe, split, info.first_unsupported);
     free(module);
     return good;
 }
@@ -54,19 +54,23 @@ int main(void) {
     };
     int good = 1;
     for (u32 i = 0; i < sizeof cases / sizeof *cases; i++)
-        good &= proof(cases[i].name, cases[i].instruction, 0, ST_FS, cases[i].safe);
-    good &= proof("guest sample-mask output", 0, 1, ST_FS, 0);
-    good &= proof("guest depth output", 0, 2, ST_FS, 0);
-    good &= proof("vertex stage", 0, 0, ST_VS, 0);
-    ShaderInfo rejected = {.mixed_sample_invariant = 1};
+        good &= proof(cases[i].name, cases[i].instruction, 0, ST_FS, cases[i].safe, 0);
+    good &= proof("guest sample-mask output", 0, 1, ST_FS, 0, 0);
+    good &= proof("guest depth output", 0, 2, ST_FS, 0, 0);
+    good &= proof("independent vertex stage", 0, 0, ST_VS, 0, 1);
+    good &= proof("vertex lane groups", 0xf0c8000000070000ull, 0, ST_VS, 0, 0);
+    good &= proof("vertex clock", 0x50c8000005070000ull, 0, ST_VS, 0, 0);
+    good &= proof("vertex shuffle", 0xef17007cf0370207ull, 0, ST_VS, 0, 0);
+    good &= proof("vertex vote", 0x50d8000000070000ull | 7ull << 39, 0, ST_VS, 0, 0);
+    ShaderInfo rejected = {.mixed_sample_invariant = 1, .primitive_split_safe = 1};
     size_t words = 0;
     u32* invalid = shader_to_spirv(NULL, 0, ST_FS, &rejected, &words, 0, 1, 1, 1);
-    good &= !invalid && !rejected.mixed_sample_invariant;
+    good &= !invalid && !rejected.mixed_sample_invariant && !rejected.primitive_split_safe;
     free(invalid);
     u8 short_program[80] = {0};
-    rejected.mixed_sample_invariant = 1;
+    rejected.mixed_sample_invariant = rejected.primitive_split_safe = 1;
     invalid = shader_to_spirv(short_program, sizeof short_program, ST_FS, &rejected, &words, 0, 1, 1, 1);
-    good &= !invalid && !rejected.mixed_sample_invariant;
+    good &= !invalid && !rejected.mixed_sample_invariant && !rejected.primitive_split_safe;
     free(invalid);
     if (good) puts("PASS shader mixed-sample source invariance: uniform sources and invocation hazards checked");
     return !good;

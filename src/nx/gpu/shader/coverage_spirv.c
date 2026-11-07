@@ -4,9 +4,9 @@
 #include "nx/gpu/shader/advanced_blend_spirv.h"
 #include "nx/gpu/shader/capture_tiles_spirv.h"
 
-uint32_t shader_alpha_coverage_spirv(SpvEmitter* e, uint32_t f32, uint32_t u32_type, uint32_t boolean,
-                                    uint32_t alpha, uint32_t samples, uint32_t guest_mask) {
-    if (!samples || samples > 16 || (samples & (samples - 1))) return 0;
+static uint32_t alpha_coverage(SpvEmitter* e, uint32_t f32, uint32_t u32_type, uint32_t boolean,
+                               uint32_t alpha, uint32_t samples, uint32_t guest_mask, uint32_t x, uint32_t y) {
+    if (!samples || samples > 16 || (samples & (samples - 1)) || (!!x != !!y)) return 0;
     uint32_t zero = spv_emit_constant_f32(e, f32, 0), one = spv_emit_constant_f32(e, f32, 1);
     uint32_t positive = SPV(e, SPV_OP_F_ORD_GREATER_THAN, boolean, alpha, zero);
     uint32_t nonnegative = spv_emit_select(e, f32, positive, alpha, zero);
@@ -17,9 +17,52 @@ uint32_t shader_alpha_coverage_spirv(SpvEmitter* e, uint32_t f32, uint32_t u32_t
     uint32_t scaled = spv_emit_fmul(e, f32, clamped, spv_emit_constant_f32(e, f32, (float)samples));
     uint32_t count = spv_emit_convert_f_to_u(e, u32_type, scaled);
     uint32_t one_bit = spv_emit_constant_u32(e, u32_type, 1);
+    uint32_t rotation = 0;
+    if (x) {
+        uint32_t four = spv_emit_constant_f32(e, f32, 4);
+        uint32_t px = spv_emit_convert_f_to_u(e, u32_type, SPV(e, SPV_OP_F_MOD, f32, x, four));
+        uint32_t py = spv_emit_convert_f_to_u(e, u32_type, SPV(e, SPV_OP_F_MOD, f32, y, four));
+        uint32_t two_bits = spv_emit_constant_u32(e, u32_type, 3);
+        px = SPV(e, SPV_OP_BITWISE_AND, u32_type, px, two_bits);
+        py = SPV(e, SPV_OP_BITWISE_AND, u32_type, py, two_bits);
+        uint32_t xy = SPV(e, SPV_OP_BITWISE_XOR, u32_type, px, py);
+        uint32_t two = spv_emit_constant_u32(e, u32_type, 2);
+        uint32_t rank = SPV(e, SPV_OP_SHIFT_LEFT_LOGICAL, u32_type,
+            SPV(e, SPV_OP_BITWISE_AND, u32_type, xy, one_bit), spv_emit_constant_u32(e, u32_type, 3));
+        rank = SPV(e, SPV_OP_BITWISE_OR, u32_type, rank,
+            SPV(e, SPV_OP_SHIFT_LEFT_LOGICAL, u32_type, SPV(e, SPV_OP_BITWISE_AND, u32_type, py, one_bit), two));
+        rank = SPV(e, SPV_OP_BITWISE_OR, u32_type, rank, SPV(e, SPV_OP_BITWISE_AND, u32_type, xy, two));
+        rank = SPV(e, SPV_OP_BITWISE_OR, u32_type, rank, SPV(e, SPV_OP_SHIFT_RIGHT_LOGICAL, u32_type, py, one_bit));
+        uint32_t threshold = spv_emit_convert_u_to_f(e, f32, SPV(e, SPV_OP_I_ADD, u32_type, rank, one_bit));
+        threshold = spv_emit_fmul(e, f32, threshold, spv_emit_constant_f32(e, f32, 1.0f / 16.0f));
+        uint32_t fraction = SPV(e, SPV_OP_F_SUB, f32, scaled, spv_emit_convert_u_to_f(e, f32, count));
+        uint32_t extra = SPV(e, SPV_OP_F_ORD_GREATER_THAN_EQUAL, boolean, fraction, threshold);
+        count = SPV(e, SPV_OP_I_ADD, u32_type, count,
+            spv_emit_select(e, u32_type, extra, one_bit, spv_emit_constant_u32(e, u32_type, 0)));
+        if (samples > 1) {
+            rotation = SPV(e, SPV_OP_I_ADD, u32_type, px, SPV(e, SPV_OP_SHIFT_LEFT_LOGICAL, u32_type, py, two));
+            rotation = SPV(e, SPV_OP_BITWISE_AND, u32_type, rotation, spv_emit_constant_u32(e, u32_type, samples - 1));
+        }
+    }
     uint32_t bits = SPV(e, SPV_OP_SHIFT_LEFT_LOGICAL, u32_type, one_bit, count);
     uint32_t mask = SPV(e, SPV_OP_I_SUB, u32_type, bits, one_bit);
+    if (rotation) {
+        uint32_t shifted = SPV(e, SPV_OP_SHIFT_LEFT_LOGICAL, u32_type, mask, rotation);
+        uint32_t wrapped = SPV(e, SPV_OP_SHIFT_RIGHT_LOGICAL, u32_type, mask,
+            SPV(e, SPV_OP_I_SUB, u32_type, spv_emit_constant_u32(e, u32_type, samples), rotation));
+        mask = SPV(e, SPV_OP_BITWISE_AND, u32_type, SPV(e, SPV_OP_BITWISE_OR, u32_type, shifted, wrapped),
+            spv_emit_constant_u32(e, u32_type, (1u << samples) - 1));
+    }
     return guest_mask ? SPV(e, SPV_OP_BITWISE_AND, u32_type, mask, guest_mask) : mask;
+}
+uint32_t shader_alpha_coverage_spirv(SpvEmitter* e, uint32_t f32, uint32_t u32_type, uint32_t boolean,
+                                    uint32_t alpha, uint32_t samples, uint32_t guest_mask) {
+    return alpha_coverage(e, f32, u32_type, boolean, alpha, samples, guest_mask, 0, 0);
+}
+uint32_t shader_alpha_coverage_dither_spirv(SpvEmitter* e, uint32_t f32, uint32_t u32_type, uint32_t boolean,
+                                           uint32_t alpha, uint32_t samples, uint32_t guest_mask,
+                                           uint32_t x, uint32_t y) {
+    return x && y ? alpha_coverage(e, f32, u32_type, boolean, alpha, samples, guest_mask, x, y) : 0;
 }
 
 uint32_t* shader_coverage_resolve_spirv(uint32_t flags, int signed_target, size_t* words) {

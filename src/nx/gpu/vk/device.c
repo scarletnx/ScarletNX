@@ -438,6 +438,7 @@ static int create_device(void) {
         has_cond = snx_vk_extensions_has(&e, VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME);
         has_provoking = snx_vk_extensions_has(&e, VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME);
         g_vk.has_conservative = snx_vk_extensions_has(&e, VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME);
+        g_vk.has_depth_range_unrestricted = snx_vk_extensions_has(&e, VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME);
         has_pipeline_robustness = snx_vk_extensions_has(&e, VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME);
         has_robustness2 = snx_vk_extensions_has(&e, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
         /* the driver's budget for each heap, the other processes' use taken out, for VMA: without it VMA took
@@ -478,6 +479,7 @@ static int create_device(void) {
     if (uma_with == VK_UMA_WITH_HOST) ext[next++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
     if (uma_with == VK_UMA_WITH_AHB) ext[next++] = "VK_ANDROID_external_memory_android_hardware_buffer";
     if (g_vk.has_budget) ext[next++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
+    if (g_vk.has_depth_range_unrestricted) ext[next++] = VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME;
     if (g_vk.has_mixed_samples) ext[next++] = VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME;
     if (g_vk.has_coverage_to_color) ext[next++] = VK_NV_FRAGMENT_COVERAGE_TO_COLOR_EXTENSION_NAME;
     if (g_vk.has_post_depth_coverage) ext[next++] = VK_EXT_POST_DEPTH_COVERAGE_EXTENSION_NAME;

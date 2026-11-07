@@ -491,8 +491,12 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[26], const ShX
     si->advanced_blend_mask = mask[23];
     si->coverage_to_color = (mask[23] & SH_COVERAGE_TO_COLOR) ? 1 + ((mask[23] >> SH_COVERAGE_OUTPUT_SHIFT) & 7) : 0;
     si->coverage_early_tests = si->coverage_to_color && (mask[23] & SH_BLEND_EARLY_TESTS);
-    si->img_int_mask = mask[24];
+    si->img_int_mask = mask[24] & 255;
     si->img_sint_mask = mask[25];
+    if (stage == ST_FS) {
+        si->late_depth = (mask[24] >> 8) & SH_FS_LATE_DEPTH;
+        si->capture_outputs = (mask[24] >> (8 + SH_FS_CAPTURE_SHIFT)) & 7;
+    }
     if (stage == ST_FS) {
         si->tex_int_mask = ints;
         si->tex_sint_mask = sints;
@@ -594,6 +598,14 @@ static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[
 VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
                     u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
                     const u8* query_hint, u64 advanced_blend, u32 advanced_mask, u32 img_int, u32 img_sint) {
+    return vk_shader_get_ex(ds, gva, gva_a, stage, int_mask, sint_mask, rt_int, rt_sint, clip, dc_color, dc_funcs,
+                            unfed, rect, xfb, query_hint, advanced_blend, advanced_mask, img_int, img_sint, 0);
+}
+VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
+                       u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
+                       const u8* query_hint, u64 advanced_blend, u32 advanced_mask, u32 img_int, u32 img_sint,
+                       u32 fs_config) {
+    if ((fs_config & ~SH_FS_CONFIG_MASK) || (fs_config && stage != ST_FS)) return NULL;
     const DsPrograms* p = ds ? &ds->prog : NULL;
     pf_merge();
     g_sh_ds = ds;
@@ -609,7 +621,7 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
                     (u32)(dc_color >> 32),
                     dc_funcs,
                     unfed};
-    mask[24] = img_int;
+    mask[24] = (img_int & 255) | fs_config << 8;
     mask[25] = img_sint;
     if (stage == ST_FS && p) mask[11] = p->early_z;
     if (stage == ST_FS) {
@@ -1766,6 +1778,7 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                   (u32)g_vk.has_descriptor_buffers,
                   (u32)g_shader_dynamic_texture_offsets,
                   g_vk.feat13.maintenance4,
+                  (u32)g_vk.has_depth_range_unrestricted,
                   (u32)g_vk.vertex_input_dynamic};
     /* the last word, dynamic vertex input, only where it is on: its keys hold no vertex layout (PipeKey.vi), and the
        files of every device without it keep the key they have */

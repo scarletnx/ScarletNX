@@ -90,6 +90,8 @@ class Classification(unittest.TestCase):
     def test_actual_new_fixture_markers_and_checked_count(self):
         replacements = {
             'txd_varying_offsets': 'PASS TEX/TXD varying offsets: 6432 bound/bindless1D/2D/array/3D samples, signed domains and fractional mips exact=1',
+            'late_depth_shadow': 'PASS late depth shadow: native D32F/S8 bytes, storage counts checked=880 exact=1',
+            'portable_mixed_mrt': 'PASS portable C1 mixed MRT: targets2..7, 120 draws, 8640 pixels checked=8640',
             'texture_min_lod': 'PASS TEX minimum LOD: 96 native fragment2D/array bound/bindless fractional/bias draws exact=1',
             'alpha_coverage': 'PASS undithered alpha coverage: 72 draws/1152 samples, thresholds, fixed/guest masks and alpha-to-one ordering exact=1',
             'late_blend_capture': 'PASS NVN late blend capture: depth/stencil, KIL/alpha rejection, per-fragment atomic counts, alpha0 and primitive order exact=1',
