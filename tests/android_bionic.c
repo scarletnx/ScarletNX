@@ -6,6 +6,7 @@
 #include "android/bridge/hle.h"
 #include "android/bridge/hle_impl.h"
 #include "android/bridge/host.h"
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -208,11 +209,57 @@ static void test_fortified(void) {
     expect_text("__readlink_chk of /proc/self/exe", link, "/system/bin/app_process64");
 }
 
+/* ---- libm ---- */
+
+/* the distance in units in the last place between two doubles of one sign */
+static int64_t ulps(double a, double b) {
+    int64_t x, y;
+    memcpy(&x, &a, 8);
+    memcpy(&y, &b, 8);
+    return x > y ? x - y : y - x;
+}
+/* a libm function of one double through its handler, against the correctly rounded result's bits: within 1 ulp */
+static void expect_math(const char* name, double x, uint64_t bits) {
+    double want, got;
+    memcpy(&want, &bits, 8);
+    CALLD(name, x, 0);
+    memcpy(&got, &g_t.cpu.v[0].df[0], 8);
+    if (ulps(got, want) > 1) {
+        fprintf(stderr, "android_bionic: %s(%g): got %.17g, %lld ulp from %.17g\n", name, x, got,
+                (long long)ulps(got, want), want);
+        g_t.failures++;
+    }
+}
+static void expect_mathf(const char* name, float x, float (*host)(float)) {
+    float got;
+    g_t.cpu = (CPU){0};
+    memcpy(&g_t.cpu.v[0].f[0], &x, 4);
+    const HleSymbol* s = find(name);
+    s->handler(&g_t.cpu, s->data);
+    memcpy(&got, &g_t.cpu.v[0].f[0], 4);
+    if (got != host(x)) {
+        fprintf(stderr, "android_bionic: %s(%g): got %.9g, the host's %.9g\n", name, x, got, host(x));
+        g_t.failures++;
+    }
+}
+
+/* the functions of bionic's libm that apps call, past the ones every app has (the probe's correctly rounded values,
+   from tools/math-expected.py of androidprobe) */
+static void test_libm(void) {
+    expect_math("cbrt", 2.0, 0x3ff428a2f98d728bull);
+    expect_math("expm1", 1e-10, 0x3ddb7cdfd9dda4e3ull);
+    expect_math("log1p", 1e-10, 0x3ddb7cdfd9d1d693ull);
+    expect_mathf("cbrtf", 2.0f, cbrtf);
+    expect_mathf("expm1f", 1e-5f, expm1f);
+    expect_mathf("log1pf", 1e-5f, log1pf);
+}
+
 int main(void) {
     test_printf_signed();
     test_sscanf_reads_its_pointers();
     test_error_texts();
     test_fortified();
+    test_libm();
     if (g_t.failures) {
         fprintf(stderr, "android_bionic: %d failed\n", g_t.failures);
         return 1;
