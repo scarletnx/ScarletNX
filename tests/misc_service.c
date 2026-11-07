@@ -1376,7 +1376,7 @@ static int mii_name_clean(const u8* c) {
    ten where she fits the age, gender and race asked (exactly 3 of mii_own_pick's 30 draws), never where she does not */
 static void test_mii_own(void) {
     static const char* const want[3] = {"Baguette", "Leek Girl", "Phone Girl"};
-    static const u8 hair[3] = {112, 126, 84}, hair_color[3] = {32, 61, 85}, eye_color[3] = {15, 60, 90};
+    static const u8 hair[3] = {112, 126, 84}, hair_color[3] = {34, 61, 85}, eye_color[3] = {29, 60, 90};
     SvcObj* service = new_mii();
     Request r;
     u32 i, j, picks[3] = {0}, own = 0, n = 3000;
