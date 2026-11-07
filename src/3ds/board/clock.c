@@ -32,10 +32,13 @@ int snx_ctr_clock_toggle(void) {
     return g_clock.pace;
 }
 double snx_ctr_clock_wait(double deadline) {
-    double now = snx_ctr_clock_seconds();
+    double host = snx_seconds(), now = g_clock.at + (host - g_clock.host) * rate_of(g_clock.pace);
     if (deadline <= now) return 0;
     if (g_clock.pace == SNX_CTR_PACE_NONE) {
-        g_clock.at += deadline - now;
+        /* the clock is the deadline at this host second: a read after it, even of the same host second (a coarse
+           timer's), gives the deadline or more, where adding the gap to the clock could round under it */
+        g_clock.at = deadline;
+        g_clock.host = host;
         return 0;
     }
     return (deadline - now) / rate_of(g_clock.pace);
