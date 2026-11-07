@@ -164,15 +164,16 @@ static u32 tex_variant(u32 kind, u32 i) {
 /* the hair styles with tails, the console's part list's: twin tails high on the sides, low behind the ears, twin
    drills (the curled ones: short ringlets out from the sides), one ponytail on the side or at the back; each its own hair
    shape (variants past HAIR_VARIANTS), over the shell variant shell, with the ties its hat part is (for those of them
-   the part list gives a hat) */
-enum { TAIL_TWIN_HIGH = 1, TAIL_TWIN_LOW, TAIL_TWIN_DRILL, TAIL_SIDE, TAIL_BACK };
+   the part list gives a hat), and one of the drill styles with an ahoge, a lock standing up from the crown
+   (TAIL_AHOGE: drawn as a tail is, never a style's tail) */
+enum { TAIL_TWIN_HIGH = 1, TAIL_TWIN_LOW, TAIL_TWIN_DRILL, TAIL_SIDE, TAIL_BACK, TAIL_AHOGE };
 #define TAIL_STYLES 10u
 static const struct {
-    u8 style, tail, shell;
-} tail_styles[TAIL_STYLES] = {{9, TAIL_BACK, 3},       {19, TAIL_TWIN_LOW, 6},    {29, TAIL_TWIN_DRILL, 6},
-                              {78, TAIL_TWIN_HIGH, 9}, {84, TAIL_SIDE, 9},        {97, TAIL_BACK, 4},
-                              {104, TAIL_TWIN_LOW, 7}, {112, TAIL_TWIN_DRILL, 6}, {126, TAIL_TWIN_HIGH, 7},
-                              {130, TAIL_BACK, 5}};
+    u8 style, tail, shell, ahoge;
+} tail_styles[TAIL_STYLES] = {{9, TAIL_BACK, 3, 0},       {19, TAIL_TWIN_LOW, 6, 0},    {29, TAIL_TWIN_DRILL, 6, 0},
+                              {78, TAIL_TWIN_HIGH, 9, 0}, {84, TAIL_SIDE, 9, 0},        {97, TAIL_BACK, 4, 0},
+                              {104, TAIL_TWIN_LOW, 7, 0}, {112, TAIL_TWIN_DRILL, 6, 1}, {126, TAIL_TWIN_HIGH, 7, 0},
+                              {130, TAIL_BACK, 5, 0}};
 static int tail_of(u32 style) {
     u32 k;
     for (k = 0; k < TAIL_STYLES; k++)
@@ -377,10 +378,10 @@ static Vec head_center(const Head* h) { return vec(0, h->cy, h->cz); }
 
 /* ============================================================ shapes */
 
-/* a shape: up to three grids (g) of ns by nt quads, each over a parametric surface (shape_at), one after the other
+/* a shape: up to four grids (g) of ns by nt quads, each over a parametric surface (shape_at), one after the other
    in its vertices and triangles; its vertices' attributes */
 enum { A_POS, A_NRM, A_UV, A_TAN, A_COL };
-#define GRIDS_MAX 3u
+#define GRIDS_MAX 4u
 typedef struct {
     u32 kind, variant, grids, g; /* g: the grid shape_at draws */
     u32 ns[GRIDS_MAX], nt[GRIDS_MAX];
@@ -438,6 +439,10 @@ static Tail tail_of_style(u32 tail, u32 k) {
             t.root = vec(25.0f, 54.0f, -12.0f), t.out = vec(8.0f, 3.0f, -4.0f);
             t.fall = 52.0f, t.r0 = 4.8f, t.r1 = 1.8f;
             break;
+        case TAIL_AHOGE: /* thin, up from the crown, leaning forward and to one side */
+            t.root = vec(0, 61.0f, 1.0f), t.out = vec(7.0f, 0, 5.0f);
+            t.fall = -12.0f, t.r0 = 2.8f, t.r1 = 0.3f, t.spread = 1.0f;
+            break;
         default: /* TAIL_BACK: one, at the back of the head */
             t.root = vec(0, 46.0f, -28.0f), t.out = vec(0, 1.0f, -6.0f);
             t.fall = 34.0f, t.r0 = 4.2f, t.r1 = 1.5f;
@@ -446,6 +451,12 @@ static Tail tail_of_style(u32 tail, u32 k) {
     return t;
 }
 static u32 tail_count(u32 tail) { return tail == TAIL_SIDE || tail == TAIL_BACK ? 1 : 2; }
+/* the grids past the head's of a hair variant with tails: its tails, then its ahoge */
+static u32 hair_grids(u32 variant) {
+    return variant < HAIR_VARIANTS
+               ? 1
+               : 1 + tail_count(tail_styles[variant - HAIR_VARIANTS].tail) + tail_styles[variant - HAIR_VARIANTS].ahoge;
+}
 /* a tail's radius at t along it (0 its root, 1 its tip) and angle a around it. A drill swells from a narrow root
    inside the hair to its thickest a sixth of the way out, then narrows ring by ring to a point; each turn of its
    ringlet is a cone, narrow where it starts and wide where it ends, the next one starting inside it, and the turn a
@@ -477,6 +488,11 @@ static Vec tail_ring(const Tail* tl, float t, float a, float r) {
     n1 = vnorm(n1);
     n2 = vcross(d, n1);
     return vadd(c, vadd(vmul(n1, r * cosf(a)), vmul(n2, r * sinf(a))));
+}
+/* what grid g (past the head's) of a hair variant with tails draws: tail g - 1, or past its tails its ahoge */
+static Tail hair_grid_tail(u32 variant, u32 g) {
+    u32 tail = tail_styles[variant - HAIR_VARIANTS].tail;
+    return g > tail_count(tail) ? tail_of_style(TAIL_AHOGE, 0) : tail_of_style(tail, g - 1);
 }
 /* the locks the hair's edge ends in, around the head, each a point */
 #define HAIR_LOCKS 16
@@ -524,8 +540,8 @@ static Vec hat_part_at(const Shape* sh, float s, float t) {
 /* the shape's point at grid (s, t), both in [0, 1], of its grid g */
 static Vec shape_at(const Shape* sh, float s, float t) {
     Head h;
-    if ((sh->kind == S_HAIR_NORMAL || sh->kind == S_HAIR_CAP) && sh->g) { /* a tail */
-        Tail tl = tail_of_style(tail_styles[sh->variant - HAIR_VARIANTS].tail, sh->g - 1);
+    if ((sh->kind == S_HAIR_NORMAL || sh->kind == S_HAIR_CAP) && sh->g) { /* a tail or the ahoge */
+        Tail tl = hair_grid_tail(sh->variant, sh->g);
         float rings = tl.turns > 0 ? smooth(6.0f, 8.0f, (float)sh->nt[sh->g] / tl.turns) : 0;
         return tail_ring(&tl, t, s * 2 * PI_F, tail_radius(&tl, t, s * 2 * PI_F, rings));
     }
@@ -608,7 +624,7 @@ static Vec shape_at(const Shape* sh, float s, float t) {
 static Vec shape_center(const Shape* sh, float s, float t) {
     Head h;
     if ((sh->kind == S_HAIR_NORMAL || sh->kind == S_HAIR_CAP) && sh->g) {
-        Tail tl = tail_of_style(tail_styles[sh->variant - HAIR_VARIANTS].tail, sh->g - 1);
+        Tail tl = hair_grid_tail(sh->variant, sh->g);
         return tail_axis(&tl, t);
     }
     if ((sh->kind == S_HAT_NORMAL || sh->kind == S_HAT_CAP) && sh->variant && sh->variant != HAT_BAND) {
@@ -686,7 +702,7 @@ static Shape shape_of(u32 kind, u32 variant) {
         case S_HAIR_CAP: /* four quads a lock around */
             ns = 4 * HAIR_LOCKS, nt = 10;
             sh.attrs = 1u << A_POS | 1u << A_NRM | 1u << A_TAN | 1u << A_COL;
-            if (variant >= HAIR_VARIANTS) grids = 1 + tail_count(tail_styles[variant - HAIR_VARIANTS].tail);
+            grids = hair_grids(variant);
             break;
         case S_HAT_NORMAL:
         case S_HAT_CAP:
@@ -705,11 +721,15 @@ static Shape shape_of(u32 kind, u32 variant) {
     }
     sh.grids = grids;
     for (g = 0; g < grids; g++) {
-        int tail = g && (kind == S_HAIR_NORMAL || kind == S_HAIR_CAP);
-        /* a drill's turns take a dozen quads around it and a dozen down each */
-        int drill = tail && tail_styles[variant - HAIR_VARIANTS].tail == TAIL_TWIN_DRILL;
-        sh.ns[g] = tail ? (drill ? 12 : 10) : ns;
-        sh.nt[g] = tail ? (drill ? 36 : 12) : nt;
+        sh.ns[g] = ns;
+        sh.nt[g] = nt;
+        if (g && (kind == S_HAIR_NORMAL || kind == S_HAIR_CAP)) {
+            /* a drill's turns take a dozen quads around it and a dozen along each; the thin ahoge few */
+            int drill = hair_grid_tail(variant, g).turns > 0;
+            int ahoge = g > tail_count(tail_styles[variant - HAIR_VARIANTS].tail);
+            sh.ns[g] = drill ? 12 : ahoge ? 6 : 10;
+            sh.nt[g] = drill ? 36 : ahoge ? 8 : 12;
+        }
     }
     return sh;
 }
