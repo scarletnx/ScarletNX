@@ -29,6 +29,7 @@ def main():
     assert '--vk_memory=N' in help_text
     assert '--async_pipelines=1' in help_text and '--pipeline_threads=N' in help_text
     assert '--gamepad_swap_ab=1' in help_text and '--gamepad_deadzone=N' in help_text
+    assert '--gamepad_map=MAP' in help_text
     run(['--board-info', '--extract-container'], 2, 'Usage:')
     run(['-x', '-r', 'game.cia'], 2, 'Usage:')
     run(['-r', '--max-blocks', '5', 'game.cia'], 2, 'Usage:')
@@ -59,6 +60,21 @@ def main():
         'settings: gamepad_deadzone=95 is not a whole number from 0 to 90: it keeps 90',
     )
     run(['--board-info', '--gamepad_rumble=50'], 2, 'unknown setting: --gamepad_rumble=50')
+    # and its button map, which the 3DS input reads itself: a map it cannot read keeps the one before, a control sent
+    # to a button the 3DS lacks sends nothing, each said with the value
+    out = run(['--board-info', '--gamepad_map=south:A east:B'], 0, 'Old 3DS')
+    assert 'gamepad_map' not in out, out
+    run(
+        ['--board-info', '--gamepad_map=south:A', '--gamepad_map=south:Q'],
+        0,
+        'settings: gamepad_map\'s "south:Q" is not a control and the button it sends (south:B): it keeps "south:A"',
+    )
+    run(
+        ['--board-info', '--gamepad_map=east:Q'],
+        0,
+        'it keeps "", each control sending the button in its place',
+    )
+    run(['--board-info', '--gamepad_map=ls:L3'], 0, "settings: gamepad_map's ls:L3 sends nothing: the 3DS has no L3")
     # an older version's packet trace (docs/DEPRECATIONS.md): still ctr_uds_trace=1, under the command line's own
     old = 'SNX_3DS_UDS_PACKET_TRACE'
     run(

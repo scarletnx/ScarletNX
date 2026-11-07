@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* A 3DS game's gamepads (input/input.c) on SDL's virtual ones, under its dummy video driver: the buttons where the
-   console's are, A and B swapped by gamepad_swap_ab, and the circle pad past gamepad_deadzone, scaled to its rim */
+   console's are, the Switch's gamepad_map over them, A and B swapped by gamepad_swap_ab, and the circle pad past
+   gamepad_deadzone, scaled to its rim */
 #include "3ds/input/input.h"
 #include "snx_settings.h"
 #include <SDL3/SDL.h>
@@ -97,6 +98,36 @@ int main(void) {
     CHECK(with(pad, SDL_GAMEPAD_BUTTON_SOUTH) == SNX_CTR_PAD_A && with(pad, SDL_GAMEPAD_BUTTON_EAST) == SNX_CTR_PAD_B);
     CHECK(with(pad, SDL_GAMEPAD_BUTTON_NORTH) == SNX_CTR_PAD_X);
     g_settings.swap_a_b = 0;
+
+    /* gamepad_map in the Switch's names: what it names, the rest in place; Minus is Select and Plus Start */
+    snx_ctr_input_map("south:X start:Minus back:Plus");
+    CHECK(with(pad, SDL_GAMEPAD_BUTTON_SOUTH) == SNX_CTR_PAD_X && with(pad, SDL_GAMEPAD_BUTTON_EAST) == SNX_CTR_PAD_A);
+    CHECK(with(pad, SDL_GAMEPAD_BUTTON_START) == SNX_CTR_PAD_SELECT &&
+          with(pad, SDL_GAMEPAD_BUTTON_BACK) == SNX_CTR_PAD_START);
+    /* the swap after the map: the control that sends A sends B */
+    g_settings.swap_a_b = 1;
+    CHECK(with(pad, SDL_GAMEPAD_BUTTON_EAST) == SNX_CTR_PAD_B && with(pad, SDL_GAMEPAD_BUTTON_SOUTH) == SNX_CTR_PAD_X);
+    g_settings.swap_a_b = 0;
+    /* a map that cannot be read changes nothing */
+    snx_ctr_input_map("south:Q");
+    CHECK(with(pad, SDL_GAMEPAD_BUTTON_SOUTH) == SNX_CTR_PAD_X);
+    /* a trigger sends what the map says once past a quarter of its travel; L3, which the 3DS has none of, and None
+       send nothing */
+    snx_ctr_input_map("lt:A ls:L3 south:None");
+    SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, SDL_JOYSTICK_AXIS_MAX);
+    CHECK(read_input().buttons == SNX_CTR_PAD_A);
+    SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, SDL_JOYSTICK_AXIS_MIN);
+    CHECK(with(pad, SDL_GAMEPAD_BUTTON_LEFT_STICK) == 0 && with(pad, SDL_GAMEPAD_BUTTON_SOUTH) == 0);
+    /* an empty map: every control in its place again, and so it stays past the run's end */
+    snx_ctr_input_map("");
+    CHECK(with(pad, SDL_GAMEPAD_BUTTON_SOUTH) == SNX_CTR_PAD_B);
+    snx_ctr_input_map("north:Y");
+    snx_ctr_input_free();
+    snx_ctr_input_init();
+    SDL_DetachVirtualJoystick(SDL_GetJoystickID(pad)); /* a pad connected anew, which the input opens */
+    pad = attach();
+    CHECK(with(pad, SDL_GAMEPAD_BUTTON_NORTH) == SNX_CTR_PAD_Y);
+    snx_ctr_input_map("");
 
     /* gamepad_deadzone's default 20: a stick within a fifth of its travel is at rest, and the rest of the travel spans
        the whole circle, so 60% along x is half way and all of it the rim */
