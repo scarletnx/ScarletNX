@@ -82,6 +82,7 @@ typedef struct {
     } blend[8]; /* the write masks 0 without a fragment program, as its outputs are undefined */
     u32 logic_op, samples, sample_off, alpha_to_coverage, alpha_to_one, sample_shading, feedback;
     VkCoverage coverage;
+    VkAdvancedBlend advanced; /* a native advanced equation is in the output part's blend state */
 } PipeFoKey;
 /* the device state the split reads, g_vk.dyn_pr and has_feedback_dynamic, as arguments so a test gives its own */
 typedef struct {

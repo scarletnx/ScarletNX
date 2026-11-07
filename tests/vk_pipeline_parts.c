@@ -169,11 +169,11 @@ static void check_states(void) {
    state and no other, so a new state of known shaders reuses the parts that compile shaders */
 enum { F_VS, F_TCS, F_TES, F_GS, F_PATCH, F_POLYGON, F_CLAMP, F_PROVOKING, F_CONSERVATIVE, F_TOPO, F_VI, F_NCOLOR,
        F_COLOR, F_DEPTH, F_STENCIL, F_BLEND, F_MASK, F_LOGIC, F_SAMPLES, F_SAMPLE_OFF, F_A2C, F_A2O, F_COVERAGE,
-       F_SHADING, F_FEEDBACK, F_ARRAYS_VS, F_ARRAYS_FS, F_ARRAYS_GS, F_FS, F_COUNT };
+       F_ADVANCED, F_SHADING, F_FEEDBACK, F_ARRAYS_VS, F_ARRAYS_FS, F_ARRAYS_GS, F_FS, F_COUNT };
 static const char* const g_fields[F_COUNT] = {
     "vs", "tcs", "tes", "gs", "patch", "polygon", "depth_clamp", "provoking_last", "conservative", "topo_class", "vi",
     "ncolor", "color", "depth", "stencil", "blend", "blend mask", "logic_op", "samples", "sample_off",
-    "alpha_to_coverage", "alpha_to_one", "coverage", "sample_shading", "feedback", "arrays (vertex)",
+    "alpha_to_coverage", "alpha_to_one", "coverage", "advanced blend", "sample_shading", "feedback", "arrays (vertex)",
     "arrays (fragment)", "arrays (geometry)", "fs"};
 static void mutate(PipeKey* k, int f) {
     switch (f) {
@@ -200,6 +200,7 @@ static void mutate(PipeKey* k, int f) {
     case F_A2C: k->alpha_to_coverage = 1; break;
     case F_A2O: k->alpha_to_one = 1; break;
     case F_COVERAGE: k->coverage.raster_samples = 8; break;
+    case F_ADVANCED: k->advanced.operation = VK_BLEND_OP_ZERO_EXT; break;
     case F_SHADING: k->sample_shading = 1; break;
     case F_FEEDBACK: k->feedback = 1; break;
     case F_ARRAYS_VS: k->arrays |= 1u; break;
