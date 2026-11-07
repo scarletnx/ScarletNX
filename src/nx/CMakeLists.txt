@@ -90,7 +90,7 @@ include("${PROJECT_SOURCE_DIR}/cmake/controls_skins.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
 set(platform runtime/platform/plat.c runtime/platform/plat_sdl.c runtime/platform/unattended.c
              runtime/platform/backend/sdl3.c
-             runtime/platform/backend/gamepad.c runtime/platform/tracy.c
+             runtime/platform/backend/gamepad.c runtime/platform/connect.c runtime/platform/tracy.c
              runtime/platform/help.c runtime/platform/hud.c runtime/platform/overlay.c runtime/platform/stats.c
              runtime/platform/touch.c
              runtime/platform/ui.c runtime/platform/vpad.c runtime/platform/vpad_skin.c

@@ -669,6 +669,12 @@ dead zone in `gamepad_deadzone` and the game's vibration as strong as `gamepad_r
 *Controllers*, which names the pads connected; its *Player* row shows every player's settings (*All*) or one
 player's own Swap A/B, Vibration and Button map. Each connected gamepad uses its own player slot, up to eight.
 Keyboard and on-screen controls also drive player one.
+`gamepad_assign=1` gives the players out as a console does (after Eden's Modern Console): each controller that
+connects is the lowest player free ("P2: Xbox Wireless Controller joined"), and one that leaves keeps its player for
+45 seconds, which it takes back when it returns while another that connects goes past it. Once a player's controller
+has been gone 3 seconds the game pauses ("P2 disconnected: reconnect, or press + on another controller to go on")
+until it returns, or until + is let go on another controller, which goes on without that player. `0`, the default,
+gives them out as each player's `gamepad_p<N>_device` names its controller, the next to connect where it names none.
 `gamepad_joycon_pair=1` makes SDL combine a left and right Joy-Con. Set it to `0` to expose them separately and
 restart the game after changing it.
 

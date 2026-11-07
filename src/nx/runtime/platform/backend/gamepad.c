@@ -4,6 +4,9 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/backend.h"
+#include "nx/runtime/platform/connect.h"
+#include "nx/runtime/platform/overlay.h"
+#include "nx/runtime/pause.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/ui.h"
 #include "common/utilities/common.h"
@@ -21,6 +24,8 @@ static SDL_Gamepad* g_pads[SNX_GAMEPADS];
 static char g_names[SNX_GAMEPADS][64]; /* theirs, for the game's menu, which the renderer draws on its thread */
 static int g_labels[SNX_GAMEPADS][4], g_symmetric[SNX_GAMEPADS]; /* and how its button map screen draws them */
 static unsigned g_held[SNX_GAMEPADS]; /* the controls each holds, a bit each, as last polled */
+static int g_left_type[SNX_GAMEPADS]; /* gamepad_assign=1: the type of the pad a player is kept for (connect.h) */
+static int g_console_paused;          /* gamepad_assign=1: the game paused for a controller that left */
 #define UNSET SNX_PAD_UNSET
 /* what the settings' maps read into (their values in g_settings) */
 static SnxGamepadConfig g_cfg = {
@@ -279,16 +284,54 @@ static int slot_for(u32 id) {
     }
     return snx_pad_slot(want, alike, players, SNX_GAMEPADS, taken);
 }
+/* who a controller is, for connect.h: its serial, else its GUID (two alike without one are told apart by when they
+   come back) */
+static void who_of(SDL_Gamepad* g, char* out, size_t n) {
+    const char* serial = SDL_GetGamepadSerial(g);
+    char guid[33];
+    if (serial && *serial) {
+        snprintf(out, n, "serial:%s", serial);
+        return;
+    }
+    SDL_GUIDToString(SDL_GetJoystickGUIDForID(SDL_GetGamepadID(g)), guid, sizeof guid);
+    snprintf(out, n, "guid:%s", guid);
+}
+static unsigned busy(void) {
+    unsigned b = 0;
+    int i;
+    for (i = 0; i < SNX_GAMEPADS; i++) b |= (unsigned)(g_pads[i] != NULL) << i;
+    return b;
+}
 void gamepad_open(u32 id) {
     int i;
     char guid[33];
     if (is_open(id)) return;
-    i = slot_for(id);
-    if (i < 0) {
-        LOG("input: %s takes no player: every free one names another controller\n", SDL_GetGamepadNameForID(id));
-        return;
+    if (g_settings.controller_assignment) { /* as a console's: opened first, as its serial says who it is */
+        SDL_Gamepad* g = SDL_OpenGamepad(id);
+        char who[64];
+        if (!g) {
+            WARN("input: cannot open SDL gamepad %s (id %lu): %s\n",
+                 SDL_GetGamepadNameForID(id) ? SDL_GetGamepadNameForID(id) : "Unknown", (unsigned long)id,
+                 SDL_GetError());
+            return;
+        }
+        who_of(g, who, sizeof who);
+        i = connect_join(who, busy(), SDL_GetTicksNS());
+        if (i < 0) {
+            LOG("input: %s waits: the eight players are taken, or kept for controllers that left\n",
+                SDL_GetGamepadName(g) ? SDL_GetGamepadName(g) : "Gamepad");
+            SDL_CloseGamepad(g);
+            return;
+        }
+        g_pads[i] = g;
+    } else {
+        i = slot_for(id);
+        if (i < 0) {
+            LOG("input: %s takes no player: every free one names another controller\n", SDL_GetGamepadNameForID(id));
+            return;
+        }
+        g_pads[i] = SDL_OpenGamepad(id);
     }
-    g_pads[i] = SDL_OpenGamepad(id);
     if (!g_pads[i]) {
         WARN("input: cannot open SDL gamepad %s (id %lu): %s\n",
              SDL_GetGamepadNameForID(id) ? SDL_GetGamepadNameForID(id) : "Unknown", (unsigned long)id, SDL_GetError());
@@ -312,24 +355,80 @@ void gamepad_open(u32 id) {
              SDL_GetGamepadName(g_pads[i]) ? SDL_GetGamepadName(g_pads[i]) : "Gamepad");
     snx_pad_labels(g_pads[i], g_labels[i]);
     g_symmetric[i] = snx_pad_symmetric(g_pads[i]);
+    if (g_settings.controller_assignment) { /* as Eden's hints: which controller joined, and as which player */
+        char said[96];
+        snprintf(said, sizeof said, "P%d: %s joined", i + 1, g_names[i]);
+        overlay_toast(said, SDL_GetTicksNS());
+    }
     ui_unlock();
 }
 void gamepad_close(u32 id) {
-    SDL_JoystickID* ids;
-    int i, n = 0;
+    int i;
     for (i = 0; i < SNX_GAMEPADS; i++)
         if (g_pads[i] && SDL_GetGamepadID(g_pads[i]) == id) {
+            g_left_type[i] = SDL_GetGamepadType(g_pads[i]);
             SDL_CloseGamepad(g_pads[i]);
             g_pads[i] = NULL;
             ui_lock();
+            if (g_settings.controller_assignment) { /* its player kept for it a while */
+                char said[96];
+                connect_leave(i, SDL_GetTicksNS());
+                snprintf(said, sizeof said, "P%d: %s left", i + 1, g_names[i]);
+                overlay_toast(said, SDL_GetTicksNS());
+            }
             g_names[i][0] = 0;
             ui_unlock();
         }
-    /* a waiting pad takes the freed slot when all eight were occupied */
+    gamepad_open_waiting();
+}
+void gamepad_open_waiting(void) { /* a waiting pad takes a freed slot when all eight were taken */
+    SDL_JoystickID* ids;
+    int i, n = 0;
     ids = SDL_GetGamepads(&n);
     if (!ids) return;
     for (i = 0; i < n; i++) gamepad_open(ids[i]);
     SDL_free(ids);
+}
+int gamepad_slot_kept(int slot) { return g_settings.controller_assignment && connect_kept(slot, SDL_GetTicksNS()); }
+int gamepad_slot_kept_type(int slot) {
+    return slot >= 0 && slot < SNX_GAMEPADS ? g_left_type[slot] : SDL_GAMEPAD_TYPE_UNKNOWN;
+}
+void gamepad_console(int plus, u64 now_ns) {
+    static int was; /* gamepad_assign at the last poll */
+    char notice[OVERLAY_COLS_MAX + 1], who[64];
+    unsigned freed;
+    int what, pads = 0, i;
+    u64 now = now_ns;
+    if (g_settings.controller_assignment != was) { /* switched: the players as they are now, none kept */
+        was = g_settings.controller_assignment;
+        connect_reset();
+        if (g_console_paused) {
+            g_console_paused = 0;
+            game_resume();
+        }
+        for (i = 0; i < SNX_GAMEPADS && was; i++)
+            if (g_pads[i]) {
+                who_of(g_pads[i], who, sizeof who);
+                connect_held(i, who);
+            }
+    }
+    if (!was) return;
+    for (i = 0; i < SNX_GAMEPADS; i++) pads += g_pads[i] != NULL;
+    what = connect_tick(now, !game_paused(), pads, plus, notice, sizeof notice, &freed);
+    if (what == CONNECT_PAUSE && !g_console_paused) {
+        LOG("input: paused, %s\n", notice);
+        g_console_paused = !game_pause();
+    } else if (what == CONNECT_RESUME && g_console_paused) {
+        LOG("input: resumed%s%s\n", notice[0] ? ": " : ", the controllers are back", notice);
+        g_console_paused = 0;
+        game_resume();
+    }
+    if (notice[0]) { /* the pause's, kept while it lasts */
+        ui_lock();
+        overlay_toast(notice, now);
+        ui_unlock();
+    }
+    if (freed) gamepad_open_waiting(); /* a player no longer kept: a waiting ninth takes it */
 }
 
 /* the dead zone as a circle, so a stick pushed along one axis keeps the small part of the other, and the travel past

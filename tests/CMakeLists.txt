@@ -1466,8 +1466,14 @@ target_link_libraries(snx-test-pad-screen PRIVATE scarletnx-common)
 add_test(NAME pad_screen COMMAND snx-test-pad-screen)
 
 include("${PROJECT_SOURCE_DIR}/cmake/pad_sdl.cmake")
+# controllers taking players as a console's do (gamepad_assign=1)
+add_executable(snx-test-connect connect.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/connect.c")
+snx_test_target(snx-test-connect 99)
+add_test(NAME connect COMMAND snx-test-connect)
+
 add_executable(snx-test-gamepad gamepad.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/backend/gamepad.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/connect.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-gamepad 11)
 target_link_libraries(snx-test-gamepad PRIVATE scarletnx-common snx_pad_sdl snx_splash m)
 target_include_directories(snx-test-gamepad PRIVATE "${PROJECT_BINARY_DIR}/generated") # ui.c's theme
