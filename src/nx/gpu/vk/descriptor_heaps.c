@@ -14,7 +14,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define HEAP_RESOURCE_FRAME (1ull << 20)
 #define HEAP_SAMPLER_FRAME (128ull << 10)
 #define HEAP_RESOURCE_CACHE 4096u
 #define HEAP_SAMPLER_CACHE 2048u
@@ -228,7 +227,7 @@ int vk_descriptor_heaps_init(const VkPhysicalDeviceDescriptorHeapPropertiesEXT* 
     VkDeviceSize sampler_frame = 5ull * (SH_MAXTEX + 2 * SNX_TEX_ARRAY) *
                                  snx_align_up(g_heaps.sizes[HEAP_SAMPLER], props->samplerDescriptorAlignment);
     if (sampler_frame < HEAP_SAMPLER_FRAME) sampler_frame = HEAP_SAMPLER_FRAME;
-    if (!vk_descriptor_heap_memory_plan_fit(&resources, HEAP_RESOURCE_FRAME, VK_FRAMES,
+    if (!vk_descriptor_heap_memory_plan_fit(&resources, VK_DESCRIPTOR_HEAP_RESOURCE_FRAME, VK_FRAMES,
                                             props->minResourceHeapReservedRange, resource_address_alignment,
                                             resource_alignment, props->maxResourceHeapSize, g_vk.alloc_cap))
         return refused("no resource heap of %u frames fits: %llu bytes reserved, maxResourceHeapSize %llu, "
