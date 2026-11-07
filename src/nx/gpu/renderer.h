@@ -180,9 +180,9 @@ typedef struct Renderer {
        frame, nothing presented yet). Any thread; NULL for none */
     int (*display_wait)(u64 deadline_ns, u64* refresh_ns);
     u64 (*screenshot)(const char* path); /* the hash of the frame it saved */
-    /* RenderDoc's capture of a frame: whether one can be taken (RenderDoc is in the process), and with ask the next
-       frame the game presents captured, the capture key's or the menu's; what it does, or that it can't, said in the
-       log. Any thread */
+    /* RenderDoc's capture of a frame: whether one can be taken (RenderDoc is in the process), and with ask a frame
+       captured, the capture key's or the menu's: the one after the next present, so the notice that the game stops
+       while it is written shows meanwhile. What it does, or that it can't, said in the log. Any thread */
     int (*capture)(int ask);
     /* the last presented frame scaled to w x h RGBA8 (a save state's thumbnail): 0, or -1 when there is none */
     int (*thumbnail)(u8* rgba, u32 w, u32 h);

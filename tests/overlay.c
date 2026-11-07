@@ -1075,6 +1075,16 @@ int main(void) {
     draw();
     assert(!overlay_shown() && shows("Saved to slot 2"));
     overlay_toast("", 0); /* none */
+    /* a notice from any thread (RenderDoc's): the notification once the next frame draws it, the last given before
+       then, and taken once */
+    overlay_notice("RenderDoc: written in 2 s: one.rdc (2 KiB)");
+    overlay_notice("RenderDoc: written in 3 s: two.rdc (2 KiB)");
+    assert(!overlay_toasting(0));
+    draw();
+    assert(shows("RenderDoc: written in 3 s: two.rdc (2 KiB)") && !shows("one.rdc") && overlay_toasting(0));
+    overlay_toast("", 0);
+    draw();
+    assert(!list.n);
     overlay_toggle();
     /* closed, it draws nothing; opened again, its first page */
     overlay_toggle();

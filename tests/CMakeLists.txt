@@ -1960,11 +1960,12 @@ if(NOT SNX_TOOLS_ONLY)
     add_test(NAME vk_image_out COMMAND snx-test-vk-image-out)
     # RenderDoc's captures (gpu/vk/renderdoc.c) against a stand-in RenderDoc: neither renderdoc= nor RenderDoc's program,
     # renderdoc= without the library, RenderDoc's program that started the game, and renderdoc= loading it; the capture
-    # key's capture of the next frame and renderdoc_frames', and what the stats box is told. A process each
+    # key's capture and renderdoc_frames', what the stats box is told, the notices over the game and the write's
+    # progress lines (a thread the test lets tick), and RenderDoc's own captures. A process each
     add_executable(snx-test-vk-renderdoc vk_renderdoc.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/renderdoc.c")
     snx_test_target(snx-test-vk-renderdoc 23)
     target_link_libraries(snx-test-vk-renderdoc PRIVATE snx_nx_flags)
-    foreach(case none missing started setting)
+    foreach(case none missing started setting write theirs)
         add_test(NAME vk_renderdoc_${case} COMMAND snx-test-vk-renderdoc ${case})
     endforeach()
     # vertex_input_dynamic_state (gpu/vk/vertex_input.c): its values, read from a .ini without it and with it, the

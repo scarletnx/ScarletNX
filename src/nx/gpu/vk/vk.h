@@ -1252,8 +1252,9 @@ int vk_buf_pending_unsubmitted(void); /* one is in the commands recorded since t
 u64 vk_buf_pending_inspected(void);
 /* renderdoc.c: RenderDoc loaded before the instance exists, with renderdoc set, or taken where RenderDoc's program
    started the game (load); the frames renderdoc_frames names and the capture key asks for captured (present, at each
-   present under vk_lock). capture: whether a capture can be taken (RenderDoc is in the process), and with ask, the next
-   frame captured, said in the log either way; the renderer's capture. Any thread */
+   present under vk_lock, where RenderDoc writes each, the game stopped, a thread of its own saying how long). capture:
+   whether a capture can be taken (RenderDoc is in the process), and with ask, the frame after the next present
+   captured, said in the log and over the game; the renderer's capture. Any thread */
 /* RenderDoc's library, by the name its own program puts in a game it starts: the one load looks for and opens */
 #if defined(_WIN32)
 #define SNX_VK_RENDERDOC_LIBRARY "renderdoc.dll"

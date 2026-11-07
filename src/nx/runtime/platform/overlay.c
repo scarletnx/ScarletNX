@@ -5,6 +5,7 @@
 #include "nx/runtime/platform/fatal_screen.h"
 #include "nx/runtime/platform/gamepad.h"
 #include "nx/runtime/platform/hotkeys.h"
+#include "nx/runtime/platform/plat.h" /* the notices' lock */
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/platform/vpad.h"
 #include "nx/gpu/renderer.h"
@@ -546,6 +547,15 @@ void overlay_toast(const char* text, u64 now_ns) {
     toast_until = now_ns + (u64)SNX_OVERLAY_TOAST_MS * 1000000u;
 }
 int overlay_toasting(u64 now_ns) { return toast[0] && now_ns < toast_until; }
+/* overlay_notice's line until the next draw takes it ("" none), under a lock of its own: its callers may hold ui_lock
+   or not */
+static PMutex notice_lock = PMUTEX_INIT;
+static char notice[OVERLAY_COLS_MAX + 1];
+void overlay_notice(const char* text) {
+    pm_lock(&notice_lock);
+    snprintf(notice, sizeof notice, "%s", text);
+    pm_unlock(&notice_lock);
+}
 void overlay_toggle(void) {
     if (!shown) page_open(PAGE_MAIN);
     __atomic_store_n(&shown, !shown, __ATOMIC_RELEASE);
@@ -1220,6 +1230,10 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
     char text[VISIBLE][OVERLAY_COLS_MAX + 1], value[VISIBLE][OVERLAY_COLS_MAX + 1], pads[2 * OVERLAY_COLS_MAX + 64];
     Dialog d;
     DialogDrawn at;
+    pm_lock(&notice_lock);
+    if (notice[0]) overlay_toast(notice, now_ns);
+    notice[0] = 0;
+    pm_unlock(&notice_lock);
     if (!shown) { /* the keyboard's box, which the menu goes over */
         if (g_overlay.kb_shown) {
             KbTexts t;
