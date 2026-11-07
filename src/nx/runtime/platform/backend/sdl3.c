@@ -941,18 +941,21 @@ static void title_paused(int paused) {
     snprintf(title, sizeof title, "%.*s%s", (int)n, t, paused ? mark : "");
     SDL_SetWindowTitle(g_win, title);
 }
+static void menu_open(int open);
+/* the runtime's keys, which the game's menu's F1 page lists (overlay.c's KEYS) with the game's buttons of keymap: a
+   binding changed here changes there */
 static void hotkey(SDL_Keycode k) {
     switch (k) {
-        case SDLK_F1: {
-            char text[HELP_MAX], debugger[SNX_DEBUGGER_NAME];
-            int fs = g_fullscreen;
-            help_text(text, sizeof text, g_renderer->capture(0),
-                      snx_debugger(debugger, sizeof debugger) ? debugger : "");
-            if (fs) set_fullscreen(0);
-            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "ScarletNX", text, g_win);
-            if (fs) set_fullscreen(1);
+        case SDLK_F1: /* the game's menu on its page of keys, over the game as the menu is, fullscreen or not */
+            ui_lock();
+            menu_open(1);
+            {
+                char debugger[SNX_DEBUGGER_NAME];
+                overlay_keys_extra(g_renderer->capture(0), snx_debugger(debugger, sizeof debugger) ? debugger : "");
+            }
+            overlay_keys();
+            ui_unlock();
             break;
-        }
         case SDLK_F3: g_shot_req = 1; break;
         case SDLK_F4: {
             /* off and back to the limit the player set (fps_limit=120 stays 120), or to the game's pace when it
@@ -1090,8 +1093,8 @@ static int menu_event(const SDL_Event* e) {
         switch (e->key.key) {
             case SDLK_UP: overlay_move(-1); break;
             case SDLK_DOWN: overlay_move(1); break;
-            case SDLK_LEFT: overlay_side(-1); break;
-            case SDLK_RIGHT: overlay_side(1); break;
+            case SDLK_LEFT: overlay_do(overlay_side(-1)); break;
+            case SDLK_RIGHT: overlay_do(overlay_side(1)); break;
             case SDLK_RETURN:
             case SDLK_SPACE:
                 if (!e->key.repeat) overlay_do(overlay_select());
@@ -1100,7 +1103,12 @@ static int menu_event(const SDL_Event* e) {
             case SDLK_BACKSPACE:
                 if (!e->key.repeat) overlay_do(overlay_back());
                 break;
-            default: break;
+            case SDLK_F1: /* its page of keys, or from there the game again */
+                if (!e->key.repeat) overlay_do(overlay_keys());
+                break;
+            default: /* F1's page goes back to the game on any key */
+                if (!e->key.repeat) overlay_do(overlay_other());
+                break;
         }
     } else if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
         /* the pads' presses act on the menu from the poll, with their sticks and the on-screen controls'; the button
