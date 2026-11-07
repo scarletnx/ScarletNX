@@ -455,6 +455,11 @@ down), what they gained and lost since the entry before, and the C-stick's posit
 the raw C-stick, which Azahar does not model either, gives the position without its
 direction bits; each is said on the standard error with the value asked for.
 
+`mic:u` (`services/mic.c`, ported from Azahar's `mic_u.cpp`) answers as Azahar does
+with no input device: sampling starts and stops, the settings a game stores (gain,
+power, clamp, the shell closed) read back, and the buffer full event is a real event
+that is never signalled, as no sample is ever written.
+
 `ir:USER` (`services/ir.c`) answers as Azahar does with no IR accessory in range.
 InitializeIrNopShared writes the shared block's header and empty receive queue, the
 receive, send and connection-status events are real kernel events, and RequireConnection
