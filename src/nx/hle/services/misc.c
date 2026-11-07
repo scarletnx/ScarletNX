@@ -1481,11 +1481,11 @@ static int nn_prepo_detail_ipc_IPrepoService_GetTransmissionStatus(SvcObj* self,
 /* Ryubing's NotInitialized and NullArgument (Services/Olsc/ResultCode.cs) */
 #define OLSC_NULL_ARGUMENT   RC(179, 100)
 #define OLSC_NOT_INITIALIZED RC(179, 101)
-/* what an operation on the online service ends with: the service is not there, which the console says as "not
-   available right now" (acc.c's answer for the online account's pages, and rEden's for a cloud olsc cannot reach).
-   No public source names olsc's own result for a license it cannot check: Switchbrew lists no code of module 179,
-   nnsdk (skyline's bindings of the SDK) has no olsc, and the SDK's symbols name no olsc result */
-#define OLSC_UNAVAILABLE     RC(124, 5249)
+/* what the license check for backups ends with: no license, there being no online service. olsc's own result for it
+   is in no public source (Switchbrew lists no code of module 179, nnsdk, skyline's bindings of the SDK, has no olsc,
+   and the SDK's symbols name no olsc result): the closest public one is account's MembershipRequired, 2124-5113
+   (Switchbrew's error codes), which tells the player backups need a membership */
+#define OLSC_NO_MEMBERSHIP   RC(124, 5113)
 
 /* a command for a user, on a session Initialize was called on (u[0]) */
 static int olsc_check(const SvcObj* self, const nn_account_Uid* uid) {
@@ -1499,16 +1499,15 @@ static int nn_olsc_srv_IOlscServiceForApplication_Initialize(SvcObj* self, u64 p
     self->u[0] = 1;
     R_SUCCEED();
 }
-/* done when it is made, with the online service not there: its result (u[0]) is what GetResult answers, the game
-   told the license could not be checked */
+/* done when it is made, with no license found: its result (u[0]) is what GetResult answers */
 static int nn_olsc_srv_IOlscServiceForApplication_VerifySaveDataBackupLicenseAsync(SvcObj* self,
                                                                                    const nn_account_Uid* uid,
                                                                                    SvcObj** result) {
     R_TRY(olsc_check(self, uid));
-    WARN_LIMIT(4, "olsc: the game checks the license for save data backups, which needs the online service: it ends "
-                  "with 2124-5249, not available right now\n");
+    WARN_LIMIT(4, "olsc: the game checks the license for save data backups, which no online service gives here: it "
+                  "ends with 2124-5113, membership required\n");
     *result = nn_olsc_srv_IAsyncResult_new();
-    (*result)->u[0] = OLSC_UNAVAILABLE;
+    (*result)->u[0] = OLSC_NO_MEMBERSHIP;
     R_SUCCEED();
 }
 /* 0 whatever the game set: no backup runs here, and how the console encodes the setting is not public (0 is Eden's
