@@ -13,6 +13,7 @@
 #include <string.h>
 
 #define MAX_DESCS  256   /* a page's descriptors read; RetroArch's keyboards have about 100 */
+#define MAX_PAGES  64    /* the pages weighed; libretro's common-overlays have 16 at most */
 #define MAX_IMAGES 32    /* the images a skin's controls take: 17 controls, a D-pad's four, two rings */
 #define PAD        2     /* clear texels around each frame, so a linear filter never reads a neighbour */
 #define NEAR       0.01f /* a ring's middle this close to its stick's, of the page */
@@ -143,6 +144,7 @@ typedef struct {
     char* dir;         /* the .cfg's folder, its images' */
     Cfg c;
     unsigned page;
+    int weighing;          /* page_controls's pass: desc_read says nothing, the page read says it all */
     float aspect, rect[4]; /* the page's: its width over its height, and where it sits on the clear part */
     Desc d[MAX_DESCS];
     int nd;
@@ -172,6 +174,11 @@ static u8* skin_file(const Load* s, const char* name, size_t* n) {
     free(path);
     return bytes;
 }
+/* LOG, but not while a page is weighed: what it leaves out is said when it is the page read */
+#define SAY(s, ...)                                                                                                    \
+    do {                                                                                                               \
+        if (!(s)->weighing) LOG(__VA_ARGS__);                                                                          \
+    } while (0)
 static int image_of(Load* s, const char* name) {
     int i;
     for (i = 0; i < s->ni; ++i)
@@ -187,7 +194,7 @@ static void desc_read(Load* s, int i, int page_normal, float page_range, float p
     Desc* d = &s->d[s->nd];
     int n = 0, k;
     if (!v) {
-        LOG("vpad skin: %s: overlay%u_desc%d is not there: left out\n", s->path, s->page, i);
+        SAY(s, "vpad skin: %s: overlay%u_desc%d is not there: left out\n", s->path, s->page, i);
         return;
     }
     snprintf(tokens, sizeof tokens, "%s", v);
@@ -199,7 +206,7 @@ static void desc_read(Load* s, int i, int page_normal, float page_range, float p
         if (*p) *p++ = 0;
     }
     if (n < 6) {
-        LOG("vpad skin: %s: overlay%u_desc%d = \"%s\" is not name,x,y,shape,range_x,range_y: left out\n", s->path,
+        SAY(s, "vpad skin: %s: overlay%u_desc%d = \"%s\" is not name,x,y,shape,range_x,range_y: left out\n", s->path,
             s->page, i, v);
         return;
     }
@@ -220,17 +227,18 @@ static void desc_read(Load* s, int i, int page_normal, float page_range, float p
         }
     if (!strcmp(t[0], "nul") || !strcmp(t[0], "null")) d->kind = D_DECORATION;
     if (d->kind == D_OTHER) {
-        LOG("vpad skin: %s: overlay%u_desc%d %s is none of the controls: left out\n", s->path, s->page, i, t[0]);
+        SAY(s, "vpad skin: %s: overlay%u_desc%d %s is none of the controls: left out\n", s->path, s->page, i, t[0]);
         return;
     }
     if (!page_normal && !is_true(desc_key(&s->c, s->page, i, "_normalized"))) {
-        LOG("vpad skin: %s: overlay%u_desc%d %s is placed in pixels of the page's image, not from 0 to 1: left out\n",
+        SAY(s,
+            "vpad skin: %s: overlay%u_desc%d %s is placed in pixels of the page's image, not from 0 to 1: left out\n",
             s->path, s->page, i, t[0]);
         return;
     }
     if (strcmp(t[3], "radial") && strcmp(t[3], "rect")) {
-        LOG("vpad skin: %s: overlay%u_desc%d %s has the hit area %s, not radial or rect: left out\n", s->path, s->page,
-            i, t[0], t[3]);
+        SAY(s, "vpad skin: %s: overlay%u_desc%d %s has the hit area %s, not radial or rect: left out\n", s->path,
+            s->page, i, t[0], t[3]);
         return;
     }
     d->x = number(t[1], NAN);
@@ -238,13 +246,13 @@ static void desc_read(Load* s, int i, int page_normal, float page_range, float p
     d->rx = number(t[4], 0);
     d->ry = number(t[5], 0);
     if (!(d->x >= 0 && d->x <= 1 && d->y >= 0 && d->y <= 1)) {
-        LOG("vpad skin: %s: overlay%u_desc%d %s is at %s %s, not from 0 to 1: left out\n", s->path, s->page, i, t[0],
+        SAY(s, "vpad skin: %s: overlay%u_desc%d %s is at %s %s, not from 0 to 1: left out\n", s->path, s->page, i, t[0],
             t[1], t[2]);
         return;
     }
     if (!(d->rx > 0 && d->ry > 0)) {
-        LOG("vpad skin: %s: overlay%u_desc%d %s has the range %s by %s, not above 0: left out\n", s->path, s->page, i,
-            t[0], t[4], t[5]);
+        SAY(s, "vpad skin: %s: overlay%u_desc%d %s has the range %s by %s, not above 0: left out\n", s->path, s->page,
+            i, t[0], t[4], t[5]);
         return;
     }
     d->round = !strcmp(t[3], "radial");
@@ -261,7 +269,7 @@ static void desc_read(Load* s, int i, int page_normal, float page_range, float p
     image = desc_key(&s->c, s->page, i, "_overlay");
     d->image = image && *image ? image_of(s, image) : -1;
     if (image && *image && d->image < 0)
-        LOG("vpad skin: %s: overlay%u_desc%d %s: more than %d images, %s is not drawn\n", s->path, s->page, i, t[0],
+        SAY(s, "vpad skin: %s: overlay%u_desc%d %s: more than %d images, %s is not drawn\n", s->path, s->page, i, t[0],
             MAX_IMAGES, image);
     if (d->kind == D_DECORATION && d->image < 0) return; /* nothing to draw nor to press */
     ++s->nd;
@@ -550,10 +558,39 @@ static void controls(Load* s, SnxSkinControl at[SNX_VPAD_COUNT], int skin_y) {
         }
 }
 
+/* how many controls page would give a look to: its descriptors read as desc_read reads them, saying nothing, then let
+   go. A control counts with an image, a stick with its ring's too, the D-pad once (its area's, else its directions') */
+static int page_controls(Load* s, unsigned page) {
+    const char* v = page_key(&s->c, page, "_descs");
+    unsigned descs = v ? (unsigned)strtoul(v, NULL, 10) : 0;
+    int i, j, area = 0, count = 0, page_normal = is_true(page_key(&s->c, page, "_normalized"));
+    u32 seen = 0;
+    if (descs > MAX_DESCS) descs = MAX_DESCS; /* as the page read takes them */
+    s->page = page;
+    s->weighing = 1;
+    for (i = 0; i < (int)descs; ++i) desc_read(s, i, page_normal, 1, 1);
+    for (i = 0; i < s->nd; ++i) area |= s->d[i].kind == D_CONTROL && s->d[i].control == SNX_VPAD_DPAD;
+    for (i = 0; i < s->nd; ++i) {
+        const Desc* d = &s->d[i];
+        int looks = d->image >= 0;
+        if (d->kind == D_DECORATION || (d->kind == D_DIRECTION && area)) continue;
+        if (d->control == SNX_VPAD_STICK_L || d->control == SNX_VPAD_STICK_R)
+            for (j = 0; j < s->nd; ++j)
+                looks |=
+                    s->d[j].kind == D_DECORATION && fabsf(s->d[j].x - d->x) < NEAR && fabsf(s->d[j].y - d->y) < NEAR;
+        if (looks && !(seen >> d->control & 1)) {
+            seen |= 1u << d->control;
+            ++count;
+        }
+    }
+    s->nd = s->ni = 0;
+    s->weighing = 0;
+    return count;
+}
 /* the skin at s->path (or shipped as s->skin) into at and its texels into *texels, *rows rows: 1, or 0 (logged) */
 static int skin_load(Load* s, SnxSkinControl at[SNX_VPAD_COUNT], u32** texels, int* rows) {
-    unsigned pages = 0;
-    int i, page_normal;
+    unsigned pages = 0, p, page = 0;
+    int i, page_normal, most = -1;
     float page_range, page_alpha;
     size_t size = 0;
     const char *v, *name = "";
@@ -563,17 +600,33 @@ static int skin_load(Load* s, SnxSkinControl at[SNX_VPAD_COUNT], u32** texels, i
     }
     v = get(&s->c, "overlays");
     if (v) pages = (unsigned)strtoul(v, NULL, 10);
-    for (s->page = 0; s->page < pages; ++s->page) { /* the first page that is no portrait one */
-        name = page_key(&s->c, s->page, "_name");
-        if (!name) name = "";
-        if (!strstr(name, "portrait")) break;
-        LOG("vpad skin: %s: overlay%u \"%s\" is a portrait page: the controls take the first other\n", s->path, s->page,
-            name);
+    if (pages > MAX_PAGES) {
+        LOG("vpad skin: %s has %u pages (overlays): the first %d weighed\n", s->path, pages, MAX_PAGES);
+        pages = MAX_PAGES;
     }
-    if (!pages || s->page == pages) {
+    for (p = 0; p < pages; ++p) { /* the landscape page that gives the most controls a look, the first of those */
+        const char* n = page_key(&s->c, p, "_name");
+        int count;
+        if (!n) n = "";
+        if (strstr(n, "portrait")) {
+            LOG("vpad skin: %s: overlay%u \"%s\" is a portrait page: left out\n", s->path, p, n);
+            continue;
+        }
+        count = page_controls(s, p);
+        LOG("vpad skin: %s: overlay%u \"%s\" has %d of the %d controls\n", s->path, p, n, count, SNX_VPAD_COUNT);
+        if (count > most) {
+            most = count;
+            page = p;
+            name = n;
+        }
+    }
+    if (most < 0) {
         LOG("vpad skin: %s has %u pages (overlays), none of them a landscape one: the built-in look\n", s->path, pages);
         return 0;
     }
+    s->page = page;
+    LOG("vpad skin: %s: overlay%u \"%s\" is read: of its landscape pages, the first with the most controls (%d)\n",
+        s->path, s->page, name, most);
     page_normal = is_true(page_key(&s->c, s->page, "_normalized"));
     page_range = number(page_key(&s->c, s->page, "_range_mod"), 1);
     page_alpha = number(page_key(&s->c, s->page, "_alpha_mod"), 1);

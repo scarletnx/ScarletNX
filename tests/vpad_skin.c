@@ -2,8 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* A skin for the on-screen controls (runtime/platform/vpad_skin.c): a RetroArch overlay this test writes, with a
    portrait page before its landscape one, a two-frame APNG, a D-pad of four directions, a stick with its ring and the
-   descriptors a skin leaves out; then the shipped skins (argv[2]...), each with every control and its pressed look.
-   argv[1] is a folder to write the test's skin in */
+   descriptors a skin leaves out; one of several landscape pages, the one with the most controls read; then the
+   shipped skins (argv[2]...), each with every control and its pressed look. argv[1] is a folder to write the test's
+   skins in */
 #include "nx/runtime/platform/vpad.h"
 #include "nx/runtime/platform/vpad_skin.h"
 #include "nx/runtime/platform/controls_atlas.h"
@@ -256,7 +257,9 @@ static void test_skin(void) {
     assert(vpad_ini("controls", "1") && vpad_ini("controls_b", "0.250 0.100 100"));
     g_test.logged[0] = 0;
     assert(load(at("skin.cfg")));
-    assert(said("overlay0 \"portrait\" is a portrait page: the controls take the first other"));
+    assert(said("overlay0 \"portrait\" is a portrait page: left out"));
+    assert(said("overlay1 \"landscape\" has 4 of the 17 controls"));
+    assert(said("overlay1 \"landscape\" is read: of its landscape pages, the first with the most controls (4)"));
     assert(said("overlay1_desc6 left|up is none of the controls: left out"));
     assert(said("overlay1_desc9 overlay_next is none of the controls: left out"));
     assert(said("overlay1 a again: left out, its first one is the control"));
@@ -352,6 +355,81 @@ static void test_skin(void) {
     assert(!vpad_skin(SNX_VPAD_A));
 }
 
+/* a skin of several landscape pages, as libretro's retropad (a D-pad on one, sticks on others): the one that gives
+   the most controls a look is read, the first of those on a tie; a portrait page is never one, and the pages weighed
+   say nothing of what they leave out. A count of pages past what is weighed is said */
+static void test_pages(void) {
+    text("pages.cfg", "overlays = 5\n"
+                      "overlay0_name = \"portrait\"\n"
+                      "overlay0_normalized = true\n"
+                      "overlay0_descs = 4\n"
+                      "overlay0_desc0 = \"a,0.5,0.2,radial,0.05,0.1\"\noverlay0_desc0_overlay = red.png\n"
+                      "overlay0_desc1 = \"b,0.5,0.4,radial,0.05,0.1\"\noverlay0_desc1_overlay = red.png\n"
+                      "overlay0_desc2 = \"x,0.5,0.6,radial,0.05,0.1\"\noverlay0_desc2_overlay = red.png\n"
+                      "overlay0_desc3 = \"y,0.5,0.8,radial,0.05,0.1\"\noverlay0_desc3_overlay = red.png\n"
+                      "overlay1_name = \"landscape\"\n"
+                      "overlay1_normalized = true\n"
+                      "overlay1_descs = 3\n"
+                      "overlay1_desc0 = \"a,0.1,0.5,radial,0.05,0.1\"\noverlay1_desc0_overlay = red.png\n"
+                      "overlay1_desc1 = \"b,0.2,0.5,radial,0.05,0.1\"\n"
+                      "overlay1_desc2 = \"a,0.3,0.5,radial,0.05,0.1\"\noverlay1_desc2_overlay = red.png\n"
+                      "overlay2_name = \"landscape-analog\"\n"
+                      "overlay2_normalized = true\n"
+                      "overlay2_descs = 4\n"
+                      "overlay2_desc0 = \"a,0.7,0.5,radial,0.05,0.1\"\noverlay2_desc0_overlay = red.png\n"
+                      "overlay2_desc1 = \"b,0.8,0.6,radial,0.05,0.1\"\noverlay2_desc1_overlay = green.png\n"
+                      "overlay2_desc2 = \"nul,0.3,0.5,radial,0.1,0.2\"\noverlay2_desc2_overlay = ring.png\n"
+                      "overlay2_desc3 = \"analog_left,0.3,0.5,radial,0.1,0.2\"\n"
+                      "overlay3_name = \"landscape-pixels\"\n"
+                      "overlay3_descs = 4\n"
+                      "overlay3_desc0 = \"a,900,500,radial,50,100\"\noverlay3_desc0_overlay = red.png\n"
+                      "overlay3_desc1 = \"b,800,600,radial,50,100\"\noverlay3_desc1_overlay = red.png\n"
+                      "overlay3_desc2 = \"x,800,400,radial,50,100\"\noverlay3_desc2_overlay = red.png\n"
+                      "overlay3_desc3 = \"y,700,500,radial,50,100\"\noverlay3_desc3_overlay = red.png\n"
+                      "overlay4_name = \"landscape-tie\"\n"
+                      "overlay4_normalized = true\n"
+                      "overlay4_descs = 3\n"
+                      "overlay4_desc0 = \"a,0.6,0.5,radial,0.05,0.1\"\noverlay4_desc0_overlay = red.png\n"
+                      "overlay4_desc1 = \"x,0.6,0.3,radial,0.05,0.1\"\noverlay4_desc1_overlay = red.png\n"
+                      "overlay4_desc2 = \"y,0.5,0.4,radial,0.05,0.1\"\noverlay4_desc2_overlay = red.png\n");
+    g_test.logged[0] = 0;
+    assert(load(at("pages.cfg")));
+    assert(said("overlay0 \"portrait\" is a portrait page: left out"));
+    assert(said("overlay1 \"landscape\" has 1 of the 17 controls"));        /* B has no image, A counts once */
+    assert(said("overlay2 \"landscape-analog\" has 3 of the 17 controls")); /* the stick by its ring */
+    assert(said("overlay3 \"landscape-pixels\" has 0 of the 17 controls"));
+    assert(said("overlay4 \"landscape-tie\" has 3 of the 17 controls"));
+    assert(said("overlay2 \"landscape-analog\" is read: of its landscape pages, the first with the most controls (3)"));
+    assert(!said("overlay3_desc0") && !said("overlay1_desc1") && !said("overlay1 a again"));
+    assert(said("page 2 \"landscape-analog\": 3 images"));
+    assert(vpad_skin(SNX_VPAD_A) && close_to(vpad_skin(SNX_VPAD_A)->x, 0.7f) && vpad_skin(SNX_VPAD_B));
+    assert(vpad_skin(SNX_VPAD_STICK_L) && vpad_skin(SNX_VPAD_STICK_L)->pieces == 1);
+    assert(!vpad_skin(SNX_VPAD_X) && !vpad_skin(SNX_VPAD_Y));
+    /* more pages than are weighed: the first of them */
+    text("many.cfg", "overlays = 4000000000\n"
+                     "overlay0_normalized = true\n"
+                     "overlay0_descs = 1\n"
+                     "overlay0_desc0 = \"a,0.4,0.5,radial,0.05,0.1\"\noverlay0_desc0_overlay = red.png\n");
+    g_test.logged[0] = 0;
+    assert(load(at("many.cfg")) && said("has 4000000000 pages (overlays): the first 64 weighed"));
+    assert(said("overlay63 \"\" has 0 of the 17 controls") && !said("overlay64"));
+    assert(said("overlay0 \"\" is read: of its landscape pages, the first with the most controls (1)"));
+    assert(close_to(vpad_skin(SNX_VPAD_A)->x, 0.4f));
+    /* a page of more descriptors than are read is weighed by those read */
+    text("descs.cfg", "overlays = 2\n"
+                      "overlay0_normalized = true\n"
+                      "overlay0_descs = 1\n"
+                      "overlay0_desc0 = \"a,0.4,0.5,radial,0.05,0.1\"\noverlay0_desc0_overlay = red.png\n"
+                      "overlay1_normalized = true\n"
+                      "overlay1_descs = 4294967295\n"
+                      "overlay1_desc0 = \"a,0.6,0.5,radial,0.05,0.1\"\noverlay1_desc0_overlay = red.png\n"
+                      "overlay1_desc1 = \"b,0.7,0.5,radial,0.05,0.1\"\noverlay1_desc1_overlay = red.png\n");
+    g_test.logged[0] = 0;
+    assert(load(at("descs.cfg")) && said("overlay1 \"\" has 2 of the 17 controls"));
+    assert(close_to(vpad_skin(SNX_VPAD_A)->x, 0.6f) && vpad_skin(SNX_VPAD_B));
+    vpad_skin_set(NULL);
+}
+
 /* controls_skin while the game runs, as the game's menu and a reload set it: the backend sees it changed once, and
    applying it makes the atlas again with the skin's rows and puts the controls in with it; a finger on a control lets
    go. Empty is the built-in look; a name ScarletNX doesn't ship, and no path, is said and the built-in look */
@@ -426,6 +504,7 @@ int main(int argc, char** argv) {
     snprintf(g_test.dir, sizeof g_test.dir, "%s", argv[1]);
     SDL_CreateDirectory(g_test.dir);
     test_skin();
+    test_pages();
     test_switch(at("skin.cfg"));
     for (i = 2; i < argc; ++i) test_shipped(argv[i]);
     printf(

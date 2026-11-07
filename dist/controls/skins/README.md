@@ -5,8 +5,9 @@ names, as libretro's [common-overlays](https://github.com/libretro/common-overla
 one with `controls_skin`: empty for the built-in look, a skin of this folder by its name (`yorha`), or the path of any
 overlay's `.cfg`. The skins here are compiled into the runtime (`cmake/controls_skins.cmake`), so every system has them;
 a change of `controls_skin` while the game runs takes effect at once.
-`src/nx/runtime/platform/vpad_skin.c` reads its first page whose name has no `portrait`, placed from 0 to 1
-(`normalized = true`):
+`src/nx/runtime/platform/vpad_skin.c` reads, of its pages whose name has no `portrait`, the one that gives the most of
+the controls below a look (the first of those: libretro's `retropad.cfg` gives its `landscape-both-analog`, with both
+sticks), placed from 0 to 1 (`normalized = true`):
 
 - `a b x y l r l2 r2 l3 r3 select start menu_toggle screenshot`: A, B, X, Y, L, R, ZL, ZR, L3, R3, minus, plus,
   Home and Capture.
