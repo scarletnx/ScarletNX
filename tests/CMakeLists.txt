@@ -261,6 +261,11 @@ if(TARGET snx_ctr_board)
     snx_test_target(snx-test-3ds-cam 11)
     target_link_libraries(snx-test-3ds-cam PRIVATE snx_ctr_process)
     add_test(NAME 3ds_cam COMMAND snx-test-3ds-cam)
+    # csnd:SND and the CSND hardware, rendered and mixed into the output
+    add_executable(snx-test-3ds-csnd 3ds_csnd.c support/3ds_guest.c)
+    snx_test_target(snx-test-3ds-csnd 11)
+    target_link_libraries(snx-test-3ds-csnd PRIVATE snx_ctr_process)
+    add_test(NAME 3ds_csnd COMMAND snx-test-3ds-csnd)
     # the pointer's touch on the window's bottom screen, from the presenter to hid:USER's samples
     add_executable(snx-test-3ds-mouse-touch 3ds_mouse_touch.c support/3ds_guest.c)
     snx_test_target(snx-test-3ds-mouse-touch 11)

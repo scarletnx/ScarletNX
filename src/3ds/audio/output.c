@@ -51,6 +51,9 @@ bool snx_ctr_audio_init(const char* wav_path) {
     return o.stream || o.wav;
 }
 void snx_ctr_audio_frame(const int16_t frame[SNX_CTR_DSP_SAMPLES][2]) {
+    int16_t mixed[SNX_CTR_DSP_SAMPLES][2];
+    snx_ctr_audio_mix_csnd(frame, mixed); /* CSND's samples waiting (mix.c) */
+    frame = (const int16_t (*)[2])mixed;
     unsigned char bytes[FRAME_BYTES];
     for (unsigned i = 0; i < SNX_CTR_DSP_SAMPLES * 2; ++i) {
         uint16_t sample = (uint16_t)frame[i / 2][i % 2];
@@ -86,6 +89,7 @@ void snx_ctr_audio_frame(const int16_t frame[SNX_CTR_DSP_SAMPLES][2]) {
     }
 }
 void snx_ctr_audio_free(void) {
+    snx_ctr_audio_mix_reset();
     if (o.stream) {
         SDL_DestroyAudioStream(o.stream);
         SDL_QuitSubSystem(SDL_INIT_AUDIO);

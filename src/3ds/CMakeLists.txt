@@ -19,7 +19,7 @@ add_library(snx_ctr_process STATIC runtime/process.c kernel/kernel.c kernel/thre
             services/srv.c services/fs.c services/apt.c services/font.c services/ptm.c services/hid.c services/romfs.c
             services/file.c services/gsp.c services/dsp.c services/cfg.c services/system.c services/am.c services/y2r.c
             services/ldr.c services/cro.c services/swkbd.c services/mii_selector.c services/ir.c services/irrst.c
-            services/mic.c services/cam.c)
+            services/mic.c services/cam.c services/csnd.c)
 # the system archives' stand-ins (cmake/ctr_system_archives.cmake), which services/fs.c serves through the NCCH archive
 target_sources(snx_ctr_process PRIVATE "${PROJECT_BINARY_DIR}/generated/ctr_system_archives.c")
 target_sources(snx_ctr_process PRIVATE services/uds.c)
@@ -43,7 +43,7 @@ endforeach()
 add_library(snx_ctr_gpu_reference STATIC gpu/raster.c gpu/lighting.c gpu/texture.c)
 target_link_libraries(snx_ctr_gpu_reference PUBLIC snx_ctr_gpu m)
 # the HLE DSP, its SDL3 output and the AAC decoder of its binary pipe
-add_library(snx_ctr_audio STATIC audio/dsp.c audio/source.c audio/mixers.c audio/output.c)
+add_library(snx_ctr_audio STATIC audio/dsp.c audio/source.c audio/mixers.c audio/output.c audio/mix.c audio/csnd.c)
 target_link_libraries(snx_ctr_audio PUBLIC snx_ctr_memory SDL3::SDL3)
 target_link_libraries(snx_ctr_audio PRIVATE FFmpeg::avcodec)
 # snx_settings_runtime: g_settings and the 3DS debug table (g_ctr_debug_ini, src/nx/runtime/settings.txt)

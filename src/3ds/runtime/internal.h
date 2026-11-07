@@ -4,6 +4,8 @@
 #define SNX_CTR_PROCESS_INTERNAL_H
 #include "3ds/runtime/ctr_process.h"
 #include "3ds/gpu/y2r.h"
+#include "3ds/audio/csnd.h"
+#include "3ds/audio/dsp.h"
 #include "3ds/kernel/ctr_kernel.h"
 #include "3ds/services/romfs.h"
 #define CTR_HANDLES        256u
@@ -202,6 +204,31 @@ typedef struct {
     SnxCtrCamPort port[2];
     uint8_t initialized;
 } SnxCtrCam;
+/* csnd:SND's state (services/csnd.c), as Azahar's CSND_SND: the hardware, each session's client (its session object,
+   its shared memory and mutex, retained from Initialize to Shutdown, the state offsets it gave and the channels and
+   capture units it holds), each channel's volumes, the channel sets (bit per channel) the fades work on, the frame
+   being rendered, and the deadlines of the next frame and the next fade step (0: none) */
+#define SNX_CTR_CSND_CLIENTS 4
+typedef struct {
+    uint32_t session, mutex, shared;
+    uint32_t master_state_offset, channel_state_offset, capture_state_offset, direct_sound_offset;
+    uint32_t channel_mask;
+    uint8_t capture_mask;
+} SnxCtrCsndClient;
+typedef struct {
+    uint16_t requested[2], target[2];
+    int32_t current[2], step[2];
+} SnxCtrCsndVolume;
+typedef struct {
+    SnxCtrCsndHw hw;
+    SnxCtrCsndClient clients[SNX_CTR_CSND_CLIENTS];
+    SnxCtrCsndVolume volumes[SNX_CTR_CSND_CHANNELS];
+    uint32_t started, fading, stop_pending, pause_pending;
+    uint8_t capture_in_use[SNX_CTR_CSND_CAPTURES];
+    uint32_t initialized_clients, frame_samples, fade_step;
+    int16_t frame[SNX_CTR_DSP_SAMPLES][2];
+    uint64_t frame_start_ns, next_frame_ns, next_fade_ns;
+} SnxCtrCsnd;
 /* hid:USER's sampling (services/hid.c): each update's next deadline, host monotonic ns (0: not running), the index
    each writes next, how many times the game enabled each sensor, and the circle pad's last two raw positions, which
    each sample averages with */
@@ -279,6 +306,7 @@ struct SnxCtrProcess {
     SnxCtrIrrst irrst;
     SnxCtrMic mic;
     SnxCtrCam cam;
+    SnxCtrCsnd csnd;
     uint64_t svc_count, svc_counts[256]; /* all, and each SVC's */
     uint64_t idle_ns, idle_waits;        /* the host time the scheduler slept with no thread to run, and how often */
     /* the codeset GetProcessInfo describes: segments as loaded, BSS, title and name (ExHeader) */
