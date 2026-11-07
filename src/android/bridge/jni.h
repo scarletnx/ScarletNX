@@ -12,4 +12,6 @@ bool android_bridge_register(JNIEnv* env);
 bool android_egl_register(JNIEnv* env);
 /* the host's JNIEnv of a guest JNIEnv* */
 JNIEnv* bridge_jni_host(uint64_t guest_env);
+/* the guest's JNIEnv* of the calling thread's host JNIEnv, as its native methods get it (the bridge started) */
+uint64_t bridge_jni_env(JNIEnv* host);
 #endif
