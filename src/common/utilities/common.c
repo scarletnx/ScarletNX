@@ -1627,6 +1627,66 @@ SnxU64 snx_process_cpu_ns(void) {
     return (SnxU64)t.tv_sec * 1000000000u + (SnxU64)t.tv_nsec;
 #endif
 }
+long snx_status_tracer(const char* status) {
+    static const char key[] = "TracerPid:";
+    const char* p;
+    for (p = status; (p = strstr(p, key)); p += sizeof key - 1)
+        if (p == status || p[-1] == '\n') { /* the line's own start, not a word inside another line */
+            char* end;
+            long pid = strtol(p + sizeof key - 1, &end, 10); /* past the tab */
+            return end != p + sizeof key - 1 && pid > 0 ? pid : 0;
+        }
+    return 0;
+}
+int snx_debugger(char* name, size_t size) {
+#if defined(__linux__)
+    char status[4096], path[64], comm[SNX_DEBUGGER_NAME];
+    size_t got;
+    long pid;
+    FILE* f = fopen("/proc/self/status", "r");
+    if (!f) return 0;
+    got = fread(status, 1, sizeof status - 1, f); /* TracerPid is among the first lines */
+    fclose(f);
+    status[got] = 0;
+    if (!(pid = snx_status_tracer(status))) return 0;
+    snprintf(name, size, "?"); /* Android's /proc hides other users' processes */
+    snprintf(path, sizeof path, "/proc/%ld/comm", pid);
+    if ((f = fopen(path, "r"))) {
+        if (fgets(comm, sizeof comm, f)) {
+            comm[strcspn(comm, "\n")] = 0;
+            if (comm[0]) snprintf(name, size, "%s", comm);
+        }
+        fclose(f);
+    }
+    return 1;
+#elif defined(__FreeBSD__)
+    struct kinfo_proc proc;
+    size_t got = sizeof proc;
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)getpid()};
+    if (sysctl(mib, 4, &proc, &got, NULL, 0) || got != sizeof proc || proc.ki_tracer <= 0) return 0;
+    snprintf(name, size, "?");
+    mib[3] = proc.ki_tracer;
+    got = sizeof proc;
+    if (!sysctl(mib, 4, &proc, &got, NULL, 0) && got == sizeof proc && proc.ki_comm[0])
+        snprintf(name, size, "%s", proc.ki_comm);
+    return 1;
+#elif defined(__APPLE__)
+    struct kinfo_proc proc = {0};
+    size_t got = sizeof proc;
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)getpid()};
+    if (sysctl(mib, 4, &proc, &got, NULL, 0) || !(proc.kp_proc.p_flag & P_TRACED)) return 0;
+    snprintf(name, size, "?");
+    return 1;
+#elif defined(_WIN32)
+    if (!IsDebuggerPresent()) return 0;
+    snprintf(name, size, "?");
+    return 1;
+#else
+    (void)name;
+    (void)size;
+    return 0;
+#endif
+}
 SnxU64 snx_thread_clock(void) {
 #if defined(_WIN32)
     HANDLE h = NULL;
