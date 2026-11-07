@@ -11,7 +11,10 @@
    (src/common/utilities/mii_gltf.c) of our own parts, built here as the reader's conventions name them, gives back
    every mesh, place and shared part ours does, and a file from it reads whole; a cube model is a head; a model part
    with no normals, no texture coordinates where its kind needs them, points instead of triangles, an index past its
-   vertices or a faceline without its nose's place stops the file. */
+   vertices or a faceline without its nose's place stops the file. The Switch's shape files take the same sources: all
+   ours is the file as it always is, a cube for faceline 0 and a mask alone are written, a hair over the console's
+   largest is refused, and so is the glTF model of our 3DS parts (its beards are over the Switch's largest), whose
+   facelines alone fit ShapeHigh.dat (not ShapeMid.dat) and are written as it gives them. */
 #include "common/utilities/mii_gltf.h"
 #include "common/utilities/mii_model.h"
 #include "common/utilities/endian.h"
@@ -48,6 +51,7 @@ static struct {
     SnxMiiMesh mesh, other;
     u32 mesh_of[9][264];
     float anchor_of[9][264][18];
+    u8 file[2][0x300000];
 } g_mii_cfl;
 #define CHECK(c)                                                                                                       \
     do {                                                                                                               \
@@ -489,6 +493,79 @@ static void check_gltf(u32 ours_size) {
     check_transform(1);
 }
 
+/* ---- the Switch's shape files from a source */
+
+static int ours(void* ctx, u32 s, u32 i, SnxMiiMesh* m) {
+    (void)ctx, (void)s, (void)i, (void)m;
+    return SNX_MII_MESH_OURS;
+}
+static int tofu_switch(void* ctx, u32 s, u32 i, SnxMiiMesh* m) { /* a cube as faceline 0, ours the rest */
+    (void)ctx;
+    return s == SNX_MII_CFL_FACELINE && !i ? cube(m) : SNX_MII_MESH_OURS;
+}
+static int mask_only(void* ctx, u32 s, u32 i, SnxMiiMesh* m) {
+    (void)ctx, (void)i, (void)m;
+    return s == SNX_MII_CFL_MASK ? SNX_MII_MESH_OURS : 0;
+}
+static int big_hair(void* ctx, u32 s, u32 i, SnxMiiMesh* m) { /* hair 0 of 4000 vertices: over the Mid file's room */
+    u32 k;
+    (void)ctx;
+    if (s != SNX_MII_CFL_HAIR || i) return SNX_MII_MESH_OURS;
+    for (k = 0; k < 4000; k++) m->pos[k][0] = (float)(k % 64), m->pos[k][1] = (float)(k / 64), m->nrm[k][2] = 1;
+    for (k = 0; k < 3 * 3900; k++) m->idx[k] = (u16)(k / 3 + k % 3);
+    m->vertices = 4000, m->indices = 3 * 3900;
+    return 1;
+}
+static int faceline_from_model(void* ctx, u32 s, u32 i, SnxMiiMesh* m) { /* the model's facelines, ours the rest */
+    return s == SNX_MII_CFL_FACELINE ? snx_mii_gltf_mesh(ctx, s, i, m) : SNX_MII_MESH_OURS;
+}
+/* shape file f's entry for Switch kind kind's part i: its decompressed size, position bytes and index bytes */
+static void entry(const u8* f, u32 kind, u32 i, u32* raw, u32* pos, u32* idx) {
+    static const u32 counts[12] = {4, 12, 12, 132, 132, 132, 132, 132, 132, 1, 18, 18};
+    u32 e = i, k;
+    for (k = 0; k < kind; k++) e += counts[k];
+    *raw = snx_ld_le32(f + 0x6c + 0x58 * e + 4), *pos = snx_ld_le32(f + 0x6c + 0x58 * e + 0x24);
+    *idx = snx_ld_le32(f + 0x6c + 0x58 * e + 0x3c);
+}
+static void check_switch(void) {
+    u32 i, n, raw, pos, idx;
+    SnxMiiGltf* g;
+    for (i = 4; i < 6; i++) { /* every part ours: the file as it always is */
+        u32 a = snx_mii_model_write(i, g_mii_cfl.file[0]),
+            b = snx_mii_model_write_from(i, ours, NULL, g_mii_cfl.file[1]);
+        CHECK(a && a == b && !memcmp(g_mii_cfl.file[0], g_mii_cfl.file[1], a));
+    }
+    n = snx_mii_model_write_from(4, tofu_switch, NULL, g_mii_cfl.file[1]); /* the cube as the head, in ShapeMid.dat */
+    CHECK(n > 0 && n <= 0xe517c);
+    entry(g_mii_cfl.file[1], 1, 0, &raw, &pos, &idx);
+    CHECK(pos == 24 * 8 && idx == 36 * 2 && raw >= pos + idx);
+    entry(g_mii_cfl.file[1], 1, 1, &raw, &pos, &idx); /* the other facelines ours */
+    CHECK(raw > 0 && pos > 24 * 8);
+    memset(g_mii_cfl.file[1], 0, sizeof g_mii_cfl.file[1]);              /* the writer takes its out zeroed */
+    n = snx_mii_model_write_from(4, mask_only, NULL, g_mii_cfl.file[1]); /* the eyes' sheet and nothing else */
+    CHECK(n > 0);
+    entry(g_mii_cfl.file[1], 1, 0, &raw, &pos, &idx);
+    CHECK(!raw); /* the faceline absent */
+    entry(g_mii_cfl.file[1], 2, 0, &raw, &pos, &idx);
+    CHECK(raw > 0);
+    CHECK(
+        !snx_mii_model_write_from(4, big_hair, NULL, g_mii_cfl.file[1])); /* over the console's largest hair: refused */
+    gltf_ours(); /* our parts through a glTF model, at the 3DS's detail: its beards are over the Switch's largest */
+    g = snx_mii_gltf_open_memory(g_mii_cfl.gltf.json, g_mii_cfl.gltf.json_at);
+    CHECK(g != NULL);
+    if (!g) return;
+    for (i = 4; i < 6; i++) CHECK(!snx_mii_model_write_from(i, snx_mii_gltf_mesh, g, g_mii_cfl.file[1]));
+    /* its 3DS facelines are over the Switch's largest in ShapeMid.dat, within it in ShapeHigh.dat */
+    CHECK(!snx_mii_model_write_from(4, faceline_from_model, g, g_mii_cfl.file[1]));
+    memset(g_mii_cfl.file[1], 0, sizeof g_mii_cfl.file[1]);
+    CHECK(snx_mii_model_write_from(5, faceline_from_model, g, g_mii_cfl.file[1]) > 0);
+    memset(&g_mii_cfl.mesh, 0, sizeof g_mii_cfl.mesh);
+    snx_mii_ctr_mesh(NULL, SNX_MII_CFL_FACELINE, 0, &g_mii_cfl.mesh);
+    entry(g_mii_cfl.file[1], 1, 0, &raw, &pos, &idx); /* the model's faceline, as it gives it */
+    CHECK(pos == 8 * g_mii_cfl.mesh.vertices && idx == 2 * g_mii_cfl.mesh.indices);
+    snx_mii_gltf_close(g);
+}
+
 int main(void) {
     u32 n, m, size, k;
     const u8* f;
@@ -512,6 +589,7 @@ int main(void) {
         CHECK(!snx_mii_cfl_write(bad, NULL, g_mii_cfl.b, ROOM));
     }
     check_gltf(size);
+    check_switch();
     if (g_mii_cfl.fails) {
         fprintf(stderr, "%d checks failed\n", g_mii_cfl.fails);
         return 1;

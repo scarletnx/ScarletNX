@@ -810,8 +810,9 @@ static u32 shape_raw_size(const Shape* sh, u32 off[5], u32 size[5], u32* idx_off
     *idx_size = quads * 6 * 2;
     return *idx_off + *idx_size;
 }
-/* a shape file's quality, in the archive's order; Q_CTR a 3DS part, whose vertices a byte indexes */
-enum { Q_MID, Q_HIGH, Q_SHAPES, Q_CTR = Q_SHAPES };
+/* a shape file's quality, in the archive's order; Q_CTR a 3DS part, whose vertices a byte indexes; Q_FULL every
+   quad shape_of draws (what a 3D program refines the parts from) */
+enum { Q_MID, Q_HIGH, Q_SHAPES, Q_CTR = Q_SHAPES, Q_FULL };
 /* the console's largest decompressed part of each shape kind in its Mid and High files. A shape file's header gives
    its own to the SDK, which sizes a Mii model's memory with them, and a game sizes its Mii heaps for the console's */
 static const u32 shape_budget[Q_SHAPES][S_KINDS] = {
@@ -827,6 +828,7 @@ static u32 fewer(u32 n, u32 least) {
    its vertices over the 256 a 3DS part's byte indexes reach */
 static int shape_over(const Shape* sh, u32 q) {
     u32 off[5], size[5], idx_off, idx_size, nv = 0, g;
+    if (q == Q_FULL) return 0;
     if (q != Q_CTR) return shape_raw_size(sh, off, size, &idx_off, &idx_size) > shape_budget[q][sh->kind];
     for (g = 0; g < sh->grids; g++) nv += (sh->ns[g] + 1) * (sh->nt[g] + 1);
     return nv > SNX_MII_CFL_VERTICES;
@@ -1334,7 +1336,8 @@ static void tex_write(u32 kind, u32 v, const TexGeom* g, u8* raw) {
 /* the data a drawing shared by several parts already has in the file */
 typedef struct {
     u32 off, raw, stored;
-    float box[6]; /* a shape's bounding box */
+    u32 aoff[5], asize[5], idx_off, idx_size; /* a shape's attributes and triangles in its decompressed bytes */
+    float box[6];                             /* a shape's bounding box */
 } Placed;
 #define VARIANTS_MAX (HAIR_VARIANTS + TAIL_STYLES)
 
@@ -1395,49 +1398,194 @@ static u32 texture_file(u32 mid, u8* b) {
     return o.at;
 }
 
-static u32 shape_file(u32 q, u8* b) {
+/* the items of each section, in the order of SNX_MII_CFL_* and then the textures' */
+static const u16 cfl_items[SNX_MII_CFL_SECTIONS] = {4,  264, 12, 264, 1,  264, 12, 18, 18, 132,
+                                                    62, 24,  3,  12,  12, 9,   2,  37, 6,  18};
+/* a mesh section's shape kind over the hair and (hat, forehead and hair, from item 132) under a cap */
+static const u8 cfl_shape[SNX_MII_CFL_MESHES][2] = {
+    {S_BEARD, S_BEARD}, {S_HAT_NORMAL, S_HAT_CAP},   {S_FACELINE, S_FACELINE}, {S_FOREHEAD_NORMAL, S_FOREHEAD_CAP},
+    {S_GLASS, S_GLASS}, {S_HAIR_NORMAL, S_HAIR_CAP}, {S_MASK, S_MASK},         {S_NOSELINE, S_NOSELINE},
+    {S_NOSE, S_NOSE}};
+/* a texture section's kind */
+static const u8 cfl_texture[SNX_MII_CFL_SECTIONS - SNX_MII_CFL_MESHES] = {
+    T_HAT, T_EYE, T_EYEBROW, T_BEARD, T_WRINKLE, T_MAKEUP, T_GLASS, T_MOLE, T_MOUTH, T_MUSTACHE, T_NOSELINE};
+static const char* const cfl_names[SNX_MII_CFL_MESHES] = {"beard", "hat",  "faceline", "forehead", "glass",
+                                                          "hair",  "mask", "noseline", "nose"};
+/* a Switch shape kind's part i as a mesh section's item */
+static void kind_item(u32 kind, u32 i, u32* section, u32* item) {
+    static const u8 sec[S_KINDS] = {SNX_MII_CFL_BEARD,    SNX_MII_CFL_FACELINE, SNX_MII_CFL_MASK,
+                                    SNX_MII_CFL_HAT,      SNX_MII_CFL_HAT,      SNX_MII_CFL_FOREHEAD,
+                                    SNX_MII_CFL_FOREHEAD, SNX_MII_CFL_HAIR,     SNX_MII_CFL_HAIR,
+                                    SNX_MII_CFL_GLASS,    SNX_MII_CFL_NOSE,     SNX_MII_CFL_NOSELINE};
+    *section = sec[kind];
+    *item = kind == S_HAT_CAP || kind == S_FOREHEAD_CAP || kind == S_HAIR_CAP ? HAIR_STYLES + i : i;
+}
+/* the console's shape files' sizes: a game's heap holds them, and no more */
+static const u32 shape_file_most[Q_SHAPES] = {0xe517c, 0x2bcf40};
+/* a mesh's decompressed part as kind's: its attributes (a hair's tangents and colors in place of texture coordinates) */
+static u32 mesh_raw_size(u32 kind, const SnxMiiMesh* m, u32 off[5], u32 size[5], u32* idx_off, u32* idx_size) {
+    static const u8 bytes[5] = {8, 4, 4, 4, 4};
+    u32 attrs = kind == S_HAIR_NORMAL || kind == S_HAIR_CAP ? 1u << A_POS | 1u << A_NRM | 1u << A_TAN | 1u << A_COL
+                                                            : 1u << A_POS | 1u << A_NRM | 1u << A_UV,
+        at = 0, a;
+    for (a = 0; a < 5; a++) {
+        off[a] = size[a] = 0;
+        if (!(attrs & (1u << a))) continue;
+        off[a] = at;
+        size[a] = m->vertices * bytes[a];
+        at += size[a];
+    }
+    *idx_off = (at + 3) & ~3u;
+    *idx_size = m->indices * 2;
+    return *idx_off + *idx_size;
+}
+/* a mesh's bytes into raw, as shape_write writes a shape's, and its box */
+static void mesh_write(u32 kind, const SnxMiiMesh* m, u8* raw, float box[6]) {
+    u32 off[5], size[5], idx_off, idx_size, n, k;
+    mesh_raw_size(kind, m, off, size, &idx_off, &idx_size);
+    box[0] = box[1] = box[2] = 1e30f;
+    box[3] = box[4] = box[5] = -1e30f;
+    for (n = 0; n < m->vertices; n++) {
+        Vec p = vec(m->pos[n][0], m->pos[n][1], m->pos[n][2]), nr = vec(m->nrm[n][0], m->nrm[n][1], m->nrm[n][2]);
+        u8* q = raw + off[A_POS] + 8 * n;
+        snx_st_le16(q, half_of(p.x));
+        snx_st_le16(q + 2, half_of(p.y));
+        snx_st_le16(q + 4, half_of(p.z));
+        snx_st_le16(q + 6, half_of(1.0f));
+        snx_st_le32(raw + off[A_NRM] + 4 * n, snorm10(nr.x) | snorm10(nr.y) << 10 | snorm10(nr.z) << 20 | 1u << 30);
+        if (size[A_UV]) {
+            snx_st_le16(raw + off[A_UV] + 4 * n, half_of(m->uv ? m->tex[n][0] : 0));
+            snx_st_le16(raw + off[A_UV] + 4 * n + 2, half_of(m->uv ? m->tex[n][1] : 1));
+        }
+        if (size[A_TAN]) { /* as shape_write: the strands run down the surface */
+            Vec down = vsub(vec(0, -1, 0), vmul(nr, -nr.y)), tg;
+            if (vlen(down) < 0.05f) down = vsub(vec(0, 0, -1), vmul(nr, -nr.z));
+            tg = vnorm(down);
+            raw[off[A_TAN] + 4 * n] = snorm8(tg.x);
+            raw[off[A_TAN] + 4 * n + 1] = snorm8(tg.y);
+            raw[off[A_TAN] + 4 * n + 2] = snorm8(tg.z);
+            raw[off[A_TAN] + 4 * n + 3] = 127;
+            raw[off[A_COL] + 4 * n + 1] = 255;
+            raw[off[A_COL] + 4 * n + 3] = 255;
+        }
+        for (k = 0; k < 3; k++) {
+            float v = k == 0 ? p.x : k == 1 ? p.y : p.z;
+            if (v < box[k]) box[k] = v;
+            if (v > box[3 + k]) box[3 + k] = v;
+        }
+    }
+    for (n = 0; n < m->indices; n++) snx_st_le16(raw + idx_off + 2 * n, m->idx[n]);
+}
+static u32 shape_file(u32 q, u8* b, SnxMiiMeshSource source, void* ctx) {
+    static const char* const qname[Q_SHAPES] = {"ShapeMid.dat", "ShapeHigh.dat"};
     Out o;
-    Placed placed[S_KINDS][VARIANTS_MAX];
-    u32 largest[S_KINDS] = {0}, kind, i, e = 0;
+    Placed placed[S_KINDS][VARIANTS_MAX], given[S_KINDS][HAIR_STYLES];
+    float hair_tf[HAIR_STYLES][18], face_tf[FACELINES][9];
+    SnxMiiMesh* m = NULL;
+    u32 largest[S_KINDS] = {0}, kind, i, k, e = 0;
     memset(placed, 0, sizeof placed);
+    memset(given, 0, sizeof given);
+    for (i = 0; i < HAIR_STYLES; i++) hair_transform(i, hair_tf[i]);
+    for (i = 0; i < FACELINES; i++) faceline_transform(i, face_tf[i]);
+    if (source && !(m = (SnxMiiMesh*)malloc(sizeof *m))) {
+        fprintf(stderr, "mii parts: no memory for a mesh (%zu bytes)\n", sizeof *m);
+        return 0;
+    }
     o.b = b;
     o.at = SHAPE_DATA;
-    if (out_open(&o)) return 0;
+    if (out_open(&o)) {
+        free(m);
+        return 0;
+    }
     for (kind = 0; kind < S_KINDS; kind++)
         for (i = 0; i < shape_counts[kind]; i++, e++) {
             Shape sh = shape_in(kind, shape_variant(kind, i), q);
-            u32 off[5], size[5], idx_off, idx_size, raw = shape_raw_size(&sh, off, size, &idx_off, &idx_size), k;
             Placed* p = &placed[kind][sh.variant];
-            if (!shape_present(kind, i)) continue;
-            if (!p->raw) {
+            int r = SNX_MII_MESH_OURS, fresh;
+            u32 sec = 0, item = 0;
+            if (source) {
+                kind_item(kind, i, &sec, &item);
+                memset(m, 0, sizeof *m);
+                if ((r = source(ctx, sec, item, m)) < 0) goto stop;
+            }
+            if (!r || (r == SNX_MII_MESH_OURS && !shape_present(kind, i))) continue;
+            if (r == 1 && m->same && m->same - 1 < item - i && m->vertices)
+                m->same = 0;         /* the same as the other form's part: written again in this kind */
+            if (r == 1 && m->same) { /* the earlier part the source says this one is */
+                u32 j = m->same - 1 - (item - i);
+                if (m->same - 1 >= item || j >= i) {
+                    fprintf(stderr, "mii parts: %s %u is said to be the same as item %u, not an earlier one\n",
+                            cfl_names[sec], item, m->same - 1);
+                    goto stop;
+                }
+                p = given[kind][j].raw ? &given[kind][j] : &placed[kind][shape_variant(kind, j)];
+                if (!p->raw) {
+                    fprintf(stderr, "mii parts: %s %u is said to be the same as item %u, which is absent\n",
+                            cfl_names[sec], item, m->same - 1);
+                    goto stop;
+                }
+                if (kind == S_HAIR_NORMAL) memcpy(hair_tf[i], hair_tf[j], sizeof hair_tf[i]);
+                if (kind == S_FACELINE) memcpy(face_tf[i], face_tf[j], sizeof face_tf[i]);
+                given[kind][i] = *p;
+            } else if (r == 1) { /* a mesh of the source's own */
+                p = &given[kind][i];
+                p->raw = mesh_raw_size(kind, m, p->aoff, p->asize, &p->idx_off, &p->idx_size);
+                if (!m->vertices || m->vertices > 0xffff || !m->indices || m->indices % 3 ||
+                    p->raw > shape_budget[q][kind]) {
+                    fprintf(stderr,
+                            "mii parts: %s %u has %u vertices and %u indices, %u bytes in %s; a part is whole "
+                            "triangles, and the console's largest %s there, which the game's heap is sized for, has "
+                            "%u\n",
+                            cfl_names[sec], item, m->vertices, m->indices, p->raw, qname[q], cfl_names[sec],
+                            shape_budget[q][kind]);
+                    goto stop;
+                }
+                for (k = 0; k < m->indices; k++)
+                    if (m->idx[k] >= m->vertices) {
+                        fprintf(stderr, "mii parts: %s %u's index %u is %u, past its %u vertices\n", cfl_names[sec],
+                                item, k, m->idx[k], m->vertices);
+                        goto stop;
+                    }
+                p->raw = 0; /* placed below */
+                if (kind == S_HAIR_NORMAL)
+                    for (k = 0; k < 3; k++) { /* the Switch's order: each place, then its rotation */
+                        memcpy(hair_tf[i] + 6 * k, m->anchor + 6 * k + 3, 3 * sizeof(float));
+                        memcpy(hair_tf[i] + 6 * k + 3, m->anchor + 6 * k, 3 * sizeof(float));
+                    }
+                if (kind == S_FACELINE) memcpy(face_tf[i], m->anchor, sizeof face_tf[i]);
+            }
+            fresh = !p->raw;
+            if (fresh) {
+                u32 raw = r == 1 ? mesh_raw_size(kind, m, p->aoff, p->asize, &p->idx_off, &p->idx_size)
+                                 : shape_raw_size(&sh, p->aoff, p->asize, &p->idx_off, &p->idx_size);
                 o.at = (o.at + 15) & ~15u;
                 p->off = o.at;
                 p->raw = raw;
                 p->stored = zstored_size(raw);
                 if (b) {
-                    u8* r = part_buffer(&o, raw);
-                    if (!r) {
-                        out_close(&o);
-                        return 0;
-                    }
-                    shape_write(&sh, r, p->box);
+                    u8* w = part_buffer(&o, raw);
+                    if (!w) goto stop;
+                    if (r == 1)
+                        mesh_write(kind, m, w, p->box);
+                    else
+                        shape_write(&sh, w, p->box);
                     p->stored = zpart(&o, raw);
                 }
                 o.at += p->stored;
             }
-            if (raw > largest[kind]) largest[kind] = raw;
+            if (p->raw > largest[kind]) largest[kind] = p->raw;
             if (b) {
                 u8* t = b + SHAPE_TABLE + SHAPE_ENTRY * e;
                 snx_st_le32(t, p->off);
-                snx_st_le32(t + 4, raw);
+                snx_st_le32(t + 4, p->raw);
                 snx_st_le32(t + 8, p->stored);
                 snx_st_le32(t + 0xc, PART_ZLIB);
                 for (k = 0; k < 5; k++) {
-                    snx_st_le32(t + 0x10 + 4 * k, off[k]);
-                    snx_st_le32(t + 0x24 + 4 * k, size[k]);
+                    snx_st_le32(t + 0x10 + 4 * k, p->aoff[k]);
+                    snx_st_le32(t + 0x24 + 4 * k, p->asize[k]);
                 }
-                snx_st_le32(t + 0x38, idx_off);
-                snx_st_le32(t + 0x3c, idx_size);
+                snx_st_le32(t + 0x38, p->idx_off);
+                snx_st_le32(t + 0x3c, p->idx_size);
                 for (k = 0; k < 6; k++) {
                     u32 bits;
                     memcpy(&bits, &p->box[k], 4);
@@ -1445,8 +1593,12 @@ static u32 shape_file(u32 q, u8* b) {
                 }
             }
         }
+    if (source && o.at > shape_file_most[q]) {
+        fprintf(stderr, "mii parts: %s takes %u bytes; the console's, which the game's heap is sized for, %u\n",
+                qname[q], o.at, shape_file_most[q]);
+        goto stop;
+    }
     if (b) {
-        float tf[18];
         memcpy(b, "NFSR", 4);
         snx_st_le32(b + 4, 1);
         snx_st_le32(b + 8, o.at);
@@ -1454,27 +1606,26 @@ static u32 shape_file(u32 q, u8* b) {
             snx_st_le32(b + 0xc + 4 * kind, largest[kind]);
             snx_st_le32(b + 0xc + 4 * S_KINDS + 4 * kind, SHAPE_ALIGN);
         }
-        for (i = 0; i < HAIR_STYLES; i++) {
-            u32 k;
-            hair_transform(i, tf);
+        for (i = 0; i < HAIR_STYLES; i++)
             for (k = 0; k < 18; k++) {
                 u32 bits;
-                memcpy(&bits, &tf[k], 4);
+                memcpy(&bits, &hair_tf[i][k], 4);
                 snx_st_le32(b + HAIR_TF + 0x48 * i + 4 * k, bits);
             }
-        }
-        for (i = 0; i < FACELINES; i++) {
-            u32 k;
-            faceline_transform(i, tf);
+        for (i = 0; i < FACELINES; i++)
             for (k = 0; k < 9; k++) {
                 u32 bits;
-                memcpy(&bits, &tf[k], 4);
+                memcpy(&bits, &face_tf[i][k], 4);
                 snx_st_le32(b + FACE_TF + 0x24 * i + 4 * k, bits);
             }
-        }
     }
     out_close(&o);
+    free(m);
     return o.at;
+stop:
+    out_close(&o);
+    free(m);
+    return 0;
 }
 
 void snx_mii_model_name(u32 i, char name[32]) {
@@ -1484,7 +1635,12 @@ void snx_mii_model_name(u32 i, char name[32]) {
     snprintf(name, 32, "%s", names[i]);
 }
 u32 snx_mii_model_same(u32 i) { return i == 1 || i == 3 ? i - 1 : i; }
-u32 snx_mii_model_write(u32 i, u8* out) { return i < 4 ? texture_file(i >= 2, out) : shape_file(i - 4, out); }
+u32 snx_mii_model_write(u32 i, u8* out) {
+    return i < 4 ? texture_file(i >= 2, out) : shape_file(i - 4, out, NULL, NULL);
+}
+u32 snx_mii_model_write_from(u32 i, SnxMiiMeshSource source, void* ctx, u8* out) {
+    return i < 4 ? texture_file(i >= 2, out) : shape_file(i - 4, out, source, ctx);
+}
 
 /* ============================================================ a Mii's picture */
 
@@ -1703,19 +1859,6 @@ int snx_mii_picture(const u8 charinfo[SNX_MII_CHARINFO], const SnxMiiLook* look,
 
 /* ============================================================ the 3DS's parts file, CFL_Res.dat */
 
-/* the items of each section, in the order of SNX_MII_CFL_* and then the textures' */
-static const u16 cfl_items[SNX_MII_CFL_SECTIONS] = {4,  264, 12, 264, 1,  264, 12, 18, 18, 132,
-                                                    62, 24,  3,  12,  12, 9,   2,  37, 6,  18};
-/* a mesh section's shape kind over the hair and (hat, forehead and hair, from item 132) under a cap */
-static const u8 cfl_shape[SNX_MII_CFL_MESHES][2] = {
-    {S_BEARD, S_BEARD}, {S_HAT_NORMAL, S_HAT_CAP},   {S_FACELINE, S_FACELINE}, {S_FOREHEAD_NORMAL, S_FOREHEAD_CAP},
-    {S_GLASS, S_GLASS}, {S_HAIR_NORMAL, S_HAIR_CAP}, {S_MASK, S_MASK},         {S_NOSELINE, S_NOSELINE},
-    {S_NOSE, S_NOSE}};
-/* a texture section's kind */
-static const u8 cfl_texture[SNX_MII_CFL_SECTIONS - SNX_MII_CFL_MESHES] = {
-    T_HAT, T_EYE, T_EYEBROW, T_BEARD, T_WRINKLE, T_MAKEUP, T_GLASS, T_MOLE, T_MOUTH, T_MUSTACHE, T_NOSELINE};
-static const char* const cfl_names[SNX_MII_CFL_MESHES] = {"beard", "hat",  "faceline", "forehead", "glass",
-                                                          "hair",  "mask", "noseline", "nose"};
 #define CFL_RGBA4 10u /* the face library's texture format: 16 bits, 4 a channel */
 #define CFL_INDEX 4u  /* the word before a mesh's index list (a list of triangles) */
 #define CFL_OFFSET                                                                                                     \
@@ -1728,10 +1871,10 @@ static void cfl_kind(u32 section, u32 item, u32* kind, u32* i) {
     *i = cap ? item - HAIR_STYLES : item;
 }
 
-int snx_mii_ctr_mesh(void* ctx, u32 section, u32 item, SnxMiiMesh* m) {
-    u32 kind, i, j, n = 0, g, base, w, k;
+/* section's item as a mesh of quality q (Q_CTR or Q_FULL), as snx_mii_ctr_mesh gives it */
+static int part_mesh(u32 section, u32 item, u32 q, SnxMiiMesh* m) {
+    u32 kind, i, j, n = 0, g, base, w, k, most = q == Q_CTR ? SNX_MII_CFL_VERTICES : SNX_MII_MESH_VERTICES;
     Shape grid;
-    (void)ctx;
     if (section >= SNX_MII_CFL_MESHES || item >= cfl_items[section]) {
         fprintf(stderr, "mii parts: no mesh section %u item %u: there are %d sections of 4 to 264 items\n", section,
                 item, SNX_MII_CFL_MESHES);
@@ -1747,16 +1890,16 @@ int snx_mii_ctr_mesh(void* ctx, u32 section, u32 item, SnxMiiMesh* m) {
             return 1;
         }
     }
-    grid = shape_in(kind, shape_variant(kind, i), Q_CTR);
+    grid = shape_in(kind, shape_variant(kind, i), q);
     m->uv = (grid.attrs >> A_UV) & 1u;
     for (grid.g = 0; grid.g < grid.grids; grid.g++)
         for (j = 0; j <= grid.nt[grid.g]; j++)
             for (k = 0; k <= grid.ns[grid.g]; k++, n++) {
                 float s = (float)k / (float)grid.ns[grid.g], t = (float)j / (float)grid.nt[grid.g];
                 Vec p = shape_at(&grid, s, t), nr = shape_normal(&grid, s, t, p);
-                if (n >= SNX_MII_CFL_VERTICES) {
-                    fprintf(stderr, "mii parts: our %s %u has more than %d vertices, the most a 3DS part has\n",
-                            cfl_names[section], item, SNX_MII_CFL_VERTICES);
+                if (n >= most) {
+                    fprintf(stderr, "mii parts: our %s %u has more than %u vertices, the most %s\n", cfl_names[section],
+                            item, most, q == Q_CTR ? "a 3DS part has" : "a mesh holds");
                     return -1;
                 }
                 m->pos[n][0] = p.x, m->pos[n][1] = p.y, m->pos[n][2] = p.z;
@@ -1788,6 +1931,11 @@ int snx_mii_ctr_mesh(void* ctx, u32 section, u32 item, SnxMiiMesh* m) {
         }
     }
     return 1;
+}
+
+int snx_mii_ctr_mesh(void* ctx, u32 section, u32 item, SnxMiiMesh* m) {
+    (void)ctx;
+    return part_mesh(section, item, Q_CTR, m);
 }
 
 /* the value in 1/scale steps as the file's signed 16 bits, 0 with *bad set when it does not fit */
