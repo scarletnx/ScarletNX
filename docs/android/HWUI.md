@@ -13,6 +13,7 @@ a byte format (`snx.android.hwui.DisplayList`), and `src/android/hwui/render.c` 
 * [The renderer](#the-renderer)
 * [Bitmaps](#bitmaps)
 * [Over an app's own Vulkan](#over-an-apps-own-vulkan)
+* [PDF](#pdf)
 * [What is missing](#what-is-missing)
 
 ## Recording
@@ -153,6 +154,15 @@ renderer, and the renderer waits for the game only when the game's blends still 
 The blend is in the encoding of the swapchain: a UNORM swapchain blends the layer's bytes as they are. An sRGB
 swapchain reads the layer through an sRGB view, so that its edges of partial alpha are a little different from
 Android's.
+
+## PDF
+
+`PdfDocument` writes the display list of each page as a PDF (`snx.android.hwui.Pdf`, the HLE of Skia's PDF backend):
+the shapes as PDF paths, filled and stroked with the paint, the clips and transforms, the alphas as graphics states,
+a bitmap's pixels as an image with its alpha, and glyphs in their font. The file carries the font with only the glyphs
+the pages draw, at their own IDs (`snx.android.hwui.TrueType`, TrueType outlines), and a ToUnicode map from its cmap,
+so a reader can copy and search the text. A page draws as the renderer does: the limits below hold for it too, and a
+bitmap that only a canvas drew into has no pixels on the CPU to write, which `writeTo` refuses with an exception.
 
 ## What is missing
 
