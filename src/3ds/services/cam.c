@@ -69,7 +69,7 @@ static void reply_event(SnxCtrIpc* c, uint32_t* slot, uint32_t reset, bool ok) {
     snx_ctr_ipc_output_handle(c, 3, handle);
     if (c->state != SNX_CTR_IPC_RETURN) snx_ctr_ipc_drop_handle(c, handle);
 }
-static void signal(SnxCtrProcess* p, uint32_t id) {
+static void signal_event(SnxCtrProcess* p, uint32_t id) {
     if (!id) return;
     p->objects[id].data.event.signaled = 1;
     snx_ctr_wake_waiters(p, id);
@@ -128,7 +128,7 @@ static void complete(SnxCtrProcess* p, unsigned port) {
     }
     q->receiving = 0;
     q->done_ns = 0;
-    signal(p, q->completion_event);
+    signal_event(p, q->completion_event);
 }
 void snx_ctr_cam_update(SnxCtrProcess* p, uint64_t now_ns) {
     for (unsigned i = 0; i < 2; ++i) {
@@ -141,7 +141,7 @@ void snx_ctr_cam_update(SnxCtrProcess* p, uint64_t now_ns) {
                 memmove(q->vsync_us + 1, q->vsync_us, sizeof q->vsync_us - sizeof *q->vsync_us);
                 q->vsync_us[0] = (int64_t)(now_ns / 1000);
                 if (q->vsync_count < 5) ++q->vsync_count;
-                signal(p, q->vsync_event);
+                signal_event(p, q->vsync_event);
                 q->vsync_ns = now_ns + latency_ns(&p->cam, q->camera);
             }
         }
