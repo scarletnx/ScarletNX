@@ -3530,8 +3530,8 @@ static void settings_text(const App* app, const char* key, char* out, size_t out
     snprintf(out, out_size, "%s", value ? value : "");
 }
 /* Debug's Log level at 2: the launcher logs more of what the system does to the app too, as a phone's runs have no
-   console to watch: each run's start and end (run_said); on the Apple apps thermal and power changes, the document
-   picker's steps and the app's lifecycle */
+   console to watch: each run's start and end (run_said); thermal and power changes on iOS, macOS and Android; the
+   document picker's steps and the app's lifecycle on the Apple apps */
 static int debug_log(const App* app) {
     char level[16];
     settings_text(app, "log", level, sizeof level);
@@ -17879,6 +17879,11 @@ static void open_files(App* app) {
     if (!app->look_only && debug_log(app)) { /* the level at the start: a later change starts neither */
         gui_apple_state_watch();
         data_folders_log(app);
+    }
+#elif defined(SDL_PLATFORM_ANDROID)
+    if (!app->look_only && debug_log(app)) { /* the level at the start: a later change starts it not */
+        char why[512];
+        if (!gui_android_state_watch(why, sizeof why)) gui_log("state: not watched: %s", why);
     }
 #endif
     if (prefs) run_log_follow(app);  /* in the Logs folder app.ini picked */

@@ -365,7 +365,11 @@ two; left out, none) and `language` (`auto`, `en` or a
   runs and deleted at its exit, Logs moving it; a game keeps its own beside its log, which the game's next start says
   the same way. The start also gives the data folder's disk, `disk: 51200 MiB free of 953344 MiB` (on iOS the
   banner's, [APPLE](APPLE.md)). Debug's Log level at 2 adds a line at each start and end of a run and of a recompile,
-  with its status, its time and the disk then (`run: ended, status 7, after 12.3 s; disk: ...`).
+  with its status, its time and the disk then (`run: ended, status 7, after 12.3 s; disk: ...`); and on Android and
+  the Apple apps each change of the thermal state and of the low power mode (Android's Battery Saver), `state: thermal
+  severe, low power mode on`: Android's seven thermal statuses by Android's names (`none`, `light`, `moderate`,
+  `severe`, `critical`, `emergency`, `shutdown`), as they do not match Apple's four (`nominal`, `fair`, `serious`,
+  `critical`) one to one, and `thermal not reported` below Android 10, which gives none.
 - **Exit** closes the launcher, once asked (ESC on the menu asks too, and while a recompile of the queue runs or waits
   the question names it), a screen saying for half a second which of its
   files it keeps for the next start (Settings, the picks of Settings > App, the libraries' folders, the recent games), a second
