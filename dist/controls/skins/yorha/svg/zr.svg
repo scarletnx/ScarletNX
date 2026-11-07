@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright 2026 the ScarletNX contributors. Made by scripts/build-skins.py: edit it, not this file -->
+<svg xmlns="http://www.w3.org/2000/svg" width="368" height="148" viewBox="0 0 368 148" shape-rendering="crispEdges">
+<path d="M301.03 3.70L3.70 3.70L3.70 144.30L364.30 144.30L364.30 66.97Z" fill="#DAD6BE" fill-opacity="0.86" stroke="#45413A" stroke-width="3.70" stroke-linejoin="miter"/>
+<line x1="14.80" y1="18.50" x2="289.93" y2="18.50" stroke="#B4B09C" stroke-width="2.22"/>
+<rect x="106.50" y="71.50" width="15.00" height="15.00" fill="#45413A"/>
+<rect x="154.00" y="54.00" width="40.00" height="5.00" fill="#45413A"/>
+<rect x="154.00" y="59.00" width="10.00" height="5.00" fill="#45413A"/>
+<rect x="184.00" y="59.00" width="10.00" height="5.00" fill="#45413A"/>
+<rect x="154.00" y="64.00" width="5.00" height="5.00" fill="#45413A"/>
+<rect x="179.00" y="64.00" width="10.00" height="5.00" fill="#45413A"/>
+<rect x="174.00" y="69.00" width="10.00" height="5.00" fill="#45413A"/>
+<rect x="169.00" y="74.00" width="10.00" height="5.00" fill="#45413A"/>
+<rect x="164.00" y="79.00" width="10.00" height="5.00" fill="#45413A"/>
+<rect x="159.00" y="84.00" width="10.00" height="5.00" fill="#45413A"/>
+<rect x="154.00" y="89.00" width="10.00" height="5.00" fill="#45413A"/>
+<rect x="189.00" y="89.00" width="5.00" height="5.00" fill="#45413A"/>
+<rect x="154.00" y="94.00" width="10.00" height="5.00" fill="#45413A"/>
+<rect x="184.00" y="94.00" width="10.00" height="5.00" fill="#45413A"/>
+<rect x="154.00" y="99.00" width="40.00" height="5.00" fill="#45413A"/>
+<rect x="194.00" y="54.00" width="30.00" height="5.00" fill="#45413A"/>
+<rect x="199.00" y="59.00" width="10.00" height="5.00" fill="#45413A"/>
+<rect x="219.00" y="59.00" width="10.00" height="5.00" fill="#45413A"/>
+<rect x="199.00" y="64.00" width="10.00" height="5.00" fill="#45413A"/>
+<rect x="219.00" y="64.00" width="10.00" height="5.00" fill="#45413A"/>
+<rect x="199.00" y="69.00" width="10.00" height="5.00" fill="#45413A"/>
+<rect x="219.00" y="69.00" width="10.00" height="5.00" fill="#45413A"/>
+<rect x="199.00" y="74.00" width="25.00" height="5.00" fill="#45413A"/>
+<rect x="199.00" y="79.00" width="10.00" height="5.00" fill="#45413A"/>
+<rect x="214.00" y="79.00" width="10.00" height="5.00" fill="#45413A"/>
+<rect x="199.00" y="84.00" width="10.00" height="5.00" fill="#45413A"/>
+<rect x="219.00" y="84.00" width="10.00" height="5.00" fill="#45413A"/>
+<rect x="199.00" y="89.00" width="10.00" height="5.00" fill="#45413A"/>
+<rect x="219.00" y="89.00" width="10.00" height="5.00" fill="#45413A"/>
+<rect x="199.00" y="94.00" width="10.00" height="5.00" fill="#45413A"/>
+<rect x="219.00" y="94.00" width="10.00" height="5.00" fill="#45413A"/>
+<rect x="194.00" y="99.00" width="15.00" height="5.00" fill="#45413A"/>
+<rect x="219.00" y="99.00" width="10.00" height="5.00" fill="#45413A"/>
+</svg>

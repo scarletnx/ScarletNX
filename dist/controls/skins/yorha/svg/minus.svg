@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright 2026 the ScarletNX contributors. Made by scripts/build-skins.py: edit it, not this file -->
+<svg xmlns="http://www.w3.org/2000/svg" width="104" height="104" viewBox="0 0 104 104" shape-rendering="crispEdges">
+<rect x="5.20" y="5.20" width="93.60" height="93.60" fill="#DAD6BE" fill-opacity="0.86" stroke="#45413A" stroke-width="2.60"/>
+<rect x="11.70" y="11.70" width="80.60" height="80.60" fill="none" stroke="#B4B09C" stroke-width="1.56"/>
+<rect x="32.00" y="49.50" width="35.00" height="5.00" fill="#45413A"/>
+</svg>

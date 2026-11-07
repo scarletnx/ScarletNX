@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright 2026 the ScarletNX contributors. Made by scripts/build-skins.py: edit it, not this file -->
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400" shape-rendering="crispEdges">
+<circle cx="200.0" cy="200.0" r="193.60" fill="#DAD6BE" fill-opacity="0.32" stroke="#45413A" stroke-opacity="0.9" stroke-width="3.20" shape-rendering="geometricPrecision"/>
+<circle cx="200.0" cy="200.0" r="144.00" fill="none" stroke="#8A8676" stroke-width="2.24" stroke-dasharray="8.00 10.00" shape-rendering="geometricPrecision"/>
+<line x1="200.0" y1="12.40" x2="200.0" y2="30.40" stroke="#45413A" stroke-width="6.40" transform="rotate(0 200.0 200.0)"/>
+<line x1="200.0" y1="12.40" x2="200.0" y2="30.40" stroke="#45413A" stroke-width="6.40" transform="rotate(90 200.0 200.0)"/>
+<line x1="200.0" y1="12.40" x2="200.0" y2="30.40" stroke="#45413A" stroke-width="6.40" transform="rotate(180 200.0 200.0)"/>
+<line x1="200.0" y1="12.40" x2="200.0" y2="30.40" stroke="#45413A" stroke-width="6.40" transform="rotate(270 200.0 200.0)"/>
+<rect x="58.31" y="58.31" width="9.60" height="9.60" fill="#45413A"/>
+<rect x="332.09" y="58.31" width="9.60" height="9.60" fill="#45413A"/>
+<rect x="332.09" y="332.09" width="9.60" height="9.60" fill="#45413A"/>
+<rect x="58.31" y="332.09" width="9.60" height="9.60" fill="#45413A"/>
+</svg>

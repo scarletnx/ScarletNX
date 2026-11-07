@@ -8,3 +8,5 @@ pixels per dp, the stick buttons at 4.5 (rEden draws their small drawables large
 atlas with room for the game menu's font and a white block. The script also writes
 `src/nx/runtime/platform/controls_atlas.h`, the sprites' places, and `--check` (a test) fails when either is not what
 these files make. After changing a drawable, run the script and commit the three together.
+
+Skins for these controls, RetroArch overlays, are in [skins/](skins/README.md).
