@@ -181,8 +181,6 @@ static int nn_pctl_detail_ipc_IParentalControlService_Unknown1460(SvcObj* self, 
 }
 
 /* ============================================================ friend */
-#define FRIEND_NO_NOTIFICATIONS RC(124, 15) /* account's NoNotifications, which friends answers too */
-
 static int nn_friends_detail_ipc_IServiceCreator_CreateFriendService(SvcObj* self, SvcObj** service) {
     (void)self;
     *service = nn_friends_detail_ipc_IFriendService_new();
@@ -210,7 +208,7 @@ static int nn_friends_detail_ipc_INotificationService_GetEvent(SvcObj* self, u32
 static int nn_friends_detail_ipc_INotificationService_Pop(SvcObj* self,
                                                          nn_friends_detail_ipc_SizedNotificationInfo* info) {
     (void)self, (void)info;
-    R_THROW(FRIEND_NO_NOTIFICATIONS);
+    R_THROW(SNX_RC_ACCOUNT_NO_NOTIFICATIONS);
 }
 
 /* ============================================================ ns */
@@ -286,9 +284,6 @@ static int nn_err_context_IWriterForApplication_CreateContextRegistrar(SvcObj* s
 #define SNX_CAPS_IDS          100 /* the two digits that tell the pictures of one second apart */
 #define SNX_CAPS_QUALITY      90
 #define SNX_CAPS_EXIF         106 /* caps_exif's segment: its marker, its length, "Exif" and 96 bytes of TIFF */
-/* capsrv's results, as Eden names them (caps_result.h): the image is not 1280x720 RGBA, the album takes no file */
-#define CAPS_OUT_OF_RANGE     RC(206, 8)
-#define CAPS_FILE_COUNT_LIMIT RC(206, 1401)
 
 /* the JPEG the splash library writes, gathered */
 typedef struct {
@@ -347,7 +342,7 @@ static int caps_save(IpcBuf image, nn_capsrv_ApplicationAlbumEntry* entry) {
         WARN("caps: the game's picture has %llu bytes, not the %llu of 1280x720 RGBA: it is not saved, and the game is "
              "told OutOfRange\n",
              (unsigned long long)image.size, (unsigned long long)SNX_CAPS_BYTES);
-        R_THROW(CAPS_OUT_OF_RANGE);
+        R_THROW(SNX_RC_CAPSRV_ALBUM_OUT_OF_RANGE);
     }
     if (snx_splash_jpeg_rgba(GP(image.addr), SNX_CAPS_WIDTH, SNX_CAPS_HEIGHT, SNX_CAPS_QUALITY, caps_jpeg_write,
                              &jpeg) ||
@@ -356,7 +351,7 @@ static int caps_save(IpcBuf image, nn_capsrv_ApplicationAlbumEntry* entry) {
              "told FileCountLimit\n",
              jpeg.size);
         free(jpeg.data);
-        R_THROW(CAPS_FILE_COUNT_LIMIT);
+        R_THROW(SNX_RC_CAPSRV_INTERNAL_ALBUM_LIMITATION_FILE_COUNT_LIMIT);
     }
 #ifdef _WIN32
     localtime_s(&t, &now);
@@ -396,7 +391,7 @@ static int caps_save(IpcBuf image, nn_capsrv_ApplicationAlbumEntry* entry) {
     if (r) {
         WARN("caps: the game's picture could not be written in %ssdmc/%s (%s): the game is told FileCountLimit\n",
              g_datadir, dir, why);
-        R_THROW(CAPS_FILE_COUNT_LIMIT);
+        R_THROW(SNX_RC_CAPSRV_INTERNAL_ALBUM_LIMITATION_FILE_COUNT_LIMIT);
     }
     LOG("caps: the game saved a picture to %ssdmc/%s/%s\n", g_datadir, dir, name);
     entry->size = (u64)size;
@@ -603,10 +598,6 @@ static int nn_mmnv_IRequest_Get(SvcObj* self, u32 request_id, nn_mmnv_Setting* c
 }
 
 /* ============================================================ nfp, nfc: no device */
-#define NFP_DEVICE_NOT_FOUND RC(115, 64)
-#define NFP_NFC_DISABLED     RC(115, 80)
-#define NFC_DEVICE_NOT_FOUND RC(127, 64)
-#define NFC_NOT_INITIALIZED  RC(127, 77)
 #define NFC_FINALIZED        6 /* nn::nfp::DeviceState of a device that isn't there */
 
 /* an IUser's NfcUser (services_int.h): its nn::nfc::State, and the one availability-change event it hands out */
@@ -621,8 +612,10 @@ static SvcObj* nfc_user(SvcObj* o, const char* name) {
     return o;
 }
 /* what a command on a device answers: there is none */
-static int nfp_device(SvcObj* self) { return nfc_state(self) ? NFP_DEVICE_NOT_FOUND : NFP_NFC_DISABLED; }
-static int nfc_device(SvcObj* self) { return nfc_state(self) ? NFC_DEVICE_NOT_FOUND : NFC_NOT_INITIALIZED; }
+static int nfp_device(SvcObj* self) { return nfc_state(self) ? SNX_RC_NFP_DEVICE_NOT_FOUND : SNX_RC_NFP_NFC_DISABLED; }
+static int nfc_device(SvcObj* self) {
+    return nfc_state(self) ? SNX_RC_NFC_DEVICE_NOT_FOUND : SNX_RC_NFC_NFC_NOT_INITIALIZED;
+}
 
 static int nn_nfp_detail_IUserManager_CreateUserInterface(SvcObj* self, SvcObj** user) {
     (void)self;
@@ -821,7 +814,6 @@ static int nn_nfc_detail_IUser_AttachDeactivateEvent(SvcObj* self, const nn_nfc_
 }
 
 /* ============================================================ bcat: synchronized at once, the cache empty */
-#define BCAT_FAILED_OPEN_ENTITY RC(122, 2)
 #define BCAT_DONE               9 /* nn::bcat::DeliveryCacheProgressStatus */
 
 static int nn_bcat_detail_ipc_IServiceCreator_CreateBcatService(SvcObj* self, u64 pid, SvcObj** service) {
@@ -904,7 +896,7 @@ static int nn_bcat_detail_ipc_IDeliveryCacheStorageService_CreateDirectoryServic
 static int nn_bcat_detail_ipc_IDeliveryCacheFileService_Open(SvcObj* self, const nn_bcat_DirectoryName* directory_name,
                                                             const nn_bcat_FileName* file_name) {
     (void)self, (void)directory_name, (void)file_name;
-    R_THROW(BCAT_FAILED_OPEN_ENTITY);
+    R_THROW(SNX_RC_BCAT_NOT_FOUND);
 }
 static int nn_bcat_detail_ipc_INotifierService_GetEvent(SvcObj* self, u32* event) {
     (void)self;
@@ -925,15 +917,10 @@ static int nn_nim_detail_IShopServiceAccessServer_CreateAccessorInterface(SvcObj
 }
 
 /* ============================================================ aoc:u: the add-on content in system/archives */
-#define AOC_NO_PURCHASED_PRODUCT RC(164, 400) /* nim's shop: NoPurchasedProductInfoAvailable */
-#define AOC_NOT_CONNECTED        RC(110, 300) /* nifm's: the token needs the network */
-
 /* the running game's from its control.nacp (am_aoc_base_id), another application's as the SDK numbers them */
 static u64 aoc_base_id(u64 application_id) {
     return application_id == g_hle.kernel.title_id ? am_aoc_base_id() : snx_nacp_aoc_base(NULL, 0, application_id);
 }
-/* am's ApplicationRecordNotFound, for a list asked from past its end */
-#define SNX_AOC_NO_RECORD RC(128, 37)
 /* An add-on content is installed when its RomFS image is in the data folder as system/archives/<data id>.romfs, the
    file OpenDataStorageByDataId opens, or is a DLC read in place from its dump (fs_aoc_has): data id = base id +
    index, index 1 to 2047. Scanned once: the list does not
@@ -967,7 +954,7 @@ static i32 aoc_count_of(u64 application_id) {
    console reads it) no record */
 static int aoc_list(i32 offset, i32 count, u64 application_id, IpcBuf indices, i32* out_count) {
     i32 total = aoc_count_of(application_id), n;
-    R_UNLESS((u32)offset <= (u32)total, SNX_AOC_NO_RECORD);
+    R_UNLESS((u32)offset <= (u32)total, SNX_RC_AM_TITLE_ID_NOT_FOUND);
     if ((u32)count > indices.size / 4) count = (i32)(indices.size / 4);
     for (n = 0; n < count && offset + n < total; n++) gw32(indices.addr + 4 * (u64)n, (u32)g_hle.misc.aoc_index[offset + n]);
     *out_count = n;
@@ -1045,7 +1032,7 @@ static int nn_aocsrv_detail_IAddOnContentManager_CreateContentsServiceManager(Sv
 static int nn_ec_IContentsServiceManager_RequestContentsAuthorizationToken(SvcObj* self, const u8* nonce, u64 pid,
                                                                           IpcBuf data, u32* event, SvcObj** async) {
     (void)self, (void)nonce, (void)pid, (void)data, (void)event, (void)async;
-    R_THROW(AOC_NOT_CONNECTED);
+    R_THROW(SNX_RC_NIFM_NO_INTERNET_CONNECTION);
 }
 static int nn_ec_IPurchaseEventManager_GetPurchasedEventReadableHandle(SvcObj* self, u32* event) {
     (void)self;
@@ -1054,12 +1041,12 @@ static int nn_ec_IPurchaseEventManager_GetPurchasedEventReadableHandle(SvcObj* s
 static int nn_ec_IPurchaseEventManager_PopPurchasedProductInfo(SvcObj* self,
                                                               nn_ec_srv_detail_PurchasedProductInfo* info) {
     (void)self, (void)info;
-    R_THROW(AOC_NO_PURCHASED_PRODUCT);
+    R_THROW(SNX_RC_EC_NO_PURCHASED_PRODUCT_INFO_AVAILABLE);
 }
 static int nn_ec_IPurchaseEventManager_PopPurchasedProductInfoWithUid(SvcObj* self, const nn_account_Uid* uid,
                                                                      nn_ec_srv_detail_PurchasedProductInfo* info) {
     (void)self, (void)uid, (void)info;
-    R_THROW(AOC_NO_PURCHASED_PRODUCT);
+    R_THROW(SNX_RC_EC_NO_PURCHASED_PRODUCT_INFO_AVAILABLE);
 }
 
 /* ============================================================ irs: a shared memory no camera writes to */
@@ -1077,10 +1064,6 @@ static int nn_irsensor_IIrSensorServer_GetIrsensorSharedMemoryHandle(SvcObj* sel
 }
 
 /* ============================================================ mii: a fixed database and the six default Miis */
-#define MII_INVALID_ARGUMENT      RC(126, 1)
-#define MII_INVALID_ARGUMENT_SIZE RC(126, 2)
-#define MII_NOT_UPDATED           RC(126, 3)
-#define MII_NOT_FOUND             RC(126, 4)
 #define MII_SOURCE_DATABASE       1 /* nn::mii::SourceFlag::Database */
 #define MII_SOURCE_DEFAULT        2 /* nn::mii::SourceFlag::Default */
 #define MII_NAME                  0x10 /* CharInfo's nickname, UTF-16, after the create id */
@@ -1172,7 +1155,7 @@ static int nn_mii_detail_IStaticService_GetDatabaseService(SvcObj* self, i32 key
 }
 static int nn_mii_detail_IDatabaseService_BuildDefault(SvcObj* self, u32 index, nn_mii_CharInfo* info) {
     (void)self;
-    R_UNLESS(index < 6, MII_INVALID_ARGUMENT);
+    R_UNLESS(index < 6, SNX_RC_MII_INVALID);
     u8 id[16];
     mii_random_id(id);
     snx_mii_default_charinfo(index, id, info->v);
@@ -1194,7 +1177,7 @@ static int mii_give(i32 source_flag, IpcBuf out, u32 size, int store, i32* count
         int is_default = i >= MII_DATABASE_COUNT;
         u64 at = out.addr + (u64)n * size;
         if (!(source_flag & (is_default ? MII_SOURCE_DEFAULT : MII_SOURCE_DATABASE))) continue;
-        if (out.size < (u64)(n + 1) * size) R_THROW(MII_INVALID_ARGUMENT_SIZE);
+        if (out.size < (u64)(n + 1) * size) R_THROW(SNX_RC_MII_BUFFER_TOO_SMALL);
         if (is_default)
             nn_mii_detail_IDatabaseService_BuildDefault(NULL, i - MII_DATABASE_COUNT, &info);
         else
@@ -1230,16 +1213,16 @@ static int nn_mii_detail_IDatabaseService_UpdateLatest(SvcObj* self, const nn_mi
                                                        nn_mii_CharInfo* latest) {
     int index = mii_find(info);
     (void)self;
-    if (!(source_flag & MII_SOURCE_DATABASE) || index < 0) R_THROW(MII_NOT_FOUND);
+    if (!(source_flag & MII_SOURCE_DATABASE) || index < 0) R_THROW(SNX_RC_MII_NOT_FOUND);
     mii_build_database(latest, (u32)index);
-    if (latest->v[MII_TYPE] != info->v[MII_TYPE]) R_THROW(MII_NOT_FOUND);
-    if (!memcmp(latest->v, info->v, sizeof latest->v)) R_THROW(MII_NOT_UPDATED);
+    if (latest->v[MII_TYPE] != info->v[MII_TYPE]) R_THROW(SNX_RC_MII_NOT_FOUND);
+    if (!memcmp(latest->v, info->v, sizeof latest->v)) R_THROW(SNX_RC_MII_NOT_UPDATED);
     R_SUCCEED();
 }
 static int nn_mii_detail_IDatabaseService_GetIndex(SvcObj* self, const nn_mii_CharInfo* info, i32* index) {
     (void)self;
     *index = mii_find(info);
-    R_UNLESS(*index >= 0, MII_NOT_FOUND);
+    R_UNLESS(*index >= 0, SNX_RC_MII_NOT_FOUND);
     R_SUCCEED();
 }
 /* ------------------------------------------------------------ BuildRandom */
@@ -1278,7 +1261,7 @@ static int nn_mii_detail_IDatabaseService_BuildRandom(SvcObj* self, u32 age, u32
     u32 axis_y = 0, index, r, eyebrow_y, flag;
     int i;
     (void)self;
-    if (age > MII_AGE_ALL || gender > MII_GENDER_ALL || race > MII_RACE_ALL) R_THROW(MII_INVALID_ARGUMENT);
+    if (age > MII_AGE_ALL || gender > MII_GENDER_ALL || race > MII_RACE_ALL) R_THROW(SNX_RC_MII_INVALID);
     if (gender != 0 /* Male */ && age != 2 /* Old */ && race != 0 /* Black */) {
         int own = mii_own_pick(mii_random(MII_OWN_ODDS - 1));
         if (own >= 0) {
@@ -1396,14 +1379,13 @@ static int nn_btm_IBtmUserCore_AcquireBleMtuConfigEvent(SvcObj* self, u8* succes
 }
 
 /* ============================================================ audin: no microphone to open */
-#define AUDIO_NOT_FOUND RC(153, 1)
 static int nn_audio_detail_IAudioInManager_OpenAudioIn(SvcObj* self, const nn_audio_AudioInParameter* params,
                                                       u64 aruid, u32 process, IpcBuf name, IpcBuf name_out,
                                                       u32* sample_rate, u32* channel_count, u32* sample_format,
                                                       u32* state, SvcObj** in) {
     (void)self, (void)params, (void)aruid, (void)process, (void)name, (void)name_out;
     (void)sample_rate, (void)channel_count, (void)sample_format, (void)state, (void)in;
-    R_THROW(AUDIO_NOT_FOUND);
+    R_THROW(SNX_RC_AUDIO_NOT_FOUND);
 }
 static int nn_audio_detail_IAudioInManager_OpenAudioInAuto(SvcObj* self, const nn_audio_AudioInParameter* params,
                                                           u64 aruid, u32 process, IpcBuf name, IpcBuf name_out,
@@ -1478,20 +1460,11 @@ static int nn_prepo_detail_ipc_IPrepoService_GetTransmissionStatus(SvcObj* self,
 }
 
 /* ============================================================ olsc:u: no online service */
-/* Ryubing's NotInitialized and NullArgument (Services/Olsc/ResultCode.cs) */
-#define OLSC_NULL_ARGUMENT   RC(179, 100)
-#define OLSC_NOT_INITIALIZED RC(179, 101)
-/* what the license check for backups ends with: no license, there being no online service. olsc's own result for it
-   is in no public source (Switchbrew lists no code of module 179, nnsdk, skyline's bindings of the SDK, has no olsc,
-   and the SDK's symbols name no olsc result): the closest public one is account's MembershipRequired, 2124-5113
-   (Switchbrew's error codes), which tells the player backups need a membership */
-#define OLSC_NO_MEMBERSHIP   RC(124, 5113)
-
 /* a command for a user, on a session Initialize was called on (u[0]) */
 static int olsc_check(const SvcObj* self, const nn_account_Uid* uid) {
     static const u8 none[sizeof uid->v] = {0};
-    R_UNLESS(self->u[0], OLSC_NOT_INITIALIZED);
-    R_UNLESS(memcmp(uid->v, none, sizeof none), OLSC_NULL_ARGUMENT);
+    R_UNLESS(self->u[0], SNX_RC_OLSC_NOT_INITIALIZED);
+    R_UNLESS(memcmp(uid->v, none, sizeof none), SNX_RC_OLSC_NULL_ARGUMENT);
     R_SUCCEED();
 }
 static int nn_olsc_srv_IOlscServiceForApplication_Initialize(SvcObj* self, u64 pid) {
@@ -1499,7 +1472,11 @@ static int nn_olsc_srv_IOlscServiceForApplication_Initialize(SvcObj* self, u64 p
     self->u[0] = 1;
     R_SUCCEED();
 }
-/* done when it is made, with no license found: its result (u[0]) is what GetResult answers */
+/* done when it is made, with no license found: its result (u[0]) is what GetResult answers, account's
+   MembershipRequired. What the license check for backups ends with, no license, there being no online service, is in
+   no public source as an olsc result (Switchbrew lists no code of module 179, nnsdk, skyline's bindings of the SDK, has
+   no olsc, and the SDK's symbols name no olsc result): the closest public one is MembershipRequired, which tells the
+   player backups need a membership */
 static int nn_olsc_srv_IOlscServiceForApplication_VerifySaveDataBackupLicenseAsync(SvcObj* self,
                                                                                    const nn_account_Uid* uid,
                                                                                    SvcObj** result) {
@@ -1507,7 +1484,7 @@ static int nn_olsc_srv_IOlscServiceForApplication_VerifySaveDataBackupLicenseAsy
     WARN_LIMIT(4, "olsc: the game checks the license for save data backups, which no online service gives here: it "
                   "ends with 2124-5113, membership required\n");
     *result = nn_olsc_srv_IAsyncResult_new();
-    (*result)->u[0] = OLSC_NO_MEMBERSHIP;
+    (*result)->u[0] = SNX_RC_ACCOUNT_MEMBERSHIP_REQUIRED;
     R_SUCCEED();
 }
 /* 0 whatever the game set: no backup runs here, and how the console encodes the setting is not public (0 is Eden's
