@@ -48,6 +48,7 @@ void am_display_mode_changed(void);
 int am_handover_out(SnxNext* next);
 void am_handover_in(int program, const SnxNext* next);
 /* the functions a save state may hold of each file (nx/runtime/state_fns.h) */
+extern const StateFnTable g_acc_state_fns;    /* acc.c */
 extern const StateFnTable g_am_state_fns;     /* am.c */
 extern const StateFnTable g_audio_state_fns;  /* audio.c */
 extern const StateFnTable g_audren_state_fns; /* audren.c */
