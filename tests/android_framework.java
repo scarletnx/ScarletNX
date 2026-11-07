@@ -10,9 +10,11 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 import java.io.File;
+import java.net.InetAddress;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicReference;
 
 final class AndroidFramework {
@@ -128,10 +130,35 @@ final class AndroidFramework {
               "java.io.FileNotFoundException, java.io.FileNotFoundException, returned, returned, then idle", got.get());
     }
 
+    /**
+     * Java's name resolver answers the names of Android's /etc/hosts as a device does, whatever the host's own say:
+     * localhost is 127.0.0.1 alone, offline and online. Offline is this JVM, whose resolver the jar's
+     * META-INF/services names; online, another JVM with the driver's snx.android.network=1.
+     */
+    private static void hostsResolve() throws Exception {
+        check("localhost offline", "[localhost/127.0.0.1]", Arrays.toString(InetAddress.getAllByName("localhost")));
+        Path dir = java.nio.file.Files.createTempDirectory("android_framework");
+        Path online = dir.resolve("Online.java");
+        java.nio.file.Files.writeString(online, "class Online { public static void main(String[] a) throws Exception {"
+            + " System.out.print(java.util.Arrays.toString(java.net.InetAddress.getAllByName(\"localhost\"))); } }");
+        Process p = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                                       "-Dsnx.android.network=1", "-cp", System.getProperty("java.class.path"),
+                                       online.toString()).redirectErrorStream(true).start();
+        String got = new String(p.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).trim();
+        if (!p.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)) {
+            p.destroyForcibly();
+            got = "the online JVM did not end in 60 s: " + got;
+        }
+        java.nio.file.Files.delete(online);
+        java.nio.file.Files.delete(dir);
+        check("localhost online", "[localhost/127.0.0.1]", got);
+    }
+
     public static void main(String[] args) throws Exception {
         mainLoopEnds();
         logIsLoggable();
         mediaPlayerSources();
+        hostsResolve();
         if (failures != 0) System.exit(1);
         System.out.println("android_framework: ok");
     }
