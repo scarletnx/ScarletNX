@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* A guest call's arguments and the guest's printf (args.h) */
 #include "android/bridge/args.h"
+#include "android/bridge/hle_impl.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -178,7 +179,11 @@ int guest_format(char* out, size_t size, const char* format, GuestArgs* a) {
             break;
         }
         case 'n': args_int(a); continue; /* nothing written back: bionic aborts on %n */
-        case 'm': n = snprintf(piece, sizeof piece, "(errno)"); break;
+        case 'm': {
+            char unknown[32]; /* %m is strerror(errno), in bionic's words */
+            n = snprintf(piece, sizeof piece, "%s", hle_error_text(*hle_errno_location(), unknown, sizeof unknown));
+            break;
+        }
         default: put(out, size, &at, spec, s); continue;
         }
         if (n > 0) put(out, size, &at, piece, (size_t)n < sizeof piece ? (size_t)n : sizeof piece - 1);

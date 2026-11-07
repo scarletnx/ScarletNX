@@ -44,5 +44,7 @@ void hle_set_errno(int linux_error);
 /* functions whose bionic form the host's C library lacks or differs from */
 size_t hle_strlcpy(char* dst, const char* src, size_t size);
 int hle_strerror_r(int error, char* buffer, size_t size);
+/* bionic's strerror text of a Linux errno: its own words, or "Unknown error N" written in buffer */
+const char* hle_error_text(int error, char* buffer, size_t size);
 char* hle_basename(const char* path);
 #endif

@@ -237,7 +237,8 @@ static void zero(CPU* c, void* data) {
 static _Thread_local struct {
     /* the guest comparator of this thread's sort or search: saved and restored, so a comparator can sort too */
     uint64_t compare;
-    int error; /* the guest's errno, where it is not the host's (hle_impl.h) */
+    int error;              /* the guest's errno, where it is not the host's (hle_impl.h) */
+    char unknown_error[32]; /* strerror's text of a number bionic has no text for */
 } t_hle_libc;
 
 static int compare_guest(const void* a, const void* b) {
@@ -316,10 +317,157 @@ static void errno_location(CPU* c, void* data) {
     (void)data;
     X(0) = (uint64_t)(uintptr_t)hle_errno_location();
 }
-/* the functions that take an errno: the guest's (Linux's) number as the host's */
+/* bionic's texts of the errno numbers, Linux's, by number (its libc/private/bionic_errdefs.h, the kernel headers'
+   words): the host C library's are other words, and in the user's language */
+static const char* const error_texts[] = {
+    [0] = "Success",
+    [1] = "Operation not permitted",
+    [2] = "No such file or directory",
+    [3] = "No such process",
+    [4] = "Interrupted system call",
+    [5] = "I/O error",
+    [6] = "No such device or address",
+    [7] = "Argument list too long",
+    [8] = "Exec format error",
+    [9] = "Bad file descriptor",
+    [10] = "No child processes",
+    [11] = "Try again",
+    [12] = "Out of memory",
+    [13] = "Permission denied",
+    [14] = "Bad address",
+    [15] = "Block device required",
+    [16] = "Device or resource busy",
+    [17] = "File exists",
+    [18] = "Cross-device link",
+    [19] = "No such device",
+    [20] = "Not a directory",
+    [21] = "Is a directory",
+    [22] = "Invalid argument",
+    [23] = "File table overflow",
+    [24] = "Too many open files",
+    [25] = "Inappropriate ioctl for device",
+    [26] = "Text file busy",
+    [27] = "File too large",
+    [28] = "No space left on device",
+    [29] = "Illegal seek",
+    [30] = "Read-only file system",
+    [31] = "Too many links",
+    [32] = "Broken pipe",
+    [33] = "Math argument out of domain of func",
+    [34] = "Math result not representable",
+    [35] = "Resource deadlock would occur",
+    [36] = "File name too long",
+    [37] = "No record locks available",
+    [38] = "Function not implemented",
+    [39] = "Directory not empty",
+    [40] = "Too many symbolic links encountered",
+    [42] = "No message of desired type",
+    [43] = "Identifier removed",
+    [44] = "Channel number out of range",
+    [45] = "Level 2 not synchronized",
+    [46] = "Level 3 halted",
+    [47] = "Level 3 reset",
+    [48] = "Link number out of range",
+    [49] = "Protocol driver not attached",
+    [50] = "No CSI structure available",
+    [51] = "Level 2 halted",
+    [52] = "Invalid exchange",
+    [53] = "Invalid request descriptor",
+    [54] = "Exchange full",
+    [55] = "No anode",
+    [56] = "Invalid request code",
+    [57] = "Invalid slot",
+    [59] = "Bad font file format",
+    [60] = "Device not a stream",
+    [61] = "No data available",
+    [62] = "Timer expired",
+    [63] = "Out of streams resources",
+    [64] = "Machine is not on the network",
+    [65] = "Package not installed",
+    [66] = "Object is remote",
+    [67] = "Link has been severed",
+    [68] = "Advertise error",
+    [69] = "Srmount error",
+    [70] = "Communication error on send",
+    [71] = "Protocol error",
+    [72] = "Multihop attempted",
+    [73] = "RFS specific error",
+    [74] = "Not a data message",
+    [75] = "Value too large for defined data type",
+    [76] = "Name not unique on network",
+    [77] = "File descriptor in bad state",
+    [78] = "Remote address changed",
+    [79] = "Can not access a needed shared library",
+    [80] = "Accessing a corrupted shared library",
+    [81] = ".lib section in a.out corrupted",
+    [82] = "Attempting to link in too many shared libraries",
+    [83] = "Cannot exec a shared library directly",
+    [84] = "Illegal byte sequence",
+    [85] = "Interrupted system call should be restarted",
+    [86] = "Streams pipe error",
+    [87] = "Too many users",
+    [88] = "Socket operation on non-socket",
+    [89] = "Destination address required",
+    [90] = "Message too long",
+    [91] = "Protocol wrong type for socket",
+    [92] = "Protocol not available",
+    [93] = "Protocol not supported",
+    [94] = "Socket type not supported",
+    [95] = "Operation not supported on transport endpoint",
+    [96] = "Protocol family not supported",
+    [97] = "Address family not supported by protocol",
+    [98] = "Address already in use",
+    [99] = "Cannot assign requested address",
+    [100] = "Network is down",
+    [101] = "Network is unreachable",
+    [102] = "Network dropped connection because of reset",
+    [103] = "Software caused connection abort",
+    [104] = "Connection reset by peer",
+    [105] = "No buffer space available",
+    [106] = "Transport endpoint is already connected",
+    [107] = "Transport endpoint is not connected",
+    [108] = "Cannot send after transport endpoint shutdown",
+    [109] = "Too many references: cannot splice",
+    [110] = "Connection timed out",
+    [111] = "Connection refused",
+    [112] = "Host is down",
+    [113] = "No route to host",
+    [114] = "Operation already in progress",
+    [115] = "Operation now in progress",
+    [116] = "Stale NFS file handle",
+    [117] = "Structure needs cleaning",
+    [118] = "Not a XENIX named type file",
+    [119] = "No XENIX semaphores available",
+    [120] = "Is a named type file",
+    [121] = "Remote I/O error",
+    [122] = "Quota exceeded",
+    [123] = "No medium found",
+    [124] = "Wrong medium type",
+    [125] = "Operation Canceled",
+    [126] = "Required key not available",
+    [127] = "Key has expired",
+    [128] = "Key has been revoked",
+    [129] = "Key was rejected by service",
+    [130] = "Owner died",
+    [131] = "State not recoverable",
+    [132] = "Operation not possible due to RF-kill",
+    [133] = "Memory page has hardware error",
+};
+const char* hle_error_text(int error, char* buffer, size_t size) {
+    if (error >= 0 && error < (int)(sizeof error_texts / sizeof *error_texts) && error_texts[error])
+        return error_texts[error];
+    snprintf(buffer, size, "Unknown error %d", error);
+    return buffer;
+}
 static void g_strerror(CPU* c, void* data) {
     (void)data;
-    X(0) = (uint64_t)(uintptr_t)strerror(gnu_errno_to_host((int)X(0)));
+    X(0) = (uint64_t)(uintptr_t)hle_error_text((int)X(0), t_hle_libc.unknown_error, sizeof t_hle_libc.unknown_error);
+}
+/* __gnu_strerror_r(error, buffer, size), GNU's strerror_r: the text cut to the buffer, which it returns */
+static void gnu_strerror_r(CPU* c, void* data) {
+    (void)data;
+    hle_strerror_r((int)X(0), PTR(1), (size_t)X(2));
+    X(0) = X(1);
 }
 
 /* ---- the fortified functions (_FORTIFY_SOURCE): the plain function, with bionic's check of the size ---- */
@@ -711,15 +859,10 @@ size_t hle_strlcpy(char* dst, const char* src, size_t size) {
     }
     return n;
 }
-/* POSIX's strerror_r, which returns an error number: glibc's of that form is __xpg_strerror_r */
+/* POSIX's strerror_r, which returns an error number (Linux's) */
 int hle_strerror_r(int error, char* buffer, size_t size) {
-    const char* text = strerror(gnu_errno_to_host(error));
-    size_t n = strlen(text);
-    if (!size) return ERANGE;
-    size_t copy = n < size - 1 ? n : size - 1;
-    memcpy(buffer, text, copy);
-    buffer[copy] = 0;
-    return copy < n ? ERANGE : 0;
+    char unknown[32];
+    return hle_strlcpy(buffer, hle_error_text(error, unknown, sizeof unknown), size) >= size ? GNU_ERANGE : 0;
 }
 /* bionic's basename leaves its argument as it is, as GNU's does, but drops trailing slashes as POSIX's */
 char* hle_basename(const char* path) {
@@ -1234,6 +1377,7 @@ const HleSymbol hle_libc[] = {
     /* strings */
     P(memchr), P(memcmp), P(memcpy), P(memmove), P(memset), P(strcasecmp), P(strcat), P(strchr), P(strcmp),
     P(strcoll), P(strcpy), P(strcspn), P(strdup), P(strlen), {"strerror", g_strerror, NULL}, P(strncasecmp), P(strncat), P(strncmp),
+    {"strerror_l", g_strerror, NULL}, {"__gnu_strerror_r", gnu_strerror_r, NULL},
     P(strncpy), P(strpbrk), P(strrchr), P(strspn), P(strstr), P(strtok),
     P(strtoll), P(strtoull), P(atoi), P(atoll),
     PH(strlcpy, hle_strlcpy), PH(strerror_r, hle_strerror_r), PH(basename, hle_basename), PH(strsep, hle_strsep),
