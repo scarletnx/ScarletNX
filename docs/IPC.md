@@ -207,7 +207,8 @@ Ryubing, Eden; `NONE` marks a name of ours, for a result no public source has. A
 row gets one there, never a `#define` or an `RC(...)` of its own. `snx_result_info(rc)` gives a result's row, its
 name and source, and `snx_result_text` writes it as the console shows it with its name, "2124-5113
 MembershipRequired", for a log line or the error applet. `tests/result_codes.c` (`ctest -R result_codes`) checks each
-row is there once and named by the rule, and the lookup.
+row is there once and named by the rule, and the lookup; `tests/result_codes.py` (`result_codes_sources`) refuses an
+`RC(...)` outside `result.h` and, in `hle/`, a result written as a number.
 
 `hle/result.h`, which `ipc.h` includes, holds `RC`, `RC_OK`, the table's constants and helpers in the style of
 Atmosphère's, written anew in C99:
