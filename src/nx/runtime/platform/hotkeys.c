@@ -138,6 +138,23 @@ void hotkey_set(const IniOpt* o, const char* v) {
     hotkey_name(g_hotkeys.key[a], g_hotkeys.mods[a], (char*)o->var, o->size);
 }
 
+int hotkey_assign(int action, unsigned key, unsigned mods, int* owner) {
+    const IniOpt* o = hotkey_row(action);
+    int a;
+    *owner = -1;
+    if (!o) return -1;
+    start();
+    for (a = 0; a < HOTKEY_COUNT && key; ++a)
+        if (a != action && g_hotkeys.key[a] == key && g_hotkeys.mods[a] == mods) {
+            *owner = a;
+            return -1;
+        }
+    g_hotkeys.key[action] = key;
+    g_hotkeys.mods[action] = mods;
+    hotkey_name(key, mods, (char*)o->var, o->size);
+    return 0;
+}
+
 int hotkeys_ini(const char* k, const char* v) {
     const IniOpt* o = ini_find(g_hotkeys_ini, k);
     if (o) ini_read(o, v);

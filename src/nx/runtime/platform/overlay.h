@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The game's menu: Android's back button, a gamepad's Home, the on-screen Home or F2 opens it over the game, in the
    menu's look (src/gui, the YoRHa theme), drawn by the renderer as quads (ui.h). The same on every platform: the
-   on-screen controls' options (vpad.h), the touch screen's, Capture frame while RenderDoc is in the game (the
-   renderer's capture), and Exit */
+   on-screen controls' options (vpad.h), the touch screen's, the runtime's keys (Shortcuts), Capture frame while
+   RenderDoc is in the game (the renderer's capture), and Exit */
 #ifndef SNX_OVERLAY_H
 #define SNX_OVERLAY_H
 #include "nx/runtime/platform/ui.h"
@@ -62,6 +62,14 @@ int overlay_controls(u64 buttons, const i32 sticks[4], u64 ms);
    key */
 int overlay_listening(void);
 void overlay_press(int control);
+/* The Shortcuts page, the runtime's keys (hotkeys.h) a row each: a row selected waits for a key, the next one pressed
+   (with its modifiers; a modifier alone waits on) its key, saved in the game's .ini; Esc or Back, B, a move or a tap
+   cancel the wait. A key another row has is refused, said on the page with the key the row keeps. Under ui_lock */
+int overlay_shortcut_listening(void);
+/* a key pressed while it waits: an SDL_Keycode, hotkeys.h's modifiers */
+void overlay_shortcut_key(unsigned key, unsigned mods);
+/* Backspace: on the Shortcuts page the row in focus back to its default key, as a key given; elsewhere overlay_back */
+int overlay_backspace(void);
 /* a tap at x, y on a picture of sw x sh: what it did, OVERLAY_CLOSE outside the panel */
 int overlay_tap(float x, float y, int sw, int sh);
 /* a finger or the mouse (touch.h's SNX_TOUCH_MOUSE) on the open menu, at x, y in the picture's pixels: down on an
