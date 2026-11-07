@@ -7,7 +7,7 @@
    Copyright (c) 2007 OpenedHand, Ltd.
    Copyright (c) 2018 Linaro
    Copyright (C) 2013 - 2018 Linaro Ltd <ard.biesheuvel@linaro.org> */
-#include "common/cpu/arm/arm.h"
+#include "support/arm_decode_ref.h"
 #include "common/cpu/arm/simd.h"
 
 static unsigned thumb16(uint16_t h, SnxThumb* o) {
@@ -255,7 +255,7 @@ static unsigned twin_kind(SnxThumb* o, uint32_t word, SnxA32Kind kind, unsigned 
     o->rd = 0;
     return TH_F32;
 }
-static unsigned twin(SnxThumb* o, uint32_t word) { return twin_kind(o, word, snx_a32_decode(word), 0); }
+static unsigned twin(SnxThumb* o, uint32_t word) { return twin_kind(o, word, snx_a32_decode_ref(word), 0); }
 
 /* Coprocessor, VFP and the v8 FP instructions: the A32 word with the condition in the first halfword's top nibble.
    Advanced SIMD data processing and element/structure transfers move their top bits (Arm ARM, "Advanced SIMD and
@@ -268,7 +268,7 @@ static unsigned coprocessor(unsigned a, unsigned b, SnxThumb* o) {
         word = 0xF4000000u | ((uint32_t)(a & 0xFF) << 16) | b;
     else
         word = ((uint32_t)a << 16) | b;
-    SnxA32Kind kind = snx_a32_decode(word);
+    SnxA32Kind kind = snx_a32_decode_ref(word);
     if (kind == SNX_A32_VECTOR) { /* Thumb's VSTR, VLDM and VSTM can't take the PC as their base, as A32's can */
         SnxArmVector v;
         snx_arm_vector_decode(word, &v);
@@ -609,7 +609,7 @@ static unsigned thumb32(uint16_t a, uint16_t b, SnxThumb* o) {
     return 0;
 }
 
-unsigned snx_thumb_decode(uint16_t hw1, uint16_t hw2, SnxThumb* out) {
+unsigned snx_thumb_decode_ref(uint16_t hw1, uint16_t hw2, SnxThumb* out) {
     out->shape = TH_UNDEF;
     out->len = 0;
     if ((hw1 >> 11) >= 0x1D) return thumb32(hw1, hw2, out);

@@ -21,7 +21,8 @@
 
    Options, as decodetree.py's: --decode NAME (an extern decode function), --static-decode NAME, --translate PREFIX
    (extern trans functions with that prefix), -w/--insnwidth 16|32|64, -o/--output FILE. Not supported:
-   --varinsnwidth. The output is only rewritten when it changes. decodetree.py emits a field's assignments in an
+   --varinsnwidth. --argsets writes only the argument sets' typedefs, for a file that includes the decoders of other
+   files that name them !extern, without the decoder of the file that defines them. The output is only rewritten when it changes. decodetree.py emits a field's assignments in an
    order that changes from run to run where no field refers to another; this one keeps the order the fields are
    written in, which is also valid.
 
@@ -1115,7 +1116,7 @@ static void usage(void) {
 int main(int argc, char** argv) {
     const char* output_file = NULL;
     const char *a64_profile = NULL, *a64_header = NULL, *a64_decoder = NULL;
-    int a64_stats = 0;
+    int a64_stats = 0, argsets_only = 0;
     const char* inputs[64];
     int ninputs = 0, i, k, top, *order;
     for (i = 1; i < argc; i++) {
@@ -1167,6 +1168,8 @@ int main(int argc, char** argv) {
             a64_decoder = VALUE();
         else if (!strcmp(opt, "--stats"))
             a64_stats = 1;
+        else if (!strcmp(opt, "--argsets"))
+            argsets_only = 1;
         else
             usage();
 #undef VALUE
@@ -1202,6 +1205,10 @@ int main(int argc, char** argv) {
         out("typedef struct {\n");
         for (k = 0; k < a->nfields; k++) out("    %s %s;\n", a->types[k], a->fields[k]);
         out("} arg_%s;\n\n", a->name);
+    }
+    if (argsets_only) { /* for the files whose argument sets are !extern of these (t32.decode, t16.decode) */
+        flush(output_file);
+        return 0;
     }
     if (anyextern)
         out("#pragma GCC diagnostic push\n#pragma GCC diagnostic ignored \"-Wredundant-decls\"\n#ifdef __clang__\n"
