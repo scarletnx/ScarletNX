@@ -46,6 +46,21 @@ void snx_vk_swapchain_free(VkDevice device, SnxVkSwapchain* sc) {
     *sc = (SnxVkSwapchain){0};
 }
 
+VkPresentModeKHR snx_vk_present_mode(const VkPresentModeKHR* modes, uint32_t count, bool vsync) {
+    VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;
+    for (uint32_t i = 0; i < count && !vsync; ++i)
+        if (modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) return modes[i];
+    for (uint32_t i = 0; i < count && !vsync; ++i)
+        if (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) mode = modes[i];
+    return mode;
+}
+/* the surface's present mode for unsynced (vsync off), FIFO with vsync */
+static VkPresentModeKHR present_mode(VkPhysicalDevice phys, VkSurfaceKHR surface, bool unsynced) {
+    VkPresentModeKHR modes[16];
+    uint32_t count = sizeof modes / sizeof *modes;
+    if (!unsynced || vkGetPhysicalDeviceSurfacePresentModesKHR(phys, surface, &count, modes) < 0) count = 0;
+    return snx_vk_present_mode(modes, count, !unsynced);
+}
 bool snx_vk_swapchain_make(VkPhysicalDevice phys, VkDevice device, const SnxVkSwapchainInfo* info,
                            SnxVkSwapchain* sc) {
     VkSwapchainKHR old = sc->swapchain;
@@ -59,6 +74,7 @@ bool snx_vk_swapchain_make(VkPhysicalDevice phys, VkDevice device, const SnxVkSw
         ok = format.format != VK_FORMAT_UNDEFINED;
     }
     VkExtent2D extent = ok ? snx_vk_swap_extent(&caps, info->window) : (VkExtent2D){0, 0};
+    VkPresentModeKHR mode = present_mode(phys, info->surface, info->unsynced);
     VkSwapchainKHR made = VK_NULL_HANDLE;
     if (ok && extent.width && extent.height) {
         VkSwapchainCreateInfoKHR ci = {.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
@@ -72,7 +88,7 @@ bool snx_vk_swapchain_make(VkPhysicalDevice phys, VkDevice device, const SnxVkSw
                                        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
                                        .preTransform = caps.currentTransform,
                                        .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-                                       .presentMode = VK_PRESENT_MODE_FIFO_KHR,
+                                       .presentMode = mode,
                                        .clipped = VK_TRUE,
                                        .oldSwapchain = old};
         if (vkCreateSwapchainKHR(device, &ci, NULL, &made) != VK_SUCCESS) made = VK_NULL_HANDLE;
@@ -92,5 +108,6 @@ bool snx_vk_swapchain_make(VkPhysicalDevice phys, VkDevice device, const SnxVkSw
     sc->format = format;
     sc->extent = extent;
     sc->count = count;
+    sc->mode = mode;
     return true;
 }
