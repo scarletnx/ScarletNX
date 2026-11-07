@@ -95,6 +95,7 @@ void vk_pipe_part_src(u32 part, const void* key, PipeKey* out) {
         out->sample_shading = fo->sample_shading;
         out->feedback = fo->feedback;
         out->coverage = fo->coverage;
+        out->advanced = fo->advanced;
         /* the masks hold already whether there is a fragment program: any one passes them through */
         out->fs = (VkShaderModule)(uintptr_t)1;
     }
@@ -213,5 +214,6 @@ void vk_pipe_split(const PipeKey* k, VkShaderModule fs, const PipeSplitDevice* d
     fo->sample_shading = k->sample_shading;
     if (!d->feedback_dynamic) fo->feedback = k->feedback;
     fo->coverage = k->coverage;
+    fo->advanced = k->advanced;
 }
 
