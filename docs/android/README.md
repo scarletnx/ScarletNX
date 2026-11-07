@@ -20,8 +20,9 @@ The layer is thin. An app's code runs on a JVM, and the Android system under it 
   its invocation API. The JVM's JIT compiles them to host code. The translation of a whole app takes under a second,
   so classes are translated as they load and kept in a cache. `--translate=DIR` translates every class ahead of time.
 - **The framework.** `android.*` is ScarletNX's own, a minimal subset that grows with the apps it runs. It is not
-  AOSP's framework. Its native side is C, the HLE of the userland libraries: libhwui's display lists drawn with
-  Vulkan, libandroidfw's resources, binder services in the process, SQLite.
+  AOSP's framework, though the files whose header names AOSP follow its source in parts ([CREDITS](../CREDITS.md)).
+  Its native side is C, the HLE of the userland libraries: libhwui's display lists drawn with Vulkan, libandroidfw's
+  resources, binder services in the process, SQLite.
 - **Interfaces.** [INTERFACES](INTERFACES.md) lists each layer an app reaches, from DEX bytecode to the kernel,
   and what the runtime does with it: high-level emulation (HLE), a heavy abstraction onto one host facility, or a
   real implementation where an app subclasses or reads the code itself.
