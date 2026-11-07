@@ -1476,6 +1476,39 @@ static void g_sendto(CPU* c, void* data) {
     socket_result(c, sendto((int)X(0), PTR(1), (int)X(2), msg_flags(X(3)), X(4) ? (struct sockaddr*)&a : NULL, n));
 #endif
 }
+/* the FORTIFY forms (_FORTIFY_SOURCE, which the NDK turns on): the plain call after bionic's check that the buffer
+   holds the length. __sendto_chk(fd, buffer, length, buffer_size, flags, address, address_length), which send() is
+   too, __recvfrom_chk(fd, buffer, length, buffer_size, flags, address, address_length), which recv() is too, and
+   __readlink_chk(path, buffer, size, buffer_size) */
+static void fortify_check(uint64_t length, uint64_t room, const char* what) {
+    if (length <= room) return;
+    fprintf(stderr, "scarletnx-android: FORTIFY: %s: a length of %llu bytes, its buffer %llu\n", what,
+            (unsigned long long)length, (unsigned long long)room);
+    abort();
+}
+static void g_sendto_chk(CPU* c, void* data) {
+    fortify_check(X(2), X(3), "sendto");
+    X(3) = X(4);
+    X(4) = X(5);
+    X(5) = X(6);
+    g_sendto(c, data);
+}
+static void g_recvfrom_chk(CPU* c, void* data) {
+    fortify_check(X(2), X(3), "recvfrom");
+    X(3) = X(4);
+    X(4) = X(5);
+    X(5) = X(6);
+#if defined(__linux__)
+    hle_pass(c, (void*)recvfrom);
+    (void)data;
+#else
+    g_recvfrom(c, data);
+#endif
+}
+static void g_readlink_chk(CPU* c, void* data) {
+    fortify_check(X(2), X(3), "readlink");
+    g_readlink_proc(c, data);
+}
 #if defined(__linux__)
 static void g_sendmsg(CPU* c, void* data) {
     (void)data;
@@ -2024,6 +2057,7 @@ const HleSymbol hle_posix[] = {
 #endif
 #endif
     A(connect, g_connect), A(sendto, g_sendto), A(sendmsg, g_sendmsg), A(gethostbyname, g_gethostbyname),
+    A(__sendto_chk, g_sendto_chk), A(__recvfrom_chk, g_recvfrom_chk), A(__readlink_chk, g_readlink_chk),
     A(getaddrinfo, g_getaddrinfo), A(freeaddrinfo, g_freeaddrinfo), A(getifaddrs, g_getifaddrs),
     A(freeifaddrs, g_freeifaddrs), A(gai_strerror, g_gai_strerror),
     A(getnameinfo, g_getnameinfo), P(gethostname), P(inet_addr), P(inet_ntoa), P(if_nametoindex),

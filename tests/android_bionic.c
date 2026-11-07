@@ -187,10 +187,32 @@ static void test_error_texts(void) {
 #endif
 }
 
+/* ---- what the NDK's _FORTIFY_SOURCE calls ---- */
+
+/* send(), recv() and readlink() of a buffer whose size the compiler knows, as __sendto_chk, __recvfrom_chk and
+   __readlink_chk */
+static void test_fortified(void) {
+    int32_t fds[2] = {-1, -1};
+    expect_int("socketpair(AF_UNIX, SOCK_STREAM)", (int64_t)CALL("socketpair", 1, 1, 0, P(fds)), 0);
+    expect_int("__sendto_chk, send's FORTIFY form", (int64_t)CALL("__sendto_chk", I32(fds[0]), P("abc"), 3, 4, 0, 0, 0),
+               3);
+    char got[8] = "";
+    expect_int("__recvfrom_chk, recv's (MSG_WAITALL)",
+               (int64_t)CALL("__recvfrom_chk", I32(fds[1]), P(got), 3, sizeof got, 0x100, 0, 0), 3);
+    expect_text("what came through", got, "abc");
+    CALL("close", I32(fds[0]));
+    CALL("close", I32(fds[1]));
+    char link[256];
+    int64_t n = (int64_t)CALL("__readlink_chk", P("/proc/self/exe"), P(link), sizeof link - 1, sizeof link);
+    link[n > 0 ? n : 0] = 0;
+    expect_text("__readlink_chk of /proc/self/exe", link, "/system/bin/app_process64");
+}
+
 int main(void) {
     test_printf_signed();
     test_sscanf_reads_its_pointers();
     test_error_texts();
+    test_fortified();
     if (g_t.failures) {
         fprintf(stderr, "android_bionic: %d failed\n", g_t.failures);
         return 1;
