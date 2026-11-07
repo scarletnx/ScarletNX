@@ -49,6 +49,13 @@ static inline void vk_descriptor_heap_write_index_run(void* destination, uint32_
     for (uint32_t i = 0; i < count; i++) snx_st_le32(bytes + (size_t)i * 4, value);
 }
 
+/* The resource heap bytes a frame slot asks for. An open world's heaviest frames (one game on RADV, 2026-11-07)
+   wrote 3,900 tables a frame: 2.1 MB of indices and descriptors. A slot of 1 MiB ran out of room once or twice in
+   such a frame, and each time the frame moved on to the other slot (vk_descriptors_room), whose GPU work the GPU
+   thread then waited for. The device's maxResourceHeapSize and allocation limit cut it down
+   (vk_descriptor_heap_memory_plan_fit) */
+#define VK_DESCRIPTOR_HEAP_RESOURCE_FRAME (8ull << 20)
+
 typedef struct {
     VkDeviceSize frame_size, reserved_offset, reserved_size, range_size, allocation_size, alignment;
 } VkDescriptorHeapMemoryPlan;

@@ -246,7 +246,7 @@ int main(void) {
     g_test.buffer_result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
     char why[256];
     snprintf(why, sizeof why, "the resource heap's %llu-byte buffer could not be made",
-             (unsigned long long)((1ull << 20) * VK_FRAMES + 256 + 63));
+             (unsigned long long)(VK_DESCRIPTOR_HEAP_RESOURCE_FRAME * VK_FRAMES + 256 + 63));
     refused(&props, 0, why, "the resource heap's buffer");
     g_test.pool_result = VK_ERROR_OUT_OF_HOST_MEMORY;
     refused(&props, 1, "the empty descriptor set that leaves descriptor buffers: vkCreateDescriptorPool failed",

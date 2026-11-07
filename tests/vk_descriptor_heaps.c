@@ -344,8 +344,30 @@ static void missing_pieces(void) {
     check(!strcmp(vk_descriptor_heap_missing(0, 0, 0, 0), "no VK_EXT_descriptor_heap"), "the first piece first");
     check(!vk_descriptor_heap_missing(1, 1, 1, 1), "nothing missing");
 }
+/* A frame slot holds an open world's heaviest frame: 3,900 tables of 516 bytes of indices and 32 of a new image
+   descriptor each (one game on RADV, 2026-11-07), with the 16 KiB the room check keeps free after them. A slot of
+   1 MiB held 1,900 of them, and the frame moved on to the other slot mid-frame */
+static void heavy_frame(void) {
+    VkDescriptorHeapMemoryPlan plan;
+    /* no reserved range (RADV's log says 0 reserved bytes), 64-byte heap addresses, 32-byte image descriptors */
+    check(vk_descriptor_heap_memory_plan_fit(&plan, VK_DESCRIPTOR_HEAP_RESOURCE_FRAME, 2, 0, 64, 32, 1ull << 32,
+                                             1ull << 32),
+          "a resource heap of two frame slots is planned");
+    VkDeviceSize used = 0;
+    uint32_t tables = 0, offset;
+    while (tables < 3900 && vk_descriptor_heap_allocate(&plan, &used, 1, 516, 8, &offset) &&
+           vk_descriptor_heap_allocate(&plan, &used, 1, 32, 32, &offset))
+        tables++;
+    char message[160];
+    snprintf(message, sizeof message,
+             "a slot of %llu bytes holds 3900 tables of an open world's frame and 16 KiB "
+             "to spare: %u tables, %llu bytes used",
+             (unsigned long long)plan.frame_size, tables, (unsigned long long)used);
+    check(tables == 3900 && plan.frame_size - used >= (16u << 10), message);
+}
 int main(void) {
     missing_pieces();
+    heavy_frame();
     image_runs(); descriptor_alignment(); plans(); constrained_heaps(); table_runs(); mappings(); current_frame_cache();
     printf("descriptor heap geometry: %u checks, %u failures\n", checks, failures);
     return failures != 0;
