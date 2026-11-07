@@ -790,6 +790,16 @@ bool vita_render_idle(VitaProcess* p, bool wait) {
     if (wait) return vita_vk_wait(r->vk->ring.submitted);
     return vita_vk_poll() >= r->vk->ring.submitted;
 }
+uint64_t vita_render_finish(VitaProcess* p) {
+    struct VitaRender* r = render_of(p);
+    if (!r || !r->vk->ring.recording) return r ? r->vk->ring.submitted : 0;
+    VkCommandBuffer cb = vita_vk_commands();
+    if (r->rendering) rendering_pause(cb);
+    memory_barrier(cb);
+    uint64_t serial = vita_vk_submit();
+    if (r->rendering) rendering_resume(r, vita_vk_commands());
+    return serial;
+}
 bool vita_render_show(VitaProcess* p, uint32_t address, uint32_t pitch, uint32_t width, uint32_t height) {
     struct VitaRender* r = render_of(p);
     if (!r || r->rendering) return false;
@@ -1348,6 +1358,86 @@ static void color_write_back(struct VitaRender* r, VitaProcess* p, VkCommandBuff
     barrier(cb, s->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s->layout);
     memory_barrier(cb);
     vita_watch_written(s->address, s->stride * bytes * s->height); /* the scene's later stores write it again */
+}
+bool vita_render_transfer_copy(VitaProcess* p, uint32_t width, uint32_t height, uint32_t bytes_per_pixel,
+                               uint32_t src_address, uint32_t src_x, uint32_t src_y, int32_t src_stride,
+                               uint32_t dst_address, uint32_t dst_x, uint32_t dst_y, int32_t dst_stride) {
+    struct VitaRender* r = render_of(p);
+    if (!r || !width || !height) return true;
+    if (!bytes_per_pixel || src_stride <= 0 || dst_stride <= 0) return false;
+
+    uint64_t row_bytes = (uint64_t)width * bytes_per_pixel;
+    uint64_t src_row_end = ((uint64_t)src_x + width) * bytes_per_pixel;
+    uint64_t dst_row_end = ((uint64_t)dst_x + width) * bytes_per_pixel;
+    uint64_t src_start = (uint64_t)src_y * (uint32_t)src_stride + (uint64_t)src_x * bytes_per_pixel;
+    uint64_t dst_start = (uint64_t)dst_y * (uint32_t)dst_stride + (uint64_t)dst_x * bytes_per_pixel;
+    uint64_t src_span = (uint64_t)(height - 1) * (uint32_t)src_stride + row_bytes;
+    uint64_t dst_span = (uint64_t)(height - 1) * (uint32_t)dst_stride + row_bytes;
+    uint64_t src_begin = (uint64_t)src_address + src_start;
+    uint64_t dst_begin = (uint64_t)dst_address + dst_start;
+    if (row_bytes > UINT32_MAX || src_row_end > (uint32_t)src_stride || dst_row_end > (uint32_t)dst_stride ||
+        src_begin > UINT32_MAX || dst_begin > UINT32_MAX || src_span > UINT32_MAX || dst_span > UINT32_MAX ||
+        ((src_begin | dst_begin | row_bytes | (uint32_t)src_stride | (uint32_t)dst_stride) & 3))
+        return false;
+
+    VkDeviceSize src_at, dst_at;
+    const Import* src = buffer_of(r, p, (uint32_t)src_begin, (uint32_t)src_span, &src_at);
+    const Import* dst = buffer_of(r, p, (uint32_t)dst_begin, (uint32_t)dst_span, &dst_at);
+    if (!src || !dst) return false;
+
+    bool same = src->buffer == dst->buffer;
+    bool overlap = same && src_at < dst_at + dst_span && dst_at < src_at + src_span;
+    VkCommandBuffer cb = vita_vk_commands();
+    bool rendering = r->rendering;
+    if (rendering) {
+        rendering_pause(cb);
+        if (overlaps_color(r, (uint32_t)src_begin, (uint32_t)src_span)) color_write_back(r, p, cb);
+    }
+    memory_barrier(cb);
+
+    if (overlap) {
+        if (row_bytes > LINEAR / height) {
+            if (rendering) rendering_resume(r, cb);
+            return false;
+        }
+        unsigned slot = vita_vk_slot();
+        VkDeviceSize old_used = r->linear[slot].used, scratch_at;
+        if (!linear_room(r, row_bytes * height, &scratch_at)) {
+            r->linear[slot].used = old_used;
+            if (rendering) rendering_resume(r, cb);
+            return false;
+        }
+        VkBuffer scratch = r->linear[slot].buffer;
+        for (uint32_t y = 0; y < height; ++y) {
+            VkBufferCopy copy = {.srcOffset = src_at + (VkDeviceSize)y * (uint32_t)src_stride,
+                                 .dstOffset = scratch_at + (VkDeviceSize)y * row_bytes,
+                                 .size = row_bytes};
+            vkCmdCopyBuffer(cb, src->buffer, scratch, 1, &copy);
+        }
+        memory_barrier(cb);
+        for (uint32_t y = 0; y < height; ++y) {
+            VkBufferCopy copy = {.srcOffset = scratch_at + (VkDeviceSize)y * row_bytes,
+                                 .dstOffset = dst_at + (VkDeviceSize)y * (uint32_t)dst_stride,
+                                 .size = row_bytes};
+            vkCmdCopyBuffer(cb, scratch, dst->buffer, 1, &copy);
+        }
+        memory_barrier(cb);
+        r->linear[slot].used = old_used;
+    } else if (src_stride == (int32_t)row_bytes && dst_stride == (int32_t)row_bytes) {
+        VkBufferCopy copy = {.srcOffset = src_at, .dstOffset = dst_at, .size = row_bytes * height};
+        vkCmdCopyBuffer(cb, src->buffer, dst->buffer, 1, &copy);
+    } else {
+        for (uint32_t y = 0; y < height; ++y) {
+            VkBufferCopy copy = {.srcOffset = src_at + (VkDeviceSize)y * (uint32_t)src_stride,
+                                 .dstOffset = dst_at + (VkDeviceSize)y * (uint32_t)dst_stride,
+                                 .size = row_bytes};
+            vkCmdCopyBuffer(cb, src->buffer, dst->buffer, 1, &copy);
+        }
+    }
+    memory_barrier(cb);
+    vita_watch_written((uint32_t)dst_begin, (uint32_t)dst_span);
+    if (rendering) rendering_resume(r, cb);
+    return true;
 }
 static Texture* texture_for(struct VitaRender* r, VitaProcess* p, VkCommandBuffer cb, const GxmTexture* x) {
     uint32_t type = gxm_texture_type(x), format = gxm_texture_format(x), data = gxm_texture_data(x);

@@ -277,6 +277,24 @@ static void gxm_program_metadata(VitaProcess* p, VitaThread* t, uint32_t mem) {
     uint32_t slot = (fragment - GXM_HANDLE_FRAGMENT) / GXM_PROGRAM_HANDLE;
     assert(slot < GXM_PROGRAMS && p->gxm->fragment[slot].references == 2);
 }
+static void gxm_texture_transfers(VitaProcess* p, VitaThread* t, uint32_t mem) {
+    const VitaHle* gxm = vita_hle_gxm;
+    uint32_t texture = mem + 0x8080;
+    assert(CALL(gxm, "sceGxmTextureInitCube", texture, mem + 0x9000, 0, 64, 32, 1) == 0);
+    GxmTexture cube = {{vita_read32(p, texture), vita_read32(p, texture + 4), vita_read32(p, texture + 8),
+                        vita_read32(p, texture + 12)}};
+    assert(gxm_texture_type(&cube) == GXM_TEXTURE_CUBE);
+    assert(CALL(gxm, "sceGxmTextureInitCube", texture, mem + 0x9000, 0, 63, 32, 1) == 0x805b0005u);
+    assert(CALL(gxm, "sceGxmTextureInitCube", texture, mem + 0x9000, 0, 64, 0, 1) == 0x805b0005u);
+    assert(CALL(gxm, "sceGxmTextureInitCube", 0, mem + 0x9000, 0, 64, 32, 1) == 0x805b0004u);
+
+    /* Unsupported transfer modes fail explicitly; finish remains safe without a renderer. */
+    assert(CALL(gxm, "sceGxmTransferCopy", 1, 1, 0, 0, 1, 0, 0, mem, 0, 0, 4, 0, 0, mem + 4, 0, 0, 4, 0, 0, 0) ==
+           0x805b0009u);
+    assert(CALL(gxm, "sceGxmTransferCopy", 0, 1, 0, 0, 0, 0, 0, mem, 0, 0, 4, 0, 0, mem + 4, 0, 0, 4, 0, 0, 0) ==
+           0);
+    assert(CALL(gxm, "sceGxmTransferFinish") == 0);
+}
 
 int main(void) {
     char *root = snx_temp_dir(NULL), *folder = root ? snx_path_join(root, "game") : NULL, error[256] = {0};
@@ -296,6 +314,7 @@ int main(void) {
     net(p, t, mem, end);
     ngs_template1(p, t, mem);
     gxm_program_metadata(p, t, mem);
+    gxm_texture_transfers(p, t, mem);
     vita_process_free(p);
     assert(!snx_remove_tree(root));
     free(folder);
