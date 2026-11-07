@@ -166,6 +166,21 @@ void mem_layout_large_heap(void) {
     }
 }
 
+/* EXPERIMENT: an Ounce program's alias region, 256 GiB where the 39-bit layout's is 64. The SDK's virtual address
+   memory (nn::os::AllocateAddressRegion) takes its regions from the alias region, GetInfo 2 and 3 less GetInfo 28,
+   and one game reserves 60 GiB there twice, at its startup and again in its main, and frees neither: 64 GiB can't
+   hold both. A Switch 1 program on the Ounce reports the 64 GiB, so an Ounce program's layout differs, by a size not
+   known. The heap, stack and kernel regions move up past it, all within the 512 GiB reservation */
+void mem_layout_ounce_alias(void) {
+    u64 extra = 192 * GIB;
+    if (g_as_size < AS_TOP || g_layout.alias_size != 64 * GIB || g_layout.kern_end + extra > g_layout.end) return;
+    g_layout.alias_size += extra;
+    g_layout.heap += extra;
+    g_layout.stack += extra;
+    g_layout.kern += extra;
+    g_layout.kern_end += extra;
+}
+
 /* The 32-bit layouts (Eden's 32-bit entries in k_address_space_info.cpp): the code region from 2 MiB to 1 GiB, which
    is the stack region too, then from 1 GiB the 1 GiB alias region and the 1 GiB heap region, or a 2 GiB heap region
    without an alias region. The kernel's pages go in the last GiB, above both */
