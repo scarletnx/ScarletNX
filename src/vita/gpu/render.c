@@ -551,8 +551,11 @@ void vita_render_free(VitaProcess* p) {
     g_retiring = NULL;
     for (unsigned i = 0; i < GXM_PROGRAMS; ++i) {
         vita_render_shader_free(p, p->gxm->vertex[i].shader);
+        p->gxm->vertex[i].shader = NULL;
+    }
+    for (unsigned i = 0; i < GXM_FRAGMENT_PROGRAMS; ++i) {
         vita_render_shader_free(p, p->gxm->fragment[i].shader);
-        p->gxm->vertex[i].shader = p->gxm->fragment[i].shader = NULL;
+        p->gxm->fragment[i].shader = NULL;
     }
     for (unsigned i = 0; i < PIPELINES; ++i)
         if (r->pipelines[i].pipeline) vkDestroyPipeline(d, r->pipelines[i].pipeline, NULL);
