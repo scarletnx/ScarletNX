@@ -170,6 +170,7 @@ static int create_instance(void) {
                               .extensions = ext,
                               .extension_count = next,
                               .validation = g_settings.vulkan_validation_layer != 0,
+                              .gpu_assisted = g_settings.vulkan_validation_layer == 2,
                               .portability = true,
                               .debug = debug_cb};
     SnxVkInstance made;
