@@ -95,7 +95,7 @@ typedef struct {
     const VkSparseShape* sh;
     const VkFmt* f;
     u8* bits;
-    u64 at, base;            /* the level's guest address, and its first sparse block */
+    u64 at, end, base;       /* the level's guest addresses, and its first sparse block */
     u32 level, lw, lh, ld;   /* its texels */
     u32 gobs_x, rows_blocks; /* its block-linear blocks across, and down */
     u32 lbh, lbd;
@@ -103,7 +103,10 @@ typedef struct {
 static void mark_pages(void* ctx, u64 gva, u64 cpu, u64 n) {
     const PageMark* m = ctx;
     const VkSparseShape* sh = m->sh;
-    u64 block = 512ull << (m->lbh + m->lbd), first = (gva - m->at) / block, last = (gva - m->at + n - 1) / block;
+    /* gmmu_pieces gives whole pages: a level that starts or ends inside one (the small ones) takes its own part */
+    u64 lo = gva > m->at ? gva : m->at, hi = gva + n < m->end ? gva + n : m->end;
+    if (lo >= hi) return;
+    u64 block = 512ull << (m->lbh + m->lbd), first = (lo - m->at) / block, last = (hi - 1 - m->at) / block;
     u32 l = m->level, rows = 8u << m->lbh, slices = 1u << m->lbd;
     (void)cpu;
     for (u64 b = first; b <= last; b++) {
@@ -146,6 +149,7 @@ static int tex_bind(Surf* t) {
                               f,
                               bits,
                               at,
+                              at + lsz,
                               (u64)layer * sh->per_layer + sh->first[l],
                               l,
                               lw,
