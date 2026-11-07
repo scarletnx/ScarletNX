@@ -1207,7 +1207,7 @@ static int may_write(const Sm86Insn* in, u32 r) {
         case SM86_LDG: case SM86_LDG_NOU: case SM86_LDL: case SM86_LDS: case SM86_LDC: case SM86_LDC_BINDLESS:
         case SM86_ALD: case SM86_ATOMG: case SM86_ATOMG_NOU: case SM86_ATOMG_CAS: case SM86_ATOMS: case SM86_ATOMS_NOU:
         case SM86_ATOMS_CAS: case SM86_SULD_P: case SM86_SULD_P_B: case SM86_SULD_D: case SM86_SULD_D_B:
-        case SM86_SURED: case SM86_SURED_B: case SM86_SUATOM_B: case SM86_SUATOM_CAS_B:
+        case SM86_SURED: case SM86_SURED_B: case SM86_SUATOM: case SM86_SUATOM_B: case SM86_SUATOM_CAS_B:
             return in->dst < SM86_RZ && r >= in->dst && r < in->dst + 4u;
         default: return in->dst < SM86_RZ && r >= in->dst && r < in->dst + 2u;
     }
@@ -1800,7 +1800,7 @@ static int image_dim(u32 dim, u32* sdim, u32* array, u32* coords, u32* type) {
     }
 }
 static void surface(Ctx* c, const Sm86Insn* in) {
-    int store = in->op == SM86_SUST_P, atomic = in->op == SM86_SURED;
+    int store = in->op == SM86_SUST_P, atomic = in->op == SM86_SURED || in->op == SM86_SUATOM;
     u32 sdim, array, coords, type;
     if (!image_dim(sm86_field(in, 61, 3), &sdim, &array, &coords, &type)) {
         fail(c, "%s dimension %u", sm86_ops[in->op].name, sm86_field(in, 61, 3));
@@ -1854,13 +1854,17 @@ static void surface(Ctx* c, const Sm86Insn* in) {
                                        SPV_OP_ATOMIC_AND, SPV_OP_ATOMIC_OR, SPV_OP_ATOMIC_XOR},
                                       {SPV_OP_ATOMIC_I_ADD, SPV_OP_ATOMIC_S_MIN, SPV_OP_ATOMIC_S_MAX, 0, 0,
                                        SPV_OP_ATOMIC_AND, SPV_OP_ATOMIC_OR, SPV_OP_ATOMIC_XOR}};
-        u32 how = sm86_field(in, 87, 3), atype = sm86_field(in, 73, 3);
-        if (atype > 1 || !ops[atype][how]) {
-            fail(c, "SURED of type %u, operation %u", atype, how);
+        /* SUATOM: the same, its operation 4 bits wide (8 EXCH), and the prior value to the destination */
+        int returns = in->op == SM86_SUATOM;
+        u32 how = sm86_field(in, 87, returns ? 4 : 3), atype = sm86_field(in, 73, 3);
+        u32 opcode = how == 8 && returns ? SPV_OP_ATOMIC_EXCHANGE : how < 8 && atype <= 1 ? ops[atype][how] : 0;
+        if (atype > 1 || !opcode) {
+            fail(c, "%s of type %u, operation %u", sm86_ops[in->op].name, atype, how);
             return;
         }
         u32 ptr = spv_emit_image_texel_pointer(&c->e, c->t_u32, c->img[slot], coord, c->zero);
-        spv_emit_atomic_u32(&c->e, c->t_u32, ops[atype][how], ptr, rd(c, sm86_field(in, 32, 8)));
+        u32 prior = spv_emit_atomic_u32(&c->e, c->t_u32, opcode, ptr, rd(c, sm86_field(in, 32, 8)));
+        if (returns && in->dst < SM86_RZ) wr(c, in->dst, prior);
         return;
     }
     /* the texel in the image's own type: the register words as floats (kind 0) or integers (2, 3); a component
@@ -3283,7 +3287,8 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         case SM86_TXQ: texture_query(c, in); return;
         case SM86_SULD_P:
         case SM86_SUST_P:
-        case SM86_SURED: surface(c, in); return;
+        case SM86_SURED:
+        case SM86_SUATOM: surface(c, in); return;
         case SM86_KILL:
             spv_emit_capability(&c->e, SPV_CAPABILITY_DEMOTE_TO_HELPER_INVOCATION);
             spv_emit_demote(&c->e);
