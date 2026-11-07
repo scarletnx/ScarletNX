@@ -810,8 +810,8 @@ static u32 shape_raw_size(const Shape* sh, u32 off[5], u32 size[5], u32* idx_off
     *idx_size = quads * 6 * 2;
     return *idx_off + *idx_size;
 }
-/* a shape file's quality, in the archive's order */
-enum { Q_MID, Q_HIGH, Q_SHAPES };
+/* a shape file's quality, in the archive's order; Q_CTR a 3DS part, whose vertices a byte indexes */
+enum { Q_MID, Q_HIGH, Q_SHAPES, Q_CTR = Q_SHAPES };
 /* the console's largest decompressed part of each shape kind in its Mid and High files. A shape file's header gives
    its own to the SDK, which sizes a Mii model's memory with them, and a game sizes its Mii heaps for the console's */
 static const u32 shape_budget[Q_SHAPES][S_KINDS] = {
@@ -823,19 +823,26 @@ static u32 fewer(u32 n, u32 least) {
     u32 m = n - (n + 7) / 8;
     return n <= least ? n : m < least ? least : m;
 }
+/* whether a shape is too big for quality q: its bytes over the console's largest of its kind there, or for Q_CTR,
+   its vertices over the 256 a 3DS part's byte indexes reach */
+static int shape_over(const Shape* sh, u32 q) {
+    u32 off[5], size[5], idx_off, idx_size, nv = 0, g;
+    if (q != Q_CTR) return shape_raw_size(sh, off, size, &idx_off, &idx_size) > shape_budget[q][sh->kind];
+    for (g = 0; g < sh->grids; g++) nv += (sh->ns[g] + 1) * (sh->nt[g] + 1);
+    return nv > SNX_MII_CFL_VERTICES;
+}
 /* a part of a shape file of quality q: shape_of's, with an eighth fewer quads each way at a time (down to 3 by 1 a
-   grid) until its bytes are no more than the console's largest of its kind there. Hair that does not fit first goes
-   to a column a lock's tip and one its valley around the head, which keeps its locks pointed, and gives up quads
-   from its tails (down to five around) and its head's rows (down to four) before its columns */
+   grid) until it is no longer over (shape_over). Hair that does not fit first goes to a column a lock's tip and one
+   its valley around the head, which keeps its locks pointed, and gives up quads from its tails (down to five around)
+   and its head's rows (down to four) before its columns */
 static Shape shape_in(u32 kind, u32 variant, u32 q) {
     Shape sh = shape_of(kind, variant);
-    u32 off[5], size[5], idx_off, idx_size, keep = 0;
-    if ((kind == S_HAIR_NORMAL || kind == S_HAIR_CAP) &&
-        shape_raw_size(&sh, off, size, &idx_off, &idx_size) > shape_budget[q][kind]) {
+    u32 keep = 0;
+    if ((kind == S_HAIR_NORMAL || kind == S_HAIR_CAP) && shape_over(&sh, q)) {
         sh.ns[0] = 2 * HAIR_LOCKS;
         keep = 1;
     }
-    while (shape_raw_size(&sh, off, size, &idx_off, &idx_size) > shape_budget[q][kind]) {
+    while (shape_over(&sh, q)) {
         u32 g, changed = 0;
         for (g = 0; g < sh.grids; g++) {
             u32 ns = keep && !g ? sh.ns[g] : fewer(sh.ns[g], keep ? 5 : 3), nt = fewer(sh.nt[g], keep && !g ? 4 : 1);
@@ -1692,4 +1699,340 @@ int snx_mii_picture(const u8 charinfo[SNX_MII_CHARINFO], const SnxMiiLook* look,
     }
     free(block);
     return 0;
+}
+
+/* ============================================================ the 3DS's parts file, CFL_Res.dat */
+
+/* the items of each section, in the order of SNX_MII_CFL_* and then the textures' */
+static const u16 cfl_items[SNX_MII_CFL_SECTIONS] = {4,  264, 12, 264, 1,  264, 12, 18, 18, 132,
+                                                    62, 24,  3,  12,  12, 9,   2,  37, 6,  18};
+/* a mesh section's shape kind over the hair and (hat, forehead and hair, from item 132) under a cap */
+static const u8 cfl_shape[SNX_MII_CFL_MESHES][2] = {
+    {S_BEARD, S_BEARD}, {S_HAT_NORMAL, S_HAT_CAP},   {S_FACELINE, S_FACELINE}, {S_FOREHEAD_NORMAL, S_FOREHEAD_CAP},
+    {S_GLASS, S_GLASS}, {S_HAIR_NORMAL, S_HAIR_CAP}, {S_MASK, S_MASK},         {S_NOSELINE, S_NOSELINE},
+    {S_NOSE, S_NOSE}};
+/* a texture section's kind */
+static const u8 cfl_texture[SNX_MII_CFL_SECTIONS - SNX_MII_CFL_MESHES] = {
+    T_HAT, T_EYE, T_EYEBROW, T_BEARD, T_WRINKLE, T_MAKEUP, T_GLASS, T_MOLE, T_MOUTH, T_MUSTACHE, T_NOSELINE};
+static const char* const cfl_names[SNX_MII_CFL_MESHES] = {"beard", "hat",  "faceline", "forehead", "glass",
+                                                          "hair",  "mask", "noseline", "nose"};
+#define CFL_RGBA4 10u /* the face library's texture format: 16 bits, 4 a channel */
+#define CFL_INDEX 4u  /* the word before a mesh's index list (a list of triangles) */
+#define CFL_OFFSET                                                                                                     \
+    22 /* an item's offset in its section's table takes the low 22 bits, the item it is the same as
+                            (1 + its index) the high 10 */
+
+static void cfl_kind(u32 section, u32 item, u32* kind, u32* i) {
+    u32 cap = cfl_items[section] == 2 * HAIR_STYLES && item >= HAIR_STYLES;
+    *kind = cfl_shape[section][cap];
+    *i = cap ? item - HAIR_STYLES : item;
+}
+
+int snx_mii_ctr_mesh(void* ctx, u32 section, u32 item, SnxMiiMesh* m) {
+    u32 kind, i, j, n = 0, g, base, w, k;
+    Shape grid;
+    (void)ctx;
+    if (section >= SNX_MII_CFL_MESHES || item >= cfl_items[section]) {
+        fprintf(stderr, "mii parts: no mesh section %u item %u: there are %d sections of 4 to 264 items\n", section,
+                item, SNX_MII_CFL_MESHES);
+        return -1;
+    }
+    cfl_kind(section, item, &kind, &i);
+    if (!shape_present(kind, i)) return 0;
+    for (j = 0; j < item; j++) { /* an earlier item of the section drawn the same: this one is it */
+        u32 kj, ij;
+        cfl_kind(section, j, &kj, &ij);
+        if (kj == kind && shape_present(kj, ij) && shape_variant(kj, ij) == shape_variant(kind, i)) {
+            m->same = j + 1;
+            return 1;
+        }
+    }
+    grid = shape_in(kind, shape_variant(kind, i), Q_CTR);
+    m->uv = (grid.attrs >> A_UV) & 1u;
+    for (grid.g = 0; grid.g < grid.grids; grid.g++)
+        for (j = 0; j <= grid.nt[grid.g]; j++)
+            for (k = 0; k <= grid.ns[grid.g]; k++, n++) {
+                float s = (float)k / (float)grid.ns[grid.g], t = (float)j / (float)grid.nt[grid.g];
+                Vec p = shape_at(&grid, s, t), nr = shape_normal(&grid, s, t, p);
+                if (n >= SNX_MII_CFL_VERTICES) {
+                    fprintf(stderr, "mii parts: our %s %u has more than %d vertices, the most a 3DS part has\n",
+                            cfl_names[section], item, SNX_MII_CFL_VERTICES);
+                    return -1;
+                }
+                m->pos[n][0] = p.x, m->pos[n][1] = p.y, m->pos[n][2] = p.z;
+                m->nrm[n][0] = nr.x, m->nrm[n][1] = nr.y, m->nrm[n][2] = nr.z;
+                if (m->uv) shape_uv(&grid, p, s, t, m->tex[n]);
+            }
+    m->vertices = n;
+    for (g = 0, n = 0, base = 0; g < grid.grids; base += (grid.ns[g] + 1) * (grid.nt[g] + 1), g++)
+        for (j = 0, w = grid.ns[g] + 1; j < grid.nt[g]; j++)
+            for (k = 0; k < grid.ns[g]; k++) { /* two triangles a quad, counterclockwise as shape_write's */
+                u16 a = (u16)(base + j * w + k), b = (u16)(a + 1), c = (u16)(a + w + 1), d = (u16)(a + w);
+                const u16 tri[6] = {a, b, c, a, c, d};
+                u32 q;
+                if (n + 6 > SNX_MII_MESH_INDICES) {
+                    fprintf(stderr, "mii parts: our %s %u has more than %d triangles\n", cfl_names[section], item,
+                            SNX_MII_MESH_INDICES / 3);
+                    return -1;
+                }
+                for (q = 0; q < 6; q++) m->idx[n++] = tri[q];
+            }
+    m->indices = n;
+    if (section == SNX_MII_CFL_FACELINE) faceline_transform(i, m->anchor);
+    if (section == SNX_MII_CFL_HAIR) { /* each of the hat's places: its rotation, then the place */
+        float t[18];
+        hair_transform(i, t);
+        for (k = 0; k < 3; k++) {
+            memcpy(m->anchor + 6 * k, t + 6 * k + 3, 3 * sizeof *t);
+            memcpy(m->anchor + 6 * k + 3, t + 6 * k, 3 * sizeof *t);
+        }
+    }
+    return 1;
+}
+
+/* the value in 1/scale steps as the file's signed 16 bits, 0 with *bad set when it does not fit */
+static u16 cfl_fixed(float v, float scale, int* bad) {
+    float f = v * scale;
+    if (!(f > -32768.5f && f < 32767.5f)) {
+        *bad = 1;
+        return 0;
+    }
+    return (u16)(i16)lroundf(f);
+}
+/* whether mesh m can be section's item: says why not */
+static int cfl_mesh_fits(u32 section, u32 item, const SnxMiiMesh* m) {
+    u32 i, a;
+    int bad = 0;
+    if (!m->vertices || m->vertices > SNX_MII_CFL_VERTICES || !m->indices || m->indices % 3 || m->indices > 0xffff) {
+        fprintf(stderr,
+                "mii parts: %s %u has %u vertices and %u indices; a 3DS part has 1 to %d vertices and a whole number "
+                "of triangles, at most 65535 indices\n",
+                cfl_names[section], item, m->vertices, m->indices, SNX_MII_CFL_VERTICES);
+        return 0;
+    }
+    for (i = 0; i < m->indices; i++)
+        if (m->idx[i] >= m->vertices) {
+            fprintf(stderr, "mii parts: %s %u's index %u is %u, past its %u vertices\n", cfl_names[section], item, i,
+                    m->idx[i], m->vertices);
+            return 0;
+        }
+    for (i = 0; i < m->vertices; i++) {
+        for (a = 0; a < 3; a++) cfl_fixed(m->pos[i][a], 256.0f, &bad), cfl_fixed(m->nrm[i][a], 256.0f, &bad);
+        if (m->uv) cfl_fixed(m->tex[i][0], 8192.0f, &bad), cfl_fixed(m->tex[i][1], 8192.0f, &bad);
+        if (bad) {
+            fprintf(stderr,
+                    "mii parts: %s %u's vertex %u is at (%g, %g, %g), texture (%g, %g): a 3DS part's places reach 128 "
+                    "and its texture coordinates 4 either way\n",
+                    cfl_names[section], item, i, (double)m->pos[i][0], (double)m->pos[i][1], (double)m->pos[i][2],
+                    (double)(m->uv ? m->tex[i][0] : 0), (double)(m->uv ? m->tex[i][1] : 0));
+            return 0;
+        }
+    }
+    return 1;
+}
+/* mesh m as section's item at out + at: the end, 0 when it does not fit in room */
+static u32 cfl_mesh(u32 section, const SnxMiiMesh* m, u8* out, u32 at, u32 room) {
+    u32 anchors = section == SNX_MII_CFL_FACELINE ? 9 : section == SNX_MII_CFL_HAIR ? 18 : 0;
+    u32 per = 12 + (m->uv ? 4 : 0), i, a, end;
+    int bad = 0;
+    end = at + 4 * anchors + 8 + per * m->vertices + 4 + m->indices +
+          (section == SNX_MII_CFL_MASK ? 2 * m->indices / 3 : 0);
+    end = (end + 3) & ~3u;
+    if (end > room || end < at) return 0;
+    for (a = 0; a < anchors; a++) {
+        union {
+            float f;
+            u32 u;
+        } x;
+        x.f = m->anchor[a];
+        snx_st_le32(out + at, x.u);
+        at += 4;
+    }
+    snx_st_le16(out + at, (u16)m->vertices);
+    snx_st_le16(out + at + 2, (u16)m->vertices); /* a normal each */
+    snx_st_le16(out + at + 4, (u16)(m->uv ? m->vertices : 0));
+    snx_st_le16(out + at + 6, 1); /* one index list */
+    at += 8;
+    for (i = 0; i < m->vertices; i++) {
+        for (a = 0; a < 3; a++) snx_st_le16(out + at + 2 * a, cfl_fixed(m->pos[i][a], 256.0f, &bad));
+        for (a = 0; a < 3; a++) snx_st_le16(out + at + 6 + 2 * a, cfl_fixed(m->nrm[i][a], 256.0f, &bad));
+        at += 12;
+        if (m->uv) {
+            snx_st_le16(out + at, cfl_fixed(m->tex[i][0], 8192.0f, &bad));
+            snx_st_le16(out + at + 2, cfl_fixed(m->tex[i][1], 8192.0f, &bad));
+            at += 4;
+        }
+    }
+    snx_st_le16(out + at, CFL_INDEX);
+    snx_st_le16(out + at + 2, (u16)m->indices);
+    at += 4;
+    for (i = 0; i < m->indices; i++) out[at++] = (u8)m->idx[i];
+    if (section == SNX_MII_CFL_MASK) /* each triangle's cover of the mask's 16 by 16 grid: all of it */
+        for (i = 0; i < m->indices / 3; i++, at += 2) out[at] = out[at + 1] = 0x0f;
+    while (at < end) out[at++] = 0;
+    return end;
+}
+
+/* a texture side for the 3DS: the power of two at most half the Switch's low one, 8 to 64 */
+static u32 cfl_side(u32 v) {
+    u32 p = 8;
+    while (p * 2 <= v / 2 && p < 64) p *= 2;
+    return p;
+}
+/* texture section's item at out + at: the end (at when the part is absent), 0 when it does not fit in room. *same: 1 +
+   the earlier item it is drawn as, or 0. Every texture is RGBA4, a channel of one-channel drawings in all four, the
+   eyes' and mouths' as the Switch's (G white or teeth, B iris, R lips, A all of it), the glasses' cover in A too */
+static u32 cfl_tex(u32 section, u32 item, u8* out, u32 at, u32 room, u32* same) {
+    static const u8 lut[8] = {0x00, 0x01, 0x04, 0x05, 0x10, 0x11, 0x14, 0x15}; /* x's bits in an 8 by 8 tile */
+    u32 kind = cfl_texture[section - SNX_MII_CFL_MESHES], v, j, x, y, end;
+    TexGeom sw;
+    float ar, aa;
+    u32 w, h;
+    *same = 0;
+    if (!tex_present(kind, item)) return at;
+    v = tex_variant(kind, item) % tex_variants[kind];
+    for (j = 0; j < item; j++)
+        if (tex_present(kind, j) && tex_variant(kind, j) % tex_variants[kind] == v) {
+            *same = j + 1;
+            return at;
+        }
+    sw = tex_geom(kind, item, 0);
+    w = cfl_side(sw.w), h = cfl_side(sw.h);
+    ar = (float)sw.w / (float)sw.h, aa = 1.4f / (float)h;
+    end = at + 8 + 2 * w * h;
+    if (end > room || end < at) return 0;
+    snx_st_le16(out + at, (u16)w);
+    snx_st_le16(out + at + 2, (u16)h);
+    out[at + 4] = 1; /* one level */
+    out[at + 5] = CFL_RGBA4;
+    out[at + 6] = kind == T_NOSELINE ? 0
+                  : kind == T_HAT    ? 1
+                                     : 2; /* u: clamp, repeat, or mirrored at the face's middle */
+    out[at + 7] = 0;
+    for (y = 0; y < h; y++)
+        for (x = 0; x < w; x++) {
+            float c[4];
+            u32 px = (y / 8) * w * 8 + (x / 8) * 64 + lut[x % 8] + 2u * lut[y % 8], k;
+            u16 rgba = 0;
+            tex_texel(kind, v, ((float)x + 0.5f) / (float)w * ar, ((float)y + 0.5f) / (float)h, aa, ar, c);
+            if (kind == T_GLASS)
+                c[3] = c[1];
+            else if (kind != T_EYE && kind != T_MOUTH && kind != T_MAKEUP)
+                c[1] = c[2] = c[3] = c[0];
+            for (k = 0; k < 4; k++) rgba |= (u16)(lroundf(clampf(c[k], 0, 1) * 15.0f) << (12 - 4 * k));
+            snx_st_le16(out + at + 8 + 2 * px, rgba);
+        }
+    return end;
+}
+
+u32 snx_mii_cfl_write(SnxMiiMeshSource source, void* ctx, u8* out, u32 room) {
+    SnxMiiMesh* m = (SnxMiiMesh*)malloc(sizeof *m);
+    u32 at = 4 + 4 * SNX_MII_CFL_SECTIONS, s;
+    if (!m) {
+        fprintf(stderr, "mii parts: no memory for a mesh (%zu bytes)\n", sizeof *m);
+        return 0;
+    }
+    if (room < at) goto full;
+    snx_st_le16(out, SNX_MII_CFL_SECTIONS);
+    snx_st_le16(out + 2, 0x0509);
+    for (s = 0; s < SNX_MII_CFL_SECTIONS; s++) {
+        u32 n = cfl_items[s], head = at, base = at + 4 + 4 * (n + 1), i, most = 0;
+        if (base > room) goto full;
+        snx_st_le32(out + 4 + 4 * s, at);
+        snx_st_le16(out + head, (u16)n);
+        at = base;
+        for (i = 0; i < n; i++) {
+            u32 start = at, same = 0;
+            if (s < SNX_MII_CFL_MESHES) {
+                int r;
+                memset(m, 0, sizeof *m);
+                r = source(ctx, s, i, m);
+                if (r < 0) goto stop;
+                if (r && m->same) {
+                    u32 j = m->same - 1, from, to;
+                    from = j < i ? snx_ld_le32(out + head + 4 + 4 * j) : 0;
+                    to = j + 1 < i ? snx_ld_le32(out + head + 8 + 4 * j) : start - base;
+                    if (j >= i || from >> CFL_OFFSET || (to & ((1u << CFL_OFFSET) - 1)) == from) {
+                        fprintf(stderr,
+                                "mii parts: %s %u is said to be the same as item %u, which is not an earlier "
+                                "one with a mesh of its own\n",
+                                cfl_names[s], i, j);
+                        goto stop;
+                    }
+                    same = m->same;
+                } else if (r) {
+                    if (!cfl_mesh_fits(s, i, m)) goto stop;
+                    if (!(at = cfl_mesh(s, m, out, at, room))) goto full;
+                }
+            } else if (!(at = cfl_tex(s, i, out, at, room, &same)))
+                goto full;
+            if (at - base >= 1u << CFL_OFFSET) {
+                fprintf(stderr, "mii parts: section %u passes 4 MiB, the most its offsets reach\n", s);
+                goto stop;
+            }
+            snx_st_le32(out + head + 4 + 4 * i, (start - base) | same << CFL_OFFSET);
+            if (at - start > most) most = at - start;
+        }
+        if (most > 0xffff) {
+            fprintf(stderr, "mii parts: section %u has an item of %u bytes; its header holds 65535\n", s, most);
+            goto stop;
+        }
+        snx_st_le32(out + head + 4 + 4 * n, at - base);
+        snx_st_le16(out + head + 2, (u16)most);
+    }
+    free(m);
+    return at;
+full:
+    fprintf(stderr, "mii parts: CFL_Res.dat takes more than the %u bytes given\n", room);
+stop:
+    free(m);
+    return 0;
+}
+
+/* a RomFS name's hash, as the 3DS's: its UTF-16 code units (ASCII here) over the parent's offset */
+static u32 cfl_romfs_hash(const char* name, u32 parent) {
+    u32 h = parent ^ 123456789u;
+    for (; *name; name++) h = ((h >> 5) | (h << 27)) ^ (u8)*name;
+    return h;
+}
+u32 snx_mii_cfl_romfs(u8* out, u32 room) {
+    static const char name[] = "CFL_Res.dat";
+    const u32 len = 2 * (sizeof name - 1), dirhash = 0x28, dirmeta = dirhash + 12, filehash = dirmeta + 0x18,
+              filemeta = filehash + 12, meta = 0x20 + len + (len % 4 ? 2 : 0), data = (filemeta + meta + 15) & ~15u;
+    u32 size, i;
+    if (room < data) {
+        fprintf(stderr, "mii parts: the RomFS takes more than the %u bytes given\n", room);
+        return 0;
+    }
+    size = snx_mii_cfl_write(snx_mii_ctr_mesh, NULL, out + data, room - data);
+    if (!size) return 0;
+    if (((size + 15) & ~15u) > room - data) {
+        fprintf(stderr, "mii parts: the RomFS takes more than the %u bytes given\n", room);
+        return 0;
+    }
+    memset(out, 0, data);
+    memset(out + data + size, 0, ((size + 15) & ~15u) - size);
+    snx_st_le32(out, 0x28);
+    snx_st_le32(out + 4, dirhash), snx_st_le32(out + 8, 12);
+    snx_st_le32(out + 12, dirmeta), snx_st_le32(out + 16, 0x18);
+    snx_st_le32(out + 20, filehash), snx_st_le32(out + 24, 12);
+    snx_st_le32(out + 28, filemeta), snx_st_le32(out + 32, meta);
+    snx_st_le32(out + 36, data);
+    for (i = 0; i < 3; i++) { /* three slots each: the root's and its file's */
+        snx_st_le32(out + dirhash + 4 * i, 0xffffffffu);
+        snx_st_le32(out + filehash + 4 * i, 0xffffffffu);
+    }
+    snx_st_le32(out + dirhash + 4 * (cfl_romfs_hash("", 0) % 3), 0);
+    snx_st_le32(out + filehash + 4 * (cfl_romfs_hash(name, 0) % 3), 0);
+    /* the root: no parent, sibling or folder, its file the first, no other in its slot, no name */
+    snx_st_le32(out + dirmeta + 4, 0xffffffffu);
+    snx_st_le32(out + dirmeta + 8, 0xffffffffu);
+    snx_st_le32(out + dirmeta + 16, 0xffffffffu);
+    /* the file: in the root, no sibling, its data at the start, its size, no other in its slot, its name */
+    snx_st_le32(out + filemeta + 4, 0xffffffffu);
+    snx_st_le64(out + filemeta + 16, size);
+    snx_st_le32(out + filemeta + 24, 0xffffffffu);
+    snx_st_le32(out + filemeta + 28, len);
+    for (i = 0; i < sizeof name - 1; i++) snx_st_le16(out + filemeta + 32 + 2 * i, (u8)name[i]);
+    return data + ((size + 15) & ~15u);
 }

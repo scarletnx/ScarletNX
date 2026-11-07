@@ -10,6 +10,7 @@
 #include "common/utilities/endian.h"
 #include "3ds/services/archives.h"
 #include "3ds/services/fs.h"
+#include "common/utilities/mii_model.h"
 #include "services/fs.swipc.inc"
 #include <stdio.h>
 #include <stdlib.h>
@@ -209,11 +210,38 @@ static void open_self(SnxCtrIpc* c, const unsigned char path[12]) {
     }
     if (!snx_ctr_fs_file_object(c, CTR_FILE_HOST, 0, 0, host, node) && host) fclose(host);
 }
+/* The Mii data archive, 0004009B00010202: our own Mii parts (common/utilities/mii_model.c's CFL_Res.dat), made at
+   the first open and kept for the runtime's life */
+#define CTR_MII_DATA      0x0004009b00010202ull
+#define CTR_MII_DATA_ROOM 0x200000u
+static struct {
+    unsigned char* mii_data;
+    size_t mii_data_size;
+} g_ctr_fs;
 /* The system titles whose RomFS a stand-in replaces, as Azahar's NCCHArchive::OpenFile picks them: the shared font
-   for the Chinese, Korean and Taiwanese ones too (their text will not show right) */
+   for the Chinese, Korean and Taiwanese ones too (their text will not show right); the Mii data's is ours, made
+   once here (NULL with nothing made when there was no memory, said in the log) */
 static const unsigned char* system_archive(uint64_t title, size_t* size) {
     switch (title) {
-        case 0x0004009b00010202ull: *size = snx_ctr_mii_data_size; return snx_ctr_mii_data;
+        case CTR_MII_DATA:
+            if (!g_ctr_fs.mii_data) {
+                unsigned char* b = calloc(1, CTR_MII_DATA_ROOM);
+                uint32_t n = b ? snx_mii_cfl_romfs(b, CTR_MII_DATA_ROOM) : 0;
+                if (!n) {
+                    fprintf(stderr,
+                            "3ds fs: the Mii data archive %016llx could not be made (%s): the game is told it "
+                            "is not found\n",
+                            (unsigned long long)title, b ? "its parts did not fit, above" : "no memory for 2 MiB");
+                    free(b);
+                    return NULL;
+                }
+                g_ctr_fs.mii_data = b;
+                g_ctr_fs.mii_data_size = n;
+                fprintf(stderr, "3ds fs: provided our Mii parts as the Mii data archive %016llx (%.1f KB)\n",
+                        (unsigned long long)title, (double)n / 1024.0);
+            }
+            *size = g_ctr_fs.mii_data_size;
+            return g_ctr_fs.mii_data;
         case 0x0004009b00010402ull: *size = snx_ctr_country_list_size; return snx_ctr_country_list;
         case 0x0004009b00014002ull:
         case 0x0004009b00014102ull:
@@ -308,7 +336,9 @@ static void open_ncch(SnxCtrIpc* c) {
         return;
     }
     size_t size = 0;
+    pm_lock(&p->tree->lock); /* the first open of the Mii data makes it, once */
     const unsigned char* stand_in = system_archive(title, &size);
+    pm_unlock(&p->tree->lock);
     if (stand_in && !words[0] && !words[1] && !words[2]) {
         char path[40];
         snprintf(path, sizeof path, "system/%016llx.romfs", (unsigned long long)title);
