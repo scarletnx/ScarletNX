@@ -100,9 +100,12 @@ static int check_txd_varying_offsets(void) {
         qmd[QMD_BLOCK_DIM_X] = invocations << 16;
         for (u32 ordinary = 0; ordinary < 2; ordinary++)
           for (u32 bindless = 0; bindless < 2; bindless++)
-            for (u32 level = 0; level < 3; level++) {
+            for (u32 level = 0; level < 3; level++)
+              for (u32 variant = 0; variant < (kind == 3 ? 4u : 1u); variant++) {
                 u64 ops[32];
                 u32 n = 0;
+                const u32 masks[4] = {1, 1, 5, 13};
+                u32 channels = masks[variant], output_register = 20 + (variant > 1 ? variant - 1 : 0);
                 CHECK(!storage_write_words(samplers + 4,
                     (const u32[1]){1u | 1u << 4 | (ordinary ? 3u : 2u) << 6}, 1));
                 ops[n++] = 0xf0c8000002170000ull; /* TID.X supplies the per-invocation table address and output X. */
@@ -117,20 +120,30 @@ static int check_txd_varying_offsets(void) {
                     ops[n++] = storage_mov(16 + bindless, texture_limit_bits((float)level + .5f));
                     /* TEX offsets use the low nibbles after the explicit LOD, unlike TXD's high-half packing. */
                     ops[n++] = 0x3828000000070000ull | 16ull << 20 | 18ull << 8 | (17 + bindless);
+                    if (variant) {
+                        u32 packed_reg = 17 + bindless;
+                        ops[n++] = 0x0400000000070000ull | 15ull << 20 | (u64)packed_reg << 8 | packed_reg;
+                        ops[n++] = 0x0420000000070000ull | 0x2f0ull << 20 | (u64)packed_reg << 8 | packed_reg;
+                    }
                     ops[n++] = (bindless ? 0xdeb8000000000000ull : 0xc038000000000000ull | 74ull << 36) |
-                        3ull << (bindless ? 37 : 55) | 1ull << (bindless ? 36 : 54) | 1ull << 31 |
+                        3ull << (bindless ? 37 : 55) | 1ull << (bindless ? 36 : 54) | (u64)channels << 31 |
                         (u64)type << 28 | 16ull << 20 | 7ull << 16 | 4ull << 8 | 20;
                 } else {
                     if (bindless) ops[n++] = 0x4c98078000070003ull | 2ull << 34 | 74ull << 20;
                     for (u32 axis = 0; axis < count; axis++) ops[n++] = storage_mov(4 + axis, 0x3ec00000);
                     ops[n++] = 0xef94000000070000ull | 3ull << 36 | 0x200ull << 20 | 2ull << 8 | (4 + count);
+                    if (variant) {
+                        u32 packed_reg = 4 + count;
+                        ops[n++] = 0x0400000000070000ull | 0xf0000ull << 20 | (u64)packed_reg << 8 | packed_reg;
+                        ops[n++] = 0x0420000000070000ull | 0x2f00000ull << 20 | (u64)packed_reg << 8 | packed_reg;
+                    }
                     for (u32 k = 0; k < 2 * count; k++)
                         ops[n++] = storage_mov(8 + k, k ? 0 : texture_limit_bits((float)(1u << level) / 16));
                     ops[n++] = (bindless ? 0xde40000000000000ull : 0xde00000000000000ull | 74ull << 36) |
-                               7ull << 51 | 1ull << 35 | 1ull << 31 | (u64)type << 28 | 8ull << 20 |
+                               7ull << 51 | 1ull << 35 | (u64)channels << 31 | (u64)type << 28 | 8ull << 20 |
                                7ull << 16 | (u64)(bindless ? 3 : 4) << 8 | 20;
                 }
-                ops[n++] = 0xeb20000000070014ull | 3ull << 33 | 1ull << 20 | 1ull << 51 | 75ull << 36;
+                ops[n++] = 0xeb20000000070000ull | output_register | 3ull << 33 | 1ull << 20 | 1ull << 51 | 75ull << 36;
                 ops[n++] = 0xe30000000007000full;
                 u8 code[512] = {0};
                 u32 at = 0;
@@ -138,18 +151,25 @@ static int check_txd_varying_offsets(void) {
                     if (!(k % 3)) snx_st_le64(code + 8 * at++, 0x001f8000fc0007e0ull);
                     snx_st_le64(code + 8 * at++, ops[k]);
                 }
-                u64 address = gpu + 0x180000 + (ordinary * 24 + kind * 6 + bindless * 3 + level) * 0x200;
+                u64 address = gpu + 0x180000 + variant * 0x10000 +
+                              (ordinary * 24 + kind * 6 + bindless * 3 + level) * 0x200;
                 CHECK(!gmem_write(address, code, sizeof code));
                 g_renderer->method_barrier(5);
                 u32 untouched[256];
                 for (u32 k = 0; k < 256; k++) untouched[k] = 0xdeadbeef;
                 CHECK(!storage_write_words(output, untouched, 256));
                 u64 before = g_vk_dispatches;
+                if (variant) vk_pipeline_quiesce();
                 vk_lock();
+                int dynamic_offsets = g_shader_dynamic_texture_offsets;
+                /* The reduced domain has16 exact cases even on a host with maintenance8. Unique programs make
+                   this a real portable-path check, not a cache hit on an earlier native-offset module. */
+                if (variant) g_shader_dynamic_texture_offsets = 0;
                 DispatchState dispatch;
                 mx_dispatch_state(qmd, channel->rcomp, address, &dispatch);
                 vk_dispatch(&dispatch);
                 vk_compute_land();
+                g_shader_dynamic_texture_offsets = dynamic_offsets;
                 vk_unlock();
                 CHECK(g_vk_dispatches == before + 1);
                 u8 actual[1024];
@@ -157,6 +177,7 @@ static int check_txd_varying_offsets(void) {
                 for (u32 k = 0; k < 256; k++) {
                     if (k >= invocations) { CHECK(snx_ld_le32(actual + k * 4) == untouched[k]); continue; }
                     u32 offset = packed[k] >> 16;
+                    if (variant) offset = (offset & 15) | 0x2f0;
                     u32 x = (u32)texture_limit_axis(level, offset & 15);
                     u32 y = count >= 2 ? (u32)texture_limit_axis(level, offset >> 4 & 15) : 0;
                     u32 z = count == 3 ? (u32)texture_limit_axis(level, offset >> 8 & 15) : 0;
@@ -167,10 +188,13 @@ static int check_txd_varying_offsets(void) {
                         z = count == 3 ? (u32)texture_limit_axis(level + 1, offset >> 8 & 15) : 0;
                         value = .5f * (value + texture_limit_value(level + 1, array ? k & 1 : 0, x, y, z));
                     }
+                    /* R32F sampling supplies B=0 and A=1. Masks X/Z and X/Z/W pack those into R21/R22. */
+                    if (variant > 1) value = variant == 2 ? 0.0f : 1.0f;
                     u32 expected = texture_limit_bits(value);
                     if (snx_ld_le32(actual + k * 4) != expected)
-                        fprintf(stderr, "%s varying kind%u bindless%u mip%u word%08x: %08x expected%08x\n",
-                                ordinary ? "TEX" : "TXD", kind, bindless, level, packed[k], snx_ld_le32(actual + k * 4), expected);
+                        fprintf(stderr, "%s varying kind%u bindless%u mip%u channels%#x word%08x: %08x expected%08x\n",
+                                ordinary ? "TEX" : "TXD", kind, bindless, level, channels, packed[k],
+                                snx_ld_le32(actual + k * 4), expected);
                     CHECK(snx_ld_le32(actual + k * 4) == expected);
                     checks++;
                 }

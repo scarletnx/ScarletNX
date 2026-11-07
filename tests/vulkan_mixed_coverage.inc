@@ -4,6 +4,7 @@
    independent per-pixel oracle. Native blending must run once per primitive after coverage reduction, including
    odd-only masks whose bit0 is clear. Read all sixteen pixels, not a representative pixel. */
 #include "nx/gpu/vk/capture.h"
+#include "vulkan_mixed_coverage_mrt.inc"
 static int check_mixed_coverage_portable(void) {
     const VkImageFormatProperties narrow = {.maxExtent = {4, 4, 1}, .maxMipLevels = 1, .maxArrayLayers = 1,
                                            .sampleCounts = VK_SAMPLE_COUNT_4_BIT};
@@ -220,5 +221,5 @@ static int check_mixed_coverage_portable(void) {
     if (!counts) puts("SKIP portable mixed coverage: multisample float capture images unavailable");
     else printf("PASS portable mixed coverage: %u draws, %u pixels, %u raster counts; masks/table/native blend/overlap exact=1\n",
                 draws, pixels, counts);
-    return 0;
+    return check_mixed_coverage_mrt();
 }

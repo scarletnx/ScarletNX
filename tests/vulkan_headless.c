@@ -4831,6 +4831,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_texture_limits.inc"
 #include "vulkan_nvn_blend_resolve.inc"
 #include "vulkan_nvn_blend_capture.inc"
+#include "vulkan_late_depth_shadow.inc"
 #include "vulkan_capture_bench.inc"
 #include "vulkan_sparse_bench.inc"
 #include "vulkan_storage_lookup_bench.inc"
@@ -5097,6 +5098,8 @@ static int run_headless(int argc, char** argv) {
             result = check_nvn_blend_resolve();
         else if (!strcmp(name, "blend_capture"))
             result = check_nvn_blend_capture();
+        else if (!strcmp(name, "late_depth_shadow"))
+            result = check_late_depth_shadow();
         else if (!strcmp(name, "shader_windows"))
             result = check_shader_read_windows();
         else if (!strcmp(name, "texture_half"))
@@ -5297,6 +5300,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_txd_varying_offsets());
     CHECK(!check_nvn_blend_resolve());
     CHECK(!check_nvn_blend_capture());
+    CHECK(!check_late_depth_shadow());
     CHECK(!check_shader_read_windows());
     CHECK(!check_texture_half_rounding());
     CHECK(!check_cross_stage_image_alias());

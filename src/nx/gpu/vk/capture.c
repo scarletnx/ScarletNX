@@ -6,6 +6,8 @@
 #include "nx/gpu/shader/coverage_spirv.h"
 #include "nx/gpu/shader/capture_tiles_spirv.h"
 #include "nx/gpu/vk/descriptors.h"
+#include "nx/memory/mem.h"
+#include "nx/hle/services/nvdrv.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -163,6 +165,22 @@ static int capture_image_make(Surf* image, const Surf* target, VkFormat format, 
     }
     return 1;
 }
+static void capture_extra_drop(VkCapture* capture, u32 first, int defer) {
+    for (u32 i = first; i < 6; i++) {
+        capture_image_drop(&capture->extra[i].source, defer);
+        capture->extra[i] = (VkCaptureExtra){0};
+    }
+}
+Surf* vk_capture_mixed_source(VkCapture* capture, u32 index) {
+    if (!capture) return NULL;
+    return !index ? &capture->source
+                  : index < 7 && index < capture->mixed_count ? &capture->extra[index - 1].source : NULL;
+}
+Surf* vk_capture_mixed_target(VkCapture* capture, u32 index) {
+    if (!capture) return NULL;
+    return !index ? capture->target
+                  : index < 7 && index < capture->mixed_count ? capture->extra[index - 1].target : NULL;
+}
 
 static VkFormat mixed_validity_format(const Surf* shape, VkImageUsageFlags usage) {
     if (!g_capture.validity_r8_checked) {
@@ -195,6 +213,7 @@ static VkCapture* capture_get(Surf* target, u32 msaa, int mixed) {
         capture->usage = 0;
         capture_image_drop(&capture->source, 1);
         capture_image_drop(&capture->valid, 1);
+        capture_extra_drop(capture, 0, 1);
         capture_tiles_drop(capture, 1);
         if (!capture_image_make(&capture->source, &shape, VK_FORMAT_R32G32B32A32_SFLOAT, 16, usage) ||
             !capture_image_make(&capture->valid, &shape, validity, validity == VK_FORMAT_R8_UNORM ? 1 : 4, usage)) {
@@ -206,6 +225,7 @@ static VkCapture* capture_get(Surf* target, u32 msaa, int mixed) {
         capture->usage = usage;
     }
     capture->target = target;
+    capture->mixed_count = mixed ? 1 : 0;
     capture->flags = target->layers > 1 ? SH_BLEND_ARRAY : 0;
     if (msaa) capture->flags |= SH_BLEND_MULTISAMPLE | (u32)vk_surf_samples(&shape) << 8;
     if (!mixed && capture_tiles_make(capture, target)) capture->flags |= SH_CAPTURE_TILED;
@@ -217,7 +237,66 @@ VkCapture* vk_capture_get_mixed(Surf* target, u32 raster_samples) {
         raster_samples < 2 || raster_samples > 16 || (raster_samples & (raster_samples - 1))) return NULL;
     u32 msaa = raster_samples == 2 ? DS_MSAA_2X1 : raster_samples == 4 ? DS_MSAA_2X2
                                                  : raster_samples == 8 ? DS_MSAA_4X2 : DS_MSAA_4X4;
-    return capture_get(target, msaa, 1);
+    VkCapture* capture = capture_get(target, msaa, 1);
+    if (capture) capture_extra_drop(capture, 0, 1);
+    return capture;
+}
+typedef struct {
+    u64 cpu[7], size[7];
+    u32 count, self;
+    int aliases;
+} MixedRanges;
+static void mixed_alias_peer(void* user, u64 at, u64 size) {
+    MixedRanges* ranges = user;
+    if (at > UINT64_MAX - size) { ranges->aliases = 1; return; }
+    for (u32 i = 0; i < ranges->count; i++)
+        if (i != ranges->self && snx_ranges_overlap(at, size, ranges->cpu[i], ranges->size[i])) ranges->aliases = 1;
+}
+VkCapture* vk_capture_get_mixed_targets(Surf* const* targets, u32 count, u32 raster_samples) {
+    if (!targets || !count || count > vk_coverage_capture_limit(g_vk.props.limits.maxColorAttachments)) return NULL;
+    if (count == 1) return vk_capture_get_mixed(targets[0], raster_samples);
+    if (!g_vk_preserve_infnan || raster_samples < 2 || raster_samples > 16 ||
+        (raster_samples & (raster_samples - 1))) return NULL;
+    const Surf* first = targets[0];
+    if (!first) return NULL;
+    MixedRanges ranges = {.count = count};
+    for (u32 i = 0; i < count; i++) {
+        const Surf* target = targets[i];
+        if (!target || !target->img || target->f.depth || target->f.is_int || target->msaa || target->volume ||
+            target->depth3d > 1 || target->layers != 1 || target->w != first->w || target->h != first->h ||
+            target->sw != first->sw || target->sh != first->sh || !target->gva) return NULL;
+        ranges.size[i] = vk_surf_guest_size(target);
+        /* A bounded proof for the first MRT path: fragmented or sparse backing remains unsupported. */
+        if (!ranges.size[i] || target->gva > UINT64_MAX - ranges.size[i] ||
+            gmmu_run(target->gva, ranges.size[i], &ranges.cpu[i]) != ranges.size[i] ||
+            ranges.cpu[i] > UINT64_MAX - ranges.size[i]) return NULL;
+        for (u32 j = 0; j < i; j++)
+            if (target->img == targets[j]->img ||
+                snx_ranges_overlap(target->gva, ranges.size[i], targets[j]->gva, ranges.size[j]) ||
+                snx_ranges_overlap(ranges.cpu[i], ranges.size[i], ranges.cpu[j], ranges.size[j])) return NULL;
+    }
+    if (mem_alias_any())
+        for (ranges.self = 0; ranges.self < count; ranges.self++) {
+            mem_alias_peers(ranges.cpu[ranges.self], ranges.size[ranges.self], mixed_alias_peer, &ranges);
+            if (ranges.aliases) return NULL;
+        }
+    u32 msaa = raster_samples == 2 ? DS_MSAA_2X1 : raster_samples == 4 ? DS_MSAA_2X2
+                                                 : raster_samples == 8 ? DS_MSAA_4X2 : DS_MSAA_4X4;
+    VkCapture* capture = capture_get(targets[0], msaa, 1);
+    if (!capture) return NULL;
+    capture_extra_drop(capture, count - 1, 1);
+    for (u32 i = 1; i < count; i++) {
+        VkCaptureExtra* extra = &capture->extra[i - 1];
+        if (!extra->source.img) {
+            Surf shape = *targets[i];
+            shape.msaa = (u8)msaa;
+            if (!capture_image_make(&extra->source, &shape, VK_FORMAT_R32G32B32A32_SFLOAT, 16, capture->usage))
+                return NULL;
+        }
+        extra->target = targets[i];
+    }
+    capture->mixed_count = count;
+    return capture;
 }
 int vk_capture_clear(VkCapture* capture) {
     if (!capture || !capture->valid.img) return 0;
@@ -484,41 +563,54 @@ static VkPipeline mixed_pipeline(const MixedKey* key) {
     g_capture.mixed[g_capture.mixed_count++] = (MixedPipeline){*key, pipeline};
     return pipeline;
 }
-int vk_capture_mixed_resolve(VkCapture* capture, const VkCoverage* coverage, const DsState* state) {
-    if (!capture || !capture->target || !coverage || !state || !capture->source.img || !capture->valid.img) return 0;
-    Surf* target = capture->target;
+typedef struct {
+    Surf *target, *source;
+    VkPipeline pipeline;
+    VkImageView attachment;
+    VkDescriptorSet set;
+} MixedResolve;
+static int mixed_prepare(VkCapture* capture, const VkCoverage* coverage, const DsState* state, u32 outputs, u32 index,
+                          MixedResolve* prepared) {
+    Surf* target = vk_capture_mixed_target(capture, index);
+    Surf* source = vk_capture_mixed_source(capture, index);
+    if (!target || !source || !source->img) return 0;
     if (target->msaa || target->f.depth || target->f.is_int || target->layers != 1 || target->depth3d > 1 ||
         vk_coverage_ratio(coverage->raster_samples, 1) <= 1 || coverage->mode > 3 ||
         !(capture->usage & VK_IMAGE_USAGE_SAMPLED_BIT) || (capture->usage & VK_IMAGE_USAGE_STORAGE_BIT) ||
-        (u32)vk_surf_samples(&capture->source) != coverage->raster_samples ||
+        (u32)vk_surf_samples(source) != coverage->raster_samples ||
         (u32)vk_surf_samples(&capture->valid) != coverage->raster_samples ||
         (state->blend.logic_op && !g_vk.feat.logicOp)) return 0;
     const DsBlend* color = &state->blend;
-    if (color->en[0] && !color->logic_op &&
-        (color->sc[0] >= DS_FACTOR_SRC1_COLOR || color->dc[0] >= DS_FACTOR_SRC1_COLOR ||
-         color->sa[0] >= DS_FACTOR_SRC1_COLOR || color->da[0] >= DS_FACTOR_SRC1_COLOR)) return 0;
-    float factors[16] = {0};
-    if (vk_coverage_table(coverage, 1, factors) != coverage->raster_samples) return 0;
+    u32 mask = color->mask[index] & (outputs >> (index * 4)) & 15;
+    if (!mask) {
+        *prepared = (MixedResolve){0}; /* No destination access, descriptor or final pass for an inert slot. */
+        return 1;
+    }
+    int blend = color->en[index] && mask;
+    if (blend && !color->logic_op &&
+        (color->sc[index] >= DS_FACTOR_SRC1_COLOR || color->dc[index] >= DS_FACTOR_SRC1_COLOR ||
+         color->sa[index] >= DS_FACTOR_SRC1_COLOR || color->da[index] >= DS_FACTOR_SRC1_COLOR)) return 0;
     MixedKey key;
     memset(&key, 0, sizeof key); /* includes native struct padding in the pipeline key */
     key.samples = coverage->raster_samples;
     key.components = vk_coverage_components(coverage->mode);
     key.format = state->tgt.srgb_write ? target->f.vk : vk_srgb_as(target->f.vk, 0);
-    key.blend = (VkPipelineColorBlendAttachmentState){.blendEnable = color->en[0],
-        .srcColorBlendFactor = (VkBlendFactor)color->sc[0], .dstColorBlendFactor = (VkBlendFactor)color->dc[0],
-        .colorBlendOp = (VkBlendOp)color->cop[0], .srcAlphaBlendFactor = (VkBlendFactor)color->sa[0],
-        .dstAlphaBlendFactor = (VkBlendFactor)color->da[0], .alphaBlendOp = (VkBlendOp)color->aop[0],
-        .colorWriteMask = color->mask[0] & 15};
+    key.blend = (VkPipelineColorBlendAttachmentState){.blendEnable = blend,
+        .srcColorBlendFactor = (VkBlendFactor)color->sc[index], .dstColorBlendFactor = (VkBlendFactor)color->dc[index],
+        .colorBlendOp = (VkBlendOp)color->cop[index], .srcAlphaBlendFactor = (VkBlendFactor)color->sa[index],
+        .dstAlphaBlendFactor = (VkBlendFactor)color->da[index], .alphaBlendOp = (VkBlendOp)color->aop[index],
+        .colorWriteMask = mask};
     key.logic = color->logic_op;
     VkPipeline pipeline = mixed_pipeline(&key);
     VkImageView attachment = vk_rt_attachment(target, state->tgt.srgb_write);
     if (!pipeline || !attachment) return 0;
-    Surf* images[2] = {&capture->source, &capture->valid};
-    vk_render_end();
-    VkCommandBuffer command = vk_cmd();
+    Surf* images[2] = {source, &capture->valid};
+    vk_cmd();
     u64 frame = vk_frame_id(); /* vk_cmd starts/recycles the frame before its cached set can be inspected */
-    VkDescriptorSet set = capture->mixed_set;
-    if (!set || capture->mixed_frame != frame) {
+    VkDescriptorSet* cached_set = index ? &capture->extra[index - 1].mixed_set : &capture->mixed_set;
+    u64* cached_frame = index ? &capture->extra[index - 1].mixed_frame : &capture->mixed_frame;
+    VkDescriptorSet set = *cached_set;
+    if (!set || *cached_frame != frame) {
         VkDescriptorImageInfo image_info[2];
         const VkComponentMapping identity = {0};
         for (u32 i = 0; i < 2; i++) {
@@ -534,40 +626,64 @@ int vk_capture_mixed_resolve(VkCapture* capture, const VkCoverage* coverage, con
                 .dstBinding = i, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
                 .pImageInfo = &image_info[i]};
         vkUpdateDescriptorSets(g_vk.dev, 2, writes, 0, NULL);
-        capture->mixed_set = set; /* never update an immutable set referenced by queued primitives */
-        capture->mixed_frame = frame;
+        *cached_set = set; /* never update an immutable set referenced by queued primitives */
+        *cached_frame = frame;
     }
-    for (u32 i = 0; i < 2; i++)
-        vk_surf_use(command, images[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-    vk_surf_use(command, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
-                                                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-    VkRenderingAttachmentInfo color_attachment = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-        .imageView = attachment, .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
-    VkRenderingInfo rendering = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-        .renderArea = {{0, 0}, {target->sw, target->sh}}, .layerCount = 1,
-        .colorAttachmentCount = 1, .pColorAttachments = &color_attachment};
-    vk_render_forget_state();
-    rec_CmdBeginRendering(command, &rendering);
-    rec_CmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-    rec_CmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g_capture.mixed_layout, 0, 1, &set, 0, NULL);
-    VkViewport viewport = {0, 0, (float)target->sw, (float)target->sh, 0, 1};
-    VkRect2D scissor = {{0, 0}, {target->sw, target->sh}};
-    rec_CmdSetViewportWithCount(command, 1, &viewport);
-    rec_CmdSetScissorWithCount(command, 1, &scissor);
-    rec_CmdSetBlendConstants(command, state->dyn.blend_const);
-    rec_CmdPushConstants(command, g_capture.mixed_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof factors, factors);
-    rec_CmdDraw(command, 3, 1, 0, 0);
-    rec_CmdEndRendering(command);
-    vk_surf_wrote(target);
-    vk_rt_drawn(target);
+    *prepared = (MixedResolve){target, source, pipeline, attachment, set};
+    return 1;
+}
+int vk_capture_mixed_resolve(VkCapture* capture, const VkCoverage* coverage, const DsState* state, u32 outputs) {
+    if (!capture || !coverage || !state || !capture->valid.img) return 0;
+    u32 count = capture->mixed_count ? capture->mixed_count : 1;
+    if (count > vk_coverage_capture_limit(g_vk.props.limits.maxColorAttachments) ||
+        !vk_capture_mixed_outputs_supported(outputs, count, &state->blend)) return 0;
+    float factors[16] = {0};
+    if (vk_coverage_table(coverage, 1, factors) != coverage->raster_samples) return 0;
+    MixedResolve prepared[7];
+    /* Prepare every pipeline, view and immutable set before changing any destination. A failed later slot must not
+       leave the earlier targets with only part of this primitive resolved. */
+    for (u32 index = 0; index < count; index++)
+        if (!mixed_prepare(capture, coverage, state, outputs, index, &prepared[index])) return 0;
+    vk_render_end();
+    VkCommandBuffer command = vk_cmd();
+    for (u32 index = 0; index < count; index++) {
+        Surf* target = prepared[index].target;
+        if (!target) continue;
+        Surf* images[2] = {prepared[index].source, &capture->valid};
+        for (u32 i = 0; i < 2; i++)
+            vk_surf_use(command, images[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        vk_surf_use(command, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
+                                                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+        VkRenderingAttachmentInfo color_attachment = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            .imageView = prepared[index].attachment, .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+        VkRenderingInfo rendering = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+            .renderArea = {{0, 0}, {target->sw, target->sh}}, .layerCount = 1,
+            .colorAttachmentCount = 1, .pColorAttachments = &color_attachment};
+        vk_render_forget_state();
+        rec_CmdBeginRendering(command, &rendering);
+        rec_CmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, prepared[index].pipeline);
+        rec_CmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g_capture.mixed_layout, 0, 1,
+                                 &prepared[index].set, 0, NULL);
+        VkViewport viewport = {0, 0, (float)target->sw, (float)target->sh, 0, 1};
+        VkRect2D scissor = {{0, 0}, {target->sw, target->sh}};
+        rec_CmdSetViewportWithCount(command, 1, &viewport);
+        rec_CmdSetScissorWithCount(command, 1, &scissor);
+        rec_CmdSetBlendConstants(command, state->dyn.blend_const);
+        rec_CmdPushConstants(command, g_capture.mixed_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof factors, factors);
+        rec_CmdDraw(command, 3, 1, 0, 0);
+        rec_CmdEndRendering(command);
+        vk_surf_wrote(target);
+        vk_rt_drawn(target);
+    }
     return 1;
 }
 void vk_capture_destroy(void) {
     capture_image_drop(&g_capture.active.source, 0);
     capture_image_drop(&g_capture.active.valid, 0);
+    capture_extra_drop(&g_capture.active, 0, 0);
     capture_tiles_drop(&g_capture.active, 0);
     for (u32 i = 0; i < g_capture.mixed_count; i++) vkDestroyPipeline(g_vk.dev, g_capture.mixed[i].pipeline, NULL);
     free(g_capture.mixed);

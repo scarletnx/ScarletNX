@@ -417,8 +417,7 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 }
                 /* Tests and sample coverage keep the original Location0 alpha. Alpha-to-one precedes ratio-one
                    color modulation. Integer outputs retain their bits; an integer primary disables alpha-to-one. */
-                if (!integer && !(si->rt_int_mask & 1u) && (si->advanced_blend_mask & SH_ALPHA_TO_ONE) &&
-                    ((si->advanced_blend_mask & SH_ALPHA_COVERAGE) || (coverage_components & 8)))
+                if (!integer && !(si->rt_int_mask & 1u) && (si->advanced_blend_mask & SH_ALPHA_TO_ONE))
                     components[3] = spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f);
                 if (!integer && coverage_components) {
                     u32 factor16 = si->advanced_blend_mask >> SH_COVERAGE_R1_FACTOR_SHIFT & 31;
@@ -442,9 +441,18 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             }
             if (sample_mask_output) {
                 u32 mask = t->guest_sample_mask ? reg_read(c, reg) : 0;
-                if (si->advanced_blend_mask & SH_ALPHA_COVERAGE)
-                    mask = shader_alpha_coverage_spirv(&c->emit, c->f32_type, c->u32_type, c->bool_type, alpha,
-                                                        si->advanced_blend_mask >> 8 & 63, mask);
+                if (si->advanced_blend_mask & SH_ALPHA_COVERAGE) {
+                    u32 samples = si->advanced_blend_mask >> 8 & 63;
+                    if (si->advanced_blend_mask & SH_ALPHA_COVERAGE_DITHER) {
+                        u32 coordinate = spv_emit_load(&c->emit, vec4, t->fragcoord);
+                        u32 x = spv_emit_vec4_extract(&c->emit, c->f32_type, coordinate, 0);
+                        u32 y = spv_emit_vec4_extract(&c->emit, c->f32_type, coordinate, 1);
+                        mask = shader_alpha_coverage_dither_spirv(&c->emit, c->f32_type, c->u32_type,
+                            c->bool_type, alpha, samples, mask, x, y);
+                    } else
+                        mask = shader_alpha_coverage_spirv(&c->emit, c->f32_type, c->u32_type, c->bool_type,
+                            alpha, samples, mask);
+                }
                 spv_emit_store(
                     &c->emit,
                     spv_emit_interface_scalar_pointer(&c->emit, 3, c->u32_type, sample_mask_output, 0, c->zero),

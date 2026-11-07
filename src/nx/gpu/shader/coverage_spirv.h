@@ -11,6 +11,13 @@
    The API specifies spatially constant masks when dithering is off, but does not prescribe their thresholds. */
 uint32_t shader_alpha_coverage_spirv(SpvEmitter* e, uint32_t f32, uint32_t u32_type, uint32_t boolean,
                                     uint32_t alpha, uint32_t samples, uint32_t guest_mask);
+/* Ordered spatial dithering, without a claim to an undocumented native pattern. x/y are finite raw framebuffer
+   coordinates. A4x4 Bayer threshold refines the covered-sample count to16 levels per sample, and a pixel-dependent
+   rotation spreads the selected sample indices. Modulo precedes coordinate conversion, including helper pixels
+   outside the framebuffer. Endpoints, NaN handling and guest/raster mask intersection match the undithered path. */
+uint32_t shader_alpha_coverage_dither_spirv(SpvEmitter* e, uint32_t f32, uint32_t u32_type, uint32_t boolean,
+                                           uint32_t alpha, uint32_t samples, uint32_t guest_mask,
+                                           uint32_t x, uint32_t y);
 /* Resolve one primitive after native tests: set0 binding1 is a float4 validity storage image (red0 or1), binding2
    is the integer coverage destination. SH_BLEND_ARRAY/MS and N<<8 select the common image shape. Dispatch
    ceil(width/8),ceil(height/8),layers. OR all valid sample-index bits, then write that union to each valid sample.

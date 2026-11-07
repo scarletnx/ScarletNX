@@ -50,18 +50,18 @@ untouched padding. Reading the image independently prevents matching upload/down
 | Graphics storage images | Vertex, tessellation control/evaluation, geometry and fragment stages have their own image and buffer-image bindings and integer format variants. Graphics layouts share the whole-pipeline descriptor budget. Compute retains an independent layout and its full per-stage budget. | Frontend bank tests, generated modules and per-stage load/store fixtures. |
 | Indexed multisample textures | Dynamic handle tables retain multisample image types and explicit sample operands for 2D and 2D-array textures. Integer and floating-point view types stay distinct. | Six compiler fixtures and a two-texture, four-sample GPU fetch fixture. |
 | Texture minimum LOD | Supported TEX/TEX.B LC forms retain the packed layer, coordinate order and unsigned minimum LOD with eight fractional bits. Fragment samples use `MinLod`; other stages clamp their explicit level. | `shader_texture_limits` and `vulkan_texture_limits.inc`, including array coordinates and bias. |
-| Texture gradients and offsets | 3D and cube-array gradient samples retain dimensions, faces and layers. With maintenance8, varying texel offsets use one native `Grad|Offset` sample. Older devices use exact constant-offset dispatch with known-bit pruning. | Fragment/compute operand oracles, uniform changes, minified texels, signed offset extrema, exhaustive fallback routing checks and a separate minified cube-edge probe. |
+| Texture gradients and offsets | 3D and cube-array gradient samples retain dimensions, faces and layers. With maintenance8, varying texel offsets use one native `Grad|Offset` sample. Older devices use exact constant-offset dispatch with known-bit pruning and bounded radix selections. | Fragment/compute operand oracles, uniform changes, minified texels, signed offset extrema, exhaustive fallback routing checks and a separate minified cube-edge probe. |
 | Half texture results | Texture and half-arithmetic result packing uses exact nearest-even conversion. Native float16 conversion requires explicit host rounding, denormal and signed-zero controls; other devices use integer significand rounding. | 128 real R32F TEXS/TLDS/TLD4S/HADD2 cases, plus independent conversion checks. |
 | Cross-stage image aliases | A draw uses compatible sampled/storage layouts across all stages and retains its complete write access until the next dependency. Target snapshots finish before the programmable blend transition. | TES stores with FS sampling and TES/GS target snapshots across consecutive draws, without host waits. |
 | Shader code reads | Coherence requests grow from a short prefix instead of landing unrelated GPU results in a fixed 128 KiB window. BRX retains the full-window path because its proof inspects later branches. | Nine hash/length differential cases and a regression that rejects a forced full-window GPU wait. |
 | DrawTexture | A generated vertex/fragment pair rasterizes the rectangle with the bound sampler, component masks, blending and alpha tests. Depth/stencil tests and conservative rasterization follow the API's DrawTexture rules. | Dedicated sampler, edge clamp, blend, alpha-test, write-mask and MSAA fixtures. |
 | Evaluation-only tessellation | A generated control shader forwards patch positions, generic attributes, point size and clip distances, then writes fixed levels. Clip interfaces use eight elements across stages. Earlier layer/viewport outputs are inert before evaluation. | Selected input vertices, fixed levels, point/clip payloads, opposite producer/consumer clip indices, interface bounds and generated-module fixtures. |
 | Transform feedback | Save, pause, resume and restore GPU counter controls per owner. A GPU shader converts captured bytes and stride into indirect draw arguments. | Exact counter data, owner isolation, control padding and a capture/redraw round trip. No CPU counter readback in the runtime. |
-| Advanced blending | Exact ordinary-blend reductions, native advanced operations, fragment interlock and source capture followed by an ordered per-primitive resolve. Each path has separate device and draw restrictions, described below. | Independent equation references, capability checks, overlap and late depth/stencil tests, discarded fragments and guest atomic side effects. |
-| Coverage modulation | Native mixed-sample coverage supports NONE/RGB/ALPHA/RGBA and custom coefficients. A guarded portable path reduces invariant sources to one color sample, with optional raster-sample depth/stencil. Equal raster/color counts use a shader multiplier. | Pixel checks cover masks, custom coefficients, overlapping primitive blending, depth/stencil, and table changes. Native mixed-sample checks retain explicit capability skips. |
+| Advanced blending | Exact ordinary-blend reductions, native advanced operations, fragment interlock and source capture followed by an ordered per-primitive resolve. A guarded D32F/S8 GPU shadow also retains late tests for eligible whole draws. Each path has separate device and draw restrictions, described below. | Independent equation references, capability checks, overlap and late depth/stencil fixtures, discarded fragments and guest atomic side effects. |
+| Coverage modulation | Native mixed-sample coverage supports NONE/RGB/ALPHA/RGBA and custom coefficients. A guarded portable path reduces invariant sources to one color sample per target across up to seven targets, with optional raster-sample depth/stencil. Equal raster/color counts use a shader multiplier. | Pixel fixtures cover masks, custom coefficients, overlapping primitive blending, per-target blend/masks/conversion, depth/stencil and table changes. Native mixed-sample checks retain explicit capability skips. |
 | Custom sample positions | Exact sample grids, sixteenth-pixel coordinates and lower-left grid phase enter the pipeline key. Repeated grids reduce only when their patterns are identical. Depth images retain compatible sample-location state. | CPU keys and GPU custom-raster fixtures, with explicit device limits. |
-| Sample masks and alpha coverage | Guest SampleMask output retains its real output-register value across translation and cache reuse. Undithered alpha coverage intersects an exact prefix mask with guest and fixed masks, before alpha-to-one changes stored alpha. | Generated register/routing proofs and per-sample threshold, NaN, mask and alpha-to-one fixtures. |
-| Coverage to color | Native coverage output or ordered source capture writes signed/unsigned single-component integer masks. Capture unions surviving samples before writing each surviving sample. | Per-sample depth rejection, signed/unsigned masks and forced split-invocation fixtures. |
+| Sample masks and alpha coverage | Guest SampleMask output retains its real output-register value across translation and cache reuse. Software coverage selects a constant prefix or a deterministic spatial dither pattern, intersected with guest and fixed masks. Independent software alpha-to-one follows original-alpha coverage/tests. | Generated register/routing proofs and C1/MSAA threshold, NaN, mask, dither and alpha-to-one fixtures. |
+| Coverage to color | Native coverage output or ordered source capture writes signed/unsigned single-component integer masks. Capture unions surviving samples before writing each surviving sample. A guarded C1 D32F/S8 shadow path retains native integer output only for fragments that pass late tests. | Per-sample depth rejection, signed/unsigned masks, late-test ordering and forced split-invocation fixtures. |
 | Graphics descriptors | Descriptor heaps use compact resource/sampler index runs and frame-owned encodings. Descriptor buffers and sets remain fallback paths. Repeated encodings and complete sets can be reused without changing live bytes. | Layout/limit oracles, registry lifetime checks, rendered backend transitions and separate submission measurements. |
 | Presentation rotation | A GPU quad handles 90-degree rotation together with crop and flip coordinates. | Presentation rotation, crop and flip fixtures. |
 | Linux placed-memory aliases | When a DMA buffer rejects a nonzero mmap offset, map the whole allocation at offset zero and move the requested subrange with `mremap`. This preserves shared backing without a CPU copy. | POSIX mapping, concurrent hole reuse and placed-view coherence fixtures. |
@@ -210,7 +210,7 @@ GPU output or compilation time for either path.
 
 ### Advanced blend paths
 
-The renderer uses four GPU paths for advanced state on color target 0. Blend enable and ordinary logic-op state
+The renderer uses the following GPU paths for advanced state on color target 0. Blend enable and ordinary logic-op state
 still control whether that state applies. NVN advanced blending supports one color target, target 0. Multiple active
 color targets have undefined API behavior and are not a missing MRT feature. Shader and pipeline keys retain the
 effective equation and its parameters.
@@ -219,10 +219,15 @@ effective equation and its parameters.
 | --- | --- | --- |
 | Ordinary blend reduction | PLUS, MINUS and RED/GREEN/BLUE selectors. With normalized destination values: ZERO/SRC/DST, premultiplied uncorrelated Porter-Duff modes and SCREEN, plus nonpremultiplied SRC and SRC_OVER. | Only the parameter combinations with an exact fixed-function equation qualify. Other correlated Porter-Duff and artistic equations need another path. |
 | Native advanced blend | Maps all 46 NVN advanced modes to `VK_EXT_blend_operation_advanced`, including artistic/HSL operations and disjoint/conjoint overlap. | The device must provide coherent operations. Its limits must permit the attachment count, operation, source premultiplication and overlap. Without `advancedBlendAllOperations`, only the extension's required operation subset qualifies. |
-| Ordered shader blend | Computes the 46 equations with an ordered destination read/modify/write under fragment shader interlock. Supports source premultiplication, all three overlap modes, component masks, array layers, sRGB transfer and multisample storage images. Guest storage images use separate bindings. Indexed texture tables retain target-feedback checks. | Requires pixel interlock, fragment storage writes and storage-image reads/writes without format. The target must be storage-capable. MSAA also requires multisample storage images and a supported raster sample count. Depth/stencil requires safe early tests, with PostDepthCoverage for multisample masks. Mixed-sample coverage, alpha-to-coverage and alpha-to-one remain outside this shader path. |
+| Ordered shader blend | Computes the 46 equations with an ordered destination read/modify/write under fragment shader interlock. Supports source premultiplication, all three overlap modes, component masks, array layers, sRGB transfer and multisample storage images. Guest storage images use separate bindings. Indexed texture tables retain target-feedback checks. | Requires pixel interlock, fragment storage writes and storage-image reads/writes without format. The target must be storage-capable. MSAA also requires multisample storage images and a supported raster sample count. Depth/stencil uses safe early tests with PostDepthCoverage for multisample masks, or the guarded late-shadow subset below. Mixed-sample coverage, alpha-to-coverage and alpha-to-one remain outside this shader blend path. |
+| Ordered late D32F/S8 shadow | Copies native depth and optional stencil aspects to a GPU-only buffer. Original guest stages run as one draw; fragment side effects precede ordered late depth/stencil tests and conditional advanced color updates. The GPU copies changed aspects back after the draw. | One color target and one D32F or D32FS8 depth target, one sample/layer, the ordinary viewport depth range and no guest FragDepth, early-test mode, active queries, predication, depth clamp, depth bias, conservative rasterization or layer/viewport exports. Depth feedback aliases are rejected. Requires ordered pixel interlock, fragment storage writes, sufficient storage-buffer descriptors, unrestricted depth range and signed-zero/infinity/NaN preservation; advanced color keeps its storage-image requirements. |
 | Source capture and resolve | Runs the original fragment shader into host-only source and validity attachments, with native late depth/stencil, discard, alpha tests and guest storage side effects. A compute shader then applies the advanced equation to surviving samples before the next primitive. | Direct point, line and triangle lists, including indexed lists without restart, with direct instances. Complete nonindexed lists also retain transform feedback and vertex storage writes. Tessellation, geometry shaders, indirect draws and indexed vertex side effects remain outside this path. The target must support storage access; multisample targets need multisample storage images. Only the first color output is supported. |
 
-The interlock shader path rejects integer targets, volume targets, additional fragment outputs and depth/sample-mask outputs.
+The late-shadow path also rejects textures in stages before the fragment shader, indexed fragment texture tables
+and texel-buffer images in any stage. These resource paths need a complete depth/stencil alias proof before they
+can use the shadow path.
+
+The advanced interlock shader path rejects integer targets, volume targets, additional fragment outputs and depth/sample-mask outputs.
 The blend attachment occupies the image binding after the guest storage images, so both must fit the same stage
 budget. A pipeline without blending retains its ordinary guest image capacity. Indexed tables resolve their entries
 before applying target-feedback snapshots and ordering. The shader path uses the destination image directly.
@@ -231,7 +236,13 @@ Ordered interlock preserves overlap between primitives within one draw.
 Safe early tests mean that the guest program explicitly requests early tests, or that moving tests earlier cannot
 change discard, alpha-test or storage side effects. A general late-depth program with discard cannot use this shortcut.
 Forcing early tests can update depth/stencil for a fragment that later discards. PostDepthCoverage does not remove
-that semantic difference. Native advanced blending remains available for supported device and format combinations.
+that semantic difference. The late-shadow subset instead runs those tests after guest discard and alpha decisions.
+Its stencil fail/depth-fail operations occur before color rejection, and every invocation leaves its interlock
+before a failed fragment is discarded. Coverage-to-color uses the same tests with a native integer color output;
+it does not need an integer storage image. Tessellation, geometry, indirect and indexed commands can stay whole on
+this subset, preserving their original shader invocation and transform-feedback behavior. Fixed-point depth,
+multisample/layered depth and the other excluded states still need a broader solution. Native advanced blending
+remains available for supported device and format combinations.
 
 Unpremultiplied sources retain their original RGB values. Premultiplied color normalization preserves exact zero
 and one endpoints, and HARDMIX compares its threshold before division. This avoids large discontinuous errors from
@@ -245,6 +256,9 @@ Capture preserves guest late tests instead of forcing early tests. The original 
 primitive, and its guest image writes are not repeated by the resolve. Source and validity attachments remain outside
 the guest surface cache and writeback lists. A sampled alias of the real destination uses the original draw's
 snapshot. Scratch images and tile buffers retire with their frame when the target shape changes.
+Splitting a draw into primitives also requires a vertex-program proof that excludes subgroup, lane-group and clock
+dependencies. Indexed lists with vertex writes or transform feedback remain excluded; complete nonindexed lists
+preserve their original vertex invocation count. The whole-draw late-shadow path does not split those invocations.
 
 An optional tile list restricts resolve work to tiles reached by non-helper fragment invocations. Native late tests
 can reject every sample in a listed tile; the validity attachment still prevents destination writes. Each resolved
@@ -264,14 +278,20 @@ when the same program is translated again. A depth result uses its separate outp
 replaced by an input-coverage value or by a cached register number.
 The fixed pipeline mask also applies to bit 0 of a single-sample target; a zero mask preserves its color and depth.
 
-With dithering disabled, alpha-to-coverage supports 2, 4, 8 and 16 samples through a shader prefix mask:
+With dithering disabled, alpha-to-coverage supports 1, 2, 4, 8 and 16 samples through a shader prefix mask:
 `(1 << floor(clamp(alpha, 0, 1) * samples)) - 1`. NaN selects no samples. The result intersects the guest output mask;
-the fixed pipeline sample mask still applies. Coverage and alpha tests use the original alpha. If alpha-to-one is
-requested on this path, the shader replaces every floating-point color alpha with one and disables native
+the fixed pipeline sample mask still applies. With dithering enabled, an ordered 4x4 threshold refines the covered
+sample count, and a pixel-dependent rotation distributes the selected sample indices. Endpoints still select no
+samples for alpha zero and all samples for alpha one. This is a deterministic implementation of the API's spatial
+dither contract, not a claim to reproduce an undocumented native pattern.
+
+Coverage and alpha tests use the original alpha. Independently of coverage enable, software alpha-to-one replaces
+every floating-point color alpha with one and disables native
 alpha-to-one; integer color outputs retain their bits. An integer primary output skips these alpha operations.
 This software path needs no host `alphaToOne` feature. The ordering follows
 [Vulkan multisample coverage](https://docs.vulkan.org/spec/latest/chapters/fragops.html#fragops-covg).
-Dithered coverage retains the host's pattern and its native alpha-to-one requirement.
+The current pipeline uses ordinary rasterization. A future smooth-line mode would need a separate ordering gate
+because its native line-coverage alpha factor occurs after fragment shading.
 
 Coverage-to-color accepts the supported signed or unsigned single-component R8/R16/R32 integer target. The ordered
 capture path currently requires target 0 alone, no logic operation and the same direct-list restrictions as source
@@ -282,22 +302,29 @@ sample, a post-depth fragment mask is the whole pixel mask. This shader path als
 indirect draws. It requires post-depth coverage, no alpha-to-coverage or shader depth/sample-mask output, and either
 explicit early tests or no discard, alpha test or shader storage writes. DrawTexture always uses the latter gate.
 Native coverage output remains available under its own capability checks.
+The guarded single-sample D32F/S8 shadow path also supports late-test coverage-to-color without forcing early
+tests or splitting a whole draw. It preserves the original guest side effects, applies fixed/guest sample bit 0,
+and discards native integer color output after the interlock when the late tests fail. Its depth and draw-state
+restrictions are the same as the late-shadow subset above.
 
 Color and depth/stencil targets retain independent sample layouts. Native coverage modulation supports a depth
 sample count equal to the raster count, including a larger count than color. Equal raster/color counts use a
 fragment multiplier for active custom coefficients and retain the original sample shading. The multiplier requires
 signed-zero/infinity/NaN preservation, uses the original alpha for tests, and applies alpha-to-one before modulation.
-Alpha modulation combined with dithered native alpha-to-coverage remains gated. A disabled mode or a unity coefficient
+Both software dither modes retain that ordering with alpha modulation. A disabled mode or a unity coefficient
 does not create an otherwise redundant pipeline. Masked clears separate unlike attachments so their pipelines retain legal sample
 counts; color-only clears preserve depth/stencil.
 
-The portable mixed-coverage path captures each primitive into source and validity attachments at the raster sample
-count. A fragment pass counts surviving samples, discards empty pixels, applies the selected coefficient, and uses
-native color blending, logic operations, component masks and sRGB conversion once per primitive. Depth/stencil runs
+The portable mixed-coverage path captures each primitive into separate source attachments and one shared validity
+attachment at the raster sample count. It supports one through seven contiguous single-sample color targets,
+subject to the host attachment limit, reserving a separate output for validity. Each target retains its own native
+blend equation, logic operation, component mask and format conversion. Resolve resources for every target are
+prepared before changing any destination. A fragment pass counts surviving samples, discards empty pixels, applies
+the selected coefficient, and uses native color state once per target and primitive. Depth/stencil runs
 against the original raster-sample attachment during capture. This retains overlapping primitive order and the
 distinction between zero coverage and a covered zero-valued source. Coefficients use push constants so table changes
 reuse shaders and pipelines. Immutable source/valid descriptors are reused only within their frame and image
-lifetimes.
+lifetimes. Guest output-register order and types remain separate from the extra validity output.
 
 The reduction reads ordinary sampled images, so it does not need multisample storage images or formatless storage
 reads/writes. Its validity image uses R8 when the device supports that format at the required extent and sample
@@ -305,10 +332,14 @@ count, with RGBA8 as fallback. This reduces the logical validity payload from fo
 sample without reducing source precision. Physical allocation and compression remain implementation dependent.
 The advanced-blend compute path retains its separate storage-image requirements.
 
-This fallback currently requires one single-sample, noninteger color target at slot 0, one layer, filled triangle
-lists and a translator proof that the fragment source is sample invariant. Fragment inputs, textures, guest memory,
-sample-dependent instructions, advanced blending and dual-source blending do not qualify. A final resolve of an
-arbitrary whole draw would not preserve these semantics.
+This fallback requires noninteger targets starting at slot 0 with equal extents, one layer, distinct native images
+and nonaliasing guest backing. The initial MRT path also requires contiguous mapped backing for each target.
+Absent fragment outputs preserve their bound targets, and zero component masks skip their final resolves.
+Partial output declarations with effective component writes remain excluded until all blending inputs are proven.
+Filled triangle lists, the vertex splitting proof and a translator proof of sample-invariant fragment sources are
+required. Fragment inputs, textures, constant-buffer interfaces, other guest memory, sample-dependent instructions,
+active advanced blending and dual-source blending do not qualify. Optional depth/stencil must have the raster
+sample count. A final resolve of an arbitrary whole draw would not preserve these semantics.
 
 ### Descriptors and GPU ownership
 
@@ -432,14 +463,17 @@ stalled in driver library cleanup.
 
 These valid rendering combinations still need broader support or exact device behavior:
 
-* Late-depth advanced blending outside the supported source-capture lists still needs a broader portable path or
-  native support. Tessellation, geometry shaders, indirect draws and indexed vertex storage/transform-feedback
-  side effects remain outside that fallback. Forcing early tests is not equivalent.
+* Late-depth advanced blending outside both the guarded single-sample D32F/S8 shadow subset and supported source
+  capture lists still needs broader support. Fixed-point, multisample or layered depth, guest FragDepth, depth
+  bias/clamp, conservative rasterization, predication, queries and depth-feedback cases remain gated on the shadow
+  path. Tessellation, geometry, indirect draws and indexed vertex side effects can use that subset, but remain
+  outside source capture. Forcing early tests is not equivalent.
 * Portable mixed-sample coverage still needs broader interpolated and sample-dependent fragment shaders, multiple
-  color samples and MRT support. The current per-primitive path supports invariant sources, one color sample and
-  optional depth/stencil at the raster count. A whole-draw resolve cannot preserve overlap-dependent blending.
-* Dithered alpha-to-coverage still uses the host's pattern and its native alpha-to-one requirement. The undithered
-  prefix-mask and alpha-to-one path does not establish exact programmable dither behavior.
+  color samples, sparse/noncontiguous or aliased MRT backing and targets beyond the available capture attachments.
+  The per-primitive path supports proved invariant sources, up to seven noninteger C1 targets and optional
+  depth/stencil at the raster count. A whole-draw resolve cannot preserve overlap-dependent blending.
+* Portable alpha dithering implements the published spatial behavior, not a bit-identical undocumented hardware
+  pattern. Smooth-line coverage ordering would require more work if that raster mode is introduced.
 * Conservative subpixel precision bias is retained in draw state. The renderer currently uses the host's raster
   precision instead of an exact implementation of the requested bias.
 * Minimum-LOD forms beyond the decoded TEX/TEX.B automatic and bias cases remain unsupported. Fragment `MinLod`

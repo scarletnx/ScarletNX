@@ -14,7 +14,8 @@ enum {
     SH_ALPHA_COVERAGE = 1u << 14,
     SH_CAPTURE_SOURCE = 1u << 15,
     SH_CAPTURE_TILED = 1u << 16,
-    SH_ALPHA_TO_ONE = 1u << 18, /* replace float output alpha after software alpha coverage uses its original value */
+    SH_ALPHA_TO_ONE = 1u << 18, /* replace float output alpha after coverage uses its original value */
+    SH_ALPHA_COVERAGE_DITHER = 1u << 19,
     SH_COVERAGE_TO_COLOR = 1u << 20,
     SH_COVERAGE_OUTPUT_SHIFT = 21,
     SH_COVERAGE_R1 = 1u << 24,

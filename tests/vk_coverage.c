@@ -72,6 +72,22 @@ int main(void) {
     check(!vk_coverage_key(&key, &call, 4, 1, 2, 1, 31), "bound depth must use the raster count");
     call.raster_samples = 0;
     check(!vk_coverage_key(&key, &call, 1, 1, 4, 1, 31), "unlike attachments require explicit raster samples");
+    call.raster_samples = 4;
+    call.coverage_mode = 3;
+    for (u32 limit = 0; limit <= 16; limit++) {
+        u32 expected = limit > 1 ? limit - 1 : 0;
+        if (expected > 7) expected = 7;
+        check(vk_coverage_capture_limit(limit) == expected, "portable capture reserves one validity attachment");
+        for (u32 count = 0; count <= 9; count++) {
+            int supported = count > 0 && count <= 7;
+            check(vk_coverage_portable_key(&key, &call, 1, count, 0, 1, 31) == supported,
+                  "portable C1 coverage accepts one through seven source targets");
+            check(!vk_coverage_portable_key(&key, &call, 2, count, 0, 1, 31),
+                  "MRT capture does not imply a multi-color-sample association");
+            check(!vk_coverage_portable_key(&key, &call, 1, count, 0, 0, 31),
+                  "each MRT source still requires an invariant fragment shader");
+        }
+    }
     printf("vk coverage: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }

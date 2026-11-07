@@ -6,10 +6,11 @@
 #include "nx/gpu/shader/translate.h"
 #include "nx/gpu/shader/advanced_blend_spirv.h"
 #include "nx/gpu/shader/capture_tiles_spirv.h"
+#include "nx/gpu/shader/depth_stencil_spirv.h"
 
-/* Only an ordered storage image owns the attachment here. The renderer detaches it from fixed-function color
-   output, and gates depth, multisampling and format support before requesting this variant. Every invocation
-   executes one begin/end pair, including a discarded/helper invocation, which cannot update the image. */
+/* Programmable blend owns an ordered storage image. Coverage-only keeps its native integer attachment and kills
+   late-failed lanes after the interlock. Every invocation executes one begin/end pair; discarded/helper lanes
+   cannot update color or the optional GPU depth/stencil shadow. The host gates the native attachment state. */
 static void advanced_blend_sample(DirectCtx* c, const ShaderInfo* si, u32 vec4, u32 xy, u32 sample,
                                    u32 source_variable, u32 image, u32 image_type) {
     SpvEmitter* e = &c->emit;
@@ -44,49 +45,78 @@ static void advanced_blend_sample(DirectCtx* c, const ShaderInfo* si, u32 vec4, 
 }
 
 static void advanced_blend_epilogue(DirectCtx* c, const ShaderInfo* si, u32 vec4, u32 i32, u32 fragcoord,
-                                    u32 layer, u32 coverage, u32 source_variable, u32 image, u32 image_type) {
+                                    u32 layer, u32 coverage, u32 sample_mask_output, u32 frontface, u32 depth_buffer,
+                                    u32 source_variable, u32 image, u32 image_type) {
     SpvEmitter* e = &c->emit;
     spv_emit_label(e, c->blend_end);
-    spv_emit_void_op(e, 5364, NULL, 0); /* OpBeginInvocationInterlockEXT */
-    u32 write = spv_emit_id(e), done = spv_emit_id(e);
     u32 kept = spv_emit_bool_not(e, c->bool_type, shader_lane_dead(c));
-    spv_emit_selection_merge(e, done);
-    spv_emit_branch_conditional(e, kept, write, done);
-    spv_emit_label(e, write);
-    u32 position = spv_emit_load(e, vec4, fragcoord), coordinate[3];
-    for (u32 i = 0; i < 2; i++)
-        coordinate[i] = spv_emit_convert_f_to_s(e, i32, spv_emit_vec4_extract(e, c->f32_type, position, i));
-    u32 xy;
-    if (si->advanced_blend_mask & SH_BLEND_ARRAY) {
-        coordinate[2] = spv_emit_load(e, i32, layer);
-        xy = spv_emit_vec3_construct(e, spv_emit_type_vec3(e, i32), coordinate[0], coordinate[1], coordinate[2]);
-    } else
-        xy = SPV(e, SPV_OP_COMPOSITE_CONSTRUCT, spv_emit_type_vec2(e, i32), coordinate[0], coordinate[1]);
-    if (si->advanced_blend_mask & SH_BLEND_MULTISAMPLE) {
+    u32 position = 0, pixel = 0, incoming = 0, front = 0;
+    if (depth_buffer) {
+        position = spv_emit_load(e, vec4, fragcoord);
+        u32 inside;
+        pixel = shader_depth_stencil_coordinates(e, c->f32_type, c->u32_type, c->bool_type,
+                                                   depth_buffer, position, &inside);
+        kept = SPV(e, SPV_OP_LOGICAL_AND, c->bool_type, kept, inside);
         u32 mask = spv_emit_load(e, c->u32_type,
                                  spv_emit_interface_scalar_pointer(e, 1, c->u32_type, coverage, 0, c->zero));
-        u32 samples = si->advanced_blend_mask >> 8 & 63;
-        for (u32 i = 0; i < samples; i++) {
-            u32 bit = spv_emit_constant_u32(e, c->u32_type, 1u << i);
-            u32 covered = spv_emit_i_not_equal(e, c->bool_type,
-                                               spv_emit_bitwise_and_u32(e, c->u32_type, mask, bit), c->zero);
-            u32 apply = spv_emit_id(e), next = spv_emit_id(e);
-            spv_emit_selection_merge(e, next);
-            spv_emit_branch_conditional(e, covered, apply, next);
-            spv_emit_label(e, apply);
-            advanced_blend_sample(c, si, vec4, xy, spv_emit_constant_u32(e, c->u32_type, i), source_variable,
-                                    image, image_type);
-            spv_emit_branch(e, next);
-            spv_emit_label(e, next);
+        if (sample_mask_output) {
+            u32 output_mask = spv_emit_load(e, c->u32_type,
+                spv_emit_interface_scalar_pointer(e, 3, c->u32_type, sample_mask_output, 0, c->zero));
+            mask = SPV(e, SPV_OP_BITWISE_AND, c->u32_type, mask, output_mask);
         }
-    } else
-        advanced_blend_sample(c, si, vec4, xy, 0, source_variable, image, image_type);
-    spv_emit_branch(e, done);
-    spv_emit_label(e, done);
+        u32 covered = spv_emit_i_not_equal(e, c->bool_type, SPV(e, SPV_OP_BITWISE_AND, c->u32_type,
+            mask, spv_emit_constant_u32(e, c->u32_type, 1)), c->zero);
+        kept = SPV(e, SPV_OP_LOGICAL_AND, c->bool_type, kept, covered);
+        incoming = spv_emit_vec4_extract(e, c->f32_type, position, 2);
+        front = spv_emit_load(e, c->bool_type, frontface);
+    }
+    spv_emit_void_op(e, 5364, NULL, 0); /* OpBeginInvocationInterlockEXT */
+    if (depth_buffer)
+        kept = shader_depth_stencil_test(e, c->f32_type, c->u32_type, c->bool_type, depth_buffer,
+                                           pixel, incoming, front, kept);
+    if (si->advanced_blend) {
+        u32 write = spv_emit_id(e), done = spv_emit_id(e);
+        spv_emit_selection_merge(e, done);
+        spv_emit_branch_conditional(e, kept, write, done);
+        spv_emit_label(e, write);
+        if (!position) position = spv_emit_load(e, vec4, fragcoord);
+        u32 coordinate[3];
+        for (u32 i = 0; i < 2; i++)
+            coordinate[i] = spv_emit_convert_f_to_s(e, i32, spv_emit_vec4_extract(e, c->f32_type, position, i));
+        u32 xy;
+        if (si->advanced_blend_mask & SH_BLEND_ARRAY) {
+            coordinate[2] = spv_emit_load(e, i32, layer);
+            xy = spv_emit_vec3_construct(e, spv_emit_type_vec3(e, i32), coordinate[0], coordinate[1], coordinate[2]);
+        } else
+            xy = SPV(e, SPV_OP_COMPOSITE_CONSTRUCT, spv_emit_type_vec2(e, i32), coordinate[0], coordinate[1]);
+        if (si->advanced_blend_mask & SH_BLEND_MULTISAMPLE) {
+            u32 mask = spv_emit_load(e, c->u32_type,
+                spv_emit_interface_scalar_pointer(e, 1, c->u32_type, coverage, 0, c->zero));
+            u32 samples = si->advanced_blend_mask >> 8 & 63;
+            for (u32 i = 0; i < samples; i++) {
+                u32 bit = spv_emit_constant_u32(e, c->u32_type, 1u << i);
+                u32 covered = spv_emit_i_not_equal(e, c->bool_type,
+                    spv_emit_bitwise_and_u32(e, c->u32_type, mask, bit), c->zero);
+                u32 apply = spv_emit_id(e), next = spv_emit_id(e);
+                spv_emit_selection_merge(e, next);
+                spv_emit_branch_conditional(e, covered, apply, next);
+                spv_emit_label(e, apply);
+                advanced_blend_sample(c, si, vec4, xy, spv_emit_constant_u32(e, c->u32_type, i), source_variable,
+                                        image, image_type);
+                spv_emit_branch(e, next);
+                spv_emit_label(e, next);
+            }
+        } else
+            advanced_blend_sample(c, si, vec4, xy, 0, source_variable, image, image_type);
+        spv_emit_branch(e, done);
+        spv_emit_label(e, done);
+    }
     spv_emit_void_op(e, 5365, NULL, 0); /* OpEndInvocationInterlockEXT; implicitly publishes coherent image writes */
-    /* Alpha/KIL rejection still removes the fragment from fixed-function query/sample accounting. */
+    /* Coverage-only keeps its native integer output. Kill after the interlock suppresses that output on a late
+       failure while retaining stencil fail/depth-fail updates and all original guest shader side effects. */
     u32 reject = spv_emit_id(e), finish = spv_emit_id(e);
-    u32 discarded = spv_emit_load(e, c->bool_type, c->discarded);
+    u32 discarded = depth_buffer ? spv_emit_bool_not(e, c->bool_type, kept)
+                                 : spv_emit_load(e, c->bool_type, c->discarded);
     spv_emit_selection_merge(e, finish);
     spv_emit_branch_conditional(e, discarded, reject, finish);
     spv_emit_label(e, reject);
@@ -233,6 +263,10 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     }
     u32 target = stage == ST_CS ? 0 : sph[18];
     if (stage == ST_FS && (sph[19] & ~3u)) return direct_reject(si, "fragment output beyond depth and mask");
+    if ((si->advanced_blend_mask & SH_CAPTURE_SOURCE) &&
+        (target >> (4 * (si->capture_outputs ? si->capture_outputs : 1))))
+        return direct_reject(si, "capture validity collides with guest color outputs");
+    if (si->late_depth && (sph[19] & 2u)) return direct_reject(si, "late depth replacement");
     /* the sample mask (SPH word 19 bit 0) and depth (bit 1) follow the colours, in that order */
     int passthrough = stage == ST_GS && (sph[0] >> 24 & 1);
     u8 used[255] = {0};
@@ -259,7 +293,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     u64 tex_read = 0, tex_elsewhere = 0; /* slots read, and of them read elsewhere than the fragment's own pixel */
     u64 tex_query = 0;                   /* slots a TXQ alone names: their type is the key's hint, or 2D */
     ShaderInfo image_info = {0};
-    int needs_fragcoord = 0;
+    int needs_fragcoord = stage == ST_FS && (si->advanced_blend_mask & SH_ALPHA_COVERAGE_DITHER);
     int needs_frontface = 0;
     int needs_point_coord = 0, needs_sample_id = 0, needs_coverage = 0;
     int needs_demote = 0, has_discard = 0;
@@ -1577,7 +1611,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         if (stage == ST_FS) needs_texel_scale = 1; /* a scaled target's size is unscaled first */
     }
     if (advanced_blend) {
-        if (image_info.nimg >= 8 || !(target & 15) || (target & ~15u) || (sph[19] & 3u) || si->rt_int_mask ||
+        if (image_info.nimg >= 8 || !(target & 15) || (target & ~15u) ||
+            (sph[19] & (si->late_depth ? 2u : 3u)) || si->rt_int_mask ||
             ((si->advanced_blend >> 37) & 63) < 5 || ((si->advanced_blend >> 37) & 63) > 50 ||
             ((si->advanced_blend >> 44) & 3) > 2 ||
             ((si->advanced_blend_mask & SH_BLEND_MULTISAMPLE) &&
@@ -1586,6 +1621,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         needs_fragcoord = needs_demote = 1;
         if (si->advanced_blend_mask & SH_BLEND_ARRAY) layer_input_used = 1;
         if (si->advanced_blend_mask & SH_BLEND_MULTISAMPLE) needs_coverage = 1;
+    }
+    if (si->late_depth) {
+        needs_fragcoord = needs_frontface = needs_coverage = needs_demote = 1;
     }
     if (stage == ST_FS && (si->advanced_blend_mask & SH_CAPTURE_TILED)) {
         needs_fragcoord = 1;
@@ -1607,17 +1645,17 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     c->soft_ftz_on = soft_ftz_on;
     spv_emit_init(&c->emit, (size_t)n * 20 + 128);
     spv_emit_shader_capability(&c->emit);
-    int post_depth_coverage = si->coverage_to_color ||
+    int post_depth_coverage = (si->coverage_to_color && !si->late_depth) ||
         (advanced_blend && (si->advanced_blend_mask & SH_BLEND_MULTISAMPLE) &&
          (si->advanced_blend_mask & SH_BLEND_EARLY_TESTS));
     if (post_depth_coverage) {
         spv_emit_extension(&c->emit, "SPV_KHR_post_depth_coverage");
         spv_emit_capability(&c->emit, 4447); /* SampleMaskPostDepthCoverage */
     }
-    if (advanced_blend) {
+    if (advanced_blend || si->late_depth) {
         spv_emit_extension(&c->emit, "SPV_EXT_fragment_shader_interlock");
         spv_emit_capability(&c->emit, 5378); /* FragmentShaderPixelInterlockEXT */
-        spv_emit_capability(&c->emit, 55);   /* StorageImageReadWithoutFormat */
+        if (advanced_blend) spv_emit_capability(&c->emit, 55); /* StorageImageReadWithoutFormat */
         c->blend_end = spv_emit_id(&c->emit);
     }
     if (stage == ST_TCS || stage == ST_TES) spv_emit_capability(&c->emit, 3); /* Tessellation */
@@ -1713,7 +1751,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 count++;
             }
     if (stage == ST_FS && (si->advanced_blend_mask & SH_CAPTURE_SOURCE)) {
-        capture_output = spv_emit_output_vec4(&c->emit, vec4, 1);
+        capture_output = spv_emit_output_vec4(&c->emit, vec4, si->capture_outputs ? si->capture_outputs : 1);
         interfaces[count++] = capture_output;
     }
     if (si->coverage_to_color && !coverage_output) {
@@ -1992,6 +2030,11 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         interfaces[count++] = capture_tiles;
         interfaces[count++] = capture_helper;
     }
+    u32 depth_buffer = 0;
+    if (si->late_depth) {
+        depth_buffer = shader_depth_stencil_declare(&c->emit, c->u32_type, shader_vk_set(ST_FS), SNX_VKB_CAPTURE);
+        interfaces[count++] = depth_buffer;
+    }
     u32 blend_image = 0, blend_image_type = 0;
     if (advanced_blend) {
         int array = !!(si->advanced_blend_mask & SH_BLEND_ARRAY);
@@ -2182,7 +2225,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     }
     if (stage == ST_CS) spv_emit_local_size(&c->emit, fn, si->cs_local[0], si->cs_local[1], si->cs_local[2]);
     if (stage == ST_FS) spv_emit_fragment_origin_upper_left(&c->emit, fn);
-    if (advanced_blend) spv_emit_execution_mode(&c->emit, fn, 5366, 0, 0); /* PixelInterlockOrderedEXT */
+    if (advanced_blend || si->late_depth) spv_emit_execution_mode(&c->emit, fn, 5366, 0, 0); /* PixelInterlockOrderedEXT */
     if (post_depth_coverage) spv_emit_execution_mode(&c->emit, fn, 4446, 0, 0); /* PostDepthCoverage */
     if (stage == ST_FS && (si->early_fragment_tests || si->coverage_early_tests ||
                           (si->advanced_blend_mask & SH_BLEND_EARLY_TESTS)))
@@ -2310,7 +2353,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     if (has_flow && !structure)
         pc = spv_emit_function_variable_init(&c->emit, reg_ptr, spv_emit_constant_u32(&c->emit, c->u32_type, 11));
     if (structure && structure->uses_flag) se.flag = spv_emit_function_variable_init(&c->emit, reg_ptr, c->zero);
-    c->discarded = (has_flow && stage == ST_FS) || advanced_blend
+    c->discarded = (has_flow && stage == ST_FS) || advanced_blend || si->late_depth
                        ? spv_emit_function_variable_init(&c->emit, pred_ptr, c->false_value)
                        : 0;
     if (capture_output) {
@@ -2530,7 +2573,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 break;
             }
             /* control runs off the program's end, which ends the dispatch loop: what follows it */
-            if (c->discarded) {
+            if (c->discarded && !c->blend_end) {
                 u32 kill_label = spv_emit_id(&c->emit), kept = spv_emit_id(&c->emit);
                 u32 discard = spv_emit_load(&c->emit, c->bool_type, c->discarded);
                 spv_emit_selection_merge(&c->emit, kept);
@@ -2636,7 +2679,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         spv_emit_label(&c->emit, loop_continue);
         spv_emit_branch(&c->emit, loop_header);
         spv_emit_label(&c->emit, loop_merge);
-        if (c->discarded && !advanced_blend) {
+        if (c->discarded && !c->blend_end) {
             u32 kill_label = spv_emit_id(&c->emit), kept = spv_emit_id(&c->emit);
             u32 discard = spv_emit_load(&c->emit, c->bool_type, c->discarded);
             spv_emit_selection_merge(&c->emit, kept);
@@ -2656,9 +2699,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         else
             spv_emit_return(&c->emit);
     }
-    if (advanced_blend)
-        advanced_blend_epilogue(c, si, vec4, i32_type, fragcoord, layer_input, coverage, outputs[0], blend_image,
-                                 blend_image_type);
+    if (c->blend_end)
+        advanced_blend_epilogue(c, si, vec4, i32_type, fragcoord, layer_input, coverage, sample_mask_output,
+                                 frontface, depth_buffer, advanced_blend ? outputs[0] : 0, blend_image, blend_image_type);
     spv_emit_function_end(&c->emit);
     u32* result = spv_emit_finish(&c->emit, word_count);
     spv_emit_destroy(&c->emit);
@@ -2678,6 +2721,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     next.advanced_blend_mask = si->advanced_blend_mask;
     next.coverage_to_color = si->coverage_to_color;
     next.coverage_early_tests = si->coverage_early_tests;
+    next.late_depth = si->late_depth;
+    next.capture_outputs = si->capture_outputs;
+    next.primitive_split_safe = stage == ST_VS && !needs_subgroup && !lane_used && !needs_clock;
     memcpy(next.cs_local, si->cs_local, sizeof next.cs_local);
     next.shared_size = si->shared_size;
     next.attr_int_mask = si->attr_int_mask;
@@ -2739,11 +2785,30 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
     u64* copy;
     const u64* insn;
     u32* r;
-    if (si) si->mixed_sample_invariant = 0;
+    if (si) si->mixed_sample_invariant = si->primitive_split_safe = 0;
     if (!code) return NULL;
     if (si && (!shader_coverage_r1_valid(si->advanced_blend_mask) ||
         ((si->advanced_blend_mask & SH_COVERAGE_R1) && (stage != ST_FS || !can_preserve))))
         return direct_reject(si, "ratio-one coverage key");
+    if (si && (si->late_depth > 1 || si->capture_outputs == 1 || si->capture_outputs > 7 ||
+        ((si->late_depth || si->capture_outputs || (si->advanced_blend_mask & SH_CAPTURE_SOURCE)) && stage != ST_FS) ||
+        (si->capture_outputs && !(si->advanced_blend_mask & SH_CAPTURE_SOURCE))))
+        return direct_reject(si, "fragment epilogue configuration");
+    if (si && si->late_depth &&
+        ((!si->advanced_blend && !si->coverage_to_color) || !can_preserve ||
+         si->early_fragment_tests || si->coverage_early_tests ||
+         (si->advanced_blend_mask & (SH_BLEND_ARRAY | SH_BLEND_MULTISAMPLE | SH_BLEND_EARLY_TESTS |
+                                    SH_CAPTURE_SOURCE | SH_CAPTURE_TILED)) ||
+         ((si->advanced_blend_mask & SH_ALPHA_COVERAGE) && (si->advanced_blend_mask >> 8 & 63) != 1)))
+        return direct_reject(si, "late depth interface");
+    if (si) {
+        u32 alpha = si->advanced_blend_mask & (SH_ALPHA_COVERAGE | SH_ALPHA_COVERAGE_DITHER | SH_ALPHA_TO_ONE);
+        u32 samples = si->advanced_blend_mask >> 8 & 63;
+        if ((alpha && stage != ST_FS) ||
+            ((alpha & SH_ALPHA_COVERAGE_DITHER) && !(alpha & SH_ALPHA_COVERAGE)) ||
+            ((alpha & SH_ALPHA_COVERAGE) && (!samples || samples > 16 || (samples & (samples - 1)))))
+            return direct_reject(si, "alpha coverage key");
+    }
     insn = shader_words(code, max_bytes, &copy);
     if (!insn) return NULL;
     u64* moved = NULL;

@@ -225,7 +225,8 @@ int main(int argc, char** argv) {
     check(vk_coverage_portable_key(&key, &call, 1, 1, 0, 1, 31), "portable key admits proved color-only one-sample state");
     check(!vk_coverage_portable_key(&key, &call, 1, 1, 0, 0, 31), "sample-dependent sources require a different path");
     check(!vk_coverage_portable_key(&key, &call, 2, 1, 0, 1, 31), "multiple stored color samples remain gated");
-    check(!vk_coverage_portable_key(&key, &call, 1, 2, 0, 1, 31), "multiple attachments remain gated");
+    check(vk_coverage_portable_key(&key, &call, 1, 2, 0, 1, 31), "two single-sample color targets can share exact raster coverage");
+    check(!vk_coverage_portable_key(&key, &call, 1, 8, 0, 1, 31), "eight colors leave no attachment for independent validity");
     check(vk_coverage_portable_key(&key, &call, 1, 1, 4, 1, 31), "matching four-sample depth can keep native tests during source capture");
     check(!vk_coverage_portable_key(&key, &call, 1, 1, 1, 1, 31), "single-sample depth cannot test a four-sample source capture");
     check(!vk_coverage_portable_key(&key, &call, 1, 1, 2, 1, 31), "two-sample depth cannot test a four-sample source capture");

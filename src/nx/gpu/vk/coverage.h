@@ -11,6 +11,10 @@ typedef struct {
     u32 raster_samples, mode, table_enable;
     u8 table[16]; /* coefficients in units of1/16, clamped to0..16 by NVN command replay */
 } VkCoverage;
+/* The shared validity output takes one color attachment. The fragment interface supports seven sources. */
+static inline u32 vk_coverage_capture_limit(u32 attachments) {
+    return attachments > 1 ? (attachments > 8 ? 7 : attachments - 1) : 0;
+}
 
 static inline int vk_coverage_ratio(u32 raster, u32 color) {
     if (!color || (color & (color - 1)) || !raster || (raster & (raster - 1)) || raster > 16 || raster < color)
@@ -74,7 +78,7 @@ static inline u32 vk_coverage_table(const VkCoverage* key, u32 color, float outp
 static inline int vk_coverage_portable_key(VkCoverage* key, const DrawCall* call, u32 color, u32 attachments,
                                            u32 depth_samples, int source_invariant, u32 raster_counts) {
     memset(key, 0, sizeof *key);
-    if (color != 1 || attachments != 1 || !source_invariant || call->raster_samples <= color) return 0;
+    if (color != 1 || !attachments || attachments > 7 || !source_invariant || call->raster_samples <= color) return 0;
     return vk_coverage_key(key, call, color, attachments, depth_samples, 1, raster_counts);
 }
 #endif

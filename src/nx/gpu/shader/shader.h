@@ -139,7 +139,12 @@ typedef struct {
     u8 tex_query_hint[SH_MAXTEX];
     u64 tex_query_mask;
     int mixed_sample_invariant; /* proof: guest FS values and discard decisions do not depend on an invocation */
+    u32 late_depth; /* key: ordered GPU depth/stencil shadow operations after guest fragment code */
+    u32 capture_outputs; /* key: capture validity location2..7; zero retains the original location1 interface */
+    int primitive_split_safe; /* proof: vertex values do not depend on subgroup/lane/clock invocation groups */
 } ShaderInfo;
+/* The graphics cache packs these explicit fragment-only fields above its eight image-format bits. */
+enum { SH_FS_LATE_DEPTH = 1u, SH_FS_CAPTURE_SHIFT = 1, SH_FS_CONFIG_MASK = 15u };
 /* ShaderInfo.tex_query_hint in a graphics key's words (vk_shader_get's mask words 14 to 19: 3 bits a slot, the 64
    slots in 6 words), and back. A 1D header's hint (1) goes as none: its query is the 2D slot's, a texel high, as the
    translation binds 1D textures */
