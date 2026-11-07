@@ -166,6 +166,7 @@ int audren_open(SvcObj* o, const u8* params) {
     return !test_audren.refuse;
 }
 void audren_tick(void) {}
+void outstream_tick(u64 now) { (void)now; } /* audio_stream.c's: no output streams here */
 static float test_renderer_gain = 1.0f;
 void audren_volume(float gain) { test_renderer_gain = gain; }
 KEvent* kevent_new(const char* name) {
