@@ -294,7 +294,7 @@ static void want_hair_at(const Shape* grids, u32 g, u32 i, u32 j, float out[3]) 
 /* the hair of a shape file (q Q_MID or Q_HIGH) as the SDK reads it. A drill style's tails (112) are drills: along
    each, at any angle around it, its radius drops at the edge of each turn of its ringlet, at least two of them before
    its point, and the turns wind along it (the drops of the opposite side fall between this side's, where rings would
-   line up), its first ring 16 units or more across, in the High file; the Mid file's, with too few rows for rings,
+   line up), its rings 30 units or more across, in the High file; the Mid file's, with too few rows for rings,
    are smooth. A high twin tail's (126) is a
    lock: narrow at its tie, widest between a fifth and three fifths of the way, a quarter of that at its point, and
    (High) flat, half as thick front to back as it is wide. Every style's fringe ends in pointed locks: its edge's height goes up and down across
@@ -350,7 +350,7 @@ static void check_hair(const u8* f, u32 q) {
                     fprintf(stderr, "%s hair 112 tail %u: drops %u and %u, first at rows %u and %u\n",
                             q ? "High" : "Mid", g, drops[0], drops[1], first[0], first[1]);
                 CHECK(drops[0] >= 2 && drops[1] >= 2 && first[0] != first[1]);
-                CHECK(thickest > 8.0f); /* chunky: its first ring a third of the head's width across */
+                CHECK(thickest > 15.0f); /* chunky: its rings near half the head's width across */
             }
         }
         /* the edge across the fringe, a fourteenth of the way around each side of its middle (past that it falls toward
@@ -561,10 +561,10 @@ static void check_shapes(const u8* f, u32 size, int high) {
                     }
                 }
                 if (i == 126) CHECK(lo[1] < 20 && left > 10 && right > 10);
-                if (i == 112 && (out_left <= 5 || out_right <= 5))
+                if (i == 112 && (out_left <= 10 || out_right <= 10))
                     fprintf(stderr, "hair 112: %u and %u vertices of its drills past the hair (%.1f)\n", out_left,
                             out_right, wide);
-                if (i == 112) CHECK(out_left > 5 && out_right > 5);
+                if (i == 112) CHECK(out_left > 10 && out_right > 10);
                 if (i == 29) crown_29 = hi[1];
                 if (i == 112) CHECK(hi[1] > crown_29 + 6); /* its ahoge up from the crown; 29 has none */
                 if (i == 84) CHECK((left > 20) != (right > 20));
@@ -676,8 +676,8 @@ static void check_picture(void) {
     CHECK(eyes[0] >= 60 && eyes[1] >= 60);
     CHECK(pic_count(rgba, 128, -20, 13, 20, 21, is_white) > 3);      /* their whites */
     CHECK(pic_count(rgba, 128, -20, 26, 20, 34, is_red_eye) < 6);    /* nothing of them where a Mii's would be */
-    CHECK(pic_count(rgba, 128, -48, 24, -41, 40, is_red_hair) > 10); /* a drill out from each side, past the hair */
-    CHECK(pic_count(rgba, 128, 41, 24, 48, 40, is_red_hair) > 10);
+    CHECK(pic_count(rgba, 128, -54, 22, -44, 36, is_red_hair) > 20); /* a drill out from each side, past the hair */
+    CHECK(pic_count(rgba, 128, 44, 22, 54, 36, is_red_hair) > 20);
     CHECK(pic_count(rgba, 128, -2, 55, 12, 62, is_red_hair) > 2); /* the ahoge over the crown */
     CHECK(pic_count(rgba, 128, 9, 8, 14, 12, is_red_hair) == 0);  /* no hair over the cheek, under the eye */
     CHECK(pic_count(rgba, 128, -14, 8, -9, 12, is_red_hair) == 0);
@@ -716,7 +716,7 @@ static void check_picture(void) {
     snx_mii_db_charinfo(1, ci); /* Leek Girl: teal */
     snx_mii_db_look(1, &look);
     CHECK(snx_mii_picture(ci, &look, 128, rgba) == 0);
-    CHECK(is_teal(pic_at(rgba, 128, 0, 48)) && pic_count(rgba, 128, -46, 0, -38, 40, is_teal) > 20);
+    CHECK(is_teal(pic_at(rgba, 128, 0, 48)) && pic_count(rgba, 128, -54, 0, -44, 40, is_teal) > 20);
     snx_mii_db_charinfo(3, ci); /* Alex: short hair, no tails */
     snx_mii_db_look(3, &look);
     CHECK(snx_mii_picture(ci, &look, 128, rgba) == 0);
