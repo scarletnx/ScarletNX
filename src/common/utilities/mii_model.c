@@ -460,9 +460,10 @@ static Tail tail_of_style(u32 tail, u32 k) {
             t.out = vec(side * 28.0f, -2.0f, -4.0f);
             t.fall = 48.0f, t.r0 = 7.5f, t.r1 = 0.6f, t.spread = 1.0f, t.flat = 0.45f, t.leaf = 1;
             break;
-        case TAIL_TWIN_LOW: /* from behind the ears */
-            t.root = vec(side * 0.82f * HEAD_RX, HEAD_CY + 0.12f * HEAD_UP, -16.0f), t.out = vec(side * 5.0f, 0, -3.0f);
-            t.fall = 34.0f, t.r0 = 3.8f, t.r1 = 1.4f;
+        case TAIL_TWIN_LOW: /* wide flat locks from behind the ears, out a little and down past the chin */
+            t.root = vec(side * 0.82f * HEAD_RX, HEAD_CY + 0.12f * HEAD_UP, -16.0f),
+            t.out = vec(side * 10.0f, -2.0f, -3.0f);
+            t.fall = 32.0f, t.r0 = 8.0f, t.r1 = 0.6f, t.spread = 0.6f, t.flat = 0.5f, t.leaf = 1;
             break;
         case TAIL_TWIN_DRILL: /* out from the sides at the eyes' height: short and chunky, nearly as thick at the end
                                  as at the root, three rings */
@@ -478,9 +479,9 @@ static Tail tail_of_style(u32 tail, u32 k) {
             t.root = vec(0, HEAD_CY + HEAD_UP + 3.5f, 1.0f), t.out = vec(7.0f, 0, 5.0f); /* inside the crown's hair */
             t.fall = -12.0f, t.r0 = 2.8f, t.r1 = 0.3f, t.spread = 1.0f;
             break;
-        default: /* TAIL_BACK: one, at the back of the head */
-            t.root = vec(0, HEAD_CY + 0.47f * HEAD_UP, -30.5f), t.out = vec(0, 1.0f, -6.0f);
-            t.fall = 34.0f, t.r0 = 4.2f, t.r1 = 1.5f;
+        default: /* TAIL_BACK: one wide flat lock down the back of the head */
+            t.root = vec(0, HEAD_CY + 0.47f * HEAD_UP, -26.0f), t.out = vec(0, 1.0f, -5.0f); /* out of the hair */
+            t.fall = 34.0f, t.r0 = 9.0f, t.r1 = 0.6f, t.spread = 0.6f, t.flat = 0.5f, t.leaf = 1;
             break;
     }
     return t;
@@ -576,7 +577,7 @@ static Vec hat_part_at(const Shape* sh, float s, float t) {
     }
     {
         Vec c = hat_ball(sh->variant);
-        float r = sh->variant == HAT_BOW ? 4.0f : 3.0f, th = s * 2 * PI_F, ph = (t - 0.5f) * PI_F;
+        float r = sh->variant == HAT_BOW ? 6.0f : 4.5f, th = s * 2 * PI_F, ph = (t - 0.5f) * PI_F;
         return vadd(c, vec(r * cosf(ph) * sinf(th), r * sinf(ph), r * cosf(ph) * cosf(th)));
     }
 }

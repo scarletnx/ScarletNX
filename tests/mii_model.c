@@ -295,14 +295,14 @@ static void want_hair_at(const Shape* grids, u32 g, u32 i, u32 j, float out[3]) 
    each, at any angle around it, its radius drops at the edge of each turn of its ringlet, at least two of them before
    its point, and the turns wind along it (the drops of the opposite side fall between this side's, where rings would
    line up), its rings 30 units or more across, in the High file; the Mid file's, with too few rows for rings,
-   are smooth. A high twin tail's (126) is a
+   are smooth. A high twin tail's (126), a low one's (19) and a ponytail's (9) is a
    lock: narrow at its tie, widest between a fifth and three fifths of the way, a quarter of that at its point, and
    (High) flat, half as thick front to back as it is wide. Every style's fringe ends in pointed locks: its edge's height goes up and down across
    the front, where an edge without them only rises toward the middle */
 static void check_hair(const u8* f, u32 q) {
-    static const u32 styles[3] = {112, 126, 0};
+    static const u32 styles[5] = {112, 126, 0, 19, 9};
     u32 s;
-    for (s = 0; s < 3; s++) {
+    for (s = 0; s < 5; s++) {
         u32 style = styles[s], e = 4 + 12 + 12 + 132 * 4 + style, g, i, j, tips = 0, valleys = 0;
         const u8* t = f + 0x6c + 0x58 * e;
         Shape sh = shape_in(S_HAIR_NORMAL, hair_variant(style), q);
@@ -328,7 +328,7 @@ static void check_hair(const u8* f, u32 q) {
                     last = r;
                 }
             }
-            if (style == 126) {
+            if (style == 126 || style == 19 || style == 9) {
                 float r[64], widest = 0, p[3];
                 u32 at = 0;
                 for (j = 0; j <= sh.nt[g] && j < 64; j++) {
