@@ -2,11 +2,13 @@
 // Copyright 2026 the ScarletNX contributors
 //
 // The framework's members as an app's code links to them, as Android 16's SDK declares them: a call finds its method
-// by name and descriptor. Run as a source file, with the framework jar in a loader of its own:
+// by name and descriptor, and a class that overrides a method needs it not final. Run as a source file, with the
+// framework jar in a loader of its own:
 //   java tests/android_framework_api.java scarletnx-android-framework.jar
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Path;
@@ -47,6 +49,14 @@ final class AndroidFrameworkApi {
         }
     }
 
+    /** An app's class may override cls.name: it is not final, as in the SDK. */
+    private static void overridable(String cls, String name, Class<?>... params) throws ReflectiveOperationException {
+        Method m = type(cls).getMethod(name, params);
+        check(!Modifier.isFinal(m.getModifiers()),
+              cls + "." + name + " is not final in the SDK: an app's class that overrides it does not load",
+              m.toString());
+    }
+
     public static void main(String[] args) throws Exception {
         if (args.length != 1) {
             System.err.println("usage: java android_framework_api.java FRAMEWORK_JAR");
@@ -56,6 +66,7 @@ final class AndroidFrameworkApi {
         try (URLClassLoader loader = new URLClassLoader(new URL[] {jar}, ClassLoader.getPlatformClassLoader())) {
             framework = loader;
             links("android.net.LinkProperties", "getDhcpServerAddress", java.net.Inet4Address.class);
+            overridable("android.widget.ArrayAdapter", "addAll", Object[].class);
         }
         if (failures != 0) System.exit(1);
         System.out.println("android_framework_api: ok");
