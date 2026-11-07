@@ -4,6 +4,8 @@
 #include "gnuabi/abi/errno/errno.h"
 #include "gnuabi/runtime/execution.h"
 #include "common/utilities/endian.h"
+#include "gnuabi/kernel/signals.h"
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -196,6 +198,17 @@ int main(int argc, char** argv) {
     t->cpu.pc = 0x400100;
     CHECK(gnu_runtime_run(t) == 139);
     CHECK(p->faulted == 11 && strstr(p->diagnostic, "mapped permissions"));
+#ifndef _WIN32
+    /* the kick's host signal (installed by gnu_runtime_run) stays the runtime's whatever the guest does with the signal
+       of its number, which is SIGUSR2 on macOS */
+    CHECK(!gnu_host_mirrored(gnu_thread_kick_signal()) && !gnu_host_mirrored(SIGSEGV) && gnu_host_mirrored(SIGUSR1));
+    int kick_guest = gnu_guest_signal(gnu_thread_kick_signal());
+    if (kick_guest) {
+        struct sigaction now;
+        gnu_host_disposition(p, kick_guest, SNX_SIG_DFL);
+        CHECK(!sigaction(gnu_thread_kick_signal(), NULL, &now) && now.sa_handler != SIG_DFL);
+    }
+#endif
     gnu_process_destroy(p);
     gnu_jit_destroy(&p->jit);
     memset(p, 0, sizeof *p);

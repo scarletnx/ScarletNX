@@ -172,14 +172,16 @@ void gnu_thread_leave(GnuThread* t) {
 
 void gnu_thread_drain(GnuThread* t) { snx_net_wake_drain(t->wake); }
 
-#ifndef _WIN32
-static int kick_signal(void) {
-#ifdef SIGRTMIN
+int gnu_thread_kick_signal(void) {
+#ifdef _WIN32
+    return 0;
+#elif defined(SIGRTMIN)
     return SIGRTMIN + 2;
 #else
     return SIGUSR2;
 #endif
 }
+#ifndef _WIN32
 static void kicked(int signal) { (void)signal; }
 #endif
 void gnu_thread_install_kick(void) {
@@ -189,7 +191,7 @@ void gnu_thread_install_kick(void) {
     memset(&action, 0, sizeof action);
     action.sa_handler = kicked;
     sigemptyset(&action.sa_mask);
-    (void)sigaction(kick_signal(), &action, NULL);
+    (void)sigaction(gnu_thread_kick_signal(), &action, NULL);
 #endif
 }
 
@@ -213,7 +215,7 @@ static void op_kick(void* context, GnuKernelThread* k) {
     GnuThread* t = k->runtime;
     snx_net_wake_signal(t->wake);
 #ifndef _WIN32
-    if (t->started) pthread_kill(t->host, kick_signal());
+    if (t->started) pthread_kill(t->host, gnu_thread_kick_signal());
 #endif
 }
 static void op_end(void* context, GnuKernelThread* k, int status, int signal, const char* reason) {

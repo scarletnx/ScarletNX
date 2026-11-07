@@ -89,9 +89,20 @@ void gnu_host_signals_forked(void) {
 #endif
 }
 
+bool gnu_host_mirrored(int host) {
+#ifdef _WIN32
+    (void)host;
+    return false;
+#else
+    return host && host != SIGKILL && host != SIGSTOP && host != SIGSEGV && host != SIGBUS &&
+           host != gnu_thread_kick_signal();
+#endif
+}
+
 /* what the host does with a guest's disposition: ignore what the guest ignores (a write to a closed pipe then fails
    with EPIPE, an ignored SIGCHLD leaves no zombies), relay what it handles, and the default action for the rest, which
-   ends the host process as Linux ends the guest's. SIGSEGV and SIGBUS are the runtime's own (execution.c) */
+   ends the host process as Linux ends the guest's. SIGSEGV and SIGBUS are the runtime's own (execution.c), and so is
+   the kick (SIGUSR2 on macOS): a guest's action for it stays the kernel's, for the signals the guest sends itself */
 void gnu_host_disposition(void* p, int sig, uint64_t handler) {
 #ifdef _WIN32
     (void)p;
@@ -99,7 +110,7 @@ void gnu_host_disposition(void* p, int sig, uint64_t handler) {
     (void)handler;
 #else
     int host = gnu_host_signal(sig);
-    if (!host || host == SIGKILL || host == SIGSTOP || host == SIGSEGV || host == SIGBUS) return;
+    if (!gnu_host_mirrored(host)) return;
     struct sigaction action = {0};
     sigemptyset(&action.sa_mask);
     if (handler > SNX_SIG_IGN) {
