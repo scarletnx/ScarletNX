@@ -17,6 +17,15 @@ struct Encoder : Invocation {
     leuvec4* bc7_blocks;
 #include "nx/gpu/texture/bc7_encode.glsl"
 };
+// the same with the whole search for every block, for the checks that a block a mode holds comes back exact
+#undef SNX_BC7_GOOD_ENOUGH
+#define SNX_BC7_GOOD_ENOUGH 0
+struct EncoderWhole : Invocation {
+    uint width, height, blocks_x, blocks_y;
+    const leuint* rgba;
+    leuvec4* bc7_blocks;
+#include "nx/gpu/texture/bc7_encode.glsl"
+};
 // the same without modes 4 and 5, which bc7_glsl.cpp measures them against
 #undef SNX_BC7_MODES_4_5
 #define SNX_BC7_MODES_4_5 0
@@ -77,6 +86,10 @@ template <typename E> static void encode(const uint8_t* rgba, uint32_t w, uint32
 
 extern "C" void bc7_encode_cpu(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out) {
     encode<bc7_shader::Encoder>(rgba, w, h, depth, out);
+}
+
+extern "C" void bc7_encode_cpu_whole(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out) {
+    encode<bc7_shader::EncoderWhole>(rgba, w, h, depth, out);
 }
 
 extern "C" void bc7_encode_cpu_without_45(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out) {
