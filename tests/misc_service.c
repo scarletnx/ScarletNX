@@ -673,7 +673,7 @@ static void test_hid(void) {
     CHECK(npad_latest_buttons(8, HO_HidNpadInternalState_handheld_lifo) == 1ull << 3);
     CHECK(npad_latest_buttons(8, HO_HidNpadInternalState_full_key_lifo) == 1ull << 3);
     g_hle.hid.pad1.buttons = 0;
-    CHECK(get_styles(h) == 0x7F); /* every style until the game says which it takes */
+    CHECK(get_styles(h) == 0x307F); /* every style until the game says which it takes, the Joy-Con 2 pair and left too */
     CHECK(no1_style() == 1);      /* No1 is a Pro Controller */
     KEvent* no1 = style_event(h, 0);
     CHECK(no1 == kev(g_hle.hid.style_ev[0]) && no1->signaled); /* signaled at first, so the game reads the styles */
