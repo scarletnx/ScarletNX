@@ -1531,6 +1531,22 @@ static void test_pctl_play_timer(void) {
     svcobj_unref(factory);
 }
 
+/* pctl's IsFreeCommunicationAvailable (1018), no arguments: success, no restriction set */
+static void test_pctl_free_communication(void) {
+    SvcObj *factory = new_pctl(), *pctl;
+    Request r;
+    request(&r, 0);
+    r.c.has_pid = 1;
+    call(factory, &r);
+    CHECK(r.c.nout_objs == 1);
+    pctl = r.c.out_objs[0];
+    request(&r, 1018);
+    call(pctl, &r);
+    CHECK(r.c.out_size == 0);
+    svcobj_unref(pctl);
+    svcobj_unref(factory);
+}
+
 /* caps:su: SaveScreenShotEx1 (205) {attribute 0x40, u32 report option at 0x40, aruid at 0x48, pid}, the application
    data in A 0 (0x404 bytes) and the 1280x720 RGBA picture in A 1. Ex0 (203) has the picture in A 0, Ex2 (210) the
    users in A 0 (0x88) and no pid. The picture is a PPM in <the game's folder>captures/, named by the entry's local time
@@ -1737,6 +1753,7 @@ int main(void) {
     test_mii_latest();
     test_pctl_play_timer();
     test_nim();
+    test_pctl_free_communication();
     test_caps();
     test_olsc();
     CHECK(test_objects == 0 && test_kobjs == 0);

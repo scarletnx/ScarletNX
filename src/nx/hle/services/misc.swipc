@@ -42,6 +42,8 @@ interface nn::pctl::detail::ipc::IParentalControlService {
     @stub [1002] ConfirmLaunchApplicationPermission(nn::ncm::ApplicationId application_id,
                                                     array<i8, 9> restriction_bitset, b8 nacp_flag);
     @stub [1004] ConfirmSnsPostPermission();
+    # success: no restriction keeps the game from talking to strangers
+    @stub [1018] IsFreeCommunicationAvailable();
     @stub [1031] IsRestrictionEnabled() -> b8 enabled;
     @stub [1032] GetSafetyLevel() -> i32 safety_level;
     @stub [1039] GetFreeCommunicationApplicationListCount() -> i32 count;
