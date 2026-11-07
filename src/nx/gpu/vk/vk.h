@@ -114,6 +114,7 @@ typedef struct {
                                 the client's, one driver call (gpuprof.c's calibration) */
     int has_xfb;                /* VK_EXT_transform_feedback: draws capture their outputs into guest memory */
     int has_mixed_samples;      /* VK_NV_framebuffer_mixed_samples: coverage at more samples than color storage */
+    int has_checkpoints;        /* VK_NV_device_diagnostic_checkpoints: the draw or dispatch a GPU fault hangs on */
     VkAdvancedBlendCaps advanced_blend_caps;
     int has_fragment_interlock; /* ordered pixel storage-image read/modify/write */
     int has_border_color;       /* VK_EXT_custom_border_color */

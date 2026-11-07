@@ -453,6 +453,7 @@ typedef struct {
 static CpDesc g_cp_desc[CP_LOG];
 static u64 g_cp_seq;
 static void vk_checkpoint(VkCommandBuffer cb, const char* what, u64 key, u64 addr, u32 gx, u32 gy, u32 gz) {
+    if (!g_vk.has_checkpoints) return;
     u64 seq = __atomic_fetch_add(&g_cp_seq, 1, __ATOMIC_RELAXED) & (CP_LOG - 1);
     g_cp_desc[seq] = (CpDesc){what, key, addr, gx, gy, gz};
     vkCmdSetCheckpointNV(cb, (const void*)(uintptr_t)(seq + 1));
@@ -461,7 +462,7 @@ static void vk_checkpoint(VkCommandBuffer cb, const char* what, u64 key, u64 add
    above) so the log names the one that hung. Dumped once: after a device-lost every later VK call fails too */
 void vk_checkpoint_dump(const char* why) {
     static int dumped;
-    if (dumped) return;
+    if (dumped || !g_vk.has_checkpoints) return;
     dumped = 1;
     VkQueue qs[2] = {g_vk.gfx, g_vk.compute};
     const char* names[2] = {"graphics", "compute"};
