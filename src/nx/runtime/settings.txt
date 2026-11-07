@@ -164,7 +164,7 @@ setting Showcase
     default 0
     words Off|On
     help 1 = player 1's buttons and sticks, as the game gets them, the frames a second, and the last inputs beside
-    help them, drawn in a corner of the window for a video. F6 turns it on and off
+    help them (showcase_history), drawn in a corner of the window for a video. F6 turns it on and off
 setting Showcase corner
     key showcase_corner
     text 3
@@ -172,6 +172,33 @@ setting Showcase corner
     set vpad_showcase_corner_set
     words tl=Top left|tr=Top right|bl=Bottom left|br=Bottom right
     help The corner showcase draws in: tl top left, tr top right, bl bottom left, br bottom right
+setting Showcase history
+    key showcase_history
+    int 0 1
+    default 1
+    label History
+    words Off|On
+    help 1 = showcase's last inputs beside its box, as Eden's controller overlay shows them
+setting Showcase history size
+    key showcase_history_size
+    int 5 20
+    default 10
+    label History size
+    help How many inputs showcase's history shows, the newest
+setting Showcase history seconds
+    key showcase_history_seconds
+    int 1 30
+    default 5
+    label History seconds
+    words #s
+    help How long each input of showcase's history shows, in seconds, before it shrinks away
+setting Showcase history gaps
+    key showcase_history_gaps
+    int 0 1
+    default 0
+    label History gaps
+    words Off|On
+    help 1 = the time between two inputs of showcase's history, in a tag between them: milliseconds, or seconds from one
 setting Stats
     key stats
     int 0 1

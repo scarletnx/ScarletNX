@@ -495,10 +495,10 @@ static const float SHOWCASE[SNX_VPAD_COUNT][3] = {
 /* The showcase's input history, as Eden's controller overlay keeps one (John's, Eden PR 4583): the last inputs of
    player 1 beside the box, the newest nearest it. A button counts when it goes down, a stick when it leans past
    STICK_ON and again when it turns another way; presses within HISTORY_TOGETHER_NS of an input's first are that input.
-   Each shows HISTORY_NS, then shrinks away in HISTORY_SHRINK_NS */
-#define HISTORY_INPUTS      10            /* inputs shown, the newest: Eden's default */
-#define HISTORY_PRESSES     64            /* presses kept, several to an input */
-#define HISTORY_NS          5000000000ull /* Eden's default 5 s */
+   showcase_history_size of them show, each for showcase_history_seconds, then shrinking away in HISTORY_SHRINK_NS */
+#define HISTORY_INPUTS      20 /* showcase_history_size's most */
+#define HISTORY_PRESSES     64 /* presses kept, several to an input */
+#define HISTORY_NS          ((u64)g_settings.showcase_history_seconds * 1000000000ull)
 #define HISTORY_SHRINK_NS   400000000ull
 #define HISTORY_TOGETHER_NS 50000000ull /* about three frames */
 #define HISTORY_BUTTONS     0xFFFFu     /* A to the D-pad's down: HidNpadButton bits 0 to 15 */
@@ -640,9 +640,13 @@ static void history_draw(SnxUiList* l, const int safe[4], const float box[4], in
     struct {
         int first, count;
         float scale, w;
+        float tag_w; /* the tag before it with the time from it to the newer one, 0 for none */
+        char tag[8];
     } in[HISTORY_INPUTS];
-    int end = g_history.n, n = 0, g, k;
-    while (end > 0 && n < HISTORY_INPUTS) { /* the inputs, newest first, as many as fit */
+    int end = g_history.n, n = 0, g, k, size = g_settings.showcase_history_size;
+    if (!g_settings.showcase_history) return;
+    if (size > HISTORY_INPUTS) size = HISTORY_INPUTS;
+    while (end > 0 && n < size) { /* the inputs, newest first, as many as fit */
         int first = end - 1;
         u64 over;
         float w = 0, sc;
@@ -653,9 +657,24 @@ static void history_draw(SnxUiList* l, const int safe[4], const float box[4], in
         for (k = first; k < end; ++k) w += chip_w(history_chip(g_history.press[k].button, &c), s);
         if (end - first > 1) w += 2 * pad + (float)(end - first - 1) * 8 * s; /* the band, a + between */
         if (sc > 0) {
+            float tag_w = 0;
             w *= sc;
-            if (width + w + (n ? gap * sc : 0) > room) break;
-            width += w + (n ? gap * sc : 0);
+            in[n].tag[0] = 0;
+            if (n && g_settings.showcase_history_gaps) { /* Eden's: ms below a second, else seconds, at most the life */
+                u64 ms = (g_history.press[in[n - 1].first].at - g_history.press[first].at) / 1000000;
+                if (ms > HISTORY_NS / 1000000) ms = HISTORY_NS / 1000000;
+                if (ms < 1000)
+                    snprintf(in[n].tag, sizeof in[n].tag, "%u", (unsigned)ms);
+                else if (ms < 9950) /* to the nearest tenth */
+                    snprintf(in[n].tag, sizeof in[n].tag, "%u.%us", (unsigned)((ms + 50) / 1000),
+                             (unsigned)((ms + 50) % 1000 / 100));
+                else
+                    snprintf(in[n].tag, sizeof in[n].tag, "%us", (unsigned)((ms + 500) / 1000));
+                tag_w = ((float)strlen(in[n].tag) * 8 * s + 4 * s) * sc + gap * sc;
+            }
+            if (width + w + tag_w + (n ? gap * sc : 0) > room) break;
+            width += w + tag_w + (n ? gap * sc : 0);
+            in[n].tag_w = tag_w;
             in[n].first = first;
             in[n].count = end - first;
             in[n].scale = sc;
@@ -668,8 +687,15 @@ static void history_draw(SnxUiList* l, const int safe[4], const float box[4], in
     ui_fill(l, x, y, width, row, 0x80000000u);
     at = corner & 1 ? x + width - pad : x + pad; /* the newest next to the box, the older ones outward */
     for (g = 0; g < n; ++g) {
-        float sc = in[g].scale, h = chip_h * sc, cx = corner & 1 ? at - in[g].w : at;
+        float sc = in[g].scale, h = chip_h * sc, cx;
         u32 alpha = (u32)((float)(255 - g * 12) * sc);
+        if (in[g].tag_w > 0) { /* the time to the newer input, between them */
+            float tw = in[g].tag_w - gap * sc, tx = corner & 1 ? at - tw : at;
+            ui_fill(l, tx, y + (row - 16 * s * sc) / 2, tw, 16 * s * sc, (22 * alpha / 255) << 24 | ink);
+            if (sc >= 1) ui_text(l, tx + 2 * s, y + (row - 16 * s) / 2, scale, in[g].tag, alpha << 24 | 0xCAC3BEu);
+            at += corner & 1 ? -in[g].tag_w : in[g].tag_w;
+        }
+        cx = corner & 1 ? at - in[g].w : at;
         if (in[g].count > 1) {
             ui_fill(l, cx, y + (row - h) / 2 - pad * sc, in[g].w, h + 2 * pad * sc, (40 * alpha / 255) << 24 | ink);
             cx += pad * sc;

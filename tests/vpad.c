@@ -175,6 +175,40 @@ static void test_history(SnxUiList* l) {
     assert(chips(l, A_RGB, &q) == 1 && q->x == 20 + 500 + 8 + 8);
     vpad_showcase_input(0, rest, t + 6 * T0);
     ini_read(ini_find(g_display_ini, "showcase_corner"), "br");
+    /* its settings: how many inputs, how long each, the time between two in a tag, and none at all */
+    ini_read(ini_find(g_display_ini, "showcase_history_size"), "5");
+    ini_read(ini_find(g_display_ini, "showcase_history_seconds"), "1");
+    t += 10 * T0;
+    for (i = 0; i < 7; ++i) {
+        vpad_showcase_input(0, rest, t += T0 / 10);
+        vpad_showcase_input(1, rest, t += T0 / 10);
+    }
+    history_at(l, t);
+    assert(chips(l, A_RGB, NULL) == 5 && !glyph(l, '2', -1, 0));
+    history_at(l, t + 12 * T0 / 10); /* 1.2 s on: half shrunk */
+    for (i = 0; i < l->n; ++i)
+        if ((l->q[i].rgba & 0xFFFFFFu) == A_RGB && l->q[i].x > 1400) assert(l->q[i].h > 19.9f && l->q[i].h < 20.1f);
+    history_at(l, t + 141 * T0 / 100);
+    assert(!chips(l, A_RGB, NULL));
+    ini_read(ini_find(g_display_ini, "showcase_history_seconds"), "5");
+    ini_read(ini_find(g_display_ini, "showcase_history_gaps"), "1");
+    vpad_showcase_input(0, rest, t += 6 * T0);
+    vpad_showcase_input(1, rest, t += T0 / 10);
+    vpad_showcase_input(0, rest, t += T0 / 10);
+    vpad_showcase_input(1, rest, t += T0 / 10); /* 0.2 s after the one before */
+    history_at(l, t);
+    assert(chips(l, A_RGB, NULL) == 2 && glyph(l, '2', -1, 0) && glyph(l, '0', -1, 0) && !glyph(l, 's', -1, 0));
+    vpad_showcase_input(0, rest, t += T0);
+    vpad_showcase_input(1, rest, t += T0 / 4); /* 1.25 s after: 1.3 s */
+    history_at(l, t);
+    assert(glyph(l, '1', -1, 0) && glyph(l, '.', -1, 0) && glyph(l, '3', -1, 0) && glyph(l, 's', -1, 0));
+    ini_read(ini_find(g_display_ini, "showcase_history"), "0");
+    history_at(l, t);
+    assert(!chips(l, A_RGB, NULL) && !glyph(l, 's', -1, 0));
+    ini_read(ini_find(g_display_ini, "showcase_history"), "1");
+    ini_read(ini_find(g_display_ini, "showcase_history_gaps"), "0");
+    ini_read(ini_find(g_display_ini, "showcase_history_size"), "10");
+    vpad_showcase_input(0, rest, t + 6 * T0);
     g_settings.showcase = 0;
 }
 
