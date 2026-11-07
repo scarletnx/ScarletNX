@@ -1402,12 +1402,14 @@ u32 snx_mii_model_write(u32 i, u8* out) { return i < 4 ? texture_file(i >= 2, ou
 #define PIC_Y1   76.0f
 #define PIC_SPAN 84.0f
 enum { PIC_NONE, PIC_SKIN, PIC_FACE, PIC_HAIR, PIC_TIE }; /* what a pixel shows: the face takes the features */
+#define PIC_EDGE 0x80u /* with what: the pixel is on an outline, the edge of a part in front of another or of nothing */
 typedef struct {
     int side;
     float scale;
-    float* z;   /* side * side depths, nearest kept */
-    u8* what;   /* PIC_ each */
-    float* lit; /* its shading */
+    float* z;     /* side * side depths, nearest kept */
+    u8* what;     /* PIC_ each */
+    float* lit;   /* its shading */
+    float* shine; /* the light the hair reflects there, added as white */
 } Pic;
 /* the triangle a, b, c (normals na, nb, nc) into the depth buffer as what, its back left out */
 static void pic_triangle(Pic* p, Vec a, Vec b, Vec c, Vec na, Vec nb, Vec nc, u8 what) {
@@ -1415,7 +1417,7 @@ static void pic_triangle(Pic* p, Vec a, Vec b, Vec c, Vec na, Vec nb, Vec nc, u8
           by = (PIC_Y1 - b.y) * p->scale, cx = (c.x - PIC_X0) * p->scale, cy = (PIC_Y1 - c.y) * p->scale;
     float area = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay);
     int x0, x1, y0, y1, x, y;
-    Vec light = vnorm(vec(0.3f, 0.5f, 0.8f));
+    Vec light = vnorm(vec(0.3f, 0.5f, 0.8f)), half = vnorm(vadd(light, vec(0, 0, 1)));
     if (fabsf(area) < 1e-6f) return;
     x0 = (int)floorf(fminf(ax, fminf(bx, cx))), x1 = (int)ceilf(fmaxf(ax, fmaxf(bx, cx)));
     y0 = (int)floorf(fminf(ay, fminf(by, cy))), y1 = (int)ceilf(fmaxf(ay, fmaxf(by, cy)));
@@ -1439,6 +1441,11 @@ static void pic_triangle(Pic* p, Vec a, Vec b, Vec c, Vec na, Vec nb, Vec nc, u8
             p->z[i] = z;
             p->what[i] = what;
             p->lit[i] = 0.55f + 0.45f * fmaxf(0, vdot(n, light));
+            if (what == PIC_HAIR) { /* a band across its strands, which run down it, where they reflect the light */
+                Vec strand = vec(n.x * n.y, n.y * n.y - 1.0f, n.z * n.y);
+                float along = vlen(strand) > 0.05f ? vdot(vnorm(strand), half) : 0;
+                p->shine[i] = 0.18f * powf(fmaxf(0, 1.0f - along * along), 60.0f);
+            }
         }
 }
 /* a shape's every grid into the picture, moved by at and mirrored in x with flip */
@@ -1463,6 +1470,36 @@ static void pic_shape(Pic* p, Shape sh, Vec at, int flip, u8 what) {
             }
     }
 }
+/* the outlines: a pixel of a part whose neighbor (w pixels away) is nothing, or the face's while it is hair's or the
+   hair's while it is the face's and behind it, or hair 3 units or more behind it (a tail in front of the head's hair) */
+static void pic_edges(Pic* p) {
+    int w = 1 + p->side / 256, x, y, k;
+    static const int d[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+    for (y = 0; y < p->side; y++)
+        for (x = 0; x < p->side; x++) {
+            size_t i = (size_t)y * (size_t)p->side + (size_t)x;
+            u8 a = p->what[i] & 0x7fu;
+            if (a == PIC_NONE) continue;
+            for (k = 0; k < 4; k++) {
+                int nx = x + w * d[k][0], ny = y + w * d[k][1];
+                size_t j;
+                u8 b;
+                int hair_a = a == PIC_HAIR || a == PIC_TIE, hair_b;
+                if (nx < 0 || ny < 0 || nx >= p->side || ny >= p->side) continue;
+                j = (size_t)ny * (size_t)p->side + (size_t)nx;
+                b = p->what[j] & 0x7fu;
+                hair_b = b == PIC_HAIR || b == PIC_TIE;
+                if (b == PIC_NONE || (hair_a != hair_b && p->z[j] < p->z[i]) ||
+                    (hair_a && hair_b && p->z[j] < p->z[i] - 3.0f)) {
+                    p->what[i] |= PIC_EDGE;
+                    break;
+                }
+            }
+        }
+}
+/* what an outline keeps of the color it darkens in a picture side pixels wide: more in a small one, of which a line
+   a pixel wide is more */
+static float pic_line(int side) { return mixf(0.85f, 0.55f, smooth(32.0f, 128.0f, (float)side)); }
 /* the color a face pixel at (x, y) takes from the features drawn on it: eyes, brows and mouth where the CharInfo puts
    them (our own reading of its fields), over skin; ty the faceline's rise */
 static void pic_features(const u8* c, const SnxMiiLook* look, float x, float y, float ty, float aa, float rgb[3]) {
@@ -1506,19 +1543,21 @@ static void pic_features(const u8* c, const SnxMiiLook* look, float x, float y, 
 int snx_mii_picture(const u8 charinfo[SNX_MII_CHARINFO], const SnxMiiLook* look, int side, u8* rgba) {
     const u8* c = charinfo;
     u32 face = c[0x2d] % FACELINES, style = c[0x31] % HAIR_STYLES, nose = c[0x42] % 18u, n, i;
-    float tf[9], ty, aa;
+    float tf[9], ty, aa, line;
     Pic p;
     u8* block;
     if (side < 16 || side > 1024) return -1;
     n = (u32)side * (u32)side;
-    block = (u8*)malloc((size_t)n * (sizeof(float) * 2 + 1)); /* the depths, the shading, then what each shows */
+    /* the depths, the shading, the shine, then what each shows */
+    block = (u8*)malloc((size_t)n * (sizeof(float) * 3 + 1));
     if (!block) return -1;
     p.side = side;
     p.scale = (float)side / PIC_SPAN;
     p.z = (float*)(void*)block;
     p.lit = p.z + n;
-    p.what = block + (size_t)n * sizeof(float) * 2;
-    for (i = 0; i < n; i++) p.z[i] = -1e30f, p.what[i] = PIC_NONE, p.lit[i] = 1;
+    p.shine = p.lit + n;
+    p.what = block + (size_t)n * sizeof(float) * 3;
+    for (i = 0; i < n; i++) p.z[i] = -1e30f, p.what[i] = PIC_NONE, p.lit[i] = 1, p.shine[i] = 0;
     faceline_transform(face, tf);
     ty = tf[1];
     aa = PIC_SPAN / (float)side;
@@ -1529,15 +1568,18 @@ int snx_mii_picture(const u8 charinfo[SNX_MII_CHARINFO], const SnxMiiLook* look,
         pic_shape(&p, shape_of(S_HAIR_NORMAL, hair_variant(style)), vec(0, ty, 0), c[0x33] & 1, PIC_HAIR);
     if (shape_present(S_HAT_NORMAL, style))
         pic_shape(&p, shape_of(S_HAT_NORMAL, hat_variant(style)), vec(0, ty, 0), c[0x33] & 1, PIC_TIE);
+    pic_edges(&p);
+    line = pic_line(side);
     for (i = 0; i < n; i++) {
         float x = PIC_X0 + ((float)(i % (u32)side) + 0.5f) / p.scale,
               y = PIC_Y1 - ((float)(i / (u32)side) + 0.5f) / p.scale;
         float rgb[3], light = 1.0f - 0.25f * (float)(i / (u32)side) / (float)side;
         u32 k;
-        const uint8_t* col = p.what[i] == PIC_HAIR ? look->hair : p.what[i] == PIC_TIE ? look->favorite : look->skin;
+        u8 what = p.what[i] & 0x7fu;
+        const uint8_t* col = what == PIC_HAIR ? look->hair : what == PIC_TIE ? look->favorite : look->skin;
         for (k = 0; k < 3; k++) /* the background: the favorite color lightened, darker toward the bottom */
             rgb[k] = (0.7f + 0.3f * (look->favorite[k] / 255.0f)) * light;
-        if (p.what[i] == PIC_NONE) {
+        if (what == PIC_NONE) {
             /* the shirt over the shoulders, the neck above it */
             float sx = x / 34.0f, sy = (y + 34.0f) / 30.0f;
             if (sx * sx + sy * sy < 1.0f && y < 4.0f)
@@ -1546,8 +1588,8 @@ int snx_mii_picture(const u8 charinfo[SNX_MII_CHARINFO], const SnxMiiLook* look,
                 for (k = 0; k < 3; k++) rgb[k] = look->skin[k] / 255.0f * 0.8f;
         } else {
             for (k = 0; k < 3; k++) rgb[k] = col[k] / 255.0f;
-            if (p.what[i] == PIC_FACE) pic_features(c, look, x, y, ty, aa, rgb);
-            for (k = 0; k < 3; k++) rgb[k] *= p.lit[i];
+            if (what == PIC_FACE) pic_features(c, look, x, y, ty, aa, rgb);
+            for (k = 0; k < 3; k++) rgb[k] = (rgb[k] * p.lit[i] + p.shine[i]) * (p.what[i] & PIC_EDGE ? line : 1.0f);
         }
         for (k = 0; k < 3; k++) rgba[4 * i + k] = (u8)lroundf(clampf(rgb[k], 0, 1) * 255.0f);
         rgba[4 * i + 3] = 255;
