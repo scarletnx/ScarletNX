@@ -135,8 +135,8 @@ static u32 xfb_word(DirectCtx* c, const XfbOut* x, u32 word) {
    vertices an instance captures, and below the draw's count each layout word goes to place * stride / 4 + its index */
 static void xfb_write(DirectCtx* c, const XfbOut* x) {
     SpvEmitter* e = &c->emit;
-    u32 u = c->u32_type, p[4];
-    for (u32 i = 0; i < 4; i++)
+    u32 u = c->u32_type, p[5];
+    for (u32 i = 0; i < 5; i++)
         p[i] = spv_emit_load(
             e, u, spv_emit_storage_access_u32(e, x->pointer, x->params, c->zero, spv_emit_constant_u32(e, u, i)));
     u32 vertex = spv_emit_isub_u32(e, u, spv_emit_load(e, u, x->vertex_index), p[0]);
@@ -150,6 +150,12 @@ static void xfb_write(DirectCtx* c, const XfbOut* x) {
     spv_emit_label(e, yes);
     for (u32 b = 0; b < 4; b++) {
         if (!x->buffer[b]) continue;
+        /* a buffer that the guest left off has a 16-byte placeholder binding: no store goes there (p[4], the mask) */
+        u32 bit = spv_emit_bitwise_and_u32(e, u, p[4], spv_emit_constant_u32(e, u, 1u << b));
+        u32 store = spv_emit_id(e), next = spv_emit_id(e);
+        spv_emit_selection_merge(e, next);
+        spv_emit_branch_conditional(e, spv_emit_i_not_equal(e, c->bool_type, bit, c->zero), store, next);
+        spv_emit_label(e, store);
         u32 base = spv_emit_imul_u32(e, u, place, spv_emit_constant_u32(e, u, x->key->stride[b] / 4u));
         for (u32 w = 0; w < x->key->count[b] && w < 128; w++) {
             u32 value = xfb_word(c, x, x->key->layout[b][w]);
@@ -157,6 +163,8 @@ static void xfb_write(DirectCtx* c, const XfbOut* x) {
             u32 at = spv_emit_iadd_u32(e, u, base, spv_emit_constant_u32(e, u, w));
             spv_emit_store(e, spv_emit_storage_access_u32(e, x->pointer, x->buffer[b], c->zero, at), value);
         }
+        spv_emit_branch(e, next);
+        spv_emit_label(e, next);
     }
     spv_emit_branch(e, done);
     spv_emit_label(e, done);

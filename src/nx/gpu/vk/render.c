@@ -475,11 +475,12 @@ static int xfb_bind(const DsState* ds, const DrawOwner* o, const VkSh* vs, int i
         x->bound |= 1u << b;
     }
     if (!x->declared) return 1;
-    u32 params[4] = {first, base_instance, n, (u32)limit};
+    /* the bound mask: the program stores into a declared buffer only when the guest enabled it, as the hardware does */
+    u32 params[5] = {first, base_instance, n, (u32)limit, x->bound};
     u8* p = vk_stage(sizeof params, vk_stage_align(), &x->buf[4], &x->off[4]);
     if (!p) return 0;
     memcpy(p, params, sizeof params);
-    snx_le32_array(p, 4);
+    snx_le32_array(p, 5);
     x->size[4] = sizeof params;
     for (b = 0; b < 4; b++) {
         if (!(x->declared >> b & 1)) continue;
