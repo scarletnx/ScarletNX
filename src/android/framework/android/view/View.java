@@ -161,9 +161,77 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
         synchronized (View.class) { mUniqueDrawingId = sNextDrawingId++; }
     }
 
-    public View(Context context, AttributeSet attrs) { this(context); }
-    public View(Context context, AttributeSet attrs, int defStyleAttr) { this(context); }
-    public View(Context context, AttributeSet attrs, int defStyleAttr, int defStyleRes) { this(context); }
+    public View(Context context, AttributeSet attrs) { this(context, attrs, 0); }
+    public View(Context context, AttributeSet attrs, int defStyleAttr) { this(context, attrs, defStyleAttr, 0); }
+    public View(Context context, AttributeSet attrs, int defStyleAttr, int defStyleRes) {
+        this(context);
+        if (attrs != null) attributes(context, attrs, defStyleAttr, defStyleRes);
+    }
+
+    /** The attributes of android:'s View that a layout sets, by their resource IDs (android.R.attr) */
+    private static final int[] VIEW_ATTRS = {
+        0x010100d0, 0x010100d1, 0x010100dc, 0x010100d4, 0x010100d5, 0x0101053d, 0x0101053e, 0x010100d6, 0x010100d7,
+        0x010100d8, 0x010100d9, 0x010103b3, 0x010103b4, 0x0101031f, 0x01010140, 0x0101013f, 0x010100e5, 0x010100e6,
+        0x010100da, 0x010100db, 0x01010273, 0x01010322, 0x01010323, 0x010103fa, 0x01010440, 0x01010326, 0x01010327,
+        0x01010328, 0x01010324, 0x01010325};
+    private static final int A_ID = 0, A_TAG = 1, A_VISIBILITY = 2, A_BACKGROUND = 3, A_PADDING = 4,
+        A_PADDING_HORIZONTAL = 5, A_PADDING_VERTICAL = 6, A_PADDING_LEFT = 7, A_PADDING_TOP = 8, A_PADDING_RIGHT = 9,
+        A_PADDING_BOTTOM = 10, A_PADDING_START = 11, A_PADDING_END = 12, A_ALPHA = 13, A_MIN_HEIGHT = 14,
+        A_MIN_WIDTH = 15, A_CLICKABLE = 16, A_LONG_CLICKABLE = 17, A_FOCUSABLE = 18, A_FOCUSABLE_IN_TOUCH_MODE = 19,
+        A_CONTENT_DESCRIPTION = 20, A_TRANSLATION_X = 21, A_TRANSLATION_Y = 22, A_TRANSLATION_Z = 23, A_ELEVATION = 24,
+        A_ROTATION = 25, A_ROTATION_X = 26, A_ROTATION_Y = 27, A_SCALE_X = 28, A_SCALE_Y = 29;
+
+    /**
+     * A layout's attributes of the View itself, as Android's View constructor reads them from the layout, its style
+     * and the theme: its id and tag, visibility, background and padding (padding, then its horizontal and vertical
+     * forms, then each side, start and end as left and right), alpha, least size, what input it takes, and its
+     * transform
+     */
+    private void attributes(Context context, AttributeSet attrs, int defStyleAttr, int defStyleRes) {
+        android.content.res.TypedArray a = context.obtainStyledAttributes(attrs, VIEW_ATTRS, defStyleAttr, defStyleRes);
+        try {
+            if (a.hasValue(A_ID)) setId(a.getResourceId(A_ID, NO_ID));
+            if (a.hasValue(A_TAG)) setTag(a.getText(A_TAG));
+            // the attribute's enum: visible 0, invisible 1, gone 2
+            if (a.hasValue(A_VISIBILITY)) {
+                int v = a.getInt(A_VISIBILITY, 0);
+                setVisibility(v == 1 ? INVISIBLE : v == 2 ? GONE : VISIBLE);
+            }
+            if (a.hasValue(A_BACKGROUND)) setBackground(a.getDrawable(A_BACKGROUND));
+            int[] pad = {mPaddingLeft, mPaddingTop, mPaddingRight, mPaddingBottom};
+            boolean padded = false;
+            int[][] sides = {{A_PADDING, 0, 1, 2, 3}, {A_PADDING_HORIZONTAL, 0, 2}, {A_PADDING_VERTICAL, 1, 3},
+                {A_PADDING_LEFT, 0}, {A_PADDING_TOP, 1}, {A_PADDING_RIGHT, 2}, {A_PADDING_BOTTOM, 3},
+                {A_PADDING_START, 0}, {A_PADDING_END, 2}};
+            for (int[] side : sides) {
+                if (!a.hasValue(side[0])) continue;
+                int px = a.getDimensionPixelSize(side[0], 0);
+                for (int k = 1; k < side.length; ++k) pad[side[k]] = px;
+                padded = true;
+            }
+            if (padded) setPadding(pad[0], pad[1], pad[2], pad[3]);
+            if (a.hasValue(A_ALPHA)) setAlpha(a.getFloat(A_ALPHA, 1));
+            if (a.hasValue(A_MIN_WIDTH)) setMinimumWidth(a.getDimensionPixelSize(A_MIN_WIDTH, 0));
+            if (a.hasValue(A_MIN_HEIGHT)) setMinimumHeight(a.getDimensionPixelSize(A_MIN_HEIGHT, 0));
+            if (a.hasValue(A_CLICKABLE)) setClickable(a.getBoolean(A_CLICKABLE, false));
+            if (a.hasValue(A_LONG_CLICKABLE)) setLongClickable(a.getBoolean(A_LONG_CLICKABLE, false));
+            if (a.hasValue(A_FOCUSABLE)) setFocusable(a.getBoolean(A_FOCUSABLE, false));
+            if (a.hasValue(A_FOCUSABLE_IN_TOUCH_MODE))
+                setFocusableInTouchMode(a.getBoolean(A_FOCUSABLE_IN_TOUCH_MODE, false));
+            if (a.hasValue(A_CONTENT_DESCRIPTION)) setContentDescription(a.getText(A_CONTENT_DESCRIPTION));
+            if (a.hasValue(A_TRANSLATION_X)) setTranslationX(a.getDimension(A_TRANSLATION_X, 0));
+            if (a.hasValue(A_TRANSLATION_Y)) setTranslationY(a.getDimension(A_TRANSLATION_Y, 0));
+            if (a.hasValue(A_TRANSLATION_Z)) setTranslationZ(a.getDimension(A_TRANSLATION_Z, 0));
+            if (a.hasValue(A_ELEVATION)) setElevation(a.getDimension(A_ELEVATION, 0));
+            if (a.hasValue(A_ROTATION)) setRotation(a.getFloat(A_ROTATION, 0));
+            if (a.hasValue(A_ROTATION_X)) setRotationX(a.getFloat(A_ROTATION_X, 0));
+            if (a.hasValue(A_ROTATION_Y)) setRotationY(a.getFloat(A_ROTATION_Y, 0));
+            if (a.hasValue(A_SCALE_X)) setScaleX(a.getFloat(A_SCALE_X, 1));
+            if (a.hasValue(A_SCALE_Y)) setScaleY(a.getFloat(A_SCALE_Y, 1));
+        } finally {
+            a.recycle();
+        }
+    }
 
     // ---- listener interfaces ----
     public interface OnClickListener { void onClick(View v); }

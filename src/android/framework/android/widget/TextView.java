@@ -89,12 +89,47 @@ public class TextView extends View {
 
     public TextView(Context context) {
         super(context);
+        defaults(context);
+    }
+
+    /** The paint's size and density for the display: 14 sp */
+    private void defaults(Context context) {
         paint.setTextSize(14 * context.getResources().getDisplayMetrics().scaledDensity);
         paint.density = context.getResources().getDisplayMetrics().density;
     }
-    public TextView(Context context, AttributeSet attrs) { this(context); }
-    public TextView(Context context, AttributeSet attrs, int defStyleAttr) { this(context); }
-    public TextView(Context context, AttributeSet attrs, int defStyleAttr, int defStyleRes) { this(context); }
+    /** android.R.attr.textViewStyle, the theme's style of a TextView */
+    private static final int TEXT_VIEW_STYLE = 0x01010084;
+    public TextView(Context context, AttributeSet attrs) { this(context, attrs, TEXT_VIEW_STYLE); }
+    public TextView(Context context, AttributeSet attrs, int defStyleAttr) { this(context, attrs, defStyleAttr, 0); }
+    public TextView(Context context, AttributeSet attrs, int defStyleAttr, int defStyleRes) {
+        super(context, attrs, defStyleAttr, defStyleRes);
+        defaults(context);
+        if (attrs != null) attributes(context, attrs, defStyleAttr, defStyleRes);
+    }
+
+    /** android:textAppearance, text, hint, textSize and textColor, by their resource IDs (android.R.attr) */
+    private static final int[] TEXT_ATTRS = {0x01010034, 0x0101014f, 0x01010150, 0x01010095, 0x01010098};
+
+    /**
+     * A layout's attributes of a TextView, as Android's constructor reads them: its text appearance first, which
+     * textSize and textColor then override, and its text and hint
+     */
+    private void attributes(Context context, AttributeSet attrs, int defStyleAttr, int defStyleRes) {
+        TypedArray a = context.obtainStyledAttributes(attrs, TEXT_ATTRS, defStyleAttr, defStyleRes);
+        try {
+            int appearance = a.getResourceId(0, 0);
+            if (appearance != 0) setTextAppearance(context, appearance);
+            if (a.hasValue(3)) setRawTextSize(a.getDimensionPixelSize(3, (int) getTextSize()));
+            if (a.hasValue(4)) {
+                ColorStateList c = a.getColorStateList(4);
+                if (c != null) setTextColor(c);
+            }
+            if (a.hasValue(2)) setHint(a.getText(2));
+            if (a.hasValue(1)) setText(a.getText(1));
+        } finally {
+            a.recycle();
+        }
+    }
 
     // ---- text ----
     public void setText(CharSequence text) { setText(text, BufferType.NORMAL); }
