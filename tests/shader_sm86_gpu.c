@@ -727,6 +727,232 @@ static int run_program(Gpu* g, const char* name, void (*build)(Prog*)) {
     return bad == 0;
 }
 
+/* ---- the warp's matrix instructions ---- */
+
+/* HMMA.16816 (F16 and F32 C and D), LDSM.16.M88.4 and .MT88.4 and MOVM.16.MT88 against matrices that the test
+   multiplies itself, each warp (a workgroup of 32) its own A (16x16), B (16x8) and C (16x8). Their elements are n / 4
+   for n in -6..6, so every product and sum is exact in f16 and f32 and the outputs compare bit for bit. The inputs are
+   the warp's fragments as PTX's mma.sync lays them out (g = lane / 4, t = lane % 4): A's rows g and g + 8 at columns
+   2t, 2t + 1 and 2t + 8, 2t + 9 in four words, B's column g at rows 2t, 2t + 1 and 2t + 8, 2t + 9 in two, C's rows g
+   and g + 8 at columns 2t, 2t + 1 in two. Lane l stores its four A words as row l of shared memory (16 bytes each),
+   which LDSM reads back as four 8x8 matrices, matrix m's row r being lane 8m + r's */
+#define TENSOR_OUT 21u
+static u16 half_bits(float v) { /* v = n / 4, |n| <= 6 * 6 * 16 + 6: exact */
+    u32 b;
+    memcpy(&b, &v, 4);
+    u32 sign = b >> 16 & 0x8000u, e = b >> 23 & 0xff, m = b & 0x7fffffu;
+    if (!e) return (u16)sign;
+    return (u16)(sign | (e - 112) << 10 | m >> 13);
+}
+static float half_value(u16 h) {
+    u32 sign = (u32)(h & 0x8000u) << 16, e = h >> 10 & 31, m = h & 0x3ffu;
+    u32 b = e ? sign | (e + 112) << 23 | m << 13 : sign;
+    float v;
+    memcpy(&v, &b, 4);
+    return v;
+}
+static u32 fbits(float v) {
+    u32 b;
+    memcpy(&b, &v, 4);
+    return b;
+}
+static void tensor_program(Prog* p) {
+    p->outputs = TENSOR_OUT;
+    p->approx_from = TENSOR_OUT;
+    Sm86Word w = sm86_fix(0x919); /* S2R R0, TID.X */
+    f(&w, 72, 8, 0x21);
+    emit(p, w);
+    w = sm86_fix(0x919); /* S2R R1, CTAID.X */
+    f(&w, 16, 8, 1);
+    f(&w, 72, 8, 0x25);
+    emit(p, w);
+    emit(p, ri(0x024, 2, 1, LOCAL, 0)); /* IMAD R2, R1, 32, R0 */
+    for (u32 k = 0; k < 2; k++) {
+        w = sm86_fix(0xab9); /* ULDC.64 */
+        f(&w, 16, 6, 4 + 2 * k);
+        sm86_cbuf(&w, 0, 0x20 + 8 * k);
+        f(&w, 73, 3, 5);
+        emit(p, w);
+    }
+    w = rr(0x011, 3, 2, 255); /* LEA R3, R2, RZ, 5: the invocation's 32 bytes of inputs */
+    f(&w, 75, 5, 5);
+    f(&w, 81, 3, 7);
+    emit(p, w);
+    for (u32 k = 0; k < 2; k++) {
+        w = sm86_fix(0x981); /* LDG.E.128 R8 + 4k, [R3.U32 + UR4 + 16k] */
+        f(&w, 16, 8, 8 + 4 * k);
+        f(&w, 24, 8, 3);
+        f(&w, 32, 6, 4);
+        f(&w, 40, 24, 16 * k);
+        f(&w, 72, 1, 1);
+        f(&w, 73, 3, 6);
+        f(&w, 81, 3, 7);
+        f(&w, 84, 3, 1);
+        f(&w, 91, 1, 1);
+        emit(p, w);
+    }
+    emit(p, ri(0x024, 6, 2, TENSOR_OUT * 4, 255)); /* IMAD R6, R2, outputs * 4, RZ */
+    emit(p, ri(0x024, 7, 0, 16, 255));             /* IMAD R7, R0, 16, RZ */
+    w = sm86_fix(0x388);                           /* STS.128 [R7 + 0x40], R8 */
+    f(&w, 24, 8, 7);
+    f(&w, 32, 8, 8);
+    f(&w, 40, 24, 0x40);
+    f(&w, 73, 3, 6);
+    emit(p, w);
+    emit(p, sm86_fix(0xb1d)); /* BAR.SYNC 0 */
+    /* HMMA.16816.F16 R16, R8, R12, RZ, .F16 R18 with C = R14, .F32 R20 with RZ, .F32 R36 with C = R20 */
+    static const u32 hmma[4][3] = {{16, 255, 0x08}, {18, 14, 0x08}, {20, 255, 0x18}, {36, 20, 0x18}};
+    for (u32 k = 0; k < 4; k++) {
+        w = sm86_fix(0x23c);
+        f(&w, 16, 8, hmma[k][0]);
+        f(&w, 24, 8, 8);
+        f(&w, 32, 8, 12);
+        f(&w, 64, 8, hmma[k][1]);
+        f(&w, 72, 19, hmma[k][2]);
+        emit(p, w);
+    }
+    for (u32 k = 0; k < 2; k++) {
+        w = sm86_fix(0x83b); /* LDSM.16.M88.4 R24 and LDSM.16.MT88.4 R28, [R7 + 0x40] */
+        f(&w, 16, 8, 24 + 4 * k);
+        f(&w, 24, 8, 7);
+        f(&w, 40, 24, 0x40);
+        f(&w, 72, 2, 2);
+        f(&w, 78, 1, k);
+        emit(p, w);
+    }
+    w = sm86_fix(0x23a); /* MOVM.16.MT88 R32, R8 */
+    f(&w, 16, 8, 32);
+    f(&w, 24, 8, 8);
+    emit(p, w);
+    for (u32 k = 0; k < 17; k++) store(p, k, 16 + k);
+    for (u32 k = 0; k < 4; k++) store(p, 17 + k, 36 + k);
+    epilogue(p);
+}
+/* each warp's matrices, its lanes' fragments (8 words each) into in, and the outputs expected into want */
+static void tensor_inputs(u32* in, u32* want) {
+    u32 seed = 0x2545f491u;
+    for (u32 warp = 0; warp < GROUPS; warp++) {
+        float a[16][16], b[16][8], c[16][8], d[16][8];
+        for (u32 i = 0; i < 16 * 16 + 2 * 16 * 8; i++) {
+            seed = seed * 1664525u + 1013904223u;
+            float v = (float)((int)(seed >> 24) % 13 - 6) / 4.0f;
+            if (i < 256)
+                a[i / 16][i % 16] = v;
+            else if (i < 384)
+                b[(i - 256) / 8][(i - 256) % 8] = v;
+            else
+                c[(i - 384) / 8][(i - 384) % 8] = v;
+        }
+        for (u32 r = 0; r < 16; r++)
+            for (u32 n = 0; n < 8; n++) {
+                float s = 0;
+                for (u32 k = 0; k < 16; k++) s += a[r][k] * b[k][n];
+                d[r][n] = s;
+            }
+#define PAIR(x, y) ((u32)half_bits(x) | (u32)half_bits(y) << 16)
+        u32* frag = in + (size_t)warp * 32 * 8;
+        for (u32 l = 0; l < 32; l++) {
+            u32 g = l / 4, t = l % 4, *q = frag + l * 8;
+            q[0] = PAIR(a[g][2 * t], a[g][2 * t + 1]);
+            q[1] = PAIR(a[g + 8][2 * t], a[g + 8][2 * t + 1]);
+            q[2] = PAIR(a[g][2 * t + 8], a[g][2 * t + 9]);
+            q[3] = PAIR(a[g + 8][2 * t + 8], a[g + 8][2 * t + 9]);
+            q[4] = PAIR(b[2 * t][g], b[2 * t + 1][g]);
+            q[5] = PAIR(b[2 * t + 8][g], b[2 * t + 9][g]);
+            q[6] = PAIR(c[g][2 * t], c[g][2 * t + 1]);
+            q[7] = PAIR(c[g + 8][2 * t], c[g + 8][2 * t + 1]);
+        }
+        for (u32 l = 0; l < 32; l++) {
+            u32 g = l / 4, t = l % 4, *o = want + ((size_t)warp * 32 + l) * TENSOR_OUT;
+            o[0] = PAIR(d[g][2 * t], d[g][2 * t + 1]);
+            o[1] = PAIR(d[g + 8][2 * t], d[g + 8][2 * t + 1]);
+            o[2] = PAIR(d[g][2 * t] + c[g][2 * t], d[g][2 * t + 1] + c[g][2 * t + 1]);
+            o[3] = PAIR(d[g + 8][2 * t] + c[g + 8][2 * t], d[g + 8][2 * t + 1] + c[g + 8][2 * t + 1]);
+            const float f32d[4] = {d[g][2 * t], d[g][2 * t + 1], d[g + 8][2 * t], d[g + 8][2 * t + 1]};
+            for (u32 k = 0; k < 4; k++) {
+                o[4 + k] = fbits(f32d[k]);
+                o[17 + k] = fbits(2 * f32d[k]);
+            }
+            /* shared row r of matrix m: lane 8m + r's A words; element j of it, half j % 2 of word j / 2 */
+            for (u32 m = 0; m < 4; m++) {
+                o[8 + m] = frag[(8 * m + g) * 8 + t];
+                u32 lo = frag[(8 * m + 2 * t) * 8 + g / 2] >> (g % 2 * 16) & 0xffffu;
+                u32 hi = frag[(8 * m + 2 * t + 1) * 8 + g / 2] >> (g % 2 * 16) & 0xffffu;
+                o[12 + m] = lo | hi << 16;
+            }
+            /* MOVM of A's word 0: element (r, j) of the 8x8 matrix is half j % 2 of lane 4r + j / 2's */
+            u32 lo = frag[(8 * t + g / 2) * 8] >> (g % 2 * 16) & 0xffffu;
+            u32 hi = frag[(8 * t + 4 + g / 2) * 8] >> (g % 2 * 16) & 0xffffu;
+            o[16] = lo | hi << 16;
+        }
+#undef PAIR
+    }
+}
+/* the device's subgroups: a warp's 32 lanes must be in one */
+static u32 subgroup_size(Gpu* g) {
+    VkPhysicalDeviceSubgroupProperties sp = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
+    VkPhysicalDeviceProperties2 p2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &sp};
+    vkGetPhysicalDeviceProperties2(g->phys, &p2);
+    if (!(sp.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) ||
+        !(sp.supportedOperations & VK_SUBGROUP_FEATURE_SHUFFLE_BIT))
+        return 0;
+    return sp.subgroupSize;
+}
+static int run_tensor(Gpu* g) {
+    static Prog p;
+    static u32 in[INVOCATIONS * 8], want[INVOCATIONS * TENSOR_OUT], got[INVOCATIONS * TENSOR_OUT];
+    static const char* names[TENSOR_OUT] = {
+        "HMMA.F16 d0",   "HMMA.F16 d1",   "HMMA.F16+C d0", "HMMA.F16+C d1", "HMMA.F32 d0", "HMMA.F32 d1",
+        "HMMA.F32 d2",   "HMMA.F32 d3",   "LDSM m0",       "LDSM m1",       "LDSM m2",     "LDSM m3",
+        "LDSM.T m0",     "LDSM.T m1",     "LDSM.T m2",     "LDSM.T m3",     "MOVM",        "HMMA.F32+C d0",
+        "HMMA.F32+C d1", "HMMA.F32+C d2", "HMMA.F32+C d3"};
+    u32 sg = subgroup_size(g);
+    if (sg < 32) {
+        printf("tensor: subgroups of %u lanes, fewer than a warp's 32 (or without shuffles): skipped\n", sg);
+        return 1;
+    }
+    memset(&p, 0, sizeof p);
+    tensor_program(&p);
+    tensor_inputs(in, want);
+    for (u32 i = 0; i < INVOCATIONS * TENSOR_OUT; i++) got[i] = FILL;
+    u32 cb0[64] = {0};
+    cb0[0x20 / 4] = (u32)VA_IN;
+    cb0[0x24 / 4] = (u32)(VA_IN >> 32);
+    cb0[0x28 / 4] = (u32)VA_OUT;
+    cb0[0x2c / 4] = (u32)(VA_OUT >> 32);
+    ShaderInfo si = {0};
+    si.cs_local[0] = LOCAL, si.cs_local[1] = si.cs_local[2] = 1;
+    si.shared_size = 1024;
+    size_t words = 0;
+    u32* spv = sm86_to_spirv(p.code, p.n * 16, ST_CS, NULL, &si, &words);
+    if (!spv) {
+        fprintf(stderr, "tensor: not translated: %s\n", si.first_unsupported);
+        return 0;
+    }
+    int ok = si.ngbuf == 2 && gpu_run(g, spv, words, &si, cb0, in, sizeof in, got, sizeof got);
+    free(spv);
+    if (!ok) {
+        fprintf(stderr, "tensor: Vulkan failed\n");
+        return 0;
+    }
+    u32 bad = 0;
+    for (u32 i = 0; i < INVOCATIONS; i++)
+        for (u32 k = 0; k < TENSOR_OUT; k++) {
+            u32 w = want[i * TENSOR_OUT + k], h = got[i * TENSOR_OUT + k];
+            if (w == h) continue;
+            if (bad++ < 24) {
+                if (k < 4)
+                    fprintf(stderr, "tensor: lane %u %s: GPU %g %g, expected %g %g\n", i, names[k], half_value((u16)h),
+                            half_value((u16)(h >> 16)), half_value((u16)w), half_value((u16)(w >> 16)));
+                else
+                    fprintf(stderr, "tensor: lane %u %s: GPU 0x%08x, expected 0x%08x\n", i, names[k], h, w);
+            }
+        }
+    printf("tensor: %u instructions, %u outputs x %u invocations (subgroups of %u), %u differ\n", p.n, TENSOR_OUT,
+           INVOCATIONS, sg, bad);
+    return bad == 0;
+}
+
 int main(void) {
     Gpu g = {0};
     if (!gpu_open(&g)) {
@@ -738,6 +964,7 @@ int main(void) {
     ok &= run_program(&g, "float", float_program);
     ok &= run_program(&g, "flow", flow_program);
     ok &= run_program(&g, "wide", wide_program);
+    ok &= run_tensor(&g);
     vkDestroyDevice(g.device, NULL);
     vkDestroyInstance(g.instance, NULL);
     return ok ? 0 : 1;
