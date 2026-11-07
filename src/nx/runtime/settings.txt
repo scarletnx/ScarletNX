@@ -848,6 +848,16 @@ setting Native ETC2
     help 1 = ETC2 and EAC textures are sampled as the game's blocks where the GPU samples ETC2 (most phone and tablet
     help GPUs), in a quarter to an eighth of the memory. 0 = they are decoded on the GPU, as they are on GPUs without
     help ETC2 (most desktop ones), to compare the two. On such a GPU 1 is a warning at start
+setting CPU extensions
+    key cpu_extensions
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    recompile
+    help Experimental: decode LSE atomics, RCpc loads and PAuth branches and signing instructions with authentication disabled by the
+    help emulated system controls. No pointer authentication protection is provided. This is not a complete
+    help newer-console CPU profile. Set the same value for recompilation and each run.
 setting SLP vectorizer
     key slp_vectorizer
     int 0 1
