@@ -741,7 +741,11 @@ int main(void) {
     draw();
     assert(text_at(C - 1 - (int)strlen("< Built-in >"), 8, "< Built-in >"));
     tap(5, C - 2);
-    assert(!strcmp(g_settings.controls_skin, "yorha") && !strcmp(stored, "controls_skin") && vpad_skin_changed());
+    assert(!strcmp(g_settings.controls_skin, "line") && !strcmp(stored, "controls_skin") && vpad_skin_changed());
+    draw();
+    assert(text_at(C - 1 - (int)strlen("< line >"), 8, "< line >"));
+    tap(5, C - 2);
+    assert(!strcmp(g_settings.controls_skin, "yorha") && vpad_skin_changed());
     draw();
     assert(text_at(C - 1 - (int)strlen("< yorha >"), 8, "< yorha >"));
     tap(5, C - 2);
