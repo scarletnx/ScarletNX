@@ -269,7 +269,7 @@ static void test_audio_controller(void) {
 static void test_user_channel(void) {
     SvcObj *a = am_storage_new(4, "abc"), *b = am_storage_new(4, "xyz"), *s = NULL;
     int i;
-    CHECK(nn_am_service_IApplicationFunctions_PopLaunchParameter(NULL, 1, &s) == AM_NO_DATA);
+    CHECK(nn_am_service_IApplicationFunctions_PopLaunchParameter(NULL, 1, &s) == SNX_RC_AM_NOT_AVAILABLE);
     CHECK(nn_am_service_IApplicationFunctions_UnpopToUserChannel(NULL, a) == 0);
     CHECK(nn_am_service_IApplicationFunctions_UnpopToUserChannel(NULL, b) == 0);
     memcpy(am_storage_bytes(a), "zzz", 4);
@@ -279,11 +279,11 @@ static void test_user_channel(void) {
     CHECK(nn_am_service_IApplicationFunctions_PopLaunchParameter(NULL, 1, &s) == 0);
     CHECK(memcmp(am_storage_bytes(s), "abc", 4) == 0);
     svcobj_unref(s);
-    CHECK(nn_am_service_IApplicationFunctions_PopLaunchParameter(NULL, 1, &s) == AM_NO_DATA);
+    CHECK(nn_am_service_IApplicationFunctions_PopLaunchParameter(NULL, 1, &s) == SNX_RC_AM_NOT_AVAILABLE);
     for (i = 0; i < AM_USER_CHANNEL; i++) CHECK(nn_am_service_IApplicationFunctions_UnpopToUserChannel(NULL, a) == 0);
-    CHECK(nn_am_service_IApplicationFunctions_UnpopToUserChannel(NULL, a) == AM_OUT_OF_MEMORY);
+    CHECK(nn_am_service_IApplicationFunctions_UnpopToUserChannel(NULL, a) == SNX_RC_AM_MEMORY_ALLOCATION_FAILED);
     CHECK(nn_am_service_IApplicationFunctions_ClearUserChannel(NULL) == 0);
-    CHECK(nn_am_service_IApplicationFunctions_PopLaunchParameter(NULL, 1, &s) == AM_NO_DATA);
+    CHECK(nn_am_service_IApplicationFunctions_PopLaunchParameter(NULL, 1, &s) == SNX_RC_AM_NOT_AVAILABLE);
     svcobj_unref(a);
     svcobj_unref(b);
     CHECK(test_objects == 0);
@@ -299,7 +299,7 @@ static void test_preselected(void) {
     CHECK(snx_ld_le64(d + 8) == test_playing_uid[0] && snx_ld_le64(d + 16) == test_playing_uid[1]);
     svcobj_unref(s);
     s = NULL;
-    CHECK(nn_am_service_IApplicationFunctions_PopLaunchParameter(NULL, 2, &s) == AM_NO_DATA);
+    CHECK(nn_am_service_IApplicationFunctions_PopLaunchParameter(NULL, 2, &s) == SNX_RC_AM_NOT_AVAILABLE);
 }
 static void test_previous_program(void) {
     i32 index = 0;
@@ -321,9 +321,9 @@ static void test_execute_program(void) {
     CHECK(nn_am_service_IApplicationFunctions_UnpopToUserChannel(NULL, a) == 0);
     CHECK(nn_am_service_IApplicationFunctions_UnpopToUserChannel(NULL, b) == 0);
     g_hle.acc.context_stored = 1;
-    CHECK(nn_am_service_IApplicationFunctions_ExecuteProgram(NULL, 1, 4096) == AM_NO_APPLICATION);
+    CHECK(nn_am_service_IApplicationFunctions_ExecuteProgram(NULL, 1, 4096) == SNX_RC_AM_TITLE_ID_NOT_FOUND);
     CHECK(log_has("am: ExecuteProgram kind 1 value 4096: a development jump to another application"));
-    CHECK(nn_am_service_IApplicationFunctions_ExecuteProgram(NULL, 0, 300) == AM_NO_APPLICATION);
+    CHECK(nn_am_service_IApplicationFunctions_ExecuteProgram(NULL, 0, 300) == SNX_RC_AM_TITLE_ID_NOT_FOUND);
     CHECK(log_has("am: ExecuteProgram kind 0 value 300: no program of an application has that index"));
     CHECK(g_test_program_ends == 0 && am_handover_out(&next) == -1);
     CHECK(nn_am_service_IApplicationFunctions_ExecuteProgram(NULL, 2, 77) == 0 && g_test_program_ends == 1);
@@ -346,7 +346,7 @@ static void test_execute_program(void) {
     CHECK(nn_am_service_IApplicationFunctions_PopLaunchParameter(NULL, 1, &s) == 0);
     CHECK(((StorageData*)s->data)->size == 3 && !memcmp(am_storage_bytes(s), "ab", 3));
     svcobj_unref(s);
-    CHECK(nn_am_service_IApplicationFunctions_PopLaunchParameter(NULL, 1, &s) == AM_NO_DATA);
+    CHECK(nn_am_service_IApplicationFunctions_PopLaunchParameter(NULL, 1, &s) == SNX_RC_AM_NOT_AVAILABLE);
     snx_next_free(&next);
     am_handover_in(0, NULL); /* back as the game's own program, the system's */
     g_hle.acc.context_stored = 0;
@@ -363,11 +363,11 @@ static void test_storage_read(void) {
     CHECK(nn_am_service_IStorage_Open(s, &acc) == 0);
     CHECK(nn_am_service_IStorageAccessor_Read(acc, 0, buf) == 0 && memcmp(guest, "abcdefg", 8) == 0);
     buf.size = 16;
-    CHECK(nn_am_service_IStorageAccessor_Read(acc, 0, buf) == AM_INVALID_OFFSET);
+    CHECK(nn_am_service_IStorageAccessor_Read(acc, 0, buf) == SNX_RC_AM_OUT_OF_BOUNDS);
     buf.size = 4;
-    CHECK(nn_am_service_IStorageAccessor_Read(acc, 6, buf) == AM_INVALID_OFFSET);
+    CHECK(nn_am_service_IStorageAccessor_Read(acc, 6, buf) == SNX_RC_AM_OUT_OF_BOUNDS);
     CHECK(nn_am_service_IStorageAccessor_Read(acc, 4, buf) == 0 && memcmp(guest, "efg", 4) == 0);
-    CHECK(nn_am_service_IStorageAccessor_Read(acc, -1, buf) == AM_INVALID_OFFSET);
+    CHECK(nn_am_service_IStorageAccessor_Read(acc, -1, buf) == SNX_RC_AM_OUT_OF_BOUNDS);
     g_mem = NULL;
     svcobj_unref(acc);
     svcobj_unref(s);

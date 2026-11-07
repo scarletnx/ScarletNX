@@ -74,7 +74,7 @@ static void test_permissions(void) {
     sessions[0] = new_time_user();
     sessions[1] = new_time();
     for (i = 0; i < 2; i++) {
-        expected = i ? 0 : (int)TIME_PERMISSION_DENIED;
+        expected = i ? 0 : (int)SNX_RC_TIME_NO_CAPABILITY;
         CHECK(nn_timesrv_detail_service_IStaticService_GetStandardUserSystemClock(sessions[i], &user) == 0);
         CHECK(nn_timesrv_detail_service_IStaticService_GetStandardNetworkSystemClock(sessions[i], &network) == 0);
         CHECK(nn_timesrv_detail_service_IStaticService_GetStandardSteadyClock(sessions[i], &steady) == 0);
@@ -216,9 +216,9 @@ int main(void) {
     CHECK(info.day_of_week == 3 && info.day_of_year == 364 && info.utc_offset == -4 * 3600);
     strcpy((char*)name.v, "Mars/Olympus_Mons");
     CHECK(nn_timesrv_detail_service_ITimeZoneService_LoadTimeZoneRule(NULL, &name, buf(0x10000, 0x4000)) ==
-          (int)TIME_ZONE_NOT_FOUND);
+          (int)SNX_RC_TIME_NOT_FOUND);
     CHECK(nn_timesrv_detail_service_ITimeZoneService_ToCalendarTime(NULL, 0, buf(0x30000, 0x4000), &cal, &info) ==
-          (int)TIME_INVALID_ARGUMENT); /* not a rule this service wrote */
+          (int)SNX_RC_TIME_INVALID_POINTER); /* not a rule this service wrote */
 
     /* snapshots: their user time and calendar, and the span between two by the steady clock */
     CHECK(nn_timesrv_detail_service_IStaticService_GetClockSnapshot(NULL, 0, buf(0x2000, 0xd0)) == 0);
