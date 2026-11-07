@@ -358,6 +358,7 @@ void vk_submit_for_readback(void);
 /* the commands recorded since the last submission submitted, when a command buffer is begun: what a change of an
    image's sparse binding has to follow (memory.c) */
 void vk_submit_recorded(void);
+void vk_submit_upload_wait(void); /* the same, and waits for the GPU, landing nothing: an upload's own pace */
 /* vk_checkpoints=1: what the GPU reached when the device was lost (checkpoints.c) */
 enum {
     VK_CK_ASTC,

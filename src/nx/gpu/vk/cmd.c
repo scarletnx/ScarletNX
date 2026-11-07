@@ -787,6 +787,12 @@ void vk_submit_for_readback(void) {
 void vk_submit_recorded(void) {
     if (g_fr[g_cur].recording) submit_why(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_SUB_OTHER);
 }
+/* What is recorded goes to the GPU, and this waits until the GPU has done it. It lands nothing, so it may run while a
+   draw is set up: that draw starts its setup again on the new submission number */
+void vk_submit_upload_wait(void) {
+    if (g_fr[g_cur].recording) submit(NULL, NULL, 0, VK_SUB_OTHER);
+    timeline_wait(g_gval, VK_WAIT_FINISH);
+}
 void vk_submit_after(VkSemaphore sem, u64 wait, u64 signal) {
     g_after[0] = (VkSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = sem,
                                          .value = wait, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};

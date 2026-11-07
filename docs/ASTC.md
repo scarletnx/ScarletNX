@@ -183,6 +183,11 @@ it whatever `native_bc` says, and `format.c` then samples BCn as it is only when
 keeps RGBA8 where the device has no 3D BC7 images, as native block formats do. Every 600 frames the log says how many
 levels went up as BC7 and their megabytes against RGBA8's.
 
+`vk_astc_upload` waits for the GPU once 256 thousand blocks are queued. The encoder is slow on a small GPU, and without
+the wait a load queued up tens of seconds of it and the device was lost in most runs of one game, on a GT 1030, with
+nothing in the validation layer or the kernel's log. Why the depth of the queue does that is not known: it is the
+driver's. Splitting the work over submissions with no wait did not help, and neither did smaller dispatches.
+
 BC7 is the default because memory is what a desktop GPU runs short of. As RGBA8, one game's textures took 5.7 GB of a
 5.7 GB budget and were evicted and uploaded again every frame (600 to 1000 ms frames). As BC7 they took 2.5 GB. BC7 is
 not exact (its PSNR is below): `astc_mode=1` (Exact) decodes to RGBA8 instead, for a player who sees the difference,
