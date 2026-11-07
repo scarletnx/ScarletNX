@@ -1488,6 +1488,10 @@ add_test(NAME ini_lines COMMAND snx-test-ini-lines)
 add_executable(snx-test-result-macros result_macros.c)
 snx_test_target(snx-test-result-macros 99)
 add_test(NAME result_macros COMMAND snx-test-result-macros)
+# the results the runtime answers (src/nx/hle/result_codes.inc) and their lookup (result.c), strict C99 as result.h
+add_executable(snx-test-result-codes result_codes.c)
+snx_test_target(snx-test-result-codes 99)
+add_test(NAME result_codes COMMAND snx-test-result-codes)
 
 # generated and checked in (the controls' atlas, their shaders): their sources must still make them
 if(Python3_Interpreter_FOUND)
