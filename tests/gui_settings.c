@@ -774,11 +774,12 @@ int main(int argc, char** argv) {
         free(dir);
     }
     /* a 3DS game's run gets its own table's picks and the Switch's settings the 3DS takes too (vk_memory,
-       async_pipelines, pipeline_threads, gamepad_swap_ab, gamepad_deadzone, gamepad_map, touch, vsync) only: a
-       Display setting picked for a Switch game is not one, nor another Graphics, Debug, Controllers or On-screen
-       controls one */
+       async_pipelines, pipeline_threads, gamepad_swap_ab, gamepad_deadzone, gamepad_map, touch, vsync, fullscreen)
+       only: another Display, Graphics, Debug, Controllers or On-screen controls setting picked for a Switch game is
+       not one */
     {
         static const char ctr[] = "Display\tfullscreen\t0\tint\t0\t1\tWhole screen\tFullscreen\t0=Off|1=On\n"
+                                  "Display\tdocked\t1\tint\t0\t1\tTV\tDocked\t0=Off|1=On\n"
                                   "3DS\tctr_separate_windows\t0\tint\t0\t1\tTwo windows\tSeparate screens\t0=Off|1=On\n"
                                   "3DS\tctr_top_resolution\t1\tint\t1\t16\tScale\tTop screen resolution\t\n"
                                   "Graphics\tvsync\t1\tint\t0\t1\tNo tearing\tVSync\t0=Off|1=On\n"
@@ -801,13 +802,13 @@ int main(int argc, char** argv) {
                gui_settings_set(&s, "gamepad_map", "south:A east:B") && gui_settings_set(&s, "touch", "1") &&
                gui_settings_set(&s, "controls_haptics", "0") && gui_settings_set(&s, "vk_memory", "1") &&
                gui_settings_set(&s, "vk_budget_mb", "512") && gui_settings_set(&s, "vsync", "0") &&
-               gui_settings_set(&s, "shadows", "0"));
-        assert(gui_settings_ctr_options(&s, options) == 10 && !strcmp(options[0], "--ctr_separate_windows=1") &&
-               !strcmp(options[1], "--ctr_top_resolution=2") && !strcmp(options[2], "--vsync=0") &&
-               !strcmp(options[3], "--async_pipelines=1") && !strcmp(options[4], "--pipeline_threads=2") &&
-               !strcmp(options[5], "--gamepad_swap_ab=1") && !strcmp(options[6], "--gamepad_deadzone=35") &&
-               !strcmp(options[7], "--gamepad_map=south:A east:B") && !strcmp(options[8], "--touch=1") &&
-               !strcmp(options[9], "--vk_memory=1"));
+               gui_settings_set(&s, "shadows", "0") && gui_settings_set(&s, "docked", "0"));
+        assert(gui_settings_ctr_options(&s, options) == 11 && !strcmp(options[0], "--fullscreen=1") &&
+               !strcmp(options[1], "--ctr_separate_windows=1") && !strcmp(options[2], "--ctr_top_resolution=2") &&
+               !strcmp(options[3], "--vsync=0") && !strcmp(options[4], "--async_pipelines=1") &&
+               !strcmp(options[5], "--pipeline_threads=2") && !strcmp(options[6], "--gamepad_swap_ab=1") &&
+               !strcmp(options[7], "--gamepad_deadzone=35") && !strcmp(options[8], "--gamepad_map=south:A east:B") &&
+               !strcmp(options[9], "--touch=1") && !strcmp(options[10], "--vk_memory=1"));
         gui_settings_free(&s);
     }
     puts("GUI settings: the runtime's list, picks and a run's options passed");

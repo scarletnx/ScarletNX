@@ -158,8 +158,10 @@ void snx_ctr_input_read(SnxCtrInput* input) {
     /* the window's keys, which SDL keeps for a window with the focus: none without a window */
     const bool* held = SDL_WasInit(SDL_INIT_VIDEO) ? SDL_GetKeyboardState(NULL) : NULL;
     if (held) {
+        /* Alt+Enter is the window's fullscreen (gpu/present.c), not Start */
+        bool alt = SDL_GetModState() & SDL_KMOD_ALT;
         for (size_t i = 0; i < sizeof keys / sizeof *keys; ++i)
-            if (held[keys[i].key]) input->buttons |= keys[i].bit;
+            if (held[keys[i].key] && !(alt && keys[i].key == SDL_SCANCODE_RETURN)) input->buttons |= keys[i].bit;
         input->circle[0] = (float)(held[SDL_SCANCODE_D] - held[SDL_SCANCODE_A]);
         input->circle[1] = (float)(held[SDL_SCANCODE_W] - held[SDL_SCANCODE_S]);
         input->c_stick[0] = (float)(held[SDL_SCANCODE_L] - held[SDL_SCANCODE_J]);

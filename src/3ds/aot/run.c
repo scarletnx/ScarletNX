@@ -14,6 +14,7 @@
 #include "3ds/audio/output.h"
 #include "3ds/input/input.h"
 #include "common/filesystem/host.h"
+#include "snx_settings.h"
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -199,8 +200,11 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
     printf("Game: %s (%s) - %s\n", process->title[0] ? process->title : id, id, snx_build_log_line());
     if (!snx_ctr_present_init(process->memory, frames))
         printf("No Vulkan device: no frames will be drawn, shown or saved\n");
-    else
+    else {
         snx_ctr_present_title(process->title[0] ? process->title : id, "");
+        /* the Switch's fullscreen=1, but for a timed or budgeted test run, as for a Switch game */
+        if (g_settings.fullscreen && !(seconds > 0) && !limit) snx_ctr_present_fullscreen();
+    }
     /* the DSP's output plays on the default device, and its first two minutes go to <output>/audio.wav */
     wav = snx_path_join(directory, "audio.wav");
     if (!snx_ctr_audio_init(wav)) printf("No audio output: the DSP's frames will not be heard or saved\n");
