@@ -47,7 +47,9 @@ private final class Picker: NSObject, UIDocumentPickerDelegate {
             return finish(nil)
         }
         let scoped = url.startAccessingSecurityScopedResource()
-        say("picked \(urls.count) after \(waited): \(url.absoluteString), security scope \(scoped ? "open" : "refused")")
+        // the home folder as ~, as snx_home_short gives the C side's paths: it names the app's container
+        let shown = (url.resolvingSymlinksInPath().path as NSString).abbreviatingWithTildeInPath
+        say("picked \(urls.count) after \(waited): \(shown), security scope \(scoped ? "open" : "refused")")
         say(describe(url))
         finish(url.path)
     }
