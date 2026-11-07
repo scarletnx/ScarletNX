@@ -48,6 +48,7 @@ static struct {
     /* feedback loops (feedback_order): the color slots in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL, those of them written
        since the pass began or its last barrier, and those sampled since then */
     u32 fb, fb_written, fb_read;
+    u32 fb_far; /* of fb_read, those sampled at other pixels than the fragment's own (vk_feedback_inplace=1) */
     /* A pass is begun (vkCmdBeginRendering) only when its first command is recorded (rp_record): a clear of whole
        attachments before that is the pass's load op (vk_render_clear), as a discard is (vk_render_discard). Its
        attachments, with the load ops it begins with, and its layers */
@@ -314,7 +315,7 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
     g_rp.zt_ro = zt_ro;
     g_rp.srgb_write = srgb_write;
     g_rp.fb = loops;
-    g_rp.fb_written = g_rp.fb_read = 0;
+    g_rp.fb_written = g_rp.fb_read = g_rp.fb_far = 0;
     g_rp.open = 1;
     return 1;
 }
@@ -355,7 +356,7 @@ static int render_begin_empty_area(VkExtent2D ext, u32 layers) {
     g_rp.ext = ext;
     g_rp.zt_ro = 0;
     g_rp.srgb_write = 0;
-    g_rp.fb = g_rp.fb_written = g_rp.fb_read = 0;
+    g_rp.fb = g_rp.fb_written = g_rp.fb_read = g_rp.fb_far = 0;
     g_rp.open = 1;
     return 1;
 }
@@ -422,11 +423,14 @@ int vk_render_xfb_control(u32 owner_id, u64 control, u32 what, u32 stride, DrawO
 
    Orders a command of the open pass that samples the color slots in read and writes those in write. 0 when the pass
    could not be begun again */
+static u32 g_fb_far; /* the draw being bound's feedback slots it samples at other pixels (vk_feedback_inplace=1) */
 static int feedback_order(u32 read, u32 write) {
     read &= g_rp.fb;
     write &= g_rp.fb;
     if (!(read & g_rp.fb_written) && !(write & g_rp.fb_read)) return 1;
-    if (!g_vk.has_local_read) {
+    /* a by-region barrier orders a fragment's own pixel only: reads of other pixels, and writes after them, take a
+       pass begun again */
+    if (!g_vk.has_local_read || (read & g_fb_far) || (write & g_rp.fb_far)) {
         Surf* rt[8];
         SNX_ZONE(z, "vk pass restart");
         memcpy(rt, g_rp.rt, sizeof rt);
@@ -447,12 +451,13 @@ static int feedback_order(u32 read, u32 write) {
                            .pMemoryBarriers = &mb};
     rp_record(); /* the barrier is the pass's, after what began it */
     rec_CmdPipelineBarrier2(vk_cmd(), &di);
-    g_rp.fb_written = g_rp.fb_read = 0;
+    g_rp.fb_written = g_rp.fb_read = g_rp.fb_far = 0;
     g_vk_fb_barriers++;
     return 1;
 }
 /* a command of the open pass sampled the color slots in read and wrote those in write */
 static void feedback_done(u32 read, u32 write) {
+    g_rp.fb_far |= read & g_fb_far & g_rp.fb;
     g_rp.fb_read |= read & g_rp.fb;
     g_rp.fb_written |= write & g_rp.fb;
 }
@@ -2111,10 +2116,12 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
            reads its own pixel. Other pixels may be the draw's own writes already, in any order the GPU's tiles take,
            where the guest's texture reads see what was there before the draw: those read a copy */
         u32 slots = 0;
+        int own_pixel = s->si.tex_own_pixel_mask >> i & 1;
         if (t && fb && g_vk.has_feedback && t->layout != VK_IMAGE_LAYOUT_UNDEFINED &&
-            (s->si.tex_own_pixel_mask >> i & 1))
+            (own_pixel || g_settings.feedback_in_place))
             for (u32 j = 0; j < n; j++)
                 if (rt[j] == t) slots |= 1u << j;
+        if (!own_pixel) g_fb_far |= slots;
         if (slots) {
             /* the guest reads the target's previous contents during a draw that writes it: in place, in a feedback
                loop */
@@ -3746,6 +3753,7 @@ retry:
     for (u32 i = 0; i < VK_DRAW_STAGES; i++)
         if (staged[i] && staged[i]->si.nimg) images.sampled_general = 1;
     VkDescriptorSet vset = stage_set(ds, 0, vs, rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, &images);
+    g_fb_far = 0;
     VkDescriptorSet fset =
         fs ? stage_set(ds, 4, fs, rt, zt, n, &zt_ro, &fb, &scaled, res, &storage, &images) : VK_NULL_HANDLE;
     /* the sets of the stages between, at their stage's index (shader_vk_set) */
