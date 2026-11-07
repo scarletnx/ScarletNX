@@ -240,6 +240,8 @@ int vk_image_resident(VkImage img, u8* want, u32 n, u64* bytes);
 /* the sparse binds made since the last submission, to the graphics queue in one batch before it (cmd.c's submit). 1
    when the submission has to wait for one, which *wait then holds */
 int vk_sparse_flush(VkSemaphoreSubmitInfo* wait);
+/* img has binds in a batch that hasn't gone to the queue yet, which goes ahead of the next submission */
+int vk_sparse_unissued(VkImage img);
 /* Sparse residency (memory.c), for a texture that guest memory maps only in part. vk_sparse_supported: the device
    makes an image of ii's format, type and usage with sparse residency. vk_image_create_sparse: such an image, with no
    memory bound yet (destroyed by vk_image_destroy with no allocation). 0 when the device can't, or when the image is

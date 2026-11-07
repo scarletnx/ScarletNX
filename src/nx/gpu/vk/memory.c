@@ -132,6 +132,37 @@ void vk_mem_init(int sparse_queue) {
 }
 
 /* ------------------------------------------------------------ binds in batches */
+/* The images with binds in a batch that hasn't gone to the queue yet. The validation layers check a sparse image's
+   memory as each command is recorded, and find these unbound in the commands recorded before their batch goes, just
+   ahead of the submission that runs those commands (vk_sparse_unissued, device.c's debug_cb). Images past the list's
+   room are left out: the layers' messages about them then count as any */
+#define UNISSUED_MAX 256
+static PMutex g_unissued_lk = PMUTEX_INIT;
+static VkImage g_unissued[UNISSUED_MAX];
+static u32 g_nunissued;
+static void unissued_add(VkImage img) {
+    pm_lock(&g_unissued_lk);
+    u32 i = 0;
+    while (i < g_nunissued && g_unissued[i] != img) i++;
+    if (i == g_nunissued && g_nunissued < UNISSUED_MAX) g_unissued[g_nunissued++] = img;
+    pm_unlock(&g_unissued_lk);
+}
+static void unissued_remove(VkImage img) {
+    pm_lock(&g_unissued_lk);
+    for (u32 i = 0; i < g_nunissued; i++)
+        if (g_unissued[i] == img) {
+            g_unissued[i] = g_unissued[--g_nunissued];
+            break;
+        }
+    pm_unlock(&g_unissued_lk);
+}
+int vk_sparse_unissued(VkImage img) {
+    int found = 0;
+    pm_lock(&g_unissued_lk);
+    for (u32 i = 0; i < g_nunissued && !found; i++) found = g_unissued[i] == img;
+    pm_unlock(&g_unissued_lk);
+    return found;
+}
 /* the batch, on the recording thread: one vkQueueBindSparse. A batch the driver refuses ends the run: the memory its
    blocks let go is freed once the submission after it is done, and would still be the image's */
 static void bind_run(const void* arg) {
@@ -175,6 +206,8 @@ static void bind_run(const void* arg) {
     vk_queue_lock(g_vk.gfx);
     VkResult r = vkQueueBindSparse(g_vk.gfx, 1, &bi, VK_NULL_HANDLE);
     vk_queue_unlock(g_vk.gfx);
+    for (u32 k = 0; k < ni; k++) unissued_remove(img[k].image);
+    for (u32 k = 0; k < no; k++) unissued_remove(opaque[k].image);
     free(img);
     free(opaque);
     if (!VK_OK(r))
@@ -228,6 +261,7 @@ static int bind_ready(void) {
    the batch. readers: the batch waits for the work submitted before it. The batch it went into */
 static u64 bind_add(VkImage img, int opaque, const void* bind, u64 each, VmaAllocation gone, u64 size, int readers) {
     if (g_bind.used + sizeof(BindOne) + each > BIND_CAP || g_bind.ngone == GONE_CAP) bind_flush();
+    unissued_add(img);
     if (!g_bind.used) {
         memset(g_bind.buf, 0, sizeof(BindHead));
         g_bind.used = sizeof(BindHead);
@@ -736,6 +770,7 @@ void vk_image_destroy(VkImage img, VmaAllocation mem) {
         vmaDestroyImage(g_vk.vma, img, mem);
         return;
     }
+    unissued_remove(img); /* its binds leave the batch (bind_drop), or went with it already */
     for (u32 i = 0; i < g_npieces; i++)
         if (g_pieces[i]->img == img) {
             bind_drop(g_pieces[i]);
