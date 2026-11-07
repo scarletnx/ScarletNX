@@ -41,7 +41,7 @@ typedef struct {
     int size;   /* percent of its own default size */
 } SnxVpadPlace;
 /* the controls' layout, read from their places (controls_a...). Their other settings are g_settings' (settings.txt):
-   show_controls, controls_scale (rEden's 0 to 100: every control at (scale + 50)%), controls_opacity, snap_to_grid,
+   show_controls, controls_scale (rEden's 0 to 100: every control at (scale + 50)%), controls_alpha, snap_to_grid,
    relative_stick_center, d_pad_slide, haptics, and control_shown[SNX_VPAD_] */
 typedef struct {
     SnxVpadPlace at[SNX_VPAD_COUNT];

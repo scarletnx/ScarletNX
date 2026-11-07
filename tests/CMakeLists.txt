@@ -1429,11 +1429,12 @@ snx_test_target(snx-test-vpad 11)
 target_link_libraries(snx-test-vpad PRIVATE scarletnx-common snx_splash m)
 target_include_directories(snx-test-vpad PRIVATE "${PROJECT_BINARY_DIR}/generated") # ui.c's theme
 add_test(NAME vpad COMMAND snx-test-vpad)
-# a RetroArch overlay as the controls' skin, written by the test, then the shipped skins
+# a RetroArch overlay as the controls' skin, written by the test, then the shipped skins and the built-in art
 add_executable(snx-test-vpad-skin vpad_skin.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad_skin.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c"
-    "${PROJECT_BINARY_DIR}/generated/controls_skins.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
+    "${PROJECT_BINARY_DIR}/generated/controls_skins.c" "${PROJECT_BINARY_DIR}/generated/controls_png.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-vpad-skin 11)
 target_link_libraries(snx-test-vpad-skin PRIVATE scarletnx-common snx_splash SDL3::SDL3 m)
 target_include_directories(snx-test-vpad-skin PRIVATE "${PROJECT_BINARY_DIR}/generated") # ui.c's theme
@@ -1498,8 +1499,8 @@ add_executable(snx-test-ini-deprecated ini_deprecated.c "${PROJECT_SOURCE_DIR}/s
 snx_test_target(snx-test-ini-deprecated 11)
 add_test(NAME ini_deprecated COMMAND snx-test-ini-deprecated)
 
-# options.c's TV mode Auto over a faked host power source, a key its .ini gives twice, and controls_skin's default as a
-# .ini opens; the rest of the runtime stubbed
+# options.c's TV mode Auto over a faked host power source, a key its .ini gives twice, controls_skin's default as a .ini
+# opens and controls_opacity read as controls_alpha; the rest of the runtime stubbed
 add_executable(snx-test-options-tv-mode options_tv_mode.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/options.c")
 snx_test_target(snx-test-options-tv-mode 23)
 target_link_libraries(snx-test-options-tv-mode PRIVATE scarletnx-common)

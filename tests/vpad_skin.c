@@ -3,11 +3,12 @@
 /* A skin for the on-screen controls (runtime/platform/vpad_skin.c): a RetroArch overlay this test writes, with a
    portrait page before its landscape one, a two-frame APNG, a D-pad of four directions, a stick with its ring and the
    descriptors a skin leaves out; one of several landscape pages, the one with the most controls read; then the
-   shipped skins (argv[2]...), each with every control and its pressed look. argv[1] is a folder to write the test's
-   skins in */
+   shipped skins (argv[2]...), each with every control and its pressed look; and the built-in art as compiled in, twice
+   as opaque as rEden's drawables. argv[1] is a folder to write the test's skins in */
 #include "nx/runtime/platform/vpad.h"
 #include "nx/runtime/platform/vpad_skin.h"
 #include "nx/runtime/platform/controls_atlas.h"
+#include "nx/runtime/platform/controls_png.h"
 #include <SDL3/SDL.h>
 #include <assert.h>
 #include <math.h>
@@ -307,7 +308,7 @@ static void test_skin(void) {
     buttons(NULL);
     assert(!vpad_down(2, 1800 + 140, 500 + 140, safe));
     /* drawn: A's frame, its pressed one held; B's one frame at its alpha, pressed at twice that */
-    vpad_ini("controls_opacity", "50");
+    vpad_ini("controls_alpha", "50");
     draw();
     assert((q = drawn(a->piece[0].u, a->piece[0].v)) && close_to(q->w, 200) && close_to(q->x, 1700));
     assert(!drawn(a->piece[0].pu, a->piece[0].pv) && (q = drawn(b->piece[0].u, b->piece[0].v)) && q->rgba >> 24 == 127);
@@ -317,15 +318,15 @@ static void test_skin(void) {
     assert((q = drawn(b->piece[0].u, b->piece[0].v)) && q->rgba >> 24 == 254);
     assert(buttons(NULL) == 3 && vpad_up(3) && vpad_up(4));
     buttons(NULL);
-    vpad_ini("controls_opacity", "100");
+    vpad_ini("controls_alpha", "100");
     /* the D-pad's up: its piece lit, the other three not */
     assert(vpad_down(5, 400, 600 - 250, safe) && buttons(NULL) == 1u << 13);
-    vpad_ini("controls_opacity", "40");
+    vpad_ini("controls_alpha", "40");
     draw();
     for (i = 0; i < g_test.list.n; ++i)
         if (g_test.quads[i].u == d->piece[0].u && g_test.quads[i].v == d->piece[0].v)
             assert(g_test.quads[i].rgba >> 24 == (close_to(g_test.quads[i].y, 300) ? 204u : 102u));
-    vpad_ini("controls_opacity", "100");
+    vpad_ini("controls_alpha", "100");
     assert(vpad_up(5));
     buttons(NULL);
     /* the stick: all the way at half its ring (100 pixels of 200), the knob there */
@@ -513,6 +514,23 @@ static void test_shipped(const char* path) {
     vpad_skin_set(NULL);
 }
 
+/* the built-in look's art (dist/controls/controls.png, compiled in): each sprite's alpha twice its drawable's, up to
+   opaque, so controls_alpha's 50 draws it as the drawables look whole. A's disc, 92 in the drawable (0.6 of 0.6), is
+   184; its letter, 128, opaque */
+static void test_builtin_art(void) {
+    SDL_Surface *png = SDL_LoadPNG_IO(SDL_IOFromConstMem(snx_controls_png, snx_controls_png_size), true), *s;
+    const unsigned short* a = snx_controls_sprites[SNX_SPRITE_A];
+    int hist[256] = {0}, x, y, most = 1;
+    assert(png && (s = SDL_ConvertSurface(png, SDL_PIXELFORMAT_RGBA32)));
+    SDL_DestroySurface(png);
+    for (y = a[1]; y < a[1] + a[3]; ++y)
+        for (x = a[0]; x < a[0] + a[2]; ++x) ++hist[((const u8*)s->pixels)[y * s->pitch + x * 4 + 3]];
+    for (x = 1; x < 256; ++x)
+        if (hist[x] > hist[most]) most = x;
+    assert(most == 184 && hist[255] > 0);
+    SDL_DestroySurface(s);
+}
+
 int main(int argc, char** argv) {
     int i;
     assert(argc >= 2);
@@ -522,6 +540,7 @@ int main(int argc, char** argv) {
     test_pages();
     test_switch(at("skin.cfg"));
     for (i = 2; i < argc; ++i) test_shipped(argv[i]);
+    test_builtin_art();
     printf(
         "vpad_skin: a RetroArch overlay's controls, images, hit areas and pressed looks, and %d shipped skins passed\n",
         argc - 2);

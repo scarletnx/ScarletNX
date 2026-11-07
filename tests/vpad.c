@@ -83,7 +83,7 @@ int main(void) {
     i32 st[4];
     vpad_set_store(store);
     vpad_defaults(&d);
-    assert(g_settings.controls_scale == 50 && g_settings.controls_opacity == 50 && g_settings.relative_stick_center &&
+    assert(g_settings.controls_scale == 50 && g_settings.controls_alpha == 50 && g_settings.relative_stick_center &&
            g_settings.d_pad_slide && g_settings.haptics && !g_settings.snap_to_grid);
     /* off, nothing is taken nor drawn */
     assert(vpad_ini("controls", "0") && !g_settings.show_controls && !vpad_shown());
@@ -188,7 +188,7 @@ int main(void) {
     assert(!buttons(NULL) && !vpad_up(10));
 
     /* opacity and scale: the alpha of every sprite, the size of every control */
-    vpad_ini("controls_opacity", "30");
+    vpad_ini("controls_alpha", "30");
     draw(&l);
     assert(drawn(&l, SNX_SPRITE_A)->rgba >> 24 == 76);
     assert(drawn(&l, SNX_SPRITE_A)->w > 109 && drawn(&l, SNX_SPRITE_A)->w < 111); /* 11% of 1000 at 100% */
@@ -196,7 +196,7 @@ int main(void) {
     draw(&l);
     assert(drawn(&l, SNX_SPRITE_A)->w > 164 && drawn(&l, SNX_SPRITE_A)->w < 166);
     vpad_ini("controls_scale", "50");
-    vpad_ini("controls_opacity", "50");
+    vpad_ini("controls_alpha", "50");
 
     /* the .ini: a place read back clamped, a broken one ignored, others not taken */
     assert(vpad_ini("controls_b", "1.5 -2 900 1") && vpad_config()->at[SNX_VPAD_B].x == 1 &&
@@ -304,6 +304,8 @@ int main(void) {
         vpad_showcase_input(0, none);
         vpad_showcase_draw(&l, safe, 60);
         assert(l.n > 13 && drawn(&l, SNX_SPRITE_A) && !drawn(&l, SNX_SPRITE_A_PRESSED) && drawn(&l, SNX_SPRITE_DPAD));
+        /* half the 230 it had, over art twice as opaque: the same look */
+        assert(drawn(&l, SNX_SPRITE_A)->rgba >> 24 == 115);
         assert(!drawn(&l, SNX_SPRITE_HOME) && !drawn(&l, SNX_SPRITE_CAPTURE) && !drawn(&l, SNX_SPRITE_L3) &&
                !drawn(&l, SNX_SPRITE_R3) && !drawn(&l, SNX_SPRITE_STICK_PRESSED));
         /* "60 FPS" at the box's top, in the font */

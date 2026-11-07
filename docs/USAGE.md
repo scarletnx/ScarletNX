@@ -774,7 +774,7 @@ retropad; the default) and yorha (the launcher's yorha theme on the controls), a
 [RetroArch overlay](../dist/controls/skins/README.md) is a skin too:
 `controls_skin=` the path of its `.cfg` (the launcher's Settings take it as text), and the controls take its places,
 sizes, images and pressed looks; what it lacks keeps the built-in look, and the log says each part it leaves out. The
-game's `.ini` keeps them: `controls`, `controls_scale`, `controls_opacity`, `controls_skin`,
+game's `.ini` keeps them: `controls`, `controls_scale`, `controls_alpha`, `controls_skin`,
 `controls_snap`, `controls_rel_center`, `controls_dpad_slide`, `controls_haptics`, a control's place once it
 was moved (`controls_a=0.930 0.470 100`: its middle across the screen and its size in percent), and whether it is
 shown once that changed (`controls_a_shown=0`). The launcher's Settings have the same, but the layout.
