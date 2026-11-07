@@ -777,20 +777,40 @@ static u64 mem_hash(u64 gva, u64 size) {
 }
 /* the hash of t's memory: of all of it, or for a sparse one or one with holes in its mapping loaded a piece at a time,
    of each run the GPU's page table maps of it with where it lies, as its holes read as zeros (a 2D sparse texture can
-   be hundreds of megabytes of them) and a run mapped or unmapped changes the runs */
+   be hundreds of megabytes of them) and a run mapped or unmapped changes the runs. The runs are taken RUNS_BATCH at a
+   time under the page table's index lock, and hashed after it is free: mem_hash takes pend_lock and may land results,
+   and a thread that holds pend_lock waits for the index lock (guest_covered in renderer.c). Hashed inside
+   gmmu_pieces, the GPU thread and one game's UnmapPhysicalMemory each held the lock the other waited for, with
+   vk_lock held too, and the game stopped before its title screen */
+#define RUNS_BATCH 64
 typedef struct {
-    u64 gva, h;
-} RunsHash;
-static void runs_hash(void* ctx, u64 gva, u64 cpu, u64 n) {
-    RunsHash* r = ctx;
+    u64 next; /* where the next batch starts: the end of the last run taken */
+    u32 n;
+    struct {
+        u64 gva, n;
+    } run[RUNS_BATCH];
+} RunsTaken;
+static void runs_take(void* ctx, u64 gva, u64 cpu, u64 n) {
+    RunsTaken* r = ctx;
     (void)cpu;
-    r->h = snx_fnv_step(snx_fnv_step(r->h, gva - r->gva), mem_hash(gva, n));
+    if (r->n == RUNS_BATCH) return;
+    r->run[r->n].gva = gva;
+    r->run[r->n].n = n;
+    r->n++;
+    r->next = gva + n;
 }
 static u64 tex_hash(const Surf* t) {
-    RunsHash r = {t->gva, 1469598103934665603ull};
+    u64 h = 1469598103934665603ull, at = t->gva, end = t->gva + t->size;
     if (!t->sparse && !t->piecewise) return mem_hash(t->gva, t->size);
-    gmmu_pieces(t->gva, t->size, runs_hash, &r);
-    return r.h;
+    while (at < end) {
+        RunsTaken r = {0};
+        gmmu_pieces(at, end - at, runs_take, &r);
+        for (u32 i = 0; i < r.n; i++)
+            h = snx_fnv_step(snx_fnv_step(h, r.run[i].gva - t->gva), mem_hash(r.run[i].gva, r.run[i].n));
+        if (r.n < RUNS_BATCH) break;
+        at = r.next;
+    }
+    return h;
 }
 /* A linear texture over memory a shader wrote in place, the write not done yet: its bytes are copied from the
    import on the GPU, after the write, as hashing them would wait for the submit and all the work before it. One game's
