@@ -235,6 +235,16 @@ static const u8 mixed_invariant_ops[O__COUNT] = {
     [O_PCNT] = 1, [O_CONT] = 1, [O_CAL] = 1, [O_RET] = 1, [O_PRET] = 1, [O_PEXIT] = 1, [O_KIL] = 1,
 };
 
+/* A fragment program's plain 2D sample (no offset, depth reference or level other than 0) at a perspective generic's
+   (x / w, y / w), the same generic as the program's other such samples (*screen_in, -1 before the first): it reads the
+   fragment's own pixel's centre where the vertex stage and the viewport map that generic onto the target (vk/render.c) */
+static int screen_sample(const u64* insn, u32 n, u32 i, const u32* sph, int plain, u32 x, u32 y, int* screen_in) {
+    int g = plain ? shader_direct_screen_uv(insn, n, i, x, y) : -1;
+    if (g < 0 || shader_ipa_interpolation(sph, (u32)g) != 2 || (*screen_in >= 0 && *screen_in != g)) return 0;
+    *screen_in = g;
+    return 1;
+}
+
 static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, ShaderInfo* si, size_t* word_count,
                      int can_flush, int can_preserve, int can_preserve_f64, int can_subgroup, u32 legacy_fs) {
     u32 clip;
@@ -292,6 +302,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     ShTex textures[SH_MAXTEX] = {0};
     int texture_count = 0;
     u64 tex_read = 0, tex_elsewhere = 0; /* slots read, and of them read elsewhere than the fragment's own pixel */
+    u64 tex_screen = 0; /* slots sampled at the own pixel's centre, if the draw agrees (screen_sample) */
+    int screen_in = -1;
     u64 tex_query = 0;                   /* slots a TXQ alone names: their type is the key's hint, or 2D */
     ShaderInfo image_info = {0};
     int needs_fragcoord = stage == ST_FS && (si->advanced_blend_mask & SH_ALPHA_COVERAGE_DITHER);
@@ -912,7 +924,11 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 texture_count++;
             }
             tex_read |= 1ull << slot;
-            tex_elsewhere |= 1ull << slot;
+            if (stage == ST_FS && screen_sample(insn, n, i, sph, encoding == 1 || encoding == 2, a,
+                                                shader_texs_y(encoding, a, b), &screen_in))
+                tex_screen |= 1ull << slot;
+            else
+                tex_elsewhere |= 1ull << slot;
             if (!B(insn[i], 59, 1)) needs_glsl = 1;
             if (a < 255) used[a] = 1;
             if (b < 255) used[b] = 1;
@@ -1171,8 +1187,13 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                                                          bindless, bank, handle_count, bank2, off2, indexed, ldc);
             if (read_slot < 0) return direct_reject(si, "texture descriptor count");
             tex_read |= 1ull << read_slot;
-            tex_elsewhere |= 1ull << read_slot;
             u32 coordinate = a + (array || clamp), dimensions = type == 0 ? 1 : type >= 2 ? 3 : 2;
+            if (stage == ST_FS &&
+                screen_sample(insn, n, i, sph, type == 1 && !array && !shadow && !offset_enabled && !clamp && mode <= 1,
+                              a, a < 254 ? a + 1 : 255, &screen_in))
+                tex_screen |= 1ull << read_slot;
+            else
+                tex_elsewhere |= 1ull << read_slot;
             if ((array || clamp) && a < 255) used[a] = 1;
             for (u32 component = 0; component < dimensions && coordinate + component < 255; component++)
                 used[coordinate + component] = 1;
@@ -2743,7 +2764,10 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     next.tex_dc_color_funcs = si->tex_dc_color_funcs;
     next.in_unfed_mask = si->in_unfed_mask;
     next.ntex = texture_count;
-    next.tex_own_pixel_mask = stage == ST_FS ? tex_read & ~tex_elsewhere : 0;
+    next.tex_own_pixel_mask = stage == ST_FS ? tex_read & ~tex_elsewhere & ~tex_screen : 0;
+    next.tex_screen_mask = stage == ST_FS ? tex_read & ~tex_elsewhere & tex_screen : 0;
+    next.screen_in = next.tex_screen_mask ? (u32)screen_in : 0;
+    if (stage == ST_VS) next.screen_out_mask = shader_direct_screen_out(insn, n, &next.screen_out_yneg_mask);
     next.tex_query_mask = tex_query;
     memcpy(next.tex_query_hint, si->tex_query_hint, sizeof next.tex_query_hint);
     next.nimg = image_info.nimg;

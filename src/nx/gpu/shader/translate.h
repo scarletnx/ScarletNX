@@ -159,6 +159,8 @@ u32 shader_legacy_address(u32 addr);
 u32 shader_legacy_base(u32 g);
 /* dataflow.c */
 int shader_direct_own_pixel_fetch(const u64* insn, u32 n, u32 index);
+int shader_direct_screen_uv(const u64* insn, u32 n, u32 index, u32 x, u32 y);
+u32 shader_direct_screen_out(const u64* insn, u32 n, u32* yneg);
 int shader_direct_track_const(const u64* insn, u32 n, u32 index, u32 reg, u32* value, int depth);
 /* Proven register bits at index: (runtime & *known)==*value, with *value masked by *known. Unknown is0/0.
    No specialization reads of mutable buffers; predicated or ambiguous definitions are left unknown. */

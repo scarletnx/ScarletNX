@@ -117,6 +117,15 @@ typedef struct {
        at gl_FragCoord's integer x and y, level 0, no offset): the only ones a draw may sample in place while it
        renders to them (vk/render.c), each fragment reading what earlier draws left at its pixel */
     u64 tex_own_pixel_mask;
+    /* FS: texture slots every read of which is a plain sample of a 2D texture at a perspective generic's (x / w, y / w)
+       (shader_direct_screen_uv), the generic screen_in for all of them, or reads the own pixel as above: the fragment's
+       own pixel's centre too when the vertex stage writes that generic as its position mapped onto [0, 1]
+       (screen_out_mask) and the draw's viewport covers the target (vk/render.c) */
+    u64 tex_screen_mask;
+    u32 screen_in;
+    /* VS: generic outputs written as the position mapped onto [0, 1], ((pos.w + pos.x) / 2, (pos.w + pos.y) / 2, -,
+       pos.w), and of them in screen_out_yneg_mask those whose y is (pos.w - pos.y) / 2 */
+    u32 screen_out_mask, screen_out_yneg_mask;
     u32 out_mask; /* generic outputs 0-31 written (all of them after an attribute store at a register's offset) */
     /* FS key: generic inputs the last stage before rasterization doesn't write. They read 0, 0, 0, 1 as yuzu reads
        them (GPL-2.0-or-later, shader_recompiler emit_spirv_context_get_set.cpp): Vulkan leaves an unfed input
