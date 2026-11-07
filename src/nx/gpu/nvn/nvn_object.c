@@ -20,6 +20,8 @@
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/nvn/nvn_tic.h"
 #include "nx/gpu/nvn/nvn_section.h"
+#include "nx/gpu/texture/blocklinear.h"
+#include "nx/runtime/main.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/shader/sm86.h"
 #include "nx/hle/services/nvdrv.h"
@@ -111,6 +113,13 @@ int nvn_DeviceInitialize(CPU* c, u64 d, u64 b) {
     __atomic_store_n(&g_nvn.object.device, d, __ATOMIC_RELAXED);
     nvn_draw_device(o.origin, o.depth_mode);
     LOG("nvn: device %llx initialized, flags %#x\n", (unsigned long long)d, o.flags);
+    /* An Ounce game's device with flag 0x10000 keeps the Maxwell GOB: the game's driver hands its texture setup
+       !(flags & 0x10000), and one game's textures, written as the older console lays them out, read right only with
+       the Maxwell GOB (gpu/texture/blocklinear.h). Before any surface */
+    if (g_ounce && (o.flags & NVN_DEVICE_FLAG_MAXWELL_GOB) && g_gob_native) {
+        g_gob_native = 0;
+        LOG("nvn: the device's flag 0x10000 keeps the Maxwell GOB for this Ounce game's surfaces\n");
+    }
     return 1;
 }
 void nvn_DeviceFinalize(CPU* c, u64 d) {
