@@ -146,8 +146,14 @@ void arsc_destroy(ArscAssets* a) {
     free(a);
 }
 int32_t arsc_add(ArscAssets* a, const unsigned char* data, size_t size, char* error, size_t error_size) {
-    if (size < 12 || ld16(data) != CHUNK_TABLE || ld32(data + 4) > size) {
+    if (size < 12 || ld16(data) != CHUNK_TABLE || ld32(data + 4) < 12 || ld32(data + 4) > size) {
         snprintf(error, error_size, "not a resource table");
+        return 0;
+    }
+    /* a package chunk's header alone is 284 bytes */
+    if (ld32(data + 8) > ld32(data + 4) / 284) {
+        snprintf(error, error_size, "a resource table of %u bytes that names %u packages", (unsigned)ld32(data + 4),
+                 (unsigned)ld32(data + 8));
         return 0;
     }
     Table* tables = realloc(a->tables, (a->table_count + 1) * sizeof *tables);
@@ -161,7 +167,7 @@ int32_t arsc_add(ArscAssets* a, const unsigned char* data, size_t size, char* er
     t->size = ld32(data + 4);
     t->data = malloc(t->size);
     uint32_t packages = ld32(data + 8);
-    t->packages = calloc(packages + 1, sizeof *t->packages);
+    t->packages = calloc((size_t)packages + 1, sizeof *t->packages);
     if (!t->data || !t->packages) {
         free(t->data);
         free(t->packages);

@@ -158,6 +158,12 @@ if(BUILD_TESTING)
     endif()
     target_compile_options(snx-test-android-host-anon PRIVATE -Wall -Wextra -Werror -UNDEBUG)
     add_test(NAME android_host_anon COMMAND snx-test-android-host-anon)
+    # the files of an APK the driver reads before its code runs, broken ones among them
+    add_executable(snx-test-android-inputs "${PROJECT_SOURCE_DIR}/tests/android_inputs.c" res/arsc.c res/axml.c)
+    target_include_directories(snx-test-android-inputs PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    set_target_properties(snx-test-android-inputs PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_compile_options(snx-test-android-inputs PRIVATE ${snx_android_c_options} -UNDEBUG)
+    add_test(NAME android_inputs COMMAND snx-test-android-inputs)
     # GLES 2 and 3 over Vulkan (bridge/gles2*.c): draws on the host's Vulkan (lavapipe) read back and compared, and
     # again under Khronos validation
     add_executable(snx-test-android-gles2 "${PROJECT_SOURCE_DIR}/tests/android_gles2.c" "${volk_SOURCE_DIR}/volk.c")
@@ -185,6 +191,6 @@ if(BUILD_TESTING)
 endif()
 
 if(COMMAND snx_sanitizer_path) # tests/CMakeLists.txt: this folder's tests
-    snx_test_sanitize(snx-test-bionic-sync snx-test-android-host-anon snx-test-android-gles2)
+    snx_test_sanitize(snx-test-bionic-sync snx-test-android-host-anon snx-test-android-gles2 snx-test-android-inputs)
     snx_sanitizer_path()
 endif()
