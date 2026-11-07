@@ -199,10 +199,10 @@ times the game's bytes), which took the GPU past its memory. `device.c` turns `t
 device has it for this. A sparse texture's levels are decoded only in the strips that have memory bound
 (`vk_image_sparse_bound`), in strips as high as the device's sparse blocks.
 
-A level of `VK_BC7_FAST_TEXELS` (2048x2048) or more takes the encoder's fast build, `bc7_fast_spv` (`SNX_BC7_FAST`
-1): a block whose mode 6 error is 256 or less (squared, summed over its 16 texels and 4 channels: 2 a channel on
-average) keeps mode 6, and only the others try every mode, where the full build keeps mode 6 only when it is exact.
-A level of `VK_BC7_MODE6_TEXELS` (8192x8192) or more takes mode 6 alone, `bc7_mode6_spv` (`SNX_BC7_FAST` 2). On a
+Every level takes the encoder's fast build, `bc7_fast_spv` (`SNX_BC7_FAST` 1: `VK_BC7_FAST_TEXELS` is 0): a block
+whose mode 6 error is 256 or less (squared, summed over its 16 texels and 4 channels: 2 a channel on average) keeps
+mode 6, and only the others try every mode, where the full build keeps mode 6 only when it is exact. A level of
+`VK_BC7_MODE6_TEXELS` (8192x8192) or more takes mode 6 alone, `bc7_mode6_spv` (`SNX_BC7_FAST` 2). On a
 GeForce RTX 2080 an 8192x8192 level of random 8x8 blocks (`snx-test-astc-vulkan --bench`) decoded in 15 ms and
 encoded in 860 ms with every mode and in 48 ms with mode 6 alone; the game above needed about a thousand million
 texels at once.

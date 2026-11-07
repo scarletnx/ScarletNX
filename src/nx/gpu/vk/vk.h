@@ -1118,8 +1118,9 @@ int vk_tc_convert_vi(VkCommandBuffer cb, u32 fmt, u32 w, u32 rows, VkBuffer in, 
    records the rest of the strip there */
 typedef int (*VkAstcRows)(void* ctx, VkCommandBuffer* cb, u32 z, u32 nz, u32 y, u32 n, VkBuffer* buf, u64* off);
 /* a level of ASTC encoded again as BC7 with this many texels or more takes the encoder's fast build, and one of
-   VK_BC7_MODE6_TEXELS or more its build of mode 6 alone (astc.c) */
-#define VK_BC7_FAST_TEXELS (2048u * 2048u)
+   VK_BC7_MODE6_TEXELS or more its build of mode 6 alone (astc.c). 0: every level takes the fast build, which is about
+   15 times faster than the full build for the loss the tables in docs/ASTC.md measure (50.7 vs 53.8 dB) */
+#define VK_BC7_FAST_TEXELS 0
 #define VK_BC7_MODE6_TEXELS (8192u * 8192u)
 /* x, y0: the level's texels its region starts at, 0 for a whole level (texture.c loads the blocks of the pages that
    changed). layers: more than 1, that level of layers layers from layer on, a 2D array's (depth 1), which rows gives
