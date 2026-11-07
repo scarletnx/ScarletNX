@@ -236,6 +236,15 @@ int snx_abort_requested(void);
 SnxU64 snx_footprint(void);
 /* the processor time this process has used, every thread's together, in ns; 0 where the system does not tell */
 SnxU64 snx_process_cpu_ns(void);
+#define SNX_DEBUGGER_NAME 32 /* a debugger's name, as snx_debugger gives it, with its NUL */
+/* the debugger tracing this process now: 1 with its name into name (size bytes), ? where the system says one does but
+   not which (Windows, macOS and iOS) or its name can't be read; 0 for none, and where the system does not tell.
+   Linux and Android read /proc/self/status's TracerPid and the tracer's comm, FreeBSD the process's kinfo_proc. Any
+   thread */
+int snx_debugger(char* name, size_t size);
+/* the tracer's process id in the text of a Linux /proc/<pid>/status, its TracerPid line's: 0 for none, and for a text
+   without the line or a number on it */
+long snx_status_tracer(const char* status);
 /* a thread's time on the processors, which any thread of the process reads: snx_thread_clock gives the calling
    thread's clock, never 0, or 0 where the system gives none; snx_thread_cpu_ns the time its thread has run so far, in
    ns, into *ns, and -1 once the thread has ended; snx_thread_clock_close lets go of the clock (a handle on Windows),
