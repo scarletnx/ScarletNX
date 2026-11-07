@@ -517,10 +517,26 @@ static const u8* g_pic_corner; /* is_corner's picture */
 static int is_corner(const u8* p) {
     return abs(p[0] - g_pic_corner[0]) < 40 && abs(p[1] - g_pic_corner[1]) < 40 && abs(p[2] - g_pic_corner[2]) < 40;
 }
+/* light: a pixel's R + G + B */
+static int pic_light(const u8* p) { return p[0] + p[1] + p[2]; }
+/* the outline at the side of the head, where the hair takes no shine: from the left along the row at y 50, the first
+   pixel of the hair over the hair past the outline (a 256th of the picture and two pixels on) */
+static float pic_outline(const u8* rgba, int side) {
+    int x, y = (int)((76.0f - 50) * (float)side / 84);
+    for (x = 0; x < side / 2; x++) {
+        const u8* p = rgba + 4 * (y * side + x);
+        if (abs(p[0] - rgba[4 * y * side]) + abs(p[1] - rgba[4 * y * side + 1]) + abs(p[2] - rgba[4 * y * side + 2]) >
+            60)
+            break;
+    }
+    return (float)pic_light(rgba + 4 * (y * side + x)) / (float)pic_light(rgba + 4 * (y * side + x + side / 256 + 2));
+}
 /* the pictures (snx_mii_picture) of our own Miis: the background of the favorite color, the hair on top and in two
-   tails at the sides, skin in the middle, the eyes in their color with their whites on the face */
+   tails at the sides, skin in the middle, the eyes in their color with their whites on the face. At 512 pixels: a
+   catchlight in each iris (white with the iris's red on both sides in its row), the hair's shine (brighter than its
+   color lit fully), and an outline where the hair meets the background, darker than both */
 static void check_picture(void) {
-    static u8 rgba[128 * 128 * 4];
+    static u8 rgba[512 * 512 * 4];
     u8 ci[SNX_MII_CHARINFO];
     SnxMiiLook look;
     const u8* p;
@@ -539,7 +555,40 @@ static void check_picture(void) {
     CHECK(pic_count(rgba, 128, -40, 0, -27, 30, is_crimson) > 20);  /* a tail at each side */
     CHECK(pic_count(rgba, 128, 27, 0, 40, 30, is_crimson) > 20);
     CHECK(pic_count(rgba, 128, -12, 21, 12, 27, is_crimson) == 0); /* no hair over the cheeks, between eyes and mouth */
-    snx_mii_db_charinfo(1, ci);                                    /* Leek Girl: teal */
+    CHECK(snx_mii_picture(ci, &look, 512, rgba) == 0);
+    {
+        int side, x, y, glints[2] = {0, 0}, shine = 0, edge = 0;
+        for (side = 0; side < 2; side++) /* each eye's box, x -16 to -3 and 3 to 16, y 30 to 38: 6.1 pixels a unit */
+            for (y = (int)((76.0f - 38) * 512 / 84); y <= (int)((76.0f - 30) * 512 / 84); y++)
+                for (x = (int)((42.0f + (side ? 3 : -16)) * 512 / 84);
+                     x <= (int)((42.0f + (side ? 16 : -3)) * 512 / 84); x++) {
+                    const u8* q = rgba + 4 * (y * 512 + x);
+                    int d, left = 0, right = 0;
+                    if (!is_white(q)) continue;
+                    for (d = 1; d <= 8; d++) {
+                        left |= is_red_eye(q - 4 * d);
+                        right |= is_red_eye(q + 4 * d);
+                    }
+                    glints[side] += left && right;
+                }
+        for (y = (int)((76.0f - 70) * 512 / 84); y <= (int)((76.0f - 40) * 512 / 84); y++) /* the crown */
+            for (x = (int)((42.0f - 15) * 512 / 84); x <= (int)((42.0f + 15) * 512 / 84); x++) {
+                const u8* q = rgba + 4 * (y * 512 + x);
+                shine += is_crimson(q) && q[0] >= look.hair[0] + 20 && q[1] >= look.hair[1] + 20 &&
+                         q[2] >= look.hair[2] + 20;
+            }
+        /* Alex's outline at the side of the head, darker than the hair beside it; a small picture's outline lighter,
+           as a line a pixel wide is more of it */
+        snx_mii_db_charinfo(3, ci);
+        snx_mii_db_look(3, &look);
+        CHECK(snx_mii_picture(ci, &look, 512, rgba) == 0);
+        edge = pic_outline(rgba, 512) < 0.75f && pic_line(32) > pic_line(512) + 0.2f && pic_line(512) == 0.55f;
+        if (!glints[0] || !glints[1] || !shine || !edge)
+            fprintf(stderr, "picture: catchlights %d and %d, shine %d, outline %.2f at 512\n", glints[0], glints[1],
+                    shine, pic_outline(rgba, 512));
+        CHECK(glints[0] > 0 && glints[1] > 0 && shine > 0 && edge);
+    }
+    snx_mii_db_charinfo(1, ci); /* Leek Girl: teal */
     snx_mii_db_look(1, &look);
     CHECK(snx_mii_picture(ci, &look, 128, rgba) == 0);
     CHECK(is_teal(pic_at(rgba, 128, 0, 64)) && pic_count(rgba, 128, -40, 0, -27, 40, is_teal) > 20);
