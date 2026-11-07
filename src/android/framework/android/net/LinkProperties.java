@@ -5,6 +5,7 @@ package android.net;
 import android.os.Parcel;
 import android.os.Parcelable;
 import java.io.IOException;
+import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -34,7 +35,7 @@ public final class LinkProperties implements Parcelable {
     public String getPrivateDnsServerName() { return null; }
     public String getDomains() { return null; }
     public int getMtu() { return 0; }
-    public InetAddress getDhcpServerAddress() { return null; }
+    public Inet4Address getDhcpServerAddress() { return null; }
     public boolean isWakeOnLanSupported() { return false; }
 
     @Override public int describeContents() { return 0; }
