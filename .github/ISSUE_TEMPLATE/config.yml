@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# a report that fits no form still starts from a blank issue: the forms are the fast paths, not the only ones
+blank_issues_enabled: true
+contact_links:
+  - name: Questions and help
+    url: https://discord.gg/tRTRXXbyjp
+    about: A build, a setting or a game that needs a hand before it becomes a report.
+  - name: Report a security problem privately
+    url: https://github.com/scarletnx/ScarletNX/security/advisories/new
+    about: Do not open an issue. Attach nothing of a game.
