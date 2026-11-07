@@ -253,32 +253,38 @@ endif()
 # driver's images (src/android/hwui/image.c). It builds with its own configure and make, which cmake/ffmpeg.cmake runs
 if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime OR
    (SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY))
-    # zlib (zlib license) for FFmpeg's PNG decoder and encoder, which call its inflate and deflate, and for the Android
-    # driver's libz.so, the NDK's zlib that an app's native code links (src/android/bridge/hle_zlib.c). libdeflate has
-    # no stream interface, so they get zlib itself: static, as libz.a in a folder of its own that FFmpeg's configure
-    # finds with -lz
-    CPMAddPackage(NAME zlib VERSION 1.3.2
-                  URL https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.gz
-                  URL_HASH SHA256=bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16
-                  DOWNLOAD_ONLY YES)
-    set(snx_zlib_sha256 bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16)
-    add_library(snx_zlib STATIC
-        "${zlib_SOURCE_DIR}/adler32.c" "${zlib_SOURCE_DIR}/compress.c" "${zlib_SOURCE_DIR}/crc32.c"
-        "${zlib_SOURCE_DIR}/deflate.c" "${zlib_SOURCE_DIR}/infback.c" "${zlib_SOURCE_DIR}/inffast.c"
-        "${zlib_SOURCE_DIR}/inflate.c" "${zlib_SOURCE_DIR}/inftrees.c" "${zlib_SOURCE_DIR}/trees.c"
-        "${zlib_SOURCE_DIR}/uncompr.c" "${zlib_SOURCE_DIR}/zutil.c" "${zlib_SOURCE_DIR}/gzclose.c"
-        "${zlib_SOURCE_DIR}/gzlib.c" "${zlib_SOURCE_DIR}/gzread.c" "${zlib_SOURCE_DIR}/gzwrite.c")
-    target_include_directories(snx_zlib SYSTEM PUBLIC "${zlib_SOURCE_DIR}")
-    if(NOT WIN32)
-        # what zlib's own configure finds: gz*.c's read, write and close
-        target_compile_definitions(snx_zlib PRIVATE Z_HAVE_UNISTD_H)
+    # the Android driver's alone: FFmpeg's image codecs and libswscale (cmake/ffmpeg.cmake), and zlib
+    set(snx_ffmpeg_images OFF)
+    if(SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY)
+        set(snx_ffmpeg_images ON)
+        # zlib (zlib license) for FFmpeg's PNG decoder and encoder, which call its inflate and deflate, and for the
+        # Android driver's libz.so, the NDK's zlib that an app's native code links (src/android/bridge/hle_zlib.c).
+        # libdeflate has no stream interface, so they get zlib itself: static, as libz.a in a folder of its own that
+        # FFmpeg's configure finds with -lz
+        CPMAddPackage(NAME zlib VERSION 1.3.2
+                      URL https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.gz
+                      URL_HASH SHA256=bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16
+                      DOWNLOAD_ONLY YES)
+        set(snx_zlib_sha256 bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16)
+        add_library(snx_zlib STATIC
+            "${zlib_SOURCE_DIR}/adler32.c" "${zlib_SOURCE_DIR}/compress.c" "${zlib_SOURCE_DIR}/crc32.c"
+            "${zlib_SOURCE_DIR}/deflate.c" "${zlib_SOURCE_DIR}/infback.c" "${zlib_SOURCE_DIR}/inffast.c"
+            "${zlib_SOURCE_DIR}/inflate.c" "${zlib_SOURCE_DIR}/inftrees.c" "${zlib_SOURCE_DIR}/trees.c"
+            "${zlib_SOURCE_DIR}/uncompr.c" "${zlib_SOURCE_DIR}/zutil.c" "${zlib_SOURCE_DIR}/gzclose.c"
+            "${zlib_SOURCE_DIR}/gzlib.c" "${zlib_SOURCE_DIR}/gzread.c" "${zlib_SOURCE_DIR}/gzwrite.c")
+        target_include_directories(snx_zlib SYSTEM PUBLIC "${zlib_SOURCE_DIR}")
+        if(NOT WIN32)
+            # what zlib's own configure finds: gz*.c's read, write and close
+            target_compile_definitions(snx_zlib PRIVATE Z_HAVE_UNISTD_H)
+        endif()
+        # position independent: FFmpeg is built with --enable-pic, and the Android runtime is a shared library. The
+        # folder is a generator expression so that a multi-config generator (Xcode) adds no folder for the
+        # configuration to it
+        set(snx_zlib_lib_dir "${PROJECT_BINARY_DIR}/zlib/lib")
+        set_target_properties(snx_zlib PROPERTIES OUTPUT_NAME z POSITION_INDEPENDENT_CODE ON
+                                                  ARCHIVE_OUTPUT_DIRECTORY "$<1:${snx_zlib_lib_dir}>")
+        snx_quiet(snx_zlib)
     endif()
-    # position independent: FFmpeg is built with --enable-pic, and the Android runtime is a shared library. The folder
-    # is a generator expression so that a multi-config generator (Xcode) adds no folder for the configuration to it
-    set(snx_zlib_lib_dir "${PROJECT_BINARY_DIR}/zlib/lib")
-    set_target_properties(snx_zlib PROPERTIES OUTPUT_NAME z POSITION_INDEPENDENT_CODE ON
-                                              ARCHIVE_OUTPUT_DIRECTORY "$<1:${snx_zlib_lib_dir}>")
-    snx_quiet(snx_zlib)
     set(snx_ffmpeg_sha256 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e)
     CPMAddPackage(NAME FFmpeg VERSION 9.0.2
                   URL https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz

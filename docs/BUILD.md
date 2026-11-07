@@ -37,7 +37,7 @@ Run from checkout root. [Extract/AOT/run](USAGE.md) · [Tests/diagnostics](DEVEL
 - **Display:** a Vulkan 1.3 driver. Headless runs use Vulkan offscreen and skip SDL video initialization.
   SDL3 remains a required build dependency.
 - **FFmpeg:** required by every NX runtime build and by the Android driver (its image codec). CMake builds the pinned
-  source release, and zlib for its PNG codec.
+  source release, and with the Android driver its image codecs, libswscale and zlib for its PNG codec.
   Avoid spaces in checkout/cache paths.
 - **OpenSSL:** required by every build with the NX or 3DS loaders (hashes, ciphers, the ssl service's TLS). CMake
   builds the pinned source release with OpenSSL's Configure, which needs **Perl**.
