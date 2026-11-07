@@ -78,6 +78,8 @@ typedef struct {
     u64 ar_cap, org_cap, cval;
     CsOut out[256];
     int nout, gfx;
+    VkWriteLog** logs; /* its dispatches' own references to their logs, dropped once it is done */
+    u32 nlogs, caplogs;
 #if defined(SNX_TRACY)
     VkQueryPool qpool; /* the batch's span on the GPU track, its two timestamps read back when it lands */
     u16 q0, q1;
@@ -87,6 +89,14 @@ typedef struct {
 #define CS_PENDING 3
 static CsBatch g_pend[CS_PENDING];
 static u32 g_phead, g_ptail; /* batches put aside, landed */
+/* the current batch's dispatches' references to their logs (CsBatch.logs) */
+static VkWriteLog** g_logs;
+static u32 g_nlogs, g_caplogs;
+static VkWriteLog* g_cs_spare; /* a log taken for a dispatch whose setup was abandoned: the next dispatch reuses it */
+static void logs_unref(VkWriteLog** logs, u32* n) {
+    for (u32 i = 0; i < *n; i++) vk_wlog_unref(logs[i]);
+    *n = 0;
+}
 /* draws can read results on the GPU before they land (vk_compute_gpu_src): the batch signals g_vk_csem, the next
    graphics submit waits for g_vk_cs_wait_value, and the arena they read stays alive until that frame is done */
 VkSemaphore g_vk_csem;
@@ -376,6 +386,7 @@ static void cs_land_oldest(void) {
     cs_times(b->qpool, b->q0, b->q1, b->ep);
 #endif
     cs_write_back(b->ar_mem, b->ar_ptr, b->org, b->out, b->nout);
+    logs_unref(b->logs, &b->nlogs);
     g_landing = was;
     outs_pages(b->out, b->nout, -1);
     vkResetDescriptorPool(g_vk.dev, b->dpool, 0);
@@ -443,6 +454,16 @@ static void cs_put_aside(void) {
 #endif
     memcpy(b->out, g_out, (size_t)g_nout * sizeof g_out[0]);
     b->nout = g_nout;
+    { /* the logs' references swap lists too: the batch's, empty since it landed, is the next one's */
+        VkWriteLog** l = b->logs;
+        u32 cap = b->caplogs;
+        b->logs = g_logs;
+        b->nlogs = g_nlogs;
+        b->caplogs = g_caplogs;
+        g_logs = l;
+        g_nlogs = 0;
+        g_caplogs = cap;
+    }
     g_phead++;
     g_ccb = cb;
     g_dpool = dp;
@@ -470,6 +491,7 @@ static void cs_land(void) {
     g_cq0 = g_cq1 = 0;
 #endif
     cs_write_back(g_ar_mem, g_ar_ptr, g_org, g_out, g_nout);
+    logs_unref(g_logs, &g_nlogs);
     outs_pages(g_out, g_nout, -1);
     /* only now: until the results are in memory, readers on other threads wait for this landing in
        vk_compute_mem_need */
@@ -1341,6 +1363,22 @@ rebind:
                                            .pBufferInfo = &bi[nw]};
             nw++;
         }
+    /* the program's write log (ShaderInfo.gbuf_mark): a deferred dispatch's written buffers land only the bytes the
+       log gives, and every dispatch that marks must bind it, or the stores' atomic OR reads an unwritten descriptor
+       (Xid 13). Part p is SH_WLOG_PART words, its flags first, at the program's own place in the log */
+    VkWriteLog* log = NULL;
+    if (p->si.nmarks) {
+        if (g_cs_spare && vk_wlog_size(g_cs_spare) != (u64)p->si.nmarks * SH_WLOG_PART * 4) {
+            vk_wlog_put(g_cs_spare);
+            g_cs_spare = NULL;
+        }
+        if (!g_cs_spare) g_cs_spare = vk_wlog_get(p->si.nmarks);
+        if (!g_cs_spare) {
+            g_cs_skips[CS_SKIP_RESOURCES]++;
+            return;
+        }
+        log = g_cs_spare;
+    }
     u64 so[16];
     VkBuffer bi_buf[16];
     int chained = 0;
@@ -1364,7 +1402,10 @@ rebind:
         } else if (deferred) {
             /* written: a pending result of its own, from its original bytes; read: the bytes draws would read,
                which may be an earlier draw's or dispatch's result on the GPU */
-            int ok = (p->si.gbuf_wmask >> i) & 1 ? vk_buf_copy_writable(sa[i], ss[i], &sbuf, &o, 1)
+            int ok = (p->si.gbuf_wmask >> i) & 1
+                         ? log && p->si.gbuf_mark[i]
+                               ? vk_buf_copy_writable_logged(sa[i], ss[i], &sbuf, &o, 1, log, p->si.gbuf_mark[i] - 1u)
+                               : vk_buf_copy_writable(sa[i], ss[i], &sbuf, &o, 1)
                      : sa[i]                     ? vk_buf_get_strict(sa[i], ss[i], &sbuf, &o)
                                                  : vk_buf_copy(0, ss[i], &sbuf, &o);
             if (!ok) {
@@ -1388,6 +1429,18 @@ rebind:
         w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                        .dstSet = set,
                                        .dstBinding = SNX_VKB_SSBO + i,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                       .pBufferInfo = &bi[nw]};
+        nw++;
+    }
+    if (log) {
+        /* the write log's buffer: the part each global buffer uses is in the program (gbuf_mark), so only this
+           binding and no MBASE */
+        bi[nw] = (VkDescriptorBufferInfo){vk_wlog_buffer(log), 0, vk_wlog_size(log)};
+        w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = set,
+                                       .dstBinding = SNX_VKB_WPAGES,
                                        .descriptorCount = 1,
                                        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                        .pBufferInfo = &bi[nw]};
@@ -1682,6 +1735,21 @@ rebind:
         rec_CmdDispatchIndirectKey(cb, grid_buf, grid_off, p->key, pa);
     else
         rec_CmdDispatchKey(cb, gx, gy, gz, p->key, pa);
+    if (log) { /* recorded: the dispatch's reference goes with the work that writes the log */
+        g_cs_spare = NULL;
+        if (gfx || resident)
+            vk_buf_log_retire(log);
+        else {
+            if (g_nlogs == g_caplogs) {
+                u32 cap = g_caplogs ? g_caplogs * 2 : 64;
+                VkWriteLog** grown = realloc(g_logs, (size_t)cap * sizeof *grown);
+                if (!grown) fatal("Out of memory keeping a write log");
+                g_logs = grown;
+                g_caplogs = cap;
+            }
+            g_logs[g_nlogs++] = log;
+        }
+    }
     if (resident) {
         vk_all_barrier(cb); /* its writes before what reads them next */
         for (int i = 0; i < ng; i++) {
