@@ -1784,6 +1784,35 @@ static void test_output_defaults(const char* dir) {
     (void)dir;
 }
 
+/* A fragment program's depth is in the register after the sample mask's, whether it writes a sample mask or not:
+   R1 with no colour (a program that turns a material number into the depth that its lighting passes test EQUAL
+   against), R5 after colour 0, and R5 with the sample mask in R4 */
+static void test_fragment_depth(const char* dir) {
+    static const struct {
+        u32 targets, outputs, depth_reg;
+    } cases[3] = {{0, 2, 1}, {0xf, 2, 5}, {0xf, 3, 5}};
+    for (u32 i = 0; i < 3; i++) {
+        u8 code[16 * 8] = {0};
+        u32 n = 0;
+        for (u32 r = 0; r < 6; r++) put(code, n++, mov_imm(r, f2u(0.0625f * (float)(r + 1))));
+        put(code, n++, exit_insn());
+        put(code, n, bra(n, n, 7, 0));
+        n++;
+        u32 fsph[32] = {0};
+        fsph[0] = sph0(2, 5);
+        fsph[18] = cases[i].targets;
+        fsph[19] = cases[i].outputs;
+        SpvEvalEnv env = {0};
+        int ran = run_stage(ST_FS, code, n, fsph, &env);
+        u32 want = f2u(0.0625f * (float)(cases[i].depth_reg + 1));
+        CHECK(ran && env.frag_depth == want);
+        if (!ran || env.frag_depth != want)
+            fprintf(stderr, "fragment depth, targets %#x, outputs %u: %08x, R%u's %08x expected\n", cases[i].targets,
+                    cases[i].outputs, env.frag_depth, cases[i].depth_reg, want);
+    }
+    (void)dir;
+}
+
 /* LDG.E (no uniform) of type 4 (32 bits) or 5 (64 bits) into dst from [addr + imm], and STG.E of data */
 static Word ldg_nou(u32 dst, u32 addr, u32 imm, u32 type) {
     Word x = fix(0x381);
@@ -2275,6 +2304,7 @@ int main(int argc, char** argv) {
     test_tld_multisample(dir);
     test_tex_f16(dir);
     test_output_defaults(dir);
+    test_fragment_depth(dir);
     test_global_pointer(dir);
     test_mesh(dir);
     test_task(dir);
