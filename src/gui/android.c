@@ -4,6 +4,7 @@
 #include "gui/model.h"
 #include "common/utilities/common.h"
 #include "gui/i18n.h"
+#include "gui/log.h"
 #include <SDL3/SDL.h>
 #include <dlfcn.h>
 #include <jni.h>
@@ -154,6 +155,19 @@ char* gui_android_exit_reason(long long pid, long long started) {
     args[1].j = (jlong)started * 1000;
     text = ask("exitReason", "(IJ)[B", args, why, sizeof why);
     return text ? text : snx_format("the system's reason is unknown: %s", why);
+}
+
+int gui_android_state_watch(char* message, size_t size) { return call("stateWatch", "()V", NULL, message, size); }
+/* MainActivity's state: line, UTF-8, at the watch's start and at each change of what it says */
+JNIEXPORT void JNICALL Java_org_scarletnx_MainActivity_stateSaid(JNIEnv* env, jclass activity, jbyteArray line);
+JNIEXPORT void JNICALL Java_org_scarletnx_MainActivity_stateSaid(JNIEnv* env, jclass activity, jbyteArray line) {
+    jsize n = line ? (*env)->GetArrayLength(env, line) : 0;
+    char* text = (char*)snx_alloc((size_t)n + 1);
+    (void)activity;
+    if (n) (*env)->GetByteArrayRegion(env, line, 0, n, (jbyte*)text);
+    text[n] = 0;
+    gui_log("%s", text);
+    free(text);
 }
 
 int gui_android_play(const char* const* argv, char* message, size_t size) {

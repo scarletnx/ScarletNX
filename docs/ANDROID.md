@@ -72,7 +72,9 @@ recompiles on the phone, then the game opens.
 - **How the last start ended.** The menu's log, and a game's of the game's last run, say a start that did not end
   with an exit ([GUI](GUI.md)), with the reason Android 11 and later keep for that process (ApplicationExitInfo): `low
   memory`, `crash native`, `user requested`, `signaled` and the others, the process, its status, its importance and
-  the memory it held, and the system's own words. Android 10 and earlier keep none, and the line says so.
+  the memory it held, and the system's own words. Android 10 and earlier keep none, and the line says so. At Debug's
+  Log level 2 the menu's log also has a `state:` line at its start and at each change of the thermal status (Android
+  10 and later) and of Battery Saver.
 
 The app runs on arm64 phones and on x86_64 Android (the emulator, some tablets and Chromebooks): the recompiler makes
 the code of the device it runs on. It installs from Android 5.0 (API 21). A game needs Vulkan 1.3: on a device without
