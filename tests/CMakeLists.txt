@@ -2806,6 +2806,7 @@ if(NOT WIN32 AND TARGET SDL3::SDL3) # SDL3 is there with a driver that draws (cm
     target_link_libraries(snx-test-platform-posix PRIVATE scarletnx-common) # plat_posix.c names its threads (snx_thread_name)
     # a library no test links, for plat_dl_loaded to find only once it is opened
     add_library(snx-test-dl-probe SHARED dl_probe.c)
+    snx_test_sanitize(snx-test-dl-probe) # the test's process loads it: built as the test is
     target_compile_definitions(snx-test-platform-posix PRIVATE SNX_TEST_DL_PROBE="$<TARGET_FILE:snx-test-dl-probe>")
     add_dependencies(snx-test-platform-posix snx-test-dl-probe)
     if(APPLE AND NOT IOS) # plat_posix.c's power source: IOKit's notifications on CoreFoundation's run loop
