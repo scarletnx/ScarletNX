@@ -21,6 +21,7 @@
 #include "nx/hle/filesystem/fs.h"
 #include "common/utilities/mii_db.h"
 #include "common/utilities/users.h"
+#include "gui/splash.h"
 #include <openssl/rand.h>
 #include <stdio.h>
 #include <time.h>
@@ -277,72 +278,127 @@ static int nn_err_context_IWriterForApplication_CreateContextRegistrar(SvcObj* s
     R_SUCCEED();
 }
 
-/* ============================================================ caps:su: the album is the game's captures folder */
+/* ============================================================ caps:su: the album on the SD card, as the console's */
 #define SNX_CAPS_WIDTH        1280
 #define SNX_CAPS_HEIGHT       720
 #define SNX_CAPS_BYTES        ((u64)SNX_CAPS_WIDTH * SNX_CAPS_HEIGHT * 4)
 #define SNX_CAPS_SD           1   /* nn::capsrv::AlbumStorage, where the console's album keeps it */
-#define SNX_CAPS_TRIES        100 /* pictures of one second, each a name of its own */
+#define SNX_CAPS_IDS          100 /* the two digits that tell the pictures of one second apart */
+#define SNX_CAPS_QUALITY      90
+#define SNX_CAPS_EXIF         106 /* caps_exif's segment: its marker, its length, "Exif" and 96 bytes of TIFF */
 /* capsrv's results, as Eden names them (caps_result.h): the image is not 1280x720 RGBA, the album takes no file */
 #define CAPS_OUT_OF_RANGE     RC(206, 8)
 #define CAPS_FILE_COUNT_LIMIT RC(206, 1401)
 
-/* the game's picture, RGBA, in <the game's folder>captures/album_<date>_<time>[_N].ppm, as RGB (the console's album
-   keeps a JPEG); its entry names the file's size, the local time it was taken and its number in that second. Under
-   g_host.misc.caps_lock: a picture is never written over another's name */
+/* the JPEG the splash library writes, gathered */
+typedef struct {
+    u8* data;
+    size_t size, cap;
+} CapsJpeg;
+static void caps_jpeg_write(void* closure, void* data, int size) {
+    CapsJpeg* j = (CapsJpeg*)closure;
+    if (size <= 0) return;
+    if (j->size + (size_t)size > j->cap) {
+        j->cap = (j->size + (size_t)size) * 2;
+        j->data = (u8*)snx_realloc(j->data, j->cap);
+    }
+    memcpy(j->data + j->size, data, (size_t)size);
+    j->size += (size_t)size;
+}
+static void caps_tag(u8* p, u16 tag, u16 type, u32 count, u32 value) {
+    snx_st_le16(p, tag);
+    snx_st_le16(p + 2, type);
+    snx_st_le32(p + 4, count);
+    snx_st_le32(p + 8, value);
+}
+/* the EXIF segment with the time the picture was taken, which the console's capsrv checks against the time in the
+   file's name (Switchbrew's Capture services): DateTime in the first IFD and DateTimeOriginal in the Exif IFD, the
+   "YYYY:MM:DD HH:MM:SS" photo programs sort by. The console's MakerNote, a MAC under its own key, is not there */
+static void caps_exif(u8* out, const char stamp[20]) {
+    u8* tiff = out + 10;                                                  /* the offsets count from the TIFF header */
+    out[0] = 0xFF, out[1] = 0xE1, out[2] = 0, out[3] = SNX_CAPS_EXIF - 2; /* APP1 and its length, big-endian */
+    memcpy(out + 4, "Exif\0\0II\x2A\0\x08\0\0\0", 14);                    /* a little-endian TIFF, its IFD at 8 */
+    snx_st_le16(tiff + 8, 2);
+    caps_tag(tiff + 10, 0x0132, 2, 20, 38); /* DateTime, ASCII */
+    caps_tag(tiff + 22, 0x8769, 4, 1, 58);  /* the Exif IFD's offset */
+    snx_st_le32(tiff + 34, 0);
+    memcpy(tiff + 38, stamp, 20);
+    snx_st_le16(tiff + 58, 1);
+    caps_tag(tiff + 60, 0x9003, 2, 20, 76); /* DateTimeOriginal */
+    snx_st_le32(tiff + 72, 0);
+    memcpy(tiff + 76, stamp, 20);
+}
+
+/* The game's picture, RGBA, as the console's album keeps it: a JPEG with the EXIF segment of its time, on the SD card
+   in Nintendo/Album/YYYY/MM/DD/, named YYYYMMDDHHMMSSII-<32 hex digits>.jpg (Switchbrew's SD Filesystem and Capture
+   services), II telling the pictures of one second apart. The console's 32 digits are the application ID encrypted
+   with its album key, which is not public: here they are the ID itself, then 16 zeros. The entry names the file's
+   size, the local time it was taken and its II */
 static int caps_save(IpcBuf image, nn_capsrv_ApplicationAlbumEntry* entry) {
-    char dir[1100], path[1200], header[32], why[256];
+    char dir[64], name[96], stamp[32], why[256];
     time_t now = time(NULL);
     struct tm t = {0};
-    u8 *ppm, *rgb;
-    const u8* rgba;
-    size_t head, size;
-    u32 n, i;
-    int failed;
+    CapsJpeg jpeg = {0};
+    u8* file;
+    size_t skip, size;
+    u32 n;
+    int r;
     if (image.size < SNX_CAPS_BYTES) {
         WARN("caps: the game's picture has %llu bytes, not the %llu of 1280x720 RGBA: it is not saved, and the game is "
              "told OutOfRange\n",
              (unsigned long long)image.size, (unsigned long long)SNX_CAPS_BYTES);
         R_THROW(CAPS_OUT_OF_RANGE);
     }
+    if (snx_splash_jpeg_rgba(GP(image.addr), SNX_CAPS_WIDTH, SNX_CAPS_HEIGHT, SNX_CAPS_QUALITY, caps_jpeg_write,
+                             &jpeg) ||
+        jpeg.size < 4 || jpeg.data[0] != 0xFF || jpeg.data[1] != 0xD8) {
+        WARN("caps: the game's picture could not be made a JPEG (%zu bytes of it): it is not saved, and the game is "
+             "told FileCountLimit\n",
+             jpeg.size);
+        free(jpeg.data);
+        R_THROW(CAPS_FILE_COUNT_LIMIT);
+    }
 #ifdef _WIN32
     localtime_s(&t, &now);
 #else
     localtime_r(&now, &t);
 #endif
-    snprintf(dir, sizeof dir, "%scaptures", g_exedir);
-    head = (size_t)snprintf(header, sizeof header, "P6\n%d %d\n255\n", SNX_CAPS_WIDTH, SNX_CAPS_HEIGHT);
-    size = head + (size_t)SNX_CAPS_WIDTH * SNX_CAPS_HEIGHT * 3;
-    ppm = (u8*)snx_alloc(size);
-    memcpy(ppm, header, head);
-    rgba = GP(image.addr);
-    for (i = 0, rgb = ppm + head; i < (u32)SNX_CAPS_WIDTH * SNX_CAPS_HEIGHT; i++, rgb += 3)
-        memcpy(rgb, rgba + i * 4, 3);
-    pm_lock(&g_host.misc.caps_lock);
-    failed = snx_mkdirs(dir);
-    if (failed) snx_os_error(why, sizeof why);
-    for (n = 0; !failed; n++) {
-        if (n == SNX_CAPS_TRIES) {
-            snprintf(why, sizeof why, "%d pictures of that second are there already", SNX_CAPS_TRIES);
-            failed = 1;
+    /* the start of the image, then the EXIF segment in place of the JFIF one, as the console's pictures have it */
+    skip = 2;
+    if (jpeg.size > 6 && jpeg.data[2] == 0xFF && jpeg.data[3] == 0xE0)
+        skip += 2 + ((size_t)jpeg.data[4] << 8 | jpeg.data[5]);
+    if (skip > jpeg.size) skip = 2;
+    size = 2 + SNX_CAPS_EXIF + jpeg.size - skip;
+    file = (u8*)snx_alloc(size);
+    memcpy(file, jpeg.data, 2);
+    snprintf(stamp, sizeof stamp, "%04d:%02d:%02d %02d:%02d:%02d", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour,
+             t.tm_min, t.tm_sec);
+    caps_exif(file + 2, stamp);
+    memcpy(file + 2 + SNX_CAPS_EXIF, jpeg.data + skip, jpeg.size - skip);
+    free(jpeg.data);
+    snprintf(dir, sizeof dir, "Nintendo/Album/%04d/%02d/%02d", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday);
+    for (n = 0;; n++) {
+        if (n == SNX_CAPS_IDS) {
+            r = FS_TREE_EXISTS;
+            snprintf(why, sizeof why, "%d pictures of that second are there already", SNX_CAPS_IDS);
             break;
         }
-        snprintf(path, sizeof path, "%s/album_%04d%02d%02d_%02d%02d%02d", dir, t.tm_year + 1900, t.tm_mon + 1,
-                 t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
-        if (n) snprintf(path + strlen(path), sizeof path - strlen(path), "_%u", (unsigned)n);
-        snprintf(path + strlen(path), sizeof path - strlen(path), ".ppm");
-        if (snx_path_exists(path)) continue;
-        failed = snx_write_file(path, ppm, size);
-        if (failed) snx_os_error(why, sizeof why);
-        break;
+        snprintf(name, sizeof name, "%04d%02d%02d%02d%02d%02d%02u-%016llX%016llX.jpg", t.tm_year + 1900, t.tm_mon + 1,
+                 t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec, (unsigned)n, (unsigned long long)g_hle.kernel.title_id,
+                 0ull);
+        r = fs_sd_write_new(dir, name, file, size);
+        if (r != FS_TREE_EXISTS) {
+            if (r) snx_os_error(why, sizeof why);
+            break;
+        }
     }
-    pm_unlock(&g_host.misc.caps_lock);
-    free(ppm);
-    if (failed) {
-        WARN("caps: the game's picture could not be written in %s (%s): the game is told FileCountLimit\n", dir, why);
+    free(file);
+    if (r) {
+        WARN("caps: the game's picture could not be written in %ssdmc/%s (%s): the game is told FileCountLimit\n",
+             g_datadir, dir, why);
         R_THROW(CAPS_FILE_COUNT_LIMIT);
     }
-    LOG("caps: the game saved a picture to %s\n", path);
+    LOG("caps: the game saved a picture to %ssdmc/%s/%s\n", g_datadir, dir, name);
     entry->size = (u64)size;
     entry->datetime.year = (i16)(t.tm_year + 1900);
     entry->datetime.month = (u8)(t.tm_mon + 1);

@@ -48,6 +48,10 @@ u8* fs_read_file(const char* path, u64* size);    /* malloc'd, or NULL */
 u8* fs_html_document(const char* path, u64* size);
 /* a file that exists only in memory, which the lookups find like any other. 0, or -1 */
 int fs_add_virtual_file(const char* path, const void* data, u64 size);
+/* a file the system writes on the game's SD card (caps' album), through the index as the game's own are: its folder
+   dir, made with those above it, and in it name, made new holding data. FS_TREE_OK; FS_TREE_EXISTS when name is there
+   already; another FsTreeResult, with the host's reason in errno (snx_os_error), when it could not be written */
+int fs_sd_write_new(const char* dir, const char* name, const void* data, u64 size);
 /* the RomFS the game opens: romfs.bin as it is, or an image built from the romfs folder */
 void romfs_init(void);
 /* What the runtime reads of the RomFS for itself (the shader programs the game ships, gpu/shipped_pass.c), from any

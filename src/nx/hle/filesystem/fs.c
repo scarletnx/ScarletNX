@@ -27,6 +27,7 @@
 #include "common/utilities/mods.h"
 #include "common/utilities/patches.h"
 #include "common/utilities/ini_lines.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -573,6 +574,28 @@ int fs_add_virtual_file(const char* path, const void* data, u64 size) {
     FsTreeResult r = fs_tree_add_virtual(&g_hle.fs.tree, path, data, size, NULL);
     pm_unlock(&g_hle.fs.tree.lock);
     return r ? -1 : 0;
+}
+int fs_sd_write_new(const char* dir, const char* name, const void* data, u64 size) {
+    char path[FS_TREE_PATH_MAX];
+    FsNode *folder, *file = NULL;
+    FsTreeResult r = FS_TREE_TOOLONG;
+    FILE* f;
+    if ((size_t)snprintf(path, sizeof path, "sdmc/%s", dir) >= sizeof path) return r;
+    pm_lock(&g_hle.fs.tree.lock);
+    r = fs_tree_mkdirs(&g_hle.fs.tree, path, &folder);
+    if (r == FS_TREE_OK) r = fs_tree_create(&g_hle.fs.tree, folder, name, 0, size, &file);
+    if (r == FS_TREE_OK) {
+        f = fs_tree_open(&g_hle.fs.tree, file, "r+b");
+        if (!f || fwrite(data, 1, (size_t)size, f) != size) r = FS_TREE_IO;
+        if (f && fclose(f)) r = FS_TREE_IO;
+        if (r) {
+            int e = errno; /* the write's reason, which the removal must not change */
+            fs_tree_remove(&g_hle.fs.tree, folder, name, 0, 0, 0);
+            errno = e;
+        }
+    }
+    pm_unlock(&g_hle.fs.tree.lock);
+    return (int)r;
 }
 
 /* The RomFS image's layout (Switchbrew's "RomFS"; the hash and bucket count as Eden's fsmitm_romfsbuild): a header of

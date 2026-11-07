@@ -27,7 +27,6 @@ void hle_init(void) {
     pm_init(&g_host.misc.mm_lock);
     pm_init(&g_host.misc.aoc_lock);
     pm_init(&g_host.misc.irs_lock);
-    pm_init(&g_host.misc.caps_lock);
     pm_init(&g_host.hid.input_lock);
     pm_init(&g_host.nvdrv.seen_lock);
     pm_init(&g_host.bsd.iface_lk);

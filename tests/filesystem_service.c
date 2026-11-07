@@ -2402,6 +2402,27 @@ static void test_extra_data(SvcObj* proxy) {
     puts("PASS a save's extra data: its attribute, owner and sizes, each byte as the mask keeps it");
 }
 
+/* fs_sd_write_new, a file the system writes on the SD card (caps' album): its folders made, written through the index,
+   so the game's SD card file system finds it and its data; a second of the same name refused, the first left */
+static void test_sd_write(SvcObj* proxy) {
+    static const char data[] = "a picture";
+    Request r;
+    SvcObj *sd, *file;
+    CHECK(fs_sd_write_new("Nintendo/Album/2026/11/07", "x.jpg", data, sizeof data) == FS_TREE_OK);
+    CHECK(fs_sd_write_new("Nintendo/Album/2026/11/07", "x.jpg", "other", 6) == FS_TREE_EXISTS);
+    CHECK(tree_has("sdmc/Nintendo/Album/2026/11/07/x.jpg"));
+    request(&r, 18); /* OpenSdCardFileSystem */
+    dispatch(proxy, &r, 0);
+    CHECK(r.c.nout_objs == 1);
+    sd = r.c.out_objs[0];
+    file = open_object(sd, 8, "/Nintendo/Album/2026/11/07/x.jpg", 1);
+    CHECK(get_size(file) == sizeof data);
+    CHECK(read_data(file, 0, sizeof data, 0) == sizeof data && !memcmp(GP(0x5000), data, sizeof data));
+    svcobj_unref(file);
+    svcobj_unref(sd);
+    puts("PASS a file written on the SD card: its folders made, found through the index, a second of its name refused");
+}
+
 static void cleanup_service(void) {
     pm_lock(&g_hle.fs.tree.lock);
     for (unsigned i = 0; i < NOPEN; i++)
@@ -2696,6 +2717,7 @@ int main(int argc, char** argv) {
     test_save_note(proxy);
     test_multi_commit(proxy);
     test_extra_data(proxy);
+    test_sd_write(proxy);
     test_state_temp(proxy);
     test_notifiers_and_program_index(proxy);
     svcobj_unref(fs);
