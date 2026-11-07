@@ -5,9 +5,11 @@
 // is a behaviour that Android 16 shows (the androidprobe's cases, run on an Android 16 emulator). Run as a source file
 // over the jar:
 //   java -cp scarletnx-android-framework.jar tests/android_framework.java
+import android.media.MediaPlayer;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import java.io.File;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Path;
@@ -75,9 +77,61 @@ final class AndroidFramework {
         }
     }
 
+    /** What setDataSource of a path throws, or "returned", on a new player each */
+    private static String source(String path) {
+        MediaPlayer mp = new MediaPlayer();
+        try {
+            mp.setDataSource(path);
+            return "returned";
+        } catch (Exception e) {
+            return e.getClass().getName();
+        } finally {
+            mp.release();
+        }
+    }
+
+    /**
+     * MediaPlayer opens a path, or a file: URI, before its decoder sees it: a missing file is FileNotFoundException,
+     * which leaves the player idle. Another scheme goes to the decoder as it is.
+     */
+    private static void mediaPlayerSources() throws Exception {
+        File dir = java.nio.file.Files.createTempDirectory("android_framework").toFile();
+        File there = new File(dir, "there.ogg"), missing = new File(dir, "missing.ogg");
+        java.nio.file.Files.write(there.toPath(), new byte[] {'O', 'g', 'g', 'S'});
+        AtomicReference<String> got = new AtomicReference<>("the player's thread did not end in 10 s");
+        Thread t = new Thread(() -> {
+            Looper.prepare();
+            String again;
+            MediaPlayer mp = new MediaPlayer();
+            try {
+                mp.setDataSource(missing.getPath());
+                again = "the missing file returned";
+            } catch (Exception e) {
+                try {
+                    mp.setDataSource(there.getPath());
+                    again = "then idle";
+                } catch (Exception e2) {
+                    again = "then " + thrown(e2);
+                }
+            } finally {
+                mp.release();
+            }
+            got.set(source(missing.getPath()) + ", " + source("file://" + missing.getPath()) + ", "
+                    + source(there.getPath()) + ", " + source("http://localhost:9/missing.ogg") + ", " + again);
+        });
+        t.setDaemon(true);
+        t.start();
+        t.join(10000);
+        there.delete();
+        dir.delete();
+        check("MediaPlayer.setDataSource of a missing path, its file: URI, a file, an http: URI, and after the first",
+              "java.io.FileNotFoundException, java.io.FileNotFoundException, returned, returned, then idle", got.get());
+    }
+
     public static void main(String[] args) throws Exception {
         mainLoopEnds();
         logIsLoggable();
+        mediaPlayerSources();
         if (failures != 0) System.exit(1);
         System.out.println("android_framework: ok");
     }
