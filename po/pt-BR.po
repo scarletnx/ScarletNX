@@ -1006,7 +1006,7 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "D-pad: move. A: select. Start: refresh. B: back."
+msgid "D-pad: move. A: select. Start: refresh. B: exit."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
