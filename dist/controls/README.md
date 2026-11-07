@@ -9,4 +9,5 @@ atlas with room for the game menu's font and a white block. The script also writ
 `src/nx/runtime/platform/controls_atlas.h`, the sprites' places, and `--check` (a test) fails when either is not what
 these files make. After changing a drawable, run the script and commit the three together.
 
-Skins for these controls, RetroArch overlays, are in [skins/](skins/README.md).
+These are the controls' built-in look; the default is a skin, `line`. Skins, RetroArch overlays, are in
+[skins/](skins/README.md).

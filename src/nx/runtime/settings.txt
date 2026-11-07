@@ -455,12 +455,12 @@ setting Controls opacity
 setting Controls skin
     key controls_skin
     text 512
-    default
+    default line
     label Skin
     set vpad_skin_choose
-    help Their look: empty for the built-in one, line or yorha for ScarletNX's own, or the path of a RetroArch overlay's
-    help .cfg (of its pages not named portrait, the one with the most controls). The game's menu goes round the built-in
-    help look and ScarletNX's own
+    help Their look: line (white lines) or yorha, ScarletNX's own; empty for the built-in one; or the path of a RetroArch
+    help overlay's .cfg (of its pages not named portrait, the one with the most controls). The game's menu goes round the
+    help built-in look and ScarletNX's own
 setting Relative stick center
     key controls_rel_center
     int 0 1

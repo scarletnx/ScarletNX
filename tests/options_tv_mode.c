@@ -5,7 +5,8 @@
    and on no other update, a change only when the watcher marks one, the 15 s query of a host with no watcher, and
    Off and On never asking the host. And a key the .ini gives twice: the last line's value, and a line that names the
    key and both values; and memory_fit, deprecated, read from an old .ini as memory_fit_mode while the file gives that
-   one none, and the file written with memory_fit_mode and memory_fit under [Deprecated] */
+   one none, and the file written with memory_fit_mode and memory_fit under [Deprecated]. And controls_skin: a .ini
+   without it opens with line, its default, and one that gives it empty keeps the built-in look */
 #include "common/utilities/common.h"
 #include "nx/hle/services/hid.h"
 #include "nx/hle/services/services.h"
@@ -47,6 +48,7 @@ static struct {
     char logged[256];
     char said[4096]; /* every line, one after the other */
     int write;       /* plat_replace_file replaces the file: ini_open writes it */
+    char skin[64];   /* the controls_skin backend_ini was given, which the on-screen controls read (vpad_ini) */
 } g_test;
 
 int plat_power_on_charger(void) {
@@ -98,8 +100,7 @@ int plat_replace_file(const char* tmp, const char* dst) {
 #endif
 }
 int backend_ini(const char* k, const char* v) {
-    (void)k;
-    (void)v;
+    if (!strcmp(k, "controls_skin")) snprintf(g_test.skin, sizeof g_test.skin, "%s", v);
     return 0;
 }
 int hud_debug_set(const char* text) {
@@ -339,6 +340,22 @@ static void test_settings_line(void) {
     CHECK(!strstr(list, "astc_mode"));
 }
 
+/* controls_skin, the on-screen controls' look: a .ini without it opens with line, its default, and is written with it; a
+   .ini that gives it empty keeps the built-in look, and the file keeps it empty */
+static void test_controls_skin(void) {
+    char* text;
+    g_test.write = 1;
+    snprintf(g_test.skin, sizeof g_test.skin, "%s", "not given");
+    text = open_ini("[On-screen controls]\ncontrols=1\n");
+    CHECK(!strcmp(g_test.skin, "line") && text && strstr(text, "\ncontrols_skin=line\n"));
+    free(text);
+    snprintf(g_test.skin, sizeof g_test.skin, "%s", "not given");
+    text = open_ini("[On-screen controls]\ncontrols=1\ncontrols_skin=\n");
+    CHECK(!g_test.skin[0] && text && strstr(text, "\ncontrols_skin=\n"));
+    free(text);
+    g_test.write = 0;
+}
+
 int main(void) {
     test_fixed();
     test_auto_watched();
@@ -347,6 +364,7 @@ int main(void) {
     test_settings_line();
     test_memory_fit_old();
     test_astc_bc_old();
+    test_controls_skin();
     printf("options_tv_mode: ok\n");
     return 0;
 }

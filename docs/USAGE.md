@@ -760,7 +760,7 @@ underlined once the log exists: a click opens it in the system's viewer, the pan
 
 ### On-screen controls
 
-A pad drawn over the game, with rEden's buttons and sizes, laid out as the console's two controllers hold them:
+A pad drawn over the game in white lines, with rEden's sizes, laid out as the console's two controllers hold them:
 sticks, D-pad, A B X Y, L R ZL ZR, plus and minus, the stick buttons, Home (the game's menu) and Capture (a
 screenshot). Fingers press them, the mouse's left button too; a finger that lands off them goes to the game's
 touch screen. They are on by default on Android and off elsewhere.
@@ -768,8 +768,8 @@ touch screen. They are on by default on Android and off elsewhere.
 The game's menu (Back on Android, Home on a gamepad, F2) has their page: show them, *Edit layout* (drag a control;
 tap one and size it with the bar on top; *Done* or Back ends it), snap to a grid, scale and opacity, the buttons
 shown, a stick's middle where the finger lands, a D-pad a finger slides on, a buzz on each press (Android), the touch
-screen, and *Reset layout*. *Skin* goes round their looks: the built-in one and ScarletNX's own, line (white lines,
-after libretro's flat retropad) and yorha (the launcher's yorha theme on the controls). Any
+screen, and *Reset layout*. *Skin* goes round their looks: ScarletNX's own, line (white lines, after libretro's flat
+retropad; the default) and yorha (the launcher's yorha theme on the controls), and the built-in one (rEden's). Any
 [RetroArch overlay](../dist/controls/skins/README.md) is a skin too:
 `controls_skin=` the path of its `.cfg` (the launcher's Settings take it as text), and the controls take its places,
 sizes, images and pressed looks; what it lacks keeps the built-in look, and the log says each part it leaves out. The

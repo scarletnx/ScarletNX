@@ -4,11 +4,11 @@
    common-overlays and RetroArch's own overlays are made. Of its pages not named portrait, the one that gives the most
    controls a look is read (the first of those): each descriptor whose name is one of the controls gives that control
    its default place, its size, its hit area (radial or rect, range_mod, reach) and its images, which go into rows of
-   the atlas under its picture (ui.h). A two-frame APNG is
-   an image and its pressed look, as RetroArch draws one; a one-frame image is drawn pressed at its alpha times
-   alpha_mod. Every descriptor left out is logged with why, and the controls the skin has none for keep the built-in
-   look. controls_skin (settings.txt) names the skin: a shipped one (dist/controls/skins, compiled in) or a .cfg's
-   path; the backend applies it when the window opens and again whenever the setting changes (vpad_skin_changed) */
+   the atlas under its picture (ui.h). A two-frame APNG is an image and its pressed look, as RetroArch draws one; a
+   one-frame image is drawn pressed at its alpha times alpha_mod. Every descriptor left out is logged with why, and the
+   controls the skin has none for keep the built-in look. controls_skin (settings.txt) names the skin: a shipped one
+   (dist/controls/skins, compiled in; line by default), empty for the built-in look, or a .cfg's path; the backend
+   applies it when the window opens and again whenever the setting changes (vpad_skin_changed) */
 #ifndef SNX_VPAD_SKIN_H
 #define SNX_VPAD_SKIN_H
 #include "common/cpu/aarch64/cpu.h"

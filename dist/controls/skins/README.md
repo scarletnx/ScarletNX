@@ -2,8 +2,8 @@
 
 A skin is a [RetroArch overlay](https://docs.libretro.com/development/retroarch/input/overlay/): a `.cfg` and the PNGs it
 names, as libretro's [common-overlays](https://github.com/libretro/common-overlays) are made. The game's `.ini` picks
-one with `controls_skin`: empty for the built-in look, a skin of this folder by its name (`line`, `yorha`), or the path
-of any overlay's `.cfg`. The skins here are compiled into the runtime (`cmake/controls_skins.cmake`), so every system
+one with `controls_skin`: a skin of this folder by its name (`line`, the default, or `yorha`), empty for the built-in
+look, or the path of any overlay's `.cfg`. The skins here are compiled into the runtime (`cmake/controls_skins.cmake`), so every system
 has them; a change of `controls_skin` while the game runs takes effect at once.
 `src/nx/runtime/platform/vpad_skin.c` reads, of its pages whose name has no `portrait`, the one that gives the most of
 the controls below a look (the first of those: libretro's `retropad.cfg` gives its `landscape-both-analog`, with both

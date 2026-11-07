@@ -430,18 +430,24 @@ static void test_pages(void) {
     vpad_skin_set(NULL);
 }
 
-/* controls_skin while the game runs, as the game's menu and a reload set it: the backend sees it changed once, and
-   applying it makes the atlas again with the skin's rows and puts the controls in with it; a finger on a control lets
-   go. Empty is the built-in look; a name ScarletNX doesn't ship, and no path, is said and the built-in look */
+/* controls_skin, line by default: the window opening applies it. Then while the game runs, as the game's menu and a
+   reload set it: the backend sees it changed once, and applying it makes the atlas again with the skin's rows and puts
+   the controls in with it; a finger on a control lets go. Empty is the built-in look; a name ScarletNX doesn't ship,
+   and no path, is said and the built-in look */
 static void test_switch(const char* tests_skin) {
     const IniOpt* o = ini_find(g_vpad_ini, "controls_skin");
     int w, h, yorha_h;
     u32 version, before;
     char name[64];
-    assert(o && o->type == INI_TEXT && !g_settings.controls_skin[0] && !vpad_skin_changed());
+    assert(o && o->type == INI_TEXT && !strcmp(o->def, "line") && !strcmp(g_settings.controls_skin, "line"));
+    assert(!vpad_skin_changed());
     assert(vpad_skin_shipped(0, name, sizeof name) && !strcmp(name, "line"));
     assert(vpad_skin_shipped(1, name, sizeof name) && !strcmp(name, "yorha") &&
            !vpad_skin_shipped(2, name, sizeof name));
+    /* the default, as the window opens */
+    g_test.logged[0] = 0;
+    assert(vpad_skin_apply(g_test.sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT));
+    assert(said("vpad skin: line, page 0 \"landscape\": 20 images in") && vpad_skin(SNX_VPAD_STICK_L));
     /* the shipped one, by its name: read from the files compiled in */
     assert(vpad_ini("controls_skin", "yorha") && vpad_skin_changed() && !vpad_skin_changed());
     ui_atlas(&w, &h, &before);
