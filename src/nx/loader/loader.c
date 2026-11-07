@@ -10,6 +10,7 @@
 #include "nx/loader/loader.h"
 #include "nx/loader/hook_routes.h"
 #include "nx/loader/match.h"
+#include "nx/loader/ounce.h"
 #include <stdlib.h>
 #include <string.h>
 #include <lz4.h>
@@ -1027,6 +1028,7 @@ int snx_parse_npdm(const unsigned char* data, size_t size, SnxNpdm* npdm, char* 
     memcpy(npdm->name, data + 0x20, 16);
     npdm->name[16] = 0;
     npdm->title_id = rd64(data + aci + 0x10);
+    npdm->ounce = snx_npdm_ounce(data, size);
     return 0;
 }
 

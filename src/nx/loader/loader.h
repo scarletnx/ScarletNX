@@ -65,6 +65,7 @@ typedef struct {
     SnxU32 stack;
     unsigned prio, core, aspace;
     int is64;
+    int ounce; /* an Ounce program's (ounce.h) */
     char name[17];
 } SnxNpdm;
 

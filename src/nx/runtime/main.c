@@ -29,6 +29,7 @@
 #include "nx/runtime/clock.h"
 #include "nx/runtime/gdbstub.h"
 #include "nx/runtime/loader.h"
+#include "nx/loader/ounce.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/pause.h"
 #include "nx/runtime/state.h"
@@ -77,6 +78,7 @@ int g_program;
 char g_addonrec[256];
 char g_confdir[1024], g_statedir[1024], g_cachedir[1024];
 volatile int g_quit;
+int g_ounce;
 int (*snx_menu)(const char* self);
 void (*snx_menu_run_theme)(const char* folder, SnxRunTheme* out);
 const SnxModule* g_mod;
@@ -538,13 +540,20 @@ static u32 rd32le(const u8* p) { return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] <
    its blocks in and the loader places the code at. The npdm is read through the fs, which fs_init has just brought
    up. A 64-bit program of type 1 is the console's pre-2.0 36-bit one, and mem_layout36's comment says what the
    layout has to guarantee for it: what its SDK marshals into an IPC buffer descriptor drops every address bit above
-   36, and the 39-bit layout's stack and heap, above 64 GiB, came back as addresses with no memory behind them */
+   36, and the 39-bit layout's stack and heap, above 64 GiB, came back as addresses with no memory behind them.
+
+   It also tells an Ounce program (loader/ounce.h), which is g_ounce: the runtime JIT then takes the extended CPU
+   features (guest_jit.c), as the recompiler does from the same NPDM */
 static void npdm_layout(void) {
     u64 size = 0;
     unsigned char* d = fs_read_file("exefs/main.npdm", &size);
     if (!d) return;
     if (size >= 0x80 && size <= 0x4000 && !memcmp(d, "META", 4)) {
         unsigned flags = d[0x0c];
+        if (snx_npdm_ounce(d, size)) {
+            g_ounce = 1;
+            LOG("npdm: an Ounce program\n");
+        }
         if ((flags & 1) && ((flags >> 1) & 7) == 1) {
             mem_layout36();
             LOG("npdm: a 36-bit address space: 64 GiB, the code region at a fixed 128 MiB\n");
