@@ -5089,6 +5089,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_nvn_state.inc"
 #include "vulkan_nvn_events.inc"
 #include "vulkan_nvn_subroutines.inc"
+#include "vulkan_nvn_savestate.inc"
 #include "vulkan_nvn_tess.inc"
 #include "vulkan_nvn_blend.inc"
 #include "vulkan_nvn_advanced_native.inc"
@@ -5362,6 +5363,8 @@ static int run_headless(int argc, char** argv) {
             result = check_nvn_event_order();
         else if (!strcmp(name, "subroutines"))
             result = check_nvn_subroutine_calls();
+        else if (!strcmp(name, "savestate")) /* only so: its load replaces the process's guest memory */
+            result = check_nvn_savestate(shot);
         else if (!strcmp(name, "copies"))
             result = check_nvn_copy_conversions();
         else if (!strcmp(name, "advanced_blend"))

@@ -1766,14 +1766,13 @@ i32 nvn_ProgramGetSubtileSize(CPU* c, u64 p) {
 static int sub_span(u32 bytes, u32 offset, u32 count, u32 width) {
     return !(offset & 3) && offset >= 80 && offset <= bytes && count <= (bytes - offset) / width;
 }
-static NvnSubLinkage* sub_linkage(u64 address, const NvnProgram* program, u32* mask) {
-    if (address > ~0ull - 80 || mem_mapped_run(address, 80) < 80) return NULL;
-    const u8* data = GP(address);
-    u32 bytes = snx_ld_le32(data + 20), stage = snx_ld_le32(data + 4);
-    if (snx_ld_le32(data) != 0xfabffabcu || stage > 5 || (*mask & (1u << stage)) || bytes < 80 || bytes > 16u << 20)
-        return NULL;
-    if (address > ~0ull - bytes || mem_mapped_run(address, bytes) < bytes) return NULL;
-    const NvnStage* shader = &program->st[stage];
+/* The fields of the linkage map at data (bytes of it, its stage's program shader), read and checked against its bytes
+   and that stage: 1 with them in *out, 0 for a map whose offsets or targets fall outside them */
+static int sub_linkage_fields(const u8* data, u32 bytes, const NvnStage* shader, NvnSubLinkage* out) {
+    if (bytes < 80 || bytes > 16u << 20 || snx_ld_le32(data) != 0xfabffabcu || snx_ld_le32(data + 4) > 5 ||
+        snx_ld_le32(data + 20) != bytes)
+        return 0;
+    u32 stage = snx_ld_le32(data + 4);
     u32 absolute = snx_ld_le32(data + 28), table = snx_ld_le32(data + 36);
     u32 labels = snx_ld_le32(data + 40), code = snx_ld_le32(data + 48), calls = snx_ld_le32(data + 56);
     u32 call_offset = snx_ld_le32(data + 60), functions = snx_ld_le32(data + 64), targets = snx_ld_le32(data + 68);
@@ -1784,7 +1783,7 @@ static NvnSubLinkage* sub_linkage(u64 address, const NvnProgram* program, u32* m
     if (!shader->data || ((u32)shader->cb << 8) < shader->off || absolute > 1 || !labels || !calls || !entries ||
         table > capacity || entries > capacity - table || !sub_span(bytes, code, labels, 4) ||
         !sub_span(bytes, call_offset, calls, 16))
-        return NULL;
+        return 0;
     u32 major = snx_ld_le32(data + 8), minor = snx_ld_le32(data + 12);
     int sorted = major > 1 || (major == 1 && minor >= 9);
     u32 summed = 0;
@@ -1795,39 +1794,59 @@ static NvnSubLinkage* sub_linkage(u64 address, const NvnProgram* program, u32* m
         if (!n || !array || array > entries - summed || uniform > 0x7fffffffu || array > 0x80000000u - uniform ||
             at > 0x3fffffffu || n > 0x40000000u - at || !sub_span(bytes, functions, at + n, 4) ||
             !sub_span(bytes, targets, at + n, 4))
-            return NULL;
+            return 0;
         for (u32 j = 0; j < n; j++) {
             if (sorted && j &&
                 snx_ld_le32(data + functions + ((size_t)at + j - 1) * 4) >
                     snx_ld_le32(data + functions + ((size_t)at + j) * 4))
-                return NULL;
+                return 0;
             u32 label = snx_ld_le32(data + targets + ((size_t)at + j) * 4);
-            if (label >= labels) return NULL;
+            if (label >= labels) return 0;
             u32 offset = snx_ld_le32(data + code + (size_t)label * 4);
             u32 extent = ((u32)shader->cb << 8) - shader->off;
             u32 magnitude = !absolute && (offset & 0x80000000u) ? 0u - offset : offset;
-            if (offset != ~0u && ((offset & 7) || magnitude >= extent)) return NULL;
+            if (offset != ~0u && ((offset & 7) || magnitude >= extent)) return 0;
         }
         summed += array;
     }
-    if (summed != entries) return NULL;
+    if (summed != entries) return 0;
+    *out = (NvnSubLinkage){.shader = *shader,
+                           .stage = stage,
+                           .absolute = absolute,
+                           .table = table,
+                           .calls = calls,
+                           .entries = entries,
+                           .labels = labels,
+                           .call_offset = call_offset,
+                           .code_offset = code,
+                           .function_offset = functions,
+                           .label_offset = targets,
+                           .bytes = bytes};
+    return 1;
+}
+/* the linkage map at address, of the program's stage it names (one stage not in *mask yet), copied out of guest
+   memory: NULL for a malformed one */
+static NvnSubLinkage* sub_linkage(u64 address, const NvnProgram* program, u32* mask) {
+    if (address > ~0ull - 80 || mem_mapped_run(address, 80) < 80) return NULL;
+    const u8* data = GP(address);
+    u32 bytes = snx_ld_le32(data + 20), stage = snx_ld_le32(data + 4);
+    if (stage > 5 || (*mask & (1u << stage)) || bytes < 80 || bytes > 16u << 20) return NULL;
+    if (address > ~0ull - bytes || mem_mapped_run(address, bytes) < bytes) return NULL;
+    NvnSubLinkage fields;
+    if (!sub_linkage_fields(data, bytes, &program->st[stage], &fields)) return NULL;
     NvnSubLinkage* result = malloc(sizeof *result + bytes);
     if (!result) return NULL;
-    *result = (NvnSubLinkage){.shader = *shader,
-                              .stage = stage,
-                              .absolute = absolute,
-                              .table = table,
-                              .calls = calls,
-                              .entries = entries,
-                              .labels = labels,
-                              .call_offset = call_offset,
-                              .code_offset = code,
-                              .function_offset = functions,
-                              .label_offset = targets,
-                              .bytes = bytes};
+    *result = fields;
     memcpy(result->data, data, bytes);
     *mask |= 1u << stage;
     return result;
+}
+int nvn_sub_linkage_valid(const NvnSubLinkage* l) {
+    NvnSubLinkage f;
+    return sub_linkage_fields(l->data, l->bytes, &l->shader, &f) && f.stage == l->stage && f.absolute == l->absolute &&
+           f.table == l->table && f.calls == l->calls && f.entries == l->entries && f.labels == l->labels &&
+           f.call_offset == l->call_offset && f.code_offset == l->code_offset &&
+           f.function_offset == l->function_offset && f.label_offset == l->label_offset;
 }
 int nvn_ProgramSetSubroutineLinkage(CPU* c, u64 p, i32 n, u64 maps) {
     (void)c;
