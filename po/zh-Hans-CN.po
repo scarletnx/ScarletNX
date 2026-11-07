@@ -782,13 +782,13 @@ msgstr "方向键/鼠标: 移动. 空格/Enter/点击: 选择."
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "Up/Down: move. Enter/Space: open. Left/Right/PgUp/PgDown: scroll. F5: refresh."
+msgid "Up/Down: move. Enter/Space: open. Left/Right/PgUp/PgDn: scroll. F5: refresh."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "Arrows: move. Enter/Space: open. PgUp/PgDown: scroll. F5: refresh."
+msgid "Arrows: move. Enter/Space: open. PgUp/PgDn: scroll. F5: refresh."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -4533,12 +4533,6 @@ msgstr "PgDn"
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
-msgid "PgDown"
-msgstr "PgDown"
-
-#. A key of the foot's sentences, which a click finds by this word
-#: src/gui/main.c
-#, snx-key
 msgid "Del"
 msgstr "Del"
 
@@ -5621,6 +5615,9 @@ msgstr "启动"
 #: src/nx/runtime/settings.txt
 msgid "LLVM Internals"
 msgstr "LLVM 内部选项"
+
+#~ msgid "PgDown"
+#~ msgstr "PgDown"
 
 #~ msgid "user=%d is deprecated: user_uid=%s (%s) replaces it"
 #~ msgstr "user=%d 是旧的设置：由 user_uid=%s（%s）取代"
