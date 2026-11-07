@@ -182,6 +182,8 @@ int gmem_write(u64 gva, const void* src, u64 size) {
     return 0;
 }
 int g_shader_sm86; /* shader.c's: Maxwell programs */
+int g_ounce;       /* main.c's: not an Ounce program */
+int g_gob_native;  /* blocklinear.c's: the Maxwell GOB */
 const char* g_shader_sm86_dump; /* shader.c's: no dumps */
 u64 ds_generation_next(void) {
     static u64 g;
