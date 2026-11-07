@@ -695,12 +695,13 @@ setting Shader captures
     help (snx-shaderc's corpus)
 setting Vulkan validation layer
     key vk_validation
-    int 0 1
+    int 0 2
     default 0
     startup
-    words Off|On
+    words Off|On|GPU-assisted
     help 1 = the Vulkan validation layer (VK_LAYER_KHRONOS_validation, the Vulkan SDK's) checks every Vulkan call and
-    help logs what it finds. It slows the game down a lot, and a missing layer is only a warning
+    help logs what it finds. It slows the game down a lot, and a missing layer is only a warning. 2 = also GPU-assisted
+    help validation, which finds out-of-bounds and unwritten descriptor accesses in shaders, and is slower again
 setting Vulkan pipeline cache
     key vk_pipeline_cache
     int 0 1
