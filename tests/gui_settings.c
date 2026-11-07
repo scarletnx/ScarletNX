@@ -774,24 +774,29 @@ int main(int argc, char** argv) {
         free(dir);
     }
     /* a 3DS game's run gets its own table's picks and the Switch's settings the 3DS takes too (vk_memory,
-       async_pipelines, pipeline_threads) only: a Display setting picked for a Switch game is not one, nor another
-       Debug one */
+       async_pipelines, pipeline_threads, gamepad_swap_ab, gamepad_deadzone) only: a Display setting picked for a
+       Switch game is not one, nor another Debug or Controllers one */
     {
         static const char ctr[] = "Display\tfullscreen\t0\tint\t0\t1\tWhole screen\tFullscreen\t0=Off|1=On\n"
                                   "3DS\tctr_separate_windows\t0\tint\t0\t1\tTwo windows\tSeparate screens\t0=Off|1=On\n"
                                   "3DS\tctr_top_resolution\t1\tint\t1\t16\tScale\tTop screen resolution\t\n"
                                   "Performance\tasync_pipelines\t0\tint\t0\t1\tNo pause\tAsync pipelines\t0=Off|1=On\n"
                                   "Performance\tpipeline_threads\t0\tint\t0\t32\tThreads\tPipeline threads\t\n"
+                                  "Controllers\tgamepad_swap_ab\t0\tint\t0\t1\tA and B\tSwap A/B\t0=Off|1=On\n"
+                                  "Controllers\tgamepad_deadzone\t20\tint\t0\t90\tDead zone\tStick dead zone\t\n"
+                                  "Controllers\tgamepad_rumble\t100\tint\t0\t100\tHow strongly\tVibration\t\n"
                                   "Debug\tvk_memory\t0\tint\t0\t2\tGuest buffers\tGuest memory\t0=Auto|1=Copy|2=UMA\n"
                                   "Debug\tvk_budget_mb\t0\tint\t0\t65536\tBudget\tVulkan budget\t";
         assert(!gui_settings_read(&s, ctr));
         assert(gui_settings_set(&s, "fullscreen", "1") && gui_settings_set(&s, "ctr_separate_windows", "1") &&
                gui_settings_set(&s, "ctr_top_resolution", "2") && gui_settings_set(&s, "async_pipelines", "1") &&
-               gui_settings_set(&s, "pipeline_threads", "2") && gui_settings_set(&s, "vk_memory", "1") &&
-               gui_settings_set(&s, "vk_budget_mb", "512"));
-        assert(gui_settings_ctr_options(&s, options) == 5 && !strcmp(options[0], "--ctr_separate_windows=1") &&
+               gui_settings_set(&s, "pipeline_threads", "2") && gui_settings_set(&s, "gamepad_swap_ab", "1") &&
+               gui_settings_set(&s, "gamepad_deadzone", "35") && gui_settings_set(&s, "gamepad_rumble", "50") &&
+               gui_settings_set(&s, "vk_memory", "1") && gui_settings_set(&s, "vk_budget_mb", "512"));
+        assert(gui_settings_ctr_options(&s, options) == 7 && !strcmp(options[0], "--ctr_separate_windows=1") &&
                !strcmp(options[1], "--ctr_top_resolution=2") && !strcmp(options[2], "--async_pipelines=1") &&
-               !strcmp(options[3], "--pipeline_threads=2") && !strcmp(options[4], "--vk_memory=1"));
+               !strcmp(options[3], "--pipeline_threads=2") && !strcmp(options[4], "--gamepad_swap_ab=1") &&
+               !strcmp(options[5], "--gamepad_deadzone=35") && !strcmp(options[6], "--vk_memory=1"));
         gui_settings_free(&s);
     }
     puts("GUI settings: the runtime's list, picks and a run's options passed");
