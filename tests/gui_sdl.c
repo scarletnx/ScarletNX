@@ -1874,7 +1874,7 @@ static void grid_view(App* app, const char* temporary) {
     { /* F1's box says the grid's keys: the arrows move over the tiles, as the menu's do, PgUp and PgDn by the lines */
         char said[1024];
         assert(strstr(screen_said(app, true, said, sizeof said), "Arrows: move.") && !strstr(said, "select") &&
-               strstr(said, "PgUp/PgDown: scroll.") && !strstr(said, "Left/Right/PgUp/PgDown: scroll.") &&
+               strstr(said, "PgUp/PgDn: scroll.") && !strstr(said, "Left/Right/PgUp/PgDn: scroll.") &&
                strstr(said, "V: view."));
     }
     /* Right and Left: the row after and before, past a label; nothing past the first */
@@ -8712,7 +8712,7 @@ int main(int argc, char** argv) {
                     render(&app);
                     help_keys(&app, &k);
                     rows = help_rows(&k);
-                    assert(k.n >= 13 && k.n <= GUI_HELP_ROWS && k.keys == gui_text_cols("Left/Right/PgUp/PgDown"));
+                    assert(k.n >= 13 && k.n <= GUI_HELP_ROWS && k.keys == gui_text_cols("Left/Right/PgUp/PgDn"));
                     assert(k.own >= 7 && k.own < k.n && rows == k.n + 1 && !strncmp(k.said, "L: play. ", 9));
                     for (i = 0; i < k.n; ++i) assert(k.icons[i] != GUI_ICON_NONE);
                     assert(!help_row(&k, k.own, key_, what, sizeof key_, &icon)); /* the title, then every screen's */
@@ -8721,7 +8721,7 @@ int main(int argc, char** argv) {
                     assert(help_row(&k, rows - 1, key_, what, sizeof key_, &icon) && !strcmp(key_, "F2"));
                     shows(&app, "Every screen", normal);
                     shows(&app, "- " ICON_EYE, normal);
-                    shows(&app, "Left/Right/PgUp/PgDown", yellow);
+                    shows(&app, "Left/Right/PgUp/PgDn", yellow);
                     help_boxes(&app, &h);
                     assert((int)ui_help_shown(h.rects, app.scale, UI_HELP_ROWS) == rows); /* all of them */
                     app.pad_driven = true; /* a pad's buttons, with their icons */
@@ -11753,20 +11753,19 @@ int main(int argc, char** argv) {
                 event(&app, &left);
                 assert(!app.hovering);
             }
-            /* Games, where each word of Left/Right/PgUp/PgDown moves a screen of rows its way, and its text, of words two
+            /* Games, where each word of Left/Right/PgUp/PgDn moves a screen of rows its way, and its text, of words two
                ways, none; Up/Down's each move the focus */
             key(&app, SDLK_TAB);
             assert(app.menu.view == GUI_LOAD_GAMES && gui_browser_pages(&app.browser) == 1);
             app.browser.selected = 0;
             {
                 size_t screen;
-                assert(hint_press(&app, "Left/Right/PgUp/PgDown", 18) && app.browser.selected > 1); /* PgDown */
+                assert(hint_press(&app, "Left/Right/PgUp/PgDn", 18) && app.browser.selected > 1); /* PgDn */
                 screen = app.browser.selected;
-                assert(!hint_press(&app, "Left/Right/PgUp/PgDown", 24) && app.browser.selected == screen); /* scroll */
-                assert(hint_press(&app, "Left/Right/PgUp/PgDown", 12) && !app.browser.selected);           /* PgUp */
-                assert(hint_press(&app, "Left/Right/PgUp/PgDown", 10) &&
-                       app.browser.selected == screen);                                          /* Right's / */
-                assert(hint_press(&app, "Left/Right/PgUp/PgDown", -1) && !app.browser.selected); /* before Left */
+                assert(!hint_press(&app, "Left/Right/PgUp/PgDn", 24) && app.browser.selected == screen); /* scroll */
+                assert(hint_press(&app, "Left/Right/PgUp/PgDn", 12) && !app.browser.selected);           /* PgUp */
+                assert(hint_press(&app, "Left/Right/PgUp/PgDn", 10) && app.browser.selected == screen);  /* Right's / */
+                assert(hint_press(&app, "Left/Right/PgUp/PgDn", -1) && !app.browser.selected); /* before Left */
             }
             assert(hint_press(&app, "Up/Down", 3) && app.browser.selected == 1);
             assert(hint_press(&app, "Up/Down", 0) && app.browser.selected == 0);

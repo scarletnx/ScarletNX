@@ -518,7 +518,7 @@ cannot be read is named and the others still listed.
   one.
 - The list is one page that scrolls, by pixels: past its height a scroll bar at its right, as every list has (below),
   which a click and a finger take. Up/Down move the focus
-  and the rows glide to show it (at once with Animations off); Left/Right and PgUp/PgDown move it a screen of rows,
+  and the rows glide to show it (at once with Animations off); Left/Right and PgUp/PgDn move it a screen of rows,
   stopping at the first and the last; a notch of the wheel glides the rows three rows, the focus staying. The count
   of the games is shown beside them.
 - Empty or missing directories show a diagnostic, and the side box says P adds a folder.

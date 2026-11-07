@@ -782,13 +782,13 @@ msgstr "Setas/mouse: mover. Espaço/Enter/clique: escolher."
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "Up/Down: move. Enter/Space: open. Left/Right/PgUp/PgDown: scroll. F5: refresh."
+msgid "Up/Down: move. Enter/Space: open. Left/Right/PgUp/PgDn: scroll. F5: refresh."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "Arrows: move. Enter/Space: open. PgUp/PgDown: scroll. F5: refresh."
+msgid "Arrows: move. Enter/Space: open. PgUp/PgDn: scroll. F5: refresh."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -4533,12 +4533,6 @@ msgstr "PgDn"
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
-msgid "PgDown"
-msgstr "PgDown"
-
-#. A key of the foot's sentences, which a click finds by this word
-#: src/gui/main.c
-#, snx-key
 msgid "Del"
 msgstr "Del"
 
@@ -5621,6 +5615,9 @@ msgstr "Inicialização"
 #: src/nx/runtime/settings.txt
 msgid "LLVM Internals"
 msgstr "Internos do LLVM"
+
+#~ msgid "PgDown"
+#~ msgstr "PgDown"
 
 #~ msgid "user=%d is deprecated: user_uid=%s (%s) replaces it"
 #~ msgstr "user=%d está obsoleto: user_uid=%s (%s) o substitui"

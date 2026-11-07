@@ -779,13 +779,13 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "Up/Down: move. Enter/Space: open. Left/Right/PgUp/PgDown: scroll. F5: refresh."
+msgid "Up/Down: move. Enter/Space: open. Left/Right/PgUp/PgDn: scroll. F5: refresh."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "Arrows: move. Enter/Space: open. PgUp/PgDown: scroll. F5: refresh."
+msgid "Arrows: move. Enter/Space: open. PgUp/PgDn: scroll. F5: refresh."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -4525,12 +4525,6 @@ msgstr ""
 #: src/gui/main.c
 #, snx-key
 msgid "PgDn"
-msgstr ""
-
-#. A key of the foot's sentences, which a click finds by this word
-#: src/gui/main.c
-#, snx-key
-msgid "PgDown"
 msgstr ""
 
 #. A key of the foot's sentences, which a click finds by this word

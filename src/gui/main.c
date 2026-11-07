@@ -873,8 +873,8 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_QUEUE_FAILED SNX_TR_NOOP("Back: to Games")
 #else
 #define SAY_MENU         SNX_TR_KEYS("Arrows/mouse: move. Space/Enter/click: select.")
-#define SAY_GAMES        SNX_TR_KEYS("Up/Down: move. Enter/Space: open. Left/Right/PgUp/PgDown: scroll. F5: refresh.")
-#define SAY_GAMES_GRID   SNX_TR_KEYS("Arrows: move. Enter/Space: open. PgUp/PgDown: scroll. F5: refresh.")
+#define SAY_GAMES        SNX_TR_KEYS("Up/Down: move. Enter/Space: open. Left/Right/PgUp/PgDn: scroll. F5: refresh.")
+#define SAY_GAMES_GRID   SNX_TR_KEYS("Arrows: move. Enter/Space: open. PgUp/PgDn: scroll. F5: refresh.")
 /* Games' focused row, each when it can be done there (games_said) */
 #define SAY_GAMES_PLAY   SNX_TR_KEYS("L: play.")
 #define SAY_GAMES_R      SNX_TR_KEYS("R: recompile.")
@@ -2866,9 +2866,9 @@ static int hint_next(const char** s, char* key, char* what, size_t size);
 /* a key every screen has, which F1's box says and a foot leaves out: moving and picking, paging, the tabs, the side
    box, a pad's D-pad, A, LT/RT and LB/RB. key: an English sentence's, its words between slashes */
 static bool key_generic(const char* key) {
-    static const char* const words[] = {"Up",    "Down",  "Left",  "Right", "Arrows", "mouse",  "pad",
-                                        "Space", "Enter", "click", "PgUp",  "PgDn",   "PgDown", "Tab",
-                                        "F2",    "D-pad", "A",     "LT",    "RT",     "LB",     "RB"};
+    static const char* const words[] = {"Up",    "Down",  "Left",  "Right", "Arrows", "mouse", "pad",
+                                        "Space", "Enter", "click", "PgUp",  "PgDn",   "Tab",   "F2",
+                                        "D-pad", "A",     "LT",    "RT",    "LB",     "RB"};
     const char* at = key;
     if (!*key) return false;
     while (*at) {
@@ -16411,7 +16411,6 @@ static const struct {
                  {SNX_TR_KEY("Right"), SDLK_RIGHT, 0, false},
                  {SNX_TR_KEY("PgUp"), SDLK_PAGEUP, 0, false},
                  {SNX_TR_KEY("PgDn"), SDLK_PAGEDOWN, 0, false},
-                 {SNX_TR_KEY("PgDown"), SDLK_PAGEDOWN, 0, false},
                  {SNX_TR_KEY("Del"), SDLK_DELETE, 0, false},
                  {SNX_TR_KEY("Take out"), SDLK_DELETE, 0, false}, /* a finger's, on the Compile tab */
                  {SNX_TR_KEY("Games"), SDLK_TAB, 0, false},
