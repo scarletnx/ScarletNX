@@ -173,6 +173,12 @@ typedef struct {
     uint32_t period_ms, index;
     bool raw_c_stick;
 } SnxCtrIrrst;
+/* mic:u's state (services/mic.c): the buffer full event (retained, made at the first request for it), whether
+   sampling runs, its encoding and rate, and the settings a game stored */
+typedef struct {
+    uint32_t event;
+    uint8_t sampling, encoding, sample_rate, gain, power, clamp, allow_shell_closed;
+} SnxCtrMic;
 /* hid:USER's sampling (services/hid.c): each update's next deadline, host monotonic ns (0: not running), the index
    each writes next, how many times the game enabled each sensor, and the circle pad's last two raw positions, which
    each sample averages with */
@@ -248,6 +254,7 @@ struct SnxCtrProcess {
     SnxCtrIrService ir;
     uint32_t irrst_objects[2]; /* ir:rst's shared memory and its update event, made at its first GetHandles */
     SnxCtrIrrst irrst;
+    SnxCtrMic mic;
     uint64_t svc_count, svc_counts[256]; /* all, and each SVC's */
     uint64_t idle_ns, idle_waits;        /* the host time the scheduler slept with no thread to run, and how often */
     /* the codeset GetProcessInfo describes: segments as loaded, BSS, title and name (ExHeader) */

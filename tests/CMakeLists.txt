@@ -251,6 +251,11 @@ if(TARGET snx_ctr_board)
     foreach(case startup permissions accessory lifecycle metadata)
         add_test(NAME 3ds_ir_${case} COMMAND snx-test-3ds-ir ${case})
     endforeach()
+    # mic:u with no input device, as Azahar's
+    add_executable(snx-test-3ds-mic 3ds_mic.c support/3ds_guest.c)
+    snx_test_target(snx-test-3ds-mic 11)
+    target_link_libraries(snx-test-3ds-mic PRIVATE snx_ctr_process)
+    add_test(NAME 3ds_mic COMMAND snx-test-3ds-mic)
     # the pointer's touch on the window's bottom screen, from the presenter to hid:USER's samples
     add_executable(snx-test-3ds-mouse-touch 3ds_mouse_touch.c support/3ds_guest.c)
     snx_test_target(snx-test-3ds-mouse-touch 11)
