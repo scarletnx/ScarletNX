@@ -53,7 +53,8 @@ static struct {
     unsigned bottom_alone; /* bottom screen frames since the window last showed, the top screen showing none */
     uint64_t decoded[2];   /* each screen's frames decoded */
     uint64_t unshown;      /* the shows that found every image of their window on the display */
-    unsigned up : 1, closed : 1, separate : 1;
+    SDL_FingerID finger;   /* the finger holding the touch screen, while one does (by_finger) */
+    unsigned up : 1, closed : 1, separate : 1, by_finger : 1;
 } g_present;
 
 static void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout old, VkImageLayout next);
@@ -143,6 +144,11 @@ static bool semaphores(const SnxCtrVk* v, const VkSemaphoreCreateInfo* si) {
 }
 bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir) {
     if (g_present.up) return true;
+    /* a finger and the mouse each reach the touch screen once, as on the Switch (backend/sdl3.c): SDL would also send
+       each as the other, and a pen as both (it stays a finger) */
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
+    SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
+    SDL_SetHint(SDL_HINT_PEN_MOUSE_EVENTS, "0");
     char why[1024];
     if (!snx_ctr_vk_init(memory, why, sizeof why)) {
         fprintf(stderr, "3ds gpu: %s\n", why);
@@ -274,43 +280,72 @@ static bool screen_rect(unsigned screen, VkOffset2D rect[2]) {
 }
 /* The touch screen's pixel under a pointer at x and y, in the window's points as SDL reports them. The blit's own scale
    maps them, so a swapchain whose pixels differ from the window's points still lands on what is shown. As the Switch
-   runtime's finger handling does, a press off the screen starts nothing and a drag off it keeps to its edge. */
-static void pointer_touch(SDL_Window* window, float x, float y, bool press) {
+   runtime's finger handling does, a press off the screen starts nothing and a drag off it keeps to its edge. Whether
+   it touched the screen */
+static bool pointer_touch(SDL_Window* window, float x, float y, bool press) {
     const Frame* bottom = &g_present.frames[1];
     unsigned screen = 1, window_index = g_present.separate ? screen : 0;
     VkExtent2D e = g_present.swap[window_index].extent;
     int width = 0, height = 0;
     VkOffset2D rect[2];
-    if (!SDL_GetWindowSize(window, &width, &height) || width <= 0 || height <= 0 || !screen_rect(screen, rect)) return;
+    if (!SDL_GetWindowSize(window, &width, &height) || width <= 0 || height <= 0 || !screen_rect(screen, rect))
+        return false;
     /* the division below is by the rect's size, so a rect with no pixels has nothing to map */
-    if (rect[1].x <= rect[0].x || rect[1].y <= rect[0].y) return;
+    if (rect[1].x <= rect[0].x || rect[1].y <= rect[0].y) return false;
     double px = (double)x * e.width / width;
     double py = (double)y * e.height / height;
-    if (press && (px < rect[0].x || px >= rect[1].x || py < rect[0].y || py >= rect[1].y)) return;
+    if (press && (px < rect[0].x || px >= rect[1].x || py < rect[0].y || py >= rect[1].y)) return false;
     px = snx_clamp_double(px, rect[0].x, rect[1].x);
     py = snx_clamp_double(py, rect[0].y, rect[1].y);
     unsigned native_width = bottom->width / bottom->scale, native_height = bottom->height / bottom->scale;
     uint32_t tx = (uint32_t)((px - rect[0].x) * native_width / (rect[1].x - rect[0].x));
     uint32_t ty = (uint32_t)((py - rect[0].y) * native_height / (rect[1].y - rect[0].y));
     snx_ctr_input_touch(true, snx_min_u32(tx, native_width - 1), snx_min_u32(ty, native_height - 1));
+    return true;
 }
+/* The touch screen takes one pointer at a time, as the console's: the first finger, or the mouse's left button, pressed
+   on it holds it until that one lets go. The Switch's touch setting says which reach it: 0 none, 1 the fingers, 2 the
+   fingers and the mouse. A mouse event SDL made of a finger is the finger's */
 static void pointer_event(const SDL_Event* event) {
     const SnxCtrVk* v = snx_ctr_vk();
     if (!v || !v->host.window) return;
     SDL_Window* bottom = g_present.separate && v->second ? v->second : v->host.window;
     SDL_WindowID id = SDL_GetWindowID(bottom);
+    bool held = snx_ctr_input_touched(), by_mouse = held && !g_present.by_finger;
+    int width = 0, height = 0;
     switch (event->type) {
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
-            if (event->button.windowID == id && event->button.button == SDL_BUTTON_LEFT)
-                pointer_touch(bottom, event->button.x, event->button.y, true);
+            if (g_settings.touch_screen == 2 && !held && event->button.windowID == id &&
+                event->button.which != SDL_TOUCH_MOUSEID && event->button.button == SDL_BUTTON_LEFT &&
+                pointer_touch(bottom, event->button.x, event->button.y, true))
+                g_present.by_finger = 0;
             break;
         case SDL_EVENT_MOUSE_BUTTON_UP: /* a release off the screen still ends the press */
-            if (event->button.windowID == id && event->button.button == SDL_BUTTON_LEFT)
+            if (by_mouse && event->button.windowID == id && event->button.which != SDL_TOUCH_MOUSEID &&
+                event->button.button == SDL_BUTTON_LEFT)
                 snx_ctr_input_touch(false, 0, 0);
             break;
         case SDL_EVENT_MOUSE_MOTION:
-            if (event->motion.windowID == id && snx_ctr_input_touched())
+            if (by_mouse && event->motion.windowID == id && event->motion.which != SDL_TOUCH_MOUSEID)
                 pointer_touch(bottom, event->motion.x, event->motion.y, false);
+            break;
+        case SDL_EVENT_FINGER_DOWN: /* its point is a fraction of the window */
+            if (g_settings.touch_screen >= 1 && !held && event->tfinger.windowID == id &&
+                SDL_GetWindowSize(bottom, &width, &height) &&
+                pointer_touch(bottom, event->tfinger.x * (float)width, event->tfinger.y * (float)height, true)) {
+                g_present.by_finger = 1;
+                g_present.finger = event->tfinger.fingerID;
+            }
+            break;
+        case SDL_EVENT_FINGER_MOTION:
+            if (held && g_present.by_finger && event->tfinger.fingerID == g_present.finger &&
+                event->tfinger.windowID == id && SDL_GetWindowSize(bottom, &width, &height))
+                pointer_touch(bottom, event->tfinger.x * (float)width, event->tfinger.y * (float)height, false);
+            break;
+        case SDL_EVENT_FINGER_UP:
+        case SDL_EVENT_FINGER_CANCELED:
+            if (held && g_present.by_finger && event->tfinger.fingerID == g_present.finger)
+                snx_ctr_input_touch(false, 0, 0);
             break;
         case SDL_EVENT_WINDOW_FOCUS_LOST:
             /* a focus loss ends the press: this window may not get the release */

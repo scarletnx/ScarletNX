@@ -29,7 +29,7 @@ def main():
     assert '--vk_memory=N' in help_text
     assert '--async_pipelines=1' in help_text and '--pipeline_threads=N' in help_text
     assert '--gamepad_swap_ab=1' in help_text and '--gamepad_deadzone=N' in help_text
-    assert '--gamepad_map=MAP' in help_text
+    assert '--gamepad_map=MAP' in help_text and '--touch=N' in help_text
     run(['--board-info', '--extract-container'], 2, 'Usage:')
     run(['-x', '-r', 'game.cia'], 2, 'Usage:')
     run(['-r', '--max-blocks', '5', 'game.cia'], 2, 'Usage:')
@@ -75,6 +75,10 @@ def main():
         'it keeps "", each control sending the button in its place',
     )
     run(['--board-info', '--gamepad_map=ls:L3'], 0, "settings: gamepad_map's ls:L3 sends nothing: the 3DS has no L3")
+    # the On-screen controls table's touch screen, as the Switch's (0 to 2), never its on-screen controls
+    run(['--board-info', '--touch=1'], 0, 'Old 3DS')
+    run(['--board-info', '--touch=5'], 0, 'settings: touch=5 is not a whole number from 0 to 2: it keeps 2')
+    run(['--board-info', '--controls_haptics=0'], 2, 'unknown setting: --controls_haptics=0')
     # an older version's packet trace (docs/DEPRECATIONS.md): still ctr_uds_trace=1, under the command line's own
     old = 'SNX_3DS_UDS_PACKET_TRACE'
     run(

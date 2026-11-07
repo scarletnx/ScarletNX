@@ -97,7 +97,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 
 | Key | Default | Effect |
 | --- | --- | --- |
-| `touch` | `2` | The game's touch screen: `2` fingers and the mouse's left button, `1` fingers, `0` off |
+| `touch` | `2` | The game's touch screen: `2` fingers and the mouse's left button, `1` fingers, `0` off. A 3DS game takes it too, for its bottom screen (`--touch=N`): one finger or the mouse at a time, the first pressed holding it until it lets go |
 | `controls_<ID>` (ID one of `l`, `r`, `zl`, `zr`, `minus`, `plus`, `capture`, `home`, `l3`, `r3`, `dpad`, `stick_l`, `stick_r`, `a`, `b`, `x`, `y`) | empty | A control's place, written once it is moved or reset: `x y size`, its middle across the screen from 0 to 1 and its size in percent (50 to 200), as `controls_a=0.930 0.470 100` |
 | `controls_<ID>_shown` | `1` | `1` draws the control, `0` hides it; written once it is shown or hidden |
 | `controls` | `0` (Android `1`) | The [on-screen controls](USAGE.md#on-screen-controls) shown |
