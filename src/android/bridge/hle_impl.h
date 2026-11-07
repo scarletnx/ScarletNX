@@ -41,6 +41,10 @@ int* hle_errno_location(void);
 void hle_errno_begin(void);
 void hle_errno_end(void);
 void hle_set_errno(int linux_error);
+/* the guest's locale on the calling thread, around a host call into guest code (bridge_call): bionic's C locale for the
+   host C library's functions the guest's calls reach, the thread's own back after the outermost */
+void hle_locale_enter(void);
+void hle_locale_leave(void);
 /* functions whose bionic form the host's C library lacks or differs from */
 size_t hle_strlcpy(char* dst, const char* src, size_t size);
 int hle_strerror_r(int error, char* buffer, size_t size);

@@ -386,9 +386,11 @@ uint64_t bridge_call(uint64_t fn, const uint64_t* args, unsigned count) {
     uint64_t pc = c->pc, lr = c->x[30];
     for (unsigned i = 0; i < count && i < 8; ++i) c->x[i] = args[i];
     c->x[30] = b.stop;
+    hle_locale_enter();
     signals_enter();
     for (uint64_t at = fn; at != b.stop; at = c->pc) snx_lookup(c, at)(c, at);
     signals_leave();
+    hle_locale_leave();
     uint64_t result = c->x[0];
     c->pc = pc;
     c->x[30] = lr;

@@ -240,6 +240,10 @@ static _Thread_local struct {
     int error;              /* the guest's errno, where it is not the host's (hle_impl.h) */
     char unknown_error[32]; /* strerror's text of a number bionic has no text for */
     uint64_t locale;        /* the guest's uselocale, 0 before its first: bionic's LC_GLOBAL_LOCALE */
+#ifndef _WIN32
+    unsigned guest_calls; /* the host calls into guest code under way (hle_locale_enter) */
+    locale_t host_locale; /* the thread's locale before the first of them */
+#endif
 } t_hle_libc;
 
 static int compare_guest(const void* a, const void* b) {
@@ -782,7 +786,17 @@ typedef struct {
 } BionicLocale;
 static struct {
     int ascii; /* setlocale's last name was not UTF-8's: MB_CUR_MAX 1. bionic starts in C.UTF-8 */
-} g_bionic_locale;
+#ifndef _WIN32
+    /* the host's C locale that the guest's calls run in (hle_locale_enter), made once */
+    pthread_once_t once;
+    locale_t c;
+#endif
+} g_locale = {
+    .ascii = 0,
+#ifndef _WIN32
+    .once = PTHREAD_ONCE_INIT,
+#endif
+};
 
 static bool locale_known(const char* name) {
     return !strcmp(name, "") || !strcmp(name, "C") || !strcmp(name, "C.UTF-8") || !strcmp(name, "en_US.UTF-8") ||
@@ -790,7 +804,7 @@ static bool locale_known(const char* name) {
 }
 static bool locale_utf8(const char* name) { return !name[0] || strstr(name, "UTF-8"); }
 static uint64_t mb_cur_max_of(uint64_t locale) {
-    if (locale == BIONIC_GLOBAL_LOCALE) return __atomic_load_n(&g_bionic_locale.ascii, __ATOMIC_RELAXED) ? 1 : 4;
+    if (locale == BIONIC_GLOBAL_LOCALE) return __atomic_load_n(&g_locale.ascii, __ATOMIC_RELAXED) ? 1 : 4;
     return ((const BionicLocale*)(uintptr_t)locale)->mb_cur_max;
 }
 static uint64_t current_locale(void) { return t_hle_libc.locale ? t_hle_libc.locale : BIONIC_GLOBAL_LOCALE; }
@@ -817,8 +831,8 @@ static void g_setlocale(CPU* c, void* data) {
         X(0) = 0;
         return;
     }
-    if (X(1)) __atomic_store_n(&g_bionic_locale.ascii, !locale_utf8(STR(1)), __ATOMIC_RELAXED);
-    X(0) = (uint64_t)(uintptr_t)(__atomic_load_n(&g_bionic_locale.ascii, __ATOMIC_RELAXED) ? "C" : "C.UTF-8");
+    if (X(1)) __atomic_store_n(&g_locale.ascii, !locale_utf8(STR(1)), __ATOMIC_RELAXED);
+    X(0) = (uint64_t)(uintptr_t)(__atomic_load_n(&g_locale.ascii, __ATOMIC_RELAXED) ? "C" : "C.UTF-8");
 }
 /* newlocale(mask, name, base): base is left as it is, as bionic's leaves it */
 static void g_newlocale(CPU* c, void* data) {
@@ -853,6 +867,38 @@ static void g_uselocale(CPU* c, void* data) {
 static void ctype_get_mb_cur_max(CPU* c, void* data) {
     (void)data;
     X(0) = mb_cur_max_of(current_locale());
+}
+
+/* The host's C library takes the user's locale (the JVM sets the process's from the environment), with a decimal
+   comma, other names of days and months, and other words. The guest's calls into it run in the C locale: the thread
+   takes it from the first host call into guest code until that one returns. On Linux it is C.UTF-8, whose multibyte
+   functions are the guest's (PASS). Windows' C runtime keeps the C locale, as no part of the process sets another */
+#ifndef _WIN32
+static void make_guest_locale(void) {
+#if defined(__linux__)
+    g_locale.c = newlocale(LC_ALL_MASK, "C.UTF-8", (locale_t)0);
+    if (!g_locale.c)
+        fprintf(stderr, "scarletnx-android: the host has no C.UTF-8 locale: the guest's multibyte functions take the "
+                        "C locale's ASCII alone\n");
+#endif
+    if (!g_locale.c) g_locale.c = newlocale(LC_ALL_MASK, "C", (locale_t)0);
+    if (!g_locale.c)
+        fprintf(stderr, "scarletnx-android: no C locale (newlocale: %s): the guest's C library takes the user's\n",
+                strerror(errno));
+}
+#endif
+void hle_locale_enter(void) {
+#ifndef _WIN32
+    if (t_hle_libc.guest_calls++) return;
+    pthread_once(&g_locale.once, make_guest_locale);
+    t_hle_libc.host_locale = uselocale(g_locale.c);
+#endif
+}
+void hle_locale_leave(void) {
+#ifndef _WIN32
+    if (--t_hle_libc.guest_calls) return;
+    uselocale(t_hle_libc.host_locale);
+#endif
 }
 
 /* ---- the system properties ---- */
