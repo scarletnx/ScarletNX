@@ -374,6 +374,8 @@ typedef enum {
     NVN_DEVICE_FLAG_DEBUG_ENABLE_LEVEL_4 = 0x10,
     NVN_DEVICE_FLAG_DEFERRED_FIRMWARE_MEMORY_RECLAIM = 0x80,
     NVN_DEVICE_FLAG_ENABLE_SEPARATE_SAMPLER_TEXTURE_SUPPORT = 0x100,
+    /* the Ounce's (API 231): the texture setup keeps the Maxwell GOB (gpu/nvn/nvn_object.c nvn_DeviceInitialize) */
+    NVN_DEVICE_FLAG_MAXWELL_GOB = 0x10000,
 
     NVN_DEVICE_FLAG_LARGE = 0x7FFFFFFF
 } NVNdeviceFlagBits;

@@ -97,6 +97,8 @@ void core_leave(KThread* t) { (void)t; }
 u64 guest_ticks(void) { return 0; }
 u64 guest_gpu_ticks(void) { return 0; }
 const char* g_shader_sm86_dump; /* shader.c's: no dumps */
+int g_ounce;                    /* main.c's: not an Ounce program */
+int g_gob_native;               /* blocklinear.c's: the Maxwell GOB */
 void loader_segments(LoaderSegEach each, void* ctx) {
     (void)each;
     (void)ctx;
