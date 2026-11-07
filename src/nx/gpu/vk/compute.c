@@ -1492,7 +1492,8 @@ rebind:
                which may be an earlier draw's or dispatch's result on the GPU */
             int ok = (p->si.gbuf_wmask >> i) & 1
                          ? log && p->si.gbuf_mark[i]
-                               ? vk_buf_copy_writable_logged(sa[i], ss[i], &sbuf, &o, 1, log, p->si.gbuf_mark[i] - 1u)
+                               ? vk_buf_copy_writable_logged(sa[i], ss[i], &sbuf, &o, 1, log, p->si.gbuf_mark[i] - 1u,
+                                                             !((p->si.gbuf_rmask >> i) & 1))
                                : vk_buf_copy_writable(sa[i], ss[i], &sbuf, &o, 1)
                      : sa[i] ? vk_buf_get_strict(sa[i], ss[i], &sbuf, &o)
                              : vk_buf_copy(0, ss[i], &sbuf, &o);
@@ -1507,10 +1508,12 @@ rebind:
             o = so[i] = chain[i] >= 0 ? (u64)chain[i] : arena_alloc(ss[i]);
             if (chain[i] >= 0)
                 ; /* written by an earlier dispatch of the batch, read in place */
-            else if (sa[i])
-                gmem_read(sa[i], g_ar_ptr + o, ss[i]);
-            else
+            else if (sa[i] && (!p->si.gbuf_mark[i] || ((p->si.gbuf_rmask >> i) & 1)))
+                gmem_read(sa[i], g_ar_ptr + o, ss[i]); /* read, or not logged (gbuf_rmask is the SM86 translator's) */
+            else {
+                if (sa[i]) gmem_need(sa[i], ss[i]); /* write-only: results pending there land, but nothing is read */
                 memset(g_ar_ptr + o, 0, ss[i]);
+            }
         }
         bi_buf[i] = sbuf;
         bi[nw] = (VkDescriptorBufferInfo){sbuf, o, ss[i]};
