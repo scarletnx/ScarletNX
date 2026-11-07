@@ -1208,6 +1208,7 @@ static int may_write(const Sm86Insn* in, u32 r) {
         case SM86_ALD: case SM86_ATOMG: case SM86_ATOMG_NOU: case SM86_ATOMG_CAS: case SM86_ATOMS: case SM86_ATOMS_NOU:
         case SM86_ATOMS_CAS: case SM86_SULD_P: case SM86_SULD_P_B: case SM86_SULD_D: case SM86_SULD_D_B:
         case SM86_SURED: case SM86_SURED_B: case SM86_SUATOM: case SM86_SUATOM_B: case SM86_SUATOM_CAS_B:
+        case SM86_HMMA: case SM86_LDSM:
             return in->dst < SM86_RZ && r >= in->dst && r < in->dst + 4u;
         default: return in->dst < SM86_RZ && r >= in->dst && r < in->dst + 2u;
     }
@@ -1893,6 +1894,149 @@ static void surface(Ctx* c, const Sm86Insn* in) {
 }
 
 static u32 system_value(Ctx* c, u32 sr);
+
+/* ---- the warp's matrix instructions (HMMA, LDSM, MOVM), as the lanes of an invocation's own 32 of a subgroup of 32 or
+   64 (NVIDIA's warp: lane l of it is the local invocation index's l % 32), each one's registers spread over the lanes
+   as PTX's mma.sync, ldmatrix and movmatrix lay them out. A lane reads another's register with a shuffle */
+static u32 warp_lane(Ctx* c) { return spv_emit_bitwise_and_u32(&c->e, c->t_u32, system_value(c, 0), cu(c, 31)); }
+/* value as lane j (0-31) of the invocation's own 32 holds it */
+static u32 warp_read(Ctx* c, u32 value, u32 j) {
+    u32 own = spv_emit_bitwise_and_u32(&c->e, c->t_u32, system_value(c, 0), cu(c, ~31u));
+    spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE);
+    return SPV(&c->e, 345 /* OpGroupNonUniformShuffle */, c->t_u32, cu(c, 3), value,
+               spv_emit_bitwise_or_u32(&c->e, c->t_u32, own, j));
+}
+static u32 half_pair(Ctx* c, u32 bits) { return SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_UNPACK_HALF2X16, bits); }
+/* HMMA (0x23c): D = A B + C on the warp's fragments, as PTX's mma.sync.aligned.m16n8k16 (bit 75) or m16n8k8 .row.col
+   with f16 A and B, and f16 (bit 76 clear) or f32 C and D (the encodings of CuAssembler's sm_86 records: bits 72-90 8
+   16816.F16, 0x18 16816.F32, 0 1688.F16, 0x10 1688.F32; BF16, TF32 and 1684 are other bits). D at 16, A at 24, B at
+   32, C at 64 (RZ: zero), each the first of its registers. With g = l / 4 and t = l % 4, lane l holds: A's rows g
+   (a0) and g + 8 (a1) at columns 2t and 2t + 1, and for k16 the same at columns 2t + 8 and 2t + 9 (a2, a3); B's column
+   g at rows 2t and 2t + 1 (b0), for k16 also 2t + 8 and 2t + 9 (b1); C and D's rows g and g + 8 at columns 2t and
+   2t + 1, a register for each element in f32 (c0 c1 row g, c2 c3 row g + 8) or a pair for each row in f16. Each lane
+   gathers the A pairs of its two rows from lanes 4g to 4g + 3 and the B pairs of its two columns from lanes 8t + p and
+   8t + 4 + p (32 shuffles for k16), and sums the products in f32, which an f16 D then rounds to */
+static void hmma(Ctx* c, const Sm86Insn* in) {
+    u32 v = sm86_field(in, 72, 19);
+    if (v & ~0x18u) {
+        fail(c, "HMMA variant %#x", v);
+        return;
+    }
+    int k16 = (int)(v >> 3 & 1), f32 = (int)(v >> 4 & 1);
+    u32 ra = sm86_field(in, 24, 8), rb = sm86_field(in, 32, 8), rc = sm86_field(in, 64, 8);
+    u32 na = k16 ? 4 : 2, nb = k16 ? 2 : 1, ncd = f32 ? 4 : 2, a[4], b[2], cc[4], k;
+    for (k = 0; k < na; k++) a[k] = ra >= SM86_RZ ? c->zero : rd(c, ra + k);
+    for (k = 0; k < nb; k++) b[k] = rb >= SM86_RZ ? c->zero : rd(c, rb + k);
+    for (k = 0; k < ncd; k++) cc[k] = rc >= SM86_RZ ? c->zero : rd(c, rc + k);
+    u32 lane = warp_lane(c);
+    u32 g4 = spv_emit_bitwise_and_u32(&c->e, c->t_u32, lane, cu(c, 28));
+    u32 t8 =
+        spv_emit_shift_left_u32(&c->e, c->t_u32, spv_emit_bitwise_and_u32(&c->e, c->t_u32, lane, cu(c, 3)), cu(c, 3));
+    u32 acc[2][2]; /* [row g, g + 8][column 2t, 2t + 1] */
+    for (u32 i = 0; i < 2; i++) {
+        if (f32) {
+            acc[i][0] = to_f(c, cc[2 * i]);
+            acc[i][1] = to_f(c, cc[2 * i + 1]);
+        } else {
+            u32 pair = half_pair(c, cc[i]);
+            acc[i][0] = spv_emit_vec4_extract(&c->e, c->t_f32, pair, 0);
+            acc[i][1] = spv_emit_vec4_extract(&c->e, c->t_f32, pair, 1);
+        }
+    }
+    for (u32 p = 0; p < 4; p++) {
+        u32 la = spv_emit_bitwise_or_u32(&c->e, c->t_u32, g4, cu(c, p));
+        u32 lb[2] = {spv_emit_bitwise_or_u32(&c->e, c->t_u32, t8, cu(c, p)),
+                     spv_emit_bitwise_or_u32(&c->e, c->t_u32, t8, cu(c, 4 + p))};
+        u32 av[4], bv[2][2];
+        for (k = 0; k < na; k++) av[k] = half_pair(c, warp_read(c, a[k], la));
+        for (u32 j = 0; j < 2; j++)
+            for (k = 0; k < nb; k++) bv[j][k] = half_pair(c, warp_read(c, b[k], lb[j]));
+        for (u32 h = 0; h < nb; h++) /* the k halves: A's registers 2h (row g) and 2h + 1 (row g + 8), B's h */
+            for (u32 i = 0; i < 2; i++)
+                for (u32 j = 0; j < 2; j++)
+                    acc[i][j] = op2(c, SPV_OP_F_ADD, c->t_f32, acc[i][j],
+                                    op2(c, 148 /* OpDot */, c->t_f32, av[2 * h + i], bv[j][h]));
+    }
+    u32 d = in->dst;
+    if (d >= SM86_RZ) return;
+    if (f32) {
+        wr(c, d, to_u(c, acc[0][0]));
+        wr(c, d + 1, to_u(c, acc[0][1]));
+        wr(c, d + 2, to_u(c, acc[1][0]));
+        wr(c, d + 3, to_u(c, acc[1][1]));
+    } else
+        for (u32 i = 0; i < 2; i++)
+            wr(c, d + i,
+               SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16,
+                       spv_emit_vec2_construct(&c->e, c->t_v2f, acc[i][0], acc[i][1])));
+}
+/* a 16-bit element of shared memory at the byte address, in the low half */
+static u32 shared_u16(Ctx* c, u32 address) {
+    u32 word = spv_emit_load(&c->e, c->t_u32, mem_ptr(c, 0, address, 0));
+    u32 shift = spv_emit_shift_left_u32(&c->e, c->t_u32, spv_emit_bitwise_and_u32(&c->e, c->t_u32, address, cu(c, 2)),
+                                        cu(c, 3));
+    return spv_emit_bitwise_and_u32(&c->e, c->t_u32, spv_emit_shift_right_u32(&c->e, c->t_u32, word, shift),
+                                    cu(c, 0xffff));
+}
+/* LDSM.16 (0x83b): 1, 2 or 4 (bits 72-73) 8x8 matrices of 16-bit elements from shared memory into the destination's
+   registers, one for each, as PTX's ldmatrix.sync.aligned.m8n8: lanes 8m to 8m + 7 give the addresses of matrix m's
+   rows 0 to 7 (the register at 24 plus the signed offset at 40-63; bit 91, a uniform register at 32, is not taken),
+   and lane l receives row l / 4's elements at columns 2(l % 4) and 2(l % 4) + 1, or transposed (MT88, bit 78) column
+   l / 4's at rows 2(l % 4) and 2(l % 4) + 1 */
+static void ldsm(Ctx* c, const Sm86Insn* in) {
+    u32 count = sm86_field(in, 72, 2), trans = sm86_field(in, 78, 1);
+    if (count > 2 || sm86_field(in, 74, 4) || sm86_field(in, 79, 12) || sm86_field(in, 91, 1)) {
+        fail(c, "LDSM variant %#x", sm86_field(in, 72, 20));
+        return;
+    }
+    u32 imm = sm86_field(in, 40, 24), bias = imm & 0x800000u ? imm | 0xff000000u : imm;
+    u32 addr = spv_emit_iadd_u32(&c->e, c->t_u32, rd(c, sm86_field(in, 24, 8)), cu(c, bias));
+    u32 lane = warp_lane(c), g = spv_emit_shift_right_u32(&c->e, c->t_u32, lane, cu(c, 2));
+    u32 t = spv_emit_bitwise_and_u32(&c->e, c->t_u32, lane, cu(c, 3)), out[4];
+    for (u32 m = 0; m < (1u << count); m++) {
+        if (!trans) {
+            u32 row = warp_read(c, addr, spv_emit_iadd_u32(&c->e, c->t_u32, g, cu(c, 8 * m)));
+            u32 at = spv_emit_iadd_u32(&c->e, c->t_u32, row, spv_emit_shift_left_u32(&c->e, c->t_u32, t, cu(c, 2)));
+            out[m] = spv_emit_load(&c->e, c->t_u32, mem_ptr(c, 0, at, 0));
+        } else {
+            u32 r0 =
+                spv_emit_iadd_u32(&c->e, c->t_u32, spv_emit_shift_left_u32(&c->e, c->t_u32, t, cu(c, 1)), cu(c, 8 * m));
+            u32 col = spv_emit_shift_left_u32(&c->e, c->t_u32, g, cu(c, 1));
+            u32 lo = shared_u16(c, spv_emit_iadd_u32(&c->e, c->t_u32, warp_read(c, addr, r0), col));
+            u32 hi = shared_u16(
+                c, spv_emit_iadd_u32(&c->e, c->t_u32,
+                                     warp_read(c, addr, spv_emit_iadd_u32(&c->e, c->t_u32, r0, cu(c, 1))), col));
+            out[m] =
+                spv_emit_bitwise_or_u32(&c->e, c->t_u32, lo, spv_emit_shift_left_u32(&c->e, c->t_u32, hi, cu(c, 16)));
+        }
+    }
+    for (u32 m = 0; m < (1u << count); m++)
+        if (in->dst < SM86_RZ) wr(c, in->dst + m, out[m]);
+}
+/* MOVM.16.MT88 (0x23a): the 8x8 matrix of 16-bit elements in the warp's register at 24, transposed into the
+   destination, as PTX's movmatrix.sync.aligned.m8n8.trans.b16. Lane l holds row l / 4 at columns 2(l % 4) and
+   2(l % 4) + 1, so the transposed pair of lane l, column l / 4 at rows 2(l % 4) and 2(l % 4) + 1, is half (l / 4) % 2
+   of lanes 8(l % 4) + (l / 4) / 2 and 8(l % 4) + 4 + (l / 4) / 2 */
+static void movm(Ctx* c, const Sm86Insn* in) {
+    if (sm86_field(in, 72, 19)) {
+        fail(c, "MOVM variant %#x", sm86_field(in, 72, 19));
+        return;
+    }
+    u32 src = rd(c, sm86_field(in, 24, 8)), lane = warp_lane(c);
+    u32 g = spv_emit_shift_right_u32(&c->e, c->t_u32, lane, cu(c, 2));
+    u32 t8 =
+        spv_emit_shift_left_u32(&c->e, c->t_u32, spv_emit_bitwise_and_u32(&c->e, c->t_u32, lane, cu(c, 3)), cu(c, 3));
+    u32 from = spv_emit_iadd_u32(&c->e, c->t_u32, t8, spv_emit_shift_right_u32(&c->e, c->t_u32, g, cu(c, 1)));
+    u32 shift =
+        spv_emit_shift_left_u32(&c->e, c->t_u32, spv_emit_bitwise_and_u32(&c->e, c->t_u32, g, cu(c, 1)), cu(c, 4));
+    u32 v0 = warp_read(c, src, from), v1 = warp_read(c, src, spv_emit_iadd_u32(&c->e, c->t_u32, from, cu(c, 4)));
+    u32 lo =
+        spv_emit_bitwise_and_u32(&c->e, c->t_u32, spv_emit_shift_right_u32(&c->e, c->t_u32, v0, shift), cu(c, 0xffff));
+    u32 hi =
+        spv_emit_bitwise_and_u32(&c->e, c->t_u32, spv_emit_shift_right_u32(&c->e, c->t_u32, v1, shift), cu(c, 0xffff));
+    wr(c, in->dst,
+       spv_emit_bitwise_or_u32(&c->e, c->t_u32, lo, spv_emit_shift_left_u32(&c->e, c->t_u32, hi, cu(c, 16))));
+}
 /* the ballot of a predicate over the invocation's 32 lanes, on a subgroup of 32 or 64 */
 static u32 ballot32(Ctx* c, u32 pred) {
     spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_BALLOT);
@@ -3289,6 +3433,9 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         case SM86_SUST_P:
         case SM86_SURED:
         case SM86_SUATOM: surface(c, in); return;
+        case SM86_HMMA: hmma(c, in); return;
+        case SM86_LDSM: ldsm(c, in); return;
+        case SM86_MOVM: movm(c, in); return;
         case SM86_KILL:
             spv_emit_capability(&c->e, SPV_CAPABILITY_DEMOTE_TO_HELPER_INVOCATION);
             spv_emit_demote(&c->e);
