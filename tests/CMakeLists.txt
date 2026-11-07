@@ -38,11 +38,11 @@ endfunction()
 # what the tests reach that this list misses
 if(SNX_TEST_SANITIZERS)
     cmake_language(DEFER DIRECTORY "${PROJECT_SOURCE_DIR}" CALL snx_test_sanitize
-        # the common code: the platform layer, network, filesystems, LZ4 and xxHash, the Vulkan setup the frontends
-        # share, the launcher's HTTPS and the roots it carries, the zip reader of VPKs and APKs, the glTF reader of a
-        # Mii's parts
+        # the common code: the platform layer, network, filesystems, LZ4, ZBIC and xxHash, the Vulkan setup the
+        # frontends share, the launcher's HTTPS and the roots it carries, the zip reader of VPKs and APKs, the glTF
+        # reader of a Mii's parts
         scarletnx-common scarletnx-platform scarletnx-net scarletnx-ldn scarletnx-filesystem snx_demangle snx_lz4
-        snx_xxhash snx_vk_common snx_https snx_cacert snx_zip snx_cgltf
+        snx_zbic snx_xxhash snx_vk_common snx_https snx_cacert snx_zip snx_cgltf
         snx-logscan
         # the recompiler and its backends
         snx_llvm snx_arm_llvm snx_arm_decode scarletnx-recompiler scarletnx-recompiler-shared
@@ -2863,6 +2863,14 @@ target_link_libraries(snx-test-shipped-pass PRIVATE snx_zstd) # an Ounce game's 
 include("${PROJECT_SOURCE_DIR}/cmake/ship_walk.cmake")
 snx_ship_walk("${PROJECT_SOURCE_DIR}/src/nx/gpu/shipped_pass.c")
 add_test(NAME shipped_pass COMMAND snx-test-shipped-pass)
+# ZBIC, the other compression of an Ounce game's NSO segments (common/utilities/zbic.c), on a frame of synthetic text
+if(TARGET snx_zbic)
+    add_executable(snx-test-zbic zbic.c)
+    snx_test_target(snx-test-zbic 99)
+    target_include_directories(snx-test-zbic PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_link_libraries(snx-test-zbic PRIVATE snx_zbic snx_zstd)
+    add_test(NAME zbic COMMAND snx-test-zbic)
+endif()
 
 add_executable(snx-test-etc2 etc2_decode.c support/etc2.c)
 snx_test_target(snx-test-etc2 23)

@@ -13,6 +13,7 @@
 #include "nx/loader/ounce.h"
 #include "common/cpu/recompiler/llvm/elf_defs.h"
 #include "common/utilities/endian.h"
+#include "common/utilities/zbic.h"
 #include "common/platform/file.h"
 #include <stdlib.h>
 #include <string.h>
@@ -761,7 +762,11 @@ static int decode_nso(SnxModuleImage* m, const unsigned char* file, size_t file_
         const unsigned char* in = file + file_off[i];
         if (!(flags & (1U << i)))
             memcpy(out, in, size[i]);
-        else if (size[i]) {
+        else if (size[i] && snx_zbic_is(in, stored[i])) {
+            if (snx_zbic_decompress(out, size[i], in, stored[i]) != (long)size[i])
+                return fail(error, error_size,
+                            snx_format("%s: the %s segment's ZBIC data is corrupt", m->path, segment_names[i]));
+        } else if (size[i]) {
             if (stored[i] > LZ4_MAX_INPUT_SIZE || size[i] > LZ4_MAX_INPUT_SIZE)
                 return fail(error, error_size,
                             snx_format("%s: the %s segment is too large for LZ4", m->path, segment_names[i]));
