@@ -298,9 +298,11 @@ VitaProcess* vita_process_new(const VitaImage* image, const char* folder, char* 
     p->start_ns = vita_now_ns();
     p->unknown_logged = calloc(image->import_count ? image->import_count : 1, sizeof *p->unknown_logged);
     p->hle = calloc(image->import_count ? image->import_count : 1, sizeof *p->hle);
+    p->hle_export = calloc(image->import_count ? image->import_count : 1, sizeof *p->hle_export);
+    p->hle_export_known = calloc(image->import_count ? image->import_count : 1, sizeof *p->hle_export_known);
     /* the guest's 4 GiB and a guard page past it, inaccessible until committed */
     p->mem = snx_vm_reserve(VITA_SPACE + 0x10000);
-    if (!p->app || !p->ux0 || !p->patch || !p->unknown_logged || !p->hle || !p->mem || !trampolines(p)) {
+    if (!p->app || !p->ux0 || !p->patch || !p->unknown_logged || !p->hle || !p->hle_export || !p->hle_export_known || !p->mem || !trampolines(p)) {
         snprintf(error, error_size, "cannot reserve the guest's address space");
         goto fail;
     }
@@ -376,6 +378,8 @@ void vita_process_free(VitaProcess* p) {
     if (p->mem) snx_vm_release(p->mem, VITA_SPACE + 0x10000);
     free(p->unknown_logged);
     free(p->hle);
+    free(p->hle_export);
+    free(p->hle_export_known);
     free(p->folder);
     free(p->app);
     free(p->patch);

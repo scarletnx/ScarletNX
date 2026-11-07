@@ -63,7 +63,11 @@ void vita_hle_call(VitaProcess* p, VitaThread* t, uint32_t index) {
        its PT_TLS data per thread, while descriptors for other modules still use their guest export. */
     bool main_tls = import->nid == NID_LIBC_TLS_GET_ADDR && p->image.tls_memsz && vita_mapped(p, r[0], 8) &&
                     vita_read32(p, r[0]) == UINT32_MAX;
-    const VitaExport* e = main_tls ? NULL : vita_export_find(&p->image, import->library_nid, import->nid);
+    if (!main_tls && !p->hle_export_known[index]) {
+        p->hle_export[index] = vita_export_find(&p->image, import->library_nid, import->nid);
+        p->hle_export_known[index] = 1;
+    }
+    const VitaExport* e = main_tls ? NULL : p->hle_export[index];
     if (e) {
         vita_hle_guest_call(p, t, e->address, r, 4, vita_export_return, NULL);
         if (g_settings.vita_import_trace > 1)
