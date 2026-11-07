@@ -5,6 +5,7 @@
 // is a behaviour that Android 16 shows (the androidprobe's cases, run on an Android 16 emulator). Run as a source file
 // over the jar:
 //   java -cp scarletnx-android-framework.jar tests/android_framework.java
+import android.icu.text.PluralRules;
 import android.media.MediaPlayer;
 import android.os.Handler;
 import android.os.Looper;
@@ -15,6 +16,7 @@ import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicReference;
 
 final class AndroidFramework {
@@ -154,11 +156,50 @@ final class AndroidFramework {
         check("localhost online", "[localhost/127.0.0.1]", got);
     }
 
+    /** Each number's plural category in a language, as Android 16's ICU selects it */
+    private static String categories(String language, double... numbers) {
+        PluralRules rules = PluralRules.forLocale(Locale.forLanguageTag(language));
+        StringBuilder got = new StringBuilder();
+        for (double n : numbers) got.append(got.length() > 0 ? " " : "").append(rules.select(n));
+        return got.toString();
+    }
+
+    /**
+     * Plurals: the category of a quantity by the locale's rules (English 0 is other, Portuguese 0 is one), and the
+     * entry of a plural's bag for it, keyed as aapt2 writes the quantities: one 0x01000006, other 0x01000004.
+     */
+    private static void plurals() throws Exception {
+        check("English 0 1 2 1.5", "other one other other", categories("en-US", 0, 1, 2, 1.5));
+        check("Portuguese 0 1 2 1000000", "one one other many", categories("pt-BR", 0, 1, 2, 1000000));
+        check("European Portuguese 0 1", "other one", categories("pt-PT", 0, 1));
+        check("French 0 1.5 2", "one one other", categories("fr", 0, 1.5, 2));
+        check("Russian 1 2 5 11 21 22 1.5", "one few many many one few other",
+              categories("ru", 1, 2, 5, 11, 21, 22, 1.5));
+        check("Polish 1 22 25 112", "one few many many", categories("pl", 1, 22, 25, 112));
+        check("Arabic 0 1 2 3 11 100", "zero one two few many other", categories("ar", 0, 1, 2, 3, 11, 100));
+        check("Welsh 0 1 2 3 6 7", "zero one two few many other", categories("cy", 0, 1, 2, 3, 6, 7));
+        check("Japanese 1", "other", categories("ja", 1));
+        // ICU's own ways: a region it has no rules for takes its language's (Angola's Portuguese is Portugal's in
+        // CLDR), and a double's fraction digits are its first 6, truncated (2.01 is 2.009999, f = 10000, not 1)
+        check("Angolan Portuguese 0, Croatian 2.01 and 21", "one other one",
+              categories("pt-AO", 0) + " " + categories("hr", 2.01, 21));
+        java.lang.reflect.Method entry =
+            android.content.res.Resources.class.getDeclaredMethod("quantityEntry", int[].class, String.class);
+        entry.setAccessible(true);
+        // the bag of <item quantity="one"> then <item quantity="other">: key, type, data, cookie and 4 more ints each
+        int[] bag = {0x01000006, 3, 0, 0, 0, 0, 0, 0, 0x01000004, 3, 1, 0, 0, 0, 0, 0};
+        int[] few = {0x01000008, 3, 0, 0, 0, 0, 0, 0};
+        check("the bag entry of one, other, and few (none: other's), and of one where only few is",
+              "0 8 8 -1", entry.invoke(null, bag, "one") + " " + entry.invoke(null, bag, "other") + " "
+                  + entry.invoke(null, bag, "few") + " " + entry.invoke(null, few, "one"));
+    }
+
     public static void main(String[] args) throws Exception {
         mainLoopEnds();
         logIsLoggable();
         mediaPlayerSources();
         hostsResolve();
+        plurals();
         if (failures != 0) System.exit(1);
         System.out.println("android_framework: ok");
     }
