@@ -254,12 +254,43 @@ static void test_libm(void) {
     expect_mathf("log1pf", 1e-5f, log1pf);
 }
 
+/* ---- files ---- */
+
+/* getline and getdelim into a buffer they make and grow, to the end of the file */
+static void test_getline(void) {
+    const char* path = "android_bionic_getline.txt";
+    FILE* f = fopen(path, "w+b");
+    if (!f) {
+        fprintf(stderr, "android_bionic: cannot write %s in the working folder\n", path);
+        exit(1);
+    }
+    fputs("one\ntwo,three\nlast", f);
+    rewind(f);
+    char* line = NULL;
+    size_t size = 0;
+    static const char* const want[] = {"one\n", "two,three\n", "last"};
+    for (int i = 0; i < 3; ++i) {
+        int64_t n = (int64_t)CALL("getline", P(&line), P(&size), P(f));
+        expect_int("getline's length", n, (int64_t)strlen(want[i]));
+        expect_text("getline's line", n > 0 ? line : "", want[i]);
+    }
+    expect_int("getline at the end of the file", (int64_t)CALL("getline", P(&line), P(&size), P(f)), -1);
+    rewind(f);
+    expect_int("getdelim to a comma", (int64_t)CALL("getdelim", P(&line), P(&size), ',', P(f)), 8);
+    expect_text("its text", line, "one\ntwo,");
+    expect_int("a room that holds it", size >= 9, 1);
+    free(line);
+    fclose(f);
+    remove(path);
+}
+
 int main(void) {
     test_printf_signed();
     test_sscanf_reads_its_pointers();
     test_error_texts();
     test_fortified();
     test_libm();
+    test_getline();
     if (g_t.failures) {
         fprintf(stderr, "android_bionic: %d failed\n", g_t.failures);
         return 1;

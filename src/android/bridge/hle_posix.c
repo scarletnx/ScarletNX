@@ -250,6 +250,42 @@ static void g_fwrite_chk(CPU* c, void* data) {
     X(0) = fwrite(PTR(0), X(1), X(2), hle_file(X(3)));
 }
 
+/* getdelim(line, size, delimiter, file) and getline(line, size, file), POSIX's, on every host (Windows' C runtime has
+   neither): the bytes up to the delimiter and it into *line, which realloc grows (*size its room): their count, or
+   -1 at the end of the file before a byte, and on an error */
+static int64_t read_delimited(char** line, size_t* size, int delimiter, FILE* f) {
+    if (!line || !size || !f) {
+        hle_set_errno(GNU_EINVAL);
+        return -1;
+    }
+    size_t room = *line ? *size : 0, n = 0;
+    for (int ch; (ch = getc(f)) != EOF;) {
+        if (n + 2 > room) {
+            size_t grown = room < 64 ? 128 : room * 2;
+            char* p = realloc(*line, grown);
+            if (!p) {
+                hle_set_errno(GNU_ENOMEM);
+                return -1;
+            }
+            *line = p;
+            *size = room = grown;
+        }
+        (*line)[n++] = (char)ch;
+        if (ch == (unsigned char)delimiter) break;
+    }
+    if (!n) return -1;
+    (*line)[n] = 0;
+    return (int64_t)n;
+}
+static void g_getdelim(CPU* c, void* data) {
+    (void)data;
+    X(0) = (uint64_t)read_delimited(PTR(0), PTR(1), (int)X(2), hle_file(X(3)));
+}
+static void g_getline(CPU* c, void* data) {
+    (void)data;
+    X(0) = (uint64_t)read_delimited(PTR(0), PTR(1), '\n', hle_file(X(2)));
+}
+
 /* setvbuf(f, buffer, mode, size): bionic's modes (_IOFBF 0, _IOLBF 1, _IONBF 2) as the host's */
 static void g_setvbuf(CPU* c, void* data) {
     (void)data;
@@ -2005,7 +2041,7 @@ const HleSymbol hle_posix[] = {
     {"stderr", NULL, &g_posix.guest_stderr},
     {"environ", NULL, &g_posix.environment},
     FILE_CALLS(FILE_CALL_ENTRY)
-    A(__fread_chk, g_fread_chk), A(__fwrite_chk, g_fwrite_chk),
+    A(__fread_chk, g_fread_chk), A(__fwrite_chk, g_fwrite_chk), A(getdelim, g_getdelim), A(getline, g_getline),
     A(fopen, g_fopen), A(fdopen, g_fdopen), A(rename, g_rename), A(setvbuf, g_setvbuf), P(tmpfile), P(remove),
     A(tmpnam, refused), A(putchar, g_putchar), A(puts, g_puts), A(perror, g_perror), A(popen, g_popen),
     A(open, g_open), A(__open_2, g_open_2), A(fcntl, g_fcntl), A(ioctl, g_ioctl),
