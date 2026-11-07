@@ -167,6 +167,8 @@ static void long_folder(const char* root) {
 }
 
 #ifndef _WIN32
+/* the parent's paths while a child runs: its exit() runs the leak check, which reads a global as reachable */
+static const char* g_held[2];
 /* a child that starts its mark in folder and ends with exit() (1) or _exit (0) */
 static pid_t child(const char* folder, int clean) {
     pid_t pid = fork();
@@ -208,6 +210,8 @@ int main(void) {
     found(folder);
     long_folder(root);
 #ifndef _WIN32
+    g_held[0] = root;
+    g_held[1] = folder;
     children(folder);
 #endif
     /* a folder that is not there: said, with no mark made */
