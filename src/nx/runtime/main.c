@@ -530,6 +530,12 @@ static void npdm_layout(void) {
         LOG("npdm: an Ounce program\n");
     }
     if (!g_arm_mod && (g_settings.memory_gb >= 12 || g_ounce)) mem_layout_large_heap();
+    if (!g_arm_mod && g_ounce) {
+        mem_layout_ounce_alias();
+        LOG("memory: alias region %#llx, %llu GiB; heap region %#llx; stack region %#llx\n",
+            (unsigned long long)ALIAS_BASE, (unsigned long long)(ALIAS_SIZE >> 30), (unsigned long long)HEAP_BASE,
+            (unsigned long long)STACK_BASE);
+    }
     if (meta && (d[0x0c] & 1) && ((d[0x0c] >> 1) & 7) == 1) {
         mem_layout36();
         LOG("npdm: a 36-bit address space: 64 GiB, the code region at a fixed 128 MiB\n");

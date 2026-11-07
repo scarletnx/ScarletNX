@@ -106,6 +106,8 @@ void mem_layout36(void);
 /* Extend a 39-bit process's heap region for the experimental larger application budget. Call after the runtime's
    address-space reservation and before the NPDM can select an older layout. */
 void mem_layout_large_heap(void);
+/* An Ounce program's larger alias region (EXPERIMENT), after mem_layout_large_heap */
+void mem_layout_ounce_alias(void);
 /* The guest's address space reserved now, the largest tier the system gives from the console's 128 GiB down to 5 GiB,
    each refused one said: before the game's code takes a share of a small one. mem_init finds it kept, and sets its
    written-page tracking up once the settings are read (plat_vm_track) */
