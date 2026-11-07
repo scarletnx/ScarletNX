@@ -2067,6 +2067,11 @@ static u32 mesh_entry(Ctx* c, u32 body) {
     for (u32 k = 0; k < 3; k++)
         index[k] = isbe_load(c, map, SPV_STORAGE_WORKGROUP, c->isbe_map_words,
                              spv_emit_iadd_u32(e, c->t_u32, at, cu(c, k)));
+    /* an index at or past the vertex count reads a vertex the program never wrote: some drivers hang on it (the
+       Xid 109). Clamp to the last vertex, as the vertex count itself isn't written */
+    u32 last_vertex = cu(c, m->max_vertices - 1);
+    for (u32 k = 0; k < 3; k++)
+        index[k] = spv_emit_glsl_binary(e, c->t_u32, c->glsl, SPV_GLSL_U_MIN, index[k], last_vertex);
     spv_emit_store(e, SPV(e, SPV_OP_ACCESS_CHAIN, pointer, indices, p),
                    SPV(e, SPV_OP_COMPOSITE_CONSTRUCT, c->t_v3u, index[0], index[1], index[2]));
     if (c->primitive_words) {
