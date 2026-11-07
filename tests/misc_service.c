@@ -28,7 +28,7 @@ const char* ini_deprecated_value(const char* key) {
     (void)key;
     return NULL;
 }
-char g_exedir[1024];
+char g_exedir[1024], g_datadir[1024];
 static unsigned test_checks, test_objects, test_kobjs;
 static u32 test_next_handle = 0x100;
 u64 plat_ns(void) {
