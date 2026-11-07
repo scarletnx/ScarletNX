@@ -39,7 +39,8 @@ def main():
     # absolute, not resolved: scarletnx-3ds may be a link to scarletnx, which runs the driver its name says
     driver = Path(sys.argv[1]).absolute()
     with tempfile.TemporaryDirectory(prefix='snx-3ds-addons-') as temp:
-        root = Path(temp)
+        # resolved, as the driver names its paths: macOS's temporary folder is under /var, a link to /private/var
+        root = Path(temp).resolve()
         env = {**os.environ, 'HOME': str(root), 'USERPROFILE': str(root)}
         data, games = root / 'data', root / 'recompiled'
         folder = games / f'{TITLE:016X}'
