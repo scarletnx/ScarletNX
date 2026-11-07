@@ -50,6 +50,14 @@ void hook_version_text(char* out, size_t n, int key, u32 version);
 /* an entry's versions as @version writes them ("sdk >= 12.0.0, < 16.0.0"), "any version" for HOOK_ANY */
 void hook_range_text(char* out, size_t n, int key, u32 lo, u32 hi);
 
+/* Runs the 64-bit guest function fn(a0, a1, a2, a3) from inside a handler, as nvn_cmd.c's guest_call runs a game's
+   callback: its return to the handler's own return address ends the run, and the link register is put back
+   (codec.c) */
+void hook_guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3);
+/* a readable handle of a new kernel event attached to the game's SystemEventType at event through its SDK's own
+   nn::os::AttachReadableHandleToSystemEvent (auto close, auto clear), as an SDK object attaches its service's: the
+   event, NULL when the SDK exports no such function (codec.c) */
+struct KEvent* hook_attach_event(CPU* c, u64 event, const char* name);
 /* the host address of guest address a, in integers as GP (memory/mem.h) makes it: under NCE c->mem is 0 */
 static inline u8* hook_host(const CPU* c, u64 a) { return (u8*)(uintptr_t)((uintptr_t)c->mem + a); }
 /* A field of a guest struct, as a layout hookgen generated from a struct declaration gives it for the module a hook
