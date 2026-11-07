@@ -873,8 +873,8 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_QUEUE_FAILED SNX_TR_NOOP("Back: to Games")
 #else
 #define SAY_MENU         SNX_TR_KEYS("Arrows/mouse: move. Space/Enter/click: select.")
-#define SAY_GAMES        SNX_TR_KEYS("Up/Down: select. Enter/Space: open. Left/Right/PgUp/PgDown: scroll. F5: refresh.")
-#define SAY_GAMES_GRID   SNX_TR_KEYS("Arrows: select. Enter/Space: open. PgUp/PgDown: scroll. F5: refresh.")
+#define SAY_GAMES        SNX_TR_KEYS("Up/Down: move. Enter/Space: open. Left/Right/PgUp/PgDown: scroll. F5: refresh.")
+#define SAY_GAMES_GRID   SNX_TR_KEYS("Arrows: move. Enter/Space: open. PgUp/PgDown: scroll. F5: refresh.")
 /* Games' focused row, each when it can be done there (games_said) */
 #define SAY_GAMES_PLAY   SNX_TR_KEYS("L: play.")
 #define SAY_GAMES_R      SNX_TR_KEYS("R: recompile.")
@@ -921,7 +921,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 /* and what they say while a pad drives the menu (pad_menu.h's keys), on every system: its face's letters as an Xbox
    pad's and a Switch one's name them, a PlayStation pad's shapes in their place (gui_pad_keys_named) */
 #define SAY_PAD_MENU             SNX_TR_KEYS("D-pad: move. A: select. Start: refresh. B: back.")
-#define SAY_PAD_GAMES            SNX_TR_KEYS("D-pad: select. A: open. LT/RT: scroll. Start: refresh. B: back.")
+#define SAY_PAD_GAMES            SNX_TR_KEYS("D-pad: move. A: open. LT/RT: scroll. Start: refresh. B: back.")
 #define SAY_PAD_GAMES_PLAY       SNX_TR_KEYS("Right stick: play.")
 #define SAY_PAD_GAMES_R          SNX_TR_KEYS("Y: recompile.")
 #define SAY_PAD_GAMES_M          SNX_TR_KEYS("L3: mods.")

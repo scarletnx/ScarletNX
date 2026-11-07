@@ -1871,9 +1871,9 @@ static void grid_view(App* app, const char* temporary) {
             assert(!same_colour(in, back) && same_colour(beside, back));
         }
     }
-    { /* F1's box says the grid's keys: the arrows go over the tiles, PgUp and PgDn by the lines */
+    { /* F1's box says the grid's keys: the arrows move over the tiles, as the menu's do, PgUp and PgDn by the lines */
         char said[1024];
-        assert(strstr(screen_said(app, true, said, sizeof said), "Arrows: select.") &&
+        assert(strstr(screen_said(app, true, said, sizeof said), "Arrows: move.") && !strstr(said, "select") &&
                strstr(said, "PgUp/PgDown: scroll.") && !strstr(said, "Left/Right/PgUp/PgDown: scroll.") &&
                strstr(said, "V: view."));
     }
@@ -8717,7 +8717,7 @@ int main(int argc, char** argv) {
                     for (i = 0; i < k.n; ++i) assert(k.icons[i] != GUI_ICON_NONE);
                     assert(!help_row(&k, k.own, key_, what, sizeof key_, &icon)); /* the title, then every screen's */
                     assert(help_row(&k, k.own + 1, key_, what, sizeof key_, &icon) && !strcmp(key_, "Up/Down") &&
-                           icon == GUI_ICON_MOVE);
+                           !strcmp(what, "move") && icon == GUI_ICON_MOVE); /* "select" is Enter's, as on the menu */
                     assert(help_row(&k, rows - 1, key_, what, sizeof key_, &icon) && !strcmp(key_, "F2"));
                     shows(&app, "Every screen", normal);
                     shows(&app, "- " ICON_EYE, normal);
@@ -8729,7 +8729,8 @@ int main(int argc, char** argv) {
                     help_keys(&app, &k);
                     assert(strstr(k.said, "Right stick: play.") && strstr(k.said, "B: back."));
                     for (i = 0; i < k.n; ++i) assert(k.icons[i] != GUI_ICON_NONE);
-                    assert(help_row(&k, k.own + 1, key_, what, sizeof key_, &icon) && !strcmp(key_, "D-pad"));
+                    assert(help_row(&k, k.own + 1, key_, what, sizeof key_, &icon) && !strcmp(key_, "D-pad") &&
+                           !strcmp(what, "move"));
                     shows(&app, "Right stick", yellow);
                     app.pad_driven = false;
                     assert(SDL_GetWindowSize(app.window, &w, &height));
