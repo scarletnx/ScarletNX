@@ -132,21 +132,40 @@ public class Resources {
             getString(id), formatArgs);
     }
 
-    /** A plural's text for quantity: the bag's entry for its CLDR category (other when the bag has none for it). */
+    /**
+     * A plural's text for quantity: the bag's entry for its category in the configuration's first locale, as ICU
+     * selects it (other when the bag has none for it)
+     */
     public CharSequence getQuantityText(int id, int quantity) throws NotFoundException {
+        java.util.Locale locale = configuration.getLocales().get(0);
+        if (locale == null) locale = java.util.Locale.getDefault();
+        String item = android.icu.text.PluralRules.forLocale(locale).select(quantity);
         int[] bag = bag(id);
-        String[] keys = {"zero", "one", "two", "few", "many", "other"};
-        int want = quantity == 0 ? 0 : quantity == 1 ? 1 : 5;
-        // the attribute IDs of the quantities (^attr-private/quantity): 0x01000005 others, then zero to many
-        int[] ids = {0x01000006, 0x01000007, 0x01000008, 0x01000009, 0x0100000a, 0x01000005};
-        CharSequence other = null;
+        int at = quantityEntry(bag, item);
+        if (at >= 0) return bagString(bag, at);
+        throw new NotFoundException("Plural resource ID #0x" + Integer.toHexString(id) + " quantity=" + quantity
+            + " item=" + item);
+    }
+
+    /**
+     * Where a plural's bag holds a category's text: its entry's index, else other's, else -1. Each entry is keyed by
+     * its quantity's attribute, ResTable_map's ATTR_OTHER to ATTR_MANY (0x01000004 to 0x01000009)
+     */
+    static int quantityEntry(int[] bag, String keyword) {
+        int want = switch (keyword) {
+            case "zero" -> 0x01000005;
+            case "one" -> 0x01000006;
+            case "two" -> 0x01000007;
+            case "few" -> 0x01000008;
+            case "many" -> 0x01000009;
+            default -> 0x01000004;
+        };
+        int other = -1;
         for (int i = 0; i < bag.length; i += 8) {
-            CharSequence text = bagString(bag, i);
-            if (bag[i] == ids[want]) return text;
-            if (bag[i] == ids[5]) other = text;
+            if (bag[i] == want) return i;
+            if (bag[i] == 0x01000004) other = i;
         }
-        if (other != null) return other;
-        throw new NotFoundException("Plural resource ID #0x" + Integer.toHexString(id) + " quantity=" + quantity + " (" + keys[want] + ")");
+        return other;
     }
 
     public String getQuantityString(int id, int quantity) { return getQuantityText(id, quantity).toString(); }
