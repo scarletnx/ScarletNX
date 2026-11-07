@@ -19,6 +19,7 @@
 #define STATS_SPAN_NS      500000000ull  /* the frame rate is over the last half second */
 #define STATS_SAMPLE_NS    1000000000ull /* the processor and the memory are measured once a second */
 #define STATS_GRAPH_LINES  3             /* the graph's height, in lines */
+#define STATS_NOTE_MAX     256           /* a line's letters under the graph at most, with its NUL */
 
 static struct {
     u64 at[STATS_FRAMES]; /* the presents of the game's last frames, a ring that next writes on */
@@ -30,8 +31,10 @@ static struct {
     u64 sampled_frames;     /* the frames kept then */
     u64 busy_ns;            /* and the GPU's busy time read with that frame, if it was timed */
     int busy_timed;
-    SnxStatsMeasure shown; /* stats_measured's */
-    int corner;            /* stats_corner's, as vpad_corner reads it */
+    SnxStatsMeasure shown;            /* stats_measured's */
+    int corner;                       /* stats_corner's, as vpad_corner reads it */
+    SnxStatsCapture capture;          /* stats_capture's, which stats off keeps */
+    char debugger[SNX_DEBUGGER_NAME]; /* stats_debugger's */
 } g_stats = {.fps10 = -1, .shown = {.cpu = -1, .gpu = -1}};
 
 void stats_corner_set(const IniOpt* o, const char* v) {
@@ -49,16 +52,29 @@ void stats_measured(const SnxStatsMeasure* m) {
     g_stats.shown = *m;
     ui_unlock();
 }
+void stats_capture(const SnxStatsCapture* c) {
+    ui_lock();
+    g_stats.capture = *c;
+    ui_unlock();
+}
+void stats_debugger(const char* name) {
+    ui_lock();
+    snprintf(g_stats.debugger, sizeof g_stats.debugger, "%s", name);
+    ui_unlock();
+}
 void stats_frame(u64 now_ns, const SnxStatsGpu* gpu) {
     u64 cpu_ns, total;
     unsigned cores;
+    char debugger[SNX_DEBUGGER_NAME];
     if (!__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)) {
-        if (g_stats.frames || g_stats.sampled_ns) { /* the next turn on starts from nothing */
+        if (g_stats.frames || g_stats.sampled_ns) { /* the next turn on starts from nothing but RenderDoc's lines */
             int corner = g_stats.corner;
             ui_lock();
+            SnxStatsCapture capture = g_stats.capture;
             memset(&g_stats, 0, sizeof g_stats);
             g_stats.fps10 = g_stats.shown.cpu = g_stats.shown.gpu = -1;
             g_stats.corner = corner;
+            g_stats.capture = capture;
             ui_unlock();
         }
         return;
@@ -70,6 +86,7 @@ void stats_frame(u64 now_ns, const SnxStatsGpu* gpu) {
     ++g_stats.frames;
     ui_unlock();
     if (g_stats.sampled_ns && now_ns - g_stats.sampled_ns < STATS_SAMPLE_NS) return;
+    stats_debugger(snx_debugger(debugger, sizeof debugger) ? debugger : "");
     cpu_ns = snx_process_cpu_ns();
     cores = snx_cpu_count();
     total = 0;
@@ -99,12 +116,70 @@ void stats_frame(u64 now_ns, const SnxStatsGpu* gpu) {
 }
 
 int stats_scale(int menu_scale) { return menu_scale > 1 ? menu_scale - 1 : 1; }
-void stats_box(const int safe[4], int scale, float box[4]) {
+
+/* the lines under the graph that apply, each after its icon in its colour, the longest's letters */
+typedef struct {
+    int n;
+    size_t longest;
+    char text[STATS_NOTES][STATS_NOTE_MAX];
+    unsigned icon[STATS_NOTES];
+    u32 rgba[STATS_NOTES];
+} StatsNotes;
+/* a line of lead and value, in room letters at most: a value past them keeps its end after "...", where a capture's
+   file name tells it from the others (_capture_2.rdc) */
+static void note(StatsNotes* s, unsigned icon, u32 rgba, size_t room, const char* lead, const char* value) {
+    size_t lead_n = strlen(lead), n = strlen(value), len;
+    char* t = s->text[s->n];
+    if (room > STATS_NOTE_MAX - 1) room = STATS_NOTE_MAX - 1;
+    if (lead_n + n <= room)
+        snprintf(t, STATS_NOTE_MAX, "%s%s", lead, value);
+    else if (lead_n + 3 < room)
+        snprintf(t, STATS_NOTE_MAX, "%s...%s", lead, value + n - (room - lead_n - 3));
+    else
+        snprintf(t, room + 1, "%s", lead);
+    s->icon[s->n] = icon;
+    s->rgba[s->n] = rgba;
+    len = strlen(t);
+    if (len > s->longest) s->longest = len;
+    s->n++;
+}
+/* a path's file name, after its last separator */
+static const char* file_name(const char* path) {
+    const char* name = path;
+    for (; *path; ++path)
+        if (*path == '/' || *path == '\\') name = path + 1;
+    return name;
+}
+/* the lines that apply, in room letters each: RenderDoc's, that a capture can be taken and what the last one asked for
+   wrote (its file's name, ? where RenderDoc didn't say it) or that it failed, in the failure colour; and the debugger
+   tracing the game */
+static void notes_make(StatsNotes* s, size_t room) {
+    char lead[48];
+    s->n = 0;
+    s->longest = 0;
+    if (g_stats.capture.ready) note(s, GUI_ICON_IMAGE, STATS_TEXT, room, "RenderDoc: Ctrl+F12 captures", "");
+    if (g_stats.capture.failed) {
+        snprintf(lead, sizeof lead, "capture %u failed", g_stats.capture.taken + 1);
+        note(s, GUI_ICON_SAVE, STATS_SLOW, room, lead, "");
+    } else if (g_stats.capture.taken) {
+        const char* name = file_name(g_stats.capture.path);
+        snprintf(lead, sizeof lead, "capture %u: ", g_stats.capture.taken);
+        note(s, GUI_ICON_SAVE, STATS_TEXT, room, lead, *name ? name : "?");
+    }
+    if (g_stats.debugger[0]) note(s, GUI_ICON_BUG, STATS_TEXT, room, "debugger attached: ", g_stats.debugger);
+}
+/* stats_box's, with the lines under the graph it is made for */
+static void box_notes(const int safe[4], int scale, float box[4], StatsNotes* notes) {
     float cw = 8.0f * (float)scale, ch = 16.0f * (float)scale, gap = ch / 2, showcase[4];
     int corner = __atomic_load_n(&g_stats.corner, __ATOMIC_RELAXED);
-    box[2] = (float)STATS_COLS * cw;
-    /* the lines and the graph, a quarter line around each */
-    box[3] = (STATS_LINES + STATS_GRAPH_LINES) * ch + 3 * ch / 4;
+    /* a line's room: the safe area's letters within its gaps, past the icon's three and a letter at the right; a
+       picture narrower than the box still gets the box's */
+    float fit = ((float)safe[2] - 2 * gap) / cw;
+    size_t across = fit > 0 ? (size_t)fit : 0;
+    notes_make(notes, (across > STATS_COLS ? across : STATS_COLS) - 5);
+    box[2] = (float)(notes->longest + 5 > STATS_COLS ? notes->longest + 5 : STATS_COLS) * cw;
+    /* the lines and the graph, a quarter line around each, and the lines under it with a quarter line after them */
+    box[3] = (STATS_LINES + STATS_GRAPH_LINES) * ch + 3 * ch / 4 + (notes->n ? (float)notes->n * ch + ch / 4 : 0);
     if (vpad_showcase_box(safe, showcase) == corner) { /* beside showcase's box, toward the picture's middle */
         box[0] = corner & 1 ? showcase[0] + showcase[2] - box[2] : showcase[0];
         box[1] = corner & 2 ? showcase[1] - gap - box[3] : showcase[1] + showcase[3] + gap;
@@ -112,6 +187,10 @@ void stats_box(const int safe[4], int scale, float box[4]) {
     }
     box[0] = corner & 1 ? (float)(safe[0] + safe[2]) - gap - box[2] : (float)safe[0] + gap;
     box[1] = corner & 2 ? (float)(safe[1] + safe[3]) - gap - box[3] : (float)safe[1] + gap;
+}
+void stats_box(const int safe[4], int scale, float box[4]) {
+    StatsNotes notes;
+    box_notes(safe, scale, box, &notes);
 }
 
 /* the time between the frame j back from the newest and the one before it, in ms; j below count - 1 */
@@ -137,6 +216,7 @@ static void stats_mib(char* s, size_t n, u64 bytes) {
 void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
     int scale = stats_scale(menu_scale);
     float cw = 8.0f * (float)scale, ch = 16.0f * (float)scale, box[4], gx, gy, gw, gh, bw, top;
+    StatsNotes notes;
     char fps[16], ms[16], share[16], used[24], total[24], gpu[STATS_COLS + 1], line[STATS_LINES][STATS_COLS + 1];
     /* the frames' gauge, the processor (the GPU's chip beside it), the memory's stick, the video memory's layers, the
        graph's pulse */
@@ -181,7 +261,7 @@ void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
     stats_mib(total, sizeof total, g_stats.shown.vram_budget);
     snprintf(line[3], sizeof line[3], "vram %s/%s MiB", used, total);
     snprintf(line[4], sizeof line[4], "frame time");
-    stats_box(safe, scale, box);
+    box_notes(safe, scale, box, &notes);
     ui_fill(l, box[0], box[1], box[2], box[3], STATS_BACK);
     for (j = 0; j < STATS_LINES; ++j) { /* the icon's two cells and one, then the line, as the menu's items */
         ui_icon(l, box[0] + cw, box[1] + ch / 4 + (float)j * ch, scale, icons[j], STATS_TEXT);
@@ -204,5 +284,11 @@ void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
     for (j = 0; j + 1 < g_stats.count; ++j) {
         float t = frame_ms(j), bh = gh * (t < STATS_TOP_MS ? t : STATS_TOP_MS) / STATS_TOP_MS;
         ui_fill(l, gx + gw - (float)(j + 1) * bw, gy + gh - bh, bw, bh, t > STATS_30_MS ? STATS_SLOW : STATS_TEXT);
+    }
+    /* the lines under it, a quarter line down, each after its icon as the lines above */
+    for (j = 0; j < (unsigned)notes.n; ++j) {
+        float y = gy + gh + ch / 4 + (float)j * ch;
+        ui_icon(l, box[0] + cw, y, scale, notes.icon[j], notes.rgba[j]);
+        ui_text(l, box[0] + 4 * cw, y, scale, notes.text[j], notes.rgba[j]);
     }
 }

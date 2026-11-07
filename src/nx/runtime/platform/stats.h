@@ -4,7 +4,9 @@
    process takes beside the GPU's busy share and time a frame, the memory it takes of the machine's, the video memory it
    uses of the driver's budget, and a graph of the times of its last STATS_FRAMES frames under its title, its guides
    labelled, in stats_corner's corner over the game; in showcase's own corner
-   beside showcase's box, toward the picture's middle. On every system: a value it does not tell shows as ? */
+   beside showcase's box, toward the picture's middle. Under the graph, while they apply: RenderDoc's lines, that a
+   capture can be taken (Ctrl+F12) and the captures written with the last one's file, and the debugger tracing the game.
+   On every system: a value it does not tell shows as ? */
 #ifndef SNX_STATS_H
 #define SNX_STATS_H
 #include "nx/runtime/platform/ui.h"
@@ -20,6 +22,8 @@
    colour */
 #define STATS_60_MS  (1000.0f / 60)
 #define STATS_30_MS  (1000.0f / 30)
+#define STATS_NOTES  3    /* the lines under the graph at most: RenderDoc's two and the debugger's */
+#define STATS_PATH   1024 /* a capture's path, with its NUL */
 
 /* what the renderer reads of the GPU at a frame while stats is on: the time its graphics queue was busy, summed from
    any start (busy_ns), where it can time that queue (timed); the device-local heap's use by the process and the
@@ -40,21 +44,37 @@ typedef struct {
     u64 vram, vram_budget;
 } SnxStatsMeasure;
 
+/* what RenderDoc's lines say (gpu/vk/renderdoc.c, as it loads and after each capture): ready, a capture can be taken
+   (RenderDoc is in the process, and Ctrl+F12 asks for one); taken, the captures written so far; failed, the last one
+   asked for wasn't written; path, the last one written's file, "" before one or where RenderDoc didn't say it */
+typedef struct {
+    int ready;
+    unsigned taken;
+    int failed;
+    char path[STATS_PATH];
+} SnxStatsCapture;
+
 /* stats_corner's: tl, tr, bl or br; another value keeps the corner it had, said in the log */
 void stats_corner_set(const IniOpt* o, const char* v);
 /* a frame of the game presented at now_ns, on the renderer's thread, with what the renderer read of the GPU then:
    kept while stats is on, and once a second the processor, the memory and the GPU measured with it, the GPU's busy
-   share and time a frame over that second. Stats off forgets them, so it starts again from the next. It takes
-   ui_lock */
+   share and time a frame over that second, and the debugger tracing the game, from the first frame on. Stats off
+   forgets them, so it starts again from the next. It takes ui_lock */
 void stats_frame(u64 now_ns, const SnxStatsGpu* gpu);
 /* what the measured lines say; stats_frame sets it, the tests too */
 void stats_measured(const SnxStatsMeasure* m);
+/* RenderDoc's lines from now on, kept while stats is off. Any thread; it takes ui_lock */
+void stats_capture(const SnxStatsCapture* c);
+/* the debugger's line: the debugger tracing the game by name (? where the system doesn't name it), "" for none.
+   stats_frame sets it at each measure from snx_debugger, the tests too; stats off forgets it. It takes ui_lock */
+void stats_debugger(const char* name);
 /* the box's letters' scale, times the 8x16 font, beside the menu's (overlay_place's) menu_scale: a step smaller, 1 at
    least, so the numbers over the game hide less of it than the menu that stops it */
 int stats_scale(int menu_scale);
 /* the box over a picture whose safe area is safe (x, y, w, h), in stats_scale's letters for the menu's menu_scale, at
    now_ns: nothing while stats is off. Under ui_lock */
 void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns);
-/* the box's place for that in letters of scale (stats_scale's): x, y, w, h into box */
+/* the box's place for that in letters of scale (stats_scale's): x, y, w, h into box. STATS_COLS letters wide, or
+   wider for a line under the graph that needs it, up to the safe area's width */
 void stats_box(const int safe[4], int scale, float box[4]);
 #endif
