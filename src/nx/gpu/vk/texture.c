@@ -771,46 +771,22 @@ static u64 mem_hash(u64 gva, u64 size) {
     }
     return h;
 }
-/* a sparse texture's runs of mapped guest memory, from gmmu_pieces */
+/* the hash of t's memory: of all of it, or for a sparse one or one with holes in its mapping loaded a piece at a time,
+   of each run the GPU's page table maps of it with where it lies, as its holes read as zeros (a 2D sparse texture can
+   be hundreds of megabytes of them) and a run mapped or unmapped changes the runs */
 typedef struct {
-    struct {
-        u64 gva, n;
-    }* r;
-    u32 n, cap;
-    int failed;
-} MappedRuns;
-static void run_add(void* ctx, u64 gva, u64 cpu, u64 n) {
-    MappedRuns* m = ctx;
+    u64 gva, h;
+} RunsHash;
+static void runs_hash(void* ctx, u64 gva, u64 cpu, u64 n) {
+    RunsHash* r = ctx;
     (void)cpu;
-    if (m->n == m->cap && !m->failed) {
-        u32 cap = m->cap ? m->cap * 2 : 64;
-        void* grown = realloc(m->r, cap * sizeof *m->r);
-        if (grown) {
-            m->r = grown;
-            m->cap = cap;
-        } else
-            m->failed = 1;
-    }
-    if (m->failed) return;
-    m->r[m->n].gva = gva;
-    m->r[m->n++].n = n;
+    r->h = snx_fnv_step(snx_fnv_step(r->h, gva - r->gva), mem_hash(gva, n));
 }
-/* the texture's memory hashed: a sparse one only where guest memory maps it, each run with its place (the rest reads as
-   zero, and can be hundreds of megabytes of it) */
 static u64 tex_hash(const Surf* t) {
-    if (!t->sparse) return mem_hash(t->gva, t->size);
-    MappedRuns m = {0};
-    gmmu_pieces(t->gva, t->size, run_add, &m);
-    u64 h = 1469598103934665603ull;
-    if (m.failed)
-        h = mem_hash(t->gva, t->size);
-    else
-        for (u32 i = 0; i < m.n; i++) {
-            h = snx_fnv_step(h, m.r[i].gva - t->gva);
-            h = snx_fnv_step(h, mem_hash(m.r[i].gva, m.r[i].n));
-        }
-    free(m.r);
-    return h;
+    RunsHash r = {t->gva, 1469598103934665603ull};
+    if (!t->sparse && !t->piecewise) return mem_hash(t->gva, t->size);
+    gmmu_pieces(t->gva, t->size, runs_hash, &r);
+    return r.h;
 }
 /* the texture's memory hashed again, and loaded again when that changed: 1 if it did */
 static int tex_rehash(Surf* t) {
