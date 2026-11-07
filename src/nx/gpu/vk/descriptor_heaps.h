@@ -271,7 +271,17 @@ static inline int vk_descriptor_heap_binding_mapping(VkDescriptorSetAndBindingMa
     return 1;
 }
 
-/* Called after VMA and the extension entry points exist. Failure leaves the legacy backends available. */
+/* What keeps a device from descriptor heaps, for the log: the first piece missing, NULL when none is */
+static inline const char* vk_descriptor_heap_missing(int extension, int feature, int addresses, int flags) {
+    return !extension   ? "no VK_EXT_descriptor_heap"
+           : !feature   ? "its descriptorHeap feature is off"
+           : !addresses ? "its bufferDeviceAddress feature is off"
+           : !flags     ? "neither extendedFlags nor maintenance5"
+                        : NULL;
+}
+
+/* Called after VMA and the extension entry points exist. A failure logs what failed and the backend the device
+   keeps (buffers or sets), and leaves those backends available. */
 int vk_descriptor_heaps_init(const VkPhysicalDeviceDescriptorHeapPropertiesEXT* props);
 /* The device is idle before destruction; the dedicated transition set remains immutable until then. */
 void vk_descriptor_heaps_destroy(void);

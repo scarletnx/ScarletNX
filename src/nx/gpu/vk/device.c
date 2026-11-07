@@ -718,9 +718,14 @@ static int create_device(void) {
              "graphics descriptors use sets\n");
         g_vk.has_descriptor_buffers = 0;
     }
-    g_vk.has_descriptor_heap_support = has_descriptor_heap && qheap.descriptorHeap && q12.bufferDeviceAddress &&
-        ((has_extended_flags && qflags.extendedFlags) || (has_maintenance5 && qmaintenance5.maintenance5)) &&
-        g_settings.descriptor_buffers >= 2;
+    const char* heaps_missing = vk_descriptor_heap_missing(
+        has_descriptor_heap, has_descriptor_heap && qheap.descriptorHeap, q12.bufferDeviceAddress,
+        (has_extended_flags && qflags.extendedFlags) || (has_maintenance5 && qmaintenance5.maintenance5));
+    g_vk.has_descriptor_heap_support = !heaps_missing && g_settings.descriptor_buffers >= 2;
+    if (heaps_missing && g_settings.descriptor_buffers >= 2)
+        LOG("vulkan: vk_descriptors=%d asks for descriptor heaps, which this device has not (%s): graphics "
+            "descriptors use %s\n",
+            g_settings.descriptor_buffers, heaps_missing, g_vk.has_descriptor_buffers ? "buffers" : "sets");
     g_vk.has_descriptor_heaps = g_vk.has_descriptor_heap_support;
     if (g_vk.has_descriptor_heap_support) {
         g_vk.descriptor_heap_props = (VkPhysicalDeviceDescriptorHeapPropertiesEXT){

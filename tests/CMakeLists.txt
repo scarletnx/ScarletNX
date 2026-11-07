@@ -3011,6 +3011,13 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         "${VulkanMemoryAllocator_SOURCE_DIR}/include")
     target_link_libraries(snx-test-vk-checkpoints PRIVATE Vulkan::Headers)
     add_test(NAME vk_checkpoints COMMAND snx-test-vk-checkpoints)
+    add_executable(snx-test-vk-descriptor-heap-setup vk_descriptor_heap_setup.c
+        "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/descriptor_heaps.c")
+    snx_test_target(snx-test-vk-descriptor-heap-setup 11)
+    target_include_directories(snx-test-vk-descriptor-heap-setup PRIVATE "${volk_SOURCE_DIR}"
+        "${VulkanMemoryAllocator_SOURCE_DIR}/include")
+    target_link_libraries(snx-test-vk-descriptor-heap-setup PRIVATE Vulkan::Headers)
+    add_test(NAME vk_descriptor_heap_setup COMMAND snx-test-vk-descriptor-heap-setup)
     add_executable(snx-test-vk-advanced-blend vk_advanced_blend.c)
     snx_test_target(snx-test-vk-advanced-blend 11)
     target_link_libraries(snx-test-vk-advanced-blend PRIVATE Vulkan::Headers)
