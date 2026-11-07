@@ -2479,6 +2479,12 @@ if(TARGET snx_vita_program)
     target_link_libraries(snx-test-vita-watch PRIVATE snx_vita_program)
     add_test(NAME vita_watch COMMAND snx-test-vita-watch)
 endif()
+if(TARGET snx_vita_usse)
+    add_executable(snx-test-vita-usse-vdual vita_usse_vdual.c)
+    snx_test_target(snx-test-vita-usse-vdual 11)
+    target_link_libraries(snx-test-vita-usse-vdual PRIVATE snx_vita_usse)
+    add_test(NAME vita_usse_vdual COMMAND snx-test-vita-usse-vdual)
+endif()
 # the texture conversion shader's GLSL run on the CPU against the CPU's conversions and ETC2 and BCn decoders: no GPU
 # needed
 add_executable(snx-test-texconv-glsl glsl/texconv_glsl.cpp support/etc2.c support/bcn.c support/half.c)
