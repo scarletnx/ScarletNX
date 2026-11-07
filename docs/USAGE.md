@@ -732,7 +732,8 @@ and a delete ask first. The game waits while the page is open. Before a load the
 listed first, so a load can be undone (`state_auto_backup`). The game's own save files are never part of a state,
 and loading one leaves them as they are. A state loads only into the game, update and mods it was saved with. A newer
 ScarletNX loads it too, unless it changed the recompiled code (`SNX_ABI`) or the layout of what a state holds, and
-then it says so.
+then it says so. A save is refused, saying why, while the game holds what a state can't keep yet: a network
+connection, local play with others, code modules it loaded, or NVN work waiting on the GPU.
 
 In the launcher, S on Games lists the save states of the game in focus, the newest first, with the picture of the one
 in focus beside them. Enter plays the game from that state, and Del deletes it after asking. A state this version

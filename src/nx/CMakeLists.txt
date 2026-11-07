@@ -79,6 +79,7 @@ target_link_libraries(snx_hle PRIVATE FFmpeg::avcodec OpenSSL::SSL snx_splash)
 snx_component(gpu gpu/gpu.c gpu/maxwell/engines.c gpu/maxwell/mme.c gpu/maxwell/compute.c gpu/maxwell/fermi2d.c gpu/maxwell/dma.c gpu/maxwell/write_pages.c gpu/draw_state.c gpu/maxwell/draw_state.c gpu/maxwell/maxwell3d.c gpu/renderer.c
               gpu/nvn/nvn_loader.c gpu/nvn/nvn_object.c gpu/nvn/nvn_cmd.c gpu/nvn/nvn_queue.c
               gpu/nvn/nvn_tex.c gpu/nvn/nvn_driver.c gpu/nvn/nvn_tic.c gpu/nvn/nvn_replay.c gpu/nvn/nvn_draw.c gpu/nvn/nvn_copy.c gpu/nvn/nvn_state.c
+              gpu/nvn/nvn_save.c
               gpu/shipped_pass.c)
 # the NVN functions nvn implements: their adapters and table, generated from gpu/nvn/nvn.hook
 snx_hookgen(snx_gpu SPEC "${CMAKE_CURRENT_SOURCE_DIR}/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
@@ -347,6 +348,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     endif()
     target_link_libraries(snx-test-vulkan PRIVATE SDL3::SDL3)
     add_test(NAME vulkan_headless COMMAND snx-test-vulkan -H)
+    # a save state of a game whose NVN the runtime runs, saved and loaded through state.c: the frame before the save
+    # comes back after the load (tests/vulkan_nvn_savestate.inc). Alone, as the load replaces the guest memory
+    add_test(NAME vulkan_nvn_savestate COMMAND snx-test-vulkan -H)
+    set_tests_properties(vulkan_nvn_savestate PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_NVN_CASE=savestate"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     add_test(NAME vulkan_storage_lookup COMMAND snx-test-vulkan -H --vk_memory=1 --bench-storage-lookup)
     set_tests_properties(vulkan_storage_lookup PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
