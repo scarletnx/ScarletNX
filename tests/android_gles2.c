@@ -720,6 +720,7 @@ int main(void) {
     gles2_make_current(NULL, NULL, NULL);
     gles2_context_free(gl);
     gles_surface_free(s);
+    gles2_shutdown(); /* every Vulkan object gone before the device, which the validation layer checks */
     if (g_t.failures) {
         fprintf(stderr, "android_gles2: %d checks failed\n", g_t.failures);
         return 1;

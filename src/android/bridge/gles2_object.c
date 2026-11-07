@@ -1743,6 +1743,27 @@ static void forget_renderbuffer(Gles2Context* gl, unsigned name) {
     if (gl->renderbuffer == name) gl->renderbuffer = 0;
     gles2_target_forget();
 }
+void gles2_objects_vk_free(void) {
+    for (size_t i = 0; i < g_gles2.buffer_count; ++i) buffer_vk_free(&g_gles2.buffers[i]);
+    for (size_t i = 0; i < g_gles2.texture_count; ++i) texture_free(&g_gles2.textures[i]);
+    for (size_t i = 0; i < g_gles2.renderbuffer_count; ++i) renderbuffer_free(&g_gles2.renderbuffers[i]);
+    for (size_t i = 0; i < g_gles2.query_count; ++i) {
+        G2Query* q = &g_gles2.queries[i];
+        if (q->pool) V.vk.vkDestroyQueryPool(V.device, q->pool, NULL);
+        q->pool = VK_NULL_HANDLE;
+    }
+    for (size_t i = 0; i < g_gles2.vk_sampler_count; ++i)
+        V.vk.vkDestroySampler(V.device, g_gles2.vk_samplers[i].sampler, NULL);
+    free(g_gles2.vk_samplers);
+    g_gles2.vk_samplers = NULL;
+    g_gles2.vk_sampler_count = 0;
+    if (g_gles2.expand) V.vk.vkDestroyPipeline(V.device, g_gles2.expand, NULL);
+    if (g_gles2.expand_layout) V.vk.vkDestroyPipelineLayout(V.device, g_gles2.expand_layout, NULL);
+    if (g_gles2.expand_set) V.vk.vkDestroyDescriptorSetLayout(V.device, g_gles2.expand_set, NULL);
+    g_gles2.expand = VK_NULL_HANDLE;
+    g_gles2.expand_layout = VK_NULL_HANDLE;
+    g_gles2.expand_set = VK_NULL_HANDLE;
+}
 static void g_delete_renderbuffers(CPU* c, Gles2Context* gl) {
     each_name(c, gl, forget_renderbuffer);
 }

@@ -36,6 +36,7 @@
 #define GLES_DEVICE_COMMANDS(X)                                                                                        \
     X(vkDeviceWaitIdle)                                                                                                \
     X(vkCreateCommandPool)                                                                                             \
+    X(vkDestroyCommandPool)                                                                                            \
     X(vkFreeCommandBuffers)                                                                                            \
     X(vkAllocateCommandBuffers)                                                                                        \
     X(vkBeginCommandBuffer)                                                                                            \
@@ -260,6 +261,9 @@ extern GlesVk g_gles_vk;
 /* the instance, a surface of the host window (*surface), the device and queue that present to it: once, at the first
    window surface. Then only a new surface. False when there is no Vulkan device */
 bool gles_vk_device(VkSurfaceKHR* surface);
+/* the device and instance gone, and every object made on them that the library still keeps: after the last GLES 1.1 and
+   2 surface and context (gles2_shutdown). The next surface brings them up again */
+void gles_vk_shutdown(void);
 uint32_t gles_vk_memory_type(uint32_t bits, VkMemoryPropertyFlags want);
 VkShaderModule gles_vk_shader(const uint32_t* words, size_t bytes);
 /* an image and its memory (device-local where the device has it), and a view of the whole when view_type is not

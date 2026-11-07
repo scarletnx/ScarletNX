@@ -19,5 +19,7 @@ VkResult hle_vulkan_create_swapchain(VkDevice device, const VkSwapchainCreateInf
 VkResult hle_vulkan_swapchain_images(VkDevice device, VkSwapchainKHR swapchain, uint32_t* count, VkImage* images);
 void hle_vulkan_destroy_swapchain(VkDevice device, VkSwapchainKHR swapchain);
 void hle_vulkan_destroy_device(VkDevice device);
+/* vkDestroyInstance, after its devices: the commands resolved for it resolve again for the next */
+void hle_vulkan_destroy_instance(VkInstance instance);
 VkResult hle_vulkan_present(VkQueue queue, const VkPresentInfoKHR* info);
 #endif

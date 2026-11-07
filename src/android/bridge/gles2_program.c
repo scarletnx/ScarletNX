@@ -553,6 +553,9 @@ static void program_free(G2Program* p) {
     free(p->bound);
     *p = (G2Program){0};
 }
+void gles2_programs_vk_free(void) {
+    for (size_t i = 0; i < g_gles2.program_count; ++i) program_unlink(&g_gles2.programs[i]);
+}
 static void g_delete_program(CPU* c, Gles2Context* gl) {
     unsigned name = (unsigned)X(0);
     G2Program* p = gles2_program(name);

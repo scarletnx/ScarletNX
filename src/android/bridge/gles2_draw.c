@@ -597,6 +597,20 @@ void gles2_pipelines_forget(const G2Program* p) {
     g_gles2.pipeline_count = kept;
 }
 
+void gles2_draw_vk_free(void) {
+    for (size_t i = 0; i < g_gles2.pipeline_capacity; ++i)
+        if (g_gles2.pipelines[i].pipeline) gles_vk_retire((GlesGarbage){.pipeline = g_gles2.pipelines[i].pipeline});
+    free(g_gles2.pipelines);
+    g_gles2.pipelines = NULL;
+    g_gles2.pipeline_capacity = g_gles2.pipeline_count = 0;
+    for (int i = 0; i < G2_TARGETS; ++i) {
+        GlesImage* m = &g_gles2.missing[i];
+        if (m->image) gles_vk_retire((GlesGarbage){.image = m->image, .view = m->view, .memory = m->memory});
+        *m = (GlesImage){0};
+    }
+    g_gles2.missing_ready = false;
+}
+
 /* ---- the vertex inputs ---- */
 
 /* the Vulkan format of an attribute array, for a shader input of base; 0 for one Vulkan has no format of */

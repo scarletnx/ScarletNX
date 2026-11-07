@@ -7,6 +7,7 @@
 #include "android/bridge/gles_vk.h"
 #include "android/bridge/gles2.h"
 #include "android/bridge/hle_vulkan_host.h"
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -271,6 +272,25 @@ void gles_vk_retire(GlesGarbage item) {
     }
     g.retired[g.retired_count].item = item;
     g.retired[g.retired_count++].serial = gles_vk_pending();
+}
+
+void gles_vk_shutdown(void) {
+    if (!g.device) {
+        g.tried = g.up = false;
+        return;
+    }
+    g.vk.vkDeviceWaitIdle(g.device);
+    /* every retired object, those of the serial still pending too: the device is idle */
+    for (size_t i = 0; i < g.retired_count; ++i) gles_vk_destroy(g.retired[i].item);
+    if (g.flush_fence) g.vk.vkDestroyFence(g.device, g.flush_fence, NULL);
+    if (g.commands) g.vk.vkDestroyCommandPool(g.device, g.commands, NULL);
+    if (g.pass_clear) g.vk.vkDestroyRenderPass(g.device, g.pass_clear, NULL);
+    if (g.pass_load) g.vk.vkDestroyRenderPass(g.device, g.pass_load, NULL);
+    hle_vulkan_destroy_device(g.device);
+    hle_vulkan_destroy_instance(g.instance);
+    free(g.retired);
+    /* everything but the lock, which the caller holds */
+    memset(&g.tried, 0, sizeof g - offsetof(GlesVk, tried));
 }
 
 void gles_vk_wait(uint64_t serial) {

@@ -105,6 +105,17 @@ void gles2_context_free(Gles2Context* gl) {
     free(gl);
 }
 
+void gles2_shutdown(void) {
+    pthread_mutex_lock(&V.lock);
+    if (V.device) {
+        gles2_programs_vk_free();
+        gles2_draw_vk_free();
+        gles2_objects_vk_free();
+    }
+    gles_vk_shutdown();
+    pthread_mutex_unlock(&V.lock);
+}
+
 void gles2_make_current(Gles2Context* gl, GlesSurface* draw, GlesSurface* read) {
     Gles2Context* old = t_gles2.gl;
     if (old && old != gl) {

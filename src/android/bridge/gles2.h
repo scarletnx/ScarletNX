@@ -422,6 +422,13 @@ Gles2Context* gles2_current(void);
 /* a context of GLES major version 2 or 3; NULL without memory */
 Gles2Context* gles2_context_new(int version);
 void gles2_context_free(Gles2Context* gl);
+/* After the last context and surface: every Vulkan object of the share group and of the caches destroyed, then the
+   device and the instance (gles_vk_shutdown). The objects' names stay, without their images and buffers */
+void gles2_shutdown(void);
+/* gles2_shutdown's part of each file: its objects' Vulkan objects, under the lock */
+void gles2_objects_vk_free(void);
+void gles2_programs_vk_free(void);
+void gles2_draw_vk_free(void);
 /* the calling thread's context and its surfaces (NULL, NULL, NULL: none) */
 void gles2_make_current(Gles2Context* gl, GlesSurface* draw, GlesSurface* read);
 /* GL_VERSION and the others for glGetString, of a context of version (2 or 3) */
