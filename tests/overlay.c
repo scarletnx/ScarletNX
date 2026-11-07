@@ -194,6 +194,98 @@ static int text_at(int col, int row, const char* text) {
     return 1;
 }
 
+/* whether an icon of gui/icons.h is drawn anywhere */
+static int icon_drawn(unsigned icon) {
+    int i;
+    for (i = 0; i < list.n; ++i)
+        if (list.q[i].u == SNX_UI_ICONS_X + 16 * (icon - GUI_ICON_FIRST) && list.q[i].v == SNX_CONTROLS_ATLAS_HEIGHT)
+            return 1;
+    return 0;
+}
+/* F1's page, from the page showing: the runtime's keys and the game's buttons, a row each with its icon and its keys
+   on a band of ink in the page's colour, none in focus; Up/Down, the D-pad and the wheel go over its rows, each of
+   which fits the narrowest panel; any other key, button or tap goes back to the game, F1 again too, and the other
+   pages keep those keys as they were */
+static void keys_page(void) {
+    const u64 x_button = 1ull << 2, down = 1ull << 15;
+    const i32 still[4] = {0, 0, 0, 0};
+    int was = overlay_shown(), i, n;
+    u32 light, ink;
+    if (!was) overlay_toggle();
+    assert(overlay_keys() == OVERLAY_NONE && overlay_shown());
+    draw();
+    light = list.q[0].rgba; /* the panel, and its head's band */
+    ink = list.q[1].rgba;
+    assert(shows("SCARLETNX  /  KEYS") && shows("Up/Down: the rest. Any other key or button: back to the game."));
+    assert(shows_as("F2, Home", 0, light) && shows_as("the game's menu", 0, ink) && shows_as("F3", 0, light) &&
+           shows_as("a screenshot", 0, ink) && shows_as("F11, Alt+Enter", 0, light) && shows("quit the game"));
+    assert(icon_drawn(GUI_ICON_APP_WINDOW) && icon_drawn(GUI_ICON_IMAGE) && icon_drawn(GUI_ICON_LOG_OUT));
+    for (i = 2, n = 0; i < list.n; ++i) /* the widest keys' band: a pixel of the scale past them either side */
+        n += list.q[i].rgba == ink && list.q[i].h == (float)(16 * s) &&
+             list.q[i].w == (float)(8 * s * (int)strlen("F11, Alt+Enter") + 2 * s);
+    assert(n == 1);
+    assert(shows("\x19") && !shows("\x18") && !shows("right stick")); /* twelve rows show, the rest under them */
+    for (i = 2; i < list.n; ++i) assert(!(list.q[i].rgba == ink && list.q[i].w == list.q[0].w)); /* none in focus */
+    overlay_move(1);
+    draw();
+    assert(!shows("the game's menu") && shows("a screenshot") && shows("\x18") && shows("\x19"));
+    for (i = 0; i < 40; ++i) assert(overlay_pad(down) == OVERLAY_NONE);
+    draw();
+    assert(shows("right stick") && shows_as("I, J, K, L", 0, light) && icon_drawn(GUI_ICON_JOYSTICK));
+    assert(!shows("\x19") && shows("\x18") && !shows("a screenshot"));
+    overlay_scroll(-100);
+    draw();
+    assert(shows("the game's menu") && !shows("\x18"));
+    /* the narrowest panel, 40 columns: every row inside it, a column short of its edge, where the arrows go */
+    for (n = 0; n < 3; ++n) {
+        int nx, ny, ns;
+        float right;
+        list.n = 0;
+        overlay_draw(&list, 400, 600, 0);
+        overlay_place(400, 600, &nx, &ny, &ns);
+        assert(overlay_cols(400, ns) == OVERLAY_COLS);
+        right = list.q[0].x + list.q[0].w - 8.0f * (float)ns;
+        for (i = 2; i < list.n; ++i) {
+            const SnxUiQuad* q = &list.q[i];
+            int arrow = q->u == SNX_CONTROLS_FONT_X + 0x18 % 16 * 8 || q->u == SNX_CONTROLS_FONT_X + 0x19 % 16 * 8;
+            if (q->w == 8.0f * (float)ns && q->h == 16.0f * (float)ns && q->v >= SNX_CONTROLS_FONT_Y && !arrow)
+                assert(q->x + q->w <= right);
+        }
+        overlay_move(12);
+    }
+    overlay_scroll(-100);
+    /* with RenderDoc in the process, the capture key's row right after F12's; a debugger, its paragraph; neither by
+       default */
+    assert(!shows("capture a frame") && !shows("Debugger"));
+    overlay_keys_extra(1, "gdb");
+    draw();
+    assert(shows_as("Ctrl+F12", 0, light) && shows("capture a frame") && !shows("Debugger"));
+    for (i = 0; i < 40; ++i) overlay_move(1);
+    draw();
+    assert(shows("right stick") && shows_as("Debugger", 0, light) && shows("gdb")); /* the last row, past the keys */
+    overlay_keys_extra(0, "");
+    overlay_scroll(-100);
+    draw();
+    assert(!shows("capture a frame") && !shows("Debugger"));
+    /* back to the game: any key, button or tap, F1 again */
+    assert(overlay_select() == OVERLAY_CLOSE && overlay_back() == OVERLAY_CLOSE && overlay_side(-1) == OVERLAY_CLOSE);
+    assert(overlay_other() == OVERLAY_CLOSE && overlay_pad(x_button) == OVERLAY_CLOSE &&
+           overlay_keys() == OVERLAY_CLOSE);
+    draw();
+    assert(overlay_tap(5.0f, 5.0f, SW, SH) == OVERLAY_CLOSE &&
+           overlay_tap(list.q[0].x + list.q[0].w / 2, list.q[0].y + list.q[0].h / 2, SW, SH) == OVERLAY_CLOSE &&
+           overlay_tap(list.q[1].x + list.q[1].w / 2, list.q[1].y + list.q[1].h / 2, SW, SH) == OVERLAY_CLOSE);
+    overlay_controls(0, still, 1);
+    assert(overlay_controls(x_button, still, 2) == OVERLAY_CLOSE);
+    overlay_controls(0, still, 3);
+    /* the first page, as the menu opens: X, Left and a key of no use there do nothing */
+    overlay_toggle();
+    overlay_toggle();
+    assert(overlay_other() == OVERLAY_NONE && overlay_pad(x_button) == OVERLAY_NONE && overlay_side(1) == OVERLAY_NONE);
+    draw();
+    assert(shows("SCARLETNX  /  MENU"));
+    if (!was) overlay_toggle();
+}
 /* a stopped panel's texts, Close in focus */
 static SnxOverlayError panel_of(const char* name, const char* msg, const char* how, const char* log, const char* said) {
     SnxOverlayError e;
@@ -1181,9 +1273,10 @@ int main(void) {
         assert(!snx_users_load("/nonexistent/users", 1, why, sizeof why)); /* Player again */
         snx_remove_tree("overlay_users");
     }
+    keys_page();
     keyboard_box();
     puts(
         "overlay: placing, pages, taps, keys, values, scrolling, look, the error's panel, the atlas, the user, a picture "
-        "that does not draw and the keyboard's box passed");
+        "that does not draw, F1's page and the keyboard's box passed");
     return 0;
 }

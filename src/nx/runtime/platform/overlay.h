@@ -35,10 +35,18 @@ void overlay_place(int sw, int sh, int* x, int* y, int* scale);
 int overlay_select(void);      /* the focused item's action: a page, a setting changed, or an OVERLAY_ for the caller */
 void overlay_move(int rows);   /* the focus up (-1) or down (1), round the page */
 void overlay_scroll(int rows); /* the mouse's wheel: the same, stopping at the ends */
-void overlay_side(int step);   /* the focused setting down (-1) or up (1) */
-int overlay_back(void);        /* the page above; OVERLAY_CLOSE from the first */
+int overlay_side(int step);    /* the focused setting down (-1) or up (1); OVERLAY_CLOSE on F1's page */
+int overlay_back(void);        /* the page above; OVERLAY_CLOSE from the first, and from F1's */
+/* F1: the page of the runtime's keys and the game's buttons on the keyboard, a row each, in place of the page showing,
+   the menu open; OVERLAY_CLOSE when it shows already. Up/Down and the wheel go over its rows; any other key, button
+   or tap is OVERLAY_CLOSE, back to the game: overlay_other for the keys the menu has no other use for */
+/* what F1's page shows besides its rows: the capture key's row while RenderDoc is in the process, and the debugger
+   tracing the process ("" for none) */
+void overlay_keys_extra(int capture, const char* debugger);
+int overlay_keys(void);
+int overlay_other(void);
 /* a button pressed, as the game reads it (one HidNpadButton bit): the D-pad and the left stick move, A selects, B goes
-   back, the rest do nothing. What it did, as overlay_select */
+   back, the rest do nothing but on F1's page. What it did, as overlay_select */
 int overlay_pad(u64 button);
 /* the pads each poll, the on-screen controls and the connected ones: their buttons and sticks at ms. With the menu
    shown, each button pressed since the last call acts as overlay_pad, the left stick past half way as the D-pad; a
