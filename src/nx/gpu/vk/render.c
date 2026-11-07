@@ -2292,6 +2292,7 @@ static struct {
     } while (0)
 void vk_render_forget_state(void) { g_dyn.cb = 0; }
 u64 g_vk_drawn, g_vk_skipped;
+u64 g_vk_capture_draws, g_vk_capture_primitives, g_vk_capture_capped;
 
 /* The viewport's size with the transform off: the surface clip's, at most the device's viewport dimensions at the
    resolution scale (a game's driver leaves the clip at 16384 x 16384, past every target). The last stage divides
@@ -3156,7 +3157,18 @@ static int capture_supported(const DrawShaders* shaders, const DsState* ds, cons
     /* A complete non-indexed list presents each vertex once per instance. Shared indices can repeat vertex
        shader stores when split into primitives, and incomplete primitives need not invoke their vertices. */
     int unique_vertices = !dc->indexed && !(dc->count % vertices);
-    return unique_vertices || (!shaders->xfb_on && !shaders->vs->si.gbuf_wmask && !shaders->vs->si.nimg);
+    if (!unique_vertices && (shaders->xfb_on || shaders->vs->si.gbuf_wmask || shaders->vs->si.nimg)) return 0;
+    u64 primitives = (u64)dc->instances * (dc->count / vertices);
+    if (primitives > VK_CAPTURE_PRIMITIVES_MAX) {
+        g_vk_capture_capped++;
+        LOG_LIMIT(4,
+                  "vulkan: a draw of %llu primitives (%u per instance, %u instance%s) needs the ordered capture path, "
+                  "which takes %u at most: draw skipped\n",
+                  (unsigned long long)primitives, dc->count / vertices, dc->instances, dc->instances == 1 ? "" : "s",
+                  VK_CAPTURE_PRIMITIVES_MAX);
+        return 0;
+    }
+    return 1;
 }
 static int late_depth_supported(const DsState* ds, const DrawCall* dc, const DrawOwner* owner,
                                  const DrawShaders* shaders, const VkSh* last, const Surf* color, const Surf* depth) {
@@ -4368,7 +4380,11 @@ static int capture_draw(const DsState* ds, const DrawCall* dc, DrawOwner* owner,
     g_capture_draw.images = NULL;
     g_capture_draw.snapshot = NULL;
     g_draw.sh.vs = NULL;
-    if (complete) g_vk_drawn = before + 1;
+    if (complete) {
+        g_vk_drawn = before + 1;
+        g_vk_capture_draws++;
+        g_vk_capture_primitives += (u64)dc->instances * (dc->count / vertices);
+    }
     return complete;
 }
 

@@ -4920,6 +4920,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_storage_lookup_bench.inc"
 #include "vulkan_storage_buffer_keep.inc"
 #include "vulkan_fragment_barrier.inc"
+#include "vulkan_capture_cap.inc"
 
 /* key's row among the settings the runtime applies itself (options.c's), or NULL */
 static const IniOpt* setting_row(const char* key) {
@@ -5184,6 +5185,8 @@ static int run_headless(int argc, char** argv) {
             result = check_nvn_blend_capture();
         else if (!strcmp(name, "fragment_barrier"))
             result = check_fragment_barrier_backend();
+        else if (!strcmp(name, "capture_cap"))
+            result = check_capture_cap();
         else if (!strcmp(name, "late_depth_shadow"))
             result = check_late_depth_shadow();
         else if (!strcmp(name, "shader_windows"))
@@ -5406,6 +5409,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_draw_texture());
     CHECK(!check_descriptor_heaps());
     CHECK(!check_fragment_barrier_backend());
+    CHECK(!check_capture_cap());
     CHECK(!check_shader_float_rounding());
     CHECK(!check_storage_image_formats());
     CHECK(!check_volume_surface_atomics());

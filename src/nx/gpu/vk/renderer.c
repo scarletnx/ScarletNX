@@ -671,6 +671,11 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 "begun again), %llu through a copy\n",
                 (unsigned long long)g_vk_fb_draws, (unsigned long long)g_vk_fb_barriers,
                 (unsigned long long)g_vk_fb_restarts, (unsigned long long)g_vk_rt_copies);
+            if (g_vk_capture_draws || g_vk_capture_capped)
+                LOG("vulkan: %llu draws captured a primitive at a time (%llu primitives), %llu skipped past %u "
+                    "primitives\n",
+                    (unsigned long long)g_vk_capture_draws, (unsigned long long)g_vk_capture_primitives,
+                    (unsigned long long)g_vk_capture_capped, VK_CAPTURE_PRIMITIVES_MAX);
             LOG("vulkan: %llu rendering passes, %llu clear commands, %llu attachments cleared and %llu left undefined "
                 "by their load op; %llu buffers filled ahead of the passes\n",
                 (unsigned long long)g_vk_passes, (unsigned long long)g_vk_clear_cmds,
