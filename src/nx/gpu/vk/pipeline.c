@@ -1008,6 +1008,7 @@ typedef struct {
     VkPipelineMultisampleStateCreateInfo ms;
     VkPipelineDepthStencilStateCreateInfo ds;
     VkPipelineColorBlendAttachmentState cba[8];
+    VkPipelineColorBlendAdvancedStateCreateInfoEXT advanced; /* with a native advanced equation (k->advanced) */
     VkPipelineColorBlendStateCreateInfo cb;
     VkFormat cf[8];
     VkSampleCountFlagBits color_samples[8];
@@ -1148,7 +1149,7 @@ static void pipe_info(const PipeKey* k, VkShaderModule fs, PipeInfo* o) {
         LOG_LIMIT(
             1, "vulkan: blending that needs dual-source or independent blend, which this GPU lacks, is simplified\n");
     }
-    VkPipelineColorBlendAdvancedStateCreateInfoEXT advanced = {
+    o->advanced = (VkPipelineColorBlendAdvancedStateCreateInfoEXT){
         .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_ADVANCED_STATE_CREATE_INFO_EXT,
         .srcPremultiplied = k->advanced.src_premultiplied,
         .dstPremultiplied = VK_TRUE,
@@ -1162,7 +1163,7 @@ static void pipe_info(const PipeKey* k, VkShaderModule fs, PipeInfo* o) {
     /* a logic operation takes the place of blending on integer and normalized targets; float and sRGB ones pass
        their color through, as the 3D engine's LOGIC_OP does */
     o->cb = (VkPipelineColorBlendStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-                                                  .pNext = k->advanced.operation ? &advanced : NULL,
+                                                  .pNext = k->advanced.operation ? &o->advanced : NULL,
                                                   .logicOpEnable = k->logic_op != 0,
                                                   .logicOp = k->logic_op ? (VkLogicOp)(k->logic_op - 1)
                                                                          : VK_LOGIC_OP_COPY,
