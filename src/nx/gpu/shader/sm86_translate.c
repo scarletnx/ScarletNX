@@ -4113,6 +4113,7 @@ u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderI
     if (stage != ST_VS && stage != ST_FS && stage != ST_CS && stage != ST_TS && stage != ST_MS) {
         si->unsupported++;
         snprintf(si->first_unsupported, sizeof si->first_unsupported, "stage %d", stage);
+        sm86_debug_dump("program", code, bytes, sph, si->first_unsupported);
         return NULL;
     }
     u32 n = bytes / 16;
