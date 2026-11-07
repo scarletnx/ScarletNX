@@ -103,7 +103,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `controls_<ID>_shown` | `1` | `1` draws the control, `0` hides it; written once it is shown or hidden |
 | `controls` | `0` (Android `1`) | The [on-screen controls](USAGE.md#on-screen-controls) shown |
 | `controls_snap`, `controls_scale`, `controls_opacity`, `controls_rel_center`, `controls_dpad_slide`, `controls_haptics` | `0`, `50`, `50`, `1`, `1`, `1` | As [On-screen controls](USAGE.md#on-screen-controls) describes them. `controls_scale` runs from `0` to `100` for 50% to 150% |
-| `controls_skin` | empty | Their look: empty for the built-in one, `line` or `yorha` for ScarletNX's own (white lines after libretro's flat retropad; the launcher's yorha theme on the controls), or the path of a RetroArch overlay's `.cfg` ([skins](../dist/controls/skins/README.md)) |
+| `controls_skin` | `line` | Their look: `line` or `yorha`, ScarletNX's own (white lines after libretro's flat retropad; the launcher's yorha theme on the controls); empty for the built-in one; or the path of a RetroArch overlay's `.cfg` ([skins](../dist/controls/skins/README.md)) |
 
 ## Controllers
 

@@ -734,21 +734,23 @@ int main(void) {
     overlay_side(-1);
     assert(g_settings.controls_opacity == 40 && !strcmp(stored, "controls_opacity"));
     overlay_side(1);
-    /* the skin goes round the built-in look and the shipped ones (the right arrow up, the rest of its row down), kept,
-       and the backend told to apply it; a .cfg's path shows its file's name, and goes up to the built-in look, down
-       to the last shipped skin */
+    /* the skin, line by default, goes round the built-in look and the shipped ones (the right arrow up, the rest of its
+       row down), kept, and the backend told to apply it; a .cfg's path shows its file's name, and goes up to the
+       built-in look, down to the last shipped skin */
     vpad_skin_changed();
-    draw();
-    assert(text_at(C - 1 - (int)strlen("< Built-in >"), 8, "< Built-in >"));
-    tap(5, C - 2);
-    assert(!strcmp(g_settings.controls_skin, "line") && !strcmp(stored, "controls_skin") && vpad_skin_changed());
     draw();
     assert(text_at(C - 1 - (int)strlen("< line >"), 8, "< line >"));
     tap(5, C - 2);
-    assert(!strcmp(g_settings.controls_skin, "yorha") && vpad_skin_changed());
+    assert(!strcmp(g_settings.controls_skin, "yorha") && !strcmp(stored, "controls_skin") && vpad_skin_changed());
     draw();
     assert(text_at(C - 1 - (int)strlen("< yorha >"), 8, "< yorha >"));
     tap(5, C - 2);
+    assert(!g_settings.controls_skin[0] && vpad_skin_changed());
+    draw();
+    assert(text_at(C - 1 - (int)strlen("< Built-in >"), 8, "< Built-in >"));
+    tap(5, C - 2);
+    assert(!strcmp(g_settings.controls_skin, "line") && vpad_skin_changed());
+    tap(5, C - 9);
     assert(!g_settings.controls_skin[0] && vpad_skin_changed());
     tap(5, C - 9);
     assert(!strcmp(g_settings.controls_skin, "yorha"));
