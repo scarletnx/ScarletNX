@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* A 3DS game's gamepads (input/input.c) on SDL's virtual ones, under its dummy video driver: the buttons where the
-   console's are, the Switch's gamepad_map over them, A and B swapped by gamepad_swap_ab, and the circle pad past
-   gamepad_deadzone, scaled to its rim */
+   console's are, the triggers the New 3DS's ZL and ZR, the Switch's gamepad_map over them, A and B swapped by
+   gamepad_swap_ab, and the circle pad and the C-stick past gamepad_deadzone, scaled to their rims */
 #include "3ds/input/input.h"
 #include "snx_settings.h"
 #include <SDL3/SDL.h>
@@ -93,6 +93,14 @@ int main(void) {
           with(pad, SDL_GAMEPAD_BUTTON_BACK) == SNX_CTR_PAD_SELECT);
     CHECK(with(pad, SDL_GAMEPAD_BUTTON_DPAD_LEFT) == SNX_CTR_PAD_LEFT &&
           with(pad, SDL_GAMEPAD_BUTTON_DPAD_DOWN) == SNX_CTR_PAD_DOWN);
+    /* the triggers, past a quarter of their travel, are the New 3DS's ZL and ZR (ir:rst's) */
+    SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, SDL_JOYSTICK_AXIS_MAX);
+    CHECK(read_input().buttons == SNX_CTR_PAD_ZL);
+    SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, SDL_JOYSTICK_AXIS_MIN);
+    SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, SDL_JOYSTICK_AXIS_MAX);
+    CHECK(read_input().buttons == SNX_CTR_PAD_ZR);
+    SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, SDL_JOYSTICK_AXIS_MIN);
+    CHECK(read_input().buttons == 0);
     /* gamepad_swap_ab: A bottom and B right, X and Y where they were */
     g_settings.swap_a_b = 1;
     CHECK(with(pad, SDL_GAMEPAD_BUTTON_SOUTH) == SNX_CTR_PAD_A && with(pad, SDL_GAMEPAD_BUTTON_EAST) == SNX_CTR_PAD_B);
@@ -118,6 +126,9 @@ int main(void) {
     CHECK(read_input().buttons == SNX_CTR_PAD_A);
     SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, SDL_JOYSTICK_AXIS_MIN);
     CHECK(with(pad, SDL_GAMEPAD_BUTTON_LEFT_STICK) == 0 && with(pad, SDL_GAMEPAD_BUTTON_SOUTH) == 0);
+    /* a map may send ZL from a shoulder */
+    snx_ctr_input_map("lb:ZL");
+    CHECK(with(pad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) == SNX_CTR_PAD_ZL);
     /* an empty map: every control in its place again, and so it stays past the run's end */
     snx_ctr_input_map("");
     CHECK(with(pad, SDL_GAMEPAD_BUTTON_SOUTH) == SNX_CTR_PAD_B);
@@ -146,6 +157,18 @@ int main(void) {
     CHECK(at[0] == 0 && at[1] == 0);
     circle(pad, 0, 0, at);
     g_settings.stick_dead_zone = 20;
+    /* the right stick is the C-stick, past the same dead zone */
+    SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX, (Sint16)lroundf(0.6f * 32767));
+    SnxCtrInput input = read_input();
+    CHECK(near(input.c_stick[0], 0.5f) && input.c_stick[1] == 0 && input.circle[0] == 0 && input.circle[1] == 0);
+    SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX, 0);
+    SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY, -32767);
+    input = read_input();
+    CHECK(input.c_stick[0] == 0 && near(input.c_stick[1], 1));
+    SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX, (Sint16)lroundf(0.15f * 32767));
+    SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY, 0);
+    input = read_input();
+    CHECK(input.c_stick[0] == 0 && input.c_stick[1] == 0);
 
     SDL_DetachVirtualJoystick(SDL_GetJoystickID(pad));
     pump();

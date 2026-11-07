@@ -422,17 +422,26 @@ second) and the gyroscope's (101) between their enable and disable. Each pad ent
 has the buttons, what was pressed and released since the one before, and the circle
 pad's position, averaged over three samples, with its direction bits. The input
 (`src/3ds/input/input.c`) is a Switch game's: X or Space A, Z B, C X, V Y, Q L, E R,
-Enter Start, Backspace Select, the arrows the D-pad and WASD the circle pad, or a
-gamepad's buttons by position, `gamepad_map` over that (the Switch's button names:
-Plus is Start, Minus Select), A swapped with B by `gamepad_swap_ab`, with its left
-stick past `gamepad_deadzone`, all three the Switch's settings, and the
+1 ZL, 3 ZR, Enter Start, Backspace Select, the arrows the D-pad, WASD the circle pad
+and IJKL the C-stick, or a gamepad's buttons by position (the triggers ZL and ZR),
+`gamepad_map` over that (the Switch's button names: Plus is Start, Minus Select), A
+swapped with B by `gamepad_swap_ab`, with its left stick the circle pad and its right
+one the C-stick past `gamepad_deadzone`, all three the Switch's settings, and the
 scripted presses of `--script=ms:hex,...` (`ctr_script`), in the pad's bits (1 A,
 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down, 100 R, 200 L, 400 X,
 800 Y), each held for `press_len` ms. The touch entries follow a finger or the
 mouse's left button pressed on the bottom screen, as the Switch's `touch` says (`2`
 both, `1` fingers, `0` neither), one at a time: the first pressed holds the screen
-until it lets go. The sensors give a console lying still. ZL, ZR and the
-C-stick are the New 3DS's `ir:rst`, which the runtime does not have yet.
+until it lets go. The sensors give a console lying still.
+
+ZL, ZR and the C-stick are the New 3DS's `ir:rst` (`services/irrst.c`, ported from
+Azahar's `ir_rst.cpp`). GetHandles moves out its shared memory and update event,
+and from Initialize to Shutdown each `update_period` ms writes the next of eight
+entries: ZL, ZR and the C-stick's direction bits (the circle pad's rule, four bits
+down), what they gained and lost since the entry before, and the C-stick's position,
+0x9c at its rim, then signals the event. A period of 0 samples every millisecond and
+the raw C-stick, which Azahar does not model either, gives the position without its
+direction bits; each is said on the standard error with the value asked for.
 
 `ir:USER` (`services/ir.c`) answers as Azahar does with no IR accessory in range.
 InitializeIrNopShared writes the shared block's header and empty receive queue, the

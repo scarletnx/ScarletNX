@@ -1,10 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The player's input for the 3DS game. The keys are a Switch game's (the SDL backend's keyboard_buttons): X or Space
-   A, Z B, C X, V Y, Q L, E R, Enter Start, Backspace Select, the arrows the D-pad and WASD the circle pad. A gamepad's
+   A, Z B, C X, V Y, Q L, E R, 1 ZL, 3 ZR, Enter Start, Backspace Select, the arrows the D-pad, WASD the circle pad and
+   IJKL the C-stick (ZL, ZR and the C-stick are the New 3DS's, which ir:rst gives the game). A gamepad's
    controls are a Switch game's pad's (backend/gamepad.c): each sends the button where it is, as on the console (east
    A, south B, north X, west Y), gamepad_map over that in the Switch's button names (Plus is Start and Minus Select),
-   then gamepad_swap_ab swapping A and B; its left stick is the circle pad past gamepad_deadzone. The script
+   then gamepad_swap_ab swapping A and B; its left stick is the circle pad and its right one the C-stick, each past
+   gamepad_deadzone. The script
    (ctr_script) is unattended.c's for a Switch game: ms:hex presses, each held for press_len ms */
 #include "3ds/input/input.h"
 #include "common/utilities/common.h"
@@ -30,8 +32,8 @@ static const uint32_t CTR_BITS[SNX_PAD_BUTTONS] = {
     0,                  /* R3 */
     SNX_CTR_PAD_L,      /* L */
     SNX_CTR_PAD_R,      /* R */
-    0,                  /* ZL: the New 3DS's ir:rst */
-    0,                  /* ZR: the same */
+    SNX_CTR_PAD_ZL,     /* ZL */
+    SNX_CTR_PAD_ZR,     /* ZR */
     SNX_CTR_PAD_START,  /* Plus */
     SNX_CTR_PAD_SELECT, /* Minus */
     SNX_CTR_PAD_LEFT,   /* Left */
@@ -67,14 +69,8 @@ void snx_ctr_input_map(const char* text) {
     for (int c = 0; c < SNX_PAD_CONTROLS; ++c)
         if (map.bit[c] >= 0 && !CTR_BITS[map.bit[c]]) {
             const char* button = snx_pad_button_name(map.bit[c]);
-            if (!strcmp(button, "ZL") || !strcmp(button, "ZR"))
-                fprintf(stderr,
-                        "settings: gamepad_map's %s:%s sends nothing: %s is the New 3DS's ir:rst, which the runtime "
-                        "does not have yet\n",
-                        snx_pad_control_key(c), button, button);
-            else
-                fprintf(stderr, "settings: gamepad_map's %s:%s sends nothing: the 3DS has no %s\n",
-                        snx_pad_control_key(c), button, button);
+            fprintf(stderr, "settings: gamepad_map's %s:%s sends nothing: the 3DS has no %s\n", snx_pad_control_key(c),
+                    button, button);
         }
 }
 
@@ -119,6 +115,16 @@ static void pad_map(SnxPadMap* map) {
     snx_pad_map_fill(map, &placed);
     if (g_settings.swap_a_b) snx_pad_map_swap_ab(map);
 }
+/* A stick at x and y (-1 to 1, y up) as held, past the dead zone and scaled so its edge is the stick at rest and the
+   full circle its rim; it replaces held when it is pushed further, so of several pads and the keys the furthest wins */
+static void stick(float x, float y, float dead, float held[2]) {
+    float length = sqrtf(x * x + y * y);
+    if (length > dead && length > sqrtf(held[0] * held[0] + held[1] * held[1])) {
+        float scale = (fminf(length, 1) - dead) / (1 - dead) / length;
+        held[0] = x * scale;
+        held[1] = y * scale;
+    }
+}
 /* a stick's axis, -1 to 1 */
 static float axis(SDL_Gamepad* pad, SDL_GamepadAxis which) {
     float v = SDL_GetGamepadAxis(pad, which) / 32767.0f;
@@ -132,7 +138,8 @@ void snx_ctr_input_read(SnxCtrInput* input) {
         {SDL_SCANCODE_X, SNX_CTR_PAD_A},           {SDL_SCANCODE_SPACE, SNX_CTR_PAD_A},
         {SDL_SCANCODE_Z, SNX_CTR_PAD_B},           {SDL_SCANCODE_C, SNX_CTR_PAD_X},
         {SDL_SCANCODE_V, SNX_CTR_PAD_Y},           {SDL_SCANCODE_Q, SNX_CTR_PAD_L},
-        {SDL_SCANCODE_E, SNX_CTR_PAD_R},           {SDL_SCANCODE_RETURN, SNX_CTR_PAD_START},
+        {SDL_SCANCODE_E, SNX_CTR_PAD_R},           {SDL_SCANCODE_1, SNX_CTR_PAD_ZL},
+        {SDL_SCANCODE_3, SNX_CTR_PAD_ZR},          {SDL_SCANCODE_RETURN, SNX_CTR_PAD_START},
         {SDL_SCANCODE_BACKSPACE, SNX_CTR_PAD_SELECT}, {SDL_SCANCODE_LEFT, SNX_CTR_PAD_LEFT},
         {SDL_SCANCODE_UP, SNX_CTR_PAD_UP},         {SDL_SCANCODE_RIGHT, SNX_CTR_PAD_RIGHT},
         {SDL_SCANCODE_DOWN, SNX_CTR_PAD_DOWN},
@@ -148,6 +155,8 @@ void snx_ctr_input_read(SnxCtrInput* input) {
             if (held[keys[i].key]) input->buttons |= keys[i].bit;
         input->circle[0] = (float)(held[SDL_SCANCODE_D] - held[SDL_SCANCODE_A]);
         input->circle[1] = (float)(held[SDL_SCANCODE_W] - held[SDL_SCANCODE_S]);
+        input->c_stick[0] = (float)(held[SDL_SCANCODE_L] - held[SDL_SCANCODE_J]);
+        input->c_stick[1] = (float)(held[SDL_SCANCODE_I] - held[SDL_SCANCODE_K]);
     }
     float dead = (float)g_settings.stick_dead_zone / 100.0f;
     SnxPadMap map;
@@ -157,14 +166,8 @@ void snx_ctr_input_read(SnxCtrInput* input) {
         if (!pad) continue;
         for (int c = 0; c < SNX_PAD_CONTROLS; ++c)
             if (map.bit[c] >= 0 && snx_pad_held(pad, c)) input->buttons |= CTR_BITS[map.bit[c]];
-        float x = axis(pad, SDL_GAMEPAD_AXIS_LEFTX), y = -axis(pad, SDL_GAMEPAD_AXIS_LEFTY);
-        float length = sqrtf(x * x + y * y);
-        if (length > dead && length > sqrtf(input->circle[0] * input->circle[0] + input->circle[1] * input->circle[1])) {
-            /* past the dead zone, scaled so its edge is the stick at rest and the full circle its rim */
-            float scale = (fminf(length, 1) - dead) / (1 - dead) / length;
-            input->circle[0] = x * scale;
-            input->circle[1] = y * scale;
-        }
+        stick(axis(pad, SDL_GAMEPAD_AXIS_LEFTX), -axis(pad, SDL_GAMEPAD_AXIS_LEFTY), dead, input->circle);
+        stick(axis(pad, SDL_GAMEPAD_AXIS_RIGHTX), -axis(pad, SDL_GAMEPAD_AXIS_RIGHTY), dead, input->c_stick);
     }
     if (g_input.presses) {
         double ms = (snx_seconds() - g_input.start) * 1000.0;

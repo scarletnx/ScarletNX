@@ -8,7 +8,8 @@
 #include <stdint.h>
 
 /* hid:USER's pad bits (Azahar's PadState, 3dbrew's HID Shared Memory): the circle pad's direction bits are HID's to
-   derive from its position, and ZL, ZR and the C-stick are the New 3DS's ir:rst, not HID's */
+   derive from its position. ZL, ZR and the C-stick are the New 3DS's ir:rst, not HID's: its pad state has ZL and ZR in
+   bits 14 and 15 (Azahar's ir_rst.h), which HID's never sets */
 enum {
     SNX_CTR_PAD_A = 1u << 0,
     SNX_CTR_PAD_B = 1u << 1,
@@ -22,11 +23,14 @@ enum {
     SNX_CTR_PAD_L = 1u << 9,
     SNX_CTR_PAD_X = 1u << 10,
     SNX_CTR_PAD_Y = 1u << 11,
-    SNX_CTR_PAD_BUTTONS = 0xfffu
+    SNX_CTR_PAD_BUTTONS = 0xfffu,
+    SNX_CTR_PAD_ZL = 1u << 14,
+    SNX_CTR_PAD_ZR = 1u << 15
 };
 typedef struct {
     uint32_t buttons; /* SNX_CTR_PAD_* held */
     float circle[2];  /* the circle pad, -1 to 1 on each axis, x to the right and y up */
+    float c_stick[2]; /* the New 3DS's C-stick, the same */
     bool touch;       /* the touch screen pressed */
     uint32_t touch_x, touch_y; /* the last touch position in the screen's 320x240 pixels, kept after a release */
 } SnxCtrInput;
