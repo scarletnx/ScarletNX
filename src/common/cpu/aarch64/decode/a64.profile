@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# The profile of a64.decode that tools/a64dec reads with it: every name of the .decode files has one line here, and a
+# The profile of a64.decode that tools/decodetree reads with it: every name of the .decode files has one line here, and a
 # name they lack is an error.
 #
 #   NAME FLOW [nop] [PREDICATE...] FEATURE...

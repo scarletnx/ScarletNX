@@ -107,7 +107,7 @@ the game's image read from that image.
   it through hactool's storage chains (`snx_hac.h`'s `SnxHacFs`), the sections decrypted, an update's patch applied
   and compressed blocks expanded as they are read. Nothing is cached.
 - `src/nx/loader/loader.c`: NSO/NRO, LZ4, SHA-256, NPDM, MOD0, symbols/relocs/FDEs.
-- `src/common/cpu/aarch64/a64_decoder.c`: the A64 decoder `tools/a64dec` generates from QEMU's `a64.decode` and
+- `src/common/cpu/aarch64/a64_decoder.c`: the A64 decoder `tools/decodetree` generates from QEMU's `a64.decode` and
   ScarletNX's `a64.profile` (`src/common/cpu/aarch64/decode/`): each op's flow and the feature it needs, so a target's
   feature set (the Switch's Cortex-A57 by default) decides what is UNDEF.
 - `src/common/cpu/recompiler/codegen.c`: function/CFG discovery over platform-neutral image views.

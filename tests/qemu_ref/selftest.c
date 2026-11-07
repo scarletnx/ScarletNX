@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The QEMU reference's self-test, under -cpu max and -cpu cortex-a57: hand-checked cases, the ported cases of
-   a64_ported_cases.h with their expected values, and the decoder's UNDEF sets (a64dec's Switch and max targets)
+   a64_ported_cases.h with their expected values, and the decoder's UNDEF sets (decodetree's Switch and max targets)
    against where each CPU raises SIGILL, a few words of every row of the decoder's table and random words. The
    mismatches of that last part are listed (in qemu_ref_undef.txt too). Under max they don't fail the test: they are
    what the profile is fixed from. The Switch target must match the Cortex-A57 but for SYS, whose system registers

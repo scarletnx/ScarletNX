@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The decoder tools/a64dec generates from a64.decode and a64.profile (src/common/cpu/aarch64/decode/): hand-encoded
+/* The decoder tools/decodetree generates from a64.decode and a64.profile (src/common/cpu/aarch64/decode/): hand-encoded
    words, one or more per argument set and format family, with the op, the arguments, the flow and the features
    they need checked against the Arm ARM (DDI 0487, chapter C4 "A64 Instruction Set Encoding" for the encoding
    tables, C6 and C7 for each instruction's fields); the hint group's first match; feature gating between the
