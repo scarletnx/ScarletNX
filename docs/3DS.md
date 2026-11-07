@@ -529,7 +529,9 @@ window shows its images, as for a Switch game: `1` each at the display's refresh
 run says at start which it got. Its `fullscreen=1` starts the window fullscreen (the
 top screen's, with Separate screens), but for a `--seconds` or `--max-blocks` run,
 and F11 or Alt+Enter switches the window it is pressed in, as on the Switch;
-Alt+Enter does not press Start. Bounded PPM snapshots land in
+Alt+Enter does not press Start. The Switch's `anisotropy` (2 to 16) filters a
+mipmapped texture the game filters linearly anisotropically, held to the device's most,
+and the run says at start the value in effect. Bounded PPM snapshots land in
 `<output>/frames` in every mode. Without a display the window path is
 unavailable and frames are only recorded; without a Vulkan device the presenter
 reports unavailability and no frame is fabricated.

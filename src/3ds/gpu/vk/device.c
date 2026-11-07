@@ -99,6 +99,7 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     want.features.fragmentStoresAndAtomics = features.features.fragmentStoresAndAtomics;
     want.features.shaderClipDistance = features.features.shaderClipDistance;
     want.features.shaderInt16 = features.features.shaderInt16;
+    want.features.samplerAnisotropy = features.features.samplerAnisotropy;
     void* const enable[] = {&want, &want12, &want13, index8 ? &want_index : NULL};
     snx_vk_chain(enable, sizeof enable / sizeof *enable);
     if (snx_vk_device_create(phys, family, &want, extensions, n, &v->device) != VK_SUCCESS) return false;
@@ -107,6 +108,7 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     v->index8 = index8 && index_features.indexTypeUint8;
     v->logic_op = features.features.logicOp;
     v->clip_distance = features.features.shaderClipDistance;
+    v->anisotropic = features.features.samplerAnisotropy;
     v->import_host = host;
     v->export_dmabuf = dmabuf;
     VkPhysicalDeviceVulkan12Properties p12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
@@ -445,6 +447,22 @@ static bool make_copies(SnxCtrVk* v, const SnxCtrProfile* profile, uint64_t* byt
     }
     return true;
 }
+float snx_ctr_vk_anisotropy(int asked, bool feature, float most, char* line, size_t line_size) {
+    if (line_size) line[0] = 0;
+    if (asked < 2) return 0;
+    if (!feature) {
+        snprintf(line, line_size,
+                 "anisotropy=%d asks for anisotropic filtering, which the device has none of: textures are filtered as "
+                 "the game asks",
+                 asked);
+        return 0;
+    }
+    float value = (float)asked < most ? (float)asked : most;
+    snprintf(line, line_size,
+             "anisotropy=%d: a mipmapped texture the game filters linearly is filtered anisotropically, at most %gx%s",
+             asked, (double)value, value < (float)asked ? ", the device's most" : "");
+    return value;
+}
 void snx_ctr_vk_path_line(int asked, SnxVkMemoryModel model, bool copied, const char* refused, uint64_t bytes,
                           uint32_t type, char* line, size_t line_size) {
     static const char* const models[] = {"is its own, a window of it mapped by the CPU",
@@ -521,6 +539,10 @@ static bool init(SnxCtrMemory* memory, char* error, size_t error_size) {
     vkGetDeviceQueue(v->device, v->family, 0, &v->queue);
     vkGetPhysicalDeviceProperties(v->phys, &v->properties);
     vkGetPhysicalDeviceMemoryProperties(v->phys, &v->memory_properties);
+    char said[256];
+    v->anisotropy = snx_ctr_vk_anisotropy(g_settings.anisotropic_filtering, v->anisotropic,
+                                          v->properties.limits.maxSamplerAnisotropy, said, sizeof said);
+    if (said[0]) fprintf(stderr, "3ds gpu: %s\n", said);
     /* a recording's sets: a draw takes two (three uniform blocks, three LUTs and three textures), a compute dispatch
        one; running out finishes the recording early (vk/render.c) */
     VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8192},

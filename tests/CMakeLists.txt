@@ -316,6 +316,11 @@ if(TARGET snx_ctr_board)
     snx_test_target(snx-test-3ds-vk-import-error 11)
     target_link_libraries(snx-test-3ds-vk-import-error PRIVATE snx_ctr_gpu)
     add_test(NAME 3ds_vk_import_error COMMAND snx-test-3ds-vk-import-error)
+    # the samplers' anisotropy for the Switch's setting, and what the run says of it
+    add_executable(snx-test-3ds-vk-anisotropy 3ds_vk_anisotropy.c)
+    snx_test_target(snx-test-3ds-vk-anisotropy 11)
+    target_link_libraries(snx-test-3ds-vk-anisotropy PRIVATE snx_ctr_gpu)
+    add_test(NAME 3ds_vk_anisotropy COMMAND snx-test-3ds-vk-anisotropy)
     # the RAM as the GPU has it, imported or the device's own memory: the guest's bytes and the GPU's are one memory,
     # in every view, before, during and after the device
     add_executable(snx-test-3ds-vk-ram 3ds_vk_ram.c)
