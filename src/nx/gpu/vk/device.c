@@ -129,11 +129,29 @@ int vk_ok_(VkResult r, const char* what, const char* file, int line) {
 }
 
 u32 g_vk_validation_messages;
+/* a message names an image with binds in a batch that hasn't gone to the queue yet (memory.c): among its objects, or
+   in its text alone, as the layers' message about a barrier names no image object */
+static int validation_unissued(const VkDebugUtilsMessengerCallbackDataEXT* d) {
+    for (u32 i = 0; i < d->objectCount; i++)
+        if (d->pObjects[i].objectType == VK_OBJECT_TYPE_IMAGE &&
+            vk_sparse_unissued((VkImage)(uintptr_t)d->pObjects[i].objectHandle))
+            return 1;
+    for (const char* at = strstr(d->pMessage, "VkImage 0x"); at; at = strstr(at + 10, "VkImage 0x"))
+        if (vk_sparse_unissued((VkImage)(uintptr_t)strtoull(at + 10, NULL, 16))) return 1;
+    return 0;
+}
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBitsEXT sev,
                                                VkDebugUtilsMessageTypeFlagsEXT type,
                                                const VkDebugUtilsMessengerCallbackDataEXT* d, void* user) {
     (void)type;
     (void)user;
+    /* an image whose binds wait in a batch for the next submission (memory.c): the layers check its memory as each
+       command is recorded, and the batch goes to the queue after that, ahead of the submission that runs the command */
+    if (d->pMessage && strstr(d->pMessage, "vkQueueBindSparse") && validation_unissued(d)) {
+        LOG_LIMIT(4, "vulkan: the validation layers find an image unbound as a command for it is recorded, its binds "
+                     "going to the queue with the next submission (not counted)\n");
+        return VK_FALSE;
+    }
     g_vk_validation_messages++;
     if (sev & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
         WARN("vulkan validation: %s\n", d->pMessage);
