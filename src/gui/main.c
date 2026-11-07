@@ -7998,12 +7998,10 @@ static unsigned group_icon(const char* name) {
     static const struct {
         const char* name;
         unsigned icon;
-    } icons[] = {{"App", GUI_ICON_APP_WINDOW},  {"Launch", GUI_ICON_ROCKET},
-                 {"Game", GUI_ICON_JOYSTICK},   {"Display", GUI_ICON_MONITOR},
-                 {"Graphics", GUI_ICON_IMAGE},  {"3DS", GUI_ICON_MONITOR},
-                 {"Performance", GUI_ICON_GAUGE},
-                 {"Overlay", GUI_ICON_POINTER}, {"Controllers", GUI_ICON_GAMEPAD_2},
-                 {"Network", GUI_ICON_WIFI},    {"User", GUI_ICON_USER},
+    } icons[] = {{"App", GUI_ICON_APP_WINDOW},     {"Launch", GUI_ICON_ROCKET},   {"Game", GUI_ICON_JOYSTICK},
+                 {"Display", GUI_ICON_MONITOR},    {"Graphics", GUI_ICON_IMAGE},  {"3DS", GUI_ICON_MONITOR},
+                 {"Performance", GUI_ICON_GAUGE},  {"Overlay", GUI_ICON_POINTER}, {"Controllers", GUI_ICON_GAMEPAD_2},
+                 {"Shortcuts", GUI_ICON_KEYBOARD}, {"Network", GUI_ICON_WIFI},    {"User", GUI_ICON_USER},
                  {"Debug", GUI_ICON_BUG}};
     for (size_t i = 0; i < SDL_arraysize(icons); ++i)
         if (!strcmp(icons[i].name, name)) return icons[i].icon;

@@ -5,8 +5,8 @@
    uses of the driver's budget, and a graph of the times of its last STATS_FRAMES frames under its title, its guides
    labelled, in stats_corner's corner over the game; in showcase's own corner
    beside showcase's box, toward the picture's middle. Under the graph, while they apply: RenderDoc's lines, that a
-   capture can be taken (Ctrl+Shift+F12) and the captures written with the last one's file, and the debugger tracing the
-   game. On every system: a value it does not tell shows as ? */
+   capture can be taken (the capture key, hotkey_capture) and the captures written with the last one's file, and the
+   debugger tracing the game. On every system: a value it does not tell shows as ? */
 #ifndef SNX_STATS_H
 #define SNX_STATS_H
 #include "nx/runtime/platform/ui.h"
@@ -45,7 +45,7 @@ typedef struct {
 } SnxStatsMeasure;
 
 /* what RenderDoc's lines say (gpu/vk/renderdoc.c, as it loads and after each capture): ready, a capture can be taken
-   (RenderDoc is in the process, and Ctrl+Shift+F12 asks for one); taken, the captures written so far; failed, the last
+   (RenderDoc is in the process, and the capture key asks for one); taken, the captures written so far; failed, the last
    one asked for wasn't written; path, the last one written's file, "" before one or where RenderDoc didn't say it */
 typedef struct {
     int ready;

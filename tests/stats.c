@@ -471,6 +471,13 @@ int main(void) {
         stats_frame(at += 16 * MS, &g_test.gpu);
         draw(at);
         assert(!strcmp(note(0), "RenderDoc: Ctrl+Shift+F12 captures") && !note(2)[0]);
+        /* the capture key as set, and with none the menu's item */
+        snprintf(g_settings.render_doc_capture_shortcut, sizeof g_settings.render_doc_capture_shortcut, "Pause");
+        draw(at);
+        assert(!strcmp(note(0), "RenderDoc: Pause captures"));
+        g_settings.render_doc_capture_shortcut[0] = 0;
+        draw(at);
+        assert(!strcmp(note(0), "RenderDoc: Capture frame in the menu"));
         /* none: no lines, the box as before */
         stats_capture(&(SnxStatsCapture){0});
         draw(at);

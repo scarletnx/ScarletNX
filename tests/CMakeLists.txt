@@ -1385,17 +1385,20 @@ add_test(NAME llvm_dependency COMMAND "${CMAKE_COMMAND}"
     "-DSNX_SOURCE_DIR=${PROJECT_SOURCE_DIR}" "-DSNX_TEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/llvm-dependency"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/llvm_dependency.cmake")
 
-add_executable(snx-test-overlay overlay.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/overlay.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/fatal_screen.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/prepare_screen.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c"
-    "${PROJECT_BINARY_DIR}/generated/controls_skins.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
-snx_test_target(snx-test-overlay 11)
-target_link_libraries(snx-test-overlay PRIVATE scarletnx-common snx_splash m)
 include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
-target_include_directories(snx-test-overlay PRIVATE "${PROJECT_BINARY_DIR}/generated")
-add_test(NAME overlay COMMAND snx-test-overlay)
+if(TARGET SDL3::SDL3) # F1's page names the runtime's keys as SDL names them
+    add_executable(snx-test-overlay overlay.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/overlay.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/fatal_screen.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/prepare_screen.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c"
+        "${PROJECT_BINARY_DIR}/generated/controls_skins.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/hotkeys.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
+    snx_test_target(snx-test-overlay 11)
+    target_link_libraries(snx-test-overlay PRIVATE scarletnx-common snx_splash m SDL3::SDL3)
+    target_include_directories(snx-test-overlay PRIVATE "${PROJECT_BINARY_DIR}/generated")
+    add_test(NAME overlay COMMAND snx-test-overlay)
+endif()
 
 add_executable(snx-test-vpad vpad.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c"
     "${PROJECT_BINARY_DIR}/generated/controls_skins.c"
@@ -1423,6 +1426,14 @@ target_link_libraries(snx-test-hud PRIVATE scarletnx-common snx_splash m)
 target_include_directories(snx-test-hud PRIVATE "${PROJECT_BINARY_DIR}/generated") # the theme's colours
 add_test(NAME hud COMMAND snx-test-hud)
 
+if(TARGET SDL3::SDL3) # the keys' names are SDL's
+    # the runtime's keys (runtime/platform/hotkeys.c): settings.txt's Shortcuts read as SDL names keys, a key pressed
+    # found by them, a value that isn't a key refused with the one in effect
+    add_executable(snx-test-hotkeys hotkeys.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/hotkeys.c")
+    snx_test_target(snx-test-hotkeys 11)
+    target_link_libraries(snx-test-hotkeys PRIVATE SDL3::SDL3)
+    add_test(NAME hotkeys COMMAND snx-test-hotkeys)
+endif()
 # F1's text (runtime/platform/help.c): Ctrl+Shift+F12 while RenderDoc can capture, the debugger while one traces the
 # game
 add_executable(snx-test-help help.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/help.c")
@@ -1963,8 +1974,8 @@ if(NOT SNX_TOOLS_ONLY)
     target_link_libraries(snx-test-vk-image-out PRIVATE snx_nx_flags)
     add_test(NAME vk_image_out COMMAND snx-test-vk-image-out)
     # RenderDoc's captures (gpu/vk/renderdoc.c) against a stand-in RenderDoc: neither renderdoc= nor RenderDoc's program,
-    # renderdoc= without the library, RenderDoc's program that started the game, and renderdoc= loading it;
-    # Ctrl+Shift+F12's capture of the next frame and renderdoc_frames', and what the stats box is told. A process each
+    # renderdoc= without the library, RenderDoc's program that started the game, and renderdoc= loading it; the capture
+    # key's capture of the next frame and renderdoc_frames', and what the stats box is told. A process each
     add_executable(snx-test-vk-renderdoc vk_renderdoc.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/renderdoc.c")
     snx_test_target(snx-test-vk-renderdoc 23)
     target_link_libraries(snx-test-vk-renderdoc PRIVATE snx_nx_flags)

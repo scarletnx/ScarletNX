@@ -9,6 +9,7 @@
 #include "nx/runtime/platform/gamepad.h"
 #include "nx/runtime/platform/touch.h"
 #include "nx/runtime/platform/vpad.h"
+#include "nx/runtime/platform/hotkeys.h"
 #include "nx/runtime/platform/controls_atlas.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/renderer.h"
@@ -227,11 +228,11 @@ static void keys_page(void) {
     ink = list.q[1].rgba;
     assert(shows("SCARLETNX  /  KEYS") && shows("Up/Down: the rest. Any other key or button: back to the game."));
     assert(shows_as("F2, Home", 0, light) && shows_as("the game's menu", 0, ink) && shows_as("F3", 0, light) &&
-           shows_as("a screenshot", 0, ink) && shows_as("F11, Alt+Enter", 0, light) && shows("quit the game"));
+           shows_as("a screenshot", 0, ink) && shows_as("F11, Alt+Return", 0, light) && shows("quit the game"));
     assert(icon_drawn(GUI_ICON_APP_WINDOW) && icon_drawn(GUI_ICON_IMAGE) && icon_drawn(GUI_ICON_LOG_OUT));
     for (i = 2, n = 0; i < list.n; ++i) /* the widest keys' band: a pixel of the scale past them either side */
         n += list.q[i].rgba == ink && list.q[i].h == (float)(16 * s) &&
-             list.q[i].w == (float)(8 * s * (int)strlen("F11, Alt+Enter") + 2 * s);
+             list.q[i].w == (float)(8 * s * (int)strlen("F11, Alt+Return") + 2 * s);
     assert(n == 1);
     assert(shows("\x19") && !shows("\x18") && !shows("right stick")); /* twelve rows show, the rest under them */
     for (i = 2; i < list.n; ++i) assert(!(list.q[i].rgba == ink && list.q[i].w == list.q[0].w)); /* none in focus */
@@ -276,6 +277,22 @@ static void keys_page(void) {
     overlay_scroll(-100);
     draw();
     assert(!shows("capture a frame") && !shows("Debugger"));
+    /* the keys as set: one moved; one with no key left out; the menu's Home without its key; fullscreen's second
+       alone; the capture key's row, with RenderDoc in the process, gone with its key */
+    assert(hotkeys_ini("hotkey_screenshot", "Ctrl+S") && hotkeys_ini("hotkey_quit", "") &&
+           hotkeys_ini("hotkey_menu", "") && hotkeys_ini("hotkey_fullscreen", "") && hotkeys_ini("hotkey_capture", ""));
+    overlay_keys_extra(1, "");
+    draw();
+    assert(shows_as("Ctrl+S", 0, light) && shows("a screenshot") && !shows("F3") && shows_as("Home", 0, light));
+    assert(!shows("F2") && shows_as("Alt+Return", 0, light) && !shows("F11") && !shows("capture a frame"));
+    for (i = 0; i < 40; ++i) overlay_move(1);
+    draw();
+    assert(shows("right stick") && !shows("quit the game"));
+    overlay_scroll(-100);
+    assert(hotkeys_ini("hotkey_screenshot", "F3") && hotkeys_ini("hotkey_quit", "Escape") &&
+           hotkeys_ini("hotkey_menu", "F2") && hotkeys_ini("hotkey_fullscreen", "F11") &&
+           hotkeys_ini("hotkey_capture", "Ctrl+Shift+F12"));
+    overlay_keys_extra(0, "");
     /* back to the game: any key, button or tap, F1 again */
     assert(overlay_select() == OVERLAY_CLOSE && overlay_back() == OVERLAY_CLOSE && overlay_side(-1) == OVERLAY_CLOSE);
     assert(overlay_other() == OVERLAY_CLOSE && overlay_pad(x_button) == OVERLAY_CLOSE &&

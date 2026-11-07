@@ -132,6 +132,7 @@ NO_SET(gamepad_player_map_set)
 NO_SET(unattended_script_set)
 NO_SET(unattended_record_set)
 NO_SET(unattended_replay_set)
+NO_SET(hotkey_set)
 
 #define POLL_NS (15ull * 1000000000ull)
 

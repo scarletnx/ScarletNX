@@ -10,6 +10,7 @@
 * [Performance](#performance)
 * [On-screen controls](#on-screen-controls)
 * [Controllers](#controllers)
+* [Shortcuts](#shortcuts)
 * [Network](#network)
 * [User](#user)
 * [Debug](#debug)
@@ -55,7 +56,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `language` | `1` | The game's language, English (US). The `.ini` lists the others, `0` to `17`. One the runtime doesn't know is English (US) |
 | `showcase` | `0` | `1` draws player 1's buttons and sticks, as the game gets them, and the frames a second in a corner of the window, for a video. F6 turns it on and off |
 | `showcase_corner` | `br` | The corner `showcase` draws in: `tl` top left, `tr` top right, `bl` bottom left, `br` bottom right |
-| `stats` | `0` | `1` draws the frames a second, the last frame's time, the processor and memory the game takes, the share of the time the GPU's graphics queue was busy and its busy time a frame over the last second, from Vulkan timestamps, the video memory the game uses of the driver's budget for it, from `VK_EXT_memory_budget` (`?` where the system or the device does not tell), and a graph of its last 120 frames' times (guides at 60 and 30 FPS, a frame slower than 30 FPS in red) in a corner over the game. Under the graph, while they apply: that Ctrl+Shift+F12 takes a RenderDoc capture (`renderdoc`), the captures written and the last one's file, and the debugger tracing the game (its name on Linux, Android and FreeBSD, `?` on Windows and macOS). F12 or the game's menu turns it on and off |
+| `stats` | `0` | `1` draws the frames a second, the last frame's time, the processor and memory the game takes, the share of the time the GPU's graphics queue was busy and its busy time a frame over the last second, from Vulkan timestamps, the video memory the game uses of the driver's budget for it, from `VK_EXT_memory_budget` (`?` where the system or the device does not tell), and a graph of its last 120 frames' times (guides at 60 and 30 FPS, a frame slower than 30 FPS in red) in a corner over the game. Under the graph, while they apply: that the capture key (`hotkey_capture`) takes a RenderDoc capture (`renderdoc`), the captures written and the last one's file, and the debugger tracing the game (its name on Linux, Android and FreeBSD, `?` on Windows and macOS). F12 or the game's menu turns it on and off |
 | `stats_corner` | `tl` | The corner `stats` draws in, as `showcase_corner`'s; in showcase's own corner it goes beside showcase's box, toward the middle |
 
 ## Graphics
@@ -120,6 +121,33 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `gamepad_p<N>_type` | `0` | The controller the game sees for player N: `0` as it is, `1` Pro Controller, `2` two Joy-Cons, `3` a left Joy-Con, `4` a right one |
 | `gamepad_p<N>_swap_ab`, `gamepad_p<N>_rumble`, `gamepad_p<N>_map` | `-1`, `-10`, empty | Player N's own `gamepad_swap_ab`, `gamepad_rumble` and `gamepad_map`; at these values, every player's |
 
+## Shortcuts
+
+The runtime's keys while a game plays. Each is a key as SDL names it (`F1`, `Pause`, `Return`, `Escape`, `A`), after
+`Ctrl+`, `Alt+`, `Shift+` or `GUI+` for the modifiers held with it (`Ctrl+Shift+F12`); empty is no key. A key held with
+Shift also does what the key alone is set to, unless a setting names it with Shift. A key two settings share does the
+first's in this table, and the log says so. A name SDL doesn't know is refused, and the log says the key in effect.
+F1's page in the game's menu lists them as they are set.
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `hotkey_help` | `F1` | Shows the keys' help |
+| `hotkey_menu` | `F2` | Opens and closes the game's menu; Back and a controller's Home open it too |
+| `hotkey_screenshot` | `F3` | Takes a screenshot |
+| `hotkey_fps_limit` | `F4` | Turns the FPS limit off and back on |
+| `hotkey_thread_dump` | `F5` | Writes every thread's state to the log |
+| `hotkey_showcase` | `F6` | Turns `showcase` on and off |
+| `hotkey_save_state` | `F7` | Saves the game's state to the selected slot |
+| `hotkey_load_state` | `F8` | Loads the selected slot's state |
+| `hotkey_next_slot` | `F9` | Selects the next save state slot |
+| `hotkey_tracy` | `F10` | Records a 60-second Tracy capture, in a build with `SNX_TRACY` |
+| `hotkey_pause` | `Pause` | Pauses the whole game and resumes it |
+| `hotkey_fullscreen` | `F11` | Switches fullscreen |
+| `hotkey_fullscreen_2` | `Alt+Return` | A second key that switches fullscreen |
+| `hotkey_stats` | `F12` | Turns `stats` on and off |
+| `hotkey_capture` | `Ctrl+Shift+F12` | Captures the next frame with RenderDoc while RenderDoc is in the game (`renderdoc`) |
+| `hotkey_quit` | `Escape` | Quits the game |
+
 ## Network
 
 | Key | Default | Effect |
@@ -178,7 +206,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `vk_record` | `1` | `0` records Vulkan commands on the GPU thread instead of a thread of their own |
 | `compute` | `1` | `0` skips every compute shader dispatch |
 | `vk_max_allocation_mb`, `vk_budget_mb` | `0`, `0` | A smaller cap on each Vulkan allocation and on the GPU memory the caches keep, in MiB, for testing. `0` is the device's |
-| `renderdoc`, `renderdoc_frames` | empty | RenderDoc captures to that path's stem of the presents listed (`500,800`, or `45s` for the first after 45 seconds), and Ctrl+Shift+F12 or the game's menu's Capture frame captures the next frame. A game RenderDoc's own program started takes them and the presents listed too, its captures where that program keeps them when `renderdoc` is empty; F12 stays the stats' key |
+| `renderdoc`, `renderdoc_frames` | empty | RenderDoc captures to that path's stem of the presents listed (`500,800`, or `45s` for the first after 45 seconds), and the capture key (`hotkey_capture`) or the game's menu's Capture frame captures the next frame. A game RenderDoc's own program started takes them and the presents listed too, its captures where that program keeps them when `renderdoc` is empty; F12 stays the stats' key |
 | `tracy_profiler` | `0` | `1` starts the run with the Tracy client up, in a build with `SNX_TRACY` ([Profiling](DEVELOPMENT.md#profiling)): connect the GUI to `127.0.0.1:8086`. A capture and the GUI cannot both have the run |
 | `tracy_sampling` | `0` | `1` starts the sampler at the first connection, for the trace's flame graphs |
 | `tracy_port` | empty | The port the client listens on and the capture connects to, `1` to `65535`. Empty is one of the run's own, so an earlier capture or GUI on 8086 is not in the way |

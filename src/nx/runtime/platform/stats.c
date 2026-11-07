@@ -150,14 +150,20 @@ static const char* file_name(const char* path) {
         if (*path == '/' || *path == '\\') name = path + 1;
     return name;
 }
-/* the lines that apply, in room letters each: RenderDoc's, that a capture can be taken and what the last one asked for
-   wrote (its file's name, ? where RenderDoc didn't say it) or that it failed, in the failure colour; and the debugger
-   tracing the game */
+/* the lines that apply, in room letters each: RenderDoc's, that a capture can be taken (by the capture key's setting,
+   hotkeys.h, or with none the menu's item) and what the last one asked for wrote (its file's name, ? where RenderDoc
+   didn't say it) or that it failed, in the failure colour; and the debugger tracing the game */
 static void notes_make(StatsNotes* s, size_t room) {
-    char lead[48];
+    char lead[96];
     s->n = 0;
     s->longest = 0;
-    if (g_stats.capture.ready) note(s, GUI_ICON_IMAGE, STATS_TEXT, room, "RenderDoc: Ctrl+Shift+F12 captures", "");
+    if (g_stats.capture.ready) {
+        if (*g_settings.render_doc_capture_shortcut)
+            snprintf(lead, sizeof lead, "RenderDoc: %s captures", g_settings.render_doc_capture_shortcut);
+        else
+            snprintf(lead, sizeof lead, "RenderDoc: Capture frame in the menu");
+        note(s, GUI_ICON_IMAGE, STATS_TEXT, room, lead, "");
+    }
     if (g_stats.capture.failed) {
         snprintf(lead, sizeof lead, "capture %u failed", g_stats.capture.taken + 1);
         note(s, GUI_ICON_SAVE, STATS_SLOW, room, lead, "");

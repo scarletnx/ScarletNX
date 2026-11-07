@@ -611,6 +611,126 @@ setting Player button map
     help Player N's map, as gamepad_map; empty = gamepad_map's
 end
 
+# the runtime's keys (platform/hotkeys.c, backend/sdl3.c): F1's help and the game's menu show them
+table g_hotkeys_ini
+setting Help shortcut
+    key hotkey_help
+    text 64
+    default F1
+    label Help
+    set hotkey_set
+    help The key that shows the keys' help, as SDL names it (F1, Pause, Return, Escape, A), after Ctrl+, Alt+, Shift+ or
+    help GUI+ for the modifiers held with it (Ctrl+Shift+F12). Empty: no key. A name SDL doesn't know is refused, said
+    help in the log with the key in effect
+setting Menu shortcut
+    key hotkey_menu
+    text 64
+    default F2
+    label Menu
+    set hotkey_set
+    help The key that opens and closes the game's menu, as hotkey_help's. Back and a controller's Home open it too
+setting Screenshot shortcut
+    key hotkey_screenshot
+    text 64
+    default F3
+    label Screenshot
+    set hotkey_set
+    help The key that takes a screenshot, as hotkey_help's
+setting FPS limit shortcut
+    key hotkey_fps_limit
+    text 64
+    default F4
+    label FPS limit
+    set hotkey_set
+    help The key that turns the FPS limit off and back on, as hotkey_help's
+setting Thread dump shortcut
+    key hotkey_thread_dump
+    text 64
+    default F5
+    label Thread dump
+    set hotkey_set
+    help The key that writes every thread's state to the log, as hotkey_help's
+setting Showcase shortcut
+    key hotkey_showcase
+    text 64
+    default F6
+    label Showcase
+    set hotkey_set
+    help The key that turns showcase on and off, as hotkey_help's
+setting Save state shortcut
+    key hotkey_save_state
+    text 64
+    default F7
+    label Save state
+    set hotkey_set
+    help The key that saves the game's state to the selected slot, as hotkey_help's
+setting Load state shortcut
+    key hotkey_load_state
+    text 64
+    default F8
+    label Load state
+    set hotkey_set
+    help The key that loads the selected slot's state, as hotkey_help's
+setting Next slot shortcut
+    key hotkey_next_slot
+    text 64
+    default F9
+    label Next slot
+    set hotkey_set
+    help The key that selects the next save state slot, as hotkey_help's
+# SNX_TRACY_DEBUG_BEGIN
+setting Tracy capture shortcut
+    key hotkey_tracy
+    text 64
+    default F10
+    label Tracy capture
+    set hotkey_set
+    help The key that records a 60-second Tracy capture, as hotkey_help's
+# SNX_TRACY_DEBUG_END
+setting Pause shortcut
+    key hotkey_pause
+    text 64
+    default Pause
+    label Pause
+    set hotkey_set
+    help The key that pauses the whole game and resumes it, as hotkey_help's
+setting Fullscreen shortcut
+    key hotkey_fullscreen
+    text 64
+    default F11
+    label Fullscreen
+    set hotkey_set
+    help The key that switches fullscreen, as hotkey_help's
+setting Second fullscreen shortcut
+    key hotkey_fullscreen_2
+    text 64
+    default Alt+Return
+    label Fullscreen 2
+    set hotkey_set
+    help A second key that switches fullscreen, as hotkey_help's
+setting Stats shortcut
+    key hotkey_stats
+    text 64
+    default F12
+    label Stats
+    set hotkey_set
+    help The key that turns the stats on and off, as hotkey_help's
+setting RenderDoc capture shortcut
+    key hotkey_capture
+    text 64
+    default Ctrl+Shift+F12
+    label RenderDoc capture
+    set hotkey_set
+    help The key that captures the next frame with RenderDoc while RenderDoc is in the game (renderdoc), as
+    help hotkey_help's
+setting Quit shortcut
+    key hotkey_quit
+    text 64
+    default Escape
+    label Quit
+    set hotkey_set
+    help The key that quits the game, as hotkey_help's
+
 table g_network_ini
 setting Network
     key network
@@ -1009,9 +1129,9 @@ setting RenderDoc captures
     text 1024
     default ""
     startup
-    help The path's stem of RenderDoc captures (RenderDoc's library is loaded before the Vulkan instance):
-    help Ctrl+Shift+F12's of the next frame, and the presents RenderDoc frames names. Empty: RenderDoc isn't loaded, and
-    help a game RenderDoc's program started captures where that program says
+    help The path's stem of RenderDoc captures (RenderDoc's library is loaded before the Vulkan instance): the capture
+    help key's (hotkey_capture) and the game's menu's of the next frame, and the presents RenderDoc frames names. Empty:
+    help RenderDoc isn't loaded, and a game RenderDoc's program started captures where that program says
 setting RenderDoc frames
     key renderdoc_frames
     text 512
@@ -1303,6 +1423,7 @@ section 3DS: g_ctr_display_ini
 section Performance: g_performance_ini
 section On-screen controls: g_vpad_ini, g_backend_ini, g_vpad_shown_ini/Buttons    backend
 section Controllers: g_gamepad_ini, g_gamepad_map_ini/Button map, g_gamepad_players_ini/Player    backend
+section Shortcuts: g_hotkeys_ini    backend
 section Network: g_network_ini
 section User: g_user_ini
 section Debug: g_debug_ini
