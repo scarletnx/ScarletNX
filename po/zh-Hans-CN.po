@@ -3832,6 +3832,10 @@ msgid "Nothing to keep: no file of the menu's"
 msgstr "无需保留：菜单没有任何文件"
 
 #: src/gui/main.c
+msgid "Every screen"
+msgstr "每个画面"
+
+#: src/gui/main.c
 #, c-format
 msgid "The game starts its program %d, %s, which is not made: Recompile the game to make its programs"
 msgstr ""
