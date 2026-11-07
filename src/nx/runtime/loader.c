@@ -7,6 +7,7 @@
 #include "nx/runtime/main.h"
 #include "nx/hle/filesystem/fs.h"
 #include "common/utilities/patches.h"
+#include "common/utilities/zbic.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
@@ -108,6 +109,13 @@ static int copy_nso(const SnxModInfo* mi, const PFileMap* map) {
         }
         if (!size) continue;
         u32 stored = snx_ld_le32(f + 0x60 + i * 4);
+        if (snx_zbic_is(f + file_off, stored)) {
+            if (snx_zbic_decompress(out, size, f + file_off, stored) != (long)size) {
+                WARN("ZBIC failed in %s\n", mi->name);
+                return -1;
+            }
+            continue;
+        }
         if (stored > LZ4_MAX_INPUT_SIZE || size > LZ4_MAX_INPUT_SIZE ||
             LZ4_decompress_safe((const char*)f + file_off, (char*)out, (int)stored, (int)size) != (int)size) {
             WARN("LZ4 failed in %s\n", mi->name);

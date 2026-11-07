@@ -2,6 +2,7 @@
 #include "nso.h"
 #include "lz4.h"
 #include "sha.h"
+#include "common/utilities/zbic.h"
 
 static void *nso_uncompress(nso0_ctx_t *ctx) {
     /* Make new header with correct sizes, fixed flags. */
@@ -27,7 +28,13 @@ static void *nso_uncompress(nso0_ctx_t *ctx) {
     for (unsigned int segment = 0; segment < 3; segment++) {
         char *src = (char *)ctx->header + ctx->header->segments[segment].file_off;
         char *dst = (char *)new_nso + new_header.segments[segment].file_off;
-        if ((ctx->header->flags >> segment) & 1) {
+        if (((ctx->header->flags >> segment) & 1) && snx_zbic_is(src, ctx->header->compressed_sizes[segment])) {
+            /* ScarletNX: an Ounce game's segment may be ZBIC rather than LZ4 (common/utilities/zbic.c) */
+            if (snx_zbic_decompress(dst, new_header.segments[segment].decomp_size, src, ctx->header->compressed_sizes[segment]) != (long)new_header.segments[segment].decomp_size) {
+                fprintf(stderr, "Error: Failed to decompress NSO0 segment %u (ZBIC)!\n", segment);
+                exit(EXIT_FAILURE);
+            }
+        } else if ((ctx->header->flags >> segment) & 1) {
             if (LZ4_decompress_safe(src, dst, ctx->header->compressed_sizes[segment], new_header.segments[segment].decomp_size) != (int)new_header.segments[segment].decomp_size) {
                 fprintf(stderr, "Error: Failed to decompress NSO0 segment %u!\n", segment);
                 exit(EXIT_FAILURE);
