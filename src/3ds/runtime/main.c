@@ -65,7 +65,9 @@ static void usage(FILE* out) {
         "                  --pipeline_threads=N threads (0: all the computer's but two, two to twelve);\n"
         "                  --gamepad_swap_ab=1 swaps a gamepad's A and B, --gamepad_deadzone=N is its sticks'\n"
         "                  dead zone in percent of their travel (default 20), --gamepad_map=MAP the buttons its\n"
-        "                  controls send (south:B east:A ..., the Switch's names: Plus is Start, Minus Select)\n"
+        "                  controls send (south:B east:A ..., the Switch's names: Plus is Start, Minus Select);\n"
+        "                  --touch=N what reaches the touch screen: 2 a finger or the mouse's left button (the\n"
+        "                  default), 1 a finger, 0 nothing\n"
         "  --ipc-stubs L   With --ctr_auto_stub_ipc=0, still answer a service command the runtime lacks with\n"
         "                  success for the services in L: all, or a comma list of srv, fs, apt, ptm, hid, gsp,\n"
         "                  cfg, dsp, system. Given more than once, the lists add up\n"
@@ -558,6 +560,7 @@ int snx_ctr_main(int argc, char** argv) {
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_debug_ini, key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_performance_ini, key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_gamepad_ini, key);
+                if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_backend_ini, key);
                 map = !strcmp(key, "gamepad_map");
             }
             if (map)

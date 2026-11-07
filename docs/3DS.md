@@ -221,8 +221,8 @@ shader interpreter, rasterizer, texturing, combiners, lighting) and plays its
 title music through a port of Azahar's HLE DSP. A run of about 2 billion native
 blocks presented frames until it was ended. It is **not playable** yet:
 
-- Input is the pad and the mouse's left button on the touch screen. The sensors
-  are at rest (`hid:USER`, below).
+- Input is the pad and a finger or the mouse's left button on the touch screen.
+  The sensors are at rest (`hid:USER`, below).
 - The music has a gap after every rendered frame, because rendering and presenting
   run inside the guest's GSP call.
 - Procedural textures and shadows still stop the run explicitly.
@@ -428,8 +428,10 @@ Plus is Start, Minus Select), A swapped with B by `gamepad_swap_ab`, with its le
 stick past `gamepad_deadzone`, all three the Switch's settings, and the
 scripted presses of `--script=ms:hex,...` (`ctr_script`), in the pad's bits (1 A,
 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down, 100 R, 200 L, 400 X,
-800 Y), each held for `press_len` ms. The touch entries follow the pointer's press
-on the bottom screen, and the sensors give a console lying still. ZL, ZR and the
+800 Y), each held for `press_len` ms. The touch entries follow a finger or the
+mouse's left button pressed on the bottom screen, as the Switch's `touch` says (`2`
+both, `1` fingers, `0` neither), one at a time: the first pressed holds the screen
+until it lets go. The sensors give a console lying still. ZL, ZR and the
 C-stick are the New 3DS's `ir:rst`, which the runtime does not have yet.
 
 `ir:USER` (`services/ir.c`) answers as Azahar does with no IR accessory in range.
