@@ -150,12 +150,38 @@ static void test_vulkan_info(void) {
     key = vk_sample_locations_standard(3);
     check_zero(&key, "invalid standard count returns no pattern");
 }
+/* A depth image's layout transition names its sample locations only where they aren't the image's standard ones,
+   which a transition naming none takes: a barrier that chains them waits for the recording thread to drain */
+static void test_barrier_locations(void) {
+    VkSampleLocationEXT pos[16];
+    VkSampleLocationsInfoEXT info;
+    for (u32 samples = 1; samples <= 16; samples *= 2) {
+        VkSampleLocations key = vk_sample_locations_standard(samples);
+        check(!vk_sample_locations_barrier(&key, samples, &info, pos), "an image's standard locations chain nothing");
+    }
+    const VkSampleLocations none = {0};
+    check(!vk_sample_locations_barrier(&none, 4, &info, pos), "no locations chain nothing");
+    VkSampleLocations key = vk_sample_locations_standard(4);
+    key.location[0] = 0x88;
+    const VkSampleLocationsInfoEXT* got = vk_sample_locations_barrier(&key, 4, &info, pos);
+    check(got == &info && info.sampleLocationsPerPixel == VK_SAMPLE_COUNT_4_BIT && info.sampleLocationsCount == 4 &&
+              pos[0].x == 0.5f && pos[0].y == 0.5f && pos[1].x == 14.0f / 16 && pos[1].y == 6.0f / 16,
+          "custom locations go in the barrier as they are");
+    key = vk_sample_locations_standard(2);
+    check(vk_sample_locations_barrier(&key, 4, &info, pos) == &info,
+          "another count's standard locations are not the image's own");
+    key = vk_sample_locations_standard(4);
+    key.width = 2;
+    memcpy(key.location + 4, key.location, 4);
+    check(vk_sample_locations_barrier(&key, 4, &info, pos) == &info, "a grid of the standard positions is named");
+}
 int main(void) {
     test_disabled_and_gates();
     test_grid_shapes();
     test_exact_repetition();
     test_lower_left();
     test_vulkan_info();
+    test_barrier_locations();
     printf("vk sample locations: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }

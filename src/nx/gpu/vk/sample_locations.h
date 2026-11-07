@@ -101,4 +101,16 @@ static inline VkSampleLocationsInfoEXT vk_sample_locations_info(const VkSampleLo
                                       .sampleLocationsCount = count,
                                       .pSampleLocations = output};
 }
+/* The sample locations a layout transition of a depth image made SAMPLE_LOCATIONS_COMPATIBLE names in its barrier's
+   pNext (into out and pos), the ones key holds: NULL for none or for the image's standard ones (samples a pixel), which
+   a transition that names none takes. Recording names nothing there that it can leave out: a barrier with a pNext
+   chain waits for the recording thread to catch up (record.c barrier_chained) */
+static inline const VkSampleLocationsInfoEXT* vk_sample_locations_barrier(const VkSampleLocations* key, u32 samples,
+                                                                          VkSampleLocationsInfoEXT* out,
+                                                                          VkSampleLocationEXT pos[16]) {
+    VkSampleLocations standard = vk_sample_locations_standard(samples);
+    if (!key->samples || !memcmp(key, &standard, sizeof standard)) return NULL;
+    *out = vk_sample_locations_info(key, pos);
+    return out;
+}
 #endif
