@@ -3836,6 +3836,10 @@ msgid "Every screen"
 msgstr "Toda tela"
 
 #: src/gui/main.c
+msgid "Shortcuts"
+msgstr "Atalhos"
+
+#: src/gui/main.c
 #, c-format
 msgid "The game starts its program %d, %s, which is not made: Recompile the game to make its programs"
 msgstr "O jogo inicia o seu programa %d, %s, que não foi compilado: Recompilar o jogo compila os programas dele"
