@@ -4,6 +4,7 @@
 #include "3ds/ipc/ctr_ipc.h"
 #include "common/filesystem/tree.h"
 #include "common/utilities/common.h"
+#include "common/utilities/mii_model.h"
 #include "snx_settings.h"
 #include "support/3ds_guest.h"
 #include <assert.h>
@@ -606,8 +607,8 @@ static void other_save(SnxCtrProcess* p, uint32_t fs, const char* directory) {
     free(host_title);
     assert(ctr_object_count(p) == before);
 }
-/* The NCCH archive through OpenFileDirectly: a system title Azahar has an open stand-in for (the Mii data, the bad
-   word list) is that RomFS, another one NotFound, and the title's own RomFS a file */
+/* The NCCH archive through OpenFileDirectly: the Mii data is our parts' RomFS (mii_model.c's), a system title Azahar
+   has an open stand-in for (the bad word list) is that RomFS, another one NotFound, and the title's own RomFS a file */
 static void ncch(SnxCtrProcess* p, uint32_t fs, bool absent) {
     for (unsigned i = 0; i < 5; ++i) ctr_put(p, 0x300040 + i * 4, 0); /* NCCH data, content 0, its RomFS */
     uint32_t open[] = {0x8030204, 0, 0x2345678a, 2, 16, 2, 0x14, 1, 0, (16u << 14) | 0x802, 0x300020,
@@ -616,7 +617,10 @@ static void ncch(SnxCtrProcess* p, uint32_t fs, bool absent) {
     static const struct {
         uint64_t title;
         uint32_t size;
-    } stand_ins[] = {{0x0004009b00010202ull, 73600}, {0x000400db00010302ull, 1508}};
+    } stand_ins[] = {{0x0004009b00010202ull, 0}, {0x000400db00010302ull, 1508}};
+    static unsigned char mii[0x200000];
+    uint32_t mii_size = snx_mii_cfl_romfs(mii, sizeof mii);
+    assert(mii_size);
     for (unsigned i = 0; i < 2; ++i) {
         ctr_put(p, 0x300020, (uint32_t)stand_ins[i].title);
         ctr_put(p, 0x300024, (uint32_t)(stand_ins[i].title >> 32));
@@ -624,7 +628,8 @@ static void ncch(SnxCtrProcess* p, uint32_t fs, bool absent) {
         assert(ctr_command_word(p, 0) == 0x8030042 && !ctr_command_word(p, 1));
         uint32_t file = ctr_command_word(p, 3);
         ctr_call(p, file, size, 1, SNX_CTR_SVC_RETURN, 0);
-        assert(!ctr_command_word(p, 1) && ctr_command_word(p, 2) == stand_ins[i].size && !ctr_command_word(p, 3));
+        assert(!ctr_command_word(p, 1) &&
+               ctr_command_word(p, 2) == (stand_ins[i].size ? stand_ins[i].size : mii_size) && !ctr_command_word(p, 3));
         uint32_t read[] = {0x80200c2, 0, 0, 4, (4u << 4) | 12, 0x300100};
         ctr_call(p, file, read, 6, SNX_CTR_SVC_RETURN, 0);
         unsigned char header[4];

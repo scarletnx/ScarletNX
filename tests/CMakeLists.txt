@@ -2580,6 +2580,17 @@ if(NOT WIN32)
     target_link_libraries(snx-test-mii-model PRIVATE m)
 endif()
 add_test(NAME mii_model COMMAND snx-test-mii-model)
+# the 3DS's Mii parts file the same model writes (CFL_Res.dat): its RomFS, sections, items, meshes and textures read
+# back as the face library's layout says, the same bytes twice, a cube as a head and a mask alone written, the meshes
+# the file cannot hold refused
+add_executable(snx-test-mii-cfl mii_cfl.c "${PROJECT_SOURCE_DIR}/src/common/utilities/mii_model.c")
+snx_test_target(snx-test-mii-cfl 99)
+target_include_directories(snx-test-mii-cfl PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(snx-test-mii-cfl PRIVATE snx_libdeflate) # mii_model.c's Switch files deflate their parts
+if(NOT WIN32)
+    target_link_libraries(snx-test-mii-cfl PRIVATE m)
+endif()
+add_test(NAME mii_cfl COMMAND snx-test-mii-cfl)
 # the ASTC shader's GLSL run on the CPU (tests/glsl/glsl.hpp) against the same decoder: no GPU needed
 add_executable(snx-test-astc-glsl glsl/astc_glsl.cpp support/astc.c)
 snx_test_target(snx-test-astc-glsl 23)
