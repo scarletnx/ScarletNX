@@ -179,6 +179,29 @@ typedef struct {
     uint32_t event;
     uint8_t sampling, encoding, sample_rate, gain, power, clamp, allow_shell_closed;
 } SnxCtrMic;
+/* cam:u's state (services/cam.c), as Azahar's Module: three cameras, each with two contexts (its current one the
+   picture's), and two ports, the first the outer left or the inner camera's, the second the outer right one's */
+typedef struct {
+    uint16_t width, height, crop_x0, crop_y0, crop_x1, crop_y1; /* the picture, and its crop of the sensor's */
+    uint8_t flip, effect, format;
+} SnxCtrCamContext;
+typedef struct {
+    SnxCtrCamContext contexts[2];
+    uint8_t context, frame_rate; /* the current context; SetFrameRate's value */
+} SnxCtrCamera;
+typedef struct {
+    uint32_t completion_event, error_event, vsync_event; /* (retained) made at the first request for each */
+    uint64_t vsync_ns, done_ns; /* host monotonic ns of the next vsync and of the receiving's end, 0 for none */
+    int64_t vsync_us[5];        /* the last vsyncs' times, newest first: vsync_count of them */
+    uint32_t vsync_count, dest, dest_size;
+    uint16_t transfer_bytes, x0, y0, x1, y1;
+    uint8_t camera, active, busy, receiving, pending, trimming;
+} SnxCtrCamPort;
+typedef struct {
+    SnxCtrCamera camera[3];
+    SnxCtrCamPort port[2];
+    uint8_t initialized;
+} SnxCtrCam;
 /* hid:USER's sampling (services/hid.c): each update's next deadline, host monotonic ns (0: not running), the index
    each writes next, how many times the game enabled each sensor, and the circle pad's last two raw positions, which
    each sample averages with */
@@ -255,6 +278,7 @@ struct SnxCtrProcess {
     uint32_t irrst_objects[2]; /* ir:rst's shared memory and its update event, made at its first GetHandles */
     SnxCtrIrrst irrst;
     SnxCtrMic mic;
+    SnxCtrCam cam;
     uint64_t svc_count, svc_counts[256]; /* all, and each SVC's */
     uint64_t idle_ns, idle_waits;        /* the host time the scheduler slept with no thread to run, and how often */
     /* the codeset GetProcessInfo describes: segments as loaded, BSS, title and name (ExHeader) */

@@ -460,6 +460,14 @@ with no input device: sampling starts and stops, the settings a game stores (gai
 power, clamp, the shell closed) read back, and the buffer full event is a real event
 that is never signalled, as no sample is ever written.
 
+`cam:u` (`services/cam.c`, ported from Azahar's `cam.cpp`) has Azahar's blank camera
+behind it: the ports activate, capture and receive as Azahar's do, a receiving
+completes at its camera's frame rate's latency with a black frame (whole or
+trimmed, YUV422 or RGB565), an activated port's vsync event fires at that latency
+and GetLatestVsyncTiming gives the last five. A frame rate or a size preset past
+Azahar's tables, and a width of 0, which Azahar would read past or divide by, are
+refused with InvalidEnumValue and OutOfRange.
+
 `ir:USER` (`services/ir.c`) answers as Azahar does with no IR accessory in range.
 InitializeIrNopShared writes the shared block's header and empty receive queue, the
 receive, send and connection-status events are real kernel events, and RequireConnection

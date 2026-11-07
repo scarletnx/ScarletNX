@@ -256,6 +256,11 @@ if(TARGET snx_ctr_board)
     snx_test_target(snx-test-3ds-mic 11)
     target_link_libraries(snx-test-3ds-mic PRIVATE snx_ctr_process)
     add_test(NAME 3ds_mic COMMAND snx-test-3ds-mic)
+    # cam:u with Azahar's blank camera
+    add_executable(snx-test-3ds-cam 3ds_cam.c support/3ds_guest.c)
+    snx_test_target(snx-test-3ds-cam 11)
+    target_link_libraries(snx-test-3ds-cam PRIVATE snx_ctr_process)
+    add_test(NAME 3ds_cam COMMAND snx-test-3ds-cam)
     # the pointer's touch on the window's bottom screen, from the presenter to hid:USER's samples
     add_executable(snx-test-3ds-mouse-touch 3ds_mouse_touch.c support/3ds_guest.c)
     snx_test_target(snx-test-3ds-mouse-touch 11)

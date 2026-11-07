@@ -30,6 +30,10 @@ static const char* event_owner(const SnxCtrProcess* p, uint32_t id) {
         if (id == p->hid_objects[i]) return "HID's";
     if (id == p->irrst_objects[1]) return "ir:rst's";
     if (id == p->mic.event) return "mic:u's buffer full";
+    for (unsigned i = 0; i < 2; ++i)
+        if (id == p->cam.port[i].completion_event || id == p->cam.port[i].vsync_event ||
+            id == p->cam.port[i].error_event)
+            return "cam:u's";
     for (unsigned i = 0; i < CTR_GSP_THREADS; ++i)
         if (id == p->gsp.event_object[i]) return "GSP's interrupt";
     for (unsigned i = 0; i < sizeof p->dsp.interrupt / sizeof *p->dsp.interrupt; ++i)

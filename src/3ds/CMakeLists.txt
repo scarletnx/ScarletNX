@@ -19,7 +19,7 @@ add_library(snx_ctr_process STATIC runtime/process.c kernel/kernel.c kernel/thre
             services/srv.c services/fs.c services/apt.c services/font.c services/ptm.c services/hid.c services/romfs.c
             services/file.c services/gsp.c services/dsp.c services/cfg.c services/system.c services/am.c services/y2r.c
             services/ldr.c services/cro.c services/swkbd.c services/mii_selector.c services/ir.c services/irrst.c
-            services/mic.c)
+            services/mic.c services/cam.c)
 # the system archives' stand-ins (cmake/ctr_system_archives.cmake), which services/fs.c serves through the NCCH archive
 target_sources(snx_ctr_process PRIVATE "${PROJECT_BINARY_DIR}/generated/ctr_system_archives.c")
 target_sources(snx_ctr_process PRIVATE services/uds.c)
