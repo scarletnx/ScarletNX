@@ -3,8 +3,8 @@
 /* Capture, save/import, and redraw a transform-feedback result without reading it on the CPU between those steps.
    Separate owner slots and temporary pause/resume must retain their own byte counters. */
 static int check_nvn_xfb(void) {
-    if (!g_vk.has_xfb) {
-        puts("SKIP NVN transform feedback: device has no capture extension");
+    if (!g_vk.has_xfb && !g_shader_xfb_stores) {
+        puts("SKIP NVN transform feedback: device has no capture extension and no vertex stores");
         return 0;
     }
     const u64 gpu = 0x4c8000000ull, cpu = HEAP_BASE + 0x720000;
@@ -52,6 +52,10 @@ static int check_nvn_xfb(void) {
     DsState* state = &channel->ds;
     u8 initial[256], captured[256];
     memset(initial, 0xcd, sizeof initial);
+    DrawOwner refused = {0};
+    CHECK(!g_renderer->xfb_control(owner_a, 0, 0, 16, &refused)); /* a begin needs its control block */
+    /* stores don't capture an indirect draw, and a draw from the counts (DrawAuto) is one */
+    const u32 redrawn = g_vk.has_xfb ? 64 : 0;
     for (u32 temporary = 0; temporary < 2; temporary++) {
         DrawOwner a = {0}, b = {0};
         CHECK(!gmem_write(output_a, initial, sizeof initial));
@@ -102,15 +106,50 @@ static int check_nvn_xfb(void) {
         CHECK(control[5] == 0xcdcdcdcdu && control[6] == 0xcdcdcdcdu && control[7] == 0xcdcdcdcdu);
         CHECK(!gmem_read(control_b, control, sizeof control) && control[0] == 16 && control[1] == 16);
         CHECK(control[5] == 0xcdcdcdcdu && control[6] == 0xcdcdcdcdu && control[7] == 0xcdcdcdcdu);
-        CHECK(!gmem_read(control_c, control, sizeof control) && control[0] == 16 && control[1] == 64);
+        CHECK(!gmem_read(control_c, control, sizeof control) && control[0] == 16 && control[1] == redrawn);
         CHECK(control[5] == 0xcdcdcdcdu && control[6] == 0xcdcdcdcdu && control[7] == 0xcdcdcdcdu);
         memcpy(initial, positions, sizeof positions);
         memcpy(initial + sizeof positions, positions + 4, 16);
         CHECK(!gmem_read(output_a, captured, sizeof captured) && !memcmp(captured, initial, sizeof captured));
-        CHECK(!gmem_read(output_c, captured, sizeof captured) && !memcmp(captured, initial, sizeof captured));
+        CHECK(!gmem_read(output_c, captured, sizeof captured) &&
+              (!redrawn || !memcmp(captured, initial, sizeof captured)));
         memset(initial, 0xcd, sizeof initial);
         memcpy(initial, positions, 16);
         CHECK(!gmem_read(output_b, captured, sizeof captured) && !memcmp(captured, initial, sizeof captured));
+        memset(initial, 0xcd, sizeof initial);
+    }
+    /* a resume goes on from its control block, not from where another capture of the same owner ended */
+    {
+        DrawOwner a = {0};
+        CHECK(!gmem_write(output_a, initial, sizeof initial));
+        CHECK(!gmem_write(output_b, initial, sizeof initial));
+        state->owner = owner_a;
+        state->bind.xfb[0].addr = output_a;
+        state->vbuf.addr[0] = stream;
+        state->vbuf.size[0] = sizeof positions;
+        state->gen[DS_BIND] = ds_generation_next();
+        state->gen[DS_VBUF] = ds_generation_next();
+        DrawCall draw = {.topology = 0, .count = 3, .instances = 1};
+        CHECK(g_renderer->xfb_control(owner_a, control_a, 0, 16, &a));
+        g_renderer->draw(state, &draw, &a);
+        CHECK(g_renderer->xfb_control(owner_a, control_a, 2, 16, &a));
+        state->bind.xfb[0].addr = output_b;
+        state->gen[DS_BIND] = ds_generation_next();
+        CHECK(g_renderer->xfb_control(owner_a, control_b, 0, 16, &a));
+        draw.count = 1;
+        g_renderer->draw(state, &draw, &a);
+        CHECK(g_renderer->xfb_control(owner_a, control_b, 1, 16, &a));
+        state->bind.xfb[0].addr = output_a;
+        state->gen[DS_BIND] = ds_generation_next();
+        CHECK(g_renderer->xfb_control(owner_a, control_a, 3, 16, &a));
+        draw.first = 1;
+        g_renderer->draw(state, &draw, &a);
+        CHECK(g_renderer->xfb_control(owner_a, control_a, 1, 16, &a));
+        u32 control[2];
+        CHECK(!gmem_read(control_a, control, sizeof control) && control[0] == 16 && control[1] == 64);
+        memcpy(initial, positions, sizeof positions);
+        memcpy(initial + sizeof positions, positions + 4, 16);
+        CHECK(!gmem_read(output_a, captured, sizeof captured) && !memcmp(captured, initial, sizeof captured));
         memset(initial, 0xcd, sizeof initial);
     }
     static const u32 cases[][2] = {{16, 48}, {16, 49}, {0, 99}, {1, 0xffffffffu}, {0xffffffffu, 0xffffffffu}};

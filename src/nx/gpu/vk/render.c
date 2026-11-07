@@ -33,6 +33,7 @@
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/vk/tess_passthrough.h"
 #include "nx/gpu/vk/quad_indices.h"
+#include "nx/gpu/vk/xfb_stores.h"
 #include "nx/memory/own.h"
 #include "nx/gpu/vk/internal_spv.h"
 #include "nx/runtime/platform/tracy.h"
@@ -386,23 +387,33 @@ static int xfb_counters(void) {
     return 1;
 }
 static u64 xfb_counter_offset(u32 owner) { return ((u64)(owner & 0x7fffffff) + (owner >> 31 ? GPU_CHANNELS : 0)) * 16; }
-int vk_render_xfb_control(u32 owner_id, u64 control, u32 what, u32 stride, DrawOwner* owner) {
-    if ((owner_id & 0x7fffffff) >= GPU_CHANNELS) return 0;
-    if (!g_vk.has_xfb && g_shader_xfb_stores) {
-        /* capture by stores: a begin starts every buffer at 0 again, and a resume goes on from the CPU's ends
-           (g_xfb.end). The control memory gets no byte counts, so a draw of them (DrawAuto) still does nothing */
-        if (!what) {
-            owner->xfb_started = 0;
-            owner->xfb_reload = 15;
-        } else if (what == 3 && control) {
-            owner->xfb_started = 15;
-            owner->xfb_reload = 0;
-        }
+/* by stores the CPU keeps the ends, so it reads and writes the control block (xfb.c's layout) itself */
+static int xfb_control_stores(u32* end, u64 control, u32 what, u32 stride) {
+    if (what > 3 || (control & 3) || (!control && what == 0)) return 0;
+    if (!control) return 1; /* temporary pause/resume keeps the current ends */
+    u8 block[16];
+    if (what == 3) {
+        if (gmem_read(control + 4, block, sizeof block)) return 0;
+        for (u32 b = 0; b < 4; b++) end[b] = snx_ld_le32(block + 4 * b);
         return 1;
     }
-    if (!g_vk.has_xfb || !xfb_counters()) return 0;
-    vk_render_end(); /* counter transfers occur outside rendering */
-    if (!vk_xfb_control_buffer(g_xfb.buf, xfb_counter_offset(owner_id), control, what, stride)) return 0;
+    if (!what) {
+        for (u32 b = 0; b < 4; b++) end[b] = 0;
+        snx_st_le32(block, stride);
+        return !gmem_write(control, block, 4);
+    }
+    for (u32 b = 0; b < 4; b++) snx_st_le32(block + 4 * b, end[b]);
+    return !gmem_write(control + 4, block, sizeof block);
+}
+int vk_render_xfb_control(u32 owner_id, u64 control, u32 what, u32 stride, DrawOwner* owner) {
+    if ((owner_id & 0x7fffffff) >= GPU_CHANNELS) return 0;
+    if (g_shader_xfb_stores) {
+        if (!xfb_control_stores(g_xfb.end[xfb_counter_offset(owner_id) / 16], control, what, stride)) return 0;
+    } else {
+        if (!g_vk.has_xfb || !xfb_counters()) return 0;
+        vk_render_end(); /* counter transfers occur outside rendering */
+        if (!vk_xfb_control_buffer(g_xfb.buf, xfb_counter_offset(owner_id), control, what, stride)) return 0;
+    }
     if (!what) {
         owner->xfb_started = 0;
         owner->xfb_reload = 15;
@@ -422,9 +433,7 @@ static int xfb_wanted(int on) {
 typedef struct {
     VkBuffer buf[5]; /* [4] the parameters */
     u64 off[5], size[5];
-    u32 declared; /* the buffers the program stores into, bound */
-    u32 bound;    /* those of them the draw captures into */
-    u32 end[4];
+    SnxXfbRange range;
     u32 slot; /* the owner's place in g_xfb.end */
 } XfbBind;
 /* x for a capture by stores, in the hardware's order: direct point, line and triangle lists only (others are logged
@@ -433,15 +442,13 @@ static int xfb_bind(const DsState* ds, const DrawOwner* o, const VkSh* vs, int i
                     u32 first, u32 count, u32 base_instance, u32 instances, XfbBind* x) {
     const ShXfb* key = &vs->si.xfb;
     u32 per = topology == 0 ? 1 : topology == 1 ? 2 : topology == 4 ? 3 : 0; /* vertices a primitive */
-    u32 n = per && !indexed && !indirect ? count - count % per : 0, start[4] = {0}, last[4] = {0}, b;
-    u64 limit = (u64)n * instances, addr[4] = {0};
-    memset(x, 0, sizeof *x);
+    u32 n = per && !indexed && !indirect ? count - count % per : 0, stride[4], words[4], size[4], from[4], off = 0;
+    u64 limit = (u64)n * instances;
+    *x = (XfbBind){0};
     x->slot = (u32)(xfb_counter_offset(ds->owner) / 16);
-    if (vs->si.ngbuf > SNX_XFB_GBUF_MAX) { /* the program was translated without stores */
+    if (vs->si.ngbuf > SNX_XFB_GBUF_MAX) /* the translator left the stores out, and it has no log */
         LOG_LIMIT(1, "vulkan: a vertex program with %d global buffers can't store what transform feedback captures\n",
                   vs->si.ngbuf);
-        return 1;
-    }
     if (!per || indexed || indirect)
         LOG_LIMIT(4, "vulkan: transform feedback of %s topology %u isn't captured without the extension\n",
                   indexed ? "an indexed" : indirect ? "an indirect" : "a", topology);
@@ -453,58 +460,46 @@ static int xfb_bind(const DsState* ds, const DrawOwner* o, const VkSh* vs, int i
         LOG_LIMIT(1, "vulkan: transform feedback of draw owner %08x isn't captured\n", ds->owner);
         limit = 0;
     }
-    for (b = 0; b < 4; b++) {
-        u32 stride = key->stride[b], words = key->count[b], size;
-        if (!words || stride < 4 || (stride & 3)) continue; /* xfb_write stores nothing there */
-        x->declared |= 1u << b;
-        addr[b] = ds->bind.xfb[b].addr;
-        size = ds->bind.xfb[b].size;
-        if (!ds->bind.xfb[b].on || (i32)size <= 0) {
-            /* not written, as the extension's path leaves it: the others still capture */
-            LOG_LIMIT(1, "vulkan: transform feedback into a buffer that isn't enabled (that buffer gets nothing)\n");
-            continue;
-        }
-        if (limit && (o->xfb_started & ~o->xfb_reload & (1u << b)))
-            start[b] = g_xfb.end[x->slot][b] < size ? g_xfb.end[x->slot][b] : size;
-        /* the vertices that fit from there: each takes stride bytes, the last at least its words */
-        u32 room = size - start[b];
-        last[b] = words * 4 > stride ? words * 4 : stride;
-        u64 fit = room >= last[b] ? (room - last[b]) / stride + 1 : 0;
-        fit -= per ? fit % per : 0;
-        if (fit < limit) limit = fit;
-        x->bound |= 1u << b;
+    for (u32 b = 0; b < 4; b++) {
+        int on = ds->bind.xfb[b].on && (i32)ds->bind.xfb[b].size > 0;
+        stride[b] = key->stride[b];
+        words[b] = key->count[b];
+        size[b] = on ? ds->bind.xfb[b].size : 0;
+        from[b] = limit && (o->xfb_started & ~o->xfb_reload & (1u << b)) ? g_xfb.end[x->slot][b] : 0;
+        off |= on ? 0 : 1u << b;
     }
-    if (!x->declared) return 1;
+    SnxXfbRange* r = &x->range;
+    snx_xfb_range((u32)limit, per, stride, words, size, from, r);
+    if (r->declared & off) /* not written, as the extension's path leaves it: the others still capture */
+        LOG_LIMIT(1, "vulkan: transform feedback into a buffer that isn't enabled (that buffer gets nothing)\n");
+    if (!r->declared) return 1;
     /* the bound mask: the program stores into a declared buffer only when the guest enabled it, as the hardware does */
-    u32 params[5] = {first, base_instance, n, (u32)limit, x->bound};
+    u32 params[5] = {first, base_instance, n, r->limit, r->bound};
     u8* p = vk_stage(sizeof params, vk_stage_align(), &x->buf[4], &x->off[4]);
     if (!p) return 0;
     memcpy(p, params, sizeof params);
     snx_le32_array(p, 5);
     x->size[4] = sizeof params;
-    for (b = 0; b < 4; b++) {
-        if (!(x->declared >> b & 1)) continue;
-        u32 stride = key->stride[b];
-        u64 used = limit ? (limit - 1) * stride + last[b] : 0;
-        if (!(x->bound >> b & 1) || !used) { /* nothing stored: a buffer for the binding */
-            x->bound &= ~(1u << b);
+    for (u32 b = 0; b < 4; b++) {
+        if (!(r->declared >> b & 1)) continue;
+        if (!(r->bound >> b & 1)) { /* nothing stored: a buffer for the binding */
             if (!vk_buf_copy(0, 16, &x->buf[b], &x->off[b])) return 0;
             x->size[b] = 16;
             continue;
         }
         /* a writable copy of guest memory from the capture's start, which later draws read (vk_buf_copy_writable) */
-        if (!vk_buf_copy_writable(addr[b] + start[b], (u32)used, &x->buf[b], &x->off[b], 1)) return 0;
-        x->size[b] = used;
-        x->end[b] = start[b] + (u32)limit * stride;
+        if (!vk_buf_copy_writable(ds->bind.xfb[b].addr + r->start[b], r->used[b], &x->buf[b], &x->off[b], 1)) return 0;
+        x->size[b] = r->used[b];
     }
     return 1;
 }
 /* after the draw: each buffer's capture resumes from where it ended, until its write pointer is loaded again */
 static void xfb_bind_done(DrawOwner* o, const XfbBind* x) {
+    u32 bound = x->range.bound;
     for (u32 b = 0; b < 4; b++)
-        if (x->bound >> b & 1) g_xfb.end[x->slot][b] = x->end[b];
-    o->xfb_started = (u8)((o->xfb_started | x->bound) & 15);
-    o->xfb_reload = (u8)(o->xfb_reload & ~x->bound);
+        if (bound >> b & 1) g_xfb.end[x->slot][b] = x->range.end[b];
+    o->xfb_started = (u8)((o->xfb_started | bound) & 15);
+    o->xfb_reload = (u8)(o->xfb_reload & ~bound);
 }
 
 /* Feedback loops. A Maxwell draw may sample a color target it renders to: a game may blend in its shaders,
@@ -2131,8 +2126,8 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     if (s->si.ngbuf)
         dw_buffer(&d, set, SNX_VKB_SMAP, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, draw->map_buf[stage], draw->map_off[stage],
                   draw->map_size[stage]);
-    for (u32 b = 0; xfb && xfb->declared && b < 5; b++)
-        if (b == 4 || xfb->declared >> b & 1)
+    for (u32 b = 0; xfb && xfb->range.declared && b < 5; b++)
+        if (b == 4 || xfb->range.declared >> b & 1)
             dw_buffer(&d, set, b == 4 ? SNX_VKB_XFB_PARAMS : SNX_VKB_XFB + b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                       xfb->buf[b], xfb->off[b], xfb->size[b]);
     VkBuffer cb;
@@ -4472,7 +4467,7 @@ retry:
         vk_render_end(); /* the next capture's begin waits for this end outside a pass, and readers for its writes */
     }
     if (late_depth) vk_depth_shadow_finish(zt);
-    if (xfb_stores.declared) xfb_bind_done(o, &xfb_stores);
+    if (xfb_stores.range.declared) xfb_bind_done(o, &xfb_stores);
     vk_buf_writable_commit();
     draw_images_commit(&images);
     feedback_done(fb, writes);

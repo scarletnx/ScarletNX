@@ -1742,7 +1742,6 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     u32 xfb_components[32][4] = {{0}};
     u32 stream_capture[4][128] = {{0}};
     int xfb_on = 0, xfb_stores = 0;
-    XfbOut xo = {0};
     memset(xfb_buf, 0xFF, sizeof xfb_buf);
     u32 clip_output = 0, clip_count = 0, point_size_in = 0, clip_input = 0;
     u32 depth_output = 0, interfaces[1024], count = 0;
@@ -2179,18 +2178,18 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         }
     }
     /* what the program's transform feedback writes (shader_xfb_store): with stores, the buffers it stores into */
-    xo = (XfbOut){.stores = xfb_stores,
-                  .key = &si->xfb,
-                  .vec4 = vec4,
-                  .position = position,
-                  .output_attrs = output_attrs,
-                  .attr_private = attr_private,
-                  .components = xfb_components,
-                  .pointer = c->gbuf_pointer,
-                  .vertex_index = vertex_index,
-                  .instance_index = instance_index,
-                  .outputs_used = outputs_used,
-                  .position_used = position_used};
+    XfbOut xo = {.stores = xfb_stores,
+                 .key = &si->xfb,
+                 .vec4 = vec4,
+                 .position = position,
+                 .output_attrs = output_attrs,
+                 .attr_private = attr_private,
+                 .components = xfb_components,
+                 .pointer = c->gbuf_pointer,
+                 .vertex_index = vertex_index,
+                 .instance_index = instance_index,
+                 .outputs_used = outputs_used,
+                 .position_used = position_used};
     if (xfb_stores) {
         xo.params = spv_emit_storage_buffer(&c->emit, gbuf_struct, shader_vk_set(stage), SNX_VKB_XFB_PARAMS);
         interfaces[count++] = xo.params;

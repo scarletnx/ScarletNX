@@ -120,8 +120,8 @@ void shader_vertex_position_fix(DirectCtx* c, u32 position, u32 push, u32 push_p
 
 /* a captured word's bits (ShXfb.layout), 0 for one with no output (left as it is, as the extension does) */
 static u32 xfb_word(DirectCtx* c, const XfbOut* x, u32 word) {
-    u32 var = 0, component = word & 3;
     if (shader_legacy_group(word * 4) >= 0) word = shader_legacy_address(word * 4) / 4; /* where it moved */
+    u32 var = 0, component = word & 3; /* after the move: the fog's one word moves to component 0 */
     if (word >= 28 && word < 32 && x->position_used)
         var = x->position;
     else if (word >= 32 && word < 160 && x->outputs_used[(word - 32) >> 2])
@@ -152,9 +152,9 @@ static void xfb_write(DirectCtx* c, const XfbOut* x) {
         if (!x->buffer[b]) continue;
         /* a buffer that the guest left off has a 16-byte placeholder binding: no store goes there (p[4], the mask) */
         u32 bit = spv_emit_bitwise_and_u32(e, u, p[4], spv_emit_constant_u32(e, u, 1u << b));
-        u32 store = spv_emit_id(e), next = spv_emit_id(e);
-        spv_emit_selection_merge(e, next);
-        spv_emit_branch_conditional(e, spv_emit_i_not_equal(e, c->bool_type, bit, c->zero), store, next);
+        u32 on = spv_emit_i_not_equal(e, c->bool_type, bit, c->zero), store = spv_emit_id(e), next = spv_emit_id(e);
+        spv_emit_selection_merge(e, next); /* the merge must come just before its branch */
+        spv_emit_branch_conditional(e, on, store, next);
         spv_emit_label(e, store);
         u32 base = spv_emit_imul_u32(e, u, place, spv_emit_constant_u32(e, u, x->key->stride[b] / 4u));
         for (u32 w = 0; w < x->key->count[b] && w < 128; w++) {
