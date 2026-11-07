@@ -113,6 +113,7 @@ void apm_set_configuration(u32 mode, u32 config);
 void apm_cpu_boost(u32 boost); /* am's SetCpuBoostMode: Boost mode's configuration for it */
 SvcObj* new_ngc(void);
 SvcObj* new_ngct(void);
+SvcObj* new_olsc(void);
 
 /* ---- audren.c: the audio renderer */
 int audren_update(SvcObj* o, IpcBuf in, IpcBuf out); /* RequestUpdate, on its input and output buffers */

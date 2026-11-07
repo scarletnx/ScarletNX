@@ -1531,6 +1531,59 @@ static void test_pctl_play_timer(void) {
     svcobj_unref(factory);
 }
 
+/* olsc:u: Initialize (0) {pid}; a user's GetSaveDataBackupSetting (13) {uid} -> u8, SetSaveDataBackupSettingEnabled
+   (14) {b8 enabled, uid at 8} and VerifySaveDataBackupLicenseAsync (10) {uid}, NotInitialized before it and
+   NullArgument without a user. The license check gives an IAsyncResult done at once: its event signaled, available,
+   and its result the online service's absence (2124-5249), which Cancel leaves */
+static void olsc_user(Request* r, u32 cmd, u32 off) {
+    request(r, cmd);
+    argument64(r, off, g_user_id[0]);
+    argument64(r, off + 8, g_user_id[1]);
+}
+static void test_olsc(void) {
+    SvcObj *olsc = new_olsc(), *result;
+    Request r;
+    KObj* event;
+    for (u32 cmd = 10; cmd <= 14; cmd += cmd == 10 ? 3 : 1) {
+        olsc_user(&r, cmd, cmd == 14 ? 8 : 0);
+        CHECK(olsc->dispatch(olsc, &r.c) == RC(179, 101));
+        CHECK(r.c.nout_objs == 0 || !r.c.out_objs[0]); /* no IAsyncResult: what ipc.c drops of a failed reply */
+    }
+    request(&r, 0);
+    r.c.has_pid = 1;
+    call(olsc, &r);
+    request(&r, 13);
+    CHECK(olsc->dispatch(olsc, &r.c) == RC(179, 100));
+    olsc_user(&r, 14, 8);
+    r.raw[0] = 1;
+    call(olsc, &r);
+    CHECK(r.c.out_size == 0);
+    olsc_user(&r, 13, 0);
+    call(olsc, &r);
+    CHECK(r.c.out_size == 4 && reply32(&r, 0) == 0);
+    olsc_user(&r, 10, 0);
+    call(olsc, &r);
+    CHECK(r.c.nout_objs == 1 && !strcmp(r.c.out_objs[0]->name, "nn::olsc::srv::IAsyncResult"));
+    result = r.c.out_objs[0];
+    request(&r, 3);
+    call(result, &r);
+    CHECK(r.c.nout_copy == 1);
+    event = handle_object(r.c.out_copy[0]);
+    CHECK(event->type == KO_EVENT && ((KEvent*)event)->signaled);
+    request(&r, 2);
+    call(result, &r);
+    CHECK(r.c.out_size == 4 && reply32(&r, 0) == 1);
+    request(&r, 0);
+    CHECK(result->dispatch(result, &r.c) == RC(124, 5249));
+    request(&r, 1);
+    call(result, &r);
+    request(&r, 0);
+    CHECK(result->dispatch(result, &r.c) == RC(124, 5249));
+    close_handles();
+    svcobj_unref(result);
+    svcobj_unref(olsc);
+}
+
 /* nim:eca: the server a game opens on its transfer memory and the accessor it takes from it, then whether large
    resources are available */
 static void test_nim(void) {
@@ -1588,6 +1641,7 @@ int main(void) {
     test_mii_latest();
     test_pctl_play_timer();
     test_nim();
+    test_olsc();
     CHECK(test_objects == 0 && test_kobjs == 0);
     free(g_mem);
     printf("misc_service: %u checks passed\n", test_checks);
