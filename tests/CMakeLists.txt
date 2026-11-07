@@ -2474,6 +2474,10 @@ if(TARGET snx_vita_program)
     snx_test_target(snx-test-vita-hle-memory 11)
     target_link_libraries(snx-test-vita-hle-memory PRIVATE snx_vita_program)
     add_test(NAME vita_hle_memory COMMAND snx-test-vita-hle-memory)
+    add_executable(snx-test-vita-watch vita_watch.c)
+    snx_test_target(snx-test-vita-watch 11)
+    target_link_libraries(snx-test-vita-watch PRIVATE snx_vita_program)
+    add_test(NAME vita_watch COMMAND snx-test-vita-watch)
 endif()
 # the texture conversion shader's GLSL run on the CPU against the CPU's conversions and ETC2 and BCn decoders: no GPU
 # needed

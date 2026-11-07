@@ -13,7 +13,8 @@ layout(push_constant) uniform Params {
     uint words;    /* the linear rows' words */
     uint elements; /* the texture's elements */
     uint src_base; /* the texture's first word in the bound source */
-    uint es;       /* log2 bytes an element */
+    uint src_at;   /* the texture's first byte in src_base's word */
+    uint es;       /* log2 bytes an element, or 5 for 3-byte U8U8U8 */
     uint width;    /* elements a row */
     uint wl;       /* swizzled: log2 width */
     uint k;        /* swizzled: log2 of the smaller side */

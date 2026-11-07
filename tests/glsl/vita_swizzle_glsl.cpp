@@ -4,7 +4,7 @@
 // against the loops Vita3K's renderer runs (renderer/src/texture/format.cpp, GPL-2.0-or-later, Copyright (C) 2026
 // Vita3K team: swizzled_texture_to_linear_texture and resolve_z_order_compressed_image, which are the same walk over
 // texels or 4x4 blocks, and tiled_texture_to_linear_texture), on random textures: swizzled ones of every power of two
-// shape up to 512 on a side, tiled ones of any size, elements of 1 to 16 bytes, the source at an offset in its buffer.
+// shape up to 512 on a side, tiled ones of any size, elements of 1, 2, 3, 4, 8 or 16 bytes, the source at an offset.
 // Every byte of the linear rows is checked, the last word's bytes past them zero, and the word after it left alone.
 #include <bit>
 #include <cstdio>
@@ -15,7 +15,7 @@
 namespace vita_swizzle_shader {
 using namespace glsl;
 struct Deswizzler : Invocation {
-    uint words, elements, src_base, es, width, wl, k, tiled, tiles_x, reverse, dst_base;
+    uint words, elements, src_base, src_at, es, width, wl, k, tiled, tiles_x, reverse, dst_base;
     const leuint* src;
     leuint* dst;
 #include "vita/gpu/swizzle.glsl"
@@ -61,28 +61,30 @@ static void tiled_reference(uint8_t* dest, const uint8_t* src, uint32_t width, u
 }
 
 static unsigned failures;
-static void one(bool tiled, uint32_t width, uint32_t height, uint32_t es) {
-    uint32_t bytes = 1u << es, elements = width * height, words = (elements * bytes + 3) / 4;
+static void one(bool tiled, uint32_t width, uint32_t height, uint32_t bytes) {
+    uint32_t es = bytes == 3 ? 5 : std::countr_zero(bytes);
+    uint32_t elements = width * height, words = (elements * bytes + 3) / 4;
     uint32_t base = random_word() % 7;
+    uint32_t src_at = bytes == 3 ? random_word() % 4 : 0;
     // the source as the guest holds it: tiled textures span whole tiles
     uint32_t span = tiled ? (((width + 31) >> 5) * ((height + 31) >> 5)) << 10 : elements;
-    std::vector<glsl::leuint> src(base + (span * bytes + 3) / 4 + 1), dst(words + 1);
+    std::vector<glsl::leuint> src(base + (src_at + span * bytes + 3) / 4 + 1), dst(words + 1);
     for (auto& w : src) w = random_word();
     uint32_t guard = random_word();
     dst[words] = guard;
     glsl::dispatch<Deswizzler>(glsl::uvec3((words + 63) / 64, 1, 1), glsl::uvec3(64, 1, 1), [&](Deswizzler& d) {
-        d.words = words, d.elements = elements, d.src_base = base, d.es = es, d.width = width;
+        d.words = words, d.elements = elements, d.src_base = base, d.src_at = src_at, d.es = es, d.width = width;
         d.wl = std::bit_width(width) - 1;
         d.k = std::bit_width(width < height ? width : height) - 1;
         d.tiled = tiled, d.tiles_x = (width + 31) >> 5, d.reverse = 0, d.dst_base = 0;
         d.src = src.data(), d.dst = dst.data();
     });
     // reversed (a color surface's store, elements of four bytes or more): the rows back where they came from
-    if (es >= 2) {
+    if (bytes >= 4) {
         std::vector<glsl::leuint> back(base + (span * bytes + 3) / 4 + 1);
         back[back.size() - 1] = guard;
         glsl::dispatch<Deswizzler>(glsl::uvec3((words + 63) / 64, 1, 1), glsl::uvec3(64, 1, 1), [&](Deswizzler& d) {
-            d.words = words, d.elements = elements, d.src_base = 0, d.es = es, d.width = width;
+            d.words = words, d.elements = elements, d.src_base = 0, d.src_at = 0, d.es = es, d.width = width;
             d.wl = std::bit_width(width) - 1;
             d.k = std::bit_width(width < height ? width : height) - 1;
             d.tiled = tiled, d.tiles_x = (width + 31) >> 5, d.reverse = 1, d.dst_base = base;
@@ -111,7 +113,7 @@ static void one(bool tiled, uint32_t width, uint32_t height, uint32_t es) {
                         width, height);
     }
     std::vector<uint8_t> want(elements * bytes);
-    const uint8_t* s = (const uint8_t*)(src.data() + base);
+    const uint8_t* s = (const uint8_t*)(src.data() + base) + src_at;
     if (tiled)
         tiled_reference(want.data(), s, width, height, bytes);
     else
@@ -129,17 +131,18 @@ static void one(bool tiled, uint32_t width, uint32_t height, uint32_t es) {
 }
 
 int main() {
+    static const uint32_t sizes[] = {1, 2, 3, 4, 8, 16};
     for (uint32_t wl = 0; wl <= 9; wl++)
-        for (uint32_t hl = 0; hl <= 9; hl++) one(false, 1u << wl, 1u << hl, random_word() % 5);
+        for (uint32_t hl = 0; hl <= 9; hl++) one(false, 1u << wl, 1u << hl, sizes[random_word() % 6]);
     for (int i = 0; i < 200; i++) {
-        uint32_t es = random_word() % 5;
-        one(false, 1u << (random_word() % 10), 1u << (random_word() % 10), es);
-        one(true, 1 + random_word() % 150, 1 + random_word() % 150, es);
+        uint32_t bytes = sizes[random_word() % 6];
+        one(false, 1u << (random_word() % 10), 1u << (random_word() % 10), bytes);
+        one(true, 1 + random_word() % 150, 1 + random_word() % 150, bytes);
     }
     if (failures) {
         std::printf("vita_swizzle_glsl: %u failures\n", failures);
         return 1;
     }
-    std::puts("vita_swizzle_glsl: the shader puts every byte where Vita3K's loops do, and nothing past the rows");
+    std::puts("vita_swizzle_glsl: every byte, including 24-bit elements, matches Vita3K's layouts");
     return 0;
 }

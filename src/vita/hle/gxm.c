@@ -339,6 +339,8 @@ static uint32_t register_program(VitaProcess* p, VitaThread* t) {
     vita_write32(p, id, program);
     return 0;
 }
+/* sceGxmShaderPatcherGetProgramFromId(id): the program's address is its ID (register_program), so it is the answer */
+static uint32_t get_program_from_id(VitaProcess* p, VitaThread* t) { return arg(p, t, 0); }
 /* sceGxmShaderPatcherCreateVertexProgram(patcher, id, attributes, count, streams, count, *program) */
 static uint32_t create_vertex_program(VitaProcess* p, VitaThread* t) {
     uint32_t program = arg(p, t, 1), attributes = arg(p, t, 2), attribute_count = arg(p, t, 3);
@@ -566,6 +568,20 @@ static uint32_t set_cull_mode(VitaProcess* p, VitaThread* t) {
     if (c) c->cull_mode = arg(p, t, 1);
     return 0;
 }
+/* sceGxmSetTwoSidedEnable(context, mode): kept in the context's state, as Vita3K's context->state.two_sided */
+static uint32_t set_two_sided_enable(VitaProcess* p, VitaThread* t) {
+    GxmContext* c = context_of(p, arg(p, t, 0));
+    if (c) c->two_sided = arg(p, t, 1);
+    return 0;
+}
+/* sceGxmSetVisibilityBuffer(context, base, stridePerCore): with no occlusion queries drawn, every primitive counts as
+   visible, so the buffer is filled with ones for all four GPU cores (Vita3K's fallback, "Set all visible") */
+static uint32_t set_visibility_buffer(VitaProcess* p, VitaThread* t) {
+    uint32_t base = arg(p, t, 1), stride = arg(p, t, 2);
+    if (!context_of(p, arg(p, t, 0))) return SCE_GXM_ERROR_INVALID_POINTER;
+    if (base && stride && stride <= 0x100000u && vita_mapped(p, base, 4 * stride)) memset(vita_ptr(p, base), 0xff, 4 * stride);
+    return 0;
+}
 /* sceGxmSetRegionClip(context, mode, xMin, yMin, xMax, yMax) */
 static uint32_t set_region_clip(VitaProcess* p, VitaThread* t) {
     GxmContext* c = context_of(p, arg(p, t, 0));
@@ -786,6 +802,17 @@ static uint32_t texture_set_mip_filter(VitaProcess* p, VitaThread* t) {
     GxmTexture x = texture_read(p, address);
     if (gxm_texture_type(&x) == GXM_TEXTURE_LINEAR_STRIDED) return SCE_GXM_ERROR_UNSUPPORTED;
     gxm_set_bits(&x.w[0], 9, 1, arg(p, t, 1) != 0);
+    texture_write(p, address, &x);
+    return 0;
+}
+/* sceGxmTextureSetLodBias(texture, bias 0 to 63): a strided texture's bits are its stride's */
+static uint32_t texture_set_lod_bias(VitaProcess* p, VitaThread* t) {
+    uint32_t address = arg(p, t, 0);
+    if (!address) return SCE_GXM_ERROR_INVALID_POINTER;
+    if (arg(p, t, 1) > 63) return SCE_GXM_ERROR_INVALID_VALUE;
+    GxmTexture x = texture_read(p, address);
+    if (gxm_texture_type(&x) == GXM_TEXTURE_LINEAR_STRIDED) return SCE_GXM_ERROR_UNSUPPORTED;
+    gxm_set_bits(&x.w[0], 21, 6, arg(p, t, 1));
     texture_write(p, address, &x);
     return 0;
 }
@@ -1053,6 +1080,9 @@ const VitaHle vita_hle_gxm[] = {
     {0x9eb4380fu, "sceGxmSetVertexTexture", set_vertex_texture},
     {0xfd93209du, "sceGxmSetFrontPolygonMode", set_front_polygon_mode},
     {0xf66ec6feu, "sceGxmSetBackPolygonMode", set_back_polygon_mode},
+    {0x0de9aeb7u, "sceGxmSetTwoSidedEnable", set_two_sided_enable},
+    {0x7767ec49u, "sceGxmSetVisibilityBuffer", set_visibility_buffer},
+    {0xa949a803u, "sceGxmShaderPatcherGetProgramFromId", get_program_from_id},
     {0xe1ca72aeu, "sceGxmSetCullMode", set_cull_mode},
     {0x70c86868u, "sceGxmSetRegionClip", set_region_clip},
     {0x3eb3380bu, "sceGxmSetViewport", set_viewport},
@@ -1082,6 +1112,9 @@ const VitaHle vita_hle_gxm[] = {
     {0xdd6aabfau, "sceGxmTextureSetPalette", texture_set_palette},
     {0x0d189c30u, "sceGxmTextureGetPalette", texture_get_palette},
     {0x4281763eu, "sceGxmTextureSetUAddrMode", texture_set_u_addr_mode},
+    {0x8699ecf4u, "sceGxmTextureSetUAddrModeSafe", texture_set_u_addr_mode},
+    {0xfa22f6ccu, "sceGxmTextureSetVAddrModeSafe", texture_set_v_addr_mode},
+    {0xb65ee6f7u, "sceGxmTextureSetLodBias", texture_set_lod_bias},
     {0x126cdaa3u, "sceGxmTextureSetVAddrMode", texture_set_v_addr_mode},
     {0xec5c26b5u, "sceGxmDisplayQueueAddEntry", display_queue_add_entry},
     {0xb98c5b0du, "sceGxmDisplayQueueFinish", display_queue_finish},

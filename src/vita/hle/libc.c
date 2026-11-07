@@ -130,12 +130,73 @@ static uint32_t cxx_new(VitaProcess* p, VitaThread* t) {
     uint32_t size = arg(p, t, 0), r = vita_heap_alloc(p, heap(p), size ? size : 1, 8);
     return r ? r : fatal(p, t, "operator new found no memory");
 }
+/* the nothrow overloads: same args plus a reference to the nothrow tag, which we never touch. 0 on failure instead
+   of fatal, same as real nothrow new */
+static uint32_t cxx_new_nothrow(VitaProcess* p, VitaThread* t) {
+    uint32_t size = arg(p, t, 0);
+    return vita_heap_alloc(p, heap(p), size ? size : 1, 8);
+}
+static uint32_t cxx_delete(VitaProcess* p, VitaThread* t) {
+    uint32_t ptr = arg(p, t, 0);
+    if (ptr) vita_heap_free(p, heap(p), ptr);
+    return 0;
+}
+/* the sized-delete overloads (operator delete(void*, unsigned int)): the size is ignored, same free either way */
+static uint32_t cxx_delete_sized(VitaProcess* p, VitaThread* t) { return cxx_delete(p, t); }
 /* the Clib's mspaces: a heap in the memory the game gives */
 static uint32_t clib_mspace_create(VitaProcess* p, VitaThread* t) {
     return vita_heap_init(p, arg(p, t, 0), arg(p, t, 1));
 }
 static uint32_t clib_mspace_malloc(VitaProcess* p, VitaThread* t) {
     return vita_heap_alloc(p, arg(p, t, 0), arg(p, t, 1), 8);
+}
+static uint32_t clib_mspace_calloc(VitaProcess* p, VitaThread* t) {
+    uint64_t size = (uint64_t)arg(p, t, 1) * arg(p, t, 2);
+    uint32_t r = size > UINT32_MAX ? 0 : vita_heap_alloc(p, arg(p, t, 0), (uint32_t)size, 8);
+    if (r && size) memset(host(p, r), 0, (size_t)size);
+    return r;
+}
+static uint32_t clib_mspace_memalign(VitaProcess* p, VitaThread* t) {
+    return vita_heap_alloc(p, arg(p, t, 0), arg(p, t, 2), arg(p, t, 1) > 8 ? arg(p, t, 1) : 8);
+}
+static uint32_t clib_mspace_realloc(VitaProcess* p, VitaThread* t) {
+    return vita_heap_realloc(p, arg(p, t, 0), arg(p, t, 1), arg(p, t, 2), 8);
+}
+static uint32_t clib_strnlen(VitaProcess* p, VitaThread* t) {
+    const char* s = host(p, arg(p, t, 0));
+    uint32_t n = arg(p, t, 1), i = 0;
+    while (i < n && s[i]) ++i;
+    return i;
+}
+static uint32_t clib_strlcpy(VitaProcess* p, VitaThread* t) {
+    char* d = host(p, arg(p, t, 0));
+    const char* s = host(p, arg(p, t, 1));
+    uint32_t n = arg(p, t, 2), len = (uint32_t)strlen(s);
+    if (n) {
+        uint32_t c = len < n - 1 ? len : n - 1;
+        memmove(d, s, c);
+        d[c] = 0;
+    }
+    return len;
+}
+static uint32_t clib_strlcat(VitaProcess* p, VitaThread* t) {
+    char* d = host(p, arg(p, t, 0));
+    const char* s = host(p, arg(p, t, 1));
+    uint32_t n = arg(p, t, 2), dl = 0, len = (uint32_t)strlen(s);
+    while (dl < n && d[dl]) ++dl;
+    if (dl == n) return n + len;
+    uint32_t c = len < n - dl - 1 ? len : n - dl - 1;
+    memmove(d + dl, s, c);
+    d[dl + c] = 0;
+    return dl + len;
+}
+static uint32_t clib_tolower(VitaProcess* p, VitaThread* t) {
+    uint32_t c = arg(p, t, 0);
+    return c >= 'A' && c <= 'Z' ? c + 32 : c;
+}
+static uint32_t clib_toupper(VitaProcess* p, VitaThread* t) {
+    uint32_t c = arg(p, t, 0);
+    return c >= 'a' && c <= 'z' ? c - 32 : c;
 }
 static uint32_t clib_mspace_free(VitaProcess* p, VitaThread* t) {
     vita_heap_free(p, arg(p, t, 0), arg(p, t, 1));
@@ -203,6 +264,10 @@ static uint32_t lc_strcat(VitaProcess* p, VitaThread* t) {
 static uint32_t lc_strchr(VitaProcess* p, VitaThread* t) {
     return guest(p, strchr(host(p, arg(p, t, 0)), (int)(arg(p, t, 1) & 0xff)));
 }
+static uint32_t lc_memchr(VitaProcess* p, VitaThread* t) {
+    uint32_t n = arg(p, t, 2);
+    return n ? guest(p, memchr(host(p, arg(p, t, 0)), (int)(arg(p, t, 1) & 0xff), n)) : 0;
+}
 static uint32_t lc_strrchr(VitaProcess* p, VitaThread* t) {
     return guest(p, strrchr(host(p, arg(p, t, 0)), (int)(arg(p, t, 1) & 0xff)));
 }
@@ -242,6 +307,23 @@ static uint32_t lc_wcschr(VitaProcess* p, VitaThread* t) {
         if (u == c) return s;
         if (!u) return 0;
     }
+}
+static uint32_t lc_wmemchr(VitaProcess* p, VitaThread* t) {
+    uint32_t s = arg(p, t, 0), c = arg(p, t, 1) & 0xffff, n = arg(p, t, 2);
+    for (uint32_t i = 0; i < n; ++i)
+        if (vita_read16(p, s + i * 2) == c) return s + i * 2;
+    return 0;
+}
+static uint32_t lc_wmemcpy(VitaProcess* p, VitaThread* t) {
+    uint32_t d = arg(p, t, 0), n = arg(p, t, 2);
+    if (n) memmove(host(p, d), host(p, arg(p, t, 1)), (size_t)n * 2);
+    return d;
+}
+static uint32_t lc_wmemset(VitaProcess* p, VitaThread* t) {
+    uint32_t d = arg(p, t, 0), n = arg(p, t, 2);
+    uint16_t c = (uint16_t)arg(p, t, 1);
+    for (uint32_t i = 0; i < n; ++i) memcpy(host(p, d + i * 2), &c, 2);
+    return d;
 }
 static uint32_t lc_wcsstr(VitaProcess* p, VitaThread* t) {
     uint32_t s = arg(p, t, 0), w = arg(p, t, 1), n = wide_length(p, w);
@@ -648,6 +730,7 @@ static FILE* stream(VitaProcess* p, uint32_t file) {
     uint32_t fd = file_fd(p, file);
     return fd == STDOUT_FD ? stdout : fd == STDERR_FD ? stderr : fd ? vita_io_file(p, fd) : NULL;
 }
+static uint32_t open_stream(VitaProcess* p, VitaThread* t, uint32_t path, uint32_t flags);
 static uint32_t lc_fopen(VitaProcess* p, VitaThread* t) {
     char mode[8];
     vita_string(p, arg(p, t, 1), mode, sizeof mode);
@@ -655,7 +738,10 @@ static uint32_t lc_fopen(VitaProcess* p, VitaThread* t) {
                      : mode[0] == 'a' ? 0x0002u | 0x0200u | 0x0100u : 0;
     if (strchr(mode, '+')) flags |= 0x0003u;
     if (!flags) return set_errno(p, t, EINVAL), 0;
-    uint32_t fd = vita_io_open(p, arg(p, t, 0), flags);
+    return open_stream(p, t, arg(p, t, 0), flags);
+}
+static uint32_t open_stream(VitaProcess* p, VitaThread* t, uint32_t path, uint32_t flags) {
+    uint32_t fd = vita_io_open(p, path, flags);
     if (fd & 0x80000000u) return set_errno(p, t, fd & 0xffff), 0;
     uint32_t file = vita_heap_alloc(p, heap(p), 16, 8);
     if (!file) {
@@ -723,6 +809,10 @@ static void stderr_init(VitaProcess* p, uint32_t slot) {
 static void ctype_init(VitaProcess* p, uint32_t slot) { vita_write32(p, slot, data(p) + CTYPE_TABLE + 2); }
 static void tolower_init(VitaProcess* p, uint32_t slot) { vita_write32(p, slot, data(p) + LOWER_TABLE + 2); }
 static void toupper_init(VitaProcess* p, uint32_t slot) { vita_write32(p, slot, data(p) + UPPER_TABLE + 2); }
+static void float_inf_init(VitaProcess* p, uint32_t slot) { vita_write32(p, slot, 0x7f800000u); }
+static void float_nan_init(VitaProcess* p, uint32_t slot) { vita_write32(p, slot, 0x7fc00000u); }
+static void double_inf_init(VitaProcess* p, uint32_t slot) { vita_write32(p, slot + 4, 0x7ff00000u); }
+static void double_nan_init(VitaProcess* p, uint32_t slot) { vita_write32(p, slot + 4, 0x7ff80000u); }
 /* an exception class's vtable: offset to top, type info, then functions that do nothing */
 static void vtable_init(VitaProcess* p, uint32_t slot) {
     for (uint32_t i = 2; i < 8; ++i) vita_write32(p, slot + i * 4, VITA_RETURN);
@@ -885,10 +975,205 @@ static uint32_t lm_fdtest(VitaProcess* p, VitaThread* t) {
     }
 }
 
+/* the double libm's others, which a game's own printf and string-to-number code reach through Dinkumware's helpers */
+D1(lm_fabs, fabs(x))
+D1(lm_sin, sin(x))
+D1(lm_cos, cos(x))
+D1(lm_tan, tan(x))
+D1(lm_asin, asin(x))
+D1(lm_acos, acos(x))
+D1(lm_atan, atan(x))
+D1(lm_atan2, atan2(x, y))
+D1(lm_log, log(x))
+D1(lm_log10, log10(x))
+D1(lm_log2, log2(x))
+D1(lm_exp2, exp2(x))
+D1(lm_trunc, trunc(x))
+D1(lm_round, round(x))
+D1(lm_rint, rint(x))
+D1(lm_nearbyint, nearbyint(x))
+D1(lm_cbrt, cbrt(x))
+D1(lm_sinh, sinh(x))
+D1(lm_cosh, cosh(x))
+D1(lm_tanh, tanh(x))
+D1(lm_hypot, hypot(x, y))
+D1(lm_copysign, copysign(x, y))
+D1(lm_fmax, fmax(x, y))
+D1(lm_fmin, fmin(x, y))
+F1(lm_truncf, truncf(x))
+F1(lm_roundf, roundf(x))
+F1(lm_rintf, rintf(x))
+F1(lm_nearbyintf, nearbyintf(x))
+F1(lm_log10f, log10f(x))
+F1(lm_log2f, log2f(x))
+F1(lm_exp2f, exp2f(x))
+F1(lm_cbrtf, cbrtf(x))
+F1(lm_sinhf, sinhf(x))
+F1(lm_coshf, coshf(x))
+F1(lm_tanhf, tanhf(x))
+F1(lm_hypotf, hypotf(x, y))
+F1(lm_copysignf, copysignf(x, y))
+F1(lm_fmaxf, fmaxf(x, y))
+F1(lm_fminf, fminf(x, y))
+/* ldexp(x, int exponent) and frexp(x, int* exponent): the double in D0, the int in R0 */
+static uint32_t lm_ldexp(VitaProcess* p, VitaThread* t) {
+    return vita_return_double(t, ldexp(vita_double(t, 0), (int)(int32_t)arg(p, t, 0)));
+}
+static uint32_t lm_frexp(VitaProcess* p, VitaThread* t) {
+    int exponent = 0;
+    double mantissa = frexp(vita_double(t, 0), &exponent);
+    uint32_t out = arg(p, t, 0);
+    if (out && vita_mapped(p, out, 4)) vita_write32(p, out, (uint32_t)exponent);
+    return vita_return_double(t, mantissa);
+}
+/* modf(x, double* integer): the fraction in D0, the integer part through R0 */
+static uint32_t lm_modf(VitaProcess* p, VitaThread* t) {
+    double whole, part = modf(vita_double(t, 0), &whole);
+    uint32_t out = arg(p, t, 0), words[2];
+    memcpy(words, &whole, sizeof words);
+    if (out && vita_mapped(p, out, 8)) vita_write32(p, out, words[0]), vita_write32(p, out + 4, words[1]);
+    return vita_return_double(t, part);
+}
+/* Dinkumware's classes: _Dtest(double* x), _FDsign(float x) and _Dsign(double x), the sign as the sign bit of the
+   16-bit word it is in (0x8000) */
+static int dinkum_class(double x) {
+    switch (fpclassify(x)) {
+        case FP_NAN: return 2;
+        case FP_INFINITE: return 1;
+        case FP_ZERO: return 0;
+        case FP_SUBNORMAL: return -2;
+        default: return -1;
+    }
+}
+static uint32_t lm_dtest(VitaProcess* p, VitaThread* t) {
+    uint32_t at = arg(p, t, 0);
+    if (!at || !vita_mapped(p, at, 8)) return 0;
+    uint32_t words[2] = {vita_read32(p, at), vita_read32(p, at + 4)};
+    double x;
+    memcpy(&x, words, sizeof x);
+    return (uint32_t)dinkum_class(x);
+}
+static uint32_t lm_dsign(VitaProcess* p, VitaThread* t) {
+    (void)p;
+    return signbit(vita_double(t, 0)) ? 0x8000u : 0;
+}
+static uint32_t lm_fdsign(VitaProcess* p, VitaThread* t) {
+    (void)p;
+    return signbit(vita_float(t, 0)) ? 0x8000u : 0;
+}
+/* _Stolx(const char* s, char** end, int base, int* error): strtol, the error set when the value is out of range */
+static uint32_t lc_stolx(VitaProcess* p, VitaThread* t) {
+    char *s = host(p, arg(p, t, 0)), *end = s;
+    long long v = strtoll(s, &end, (int)arg(p, t, 2));
+    uint32_t error = arg(p, t, 3);
+    if (arg(p, t, 1)) vita_write32(p, arg(p, t, 1), guest(p, end));
+    if (v > INT32_MAX || v < INT32_MIN) {
+        if (error && vita_mapped(p, error, 4)) vita_write32(p, error, 1);
+        return v > 0 ? (uint32_t)INT32_MAX : (uint32_t)INT32_MIN;
+    }
+    return (uint32_t)(int32_t)v;
+}
+
+/* _Fiopen(path, openmode, protection): what ifstream and ofstream open with. The openmode's bits: in 1, out 2, ate 4,
+   app 8, trunc 0x10, binary 0x20 */
+static uint32_t cxx_fiopen(VitaProcess* p, VitaThread* t) {
+    uint32_t mode = arg(p, t, 1), flags = 0;
+    if (mode & 1) flags |= 0x0001u;
+    if (mode & 2) flags |= 0x0002u;
+    if ((mode & 3) == 2 || (mode & 0x10)) flags |= 0x0200u | 0x0400u; /* out alone makes the file and empties it */
+    if (mode & 8) flags = (flags & ~0x0400u) | 0x0002u | 0x0200u | 0x0100u;
+    if (!flags) return set_errno(p, t, EINVAL), 0;
+    return open_stream(p, t, arg(p, t, 0), flags);
+}
+/* wide strings are 16-bit on the Vita */
+static uint32_t lc_wmemcmp(VitaProcess* p, VitaThread* t) {
+    uint32_t a = arg(p, t, 0), b = arg(p, t, 1), n = arg(p, t, 2);
+    for (uint32_t i = 0; i < n; ++i) {
+        uint16_t x, y;
+        memcpy(&x, host(p, a + i * 2), 2), memcpy(&y, host(p, b + i * 2), 2);
+        if (x != y) return x < y ? UINT32_MAX : 1;
+    }
+    return 0;
+}
+static uint32_t lc_labs(VitaProcess* p, VitaThread* t) {
+    int32_t v = (int32_t)arg(p, t, 0);
+    return v < 0 ? 0u - (uint32_t)v : (uint32_t)v;
+}
+static uint32_t lc_imaxabs(VitaProcess* p, VitaThread* t) {
+    int64_t v = (int64_t)((uint64_t)arg(p, t, 1) << 32 | arg(p, t, 0));
+    return vita_return64(t, v < 0 ? 0u - (uint64_t)v : (uint64_t)v);
+}
+/* _Log(x, base) as _FLog's, in double */
+static uint32_t lm_log_base(VitaProcess* p, VitaThread* t) {
+    double x = vita_double(t, 0);
+    uint32_t base = arg(p, t, 0);
+    return vita_return_double(t, base == 1 ? log10(x) : base == 2 ? log2(x) : log(x));
+}
+
 /* ---- SceLibstdcxx: what the game's code throws ends it ---- */
 static uint32_t cxx_length_error(VitaProcess* p, VitaThread* t) { return fatal(p, t, "std::length_error thrown"); }
 static uint32_t cxx_out_of_range(VitaProcess* p, VitaThread* t) { return fatal(p, t, "std::out_of_range thrown"); }
 static uint32_t cxx_raise(VitaProcess* p, VitaThread* t) { return fatal(p, t, "a C++ exception thrown"); }
+/* type_info compares by identity, then by the name the second word points to */
+/* the name of a type_info: the string its second word points to, or else (Dinkumware's type_info has a data word, then
+   the name's characters inline) the bytes after that word. The layout is a guess: type_info::name logs the first
+   objects' words, to check it */
+static uint32_t typeinfo_name(VitaProcess* p, uint32_t info) {
+    if (!info || !vita_mapped(p, info, 12)) return 0;
+    uint32_t pointer = vita_read32(p, info + 4);
+    if (pointer && vita_mapped(p, pointer, 1) && (isalnum(p->mem[pointer]) || p->mem[pointer] == '_')) return pointer;
+    return info + 8;
+}
+static int typeinfo_same(VitaProcess* p, uint32_t a, uint32_t b) {
+    if (a == b) return 1;
+    uint32_t x = typeinfo_name(p, a), y = typeinfo_name(p, b);
+    return x && y && (x == y || !strcmp(host(p, x), host(p, y)));
+}
+static uint32_t cxx_typeinfo_name(VitaProcess* p, VitaThread* t) {
+    static unsigned shown;
+    uint32_t info = arg(p, t, 0);
+    if (shown < 3 && info && vita_mapped(p, info, 16)) {
+        ++shown;
+        printf("vita: type_info::name(0x%08" PRIx32 ") words %08" PRIx32 " %08" PRIx32 " %08" PRIx32 " %08" PRIx32 "\n",
+               info, vita_read32(p, info), vita_read32(p, info + 4), vita_read32(p, info + 8),
+               vita_read32(p, info + 12));
+    }
+    return typeinfo_name(p, info);
+}
+static uint32_t cxx_typeinfo_eq(VitaProcess* p, VitaThread* t) {
+    return (uint32_t)typeinfo_same(p, arg(p, t, 0), arg(p, t, 1));
+}
+static uint32_t cxx_typeinfo_ne(VitaProcess* p, VitaThread* t) {
+    return (uint32_t)!typeinfo_same(p, arg(p, t, 0), arg(p, t, 1));
+}
+static uint32_t cxa_allocate_exception(VitaProcess* p, VitaThread* t) {
+    uint32_t r = vita_heap_alloc(p, heap(p), arg(p, t, 0) + 128, 8);
+    return r ? r : fatal(p, t, "no memory for an exception");
+}
+/* ios_base::clear(state, reraise). The game's inline code reads the state at +8 and the rdbuf at +0x24, so the
+   exception mask is taken as the word after the state. The first calls are logged to check it */
+static uint32_t ios_clear(VitaProcess* p, VitaThread* t) {
+    static unsigned shown;
+    uint32_t self = arg(p, t, 0), state = arg(p, t, 1);
+    if (shown++ < 4)
+        printf("vita: ios_base::clear(0x%08" PRIx32 ", 0x%" PRIx32 ") words %08" PRIx32 " %08" PRIx32 " %08" PRIx32
+               " %08" PRIx32 " rdbuf %08" PRIx32 "\n",
+               self, state, vita_read32(p, self), vita_read32(p, self + 4), vita_read32(p, self + 8),
+               vita_read32(p, self + 12), vita_read32(p, self + 0x24));
+    vita_write32(p, self + 8, state & 0x17);
+    if (state & vita_read32(p, self + 12) & 0x17) return fatal(p, t, "std::ios_base::failure thrown");
+    return 0;
+}
+/* ios_base::_Init(this) gives the stream the state of a new one: good, no exceptions, skipws and dec, precision 6 */
+static uint32_t ios_init(VitaProcess* p, VitaThread* t) {
+    uint32_t self = arg(p, t, 0);
+    vita_write32(p, self + 8, 0);
+    vita_write32(p, self + 12, 0);
+    vita_write32(p, self + 16, 0x201);
+    vita_write32(p, self + 20, 6);
+    vita_write32(p, self + 24, 0);
+    return self;
+}
 /* std::exception::exception(this): its vtable one whose functions do nothing */
 static uint32_t cxx_exception(VitaProcess* p, VitaThread* t) {
     uint32_t self = arg(p, t, 0), d = data(p);
@@ -913,6 +1198,7 @@ const VitaHle vita_hle_libc[] = {
     {0xaf5c218du, "memmove", lc_memcpy},
     {0x6dc1f0d8u, "memset", lc_memset},
     {0x7747f6d7u, "memcmp", lc_memcmp},
+    {0x2f3e5b16u, "memchr", lc_memchr},
     {0x8aecc873u, "strlen", lc_strlen},
     {0x1b58fa3bu, "strcmp", lc_strcmp},
     {0xe4299dcbu, "strncmp", lc_strncmp},
@@ -926,6 +1212,9 @@ const VitaHle vita_hle_libc[] = {
     {0x0d5200cbu, "strstr", lc_strstr},
     {0x4203b663u, "strspn", lc_strspn},
     {0x0e29d27au, "strcspn", lc_strcspn},
+    {0x7a08be70u, "wmemchr", lc_wmemchr},
+    {0xd9f9ddcdu, "wmemcpy", lc_wmemcpy},
+    {0x4d04a480u, "wmemset", lc_wmemset},
     {0xa778a14bu, "wcslen", lc_wcslen},
     {0xf42128b9u, "wcscmp", lc_wcscmp},
     {0xaaa6aaa2u, "wcsncmp", lc_wcsncmp},
@@ -997,8 +1286,89 @@ const VitaHle vita_hle_libc[] = {
     {0x4a496bc0u, "_FSin", lm_fsin},
     {0xd5bd8d5cu, "_FLog", lm_flog},
     {0xc5b9c8d8u, "_FDtest", lm_fdtest},
+    {0x1167b5d2u, "modf", lm_modf},
+    {0x27a55170u, "_Dtest", lm_dtest},
+    {0x5bd0f71cu, "_Dsign", lm_dsign},
+    {0xc4f7e42cu, "_FDsign", lm_fdsign},
+    {0x52ddcdafu, "_Stolx", lc_stolx},
+    {0x3e672be3u, "fabs", lm_fabs},
+    {0xb5519ff0u, "sin", lm_sin},
+    {0x061d0244u, "cos", lm_cos},
+    {0x5bae40b0u, "tan", lm_tan},
+    {0x4016b2e6u, "asin", lm_asin},
+    {0xd72b5acbu, "acos", lm_acos},
+    {0x516d9970u, "atan", lm_atan},
+    {0xc9be3f05u, "atan2", lm_atan2},
+    {0x6037c48fu, "log", lm_log},
+    {0xcf65f098u, "log10", lm_log10},
+    {0x73afee5fu, "log2", lm_log2},
+    {0x9b18f38fu, "exp2", lm_exp2},
+    {0x0212323eu, "trunc", lm_trunc},
+    {0x64d37996u, "round", lm_round},
+    {0x943f218fu, "rint", lm_rint},
+    {0x877187c4u, "nearbyint", lm_nearbyint},
+    {0xacc0dc5au, "cbrt", lm_cbrt},
+    {0xf2c0af49u, "sinh", lm_sinh},
+    {0x110195e7u, "cosh", lm_cosh},
+    {0x26cd78cau, "tanh", lm_tanh},
+    {0x2d2cd795u, "hypot", lm_hypot},
+    {0x0b918d13u, "copysign", lm_copysign},
+    {0xbe30cc1eu, "fmax", lm_fmax},
+    {0x2abbdff7u, "fmin", lm_fmin},
+    {0x0056061bu, "ldexp", lm_ldexp},
+    {0x59197427u, "frexp", lm_frexp},
+    {0x090b899fu, "truncf", lm_truncf},
+    {0xaaf31896u, "roundf", lm_roundf},
+    {0xcace5a19u, "rintf", lm_rintf},
+    {0xd56e78f6u, "nearbyintf", lm_nearbyintf},
+    {0xfd2a3464u, "log10f", lm_log10f},
+    {0x4095dbdbu, "log2f", lm_log2f},
+    {0x79415bd3u, "exp2f", lm_exp2f},
+    {0xd1699f4du, "cbrtf", lm_cbrtf},
+    {0xb5838e7du, "sinhf", lm_sinhf},
+    {0x61de0770u, "coshf", lm_coshf},
+    {0xc4847578u, "tanhf", lm_tanhf},
+    {0xa397b929u, "hypotf", lm_hypotf},
+    {0x16eb9e63u, "copysignf", lm_copysignf},
+    {0x7004fa75u, "fmaxf", lm_fmaxf},
+    {0x7673cc1eu, "fminf", lm_fminf},
     /* SceLibstdcxx */
     {0xf99ed5acu, "_Znwj", cxx_new},
+    {0xe7fb2bf4u, "_Znaj", cxx_new},
+    {0x0ae71dc3u, "_ZnwjRKSt9nothrow_t", cxx_new_nothrow},
+    {0x31c62481u, "_ZnajRKSt9nothrow_t", cxx_new_nothrow},
+    {0x72293931u, "_ZdlPv", cxx_delete},
+    {0x91b0dc47u, "_ZdaPv", cxx_delete},
+    {0x87ef85ffu, "_ZdlPvRKSt9nothrow_t", cxx_delete},
+    {0xa7241f09u, "_ZdaPvRKSt9nothrow_t", cxx_delete},
+    {0x1eb89099u, "_ZdlPvS_", cxx_delete_sized},
+    {0x3688ffdau, "_ZdaPvS_", cxx_delete_sized},
+    {0xf9fab558u, "_ZNSt6_Mutex5_LockEv", zero},
+    {0x0402c9f8u, "_ZNSt6_Mutex7_UnlockEv", zero},
+    {0xa4f99ae7u, "_ZNSt6_MutexC1Ev", first_argument},
+    {0x011ceb00u, "_ZSt18uncaught_exceptionv", zero},
+    {0x78cb190eu, "_ZNSt8ios_base5_InitEv", ios_init},
+    {0x9b37cad9u, "_ZNSt6_MutexD1Ev", zero},
+    {0xdce89e71u, "_ZNSt8ios_baseD2Ev", zero},
+    {0x40ea90d5u, "_ZNSt8ios_baseD1Ev", zero},
+    {0x5e60b2b3u, "_ZNSt8ios_base4InitC1Ev", first_argument},
+    {0xabb11cf9u, "_ZNSt6_WinitC1Ev", first_argument},
+    {0xc9de8208u, "_ZNSt8ios_base5clearENSt5_IosbIiE8_IostateEb", ios_clear},
+    {0xdb15f0fcu, "_ZNKSt9type_infoeqERKS_", cxx_typeinfo_eq},
+    {0x9994f9feu, "_ZNKSt9type_infoneERKS_", cxx_typeinfo_ne},
+    {0x8c93efdau, "__cxa_allocate_exception", cxa_allocate_exception},
+    {0xbae38df9u, "_ZNKSt9type_info4nameEv", cxx_typeinfo_name},
+    {0xfd276300u, "_ZSt7_FiopenPKcNSt5_IosbIiE9_OpenmodeEi", cxx_fiopen},
+    {0x9da92617u, "_ZNSt6_MutexC1ESt14_Uninitialized", first_argument},
+    {0x9864c99fu, "wmemcmp", lc_wmemcmp},
+    {0x53f7eb4bu, "wmemmove", lc_wmemcpy},
+    {0xbcea304bu, "labs", lc_labs},
+    {0x1118b49fu, "imaxabs", lc_imaxabs},
+    {0x5044fc32u, "_Lockfilelock", zero},
+    {0xfd5dd98cu, "_Unlockfilelock", zero},
+    {0x67e99979u, "_Log", lm_log_base},
+    {0xf87e6098u, "__cxa_throw", cxx_raise},
+    {0x596ba786u, "_ZNSt8bad_castC2Ev", first_argument},
     {0xe8d59ab5u, "_ZNKSt12_String_base5_XlenEv", cxx_length_error},
     {0x473dc636u, "_ZNKSt12_String_base5_XranEv", cxx_out_of_range},
     {0x0656be32u, "_ZNKSt9exception6_RaiseEv", cxx_raise},
@@ -1018,6 +1388,25 @@ const VitaHle vita_hle_libc[] = {
     {0x86ef7680u, "sceClibMspaceMalloc", clib_mspace_malloc},
     {0x9c56b4d1u, "sceClibMspaceFree", clib_mspace_free},
     {0xae1a21ecu, "sceClibMspaceDestroy", zero},
+    {0x736753c8u, "sceClibMemmove", lc_memcpy},
+    {0xa18068fcu, "sceClibMemmoveChk", lc_memcpy},
+    {0x1f94ef45u, "sceClibMemcpyChk", lc_memcpy},
+    {0x2e3b02a1u, "sceClibMemcpy_safe", lc_memcpy},
+    {0xd19b6dc5u, "sceClibMemsetChk", lc_memset},
+    {0x407d6153u, "sceClibMemchr", lc_memchr},
+    {0x614076b7u, "sceClibStrchr", lc_strchr},
+    {0xa2fb4d9du, "sceClibStrcmp", lc_strcmp},
+    {0x660d1f6du, "sceClibStrncmp", lc_strncmp},
+    {0xc458d60au, "sceClibStrncpy", lc_strncpy},
+    {0xe265498bu, "sceClibStrstr", lc_strstr},
+    {0xac595e68u, "sceClibStrnlen", clib_strnlen},
+    {0x2cdfcd1cu, "sceClibStrlcpy", clib_strlcpy},
+    {0x70cbc2d5u, "sceClibStrlcat", clib_strlcat},
+    {0x4c5471bcu, "sceClibTolower", clib_tolower},
+    {0xb0335388u, "sceClibToupper", clib_toupper},
+    {0x678374adu, "sceClibMspaceCalloc", clib_mspace_calloc},
+    {0x3c847d57u, "sceClibMspaceMemalign", clib_mspace_memalign},
+    {0x774891d6u, "sceClibMspaceRealloc", clib_mspace_realloc},
     {0x4373b548u, "__sce_aeabi_idiv0", zero},
     {0xfb235848u, "__sce_aeabi_ldiv0", zero},
     {0, NULL, NULL},
@@ -1028,6 +1417,12 @@ const VitaHleVariable vita_hle_libc_variables[] = {
     {0x3ce6109du, "_Ctype", ctype_init},
     {0xd662e07cu, "_Tolotab", tolower_init},
     {0x36878958u, "_Touptab", toupper_init},
+    {0x8a0f308cu, "_FInf", float_inf_init},
+    {0x415162ddu, "_FNan", float_nan_init},
+    {0x710b5f33u, "_Inf", double_inf_init},
+    {0x5289bbc0u, "_LInf", double_inf_init},
+    {0x116f3da9u, "_Nan", double_nan_init},
+    {0x036d0f07u, "_LNan", double_nan_init},
     {0x064ada35u, "_ZTVSt12length_error", vtable_init},
     {0x82a84e5eu, "_ZTVSt11logic_error", vtable_init},
     {0xddae7cbeu, "_ZTVSt12out_of_range", vtable_init},

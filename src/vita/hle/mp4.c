@@ -340,6 +340,25 @@ static uint32_t get_stream_info(VitaProcess* p, VitaThread* t) {
     if (language) memcpy(b + 0x38, language->value, strnlen(language->value, 3));
     return 0;
 }
+/* sceMp4GetStreamInfo, its own NID (0x8be0e3d3; 0xd5b26179 above is the call the library's other path makes): the
+   arguments are not known. It does what that does, which reads the same handle, index and buffer, and the first calls
+   log what they were given and what the pointers point to, to check */
+static uint32_t get_stream_info_named(VitaProcess* p, VitaThread* t) {
+    static unsigned shown;
+    if (shown < 4) {
+        ++shown;
+        printf("vita: sceMp4GetStreamInfo(0x%08x, 0x%08x, 0x%08x, 0x%08x)\n", arg(p, t, 0), arg(p, t, 1), arg(p, t, 2),
+               arg(p, t, 3));
+        for (unsigned i = 0; i < 4; ++i) {
+            uint32_t a = arg(p, t, i) & ~3u;
+            if (a < 0x80000000u || !vita_mapped(p, a, 32)) continue;
+            printf("  r%u points to:", i);
+            for (unsigned k = 0; k < 8; ++k) printf(" %08x", vita_read32(p, a + k * 4));
+            putchar('\n');
+        }
+    }
+    return get_stream_info(p, t);
+}
 static uint32_t enable_stream(VitaProcess* p, VitaThread* t) {
     Mp4* m = file_of(p, arg(p, t, 0));
     return m && arg(p, t, 1) < m->stream_count ? 0 : 0x80000000u;
@@ -439,6 +458,7 @@ const VitaHle vita_hle_mp4[] = {
     {0x05474af0u, "sceMp4OpenFile", open_file},
     {0x30e49e4du, "sceMp4StartFileStreaming", start_file_streaming},
     {0xd5b26179u, "sceMp4GetStreamInfo", get_stream_info},
+    {0x8be0e3d3u, "sceMp4GetStreamInfo", get_stream_info_named},
     {0x609e57adu, "sceMp4EnableStream", enable_stream},
     {0x20a01112u, "sceMp4GetNextUnit", get_next_unit},
     {0xd092a066u, "sceMp4GetNextUnitData", get_next_unit_data},
