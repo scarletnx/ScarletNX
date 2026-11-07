@@ -7,6 +7,10 @@
 //   java -cp scarletnx-android-framework.jar tests/android_framework.java
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicReference;
 
 final class AndroidFramework {
@@ -53,8 +57,27 @@ final class AndroidFramework {
               "status 3, main looper's quitSafely: Main thread not allowed to quit.", got.get());
     }
 
+    /**
+     * With no log.tag property, Android's isLoggable is true from INFO up. The driver's --log-level sets it as log.tag
+     * does: a Log of a loader of its own, which reads the property as the driver gives it.
+     */
+    private static void logIsLoggable() throws Exception {
+        check("Log.isLoggable of DEBUG and INFO", "false true",
+              Log.isLoggable("android_framework", Log.DEBUG) + " " + Log.isLoggable("android_framework", Log.INFO));
+        System.setProperty("snx.android.log_level", "D");
+        URL jar = Path.of(System.getProperty("java.class.path")).toUri().toURL();
+        try (URLClassLoader loader = new URLClassLoader(new URL[] {jar}, ClassLoader.getPlatformClassLoader())) {
+            Class<?> log = Class.forName("android.util.Log", true, loader);
+            check("Log.isLoggable of DEBUG with --log-level=D", true,
+                  log.getMethod("isLoggable", String.class, int.class).invoke(null, "android_framework", Log.DEBUG));
+        } finally {
+            System.clearProperty("snx.android.log_level");
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         mainLoopEnds();
+        logIsLoggable();
         if (failures != 0) System.exit(1);
         System.out.println("android_framework: ok");
     }

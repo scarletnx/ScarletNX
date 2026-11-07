@@ -69,7 +69,7 @@ These find what an app does when it stops or runs slowly:
 
 | Option | Meaning |
 | --- | --- |
-| `--log-level=L` | The least `android.util.Log` level printed: `V`, `D` (the default), `I`, `W`, `E` or `A` |
+| `--log-level=L` | The least `android.util.Log` level printed: `V`, `D` (the default), `I`, `W`, `E` or `A`. It is also the least level `Log.isLoggable` is true for, as Android's `log.tag` property sets it; without it, `I`, as on Android |
 | `--sample` | Every 5 seconds, each guest thread's pc, x30 and HLE call, and the count of Vulkan presents |
 | `--log-signals` | Each guest signal action, send and delivery |
 | `--jit-verbose`, `--jit-opt=0` | Each unit the JIT compiles with its time, and its code at -O0, which compiles several times faster to test the JIT itself (2 is the default) |
