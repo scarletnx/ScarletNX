@@ -14,9 +14,13 @@
 #define VK_CSF_SETS     64 /* dispatches */
 #define VK_CSF_WAYS     4
 
+/* Fibonacci hashing (Knuth's multiplicative hashing): 2^64 divided by the golden ratio. A key times it keeps, in the
+   product's top bits, a mix of every bit of the key, so the top VK_SHA_SET_BITS spread keys that differ only in a few
+   bits over all the sets */
+#define VK_FIB_MULT 0x9E3779B97F4A7C15ull
 /* the set of a draw's key (its mix of address, key words and stage), from every bit of it: programs are 256-byte
    aligned, and a shift and xor of their addresses left most sets unused */
-static inline u32 vk_sha_set(u64 hk) { return (u32)((hk * 0x9E3779B97F4A7C15ull) >> (64 - VK_SHA_SET_BITS)); }
+static inline u32 vk_sha_set(u64 hk) { return (u32)((hk * VK_FIB_MULT) >> (64 - VK_SHA_SET_BITS)); }
 /* the set of a dispatch's program address */
 static inline u32 vk_csf_set(u64 pa) { return (u32)(((pa >> 8) ^ (pa >> 16)) & (VK_CSF_SETS - 1)); }
 #endif
