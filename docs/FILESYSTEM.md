@@ -79,7 +79,7 @@ IPC requests allow 0x300-byte paths excluding NUL. Host limits also apply.
   the SDK composes there, on the mask, on the faceline's texture and in the launcher's picture). Every shape is a
   parametric surface (the head and the face's front
   per faceline, 24 hair forms in normal and cap form whose edge ends in pointed locks, tails for the twin-tail and
-  ponytail styles (the high twin tails and the side ponytail wide flat locks), the curled twin tails as chunky drills, one of
+  ponytail styles (wide flat locks, high or low, the side ponytail and the one at the back too), the curled twin tails as chunky drills, one of
   them with an ahoge, noses, a beard, the caps, ties, bands, bow and clip of the hat parts, the noseline's and the
   glasses' quads) and every texture drawn from distance functions (eyes with a
   catchlight, brows, mouths, glasses, mustaches, beards, lines, make-up, the mole, the noselines, the hats), none of
