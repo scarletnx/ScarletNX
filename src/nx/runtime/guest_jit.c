@@ -161,7 +161,6 @@ static GuestFn variant_resolve(SnxU64 pc) {
     return result;
 }
 
-#if defined(SNX_TRACY)
 /* What a batch took and what the queues hold, on the timeline. A batch runs on a compile thread, whose name the
    profiler is given with its first batch, and the sums since that thread's last batch give the cache loads and the
    batches compiled. A batch's seconds are the LLVM pipeline's and the loader's, so a hitch in a run that compiles
@@ -173,17 +172,17 @@ static _Thread_local struct {
 
 static void jit_report_plots(const SnxJitReport* r) {
     SnxJitStats stats;
+    if (!snx_tracy_enter()) return; /* no client: a batch's numbers go nowhere */
     if (!t_jit_plot.named) {
         t_jit_plot.named = 1;
         snx_tracy_thread_name("jit compile"); /* the system's name is set where the thread starts (jit_service.c) */
     }
     /* the service's sums: read under its lock, which this thread does not hold (the report comes outside them) */
     if (g_jit) {
-        unsigned long cached, batches, queued;
         snx_jit_stats(g_jit, &stats);
-        cached = (unsigned long)stats.cached;
-        batches = (unsigned long)stats.batches;
-        queued = (unsigned long)stats.queued;
+        unsigned long cached = (unsigned long)stats.cached, batches = (unsigned long)stats.batches;
+        /* the queue the batch this thread last landed left behind: only the client's plot reads it */
+        [[maybe_unused]] unsigned long queued = (unsigned long)stats.queued;
         SNX_PLOT("jit cache loads", (double)(cached - t_jit_plot.cached));
         SNX_PLOT("jit batches", (double)(batches - t_jit_plot.batches));
         t_jit_plot.cached = cached;
@@ -199,8 +198,8 @@ static void jit_report_plots(const SnxJitReport* r) {
         SNX_PLOT("jit failures", 1);
     else
         SNX_PLOT("jit compiled pcs", (double)r->pcs);
+    snx_tracy_leave();
 }
-#endif
 
 /* on a compile thread */
 static void jit_log(const SnxJitReport* r) {
@@ -214,9 +213,7 @@ static void jit_log(const SnxJitReport* r) {
         LOGV("jit: %llx and %lu more pcs compiled, %lu functions, %lu instructions, %lu KiB, %.1f ms\n",
              (unsigned long long)r->pc, (unsigned long)(r->pcs - 1), (unsigned long)r->functions,
              (unsigned long)r->instructions, (unsigned long)(r->bytes >> 10), r->seconds * 1000.0);
-#if defined(SNX_TRACY)
     jit_report_plots(r);
-#endif
 }
 
 void jit_init(void) {
@@ -312,24 +309,19 @@ GuestFn jit_resolve(u64 pc) {
 
 GuestFn jit_wait(u64 pc) {
     GuestFn code = variant_resolve(pc);
-#if defined(SNX_TRACY)
-    u64 t0 = 0;
-    int trace;
+    [[maybe_unused]] u64 t0 = 0;
+    [[maybe_unused]] int trace;
     /* the wait a miss costs the game: one a compile thread is working on waits on its condition, and one it has not
        taken yet is queued for it. Only the wait is measured: the resolve above is a table read. Its zone is left out:
        the wait can span a guest thread's own block (rt_miss's kthread_block), which leaves a zone open for good */
     if (code) return code;
     if ((trace = snx_tracy_enter())) t0 = plat_ns();
     code = g_jit ? snx_jit_wait(g_jit, pc) : NULL;
-    if (trace) {
+    if (trace) { /* the gate is open, so the client is up: the wait is measured */
         SNX_PLOT("jit miss ms", (double)(plat_ns() - t0) / 1e6);
         snx_tracy_leave();
     }
     return code;
-#else
-    if (code) return code;
-    return g_jit ? snx_jit_wait(g_jit, pc) : NULL;
-#endif
 }
 
 /* whether pc is in executable guest memory, and the block it is in */

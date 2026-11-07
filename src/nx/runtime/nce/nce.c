@@ -180,25 +180,19 @@ static void hook(CPU* c, u32 ix, unsigned index) {
     if (index >= __atomic_load_n(&g_nce.diverts, __ATOMIC_ACQUIRE))
         fatal("NCE: an outcall of hook %u, which no function has", index);
     guest_stats_hook(ix, g_nce.family[index]);
-#if defined(SNX_TRACY)
     /* the dispatch path's own zone: an outcall a hook makes, named by its family. Not one per outcall (a stub's SVC
        is already a zone of its own), which would put a zone on every call the game makes */
     SNX_ZONE_T(z_hook, "nce hook", "%s", guest_stats_family_name(g_nce.family[index]));
-#endif
     entry = g_nce.entry[index];
     f = __atomic_load_n(&g_disp[(entry - g_code_lo) >> 2], __ATOMIC_ACQUIRE);
-#if defined(SNX_TRACY)
     if (!f || f == nce_native) {
         c->pc = g_nce.original[index];
         SNX_ZONE_END(z_hook); /* no handler: the hook's own code is the outcall */
         return;
     }
-#endif
     c->pc = entry;
     f(c, entry); /* the adapter leaves the pc where the guest goes on: the function's return address */
-#if defined(SNX_TRACY)
     SNX_ZONE_END(z_hook);
-#endif
 }
 
 static void dispatch(CPU* c, u64 code) {

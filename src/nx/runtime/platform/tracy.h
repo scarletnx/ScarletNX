@@ -121,8 +121,14 @@ void snx_tracy_lock_try(SnxTracyLock* l, int acquired);
 #define SNX_PLOT(name, value)   ((void)0)
 #include "common/utilities/common.h"
 /* the thread's name for the system: the "threads:" line of the log (main.c), a debugger and a crash report name the
-   threads by it */
+   threads by it. The client's own name for it, which a zone on the thread announces, is the one the build with the
+   client keeps */
 #define SNX_THREAD_NAME(name) snx_thread_name(name)
+static inline void snx_tracy_thread_name(const char* name) { snx_thread_name(name); }
+/* the gate: no client, so nothing is in flight and no caller enters one */
+static inline int snx_tracy_enter(void) { return 0; }
+static inline void snx_tracy_leave(void) {}
+static inline int snx_tracy_attached(void) { return 0; }
 static inline int snx_tracy_gpu_context(int ctx, int64_t gpu_time, float period, int calibrated,
                                         const char* name) {
     (void)ctx, (void)gpu_time, (void)period, (void)calibrated, (void)name;
@@ -163,7 +169,6 @@ static inline int64_t snx_tracy_gpu_cal_delta(SnxTracyGpuCal* c, int64_t cpu) {
     return d;
 }
 static inline uint64_t snx_tracy_connection_id(void) { return 1; }
-static inline int snx_tracy_attached(void) { return 0; }
 static inline int snx_tracy_gate_open(void) { return 0; }
 typedef struct SnxTracyLock SnxTracyLock;
 static inline SnxTracyLock* snx_tracy_lock_make(const char* name) {

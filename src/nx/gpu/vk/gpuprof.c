@@ -113,14 +113,12 @@ static struct {
     int kind;
 } g_waited[GP_WAITS];
 
-#if defined(SNX_TRACY)
 /* Tracy's GPU track: the passes as zones on the GPU's clock, their timestamps read back with the frame's results,
    the emissions themselves in the platform layer (tracy.c). A profiling run asks for them: the setting, or the
    client being up. A new connection's server re-anchors at the replayed context's original pair, so the caller's
    CPU delta is measured from that pair again (SnxTracyGpuCal). */
 static SnxTracyGpuCal g_cal; /* the announcement's anchor, and whether it was calibrated */
 static u64 g_cal_conn;       /* the connection that anchor was announced on */
-#endif
 
 int vk_gpuprof_calibrated(void) {
     return g_vk.has_calibrated_host && g_vk.props.limits.timestampComputeAndGraphics;
@@ -132,12 +130,10 @@ static int gp_on(void) {
         if (g_settings.gpu_profile && !g_on) WARN("vulkan: vk_gpu_profile: the device has no timestamps on its graphics queue\n");
     }
     if (g_dead) return 0;
-#if defined(SNX_TRACY)
     /* The client's track without the setting. Attached, not merely started: on-demand Tracy drops the GPU events
        of a client no server has connected to, so a --tracy run waiting for a GUI would otherwise pay a query pool
        reset and two timestamps for every pass, a read-back at each recycle, and keep none of it. */
     if (snx_tracy_attached()) return g_vk.props.limits.timestampComputeAndGraphics;
-#endif
     return g_on;
 }
 int vk_gpuprof_timed(void) { return g_vk.gfx_timestamp_bits && !g_dead; }
@@ -211,7 +207,6 @@ void vk_gpuprof_waited(u64 value, int kind) {
     g_waited[value % GP_WAITS].value = value;
     g_waited[value % GP_WAITS].kind = kind + 1;
 }
-#if defined(SNX_TRACY)
 /* vk_gpu_draw_profile: one GPU zone per draw or dispatch, named by what it is. A timestamp between draws leaves the
    pipeline waiting for the one before it on many devices, so it is opt-in, and capped: past the cap, and past what
    the slot's pool holds with the passes', the rest are counted (g_draw_lost) and shown in the trace. */
@@ -260,7 +255,6 @@ void vk_gpuprof_draw_end(VkCommandBuffer cb) {
     if (d->q0) d->q1 = snx_tracy_gpu_zone_end(d->q0, VK_GPU_CTX_GRAPHICS, d->ep);
     g_draw_at = NULL;
 }
-#endif
 /* before vkCmdBeginRendering, outside any pass */
 void vk_gpuprof_pass_begin(VkCommandBuffer cb, const Surf* rt, const Surf* zt) {
     GpSlot* g = gp_slot_reset(cb, gp_on());
@@ -285,14 +279,12 @@ void vk_gpuprof_pass_begin(VkCommandBuffer cb, const Surf* rt, const Surf* zt) {
     g->used += 2; /* the pass's own two: its end's is its second, which the draws' in between are not */
     g_draws_at_begin = g_vk_drawn;
     g_in_pass = 1;
-#if defined(SNX_TRACY)
     p->q0 = p->q1 = 0;
     if (snx_tracy_attached()) {
         char name[48] = "gpu pass";
         if (s) snprintf(name, sizeof name, "gpu pass %ux%u fmt %u", s->w, s->h, (u32)s->f.vk);
         p->q0 = snx_tracy_gpu_zone_begin(name, 0x3d8f4a, VK_GPU_CTX_GRAPHICS, &p->ep);
     }
-#endif
 }
 /* after vkCmdEndRendering */
 void vk_gpuprof_pass_end(VkCommandBuffer cb) {
@@ -310,10 +302,8 @@ void vk_gpuprof_pass_end(VkCommandBuffer cb) {
     g_d_at_end = g_vk_dispatches;
     for (int i = 0; i < 3; i++) g_k_at_end[i] = g_rec_xfer_kind[i];
     g_bytes_at_end = g_rec_buf_bytes;
-#if defined(SNX_TRACY)
     /* the end goes out whenever the begin did: a dropped pair never reaches the server apart */
     if (p->q0) p->q1 = snx_tracy_gpu_zone_end(p->q0, VK_GPU_CTX_GRAPHICS, p->ep);
-#endif
 }
 static void gp_report(void);
 /* the slot's submissions into the sums of busy and idle time, on the CPU's clock: one calibrated pair of the two clocks
@@ -419,7 +409,6 @@ void vk_gpuprof_frame_done(u32 slot) {
     }
     gp_busy(g, ts);
     if (!profile) return;
-#if defined(SNX_TRACY)
     /* the frame's timestamps onto the GPU track. The context is announced calibrated when the device can put its
        clock next to the client's (a fresh pair of the two every frame, vk_gpuprof_clock), with the anchor then
        that very pair; else the GPU clock is anchored at this moment: the last timestamp was written before
@@ -465,7 +454,6 @@ void vk_gpuprof_frame_done(u32 slot) {
         }
     } else if (g_draw_lost)
         g_draw_lost = 0; /* a frame without a client keeps no count */
-#endif
     double period = g_vk.props.limits.timestampPeriod;
     for (u32 i = 0; i < g->npass; i++) {
         const GpPass* p = &g->pass[i];
@@ -502,7 +490,6 @@ void vk_gpuprof_frame_done(u32 slot) {
         gp_report();
     }
 }
-#if defined(SNX_TRACY)
 /* a fresh pair of the GPU's clock and the client's, one driver call: CLOCK_MONOTONIC_RAW is the clock the Tracy
    client keeps its own time in, so the deltas between the pairs map the device's timestamps onto it. 0 without
    the extension or when the driver refused. */
@@ -517,7 +504,6 @@ int vk_gpuprof_clock(i64* cpu, i64* gpu) {
     *gpu = (i64)ts2[0];
     return 1;
 }
-#endif
 /* the graphics queue's busy and idle time over the report's window, a frame (present) at a time, and the CPU's waits
    for the GPU by kind (cmd.c) */
 static void gp_idle_report(void) {
