@@ -2,8 +2,8 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # Graphics descriptor measurements
 
-`vk_descriptors=0` selects sets, `1` selects buffers, and `2` prefers heaps. The default `3` selects heaps,
-buffers, then sets according to device support. An unencodable heap draw retries with buffers or sets before any
+`vk_descriptors=0` selects sets and `1` buffers. `2` and the default `3` do the same: heaps, else buffers, else
+sets, by device support. An unencodable heap draw retries with buffers or sets before any
 draw command. Heap encodings, index tables and buffer descriptors remain immutable until their frame retires.
 
 Build `snx-test-vulkan` first. Stop builds and other timing jobs, then use a new local output directory:
