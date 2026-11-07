@@ -1091,8 +1091,18 @@ static int check_depth_writeback(void) {
         r[0x368] = 0x5A;
         engine_clear(ch, 3);
         vk_render_end();
-        CHECK(vk_rt_find(gva));
+        Surf* zt = vk_rt_find(gva);
+        CHECK(zt);
+        /* its move out of the attachment layout names no sample locations, as they are the standard ones: a barrier
+           that chains them drains the recording thread's ring (one game's depth targets did it every pass) */
+        u64 synced = g_rec_barriers_synced;
         vk_rt_flush(gva);
+        if (g_rec_barriers_synced != synced) {
+            fprintf(stderr, "depth write-back of zeta %#x: %llu barriers waited for the recording thread%s\n",
+                    c[k].zeta, (unsigned long long)(g_rec_barriers_synced - synced),
+                    zt->sample_locations_compatible ? " (the target takes sample locations)" : "");
+            return 1;
+        }
         CHECK(!gmem_read(gva, out, 16 * 16 * c[k].bpp));
         for (u32 i = 0; i < 16 * 16; i++) {
             u32 lo, hi = 0;
@@ -1107,6 +1117,7 @@ static int check_depth_writeback(void) {
     }
     CHECK(mem_unmap(base, 0x40000) == 0);
     free(ch);
+    printf("Depth targets write back with no barrier waiting for the recording thread\n");
     return 0;
 }
 /* A volume of more than 512 Mi texels whose bytes the GPU holds is a texture (a game's light volume, 1664x448x1344 of

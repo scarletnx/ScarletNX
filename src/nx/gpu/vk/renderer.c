@@ -636,6 +636,14 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 (unsigned long long)g_vk_draw_kept, (unsigned long long)g_vk_draw_checked,
                 (unsigned long long)g_vk_targets_kept);
             {
+                static u64 synced_was;
+                if (g_rec_barriers_synced != synced_was)
+                    LOG("vulkan: %llu barriers of the last 600 frames waited for the recording thread to finish its "
+                        "ring, for a structure chained to them\n",
+                        (unsigned long long)(g_rec_barriers_synced - synced_was));
+                synced_was = g_rec_barriers_synced;
+            }
+            {
                 u64 pipes, hits, make_ms, pipe_ms, shaders, shader_ms, uploads, upload_bytes, partial, partial_bytes;
                 vk_pipeline_stats(&pipes, &hits, &make_ms, &pipe_ms, &shaders, &shader_ms);
                 vk_tex_stats(&uploads, &upload_bytes);

@@ -975,6 +975,7 @@ static void clear_depth_run(const void* p) {
                                 XFER_REGIONS(x));
 }
 u64 g_rec_xfers, g_rec_barriers; /* copies and blits, and barriers, put in the frame's ring (gpuprof.c's gaps) */
+u64 g_rec_barriers_synced;       /* barriers with a pNext chain, recorded after the ring drained */
 u64 g_rec_xfer_kind[3], g_rec_buf_bytes; /* buffer copies, buffer-image copies, image copies and blits; buffer bytes */
 static void copy_buffer_run(const void* p);
 static void buffer_to_image_run(const void* p);
@@ -1127,7 +1128,10 @@ static int barrier_chained(const VkDependencyInfo* d) {
 void rec_CmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo* d) {
     if (rec_on(cb)) g_rec_barriers++;
     if (!rec_on(cb) || barrier_chained(d)) {
-        if (rec_on(cb)) vk_rec_sync();
+        if (rec_on(cb)) {
+            g_rec_barriers_synced++;
+            vk_rec_sync();
+        }
         vkCmdPipelineBarrier2(cb, d);
         return;
     }

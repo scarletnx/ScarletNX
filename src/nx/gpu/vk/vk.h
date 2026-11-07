@@ -1735,6 +1735,7 @@ int vk_gpuprof_calibrated(void);
 /* a fresh pair of the GPU's clock and the client's, for the track's calibration (0 without the extension) */
 int vk_gpuprof_clock(i64* cpu, i64* gpu);
 extern u64 g_rec_xfers, g_rec_barriers;         /* record.c: copies and blits, and barriers, put in the frame's ring */
+extern u64 g_rec_barriers_synced;               /* record.c: barriers with a pNext chain, after the ring drained */
 extern u64 g_rec_xfer_kind[3], g_rec_buf_bytes; /* buffer, buffer-image, image copies; buffer copies' bytes */
 
 /* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */

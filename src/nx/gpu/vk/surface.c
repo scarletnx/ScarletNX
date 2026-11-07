@@ -144,10 +144,13 @@ static void surf_barrier(VkCommandBuffer cb, const Surf* s, VkPipelineStageFlags
                           VkAccessFlags2 source_access, VkImageLayout old_layout, VkPipelineStageFlags2 stage,
                           VkAccessFlags2 access, VkImageLayout layout) {
     VkSampleLocationEXT positions[16];
-    VkSampleLocationsInfoEXT locations = vk_sample_locations_info(&s->sample_locations, positions);
+    VkSampleLocationsInfoEXT locations;
     VkImageMemoryBarrier2 image = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
                                     .pNext = s->sample_locations_compatible && old_layout != VK_IMAGE_LAYOUT_UNDEFINED
-                                                 ? &locations : NULL,
+                                                 ? vk_sample_locations_barrier(&s->sample_locations,
+                                                                               vk_surf_samples(s), &locations,
+                                                                               positions)
+                                                 : NULL,
                                     .srcStageMask = source_stage, .srcAccessMask = source_access,
                                     .dstStageMask = stage, .dstAccessMask = access,
                                     .oldLayout = old_layout, .newLayout = layout,
