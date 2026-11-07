@@ -179,6 +179,10 @@ SM86_OP(SURED_B, 0x3a0, SM86_K_FIX, 0, "SURED.B")
 /* SURED with the handle in a constant buffer: no source names 0x59f. The bindless 0x3a0 plus 0x1ff, as 0x998 is to
    0xb97, and its fields (the handle at 40-58, the dimension, ADD, U32) agree in a game's program */
 SM86_OP(SURED, 0x59f, SM86_K_FIX, 0, "SURED")
+/* SUATOM with the handle in a constant buffer: the bindless 0x394 plus 0x1ff, as SURED's 0x59f is to 0x3a0, with the
+   bindless one's fields (NAK's: destination 16, coordinates 24, data 32, dimension 61, type 73, operation 87-90) and
+   SURED's handle at 40-58. A game's fragment programs use it */
+SM86_OP(SUATOM, 0x593, SM86_K_FIX, 0, "SUATOM")
 SM86_OP(SUATOM_B, 0x394, SM86_K_FIX, 0, "SUATOM.B")
 SM86_OP(SUATOM_CAS_B, 0x396, SM86_K_FIX, 0, "SUATOM.CAS.B")
 /* control flow: convergence barriers (BSSY, BSYNC, BREAK, BMOV) in place of Maxwell's CRS stack */
