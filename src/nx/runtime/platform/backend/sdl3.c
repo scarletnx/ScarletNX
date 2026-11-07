@@ -24,6 +24,7 @@
 #include "nx/runtime/platform/vpad.h"
 #include "nx/runtime/platform/gamepad.h"
 #include "nx/runtime/platform/help.h"
+#include "nx/runtime/platform/hotkeys.h"
 #include "common/utilities/pad_sdl.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -235,7 +236,7 @@ int backend_ini(const char* k, const char* v) {
     /* the in-game menu reads the touch mode, and the renderer the on-screen controls, under ui_lock */
     ui_lock();
     if (o) ini_read(o, v);
-    known = o || vpad_ini(k, v) || gamepad_ini(k, v);
+    known = o || vpad_ini(k, v) || gamepad_ini(k, v) || hotkeys_ini(k, v);
     ui_unlock();
     return known || unattended_ini(k, v);
 }
@@ -942,11 +943,25 @@ static void title_paused(int paused) {
     SDL_SetWindowTitle(g_win, title);
 }
 static void menu_open(int open);
-/* the runtime's keys, which the game's menu's F1 page lists (overlay.c's KEYS) with the game's buttons of keymap: a
-   binding changed here changes there */
-static void hotkey(SDL_Keycode k) {
-    switch (k) {
-        case SDLK_F1: /* the game's menu on its page of keys, over the game as the menu is, fullscreen or not */
+/* a key's modifiers as hotkeys.h counts them, either side's */
+static unsigned key_mods(SDL_Keymod m) {
+    return (m & SDL_KMOD_CTRL ? HOTKEY_CTRL : 0u) | (m & SDL_KMOD_ALT ? HOTKEY_ALT : 0u) |
+           (m & SDL_KMOD_SHIFT ? HOTKEY_SHIFT : 0u) | (m & SDL_KMOD_GUI ? HOTKEY_GUI : 0u);
+}
+/* the runtime's key a key press is (hotkeys.h's action), -1 for none: a key two actions are set to does the first's,
+   which the log says */
+static int key_action(const SDL_KeyboardEvent* k) {
+    int also, a = hotkey_find(k->key, key_mods(k->mod), &also);
+    if (a >= 0 && also >= 0 && !k->repeat)
+        WARN_LIMIT(4, "input: %s is %s's and %s's: it does %s's\n", hotkey_text(a), hotkey_row(a)->key,
+                   hotkey_row(also)->key, hotkey_row(a)->key);
+    return a;
+}
+/* a runtime key's action, which the game's menu's F1 page lists (overlay.c's keys_row) with the game's buttons of
+   keymap: a binding changed here changes there. The menu's is menu_event's */
+static void hotkey(int action) {
+    switch (action) {
+        case HOTKEY_HELP: /* the game's menu on its page of keys, over the game as the menu is, fullscreen or not */
             ui_lock();
             menu_open(1);
             {
@@ -956,8 +971,8 @@ static void hotkey(SDL_Keycode k) {
             overlay_keys();
             ui_unlock();
             break;
-        case SDLK_F3: g_shot_req = 1; break;
-        case SDLK_F4: {
+        case HOTKEY_SCREENSHOT: g_shot_req = 1; break;
+        case HOTKEY_FPS_LIMIT: {
             /* off and back to the limit the player set (fps_limit=120 stays 120), or to the game's pace when it
                started off */
             static int was = SNX_FPS_GAME;
@@ -977,8 +992,8 @@ static void hotkey(SDL_Keycode k) {
                 LOG("FPS limit: off\n");
             break;
         }
-        case SDLK_F5: kernel_dump_threads(); break;
-        case SDLK_F6: {
+        case HOTKEY_THREAD_DUMP: kernel_dump_threads(); break;
+        case HOTKEY_SHOWCASE: {
             int on = !__atomic_load_n(&g_settings.showcase, __ATOMIC_RELAXED);
             __atomic_store_n(&g_settings.showcase, on, __ATOMIC_RELAXED); /* a run's --showcase stays out of the file */
             ini_set("showcase", on ? "1" : "0");
@@ -988,10 +1003,10 @@ static void hotkey(SDL_Keycode k) {
                 LOG("showcase: off\n");
             break;
         }
-        case SDLK_F7: state_ask(STATE_SAVE, -1); break;
-        case SDLK_F8: state_ask(STATE_LOAD, -1); break;
-        case SDLK_F9: state_slot_next(); break;
-        case SDLK_F12: {
+        case HOTKEY_SAVE_STATE: state_ask(STATE_SAVE, -1); break;
+        case HOTKEY_LOAD_STATE: state_ask(STATE_LOAD, -1); break;
+        case HOTKEY_NEXT_SLOT: state_slot_next(); break;
+        case HOTKEY_STATS: {
             int on = !__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED);
             __atomic_store_n(&g_settings.stats, on, __ATOMIC_RELAXED);
             ini_set("stats", on ? "1" : "0");
@@ -1002,19 +1017,23 @@ static void hotkey(SDL_Keycode k) {
             break;
         }
 #if defined(SNX_TRACY)
-        case SDLK_F10: snx_tracy_capture_now(); break;
+        case HOTKEY_TRACY: snx_tracy_capture_now(); break;
 #endif
-        case SDLK_F11: set_fullscreen(!g_fullscreen); break;
-        case SDLK_PAUSE:
+        case HOTKEY_FULLSCREEN:
+        case HOTKEY_FULLSCREEN_2: set_fullscreen(!g_fullscreen); break;
+        case HOTKEY_PAUSE:
             game_pause_toggle();
             title_paused(game_paused());
             break;
+        case HOTKEY_CAPTURE: g_renderer->capture(1); break;
+        case HOTKEY_QUIT: g_quit = 1; break;
+        default: break;
     }
 }
 
 /* The game's menu takes the keys, the buttons, the fingers and the mouse while it is open, and the keyboard's box
-   while it shows and the menu doesn't. Back, Home and F2 open and close the menu, and they and Esc end the on-screen
-   controls' edit mode. Under ui_lock: the renderer draws them on its thread */
+   while it shows and the menu doesn't. Back, Home and the menu's key (hotkey_menu, F2) open and close the menu, and
+   they and Esc end the on-screen controls' edit mode. Under ui_lock: the renderer draws them on its thread */
 /* a finger's id, the pen's apart: SDL gives a pen's touch the id 1 on every platform, the id Android and Wayland
    give a first finger and any finger may have, and no real finger's id sets bit 63 */
 static u64 finger_id(const SDL_TouchFingerEvent* f) {
@@ -1048,17 +1067,21 @@ static void overlay_do(int action) {
     }
 }
 /* the keyboard's box, under no menu: the text typed, Backspace, Return and Esc, a paste (Ctrl+V, the system key's V
-   on a Mac), and no other key, which would reach the game or a hotkey; Alt+Return still switches fullscreen */
-static int keyboard_event(const SDL_Event* e) {
+   on a Mac), and no other key, which would reach the game or a runtime key; a fullscreen key held with Ctrl, Alt or
+   the system key (Alt+Return), which types nothing, still switches fullscreen. action: the key's runtime key, -1 for
+   none */
+static int keyboard_event(const SDL_Event* e, int action) {
     if (e->type == SDL_EVENT_TEXT_INPUT) {
         overlay_keyboard_type(e->text.text);
         return 1;
     }
+    if ((action == HOTKEY_FULLSCREEN || action == HOTKEY_FULLSCREEN_2) &&
+        (key_mods(e->key.mod) & (HOTKEY_CTRL | HOTKEY_ALT | HOTKEY_GUI)))
+        return 0;
     switch (e->key.key) {
         case SDLK_BACKSPACE: overlay_keyboard_key(OVERLAY_KEY_BACKSPACE); break;
         case SDLK_RETURN:
         case SDLK_KP_ENTER:
-            if (e->key.mod & SDL_KMOD_ALT) return 0;
             if (!e->key.repeat) overlay_keyboard_key(OVERLAY_KEY_ENTER);
             break;
         case SDLK_ESCAPE:
@@ -1075,10 +1098,11 @@ static int keyboard_event(const SDL_Event* e) {
     }
     return 1;
 }
-static int menu_event(const SDL_Event* e) {
+/* action: the key's runtime key (hotkeys.h), -1 for none */
+static int menu_event(const SDL_Event* e, int action) {
     int w, h;
     float d;
-    if ((e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && (e->key.key == SDLK_AC_BACK || e->key.key == SDLK_F2)) ||
+    if ((e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && (e->key.key == SDLK_AC_BACK || action == HOTKEY_MENU)) ||
         (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE)) {
         if (vpad_editing())
             vpad_edit(0);
@@ -1092,8 +1116,10 @@ static int menu_event(const SDL_Event* e) {
     }
     if (!overlay_shown() && !overlay_keyboard_shown()) return 0;
     if (!overlay_shown() && (e->type == SDL_EVENT_KEY_DOWN || e->type == SDL_EVENT_TEXT_INPUT))
-        return keyboard_event(e);
-    if (e->type == SDL_EVENT_KEY_DOWN) {
+        return keyboard_event(e, action);
+    if (e->type == SDL_EVENT_KEY_DOWN && action == HOTKEY_HELP) { /* its page of keys, or from there the game again */
+        if (!e->key.repeat) overlay_do(overlay_keys());
+    } else if (e->type == SDL_EVENT_KEY_DOWN) {
         switch (e->key.key) {
             case SDLK_UP: overlay_move(-1); break;
             case SDLK_DOWN: overlay_move(1); break;
@@ -1106,9 +1132,6 @@ static int menu_event(const SDL_Event* e) {
             case SDLK_ESCAPE:
             case SDLK_BACKSPACE:
                 if (!e->key.repeat) overlay_do(overlay_back());
-                break;
-            case SDLK_F1: /* its page of keys, or from there the game again */
-                if (!e->key.repeat) overlay_do(overlay_keys());
                 break;
             default: /* F1's page goes back to the game on any key */
                 if (!e->key.repeat) overlay_do(overlay_other());
@@ -1162,10 +1185,10 @@ static int menu_event(const SDL_Event* e) {
         return 0; /* the window's events, and keys let go: the game still has them */
     return 1;
 }
-static int overlay_event(const SDL_Event* e) {
+static int overlay_event(const SDL_Event* e, int action) {
     int taken;
     ui_lock();
-    taken = menu_event(e);
+    taken = menu_event(e, action);
     ui_unlock();
     return taken;
 }
@@ -1275,8 +1298,9 @@ static void press_pads_held(void) {
 }
 /* What the event is to the prepare screen's press: 1 when the screen takes it. Every pad's buttons and triggers are
    followed, listening or not, so one held from before counts only once let go. While the menu or the controls' edit
-   mode is over the screen, they take what they would take over the game, and nothing presses */
-static int press_event(const SDL_Event* e) {
+   mode is over the screen, they take what they would take over the game, and nothing presses; nor does a runtime key
+   (action, hotkeys.h's; -1 for none), whatever key it is set to */
+static int press_event(const SDL_Event* e, int action) {
     u32* held;
     int bit, listening = g_press.listening && !overlay_shown() && !vpad_editing();
     switch (e->type) {
@@ -1318,7 +1342,7 @@ static int press_event(const SDL_Event* e) {
             return 1;
         }
         case SDL_EVENT_KEY_DOWN:
-            if (!listening || !press_key(&e->key)) return 0;
+            if (!listening || !press_key(&e->key) || action >= 0) return 0;
             g_press.kind = PRESS_KEY;
             g_press.code = e->key.scancode;
             return 1;
@@ -1408,8 +1432,9 @@ void video_poll(void) {
        gives the box's line) is in this poll's state */
     int menu_had = overlay_shown() || vpad_editing() || overlay_keyboard_shown();
     while (!g_opt_headless && SDL_PollEvent(&e)) {
-        if (press_event(&e)) continue;
-        if (overlay_event(&e)) continue;
+        int action = e.type == SDL_EVENT_KEY_DOWN ? key_action(&e.key) : -1; /* the runtime key it is */
+        if (press_event(&e, action)) continue;
+        if (overlay_event(&e, action)) continue;
         switch (e.type) {
             case SDL_EVENT_QUIT: g_quit = 1; break;
             case SDL_EVENT_WINDOW_MINIMIZED:
@@ -1444,26 +1469,15 @@ void video_poll(void) {
                 wsafe_set();
                 break;
             case SDL_EVENT_KEY_DOWN:
-                if (e.key.key == SDLK_ESCAPE) { /* a fresh press: the repeats of the Esc that closed the menu don't */
-                    if (!e.key.repeat) g_quit = 1;
-                    break;
-                }
-                if (e.key.key == SDLK_RETURN && (e.key.mod & SDL_KMOD_ALT)) {
-                    if (!e.key.repeat) set_fullscreen(!g_fullscreen);
-                    break;
-                }
-                /* Ctrl+Shift+F12: RenderDoc's capture of the next frame, F12 alone the stats' (hotkey). Not Ctrl+F12,
-                   which KDE takes to show the desktop */
-                if (e.key.key == SDLK_F12 && (e.key.mod & SDL_KMOD_CTRL) && (e.key.mod & SDL_KMOD_SHIFT) &&
-                    !(e.key.mod & (SDL_KMOD_ALT | SDL_KMOD_GUI))) {
-                    if (!e.key.repeat) g_renderer->capture(1);
-                    break;
-                }
-                /* not with Ctrl, Alt or the system key: Alt+F4 also arrives as F4 on Windows */
-                if (!e.key.repeat && !(e.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) hotkey(e.key.key);
-                /* a repeat doesn't press again: a key held as the menu closed (which cleared keys_held) stays from
-                   the game until it is let go */
-                if (!e.key.repeat) keys_held |= keymap(e.key.scancode);
+                /* a runtime key is no button of the game's. A repeat does neither: a key held as the menu closed (which
+                   cleared keys_held) stays from the game until it is let go, and the Esc that closed the menu doesn't
+                   quit. A key with modifiers the setting doesn't name is no runtime key (Alt+F4 also arrives as F4 on
+                   Windows) */
+                if (e.key.repeat) break;
+                if (action >= 0)
+                    hotkey(action);
+                else
+                    keys_held |= keymap(e.key.scancode);
                 break;
             case SDL_EVENT_KEY_UP: keys_held &= ~keymap(e.key.scancode); break;
             case SDL_EVENT_WINDOW_FOCUS_LOST:

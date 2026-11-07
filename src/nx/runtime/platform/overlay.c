@@ -4,6 +4,7 @@
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/fatal_screen.h"
 #include "nx/runtime/platform/gamepad.h"
+#include "nx/runtime/platform/hotkeys.h"
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/platform/vpad.h"
 #include "nx/gpu/renderer.h"
@@ -62,53 +63,68 @@ static const char* const PADS[P_COUNT] = {SNX_GAMEPAD_PLAYERS,
                                           "gamepad_background",
                                           SNX_GAMEPAD_MAP,
                                           "Back"};
-/* F1's page: the runtime's keys (backend/sdl3.c's hotkey and menu_event) and the game's buttons on the keyboard (its
-   keymap), a row each with the icon the launcher's F1 box gives what it does (src/gui/main.c's key_icon): a binding
-   changed there changes here. Each row fits the narrowest panel, OVERLAY_COLS, its what after the widest keys */
+/* F1's page: the runtime's keys as set (hotkeys.h; backend/sdl3.c's hotkey and menu_event) and the game's buttons on
+   the keyboard (its keymap), a row each with the icon the launcher's F1 box gives what it does (src/gui/main.c's
+   key_icon): a binding changed there changes here. With the keys at their defaults each row fits the narrowest panel,
+   OVERLAY_COLS, its what after the widest keys */
 static const struct {
     unsigned icon;
-    const char *key, *what;
-} KEYS[] = {{GUI_ICON_APP_WINDOW, "F2, Home", "the game's menu"},
-            {GUI_ICON_IMAGE, "F3", "a screenshot"},
-            {GUI_ICON_GAUGE, "F4", "FPS limit off/on"},
-            {GUI_ICON_BUG, "F5", "threads to log"},
-            {GUI_ICON_MONITOR, "F6", "showcase off/on"},
-            {GUI_ICON_SAVE, "F7", "save to the slot"},
-            {GUI_ICON_ROTATE_CCW, "F8", "load the slot"},
-            {GUI_ICON_LAYERS, "F9", "the next slot"},
-#if defined(SNX_TRACY)
-            {GUI_ICON_BUG, "F10", "Tracy, 60 s"},
-#endif
-            {GUI_ICON_PLAY, "Pause", "pause, resume"},
-            {GUI_ICON_MONITOR, "F11, Alt+Enter", "fullscreen"},
-            {GUI_ICON_ACTIVITY, "F12", "stats off/on"},
-            {GUI_ICON_LOG_OUT, "Esc", "quit the game"},
-            {GUI_ICON_GAMEPAD, "X, Space", "A"},
-            {GUI_ICON_GAMEPAD, "Z, C, V", "B, X, Y"},
-            {GUI_ICON_GAMEPAD, "Q, E", "L, R"},
-            {GUI_ICON_GAMEPAD, "1, 3", "ZL, ZR"},
-            {GUI_ICON_GAMEPAD, "Enter", "plus"},
-            {GUI_ICON_GAMEPAD, "Backspace", "minus"},
-            {GUI_ICON_GAMEPAD_DIRECTIONAL, "Arrows", "D-pad"},
-            {GUI_ICON_JOYSTICK, "W, A, S, D", "left stick"},
-            {GUI_ICON_JOYSTICK, "I, J, K, L", "right stick"}};
+    int action;      /* a runtime key's (hotkeys.h), whose row shows while it has a key; -1 for the game's buttons */
+    const char* key; /* the game's buttons' keys, or what goes with the runtime key (a controller's Home); NULL none */
+    const char* what;
+} KEYS[] = {{GUI_ICON_APP_WINDOW, HOTKEY_MENU, "Home", "the game's menu"},
+            {GUI_ICON_IMAGE, HOTKEY_SCREENSHOT, NULL, "a screenshot"},
+            {GUI_ICON_GAUGE, HOTKEY_FPS_LIMIT, NULL, "FPS limit off/on"},
+            {GUI_ICON_BUG, HOTKEY_THREAD_DUMP, NULL, "threads to log"},
+            {GUI_ICON_MONITOR, HOTKEY_SHOWCASE, NULL, "showcase off/on"},
+            {GUI_ICON_SAVE, HOTKEY_SAVE_STATE, NULL, "save to the slot"},
+            {GUI_ICON_ROTATE_CCW, HOTKEY_LOAD_STATE, NULL, "load the slot"},
+            {GUI_ICON_LAYERS, HOTKEY_NEXT_SLOT, NULL, "the next slot"},
+            {GUI_ICON_BUG, HOTKEY_TRACY, NULL, "Tracy, 60 s"}, /* a build with SNX_TRACY has its key */
+            {GUI_ICON_PLAY, HOTKEY_PAUSE, NULL, "pause, resume"},
+            {GUI_ICON_MONITOR, HOTKEY_FULLSCREEN, NULL, "fullscreen"}, /* with its second key */
+            {GUI_ICON_ACTIVITY, HOTKEY_STATS, NULL, "stats off/on"},
+            {GUI_ICON_IMAGE, HOTKEY_CAPTURE, NULL, "capture a frame"}, /* while RenderDoc is in the process */
+            {GUI_ICON_LOG_OUT, HOTKEY_QUIT, NULL, "quit the game"},
+            {GUI_ICON_GAMEPAD, -1, "X, Space", "A"},
+            {GUI_ICON_GAMEPAD, -1, "Z, C, V", "B, X, Y"},
+            {GUI_ICON_GAMEPAD, -1, "Q, E", "L, R"},
+            {GUI_ICON_GAMEPAD, -1, "1, 3", "ZL, ZR"},
+            {GUI_ICON_GAMEPAD, -1, "Enter", "plus"},
+            {GUI_ICON_GAMEPAD, -1, "Backspace", "minus"},
+            {GUI_ICON_GAMEPAD_DIRECTIONAL, -1, "Arrows", "D-pad"},
+            {GUI_ICON_JOYSTICK, -1, "W, A, S, D", "left stick"},
+            {GUI_ICON_JOYSTICK, -1, "I, J, K, L", "right stick"}};
 enum { KEYS_COUNT = sizeof KEYS / sizeof *KEYS };
-/* the capture key's row, after F12's, while RenderDoc is in the process (overlay_keys_extra), and the debugger's name */
-static const struct {
-    unsigned icon;
-    const char *key, *what;
-} KEYS_CAPTURE = {GUI_ICON_IMAGE, "Ctrl+Shift+F12", "capture a frame"};
+/* RenderDoc in the process, which shows the capture key's row (overlay_keys_extra), and the debugger's name */
 static int keys_capture;
 static char keys_debugger[32];
-/* the capture row's place: right after F12's */
-static int keys_capture_at(void) {
-    for (int i = 0; i < KEYS_COUNT; i++)
-        if (!strcmp(KEYS[i].key, "F12")) return i + 1;
-    return KEYS_COUNT;
+/* KEYS' row i's keys into out (n bytes): the game's buttons', or the runtime key's as set with what goes with it,
+   fullscreen's two together. 0 for a row that doesn't show: a runtime key with none, the capture key's without
+   RenderDoc */
+static int keys_text(int i, char* out, size_t n) {
+    const char *key = KEYS[i].action < 0 ? "" : hotkey_text(KEYS[i].action),
+               *also = KEYS[i].action == HOTKEY_FULLSCREEN ? hotkey_text(HOTKEY_FULLSCREEN_2) : KEYS[i].key;
+    if (KEYS[i].action == HOTKEY_CAPTURE && !keys_capture) return 0;
+    if (!also) also = "";
+    snprintf(out, n, "%s%s%s", key, *key && *also ? ", " : "", also);
+    return *out != 0;
 }
-/* F1's page's rows: the table's, the capture key's while RenderDoc is in the process, the debugger's last while one
-   traces the process */
-static int keys_rows(void) { return KEYS_COUNT + keys_capture + (keys_debugger[0] != 0); }
+/* F1's page's rows: KEYS' that show, then the debugger's while one traces the process. Row r's KEYS index, -1 for
+   the debugger's */
+static int keys_rows(void) {
+    char text[OVERLAY_COLS_MAX + 1];
+    int i, n = keys_debugger[0] != 0;
+    for (i = 0; i < KEYS_COUNT; ++i) n += keys_text(i, text, sizeof text);
+    return n;
+}
+static int keys_at(int r) {
+    char text[OVERLAY_COLS_MAX + 1];
+    int i;
+    for (i = 0; i < KEYS_COUNT; ++i)
+        if (keys_text(i, text, sizeof text) && !r--) return i;
+    return -1;
+}
 void overlay_keys_extra(int capture, const char* debugger) {
     keys_capture = capture != 0;
     snprintf(keys_debugger, sizeof keys_debugger, "%s", debugger ? debugger : "");
@@ -953,24 +969,19 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
         d->top = top;
         d->focus = -1;
         d->shown = n - top < VISIBLE ? n - top : VISIBLE;
-        for (r = 0; r < KEYS_COUNT; ++r)
-            d->keys = (int)strlen(KEYS[r].key) > d->keys ? (int)strlen(KEYS[r].key) : d->keys;
+        for (r = 0; r < KEYS_COUNT; ++r) /* the widest keys of every row that shows, the ones scrolled away too */
+            if (keys_text(r, *text, sizeof *text))
+                d->keys = (int)strlen(*text) > d->keys ? (int)strlen(*text) : d->keys;
         for (r = 0; r < d->shown; ++r) {
-            int k = top + r; /* the row, KEYS_CAPTURE's slot after F12's while it shows */
-            if (keys_debugger[0] && k == keys_rows() - 1) {
+            int k = keys_at(top + r);
+            if (k < 0) { /* the debugger's, last */
                 d->key[r] = "Debugger";
                 d->icon[r] = GUI_ICON_BUG;
                 d->label[r] = keys_debugger;
                 continue;
             }
-            if (keys_capture && k == keys_capture_at()) {
-                d->key[r] = KEYS_CAPTURE.key;
-                d->icon[r] = KEYS_CAPTURE.icon;
-                d->label[r] = KEYS_CAPTURE.what;
-                continue;
-            }
-            if (keys_capture && k > keys_capture_at()) k--;
-            d->key[r] = KEYS[k].key;
+            keys_text(k, text[r], sizeof *text);
+            d->key[r] = text[r];
             d->icon[r] = KEYS[k].icon;
             d->label[r] = KEYS[k].what;
         }
