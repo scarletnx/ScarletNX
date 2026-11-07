@@ -360,8 +360,6 @@ int Solve(uint s, uint c, uint side, int det) {
 }
 
 /* fits subset s of the shape: fit_err and the rest */
-/* what the subsets of the job before this one came to (Encode), against best_err */
-uint job_err;
 void FitSubset(uint s) {
     /* the bounding box, the channel the shape weighs that the subset spans most, and each channel's sign against
        it */
@@ -426,8 +424,6 @@ void FitSubset(uint s) {
             f0 = b0, f1 = b1, f2 = b2, f3 = b3;
         } else if (step >= 2u) {
             if (fit_err == 0u) break;
-            /* a line the box leaves this far behind the best block won't catch it */
-            if (job_err + fit_err / 2u >= best_err) break;
             /* the same weights give the same line */
             if (step == 3u && fit_lo == seen_lo && fit_hi == seen_hi) break;
             seen_lo = fit_lo;
@@ -740,7 +736,6 @@ uvec4 Encode() {
                 sh_cb = mode == 4u ? (colour ? 5u : 6u) : (colour ? 7u : 8u);
                 sh_ib = mode == 4u && (isb != 0u) == colour ? 3u : 2u;
             }
-            job_err = err;
             FitSubset(dual ? 0u : s);
             err += fit_err;
             if (err >= best_err) {

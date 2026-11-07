@@ -220,3 +220,53 @@ static int check_shader_invalidation(void)
 	free(channel);
 	return 0;
 }
+
+/* A zero-sized GPU-provided grid must not run a fallback direct dispatch. A guarded storage word distinguishes
+   an empty launch from a duplicate command, while positive direct/indirect controls prove that the shader stores. */
+static int check_indirect_dispatch_once(void) {
+    const u64 address = 0xaf0000000ull, cpu = HEAP_BASE + 0x1c000000;
+    const u64 grid = address + 0x2000, target = address + 0x4000;
+    CHECK(!mem_map(cpu, 0x10000, MS_NORMAL, PERM_RW));
+    gmmu_map(address, cpu, 0x10000);
+    const u64 instructions[] = {
+        0x4c9807800c470000ull, /* MOV R0, c[0][0x310] */
+        0x4c9807800c570001ull, /* MOV R1, c[0][0x314] */
+        0x0100000000071002ull | 0x5a17c3e9ull << 20,
+        0xeedc200001070002ull, /* STG.E [R0 + 0x10], R2 */
+        0xe30000000007000full
+    };
+    u64 code[64] = {0};
+    u32 at = 0;
+    for (u32 i = 0; i < sizeof instructions / sizeof *instructions; i++) {
+        if (!(i % 3)) code[at++] = 0x001f8000fc0007e0ull;
+        code[at++] = instructions[i];
+    }
+    CHECK(invalidate_write_code(address, code, 64));
+    DispatchState state = {.code = address, .grid = {1, 1, 1}, .block = {1, 1, 1}, .cb_on = 1};
+    state.cb_inline[0] = DS_CB_BANK0;
+    snx_st_le32(state.bank0 + 0x310, (u32)target);
+    snx_st_le32(state.bank0 + 0x314, (u32)(target >> 32));
+    snx_st_le32(state.bank0 + 0x318, 64);
+    for (u32 test = 0; test < 5; test++) {
+        u8 expected[64], actual[64], dimensions[12];
+        memset(expected, 0xcd, sizeof expected);
+        CHECK(!gmem_write(target, expected, sizeof expected));
+        for (u32 axis = 0; axis < 3; axis++) snx_st_le32(dimensions + axis * 4, test == axis ? 0 : 1);
+        CHECK(!gmem_write(grid, dimensions, sizeof dimensions));
+        state.indirect = test == 4 ? 0 : grid;
+        u64 dispatches = g_vk_dispatches;
+        vk_lock();
+        vk_dispatch(&state);
+        vk_finish();
+        vk_unlock();
+        CHECK(g_vk_dispatches == dispatches + 1);
+        CHECK(!gmem_read(target, actual, sizeof actual));
+        if (test >= 3) snx_st_le32(expected + 16, 0x5a17c3e9u);
+        if (memcmp(actual, expected, sizeof actual))
+            fprintf(stderr, "compute launch case%u: word %08x, expected %08x\n", test,
+                    snx_ld_le32(actual + 16), snx_ld_le32(expected + 16));
+        CHECK(!memcmp(actual, expected, sizeof actual));
+    }
+    puts("PASS indirect compute dispatch: three empty grids, direct/indirect stores and guards checked=320 exact=1");
+    return 0;
+}

@@ -5124,6 +5124,8 @@ static int run_headless(int argc, char** argv) {
             result = check_draw_texture();
         else if (!strcmp(name, "descriptor_heaps"))
             result = check_descriptor_heaps();
+        else if (!strcmp(name, "indirect_dispatch"))
+            result = check_indirect_dispatch_once();
         else if (!strcmp(name, "integer_half"))
             result = check_shader_integer_half_rounding();
         else if (!strcmp(name, "sample_locations"))
@@ -5349,6 +5351,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_saturate());
     CHECK(!check_sampler_reduction());
     CHECK(!check_shader_invalidation());
+    CHECK(!check_indirect_dispatch_once());
     CHECK(!check_shared_clamp());
     CHECK(!check_vic());
     CHECK(!check_vic_chain(shot));

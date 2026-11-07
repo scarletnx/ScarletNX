@@ -436,7 +436,7 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         gpu/vk/blocklinear.c gpu/texture/blocklinear.c gpu/vk/texconv.c "${PROJECT_SOURCE_DIR}/tests/support/etc2.c"
         "${PROJECT_SOURCE_DIR}/tests/support/bcn.c"
         gpu/vk/cmd.c gpu/vk/descriptors.c gpu/vk/descriptor_heaps.c gpu/vk/descriptor_objects.c
-        gpu/vk/memory.c gpu/vk/record.c gpu/vk/vma.cpp ${snx_astc_plat} "${volk_SOURCE_DIR}/volk.c"
+        gpu/vk/memory.c gpu/vk/record.c gpu/vk/checkpoints.c gpu/vk/vma.cpp ${snx_astc_plat} "${volk_SOURCE_DIR}/volk.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/blocklinear_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/bc7_spv.c"
         "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp")
@@ -452,11 +452,13 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     set_target_properties(snx-test-astc-vulkan PROPERTIES LINKER_LANGUAGE CXX)
     add_test(NAME astc_vulkan COMMAND snx-test-astc-vulkan)
     add_test(NAME astc_vulkan_pieces COMMAND snx-test-astc-vulkan --vk_max_allocation_mb=4)
+    add_test(NAME astc_vulkan_upload_wait COMMAND snx-test-astc-vulkan --upload-wait)
+    set_tests_properties(astc_vulkan_upload_wait PROPERTIES SKIP_RETURN_CODE 77)
     # pieces, and then the line the program prints only once every comparison passed: a pass expression alone
     # passes the test whatever the exit code
     set_tests_properties(astc_vulkan_pieces PROPERTIES PASS_REGULAR_EXPRESSION
                          "memory in pieces.*All ASTC Vulkan comparisons passed")
-    set_tests_properties(astc_vulkan astc_vulkan_pieces PROPERTIES TIMEOUT 300)
+    set_tests_properties(astc_vulkan astc_vulkan_pieces astc_vulkan_upload_wait PROPERTIES TIMEOUT 300)
 endif()
 if(BUILD_TESTING)
     snx_sanitizer_path() # tests/CMakeLists.txt: this folder's tests
