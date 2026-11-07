@@ -165,6 +165,7 @@ static uint32_t display_queue_finish(VitaProcess* p, VitaThread* t) {
 }
 static uint32_t finish(VitaProcess* p, VitaThread* t) {
     (void)t;
+    vita_render_finish(p);
     if (p->gxm && !vita_render_idle(p, false)) vita_wait(p, (VitaWait){.kind = VITA_WAIT_GXM, .a = 0});
     return 0;
 }
@@ -781,6 +782,14 @@ static uint32_t texture_init_tiled(VitaProcess* p, VitaThread* t) {
     return texture_init(p, arg(p, t, 0), arg(p, t, 1), arg(p, t, 2), arg(p, t, 3), arg(p, t, 4), arg(p, t, 5),
                         GXM_TEXTURE_TILED);
 }
+static uint32_t texture_init_cube(VitaProcess* p, VitaThread* t) {
+    uint32_t width = arg(p, t, 3), height = arg(p, t, 4);
+    if (!arg(p, t, 0)) return SCE_GXM_ERROR_INVALID_POINTER;
+    if (!width || !height || (width & (width - 1)) || (height & (height - 1)))
+        return SCE_GXM_ERROR_INVALID_ALIGNMENT;
+    return texture_init(p, arg(p, t, 0), arg(p, t, 1), arg(p, t, 2), width, height, arg(p, t, 5),
+                        GXM_TEXTURE_CUBE);
+}
 /* sceGxmTextureInitLinearStrided(texture, data, format, width, height, stride): one level of rows stride bytes apart,
    the stride in 4-byte units less one where the mip filter, min filter, mip count and LOD bias are kept otherwise
    (gxm_texture_stride), its min filter its mag filter */
@@ -809,6 +818,71 @@ static uint32_t texture_set_mip_filter(VitaProcess* p, VitaThread* t) {
     if (gxm_texture_type(&x) == GXM_TEXTURE_LINEAR_STRIDED) return SCE_GXM_ERROR_UNSUPPORTED;
     gxm_set_bits(&x.w[0], 9, 1, arg(p, t, 1) != 0);
     texture_write(p, address, &x);
+    return 0;
+}
+/* sceGxmTransferCopy's raw format sizes (bytes per pixel). */
+static uint32_t transfer_bytes_per_pixel(uint32_t format) {
+    switch (format) {
+        case 0x00000000u: return 1; /* U8_R */
+        case 0x00010000u: /* U4U4U4U4_ABGR */
+        case 0x00020000u: /* U1U5U5U5_ABGR */
+        case 0x00030000u: /* U5U6U5_BGR */
+        case 0x00040000u: /* U8U8_GR */
+        case 0x00070000u: /* VYUY422 */
+        case 0x00080000u: /* YVYU422 */
+        case 0x00090000u: /* UYVY422 */
+        case 0x000a0000u: /* YUYV422 */
+        case 0x000f0000u: return 2; /* RAW16 */
+        case 0x00050000u: return 3; /* U8U8U8_BGR */
+        case 0x00060000u: /* U8U8U8U8_ABGR */
+        case 0x000d0000u: /* U2U10U10U10_ABGR */
+        case 0x00110000u: return 4; /* RAW32 */
+        case 0x00120000u: return 8; /* RAW64 */
+        case 0x00130000u: return 16; /* RAW128 */
+        default: return 0;
+    }
+}
+/* sceGxmTransferCopy(width, height, key value/mask/mode, source format/type/address/x/y/stride,
+   destination format/type/address/x/y/stride, sync object/flags, notification) */
+static uint32_t transfer_copy(VitaProcess* p, VitaThread* t) {
+    uint32_t width = arg(p, t, 0), height = arg(p, t, 1);
+    uint32_t src_format = arg(p, t, 5), src_type = arg(p, t, 6), src_address = arg(p, t, 7);
+    uint32_t dst_format = arg(p, t, 11), dst_type = arg(p, t, 12), dst_address = arg(p, t, 13);
+    int32_t src_stride = (int32_t)arg(p, t, 10), dst_stride = (int32_t)arg(p, t, 16);
+    uint32_t bytes = transfer_bytes_per_pixel(src_format);
+    if (!src_address || !dst_address) return SCE_GXM_ERROR_INVALID_POINTER;
+    if ((src_type == 0x00400000u && dst_type == 0x00800000u) ||
+        (src_type == 0x00800000u && dst_type == 0x00400000u) ||
+        (src_type == 0x00800000u && dst_type == 0x00800000u))
+        return SCE_GXM_ERROR_INVALID_VALUE;
+    if (src_format != dst_format || !bytes || src_type || dst_type || arg(p, t, 4) != 0)
+        return SCE_GXM_ERROR_UNSUPPORTED;
+    if (arg(p, t, 17) || arg(p, t, 18)) return SCE_GXM_ERROR_UNSUPPORTED;
+    if (width && height && (src_stride <= 0 || dst_stride <= 0)) return SCE_GXM_ERROR_INVALID_VALUE;
+    uint32_t notification = arg(p, t, 19), notify_address = 0, notify_value = 0;
+    if (notification) {
+        if (!vita_mapped(p, notification, 8)) return SCE_GXM_ERROR_INVALID_POINTER;
+        notify_address = vita_read32(p, notification);
+        notify_value = vita_read32(p, notification + 4);
+        if (notify_address && !vita_mapped(p, notify_address, 4)) return SCE_GXM_ERROR_INVALID_POINTER;
+        if (notify_address && !p->gxm) return SCE_GXM_ERROR_UNINITIALIZED;
+    }
+    if (!vita_render_transfer_copy(p, width, height, bytes, src_address, arg(p, t, 8), arg(p, t, 9), src_stride,
+                                   dst_address, arg(p, t, 14), arg(p, t, 15), dst_stride))
+        return SCE_GXM_ERROR_UNSUPPORTED;
+
+    if (notify_address) {
+        VitaGxm* g = p->gxm;
+        if (g->note_count == GXM_NOTES) {
+            vita_render_wait(p, g->notes[0].serial);
+            notifications_poll(p);
+        }
+        uint64_t serial = g->render ? vita_render_submitted(p) + 1 : 0;
+        g->notes[g->note_count].address = notify_address;
+        g->notes[g->note_count].value = notify_value;
+        g->notes[g->note_count++].serial = serial;
+        notifications_poll(p);
+    }
     return 0;
 }
 /* sceGxmTextureSetLodBias(texture, bias 0 to 63): a strided texture's bits are its stride's */
@@ -1109,6 +1183,7 @@ const VitaHle vita_hle_gxm[] = {
     {0x4811aecbu, "sceGxmTextureInitLinear", texture_init_linear},
     {0xd572d547u, "sceGxmTextureInitSwizzled", texture_init_swizzled},
     {0xe6f0db27u, "sceGxmTextureInitTiled", texture_init_tiled},
+    {0x11dc8dc9u, "sceGxmTextureInitCube", texture_init_cube},
     {0x6679bef0u, "sceGxmTextureInitLinearStrided", texture_init_linear_strided},
     {0x1ca9fe0bu, "sceGxmTextureSetMipFilter", texture_set_mip_filter},
     {0x2ea178beu, "sceGxmTextureSetWidth", texture_set_width},
@@ -1132,6 +1207,8 @@ const VitaHle vita_hle_gxm[] = {
     {0xec5c26b5u, "sceGxmDisplayQueueAddEntry", display_queue_add_entry},
     {0xb98c5b0du, "sceGxmDisplayQueueFinish", display_queue_finish},
     {0x0733d8aeu, "sceGxmFinish", finish},
+    {0x62312bf8u, "sceGxmTransferCopy", transfer_copy},
+    {0x45229c39u, "sceGxmTransferFinish", finish},
     {0x3d25fce9u, "sceGxmPadHeartbeat", ok},
     {0x04bb3c59u, "sceGxmProgramGetType", program_get_type},
     {0xd5d5fccdu, "sceGxmProgramGetParameterCount", program_get_parameter_count},
