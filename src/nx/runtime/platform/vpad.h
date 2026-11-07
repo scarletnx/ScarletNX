@@ -6,6 +6,7 @@
 #ifndef SNX_VPAD_H
 #define SNX_VPAD_H
 #include "nx/runtime/platform/ui.h"
+#include "nx/runtime/platform/vpad_skin.h"
 #include "nx/runtime/ini.h"
 #include "snx_settings.h"
 
@@ -50,7 +51,13 @@ SnxVpadConfig* vpad_config(void);
 #define SNX_VPAD_SIZE_MIN 50
 #define SNX_VPAD_SIZE_MAX 200
 
-void vpad_defaults(SnxVpadConfig* c); /* the default layout */
+void vpad_defaults(SnxVpadConfig* c); /* the default layout: the skin's places (vpad_skin.h), else the built-in ones */
+/* the skin's controls (vpad_skin_load), copied: those with pieces take its look, hit area and default place, which
+   the places no .ini key set move to; NULL for the built-in look, the atlas's skin rows let go too */
+void vpad_skin_set(const SnxSkinControl at[SNX_VPAD_COUNT]);
+/* a control's look from the skin, NULL for the built-in one */
+const SnxSkinControl* vpad_skin(int control);
+const char* vpad_name(int control); /* a control's name, as edit mode shows it: "A", "D-pad" */
 /* places, sizes and the shown ones back to their defaults, kept */
 void vpad_reset_layout(void);
 /* the settings' tables (settings.h): g_vpad_ini, controls, controls_scale..., a control's place (controls_a); and
