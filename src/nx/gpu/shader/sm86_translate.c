@@ -352,11 +352,18 @@ static u32 directed(Ctx* c, u32 mode, u32 r, u32 above, u32 below) {
     return to_f(c, bits);
 }
 static u32 widen(Ctx* c, u32 f) { return SPV(&c->e, SPV_OP_F_CONVERT, f64_type(c), f); }
+/* d rounded to nearest as a float, and that float back as a double, both exact (NoContraction): NIR takes a double
+   rounded to a float and widened again for the double itself where the conversions may be inexact, and the round trip
+   then never differs from d, which hid every step of a directed rounding (RADV, lavapipe) */
+static u32 to_float_and_back(Ctx* c, u32 d, u32* back) {
+    u32 r = nocontract(c, SPV(&c->e, SPV_OP_F_CONVERT, c->t_f32, d));
+    *back = nocontract(c, widen(c, r));
+    return r;
+}
 /* a double rounded to a float by mode: exact when the double holds the exact result */
 static u32 round_f64(Ctx* c, u32 mode, u32 d) {
-    u32 r = SPV(&c->e, SPV_OP_F_CONVERT, c->t_f32, d);
-    if (mode == 0) return r;
-    u32 back = widen(c, r);
+    if (mode == 0) return SPV(&c->e, SPV_OP_F_CONVERT, c->t_f32, d);
+    u32 back, r = to_float_and_back(c, d, &back);
     return directed(c, mode, r, op2(c, SPV_OP_F_ORD_GREATER_THAN, c->t_bool, d, back),
                     op2(c, SPV_OP_F_ORD_LESS_THAN, c->t_bool, d, back));
 }
@@ -369,7 +376,7 @@ static u32 round_sum(Ctx* c, u32 mode, u32 p, u32 q) {
     u32 bb = nocontract(c, op2(c, SPV_OP_F_SUB, f64, sum, p));
     u32 ea = nocontract(c, op2(c, SPV_OP_F_SUB, f64, p, nocontract(c, op2(c, SPV_OP_F_SUB, f64, sum, bb))));
     u32 err = nocontract(c, op2(c, SPV_OP_F_ADD, f64, ea, nocontract(c, op2(c, SPV_OP_F_SUB, f64, q, bb))));
-    u32 r = SPV(&c->e, SPV_OP_F_CONVERT, c->t_f32, sum), back = widen(c, r);
+    u32 back, r = to_float_and_back(c, sum, &back);
     u32 zero = spv_emit_constant64(&c->e, f64, 0);
     u32 tie = op2(c, SPV_OP_F_ORD_EQUAL, c->t_bool, sum, back);
     u32 above =
