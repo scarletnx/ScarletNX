@@ -212,11 +212,11 @@ static void producer_unlock(void) {
     if (g_hooks.unlock) g_hooks.unlock();
 }
 
-/* every entry on the host pages [lo, hi) landed and let go, the pages with them. The producer's lock is taken only
-   when entries are there (a fault with none, the trap thread's, never waits for it), before any is marked, then the
-   entries are looked for again: they may have landed or changed while it waited. No owner can come while it is held
-   (own_begin's callers hold it), so every page lands and is let go; an owner that publishes over them after the lock
-   is let go lands on the next pass */
+/* every entry on the host pages [lo, hi) landed and let go, the pages with them, once. The producer's lock is taken
+   only when entries are there (a fault with none, the trap thread's, never waits for it), before any is marked, then
+   the entries are looked for again: they may have landed or changed while it waited. No owner can come while it is
+   held (own_begin's callers hold it), so every page lands and is let go; an owner that publishes over them after the
+   lock is let go stays until something touches its bytes, as any other */
 static void land_pages(u64 lo, u64 hi) {
     int waited = 0;
     for (;;) {
@@ -298,6 +298,7 @@ static void land_pages(u64 lo, u64 hi) {
         let_go(elo & ~(g_page - 1), (ehi + g_page - 1) & ~(g_page - 1));
         res_release(&rel);
         producer_unlock();
+        return; /* once: the loop only comes back after the wait for the GPU above */
     }
 }
 
@@ -357,8 +358,9 @@ static void own_fault(u8* p, int write, u32 tid) {
                   tid, (unsigned long long)a);
         }
     }
-    /* never under g_trap_lk: the landing takes the producer's lock. A page owned again by the time it is done (a
-       republish) lands again */
+    /* never under g_trap_lk: the landing takes the producer's lock. Its let_go wakes the faulting thread, which may
+       publish over the page again before this returns: that owner lands when an access faults on it, not here (a VIC
+       job's picture, written over the one just read, stays on the GPU for the display) */
     land_pages(page, page + g_page);
 }
 
