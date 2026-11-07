@@ -350,7 +350,7 @@ typedef struct App {
     bool recent_unsaved;        /* the list could not be written the last time it changed: the message says so */
     Uint64 clock;               /* fixed time for tests; 0 is the real clock */
     Uint64 fade_ms, leaving_ms; /* a screen fading in from black since; the run fading out since */
-    Uint64 run_started_ms;      /* the menu's run started, for its end's line in the log (debug_log) */
+    Uint64 run_started_ms;      /* the menu's run started, for its end's line in the log (run_said) */
     Uint64 entering_ms;         /* the menu fading out since, before a run fades in */
     char* self;    /* the program that runs Switch inputs: the runtime the menu is part of, NULL to look for one */
     char* drivers; /* the folder the other drivers are looked for in first */
@@ -3529,30 +3529,45 @@ static void settings_text(const App* app, const char* key, char* out, size_t out
     value = gui_settings_value(&app->settings, key);
     snprintf(out, out_size, "%s", value ? value : "");
 }
-#ifdef SDL_PLATFORM_APPLE
-/* Debug's Log level at 2: the launcher logs more of what the system does to the app too, as the Apple apps' runs have
-   no console to watch: the document picker's steps, the app's lifecycle, each run's start and end, thermal and power
-   changes */
+/* Debug's Log level at 2: the launcher logs more of what the system does to the app too, as a phone's runs have no
+   console to watch: each run's start and end (run_said); on the Apple apps thermal and power changes, the document
+   picker's steps and the app's lifecycle */
 static int debug_log(const App* app) {
     char level[16];
     settings_text(app, "log", level, sizeof level);
     return SDL_atoi(level) >= 2;
 }
-/* a run's or a recompile's line in the launcher log (debug_log): what happened to it, its status and time once it
-   ended (started_ms, 0 for a start), and the space left on the data folder's disk then, which a recompile uses up */
-static void run_said(const App* app, const char* kind, const char* what, int status, Uint64 started_ms) {
-    char ended[64] = {0};
-    if (started_ms)
-        snprintf(ended, sizeof ended, ", status %d, after %.1f s", status,
-                 (double)(now_ms(app) - started_ms) / 1000);
-    gui_log("%s: %s%s, %llu MiB free on the data folder's disk", kind, what, ended,
-            app->data_dir ? (unsigned long long)(snx_free_space(app->data_dir) >> 20) : 0ull);
+/* the data folder's disk, no path: "N MiB free of M MiB", or why that is unknown */
+static void disk_room(const App* app, char* out, size_t size) {
+    SnxU64 room = 0, all = 0;
+    char why[256];
+    if (!app->data_dir)
+        snprintf(out, size, "unknown, with no data folder");
+    else if (snx_disk_room(app->data_dir, &room, &all))
+        snprintf(out, size, "unknown, %s", snx_os_error(why, sizeof why));
+    else
+        snprintf(out, size, "%llu MiB free of %llu MiB", (unsigned long long)(room >> 20),
+                 (unsigned long long)(all >> 20));
+}
+/* a run's or a recompile's line in the launcher log (debug_log): what happened to it, its time once it ended
+   (started_ms, 0 for a start), and the data folder's disk then, which a recompile uses up */
+static void run_said(const App* app, const char* kind, const char* what, Uint64 started_ms) {
+    char ended[64] = {0}, disk[128];
+    if (started_ms) snprintf(ended, sizeof ended, ", after %.1f s", (double)(now_ms(app) - started_ms) / 1000);
+    disk_room(app, disk, sizeof disk);
+    gui_log("%s: %s%s; disk: %s", kind, what, ended, disk);
 #ifdef SDL_PLATFORM_IOS
     char stats[512];
     gui_apple_stats(stats, sizeof stats); /* the app's memory then: a recompile runs in its process */
     gui_log("%s: %s", kind, stats);
 #endif
 }
+/* an end's what for run_said, with its status */
+static const char* run_ended(char* out, size_t size, bool aborted, int status) {
+    snprintf(out, size, "%s, status %d", aborted ? "aborted" : "ended", status);
+    return out;
+}
+#ifdef SDL_PLATFORM_APPLE
 /* the data folder's dumps/, keys/ and recompiled/ in the launcher log (debug_log): what the app finds there, its names
    and sizes. A key file's name and size only, never what it holds */
 static void data_folders_log(const App* app) {
@@ -13089,6 +13104,9 @@ static int play_as(App* app, const char* asked, bool next) {
     SDL_GetCurrentTime(&app->played_at);
     ok = gui_android_play(argv, app->message, sizeof(app->message));
     if (ok) app->playing = true; /* the queue's recompile goes gently until the menu shows again */
+    app->run_started_ms = SDL_max(now_ms(app), 1);
+    if (debug_log(app))
+        run_said(app, "run", ok ? "starts in the game's activity, a process of its own" : app->message, 0);
     if (ok) {
         free(app->played_game);
         app->played_game = snx_strdup(game);
@@ -13156,6 +13174,11 @@ static void game_end(App* app) {
         snprintf(what, sizeof what, snx_tr("the game wrote no log since it started; the newest is %s"), log);
     else
         end = gui_log_game_end(log, what, sizeof what, lines, sizeof lines);
+    if (debug_log(app)) { /* its status is the game's process's, which this one is not the parent of */
+        char said[sizeof what + 32];
+        snprintf(said, sizeof said, "ended, %s: %s", end >= 0 ? "its log says" : "its log unread", what);
+        run_said(app, "run", said, app->run_started_ms);
+    }
     if (end == SNX_LOG_NONE) {
         free(log);
         return;
@@ -13231,7 +13254,7 @@ static int play(App* app, const char* asked) {
     if (driver) argv[n++] = driver;
     if (freedreno) argv[n++] = freedreno;
     argv[n] = NULL;
-    if (debug_log(app)) run_said(app, "run", "starts in this process once the menu closes", 0, 0);
+    if (debug_log(app)) run_said(app, "run", "starts in this process once the menu closes", 0);
     gui_apple_play(argv);
     free(driver);
     free(freedreno);
@@ -13747,10 +13770,10 @@ static void pump(App* app) {
         int status;
         if (gui_process_finished(app->process, &status)) {
             app->menu.running = false;
-#ifdef SDL_PLATFORM_APPLE
-            if (debug_log(app))
-                run_said(app, "run", app->aborting ? "aborted" : "ended", status, app->run_started_ms);
-#endif
+            if (debug_log(app)) {
+                char what[64];
+                run_said(app, "run", run_ended(what, sizeof what, app->aborting, status), app->run_started_ms);
+            }
             /* Normal exits wait for acknowledgement. ESC already acknowledged
                an abort, so return straight to the menu after nonblocking reaping. */
             app->finished = !app->aborting;
@@ -14515,10 +14538,8 @@ static void launch(App* app, char* absolute, bool prepared) {
     icons_wait(app); /* the one driver thread, a dump's icon's first */
 #endif
     bool started = gui_process_start(app->process, argv, app->message, sizeof(app->message));
-#ifdef SDL_PLATFORM_APPLE
     app->run_started_ms = SDL_max(now_ms(app), 1);
-    if (debug_log(app)) run_said(app, "run", started ? "starts" : app->message, 0, 0);
-#endif
+    if (debug_log(app)) run_said(app, "run", started ? "starts" : app->message, 0);
     if (started && app->run_log) {
         size_t k;
         if (app->run_out) fclose(app->run_out);
@@ -14653,9 +14674,7 @@ static void job_start(App* app) {
         icons_wait(app); /* the one driver thread, a dump's icon's first */
 #endif
         bool started = gui_process_start(app->job_process, argv, why, sizeof why);
-#ifdef SDL_PLATFORM_APPLE
-        if (debug_log(app)) run_said(app, "recompile", started ? "starts" : why, 0, 0);
-#endif
+        if (debug_log(app)) run_said(app, "recompile", started ? "starts" : why, 0);
         if (!started) {
             job->state = GUI_JOB_FAILED;
             job->status = -1;
@@ -14791,9 +14810,10 @@ static void job_ended(App* app, int i, int status) {
     char took[64];
     Uint64 now = SDL_max(now_ms(app), 1);
     gui_steps_finish(&app->job_steps, !failed);
-#ifdef SDL_PLATFORM_APPLE
-    if (debug_log(app)) run_said(app, "recompile", aborted ? "aborted" : "ended", status, job->started_ms);
-#endif
+    if (debug_log(app)) {
+        char what[64];
+        run_said(app, "recompile", run_ended(what, sizeof what, aborted, status), job->started_ms);
+    }
     if (app->job_out) {
         fprintf(app->job_out, "\n[%s, status %d]\n", aborted ? "aborted" : "ended", status);
         fclose(app->job_out);
@@ -17848,6 +17868,13 @@ static void open_files(App* app) {
     drivers_load(app);
     if (!app->look_only)
         gui_log("%s starts, its data folder %s", snx_build_log_line(), app->data_dir ? app->data_dir : "(none)");
+#ifndef SDL_PLATFORM_IOS /* there the banner says it, with the space iOS keeps for the app (apple.m) */
+    if (!app->look_only) {
+        char disk[128];
+        disk_room(app, disk, sizeof disk);
+        gui_log("disk: %s", disk);
+    }
+#endif
 #ifdef SDL_PLATFORM_APPLE
     if (!app->look_only && debug_log(app)) { /* the level at the start: a later change starts neither */
         gui_apple_state_watch();
