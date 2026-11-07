@@ -81,7 +81,8 @@ static bool swap_create(unsigned screen) {
                                .formats = formats,
                                .format_count = sizeof formats / sizeof *formats,
                                .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                               .window = snx_vk_window_extent(&v->host, fallback)};
+                               .window = snx_vk_window_extent(&v->host, fallback),
+                               .unsynced = !g_settings.vsync};
     if (window != v->host.window) { /* the second window's own size */
         int width = 0, height = 0;
         info.window = SDL_GetWindowSizeInPixels(window, &width, &height) && width > 0 && height > 0
@@ -189,6 +190,15 @@ bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir) {
     g_present.source_dummy.layout = VK_IMAGE_LAYOUT_GENERAL;
     (void)swap_create(0);
     if (g_present.separate) (void)swap_create(1);
+    /* vsync's effect: FIFO waits for the display's refresh, mailbox and immediate do not */
+    if (g_present.swap[0].swapchain) {
+        VkPresentModeKHR mode = g_present.swap[0].mode;
+        fprintf(stderr, "3ds gpu: the window shows its images %s (vsync=%d)\n",
+                mode == VK_PRESENT_MODE_FIFO_KHR      ? "at the display's refresh, in order (fifo)"
+                : mode == VK_PRESENT_MODE_MAILBOX_KHR ? "the newest at the next refresh (mailbox)"
+                                                      : "at once, tearing (immediate)",
+                g_settings.vsync);
+    }
     g_present.up = 1;
     return true;
 }
