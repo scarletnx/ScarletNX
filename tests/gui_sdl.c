@@ -11721,6 +11721,16 @@ int main(int argc, char** argv) {
                     assert(k.n == (int)SDL_arraysize(menu_icons) && k.own == 1 && help_rows(&k) == k.n + 1);
                     assert(!memcmp(k.icons, menu_icons, sizeof menu_icons));
                     shows(&app, "Every screen", normal);
+                    /* a pad's B does there what ESC does, and says so: exit, in the foot and in the box */
+                    app.pad_driven = true;
+                    help_keys(&app, &k);
+                    assert(strstr(k.said, "B: exit.") && !strstr(k.said, "back"));
+                    assert(k.n == (int)SDL_arraysize(menu_icons) - 1 && k.icons[k.n - 2] == GUI_ICON_LOG_OUT);
+                    {
+                        char said[512];
+                        assert(!strncmp(shown_keys(&app, said, sizeof said), "B: exit.\x1f", 9));
+                    }
+                    app.pad_driven = false;
                 }
                 { /* the wheel over it moves nothing under it, all its rows showing */
                     SDL_Event e = {0};

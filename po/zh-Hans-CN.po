@@ -1006,8 +1006,8 @@ msgstr "按 [ESC] 返回游戏"
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "D-pad: move. A: select. Start: refresh. B: back."
-msgstr "十字键: 移动. A: 选择. Start: 更新. B: 返回."
+msgid "D-pad: move. A: select. Start: refresh. B: exit."
+msgstr "十字键: 移动. A: 选择. Start: 更新. B: 退出."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -5615,6 +5615,9 @@ msgstr "启动"
 #: src/nx/runtime/settings.txt
 msgid "LLVM Internals"
 msgstr "LLVM 内部选项"
+
+#~ msgid "D-pad: move. A: select. Start: refresh. B: back."
+#~ msgstr "十字键: 移动. A: 选择. Start: 更新. B: 返回."
 
 #~ msgid "PgDown"
 #~ msgstr "PgDown"
