@@ -87,6 +87,9 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns);
 #define SNX_OVERLAY_TOAST_MS 3000
 void overlay_toast(const char* text, u64 now_ns);
 int overlay_toasting(u64 now_ns); /* one shows */
+/* the same from any thread, with or without ui_lock (RenderDoc's notices, gpu/vk/renderdoc.c): its time starts as the
+   next frame draws it, the last one given before then shown */
+void overlay_notice(const char* text);
 /* The save states' pages: a row per slot, the focused one's thumbnail beside them, and Save, Load and Delete for one
    (Load and Delete asked first). Slot 0 is the one a load saves over first, which only loads or goes */
 #define OVERLAY_SLOTS_MAX 33
