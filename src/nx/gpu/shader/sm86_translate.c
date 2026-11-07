@@ -2066,7 +2066,9 @@ static u32 ipa_input(Ctx* c, u32 i, u32 k, u32 loc, u32 freq) {
 /* ---- one instruction ---- */
 
 /* the fragment program's outputs from the registers when it ends: the colours of the render targets the SPH's omap
-   enables, four registers a target, then the depth (Maxwell's layout) */
+   enables, four registers a target, then the sample mask's register and the depth's after it (Maxwell's layout, as
+   emit_flow.c reads it: the depth is the last colour register plus two whether the program writes a sample mask or
+   not, as nouveau's nvc0_fp_assign_output_slots has it from Kepler on) */
 static void epilogue(Ctx* c) {
     if (c->stage == ST_VS && c->position && !(c->si->clip_enable & SNX_SH_NOT_LAST)) vertex_depth_fix(c);
     if (c->stage != ST_FS) return;
@@ -2082,13 +2084,13 @@ static void epilogue(Ctx* c) {
         spv_emit_store(&c->e, c->color[rt], spv_emit_vec4_construct(&c->e, c->t_v4f, v));
         reg += 4;
     }
-    if (c->sph[19] & 1u) reg++; /* the sample mask, which a single-sampled target ignores */
+    /* reg: the sample mask, which a single-sampled target ignores */
     if (c->sph[19] & 2u) {
         if (!c->depth) {
             c->depth = spv_emit_frag_depth_output(&c->e, c->t_f32);
             add_interface(c, c->depth);
         }
-        spv_emit_store(&c->e, c->depth, to_f(c, rd(c, reg)));
+        spv_emit_store(&c->e, c->depth, to_f(c, rd(c, reg + 1)));
     }
 }
 /* an S2R system register */
