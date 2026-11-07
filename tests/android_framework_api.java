@@ -67,6 +67,7 @@ final class AndroidFrameworkApi {
             framework = loader;
             links("android.net.LinkProperties", "getDhcpServerAddress", java.net.Inet4Address.class);
             overridable("android.widget.ArrayAdapter", "addAll", Object[].class);
+            overridable("android.view.KeyEvent", "getKeyData", type("android.view.KeyCharacterMap$KeyData"));
         }
         if (failures != 0) System.exit(1);
         System.out.println("android_framework_api: ok");

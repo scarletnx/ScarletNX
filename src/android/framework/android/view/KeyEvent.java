@@ -147,7 +147,7 @@ public class KeyEvent extends InputEvent {
     public static int getModifierMetaStateMask() {
         return META_SHIFT_MASK | META_ALT_MASK | META_CTRL_MASK | META_META_MASK | META_SYM_ON | META_FUNCTION_ON;
     }
-    @Deprecated public final boolean getKeyData(KeyCharacterMap.KeyData results) { return getKeyCharacterMap().getKeyData(keyCode, results); }
+    @Deprecated public boolean getKeyData(KeyCharacterMap.KeyData results) { return getKeyCharacterMap().getKeyData(keyCode, results); }
     public static final android.os.Parcelable.Creator<KeyEvent> CREATOR = new android.os.Parcelable.Creator<>() {
         @Override public KeyEvent createFromParcel(android.os.Parcel in) {
             KeyEvent k = new KeyEvent(in.readLong(), in.readLong(), in.readInt(), in.readInt(), in.readInt(), in.readInt(), in.readInt(), in.readInt(), in.readInt(), in.readInt());
