@@ -1528,6 +1528,8 @@ void vk_buf_stats(u32* count, u64* bytes);
    their output's fill), their results' bytes copied back from the GPU to land, and the results landed by comparing
    them with their original bytes. buffer_copy_stats LOGs them every 600 presents */
 void vk_buf_writable_stats(u64* copied, u64* read_back, u64* merged);
+/* temporary writeback diagnosis: bytes compared (memcmp) and bytes actually changed and written back */
+void vk_writeback_diag(u64* cmp, u64* chg);
 /* guest memory checked by its contents so far: compared with a pending result's original bytes, hashed whole, and
    sampled (tests count them: write tracking's answers stand in for them) */
 void vk_buf_checks(u64* compares, u64* hashes, u64* samples);

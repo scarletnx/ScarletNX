@@ -155,6 +155,9 @@ static struct {
         u64 copied, read_back, merged, kept;
     } wstat, wstat_seen;
 } g_buffer;
+/* why keep_new turned a writable binding away (temporary diagnosis of the writeback cost) */
+enum { KF_NONE, KF_TRAPS_OFF, KF_UMA, KF_EMPTY, KF_UNALIGNED, KF_NOT_CONTIG, KF_CPU_READ, KF_N };
+static u64 g_keep_fail[KF_N];
 static void own_link(u32 i) {
     Vb* e = &g_vb[i];
     e->own_next = 0;
@@ -2253,9 +2256,23 @@ static int keep_new(u64 gva, u32 len, u64 align, VkBuffer* buf, u64* off) {
     u64 cpu = 0, at = 0;
     VkOwnRes* res;
     GfxOut* o;
-    if (!own_traps() || vk_uma() || !len || ((gva | len) & 0xFFF) || gmmu_run(gva, len, &cpu) != len ||
-        vk_own_cpu_read(cpu, len, KEEP_CPU_PRESENTS))
+    int why = KF_NONE;
+    if (!own_traps())
+        why = KF_TRAPS_OFF;
+    else if (vk_uma())
+        why = KF_UMA;
+    else if (!len)
+        why = KF_EMPTY;
+    else if ((gva | len) & 0xFFF)
+        why = KF_UNALIGNED;
+    else if (gmmu_run(gva, len, &cpu) != len)
+        why = KF_NOT_CONTIG;
+    else if (vk_own_cpu_read(cpu, len, KEEP_CPU_PRESENTS))
+        why = KF_CPU_READ;
+    if (why) {
+        g_keep_fail[why]++;
         return 0;
+    }
     if (own_lookup(cpu, len, r, 2) == 1 && r[0].addr == cpu && r[0].size == len) {
         if (r[0].res_off & (align - 1)) return 0;
         res = (VkOwnRes*)r[0].res;
@@ -3611,6 +3628,17 @@ static void buf_frame(void) {
             (unsigned long long)(g_buffer.wstat.merged - g_buffer.wstat_seen.merged),
             (unsigned long long)(g_buffer.wstat.kept - g_buffer.wstat_seen.kept));
         g_buffer.wstat_seen = g_buffer.wstat;
+        LOG("vulkan: keep_new rejected (traps_off=%llu uma=%llu empty=%llu unaligned=%llu not_contig=%llu "
+            "cpu_read=%llu)\n",
+            (unsigned long long)g_keep_fail[KF_TRAPS_OFF], (unsigned long long)g_keep_fail[KF_UMA],
+            (unsigned long long)g_keep_fail[KF_EMPTY], (unsigned long long)g_keep_fail[KF_UNALIGNED],
+            (unsigned long long)g_keep_fail[KF_NOT_CONTIG], (unsigned long long)g_keep_fail[KF_CPU_READ]);
+        {
+            u64 cmp, chg;
+            vk_writeback_diag(&cmp, &chg);
+            LOG("vulkan: writeback compared %llu bytes and changed %llu (%.1f%%)\n", (unsigned long long)cmp,
+                (unsigned long long)chg, cmp ? (double)chg * 100.0 / (double)cmp : 0.0);
+        }
         LOG("vulkan: aliased storage draws=%llu pages=%llu; buffer cache entries=%u, lookups=%llu probing %llu more "
             "slots\n",
             (unsigned long long)g_alias_draws, (unsigned long long)g_alias_pages, g_vblive,
