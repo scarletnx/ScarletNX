@@ -164,6 +164,10 @@ typedef struct {
 } NVNdlssParameters;
 
 typedef struct {
+    char reserved[0x258];
+} NVNdlssNetwork;
+
+typedef struct {
     char reserved[0x30];
 } NVNdeviceCommandBuffer;
 
