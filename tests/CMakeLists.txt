@@ -1368,6 +1368,12 @@ target_link_libraries(snx-test-hud PRIVATE scarletnx-common snx_splash m)
 target_include_directories(snx-test-hud PRIVATE "${PROJECT_BINARY_DIR}/generated") # the theme's colours
 add_test(NAME hud COMMAND snx-test-hud)
 
+# F1's text (runtime/platform/help.c): Ctrl+F12 while RenderDoc can capture, the debugger while one traces the game
+add_executable(snx-test-help help.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/help.c")
+snx_test_target(snx-test-help 99)
+target_include_directories(snx-test-help PRIVATE "${PROJECT_SOURCE_DIR}/src")
+add_test(NAME help COMMAND snx-test-help)
+
 add_executable(snx-test-stats stats.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
