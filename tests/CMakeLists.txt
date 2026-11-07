@@ -2002,12 +2002,10 @@ if(NOT SNX_TOOLS_ONLY)
     add_test(NAME vk_resource_stats COMMAND snx-test-vk-resource-stats)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         # The real cache saver with a fake driver: compilation defers periodic snapshots without losing dirty work.
+        # Include only its implementation; sanitizer-retained callback tables make whole-file linker GC unsuitable.
         add_executable(snx-test-vk-pipeline-save vk_pipeline_save.c)
         snx_test_target(snx-test-vk-pipeline-save 23)
         target_link_libraries(snx-test-vk-pipeline-save PRIVATE snx_nx_flags)
-        target_include_directories(snx-test-vk-pipeline-save PRIVATE "${renderdoc_app_SOURCE_DIR}")
-        target_compile_options(snx-test-vk-pipeline-save PRIVATE -ffunction-sections -fdata-sections)
-        target_link_options(snx-test-vk-pipeline-save PRIVATE -Wl,--gc-sections)
         add_test(NAME vk_pipeline_save COMMAND snx-test-vk-pipeline-save)
     endif()
     # graphics storage images' write-backs (gpu/vk/image_out.c) against a stand-in GPU: a draw over one whose copy is
