@@ -1830,8 +1830,18 @@ static void games_place(App* app, GuiPlace* p) {
     place_screen(app, p, shown_keys(app, keys, sizeof keys),
                  GUI_SHOWS_STATUS | GUI_SHOWS_TABS | GUI_SHOWS_SIDE | (games_grid(app) ? GUI_SHOWS_WIDE : 0));
 }
-/* the list's entries before the page's games: "Recent Games" and the recent rows, none without recent games */
-static int games_lead(const App* app) { return app->browser.head ? (int)app->browser.head + 1 : 0; }
+/* the heading over the page's games while Recent Games shows rows above them and the games are one group alone, which
+   gui_games_group heads only beside the other: that group's own, Recompiled or Dumps, so that its rows read apart
+   from the recent ones. NULL when there is none to put there (the list is one page: its first entry is the page's) */
+static const char* games_lone_heading(const App* app) {
+    if (!app->browser.head || !app->games.count || gui_games_heading(&app->games, 0)) return NULL;
+    return gui_games_dumps_group(&app->games, 0) ? snx_tr("Dumps") : snx_tr("Recompiled");
+}
+/* the list's entries before the page's games: "Recent Games", the recent rows and the page's lone heading
+   (games_lone_heading), none without recent games */
+static int games_lead(const App* app) {
+    return app->browser.head ? (int)app->browser.head + 1 + (games_lone_heading(app) != NULL) : 0;
+}
 /* one page of all the games, the list's and the grid's, which they scroll: the list by pixels (games_y), the grid by
    its lines */
 static size_t games_page(App* app) { return app->games.count ? app->games.count : 1; }
@@ -6339,7 +6349,7 @@ static size_t games_rows(const App* app) { return (size_t)games_lead(app) + gui_
 /* whether Rows' row is a label, which the grid puts on a line of its own: "Recent Games", a group's heading */
 static bool games_row_label(const App* app, size_t row) {
     size_t lead = (size_t)games_lead(app);
-    if (row < lead) return row == 0;
+    if (row < lead) return row == 0 || (row + 1 == lead && games_lone_heading(app));
     return gui_games_heading(&app->games, app->browser.page * app->browser.page_size + row - lead);
 }
 /* the grid's flow over its rows from the first, as tall as they take: where each goes, its line and its column */
@@ -6620,8 +6630,8 @@ static void games_finger(App* app, float x, float y, int phase) {
 static bool box_shown(App* app);
 static void game_label(const App* app, const GuiGames* games, size_t i, char* out, size_t size);
 static void menu_key(App* app, GuiKey key);
-/* Rows' row i as the browser counts it (0 is "Recent Games" over the recent rows): a recent row, else a game of the
-   page */
+/* Rows' row i as the browser counts it (0 is "Recent Games" over the recent rows, and a lone heading follows them): a
+   recent row, else a game of the page */
 static size_t games_selected(const App* app, size_t row) {
     size_t lead = (size_t)games_lead(app);
     return row < lead ? row - 1 : app->browser.head + row - lead;
@@ -6635,6 +6645,11 @@ bool ui_games_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info
     start = app->browser.page * app->browser.page_size;
     if (row == 0 && lead) {
         info->label = snx_tr("Recent Games");
+        info->attr = UI_ATTR_LABEL;
+        return true;
+    }
+    if (row + 1 == lead && games_lone_heading(app)) { /* the games' group under the recent rows */
+        info->label = games_lone_heading(app);
         info->attr = UI_ATTR_LABEL;
         return true;
     }
@@ -6669,9 +6684,9 @@ bool ui_games_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info
     if (i + 1 == items && app->browser.page + 1 < gui_browser_pages(&app->browser)) info->attr |= UI_ATTR_MORE_DOWN;
     return true;
 }
-/* a row hit: the focus on it, and a click opens it; "Recent Games" is no row to take */
+/* a row hit: the focus on it, and a click opens it; "Recent Games" and the heading under its rows are no rows to take */
 void ui_games_rows_row_action_cb(App* app, size_t row, uint32_t hit) {
-    if (row == 0 && games_lead(app)) return;
+    if (row < (size_t)games_lead(app) && games_row_label(app, row)) return;
     app->browser.selected = games_selected(app, row);
     if (hit & UI_HIT_CLICK) menu_key(app, GUI_SELECT);
 }

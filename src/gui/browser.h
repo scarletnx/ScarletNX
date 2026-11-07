@@ -24,13 +24,15 @@ bool gui_games_add(GuiGames* games, const char* directory, int kinds, char* erro
    own error alone is said */
 bool gui_games_add_deep(GuiGames* games, const char* directory, int kinds, int depth, char* error, size_t size);
 /* games in two groups: those ready to run, then the dumps and CIAs, each in the order it had; when both have games,
-   each under a heading of its own (an entry whose path is NULL, its text shown). A dump made already (made says so of
-   its path) is left out, and with dumps NULL every dump and CIA, the ready games alone. False when out of memory,
-   games as they were */
+   each under a heading of its own (an entry whose path is NULL, its text shown). One group alone gets none here: Games
+   heads it itself while Recent Games shows rows above it. A dump made already (made says so of its path) is left out,
+   and with dumps NULL every dump and CIA, the ready games alone. False when out of memory, games as they were */
 bool gui_games_group(GuiGames* games, const char* ready, const char* dumps,
                      bool (*made)(const char* path, const void* user), const void* user);
 /* whether entry i of games is a group's heading, which nothing runs */
 bool gui_games_heading(const GuiGames* games, size_t i);
+/* whether entry i of games goes in gui_games_group's second group, the dumps': a dump, a CIA, a VPK or a GBA ROM */
+bool gui_games_dumps_group(const GuiGames* games, size_t i);
 /* The log the runtime writes for the game whose program is at path, again at each run: <name>.log in its state folder
    (gui_game_kind_dir), <name> the game's folder for one of its own, else the program's name without .exe. Owned, NULL
    when out of memory */
