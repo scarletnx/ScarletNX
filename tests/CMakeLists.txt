@@ -2918,6 +2918,11 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         snx_test_target(snx-test-vk-memory-model 11)
         target_link_libraries(snx-test-vk-memory-model PRIVATE snx_vk_common)
         add_test(NAME vk_memory_model COMMAND snx-test-vk-memory-model)
+        # the presentation the vsync setting picks, for every frontend's swapchain
+        add_executable(snx-test-vk-present-mode vk_present_mode.c "${volk_SOURCE_DIR}/volk.c")
+        snx_test_target(snx-test-vk-present-mode 11)
+        target_link_libraries(snx-test-vk-present-mode PRIVATE snx_vk_common)
+        add_test(NAME vk_present_mode COMMAND snx-test-vk-present-mode)
         # the submission ring's uploads run before the recording they belong to, on whatever device there is
         add_executable(snx-test-vk-ring-uploads vk_ring_uploads.c "${volk_SOURCE_DIR}/volk.c")
         snx_test_target(snx-test-vk-ring-uploads 11)

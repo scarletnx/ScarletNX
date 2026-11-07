@@ -1058,12 +1058,7 @@ int vk_swapchain_create(int srgb) {
     vkGetPhysicalDeviceSurfacePresentModesKHR(g_vk.phys, g_vk.surface, &nm, NULL);
     VkPresentModeKHR* ms = calloc(nm ? nm : 1, sizeof *ms);
     vkGetPhysicalDeviceSurfacePresentModesKHR(g_vk.phys, g_vk.surface, &nm, ms);
-    VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;
-    for (u32 i = 0; i < nm && !vsync; i++)
-        if (ms[i] == VK_PRESENT_MODE_MAILBOX_KHR) mode = ms[i];
-    if (mode == VK_PRESENT_MODE_FIFO_KHR && !vsync)
-        for (u32 i = 0; i < nm; i++)
-            if (ms[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) mode = ms[i];
+    VkPresentModeKHR mode = snx_vk_present_mode(ms, nm, vsync);
     free(ms);
 
     /* an image for each frame in flight beyond what the driver keeps: a frame's present waits in the recording ring
