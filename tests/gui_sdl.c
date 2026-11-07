@@ -5088,6 +5088,10 @@ int main(int argc, char** argv) {
             assert(app.help_shown);
             shows(&app, "linha", normal); /* F1's box: every key of the screen, translated */
             shows(&app, "tela", normal);
+            /* its title its own phrase, not the key files' Keys, which xx translates as the files */
+            assert(strcmp(SAY_SHORTCUTS, setup_step_names[SNX_SETUP_KEYS]) && !strcmp(snx_tr("Keys"), "Chaves"));
+            shows(&app, "Atalhos", normal);
+            hides(&app, "Chaves", normal);
             key(&app, SDLK_ESCAPE); /* any key closes it, and does nothing else */
             assert(!app.help_shown && app.editing && app.form == form);
             render(&app);
@@ -11704,7 +11708,7 @@ int main(int argc, char** argv) {
                 mouse_px(&app, x + 4, mb.place.keys.y, true);
                 assert(app.help_shown);
                 render(&app);
-                shows(&app, "Keys", normal);
+                shows(&app, "Shortcuts", normal);
                 shows(&app, "Arrows/mouse", yellow); /* every key, the foot's and the others */
                 shows(&app, "side box", normal);
                 /* as the boxes over a screen are: the screen under it darkened, a row a key with its icon after the
@@ -11870,7 +11874,7 @@ int main(int argc, char** argv) {
             key(&app, SDLK_F1);
             render(&app);
             assert(app.help_shown);
-            shows(&app, "Keys", rgb(app.theme.page));
+            shows(&app, "Shortcuts", rgb(app.theme.page));
             shows(&app, "exit", rgb(app.theme.ink));
             hides(&app, "ESC", rgb(app.theme.focus));
             {

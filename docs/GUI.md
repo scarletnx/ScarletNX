@@ -619,13 +619,13 @@ box. The tips have a row of their own under the head, their letters a half step 
 as the Status box's and the note at the foot of a Settings box are; the setup's go to the foot beside its keys, where they take one row,
 a long one sliding, or wrap over its rows with `[tips] wrap`, the last sliding what does not fit. At the foot the
 screen's keys, the whole width (the setup's beside its tips), in letters a size under the rest's: its own keys, ESC alone
-at the left of the row, **F1** last, which opens a box over the screen with every key it has, those every screen has too
-(the arrows and the mouse, Enter, Space and a click, the pages, Tab and F2), as the other boxes over a screen are: the
-screen darkened under it, a row a key with its icon, the keys as the foot draws them, the screen's own first and those
-every screen has under the title Every screen (ESC among them; no title where all are those), OK under them; Up/Down, PgUp/PgDn and the wheel go over
-the rows a short window cannot show, any other key or a click closes it; on a
-phone, the words to tap, whole, in the text's letters, each row of them as tall as a list's row (48 pixels times
-the text's size) for a finger, and so are the tabs. The tips and the keys each in a box with a bar down
+at the left of the row, **F1** last, which opens a box over the screen, Shortcuts, with every key it has, those every
+screen has too (the arrows and the mouse, Enter, Space and a click, the pages, Tab and F2), as the other boxes over a
+screen are: the screen darkened under it, a row a key with its icon, the keys as the foot draws them, the screen's own
+first and those every screen has under the title Every screen (ESC among them; no title where all are those), OK under
+them; Up/Down, PgUp/PgDn and the wheel go over the rows a short window cannot show, any other key or a click closes
+it; on a phone, the words to tap, whole, in the text's letters, each row of them as tall as a list's row (48 pixels
+times the text's size) for a finger, and so are the tabs. The tips and the keys each in a box with a bar down
 its left (`[tips] box`, `[footer] box`) or on the page, each key with what it does a button as a tab is: a box as the
 theme's are (filled in the dim colour, framed in it, or on the foot's band framed in the soft one), its text a column
 inside, a column between two, as tall as a tab where it has a row of its own. Games lists the recent games and the

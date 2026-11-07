@@ -12678,6 +12678,9 @@ static void draw_closing(App* app) {
    them. Up/Down, PgUp/PgDn and the wheel go over the rows
    that do not fit, help_top the first shown; another key, button or finger closes it ---- */
 #define SAY_EVERY_SCREEN SNX_TR_NOOP("Every screen")
+/* its title: a word of its own, as "Keys" is the key files' (the setup's step and its box), which a language may
+   translate as files of keys */
+#define SAY_SHORTCUTS    SNX_TR_NOOP("Shortcuts")
 typedef struct {
     char said[1024];               /* the keys as screen_keys says them, a key and what it does at a time (hint_next) */
     unsigned icons[GUI_HELP_ROWS]; /* each one's icon, none past GUI_HELP_ROWS */
@@ -12721,7 +12724,7 @@ static void help_boxes(App* app, GuiHelpBoxes* h) {
     GuiRect area;
     help_keys(app, &k);
     rows = help_rows(&k);
-    longest = SDL_max(16, SDL_max(gui_text_cols(snx_tr("Keys")), gui_text_cols(snx_tr(SAY_EVERY_SCREEN))) + 2);
+    longest = SDL_max(16, SDL_max(gui_text_cols(snx_tr(SAY_SHORTCUTS)), gui_text_cols(snx_tr(SAY_EVERY_SCREEN))) + 2);
     while (hint_next(&at, key, what, sizeof key))
         longest = SDL_max(longest, gui_text_cols(app->theme.marker) + 3 + k.keys + 2 + gui_text_cols(what) + 4);
     ok_h = rows_h(ui_files_layout, ui_files_row, h->ok, UI_FILES_OK, s, 1);
@@ -12791,7 +12794,7 @@ static void render_help(App* app) {
     unsigned icon;
     int s = app->scale, w = cell_w(app), shown;
     help_boxes(app, &h);
-    over_box(app, h.box, snx_tr("Keys"));
+    over_box(app, h.box, snx_tr(SAY_SHORTCUTS));
     ui_help_draw(app, h.rects, s, h.lists);
     ui_files_draw(app, h.ok, s, oks);
     help_keys(app, &k);
