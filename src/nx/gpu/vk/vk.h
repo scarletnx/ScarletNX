@@ -1674,6 +1674,8 @@ void vk_pipeline_lib_stats(u64 made[4], u64 hits[4], u64 make_ms[4], u64* links,
    every worker was busy with one or more on an optimized pipeline, and the longest wait; the most workers that made
    optimized pipelines at once */
 void vk_pipeline_lib_waits(u64* waits, u64* wait_ms, u64* behind_opt_ms, u64* max_ms, int* opt_workers);
+/* the shipped programs' parts warmed into the pipeline cache ahead of their draws: made, those the cache had, their ms */
+void vk_pipeline_lib_warm_stats(u64* made, u64* hit, u64* ms);
 void vk_tex_stats(u64* uploads, u64* bytes); /* texture uploads from guest memory so far, and their bytes */
 u64 vk_tex_hashes(void); /* texture memory hashed so far, whole or sampled, to learn whether it changed */
 u64 vk_rt_made(void);                        /* render targets made so far */

@@ -1280,6 +1280,9 @@ static struct {
        pipelines made, their ns, and the optimized ones the cache had */
     u64 made[4], hits[4], ns[4];
     u64 links, link_ns, opts, opt_ns, opt_hits;
+    /* the shipped programs' parts warmed into the pipeline cache ahead of their draws (ship_warm): queued, made, the
+       cache hits, their ns */
+    u64 warm_queued, warm_made, warm_hit, warm_ns;
     /* the draws' pipelines' waits for a worker: how many, their ns, the ns of those queued while every worker was
        busy and one or more made an optimized pipeline, and the longest (g_pj_lock) */
     u64 job_waits, job_wait_ns, job_behind_opt_ns, job_wait_max_ns;
@@ -1574,6 +1577,11 @@ void vk_pipeline_lib_stats(u64 made[4], u64 hits[4], u64 make_ms[4], u64* links,
     *opts = __atomic_load_n(&g_plib.opts, __ATOMIC_RELAXED);
     *opt_ms = __atomic_load_n(&g_plib.opt_ns, __ATOMIC_RELAXED) / 1000000;
 }
+void vk_pipeline_lib_warm_stats(u64* made, u64* hit, u64* ms) {
+    *made = __atomic_load_n(&g_plib.warm_made, __ATOMIC_RELAXED);
+    *hit = __atomic_load_n(&g_plib.warm_hit, __ATOMIC_RELAXED);
+    *ms = __atomic_load_n(&g_plib.warm_ns, __ATOMIC_RELAXED) / 1000000;
+}
 /* e's pipeline, made here. One a draw asked for is kept in the file (pf_pipe_record): once made when the GPU thread
    makes it (record), and when it queues it for a worker otherwise, as the file's tables are the GPU thread's */
 static VkPipeline pipe_make(const Pipe* e, int record) {
@@ -1600,12 +1608,47 @@ static Pipe *g_pj_head, *g_pj_tail; /* a draw's */
 static Pipe *g_pw_head, *g_pw_tail; /* the file's */
 static Pipe *g_po_head, *g_po_tail; /* the optimized pipelines to make after their fast links, last */
 static int g_po_busy;               /* the workers making an optimized pipeline now (g_pj_lock) */
+/* a shipped program's part to make into the pipeline cache ahead of its draws (ship_warm): with the part warm, a draw
+   that meets the same program links it in about a millisecond instead of waiting seconds for its compile. The module is
+   made from the shipped SPIR-V and destroyed by the worker once the part is in the cache. On the lowest queue, after
+   the optimized pipelines */
+typedef struct WarmItem {
+    PipeKey src;       /* the part's state alone, as a draw's vk_pipe_part_src builds it: for a shipped program only its
+                          indexed bit */
+    VkShaderModule fs; /* a fragment part's module, also in src.fs; VK_NULL_HANDLE for a pre-rasterization part */
+    u32 part;          /* VK_PART_PR or VK_PART_FS */
+    struct WarmItem* next;
+} WarmItem;
+static WarmItem *g_warm_head, *g_warm_tail; /* last: the workers make these only when nothing else waits */
+static int g_warm_busy;                      /* the workers warming a part now (g_pj_lock) */
+/* a shipped program's part this large or larger (SPIR-V) takes about a second or more to make, so it is warmed */
+#define SHIP_WARM_WORDS 65536u /* 256 KiB of SPIR-V */
+/* As the optimized pipelines (PIPE_OPT_WORKERS), a warm part's compile is seconds and no draw can take it back once a
+   worker has begun it. One worker warms, the others stay free for the draws' new pipelines */
+#define WARM_WORKERS 1
 /* The most workers that make optimized pipelines at once. An optimized link compiles every stage again: 4 to 5 s
    for a pipeline of a 1.7 MB vertex program on NVIDIA, which no draw can take back once a worker has begun it. A
    first run queues hundreds of them behind the parts, and with no bound they took every worker while a new
    shader's parts waited (docs/PIPELINE_LIBRARIES.md, "Results"). One worker optimizes, the others stay free */
 #define PIPE_OPT_WORKERS 1
 static void pipe_queue(Pipe* e, int queue);
+/* on a worker: make a shipped program's part into the pipeline cache, then drop the module and the part pipeline (a
+   draw's own module later hits the cache by its SPIR-V, which is the cache's key) */
+static void warm_run(WarmItem* w) {
+    PipeLib lib = {.src = w->src, .fs = w->fs, .part = w->part};
+    int hit = 0;
+    u64 t0 = plat_ns();
+    VkPipeline p = lib_create(&lib, &hit);
+    u64 ns = plat_ns() - t0;
+    __atomic_add_fetch(&g_plib.warm_ns, ns, __ATOMIC_RELAXED);
+    pcache_note();
+    __atomic_add_fetch(&g_plib.warm_made, 1, __ATOMIC_RELAXED);
+    if (hit) __atomic_add_fetch(&g_plib.warm_hit, 1, __ATOMIC_RELAXED);
+    if (p) vkDestroyPipeline(g_vk.dev, p, NULL);
+    VkShaderModule mod = w->part == VK_PART_PR ? w->src.vs : w->fs;
+    if (mod) vkDestroyShaderModule(g_vk.dev, mod, NULL);
+    free(w);
+}
 static void pipe_worker(void* arg) {
     (void)arg;
     SNX_THREAD_NAME("Vulkan pipelines");
@@ -1613,8 +1656,22 @@ static void pipe_worker(void* arg) {
         Pipe* e;
         VkPipeline p;
         pm_lock(&g_pj_lock);
-        while (!g_pj_head && !g_pw_head && !(g_po_head && g_po_busy < PIPE_OPT_WORKERS))
+        while (!g_pj_head && !g_pw_head && !(g_po_head && g_po_busy < PIPE_OPT_WORKERS) &&
+               !(g_warm_head && g_warm_busy < WARM_WORKERS))
             pc_wait(&g_pj_work, &g_pj_lock, -1);
+        if (!g_pj_head && !g_pw_head && !(g_po_head && g_po_busy < PIPE_OPT_WORKERS)) {
+            WarmItem* w = g_warm_head;
+            g_warm_head = w->next;
+            if (!g_warm_head) g_warm_tail = NULL;
+            g_warm_busy++;
+            pm_unlock(&g_pj_lock);
+            warm_run(w);
+            pm_lock(&g_pj_lock);
+            g_warm_busy--;
+            if (g_warm_head) pc_signal(&g_pj_work); /* the next warm part, to a worker that waits */
+            pm_unlock(&g_pj_lock);
+            continue;
+        }
         Pipe **head = g_pj_head ? &g_pj_head : g_pw_head ? &g_pw_head : &g_po_head,
              **tail = g_pj_head ? &g_pj_tail : g_pw_head ? &g_pw_tail : &g_po_tail;
         e = *head;
@@ -2456,6 +2513,45 @@ static u8* ship_window(const u8* p, size_t avail) {
     if (code) memcpy(code, p, avail < SH_CODE ? avail : SH_CODE);
     return code;
 }
+/* a shipped program large enough that its part takes about a second to make: make that part into the pipeline cache now,
+   on the lowest worker queue, so a draw that meets the program links it (a millisecond) instead of compiling it
+   (seconds). The program's indexed bit and its clip word are the ship pass's guesses, so a draw whose key differs
+   still translates and compiles its own, as now (docs/PIPELINE_LIBRARIES.md, step 8) */
+static void ship_warm(int stage, int indexed, const u32* spv, u32 nw) {
+    VkShaderModule mod = vk_module_spv(spv, nw);
+    if (!mod) return;
+    WarmItem* w = calloc(1, sizeof *w);
+    if (!w) {
+        vkDestroyShaderModule(g_vk.dev, mod, NULL);
+        return;
+    }
+    if (stage == ST_VS) {
+        w->part = VK_PART_PR;
+        w->src.vs = mod;
+        w->src.arrays = indexed ? (1u << shader_vk_set(ST_VS)) : 0;
+    } else { /* ST_FS: the pass makes no other stage */
+        w->part = VK_PART_FS;
+        w->src.fs = mod;
+        w->src.arrays = indexed ? (1u << shader_vk_set(ST_FS)) : 0;
+        w->fs = mod;
+    }
+    pm_lock(&g_pj_lock);
+    if (!pipe_workers()) { /* no workers: the parts are made when the draws ask, as now */
+        pm_unlock(&g_pj_lock);
+        vkDestroyShaderModule(g_vk.dev, mod, NULL);
+        free(w);
+        return;
+    }
+    w->next = NULL;
+    if (g_warm_tail)
+        g_warm_tail->next = w;
+    else
+        g_warm_head = w;
+    g_warm_tail = w;
+    __atomic_add_fetch(&g_plib.warm_queued, 1, __ATOMIC_RELAXED);
+    pc_signal(&g_pj_work);
+    pm_unlock(&g_pj_lock);
+}
 /* the shader of code (hashing to h, as vk_shader_get hashes it) a draw asks for first: float attributes, textures
    and outputs, no capture, not early-Z (a fragment shader's first lookup, render.c), and the clip word of ship_clip.
    Translated into the shipped file unless it has it: SHIP_NEW, SHIP_KNOWN, SHIP_FAILED, or SHIP_STOP when the file
@@ -2474,6 +2570,7 @@ static int ship_make(const u8* code, u64 h, int stage, u32 len, u64 qh, u32 len_
     u32* spv = sh_spirv(&s, code, h, stage, mask, len, qh, len_a, qh_a, NULL, ship_read, 1, &nw);
     int translated = spv != NULL;
     if (spv) at = pf_shader_into(&g_pf.ship, &s, 0, spv, nw, NULL, 0, NULL);
+    if (translated && nw >= SHIP_WARM_WORDS) ship_warm(stage, s.indexed, spv, nw);
     free(spv);
     free(s.cbr.r);
     /* An allocation failing inside the translator comes back as a program it can't translate, with no reason given,
@@ -2597,12 +2694,14 @@ static void pf_ship_pass(void) {
         int rc = ship_walk(&sink, &g_pf.progress, g_settings.prepare_shaders == 2, g_ounce);
         __atomic_store_n(&g_pf.scanning, 0, __ATOMIC_RELAXED);
         pf_close(&g_pf.scan);
-        LOG("vulkan: the game's own shaders: %u translated new, %u in %s, in %llu ms%s\n",
+        LOG("vulkan: the game's own shaders: %u translated new, %u in %s, in %llu ms%s; %llu large ones queued to warm "
+            "their parts\n",
             __atomic_load_n(&g_pf.ship_new, __ATOMIC_RELAXED), g_pf.nidx, g_pf.ship_path,
             (unsigned long long)((plat_ns() - t0) / 1000000),
             rc > 0   ? " (stopped: the file takes no more)"
             : rc < 0 ? " (a later run reads what wasn't)"
-                     : "");
+                     : "",
+            (unsigned long long)__atomic_load_n(&g_plib.warm_queued, __ATOMIC_RELAXED));
     } /* else pf_open_mapped or pf_unseal said why the file can't be written */
     pf_seal(&g_pf.ship); /* mapped again with the records appended, for the draws to read */
 }

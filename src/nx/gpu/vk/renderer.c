@@ -675,6 +675,13 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                         (unsigned long long)made[0], (unsigned long long)made[3],
                         (unsigned long long)(make_ms[0] + make_ms[3]), (unsigned long long)links,
                         (unsigned long long)link_ms, (unsigned long long)opts, (unsigned long long)opt_ms);
+                    u64 warm_made, warm_hit, warm_ms;
+                    vk_pipeline_lib_warm_stats(&warm_made, &warm_hit, &warm_ms);
+                    if (warm_made)
+                        LOG("vulkan: %llu shipped programs' parts warmed ahead of their draws (%llu from the cache, "
+                            "%llu ms)\n",
+                            (unsigned long long)warm_made, (unsigned long long)warm_hit,
+                            (unsigned long long)warm_ms);
                     u64 waits, wait_ms, behind_ms, max_ms;
                     int opt_workers;
                     vk_pipeline_lib_waits(&waits, &wait_ms, &behind_ms, &max_ms, &opt_workers);
