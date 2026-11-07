@@ -1283,6 +1283,89 @@ static int read_pixel_at(Surf* target, u32 x, u32 y, u8 out[4]) {
 /* a single-layer target's pixel 0 as its image holds it */
 static int read_pixel0(Surf* target, u8 out[4]) { return read_pixel_at(target, 0, 0, out); }
 
+/* A blit from an sRGB target to an sRGB image keeps its bytes, as the presentation's blit to an sRGB swapchain must:
+   vkCmdBlitImage converts by the images' own formats, so a target whose image were its linear twin would be encoded
+   a second time and come out washed out */
+static int check_srgb_blit(void) {
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    u32* r = ch->r3d;
+    r[0x487] = 1;
+    r[0x201] = 0x480000;
+    r[0x202] = 64; /* 16 RGBA pixels, pitch linear */
+    r[0x203] = 16;
+    r[0x204] = 0xD6; /* A8B8G8R8 sRGB */
+    r[0x205] = 0x1000;
+    r[0x206] = 1;
+    r[0x207] = 1024;
+    r[0x56E] = 1;
+    const float color[4] = {0.25f, 0.5f, 0.75f, 1};
+    memcpy(&r[0x360], color, sizeof color);
+    engine_clear(ch, 15 << 2);
+    vk_render_end();
+    Surf* target = vk_rt_find(r[0x201]);
+    CHECK(target && target->f.vk == VK_FORMAT_R8G8B8A8_SRGB);
+    u8 stored[4];
+    CHECK(!read_pixel0(target, stored));
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .imageType = VK_IMAGE_TYPE_2D,
+                            .format = VK_FORMAT_R8G8B8A8_SRGB,
+                            .extent = {16, 16, 1},
+                            .mipLevels = 1,
+                            .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+    VkImage dst;
+    VmaAllocation mem;
+    vk_lock();
+    CHECK(vk_image_create(&ii, &dst, &mem));
+    VkCommandBuffer cb = vk_cmd();
+    vk_surf_use(cb, target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkImageMemoryBarrier2 to_dst = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                    .dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT,
+                                    .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                                    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    .image = dst,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    VkDependencyInfo di = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &to_dst};
+    rec_CmdPipelineBarrier2(cb, &di);
+    VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                        .srcOffsets = {{0, 0, 0}, {16, 16, 1}},
+                        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                        .dstOffsets = {{0, 0, 0}, {16, 16, 1}}};
+    rec_CmdBlitImage(cb, target->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     1, &blit, VK_FILTER_NEAREST);
+    VkBuffer buffer;
+    u8* data = vk_readback_buffer(4, &buffer);
+    CHECK(data);
+    to_dst.srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+    to_dst.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    to_dst.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    to_dst.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    to_dst.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_dst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    rec_CmdPipelineBarrier2(cb, &di);
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {1, 1, 1}};
+    rec_CmdCopyImageToBuffer(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    vk_unlock();
+    vk_finish();
+    vk_readback_ready();
+    for (u32 i = 0; i < 4; i++) {
+        if (abs((int)data[i] - stored[i]) > 1)
+            fprintf(stderr, "srgb blit: byte %u stored %u, blitted %u (encoded twice when above)\n", i, stored[i],
+                    data[i]);
+        CHECK(abs((int)data[i] - stored[i]) <= 1);
+    }
+    vk_lock();
+    vk_image_destroy(dst, mem);
+    vk_unlock();
+    free(ch);
+    return 0;
+}
+
 /* Clears as load ops: a whole-target clear before any draw of its pass is the pass's LOAD_OP_CLEAR, and gives the
    pixels a vkCmdClearAttachments gave. A discarded target's next pass loads it as DONT_CARE, and what that pass writes
    is there */
@@ -5339,6 +5422,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_depth_writeback());
     CHECK(!check_big_volume());
     CHECK(!check_srgb_write());
+    CHECK(!check_srgb_blit());
     CHECK(!check_clear_load_op());
     CHECK(!check_sparse_while_submitting());
     CHECK(!check_multisample_shader_gate());
