@@ -11,6 +11,9 @@
    Documents (gui/log.h), which the Files app shows, after a banner naming the device, the system and the limits it puts
    on the app (a phone shows no console) */
 void gui_apple_log_start(void);
+/* iOS and macOS: a line in the launcher log now and at each change of the thermal state and of the low power mode,
+   and on iOS at each step of the app's lifecycle, from then until the process ends, the game's run too on iOS */
+void gui_apple_state_watch(void);
 /* iOS: one line of what the app uses now (memory it is charged for and may still take, CPU time, thermal state, power
    mode), for the log every few seconds of a run */
 void gui_apple_stats(char* out, size_t size);
@@ -18,8 +21,8 @@ void gui_apple_stats(char* out, size_t size);
 void gui_apple_start(void);
 /* iOS: the system's document picker, as SDL has none there: a file, or a folder when folder is set. done gets its path
    or an empty list when none was picked, as an SDL dialog calls back (from the app's main thread); 0 with message when
-   it cannot open */
-int gui_apple_pick(SDL_Window* window, int folder, SDL_DialogFileCallback done, void* data, char* message,
+   it cannot open. With log set, each of its steps goes to the launcher log: its open, its answer and the item picked */
+int gui_apple_pick(SDL_Window* window, int folder, SDL_DialogFileCallback done, void* data, int log, char* message,
                    size_t size);
 /* iOS: the system's share sheet for the file at path (AirDrop, Messages, Mail, Save to Files), over the window. 0 when
    it cannot open, and on macOS, where Finder shares the file from its folder */

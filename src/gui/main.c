@@ -349,6 +349,7 @@ typedef struct App {
     bool recent_unsaved;        /* the list could not be written the last time it changed: the message says so */
     Uint64 clock;               /* fixed time for tests; 0 is the real clock */
     Uint64 fade_ms, leaving_ms; /* a screen fading in from black since; the run fading out since */
+    Uint64 run_started_ms;      /* the menu's run started, for its end's line in the log (debug_log) */
     Uint64 entering_ms;         /* the menu fading out since, before a run fades in */
     char* self;    /* the program that runs Switch inputs: the runtime the menu is part of, NULL to look for one */
     char* drivers; /* the folder the other drivers are looked for in first */
@@ -3527,6 +3528,65 @@ static void settings_text(const App* app, const char* key, char* out, size_t out
     value = gui_settings_value(&app->settings, key);
     snprintf(out, out_size, "%s", value ? value : "");
 }
+#ifdef SDL_PLATFORM_APPLE
+/* Debug's Log level at 2: the launcher logs more of what the system does to the app too, as the Apple apps' runs have
+   no console to watch: the document picker's steps, the app's lifecycle, each run's start and end, thermal and power
+   changes */
+static int debug_log(const App* app) {
+    char level[16];
+    settings_text(app, "log", level, sizeof level);
+    return SDL_atoi(level) >= 2;
+}
+/* a run's or a recompile's line in the launcher log (debug_log): what happened to it, its status and time once it
+   ended (started_ms, 0 for a start), and the space left on the data folder's disk then, which a recompile uses up */
+static void run_said(const App* app, const char* kind, const char* what, int status, Uint64 started_ms) {
+    char ended[64] = {0};
+    if (started_ms)
+        snprintf(ended, sizeof ended, ", status %d, after %.1f s", status,
+                 (double)(now_ms(app) - started_ms) / 1000);
+    gui_log("%s: %s%s, %llu MiB free on the data folder's disk", kind, what, ended,
+            app->data_dir ? (unsigned long long)(snx_free_space(app->data_dir) >> 20) : 0ull);
+#ifdef SDL_PLATFORM_IOS
+    char stats[512];
+    gui_apple_stats(stats, sizeof stats); /* the app's memory then: a recompile runs in its process */
+    gui_log("%s: %s", kind, stats);
+#endif
+}
+/* the data folder's dumps/, keys/ and recompiled/ in the launcher log (debug_log): what the app finds there, its names
+   and sizes. A key file's name and size only, never what it holds */
+static void data_folders_log(const App* app) {
+    static const char* const names[] = {"dumps", "keys", "recompiled"};
+    for (size_t f = 0; app->data_dir && f < SDL_arraysize(names); ++f) {
+        char* dir = snx_path_join(app->data_dir, names[f]);
+        char** list = NULL;
+        size_t n = 0;
+        if (!dir || snx_list_dir(dir, &list, &n)) {
+            gui_log("folders: %s/ cannot be listed", names[f]);
+            free(dir);
+            continue;
+        }
+        char shown[SNX_PATH_SIZE];
+        snx_home_short(dir, shown, sizeof shown);
+        gui_log("folders: %s holds %zu", shown, n);
+        for (size_t i = 0; i < n && i < 64; ++i) { /* shortcut: 64 entries a folder, raise it when a log needs more */
+            char* path = snx_path_join(dir, list[i]);
+            if (path && snx_is_dir(path))
+                gui_log("  %s/", list[i]);
+            else
+                gui_log("  %s, %llu MiB", list[i], path ? (unsigned long long)(snx_file_size(path) >> 20) : 0ull);
+            free(path);
+        }
+        if (n > 64) gui_log("  and %zu more", n - 64);
+        snx_free_strings(list, n);
+        free(dir);
+    }
+    for (int i = 0; i < app->folder_count; ++i) {
+        char shown[SNX_PATH_SIZE];
+        snx_home_short(app->folders[i], shown, sizeof shown);
+        gui_log("folders: also listed %s", shown);
+    }
+}
+#endif
 /* Settings' user, by its uid (user_uid), as users.ini lists them: its number, 0 for a uid no user has; without one
    the deprecated user's number, else 1 */
 static int settings_user(const App* app) {
@@ -5180,7 +5240,8 @@ static void addons_pick(App* app, int row) {
     else
         SDL_ShowOpenFileDialog(folder_picked, &app->addon_picked, app->window, &app->cheats_filter, 1, NULL, false);
 #elif defined(SDL_PLATFORM_IOS) /* nor any picker there: the document picker (dist/apple), which takes no filter */
-    opened = gui_apple_pick(app->window, folder, folder_picked, &app->addon_picked, why, sizeof why) != 0;
+    opened =
+        gui_apple_pick(app->window, folder, folder_picked, &app->addon_picked, debug_log(app), why, sizeof why) != 0;
 #else
     /* its answer comes as an event even when it cannot open, which says why */
     if (folder)
@@ -7962,7 +8023,7 @@ static void folder_answer(App* app, bool taken, bool deep) {
         snprintf(app->editor.note, sizeof app->editor.note, "%s", snx_tr("Not added"));
     free(path);
 }
-/* the system's folder picker answers on its own thread, as the file picker */
+/* a system picker answers on its own thread: its choice comes back to event() as an event of the type at userdata */
 static void SDLCALL folder_picked(void* userdata, const char* const* files, int filter) {
     SDL_Event e;
     (void)filter;
@@ -8811,7 +8872,7 @@ static void open_folder_picker(App* app) {
 #elif defined(SDL_PLATFORM_IOS)
     { /* nor there: the document picker (dist/apple) */
         char message[sizeof app->editor.note - 40];
-        if (gui_apple_pick(app->window, 1, folder_picked, &app->picked_folder, message, sizeof message))
+        if (gui_apple_pick(app->window, 1, folder_picked, &app->picked_folder, debug_log(app), message, sizeof message))
             ;
         else if (app->editing) {
             snprintf(app->editor.note, sizeof app->editor.note, snx_tr("The folder picker could not open: %s"),
@@ -9274,7 +9335,7 @@ static void driver_pick(App* app) {
         return;
     }
 #ifdef SDL_PLATFORM_IOS
-    opened = gui_apple_pick(app->window, 0, folder_picked, &app->driver_picked, why, sizeof why) != 0;
+    opened = gui_apple_pick(app->window, 0, folder_picked, &app->driver_picked, debug_log(app), why, sizeof why) != 0;
 #else
     SDL_ShowOpenFileDialog(folder_picked, &app->driver_picked, app->window, &app->driver_filter, 1, NULL, false);
 #endif
@@ -13114,6 +13175,7 @@ static int play(App* app, const char* asked) {
     if (driver) argv[n++] = driver;
     if (freedreno) argv[n++] = freedreno;
     argv[n] = NULL;
+    if (debug_log(app)) run_said(app, "run", "starts in this process once the menu closes", 0, 0);
     gui_apple_play(argv);
     free(driver);
     free(freedreno);
@@ -13629,6 +13691,10 @@ static void pump(App* app) {
         int status;
         if (gui_process_finished(app->process, &status)) {
             app->menu.running = false;
+#ifdef SDL_PLATFORM_APPLE
+            if (debug_log(app))
+                run_said(app, "run", app->aborting ? "aborted" : "ended", status, app->run_started_ms);
+#endif
             /* Normal exits wait for acknowledgement. ESC already acknowledged
                an abort, so return straight to the menu after nonblocking reaping. */
             app->finished = !app->aborting;
@@ -14393,6 +14459,10 @@ static void launch(App* app, char* absolute, bool prepared) {
     icons_wait(app); /* the one driver thread, a dump's icon's first */
 #endif
     bool started = gui_process_start(app->process, argv, app->message, sizeof(app->message));
+#ifdef SDL_PLATFORM_APPLE
+    app->run_started_ms = SDL_max(now_ms(app), 1);
+    if (debug_log(app)) run_said(app, "run", started ? "starts" : app->message, 0, 0);
+#endif
     if (started && app->run_log) {
         size_t k;
         if (app->run_out) fclose(app->run_out);
@@ -14526,7 +14596,11 @@ static void job_start(App* app) {
 #ifdef SDL_PLATFORM_IOS
         icons_wait(app); /* the one driver thread, a dump's icon's first */
 #endif
-        if (!gui_process_start(app->job_process, argv, why, sizeof why)) {
+        bool started = gui_process_start(app->job_process, argv, why, sizeof why);
+#ifdef SDL_PLATFORM_APPLE
+        if (debug_log(app)) run_said(app, "recompile", started ? "starts" : why, 0, 0);
+#endif
+        if (!started) {
             job->state = GUI_JOB_FAILED;
             job->status = -1;
             job->ended_ms = SDL_max(now_ms(app), 1);
@@ -14661,6 +14735,9 @@ static void job_ended(App* app, int i, int status) {
     char took[64];
     Uint64 now = SDL_max(now_ms(app), 1);
     gui_steps_finish(&app->job_steps, !failed);
+#ifdef SDL_PLATFORM_APPLE
+    if (debug_log(app)) run_said(app, "recompile", aborted ? "aborted" : "ended", status, job->started_ms);
+#endif
     if (app->job_out) {
         fprintf(app->job_out, "\n[%s, status %d]\n", aborted ? "aborted" : "ended", status);
         fclose(app->job_out);
@@ -15364,23 +15441,15 @@ static void drop(App* app, const char* value, bool text_drop) {
             free(absolute);
     }
 }
-/* the system's file picker answers on its own thread: the choice comes back to event() as an app->picked event */
-static void SDLCALL picker_done(void* userdata, const char* const* files, int filter) {
-    SDL_Event e;
-    (void)filter;
-    SDL_zero(e);
-    e.type = *(const Uint32*)userdata;
-    e.user.data1 = files && files[0] ? SDL_strdup(files[0]) : NULL;
-    SDL_PushEvent(&e);
-}
 static void picked(App* app, const char* uri);
 static void open_picker(App* app) {
     app->keys_done = 0; /* another try: the last one's outcome no longer stands */
     if (!app->picked) app->picked = SDL_RegisterEvents(1);
 #ifdef SDL_PLATFORM_IOS /* SDL has no file dialog there: the document picker (dist/apple) */
-    if (app->picked) gui_apple_pick(app->window, 0, picker_done, &app->picked, app->message, sizeof(app->message));
+    if (app->picked)
+        gui_apple_pick(app->window, 0, folder_picked, &app->picked, debug_log(app), app->message, sizeof(app->message));
 #else
-    if (app->picked) SDL_ShowOpenFileDialog(picker_done, &app->picked, app->window, NULL, 0, NULL, false);
+    if (app->picked) SDL_ShowOpenFileDialog(folder_picked, &app->picked, app->window, NULL, 0, NULL, false);
 #endif
 }
 /* the last max bytes of a file from the first line that starts in them, as text, or "". A home folder cut in two is no
@@ -17215,6 +17284,18 @@ static void event_take(App* app, const SDL_Event* e) {
         drop(app, e->drop.data, e->type == SDL_EVENT_DROP_TEXT);
         return; /* SDL3 owns the event's data, unlike SDL2. */
     }
+#ifdef SDL_PLATFORM_APPLE
+    /* a picker's answer, any of the four, in the launcher log (debug_log): what came back, or SDL's error */
+    if (e->type >= SDL_EVENT_USER &&
+        ((app->addon_picked && e->type == app->addon_picked) || (app->driver_picked && e->type == app->driver_picked) ||
+         (app->picked_folder && e->type == app->picked_folder) || (app->picked && e->type == app->picked)) &&
+        debug_log(app)) {
+        char shown[SNX_PATH_SIZE];
+        snx_home_short(e->user.data1 ? (const char*)e->user.data1 : "none", shown, sizeof shown);
+        gui_log("dialog: the answer %s%s%s", shown, e->user.code ? ", an error: " : "",
+                e->user.code && e->user.data2 ? (const char*)e->user.data2 : "");
+    }
+#endif
     /* Add Mod's or Add Cheats' picker's answer: a folder or a file, none, or why it could not open */
     if (app->addon_picked && e->type == app->addon_picked) {
         addons_picked(app, (const char*)e->user.data1, (const char*)e->user.data2, e->user.code != 0);
@@ -17266,6 +17347,7 @@ static void event_take(App* app, const SDL_Event* e) {
     if (app->picked && e->type == app->picked) {
         picked(app, e->user.data1);
         SDL_free(e->user.data1);
+        SDL_free(e->user.data2);
         return;
     }
     if (e->type == SDL_EVENT_FINGER_DOWN && !app->finger) {
@@ -17711,6 +17793,12 @@ static void open_files(App* app) {
     drivers_load(app);
     if (!app->look_only)
         gui_log("%s starts, its data folder %s", snx_build_log_line(), app->data_dir ? app->data_dir : "(none)");
+#ifdef SDL_PLATFORM_APPLE
+    if (!app->look_only && debug_log(app)) { /* the level at the start: a later change starts neither */
+        gui_apple_state_watch();
+        data_folders_log(app);
+    }
+#endif
     if (prefs) run_log_follow(app);  /* in the Logs folder app.ini picked */
     if (prefs) recent_as_games(app); /* by the recompiled/ app.ini picked */
     app->users_dir = snx_users_dir(app->home_dir ? app->home_dir : app->data_dir);
