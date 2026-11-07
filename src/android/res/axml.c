@@ -185,6 +185,11 @@ bool axml_open(AxmlDocument* doc, const unsigned char* data, size_t size, char* 
             }
         } else if (type == CHUNK_RESOURCE_MAP) {
             uint32_t header = snx_ld_le16(data + at + 2);
+            if (header < 8 || header > chunk) {
+                snprintf(error, error_size, "a resource map whose header of %u bytes is past its chunk of %u",
+                         (unsigned)header, (unsigned)chunk);
+                return false;
+            }
             doc->ids = data + at + header;
             doc->id_count = (chunk - header) / 4;
         } else if (type >= CHUNK_START_NAMESPACE && type <= CHUNK_CDATA) {
