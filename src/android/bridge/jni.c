@@ -158,6 +158,7 @@ static JNIEnv* host_env(uint64_t guest) {
 JNIEnv* bridge_jni_host(uint64_t guest_env) {
     return host_env(guest_env);
 }
+uint64_t bridge_jni_env(JNIEnv* host) { return (uint64_t)(uintptr_t)guest_env(host); }
 
 /* ---- method signatures ---- */
 
@@ -224,6 +225,12 @@ static const char* jni_params(const char* name) {
     if (set && n > 10 && !strcmp(name + n - 10, "FloatField")) return "IIIF";
     if (set && n > 11 && !strcmp(name + n - 11, "DoubleField")) return "IIID";
     return NULL;
+}
+
+/* GetVersion: Android's JNI, 1.6, where the host's JVM gives its own (JDK 25's is 24) */
+static void jni_get_version(CPU* c, void* data) {
+    (void)data;
+    X(0) = JNI_VERSION_1_6;
 }
 
 static void jni_generic(CPU* c, void* data) {
@@ -458,6 +465,7 @@ static void make_tables(void) {
         else if (!strcmp(name, "RegisterNatives")) h = jni_register_natives;
         else if (!strcmp(name, "UnregisterNatives")) h = jni_unregister_natives;
         else if (!strcmp(name, "GetJavaVM")) h = jni_get_java_vm;
+        if (!strcmp(name, "GetVersion")) h = jni_get_version;
         char* export = snx_format("JNIEnv::%s#%u", name, i);
         j.env_table[i] = i < 4 ? 0 : bridge_export(export, h, (void*)(uintptr_t)i);
         free(export);

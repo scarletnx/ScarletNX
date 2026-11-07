@@ -188,6 +188,18 @@ if(BUILD_TESTING)
     set_target_properties(snx-test-android-bionic PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
     target_compile_options(snx-test-android-bionic PRIVATE -Wall -Wextra -Werror -UNDEBUG)
     add_test(NAME android_bionic COMMAND snx-test-android-bionic)
+    # JNI as the bridge gives it to an app's code (bridge/jni.c), on the JVM of javac's JDK in the test's process: on
+    # Linux, where it runs, and not in a sanitizer build, whose runtime has not been tried under HotSpot
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT SNX_TEST_SANITIZERS)
+        add_executable(snx-test-android-jni "${PROJECT_SOURCE_DIR}/tests/android_jni.c")
+        target_link_libraries(snx-test-android-jni PRIVATE
+                              "$<LINK_GROUP:RESCAN,snx_android_program,snx_android_bridge>")
+        set_target_properties(snx-test-android-jni PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+        target_compile_options(snx-test-android-jni PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+        add_dependencies(snx-test-android-jni snx_android_framework)
+        add_test(NAME android_jni COMMAND snx-test-android-jni $<TARGET_PROPERTY:snx_android_framework,JAR_FILE>
+                                          "${snx_javac_home}")
+    endif()
     # the framework's members as an app's code links to them (a Java source-file program over the jar)
     add_test(NAME android_framework_api COMMAND "${Java_JAVA_EXECUTABLE}"
              "${PROJECT_SOURCE_DIR}/tests/android_framework_api.java" $<TARGET_PROPERTY:snx_android_framework,JAR_FILE>)
