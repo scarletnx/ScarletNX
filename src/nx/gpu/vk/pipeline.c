@@ -20,6 +20,7 @@
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/descriptor_heaps.h"
 #include "nx/gpu/vk/capture.h"
+#include "nx/gpu/vk/lookup_ways.h"
 #include "nx/gpu/vk/pipeline_file.h"
 #include "nx/gpu/vk/internal_spv.h"
 #include "nx/gpu/vk/tess_passthrough.h"
@@ -448,8 +449,8 @@ void vk_pipeline_init(void) {
 /* ------------------------------------------------------------ shaders */
 
 static VkSh* g_shh[1024];
-/* the shader last found for an address and key, two per set. It is checked against memory once per submit: unchanged
-   by write tracking since then, or else by the hash of its code */
+/* the shader last found for an address and key, VK_SHA_WAYS per set (lookup_ways.h). It is checked against memory
+   once per submit: unchanged by write tracking since then, or else by the hash of its code */
 typedef struct {
     u64 gva, gva_a, gw;
     u64 shader_generation;
@@ -457,7 +458,7 @@ typedef struct {
     int stage;
     VkSh* s;
 } ShA;
-static ShA g_sha[4096];
+static ShA g_sha[VK_SHA_WAYS << VK_SHA_SET_BITS];
 
 /* the program's own bytes: what the GPU holds beside them on their pages stays there */
 static int code_hash(u64 gva, u32 len, u64* hash) {
@@ -676,13 +677,11 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
     if (stage == ST_GS) mix ^= (u32)vk_hash(mask + 12, 8 * sizeof(u32));
     if (stage != ST_GS && rect) mix ^= (u32)vk_hash(mask + 12, 2 * sizeof(u32));
     if (queried) mix ^= (u32)vk_hash(mask + 14, SH_QUERY_WORDS * sizeof(u32));
-    /* the set from every bit of the key, mixed by multiplying: programs are 256-byte aligned, and a shift and xor of
-       their addresses left most sets unused */
     u64 hk = (gva * 0x9E3779B97F4A7C15ull) ^ (gva_a * 0xC2B2AE3D27D4EB4Full) ^ ((u64)mix << 24) ^ (u64)stage;
-    ShA* set = &g_sha[(u32)((hk * 0x9E3779B97F4A7C15ull) >> 52) & 4094];
+    ShA* set = &g_sha[vk_sha_set(hk) * VK_SHA_WAYS];
     ShA* ca = NULL;
     u32 epoch = vk_ww_epoch(); /* before the code is checked or read */
-    for (int w = 0; w < 2 && !ca; w++)
+    for (int w = 0; w < VK_SHA_WAYS && !ca; w++)
         if (set[w].s && set[w].gva == gva && set[w].gva_a == gva_a && set[w].stage == stage &&
             !memcmp(set[w].mask, mask, 20 * sizeof *mask) && !memcmp(set[w].mask + 21, mask + 21, 5 * sizeof *mask))
             ca = &set[w];
@@ -697,8 +696,11 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
             ca->gw = gpu_mem_generation();
         }
         if (same && vk_cb_reads_hold(&s->cbr, sh_cb_read)) return s;
-    } else /* the way used longest ago */
-        ca = !set[0].s || (set[1].s && (i32)(set[0].epoch - set[1].epoch) <= 0) ? &set[0] : &set[1];
+    } else { /* an empty way, else the one used longest ago */
+        ca = &set[0];
+        for (int w = 1; w < VK_SHA_WAYS && ca->s; w++)
+            if (!set[w].s || (i32)(set[w].epoch - ca->epoch) < 0) ca = &set[w];
+    }
     u32 wseen = vk_ww_now();
     u64 gw = gpu_mem_generation();
     u8* code = malloc(SH_CODE);
