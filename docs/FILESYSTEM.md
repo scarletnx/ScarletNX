@@ -76,9 +76,10 @@ IPC requests allow 0x300-byte paths excluding NUL. Host limits also apply.
 - `0100000000000802` (MiiModel), the Mii parts' shapes and textures a game that draws Miis builds their heads from, is
   generated when absent (`hle/filesystem/mii_model.c`): every shape a parametric surface (the head and the face's front
   per faceline, 24 hair forms in normal and cap form whose edge ends in pointed locks, tails for the twin-tail and
-  ponytail styles, noses, a beard, the caps, ties, bands, bow and clip of the hat parts, the noseline's and the
-  glasses' quads) and every texture drawn from distance functions (eyes with a catchlight, brows, mouths, glasses,
-  mustaches, beards, lines, make-up, the mole, the noselines, the hats), none of the console's own. Its six files
+  ponytail styles, the curled twin tails as drills, noses, a beard, the caps, ties, bands, bow and clip of the hat
+  parts, the noseline's and the glasses' quads) and every texture drawn from distance functions (eyes with a
+  catchlight, brows, mouths, glasses, mustaches, beards, lines, make-up, the mole, the noselines, the hats), none of
+  the console's own. Its six files
   (`NXTexture{Low,Mid}{Linear,SRGB}.dat`, `Shape{Mid,High}.dat`, the SRGB copies sharing their Linear ones' bytes, each
   shape with as many quads as fit the console's largest part of its kind in that file) keep the console's
   layout: the part tables with each kind's largest part and alignment, the console's list of parts (which are

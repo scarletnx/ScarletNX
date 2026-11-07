@@ -32,7 +32,7 @@ static const u8 mii_defaults[6][MII_FIELDS] = {
 /* The database the console keeps in its system save, here pre-baked and never changed: what a game asks of source
    Database is these eleven, before the defaults. Their fields are each in the range CharInfo::Verify takes, and their
    create ids are fixed, so a Mii a game saved is found again on the next run. The first three are ScarletNX's own, as
-   a player would make them: baguette girl (red-magenta curled twin tails, red eyes), leek girl (long teal twin tails,
+   a player would make them: baguette girl (red-magenta twin drills, red eyes), leek girl (long teal twin tails,
    teal eyes) and phone girl (a yellow ponytail on one side, amber eyes). Their colors are the Switch's common colors
    (0 to 99, past the 3DS's eight), the eight after them the defaults' with other parts in the 3DS numbering.
    Baguette girl, the first, is the Mii a game takes when it takes the database's first */
@@ -43,7 +43,7 @@ static const struct {
     char name[11];
     u8 f[MII_FIELDS];
 } mii_database[MII_DATABASE_COUNT] = {
-    /* curled twin tails (hair 112) in crimson (32), red eyes (15), a lashed round eye (28), an open grin (22) */
+    /* twin drills (hair 112) in crimson (32), red eyes (15), a lashed round eye (28), an open grin (22) */
     {{0xa9, 0x36, 0x9a, 0x34, 0xd9, 0xc5, 0x4e, 0x24, 0xa0, 0xe6, 0xe7, 0x4a, 0x77, 0xf6, 0xcd, 0x59},
      "Baguette",
      {0,  0, 0, 0,  112, 32, 0,  28, 15, 4, 3, 4, 2,  12, 1, 32, 4,  3,  6,  2, 10, 1, 4, 9, 22,

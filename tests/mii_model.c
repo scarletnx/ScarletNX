@@ -261,6 +261,18 @@ static void check_textures(const u8* f, u32 size, int mid) {
     }
 }
 
+/* vertex n of a hair part made as grids (past its head's grid, on a tail): the middle of its tail at its row */
+static void want_tail_axis(const Shape* grids, u32 n, float out[3]) {
+    u32 g = 0, row;
+    Tail tl;
+    Vec c;
+    while (g + 1 < grids->grids && n >= (grids->ns[g] + 1) * (grids->nt[g] + 1))
+        n -= (grids->ns[g] + 1) * (grids->nt[g] + 1), g++;
+    row = n / (grids->ns[g] + 1);
+    tl = tail_of_style(tail_styles[grids->variant - HAIR_VARIANTS].tail, g - 1);
+    c = tail_axis(&tl, (float)row / (float)grids->nt[g]);
+    out[0] = c.x, out[1] = c.y, out[2] = c.z;
+}
 /* a hair part's vertex (column i, row j of grid g) as the SDK reads it, from the inflated part in g_mii_model.raw */
 static void want_hair_at(const Shape* grids, u32 g, u32 i, u32 j, float out[3]) {
     u32 n = 0, h, c;
@@ -268,17 +280,46 @@ static void want_hair_at(const Shape* grids, u32 g, u32 i, u32 j, float out[3]) 
     n += j * (grids->ns[g] + 1) + i;
     for (c = 0; c < 3; c++) out[c] = want_half(snx_ld_le16(g_mii_model.raw + 8 * n + 2 * c));
 }
-/* the hair of a shape file (q Q_MID or Q_HIGH) as the SDK reads it: every style's fringe ends in pointed locks, its
-   edge's height going up and down across the front, where an edge without them only rises toward the middle */
+/* the hair of a shape file (q Q_MID or Q_HIGH) as the SDK reads it. A drill style's tails (112) are drills: down each,
+   at any angle around it, its radius drops at the bottom edge of each turn of its ringlet, at least three of them, and
+   the turns wind down (the drops of the opposite side fall between this side's, where rings would line up); a plain
+   tail's radius only narrows. Every style's fringe ends in pointed locks: its edge's height goes up and down across
+   the front, where an edge without them only rises toward the middle */
 static void check_hair(const u8* f, u32 q) {
     static const u32 styles[3] = {112, 126, 0};
     u32 s;
     for (s = 0; s < 3; s++) {
-        u32 style = styles[s], e = 4 + 12 + 12 + 132 * 4 + style, i, tips = 0;
+        u32 style = styles[s], e = 4 + 12 + 12 + 132 * 4 + style, g, i, j, tips = 0;
         const u8* t = f + 0x6c + 0x58 * e;
         Shape sh = shape_in(S_HAIR_NORMAL, hair_variant(style), q);
         float edge[4 * HAIR_LOCKS + 1], lo = 1e9f, hi = -1e9f;
         CHECK(want_inflate(f + snx_ld_le32(t), snx_ld_le32(t + 8), g_mii_model.raw, snx_ld_le32(t + 4)));
+        for (g = 1; g < sh.grids; g++) {
+            Tail tl = tail_of_style(tail_styles[sh.variant - HAIR_VARIANTS].tail, g - 1);
+            u32 drops[2] = {0, 0}, first[2] = {0, 0}, side;
+            for (side = 0; side < 2; side++) { /* the column at angle 0 and the one opposite */
+                float last = 0;
+                i = side * sh.ns[g] / 2;
+                for (j = 0; j <= sh.nt[g]; j++) {
+                    float p[3], r;
+                    Vec c = tail_axis(&tl, (float)j / (float)sh.nt[g]);
+                    want_hair_at(&sh, g, i, j, p);
+                    r = vlen(vsub(vec(p[0], p[1], p[2]), c));
+                    if (j && r < 0.8f * last && (float)j < 0.85f * (float)sh.nt[g]) { /* before its point narrows */
+                        if (!drops[side]) first[side] = j;
+                        drops[side]++;
+                    }
+                    if (style != 112) CHECK(!j || r <= last + 0.05f);
+                    last = r;
+                }
+            }
+            if (style == 112) {
+                if (drops[0] < (q ? 3u : 2u) || drops[1] < (q ? 3u : 2u) || first[0] == first[1])
+                    fprintf(stderr, "%s hair 112 tail %u: drops %u and %u, first at rows %u and %u\n",
+                            q ? "High" : "Mid", g, drops[0], drops[1], first[0], first[1]);
+                CHECK(drops[0] >= (q ? 3u : 2u) && drops[1] >= (q ? 3u : 2u) && first[0] != first[1]);
+            }
+        }
         /* the edge across the front, an eighth of the way around each side of its middle: its tips (lower than both
            neighbors) */
         for (i = 0; i <= sh.ns[0]; i++) {
@@ -322,9 +363,12 @@ static void check_shapes(const u8* f, u32 size, int high) {
         for (i = 0; i < want_shape_counts[k]; i++, e++) {
             const u8* t = f + 0x6c + 0x58 * e;
             u32 off = snx_ld_le32(t), raw = snx_ld_le32(t + 4), stored = snx_ld_le32(t + 8), a, nv, at = 0, n,
-                inward = 0;
+                inward = 0, tail_inward = 0;
             u32 aoff[5], asz[5], ioff = snx_ld_le32(t + 0x38), isz = snx_ld_le32(t + 0x3c);
             int hair = k == 7 || k == 8;
+            /* hair's grids as the generator made them: the head's, then its tails' */
+            Shape grids = shape_in(k, shape_variant(k, i), (u32)high);
+            u32 head_nv = (grids.ns[0] + 1) * (grids.nt[0] + 1);
             float box[6], lo[3] = {1e9f, 1e9f, 1e9f}, hi[3] = {-1e9f, -1e9f, -1e9f};
             if (!want_shape_present(k, i)) {
                 CHECK(raw == 0 && stored == 0);
@@ -362,8 +406,13 @@ static void check_shapes(const u8* f, u32 size, int high) {
                     if (pos[c] > hi[c]) hi[c] = pos[c];
                 }
                 CHECK(want_half(snx_ld_le16(p + 6)) == 1.0f && nw >> 30 == 1);
-                /* the parts around the head face out of it, from its middle (0, 30, 2) */
-                if (k <= 1 || k == 3 || k == 4 || k == 7 || k == 8)
+                /* the parts around the head face out of it, from its middle (0, 30, 2); a tail out of its own middle */
+                if (hair && n >= head_nv) {
+                    float around[3];
+                    want_tail_axis(&grids, n, around);
+                    tail_inward +=
+                        nx * (pos[0] - around[0]) + ny * (pos[1] - around[1]) + nz * (pos[2] - around[2]) <= 0;
+                } else if (k <= 1 || k == 3 || k == 4 || k == 7 || k == 8)
                     inward += nx * pos[0] + ny * (pos[1] - 30) + nz * (pos[2] - 2) <= 0;
                 CHECK(fabsf(sqrtf(nx * nx + ny * ny + nz * nz) - 1) < 0.02f);
                 if (k == 2) { /* the mask: the SDK's composed texture 100 units across, its top 80.35 + the rise */
@@ -378,11 +427,11 @@ static void check_shapes(const u8* f, u32 size, int high) {
                     CHECK(fabsf(d) < 0.08f && tg[3] == 127);
                 }
             }
-            /* hair with tails (7, 8) is part tubes, whose sides toward the head face it; a hat part (3, 4) that is no
-               cap (34 and 57 are) is a tie, band, bow or clip, its facing checked by its triangles alone */
-            if (k == 7 || k == 8)
-                CHECK(inward * 10 <= nv * 3);
-            else if ((k != 3 && k != 4) || i == 34 || i == 57)
+            /* the head's hair faces out of the head and a tail out of its middle; a hat part (3, 4) that is no cap (34
+               and 57 are) is a tie, band, bow or clip, its facing checked by its triangles alone */
+            if (hair) {
+                CHECK(head_nv <= nv && inward * 20 <= head_nv && tail_inward * 20 <= nv - head_nv);
+            } else if ((k != 3 && k != 4) || i == 34 || i == 57)
                 CHECK(inward * 20 <= nv);
             for (a = 0; a < 3; a++) /* the box holds the vertices, to the halves' precision */
                 CHECK(fabsf(box[a] - lo[a]) < 0.05f && fabsf(box[3 + a] - hi[a]) < 0.05f);
@@ -398,6 +447,7 @@ static void check_shapes(const u8* f, u32 size, int high) {
                     left += x < -26 && y < 30, right += x > 26 && y < 30;
                 }
                 if (i == 126) CHECK(lo[1] < 0 && left > 20 && right > 20);
+                if (i == 112) CHECK(lo[1] < -5 && left > 20 && right > 20 && hi[0] > 35 && lo[0] < -35); /* drills */
                 if (i == 84) CHECK((left > 20) != (right > 20));
                 if (i == 0 || i == 33) CHECK(left == 0 && right == 0);
             }

@@ -161,16 +161,17 @@ static u32 tex_variant(u32 kind, u32 i) {
 }
 #define HAIR_VARIANTS 24u
 #define NOSE_VARIANTS 6u
-/* the hair styles with tails, the console's part list's: twin tails high on the sides, low behind the ears, curled,
-   one ponytail on the side or at the back; each its own hair shape (variants past HAIR_VARIANTS), over the shell
-   variant shell, with the ties its hat part is (for those of them the part list gives a hat) */
-enum { TAIL_TWIN_HIGH = 1, TAIL_TWIN_LOW, TAIL_TWIN_CURL, TAIL_SIDE, TAIL_BACK };
+/* the hair styles with tails, the console's part list's: twin tails high on the sides, low behind the ears, twin
+   drills (the curled ones: a ringlet wound into a cone), one ponytail on the side or at the back; each its own hair
+   shape (variants past HAIR_VARIANTS), over the shell variant shell, with the ties its hat part is (for those of them
+   the part list gives a hat) */
+enum { TAIL_TWIN_HIGH = 1, TAIL_TWIN_LOW, TAIL_TWIN_DRILL, TAIL_SIDE, TAIL_BACK };
 #define TAIL_STYLES 10u
 static const struct {
     u8 style, tail, shell;
-} tail_styles[TAIL_STYLES] = {{9, TAIL_BACK, 3},       {19, TAIL_TWIN_LOW, 6},   {29, TAIL_TWIN_CURL, 6},
-                              {78, TAIL_TWIN_HIGH, 9}, {84, TAIL_SIDE, 9},       {97, TAIL_BACK, 4},
-                              {104, TAIL_TWIN_LOW, 7}, {112, TAIL_TWIN_CURL, 6}, {126, TAIL_TWIN_HIGH, 7},
+} tail_styles[TAIL_STYLES] = {{9, TAIL_BACK, 3},       {19, TAIL_TWIN_LOW, 6},    {29, TAIL_TWIN_DRILL, 6},
+                              {78, TAIL_TWIN_HIGH, 9}, {84, TAIL_SIDE, 9},        {97, TAIL_BACK, 4},
+                              {104, TAIL_TWIN_LOW, 7}, {112, TAIL_TWIN_DRILL, 6}, {126, TAIL_TWIN_HIGH, 7},
                               {130, TAIL_BACK, 5}};
 static int tail_of(u32 style) {
     u32 k;
@@ -409,25 +410,27 @@ static Hair hair_of(u32 v) {
     }
 }
 /* a tail of a tail style (k 0 or 1 of a pair): where it leaves the hair, the way out, how long it falls, its
-   thickness at the root and the tip, and whether it curls */
+   thickness at the root and the tip, and for a drill the turns its ringlet winds down its length (0 for a plain tail) */
 typedef struct {
     Vec root, out;
-    float fall, r0, r1, curl;
+    float fall, r0, r1, turns;
 } Tail;
 static Tail tail_of_style(u32 tail, u32 k) {
     float side = k ? -1.0f : 1.0f;
     Tail t;
-    t.curl = 0;
+    t.turns = 0;
     switch (tail) {
         case TAIL_TWIN_HIGH: /* long, from high on the sides */
             t.root = vec(side * 28.0f, 52.0f, -8.0f), t.out = vec(side * 9.0f, 2.0f, -4.0f);
             t.fall = 64.0f, t.r0 = 4.4f, t.r1 = 1.8f;
             break;
-        case TAIL_TWIN_LOW:
-        case TAIL_TWIN_CURL: /* from behind the ears, the curled ones in rings down their length */
+        case TAIL_TWIN_LOW: /* from behind the ears */
             t.root = vec(side * 21.0f, 34.0f, -16.0f), t.out = vec(side * 5.0f, 0, -3.0f);
-            t.fall = tail == TAIL_TWIN_CURL ? 40.0f : 34.0f, t.r0 = 3.8f, t.r1 = tail == TAIL_TWIN_CURL ? 2.4f : 1.4f;
-            t.curl = tail == TAIL_TWIN_CURL ? 0.35f : 0;
+            t.fall = 34.0f, t.r0 = 3.8f, t.r1 = 1.4f;
+            break;
+        case TAIL_TWIN_DRILL: /* from high behind the ears, thick, wound down to a point below the shoulders */
+            t.root = vec(side * 18.0f, 47.0f, -11.0f), t.out = vec(side * 14.0f, 0, -1.0f);
+            t.fall = 56.0f, t.r0 = 9.5f, t.r1 = 2.0f, t.turns = 4.0f;
             break;
         case TAIL_SIDE: /* one, high on one side */
             t.root = vec(25.0f, 54.0f, -12.0f), t.out = vec(8.0f, 3.0f, -4.0f);
@@ -441,6 +444,19 @@ static Tail tail_of_style(u32 tail, u32 k) {
     return t;
 }
 static u32 tail_count(u32 tail) { return tail == TAIL_SIDE || tail == TAIL_BACK ? 1 : 2; }
+/* a tail's radius at t along it (0 its root, 1 its tip) and angle a around it. A drill swells from a narrow root
+   inside the hair to its thickest a seventh of the way down, then narrows to a point; each turn of its ringlet is a
+   cone, narrow at its top and wide at its bottom, the next one starting under it, and the turn a point is on goes
+   down as a goes around, so the edges between them wind down the tail */
+static float tail_radius(const Tail* tl, float t, float a) {
+    float env, f;
+    if (tl->turns == 0) return mixf(tl->r0, tl->r1, t);
+    env =
+        mixf(tl->r0, tl->r1, t * t) * mixf(0.2f, 1.0f, smooth(0.0f, 0.14f, t)) * (1.0f - 0.8f * smooth(0.82f, 1.0f, t));
+    f = tl->turns * t + a / (2 * PI_F);
+    f -= floorf(f);
+    return env * (0.45f + 0.55f * sqrtf(smooth(0.0f, 0.82f, f)) * (1.0f - smooth(0.82f, 1.0f, f)));
+}
 /* the tail's middle at t (0 its root, 1 its tip): out, then falling, a little back */
 static Vec tail_axis(const Tail* tl, float t) {
     float o = sinf(clampf(t * 2.5f, 0, 1) * PI_F * 0.5f);
@@ -506,8 +522,7 @@ static Vec shape_at(const Shape* sh, float s, float t) {
     Head h;
     if ((sh->kind == S_HAIR_NORMAL || sh->kind == S_HAIR_CAP) && sh->g) { /* a tail */
         Tail tl = tail_of_style(tail_styles[sh->variant - HAIR_VARIANTS].tail, sh->g - 1);
-        float r = mixf(tl.r0, tl.r1, t) * (1.0f + tl.curl * sinf(t * 10.0f * PI_F));
-        return tail_ring(&tl, t, s * 2 * PI_F, r);
+        return tail_ring(&tl, t, s * 2 * PI_F, tail_radius(&tl, t, s * 2 * PI_F));
     }
     if ((sh->kind == S_HAT_NORMAL || sh->kind == S_HAT_CAP) && sh->variant) return hat_part_at(sh, s, t);
     switch (sh->kind) {
@@ -685,8 +700,11 @@ static Shape shape_of(u32 kind, u32 variant) {
     }
     sh.grids = grids;
     for (g = 0; g < grids; g++) {
-        sh.ns[g] = g && (kind == S_HAIR_NORMAL || kind == S_HAIR_CAP) ? 10 : ns;
-        sh.nt[g] = g && (kind == S_HAIR_NORMAL || kind == S_HAIR_CAP) ? 12 : nt;
+        int tail = g && (kind == S_HAIR_NORMAL || kind == S_HAIR_CAP);
+        /* a drill's turns take a dozen quads around it and a dozen down each */
+        int drill = tail && tail_styles[variant - HAIR_VARIANTS].tail == TAIL_TWIN_DRILL;
+        sh.ns[g] = tail ? (drill ? 12 : 10) : ns;
+        sh.nt[g] = tail ? (drill ? 48 : 12) : nt;
     }
     return sh;
 }
