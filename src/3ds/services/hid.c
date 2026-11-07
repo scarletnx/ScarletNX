@@ -7,6 +7,7 @@
    Memory. The input is the player's (input/input.c), the touch screen and a gamepad's motion sensors included; with no
    gamepad that has them, the sensors are at rest. */
 #include "3ds/services/hid.h"
+#include "3ds/board/clock.h"
 #include "3ds/input/input.h"
 #include "3ds/runtime/internal.h"
 #include "common/utilities/bits.h"
@@ -63,7 +64,7 @@ static uint32_t get32(SnxCtrProcess* p, uint32_t offset) {
 }
 /* the system tick, as svcGetSystemTick counts it */
 static uint64_t ticks(const SnxCtrProcess* p) {
-    double elapsed = snx_seconds() - p->clock_origin;
+    double elapsed = snx_ctr_clock_seconds() - p->clock_origin;
     return elapsed > 0 ? (uint64_t)(elapsed * HID_TICK_HZ) : 0;
 }
 /* The section's next index, written once its entry is: at a wrap to 0 the ticks move on, the current one becoming the

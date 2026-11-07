@@ -7,6 +7,7 @@
    (ZL bit 14, ZR 15, the C-stick's right, left, up and down 24 to 27), what it gained and lost since the entry before,
    and the C-stick's position, 0x9c at its rim. The input is the player's (input/input.c). */
 #include "3ds/services/irrst.h"
+#include "3ds/board/clock.h"
 #include "3ds/input/input.h"
 #include "3ds/runtime/internal.h"
 #include "3ds/services/hid.h"
@@ -59,7 +60,7 @@ static void sample(SnxCtrProcess* p) {
     if (!index) {
         put32(p, 8, get32(p, 0));
         put32(p, 12, get32(p, 4));
-        double elapsed = snx_seconds() - p->clock_origin;
+        double elapsed = snx_ctr_clock_seconds() - p->clock_origin;
         uint64_t now = elapsed > 0 ? (uint64_t)(elapsed * IRRST_TICK_HZ) : 0;
         put32(p, 0, (uint32_t)now);
         put32(p, 4, (uint32_t)(now >> 32));

@@ -31,6 +31,7 @@ def main():
     assert '--gamepad_swap_ab=1' in help_text and '--gamepad_deadzone=N' in help_text
     assert '--gamepad_map=MAP' in help_text and '--touch=N' in help_text
     assert '--vsync=0' in help_text and '--fullscreen=1' in help_text and '--anisotropy=N' in help_text
+    assert '--fps_limit=N' in help_text
     run(['--board-info', '--extract-container'], 2, 'Usage:')
     run(['-x', '-r', 'game.cia'], 2, 'Usage:')
     run(['-r', '--max-blocks', '5', 'game.cia'], 2, 'Usage:')
@@ -88,6 +89,19 @@ def main():
     # and the Display table's fullscreen, never its others
     run(['--board-info', '--fullscreen=1'], 0, 'Old 3DS')
     run(['--board-info', '--docked=0'], 2, 'unknown setting: --docked=0')
+    # and the Performance table's fps_limit, read as the Switch reads it, a value not taken as given said
+    out = run(['--board-info', '--fps_limit=120'], 0, 'Old 3DS')
+    assert 'fps_limit' not in out, out
+    run(
+        ['--board-info', '--fps_limit=5'],
+        0,
+        'settings: fps_limit=5 is not game, 0 or a whole number of frames a second from 10 to 1000: it takes 10',
+    )
+    run(
+        ['--board-info', '--fps_limit=fast'],
+        0,
+        'settings: fps_limit=fast is not game or a number of frames a second: it keeps game',
+    )
     # an older version's packet trace (docs/DEPRECATIONS.md): still ctr_uds_trace=1, under the command line's own
     old = 'SNX_3DS_UDS_PACKET_TRACE'
     run(

@@ -11,6 +11,7 @@
    the window and the dumps show it that way round. A 3D render scaled by its screen's resolution setting is drawn
    from its render target while the GPU keeps that newer than memory. */
 #include "3ds/gpu/present.h"
+#include "3ds/board/clock.h"
 #include "3ds/input/input.h"
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/shaders/present_spv.h"
@@ -374,7 +375,8 @@ void snx_ctr_present_fullscreen(void) {
     if (g_present.up && v && v->host.window) fullscreen(v->host.window, true);
 }
 /* The window's own keys, as a Switch game's (backend/sdl3.c): F11, or Alt+Enter, switches the window it is pressed in
-   to fullscreen and back; not with Ctrl or the system key, the desktop's */
+   to fullscreen and back, and F4 turns the FPS limit off and back on (board/clock.h); not with Ctrl or the system
+   key, the desktop's, nor F4 with Alt, which closes a window */
 static void key_event(const SDL_Event* event) {
     if (event->type != SDL_EVENT_KEY_DOWN || event->key.repeat || (event->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)))
         return;
@@ -382,6 +384,15 @@ static void key_event(const SDL_Event* event) {
     SDL_Window* window = SDL_GetWindowFromID(event->key.windowID);
     if (window && ((event->key.key == SDLK_F11 && !alt) || (event->key.key == SDLK_RETURN && alt)))
         fullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
+    else if (event->key.key == SDLK_F4 && !alt) {
+        int pace = snx_ctr_clock_toggle();
+        if (pace == SNX_CTR_PACE_NONE)
+            fprintf(stderr, "FPS limit: off\n");
+        else if (pace == SNX_CTR_PACE_CONSOLE)
+            fprintf(stderr, "FPS limit: the game's pace\n");
+        else
+            fprintf(stderr, "FPS limit: %d\n", pace);
+    }
 }
 static void pump(void) {
     SDL_Event event;
