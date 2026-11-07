@@ -173,7 +173,7 @@ writes its numbers with `snx_ld_le32`, `snx_st_le32` and their kin (`common/util
 (`c->out`) in a `@fallback` or a dispatcher of its own, while `out32` takes a host number. On a little-endian host
 every conversion compiles to nothing.
 
-It returns the result: 0, or an `RC(module, description)`. `I_new` makes an object whose dispatcher is the generated
+It returns the result: 0, or one of `hle/result_codes.inc` (Results, below). `I_new` makes an object whose dispatcher is the generated
 one. An object that needs a lock around every command, or a check before each one, has a dispatcher of its own that
 calls `I_dispatch`: fs.c's `file_disp`, `dir_disp` and `fs_disp`, ldr.c's `ro_dispatch`. `I_register` registers a
 constructor under the interface's service names, in `services.c` or in the service's own init (fs, nvdrv, hid, vi,
@@ -194,9 +194,23 @@ through it.
 
 ## Results
 
-A result is a 32-bit value: 0 for success, otherwise a module in bits 0 to 8 and a description from bit 9, built with
-`RC(module, description)` (`RC(1, 123)` is the kernel's SessionClosed, 0xF601). `hle/result.h`, which `ipc.h`
-includes, holds `RC` and `RC_OK` with helpers in the style of Atmosphère's, written anew in C99:
+A result is a 32-bit value: 0 for success, otherwise a module in bits 0 to 8 and a description from bit 9,
+`RC(module, description)` (`RC(1, 123)` is the kernel's SessionClosed, 0xF601), which the console shows as 2000 + the
+module, then the description: 2001-0123.
+
+Every result the runtime answers is a row of `hle/result_codes.inc`, once, whichever services answer it:
+`SNX_RESULT(ACCOUNT, MEMBERSHIP_REQUIRED, 5113, MembershipRequired, SWITCHBREW)` is the constant
+`SNX_RC_ACCOUNT_MEMBERSHIP_REQUIRED`, 2124-5113. The module goes by its name in Switchbrew's Error codes
+(`SNX_RESULT_MODULE(ACCOUNT, 124)`), the result by the name public sources give it, spelled as they spell it, with
+the first source that names it: Switchbrew, then Ryubing's `ResultNames.cs`, the service's `ResultCode.cs` in
+Ryubing, Eden; `NONE` marks a name of ours, for a result no public source has. A result a service needs that has no
+row gets one there, never a `#define` or an `RC(...)` of its own. `snx_result_info(rc)` gives a result's row, its
+name and source, and `snx_result_text` writes it as the console shows it with its name, "2124-5113
+MembershipRequired", for a log line or the error applet. `tests/result_codes.c` (`ctest -R result_codes`) checks each
+row is there once and named by the rule, and the lookup.
+
+`hle/result.h`, which `ipc.h` includes, holds `RC`, `RC_OK`, the table's constants and helpers in the style of
+Atmosphère's, written anew in C99:
 
 | Macro | What it does |
 | --- | --- |
@@ -209,5 +223,5 @@ includes, holds `RC` and `RC_OK` with helpers in the style of Atmosphère's, wri
 Each statement macro is a single statement (`do { } while (0)`), so it is safe as the body of an `if` or `else`
 without braces, and evaluates each argument at most once. `R_TRY` keeps the result in a 32-bit `unsigned int` in a
 block of its own, which converts back to the function's return type, `int` for a handler or `u32` for the kernel's
-`svc_` functions. The header includes nothing, so strict C99 code can use it. `tests/result_macros.c`
+`svc_` functions. The header includes only `<stddef.h>` and the table, so strict C99 code can use it. `tests/result_macros.c`
 (`ctest -R result_macros`) builds them with `-std=c99 -pedantic-errors`.

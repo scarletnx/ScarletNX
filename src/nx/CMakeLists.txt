@@ -44,7 +44,7 @@ if(APPLE)
     target_link_options(snx_core INTERFACE "LINKER:-U,_snx_module_static")
 endif()
 snx_component(kernel hle/hle.c hle/kernel/kernel.c hle/kernel/thread.c hle/kernel/sync.c hle/svc/svc.c hle/svc/svc_mem.c hle/kernel/debug.c
-              memory/mem.c memory/own.c hle/kernel/ipc.c)
+              memory/mem.c memory/own.c hle/kernel/ipc.c hle/result.c)
 # the SVC dispatch, generated from hle/svc/hos.svc
 include("${PROJECT_SOURCE_DIR}/cmake/svcgen.cmake")
 snx_svcgen(snx_kernel)
