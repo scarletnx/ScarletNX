@@ -14,7 +14,7 @@
    src/Ryujinx.HLE/HOS/Services/Mii/Helper.cs and Types/StoreData.cs:
    SPDX-FileCopyrightText: Ryujinx Team and Contributors (MIT) */
 /* The smaller services: apm, lm, pctl, friend, ns, prepo, caps, ectx, psm, fatal, csrng, spl, mm, nfp, nfc, bcat,
-   nim, aoc, irs, mii, btm and audin, each as a console offline, with no NFC device or microphone, and the add-on
+   nim, aoc, irs, mii, btm, audin and olsc, each as a console offline, with no NFC device or microphone, and the add-on
    content the data folder holds */
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/hle.h"
@@ -1318,6 +1318,67 @@ static int nn_prepo_detail_ipc_IPrepoService_GetTransmissionStatus(SvcObj* self,
     R_SUCCEED();
 }
 
+/* ============================================================ olsc:u: no online service */
+/* Ryubing's NotInitialized and NullArgument (Services/Olsc/ResultCode.cs) */
+#define OLSC_NULL_ARGUMENT   RC(179, 100)
+#define OLSC_NOT_INITIALIZED RC(179, 101)
+/* what an operation on the online service ends with: the service is not there, which the console says as "not
+   available right now" (acc.c's answer for the online account's pages, and rEden's for a cloud olsc cannot reach) */
+#define OLSC_UNAVAILABLE     RC(124, 5249)
+
+/* a command for a user, on a session Initialize was called on (u[0]) */
+static int olsc_check(const SvcObj* self, const nn_account_Uid* uid) {
+    static const u8 none[sizeof uid->v] = {0};
+    R_UNLESS(self->u[0], OLSC_NOT_INITIALIZED);
+    R_UNLESS(memcmp(uid->v, none, sizeof none), OLSC_NULL_ARGUMENT);
+    R_SUCCEED();
+}
+static int nn_olsc_srv_IOlscServiceForApplication_Initialize(SvcObj* self, u64 pid) {
+    (void)pid;
+    self->u[0] = 1;
+    R_SUCCEED();
+}
+/* done when it is made, with the online service not there: its result (u[0]) is what GetResult answers, the game
+   told the license could not be checked */
+static int nn_olsc_srv_IOlscServiceForApplication_VerifySaveDataBackupLicenseAsync(SvcObj* self,
+                                                                                   const nn_account_Uid* uid,
+                                                                                   SvcObj** result) {
+    R_TRY(olsc_check(self, uid));
+    WARN_LIMIT(4, "olsc: the game checks the license for save data backups, which needs the online service: it ends "
+                  "with 2124-5249, not available right now\n");
+    *result = nn_olsc_srv_IAsyncResult_new();
+    (*result)->u[0] = OLSC_UNAVAILABLE;
+    R_SUCCEED();
+}
+/* 0 whatever the game set: no backup runs here, and how the console encodes the setting is not public (0 is Eden's
+   answer, Ryubing's 1 and 2 are marked as guesses) */
+static int nn_olsc_srv_IOlscServiceForApplication_GetSaveDataBackupSetting(SvcObj* self, const nn_account_Uid* uid,
+                                                                           nn_olsc_SaveDataBackupSetting* setting) {
+    *setting = 0;
+    return olsc_check(self, uid);
+}
+static int nn_olsc_srv_IOlscServiceForApplication_SetSaveDataBackupSettingEnabled(SvcObj* self,
+                                                                                  const nn_account_Uid* uid,
+                                                                                  u8 enabled) {
+    (void)enabled;
+    return olsc_check(self, uid);
+}
+static int nn_olsc_srv_IAsyncResult_GetResult(SvcObj* self) { return (int)self->u[0]; }
+/* nothing left to stop: the operation ended when it was made */
+static int nn_olsc_srv_IAsyncResult_Cancel(SvcObj* self) {
+    (void)self;
+    R_SUCCEED();
+}
+static int nn_olsc_srv_IAsyncResult_IsAvailable(SvcObj* self, u8* available) {
+    (void)self;
+    *available = 1;
+    R_SUCCEED();
+}
+static int nn_olsc_srv_IAsyncResult_GetSystemEvent(SvcObj* self, u32* event) {
+    (void)self;
+    return new_event(event, "olsc async result", 1);
+}
+
 /* ============================================================ the services' objects */
 SvcObj* new_apm(void) { return nn_apm_IManager_new(); }
 SvcObj* new_lm(void) { return nn_lm_ILogService_new(); }
@@ -1343,6 +1404,7 @@ SvcObj* new_btmu(void) { return nn_btm_IBtmUser_new(); }
 SvcObj* new_audin(void) { return nn_audio_detail_IAudioInManager_new(); }
 SvcObj* new_ngc(void) { return nn_ngc_detail_IService_new(); }
 SvcObj* new_ngct(void) { return nn_ngct_detail_IService_new(); }
+SvcObj* new_olsc(void) { return nn_olsc_srv_IOlscServiceForApplication_new(); }
 /* the functions a save state may hold of this file (state_fns.h) */
 STATE_FN_TABLE(g_misc_state_fns,
                STATE_FN("misc", nfc_user_destroy));

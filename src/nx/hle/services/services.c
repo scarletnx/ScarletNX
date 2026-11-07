@@ -105,6 +105,7 @@ void svc_core_init(void) {
     nn_audio_detail_IAudioInManager_register(new_audin);
     nn_ngc_detail_IService_register(new_ngc);
     nn_ngct_detail_IService_register(new_ngct);
+    nn_olsc_srv_IOlscServiceForApplication_register(new_olsc);
 
     /* the audio renderer's 5 ms frames and the audio outs' buffers (audio.c), from the start as on the console */
     if (plat_thread(audio_clock, NULL, (size_t)8 << 20)) fatal("Could not start the audio clock's thread");

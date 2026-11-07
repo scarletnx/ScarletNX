@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 # The smaller services (misc.c): apm, lm, pctl, friend, ns, prepo, psm, fatal, csrng, mm, nfp, caps, bcat, nim, aoc,
-# irs, mii, ectx, spl, btm, audin. Names and argument types from Switchbrew, libnx and the SDK's own symbols
+# irs, mii, ectx, spl, btm, audin, olsc. Names and argument types from Switchbrew, libnx and the SDK's own symbols
 
 # ================================================================ apm
 type nn::apm::PerformanceMode = i32;
@@ -464,4 +464,22 @@ interface nn::ngc::detail::IService is ngc:u {
 interface nn::ngct::detail::IService is ngct:u {
     [0] Match(buffer<u8, 9> text) -> b8 matched;
     [1] Filter(buffer<u8, 9> text, buffer<u8, 0xa> filtered);
+}
+
+# ================================================================ olsc:u: the save data cloud
+# each user's backup setting for the game, and the license check before a game turns backups on, which needs the
+# online service: never there (misc.c's olsc). The layouts are the SDK's nn::olsc client's
+type nn::olsc::SaveDataBackupSetting = u8;
+interface nn::olsc::srv::IOlscServiceForApplication is olsc:u {
+    [0] Initialize(pid);
+    [10] VerifySaveDataBackupLicenseAsync(nn::account::Uid uid) -> object<nn::olsc::srv::IAsyncResult> result;
+    [13] GetSaveDataBackupSetting(nn::account::Uid uid) -> nn::olsc::SaveDataBackupSetting setting;
+    [14] SetSaveDataBackupSettingEnabled(nn::account::Uid uid, b8 enabled);
+}
+# an operation on the online service, done when it is made: its event signaled, and its result the one it ended with
+interface nn::olsc::srv::IAsyncResult {
+    [0] GetResult();
+    [1] Cancel();
+    [2] IsAvailable() -> b8 available;
+    [3] GetSystemEvent() -> handle<copy, event> event;
 }
