@@ -15,6 +15,7 @@
      ScePerf allocates the flag (zeroed) and stores its address; profiling capture is never on, so the flag is 0. */
 #define NID_SCE_LIBCPARAM     0xdf084dfau
 #define NID_LIBPERF_FLAG_PTR  0x936a5f31u
+#define NID_LIBC_TLS_GET_ADDR 0xbc529b7bu
 
 uint32_t vita_arg(VitaProcess* p, VitaThread* t, unsigned n) {
     return n < 4 ? t->cpu.r[n] : vita_read32(p, t->cpu.r[13] + (n - 4) * 4);
@@ -58,7 +59,11 @@ void vita_hle_call(VitaProcess* p, VitaThread* t, uint32_t index) {
     const VitaImport* import = &p->image.imports[index];
     ++p->hle_calls;
     uint32_t r[4] = {t->cpu.r[0], t->cpu.r[1], t->cpu.r[2], t->cpu.r[3]};
-    const VitaExport* e = vita_export_find(&p->image, import->library_nid, import->nid);
+    /* SceLibc's resolver needs a registered module table. Handle the main image's TLS directly; the HLE libc copies
+       its PT_TLS data per thread, while descriptors for other modules still use their guest export. */
+    bool main_tls = import->nid == NID_LIBC_TLS_GET_ADDR && p->image.tls_memsz && vita_mapped(p, r[0], 8) &&
+                    vita_read32(p, r[0]) == UINT32_MAX;
+    const VitaExport* e = main_tls ? NULL : vita_export_find(&p->image, import->library_nid, import->nid);
     if (e) {
         vita_hle_guest_call(p, t, e->address, r, 4, vita_export_return, NULL);
         if (g_settings.vita_import_trace > 1)
