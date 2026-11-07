@@ -361,14 +361,16 @@ static void test_controls_skin(void) {
 
 /* controls_opacity, deprecated, in an old .ini: read while controls_alpha has no value, as half of it rounded up (the
    built-in art is twice as opaque now, so the look stays), said once; the file written with controls_alpha and
-   controls_opacity under [Deprecated]. A value that is not a whole number leaves controls_alpha its default, said */
+   controls_opacity under [Deprecated]. 50, the default it had last, and a value that is not a whole number leave
+   controls_alpha its default, said */
 static void test_controls_opacity_old(void) {
     char *text, *again;
     CHECK(options_controls_opacity_old("100") == 50 && options_controls_opacity_old("75") == 38 &&
           options_controls_opacity_old("0") == 0 && options_controls_opacity_old("150") == 50 &&
-          options_controls_opacity_old("-3") == 0);
-    CHECK(options_controls_opacity_old("most") == -1 && options_controls_opacity_old("50.5") == -1 &&
-          options_controls_opacity_old("") == -1);
+          options_controls_opacity_old("-3") == 0 && options_controls_opacity_old("40") == 20);
+    CHECK(options_controls_opacity_old("50") == -1); /* the default the .ini files made since it was had written */
+    CHECK(options_controls_opacity_old("most") == -2 && options_controls_opacity_old("50.5") == -2 &&
+          options_controls_opacity_old("") == -2);
     g_test.write = 1;
     text = open_ini("[On-screen controls]\ncontrols=1\ncontrols_opacity=100\n");
     CHECK(!strcmp(g_test.alpha, "50"));
@@ -385,6 +387,14 @@ static void test_controls_opacity_old(void) {
     text = open_ini("[On-screen controls]\ncontrols_opacity=30\n");
     CHECK(!strcmp(g_test.alpha, "15") && strstr(g_test.said, "settings: controls_opacity=30, deprecated, is "
                                                              "controls_alpha=15 now"));
+    free(text);
+    /* 50, controls_opacity's last default, which a new game's .ini wrote: controls_alpha its own, 50, not 25 */
+    snprintf(g_test.alpha, sizeof g_test.alpha, "%s", "not given");
+    text = open_ini("[On-screen controls]\ncontrols_opacity=50\n");
+    CHECK(!strcmp(g_test.alpha, "50"));
+    CHECK(strstr(g_test.said, "settings: controls_opacity=50, deprecated, was its default: controls_alpha takes its "
+                              "own, 50 (docs/DEPRECATIONS.md)\n"));
+    CHECK(text && strstr(text, "\ncontrols_alpha=50\n") && strstr(text, "\ncontrols_opacity=50\n"));
     free(text);
     text = open_ini("[On-screen controls]\ncontrols_opacity=most\n");
     CHECK(!strcmp(g_test.alpha, "50"));
