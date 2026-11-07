@@ -58,6 +58,7 @@ static Surf* tp_frame(const TpTex* x) {
     vk_lock();
     Surf* t = vk_tex_from_tic(x->tic);
     vk_unlock();
+    later_drain(); /* and the encoder's frames: a texture held as BC7 is */
     return t;
 }
 /* the texels or blocks of t's image, every level of every layer, that differ from memory's: how many, and the first
@@ -254,16 +255,17 @@ static int tex_partial(const TpCase* c, u32 index) {
     }
     return failed;
 }
-/* An ASTC texture decoded on the GPU (held as BC7 with astc_mode=0, Auto, else RGBA8) takes its changes as block runs
-   of their pages, decoded (and encoded) again: after each write its image is the one a whole upload of the same bytes
-   makes, byte for byte (a texture of its own over the same memory at another GPU address, made then), and only those
-   runs were loaded. The writes: an ASTC block astride BC7 blocks, a DMA copy, the mip tail */
+/* An ASTC texture decoded on the GPU (held as BC7 with astc_mode=2, else RGBA8) takes its changes as block runs of
+   their pages, decoded (and encoded straight to BC7, once the encoder made its BC7 image between frames) again: after
+   each write its image is the one a whole upload of the same bytes makes, byte for byte (a texture of its own over the
+   same memory at another GPU address, made then and made BC7 between frames), and only those runs were loaded. The
+   writes: an ASTC block astride BC7 blocks, a DMA copy, the mip tail */
 typedef struct {
     const char* name;
     int format; /* NVN's */
     u32 bw;     /* the footprint, square */
     u32 size;   /* level 0's texels across and down */
-    int bc7;    /* held as BC7: astc_mode 0 (Auto) */
+    int bc7;    /* held as BC7: astc_mode 2 */
 } TaCase;
 /* every level of every layer of t's image, read back: the bytes, malloc'd (the caller frees them), and how many */
 static u8* ta_image(const TpTex* x, Surf* t, u64* size) {
@@ -323,6 +325,7 @@ static int ta_way(TpTex* x, const char* way, u32 step, u64 most) {
     vk_lock();
     Surf* whole = vk_tex_from_tic(tic);
     vk_unlock();
+    later_drain();
     u8* got = now ? ta_image(x, now, &size) : NULL;
     u8* want = whole ? ta_image(x, whole, &ref_size) : NULL;
     u64 differ = 0, first = 0;
@@ -367,7 +370,7 @@ static int tex_partial_astc(const TaCase* a, u32 index) {
     x.tex.gpu = x.gva;
     nvn_tex_layout(&x.tex.d, &x.lay);
     CHECK(x.lay.size + 0x1000 <= TP_SPAN && nvn_tic_encode(&x.tex, NULL, 0, 0, x.tic));
-    g_settings.astc_mode = !a->bc7;
+    g_settings.astc_mode = a->bc7 ? 2 : 1;
     VkFmt f = vk_tic_format(x.tic[0], 0);
     int bc7 = f.vk == VK_FORMAT_BC7_UNORM_BLOCK;
     if (f.conv != VKC_ASTC || bc7 != a->bc7) {
@@ -389,6 +392,7 @@ static int tex_partial_astc(const TaCase* a, u32 index) {
     x.tracked = vk_written_since(GP(x.cpu), x.lay.size, 0) >= 0;
     x.t = vk_tex_from_tic(x.tic);
     vk_unlock();
+    later_drain();
     CHECK(x.t && x.t->f.conv == VKC_ASTC && x.t->levels == x.tex.d.levels && x.t->layers == TP_LAYERS);
     for (int i = 0; i < 3; i++) CHECK(tp_frame(&x) == x.t);
     int failed = 0;

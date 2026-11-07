@@ -318,8 +318,8 @@ static void test_astc_bc_old(void) {
     free(text);
     text = open_ini("[Graphics]\nastc_bc=0\n");
     CHECK(strstr(g_test.said, "settings: astc_bc=0, deprecated, was its default: astc_mode takes its own, 0 (Auto), "
-                              "which encodes ASTC textures again as BC7 where the GPU samples BCn but not ASTC "
-                              "(docs/DEPRECATIONS.md)\n"));
+                              "which holds ASTC textures as RGBA8 or BC7 by the GPU's memory where the GPU samples BCn "
+                              "but not ASTC (docs/DEPRECATIONS.md)\n"));
     CHECK(text && strstr(text, "\nastc_mode=0\n"));
     free(text);
     text = open_ini("[Graphics]\nastc_bc=yes\n");

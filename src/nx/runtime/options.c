@@ -538,8 +538,9 @@ static void astc_bc_old(void) {
     if (now == -2)
         WARN("settings: astc_bc=%s, deprecated, is neither 0 nor 1: astc_mode takes its default, 0 (Auto)\n", old);
     else if (now == -1)
-        WARN("settings: astc_bc=%s, deprecated, was its default: astc_mode takes its own, 0 (Auto), which encodes ASTC "
-             "textures again as BC7 where the GPU samples BCn but not ASTC (docs/DEPRECATIONS.md)\n",
+        WARN("settings: astc_bc=%s, deprecated, was its default: astc_mode takes its own, 0 (Auto), which holds ASTC "
+             "textures as RGBA8 or BC7 by the GPU's memory where the GPU samples BCn but not ASTC "
+             "(docs/DEPRECATIONS.md)\n",
              old);
     else {
         store_put("astc_mode", "0");

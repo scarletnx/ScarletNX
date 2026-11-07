@@ -347,6 +347,13 @@ static void frame_recycle(Frame* f) {
     f->fresh = 0;
 }
 
+int vk_cmd_ready(void) {
+    const Frame* f = &g_fr[g_cur];
+    u64 last = f->last > f->hold ? f->last : f->hold, done = 0;
+    if (f->recording || !f->fresh || !last) return 1;
+    return vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, &done) == VK_SUCCESS && done >= last;
+}
+
 VkCommandBuffer vk_cmd(void) {
     Frame* f = &g_fr[g_cur];
     if (!f->recording) {

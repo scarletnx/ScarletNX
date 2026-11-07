@@ -251,14 +251,15 @@ setting Vertex input dynamic state
 setting ASTC mode
     label ASTC textures
     key astc_mode
-    int 0 1
+    int 0 2
     default 0
     startup
-    words Auto|Exact
-    help Auto = on a GPU that samples BCn but not ASTC (most desktop ones), ASTC textures are decoded and then encoded
-    help again as BC7, in a quarter of RGBA8's memory, close to what the blocks decode to but not always the same.
-    help Exact = they are decoded to RGBA8, exactly as the game's blocks decode, in four times the memory. Where the GPU
-    help samples ASTC it does nothing. It takes the place of astc_bc, whose 1 was Auto
+    words Auto|Exact|BC7
+    help How a GPU that samples BCn but not ASTC (most desktop ones) holds ASTC textures. Auto = Exact where the GPU's
+    help memory budget is 8 GB or more as the game starts, else BC7. Exact = decoded to RGBA8, exactly as the game's
+    help blocks decode, in four times the memory. BC7 = shown at once decoded to RGBA8, then encoded again as BC7 between
+    help frames, a few at a time, into a quarter of RGBA8's memory, close to what the blocks decode to but not always the
+    help same. Where the GPU samples ASTC it does nothing. It takes the place of astc_bc, whose 1 is Auto
 
 table g_performance_ini
 setting FPS limit

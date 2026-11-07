@@ -8,6 +8,8 @@
   * [Where it differs from Eden](#where-it-differs-from-eden)
 * [The upload path](#the-upload-path)
 * [Encoded again as BC7](#encoded-again-as-bc7)
+  * [Auto, Exact and BC7](#auto-exact-and-bc7)
+  * [Between frames](#between-frames)
 * [Textures bigger than one allocation](#textures-bigger-than-one-allocation)
 * [Sparse textures](#sparse-textures)
 * [Building the shader](#building-the-shader)
@@ -172,9 +174,9 @@ is left out, the texture keeps its old hash, and the next check uploads it again
 ## Encoded again as BC7
 
 Most desktop GPUs sample BCn but not ASTC, and a decoded ASTC texture is four bytes a texel where the game's blocks
-take one (4x4) or less. With the `astc_mode` setting at Auto (`0`, the default, a `startup` setting), `format.c`'s
-`TA()` gives such a texture a `VK_FORMAT_BC7_UNORM_BLOCK` or `_SRGB_BLOCK` image in place of RGBA8, and
-`vk_astc_upload` runs a second dispatch after the decode: `src/nx/gpu/texture/bc7.comp`, with its body in
+take one (4x4) or less. Held as BC7 (the `astc_mode` setting, below), `format.c`'s `TA()` gives such a texture a
+`VK_FORMAT_BC7_UNORM_BLOCK` or `_SRGB_BLOCK` image in place of RGBA8, which texture.c makes between frames from an
+RGBA8 one (below), and `vk_astc_upload`, where it uploads straight to BC7, runs a second dispatch after the decode: `src/nx/gpu/texture/bc7.comp`, with its body in
 `bc7_encode.glsl`, encodes the decoded texels into BC7 blocks, an invocation a block, into a second scratch buffer of
 the same size, and the copy writes those blocks into the image. A BC7 strip starts on a row of whole 4x4 blocks, so
 its ASTC block rows are a multiple of 4 / gcd(block height, 4), and whole slices are counted by the blocks' bytes
@@ -194,15 +196,63 @@ the wait a load queued up tens of seconds of it and the device was lost in most 
 nothing in the validation layer or the kernel's log. Why the depth of the queue does that is not known: it is the
 driver's. Splitting the work over submissions with no wait did not help, and neither did smaller dispatches.
 
-BC7 is the default because memory is what a desktop GPU runs short of. As RGBA8, one game's textures took 5.7 GB of a
-5.7 GB budget and were evicted and uploaded again every frame (600 to 1000 ms frames). As BC7 they took 2.5 GB. BC7 is
-not exact (its PSNR is below): `astc_mode=1` (Exact) decodes to RGBA8 instead, for a player who sees the difference,
-mostly in UI text.
+### Auto, Exact and BC7
 
-With `astc_mode=1`, on a GPU that samples BCn but not ASTC, the log suggests Auto once a run, with the budget, the use
-and the megabytes of ASTC textures decoded to RGBA8, when the images run short (`surface.c`'s `astc_bc_suggest`): an
-image allocation finds no memory, a trim leaves the caches past their budget, or a trim takes what the last two
+`astc_mode` (a `startup` setting) says how a GPU that samples BCn but not ASTC holds the ASTC textures it decodes:
+
+| Value | Name | Held as |
+| --- | --- | --- |
+| `0` | Auto, the default | Exact where the budget of the heap images go to is 8 GiB or more as the device starts, else BC7 |
+| `1` | Exact | RGBA8, as the game's blocks decode, four bytes a texel |
+| `2` | BC7 | RGBA8 at once, then BC7 made between frames, a byte a texel |
+
+Memory is what a desktop GPU runs short of. As RGBA8, one game's textures took 5.7 GB of a 5.7 GB budget and were
+evicted and uploaded again every frame (600 to 1000 ms frames); as BC7 they took 2.5 GB. Another took 3.9 GB of an
+RX 6700 XT's 11.8 GB budget as RGBA8, 0.4 GB more than as BC7, and its frames were smoother so. BC7 is not exact (its
+PSNR is below), mostly seen in UI text. Auto's line (`SNX_ASTC_EXACT_MB` in `gpu/texture/astc_bc.h`) is drawn
+between them: the budget is `VK_EXT_memory_budget`'s (VMA's estimate of 80% of the heap without it), or `vk_budget_mb`
+where that is lower, as `vk_mem_use` gives it, read once after the device is made (`device.c`'s `astc_choose`). The
+log's line says the budget, the line and the choice (an RX 6700 XT's):
+
+```
+vulkan: astc_mode=0 (Auto): heap 1's budget is 11834 MB as the device starts, at least 8192 MB: ASTC textures are decoded to RGBA8, exact, in four times BC7's memory (Exact)
+```
+
+Held as RGBA8 (Exact, or Auto with the budget for it), the log suggests `astc_mode=2` once a run, with the budget, the
+use and the megabytes of ASTC textures decoded to RGBA8, when the images run short (`surface.c`'s `astc_bc_suggest`):
+an image allocation finds no memory, a trim leaves the caches past their budget, or a trim takes what the last two
 presents used (the working set, which the next frames load again).
+
+### Between frames
+
+Uploading straight to BC7 held the game for the encoder: the encoder makes about 10 million blocks a second on an
+RX 6700 XT, and two arrays coming in one frame cost 30 to 40 ms of it, frames of 50 to 90 ms, where RGBA8 left none
+over 50 ms on the same route. So a texture held as BC7 goes up decoded to RGBA8, which the game samples at once, and
+texture.c (`vk_tex_later_frame`, after each present, in a submission of its own that the present doesn't wait for)
+makes its BC7 image from those texels: `vk_bc7_encode_image` copies a strip of the RGBA8 image into the decoder's
+scratch buffer, where the decode would have left the texels, and encodes it as an upload does, so the blocks are the
+same an upload straight to BC7 makes. A frame encodes `VK_BC7_LATER_BLOCKS` (32768) blocks at most: 3.3 ms of the
+RX 6700 XT, a tenth of a frame at 30 fps. Its strips are whole slices of a level (an array's layers, a 3D level's
+depth slices, as many as the blocks left take), or rows of blocks of one when a slice is more than that; a frame's
+first strip is one row at least. Textures go in the order they were loaded, one at a time. The step does nothing when
+`vk_cmd` would wait for the GPU first, so it never holds the frame after the present.
+
+Once the BC7 image is whole it takes the RGBA8 one's place in the texture, moved to the layout the RGBA8 one was
+sampled in, and the RGBA8 image and its views go once the frames that sample them are done (`vk_defer_image`), three
+quarters of its memory. Meanwhile the texture takes RGBA8's memory and a quarter more for the BC7 image being made.
+
+- Written before its BC7 image is whole (a whole load or pieces, which give it a new write generation): the encoder
+  drops what it made and starts over on the new texels, behind the other textures.
+- Written whole after: an RGBA8 image in the BC7 one's place, loaded at once, and the encoder makes BC7 again. Where
+  no memory is found for it, the texture is left out until a check finds some, as any image that finds none.
+- Written in pieces after: pieces of a frame's blocks or fewer go straight to BC7 (they are decoded and encoded as a
+  region, as above); more load whole as RGBA8 (`later_pieces_whole`).
+- A texture whose memory is bound by tiles (sparse) is BC7 from the start and loaded straight to it, as the tiles
+  of an RGBA8 image don't match the guest's (below).
+- A texture freed leaves the queue, and the BC7 image being made goes with it.
+
+Every 600 frames the log says how many textures were made BC7 between frames, the RGBA8 memory that freed, the blocks
+encoded and the encodes started over, and how many textures wait with their RGBA8 memory.
 
 The encoder tries each block in the modes that suit it and writes the one with the least squared error. Every
 block takes mode 6, one line through RGBA with 4-bit weights, which holds a block of one gradient closely. An opaque
@@ -259,8 +309,8 @@ The `[Debug]` setting `vk_max_allocation_mb` (`--vk_max_allocation_mb=4` for a r
 
 A sparse texture's memory is mapped a 64 KiB tile at a time; for blocks of 16 bytes a tile is 64x64 of them. Where the
 device has sparse residency of 2D images and reads what isn't bound as zeros, `texture.c` gives such a texture's image
-memory only for its mapped tiles. An ASTC 4x4 one held as BC7 (`astc_bc=1`) takes part: BC7's sparse block is 256x256
-texels, 64x64 blocks of 16 bytes too, so each mapped tile is one block of the image, decoded and encoded on its own as
+memory only for its mapped tiles. An ASTC 4x4 one held as BC7 (`astc_mode`, above) takes part: BC7's sparse block is
+256x256 texels, 64x64 blocks of 16 bytes too, so each mapped tile is one block of the image, decoded and encoded on its own as
 a texture's changed runs are. Other footprints (an 8x8 tile is 2x2 BC7 blocks) and ASTC held as RGBA8 (blocks of
 128x128 texels) keep the whole image, and the log line saying so names the format and the device's block in the
 layout's terms.
@@ -327,6 +377,12 @@ separate SPIRV-Tools is needed.
   encoder run on the CPU over the CPU decoder's texels, byte for byte.
 - `tex_upload_rows` checks what `texture.c` hands `vk_astc_upload`: an ASTC level's block rows, strip by strip,
   against the block-linear layout walked byte by byte, and the bands other formats take past the cap.
+- `vulkan_headless` (`tests/vulkan_astc_later.inc`) holds the BC7 images made between frames to the CPU encoder's
+  blocks over the RGBA8 texels the texture showed first, byte for byte: a 1024x768 texture in three frames of 32768,
+  32768 and 3 blocks, the RGBA8 image freed after them; a 2D array of sides on no block in one frame and one dispatch
+  a level, written whole after and made BC7 again from the new texels; a texture written between its two frames,
+  started over; an array of 40 layers and a 3D texture of 40 slices, cut between two frames; pieces of a BC7 one,
+  straight to BC7 for a block and whole as RGBA8 for 55296 blocks; and a texture freed while it is made. `astc_bc_suggest` (ctest, no GPU) holds Auto's line and the three modes.
 
 The CPU decoder was also compared with ARM's astcenc 5.7.0 (`astcenc -dl` and `-dH`, Apache-2.0, a release binary
 used only as a tool), on the same kind of random blocks for every footprint. Every texel agreed within one step of

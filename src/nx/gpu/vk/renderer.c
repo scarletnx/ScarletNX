@@ -661,10 +661,18 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 u64 bc7_levels, bc7_bytes, bc7_rgba8;
                 vk_astc_stats(&bc7_levels, &bc7_bytes, &bc7_rgba8);
                 if (bc7_levels)
-                    LOG("vulkan: %llu ASTC texture levels or regions uploaded as BC7 in %llu encoder dispatches, %llu "
-                        "MB where RGBA8 takes %llu MB\n",
-                        (unsigned long long)bc7_levels, (unsigned long long)vk_astc_dispatches(),
-                        (unsigned long long)(bc7_bytes >> 20), (unsigned long long)(bc7_rgba8 >> 20));
+                    LOG("vulkan: %llu ASTC texture levels or regions uploaded straight to BC7, %llu MB where RGBA8 "
+                        "takes %llu MB; %llu encoder dispatches in all\n",
+                        (unsigned long long)bc7_levels, (unsigned long long)(bc7_bytes >> 20),
+                        (unsigned long long)(bc7_rgba8 >> 20), (unsigned long long)vk_astc_dispatches());
+                VkLaterStats later;
+                vk_tex_later_stats(&later);
+                if (later.made || later.waiting || later.restarted)
+                    LOG("vulkan: %llu ASTC textures made BC7 between frames (%llu MB of RGBA8 freed, %llu blocks "
+                        "encoded, %llu encodes started over for a write); %u waiting, %llu MB as RGBA8\n",
+                        (unsigned long long)later.made, (unsigned long long)(later.freed >> 20),
+                        (unsigned long long)later.blocks, (unsigned long long)later.restarted, later.waiting,
+                        (unsigned long long)(later.waiting_bytes >> 20));
                 u64 early_made, early_hits, early_left;
                 vk_pipeline_prewarm_stats(&early_made, &early_hits, &early_left);
                 if (early_made || early_left)
@@ -746,6 +754,8 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
             VK_OK(r);
     } else /* not presented: displayed never, once the presents before it are done with */
         vk_display_presented(VK_NULL_HANDLE, 0, game, released_ns, shown_syncpt);
+    /* the BC7 encoder's share of the frame after its present, which it never holds back */
+    vk_tex_later_frame();
     if (recreate && !g_lost && !g_vk.sc_lost) { /* not when this frame's create found the surface lost */
         vk_finish();
         vk_swapchain_create(srgb);
