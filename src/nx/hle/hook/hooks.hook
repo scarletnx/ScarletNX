@@ -52,3 +52,19 @@ hook _ZN2nn5codec48DequeuePcmInterleavedDataFromHardwareOpusDecoderEPNS0_23Hardw
 hook _ZN2nn5codec47GetHardwareOpusDecoderWaitingDecodeRequestCountEPKNS0_23HardwareOpusDecoderTypeE(addr decoder) -> i32 = codec_decoder_waiting
 hook _ZN2nn5codec49GetHardwareOpusDecoderExecutingDecodeRequestCountEPKNS0_23HardwareOpusDecoderTypeE(addr decoder) -> i32 = codec_decoder_executing
 hook _ZN2nn5codec49GetHardwareOpusDecoderCompletedDecodeRequestCountEPKNS0_23HardwareOpusDecoderTypeE(addr decoder) -> i32 = codec_decoder_completed
+
+# nn::audio's output streams of the Ounce's SDK (audio_stream.c), which its SDK plays through the audio device manager
+# (auddmg:u) and the audio DSP: played here on the host's output, paced by the audio clock
+family audio_stream
+hook _ZN2nn5audio29GetDefaultVirtualOutputDeviceEPNS0_15AudioDeviceNameE(addr name) -> u32 = audio_default_virtual_output
+hook _ZN2nn5audio16OpenOutputStreamEPNS0_16OutputStreamTypeEPNS_2os11SystemEventEPvmRKNS0_15AudioDeviceNameERKNS0_12StreamFormatEiiNS_4util10BitFlagSetILi32ENS0_16OutputStreamFlagEEE(addr stream, addr event, addr work, u64 size, addr device, addr format, i32 capacity, i32 threshold) -> u32 = audio_open_stream_event
+hook _ZN2nn5audio16OpenOutputStreamEPNS0_16OutputStreamTypeEPvmRKNS0_15AudioDeviceNameERKNS0_12StreamFormatEiNS_4util10BitFlagSetILi32ENS0_16OutputStreamFlagEEE(addr stream, addr work, u64 size, addr device, addr format, i32 capacity, u32 flags) -> u32 = audio_open_stream
+hook _ZN2nn5audio17CloseOutputStreamEPNS0_16OutputStreamTypeE(addr stream) = audio_close_stream
+hook _ZN2nn5audio17StartOutputStreamEPNS0_16OutputStreamTypeE(addr stream) -> u32 = audio_start_stream
+hook _ZN2nn5audio16StopOutputStreamEPNS0_16OutputStreamTypeE(addr stream) -> u32 = audio_stop_stream
+hook _ZN2nn5audio17PurgeOutputStreamEPNS0_16OutputStreamTypeE(addr stream) -> u32 = audio_purge_stream
+hook _ZN2nn5audio20GetOutputStreamStateEPKNS0_16OutputStreamTypeE(addr stream) -> u32 = audio_stream_state
+hook _ZN2nn5audio29GetOutputStreamFreeFrameCountEPKNS0_16OutputStreamTypeE(addr stream) -> i32 = audio_stream_free_frames
+hook _ZN2nn5audio17WriteOutputStreamEPNS0_16OutputStreamTypeEPKvi(addr stream, addr data, i32 frames) -> i32 = audio_write_stream
+hook _ZN2nn5audio19SetOutputStreamGainEPNS0_16OutputStreamTypeEfNS_8TimeSpanE(addr stream, f32 gain, i64 fade) = audio_set_stream_gain
+hook _ZN2nn5audio25GetOutputStreamStatisticsEPNS0_16OutputStreamTypeEb(addr stream, bool reset) = audio_stream_statistics

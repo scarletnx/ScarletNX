@@ -742,6 +742,7 @@ void audio_clock(void* arg) {
         now = plat_ns();
         SNX_ZONE_VALUE(z_audio, now > next ? (u64)(now - next) / AUDIO_FRAME_NS : 0);
         audout_tick(guest_ns());
+        outstream_tick(guest_ns());
         SNX_ZONE_END(z_audio);
         next += AUDIO_FRAME_NS;
         if (now > next + 10 * (u64)AUDIO_FRAME_NS) next = now + AUDIO_FRAME_NS;
