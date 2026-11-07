@@ -107,10 +107,10 @@ static void pacing(void) {
 /* the display's clock: its refresh sets the period, and one that didn't take the frames in time is only asked,
    without waiting, until it takes them again */
 static int display_r;
-static u64 display_deadline;
+static u64 display_deadline, display_refresh = 16683350;
 static int test_display_wait(u64 deadline_ns, u64* refresh_ns) {
     display_deadline = deadline_ns;
-    *refresh_ns = 16683350; /* 59.94 Hz */
+    *refresh_ns = display_refresh;
     return display_r;
 }
 static void display_pacing(void) {
@@ -140,7 +140,7 @@ static void display_pacing(void) {
     test_renderer.display_wait = NULL;
 }
 
-/* a frame period onto the display's refresh: the nearest whole number of refreshes within 1/32 of it, else as it is */
+/* Near-identical clocks follow the display; incompatible refresh ratios preserve the game's own rate. */
 static void display_period(void) {
     const u64 p60 = 1000000000u / 60, r5994 = 16683350, r144 = 6944444;
     CHECK(present_display_period(p60, r5994) == r5994, "one refresh of a 59.94 Hz display");
@@ -148,8 +148,35 @@ static void display_period(void) {
     CHECK(present_display_period(p60, r144) == p60, "a 144 Hz display keeps no whole number of refreshes of 60 Hz");
     CHECK(present_display_period(2 * p60, 2 * r144) == 2 * p60, "nor 72 Hz of 30 Hz");
     CHECK(present_display_period(p60, p60 / 2) == p60, "two refreshes of a 120 Hz display");
+    CHECK(present_display_period(2 * p60, 1000000000u / 350) == 2 * p60,
+          "350 Hz must not slow a 30 Hz game to 29.17 Hz");
+    CHECK(present_display_period(p60, 1000000000u / 350) == p60,
+          "350 Hz must not slow a 60 Hz game to 58.33 Hz");
+    CHECK(present_display_period(2 * p60, 1000000000u / 165) == 2 * p60,
+          "165 Hz retains a 30 Hz game's period");
+    const u64 r23976 = 4170837;
+    CHECK(present_display_period(2 * p60, r23976) == 8 * r23976,
+          "eight refreshes of a 239.76 Hz display retain NTSC clock matching");
     CHECK(present_display_period(p60, 0) == p60, "an unknown refresh");
     CHECK(present_display_period(p60, 3 * p60) == p60, "a refresh longer than the period");
+}
+
+static void high_refresh_pacing(void) {
+    test_renderer.display_wait = test_display_wait;
+    display_r = 1;
+    display_refresh = 1000000000u / 350;
+    now_ns += 1000000000u;
+    present_pace(2, 3); /* reset after the gap */
+    const u64 start = now_ns, before = slept_ns, period = 2 * (1000000000u / 60);
+    for (u32 frame = 0; frame < 300; frame++) {
+        now_ns += 1000000u;
+        present_pace(2, 3);
+        CHECK(g_pace.period_ns[3] == period, "the renderer must receive the original 30 Hz period");
+    }
+    CHECK(now_ns - start == 300 * period, "350 Hz changed ten seconds of 30 Hz game pacing");
+    CHECK(slept_ns - before == 300 * (period - 1000000u), "high-refresh pacing slept for a rounded display period");
+    test_renderer.display_wait = NULL;
+    display_refresh = 16683350;
 }
 
 int main(void) {
@@ -159,6 +186,7 @@ int main(void) {
     pacing();
     display_pacing();
     display_period();
+    high_refresh_pacing();
     test_renderer.present_buffer = test_present;
     vi_show_buffer(7, 0x40, 1, 1, 4, 1, 0, 1, crop, 0, 0);
     vi_show_buffer(8, 0, 1, 1, 4, 1, 0, 1, crop, 0, 0);

@@ -93,11 +93,6 @@ static void insert_nl(u32 i, const Own* o) {
     cover_nl(o, 1);
     __atomic_store_n(&g_nown, g_nown + 1, __ATOMIC_RELEASE);
 }
-static void remove_nl(u32 i) {
-    cover_nl(&g_own[i], (u32)-1);
-    memmove(&g_own[i], &g_own[i + 1], sizeof *g_own * (size_t)(g_nown - i - 1));
-    __atomic_store_n(&g_nown, g_nown - 1, __ATOMIC_RELEASE);
-}
 static int page_owned_nl(u64 page) {
     u32 i = first_after_nl(page);
     return i < g_nown && g_own[i].lo < page + g_page;
@@ -161,8 +156,16 @@ static void cut_nl(u64 lo, u64 hi, ResList* rel) {
             cover_nl(o, 1);
             return;
         } else { /* all of it */
-            res_push(rel, o->res);
-            remove_nl(i);
+            /* Entries are sorted and apart, so all fully covered entries form one run. Move the suffix only once:
+               dropping or replacing a range over many owners must not shift that suffix once for every owner. */
+            u32 past = i;
+            do {
+                res_push(rel, g_own[past].res);
+                cover_nl(&g_own[past], (u32)-1);
+                past++;
+            } while (past < g_nown && g_own[past].lo < hi && g_own[past].hi <= hi);
+            memmove(&g_own[i], &g_own[past], sizeof *g_own * (size_t)(g_nown - past));
+            __atomic_store_n(&g_nown, g_nown - (past - i), __ATOMIC_RELEASE);
         }
     }
 }
@@ -269,7 +272,9 @@ static void land_pages(u64 lo, u64 hi) {
             g_hooks.landed(plo, phi - plo, dst[i] - (r[i].addr - plo));
         }
     pm_lock(&g_own_lk);
-    for (i = 0; i < n; i++) cut_nl(r[i].addr, r[i].addr + r[i].size, &rel);
+    /* The snapshot is a consecutive run of entries, and the producer's lock prevents another owner coming between
+       them while they land. Remove the run at once, including empty gaps, instead of moving the suffix n times. */
+    cut_nl(r[0].addr, r[n - 1].addr + r[n - 1].size, &rel);
     pc_broadcast(&g_own_cv);
     pm_unlock(&g_own_lk);
     free(r);

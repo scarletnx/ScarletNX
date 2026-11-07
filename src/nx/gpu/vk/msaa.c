@@ -18,6 +18,7 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/msaa_spv.h" /* compiled from msaa.vert and msaa.frag by the build (cmake/glsl.cmake) */
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/plat.h"
 
 enum { MS_UNPACK, MS_UNPACK_DEPTH, MS_PACK, MS_KINDS };
 #define MS_PIPES 32
@@ -139,7 +140,9 @@ static VkPipeline ms_pipe(u32 kind, VkFormat format, VkSampleCountFlagBits sampl
                                        .pDynamicState = &dy,
                                        .layout = g_msaa.layout};
     VkPipeline p;
+    u64 started = plat_ns();
     if (!VK_OK(vkCreateGraphicsPipelines(g_vk.dev, vk_pipeline_cache(), 1, &pi, NULL, &p))) return VK_NULL_HANDLE;
+    vk_texture_pipeline_made(plat_ns() - started);
     g_msaa.pipe[g_msaa.npipe++] = (MsPipe){kind, format, samples, p};
     return p;
 }

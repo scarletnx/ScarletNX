@@ -8,7 +8,8 @@
    VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
    to check synchronization too (docs/ASTC.md). --vk_max_allocation_mb=N lowers
    the allocation cap, so images in pieces are tested at small sizes; --large
-   decodes a 2D and a 3D texture of 512 MiB each. --upload-wait checks a BC7 upload across an internal submission. */
+   decodes a 2D and a 3D texture of 512 MiB each. --upload-wait checks a BC7 upload across an internal submission.
+   --upload-retire checks that completed uploads do not accumulate toward the encoder's wait threshold. */
 #include <math.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -24,6 +25,8 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/nce/nce.h"
+#include "nx/memory/own.h"
+#include "nx/hle/services/nvdrv.h"
 
 VkState g_vk;
 VkSemaphore g_vk_csem;
@@ -31,6 +34,14 @@ u64 g_vk_cs_wait_value;
 static unsigned errors;
 /* uma.c isn't here: no guest memory read in place for cmd.c's draws to settle */
 void vk_uma_settle(u64 ended) { (void)ended; }
+/* Synthetic upload sources have no guest GPU mappings, ownership or pending in-place writes. */
+u32 g_nown;
+int vk_uma_pending(u64 gva, u64 size) { (void)gva; (void)size; return 0; }
+u64 gmmu_run(u64 gva, u64 size, u64* cpu) { (void)gva; (void)size; *cpu = 0; return 0; }
+u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) {
+    (void)addr; (void)size; (void)out; (void)max;
+    return 0;
+}
 
 /* Only the window/game and guest pipeline services are stubbed. cmd.c and
    vk/astc.c are linked unchanged, including staging flushes and frame reuse. */
@@ -64,6 +75,11 @@ void vk_buf_host_barrier(VkCommandBuffer cb, u64 frame) {
     (void)frame;
 }
 VkPipelineCache vk_pipeline_cache(void) { return VK_NULL_HANDLE; }
+static struct { u64 count, ns; } g_texture_pipelines;
+void vk_texture_pipeline_made(u64 ns) {
+    g_texture_pipelines.count++;
+    g_texture_pipelines.ns += ns;
+}
 int vk_graphics_playout_is(VkPipelineLayout layout) { (void)layout; return 0; }
 /* no occlusion queries, and no guest memory for cmd.c's sampled hashes */
 void vk_query_flush(VkCommandBuffer cb) { (void)cb; }
@@ -255,7 +271,7 @@ static int level_rows(void* ctx, VkCommandBuffer* pcb, u32 z, u32 nz, u32 y, u32
         u64 lo, hi, at, cap;
         VkBuffer staged;
         vk_bl_range(&m, &lo, &hi);
-        u8* p = vk_stage(hi - lo, vk_stage_align(), &staged, &at);
+        u8* p = vk_stage_upload(hi - lo, vk_stage_align(), &staged, &at);
         *buf = vk_bl_scratch((u64)l->nx * 16 * n * nz, &cap);
         *off = 0;
         if (!p || !*buf) return 0;
@@ -265,7 +281,7 @@ static int level_rows(void* ctx, VkCommandBuffer* pcb, u32 z, u32 nz, u32 y, u32
         vk_bl_barrier(cb, 0);
         return ok;
     }
-    u8* p = vk_stage((u64)n * nz * l->nx * 16, vk_stage_align(), buf, off);
+    u8* p = vk_stage_upload((u64)n * nz * l->nx * 16, vk_stage_align(), buf, off);
     if (!p) return 0;
     for (u32 k = 0; k < nz; k++)
         memcpy(p + (size_t)k * n * l->nx * 16, l->blocks + ((size_t)(z + k) * l->ny + y) * l->nx * 16,
@@ -503,8 +519,8 @@ static int upload_wait_rows(void* ctx, VkCommandBuffer* pcb, u32 z, u32 nz, u32 
 /* 262656 BC7 blocks: one strip reaches the real 256Ki-block threshold with the default 16MiB scratch, then
    another strip must record into a new command buffer. Constant blocks keep the GPU encoder's first fit exact;
    the final block row has a different color, so a missing continuation cannot pass the output comparison. */
-static int upload_wait_case(void) {
-    const u32 w = 2048, h = 2052, nx = w / 4, ny = h / 4;
+static int upload_wait_case(int retire) {
+    const u32 w = retire ? 1024 : 2048, h = retire ? 1024 : 2052, nx = w / 4, ny = h / 4;
     VkImageFormatProperties props;
     if (!g_vk.feat.textureCompressionBC ||
         vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, VK_FORMAT_BC7_UNORM_BLOCK, VK_IMAGE_TYPE_2D,
@@ -540,9 +556,24 @@ static int upload_wait_case(void) {
     UploadWaitSource source = {.level = {blocks, nx, ny, NULL, 0, 0}};
     barrier(t.img, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COPY_BIT,
         VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    if (!vk_astc_upload(vk_cmd(), &t, 0, 0, w, h, 1, 0, 0, upload_wait_rows, &source))
-        fatal("BC7 upload wait: upload failed\n");
-    if (source.calls < 2 || !source.changes || vk_submit_number() <= source.first_submit)
+    for (u32 upload = 0; upload < (retire ? 5u : 1u); upload++) {
+        if (upload)
+            barrier(t.img, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        u64 before = vk_last_submit();
+        if (!vk_astc_upload(vk_cmd(), &t, 0, 0, w, h, 1, 0, 0, upload_wait_rows, &source))
+            fatal("BC7 upload wait: upload failed\n");
+        /* Each upload is below the limit, but five exceed it together. Every preceding upload is complete:
+           a stale queued-block count would force an extra submission on the fourth one. */
+        if (retire) {
+            if (vk_last_submit() != before) fatal("BC7 completed uploads caused an unnecessary submit at %u\n", upload);
+            vk_finish();
+        }
+    }
+    if (g_texture_pipelines.count != 2 || !g_texture_pipelines.ns)
+        fatal("BC7 upload wait: internal pipeline counters missed creation or counted a reused pipeline\n");
+    if (!retire && (source.calls < 2 || !source.changes || vk_submit_number() <= source.first_submit))
         fatal("BC7 upload wait: no continuation across a submission (%u calls, %u changes)\n",
             source.calls, source.changes);
     barrier(t.img, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -568,8 +599,8 @@ static int upload_wait_case(void) {
     free(blocks);
     vk_image_destroy(t.img, t.mem);
     if (errors) fatal("BC7 upload wait: %u validation errors\n", errors);
-    printf("PASS BC7 upload wait: %u strips, %u command-buffer changes, %u exact blocks\n",
-        source.calls, source.changes, nx * ny);
+    printf("PASS BC7 upload %s: %u strips, %u command-buffer changes, %u exact blocks\n",
+        retire ? "retire" : "wait", source.calls, source.changes, nx * ny);
     return 0;
 }
 
@@ -664,17 +695,31 @@ static void bench(u32 w, u32 h, int runs) {
                                 .tiling = VK_IMAGE_TILING_OPTIMAL,
                                 .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
         if (!vk_image_create(&ii, &t.img, &t.mem)) fatal("cannot create a %ux%u bench image\n", w, h);
+        if (t.mem) {
+            VmaAllocationInfo allocation;
+            vmaGetAllocationInfo(g_vk.vma, t.mem, &allocation);
+            printf("BENCH memory %s %ux%u: %llu bytes\n", fi ? "BC7" : "RGBA8", w, h,
+                   (unsigned long long)allocation.size);
+        } else {
+            VkMemoryRequirements requirements;
+            vkGetImageMemoryRequirements(g_vk.dev, t.img, &requirements);
+            printf("BENCH memory %s %ux%u: %llu bytes required across pieces\n", fi ? "BC7" : "RGBA8", w, h,
+                   (unsigned long long)requirements.size);
+        }
         barrier(t.img, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
         vk_finish();
         for (int r = 0; r < runs; r++) {
             Level lv = {b, (w + 7) / 8, (h + 7) / 8, NULL, 2, 0};
+            u64 count = g_texture_pipelines.count, pipeline_ns = g_texture_pipelines.ns;
             u64 t0 = plat_ns();
             if (!vk_astc_upload(vk_cmd(), &t, 0, 0, w, h, 1, 0, 0, level_rows, &lv)) fatal("bench upload failed\n");
             vk_finish();
             double s = (plat_ns() - t0) / 1e9;
-            printf("BENCH %s %ux%u: %.1f ms, %.0f Mtexels/s\n", fi ? "ASTC 8x8 as BC7" : "ASTC 8x8 as RGBA8", w, h,
-                   s * 1e3, (double)w * h / s / 1e6);
+            printf("BENCH %s %ux%u: %.1f ms, %.0f Mtexels/s, %llu internal pipelines (%.1f ms)\n",
+                   fi ? "ASTC 8x8 as BC7" : "ASTC 8x8 as RGBA8", w, h, s * 1e3, (double)w * h / s / 1e6,
+                   (unsigned long long)(g_texture_pipelines.count - count),
+                   (double)(g_texture_pipelines.ns - pipeline_ns) / 1e6);
             fflush(stdout);
         }
         vk_image_destroy(t.img, t.mem);
@@ -1043,8 +1088,10 @@ int main(int argc, char** argv) {
             large = 2;
         else if (!strcmp(argv[i], "--upload-wait"))
             upload_wait = 1;
+        else if (!strcmp(argv[i], "--upload-retire"))
+            upload_wait = 2;
     init();
-    if (upload_wait) return upload_wait_case();
+    if (upload_wait) return upload_wait_case(upload_wait == 2);
     if (large == 2) {
         bench(4096, 4096, 3);
         return 0;

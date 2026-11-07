@@ -49,16 +49,18 @@ void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layou
    Where the renderer knows when frames are displayed (renderer.h display_wait, the frame_pacing setting), the game's
    pace also goes by the display: a frame is released once the game's frames presented before it have been displayed
    (all but one where the display doesn't hold them until their refresh), so none queues for the display behind
-   another, and the timer's period is the display's refresh times the refreshes nearest the swap interval's, so it
-   doesn't drift from the display (a 59.94 Hz one). A display that stops taking frames (a window covered) leaves the
-   timer alone until it takes them again */
+   another, and the timer's period follows a near-identical display clock (a 59.94 Hz one). Incompatible refresh
+   ratios keep the game's period instead of rounding its frame rate down. A display that stops taking frames leaves
+   the timer alone until it takes them again */
 
 u64 present_display_period(u64 period, u64 refresh) {
     u64 n, d;
     if (!refresh) return period;
     n = (period + refresh / 2) / refresh;
     d = n * refresh;
-    return n && (d > period ? d - period : period - d) <= period / 32 ? d : period;
+    /* Allow clock drift, including 60/1.001 Hz, rather than a different frame rate. A 350 Hz display rounds a
+       30 Hz period to twelve refreshes (29.17 Hz); the old 1/32 tolerance silently applied that slower pace. */
+    return n && (d > period ? d - period : period - d) <= period / 512 ? d : period;
 }
 
 static void released(int slot, u64 period) {

@@ -98,6 +98,13 @@ u8* vk_stage(u64 size, u64 align, VkBuffer* buf, u64* off) {
     *off = at;
     return stage + at;
 }
+u8* vk_stage_upload(u64 size, u64 align, VkBuffer* buf, u64* off) {
+    return vk_stage(size, align, buf, off);
+}
+u8* vk_stage_guest_input(u64 gva, u64 source_size, u64 bytes, VkBuffer* buf, u64* off) {
+    (void)gva; (void)source_size;
+    return vk_stage_upload(bytes, vk_stage_align(), buf, off);
+}
 u64 vk_stage_align(void) { return 64; }
 /* the scratch buffer the GPU deswizzles and converts into, which a CPU model of those dispatches writes here */
 #define SCRATCH (8u << 20)

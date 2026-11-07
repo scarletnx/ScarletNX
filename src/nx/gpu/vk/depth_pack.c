@@ -8,6 +8,7 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/depth_pack_spv.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/plat.h"
 
 static struct {
     VkDescriptorSetLayout ds;
@@ -56,12 +57,15 @@ static int pack_init(void) {
                                                 .module = m,
                                                 .pName = "main"},
                                       .layout = g_depth_pack.layout};
+    u64 started = plat_ns();
     int ok = VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, &g_depth_pack.pipe));
+    u64 elapsed = plat_ns() - started;
     vkDestroyShaderModule(g_vk.dev, m, NULL);
     if (!ok) {
         g_depth_pack.pipe = VK_NULL_HANDLE;
         return 0;
     }
+    vk_texture_pipeline_made(elapsed);
     g_depth_pack.failed = 0;
     return 1;
 }

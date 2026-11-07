@@ -18,6 +18,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/resource_stats.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/runtime/platform/tracy.h"
@@ -2622,9 +2623,11 @@ static int patch_dirty(u32 i, u64 gva, const u8* host, u64 gw, u32 ws) {
 static int make_own_(u32 i, VkBuffer sb, u64 so);
 /* a buffer of its own being made, as a profiler zone (SNX_TRACY builds) */
 static int make_own(u32 i, VkBuffer sb, u64 so) {
+    VkResourceScope scope = vk_resource_begin();
     SNX_ZONE_V(z, "own buffer", g_vb[i].len);
     int r = make_own_(i, sb, so);
     SNX_ZONE_END(z);
+    vk_resource_end(VK_RESOURCE_BUFFER_CACHE_BUILD, scope);
     return r;
 }
 static int make_own_(u32 i, VkBuffer sb, u64 so) {
@@ -3107,7 +3110,7 @@ void vk_buf_writable_stats(u64* copied, u64* read_back, u64* merged) {
 }
 
 /* buffers not read for twenty seconds, and in 120 presents, go */
-void vk_buf_frame(void) {
+static void buf_frame(void) {
     vk_uma_frame();
     if (g_vk_present % 4) return;
     if (copy_stats_on() && g_vk_present % 600 == 0) {
@@ -3168,6 +3171,11 @@ void vk_buf_frame(void) {
         drop_own(i);
         vb_free(i);
     }
+}
+void vk_buf_frame(void) {
+    VkResourceScope scope = vk_resource_begin();
+    buf_frame();
+    vk_resource_end(VK_RESOURCE_BUFFER_MAINTENANCE, scope);
 }
 
 /* a save state's load: every buffer kept of guest memory goes, and their host addresses with it */
