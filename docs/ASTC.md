@@ -221,9 +221,10 @@ around its projection. All of it is integer arithmetic in the part of GLSL that 
 same file on the CPU and get the GPU's bytes.
 
 A block stops trying modes once its squared error over all its texels and channels is `SNX_BC7_GOOD_ENOUGH` (16) or less,
-a mean squared error of a quarter, 54 dB, for that block. A hard block still gets the whole search. Within a fit, `Eval` leaves
-a line as soon as it can't win, a second least squares runs only on weights that changed, and a line the box leaves far
-behind the best block gets none. On a GT 1030 one game's first load fell from 36 s to 25 s.
+a mean squared error of a quarter, 54 dB, for that block. A hard block still gets the whole search. Within a fit,
+`Eval` leaves a candidate once its partial error proves it cannot win, and a second least squares runs only on
+weights that changed. Quality tests compare against the prior unpruned search and require each block to stay
+within the 16-error allowance or produce no more error than that reference.
 
 What it costs, as PSNR against what it encodes, on edenprobe's astcimage picture (gradients, hard edges where three
 colours meet in a block, noise, and alpha) decoded from ASTC: 39.9 dB over the picture at 4x4 (gradients 53.1,

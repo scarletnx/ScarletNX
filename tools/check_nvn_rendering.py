@@ -13,7 +13,8 @@ import subprocess
 import time
 
 NATIVE = ('nvn-descriptors', 'nvn-tex-storage', 'nvn-commands', 'nvn-draw-banks', 'nvn-copy-formats', 'nvn-names',
-          'nvn-advanced-blend', 'vk-coverage', 'vk-tess-passthrough', 'vk-sample-locations', 'nvn-queue-lifetime', 'vk-advanced-blend')
+          'nvn-advanced-blend', 'vk-coverage', 'vk-tess-passthrough', 'vk-sample-locations', 'nvn-queue-lifetime',
+          'vk-advanced-blend', 'vk-checkpoints')
 SHADER_NATIVE = ('shader-direct-regressions', 'shader-float-rounding', 'shader-indexed-ms',
                  'shader-integer-half', 'shader-tcs-dead-outputs', 'shader-blend-images',
                  'shader-half-native', 'shader-txd-uniform', 'shader-half-packing',
@@ -22,6 +23,7 @@ SHADER_NATIVE = ('shader-direct-regressions', 'shader-float-rounding', 'shader-i
 GPU_MARKER = 'PASS NVN array copies: image texels, mirrored layers, view offsets and output padding exact=1'
 GPU_FEATURES = (
     ('array_copies', 'PASS NVN array copies:', None),
+    ('indirect_compute', 'PASS indirect compute dispatch:', None),
     ('shader_windows', 'PASS shader read windows:', None),
     ('shader_windows_owned', 'PASS shader read windows GPU-owned BRX:', 'SKIP shader read windows GPU-owned BRX:'),
     ('texture_half', 'PASS half texture rounding:', 'SKIP half texture rounding:'),

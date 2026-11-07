@@ -36,6 +36,13 @@ static std::vector<glsl::leuvec4> encode_whole(const std::vector<glsl::leuint>& 
                          reinterpret_cast<uint8_t*>(blocks.data()));
     return blocks;
 }
+static std::vector<glsl::leuvec4> encode_whole_without_45(const std::vector<glsl::leuint>& texels,
+                                                         uint32_t w, uint32_t h) {
+    std::vector<glsl::leuvec4> blocks((size_t)((w + 3) / 4) * ((h + 3) / 4));
+    bc7_encode_cpu_whole_without_45(reinterpret_cast<const uint8_t*>(texels.data()), w, h, 1,
+                                    reinterpret_cast<uint8_t*>(blocks.data()));
+    return blocks;
+}
 
 // the same by the encoder without modes 4 and 5
 static std::vector<glsl::leuvec4> encode_without_45(const std::vector<glsl::leuint>& texels, uint32_t w, uint32_t h) {
@@ -483,42 +490,81 @@ static void channel_apart() {
     if (!pass) failures++;
 }
 
-// a block whose every alpha is 255 comes back with every alpha 255, and one whose every alpha is 0 with every alpha 0,
-// whatever its colours: the p-bit a mode 6 end shares with its colours would otherwise make 254 or 1 of them where
-// that is nearer for the colours
-// A block stops at SNX_BC7_GOOD_ENOUGH or takes the search: no block of a picture of gradients, edges, noise and alpha
-// comes back worse than that or far worse than the whole search brings it, and the picture stays close to it
+// Decode independently, then sum each block's actual RGBA error. The bounded stop may replace an exact block by
+// error<=16; a harder block must retain the prior search's quality, not a reference with the same pruning.
+static void bounded_quality(const char* what, const std::vector<glsl::leuint>& texels, uint32_t w, uint32_t h) {
+    const auto blocks = encode(texels, w, h, 1), whole = encode_whole(texels, w, h);
+    const auto got = decode(blocks.data(), w, h), best = decode(whole.data(), w, h);
+    known_modes(blocks, what, nullptr);
+    uint32_t over = 0;
+    uint64_t worst = 0;
+    for (uint32_t by = 0; by < (h + 3) / 4; by++)
+        for (uint32_t bx = 0; bx < (w + 3) / 4; bx++) {
+            uint64_t e = 0, b = 0;
+            for (uint32_t y = by * 4; y < std::min(by * 4 + 4, h); y++)
+                for (uint32_t x = bx * 4; x < std::min(bx * 4 + 4, w); x++)
+                    for (uint32_t c = 0; c < 4; c++) {
+                        const int v = byte_of(texels[y * w + x], c);
+                        const int d = v - got[(y * w + x) * 4 + c], f = v - best[(y * w + x) * 4 + c];
+                        e += uint64_t(d * d);
+                        b += uint64_t(f * f);
+                    }
+            if (e > 16 && e > b) {
+                if (over < 3)
+                    std::fprintf(stderr, "FAIL %s block(%u,%u): error %llu exceeds16 and prior search %llu\n",
+                                 what, bx, by, (unsigned long long)e, (unsigned long long)b);
+                over++;
+            }
+            if (e > worst) worst = e;
+        }
+    const double db = psnr(texels, got, w, 0, 0, w, h), db_whole = psnr(texels, best, w, 0, 0, w, h);
+    std::printf("%s: %.2f dB, prior search %.2f, %u blocks past both limits, worst block %llu\n", what, db,
+                db_whole, over, (unsigned long long)worst);
+    if (over || db < db_whole - 1.0) {
+        std::fprintf(stderr, "FAIL %s: %u blocks past both limits, %.2f dB against %.2f\n", what, over, db, db_whole);
+        failures++;
+    }
+}
 static void good_enough() {
     std::vector<glsl::leuint> texels(128 * 128);
     for (uint32_t y = 0; y < 128; y++)
         for (uint32_t x = 0; x < 128; x++) texels[(size_t)y * 128 + x] = picture(x, y);
-    const auto blocks = encode(texels, 128, 128, 1), whole = encode_whole(texels, 128, 128);
-    const auto got = decode(blocks.data(), 128, 128), best = decode(whole.data(), 128, 128);
-    uint32_t over = 0;
-    uint64_t worst = 0;
-    for (uint32_t by = 0; by < 32; by++)
-        for (uint32_t bx = 0; bx < 32; bx++) {
-            uint64_t e = 0, b = 0;
-            for (uint32_t y = by * 4; y < by * 4 + 4; y++)
-                for (uint32_t x = bx * 4; x < bx * 4 + 4; x++)
-                    for (uint32_t c = 0; c < 4; c++) {
-                        const int v = byte_of(texels[y * 128 + x], c);
-                        const int d = v - got[(y * 128 + x) * 4 + c], f = v - best[(y * 128 + x) * 4 + c];
-                        e += uint64_t(d * d);
-                        b += uint64_t(f * f);
+    bounded_quality("good enough picture", texels, 128, 128);
+
+    // Different content in each block: independent/correlated channels, alpha separated from color, clusters,
+    // outliers and near-constant colors. This corpus does not use the encoder's partitions, weights or errors.
+    const uint32_t w = 128, h = 32;
+    std::vector<glsl::leuint> corpus(w * h);
+    uint32_t random = 0x9e3779b9u;
+    for (uint32_t by = 0; by < h / 4; by++)
+        for (uint32_t bx = 0; bx < w / 4; bx++) {
+            const uint32_t block = by * (w / 4) + bx;
+            const uint32_t ends[3] = {xorshift(random), xorshift(random), xorshift(random)};
+            for (uint32_t k = 0; k < 16; k++) {
+                uint32_t value = 0, noise = xorshift(random);
+                for (uint32_t c = 0; c < 4; c++) {
+                    const int lo = int(ends[0] >> (c * 8) & 255), hi = int(ends[1] >> (c * 8) & 255);
+                    const int t = int((k * 13 + block) & 15);
+                    int component = int(noise >> (c * 8) & 255);
+                    switch (block & 7) {
+                        case 0: if (c == 3) component = 255; break;
+                        case 1: component = lo + ((hi - lo) * t + 7) / 15; break;
+                        case 2: component = lo + (int(k & 3) - 1) * (c == 3 ? 0 : 3); break;
+                        case 3: if (c != 3) component = lo + ((hi - lo) * t + 7) / 15; break;
+                        case 4: component = int(ends[(k + block) % 3] >> (c * 8) & 255); break;
+                        case 5: component = k == (block & 15) ? hi : lo + int(k & 1); break;
+                        case 6: component = lo + int(noise >> (c * 8) & 3) - 1; break;
+                        default: break;
                     }
-            if (e > 16 && e > b + b / 2) over++;
-            if (e > worst) worst = e;
+                    value |= clamp255(component) << (c * 8);
+                }
+                corpus[(by * 4 + k / 4) * w + bx * 4 + k % 4] = value;
+            }
         }
-    const double db = psnr(texels, got, 128, 0, 0, 128, 128), db_whole = psnr(texels, best, 128, 0, 0, 128, 128);
-    std::printf("good enough: %.2f dB, the whole search %.2f, %u blocks past both limits, worst block %llu\n", db,
-                db_whole, over, (unsigned long long)worst);
-    if (over || db < db_whole - 1.0) {
-        std::fprintf(stderr, "FAIL good enough: %u blocks past both limits, %.2f dB against %.2f\n", over, db, db_whole);
-        failures++;
-    }
+    bounded_quality("good enough mixed blocks", corpus, w, h);
 }
 
+// A block whose alpha is uniformly255 or0 retains it, whatever the colors.
 static void alpha_kept() {
     std::vector<glsl::leuint> texels(128 * 128);
     for (uint32_t y = 0; y < 128; y++)
@@ -581,10 +627,18 @@ static void same_blocks() {
                                                 encode(opaque, 64, 64, 1), encode_without_45(any, 64, 64)};
     uint64_t h = 0xCBF29CE484222325ull;
     for (const auto& r : runs) h = fnv1a(h, r.data(), r.size() * sizeof r[0]);
-    const uint64_t want = 0x6E76FB4B1C7205D4ull;
+    const uint64_t want = 0xCF713CD3243FCE94ull;
     std::printf("%s the encoder's blocks: digest %016llx, %016llx expected\n", h == want ? "PASS" : "FAIL",
                 (unsigned long long)h, (unsigned long long)want);
     if (h != want) failures++;
+    const std::vector<glsl::leuvec4> prior[4] = {encode_whole(pic, 128, 128), encode_whole(any, 64, 64),
+        encode_whole(opaque, 64, 64), encode_whole_without_45(any, 64, 64)};
+    uint64_t prior_hash = 0xCBF29CE484222325ull;
+    for (const auto& r : prior) prior_hash = fnv1a(prior_hash, r.data(), r.size() * sizeof r[0]);
+    const uint64_t prior_want = 0x97987257CCF58CADull; // The committed digest before the search optimizations.
+    std::printf("%s prior search blocks: digest %016llx, %016llx expected\n", prior_hash == prior_want ? "PASS" : "FAIL",
+                (unsigned long long)prior_hash, (unsigned long long)prior_want);
+    if (prior_hash != prior_want) failures++;
 }
 
 int main() {
