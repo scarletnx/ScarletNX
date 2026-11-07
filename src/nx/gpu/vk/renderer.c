@@ -997,6 +997,7 @@ const Renderer vk_renderer = {
     .present_buffer = vkr_present_buffer,
     .display_wait = vk_display_wait,
     .screenshot = vkr_screenshot,
+    .capture = vk_renderdoc_capture,
     .thumbnail = vkr_thumbnail,
     .refresh = vkr_refresh,
     .save = vk_pipeline_save,

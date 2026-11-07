@@ -1447,6 +1447,12 @@ void video_poll(void) {
                     if (!e.key.repeat) set_fullscreen(!g_fullscreen);
                     break;
                 }
+                /* Ctrl+F12: RenderDoc's capture of the next frame, F12 alone the stats' (hotkey) */
+                if (e.key.key == SDLK_F12 && (e.key.mod & SDL_KMOD_CTRL) &&
+                    !(e.key.mod & (SDL_KMOD_ALT | SDL_KMOD_GUI))) {
+                    if (!e.key.repeat) g_renderer->capture(1);
+                    break;
+                }
                 /* not with Ctrl, Alt or the system key: Alt+F4 also arrives as F4 on Windows */
                 if (!e.key.repeat && !(e.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) hotkey(e.key.key);
                 /* a repeat doesn't press again: a key held as the menu closed (which cleared keys_held) stays from
