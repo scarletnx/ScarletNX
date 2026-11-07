@@ -1547,6 +1547,38 @@ static void test_pctl_free_communication(void) {
     svcobj_unref(factory);
 }
 
+/* IFriendService's GetBlockedUserListIds (10400) {i32 offset, uid at 8, a C buffer of ids}: nobody, the count 0 and
+   the buffer as it was; DeclareOpenOnlinePlaySession (10600) and DeclareCloseOnlinePlaySession (10601) {uid} */
+static void friend_uid(Request* r, u32 off) {
+    argument64(r, off, g_user_id[0]);
+    argument64(r, off + 8, g_user_id[1]);
+}
+static void test_friend_blocked_and_presence(void) {
+    SvcObj *creator = new_friend(), *friends;
+    Request r;
+    request(&r, 0);
+    call(creator, &r);
+    CHECK(r.c.nout_objs == 1);
+    friends = r.c.out_objs[0];
+    memset(g_mem + 0x4000, 0xAB, 0x80);
+    request(&r, 10400);
+    argument32(&r, 0, 0);
+    friend_uid(&r, 8);
+    r.c.c[0] = (IpcBuf){0x4000, 0x80, 0};
+    r.c.nc = 1;
+    call(friends, &r);
+    CHECK(r.c.out_size == 4 && reply32(&r, 0) == 0);
+    for (u32 i = 0; i < 0x80; i++) CHECK(g_mem[0x4000 + i] == 0xAB);
+    for (u32 cmd = 10600; cmd <= 10601; cmd++) {
+        request(&r, cmd);
+        friend_uid(&r, 0);
+        call(friends, &r);
+        CHECK(r.c.out_size == 0);
+    }
+    svcobj_unref(friends);
+    svcobj_unref(creator);
+}
+
 /* caps:su: SaveScreenShotEx1 (205) {attribute 0x40, u32 report option at 0x40, aruid at 0x48, pid}, the application
    data in A 0 (0x404 bytes) and the 1280x720 RGBA picture in A 1. Ex0 (203) has the picture in A 0, Ex2 (210) the
    users in A 0 (0x88) and no pid. The picture is a PPM in <the game's folder>captures/, named by the entry's local time
@@ -1754,6 +1786,7 @@ int main(void) {
     test_pctl_play_timer();
     test_nim();
     test_pctl_free_communication();
+    test_friend_blocked_and_presence();
     test_caps();
     test_olsc();
     CHECK(test_objects == 0 && test_kobjs == 0);

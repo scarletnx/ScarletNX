@@ -78,6 +78,12 @@ interface nn::friends::detail::ipc::IFriendService {
                                 pid, array<nn::friends::detail::FriendImpl, 6> friends) -> i32 count;
     @stub [10102] UpdateFriendInfo(nn::account::Uid uid, pid, array<nn::account::NetworkServiceAccountId, 9> ids,
                                    array<nn::friends::detail::FriendImpl, 6> friends);
+    # nobody blocked: a count of 0, and the list as the game sent it
+    @stub [10400] GetBlockedUserListIds(i32 offset, nn::account::Uid uid,
+                                        array<nn::account::NetworkServiceAccountId, 0xa> ids) -> i32 count;
+    # the user playing online, or no longer: no friend server to tell
+    @stub [10600] DeclareOpenOnlinePlaySession(nn::account::Uid uid);
+    @stub [10601] DeclareCloseOnlinePlaySession(nn::account::Uid uid);
 }
 interface nn::friends::detail::ipc::INotificationService {
     [0] GetEvent() -> handle<copy, event> event;
