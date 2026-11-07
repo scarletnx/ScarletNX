@@ -404,6 +404,8 @@ static uint32_t create_cond(VitaProcess* p, VitaThread* t) {
     o->u.cond.mutex = arg(p, t, 2);
     return uid;
 }
+/* timeout is the guest's SceUInt32* (0 for none), as VitaWait.timeout and vita_deadline take it: the wait writes the time
+   left back through it */
 static uint32_t cond_wait(VitaProcess* p, VitaThread* t, uint32_t uid, uint32_t timeout) {
     VitaObject* c = vita_object(p, uid, VITA_OBJ_COND);
     if (!c) return SCE_KERNEL_ERROR_UNKNOWN_COND_ID;
@@ -461,7 +463,7 @@ static uint32_t create_lw_cond(VitaProcess* p, VitaThread* t) {
 static uint32_t wait_lw_cond(VitaProcess* p, VitaThread* t) {
     uint32_t uid, at = arg(p, t, 1);
     if (!lw_cond(p, arg(p, t, 0), &uid)) return SCE_KERNEL_ERROR_UNKNOWN_COND_ID;
-    return cond_wait(p, t, uid, at && vita_mapped(p, at, 4) ? vita_read32(p, at) : 0);
+    return cond_wait(p, t, uid, at && vita_mapped(p, at, 4) ? at : 0);
 }
 static uint32_t signal_lw_cond(VitaProcess* p, VitaThread* t) {
     uint32_t uid;
