@@ -170,8 +170,9 @@ static void case_started(void) {
     assert(!g.opened[0] && !g.path_set && !strcmp(g.path, "/tmp/RenderDoc/scarletnx_2026.11.07"));
     assert(g.keys_set == 1 && g.keys_num == 0 && g.overlay_set == 1 && g.overlay_and == eRENDERDOC_Overlay_None);
     assert(!strcmp(g.env, "ENABLE_VULKAN_RENDERDOC_CAPTURE=1"));
-    assert(logged("renderdoc: in the process (RenderDoc's program started the game), Ctrl+Shift+F12 captures the "
-                  "next frame, 0 frame(s) listed, to /tmp/RenderDoc/scarletnx_2026.11.07\n"));
+    assert(logged("renderdoc: in the process (RenderDoc's program started the game), Ctrl+Shift+F12 or the menu's "
+                  "Capture frame captures the next frame, 0 frame(s) listed, to "
+                  "/tmp/RenderDoc/scarletnx_2026.11.07\n"));
     assert(g.told == 1 && g.shown.ready && !g.shown.taken && !g.shown.failed && !g.shown.path[0]);
     /* nothing asked: no capture */
     assert(vk_renderdoc_capture(0) && !strcmp(presents(1, 10), "") && g.told == 1);
@@ -202,7 +203,8 @@ static void case_setting(void) {
     vk_renderdoc_load();
     assert(!strcmp(g.looked, SNX_VK_RENDERDOC_LIBRARY) && !strcmp(g.opened, SNX_VK_RENDERDOC_LIBRARY));
     assert(g.path_set == 1 && !strcmp(g.path, "/caps/game") && g.keys_set == 1 && g.keys_num == 0);
-    assert(logged("renderdoc: loaded, Ctrl+Shift+F12 captures the next frame, 1 frame(s) listed, to /caps/game\n"));
+    assert(logged("renderdoc: loaded, Ctrl+Shift+F12 or the menu's Capture frame captures the next frame, 1 frame(s) "
+                  "listed, to /caps/game\n"));
     assert(g.told == 1 && g.shown.ready);
     /* Ctrl+Shift+F12 for frame 11, and frame 30 as listed: each captured once */
     assert(vk_renderdoc_capture(1) && !strcmp(presents(10, 11), "sbse") && g.captures == 1);

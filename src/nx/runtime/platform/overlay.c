@@ -6,6 +6,7 @@
 #include "nx/runtime/platform/gamepad.h"
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/platform/vpad.h"
+#include "nx/gpu/renderer.h"
 #include "gui_theme_colors.h"
 #include "gui/icons.h"
 #include "common/utilities/pad_screen.h"
@@ -18,7 +19,8 @@
 
 enum { FIRST = 3, VISIBLE = OVERLAY_ROWS - FIRST - 1 }; /* the items' first row, and how many show at once */
 enum { PAGE_MAIN, PAGE_CONTROLS, PAGE_BUTTONS, PAGE_PADS, PAGE_MAP, PAGE_STATES, PAGE_SLOT, PAGE_ASK, PAGE_KEYS };
-enum { M_CONTROLS, M_PADS, M_STATES, M_STATS, M_EXIT, M_COUNT }; /* the first page's items */
+/* the first page's items: Capture frame only while RenderDoc can capture */
+enum { M_CONTROLS, M_PADS, M_STATES, M_STATS, M_CAPTURE, M_EXIT, M_COUNT };
 enum { S_SAVE, S_LOAD, S_DELETE, S_BACK, S_COUNT };              /* a slot's page's, the auto slot without Save */
 enum { P_PLAYER, P_SWAP, P_DEADZONE, P_RUMBLE, P_BACKGROUND, P_MAP, P_BACK, P_COUNT }; /* the gamepads' page's */
 /* the controls page's items */
@@ -131,8 +133,10 @@ static int pad_player; /* the player the gamepads' page shows: 0 every player's,
 
 /* a slot's page's items: the auto slot has no Save */
 static int slot_item(int i) { return slot_at ? i : i + 1; }
+/* the first page's item shown at i: past Stats, Exit where RenderDoc can't capture */
+static int main_item(int i) { return i >= M_CAPTURE && !g_renderer->capture(0) ? i + 1 : i; }
 static int items(void) {
-    return page == PAGE_MAIN       ? M_COUNT
+    return page == PAGE_MAIN       ? M_COUNT - !g_renderer->capture(0)
            : page == PAGE_CONTROLS ? C_COUNT
            : page == PAGE_PADS     ? P_COUNT
            : page == PAGE_STATES   ? nslots + 1
@@ -159,7 +163,7 @@ static int all_shown(void) {
 static int clamp(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 /* the setting an item is, NULL for an action */
 static const IniOpt* setting(int i) {
-    if (page == PAGE_MAIN) return i == M_STATS ? ini_find(g_display_ini, "stats") : NULL;
+    if (page == PAGE_MAIN) return main_item(i) == M_STATS ? ini_find(g_display_ini, "stats") : NULL;
     if (page == PAGE_CONTROLS) return ini_find(i == C_TOUCH ? g_backend_ini : g_vpad_ini, CONTROLS[i]);
     if (page == PAGE_PADS && i == P_PLAYER) return NULL;
     if (page == PAGE_PADS && pad_player && (i == P_SWAP || i == P_RUMBLE)) { /* the player's own */
@@ -187,10 +191,10 @@ static void label(int i, char* text, size_t size, char* value, size_t vsize) {
         return;
     }
     if (page == PAGE_MAIN) {
-        static const char* const main_items[M_COUNT] = {SNX_VPAD_PAGE, SNX_GAMEPAD_PAGE, "Save states", "Stats",
-                                                        "Exit"};
-        snprintf(text, size, "%s", main_items[i]);
-        if (i != M_EXIT) snprintf(value, vsize, ">");
+        static const char* const main_items[M_COUNT] = {SNX_VPAD_PAGE, SNX_GAMEPAD_PAGE, "Save states",
+                                                        "Stats",       "Capture frame",  "Exit"};
+        snprintf(text, size, "%s", main_items[main_item(i)]);
+        if (main_item(i) < M_CAPTURE) snprintf(value, vsize, ">");
         return;
     }
     if (page == PAGE_BUTTONS) {
@@ -376,7 +380,8 @@ static int act(int i, int step) {
     }
     if (page == PAGE_MAIN) {
         if (step) return OVERLAY_NONE;
-        if (i == M_EXIT) return OVERLAY_EXIT;
+        if (main_item(i) == M_EXIT) return OVERLAY_EXIT;
+        if (main_item(i) == M_CAPTURE) return OVERLAY_CAPTURE;
         page_open(i == M_PADS ? PAGE_PADS : i == M_STATES ? PAGE_STATES : PAGE_CONTROLS);
         return OVERLAY_NONE;
     }
@@ -1006,11 +1011,11 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
     d->focus = focus;
     d->shown = n - top < VISIBLE ? n - top : VISIBLE;
     for (r = 0; r < d->shown; ++r) {
-        static const unsigned main_icons[M_COUNT] = {GUI_ICON_POINTER, GUI_ICON_GAMEPAD_2, GUI_ICON_SAVE,
-                                                     GUI_ICON_ACTIVITY, GUI_ICON_LOG_OUT};
+        static const unsigned main_icons[M_COUNT] = {GUI_ICON_POINTER,  GUI_ICON_GAMEPAD_2, GUI_ICON_SAVE,
+                                                     GUI_ICON_ACTIVITY, GUI_ICON_IMAGE,     GUI_ICON_LOG_OUT};
         label(top + r, text[r], sizeof *text, value[r], sizeof *value);
         d->label[r] = text[r];
-        d->icon[r] = page == PAGE_MAIN ? main_icons[top + r] : GUI_ICON_NONE;
+        d->icon[r] = page == PAGE_MAIN ? main_icons[main_item(top + r)] : GUI_ICON_NONE;
         d->value[r] = value[r];
     }
 }

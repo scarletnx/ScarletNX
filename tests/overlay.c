@@ -11,6 +11,7 @@
 #include "nx/runtime/platform/vpad.h"
 #include "nx/runtime/platform/controls_atlas.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/gpu/renderer.h"
 #include "common/utilities/font.h"
 #include "gui/icons.h"
 #include "gui_theme_colors.h"
@@ -82,6 +83,14 @@ int gamepad_layout(int i, int labels[4], int* symmetric) {
 unsigned gamepad_held(int i) { return i < 0 ? pads_held[0] | pads_held[1] | pads_held[2] : i < 3 ? pads_held[i] : 0; }
 const char* gamepad_name(int i) { return i >= 0 && i < 3 ? pad_names[i] : NULL; }
 int gamepad_of_player(int slot) { return slot >= 0 && slot < 3 ? pad_of_player[slot] : -1; }
+/* the renderer's RenderDoc: whether a capture can be taken, which shows the menu's Capture frame */
+static int can_capture;
+static int capture(int ask) {
+    (void)ask;
+    return can_capture;
+}
+static const Renderer renderer = {.capture = capture};
+const Renderer* g_renderer = &renderer;
 const IniOpt g_backend_ini[] = {
     {"touch", "2", NULL, INI_INT, 0, &touch, 0, 2, NULL, "Touch screen", "Off|Fingers|Fingers and mouse", 0, 0, 0},
     {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
@@ -575,6 +584,21 @@ int main(void) {
     overlay_move(1);
     overlay_move(-6);
     assert(overlay_select() == OVERLAY_EXIT && overlay_back() == OVERLAY_CLOSE);
+    /* RenderDoc in the game: Capture frame between Stats and Exit, with the stats box's RenderDoc icon and no page
+       under it, the panel a row taller; a tap is the caller's capture, Exit a row down */
+    can_capture = 1;
+    draw();
+    assert(list.q[0].h == 10 * 32 && icon_at(3, 7, GUI_ICON_IMAGE) && text_at(6, 7, "Capture frame") &&
+           !text_at(C - 2, 7, ">") && text_at(6, 8, "Exit") && icon_at(3, 8, GUI_ICON_LOG_OUT));
+    assert(tap(5, 3) == OVERLAY_EXIT && tap(4, 3) == OVERLAY_CAPTURE && overlay_select() == OVERLAY_CAPTURE);
+    overlay_move(1);
+    assert(overlay_select() == OVERLAY_EXIT);
+    overlay_move(-1);
+    /* without it, none: Exit where it was */
+    can_capture = 0;
+    draw();
+    assert(list.q[0].h == 9 * 32 && text_at(6, 7, "Exit") && !shows("Capture frame"));
+    assert(overlay_select() == OVERLAY_EXIT);
 
     /* the controls' page: each setting shown with its value, changed and kept */
     assert(tap(0, 3) == OVERLAY_NONE);

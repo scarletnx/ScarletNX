@@ -3,15 +3,15 @@
 /* RenderDoc captures of frames. RenderDoc's library comes in by renderdoc=PREFIX ([Debug] or --renderdoc=), which loads
    it before the Vulkan instance exists (its capture layer is an implicit one, which the loader enables with
    ENABLE_VULKAN_RENDERDOC_CAPTURE), or is in the process already when RenderDoc's own program started the game. Either
-   way Ctrl+Shift+F12 (backend/sdl3.c) captures the next frame, and renderdoc_frames=N,M,... names frames to capture: a
-   number is a present, a number with s a time in seconds on the clock --script counts from (the first frame after it),
-   which a loaded machine doesn't move. A capture holds one guest frame: everything recorded after present N-1 up to
-   present N, written where renderdoc= says (PREFIX_capture.rdc, then PREFIX_capture_2.rdc and on), or where
-   RenderDoc's program keeps its captures when it is empty. Frames that never reach the swapchain (offscreen, headless) are
-   captured the same way, because the capture starts and ends here rather than at RenderDoc's present hook. RenderDoc's
-   own keys and overlay are off, so F12 stays the stats' key: the stats box says when a capture can be taken, and what
-   the last one wrote (stats_capture). The in-application API is RenderDoc's renderdoc_app.h (MIT, Baldur Karlsson),
-   fetched by cmake/dependencies.cmake. */
+   way Ctrl+Shift+F12 (backend/sdl3.c) or the game's menu's Capture frame (overlay.c) captures the next frame, and
+   renderdoc_frames=N,M,... names frames to capture: a number is a present, a number with s a time in seconds on the
+   clock --script counts from (the first frame after it), which a loaded machine doesn't move. A capture holds one guest
+   frame: everything recorded after present N-1 up to present N, written where renderdoc= says (PREFIX_capture.rdc, then
+   PREFIX_capture_2.rdc and on), or where RenderDoc's program keeps its captures when it is empty. Frames that never
+   reach the swapchain (offscreen, headless) are captured the same way, because the capture starts and ends here rather
+   than at RenderDoc's present hook. RenderDoc's own keys and overlay are off, so F12 stays the stats' key: the stats
+   box says when a capture can be taken, and what the last one wrote (stats_capture). The in-application API is
+   RenderDoc's renderdoc_app.h (MIT, Baldur Karlsson), fetched by cmake/dependencies.cmake. */
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
@@ -91,7 +91,8 @@ void vk_renderdoc_load(void) {
         WARN("renderdoc: renderdoc_frames: \"%s\" is no frame (N, or Ns for seconds): it captures the %d "
              "before it\n",
              p, g_renderdoc.nframes);
-    LOG("renderdoc: %s, Ctrl+Shift+F12 captures the next frame, %d frame(s) listed, to %s\n",
+    LOG("renderdoc: %s, Ctrl+Shift+F12 or the menu's Capture frame captures the next frame, %d frame(s) listed, to "
+        "%s\n",
         started ? "in the process (RenderDoc's program started the game)" : "loaded", g_renderdoc.nframes,
         *prefix ? prefix : rd->GetCaptureFilePathTemplate());
     __atomic_store_n(&g_renderdoc.api, rd, __ATOMIC_RELEASE); /* the main thread's Ctrl+Shift+F12 reads it */

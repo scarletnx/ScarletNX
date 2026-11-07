@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The game's menu: Android's back button, a gamepad's Home, the on-screen Home or F2 opens it over the game, in the
    menu's look (src/gui, the YoRHa theme), drawn by the renderer as quads (ui.h). The same on every platform: the
-   on-screen controls' options (vpad.h), the touch screen's, and Exit */
+   on-screen controls' options (vpad.h), the touch screen's, Capture frame while RenderDoc is in the game (the
+   renderer's capture), and Exit */
 #ifndef SNX_OVERLAY_H
 #define SNX_OVERLAY_H
 #include "nx/runtime/platform/ui.h"
@@ -11,7 +12,8 @@
 #define OVERLAY_COLS_MAX 72 /* and the widest, as far as three quarters of the picture let it */
 #define OVERLAY_ROWS     16 /* the tallest page's: the others are as tall as their items */
 /* what a menu action leaves to its caller: the save state ones for the slot overlay_slot names; the keyboard's box
-   answered (overlay_keyboard_take), or a tap on its line, which asks for the system's keyboard again */
+   answered (overlay_keyboard_take), or a tap on its line, which asks for the system's keyboard again; Capture frame,
+   RenderDoc's capture of the next frame, the menu closed first so the frame is the game's */
 enum {
     OVERLAY_NONE,
     OVERLAY_CLOSE,
@@ -21,7 +23,8 @@ enum {
     OVERLAY_LOAD,
     OVERLAY_DELETE,
     OVERLAY_KEYBOARD,
-    OVERLAY_TYPE
+    OVERLAY_TYPE,
+    OVERLAY_CAPTURE
 };
 
 /* whether it is open, for the renderer's thread too */
