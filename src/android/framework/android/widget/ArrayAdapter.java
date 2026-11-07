@@ -44,7 +44,7 @@ public class ArrayAdapter<T> extends BaseAdapter implements Filterable, ThemedSp
     private List<T> target() { return originalValues != null ? originalValues : objects; }
     public void add(T object) { synchronized (lock) { target().add(object); } changed(); }
     public void addAll(Collection<? extends T> collection) { synchronized (lock) { target().addAll(collection); } changed(); }
-    @SafeVarargs public final void addAll(T... items) { synchronized (lock) { Collections.addAll(target(), items); } changed(); }
+    @SuppressWarnings("unchecked") public void addAll(T... items) { synchronized (lock) { Collections.addAll(target(), items); } changed(); }
     public void insert(T object, int index) { synchronized (lock) { target().add(index, object); } changed(); }
     public void remove(T object) { synchronized (lock) { target().remove(object); } changed(); }
     public void clear() { synchronized (lock) { target().clear(); } changed(); }
