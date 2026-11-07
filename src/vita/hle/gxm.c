@@ -705,6 +705,12 @@ static uint32_t set_uniform_data_f(VitaProcess* p, VitaThread* t) {
     bool is_float = type == GXP_TYPE_F32 || type == GXP_TYPE_F16;
     if (gxp_parameter_array_size(q) == 1 || components == 1) {
         if (components == 1) size = 4;
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+        if (type == GXP_TYPE_F32 && size == 4) {
+            memcpy(base + offset * 4, vita_ptr(p, data), count * 4);
+            return 0;
+        }
+#endif
         for (uint32_t i = 0; i < count; ++i)
             put_component(base + (offset + i) * size, components == 1 && type != GXP_TYPE_F32 ? GXP_TYPE_U32 : type,
                           gxp_f32(vita_ptr(p, data + i * 4)));
@@ -712,6 +718,17 @@ static uint32_t set_uniform_data_f(VitaProcess* p, VitaThread* t) {
     }
     unsigned element = components * size, padded = element;
     padded = is_float ? (element + 7) & ~7u : (element + 3) & ~3u;
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    if (type == GXP_TYPE_F32) {
+        for (uint32_t i = 0; i < count;) {
+            uint32_t at = offset + i, vector = at / components, component = at % components, run = components - component;
+            if (run > count - i) run = count - i;
+            memcpy(base + vector * padded + component * 4, vita_ptr(p, data + i * 4), run * 4);
+            i += run;
+        }
+        return 0;
+    }
+#endif
     for (uint32_t i = 0; i < count; ++i) {
         uint32_t at = offset + i, vector = at / components, component = at % components;
         put_component(base + vector * padded + component * size, type, gxp_f32(vita_ptr(p, data + i * 4)));

@@ -248,6 +248,8 @@ typedef struct VitaProcess {
     struct VitaTrophy* trophy;
     /* each import's function (vita/hle/hle.c), looked up at its first call; unknown_logged: reported as missing */
     const void** hle;
+    const void** hle_export; /* the guest export an import resolves to, found at its first call */
+    unsigned char* hle_export_known;
     uint32_t* unknown_logged;
 } VitaProcess;
 

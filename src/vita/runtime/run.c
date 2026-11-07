@@ -297,14 +297,40 @@ static bool live(const VitaProcess* p) {
         if (p->threads[i].state == VITA_THREAD_READY || p->threads[i].state == VITA_THREAD_WAITING) return true;
     return false;
 }
+/* the imports by SVC immediate, as chains through svc_next in import order */
+static uint32_t* svc_head;
+static uint32_t* svc_next;
+static uint32_t svc_heads;
+static bool svc_index_make(const VitaProcess* p) {
+    uint32_t count = p->image.import_count, max = 0;
+    for (uint32_t i = 0; i < count; ++i)
+        if (p->image.imports[i].svc > max) max = p->image.imports[i].svc;
+    svc_heads = count ? max + 1 : 0;
+    svc_head = malloc((svc_heads ? svc_heads : 1) * sizeof *svc_head);
+    svc_next = malloc((count ? count : 1) * sizeof *svc_next);
+    if (!svc_head || !svc_next) return false;
+    for (uint32_t i = 0; i < svc_heads; ++i) svc_head[i] = UINT32_MAX;
+    for (uint32_t i = count; i-- > 0;) {
+        uint32_t svc_imm = p->image.imports[i].svc;
+        svc_next[i] = svc_head[svc_imm];
+        svc_head[svc_imm] = i;
+    }
+    return true;
+}
+static void svc_index_free(void) {
+    free(svc_head);
+    free(svc_next);
+    svc_head = svc_next = NULL;
+    svc_heads = 0;
+}
 /* an SVC of the current thread: an import, or a trampoline's. False when the run cannot go on */
 static bool svc(VitaProcess* p, VitaThread* t, uint32_t imm) {
     if (imm < VITA_SVC_RUNTIME) {
         uint32_t pc = t->cpu.r[15], address = 0;
         bool thumb = !!(t->cpu.cpsr & SNX_ARM_T);
-        for (uint32_t i = 0; i < p->image.import_count; ++i) {
+        for (uint32_t i = imm < svc_heads ? svc_head[imm] : UINT32_MAX; i != UINT32_MAX; i = svc_next[i]) {
             const VitaImport* import = &p->image.imports[i];
-            if (import->svc != imm || !!(import->stub & 1) != thumb) continue;
+            if (!!(import->stub & 1) != thumb) continue;
             address = import->stub & ~1u;
             if (pc >= address && pc <= address + 8) {
                 vita_hle_call(p, t, i);
@@ -332,6 +358,10 @@ int vita_run(VitaProcess* p, double seconds) {
     p->display.next_ns = vita_now_ns() + VBLANK_NS;
     VitaThread* volatile running = NULL;
     VitaThread* last = NULL; /* the thread that ran the last slice */
+    if (!svc_index_make(p)) {
+        result = 1;
+        goto done;
+    }
 #ifndef _WIN32
     faults_install(p->mem);
     if (sigsetjmp(fault_jump, 1)) {
@@ -441,5 +471,6 @@ done:
     vita_jit_free(p->jit);
     p->jit = NULL;
     vita_lockstep_free();
+    svc_index_free();
     return result;
 }
