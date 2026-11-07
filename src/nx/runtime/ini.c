@@ -279,7 +279,7 @@ static const struct {
                       {"user", "now user_uid, the uid of the user it named"},
                       {"memory_fit", "now memory_fit_mode, whose 0 is Auto (memory_fit's 1) and 1 Off"},
                       {"astc_bc", "now astc_mode, whose 0 is Auto (BC7, astc_bc's 1) and 1 Exact (RGBA8)"},
-                      {"controls_opacity", "now controls_alpha, half of it: the built-in art is twice as opaque"},
+                      {"controls_opacity", "now controls_alpha: the built-in art is opaque, its 50 the old 100"},
                       {NULL, NULL}};
 const char* ini_deprecated(const char* k) {
     int i;

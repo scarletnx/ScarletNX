@@ -21,6 +21,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/unattended.h"
 #include "nx/runtime/platform/vpad.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -552,7 +553,7 @@ int options_controls_opacity_old(const char* old) {
     if (end == old || *end) return -2;
     if (v < 0) v = 0;
     if (v > 100) v = 100;
-    return v == 50 ? -1 : (int)(v + 1) / 2;
+    return v == 50 ? -1 : (int)(100 * pow(0.006 * (double)v, 1 / SNX_VPAD_BUILTIN_CURVE) + 0.5);
 }
 static void controls_opacity_old(void) {
     const char* old = ini_deprecated_value("controls_opacity");
@@ -577,7 +578,7 @@ static void controls_opacity_old(void) {
     store_put("controls_alpha", now);
     WARN(
         "settings: controls_opacity=%s, deprecated, is controls_alpha=%d now, the same look: the built-in controls' art "
-        "is twice as opaque (docs/DEPRECATIONS.md)\n",
+        "is opaque (docs/DEPRECATIONS.md)\n",
         old, v);
 }
 

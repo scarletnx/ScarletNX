@@ -7,7 +7,7 @@
    key and both values; and memory_fit, deprecated, read from an old .ini as memory_fit_mode while the file gives that
    one none, and the file written with memory_fit_mode and memory_fit under [Deprecated]. And controls_skin: a .ini
    without it opens with line, its default, and one that gives it empty keeps the built-in look. And controls_opacity,
-   deprecated, read from an old .ini as controls_alpha, half of it */
+   deprecated, read from an old .ini as the controls_alpha of the same look */
 #include "common/utilities/common.h"
 #include "nx/hle/services/hid.h"
 #include "nx/hle/services/services.h"
@@ -359,15 +359,15 @@ static void test_controls_skin(void) {
     g_test.write = 0;
 }
 
-/* controls_opacity, deprecated, in an old .ini: read while controls_alpha has no value, as half of it rounded up (the
-   built-in art is twice as opaque now, so the look stays), said once; the file written with controls_alpha and
+/* controls_opacity, deprecated, in an old .ini: read while controls_alpha has no value, as the value that draws the
+   built-in look as it was (the art opaque now, on SNX_VPAD_BUILTIN_CURVE), said once; the file written with controls_alpha and
    controls_opacity under [Deprecated]. 50, the default it had last, and a value that is not a whole number leave
    controls_alpha its default, said */
 static void test_controls_opacity_old(void) {
     char *text, *again;
-    CHECK(options_controls_opacity_old("100") == 50 && options_controls_opacity_old("75") == 38 &&
+    CHECK(options_controls_opacity_old("100") == 50 && options_controls_opacity_old("75") == 34 &&
           options_controls_opacity_old("0") == 0 && options_controls_opacity_old("150") == 50 &&
-          options_controls_opacity_old("-3") == 0 && options_controls_opacity_old("40") == 20);
+          options_controls_opacity_old("-3") == 0 && options_controls_opacity_old("40") == 14);
     CHECK(options_controls_opacity_old("50") == -1); /* the default the .ini files made since it was had written */
     CHECK(options_controls_opacity_old("most") == -2 && options_controls_opacity_old("50.5") == -2 &&
           options_controls_opacity_old("") == -2);
@@ -376,7 +376,7 @@ static void test_controls_opacity_old(void) {
     CHECK(!strcmp(g_test.alpha, "50"));
     CHECK(strstr(g_test.said,
                  "settings: controls_opacity=100, deprecated, is controls_alpha=50 now, the same look: the "
-                 "built-in controls' art is twice as opaque (docs/DEPRECATIONS.md)\n"));
+                 "built-in controls' art is opaque (docs/DEPRECATIONS.md)\n"));
     CHECK(text && strstr(text, "\ncontrols_alpha=50\n") && strstr(text, "\n[Deprecated]\n") &&
           strstr(text, "\n[Deprecated]\n") < strstr(text, "\ncontrols_opacity=100\n"));
     snprintf(g_test.alpha, sizeof g_test.alpha, "%s", "not given");
@@ -385,8 +385,8 @@ static void test_controls_opacity_old(void) {
     free(again);
     free(text);
     text = open_ini("[On-screen controls]\ncontrols_opacity=30\n");
-    CHECK(!strcmp(g_test.alpha, "15") && strstr(g_test.said, "settings: controls_opacity=30, deprecated, is "
-                                                             "controls_alpha=15 now"));
+    CHECK(!strcmp(g_test.alpha, "10") && strstr(g_test.said, "settings: controls_opacity=30, deprecated, is "
+                                                             "controls_alpha=10 now"));
     free(text);
     /* 50, controls_opacity's last default, which a new game's .ini wrote: controls_alpha its own, 50, not 25 */
     snprintf(g_test.alpha, sizeof g_test.alpha, "%s", "not given");
