@@ -6,7 +6,7 @@
    controls are a Switch game's pad's (backend/gamepad.c): each sends the button where it is, as on the console (east
    A, south B, north X, west Y), gamepad_map over that in the Switch's button names (Plus is Start and Minus Select),
    then gamepad_swap_ab swapping A and B; its left stick is the circle pad and its right one the C-stick, each past
-   gamepad_deadzone. The script
+   gamepad_deadzone. The first pad with motion sensors is the console's accelerometer and gyroscope. The script
    (ctr_script) is unattended.c's for a Switch game: ms:hex presses, each held for press_len ms */
 #include "3ds/input/input.h"
 #include "common/utilities/common.h"
@@ -81,6 +81,12 @@ void snx_ctr_input_init(void) {
     g_input.gamepads = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
     if (!g_input.gamepads) fprintf(stderr, "scarletnx-3ds: no gamepads: %s\n", SDL_GetError());
 }
+/* the lines of snx_pad_motion_enable (pad_sdl.c), which turns a pad's motion sensors on: each says whether its sensor
+   turned on, SDL's error when it did not */
+static void say_motion(int warn, const char* line) {
+    (void)warn;
+    fprintf(stderr, "3ds input: %s\n", line);
+}
 void snx_ctr_input_event(const union SDL_Event* event) {
     if (event->type == SDL_EVENT_GAMEPAD_ADDED) {
         for (unsigned i = 0; i < INPUT_PADS; ++i)
@@ -88,6 +94,7 @@ void snx_ctr_input_event(const union SDL_Event* event) {
         for (unsigned i = 0; i < INPUT_PADS; ++i)
             if (!g_input.pads[i]) {
                 g_input.pads[i] = SDL_OpenGamepad(event->gdevice.which);
+                if (g_input.pads[i]) snx_pad_motion_enable(g_input.pads[i], say_motion);
                 break;
             }
     } else if (event->type == SDL_EVENT_GAMEPAD_REMOVED)
@@ -173,6 +180,24 @@ void snx_ctr_input_read(SnxCtrInput* input) {
         double ms = (snx_seconds() - g_input.start) * 1000.0;
         input->buttons |= snx_script_held(g_input.script, g_input.presses, ms, (uint32_t)g_settings.press_length);
     }
+}
+bool snx_ctr_input_motion(float accel[3], float gyro[3]) {
+    const float degrees = 57.29577951f; /* a radian's */
+    for (unsigned p = 0; p < INPUT_PADS; ++p)
+        for (int which = 0; g_input.pads[p] && which < SNX_PAD_MOTIONS; ++which) {
+            float a[3], w[3];
+            if (!snx_pad_motion_read(g_input.pads[p], which, a, w)) continue;
+            /* Azahar's SDL motion (input_common/sdl/sdl_impl.cpp at azahar-emu/azahar 6e42de8): y of the acceleration
+               and x and z of the rotation negated */
+            accel[0] = a[0] / SDL_STANDARD_GRAVITY;
+            accel[1] = -a[1] / SDL_STANDARD_GRAVITY;
+            accel[2] = a[2] / SDL_STANDARD_GRAVITY;
+            gyro[0] = -w[0] * degrees;
+            gyro[1] = w[1] * degrees;
+            gyro[2] = -w[2] * degrees;
+            return true;
+        }
+    return false;
 }
 void snx_ctr_input_free(void) {
     for (unsigned i = 0; i < INPUT_PADS; ++i)

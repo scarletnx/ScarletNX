@@ -222,7 +222,8 @@ title music through a port of Azahar's HLE DSP. A run of about 2 billion native
 blocks presented frames until it was ended. It is **not playable** yet:
 
 - Input is the pad and a finger or the mouse's left button on the touch screen.
-  The sensors are at rest (`hid:USER`, below).
+  The sensors are a gamepad's accelerometer and gyroscope, else at rest (`hid:USER`,
+  below).
 - The music has a gap after every rendered frame, because rendering and presenting
   run inside the guest's GSP call.
 - Procedural textures and shadows still stop the run explicitly.
@@ -432,7 +433,12 @@ scripted presses of `--script=ms:hex,...` (`ctr_script`), in the pad's bits (1 A
 800 Y), each held for `press_len` ms. The touch entries follow a finger or the
 mouse's left button pressed on the bottom screen, as the Switch's `touch` says (`2`
 both, `1` fingers, `0` neither), one at a time: the first pressed holds the screen
-until it lets go. The sensors give a console lying still.
+until it lets go. The accelerometer and gyroscope are the first gamepad whose motion
+sensors SDL reads (its own, else a left or right Joy-Con's), as the Switch's backend
+reads them (`snx_pad_motion_read`), in the axes of Azahar's SDL motion (y of the
+acceleration and x and z of the rotation negated), at 512 raw a g and 14.375 a
+degree a second; a pad held up in front of the player at rest reads as the console
+at rest. With no such pad they give a console lying still.
 
 ZL, ZR and the C-stick are the New 3DS's `ir:rst` (`services/irrst.c`, ported from
 Azahar's `ir_rst.cpp`). GetHandles moves out its shared memory and update event,

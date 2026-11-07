@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* pad_map.h's controls on SDL's gamepads, for the runtime (gamepad.c) and the launcher (cmake/pad_sdl.cmake) */
+/* pad_map.h's controls and the motion sensors on SDL's gamepads, for the runtimes (the Switch's backend/gamepad.c, the
+   3DS's input/input.c) and the launcher (cmake/pad_sdl.cmake) */
 #ifndef SNX_PAD_SDL_H
 #define SNX_PAD_SDL_H
 #include <SDL3/SDL.h>
@@ -19,4 +20,12 @@ int snx_pad_symmetric(SDL_Gamepad* g);
    names none (NULL or ""); -1 for none. alike: the pads with its GUID that took a player before it; players: each
    player's controller (gamepad_p<N>_device), count of them; taken: a bit for each player that has a pad */
 int snx_pad_slot(const char* guid, int alike, const char* const* players, int count, unsigned taken);
+/* a pad's motion sensors, as SDL has them: its own accelerometer and gyroscope, a left Joy-Con's and a right one's */
+enum { SNX_PAD_MOTION_MAIN, SNX_PAD_MOTION_LEFT, SNX_PAD_MOTION_RIGHT, SNX_PAD_MOTIONS };
+/* Turns on every motion sensor g has, saying each through say (a line without its newline: warn set with SDL's error
+   when one would not turn on), and that it has none */
+void snx_pad_motion_enable(SDL_Gamepad* g, void (*say)(int warn, const char* line));
+/* The accelerometer and gyroscope of g's pair which (SNX_PAD_MOTION_*) as SDL reads them: m/s^2 and rad/s, x to the
+   right, y up and z toward the player (SDL_sensor.h). 0 when either is off or has nothing to read */
+int snx_pad_motion_read(SDL_Gamepad* g, int which, float accel[3], float gyro[3]);
 #endif
