@@ -29,6 +29,7 @@ typedef struct {
 } Program;
 typedef struct {
     VitaImage* image;
+    uint32_t vaddr[16], vsize[16]; /* each loaded program header's link-time address and size (formats 6 to 9's pointers) */
     uint32_t base[16]; /* each program header's load address, by its index (a relocation's segment), 0 for none */
     int loaded[16];    /* the image segment of each program header, -1 for none */
     size_t seed_capacity;
@@ -152,27 +153,93 @@ static bool relocate(Loader* l, unsigned code, unsigned symseg, unsigned datseg,
         default: return fail(l, "unknown relocation type %u at 0x%08x", code, P);
     }
 }
+/* The relocation stream's entries have ten formats (vita-toolchain's sce-elf.h, and Vita3K's relocation.cpp, GPL-2.0-or-later),
+   the first word's low nibble naming each. Format 0 is the 12-byte one that names everything. Format 1 is its 8-byte
+   short form. Formats 2 to 9 are deltas on the state that the entries before them left (the patched segment, offset,
+   symbol segment, addend and the two relocation codes), so the SDK's linker packs a long run of MOVW and MOVT pairs and
+   pointers into 4 or 8 bytes each. The state starts empty for each stream */
+typedef struct {
+    unsigned patchseg, symseg, code, code2;
+    uint32_t offset, addend;
+} RelocState;
+/* the code at the state's offset, and a second one dist bytes on (a MOVW's MOVT) when the state has one */
+static bool relocate_pair(Loader* l, const RelocState* st, uint32_t dist) {
+    if (!relocate(l, st->code, st->symseg, st->patchseg, st->offset, st->addend)) return false;
+    return !st->code2 || relocate(l, st->code2, st->symseg, st->patchseg, st->offset + dist, st->addend);
+}
+/* Formats 6 to 9 relocate a pointer the image already holds: the segment whose link-time range has its value says
+   which segment it points into, and its offset there is the addend. A value in none of them keeps the last symbol
+   segment */
+static bool relocate_pointer(Loader* l, RelocState* st) {
+    uint32_t value;
+    if (st->patchseg >= 16 || l->loaded[st->patchseg] < 0 || !word(l->image, l->base[st->patchseg] + st->offset, &value))
+        return fail(l, "pointer relocation at 0x%08x outside its segment", l->base[st->patchseg % 16] + st->offset, 0);
+    uint32_t segment_base = 0;
+    for (unsigned i = 0; i < 16; ++i) {
+        if (l->loaded[i] < 0 || value < l->vaddr[i] || value - l->vaddr[i] >= l->vsize[i]) continue;
+        segment_base = l->vaddr[i];
+        st->symseg = i;
+    }
+    st->code = 2, st->code2 = 0, st->addend = value - segment_base; /* R_ARM_ABS32 */
+    return relocate(l, st->code, st->symseg, st->patchseg, st->offset, st->addend);
+}
 static bool relocate_all(Loader* l, const unsigned char* r, size_t size) {
+    RelocState st = {0};
     for (size_t pos = 0; pos < size;) {
-        if (size - pos < 8) return fail(l, "truncated relocation at %u of %u bytes", (uint32_t)pos, (uint32_t)size);
-        uint32_t type = snx_ld_le32(r + pos), offset, addend, code2 = 0, dist2 = 0;
-        if (type & 15) { /* the short form: the offset split over the two words, a 12-bit addend */
-            uint32_t second = snx_ld_le32(r + pos + 4);
-            offset = (type >> 20) | (second & 0xfffff) << 12;
-            addend = second >> 20;
-            pos += 8;
-        } else {
-            if (size - pos < 12) return fail(l, "truncated relocation at %u of %u bytes", (uint32_t)pos, (uint32_t)size);
-            addend = snx_ld_le32(r + pos + 4);
-            offset = snx_ld_le32(r + pos + 8);
-            code2 = (type >> 20) & 0xff;
-            dist2 = (type >> 28) & 15;
-            pos += 12;
+        uint32_t first = snx_ld_le32(r + pos), format = first & 15, second = 0;
+        static const unsigned char length[16] = {12, 8, 8, 8, 4, 4, 4, 4, 4, 4};
+        if (format > 9) return fail(l, "unknown relocation entry format %u at %u", format, (uint32_t)pos);
+        if (size - pos < length[format]) return fail(l, "truncated relocation at %u of %u bytes", (uint32_t)pos, (uint32_t)size);
+        if (length[format] >= 8) second = snx_ld_le32(r + pos + 4);
+        switch (format) {
+            case 0: /* code, code2 and dist2 (halfwords), then the addend and the offset in whole words */
+                st = (RelocState){.patchseg = (first >> 16) & 15, .symseg = (first >> 4) & 15, .code = (first >> 8) & 0xff,
+                                  .code2 = (first >> 20) & 0xff, .offset = snx_ld_le32(r + pos + 8), .addend = second};
+                if (!relocate_pair(l, &st, ((first >> 28) & 15) * 2)) return false;
+                break;
+            case 1: /* the offset's low 12 bits here and its high 10 in the second word, which has a 22-bit addend */
+                st = (RelocState){.patchseg = (first >> 16) & 15, .symseg = (first >> 4) & 15, .code = (first >> 8) & 0xff,
+                                  .offset = (first >> 20) | (second & 0x3ff) << 12, .addend = second >> 10};
+                if (!relocate_pair(l, &st, 0)) return false;
+                break;
+            case 2: /* a new offset step, symbol segment, code and addend, in the state's patched segment */
+                st.symseg = (first >> 4) & 15, st.code = (first >> 8) & 0xff, st.code2 = 0;
+                st.offset += first >> 16, st.addend = second;
+                if (!relocate_pair(l, &st, 0)) return false;
+                break;
+            case 3: { /* a MOVW and MOVT pair, in Thumb when bit 8 is set: dist2 bytes apart */
+                bool thumb = (first >> 8) & 1;
+                st.symseg = (first >> 4) & 15, st.code = thumb ? 47 : 43, st.code2 = thumb ? 48 : 44;
+                st.offset += (first >> 9) & 0x3ffff, st.addend = second & 0x3fffff;
+                if (!relocate_pair(l, &st, first >> 27)) return false;
+                break;
+            }
+            case 4: /* the same symbol, code and addend, a step on */
+                st.offset += (first >> 4) & 0x7fffff;
+                if (!relocate_pair(l, &st, first >> 27)) return false;
+                break;
+            case 5: { /* two pairs of them: dist1, dist2, dist3, dist4 */
+                st.offset += (first >> 4) & 0x1ff;
+                if (!relocate_pair(l, &st, (first >> 13) & 0x1f)) return false;
+                st.offset += (first >> 18) & 0x1ff;
+                if (!relocate_pair(l, &st, first >> 27)) return false;
+                break;
+            }
+            case 6:
+                st.offset += first >> 4;
+                if (!relocate_pointer(l, &st)) return false;
+                break;
+            default: { /* 7, 8, 9: 4, 7 or 14 word steps of 7, 4 or 2 bits, each a pointer */
+                unsigned bits = format == 7 ? 7 : format == 8 ? 4 : 2;
+                uint32_t steps = first >> 4;
+                do {
+                    st.offset += (steps & ((1u << bits) - 1)) * 4;
+                    if (!relocate_pointer(l, &st)) return false;
+                } while (steps >>= bits);
+                break;
+            }
         }
-        unsigned code = (type >> 8) & 0xff, symseg = (type >> 4) & 15, datseg = (type >> 16) & 15;
-        if (!relocate(l, code, symseg, datseg, offset, addend)) return false;
-        /* a second relocation of the same symbol dist2 halfwords on (a MOVW's MOVT) */
-        if (code2 && !relocate(l, code2, symseg, datseg, offset + dist2 * 2, addend)) return false;
+        pos += length[format];
     }
     return true;
 }
@@ -418,7 +485,7 @@ bool vita_image_load_at(const char* path, VitaImage* image, uint32_t origin, uin
             if (s->address < image->segment[j].address + image->segment[j].size &&
                 image->segment[j].address < s->address + s->size)
                 ok = fail(&l, "segments %u and %u overlap", j, image->segment_count);
-        l.base[i] = s->address;
+        l.base[i] = s->address, l.vaddr[i] = ph[i].vaddr, l.vsize[i] = ph[i].memsz;
         l.loaded[i] = (int)image->segment_count++;
     }
     for (unsigned i = 0; ok && i < count; ++i)
