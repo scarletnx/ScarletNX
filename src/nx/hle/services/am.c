@@ -771,10 +771,9 @@ static int nn_am_service_IApplicationFunctions_GetDisplayVersion(SvcObj* self, n
 /* the account's (type 1) and the device's (3) save data: the size ExtendSaveData gave it, else the NACP's, 64 MiB each
    without a NACP */
 #define AM_DEFAULT_SAVE_SIZE 0x4000000
-static int nn_am_service_IApplicationFunctions_GetSaveDataSize(SvcObj* self, u8 type, const nn_account_Uid* uid,
-                                                              i64* normal_size, i64* journal_size) {
+void am_save_data_size(u8 type, i64* normal_size, i64* journal_size) {
     int device = type == 3, extended = 0;
-    (void)self, (void)uid;
+    *normal_size = *journal_size = 0;
     if (type == 1 || type == 3) {
         pm_lock(&g_host.am.lock);
         extended = g_hle.am.save_extended[device];
@@ -784,7 +783,7 @@ static int nn_am_service_IApplicationFunctions_GetSaveDataSize(SvcObj* self, u8 
         }
         pm_unlock(&g_host.am.lock);
     }
-    if (extended) R_SUCCEED();
+    if (extended) return;
     if (!am_nacp(0, 0)) {
         *normal_size = AM_DEFAULT_SAVE_SIZE;
         *journal_size = AM_DEFAULT_SAVE_SIZE;
@@ -792,6 +791,11 @@ static int nn_am_service_IApplicationFunctions_GetSaveDataSize(SvcObj* self, u8 
         *normal_size = (i64)am_nacp_u64(NACP_ACCOUNT_SAVE_SIZE + (device ? 16 : 0));
         *journal_size = (i64)am_nacp_u64(NACP_ACCOUNT_SAVE_SIZE + 8 + (device ? 16 : 0));
     }
+}
+static int nn_am_service_IApplicationFunctions_GetSaveDataSize(SvcObj* self, u8 type, const nn_account_Uid* uid,
+                                                               i64* normal_size, i64* journal_size) {
+    (void)self, (void)uid;
+    am_save_data_size(type, normal_size, journal_size);
     R_SUCCEED();
 }
 /* the largest save data the console allows, as Eden answers (application_functions.cpp) */
