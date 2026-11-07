@@ -193,6 +193,11 @@ void am_display_version(char version[16]) {
     memcpy(version, test_display, sizeof test_display);
     version[15] = 0;
 }
+/* am.c's: an account's and the device's save sizes, which this test sets */
+void am_save_data_size(u8 type, i64* normal_size, i64* journal_size) {
+    *normal_size = type == 1 ? 0x1230000 : type == 3 ? 0x450000 : 0;
+    *journal_size = type == 1 ? 0x670000 : type == 3 ? 0x89000 : 0;
+}
 void fatal(const char* format, ...) {
     va_list args;
     va_start(args, format);
@@ -270,6 +275,14 @@ int ipc_bad_request(SvcObj* o, IpcCtx* c) {
 int ipc_bad_objects(SvcObj* o, IpcCtx* c) {
     (void)o, (void)c;
     return RC(10, 235);
+}
+/* the object a request sends in its domain message: the one test_in_object names, with a reference for the caller */
+#define TEST_DOMAIN_MESSAGE 2 /* ipc.c's IPC_DOMAIN_MESSAGE */
+static SvcObj* test_in_object;
+SvcObj* ipc_in_obj(IpcCtx* c, int index) {
+    if (c->is_domain != TEST_DOMAIN_MESSAGE || index || !test_in_object) return NULL;
+    test_in_object->refs++;
+    return test_in_object;
 }
 int stub_ok(SvcObj* obj, IpcCtx* c) {
     fprintf(stderr, "Unexpected stub: %s command %u\n", obj->name, c->cmd);
@@ -2286,6 +2299,109 @@ static void test_save_note(SvcObj* proxy) {
          "an older, the same or another game's not, by the content meta's versions else the display versions'");
 }
 
+/* IMultiCommitManager (fsp-srv's 1200): Add (1) {an IFileSystem, in the domain message} takes 10 file systems, each
+   once; Commit (2) commits each as its own Commit does, an Account and a Device save's notes written, or none when
+   one of them was closed since */
+static u32 multi_add(SvcObj* manager, SvcObj* filesystem) {
+    Request r;
+    u32 rc;
+    request(&r, 1);
+    r.c.is_domain = TEST_DOMAIN_MESSAGE;
+    r.c.nin_objs = 1;
+    test_in_object = filesystem;
+    rc = (u32)manager->dispatch(manager, &r.c);
+    test_in_object = NULL;
+    return rc;
+}
+static void save_note_of(SvcObj* save, char* note, size_t size) {
+    char folder[FS_TREE_PATH_MAX];
+    save_host_folder(save, folder, sizeof folder);
+    snprintf(note, size, "%s.version", folder);
+}
+static void test_multi_commit(SvcObj* proxy) {
+    char user_note[FS_TREE_PATH_MAX + 16], device_note[FS_TREE_PATH_MAX + 16];
+    SvcObj *manager, *user, *device, *more[9];
+    Request r;
+    strcpy(g_settings.save_layout, "game");
+    test_program(0, 0, "1.0.0");
+    request(&r, 1200);
+    dispatch(proxy, &r, 0);
+    CHECK(r.c.nout_objs == 1);
+    manager = r.c.out_objs[0];
+    user = open_user_save(proxy, g_user_id);
+    device = open_save_data(proxy, 51, 3);
+    save_note_of(user, user_note, sizeof user_note);
+    save_note_of(device, device_note, sizeof device_note);
+    remove(user_note);
+    remove(device_note);
+    CHECK(multi_add(manager, user) == 0 && multi_add(manager, device) == 0);
+    CHECK(multi_add(manager, user) == RC(2, 6463));    /* MultiCommitHasOverlappingTargets */
+    CHECK(multi_add(manager, manager) == RC(2, 6001)); /* not a file system: InvalidArgument */
+    CHECK(!host_file(user_note) && !host_file(device_note));
+    request(&r, 2);
+    dispatch(manager, &r, 0);
+    CHECK(host_text(user_note, "program=0100000000010000\ndisplay=1.0.0\n"));
+    CHECK(host_text(device_note, "program=0100000000010000\ndisplay=1.0.0\n"));
+    /* ten at most: MultiCommitFileSystemLimit past them */
+    for (int i = 0; i < 9; i++) more[i] = open_user_save(proxy, g_user_id);
+    for (int i = 0; i < 8; i++) CHECK(multi_add(manager, more[i]) == 0);
+    CHECK(multi_add(manager, more[8]) == RC(2, 6710));
+    /* one of them closed: NotFound, and no note written */
+    svcobj_unref(more[0]);
+    remove(user_note);
+    remove(device_note);
+    request(&r, 2);
+    dispatch(manager, &r, FS_NOTFOUND);
+    CHECK(!host_file(user_note) && !host_file(device_note));
+    for (int i = 1; i < 9; i++) svcobj_unref(more[i]);
+    svcobj_unref(user);
+    svcobj_unref(device);
+    svcobj_unref(manager);
+    g_settings.save_layout[0] = 0;
+    g_gamename[0] = g_exename[0] = 0;
+    puts("PASS the commit of several file systems: ten, each once, their notes written, none when one is closed");
+}
+/* ReadSaveDataFileSystemExtraDataWithMaskBySaveDataAttribute (71) {u8 space id, attribute at 8}, the extra data out
+   in B 0 and the mask in A 0, 0x200 bytes each: the attribute with the game's program when it named none (0x0), the
+   owner at 0x40, an account's or the device's available and journal sizes at 0x58 and 0x60 (am.c's), the rest 0, each
+   byte as the mask keeps it */
+/* the request for a save's extra data: its attribute's program 0 (the game's) unless program, the mask keeping the
+   bytes from..to */
+static void extra_data(SvcObj* proxy, u8 type, const u64* uid, int program, u32 from, u32 to) {
+    Request r;
+    save_request(&r, 71, type, uid);
+    if (!program) memset(r.raw + 8, 0, 8);
+    memset(GP(0x3000), 0, 0x200);
+    memset(GP(0x3000 + from), 0xFF, to - from);
+    r.c.a[0] = (IpcBuf){0x3000, 0x200, 0};
+    r.c.na = 1;
+    output_buffer(&r, 0x200);
+    dispatch(proxy, &r, 0);
+    CHECK(r.c.out_size == 0);
+}
+static void test_extra_data(SvcObj* proxy) {
+    const u8* out = GP(0x5000);
+    Request sent;
+    save_request(&sent, 71, 1, g_user_id);
+    snx_st_le64(sent.raw + 8, 0x0100000000010000ull); /* the attribute as sent, with the game's program */
+    extra_data(proxy, 1, g_user_id, 0, 0, 0x200);
+    CHECK(!memcmp(out, sent.raw + 8, 0x40));
+    CHECK(snx_ld_le64(out + 0x40) == 0x0100000000010000ull && snx_ld_le64(out + 0x48) == 0 &&
+          snx_ld_le32(out + 0x50) == 0 && snx_ld_le32(out + 0x54) == 0);
+    CHECK(snx_ld_le64(out + 0x58) == 0x1230000 && snx_ld_le64(out + 0x60) == 0x670000 && snx_ld_le64(out + 0x68) == 0);
+    for (int i = 0x70; i < 0x200; i++) CHECK(out[i] == 0);
+    /* a program named stays, the owner too; the device's sizes */
+    extra_data(proxy, 3, NULL, 1, 0, 0x200);
+    CHECK(snx_ld_le64(out) == 0x0404040404040404ull && snx_ld_le64(out + 0x40) == 0x0404040404040404ull);
+    CHECK(snx_ld_le64(out + 0x58) == 0x450000 && snx_ld_le64(out + 0x60) == 0x89000);
+    /* a mask that keeps the available size alone */
+    extra_data(proxy, 1, g_user_id, 0, 0x58, 0x60);
+    CHECK(snx_ld_le64(out + 0x58) == 0x1230000);
+    for (int i = 0; i < 0x200; i++)
+        if (i < 0x58 || i >= 0x60) CHECK(out[i] == 0);
+    puts("PASS a save's extra data: its attribute, owner and sizes, each byte as the mask keeps it");
+}
+
 static void cleanup_service(void) {
     pm_lock(&g_hle.fs.tree.lock);
     for (unsigned i = 0; i < NOPEN; i++)
@@ -2578,6 +2694,8 @@ int main(int argc, char** argv) {
     test_save_data(proxy);
     test_save_layout(proxy);
     test_save_note(proxy);
+    test_multi_commit(proxy);
+    test_extra_data(proxy);
     test_state_temp(proxy);
     test_notifiers_and_program_index(proxy);
     svcobj_unref(fs);
