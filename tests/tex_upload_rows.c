@@ -187,6 +187,12 @@ int vk_ok_(VkResult r, const char* what, const char* file, int line) {
     return r == VK_SUCCESS;
 }
 VkCommandBuffer vk_cmd(void) { return (VkCommandBuffer)(uintptr_t)0xCB; }
+/* surface.c's, for a storage image over a target, which no case here samples: an unoptimized build keeps the call, and
+   the test links at every level with this, which aborts if a case ever reaches it */
+int vk_rt_same_layout(const Surf* s, u32 w, u32 h, int bl, u32 bh, u32 pitch) {
+    (void)s, (void)w, (void)h, (void)bl, (void)bh, (void)pitch;
+    abort();
+}
 void vk_render_end_at(const char* file, int line) {
     (void)file;
     (void)line;
