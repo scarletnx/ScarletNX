@@ -1934,6 +1934,15 @@ static void g_sigdelset(CPU* c, void* data) {
     (void)data;
     set_bit(c, false);
 }
+static void g_sigismember(CPU* c, void* data) {
+    (void)data;
+    int sig = (int)X(1);
+    if (sig < 1 || sig > 64) {
+        fail_errno(c, GNU_EINVAL);
+        return;
+    }
+    X(0) = snx_ld_le64(PTR(0)) >> (sig - 1) & 1;
+}
 #if defined(__linux__)
 static void host_set(uint64_t guest, sigset_t* out) {
     sigemptyset(out);
@@ -2121,7 +2130,10 @@ const HleSymbol hle_posix[] = {
     A(arc4random, g_arc4random), A(arc4random_buf, g_arc4random_buf),
     A(fork, refused), A(execl, refused), A(system, refused), A(waitpid, refused), A(ptrace, g_ptrace),
     A(sigemptyset, g_sigemptyset), A(sigfillset, g_sigfillset), A(sigaddset, g_sigaddset),
-    A(sigdelset, g_sigdelset),
+    A(sigdelset, g_sigdelset), A(sigismember, g_sigismember),
+    /* sigset64_t is sigset_t on LP64 */
+    A(sigemptyset64, g_sigemptyset), A(sigfillset64, g_sigfillset), A(sigaddset64, g_sigaddset),
+    A(sigdelset64, g_sigdelset), A(sigismember64, g_sigismember),
 #if defined(__linux__)
     A(signalfd, g_signalfd),
 #else

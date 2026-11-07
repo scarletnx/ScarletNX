@@ -284,6 +284,37 @@ static void test_getline(void) {
     remove(path);
 }
 
+/* ---- signals ---- */
+
+/* sigismember of a set the other set functions made, and the 64-bit forms, which are the same on LP64 */
+static void test_signal_sets(void) {
+    static const char* const forms[2] = {"", "64"};
+    for (int k = 0; k < 2; ++k) {
+        char name[32];
+        uint64_t set = ~0ull;
+        snprintf(name, sizeof name, "sigemptyset%s", forms[k]);
+        CALL(name, P(&set));
+        snprintf(name, sizeof name, "sigaddset%s", forms[k]);
+        CALL(name, P(&set), 10);
+        CALL(name, P(&set), 64);
+        snprintf(name, sizeof name, "sigismember%s", forms[k]);
+        expect_int("SIGUSR1 (10) added", (int64_t)CALL(name, P(&set), 10), 1);
+        expect_int("signal 64 added", (int64_t)CALL(name, P(&set), 64), 1);
+        expect_int("SIGUSR2 (12) not", (int64_t)CALL(name, P(&set), 12), 0);
+        expect_int("signal 0: -1", (int64_t)CALL(name, P(&set), 0), -1);
+        expect_int("and EINVAL", *hle_errno_location(), 22);
+        expect_int("signal 65: -1", (int64_t)CALL(name, P(&set), 65), -1);
+        snprintf(name, sizeof name, "sigdelset%s", forms[k]);
+        CALL(name, P(&set), 10);
+        snprintf(name, sizeof name, "sigismember%s", forms[k]);
+        expect_int("SIGUSR1 taken out", (int64_t)CALL(name, P(&set), 10), 0);
+        snprintf(name, sizeof name, "sigfillset%s", forms[k]);
+        CALL(name, P(&set));
+        snprintf(name, sizeof name, "sigismember%s", forms[k]);
+        expect_int("SIGUSR2 in a full set", (int64_t)CALL(name, P(&set), 12), 1);
+    }
+}
+
 int main(void) {
     test_printf_signed();
     test_sscanf_reads_its_pointers();
@@ -291,6 +322,7 @@ int main(void) {
     test_fortified();
     test_libm();
     test_getline();
+    test_signal_sets();
     if (g_t.failures) {
         fprintf(stderr, "android_bionic: %d failed\n", g_t.failures);
         return 1;
