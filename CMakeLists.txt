@@ -63,13 +63,27 @@ option(SNX_BUILD_VITA "Build the PS Vita driver: VPK extraction, the AArch32 AOT
 option(SNX_BUILD_AGB "Build the Game Boy Advance AGB board runtime" ON)
 # the Android app driver runs apps on a desktop's JVM: not in ScarletNX's own Android and iOS apps, which have none.
 # Its native bridge passes the guest's registers as an x86-64 or AArch64 host's (bridge/hle_libc.c)
+# By default only where a JDK 21 or later with include/jni.h is found (cmake/android_jdk.cmake); asked for with none,
+# src/android stops with why
 if(ANDROID OR IOS OR NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|aarch64|arm64|ARM64)$")
     set(snx_android_default OFF)
 else()
-    set(snx_android_default ON)
+    include(cmake/android_jdk.cmake)
+    find_package(Java 21 COMPONENTS Development QUIET)
+    snx_android_jdk("${SNX_JAVA_HOME}" "${Java_JAVAC_EXECUTABLE}" "${Java_VERSION}" snx_android_jdk_home
+                    snx_android_jdk_why)
+    if(snx_android_jdk_home)
+        set(snx_android_default ON)
+    else()
+        set(snx_android_default OFF)
+    endif()
 endif()
 option(SNX_BUILD_ANDROID "Build the Android app driver: the DEX translator and the HLE of Android's userland"
        ${snx_android_default})
+if(NOT SNX_BUILD_ANDROID AND snx_android_jdk_why)
+    message(STATUS "The Android app driver is off: ${snx_android_jdk_why}. Set SNX_BUILD_ANDROID=ON with a JDK 21 or "
+                   "later to build it")
+endif()
 # Reject stale backend selections instead of silently changing an existing build's behavior.
 if(SNX_BUILD_NX AND DEFINED SNX_BACKEND AND NOT SNX_BACKEND STREQUAL "sdl3")
     message(FATAL_ERROR "SNX_BACKEND=${SNX_BACKEND}: SDL3 is now mandatory for the NX runtime. "
