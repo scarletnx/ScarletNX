@@ -6,6 +6,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* the SPIR-V version new modules take: 1.6, or the most the device takes (spv_emit_set_version) */
+static struct {
+    uint32_t version;
+} g_spirv_emit = {0x00010600};
+
+void spv_emit_set_version(uint32_t version) { g_spirv_emit.version = version; }
+
 static void reserve(SpvWords* s, size_t more) {
     assert(more <= SIZE_MAX - s->count);
     size_t need = s->count + more;
@@ -84,7 +91,7 @@ static uint32_t known(SpvEmitter* e, uint32_t op, size_t at, const uint32_t* ope
 void spv_emit_init(SpvEmitter* e, size_t estimated_function_words) {
     *e = (SpvEmitter){0};
     e->next_id = 1;
-    e->version = 0x00010600; /* SPIR-V 1.6 */
+    e->version = g_spirv_emit.version;
     /* Most instructions are in function bodies. Reserve from the guest program size once. */
     if (estimated_function_words) reserve(&e->functions, estimated_function_words);
 }

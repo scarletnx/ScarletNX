@@ -76,7 +76,7 @@ VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* ou
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
                              .pApplicationName = info->app_name,
                              .pEngineName = "ScarletNX",
-                             .apiVersion = VK_API_VERSION_1_3};
+                             .apiVersion = info->api_version ? info->api_version : VK_API_VERSION_1_3};
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
                                .flags = out->portability ? VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0,
                                .pApplicationInfo = &app,

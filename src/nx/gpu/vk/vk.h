@@ -41,6 +41,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 #include "volk.h"
+#include "common/gpu/vk/vk_common.h"
 #include "vk_mem_alloc.h"
 #include "nx/gpu/shader/shader.h"
 
@@ -58,6 +59,10 @@ typedef struct {
     VkSurfaceKHR surface;
     VkPhysicalDevice phys;
     VkPhysicalDeviceProperties props;
+    /* the Vulkan version the renderer runs at: 1.3, or 1.2 with the extensions 1.3 took in (device.c g_vk12), their
+       commands under the core names */
+    u32 api;
+    u32 api_cap;           /* the most it takes, 0 for 1.3: the tests' --vk-api runs the 1.2 way on a newer device */
     u64 shader_generation; /* shader instruction invalidations, separate from memory epochs */
     int has_descriptor_buffers;
     int has_descriptor_heaps;
@@ -77,12 +82,12 @@ typedef struct {
        asks for it (experimental): FFmpeg's Vulkan decoder decodes on it (vk/nvdec.c), told of the device by the
        extensions and features enabled */
     u32 video_family;
-    const char* dev_ext[48];
+    const char* dev_ext[64]; /* create_device enables 59 at most, were every one it can enable there */
     u32 dev_ext_n;
-    VkPhysicalDeviceFeatures2 feat2; /* feat, with the 1.1 to 1.3 features enabled chained */
+    VkPhysicalDeviceFeatures2 feat2; /* feat, with the 1.1 to 1.3 features enabled chained (to 1.2 on a 1.2 device) */
     VkPhysicalDeviceVulkan11Features feat11;
     VkPhysicalDeviceVulkan12Features feat12;
-    VkPhysicalDeviceVulkan13Features feat13;
+    VkPhysicalDeviceVulkan13Features feat13; /* on a 1.2 device, what its extensions enabled of these */
     /* swapchain */
     VkSwapchainKHR swapchain;
     VkExtent2D sc_extent;
@@ -192,6 +197,9 @@ typedef enum { VK_CLOCK_NONE, VK_CLOCK_WAIT, VK_CLOCK_WAIT2, VK_CLOCK_GOOGLE } V
 int vk_init(void);
 /* why vk_init found no device it runs on, with each device's Vulkan version; "" when it did not say */
 const char* vk_start_failure(void);
+/* how many of the extensions a Vulkan 1.2 device runs the renderer with (1.3's, device.c) e lacks, their names in out
+   (size bytes, may be 0) comma separated */
+u32 vk_1_2_missing(const SnxVkExtensions* e, char* out, size_t size);
 /* (re)creates the swapchain at the window's size, in an sRGB format when srgb is set and the surface has one, with
    the present mode the vsync setting asks for, recorded in sc_vsync (show() makes a new one when the setting moves).
    0 while the window has no area (minimized) or its surface can't be queried, the old swapchain staying, or when the
