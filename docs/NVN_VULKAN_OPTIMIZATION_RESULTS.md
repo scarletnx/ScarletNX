@@ -15,6 +15,7 @@ No native-console NVN measurement was available.
 * [Separate GPU and game observations](#separate-gpu-and-game-observations)
 * [Validation recorded before integration](#validation-recorded-before-integration)
 * [Validation after integration](#validation-after-integration)
+* [CI fixture follow-up](#ci-fixture-follow-up)
 
 ## Scope and machine
 
@@ -172,5 +173,22 @@ build/src/nx/snx-test-vulkan -H --vk_descriptors=2 --vk_memory=2
 ctest --test-dir build -R '^(docs_check|tracked_material)$' --output-on-failure
 python3 tests/run_filesystem_tree.py --cc clang --sanitize --only tree
 ```
+
+## CI fixture follow-up
+
+The initial sanitizer CI build exposed a fixture dependency on linker garbage collection. ASan retained constant
+shader callback tables from the full `pipeline.c` translation unit, keeping unrelated shader/driver dependencies.
+The cache activity and saving implementation now resides in a shared private include with unchanged function bodies.
+The fixture compiles that implementation alone and keeps all deterministic interleaving and persistence checks.
+Its section-GC options were removed. ASan and UBSan remain enabled.
+
+The original instrumented fixture link failure was reproduced locally. The focused fixture passed both the
+`SNX_TEST_SANITIZERS=ON` CMake build/test and the ordinary build/test. The runtime rebuilt and the full Vulkan
+headless regression passed after the extraction. These checks do not change the historical timing measurements.
+
+Windows CI also exposed Unix-specific assumptions in the Python benchmark fixtures. Fake runtimes now run through
+`sys.executable` and the real subprocess runner, the valid source path is native and absolute, and settings hashes
+use their original bytes, including CRLF. Rejected-run cases check their intended failure reason. All 14 tests
+passed locally on Linux. Native Windows was unavailable locally, so native verification is delegated to CI.
 
 This public evidence includes synthetic fixture measurements and aggregate observations only.

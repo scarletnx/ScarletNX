@@ -12,6 +12,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location('gamebench', Path(__file__).resolve().parents[1] / 'tools/bench_nvn_game.py')
 bench = importlib.util.module_from_spec(spec)
@@ -27,6 +28,16 @@ class Measurements(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.image = self.root / 'image.ppm'
         self.image.write_bytes(IMAGE)
+        # Fake runtimes are Python source, not native executables. Windows does not execute their shebangs.
+        # Keep the actual process runner, including its timeout and evidence handling, behind this test adapter.
+        run_process = bench.run_process
+
+        def run_python_runtime(command, run, timeout):
+            return run_process([sys.executable, *command], run, timeout)
+
+        runtime_runner = mock.patch.object(bench, 'run_process', side_effect=run_python_runtime)
+        runtime_runner.start()
+        self.addCleanup(runtime_runner.stop)
 
     def test_final_frame_and_screenshot_required(self):
         row = bench.validate_result(0, VALID, self.image, 12)
@@ -182,6 +193,7 @@ print('frames=' + str(frames) + ' hash=0123456789abcdef', file=sys.stderr)
 
     def test_full_harness_preserves_source_saves_and_update_name(self):
         selected, runtime, source, config = self.fixture()
+        initial_settings = hashlib.sha256((config / '0100000000000000.ini').read_bytes()).hexdigest()
         output = self.root / 'results'
         self.assertEqual(self.invoke(selected, runtime, output, uncapped=True), 0)
         result = json.loads((output / 'results.json').read_text())
@@ -193,7 +205,7 @@ print('frames=' + str(frames) + ' hash=0123456789abcdef', file=sys.stderr)
         self.assertEqual(result['pacing_policy'], 'fps_limit=0, vsync=0 for both builds')
         self.assertTrue(all('--fps_limit=0' in row['command'] and '--vsync=0' in row['command'] for row in result['runs']))
         self.assertEqual(result['snapshot']['settings_sha256'], {
-            '0100000000000000.ini': hashlib.sha256(b'[Graphics]\nresolution_scale=2\n').hexdigest()})
+            '0100000000000000.ini': initial_settings})
         self.assertTrue(all(r['module_sha256'] == result['snapshot']['module_sha256'] for r in result['runs']))
         self.assertTrue(all(r['module_sha256_after'] == result['snapshot']['module_sha256'] for r in result['runs']))
         self.assertTrue(all(r['binary_sha256_after'] == result['binary_sha256'] for r in result['runs']))
@@ -207,7 +219,10 @@ print('frames=' + str(frames) + ' hash=0123456789abcdef', file=sys.stderr)
         self.assertEqual((output / 'results.json').read_bytes(), before)
 
     def test_failed_runs_retain_evidence_and_cannot_win(self):
-        for failure in ('crash', 'noimage', 'timeout', 'modulechange', 'binarychange'):
+        reasons = {'crash': 'process exited with status 1', 'noimage': 'final screenshot is missing',
+                   'timeout': 'run timed out', 'modulechange': 'compiled module changed during the measured run',
+                   'binarychange': 'runtime binary changed during the measured run'}
+        for failure, reason in reasons.items():
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
                 old = self.root
                 self.root = Path(temporary)
@@ -220,6 +235,7 @@ print('frames=' + str(frames) + ' hash=0123456789abcdef', file=sys.stderr)
                     self.assertFalse(result['runs'])
                     self.assertNotIn('summary', result)
                     self.assertTrue(result['rejected'])
+                    self.assertIn(reason, result['rejected'][0]['reason'])
                     active = Path(result['active_run']['directory'])
                     self.assertTrue((active / 'stderr.log').is_file())
                 finally:
@@ -253,7 +269,8 @@ print('frames=' + str(frames) + ' hash=0123456789abcdef', file=sys.stderr)
         ini.write_text('[Game]\nsource=relative.xci\n')
         self.assertEqual(self.invoke(selected, runtime, self.root / 'relative-output'), 2)
         self.assertFalse((self.root / 'relative-output').exists())
-        ini.write_text('[Game]\nsource=/absolute/immutable.xci\n[Debug]\nshader_corpus=\n; renderdoc=/ignored\n')
+        source = self.root / 'immutable.xci'
+        ini.write_text(f'[Game]\nsource={source}\n[Debug]\nshader_corpus=\n; renderdoc=/ignored\n')
         bench.validate_settings(config, selected.parent.name)
 
     def test_timed_samples_compare_frame_rates_instead_of_wall_times(self):
