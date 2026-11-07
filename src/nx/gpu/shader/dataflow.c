@@ -684,6 +684,171 @@ int shader_direct_own_pixel_fetch(const u64* insn, u32 n, u32 index) {
     return 0;
 }
 
+/* reg at index holds an IPA of the generic attribute word at addr, not indexed nor saturated, in pass mode or multiplied
+   by a register: *mul gets the multiplier's value, its definition times 256 plus the register (one instruction may
+   write several), -1 in pass mode, so that two reads can be told to interpolate alike. emit_io.c interpolates every
+   IPA at the pixel's centre */
+static int direct_ipa_at(const u64* insn, u32 n, u32 index, u32 reg, u32 addr, int* mul, int depth) {
+    int j = depth > 4 ? -1 : direct_reaching_def(insn, n, index, reg);
+    if (j < 0) return 0;
+    u64 w = insn[j];
+    int op = decode(w)->id;
+    if (op == O_MOV_R) return direct_ipa_at(insn, n, (u32)j, B(w, 20, 8), addr, mul, depth + 1);
+    if (op != O_IPA || B(w, 38, 1) || B(w, 51, 1) || B(w, 30, 8) * 4 != addr || B(w, 54, 2) > 1) return 0;
+    int def = B(w, 54, 2) == 1 && B(w, 20, 8) < 255 ? direct_reaching_def(insn, n, (u32)j, B(w, 20, 8)) : -1;
+    *mul = def >= 0 ? def * 256 + (int)B(w, 20, 8) : -1;
+    return B(w, 54, 2) == 0 || *mul >= 0;
+}
+/* reg at index holds the reciprocal of a generic's w (MUFU.RCP of its IPA, no absolute value, negation or
+   saturation): the generic's index, and in *mul its IPA's multiplier (direct_ipa_at); -1 when it isn't */
+static int direct_rcp_w(const u64* insn, u32 n, u32 index, u32 reg, int* mul, int depth) {
+    int j = depth > 4 ? -1 : direct_reaching_def(insn, n, index, reg);
+    if (j < 0) return -1;
+    u64 w = insn[j];
+    int op = decode(w)->id;
+    if (op == O_MOV_R) return direct_rcp_w(insn, n, (u32)j, B(w, 20, 8), mul, depth + 1);
+    if (op != O_MUFU || B(w, 20, 4) != 4 || B(w, 46, 1) || B(w, 48, 1) || B(w, 50, 1)) return -1;
+    int k = direct_reaching_def(insn, n, (u32)j, B(w, 8, 8));
+    if (k < 0) return -1;
+    u64 v = insn[k];
+    if (decode(v)->id != O_IPA || B(v, 38, 1)) return -1;
+    u32 addr = B(v, 30, 8) * 4;
+    if (addr < 0x80 || addr >= 0x280 || (addr & 15) != 12) return -1;
+    return direct_ipa_at(insn, n, (u32)j, B(w, 8, 8), addr, mul, 0) ? (int)((addr - 0x80) >> 4) : -1;
+}
+/* reg at index holds a generic's component c (0 x, 1 y) divided by its w: FMUL, no negation, scale or saturation, of
+   that component's IPA and the reciprocal of the w's IPA, both interpolated alike. The generic's index, or -1 */
+static int direct_over_w(const u64* insn, u32 n, u32 index, u32 reg, u32 c, int depth) {
+    int j = depth > 4 ? -1 : direct_reaching_def(insn, n, index, reg);
+    if (j < 0) return -1;
+    u64 w = insn[j];
+    int op = decode(w)->id;
+    if (op == O_MOV_R) return direct_over_w(insn, n, (u32)j, B(w, 20, 8), c, depth + 1);
+    if (op != O_FMUL_R || B(w, 48, 1) || B(w, 41, 3) || B(w, 50, 1)) return -1;
+    u32 ops[2] = {B(w, 8, 8), B(w, 20, 8)};
+    for (int side = 0; side < 2; side++) {
+        int rmul, vmul;
+        int g = direct_rcp_w(insn, n, (u32)j, ops[side], &rmul, 0);
+        if (g >= 0 && direct_ipa_at(insn, n, (u32)j, ops[!side], 0x80 + (u32)g * 16 + c * 4, &vmul, 0) && vmul == rmul)
+            return g;
+    }
+    return -1;
+}
+/* The texture read at index samples at (x, y) = a generic's (x / w, y / w), the same generic for both: the fragment's
+   own pixel when the vertex stage wrote that generic as its position mapped onto the target, (pos.xy * (1, +-1) +
+   pos.w) / 2 with pos.w as its w (ShaderInfo.screen_out_mask), and the draw's viewport covers the target the texture
+   is (vk/render.c). The generic's index, or -1 */
+int shader_direct_screen_uv(const u64* insn, u32 n, u32 index, u32 x, u32 y) {
+    int g = x < 255 ? direct_over_w(insn, n, index, x, 0, 0) : -1;
+    return g >= 0 && y < 255 && direct_over_w(insn, n, index, y, 1, 0) == g ? g : -1;
+}
+
+/* reg's value at index past full register moves: the instruction that makes it times 256 plus the register it
+   writes, as one instruction may write several (ALD.128, a texture read). -1 when no single one reaches it */
+static int direct_value_def(const u64* insn, u32 n, u32 index, u32 reg) {
+    for (int depth = 0; depth < 6; depth++) {
+        int j = reg < 255 ? direct_reaching_def(insn, n, index, reg) : -1;
+        if (j < 0) return -1;
+        if (decode(insn[j])->id != O_MOV_R || B(insn[j], 39, 4) != 0xf) return j * 256 + (int)reg;
+        index = (u32)j;
+        reg = B(insn[j], 20, 8);
+    }
+    return -1;
+}
+/* Whether every run of the program passes the instruction at index once: no EXIT, KIL or RET before it, no branch
+   from before it that lands past it, none from after it back to it or before it. Its writes are the ones the program
+   ends with, as long as nothing else writes there */
+static int direct_once_to_end(const u64* insn, u32 n, u32 index) {
+    for (u32 k = 11; k < n; k++) {
+        u32 targets[64];
+        u8 elsewhere[64];
+        if (!IDX_OK(k)) continue;
+        const Op* op = decode(insn[k]);
+        if (!op) return 0;
+        if (k < index && (op->id == O_EXIT || op->id == O_KIL || op->id == O_RET)) return 0;
+        int count = direct_flow_targets(insn, n, k, targets, elsewhere);
+        if (count < 0) {
+            if (direct_flow_below(insn, k, index + 1)) continue;
+            return 0;
+        }
+        for (int t = 0; t < count; t++) {
+            if (k > index && targets[t] <= index) return 0;
+            /* an SSY or PBK only names where its SYNC or BRK goes, and none comes between it and index */
+            if (k < index && targets[t] > index &&
+                !((op->id == O_SSY || op->id == O_PBK) && direct_straight(insn, k, index)))
+                return 0;
+        }
+    }
+    return 1;
+}
+/* The value (direct_value_def) the vertex program's output word at addr ends with: its last store's, an AST with no
+   guard, not per patch nor indexed, that every run passes once (direct_once_to_end), so no store before it can come
+   after it. -1 when there isn't one */
+static int direct_output_def(const u64* insn, u32 n, u32 addr) {
+    int store = -1;
+    for (u32 k = 11; k < n; k++) {
+        if (!IDX_OK(k)) continue;
+        const Op* op = decode(insn[k]);
+        u64 w = insn[k];
+        if (op && op->id == O_AST && !B(w, 31, 1) && addr >= B(w, 20, 10) &&
+            addr < B(w, 20, 10) + (B(w, 47, 2) + 1) * 4)
+            store = (int)k;
+    }
+    if (store < 0) return -1;
+    u64 w = insn[store];
+    u32 reg = B(w, 0, 8) + (addr - B(w, 20, 10)) / 4;
+    if (B(w, 16, 4) != 7 || B(w, 8, 8) != 255 || reg >= 255 || !direct_once_to_end(insn, n, (u32)store)) return -1;
+    return direct_value_def(insn, n, (u32)store, reg);
+}
+/* The value (direct_value_def) is half of another: FMUL or FMUL32I by the immediate 0.5, with no negation, scale or
+   saturation. That other value, or -1 */
+static int direct_half_of(const u64* insn, u32 n, int value) {
+    if (value < 0) return -1;
+    u32 def = (u32)value / 256;
+    u64 w = insn[def];
+    int op = decode(w)->id;
+    if (op == O_FMUL_I) {
+        if (((B(w, 20, 19) << 12) | (B(w, 56, 1) << 31)) != 0x3f000000u || B(w, 48, 1) || B(w, 41, 3) || B(w, 50, 1))
+            return -1;
+    } else if (op != O_FMUL32I || B(w, 20, 32) != 0x3f000000u || B(w, 55, 1))
+        return -1;
+    return direct_value_def(insn, n, def, B(w, 8, 8));
+}
+/* The value (direct_value_def) is the sum of the values p and q, FADD with no absolute value or saturation and p not
+   negated, in either order: 1 for p + q, 2 for p - q, 0 when it is neither */
+static int direct_sum_of(const u64* insn, u32 n, int value, int p, int q) {
+    if (value < 0) return 0;
+    u32 def = (u32)value / 256;
+    u64 w = insn[def];
+    if (decode(w)->id != O_FADD_R || B(w, 46, 1) || B(w, 49, 1) || B(w, 50, 1)) return 0;
+    int left = direct_value_def(insn, n, def, B(w, 8, 8)), right = direct_value_def(insn, n, def, B(w, 20, 8));
+    if (left == p && right == q && !B(w, 48, 1)) return B(w, 45, 1) ? 2 : 1;
+    if (left == q && right == p && !B(w, 45, 1)) return B(w, 48, 1) ? 2 : 1;
+    return 0;
+}
+/* The generic outputs the vertex program writes as its position mapped onto [0, 1]: x = (pos.w + pos.x) / 2,
+   y = (pos.w + pos.y) / 2 or (pos.w - pos.y) / 2 (its bit in *yneg) and w = pos.w, each of those words and pos.x, y
+   and w written once (direct_output_def). A fragment's (x / w, y / w) of one is the centre of its own pixel in [0, 1]
+   of the viewport, which vk/render.c checks covers the target with the y this sign maps */
+u32 shader_direct_screen_out(const u64* insn, u32 n, u32* yneg) {
+    int px = direct_output_def(insn, n, 0x70), py = direct_output_def(insn, n, 0x74);
+    int pw = direct_output_def(insn, n, 0x7c);
+    u32 mask = 0;
+    *yneg = 0;
+    if (px < 0 || py < 0 || pw < 0) return 0;
+    for (u32 g = 0; g < 32; g++) {
+        u32 at = 0x80 + g * 16;
+        if (direct_output_def(insn, n, at + 12) != pw ||
+            direct_sum_of(insn, n, direct_half_of(insn, n, direct_output_def(insn, n, at)), pw, px) != 1)
+            continue;
+        int sign = direct_sum_of(insn, n, direct_half_of(insn, n, direct_output_def(insn, n, at + 4)), pw, py);
+        if (!sign) continue;
+        mask |= 1u << g;
+        if (sign == 2) *yneg |= 1u << g;
+    }
+    return mask;
+}
+
 int shader_direct_track_const(const u64* insn, u32 n, u32 index, u32 reg, u32* value, int depth) {
     int j = depth > 6 ? -1 : direct_reaching_def(insn, n, index, reg);
     u64 w;

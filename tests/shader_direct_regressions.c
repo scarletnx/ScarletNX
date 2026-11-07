@@ -3942,6 +3942,178 @@ static void feedback_own_pixel(void) {
         free(code);
     }
 }
+
+/* ShaderInfo.tex_screen_mask: a plain 2D sample at a perspective generic's (x / w, y / w), each an IPA multiplied by
+   1 / gl_FragCoord.w as the console's compiler writes them, reads the fragment's own pixel's centre wherever the vertex
+   program wrote that generic as its position mapped onto [0, 1]; screen_in names the generic. Read undivided, with y
+   over another generic's w, with a level bias, or from a screen-linear input it reads other pixels */
+#define SCREEN_IPA(d, addr)          (0xe000000000070000ull | (u64)(addr) << 28 | 0xff00ull | (u64)(d))
+#define SCREEN_IPA_MUL(d, addr, mul) (SCREEN_IPA(d, addr) | 1ull << 54 | (u64)(mul) << 20)
+#define SCREEN_RCP(d, a)             (0x5080000000470000ull | (u64)(a) << 8 | (u64)(d))
+#define SCREEN_FMUL(d, a, b)         (0x5c68000000070000ull | (u64)(b) << 20 | (u64)(a) << 8 | (u64)(d))
+#define SCREEN_TEX(d, a)                                                                                               \
+    (0xc000000000000000ull | 0x10ull << 36 | 0xfull << 31 | 2ull << 28 | 0xffull << 20 | 7ull << 16 | (u64)(a) << 8 |  \
+     (u64)(d))
+static void screen_uv_case(const u64* instructions, int count, u32 imap7, u64 screen, const char* what) {
+    size_t slots, words = 0;
+    u64* code = guest_program(instructions, count, NULL, &slots);
+    if (!code) return;
+    set_sph(code, 7, imap7); /* byte 0x18 + 5 on: generic 5's (and 6's) components, 2 bits each */
+    ShaderInfo info;
+    memset(&info, 0, sizeof info);
+    u32* spv = spirv_of(code, slots * sizeof *code, ST_FS, &info, &words, 0, 1, 1, 1);
+    free(code);
+    check_translated(spv, &info, what);
+    int ok = spv && info.tex_screen_mask == screen && !info.tex_own_pixel_mask && (!screen || info.screen_in == 5);
+    if (spv && !ok)
+        fprintf(stderr, "  screen mask %#llx (generic %u), own pixel %#llx, expected screen %#llx\n",
+                (unsigned long long)info.tex_screen_mask, info.screen_in, (unsigned long long)info.tex_own_pixel_mask,
+                (unsigned long long)screen);
+    check(ok, what);
+    free(spv);
+}
+static void feedback_screen_uv(void) {
+    /* generic 5 (a[0xd0]) divided by its w (a[0xdc]), the multiplier 1 / gl_FragCoord.w in R0, then the sample */
+    const u64 ipa_w = SCREEN_IPA(0, 0x7c), rcp_w = SCREEN_RCP(0, 0), x = SCREEN_IPA_MUL(1, 0xd0, 0),
+              y = SCREEN_IPA_MUL(2, 0xd4, 0), w = SCREEN_IPA_MUL(3, 0xdc, 0), rcp = SCREEN_RCP(3, 3),
+              ux = SCREEN_FMUL(4, 1, 3), uy = SCREEN_FMUL(5, 2, 3), tex = SCREEN_TEX(8, 4);
+    const u64 screen[] = {ipa_w, rcp_w, x, y, w, rcp, ux, uy, tex};
+    const u64 screen_texs[] = {ipa_w, rcp_w, x, y, w, rcp, ux, uy, OWN_TEXS(1, 4, 5)};
+    const u64 passed[] = {SCREEN_IPA(1, 0xd0), SCREEN_IPA(2, 0xd4), SCREEN_IPA(3, 0xdc), rcp, ux, uy, tex};
+    const u64 undivided[] = {ipa_w, rcp_w, x, y, w, rcp, ux, uy, SCREEN_TEX(8, 1)};
+    const u64 other_y[] = {ipa_w, rcp_w, x, SCREEN_IPA_MUL(2, 0xe4, 0), w, rcp, ux, uy, tex};
+    const u64 two_generics[] = {ipa_w,
+                                rcp_w,
+                                x,
+                                SCREEN_IPA_MUL(2, 0xe4, 0),
+                                w,
+                                rcp,
+                                SCREEN_IPA_MUL(6, 0xec, 0),
+                                SCREEN_RCP(6, 6),
+                                ux,
+                                SCREEN_FMUL(5, 2, 6),
+                                tex};
+    const u64 saturated_w[] = {
+        SCREEN_IPA(1, 0xd0), SCREEN_IPA(2, 0xd4), SCREEN_IPA(3, 0xdc) | 1ull << 51, rcp, ux, uy, tex};
+    const u64 mixed[] = {ipa_w, rcp_w, x, y, SCREEN_IPA(3, 0xdc), rcp, ux, uy, tex};
+    const u64 bias[] = {ipa_w, rcp_w, x, y, w, rcp, ux, uy, tex | 2ull << 55};
+    const u64 both[] = {ipa_w, rcp_w, x, y, w, rcp, ux, uy, tex, SCREEN_TEX(12, 1)};
+    screen_uv_case(screen, 9, 0xaa00, 1, "TEX at a generic's x / w and y / w samples the own pixel's centre");
+    screen_uv_case(screen_texs, 9, 0xaa00, 1, "TEXS 2D at a generic's x / w and y / w samples the own pixel's centre");
+    screen_uv_case(passed, 7, 0xaa00, 1, "x, y and w read without the multiplier divide alike");
+    screen_uv_case(undivided, 9, 0xaa00, 0, "TEX at a generic's x and y, not divided by its w, reads elsewhere");
+    screen_uv_case(other_y, 9, 0xaaaa00, 0, "TEX whose y is another generic's over this one's w reads elsewhere");
+    screen_uv_case(two_generics, 11, 0xaaaa00, 0, "TEX at one generic's x / w and another's y / w reads elsewhere");
+    screen_uv_case(saturated_w, 7, 0xaa00, 0, "a w read saturated is not the position's w");
+    screen_uv_case(mixed, 9, 0xaa00, 0, "x and y multiplied by 1 / gl_FragCoord.w over a w read without it");
+    screen_uv_case(bias, 9, 0xaa00, 0, "TEX.LB at the own pixel's centre may read another level");
+    screen_uv_case(screen, 9, 0xff00, 0, "a screen-linear generic's x / w and y / w is not the position's");
+    screen_uv_case(both, 10, 0xaa00, 0, "a slot also sampled at a generic's x and y reads elsewhere");
+}
+
+/* ShaderInfo.screen_out_mask: the vertex program writes generic 5 as its position mapped onto [0, 1],
+   ((w + x) / 2, (w - y) / 2, -, w), the y's sign in screen_out_yneg_mask, each word stored once with no guard, from
+   x, y, z and w loaded one register each. Half of x - w, w from another register, a quarter, a guarded or second
+   store, or an EXIT that may come before the stores leave the generic out */
+#define SCREEN_FADD(d, a, b, negb)                                                                                     \
+    (0x5c58000000070000ull | (u64)(negb) << 45 | (u64)(b) << 20 | (u64)(a) << 8 | (u64)(d))
+#define SCREEN_HALF(d, a)   (0x3868000000070000ull | 0x3f000ull << 20 | (u64)(a) << 8 | (u64)(d))
+#define SCREEN_HALF32(d, a) (0x1e00000000070000ull | 0x3f000000ull << 20 | (u64)(a) << 8 | (u64)(d))
+#define SCREEN_AST(addr, reg, count)                                                                                   \
+    (0xeff0000000070000ull | (u64)((count) - 1) << 47 | (u64)(addr) << 20 | 0xff00ull | (u64)(reg))
+/* ALD Rd, a[0x80 + 4 d]: one word of the vertex's generic input 0 */
+#define SCREEN_ALD(d) ((0xefd9ff8000070000ull & ~(3ull << 47)) | (0x80ull + 4 * (d)) << 20 | 0xff00ull | (u64)(d))
+static void vertex_screen_out(void) {
+    const u64 guarded_exit = EXIT & ~(0xfull << 16);
+    struct {
+        u64 instructions[12];
+        int count;
+        u32 out, yneg;
+        const char* what;
+    } cases[] = {
+        {{SCREEN_ALD(0), SCREEN_ALD(1), SCREEN_ALD(2), SCREEN_ALD(3), SCREEN_FADD(4, 3, 0, 0), SCREEN_FADD(5, 3, 1, 1),
+          SCREEN_HALF(4, 4), SCREEN_HALF32(5, 5), SCREEN_AST(0x70, 0, 4), SCREEN_AST(0xd0, 4, 2),
+          SCREEN_AST(0xdc, 3, 1)},
+         11,
+         1u << 5,
+         1u << 5,
+         "(w + x) / 2, (w - y) / 2 and w: the position mapped onto [0, 1], y down"},
+        {{SCREEN_ALD(0), SCREEN_ALD(1), SCREEN_ALD(2), SCREEN_ALD(3), SCREEN_FADD(4, 0, 3, 0), SCREEN_FADD(5, 1, 3, 0),
+          SCREEN_HALF(4, 4), SCREEN_HALF(5, 5), SCREEN_AST(0x70, 0, 4), SCREEN_AST(0xd0, 4, 2), SCREEN_AST(0xdc, 3, 1)},
+         11,
+         1u << 5,
+         0,
+         "(x + w) / 2, (y + w) / 2 and w: the position mapped onto [0, 1], y up"},
+        {{SCREEN_ALD(0), SCREEN_ALD(1), SCREEN_ALD(2), SCREEN_ALD(3), SCREEN_FADD(4, 0, 3, 1), SCREEN_FADD(5, 3, 1, 1),
+          SCREEN_HALF(4, 4), SCREEN_HALF(5, 5), SCREEN_AST(0x70, 0, 4), SCREEN_AST(0xd0, 4, 2), SCREEN_AST(0xdc, 3, 1)},
+         11,
+         0,
+         0,
+         "(x - w) / 2 is not the position's x mapped onto [0, 1]"},
+        {{SCREEN_ALD(0), SCREEN_ALD(1), SCREEN_ALD(2), SCREEN_ALD(3), SCREEN_FADD(4, 3, 0, 0), SCREEN_FADD(5, 3, 1, 1),
+          SCREEN_HALF(4, 4), SCREEN_HALF(5, 5), SCREEN_AST(0x70, 0, 4), SCREEN_AST(0xd0, 4, 2), SCREEN_AST(0xdc, 2, 1)},
+         11,
+         0,
+         0,
+         "a w that is the position's z, not its w"},
+        {{SCREEN_ALD(0), SCREEN_ALD(1), SCREEN_ALD(2), SCREEN_ALD(3), SCREEN_FADD(4, 3, 0, 0), SCREEN_FADD(5, 3, 1, 1),
+          SCREEN_HALF(4, 4), 0x1e00000000070000ull | 0x3e800000ull << 20 | 5ull << 8 | 5ull, SCREEN_AST(0x70, 0, 4),
+          SCREEN_AST(0xd0, 4, 2), SCREEN_AST(0xdc, 3, 1)},
+         11,
+         0,
+         0,
+         "a quarter of w - y is not half"},
+        {{SCREEN_ALD(0), SCREEN_ALD(1), SCREEN_ALD(2), SCREEN_ALD(3), SCREEN_FADD(4, 3, 0, 0), SCREEN_FADD(5, 3, 1, 1),
+          SCREEN_HALF(4, 4), SCREEN_HALF(5, 5), SCREEN_AST(0x70, 0, 4), SCREEN_AST(0xd0, 4, 2) & ~(0xfull << 16),
+          SCREEN_AST(0xdc, 3, 1)},
+         11,
+         0,
+         0,
+         "a store under @P0 may not run"},
+        {{SCREEN_ALD(0), SCREEN_ALD(1), SCREEN_ALD(2), SCREEN_ALD(3), SCREEN_FADD(4, 3, 0, 0), SCREEN_FADD(5, 3, 1, 1),
+          SCREEN_HALF(4, 4), SCREEN_HALF(5, 5), SCREEN_AST(0x70, 0, 4), SCREEN_AST(0xd0, 4, 2), SCREEN_AST(0xdc, 3, 1),
+          SCREEN_AST(0xd0, 0, 1)},
+         12,
+         0,
+         0,
+         "a second store of x leaves the generic as that one wrote it"},
+        {{SCREEN_ALD(0), SCREEN_ALD(1), SCREEN_ALD(2), SCREEN_ALD(3), SCREEN_AST(0xd0, 0, 1), SCREEN_FADD(4, 3, 0, 0),
+          SCREEN_FADD(5, 3, 1, 1), SCREEN_HALF(4, 4), SCREEN_HALF(5, 5), SCREEN_AST(0x70, 0, 4), SCREEN_AST(0xd0, 4, 2),
+          SCREEN_AST(0xdc, 3, 1)},
+         12,
+         1u << 5,
+         1u << 5,
+         "a store of x before the last one is overwritten by it"},
+        {{SCREEN_ALD(0), SCREEN_ALD(1), SCREEN_ALD(2), SCREEN_ALD(3), guarded_exit, SCREEN_FADD(4, 3, 0, 0),
+          SCREEN_FADD(5, 3, 1, 1), SCREEN_HALF(4, 4), SCREEN_HALF(5, 5), SCREEN_AST(0x70, 0, 4), SCREEN_AST(0xd0, 4, 2),
+          SCREEN_AST(0xdc, 3, 1)},
+         12,
+         0,
+         0,
+         "an @P0 EXIT before the stores may leave them unwritten"},
+    };
+    for (size_t k = 0; k < sizeof cases / sizeof *cases; k++) {
+        ShaderInfo info;
+        size_t words = 0;
+        u32* spv = translate(cases[k].instructions, cases[k].count, ST_VS, &info, &words, 0);
+        check_translated(spv, &info, cases[k].what);
+        if (spv && (info.screen_out_mask != cases[k].out || info.screen_out_yneg_mask != cases[k].yneg))
+            fprintf(stderr, "  screen out %#x (y down %#x), expected %#x (%#x)\n", info.screen_out_mask,
+                    info.screen_out_yneg_mask, cases[k].out, cases[k].yneg);
+        check(spv && info.screen_out_mask == cases[k].out && info.screen_out_yneg_mask == cases[k].yneg, cases[k].what);
+        free(spv);
+    }
+}
+#undef SCREEN_IPA
+#undef SCREEN_IPA_MUL
+#undef SCREEN_RCP
+#undef SCREEN_FMUL
+#undef SCREEN_TEX
+#undef SCREEN_FADD
+#undef SCREEN_HALF
+#undef SCREEN_HALF32
+#undef SCREEN_AST
+#undef SCREEN_ALD
 #undef OWN_TEXS
 
 /* A fragment program's SHFL within its quad (mask 0x1c03) from a lane known when translated is a quad operation:
@@ -4212,6 +4384,8 @@ int main(int argc, char** argv) {
     shfl_quad_forms();
     shfl_predicate();
     feedback_own_pixel();
+    feedback_screen_uv();
+    vertex_screen_out();
     check(!g_fixtures.failed, "shader fixture paths allocated");
     for (size_t i = 0; i < g_fixtures.count; i++) free(g_fixtures.paths[i]);
     free(g_fixtures.paths);
