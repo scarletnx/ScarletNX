@@ -1715,7 +1715,8 @@ static void test_caps(void) {
 /* olsc:u: Initialize (0) {pid}; a user's GetSaveDataBackupSetting (13) {uid} -> u8, SetSaveDataBackupSettingEnabled
    (14) {b8 enabled, uid at 8} and VerifySaveDataBackupLicenseAsync (10) {uid}, NotInitialized before it and
    NullArgument without a user. The license check gives an IAsyncResult done at once: its event signaled, available,
-   and its result the online service's absence (2124-5249), which Cancel leaves */
+   and its result account's MembershipRequired (2124-5113), no license there being no online service, which Cancel
+   leaves */
 static void olsc_user(Request* r, u32 cmd, u32 off) {
     request(r, cmd);
     argument64(r, off, g_user_id[0]);
@@ -1755,11 +1756,11 @@ static void test_olsc(void) {
     call(result, &r);
     CHECK(r.c.out_size == 4 && reply32(&r, 0) == 1);
     request(&r, 0);
-    CHECK(result->dispatch(result, &r.c) == RC(124, 5249));
+    CHECK(result->dispatch(result, &r.c) == RC(124, 5113));
     request(&r, 1);
     call(result, &r);
     request(&r, 0);
-    CHECK(result->dispatch(result, &r.c) == RC(124, 5249));
+    CHECK(result->dispatch(result, &r.c) == RC(124, 5113));
     close_handles();
     svcobj_unref(result);
     svcobj_unref(olsc);
