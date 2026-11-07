@@ -319,6 +319,12 @@ void vk_barrier(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect, VkPi
         (void)to;
 }
 void vk_compute_mem_need(u64 a, u64 n) { (void)a, (void)n; }
+/* nothing here is written in place (uma.c): no texture is copied from an import (tex_copy_pending) */
+int vk_uma_pending(u64 gva, u64 len) { return (void)gva, (void)len, 0; }
+void vk_uma_gpu_reads(int on) { (void)on; }
+int vk_uma_copy_pending(u64 cpu, u64 len, VkBuffer* buf, u64* off) {
+    return (void)cpu, (void)len, (void)buf, (void)off, 0;
+}
 void vk_defer_image(VkImage img, VmaAllocation a, VkImageView v1, VkImageView v2) {
     (void)img, (void)a, (void)v1, (void)v2;
 }
