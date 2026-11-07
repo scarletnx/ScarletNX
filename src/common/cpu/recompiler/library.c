@@ -93,6 +93,11 @@ typedef struct {
     GuestFn code;
     size_t entry;
     size_t stale_index;
+    /* The entry indices of the function's leaders: each leader's dispatch slot must go when the function is
+       retired, or a call through a leader whose slot was not cleared re-enters the retired function. Into
+       snx_recompiled's leader_entries, one block for every function */
+    size_t* leaders;
+    size_t leader_count;
 } SnxCompiledFunction;
 
 typedef struct {
@@ -123,6 +128,7 @@ struct snx_recompiled {
     size_t compiled_function_count;
     SnxEntryAlias* entry_aliases;
     size_t entry_alias_count;
+    size_t* leader_entries;
     struct snx_recompiler* arena_owner; /* PowerPC64: the recompiler whose arena holds the module's code */
     char opt;
     SnxU64 features; /* the recompiler's when the module was made: its JIT decodes as its code was */
@@ -1135,7 +1141,10 @@ static int keep_invalidation_map(struct snx_recompiler* r, struct snx_recompiled
     }
     m->compiled_functions = (SnxCompiledFunction*)calloc(codegen->function_count, sizeof(*m->compiled_functions));
     m->entry_aliases = (SnxEntryAlias*)calloc(m->entry_count ? m->entry_count : 1, sizeof(*m->entry_aliases));
-    if (!m->compiled_functions || !m->entry_aliases) {
+    size_t total_leaders = 0;
+    for (size_t i = 0; i < codegen->function_count; ++i) total_leaders += codegen->functions[i].leader_count;
+    m->leader_entries = (size_t*)calloc(total_leaders ? total_leaders : 1, sizeof(*m->leader_entries));
+    if (!m->compiled_functions || !m->entry_aliases || !m->leader_entries) {
         fail(r, "out of memory for guest code invalidation metadata");
         return -1;
     }
@@ -1145,19 +1154,22 @@ static int keep_invalidation_map(struct snx_recompiler* r, struct snx_recompiled
     }
     m->entry_alias_count = m->entry_count;
     qsort(m->entry_aliases, m->entry_alias_count, sizeof(*m->entry_aliases), compare_entry_alias);
+    size_t leader_at = 0;
     for (size_t i = 0; i < codegen->function_count; ++i) {
         const SnxFunction* function = &codegen->functions[i];
         uint64_t start = UINT64_MAX, last = 0;
         size_t first_entry = m->entry_count;
+        size_t leader_base = leader_at;
         if (!function->count) continue;
         for (size_t j = 0; j < function->count; ++j) {
             uint64_t address = snx_function_address(function, j);
             if (address < start) start = address;
             if (address > last) last = address;
-            if (first_entry == m->entry_count && function->leaders && function->leaders[j]) {
-                size_t entry = lower_entry(m, address);
-                if (entry < m->entry_count && m->entry_addresses[entry] == address) first_entry = entry;
-            }
+            if (!function->leaders || !function->leaders[j]) continue;
+            size_t entry = lower_entry(m, address);
+            if (entry >= m->entry_count || m->entry_addresses[entry] != address) continue;
+            m->leader_entries[leader_at++] = entry;
+            if (first_entry == m->entry_count) first_entry = entry;
         }
         if (first_entry == m->entry_count || last > UINT64_MAX - 4) continue;
         SnxCompiledFunction* compiled = &m->compiled_functions[count++];
@@ -1166,6 +1178,8 @@ static int keep_invalidation_map(struct snx_recompiler* r, struct snx_recompiled
         compiled->code = m->entry_functions[first_entry];
         compiled->entry = first_entry;
         compiled->stale_index = i;
+        compiled->leaders = m->leader_entries + leader_base;
+        compiled->leader_count = leader_at - leader_base;
     }
     /* codegen orders functions by entry, but a span starts at its lowest block, which can lie below the entry (a split
        or tail-merged function). snx_recompiled_invalidate stops its scan at the first span starting past the changed
@@ -1293,6 +1307,7 @@ void snx_recompiled_free(struct snx_recompiled* m) {
     free(m->jit_cache_path);
     free(m->compiled_functions);
     free(m->entry_aliases);
+    free(m->leader_entries);
     free(m->views);
     if (m->dispatch) free((void**)m->dispatch - 1); /* load_descriptor's block, with the module in front */
     unload_image(m);
@@ -1358,6 +1373,14 @@ size_t snx_recompiled_invalidate(struct snx_recompiled* m, uint64_t addr, uint64
         }
         for (; alias_lo < m->entry_alias_count && m->entry_aliases[alias_lo].code == code; ++alias_lo) {
             size_t entry = m->entry_aliases[alias_lo].entry;
+            uint64_t address = m->entry_addresses[entry];
+            if (address >= m->code_lo && address < m->code_hi)
+                __atomic_store_n(&m->dispatch[(address - m->code_lo) >> 2], NULL, __ATOMIC_RELEASE);
+        }
+        /* The aliases above share the first leader's wrapper; every other leader's slot goes too, so a call through
+           one of them cannot re-enter the retired function */
+        for (size_t k = 0; k < function->leader_count; ++k) {
+            size_t entry = function->leaders[k];
             uint64_t address = m->entry_addresses[entry];
             if (address >= m->code_lo && address < m->code_hi)
                 __atomic_store_n(&m->dispatch[(address - m->code_lo) >> 2], NULL, __ATOMIC_RELEASE);
