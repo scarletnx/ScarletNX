@@ -24,8 +24,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#define RD_LIB "librenderdoc.so"
-
 VkState g_vk;
 
 /* ---- the stand-in RenderDoc, and what the code under test did with it */
@@ -147,7 +145,7 @@ static int logged(const char* line) { return strstr(g.log, line) != NULL; }
 /* neither: nothing taken, and Ctrl+F12 says why */
 static void case_none(void) {
     vk_renderdoc_load();
-    assert(!strcmp(g.looked, RD_LIB) && !g.opened[0] && !g.env[0] && !g.told);
+    assert(!strcmp(g.looked, SNX_VK_RENDERDOC_LIBRARY) && !g.opened[0] && !g.env[0] && !g.told);
     assert(!vk_renderdoc_capture(0) && !g.log[0]);
     assert(!vk_renderdoc_capture(1));
     assert(logged("renderdoc: Ctrl+F12 captures nothing: RenderDoc isn't in the process (renderdoc= is empty, and "
@@ -158,9 +156,9 @@ static void case_none(void) {
 static void case_missing(void) {
     snprintf(g_settings.render_doc_captures, sizeof g_settings.render_doc_captures, "/caps/game");
     vk_renderdoc_load();
-    assert(!strcmp(g.opened, RD_LIB) && !g.env[0] && !g.told);
-    assert(logged("renderdoc: renderdoc=/caps/game is set but RenderDoc's library, librenderdoc.so, didn't load: no "
-                  "such file\n"));
+    assert(!strcmp(g.opened, SNX_VK_RENDERDOC_LIBRARY) && !g.env[0] && !g.told);
+    assert(logged("renderdoc: renderdoc=/caps/game is set but RenderDoc's library, " SNX_VK_RENDERDOC_LIBRARY
+                  ", didn't load: no such file\n"));
     assert(!vk_renderdoc_capture(0) && !vk_renderdoc_capture(1) && !strcmp(presents(1, 5), ""));
 }
 /* RenderDoc's program started the game */
@@ -202,7 +200,7 @@ static void case_setting(void) {
     snprintf(g_settings.render_doc_captures, sizeof g_settings.render_doc_captures, "/caps/game");
     snprintf(g_settings.render_doc_frames, sizeof g_settings.render_doc_frames, "30");
     vk_renderdoc_load();
-    assert(!strcmp(g.looked, RD_LIB) && !strcmp(g.opened, RD_LIB));
+    assert(!strcmp(g.looked, SNX_VK_RENDERDOC_LIBRARY) && !strcmp(g.opened, SNX_VK_RENDERDOC_LIBRARY));
     assert(g.path_set == 1 && !strcmp(g.path, "/caps/game") && g.keys_set == 1 && g.keys_num == 0);
     assert(logged("renderdoc: loaded, Ctrl+F12 captures the next frame, 1 frame(s) listed, to /caps/game\n"));
     assert(g.told == 1 && g.shown.ready);
