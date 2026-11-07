@@ -222,6 +222,18 @@ static jbyteArray JNICALL apk_read(JNIEnv* env, jclass unused, jstring name) {
     (*env)->ReleaseStringUTFChars(env, name, text);
     return result;
 }
+/* whether a member is stored, not compressed: what a file descriptor can read in place */
+static jboolean JNICALL apk_stored(JNIEnv* env, jclass unused, jstring name) {
+    (void)unused;
+    const char* text = (*env)->GetStringUTFChars(env, name, NULL);
+    if (!text) return JNI_FALSE;
+    uint32_t index;
+    uint64_t offset;
+    SnxZip* zip = find(text, &index);
+    jboolean stored = zip && snx_zip_stored_at(zip, index, &offset) ? JNI_TRUE : JNI_FALSE;
+    (*env)->ReleaseStringUTFChars(env, name, text);
+    return stored;
+}
 static jobjectArray JNICALL apk_list(JNIEnv* env, jclass unused) {
     (void)unused;
     jclass string = (*env)->FindClass(env, "java/lang/String");
@@ -249,6 +261,7 @@ bool android_app_register(JNIEnv* env) {
         {(char*)"path", (char*)"()Ljava/lang/String;", (void*)apk_path},
         {(char*)"nativeRead", (char*)"(Ljava/lang/String;)[B", (void*)apk_read},
         {(char*)"nativeList", (char*)"()[Ljava/lang/String;", (void*)apk_list},
+        {(char*)"nativeStored", (char*)"(Ljava/lang/String;)Z", (void*)apk_stored},
         {(char*)"splitPaths", (char*)"()[Ljava/lang/String;", (void*)split_paths},
         {(char*)"splitNames", (char*)"()[Ljava/lang/String;", (void*)split_names},
         {(char*)"libraryDir", (char*)"()Ljava/lang/String;", (void*)library_dir},

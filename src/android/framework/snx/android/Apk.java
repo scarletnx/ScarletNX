@@ -29,7 +29,14 @@ public final class Apk {
         return nativeList();
     }
 
+    /** Whether a member is stored, not compressed, as Android needs one to open it as a file descriptor */
+    public static synchronized boolean stored(String name) {
+        return nativeStored(name);
+    }
+
     private static native byte[] nativeRead(String name);
+
+    private static native boolean nativeStored(String name);
 
     private static native String[] nativeList();
 }
