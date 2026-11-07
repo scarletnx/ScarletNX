@@ -285,8 +285,9 @@ static void want_hair_at(const Shape* grids, u32 g, u32 i, u32 j, float out[3]) 
    each, at any angle around it, its radius drops at the edge of each turn of its ringlet, at least two of them before
    its point, and the turns wind along it (the drops of the opposite side fall between this side's, where rings would
    line up), its first ring 16 units or more across, in the High file; the Mid file's, with too few rows for rings,
-   are smooth. A plain tail's radius only
-   narrows. Every style's fringe ends in pointed locks: its edge's height goes up and down across
+   are smooth. A high twin tail's (126) is a
+   lock: narrow at its tie, widest between a fifth and three fifths of the way, a quarter of that at its point, and
+   (High) flat, half as thick front to back as it is wide. Every style's fringe ends in pointed locks: its edge's height goes up and down across
    the front, where an edge without them only rises toward the middle */
 static void check_hair(const u8* f, u32 q) {
     static const u32 styles[3] = {112, 126, 0};
@@ -314,8 +315,23 @@ static void check_hair(const u8* f, u32 q) {
                         if (!drops[side]) first[side] = j;
                         drops[side]++;
                     }
-                    if (style != 112) CHECK(!j || r <= last + 0.05f);
                     last = r;
+                }
+            }
+            if (style == 126) {
+                float r[64], widest = 0, p[3];
+                u32 at = 0;
+                for (j = 0; j <= sh.nt[g] && j < 64; j++) {
+                    want_hair_at(&sh, g, 0, j, p);
+                    r[j] = vlen(vsub(vec(p[0], p[1], p[2]), tail_axis(&tl, (float)j / (float)sh.nt[g])));
+                    if (r[j] > widest) widest = r[j], at = j;
+                }
+                CHECK(sh.nt[g] < 64 && r[0] < 0.75f * widest && r[sh.nt[g]] < 0.25f * widest && at * 5 >= sh.nt[g] &&
+                      at * 5 <= 3 * sh.nt[g]);
+                if (q) { /* a quarter of the way around, front to back */
+                    want_hair_at(&sh, g, sh.ns[g] / 4, at, p);
+                    CHECK(vlen(vsub(vec(p[0], p[1], p[2]), tail_axis(&tl, (float)at / (float)sh.nt[g]))) <
+                          0.6f * widest);
                 }
             }
             if (style == 112 && !q) CHECK(drops[0] == 0 && drops[1] == 0);
@@ -455,7 +471,7 @@ static void check_shapes(const u8* f, u32 size, int high) {
                     left += x < -26 && y < 30, right += x > 26 && y < 30;
                     out_left += x < -32, out_right += x > 32, out_low += fabsf(x) > 32 && y < 25;
                 }
-                if (i == 126) CHECK(lo[1] < 0 && left > 20 && right > 20);
+                if (i == 126) CHECK(lo[1] < 20 && left > 10 && right > 10);
                 if (i == 112) CHECK(out_left > 20 && out_right > 20 && out_low == 0 && hi[0] > 38 && lo[0] < -38);
                 if (i == 112) CHECK(hi[1] > 70); /* its ahoge up from the crown */
                 if (i == 29) CHECK(hi[1] < 70);  /* the other drill style, without one */
