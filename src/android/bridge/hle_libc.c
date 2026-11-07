@@ -1180,6 +1180,12 @@ static void g_mbsrtowcs(CPU* c, void* data) {
     (void)data;
     X(0) = decode_string(X(0), X(1), SIZE_MAX, X(2));
 }
+/* mbstowcs(dst, src, n): mbsrtowcs of a pointer of its own */
+static void g_mbstowcs(CPU* c, void* data) {
+    (void)data;
+    uint64_t src = X(1);
+    X(0) = decode_string(X(0), (uint64_t)(uintptr_t)&src, SIZE_MAX, X(2));
+}
 static void g_wcrtomb(CPU* c, void* data) {
     (void)data;
     unsigned char out[4];
@@ -1227,6 +1233,14 @@ static void g_wcsnrtombs(CPU* c, void* data) {
     }
     X(0) = bytes;
 }
+/* wcstombs(dst, src, n): wcsnrtombs of every character of a pointer of its own, at most n bytes */
+static void g_wcstombs(CPU* c, void* data) {
+    uint64_t src = X(1);
+    X(3) = X(2);
+    X(2) = SIZE_MAX;
+    X(1) = (uint64_t)(uintptr_t)&src;
+    g_wcsnrtombs(c, data);
+}
 /* the case of ASCII and Latin-1, as the C locale of bionic's has it */
 static void g_towlower(CPU* c, void* data) {
     (void)data;
@@ -1239,8 +1253,9 @@ static void g_iswlower_l(CPU* c, void* data) {
     X(0) = (w >= 'a' && w <= 'z') || (w >= 0xdf && w <= 0xff && w != 0xf7);
 }
 #define WIDE_FUNCTIONS(F)                                                                                              \
-    F(wcslen) F(wmemchr) F(wmemcmp) F(wmemcpy) F(mbrlen) F(mbrtowc) F(mbsnrtowcs) F(mbsrtowcs) F(mbtowc) F(wcrtomb)   \
-    F(wcsnrtombs) F(towlower) F(iswlower_l)
+    F(wcslen)                                                                                                          \
+    F(wmemchr) F(wmemcmp) F(wmemcpy) F(mbrlen) F(mbrtowc) F(mbsnrtowcs) F(mbsrtowcs) F(mbtowc) F(wcrtomb)              \
+        F(wcsnrtombs) F(towlower) F(iswlower_l) F(mbstowcs) F(wcstombs)
 #define WIDE_ENTRY(name) {#name, g_##name, NULL},
 #endif
 
@@ -1511,7 +1526,7 @@ const HleSymbol hle_libc[] = {
 #endif
 #if defined(__linux__)
     P(wcslen), P(wmemchr), P(wmemcmp), P(wmemcpy), P(mbrlen), P(mbrtowc), P(mbsnrtowcs), P(mbsrtowcs), P(mbtowc),
-    P(wcrtomb), P(wcsnrtombs), P(towlower), PH(iswlower_l, iswlower),
+    P(wcrtomb), P(wcsnrtombs), P(towlower), PH(iswlower_l, iswlower), P(mbstowcs), P(wcstombs),
 #else
     WIDE_FUNCTIONS(WIDE_ENTRY)
 #endif

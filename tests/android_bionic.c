@@ -436,6 +436,25 @@ static void test_guest_locale(void) {
     setlocale(LC_ALL, "C");
 }
 
+/* mbstowcs and wcstombs in UTF-8, bionic's only multibyte encoding, whatever the host's locale (C here) */
+static void test_multibyte_strings(void) {
+    setlocale(LC_ALL, "C");
+    const char* text = "a\xc3\xa7\xc3\xa3o"; /* "a", c cedilla, a tilde, "o" */
+    expect_int("mbstowcs counts the characters", (int64_t)GUEST("mbstowcs", 0, P(text), 0), 4);
+    uint32_t wide[8] = {0};
+    expect_int("mbstowcs writes them", (int64_t)GUEST("mbstowcs", P(wide), P(text), 8), 4);
+    expect_int("the second", wide[1], 0xe7);
+    expect_int("the fourth", wide[3], 'o');
+    expect_int("and a 0 after", wide[4], 0);
+    expect_int("mbstowcs of a byte that starts no character", (int64_t)GUEST("mbstowcs", 0, P("a\xff"), 0), -1);
+    expect_int("wcstombs counts the bytes", (int64_t)GUEST("wcstombs", 0, P(wide), 0), 6);
+    char bytes[16] = "";
+    expect_int("wcstombs writes them", (int64_t)GUEST("wcstombs", P(bytes), P(wide), sizeof bytes), 6);
+    expect_text("as UTF-8", bytes, text);
+    expect_int("wcstombs stops at a whole character that does not fit",
+               (int64_t)GUEST("wcstombs", P(bytes), P(wide), 2), 1);
+}
+
 int main(void) {
     test_printf_signed();
     test_sscanf_reads_its_pointers();
@@ -446,6 +465,7 @@ int main(void) {
     test_signal_sets();
     test_bionic_locales();
     test_guest_locale();
+    test_multibyte_strings();
     if (g_t.failures) {
         fprintf(stderr, "android_bionic: %d failed\n", g_t.failures);
         return 1;
