@@ -411,21 +411,25 @@ static Hair hair_of(u32 v) {
     }
 }
 /* a tail of a tail style (k 0 or 1 of a pair): where it leaves the hair, the way out (taken over its first part, or
-   along all of it as spread goes to 1), how long it falls, its thickness at the root and the tip, and for a drill the
-   turns its ringlet winds down its length (0 for a plain tail) */
+   along all of it as spread goes to 1), how long it falls, its thickness at the root and the tip, for a drill the
+   turns its ringlet winds down its length (0 for a plain tail), how much of its width its thickness front to back is
+   (flat, 1 round), and whether it is a lock (leaf): narrow at its tie, widest a third of the way, then to a point */
 typedef struct {
     Vec root, out;
-    float fall, r0, r1, turns, spread;
+    float fall, r0, r1, turns, spread, flat;
+    int leaf;
 } Tail;
 static Tail tail_of_style(u32 tail, u32 k) {
     float side = k ? -1.0f : 1.0f;
     Tail t;
     t.turns = 0;
     t.spread = 0;
+    t.flat = 1.0f;
+    t.leaf = 0;
     switch (tail) {
-        case TAIL_TWIN_HIGH: /* long, from high on the sides */
-            t.root = vec(side * 28.0f, 52.0f, -8.0f), t.out = vec(side * 9.0f, 2.0f, -4.0f);
-            t.fall = 64.0f, t.r0 = 4.4f, t.r1 = 1.8f;
+        case TAIL_TWIN_HIGH: /* wide flat locks from high on the sides, out and down to the chin's height */
+            t.root = vec(side * 22.0f, 54.0f, -8.0f), t.out = vec(side * 16.0f, -2.0f, -4.0f);
+            t.fall = 40.0f, t.r0 = 9.5f, t.r1 = 0.6f, t.spread = 1.0f, t.flat = 0.45f, t.leaf = 1;
             break;
         case TAIL_TWIN_LOW: /* from behind the ears */
             t.root = vec(side * 21.0f, 34.0f, -16.0f), t.out = vec(side * 5.0f, 0, -3.0f);
@@ -435,9 +439,9 @@ static Tail tail_of_style(u32 tail, u32 k) {
             t.root = vec(side * 18.0f, 45.0f, -6.0f), t.out = vec(side * 23.0f, -3.0f, 1.0f);
             t.fall = 3.0f, t.r0 = 12.5f, t.r1 = 4.0f, t.turns = 3.0f, t.spread = 1.0f;
             break;
-        case TAIL_SIDE: /* one, high on one side */
-            t.root = vec(25.0f, 54.0f, -12.0f), t.out = vec(8.0f, 3.0f, -4.0f);
-            t.fall = 52.0f, t.r0 = 4.8f, t.r1 = 1.8f;
+        case TAIL_SIDE: /* one wide flat lock, from high on one side down past the jaw */
+            t.root = vec(25.0f, 56.0f, -10.0f), t.out = vec(12.0f, 2.0f, -4.0f);
+            t.fall = 46.0f, t.r0 = 10.0f, t.r1 = 0.6f, t.spread = 0.6f, t.flat = 0.5f, t.leaf = 1;
             break;
         case TAIL_AHOGE: /* thin, up from the crown, leaning forward and to one side */
             t.root = vec(0, 61.0f, 1.0f), t.out = vec(7.0f, 0, 5.0f);
@@ -464,6 +468,7 @@ static u32 hair_grids(u32 variant) {
    rows a turn draws a drill without its rings (rings 0): sampled that sparsely they fold its surface */
 static float tail_radius(const Tail* tl, float t, float a, float rings) {
     float env, f;
+    if (tl->leaf) return mixf(tl->r0 * mixf(0.5f, 1.0f, smooth(0.0f, 0.3f, t)), tl->r1, smooth(0.4f, 1.0f, t));
     if (tl->turns == 0) return mixf(tl->r0, tl->r1, t);
     env = mixf(tl->r0, tl->r1, t) * mixf(0.3f, 1.0f, smooth(0.0f, 0.15f, t)) * (1.0f - 0.8f * smooth(0.85f, 1.0f, t));
     f = tl->turns * t + a / (2 * PI_F);
@@ -478,8 +483,8 @@ static Vec tail_axis(const Tail* tl, float t) {
     return vec(tl->root.x + tl->out.x * o, tl->root.y + tl->out.y * o - tl->fall * t * t * 0.4f - tl->fall * t * 0.6f,
                tl->root.z + tl->out.z * o - 3.0f * t);
 }
-/* a ring of radius r around the tail's axis at t, at angle a: s around it counterclockwise as the axis runs, so the
-   grid faces out */
+/* a ring of radius r around the tail's axis at t, at angle a, flattened front to back by its flat: s around it
+   counterclockwise as the axis runs, so the grid faces out */
 static Vec tail_ring(const Tail* tl, float t, float a, float r) {
     Vec c = tail_axis(tl, t), d = vsub(tail_axis(tl, t + 0.01f), tail_axis(tl, t - 0.01f)), n1, n2;
     d = vnorm(d);
@@ -487,7 +492,7 @@ static Vec tail_ring(const Tail* tl, float t, float a, float r) {
     if (vlen(n1) < 0.2f) n1 = vcross(d, vec(1, 0, 0));
     n1 = vnorm(n1);
     n2 = vcross(d, n1);
-    return vadd(c, vadd(vmul(n1, r * cosf(a)), vmul(n2, r * sinf(a))));
+    return vadd(c, vadd(vmul(n1, r * cosf(a)), vmul(n2, r * tl->flat * sinf(a))));
 }
 /* what grid g (past the head's) of a hair variant with tails draws: tail g - 1, or past its tails its ahoge */
 static Tail hair_grid_tail(u32 variant, u32 g) {
@@ -519,7 +524,7 @@ static Vec hat_part_at(const Shape* sh, float s, float t) {
     Head h;
     if (sh->variant <= TAIL_STYLES) { /* a tie: grid g around tail g's root */
         Tail tl = tail_of_style(tail_styles[sh->variant - 1].tail, sh->g);
-        float a = s * 2 * PI_F, b = t * 2 * PI_F, big = tl.r0 + 0.5f;
+        float a = s * 2 * PI_F, b = t * 2 * PI_F, big = tail_radius(&tl, 0.06f, a, 1.0f) + 0.5f;
         Vec c = tail_axis(&tl, 0.06f), ring = vsub(tail_ring(&tl, 0.06f, a, 1.0f), c);
         Vec d = vnorm(vsub(tail_axis(&tl, 0.07f), tail_axis(&tl, 0.05f)));
         return vadd(c, vadd(vmul(ring, big + 1.1f * cosf(b)), vmul(d, 1.1f * sinf(b))));
@@ -631,7 +636,8 @@ static Vec shape_center(const Shape* sh, float s, float t) {
         if (sh->variant <= TAIL_STYLES) {
             Tail tl = tail_of_style(tail_styles[sh->variant - 1].tail, sh->g);
             Vec c = tail_axis(&tl, 0.06f);
-            return vadd(c, vmul(vsub(tail_ring(&tl, 0.06f, s * 2 * PI_F, 1.0f), c), tl.r0 + 0.5f));
+            return vadd(c, vmul(vsub(tail_ring(&tl, 0.06f, s * 2 * PI_F, 1.0f), c),
+                                tail_radius(&tl, 0.06f, s * 2 * PI_F, 1.0f) + 0.5f));
         }
         return sh->variant == HAT_BOW ? vec(0, 63.0f, -17.0f) : vec(26.0f, 50.0f, 4.0f);
     }
