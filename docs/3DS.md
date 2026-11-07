@@ -523,7 +523,10 @@ The pair keeps its shape in a window of any size. The 3DS display's Separate
 screens setting gives each screen a window of its own instead, which fills with
 that screen. Top screen resolution and Bottom screen resolution scale the 3D
 rendering of that screen, 1 to 16 times the console's 400x240 and 320x240, and
-the window scales the larger image to its size. Bounded PPM snapshots land in
+the window scales the larger image to its size. The Switch's `vsync` picks how the
+window shows its images, as for a Switch game: `1` each at the display's refresh
+(FIFO), `0` the newest at the next refresh (mailbox) or at once (immediate), and the
+run says at start which it got. Bounded PPM snapshots land in
 `<output>/frames` in every mode. Without a display the window path is
 unavailable and frames are only recorded; without a Vulkan device the presenter
 reports unavailability and no frame is fabricated.
