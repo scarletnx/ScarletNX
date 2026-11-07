@@ -297,7 +297,10 @@ static void timeline_wait(u64 value, int kind) {
     SNX_ZONE_V(z, "timeline wait", value);
     VkResult waited = vkWaitSemaphores(g_vk.dev, &wi, UINT64_MAX);
     /* going on would take the wait as done: the next Vulkan call crashes in the driver, and the log blames the game */
-    if (waited == VK_ERROR_DEVICE_LOST) fatal("vulkan: the GPU device was lost (driver reset or crash)");
+    if (waited == VK_ERROR_DEVICE_LOST) {
+        vk_ck_report();
+        fatal("vulkan: the GPU device was lost (driver reset or crash)");
+    }
     VK_OK(waited);
     SNX_ZONE_END(z);
     gpu_wait_note(NULL, 0);
@@ -710,6 +713,7 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
                                    .value = g_gval + 1,
                                    .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}};
     if (xs) s[1] = *xs;
+    vk_ck(cb, VK_CK_SUBMIT, (u32)why, 0, 0, 0);
     vk_gpuprof_cb_end(cb, why, g_gval + 1);
     /* ended and submitted after its commands, on the recording thread (a submission that fails signals the timeline
        from the host there, so waits for it end) */

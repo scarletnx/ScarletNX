@@ -256,7 +256,10 @@ static void submit_run(const void* p) {
     vk_queue_lock(g_vk.gfx);
     VkResult r = vkQueueSubmit2(g_vk.gfx, 1, &si, VK_NULL_HANDLE);
     vk_queue_unlock(g_vk.gfx);
-    if (r == VK_ERROR_DEVICE_LOST) fatal("vulkan: the GPU device was lost (driver reset or crash)");
+    if (r == VK_ERROR_DEVICE_LOST) {
+        vk_ck_report();
+        fatal("vulkan: the GPU device was lost (driver reset or crash)");
+    }
     VK_OK(r);
     /* a timeline of FFmpeg's never reaching its value would hang its decoder for good */
     if (r != VK_SUCCESS && x->ns > 1 && x->s[1].value)
@@ -506,6 +509,7 @@ void rec_CmdDrawIndirect(VkCommandBuffer cb, int indexed, VkBuffer buf, VkDevice
 }
 REC3(CmdBindIndexBuffer, VkBuffer, VkDeviceSize, VkIndexType)
 REC3(CmdDispatch, u32, u32, u32)
+REC1(CmdSetCheckpointNV, const void*)
 REC2(CmdDispatchIndirect, VkBuffer, VkDeviceSize)
 REC4(CmdFillBuffer, VkBuffer, VkDeviceSize, VkDeviceSize, u32)
 REC0(CmdEndRendering)
@@ -1161,6 +1165,7 @@ static void rendering_run(const void* p) {
     vkCmdBeginRendering(x->cb, &ri);
 }
 void rec_CmdBeginRendering(VkCommandBuffer cb, const VkRenderingInfo* ri) {
+    vk_ck(cb, VK_CK_PASS, ri->renderArea.extent.width, ri->renderArea.extent.height, ri->colorAttachmentCount, 0);
     int chained = ri->pNext || (ri->pDepthAttachment && ri->pDepthAttachment->pNext) ||
                   (ri->pStencilAttachment && ri->pStencilAttachment->pNext);
     for (u32 i = 0; i < ri->colorAttachmentCount && !chained; i++) chained = ri->pColorAttachments[i].pNext != NULL;

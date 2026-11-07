@@ -1000,6 +1000,15 @@ static int create_device(void) {
         ext[next++] = VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME;
         ext[next++] = VK_EXT_ROBUSTNESS_2_EXTENSION_NAME;
     }
+    if (g_settings.gpu_checkpoints) {
+        SnxVkExtensions ck;
+        snx_vk_device_extensions(g_vk.phys, &ck);
+        g_vk.has_checkpoints = snx_vk_extensions_has(&ck, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+        if (g_vk.has_checkpoints)
+            ext[next++] = VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME;
+        else
+            WARN("vulkan: vk_checkpoints: this driver has no VK_NV_device_diagnostic_checkpoints\n");
+    }
     u32 nq = g_vk.compute_family == g_vk.gfx_family ? 1 : 2;
     if (g_vk.video_family != ~0u)
         qci[nq++] = (VkDeviceQueueCreateInfo){.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
@@ -1025,6 +1034,7 @@ static int create_device(void) {
     g_vk.feat2 = (VkPhysicalDeviceFeatures2){
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &g_vk.feat11, .features = g_vk.feat};
     volkLoadDevice(g_vk.dev);
+    if (g_vk.has_checkpoints) vk_ck_init();
     pm_lock_announce(&g_vklock, "vulkan"); /* the device's calls, every thread's */
     vkGetDeviceQueue(g_vk.dev, g_vk.gfx_family, 0, &g_vk.gfx);
     vkGetDeviceQueue(g_vk.dev, g_vk.compute_family, second ? 1 : 0, &g_vk.compute);
