@@ -443,7 +443,7 @@ typedef struct {
    recording thread fills, not a string pointer: a string ring of the same size would be overwritten before the GPU (which
    lags the recorder by up to the 4 MiB command ring) reads it. The ring covers that whole lag, so an entry is intact
    when the checkpoint dump reads it */
-#define CP_LOG (1u << 17)
+#define CP_LOG (1u << 20)
 typedef struct {
     const char* what;
     u64 key;

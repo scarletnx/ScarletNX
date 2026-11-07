@@ -947,6 +947,8 @@ static int vkr_thumbnail(u8* rgba, u32 w, u32 h) {
 
 /* the stall watchdog: the releases queued and how far the submissions they wait for have got */
 static void vk_report_stall(void) {
+    static u64 last_gdone, last_cdone;
+    static int have;
     u64 n, gate, cgate, gsub, gdone, csub, cdone;
     vk_release_queued(&n, &gate, &cgate);
     vk_submit_progress(&gsub, &gdone);
@@ -956,7 +958,12 @@ static void vk_report_stall(void) {
          (unsigned long long)n, (unsigned long long)gate, (unsigned long long)cgate, (unsigned long long)gdone,
          (unsigned long long)gsub, (unsigned long long)cdone, (unsigned long long)csub,
          (unsigned long long)vk_rec_behind());
-    if (gsub - gdone > 50 || csub - cdone > 50) vk_checkpoint_dump("stall");
+    /* a wedge is a GPU whose done count stopped moving, not merely one that is behind: name its last draw then */
+    if (have && ((gdone < gsub && gdone == last_gdone) || (cdone < csub && cdone == last_cdone)))
+        vk_checkpoint_dump("stall");
+    last_gdone = gdone;
+    last_cdone = cdone;
+    have = 1;
 }
 static void vkr_idle(void) {
     vk_lock();
