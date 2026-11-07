@@ -5,6 +5,7 @@
    libraries and path queries). Paths are UTF-8, converted to wide for the W functions (the
    manifest's UTF-8 code page makes the A functions and the CRT take UTF-8 too) */
 #include "nx/runtime/platform/plat.h"
+#include "common/utilities/run_mark.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
@@ -237,6 +238,7 @@ void plat_system_info(char* out, size_t cap) {
 void plat_yield(void) { SwitchToThread(); }
 void plat_exit_now(int code) {
     fflush(NULL);
+    snx_run_mark_end(); /* an exit: TerminateProcess runs no atexit handler */
     /* not ExitProcess: DLL detach code (the video driver's) can wait on a lock one of the stopped threads held */
     TerminateProcess(GetCurrentProcess(), (UINT)code);
     _exit(code);

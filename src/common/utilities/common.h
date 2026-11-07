@@ -320,6 +320,8 @@ int snx_log_lines(const char* path, const char* text);
    file's bytes stay free to be read and written by anyone: POSIX's flock, which only other locks see, and on Windows a
    lock of one byte past any end the file reaches */
 int snx_lock_file(const char* path, intptr_t* lock);
+/* The same lock on a file that is there, never made: 0, 1, or -1 with errno, ENOENT when it is not there */
+int snx_lock_existing(const char* path, intptr_t* lock);
 void snx_unlock_file(intptr_t lock);
 /* f to offset from its start, past 2 GiB too (fseek takes a long, 32 bits on Windows); 0, or nonzero */
 int snx_seek(FILE* f, SnxU64 offset);

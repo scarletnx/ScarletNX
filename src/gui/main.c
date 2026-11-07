@@ -17,6 +17,7 @@
 #include "common/utilities/state_header.h"
 #include "common/utilities/demangle.h"
 #include "common/utilities/logscan.h"
+#include "common/utilities/run_mark.h"
 #include "gui/aot.h"
 #include "gui/browser.h"
 #include "gui/editor.h"
@@ -8442,6 +8443,51 @@ static int places_keep(App* app, char* const* before, char* note, size_t size) {
              app->app_file);
     return 1;
 }
+/* the launcher log's folder, where its start's mark is too (run_mark.h): logs/ of iOS's Documents, which the Files app
+   shows (gui_apple_start made it), else the state folder (Folders' Logs). Owned; NULL when there is none */
+static char* log_folder(const App* app) {
+#ifdef SDL_PLATFORM_IOS
+    char *documents = SDL_GetCurrentDirectory(), *logs = documents ? snx_path_join(documents, "logs") : NULL;
+    (void)app;
+    SDL_free(documents);
+    return logs;
+#else
+    return menu_folder(app, SNX_USER_STATE, true);
+#endif
+}
+/* a start of the launcher that did not end with an exit (run_mark.h), in its log, with what the system says of it */
+static void mark_said(void* data, const SnxRunMark* mark) {
+#ifdef SDL_PLATFORM_ANDROID
+    char* cause = gui_android_exit_reason(mark->pid, mark->started);
+#elif defined(SDL_PLATFORM_IOS)
+    const char* cause = "the system ended it: a crash, its memory limit (jetsam), or a close from the app switcher";
+#else
+    const char* cause = "a crash, a kill (by the system for its memory, or by the user) or a power loss, which the "
+                        "system does not name";
+#endif
+    *(bool*)data = true;
+    if (!mark->text)
+        gui_log("last start: pid %lld, unknown whether it ended with an exit: %s", mark->pid, mark->left);
+    else
+        gui_log("last start: %s did not end with an exit: %s", mark->text[0] ? mark->text : "a mark with no text",
+                cause);
+    if (mark->text && mark->left) gui_log("last start: %s, so the next start says it again", mark->left);
+#ifdef SDL_PLATFORM_ANDROID
+    free(cause);
+#endif
+}
+/* this launcher's start's mark (run_mark.h) in its log's folder, after each start that left its own there unended is
+   said; moving it, from the folder Logs was before */
+static void mark_start(const App* app, bool moving) {
+    char *folder = log_folder(app), why[1024];
+    bool any = false;
+    snx_run_mark_end();
+    if (!folder || snx_run_mark_start(folder, mark_said, &any, why, sizeof why) < 0)
+        gui_log("start mark: %s: the next start cannot tell whether this one ended with an exit",
+                folder ? why : "no log folder");
+    if (!any && !moving) gui_log("last start: ended with an exit, or none before");
+    free(folder);
+}
 #define GUI_RUN_LOGS 8 /* launchers open at once on one Logs folder, each with run logs of its own */
 /* the run logs of the Logs folder in use, made as the menu opens it (open_files) and as Folders' Logs changes: the
    first pair no other launcher holds, last-run.log and last-recompile.log, else last-run-2.log and last-recompile-2.log
@@ -8452,6 +8498,7 @@ static void run_log_follow(App* app) {
     if (!state) return;
 #ifndef SDL_PLATFORM_IOS /* there in Documents' logs/, which the Files app shows (initialize) */
     if (!app->look_only) gui_log_folder(state);
+    if (!app->look_only && snx_run_mark_held()) mark_start(app, true); /* Logs changed: the mark goes with the log */
 #endif
     if (app->run_locked) snx_unlock_file(app->run_lock);
     app->run_locked = false;
@@ -17626,10 +17673,9 @@ static bool initialize(App* app, const char* self) {
 #ifdef SDL_PLATFORM_IOS
     gui_apple_start();
     { /* the log in Documents' logs/, which gui_apple_start made and the Files app shows */
-        char *documents = SDL_GetCurrentDirectory(), *logs = documents ? snx_path_join(documents, "logs") : NULL;
+        char* logs = log_folder(app);
         gui_log_folder(logs);
         free(logs);
-        SDL_free(documents);
     }
 #endif
     if (!SDL_Init(SDL_INIT_VIDEO)) return false;
@@ -17901,6 +17947,7 @@ int snx_gui_main(const char* self) {
         return 1;
     }
     open_files(&app); /* here, not in initialize(), so the tests keep their own */
+    mark_start(&app, false);
     setup_start(&app);
     app.games_fresh = true;
     watch_start(&app);
@@ -17926,6 +17973,11 @@ int snx_gui_main(const char* self) {
         SDL_Delay(16);
     }
     cleanup(&app);
+#ifdef SDL_PLATFORM_IOS
+    int played = 0;
+    if (gui_apple_played(&played)) return 0; /* the game picked runs in this process next, under this mark */
+#endif
+    snx_run_mark_end();
     return 0;
 }
 #ifndef SNX_GUI_NO_MAIN /* the menu alone: Android's activity runs it, and a build without the Switch runtime */

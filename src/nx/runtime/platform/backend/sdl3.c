@@ -654,6 +654,29 @@ static int android_share(const char* path) {
     return ok;
 }
 #endif
+#ifdef __ANDROID__
+char* backend_exit_reason(long long pid, long long started) {
+    JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+    jobject activity = (jobject)SDL_GetAndroidActivity();
+    jclass type = env && activity ? (*env)->GetObjectClass(env, activity) : NULL;
+    jmethodID ask = type ? (*env)->GetMethodID(env, type, "exitReason", "(IJ)[B") : NULL;
+    jbyteArray text =
+        ask ? (jbyteArray)(*env)->CallObjectMethod(env, activity, ask, (jint)pid, (jlong)started * 1000) : NULL;
+    jsize n = text && !(*env)->ExceptionCheck(env) ? (*env)->GetArrayLength(env, text) : -1;
+    char* said = n >= 0 ? (char*)snx_alloc((size_t)n + 1) : NULL;
+    if (said) {
+        (*env)->GetByteArrayRegion(env, text, 0, n, (jbyte*)said);
+        said[n] = 0;
+    }
+    if (env && (*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (text) (*env)->DeleteLocalRef(env, text);
+    if (type) (*env)->DeleteLocalRef(env, type);
+    if (activity) (*env)->DeleteLocalRef(env, activity);
+    return said ? said
+                : snx_strdup(!env || !activity ? "the system's reason is unknown: no Android activity to ask"
+                                               : "the system's reason is unknown: GameActivity.exitReason failed");
+}
+#endif
 /* Share Log, as the launcher's: scarletnx.log beside the game's log, sent to the app the player picks on Android and
    iOS; its path in saved once written (else left as it was), what it did in said */
 static void fatal_share(const char* msg, const char* game_log, char* saved, size_t saved_size, char* said,

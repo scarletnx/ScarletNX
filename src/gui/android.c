@@ -115,6 +115,47 @@ static int call(const char* method, const char* signature, const jvalue* args, c
     return 0;
 }
 
+/* MainActivity's method that answers UTF-8 text as a byte[], with its arguments: the text, owned; NULL with why in
+   message when it did not answer */
+static char* ask(const char* method, const char* signature, const jvalue* args, char* message, size_t size) {
+    JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+    jobject activity = (jobject)SDL_GetAndroidActivity();
+    jclass activity_class;
+    jmethodID id;
+    jbyteArray answer = NULL;
+    char thrown[512], *text = NULL;
+    if (!env || !activity) {
+        snprintf(message, size, "%s", snx_tr("No Android activity to ask."));
+        return NULL;
+    }
+    activity_class = (*env)->GetObjectClass(env, activity);
+    id = (*env)->GetMethodID(env, activity_class, method, signature);
+    if (id) answer = (jbyteArray)(*env)->CallObjectMethodA(env, activity, id, args);
+    thrown_text(env, thrown, sizeof thrown); /* GetMethodID's NoSuchMethodError too */
+    if (answer && !thrown[0]) {
+        jsize n = (*env)->GetArrayLength(env, answer);
+        text = (char*)snx_alloc((size_t)n + 1);
+        (*env)->GetByteArrayRegion(env, answer, 0, n, (jbyte*)text);
+        text[n] = 0;
+    } else if (thrown[0])
+        snprintf(message, size, snx_tr("MainActivity.%s did not run: %s"), method, thrown);
+    else
+        snprintf(message, size, snx_tr("MainActivity.%s did not run."), method);
+    if (answer) (*env)->DeleteLocalRef(env, answer);
+    (*env)->DeleteLocalRef(env, activity_class);
+    (*env)->DeleteLocalRef(env, activity);
+    return text;
+}
+
+char* gui_android_exit_reason(long long pid, long long started) {
+    char why[640], *text;
+    jvalue args[2];
+    args[0].i = (jint)pid;
+    args[1].j = (jlong)started * 1000;
+    text = ask("exitReason", "(IJ)[B", args, why, sizeof why);
+    return text ? text : snx_format("the system's reason is unknown: %s", why);
+}
+
 int gui_android_play(const char* const* argv, char* message, size_t size) {
     JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
     jclass string;

@@ -1709,6 +1709,12 @@ snx_test_target(snx-test-collection-programs 99)
 target_link_libraries(snx-test-collection-programs PRIVATE scarletnx-common)
 add_test(NAME collection_programs COMMAND snx-test-collection-programs)
 
+# a start's mark (common/utilities/run_mark.c): made, ended, said by the next start, a held one left, a long folder
+add_executable(snx-test-run-mark run_mark.c)
+snx_test_target(snx-test-run-mark 99)
+target_link_libraries(snx-test-run-mark PRIVATE scarletnx-common)
+add_test(NAME run_mark COMMAND snx-test-run-mark)
+
 # the console a game's folder plays and its copy of the runtime (common/utilities/game_ini.c), which the launcher reads
 add_executable(snx-test-game-system game_system.c)
 snx_test_target(snx-test-game-system 99)

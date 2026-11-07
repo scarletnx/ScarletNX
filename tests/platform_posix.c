@@ -952,6 +952,12 @@ static void bench_ww(void) {
     }
 }
 
+/* a start's mark that an earlier run of this test left: nothing to check of it */
+static void mark_seen(void* data, const SnxRunMark* mark) {
+    (void)data;
+    (void)mark;
+}
+
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
     char path[1200], tmp[1200], sub[1200];
@@ -1059,6 +1065,22 @@ int main(int argc, char** argv) {
     CHECK(!plat_thread(thread_fn, &arg, 0) && !plat_thread(thread_fn, &arg, 1024), "threads did not start");
     for (i = 0; i < 5000 && __atomic_load_n(&g_ran, __ATOMIC_ACQUIRE) != 14; i++) plat_sleep_ns(1000000);
     CHECK(__atomic_load_n(&g_ran, __ATOMIC_ACQUIRE) == 14, "a thread did not run");
+
+    /* an exit through plat_exit_now deletes the start's mark (common/utilities/run_mark.h), which _exit would leave */
+    printf("start mark\n");
+    {
+        pid_t child = fork();
+        int status = 0;
+        char why[1300];
+        if (!child) {
+            if (snx_run_mark_start(dir, mark_seen, NULL, why, sizeof why)) _exit(9);
+            plat_exit_now(5);
+        }
+        CHECK(child > 0 && waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 5,
+              "the child did not make its mark and exit through plat_exit_now");
+        snprintf(path, sizeof path, "%s/.running-%ld", dir, (long)child);
+        CHECK(access(path, F_OK) && errno == ENOENT, "plat_exit_now left the start's mark");
+    }
 
     /* last: the crash handler stays for the rest of the process. A SIGSEGV or SIGBUS sent (a debugger's leftover, a
        kill) is ignored where the kernel says it was sent (Linux: sent_signal), and a real fault is still reported */

@@ -358,7 +358,12 @@ two; left out, none) and `language` (`auto`, `en` or a
   to them. Launchers open at once on one Logs folder each keep their runs' output apart: the first `last-run.log` and
   `last-recompile.log`, the next `last-run-2.log` and `last-recompile-2.log`, and on to 8, each held while its
   launcher is open (a lock on the file, which leaves it to be read); the log says which a launcher took, and Share Log
-  sends its own.
+  sends its own. Each start says how the last ended: `last start: ended with an exit, or none before`, or for each
+  start that left its mark, `last start: pid 4242, started 2026-11-07 10:01:02 did not end with an exit:` and what the
+  system says of it (on Android 11 and later the reason it keeps for that process, [ANDROID](ANDROID.md); elsewhere
+  the system names none). The mark is `.running-<pid>` beside the log, made at the start, held while the launcher
+  runs and deleted at its exit, Logs moving it; a game keeps its own beside its log, which the game's next start says
+  the same way.
 - **Exit** closes the launcher, once asked (ESC on the menu asks too, and while a recompile of the queue runs or waits
   the question names it), a screen saying for half a second which of its
   files it keeps for the next start (Settings, the picks of Settings > App, the libraries' folders, the recent games), a second

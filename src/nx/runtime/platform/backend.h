@@ -39,6 +39,10 @@ const char* backend_pressed(void);
    own folder (g_exedir), which snx_menu_dir walks up from to the data folder; on Android the data folder in the
    app's files (src/gui/android.c), wherever the game is */
 char* backend_launcher_folder(void);
+/* Android: what the system says of the end of the app's process pid, started then (seconds since 1970, 0 when
+   unknown), for a start's mark (common/utilities/run_mark.h): GameActivity's exitReason, ApplicationExitInfo from
+   Android 11, else that the system says none. Owned */
+char* backend_exit_reason(long long pid, long long started);
 /* the refresh period of the display the window is on, in ns: 0 when headless or the display doesn't say. Any thread */
 u64 backend_display_refresh_ns(void);
 /* changes whenever the surface comes back, so the renderer knows to make a new Vulkan surface */

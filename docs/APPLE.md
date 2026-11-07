@@ -75,9 +75,9 @@ menu's driver:
   Documents (the 14 newest days kept), after a banner with the
   device, the system and the limits the app has, with the menu's own lines ([GUI](GUI.md)), and a fatal error, the
   menu's or a game's, is also written to `logs/scarletnx-error.log`. A phone shows no console, so these are what to read
-  when a run fails; Share Log sends both. The banner also gives the disk space free for the app, and if the last start
-  ended without an exit of the menu or of its game: a crash, the memory limit, or a close from the app switcher.
-  `logs/.running` is the mark.
+  when a run fails; Share Log sends both. The banner also gives the disk space free for the app, and the menu's start
+  says if the last start ended without an exit of the menu or of its game: a crash, the memory limit, or a close from
+  the app switcher. `logs/.running-<pid>` is the mark ([GUI](GUI.md)).
 - **More logs.** Debug's *Log level* at 2 adds these lines to the launcher log, on iOS and on macOS where the system
   has them. `picker:` is each step of the document picker: its open, its answer, the item and its security scope. An
   open with no answer after it is a pick that iOS did not end. `lifecycle:` is the app going to the background and

@@ -13121,6 +13121,76 @@ int main(int argc, char** argv) {
         free(first);
         free(state);
     }
+    /* the launcher's start's mark (run_mark.h) in its log's folder: a start whose mark no program holds said, with what
+       the system says, and deleted, this one's made; Logs changed, it goes with the log; the end deletes it; a start
+       that finds none says the last ended with an exit */
+    {
+        char *run_was = app.run_log, *job_was = app.job_log, *place_was = app.place[GUI_PLACE_STATE];
+        char *first = snx_path_join(temporary, "mark logs"), *second = snx_path_join(temporary, "mark logs 2");
+        char *stale = snx_path_join(first, ".running-77"), *console = console_in(first), *said, own[64];
+        char *mine, *moved;
+        size_t size = 0;
+        bool locked_was = app.run_locked;
+        intptr_t lock_was = app.run_lock;
+#ifdef _WIN32
+        snprintf(own, sizeof own, ".running-%lld", (long long)GetCurrentProcessId());
+#else
+        snprintf(own, sizeof own, ".running-%lld", (long long)getpid());
+#endif
+        mine = snx_path_join(first, own);
+        moved = snx_path_join(second, own);
+        assert(!snx_mkdirs(first) && !snx_mkdirs(second) && !snx_run_mark_held());
+        app.run_log = app.job_log = NULL;
+        app.run_locked = false;
+        app.place[GUI_PLACE_STATE] = snx_strdup(first);
+        run_log_follow(&app); /* no mark yet: the menu's start makes it, after its files */
+        assert(!snx_run_mark_held() && !snx_path_exists(mine));
+        said = snx_strdup("pid 77, started 2026-01-01 00:00:00\n1767225600\n");
+        assert(!snx_write_file(stale, said, strlen(said)));
+        free(said);
+        mark_start(&app, false);
+        said = (char*)snx_read_file(console, &size);
+        assert(said && strstr(said, "] last start: pid 77, started 2026-01-01 00:00:00 did not end with an exit: "));
+        assert(!strstr(said, "] last start: ended with an exit"));
+        free(said);
+        assert(!snx_path_exists(stale) && snx_is_file(mine) && snx_run_mark_held());
+        free(app.place[GUI_PLACE_STATE]);
+        app.place[GUI_PLACE_STATE] = snx_strdup(second);
+        if (app.run_locked) snx_unlock_file(app.run_lock);
+        app.run_locked = false;
+        run_log_follow(&app); /* Logs changed */
+        assert(!snx_path_exists(mine) && snx_is_file(moved) && snx_run_mark_held());
+        snx_run_mark_end(); /* the launcher's end */
+        assert(!snx_path_exists(moved) && !snx_run_mark_held());
+        free(app.place[GUI_PLACE_STATE]);
+        app.place[GUI_PLACE_STATE] = snx_strdup(first);
+        if (app.run_locked) snx_unlock_file(app.run_lock);
+        app.run_locked = false;
+        run_log_follow(&app);
+        mark_start(&app, false);
+        said = (char*)snx_read_file(console, &size);
+        assert(said && strstr(said, "] last start: ended with an exit, or none before\n") && snx_is_file(mine));
+        free(said);
+        snx_run_mark_end();
+        assert(!snx_path_exists(mine));
+        if (app.run_locked) snx_unlock_file(app.run_lock);
+        free(app.run_log);
+        free(app.job_log);
+        free(app.place[GUI_PLACE_STATE]);
+        app.place[GUI_PLACE_STATE] = place_was;
+        app.run_log = run_was;
+        app.job_log = job_was;
+        app.run_locked = locked_was;
+        app.run_lock = lock_was;
+        gui_log_folder(NULL);
+        assert(!snx_remove_tree(first) && !snx_remove_tree(second));
+        free(moved);
+        free(mine);
+        free(console);
+        free(stale);
+        free(second);
+        free(first);
+    }
     /* Android's menu: its own files in its data folder's config/ and state/ (.scarletnx/ in the app's own files, which
        the Files app shows). An older version's, in the app's own files, are neither moved nor read: the menu starts
        from its defaults, and the box of what older versions left names each file with its size, then how they go while

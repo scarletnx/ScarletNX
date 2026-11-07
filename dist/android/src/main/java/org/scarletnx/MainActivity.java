@@ -137,6 +137,12 @@ public class MainActivity extends SDLActivity {
     /** src/gui/android.c: the folder picked, its tree's URI as UTF-8; null for none */
     private static native void folderPicked(byte[] uri);
 
+    /** src/gui/android.c: what Android says of how process pid of the app ended, started at since (ms since 1970, 0
+        when unknown), as UTF-8 */
+    public byte[] exitReason(int pid, long since) {
+        return Exits.of(this, pid, since).getBytes(StandardCharsets.UTF_8);
+    }
+
     /** a stopped game's Share Log (GameActivity, a text log), from the activity that shows it: a file of the data
         folder through DataProvider, another through the media store */
     static void share(Activity activity, String path) {
