@@ -17,8 +17,13 @@ enum {
     FIND_CLASS = 6,
     EXCEPTION_OCCURRED = 15,
     EXCEPTION_CLEAR = 17,
+    NEW_STRING_UTF = 167,
+    GET_STRING_UTF_LENGTH = 168,
+    GET_STRING_UTF_CHARS = 169,
+    RELEASE_STRING_UTF_CHARS = 170,
     REGISTER_NATIVES = 215,
     GET_JAVA_VM = 219,
+    GET_STRING_UTF_REGION = 221,
 };
 /* the JNIInvokeInterface's */
 enum { ATTACH_CURRENT_THREAD = 4, DETACH_CURRENT_THREAD = 5 };
@@ -195,6 +200,49 @@ static void test_find_class(void) {
     expect_int("FindClass in a native method of the app finds the app's class", found != NULL, 1);
 }
 
+/* ---- strings ---- */
+
+static void hex(const unsigned char* bytes, size_t n, char* out, size_t size) {
+    out[0] = 0;
+    for (size_t i = 0; i < n && 2 * i + 2 < size; ++i) snprintf(out + 2 * i, 3, "%02x", bytes[i]);
+}
+
+/* a string's modified UTF-8 as ART gives it: a supplementary character as UTF-8's 4 bytes, NUL as C0 80, and a lone
+   surrogate as its 3 bytes. "a", c cedilla, U+1F600, NUL, "b": 10 bytes, where HotSpot gives 12 */
+static void test_strings(void) {
+    JNIEnv* env = g_t.env;
+    static const jchar units[] = {'a', 0xe7, 0xd83d, 0xde00, 0, 'b'};
+    jstring s = (*env)->NewString(env, units, 6);
+    expect_int("GetStringUTFLength", (int64_t)jni(g_t.genv, GET_STRING_UTF_LENGTH, P(s), 0, 0, 0), 10);
+    jboolean copy = JNI_FALSE;
+    const unsigned char* chars =
+        (const unsigned char*)(uintptr_t)jni(g_t.genv, GET_STRING_UTF_CHARS, P(s), P(&copy), 0, 0);
+    char got[64];
+    hex(chars, chars ? strlen((const char*)chars) : 0, got, sizeof got); /* NUL is C0 80: no zero byte inside */
+    expect_text("GetStringUTFChars", got, "61c3a7f09f9880c08062");
+    expect_int("its copy flag", copy, JNI_TRUE);
+    if (chars) jni(g_t.genv, RELEASE_STRING_UTF_CHARS, P(s), P(chars), 0, 0);
+    unsigned char region[16];
+    memset(region, 0xff, sizeof region);
+    jni(g_t.genv, GET_STRING_UTF_REGION, P(s), 1, 3, P(region));
+    hex(region, 8, got, sizeof got);
+    expect_text("GetStringUTFRegion of the pair and the cedilla", got, "c3a7f09f988000ff");
+    jni(g_t.genv, GET_STRING_UTF_REGION, P(s), 2, 1, P(region));
+    hex(region, 4, got, sizeof got);
+    expect_text("GetStringUTFRegion of a lone surrogate", got, "eda0bd00");
+
+    /* NewStringUTF reads them back: U+1F600 a surrogate pair, C0 80 a NUL */
+    jstring back = (jstring)(uintptr_t)jni(g_t.genv, NEW_STRING_UTF,
+                                           P("a\xc3\xa7\xf0\x9f\x98\x80\xc0\x80"
+                                             "b"),
+                                           0, 0, 0);
+    jsize n = back ? (*env)->GetStringLength(env, back) : -1;
+    expect_int("NewStringUTF's length in UTF-16 units", n, 6);
+    jchar read[6] = {0};
+    if (n == 6) (*env)->GetStringRegion(env, back, 0, 6, read);
+    expect_int("its units", !memcmp(read, units, sizeof read), 1);
+}
+
 int main(int argc, char** argv) {
     if (argc != 3) {
         fprintf(stderr, "usage: %s FRAMEWORK_JAR JAVA_HOME\n", argv[0]);
@@ -220,6 +268,7 @@ int main(int argc, char** argv) {
 
     test_version();
     test_find_class();
+    test_strings();
     if (g_t.failures) {
         fprintf(stderr, "android_jni: %d failed\n", g_t.failures);
         return 1;

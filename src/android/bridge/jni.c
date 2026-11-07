@@ -441,6 +441,135 @@ static void jni_get_java_vm(CPU* c, void* data) {
     X(0) = 0;
 }
 
+/* ---- strings in ART's modified UTF-8, where HotSpot's is CESU-8: a supplementary character (a surrogate pair) is
+   UTF-8's 4 bytes, not 6, and NUL C0 80 and a lone surrogate its 3 bytes in both ---- */
+
+/* n UTF-16 units as ART's modified UTF-8 into out (none: counted): its length, without a NUL */
+static size_t art_utf8(const jchar* units, size_t n, unsigned char* out) {
+    size_t at = 0;
+    for (size_t i = 0; i < n; ++i) {
+        uint32_t u = units[i];
+        if (u >= 0xd800 && u < 0xdc00 && i + 1 < n && units[i + 1] >= 0xdc00 && units[i + 1] < 0xe000) {
+            uint32_t cp = 0x10000 + ((u - 0xd800) << 10) + (units[++i] - 0xdc00u);
+            if (out) {
+                out[at] = (unsigned char)(0xf0 | cp >> 18);
+                out[at + 1] = (unsigned char)(0x80 | (cp >> 12 & 0x3f));
+                out[at + 2] = (unsigned char)(0x80 | (cp >> 6 & 0x3f));
+                out[at + 3] = (unsigned char)(0x80 | (cp & 0x3f));
+            }
+            at += 4;
+        } else if (u && u < 0x80) {
+            if (out) out[at] = (unsigned char)u;
+            at += 1;
+        } else if (u < 0x800) {
+            if (out) {
+                out[at] = (unsigned char)(0xc0 | u >> 6);
+                out[at + 1] = (unsigned char)(0x80 | (u & 0x3f));
+            }
+            at += 2;
+        } else {
+            if (out) {
+                out[at] = (unsigned char)(0xe0 | u >> 12);
+                out[at + 1] = (unsigned char)(0x80 | (u >> 6 & 0x3f));
+                out[at + 2] = (unsigned char)(0x80 | (u & 0x3f));
+            }
+            at += 3;
+        }
+    }
+    return at;
+}
+/* NewStringUTF(env, bytes): a 4-byte sequence a surrogate pair, as ART reads it, where HotSpot's ends the string at
+   its second byte */
+static void jni_new_string_utf(CPU* c, void* data) {
+    (void)data;
+    JNIEnv* env = host_env(X(0));
+    const unsigned char* b = PTR(1);
+    if (!b) {
+        X(0) = 0;
+        return;
+    }
+    size_t n = strlen((const char*)b), k = 0;
+    jchar* units = malloc((n ? n : 1) * sizeof *units); /* a unit for each byte at most */
+    if (!units) {
+        jclass oom = (*env)->FindClass(env, "java/lang/OutOfMemoryError");
+        if (oom) (*env)->ThrowNew(env, oom, "NewStringUTF: no memory for the string's characters");
+        X(0) = 0;
+        return;
+    }
+    for (size_t i = 0; i < n;) {
+        uint32_t one = b[i++];
+        if (!(one & 0x80)) {
+            units[k++] = (jchar)one;
+            continue;
+        }
+        uint32_t two = i < n ? b[i++] & 0x3fu : 0;
+        if (!(one & 0x20)) {
+            units[k++] = (jchar)((one & 0x1f) << 6 | two);
+            continue;
+        }
+        uint32_t three = i < n ? b[i++] & 0x3fu : 0;
+        if (!(one & 0x10)) {
+            units[k++] = (jchar)((one & 0x0f) << 12 | two << 6 | three);
+            continue;
+        }
+        uint32_t four = i < n ? b[i++] & 0x3fu : 0;
+        uint32_t cp = (one & 0x07) << 18 | two << 12 | three << 6 | four;
+        units[k++] = (jchar)((cp >> 10) + 0xd7c0);
+        units[k++] = (jchar)((cp & 0x3ff) + 0xdc00);
+    }
+    X(0) = (uint64_t)(uintptr_t)(*env)->NewString(env, units, (jsize)k);
+    free(units);
+}
+/* GetStringUTFLength(env, string) */
+static void jni_get_string_utf_length(CPU* c, void* data) {
+    (void)data;
+    JNIEnv* env = host_env(X(0));
+    jstring s = (jstring)(uintptr_t)X(1);
+    jsize n = (*env)->GetStringLength(env, s);
+    const jchar* units = (*env)->GetStringChars(env, s, NULL);
+    X(0) = units ? art_utf8(units, (size_t)n, NULL) : 0;
+    if (units) (*env)->ReleaseStringChars(env, s, units);
+}
+/* GetStringUTFChars(env, string, is_copy): a copy of the bridge's, which ReleaseStringUTFChars frees */
+static void jni_get_string_utf_chars(CPU* c, void* data) {
+    (void)data;
+    JNIEnv* env = host_env(X(0));
+    jstring s = (jstring)(uintptr_t)X(1);
+    jsize n = (*env)->GetStringLength(env, s);
+    const jchar* units = (*env)->GetStringChars(env, s, NULL);
+    unsigned char* out = units ? malloc(art_utf8(units, (size_t)n, NULL) + 1) : NULL;
+    if (out) out[art_utf8(units, (size_t)n, out)] = 0;
+    if (units) (*env)->ReleaseStringChars(env, s, units);
+    if (units && !out) {
+        jclass oom = (*env)->FindClass(env, "java/lang/OutOfMemoryError");
+        if (oom) (*env)->ThrowNew(env, oom, "GetStringUTFChars: no memory for the string's bytes");
+    }
+    if (out && X(2)) *(jboolean*)PTR(2) = JNI_TRUE;
+    X(0) = (uint64_t)(uintptr_t)out;
+}
+static void jni_release_string_utf_chars(CPU* c, void* data) {
+    (void)data;
+    free(PTR(2));
+}
+/* GetStringUTFRegion(env, string, start, length, buffer): with a NUL after, as HotSpot's */
+static void jni_get_string_utf_region(CPU* c, void* data) {
+    (void)data;
+    JNIEnv* env = host_env(X(0));
+    jsize start = (jsize)X(2), length = (jsize)X(3);
+    jchar* units = malloc((length > 0 ? (size_t)length : 1) * sizeof *units);
+    if (!units) {
+        jclass oom = (*env)->FindClass(env, "java/lang/OutOfMemoryError");
+        if (oom) (*env)->ThrowNew(env, oom, "GetStringUTFRegion: no memory for the string's characters");
+        return;
+    }
+    (*env)->GetStringRegion(env, (jstring)(uintptr_t)X(1), start, length, units);
+    if (!(*env)->ExceptionCheck(env)) {
+        unsigned char* out = PTR(4);
+        out[art_utf8(units, (size_t)length, out)] = 0;
+    }
+    free(units);
+}
+
 /* ---- the JavaVM functions ---- */
 
 static void vm_destroy(CPU* c, void* data) {
@@ -484,6 +613,11 @@ static void make_tables(void) {
         else if (!strcmp(name, "UnregisterNatives")) h = jni_unregister_natives;
         else if (!strcmp(name, "GetJavaVM")) h = jni_get_java_vm;
         if (!strcmp(name, "GetVersion")) h = jni_get_version;
+        if (!strcmp(name, "NewStringUTF")) h = jni_new_string_utf;
+        if (!strcmp(name, "GetStringUTFLength")) h = jni_get_string_utf_length;
+        if (!strcmp(name, "GetStringUTFChars")) h = jni_get_string_utf_chars;
+        if (!strcmp(name, "ReleaseStringUTFChars")) h = jni_release_string_utf_chars;
+        if (!strcmp(name, "GetStringUTFRegion")) h = jni_get_string_utf_region;
         char* export = snx_format("JNIEnv::%s#%u", name, i);
         j.env_table[i] = i < 4 ? 0 : bridge_export(export, h, (void*)(uintptr_t)i);
         free(export);
