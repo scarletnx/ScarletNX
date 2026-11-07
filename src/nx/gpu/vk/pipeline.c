@@ -328,7 +328,7 @@ void vk_pipeline_init(void) {
         buffer_slots = image_slots;
         if (image_slots > SNX_VKB_RS - SNX_VKB_IMG) image_slots = SNX_VKB_RS - SNX_VKB_IMG;
         buffer_slots -= image_slots;
-        if (buffer_slots > SNX_VKB_TEXARRAY - SNX_VKB_IMGBUF) buffer_slots = SNX_VKB_TEXARRAY - SNX_VKB_IMGBUF;
+        if (buffer_slots > SNX_VKB_CAPTURE - SNX_VKB_IMGBUF) buffer_slots = SNX_VKB_CAPTURE - SNX_VKB_IMGBUF;
         static const int shader_stage[5] = {ST_VS, ST_FS, ST_TCS, ST_TES, ST_GS};
         g_vk.image_slots[shader_stage[s]] = image_slots;
         g_vk.buffer_image_slots[shader_stage[s]] = buffer_slots;
