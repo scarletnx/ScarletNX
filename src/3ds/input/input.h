@@ -50,5 +50,9 @@ void snx_ctr_input_touch(bool pressed, uint32_t x, uint32_t y);
 bool snx_ctr_input_touched(void);
 /* What the player holds now */
 void snx_ctr_input_read(SnxCtrInput* input);
+/* The console's motion: the first pad whose accelerometer and gyroscope SDL reads (its own, else a left Joy-Con's,
+   else a right one's), in the axes and units of Azahar's motion device: accel in g, a pad held up in front of the player
+   at rest reading (0, -1, 0), and gyro in degrees a second. False, with both left as they were, when no pad has them */
+bool snx_ctr_input_motion(float accel[3], float gyro[3]);
 void snx_ctr_input_free(void);
 #endif
