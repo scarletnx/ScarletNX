@@ -48,7 +48,8 @@ int options_memory_fit_old(const char* old, int ios);
 int options_astc_bc_old(const char* old);
 /* controls_opacity's value old as controls_alpha's: half of it, rounded up, the same look, as the built-in controls' art
    is twice as opaque now (scripts/build-controls.py); a whole number past 0 to 100 as the nearer end, as
-   controls_opacity's reader took it; -1 for a value that is not a whole number */
+   controls_opacity's reader took it. 50 is -1, controls_alpha's default, as 50 was then controls_opacity's own, which
+   the .ini files made since it was had written; -2 for a value that is not a whole number */
 int options_controls_opacity_old(const char* old);
 /* the path ini_open read, "" before it */
 const char* ini_file(void);
