@@ -26,8 +26,8 @@ int main(void) {
     snx_st_le16(gxp + 160, 19); /* sampler table's base SA container */
     snx_st_le16(gxp + 164, 1);  /* base SA register */
     snx_st_le16(gxp + 168, 0);  /* texture zero */
-    snx_st_le16(gxp + 170, 0);  /* dependent sampler at the base SA register */
-    snx_st_le64(gxp + 176, 0xe0000800c0000080ull); /* SMP, dim=3, sampler in SA register 1 */
+    snx_st_le16(gxp + 170, 1);  /* dependent sampler at base + 1: SMP's src1 doubles its decoded register (1 -> 2) */
+    snx_st_le64(gxp + 176, 0xe0000800c0000080ull); /* SMP, dim=3, sampler read from SA register 2 */
     gxp[184 + 4] = GXP_CATEGORY_SAMPLER;
     gxp[184 + 7] = 0x10; /* cube sampler */
     snx_st_le32(gxp + 184 + 8, 1);
