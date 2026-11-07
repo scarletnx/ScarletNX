@@ -194,6 +194,16 @@ int vk_ok_(VkResult r, const char* what, const char* file, int line) {
     return r == VK_SUCCESS;
 }
 VkCommandBuffer vk_cmd(void) { return (VkCommandBuffer)(uintptr_t)0xCB; }
+/* the BC7 encoder between frames (texture.c vk_tex_later_frame), which no case here runs: the textures are RGBA8 or
+   held as such. They link at every level, and abort if a case ever reaches them */
+int vk_cmd_ready(void) { abort(); }
+void vk_submit_recorded(void) { abort(); }
+u64 vk_bc7_strip_texels(void) { abort(); }
+int vk_bc7_encode_image(VkCommandBuffer cb, VkImage src, VkImage dst, u32 level, u32 w, u32 h, int is3d, u32 z, u32 nz,
+                        u32 y, u32 rows) {
+    (void)cb, (void)src, (void)dst, (void)level, (void)w, (void)h, (void)is3d, (void)z, (void)nz, (void)y, (void)rows;
+    abort();
+}
 /* surface.c's, for a storage image over a target, which no case here samples: an unoptimized build keeps the call, and
    the test links at every level with this, which aborts if a case ever reaches it */
 int vk_rt_same_layout(const Surf* s, u32 w, u32 h, int bl, u32 bh, u32 pitch) {

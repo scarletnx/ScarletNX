@@ -56,6 +56,21 @@
 static void guest_done(u64 cpu, u64 len) {
     if (vk_uma()) vk_uma_mem_need_cpu(cpu, len);
 }
+/* the BC7 encoder's frames (vk_tex_later_frame) until every ASTC texture held as BC7 is, or until a frame does nothing
+   (a texture whose load failed waits for it): the images a check compares are BC7 then. The frames it took */
+static u32 later_drain(void) {
+    VkLaterStats a, b;
+    u32 frames = 0;
+    for (vk_tex_later_stats(&a); a.waiting; a = b) {
+        vk_lock();
+        vk_tex_later_frame();
+        vk_unlock();
+        frames++;
+        vk_tex_later_stats(&b);
+        if (b.blocks == a.blocks && b.made == a.made && b.waiting == a.waiting) break;
+    }
+    return frames;
+}
 
 /* The fatal path of a lost device runs on the recording thread: record.c's submit_run calls fatal(), whose window
    release asks the ring to drain (vk_rec_sync). A wait there waits for the thread that runs it, so the process spun at
@@ -990,17 +1005,23 @@ static int gpu_unpack(const VkFmt* f, const u32* src, u32 n, u32* depth, u8* ste
     return 0;
 }
 
-/* astc_mode: Auto (0, the default) gives an ASTC texture a BC7 image where the GPU samples BCn but not ASTC, Exact (1)
-   an RGBA8 one; where the GPU samples ASTC, both keep the game's blocks */
+/* astc_mode: where the GPU samples BCn but not ASTC, an ASTC texture is held as BC7 by BC7 (2), as RGBA8 by Exact (1),
+   and by Auto (0, the default) as the budget at start said (device.c astc_choose: BC7 under 8 GiB); where the GPU
+   samples ASTC, all three keep the game's blocks */
 static int check_astc_mode(void) {
-    for (int mode = 0; mode < 2; mode++) {
+    u64 usage, budget;
+    vk_mem_use(&usage, &budget);
+    for (int mode = 0; mode < 3; mode++) {
         g_settings.astc_mode = mode;
-        const VkFormat want = g_vk.feat.textureCompressionASTC_LDR      ? VK_FORMAT_ASTC_4x4_UNORM_BLOCK
-                              : g_vk.feat.textureCompressionBC && !mode ? VK_FORMAT_BC7_UNORM_BLOCK
-                                                                        : VK_FORMAT_R8G8B8A8_UNORM;
-        CHECK(vk_tic_format(0x40, 0).vk == want);
+        const int bc7 = mode == 2 || (mode == 0 && g_vk.astc_auto_bc7);
+        const VkFormat want = g_vk.feat.textureCompressionASTC_LDR    ? VK_FORMAT_ASTC_4x4_UNORM_BLOCK
+                              : g_vk.feat.textureCompressionBC && bc7 ? VK_FORMAT_BC7_UNORM_BLOCK
+                                                                      : VK_FORMAT_R8G8B8A8_UNORM;
+        CHECK(vk_tic_format(0x40, 0).vk == want && vk_astc_bc7() == bc7);
     }
     g_settings.astc_mode = 0;
+    printf("astc_mode: Auto holds ASTC textures as %s here (a budget of %llu MB now), Exact as RGBA8, BC7 as BC7\n",
+           g_vk.astc_auto_bc7 ? "BC7" : "RGBA8", (unsigned long long)(budget >> 20));
     return 0;
 }
 
@@ -2220,6 +2241,7 @@ static Surf* sv_frame(const u32* tic) {
     vk_lock();
     Surf* t = vk_tex_from_tic(tic);
     vk_unlock();
+    later_drain(); /* and the encoder's frames: a texture held as BC7 is */
     return t;
 }
 /* one way in: after it, the next frame's texture is the one made, all of it is memory's, and it loaded at most most
@@ -3181,7 +3203,7 @@ static int check_sparse_pieces_batched(void) {
    mapped tiles and mip tails alone */
 #define RS_TILE 0x10000u
 /* the format such a texture is made in: NVN's, its tile's texels across and down, and its image's blocks (texels
-   across and bytes): RGBA8, or ASTC 4x4 held as BC7 (astc_mode=0, Auto), whose image is compared with the same texture made
+   across and bytes): RGBA8, or ASTC 4x4 held as BC7 (astc_mode=2), whose image is compared with the same texture made
    whole, not with memory */
 typedef struct {
     const char* name;
@@ -3471,6 +3493,7 @@ static int resident_texture(const RsFmt* as, u32 size, u32 layers, u64 gva, u64 
     Surf* whole2 = vk_tex_from_tic(ref2.tic);
     g_vk.resident = had_resident;
     vk_unlock();
+    later_drain(); /* the ASTC ones made whole are BC7 between frames */
     CHECK(t && whole && whole2 && t->levels == r.levels && t->layers == layers);
     VkMemoryRequirements req;
     vkGetImageMemoryRequirements(g_vk.dev, t->img, &req);
@@ -3559,12 +3582,12 @@ static int check_resident_texture(void) {
                             most, n));
     return 0;
 }
-/* the same for an ASTC 4x4 texture held as BC7 (astc_mode=0, Auto), whose tiles of 64x64 blocks are BC7's 256x256 texels:
+/* the same for an ASTC 4x4 texture held as BC7 (astc_mode=2), whose tiles of 64x64 blocks are BC7's 256x256 texels:
    its bound tiles are decoded where they lie, its image the same texture's made whole there and zeros elsewhere */
 static int check_resident_astc(void) {
     const int had = g_settings.astc_mode;
     RsTex probe;
-    g_settings.astc_mode = 0;
+    g_settings.astc_mode = 2;
     rs_make(&probe, &RS_ASTC4, 256, 1, 0xA10000000ull);
     const VkFmt f = vk_tic_format(probe.tic[0], 0);
     if (f.conv != VKC_ASTC || f.vk != VK_FORMAT_BC7_UNORM_BLOCK) {
@@ -3573,14 +3596,15 @@ static int check_resident_astc(void) {
         g_settings.astc_mode = had;
         return 0;
     }
-    /* the decoder's buffers made first, by a texture of its own mapped whole: what the textures below allocate is
-       counted without them */
+    /* the decoder's and the encoder's buffers made first, by a texture of its own mapped whole, made BC7 between
+       frames: what the textures below allocate is counted without them */
     CHECK(mem_map(HEAP_BASE + 0x1200000, probe.lay.size, MS_NORMAL, PERM_RW) == 0);
     gmmu_map(probe.tex.gpu, HEAP_BASE + 0x1200000, probe.lay.size);
     vk_lock();
     CHECK(vk_tex_from_tic(probe.tic));
     vk_finish();
     vk_unlock();
+    later_drain();
     gmmu_space_unmap(probe.tex.gpu, probe.lay.size);
     CHECK(mem_unmap(HEAP_BASE + 0x1200000, probe.lay.size) == 0);
     /* 2048x2048, 12 levels, levels 0 to 3 in tiles: two tiles of level 0, one of level 1 and of level 3, the mip tail;
@@ -3601,11 +3625,12 @@ static int check_resident_astc(void) {
 
 /* An ASTC array is uploaded a level at a time over all its layers (vk_astc_upload_layers): a layer and level at a time,
    each layer's encoder dispatch waited for the one before, and one game's arrays of 118 layers of 128x128 in 8 levels
-   took 667 ms of an RX 6700 XT as BC7 (docs/ASTC.md). The encoder runs once a level, and each layer's image is the one
-   its memory makes as a 2D texture on its own, as BC7 and as RGBA8 */
+   took 667 ms of an RX 6700 XT as BC7 (docs/ASTC.md). Held as BC7 (astc_mode 2), the encoder makes its BC7 image
+   between frames a level at a time too, all the layers in one dispatch; and each layer's image is the one its memory
+   makes as a 2D texture on its own, as BC7 and as RGBA8 (astc_mode 1) */
 static int astc_array_levels(int mode) {
     static const RsFmt as_rgba8 = {"ASTC 4x4 as RGBA8", NVN_FORMAT_RGBA_ASTC_4x4, 256, 1, 4, 1};
-    const RsFmt* as = mode ? &as_rgba8 : &RS_ASTC4;
+    const RsFmt* as = mode == 1 ? &as_rgba8 : &RS_ASTC4;
     const u32 layers = 8; /* 7 levels each: rs_image's 64 regions */
     const u64 cpu = HEAP_BASE + 0x1E000000 + (u64)mode * 0x100000;
     RsTex arr;
@@ -3615,7 +3640,7 @@ static int astc_array_levels(int mode) {
     nvn_tex_layout(&arr.tex.d, &arr.lay);
     nvn_tic_encode(&arr.tex, NULL, 0, 0, arr.tic);
     const VkFmt f = vk_tic_format(arr.tic[0], 0);
-    if (f.conv != VKC_ASTC || f.vk != (mode ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_BC7_UNORM_BLOCK)) {
+    if (f.conv != VKC_ASTC || f.vk != (mode == 1 ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_BC7_UNORM_BLOCK)) {
         printf("ASTC array levels, %s: the GPU %s, skipped\n", as->name,
                f.conv != VKC_ASTC ? "samples ASTC as it is" : "holds no such image");
         return 0;
@@ -3624,16 +3649,20 @@ static int astc_array_levels(int mode) {
     CHECK(mem_map(cpu, size, MS_NORMAL, PERM_RW) == 0);
     for (u64 k = 0; k < size / RS_TILE; k++) rs_fill(&arr, GP(cpu + k * RS_TILE), (u32)k + 3); /* a color a block */
     gmmu_map(arr.tex.gpu, cpu, size);
+    later_drain(); /* what the checks before left to the encoder */
     const u64 before = vk_astc_dispatches();
     vk_lock();
     Surf* t = vk_tex_from_tic(arr.tic);
     vk_finish();
     vk_unlock();
+    const u32 frames = later_drain();
     const u64 dispatches = vk_astc_dispatches() - before;
     CHECK(t && t->layers == layers && t->levels == arr.levels);
-    if (dispatches != (mode ? 0 : arr.levels)) {
-        fprintf(stderr, "ASTC array of %u layers in %u levels, %s: %llu encoder dispatches, not %u\n", layers,
-                arr.levels, as->name, (unsigned long long)dispatches, mode ? 0 : arr.levels);
+    if (dispatches != (mode == 1 ? 0 : arr.levels) || frames != (mode == 1 ? 0u : 1u)) {
+        fprintf(stderr,
+                "ASTC array of %u layers in %u levels, %s: %llu encoder dispatches in %u frames, not %u in %u\n",
+                layers, arr.levels, as->name, (unsigned long long)dispatches, frames, mode == 1 ? 0 : arr.levels,
+                mode == 1 ? 0u : 1u);
         return 1;
     }
     u8* image = rs_image(t, &arr);
@@ -3648,6 +3677,7 @@ static int astc_array_levels(int mode) {
         vk_lock();
         Surf* o = vk_tex_from_tic(one.tic);
         vk_unlock();
+        later_drain();
         u8* alone = o ? rs_image(o, &one) : NULL;
         const u64 bytes = rs_bytes(&one);
         if (!alone || memcmp(alone, image + at, (size_t)bytes)) {
@@ -3667,7 +3697,7 @@ static int astc_array_levels(int mode) {
 }
 static int check_astc_array_levels(void) {
     const int had = g_settings.astc_mode;
-    int failed = astc_array_levels(0) || astc_array_levels(1);
+    int failed = astc_array_levels(2) || astc_array_levels(1);
     g_settings.astc_mode = had;
     return failed;
 }
@@ -3734,6 +3764,7 @@ static int resident_in_flight(const RsFmt* as, u64 gva, u64 ref_gva, u64 cpu) {
         g_vk.feat.sparseResidencyImage2D = had2d;
     }
     vk_unlock();
+    later_drain(); /* the ASTC one made whole is BC7 between frames */
     CHECK(t && t->bricks && (!as->astc || (whole && !whole->bricks)));
     CHECK(rs_want(&r, whole, xa, want[0]) && rs_want(&r, whole, xb, want[1]));
     vk_lock();
@@ -3847,7 +3878,7 @@ static int resident_in_flight(const RsFmt* as, u64 gva, u64 ref_gva, u64 cpu) {
 static int check_resident_texture_in_flight(void) {
     const int had = g_settings.astc_mode;
     CHECK(!resident_in_flight(&RS_RGBA8, 0x960000000ull, 0, HEAP_BASE + 0x1300000));
-    g_settings.astc_mode = 0; /* held as BC7 where the GPU samples BCn and not ASTC; rs_device_can skips it elsewhere */
+    g_settings.astc_mode = 2; /* held as BC7 where the GPU samples BCn and not ASTC; rs_device_can skips it elsewhere */
     int failed = resident_in_flight(&RS_ASTC4, 0xA70000000ull, 0xA80000000ull, HEAP_BASE + 0x1300000);
     g_settings.astc_mode = had;
     return failed;
@@ -5077,6 +5108,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_uma_imports.inc"
 #include "vulkan_write_tracking.inc"
 #include "vulkan_tex_partial.inc"
+#include "vulkan_astc_later.inc"
 
 #include "vulkan_descriptor_bench.inc"
 #include "vulkan_pipeline_probe.inc"
@@ -5675,6 +5707,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_resident_texture());
     CHECK(!check_resident_astc());
     CHECK(!check_astc_array_levels());
+    CHECK(!check_astc_later());
     CHECK(!check_resident_texture_in_flight());
     CHECK(!check_sparse_pieces_batched());
     CHECK(!check_dma_untracked_source());

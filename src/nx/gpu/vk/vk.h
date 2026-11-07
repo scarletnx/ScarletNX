@@ -107,7 +107,10 @@ typedef struct {
     /* optional features that were enabled */
     VkPhysicalDeviceFeatures feat;
     int has_divisor;    /* VK_EXT_vertex_attribute_divisor: instance divisors above 1 */
-    int astc_bc7_could; /* the GPU samples BCn but not ASTC: astc_mode=0 holds its ASTC textures as BC7 */
+    int astc_bc7_could; /* the GPU samples BCn but not ASTC: astc_mode=2 holds its ASTC textures as BC7 */
+    /* astc_mode's Auto holds the ASTC textures it decodes as BC7: the device started with a budget under
+       SNX_ASTC_EXACT_MB (gpu/texture/astc_bc.h). vk_astc_bc7 says what the mode in effect holds them as */
+    int astc_auto_bc7;
     /* VK_EXT_vertex_input_dynamic_state in effect (vertex_input.h's choice): each draw sets its vertex layout, which
        pipelines leave out of their keys */
     int vertex_input_dynamic;
@@ -361,6 +364,8 @@ void vk_submit_for_readback(void);
    image's sparse binding has to follow (memory.c) */
 void vk_submit_recorded(void);
 void vk_submit_upload_wait(void); /* the same, and waits for the GPU, landing nothing: an upload's own pace */
+/* vk_cmd() returns without waiting: the frame slot is recording, or the GPU is done with its last use */
+int vk_cmd_ready(void);
 /* vk_checkpoints=1: what the GPU reached when the device was lost (checkpoints.c) */
 enum {
     VK_CK_ASTC,
@@ -643,6 +648,9 @@ enum {
 VkFmt vk_rt_format(u32 fmt);
 VkFmt vk_zt_format(u32 fmt);
 VkFmt vk_tic_format(u32 w0, int srgb); /* bpp 0: not supported */
+/* the ASTC textures the GPU decodes are held as BC7: astc_mode's BC7, or its Auto on a device that started with little
+   memory (gpu/texture/astc_bc.h) */
+int vk_astc_bc7(void);
 /* vk_tic_format for a 3D image: ASTC and ETC2 blocks decoded where the device can't make 3D images of them */
 VkFmt vk_tic_format_3d(u32 w0, int srgb);
 /* The device and optimal-tiling format both support writes without a shader format. */
@@ -761,6 +769,19 @@ typedef struct Surf {
     /* depth targets: undefined but for draws and clears predicated on the GPU, which may not have run, so they count
        as no draw (render.c zt_written) */
     int pred_undefined;
+    /* textures: an ASTC one held as BC7 whose image is RGBA8 until the BC7 encoder has made its BC7 one between frames
+       (texture.c vk_tex_later_frame), and again each time the game writes it whole */
+    u8 bc7_later;
+    /* that BC7 image while it is made (VK_NULL_HANDLE before the encoder starts on it), its memory, and how far the
+       encoder got: level, then slice (a layer, or a 3D level's depth slice) and row of BC7 blocks, from the RGBA8
+       image's texels of write generation wgen. queued: in the encoder's queue */
+    struct {
+        VkImage img;
+        VmaAllocation mem;
+        u64 bytes;
+        u32 level, slice, row, wgen;
+        int queued;
+    } bc7;
 } Surf;
 enum { VK_LRU_NONE, VK_LRU_TEX, VK_LRU_RT };
 /* resolution= in the .ini: render targets are made this much bigger (read once, at startup) */
@@ -1087,6 +1108,13 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y, u32 w, u32 h, u32 
    work to fill the GPU and each layer's encoder dispatch waits for the one before (docs/ASTC.md) */
 int vk_astc_upload_layers(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 level, u32 layer, u32 layers, VkAstcRows rows,
                           void* ctx);
+/* The BC7 blocks of slices z to z + nz of level `level` of src, an RGBA8 image in TRANSFER_SRC_OPTIMAL (w x h texels a
+   slice: its layers, or a 3D level's depth slices with is3d), rows texel rows of them from y, a multiple of 4, encoded
+   into the same place of dst, a BC7 image of its shape in TRANSFER_DST_OPTIMAL. rows ends on a whole block or at the
+   level's edge; nz x rows x w texels fit vk_bc7_strip_texels. 0 when no descriptor set is left */
+int vk_bc7_encode_image(VkCommandBuffer cb, VkImage src, VkImage dst, u32 level, u32 w, u32 h, int is3d, u32 z, u32 nz,
+                        u32 y, u32 rows);
+u64 vk_bc7_strip_texels(void); /* the texels vk_bc7_encode_image takes at once at most */
 /* the image levels (or regions of them) uploaded as BC7 so far, their bytes, and the bytes they would have taken as
    RGBA8 */
 void vk_astc_stats(u64* levels, u64* bytes, u64* rgba8_bytes);
@@ -1190,6 +1218,22 @@ VkImageView vk_null_view(VkImageViewType type, int num, int ms);
 VkSampler vk_sampler(const u32* tsc, int raise, int integer);
 extern int g_vk_anisotropy; /* anisotropy=, read once at start: the sampler table keeps the samplers it made */
 void vk_tex_frame(void);    /* a frame was presented: evicts what wasn't used for a while */
+/* After a frame's present, its own submission: the BC7 encoder makes the BC7 images of ASTC textures held as BC7 from
+   their RGBA8 ones, VK_BC7_LATER_BLOCKS blocks at most, a texture at a time in the order they were loaded, and puts
+   each in its texture's place once whole. Nothing when vk_cmd would wait for the GPU first */
+void vk_tex_later_frame(void);
+/* the encoder's blocks a frame: 3.3 ms of an RX 6700 XT, which encodes 10 million a second (docs/ASTC.md), a tenth of
+   a frame at 30 fps */
+#define VK_BC7_LATER_BLOCKS (1u << 15)
+/* s goes: its place in the queue and the BC7 image being made for it with it (surface.c surf_free) */
+void vk_tex_later_forget(Surf* s);
+/* statistics since the start: textures made BC7, the RGBA8 bytes that freed, encodes started over for a write or
+   given up, blocks encoded; and now: textures waiting, the bytes their RGBA8 images take */
+typedef struct {
+    u64 made, freed, restarted, blocks, waiting_bytes;
+    u32 waiting;
+} VkLaterStats;
+void vk_tex_later_stats(VkLaterStats* s);
 
 /* gpu/vk/buffer.c: guest memory [gva, gva + len) as a buffer the GPU reads, valid until the next submit */
 int vk_buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off);

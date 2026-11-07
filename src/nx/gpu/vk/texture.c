@@ -550,6 +550,271 @@ static int resident_upload(Surf* t) {
     free(want);
     return ok;
 }
+/* ------------------------------------------------------------ ASTC held as BC7, made between frames */
+/* An ASTC texture held as BC7 (vk_astc_bc7) goes up decoded to RGBA8, which the game samples at once, and the BC7
+   encoder makes its BC7 image from those texels after the frames' presents, VK_BC7_LATER_BLOCKS blocks a frame at most:
+   uploading straight to BC7 held the game for the encoder, 50 to 90 ms when two arrays came in one frame, a second and
+   more before the arrays went up a level at a time. Once whole, the BC7 image takes the RGBA8 one's place, which goes
+   with its views when the frames that sample them are done. A write of the texture before then (a whole upload or
+   pieces, which give it a new wgen) makes the encoder drop what it made and start over behind the others; one whole
+   after it is loaded as RGBA8 again, and pieces of it go straight to BC7 while they are a frame's blocks or fewer.
+   A texture whose memory is bound by tiles (resident_image) is made BC7 and loaded straight to it */
+static int is_bc7(VkFormat f) { return f == VK_FORMAT_BC7_UNORM_BLOCK || f == VK_FORMAT_BC7_SRGB_BLOCK; }
+/* the RGBA8 format a BC7 one is decoded to before it is encoded, and back: the same sRGB */
+static VkFormat later_rgba8(VkFormat bc7) {
+    return bc7 == VK_FORMAT_BC7_SRGB_BLOCK ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+}
+static VkFormat later_bc7(VkFormat rgba8) {
+    return rgba8 == VK_FORMAT_R8G8B8A8_SRGB ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK;
+}
+/* t's image in format fmt: what tex_create makes it (vf has to live until it is made), storage where fmt is sampled
+   so too (*storage) */
+static void tex_info(const Surf* t, VkFormat fmt, VkImageCreateInfo* ii, VkViewFormats* vf, int* storage) {
+    VkFormatProperties fp;
+    const int is3d = t->type == VK_IMAGE_VIEW_TYPE_3D;
+    *ii = (VkImageCreateInfo){.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                              .imageType = is3d ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D,
+                              .format = fmt,
+                              .extent = {t->w, t->h, is3d ? t->depth3d : 1},
+                              .mipLevels = t->levels,
+                              .arrayLayers = t->layers,
+                              .samples = vk_surf_samples(t),
+                              .tiling = VK_IMAGE_TILING_OPTIMAL,
+                              .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                       (t->msaa ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : 0),
+                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    vkGetPhysicalDeviceFormatProperties(g_vk.phys, fmt, &fp);
+    *storage = !t->msaa && (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT);
+    if (*storage) ii->usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+    if (!is3d && t->layers >= 6 && t->w == t->h && !t->msaa) ii->flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    /* a multisampled one is loaded by drawing its samples from the guest's layout of them, through a view of their
+       raw bytes (gpu/vk/msaa.c) */
+    vk_view_formats(ii, vf, t->msaa ? vk_raw_format(t->f.bpp) : VK_FORMAT_UNDEFINED);
+}
+/* the textures whose BC7 images the encoder makes, in the order they were loaded, and what it did */
+static struct {
+    Surf** q;
+    u32 n, cap;
+    VkLaterStats stats;
+} g_later;
+/* the BC7 image made so far for t goes once the frames that wrote it are done */
+static void later_drop_image(Surf* t) {
+    if (t->bc7.img) {
+        vk_defer_image(t->bc7.img, t->bc7.mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
+        vk_defer_bytes(t->bc7.bytes);
+    }
+    t->bc7.img = VK_NULL_HANDLE;
+    t->bc7.mem = VK_NULL_HANDLE;
+    t->bc7.bytes = 0;
+    t->bc7.level = t->bc7.slice = t->bc7.row = 0;
+}
+/* t's RGBA8 image holds what its BC7 one has to, as of its wgen: queued, the encoder starting from its first block */
+static void later_queue(Surf* t) {
+    if (!t->bc7_later || is_bc7(t->f.vk) || t->bc7.queued) return; /* a queued one starts over on its new wgen */
+    if (g_later.n == g_later.cap) {
+        u32 cap = g_later.cap ? g_later.cap * 2 : 256;
+        Surf** q = realloc(g_later.q, (size_t)cap * sizeof *q);
+        if (!q) {
+            LOG_LIMIT(
+                4,
+                "vulkan: no memory to queue a %ux%ux%u ASTC texture for the BC7 encoder: it stays RGBA8, %llu MB, "
+                "until it is loaded again\n",
+                t->w, t->h, t->layers * t->depth3d, (unsigned long long)(t->bytes >> 20));
+            return;
+        }
+        g_later.q = q;
+        g_later.cap = cap;
+    }
+    g_later.q[g_later.n++] = t;
+    t->bc7.queued = 1;
+    t->bc7.wgen = t->wgen;
+    t->bc7.level = t->bc7.slice = t->bc7.row = 0;
+}
+/* the queue's first texture to its end */
+static void later_to_back(void) {
+    Surf* t = g_later.q[0];
+    memmove(g_later.q, g_later.q + 1, (size_t)(g_later.n - 1) * sizeof *g_later.q);
+    g_later.q[g_later.n - 1] = t;
+}
+void vk_tex_later_forget(Surf* s) {
+    if (!s->bc7.queued) return;
+    u32 i = 0;
+    while (i < g_later.n && g_later.q[i] != s) i++;
+    if (i < g_later.n) {
+        memmove(g_later.q + i, g_later.q + i + 1, (size_t)(g_later.n - i - 1) * sizeof *g_later.q);
+        g_later.n--;
+    }
+    later_drop_image(s);
+    s->bc7.queued = 0;
+}
+void vk_tex_later_stats(VkLaterStats* s) {
+    *s = g_later.stats;
+    s->waiting = g_later.n;
+    s->waiting_bytes = 0;
+    for (u32 i = 0; i < g_later.n; i++) s->waiting_bytes += g_later.q[i]->bytes;
+}
+/* t's image as img (memory mem, bytes bytes) of format fmt, in UNDEFINED or (copied) TRANSFER_DST_OPTIMAL: the old one
+   and its views go once the frames that sample them are done */
+static void tex_image_swap(Surf* t, VkImage img, VmaAllocation mem, u64 bytes, VkFormat fmt, int copied) {
+    for (int i = 0; i < t->nsv; i++) vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, t->sv[i].v, VK_NULL_HANDLE);
+    t->nsv = 0;
+    vk_defer_image(t->img, t->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    vk_defer_bytes(t->bytes);
+    t->img = img;
+    t->mem = mem;
+    vk_surf_bytes(t, bytes);
+    t->f.vk = fmt;
+    VkFormatProperties fp;
+    vkGetPhysicalDeviceFormatProperties(g_vk.phys, fmt, &fp);
+    t->storage_capable = !t->msaa && (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT);
+    t->layout = copied ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+    t->stage = copied ? VK_PIPELINE_STAGE_2_COPY_BIT : 0;
+    t->access = copied ? VK_ACCESS_2_TRANSFER_WRITE_BIT : 0;
+}
+/* t, held as BC7 and loaded whole again: an RGBA8 image in place of its BC7 one, which the load fills and the encoder
+   makes BC7 again (later_queue). 0 when no memory was found for it: the texture is left out until a check finds some,
+   as any image that finds none */
+static int later_rgba8_again(Surf* t) {
+    VkImageCreateInfo ii;
+    VkViewFormats vf;
+    VkImage img;
+    VmaAllocation mem;
+    u64 bytes;
+    int storage;
+    const VkFormat rgba8 = later_rgba8(t->f.vk);
+    tex_info(t, rgba8, &ii, &vf, &storage);
+    if (!vk_cache_image_create(&ii, &img, &mem, &bytes)) {
+        LOG_LIMIT(4,
+                  "vulkan: no memory for the RGBA8 image (%llu MB) a %ux%ux%u ASTC texture held as BC7 is loaded again "
+                  "into: it is left out until a check finds some\n",
+                  (unsigned long long)(bytes >> 20), t->w, t->h, t->layers * t->depth3d);
+        return 0;
+    }
+    tex_image_swap(t, img, mem, bytes, rgba8, 0);
+    return 1;
+}
+/* encodes t's BC7 image on from where the encoder got, up to left blocks, its first strip whatever its size: the RGBA8
+   image a copy's source and back in the layout it was sampled in. The blocks it took */
+static u32 later_encode(VkCommandBuffer cb, Surf* t, u32 left) {
+    const int is3d = t->type == VK_IMAGE_VIEW_TYPE_3D;
+    const u64 cap = vk_bc7_strip_texels();
+    const VkImageLayout was = t->layout;
+    const VkPipelineStageFlags2 stage = t->stage;
+    const VkAccessFlags2 access = t->access;
+    const int first = !t->bc7.level && !t->bc7.slice && !t->bc7.row;
+    u32 used = 0;
+    vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    /* the BC7 image's copies after the last frame's into it (from nothing when the encoder starts on it) */
+    vk_barrier(cb, t->bc7.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+               first ? 0 : VK_ACCESS_2_TRANSFER_WRITE_BIT,
+               first ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+               VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    while (t->bc7.level < t->levels && (!used || used < left)) {
+        const u32 l = t->bc7.level, lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1;
+        const u32 slices = is3d ? (t->depth3d >> l ? t->depth3d >> l : 1) : t->layers;
+        const u32 cx = (lw + 3) / 4, cy = (lh + 3) / 4;
+        const u64 room = left > used ? left - used : 1, slice_blocks = (u64)cx * cy, row_texels = (u64)lw * 4;
+        u32 nz = 1, n;
+        if (!t->bc7.row && slice_blocks <= room && row_texels * cy <= cap) {
+            /* whole slices, as many as the blocks left and the scratch take */
+            u64 k = room / slice_blocks, by_cap = cap / (row_texels * cy);
+            if (k > by_cap) k = by_cap;
+            nz = slices - t->bc7.slice < k ? slices - t->bc7.slice : (u32)k;
+            n = cy;
+        } else {
+            /* rows of blocks of one slice: one at least */
+            u64 k = room / cx, by_cap = cap / row_texels;
+            if (k > by_cap) k = by_cap;
+            if (!k) k = 1;
+            n = cy - t->bc7.row < k ? cy - t->bc7.row : (u32)k;
+        }
+        const u32 y = t->bc7.row * 4, rows = lh - y < n * 4 ? lh - y : n * 4;
+        if (!vk_bc7_encode_image(cb, t->img, t->bc7.img, l, lw, lh, is3d, t->bc7.slice, nz, y, rows)) break;
+        used += cx * n * nz;
+        if (n == cy)
+            t->bc7.slice += nz;
+        else if ((t->bc7.row += n) == cy) {
+            t->bc7.row = 0;
+            t->bc7.slice++;
+        }
+        if (t->bc7.slice == slices) {
+            t->bc7.slice = 0;
+            t->bc7.level++;
+        }
+    }
+    if (was == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL || was == VK_IMAGE_LAYOUT_GENERAL)
+        vk_surf_use(cb, t, was, stage, access);
+    return used;
+}
+void vk_tex_later_frame(void) {
+    if (!g_later.n || !vk_cmd_ready()) return;
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    u32 left = VK_BC7_LATER_BLOCKS;
+    SNX_ZONE(z, "vk BC7 later");
+    /* each texture is put back once at most (skipped) for a failed load, and once for a write */
+    for (u32 skipped = 0; left && g_later.n && skipped < g_later.n;) {
+        Surf* t = g_later.q[0];
+        if (t->bc7.wgen != t->wgen) {
+            /* written since the encoder started: what it made goes, and the texture waits behind the others */
+            if (t->bc7.img) g_later.stats.restarted++;
+            later_drop_image(t);
+            t->bc7.wgen = t->wgen;
+            later_to_back();
+            continue;
+        }
+        if (!t->upload_valid) { /* its upload is tried again first: the RGBA8 image isn't whole */
+            later_to_back();
+            skipped++;
+            continue;
+        }
+        if (!t->bc7.img) {
+            VkImageCreateInfo ii;
+            VkViewFormats vf;
+            int storage;
+            tex_info(t, later_bc7(t->f.vk), &ii, &vf, &storage);
+            vk_surf_touch(t); /* used now: the trim that makes room for the image leaves t, and t first in the queue */
+            if (!vk_cache_image_create(&ii, &t->bc7.img, &t->bc7.mem, &t->bc7.bytes)) {
+                LOG_LIMIT(4,
+                          "vulkan: no memory for the BC7 image (%llu MB) of a %ux%ux%u ASTC texture: it stays RGBA8, "
+                          "%llu MB, and the encoder tries again in the next frame\n",
+                          (unsigned long long)(t->bc7.bytes >> 20), t->w, t->h, t->layers * t->depth3d,
+                          (unsigned long long)(t->bytes >> 20));
+                t->bc7.img = VK_NULL_HANDLE;
+                t->bc7.mem = VK_NULL_HANDLE;
+                t->bc7.bytes = 0;
+                later_to_back();
+                break;
+            }
+        }
+        if (!cb) {
+            vk_render_end(); /* copies and dispatches happen outside rendering passes */
+            cb = vk_cmd();
+        }
+        u32 used = later_encode(cb, t, left);
+        g_later.stats.blocks += used;
+        left = used < left ? left - used : 0;
+        if (t->bc7.level < t->levels) {
+            if (!used) break; /* no descriptor set left: the next frame goes on */
+            continue;
+        }
+        /* whole: in the RGBA8 image's place, in the layout that one was sampled in */
+        const VkImageLayout was = t->layout;
+        const VkPipelineStageFlags2 stage = t->stage;
+        const VkAccessFlags2 access = t->access;
+        g_later.stats.made++;
+        g_later.stats.freed += t->bytes > t->bc7.bytes ? t->bytes - t->bc7.bytes : 0;
+        tex_image_swap(t, t->bc7.img, t->bc7.mem, t->bc7.bytes, later_bc7(t->f.vk), 1);
+        if (was == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL || was == VK_IMAGE_LAYOUT_GENERAL)
+            vk_surf_use(cb, t, was, stage, access);
+        memset(&t->bc7, 0, sizeof t->bc7);
+        memmove(g_later.q, g_later.q + 1, (size_t)(g_later.n - 1) * sizeof *g_later.q);
+        g_later.n--;
+    }
+    if (cb) vk_submit_recorded(); /* its own submission, after the present's */
+}
+
 /* 1 when every subresource was copied; 0 when memory or staging ran out, and upload_valid keeps it for a retry */
 static int tex_upload_(Surf* t);
 /* a texture's upload as a profiler zone (SNX_TRACY builds) */
@@ -572,6 +837,8 @@ static int tex_upload_(Surf* t) {
     vk_render_end();                                     /* copies and clears happen outside rendering passes */
     if (t->msaa) return t->upload_valid = vk_ms_load(t); /* its samples drawn from the guest's layout of them */
     if (t->bricks) return t->upload_valid = resident_upload(t);
+    /* held as BC7 and whole: RGBA8 again, made BC7 again between frames */
+    if (t->bc7_later && is_bc7(f->vk) && !later_rgba8_again(t)) return t->upload_valid = 0;
     VkCommandBuffer cb = vk_cmd();
     vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
@@ -621,6 +888,7 @@ static int tex_upload_(Surf* t) {
         }
     }
     complete = up_flush(&u) && complete;
+    if (complete) later_queue(t);
     return t->upload_valid = complete;
 }
 
@@ -859,29 +1127,18 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
     t->pitch = pitch;
     t->layer_size = layer_size;
     t->layout = VK_IMAGE_LAYOUT_UNDEFINED;
-    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-                            .imageType = type == VK_IMAGE_VIEW_TYPE_3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D,
-                            .format = f.vk,
-                            .extent = {w, h, type == VK_IMAGE_VIEW_TYPE_3D ? d3 : 1},
-                            .mipLevels = levels,
-                            .arrayLayers = layers,
-                            .samples = vk_surf_samples(t),
-                            .tiling = VK_IMAGE_TILING_OPTIMAL,
-                            .usage = usage,
-                            .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VkFormatProperties format_props;
-    vkGetPhysicalDeviceFormatProperties(g_vk.phys, f.vk, &format_props);
-    if (!msaa && (format_props.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
-        ii.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
-        t->storage_capable = 1;
-    }
-    if (type != VK_IMAGE_VIEW_TYPE_3D && layers >= 6 && w == h && !msaa)
-        ii.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    VkImageCreateInfo ii;
     VkViewFormats vf;
-    vk_view_formats(&ii, &vf, raw);
+    tex_info(t, f.vk, &ii, &vf, &t->storage_capable);
     if (holes && resident_image(t, &ii)) {
         vk_surf_add(t);
         return t;
+    }
+    /* held as BC7: RGBA8 until the encoder has made its BC7 image between frames (vk_tex_later_frame) */
+    if (f.conv == VKC_ASTC && is_bc7(f.vk)) {
+        t->bc7_later = 1;
+        t->f.vk = later_rgba8(f.vk);
+        tex_info(t, t->f.vk, &ii, &vf, &t->storage_capable);
     }
     /* room is made for it under the budget: the caller holds only surfaces it used this present, which stay */
     if (!vk_cache_image_create(&ii, &t->img, &t->mem, &t->bytes)) {
@@ -1308,15 +1565,20 @@ static int tex_patch_range(Upload* u, u64 a, u64 b) {
     }
     return 1;
 }
+/* pieces of sum bytes of t, an ASTC texture whose BC7 image the encoder made: more BC7 blocks than it encodes in a
+   frame (vk_tex_later_frame), which would hold the game as long, load whole as RGBA8 */
+static int later_pieces_whole(const Surf* t, u64 sum) {
+    return t->bc7_later && is_bc7(t->f.vk) && sum / 16 * t->f.bw * t->f.bh / 16 > VK_BC7_LATER_BLOCKS;
+}
 /* the pieces p of t loaded again into its image; all of it when they are more than half of it (a whole upload reads
-   at most twice their bytes, in fewer moves), or when render targets' pixels were copied into it (tex_take_drawn),
-   which a whole upload takes again. A texture loaded whole whose hash is still its image's (no blocks loaded alone
-   since) is hashed for that, as a change found by its hash is: its pages written with the bytes they had load
-   nothing. 1 when the image has them */
+   at most twice their bytes, in fewer moves), when render targets' pixels were copied into it (tex_take_drawn),
+   which a whole upload takes again, or when they are too many BC7 blocks to encode at once (later_pieces_whole). A
+   texture loaded whole whose hash is still its image's (no blocks loaded alone since) is hashed for that, as a change
+   found by its hash is: its pages written with the bytes they had load nothing. 1 when the image has them */
 static int tex_patch(Surf* t, const TexPieces* p) {
     u64 sum = 0, bytes = g_tex_loads.bytes;
     for (u32 i = 0; i < p->count; i++) sum += p->piece[i].n;
-    if (p->all || t->took_drawn || sum > t->size / 2) {
+    if (p->all || t->took_drawn || sum > t->size / 2 || later_pieces_whole(t, sum)) {
         if (t->piecewise || !t->hash) return tex_upload(t);
         tex_rehash(t);
         return t->upload_valid;
@@ -1368,6 +1630,7 @@ static int tex_patch(Surf* t, const TexPieces* p) {
     for (u32 i = 0; i < p->count && ok && t->bl; i++)
         ok = tex_patch_range(&u, p->piece[i].at, p->piece[i].at + p->piece[i].n);
     ok = up_flush(&u) && ok;
+    if (ok) later_queue(t); /* an RGBA8 one the encoder starts on again */
     g_tex_loads.partial++;
     g_tex_loads.partial_bytes += g_tex_loads.bytes - bytes;
     if (!ok) {
