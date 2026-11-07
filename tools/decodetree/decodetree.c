@@ -1208,6 +1208,7 @@ int main(int argc, char** argv) {
     }
     if (argsets_only) { /* for the files whose argument sets are !extern of these (t32.decode, t16.decode) */
         flush(output_file);
+        free(order);
         return 0;
     }
     if (anyextern)
@@ -1249,5 +1250,6 @@ int main(int argc, char** argv) {
     }
     out("    return false;\n}\n");
     flush(output_file);
+    free(order);
     return 0;
 }
