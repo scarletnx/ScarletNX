@@ -1426,7 +1426,9 @@ static int nn_prepo_detail_ipc_IPrepoService_GetTransmissionStatus(SvcObj* self,
 #define OLSC_NULL_ARGUMENT   RC(179, 100)
 #define OLSC_NOT_INITIALIZED RC(179, 101)
 /* what an operation on the online service ends with: the service is not there, which the console says as "not
-   available right now" (acc.c's answer for the online account's pages, and rEden's for a cloud olsc cannot reach) */
+   available right now" (acc.c's answer for the online account's pages, and rEden's for a cloud olsc cannot reach).
+   No public source names olsc's own result for a license it cannot check: Switchbrew lists no code of module 179,
+   nnsdk (skyline's bindings of the SDK) has no olsc, and the SDK's symbols name no olsc result */
 #define OLSC_UNAVAILABLE     RC(124, 5249)
 
 /* a command for a user, on a session Initialize was called on (u[0]) */
