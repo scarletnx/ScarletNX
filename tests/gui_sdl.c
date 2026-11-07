@@ -1385,6 +1385,49 @@ static void view_box(App* app, const char* temporary) {
     assert(hint_keys[hint_pick("V", 0, false)].key == SDLK_V && !hint_keys[hint_pick("V", 0, false)].mod);
     assert(hint_keys[hint_pick("View", 1, false)].key == SDLK_V); /* a phone's: the word alone */
     assert(strstr(screen_said(app, true, said, sizeof said), "V: view."));
+    /* a heading under Recent Games' rows, over the games: two groups have theirs, the list's own, once; one group alone
+       its own there too, Recompiled or Dumps, so that a game's row reads apart from its recent row (a player took the
+       two for two entries of one game); none without recent rows. A heading is no row to take */
+    {
+        UiRowInfo info = {0};
+        assert(games_lead(app) == 2 && gui_games_heading(&app->games, 0) && !games_row_label(app, 1));
+        assert(ui_games_rows_get_row_info(app, 2, 300, &info) && !strcmp(info.label, "Recompiled") &&
+               (info.attr & UI_ATTR_LABEL));
+        app->options[GUI_OPTION_DUMPS] = 1; /* the ready games alone */
+        list_games(app);
+        assert(app->browser.head == 1 && !gui_games_heading(&app->games, 0) && games_lead(app) == 3);
+        assert(games_row_label(app, 0) && !games_row_label(app, 1) && games_row_label(app, 2) &&
+               !games_row_label(app, 3));
+        info = (UiRowInfo){0};
+        assert(ui_games_rows_get_row_info(app, 2, 300, &info) && !strcmp(info.label, "Recompiled") &&
+               (info.attr & UI_ATTR_LABEL));
+        info = (UiRowInfo){0};
+        assert(ui_games_rows_get_row_info(app, 3, 300, &info) && !strncmp(info.label, "alpha game", 10) &&
+               !(info.attr & UI_ATTR_LABEL));
+        render(app);
+        shows(app, "Recompiled", rgb(app->theme.soft));
+        app->browser.selected = 0; /* the recent row; a click on the heading leaves it there, and opens nothing */
+        ui_games_rows_row_action_cb(app, 2, UI_HIT_CLICK);
+        assert(app->browser.selected == 0 && !app->menu.running && !app->confirm.shown);
+        app->recompiled_off = true; /* the dumps alone, the recent game's row still there */
+        app->options[GUI_OPTION_DUMPS] = 0;
+        list_games(app);
+        assert(app->browser.head == 1 && games_lists(app, "beta dump.nsp") && games_lead(app) == 3);
+        info = (UiRowInfo){0};
+        assert(ui_games_rows_get_row_info(app, 2, 300, &info) && !strcmp(info.label, "Dumps") &&
+               (info.attr & UI_ATTR_LABEL));
+        app->recompiled_off = false;
+        app->options[GUI_OPTION_DUMPS] = 1;
+        app->recent = (GuiRecent){0}; /* no recent row: the games from the list's first row, as before */
+        recent_changed(app);
+        list_games(app);
+        assert(!app->browser.head && games_lead(app) == 0 && !games_row_label(app, 0));
+        assert(!gui_recent_add(&app->recent, game, GUI_SWITCH, 1));
+        recent_changed(app);
+        app->options[GUI_OPTION_DUMPS] = 0;
+        list_games(app);
+        assert(app->browser.head == 1 && games_lead(app) == 2 && app->browser.selected == 0);
+    }
     /* V opens the box, its rows the options, a value each between the arrows */
     key(app, SDLK_V);
     assert(app->options_shown && app->options_focus == 0 && app->menu.view == GUI_LOAD_GAMES);
@@ -12321,7 +12364,7 @@ int main(int argc, char** argv) {
         render(&app);
         menu_boxes(&app, &m);
         /* with its tabs and big title, a 1280x800 window still holds the whole menu, and Games Add Folder, three
-           recent games, the row for the rest and a page of games */
+           recent games, the row for the rest, the heading of the games' one group under them and a page of games */
         {
             GuiRecent kept = app.recent;
             int n;
@@ -12342,9 +12385,10 @@ int main(int argc, char** argv) {
                 GuiGamesBoxes g;
                 render(&app);
                 games_boxes(&app, &g);
-                assert(g.lead == 5 && ui_games_shown(g.rects, app.scale, UI_GAMES_ROWS) > (size_t)g.lead);
+                assert(g.lead == 6 && ui_games_shown(g.rects, app.scale, UI_GAMES_ROWS) > (size_t)g.lead);
                 shows(&app, "Recent Games", rgb(app.theme.soft));
                 shows(&app, "Show More", rgb(app.theme.ink));
+                shows(&app, "Recompiled", rgb(app.theme.soft));
             }
             go_tab(&app, GUI_TAB_MENU);
             app.recent = kept;

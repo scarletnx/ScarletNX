@@ -541,7 +541,7 @@ bool gui_games_add_deep(GuiGames* games, const char* directory, int kinds, int d
     return add_games(games, directory, kinds, games->count, depth, error, size);
 }
 bool gui_games_heading(const GuiGames* games, size_t i) { return i < games->count && !games->paths[i]; }
-static bool dump_entry(const GuiGames* games, size_t i) {
+bool gui_games_dumps_group(const GuiGames* games, size_t i) {
     return gui_is_dump(games->names[i]) || gui_is_cia(games->names[i]) || gui_is_vpk(games->names[i]) ||
            gui_is_gba(games->names[i]);
 }
@@ -553,8 +553,8 @@ bool gui_games_group(GuiGames* games, const char* ready, const char* dumps,
     int group;
     bool ok;
     for (i = 0; i < games->count; ++i) /* no dumps' heading: none of the second group counted, so none moved */
-        if (games->paths[i] && !(dump_entry(games, i) && (!dumps || (made && made(games->paths[i], user)))))
-            in[dump_entry(games, i)]++;
+        if (games->paths[i] && !(gui_games_dumps_group(games, i) && (!dumps || (made && made(games->paths[i], user)))))
+            in[gui_games_dumps_group(games, i)]++;
     memset(&out, 0, sizeof out);
     out.names = (char**)calloc(room, sizeof *out.names);
     out.shown = (char**)calloc(room, sizeof *out.shown);
@@ -563,7 +563,7 @@ bool gui_games_group(GuiGames* games, const char* ready, const char* dumps,
     out.room = room;
     ok = out.names && out.shown && out.paths && out.addons;
     for (group = 0; group < 2 && ok; ++group)
-        if (in[0] && in[1]) { /* one group alone has nothing to be told apart from */
+        if (in[0] && in[1]) { /* one group alone has nothing here to be told apart from (Games' lone heading) */
             heading[group][0] = snx_strdup("");
             heading[group][1] = snx_strdup(group ? dumps : ready);
             ok = heading[group][0] && heading[group][1];
@@ -583,7 +583,8 @@ bool gui_games_group(GuiGames* games, const char* ready, const char* dumps,
             out.shown[n++] = heading[group][1];
         }
         for (i = 0; i < games->count; ++i) {
-            if (!games->paths[i] || (int)dump_entry(games, i) != group) continue; /* an earlier heading goes */
+            if (!games->paths[i] || (int)gui_games_dumps_group(games, i) != group)
+                continue; /* an earlier heading goes */
             if (group && made && made(games->paths[i], user)) continue;
             out.names[n] = games->names[i];
             out.shown[n] = games->shown[i];
@@ -621,7 +622,7 @@ bool gui_games_by_last_opened(GuiGames* games) {
     size_t i, j;
     if (!times) return false;
     for (i = 0; i < games->count; ++i)
-        if (games->paths[i] && !dump_entry(games, i)) { /* a game ready to run: its log's, 0 for none */
+        if (games->paths[i] && !gui_games_dumps_group(games, i)) { /* a game ready to run: its log's, 0 for none */
             char* log = gui_game_log(games->paths[i]);
             if (!log) {
                 free(times);
