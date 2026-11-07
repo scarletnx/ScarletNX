@@ -935,6 +935,30 @@ static int hwopus_decode(HwOpus* h, const u8* in, u64 in_size, i16* out, u64 out
     R_SUCCEED();
 }
 
+/* An Ounce game's hardware Opus decoders (hle/hook/codec.c), which its SDK runs on the audio DSP and the hooks run
+   here: the same decoding, outside the service's objects and their save states */
+HwOpus* hwopus_new(u32 rate, u32 channels) {
+    HwOpus* h = calloc(1, sizeof *h);
+    if (h && !hwopus_open(h, rate, channels, 1, channels - 1, NULL)) {
+        free(h);
+        return NULL;
+    }
+    return h;
+}
+void hwopus_delete(HwOpus* h) {
+    if (!h) return;
+    hwopus_free(h);
+    free(h);
+}
+int hwopus_decode_packet(HwOpus* h, const u8* in, u64 in_size, i16* out, u64 out_size, int reset, u32* consumed,
+                         u32* samples) {
+    int rc;
+    pm_lock(&h->lk);
+    rc = hwopus_decode(h, in, in_size, out, out_size, reset, consumed, samples);
+    pm_unlock(&h->lk);
+    return rc;
+}
+
 /* a decode command: the guest's buffers checked, the time it took in microseconds */
 static int decode(SvcObj* self, int reset, IpcBuf input, IpcBuf output, u32* consumed, u32* samples, u64* perf_us) {
     HwOpus* h = self->data;

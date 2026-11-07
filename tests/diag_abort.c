@@ -57,6 +57,52 @@ u64 hook_memset(CPU* c, u64 dst, i32 value, u64 size) {
     (void)c, (void)value, (void)size;
     return dst;
 }
+/* codec.c's, none reached here */
+void codec_decoder_reset(CPU* c, u64 decoder) { (void)c, (void)decoder; }
+void codec_decoder_finalize(CPU* c, u64 decoder) { (void)c, (void)decoder; }
+u32 codec_decoder_init(CPU* c, u64 decoder, i32 rate, i32 channels, i64 frame, u64 manager) {
+    (void)c, (void)decoder, (void)rate, (void)channels, (void)frame, (void)manager;
+    return 0;
+}
+u32 codec_manager_execute(CPU* c, u64 manager) {
+    (void)c, (void)manager;
+    return 0;
+}
+void codec_manager_finalize(CPU* c, u64 manager) { (void)c, (void)manager; }
+u32 codec_decoder_enqueue(CPU* c, u64 decoder, u64 consumed, u64 data, u64 size) {
+    (void)c, (void)decoder, (void)consumed, (void)data, (void)size;
+    return 0;
+}
+u32 codec_manager_init(CPU* c, u64 manager, u64 event, i32 rate, i32 channels, i64 frame, i32 decoders, i32 buffers,
+                       u64 work) {
+    (void)c, (void)manager, (void)event, (void)rate, (void)channels, (void)frame, (void)decoders, (void)buffers,
+        (void)work;
+    return 0;
+}
+u64 codec_manager_work_size(CPU* c, i32 rate, i32 channels, i64 frame, i32 decoders, i32 buffers) {
+    (void)c, (void)rate, (void)channels, (void)frame, (void)decoders, (void)buffers;
+    return 0;
+}
+i32 codec_manager_free_buffers(CPU* c, u64 manager) {
+    (void)c, (void)manager;
+    return 0;
+}
+i32 codec_decoder_waiting(CPU* c, u64 decoder) {
+    (void)c, (void)decoder;
+    return 0;
+}
+u32 codec_decoder_dequeue(CPU* c, u64 decoder, u64 samples, u64 out, u64 size) {
+    (void)c, (void)decoder, (void)samples, (void)out, (void)size;
+    return 0;
+}
+i32 codec_decoder_completed(CPU* c, u64 decoder) {
+    (void)c, (void)decoder;
+    return 0;
+}
+i32 codec_decoder_executing(CPU* c, u64 decoder) {
+    (void)c, (void)decoder;
+    return 0;
+}
 
 static void put(CPU* c, u64 at, const char* s) { memcpy(c->mem + at, s, strlen(s) + 1); }
 
