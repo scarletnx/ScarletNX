@@ -280,10 +280,12 @@ static void want_hair_at(const Shape* grids, u32 g, u32 i, u32 j, float out[3]) 
     n += j * (grids->ns[g] + 1) + i;
     for (c = 0; c < 3; c++) out[c] = want_half(snx_ld_le16(g_mii_model.raw + 8 * n + 2 * c));
 }
-/* the hair of a shape file (q Q_MID or Q_HIGH) as the SDK reads it. A drill style's tails (112) are drills: down each,
-   at any angle around it, its radius drops at the bottom edge of each turn of its ringlet, at least three of them, and
-   the turns wind down (the drops of the opposite side fall between this side's, where rings would line up); a plain
-   tail's radius only narrows. Every style's fringe ends in pointed locks: its edge's height goes up and down across
+/* the hair of a shape file (q Q_MID or Q_HIGH) as the SDK reads it. A drill style's tails (112) are drills: along
+   each, at any angle around it, its radius drops at the edge of each turn of its ringlet, at least two of them before
+   its point, and the turns wind along it (the drops of the opposite side fall between this side's, where rings would
+   line up), its first ring 16 units or more across, in the High file; the Mid file's, with too few rows for rings,
+   are smooth. A plain tail's radius only
+   narrows. Every style's fringe ends in pointed locks: its edge's height goes up and down across
    the front, where an edge without them only rises toward the middle */
 static void check_hair(const u8* f, u32 q) {
     static const u32 styles[3] = {112, 126, 0};
@@ -297,6 +299,7 @@ static void check_hair(const u8* f, u32 q) {
         for (g = 1; g < sh.grids; g++) {
             Tail tl = tail_of_style(tail_styles[sh.variant - HAIR_VARIANTS].tail, g - 1);
             u32 drops[2] = {0, 0}, first[2] = {0, 0}, side;
+            float thickest = 0;
             for (side = 0; side < 2; side++) { /* the column at angle 0 and the one opposite */
                 float last = 0;
                 i = side * sh.ns[g] / 2;
@@ -305,6 +308,7 @@ static void check_hair(const u8* f, u32 q) {
                     Vec c = tail_axis(&tl, (float)j / (float)sh.nt[g]);
                     want_hair_at(&sh, g, i, j, p);
                     r = vlen(vsub(vec(p[0], p[1], p[2]), c));
+                    if (r > thickest) thickest = r;
                     if (j && r < 0.8f * last && (float)j < 0.85f * (float)sh.nt[g]) { /* before its point narrows */
                         if (!drops[side]) first[side] = j;
                         drops[side]++;
@@ -313,11 +317,13 @@ static void check_hair(const u8* f, u32 q) {
                     last = r;
                 }
             }
-            if (style == 112) {
-                if (drops[0] < (q ? 3u : 2u) || drops[1] < (q ? 3u : 2u) || first[0] == first[1])
+            if (style == 112 && !q) CHECK(drops[0] == 0 && drops[1] == 0);
+            if (style == 112 && q) {
+                if (drops[0] < 2 || drops[1] < 2 || first[0] == first[1])
                     fprintf(stderr, "%s hair 112 tail %u: drops %u and %u, first at rows %u and %u\n",
                             q ? "High" : "Mid", g, drops[0], drops[1], first[0], first[1]);
-                CHECK(drops[0] >= (q ? 3u : 2u) && drops[1] >= (q ? 3u : 2u) && first[0] != first[1]);
+                CHECK(drops[0] >= 2 && drops[1] >= 2 && first[0] != first[1]);
+                CHECK(thickest > 8.0f); /* chunky: its first ring a third of the head's width across */
             }
         }
         /* the edge across the front, an eighth of the way around each side of its middle: its tips (lower than both
@@ -439,15 +445,17 @@ static void check_shapes(const u8* f, u32 size, int high) {
                 CHECK(lo[1] > -2 && lo[1] < 2 && hi[2] > 20 && hi[2] < 28 && hi[0] < 30 && lo[2] > -25);
             if (k ==
                 7) { /* the tail styles' tails: long twin tails (126) below the chin on both sides, a side tail (84)
-                             on one side only, the head's other hair styles no lower than the nape */
-                u32 left = 0, right = 0;
+                             on one side only, the twin drills (112) out from both sides at the temples and none of them
+                             lower than the ears, the head's other hair styles no lower than the nape */
+                u32 left = 0, right = 0, out_left = 0, out_right = 0, out_low = 0;
                 for (n = 0; n < nv; n++) {
                     float x = want_half(snx_ld_le16(g_mii_model.raw + 8 * n)),
                           y = want_half(snx_ld_le16(g_mii_model.raw + 8 * n + 2));
                     left += x < -26 && y < 30, right += x > 26 && y < 30;
+                    out_left += x < -32, out_right += x > 32, out_low += fabsf(x) > 32 && y < 25;
                 }
                 if (i == 126) CHECK(lo[1] < 0 && left > 20 && right > 20);
-                if (i == 112) CHECK(lo[1] < -5 && left > 20 && right > 20 && hi[0] > 35 && lo[0] < -35); /* drills */
+                if (i == 112) CHECK(out_left > 20 && out_right > 20 && out_low == 0 && hi[0] > 38 && lo[0] < -38);
                 if (i == 84) CHECK((left > 20) != (right > 20));
                 if (i == 0 || i == 33) CHECK(left == 0 && right == 0);
             }
@@ -552,8 +560,8 @@ static void check_picture(void) {
     CHECK(pic_count(rgba, 128, -16, 30, -3, 38, is_red_eye) > 3);   /* an eye, red */
     CHECK(pic_count(rgba, 128, 3, 30, 16, 38, is_red_eye) > 3);     /* the other */
     CHECK(pic_count(rgba, 128, -16, 30, 16, 38, is_white) > 3);     /* their whites */
-    CHECK(pic_count(rgba, 128, -40, 0, -27, 30, is_crimson) > 20);  /* a tail at each side */
-    CHECK(pic_count(rgba, 128, 27, 0, 40, 30, is_crimson) > 20);
+    CHECK(pic_count(rgba, 128, -41, 36, -31, 52, is_crimson) > 20); /* a drill out from each side */
+    CHECK(pic_count(rgba, 128, 31, 36, 41, 52, is_crimson) > 20);
     CHECK(pic_count(rgba, 128, -12, 21, 12, 27, is_crimson) == 0); /* no hair over the cheeks, between eyes and mouth */
     CHECK(snx_mii_picture(ci, &look, 512, rgba) == 0);
     {
