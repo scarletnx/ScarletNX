@@ -5,9 +5,10 @@
    memory added again and recorded over, which gives the first recording's block of the runtime's record memory
    back), the state loaded, a new recording made as a game makes them after a load, and the first recording presented
    again: the same frame as before the save, as g_nvn's record memory, which the state holds, keeps the first
-   recording's block in use. A save while a queue's work waits on the GPU is refused, and so is the load of a state
-   saved without NVN, or whose NVN state indexes past the runtime's tables. Runs alone (SNX_TEST_NVN_CASE=savestate):
-   a load replaces the process's guest memory */
+   recording's block in use; and the window's textures come as they did, the pacer's clock going on from the save
+   though the saving process had run an hour longer. A save while a queue's work waits on the GPU is refused, and so
+   is the load of a state saved without NVN, or whose NVN state indexes past the runtime's tables. Runs alone
+   (SNX_TEST_NVN_CASE=savestate): a load replaces the process's guest memory */
 #include "nx/runtime/state.h"
 #include "nx/runtime/state_io.h"
 #include "common/filesystem/tree.h"
@@ -75,7 +76,8 @@ static int nvn_parses(const NvnSection* saved, const NvnChange* change, u32 n) {
     NvnSection b = {(u8*)malloc((size_t)saved->n), saved->n, 0};
     if (!b.p) return -1;
     memcpy(b.p, saved->p, (size_t)saved->n);
-    for (u32 i = 0; i < n; i++) memcpy(b.p + 4 + change[i].off, change[i].bytes, change[i].n); /* after the version */
+    for (u32 i = 0; i < n; i++) /* after the version and the pacer's clock */
+        memcpy(b.p + 12 + change[i].off, change[i].bytes, change[i].n);
     StateIo io = {&b, section_put, section_get};
     NvnStaged* s = nvn_state_parse(&io);
     int took = s != NULL;
@@ -114,7 +116,8 @@ static int check_nvn_savestate(const char* shot) {
        texels at 0x8000. The objects after it */
     const u64 pool = cpu + 0x10000, tex = cpu + 0x10100, queue = cpu + 0x10200, cmd = cpu + 0x12000;
     const u64 wb = cpu + 0x12100, window = cpu + 0x12200, event = cpu + 0x12400, targets = cpu + 0x12500;
-    const u64 rgba = cpu + 0x12600, handles = cpu + 0x12700, red = solid_frame(0xFF0000FFu);
+    const u64 rgba = cpu + 0x12600, handles = cpu + 0x12700, sync = cpu + 0x12800, index = cpu + 0x12900;
+    const u64 red = solid_frame(0xFF0000FFu);
     char path[1100], data[1100], why[256];
     snprintf(path, sizeof path, "%sstates/nvn.snxstate", g_exedir);
     snprintf(data, sizeof data, "%sdata", g_exedir);
@@ -140,6 +143,9 @@ static int check_nvn_savestate(const char* shot) {
                                              .memory = cpu + 0x8000,
                                              .size = 0x1000};
     gw64(targets, tex);
+    /* the saving process's pacer's clock an hour on, as one that had run for an hour: its times in the game's memory
+       are ahead of where this process's plat_ns is at the load */
+    g_nvn.queue.clock = (i64)3600000000000ll;
     CHECK(nvn_QueueInitialize(NULL, queue, 0));
     nvn_WindowBuilderSetDefaults(NULL, wb);
     nvn_WindowBuilderSetTextures(NULL, wb, 1, targets);
@@ -167,6 +173,7 @@ static int check_nvn_savestate(const char* shot) {
     u64 first = nvn_clear(cmd, pool, 0, targets, rgba);
     CHECK(nvn_frame(queue, window, handles, first, shot) == red);
     CHECK(!state_save(path, why, sizeof why));
+    g_nvn.queue.clock = 0; /* from here as a process that started an hour later: on its own plat_ns */
 
     /* the game goes on: the same command memory recorded over, which hands the first recording's block back to the
        runtime's record memory, where a recording made after the load would take it */
@@ -186,6 +193,12 @@ static int check_nvn_savestate(const char* shot) {
     CHECK(!loaded);
     /* what the renderer built from the queue's draw state is keyed by generations this process hands out */
     for (u32 g = 0; g < DS_GENS; g++) CHECK(g_nvn.replay.q[0].d.ds.gen[g] > before);
+    /* the pacer's clock goes on from the save, and the window's next texture comes at once: its last present's slot
+       is behind that clock, not an hour ahead of the process's */
+    CHECK(nvn_now() >= NVN_OBJ(const NvnWindow, window)->pace);
+    u64 t = plat_ns();
+    nvn_WindowAcquireTexture(NULL, window, sync, index);
+    CHECK(plat_ns() - t < 500000000ull && gr32(index) == 0);
     put_rgba(rgba, 0, 0, 1);
     u64 third = nvn_clear(cmd, pool, 0x400, targets, rgba);
     u64 again = nvn_frame(queue, window, handles, first, shot);

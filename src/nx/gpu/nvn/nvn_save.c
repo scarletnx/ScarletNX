@@ -15,17 +15,20 @@
    Once the running game is gone it lets go of that game's host side (its queues' render predicates, its waiting
    submissions' records and its heap memory) and puts the state's in place. The renderer has forgotten all it kept by
    then (renderer.h reset), so the state's queues start with no render predicate, sample counter or capture counters
-   of the renderer's, and with new generations for their draw state, which the saving process numbered */
+   of the renderer's, and with new generations for their draw state, which the saving process numbered. The pacer's
+   clock (nvn_now) goes on from where the state left it, as the times in the game's syncs, queues and windows count
+   on it */
 #include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/draw_state.h"
 #include "nx/gpu/renderer.h"
+#include "nx/runtime/platform/plat.h"
 #include "nx/runtime/state_io.h"
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define NVN_STATE_VERSION 1
+#define NVN_STATE_VERSION 2
 /* the heap memory g_nvn's members own, after it: g_nvn.object's program metadata and linkage maps, and the blocks the
    small store of g_nvn.cmd was given back */
 enum { NH_END, NH_XFB, NH_TESS, NH_SUBPROGRAM, NH_SUBLINKAGE, NH_SMALL };
@@ -33,18 +36,21 @@ enum { NH_END, NH_XFB, NH_TESS, NH_SUBPROGRAM, NH_SUBLINKAGE, NH_SMALL };
 #define NH_MAX (1u << 24)
 
 struct NvnStaged {
+    u64 now; /* the pacer's clock at the save */
     Nvn n;
 };
 
 /* The host's fields of a copy of g_nvn cleared: a save writes them so, and a load clears them in the state's copy
-   whatever the file held, before it fills any. The loader's recompiled code is the running process's, and the
-   GPU thread's tables of a submission's effects and of a blit are scratch between its uses */
+   whatever the file held, before it fills any. The loader's recompiled code is the running process's, as is where
+   its pacer's clock stands against its plat_ns, and the GPU thread's tables of a submission's effects and of a blit
+   are scratch between its uses */
 static void nil_host(Nvn* c) {
     u32 i;
     memset(&c->loader.lock, 0, sizeof c->loader.lock);
     c->loader.bootstrap_original = c->loader.getproc_original = NULL;
     c->loader.bootstrap_original32 = c->loader.getproc_original32 = NULL;
     c->loader.nvrm_get = c->loader.nvrm_init = NULL;
+    c->queue.clock = 0;
     memset(&c->object.xfb_lock, 0, sizeof c->object.xfb_lock);
     c->object.xfb = NULL;
     c->object.tess = NULL;
@@ -91,7 +97,7 @@ int nvn_state_save(StateIo* io, char* why, size_t whysize) {
     pm_lock(&g_nvn.object.xfb_lock);
     memcpy(c, &g_nvn, sizeof *c);
     nil_host(c);
-    r = io_put32(io, NVN_STATE_VERSION) | io_put(io, c, sizeof *c);
+    r = io_put32(io, NVN_STATE_VERSION) | io_put64(io, nvn_now()) | io_put(io, c, sizeof *c);
     if (o->nxfb) r |= heap_put(io, NH_XFB, 0, o->xfb, (u64)o->nxfb * sizeof *o->xfb);
     if (o->ntess) r |= heap_put(io, NH_TESS, 0, o->tess, (u64)o->ntess * sizeof *o->tess);
     if (o->nsubprogram) r |= heap_put(io, NH_SUBPROGRAM, 0, o->subprogram, (u64)o->nsubprogram * sizeof *o->subprogram);
@@ -194,7 +200,7 @@ NvnStaged* nvn_state_parse(StateIo* io) {
     if (!s) return NULL;
     n = &s->n;
     o = &n->object;
-    if (io_get32(io, &version) || version != NVN_STATE_VERSION || io_get(io, n, sizeof *n)) {
+    if (io_get32(io, &version) || version != NVN_STATE_VERSION || io_get64(io, &s->now) || io_get(io, n, sizeof *n)) {
         free(s); /* none of its pointers are this process's */
         return NULL;
     }
@@ -291,6 +297,7 @@ void nvn_state_install(NvnStaged* s) {
     n->cmd.lock = g_nvn.cmd.lock;
     n->replay.lock = g_nvn.replay.lock;
     n->copy.read_lock = g_nvn.copy.read_lock;
+    n->queue.clock = (i64)(s->now - plat_ns()); /* nvn_now() is the state's now from here */
     memcpy(&g_nvn, n, sizeof g_nvn);
     free(s);
 }
