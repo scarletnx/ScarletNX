@@ -241,8 +241,10 @@ Limits:
   fail with `EINTR`. They need a frame of AArch32 (`sigframe` with `ucontext` and the VFP
   registers, `sigreturn` 119 and `rt_sigreturn` 173, `SA_RESTORER` or a trampoline in A32
   or Thumb state, as the handler's bit 0 says), and delivery at the ARM block loop's points.
-* `epoll_ctl` of another thread during an `epoll_wait` is seen at the next wait. A socket
-  that another thread closes during a blocking call on it stays open until the call ends.
+* `epoll_ctl` of another thread during an `epoll_wait` is seen at the next wait. A
+  descriptor that another thread closes during a call on it (a socket's call, `ppoll`,
+  `pselect6`, `epoll_pwait`) keeps its file open until the call ends, as Linux's file
+  reference does.
 * Windows: no host signals. A thread in a blocking host call (outside the network stack) is
   not stopped by a signal. A vfork child runs in its parent's process in place of the
   calling thread; the other threads go on.
@@ -309,10 +311,10 @@ suite exercises tmpfs, devfs, procfs, descriptor and metadata calls, clocks,
 random reads, and unsupported-call errors. The PIE suite verifies ET_DYN,
 PC-relative global accesses, and BSS initialization. The optional `libc.c` fixture exercises
 static libc startup, allocation, memory operations, and formatted output.
-The `threads` suite (`threads.c`, `signals.c`, `restart.c`, `sigsuspend.c` and `wake.c`,
-with `thread_start.S`) covers threads, futexes, signal frames, `rt_sigreturn`, `SA_RESTART`,
-`rt_sigsuspend` and a network wait after a signal; CTest runs it as `gnuabi_threads`
-(skipped without Clang and LLD).
+The `threads` suite (`threads.c`, `signals.c`, `restart.c`, `sigsuspend.c`, `wake.c` and
+`close.c`, with `thread_start.S`) covers threads, futexes, signal frames, `rt_sigreturn`,
+`SA_RESTART`, `rt_sigsuspend`, a network wait after a signal and a descriptor closed during
+a call on it; CTest runs it as `gnuabi_threads` (skipped without Clang and LLD).
 The standalone `self_modify.S` fixture must exit 42 after replacing a compiled
 instruction, as must `rewrite.S`, which rewrites code that already ran;
 `fetch_fault.S` must fault after removing the executing page's execute permission. These intentional faults should be checked directly rather

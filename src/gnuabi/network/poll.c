@@ -46,17 +46,22 @@ static int timespec_ms(GnuMemory* m, uint64_t a, int* ms) {
 }
 
 /* One wait over descriptors. events and revents are the stack's (SNX_POLL*). A descriptor that isn't open gets
-   NVAL, as poll() reports it */
+   NVAL, as poll() reports it. Each open file stays open through the wait (gnu_vfs_fd_hold), as Linux's file
+   references keep them through a close() of another thread. closed_nval: a descriptor closed during the wait reports
+   NVAL, as Linux's poll finds it at its last look (its select reports what the file it waited on had, and epoll
+   leaves the descriptor out) */
 typedef struct {
     int fd;
     uint16_t events, revents;
 } Wait;
-static int64_t wait_fds(GnuProcess* p, Wait* w, size_t n, int ms) {
+static int64_t wait_fds(GnuProcess* p, Wait* w, size_t n, int ms, int closed_nval) {
     SnxPollEntry* e = calloc(n ? n : 1, sizeof *e);
     uint16_t* fixed = calloc(n ? n : 1, sizeof *fixed);
-    if (!e || !fixed) {
+    const void** held = calloc(n ? n : 1, sizeof *held);
+    if (!e || !fixed || !held) {
         free(e);
         free(fixed);
+        free(held);
         return -GNU_ENOMEM;
     }
     int ready = 0;
@@ -65,9 +70,13 @@ static int64_t wait_fds(GnuProcess* p, Wait* w, size_t n, int ms) {
         e[i].host_fd = -1;
         e[i].events = w[i].events;
         if (w[i].fd < 0) continue;
-        if (gnu_vfs_fd_info(&p->vfs, w[i].fd, &info))
+        if (gnu_vfs_fd_hold(&p->vfs, w[i].fd, &info)) {
             fixed[i] = SNX_POLLNVAL;
-        else if ((e[i].socket = gnu_net_pollable(&info)))
+            ready = 1;
+            continue;
+        }
+        held[i] = info.identity;
+        if ((e[i].socket = gnu_net_pollable(&info)))
             continue;
         else if (info.host_fd >= 0) {
 #ifdef _WIN32
@@ -84,12 +93,20 @@ static int64_t wait_fds(GnuProcess* p, Wait* w, size_t n, int ms) {
     if (r >= 0) {
         r = 0;
         for (size_t i = 0; i < n; i++) {
+            GnuFdInfo now;
+            if (closed_nval && held[i] && gnu_vfs_fd_info(&p->vfs, w[i].fd, &now)) {
+                e[i].revents = 0;
+                fixed[i] = SNX_POLLNVAL;
+            }
             w[i].revents = (uint16_t)(e[i].revents | fixed[i]);
             r += w[i].revents != 0;
         }
     }
+    for (size_t i = 0; i < n; i++)
+        if (held[i]) gnu_vfs_release(&p->vfs, held[i]);
     free(e);
     free(fixed);
+    free(held);
     return r;
 }
 
@@ -106,7 +123,7 @@ int64_t gnu_net_ppoll(GnuProcess* p, const uint64_t a[6]) {
         w[i].fd = (int32_t)get32(fds + i * 8);
         w[i].events = gnu_net_poll_in(get16(fds + i * 8 + 4));
     }
-    int64_t r = wait_fds(p, w, (size_t)n, ms);
+    int64_t r = wait_fds(p, w, (size_t)n, ms, 1);
     for (uint64_t i = 0; r >= 0 && i < n; i++) {
         /* ERR, HUP and NVAL come whether asked or not */
         uint16_t rev = w[i].revents & (w[i].events | SNX_POLLERR | SNX_POLLHUP | SNX_POLLNVAL);
@@ -141,7 +158,7 @@ int64_t gnu_net_pselect6(GnuProcess* p, const uint64_t a[6]) {
         w[n].fd = fd;
         w[n++].events = ev;
     }
-    int64_t r = wait_fds(p, w, n, ms);
+    int64_t r = wait_fds(p, w, n, ms, 0);
     if (r < 0) return r == -SNX_EINTR ? -GNU_EINTR : r;
     for (size_t i = 0; i < n; i++)
         if (w[i].revents & SNX_POLLNVAL) return -GNU_EBADF;
@@ -203,14 +220,32 @@ static EpollItem* epoll_find(GnuProcess* p, Epoll* ep, int fd) {
     }
     return NULL;
 }
+/* the epoll of descriptor fd, its open file held (*held) until gnu_vfs_release: a close() of another thread during
+   the call leaves the epoll until the call ends, as on Linux. NULL with *err: EBADF, or EINVAL for another kind */
+static Epoll* epoll_of(GnuProcess* p, uint64_t fd, int64_t* err, const void** held) {
+    GnuFdInfo info;
+    if (gnu_vfs_fd_hold(&p->vfs, (int)fd, &info)) {
+        *err = -GNU_EBADF;
+        return NULL;
+    }
+    if (info.ops != &g_epoll_ops) {
+        gnu_vfs_release(&p->vfs, info.identity);
+        *err = -GNU_EINVAL;
+        return NULL;
+    }
+    *held = info.identity;
+    return info.object;
+}
 static int64_t epoll_ctl_locked(GnuProcess* p, Epoll* ep, const uint64_t a[6]);
 int64_t gnu_net_epoll_ctl(GnuProcess* p, const uint64_t a[6]) {
-    Epoll* ep = gnu_vfs_object(&p->vfs, (int)a[0], &g_epoll_ops, NULL);
-    GnuFdInfo info;
-    if (!ep) return gnu_vfs_fd_info(&p->vfs, (int)a[0], &info) ? -GNU_EBADF : -GNU_EINVAL;
+    const void* held;
+    int64_t r;
+    Epoll* ep = epoll_of(p, a[0], &r, &held);
+    if (!ep) return r;
     gnu_mutex_lock(&ep->lock);
-    int64_t r = epoll_ctl_locked(p, ep, a);
+    r = epoll_ctl_locked(p, ep, a);
     gnu_mutex_unlock(&ep->lock);
+    gnu_vfs_release(&p->vfs, held);
     return r;
 }
 static int64_t epoll_ctl_locked(GnuProcess* p, Epoll* ep, const uint64_t a[6]) {
@@ -252,10 +287,17 @@ static int64_t epoll_ctl_locked(GnuProcess* p, Epoll* ep, const uint64_t a[6]) {
     }
     return -GNU_EINVAL;
 }
+static int64_t epoll_pwait_held(GnuProcess* p, Epoll* ep, const uint64_t a[6], int timespec_timeout);
 int64_t gnu_net_epoll_pwait(GnuProcess* p, const uint64_t a[6], int timespec_timeout) {
-    Epoll* ep = gnu_vfs_object(&p->vfs, (int)a[0], &g_epoll_ops, NULL);
-    GnuFdInfo info;
-    if (!ep) return gnu_vfs_fd_info(&p->vfs, (int)a[0], &info) ? -GNU_EBADF : -GNU_EINVAL;
+    const void* held;
+    int64_t r;
+    Epoll* ep = epoll_of(p, a[0], &r, &held);
+    if (!ep) return r;
+    r = epoll_pwait_held(p, ep, a, timespec_timeout);
+    gnu_vfs_release(&p->vfs, held);
+    return r;
+}
+static int64_t epoll_pwait_held(GnuProcess* p, Epoll* ep, const uint64_t a[6], int timespec_timeout) {
     int max = (int)a[2], ms = (int)a[3];
     if (max <= 0 || max > 0x7FFFFFFF / EPOLL_EVENT_SIZE) return -GNU_EINVAL;
     if (timespec_timeout) {
@@ -282,7 +324,7 @@ int64_t gnu_net_epoll_pwait(GnuProcess* p, const uint64_t a[6], int timespec_tim
         which[n++] = i;
     }
     gnu_mutex_unlock(&ep->lock);
-    int64_t r = n ? wait_fds(p, w, n, ms) : 0;
+    int64_t r = n ? wait_fds(p, w, n, ms, 0) : 0;
     if (!n && ms) {
         /* nothing to watch: wait out the timeout on no descriptor, which only a cancel ends */
         SnxPollEntry none = {NULL, -1, 0, 0};
@@ -295,6 +337,9 @@ int64_t gnu_net_epoll_pwait(GnuProcess* p, const uint64_t a[6], int timespec_tim
         /* an entry another thread took out during the wait is not reported */
         if (!rev || which[i] >= ep->count || ep->items[which[i]].fd != w[i].fd) continue;
         EpollItem* it = &ep->items[which[i]];
+        /* nor one that another thread closed: Linux takes it out of the set at the close */
+        GnuFdInfo now;
+        if (gnu_vfs_fd_info(&p->vfs, it->fd, &now) || now.identity != it->identity) continue;
         unsigned char* e = out + count++ * EPOLL_EVENT_SIZE;
         memset(e, 0, EPOLL_EVENT_SIZE);
         gnu_vfs_put32(e, gnu_net_poll_out(rev));

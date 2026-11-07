@@ -163,21 +163,24 @@ static const GnuObjectOps g_eventfd_ops = {"anon_inode:[eventfd]", 0,           
 SnxSocket* gnu_net_pollable(const GnuFdInfo* i) {
     return i->ops == &g_socket_ops || i->ops == &g_eventfd_ops ? i->object : NULL;
 }
-static SnxSocket* sock_of(GnuProcess* p, uint64_t fd, int64_t* err) {
-    unsigned flags = 0;
-    SnxSocket* s = gnu_vfs_object(&p->vfs, (int)fd, &g_socket_ops, &flags);
-    if (!s) {
-        GnuFdInfo i;
-        *err = gnu_vfs_fd_info(&p->vfs, (int)fd, &i) ? -GNU_EBADF : -SNX_ENOTSOCK;
+/* the socket of descriptor fd, its open file held (*held) until gnu_vfs_release: a close() of another thread during
+   the call leaves the socket open until the call ends, as on Linux. NULL with *err: EBADF, or ENOTSOCK */
+static SnxSocket* sock_of(GnuProcess* p, uint64_t fd, int64_t* err, const void** held) {
+    GnuFdInfo info;
+    if (gnu_vfs_fd_hold(&p->vfs, (int)fd, &info)) {
+        *err = -GNU_EBADF;
         return NULL;
     }
-    snx_socket_set_nonblocking(s, (flags & GNU_O_NONBLOCK) != 0);
+    if (info.ops != &g_socket_ops) {
+        gnu_vfs_release(&p->vfs, info.identity);
+        *err = -SNX_ENOTSOCK;
+        return NULL;
+    }
+    SnxSocket* s = info.object;
+    snx_socket_set_nonblocking(s, (info.flags & GNU_O_NONBLOCK) != 0);
+    *held = info.identity;
     return s;
 }
-#define SOCK_OR_FAIL(fd)                                                                                               \
-    int64_t err_;                                                                                                      \
-    SnxSocket* s = sock_of(p, fd, &err_);                                                                              \
-    if (!s) return err_
 
 static int64_t install(GnuProcess* p, SnxSocket* s, uint64_t typeflags) {
     return gnu_vfs_install_object(&p->vfs, &g_socket_ops, s, (typeflags & LINUX_SOCK_NONBLOCK) ? GNU_O_NONBLOCK : 0,
@@ -216,17 +219,14 @@ static int64_t sys_socketpair(GnuProcess* p, const uint64_t a[6]) {
     gnu_vfs_put32(fds + 4, (uint32_t)f1);
     return gnu_memory_write(&p->memory, a[3], fds, 8);
 }
-static int64_t sys_bind_connect(GnuProcess* p, const uint64_t a[6], int connect) {
-    SOCK_OR_FAIL(a[0]);
+static int64_t sys_bind_connect(GnuProcess* p, SnxSocket* s, const uint64_t a[6], int connect) {
     SnxSockAddr sa;
     int r = addr_in(&p->memory, a[1], a[2], &sa);
     if (r == 1) return connect ? -GNU_ENOENT : -SNX_EADDRNOTAVAIL; /* no path reaches the guest's filesystem */
     if (r) return r;
     return connect ? snx_socket_connect(s, &sa) : snx_socket_bind(s, &sa);
 }
-static int64_t sys_accept4(GnuProcess* p, const uint64_t a[6], uint64_t flags) {
-    if (flags & ~(uint64_t)(LINUX_SOCK_NONBLOCK | LINUX_SOCK_CLOEXEC)) return -GNU_EINVAL;
-    SOCK_OR_FAIL(a[0]);
+static int64_t sys_accept4(GnuProcess* p, SnxSocket* s, const uint64_t a[6], uint64_t flags) {
     SnxSocket* n;
     SnxSockAddr peer;
     int r = snx_socket_accept(s, &n, &peer, (flags & LINUX_SOCK_NONBLOCK) != 0); /* Linux doesn't inherit it */
@@ -235,15 +235,13 @@ static int64_t sys_accept4(GnuProcess* p, const uint64_t a[6], uint64_t flags) {
     if (fd >= 0 && (r = addr_out(&p->memory, &peer, a[1], a[2]))) return r;
     return fd;
 }
-static int64_t sys_name(GnuProcess* p, const uint64_t a[6], int peer) {
-    SOCK_OR_FAIL(a[0]);
+static int64_t sys_name(GnuProcess* p, SnxSocket* s, const uint64_t a[6], int peer) {
     if (!a[1] || !a[2]) return -GNU_EFAULT;
     SnxSockAddr sa;
     int r = peer ? snx_socket_peer(s, &sa) : snx_socket_name(s, &sa);
     return r ? r : addr_out(&p->memory, &sa, a[1], a[2]);
 }
-static int64_t sys_sendto(GnuProcess* p, const uint64_t a[6]) {
-    SOCK_OR_FAIL(a[0]);
+static int64_t sys_sendto(GnuProcess* p, SnxSocket* s, const uint64_t a[6]) {
     SnxSockAddr to;
     if (a[4]) {
         int r = addr_in(&p->memory, a[4], a[5], &to);
@@ -253,8 +251,7 @@ static int64_t sys_sendto(GnuProcess* p, const uint64_t a[6]) {
     if (!data) return -GNU_EFAULT;
     return snx_socket_send(s, data, (size_t)a[2], msg_in(a[3]), a[4] ? &to : NULL);
 }
-static int64_t sys_recvfrom(GnuProcess* p, const uint64_t a[6]) {
-    SOCK_OR_FAIL(a[0]);
+static int64_t sys_recvfrom(GnuProcess* p, SnxSocket* s, const uint64_t a[6]) {
     void* data = gnu_memory_access(&p->memory, a[1], (size_t)a[2], GNU_PROT_WRITE);
     if (!data) return -GNU_EFAULT;
     SnxSockAddr from;
@@ -265,8 +262,7 @@ static int64_t sys_recvfrom(GnuProcess* p, const uint64_t a[6]) {
     }
     return r;
 }
-static int64_t sys_setsockopt(GnuProcess* p, const uint64_t a[6]) {
-    SOCK_OR_FAIL(a[0]);
+static int64_t sys_setsockopt(GnuProcess* p, SnxSocket* s, const uint64_t a[6]) {
     int level, name, layout, r = sockopt_in(a[1], a[2], &level, &name, &layout);
     if (r) return r;
     unsigned char v[64] = {0};
@@ -280,8 +276,7 @@ static int64_t sys_setsockopt(GnuProcess* p, const uint64_t a[6]) {
     }
     return snx_socket_setsockopt(s, level, name, v, len);
 }
-static int64_t sys_getsockopt(GnuProcess* p, const uint64_t a[6]) {
-    SOCK_OR_FAIL(a[0]);
+static int64_t sys_getsockopt(GnuProcess* p, SnxSocket* s, const uint64_t a[6]) {
     int level, name, layout, r = sockopt_in(a[1], a[2], &level, &name, &layout);
     if (r) return r;
     unsigned char l[4], v[64] = {0};
@@ -386,8 +381,7 @@ static int64_t do_recvmsg(GnuProcess* p, SnxSocket* s, uint64_t msg, uint64_t fl
     free(buf);
     return r;
 }
-static int64_t sys_mmsg(GnuProcess* p, const uint64_t a[6], int send) {
-    SOCK_OR_FAIL(a[0]);
+static int64_t sys_mmsg(GnuProcess* p, SnxSocket* s, const uint64_t a[6], int send) {
     uint64_t vlen = a[2] > 1024 ? 1024 : a[2], flags = a[3];
     int64_t done = 0;
     for (uint64_t i = 0; i < vlen; i++) {
@@ -412,41 +406,33 @@ static int64_t sys_eventfd2(GnuProcess* p, const uint64_t a[6]) {
                                   (a[1] & LINUX_SOCK_CLOEXEC) != 0);
 }
 
+/* the calls on a socket's descriptor (a[0]), with the socket held */
+static int64_t socket_call(GnuProcess* p, SnxSocket* s, uint64_t number, const uint64_t a[6]) {
+    switch (number) {
+        case GNU_NR_bind: return sys_bind_connect(p, s, a, 0);
+        case GNU_NR_connect: return sys_bind_connect(p, s, a, 1);
+        case GNU_NR_listen: return snx_socket_listen(s, (int)a[1]);
+        case GNU_NR_accept: return sys_accept4(p, s, a, 0);
+        case GNU_NR_accept4: return sys_accept4(p, s, a, a[3]);
+        case GNU_NR_getsockname: return sys_name(p, s, a, 0);
+        case GNU_NR_getpeername: return sys_name(p, s, a, 1);
+        case GNU_NR_sendto: return sys_sendto(p, s, a);
+        case GNU_NR_recvfrom: return sys_recvfrom(p, s, a);
+        case GNU_NR_setsockopt: return sys_setsockopt(p, s, a);
+        case GNU_NR_getsockopt: return sys_getsockopt(p, s, a);
+        case GNU_NR_shutdown: return snx_socket_shutdown(s, (int)a[1]);
+        case GNU_NR_sendmsg: return do_sendmsg(p, s, a[1], a[2]);
+        case GNU_NR_recvmsg: return do_recvmsg(p, s, a[1], a[2]);
+        case GNU_NR_sendmmsg: return sys_mmsg(p, s, a, 1);
+        case GNU_NR_recvmmsg: return sys_mmsg(p, s, a, 0);
+    }
+    return -GNU_ENOSYS;
+}
+
 bool gnu_net_syscall(GnuProcess* p, uint64_t number, const uint64_t a[6], int64_t* result) {
     switch (number) {
         case GNU_NR_socket: *result = sys_socket(p, a); return true;
         case GNU_NR_socketpair: *result = sys_socketpair(p, a); return true;
-        case GNU_NR_bind: *result = sys_bind_connect(p, a, 0); return true;
-        case GNU_NR_connect: *result = sys_bind_connect(p, a, 1); return true;
-        case GNU_NR_listen: {
-            int64_t e;
-            SnxSocket* s = sock_of(p, a[0], &e);
-            *result = s ? snx_socket_listen(s, (int)a[1]) : e;
-            return true;
-        }
-        case GNU_NR_accept: *result = sys_accept4(p, a, 0); return true;
-        case GNU_NR_accept4: *result = sys_accept4(p, a, a[3]); return true;
-        case GNU_NR_getsockname: *result = sys_name(p, a, 0); return true;
-        case GNU_NR_getpeername: *result = sys_name(p, a, 1); return true;
-        case GNU_NR_sendto: *result = sys_sendto(p, a); return true;
-        case GNU_NR_recvfrom: *result = sys_recvfrom(p, a); return true;
-        case GNU_NR_setsockopt: *result = sys_setsockopt(p, a); return true;
-        case GNU_NR_getsockopt: *result = sys_getsockopt(p, a); return true;
-        case GNU_NR_shutdown: {
-            int64_t e;
-            SnxSocket* s = sock_of(p, a[0], &e);
-            *result = s ? snx_socket_shutdown(s, (int)a[1]) : e;
-            return true;
-        }
-        case GNU_NR_sendmsg:
-        case GNU_NR_recvmsg: {
-            int64_t e;
-            SnxSocket* s = sock_of(p, a[0], &e);
-            *result = !s ? e : number == GNU_NR_sendmsg ? do_sendmsg(p, s, a[1], a[2]) : do_recvmsg(p, s, a[1], a[2]);
-            return true;
-        }
-        case GNU_NR_sendmmsg: *result = sys_mmsg(p, a, 1); return true;
-        case GNU_NR_recvmmsg: *result = sys_mmsg(p, a, 0); return true;
         case GNU_NR_eventfd2: *result = sys_eventfd2(p, a); return true;
         case GNU_NR_ppoll: *result = gnu_net_ppoll(p, a); return true;
         case GNU_NR_pselect6: *result = gnu_net_pselect6(p, a); return true;
@@ -454,6 +440,36 @@ bool gnu_net_syscall(GnuProcess* p, uint64_t number, const uint64_t a[6], int64_
         case GNU_NR_epoll_ctl: *result = gnu_net_epoll_ctl(p, a); return true;
         case GNU_NR_epoll_pwait: *result = gnu_net_epoll_pwait(p, a, 0); return true;
         case GNU_NR_epoll_pwait2: *result = gnu_net_epoll_pwait(p, a, 1); return true;
+        case GNU_NR_accept4:
+            /* Linux checks accept4's flags before its descriptor */
+            if (a[3] & ~(uint64_t)(LINUX_SOCK_NONBLOCK | LINUX_SOCK_CLOEXEC)) {
+                *result = -GNU_EINVAL;
+                return true;
+            }
+            /* fallthrough */
+        case GNU_NR_bind:
+        case GNU_NR_connect:
+        case GNU_NR_listen:
+        case GNU_NR_accept:
+        case GNU_NR_getsockname:
+        case GNU_NR_getpeername:
+        case GNU_NR_sendto:
+        case GNU_NR_recvfrom:
+        case GNU_NR_setsockopt:
+        case GNU_NR_getsockopt:
+        case GNU_NR_shutdown:
+        case GNU_NR_sendmsg:
+        case GNU_NR_recvmsg:
+        case GNU_NR_sendmmsg:
+        case GNU_NR_recvmmsg: {
+            const void* held;
+            SnxSocket* s = sock_of(p, a[0], result, &held);
+            if (s) {
+                *result = socket_call(p, s, number, a);
+                gnu_vfs_release(&p->vfs, held);
+            }
+            return true;
+        }
     }
     return false;
 }

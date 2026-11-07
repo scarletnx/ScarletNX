@@ -76,6 +76,11 @@ typedef struct GnuFdInfo {
     const void* identity; /* the open file, which tells a reused descriptor number from the one registered */
 } GnuFdInfo;
 int gnu_vfs_fd_info(GnuVfs* vfs, int fd, GnuFdInfo* out); /* 0 or -GNU_EBADF */
+/* gnu_vfs_fd_info, and the open file (out->identity) held until gnu_vfs_release: a call that uses the descriptor's
+   object or host descriptor after the table's lock (a socket's call, poll, epoll) keeps it open through a close() of
+   another thread, as Linux's file reference does */
+int gnu_vfs_fd_hold(GnuVfs* vfs, int fd, GnuFdInfo* out);
+void gnu_vfs_release(GnuVfs* vfs, const void* identity);
 /* a read-only file the runtime provides (/etc/resolv.conf), its directories made as needed */
 int gnu_vfs_add_file(GnuVfs* vfs, const char* path, const void* data, size_t size);
 #endif

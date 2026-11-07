@@ -1521,6 +1521,18 @@ int gnu_vfs_fd_info(GnuVfs* vfs, int fd, GnuFdInfo* out) {
     vfs_unlock(vfs->state);
     return r;
 }
+int gnu_vfs_fd_hold(GnuVfs* vfs, int fd, GnuFdInfo* out) {
+    vfs_lock(vfs->state);
+    int r = fd_info_locked(vfs, fd, out);
+    if (!r) ((GnuOpen*)(uintptr_t)out->identity)->references++;
+    vfs_unlock(vfs->state);
+    return r;
+}
+void gnu_vfs_release(GnuVfs* vfs, const void* identity) {
+    vfs_lock(vfs->state);
+    release_file((GnuOpen*)(uintptr_t)identity);
+    vfs_unlock(vfs->state);
+}
 bool gnu_vfs_syscall(GnuVfs* vfs, GnuMemory* memory, uint64_t number, const uint64_t arguments[6], int64_t* result) {
     vfs_lock(vfs->state);
     bool r = syscall_locked(vfs, memory, number, arguments, result);
