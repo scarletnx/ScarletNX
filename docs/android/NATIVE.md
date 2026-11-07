@@ -294,7 +294,8 @@ builds for FreeBSD, macOS and Windows x64, where they differ:
   the mmap and msync flags, fcntl's commands and `struct flock`, the requests of ioctl, `struct dirent`, `struct
   statfs` and the poll events. `getaddrinfo`, `getnameinfo` and `gethostbyname` are the stack's on every host, whose
   flags and errors are bionic's. Offline (the Network setting), another machine's name is `EAI_NODATA`, as Android
-  answers without a network.
+  answers without a network. localhost is 127.0.0.1 alone, once, as Android's hosts file has it (`::1` is
+  ip6-localhost there).
 - **Threads**: FreeBSD's, macOS's and winpthreads' objects differ in size or in their static initializer, so a
   guest mutex, condition variable, rwlock and semaphore keep a host object's address at offset 8, made at the first
   use, and the attributes are bionic's own layout (`hle_thread.c`).
