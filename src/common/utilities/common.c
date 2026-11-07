@@ -2521,9 +2521,17 @@ SnxU64 snx_addon_version(const char* entry) {
     return strlen(entry) > 17 && entry[16] == 'v' ? (SnxU64)strtoull(entry + 17, NULL, 10) : SNX_NO_VERSION;
 }
 int snx_addon_kind(SnxU64 game, SnxU64 id) {
+    if (!id || id == game) return SNX_ADDON_NONE;
+    /* a 3DS application's (0x00040000 its ID's high half): its update has its low half under 0x0004000E, as Azahar's
+       am makes an update's ID, and its add-on content its low half's 28 bits under 0x0004008C, as Azahar's game list
+       finds a game's DLC; nothing else is its */
+    if (game >> 32 == 0x00040000u) {
+        if (id >> 32 == 0x0004000Eu && (id & 0xFFFFFFFFu) == (game & 0xFFFFFFFFu)) return SNX_ADDON_UPDATE;
+        if (id >> 32 == 0x0004008Cu && (id & 0xFFFFFFFFu) == (game & 0x0FFFFFFFu)) return SNX_ADDON_DLC;
+        return SNX_ADDON_NONE;
+    }
     /* the console's rule: an application's patch is its ID with 0x800 added, its other programs follow its ID and
        their patches the patch's; any other add-on of it is content */
-    if (!id || id == game) return SNX_ADDON_NONE;
     if (id == (game | 0x800)) return SNX_ADDON_UPDATE;
     return snx_program_index(game, id) > 0 ? SNX_ADDON_PROGRAM : SNX_ADDON_DLC;
 }

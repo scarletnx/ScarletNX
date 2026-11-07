@@ -302,3 +302,55 @@ def cia(
     if with_meta:
         archive += b'\0' * (align(len(archive), 64) - len(archive)) + b'\0' * 0x400
     return bytes(archive)
+
+
+DLC_TITLE = (TITLE & 0xFFFFFF00) | 0x0004008C00000000
+
+
+def dlc_content(title=DLC_TITLE, file_name='hello.txt', with_romfs=True):
+    """An add-on content: an NCCH of the DLC title holding a RomFS with the one file."""
+
+    def header(h):
+        put(h, 0x118, '<Q', title)
+
+    return ncch(patch_header=header, romfs_options={'file_name': file_name}, with_romfs=with_romfs)
+
+
+def dlc_cia(contents, title=DLC_TITLE, signature=0x10004, content_type=0):
+    """A DLC CIA: contents is a list of (TMD index, NCCH), the TMD listing them in that order, each present in the
+    CIA's bitmap; an NCCH given as a number is a content of that size the TMD lists and the CIA leaves out. It has no
+    boot content, and its TMD's title type is 0x40, an application's. content_type is each chunk's type (1: encrypted)"""
+    body_at = {0x10000: 0x240, 0x10003: 0x240, 0x10001: 0x140, 0x10004: 0x140, 0x10002: 0x40, 0x10005: 0x40}[signature]
+    ticket = bytearray(body_at + 0x164 + 0x14)
+    put(ticket, 0, '>I', signature)
+    put(ticket, body_at + 0x9C, '>Q', title)
+    put(ticket, body_at + 0x164, '>HHIIHHI', 1, 0x14, 0x14, 0x14, 0, 0x14, 0)
+    listed = len(contents)
+    chunks = bytearray(listed * 0x30)
+    for i, (index, content) in enumerate(contents):
+        size = content if isinstance(content, int) else len(content)
+        put(chunks, i * 0x30, '>IHHQ', 0x1111 * (i + 2), index, content_type, size)
+        if not isinstance(content, int):
+            chunks[i * 0x30 + 16 : (i + 1) * 0x30] = sha(content)
+    contents = [(index, content) for index, content in contents if not isinstance(content, int)]
+    body = bytearray(0x9C4)
+    put(body, 0x4C, '>Q', title)
+    put(body, 0x54, '>I', 0x40)
+    put(body, 0x9C, '>HHH', 1, listed, 0)
+    put(body, 0xC4, '>HH', 0, listed)
+    body[0xC8:0xE8] = sha(chunks)
+    body[0xA4:0xC4] = sha(body[0xC4:])
+    tmd = bytearray(body_at) + body + chunks
+    put(tmd, 0, '>I', signature)
+    header = bytearray(0x2020)
+    total = sum(len(c) for _, c in contents)
+    put(header, 0, '<IHHIIIIQ', 0x2020, 0, 0, 0, len(ticket), len(tmd), 0, total)
+    for index, _ in contents:
+        header[0x20 + (index >> 3)] |= 0x80 >> (index & 7)
+    archive = header.ljust(0x2040, b'\0')
+    for section in [b'', ticket, tmd]:
+        archive += section
+        archive += b'\0' * (align(len(archive), 64) - len(archive))
+    for _, content in contents:
+        archive += content
+    return bytes(archive)

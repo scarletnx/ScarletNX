@@ -86,6 +86,7 @@ typedef struct {
             uint32_t position; /* CTR_FILE_DIR: the entries Read has given so far */
             void* host;        /* FILE* for CTR_FILE_HOST */
             void* node;        /* FsNode*, retained for the file's lifetime */
+            uint32_t dlc_view; /* CTR_FILE_VIEW: 1 + the dlc_views entry it reads (a DLC's), 0 for the game's own */
         } file;
         struct {
             /* physical: a service block's FCRAM pages (font, GSP, HID); 0 for a block the application made */
@@ -184,6 +185,14 @@ typedef struct {
 } SnxCtrHid;
 struct SnxCtrProcess {
     SnxCtrRomfs* romfs; /* runtime-owned immutable host filesystem view */
+    const SnxCtrSource* source; /* the game read where it lies, with its DLC files, which romfs reads too: the
+                                   caller's, open while the process is; NULL for an extraction */
+    struct {
+        uint64_t title;
+        unsigned index;
+        SnxCtrRomfs* view;
+    } dlc_views[32]; /* the RomFS views of the DLC contents the game has opened, made on first open */
+    unsigned dlc_view_count;
     FsTree* tree;       /* the shared NX-style tree: romfs/exefs read-only, sdmc read-write */
     FsNode* sd;         /* the "sdmc" subtree root (read-write) */
     FsNode* save;       /* the "savedata" subtree root (read-write), NULL until the game formats its save data */

@@ -10,6 +10,7 @@
 #include "3ds/services/uds.h"
 #include "common/utilities/ascii.h"
 #include "common/utilities/common.h"
+#include "common/utilities/game_ini.h"
 #include "common/utilities/ini_lines.h"
 #include "snx_settings.h"
 #include <errno.h>
@@ -41,6 +42,10 @@ static void usage(FILE* out) {
         "                  Extract the game into its folder first and play from the extraction\n"
         "  -x, --extract   Extract only\n"
         "  -r, --recompile Recompile without playing\n"
+        "  --update FILE   An update or a DLC of the game (its CIA; a bare NCCH for an update), given again for\n"
+        "                  each: recorded beside the game in its folder and checked in its .ini's addons=, as a\n"
+        "                  Switch game's are, then the game played with them. An update or a DLC given alone, as\n"
+        "                  game, is recorded beside its game, made already, the same way\n"
         "  --model old|new The console to model (default old)\n"
         "  --keys FILE     The 3DS AES keys, in Azahar's aes_keys.txt format, to decrypt an encrypted game\n"
         "                  with (default ~/.3ds/aes_keys.txt)\n"
@@ -83,7 +88,9 @@ static void usage(FILE* out) {
         "are: the ARM11 code is compiled again only when its module is missing or no longer matches the\n"
         "build or the code. An encrypted game is decrypted once, with the keys, into a copy beside the title's\n"
         "folder (<folder>.decrypted.cia, <folder>.decrypted.cci), and read from there. A cartridge image whose\n"
-        "game partition carries the game's update is played as that update.\n",
+        "game partition carries the game's update is played as that update. The game plays with the update and\n"
+        "DLCs its addons= checks, each read where its record names it (<title ID>_<its entry>.ini, source=); one\n"
+        "whose file is not there is said and left out. A game played from an extraction plays with none.\n",
         out);
 }
 /* the extensions a game of this system may have. The loader reads the file's own header, so this is a guard against a
@@ -448,6 +455,118 @@ static void move_old_folder(const char* old, const char* folder) {
                 snx_os_error(why, sizeof why));
     free(parent);
 }
+/* ---- A game's update and DLCs, as a Switch game's are (common/utilities/game_ini.h): each recorded beside the game in
+   its folder, <title ID>_<its entry>.ini naming its file (source=) and its data folder <title ID>_<its entry>_data,
+   which the launcher lists, and checked in the game's addons=, one update at most ---- */
+#define MAX_UPDATES (1 + SNX_CTR_MAX_DLC) /* --update given at most: an update and the DLCs a game takes */
+static const char* addon_word(SnxU64 game, SnxU64 title) {
+    return snx_addon_kind(game, title) == SNX_ADDON_UPDATE ? "update" : "DLC";
+}
+/* the game an update or a DLC of title is of: its title ID's low half (a DLC's 28 bits) under 0x00040000; 0 for a title
+   that is neither */
+static uint64_t addon_game(uint64_t title) {
+    uint64_t game = 0x0004000000000000ull | (title & ((title >> 32) == 0x0004008cu ? 0x0FFFFFFFull : 0xFFFFFFFFull));
+    return snx_addon_kind(game, title) == SNX_ADDON_NONE ? 0 : game;
+}
+/* The add-on title (version -1 for none known) of the game named name in folder, its file dump as the player gave it,
+   recorded and checked. 0, or 1 with a line saying why */
+static int record_addon(const char* folder, const char* name, uint64_t title, int32_t version, const char* dump) {
+    SnxU64 game = 0;
+    char entry[32], why[256];
+    (void)snx_title_parse(name, &game);
+    snx_addon_entry(game, title, version < 0 ? SNX_NO_VERSION : (SnxU64)version, entry);
+    char *own = snx_format("%s_%s", name, entry), *full = snx_absolute(dump);
+    char* data = own ? snx_format("%s_data", own) : NULL;
+    char* where = data ? snx_path_join(folder, data) : NULL;
+    int rc = 1;
+    if (!full || !where)
+        fprintf(stderr, "scarletnx-3ds: cannot resolve %s: %s\n", dump, snx_os_error(why, sizeof why));
+    else if (snx_mkdirs(where))
+        fprintf(stderr, "scarletnx-3ds: cannot create %s: %s\n", where, snx_os_error(why, sizeof why));
+    else if (!snx_record_source(folder, own, full) && !snx_addon_check(folder, name, entry)) { /* each said why */
+        printf("Recorded the %s %s beside its game in %s, checked in its addons=\n", addon_word(game, title), entry,
+               folder);
+        rc = 0;
+    }
+    free(where);
+    free(data);
+    free(full);
+    free(own);
+    return rc;
+}
+/* The update and DLCs the addons= of the game in folder checks, each read where its record names it, decrypted first
+   as a game is: the update laid over source, each DLC beside it. One whose record or file is not there is said, with
+   the path, and left out. 0, or the run's exit status with a line saying why */
+static int apply_addons(const char* folder, SnxCtrSource* source, const char* keys, const char* repo,
+                        const char* argv0) {
+    char *name = last_part(folder), *ini = name ? snx_game_ini(folder, name) : NULL;
+    char* text = ini ? snx_ini_value(ini, "addons") : NULL;
+    SnxAddon* list = (SnxAddon*)snx_alloc(SNX_ADDONS_MAX * sizeof *list);
+    size_t count = name ? snx_addons_parse(text, name, list, SNX_ADDONS_MAX) : 0;
+    SnxU64 game = 0;
+    int status = 0;
+    char error[512];
+    if (name) (void)snx_title_parse(name, &game);
+    for (size_t i = 0; i < count && !status; ++i) {
+        const char* what = addon_word(game, list[i].id);
+        char *own = snx_format("%s_%s", name, list[i].entry), *readable = NULL, *where = NULL;
+        int recorded = 0;
+        char* dump = own ? snx_game_source(folder, own, &recorded) : NULL;
+        if (!dump) { /* its path did not fit, said */
+            status = 1;
+        } else if (!recorded) {
+            fprintf(stderr,
+                    "scarletnx-3ds: the %s %s checked in addons= has no record (%s.ini names no file): this "
+                    "run plays without it\n",
+                    what, list[i].entry, own ? own : "its");
+        } else if (!snx_is_file(dump)) {
+            fprintf(stderr, "scarletnx-3ds: the %s %s checked in addons= is not at %s: this run plays without it\n",
+                    what, list[i].entry, dump);
+        } else {
+            char *work = work_folder(repo, argv0), *leaf = snx_dump_name(dump);
+            if (work && leaf) where = snx_path_join(work, leaf);
+            free(leaf);
+            free(work);
+            status = where ? readable_game(dump, where, keys, &readable) : 1; /* said why */
+            SnxCtrExtractResult result = SNX_CTR_EXTRACT_OK;
+            if (!status)
+                result = snx_addon_kind(game, list[i].id) == SNX_ADDON_UPDATE
+                             ? snx_ctr_source_set_update(source, readable, error, sizeof error)
+                             : snx_ctr_source_add_dlc(source, readable, error, sizeof error);
+            if (result != SNX_CTR_EXTRACT_OK) {
+                fprintf(stderr, "scarletnx-3ds: the %s %s checked in addons=: %s\n", what, list[i].entry, error);
+                status = result == SNX_CTR_EXTRACT_UNSUPPORTED ? 3 : 1;
+            } else if (!status)
+                printf("Playing with the %s %s, read from %s\n", what, list[i].entry, readable);
+        }
+        free(where);
+        free(readable);
+        free(dump);
+        free(own);
+    }
+    free(list);
+    free(text);
+    free(ini);
+    free(name);
+    return status;
+}
+/* An extraction's game plays with no update or DLC: the ones the game's addons= checks said, as this run leaves them
+   out */
+static void addons_unplayed(const char* folder) {
+    char *name = last_part(folder), *ini = name ? snx_game_ini(folder, name) : NULL;
+    char* text = ini ? snx_ini_value(ini, "addons") : NULL;
+    SnxAddon* list = (SnxAddon*)snx_alloc(SNX_ADDONS_MAX * sizeof *list);
+    size_t count = name ? snx_addons_parse(text, name, list, SNX_ADDONS_MAX) : 0;
+    for (size_t i = 0; i < count; ++i)
+        fprintf(stderr,
+                "scarletnx-3ds: the game plays from its extraction, which reads no update or DLC: this run "
+                "plays without %s, checked in addons= (play it without --extract-container to play with it)\n",
+                list[i].entry);
+    free(list);
+    free(text);
+    free(ini);
+    free(name);
+}
 /* N of --max-blocks N or --max-blocks=N, false for anything but a positive number */
 static bool parse_blocks(const char* text, uint64_t* blocks) {
     char* end = NULL;
@@ -472,11 +591,85 @@ static char* own_game(const char* argv0) {
     free(name);
     return dir;
 }
+/* The game in its folder (owned) played as its copy of the runtime plays it: the game its .ini names, an extraction
+   the folder holds, else the game itself read where it lies, with the update and DLCs its addons= checks. runtime is
+   owned too */
+static int play_folder(char* folder, SnxCtrModel model, bool model_set, const char* repo, const char* argv0,
+                       const char* keys, uint64_t max_blocks, double seconds, bool recompile, bool extract_only,
+                       bool extract_container, uint32_t ipc_stubs, char* runtime) {
+    SnxCtrSource* source = NULL;
+    char error[512];
+    int status;
+    /* the game its .ini names: an extraction its folder holds, else the game itself */
+    char* named = NULL;
+    SnxCtrModel recorded = model;
+    if (!read_game_ini(folder, &named, &recorded)) {
+        fprintf(stderr, "scarletnx-3ds: cannot read the game's .ini in %s\n", folder);
+        free(runtime);
+        free(folder);
+        return 1;
+    }
+    if (!model_set) model = recorded;
+    if (holds_extraction(folder))
+        extract_container = true;
+    else if (!named) {
+        fprintf(stderr,
+                "scarletnx-3ds: %s holds no game: its .ini names no game (source=). Play the game again "
+                "(scarletnx-3ds game.cia) to make its folder\n",
+                folder);
+        free(runtime);
+        free(folder);
+        return 2;
+    } else if (!extract_container && !extract_only) {
+        /* the game it names may be an encrypted one: decrypt it as the run that made the folder did, or reuse that
+           run's copy, so the folder plays without the keys being asked for again */
+        char *work = work_folder(repo, argv0), *leaf = snx_dump_name(named), *where = NULL, *readable = NULL;
+        if (work && leaf) where = snx_path_join(work, leaf);
+        free(leaf);
+        free(work);
+        int decrypted = where ? readable_game(named, where, keys, &readable) : 1;
+        free(where);
+        if (decrypted != 1) {
+            free(named);
+            if (decrypted) {
+                free(readable);
+                free(runtime);
+                free(folder);
+                return decrypted;
+            }
+            named = readable;
+        }
+        SnxCtrExtractResult opened = snx_ctr_source_open(named, &source, error, sizeof error);
+        if (opened != SNX_CTR_EXTRACT_OK) {
+            fprintf(stderr, "scarletnx-3ds: %s\n", error);
+            free(named);
+            free(runtime);
+            free(folder);
+            return opened == SNX_CTR_EXTRACT_UNSUPPORTED ? 3 : 1;
+        }
+        int added = apply_addons(folder, source, keys, repo, argv0); /* said why */
+        if (added) {
+            snx_ctr_source_close(source);
+            free(named);
+            free(runtime);
+            free(folder);
+            return added;
+        }
+    }
+    if (extract_container) addons_unplayed(folder);
+    status = play(named, source, folder, model, max_blocks, seconds, recompile, extract_only, extract_container,
+                  ipc_stubs, runtime);
+    free(named);
+    free(runtime);
+    return status;
+}
 int snx_ctr_main(int argc, char** argv) {
     SnxCtrModel model = SNX_CTR_OLD;
     const char *input = NULL, *output = NULL, *outdir = NULL, *repo = NULL, *keys = NULL, *game = NULL;
     bool info = false, positional = false, extract_only = false, recompile = false, budget_set = false;
     bool extract_container = false, model_set = false;
+    const char* updates[MAX_UPDATES]; /* --update's files, an update's or a DLC's each */
+    unsigned update_count = 0;
     uint64_t max_blocks = 0; /* no budget */
     double seconds = 0;      /* no time limit */
     uint32_t ipc_stubs = 0;  /* with ctr_auto_stub_ipc off, every unknown service command stops the run */
@@ -543,6 +736,13 @@ int snx_ctr_main(int argc, char** argv) {
                       stderr);
                 return 2;
             }
+        } else if (!positional && (!strcmp(arg, "--update") || !strncmp(arg, "--update=", 9))) {
+            const char* file = arg[8] ? arg + 9 : ++i < argc ? argv[i] : NULL;
+            if (!file || !*file || update_count == MAX_UPDATES) {
+                fprintf(stderr, "scarletnx-3ds: --update requires a file, given %d times at most\n", MAX_UPDATES);
+                return 2;
+            }
+            updates[update_count++] = file;
         } else if (!positional && !strcmp(arg, "--model")) {
             if (++i == argc || (strcmp(argv[i], "old") && strcmp(argv[i], "new"))) {
                 fputs("scarletnx-3ds: --model requires old or new\n", stderr);
@@ -601,7 +801,8 @@ int snx_ctr_main(int argc, char** argv) {
     /* the game's own copy of the runtime plays it, or --game= names it */
     char* folder = game ? snx_strdup(game) : input || info ? NULL : own_game(argv[0]);
     /* --ipc-stubs only changes a run: with an option that does not run the game it is a mistake to report */
-    if ((!input && !info && !folder) || (folder && (input || output || outdir || keys)) ||
+    if ((!input && !info && !folder) || (folder && (input || output || outdir || keys || update_count)) ||
+        (update_count && (info || output || extract_only || extract_container)) ||
         (info && (input || extract_only || extract_container || recompile || output || outdir || budget_set)) ||
         (extract_only && (budget_set || recompile)) || (recompile && budget_set) ||
         (ipc_stubs && (info || extract_only || recompile))) {
@@ -632,60 +833,9 @@ int snx_ctr_main(int argc, char** argv) {
     free(runtime_dir);
     SnxCtrSource* source = NULL;
     int status;
-    if (folder) {
-        /* the game its .ini names: an extraction its folder holds, else the game itself */
-        char* named = NULL;
-        SnxCtrModel recorded = model;
-        if (!read_game_ini(folder, &named, &recorded)) {
-            fprintf(stderr, "scarletnx-3ds: cannot read the game's .ini in %s\n", folder);
-            free(runtime);
-            free(folder);
-            return 1;
-        }
-        if (!model_set) model = recorded;
-        if (holds_extraction(folder))
-            extract_container = true;
-        else if (!named) {
-            fprintf(stderr,
-                    "scarletnx-3ds: %s holds no game: its .ini names no game (source=). Play the game again "
-                    "(scarletnx-3ds game.cia) to make its folder\n",
-                    folder);
-            free(runtime);
-            free(folder);
-            return 2;
-        } else if (!extract_container && !extract_only) {
-            /* the game it names may be an encrypted one: decrypt it as the run that made the folder did, or reuse that
-               run's copy, so the folder plays without the keys being asked for again */
-            char *work = work_folder(repo, argv[0]), *leaf = snx_dump_name(named), *where = NULL, *readable = NULL;
-            if (work && leaf) where = snx_path_join(work, leaf);
-            free(leaf);
-            free(work);
-            int decrypted = where ? readable_game(named, where, keys, &readable) : 1;
-            free(where);
-            if (decrypted != 1) {
-                free(named);
-                if (decrypted) {
-                    free(readable);
-                    free(runtime);
-                    free(folder);
-                    return decrypted;
-                }
-                named = readable;
-            }
-            SnxCtrExtractResult opened = snx_ctr_source_open(named, &source, error, sizeof error);
-            if (opened != SNX_CTR_EXTRACT_OK) {
-                fprintf(stderr, "scarletnx-3ds: %s\n", error);
-                free(runtime);
-                free(folder);
-                return opened == SNX_CTR_EXTRACT_UNSUPPORTED ? 3 : 1;
-            }
-        }
-        status = play(named, source, folder, model, max_blocks, seconds, recompile, extract_only, extract_container,
-                      ipc_stubs, runtime);
-        free(named);
-        free(runtime);
-        return status;
-    }
+    if (folder)
+        return play_folder(folder, model, model_set, repo, argv[0], keys, max_blocks, seconds, recompile, extract_only,
+                           extract_container, ipc_stubs, runtime);
     /* Do not let a host filename inject progress/launch banners into the GUI. */
     if (!visible_path(input) || (output && !visible_path(output)) || (outdir && !visible_path(outdir))) {
         fputs("scarletnx-3ds: input/output paths may not contain control characters\n", stderr);
@@ -722,7 +872,46 @@ int snx_ctr_main(int argc, char** argv) {
         return decrypted;
     }
     printf("Reading %s\n", readable);
-    SnxCtrExtractResult opened = snx_ctr_source_open(readable, &source, error, sizeof error);
+    /* an update or a DLC: recorded beside its game, made already, and the game played with what its addons= checks */
+    uint64_t title = 0;
+    int32_t version = -1;
+    SnxCtrExtractResult opened = snx_ctr_source_identify(readable, &title, &version, error, sizeof error);
+    uint64_t of = opened == SNX_CTR_EXTRACT_OK ? addon_game(title) : 0;
+    if (of) {
+        char name[17], *named = NULL;
+        SnxCtrModel ignored = model;
+        snprintf(name, sizeof name, "%016" PRIX64, of);
+        free(old);
+        free(readable);
+        if (update_count || output || extract_only || extract_container) {
+            fprintf(stderr,
+                    "scarletnx-3ds: %s is the %s %016" PRIX64 " of the game %s, read where it lies beside it: "
+                    "it takes no --update, --output, -x or --extract-container\n",
+                    input, addon_word(of, title), title, name);
+            free(runtime);
+            return 2;
+        }
+        folder = snx_game_folder(repo, outdir, argv[0], name, 0);
+        if (!folder) {
+            char why[256];
+            fprintf(stderr, "scarletnx-3ds: cannot resolve the folder of %s: %s\n", name,
+                    snx_os_error(why, sizeof why));
+        } else if (!read_game_ini(folder, &named, &ignored) || (!named && !holds_extraction(folder))) {
+            fprintf(stderr,
+                    "scarletnx-3ds: %s is the %s %016" PRIX64 " of the game %s, which is not made in %s yet: "
+                    "play the game first (scarletnx-3ds GAME), or give both (scarletnx-3ds GAME --update %s)\n",
+                    input, addon_word(of, title), title, name, folder, input);
+        } else if (!record_addon(folder, name, title, version, input)) {
+            free(named);
+            return play_folder(folder, model, model_set, repo, argv[0], keys, max_blocks, seconds, recompile,
+                               extract_only, extract_container, ipc_stubs, runtime);
+        }
+        free(named);
+        free(folder);
+        free(runtime);
+        return 1;
+    }
+    opened = snx_ctr_source_open(readable, &source, error, sizeof error);
     if (opened != SNX_CTR_EXTRACT_OK) {
         fprintf(stderr, "scarletnx-3ds: %s\n", error);
         free(readable);
@@ -759,6 +948,43 @@ int snx_ctr_main(int argc, char** argv) {
         free(readable);
         free(runtime);
         return 1;
+    }
+    /* --update's each recorded beside the game as its own, then the game read with what its addons= checks */
+    status = 0;
+    char name[17];
+    snprintf(name, sizeof name, "%016" PRIX64, snx_ctr_source_title(source));
+    for (unsigned u = 0; u < update_count && !status; ++u) {
+        char *work = work_folder(repo, argv[0]), *leaf = snx_dump_name(updates[u]), *copy = NULL;
+        char* kept = work && leaf ? snx_path_join(work, leaf) : NULL;
+        uint64_t its = 0;
+        int32_t its_version = -1;
+        status = kept ? readable_game(updates[u], kept, keys, &copy) : 1; /* said why */
+        opened = status ? SNX_CTR_EXTRACT_OK : snx_ctr_source_identify(copy, &its, &its_version, error, sizeof error);
+        if (opened != SNX_CTR_EXTRACT_OK) {
+            fprintf(stderr, "scarletnx-3ds: %s: %s\n", updates[u], error);
+            status = opened == SNX_CTR_EXTRACT_UNSUPPORTED ? 3 : 1;
+        } else if (!status && snx_addon_kind(snx_ctr_source_title(source), its) == SNX_ADDON_NONE) {
+            fprintf(stderr, "scarletnx-3ds: %s is not an update or a DLC of %s (%s): its title is %016" PRIX64 "\n",
+                    updates[u], input, name, its);
+            status = 1;
+        } else if (!status) {
+            status = record_addon(folder, name, its, its_version, updates[u]);
+        }
+        free(kept);
+        free(copy);
+        free(leaf);
+        free(work);
+    }
+    if (!status && !extract_container && !extract_only)
+        status = apply_addons(folder, source, keys, repo, argv[0]);
+    else if (!status && extract_container)
+        addons_unplayed(folder);
+    if (status) {
+        snx_ctr_source_close(source);
+        free(folder);
+        free(readable);
+        free(runtime);
+        return status;
     }
     status = play(readable, source, folder, model, max_blocks, seconds, recompile, extract_only, extract_container,
                   ipc_stubs, runtime);
