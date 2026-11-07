@@ -370,6 +370,9 @@ enum { SNX_ADDON_NONE, SNX_ADDON_UPDATE, SNX_ADDON_DLC, SNX_ADDON_PROGRAM };
    half) has an update, its ID's low half under 0x0004000E, and a DLC, the low half's 28 bits under 0x0004008C, and
    nothing else: its update's code is the game's own, run by the game's program, which has no other */
 int snx_addon_kind(SnxU64 game, SnxU64 id);
+/* 1 when the update id of game is recompiled into a program of its own, which plays it (a Switch game's); 0 for any
+   other add-on, and for a 3DS game's update, whose code its game's program reads */
+int snx_addon_own_program(SnxU64 game, SnxU64 id);
 /* An application of several programs (a collection whose menu starts each game, nn::oe::ExecuteProgram) numbers them
    from its own ID, as the console does: program i is the application's ID plus i, and that program's patch the
    update's ID plus i. The index is a byte (fs's ProgramIndexMapInfo), 0 the application's own program */

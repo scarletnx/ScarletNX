@@ -4418,11 +4418,20 @@ static void addons_checked_read(const char* folder, const char* name, const GuiG
     free(text);
     free(ini);
 }
-/* the program of the update checked among addons, absolute and owned; NULL with none checked */
+/* whether the add-on named name has a program of its own (snx_addon_own_program): a 3DS game's update has none */
+static bool own_program(const char* name) {
+    char game[17];
+    SnxU64 own = 0, id = 0;
+    snprintf(game, sizeof game, "%s", name);
+    return snx_title_parse(game, &own) && snx_addon_entry_id(own, entry_of(name), &id) &&
+           snx_addon_own_program(own, id);
+}
+/* the program of the update checked among addons, absolute and owned; NULL with none checked, or with one its game's
+   program reads (a 3DS game's) */
 static char* update_program(const GuiGames* addons, const bool* checked) {
     char* program = NULL;
     for (size_t i = 0; i < addons->count; ++i)
-        if (checked[i] && kind_of(addons->names[i]) == SNX_ADDON_UPDATE) {
+        if (checked[i] && kind_of(addons->names[i]) == SNX_ADDON_UPDATE && own_program(addons->names[i])) {
             free(program);
             program = snx_absolute(addons->paths[i]);
         }

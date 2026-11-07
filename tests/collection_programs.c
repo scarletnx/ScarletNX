@@ -48,6 +48,9 @@ static void kinds(void) {
     CHECK(snx_addon_kind(0x0004000001234500ull, 0x0004008C09999900ull) == SNX_ADDON_NONE);
     CHECK(snx_addon_kind(0x0004000001234500ull, 0x0004000001234501ull) == SNX_ADDON_NONE);
     CHECK(snx_addon_kind(0x0004000001234500ull, 0x0004001001234500ull) == SNX_ADDON_NONE);
+    /* its update's code is its game's: no program of its own, a Switch game's update has one */
+    CHECK(!snx_addon_own_program(0x0004000001234500ull, 0x0004000E01234500ull));
+    CHECK(snx_addon_own_program(GAME, UPDATE) && !snx_addon_own_program(GAME, GAME + 0x1001));
     /* the game a dump's NCA belongs to, without a content meta: a patch's and a program patch's, a DLC's */
     CHECK(snx_addon_guess(UPDATE) == GAME && snx_addon_guess(UPDATE + 3) == GAME);
     CHECK(snx_addon_guess(GAME + 0x1002) == GAME && snx_addon_guess(GAME + 2) == GAME);

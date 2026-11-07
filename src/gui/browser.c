@@ -255,7 +255,8 @@ static size_t addons_of(const char* path, GuiGames* addons) {
         if (listed) stem[n - 5] = 0;
         /* another program of a collection's is no add-on: its game plays it (gui_game_programs) */
         listed = listed && snx_addon_name(leaf, stem, &id) && snx_addon_kind(game, id) != SNX_ADDON_PROGRAM;
-        if (listed && snx_addon_kind(game, id) == SNX_ADDON_UPDATE) {
+        /* an update with a program of its own, listed once it is made; a 3DS game's has none, its game reads it */
+        if (listed && snx_addon_own_program(game, id)) {
 #if defined(__ANDROID__) || defined(SNX_IOS)
             char* file = snx_format("%s" GAME_CODE, stem);
 #elif defined(_WIN32)
@@ -288,7 +289,12 @@ static size_t addons_of(const char* path, GuiGames* addons) {
                 snprintf(text, sizeof text, snx_tr("DLC %s"), title);
             } else if (snx_nacp_version(nacp, size, version, sizeof version))
                 snprintf(text, sizeof text, snx_tr("Update %s"), version);
-            else
+            else if (!snx_addon_own_program(game, id) && snx_addon_version(stem + strlen(leaf) + 1) != SNX_NO_VERSION) {
+                /* a 3DS game's update: its TMD's title version */
+                snprintf(version, sizeof version, "v%llu",
+                         (unsigned long long)snx_addon_version(stem + strlen(leaf) + 1));
+                snprintf(text, sizeof text, snx_tr("Update %s"), version);
+            } else
                 snprintf(text, sizeof text, "%s", snx_tr("Update"));
             free(nacp);
             for (j = addons->count; j > 0 && addon_before(game, stem, addons->names[j - 1]); --j) {
