@@ -18,8 +18,6 @@
 
 #include "hle/services/hid.swipc.inc"
 
-#define HID_INVALID_NPAD_ID RC(202, 709)
-
 #define HID_LIFO_N  17 /* each LIFO's entries */
 
 /* nn::hid::NpadStyleTag */
@@ -564,7 +562,7 @@ static int nn_hid_IHidServer_AcquireNpadStyleSetUpdateEventHandle(SvcObj* self, 
                                                                   u64 event_ptr, u32* event) {
     int e = hid_entry(id);
     (void)self, (void)aruid, (void)event_ptr;
-    R_UNLESS(e >= 0, HID_INVALID_NPAD_ID);
+    R_UNLESS(e >= 0, SNX_RC_HID_INVALID_NPAD_ID);
     *event = ev_handle(g_hle.hid.style_ev[e]);
     R_SUCCEED();
 }
@@ -668,7 +666,7 @@ static int nn_hid_IHidServer_MergeSingleJoyAsDualJoy(SvcObj* self, nn_hid_NpadId
                                                      u64 aruid) {
     int a = hid_entry(id1), b = hid_entry(id2), i, q;
     (void)self, (void)aruid;
-    R_UNLESS(a >= 0 && b >= 0, HID_INVALID_NPAD_ID);
+    R_UNLESS(a >= 0 && b >= 0, SNX_RC_HID_INVALID_NPAD_ID);
     pm_lock(&g_host.hid.lock);
     if (a < HID_PADS && b < HID_PADS && a != b) {
         for (i = 0; i < 2; i++) {

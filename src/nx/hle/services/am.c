@@ -22,13 +22,6 @@
 
 #include "hle/services/am.swipc.inc"
 
-#define AM_NO_DATA         RC(128, 2)   /* ResultNoDataInChannel */
-#define AM_NO_MESSAGES     RC(128, 3)   /* ResultNoMessages */
-#define AM_INVALID_OFFSET  RC(128, 503) /* ResultInvalidOffset */
-#define AM_INVALID_STORAGE RC(128, 511) /* ResultInvalidStorageType */
-#define AM_OUT_OF_MEMORY   RC(128, 600)
-#define AM_NO_APPLICATION  RC(128, 37) /* ResultApplicationRecordNotFound: no application, or no program, of the ID */
-
 /* nn::am::AppletMessage */
 #define AM_MSG_FOCUS_STATE_CHANGED      15
 #define AM_MSG_PERFORMANCE_MODE_CHANGED 31
@@ -124,10 +117,10 @@ static SvcObj* am_storage_new(u64 size, const void* data) {
 static int am_storage_tmem(i64 size, u32 handle, int handle_only, SvcObj** storage) {
     KTmem* t = (KTmem*)h_get_ref(handle, KO_TMEM);
     StorageData* s;
-    R_UNLESS(t, RC(1, 114)); /* the kernel's InvalidHandle */
+    R_UNLESS(t, SNX_RC_SVC_INVALID_HANDLE);
     if (size < 0 || (u64)size > t->size) {
         kobj_unref(&t->o);
-        R_THROW(AM_INVALID_OFFSET);
+        R_THROW(SNX_RC_AM_OUT_OF_BOUNDS);
     }
     *storage = am_storage_new(0, NULL);
     s = (StorageData*)(*storage)->data;
@@ -139,7 +132,7 @@ static int am_storage_tmem(i64 size, u32 handle, int handle_only, SvcObj** stora
 }
 
 static int nn_am_service_IStorage_Open(SvcObj* self, SvcObj** accessor) {
-    R_UNLESS(!((StorageData*)self->data)->handle_only, AM_INVALID_STORAGE);
+    R_UNLESS(!((StorageData*)self->data)->handle_only, SNX_RC_AM_OPENED_AS_WRONG_TYPE);
     *accessor = nn_am_service_IStorageAccessor_new_data(g_hle.am.accessors, g_hle.am.accessor_next, "am storage accessors");
     svcobj_ref(self);
     ((AmAccessor*)(*accessor)->data)->storage = self;
@@ -147,7 +140,7 @@ static int nn_am_service_IStorage_Open(SvcObj* self, SvcObj** accessor) {
     R_SUCCEED();
 }
 static int nn_am_service_IStorage_OpenTransferStorage(SvcObj* self, SvcObj** accessor) {
-    R_UNLESS(((StorageData*)self->data)->guest, AM_INVALID_STORAGE);
+    R_UNLESS(((StorageData*)self->data)->guest, SNX_RC_AM_OPENED_AS_WRONG_TYPE);
     *accessor = nn_am_service_ITransferStorageAccessor_new_data(g_hle.am.accessors, g_hle.am.accessor_next,
                                                                   "am storage accessors");
     svcobj_ref(self);
@@ -163,7 +156,7 @@ static int nn_am_service_IStorageAccessor_GetSize(SvcObj* self, i64* size) {
 static int nn_am_service_IStorageAccessor_Write(SvcObj* self, i64 offset, IpcBuf data) {
     SvcObj* st = ((AmAccessor*)self->data)->storage;
     u64 size = ((StorageData*)st->data)->size;
-    R_UNLESS(offset >= 0 && (u64)offset <= size && data.size <= size - (u64)offset, AM_INVALID_OFFSET);
+    R_UNLESS(offset >= 0 && (u64)offset <= size && data.size <= size - (u64)offset, SNX_RC_AM_OUT_OF_BOUNDS);
     memcpy(am_storage_bytes(st) + offset, GP(data.addr), (size_t)data.size);
     R_SUCCEED();
 }
@@ -171,7 +164,7 @@ static int nn_am_service_IStorageAccessor_Write(SvcObj* self, i64 offset, IpcBuf
 static int nn_am_service_IStorageAccessor_Read(SvcObj* self, i64 offset, IpcBuf data) {
     SvcObj* st = ((AmAccessor*)self->data)->storage;
     u64 size = ((StorageData*)st->data)->size;
-    R_UNLESS(offset >= 0 && (u64)offset <= size && data.size <= size - (u64)offset, AM_INVALID_OFFSET);
+    R_UNLESS(offset >= 0 && (u64)offset <= size && data.size <= size - (u64)offset, SNX_RC_AM_OUT_OF_BOUNDS);
     memcpy(GP(data.addr), am_storage_bytes(st) + offset, (size_t)data.size);
     R_SUCCEED();
 }
@@ -255,7 +248,7 @@ static int nn_am_service_ICommonStateGetter_ReceiveMessage(SvcObj* self, nn_am_A
     (void)self;
     pm_lock(&g_host.am.lock);
     if (!g_hle.am.count)
-        rc = AM_NO_MESSAGES;
+        rc = SNX_RC_AM_NO_MESSAGES;
     else {
         *message = g_hle.am.msgs[g_hle.am.head];
         g_hle.am.head = (g_hle.am.head + 1) % AM_MESSAGES;
@@ -554,15 +547,15 @@ static int nn_am_service_IApplicationFunctions_PopLaunchParameter(SvcObj* self, 
         pm_lock(&g_host.am.lock);
         *storage = g_hle.am.user_count ? g_hle.am.user_channel[--g_hle.am.user_count] : NULL;
         pm_unlock(&g_host.am.lock);
-        R_UNLESS(*storage, AM_NO_DATA);
+        R_UNLESS(*storage, SNX_RC_AM_NOT_AVAILABLE);
         R_SUCCEED();
     }
-    R_UNLESS(kind == 2, AM_NO_DATA); /* PreselectedUser (2) is the only other kind with data */
+    R_UNLESS(kind == 2, SNX_RC_AM_NOT_AVAILABLE); /* PreselectedUser (2) is the only other kind with data */
     pm_lock(&g_host.am.lock);
     v = (u32)g_hle.am.preselected_popped;
     g_hle.am.preselected_popped = 1;
     pm_unlock(&g_host.am.lock);
-    R_UNLESS(!v, AM_NO_DATA);
+    R_UNLESS(!v, SNX_RC_AM_NOT_AVAILABLE);
     /* AccountPreselectedUser: the user the game plays as, selected */
     acc_playing(uid, NULL, 0);
     *storage = am_storage_new(0x88, NULL);
@@ -591,7 +584,7 @@ static int nn_am_service_IApplicationFunctions_UnpopToUserChannel(SvcObj* self, 
     (void)self;
     if (!storage) R_SUCCEED();
     copy = am_storage_new(((StorageData*)storage->data)->size, am_storage_bytes(storage));
-    if (!copy) R_THROW(AM_OUT_OF_MEMORY);
+    if (!copy) R_THROW(SNX_RC_AM_MEMORY_ALLOCATION_FAILED);
     pm_lock(&g_host.am.lock);
     if (g_hle.am.user_count < AM_USER_CHANNEL) {
         g_hle.am.user_channel[g_hle.am.user_count++] = copy;
@@ -601,7 +594,7 @@ static int nn_am_service_IApplicationFunctions_UnpopToUserChannel(SvcObj* self, 
     if (!copy) R_SUCCEED();
     svcobj_unref(copy);
     WARN_LIMIT(4, "am: the user channel holds %d storages, no more\n", AM_USER_CHANNEL);
-    R_THROW(AM_OUT_OF_MEMORY);
+    R_THROW(SNX_RC_AM_MEMORY_ALLOCATION_FAILED);
 }
 
 /* nn::oe::ExecuteProgram (am's 120) starts another program of the application: ExecuteProgram (kind 0) the one whose
@@ -624,7 +617,7 @@ static int nn_am_service_IApplicationFunctions_ExecuteProgram(SvcObj* self, u32 
              : kind == 1 ? "a development jump to another application, which a recompiled game has none of"
                          : "a kind that is none of ExecuteProgram (0), the jump (1) and RestartProgram (2)",
              g_hle.am.program);
-        R_THROW(AM_NO_APPLICATION);
+        R_THROW(SNX_RC_AM_TITLE_ID_NOT_FOUND);
     }
     pm_lock(&g_host.am.lock);
     g_hle.am.execute = index + 1;
@@ -858,7 +851,7 @@ static int nn_am_service_IApplicationFunctions_GetFriendInvitationStorageChannel
 static int nn_am_service_IApplicationFunctions_TryPopFromFriendInvitationStorageChannel(SvcObj* self,
                                                                                        SvcObj** storage) {
     (void)self, (void)storage;
-    R_THROW(AM_NO_DATA);
+    R_THROW(SNX_RC_AM_NOT_AVAILABLE);
 }
 static int nn_am_service_IApplicationFunctions_GetNotificationStorageChannelEvent(SvcObj* self, u32* event) {
     (void)self;
@@ -866,7 +859,7 @@ static int nn_am_service_IApplicationFunctions_GetNotificationStorageChannelEven
 }
 static int nn_am_service_IApplicationFunctions_TryPopFromNotificationStorageChannel(SvcObj* self, SvcObj** storage) {
     (void)self, (void)storage;
-    R_THROW(AM_NO_DATA);
+    R_THROW(SNX_RC_AM_NOT_AVAILABLE);
 }
 static int nn_am_service_IApplicationFunctions_GetHealthWarningDisappearedSystemEvent(SvcObj* self, u32* event) {
     (void)self;
@@ -976,9 +969,9 @@ static int nn_am_service_ILibraryAppletCreator_CreateLibraryAppletEx(SvcObj* sel
 }
 static int nn_am_service_ILibraryAppletCreator_CreateStorage(SvcObj* self, i64 size, SvcObj** storage) {
     (void)self;
-    R_UNLESS(size >= 0, AM_INVALID_OFFSET);
+    R_UNLESS(size >= 0, SNX_RC_AM_OUT_OF_BOUNDS);
     *storage = am_storage_new((u64)size, NULL);
-    return *storage ? 0 : AM_OUT_OF_MEMORY;
+    return *storage ? 0 : SNX_RC_AM_MEMORY_ALLOCATION_FAILED;
 }
 static int nn_am_service_ILibraryAppletCreator_CreateTransferMemoryStorage(SvcObj* self, u8 is_writable, i64 size,
                                                                            u32 transfer_memory, SvcObj** storage) {
@@ -1607,7 +1600,7 @@ static int nn_am_service_ILibraryAppletAccessor_PopOutData(SvcObj* self, SvcObj*
     pm_lock(&g_host.am.lock);
     popped = a->out_popped || am_is_inline(a);
     pm_unlock(&g_host.am.lock);
-    R_UNLESS(!popped, AM_NO_DATA);
+    R_UNLESS(!popped, SNX_RC_AM_NOT_AVAILABLE);
     switch (a->applet_id) {
     case AM_APPLET_CONTROLLER: { /* ControllerSupportResultInfo: the players connected and the first of them */
         /* ControllerSupportArg, the last storage pushed, starts with the fewest players the game accepts */
@@ -1675,7 +1668,7 @@ static int nn_am_service_ILibraryAppletAccessor_PopInteractiveOutData(SvcObj* se
     int rc = 0;
     pm_lock(&g_host.am.lock);
     if (!a->nout)
-        rc = AM_NO_DATA;
+        rc = SNX_RC_AM_NOT_AVAILABLE;
     else {
         *storage = a->out[0];
         a->nout--;

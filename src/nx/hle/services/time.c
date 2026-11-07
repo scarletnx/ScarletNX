@@ -16,13 +16,6 @@
 
 #include "hle/services/time.swipc.inc"
 
-#define TIME_PERMISSION_DENIED    RC(116, 1)
-#define TIME_CLOCK_MISMATCH      RC(116, 102)
-#define TIME_NOT_FOUND           RC(116, 200)
-#define TIME_OVERFLOW            RC(116, 201)
-#define TIME_INVALID_ARGUMENT    RC(116, 901)
-#define TIME_ZONE_OUT_OF_RANGE   RC(116, 902)
-#define TIME_ZONE_NOT_FOUND      RC(116, 989)
 #define TIME_NS                  1000000000ll
 #define TIME_INITIAL_YEAR        2019 /* set:sys's time!standard_user_clock_initial_year on the 12.1.0 set reports */
 #define TIME_AUTOMATIC_CORRECTION 1   /* the console's default: the clock is set from the network */
@@ -61,7 +54,7 @@ static int time_to_calendar(i64 posix, const TimeRule* r, nn_time_CalendarTime* 
     i64 t = posix + r->utc_offset, days = floor_div(t, 86400), secs = t - days * 86400, y;
     int m, d;
     civil_from_days(days, &y, &m, &d);
-    R_UNLESS(y >= -32768 && y <= 32767, TIME_ZONE_OUT_OF_RANGE);
+    R_UNLESS(y >= -32768 && y <= 32767, SNX_RC_TIME_OUT_OF_RANGE);
     cal->year = (i16)y;
     cal->month = (i8)m;
     cal->day = (i8)d;
@@ -78,7 +71,7 @@ static int time_to_calendar(i64 posix, const TimeRule* r, nn_time_CalendarTime* 
 static int calendar_to_time(const nn_time_CalendarTime* cal, const TimeRule* r, i64* posix) {
     if (cal->month < 1 || cal->month > 12 || cal->day < 1 || cal->day > 31 || cal->hour < 0 || cal->hour > 23 ||
         cal->minute < 0 || cal->minute > 59 || cal->second < 0 || cal->second > 59)
-        R_THROW(TIME_INVALID_ARGUMENT);
+        R_THROW(SNX_RC_TIME_INVALID_POINTER);
     *posix = days_from_civil(cal->year, cal->month, cal->day) * 86400 + cal->hour * 3600 + cal->minute * 60 +
              cal->second - r->utc_offset;
     R_SUCCEED();
@@ -125,12 +118,12 @@ static int find_rule(const char* name, TimeRule* r) {
             R_SUCCEED();
         }
     }
-    R_THROW(TIME_ZONE_NOT_FOUND);
+    R_THROW(SNX_RC_TIME_NOT_FOUND);
 }
 static int read_rule(IpcBuf b, TimeRule* r) {
-    R_UNLESS(b.size >= sizeof *r, TIME_INVALID_ARGUMENT);
+    R_UNLESS(b.size >= sizeof *r, SNX_RC_TIME_INVALID_POINTER);
     memcpy(r, GP(b.addr), sizeof *r);
-    return memcmp(r->magic, "SNXZ", 4) ? TIME_INVALID_ARGUMENT : 0;
+    return memcmp(r->magic, "SNXZ", 4) ? SNX_RC_TIME_INVALID_POINTER : 0;
 }
 
 /* ============================================================ the clocks */
@@ -141,7 +134,7 @@ static void steady_point(nn_time_SteadyClockTimePoint* p) {
 }
 /* a system clock's time from its context and the steady clock now, when they count from the same source */
 static int context_time(const nn_time_SystemClockContext* c, const nn_time_SteadyClockTimePoint* now, i64* t) {
-    R_UNLESS(!memcmp(c->timestamp.source_id.v, now->source_id.v, 16), TIME_CLOCK_MISMATCH);
+    R_UNLESS(!memcmp(c->timestamp.source_id.v, now->source_id.v, 16), SNX_RC_TIME_OFFSET_INVALID);
     *t = c->offset + now->value;
     R_SUCCEED();
 }
@@ -241,7 +234,7 @@ static SvcObj* time_child(SvcObj* o, const SvcObj* parent) {
 /* a write time:a or time:s may make: refused to time:u, and not kept for the others, the clocks and the time zone
    being the host's */
 static int time_write(SvcObj* self, const char* what) {
-    R_UNLESS(!time_read_only(self), TIME_PERMISSION_DENIED);
+    R_UNLESS(!time_read_only(self), SNX_RC_TIME_NO_CAPABILITY);
     WARN_LIMIT(8, "time: %s is not kept: the clocks and the time zone are the host's\n", what);
     R_SUCCEED();
 }
@@ -308,7 +301,7 @@ static int nn_timesrv_detail_service_ITimeZoneService_LoadLocationNameList(SvcOb
                                                                           i32* count) {
     i32 n = 0;
     (void)self;
-    R_UNLESS(index >= 0, TIME_INVALID_ARGUMENT);
+    R_UNLESS(index >= 0, SNX_RC_TIME_INVALID_POINTER);
     while (index + n < TIME_ZONES && (u64)(n + 1) * 0x24 <= names.size) {
         char z[0x24];
         zone_name(index + n, z);
@@ -326,7 +319,7 @@ static int nn_timesrv_detail_service_ITimeZoneService_LoadTimeZoneRule(SvcObj* s
     memcpy(z, name->v, 0x24);
     z[0x24] = 0;
     R_TRY(find_rule(z, &r));
-    R_UNLESS(rule.size >= sizeof r, TIME_INVALID_ARGUMENT);
+    R_UNLESS(rule.size >= sizeof r, SNX_RC_TIME_INVALID_POINTER);
     memset(GP(rule.addr), 0, (size_t)rule.size);
     memcpy(GP(rule.addr), &r, sizeof r);
     R_SUCCEED();
@@ -367,7 +360,7 @@ static int nn_timesrv_detail_service_ITimeZoneService_ToCalendarTimeWithMyRule(
 static int to_posix(const nn_time_CalendarTime* calendar, const TimeRule* r, IpcBuf times, i32* count) {
     i64 t;
     R_TRY(calendar_to_time(calendar, r, &t));
-    R_UNLESS(times.size >= 8, TIME_INVALID_ARGUMENT);
+    R_UNLESS(times.size >= 8, SNX_RC_TIME_INVALID_POINTER);
     gw64(times.addr, (u64)t);
     *count = 1;
     R_SUCCEED();
@@ -462,7 +455,7 @@ static int nn_timesrv_detail_service_IStaticService_CalculateMonotonicSystemCloc
     nn_time_SteadyClockTimePoint now;
     (void)self;
     steady_point(&now);
-    R_UNLESS(!memcmp(now.source_id.v, context->timestamp.source_id.v, 16), TIME_CLOCK_MISMATCH);
+    R_UNLESS(!memcmp(now.source_id.v, context->timestamp.source_id.v, 16), SNX_RC_TIME_OFFSET_INVALID);
     *time = context->offset + now.value - (i64)(guest_ns() / TIME_NS);
     R_SUCCEED();
 }
@@ -573,14 +566,14 @@ static int nn_timesrv_detail_service_IStaticService_CalculateSpanBetween(SvcObj*
         ta = (i64)snx_ld_le64(sa + SNAP_STEADY);
         tb = (i64)snx_ld_le64(sb + SNAP_STEADY);
         if ((tb > 0 && ta < tb - 0x7fffffffffffffffll) || (tb < 0 && ta > tb + 0x7fffffffffffffffll))
-            R_THROW(TIME_OVERFLOW);
+            R_THROW(SNX_RC_TIME_OVERFLOWED);
     } else {
         ta = (i64)snx_ld_le64(sa + SNAP_NETWORK_TIME);
         tb = (i64)snx_ld_le64(sb + SNAP_NETWORK_TIME);
-        R_UNLESS(ta && tb, TIME_NOT_FOUND);
+        R_UNLESS(ta && tb, SNX_RC_TIME_NOT_COMPARABLE);
     }
     s = tb - ta;
-    R_UNLESS(s <= 0x7fffffffffffffffll / TIME_NS && s >= -0x7fffffffffffffffll / TIME_NS, TIME_OVERFLOW);
+    R_UNLESS(s <= 0x7fffffffffffffffll / TIME_NS && s >= -0x7fffffffffffffffll / TIME_NS, SNX_RC_TIME_OVERFLOWED);
     *span = s * TIME_NS;
     R_SUCCEED();
 }

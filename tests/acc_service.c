@@ -593,7 +593,7 @@ static void test_users(void) {
     svcobj_unref(profile);
     /* a uid that is no user's has no profile */
     uid_of("00000000000000040000000000000004", &uid);
-    CHECK(nn_account_IAccountServiceForApplication_GetProfile(NULL, &uid, &profile) == ACC_INVALID_USER_ID);
+    CHECK(nn_account_IAccountServiceForApplication_GetProfile(NULL, &uid, &profile) == SNX_RC_ACCOUNT_INVALID_USER_ID);
     gone(UID2 ".jpg");
     puts("PASS three users: the list, the open user, the selection, nicknames and pictures");
 }
