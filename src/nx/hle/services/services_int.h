@@ -99,6 +99,7 @@ SvcObj* new_mm(void);
 SvcObj* new_nfp(void);
 SvcObj* new_nfc(void);
 SvcObj* new_caps(void);
+SvcObj* new_capssu(void);
 SvcObj* new_bcat(void);
 SvcObj* new_nim(void);
 SvcObj* new_aoc(void);
@@ -434,6 +435,8 @@ typedef struct {
     PMutex aoc_lock;
     /* irs's shared memory, made at the first ask */
     PMutex irs_lock;
+    /* the album's folder: a picture's name taken and written in one go */
+    PMutex caps_lock;
 } HostMisc;
 
 /* ---- pl.c */

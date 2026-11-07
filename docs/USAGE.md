@@ -759,7 +759,8 @@ screen, and *Reset layout*. The game's `.ini` keeps them: `controls`, `controls_
 `controls_snap`, `controls_rel_center`, `controls_dpad_slide`, `controls_haptics`, a control's place once it
 was moved (`controls_a=0.930 0.470 100`: its middle across the screen and its size in percent), and whether it is
 shown once that changed (`controls_a_shown=0`). The launcher's Settings have the same, but the layout.
-Beside the executable: `Game.log`, `threads.txt` (15 s refresh), `captures/` (screenshots); an installed copy on Linux
+Beside the executable: `Game.log`, `threads.txt` (15 s refresh), `captures/` (screenshots, and the pictures the game
+saves to its album, `album_<date>_<time>.ppm`); an installed copy on Linux
 keeps the first two in its state folder ([Folders](#folders)). `Game.log` is this run's: the 4 runs before keep theirs
 in `logs/` beside it, named by when each was last written (`2026-10-28_14-05-33.log`). Past `log_max` (MiB, 1 to
 1024, default 16; [Debug](DEVELOPMENT.md)) the log keeps the run's start and its last lines, with a line saying how
