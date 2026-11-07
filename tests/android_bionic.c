@@ -10,6 +10,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 static struct {
     CPU cpu;
@@ -116,9 +121,76 @@ static void test_sscanf_reads_its_pointers(void) {
     expect_int("sscanf of 25 conversions", (int64_t)CALL("sscanf", P("1"), P(many)), -1);
 }
 
+/* ---- errno's texts ---- */
+
+/* bionic's own words for each errno (not the host C library's, nor in the user's language), "Unknown error N" past
+   them, in strerror, strerror_r, GNU's strerror_r, perror and %m */
+static void test_error_texts(void) {
+    static const struct {
+        int error;
+        const char* text;
+    } texts[] = {
+        {0, "Success"},
+        {2, "No such file or directory"},
+        {11, "Try again"},
+        {38, "Function not implemented"},
+        {41, "Unknown error 41"}, /* a number Linux leaves out */
+        {133, "Memory page has hardware error"},
+        {134, "Unknown error 134"},
+        {9999, "Unknown error 9999"},
+        {-1, "Unknown error -1"},
+    };
+    for (size_t i = 0; i < sizeof texts / sizeof *texts; ++i) {
+        char what[64];
+        snprintf(what, sizeof what, "strerror(%d)", texts[i].error);
+        expect_text(what, (const char*)(uintptr_t)CALL("strerror", I32(texts[i].error)), texts[i].text);
+    }
+    expect_text("strerror_l(11)", (const char*)(uintptr_t)CALL("strerror_l", 11, 0), "Try again");
+    char buffer[64];
+    expect_int("strerror_r of a text that fits", (int64_t)CALL("strerror_r", 2, P(buffer), sizeof buffer), 0);
+    expect_text("its text", buffer, "No such file or directory");
+    expect_int("strerror_r of a text cut short: ERANGE", (int64_t)CALL("strerror_r", 11, P(buffer), 4), 34);
+    expect_text("its cut text", buffer, "Try");
+    expect_int("GNU's strerror_r gives its buffer", (int64_t)CALL("__gnu_strerror_r", I32(9999), P(buffer), 8),
+               (int64_t)(uintptr_t)buffer);
+    expect_text("its cut text", buffer, "Unknown");
+    hle_set_errno(11);
+    CALL("snprintf", P(buffer), sizeof buffer, P("%m|%d"), I32(5));
+    expect_text("%m", buffer, "Try again|5");
+#ifndef _WIN32
+    /* perror's line on stderr */
+    static const struct {
+        const char* message;
+        const char* line;
+    } lines[] = {{"open", "open: No such file or directory\n"},
+                 {"", "No such file or directory\n"},
+                 {NULL, "No such file or directory\n"}};
+    for (size_t i = 0; i < sizeof lines / sizeof *lines; ++i) {
+        fflush(stderr);
+        FILE* f = tmpfile();
+        int saved = dup(2);
+        if (!f || saved < 0 || dup2(fileno(f), 2) < 0) {
+            fprintf(stderr, "android_bionic: stderr cannot be read back for perror\n");
+            exit(1);
+        }
+        hle_set_errno(2);
+        CALL("perror", P(lines[i].message));
+        fflush(stderr);
+        dup2(saved, 2);
+        close(saved);
+        rewind(f);
+        size_t n = fread(buffer, 1, sizeof buffer - 1, f);
+        buffer[n] = 0;
+        fclose(f);
+        expect_text("perror's line", buffer, lines[i].line);
+    }
+#endif
+}
+
 int main(void) {
     test_printf_signed();
     test_sscanf_reads_its_pointers();
+    test_error_texts();
     if (g_t.failures) {
         fprintf(stderr, "android_bionic: %d failed\n", g_t.failures);
         return 1;

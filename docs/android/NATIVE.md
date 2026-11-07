@@ -280,8 +280,8 @@ builds for FreeBSD, macOS and Windows x64, where they differ:
   and `host_dontneed` maps fresh zero pages over the recorded parts (a new anonymous `MAP_FIXED` mapping, or a decommit
   and commit on Windows). Linux keeps its own advice.
 - **errno**: on Linux the guest's errno is the host's. Elsewhere it is the guest's own, and each HLE call sets it
-  from the host's in Linux's numbers (`gnu_host_errno`, `gnuabi/kernel/errno.c`, which also gives them back for
-  `strerror`).
+  from the host's in Linux's numbers (`gnu_host_errno`, `gnuabi/kernel/errno.c`). `strerror`, `strerror_r`, `perror`
+  and `%m` give bionic's texts (`hle_error_text`): the host C library's are other words, in the user's language.
 - **Constants and layouts** convert by the GNU ABI's tables and the network stack's: `gnuabi/abi/linux_file.h`
   (struct stat, the open flags), `gnuabi/abi/linux_net.h` (families, flags, options, `sockaddr_in` and `sockaddr_in6`)
   and `common/network/net_host.h` (the stack's constants as the host's). The adapters in `hle_posix.c` also convert

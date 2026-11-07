@@ -304,10 +304,13 @@ static void g_puts(CPU* c, void* data) {
     (void)data;
     X(0) = wide_int(puts(STR(0)));
 }
+/* bionic's: "message: " when there is one, then strerror's text */
 static void g_perror(CPU* c, void* data) {
     (void)data;
-    errno = gnu_errno_to_host(*hle_errno_location());
-    perror(STR(0));
+    char unknown[32];
+    const char* text = hle_error_text(*hle_errno_location(), unknown, sizeof unknown);
+    bool message = X(0) && STR(0)[0];
+    fprintf(stderr, "%s%s%s\n", message ? STR(0) : "", message ? ": " : "", text);
 }
 /* a process the app would start: none, as an app's sandbox mostly refuses */
 static void g_popen(CPU* c, void* data) {
