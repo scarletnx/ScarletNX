@@ -66,6 +66,19 @@ add_library(snx_yyjson STATIC "${yyjson_SOURCE_DIR}/src/yyjson.c")
 target_include_directories(snx_yyjson PUBLIC "${yyjson_SOURCE_DIR}/src")
 snx_quiet(snx_yyjson)
 
+# cgltf (MIT) for the Mii parts a glTF 2.0 model gives (src/common/utilities/mii_gltf.c): its implementation in a
+# target of ours, built quiet
+CPMAddPackage(NAME cgltf VERSION 1.15
+              URL https://github.com/jkuhlmann/cgltf/archive/refs/tags/v1.15.tar.gz
+              URL_HASH SHA256=84e352092e5cd6aab7f66de62ddb66beb5e6f18d412ca9d12950d7a55bfef25a
+              DOWNLOAD_ONLY YES)
+file(CONFIGURE OUTPUT "${PROJECT_BINARY_DIR}/generated/cgltf.c" CONTENT "#define CGLTF_IMPLEMENTATION
+#include \"cgltf.h\"
+")
+add_library(snx_cgltf STATIC "${PROJECT_BINARY_DIR}/generated/cgltf.c")
+target_include_directories(snx_cgltf SYSTEM PUBLIC "${cgltf_SOURCE_DIR}")
+snx_quiet(snx_cgltf)
+
 # xxHash (BSD-2-Clause) for the renderer's content hashes (src/nx/gpu/vk/cmd.c's vk_hash): XXH3, about three times
 # XXH64's speed. src/nx/gpu/vk/xxh3.c builds the dispatcher on x86 (the CPU's SSE2, AVX2 or AVX-512 loop, chosen at
 # run time) and xxhash.c on every other architecture, by the compiler's own macros

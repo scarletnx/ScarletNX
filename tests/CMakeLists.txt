@@ -2574,11 +2574,12 @@ endif()
 add_test(NAME mii_model COMMAND snx-test-mii-model)
 # the 3DS's Mii parts file the same model writes (CFL_Res.dat): its RomFS, sections, items, meshes and textures read
 # back as the face library's layout says, the same bytes twice, a cube as a head and a mask alone written, the meshes
-# the file cannot hold refused
-add_executable(snx-test-mii-cfl mii_cfl.c "${PROJECT_SOURCE_DIR}/src/common/utilities/mii_model.c")
+# the file cannot hold refused; and the same parts through a glTF model (mii_gltf.c), its broken parts refused
+add_executable(snx-test-mii-cfl mii_cfl.c "${PROJECT_SOURCE_DIR}/src/common/utilities/mii_model.c"
+               "${PROJECT_SOURCE_DIR}/src/common/utilities/mii_gltf.c")
 snx_test_target(snx-test-mii-cfl 99)
 target_include_directories(snx-test-mii-cfl PRIVATE "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(snx-test-mii-cfl PRIVATE snx_libdeflate) # mii_model.c's Switch files deflate their parts
+target_link_libraries(snx-test-mii-cfl PRIVATE snx_libdeflate snx_cgltf) # mii_model.c's Switch files deflate their parts
 if(NOT WIN32)
     target_link_libraries(snx-test-mii-cfl PRIVATE m)
 endif()
