@@ -455,6 +455,49 @@ static void test_multibyte_strings(void) {
                (int64_t)GUEST("wcstombs", P(bytes), P(wide), 2), 1);
 }
 
+/* ---- names ---- */
+
+/* bionic's struct addrinfo */
+typedef struct GuestAddrinfo {
+    int32_t flags, family, socktype, protocol;
+    uint32_t addrlen;
+    char* canonname;
+    unsigned char* addr;
+    struct GuestAddrinfo* next;
+} GuestAddrinfo;
+
+/* getaddrinfo's answer for a name, as text: "getaddrinfo N" for an error, else its addresses in order */
+static void resolve(const char* name, int32_t family, char* out, size_t size) {
+    GuestAddrinfo hints = {.family = family, .socktype = 1}, *list = NULL; /* SOCK_STREAM */
+    int64_t r = (int32_t)CALL("getaddrinfo", P(name), 0, P(&hints), P(&list));
+    if (r) {
+        snprintf(out, size, "getaddrinfo %lld", (long long)r);
+        return;
+    }
+    size_t n = 0;
+    out[0] = 0;
+    for (const GuestAddrinfo* a = list; a && n < size; a = a->next) {
+        if (a->family == 2) /* AF_INET: port, then the address */
+            n += (size_t)snprintf(out + n, size - n, "%s%u.%u.%u.%u", n ? " " : "", a->addr[4], a->addr[5], a->addr[6],
+                                  a->addr[7]);
+        else if (a->family == 10) /* AF_INET6 */
+            n += (size_t)snprintf(out + n, size - n, "%sipv6", n ? " " : "");
+    }
+    CALL("freeaddrinfo", P(list));
+}
+
+/* offline, the Network setting's default, a name of another machine does not resolve: EAI_NODATA, as Android answers
+   without a network */
+static void test_offline_names(void) {
+    char got[128];
+    resolve("androidprobe.invalid", 0, got, sizeof got);
+    expect_text("a name under .invalid", got, "getaddrinfo 7");
+    resolve("example.com", 2, got, sizeof got);
+    expect_text("another machine's name", got, "getaddrinfo 7");
+    resolve("127.0.0.1", 0, got, sizeof got);
+    expect_text("loopback's address", got, "127.0.0.1");
+}
+
 int main(void) {
     test_printf_signed();
     test_sscanf_reads_its_pointers();
@@ -464,6 +507,7 @@ int main(void) {
     test_getline();
     test_signal_sets();
     test_bionic_locales();
+    test_offline_names();
     test_guest_locale();
     test_multibyte_strings();
     if (g_t.failures) {

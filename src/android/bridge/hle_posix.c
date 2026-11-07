@@ -1598,9 +1598,10 @@ static void g_getaddrinfo(CPU* c, void* data) {
         hints.socktype = h->socktype;
         hints.protocol = h->protocol;
     }
-    /* offline, a name that isn't this machine's doesn't resolve: no DNS server is asked */
+    /* offline, a name that isn't this machine's doesn't resolve: no DNS server is asked, and the answer is Android's
+       without a network, "No address associated with hostname" */
     int r = local_name(STR(0)) || g_posix.online ? snx_net_getaddrinfo(STR(0), STR(1), h ? &hints : NULL, &result)
-                                                 : SNX_EAI_AGAIN;
+                                                 : SNX_EAI_NODATA;
     GuestAddrinfo* out = r ? NULL : to_guest(result);
     snx_net_freeaddrinfo(result);
     memcpy(PTR(3), &out, sizeof out);
