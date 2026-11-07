@@ -79,6 +79,7 @@ void svc_core_init(void) {
     nn_nsd_detail_IManager_register(new_nsd);
     nn_nifm_detail_IStaticService_register(new_nifm);
     nn_ssl_sf_ISslService_register(new_ssl);
+    nn_ssl_sf_ISslServiceForSystem_register(new_ssl_system);
 
     nn_apm_IManager_register(new_apm);
     nn_lm_ILogService_register(new_lm);
