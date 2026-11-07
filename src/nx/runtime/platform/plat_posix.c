@@ -525,8 +525,15 @@ void plat_system_info(char* out, size_t cap) {
              (ram + (512ull << 20)) >> 30);
 }
 void plat_yield(void) { sched_yield(); }
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+/* apple.m's, which the app links: a game ends the app's process here, and _exit runs no atexit handler */
+extern void snx_apple_exit(void) __attribute__((weak));
+#endif
 void plat_exit_now(int code) {
     fflush(NULL);
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    if (snx_apple_exit) snx_apple_exit();
+#endif
     _exit(code);
 }
 

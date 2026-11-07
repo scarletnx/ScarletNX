@@ -12,7 +12,7 @@
    on the app (a phone shows no console) */
 void gui_apple_log_start(void);
 /* iOS and macOS: a line in the launcher log now and at each change of the thermal state and of the low power mode,
-   from then until the process ends, the game's run too on iOS */
+   and on iOS at each step of the app's lifecycle, from then until the process ends, the game's run too on iOS */
 void gui_apple_state_watch(void);
 /* iOS: one line of what the app uses now (memory it is charged for and may still take, CPU time, thermal state, power
    mode), for the log every few seconds of a run */
