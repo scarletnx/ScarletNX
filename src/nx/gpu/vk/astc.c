@@ -281,6 +281,7 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h, u32
             AstcParams p = {
                 w, height, nx, n, t->f.vk == VK_FORMAT_R8G8B8A8_SRGB || t->f.vk == VK_FORMAT_BC7_SRGB_BLOCK, shift};
             rec_CmdPushConstants(cb, g_astc_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
+            vk_ck(cb, VK_CK_ASTC, nx, n, nz, bw << 8 | bh);
             rec_CmdDispatch(cb, (nx + tw - 1) / tw, (n + th - 1) / th, nz);
             VkBuffer from = g_astc_scratch;
             u32 row_texels = 0, image_rows = 0;
@@ -299,6 +300,7 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h, u32
                 rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_bc7_layout, 0, 1, &set7, 0, NULL);
                 Bc7Params q = {w, height, cx, cy};
                 rec_CmdPushConstants(cb, g_bc7_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof q, &q);
+                vk_ck(cb, VK_CK_BC7, cx, cy, nz, w);
                 rec_CmdDispatch(cb, (cx + 63) / 64, cy, nz);
                 scratch_barrier(cb, g_bc7_scratch, USE_WRITE, 0, USE_COPY);
                 from = g_bc7_scratch;
@@ -315,7 +317,9 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h, u32
                                       .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1},
                                       .imageOffset = {(i32)x, (i32)(y0 + y * bh), (i32)z},
                                       .imageExtent = {w, height, nz}};
+            vk_ck(cb, VK_CK_COPY, w, height, nz, level);
             rec_CmdCopyBufferToImage(cb, from, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+            vk_ck(cb, VK_CK_STRIP_DONE, w, height, nz, level);
         }
     }
     return 1;

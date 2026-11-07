@@ -910,6 +910,14 @@ setting GPU profile
     startup
     words Off|On
     help 1 = the GPU's time per rendering pass, summed per target and logged every 10 seconds (Vulkan timestamps)
+setting GPU checkpoints
+    key vk_checkpoints
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = records what the GPU is doing as it goes (VK_NV_device_diagnostic_checkpoints), and when the device is
+    help lost logs the work each queue reached. Where the driver has no such extension it is only a warning
 setting Guest memory
     key vk_memory
     int 0 2

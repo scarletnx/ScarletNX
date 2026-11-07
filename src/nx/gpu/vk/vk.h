@@ -166,6 +166,7 @@ typedef struct {
     u32 gfx_timestamp_bits;  /* the graphics queue family's timestampValidBits: 0 where it writes no timestamps */
     /* VK_EXT_memory_budget: the driver tells each heap's use and budget (VMA reads them, and guesses without it) */
     int has_budget;
+    int has_checkpoints; /* vk_checkpoints=1 on a driver that has them (checkpoints.c) */
     /* VK_GOOGLE_display_timing, enabled without present waits (Android): presents carry ids and times to be shown at,
        and the swapchain tells when each was */
     int has_display_timing;
@@ -357,6 +358,26 @@ void vk_submit_for_readback(void);
 /* the commands recorded since the last submission submitted, when a command buffer is begun: what a change of an
    image's sparse binding has to follow (memory.c) */
 void vk_submit_recorded(void);
+/* vk_checkpoints=1: what the GPU reached when the device was lost (checkpoints.c) */
+enum {
+    VK_CK_ASTC,
+    VK_CK_BC7,
+    VK_CK_COPY,
+    VK_CK_STRIP_DONE,
+    VK_CK_DESWIZZLE,
+    VK_CK_CONVERT,
+    VK_CK_DISPATCH,
+    VK_CK_PASS,
+    VK_CK_SUBMIT,
+    VK_CK_KINDS
+};
+void vk_ck_init(void);
+void vk_ck_(VkCommandBuffer cb, u32 kind, u32 a, u32 b, u32 c, u32 d);
+void vk_ck_report(void); /* logs them, once: before the fatal error of a lost device */
+#define vk_ck(cb, kind, a, b, c, d)                                                                                    \
+    do {                                                                                                               \
+        if (g_vk.has_checkpoints) vk_ck_((cb), (kind), (a), (b), (c), (d));                                            \
+    } while (0)
 /* the next submission waits for a timeline semaphore of someone else's (FFmpeg's picture's) at one value and signals
    it at another: whichever submit comes next takes them, so commands recorded from now on never run before the wait */
 void vk_submit_after(VkSemaphore sem, u64 wait, u64 signal);
@@ -496,6 +517,7 @@ void rec_CmdDrawIndexed(VkCommandBuffer cb, u32 count, u32 instances, u32 first,
 void rec_CmdDrawIndirect(VkCommandBuffer cb, int indexed, VkBuffer buf, VkDeviceSize off, VkBuffer count_buf,
                          VkDeviceSize count_off, u32 max, u32 stride);
 void rec_CmdDispatch(VkCommandBuffer cb, u32 x, u32 y, u32 z);
+void rec_CmdSetCheckpointNV(VkCommandBuffer cb, const void* marker);
 void rec_CmdDispatchIndirect(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off);
 void rec_CmdFillBuffer(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize offset, VkDeviceSize size, u32 value);
 void rec_CmdEndRendering(VkCommandBuffer cb);
