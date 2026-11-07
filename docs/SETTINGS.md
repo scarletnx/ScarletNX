@@ -127,7 +127,8 @@ The runtime's keys while a game plays. Each is a key as SDL names it (`F1`, `Pau
 `Ctrl+`, `Alt+`, `Shift+` or `GUI+` for the modifiers held with it (`Ctrl+Shift+F12`); empty is no key. A key held with
 Shift also does what the key alone is set to, unless a setting names it with Shift. A key two settings share does the
 first's in this table, and the log says so. A name SDL doesn't know is refused, and the log says the key in effect.
-F1's page in the game's menu lists them as they are set.
+F1's page in the game's menu lists them as they are set, and its **Shortcuts** page sets them: Enter on a row, then
+the key (with its modifiers held); Esc cancels, Backspace puts the default back, and a key another row has is refused.
 
 | Key | Default | Effect |
 | --- | --- | --- |

@@ -34,6 +34,7 @@
 #define FAILURE                                                                                                        \
     (0xFFu << 24 | (SNX_GUI_THEME_YORHA_FAILURE & 0xFFu) << 16 | (SNX_GUI_THEME_YORHA_FAILURE & 0xFF00u) |             \
      (SNX_GUI_THEME_YORHA_FAILURE >> 16 & 0xFFu))
+#include <SDL3/SDL_keycode.h>
 #include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -555,14 +556,14 @@ int main(void) {
     overlay_toggle();
     assert(overlay_shown());
     /* letters half the screen's height at most, in whole steps, in the middle: a phone held wide, a small window. The
-       page is as tall as its items (five here, under three rows of head, over a blank one), at the scale of the
+       page is as tall as its items (six here, under three rows of head, over a blank one), at the scale of the
        tallest page, and as wide as three quarters of the picture hold, between 40 and 72 columns */
     overlay_place(SW, SH, &px, &py, &s);
     C = overlay_cols(SW, s);
-    assert(s == 2 && C == OVERLAY_COLS_MAX && px == (SW - C * 16) / 2 && py == (SH - 9 * 32) / 2);
+    assert(s == 2 && C == OVERLAY_COLS_MAX && px == (SW - C * 16) / 2 && py == (SH - 10 * 32) / 2);
     assert(overlay_cols(1280, 2) == 60 && overlay_cols(500, 1) == 46 && overlay_cols(400, 1) == OVERLAY_COLS &&
            overlay_cols(3840, 4) == OVERLAY_COLS_MAX);
-    overlay_place(500, 152, &x, &y, &sc);
+    overlay_place(500, 168, &x, &y, &sc);
     assert(sc == 1 && x == (500 - 46 * 8) / 2 && y == 4);
     /* a phone's display scale: the Poco F8 (408 dpi, 2510x1156) and the Pixel 9 (420 dpi) at 3x, where half the
        picture gave 2x; a 4K picture at 100% keeps the 4x half of it gives */
@@ -579,43 +580,125 @@ int main(void) {
     /* the first page: the title on a band of ink, the items under it, the focused one on a band; the page hides the
        game, whose text would show through it */
     draw();
-    assert(list.q[0].w == (float)(C * 16) && list.q[0].h == 9 * 32 && list.q[1].rgba == ink && list.q[1].h == 32);
+    assert(list.q[0].w == (float)(C * 16) && list.q[0].h == 10 * 32 && list.q[1].rgba == ink && list.q[1].h == 32);
     assert(list.q[0].rgba >> 24 == 0xFFu);
-    assert(text_at(C - 2, 3, ">") && text_at(C - 2, 4, ">")); /* a page under each */
+    assert(text_at(C - 2, 3, ">") && text_at(C - 2, 4, ">") && text_at(C - 2, 6, ">")); /* a page under each */
     /* each item its marker, its icon in two cells and one, its name */
     assert(text_at(1, 0, "SCARLETNX  /  MENU") && text_at(1, 3, "\xFE") && icon_at(3, 3, GUI_ICON_POINTER) &&
            text_at(6, 3, "On-screen controls") && icon_at(3, 4, GUI_ICON_GAMEPAD_2) && text_at(6, 4, "Controllers") &&
-           icon_at(3, 5, GUI_ICON_SAVE) && text_at(6, 5, "Save states") && icon_at(3, 6, GUI_ICON_ACTIVITY) &&
-           text_at(6, 6, "Stats") && icon_at(3, 7, GUI_ICON_LOG_OUT) && text_at(1, 7, "\xFE") && text_at(6, 7, "Exit"));
+           icon_at(3, 5, GUI_ICON_SAVE) && text_at(6, 5, "Save states") && icon_at(3, 6, GUI_ICON_KEYBOARD) &&
+           text_at(6, 6, "Shortcuts") && icon_at(3, 7, GUI_ICON_ACTIVITY) && text_at(6, 7, "Stats") &&
+           icon_at(3, 8, GUI_ICON_LOG_OUT) && text_at(1, 8, "\xFE") && text_at(6, 8, "Exit"));
     assert(!icon_at(3, 3, GUI_ICON_SAVE) && !text_at(1, 3, "\xFE On-screen controls"));
     /* Stats: a tap turns it on and keeps it in the game's .ini, as F12 does, and again off */
-    assert(text_at(C - 4, 6, "Off") && !g_settings.stats);
-    assert(tap(3, 3) == OVERLAY_NONE && g_settings.stats && !strcmp(stored, "stats"));
+    assert(text_at(C - 4, 7, "Off") && !g_settings.stats);
+    assert(tap(4, 3) == OVERLAY_NONE && g_settings.stats && !strcmp(stored, "stats"));
     draw();
-    assert(text_at(C - 3, 6, "On"));
-    assert(tap(3, 3) == OVERLAY_NONE && !g_settings.stats);
+    assert(text_at(C - 3, 7, "On"));
+    assert(tap(4, 3) == OVERLAY_NONE && !g_settings.stats);
     /* a tap on Exit exits; on the title, nothing; outside the panel, it closes */
-    assert(tap(4, 3) == OVERLAY_EXIT && tap(-3, 3) == OVERLAY_NONE);
+    assert(tap(5, 3) == OVERLAY_EXIT && tap(-3, 3) == OVERLAY_NONE);
     assert(overlay_tap(5.0f, 5.0f, SW, SH) == OVERLAY_CLOSE);
     /* the focus goes round, from Exit to the first item and back over the top; Back from here closes */
     overlay_move(1);
-    overlay_move(-6);
+    overlay_move(-7);
     assert(overlay_select() == OVERLAY_EXIT && overlay_back() == OVERLAY_CLOSE);
     /* RenderDoc in the game: Capture frame between Stats and Exit, with the stats box's RenderDoc icon and no page
        under it, the panel a row taller; a tap is the caller's capture, Exit a row down */
     can_capture = 1;
     draw();
-    assert(list.q[0].h == 10 * 32 && icon_at(3, 7, GUI_ICON_IMAGE) && text_at(6, 7, "Capture frame") &&
-           !text_at(C - 2, 7, ">") && text_at(6, 8, "Exit") && icon_at(3, 8, GUI_ICON_LOG_OUT));
-    assert(tap(5, 3) == OVERLAY_EXIT && tap(4, 3) == OVERLAY_CAPTURE && overlay_select() == OVERLAY_CAPTURE);
+    assert(list.q[0].h == 11 * 32 && icon_at(3, 8, GUI_ICON_IMAGE) && text_at(6, 8, "Capture frame") &&
+           !text_at(C - 2, 8, ">") && text_at(6, 9, "Exit") && icon_at(3, 9, GUI_ICON_LOG_OUT));
+    assert(tap(6, 3) == OVERLAY_EXIT && tap(5, 3) == OVERLAY_CAPTURE && overlay_select() == OVERLAY_CAPTURE);
     overlay_move(1);
     assert(overlay_select() == OVERLAY_EXIT);
     overlay_move(-1);
     /* without it, none: Exit where it was */
     can_capture = 0;
     draw();
-    assert(list.q[0].h == 9 * 32 && text_at(6, 7, "Exit") && !shows("Capture frame"));
+    assert(list.q[0].h == 10 * 32 && text_at(6, 8, "Exit") && !shows("Capture frame"));
     assert(overlay_select() == OVERLAY_EXIT);
+
+    /* the Shortcuts page: a row a runtime key, its key at the right. Enter (a select) waits for a key, which with its
+       modifiers becomes the row's key, saved in the .ini; a modifier alone waits on; Esc cancels; a key another row
+       has is refused, said in the failure colour with the key the row keeps; Backspace puts the default back, as a
+       key given */
+    log_[0] = 0;
+    assert(tap(3, 3) == OVERLAY_NONE);
+    draw();
+    assert(text_at(1, 0, "SCARLETNX  /  SHORTCUTS") && text_at(1, 3, "\xFE Help") && text_at(C - 3, 3, "F1"));
+    assert(text_at(1, 5, "\xFE Screenshot") && text_at(C - 3, 5, "F3") && list.q[0].h == 16 * 32);
+    assert(shows("Enter, then a key: its new key. Backspace: its default."));
+    overlay_move(2);
+    assert(overlay_select() == OVERLAY_NONE && overlay_shortcut_listening());
+    draw();
+    assert(text_at(C - 12, 5, "Press a key") && shows("Press the key for Screenshot. Esc or B cancels."));
+    overlay_shortcut_key(SDLK_LCTRL, HOTKEY_CTRL);
+    assert(overlay_shortcut_listening() && !log_[0]);
+    overlay_shortcut_key(SDLK_S, HOTKEY_CTRL);
+    assert(!overlay_shortcut_listening() && !strcmp(hotkey_text(HOTKEY_SCREENSHOT), "Ctrl+S"));
+    assert(!strcmp(log_, "hotkey_screenshot=Ctrl+S;"));
+    {
+        int also;
+        assert(hotkey_find(SDLK_S, HOTKEY_CTRL, &also) == HOTKEY_SCREENSHOT && hotkey_find(SDLK_F3, 0, &also) == -1);
+    }
+    draw();
+    assert(text_at(C - 7, 5, "Ctrl+S") && shows("Enter, then a key"));
+    /* Esc, and Android's Back: nothing set, nothing saved, nothing refused (Escape is Quit's) */
+    log_[0] = 0;
+    overlay_select();
+    overlay_shortcut_key(SDLK_ESCAPE, 0);
+    assert(!overlay_shortcut_listening() && !strcmp(hotkey_text(HOTKEY_SCREENSHOT), "Ctrl+S") && !log_[0]);
+    draw();
+    assert(!shows("already does"));
+    overlay_select();
+    overlay_shortcut_key(SDLK_AC_BACK, 0);
+    assert(!overlay_shortcut_listening() && !strcmp(hotkey_text(HOTKEY_SCREENSHOT), "Ctrl+S") && !log_[0]);
+    /* the stats' key: refused, said */
+    overlay_select();
+    overlay_shortcut_key(SDLK_F12, 0);
+    assert(!overlay_shortcut_listening() && !strcmp(hotkey_text(HOTKEY_SCREENSHOT), "Ctrl+S") && !log_[0]);
+    draw();
+    /* (the line under the hint moves the rows a row down: the row in focus by its colour) */
+    assert(shows_as("F12 already does Stats: Screenshot keeps Ctrl+S.", 0, FAILURE) &&
+           shows_as("Ctrl+S", 0, LIGHT_RGBA));
+    /* Help on F3, Screenshot's default: Backspace on Screenshot is refused as that key would be */
+    overlay_move(-2);
+    overlay_select();
+    overlay_shortcut_key(SDLK_F3, 0);
+    assert(!strcmp(hotkey_text(HOTKEY_HELP), "F3") && !strcmp(log_, "hotkey_help=F3;"));
+    overlay_move(2);
+    assert(overlay_backspace() == OVERLAY_NONE && !strcmp(hotkey_text(HOTKEY_SCREENSHOT), "Ctrl+S"));
+    draw();
+    assert(shows("F3 already does Help: Screenshot keeps Ctrl+S."));
+    /* Help back to F1, then Screenshot to F3, each saved */
+    log_[0] = 0;
+    overlay_move(-2);
+    assert(overlay_backspace() == OVERLAY_NONE && !strcmp(hotkey_text(HOTKEY_HELP), "F1"));
+    overlay_move(2);
+    assert(overlay_backspace() == OVERLAY_NONE && !strcmp(hotkey_text(HOTKEY_SCREENSHOT), "F3"));
+    assert(!strcmp(log_, "hotkey_help=F1;hotkey_screenshot=F3;"));
+    draw();
+    assert(!shows("already does"));
+    /* a pad's B, a move and a tap cancel the wait; on the page the next B goes back to the menu, on Shortcuts */
+    overlay_select();
+    assert(overlay_pad(1ull << 1) == OVERLAY_NONE && !overlay_shortcut_listening());
+    draw();
+    assert(text_at(1, 0, "SCARLETNX  /  SHORTCUTS"));
+    overlay_select();
+    overlay_move(1);
+    assert(!overlay_shortcut_listening());
+    overlay_select();
+    assert(tap(0, 3) == OVERLAY_NONE && !overlay_shortcut_listening() && !strcmp(hotkey_text(HOTKEY_HELP), "F1"));
+    draw();
+    assert(text_at(1, 0, "SCARLETNX  /  SHORTCUTS"));
+    /* Backspace on Back, as Back */
+    overlay_scroll(100);
+    assert(overlay_backspace() == OVERLAY_NONE);
+    draw();
+    assert(text_at(1, 0, "SCARLETNX  /  MENU") && overlay_select() == OVERLAY_NONE);
+    draw();
+    assert(text_at(1, 0, "SCARLETNX  /  SHORTCUTS") && overlay_back() == OVERLAY_NONE);
 
     /* the controls' page: each setting shown with its value, changed and kept */
     assert(tap(0, 3) == OVERLAY_NONE);
@@ -739,7 +822,7 @@ int main(void) {
            left stick past half way as one, goes on after a while, then on and on; with the menu closed, nothing, and
            a press held as it opens does not act */
         assert(overlay_controls(0, still, 1000) == OVERLAY_NONE); /* the focus back on Controllers */
-        overlay_move(1);                                          /* Save states */
+        overlay_move(2);                                          /* Shortcuts */
         assert(overlay_controls(0, down, 1000) == OVERLAY_NONE);  /* to Stats */
         assert(overlay_controls(0, still, 1000) == OVERLAY_NONE); /* let go */
         assert(overlay_controls(0, down, 1000) == OVERLAY_NONE);  /* to Exit */
@@ -754,7 +837,7 @@ int main(void) {
         assert(overlay_controls(1ull << 15, still, 2001 + SNX_OVERLAY_REPEAT_DELAY) == OVERLAY_NONE); /* Save states */
         assert(overlay_controls(1ull << 15, still, 2001 + SNX_OVERLAY_REPEAT_DELAY + SNX_OVERLAY_REPEAT_MS - 1) ==
                OVERLAY_NONE);
-        overlay_move(1); /* past Save states, to Stats */
+        overlay_move(2); /* past Save states and Shortcuts, to Stats */
         assert(overlay_controls(1ull << 0, still, 3000) == OVERLAY_NONE && g_settings.stats); /* A on it */
         g_settings.stats = 0;
         assert(overlay_controls(1ull << 13, still, 3001) == OVERLAY_NONE &&

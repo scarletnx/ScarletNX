@@ -1102,6 +1102,11 @@ static int keyboard_event(const SDL_Event* e, int action) {
 static int menu_event(const SDL_Event* e, int action) {
     int w, h;
     float d;
+    /* the Shortcuts page's wait: any key is the one it waits for, the menu's too */
+    if (e->type == SDL_EVENT_KEY_DOWN && overlay_shortcut_listening()) {
+        if (!e->key.repeat) overlay_shortcut_key(e->key.key, key_mods(e->key.mod));
+        return 1;
+    }
     if ((e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && (e->key.key == SDLK_AC_BACK || action == HOTKEY_MENU)) ||
         (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE)) {
         if (vpad_editing())
@@ -1130,8 +1135,10 @@ static int menu_event(const SDL_Event* e, int action) {
                 if (!e->key.repeat) overlay_do(overlay_select());
                 break;
             case SDLK_ESCAPE:
-            case SDLK_BACKSPACE:
                 if (!e->key.repeat) overlay_do(overlay_back());
+                break;
+            case SDLK_BACKSPACE: /* back, and on the Shortcuts page a key's default */
+                if (!e->key.repeat) overlay_do(overlay_backspace());
                 break;
             default: /* F1's page goes back to the game on any key */
                 if (!e->key.repeat) overlay_do(overlay_other());

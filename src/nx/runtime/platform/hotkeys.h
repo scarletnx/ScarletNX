@@ -2,8 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* The runtime's keys (backend/sdl3.c): an action each, its key a setting of settings.txt's Shortcuts
    (hotkey_<action>), the key as SDL names it after Ctrl+, Alt+, Shift+ or GUI+ for the modifiers held with it, empty
-   for none. F1's help (help.c) and the stats box's RenderDoc line show them. The main thread's, and the renderer's
-   reading a key's text under ui_lock, which the settings' reads (backend_ini) hold too */
+   for none. F1's help (help.c) and the stats box's RenderDoc line show them, and the game's menu's Shortcuts page sets
+   them (overlay.c). The main thread's, and the renderer's reading a key's text under ui_lock, which the settings' reads
+   (backend_ini) and the menu hold too */
 #ifndef SNX_HOTKEYS_H
 #define SNX_HOTKEYS_H
 #include "nx/runtime/ini.h"
@@ -51,6 +52,9 @@ int hotkey_find(unsigned key, unsigned mods, int* also);
 /* settings.txt's set of the Shortcuts' rows: a text that isn't a key refused in the log, with the key the setting
    keeps; the setting's text the key's, as hotkey_name says it */
 void hotkey_set(const IniOpt* o, const char* v);
+/* action set to key with mods (key 0: none), as the game's menu sets it, the setting's text with it: 0; else -1, with
+   the action set to that key with those modifiers already in *owner, action's key as it was */
+int hotkey_assign(int action, unsigned key, unsigned mods, int* owner);
 /* backend_ini's: k a Shortcuts' row, v read into it: 1; else 0 */
 int hotkeys_ini(const char* k, const char* v);
 #endif
