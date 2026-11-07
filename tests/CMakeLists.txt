@@ -1496,6 +1496,8 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME gpu_descriptor_benchmark COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/bench_gpu_descriptors_test.py")
     add_test(NAME controls_atlas_current
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-controls.py" --check)
+    add_test(NAME controls_skins_current
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-skins.py" --check)
     add_test(NAME ui_shaders_current
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-ui-shaders.py" --check)
     add_test(NAME generators_crlf COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/generators_crlf.py")
