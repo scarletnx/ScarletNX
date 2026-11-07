@@ -7,10 +7,10 @@
 # VP9 jobs need a change to its VP9 decoder (cmake/ffmpeg-vp9-nvdec.patch), so it builds from a patched copy of the
 # release in the build tree. Only the decoders NVDEC handles are in (H.264, VP8, VP9), Opus for hwopus (FFmpeg's Opus
 # decoder resamples its SILK layer with libswresample, which is why that library is in), for the 3DS DSP's AAC, and for
-# the Vita AAC, ATRAC9, the MP4 demuxer and H.264's Annex B filter. The Android driver's images
-# (src/android/hwui/image.c) add the PNG, JPEG (mjpeg), WebP, GIF and BMP decoders, the PNG and JPEG encoders, and
-# libswscale for their pixel formats. PNG needs zlib, the build's own static one (snx_zlib in
-# cmake/dependencies.cmake). No programs, other formats, filters, devices, network or autodetected system libraries, so
+# the Vita AAC, ATRAC9, the MP4 demuxer and H.264's Annex B filter. With the Android driver (SNX_BUILD_ANDROID), its
+# images (src/android/hwui/image.c) add the PNG, JPEG (mjpeg), WebP, GIF and BMP decoders, the PNG and JPEG encoders, and
+# libswscale for their pixel formats; PNG needs zlib, the build's own static one (snx_zlib in cmake/dependencies.cmake).
+# No programs, other formats, filters, devices, network or autodetected system libraries, so
 # the result needs nothing but libc and zlib and builds the same everywhere. All of it is LGPL (no --enable-gpl). It
 # needs a POSIX shell and make (gmake on the BSDs), and NASM for the x86-64 assembly. macOS and iOS build it with
 # Xcode's Clang and SDK (cmake/apple.cmake), iOS as a cross build. This file is included into the top-level scope: its
@@ -64,12 +64,6 @@ set(snx_ffmpeg_args
     --disable-avfilter
     --disable-iconv
     --enable-decoder=h264,vp8,vp9,opus,aac,atrac9
-    # the Android driver's BitmapFactory and Bitmap.compress (src/android/hwui/image.c)
-    --enable-decoder=png,mjpeg,webp,gif,bmp
-    --enable-encoder=png,mjpeg
-    --enable-zlib
-    "--extra-cflags=-I${zlib_SOURCE_DIR}"
-    "--extra-ldflags=-L${snx_zlib_lib_dir}"
     # the Vita's SceMp4 (src/vita/hle/mp4.c): MP4 files demuxed from memory (no protocol), their H.264 made Annex B
     --enable-demuxer=mov
     --enable-bsf=h264_mp4toannexb
@@ -80,6 +74,19 @@ set(snx_ffmpeg_args
     --nm=${CMAKE_NM}
     # FFmpeg's own warnings stay out of the build output
     --extra-cflags=-w)
+if(snx_ffmpeg_images)
+    # the Android driver's BitmapFactory and Bitmap.compress (src/android/hwui/image.c), and libswscale for their pixel
+    # formats
+    list(APPEND snx_ffmpeg_args --enable-decoder=png,mjpeg,webp,gif,bmp --enable-encoder=png,mjpeg --enable-zlib
+         "--extra-cflags=-I${zlib_SOURCE_DIR}" "--extra-ldflags=-L${snx_zlib_lib_dir}")
+    set(snx_ffmpeg_swscale "${snx_ffmpeg_prefix}/lib/libswscale.a")
+    # configure checks for zlib with a link of -lz: the library has to be there before it runs
+    set(snx_ffmpeg_depends DEPENDS snx_zlib)
+else()
+    list(APPEND snx_ffmpeg_args --disable-swscale)
+    set(snx_ffmpeg_swscale "")
+    set(snx_ffmpeg_depends "")
+endif()
 if((WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux") AND NOT ANDROID)
     # the H.264 decoder's Vulkan Video path, which the vulkan_video setting turns on (src/nx/gpu/vk/nvdec.c). FFmpeg
     # loads Vulkan's functions through the runtime's device (no link to the loader); only the headers are needed
@@ -181,10 +188,9 @@ else()
         COMMAND "${SNX_FFMPEG_MAKE}" install
         INSTALL_COMMAND ""
         BUILD_BYPRODUCTS "${snx_ffmpeg_prefix}/lib/libavcodec.a" "${snx_ffmpeg_prefix}/lib/libswresample.a"
-                         "${snx_ffmpeg_prefix}/lib/libavformat.a" "${snx_ffmpeg_prefix}/lib/libswscale.a"
+                         "${snx_ffmpeg_prefix}/lib/libavformat.a" ${snx_ffmpeg_swscale}
                          "${snx_ffmpeg_prefix}/lib/libavutil.a"
-        # configure checks for zlib with a link of -lz: the library has to be there before it runs
-        DEPENDS snx_zlib
+        ${snx_ffmpeg_depends}
         # configure and make print a lot: keep it in log files, shown when a step fails
         LOG_CONFIGURE ON
         LOG_BUILD ON
@@ -198,12 +204,14 @@ else()
         ExternalProject_Add_StepDependencies(ffmpeg_build configure "${snx_ffmpeg_src}/configure")
     endif()
     # the configuration FFmpeg was built with, which make install leaves out, kept with the install (and so in the
-    # dependency cache) for the tests that read a decoder's private state
+    # dependency cache) for the tests that read a decoder's private state, and its components for ffmpeg_images
     ExternalProject_Add_Step(ffmpeg_build private
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${snx_ffmpeg_prefix}/private"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different config.h "${snx_ffmpeg_prefix}/private/config.h"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different config_components.h
+                "${snx_ffmpeg_prefix}/private/config_components.h"
         WORKING_DIRECTORY "${PROJECT_BINARY_DIR}/ffmpeg-build-patched"
-        BYPRODUCTS "${snx_ffmpeg_prefix}/private/config.h"
+        BYPRODUCTS "${snx_ffmpeg_prefix}/private/config.h" "${snx_ffmpeg_prefix}/private/config_components.h"
         DEPENDEES build
         DEPENDERS install)
     snx_deps_publish(ffmpeg_build ffmpeg "${snx_ffmpeg_prefix}" "${snx_ffmpeg_cache_DIR}")
@@ -236,16 +244,22 @@ target_link_libraries(FFmpeg::swresample INTERFACE FFmpeg::avutil)
 if(TARGET ffmpeg_build)
     add_dependencies(FFmpeg::swresample ffmpeg_build)
 endif()
-add_library(FFmpeg::swscale STATIC IMPORTED GLOBAL)
-set_target_properties(FFmpeg::swscale PROPERTIES IMPORTED_LOCATION "${snx_ffmpeg_prefix}/lib/libswscale.a" SYSTEM OFF)
-target_link_libraries(FFmpeg::swscale INTERFACE FFmpeg::avutil)
-if(TARGET ffmpeg_build)
-    add_dependencies(FFmpeg::swscale ffmpeg_build)
+if(snx_ffmpeg_images)
+    add_library(FFmpeg::swscale STATIC IMPORTED GLOBAL)
+    set_target_properties(FFmpeg::swscale PROPERTIES IMPORTED_LOCATION "${snx_ffmpeg_prefix}/lib/libswscale.a"
+                                                     SYSTEM OFF)
+    target_link_libraries(FFmpeg::swscale INTERFACE FFmpeg::avutil)
+    if(TARGET ffmpeg_build)
+        add_dependencies(FFmpeg::swscale ffmpeg_build)
+    endif()
 endif()
 add_library(FFmpeg::avcodec STATIC IMPORTED GLOBAL)
 set_target_properties(FFmpeg::avcodec PROPERTIES IMPORTED_LOCATION "${snx_ffmpeg_prefix}/lib/libavcodec.a" SYSTEM OFF)
 # the Opus decoder in libavcodec calls libswresample, and the PNG decoder and encoder zlib
-target_link_libraries(FFmpeg::avcodec INTERFACE FFmpeg::swresample FFmpeg::avutil snx_zlib)
+target_link_libraries(FFmpeg::avcodec INTERFACE FFmpeg::swresample FFmpeg::avutil)
+if(snx_ffmpeg_images)
+    target_link_libraries(FFmpeg::avcodec INTERFACE snx_zlib)
+endif()
 if(TARGET ffmpeg_build)
     add_dependencies(FFmpeg::avcodec ffmpeg_build)
 endif()

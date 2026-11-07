@@ -1875,6 +1875,16 @@ if(NOT SNX_TOOLS_ONLY)
     target_link_libraries(snx-test-nvdec-decode PRIVATE FFmpeg::avcodec)
     add_test(NAME nvdec_decode COMMAND snx-test-nvdec-decode)
 endif()
+# FFmpeg's image codecs, libswscale and zlib come with the Android driver alone (cmake/ffmpeg.cmake)
+if(TARGET FFmpeg::avcodec AND Python3_Interpreter_FOUND)
+    if(snx_ffmpeg_images)
+        set(snx_ffmpeg_images_want 1)
+    else()
+        set(snx_ffmpeg_images_want 0)
+    endif()
+    add_test(NAME ffmpeg_images COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg_images.py"
+                                        "${snx_ffmpeg_prefix}/private" ${snx_ffmpeg_images_want})
+endif()
 if(SNX_TEST_VP9_VECTORS)
     # nvdec.c's VP9 jobs on libvpx's test vectors, each image against the MD5 libvpx lists for it, at its own job's
     # fence (nvdec_vp9_vectors.c). FFmpeg's decoder works the jobs out of each vector from its private state
