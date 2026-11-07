@@ -236,36 +236,46 @@ static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 b
     if (is_rt) usage |= f.depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     /* the draws rendering to a color target can sample it, in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL (gpu/vk/render.c) */
     if (is_rt && !f.depth && g_vk.has_feedback) usage |= VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
-    VkFormat image_format = vk_srgb_as(f.vk, 0);
+    /* sRGB has no storage-image format: the ordered blend shader writes the same bytes through a view of the linear
+       twin, which EXTENDED_USAGE allows on an image that stays sRGB. The image's own format must stay the target's:
+       vkCmdBlitImage converts by it, so a linear image blitted to an sRGB one (the presentation's swapchain) is
+       encoded twice and comes out washed out */
+    VkFormat storage_format = vk_srgb_as(f.vk, 0);
+    VkImageCreateFlags flags = 0;
     VkFormatProperties format_props;
-    vkGetPhysicalDeviceFormatProperties(g_vk.phys, image_format, &format_props);
-    /* sRGB has no storage-image format. Its linear twin exposes the same bytes to the ordered blend shader. */
+    vkGetPhysicalDeviceFormatProperties(g_vk.phys, storage_format, &format_props);
     if ((!msaa || g_vk.feat.shaderStorageImageMultisample) &&
         (format_props.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
-        usage |= VK_IMAGE_USAGE_STORAGE_BIT;
-        s->storage_capable = 1;
-    } else
-        image_format = f.vk;
+        VkImageCreateFlags storage_flags =
+            storage_format != f.vk ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT : 0;
+        VkImageFormatProperties image_props;
+        if (vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, f.vk, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+                                                     usage | VK_IMAGE_USAGE_STORAGE_BIT, storage_flags,
+                                                     &image_props) == VK_SUCCESS) {
+            usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+            flags |= storage_flags;
+            s->storage_capable = 1;
+        }
+    }
     /* a multisampled color image's samples move to and from guest memory through views of their raw bytes
        (gpu/vk/msaa.c), when the device renders and samples those with its samples */
     VkFormat raw = VK_FORMAT_UNDEFINED;
-    VkImageCreateFlags flags = 0;
     if (msaa && !f.depth) {
         raw = vk_raw_format(f.bpp);
         VkImageUsageFlags moves = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         if (raw && !vk_ms_supported(raw, moves, 0, msaa)) raw = VK_FORMAT_UNDEFINED;
-        if (raw && raw != f.vk) flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+        if (raw && raw != f.vk) flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
     }
     if (f.depth && g_vk.sample_locations.available && g_vk.props.limits.standardSampleLocations &&
         ds_msaa_samples(msaa) <= 16)
         flags |= VK_IMAGE_CREATE_SAMPLE_LOCATIONS_COMPATIBLE_DEPTH_BIT_EXT;
-    if (msaa && s->storage_capable && !vk_ms_supported(image_format, usage, flags, msaa)) {
+    if (msaa && s->storage_capable && !vk_ms_supported(f.vk, usage, flags, msaa)) {
         /* Optional storage support must not remove an otherwise supported ordinary render target. */
         usage &= ~VK_IMAGE_USAGE_STORAGE_BIT;
+        flags &= ~VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
         s->storage_capable = 0;
-        image_format = f.vk;
     }
-    if (msaa && !vk_ms_supported(image_format, usage, flags, msaa)) {
+    if (msaa && !vk_ms_supported(f.vk, usage, flags, msaa)) {
         LOG_LIMIT(4, "vulkan: the GPU makes no %u-sample images of format %d: the target isn't drawn\n",
                   ds_msaa_samples(msaa), (int)f.vk);
         free(s);
@@ -277,7 +287,7 @@ static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 b
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                             .flags = flags,
                             .imageType = VK_IMAGE_TYPE_2D,
-                            .format = image_format,
+                            .format = f.vk,
                             .extent = {s->sw, s->sh, 1},
                             .mipLevels = 1,
                             .arrayLayers = layers,
@@ -303,7 +313,7 @@ static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 b
                                 .subresourceRange = {vk_aspect(&f), 0, 1, 0, layers}};
     VkImageViewUsageCreateInfo view_usage = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
                                             .usage = usage & ~VK_IMAGE_USAGE_STORAGE_BIT};
-    if (image_format != f.vk) vi.pNext = &view_usage;
+    if ((usage & VK_IMAGE_USAGE_STORAGE_BIT) && storage_format != f.vk) vi.pNext = &view_usage;
     VK_OK(vk_image_view_create(g_vk.dev, &vi, NULL, &s->att));
     u32 k = hkey(gva);
     s->next = g_surfh[k];
