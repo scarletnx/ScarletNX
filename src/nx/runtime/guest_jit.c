@@ -216,6 +216,7 @@ void jit_init(void) {
         WARN("jit: jit_opt=%s is not 0, 1, 2, 3, s or z: it compiles at O%c\n", g_settings.jit_optimization, opt);
     }
 #endif
+    config.features = g_settings.cpu_extensions ? SNX_A64_TARGET_SWITCH_EXTENDED : 0;
     config.opt = opt;
     config.images = g_jit_images;
     config.image_count = g_mod->nmods;

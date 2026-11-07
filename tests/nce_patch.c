@@ -134,7 +134,7 @@ static void scan_test(NceSites* sites) {
     module.function_count = 1;
     program.modules = &module;
     program.module_count = 1;
-    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1), "the analysis of the synthetic module");
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "the analysis of the synthetic module");
     nce_find_sites(&codegen, sites);
     snx_codegen_free(&codegen);
 

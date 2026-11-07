@@ -742,7 +742,7 @@ static void check(Program* p, int portable) {
     program.npdm.stack = 0x100000;
     program.npdm.prio = 44;
     program.npdm.core = 2;
-    if (snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1)) {
+    if (snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0)) {
         fail(p->name, "analyze the program");
         return;
     }
@@ -1476,7 +1476,7 @@ static void corpus(int portable, unsigned programs) {
         program.npdm.stack = 0x100000;
         program.npdm.prio = 44;
         program.npdm.core = 2;
-        if (snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1)) {
+        if (snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0)) {
             fail("checker corpus", "analyze a program");
             continue;
         }
