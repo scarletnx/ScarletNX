@@ -455,23 +455,24 @@ static Tail tail_of_style(u32 tail, u32 k) {
     t.flat = 1.0f;
     t.leaf = 0;
     switch (tail) {
-        case TAIL_TWIN_HIGH: /* wide flat locks from high on the sides, out and down to the chin's height */
+        case TAIL_TWIN_HIGH: /* wide flat locks from high on the sides, far out and down past the chin */
             t.root = vec(side * 0.86f * HEAD_RX, HEAD_CY + 0.70f * HEAD_UP, -8.0f),
-            t.out = vec(side * 16.0f, -2.0f, -4.0f);
-            t.fall = 40.0f, t.r0 = 9.5f, t.r1 = 0.6f, t.spread = 1.0f, t.flat = 0.45f, t.leaf = 1;
+            t.out = vec(side * 28.0f, -2.0f, -4.0f);
+            t.fall = 48.0f, t.r0 = 7.5f, t.r1 = 0.6f, t.spread = 1.0f, t.flat = 0.45f, t.leaf = 1;
             break;
         case TAIL_TWIN_LOW: /* from behind the ears */
             t.root = vec(side * 0.82f * HEAD_RX, HEAD_CY + 0.12f * HEAD_UP, -16.0f), t.out = vec(side * 5.0f, 0, -3.0f);
             t.fall = 34.0f, t.r0 = 3.8f, t.r1 = 1.4f;
             break;
-        case TAIL_TWIN_DRILL: /* out from the sides at the temples, a little down: short, thick, three rings to a point */
-            t.root = vec(side * 0.70f * HEAD_RX, HEAD_CY + 0.44f * HEAD_UP, -6.0f),
-            t.out = vec(side * 23.0f, -3.0f, 1.0f);
-            t.fall = 3.0f, t.r0 = 12.5f, t.r1 = 4.0f, t.turns = 3.0f, t.spread = 1.0f;
+        case TAIL_TWIN_DRILL: /* out from the sides at the eyes' height: short and chunky, nearly as thick at the end
+                                 as at the root, three rings */
+            t.root = vec(side * 0.70f * HEAD_RX, HEAD_CY + 0.4f * HEAD_UP, -6.0f),
+            t.out = vec(side * 25.0f, -3.0f, 1.0f);
+            t.fall = 0.0f, t.r0 = 18.0f, t.r1 = 12.0f, t.turns = 3.0f, t.spread = 1.0f;
             break;
-        case TAIL_SIDE: /* one wide flat lock, from high on one side down past the jaw */
-            t.root = vec(0.98f * HEAD_RX, HEAD_CY + 0.76f * HEAD_UP, -10.0f), t.out = vec(12.0f, 2.0f, -4.0f);
-            t.fall = 46.0f, t.r0 = 10.0f, t.r1 = 0.6f, t.spread = 0.6f, t.flat = 0.5f, t.leaf = 1;
+        case TAIL_SIDE: /* one wide flat lock, from high on one side, close to the hair, down past the jaw */
+            t.root = vec(0.98f * HEAD_RX, HEAD_CY + 0.76f * HEAD_UP, -10.0f), t.out = vec(8.0f, 2.0f, -4.0f);
+            t.fall = 42.0f, t.r0 = 10.0f, t.r1 = 0.6f, t.spread = 0.6f, t.flat = 0.5f, t.leaf = 1;
             break;
         case TAIL_AHOGE: /* thin, up from the crown, leaning forward and to one side */
             t.root = vec(0, HEAD_CY + HEAD_UP + 3.5f, 1.0f), t.out = vec(7.0f, 0, 5.0f); /* inside the crown's hair */
@@ -503,8 +504,9 @@ static float tail_radius(const Tail* tl, float t, float a, float rings) {
     env = mixf(tl->r0, tl->r1, t) * mixf(0.3f, 1.0f, smooth(0.0f, 0.15f, t)) * (1.0f - 0.8f * smooth(0.85f, 1.0f, t));
     f = tl->turns * t + a / (2 * PI_F);
     f -= floorf(f);
-    /* the rings start past the root, which only swells, or a ring's edge would fold the surface there */
-    return env * mixf(1.0f, 0.45f + 0.55f * sqrtf(smooth(0.0f, 0.82f, f)) * (1.0f - smooth(0.82f, 1.0f, f)),
+    /* the rings start past the root, which only swells, or a ring's edge would fold the surface there; each ring
+       narrows to six tenths, deeper folds a drill this thick */
+    return env * mixf(1.0f, 0.6f + 0.4f * sqrtf(smooth(0.0f, 0.82f, f)) * (1.0f - smooth(0.82f, 1.0f, f)),
                       rings * smooth(0.1f, 0.2f, t));
 }
 /* the tail's middle at t (0 its root, 1 its tip): out, then falling, a little back */
