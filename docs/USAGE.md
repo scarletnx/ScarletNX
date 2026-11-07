@@ -715,7 +715,7 @@ pad.
 F1 a page of the game's menu with these keys and the buttons above, a row each (Up/Down go over it, any other key goes
 back to the game); F2 the game's menu; F3 screenshot; F4 FPS limit off and on; F5 thread dump; F6 showcase on and off;
 F7 save state; F8 load state; F9 next save state slot; F10 60-second Tracy capture (SNX_TRACY builds); F11/Alt+Enter
-fullscreen; F12 stats on and off; Ctrl+F12 a RenderDoc capture of the next frame, with RenderDoc in the game
+fullscreen; F12 stats on and off; Ctrl+Shift+F12 a RenderDoc capture of the next frame, with RenderDoc in the game
 (`renderdoc`, or a game RenderDoc's program started); Pause pauses the whole game and resumes it (the window's title
 says "(paused)"); Escape quit. A window shows at most one image per refresh and drops the rest unless images tear, and
 the game keeps the pace `fps_limit` sets.

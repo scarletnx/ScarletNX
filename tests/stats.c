@@ -401,8 +401,8 @@ int main(void) {
         stats_capture(&c);
         draw(at);
         stats_box(safe, 2, box);
-        assert(box[3] == plain + 32 + 8 && box[2] == STATS_COLS * 16);
-        assert(!strcmp(note(0), "RenderDoc: Ctrl+F12 captures") && note_icon(0, TEXT_RGBA) == GUI_ICON_IMAGE);
+        assert(box[3] == plain + 32 + 8 && box[2] == (34 + 5) * 16); /* the line's 34 letters past STATS_COLS */
+        assert(!strcmp(note(0), "RenderDoc: Ctrl+Shift+F12 captures") && note_icon(0, TEXT_RGBA) == GUI_ICON_IMAGE);
         /* a capture written: how many, and the last one's file by its name */
         c.taken = 2;
         snprintf(c.path, sizeof c.path, "/caps/game_capture_2.rdc");
@@ -430,10 +430,10 @@ int main(void) {
         /* a debugger: its line last */
         stats_debugger("gdb");
         draw(at);
-        assert(!strcmp(note(0), "RenderDoc: Ctrl+F12 captures") && !strcmp(note(2), "debugger attached: gdb"));
+        assert(!strcmp(note(0), "RenderDoc: Ctrl+Shift+F12 captures") && !strcmp(note(2), "debugger attached: gdb"));
         assert(note_icon(2, TEXT_RGBA) == GUI_ICON_BUG);
         stats_box(safe, 2, box);
-        assert(box[3] == plain + 3 * 32 + 8 && box[2] == STATS_COLS * 16 && past_margin() == 0);
+        assert(box[3] == plain + 3 * 32 + 8 && box[2] == (34 + 5) * 16 && past_margin() == 0);
         /* a name the box's letters don't hold: the box wider, the line whole */
         stats_debugger("lldb-server-123");
         draw(at);
@@ -465,12 +465,12 @@ int main(void) {
         stats_frame(at += 16 * MS, &g_test.gpu);
         g_settings.stats = 1;
         draw(at);
-        assert(!strcmp(note(0), "RenderDoc: Ctrl+F12 captures") && !strncmp(note(1), "capture 4: ...", 14));
+        assert(!strcmp(note(0), "RenderDoc: Ctrl+Shift+F12 captures") && !strncmp(note(1), "capture 4: ...", 14));
         assert(!note(2)[0]);
         stats_debugger("gdb");
         stats_frame(at += 16 * MS, &g_test.gpu);
         draw(at);
-        assert(!strcmp(note(0), "RenderDoc: Ctrl+F12 captures") && !note(2)[0]);
+        assert(!strcmp(note(0), "RenderDoc: Ctrl+Shift+F12 captures") && !note(2)[0]);
         /* none: no lines, the box as before */
         stats_capture(&(SnxStatsCapture){0});
         draw(at);

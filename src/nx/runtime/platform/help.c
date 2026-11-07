@@ -35,6 +35,6 @@ static const char* const HELP_KEYS =
 int help_text(char* out, size_t size, int capture, const char* debugger) {
     int has = debugger && *debugger;
     return snprintf(out, size, "%s%s  Esc  quit the game%s%s", HELP_KEYS,
-                    capture ? "  Ctrl+F12  capture the next frame with RenderDoc\n" : "",
+                    capture ? "  Ctrl+Shift+F12  capture the next frame with RenderDoc\n" : "",
                     has ? "\n\nDebugger attached: " : "", has ? debugger : "");
 }

@@ -22,7 +22,7 @@
    render.c    the render target set (dynamic rendering), clears and draws
    compute.c   compute dispatches (on a queue of their own when there is one), landing their results in guest memory
    renderer.c  the renderer interface the GPU front end calls (gpu/renderer.h) and presenting
-   renderdoc.c RenderDoc captures of chosen frames (renderdoc) and of Ctrl+F12's
+   renderdoc.c RenderDoc captures of chosen frames (renderdoc) and of Ctrl+Shift+F12's
    ui.c        the on-screen controls and the game's menu, drawn over the swapchain image
    vma.cpp     VulkanMemoryAllocator's implementation
 
@@ -1256,9 +1256,9 @@ int vk_buf_pending_unsubmitted(void); /* one is in the commands recorded since t
    the results on the range's pages alone (tests count them) */
 u64 vk_buf_pending_inspected(void);
 /* renderdoc.c: RenderDoc loaded before the instance exists, with renderdoc set, or taken where RenderDoc's program
-   started the game (load); the frames renderdoc_frames names and Ctrl+F12 asks for captured (present, at each present
-   under vk_lock). capture: whether a capture can be taken (RenderDoc is in the process), and with ask, the next frame
-   captured, said in the log either way; the renderer's capture. Any thread */
+   started the game (load); the frames renderdoc_frames names and Ctrl+Shift+F12 asks for captured (present, at each
+   present under vk_lock). capture: whether a capture can be taken (RenderDoc is in the process), and with ask, the next
+   frame captured, said in the log either way; the renderer's capture. Any thread */
 /* RenderDoc's library, by the name its own program puts in a game it starts: the one load looks for and opens */
 #if defined(_WIN32)
 #define SNX_VK_RENDERDOC_LIBRARY "renderdoc.dll"
