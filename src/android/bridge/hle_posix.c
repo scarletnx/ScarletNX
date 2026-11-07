@@ -19,6 +19,7 @@
 #include "android/bridge/host.h"
 #include "android/bridge/hle_proc.h"
 #include "common/network/net_host.h"
+#include "common/utilities/ascii.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include "gnuabi/abi/errno/errno.h"
@@ -1076,8 +1077,15 @@ static bool reachable(const void* address, snx_socklen size) {
     static const uint8_t loopback6[16] = {[15] = 1};
     return a.family == SNX_AF_INET6 && !memcmp(a.addr, loopback6, 16);
 }
+/* localhost, whose case a hosts file's lookup ignores */
+static bool is_localhost(const char* name) {
+    static const char localhost[] = "localhost";
+    for (size_t i = 0; i < sizeof localhost; ++i)
+        if (snx_to_lower((unsigned char)name[i]) != localhost[i]) return false;
+    return true;
+}
 static bool local_name(const char* name) {
-    return !name || !strcmp(name, "localhost") || !strncmp(name, "127.", 4) || !strcmp(name, "::1");
+    return !name || is_localhost(name) || !strncmp(name, "127.", 4) || !strcmp(name, "::1");
 }
 
 /* -1 and the socket call's error: Winsock's own, errno elsewhere */
@@ -1598,11 +1606,24 @@ static void g_getaddrinfo(CPU* c, void* data) {
         hints.socktype = h->socktype;
         hints.protocol = h->protocol;
     }
+    /* Android's hosts file has localhost once, at 127.0.0.1 (::1 is ip6-localhost), where the host's may list ::1 too
+       and give 127.0.0.1 for both lines: the address of IPv4 and of any family is that one alone */
+    const char* node = STR(0);
+    bool localhost = node && is_localhost(node) && (!h || h->family == SNX_AF_UNSPEC || h->family == SNX_AF_INET);
+    if (localhost) {
+        node = "127.0.0.1";
+        hints.flags |= SNX_AI_NUMERICHOST;
+    }
     /* offline, a name that isn't this machine's doesn't resolve: no DNS server is asked, and the answer is Android's
        without a network, "No address associated with hostname" */
-    int r = local_name(STR(0)) || g_posix.online ? snx_net_getaddrinfo(STR(0), STR(1), h ? &hints : NULL, &result)
-                                                 : SNX_EAI_NODATA;
+    int r = local_name(node) || g_posix.online
+                ? snx_net_getaddrinfo(node, STR(1), h || localhost ? &hints : NULL, &result)
+                : SNX_EAI_NODATA;
     GuestAddrinfo* out = r ? NULL : to_guest(result);
+    if (out && localhost && (hints.flags & SNX_AI_CANONNAME)) { /* the hosts file's name */
+        free(out->canonname);
+        out->canonname = snx_strdup("localhost");
+    }
     snx_net_freeaddrinfo(result);
     memcpy(PTR(3), &out, sizeof out);
     X(0) = (uint64_t)(int64_t)r;

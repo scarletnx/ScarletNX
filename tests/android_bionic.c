@@ -498,6 +498,23 @@ static void test_offline_names(void) {
     expect_text("loopback's address", got, "127.0.0.1");
 }
 
+/* localhost is 127.0.0.1 alone, as Android's hosts file has it (::1 is ip6-localhost there), whatever the host's
+   lists, in any case of its letters */
+static void test_localhost(void) {
+    char got[128];
+    resolve("localhost", 0, got, sizeof got);
+    expect_text("localhost", got, "127.0.0.1");
+    resolve("LocalHost", 0, got, sizeof got);
+    expect_text("LocalHost", got, "127.0.0.1");
+    resolve("localhost", 2, got, sizeof got);
+    expect_text("localhost of AF_INET", got, "127.0.0.1");
+    GuestAddrinfo hints = {.flags = 2, .socktype = 1}, *list = NULL; /* AI_CANONNAME */
+    expect_int("getaddrinfo of localhost's canonical name",
+               (int32_t)CALL("getaddrinfo", P("localhost"), 0, P(&hints), P(&list)), 0);
+    expect_text("its name", list && list->canonname ? list->canonname : "(none)", "localhost");
+    CALL("freeaddrinfo", P(list));
+}
+
 int main(void) {
     test_printf_signed();
     test_sscanf_reads_its_pointers();
@@ -508,6 +525,7 @@ int main(void) {
     test_signal_sets();
     test_bionic_locales();
     test_offline_names();
+    test_localhost();
     test_guest_locale();
     test_multibyte_strings();
     if (g_t.failures) {
