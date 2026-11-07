@@ -183,6 +183,11 @@ SM86_OP(SURED, 0x59f, SM86_K_FIX, 0, "SURED")
    bindless one's fields (NAK's: destination 16, coordinates 24, data 32, dimension 61, type 73, operation 87-90) and
    SURED's handle at 40-58. A game's fragment programs use it */
 SM86_OP(SUATOM, 0x593, SM86_K_FIX, 0, "SUATOM")
+/* the warp's matrix instructions, CuAssembler's sm_86 encodings: HMMA (0x23c, A at 24, B at 32, C at 64), LDSM
+   (0x83b, the address register at 24 and offset at 40-63) and MOVM (0x23a, the source at 24) */
+SM86_OP(HMMA, 0x23c, SM86_K_FIX, 0, "HMMA")
+SM86_OP(LDSM, 0x83b, SM86_K_FIX, 0, "LDSM")
+SM86_OP(MOVM, 0x23a, SM86_K_FIX, 0, "MOVM")
 SM86_OP(SUATOM_B, 0x394, SM86_K_FIX, 0, "SUATOM.B")
 SM86_OP(SUATOM_CAS_B, 0x396, SM86_K_FIX, 0, "SUATOM.CAS.B")
 /* control flow: convergence barriers (BSSY, BSYNC, BREAK, BMOV) in place of Maxwell's CRS stack */
