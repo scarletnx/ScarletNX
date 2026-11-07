@@ -48,7 +48,7 @@ static GxmVertexProgram* vertex_of(VitaGxm* g, uint32_t handle) {
 }
 static GxmFragmentProgram* fragment_of(VitaGxm* g, uint32_t handle) {
     uint32_t i = (handle - GXM_HANDLE_FRAGMENT) / GXM_PROGRAM_HANDLE;
-    return handle >= GXM_HANDLE_FRAGMENT && i < GXM_PROGRAMS && g->fragment[i].references ? &g->fragment[i] : NULL;
+    return handle >= GXM_HANDLE_FRAGMENT && i < GXM_FRAGMENT_PROGRAMS && g->fragment[i].references ? &g->fragment[i] : NULL;
 }
 
 /* ---- initialization: the display queue's thread ---- */
@@ -392,11 +392,11 @@ static uint32_t create_fragment_program(VitaProcess* p, VitaThread* t) {
                                .output_format = arg(p, t, 2),
                                .multisample = arg(p, t, 3),
                                .blend_info = blend ? vita_read32(p, blend) : 0xf}; /* all channels written */
-    uint32_t slot = GXM_PROGRAMS;
-    for (uint32_t i = 0; i < GXM_PROGRAMS; ++i) {
+    uint32_t slot = GXM_FRAGMENT_PROGRAMS;
+    for (uint32_t i = 0; i < GXM_FRAGMENT_PROGRAMS; ++i) {
         GxmFragmentProgram* f = &g->fragment[i];
         if (!f->references) {
-            if (slot == GXM_PROGRAMS) slot = i;
+            if (slot == GXM_FRAGMENT_PROGRAMS) slot = i;
             continue;
         }
         if (f->program == program && f->vertex_program == want.vertex_program &&
@@ -407,7 +407,7 @@ static uint32_t create_fragment_program(VitaProcess* p, VitaThread* t) {
             return 0;
         }
     }
-    if (slot == GXM_PROGRAMS) return SCE_GXM_ERROR_OUT_OF_MEMORY;
+    if (slot == GXM_FRAGMENT_PROGRAMS) return SCE_GXM_ERROR_OUT_OF_MEMORY;
     g->fragment[slot] = want;
     vita_write32(p, out, GXM_HANDLE_FRAGMENT + slot * GXM_PROGRAM_HANDLE);
     return 0;

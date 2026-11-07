@@ -11,8 +11,10 @@
 #define GXM_ATTRIBUTES       16u
 #define GXM_TEXTURES         16u
 #define GXM_UNIFORM_BUFFERS  15u /* the default one is GXP_DEFAULT_CONTAINER, 14 */
-#define GXM_PROGRAMS         4096u /* of each kind, as the patcher's memory allows: one game keeps 1200 fragment
-                                        programs */
+#define GXM_PROGRAMS         4096u /* vertex programs, as the patcher's memory allows */
+#define GXM_FRAGMENT_PROGRAMS 32768u /* fragment programs: one game creates over 13000 (a program for each pair of
+                                        fragment GXP, vertex program and blend state) while it loads its shaders, and
+                                        each draw after a refused creation fails with SCE_GXM_ERROR_NULL_PROGRAM */
 #define GXM_TARGETS          16u
 #define GXM_MAPPINGS         128u
 #define GXM_DISPLAY_QUEUE    16u
@@ -23,7 +25,8 @@
 #define GXM_HANDLE_SYNC      0x80007000u
 #define GXM_HANDLE_PATCHER   0x80008000u
 #define GXM_HANDLE_VERTEX    0x80010000u /* GXM_PROGRAMS handles, GXM_PROGRAM_HANDLE apart */
-#define GXM_HANDLE_FRAGMENT  0x80020000u
+#define GXM_HANDLE_FRAGMENT  0x80020000u /* GXM_FRAGMENT_PROGRAMS handles, up to 0x800a0000 (0x80100000 is the
+                                            variables' slots) */
 #define GXM_PROGRAM_HANDLE   16u
 
 typedef struct {
@@ -128,7 +131,7 @@ typedef struct VitaGxm {
     uint32_t display_thread;
     GxmContext context;
     GxmVertexProgram vertex[GXM_PROGRAMS];
-    GxmFragmentProgram fragment[GXM_PROGRAMS];
+    GxmFragmentProgram fragment[GXM_FRAGMENT_PROGRAMS];
     GxmTarget targets[GXM_TARGETS];
     struct {
         uint32_t address, size;
