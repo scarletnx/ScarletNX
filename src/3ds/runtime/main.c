@@ -61,7 +61,9 @@ static void usage(FILE* out) {
         "                  --vk_memory=N, as it means there: 0 has the GPU work on a copy of the RAM in its own\n"
         "                  memory unless it shares the system's, 1 on the copy, 2 on the RAM in place;\n"
         "                  --async_pipelines=1 skips what a new pipeline draws while it is made, on\n"
-        "                  --pipeline_threads=N threads (0: all the computer's but two, two to twelve)\n"
+        "                  --pipeline_threads=N threads (0: all the computer's but two, two to twelve);\n"
+        "                  --gamepad_swap_ab=1 swaps a gamepad's A and B, --gamepad_deadzone=N is its sticks'\n"
+        "                  dead zone in percent of their travel (default 20)\n"
         "  --ipc-stubs L   With --ctr_auto_stub_ipc=0, still answer a service command the runtime lacks with\n"
         "                  success for the services in L: all, or a comma list of srv, fs, apt, ptm, hid, gsp,\n"
         "                  cfg, dsp, system. Given more than once, the lists add up\n"
@@ -551,6 +553,7 @@ int snx_ctr_main(int argc, char** argv) {
                 if (!o) o = ini_find(g_ctr_debug_ini, !strcmp(key, "script") ? "ctr_script" : key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_debug_ini, key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_performance_ini, key);
+                if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_gamepad_ini, key);
             }
             if (!o) {
                 fprintf(stderr, "scarletnx-3ds: unknown setting: %s\n", arg);
