@@ -44,6 +44,8 @@ typedef struct {
     VkPhysicalDeviceMemoryProperties memory_properties;
     bool index8, logic_op; /* VK_EXT_index_type_uint8; the logicOp feature */
     bool clip_distance;    /* shaderClipDistance */
+    bool anisotropic;      /* samplerAnisotropy */
+    float anisotropy;      /* the samplers' anisotropy, snx_ctr_vk_anisotropy's: 0 for none */
     bool preserve_infnan;  /* shaderSignedZeroInfNanPreserveFloat32: the generated shaders keep infinities and NaNs */
     bool import_host;      /* VK_EXT_external_memory_host */
     bool export_dmabuf;    /* VK_KHR_external_memory_fd and VK_EXT_external_memory_dma_buf */
@@ -125,6 +127,10 @@ typedef struct {
     uint32_t type;              /* the memory type allocated (ALLOCATE on) */
     int error;                  /* the system's reason the views did not map, an errno (VIEWS) */
 } SnxCtrVkDeviceRam;
+/* The samplers' anisotropy for the Switch's anisotropy setting (asked): none below 2 or on a device without the
+   samplerAnisotropy feature (feature), else asked held to the device's most. line gets what the run says of it on the
+   standard error, with the value asked and the one in effect ("" below 2) */
+float snx_ctr_vk_anisotropy(int asked, bool feature, float most, char* line, size_t line_size);
 /* The line the device says of where the GPU's work is (snx_ctr_vk_init), without its "3ds gpu: " and its newline:
    vk_memory's value asked, which the device's memory model (vk_common.h) took. With refused not NULL, the copy asked
    for and refused for that reason, the run taking vk_memory=2; else on the copy (copied, bytes of memory type type),

@@ -2,7 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* The presenter's window: a pointer press on the bottom screen's blit rectangle becomes a hid:USER touch sample, a
    drag moves it and keeps to the screen's edge when it leaves it, and a release or a focus loss ends it, while another
-   window's events do nothing. The samples are read from a process's shared memory as the game reads them. Without a
+   window's events do nothing. A finger does the same; the first finger or mouse press holds the screen until it lets
+   go, and the Switch's touch setting picks which reach it. The samples are read from a process's shared memory as the
+   game reads them. Without a
    Vulkan device and a window there is nothing to point at, and a window that is not the presenter's 600x720 leaves the
    fixture's window fractions meaningless: these skip with 77. */
 #include "3ds/gpu/present.h"
@@ -11,6 +13,7 @@
 #include "3ds/ipc/ctr_ipc.h"
 #include "3ds/runtime/internal.h"
 #include "3ds/services/hid.h"
+#include "snx_settings.h"
 #include "support/3ds_guest.h"
 #include <SDL3/SDL.h>
 #include <assert.h>
@@ -47,6 +50,30 @@ static void event_mouse(Uint32 type, SDL_WindowID id, float x, float y) {
     }
     assert(SDL_PushEvent(&e));
     assert(!snx_ctr_present_closed()); /* pumps the queue */
+}
+/* a mouse event SDL made of a finger (its mouse SDL_TOUCH_MOUSEID) */
+static void event_finger_mouse(Uint32 type, SDL_WindowID id, float x, float y) {
+    SDL_Event e = {0};
+    e.type = type;
+    e.button.windowID = id;
+    e.button.which = SDL_TOUCH_MOUSEID;
+    e.button.button = SDL_BUTTON_LEFT;
+    e.button.x = x;
+    e.button.y = y;
+    assert(SDL_PushEvent(&e));
+    assert(!snx_ctr_present_closed());
+}
+/* a finger's event on a window, at x and y as fractions of it, as SDL sends them */
+static void event_finger(Uint32 type, SDL_WindowID id, SDL_FingerID finger, float x, float y) {
+    SDL_Event e = {0};
+    e.type = type;
+    e.tfinger.windowID = id;
+    e.tfinger.touchID = 1;
+    e.tfinger.fingerID = finger;
+    e.tfinger.x = x;
+    e.tfinger.y = y;
+    assert(SDL_PushEvent(&e));
+    assert(!snx_ctr_present_closed());
 }
 /* runs the HID clock to the next pad sample, then reads that sample's touch entry: x, y, and whether it is valid */
 static bool next_touch_sample(SnxCtrProcess* p, uint16_t* x, uint16_t* y) {
@@ -162,6 +189,72 @@ int main(void) {
     assert(SDL_PushEvent(&focus));
     assert(!snx_ctr_present_closed());
     no_touch(p);
+    /* a finger, as the mouse with the default touch=2: pressed, dragged, and lifted */
+    assert(g_settings.touch_screen == 2);
+    event_finger(SDL_EVENT_FINGER_DOWN, id, 7, 0.5f, 0.75f);
+    touching(p, 160, 120);
+    event_finger(SDL_EVENT_FINGER_MOTION, id, 7, 0.3f, 0.625f);
+    touching(p, 80, 60);
+    /* one pointer at a time: while the finger holds the screen, the mouse, another finger and a finger on another
+       window change nothing, nor do their releases end it */
+    event_mouse(SDL_EVENT_MOUSE_BUTTON_DOWN, id, w / 2.0f, h * 0.75f);
+    touching(p, 80, 60);
+    event_mouse(SDL_EVENT_MOUSE_MOTION, id, w / 2.0f, h * 0.75f);
+    touching(p, 80, 60);
+    event_mouse(SDL_EVENT_MOUSE_BUTTON_UP, id, w / 2.0f, h * 0.75f);
+    touching(p, 80, 60);
+    event_finger(SDL_EVENT_FINGER_DOWN, id, 8, 0.5f, 0.75f);
+    event_finger(SDL_EVENT_FINGER_MOTION, id, 8, 0.5f, 0.8f);
+    touching(p, 80, 60);
+    event_finger(SDL_EVENT_FINGER_UP, id, 8, 0.5f, 0.8f);
+    touching(p, 80, 60);
+    event_finger(SDL_EVENT_FINGER_MOTION, other_id, 7, 0.5f, 0.75f);
+    touching(p, 80, 60);
+    event_finger(SDL_EVENT_FINGER_UP, id, 7, 0.3f, 0.625f);
+    no_touch(p);
+    /* a finger pressed off the bottom screen starts nothing, nor does one on another window */
+    event_finger(SDL_EVENT_FINGER_DOWN, id, 9, 0.5f, 0.25f);
+    no_touch(p);
+    event_finger(SDL_EVENT_FINGER_UP, id, 9, 0.5f, 0.25f);
+    event_finger(SDL_EVENT_FINGER_DOWN, other_id, 9, 0.5f, 0.75f);
+    no_touch(p);
+    event_finger(SDL_EVENT_FINGER_UP, other_id, 9, 0.5f, 0.75f);
+    /* the mouse holding it: a finger changes nothing, and the mouse's release ends it */
+    event_mouse(SDL_EVENT_MOUSE_BUTTON_DOWN, id, w / 2.0f, h * 0.75f);
+    touching(p, 160, 120);
+    event_finger(SDL_EVENT_FINGER_DOWN, id, 10, 0.3f, 0.625f);
+    touching(p, 160, 120);
+    event_finger(SDL_EVENT_FINGER_UP, id, 10, 0.3f, 0.625f);
+    touching(p, 160, 120);
+    event_mouse(SDL_EVENT_MOUSE_BUTTON_UP, id, w / 2.0f, h * 0.75f);
+    no_touch(p);
+    /* a mouse press SDL made of a finger is the finger's, not one more pointer */
+    event_finger_mouse(SDL_EVENT_MOUSE_BUTTON_DOWN, id, w / 2.0f, h * 0.75f);
+    no_touch(p);
+    event_finger_mouse(SDL_EVENT_MOUSE_BUTTON_UP, id, w / 2.0f, h * 0.75f);
+    /* a finger the system cancels lets go as a lift does */
+    event_finger(SDL_EVENT_FINGER_DOWN, id, 11, 0.5f, 0.75f);
+    touching(p, 160, 120);
+    event_finger(SDL_EVENT_FINGER_CANCELED, id, 11, 0.5f, 0.75f);
+    no_touch(p);
+    /* touch=1: the fingers alone */
+    g_settings.touch_screen = 1;
+    event_mouse(SDL_EVENT_MOUSE_BUTTON_DOWN, id, w / 2.0f, h * 0.75f);
+    no_touch(p);
+    event_mouse(SDL_EVENT_MOUSE_BUTTON_UP, id, w / 2.0f, h * 0.75f);
+    event_finger(SDL_EVENT_FINGER_DOWN, id, 12, 0.3f, 0.625f);
+    touching(p, 80, 60);
+    event_finger(SDL_EVENT_FINGER_UP, id, 12, 0.3f, 0.625f);
+    no_touch(p);
+    /* touch=0: neither */
+    g_settings.touch_screen = 0;
+    event_finger(SDL_EVENT_FINGER_DOWN, id, 13, 0.5f, 0.75f);
+    no_touch(p);
+    event_finger(SDL_EVENT_FINGER_UP, id, 13, 0.5f, 0.75f);
+    event_mouse(SDL_EVENT_MOUSE_BUTTON_DOWN, id, w / 2.0f, h * 0.75f);
+    no_touch(p);
+    event_mouse(SDL_EVENT_MOUSE_BUTTON_UP, id, w / 2.0f, h * 0.75f);
+    g_settings.touch_screen = 2;
     SDL_DestroyWindow(other);
     /* a window of another size with the same aspect ratio: the frame at the new size recreates the swapchain once the
        driver reports it out of date (present.c), and the window fractions still map onto the bottom screen's centre */

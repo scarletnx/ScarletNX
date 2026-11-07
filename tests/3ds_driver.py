@@ -28,6 +28,10 @@ def main():
     assert '--ctr_separate_windows=1' in help_text and '--ctr_top_resolution=2' in help_text
     assert '--vk_memory=N' in help_text
     assert '--async_pipelines=1' in help_text and '--pipeline_threads=N' in help_text
+    assert '--gamepad_swap_ab=1' in help_text and '--gamepad_deadzone=N' in help_text
+    assert '--gamepad_map=MAP' in help_text and '--touch=N' in help_text
+    assert '--vsync=0' in help_text and '--fullscreen=1' in help_text and '--anisotropy=N' in help_text
+    assert '--fps_limit=N' in help_text
     run(['--board-info', '--extract-container'], 2, 'Usage:')
     run(['-x', '-r', 'game.cia'], 2, 'Usage:')
     run(['-r', '--max-blocks', '5', 'game.cia'], 2, 'Usage:')
@@ -49,6 +53,55 @@ def main():
     run(['--board-info', '--vk_memory=1'], 0, 'Old 3DS')
     run(['--board-info', '--async_pipelines=1', '--pipeline_threads=2'], 0, 'Old 3DS')
     run(['--board-info', '--vk_budget_mb=64'], 2, 'unknown setting: --vk_budget_mb=64')
+    # the Controllers table's A and B and dead zone, read as the Switch's (a dead zone past 90 is 90, said), never
+    # its vibration, which the 3DS has none of
+    run(['--board-info', '--gamepad_swap_ab=1', '--gamepad_deadzone=30'], 0, 'Old 3DS')
+    run(
+        ['--board-info', '--gamepad_deadzone=95'],
+        0,
+        'settings: gamepad_deadzone=95 is not a whole number from 0 to 90: it keeps 90',
+    )
+    run(['--board-info', '--gamepad_rumble=50'], 2, 'unknown setting: --gamepad_rumble=50')
+    # and its button map, which the 3DS input reads itself: a map it cannot read keeps the one before, a control sent
+    # to a button the 3DS lacks sends nothing, each said with the value
+    out = run(['--board-info', '--gamepad_map=south:A east:B'], 0, 'Old 3DS')
+    assert 'gamepad_map' not in out, out
+    run(
+        ['--board-info', '--gamepad_map=south:A', '--gamepad_map=south:Q'],
+        0,
+        'settings: gamepad_map\'s "south:Q" is not a control and the button it sends (south:B): it keeps "south:A"',
+    )
+    run(
+        ['--board-info', '--gamepad_map=east:Q'],
+        0,
+        'it keeps "", each control sending the button in its place',
+    )
+    run(['--board-info', '--gamepad_map=ls:L3'], 0, "settings: gamepad_map's ls:L3 sends nothing: the 3DS has no L3")
+    out = run(['--board-info', '--gamepad_map=lb:ZL rb:ZR'], 0, 'Old 3DS')  # ir:rst's, which the runtime has
+    assert 'sends nothing' not in out, out
+    # the On-screen controls table's touch screen, as the Switch's (0 to 2), never its on-screen controls
+    run(['--board-info', '--touch=1'], 0, 'Old 3DS')
+    run(['--board-info', '--touch=5'], 0, 'settings: touch=5 is not a whole number from 0 to 2: it keeps 2')
+    run(['--board-info', '--controls_haptics=0'], 2, 'unknown setting: --controls_haptics=0')
+    # the Graphics table's vsync, never another of its rows
+    run(['--board-info', '--vsync=0', '--anisotropy=16'], 0, 'Old 3DS')
+    run(['--board-info', '--shadows=0'], 2, 'unknown setting: --shadows=0')
+    # and the Display table's fullscreen, never its others
+    run(['--board-info', '--fullscreen=1'], 0, 'Old 3DS')
+    run(['--board-info', '--docked=0'], 2, 'unknown setting: --docked=0')
+    # and the Performance table's fps_limit, read as the Switch reads it, a value not taken as given said
+    out = run(['--board-info', '--fps_limit=120'], 0, 'Old 3DS')
+    assert 'fps_limit' not in out, out
+    run(
+        ['--board-info', '--fps_limit=5'],
+        0,
+        'settings: fps_limit=5 is not game, 0 or a whole number of frames a second from 10 to 1000: it takes 10',
+    )
+    run(
+        ['--board-info', '--fps_limit=fast'],
+        0,
+        'settings: fps_limit=fast is not game or a number of frames a second: it keeps game',
+    )
     # an older version's packet trace (docs/DEPRECATIONS.md): still ctr_uds_trace=1, under the command line's own
     old = 'SNX_3DS_UDS_PACKET_TRACE'
     run(

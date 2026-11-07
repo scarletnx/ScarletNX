@@ -12,10 +12,14 @@ int snx_ctr_main(int argc, char** argv); /* extracts, recompiles and plays what 
    game's folder and its copy of the runtime are named: a Switch title ID starts 01 */
 bool snx_ctr_title_name(const char* path);
 /* Whether key is one of the Switch's settings the 3DS driver takes too, with its meaning, its row and its key (the
-   Debug and Performance tables, g_debug_ini and g_performance_ini in src/nx/runtime/settings.txt), as --key=value
-   beside the 3DS tables' own: the launcher passes them to a 3DS game's run with those */
+   Display, Graphics, Debug, Performance, Controllers and On-screen controls tables, g_display_ini, g_graphics_ini,
+   g_debug_ini, g_performance_ini, g_gamepad_ini, g_gamepad_map_ini and g_backend_ini in src/nx/runtime/settings.txt), as
+   --key=value beside the 3DS tables' own: the launcher passes them to a 3DS game's run with those */
 static inline bool snx_ctr_shared_setting(const char* key) {
-    return !strcmp(key, "vk_memory") || !strcmp(key, "async_pipelines") || !strcmp(key, "pipeline_threads");
+    return !strcmp(key, "vk_memory") || !strcmp(key, "async_pipelines") || !strcmp(key, "pipeline_threads") ||
+           !strcmp(key, "gamepad_swap_ab") || !strcmp(key, "gamepad_deadzone") || !strcmp(key, "gamepad_map") ||
+           !strcmp(key, "touch") || !strcmp(key, "vsync") || !strcmp(key, "fullscreen") || !strcmp(key, "anisotropy") ||
+           !strcmp(key, "fps_limit");
 }
 
 #endif

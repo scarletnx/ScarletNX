@@ -399,11 +399,12 @@ int plat_alias_unmap(u8* p, u64 size) {
     (void)size;
     return -1;
 }
-int plat_vm_map_fd(u8* p, u64 size, int fd, u64 off) {
+int plat_vm_map_fd(u8* p, u64 size, int fd, u64 off, u64 allocation_size) {
     (void)p;
     (void)size;
     (void)fd;
     (void)off;
+    (void)allocation_size;
     return -1;
 }
 void plat_vm_fd_close(int fd) { (void)fd; }
@@ -465,6 +466,9 @@ void plat_freeze(u8* p, u64 size) {
     (void)size;
 }
 void plat_thaw(void) {}
+
+/* ================================================================ libraries */
+void* plat_dl_loaded(const char* name) { return GetModuleHandleA(name); }
 
 /* ================================================================ environment */
 int plat_setenv(const char* name, const char* value) { return _putenv_s(name, value) ? -1 : 0; }

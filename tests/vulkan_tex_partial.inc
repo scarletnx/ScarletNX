@@ -254,7 +254,7 @@ static int tex_partial(const TpCase* c, u32 index) {
     }
     return failed;
 }
-/* An ASTC texture decoded on the GPU (held as BC7 with astc_mode=0, Auto, else RGBA8) takes its changes as the runs of blocks
+/* An ASTC texture decoded on the GPU (held as BC7 with astc_mode=0, Auto, else RGBA8) takes its changes as block runs
    of their pages, decoded (and encoded) again: after each write its image is the one a whole upload of the same bytes
    makes, byte for byte (a texture of its own over the same memory at another GPU address, made then), and only those
    runs were loaded. The writes: an ASTC block astride BC7 blocks, a DMA copy, the mip tail */

@@ -26,6 +26,7 @@
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
 #include "nx/gpu/vk/pending_pages.h"
+#include "nx/gpu/vk/present_quad.h"
 #include "nx/gpu/renderer.h"
 
 static VkSemaphore g_acquired[VK_FRAMES];
@@ -110,6 +111,7 @@ static int vkr_start(void) {
         LOG("vulkan: this GPU has no anisotropic filtering, so anisotropy=%d does nothing\n", g_vk_anisotropy);
     if (g_vk_scale != 1.0f) LOG("vulkan: render targets at %.2fx\n", g_vk_scale);
     vk_cmd_init();
+    vk_render_upload_cache_reset();
     vk_pipeline_init();
     vk_own_init(); /* GPU engines' results stay on the GPU where guest memory can be trapped (memory/own.c) */
     g_gpu_before_write = vkr_before_write;
@@ -198,10 +200,12 @@ static void vkr_method_barrier(int kind)
 	 * draws that read results of earlier ones get one there (buffer.c
 	 * gfx_gpu_src). Ended here, the pass ended about 120 times a frame in one
 	 * game's open world. Writes that none of those track (stores into guest
-	 * memory read in place) are not covered yet, so only the opt-in
-	 * vk_descriptors setting skips it.
+	 * memory read in place) are not covered yet, so it is skipped only where
+	 * the device runs graphics descriptor buffers or heaps, which the
+	 * vk_descriptors setting asks for: a device that has neither draws with
+	 * descriptor sets and keeps every fragment barrier.
 	 */
-	if (kind == 1 || kind == 3 || (kind == 0 && g_settings.descriptor_buffers))
+	if (kind == 1 || kind == 3 || (kind == 0 && (g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support)))
 		return;
 
 	vk_lock();
@@ -299,7 +303,8 @@ static Surf* cpu_frame(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u32 bh
                                 .arrayLayers = 1,
                                 .samples = VK_SAMPLE_COUNT_1_BIT,
                                 .tiling = VK_IMAGE_TILING_OPTIMAL,
-                                .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                         VK_IMAGE_USAGE_SAMPLED_BIT,
                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
         VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
         if (!VK_OK(vmaCreateImage(g_vk.vma, &ii, &aci, &g_cpu_img->img, &g_cpu_img->mem, NULL))) {
@@ -408,6 +413,7 @@ static void gpu_memory_plots(void) {
 static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 released_ns, u64 period_ns,
                  u32 shown_syncpt) {
     SNX_ZONE(z_show, "vk show");
+    if (transform & 4) { u32 w = fw; fw = fh; fh = w; }
     /* the size the swapchain was made for, not the extent the surface clamped it to: that can stay different */
     int ww, wh, srgb = src ? is_srgb(src->f.vk) : g_sc_srgb, shown = backend_window_shown();
     backend_window_size(&ww, &wh);
@@ -491,9 +497,15 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                                                    {(i32)(g_last_x + g_last_w), (i32)(g_last_y + g_last_h), 1}},
                                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                     .dstOffsets = {{dx, dy, 0}, {dx + (i32)dw, dy + (i32)dh, 1}}};
-                flip_src(&blit, transform); /* render targets stay in guest order */
-                rec_CmdBlitImage(cb, src->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sc,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+                if (transform & 4) {
+                    VkRect2D crop = {{(i32)g_last_x, (i32)g_last_y}, {g_last_w, g_last_h}};
+                    VkRect2D destination = {{dx, dy}, {dw, dh}};
+                    vk_present_quad(src, sc, g_vk.sc_format, g_vk.sc_extent, crop, destination, transform, 1);
+                } else {
+                    flip_src(&blit, transform); /* render targets stay in guest order */
+                    rec_CmdBlitImage(cb, src->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sc,
+                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+                }
             }
             {
                 int safe[4] = {(int)cx, (int)cy, (int)cw, (int)ch};
@@ -659,6 +671,11 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 "begun again), %llu through a copy\n",
                 (unsigned long long)g_vk_fb_draws, (unsigned long long)g_vk_fb_barriers,
                 (unsigned long long)g_vk_fb_restarts, (unsigned long long)g_vk_rt_copies);
+            if (g_vk_capture_draws || g_vk_capture_capped)
+                LOG("vulkan: %llu draws captured a primitive at a time (%llu primitives), %llu skipped past %u "
+                    "primitives\n",
+                    (unsigned long long)g_vk_capture_draws, (unsigned long long)g_vk_capture_primitives,
+                    (unsigned long long)g_vk_capture_capped, VK_CAPTURE_PRIMITIVES_MAX);
             LOG("vulkan: %llu rendering passes, %llu clear commands, %llu attachments cleared and %llu left undefined "
                 "by their load op; %llu buffers filled ahead of the passes\n",
                 (unsigned long long)g_vk_passes, (unsigned long long)g_vk_clear_cmds,
@@ -772,7 +789,8 @@ static const u8* surf_read(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u
                             .arrayLayers = 1,
                             .samples = VK_SAMPLE_COUNT_1_BIT,
                             .tiling = VK_IMAGE_TILING_OPTIMAL,
-                            .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     VkImage tmp;
@@ -796,9 +814,22 @@ static const u8* surf_read(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u
                         .srcOffsets = {{(i32)x, (i32)y, 0}, {(i32)(x + w), (i32)(y + h), 1}},
                         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                         .dstOffsets = {{0, 0, 0}, {(i32)dw, (i32)dh, 1}}};
-    flip_src(&blit, transform); /* screenshots show the window's transform, offscreen and headless presents too */
-    rec_CmdBlitImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, tmp, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                   &blit, dw == w && dh == h ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+    if (transform & 4) {
+        VkRect2D crop = {{(i32)x, (i32)y}, {w, h}}, destination = {{0, 0}, {dw, dh}};
+        /* The raster copy covers the whole temporary image. Its LOAD still requires defined contents. */
+        VkClearColorValue black = {{0, 0, 0, 1}};
+        VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        rec_CmdClearColorImage(cb, tmp, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
+        if (!vk_present_quad(s, tmp, ii.format, (VkExtent2D){dw, dh}, crop, destination, transform,
+                             dw != h || dh != w)) {
+            vk_defer_image(tmp, tmem, VK_NULL_HANDLE, VK_NULL_HANDLE);
+            return NULL;
+        }
+    } else {
+        flip_src(&blit, transform);
+        rec_CmdBlitImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, tmp, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                        &blit, dw == w && dh == h ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+    }
     vk_barrier(cb, tmp, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
@@ -820,7 +851,8 @@ static const u8* surf_read(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u
 /* a part of a surface, blitted to RGBA8 and read back: its hash, and a .ppm at path if given */
 static u64 surf_save(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, const char* path) {
     u64 hash = 1469598103934665603ull;
-    const u8* px = surf_read(s, x, y, w, h, transform, w, h);
+    u32 dw = transform & 4 ? h : w, dh = transform & 4 ? w : h;
+    const u8* px = surf_read(s, x, y, w, h, transform, dw, dh);
     if (!px) return hash;
     /* the pixels as the device wrote them, little-endian words: the hash is the same on every host */
     for (u64 i = 0; i < (u64)w * h; i++) hash = snx_fnv_step(hash, snx_ld_le32(px + i * 4));
@@ -830,7 +862,7 @@ static u64 surf_save(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, const c
         FILE* f = fopen(fn, "wb");
         int ok = f != NULL;
         if (f) {
-            fprintf(f, "P6\n%u %u\n255\n", w, h);
+            fprintf(f, "P6\n%u %u\n255\n", dw, dh);
             for (u64 i = 0; i < (u64)w * h && ok; i++) {
                 u8 rgb[3] = {px[i * 4], px[i * 4 + 1], px[i * 4 + 2]};
                 ok = fwrite(rgb, 1, 3, f) == 3;
@@ -972,6 +1004,7 @@ const Renderer vk_renderer = {
     .present_buffer = vkr_present_buffer,
     .display_wait = vk_display_wait,
     .screenshot = vkr_screenshot,
+    .capture = vk_renderdoc_capture,
     .thumbnail = vkr_thumbnail,
     .refresh = vkr_refresh,
     .save = vk_pipeline_save,

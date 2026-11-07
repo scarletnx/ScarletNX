@@ -7,6 +7,7 @@
    come back. Textures and render targets are each in a list from the least recently used to the most, which the
    caches' eviction takes from (vk_surf_reclaim): idle ones, and more when device memory nears its budget
    (vk_mem_trim, with the budget from gpu/vk/memory.c). */
+#include "nx/gpu/vk/descriptor_objects.h"
 #include "common/utilities/bits.h"
 #include <stdlib.h>
 #include <string.h>
@@ -138,6 +139,25 @@ VkImageAspectFlags vk_aspect(const VkFmt* f) {
     return VK_IMAGE_ASPECT_DEPTH_BIT | (f->stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
 }
 
+static void surf_barrier(VkCommandBuffer cb, const Surf* s, VkPipelineStageFlags2 source_stage,
+                          VkAccessFlags2 source_access, VkImageLayout old_layout, VkPipelineStageFlags2 stage,
+                          VkAccessFlags2 access, VkImageLayout layout) {
+    VkSampleLocationEXT positions[16];
+    VkSampleLocationsInfoEXT locations = vk_sample_locations_info(&s->sample_locations, positions);
+    VkImageMemoryBarrier2 image = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                    .pNext = s->sample_locations_compatible && old_layout != VK_IMAGE_LAYOUT_UNDEFINED
+                                                 ? &locations : NULL,
+                                    .srcStageMask = source_stage, .srcAccessMask = source_access,
+                                    .dstStageMask = stage, .dstAccessMask = access,
+                                    .oldLayout = old_layout, .newLayout = layout,
+                                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = s->img,
+                                    .subresourceRange = {vk_aspect(&s->f), 0, VK_REMAINING_MIP_LEVELS, 0,
+                                                         VK_REMAINING_ARRAY_LAYERS}};
+    VkDependencyInfo dependency = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                    .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &image};
+    rec_CmdPipelineBarrier2(cb, &dependency);
+}
 void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineStageFlags2 stage,
                  VkAccessFlags2 access) {
     int writes = (access & (VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
@@ -152,7 +172,7 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
            extends that visibility to it */
         if (stage & ~s->stage) {
             vk_render_end();
-            vk_barrier(cb, s->img, vk_aspect(&s->f), s->stage ? s->stage : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+            surf_barrier(cb, s, s->stage ? s->stage : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                        layout, stage, access, layout);
         }
         s->stage |= stage;
@@ -160,7 +180,7 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
         return;
     }
     vk_render_end(); /* no barriers on images inside a rendering pass */
-    vk_barrier(cb, s->img, vk_aspect(&s->f), s->stage ? s->stage : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, s->access,
+    surf_barrier(cb, s, s->stage ? s->stage : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, s->access,
                s->layout, stage, access, layout);
     s->layout = layout;
     s->stage = stage;
@@ -216,22 +236,44 @@ static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 b
     if (is_rt) usage |= f.depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     /* the draws rendering to a color target can sample it, in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL (gpu/vk/render.c) */
     if (is_rt && !f.depth && g_vk.has_feedback) usage |= VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
+    /* sRGB has no storage-image format: the ordered blend shader writes the same bytes through a view of the linear
+       twin, which EXTENDED_USAGE allows on an image that stays sRGB. The image's own format must stay the target's:
+       vkCmdBlitImage converts by it, so a linear image blitted to an sRGB one (the presentation's swapchain) is
+       encoded twice and comes out washed out */
+    VkFormat storage_format = vk_srgb_as(f.vk, 0);
+    VkImageCreateFlags flags = 0;
     VkFormatProperties format_props;
-    vkGetPhysicalDeviceFormatProperties(g_vk.phys, f.vk, &format_props);
-    /* storage images of several samples are an optional feature compute and draws don't use: none */
-    if (!msaa && (format_props.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
-        usage |= VK_IMAGE_USAGE_STORAGE_BIT;
-        s->storage_capable = 1;
+    vkGetPhysicalDeviceFormatProperties(g_vk.phys, storage_format, &format_props);
+    if ((!msaa || g_vk.feat.shaderStorageImageMultisample) &&
+        (format_props.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
+        VkImageCreateFlags storage_flags =
+            storage_format != f.vk ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT : 0;
+        VkImageFormatProperties image_props;
+        if (vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, f.vk, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+                                                     usage | VK_IMAGE_USAGE_STORAGE_BIT, storage_flags,
+                                                     &image_props) == VK_SUCCESS) {
+            usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+            flags |= storage_flags;
+            s->storage_capable = 1;
+        }
     }
     /* a multisampled color image's samples move to and from guest memory through views of their raw bytes
        (gpu/vk/msaa.c), when the device renders and samples those with its samples */
     VkFormat raw = VK_FORMAT_UNDEFINED;
-    VkImageCreateFlags flags = 0;
     if (msaa && !f.depth) {
         raw = vk_raw_format(f.bpp);
         VkImageUsageFlags moves = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         if (raw && !vk_ms_supported(raw, moves, 0, msaa)) raw = VK_FORMAT_UNDEFINED;
-        if (raw && raw != f.vk) flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+        if (raw && raw != f.vk) flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+    }
+    if (f.depth && g_vk.sample_locations.available && g_vk.props.limits.standardSampleLocations &&
+        ds_msaa_samples(msaa) <= 16)
+        flags |= VK_IMAGE_CREATE_SAMPLE_LOCATIONS_COMPATIBLE_DEPTH_BIT_EXT;
+    if (msaa && s->storage_capable && !vk_ms_supported(f.vk, usage, flags, msaa)) {
+        /* Optional storage support must not remove an otherwise supported ordinary render target. */
+        usage &= ~VK_IMAGE_USAGE_STORAGE_BIT;
+        flags &= ~VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
+        s->storage_capable = 0;
     }
     if (msaa && !vk_ms_supported(f.vk, usage, flags, msaa)) {
         LOG_LIMIT(4, "vulkan: the GPU makes no %u-sample images of format %d: the target isn't drawn\n",
@@ -243,6 +285,7 @@ static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 b
     s->ms_raw = msaa && (raw || f.vk == VK_FORMAT_D32_SFLOAT || f.vk == VK_FORMAT_D16_UNORM);
     s->type = layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .flags = flags,
                             .imageType = VK_IMAGE_TYPE_2D,
                             .format = f.vk,
                             .extent = {s->sw, s->sh, 1},
@@ -254,6 +297,8 @@ static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 b
                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
     VkViewFormats vf; /* sRGB and linear views, and the raw one */
+    s->sample_locations_compatible = (ii.flags & VK_IMAGE_CREATE_SAMPLE_LOCATIONS_COMPATIBLE_DEPTH_BIT_EXT) != 0;
+    if (s->sample_locations_compatible) s->sample_locations = vk_sample_locations_standard(vk_surf_samples(s));
     vk_view_formats(&ii, &vf, raw);
     /* a scaled target can pass the allocation cap (4x of 4K is 506 MiB in RGBA8). Room is made for it under the
        budget: the caller holds only surfaces it used this present, which stay */
@@ -266,7 +311,10 @@ static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 b
                                 .viewType = s->type,
                                 .format = f.vk,
                                 .subresourceRange = {vk_aspect(&f), 0, 1, 0, layers}};
-    VK_OK(vkCreateImageView(g_vk.dev, &vi, NULL, &s->att));
+    VkImageViewUsageCreateInfo view_usage = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
+                                            .usage = usage & ~VK_IMAGE_USAGE_STORAGE_BIT};
+    if ((usage & VK_IMAGE_USAGE_STORAGE_BIT) && storage_format != f.vk) vi.pNext = &view_usage;
+    VK_OK(vk_image_view_create(g_vk.dev, &vi, NULL, &s->att));
     u32 k = hkey(gva);
     s->next = g_surfh[k];
     g_surfh[k] = s;
@@ -293,7 +341,7 @@ VkImageView vk_rt_attachment(Surf* s, int srgb_write) {
                                     .viewType = s->type,
                                     .format = linear,
                                     .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, s->layers}};
-        VK_OK(vkCreateImageView(g_vk.dev, &vi, NULL, &s->att_linear));
+        VK_OK(vk_image_view_create(g_vk.dev, &vi, NULL, &s->att_linear));
     }
     return s->att_linear;
 }
@@ -2242,9 +2290,9 @@ static int resolve_depth(Surf* st, const Surf2D* d, int dx, int dy, int dw, int 
                                 .format = st->f.vk,
                                 .subresourceRange = {aspect, 0, 1, 0, 1}};
     VkImageView sv = VK_NULL_HANDLE, tv = VK_NULL_HANDLE;
-    int ok = VK_OK(vkCreateImageView(g_vk.dev, &vi, NULL, &sv));
+    int ok = VK_OK(vk_image_view_create(g_vk.dev, &vi, NULL, &sv));
     vi.image = tmp;
-    ok = ok && VK_OK(vkCreateImageView(g_vk.dev, &vi, NULL, &tv));
+    ok = ok && VK_OK(vk_image_view_create(g_vk.dev, &vi, NULL, &tv));
     vk_defer_image(tmp, tm, sv, tv); /* once the frame's commands that use them are done */
     if (!ok) return 0;
     vk_render_end();

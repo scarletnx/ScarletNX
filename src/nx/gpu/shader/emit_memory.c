@@ -94,6 +94,31 @@ u32 shader_cbuf_read_dynamic(DirectCtx* c, u32 bank, u32 address) {
                                       c->u32_type);
 }
 
+/* Logical descriptor indexing does not require a device's dynamic-uniform-buffer indexing feature. Only the
+   selected case reads its buffer. The default bank returns zero without an out-of-range descriptor access. */
+static u32 cbuf_read_bank(DirectCtx* c, u32 first, u32 bank, u32 address) {
+    u32 merge = spv_emit_id(&c->emit), other = spv_emit_id(&c->emit);
+    u32 literals[18], labels[18], incoming[38], count = 18 - first;
+    for (u32 i = 0; i < count; i++) {
+        literals[i] = first + i;
+        labels[i] = spv_emit_id(&c->emit);
+    }
+    spv_emit_selection_merge(&c->emit, merge);
+    spv_emit_switch_u32(&c->emit, bank, other, literals, labels, count);
+    for (u32 i = 0; i < count; i++) {
+        spv_emit_label(&c->emit, labels[i]);
+        incoming[2 * i] = shader_cbuf_read_dynamic(c, first + i, address);
+        incoming[2 * i + 1] = labels[i];
+        spv_emit_branch(&c->emit, merge);
+    }
+    spv_emit_label(&c->emit, other);
+    spv_emit_branch(&c->emit, merge);
+    incoming[2 * count] = c->zero;
+    incoming[2 * count + 1] = other;
+    spv_emit_label(&c->emit, merge);
+    return spv_emit_op(&c->emit, 245, c->u32_type, incoming, 2 * (count + 1)); /* OpPhi */
+}
+
 static u32 smap_word(DirectCtx* c, u32 index) {
     u32 pointer = spv_emit_storage_access_u32(&c->emit, c->gbuf_pointer, c->smap, c->zero, index);
     return spv_emit_load(&c->emit, c->u32_type, pointer);
@@ -241,9 +266,19 @@ void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     u32 atomic_old_var = t->atomic_old_var;
     if (op == O_LDC) {
         u32 off = spv_emit_constant_u32(&c->emit, c->u32_type, (u32)(i32)(i16)B(w, 20, 16));
-        u32 address = a == 255 ? off : spv_emit_iadd_u32(&c->emit, c->u32_type, reg_read(c, a), off);
+        u32 source = reg_read(c, a), dynamic_bank = 0;
         u32 bank = B(w, 36, 5);
-        u32 value = shader_cbuf_read_dynamic(c, bank, address);
+        if (B(w, 44, 1)) {
+            dynamic_bank = spv_emit_iadd_u32(
+                &c->emit, c->u32_type, spv_emit_constant_u32(&c->emit, c->u32_type, bank),
+                spv_emit_shift_right_u32(&c->emit, c->u32_type, source,
+                                          spv_emit_constant_u32(&c->emit, c->u32_type, 16)));
+            source = spv_emit_bitwise_and_u32(&c->emit, c->u32_type, source,
+                                               spv_emit_constant_u32(&c->emit, c->u32_type, 0xffff));
+        }
+        u32 address = spv_emit_iadd_u32(&c->emit, c->u32_type, source, off);
+        u32 value = dynamic_bank ? cbuf_read_bank(c, bank, dynamic_bank, address)
+                                  : shader_cbuf_read_dynamic(c, bank, address);
         u32 size = B(w, 48, 3);
         /* the element an indexed texture whose handle this loads picks: the address register over the stride */
         for (k_indexed = 0; k_indexed < texture_count; k_indexed++)
@@ -268,7 +303,8 @@ void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         if (size == 5) {
             u32 next =
                 spv_emit_iadd_u32(&c->emit, c->u32_type, address, spv_emit_constant_u32(&c->emit, c->u32_type, 4));
-            reg_write(c, d + 1, shader_cbuf_read_dynamic(c, bank, next));
+            reg_write(c, d + 1, dynamic_bank ? cbuf_read_bank(c, bank, dynamic_bank, next)
+                                            : shader_cbuf_read_dynamic(c, bank, next));
         }
     } else if (op == O_ATOMS) {
         u32 index = shader_shared_atomic_index(c, a, w, shared_words);

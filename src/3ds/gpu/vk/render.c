@@ -953,6 +953,9 @@ static VkSampler sampler(uint32_t key) {
         VK_SAMPLER_ADDRESS_MODE_REPEAT,        VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT,
         VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
         VK_SAMPLER_ADDRESS_MODE_REPEAT,        VK_SAMPLER_ADDRESS_MODE_REPEAT};
+    /* the Switch's anisotropy raises a mipmapped texture's linear filtering, a 3D scene's surfaces; nearest filtering
+       (2D art) and a texture without levels keep the game's */
+    float anisotropy = (key & 3) == 3 && (key >> 13 & 15) ? snx_ctr_vk()->anisotropy : 0;
     VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
                               .magFilter = key & 1 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,
                               .minFilter = key >> 1 & 1 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,
@@ -963,6 +966,8 @@ static VkSampler sampler(uint32_t key) {
                               .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                               .minLod = (float)(key >> 9 & 15),
                               .maxLod = (float)(key >> 13 & 15),
+                              .anisotropyEnable = anisotropy > 0,
+                              .maxAnisotropy = anisotropy,
                               .borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK};
     VkSampler s;
     if (vkCreateSampler(device(), &si, NULL, &s) != VK_SUCCESS) return g.sampler_count ? g.samplers[0].sampler : 0;

@@ -23,6 +23,7 @@
 #include "nx/runtime/platform/ui.h"
 #include "nx/runtime/platform/vpad.h"
 #include "nx/runtime/platform/gamepad.h"
+#include "nx/runtime/platform/help.h"
 #include "common/utilities/pad_sdl.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -538,35 +539,6 @@ int backend_vk_surface(VkInstance instance, VkSurfaceKHR* surface) {
     LOG("video: no Vulkan surface: %s\n", SDL_GetError());
     return 0;
 }
-/* F1's text. It follows keymap (the game's buttons), hotkey and menu_event (the runtime's keys): a binding changed there
-   changes here */
-static const char* HELP =
-    "Controller: A, B, X and Y sit where the console has them (gamepad_swap_ab=1 swaps A and B). "
-    "Home opens the game's menu.\n\n"
-    "Keyboard, by key position on a US layout:\n"
-    "  Buttons      A: X or Space    B: Z    X: C    Y: V\n"
-    "  Shoulders    L: Q    R: E    ZL: 1    ZR: 3\n"
-    "  Plus, minus  +: Enter    -: Backspace\n"
-    "  D-Pad        the arrow keys\n"
-    "  Left stick   W, A, S and D\n"
-    "  Right stick  I, J, K and L\n\n"
-    "Runtime keys:\n"
-    "  F1  this help\n"
-    "  F2  open or close the game's menu (arrows move, Enter or Space picks, Esc or Backspace goes back)\n"
-    "  F3  take a screenshot\n"
-    "  F4  turn the FPS limit off or back on\n"
-    "  F5  write every thread's state to the log\n"
-    "  F6  turn showcase mode on or off\n"
-    "  F7  save the game's state to the selected slot\n"
-    "  F8  load the selected slot's state\n"
-    "  F9  select the next save state slot\n"
-#if defined(SNX_TRACY)
-    "  F10 record a 60 second Tracy capture\n"
-#endif
-    "  Pause  pause the whole game, and resume it\n"
-    "  F11 or Alt+Enter  switch fullscreen\n"
-    "  F12  turn the stats on or off\n"
-    "  Esc  quit the game";
 
 static PadKind gamepad_kind(int type) {
     switch (type) {
@@ -577,7 +549,7 @@ static PadKind gamepad_kind(int type) {
     }
 }
 
-/* keys -> HidNpadButton bits; 40..47 are the stick keys, turned into axes in video_poll. By scancode, the key's
+/* keys -> HidNpadButton bits, which F1's text lists (help.c); 40..47 are the stick keys, turned into axes in video_poll. By scancode, the key's
    position: the keycode depends on the layout and on the modifiers, so Shift pressed while 1 was held made its release
    a different key, and ZL stayed held */
 static u64 keymap(SDL_Scancode k) {
@@ -955,9 +927,12 @@ static void title_paused(int paused) {
 static void hotkey(SDL_Keycode k) {
     switch (k) {
         case SDLK_F1: {
+            char text[HELP_MAX], debugger[SNX_DEBUGGER_NAME];
             int fs = g_fullscreen;
+            help_text(text, sizeof text, g_renderer->capture(0),
+                      snx_debugger(debugger, sizeof debugger) ? debugger : "");
             if (fs) set_fullscreen(0);
-            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "ScarletNX", HELP, g_win);
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "ScarletNX", text, g_win);
             if (fs) set_fullscreen(1);
             break;
         }
@@ -1445,6 +1420,12 @@ void video_poll(void) {
                 }
                 if (e.key.key == SDLK_RETURN && (e.key.mod & SDL_KMOD_ALT)) {
                     if (!e.key.repeat) set_fullscreen(!g_fullscreen);
+                    break;
+                }
+                /* Ctrl+F12: RenderDoc's capture of the next frame, F12 alone the stats' (hotkey) */
+                if (e.key.key == SDLK_F12 && (e.key.mod & SDL_KMOD_CTRL) &&
+                    !(e.key.mod & (SDL_KMOD_ALT | SDL_KMOD_GUI))) {
+                    if (!e.key.repeat) g_renderer->capture(1);
                     break;
                 }
                 /* not with Ctrl, Alt or the system key: Alt+F4 also arrives as F4 on Windows */

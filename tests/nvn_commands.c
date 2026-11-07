@@ -468,6 +468,27 @@ int main(void) {
               "the draw counts in the memory the callback added");
         walk(h4, &a);
         check(a.n == 3 && a.op[2] == OP_DRAW_IDX, "the recording replays whole across the callback's memory");
+
+        int before = g_cb.calls;
+        nvn_CommandBufferSetControlMemoryCallbackEnabled(&cpu, cb4, 0);
+        nvn_CommandBufferSetCommandMemoryCallbackEnabled(&cpu, cb4, 0);
+        nvn_CommandBufferAddCommandMemory(&cpu, cb4, 1, 0x6000, 40);
+        nvn_CommandBufferBeginRecording(&cpu, cb4);
+        nvn_CommandBufferBindTexture(&cpu, cb4, 0, 0, 0x10200102);
+        nvn_CommandBufferBindUniformBuffer(&cpu, cb4, 0, 1, 0x605640000ull, 0x100);
+        nvn_CommandBufferDrawElements(&cpu, cb4, 4, 2, 36, 0x605660140ull);
+        h4 = nvn_CommandBufferEndRecording(&cpu, cb4);
+        check(g_cb.calls == before, "disabled command-memory callback cannot invoke guest code");
+        check(nvn_CommandBufferGetCommandMemoryUsed(&cpu, cb4) == 40,
+              "disabled callback preserves the supplied command-memory bound");
+        walk(h4, &a);
+        check(a.n == 3 && a.op[2] == OP_DRAW_IDX, "callback suppression preserves the recording in runtime memory");
+        nvn_CommandBufferSetCommandMemoryCallbackEnabled(&cpu, cb4, 1);
+        nvn_CommandBufferBeginRecording(&cpu, cb4);
+        nvn_CommandBufferDrawElements(&cpu, cb4, 4, 2, 36, 0x605660140ull);
+        nvn_CommandBufferEndRecording(&cpu, cb4);
+        check(g_cb.calls == before + 1 && g_cb.event == NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_COMMAND_MEMORY,
+              "command-memory callback can be enabled after suppression");
     }
 
     /* a record that doesn't fit with no room for a JUMP: a draw takes all the bytes counted (its size, nobody measured
@@ -638,6 +659,7 @@ int main(void) {
         const u64 cbf = 0x4b000, ctl = 0x4c000;
         int calls = g_cb.calls;
         nvn_CommandBufferInitialize(&cpu, cbf, 0);
+        nvn_CommandBufferSetCommandMemoryCallbackEnabled(&cpu, cbf, 0);
         nvn_CommandBufferAddCommandMemory(&cpu, cbf, 1, 0x2a000, 0x100);
         nvn_CommandBufferSetMemoryCallback(&cpu, cbf, CALLBACK_PC);
         nvn_CommandBufferAddControlMemory(&cpu, cbf, ctl, 0x48);
@@ -648,7 +670,7 @@ int main(void) {
         check(nvn_CommandBufferGetControlMemoryUsed(&cpu, cbf) == 0x38, "the recording takes its 0x38 control bytes");
         nvn_CommandBufferBeginRecording(&cpu, cbf);
         check(g_cb.calls == calls + 1 && g_cb.event == 1 && g_cb.size == 0x100,
-              "a start entry that doesn't fit asks the callback for 0x100 bytes of control memory");
+              "control-memory callback remains enabled when the command-memory callback is disabled");
         nvn_CommandBufferEndRecording(&cpu, cbf);
     }
     /* a range entry in an open block of them is 0x18 bytes, but the driver checks room for 0x20 before it, as for one

@@ -51,11 +51,11 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | Key | Default | Effect |
 | --- | --- | --- |
 | `docked` | `1` | `1` is TV mode, `0` handheld mode (1280x720), `2` Auto: TV mode while the host is on its charger, handheld mode on its battery. Auto switches while the game runs |
-| `fullscreen` | `0` | `1` starts fullscreen, except in timed test runs (`--seconds`, `--frames`). `-f` or `--fullscreen=0` sets it for one run. F11 or Alt+Enter switches without changing it |
+| `fullscreen` | `0` | `1` starts fullscreen, except in timed test runs (`--seconds`, `--frames`). `-f` or `--fullscreen=0` sets it for one run. F11 or Alt+Enter switches without changing it. A 3DS game takes it too (`--fullscreen=1`, not in `--seconds` or `--max-blocks` runs), with the same keys |
 | `language` | `1` | The game's language, English (US). The `.ini` lists the others, `0` to `17`. One the runtime doesn't know is English (US) |
 | `showcase` | `0` | `1` draws player 1's buttons and sticks, as the game gets them, and the frames a second in a corner of the window, for a video. F6 turns it on and off |
 | `showcase_corner` | `br` | The corner `showcase` draws in: `tl` top left, `tr` top right, `bl` bottom left, `br` bottom right |
-| `stats` | `0` | `1` draws the frames a second, the last frame's time, the processor and memory the game takes, the share of the time the GPU's graphics queue was busy and its busy time a frame over the last second, from Vulkan timestamps, the video memory the game uses of the driver's budget for it, from `VK_EXT_memory_budget` (`?` where the system or the device does not tell), and a graph of its last 120 frames' times (guides at 60 and 30 FPS, a frame slower than 30 FPS in red) in a corner over the game. F12 or the game's menu turns it on and off |
+| `stats` | `0` | `1` draws the frames a second, the last frame's time, the processor and memory the game takes, the share of the time the GPU's graphics queue was busy and its busy time a frame over the last second, from Vulkan timestamps, the video memory the game uses of the driver's budget for it, from `VK_EXT_memory_budget` (`?` where the system or the device does not tell), and a graph of its last 120 frames' times (guides at 60 and 30 FPS, a frame slower than 30 FPS in red) in a corner over the game. Under the graph, while they apply: that Ctrl+F12 takes a RenderDoc capture (`renderdoc`), the captures written and the last one's file, and the debugger tracing the game (its name on Linux, Android and FreeBSD, `?` on Windows and macOS). F12 or the game's menu turns it on and off |
 | `stats_corner` | `tl` | The corner `stats` draws in, as `showcase_corner`'s; in showcase's own corner it goes beside showcase's box, toward the middle |
 
 ## Graphics
@@ -64,9 +64,9 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | --- | --- | --- |
 | `resolution` | `1` | Internal 3D scale, `0.25` to `16`: `1` native, `2` double, `0.75` and `0.5` faster. The launcher's Settings takes only the digits, three in all with two decimals at most, and refuses a value past the range, its dialog saying so. It warns below `0.5` and above `4`, where a game may use too much GPU memory or fall apart |
 | `shadows` | `1` | `0` skips shadow maps |
-| `vsync` | `1` | Images are shown only on the display's refresh, so nothing tears. `0` doesn't wait for it: the newest image is shown on the next refresh where the display can do that, else at once (which may tear). A display that can do neither waits for the refresh as `1` does |
+| `vsync` | `1` | Images are shown only on the display's refresh, so nothing tears. `0` doesn't wait for it: the newest image is shown on the next refresh where the display can do that, else at once (which may tear). A display that can do neither waits for the refresh as `1` does. A 3DS game takes it too (`--vsync=0`), its window saying at start which it got |
 | `frame_pacing` | `1` | With VSync and `fps_limit=game`: `0` paces the game's frames by a timer; `1` also has the next frame wait until the one before is on the display (`VK_KHR_present_wait` or `VK_GOOGLE_display_timing`), so frames don't queue for it; `2` also holds each frame of a game that asks for two refreshes or more a frame until its refresh, where the display can say when (`VK_EXT_present_timing` or `VK_GOOGLE_display_timing`). Where the display can't do one, the one before it |
-| `anisotropy` | `0` | Texture filtering as the game asks. `2` to `16` sharpens surfaces seen at an angle |
+| `anisotropy` | `0` | Texture filtering as the game asks. `2` to `16` sharpens surfaces seen at an angle. A 3DS game takes it too (`--anisotropy=N`), for its mipmapped textures filtered linearly, and says at start the value in effect |
 | `vulkan_video` | `0` | `1` decodes H.264 movies on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), where the GPU and its driver have an H.264 decode queue. Experimental and untested. `0` decodes them on the CPU, as VP9 movies always are |
 | `vertex_input_dynamic_state` | `auto` | How a draw gives the GPU its vertex layout. `auto` sets it as dynamic state (`VK_EXT_vertex_input_dynamic_state`) where the GPU's driver has the extension and its `vertexInputDynamicState` feature, but not on the drivers known to draw it wrong: NVIDIA's before 580.119.02 and Intel's Windows driver before 27.20.100.0 (of whose four numbers the driver gives the last two: below 100.0), and not on Android, whatever the driver, as Eden: Qualcomm's 512.800.48 draws it wrong. `on` sets it as dynamic state wherever the driver has it, those too. `off` puts it in the pipeline: each layout a program is drawn with takes a pipeline of its own, where dynamic state has one serve them all. The log says which, with the device, its driver and version. `on` on a device without the extension says so and puts the layout in the pipeline; any value but `auto`, `on` and `off` stops the game, saying so. Pipelines kept for the next run (`.vkshaders`) are made again when the choice changes |
 | `astc_mode` | `0` | `0` (Auto), on a GPU that samples BCn but not ASTC (most desktop ones), decodes ASTC textures and encodes them again as BC7, in a quarter of RGBA8's memory, close to what the blocks decode to but not always the same. `1` (Exact) decodes them to RGBA8 exactly, in four times the memory. Where the GPU samples ASTC it does nothing. It takes the place of `astc_bc`, whose `1` was Auto ([DEPRECATIONS](DEPRECATIONS.md)) |
@@ -75,7 +75,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 
 | Key | Default | Effect |
 | --- | --- | --- |
-| `fps_limit` | `game` | The pace the game asks for, as on the console: 60 FPS, or 30 for a game made for 30. `0` is unlimited, and `10` to `1000` is that many FPS |
+| `fps_limit` | `game` | The pace the game asks for, as on the console: 60 FPS, or 30 for a game made for 30. `0` is unlimited, and `10` to `1000` is that many FPS. A 3DS game takes it too (`--fps_limit=N`): its clock runs at N/60 of the console's pace (the 3DS shows 60 frames a second), its sound with it; `0` skips every wait, its sound not played. F4 turns it off and on there too |
 | `memory_gb` | `0` | Memory the game sees. Below `6` it is the console's 3.2 GB, `6` gives 4.8 GB and `8` gives 6.8 GB. Games that run out of memory on 3.2 GB need `6` |
 | `memory_fit_mode` | `0` | `0` (Auto) tells the game no more of `memory_gb`'s memory than the device can still give it, measured as the game starts, less what the rest of ScarletNX takes, so a device with less than the console has is not run out of memory, and one that can give it all tells it all of it. The log says what it measured. `1` (Off) tells it all of it. It takes the place of `memory_fit`, whose `0` was Off ([DEPRECATIONS](DEPRECATIONS.md)) |
 | `heap_max_mb` | `0` | The most heap the game can allocate, in MB. `0` is as much as the memory allows |
@@ -97,7 +97,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 
 | Key | Default | Effect |
 | --- | --- | --- |
-| `touch` | `2` | The game's touch screen: `2` fingers and the mouse's left button, `1` fingers, `0` off |
+| `touch` | `2` | The game's touch screen: `2` fingers and the mouse's left button, `1` fingers, `0` off. A 3DS game takes it too, for its bottom screen (`--touch=N`): one finger or the mouse at a time, the first pressed holding it until it lets go |
 | `controls_<ID>` (ID one of `l`, `r`, `zl`, `zr`, `minus`, `plus`, `capture`, `home`, `l3`, `r3`, `dpad`, `stick_l`, `stick_r`, `a`, `b`, `x`, `y`) | empty | A control's place, written once it is moved or reset: `x y size`, its middle across the screen from 0 to 1 and its size in percent (50 to 200), as `controls_a=0.930 0.470 100` |
 | `controls_<ID>_shown` | `1` | `1` draws the control, `0` hides it; written once it is shown or hidden |
 | `controls` | `0` (Android `1`) | The [on-screen controls](USAGE.md#on-screen-controls) shown |
@@ -107,9 +107,9 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 
 | Key | Default | Effect |
 | --- | --- | --- |
-| `gamepad_swap_ab` | `0` | `1` swaps a gamepad's A and B. `0` sends A, B, X and Y where the console's are |
-| `gamepad_map` | none | The player's map over that, below |
-| `gamepad_deadzone` | `20` | The sticks' dead zone, in percent of their travel (`0` to `90`) |
+| `gamepad_swap_ab` | `0` | `1` swaps a gamepad's A and B. `0` sends A, B, X and Y where the console's are. A 3DS game takes it too (the launcher passes it to `scarletnx-3ds` as `--gamepad_swap_ab=1`) |
+| `gamepad_map` | none | The player's map over that, below. A 3DS game takes it too (`--gamepad_map=MAP`), Plus as Start and Minus as Select; a control sent to L3 or R3, which the 3DS has none of, sends nothing, and the log says so |
+| `gamepad_deadzone` | `20` | The sticks' dead zone, in percent of their travel (`0` to `90`). A 3DS game takes it too, for its circle pad (`--gamepad_deadzone=N`) |
 | `gamepad_rumble` | `100` | How strongly gamepads vibrate when the game asks, in percent. `0` is never |
 | `gamepad_background` | `0` | `1` keeps gamepads playing while the window is not focused |
 | `gamepad_joycon_pair` | `1` | `1` plays a left and right Joy-Con together, `0` separately. Restart the game after changing it |
@@ -168,14 +168,15 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `shader_corpus` | empty | A folder that keeps each translated shader for `snx-shaderc`. With it every shader is translated, and none is kept for the next run |
 | `gpu_trace_target` | empty | `address[:bytes]`: logs the clears and draws that write a render target starting in that GPU address range |
 | `vk_gpu_profile` | `0` | `1` logs the GPU's time per rendering pass every 10 seconds |
+| `vk_checkpoints` | `0` | `1` logs the work each queue reached when the device is lost (`VK_NV_device_diagnostic_checkpoints`) |
 | `vk_memory` | `0` | How the GPU reads and writes guest buffers (vertices, indices, storage, the engines' results; [GPU ownership](GPU_OWNERSHIP.md)). `1` copies them into the renderer's buffers when they change, and back. `2` reads and writes them where they are in guest memory (`VK_EXT_external_memory_host`; on Android without it, guest memory moves into AHardwareBuffers), as the console's GPU does: for a GPU that shares system memory; on a discrete GPU it goes across the bus, slowly, which still shows that the path is correct. `0` is `2` on a GPU that shares system memory, but never the moves into AHardwareBuffers, else `1`. A 3DS game takes it too (the launcher passes it to `scarletnx-3ds` as `--vk_memory=N`), for the board's RAM: `1` has the GPU work on a copy of it in its own memory, kept in step by page, `2` on the RAM in place, `0` the same choice by the device ([3DS](3DS.md)) |
 | `vk_buffer_stats` | `0` | `1` logs what the renderer copies between guest memory and its buffers |
 | `nvn_storage_order` | `2` | How NVN draws that write storage buffers are ordered. `2` lets draws whose writable views cover the same buffer overlap, as NVN does until the game's own barrier, and puts the Vulkan barrier that barrier asks for at the next buffer use that depends on it. `1` puts it where the game's barrier is. `0` orders each such draw after the ones before it, as Maxwell draws are, to compare ([NVN storage ordering](DEVELOPMENT.md#measure-nvn-storage-ordering)) |
-| `vk_descriptors` | `0` | `1` gives graphics descriptors addressable Vulkan buffers where supported, with no descriptor-set allocations (compute keeps its own pools), and skips the guest's fragment barriers, which the tracking of targets and buffers orders. `0` uses descriptor sets for graphics too, and every fragment barrier |
+| `vk_descriptors` | `3` | `2` and `3` do the same: graphics descriptors in heaps where the device has them, else buffers, else sets, and a heap draw whose resource cannot be encoded uses buffers or sets. `1` uses descriptor buffers where supported, else sets. Compute keeps its own pools. With buffers or heaps in use, the guest fragment barriers that target/buffer tracking orders are skipped. `0` uses descriptor sets and every fragment barrier. See [descriptor measurements](GPU_DESCRIPTOR_BENCH.md) |
 | `vk_record` | `1` | `0` records Vulkan commands on the GPU thread instead of a thread of their own |
 | `compute` | `1` | `0` skips every compute shader dispatch |
 | `vk_max_allocation_mb`, `vk_budget_mb` | `0`, `0` | A smaller cap on each Vulkan allocation and on the GPU memory the caches keep, in MiB, for testing. `0` is the device's |
-| `renderdoc`, `renderdoc_frames` | empty | RenderDoc captures to that path's stem of the presents listed (`500,800`, or `45s` for the first after 45 seconds) |
+| `renderdoc`, `renderdoc_frames` | empty | RenderDoc captures to that path's stem of the presents listed (`500,800`, or `45s` for the first after 45 seconds), and Ctrl+F12 captures the next frame. A game RenderDoc's own program started takes Ctrl+F12 and the presents listed too, its captures where that program keeps them when `renderdoc` is empty; F12 stays the stats' key |
 | `tracy_profiler` | `0` | `1` starts the run with the Tracy client up, in a build with `SNX_TRACY` ([Profiling](DEVELOPMENT.md#profiling)): connect the GUI to `127.0.0.1:8086`. A capture and the GUI cannot both have the run |
 | `tracy_sampling` | `0` | `1` starts the sampler at the first connection, for the trace's flame graphs |
 | `tracy_port` | empty | The port the client listens on and the capture connects to, `1` to `65535`. Empty is one of the run's own, so an earlier capture or GUI on 8086 is not in the way |

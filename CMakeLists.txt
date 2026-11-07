@@ -166,9 +166,10 @@ if(NOT SNX_BUILD_NX AND NOT SNX_BUILD_GNUABI)
 endif()
 include(cmake/build_info.cmake) # the window titles' line; the driver stamps games with its commit
 if(SNX_BUILD_3DS)
-    # the window's icon, as the Switch runtime's: made here, as the folder including it first owns snx_window_icon,
-    # and a target of src/3ds compiles only src/3ds (tests/architecture.py)
+    # the window's icon and the gamepads' controls, as the Switch runtime's: made here, as the folder including them
+    # first owns snx_window_icon and snx_pad_sdl, and a target of src/3ds compiles only src/3ds (tests/architecture.py)
     include(cmake/window_icon.cmake)
+    include(cmake/pad_sdl.cmake)
     add_subdirectory(src/3ds)
 endif()
 if(SNX_BUILD_VITA AND NOT SNX_TOOLS_ONLY)

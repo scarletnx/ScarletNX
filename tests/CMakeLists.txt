@@ -156,6 +156,11 @@ if(TARGET snx_ctr_board)
     snx_test_target(snx-test-3ds-board 11)
     target_link_libraries(snx-test-3ds-board PRIVATE snx_ctr_board)
     add_test(NAME 3ds_board COMMAND snx-test-3ds-board)
+    # the game's clock, which fps_limit paces
+    add_executable(snx-test-3ds-clock 3ds_clock.c)
+    snx_test_target(snx-test-3ds-clock 11)
+    target_link_libraries(snx-test-3ds-clock PRIVATE snx_ctr_board m)
+    add_test(NAME 3ds_clock COMMAND snx-test-3ds-clock)
     add_executable(snx-test-3ds-memory 3ds_memory.c)
     snx_test_target(snx-test-3ds-memory 11)
         target_link_libraries(snx-test-3ds-memory PRIVATE snx_ctr_memory)
@@ -225,6 +230,21 @@ if(TARGET snx_ctr_board)
     snx_test_target(snx-test-3ds-hid 11)
     target_link_libraries(snx-test-3ds-hid PRIVATE snx_ctr_process)
     add_test(NAME 3ds_hid COMMAND snx-test-3ds-hid)
+    # the gamepads as a 3DS game reads them, on SDL's virtual pads
+    add_executable(snx-test-3ds-input 3ds_input.c)
+    snx_test_target(snx-test-3ds-input 11)
+    target_link_libraries(snx-test-3ds-input PRIVATE snx_ctr_gpu m)
+    add_test(NAME 3ds_input COMMAND snx-test-3ds-input)
+    # ir:rst, the New 3DS's ZL, ZR and C-stick, from a virtual pad to its shared memory
+    add_executable(snx-test-3ds-irrst 3ds_irrst.c support/3ds_guest.c)
+    snx_test_target(snx-test-3ds-irrst 11)
+    target_link_libraries(snx-test-3ds-irrst PRIVATE snx_ctr_process)
+    add_test(NAME 3ds_irrst COMMAND snx-test-3ds-irrst)
+    # hid:USER's accelerometer and gyroscope from a virtual pad's motion sensors
+    add_executable(snx-test-3ds-motion 3ds_motion.c support/3ds_guest.c)
+    snx_test_target(snx-test-3ds-motion 11)
+    target_link_libraries(snx-test-3ds-motion PRIVATE snx_ctr_process)
+    add_test(NAME 3ds_motion COMMAND snx-test-3ds-motion)
     add_executable(snx-test-3ds-ir 3ds_ir.c support/3ds_guest.c)
     snx_test_target(snx-test-3ds-ir 11)
     target_link_libraries(snx-test-3ds-ir PRIVATE snx_ctr_process)
@@ -301,6 +321,11 @@ if(TARGET snx_ctr_board)
     snx_test_target(snx-test-3ds-vk-import-error 11)
     target_link_libraries(snx-test-3ds-vk-import-error PRIVATE snx_ctr_gpu)
     add_test(NAME 3ds_vk_import_error COMMAND snx-test-3ds-vk-import-error)
+    # the samplers' anisotropy for the Switch's setting, and what the run says of it
+    add_executable(snx-test-3ds-vk-anisotropy 3ds_vk_anisotropy.c)
+    snx_test_target(snx-test-3ds-vk-anisotropy 11)
+    target_link_libraries(snx-test-3ds-vk-anisotropy PRIVATE snx_ctr_gpu)
+    add_test(NAME 3ds_vk_anisotropy COMMAND snx-test-3ds-vk-anisotropy)
     # the RAM as the GPU has it, imported or the device's own memory: the guest's bytes and the GPU's are one memory,
     # in every view, before, during and after the device
     add_executable(snx-test-3ds-vk-ram 3ds_vk_ram.c)
@@ -1371,6 +1396,12 @@ target_link_libraries(snx-test-hud PRIVATE scarletnx-common snx_splash m)
 target_include_directories(snx-test-hud PRIVATE "${PROJECT_BINARY_DIR}/generated") # the theme's colours
 add_test(NAME hud COMMAND snx-test-hud)
 
+# F1's text (runtime/platform/help.c): Ctrl+F12 while RenderDoc can capture, the debugger while one traces the game
+add_executable(snx-test-help help.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/help.c")
+snx_test_target(snx-test-help 99)
+target_include_directories(snx-test-help PRIVATE "${PROJECT_SOURCE_DIR}/src")
+add_test(NAME help COMMAND snx-test-help)
+
 add_executable(snx-test-stats stats.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
@@ -1450,6 +1481,9 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME cpu_sample_recovery COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/cpu_sample.py")
     add_test(NAME nvn_coverage COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/nvn_coverage.py")
     add_test(NAME nvn_rendering_harness COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/check_nvn_rendering_test.py")
+    add_test(NAME nvn_contracts COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/nvn_contracts_test.py")
+    add_test(NAME analyze_gpu_budget COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/analyze_gpu_budget_test.py")
+    add_test(NAME analyze_descriptor_cache COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/analyze_descriptor_cache_test.py")
     add_test(NAME gpu_hotpath_benchmark COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/bench_gpu_hotpaths_test.py")
     add_test(NAME gpu_tuner COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tune_gpu_test.py")
     add_test(NAME nvn_draw_benchmark COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/bench_nvn_draws_test.py")
@@ -1891,6 +1925,15 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-image-out 23)
     target_link_libraries(snx-test-vk-image-out PRIVATE snx_nx_flags)
     add_test(NAME vk_image_out COMMAND snx-test-vk-image-out)
+    # RenderDoc's captures (gpu/vk/renderdoc.c) against a stand-in RenderDoc: neither renderdoc= nor RenderDoc's program,
+    # renderdoc= without the library, RenderDoc's program that started the game, and renderdoc= loading it; Ctrl+F12's
+    # capture of the next frame and renderdoc_frames', and what the stats box is told. A process each
+    add_executable(snx-test-vk-renderdoc vk_renderdoc.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/renderdoc.c")
+    snx_test_target(snx-test-vk-renderdoc 23)
+    target_link_libraries(snx-test-vk-renderdoc PRIVATE snx_nx_flags)
+    foreach(case none missing started setting)
+        add_test(NAME vk_renderdoc_${case} COMMAND snx-test-vk-renderdoc ${case})
+    endforeach()
     # vertex_input_dynamic_state (gpu/vk/vertex_input.c): its values, read from a .ini without it and with it, the
     # drivers' bans against stand-in devices and the log line of each case
     add_executable(snx-test-vk-vertex-input vk_vertex_input.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/vertex_input.c"
@@ -2477,6 +2520,10 @@ if(TARGET snx_vita_program)
     snx_test_target(snx-test-vita-hle-memory 11)
     target_link_libraries(snx-test-vita-hle-memory PRIVATE snx_vita_program)
     add_test(NAME vita_hle_memory COMMAND snx-test-vita-hle-memory)
+    add_executable(snx-test-vita-watch vita_watch.c)
+    snx_test_target(snx-test-vita-watch 11)
+    target_link_libraries(snx-test-vita-watch PRIVATE snx_vita_program)
+    add_test(NAME vita_watch COMMAND snx-test-vita-watch)
 endif()
 # the texture conversion shader's GLSL run on the CPU against the CPU's conversions and ETC2 and BCn decoders: no GPU
 # needed
@@ -2654,6 +2701,11 @@ add_executable(snx-test-process-threads process_threads.c)
 snx_test_target(snx-test-process-threads 11)
 target_link_libraries(snx-test-process-threads PRIVATE scarletnx-common)
 add_test(NAME process_threads COMMAND snx-test-process-threads)
+# the debugger tracing the process as common.c reads it, which the stats box and F1's help name (process_debugger.c)
+add_executable(snx-test-process-debugger process_debugger.c)
+snx_test_target(snx-test-process-debugger 11)
+target_link_libraries(snx-test-process-debugger PRIVATE scarletnx-common)
+add_test(NAME process_debugger COMMAND snx-test-process-debugger)
 # what the log's lines on the process's resources compute (runtime/platform/resources.c): the threads line
 add_executable(snx-test-resources resources.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/resources.c")
 snx_test_target(snx-test-resources 11)
@@ -2780,6 +2832,11 @@ if(NOT WIN32 AND TARGET SDL3::SDL3) # SDL3 is there with a driver that draws (cm
     snx_test_target(snx-test-platform-posix 11)
     target_link_libraries(snx-test-platform-posix PRIVATE SDL3::SDL3 ${CMAKE_DL_LIBS})
     target_link_libraries(snx-test-platform-posix PRIVATE scarletnx-common) # plat_posix.c names its threads (snx_thread_name)
+    # a library no test links, for plat_dl_loaded to find only once it is opened
+    add_library(snx-test-dl-probe SHARED dl_probe.c)
+    snx_test_sanitize(snx-test-dl-probe) # the test's process loads it: built as the test is
+    target_compile_definitions(snx-test-platform-posix PRIVATE SNX_TEST_DL_PROBE="$<TARGET_FILE:snx-test-dl-probe>")
+    add_dependencies(snx-test-platform-posix snx-test-dl-probe)
     if(APPLE AND NOT IOS) # plat_posix.c's power source: IOKit's notifications on CoreFoundation's run loop
         target_link_libraries(snx-test-platform-posix PRIVATE "-framework IOKit" "-framework CoreFoundation")
     endif()
@@ -2906,6 +2963,11 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         snx_test_target(snx-test-vk-memory-model 11)
         target_link_libraries(snx-test-vk-memory-model PRIVATE snx_vk_common)
         add_test(NAME vk_memory_model COMMAND snx-test-vk-memory-model)
+        # the presentation the vsync setting picks, for every frontend's swapchain
+        add_executable(snx-test-vk-present-mode vk_present_mode.c "${volk_SOURCE_DIR}/volk.c")
+        snx_test_target(snx-test-vk-present-mode 11)
+        target_link_libraries(snx-test-vk-present-mode PRIVATE snx_vk_common)
+        add_test(NAME vk_present_mode COMMAND snx-test-vk-present-mode)
         # the submission ring's uploads run before the recording they belong to, on whatever device there is
         add_executable(snx-test-vk-ring-uploads vk_ring_uploads.c "${volk_SOURCE_DIR}/volk.c")
         snx_test_target(snx-test-vk-ring-uploads 11)
@@ -2938,15 +3000,59 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         "${VulkanMemoryAllocator_SOURCE_DIR}/include")
     target_link_libraries(snx-test-vk-tess-passthrough PRIVATE Vulkan::Headers)
     add_test(NAME vk_tess_passthrough COMMAND snx-test-vk-tess-passthrough)
+    add_executable(snx-test-vk-sample-locations vk_sample_locations.c)
+    snx_test_target(snx-test-vk-sample-locations 11)
+    target_link_libraries(snx-test-vk-sample-locations PRIVATE Vulkan::Headers)
+    add_test(NAME vk_sample_locations COMMAND snx-test-vk-sample-locations)
     add_executable(snx-test-vk-coverage vk_coverage.c)
     snx_test_target(snx-test-vk-coverage 11)
     add_test(NAME vk_coverage COMMAND snx-test-vk-coverage)
+    add_executable(snx-test-vk-coverage-factors vk_coverage_factors.c)
+    snx_test_target(snx-test-vk-coverage-factors 11)
+    add_test(NAME vk_coverage_factors COMMAND snx-test-vk-coverage-factors)
+    add_executable(snx-test-vk-descriptor-encoding vk_descriptor_encoding.c)
+    snx_test_target(snx-test-vk-descriptor-encoding 11)
+    target_link_libraries(snx-test-vk-descriptor-encoding PRIVATE Vulkan::Headers)
+    add_test(NAME vk_descriptor_encoding COMMAND snx-test-vk-descriptor-encoding)
+    add_executable(snx-test-vk-descriptor-heaps vk_descriptor_heaps.c)
+    snx_test_target(snx-test-vk-descriptor-heaps 11)
+    target_include_directories(snx-test-vk-descriptor-heaps PRIVATE "${volk_SOURCE_DIR}"
+        "${VulkanMemoryAllocator_SOURCE_DIR}/include")
+    target_link_libraries(snx-test-vk-descriptor-heaps PRIVATE Vulkan::Headers)
+    add_test(NAME vk_descriptor_heaps COMMAND snx-test-vk-descriptor-heaps)
+    add_executable(snx-test-vk-descriptor-heap-batch vk_descriptor_heap_batch.c)
+    snx_test_target(snx-test-vk-descriptor-heap-batch 11)
+    target_include_directories(snx-test-vk-descriptor-heap-batch PRIVATE "${volk_SOURCE_DIR}"
+        "${VulkanMemoryAllocator_SOURCE_DIR}/include")
+    target_link_libraries(snx-test-vk-descriptor-heap-batch PRIVATE Vulkan::Headers)
+    add_test(NAME vk_descriptor_heap_batch COMMAND snx-test-vk-descriptor-heap-batch)
+    add_executable(snx-test-vk-descriptor-objects vk_descriptor_objects.c
+        "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/descriptor_objects.c")
+    snx_test_target(snx-test-vk-descriptor-objects 11)
+    target_include_directories(snx-test-vk-descriptor-objects PRIVATE "${volk_SOURCE_DIR}"
+        "${VulkanMemoryAllocator_SOURCE_DIR}/include")
+    target_link_libraries(snx-test-vk-descriptor-objects PRIVATE Vulkan::Headers)
+    add_test(NAME vk_descriptor_objects COMMAND snx-test-vk-descriptor-objects)
+    add_executable(snx-test-vk-checkpoints vk_checkpoints.c)
+    snx_test_target(snx-test-vk-checkpoints 11)
+    target_include_directories(snx-test-vk-checkpoints PRIVATE "${volk_SOURCE_DIR}"
+        "${VulkanMemoryAllocator_SOURCE_DIR}/include")
+    target_link_libraries(snx-test-vk-checkpoints PRIVATE Vulkan::Headers)
+    add_test(NAME vk_checkpoints COMMAND snx-test-vk-checkpoints)
+    add_executable(snx-test-vk-descriptor-heap-setup vk_descriptor_heap_setup.c
+        "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/descriptor_heaps.c")
+    snx_test_target(snx-test-vk-descriptor-heap-setup 11)
+    target_include_directories(snx-test-vk-descriptor-heap-setup PRIVATE "${volk_SOURCE_DIR}"
+        "${VulkanMemoryAllocator_SOURCE_DIR}/include")
+    target_link_libraries(snx-test-vk-descriptor-heap-setup PRIVATE Vulkan::Headers)
+    add_test(NAME vk_descriptor_heap_setup COMMAND snx-test-vk-descriptor-heap-setup)
     add_executable(snx-test-vk-advanced-blend vk_advanced_blend.c)
     snx_test_target(snx-test-vk-advanced-blend 11)
     target_link_libraries(snx-test-vk-advanced-blend PRIVATE Vulkan::Headers)
     add_test(NAME vk_advanced_blend COMMAND snx-test-vk-advanced-blend)
     add_executable(snx-test-shader-advanced-blend shader_advanced_blend.c
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/advanced_blend_spirv.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/capture_tiles_spirv.c"
         "${PROJECT_SOURCE_DIR}/src/common/utilities/spirv_emit.c")
     snx_test_target(snx-test-shader-advanced-blend 11)
     add_test(NAME shader_advanced_blend COMMAND snx-test-shader-advanced-blend)

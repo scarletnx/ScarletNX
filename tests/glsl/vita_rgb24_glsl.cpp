@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright 2026 the ScarletNX contributors
-// The Vita's 24-bit color surface shader's body (src/vita/gpu/rgb24.glsl) run on the CPU through tests/glsl/glsl.hpp
-// against the layout written out per byte: random surfaces of both swizzles, strides past the width, the surface at
-// every offset in a word, unpacked to rows and the rows packed back over memory whose other bytes must stay.
+// The Vita's 24-bit color shader body (src/vita/gpu/rgb24.glsl) run on the CPU through tests/glsl/glsl.hpp against
+// memory written out per byte: random surfaces of both swizzles, source row strides in bytes, strides past the width,
+// the surface at every offset in a word, unpacked to rows and packed back with other bytes unchanged.
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -40,7 +40,7 @@ static void one(uint32_t width, uint32_t height, uint32_t stride, uint32_t at, b
     for (auto& b : bytes) b = (uint8_t)random_word();
     std::vector<glsl::leuint> memory(words), rows(width * height);
     std::memcpy(memory.data(), bytes.data(), bytes.size());
-    run(width * height, at, 0, width, height, stride, false, bgr, memory.data(), rows.data());
+    run(width * height, at, 0, width, height, stride * 3, false, bgr, memory.data(), rows.data());
     for (uint32_t y = 0; y < height; y++)
         for (uint32_t x = 0; x < width; x++) {
             const uint8_t* p = &bytes[at + (y * stride + x) * 3];
@@ -66,12 +66,31 @@ static void one(uint32_t width, uint32_t height, uint32_t stride, uint32_t at, b
             std::printf("pack %ux%u stride %u at %u %s: byte %zu is %02x, not %02x\n", width, height, stride, at,
                         bgr ? "RGB" : "BGR", i, got[i], want[i]);
 }
+static void one_unpacked_stride(uint32_t width, uint32_t height, uint32_t stride, uint32_t at, bool bgr) {
+    size_t size = at + (size_t)stride * height, words = (size + 3) / 4;
+    std::vector<uint8_t> bytes(words * 4);
+    for (auto& b : bytes) b = (uint8_t)random_word();
+    std::vector<glsl::leuint> memory(words), rows(width * height);
+    std::memcpy(memory.data(), bytes.data(), bytes.size());
+    run(width * height, at, 0, width, height, stride, false, bgr, memory.data(), rows.data());
+    for (uint32_t y = 0; y < height; y++)
+        for (uint32_t x = 0; x < width; x++) {
+            const uint8_t* p = &bytes[at + (size_t)y * stride + x * 3];
+            uint32_t want = bgr ? (p[2] | p[1] << 8 | p[0] << 16) : (p[0] | p[1] << 8 | p[2] << 16);
+            want |= 0xff000000u;
+            uint32_t got = rows[y * width + x];
+            if (got != want && failures++ < 10)
+                std::printf("unpack byte stride %u at %u: (%u, %u) is %08x, not %08x\n", stride, at, x, y, got,
+                            want);
+        }
+}
 
 int main() {
     for (int i = 0; i < 300; i++) {
         uint32_t width = 1 + random_word() % 70, height = 1 + random_word() % 40;
         uint32_t stride = width + (random_word() % 2 ? random_word() % 9 : 0);
         one(width, height, stride, random_word() % 4, random_word() % 2);
+        one_unpacked_stride(width, height, width * 3 + random_word() % 9, random_word() % 4, random_word() % 2);
     }
     if (failures) {
         std::printf("vita_rgb24_glsl: %u failures\n", failures);

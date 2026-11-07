@@ -75,6 +75,14 @@ uint sh_mask;
 #ifndef SNX_BC7_MODES_4_5
 #define SNX_BC7_MODES_4_5 1
 #endif
+/* A block whose squared error, summed over its texels and channels, is this or less takes no more modes. 16 is a mean
+   squared error of a quarter over 16 texels of 4 channels, 54 dB, for each block that stops, so what a block looks like
+   doesn't bear on it: a hard one still gets the whole search. It is the most that keeps every PSNR tests/glsl/bc7_glsl.cpp
+   holds the encoder to. That test builds the encoder with 0 too, for the checks that a block each mode holds comes back
+   exact */
+#ifndef SNX_BC7_GOOD_ENOUGH
+#define SNX_BC7_GOOD_ENOUGH 16
+#endif
 
 /* the weights the last Eval chose for its subset's texels, a nibble a texel (texels 0 to 7, then 8 to 15), nought
    for the other texels */
@@ -264,6 +272,7 @@ uint Eval(uint s, uint q0, uint q1) {
             }
         }
         err += be;
+        if (err >= fit_err) return err; /* Try keeps only a smaller one */
         if (k < 8u)
             cur_lo |= bi << (k * 4u);
         else
@@ -403,6 +412,7 @@ void FitSubset(uint s) {
     /* a sixteenth in from each end: the box's corners lie past the texels on any line not along an axis */
     const int i0 = (b0 - a0) / 16, i1 = (b1 - a1) / 16, i2 = (b2 - a2) / 16, i3 = (b3 - a3) / 16;
     fit_err = 0xFFFFFFFFu;
+    uint seen_lo = 0u, seen_hi = 0u;
     /* the lines tried, in turn: the box pulled in, the box, then a least squares fit to the weights chosen, twice.
        One call of Try in a loop, not one a line: the compiler inlines each call, and the copies' registers (the
        whole encoder's, as each shape inlines this too) made the GPU spill and run fewer blocks at once */
@@ -414,6 +424,10 @@ void FitSubset(uint s) {
             f0 = b0, f1 = b1, f2 = b2, f3 = b3;
         } else if (step >= 2u) {
             if (fit_err == 0u) break;
+            /* the same weights give the same line */
+            if (step == 3u && fit_lo == seen_lo && fit_hi == seen_hi) break;
+            seen_lo = fit_lo;
+            seen_hi = fit_hi;
             const int det = Fit(s);
             if (det <= 0) break;
             /* Solve's sums for every channel in one pass over the texels */
@@ -656,8 +670,8 @@ uvec4 Encode() {
     const uint jobs = shapes + (SNX_BC7_MODES_4_5 != 0 ? 12u : 0u);
     uint first = 0u, second = 1u, third = 0u;
     for (uint j = 0u; j < jobs; j++) {
+        if (best_err <= uint(SNX_BC7_GOOD_ENOUGH)) break;
         if (j == 1u) {
-            if (best_err == 0u) break;
             BlockSums();
             const uint alpha = opaque ? 0u : 1u;
             uint f_cost = 0xFFFFFFFFu, s_cost = 0xFFFFFFFFu;

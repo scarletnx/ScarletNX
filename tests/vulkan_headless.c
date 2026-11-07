@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Opt-in integration test: real renderer, no game data. Works with Mesa lavapipe and no display server. */
+#include "nx/gpu/vk/descriptor_objects.h"
 #include "common/utilities/common.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/cli.h"
@@ -28,6 +29,7 @@
 #include "nx/memory/own.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/backend.h"
+#include "nx/runtime/platform/plat.h"
 #include "nx/runtime/ini.h"
 #include "snx_settings.h"
 #include "spirv_emitter_fixture.h"
@@ -1281,6 +1283,89 @@ static int read_pixel_at(Surf* target, u32 x, u32 y, u8 out[4]) {
 /* a single-layer target's pixel 0 as its image holds it */
 static int read_pixel0(Surf* target, u8 out[4]) { return read_pixel_at(target, 0, 0, out); }
 
+/* A blit from an sRGB target to an sRGB image keeps its bytes, as the presentation's blit to an sRGB swapchain must:
+   vkCmdBlitImage converts by the images' own formats, so a target whose image were its linear twin would be encoded
+   a second time and come out washed out */
+static int check_srgb_blit(void) {
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    u32* r = ch->r3d;
+    r[0x487] = 1;
+    r[0x201] = 0x480000;
+    r[0x202] = 64; /* 16 RGBA pixels, pitch linear */
+    r[0x203] = 16;
+    r[0x204] = 0xD6; /* A8B8G8R8 sRGB */
+    r[0x205] = 0x1000;
+    r[0x206] = 1;
+    r[0x207] = 1024;
+    r[0x56E] = 1;
+    const float color[4] = {0.25f, 0.5f, 0.75f, 1};
+    memcpy(&r[0x360], color, sizeof color);
+    engine_clear(ch, 15 << 2);
+    vk_render_end();
+    Surf* target = vk_rt_find(r[0x201]);
+    CHECK(target && target->f.vk == VK_FORMAT_R8G8B8A8_SRGB);
+    u8 stored[4];
+    CHECK(!read_pixel0(target, stored));
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .imageType = VK_IMAGE_TYPE_2D,
+                            .format = VK_FORMAT_R8G8B8A8_SRGB,
+                            .extent = {16, 16, 1},
+                            .mipLevels = 1,
+                            .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+    VkImage dst;
+    VmaAllocation mem;
+    vk_lock();
+    CHECK(vk_image_create(&ii, &dst, &mem));
+    VkCommandBuffer cb = vk_cmd();
+    vk_surf_use(cb, target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkImageMemoryBarrier2 to_dst = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                    .dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT,
+                                    .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                                    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    .image = dst,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    VkDependencyInfo di = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &to_dst};
+    rec_CmdPipelineBarrier2(cb, &di);
+    VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                        .srcOffsets = {{0, 0, 0}, {16, 16, 1}},
+                        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                        .dstOffsets = {{0, 0, 0}, {16, 16, 1}}};
+    rec_CmdBlitImage(cb, target->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     1, &blit, VK_FILTER_NEAREST);
+    VkBuffer buffer;
+    u8* data = vk_readback_buffer(4, &buffer);
+    CHECK(data);
+    to_dst.srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+    to_dst.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    to_dst.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    to_dst.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    to_dst.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_dst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    rec_CmdPipelineBarrier2(cb, &di);
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {1, 1, 1}};
+    rec_CmdCopyImageToBuffer(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    vk_unlock();
+    vk_finish();
+    vk_readback_ready();
+    for (u32 i = 0; i < 4; i++) {
+        if (abs((int)data[i] - stored[i]) > 1)
+            fprintf(stderr, "srgb blit: byte %u stored %u, blitted %u (encoded twice when above)\n", i, stored[i],
+                    data[i]);
+        CHECK(abs((int)data[i] - stored[i]) <= 1);
+    }
+    vk_lock();
+    vk_image_destroy(dst, mem);
+    vk_unlock();
+    free(ch);
+    return 0;
+}
+
 /* Clears as load ops: a whole-target clear before any draw of its pass is the pass's LOAD_OP_CLEAR, and gives the
    pixels a vkCmdClearAttachments gave. A discarded target's next pass loads it as DONT_CARE, and what that pass writes
    is there */
@@ -1571,7 +1656,7 @@ static int check_sampler_reduction(void) {
                                 .format = VK_FORMAT_R32_SFLOAT,
                                 .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
     VkImageView view;
-    CHECK(vkCreateImageView(g_vk.dev, &vi, NULL, &view) == VK_SUCCESS);
+    CHECK(vk_image_view_create(g_vk.dev, &vi, NULL, &view) == VK_SUCCESS);
     size_t words = 0;
     u32* code = snx_test_spirv_sample(&words);
     CHECK(code);
@@ -1635,7 +1720,7 @@ static int check_sampler_reduction(void) {
     g_vk.has_minmax_swizzle = 1;
     CHECK(!minmax || vk_tex_bind_sampler(least, swizzled, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) != avg);
     g_vk.has_minmax_swizzle = had_swizzle;
-    vkDestroyImageView(g_vk.dev, view, NULL);
+    vk_image_view_destroy(g_vk.dev, view, NULL);
     vmaDestroyImage(g_vk.vma, image, image_memory);
     return 0;
 }
@@ -4772,6 +4857,7 @@ static int check_uma_page_changes(void) {
 }
 
 #include "vulkan_shader_invalidate.inc"
+#include "vulkan_shader_windows.inc"
 #include "vulkan_shared_clamp.inc"
 #include "vulkan_index_draws.inc"
 #include "vulkan_pass_breaks.inc"
@@ -4784,10 +4870,21 @@ static int check_uma_page_changes(void) {
 #include "vulkan_pending_index.inc"
 #include "vulkan_draw_storage_stages.inc"
 #include "vulkan_mesh_inputs.inc"
+#include "vulkan_shader_stage_images.inc"
+#include "vulkan_cross_stage_blend.inc"
+#include "vulkan_texture_gradients.inc"
+#include "vulkan_txd_uniform.inc"
 #include "vulkan_vertex_input.inc"
 #include "vulkan_frag_coord.inc"
 #include "vulkan_vertex_restride.inc"
 #include "vulkan_msaa.inc"
+#include "vulkan_cross_stage_alias.inc"
+#include "vulkan_draw_texture.inc"
+#include "vulkan_descriptor_heaps.inc"
+#include "vulkan_sample_raster.inc"
+#include "vulkan_mixed_coverage.inc"
+#include "vulkan_alpha_coverage.inc"
+#include "vulkan_indexed_feedback.inc"
 #include "vulkan_targetless_stores.inc"
 #include "vulkan_storage_image_keep.inc"
 #include "vulkan_uma_imports.inc"
@@ -4795,6 +4892,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_tex_partial.inc"
 
 #include "vulkan_descriptor_bench.inc"
+#include "vulkan_indexed_map_bench.inc"
 #include "vulkan_nvn_storage.inc"
 #include "vulkan_nvn_compat.inc"
 #include "vulkan_nvn_copy_flags.inc"
@@ -4807,11 +4905,22 @@ static int check_uma_page_changes(void) {
 #include "vulkan_nvn_blend.inc"
 #include "vulkan_nvn_advanced_native.inc"
 #include "vulkan_nvn_advanced_shader.inc"
+#include "vulkan_advanced_blend_images.inc"
 #include "vulkan_nvn_blend_equations.inc"
+#include "vulkan_shader_rounding.inc"
+#include "vulkan_integer_half.inc"
+#include "vulkan_texture_half.inc"
 #include "vulkan_nvn_coverage.inc"
+#include "vulkan_texture_limits.inc"
+#include "vulkan_nvn_blend_resolve.inc"
+#include "vulkan_nvn_blend_capture.inc"
+#include "vulkan_late_depth_shadow.inc"
+#include "vulkan_capture_bench.inc"
 #include "vulkan_sparse_bench.inc"
 #include "vulkan_storage_lookup_bench.inc"
 #include "vulkan_storage_buffer_keep.inc"
+#include "vulkan_fragment_barrier.inc"
+#include "vulkan_capture_cap.inc"
 
 /* key's row among the settings the runtime applies itself (options.c's), or NULL */
 static const IniOpt* setting_row(const char* key) {
@@ -4848,7 +4957,7 @@ static int check_map_lands_covered(void) {
     return 0;
 }
 
-int main(int argc, char** argv) {
+static int run_headless(int argc, char** argv) {
     nvn_init();
     const u32 w = 32, h = 16;
     const u64 address = HEAP_BASE;
@@ -4856,9 +4965,9 @@ int main(int argc, char** argv) {
     char *root, *shot, *ppm;
     setvbuf(stdout, NULL, _IOLBF, 0); /* a CHECK's stderr line lands between whole lines in a log both go to */
     CHECK(!snx_startup_options(argc, argv));
-    int nvn_benchmark = -1;
-    u32 benchmark_sets = 0, benchmark_count = 16, benchmark_images = 0, benchmark_sparse = 0, benchmark_storage = 0;
-    u32 benchmark_image = 0;
+    int nvn_benchmark = -1, indexed_map_benchmark = -1;
+    u32 benchmark_sets = 0, benchmark_count = 16, benchmark_images = 0, benchmark_indexed = 0;
+    u32 benchmark_sparse = 0, benchmark_storage = 0, benchmark_image = 0;
     u32 benchmark_buffer = 0;
     u32 benchmark_passes = 0;
     /* the runtime's startup flags (-H), its settings as it takes them (--vk_memory=2, --memory_traps=2,
@@ -4870,6 +4979,10 @@ int main(int argc, char** argv) {
         unsigned flags = 0;
         char key[64];
         if (snx_cli_flag(argv[i], &flags) == 1) continue;
+        if (!strncmp(argv[i], "--bench-indexed-map=", 20)) {
+            indexed_map_benchmark = (int)strtol(argv[i] + 20, NULL, 10);
+            continue;
+        }
         if (!strncmp(argv[i], "--nvn-draw-bench=", 17)) {
             nvn_benchmark = (int)strtol(argv[i] + 17, NULL, 10);
             continue;
@@ -4880,6 +4993,10 @@ int main(int argc, char** argv) {
         }
         if (!strncmp(argv[i], "--descriptor-images=", 20)) {
             benchmark_images = (u32)strtoul(argv[i] + 20, NULL, 10);
+            continue;
+        }
+        if (!strncmp(argv[i], "--descriptor-indexed=", 21)) {
+            benchmark_indexed = (u32)strtoul(argv[i] + 21, NULL, 10);
             continue;
         }
         if (!strncmp(argv[i], "--descriptor-count=", 19)) {
@@ -4918,7 +5035,9 @@ int main(int argc, char** argv) {
             fprintf(
                 stderr,
                 "snx-test-vulkan: %s is not an option it takes: -H, --KEY=VALUE of the runtime's settings, "
-                "--bench-descriptors=N, --descriptor-images=N, --descriptor-count=N, --bench-sparse-volume, --bench-sparse-texture, --bench-storage-lookup, --bench-storage-image, --bench-storage-buffer, --bench-pass-breaks=N, --nvn-draw-bench=N\n",
+                "--bench-descriptors=N, --descriptor-images=N, --descriptor-indexed=N, --descriptor-count=N, "
+                "--bench-sparse-volume, --bench-sparse-texture, --bench-storage-lookup, --bench-storage-image, "
+                "--bench-storage-buffer, --bench-pass-breaks=N, --nvn-draw-bench=N, --bench-indexed-map=N\n",
                 argv[i]);
             return 2;
         }
@@ -4947,14 +5066,23 @@ int main(int argc, char** argv) {
     }
     CHECK(!check_recorder_self_sync());
     viw_install();
-    if (g_settings.descriptor_buffers && !g_vk.has_descriptor_buffers) {
-        puts("SKIP descriptor-buffer checks: the device does not support this path");
+    if ((g_settings.descriptor_buffers == 1 && !g_vk.has_descriptor_buffers) ||
+        (g_settings.descriptor_buffers == 2 && !g_vk.has_descriptor_heaps)) {
+        puts("SKIP selected descriptor backend: the device does not support this path");
         vk_pipeline_quiesce(); /* the shader files' reading thread, before the driver's exit */
         CHECK(!snx_remove_tree(root));
         free(root);
         free(shot);
         free(ppm);
         return 77;
+    }
+    if (indexed_map_benchmark >= 0) {
+        CHECK(indexed_map_benchmark <= 1);
+        int result = bench_indexed_map(indexed_map_benchmark);
+        vk_pipeline_quiesce();
+        CHECK(!snx_remove_tree(root));
+        free(root); free(shot); free(ppm);
+        return result;
     }
     if (nvn_benchmark >= 0) {
         CHECK(nvn_benchmark <= 2);
@@ -4994,7 +5122,7 @@ int main(int argc, char** argv) {
         return result;
     }
     if (benchmark_sets) {
-        int result = bench_descriptors(benchmark_sets, benchmark_count, benchmark_images);
+        int result = bench_descriptors(benchmark_sets, benchmark_count, benchmark_images, benchmark_indexed);
         vk_pipeline_quiesce();
         CHECK(!snx_remove_tree(root));
         free(root);
@@ -5035,6 +5163,66 @@ int main(int argc, char** argv) {
             result = check_nvn_advanced_shader();
         else if (!strcmp(name, "blend_equations"))
             result = check_nvn_blend_equations();
+        else if (!strcmp(name, "alpha_coverage"))
+            result = check_alpha_coverage();
+        else if (!strcmp(name, "capture_tiles"))
+            result = bench_capture_tiles();
+        else if (!strcmp(name, "coverage_color"))
+            result = check_coverage_to_color();
+        else if (!strcmp(name, "mixed_coverage"))
+            result = check_mixed_coverage_portable();
+        else if (!strcmp(name, "depth_coverage"))
+            result = check_nvn_depth_coverage();
+        else if (!strcmp(name, "coverage_modulation"))
+            result = check_nvn_coverage();
+        else if (!strcmp(name, "texture_min_lod"))
+            result = check_texture_min_lod();
+        else if (!strcmp(name, "txd_varying"))
+            result = check_txd_varying_offsets();
+        else if (!strcmp(name, "blend_resolve"))
+            result = check_nvn_blend_resolve();
+        else if (!strcmp(name, "blend_capture"))
+            result = check_nvn_blend_capture();
+        else if (!strcmp(name, "fragment_barrier"))
+            result = check_fragment_barrier_backend();
+        else if (!strcmp(name, "capture_cap"))
+            result = check_capture_cap();
+        else if (!strcmp(name, "late_depth_shadow"))
+            result = check_late_depth_shadow();
+        else if (!strcmp(name, "shader_windows"))
+            result = check_shader_read_windows();
+        else if (!strcmp(name, "texture_half"))
+            result = check_texture_half_rounding();
+        else if (!strcmp(name, "cross_stage_alias"))
+            result = check_cross_stage_image_alias();
+        else if (!strcmp(name, "cross_stage_blend"))
+            result = check_cross_stage_blend_snapshots();
+        else if (!strcmp(name, "txd_uniform"))
+            result = check_txd_uniform_offsets();
+        else if (!strcmp(name, "indexed_feedback"))
+            result = check_indexed_texture_feedback();
+        else if (!strcmp(name, "texture_gradients"))
+            result = check_texture_gradients();
+        else if (!strcmp(name, "blend_images"))
+            result = check_advanced_blend_images();
+        else if (!strcmp(name, "stage_images"))
+            result = check_shader_stage_images();
+        else if (!strcmp(name, "tessellation"))
+            result = check_nvn_default_tessellation();
+        else if (!strcmp(name, "draw_texture"))
+            result = check_draw_texture();
+        else if (!strcmp(name, "descriptor_heaps"))
+            result = check_descriptor_heaps();
+        else if (!strcmp(name, "indirect_dispatch"))
+            result = check_indirect_dispatch_once();
+        else if (!strcmp(name, "integer_half"))
+            result = check_shader_integer_half_rounding();
+        else if (!strcmp(name, "sample_locations"))
+            result = check_custom_sample_locations();
+        else if (!strcmp(name, "coverage_to_color"))
+            result = check_coverage_to_color();
+        else if (!strcmp(name, "float_rounding"))
+            result = check_shader_float_rounding();
         else {
             fprintf(stderr, "Unknown NVN case: %s\n", name);
             return 2;
@@ -5192,12 +5380,37 @@ int main(int argc, char** argv) {
     CHECK(!check_nvn_default_tessellation());
     CHECK(!check_nvn_advanced_blend());
     CHECK(!check_nvn_coverage());
+    CHECK(!check_nvn_depth_coverage());
     CHECK(!check_nvn_copy_conversions());
     CHECK(!check_nvn_event_order());
     CHECK(!check_nvn_subroutine_calls());
     CHECK(!check_nvn_advanced_native());
     CHECK(!check_nvn_advanced_shader());
     CHECK(!check_nvn_blend_equations());
+    CHECK(!check_texture_min_lod());
+    CHECK(!check_txd_varying_offsets());
+    CHECK(!check_nvn_blend_resolve());
+    CHECK(!check_nvn_blend_capture());
+    CHECK(!check_late_depth_shadow());
+    CHECK(!check_shader_read_windows());
+    CHECK(!check_texture_half_rounding());
+    CHECK(!check_cross_stage_image_alias());
+    CHECK(!check_cross_stage_blend_snapshots());
+    CHECK(!check_txd_uniform_offsets());
+    CHECK(!check_indexed_texture_feedback());
+    CHECK(!check_texture_gradients());
+    CHECK(!check_advanced_blend_images());
+    CHECK(!check_shader_stage_images());
+    CHECK(!check_custom_sample_locations());
+    CHECK(!check_coverage_to_color());
+    CHECK(!check_mixed_coverage_portable());
+    CHECK(!check_alpha_coverage());
+    CHECK(!check_shader_integer_half_rounding());
+    CHECK(!check_draw_texture());
+    CHECK(!check_descriptor_heaps());
+    CHECK(!check_fragment_barrier_backend());
+    CHECK(!check_capture_cap());
+    CHECK(!check_shader_float_rounding());
     CHECK(!check_storage_image_formats());
     CHECK(!check_volume_surface_atomics());
     CHECK(!check_layered_surface_loads());
@@ -5219,6 +5432,7 @@ int main(int argc, char** argv) {
     CHECK(!check_depth_writeback());
     CHECK(!check_big_volume());
     CHECK(!check_srgb_write());
+    CHECK(!check_srgb_blit());
     CHECK(!check_clear_load_op());
     CHECK(!check_sparse_while_submitting());
     CHECK(!check_multisample_shader_gate());
@@ -5229,6 +5443,7 @@ int main(int argc, char** argv) {
     CHECK(!check_saturate());
     CHECK(!check_sampler_reduction());
     CHECK(!check_shader_invalidation());
+    CHECK(!check_indirect_dispatch_once());
     CHECK(!check_shared_clamp());
     CHECK(!check_vic());
     CHECK(!check_vic_chain(shot));
@@ -5301,18 +5516,20 @@ int main(int argc, char** argv) {
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR = NULL;
     CHECK(!vk_swapchain_create(0));
     u32* pixels = (u32*)(g_mem + address);
-    for (u32 frame = 0; frame < 8; ++frame) {
+    for (u32 frame = 0; frame < 16; ++frame) {
         for (u32 y = 0; y < h; ++y)
             for (u32 x = 0; x < w; ++x) pixels[y * w + x] = 0xff000000u | x | (y << 8) | (frame << 16);
         const i32* region = frame & 1 ? crop : full;
         u32 x0 = frame & 1 ? 4 : 0, y0 = frame & 1 ? 2 : 0;
         u32 width = frame & 1 ? 16 : w, height = frame & 1 ? 8 : h;
         u32 transform = frame >> 1; /* none, horizontal, vertical, both; each with a full image and a crop */
+        u32 output_width = transform & 4 ? height : width, output_height = transform & 4 ? width : height;
         u64 expected = 1469598103934665603ull;
-        for (u32 y = 0; y < height; ++y)
-            for (u32 x = 0; x < width; ++x) {
-                u32 sx = x0 + ((transform & 1) ? width - 1 - x : x);
-                u32 sy = y0 + ((transform & 2) ? height - 1 - y : y);
+        for (u32 y = 0; y < output_height; ++y)
+            for (u32 x = 0; x < output_width; ++x) {
+                u32 rx = transform & 4 ? y : x, ry = transform & 4 ? height - 1 - x : y;
+                u32 sx = x0 + ((transform & 1) ? width - 1 - rx : rx);
+                u32 sy = y0 + ((transform & 2) ? height - 1 - ry : ry);
                 expected = (expected ^ pixels[sy * w + sx]) * 1099511628211ull;
             }
         u64 before = vk_frame_id();
@@ -5323,13 +5540,14 @@ int main(int argc, char** argv) {
         size_t size;
         unsigned char* data = snx_read_file(ppm, &size);
         char header[64];
-        int n = snprintf(header, sizeof header, "P6\n%u %u\n255\n", width, height);
-        CHECK(data && size == (size_t)n + width * height * 3 && !memcmp(data, header, (size_t)n));
-        for (u32 y = 0; y < height; ++y)
-            for (u32 x = 0; x < width; ++x) {
-                unsigned char* p = data + n + (y * width + x) * 3;
-                CHECK(p[0] == x0 + ((transform & 1) ? width - 1 - x : x));
-                CHECK(p[1] == y0 + ((transform & 2) ? height - 1 - y : y));
+        int n = snprintf(header, sizeof header, "P6\n%u %u\n255\n", output_width, output_height);
+        CHECK(data && size == (size_t)n + output_width * output_height * 3 && !memcmp(data, header, (size_t)n));
+        for (u32 y = 0; y < output_height; ++y)
+            for (u32 x = 0; x < output_width; ++x) {
+                u32 rx = transform & 4 ? y : x, ry = transform & 4 ? height - 1 - x : y;
+                unsigned char* p = data + n + (y * output_width + x) * 3;
+                CHECK(p[0] == x0 + ((transform & 1) ? width - 1 - rx : rx));
+                CHECK(p[1] == y0 + ((transform & 2) ? height - 1 - ry : ry));
                 CHECK(p[2] == frame);
             }
         free(data);
@@ -5351,6 +5569,12 @@ int main(int argc, char** argv) {
         "PASS headless Vulkan: viewport orientation, 7 VIC compositions, a VIC picture kept on the GPU and "
         "presented from there, NVDEC pictures laid out on the GPU and composed by VIC as the CPU references do, DMA copies and 2D blits on the GPU as theirs, "
         "render targets over one another newest on top, "
-        "8 cropped/transformed readbacks and PPMs, no WSI");
+        "16 cropped/flipped/rotated readbacks and PPMs, no WSI");
     return 0;
+}
+
+int main(int argc, char** argv) {
+    /* Driver cleanup can race its live worker threads after the tests finish. The runtime's exit flushes stdio
+       without unloading those libraries, and preserves the result of every full or selected test path. */
+    plat_exit_now(run_headless(argc, argv));
 }

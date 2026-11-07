@@ -5,6 +5,8 @@
 #include "3ds/aot/ctr_module.h"
 #include "3ds/runtime/main.h"
 #include "3ds/ipc/ctr_ipc.h"
+#include "3ds/input/input.h"
+#include "3ds/board/clock.h"
 #include "3ds/services/uds.h"
 #include "common/utilities/ascii.h"
 #include "common/utilities/common.h"
@@ -61,7 +63,18 @@ static void usage(FILE* out) {
         "                  --vk_memory=N, as it means there: 0 has the GPU work on a copy of the RAM in its own\n"
         "                  memory unless it shares the system's, 1 on the copy, 2 on the RAM in place;\n"
         "                  --async_pipelines=1 skips what a new pipeline draws while it is made, on\n"
-        "                  --pipeline_threads=N threads (0: all the computer's but two, two to twelve)\n"
+        "                  --pipeline_threads=N threads (0: all the computer's but two, two to twelve);\n"
+        "                  --gamepad_swap_ab=1 swaps a gamepad's A and B, --gamepad_deadzone=N is its sticks'\n"
+        "                  dead zone in percent of their travel (default 20), --gamepad_map=MAP the buttons its\n"
+        "                  controls send (south:B east:A ..., the Switch's names: Plus is Start, Minus Select);\n"
+        "                  --touch=N what reaches the touch screen: 2 a finger or the mouse's left button (the\n"
+        "                  default), 1 a finger, 0 nothing; --vsync=0 shows the newest image at the display's next\n"
+        "                  refresh, or at once, instead of each in turn at its refresh (the default 1);\n"
+        "                  --fullscreen=1 starts the window fullscreen, but for --seconds and --max-blocks runs (F11\n"
+        "                  or Alt+Enter switches it while the game runs); --anisotropy=N (2 to 16) filters a\n"
+        "                  mipmapped texture the game filters linearly anisotropically (default 0: as the game asks);\n"
+        "                  --fps_limit=N runs the game at N/60 of the console's pace (the 3DS shows 60 frames a\n"
+        "                  second), 0 as fast as it goes, game the console's (the default); F4 turns it off and on\n"
         "  --ipc-stubs L   With --ctr_auto_stub_ipc=0, still answer a service command the runtime lacks with\n"
         "                  success for the services in L: all, or a comma list of srv, fs, apt, ptm, hid, gsp,\n"
         "                  cfg, dsp, system. Given more than once, the lists add up\n"
@@ -540,10 +553,12 @@ int snx_ctr_main(int argc, char** argv) {
         } else if (!positional && !strncmp(arg, "--", 2) && strchr(arg, '=')) {
             /* a setting of the 3DS display or debug table (g_ctr_display_ini, g_ctr_debug_ini, in
                src/nx/runtime/settings.txt), or one of the Switch's the 3DS takes too (snx_ctr_shared_setting),
-               --key=value; --script= is ctr_script, a Switch game's name for it */
+               --key=value; --script= is ctr_script, a Switch game's name for it. gamepad_map is the input's to read:
+               its row's setter keeps the map for a Switch game's pads */
             char key[64];
             size_t length = (size_t)(strchr(arg, '=') - arg - 2);
             const IniOpt* o = NULL;
+            bool map = false;
             if (length < sizeof key) {
                 memcpy(key, arg + 2, length);
                 key[length] = 0;
@@ -551,12 +566,19 @@ int snx_ctr_main(int argc, char** argv) {
                 if (!o) o = ini_find(g_ctr_debug_ini, !strcmp(key, "script") ? "ctr_script" : key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_debug_ini, key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_performance_ini, key);
+                if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_gamepad_ini, key);
+                if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_backend_ini, key);
+                if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_graphics_ini, key);
+                if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_display_ini, key);
+                map = !strcmp(key, "gamepad_map");
             }
-            if (!o) {
+            if (map)
+                snx_ctr_input_map(strchr(arg, '=') + 1);
+            else if (!o) {
                 fprintf(stderr, "scarletnx-3ds: unknown setting: %s\n", arg);
                 return 2;
-            }
-            ini_read(o, strchr(arg, '=') + 1);
+            } else
+                ini_read(o, strchr(arg, '=') + 1);
         } else if ((!positional && arg[0] == '-') || input) {
             fprintf(stderr, "scarletnx-3ds: unexpected argument: %s\n", arg);
             usage(stderr);
@@ -564,6 +586,12 @@ int snx_ctr_main(int argc, char** argv) {
         } else
             input = arg;
     }
+    /* the Switch's fps_limit, its text as the Switch reads it, the game's clock's pace (board/clock.h) */
+    char said[192];
+    int pace = snx_ctr_clock_pace();
+    (void)snx_ctr_clock_parse(g_settings.fps_limit, &pace, said, sizeof said);
+    if (said[0]) fprintf(stderr, "settings: %s\n", said);
+    snx_ctr_clock_set_pace(pace);
     if (old_trace)
         snx_error("SNX_3DS_UDS_PACKET_TRACE=%s is deprecated, %s: ctr_uds_trace=%d (docs/DEPRECATIONS.md)", old_trace,
                   strcmp(old_trace, "1")     ? "and only 1 did anything"

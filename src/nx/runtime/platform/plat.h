@@ -171,7 +171,9 @@ int plat_alias_unmap(u8* p, u64 size);
    writable: 0, or -1 (and p as a failed MAP_FIXED leaves it: plat_alias_unmap gives the reservation back). No write
    tracking registers it, as userfaultfd refuses a driver's mapping: the caller keeps it from the scans. Linux and
    Android; -1 elsewhere */
-int plat_vm_map_fd(u8* p, u64 size, int fd, u64 off);
+/* allocation_size is the whole dma-buf size. Some drivers accept mmap only at offset zero. Linux can map the
+   allocation temporarily, then move the requested page range to p without a copy. */
+int plat_vm_map_fd(u8* p, u64 size, int fd, u64 off, u64 allocation_size);
 void plat_vm_fd_close(int fd);
 /* copies between host memory and the pool: 0, or -1 */
 int plat_alias_write(u64 off, const void* src, u64 size);
@@ -213,6 +215,9 @@ void plat_thaw(void);
 void* plat_dl_open(const char* path);
 void* plat_dl_sym(void* h, const char* name);
 const char* plat_dl_error(void); /* the reason the last plat_dl_open or plat_dl_sym returned NULL */
+/* the library of that name when the process has it loaded already (RenderDoc's program puts its own in the game it
+   starts), NULL when it hasn't: never loads it */
+void* plat_dl_loaded(const char* name);
 int plat_setenv(const char* name, const char* value); /* for this process and what it loads; 0 on success */
 
 /* ---- files */

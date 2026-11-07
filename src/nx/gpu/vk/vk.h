@@ -22,7 +22,7 @@
    render.c    the render target set (dynamic rendering), clears and draws
    compute.c   compute dispatches (on a queue of their own when there is one), landing their results in guest memory
    renderer.c  the renderer interface the GPU front end calls (gpu/renderer.h) and presenting
-   renderdoc.c RenderDoc captures of chosen frames (renderdoc)
+   renderdoc.c RenderDoc captures of chosen frames (renderdoc) and of Ctrl+F12's
    ui.c        the on-screen controls and the game's menu, drawn over the swapchain image
    vma.cpp     VulkanMemoryAllocator's implementation
 
@@ -36,6 +36,7 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/draw_state.h"
 #include "nx/gpu/vk/coverage.h"
+#include "nx/gpu/vk/sample_locations.h"
 #include "nx/gpu/vk/advanced_blend.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
@@ -59,7 +60,10 @@ typedef struct {
     VkPhysicalDeviceProperties props;
     u64 shader_generation; /* shader instruction invalidations, separate from memory epochs */
     int has_descriptor_buffers;
+    int has_descriptor_heaps;
+    int has_descriptor_heap_support; /* enabled device feature, retained during a draw's buffer fallback */
     VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptor_props;
+    VkPhysicalDeviceDescriptorHeapPropertiesEXT descriptor_heap_props;
     VkPipelineLayout cs_playout;
     VkDescriptorSetLayout cs_dslayout;
     VkDevice dev;
@@ -113,8 +117,14 @@ typedef struct {
                                 the client's, one driver call (gpuprof.c's calibration) */
     int has_xfb;                /* VK_EXT_transform_feedback: draws capture their outputs into guest memory */
     int has_mixed_samples;      /* VK_NV_framebuffer_mixed_samples: coverage at more samples than color storage */
+    int has_coverage_to_color, has_post_depth_coverage;
+    VkSampleLocationCaps sample_locations;
     VkAdvancedBlendCaps advanced_blend_caps;
     int has_fragment_interlock; /* ordered pixel storage-image read/modify/write */
+    int has_sample_interlock;
+    int has_geometry_streams;
+    int geometry_streams_lines_triangles;
+    u32 image_slots[5], buffer_image_slots[5]; /* descriptor capacity by shader stage, after the pipeline-wide limit */
     int has_border_color;       /* VK_EXT_custom_border_color */
     u32 border_color_max;       /* maxCustomBorderColorSamplers: past it, samplers take the nearest built-in color */
     int has_mirror_clamp;       /* samplerMirrorClampToEdge: VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE */
@@ -142,6 +152,7 @@ typedef struct {
     /* VK_EXT_conservative_rasterization: conservative rasterization (CONSERVATIVE_RASTER, 0x452), dilated by at most
        conservative_extra pixels (maxExtraPrimitiveOverestimationSize) */
     int has_conservative;
+    int has_depth_range_unrestricted; /* raw D32F copies retain every imported bit */
     float conservative_extra;
     /* VK_KHR_index_type_uint8 (or the EXT before it): 8-bit index buffers bound as they are */
     int has_index8;
@@ -155,6 +166,7 @@ typedef struct {
     u32 gfx_timestamp_bits;  /* the graphics queue family's timestampValidBits: 0 where it writes no timestamps */
     /* VK_EXT_memory_budget: the driver tells each heap's use and budget (VMA reads them, and guesses without it) */
     int has_budget;
+    int has_checkpoints; /* vk_checkpoints=1 on a driver that has them (checkpoints.c) */
     /* VK_GOOGLE_display_timing, enabled without present waits (Android): presents carry ids and times to be shown at,
        and the swapchain tells when each was */
     int has_display_timing;
@@ -346,6 +358,27 @@ void vk_submit_for_readback(void);
 /* the commands recorded since the last submission submitted, when a command buffer is begun: what a change of an
    image's sparse binding has to follow (memory.c) */
 void vk_submit_recorded(void);
+void vk_submit_upload_wait(void); /* the same, and waits for the GPU, landing nothing: an upload's own pace */
+/* vk_checkpoints=1: what the GPU reached when the device was lost (checkpoints.c) */
+enum {
+    VK_CK_ASTC,
+    VK_CK_BC7,
+    VK_CK_COPY,
+    VK_CK_STRIP_DONE,
+    VK_CK_DESWIZZLE,
+    VK_CK_CONVERT,
+    VK_CK_DISPATCH,
+    VK_CK_PASS,
+    VK_CK_SUBMIT,
+    VK_CK_KINDS
+};
+void vk_ck_init(void);
+void vk_ck_(VkCommandBuffer cb, u32 kind, u32 a, u32 b, u32 c, u32 d);
+void vk_ck_report(void); /* logs them, once: before the fatal error of a lost device */
+#define vk_ck(cb, kind, a, b, c, d)                                                                                    \
+    do {                                                                                                               \
+        if (g_vk.has_checkpoints) vk_ck_((cb), (kind), (a), (b), (c), (d));                                            \
+    } while (0)
 /* the next submission waits for a timeline semaphore of someone else's (FFmpeg's picture's) at one value and signals
    it at another: whichever submit comes next takes them, so commands recorded from now on never run before the wait */
 void vk_submit_after(VkSemaphore sem, u64 wait, u64 signal);
@@ -410,10 +443,11 @@ u32 vk_desc_pools(void);                 /* the pools that exist, made on any th
 void vk_memory_text(char* out, size_t size);
 u64 vk_memory_blocks(void);              /* the bytes of VMA's blocks in all heaps, any thread */
 u32 vk_frame_slot(void);                 /* the frame slot being recorded */
-/* a descriptor pool's sizes (VK_POOL_TYPES entries) for `sets` sets of the stage layouts (gpu/vk/pipeline.c) */
-#define VK_POOL_TYPES 5 /* descriptor types in a set: uniform, storage buffers, textures, images, texel buffers */
+/* A descriptor pool's sizes (VK_POOL_TYPES entries) for `sets` stage or auxiliary sets (gpu/vk/pipeline.c). */
+#define VK_POOL_TYPES 6 /* uniform/storage buffers, combined textures, storage images/texels, sampled images */
 void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets);
 extern u32 g_vk_buffer_image_slots; /* storage texel buffer bindings in a set, from SNX_VKB_IMGBUF */
+VkDescriptorType vk_cbuf_type(u32 slot); /* the descriptor type of a constant buffer slot (g_shader_uniform_cbufs) */
 /* A buffer image: the texels a buffer header describes, bound as a storage texel buffer over their copy. Raw loads
    and atomics view it as R32_UINT, as the console reads it for them whatever its format. Formatted loads and stores
    see the format itself, of the number type the program was keyed on (kind 0 float, 2 unsigned, 3 signed); unkeyed,
@@ -484,7 +518,9 @@ void rec_CmdDrawIndexed(VkCommandBuffer cb, u32 count, u32 instances, u32 first,
 void rec_CmdDrawIndirect(VkCommandBuffer cb, int indexed, VkBuffer buf, VkDeviceSize off, VkBuffer count_buf,
                          VkDeviceSize count_off, u32 max, u32 stride);
 void rec_CmdDispatch(VkCommandBuffer cb, u32 x, u32 y, u32 z);
+void rec_CmdSetCheckpointNV(VkCommandBuffer cb, const void* marker);
 void rec_CmdDispatchIndirect(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off);
+void rec_CmdFillBuffer(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize offset, VkDeviceSize size, u32 value);
 void rec_CmdEndRendering(VkCommandBuffer cb);
 void rec_CmdSetCullMode(VkCommandBuffer cb, VkCullModeFlags mode);
 void rec_CmdSetFrontFace(VkCommandBuffer cb, VkFrontFace face);
@@ -646,6 +682,8 @@ typedef struct Surf {
     u64 rt_size;           /* a render target's guest bytes, all layers (its shape is fixed when it is made) */
     int is_rt;
     int storage_capable;  /* image was created with VK_IMAGE_USAGE_STORAGE_BIT */
+    int sample_locations_compatible; /* depth image carries sample-location layout metadata */
+    VkSampleLocations sample_locations;
     int volume;           /* render target layers use 3D block-linear memory rather than array strides */
     u8 msaa;              /* DS_MSAA_: a multisampled image's sample layout. w and h count its pixels, the guest's
                              memory its samples (w << ds_msaa_log2_x(msaa) by h << ds_msaa_log2_y(msaa) texels) */
@@ -1212,9 +1250,20 @@ int vk_buf_pending_unsubmitted(void); /* one is in the commands recorded since t
 /* graphics results that searches for the ones over a range gave their callers to compare so far: each search looks at
    the results on the range's pages alone (tests count them) */
 u64 vk_buf_pending_inspected(void);
-/* renderdoc.c: with renderdoc set, RenderDoc loaded before the instance exists (load) and the frames
-   renderdoc_frames names captured (present, at each present under vk_lock) */
+/* renderdoc.c: RenderDoc loaded before the instance exists, with renderdoc set, or taken where RenderDoc's program
+   started the game (load); the frames renderdoc_frames names and Ctrl+F12 asks for captured (present, at each present
+   under vk_lock). capture: whether a capture can be taken (RenderDoc is in the process), and with ask, the next frame
+   captured, said in the log either way; the renderer's capture. Any thread */
+/* RenderDoc's library, by the name its own program puts in a game it starts: the one load looks for and opens */
+#if defined(_WIN32)
+#define SNX_VK_RENDERDOC_LIBRARY "renderdoc.dll"
+#elif defined(__ANDROID__)
+#define SNX_VK_RENDERDOC_LIBRARY "libVkLayer_GLES_RenderDoc.so"
+#else
+#define SNX_VK_RENDERDOC_LIBRARY "librenderdoc.so"
+#endif
 void vk_renderdoc_load(void);
+int vk_renderdoc_capture(int ask);
 void vk_renderdoc_present(u64 present);
 
 /* release.c: releases the game can observe, once the results before them land (renderer.h release_write) */
@@ -1239,6 +1288,8 @@ typedef struct {
 int vk_release_read_counts(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 max, u32* n);
 extern u64 g_vk_release_forwards;           /* statistics: reads vk_release_read answered */
 extern u64 g_vk_dset_new, g_vk_dset_reused; /* statistics: descriptor sets written, reused for the same contents */
+extern u64 g_vk_itable_uploads, g_vk_itable_reused, g_vk_itable_bytes; /* indexed uniform staging statistics */
+void vk_render_upload_cache_reset(void); /* renderer start: invalidate staging addresses from an earlier device */
 u32 vk_release_value(u32 id);
 /* the event slots the syncpoint increments this thread performed under vk_lock reached, signaled (nvdrv.c's
    syncpt_events): the outermost vk_unlock's, after the lock goes */
@@ -1258,6 +1309,7 @@ void vk_query_pass_end(VkCommandBuffer cb);
 void vk_query_flush(VkCommandBuffer cb);
 void vk_query_reset(u32 owner);
 void vk_query_enable(u32 owner, int on);
+int vk_query_enabled(u32 owner);
 int vk_query_report(u32 owner, u64 gva, u32 len, u64 ticks);
 /* a report performed (release.c): the count of counter's segments [first, end) */
 u64 vk_query_value(u32 counter, u64 first, u64 end);
@@ -1336,6 +1388,8 @@ typedef struct {
     u32 n;
 } VkCbReads;
 typedef int (*VkCbReader)(u32 idx, u32 off, u32* out);
+/* Read/hash a program into a zero-padded128KiB buffer, without cohering unrelated trailing data. Holds vk_lock. */
+void vk_shader_read_code(u64 gva, u8* code, u32* len, VkCbReader read);
 u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, size_t* words, VkCbReader read,
                         VkCbReads* reads);
 /* A compute pipeline kept across runs in the pipeline file (pipeline_file.h's PF_CSPIPE). vk_pf_cspipe (pipeline.c):
@@ -1358,7 +1412,7 @@ const char* vk_corpus_dir(void);
 int vk_cb_reads_hold(const VkCbReads* reads, VkCbReader read);
 typedef struct VkSh {
     u64 hash;
-    u32 mask[24]; /* vk_shader_get's masks, including the geometry passthrough skip mask */
+    u32 mask[26]; /* vk_shader_get's masks, including the geometry passthrough skip mask */
     int stage;
     VkCbReads cbr;
     ShaderInfo si;
@@ -1370,10 +1424,15 @@ typedef struct VkSh {
     u64 qh, qh_a;
     struct VkSh* next;
 } VkSh;
+/* Generated graphics modules share the persistent shader/pipeline ownership and cache. Caller holds vk_lock. */
+VkSh* vk_shader_generated_find(u64 hash, int stage, const u32 mask[26]);
+void vk_shader_generated_record(VkSh* shader, const u32* spv, size_t words, const u8* source, u32 bytes);
+
 /* the pipeline layout whose sets have no texture array bindings: compute's, and the one push constants go through
    (every layout has the same push constant range) */
 extern VkPipelineLayout g_vk_playout;
 VkPipelineLayout vk_playout(u32 arrays); /* arrays: a bit per set (shader_vk_set) that has them */
+int vk_graphics_playout_is(VkPipelineLayout layout);
 extern int g_vk_preserve_infnan;
 extern int g_vk_preserve_infnan64;
 extern int g_vk_flush_denorm;
@@ -1406,7 +1465,11 @@ void vk_pipeline_init(void);
    samples whose headers take unnormalized coordinates (ShaderInfo.tex_rect_mask) */
 VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
                     u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
-                    const u8* query_hint, u64 advanced_blend, u32 advanced_mask);
+                    const u8* query_hint, u64 advanced_blend, u32 advanced_mask, u32 img_int, u32 img_sint);
+VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
+                       u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
+                       const u8* query_hint, u64 advanced_blend, u32 advanced_mask, u32 img_int, u32 img_sint,
+                       u32 fs_config);
 /* whether the constant buffer words s's translation read still hold in ds's bound buffers (vk_shader_get's check on
    a hit, for a caller that kept s) */
 int vk_shader_cb_hold(const DsState* ds, const VkSh* s);
@@ -1445,8 +1508,11 @@ typedef struct {
     u32 provoking_last;  /* the last vertex provokes (has_provoking_last) */
     u32 logic_op;        /* 0, or the VkLogicOp the color targets take in place of blending, plus 1 */
     u32 arrays;          /* the sets with texture arrays: its layout, vk_playout(arrays) */
+    u32 heaps;           /* graphics descriptor heap mappings instead of descriptor-set layouts */
     u32 samples;         /* the targets' VkSampleCountFlagBits (0 taken as 1) */
     VkCoverage coverage; /* color-only target-independent rasterization, all zero for ordinary multisampling */
+    VkSampleLocations sample_locations;
+    u32 coverage_to_color; /* zero off, else the integer color attachment index+1 */
     /* with several samples, DsRasterKey's: the samples the sample mask leaves out, alpha to coverage and to one */
     u32 sample_off, alpha_to_coverage, alpha_to_one;
     u32 sample_shading; /* every sample is shaded (sampleRateShading), with several samples */
@@ -1611,6 +1677,10 @@ u32 vk_gbuf_desc(int stage, u32 off, const u32* v, u64* addr);
    accesses a barrier names see the writes before it */
 #define VK_STORAGE_IMAGE_ACCESS (VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)
 extern u64 g_vk_drawn, g_vk_skipped; /* draws recorded, and draws skipped (unsupported topology, failed shader) */
+/* The ordered capture fallback (render.c capture_draw) records a clear, a draw and a resolve for every primitive: past
+   this many primitives a draw is skipped instead. Statistics: draws captured, their primitives, the draws skipped */
+#define VK_CAPTURE_PRIMITIVES_MAX 256u
+extern u64 g_vk_capture_draws, g_vk_capture_primitives, g_vk_capture_capped;
 /* draws that kept the last draw's shaders and pipeline key, and those of them draw_state_check made again to compare */
 extern u64 g_vk_draw_kept, g_vk_draw_checked;
 /* draws, clears and the like that kept the last one's render targets, found again through the surface table before */

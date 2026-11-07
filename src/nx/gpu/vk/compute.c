@@ -321,7 +321,10 @@ static void cs_submit(void) {
     vk_queue_lock(g_vk.compute);
     VkResult r = vkQueueSubmit2(g_vk.compute, 1, &si, VK_NULL_HANDLE);
     vk_queue_unlock(g_vk.compute);
-    if (r == VK_ERROR_DEVICE_LOST) fatal("vulkan: the GPU device was lost (driver reset or crash)");
+    if (r == VK_ERROR_DEVICE_LOST) {
+        vk_ck_report();
+        fatal("vulkan: the GPU device was lost (driver reset or crash)");
+    }
     g_recording = 0;
     g_inflight = 1;
     if (!VK_OK(r)) { /* never signaled by the GPU: the host signals it, so waits for it end */
@@ -625,9 +628,8 @@ void vk_compute_mem_need_map(u64 a, u64 n) {
 
 /* the pipeline of a program (80 zero bytes, then the code), by its code and launch parameters, and by the constant
    buffer words its translation read */
-/* A program is translated for the numeric types of its sampled and storage images. Storage stores use
-   rt_int_mask bits 8 and up to switch the bound/bindless default between float and integer, and rt_sint_mask's
-   corresponding bits to select signed stores. Atomics retain their R32ui declaration. */
+/* A program is translated for the numeric types of its sampled and storage images. Image masks select float,
+   unsigned or signed stores independently of the graphics stage's parameters. Atomics retain R32ui declarations. */
 typedef struct {
     u64 tex_int, tex_sint, tex_rect;
     u32 image, image_sint;
@@ -705,8 +707,8 @@ static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx,
             (unsigned long long)key, shm, shared_max, reach, shared);
         p->si.shared_size = (int)shared;
     }
-    p->si.rt_int_mask = k.image << 8;
-    p->si.rt_sint_mask = k.image_sint << 8;
+    p->si.img_int_mask = k.image;
+    p->si.img_sint_mask = k.image_sint;
     p->si.tex_int_mask = k.tex_int;
     p->si.tex_sint_mask = k.tex_sint;
     p->si.tex_rect_mask = k.tex_rect;
@@ -1138,8 +1140,8 @@ void vk_dispatch(const DispatchState* d) {
     int queried = 0;
     for (i = 0; i < SH_MAXTEX; i++) queried |= ck.query[i] != 0;
     if (ck.tex_int || ck.image || ck.image_sint || ck.tex_rect || queried) {
-        if (!p->keyed || (p->keyed->si.rt_int_mask >> 8) != ck.image || p->keyed->si.tex_int_mask != ck.tex_int ||
-            p->keyed->si.tex_sint_mask != ck.tex_sint || (p->keyed->si.rt_sint_mask >> 8) != ck.image_sint ||
+        if (!p->keyed || p->keyed->si.img_int_mask != ck.image || p->keyed->si.tex_int_mask != ck.tex_int ||
+            p->keyed->si.tex_sint_mask != ck.tex_sint || p->keyed->si.img_sint_mask != ck.image_sint ||
             p->keyed->si.tex_rect_mask != ck.tex_rect ||
             memcmp(p->keyed->si.tex_query_hint, ck.query, sizeof ck.query) != 0) {
             static u8 keyed_code[0x10000 + 80];
@@ -1337,7 +1339,7 @@ rebind:
                                            .dstSet = set,
                                            .dstBinding = SNX_VKB_CB + i,
                                            .descriptorCount = 1,
-                                           .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                           .descriptorType = vk_cbuf_type((u32)i),
                                            .pBufferInfo = &bi[nw]};
             nw++;
         }
@@ -1678,10 +1680,12 @@ rebind:
     }
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->p);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_vk.cs_playout, 0, 1, &set, 0, NULL);
-    if (d->indirect)
+    if (d->indirect) {
         rec_CmdDispatchIndirect(cb, grid_buf, grid_off);
-    else
+    } else {
+        vk_ck(cb, VK_CK_DISPATCH, gx, gy, gz, 0);
         rec_CmdDispatch(cb, gx, gy, gz);
+    }
     if (resident) {
         vk_all_barrier(cb); /* its writes before what reads them next */
         for (int i = 0; i < ng; i++) {

@@ -167,23 +167,12 @@ static int is_open(SDL_JoystickID id) {
         if (g_pads[i] && SDL_GetGamepadID(g_pads[i]) == id) return 1;
     return 0;
 }
-static void enable_sensor(SDL_Gamepad* g, SDL_SensorType type, const char* name) {
-    if (!SDL_GamepadHasSensor(g, type)) return;
-    if (SDL_SetGamepadSensorEnabled(g, type, true))
-        LOG("input: enabled %s sensor on %s\n", name, SDL_GetGamepadName(g));
+/* the lines of snx_pad_motion_enable (pad_sdl.c), which turns a pad's motion sensors on */
+static void say_motion(int warn, const char* line) {
+    if (warn)
+        WARN("input: %s\n", line);
     else
-        WARN("input: cannot enable %s sensor on %s: %s\n", name, SDL_GetGamepadName(g), SDL_GetError());
-}
-static void enable_motion(SDL_Gamepad* g) {
-    enable_sensor(g, SDL_SENSOR_ACCEL, "accelerometer");
-    enable_sensor(g, SDL_SENSOR_GYRO, "gyroscope");
-    enable_sensor(g, SDL_SENSOR_ACCEL_L, "left accelerometer");
-    enable_sensor(g, SDL_SENSOR_GYRO_L, "left gyroscope");
-    enable_sensor(g, SDL_SENSOR_ACCEL_R, "right accelerometer");
-    enable_sensor(g, SDL_SENSOR_GYRO_R, "right gyroscope");
-    if (!SDL_GamepadHasSensor(g, SDL_SENSOR_ACCEL) && !SDL_GamepadHasSensor(g, SDL_SENSOR_ACCEL_L) &&
-        !SDL_GamepadHasSensor(g, SDL_SENSOR_ACCEL_R))
-        LOG("input: %s exposes no motion sensors through SDL\n", SDL_GetGamepadName(g));
+        LOG("input: %s\n", line);
 }
 /* SDL reads SDL_GAMECONTROLLERCONFIG_FILE during initialization. Without that override, load the user's mappings
    from the same configuration directory as the game's .ini. Mapping a connected joystick raises GAMEPAD_ADDED. */
@@ -317,7 +306,7 @@ void gamepad_open(u32 id) {
             mapping ? mapping : "unavailable");
         SDL_free(mapping);
     }
-    enable_motion(g_pads[i]);
+    snx_pad_motion_enable(g_pads[i], say_motion);
     ui_lock();
     snprintf(g_names[i], sizeof g_names[i], "%s",
              SDL_GetGamepadName(g_pads[i]) ? SDL_GetGamepadName(g_pads[i]) : "Gamepad");
@@ -442,11 +431,9 @@ void gamepad_state_slot(int slot, u64* buttons, i32 sticks[4]) {
     sticks[3] = up(SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_RIGHTY));
     dz(&sticks[2], &sticks[3]);
 }
-static int sample_sensor(SDL_Gamepad* g, SDL_SensorType accel_type, SDL_SensorType gyro_type, PadMotion* out) {
+static int sample_sensor(SDL_Gamepad* g, int which, PadMotion* out) {
     float a[3], w[3];
-    if (!SDL_GamepadSensorEnabled(g, accel_type) || !SDL_GamepadSensorEnabled(g, gyro_type) ||
-        !SDL_GetGamepadSensorData(g, accel_type, a, 3) || !SDL_GetGamepadSensorData(g, gyro_type, w, 3))
-        return 0;
+    if (!snx_pad_motion_read(g, which, a, w)) return 0;
     /* SDL acceleration is m/s^2. Horizon uses g, with Y up and Z toward the player. */
     out->acceleration[0] = -a[0] / 9.80665f;
     out->acceleration[1] = a[2] / 9.80665f;
@@ -463,9 +450,9 @@ void gamepad_motion(int slot, PadMotion out[2]) {
     int left, right;
     memset(out, 0, 2 * sizeof *out);
     if (slot < 0 || slot >= SNX_GAMEPADS || !(g = g_pads[slot])) return;
-    left = sample_sensor(g, SDL_SENSOR_ACCEL_L, SDL_SENSOR_GYRO_L, &out[0]);
-    right = sample_sensor(g, SDL_SENSOR_ACCEL_R, SDL_SENSOR_GYRO_R, &out[1]);
-    if (!left && !right) sample_sensor(g, SDL_SENSOR_ACCEL, SDL_SENSOR_GYRO, &out[0]);
+    left = sample_sensor(g, SNX_PAD_MOTION_LEFT, &out[0]);
+    right = sample_sensor(g, SNX_PAD_MOTION_RIGHT, &out[1]);
+    if (!left && !right) sample_sensor(g, SNX_PAD_MOTION_MAIN, &out[0]);
 }
 
 void gamepad_state(u64* buttons, i32 sticks[4]) {

@@ -221,8 +221,9 @@ shader interpreter, rasterizer, texturing, combiners, lighting) and plays its
 title music through a port of Azahar's HLE DSP. A run of about 2 billion native
 blocks presented frames until it was ended. It is **not playable** yet:
 
-- Input is the pad and the mouse's left button on the touch screen. The sensors
-  are at rest (`hid:USER`, below).
+- Input is the pad and a finger or the mouse's left button on the touch screen.
+  The sensors are a gamepad's accelerometer and gyroscope, else at rest (`hid:USER`,
+  below).
 - The music has a gap after every rendered frame, because rendering and presenting
   run inside the guest's GSP call.
 - Procedural textures and shadows still stop the run explicitly.
@@ -399,9 +400,15 @@ B3n30/citra_system_archives): the Mii data, the country list, the shared font
 system title is NotFound. Directory sessions read their entries, and FSFILE has
 Flush, priorities and OpenLinkFile. Reads preflight
 the complete guest destination and stage host IO before publication.
-Host-paced GetSystemTick and the shared page's date and time (the host's local
+GetSystemTick and the shared page's date and time (the host's local
 time, rewritten every hour into the entry the counter does not select, as
-Azahar does) serve time queries, without cycle accuracy. FSUSER ControlArchive
+Azahar does) serve time queries, without cycle accuracy. Every deadline, sleep and
+tick of the runtime is on one clock (`board/clock.c`): the host's at the console's
+pace, which the Switch's `fps_limit` sets as for a Switch game. `N` runs it at N/60
+of the console's pace (the 3DS shows 60 frames a second), the sound with it; `0`
+skips every wait, the clock moving on by it, so the game runs as fast as the host
+does and its sound is not played; F4 turns the limit off and back on. A change of
+pace never moves the clock back. FSUSER ControlArchive
 GET_TIMESTAMP (`0x80d`) resolves a bounded UTF-16 archive path and returns the real
 backing file's host modification time as a 3DS datetime (milliseconds since 1900
 UTC). Missing paths return `0xc8804478` and stale tokens `0xc8804465`.
@@ -422,13 +429,31 @@ second) and the gyroscope's (101) between their enable and disable. Each pad ent
 has the buttons, what was pressed and released since the one before, and the circle
 pad's position, averaged over three samples, with its direction bits. The input
 (`src/3ds/input/input.c`) is a Switch game's: X or Space A, Z B, C X, V Y, Q L, E R,
-Enter Start, Backspace Select, the arrows the D-pad and WASD the circle pad, or a
-gamepad's buttons by position (`gamepad_swap_ab`) with its left stick, and the
+1 ZL, 3 ZR, Enter Start, Backspace Select, the arrows the D-pad, WASD the circle pad
+and IJKL the C-stick, or a gamepad's buttons by position (the triggers ZL and ZR),
+`gamepad_map` over that (the Switch's button names: Plus is Start, Minus Select), A
+swapped with B by `gamepad_swap_ab`, with its left stick the circle pad and its right
+one the C-stick past `gamepad_deadzone`, all three the Switch's settings, and the
 scripted presses of `--script=ms:hex,...` (`ctr_script`), in the pad's bits (1 A,
 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down, 100 R, 200 L, 400 X,
-800 Y), each held for `press_len` ms. The touch entries follow the pointer's press
-on the bottom screen, and the sensors give a console lying still. ZL, ZR and the
-C-stick are the New 3DS's `ir:rst`, which the runtime does not have yet.
+800 Y), each held for `press_len` ms. The touch entries follow a finger or the
+mouse's left button pressed on the bottom screen, as the Switch's `touch` says (`2`
+both, `1` fingers, `0` neither), one at a time: the first pressed holds the screen
+until it lets go. The accelerometer and gyroscope are the first gamepad whose motion
+sensors SDL reads (its own, else a left or right Joy-Con's), as the Switch's backend
+reads them (`snx_pad_motion_read`), in the axes of Azahar's SDL motion (y of the
+acceleration and x and z of the rotation negated), at 512 raw a g and 14.375 a
+degree a second; a pad held up in front of the player at rest reads as the console
+at rest. With no such pad they give a console lying still.
+
+ZL, ZR and the C-stick are the New 3DS's `ir:rst` (`services/irrst.c`, ported from
+Azahar's `ir_rst.cpp`). GetHandles moves out its shared memory and update event,
+and from Initialize to Shutdown each `update_period` ms writes the next of eight
+entries: ZL, ZR and the C-stick's direction bits (the circle pad's rule, four bits
+down), what they gained and lost since the entry before, and the C-stick's position,
+0x9c at its rim, then signals the event. A period of 0 samples every millisecond and
+the raw C-stick, which Azahar does not model either, gives the position without its
+direction bits; each is said on the standard error with the value asked for.
 
 `ir:USER` (`services/ir.c`) answers as Azahar does with no IR accessory in range.
 InitializeIrNopShared writes the shared block's header and empty receive queue, the
@@ -504,7 +529,15 @@ The pair keeps its shape in a window of any size. The 3DS display's Separate
 screens setting gives each screen a window of its own instead, which fills with
 that screen. Top screen resolution and Bottom screen resolution scale the 3D
 rendering of that screen, 1 to 16 times the console's 400x240 and 320x240, and
-the window scales the larger image to its size. Bounded PPM snapshots land in
+the window scales the larger image to its size. The Switch's `vsync` picks how the
+window shows its images, as for a Switch game: `1` each at the display's refresh
+(FIFO), `0` the newest at the next refresh (mailbox) or at once (immediate), and the
+run says at start which it got. Its `fullscreen=1` starts the window fullscreen (the
+top screen's, with Separate screens), but for a `--seconds` or `--max-blocks` run,
+and F11 or Alt+Enter switches the window it is pressed in, as on the Switch;
+Alt+Enter does not press Start. The Switch's `anisotropy` (2 to 16) filters a
+mipmapped texture the game filters linearly anisotropically, held to the device's most,
+and the run says at start the value in effect. Bounded PPM snapshots land in
 `<output>/frames` in every mode. Without a display the window path is
 unavailable and frames are only recorded; without a Vulkan device the presenter
 reports unavailability and no frame is fabricated.

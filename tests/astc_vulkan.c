@@ -8,7 +8,7 @@
    VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
    to check synchronization too (docs/ASTC.md). --vk_max_allocation_mb=N lowers
    the allocation cap, so images in pieces are tested at small sizes; --large
-   decodes a 2D and a 3D texture of 512 MiB each. */
+   decodes a 2D and a 3D texture of 512 MiB each. --upload-wait checks a BC7 upload across an internal submission. */
 #include <math.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -64,6 +64,7 @@ void vk_buf_host_barrier(VkCommandBuffer cb, u64 frame) {
     (void)frame;
 }
 VkPipelineCache vk_pipeline_cache(void) { return VK_NULL_HANDLE; }
+int vk_graphics_playout_is(VkPipelineLayout layout) { (void)layout; return 0; }
 /* no occlusion queries, and no guest memory for cmd.c's sampled hashes */
 void vk_query_flush(VkCommandBuffer cb) { (void)cb; }
 /* cmd.c's sampled hash reads guest memory this way: there is none here */
@@ -125,6 +126,7 @@ void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets) {
     sz[2] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sets};
     sz[3] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, sets};
     sz[4] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, sets};
+    sz[5] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sets * 2};
 }
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
@@ -478,6 +480,97 @@ static void run_bc7(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layer
     printf("PASS ASTC as BC7 %ux%u srgb=%d image=%ux%ux%u layers=%u mips=%u\n", bw, bh, srgb, w, h, depth, layers,
            levels);
     fflush(stdout);
+}
+
+typedef struct {
+    Level level;
+    u32 calls, changes, begun;
+    u64 first_submit;
+} UploadWaitSource;
+static int upload_wait_rows(void* ctx, VkCommandBuffer* pcb, u32 z, u32 nz, u32 y, u32 n,
+                            VkBuffer* buf, u64* off) {
+    UploadWaitSource* source = ctx;
+    /* This callback deliberately does not repair its command buffer. The upload must pass a live one after
+       its own wait, even when the source callback has no reason to acquire another recording. */
+    if (*pcb != vk_cmd()) fatal("BC7 upload wait: rows received a submitted command buffer\n");
+    u32 begun = vk_cb_begun();
+    if (!source->calls) source->first_submit = vk_submit_number();
+    else if (source->begun != begun) source->changes++;
+    source->begun = begun;
+    source->calls++;
+    return level_rows(&source->level, pcb, z, nz, y, n, buf, off);
+}
+/* 262656 BC7 blocks: one strip reaches the real 256Ki-block threshold with the default 16MiB scratch, then
+   another strip must record into a new command buffer. Constant blocks keep the GPU encoder's first fit exact;
+   the final block row has a different color, so a missing continuation cannot pass the output comparison. */
+static int upload_wait_case(void) {
+    const u32 w = 2048, h = 2052, nx = w / 4, ny = h / 4;
+    VkImageFormatProperties props;
+    if (!g_vk.feat.textureCompressionBC ||
+        vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, VK_FORMAT_BC7_UNORM_BLOCK, VK_IMAGE_TYPE_2D,
+            VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            0, &props) != VK_SUCCESS || props.maxExtent.width < w || props.maxExtent.height < h) {
+        puts("SKIP BC7 upload wait: the device has no suitable BC7 image");
+        return 77;
+    }
+    Surf t = {.w = w, .h = h, .layers = 1, .levels = 1, .depth3d = 1,
+              .f = {.vk = VK_FORMAT_BC7_UNORM_BLOCK, .bw = 4, .bh = 4}};
+    VkImageCreateInfo image = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D, .format = t.f.vk, .extent = {w, h, 1}, .mipLevels = 1,
+        .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+    if (!vk_image_create(&image, &t.img, &t.mem)) fatal("BC7 upload wait: cannot create the target image\n");
+    u8* blocks = malloc((size_t)nx * ny * 16);
+    if (!blocks) fatal("BC7 upload wait: no source memory\n");
+    const u8 header[8] = {0xfc, 0xfd, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+    for (u32 y = 0; y < ny; y++)
+        for (u32 x = 0; x < nx; x++) {
+            u8* block = blocks + ((size_t)y * nx + x) * 16;
+            memcpy(block, header, sizeof header);
+            memset(block + 8, y + 1 == ny ? 255 : 0, 8);
+        }
+    u8 expected[2][16];
+    for (u32 color = 0; color < 2; color++) {
+        u8 texels[64], decoded[64];
+        memset(texels, color ? 255 : 0, sizeof texels);
+        bc7_encode_cpu(texels, 4, 4, 1, expected[color]);
+        bcn_decode_image(expected[color], 4, 4, BCN_BC7, decoded);
+        if (memcmp(texels, decoded, sizeof texels)) fatal("BC7 upload wait: constant-color reference is not exact\n");
+    }
+    UploadWaitSource source = {.level = {blocks, nx, ny, NULL, 0, 0}};
+    barrier(t.img, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COPY_BIT,
+        VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    if (!vk_astc_upload(vk_cmd(), &t, 0, 0, w, h, 1, 0, 0, upload_wait_rows, &source))
+        fatal("BC7 upload wait: upload failed\n");
+    if (source.calls < 2 || !source.changes || vk_submit_number() <= source.first_submit)
+        fatal("BC7 upload wait: no continuation across a submission (%u calls, %u changes)\n",
+            source.calls, source.changes);
+    barrier(t.img, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    u64 row_bytes = (u64)nx * 16;
+    u32 rows = (u32)((g_vk.alloc_cap < (16ull << 20) ? g_vk.alloc_cap : 16ull << 20) / row_bytes);
+    if (!rows) fatal("BC7 upload wait: the readback cap holds no block row\n");
+    for (u32 y = 0; y < ny; y += rows) {
+        u32 count = ny - y < rows ? ny - y : rows;
+        VkBuffer readback;
+        u8* bytes = vk_readback_buffer(row_bytes * count, &readback);
+        if (!bytes) fatal("BC7 upload wait: no readback memory\n");
+        VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .imageOffset = {0, (i32)(y * 4), 0}, .imageExtent = {w, count * 4, 1}};
+        rec_CmdCopyImageToBuffer(vk_cmd(), t.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1, &copy);
+        vk_finish();
+        vk_readback_ready();
+        for (u32 row = 0; row < count; row++)
+            for (u32 x = 0; x < nx; x++)
+                if (memcmp(bytes + ((size_t)row * nx + x) * 16, expected[y + row + 1 == ny], 16))
+                    fatal("BC7 upload wait: block (%u,%u) differs\n", x, y + row);
+    }
+    free(blocks);
+    vk_image_destroy(t.img, t.mem);
+    if (errors) fatal("BC7 upload wait: %u validation errors\n", errors);
+    printf("PASS BC7 upload wait: %u strips, %u command-buffer changes, %u exact blocks\n",
+        source.calls, source.changes, nx * ny);
+    return 0;
 }
 
 /* A region of a level uploaded again over its whole upload, as texture.c loads the blocks of the pages that changed:
@@ -941,14 +1034,17 @@ static void bc_native_case(void) {
 }
 
 int main(int argc, char** argv) {
-    int large = 0;
+    int large = 0, upload_wait = 0;
     /* --vk_max_allocation_mb=N as the runtime takes it (ctest's astc_vulkan_pieces: 4), and --large */
     for (int i = 1; i < argc; i++)
         if (!strncmp(argv[i], "--vk_max_allocation_mb=", 23)) g_settings.vulkan_allocation_cap = atoi(argv[i] + 23);
         else if (!strcmp(argv[i], "--large")) large = 1;
         else if (!strcmp(argv[i], "--bench"))
             large = 2;
+        else if (!strcmp(argv[i], "--upload-wait"))
+            upload_wait = 1;
     init();
+    if (upload_wait) return upload_wait_case();
     if (large == 2) {
         bench(4096, 4096, 3);
         return 0;

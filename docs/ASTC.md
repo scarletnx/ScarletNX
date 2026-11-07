@@ -183,6 +183,11 @@ it whatever `native_bc` says, and `format.c` then samples BCn as it is only when
 keeps RGBA8 where the device has no 3D BC7 images, as native block formats do. Every 600 frames the log says how many
 levels went up as BC7 and their megabytes against RGBA8's.
 
+`vk_astc_upload` waits for the GPU once 256 thousand blocks are queued. The encoder is slow on a small GPU, and without
+the wait a load queued up tens of seconds of it and the device was lost in most runs of one game, on a GT 1030, with
+nothing in the validation layer or the kernel's log. Why the depth of the queue does that is not known: it is the
+driver's. Splitting the work over submissions with no wait did not help, and neither did smaller dispatches.
+
 BC7 is the default because memory is what a desktop GPU runs short of. As RGBA8, one game's textures took 5.7 GB of a
 5.7 GB budget and were evicted and uploaded again every frame (600 to 1000 ms frames). As BC7 they took 2.5 GB. BC7 is
 not exact (its PSNR is below): `astc_mode=1` (Exact) decodes to RGBA8 instead, for a player who sees the difference,
@@ -214,6 +219,12 @@ bit that keeps it exactly: a nearly opaque texel blends, and a nearly clear one 
 nought. Modes 4 and 5 have no p-bits and hold 255 and 0 as they are. Each texel takes the best of the three weights
 around its projection. All of it is integer arithmetic in the part of GLSL that is also C++, so the tests run the
 same file on the CPU and get the GPU's bytes.
+
+A block stops trying modes once its squared error over all its texels and channels is `SNX_BC7_GOOD_ENOUGH` (16) or less,
+a mean squared error of a quarter, 54 dB, for that block. A hard block still gets the whole search. Within a fit,
+`Eval` leaves a candidate once its partial error proves it cannot win, and a second least squares runs only on
+weights that changed. Quality tests compare against the prior unpruned search and require each block to stay
+within the 16-error allowance or produce no more error than that reference.
 
 What it costs, as PSNR against what it encodes, on edenprobe's astcimage picture (gradients, hard edges where three
 colours meet in a block, noise, and alpha) decoded from ASTC: 39.9 dB over the picture at 4x4 (gradients 53.1,

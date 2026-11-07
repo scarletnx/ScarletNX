@@ -66,7 +66,8 @@ int nvn_subroutine_apply(u32 linkage, i32 first, i32 count, const i32* values) {
 }
 /* the texture layout and formats: only the render target records use them */
 u32 nvn_rt_format(u32 format, int* depth) {
-    *depth = 0;
+    *depth = format == NVN_FORMAT_DEPTH32F;
+    if (*depth) return 0x0a;
     return format == NVN_FORMAT_RGBA8 ? 0xD5 : 0; /* compressed formats: no target takes them */
 }
 void nvn_tex_layout(const NvnTexDesc* d, NvnTexLayout* o) {
@@ -95,8 +96,8 @@ u32 nvn_tex_level_gobs(const NvnTexDesc* d, unsigned level) {
     return 0;
 }
 u32 nvn_tex_msaa(int samples) {
-    (void)samples;
-    return 0;
+    return samples == 2 ? DS_MSAA_2X1 : samples == 4 ? DS_MSAA_2X2
+         : samples == 8 ? DS_MSAA_4X2 : samples == 16 ? DS_MSAA_4X4 : DS_MSAA_1X1;
 }
 int nvn_fmt_bpb(int format, int* bw, int* bh) {
     int bc7 = format == NVN_FORMAT_BPTC_UNORM_SRGB, bc1 = format == NVN_FORMAT_RGBA_DXT1;
@@ -794,10 +795,40 @@ static void test_fixed_state(void) {
     nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
     check(!fixed_call.coverage_table_enable && fixed_call.raster_samples == 4 && fixed_call.coverage_mode == 3,
           "a NULL coverage table selects linear modulation without changing the multisample mode");
-    d.ms.raster_samples = 1;
+    d.ms.samples = d.ms.raster_samples = 4;
     nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
-    check(!fixed_call.raster_samples && !fixed_call.coverage_table_enable,
-          "equal raster and color sample counts need no mixed-sample metadata");
+    check(fixed_call.raster_samples == 4 && !fixed_call.coverage_table_enable,
+          "equal raster and color counts retain explicit target-independent state");
+    d.coverage_table_enable = 1;
+    d.coverage_table[0] = 5;
+    nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+    check(fixed_call.raster_samples == 4 && fixed_call.coverage_mode == 3 &&
+              fixed_call.coverage_table_enable && fixed_call.coverage_table[0] == 5,
+          "ratio-one coverage retains its custom coefficient");
+    d.ms.flags = NVN_MS_GRID;
+    d.ms.cov_to_color_out = 7;
+    memset(d.ms.location, 0x12, sizeof d.ms.location);
+    NvnPConservative precision = {.which = 2, .on = 3, .dilate = 8};
+    memcpy(GP(0xb200), &precision, sizeof precision);
+    nvn_draw_record(&d, OP_CONSERVATIVE, 0xb200, sizeof precision);
+    nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+    check(!fixed_call.multisample_flags && !fixed_call.coverage_to_color_output &&
+              !fixed_call.subpixel_bias_x && !fixed_call.subpixel_bias_y &&
+              !memcmp(fixed_call.sample_locations, (const u8[16]){0}, sizeof fixed_call.sample_locations),
+          "disabled sample features and conservative rasterization keep dormant state out of draws");
+    d.conservative = 1;
+    d.ms.flags = NVN_MS_A2C_DITHER | NVN_MS_COV_TO_COLOR | NVN_MS_LOCATIONS | NVN_MS_GRID;
+    nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+    check(fixed_call.multisample_flags ==
+                  (DS_MS_A2C_DITHER | DS_MS_COVERAGE_TO_COLOR | DS_MS_SAMPLE_LOCATIONS | DS_MS_SAMPLE_GRID) &&
+              fixed_call.coverage_to_color_output == 7 && fixed_call.subpixel_bias_x == 3 &&
+              fixed_call.subpixel_bias_y == 8 &&
+              !memcmp(fixed_call.sample_locations, d.ms.location, sizeof fixed_call.sample_locations),
+          "active sample and conservative precision state reaches direct draws");
+    precision.on = -1;
+    memcpy(GP(0xb200), &precision, sizeof precision);
+    nvn_draw_record(&d, OP_CONSERVATIVE, 0xb200, sizeof precision);
+    check(d.subpixel_bias_x == 3 && d.subpixel_bias_y == 8, "invalid replay precision values preserve state");
     d.xfb.stride[0] = 20;
     for (u32 what = 0; what < 4; what++) {
         NvnPTfState tf = {.what = (i32)what, .control = what < 2 ? 0x70000 : 0};
@@ -998,9 +1029,50 @@ static void test_compressed_targets(void) {
     }
 }
 
+static void test_depth_sample_layouts(void) {
+    NvnDraw draw;
+    nvn_draw_init(&draw, 7);
+    NvnPDraw call = {.count = 3, .instances = 1};
+    memcpy(GP(0x5800), &call, sizeof call);
+    const u32 color_samples[] = {1, 4, 4, 0}, depth_samples[] = {4, 1, 4, 4};
+    for (u32 test = 0; test < 4; test++) {
+        NvnTexture color = {.magic = NVN_MAGIC('T', 'E', 'X', 0), .gpu = 0x100000};
+        color.d.format = NVN_FORMAT_RGBA8;
+        color.d.target = color_samples[test] > 1 ? NVN_TEXTURE_TARGET_2D_MULTISAMPLE : NVN_TEXTURE_TARGET_2D;
+        color.d.width = 8; color.d.height = 6; color.d.depth = color.d.levels = 1;
+        color.d.samples = (u8)color_samples[test];
+        NvnTexture depth = color;
+        depth.gpu = 0x200000;
+        depth.d.format = NVN_FORMAT_DEPTH32F;
+        depth.d.target = depth_samples[test] > 1 ? NVN_TEXTURE_TARGET_2D_MULTISAMPLE : NVN_TEXTURE_TARGET_2D;
+        depth.d.samples = (u8)depth_samples[test];
+        memcpy(GP(0x4000), &color, NVN_TEX_SNAP);
+        memcpy(GP(0x4800), &depth, NVN_TEX_SNAP);
+        NvnPSetRT targets = {.count = color_samples[test] != 0, .color = {0x4000}, .depth = 0x4800};
+        memcpy(GP(0x5000), &targets, sizeof targets);
+        nvn_draw_record(&draw, OP_SET_RT, 0x5000, sizeof targets);
+        nvn_draw_record(&draw, OP_DRAW, 0x5800, sizeof call);
+        u32 color_mode = nvn_tex_msaa((int)(color_samples[test] ? color_samples[test] : depth_samples[test]));
+        u32 depth_mode = nvn_tex_msaa((int)depth_samples[test]);
+        check(draw.ds.tgt.msaa == color_mode && ds_depth_msaa(&draw.ds.tgt) == depth_mode &&
+                  draw.ds.tgt.depth_msaa == (color_mode == depth_mode ? 0 : depth_mode + 1),
+              "color/depth sample layouts retain their independent counts, case %u", test);
+        check(draw.ds.tgt.depth.gva == depth.gpu &&
+                  draw.ds.tgt.depth.width == 8u << ds_msaa_log2_x(depth_mode) &&
+                  draw.ds.tgt.depth.height == 6u << ds_msaa_log2_y(depth_mode),
+              "depth dimensions retain their own stored sample grid, case %u", test);
+        check(draw.ds.dyn.clip_height == 6, "lower-left clip height counts pixels, case %u", test);
+    }
+    DsTargets inherited = {.msaa = DS_MSAA_2X2};
+    check(ds_depth_msaa(&inherited) == DS_MSAA_2X2 && offsetof(DsTargets, color) == 8 &&
+              sizeof(DsTargets) == 8 + 9 * sizeof(DsSurf),
+          "zero depth-layout sentinel retains legacy construction and target ABI offsets");
+}
+
 int main(int argc, char** argv) {
     nvn_init();
     test_compressed_targets();
+    test_depth_sample_layouts();
     test_init();
     test_barriers();
     test_bind_program();

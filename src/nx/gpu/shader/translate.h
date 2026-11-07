@@ -72,6 +72,7 @@ typedef struct {
        compiler then repeats the loop with no lane left to end it, until the GPU is reset. */
     u32 discarded;
     u32 blend_end;     /* one final fragment epilogue, reached after all guest control flow and alpha tests */
+    u32 primitive_base; /* capture slices preserve the original fragment PrimitiveId through push constants */
     u32 branch_cond;   /* with structured flow, the condition of the branch that ends the block, 0 for always */
     u32 branch_target; /* and the word a BRX that ends it goes to */
 } DirectCtx;
@@ -158,7 +159,13 @@ u32 shader_legacy_address(u32 addr);
 u32 shader_legacy_base(u32 g);
 /* dataflow.c */
 int shader_direct_own_pixel_fetch(const u64* insn, u32 n, u32 index);
+int shader_direct_screen_uv(const u64* insn, u32 n, u32 index, u32 x, u32 y);
+u32 shader_direct_screen_out(const u64* insn, u32 n, u32* yneg);
 int shader_direct_track_const(const u64* insn, u32 n, u32 index, u32 reg, u32* value, int depth);
+/* Proven register bits at index: (runtime & *known)==*value, with *value masked by *known. Unknown is0/0.
+   No specialization reads of mutable buffers; predicated or ambiguous definitions are left unknown. */
+int shader_direct_track_known_bits(const u64* insn, u32 n, u32 index, u32 reg, u32* known, u32* value, int depth);
+int shader_direct_track_cbuf_word(const u64* insn, u32 n, u32 index, u32 reg, u32* bank, u32* off, int depth);
 int shader_direct_track_image_handle(const u64* insn, u32 n, u32 index, u32 reg, u32* bank, u32* off, int depth);
 int shader_direct_track_image_handle_pair(const u64* insn, u32 n, u32 index, u32 reg, u32* bank, u32* off, u32* bank2,
                                           u32* off2, int depth);
@@ -195,6 +202,7 @@ u32 shader_half_immediate(DirectCtx* c, u64 w);
 u32 shader_half_fmz(DirectCtx* c, u32 vec2, u32 pair, u32 lhs, u32 rhs, u32 zero_value);
 u32 shader_float_saturate(DirectCtx* c, u32 value, int saturate);
 u32 shader_half_pair_result(DirectCtx* c, u32 vec2, u32 pair, u32 old, u32 merge, int saturate);
+u32 shader_pack_half_rte(DirectCtx* c, u32 pair);
 u32 shader_float_imm20(DirectCtx* c, u64 w);
 u32 shader_float_imm32(DirectCtx* c, u64 w);
 u32 shader_conversion_source_f32(DirectCtx* c, u32 vec2, u64 w, int kind, u32 format);
@@ -233,8 +241,6 @@ int shader_direct_add_typed_slot(ShTex* textures, int* count, u32 off, u32 type,
 void shader_direct_swap_element(DirectCtx* c, int slot);
 u32 shader_texture_float_component(DirectCtx* c, u32 value, u32 scalar, u32 i32_type);
 u32 shader_pack_texture_halves(DirectCtx* c, u32 vec2, u32 first, u32 second);
-u32 shader_direct_offset_coords(DirectCtx* c, u32 coords, u32 offset, u32 coord_count, u32 offset_count, int slot,
-                                u32 level, u32 vec2, u32 vec3, u32 vec2_i32, u32 vec3_i32, u32 i32_type);
 u32 shader_direct_gather_offset(DirectCtx* c, u32 raw, u32 shift, int zero_y, u32 i32_type, u32 vec2_i32);
 void shader_texs_store(DirectCtx* c, u64 w, u32 sample, u32 scalar, int shadow, u32 i32_type, u32 vec2, u32 zero_f);
 /* emit_io.c */
@@ -408,7 +414,10 @@ typedef struct {
     u32* input_vec_type;
     u32 position;
     u32* output_attrs;
+    u32 (*stream_capture)[128];
+    u32 stream_mask;
     u32 point_size;
+    u32 point_size_in, clip_input;
     u32 default_point_size;
     u32 layer_output;
     u32 layer_input;
@@ -430,8 +439,10 @@ typedef struct {
     u32 patch_vertices;
     int position_fix;
     u32 sample_mask_output;
+    int guest_sample_mask;
     u32 sample_id;
     u32 coverage;
+    u32 coverage_output;
     u32 fragcoord;
     u32 frontface;
     u32 point_coord;

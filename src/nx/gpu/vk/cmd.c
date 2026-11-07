@@ -6,6 +6,7 @@
    buffers), a ring its storage results are copied back into for the CPU, descriptor pools, and the resources to
    destroy once its work is done; none of them is reused before its last submission has finished. Ending a frame at a
    submit would reset them mid-draw, and wait for the GPU at every submit. */
+#include "nx/gpu/vk/descriptor_objects.h"
 #include <stdlib.h>
 #include <string.h>
 #include "nx/runtime/platform/log.h"
@@ -190,8 +191,8 @@ static void dead_push(Frame* f, Dead d) {
 static void dead_free(Frame* f) {
     for (int i = 0; i < f->ndead; i++) {
         Dead* d = &f->dead[i];
-        if (d->v1) vkDestroyImageView(g_vk.dev, d->v1, NULL);
-        if (d->v2) vkDestroyImageView(g_vk.dev, d->v2, NULL);
+        if (d->v1) vk_image_view_destroy(g_vk.dev, d->v1, NULL);
+        if (d->v2) vk_image_view_destroy(g_vk.dev, d->v2, NULL);
         if (d->view) vkDestroyBufferView(g_vk.dev, d->view, NULL);
         if (d->img) vk_image_destroy(d->img, d->mem);
         if (d->buf) {
@@ -294,7 +295,13 @@ static void timeline_wait(u64 value, int kind) {
     int mine = gpu_wait_note("a graphics submission", value);
     if (mine) vk_gpuprof_waited(value, kind);
     SNX_ZONE_V(z, "timeline wait", value);
-    VK_OK(vkWaitSemaphores(g_vk.dev, &wi, UINT64_MAX));
+    VkResult waited = vkWaitSemaphores(g_vk.dev, &wi, UINT64_MAX);
+    /* going on would take the wait as done: the next Vulkan call crashes in the driver, and the log blames the game */
+    if (waited == VK_ERROR_DEVICE_LOST) {
+        vk_ck_report();
+        fatal("vulkan: the GPU device was lost (driver reset or crash)");
+    }
+    VK_OK(waited);
     SNX_ZONE_END(z);
     gpu_wait_note(NULL, 0);
     if (mine) {
@@ -706,6 +713,7 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
                                    .value = g_gval + 1,
                                    .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}};
     if (xs) s[1] = *xs;
+    vk_ck(cb, VK_CK_SUBMIT, (u32)why, 0, 0, 0);
     vk_gpuprof_cb_end(cb, why, g_gval + 1);
     /* ended and submitted after its commands, on the recording thread (a submission that fails signals the timeline
        from the host there, so waits for it end) */
@@ -778,6 +786,12 @@ void vk_submit_for_readback(void) {
 }
 void vk_submit_recorded(void) {
     if (g_fr[g_cur].recording) submit_why(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_SUB_OTHER);
+}
+/* What is recorded goes to the GPU, and this waits until the GPU has done it. It lands nothing, so it may run while a
+   draw is set up: that draw starts its setup again on the new submission number */
+void vk_submit_upload_wait(void) {
+    if (g_fr[g_cur].recording) submit(NULL, NULL, 0, VK_SUB_OTHER);
+    timeline_wait(g_gval, VK_WAIT_FINISH);
 }
 void vk_submit_after(VkSemaphore sem, u64 wait, u64 signal) {
     g_after[0] = (VkSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = sem,

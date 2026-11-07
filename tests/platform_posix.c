@@ -4,8 +4,68 @@
    file maps, replace, folders, timed waits and threads, the watch of the system's memory pressure. Written-page
    tracking needs Linux 6.7 for userfaultfd's; write_tracking=1 (and every host without it) tracks by protection, and
    write_tracking=2 must make the scan say -1. The arguments: the folder for its files, then Debug settings as the
-   runtime takes them, --key=value; --bench-ww runs the tracking's benchmark alone (bench_ww) */
+   runtime takes them, --key=value; --bench-ww runs the tracking's benchmark alone (bench_ww). And the look for a
+   library the process has loaded already (plat_dl_loaded), with a library of the tests' own, SNX_TEST_DL_PROBE */
+#if defined(__linux__)
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#include <errno.h>
+#include <stdarg.h>
+#include <string.h>
+#include <sys/mman.h>
+
+/* Intercept only this test's alias operation. Simulate a driver that rejects nonzero mmap offsets, then another
+   thread that immediately maps the hole left by mremap. All other calls reach the real system calls. */
+typedef struct {
+    int armed, fd, rejected, moved, sentinel_error;
+    void* destination;
+    unsigned char* sentinel;
+    size_t sentinel_size;
+} AliasCleanup;
+static AliasCleanup g_alias_cleanup;
+static void* alias_test_mmap(void* address, size_t length, int protection, int flags, int fd, off_t offset) {
+    if (g_alias_cleanup.armed && fd == g_alias_cleanup.fd && address == g_alias_cleanup.destination && offset) {
+        g_alias_cleanup.rejected++;
+        errno = EINVAL;
+        return MAP_FAILED;
+    }
+    return mmap(address, length, protection, flags, fd, offset);
+}
+static void* alias_test_mremap(void* address, size_t old_size, size_t new_size, int flags, ...) {
+    void* destination = NULL;
+    void* result;
+    if (flags & MREMAP_FIXED) {
+        va_list args;
+        va_start(args, flags);
+        destination = va_arg(args, void*);
+        va_end(args);
+        result = mremap(address, old_size, new_size, flags, destination);
+    } else
+        result = mremap(address, old_size, new_size, flags);
+    if (g_alias_cleanup.armed && g_alias_cleanup.rejected && destination == g_alias_cleanup.destination &&
+        result != MAP_FAILED) {
+        g_alias_cleanup.moved++;
+        void* sentinel = mmap(address, old_size, PROT_READ | PROT_WRITE,
+                              MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+        if (sentinel == MAP_FAILED)
+            g_alias_cleanup.sentinel_error = errno;
+        else {
+            memset(sentinel, 0xa7, old_size);
+            g_alias_cleanup.sentinel = sentinel;
+            g_alias_cleanup.sentinel_size = old_size;
+        }
+    }
+    return result;
+}
+#define mmap alias_test_mmap
+#define mremap alias_test_mremap
+#endif
 #include "nx/runtime/platform/plat_posix.c"
+#if defined(__linux__)
+#undef mmap
+#undef mremap
+#endif
 #include "nx/runtime/ini.h"
 #include <stdarg.h>
 #include <stdio.h>
@@ -43,13 +103,17 @@ void nce_crash_context(const void* context, const void* fault) {
     (void)context;
     (void)fault;
 }
-static int g_reports;     /* crash reports made */
+#if defined(__linux__)
+static int g_reports; /* crash reports made: only the checks of signals sent to a thread read them */
+#endif
 static int g_report_exit; /* a child's: a report ends it with 42, which its parent checks */
 void crash_report(void* host_pc, void* fault, int sig) {
     (void)host_pc;
     (void)fault;
     (void)sig;
+#if defined(__linux__)
     g_reports++;
+#endif
     if (g_report_exit) _exit(42);
 }
 
@@ -113,6 +177,28 @@ static void writers_pause(void) {
     __atomic_store_n(&g_writers_run, 0, __ATOMIC_SEQ_CST);
     for (i = 0; i < WRITERS; i++)
         while (!__atomic_load_n(&g_writer_idle[i], __ATOMIC_SEQ_CST)) sched_yield();
+}
+/* the marks that let a scan skip a group of unwritten pages: a whole group's scan takes its mark, and a scan of a part
+   of it leaves the mark for the pages it didn't read. The first 64 pages are the reservation's first group */
+static void test_scan_marks(void) {
+    printf("written-page tracking by protection: the marks of groups of pages\n");
+    CHECK(g_wp_marks != NULL && g_base == g_wp_base, "no marks, or the test's pages are not the first group");
+    scan();
+    CHECK(!__atomic_load_n(&g_wp_marks[0], __ATOMIC_RELAXED), "a whole group's scan left its mark");
+    g_base[3 * 4096] = 1;
+    CHECK(__atomic_load_n(&g_wp_marks[0], __ATOMIC_RELAXED), "a written page left no mark");
+    __atomic_store_n(&g_seen, 0, __ATOMIC_RELAXED);
+    plat_ww_scan(g_base + 8 * 4096, 8 * 4096, on_seen);
+    CHECK(!__atomic_load_n(&g_seen, __ATOMIC_RELAXED), "a scan of other pages reported a page");
+    CHECK(__atomic_load_n(&g_wp_marks[0], __ATOMIC_RELAXED), "a scan of a part of a group took its mark");
+    CHECK(scan() == 1ull << 3, "the written page was lost to the scan of a part of its group");
+    CHECK(!__atomic_load_n(&g_wp_marks[0], __ATOMIC_RELAXED) && scan() == 0, "the page was reported twice");
+    /* a scan that starts inside a group takes the written page it reads, and the next finds nothing */
+    g_base[60 * 4096] = 2;
+    __atomic_store_n(&g_seen, 0, __ATOMIC_RELAXED);
+    plat_ww_scan(g_base + 56 * 4096, 8 * 4096, on_seen);
+    CHECK(__atomic_load_n(&g_seen, __ATOMIC_RELAXED) == 1ull << 60, "a scan of a part of a group missed its page");
+    CHECK(scan() == 0, "a page that a scan of a part of its group took was reported again");
 }
 /* system calls that write guest memory while another thread scans it: the pages plat_ww_open opened stay writable
    until plat_ww_close, so the kernel's write never meets a page a scan protected again (EFAULT, a short read) */
@@ -435,6 +521,7 @@ static void test_guest_memory(const char* dir) {
         plat_ww_close(g_base + 7 * 4096, 10);
         close(fd);
         CHECK(scan() == 1ull << 7, "a read() into page 7 was not reported");
+        if (g_wp && g_wp_track) test_scan_marks();
         if (g_wp) {
             test_protection_tracking();
             test_kernel_writes(dir);
@@ -470,6 +557,37 @@ static void test_guest_memory(const char* dir) {
         CHECK(!plat_vm_unshare(g, 2u << 20) && g[12345] == 0x5A && g[778] == 0x22, "guest memory did not move back");
         g[999] = 0x33;
         CHECK(v[999] != 0x33, "guest memory moved back is still the buffer's");
+        u8* alias = g + 0x10000;
+        g[0xffff] = 0x55;
+        g[0x12000] = 0x66;
+        v[0x3011] = 0x77;
+        CHECK(!plat_vm_map_fd(alias, 0x2000, fd, 0x3000, 2u << 20) && alias[17] == 0x77,
+              "a file range did not map its source offset");
+        alias[18] = 0x88;
+        CHECK(v[0x3012] == 0x88 && g[0xffff] == 0x55 && g[0x12000] == 0x66,
+              "a file range did not share its pages or changed its neighbors");
+        CHECK(plat_vm_map_fd(alias, 0x2000, fd, (2u << 20) - 0x1000, 2u << 20) == -1 && alias[18] == 0x88,
+              "an out-of-bounds file range replaced the destination");
+        g_alias_cleanup = (AliasCleanup){.armed = 1, .fd = fd, .destination = alias};
+        int remapped = plat_vm_map_fd(alias, 0x2000, fd, 0x3000, 2u << 20);
+        g_alias_cleanup.armed = 0;
+        CHECK(!remapped && g_alias_cleanup.rejected == 1 && g_alias_cleanup.moved == 1 &&
+                  !g_alias_cleanup.sentinel_error && g_alias_cleanup.sentinel,
+              "the alias cleanup race did not reach its forced mmap fallback and sentinel mapping");
+        /* mincore tests the mapping before any read. The old whole-allocation munmap removed this sentinel. */
+        unsigned char residency[2];
+        int retained = g_alias_cleanup.sentinel &&
+                       !mincore(g_alias_cleanup.sentinel, g_alias_cleanup.sentinel_size, residency);
+        CHECK(retained, "alias cleanup removed another thread's mapping in the old mremap hole");
+        if (retained) {
+            CHECK(g_alias_cleanup.sentinel[17] == 0xa7 &&
+                      g_alias_cleanup.sentinel[g_alias_cleanup.sentinel_size - 1] == 0xa7,
+                  "alias cleanup changed another thread's sentinel bytes");
+            munmap(g_alias_cleanup.sentinel, g_alias_cleanup.sentinel_size);
+        }
+        if (!remapped)
+            CHECK(alias[17] == 0x77 && alias[18] == 0x88 && g[0xffff] == 0x55 && g[0x12000] == 0x66,
+                  "the mmap fallback changed its file offset, shared bytes or destination neighbors");
         plat_vm_decommit(g, 2u << 20);
         plat_gpu_buffer_free(fd, handle, 2u << 20);
 #elif !defined(__ANDROID__)
@@ -915,6 +1033,19 @@ int main(int argc, char** argv) {
     snprintf(sub, sizeof sub, "%s/platform_posix.dir", dir);
     plat_mkdir(sub);
     CHECK(plat_is_dir(sub) && !plat_is_dir(path), "plat_is_dir");
+
+    printf("libraries\n");
+    /* a library the process hasn't loaded isn't found, and isn't loaded by the look (twice: a look that loaded it
+       finds it the second time); once opened it is, and its function through that */
+    CHECK(!plat_dl_loaded(SNX_TEST_DL_PROBE) && !plat_dl_loaded(SNX_TEST_DL_PROBE), "a library not loaded was found");
+    {
+        void* opened = plat_dl_open(SNX_TEST_DL_PROBE);
+        void* found = plat_dl_loaded(SNX_TEST_DL_PROBE);
+        int (*probe)(void) = NULL;
+        void* sym = found ? plat_dl_sym(found, "snx_test_dl_probe") : NULL;
+        memcpy(&probe, &sym, sizeof probe);
+        CHECK(opened && found && probe && probe() == 42, "a library opened was not found, or its function");
+    }
 
     printf("timed waits and threads\n");
     /* a timed wait times out, roughly on time */

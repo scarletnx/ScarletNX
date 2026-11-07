@@ -31,7 +31,7 @@ typedef struct {
     void* pMappedData;
 } VmaAllocationInfo;
 static struct {
-    int has_descriptor_buffers;
+    int has_descriptor_buffers, has_descriptor_heap_support, has_descriptor_heaps;
     VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptor_props;
     VkPhysicalDeviceFeatures feat;
     VkDevice dev;
@@ -62,6 +62,39 @@ void rec_CmdBindDescriptorSets(VkCommandBuffer, VkPipelineBindPoint, VkPipelineL
 #include "nx/gpu/vk/descriptors.c"
 
 #define HANDLE(type, value) ((type)(uintptr_t)(value))
+void vk_descriptor_heaps_layout(VkDescriptorSetLayout layout, const VkDescriptorSetLayoutBinding* bindings, u32 count) {
+    (void)layout;
+    (void)bindings;
+    (void)count;
+    abort();
+}
+void vk_descriptor_heaps_reset(u32 slot) {
+    (void)slot;
+    abort();
+}
+int vk_descriptor_heaps_room(u32 slot) {
+    (void)slot;
+    abort();
+}
+VkDescriptorSet vk_descriptor_heaps_write(VkDescriptorSetLayout layout, u32 count, const VkWriteDescriptorSet* writes) {
+    (void)layout;
+    (void)count;
+    (void)writes;
+    abort();
+}
+void vk_descriptor_heaps_bind(VkCommandBuffer cb, u32 first, u32 count, const VkDescriptorSet* sets) {
+    (void)cb;
+    (void)first;
+    (void)count;
+    (void)sets;
+    abort();
+}
+void vk_descriptor_heaps_buffer_bound(u32 begun) { (void)begun; abort(); }
+void vk_descriptor_heaps_stats(void) { abort(); }
+void vk_descriptor_heaps_get_stats(VkDescriptorHeapStats* stats) {
+    (void)stats;
+    abort();
+}
 VkResult vmaCreateBuffer(VmaAllocator a, const VkBufferCreateInfo* b, const VmaAllocationCreateInfo* c, VkBuffer* d,
                          VmaAllocation* e, VmaAllocationInfo* f) {
     (void)a;
@@ -150,10 +183,16 @@ VKAPI_ATTR void VKAPI_CALL vkGetDescriptorEXT(VkDevice device, const VkDescripto
     memcpy(destination, &a->address, size);
 }
 
-static void encode(const VkWriteDescriptorSet* writes, u32 count, u32 queries, u32 descriptors) {
+static const u8* encode(const VkWriteDescriptorSet* writes, u32 count, u32 queries, u32 descriptors) {
     g_test.queries = g_test.encoded = 0;
-    vk_descriptors_write(HANDLE(VkDescriptorSetLayout, 1), count, writes);
+    VkDescriptorSet set = vk_descriptors_write(HANDLE(VkDescriptorSetLayout, 1), count, writes);
     assert(g_test.queries == queries && g_test.encoded == descriptors);
+    return g_descriptors.frame[0].mapped + (uintptr_t)set - 1;
+}
+static u64 encoded_address(const u8* table, u32 binding, u32 element) {
+    u64 address;
+    memcpy(&address, table + g_descriptors.layouts[0].offset[binding] + element * sizeof address, sizeof address);
+    return address;
 }
 int main(void) {
     static u8 arena_bytes[64 * 1024];
@@ -172,6 +211,8 @@ int main(void) {
     VkWriteDescriptorSet writes[34];
     for (u32 i = 0; i < 34; i++) {
         g_descriptors.layouts[0].offset[i] = i * 64;
+        g_descriptors.layouts[0].count[i] = 4;
+        g_descriptors.layouts[0].type[i] = i < 18 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         buffers[i] = (VkDescriptorBufferInfo){HANDLE(VkBuffer, 7), 16 + 8 * i, 16 + i};
         writes[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                            .dstBinding = i,
@@ -180,28 +221,26 @@ int main(void) {
                                                                     : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                            .pBufferInfo = &buffers[i]};
     }
-    encode(writes, 34, 1, 34);
+    const u8* table = encode(writes, 34, 1, 34);
     for (u32 i = 0; i < 34; i++) {
         assert(g_test.address[i] == 7 * 4096 + buffers[i].offset);
         assert(g_test.range[i] == buffers[i].range && g_test.format[i] == VK_FORMAT_UNDEFINED);
-        u64 encoded;
-        memcpy(&encoded, arena_bytes + i * 64, sizeof encoded);
-        assert(encoded == g_test.address[i]);
+        assert(encoded_address(table, i, 0) == g_test.address[i]);
     }
     /* A/B/A must query again on the second A and keep each descriptor's own offset. */
     buffers[1].buffer = HANDLE(VkBuffer, 8);
-    encode(writes, 3, 3, 3);
-    for (u32 i = 0; i < 3; i++) assert(g_test.address[i] == (i == 1 ? 8 : 7) * 4096 + buffers[i].offset);
+    table = encode(writes, 3, 3, 1); /* both A encodings are cached; the B encoding is new */
+    for (u32 i = 0; i < 3; i++) assert(encoded_address(table, i, 0) == (i == 1 ? 8 : 7) * 4096 + buffers[i].offset);
     /* A Vulkan handle reused in a later write call gets its new device address. */
     g_test.incarnation = 1ull << 40;
-    encode(writes, 1, 1, 1);
-    assert(g_test.address[0] == (1ull << 40) + 7 * 4096 + buffers[0].offset);
+    table = encode(writes, 1, 1, 1);
+    assert(encoded_address(table, 0, 0) == (1ull << 40) + 7 * 4096 + buffers[0].offset);
     g_test.incarnation = 0;
     /* Descriptor arrays share the same reuse; null descriptors never query the driver. */
     for (u32 i = 0; i < 4; i++) buffers[i].buffer = HANDLE(VkBuffer, i < 2 ? 7 : 0);
     writes[0].descriptorCount = 4;
-    encode(writes, 1, 1, 4);
-    for (u32 i = 0; i < 4; i++) assert(g_test.address[i] == (i < 2 ? 7 * 4096 : 0) + buffers[i].offset);
+    table = encode(writes, 1, 1, 2); /* the two non-null encodings are cached */
+    for (u32 i = 0; i < 4; i++) assert(encoded_address(table, 0, i) == (i < 2 ? 7 * 4096 : 0) + buffers[i].offset);
     writes[0].descriptorCount = 1;
     /* A texel view of the same buffer can reuse the address across descriptor types. */
     VkBufferViewCreateInfo view = {.sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
@@ -214,11 +253,14 @@ int main(void) {
                                        .dstBinding = 1,
                                        .descriptorCount = 1,
                                        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER};
-    encode(writes, 2, 1, 2);
-    assert(g_test.address[1] == 7 * 4096 + 128 && g_test.range[1] == 64 && g_test.format[1] == VK_FORMAT_R32_UINT);
+    g_descriptors.layouts[0].count[1] = 1;
+    g_descriptors.layouts[0].type[1] = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+    table = encode(writes, 2, 1, 1);
+    assert(encoded_address(table, 1, 0) == 7 * 4096 + 128);
+    assert(g_test.range[0] == 64 && g_test.format[0] == VK_FORMAT_R32_UINT);
     view.buffer = HANDLE(VkBuffer, 9);
-    encode(writes, 2, 2, 2);
-    assert(g_test.address[1] == 9 * 4096 + 128);
+    table = encode(writes, 2, 2, 1);
+    assert(encoded_address(table, 1, 0) == 9 * 4096 + 128);
     puts("PASS descriptor addresses: repeated buffers, switches, offsets, arrays, nulls and texel views");
     return 0;
 }

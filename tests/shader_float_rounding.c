@@ -1,0 +1,61 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+#include "nx/gpu/shader/shader.h"
+#include "common/utilities/endian.h"
+#include <stdio.h>
+#include <stdlib.h>
+
+/* Generate the actual narrowing instructions for independent spirv-val checks. */
+int main(int argc, char** argv) {
+    for (u32 pair = 0; pair < 3; pair++)
+        for (u32 mode = 0; mode < 4; mode++) {
+            u32 source = pair ? 3 : 2, destination = pair == 2 ? 2 : 1;
+            u64 program[16] = {0};
+            program[9] = 1; /* one fragment color component */
+            program[10] = 0x001f8000fc0007e0ull;
+            program[11] = 0x0100000000071004ull | 0x00000001ull << 20;
+            program[12] = 0x0100000000071005ull | 0x3ff00200ull << 20;
+            program[13] = 0x5ca8000000470000ull | (u64)source << 10 | (u64)destination << 8 | (u64)mode << 39;
+            program[14] = 0x001f8000fc0007e0ull;
+            program[15] = 0xe30000000007000full;
+            u8 bytes[sizeof program];
+            for (u32 i = 0; i < 16; i++) snx_st_le64(bytes + i * 8, program[i]);
+            ShaderInfo info = {.rt_int_mask = 1};
+            size_t words = 0;
+            u32* code = shader_to_spirv(bytes, sizeof bytes, ST_FS, &info, &words, 0, 1, 1, 1);
+            if (!code || info.unsupported) {
+                fprintf(stderr, "F2F %u→%u mode%u: %s\n", source, destination, mode, info.first_unsupported);
+                free(code);
+                return 1;
+            }
+            for (size_t at = 5; at < words;) {
+                u32 length = code[at] >> 16;
+                if (!length || length > words - at) {
+                    free(code);
+                    return 1;
+                }
+                if ((code[at] & 0xffff) == 17 && length == 2 && code[at + 1] == 11) {
+                    fputs("Float narrowing must not add an Int64 requirement\n", stderr);
+                    free(code);
+                    return 1;
+                }
+                at += length;
+            }
+            if (argc == 2) {
+                char path[4096];
+                int n = snprintf(path, sizeof path, "%s/narrow-%u-%u-%u.spv", argv[1], source, destination, mode);
+                if (n < 0 || n >= (int)sizeof path) {
+                    free(code);
+                    return 1;
+                }
+                FILE* file = fopen(path, "wb");
+                if (!file || fwrite(code, 4, words, file) != words || fclose(file)) {
+                    free(code);
+                    return 1;
+                }
+            }
+            free(code);
+        }
+    puts("PASS float narrowing:12 actual Maxwell modules without an Int64 requirement");
+    return 0;
+}

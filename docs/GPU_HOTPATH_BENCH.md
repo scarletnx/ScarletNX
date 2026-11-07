@@ -67,3 +67,18 @@ python3 tests/bench_gpu_hotpaths_test.py
 ```
 
 The unit tests require only Python's standard library and run no benchmark executable.
+
+The indexed-map fixture measures the renderer's staging allocator and map copy path for one, two, five and ten
+active tables. Both strategies run from the same executable. Before timing, GPU buffer copies check every active
+word and untouched padding. GPU completion is outside the measured CPU interval.
+
+```sh
+python3 tools/bench_gpu_hotpaths.py --kind hotpath --baseline build/src/nx/snx-test-vulkan \
+    --candidate active=build/src/nx/snx-test-vulkan --arg=-H --arg=--vk_memory=1 --arg=--vk_record=0 \
+    --variant-arg=baseline=--bench-indexed-map=0 --variant-arg=active=--bench-indexed-map=1 \
+    --index /local/contract-index.json --out .cache/indexed-map-comparison
+```
+
+The contract-index format attaches API and contract counts, plus the input file hash. It does not copy reference
+identifiers or text into the benchmark report. Static priority and measured cost remain separate evidence. The
+comparison measures map allocation and copying; it does not include a whole draw or claim a game FPS improvement.

@@ -910,6 +910,14 @@ setting GPU profile
     startup
     words Off|On
     help 1 = the GPU's time per rendering pass, summed per target and logged every 10 seconds (Vulkan timestamps)
+setting GPU checkpoints
+    key vk_checkpoints
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = records what the GPU is doing as it goes (VK_NV_device_diagnostic_checkpoints), and when the device is
+    help lost logs the work each queue reached. Where the driver has no such extension it is only a warning
 setting Guest memory
     key vk_memory
     int 0 2
@@ -941,13 +949,15 @@ setting NVN storage ordering
     help 0 keeps conservative per-draw dependencies for comparisons or command recordings from older builds.
 setting Descriptor buffers
     key vk_descriptors
-    int 0 1
-    default 0
+    int 0 3
+    default 3
     startup
-    words Sets|Buffers
-    help 1 = graphics descriptors use addressable Vulkan buffers when supported, with no descriptor-set allocations.
-    help Compute keeps its own descriptor pools. It also skips the guest's fragment barriers, which the tracking
-    help of targets and buffers orders. 0 = descriptor sets for graphics too, and every fragment barrier
+    words Sets|Buffers|Heaps|Automatic
+    help 2 and 3 do the same: graphics descriptors in heaps where the device has them, else buffers, else sets.
+    help 1 uses descriptor buffers where supported, else sets. A heap draw whose resource cannot be encoded uses
+    help buffers or sets. Compute keeps its own descriptor pools. With buffers or heaps in use, the guest's fragment
+    help barriers are skipped, which the tracking of targets and buffers orders. 0 = descriptor sets for graphics
+    help too, and every fragment barrier
 setting Vulkan recording thread
     key vk_record
     int 0 1
@@ -981,8 +991,9 @@ setting RenderDoc captures
     text 1024
     default ""
     startup
-    help The path's stem of RenderDoc captures (RenderDoc's library is loaded before the Vulkan instance), of the
-    help presents RenderDoc frames names. Empty: RenderDoc isn't loaded
+    help The path's stem of RenderDoc captures (RenderDoc's library is loaded before the Vulkan instance): Ctrl+F12's of
+    help the next frame, and the presents RenderDoc frames names. Empty: RenderDoc isn't loaded, and a game RenderDoc's
+    help program started captures where that program says
 setting RenderDoc frames
     key renderdoc_frames
     text 512

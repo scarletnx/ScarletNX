@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <inttypes.h>
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -73,6 +74,11 @@ bool vita_mapped(VitaProcess* p, uint32_t address, uint32_t size) {
         if (address >= s->address && end <= s->address + (uint64_t)((s->size + PAGE - 1) & ~(PAGE - 1))) return true;
     }
     if (address >= VITA_RUNTIME_PAGE && end <= VITA_TLS_BASE + (uint64_t)VITA_THREADS * VITA_TLS_SIZE) return true;
+    /* The imported variables' slots: only the used ones, so an address past them stays unmapped and a stray read
+       faults. VITA_VARIABLE_COUNT is the most the region can hold, and p->image.variable_count is how many are used. */
+    if (p->image.variable_count && address >= VITA_VARIABLES &&
+        end <= VITA_VARIABLES + (uint64_t)p->image.variable_count * VITA_VARIABLE_SIZE)
+        return true;
     for (unsigned i = 0; i < VITA_ALLOCATIONS; ++i) {
         const VitaAllocation* a = &p->allocations[i];
         if (a->size && address >= a->address && end <= (uint64_t)a->address + a->size) return true;
@@ -188,6 +194,10 @@ void vita_thread_start(VitaProcess* p, VitaThread* t, uint32_t r0, uint32_t r1) 
     t->seq = ++p->seq;
 }
 void vita_thread_end(VitaProcess* p, VitaThread* t, int32_t status) {
+    /* a thread's status is its entry function's return value. For the main thread this is the last module_start's
+       result (libc, then libfios2, then libsmart, then libult, then the game's own): a non-zero value here is the
+       module that aborted the chain, and the number is the module's own error code */
+    if (t->name[0]) printf("vita: thread \"%s\" ended with status 0x%08x\n", t->name, (unsigned)status);
     t->exit_status = status;
     t->state = VITA_THREAD_DEAD;
     if (p->current == t) p->current = NULL;
@@ -251,6 +261,27 @@ static void title_id(VitaProcess* p) {
     snprintf(p->title_id, sizeof p->title_id, "%s", name);
     free(title);
 }
+static uint32_t vita_module_start_next(VitaProcess* p, VitaThread* t, void* context) {
+    uintptr_t index = (uintptr_t)context;
+    /* The chain of module_start functions: each library's in turn, then the game's. The thread's entry is the
+       first, and a result other than SCE_OK from any of them ends the chain. */
+    printf("vita: module_start_next index=%u previous-r0=0x%08" PRIx32 "\n", (unsigned)index, t->cpu.r[0]);
+    if (t->cpu.r[0] != SCE_OK) return t->cpu.r[0];
+    if (index < p->image.library_start_count) {
+        uint32_t entry = p->image.library_starts[index];
+        vita_hle_guest_call(p, t, entry, NULL, 0, vita_module_start_next, (void*)(index + 1));
+        return 0;
+    }
+    if (index == p->image.library_start_count) {
+        vita_hle_guest_call(p, t, p->image.module_start, NULL, 0, vita_module_start_next,
+                            (void*)(index + 1));
+        return 0;
+    }
+    return t->cpu.r[0];
+}
+/* whether t is running a module_start of the chain. A module_start may end with sceKernelExitThread, which then
+   counts as its return */
+bool vita_in_module_start(const VitaThread* t) { return t->call.active && t->call.next == vita_module_start_next; }
 VitaProcess* vita_process_new(const VitaImage* image, const char* folder, char* error, size_t error_size) {
     VitaProcess* p = calloc(1, sizeof *p);
     if (!p) {
@@ -291,6 +322,15 @@ VitaProcess* vita_process_new(const VitaImage* image, const char* folder, char* 
         }
         memcpy(p->mem + s->address, s->bytes, s->size);
     }
+    /* The imported variables' slots (VitaImage.variables): one for each variable each module imports. Map the used
+       range, and nothing past it, before vita_hle_variables writes through them. */
+    if (image->variable_count) {
+        uint32_t variables_size = (image->variable_count * VITA_VARIABLE_SIZE + PAGE - 1) & ~(PAGE - 1);
+        if (!commit(p, VITA_VARIABLES, variables_size)) {
+            snprintf(error, error_size, "cannot map the %u imported variables", image->variable_count);
+            goto fail;
+        }
+    }
     vita_hle_variables(p);
     /* the main thread, at module_start, with the stack and priority the process parameters name (sceProcessParam's
        main_thread_priority and main_thread_stacksize, pointers when set) */
@@ -300,12 +340,22 @@ VitaProcess* vita_process_new(const VitaImage* image, const char* folder, char* 
         if (prio && vita_mapped(p, prio, 4)) priority = vita_read32(p, prio);
         if (size && vita_mapped(p, size, 4)) stack = vita_read32(p, size);
     }
-    int32_t uid = vita_thread_new(p, "main thread", image->module_start, priority, stack, 0);
+    uint32_t first_start = image->library_start_count ? image->library_starts[0] : image->module_start;
+    int32_t uid = vita_thread_new(p, "main thread", first_start, priority, stack, 0);
     if (uid < 0) {
         snprintf(error, error_size, "cannot create the main thread");
         goto fail;
     }
-    vita_thread_start(p, vita_thread(p, (uint32_t)uid), 0, 0);
+    VitaThread* main_thread = vita_thread(p, (uint32_t)uid);
+    vita_thread_start(p, main_thread, 0, 0);
+    if (image->library_start_count) {
+        main_thread->call.active = true;
+        main_thread->call.lr = VITA_THREAD_RETURN;
+        main_thread->call.sp = main_thread->cpu.r[13];
+        main_thread->call.next = vita_module_start_next;
+        main_thread->call.context = (void*)1;
+        main_thread->cpu.r[14] = VITA_CALL_RETURN;
+    }
     return p;
 fail:
     vita_process_free(p);
