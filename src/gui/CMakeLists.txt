@@ -276,9 +276,11 @@ if(BUILD_TESTING)
         endif()
         set_target_properties(snx-test-gui-sdl PROPERTIES LINKER_LANGUAGE CXX)
     endif()
-    # the runtime's sections and pages, each of which has an icon in the Settings
+    # the runtime's sections and pages, each of which has an icon in the Settings; the key sentences, each key of which
+    # has an icon in F1's box
     target_compile_definitions(snx-test-gui-sdl PRIVATE
-                               SNX_GUI_SETTINGS_TXT="${PROJECT_SOURCE_DIR}/src/nx/runtime/settings.txt")
+                               SNX_GUI_SETTINGS_TXT="${PROJECT_SOURCE_DIR}/src/nx/runtime/settings.txt"
+                               SNX_GUI_POT="${PROJECT_SOURCE_DIR}/po/scarletnx.pot")
     # the screens' tests: no file picker of the desktop's, as the portal would open one on the screen, DBus being there
     # without a display. A Mac's TMPDIR, /var/folders/..., is long enough to wrap the paths the screens show, and /var
     # and /tmp are links into /private, which the checks compare as text: /private/tmp is short and real
