@@ -13,16 +13,6 @@
 
 #define SFCI                 0x49434653u /* the CmifInHeader's magic */
 #define SFCO                 0x4F434653u /* the CmifOutHeader's */
-/* sf's results (module 10, cmif) and hipc's (module 11) */
-#define RC_NOTSUPPORTED      RC(10, 1)
-#define RC_BADHEADERSIZE     RC(10, 202)
-#define RC_BADINHEADER       RC(10, 211)
-#define RC_UNKNOWNCOMMAND    RC(10, 221)
-#define RC_BADNUMINOBJECTS   RC(10, 235)
-#define RC_TARGETNOTFOUND    RC(10, 261)
-#define RC_BADCMIFREQUEST    RC(11, 420)
-#define RC_TARGETNOTDOMAIN   RC(11, 491)
-#define RC_DOMAINOBJNOTFOUND RC(11, 492)
 /* the server's message buffer, which the raw data and every reply fit in */
 #define SERVER_MSG           0x100u
 /* what QueryPointerBufferSize answers unless the service sets its own (SvcObj.ptrbuf): the size of the server's
@@ -242,16 +232,16 @@ static u32 parse_hipc(IpcCtx* c, Hipc* h) {
     h->raw_end = h->data + 4 * h->ndata;
     nc = cmode == 2 ? 1 : cmode > 2 ? cmode - 2 : 0;
     rl = rloff ? rloff * 4 : h->raw_end;
-    if ((u64)rl + 8 * (u64)nc > c->msg_size) return c->kernel_rc = R_BADCOMBO;
-    if (h->raw_end > SERVER_MSG) return c->kernel_rc = R_MSGTOOLARGE;
-    if (nmove) return c->kernel_rc = R_BADCOMBO;
+    if ((u64)rl + 8 * (u64)nc > c->msg_size) return c->kernel_rc = SNX_RC_SVC_INVALID_COMBINATION;
+    if (h->raw_end > SERVER_MSG) return c->kernel_rc = SNX_RC_SVC_MESSAGE_TOO_LARGE;
+    if (nmove) return c->kernel_rc = SNX_RC_SVC_INVALID_COMBINATION;
     for (i = 0; i < nx; i++, off += 8) { /* X: the pointer buffer's send statics */
         u32 d0 = rd32(m + off), d1 = rd32(m + off + 4);
         IpcBuf b;
         b.addr = d1 | (u64)((d0 >> 12) & 15) << 32 | (u64)((d0 >> 6) & 7) << 36;
         b.size = d0 >> 16;
         b.flags = (d0 & 63) | ((d0 >> 9) & 7) << 6; /* the static's index */
-        if (out_of_space(b.addr, b.size)) return c->kernel_rc = R_BADMEMSTATE;
+        if (out_of_space(b.addr, b.size)) return c->kernel_rc = SNX_RC_SVC_INVALID_CURRENT_MEMORY;
         if (i < MAX_BUFS) c->x[c->nx++] = b;
     }
     for (i = 0; i < na + nb + nw; i++, off += 12) { /* A, B, W: mapped buffers */
@@ -260,7 +250,7 @@ static u32 parse_hipc(IpcCtx* c, Hipc* h) {
         b.addr = d1 | (u64)(d2 >> 28) << 32 | (u64)((d2 >> 2) & 0x3FFFFF) << 36;
         b.size = d0 | (u64)((d2 >> 24) & 15) << 32;
         b.flags = d2 & 3;
-        if (out_of_space(b.addr, b.size)) return c->kernel_rc = R_BADMEMSTATE;
+        if (out_of_space(b.addr, b.size)) return c->kernel_rc = SNX_RC_SVC_INVALID_CURRENT_MEMORY;
         if (i < na) {
             if (i < MAX_BUFS) c->a[c->na++] = b;
         } else if (i < na + nb) {
@@ -274,19 +264,19 @@ static u32 parse_hipc(IpcCtx* c, Hipc* h) {
         b.addr = d0 | (u64)(d1 & 0xFFFF) << 32;
         b.size = d1 >> 16;
         b.flags = 0;
-        if (out_of_space(b.addr, b.size)) return c->kernel_rc = R_BADMEMSTATE;
+        if (out_of_space(b.addr, b.size)) return c->kernel_rc = SNX_RC_SVC_INVALID_CURRENT_MEMORY;
         if (i < MAX_BUFS) c->c[c->nc++] = b;
     }
-    if (nc && rloff && rl < h->raw_end) return c->kernel_rc = R_BADCOMBO;
+    if (nc && rloff && rl < h->raw_end) return c->kernel_rc = SNX_RC_SVC_INVALID_COMBINATION;
     R_SUCCEED();
 }
 /* why the kernel refused a request, for the log */
 static const char* kernel_refusal(u32 rc) {
     switch (rc) {
-        case R_BADCOMBO:
+        case SNX_RC_SVC_INVALID_COMBINATION:
             return "a header describing more than the message buffer, a move handle or a misplaced receive list";
-        case R_MSGTOOLARGE: return "raw data past the server's 0x100 bytes";
-        case R_BADMEMSTATE: return "a buffer outside the address space";
+        case SNX_RC_SVC_MESSAGE_TOO_LARGE: return "raw data past the server's 0x100 bytes";
+        case SNX_RC_SVC_INVALID_CURRENT_MEMORY: return "a buffer outside the address space";
         default: return "?";
     }
 }
@@ -299,9 +289,9 @@ u32 ipc_user_buffer(u64 addr, u64 size) {
     MemBlock b;
     u64 a = addr;
     u32 state = 0, perm = 0;
-    R_UNLESS(!(addr & 0xFFF), R_BADADDR);
-    R_UNLESS(size && !(size & 0xFFF), R_BADSIZE);
-    R_UNLESS(addr < AS_SIZE && size <= AS_SIZE - addr, R_BADMEMSTATE);
+    R_UNLESS(!(addr & 0xFFF), SNX_RC_SVC_INVALID_ADDRESS);
+    R_UNLESS(size && !(size & 0xFFF), SNX_RC_SVC_INVALID_SIZE);
+    R_UNLESS(addr < AS_SIZE && size <= AS_SIZE - addr, SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     while (a < addr + size) {
         mem_query(a, &b);
         if (a == addr) {
@@ -310,7 +300,7 @@ u32 ipc_user_buffer(u64 addr, u64 size) {
         }
         if (b.state != state || b.perm != perm || b.attr || !(b.state & MS_FLAG_IPC_USER_BUFFER) || b.perm != PERM_RW ||
             !b.size)
-            R_THROW(R_BADMEMSTATE);
+            R_THROW(SNX_RC_SVC_INVALID_CURRENT_MEMORY);
         a = b.addr + b.size;
     }
     R_SUCCEED();
@@ -327,7 +317,7 @@ static void parse_cmif(IpcCtx* c, const Hipc* h, int domain) {
         u32 nobj;
         c->is_domain = IPC_DOMAIN_MESSAGE; /* refused or not, the reply is a domain one */
         if (avail < 16) {
-            c->header_rc = RC_BADHEADERSIZE;
+            c->header_rc = SNX_RC_SF_INVALID_CMIF_HEADER_SIZE;
             return;
         }
         nobj = d[1];
@@ -337,11 +327,11 @@ static void parse_cmif(IpcCtx* c, const Hipc* h, int domain) {
         if (d[0] == 2) /* Close: nothing more */
             return;
         if (d[0] != 1)
-            c->domain_rc = RC_BADINHEADER;
+            c->domain_rc = SNX_RC_SF_INVALID_CMIF_IN_HEADER;
         else if (16 + payload + 4 * (i32)nobj > avail)
-            c->domain_rc = RC_BADHEADERSIZE;
+            c->domain_rc = SNX_RC_SF_INVALID_CMIF_HEADER_SIZE;
         else if (nobj > 8)
-            c->domain_rc = RC_BADNUMINOBJECTS;
+            c->domain_rc = SNX_RC_SF_INVALID_IN_OBJECT_COUNT;
         else {
             u32 i;
             c->nin_objs = (int)nobj;
@@ -352,16 +342,16 @@ static void parse_cmif(IpcCtx* c, const Hipc* h, int domain) {
     }
     if (payload < 16) {
         if (domain)
-            c->domain_rc = RC_BADHEADERSIZE;
+            c->domain_rc = SNX_RC_SF_INVALID_CMIF_HEADER_SIZE;
         else
-            c->header_rc = RC_BADHEADERSIZE;
+            c->header_rc = SNX_RC_SF_INVALID_CMIF_HEADER_SIZE;
         return;
     }
     if (rd32(d) != SFCI || rd32(d + 4) > 1) {
         if (domain)
-            c->domain_rc = RC_BADINHEADER;
+            c->domain_rc = SNX_RC_SF_INVALID_CMIF_IN_HEADER;
         else
-            c->header_rc = RC_BADINHEADER;
+            c->header_rc = SNX_RC_SF_INVALID_CMIF_IN_HEADER;
         return;
     }
     c->cmd = rd32(d + 8);
@@ -511,10 +501,10 @@ static u32 control(IpcCtx* c, KSession* s) {
             R_SUCCEED();
         case 1: {
             SvcObj* o;
-            R_UNLESS(d, RC_TARGETNOTDOMAIN);
+            R_UNLESS(d, SNX_RC_SF_HIPC_TARGET_NOT_DOMAIN);
             ipc_in(c, 0, &id, 4);
             o = domain_get(d, snx_le32(id));
-            R_UNLESS(o, RC_DOMAINOBJNOTFOUND);
+            R_UNLESS(o, SNX_RC_SF_HIPC_DOMAIN_OBJECT_NOT_FOUND);
             out_move_h(c, session_new(o));
             R_SUCCEED();
         }
@@ -528,14 +518,14 @@ static u32 control(IpcCtx* c, KSession* s) {
         default:
             if (ipc_warn_once("control", c->cmd))
                 WARN("ipc: %s: control request %u, UnknownCommandId\n", s->obj ? s->obj->name : "session", c->cmd);
-            R_THROW(RC_UNKNOWNCOMMAND);
+            R_THROW(SNX_RC_SF_UNKNOWN_METHOD_ID);
     }
 }
 /* a request in a domain message: Close, or the target object's command */
 static void serve_domain(IpcCtx* c, Domain* d, u32 seq, const char* name) {
     SvcObj* o = domain_get(d, c->domain_obj);
     if (!o) {
-        answer(c, RC_TARGETNOTFOUND, seq, name, "object");
+        answer(c, SNX_RC_SF_TARGET_OBJECT_NOT_FOUND, seq, name, "object");
         return;
     }
     if (c->domain_rc) {
@@ -569,15 +559,15 @@ u32 ipc_handle(u32 handle, u64 msg_addr, u64 msg_size) {
     u32 rc = 0;
     if (t && s) t->req_session = kobj_id(&s->o);
     if (!s) {
-        ring_set(seq, IPC_REC_NOT_SESSION, NULL, 0, handle, NULL, R_BADHANDLE, NULL);
+        ring_set(seq, IPC_REC_NOT_SESSION, NULL, 0, handle, NULL, SNX_RC_SVC_INVALID_HANDLE, NULL);
         WARN_LIMIT(8, "ipc: a request on handle %x, which isn't a session: InvalidHandle\n", handle);
-        return R_BADHANDLE;
+        return SNX_RC_SVC_INVALID_HANDLE;
     }
     name = s->obj ? s->obj->name : "session";
     if (__atomic_load_n(&s->closed, __ATOMIC_ACQUIRE)) {
-        ring_set(seq, IPC_REC_SESSION_CLOSED, name, 0, 0, NULL, R_SESSIONCLOSED, NULL);
+        ring_set(seq, IPC_REC_SESSION_CLOSED, name, 0, 0, NULL, SNX_RC_SVC_SESSION_CLOSED, NULL);
         kobj_unref(&s->o);
-        return R_SESSIONCLOSED;
+        return SNX_RC_SVC_SESSION_CLOSED;
     }
     memset(&c, 0, sizeof c);
     c.msg = GP(msg_addr);
@@ -596,13 +586,13 @@ u32 ipc_handle(u32 handle, u64 msg_addr, u64 msg_size) {
         if (s->obj)
             serve(&c, s->obj, seq);
         else
-            answer(&c, RC_UNKNOWNCOMMAND, seq, name, "command");
+            answer(&c, SNX_RC_SF_UNKNOWN_METHOD_ID, seq, name, "command");
     } else if (c.type < 4 || c.type > 7) {
         __atomic_store_n(&s->closed, 1, __ATOMIC_RELEASE);
-        ring_set(seq, IPC_REC_TYPE_CLOSED, name, c.type, 0, NULL, R_SESSIONCLOSED, NULL);
+        ring_set(seq, IPC_REC_TYPE_CLOSED, name, c.type, 0, NULL, SNX_RC_SVC_SESSION_CLOSED, NULL);
         if (c.type != 2 && c.type != 15)
             WARN_LIMIT(4, "ipc: %s: message type %u, which sf doesn't serve: the session is closed\n", name, c.type);
-        rc = R_SESSIONCLOSED;
+        rc = SNX_RC_SVC_SESSION_CLOSED;
     } else {
         int ctl = c.type == 5 || c.type == 7;
         d = __atomic_load_n(&s->domain, __ATOMIC_ACQUIRE);
@@ -611,13 +601,13 @@ u32 ipc_handle(u32 handle, u64 msg_addr, u64 msg_size) {
         if (c.header_rc)
             answer(&c, c.header_rc, seq, name, "request");
         else if (ctl)
-            answer(&c, s->obj ? control(&c, s) : RC_UNKNOWNCOMMAND, seq, name, "control");
+            answer(&c, s->obj ? control(&c, s) : SNX_RC_SF_UNKNOWN_METHOD_ID, seq, name, "control");
         else if (d)
             serve_domain(&c, d, seq, name);
         else if (s->obj)
             serve(&c, s->obj, seq);
         else
-            answer(&c, RC_UNKNOWNCOMMAND, seq, name, "command");
+            answer(&c, SNX_RC_SF_UNKNOWN_METHOD_ID, seq, name, "command");
     }
     if (t) t->req_session = 0;
     kobj_unref(&s->o);
@@ -672,17 +662,17 @@ int quiet_ok(SvcObj* o, IpcCtx* c) {
 }
 int ipc_unknown(SvcObj* o, IpcCtx* c) {
     if (ipc_warn_once(o->name, c->cmd)) WARN("  [unknown] %s cmd %u -> UnknownCommandId\n", o->name, c->cmd);
-    R_THROW((int)RC_UNKNOWNCOMMAND);
+    R_THROW((int)SNX_RC_SF_UNKNOWN_METHOD_ID);
 }
 int ipc_bad_request(SvcObj* o, IpcCtx* c) {
     WARN("  [bad request] %s cmd %u: pid %d, A %d, B %d, X %d, W %d, copy handles %d, raw 0x%x bytes%s\n", o->name,
          c->cmd, c->has_pid, c->na, c->nb, c->nx, c->nw, c->ncopy, c->raw_size, c->tipc ? " (TIPC)" : "");
-    R_THROW((int)RC_BADCMIFREQUEST);
+    R_THROW((int)SNX_RC_SF_HIPC_INVALID_CMIF_REQUEST);
 }
 int ipc_bad_objects(SvcObj* o, IpcCtx* c) {
     WARN("  [bad request] %s cmd %u: %d objects%s\n", o->name, c->cmd, c->nin_objs,
          c->is_domain ? "" : " on a session that isn't a domain");
-    return (int)(c->is_domain ? RC_BADNUMINOBJECTS : RC_NOTSUPPORTED);
+    return (int)(c->is_domain ? SNX_RC_SF_INVALID_IN_OBJECT_COUNT : SNX_RC_SF_NOT_SUPPORTED);
 }
 SvcObj* ipc_in_obj(IpcCtx* c, int i) {
     if (c->is_domain != IPC_DOMAIN_MESSAGE || i < 0 || i >= c->nin_objs || !c->sess) return NULL;

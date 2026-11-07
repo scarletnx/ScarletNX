@@ -176,11 +176,11 @@ static void test_map_memory(u64 info) {
     gw32(src + 0x10, 0x5555);            /* (the guest may not, but the host can see it is one page) */
     CHECK(gr32(dst + 0x10) == 0x5555);
     CHECK(info_attr_perm(info, src, &perm) == 1 && perm == PERM_NONE);
-    CHECK(svc_map_memory(dst + 0x4000, src, 0x1000) == R_BADMEMSTATE); /* locked */
-    CHECK(svc_set_heap_size(0) == R_BADMEMSTATE);
+    CHECK(svc_map_memory(dst + 0x4000, src, 0x1000) == SNX_RC_SVC_INVALID_CURRENT_MEMORY); /* locked */
+    CHECK(svc_set_heap_size(0) == SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     check_tracking(dst, 0x2000);
     check_tracking(src, 0x2000);
-    CHECK(svc_unmap_memory(dst + 0x1000, src, 0x2000) == R_BADMEMSTATE);
+    CHECK(svc_unmap_memory(dst + 0x1000, src, 0x2000) == SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     CHECK(svc_unmap_memory(dst, src, 0x2000) == 0);
     CHECK(gr32(src) == 0xCAFE && gr32(src + 0x1000) == 0xBEEF && gr32(src + 0x10) == 0x5555);
     CHECK(state(dst) == MS_FREE && mem_pool_used() == 0);
@@ -198,7 +198,7 @@ static void test_map_memory(u64 info) {
     CHECK(svc_unmap_memory(ALIAS_BASE, src, 0x2000) == 0 && mem_pool_used() == 0 && gr32(src) == 0x7777);
     /* a view onto memory that isn't free fails and leaves the source as it was */
     CHECK(mem_map(dst, 0x1000, MS_STACK, PERM_RW) == 0);
-    CHECK(svc_map_memory(dst, src, 0x2000) == R_BADMEMSTATE);
+    CHECK(svc_map_memory(dst, src, 0x2000) == SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     CHECK(mem_pool_used() == 0 && info_attr_perm(info, src, &perm) == 0 && perm == PERM_RW && gr32(src) == 0x7777);
     CHECK(mem_unmap(dst, 0x1000) == 0);
     /* two sources side by side get neighbouring pool pages, and their blocks join: unmapping each gives its own back,
@@ -232,7 +232,7 @@ static void test_code_memory(void) {
     CHECK(gr32(owner + 0x10000 + 0x2000) == 0xD503201F);
     gw32(owner + 0x10000 + 4, 0x22);
     CHECK(gr32(slave + 4) == 0x22);
-    CHECK(svc_codemem_control(o, 0, owner, 0x4000, PERM_RW) == R_BADSTATE);
+    CHECK(svc_codemem_control(o, 0, owner, 0x4000, PERM_RW) == SNX_RC_SVC_INVALID_STATE);
     kcodemem_destroy(o);
     CHECK(mem_pool_used() == 0 && state(owner + 0x10000) == MS_FREE && state(slave) == MS_FREE);
     mem_query(src, &b);
@@ -320,9 +320,9 @@ static void test_shared_memory(void) {
     CHECK(GP(a)[5] == 5 && host[5] == 5);
     check_tracking(a, 0x2000);
     check_tracking(b, 0x3000);
-    CHECK(svc_unmap_shm(0x1234, a + 0x1000, 0x2000) == R_BADMEMSTATE);
+    CHECK(svc_unmap_shm(0x1234, a + 0x1000, 0x2000) == SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     CHECK(svc_unmap_shm(0x1234, a, 0x2000) == 0 && state(a) == MS_FREE && s->o.refs == 2);
-    CHECK(svc_unmap_shm(0x1234, a, 0x2000) == R_BADMEMSTATE);
+    CHECK(svc_unmap_shm(0x1234, a, 0x2000) == SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     CHECK(GP(b)[5] == 5);
     CHECK(svc_unmap_shm(0x1234, b, 0x3000) == 0 && state(b + 0x2000) == MS_FREE && s->o.refs == 1);
     CHECK(svc_map_shm(0x1234, b, 0x2000, PERM_RW) == 0 && GP(b)[0x1001] == 9 && GP(b)[5] == 5);
@@ -339,9 +339,9 @@ static void test_pool_full(u64 info) {
     KShmem* s;
     u32 perm;
     g_pool_size = 0x1000;
-    CHECK(svc_map_memory(dst, src, 0x2000) == R_OUTOFMEM);
+    CHECK(svc_map_memory(dst, src, 0x2000) == SNX_RC_SVC_OUT_OF_MEMORY);
     CHECK(state(dst) == MS_FREE && info_attr_perm(info, src, &perm) == 0 && perm == PERM_RW);
-    CHECK(svc_codemem_new(src, 0x2000, &o) == R_OUTOFMEM && !o);
+    CHECK(svc_codemem_new(src, 0x2000, &o) == SNX_RC_SVC_OUT_OF_MEMORY && !o);
     CHECK(info_attr_perm(info, src, &perm) == 0 && perm == PERM_RW);
     s = kshmem_new(0x2000, "copy");
     CHECK(s && !s->pool && kshmem_ptr(s) == s->host);

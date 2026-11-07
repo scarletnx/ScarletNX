@@ -12,8 +12,6 @@
 #include "nx/hle/hle.h"
 #include "nx/runtime/clock.h"
 
-#define R_BADPERM    0xD801 /* InvalidNewMemoryPermission */
-#define R_BADPOINTER 0xE601 /* InvalidPointer: a user copy that faults */
 #define MIB          (1ull << 20)
 
 /* the MemoryState flags the checks below test (k_memory_block.h, Switchbrew's MemoryState) */
@@ -66,9 +64,9 @@ static void set_perm(u64 a, u64 size, u32 perm) {
 /* the argument checks every mapping SVC makes first: InvalidAddress, InvalidSize, then InvalidCurrentMemory for a
    range that wraps around */
 static u32 check_range(u64 a, u64 size) {
-    R_UNLESS(!(a & 0xFFF), R_BADADDR);
-    R_UNLESS(size && !(size & 0xFFF), R_BADSIZE);
-    R_UNLESS(a + size > a, R_BADMEMSTATE);
+    R_UNLESS(!(a & 0xFFF), SNX_RC_SVC_INVALID_ADDRESS);
+    R_UNLESS(size && !(size & 0xFFF), SNX_RC_SVC_INVALID_SIZE);
+    R_UNLESS(a + size > a, SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     R_SUCCEED();
 }
 /* guest memory the kernel writes for the game (QueryMemory's info, a thread context): mapped and writable */
@@ -139,7 +137,10 @@ static u64 heap_budget(void) {
     return fixed < total ? total - fixed : 0;
 }
 static u32 mem_result(int r) {
-    return r == MEM_LIMIT ? R_LIMIT : r == MEM_NOMEM ? R_OUTOFMEM : r == MEM_BADSTATE ? R_BADMEMSTATE : 0;
+    return r == MEM_LIMIT      ? SNX_RC_SVC_LIMIT_REACHED
+           : r == MEM_NOMEM    ? SNX_RC_SVC_OUT_OF_MEMORY
+           : r == MEM_BADSTATE ? SNX_RC_SVC_INVALID_CURRENT_MEMORY
+                               : 0;
 }
 /* for the crash report: read without the memory lock, which the crashed thread may hold */
 void mem_report(char* out, int n) {
@@ -158,9 +159,9 @@ u32 svc_set_heap_size(u64 size) {
     u64 proc = g_code_memory + g_main_stack_size;
     u32 r;
     if ((size & 0x1FFFFF) || size >= (8ull << 30))
-        r = R_BADSIZE;
+        r = SNX_RC_SVC_INVALID_SIZE;
     else if (proc > HEAP_SIZE || size > HEAP_SIZE - proc || (g_heap_max && size > g_heap_max))
-        r = R_OUTOFMEM;
+        r = SNX_RC_SVC_OUT_OF_MEMORY;
     else
         r = mem_result(mem_heap_set(size, heap_budget()));
     LOG("heap: %llu MB requested%s (result %x)\n", (unsigned long long)(size >> 20), R_FAILED(r) ? ", refused" : "",
@@ -171,11 +172,11 @@ u32 svc_set_heap_size(u64 size) {
    (InvalidMemoryRegion), a process with a system resource (InvalidState), inside the alias region
    (InvalidMemoryRegion) */
 static u32 check_physical(u64 addr, u64 size) {
-    R_UNLESS(!(addr & 0xFFF), R_BADADDR);
-    R_UNLESS(size && !(size & 0xFFF), R_BADSIZE);
-    R_UNLESS(addr + size > addr, R_BADREGION);
-    R_UNLESS(g_hle.kernel.sysres_size, R_BADSTATE);
-    R_UNLESS(in_region(addr, size, ALIAS_BASE, ALIAS_SIZE), R_BADREGION);
+    R_UNLESS(!(addr & 0xFFF), SNX_RC_SVC_INVALID_ADDRESS);
+    R_UNLESS(size && !(size & 0xFFF), SNX_RC_SVC_INVALID_SIZE);
+    R_UNLESS(addr + size > addr, SNX_RC_SVC_INVALID_MEMORY_REGION);
+    R_UNLESS(g_hle.kernel.sysres_size, SNX_RC_SVC_INVALID_STATE);
+    R_UNLESS(in_region(addr, size, ALIAS_BASE, ALIAS_SIZE), SNX_RC_SVC_INVALID_MEMORY_REGION);
     R_SUCCEED();
 }
 u32 svc_map_physical(u64 addr, u64 size) {
@@ -192,10 +193,10 @@ u32 svc_unmap_physical(u64 addr, u64 size) {
 u32 svc_set_mem_perm(u64 addr, u64 size, u32 perm) {
     u32 r;
     R_TRY(check_range(addr, size));
-    if (perm != PERM_NONE && perm != PERM_R && perm != PERM_RW) R_THROW(R_BADPERM);
+    if (perm != PERM_NONE && perm != PERM_R && perm != PERM_RW) R_THROW(SNX_RC_SVC_INVALID_NEW_MEMORY_PERMISSION);
     pm_lock(&g_host.svcmem.map_lk);
     if (!in_region(addr, size, 0, AS_END) || !range_ok(addr, size, 0, MSF_CAN_REPROTECT, ANY, ~0u, 0))
-        r = R_BADMEMSTATE;
+        r = SNX_RC_SVC_INVALID_CURRENT_MEMORY;
     else {
         set_perm(addr, size, perm);
         r = 0;
@@ -349,7 +350,7 @@ static u32 set_mem_attr_locked(u64 addr, u64 size, u32 mask, u32 attr) {
                        "attr %x, perm %x\n",
                        (unsigned long long)addr, (unsigned long long)size, mask, attr, (unsigned long long)b.addr,
                        (unsigned long long)b.size, b.state, b.attr, b.perm);
-        R_THROW(R_BADMEMSTATE);
+        R_THROW(SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     }
     mem_set_attr(addr, size, mask, attr);
     R_SUCCEED();
@@ -357,7 +358,7 @@ static u32 set_mem_attr_locked(u64 addr, u64 size, u32 mask, u32 attr) {
 u32 svc_set_mem_attr(u64 addr, u64 size, u32 mask, u32 attr) {
     u32 r;
     R_TRY(check_range(addr, size));
-    R_UNLESS((mask | attr) == mask && (mask | attr | MA_SET_MASK) == MA_SET_MASK, R_BADCOMBO);
+    R_UNLESS((mask | attr) == mask && (mask | attr | MA_SET_MASK) == MA_SET_MASK, SNX_RC_SVC_INVALID_COMBINATION);
     pm_lock(&g_host.svcmem.map_lk);
     r = set_mem_attr_locked(addr, size, mask, attr);
     pm_unlock(&g_host.svcmem.map_lk);
@@ -367,22 +368,22 @@ u32 svc_set_mem_attr(u64 addr, u64 size, u32 mask, u32 attr) {
    the alias region (as normal memory), src locked meanwhile (no permission, locked). The view and src are the same
    pages with the alias pool (mem_alias_begin); without it the view is a copy that svcUnmapMemory copies back */
 static u32 check_map_memory(u64 dst, u64 src, u64 size, u32* state) {
-    R_UNLESS(!((dst | src) & 0xFFF), R_BADADDR);
-    R_UNLESS(size && !(size & 0xFFF), R_BADSIZE);
-    R_UNLESS(dst + size > dst && src + size > src, R_BADMEMSTATE);
-    R_UNLESS(in_region(src, size, 0, AS_END), R_BADMEMSTATE);
+    R_UNLESS(!((dst | src) & 0xFFF), SNX_RC_SVC_INVALID_ADDRESS);
+    R_UNLESS(size && !(size & 0xFFF), SNX_RC_SVC_INVALID_SIZE);
+    R_UNLESS(dst + size > dst && src + size > src, SNX_RC_SVC_INVALID_CURRENT_MEMORY);
+    R_UNLESS(in_region(src, size, 0, AS_END), SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     if (can_contain(dst, size, MS_STACK))
         *state = MS_STACK;
     else if (ALIAS_SIZE && in_region(dst, size, ALIAS_BASE, ALIAS_SIZE))
         *state = MS_NORMAL;
     else
-        R_THROW(R_BADREGION);
+        R_THROW(SNX_RC_SVC_INVALID_MEMORY_REGION);
     R_SUCCEED();
 }
 static u32 svc_map_memory_impl(u64 dst, u64 src, u64 size) {
     u32 state, r;
     R_TRY(check_map_memory(dst, src, size, &state));
-    R_UNLESS(range_ok(src, size, 0, MSF_CAN_ALIAS, PERM_RW, ~0u, 0), R_BADMEMSTATE);
+    R_UNLESS(range_ok(src, size, 0, MSF_CAN_ALIAS, PERM_RW, ~0u, 0), SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     R_TRY(mem_result(mem_alias_begin(src, size)));
     r = mem_result(mem_alias_map(dst, src, size, state, PERM_RW));
     if (R_FAILED(r)) {
@@ -406,7 +407,7 @@ static u32 svc_unmap_memory_impl(u64 dst, u64 src, u64 size) {
     R_TRY(check_map_memory(dst, src, size, &state));
     R_UNLESS(range_ok(src, size, 0, MSF_CAN_ALIAS, PERM_NONE, ~0u, MA_LOCKED) &&
                  range_ok(dst, size, state, 0, ANY, MA_LOCKED, 0),
-             R_BADMEMSTATE);
+             SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     r = mem_result(mem_alias_unmap(dst, size, src));
     if (R_FAILED(r)) R_THROW(r); /* dst is still mapped and src still locked: the view stands */
     mem_alias_end(src, size);
@@ -429,22 +430,22 @@ u32 svc_unmap_memory(u64 dst, u64 src, u64 size) {
    without. Either way the code compiled from src is stale once the view goes (mem_alias_unmap) */
 static u32 check_process_memory(u64 dst, u32 process, u64 src, u64 size) {
     KObj* p;
-    R_UNLESS(!((dst | src) & 0xFFF), R_BADADDR);
-    R_UNLESS(size && !(size & 0xFFF), R_BADSIZE);
-    R_UNLESS(dst + size > dst && src + size > src, R_BADMEMSTATE);
+    R_UNLESS(!((dst | src) & 0xFFF), SNX_RC_SVC_INVALID_ADDRESS);
+    R_UNLESS(size && !(size & 0xFFF), SNX_RC_SVC_INVALID_SIZE);
+    R_UNLESS(dst + size > dst && src + size > src, SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     p = h_get_ref(process, KO_PROCESS);
-    R_UNLESS(p, R_BADHANDLE);
+    R_UNLESS(p, SNX_RC_SVC_INVALID_HANDLE);
     kobj_unref(p);
-    R_UNLESS(can_contain(dst, size, MS_SHAREDCODE), R_BADREGION);
-    R_UNLESS(in_region(src, size, 0, AS_END), R_BADMEMSTATE);
+    R_UNLESS(can_contain(dst, size, MS_SHAREDCODE), SNX_RC_SVC_INVALID_MEMORY_REGION);
+    R_UNLESS(in_region(src, size, 0, AS_END), SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     R_SUCCEED();
 }
 u32 svc_map_process_memory(u64 dst, u32 process, u64 src, u64 size) {
     u32 r;
     int i;
     R_TRY(check_process_memory(dst, process, src, size));
-    R_UNLESS(range_ok(src, size, 0, MSF_CAN_MAP_PROCESS, ANY, ~0u, 0), R_BADMEMSTATE);
-    R_UNLESS(range_ok(dst, size, MS_FREE, 0, ANY, ~0u, 0), R_BADMEMSTATE);
+    R_UNLESS(range_ok(src, size, 0, MSF_CAN_MAP_PROCESS, ANY, ~0u, 0), SNX_RC_SVC_INVALID_CURRENT_MEMORY);
+    R_UNLESS(range_ok(dst, size, MS_FREE, 0, ANY, ~0u, 0), SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     R_TRY(mem_result(mem_alias_begin(src, size)));
     r = mem_result(mem_alias_map(dst, src, size, MS_SHAREDCODE, PERM_RW));
     if (R_FAILED(r)) {
@@ -470,8 +471,8 @@ u32 svc_map_process_memory(u64 dst, u32 process, u64 src, u64 size) {
 u32 svc_unmap_process_memory(u64 dst, u32 process, u64 src, u64 size) {
     int i;
     R_TRY(check_process_memory(dst, process, src, size));
-    R_UNLESS(range_ok(dst, size, MS_SHAREDCODE, 0, PERM_RW, ~0u, 0), R_BADMEMSTATE);
-    R_UNLESS(range_ok(src, size, 0, MSF_CAN_MAP_PROCESS, ANY, ~0u, 0), R_BADMEMSTATE);
+    R_UNLESS(range_ok(dst, size, MS_SHAREDCODE, 0, PERM_RW, ~0u, 0), SNX_RC_SVC_INVALID_CURRENT_MEMORY);
+    R_UNLESS(range_ok(src, size, 0, MSF_CAN_MAP_PROCESS, ANY, ~0u, 0), SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     mem_alias_unmap(dst, size, src);
     mem_alias_end(src, size);
     pm_lock(&g_host.svcmem.views_lk);
@@ -532,7 +533,7 @@ int svc_code_line(u64 addr, u64* code) {
 u32 svc_query(u64 info, u64 addr) {
     MemBlock b;
     u32 w[6];
-    R_UNLESS(user_writable(info, 0x28), R_BADPOINTER);
+    R_UNLESS(user_writable(info, 0x28), SNX_RC_SVC_INVALID_POINTER);
     mem_query(addr, &b);
     w[0] = b.state & 0xFF;
     w[1] = b.attr;
@@ -611,9 +612,9 @@ u32 svc_map_shm(u32 h, u64 addr, u64 size, u32 perm) {
     u64 none = 0, whole;
     int m;
     if (r) return r;
-    if (perm != PERM_R && perm != PERM_RW) R_THROW(R_BADPERM);
+    if (perm != PERM_R && perm != PERM_RW) R_THROW(SNX_RC_SVC_INVALID_NEW_MEMORY_PERMISSION);
     s = (KShmem*)h_get_ref(h, KO_SHMEM);
-    R_UNLESS(s, R_BADHANDLE);
+    R_UNLESS(s, SNX_RC_SVC_INVALID_HANDLE);
     whole = shm_whole(s);
     if (size != whole) {
         WARN_LIMIT(4, "kernel: the game maps the shared memory %s as 0x%llx bytes, which is 0x%llx: mapping 0x%llx\n",
@@ -622,16 +623,16 @@ u32 svc_map_shm(u32 h, u64 addr, u64 size, u32 perm) {
         if (size < whole) size = whole;
     }
     if (!can_contain(addr, size, MS_SHARED))
-        r = R_BADREGION;
+        r = SNX_RC_SVC_INVALID_MEMORY_REGION;
     else if ((perm & ~s->perm) != 0)
-        r = R_BADPERM;
+        r = SNX_RC_SVC_INVALID_NEW_MEMORY_PERMISSION;
     else if (s->pool) {
         r = shm_map_pool(s, addr, size, perm);
         if (R_SUCCEEDED(r)) return r; /* the mapping keeps the reference */
     } else if (!__atomic_compare_exchange_n(&s->gsize, &none, size, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
-        r = R_BADSTATE;
+        r = SNX_RC_SVC_INVALID_STATE;
     else if ((m = mem_map(addr, size, MS_SHARED, perm)) != 0) {
-        r = m == -2 ? R_OUTOFMEM : R_BADMEMSTATE;
+        r = m == -2 ? SNX_RC_SVC_OUT_OF_MEMORY : SNX_RC_SVC_INVALID_CURRENT_MEMORY;
         __atomic_store_n(&s->gsize, 0, __ATOMIC_RELEASE);
     } else {
         pm_lock(&g_host.kernel.klock);
@@ -649,22 +650,22 @@ u32 svc_unmap_shm(u32 h, u64 addr, u64 size) {
     KShmem* s;
     if (r) return r;
     s = (KShmem*)h_get_ref(h, KO_SHMEM);
-    R_UNLESS(s, R_BADHANDLE);
+    R_UNLESS(s, SNX_RC_SVC_INVALID_HANDLE);
     if (!can_contain(addr, size, MS_SHARED))
-        r = R_BADREGION;
+        r = SNX_RC_SVC_INVALID_MEMORY_REGION;
     else if (s->pool) {
         u64 whole = shm_whole(s), n = size > whole ? size : whole;
         /* the object's pages are checked and unmapped at once, so two threads can't both drop the mapping's
            reference */
         if ((n > whole && !range_ok(addr + whole, n - whole, MS_SHARED, 0, ANY, 0, 0)) ||
             mem_unmap_pool(addr, s->pool - 1, whole, MS_SHARED))
-            r = R_BADMEMSTATE;
+            r = SNX_RC_SVC_INVALID_CURRENT_MEMORY;
         else {
             if (n > whole) mem_unmap(addr + whole, n - whole);
             kobj_unref(&s->o); /* the mapping's */
         }
     } else if (__atomic_load_n(&s->gaddr, __ATOMIC_ACQUIRE) != addr)
-        r = R_BADMEMSTATE;
+        r = SNX_RC_SVC_INVALID_CURRENT_MEMORY;
     else {
         pm_lock(&g_host.kernel.klock);
         memcpy(s->host, GP(addr), (size_t)s->size);
@@ -683,9 +684,9 @@ u32 svc_unmap_shm(u32 h, u64 addr, u64 size) {
 static u32 svc_tmem_new_impl(u64 addr, u64 size, u32 perm, KTmem** out) {
     KTmem* m;
     R_TRY(check_range(addr, size));
-    if (perm != PERM_NONE && perm != PERM_R && perm != PERM_RW) R_THROW(R_BADPERM);
+    if (perm != PERM_NONE && perm != PERM_R && perm != PERM_RW) R_THROW(SNX_RC_SVC_INVALID_NEW_MEMORY_PERMISSION);
     if (!in_region(addr, size, 0, AS_END) || !range_ok(addr, size, 0, MSF_CAN_TRANSFER, PERM_RW, ~0u, 0))
-        R_THROW(R_BADMEMSTATE);
+        R_THROW(SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     pm_lock(&g_host.kernel.pool_lk);
     m = (KTmem*)POOL_TAKE(g_hle.svcmem.tmems, g_hle.svcmem.tmem_next, "transfer memories");
     m->o.type = KO_TMEM;
@@ -732,7 +733,7 @@ static u32 svc_codemem_new_impl(u64 addr, u64 size, KObj** out) {
     KCodeMem* c;
     R_TRY(check_range(addr, size));
     if (!in_region(addr, size, 0, AS_END) || !range_ok(addr, size, 0, MSF_CAN_CODE_MEMORY, PERM_RW, ~0u, 0))
-        R_THROW(R_BADMEMSTATE);
+        R_THROW(SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     R_TRY(mem_result(mem_alias_begin(addr, size)));
     pm_lock(&g_host.kernel.pool_lk);
     c = (KCodeMem*)POOL_TAKE(g_hle.svcmem.codemems, g_hle.svcmem.codemem_next, "code memories");
@@ -755,20 +756,20 @@ u32 svc_codemem_control(KObj* o, u32 op, u64 addr, u64 size, u32 perm) {
     u64* at;
     u32 state;
     R_TRY(check_range(addr, size));
-    R_UNLESS(op <= 3, R_BADENUM);
+    R_UNLESS(op <= 3, SNX_RC_SVC_INVALID_ENUM_VALUE);
     state = op & 1 ? MS_CODEOUT : MS_GENCODE;
     at = op & 1 ? &c->slave : &c->owner;
-    if (op == 0 && perm != PERM_RW) R_THROW(R_BADPERM);
-    if (op == 1 && perm != PERM_R && perm != PERM_RX) R_THROW(R_BADPERM);
-    R_UNLESS(can_contain(addr, size, state), R_BADREGION);
-    R_UNLESS(size == c->size, R_BADSIZE);
+    if (op == 0 && perm != PERM_RW) R_THROW(SNX_RC_SVC_INVALID_NEW_MEMORY_PERMISSION);
+    if (op == 1 && perm != PERM_R && perm != PERM_RX) R_THROW(SNX_RC_SVC_INVALID_NEW_MEMORY_PERMISSION);
+    R_UNLESS(can_contain(addr, size, state), SNX_RC_SVC_INVALID_MEMORY_REGION);
+    R_UNLESS(size == c->size, SNX_RC_SVC_INVALID_SIZE);
     if (op < 2) {
-        R_UNLESS(!*at, R_BADSTATE);
+        R_UNLESS(!*at, SNX_RC_SVC_INVALID_STATE);
         R_TRY(mem_result(mem_alias_map(addr, op == 1 && c->owner ? c->owner : c->addr, size, state, perm)));
         *at = addr;
         R_SUCCEED();
     }
-    R_UNLESS(*at == addr, R_BADMEMSTATE);
+    R_UNLESS(*at == addr, SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     mem_alias_unmap(addr, size, op == 2 ? c->addr : 0);
     *at = 0;
     R_SUCCEED();
@@ -843,7 +844,7 @@ static u32 process_info(u32 id, u64* out) {
             R_SUCCEED();
         }
         case 28: *out = 0; R_SUCCEED(); /* AliasRegionExtraSize: no extra alias region */
-        default: R_THROW(R_BADENUM);
+        default: R_THROW(SNX_RC_SVC_INVALID_ENUM_VALUE);
     }
 }
 /* The rest of svcGetInfo; ResourceLimit (9), which makes a handle, is svc.c's */
@@ -852,36 +853,36 @@ u32 svc_get_info(u32 id0, u32 h, u64 id1, u64* out) {
         case 0: case 1: case 2: case 3: case 4: case 5: case 6: case 7: case 12: case 13: case 14: case 15: case 16:
         case 17: case 18: case 20: case 21: case 22: case 23: case 24: case 28: {
             KObj* p;
-            R_UNLESS(!id1, R_BADENUM);
+            R_UNLESS(!id1, SNX_RC_SVC_INVALID_ENUM_VALUE);
             if (h != H_CUR_PROC) {
                 p = h_get_ref(h, KO_PROCESS);
-                R_UNLESS(p, R_BADHANDLE);
+                R_UNLESS(p, SNX_RC_SVC_INVALID_HANDLE);
                 kobj_unref(p);
             }
             return process_info(id0, out);
         }
         case 8: *out = 0; R_SUCCEED(); /* DebuggerAttached */
         case 10:                    /* IdleTickCount: a core, or -1 for all of them */
-            if (id1 != ~0ull && id1 >= NCORES) R_THROW(R_BADCOMBO);
-            R_UNLESS(!h, R_BADHANDLE);
+            if (id1 != ~0ull && id1 >= NCORES) R_THROW(SNX_RC_SVC_INVALID_COMBINATION);
+            R_UNLESS(!h, SNX_RC_SVC_INVALID_HANDLE);
             *out = 0;
             R_SUCCEED();
         case 11: /* RandomEntropy */
-            R_UNLESS(!h, R_BADHANDLE);
-            R_UNLESS(id1 < 4, R_BADCOMBO);
+            R_UNLESS(!h, SNX_RC_SVC_INVALID_HANDLE);
+            R_UNLESS(id1 < 4, SNX_RC_SVC_INVALID_COMBINATION);
             *out = entropy((u32)id1);
             R_SUCCEED();
         case 19: /* InitialProcessIdRange: the kernel's own processes */
-            R_UNLESS(!h, R_BADHANDLE);
-            R_UNLESS(id1 <= 1, R_BADCOMBO);
+            R_UNLESS(!h, SNX_RC_SVC_INVALID_HANDLE);
+            R_UNLESS(id1 <= 1, SNX_RC_SVC_INVALID_COMBINATION);
             *out = id1 ? 0x50 : 1;
             R_SUCCEED();
         case 25:
         case 0xF0000002: { /* ThreadTickCount (0xF0000002 before 13.0.0): -1 for the thread's total, or a core's */
             KObj* t;
-            if (id1 != ~0ull && id1 >= NCORES) R_THROW(R_BADCOMBO);
+            if (id1 != ~0ull && id1 >= NCORES) R_THROW(SNX_RC_SVC_INVALID_COMBINATION);
             t = h_get_ref(h, KO_THREAD);
-            R_UNLESS(t, R_BADHANDLE);
+            R_UNLESS(t, SNX_RC_SVC_INVALID_HANDLE);
             kobj_unref(t);
             /* no per-thread CPU time is kept: the system tick stands in for it, the total and each core's */
             *out = guest_ticks();
@@ -889,6 +890,6 @@ u32 svc_get_info(u32 id0, u32 h, u64 id1, u64* out) {
         }
         default:
             WARN_LIMIT(16, "svcGetInfo %x (sub-id %llx): unknown, InvalidEnumValue\n", id0, (unsigned long long)id1);
-            R_THROW(R_BADENUM);
+            R_THROW(SNX_RC_SVC_INVALID_ENUM_VALUE);
     }
 }

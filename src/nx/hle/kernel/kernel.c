@@ -151,7 +151,7 @@ int h_close(u32 h) {
     i = h_index_nl(h);
     if (i < 0) {
         klock_unlock();
-        R_THROW(R_BADHANDLE);
+        R_THROW(SNX_RC_SVC_INVALID_HANDLE);
     }
     o = kobj_at(g_hle.kernel.htab[i].obj);
     g_hle.kernel.htab[i].obj = 0;
