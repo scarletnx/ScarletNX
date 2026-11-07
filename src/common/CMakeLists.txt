@@ -5,7 +5,7 @@ add_library(scarletnx-common STATIC
     utilities/pad_screen.c utilities/users.c utilities/mii_model.c utilities/mii_db.c utilities/logscan.c utilities/language_tag.c utilities/mods.c utilities/patches.c utilities/cheat_list.c utilities/state_header.c
     utilities/gpu_driver.c
     utilities/spirv_emit.c utilities/script.c memory/host.c
-    cpu/aarch64/a64_decoder.c cpu/recompiler/codegen.c cpu/recompiler/variants.c runtime/cas128.c)
+    cpu/aarch64/a64_decoder.c cpu/recompiler/codegen.c cpu/recompiler/variants.c runtime/cas128.c runtime/linux_signal.c)
 target_compile_definitions(scarletnx-common PRIVATE _CRT_SECURE_NO_WARNINGS
     SNX_HOST_COMPILER="${CMAKE_C_COMPILER}"
     SNX_CPU_INCLUDE="${CMAKE_CURRENT_SOURCE_DIR}/cpu/aarch64"
@@ -90,6 +90,12 @@ if(TARGET snx_enet)
     target_link_libraries(scarletnx-ldn PUBLIC scarletnx-net PRIVATE snx_enet snx_zstd)
 endif()
 
+# The zip reader (utilities/zip.h) of the Vita driver's VPKs and the Android driver's APKs
+if(TARGET snx_libdeflate)
+    add_library(snx_zip STATIC utilities/zip.c)
+    target_link_libraries(snx_zip PUBLIC scarletnx-common PRIVATE snx_libdeflate)
+    target_compile_options(snx_zip PRIVATE -Wall -Wextra -Werror=missing-prototypes)
+endif()
 # What the Vulkan frontends (src/nx/gpu/vk, src/3ds/gpu/vk, src/vita/gpu) share of a device: the instance, queries,
 # the device's choice, the submission ring, the swapchain and the SDL window (gpu/vk/). Each frontend compiles volk.c,
 # whose functions these call

@@ -82,6 +82,17 @@ int snx_net_init(void);
    exits, or a debugger that stops it */
 void snx_net_cancel(void);
 void snx_net_restart(void);
+/* A wake of one thread: while it is signalled, the waits of the thread it is bound to (snx_net_poll and the blocking
+   socket calls) end at once with -SNX_EINTR, as snx_net_cancel ends every thread's. A guest's signal to a thread that
+   waits stops its wait this way, with no race against the wait's start: the wake is a pipe that stays readable until
+   the thread drains it. snx_net_wake_signal is one write, safe in a host signal handler */
+typedef struct SnxNetWake SnxNetWake;
+SnxNetWake* snx_net_wake_new(void); /* NULL when the host has no pipe for it */
+void snx_net_wake_free(SnxNetWake* wake);
+void snx_net_wake_signal(SnxNetWake* wake);
+void snx_net_wake_drain(SnxNetWake* wake);
+/* the calling thread's wake, NULL for none */
+void snx_net_wake_bind(SnxNetWake* wake);
 /* Where the stack's messages go: stderr by default. The runtime points them at its log, and the warnings, what the
    player must hear of (a room that put the console out), at its warnings */
 void snx_net_set_log(void (*log)(const char* message));

@@ -35,6 +35,12 @@ ScarletNX yourself, see [Build](./BUILD.md).
 - [PS Vita](./VITA.md): the Vita driver, its shader corpus and its limits
 - [Game Boy Advance](./AGB.md): the AGB board, playing a ROM, its devices and tests
 - [Linux AArch64 programs (GNU ABI)](./GNUABI.md): the sysroot, how code runs, processes and the system calls
+- [Android apps](./android/README.md): `scarletnx-android`, an app's code on a desktop's JVM, running an app and the
+  DEX translator
+  - [Interfaces](./android/INTERFACES.md): each layer of Android an app reaches, and how far the runtime emulates it
+  - [HWUI](./android/HWUI.md): the display lists and their Vulkan renderer
+  - [The native bridge](./android/NATIVE.md): an app's AArch64 libraries run through the recompiler, their imports
+    answered by the host
 
 ## Development
 

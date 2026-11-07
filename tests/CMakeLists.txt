@@ -39,9 +39,9 @@ endfunction()
 if(SNX_TEST_SANITIZERS)
     cmake_language(DEFER DIRECTORY "${PROJECT_SOURCE_DIR}" CALL snx_test_sanitize
         # the common code: network, filesystems, LZ4 and xxHash, the Vulkan setup the frontends share, the launcher's
-        # HTTPS and the roots it carries
+        # HTTPS and the roots it carries, the zip reader of VPKs and APKs
         scarletnx-common scarletnx-net scarletnx-ldn scarletnx-filesystem snx_demangle snx_lz4
-        snx_xxhash snx_vk_common snx_https snx_cacert
+        snx_xxhash snx_vk_common snx_https snx_cacert snx_zip
         snx-logscan
         # the recompiler and its backends
         snx_llvm snx_arm_llvm snx_arm_decode scarletnx-recompiler scarletnx-recompiler-shared
@@ -50,8 +50,10 @@ if(SNX_TEST_SANITIZERS)
         snx-test-build-info
         # the Switch runtime: its components, the shader translator and the Vulkan backend
         scarletnx snx_core snx_kernel snx_hle snx_video snx_gpu snx_platform snx_shader snx_vk
-        # the GNU ABI runtime
-        scarletnx-gnuabi
+        # the GNU ABI runtime and its kernel
+        scarletnx-gnuabi scarletnx-gnuabi-kernel
+        # the Android app driver: its DEX translator, its program and the native bridge
+        snx_android_dex snx_android_program snx_android_bridge
         # the 3DS runtime
         scarletnx-3ds snx_ctr_program snx_ctr_board snx_ctr_memory snx_ctr_loader snx_ctr_cpu snx_ctr_process snx_ctr_native
         snx_ctr_audio snx_ctr_gpu snx_ctr_gpu_reference
@@ -1514,6 +1516,10 @@ add_test(NAME fatal_screen COMMAND snx-test-fatal-screen)
 add_executable(snx-test-ini ini.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-ini 11)
 add_test(NAME ini COMMAND snx-test-ini)
+# the Linux AArch64 signal frame the GNU ABI runtime and the Android bridge share
+add_executable(snx-test-linux-signal linux_signal.c "${PROJECT_SOURCE_DIR}/src/common/runtime/linux_signal.c")
+snx_test_target(snx-test-linux-signal 11)
+add_test(NAME linux_signal COMMAND snx-test-linux-signal)
 add_executable(snx-test-ini-lines ini_lines.c "${PROJECT_SOURCE_DIR}/src/common/utilities/ini_lines.c")
 snx_test_target(snx-test-ini-lines 99)
 add_test(NAME ini_lines COMMAND snx-test-ini-lines)

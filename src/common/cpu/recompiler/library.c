@@ -74,7 +74,7 @@ typedef const Descriptor* (*DescriptorFn)(void);
 
 struct snx_recompiler {
     char opt;
-    SnxU64 features; /* the guest's A64 features (a64_decoder.h): SNX_A64_TARGET_SWITCH or SNX_A64_TARGET_MAX */
+    SnxU64 features; /* the guest's A64 features (a64_decoder.h): a SNX_A64_TARGET_* */
     unsigned jobs;
     int verbose;
     int hook_direct_calls;
@@ -212,11 +212,12 @@ int snx_recompiler_set_optimization(struct snx_recompiler* r, char opt) {
 }
 
 int snx_recompiler_set_a64_target(struct snx_recompiler* r, int target) {
-    if (target != SNX_RECOMPILER_A64_SWITCH && target != SNX_RECOMPILER_A64_MAX) {
-        fail(r, "unknown A64 target %d", target);
-        return -1;
+    switch (target) {
+    case SNX_RECOMPILER_A64_SWITCH: r->features = SNX_A64_TARGET_SWITCH; break;
+    case SNX_RECOMPILER_A64_MAX: r->features = SNX_A64_TARGET_MAX; break;
+    case SNX_RECOMPILER_A64_ANDROID: r->features = SNX_A64_TARGET_ANDROID; break;
+    default: fail(r, "unknown A64 target %d", target); return -1;
     }
-    r->features = target == SNX_RECOMPILER_A64_MAX ? SNX_A64_TARGET_MAX : SNX_A64_TARGET_SWITCH;
     return 0;
 }
 

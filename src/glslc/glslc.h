@@ -116,9 +116,16 @@ typedef int (*GlslcBindFn)(void* user, const GlslcResource* resource, uint32_t* 
 typedef struct {
     GlslcStage stage;
     /* NULL: each resource at the set and binding it gives, else at the first free binding of set 0. The default
-       uniform block is not the map's: it takes the first free binding of set 0 after the others */
+       uniform block takes the first free binding of set 0 after the others, unless map_default gives it to the map */
     GlslcBindFn bind;
     void* bind_user; /* bind's first argument */
+    /* nonzero: bind places the default uniform block too, as a UNIFORM_BLOCK with an empty name and its size, after
+       the other resources. A program's stages each have a default block, and the backend puts them apart */
+    int map_default;
+    /* nonzero: a fragment shader reads gl_FragCoord.y as y * flip.x + flip.y and gl_PointCoord.y as y * flip.z +
+       flip.w, flip a vec4 at offset 0 of a push constant block. A backend that draws a framebuffer with a negative
+       viewport height (GL's origin) gives (-1, height, 1, 0) there, and (1, 0, -1, 1) for one drawn upright */
+    int flip_y;
 } GlslcOptions;
 
 /* The scratch memory of compilations: every array of the bounds above, carved anew by each compilation, so nothing

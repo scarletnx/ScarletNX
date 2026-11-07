@@ -6,6 +6,7 @@
 * [The sysroot](#the-sysroot)
 * [How code runs](#how-code-runs)
 * [Processes](#processes)
+* [Threads and signals](#threads-and-signals)
 * [Implemented scope](#implemented-scope)
 * [Differential validation and fuzzing](#differential-validation-and-fuzzing)
 * [ABI references](#abi-references)
@@ -110,8 +111,16 @@ go through the table, and the page is write-protected on the host: a write to it
 its code, and the store is retried. `tests/gnuabi/self_modify.S` and `rewrite.S` exit
 42 in both modes. Fetching from a page without execute permission faults.
 
-Guest calls are host calls in the generated code, so the guest runs on a host thread
-with a 1 GiB stack reservation.
+Guest calls are host calls in the generated code, so each guest thread runs on a host
+thread with a 1 GiB stack reservation.
+
+The guest's threads share the dispatch table, the memory map and the descriptor table. One
+compile runs at a time (the JIT's lock), and a thread that misses code another thread
+compiles waits for it. The table's slots are published with release stores and read with
+relaxed loads, as generated code reads them. The memory map changes under its own lock; a
+guest access reads the page flags without it. A system call holds the descriptor table's
+lock, and lets it go around a host call that can block (a pipe, a terminal, a socket), with
+a reference that keeps the open file.
 
 ## Processes
 
@@ -129,6 +138,10 @@ host ignore it (`SIGPIPE`, `SIGCHLD`, `SIGINT`). A signal whose default action e
 process ends the host process with the same signal, so a parent sees what it would on
 Linux.
 
+A fork from a thread copies that thread alone, as on Linux. Every lock of the runtime
+(descriptors, memory map, JIT, futexes, process) is held across the host's fork, and the
+child makes each one again, since its thread has a new id.
+
 Windows has no fork. A vfork child runs in its parent's process (with its own
 descriptor table, registers and signal state) until it execs. Then another copy of
 this runtime starts the program, adopting the child's descriptors as inherited
@@ -136,6 +149,103 @@ handles (`--fd=N:HANDLE`, `--cwd`), and the parent goes on from its `clone`. A c
 that exits before its exec leaves a status for `wait4`. An `execve` outside a vfork
 child starts the new program the same way and ends with its status. A plain `fork`
 returns `ENOSYS` there. The Windows paths compile with llvm-mingw but have not been run.
+
+## Threads and signals
+
+The threads, futexes and signals are a library of their own, `scarletnx-gnuabi-kernel`
+(`src/gnuabi/kernel/`, with `kernel.h` as its interface). It has no loader, file system
+or descriptor table. The runtime that uses it gives it the guest's memory (a checked read
+and write, and the host address of guest address 0), and a way to stop a thread's host
+call, end the process and leave a thread. This runtime and the Android bridge both use it.
+
+The library also answers the system calls that need no loader, file system or descriptor
+table, with Linux's AArch64 behavior and the checked memory access: `clock_gettime`,
+`clock_getres`, `gettimeofday`, `times`, `getrusage`, `sysinfo` (the host's memory on
+Linux), `uname`, `getrlimit`, `setrlimit`, `prlimit64`, `prctl` (`PR_SET_NAME`,
+`PR_GET_NAME`, `PR_SET_VMA`, `PR_SET_DUMPABLE` and the other options of bionic and the C
+libraries; `EINVAL` for the rest, and for SVE, pointer authentication and tagged
+addresses), `getcpu`, `getpid`, `getppid`, the user and group ids, `getgroups`,
+`setpriority`, `getpriority`, the `sched_*` parameter calls, `madvise` (checked, then the
+runtime's), `getrandom`, `membarrier` (the host's barrier) and `rseq` (`ENOSYS`). The
+Android bridge sends `syscall()` and the bionic functions that are one system call to it.
+
+**Threads.** `clone` with `CLONE_THREAD` (it needs `CLONE_SIGHAND` and `CLONE_VM`) starts
+a host thread with the caller's registers, the new stack, `CLONE_SETTLS`,
+`CLONE_PARENT_SETTID`, `CLONE_CHILD_SETTID` and `CLONE_CHILD_CLEARTID`. Both tid words are
+written before either thread goes on. A thread's tid is its host thread's id on Linux, so
+`tgkill` from another process reaches it. At a thread's exit the runtime walks its robust
+list (`set_robust_list`), writes 0 to its `clear_tid` word and wakes one waiter there, as
+Linux does. `exit` ends one thread, and the last thread's `exit` ends the process.
+`exit_group`, a fault and a fatal signal end the process: the other threads leave their
+guest code at their next delivery point, and a thread blocked in a system call is not
+waited for. `execve` from any thread first stops all the others, and the thread takes the
+process's id. `gettid`, `set_tid_address`, `tkill`, `tgkill`, `sched_yield`,
+`sched_getaffinity` (the host's processors) and `sched_setaffinity` (accepted) are there.
+
+**Futexes.** `FUTEX_WAIT`, `WAKE`, `REQUEUE`, `CMP_REQUEUE`, `WAKE_OP`, `WAIT_BITSET` and
+`WAKE_BITSET`, with the results Linux gives. A waiter reads the word and joins the list
+under one lock, so a wake after a change of the word finds it. A relative timeout is on the
+monotonic clock, and `WAIT_BITSET`'s absolute one on the monotonic clock or, with
+`FUTEX_CLOCK_REALTIME`, on the realtime clock (converted once: a change of the realtime
+clock during the wait does not move it). `FUTEX_PRIVATE_FLAG` changes nothing: guest
+memory is never shared with another process. The PI operations return `ENOSYS`.
+
+**Signals.** Each thread and the process have a queue: one entry of a standard signal, an
+entry for each real-time one sent (up to 64 in a queue, then `EAGAIN`). A signal to the
+process goes to its main thread if it does not block it, else to another thread that does
+not. The sender sets the target's poll word, wakes its wait in the runtime (futex, sleeps,
+`rt_sigsuspend`), ends its wait in the network stack (a wake pipe that its polls watch)
+and sends its host thread a host signal (`SIGRTMIN+2`), which stops another blocking host
+call with `EINTR`.
+
+A signal is delivered only where all the guest's registers are in its CPU structure: at
+`RtAPI.poll` (each backward branch and dispatch of generated code) and at the end of each
+system call. Never in a host signal handler. The frame is Linux's `rt_sigframe`
+(`src/common/runtime/linux_signal.c`, which the Android bridge shares), written with the
+runtime's checked access; a frame that does not fit ends the process with `SIGSEGV`. The
+handler returns to `sa_restorer` with `SA_RESTORER`, else to the runtime's page at
+`0xfffff000`, which holds `mov x8, #139; svc #0` as the vDSO's `__kernel_rt_sigreturn`.
+`rt_sigreturn` restores the registers, the mask and the alternate stack from the frame, and
+the guest goes on at the restored pc through the dispatch table. `SA_SIGINFO`,
+`SA_ONSTACK`, `SA_NODEFER`, `SA_RESETHAND` and `SA_RESTART` work, and a handler's changes to
+its `ucontext` are the state it returns to.
+
+A call that a signal stops follows Linux's restart rules: it restarts after a handler with
+`SA_RESTART` (`ERESTARTSYS`), and fails with `EINTR` without one. `nanosleep`,
+`clock_nanosleep`, `poll`, `ppoll`, `select`, `pselect6`, `epoll_wait`, `rt_sigsuspend`,
+`rt_sigtimedwait` and a futex wait with a timeout never restart after a handler. A call
+that a signal stops without a handler (the signal went to another thread) restarts.
+`ppoll`, `pselect6` and `epoll_pwait` apply their mask while they wait, as `rt_sigsuspend`
+does. `rt_sigsuspend`, `rt_sigtimedwait`, `rt_sigpending`, `sigaltstack`, `rt_sigqueueinfo`
+and `rt_tgsigqueueinfo` are there.
+
+With `SIG_DFL` the signal's default action runs: it is ignored, it stops the host process
+(`SIGSTOP` to itself), or it ends the host process with the same signal, so a parent sees
+what it would on Linux. A guest that handles a signal has the host relay it: the host
+handler writes the signal to a pipe, and a relay thread sends it to the process. A guest
+that ignores one has the host ignore it.
+
+Limits:
+
+* Faults in guest code (`SIGSEGV`, `SIGBUS`, `SIGILL`, `SIGTRAP` of `BRK`) end the process.
+  Their registers are not exact at the fault (generated code keeps registers in host
+  registers), so no guest handler is entered for them. `kill` of the process with
+  `SIGSEGV` does run a handler.
+* A host signal that comes after a thread entered a system call but before its host call
+  blocks is lost for that call, which then blocks until it ends on its own. Waits in the
+  runtime and in the network stack have no such window. A pipe or terminal read can.
+  QEMU's `safe_syscall` closes it with a check of the pc in the host handler.
+* A real-time signal to another process, and one from another process, goes through the
+  host's numbers only for 1 to 31.
+* Signals for 32-bit guests (A32, Thumb) are not delivered: their calls that a signal stops
+  fail with `EINTR`. They need a frame of AArch32 (`sigframe` with `ucontext` and the VFP
+  registers, `sigreturn` 119 and `rt_sigreturn` 173, `SA_RESTORER` or a trampoline in A32
+  or Thumb state, as the handler's bit 0 says), and delivery at the ARM block loop's points.
+* `epoll_ctl` of another thread during an `epoll_wait` is seen at the next wait. A socket
+  that another thread closes during a blocking call on it stays open until the call ends.
+* Windows: no host signals. A thread in a blocking host call (outside the network stack) is
+  not stopped by a signal. A vfork child runs in its parent's process in place of the
+  calling thread; the other threads go on.
 
 ## Implemented scope
 
@@ -160,19 +270,15 @@ I/O, `openat`, `close`, `lseek`, `dup`, `dup3`, `fcntl`, `pipe2`, `ioctl` for te
 `fchmodat`, `fchownat`, `utimensat`, `faccessat2`, `truncate`, `statfs`, `fsync`,
 `chdir`, `fchdir`, `getcwd`), memory (`brk`, `mmap` with private file mappings and
 read-only shared ones, `munmap`, `mprotect`), processes (`clone`, `execve`,
-`execveat`, `wait4`, `waitid`, `kill`, `tgkill`, `exit_group`, ids, process groups,
-`umask`), `uname`, clocks and sleeps, random bytes, resource queries, signal action and
-mask storage, and basic single-thread futex operations. Networking adds host-backed
+`execveat`, `wait4`, `waitid`, `exit`, `exit_group`, ids, process groups,
+`umask`), threads, futexes and signals (see [Threads and signals](#threads-and-signals)),
+`uname`, clocks and sleeps, random bytes and resource queries. Networking adds host-backed
 sockets, socketpair, poll/select, epoll and eventfd through the shared stack;
 read-only virtual `/etc` files support guest libc DNS. See [NETWORKING.md](NETWORKING.md)
 for configuration, tests, and current semantic limitations. Guest structures and
 constants are encoded for AArch64 rather than copied from the host ABI.
 
-Each process runs one guest thread: `clone` of a thread (`CLONE_THREAD`) returns
-`ENOSYS`. Signal handlers are recorded but never entered, so `rt_sigreturn` and
-signal frames are unsupported. File-backed writable `MAP_SHARED` is unsupported. Futex
-wake returns zero without peers; waits with a mismatched value return `-EAGAIN`, timed
-waits can return `-ETIMEDOUT`, and a blocking wait without a timeout returns `-ENOSYS`.
+File-backed writable `MAP_SHARED` is unsupported.
 
 The virtual nodes:
 
@@ -203,6 +309,9 @@ suite exercises tmpfs, devfs, procfs, descriptor and metadata calls, clocks,
 random reads, and unsupported-call errors. The PIE suite verifies ET_DYN,
 PC-relative global accesses, and BSS initialization. The optional `libc.c` fixture exercises
 static libc startup, allocation, memory operations, and formatted output.
+The `threads` suite (`threads.c`, `signals.c`, `restart.c` and `sigsuspend.c`, with
+`thread_start.S`) covers threads, futexes, signal frames, `rt_sigreturn`, `SA_RESTART` and
+`rt_sigsuspend`; CTest runs it as `gnuabi_threads` (skipped without Clang and LLD).
 The standalone `self_modify.S` fixture must exit 42 after replacing a compiled
 instruction, as must `rewrite.S`, which rewrites code that already ran;
 `fetch_fault.S` must fault after removing the executing page's execute permission. These intentional faults should be checked directly rather

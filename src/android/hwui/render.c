@@ -1,0 +1,2401 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* The libhwui HLE's renderer: a frame's display list (docs/android/HWUI.md) drawn with Vulkan into the SDL window,
+   or into an image of its own without one. The CPU reads the list, keeps the transform and clip stack, and makes
+   each shape into triangles in device pixels (path.c). The GPU rasterizes them with 4x MSAA. A convex shape is a fan
+   drawn directly. A path, a stroke and glyphs are drawn by stencil then cover: their triangles count the winding
+   in the stencil, then a rectangle over their bounds draws where it is not zero and clears it again.
+
+   Once an app's own Vulkan takes the window (render_yield), the frames go into the layer instead: a ring of images,
+   cleared to transparent, that the app's device imports and blends over each of its presents (hle_vulkan.c,
+   docs/android/HWUI.md "Over an app's own Vulkan") */
+#include "android/hwui/render.h"
+#include "android/bridge/hle.h"
+#include "android/bridge/hle_vulkan.h"
+#include "android/hwui/draw_frag_spv.h"
+#include "android/hwui/draw_vert_spv.h"
+#include "android/hwui/path.h"
+#include "android/hwui/texture_frag_spv.h"
+#include "android/hwui/text.h"
+#include "android/runtime/jvm.h"
+#include "common/gpu/vk/ring.h"
+#include "common/gpu/vk/swapchain.h"
+#include "common/gpu/vk/window.h"
+#include "common/utilities/endian.h"
+#include <SDL3/SDL.h>
+#include <math.h>
+#include <pthread.h>
+#if defined(_WIN32)
+/* without wingdi.h, whose Polyline() is path.h's type: Vulkan's Win32 types need none of it */
+#define NOGDI
+#include <windows.h>
+#include <vulkan/vulkan_win32.h>
+#endif
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+enum { SLOTS = 2 };
+
+/* a vertex: its position in device pixels, its premultiplied color as bytes R, G, B, A, and a bitmap's texture
+   coordinates */
+typedef struct {
+    float x, y;
+    unsigned char rgba[4];
+    float u, v;
+} Vertex;
+
+enum {
+    PIPE_COLOR,     /* source over, no stencil */
+    PIPE_COPY,      /* the source replaces the target (Clear, Src) */
+    PIPE_WINDING,   /* stencil only: +1 for each front face, -1 for each back face */
+    PIPE_EVEN_ODD,  /* stencil only: its low bit flipped */
+    PIPE_SET,       /* stencil only: 1 (a stroke's triangles, which overlap) */
+    PIPE_COVER,     /* source over where the stencil is not zero, which it zeroes */
+    PIPE_COVER_COPY, /* the same, the source replacing the target */
+    PIPE_TEXTURE,      /* a bitmap's texels times the color, source over */
+    PIPE_TEXTURE_TINT, /* the color where the bitmap is (a SrcIn color filter), source over */
+    PIPE_TEXTURE_COPY, /* a bitmap's texels replacing the target: a bitmap's image into its multisampled image */
+    PIPE_COUNT
+};
+
+typedef struct {
+    uint8_t pipe;
+    VkRect2D scissor;
+    uint32_t first, count;
+    int32_t texture; /* the bitmap's texture, -1 for none */
+} Draw;
+
+/* A bitmap's image: what the app sees of a Bitmap. Its pixels go up to it, and what a canvas draws into the bitmap
+   is drawn into its multisampled image, which resolves to it. The multisampled image keeps what was drawn, so that
+   the next drawing goes over it */
+typedef struct {
+    int32_t id; /* the Bitmap's, 0 for a free entry */
+    uint32_t width, height;
+    VkImage image, msaa;
+    VkDeviceMemory memory, msaa_memory;
+    VkImageView view, msaa_view;
+    VkDescriptorSet set;
+    VkImageLayout layout;
+    bool msaa_current; /* the multisampled image holds what the image does */
+} Texture;
+
+/* the work of a frame before its own draws: pixels to upload into a texture, or a bitmap's drawing to draw into it
+   (its draws from first, count of them) */
+typedef struct {
+    int32_t texture;
+    unsigned char* pixels; /* the upload's bytes in the texture's format, or NULL for a drawing */
+    size_t first, count;
+    int32_t seed; /* the draw that copies the image into the multisampled one first, -1 for none */
+    bool load;    /* the drawing goes over what the target holds (else over transparent) */
+} Pass;
+
+/* the state of a save, a layer or a node */
+typedef struct {
+    Affine m;
+    float clip[4]; /* left, top, right, bottom in device pixels */
+    float alpha;
+} State;
+
+/* a glyph's outline in font units, y up: verbs, and their points' coordinates */
+typedef struct {
+    jint font;
+    uint32_t glyph;
+    uint8_t* verbs;
+    float* points;
+    uint32_t verb_count, point_count; /* point_count floats */
+    bool used;
+} Glyph;
+
+/* android_render_set_options': the program's options, before the renderer starts */
+static struct {
+    bool headless;
+    const char* shot;
+    const char* shot_frames;
+} option;
+void android_render_set_options(bool headless, const char* shot, const char* shot_frames) {
+    option.headless = headless;
+    option.shot = shot;
+    option.shot_frames = shot_frames;
+}
+
+static struct {
+    /* the device */
+    SnxVkWindow host;
+    VkPhysicalDevice phys;
+    VkDevice device;
+    uint32_t family;
+    VkQueue queue;
+    VkPhysicalDeviceMemoryProperties memory;
+    SnxVkRing ring;
+    SnxVkSwapchain swap;
+    VkImageView swap_views[SNX_VK_SWAP_IMAGES];
+    VkSemaphore acquired[SLOTS], rendered[SNX_VK_SWAP_IMAGES];
+    VkFormat color_format, stencil_format;
+    VkSampleCountFlagBits samples;
+    bool up;
+    bool yielded; /* the guest's Vulkan owns the window: the frames go into the layer */
+
+    /* the targets: the multisampled color and stencil, and the image a frame goes to without a window */
+    VkExtent2D extent;
+    VkImage msaa, stencil, offscreen;
+    VkDeviceMemory msaa_memory, stencil_memory, offscreen_memory;
+    VkImageView msaa_view, stencil_view, offscreen_view;
+
+    /* the layer, after the window is given up (hle_vulkan.h's HleLayer): images the guest's device imports. The
+       shown and pending ones are 1 more than their index, 0 for none. layer_lock orders them, the generations, the
+       memory and the fences against the presenting thread (render_layer, render_layer_handle) */
+    bool exportable; /* the device exports HLE_LAYER_MEMORY images */
+    uint8_t device_uuid[16], driver_uuid[16];
+    VkImage layers[HLE_LAYER_IMAGES];
+    VkDeviceMemory layer_memory[HLE_LAYER_IMAGES];
+    VkImageView layer_views[HLE_LAYER_IMAGES];
+    VkDeviceSize layer_size[HLE_LAYER_IMAGES];
+    VkExtent2D layer_extent;
+    uint64_t layer_generation[HLE_LAYER_IMAGES];
+    VkFence layer_fences[HLE_LAYER_IMAGES]; /* signaled when the image's drawing is done */
+    bool layer_fenced[HLE_LAYER_IMAGES];    /* its fence submitted, and not reset since */
+    int layer_shown, layer_pending;         /* the image the presents blend, and the one drawn after it */
+
+    VkPipelineLayout layout;
+    VkDescriptorSetLayout set_layout;
+    VkDescriptorPool textures_pool;
+    VkSampler sampler;
+    VkPipeline pipes[PIPE_COUNT];
+    Texture* textures;
+    size_t texture_count; /* entries, free ones too */
+    Pass* passes;
+    size_t pass_count, pass_capacity;
+    size_t frame_first; /* the frame's own draws, after the bitmaps' */
+    VkImage scratch; /* the stencil of the bitmaps' passes, as large as the largest */
+    VkDeviceMemory scratch_memory;
+    VkImageView scratch_view;
+    VkExtent2D scratch_extent;
+    VkBuffer staging[SLOTS];
+    VkDeviceMemory staging_memory[SLOTS];
+    void* staging_map[SLOTS];
+    size_t staging_capacity[SLOTS];
+    VkBuffer vertices[SLOTS];
+    VkDeviceMemory vertex_memory[SLOTS];
+    void* vertex_map[SLOTS];
+    size_t vertex_capacity[SLOTS]; /* bytes */
+
+    /* the frame being made */
+    Vertex* verts;
+    size_t vert_count, vert_capacity;
+    Draw* draws;
+    size_t draw_count, draw_capacity;
+    State* states;
+    size_t state_count, state_capacity;
+    Polyline poly;
+    Triangles tris;
+    bool failed;
+    int width, height; /* the frame's */
+
+    /* glyph outlines, open addressing */
+    Glyph* glyphs;
+    size_t glyph_capacity, glyph_count;
+
+    /* screenshots: the frames in shot_frames (--shot-frame, numbers with commas) at shot (--shot,
+       where %ld is the frame's number), and the frames presented */
+    char shot[1024];
+    long shot_frames[64];
+    unsigned shot_count;
+    long frames;
+    bool warned_shader;
+} r;
+
+/* the locks the presenting thread shares with this renderer's: the layer's state (r.layer_*), and a frame against the
+   window given up (render, render_yield). The frame's is taken first */
+static struct {
+    pthread_mutex_t layer, frame;
+} locks = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER};
+
+/* ---- the frame's vertices and draws ---- */
+
+static bool reserve(void** data, size_t* capacity, size_t need, size_t size) {
+    if (need <= *capacity) return true;
+    size_t n = *capacity ? *capacity : 256;
+    while (n < need) n *= 2;
+    void* d = realloc(*data, n * size);
+    if (!d) return false;
+    *data = d;
+    *capacity = n;
+    return true;
+}
+
+static VkRect2D scissor(void) {
+    const float* c = r.states[r.state_count - 1].clip;
+    float l = c[0] < 0 ? 0 : c[0], t = c[1] < 0 ? 0 : c[1];
+    float rr = c[2] > (float)r.width ? (float)r.width : c[2], b = c[3] > (float)r.height ? (float)r.height : c[3];
+    VkRect2D s = {{0, 0}, {0, 0}};
+    if (rr <= l || b <= t) return s;
+    s.offset.x = (int32_t)floorf(l);
+    s.offset.y = (int32_t)floorf(t);
+    s.extent.width = (uint32_t)ceilf(rr) - (uint32_t)s.offset.x;
+    s.extent.height = (uint32_t)ceilf(b) - (uint32_t)s.offset.y;
+    return s;
+}
+
+/* the vertices from first on, as a draw of pipe with a texture (-1 for none): joined to the last draw when it
+   continues it */
+static void add_textured(uint8_t pipe, size_t first, int32_t texture) {
+    if (r.failed || r.vert_count == first) return;
+    VkRect2D s = scissor();
+    if (!s.extent.width || !s.extent.height) {
+        r.vert_count = first;
+        return;
+    }
+    if (r.draw_count) {
+        Draw* d = &r.draws[r.draw_count - 1];
+        bool joins = pipe == PIPE_COLOR || pipe == PIPE_COPY || pipe == PIPE_TEXTURE || pipe == PIPE_TEXTURE_TINT;
+        if (d->pipe == pipe && joins && d->texture == texture && d->first + d->count == first &&
+            !memcmp(&d->scissor, &s, sizeof s)) {
+            d->count = (uint32_t)(r.vert_count - d->first);
+            return;
+        }
+    }
+    if (!reserve((void**)&r.draws, &r.draw_capacity, r.draw_count + 1, sizeof *r.draws)) {
+        r.failed = true;
+        return;
+    }
+    r.draws[r.draw_count++] = (Draw){pipe, s, (uint32_t)first, (uint32_t)(r.vert_count - first), texture};
+}
+static void add_draw(uint8_t pipe, size_t first) {
+    add_textured(pipe, first, -1);
+}
+
+static void vertex_uv(Point p, const unsigned char rgba[4], float u, float v) {
+    if (r.failed || !reserve((void**)&r.verts, &r.vert_capacity, r.vert_count + 1, sizeof *r.verts)) {
+        r.failed = true;
+        return;
+    }
+    Vertex* out = &r.verts[r.vert_count++];
+    out->x = p.x;
+    out->y = p.y;
+    memcpy(out->rgba, rgba, 4);
+    out->u = u;
+    out->v = v;
+}
+static void vertex(Point p, const unsigned char rgba[4]) {
+    vertex_uv(p, rgba, 0, 0);
+}
+
+/* ---- paints ---- */
+
+/* a paint as the renderer uses it: its color, premultiplied with the state's alpha, and how it draws. A bitmap
+   draws with the paint's alpha and its color filter only: alpha is that alpha with the state's, and tint the
+   filter's color premultiplied by it, for a filter of SrcIn (tint_mode BLEND_SRC_IN) or Modulate */
+typedef struct {
+    unsigned char rgba[4];
+    uint8_t style, cap, join, blend;
+    float width, miter;
+    float alpha;
+    unsigned char tint[4];
+    uint8_t tint_mode; /* 0 for none */
+} Paint;
+
+typedef struct {
+    const unsigned char *p, *end;
+    bool bad;
+} Reader;
+static bool need(Reader* rd, size_t n) {
+    if (rd->bad || (size_t)(rd->end - rd->p) < n) {
+        rd->bad = true;
+        return false;
+    }
+    return true;
+}
+static unsigned rd_u8(Reader* rd) {
+    return need(rd, 1) ? *rd->p++ : 0;
+}
+static unsigned rd_u16(Reader* rd) {
+    if (!need(rd, 2)) return 0;
+    unsigned v = snx_ld_le16(rd->p);
+    rd->p += 2;
+    return v;
+}
+static int32_t rd_i32(Reader* rd) {
+    if (!need(rd, 4)) return 0;
+    uint32_t v = snx_ld_le32(rd->p);
+    rd->p += 4;
+    return (int32_t)v;
+}
+static float rd_f32(Reader* rd) {
+    if (!need(rd, 4)) return 0;
+    float v = snx_ld_lef32(rd->p);
+    rd->p += 4;
+    return v;
+}
+static void skip(Reader* rd, size_t n) {
+    if (need(rd, n)) rd->p += n;
+}
+
+/* Skia's blend modes, as BlendMode.skia() gives them */
+enum { BLEND_CLEAR = 0, BLEND_SRC = 1, BLEND_DST = 2, BLEND_SRC_OVER = 3, BLEND_SRC_IN = 5, BLEND_SRC_ATOP = 9,
+       BLEND_MODULATE = 13 };
+
+static float channel(uint32_t argb, unsigned shift) {
+    return (float)((argb >> shift) & 0xff) / 255.0f;
+}
+static void premultiply(float a, float red, float green, float blue, unsigned char out[4]) {
+    if (a < 0) a = 0;
+    if (a > 1) a = 1;
+    const float c[3] = {red, green, blue};
+    for (int i = 0; i < 3; ++i) {
+        float v = c[i] < 0 ? 0 : c[i] > 1 ? 1 : c[i];
+        out[i] = (unsigned char)lroundf(v * a * 255.0f);
+    }
+    out[3] = (unsigned char)lroundf(a * 255.0f);
+}
+
+/* Paint.write's record. A shader's color is the average of its colors (gradients are not drawn yet); a color filter
+   of a blend mode or a color matrix applies to the paint's color here, as Skia's does to a solid color */
+static void read_paint(Reader* rd, Paint* out) {
+    uint32_t color = (uint32_t)rd_i32(rd);
+    out->style = (uint8_t)rd_u8(rd);
+    out->cap = (uint8_t)rd_u8(rd);
+    out->join = (uint8_t)rd_u8(rd);
+    rd_u8(rd); /* flags */
+    out->width = rd_f32(rd);
+    out->miter = rd_f32(rd);
+    out->blend = (uint8_t)rd_u8(rd);
+    unsigned shader = rd_u8(rd), filter = rd_u8(rd), dashes = rd_u8(rd);
+    float a = channel(color, 24), red = channel(color, 16), green = channel(color, 8), blue = channel(color, 0);
+    float state_alpha = r.states[r.state_count - 1].alpha;
+    out->alpha = a * state_alpha;
+    out->tint_mode = 0;
+    if (shader) {
+        rd_u8(rd);
+        rd_u8(rd);
+        unsigned n = rd_u16(rd);
+        skip(rd, 4 * (6 + 9));
+        float sum[4] = {0, 0, 0, 0};
+        for (unsigned i = 0; i < n; ++i) {
+            uint32_t c = (uint32_t)rd_i32(rd);
+            sum[0] += channel(c, 24);
+            sum[1] += channel(c, 16);
+            sum[2] += channel(c, 8);
+            sum[3] += channel(c, 0);
+        }
+        unsigned positions = rd_u8(rd);
+        skip(rd, 3);
+        if (positions) skip(rd, 4 * (size_t)n);
+        int32_t bitmap = rd_i32(rd);
+        if (n) { /* the shader's color, with the paint's alpha over it */
+            a *= sum[0] / (float)n;
+            red = sum[1] / (float)n;
+            green = sum[2] / (float)n;
+            blue = sum[3] / (float)n;
+        }
+        if (!r.warned_shader && (n > 1 || bitmap)) {
+            fprintf(stderr, "scarletnx-android: gradients and bitmap shaders draw as one color for now\n");
+            r.warned_shader = true;
+        }
+    }
+    if (filter == 1) {
+        uint32_t c = (uint32_t)rd_i32(rd);
+        unsigned mode = rd_u8(rd);
+        skip(rd, 3);
+        float fa = channel(c, 24), fr = channel(c, 16), fg = channel(c, 8), fb = channel(c, 0);
+        if (mode == BLEND_SRC_IN || mode == BLEND_SRC_ATOP || mode == BLEND_MODULATE) {
+            out->tint_mode = mode == BLEND_MODULATE ? BLEND_MODULATE : BLEND_SRC_IN;
+            premultiply(fa * out->alpha, fr, fg, fb, out->tint);
+        }
+        switch (mode) {
+        case BLEND_SRC: a = fa, red = fr, green = fg, blue = fb; break;
+        case BLEND_SRC_IN: a *= fa, red = fr, green = fg, blue = fb; break;
+        case BLEND_SRC_ATOP: /* the filter's color over the paint's, where the paint is */
+            red = fr * fa + red * (1 - fa), green = fg * fa + green * (1 - fa), blue = fb * fa + blue * (1 - fa);
+            break;
+        case BLEND_MODULATE: a *= fa, red *= fr, green *= fg, blue *= fb; break;
+        default: break;
+        }
+    } else if (filter == 2) {
+        float m[20];
+        for (int i = 0; i < 20; ++i) m[i] = rd_f32(rd);
+        /* Android's color matrix: rows for R, G, B and A over (R, G, B, A, 1), the offsets in 0..255 */
+        float in[4] = {red, green, blue, a}, o[4];
+        for (int row = 0; row < 4; ++row)
+            o[row] = m[5 * row] * in[0] + m[5 * row + 1] * in[1] + m[5 * row + 2] * in[2] + m[5 * row + 3] * in[3] +
+                     m[5 * row + 4] / 255.0f;
+        red = o[0], green = o[1], blue = o[2], a = o[3];
+    }
+    if (dashes) skip(rd, 4 * (1 + (size_t)dashes)); /* dashed strokes draw solid for now */
+    a *= state_alpha;
+    if (out->blend == BLEND_CLEAR) a = red = green = blue = 0;
+    premultiply(a, red, green, blue, out->rgba);
+}
+
+/* whether the paint draws over the target (source over) or replaces it */
+static bool copies(const Paint* p) {
+    return p->blend == BLEND_CLEAR || p->blend == BLEND_SRC;
+}
+/* a paint that changes nothing */
+static bool invisible(const Paint* p) {
+    return p->blend == BLEND_DST || (!copies(p) && p->rgba[3] == 0);
+}
+
+/* ---- shapes ---- */
+
+static float tolerance(void) {
+    return 0.25f;
+}
+static Affine current(void) {
+    return r.states[r.state_count - 1].m;
+}
+static Point at(Affine m, float x, float y) {
+    Point p = {m.a * x + m.b * y + m.c, m.d * x + m.e * y + m.f};
+    return p;
+}
+
+/* a convex polygon (device pixels) filled directly */
+static void fill_convex(const Point* pts, size_t n, const Paint* p) {
+    size_t first = r.vert_count;
+    for (size_t i = 1; i + 1 < n; ++i) {
+        vertex(pts[0], p->rgba);
+        vertex(pts[i], p->rgba);
+        vertex(pts[i + 1], p->rgba);
+    }
+    add_draw(copies(p) ? PIPE_COPY : PIPE_COLOR, first);
+}
+
+/* the bounds of points, a cover's rectangle */
+static void cover(const Point* pts, size_t n, const Paint* p) {
+    if (!n) return;
+    float l = pts[0].x, t = pts[0].y, rr = l, b = t;
+    for (size_t i = 1; i < n; ++i) {
+        if (pts[i].x < l) l = pts[i].x;
+        if (pts[i].x > rr) rr = pts[i].x;
+        if (pts[i].y < t) t = pts[i].y;
+        if (pts[i].y > b) b = pts[i].y;
+    }
+    l -= 1, t -= 1, rr += 1, b += 1;
+    Point q[4] = {{l, t}, {rr, t}, {rr, b}, {l, b}};
+    size_t first = r.vert_count;
+    vertex(q[0], p->rgba);
+    vertex(q[1], p->rgba);
+    vertex(q[2], p->rgba);
+    vertex(q[0], p->rgba);
+    vertex(q[2], p->rgba);
+    vertex(q[3], p->rgba);
+    add_draw(copies(p) ? PIPE_COVER_COPY : PIPE_COVER, first);
+}
+
+/* triangles into the stencil by pipe, then their cover */
+static void stencil_cover(const Triangles* t, uint8_t pipe, const Paint* p) {
+    if (!t->count) return;
+    static const unsigned char none[4] = {0, 0, 0, 0};
+    size_t first = r.vert_count;
+    for (size_t i = 0; i < t->count; ++i) vertex(t->points[i], none);
+    add_draw(pipe, first);
+    cover(t->points, t->count, p);
+}
+
+/* the polyline (device pixels) filled by its fill type (0 winding, 1 even-odd; inverse types fill as their normal
+   ones for now), and stroked when the paint strokes */
+static void draw_poly(const Paint* p, unsigned fill_type, bool fill, bool stroke, float stroke_width) {
+    if (fill) {
+        r.tris.count = 0;
+        fan_poly(&r.tris, &r.poly);
+        stencil_cover(&r.tris, (fill_type & 1) ? PIPE_EVEN_ODD : PIPE_WINDING, p);
+    }
+    if (stroke) {
+        r.tris.count = 0;
+        stroke_poly(&r.tris, &r.poly, stroke_width, p->cap, p->join, p->miter, tolerance());
+        stencil_cover(&r.tris, PIPE_SET, p);
+    }
+    if (r.poly.failed || r.tris.failed) r.failed = true;
+}
+
+/* the stroke's width in device pixels: a hairline (0) is one pixel */
+static float device_width(const Paint* p) {
+    return p->width > 0 ? p->width * affine_scale(current()) : 1.0f;
+}
+
+/* a shape given as a closed local polygon, drawn with the paint's style */
+static void draw_shape(const Point* local, size_t n, const Paint* p) {
+    if (invisible(p) || n < 2) return;
+    Affine m = current();
+    poly_clear(&r.poly);
+    for (size_t i = 0; i < n; ++i) {
+        Point d = at(m, local[i].x, local[i].y);
+        if (i) poly_line(&r.poly, d);
+        else poly_move(&r.poly, d);
+    }
+    poly_close(&r.poly);
+    if (r.poly.failed) {
+        r.failed = true;
+        return;
+    }
+    if (p->style != 1 && r.poly.contours) fill_convex(r.poly.points, r.poly.ends[0], p);
+    if (p->style != 0) draw_poly(p, 0, false, true, device_width(p));
+}
+
+/* an ellipse's points from angle a0 through sweep (radians, y down), at least enough that each chord stays within
+   the tolerance in device pixels */
+static size_t ellipse(Point* out, size_t max, float cx, float cy, float rx, float ry, float a0, float sweep) {
+    float radius = (rx > ry ? rx : ry) * affine_scale(current());
+    float step = radius > tolerance() ? 2 * acosf(1 - tolerance() / radius) : 1.0f;
+    if (!(step > 0.02f)) step = 0.02f;
+    size_t n = (size_t)ceilf(fabsf(sweep) / step);
+    if (n < 4) n = 4;
+    if (n > max - 1) n = max - 1;
+    for (size_t i = 0; i <= n; ++i) {
+        float a = a0 + sweep * (float)i / (float)n;
+        out[i] = (Point){cx + rx * cosf(a), cy + ry * sinf(a)};
+    }
+    return n + 1;
+}
+
+enum { SHAPE_MAX = 1024 };
+static Point shape[SHAPE_MAX];
+
+static void draw_rrect(float l, float t, float rr, float b, float rx, float ry, const Paint* p) {
+    if (rr < l) { float s = l; l = rr; rr = s; }
+    if (b < t) { float s = t; t = b; b = s; }
+    rx = fminf(fmaxf(rx, 0), (rr - l) / 2);
+    ry = fminf(fmaxf(ry, 0), (b - t) / 2);
+    if (rx <= 0 || ry <= 0) {
+        Point q[4] = {{l, t}, {rr, t}, {rr, b}, {l, b}};
+        draw_shape(q, 4, p);
+        return;
+    }
+    size_t n = 0;
+    const float h = HWUI_PI / 2;
+    n += ellipse(shape + n, SHAPE_MAX / 4, rr - rx, t + ry, rx, ry, -h, h);
+    n += ellipse(shape + n, SHAPE_MAX / 4, rr - rx, b - ry, rx, ry, 0, h);
+    n += ellipse(shape + n, SHAPE_MAX / 4, l + rx, b - ry, rx, ry, h, h);
+    n += ellipse(shape + n, SHAPE_MAX / 4, l + rx, t + ry, rx, ry, 2 * h, h);
+    draw_shape(shape, n, p);
+}
+
+static void draw_oval(float l, float t, float rr, float b, const Paint* p) {
+    size_t n = ellipse(shape, SHAPE_MAX, (l + rr) / 2, (t + b) / 2, fabsf(rr - l) / 2, fabsf(b - t) / 2, 0,
+                       2 * HWUI_PI);
+    draw_shape(shape, n - 1, p);
+}
+
+static void draw_arc(float l, float t, float rr, float b, float start, float sweep, bool center, const Paint* p) {
+    if (invisible(p)) return;
+    float cx = (l + rr) / 2, cy = (t + b) / 2;
+    if (sweep > 360) sweep = 360;
+    if (sweep < -360) sweep = -360;
+    size_t n = ellipse(shape, SHAPE_MAX - 1, cx, cy, fabsf(rr - l) / 2, fabsf(b - t) / 2, start * HWUI_PI / 180,
+                       sweep * HWUI_PI / 180);
+    if (center) shape[n++] = (Point){cx, cy};
+    Affine m = current();
+    poly_clear(&r.poly);
+    for (size_t i = 0; i < n; ++i) {
+        Point d = at(m, shape[i].x, shape[i].y);
+        if (i) poly_line(&r.poly, d);
+        else poly_move(&r.poly, d);
+    }
+    /* a stroke without the center is the open arc */
+    if (center || p->style == 0) poly_close(&r.poly);
+    else poly_end(&r.poly);
+    draw_poly(p, 0, p->style != 1, p->style != 0, device_width(p));
+}
+
+/* a recorded path (Canvas.writePath): its fill type, then the path */
+static bool read_path(Reader* rd, unsigned* fill_type) {
+    *fill_type = rd_u8(rd);
+    uint32_t verbs = (uint32_t)rd_i32(rd), points = (uint32_t)rd_i32(rd);
+    if (!need(rd, (size_t)verbs + 4 * (size_t)points)) return false;
+    const uint8_t* v = rd->p;
+    const unsigned char* pts = rd->p + verbs;
+    rd->p += verbs + 4 * (size_t)points;
+    poly_clear(&r.poly);
+    poly_path(&r.poly, v, verbs, pts, points, current(), tolerance());
+    return !r.poly.failed;
+}
+
+/* ---- glyphs ---- */
+
+typedef struct {
+    uint8_t* verbs;
+    float* points;
+    uint32_t verb_count, point_count, verb_capacity, point_capacity;
+    bool failed;
+} Outline;
+static void outline_verb(Outline* o, uint8_t verb, const float* pts, unsigned n) {
+    if (o->failed) return;
+    size_t vc = o->verb_capacity, pc = o->point_capacity;
+    if (!reserve((void**)&o->verbs, &vc, (size_t)o->verb_count + 1, 1) ||
+        !reserve((void**)&o->points, &pc, (size_t)o->point_count + n, sizeof(float))) {
+        o->failed = true;
+        return;
+    }
+    o->verb_capacity = (uint32_t)vc;
+    o->point_capacity = (uint32_t)pc;
+    o->verbs[o->verb_count++] = verb;
+    memcpy(o->points + o->point_count, pts, n * sizeof(float));
+    o->point_count += n;
+}
+static void move_to(hb_draw_funcs_t* f, void* data, hb_draw_state_t* s, float x, float y, void* u) {
+    (void)f, (void)s, (void)u;
+    float p[2] = {x, y};
+    outline_verb(data, VERB_MOVE, p, 2);
+}
+static void line_to(hb_draw_funcs_t* f, void* data, hb_draw_state_t* s, float x, float y, void* u) {
+    (void)f, (void)s, (void)u;
+    float p[2] = {x, y};
+    outline_verb(data, VERB_LINE, p, 2);
+}
+static void quad_to(hb_draw_funcs_t* f, void* data, hb_draw_state_t* s, float cx, float cy, float x, float y,
+                    void* u) {
+    (void)f, (void)s, (void)u;
+    float p[4] = {cx, cy, x, y};
+    outline_verb(data, VERB_QUAD, p, 4);
+}
+static void cubic_to(hb_draw_funcs_t* f, void* data, hb_draw_state_t* s, float c1x, float c1y, float c2x, float c2y,
+                     float x, float y, void* u) {
+    (void)f, (void)s, (void)u;
+    float p[6] = {c1x, c1y, c2x, c2y, x, y};
+    outline_verb(data, VERB_CUBIC, p, 6);
+}
+static void close_path(hb_draw_funcs_t* f, void* data, hb_draw_state_t* s, void* u) {
+    (void)f, (void)s, (void)u;
+    outline_verb(data, VERB_CLOSE, NULL, 0);
+}
+
+static size_t glyph_slot(jint font, uint32_t glyph) {
+    uint32_t h = (uint32_t)font * 0x9e3779b1u ^ glyph * 0x85ebca77u;
+    size_t mask = r.glyph_capacity - 1, i = h & mask;
+    while (r.glyphs[i].used && (r.glyphs[i].font != font || r.glyphs[i].glyph != glyph)) i = (i + 1) & mask;
+    return i;
+}
+/* a glyph's outline, read once from its font */
+static const Glyph* glyph_outline(jint font, uint32_t glyph) {
+    if (r.glyph_count * 2 >= r.glyph_capacity) {
+        size_t old = r.glyph_capacity, n = old ? old * 2 : 1024;
+        Glyph* list = r.glyphs;
+        r.glyphs = calloc(n, sizeof *r.glyphs);
+        if (!r.glyphs) {
+            r.glyphs = list;
+            return NULL;
+        }
+        r.glyph_capacity = n;
+        for (size_t i = 0; i < old; ++i)
+            if (list[i].used) r.glyphs[glyph_slot(list[i].font, list[i].glyph)] = list[i];
+        free(list);
+    }
+    size_t i = glyph_slot(font, glyph);
+    if (r.glyphs[i].used) return &r.glyphs[i];
+    hb_font_t* f = android_text_font(font);
+    if (!f) return NULL;
+    static hb_draw_funcs_t* funcs;
+    if (!funcs) {
+        funcs = hb_draw_funcs_create();
+        hb_draw_funcs_set_move_to_func(funcs, move_to, NULL, NULL);
+        hb_draw_funcs_set_line_to_func(funcs, line_to, NULL, NULL);
+        hb_draw_funcs_set_quadratic_to_func(funcs, quad_to, NULL, NULL);
+        hb_draw_funcs_set_cubic_to_func(funcs, cubic_to, NULL, NULL);
+        hb_draw_funcs_set_close_path_func(funcs, close_path, NULL, NULL);
+        hb_draw_funcs_make_immutable(funcs);
+    }
+    Outline o = {0};
+    hb_font_draw_glyph(f, glyph, funcs, &o);
+    if (o.failed) {
+        free(o.verbs);
+        free(o.points);
+        return NULL;
+    }
+    r.glyphs[i] = (Glyph){font, glyph, o.verbs, o.points, o.verb_count, o.point_count, true};
+    ++r.glyph_count;
+    return &r.glyphs[i];
+}
+
+static void draw_glyphs(Reader* rd) {
+    jint font = rd_i32(rd);
+    float size = rd_f32(rd), scale_x = rd_f32(rd), skew = rd_f32(rd);
+    rd_u8(rd); /* fake bold */
+    int32_t n = rd_i32(rd);
+    if (n < 0 || !need(rd, 12 * (size_t)n)) return;
+    const unsigned char* ids = rd->p;
+    const unsigned char* pos = rd->p + 4 * (size_t)n;
+    rd->p += 12 * (size_t)n;
+    Paint p;
+    read_paint(rd, &p);
+    hb_font_t* f = android_text_font(font);
+    if (!f || invisible(&p) || rd->bad) return;
+    int upem_x, upem_y;
+    hb_font_get_scale(f, &upem_x, &upem_y);
+    float s = size / (float)(upem_y ? upem_y : 1000);
+    Affine m = current();
+    poly_clear(&r.poly);
+    for (int32_t g = 0; g < n; ++g) {
+        const Glyph* gl = glyph_outline(font, snx_ld_le32(ids + 4 * (size_t)g));
+        if (!gl) continue;
+        float x = snx_ld_lef32(pos + 8 * (size_t)g), y = snx_ld_lef32(pos + 8 * (size_t)g + 4);
+        /* font units (y up) to the canvas: scaled, the y axis turned down, the x skewed by the text's skew */
+        Affine glyph = {s * scale_x, -s * skew, x, 0, -s, y};
+        Affine to = affine_mul(m, glyph);
+        uint32_t k = 0;
+        for (uint32_t v = 0; v < gl->verb_count; ++v) {
+            const float* q = gl->points + k;
+            switch (gl->verbs[v]) {
+            case VERB_MOVE: poly_move(&r.poly, at(to, q[0], q[1])), k += 2; break;
+            case VERB_LINE: poly_line(&r.poly, at(to, q[0], q[1])), k += 2; break;
+            case VERB_QUAD: poly_quad(&r.poly, at(to, q[0], q[1]), at(to, q[2], q[3]), tolerance()), k += 4; break;
+            case VERB_CUBIC:
+                poly_cubic(&r.poly, at(to, q[0], q[1]), at(to, q[2], q[3]), at(to, q[4], q[5]), tolerance());
+                k += 6;
+                break;
+            case VERB_CLOSE: poly_close(&r.poly); break;
+            default: break;
+            }
+        }
+        poly_end(&r.poly);
+    }
+    p.style = 0;
+    draw_poly(&p, 0, true, false, 0);
+}
+
+/* ---- bitmaps ---- */
+
+static int32_t texture_find(int32_t id) {
+    for (size_t i = 0; i < r.texture_count; ++i)
+        if (r.textures[i].id == id) return (int32_t)i;
+    return -1;
+}
+
+/* a bitmap's source rectangle onto its destination rectangle, with the paint's alpha and tint */
+static void draw_bitmap(Reader* rd) {
+    int32_t id = rd_i32(rd);
+    float s[4], d[4];
+    for (int i = 0; i < 4; ++i) s[i] = rd_f32(rd);
+    for (int i = 0; i < 4; ++i) d[i] = rd_f32(rd);
+    Paint p;
+    read_paint(rd, &p);
+    int32_t t = texture_find(id);
+    if (t < 0 || rd->bad) return;
+    float w = (float)r.textures[t].width, h = (float)r.textures[t].height;
+    unsigned char color[4];
+    uint8_t pipe = PIPE_TEXTURE;
+    if (p.tint_mode) {
+        memcpy(color, p.tint, 4);
+        if (p.tint_mode == BLEND_SRC_IN) pipe = PIPE_TEXTURE_TINT;
+    } else {
+        premultiply(p.alpha, 1, 1, 1, color);
+    }
+    if (!color[3]) return;
+    Affine m = current();
+    Point q[4] = {at(m, d[0], d[1]), at(m, d[2], d[1]), at(m, d[2], d[3]), at(m, d[0], d[3])};
+    float u0 = s[0] / w, v0 = s[1] / h, u1 = s[2] / w, v1 = s[3] / h;
+    size_t first = r.vert_count;
+    vertex_uv(q[0], color, u0, v0);
+    vertex_uv(q[1], color, u1, v0);
+    vertex_uv(q[2], color, u1, v1);
+    vertex_uv(q[0], color, u0, v0);
+    vertex_uv(q[2], color, u1, v1);
+    vertex_uv(q[3], color, u0, v1);
+    add_textured(pipe, first, t);
+}
+
+/* ---- the display list ---- */
+
+static void push(void) {
+    if (!reserve((void**)&r.states, &r.state_capacity, r.state_count + 1, sizeof *r.states)) {
+        r.failed = true;
+        return;
+    }
+    r.states[r.state_count] = r.states[r.state_count - 1];
+    ++r.state_count;
+}
+/* the clip intersected with a local rectangle's device bounds */
+static void clip_rect(float l, float t, float rr, float b) {
+    Affine m = current();
+    Point q[4] = {at(m, l, t), at(m, rr, t), at(m, rr, b), at(m, l, b)};
+    float x0 = q[0].x, y0 = q[0].y, x1 = x0, y1 = y0;
+    for (int i = 1; i < 4; ++i) {
+        x0 = fminf(x0, q[i].x), x1 = fmaxf(x1, q[i].x);
+        y0 = fminf(y0, q[i].y), y1 = fmaxf(y1, q[i].y);
+    }
+    float* c = r.states[r.state_count - 1].clip;
+    c[0] = fmaxf(c[0], x0), c[1] = fmaxf(c[1], y0), c[2] = fminf(c[2], x1), c[3] = fminf(c[3], y1);
+}
+static void clip_poly(void) {
+    if (!r.poly.count) return;
+    float x0 = r.poly.points[0].x, y0 = r.poly.points[0].y, x1 = x0, y1 = y0;
+    for (size_t i = 1; i < r.poly.count; ++i) {
+        x0 = fminf(x0, r.poly.points[i].x), x1 = fmaxf(x1, r.poly.points[i].x);
+        y0 = fminf(y0, r.poly.points[i].y), y1 = fmaxf(y1, r.poly.points[i].y);
+    }
+    float* c = r.states[r.state_count - 1].clip;
+    c[0] = fmaxf(c[0], x0), c[1] = fmaxf(c[1], y0), c[2] = fminf(c[2], x1), c[3] = fminf(c[3], y1);
+}
+static Affine read_matrix(Reader* rd) {
+    float v[9];
+    for (int i = 0; i < 9; ++i) v[i] = rd_f32(rd);
+    Affine m = {v[0], v[1], v[2], v[3], v[4], v[5]};
+    return m;
+}
+static void fill_clip(const Paint* p) {
+    const float* c = r.states[r.state_count - 1].clip;
+    Point q[4] = {{c[0], c[1]}, {c[2], c[1]}, {c[2], c[3]}, {c[0], c[3]}};
+    fill_convex(q, 4, p);
+}
+
+/* the frame's operations. Restores never go below the save depth that the node began at */
+static void interpret(Reader* rd) {
+    size_t* bases = NULL; /* each open node's state depth */
+    size_t base_count = 0, base_capacity = 0;
+    size_t base = 1;
+    while (rd->p < rd->end && !rd->bad && !r.failed) {
+        unsigned op = rd_u8(rd);
+        Paint p;
+        switch (op) {
+        case 1: push(); break; /* SAVE */
+        case 2:                /* RESTORE */
+            if (r.state_count > base) --r.state_count;
+            break;
+        case 4: { /* TRANSLATE */
+            float dx = rd_f32(rd), dy = rd_f32(rd);
+            Affine t = {1, 0, dx, 0, 1, dy};
+            r.states[r.state_count - 1].m = affine_mul(current(), t);
+            break;
+        }
+        case 5: { /* SCALE */
+            float sx = rd_f32(rd), sy = rd_f32(rd);
+            Affine t = {sx, 0, 0, 0, sy, 0};
+            r.states[r.state_count - 1].m = affine_mul(current(), t);
+            break;
+        }
+        case 6: { /* ROTATE */
+            float a = rd_f32(rd) * HWUI_PI / 180, c = cosf(a), s = sinf(a);
+            Affine t = {c, -s, 0, s, c, 0};
+            r.states[r.state_count - 1].m = affine_mul(current(), t);
+            break;
+        }
+        case 7: r.states[r.state_count - 1].m = affine_mul(current(), read_matrix(rd)); break; /* CONCAT */
+        case 8: { /* SET_MATRIX: relative to the node's own transform */
+            Affine m = read_matrix(rd);
+            r.states[r.state_count - 1].m = affine_mul(r.states[base - 1].m, m);
+            break;
+        }
+        case 10: { /* CLIP_RECT */
+            float l = rd_f32(rd), t = rd_f32(rd), rr = rd_f32(rd), b = rd_f32(rd);
+            if (rd_u8(rd) == 0) clip_rect(l, t, rr, b); /* a difference leaves the clip (its bounds) as it is */
+            break;
+        }
+        case 11: { /* CLIP_PATH */
+            unsigned fill;
+            if (read_path(rd, &fill) && rd_u8(rd) == 0) clip_poly();
+            break;
+        }
+        case 12: { /* DRAW_COLOR */
+            uint32_t c = (uint32_t)rd_i32(rd);
+            p.blend = (uint8_t)rd_u8(rd);
+            premultiply(channel(c, 24) * r.states[r.state_count - 1].alpha, channel(c, 16), channel(c, 8),
+                        channel(c, 0), p.rgba);
+            if (p.blend == BLEND_CLEAR) memset(p.rgba, 0, 4);
+            if (!invisible(&p)) fill_clip(&p);
+            break;
+        }
+        case 13: /* DRAW_PAINT */
+            read_paint(rd, &p);
+            if (!invisible(&p)) fill_clip(&p);
+            break;
+        case 14: { /* DRAW_RECT */
+            float l = rd_f32(rd), t = rd_f32(rd), rr = rd_f32(rd), b = rd_f32(rd);
+            read_paint(rd, &p);
+            Point q[4] = {{l, t}, {rr, t}, {rr, b}, {l, b}};
+            draw_shape(q, 4, &p);
+            break;
+        }
+        case 15: { /* DRAW_RRECT */
+            float l = rd_f32(rd), t = rd_f32(rd), rr = rd_f32(rd), b = rd_f32(rd), rx = rd_f32(rd), ry = rd_f32(rd);
+            read_paint(rd, &p);
+            draw_rrect(l, t, rr, b, rx, ry, &p);
+            break;
+        }
+        case 16: { /* DRAW_OVAL */
+            float l = rd_f32(rd), t = rd_f32(rd), rr = rd_f32(rd), b = rd_f32(rd);
+            read_paint(rd, &p);
+            draw_oval(l, t, rr, b, &p);
+            break;
+        }
+        case 17: { /* DRAW_CIRCLE */
+            float cx = rd_f32(rd), cy = rd_f32(rd), radius = rd_f32(rd);
+            read_paint(rd, &p);
+            draw_oval(cx - radius, cy - radius, cx + radius, cy + radius, &p);
+            break;
+        }
+        case 18: { /* DRAW_ARC */
+            float l = rd_f32(rd), t = rd_f32(rd), rr = rd_f32(rd), b = rd_f32(rd);
+            float start = rd_f32(rd), sweep = rd_f32(rd);
+            bool center = rd_u8(rd) != 0;
+            read_paint(rd, &p);
+            draw_arc(l, t, rr, b, start, sweep, center, &p);
+            break;
+        }
+        case 19:   /* DRAW_LINES */
+        case 20: { /* DRAW_POINTS */
+            int32_t n = rd_i32(rd);
+            if (n < 0 || !need(rd, 4 * (size_t)n)) break;
+            const unsigned char* pts = rd->p;
+            rd->p += 4 * (size_t)n;
+            read_paint(rd, &p);
+            if (invisible(&p)) break;
+            Affine m = current();
+            poly_clear(&r.poly);
+            unsigned step = op == 19 ? 4 : 2;
+            for (int32_t i = 0; i + (int32_t)step <= n; i += (int32_t)step) {
+                const unsigned char* q = pts + 4 * (size_t)i;
+                Point a = at(m, snx_ld_lef32(q), snx_ld_lef32(q + 4));
+                poly_move(&r.poly, a);
+                poly_line(&r.poly, op == 19 ? at(m, snx_ld_lef32(q + 8), snx_ld_lef32(q + 12)) : a);
+                poly_end(&r.poly);
+            }
+            /* a point is a dot of the stroke's width, square unless the cap is round */
+            if (op == 20 && p.cap == CAP_BUTT) p.cap = CAP_SQUARE;
+            draw_poly(&p, 0, false, true, device_width(&p));
+            break;
+        }
+        case 21: { /* DRAW_PATH */
+            unsigned fill;
+            bool ok = read_path(rd, &fill);
+            read_paint(rd, &p);
+            if (ok && !invisible(&p)) {
+                /* stroking the path read again: draw_poly strokes what it fills */
+                draw_poly(&p, fill, p.style != 1, p.style != 0, device_width(&p));
+            }
+            break;
+        }
+        case 22: draw_glyphs(rd); break; /* DRAW_GLYPHS */
+        case 23: /* DRAW_BITMAP */
+            draw_bitmap(rd);
+            break;
+        case 25: { /* SAVE_LAYER: its alpha on what it holds (no offscreen layer yet) */
+            skip(rd, 16);
+            int32_t alpha = rd_i32(rd);
+            rd_u8(rd);
+            push();
+            r.states[r.state_count - 1].alpha *= (float)alpha / 255.0f;
+            break;
+        }
+        case 30: { /* NODE_BEGIN */
+            Affine m = read_matrix(rd);
+            float alpha = rd_f32(rd), w = rd_f32(rd), h = rd_f32(rd);
+            bool clip_bounds = rd_u8(rd) != 0;
+            push();
+            if (!reserve((void**)&bases, &base_capacity, base_count + 1, sizeof *bases)) {
+                r.failed = true;
+                break;
+            }
+            bases[base_count++] = base;
+            base = r.state_count;
+            State* st = &r.states[r.state_count - 1];
+            st->m = affine_mul(st->m, m);
+            st->alpha *= alpha;
+            if (clip_bounds) clip_rect(0, 0, w, h);
+            unsigned outline = rd_u8(rd);
+            if (outline == 1) {
+                float l = rd_f32(rd), t = rd_f32(rd), rr = rd_f32(rd), b = rd_f32(rd);
+                rd_f32(rd); /* the radius: the outline clips to its bounds for now */
+                clip_rect(l, t, rr, b);
+            } else if (outline == 2) {
+                unsigned fill;
+                if (read_path(rd, &fill)) clip_poly();
+            }
+            if (rd_u8(rd)) {
+                float l = rd_f32(rd), t = rd_f32(rd), rr = rd_f32(rd), b = rd_f32(rd);
+                clip_rect(l, t, rr, b);
+            }
+            break;
+        }
+        case 31: /* NODE_END */
+            if (!base_count) {
+                rd->bad = true;
+                break;
+            }
+            r.state_count = base - 1;
+            base = bases[--base_count];
+            break;
+        default: rd->bad = true; break;
+        }
+    }
+    if (rd->bad) fprintf(stderr, "scarletnx-android: a display list that can't be read\n");
+    free(bases);
+}
+
+/* ---- Vulkan ---- */
+
+static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
+    (void)user;
+    VkPhysicalDeviceVulkan13Features v13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    VkPhysicalDeviceFeatures2 features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &v13};
+    vkGetPhysicalDeviceFeatures2(phys, &features);
+    if (!v13.dynamicRendering || !v13.synchronization2) return false;
+    SnxVkExtensions list;
+    if (!snx_vk_device_extensions(phys, &list)) return false;
+    bool swapchain = snx_vk_extensions_has(&list, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    /* the layer's images, for an app's own Vulkan (hle_vulkan.h) */
+    bool exportable = HLE_LAYER_MEMORY && snx_vk_extensions_has(&list, HLE_LAYER_EXTENSION);
+    snx_vk_extensions_free(&list);
+    const char* extensions[2];
+    uint32_t n = 0;
+    if (r.host.surface) {
+        if (!swapchain) return false;
+        extensions[n++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    }
+    if (exportable) extensions[n++] = HLE_LAYER_EXTENSION;
+    VkPhysicalDeviceVulkan13Features want13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+                                               .dynamicRendering = VK_TRUE,
+                                               .synchronization2 = VK_TRUE};
+    VkPhysicalDeviceFeatures2 want = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &want13};
+    if (snx_vk_device_create(phys, family, &want, extensions, n, &r.device) != VK_SUCCESS) return false;
+    r.phys = phys;
+    r.family = family;
+    r.exportable = exportable;
+    return true;
+}
+
+static bool make_image(VkExtent2D extent, VkFormat format, VkImageUsageFlags usage, VkSampleCountFlagBits samples,
+                       VkImageAspectFlags aspect, VkImage* image, VkDeviceMemory* memory, VkImageView* view) {
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .imageType = VK_IMAGE_TYPE_2D,
+                            .format = format,
+                            .extent = {extent.width, extent.height, 1},
+                            .mipLevels = 1,
+                            .arrayLayers = 1,
+                            .samples = samples,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = usage,
+                            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+    if (vkCreateImage(r.device, &ii, NULL, image) != VK_SUCCESS) return false;
+    VkMemoryRequirements req;
+    vkGetImageMemoryRequirements(r.device, *image, &req);
+    uint32_t type = snx_vk_memory_type(&r.memory, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                               .allocationSize = req.size,
+                               .memoryTypeIndex = type};
+    if (type == UINT32_MAX || vkAllocateMemory(r.device, &ai, NULL, memory) != VK_SUCCESS) return false;
+    vkBindImageMemory(r.device, *image, *memory, 0);
+    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                .image = *image,
+                                .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                .format = format,
+                                .subresourceRange = {aspect, 0, 1, 0, 1}};
+    return vkCreateImageView(r.device, &vi, NULL, view) == VK_SUCCESS;
+}
+static void free_image(VkImage* image, VkDeviceMemory* memory, VkImageView* view) {
+    if (*view) vkDestroyImageView(r.device, *view, NULL);
+    if (*image) vkDestroyImage(r.device, *image, NULL);
+    if (*memory) vkFreeMemory(r.device, *memory, NULL);
+    *view = VK_NULL_HANDLE;
+    *image = VK_NULL_HANDLE;
+    *memory = VK_NULL_HANDLE;
+}
+
+/* The layer's images at the extent, exportable as HLE_LAYER_MEMORY with the parameters hle_vulkan.h gives, each of a
+   new generation. False when one can't be made: the frames then have no layer */
+static bool make_layers(VkExtent2D extent) {
+    static uint64_t generations;
+    bool ok = r.exportable;
+    pthread_mutex_lock(&locks.layer);
+    r.layer_shown = r.layer_pending = 0;
+    r.layer_extent = extent;
+    for (unsigned i = 0; i < HLE_LAYER_IMAGES && ok; ++i) {
+        VkExternalMemoryImageCreateInfo external = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+                                                    .handleTypes = HLE_LAYER_MEMORY};
+        VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                .pNext = &external,
+                                .flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT,
+                                .imageType = VK_IMAGE_TYPE_2D,
+                                .format = r.color_format,
+                                .extent = {extent.width, extent.height, 1},
+                                .mipLevels = 1,
+                                .arrayLayers = 1,
+                                .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+        ok = vkCreateImage(r.device, &ii, NULL, &r.layers[i]) == VK_SUCCESS;
+        if (!ok) break;
+        VkMemoryRequirements req;
+        vkGetImageMemoryRequirements(r.device, r.layers[i], &req);
+        uint32_t type = snx_vk_memory_type(&r.memory, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        VkMemoryDedicatedAllocateInfo dedicated = {.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+                                                   .image = r.layers[i]};
+        VkExportMemoryAllocateInfo export = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+                                             .pNext = &dedicated,
+                                             .handleTypes = HLE_LAYER_MEMORY};
+        VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                   .pNext = &export,
+                                   .allocationSize = req.size,
+                                   .memoryTypeIndex = type};
+        ok = type != UINT32_MAX && vkAllocateMemory(r.device, &ai, NULL, &r.layer_memory[i]) == VK_SUCCESS &&
+             vkBindImageMemory(r.device, r.layers[i], r.layer_memory[i], 0) == VK_SUCCESS;
+        VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                    .image = r.layers[i],
+                                    .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                    .format = r.color_format,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        ok = ok && vkCreateImageView(r.device, &vi, NULL, &r.layer_views[i]) == VK_SUCCESS;
+        r.layer_size[i] = req.size;
+        r.layer_generation[i] = ++generations;
+    }
+    for (unsigned i = 0; i < HLE_LAYER_IMAGES && !ok; ++i) {
+        free_image(&r.layers[i], &r.layer_memory[i], &r.layer_views[i]);
+        r.layer_generation[i] = 0;
+    }
+    pthread_mutex_unlock(&locks.layer);
+    return ok;
+}
+static void free_layers(void) {
+    pthread_mutex_lock(&locks.layer);
+    r.layer_shown = r.layer_pending = 0;
+    for (unsigned i = 0; i < HLE_LAYER_IMAGES; ++i) {
+        free_image(&r.layers[i], &r.layer_memory[i], &r.layer_views[i]);
+        r.layer_generation[i] = 0;
+    }
+    pthread_mutex_unlock(&locks.layer);
+}
+
+static void free_targets(void) {
+    free_layers();
+    free_image(&r.msaa, &r.msaa_memory, &r.msaa_view);
+    free_image(&r.stencil, &r.stencil_memory, &r.stencil_view);
+    free_image(&r.offscreen, &r.offscreen_memory, &r.offscreen_view);
+    for (unsigned i = 0; i < SNX_VK_SWAP_IMAGES; ++i)
+        if (r.swap_views[i]) vkDestroyImageView(r.device, r.swap_views[i], NULL), r.swap_views[i] = VK_NULL_HANDLE;
+}
+
+/* the targets for an extent: the swapchain's images (a window's) or the offscreen image, and the multisampled ones */
+static bool make_targets(VkExtent2D extent) {
+    vkDeviceWaitIdle(r.device);
+    free_targets();
+    r.extent = extent;
+    if (r.yielded) {
+        if (!make_layers(extent)) fprintf(stderr, "scarletnx-android: no layer over the app's Vulkan frames\n");
+    } else if (r.host.surface) {
+        static const VkFormat formats[] = {VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
+        SnxVkSwapchainInfo info = {.surface = r.host.surface,
+                                   .formats = formats,
+                                   .format_count = 2,
+                                   .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                   .window = extent};
+        if (!snx_vk_swapchain_make(r.phys, r.device, &info, &r.swap)) return false;
+        r.extent = r.swap.extent;
+        if (r.swap.format.format != r.color_format) return false; /* the pipelines' format */
+        for (uint32_t i = 0; i < r.swap.count; ++i) {
+            VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                        .image = r.swap.images[i],
+                                        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                        .format = r.color_format,
+                                        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+            if (vkCreateImageView(r.device, &vi, NULL, &r.swap_views[i]) != VK_SUCCESS) return false;
+        }
+    } else if (!make_image(r.extent, r.color_format,
+                           VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                           VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_ASPECT_COLOR_BIT, &r.offscreen, &r.offscreen_memory,
+                           &r.offscreen_view)) {
+        return false;
+    }
+    if (r.samples != VK_SAMPLE_COUNT_1_BIT &&
+        !make_image(r.extent, r.color_format,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
+                    r.samples, VK_IMAGE_ASPECT_COLOR_BIT, &r.msaa, &r.msaa_memory, &r.msaa_view))
+        return false;
+    VkImageAspectFlags stencil_aspect = r.stencil_format == VK_FORMAT_S8_UINT
+                                            ? VK_IMAGE_ASPECT_STENCIL_BIT
+                                            : VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+    return make_image(r.extent, r.stencil_format,
+                      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT, r.samples,
+                      stencil_aspect, &r.stencil, &r.stencil_memory, &r.stencil_view);
+}
+
+static VkShaderModule shader(const u32* words, u64 size) {
+    VkShaderModuleCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                                   .codeSize = (size_t)size,
+                                   .pCode = words};
+    VkShaderModule m = VK_NULL_HANDLE;
+    vkCreateShaderModule(r.device, &ci, NULL, &m);
+    return m;
+}
+
+static bool make_pipelines(void) {
+    VkDescriptorSetLayoutBinding sampled = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                                            VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
+    VkDescriptorSetLayoutCreateInfo sli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                           .bindingCount = 1,
+                                           .pBindings = &sampled};
+    if (vkCreateDescriptorSetLayout(r.device, &sli, NULL, &r.set_layout) != VK_SUCCESS) return false;
+    VkPushConstantRange push = {VK_SHADER_STAGE_VERTEX_BIT, 0, 8};
+    VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                     .setLayoutCount = 1,
+                                     .pSetLayouts = &r.set_layout,
+                                     .pushConstantRangeCount = 1,
+                                     .pPushConstantRanges = &push};
+    if (vkCreatePipelineLayout(r.device, &li, NULL, &r.layout) != VK_SUCCESS) return false;
+    VkShaderModule vs = shader(android_draw_vert_spv, android_draw_vert_spv_size);
+    VkShaderModule fs = shader(android_draw_frag_spv, android_draw_frag_spv_size);
+    VkShaderModule ts = shader(android_texture_frag_spv, android_texture_frag_spv_size);
+    bool ok = vs && fs && ts;
+    VkSpecializationMapEntry tint_entry = {0, 0, sizeof(int32_t)};
+    VkVertexInputBindingDescription binding = {0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX};
+    VkVertexInputAttributeDescription attributes[3] = {{0, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, x)},
+                                                       {1, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(Vertex, rgba)},
+                                                       {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, u)}};
+    VkPipelineVertexInputStateCreateInfo input = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                                                  .vertexBindingDescriptionCount = 1,
+                                                  .pVertexBindingDescriptions = &binding,
+                                                  .vertexAttributeDescriptionCount = 3,
+                                                  .pVertexAttributeDescriptions = attributes};
+    VkPipelineInputAssemblyStateCreateInfo assembly = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+    VkPipelineViewportStateCreateInfo viewport = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+                                                  .viewportCount = 1,
+                                                  .scissorCount = 1};
+    VkPipelineRasterizationStateCreateInfo raster = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .polygonMode = VK_POLYGON_MODE_FILL,
+        .cullMode = VK_CULL_MODE_NONE,
+        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        .lineWidth = 1};
+    VkPipelineMultisampleStateCreateInfo multisample = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples = r.samples};
+    VkDynamicState dynamic[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamics = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+                                                 .dynamicStateCount = 2,
+                                                 .pDynamicStates = dynamic};
+    VkFormat stencil_depth = r.stencil_format == VK_FORMAT_S8_UINT ? VK_FORMAT_UNDEFINED : r.stencil_format;
+    VkPipelineRenderingCreateInfo rendering = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+                                               .colorAttachmentCount = 1,
+                                               .pColorAttachmentFormats = &r.color_format,
+                                               .depthAttachmentFormat = stencil_depth,
+                                               .stencilAttachmentFormat = r.stencil_format};
+    for (int i = 0; i < PIPE_COUNT && ok; ++i) {
+        bool stencil_only = i == PIPE_WINDING || i == PIPE_EVEN_ODD || i == PIPE_SET;
+        bool cover = i == PIPE_COVER || i == PIPE_COVER_COPY;
+        bool copy = i == PIPE_COPY || i == PIPE_COVER_COPY || i == PIPE_TEXTURE_COPY;
+        bool textured = i == PIPE_TEXTURE || i == PIPE_TEXTURE_TINT || i == PIPE_TEXTURE_COPY;
+        int32_t tint = i == PIPE_TEXTURE_TINT;
+        VkSpecializationInfo special = {1, &tint_entry, sizeof tint, &tint};
+        VkPipelineShaderStageCreateInfo stages[2] = {
+            {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+             .stage = VK_SHADER_STAGE_VERTEX_BIT,
+             .module = vs,
+             .pName = "main"},
+            {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+             .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+             .module = textured ? ts : fs,
+             .pName = "main",
+             .pSpecializationInfo = textured ? &special : NULL}};
+        VkPipelineColorBlendAttachmentState blend = {
+            .blendEnable = !copy && !stencil_only,
+            .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
+            .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+            .colorBlendOp = VK_BLEND_OP_ADD,
+            .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+            .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+            .alphaBlendOp = VK_BLEND_OP_ADD,
+            .colorWriteMask = stencil_only ? 0
+                                           : VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                                 VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT};
+        VkPipelineColorBlendStateCreateInfo blending = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+            .attachmentCount = 1,
+            .pAttachments = &blend};
+        VkStencilOpState front = {VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_COMPARE_OP_ALWAYS,
+                                  0xff, 0xff, 0};
+        VkStencilOpState back = front;
+        if (i == PIPE_WINDING) {
+            front.passOp = VK_STENCIL_OP_INCREMENT_AND_WRAP;
+            back.passOp = VK_STENCIL_OP_DECREMENT_AND_WRAP;
+        } else if (i == PIPE_EVEN_ODD) {
+            front.passOp = back.passOp = VK_STENCIL_OP_INVERT;
+            front.writeMask = back.writeMask = 1;
+        } else if (i == PIPE_SET) {
+            front.passOp = back.passOp = VK_STENCIL_OP_REPLACE;
+            front.reference = back.reference = 1;
+        } else if (cover) {
+            front.compareOp = back.compareOp = VK_COMPARE_OP_NOT_EQUAL;
+            front.passOp = back.passOp = VK_STENCIL_OP_ZERO;
+        }
+        VkPipelineDepthStencilStateCreateInfo depth = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+            .stencilTestEnable = stencil_only || cover,
+            .front = front,
+            .back = back};
+        VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+                                           .pNext = &rendering,
+                                           .stageCount = 2,
+                                           .pStages = stages,
+                                           .pVertexInputState = &input,
+                                           .pInputAssemblyState = &assembly,
+                                           .pViewportState = &viewport,
+                                           .pRasterizationState = &raster,
+                                           .pMultisampleState = &multisample,
+                                           .pDepthStencilState = &depth,
+                                           .pColorBlendState = &blending,
+                                           .pDynamicState = &dynamics,
+                                           .layout = r.layout};
+        ok = vkCreateGraphicsPipelines(r.device, VK_NULL_HANDLE, 1, &pi, NULL, &r.pipes[i]) == VK_SUCCESS;
+    }
+    if (vs) vkDestroyShaderModule(r.device, vs, NULL);
+    if (fs) vkDestroyShaderModule(r.device, fs, NULL);
+    if (ts) vkDestroyShaderModule(r.device, ts, NULL);
+    return ok;
+}
+
+/* the device, the window's or none, and what the frames need. False with the reason printed */
+static bool start(int width, int height, const char* title) {
+    char error[256];
+    if (!snx_vk_window_open("scarletnx-android", title, width, height, &r.host, error, sizeof error)) {
+        fprintf(stderr, "scarletnx-android: %s\n", error);
+        return false;
+    }
+    if (!snx_vk_first_device(r.host.instance.instance, VK_API_VERSION_1_3, VK_QUEUE_GRAPHICS_BIT, r.host.surface,
+                             make_device, NULL)) {
+        fprintf(stderr, "scarletnx-android: no Vulkan 1.3 device with dynamic rendering\n");
+        snx_vk_window_close(&r.host);
+        return false;
+    }
+    volkLoadDevice(r.device);
+    vkGetDeviceQueue(r.device, r.family, 0, &r.queue);
+    vkGetPhysicalDeviceMemoryProperties(r.phys, &r.memory);
+    VkPhysicalDeviceIDProperties id = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+    VkPhysicalDeviceProperties2 properties2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &id};
+    vkGetPhysicalDeviceProperties2(r.phys, &properties2);
+    VkPhysicalDeviceProperties properties = properties2.properties;
+    memcpy(r.device_uuid, id.deviceUUID, sizeof r.device_uuid);
+    memcpy(r.driver_uuid, id.driverUUID, sizeof r.driver_uuid);
+    /* 4x MSAA where the color and stencil targets take it */
+    VkSampleCountFlags counts = properties.limits.framebufferColorSampleCounts &
+                                properties.limits.framebufferStencilSampleCounts;
+    r.samples = counts & VK_SAMPLE_COUNT_4_BIT ? VK_SAMPLE_COUNT_4_BIT : VK_SAMPLE_COUNT_1_BIT;
+    static const VkFormat stencils[3] = {VK_FORMAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT};
+    for (unsigned i = 0; i < 3 && !r.stencil_format; ++i) {
+        VkFormatProperties f;
+        vkGetPhysicalDeviceFormatProperties(r.phys, stencils[i], &f);
+        if (f.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) r.stencil_format = stencils[i];
+    }
+    r.color_format = VK_FORMAT_B8G8R8A8_UNORM;
+    if (r.host.surface) {
+        static const VkFormat formats[] = {VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
+        VkSurfaceFormatKHR f;
+        snx_vk_surface_format(r.phys, r.host.surface, formats, 2, &f);
+        r.color_format = f.format;
+    }
+    /* the layer's images: exportable, with the parameters make_layers gives them */
+    if (r.exportable) {
+        VkPhysicalDeviceExternalImageFormatInfo external = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO, .handleType = HLE_LAYER_MEMORY};
+        VkPhysicalDeviceImageFormatInfo2 fi = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
+                                               .pNext = &external,
+                                               .format = r.color_format,
+                                               .type = VK_IMAGE_TYPE_2D,
+                                               .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                               .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                                        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                               .flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT};
+        VkExternalImageFormatProperties ep = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES};
+        VkImageFormatProperties2 fp = {.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2, .pNext = &ep};
+        r.exportable = vkGetPhysicalDeviceImageFormatProperties2(r.phys, &fi, &fp) == VK_SUCCESS &&
+                       (ep.externalMemoryProperties.externalMemoryFeatures &
+                        VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT);
+    }
+    VkSamplerCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                               .magFilter = VK_FILTER_LINEAR,
+                               .minFilter = VK_FILTER_LINEAR,
+                               .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                               .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                               .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                               .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                               .maxLod = 0};
+    /* the bitmaps' descriptor sets, one for each live bitmap */
+    VkDescriptorPoolSize texture_size = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4096};
+    VkDescriptorPoolCreateInfo tpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                                      .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+                                      .maxSets = 4096,
+                                      .poolSizeCount = 1,
+                                      .pPoolSizes = &texture_size};
+    if (vkCreateSampler(r.device, &sci, NULL, &r.sampler) != VK_SUCCESS ||
+        vkCreateDescriptorPool(r.device, &tpi, NULL, &r.textures_pool) != VK_SUCCESS) {
+        fprintf(stderr, "scarletnx-android: the renderer's sampler can't be made\n");
+        return false;
+    }
+    VkDescriptorPoolSize size = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16};
+    VkDescriptorPoolCreateInfo dp = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                                     .maxSets = 16,
+                                     .poolSizeCount = 1,
+                                     .pPoolSizes = &size};
+    bool ok = r.stencil_format && snx_vk_ring_init(&r.ring, r.device, r.queue, r.family, SLOTS, &dp);
+    VkSemaphoreCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    for (unsigned i = 0; i < SLOTS && ok; ++i)
+        ok = vkCreateSemaphore(r.device, &si, NULL, &r.acquired[i]) == VK_SUCCESS;
+    for (unsigned i = 0; i < SNX_VK_SWAP_IMAGES && ok; ++i)
+        ok = vkCreateSemaphore(r.device, &si, NULL, &r.rendered[i]) == VK_SUCCESS;
+    VkFenceCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    for (unsigned i = 0; i < HLE_LAYER_IMAGES && ok; ++i)
+        ok = vkCreateFence(r.device, &fci, NULL, &r.layer_fences[i]) == VK_SUCCESS;
+    ok = ok && make_pipelines() && make_targets((VkExtent2D){(uint32_t)width, (uint32_t)height});
+    if (!ok) {
+        fprintf(stderr, "scarletnx-android: the renderer's Vulkan objects can't be made\n");
+        return false;
+    }
+    r.states = malloc(16 * sizeof *r.states);
+    r.state_capacity = r.states ? 16 : 0;
+    if (option.shot && option.shot[0]) {
+        snprintf(r.shot, sizeof r.shot, "%s", option.shot);
+        const char* frames = option.shot_frames;
+        if (!frames || !frames[0]) frames = "60";
+        for (char* end; *frames && r.shot_count < 64; frames = *end ? end + 1 : end) {
+            long f = strtol(frames, &end, 10);
+            if (end == frames) break;
+            r.shot_frames[r.shot_count++] = f;
+        }
+    }
+    r.up = r.states != NULL;
+    return r.up;
+}
+
+static void barrier(VkCommandBuffer cb, VkImage image, VkImageAspectFlags aspect, VkImageLayout from, VkImageLayout to,
+                    VkPipelineStageFlags2 src_stage, VkAccessFlags2 src, VkPipelineStageFlags2 dst_stage,
+                    VkAccessFlags2 dst) {
+    VkImageMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                               .srcStageMask = src_stage,
+                               .srcAccessMask = src,
+                               .dstStageMask = dst_stage,
+                               .dstAccessMask = dst,
+                               .oldLayout = from,
+                               .newLayout = to,
+                               .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                               .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                               .image = image,
+                               .subresourceRange = {aspect, 0, 1, 0, 1}};
+    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1,
+                          .pImageMemoryBarriers = &b};
+    vkCmdPipelineBarrier2(cb, &d);
+}
+
+/* the target image read back and written as a binary PPM (RGB), the debug screenshot */
+static void screenshot(VkImage image) {
+    size_t size = (size_t)r.extent.width * r.extent.height * 4;
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                             .size = size,
+                             .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+    VkBuffer buffer;
+    if (vkCreateBuffer(r.device, &bi, NULL, &buffer) != VK_SUCCESS) return;
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(r.device, buffer, &req);
+    uint32_t type = snx_vk_memory_type(&r.memory, req.memoryTypeBits,
+                                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+    if (type == UINT32_MAX)
+        type = snx_vk_memory_type(&r.memory, req.memoryTypeBits,
+                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                               .allocationSize = req.size,
+                               .memoryTypeIndex = type};
+    VkDeviceMemory memory;
+    if (type == UINT32_MAX || vkAllocateMemory(r.device, &ai, NULL, &memory) != VK_SUCCESS) {
+        vkDestroyBuffer(r.device, buffer, NULL);
+        return;
+    }
+    vkBindBufferMemory(r.device, buffer, memory, 0);
+    VkCommandBuffer cb = snx_vk_ring_commands(&r.ring);
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                              .imageExtent = {r.extent.width, r.extent.height, 1}};
+    vkCmdCopyImageToBuffer(cb, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    snx_vk_ring_wait(&r.ring, snx_vk_ring_submit(&r.ring, VK_NULL_HANDLE, VK_NULL_HANDLE), UINT64_MAX);
+    void* data;
+    char path[1100];
+    if (strstr(r.shot, "%ld")) {
+        const char* at = strstr(r.shot, "%ld");
+        snprintf(path, sizeof path, "%.*s%ld%s", (int)(at - r.shot), r.shot, r.frames, at + 3);
+    } else {
+        snprintf(path, sizeof path, "%s", r.shot);
+    }
+    FILE* f = fopen(path, "wb");
+    if (f && vkMapMemory(r.device, memory, 0, VK_WHOLE_SIZE, 0, &data) == VK_SUCCESS) {
+        VkMappedMemoryRange range = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = memory,
+                                     .size = VK_WHOLE_SIZE};
+        vkInvalidateMappedMemoryRanges(r.device, 1, &range);
+        fprintf(f, "P6\n%u %u\n255\n", r.extent.width, r.extent.height);
+        const unsigned char* px = data;
+        bool bgra = r.color_format == VK_FORMAT_B8G8R8A8_UNORM;
+        for (size_t i = 0; i < size; i += 4) {
+            unsigned char rgb[3] = {px[i + (bgra ? 2 : 0)], px[i + 1], px[i + (bgra ? 0 : 2)]};
+            fwrite(rgb, 1, 3, f);
+        }
+        vkUnmapMemory(r.device, memory);
+        fprintf(stderr, "scarletnx-android: frame %ld saved as %s\n", r.frames, path);
+    }
+    if (f) fclose(f);
+    vkDestroyBuffer(r.device, buffer, NULL);
+    vkFreeMemory(r.device, memory, NULL);
+}
+
+static VkImageAspectFlags stencil_aspect(void) {
+    return r.stencil_format == VK_FORMAT_S8_UINT ? VK_IMAGE_ASPECT_STENCIL_BIT
+                                                 : VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+}
+
+/* ---- bitmaps' images ---- */
+
+static void texture_free(Texture* t) {
+    if (t->set) vkFreeDescriptorSets(r.device, r.textures_pool, 1, &t->set);
+    free_image(&t->image, &t->memory, &t->view);
+    free_image(&t->msaa, &t->msaa_memory, &t->msaa_view);
+    *t = (Texture){0};
+}
+
+/* the image of bitmap id, width by height, made (anew when its size changed): its index, -1 when it can't be made */
+static int32_t texture_get(int32_t id, uint32_t width, uint32_t height) {
+    int32_t i = texture_find(id);
+    if (i >= 0 && r.textures[i].width == width && r.textures[i].height == height) return i;
+    if (i >= 0) {
+        vkQueueWaitIdle(r.queue);
+        texture_free(&r.textures[i]);
+    } else {
+        for (size_t k = 0; k < r.texture_count && i < 0; ++k)
+            if (!r.textures[k].id) i = (int32_t)k;
+        if (i < 0) {
+            size_t capacity = r.texture_count;
+            Texture* list = realloc(r.textures, (capacity + 1) * sizeof *list);
+            if (!list) return -1;
+            r.textures = list;
+            i = (int32_t)r.texture_count++;
+        }
+    }
+    Texture* t = &r.textures[i];
+    *t = (Texture){0};
+    VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                                      .descriptorPool = r.textures_pool,
+                                      .descriptorSetCount = 1,
+                                      .pSetLayouts = &r.set_layout};
+    if (!make_image((VkExtent2D){width, height}, r.color_format,
+                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                    VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_ASPECT_COLOR_BIT, &t->image, &t->memory, &t->view) ||
+        vkAllocateDescriptorSets(r.device, &ai, &t->set) != VK_SUCCESS) {
+        texture_free(t);
+        return -1;
+    }
+    VkDescriptorImageInfo ii = {r.sampler, t->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                              .dstSet = t->set,
+                              .descriptorCount = 1,
+                              .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              .pImageInfo = &ii};
+    vkUpdateDescriptorSets(r.device, 1, &w, 0, NULL);
+    t->id = id;
+    t->width = width;
+    t->height = height;
+    t->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    return i;
+}
+
+/* the stencil of the bitmaps' passes, at least width by height */
+static bool scratch_room(uint32_t width, uint32_t height) {
+    if (r.scratch && r.scratch_extent.width >= width && r.scratch_extent.height >= height) return true;
+    vkQueueWaitIdle(r.queue);
+    free_image(&r.scratch, &r.scratch_memory, &r.scratch_view);
+    VkExtent2D e = {width > r.scratch_extent.width ? width : r.scratch_extent.width,
+                    height > r.scratch_extent.height ? height : r.scratch_extent.height};
+    r.scratch_extent = e;
+    return make_image(e, r.stencil_format,
+                      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
+                      r.samples, stencil_aspect(), &r.scratch, &r.scratch_memory, &r.scratch_view);
+}
+
+/* a host-visible buffer of the slot's (vertices or staging), with room for size bytes */
+static bool buffer_room(VkBuffer* buffer, VkDeviceMemory* memory, void** map, size_t* have, size_t size,
+                        VkBufferUsageFlags usage) {
+    if (*have >= size) return true;
+    if (*buffer) {
+        vkUnmapMemory(r.device, *memory);
+        vkDestroyBuffer(r.device, *buffer, NULL);
+        vkFreeMemory(r.device, *memory, NULL);
+        *buffer = VK_NULL_HANDLE;
+        *memory = VK_NULL_HANDLE;
+        *have = 0;
+    }
+    size_t capacity = 1 << 16;
+    while (capacity < size) capacity *= 2;
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = capacity, .usage = usage};
+    if (vkCreateBuffer(r.device, &bi, NULL, buffer) != VK_SUCCESS) return false;
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(r.device, *buffer, &req);
+    uint32_t type = snx_vk_memory_type(&r.memory, req.memoryTypeBits,
+                                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                               .allocationSize = req.size,
+                               .memoryTypeIndex = type};
+    if (type == UINT32_MAX || vkAllocateMemory(r.device, &ai, NULL, memory) != VK_SUCCESS) return false;
+    vkBindBufferMemory(r.device, *buffer, *memory, 0);
+    if (vkMapMemory(r.device, *memory, 0, VK_WHOLE_SIZE, 0, map) != VK_SUCCESS) return false;
+    *have = capacity;
+    return true;
+}
+
+/* draws from first, count of them, in the open rendering of extent */
+static void draw_range(VkCommandBuffer cb, size_t first, size_t count, VkExtent2D extent) {
+    float scale[2] = {2.0f / (float)extent.width, 2.0f / (float)extent.height};
+    vkCmdPushConstants(cb, r.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof scale, scale);
+    VkViewport viewport = {0, 0, (float)extent.width, (float)extent.height, 0, 1};
+    vkCmdSetViewport(cb, 0, 1, &viewport);
+    int bound = -1;
+    int32_t texture = -1;
+    for (size_t i = first; i < first + count; ++i) {
+        const Draw* d = &r.draws[i];
+        if (bound != d->pipe) vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, r.pipes[d->pipe]);
+        bound = d->pipe;
+        if (d->texture >= 0 && d->texture != texture) {
+            vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, r.layout, 0, 1, &r.textures[d->texture].set,
+                                    0, NULL);
+            texture = d->texture;
+        }
+        VkRect2D s = d->scissor;
+        if ((uint32_t)s.offset.x >= extent.width || (uint32_t)s.offset.y >= extent.height) continue;
+        if (s.offset.x + s.extent.width > extent.width) s.extent.width = extent.width - (uint32_t)s.offset.x;
+        if (s.offset.y + s.extent.height > extent.height) s.extent.height = extent.height - (uint32_t)s.offset.y;
+        vkCmdSetScissor(cb, 0, 1, &s);
+        vkCmdDraw(cb, d->count, 1, d->first, 0);
+    }
+}
+
+static const VkPipelineStageFlags2 COLOR_STAGE = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+static const VkPipelineStageFlags2 STENCIL_STAGE =
+    VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+static const VkAccessFlags2 COLOR_ACCESS =
+    VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+static const VkAccessFlags2 STENCIL_ACCESS =
+    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+static const VkPipelineStageFlags2 ALL_DRAW = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COPY_BIT;
+
+/* a texture made ready to sample, from what it was last */
+static void texture_readable(VkCommandBuffer cb, Texture* t) {
+    barrier(cb, t->image, VK_IMAGE_ASPECT_COLOR_BIT, t->layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, ALL_DRAW,
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    t->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+}
+
+/* a pass of pixels: copied from the staging buffer at offset */
+static void upload(VkCommandBuffer cb, Texture* t, VkBuffer staging, size_t offset) {
+    barrier(cb, t->image, VK_IMAGE_ASPECT_COLOR_BIT, t->layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, ALL_DRAW,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    t->layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    VkBufferImageCopy copy = {.bufferOffset = offset,
+                              .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                              .imageExtent = {t->width, t->height, 1}};
+    vkCmdCopyBufferToImage(cb, staging, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    texture_readable(cb, t);
+}
+
+/* a pass of a bitmap's drawing: its draws into its multisampled image (seeded with its image first when that holds
+   more), resolved to its image */
+static void draw_bitmap_pass(VkCommandBuffer cb, const Pass* p) {
+    Texture* t = &r.textures[p->texture];
+    VkExtent2D e = {t->width, t->height};
+    bool multisampled = r.samples != VK_SAMPLE_COUNT_1_BIT;
+    if (!scratch_room(t->width, t->height)) return;
+    if (multisampled && !t->msaa &&
+        !make_image(e, r.color_format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, r.samples, VK_IMAGE_ASPECT_COLOR_BIT,
+                    &t->msaa, &t->msaa_memory, &t->msaa_view))
+        return;
+    barrier(cb, r.scratch, stencil_aspect(), VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            STENCIL_STAGE, STENCIL_ACCESS, STENCIL_STAGE, STENCIL_ACCESS);
+    VkRenderingAttachmentInfo stencil = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                         .imageView = r.scratch_view,
+                                         .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                         .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                         .clearValue = {.depthStencil = {1, 0}}};
+    VkRenderingAttachmentInfo color = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                       .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                       .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                       .clearValue = {.color = {{0, 0, 0, 0}}}};
+    VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                          .renderArea = {{0, 0}, e},
+                          .layerCount = 1,
+                          .colorAttachmentCount = 1,
+                          .pColorAttachments = &color,
+                          .pDepthAttachment = r.stencil_format == VK_FORMAT_S8_UINT ? NULL : &stencil,
+                          .pStencilAttachment = &stencil};
+    if (multisampled) {
+        /* the multisampled image: what it held (its layout stays an attachment's), or the image seeded into it */
+        VkImageLayout from = p->seed >= 0 || !p->load ? VK_IMAGE_LAYOUT_UNDEFINED
+                                                       : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barrier(cb, t->msaa, VK_IMAGE_ASPECT_COLOR_BIT, from, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, COLOR_STAGE,
+                COLOR_ACCESS, COLOR_STAGE, COLOR_ACCESS);
+        color.imageView = t->msaa_view;
+        if (p->seed >= 0) {
+            color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            vkCmdBeginRendering(cb, &ri);
+            draw_range(cb, (size_t)p->seed, 1, e);
+            vkCmdEndRendering(cb);
+            barrier(cb, t->msaa, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, COLOR_STAGE, COLOR_ACCESS, COLOR_STAGE, COLOR_ACCESS);
+            barrier(cb, r.scratch, stencil_aspect(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                    VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, STENCIL_STAGE, STENCIL_ACCESS, STENCIL_STAGE,
+                    STENCIL_ACCESS);
+        }
+        color.loadOp = p->seed >= 0 || p->load ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
+        color.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+        color.resolveImageView = t->view;
+        color.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barrier(cb, t->image, VK_IMAGE_ASPECT_COLOR_BIT, t->layout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                ALL_DRAW, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT, COLOR_STAGE,
+                COLOR_ACCESS);
+    } else {
+        color.imageView = t->view;
+        color.loadOp = p->load ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
+        barrier(cb, t->image, VK_IMAGE_ASPECT_COLOR_BIT, p->load ? t->layout : VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, ALL_DRAW,
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT, COLOR_STAGE, COLOR_ACCESS);
+    }
+    t->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    vkCmdBeginRendering(cb, &ri);
+    draw_range(cb, p->first, p->count, e);
+    vkCmdEndRendering(cb);
+    texture_readable(cb, t);
+}
+
+/* the frame's passes and draws recorded and submitted, and presented to the window */
+/* ---- the layer over an app's own Vulkan ---- */
+
+/* Whether the frame's draws leave anything visible in the layer, without reading it back: each draw that colors the
+   target adds its bounds (in its scissor), and a transparent rectangle that replaces the target (a SurfaceView's
+   hole, PIPE_COPY) takes away the bounds inside it. Conservative: what it can't follow counts as visible */
+static bool frame_visible(void) {
+    enum { MAX = 64 };
+    float boxes[MAX][4];
+    unsigned n = 0;
+    for (size_t d = r.frame_first; d < r.draw_count; ++d) {
+        const Draw* dr = &r.draws[d];
+        if (dr->pipe == PIPE_WINDING || dr->pipe == PIPE_EVEN_ODD || dr->pipe == PIPE_SET || !dr->count) continue;
+        const Vertex* v = r.verts + dr->first;
+        float box[4] = {v[0].x, v[0].y, v[0].x, v[0].y};
+        bool clear = dr->pipe == PIPE_COPY || dr->pipe == PIPE_COVER_COPY;
+        for (uint32_t i = 0; i < dr->count; ++i) {
+            box[0] = fminf(box[0], v[i].x), box[1] = fminf(box[1], v[i].y);
+            box[2] = fmaxf(box[2], v[i].x), box[3] = fmaxf(box[3], v[i].y);
+            clear = clear && !(v[i].rgba[0] | v[i].rgba[1] | v[i].rgba[2] | v[i].rgba[3]);
+        }
+        /* a rectangle: each vertex at a corner of the bounds (a fan of 4 corners, 6 vertices) */
+        bool rect = dr->count == 6;
+        for (uint32_t i = 0; i < dr->count && rect; ++i)
+            rect = (v[i].x == box[0] || v[i].x == box[2]) && (v[i].y == box[1] || v[i].y == box[3]);
+        const VkRect2D* sc = &dr->scissor;
+        box[0] = fmaxf(box[0], (float)sc->offset.x), box[1] = fmaxf(box[1], (float)sc->offset.y);
+        box[2] = fminf(box[2], (float)sc->offset.x + (float)sc->extent.width);
+        box[3] = fminf(box[3], (float)sc->offset.y + (float)sc->extent.height);
+        if (box[0] >= box[2] || box[1] >= box[3]) continue;
+        if (clear) {
+            /* a transparent copy under the stencil (PIPE_COVER_COPY) or of another shape takes pixels away, and
+               adds none */
+            if (dr->pipe != PIPE_COPY || !rect) continue;
+            unsigned kept = 0;
+            for (unsigned k = 0; k < n; ++k)
+                if (!(boxes[k][0] >= box[0] && boxes[k][1] >= box[1] && boxes[k][2] <= box[2] &&
+                      boxes[k][3] <= box[3]))
+                    memcpy(boxes[kept++], boxes[k], sizeof boxes[k]);
+            n = kept;
+            continue;
+        }
+        if (n == MAX) return true;
+        memcpy(boxes[n++], box, sizeof box);
+    }
+    return n > 0;
+}
+
+/* The layer image for a frame, which no blend of the app's presents reads: not the shown one, and none that a blend
+   still reads (hle_vulkan_layer_reading). The pending one is dropped first, as this frame replaces it, so that no
+   blend begins to read an image this frame can take. Waits for the app's blends a short time at most: -1 when all
+   are still read */
+static int layer_target(void) {
+    pthread_mutex_lock(&locks.layer);
+    r.layer_pending = 0;
+    int shown = r.layer_shown;
+    pthread_mutex_unlock(&locks.layer);
+    for (unsigned tries = 0; tries < 200; ++tries) {
+        for (int i = 0; i < HLE_LAYER_IMAGES; ++i) {
+            if (i + 1 == shown || hle_vulkan_layer_reading((unsigned)i)) continue;
+            /* this renderer's own last drawing into it done, so that its fence can be reset */
+            if (r.layer_fenced[i]) {
+                vkWaitForFences(r.device, 1, &r.layer_fences[i], VK_TRUE, UINT64_MAX);
+                pthread_mutex_lock(&locks.layer);
+                vkResetFences(r.device, 1, &r.layer_fences[i]);
+                r.layer_fenced[i] = false;
+                pthread_mutex_unlock(&locks.layer);
+            }
+            return i;
+        }
+        SDL_Delay(1);
+    }
+    static bool said;
+    if (!said) fprintf(stderr, "scarletnx-android: the app's presents still read each layer image: a frame left out\n");
+    said = true;
+    return -1;
+}
+
+/* The frame drawn into layer image i given to the app's device: released to the external queue family in layout
+   GENERAL, submitted, then a fence after it. The presents blend the image once that fence is signaled */
+static void layer_publish(VkCommandBuffer cb, int i) {
+    VkImageMemoryBarrier2 release = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                     .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                     .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                                     .dstStageMask = VK_PIPELINE_STAGE_2_NONE,
+                                     .dstAccessMask = 0,
+                                     .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                     .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                     .srcQueueFamilyIndex = r.family,
+                                     .dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL,
+                                     .image = r.layers[i],
+                                     .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                          .imageMemoryBarrierCount = 1,
+                          .pImageMemoryBarriers = &release};
+    vkCmdPipelineBarrier2(cb, &d);
+    snx_vk_ring_submit(&r.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    pthread_mutex_lock(&locks.layer);
+    /* a submission of no batches: its fence is signaled when all the queue's work before it is done */
+    if (vkQueueSubmit(r.queue, 0, NULL, r.layer_fences[i]) == VK_SUCCESS) {
+        r.layer_fenced[i] = true;
+        r.layer_pending = i + 1;
+    }
+    pthread_mutex_unlock(&locks.layer);
+}
+
+/* hle_vulkan.h's layer, on the presenting thread: the pending image shown once its drawing is done, and the shown one */
+static bool render_layer(HleLayer* out) {
+    pthread_mutex_lock(&locks.layer);
+    if (r.layer_pending && vkGetFenceStatus(r.device, r.layer_fences[r.layer_pending - 1]) == VK_SUCCESS) {
+        r.layer_shown = r.layer_pending;
+        r.layer_pending = 0;
+    }
+    int shown = r.layer_shown;
+    if (shown) {
+        unsigned i = (unsigned)shown - 1;
+        *out = (HleLayer){.index = i,
+                          .generation = r.layer_generation[i],
+                          .width = r.layer_extent.width,
+                          .height = r.layer_extent.height,
+                          .format = (int32_t)r.color_format,
+                          .size = r.layer_size[i]};
+        memcpy(out->device_uuid, r.device_uuid, sizeof out->device_uuid);
+        memcpy(out->driver_uuid, r.driver_uuid, sizeof out->driver_uuid);
+    }
+    pthread_mutex_unlock(&locks.layer);
+    return shown != 0;
+}
+
+/* hle_vulkan.h's layer_handle: a new handle of image index's memory, while it is of that generation */
+static intptr_t render_layer_handle(unsigned index, uint64_t generation) {
+    intptr_t handle = -1;
+    pthread_mutex_lock(&locks.layer);
+    if (index < HLE_LAYER_IMAGES && r.layer_memory[index] && r.layer_generation[index] == generation) {
+#if defined(_WIN32)
+        PFN_vkGetMemoryWin32HandleKHR get =
+            (PFN_vkGetMemoryWin32HandleKHR)vkGetDeviceProcAddr(r.device, "vkGetMemoryWin32HandleKHR");
+        VkMemoryGetWin32HandleInfoKHR info = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR,
+                                              .memory = r.layer_memory[index],
+                                              .handleType = HLE_LAYER_MEMORY};
+        HANDLE h = NULL;
+        if (get && get(r.device, &info, &h) == VK_SUCCESS) handle = (intptr_t)h;
+#elif !defined(__APPLE__)
+        PFN_vkGetMemoryFdKHR get = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(r.device, "vkGetMemoryFdKHR");
+        VkMemoryGetFdInfoKHR info = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
+                                     .memory = r.layer_memory[index],
+                                     .handleType = HLE_LAYER_MEMORY};
+        int fd = -1;
+        if (get && get(r.device, &info, &fd) == VK_SUCCESS) handle = fd;
+#endif
+    }
+    pthread_mutex_unlock(&locks.layer);
+    return handle;
+}
+
+static void render_frame(void) {
+    VkExtent2D want = snx_vk_window_extent(&r.host, (VkExtent2D){(uint32_t)r.width, (uint32_t)r.height});
+    if (want.width != r.extent.width || want.height != r.extent.height ||
+        (r.host.surface && !r.yielded && !r.swap.swapchain))
+        if (!make_targets(want)) return;
+    if (!r.extent.width || !r.extent.height) return;
+    if (r.yielded && !r.layers[0]) return; /* no layer: nothing of this renderer shows */
+    VkCommandBuffer cb = snx_vk_ring_commands(&r.ring);
+    unsigned slot = r.ring.slot;
+    size_t bytes = r.vert_count * sizeof *r.verts;
+    if (bytes && !buffer_room(&r.vertices[slot], &r.vertex_memory[slot], &r.vertex_map[slot],
+                              &r.vertex_capacity[slot], bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT))
+        return;
+    if (bytes) memcpy(r.vertex_map[slot], r.verts, bytes);
+    size_t staged = 0;
+    for (size_t i = 0; i < r.pass_count; ++i)
+        if (r.passes[i].pixels) staged += (size_t)r.textures[r.passes[i].texture].width *
+                                          r.textures[r.passes[i].texture].height * 4;
+    if (staged && !buffer_room(&r.staging[slot], &r.staging_memory[slot], &r.staging_map[slot],
+                               &r.staging_capacity[slot], staged, VK_BUFFER_USAGE_TRANSFER_SRC_BIT))
+        return;
+    if (bytes) {
+        VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(cb, 0, 1, &r.vertices[slot], &offset);
+    }
+
+    /* the bitmaps first, in the order the frame needs them */
+    size_t offset = 0;
+    for (size_t i = 0; i < r.pass_count; ++i) {
+        Pass* p = &r.passes[i];
+        Texture* t = &r.textures[p->texture];
+        if (p->pixels) {
+            size_t size = (size_t)t->width * t->height * 4;
+            memcpy((unsigned char*)r.staging_map[slot] + offset, p->pixels, size);
+            upload(cb, t, r.staging[slot], offset);
+            offset += size;
+        } else {
+            draw_bitmap_pass(cb, p);
+        }
+    }
+    /* a bitmap nothing drew into yet is transparent */
+    for (size_t i = 0; i < r.texture_count; ++i) {
+        Texture* t = &r.textures[i];
+        if (!t->id || t->layout != VK_IMAGE_LAYOUT_UNDEFINED) continue;
+        barrier(cb, t->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, 0, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        VkClearColorValue clear = {{0, 0, 0, 0}};
+        VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdClearColorImage(cb, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear, 1, &range);
+        t->layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        texture_readable(cb, t);
+    }
+
+    uint32_t image_index = 0;
+    VkImage target = r.offscreen;
+    VkImageView target_view = r.offscreen_view;
+    VkSemaphore acquired = VK_NULL_HANDLE, rendered = VK_NULL_HANDLE;
+    int layer = -1;
+    if (r.yielded) {
+        /* the layer: nothing to blend when no window shows over the app's surface (the presents are the app's own
+           from now on), else an image no blend reads */
+        bool visible = frame_visible();
+        if (!visible) {
+            pthread_mutex_lock(&locks.layer);
+            r.layer_shown = r.layer_pending = 0;
+            pthread_mutex_unlock(&locks.layer);
+        }
+        layer = visible ? layer_target() : -1;
+        if (layer < 0) {
+            snx_vk_ring_submit(&r.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+            ++r.frames;
+            return;
+        }
+        target = r.layers[layer];
+        target_view = r.layer_views[layer];
+    } else if (r.host.surface) {
+        acquired = r.acquired[slot];
+        VkResult res = vkAcquireNextImageKHR(r.device, r.swap.swapchain, UINT64_MAX, acquired, VK_NULL_HANDLE,
+                                             &image_index);
+        if (res == VK_ERROR_OUT_OF_DATE_KHR || (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)) {
+            /* the bitmaps' work still goes: their images keep it */
+            snx_vk_ring_submit(&r.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+            if (res == VK_ERROR_OUT_OF_DATE_KHR) make_targets(want);
+            return;
+        }
+        target = r.swap.images[image_index];
+        target_view = r.swap_views[image_index];
+        rendered = r.rendered[image_index];
+    }
+    barrier(cb, target, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            COLOR_STAGE, 0, COLOR_STAGE, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    if (r.msaa)
+        barrier(cb, r.msaa, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, COLOR_STAGE, 0, COLOR_STAGE,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    barrier(cb, r.stencil, stencil_aspect(), VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, STENCIL_STAGE, 0, STENCIL_STAGE, STENCIL_ACCESS);
+
+    VkRenderingAttachmentInfo color = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                       .imageView = r.msaa ? r.msaa_view : target_view,
+                                       .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                       .resolveMode = r.msaa ? VK_RESOLVE_MODE_AVERAGE_BIT : VK_RESOLVE_MODE_NONE,
+                                       .resolveImageView = r.msaa ? target_view : VK_NULL_HANDLE,
+                                       .resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                       .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                       .storeOp = r.msaa ? VK_ATTACHMENT_STORE_OP_DONT_CARE
+                                                         : VK_ATTACHMENT_STORE_OP_STORE,
+                                       .clearValue = {.color = {{0, 0, 0, r.yielded ? 0.0f : 1.0f}}}};
+    VkRenderingAttachmentInfo stencil = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                         .imageView = r.stencil_view,
+                                         .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                         .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                         .clearValue = {.depthStencil = {1, 0}}};
+    VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                          .renderArea = {{0, 0}, r.extent},
+                          .layerCount = 1,
+                          .colorAttachmentCount = 1,
+                          .pColorAttachments = &color,
+                          .pDepthAttachment = r.stencil_format == VK_FORMAT_S8_UINT ? NULL : &stencil,
+                          .pStencilAttachment = &stencil};
+    vkCmdBeginRendering(cb, &ri);
+    draw_range(cb, r.frame_first, r.draw_count - r.frame_first, r.extent);
+    vkCmdEndRendering(cb);
+    ++r.frames;
+    if (layer >= 0) {
+        layer_publish(cb, layer);
+        return;
+    }
+    bool shot = false;
+    for (unsigned i = 0; i < r.shot_count; ++i) shot |= r.frames == r.shot_frames[i];
+    if (shot || !r.host.surface) {
+        barrier(cb, target, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, COLOR_STAGE, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    }
+    if (shot) {
+        snx_vk_ring_submit(&r.ring, acquired, VK_NULL_HANDLE);
+        acquired = VK_NULL_HANDLE;
+        screenshot(target);
+        cb = snx_vk_ring_commands(&r.ring);
+    }
+    if (r.host.surface) {
+        barrier(cb, target, VK_IMAGE_ASPECT_COLOR_BIT,
+                shot ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, COLOR_STAGE | VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0);
+        snx_vk_ring_submit(&r.ring, acquired, rendered);
+        VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                               .waitSemaphoreCount = 1,
+                               .pWaitSemaphores = &rendered,
+                               .swapchainCount = 1,
+                               .pSwapchains = &r.swap.swapchain,
+                               .pImageIndices = &image_index};
+        VkResult res = vkQueuePresentKHR(r.queue, &pi);
+        if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR) r.swap.extent = (VkExtent2D){0, 0};
+    } else if (!shot) {
+        snx_vk_ring_submit(&r.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    }
+}
+
+/* a frame, against the window given up meanwhile (render_yield, on the presenting thread) */
+static void render(void) {
+    pthread_mutex_lock(&locks.frame);
+    render_frame();
+    pthread_mutex_unlock(&locks.frame);
+}
+
+/* ---- the natives of snx.android.ui.Window ---- */
+
+static jboolean JNICALL native_open(JNIEnv* env, jclass unused, jint width, jint height, jstring title) {
+    (void)unused;
+    if (r.up) return JNI_TRUE;
+    const char* t = title ? (*env)->GetStringUTFChars(env, title, NULL) : NULL;
+    bool ok = start(width, height, t ? t : "ScarletNX Android");
+    if (t) (*env)->ReleaseStringUTFChars(env, title, t);
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+/* the state a list starts in: no transform, the whole target, opaque */
+static void begin_list(int width, int height) {
+    r.width = width;
+    r.height = height;
+    r.state_count = 1;
+    r.states[0] = (State){{1, 0, 0, 0, 1, 0}, {0, 0, (float)width, (float)height}, 1};
+}
+
+static Pass* add_pass(int32_t texture) {
+    if (!reserve((void**)&r.passes, &r.pass_capacity, r.pass_count + 1, sizeof *r.passes)) {
+        r.failed = true;
+        return NULL;
+    }
+    Pass* p = &r.passes[r.pass_count++];
+    *p = (Pass){texture, NULL, 0, 0, -1, false};
+    return p;
+}
+
+/* pixels (ARGB, not premultiplied, as Bitmap holds them) as the texture's bytes, premultiplied as Skia keeps them */
+static unsigned char* texels(JNIEnv* env, jintArray pixels, uint32_t count) {
+    if ((uint32_t)(*env)->GetArrayLength(env, pixels) < count) return NULL;
+    jint* argb = malloc((size_t)count * sizeof *argb);
+    unsigned char* out = malloc((size_t)count * 4);
+    if (!argb || !out) {
+        free(argb);
+        free(out);
+        return NULL;
+    }
+    (*env)->GetIntArrayRegion(env, pixels, 0, (jsize)count, argb);
+    bool bgra = r.color_format == VK_FORMAT_B8G8R8A8_UNORM;
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t c = (uint32_t)argb[i], a = c >> 24;
+        unsigned char red = (unsigned char)(((c >> 16 & 0xff) * a + 127) / 255);
+        unsigned char green = (unsigned char)(((c >> 8 & 0xff) * a + 127) / 255);
+        unsigned char blue = (unsigned char)(((c & 0xff) * a + 127) / 255);
+        unsigned char* o = out + 4 * (size_t)i;
+        o[0] = bgra ? blue : red;
+        o[1] = green;
+        o[2] = bgra ? red : blue;
+        o[3] = (unsigned char)a;
+    }
+    free(argb);
+    return out;
+}
+
+/* a bitmap's drawing as a pass, with a seed draw when its multisampled image is behind its image */
+static void drawing_pass(JNIEnv* env, int32_t t, jbyteArray ops) {
+    Texture* tex = &r.textures[t];
+    jsize size = (*env)->GetArrayLength(env, ops);
+    unsigned char* bytes = malloc((size_t)size + 1);
+    if (!bytes) {
+        r.failed = true;
+        return;
+    }
+    (*env)->GetByteArrayRegion(env, ops, 0, size, (jbyte*)bytes);
+    size_t pass = r.pass_count;
+    if (!add_pass(t)) {
+        free(bytes);
+        return;
+    }
+    /* what the image holds: an upload or an earlier drawing, which its multisampled image may lack */
+    bool holds = tex->layout != VK_IMAGE_LAYOUT_UNDEFINED || tex->msaa_current;
+    for (size_t i = 0; i < pass; ++i) holds |= r.passes[i].texture == t;
+    r.passes[pass].load = holds;
+    if (holds && !tex->msaa_current && r.samples != VK_SAMPLE_COUNT_1_BIT) {
+        begin_list((int)tex->width, (int)tex->height);
+        static const unsigned char white[4] = {255, 255, 255, 255};
+        float w = (float)tex->width, h = (float)tex->height;
+        size_t first = r.vert_count;
+        vertex_uv((Point){0, 0}, white, 0, 0);
+        vertex_uv((Point){w, 0}, white, 1, 0);
+        vertex_uv((Point){w, h}, white, 1, 1);
+        vertex_uv((Point){0, 0}, white, 0, 0);
+        vertex_uv((Point){w, h}, white, 1, 1);
+        vertex_uv((Point){0, h}, white, 0, 1);
+        size_t draw = r.draw_count;
+        add_textured(PIPE_TEXTURE_COPY, first, t);
+        r.passes[pass].seed = r.draw_count > draw ? (int32_t)draw : -1;
+    }
+    begin_list((int)tex->width, (int)tex->height);
+    r.passes[pass].first = r.draw_count;
+    Reader rd = {bytes, bytes + size, false};
+    interpret(&rd);
+    r.passes[pass].count = r.draw_count - r.passes[pass].first;
+    tex->msaa_current = true;
+    free(bytes);
+}
+
+static void JNICALL native_present(JNIEnv* env, jclass unused, jint width, jint height, jbyteArray list, jint size,
+                                   jintArray info, jobjectArray pixels, jobjectArray drawings, jintArray freed) {
+    (void)unused;
+    if (!r.up || size < 0) return;
+    r.vert_count = r.draw_count = 0;
+    for (size_t i = 0; i < r.pass_count; ++i) free(r.passes[i].pixels);
+    r.pass_count = 0;
+    r.failed = false;
+
+    /* the bitmaps the app let go */
+    jsize gone = freed ? (*env)->GetArrayLength(env, freed) : 0;
+    if (gone) {
+        jint* ids = (*env)->GetIntArrayElements(env, freed, NULL);
+        vkQueueWaitIdle(r.queue);
+        for (jsize i = 0; ids && i < gone; ++i) {
+            int32_t t = texture_find(ids[i]);
+            if (t >= 0) texture_free(&r.textures[t]);
+        }
+        if (ids) (*env)->ReleaseIntArrayElements(env, freed, ids, JNI_ABORT);
+    }
+
+    /* the frame's bitmaps, their uploads and drawings first */
+    jsize bitmaps = (*env)->GetArrayLength(env, info) / 3;
+    jint* b = bitmaps ? (*env)->GetIntArrayElements(env, info, NULL) : NULL;
+    for (jsize i = 0; b && i < bitmaps && !r.failed; ++i) {
+        int32_t t = texture_get(b[3 * i], (uint32_t)b[3 * i + 1], (uint32_t)b[3 * i + 2]);
+        if (t < 0) continue;
+        jintArray px = (*env)->GetObjectArrayElement(env, pixels, i);
+        if (px) {
+            Pass* p = add_pass(t);
+            if (p) p->pixels = texels(env, px, r.textures[t].width * r.textures[t].height);
+            if (p && !p->pixels) --r.pass_count;
+            r.textures[t].msaa_current = false;
+            (*env)->DeleteLocalRef(env, px);
+        }
+        jbyteArray ops = (*env)->GetObjectArrayElement(env, drawings, i);
+        if (ops) {
+            drawing_pass(env, t, ops);
+            (*env)->DeleteLocalRef(env, ops);
+        }
+    }
+    if (b) (*env)->ReleaseIntArrayElements(env, info, b, JNI_ABORT);
+
+    unsigned char* bytes = malloc((size_t)size + 1);
+    if (!bytes) return;
+    (*env)->GetByteArrayRegion(env, list, 0, size, (jbyte*)bytes);
+    begin_list(width, height);
+    r.frame_first = r.draw_count;
+    Reader rd = {bytes, bytes + size, false};
+    interpret(&rd);
+    free(bytes);
+    if (r.failed) fprintf(stderr, "scarletnx-android: a frame ran out of memory\n");
+    else render();
+}
+
+/* the window's events since the last poll, 8 floats each into out (kind, action, x, y, key, modifiers, unicode,
+   unused), the count of them. Kinds: 1 a pointer, 2 a key, 3 a size, 4 the window closed */
+static jint JNICALL native_poll(JNIEnv* env, jclass unused, jfloatArray out) {
+    (void)unused;
+    if (!r.host.window) return 0;
+    jsize room = (*env)->GetArrayLength(env, out) / 8;
+    jfloat events[8 * 64];
+    if (room > 64) room = 64;
+    jint n = 0;
+    SDL_Event e;
+    while (n < room && SDL_PollEvent(&e)) {
+        jfloat* v = events + 8 * n;
+        memset(v, 0, 8 * sizeof *v);
+        switch (e.type) {
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        case SDL_EVENT_MOUSE_BUTTON_UP:
+            if (e.button.button != SDL_BUTTON_LEFT) continue;
+            v[0] = 1, v[1] = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN ? 0 : 1;
+            v[2] = e.button.x, v[3] = e.button.y;
+            break;
+        case SDL_EVENT_MOUSE_MOTION:
+            if (!(e.motion.state & SDL_BUTTON_LMASK)) continue;
+            v[0] = 1, v[1] = 2, v[2] = e.motion.x, v[3] = e.motion.y;
+            break;
+        case SDL_EVENT_KEY_DOWN:
+        case SDL_EVENT_KEY_UP:
+            v[0] = 2, v[1] = e.type == SDL_EVENT_KEY_DOWN ? 0 : 1;
+            v[4] = (jfloat)e.key.key, v[5] = (jfloat)e.key.mod;
+            break;
+        case SDL_EVENT_TEXT_INPUT: {
+            /* each character of the text, as a key without a key code */
+            const unsigned char* s = (const unsigned char*)e.text.text;
+            while (*s && n < room) {
+                uint32_t cp = *s++;
+                if (cp >= 0xc0) {
+                    int extra = cp >= 0xf0 ? 3 : cp >= 0xe0 ? 2 : 1;
+                    cp &= 0x3fu >> extra;
+                    for (int k = 0; k < extra && (*s & 0xc0) == 0x80; ++k) cp = cp << 6 | (*s++ & 0x3fu);
+                }
+                v = events + 8 * n;
+                memset(v, 0, 8 * sizeof *v);
+                v[0] = 2, v[1] = 3, v[6] = (jfloat)cp;
+                ++n;
+            }
+            continue;
+        }
+        case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+            v[0] = 3, v[2] = (jfloat)e.window.data1, v[3] = (jfloat)e.window.data2;
+            break;
+        case SDL_EVENT_QUIT:
+        case SDL_EVENT_WINDOW_CLOSE_REQUESTED: v[0] = 4; break;
+        default: continue;
+        }
+        ++n;
+    }
+    if (n) (*env)->SetFloatArrayRegion(env, out, 0, 8 * n, events);
+    return n;
+}
+
+/* Window.nativeResize: the SDL window at the display's new size (a turn of the display). Its size event follows */
+static void JNICALL native_resize(JNIEnv* env, jclass unused, jint width, jint height) {
+    (void)env, (void)unused;
+    if (r.host.window && width > 0 && height > 0) SDL_SetWindowSize(r.host.window, width, height);
+}
+
+static jboolean JNICALL native_has_window(JNIEnv* env, jclass unused) {
+    (void)env;
+    (void)unused;
+    return r.host.window ? JNI_TRUE : JNI_FALSE;
+}
+
+bool android_render_register(JNIEnv* env) {
+    static const JNINativeMethod methods[] = {
+        {(char*)"nativeOpen", (char*)"(IILjava/lang/String;)Z", (void*)native_open},
+        {(char*)"nativePresent", (char*)"(II[BI[I[[I[[B[I)V", (void*)native_present},
+        {(char*)"nativePoll", (char*)"([F)I", (void*)native_poll},
+        {(char*)"nativeResize", (char*)"(II)V", (void*)native_resize},
+        {(char*)"nativeHasWindow", (char*)"()Z", (void*)native_has_window},
+    };
+    return android_jvm_register(env, "snx/android/ui/Window", methods, (int)(sizeof methods / sizeof *methods));
+}
+
+/* the SDL window for the guest's Vulkan surface (hle_vulkan.c), opened at the native window's size if the app drew
+   nothing yet: NULL without a display */
+static void* render_window(void) {
+    if (option.headless) return NULL;
+    if (!r.up) {
+        int w, h;
+        hle_android_window(&w, &h);
+        start(w > 0 ? w : 600, h > 0 ? h : 1066, "ScarletNX Android");
+    }
+    return r.host.window;
+}
+/* The window given up, on the guest's thread: a window has one swapchain at a time, and the guest's takes it. The
+   frames from then on go into the layer, which the guest's presents blend (make_targets makes it at the next frame) */
+static void render_yield(void) {
+    pthread_mutex_lock(&locks.frame);
+    if (!r.yielded) {
+        r.yielded = true;
+        if (r.up) {
+            vkDeviceWaitIdle(r.device);
+            free_targets();
+            snx_vk_swapchain_free(r.device, &r.swap);
+            r.extent = (VkExtent2D){0, 0};
+        }
+    }
+    pthread_mutex_unlock(&locks.frame);
+}
+const HleWindowHost* android_render_host(void) {
+    static const HleWindowHost host = {render_window, render_yield, render_layer, render_layer_handle};
+    return &host;
+}
+
+void android_render_close(void) {
+    if (!r.device) return;
+    vkDeviceWaitIdle(r.device);
+    free_targets();
+    snx_vk_swapchain_free(r.device, &r.swap);
+    for (size_t i = 0; i < r.texture_count; ++i)
+        if (r.textures[i].id) texture_free(&r.textures[i]);
+    free(r.textures);
+    free_image(&r.scratch, &r.scratch_memory, &r.scratch_view);
+    for (unsigned i = 0; i < SLOTS; ++i) {
+        if (r.staging[i]) vkDestroyBuffer(r.device, r.staging[i], NULL);
+        if (r.staging_memory[i]) vkFreeMemory(r.device, r.staging_memory[i], NULL);
+    }
+    for (size_t i = 0; i < r.pass_count; ++i) free(r.passes[i].pixels);
+    free(r.passes);
+    if (r.sampler) vkDestroySampler(r.device, r.sampler, NULL);
+    if (r.textures_pool) vkDestroyDescriptorPool(r.device, r.textures_pool, NULL);
+    if (r.set_layout) vkDestroyDescriptorSetLayout(r.device, r.set_layout, NULL);
+    for (int i = 0; i < PIPE_COUNT; ++i)
+        if (r.pipes[i]) vkDestroyPipeline(r.device, r.pipes[i], NULL);
+    if (r.layout) vkDestroyPipelineLayout(r.device, r.layout, NULL);
+    for (unsigned i = 0; i < SLOTS; ++i) {
+        if (r.vertices[i]) vkDestroyBuffer(r.device, r.vertices[i], NULL);
+        if (r.vertex_memory[i]) vkFreeMemory(r.device, r.vertex_memory[i], NULL);
+        if (r.acquired[i]) vkDestroySemaphore(r.device, r.acquired[i], NULL);
+    }
+    for (unsigned i = 0; i < SNX_VK_SWAP_IMAGES; ++i)
+        if (r.rendered[i]) vkDestroySemaphore(r.device, r.rendered[i], NULL);
+    for (unsigned i = 0; i < HLE_LAYER_IMAGES; ++i)
+        if (r.layer_fences[i]) vkDestroyFence(r.device, r.layer_fences[i], NULL);
+    snx_vk_ring_free(&r.ring);
+    vkDestroyDevice(r.device, NULL);
+    snx_vk_window_close(&r.host);
+    for (size_t i = 0; i < r.glyph_capacity; ++i) {
+        free(r.glyphs[i].verbs);
+        free(r.glyphs[i].points);
+    }
+    free(r.glyphs);
+    free(r.verts);
+    free(r.draws);
+    free(r.states);
+    poly_free(&r.poly);
+    tri_free(&r.tris);
+    pthread_mutex_lock(&locks.layer); /* the presenting thread sees no layer from now on */
+    memset(&r, 0, sizeof r);
+    pthread_mutex_unlock(&locks.layer);
+}

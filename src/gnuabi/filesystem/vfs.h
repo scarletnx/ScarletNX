@@ -43,6 +43,11 @@ int gnu_vfs_adopt(GnuVfs* vfs, int fd, int host);
 struct GnuVfsTable;
 struct GnuVfsTable* gnu_vfs_save_table(GnuVfs* vfs);
 void gnu_vfs_restore_table(GnuVfs* vfs, struct GnuVfsTable* table);
+/* the descriptor table's lock, held across a host fork (thread.c) */
+void gnu_vfs_lock(GnuVfs* vfs);
+void gnu_vfs_unlock(GnuVfs* vfs);
+/* a fork's child: the lock again, unlocked (the child's thread is not its owner: its id changed) */
+void gnu_vfs_forked(GnuVfs* vfs);
 bool gnu_vfs_syscall(GnuVfs* vfs, GnuMemory* memory, uint64_t number, const uint64_t args[6], int64_t* result);
 int64_t gnu_vfs_pread(GnuVfs* vfs, int fd, void* destination, size_t length, uint64_t offset);
 

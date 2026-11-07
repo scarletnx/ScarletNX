@@ -72,8 +72,11 @@ SNX_RECOMPILER_API int snx_recompiler_set_optimization(struct snx_recompiler* r,
    (Armv8.0 with CRC32 and the Cryptographic Extension); SNX_RECOMPILER_A64_MAX has every feature the decoder knows,
    though an instruction the backend has no code for yet still raises an undefined instruction (docs/LIBRARY.md).
    Modules made afterwards take it. 0, or -1 for an unknown target */
-#define SNX_RECOMPILER_A64_SWITCH 0
-#define SNX_RECOMPILER_A64_MAX    1
+#define SNX_RECOMPILER_A64_SWITCH  0
+#define SNX_RECOMPILER_A64_MAX     1
+/* An Android phone's: Armv8.2 with LSE, RDM, FP16, the dot product and LRCPC, without pointer authentication, whose
+   HINT-space instructions (PACIASP, AUTIASP) are then NOPs (a64.profile's `target android`) */
+#define SNX_RECOMPILER_A64_ANDROID 2
 SNX_RECOMPILER_API int snx_recompiler_set_a64_target(struct snx_recompiler* r, int target);
 /* Code units compiled at once, on host threads; 0, the default, uses one per processor */
 SNX_RECOMPILER_API void snx_recompiler_set_jobs(struct snx_recompiler* r, unsigned jobs);

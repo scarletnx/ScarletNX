@@ -51,12 +51,12 @@ int main(void) {
         assert(!strcmp(again.game[i].path, r.game[i].path) && !strcmp(again.game[i].name, r.game[i].name) &&
                again.game[i].driver == r.game[i].driver && again.game[i].prepared == r.game[i].prepared);
 
-    /* every console's records keep their driver across a restart: its package (a CIA, a VPK, a GBA ROM) as one, and the
-       game its driver made of it, ready to run, as one too */
+    /* every console's records keep their driver across a restart: its package (a CIA, a VPK, a GBA ROM, an APK) as one,
+       and the game its driver made of it, ready to run, as one too */
     GuiRecent before_ctr = r;
     assert(gui_recent_add(&r, games[6], GUI_KEYS, 0));
-    for (int d = 0; d < 6; ++d) {
-        int driver = d % 3 == 0 ? GUI_3DS : d % 3 == 1 ? GUI_VITA : GUI_GBA, made = d >= 3;
+    for (int d = 0; d < 8; ++d) {
+        int driver = d % 4 == 0 ? GUI_3DS : d % 4 == 1 ? GUI_VITA : d % 4 == 2 ? GUI_GBA : GUI_ANDROID, made = d >= 4;
         assert(!gui_recent_add(&r, games[6], driver, made));
         assert(r.game[0].prepared == made && r.game[0].driver == driver);
         assert(!gui_recent_save(&r, file));
