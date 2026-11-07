@@ -363,11 +363,32 @@ static void pointer_event(const SDL_Event* event) {
             break;
     }
 }
+/* a window to fullscreen and back, said when the system refuses */
+static void fullscreen(SDL_Window* window, bool on) {
+    if (!SDL_SetWindowFullscreen(window, on))
+        fprintf(stderr, "3ds gpu: the window cannot go %s: %s\n", on ? "fullscreen" : "back from fullscreen",
+                SDL_GetError());
+}
+void snx_ctr_present_fullscreen(void) {
+    const SnxCtrVk* v = snx_ctr_vk();
+    if (g_present.up && v && v->host.window) fullscreen(v->host.window, true);
+}
+/* The window's own keys, as a Switch game's (backend/sdl3.c): F11, or Alt+Enter, switches the window it is pressed in
+   to fullscreen and back; not with Ctrl or the system key, the desktop's */
+static void key_event(const SDL_Event* event) {
+    if (event->type != SDL_EVENT_KEY_DOWN || event->key.repeat || (event->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)))
+        return;
+    bool alt = event->key.mod & SDL_KMOD_ALT;
+    SDL_Window* window = SDL_GetWindowFromID(event->key.windowID);
+    if (window && ((event->key.key == SDLK_F11 && !alt) || (event->key.key == SDLK_RETURN && alt)))
+        fullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
+}
 static void pump(void) {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) g_present.closed = 1;
         pointer_event(&event);
+        key_event(&event);
         snx_ctr_input_event(&event); /* the gamepads connected and gone */
     }
 }

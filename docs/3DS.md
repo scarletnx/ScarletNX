@@ -526,7 +526,10 @@ rendering of that screen, 1 to 16 times the console's 400x240 and 320x240, and
 the window scales the larger image to its size. The Switch's `vsync` picks how the
 window shows its images, as for a Switch game: `1` each at the display's refresh
 (FIFO), `0` the newest at the next refresh (mailbox) or at once (immediate), and the
-run says at start which it got. Bounded PPM snapshots land in
+run says at start which it got. Its `fullscreen=1` starts the window fullscreen (the
+top screen's, with Separate screens), but for a `--seconds` or `--max-blocks` run,
+and F11 or Alt+Enter switches the window it is pressed in, as on the Switch;
+Alt+Enter does not press Start. Bounded PPM snapshots land in
 `<output>/frames` in every mode. Without a display the window path is
 unavailable and frames are only recorded; without a Vulkan device the presenter
 reports unavailability and no frame is fabricated.

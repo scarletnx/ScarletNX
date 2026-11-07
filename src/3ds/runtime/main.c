@@ -68,7 +68,9 @@ static void usage(FILE* out) {
         "                  controls send (south:B east:A ..., the Switch's names: Plus is Start, Minus Select);\n"
         "                  --touch=N what reaches the touch screen: 2 a finger or the mouse's left button (the\n"
         "                  default), 1 a finger, 0 nothing; --vsync=0 shows the newest image at the display's next\n"
-        "                  refresh, or at once, instead of each in turn at its refresh (the default 1)\n"
+        "                  refresh, or at once, instead of each in turn at its refresh (the default 1);\n"
+        "                  --fullscreen=1 starts the window fullscreen, but for --seconds and --max-blocks runs (F11\n"
+        "                  or Alt+Enter switches it while the game runs)\n"
         "  --ipc-stubs L   With --ctr_auto_stub_ipc=0, still answer a service command the runtime lacks with\n"
         "                  success for the services in L: all, or a comma list of srv, fs, apt, ptm, hid, gsp,\n"
         "                  cfg, dsp, system. Given more than once, the lists add up\n"
@@ -563,6 +565,7 @@ int snx_ctr_main(int argc, char** argv) {
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_gamepad_ini, key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_backend_ini, key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_graphics_ini, key);
+                if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_display_ini, key);
                 map = !strcmp(key, "gamepad_map");
             }
             if (map)
