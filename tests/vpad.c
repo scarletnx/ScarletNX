@@ -141,10 +141,10 @@ int main(void) {
         vpad_ini("controls_dpad_slide", "1");
         vpad_move(8, x, y + half * 0.6f, safe);
         assert(buttons(NULL) == 1u << 15);
-        /* drawn as the up sprite turned half round */
+        /* drawn as the up sprite turned half round, over the D-pad */
         draw(&l);
         assert(drawn(&l, SNX_SPRITE_DPAD_UP) && drawn(&l, SNX_SPRITE_DPAD_UP)->turn == 2 &&
-               !drawn(&l, SNX_SPRITE_DPAD));
+               drawn(&l, SNX_SPRITE_DPAD) && drawn(&l, SNX_SPRITE_DPAD) < drawn(&l, SNX_SPRITE_DPAD_UP));
         assert(vpad_up(8) && !buttons(NULL));
     }
 
@@ -344,7 +344,8 @@ int main(void) {
         l.n = 0;
         vpad_showcase_draw(&l, safe, -1);
         assert(drawn(&l, SNX_SPRITE_A_PRESSED) && !drawn(&l, SNX_SPRITE_A) && drawn(&l, SNX_SPRITE_B));
-        assert((q = drawn(&l, SNX_SPRITE_DPAD_UP)) && q->turn == 0 && !drawn(&l, SNX_SPRITE_DPAD));
+        assert((q = drawn(&l, SNX_SPRITE_DPAD_UP)) && q->turn == 0 && drawn(&l, SNX_SPRITE_DPAD) &&
+               drawn(&l, SNX_SPRITE_DPAD) < q);
         ring = drawn(&l, SNX_SPRITE_STICK_RANGE);
         knob = drawn(&l, SNX_SPRITE_STICK_PRESSED);
         assert(ring && knob && drawn(&l, SNX_SPRITE_STICK)); /* the right stick's knob stays up */
