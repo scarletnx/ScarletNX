@@ -780,3 +780,7 @@ static SvcObj* acc_with(SvcObj* o, int (*dispatch)(SvcObj*, IpcCtx*)) {
 SvcObj* new_acc(void) { return acc_with(nn_account_IAccountServiceForApplication_new(), acc_u0_dispatch); }
 SvcObj* new_acc_system(void) { return acc_with(nn_account_IAccountServiceForSystemService_new(), acc_u1_dispatch); }
 SvcObj* new_acc_admin(void) { return acc_with(nn_account_IAccountServiceForAdministrator_new(), acc_su_dispatch); }
+/* the functions a save state may hold of this file (state_fns.h): the locked dispatchers its objects answer through */
+STATE_FN_TABLE(g_acc_state_fns, STATE_FN("acc", acc_u0_dispatch), STATE_FN("acc", acc_u1_dispatch),
+               STATE_FN("acc", acc_su_dispatch), STATE_FN("acc", acc_profile_dispatch),
+               STATE_FN("acc", acc_editor_dispatch));
