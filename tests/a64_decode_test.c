@@ -15,6 +15,7 @@
 
 #define SW  SNX_A64_TARGET_SWITCH
 #define MAX SNX_A64_TARGET_MAX
+#define ANDROID SNX_A64_TARGET_ANDROID
 
 static struct {
     int failures;
@@ -167,6 +168,14 @@ static void hints(void) {
     NOP(0), NEEDS(SNX_A64_FEAT_PAUTH);
     DEC(0xd503233fu, SW, NOP);
     DEC(0xd503233fu, MAX, PACIASP);
+    /* an Android phone's target has no FEAT_PAuth: PACIASP and AUTIASP (CRm=0011 op2=101), which an app's arm64
+       libraries sign their returns with, are NOPs as on a phone without it, while its atomics decode */
+    DEC(0xd503233fu, ANDROID, NOP);
+    NOP(1);
+    DEC(0xd50323bfu, ANDROID, NOP);
+    NOP(1);
+    DEC(0xd50323bfu, MAX, AUTIASP);
+    DEC(0xf8e00041u, ANDROID, LDADD);
     /* DMB ISH: CRm=1011 (domain=10 types=11) op2=101 (C6.2.95) */
     DEC(0xd5033bbfu, SW, DSB_DMB);
     A(domain, 2), A(types, 3), NOP(0);
