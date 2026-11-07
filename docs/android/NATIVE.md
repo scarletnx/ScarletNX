@@ -335,9 +335,10 @@ compile with `clang --target=x86_64-w64-mingw32 -fsyntax-only` and the mingw-w64
 - JNI: the guest's `JNIEnv` and `JavaVM` are tables of exports over the host JVM's functions, called through one
   adapter (`hle_call`) that passes `x0` to `x5` and `v0` to `v7` as the host's integer and floating registers, which
   AAPCS64 and the System V ABI fill in the same order. The calls with variable arguments read them by the signature
-  that `GetMethodID` recorded. `FindClass` falls back to the app's class loader, as Android's uses the loader of the
-  class that loaded the library. `GetVersion` is Android's JNI 1.6, not the host JDK's. `RegisterNatives` records the
-  guest's functions.
+  that `GetMethodID` recorded. `FindClass` falls back to the app's class loader within the app's native methods and
+  the loads of its libraries, as Android's uses the loader of the class whose native method runs; on a thread with
+  none (one the app attached) it has the system class loader alone, and an app's class is a ClassNotFoundException,
+  as on ART. `GetVersion` is Android's JNI 1.6, not the host JDK's. `RegisterNatives` records the guest's functions.
 - The translator gives each `native` method a body that calls `NativeBridge.invoke*` with its key, the object and its
   parameters (primitives as bits in a `long[]`, references in an `Object[]`). The bridge finds the function by
   `RegisterNatives` or by its JNI name, and passes the parameters as AAPCS64 does.

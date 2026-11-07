@@ -141,6 +141,10 @@ static struct {
 } j = {.lock = PTHREAD_MUTEX_INITIALIZER};
 
 static _Thread_local GuestEnv* t_env;
+/* the app's native methods under way on this thread (NativeBridge's invoke), and the loads of its libraries (their
+   constructors and JNI_OnLoad): FindClass looks in the app's class loader within them, as ART's in the loader of the
+   class whose native method runs. A thread with none, one the app attached, has the system class loader alone */
+static _Thread_local unsigned t_app_calls;
 
 /* ---- the guest's JNIEnv of this thread ---- */
 
@@ -337,14 +341,28 @@ static void jni_variadic(CPU* c, void* data) {
     hle_call(c, ((void**)*env)[a_form], functions[a_form].kind, NULL);
 }
 
-/* FindClass: the host's, which looks in the loader of the native method that runs (the framework's here), then the
-   app's class loader, as Android's looks in the loader of the class that loaded the library */
+/* FindClass: the host's, which looks in the loader of the native method that runs (the framework's here), then within
+   the app's native methods the app's class loader, as Android's looks in the loader of the class that loaded the
+   library. Elsewhere ART's system class loader, which has no class of the app, throws ClassNotFoundException where
+   the host's JVM throws NoClassDefFoundError */
 static void jni_find_class(CPU* c, void* data) {
     (void)data;
     JNIEnv* env = host_env(X(0));
     const char* name = STR(1);
     jclass found = (*env)->FindClass(env, name);
-    if (!found && (*env)->ExceptionCheck(env)) {
+    if (!found && (*env)->ExceptionCheck(env) && !t_app_calls) {
+        (*env)->ExceptionClear(env);
+        char* dotted = snx_format("%s", name);
+        for (char* p = dotted; *p; ++p)
+            if (*p == '/') *p = '.';
+        char* text = snx_format("Didn't find class \"%s\" in the system class loader (no native method of the app "
+                                "runs on this thread)",
+                                dotted);
+        jclass not_found = (*env)->FindClass(env, "java/lang/ClassNotFoundException");
+        if (not_found) (*env)->ThrowNew(env, not_found, text);
+        free(text);
+        free(dotted);
+    } else if (!found && (*env)->ExceptionCheck(env)) {
         jthrowable pending = (*env)->ExceptionOccurred(env);
         (*env)->ExceptionClear(env);
         jclass app = (*env)->FindClass(env, "snx/android/app/App");
@@ -546,7 +564,9 @@ static jstring JNICALL native_load(JNIEnv* env, jclass unused, jstring path, jst
     guest_env(env);
     /* the JVM's handlers are in place by now: the guest's crash report goes before them */
     fault_install();
+    ++t_app_calls;
     GuestLibrary* l = linker_load(p, error, sizeof error);
+    --t_app_calls;
     (*env)->ReleaseStringUTFChars(env, path, p);
     if (!l) {
         char text[1100];
@@ -562,7 +582,9 @@ static jstring JNICALL native_load(JNIEnv* env, jclass unused, jstring path, jst
     }
     if (onload) {
         uint64_t args[2] = {(uint64_t)(uintptr_t)&j.guest_vm, 0};
+        ++t_app_calls;
         jint version = (jint)bridge_call(onload, args, 2);
+        --t_app_calls;
         if ((*env)->ExceptionCheck(env)) return NULL;
         if (version != JNI_VERSION_1_2 && version != JNI_VERSION_1_4 && version != JNI_VERSION_1_6) {
             char text[256];
@@ -625,7 +647,9 @@ static uint64_t invoke(JNIEnv* env, jstring key, jobject self, jlongArray prims,
         c->x[31] = (sp - 8 * ns) & ~(uint64_t)15;
         memcpy((void*)(uintptr_t)c->x[31], stack, 8 * ns);
     }
+    ++t_app_calls;
     bridge_call(fn, NULL, 0);
+    --t_app_calls;
     c->x[31] = sp;
     uint64_t r = c->x[0];
     switch (*result) {
