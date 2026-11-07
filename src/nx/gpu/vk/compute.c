@@ -49,6 +49,8 @@ typedef struct {
     u64 addr;
     u64 off;
     u32 size;
+    VkWriteLog* log; /* the write log whose part gives the bytes its dispatch wrote, with a reference; NULL: compared */
+    u32 part, wseen; /* and the write tracking clock before its input was read */
 } CsOut;
 static CsOut g_out[256];
 static int g_nout;
@@ -374,10 +376,33 @@ static void cs_wait(u64 value) {
     gpu_wait_note(NULL, 0);
     __atomic_add_fetch(&g_vk_cs_wait_ns, plat_ns() - t0, __ATOMIC_RELAXED);
 }
-/* the arena's results that changed, into guest memory, after its batch is done */
+/* the arena's results into guest memory, after its batch is done: of a logged one the bytes its dispatch wrote, each
+   of them and no other, its reference to the log dropped then; of another, the bytes that changed */
+static VkRun* g_runs;
+static u32 g_nruns, g_capruns;
+static void run_add(void* user, u32 from, u32 to) {
+    (void)user;
+    if (g_nruns == g_capruns) {
+        u32 cap = g_capruns ? g_capruns * 2 : 256;
+        VkRun* grown = realloc(g_runs, (size_t)cap * sizeof *grown);
+        if (!grown) fatal("Out of memory landing a compute result");
+        g_runs = grown;
+        g_capruns = cap;
+    }
+    g_runs[g_nruns++] = (VkRun){from, to};
+}
 static void cs_write_back(VmaAllocation mem, const u8* ar, const u8* org, const CsOut* out, int nout) {
     vmaInvalidateAllocation(g_vk.vma, mem, 0, VK_WHOLE_SIZE);
-    for (int i = 0; i < nout; i++) vk_write_changed(out[i].addr, ar + out[i].off, org + out[i].off, out[i].size);
+    for (int i = 0; i < nout; i++) {
+        if (!out[i].log) {
+            vk_write_changed(out[i].addr, ar + out[i].off, org + out[i].off, out[i].size);
+            continue;
+        }
+        g_nruns = 0;
+        vk_wlog_runs(out[i].log, out[i].part, out[i].size, run_add, NULL);
+        vk_write_runs(out[i].addr, ar + out[i].off, g_runs, g_nruns, out[i].wseen);
+        vk_wlog_unref(out[i].log);
+    }
 }
 /* an arena whose batch has landed: draws that read it may still run (gfx), so it waits for their frame like the
    arenas draws read; one they didn't read is free now */
@@ -1441,6 +1466,7 @@ rebind:
         }
         log = g_cs_spare;
     }
+    u32 wseen = vk_ww_now(); /* before the inputs are read */
     u64 so[16];
     VkBuffer bi_buf[16];
     int chained = 0;
@@ -1746,8 +1772,13 @@ rebind:
     /* the outputs, once every input is read (an input can alias another storage buffer's output) */
     for (int i = 0; i < ng && !deferred; i++)
         if (((p->si.gbuf_wmask >> i) & 1) && sa[i]) {
-            memcpy(g_org + so[i], g_ar_ptr + so[i], ss[i]);
-            g_out[g_nout++] = (CsOut){sa[i], so[i], ss[i]};
+            /* a logged result needs no original bytes: its log gives what its dispatch wrote */
+            VkWriteLog* l = log && p->si.gbuf_mark[i] ? log : NULL;
+            if (l)
+                vk_wlog_ref(l);
+            else
+                memcpy(g_org + so[i], g_ar_ptr + so[i], ss[i]);
+            g_out[g_nout++] = (CsOut){sa[i], so[i], ss[i], l, l ? p->si.gbuf_mark[i] - 1u : 0, wseen};
             pend_add(&g_pages, sa[i], ss[i], 1);
         }
     /* buffer images land like storage buffers: only the bytes the dispatch changed are written back */
@@ -1760,6 +1791,7 @@ rebind:
             g_out[g_nout].addr = bimg[i].gva;
             g_out[g_nout].off = bufimg_off[i];
             g_out[g_nout].size = bimg[i].bytes;
+            g_out[g_nout].log = NULL;
             g_nout++;
             pend_add(&g_pages, bimg[i].gva, bimg[i].bytes, 1);
         }
@@ -1884,8 +1916,8 @@ rebind:
         vk_finish();
         vmaInvalidateAllocation(g_vk.vma, g_ar_mem, 0, VK_WHOLE_SIZE);
         g_landing = 1;
-        for (int i = 0; i < g_nout; i++)
-            vk_write_changed(g_out[i].addr, g_ar_ptr + g_out[i].off, g_org + g_out[i].off, g_out[i].size);
+        cs_write_back(g_ar_mem, g_ar_ptr, g_org, g_out, g_nout); /* a logged result has no original bytes in g_org */
+        logs_unref(g_logs, &g_nlogs);
         outs_pages(g_out, g_nout, -1);
         for (i = 0; i < p->si.nimg && i < 8; i++)
             if (bufimg_view[i]) vkDestroyBufferView(g_vk.dev, bufimg_view[i], NULL);
