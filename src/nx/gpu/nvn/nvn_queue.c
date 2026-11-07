@@ -26,9 +26,16 @@
 #include "nx/runtime/platform/log.h"
 #include <string.h>
 
+u64 nvn_now(void) { return plat_ns() + (u64)__atomic_load_n(&g_nvn.queue.clock, __ATOMIC_RELAXED); }
+/* a time on the pacer's clock as plat_ns tells it, for the renderer: 0 (unknown) for 0, or one before the process */
+static u64 host_ns(u64 t) {
+    i64 h = (i64)(t - (u64)__atomic_load_n(&g_nvn.queue.clock, __ATOMIC_RELAXED));
+    return t && h > 0 ? (u64)h : 0;
+}
+
 /* when the queue's work so far is done: its last wait, or now */
 static u64 queue_ready(const NvnQueue* q) {
-    u64 now = plat_ns();
+    u64 now = nvn_now();
     return q->ready > now ? q->ready : now;
 }
 /* a sync that signals once syncpoint syncpt reaches value (0: none), the presents' syncpoint reaches shown (0: none)
@@ -236,7 +243,7 @@ static int shown_wait(const NvnSync* s, u64 start, i64 left, int* waited) {
         return 1;
     }
     if (__atomic_load_n(&g_nvn.queue.stuck, __ATOMIC_RELAXED)) return 1;
-    now = plat_ns();
+    now = nvn_now();
     bound = (s->ready > now ? s->ready : now) + 2 * __atomic_load_n(&g_nvn.queue.period, __ATOMIC_RELAXED);
     until = left >= 0 && start + (u64)left < bound ? start + (u64)left : bound;
     wait = until > now ? (i64)(until - now) : 0;
@@ -255,7 +262,7 @@ static int shown_wait(const NvnSync* s, u64 start, i64 left, int* waited) {
    the timeout, as the game's driver answers it */
 static i32 sync_wait(CPU* c, u64 sync, u64 timeout) {
     const NvnSync* s = NVN_OBJ(const NvnSync, sync);
-    u64 start = plat_ns(), now, ready;
+    u64 start = nvn_now(), now, ready;
     i64 left = timeout > (u64)INT64_MAX ? -1 : (i64)timeout;
     int waited = 0;
     if (!__atomic_load_n(&s->fenced, __ATOMIC_ACQUIRE)) {
@@ -270,12 +277,12 @@ static i32 sync_wait(CPU* c, u64 sync, u64 timeout) {
         waited = 1;
     }
     if (s->shown) {
-        now = plat_ns();
+        now = nvn_now();
         if (left >= 0) left = (u64)left > now - start ? left - (i64)(now - start) : 0;
         start = now;
         if (!shown_wait(s, start, left, &waited)) return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
     }
-    now = plat_ns();
+    now = nvn_now();
     ready = s->ready;
     if (ready > now) {
         u64 used = now - start;
@@ -448,7 +455,7 @@ static u64 present_period(const NvnWindow* o, int* paced) {
    slots a minute ahead of the clock. Only the pacer's slot is waited for: the display's showing of the frame is the
    sync's (on_display), which such a game's queue carries to its fences */
 static void slot_wait(const NvnWindow* o, i32 i) {
-    u64 now = plat_ns();
+    u64 now = nvn_now();
     if (o->shown_at[i] <= now) return;
     nvn_wait_begin();
     plat_sleep_ns((i64)(o->shown_at[i] - now));
@@ -460,7 +467,7 @@ static void acquire(NvnWindow* o, NvnSync* s, u64 index) {
     gw32(index, (u32)i);
     if (i < 4) {
         slot_wait(o, i);
-        u64 now = plat_ns();
+        u64 now = nvn_now();
         o->released[i] = o->available[i] > now ? o->available[i] : now;
         fence_at(s, o->syncpt[i], o->value[i], o->on_display[1], o->available[i]);
     } else
@@ -545,7 +552,7 @@ void nvn_QueuePresentTexture(CPU* c, u64 q, u64 w, i32 index) {
     }
     /* the game's pace for the renderer's holds, with interval 0 or fps_limit none, as vi's present_pace gives it */
     p.period_ns = __atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED) == SNX_FPS_GAME ? period : 0;
-    p.released_ns = index >= 0 && index < 4 ? o->released[index] : 0;
+    p.released_ns = index >= 0 && index < 4 ? host_ns(o->released[index]) : 0;
     value = nvn_replay_present(queue->replay, &p, &shown);
     o->on_display[1] = o->on_display[0];
     o->on_display[0] = paced ? shown : 0;
