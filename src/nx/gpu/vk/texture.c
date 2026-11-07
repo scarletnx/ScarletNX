@@ -1046,8 +1046,9 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
         return t;
     }
     /* room is made for it under the budget: the caller holds only surfaces it used this present, which stay. A sparse
-       one has no memory until tex_bind, which makes room for what it binds */
-    int sparse = holes && bl && !msaa && g_vk.sparse &&
+       one has no memory until tex_bind, which makes room for what it binds. Only where holes read as zeros
+       (g_vk.resident), as they do on the console: elsewhere a texture with holes is made whole */
+    int sparse = holes && bl && !msaa && g_vk.sparse && g_vk.resident &&
                  (type == VK_IMAGE_VIEW_TYPE_3D ? g_vk.feat.sparseResidencyImage3D : g_vk.feat.sparseResidencyImage2D);
     if (sparse && vk_image_create_sparse(&ii, &t->img))
         t->sparse = 1;
