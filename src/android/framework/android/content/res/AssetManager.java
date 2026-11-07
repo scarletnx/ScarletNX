@@ -134,9 +134,12 @@ public final class AssetManager implements AutoCloseable {
         return fdOf(fileName, "apk-files/" + fileName);
     }
 
+    /** A compressed member is refused, as Android refuses it: only a stored one can be read through a descriptor */
     private static AssetFileDescriptor fdOf(String member, String copy) throws IOException {
         byte[] data = Apk.read(member);
         if (data == null) throw new FileNotFoundException(member);
+        if (!Apk.stored(member))
+            throw new FileNotFoundException("This file can not be opened as a file descriptor; it is probably compressed");
         File file = new File(snx.android.Main.dataRoot(), copy);
         if (!file.isFile() || file.length() != data.length) {
             file.getParentFile().mkdirs();
