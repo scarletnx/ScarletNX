@@ -1073,7 +1073,8 @@ static void test_nfp_filter(void) {
             argument32(&r, 8, 0xFFFFFFFFu);
             answers[i] = user->dispatch(user, &r.c);
         }
-        CHECK(answers[0] == answers[1] && answers[0] == (initialized ? NFP_DEVICE_NOT_FOUND : NFP_NFC_DISABLED));
+        CHECK(answers[0] == answers[1] &&
+              answers[0] == (initialized ? SNX_RC_NFP_DEVICE_NOT_FOUND : SNX_RC_NFP_NFC_DISABLED));
     }
     svcobj_unref(user);
     svcobj_unref(manager);
