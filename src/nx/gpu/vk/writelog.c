@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The write logs of compute programs where there is no GPU mirror (mirror.c), a dispatch's own: the bytes each store
-   wrote (shader.h's SNX_VKB_WPAGES), a bit a byte of each global buffer's SH_WLOG_SLOT bytes, which the renderer lands
-   in guest memory, and no others. A log is host memory the GPU writes, kept in a pool, and cleared where it was
-   written when it goes back. All under vk_lock, or the GPU thread's before it shares any */
+   wrote (shader.h's SNX_VKB_WPAGES, SH_WLOG_*), which the renderer lands in guest memory, and no others. A log is host
+   memory the GPU writes, kept in a pool: it is cleared when it goes back, where it was written (the windows its flags
+   give), so that a dispatch costs what its stores wrote, not the 16 MiB an Ounce program's storage buffer is bound as.
+   All under vk_lock, or the GPU thread's before it shares any */
 #include <stdlib.h>
 #include <string.h>
 #include "common/utilities/bits.h"
@@ -16,7 +17,7 @@ struct VkWriteLog {
     VkBuffer buf;
     VmaAllocation mem;
     u32* w;
-    u32 parts, refs; /* parts: its global buffers' masks, SH_WLOG_WORDS words each */
+    u32 parts, refs; /* parts: its global buffers' masks, SH_WLOG_PART words each */
     int seen;  /* invalidated since the GPU wrote it: its words are the GPU's to the host */
     u32 freed; /* the present it went back to the pool at, for vk_wlog_trim */
     struct VkWriteLog* next;
@@ -28,7 +29,7 @@ static struct {
     u64 made, in_use, bytes, windows, cleared;
 } g_wlog;
 
-static u64 log_bytes(u32 parts) { return (u64)parts * SH_WLOG_WORDS * 4; }
+static u64 log_bytes(u32 parts) { return (u64)parts * SH_WLOG_PART * 4; }
 
 VkWriteLog* vk_wlog_get(u32 parts) {
     if (!parts || parts > 16) return NULL;
@@ -109,33 +110,21 @@ void vk_wlog_trim(void) {
 void vk_wlog_put(VkWriteLog* l) {
     if (l) log_free(l); /* no work recorded with it: clear still */
 }
-/* the first nonzero word of w[i, n), n when none: eight at a time, as nearly all are zero */
-static u32 next_word(const u32* w, u32 i, u32 n) {
-    while (i < n && (i & 7)) {
-        if (w[i]) return i;
-        i++;
-    }
-    for (; i + 8 <= n; i += 8) {
-        u64 a, b, c, d;
-        memcpy(&a, w + i, 8);
-        memcpy(&b, w + i + 2, 8);
-        memcpy(&c, w + i + 4, 8);
-        memcpy(&d, w + i + 6, 8);
-        if (a | b | c | d) break;
-    }
-    while (i < n && !w[i]) i++;
-    return i;
-}
-/* the last reference gone, the work that wrote it done: the words written cleared, and back to the pool */
+/* the last reference gone, the work that wrote it done: its windows written cleared, and back to the pool */
 void vk_wlog_unref(VkWriteLog* l) {
     if (!l || --l->refs) return;
     log_see(l);
     int cleared = 0;
-    u32 n = l->parts * SH_WLOG_WORDS;
-    for (u32 i = next_word(l->w, 0, n); i < n; i = next_word(l->w, i + 1, n)) {
-        l->w[i] = 0;
-        cleared = 1;
-        g_wlog.cleared++;
+    for (u32 p = 0; p < l->parts; p++) {
+        u32* flags = l->w + (size_t)p * SH_WLOG_PART;
+        u32* masks = flags + SH_WPAGE_SLOT;
+        for (u32 j = 0; j < SH_WPAGE_SLOT; j++)
+            if (flags[j]) {
+                flags[j] = 0;
+                memset(masks + (size_t)j * SH_WLOG_MASK, 0, SH_WLOG_MASK * 4);
+                cleared = 1;
+                g_wlog.cleared++;
+            }
     }
     if (cleared && !VK_OK(vmaFlushAllocation(g_vk.vma, l->mem, 0, VK_WHOLE_SIZE)))
         fatal("vulkan: a write log stayed unflushed");
@@ -144,27 +133,32 @@ void vk_wlog_unref(VkWriteLog* l) {
 
 u32 vk_wlog_runs(VkWriteLog* l, u32 part, u32 size, VkRunFn fn, void* user) {
     log_see(l);
-    const u32* w = l->w + (size_t)part * SH_WLOG_WORDS;
-    u32 words = (u32)(((u64)size + 31) / 32), seen = 0;
-    if (words > SH_WLOG_WORDS) words = SH_WLOG_WORDS;
+    const u32* flags = l->w + (size_t)part * SH_WLOG_PART;
+    const u32* masks = flags + SH_WPAGE_SLOT;
+    u32 windows = (u32)(((u64)size + 4095) / 4096), seen = 0;
+    if (windows > SH_WPAGE_SLOT) windows = SH_WPAGE_SLOT;
     u64 from = 0, to = 0; /* the run being gathered, empty when equal */
-    for (u32 k = next_word(w, 0, words); k < words; k = next_word(w, k + 1, words)) {
-        u32 bits = w[k];
-        u64 base = (u64)k * 32;
+    for (u32 j = 0; j < windows; j++) {
+        if (!flags[j]) continue;
         seen++;
-        while (bits) {
-            u32 s = snx_ctz32(bits), rest = bits >> s;
-            u32 n = snx_ctz32(~rest); /* 32 when rest is all ones, s being 0 then */
-            if (n > 32 - s) n = 32 - s;
-            u64 a = base + s, b = a + n;
-            if (a == to && to != from)
-                to = b; /* goes on from the last */
-            else {
-                if (to != from && from < size) fn(user, (u32)from, (u32)(to < size ? to : size));
-                from = a;
-                to = b;
+        const u32* m = masks + (size_t)j * SH_WLOG_MASK;
+        for (u32 k = 0; k < SH_WLOG_MASK; k++) {
+            u32 bits = m[k];
+            u64 base = (u64)j * 4096 + (u64)k * 32;
+            while (bits) {
+                u32 s = snx_ctz32(bits), rest = bits >> s;
+                u32 n = snx_ctz32(~rest); /* 32 when rest is all ones, s being 0 then */
+                if (n > 32 - s) n = 32 - s;
+                u64 a = base + s, b = a + n;
+                if (a == to && to != from)
+                    to = b; /* goes on from the last */
+                else {
+                    if (to != from && from < size) fn(user, (u32)from, (u32)(to < size ? to : size));
+                    from = a;
+                    to = b;
+                }
+                bits = n + s >= 32 ? 0 : bits & ~(((1u << n) - 1) << s);
             }
-            bits = n + s >= 32 ? 0 : bits & ~(((1u << n) - 1) << s);
         }
     }
     if (to != from && from < size) fn(user, (u32)from, (u32)(to < size ? to : size));

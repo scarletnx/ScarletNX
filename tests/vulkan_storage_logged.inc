@@ -5,27 +5,25 @@
    compute program's stores: each copies its value into the result and its bits into the write log, as
    sm86_translate.c's mark_written has a store do */
 
-/* part 0 of log: the bytes [from, from + n) of a binding written, as the GPU would log them (a bit a byte) */
+/* part 0 of log: the bytes [from, from + n) of a binding written, as the GPU would log them (shader.h's SH_WLOG_*): the
+   flag of each window they are in, and a bit a byte in that window's mask */
 static int logged_mark(VkWriteLog* log, u32 from, u32 n) {
-    static u32 masks[SH_WLOG_WORDS];
-    memset(masks, 0, sizeof masks);
-    for (u32 b = from; b < from + n; b++) masks[b / 32] |= 1u << (b % 32);
-    /* the words set, a run at a time, copied from staging into the log */
-    for (u32 i = 0; i < SH_WLOG_WORDS;) {
-        if (!masks[i]) {
-            i++;
-            continue;
-        }
-        u32 j = i;
-        while (j < SH_WLOG_WORDS && masks[j]) j++;
+    static u32 masks[SH_WLOG_MASK];
+    for (u32 w = from / 4096; n && w <= (from + n - 1) / 4096; w++) {
+        memset(masks, 0, sizeof masks);
+        for (u32 b = from; b < from + n; b++)
+            if (b / 4096 == w) masks[b % 4096 / 32] |= 1u << (b % 32);
+        /* the flag and the mask, copied from staging into the log: the flag first, the mask 16 bytes on */
         VkBuffer src;
         u64 at;
-        u8* data = vk_stage_upload((u64)(j - i) * 4, 16, &src, &at);
+        u8* data = vk_stage_upload(16 + sizeof masks, 16, &src, &at);
         CHECK(data);
-        memcpy(data, masks + i, (size_t)(j - i) * 4);
-        VkBufferCopy copy = {at, (u64)i * 4, (u64)(j - i) * 4};
-        rec_CmdCopyBuffer(vk_cmd(), src, vk_wlog_buffer(log), 1, &copy);
-        i = j;
+        const u32 one = 1;
+        memcpy(data, &one, 4);
+        memcpy(data + 16, masks, sizeof masks);
+        VkBufferCopy copy[2] = {{at, (u64)w * 4, 4},
+                                {at + 16, ((u64)SH_WPAGE_SLOT + (u64)w * SH_WLOG_MASK) * 4, sizeof masks}};
+        rec_CmdCopyBuffer(vk_cmd(), src, vk_wlog_buffer(log), 2, copy);
     }
     return 0;
 }
@@ -151,7 +149,7 @@ static int check_storage_logged(void) {
         CHECK(log);
         vk_finish();
         u32 bytes = 0;
-        CHECK(vk_wlog_runs(log, 0, SH_WLOG_SLOT, logged_count, &bytes) == 0 && bytes == 0);
+        CHECK(vk_wlog_runs(log, 0, SH_WPAGE_SLOT * 4096u, logged_count, &bytes) == 0 && bytes == 0);
         vk_wlog_put(log);
     }
     CHECK(g_vk_validation_messages == validation);
