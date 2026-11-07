@@ -113,10 +113,10 @@ typedef struct {
 } VkDescriptorHeapResourceEntry;
 typedef struct { uint64_t hash; uint32_t offset, used; } VkDescriptorHeapSamplerEntry;
 #define VK_DESCRIPTOR_HEAP_RESOURCE_KEY_BYTES 28u
-_Static_assert(sizeof(VkDescriptorHeapResourceEntry) == 32 &&
-                   offsetof(VkDescriptorHeapResourceEntry, heap_offset) == VK_DESCRIPTOR_HEAP_RESOURCE_KEY_BYTES,
-               "resource keys have exactly28 bytes before the immutable heap index");
-_Static_assert(sizeof(VkDescriptorHeapSamplerEntry) == 16, "sampler metadata has one hash and two32-bit fields");
+typedef char VkDescriptorHeapResourceEntryLayout[
+    sizeof(VkDescriptorHeapResourceEntry) == 32 &&
+    offsetof(VkDescriptorHeapResourceEntry, heap_offset) == VK_DESCRIPTOR_HEAP_RESOURCE_KEY_BYTES ? 1 : -1];
+typedef char VkDescriptorHeapSamplerEntryLayout[sizeof(VkDescriptorHeapSamplerEntry) == 16 ? 1 : -1];
 /* Nonnegative VkFormat values plus2 cannot reach the three image tags. Unformatted buffers have separate tags;
    formatted buffers currently support storage texel descriptors alone. An object handle of0 marks an empty slot. */
 static inline int vk_descriptor_heap_resource_tag(VkDescriptorType type, VkFormat format, uint32_t* tag) {
