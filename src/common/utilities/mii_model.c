@@ -458,12 +458,16 @@ static Vec tail_ring(const Tail* tl, float t, float a, float r) {
     n2 = vcross(d, n1);
     return vadd(c, vadd(vmul(n1, r * cosf(a)), vmul(n2, r * sinf(a))));
 }
-/* the hair's lower edge's elevation at azimuth th: the fringe at the front, the sides at the ears, the back */
+/* the locks the hair's edge ends in, around the head, each a point */
+#define HAIR_LOCKS 16
+/* the hair's lower edge's elevation at azimuth th: the fringe at the front, the sides at the ears, the back. Across the
+   fringe and the sides it ends in locks, pointed at their tips and rounded between them, one at the front's middle */
 static float hair_edge(const Hair* r, float th) {
     float a = fabsf(th) / PI_F; /* 0 front, 0.5 side, 1 back */
     float e = a < 0.5f ? mixf(r->front, r->side, smooth(0.0f, 0.5f, a)) : mixf(r->side, r->back, smooth(0.5f, 1.0f, a));
+    float u = th * (float)HAIR_LOCKS / (2 * PI_F), lock = 1.0f - 2.0f * fabsf(u - floorf(u + 0.5f));
     if (a < 0.35f) e -= r->part * (th > 0 ? 1.0f : -0.3f) * (1.0f - a / 0.35f); /* a side part: lower on one side */
-    return e;
+    return e - 0.10f * lock * lock * (1.0f - smooth(0.4f, 0.7f, a));
 }
 static const Head* base_head(Head* h) {
     *h = head_of(0);
@@ -659,8 +663,8 @@ static Shape shape_of(u32 kind, u32 variant) {
         case S_FACELINE: ns = 32, nt = 18; break;
         case S_MASK: ns = 22, nt = 16; break;
         case S_HAIR_NORMAL:
-        case S_HAIR_CAP:
-            ns = 32, nt = 10;
+        case S_HAIR_CAP: /* four quads a lock around */
+            ns = 4 * HAIR_LOCKS, nt = 10;
             sh.attrs = 1u << A_POS | 1u << A_NRM | 1u << A_TAN | 1u << A_COL;
             if (variant >= HAIR_VARIANTS) grids = 1 + tail_count(tail_styles[variant - HAIR_VARIANTS].tail);
             break;
@@ -720,19 +724,27 @@ static u32 fewer(u32 n, u32 least) {
     return n <= least ? n : m < least ? least : m;
 }
 /* a part of a shape file of quality q: shape_of's, with an eighth fewer quads each way at a time (down to 3 by 1 a
-   grid) until its bytes are no more than the console's largest of its kind there */
+   grid) until its bytes are no more than the console's largest of its kind there. Hair that does not fit first goes
+   to a column a lock's tip and one its valley around the head, which keeps its locks pointed, and gives up quads
+   from its tails (down to five around) and its head's rows (down to four) before its columns */
 static Shape shape_in(u32 kind, u32 variant, u32 q) {
     Shape sh = shape_of(kind, variant);
-    u32 off[5], size[5], idx_off, idx_size;
+    u32 off[5], size[5], idx_off, idx_size, keep = 0;
+    if ((kind == S_HAIR_NORMAL || kind == S_HAIR_CAP) &&
+        shape_raw_size(&sh, off, size, &idx_off, &idx_size) > shape_budget[q][kind]) {
+        sh.ns[0] = 2 * HAIR_LOCKS;
+        keep = 1;
+    }
     while (shape_raw_size(&sh, off, size, &idx_off, &idx_size) > shape_budget[q][kind]) {
         u32 g, changed = 0;
         for (g = 0; g < sh.grids; g++) {
-            u32 ns = fewer(sh.ns[g], 3), nt = fewer(sh.nt[g], 1);
+            u32 ns = keep && !g ? sh.ns[g] : fewer(sh.ns[g], keep ? 5 : 3), nt = fewer(sh.nt[g], keep && !g ? 4 : 1);
             changed |= ns != sh.ns[g] || nt != sh.nt[g];
             sh.ns[g] = ns;
             sh.nt[g] = nt;
         }
-        if (!changed) break;
+        if (!changed && !keep) break;
+        if (!changed) keep = 0; /* still too big: the head's columns and rows too */
     }
     return sh;
 }
