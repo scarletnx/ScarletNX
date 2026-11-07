@@ -38,11 +38,25 @@ public final class Main {
     }
 
     private static int status;
+    private static volatile boolean ending;
 
-    /** The process's end, as the last activity's finish brings it: the main loop stops, main returns status. */
+    /**
+     * The process's end, as the last activity's finish brings it: the main loop stops after the message it runs, and
+     * main returns status. The main looper itself never quits, as on Android, where its queue refuses to
+     */
     public static void exit(int code) {
         status = code;
-        android.os.Looper.getMainLooper().quitSafely();
+        ending = true;
+        // a call from another thread wakes the loop
+        new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {});
+    }
+
+    /** The main thread's loop: the main looper's messages one at a time, until exit. */
+    public static void loop() {
+        android.os.Looper main = android.os.Looper.myLooper();
+        if (main == null || main != android.os.Looper.getMainLooper())
+            throw new IllegalStateException("snx: Main.loop on " + Thread.currentThread() + ", not the main thread");
+        while (!ending && android.os.Looper.loopOnce(main)) {}
     }
 
     /** The exit status that main left, for the host. */
@@ -98,6 +112,6 @@ public final class Main {
 
         if (launcher == null) throw new IllegalStateException("the manifest has no launcher activity");
         Activities.launchMain(launcher);
-        android.os.Looper.loop();
+        loop();
     }
 }
