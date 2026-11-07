@@ -81,7 +81,7 @@ static void pump(void) {
             gamepad_close(e.gdevice.which);
 }
 /* what each pad's motors were last told: low (the heavy one) | high << 16 */
-static Uint32 motors[16];
+static Uint32 motors[32];
 static int pads;
 static bool SDLCALL rumble(void* pad, Uint16 low, Uint16 high) {
     *(Uint32*)pad = low | (Uint32)high << 16;
@@ -99,6 +99,7 @@ static SDL_Joystick* attach(Uint16 vendor, Uint16 product) {
     int a;
     SDL_INIT_INTERFACE(&d);
     d.Rumble = rumble;
+    CHECK(pads < (int)(sizeof motors / sizeof motors[0])); /* a motor each, for every pad the test attaches */
     d.userdata = &motors[pads++];
     d.type = SDL_JOYSTICK_TYPE_GAMEPAD;
     d.naxes = SDL_GAMEPAD_AXIS_COUNT;
