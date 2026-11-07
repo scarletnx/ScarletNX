@@ -112,7 +112,7 @@ when the runtime can invalidate guest code, so callers do not retain direct poin
 retired functions.
 
 `snx_recompiler_set_a64_target` chooses the A64 features of the guest's CPU, which
-decide what the decoder (`tools/a64dec`, from QEMU's `a64.decode`) accepts: an
+decide what the decoder (`tools/decodetree`, from QEMU's `a64.decode`) accepts: an
 encoding needing a feature the target lacks is an undefined instruction, as on that
 CPU. `SNX_RECOMPILER_A64_SWITCH`, the default, is the Switch's Cortex-A57 (Armv8.0
 with CRC32 and the Cryptographic Extension). `SNX_RECOMPILER_A64_MAX` takes every

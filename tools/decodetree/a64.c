@@ -1,22 +1,16 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* a64dec: generates the A64 instruction decoder from decodetree files (QEMU's a64.decode, and later sve.decode and
-   sme.decode) and ScarletNX's profile of them (src/common/cpu/aarch64/decode/a64.profile).
-
-   The decodetree subset it reads: %fields of bit ranges (pos:len, pos:slen for a signed part) and of other arguments
-   (name:len), each with an optional !function= from a fixed list; &argsets; @formats; patterns, one per line, whose
-   tokens are bit strings of 0 1 . -, inline fields (name:len, name:slen), name=const, name=%field, %field (short for
-   field=%field), &argset and @format; and groups: { } is an overlapping group, tried in order (first match wins), and
-   [ ] inside one is a run of rows that must not overlap each other. Fixed bits a format holds count towards a row's
-   mask. Outside a { } group two rows that can match the same word are an error. Every name of the .decode files is
-   in the decoder: nothing is dropped.
+/* decodetree's A64 output (--a64): the A64 instruction decoder from the .decode files (QEMU's a64.decode, and later
+   sve.decode and sme.decode) and ScarletNX's profile of them (src/common/cpu/aarch64/decode/a64.profile). It was
+   tools/a64dec; its .decode parser is now decodetree.c's, whose patterns load_rows takes in order.
 
    The profile gives each name a line: its flow kind, `nop` when it has no architectural effect at EL0, predicates on
    its arguments (a row whose predicate fails does not match), and the FEAT_* features it needs, some only when a
-   condition on its arguments holds, or EL1 for an encoding that is UNDEF at EL0. A row needing a feature the target lacks does not match either, so the word is
-   UNDEF unless another row (in a group, a later one) matches it. A profile name the .decode files lack, and a name
-   they have that the profile lacks, are errors. The profile also declares the features (their bit numbers, in that
-   order) and the target sets.
+   condition on its arguments holds, or EL1 for an encoding that is UNDEF at EL0. A row needing a feature the target
+   lacks does not match either, so the word is UNDEF unless another row (in a group, a later one) matches it. A
+   profile name the .decode files lack, and a name they have that the profile lacks, are errors. The profile also
+   declares the features (their bit numbers, in that order) and the target sets. Two rows that can match the same
+   word must be in a { } group, and not both in one [ ] group in it. A field's !function= is one of a fixed list.
 
    It writes two files, both derived from the .decode files (LGPL-2.1-or-later):
    - the header: the features and targets, SNX_A64_OPS(X) (the names), SnxA64Op, SnxA64Flow, SnxA64Args (every
@@ -24,19 +18,14 @@
    - the decoder: the rows (mask, value, features, op, body), each row's body (its fields, predicates and conditional
      features) in one switch, a static index of 2048 buckets on bits [31:21] with a second level on a run of lower
      bits for a bucket of more than 16 rows, and snx_a64_decode(word, features, insn). It ends with
-     SNX_A64_DECODE_HASH, the FNV-1a hash of everything before it.
-   Nothing is built at run time. It is strict C99 and depends on nothing, so a cross build can build it for the
-   machine it runs on.
-
-   Usage: a64dec --header OUT.h --decoder OUT.inc [--stats] PROFILE DECODE...
-   Outputs are only rewritten when they change. */
+     SNX_A64_DECODE_HASH, the FNV-1a hash of everything before it. */
+#include "decodetree.h"
 #include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define NAME_LEN     40
 #define MAX_FILES    8
 #define MAX_FIELDS   1024
 #define MAX_SUB      4
@@ -54,6 +43,7 @@
 #define MAX_TARGETS  8
 #define MAX_TOKENS   64
 #define LINE_LEN     2048
+#define A64_NAME     40
 #define BUCKET_BITS  11
 #define BUCKETS      (1 << BUCKET_BITS)
 #define CROWDED      16
@@ -97,13 +87,13 @@ typedef struct {
 } Sub;
 
 typedef struct {
-    char name[NAME_LEN];
+    char name[A64_NAME];
     Sub sub[MAX_SUB];
     int nsub, func, file;
 } Field;
 
 typedef struct {
-    char name[NAME_LEN];
+    char name[A64_NAME];
     int member[MAX_MEMBERS];
     int nmember, file;
 } Argset;
@@ -116,7 +106,7 @@ typedef struct {
 
 /* a format, or a pattern merged with its format */
 typedef struct {
-    char name[NAME_LEN];
+    char name[A64_NAME];
     unsigned fixmask, fixval, fieldmask, ignmask;
     Assign as[MAX_ASSIGN];
     int nas;
@@ -127,7 +117,7 @@ typedef struct {
 typedef struct {
     Pat p;
     int name;
-    int group, sub; /* the { } and [ ] the row is in, 0 for none */
+    int node; /* its node in decodetree.c's tree, for check_overlaps */
     unsigned long long feat;
     int body;
 } Row;
@@ -152,7 +142,7 @@ typedef struct {
 } Need;
 
 typedef struct {
-    char name[NAME_LEN];
+    char name[A64_NAME];
     int flow, nop, profiled, line;
     Pred pred[MAX_PRED];
     int npred;
@@ -161,7 +151,7 @@ typedef struct {
 } Name;
 
 typedef struct {
-    char name[NAME_LEN];
+    char name[A64_NAME];
     unsigned long long feats;
 } Target;
 
@@ -184,9 +174,9 @@ static struct {
     int nrows;
     Name names[MAX_NAMES];
     int nnames;
-    char args[MAX_ARGS][NAME_LEN];
+    char args[MAX_ARGS][A64_NAME];
     int nargs;
-    char feats[MAX_FEATS][NAME_LEN];
+    char feats[MAX_FEATS][A64_NAME];
     int nfeats;
     Target targets[MAX_TARGETS];
     int ntargets;
@@ -209,7 +199,7 @@ static void fail(const char* fmt, ...) {
     if (g.where && g.line)
         fprintf(stderr, "%s:%d: ", g.where, g.line);
     else
-        fprintf(stderr, "a64dec: ");
+        fprintf(stderr, "decodetree: ");
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
     va_end(ap);
@@ -254,7 +244,7 @@ static void flush(const char* path) {
 }
 
 static void copy_name(char* dst, const char* src) {
-    if (strlen(src) >= NAME_LEN) fail("the name %s is too long", src);
+    if (strlen(src) >= A64_NAME) fail("the name %s is too long", src);
     strcpy(dst, src);
 }
 
@@ -284,14 +274,6 @@ static int arg_index(const char* name, int add) {
     return g.nargs++;
 }
 
-static int field_index(const char* name) {
-    int i;
-    for (i = 0; i < g.nfields; i++)
-        if (g.fields[i].file == g.file && !strcmp(g.fields[i].name, name)) return i;
-    fail("no field %%%s", name);
-    return -1;
-}
-
 static int name_index(const char* name, int add) {
     int i;
     for (i = 0; i < g.nnames; i++)
@@ -315,65 +297,7 @@ static int split(char* line, char** tok) {
     }
 }
 
-/* ---- the .decode files ---- */
-
-static void parse_field_def(char** tok, int n) {
-    Field* f;
-    int i;
-    if (g.nfields == MAX_FIELDS) fail("more than %d fields", MAX_FIELDS);
-    f = &g.fields[g.nfields];
-    memset(f, 0, sizeof *f);
-    if (!is_ident(tok[0] + 1)) fail("%s is not a field name", tok[0]);
-    for (i = 0; i < g.nfields; i++)
-        if (g.fields[i].file == g.file && !strcmp(g.fields[i].name, tok[0] + 1)) fail("%s is defined twice", tok[0]);
-    copy_name(f->name, tok[0] + 1);
-    f->file = g.file;
-    for (i = 1; i < n; i++) {
-        char* colon;
-        Sub* s;
-        if (!strncmp(tok[i], "!function=", 10)) {
-            int k;
-            for (k = 1; k < NFUNCS && strcmp(funcs[k].name, tok[i] + 10); k++) {}
-            if (k == NFUNCS) fail("unknown function %s", tok[i] + 10);
-            f->func = k;
-            continue;
-        }
-        if (f->func) fail("the subfields come before !function=");
-        if (f->nsub == MAX_SUB) fail("more than %d subfields", MAX_SUB);
-        s = &f->sub[f->nsub++];
-        colon = strchr(tok[i], ':');
-        if (!colon) fail("%s is not pos:len", tok[i]);
-        *colon++ = 0;
-        if (*colon == 's') {
-            s->sign = 1;
-            colon++;
-        }
-        if (!parse_int(colon, &s->len) || s->len < 1 || s->len > 32) fail("bad length %s", colon);
-        if (isdigit((unsigned char)tok[i][0])) {
-            if (!parse_int(tok[i], &s->pos) || s->pos < 0 || s->pos + s->len > 32) fail("bad position %s", tok[i]);
-        } else {
-            s->ref = arg_index(tok[i], 1) + 1;
-        }
-    }
-    if (!f->nsub) fail("%s has no subfields", tok[0]);
-    g.nfields++;
-}
-
-static void parse_argset(char** tok, int n) {
-    Argset* a;
-    int i;
-    if (g.nargsets == MAX_ARGSETS) fail("more than %d argsets", MAX_ARGSETS);
-    a = &g.argsets[g.nargsets];
-    memset(a, 0, sizeof *a);
-    copy_name(a->name, tok[0] + 1);
-    a->file = g.file;
-    for (i = 1; i < n; i++) {
-        if (!strcmp(tok[i], "!extern")) continue;
-        if (a->nmember == MAX_MEMBERS) fail("more than %d members", MAX_MEMBERS);
-        a->member[a->nmember++] = arg_index(tok[i], 1);
-    }
-    g.nargsets++;
-}
+/* ---- the rows, from decodetree.c's parse ---- */
 
 static void add_assign(Pat* p, int arg, int field, int value) {
     int i;
@@ -386,11 +310,6 @@ static void add_assign(Pat* p, int arg, int field, int value) {
     p->nas++;
 }
 
-static void set_argset(Pat* p, int argset) {
-    if (p->argset && p->argset != argset) fail("two argsets");
-    p->argset = argset;
-}
-
 /* the bits covered by a field's subfields */
 static unsigned field_bits(const Field* f) {
     unsigned m = 0;
@@ -398,101 +317,6 @@ static unsigned field_bits(const Field* f) {
     for (i = 0; i < f->nsub; i++)
         if (!f->sub[i].ref) m |= (f->sub[i].len == 32 ? 0xFFFFFFFFu : ((1u << f->sub[i].len) - 1)) << f->sub[i].pos;
     return m;
-}
-
-static void merge_format(Pat* p, const Pat* fmt) {
-    int i;
-    if ((p->fixmask & fmt->fixmask & (p->fixval ^ fmt->fixval)) != 0) fail("the fixed bits disagree with @%s", fmt->name);
-    p->fixmask |= fmt->fixmask;
-    p->fixval |= fmt->fixval;
-    p->fieldmask |= fmt->fieldmask;
-    p->ignmask |= fmt->ignmask;
-    for (i = 0; i < fmt->nas; i++) add_assign(p, fmt->as[i].arg, fmt->as[i].field, fmt->as[i].value);
-    if (fmt->argset) set_argset(p, fmt->argset);
-}
-
-/* the tokens after a format's or pattern's name; a pattern may name a format */
-static void parse_body(Pat* p, char** tok, int n, int is_format) {
-    int pos = 32, i, has_format = 0;
-    for (i = 0; i < n; i++) {
-        char* t = tok[i];
-        char* eq = strchr(t, '=');
-        char* colon = strchr(t, ':');
-        if (t[0] == '&') {
-            int k;
-            for (k = 0; k < g.nargsets; k++)
-                if (g.argsets[k].file == g.file && !strcmp(g.argsets[k].name, t + 1)) break;
-            if (k == g.nargsets) fail("no argset %s", t);
-            set_argset(p, k + 1);
-        } else if (t[0] == '@') {
-            int k;
-            if (is_format) fail("a format cannot name a format");
-            if (has_format++) fail("two formats");
-            for (k = 0; k < g.nformats; k++)
-                if (g.formats[k].file == g.file && !strcmp(g.formats[k].name, t + 1)) break;
-            if (k == g.nformats) fail("no format %s", t);
-            merge_format(p, &g.formats[k]);
-        } else if (t[0] == '%') {
-            add_assign(p, arg_index(t + 1, 1), field_index(t + 1) + 1, 0);
-        } else if (eq) {
-            int value;
-            *eq++ = 0;
-            if (*eq == '%')
-                add_assign(p, arg_index(t, 1), field_index(eq + 1) + 1, 0);
-            else if (parse_int(eq, &value))
-                add_assign(p, arg_index(t, 1), 0, value);
-            else
-                fail("bad value %s", eq);
-        } else if (colon) {
-            /* an inline field */
-            Field* f;
-            int len, sign = 0;
-            *colon++ = 0;
-            if (*colon == 's') {
-                sign = 1;
-                colon++;
-            }
-            int k;
-            if (!parse_int(colon, &len) || len < 1 || len > pos) fail("bad inline field length %s", colon);
-            pos -= len;
-            /* rows share an inline field of the same name and bits */
-            for (k = 0; k < g.nfields; k++) {
-                f = &g.fields[k];
-                if (f->file == -1 && f->sub[0].pos == pos && f->sub[0].len == len && f->sub[0].sign == sign &&
-                    !strcmp(f->name, t))
-                    break;
-            }
-            if (k == g.nfields) {
-                if (g.nfields == MAX_FIELDS) fail("more than %d fields", MAX_FIELDS);
-                f = &g.fields[g.nfields++];
-                memset(f, 0, sizeof *f);
-                f->file = -1; /* not found by name */
-                f->sub[0].pos = pos;
-                f->sub[0].len = len;
-                f->sub[0].sign = sign;
-                f->nsub = 1;
-                copy_name(f->name, t);
-            }
-            p->fieldmask |= field_bits(f);
-            add_assign(p, arg_index(t, 1), k + 1, 0);
-        } else {
-            const char* c;
-            for (c = t; *c; c++) {
-                unsigned bit;
-                if (!pos) fail("more than 32 bits");
-                bit = 1u << --pos;
-                if (*c == '0' || *c == '1') {
-                    p->fixmask |= bit;
-                    if (*c == '1') p->fixval |= bit;
-                } else if (*c == '-') {
-                    p->ignmask |= bit;
-                } else if (*c != '.') {
-                    fail("unknown token %s", t);
-                }
-            }
-        }
-    }
-    if (pos) fail("%d bits short of 32", pos);
 }
 
 static void finish_row(Row* r) {
@@ -532,93 +356,98 @@ static void finish_row(Row* r) {
     }
 }
 
-static void parse_decode(const char* path) {
-    FILE* f = fopen(path, "rb");
-    char line[LINE_LEN], logical[LINE_LEN];
-    size_t len = 0;
-    int start = 0, phys = 0;
-    if (!f) fail("cannot read %s", path);
-    g.where = path;
-    g.line = 0;
-    logical[0] = 0;
-    while (fgets(line, sizeof line, f)) {
-        char* hash;
-        char* tok[MAX_TOKENS];
-        size_t n;
-        int ntok, cont = 0;
-        g.line = ++phys;
-        n = strlen(line);
-        if (n && line[n - 1] != '\n' && !feof(f)) fail("the line is too long");
-        hash = strchr(line, '#');
-        if (hash) *hash = 0;
-        n = strlen(line);
-        while (n && isspace((unsigned char)line[n - 1])) line[--n] = 0;
-        if (n && line[n - 1] == '\\') {
-            line[--n] = 0;
-            cont = 1;
-        }
-        if (!len) start = phys;
-        if (len + n + 2 > sizeof logical) fail("the line is too long");
-        logical[len++] = ' ';
-        memcpy(logical + len, line, n + 1);
-        len += n;
-        if (cont) continue;
-        g.line = start;
-        ntok = split(logical, tok);
-        len = 0;
-        if (!ntok) {
-        } else if (!strcmp(tok[0], "{")) {
-            if (g.depth_group || ntok != 1) fail("only one level of { } groups");
-            g.depth_group = 1;
-            g.in_group = ++g.ngroups;
-        } else if (!strcmp(tok[0], "}")) {
-            if (!g.depth_group || g.depth_sub || ntok != 1) fail("unbalanced }");
-            g.depth_group = 0;
-            g.in_group = 0;
-        } else if (!strcmp(tok[0], "[")) {
-            if (!g.depth_group || g.depth_sub || ntok != 1) fail("[ ] only inside a { } group");
-            g.depth_sub = 1;
-            g.in_sub = ++g.nsubs;
-        } else if (!strcmp(tok[0], "]")) {
-            if (!g.depth_sub || ntok != 1) fail("unbalanced ]");
-            g.depth_sub = 0;
-            g.in_sub = 0;
-        } else if (tok[0][0] == '%') {
-            parse_field_def(tok, ntok);
-        } else if (tok[0][0] == '&') {
-            parse_argset(tok, ntok);
-        } else if (tok[0][0] == '@') {
-            Pat* p;
-            int k;
-            if (g.nformats == MAX_FORMATS) fail("more than %d formats", MAX_FORMATS);
-            for (k = 0; k < g.nformats; k++)
-                if (g.formats[k].file == g.file && !strcmp(g.formats[k].name, tok[0] + 1)) fail("%s twice", tok[0]);
-            p = &g.formats[g.nformats++];
-            memset(p, 0, sizeof *p);
-            copy_name(p->name, tok[0] + 1);
-            p->file = g.file;
-            p->line = start;
-            parse_body(p, tok + 1, ntok - 1, 1);
-        } else {
-            Row* r;
-            if (!is_ident(tok[0])) fail("unknown line %s", tok[0]);
-            if (g.nrows == MAX_ROWS) fail("more than %d rows", MAX_ROWS);
-            r = &g.rows[g.nrows++];
-            memset(r, 0, sizeof *r);
-            copy_name(r->p.name, tok[0]);
-            r->p.file = g.file;
-            r->p.line = start;
-            r->name = name_index(tok[0], 1);
-            r->group = g.in_group;
-            r->sub = g.in_sub;
-            parse_body(&r->p, tok + 1, ntok - 1, 0);
-            finish_row(r);
-        }
-        logical[0] = 0;
+static int func_index(const char* name) {
+    int k;
+    for (k = 1; k < NFUNCS; k++)
+        if (!strcmp(funcs[k].name, name)) return k;
+    fail("unknown function %s", name);
+    return 0;
+}
+
+static void add_sub(Field* f, int node) {
+    const FNode* n = &fnodes[node];
+    Sub* s;
+    if (f->nsub == MAX_SUB) fail("more than %d subfields", MAX_SUB);
+    s = &f->sub[f->nsub++];
+    if (n->len < 1 || n->len > 32) fail("bad length %d", n->len);
+    s->len = n->len;
+    s->sign = n->sign;
+    if (n->kind == F_FIELD)
+        s->pos = n->pos;
+    else if (n->kind == F_NAMED)
+        s->ref = arg_index(n->name, 1) + 1;
+    else
+        fail("%s: a part of a field is bits or an argument", f->name);
+}
+
+/* a field of decodetree.c's as a64's: its parts, and its !function= from the list */
+static int make_field(const char* name, int node) {
+    Field* f;
+    if (g.nfields == MAX_FIELDS) fail("more than %d fields", MAX_FIELDS);
+    f = &g.fields[g.nfields];
+    memset(f, 0, sizeof *f);
+    copy_name(f->name, name);
+    f->file = -1;
+    if (fnodes[node].kind == F_FUNC) {
+        f->func = func_index(fnodes[node].func);
+        node = fnodes[node].base;
     }
-    if (len) fail("the file ends in a continued line");
-    if (g.depth_group) fail("a { } group is not closed");
-    fclose(f);
+    if (fnodes[node].kind == F_MULTI) {
+        int k;
+        for (k = 0; k < fnodes[node].nsubs; k++) add_sub(f, fnodes[node].subs[k]);
+    } else
+        add_sub(f, node);
+    { /* rows share a field of the same name and parts */
+        int k;
+        for (k = 0; k < g.nfields; k++)
+            if (!strcmp(g.fields[k].name, f->name) && g.fields[k].func == f->func && g.fields[k].nsub == f->nsub &&
+                !memcmp(g.fields[k].sub, f->sub, sizeof(Sub) * (size_t)f->nsub))
+                return k;
+    }
+    return g.nfields++;
+}
+
+/* the patterns, in the files' order, as rows */
+static void load_rows(void) {
+    int i, k;
+    for (i = 0; i < nargs; i++)
+        for (k = 0; k < args[i].nfields; k++) arg_index(args[i].fields[k], 1);
+    for (i = 0; i < nnodes; i++) {
+        const General* p;
+        Row* r;
+        if (nodes[i].kind != N_PAT) continue;
+        p = &pats[nodes[i].pat];
+        g.where = p->file;
+        g.line = p->lineno;
+        if (p->width != 32) fail("%s: an A64 pattern has 32 bits", p->name);
+        if (g.nrows == MAX_ROWS) fail("more than %d rows", MAX_ROWS);
+        r = &g.rows[g.nrows++];
+        memset(r, 0, sizeof *r);
+        copy_name(r->p.name, p->name);
+        for (k = 0; k < g.nfiles && g.files[k] != p->file; k++) continue;
+        r->p.file = k;
+        r->p.line = p->lineno;
+        r->node = i;
+        r->name = name_index(p->name, 1);
+        r->p.fixmask = (unsigned)p->fixedmask;
+        r->p.fixval = (unsigned)p->fixedbits;
+        r->p.fieldmask = (unsigned)p->fieldmask;
+        r->p.ignmask = (unsigned)p->ignmask;
+        for (k = 0; k < p->all.n; k++) {
+            const FNode* n = &fnodes[p->all.node[k]];
+            int arg = arg_index(p->all.name[k], 1);
+            if (n->kind == F_CONST) {
+                if (n->value < -0x7FFFFFFFLL || n->value > 0x7FFFFFFFLL) fail("bad value %lld", n->value);
+                add_assign(&r->p, arg, 0, (int)n->value);
+            } else if (n->kind == F_PARAM)
+                fail("%s: a field of no bits", p->all.name[k]);
+            else
+                add_assign(&r->p, arg, make_field(p->all.name[k], p->all.node[k]) + 1, 0);
+        }
+        finish_row(r);
+    }
+    g.where = NULL;
+    g.line = 0;
 }
 
 /* ---- the profile ---- */
@@ -632,7 +461,7 @@ static int feat_index(const char* name) {
 }
 
 static void parse_cmp(Cmp* c, const char* text) {
-    char lhs[NAME_LEN], rhs[NAME_LEN];
+    char lhs[A64_NAME], rhs[A64_NAME];
     const char* p = text;
     const char* amp;
     size_t n;
@@ -1024,6 +853,15 @@ static int overlap(const Row* a, const Row* b) {
     return ((a->p.fixval ^ b->p.fixval) & a->p.fixmask & b->p.fixmask) == 0;
 }
 
+/* the innermost group two nodes are both in */
+static int common(int a, int b) {
+    int x, y;
+    for (x = a; x >= 0; x = nodes[x].parent)
+        for (y = b; y >= 0; y = nodes[y].parent)
+            if (x == y) return x;
+    return 0;
+}
+
 static void check_overlaps(void) {
     int i, j;
     for (i = 0; i < g.nrows; i++)
@@ -1031,7 +869,7 @@ static void check_overlaps(void) {
             const Row* a = &g.rows[i];
             const Row* b = &g.rows[j];
             if (!overlap(a, b)) continue;
-            if (a->group && a->group == b->group && !(a->sub && a->sub == b->sub)) continue;
+            if (nodes[common(a->node, b->node)].kind == N_INC) continue;
             g.where = g.files[a->p.file];
             g.line = a->p.line;
             fail("%s overlaps %s (%s:%d), outside an overlapping group", a->p.name, b->p.name, g.files[b->p.file],
@@ -1130,7 +968,7 @@ static const char* base_name(const char* path) {
 
 static void notice(const char* what) {
     int i;
-    out("/* Generated by tools/a64dec: %s. Do not edit.\n   Derived from", what);
+    out("/* Generated by tools/decodetree (--a64): %s. Do not edit.\n   Derived from", what);
     for (i = 0; i < g.nfiles; i++) out(" %s", base_name(g.files[i]));
     out(" (QEMU's decodetree files, Copyright (c) 2023 Linaro, Ltd,\n   LGPL-2.1-or-later) and ScarletNX's"
         " profile of them (GPL-3.0-or-later). */\n");
@@ -1151,7 +989,7 @@ static void write_header(const char* path) {
     out("\n/* the targets: a decode takes the features of one */\n");
     for (i = 0; i < g.ntargets; i++) {
         const Target* t = &g.targets[i];
-        char up[NAME_LEN];
+        char up[A64_NAME];
         int k;
         for (k = 0; t->name[k]; k++) up[k] = (char)toupper((unsigned char)t->name[k]);
         up[k] = 0;
@@ -1278,11 +1116,11 @@ static void write_decoder(const char* path) {
 
 static void stats(void) {
     int i, t, largest = 0, largest_at = 0, split = 0;
-    fprintf(stderr, "a64dec: %d names, %d rows, %d bodies, %d list entries\n", g.nnames, g.nrows, g.nbodies, g.nlist);
+    fprintf(stderr, "decodetree: %d names, %d rows, %d bodies, %d list entries\n", g.nnames, g.nrows, g.nbodies, g.nlist);
     for (t = 0; t < g.ntargets; t++) {
         int n = 0;
         for (i = 0; i < g.nrows; i++) n += (g.rows[i].feat & ~g.targets[t].feats) == 0;
-        fprintf(stderr, "a64dec: target %s: %d rows can match\n", g.targets[t].name, n);
+        fprintf(stderr, "decodetree: target %s: %d rows can match\n", g.targets[t].name, n);
     }
     for (i = 0; i < BUCKETS; i++) {
         if (g.buckets[i].count > largest) {
@@ -1291,39 +1129,22 @@ static void stats(void) {
         }
         split += g.buckets[i].bits != 0;
     }
-    fprintf(stderr, "a64dec: largest bucket 0x%03x: %d rows; %d buckets split", largest_at, largest, split);
+    fprintf(stderr, "decodetree: largest bucket 0x%03x: %d rows; %d buckets split", largest_at, largest, split);
     largest = 0;
     for (i = 0; i < g.nsubs_out; i++)
         if (g.subs[i].count > largest) largest = g.subs[i].count;
     fprintf(stderr, ", largest part %d rows\n", largest);
 }
 
-int main(int argc, char** argv) {
-    const char* header = NULL;
-    const char* decoder = NULL;
-    const char* profile = NULL;
+int a64_generate(const char* profile, const char* header, const char* decoder, int stats_, const char* const* files,
+                 int nfiles) {
     int i;
-    for (i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--header") && i + 1 < argc)
-            header = argv[++i];
-        else if (!strcmp(argv[i], "--decoder") && i + 1 < argc)
-            decoder = argv[++i];
-        else if (!strcmp(argv[i], "--stats"))
-            g.stats = 1;
-        else if (argv[i][0] == '-')
-            fail("unknown option %s", argv[i]);
-        else if (!profile)
-            profile = argv[i];
-        else if (g.nfiles == MAX_FILES)
-            fail("more than %d .decode files", MAX_FILES);
-        else
-            g.files[g.nfiles++] = argv[i];
-    }
-    if (!header || !decoder || !profile || !g.nfiles)
-        fail("usage: a64dec --header OUT.h --decoder OUT.inc [--stats] PROFILE DECODE...");
-    for (g.file = 0; g.file < g.nfiles; g.file++) parse_decode(g.files[g.file]);
+    if (nfiles > MAX_FILES) fail("more than %d .decode files", MAX_FILES);
+    for (i = 0; i < nfiles; i++) g.files[i] = files[i];
+    g.nfiles = nfiles;
+    g.stats = stats_;
+    load_rows();
     parse_profile(profile);
-    g.where = NULL;
     for (i = 0; i < g.nrows; i++) {
         g.where = g.files[g.rows[i].p.file];
         g.line = g.rows[i].p.line;

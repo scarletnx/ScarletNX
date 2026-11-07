@@ -14,7 +14,7 @@ exception vectors and interrupts. If a question seems to need them, the answer i
 (`snx-kernel-expert`), not in the instruction semantics.
 
 ## Project specifics
-- `tools/a64dec` generates the A64 decoder from QEMU's `a64.decode` and ScarletNX's `a64.profile`
+- `tools/decodetree` generates the A64 decoder from QEMU's `a64.decode` and ScarletNX's `a64.profile`
   (`src/common/cpu/aarch64/decode/`). It records the flow and the FEAT_* tag of each op. The features of a target
   decide UNDEF (by default, the Switch's Cortex-A57). The emitters `src/common/cpu/recompiler/llvm/ir_int.c`,
   `ir_ldst.c`, `ir_fpu.c` and `ir_vec*.c` come from QEMU's `translate-a64.c`, and they key on its ops and arguments.

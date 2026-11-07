@@ -69,7 +69,7 @@ if(SNX_TEST_SANITIZERS)
         # GLSL ES into SPIR-V
         snx_glslc snx-glslc-cli snx-test-glslc-lex snx-test-glslc-parse snx-test-glslc-emit snx-test-glslc-fuzz
         # the code generators, which tests run on files they refuse
-        snx-swipc snx-svcgen snx-hookgen snx-shaderdec snx-settingsgen snx-uigen snx-a64dec)
+        snx-swipc snx-svcgen snx-hookgen snx-shaderdec snx-settingsgen snx-uigen snx-decodetree)
 endif()
 # one Python for the scripted tests: without it they are left out
 find_package(Python3 QUIET COMPONENTS Interpreter)
@@ -954,12 +954,13 @@ if(NOT WIN32)
 endif()
 add_test(NAME a64_fp_arithmetic_witnesses COMMAND snx-test-a64-fp-arithmetic)
 
-# the A64 decoder tools/a64dec generates from src/common/cpu/aarch64/decode/ (a64.decode and a64.profile)
-include("${PROJECT_SOURCE_DIR}/cmake/a64dec.cmake")
+# the A64 decoder tools/decodetree generates from src/common/cpu/aarch64/decode/ (a64.decode and a64.profile)
+include("${PROJECT_SOURCE_DIR}/cmake/decodetree.cmake")
 add_executable(snx-test-a64-decode a64_decode_test.c)
 snx_test_target(snx-test-a64-decode 99)
-snx_a64dec(snx-test-a64-decode)
+snx_decodetree_a64(snx-test-a64-decode)
 add_test(NAME a64_decode COMMAND snx-test-a64-decode)
+
 
 # The QEMU reference (tests/qemu_ref/): hand-checked cases, the ported cases and the decoder's UNDEF sets under
 # qemu-aarch64 -cpu max and -cpu cortex-a57. Skipped (ctest's skip, code 77) without qemu-aarch64, ld.lld or a Clang
@@ -969,7 +970,7 @@ add_executable(snx-test-qemu-ref qemu_ref/selftest.c qemu_ref/qemu_ref.c)
 snx_test_target(snx-test-qemu-ref 99)
 target_include_directories(snx-test-qemu-ref PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-qemu-ref PRIVATE snx_test_common)
-snx_a64dec(snx-test-qemu-ref)
+snx_decodetree_a64(snx-test-qemu-ref)
 if(SNX_QEMU_REF)
     snx_qemu_ref_runner()
     add_dependencies(snx-test-qemu-ref snx_qemu_ref_runner)
@@ -2086,7 +2087,7 @@ if(NOT WIN32)
     snx_test_target(snx-test-llvm-qemu-differential 11)
     target_include_directories(snx-test-llvm-qemu-differential PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(snx-test-llvm-qemu-differential PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-    snx_a64dec(snx-test-llvm-qemu-differential)
+    snx_decodetree_a64(snx-test-llvm-qemu-differential)
     set(snx_lqd_expected "${CMAKE_CURRENT_SOURCE_DIR}/llvm_qemu_expected.txt")
     if(SNX_QEMU_REF)
         add_dependencies(snx-test-llvm-qemu-differential snx_qemu_ref_runner)
@@ -2127,7 +2128,7 @@ if(NOT WIN32)
     snx_test_target(snx-test-llvm-lowering 99)
     target_include_directories(snx-test-llvm-lowering PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(snx-test-llvm-lowering PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-    snx_a64dec(snx-test-llvm-lowering)
+    snx_decodetree_a64(snx-test-llvm-lowering)
     add_test(NAME llvm_lowering COMMAND snx-test-llvm-lowering "${CMAKE_CURRENT_SOURCE_DIR}/llvm_lowering_expected.txt")
     set_tests_properties(llvm_lowering PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
     # snx_ir_object's check of the symbols an object names (llvm_object_symbols.c)
@@ -2140,12 +2141,12 @@ if(NOT WIN32)
     add_executable(snx-test-llvm-atomic-rmw llvm_atomic_rmw.c)
     snx_test_target(snx-test-llvm-atomic-rmw 99)
     target_link_libraries(snx-test-llvm-atomic-rmw PRIVATE snx_llvm)
-    snx_a64dec(snx-test-llvm-atomic-rmw)
+    snx_decodetree_a64(snx-test-llvm-atomic-rmw)
     add_test(NAME llvm_atomic_rmw COMMAND snx-test-llvm-atomic-rmw)
     set_tests_properties(llvm_atomic_rmw PROPERTIES SKIP_RETURN_CODE 77)
     add_executable(snx-test-llvm-block-fuzz llvm_block_fuzz.c llvm_steps.c llvm_qemu_words.c qemu_ref/qemu_ref.c)
     snx_test_target(snx-test-llvm-block-fuzz 11)
-    snx_a64dec(snx-test-llvm-block-fuzz)
+    snx_decodetree_a64(snx-test-llvm-block-fuzz)
     target_link_libraries(snx-test-llvm-block-fuzz PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
     if(SNX_QEMU_REF)
         add_dependencies(snx-test-llvm-block-fuzz snx_qemu_ref_runner)
@@ -2528,12 +2529,12 @@ else()
                 COMMAND "${CMAKE_C_COMPILER}" --target=aarch64-linux-gnu "--sysroot=${SNX_AARCH64_SYSROOT}"
                         ${nce_host_toolchain} -fuse-ld=lld -static -O2 -std=c11 -pedantic -Wall -Wextra -Werror
                         ${nce_host_form} -ffunction-sections -fdata-sections -Wl,--gc-sections
-                        "-I${PROJECT_SOURCE_DIR}/src" "-I${PROJECT_BINARY_DIR}/src/common/a64dec" ${nce_host_sources}
+                        "-I${PROJECT_SOURCE_DIR}/src" "-I${PROJECT_BINARY_DIR}/src/common/decodetree/a64" ${nce_host_sources}
                         "${PROJECT_SOURCE_DIR}/src/nx/runtime/nce/nce_patch.c" -lpthread -o "${nce_host_out}"
                 DEPENDS ${nce_host_sources} "${PROJECT_SOURCE_DIR}/src/nx/runtime/nce/nce_patch.c"
                         "${PROJECT_SOURCE_DIR}/src/nx/runtime/nce/nce_patch.h"
                         "${PROJECT_SOURCE_DIR}/src/nx/runtime/nce/nce_host.h"
-                        "${PROJECT_BINARY_DIR}/src/common/a64dec/a64_decode.h"
+                        "${PROJECT_BINARY_DIR}/src/common/decodetree/a64/a64_decode.h"
                 COMMENT "Building NCE's machine-layer test for AArch64${form}" VERBATIM)
             add_custom_target(snx-test-nce-host${form}-aarch64 ALL DEPENDS "${nce_host_out}")
             add_test(NAME nce_host${form} COMMAND "${SNX_QEMU_AARCH64}" "${nce_host_out}")

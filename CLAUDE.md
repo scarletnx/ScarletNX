@@ -111,7 +111,7 @@ its only backend, and the build must have LLVM. The third-party libraries are CP
 the runtime.
 
 The runtime finds its game module by its own file name. For this reason, each game has its own copy of the runtime,
-with the name of the game. The deploy step of the build makes these copies. `tools/a64dec` generates the A64 decoder
+with the name of the game. The deploy step of the build makes these copies. `tools/decodetree` generates the A64 decoder
 from `a64.decode` of QEMU and `a64.profile` of ScarletNX (`src/common/cpu/aarch64/decode/`). The LLVM emitters
 (`src/common/cpu/recompiler/llvm/ir_int.c`, `ir_ldst.c`, `ir_fpu.c`, `ir_vec*.c`) come from `translate-a64.c` of
 QEMU.
