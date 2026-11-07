@@ -9465,6 +9465,76 @@ int main(int argc, char** argv) {
                 free(played);
                 free(row);
             }
+            { /* a DLC's package and an update's installed into the game (R on each): each add-on's own .ini names its
+                 package (source=), the game's names no dump, as for one made from a dump the launcher never saw. A
+                 package's recent entry, which Recent Games does not show, goes by the game's row: one entry, the
+                 game's, whichever ran last, in recompiled/ or a Library recompiled folder, and so in a list an older
+                 launcher kept */
+                char *row = snx_absolute(base), *dlc = snx_path_join(temporary, "the dlc.nsp"),
+                     *update = snx_path_join(temporary, "the update.nsp"),
+                     *other = snx_path_join(temporary, "not installed.nsp"),
+                     *list = snx_path_join(temporary, "recent-addon.txt"),
+                     *dlc_ini = snx_game_ini(own, "0100ABCD12340000_0100ABCD12341001"),
+                     *update_ini = snx_game_ini(own, "0100ABCD12340000_0100ABCD12340800v0"), *shown, *text,
+                     *games_was = app.games_dir, *folder_was;
+                int library_was;
+                GuiRecent recent = app.recent, kept = {0};
+                assert(row && !snx_write_file(dlc, "x", 1) && !snx_write_file(update, "x", 1) &&
+                       !snx_write_file(other, "x", 1) && !snx_is_file(dlc_ini) && !snx_is_file(update_ini));
+                assert(!snx_record_source(own, "0100ABCD12340000_0100ABCD12341001", dlc));
+                assert(!snx_record_source(own, "0100ABCD12340000_0100ABCD12340800v0", update));
+                shown = gui_game_shown(row);
+                app.recent = (GuiRecent){0}; /* the game's run the newer: its entry alone */
+                assert(!gui_recent_add(&app.recent, dlc, GUI_SWITCH, false));
+                assert(!gui_recent_add(&app.recent, row, GUI_SWITCH, true));
+                recent_as_games(&app);
+                assert(app.recent.count == 1 && !strcmp(app.recent.game[0].path, row));
+                /* the update's package the newer: its place, run as the game's program, by the game's name; a package
+                   no add-on names stays a dump not made yet */
+                assert(!gui_recent_add(&app.recent, other, GUI_SWITCH, false));
+                assert(!gui_recent_add(&app.recent, update, GUI_SWITCH, false));
+                recent_as_games(&app);
+                assert(app.recent.count == 2 && app.recent.game[0].prepared && !strcmp(app.recent.game[0].path, row) &&
+                       !strcmp(app.recent.game[0].name, shown));
+                assert(!app.recent.game[1].prepared && !strcmp(app.recent.game[1].path, other));
+                /* the game in a Library recompiled folder, not recompiled/ */
+                app.recent = (GuiRecent){0};
+                assert(!gui_recent_add(&app.recent, dlc, GUI_SWITCH, false));
+                folder_was = app.folders[app.folder_count];
+                library_was = app.folders_library[app.folder_count];
+                app.folders[app.folder_count] = games_was;
+                app.folders_library[app.folder_count++] = GUI_LIBRARY_RECOMPILED;
+                app.games_dir = NULL;
+                recent_as_games(&app);
+                app.games_dir = games_was;
+                app.folders[--app.folder_count] = folder_was;
+                app.folders_library[app.folder_count] = library_was;
+                assert(app.recent.count == 1 && app.recent.game[0].prepared && !strcmp(app.recent.game[0].path, row));
+                /* a list an older launcher kept: the game's line, then its DLC's package's, both read, then one */
+                text = snx_format("switch\tgames\t%s\t%s\nswitch\tfile\t%s\tthe dlc\n", row, shown, dlc);
+                assert(!snx_write_file(list, text, strlen(text)));
+                recent_open(&app, snx_strdup(list));
+                assert(app.recent.count == 2);
+                recent_as_games(&app);
+                assert(app.recent.count == 1 && !strcmp(app.recent.game[0].path, row));
+                gui_recent_load(&kept, list); /* and kept so */
+                assert(kept.count == 1 && !strcmp(kept.game[0].path, row));
+                free(app.recent_file); /* the rest runs with no list again */
+                app.recent_file = NULL;
+                app.recent = recent;
+                recent_changed(&app);
+                assert(!remove(list) && !remove(dlc) && !remove(update) && !remove(other) && !remove(dlc_ini) &&
+                       !remove(update_ini));
+                free(text);
+                free(shown);
+                free(update_ini);
+                free(dlc_ini);
+                free(list);
+                free(other);
+                free(update);
+                free(dlc);
+                free(row);
+            }
             { /* a game made again from a copy of its dump elsewhere, the first dump gone: the made list has a game
                  once, by its folder, its source= the copy's; its recent rows, the first dump's and the copy's, are
                  one, its program's (#924) */

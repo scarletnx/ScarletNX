@@ -8540,7 +8540,9 @@ static char* dump_out(const App* app, const char* file, const char* kind) {
     return out;
 }
 /* the games of recompiled/ made from a dump: each one's program, as Games lists it, and the dump its .ini's source=
-   names, else its folder's <name>.source, the link an older version made (snx_game_source) */
+   names, else its folder's <name>.source, the link an older version made (snx_game_source). Or the updates and DLCs
+   installed into those games from a package of their own: each its game's program, and the package its own .ini
+   names */
 typedef struct {
     char* program;
     char* dump;
@@ -8549,43 +8551,55 @@ typedef struct {
     MadeGame* game;
     size_t count;
 } MadeGames;
-/* the games made in dir (recompiled/ or a folder of the Library's recompiled ones), each with the dump it names */
-static void made_read_dir(MadeGames* made, const char* dir) {
-    char** names = NULL;
-    size_t count = 0, i;
-    MadeGame* grown;
-    if (!dir || snx_list_dir(dir, &names, &count) || !count) return;
-    if (!(grown = (MadeGame*)realloc(made->game, (made->count + count) * sizeof *grown))) {
-        snx_free_strings(names, count);
+/* program, owned, made from the dump name's .ini in folder names (snx_game_source), at the end of made; freed when it
+   names none */
+static void made_add(MadeGames* made, const char* folder, const char* name, char* program) {
+    int recorded = 0;
+    char* dump = snx_game_source(folder, name, &recorded);
+    if (!recorded) {
+        free(program);
+        free(dump);
         return;
     }
-    made->game = grown;
+    made->game = (MadeGame*)snx_realloc(made->game, (made->count + 1) * sizeof *made->game);
+    made->game[made->count++] = (MadeGame){program, dump};
+}
+/* the games made in dir (recompiled/ or a folder of the Library's recompiled ones), each with the dump it names; with
+   addons, the updates and DLCs of each instead, by the game's program, each with the package it names. An add-on is
+   its game's <name>_<entry> (gui_game_addons), its title ID the one the driver read from its package's content meta,
+   and its own .ini names that package (source=): a game whose .ini names no dump has them too */
+static void made_read_dir(MadeGames* made, const char* dir, bool addons) {
+    char** names = NULL;
+    size_t count = 0, i, j;
+    if (!dir || snx_list_dir(dir, &names, &count) || !count) return;
     for (i = 0; i < count; ++i) {
-        char *program = gui_folder_game(dir, names[i]), *folder, *dump;
-        int recorded = 0;
+        char *program = gui_folder_game(dir, names[i]), *folder;
+        GuiGames list = {0};
         if (!program) continue;
         folder = snx_path_join(dir, names[i]);
-        dump = snx_game_source(folder, names[i], &recorded);
-        free(folder);
-        if (!recorded) {
+        if (!addons)
+            made_add(made, folder, names[i], program);
+        else {
+            if (gui_game_addons(program, &list))
+                for (j = 0; j < list.count; ++j) made_add(made, folder, list.names[j], snx_strdup(program));
+            gui_games_free(&list);
             free(program);
-            free(dump);
-            continue;
         }
-        made->game[made->count++] = (MadeGame){program, dump};
+        free(folder);
     }
     snx_free_strings(names, count);
 }
 /* the games made in recompiled/ and in the Library's recompiled folders, the places a dump's game is made in
-   (dest_dirs): a game the driver recompiles stays where it is */
-static void made_read(const App* app, MadeGames* made) {
+   (dest_dirs): a game the driver recompiles stays where it is. With addons, their updates and DLCs (made_read_dir) */
+static void made_list(const App* app, MadeGames* made, bool addons) {
     *made = (MadeGames){0};
-    made_read_dir(made, app->games_dir);
+    made_read_dir(made, app->games_dir, addons);
     for (int i = 0; i < app->folder_count; ++i)
         if (app->folders_library[i] == GUI_LIBRARY_RECOMPILED &&
             !(app->games_dir && snx_same_file(app->folders[i], app->games_dir)))
-            made_read_dir(made, app->folders[i]);
+            made_read_dir(made, app->folders[i], addons);
 }
+static void made_read(const App* app, MadeGames* made) { made_list(app, made, false); }
 /* the program of the game made from dump, else NULL */
 #ifdef SDL_PLATFORM_IOS
 /* a file's own name, without its folder */
@@ -8696,20 +8710,26 @@ static char* addon_game(const char* path) {
 }
 /* the recent rows as Games has their games: a dump or a package made into a game of recompiled/ since runs that game's
    program from then on, whichever console's, a run of a game's update's program (Play with the update checked) is the
-   game's own row, which plays it again, and a game of a folder of its own goes by the name Games shows it by, its
-   control.nacp's */
+   game's own row, which plays it again, an update's or a DLC's package installed into a game is that game's row, and a
+   game of a folder of its own goes by the name Games shows it by, its control.nacp's */
 static void recent_as_games(App* app) {
-    MadeGames made;
-    bool changed = false;
+    MadeGames made, addons = {0};
+    bool changed = false, addons_read = false;
     int i;
     made_read(app, &made);
     for (i = app->recent.count - 1; i >= 0; --i) { /* from the oldest: an entry dropped moves none still to look at */
         const GuiRecentGame* r = &app->recent.game[i];
         char* own = r->driver == GUI_SWITCH && r->prepared ? addon_game(r->path) : NULL;
         const char* program = own ? own : r->driver != GUI_LINUX && !r->prepared ? made_program(&made, r->path) : NULL;
+        if (!program && r->driver == GUI_SWITCH && !r->prepared) { /* the games' add-ons read once, when one is asked */
+            if (!addons_read) made_list(app, &addons, true);
+            addons_read = true;
+            program = made_program(&addons, r->path);
+        }
         if (program && gui_recent_made(&app->recent, i, program)) changed = true;
         free(own);
     }
+    made_free(&addons);
     made_free(&made);
     for (i = 0; i < app->recent.count; ++i) /* one file under two spellings (/var and /private/var) is one game */
         for (int j = i + 1; j < app->recent.count;)
