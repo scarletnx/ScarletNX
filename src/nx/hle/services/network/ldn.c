@@ -34,16 +34,6 @@ enum {
     LDN_STATION_CONNECTED = 5,
     LDN_ERROR = 6
 };
-#define LDN_ADVERTISE_DATA_TOO_LARGE RC(203, 10)
-#define LDN_DISABLED                 RC(203, 22)
-#define LDN_AIRPLANE_MODE_ENABLED    RC(203, 23)
-#define LDN_INVALID_NODE_COUNT       RC(203, 30)
-#define LDN_BAD_STATE                RC(203, 32)
-#define LDN_NO_IP_ADDRESS            RC(203, 33)
-#define LDN_INVALID_BUFFER_COUNT     RC(203, 50)
-#define LDN_CONNECT_FAILURE          RC(203, 64)
-#define LDN_CONNECT_TIMEOUT          RC(203, 66)
-#define LDN_BAD_INPUT                RC(203, 96)
 #define LDN_SCAN_MS                  1000 /* Eden and Ryujinx wait a second for the replies */
 #define LDN_CONNECT_MS               4000 /* Ryujinx's FailureTimeout */
 
@@ -187,11 +177,11 @@ static int nn_ldn_detail_IUserLocalCommunicationService_Initialize(SvcObj* self,
     (void)pid;
     if (g_opt_ldn == SNX_OPT_LDN_OFF) {
         WARN_LIMIT(1, "ldn: the game asked for local wireless, which ldn=off disables\n");
-        R_THROW(refuse(d, LDN_DISABLED));
+        R_THROW(refuse(d, SNX_RC_LDN_DEVICE_DISABLED));
     }
     if (g_settings.airplane_mode) {
         WARN_LIMIT(1, "ldn: the game asked for local wireless, which airplane_mode=1 turns off\n");
-        R_THROW(refuse(d, LDN_AIRPLANE_MODE_ENABLED));
+        R_THROW(refuse(d, SNX_RC_LDN_AIRPLANE_MODE_ENABLED));
     }
     pm_lock(&d->lk);
     if (d->state == LDN_NONE) {
@@ -222,7 +212,7 @@ static int nn_ldn_detail_IUserLocalCommunicationService_Initialize(SvcObj* self,
         }
     }
     pm_unlock(&d->lk);
-    R_UNLESS(!r, LDN_NO_IP_ADDRESS);
+    R_UNLESS(!r, SNX_RC_LDN_NO_IP_ADDRESS);
     R_SUCCEED();
 }
 static int nn_ldn_detail_IUserLocalCommunicationService_InitializeWithVersion(SvcObj* self, i32 version, u64 pid) {
@@ -244,7 +234,7 @@ static int nn_ldn_detail_IUserLocalCommunicationService_GetIpv4Address(SvcObj* s
             *subnet_mask |= (u32)d->mask[i] << (8 * (3 - i));
         }
     pm_unlock(&d->lk);
-    R_UNLESS(r, LDN_NO_IP_ADDRESS);
+    R_UNLESS(r, SNX_RC_LDN_NO_IP_ADDRESS);
     R_SUCCEED();
 }
 static int nn_ldn_detail_IUserLocalCommunicationService_GetDisconnectReason(SvcObj* self, i16* reason) {
@@ -267,8 +257,8 @@ static int nn_ldn_detail_IUserLocalCommunicationService_GetNetworkInfo(SvcObj* s
     pm_lock(&d->lk);
     r = current_network(d, &n, NULL);
     pm_unlock(&d->lk);
-    R_UNLESS(r, LDN_BAD_STATE);
-    R_UNLESS(info.addr && info.size >= sizeof n, LDN_BAD_INPUT);
+    R_UNLESS(r, SNX_RC_LDN_INVALID_STATE);
+    R_UNLESS(info.addr && info.size >= sizeof n, SNX_RC_LDN_INVALID_ARGUMENT);
     memcpy(GP(info.addr), &n, sizeof n);
     R_SUCCEED();
 }
@@ -279,13 +269,13 @@ static int nn_ldn_detail_IUserLocalCommunicationService_GetNetworkInfoLatestUpda
     u8 changes[SNX_LDN_NODES], *p;
     u64 count = updates.size / 8, i;
     int r;
-    R_UNLESS(updates.addr && count, LDN_BAD_INPUT);
-    R_UNLESS(count <= SNX_LDN_NODES, LDN_INVALID_BUFFER_COUNT);
-    R_UNLESS(info.addr && info.size >= sizeof n, LDN_BAD_INPUT);
+    R_UNLESS(updates.addr && count, SNX_RC_LDN_INVALID_ARGUMENT);
+    R_UNLESS(count <= SNX_LDN_NODES, SNX_RC_LDN_INVALID_BUFFER_COUNT);
+    R_UNLESS(info.addr && info.size >= sizeof n, SNX_RC_LDN_INVALID_ARGUMENT);
     pm_lock(&d->lk);
     r = current_network(d, &n, changes);
     pm_unlock(&d->lk);
-    R_UNLESS(r, LDN_BAD_STATE);
+    R_UNLESS(r, SNX_RC_LDN_INVALID_STATE);
     memcpy(GP(info.addr), &n, sizeof n);
     p = GP(updates.addr);
     memset(p, 0, count * 8);
@@ -300,7 +290,7 @@ static int nn_ldn_detail_IUserLocalCommunicationService_GetSecurityParameter(Svc
     pm_lock(&d->lk);
     r = current_network(d, &n, NULL);
     pm_unlock(&d->lk);
-    R_UNLESS(r, LDN_BAD_STATE);
+    R_UNLESS(r, SNX_RC_LDN_INVALID_STATE);
     memcpy(parameter->v, n.security_parameter, 16);
     memcpy(parameter->v + 16, n.session_id, 16);
     R_SUCCEED();
@@ -312,7 +302,7 @@ static int nn_ldn_detail_IUserLocalCommunicationService_GetNetworkConfig(SvcObj*
     pm_lock(&d->lk);
     r = current_network(d, &n, NULL);
     pm_unlock(&d->lk);
-    R_UNLESS(r, LDN_BAD_STATE);
+    R_UNLESS(r, SNX_RC_LDN_INVALID_STATE);
     memcpy(config->v + NET_INTENT, &n.local_communication_id, 16); /* the IntentId as the network carries it */
     memcpy(config->v + NET_CHANNEL, &n.channel, 2);
     config->v[NET_NODE_COUNT_MAX] = n.node_count_max;
@@ -328,14 +318,14 @@ static int scan(SvcObj* self, i16 channel, const nn_ldn_ScanFilter* filter, IpcB
     u64 max = networks.size / sizeof(SnxLdnNetworkInfo);
     int n;
     (void)channel;
-    R_UNLESS(networks.addr && max, LDN_BAD_INPUT);
+    R_UNLESS(networks.addr && max, SNX_RC_LDN_INVALID_ARGUMENT);
     if (max > 16) max = 16;
     pm_lock(&d->lk);
     n = d->state == LDN_NONE ? -1 : 0;
     pm_unlock(&d->lk);
-    R_UNLESS(n == 0, LDN_BAD_STATE);
+    R_UNLESS(n == 0, SNX_RC_LDN_INVALID_STATE);
     found = calloc((size_t)max, sizeof *found);
-    R_UNLESS(found, LDN_BAD_INPUT);
+    R_UNLESS(found, SNX_RC_LDN_INVALID_ARGUMENT);
     memcpy(&f, filter->v, sizeof f);
     /* the transport is only closed by Finalize, which the game doesn't send while it scans */
     n = snx_ldn_scan(d->lan, &f, found, (int)max, LDN_SCAN_MS);
@@ -366,7 +356,7 @@ static int nn_ldn_detail_IUserLocalCommunicationService_OpenAccessPoint(SvcObj* 
         set_state(d, LDN_ACCESS_POINT_OPENED);
     }
     pm_unlock(&d->lk);
-    R_UNLESS(ok, LDN_BAD_STATE);
+    R_UNLESS(ok, SNX_RC_LDN_INVALID_STATE);
     R_SUCCEED();
 }
 static int nn_ldn_detail_IUserLocalCommunicationService_CloseAccessPoint(SvcObj* self) {
@@ -379,7 +369,7 @@ static int nn_ldn_detail_IUserLocalCommunicationService_CloseAccessPoint(SvcObj*
         set_state(d, LDN_INITIALIZED);
     }
     pm_unlock(&d->lk);
-    R_UNLESS(ok, LDN_BAD_STATE);
+    R_UNLESS(ok, SNX_RC_LDN_INVALID_STATE);
     R_SUCCEED();
 }
 /* the network a CreateNetwork's config describes, with this console as node 0 */
@@ -419,8 +409,8 @@ static int nn_ldn_detail_IUserLocalCommunicationService_CreateNetwork(SvcObj* se
         if (!r) set_state(d, LDN_ACCESS_POINT_CREATED);
     }
     pm_unlock(&d->lk);
-    R_UNLESS(ok, LDN_BAD_STATE);
-    R_UNLESS(!r, LDN_CONNECT_FAILURE);
+    R_UNLESS(ok, SNX_RC_LDN_INVALID_STATE);
+    R_UNLESS(!r, SNX_RC_LDN_CONNECT_FAILURE);
     R_SUCCEED();
 }
 /* the private form carries the same pieces further in, and a list of addresses the LAN has no use for */
@@ -436,8 +426,8 @@ static int nn_ldn_detail_IUserLocalCommunicationService_CreateNetworkPrivate(
         if (!r) set_state(d, LDN_ACCESS_POINT_CREATED);
     }
     pm_unlock(&d->lk);
-    R_UNLESS(ok, LDN_BAD_STATE);
-    R_UNLESS(!r, LDN_CONNECT_FAILURE);
+    R_UNLESS(ok, SNX_RC_LDN_INVALID_STATE);
+    R_UNLESS(!r, SNX_RC_LDN_CONNECT_FAILURE);
     R_SUCCEED();
 }
 static int nn_ldn_detail_IUserLocalCommunicationService_DestroyNetwork(SvcObj* self) {
@@ -450,18 +440,18 @@ static int nn_ldn_detail_IUserLocalCommunicationService_DestroyNetwork(SvcObj* s
         set_state(d, LDN_ACCESS_POINT_OPENED);
     }
     pm_unlock(&d->lk);
-    R_UNLESS(ok, LDN_BAD_STATE);
+    R_UNLESS(ok, SNX_RC_LDN_INVALID_STATE);
     R_SUCCEED();
 }
 static int nn_ldn_detail_IUserLocalCommunicationService_SetAdvertiseData(SvcObj* self, IpcBuf data) {
     Ldn* d = self->data;
     int r;
-    R_UNLESS(data.size <= SNX_LDN_ADVERTISE_MAX, LDN_ADVERTISE_DATA_TOO_LARGE);
+    R_UNLESS(data.size <= SNX_LDN_ADVERTISE_MAX, SNX_RC_LDN_ADVERTISE_DATA_TOO_LARGE);
     pm_lock(&d->lk);
     r = d->state == LDN_NONE ? -1
                              : snx_ldn_set_advertise_data(d->lan, data.addr ? GP(data.addr) : (const u8*)"", data.size);
     pm_unlock(&d->lk);
-    R_UNLESS(!r, LDN_BAD_STATE);
+    R_UNLESS(!r, SNX_RC_LDN_INVALID_STATE);
     R_SUCCEED();
 }
 
@@ -476,7 +466,7 @@ static int nn_ldn_detail_IUserLocalCommunicationService_OpenStation(SvcObj* self
         set_state(d, LDN_STATION_OPENED);
     }
     pm_unlock(&d->lk);
-    R_UNLESS(ok, LDN_BAD_STATE);
+    R_UNLESS(ok, SNX_RC_LDN_INVALID_STATE);
     R_SUCCEED();
 }
 static int nn_ldn_detail_IUserLocalCommunicationService_CloseStation(SvcObj* self) {
@@ -489,7 +479,7 @@ static int nn_ldn_detail_IUserLocalCommunicationService_CloseStation(SvcObj* sel
         set_state(d, LDN_INITIALIZED);
     }
     pm_unlock(&d->lk);
-    R_UNLESS(ok, LDN_BAD_STATE);
+    R_UNLESS(ok, SNX_RC_LDN_INVALID_STATE);
     R_SUCCEED();
 }
 static int nn_ldn_detail_IUserLocalCommunicationService_Connect(SvcObj* self, const nn_ldn_ConnectNetworkData* data,
@@ -498,14 +488,14 @@ static int nn_ldn_detail_IUserLocalCommunicationService_Connect(SvcObj* self, co
     SnxLdnNetworkInfo n;
     i32 version;
     int ok, r;
-    R_UNLESS(info.addr && info.size >= sizeof n, LDN_BAD_INPUT);
+    R_UNLESS(info.addr && info.size >= sizeof n, SNX_RC_LDN_INVALID_ARGUMENT);
     memcpy(&n, GP(info.addr), sizeof n);
     version = (i32)snx_ld_le32(data->v + CONNECT_VERSION);
     pm_lock(&d->lk);
     ok = d->state == LDN_STATION_OPENED;
     pm_unlock(&d->lk);
-    R_UNLESS(ok, LDN_BAD_STATE);
-    R_UNLESS(n.node_count, LDN_INVALID_NODE_COUNT);
+    R_UNLESS(ok, SNX_RC_LDN_INVALID_STATE);
+    R_UNLESS(n.node_count, SNX_RC_LDN_INVALID_NODE_COUNT);
     /* the host by its address: its user_name can name the player, and players attach the log to public reports */
     LOG("ldn: connecting to the host at %u.%u.%u.%u\n", n.nodes[0].ipv4[3], n.nodes[0].ipv4[2], n.nodes[0].ipv4[1],
         n.nodes[0].ipv4[0]);
@@ -515,8 +505,8 @@ static int nn_ldn_detail_IUserLocalCommunicationService_Connect(SvcObj* self, co
     if (!r && d->state == LDN_STATION_OPENED) set_state(d, LDN_STATION_CONNECTED);
     pm_unlock(&d->lk);
     if (r) WARN("ldn: connect failed: errno %d\n", -r);
-    R_UNLESS(r != -SNX_ETIMEDOUT, LDN_CONNECT_TIMEOUT);
-    R_UNLESS(!r, LDN_CONNECT_FAILURE);
+    R_UNLESS(r != -SNX_ETIMEDOUT, SNX_RC_LDN_CONNECTION_TIMEOUT);
+    R_UNLESS(!r, SNX_RC_LDN_CONNECT_FAILURE);
     R_SUCCEED();
 }
 static int nn_ldn_detail_IUserLocalCommunicationService_Disconnect(SvcObj* self) {
@@ -530,7 +520,7 @@ static int nn_ldn_detail_IUserLocalCommunicationService_Disconnect(SvcObj* self)
         set_state(d, LDN_STATION_OPENED);
     }
     pm_unlock(&d->lk);
-    R_UNLESS(ok, LDN_BAD_STATE);
+    R_UNLESS(ok, SNX_RC_LDN_INVALID_STATE);
     R_SUCCEED();
 }
 
