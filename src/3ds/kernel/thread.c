@@ -12,6 +12,7 @@
 #include "3ds/services/hid.h"
 #include "3ds/services/irrst.h"
 #include "3ds/services/cam.h"
+#include "3ds/services/csnd.h"
 #include "3ds/services/uds.h"
 #include "common/utilities/common.h"
 #include <string.h>
@@ -404,6 +405,7 @@ SnxCtrSchedule snx_ctr_schedule(SnxCtrProcess* p) {
         if (now >= snx_ctr_hid_deadline(p)) snx_ctr_hid_update(p, now);
         if (now >= snx_ctr_irrst_deadline(p)) snx_ctr_irrst_update(p, now);
         if (now >= snx_ctr_cam_deadline(p)) snx_ctr_cam_update(p, now);
+        if (now >= snx_ctr_csnd_deadline(p)) snx_ctr_csnd_update(p, now);
         if (now >= p->time_update_ns) snx_ctr_shared_page_time(p);
         for (uint32_t i = 1; i < CTR_OBJECTS; ++i) {
             CtrObject* o = &p->objects[i];
@@ -475,6 +477,7 @@ SnxCtrSchedule snx_ctr_schedule(SnxCtrProcess* p) {
         if (snx_ctr_hid_deadline(p) < deadline) deadline = snx_ctr_hid_deadline(p);
         if (snx_ctr_irrst_deadline(p) < deadline) deadline = snx_ctr_irrst_deadline(p);
         if (snx_ctr_cam_deadline(p) < deadline) deadline = snx_ctr_cam_deadline(p);
+        if (snx_ctr_csnd_deadline(p) < deadline) deadline = snx_ctr_csnd_deadline(p);
         /* nothing to wake for (a thread sleeping forever included) */
         if (deadline >= UINT64_MAX - 1) return SNX_CTR_SCHED_BLOCKED;
         slept_for_device = deadline < earliest;

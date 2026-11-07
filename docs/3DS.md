@@ -468,6 +468,17 @@ and GetLatestVsyncTiming gives the last five. A frame rate or a size preset past
 Azahar's tables, and a width of 0, which Azahar would read past or divide by, are
 refused with InvalidEnumValue and OutOfRange.
 
+`csnd:SND` (`services/csnd.c`, with the CSND hardware in `audio/csnd.c`, ported from
+Azahar's `csnd_snd.cpp` and `csnd.cpp`) plays: each session gets its shared memory
+and mutex at Initialize, and the command lists the game writes there configure,
+start, pause and stop the 32 channels (PCM8, PCM16, IMA-ADPCM; one-shot, looping,
+held; linear interpolation), with Azahar's 40-step volume fades before a pause or a
+stop, and write back the state the game reads. While a session is initialized or a
+channel plays, the hardware renders a frame each DSP frame time, a command landing at
+the sample it comes at, and the frame is mixed into the DSP's output as Azahar mixes
+it, or played alone when the DSP is idle. PSG and noise play silence and the capture
+units capture nothing, as in Azahar.
+
 `ir:USER` (`services/ir.c`) answers as Azahar does with no IR accessory in range.
 InitializeIrNopShared writes the shared block's header and empty receive queue, the
 receive, send and connection-status events are real kernel events, and RequireConnection
