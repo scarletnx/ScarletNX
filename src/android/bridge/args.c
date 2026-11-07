@@ -130,7 +130,8 @@ int guest_format(char* out, size_t size, const char* format, GuestArgs* a) {
             if (length >= 1 || conv == 'c') value = (long long)v;
             else if (length == -1) value = is_signed ? (short)v : (unsigned short)v;
             else if (length == -2) value = is_signed ? (signed char)v : (unsigned char)v;
-            else value = is_signed ? (int32_t)v : (uint32_t)v;
+            else
+                value = is_signed ? (long long)(int32_t)v : (long long)(uint32_t)v; /* uncast, the ?: is unsigned */
             if (conv == 'c') {
                 spec[s - 3] = 'c';
                 spec[s - 2] = 0;
