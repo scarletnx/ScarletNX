@@ -63,11 +63,14 @@ VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* ou
     }
     const char* layers[1];
     uint32_t nlayers = 0;
+    bool gpu_assisted = false;
     if (info->validation && snx_vk_has_layer("VK_LAYER_KHRONOS_validation")) {
         layers[nlayers++] = "VK_LAYER_KHRONOS_validation";
         ext[next++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
-        if (snx_vk_has_instance_extension(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME))
+        if (info->gpu_assisted && snx_vk_has_instance_extension(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME)) {
             ext[next++] = VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME; /* GPU-assisted validation finds bad accesses */
+            gpu_assisted = true;
+        }
         out->validation = true;
     }
     out->portability = asked;
@@ -80,14 +83,15 @@ VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* ou
                              .pEngineName = "ScarletNX",
                              .apiVersion = info->api_version ? info->api_version : VK_API_VERSION_1_3};
     /* GPU-assisted validation (VK_EXT_validation_features) instruments the shaders to report out-of-bounds and
-       uninitialized descriptor accesses, which the plain layer can't see: the way a GPU fault is pinned to an access */
+       uninitialized descriptor accesses, which the plain layer can't see: the way a GPU fault is pinned to an access.
+       Only when asked: it also logs the settings it changes, and makes each run several times slower */
     VkValidationFeatureEnableEXT vf_enable = VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT;
     VkValidationFeaturesEXT vf = {.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
                                   .enabledValidationFeatureCount = 1,
                                   .pEnabledValidationFeatures = &vf_enable};
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
                                .flags = out->portability ? VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0,
-                               .pNext = out->validation ? &vf : NULL,
+                               .pNext = gpu_assisted ? &vf : NULL,
                                .pApplicationInfo = &app,
                                .enabledLayerCount = nlayers,
                                .ppEnabledLayerNames = nlayers ? layers : NULL,
