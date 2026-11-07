@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright 2026 the ScarletNX contributors
+// Parts follow XmlPull's source of this class (public domain), as the Android Open Source Project carries it
 package org.xmlpull.v1;
 
 /** An error of an XmlPullParser, with the place in the document. */
