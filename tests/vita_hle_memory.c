@@ -4,6 +4,7 @@
    or the runtime's page holds gets the call's error, and the call neither reads nor writes there. Here no data abort
    handler runs (vita_run arms it), so a call that reaches such an address ends this test with the host's fault */
 #include "vita/hle/hle.h"
+#include "vita/gpu/gxm.h"
 #include "common/utilities/common.h"
 #include <assert.h>
 #include <stdio.h>
@@ -257,6 +258,26 @@ static void ngs_template1(VitaProcess* p, VitaThread* t, uint32_t mem) {
     assert(CALL(n, "sceNgsSystemRelease", system) == 0);
 }
 
+static void gxm_program_metadata(VitaProcess* p, VitaThread* t, uint32_t mem) {
+    const VitaHle* gxm = vita_hle_gxm;
+    uint32_t parameter = mem + 0x8000, patcher_out = mem + 0x8020, program = mem + 0x8040,
+             fragment_out = mem + 0x8060;
+    unsigned char* bytes = vita_ptr(p, parameter);
+    memset(bytes, 0, 16);
+    bytes[5] = 3;
+    vita_write32(p, parameter + 8, 7);
+    assert(CALL(gxm, "sceGxmProgramParameterGetComponentCount", parameter) == 3);
+    assert(CALL(gxm, "sceGxmProgramParameterGetArraySize", parameter) == 7);
+
+    assert(CALL(gxm, "sceGxmShaderPatcherCreate", mem, patcher_out) == 0);
+    uint32_t patcher = vita_read32(p, patcher_out);
+    assert(CALL(gxm, "sceGxmShaderPatcherCreateFragmentProgram", patcher, program, 0, 0, 0, 0, fragment_out) == 0);
+    uint32_t fragment = vita_read32(p, fragment_out);
+    assert(CALL(gxm, "sceGxmShaderPatcherAddRefFragmentProgram", patcher, fragment) == 0);
+    uint32_t slot = (fragment - GXM_HANDLE_FRAGMENT) / GXM_PROGRAM_HANDLE;
+    assert(slot < GXM_PROGRAMS && p->gxm->fragment[slot].references == 2);
+}
+
 int main(void) {
     char *root = snx_temp_dir(NULL), *folder = root ? snx_path_join(root, "game") : NULL, error[256] = {0};
     assert(folder && !snx_mkdirs(folder));
@@ -274,6 +295,7 @@ int main(void) {
     save_data(p, t, mem, end);
     net(p, t, mem, end);
     ngs_template1(p, t, mem);
+    gxm_program_metadata(p, t, mem);
     vita_process_free(p);
     assert(!snx_remove_tree(root));
     free(folder);
