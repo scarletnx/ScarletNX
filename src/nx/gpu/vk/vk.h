@@ -1082,9 +1082,15 @@ int vk_tc_convert_vi(VkCommandBuffer cb, u32 fmt, u32 w, u32 rows, VkBuffer in, 
 typedef int (*VkAstcRows)(void* ctx, VkCommandBuffer* cb, u32 z, u32 nz, u32 y, u32 n, VkBuffer* buf, u64* off);
 int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y, u32 w, u32 h, u32 depth, u32 level, u32 layer,
                    VkAstcRows rows, void* ctx);
+/* the same for a whole level of layers layers of a 2D array from layer, as a 3D level's slices: rows's z and nz count
+   layers from layer, and a strip takes as many as the scratch holds. A layer at a time, a small level is too little
+   work to fill the GPU and each layer's encoder dispatch waits for the one before (docs/ASTC.md) */
+int vk_astc_upload_layers(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 level, u32 layer, u32 layers, VkAstcRows rows,
+                          void* ctx);
 /* the image levels (or regions of them) uploaded as BC7 so far, their bytes, and the bytes they would have taken as
    RGBA8 */
 void vk_astc_stats(u64* levels, u64* bytes, u64* rgba8_bytes);
+u64 vk_astc_dispatches(void); /* the BC7 encoder's dispatches so far */
 /* Internal ASTC, BC7, block-linear, conversion, multisample and depth-packing pipelines, apart from guest shaders.
    Both functions run under vk_lock. Cumulative time is in nanoseconds, including time inside the driver. */
 void vk_texture_pipeline_made(u64 ns);

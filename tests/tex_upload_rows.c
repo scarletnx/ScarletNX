@@ -254,6 +254,31 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h, u32
         }
     return 1;
 }
+/* an ASTC array's level at once (vk_astc_upload_layers): its calls, and its block rows asked for 2 layers and 3 rows at
+   a time, as strips take them, into astc_out layer after layer from astc_used, which goes on past them */
+static u32 nlayered;
+int vk_astc_upload_layers(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 level, u32 layer, u32 layers, VkAstcRows rows,
+                          void* ctx) {
+    u32 nx = (w + t->f.bw - 1) / t->f.bw, ny = (h + t->f.bh - 1) / t->f.bh;
+    (void)level;
+    nlayered++;
+    for (u32 z = 0; z < layers; z += 2) {
+        u32 nz = layers - z < 2 ? layers - z : 2;
+        for (u32 y = 0; y < ny; y += 3) {
+            u32 n = ny - y < 3 ? ny - y : 3;
+            VkBuffer b;
+            u64 off;
+            CHECK(rows(ctx, &cb, z, nz, y, n, &b, &off) && mem_of(b));
+            for (u32 k = 0; k < nz; k++) {
+                u64 to = astc_used + (((u64)(layer + z + k) * ny + y) * nx * 16);
+                CHECK(to + (u64)n * nx * 16 <= sizeof astc_out);
+                memcpy(astc_out + to, mem_of(b) + off + (u64)k * n * nx * 16, (u64)n * nx * 16);
+            }
+        }
+    }
+    astc_used += (u64)layers * ny * nx * 16;
+    return 1;
+}
 /* a CPU model of the GPU's moves (vk/blocklinear.c) and conversions (vk/texconv.c), done as they are recorded: the
    recorded order is the order the barriers keep. Conversions: RGBA4 only, the format the cases convert */
 /* static u32 moves */
@@ -1338,6 +1363,36 @@ int main(void) {
         for (u32 y = 0; y < 10; y++)
             for (u32 x = 0; x < 15 * 16; x++)
                 CHECK(astc_out[((z * 10 + y) * 15) * 16 + x] == guest[bl_offset(x, y, z, 15 * 16, 10, 1, 1)]);
+    /* an ASTC array of 5 layers: a level at a time over all of them (one game's arrays of 118 layers took 667 ms of the
+       GPU a layer at a time), each layer's block rows deswizzled from its own block linear surface, a layer_size
+       after the one before */
+    {
+        Surf a = tex(60, 37, 1, 1, 16, 1, 0, 1);
+        a.f.bw = a.f.bh = 4;
+        a.f.conv = VKC_ASTC;
+        a.layers = 5;
+        a.layer_size = bl_layer_size(60, 37, 1, &a.f, 1, 0, 0, 1);
+        a.size = a.layer_size * a.layers;
+        stage_used = nregs = 0;
+        nastc = nlayered = 0;
+        astc_used = 0;
+        CHECK(tex_upload(&a) && nregs == 0 && nlayered == 1 && nastc == 0);
+        for (u32 layer = 0; layer < 5; layer++)
+            for (u32 y = 0; y < 10; y++)
+                for (u32 x = 0; x < 15 * 16; x++)
+                    CHECK(astc_out[((layer * 10 + y) * 15) * 16 + x] ==
+                          guest[layer * a.layer_size + bl_offset(x, y, 0, 15 * 16, 10, 1, 0)]);
+        /* and of 2 levels: a call a level */
+        Surf a2 = tex(60, 37, 1, 2, 16, 1, 0, 1);
+        a2.f = a.f;
+        a2.layers = 3;
+        a2.layer_size = bl_layer_size(60, 37, 1, &a2.f, 1, 0, 0, 2);
+        a2.size = a2.layer_size * a2.layers;
+        stage_used = nregs = 0;
+        nastc = nlayered = 0;
+        astc_used = 0;
+        CHECK(tex_upload(&a2) && nlayered == 2 && nastc == 0);
+    }
     /* a sparse texture's levels at least a tile in size have rows of whole tiles (tile_w). RGBA8 tiles of 128x128
        texels (8 GOBs across, blocks 16 high): 200 texels across (13 GOBs) take 16 at level 0, and levels 1 and 2 are
        narrower than a tile. Whole, in rows of blocks under 160 KiB (2 of them), and 8 GOB rows at a time under 64 KiB,

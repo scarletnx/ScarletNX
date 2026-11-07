@@ -45,6 +45,8 @@ static VmaAllocation g_bc7_mem;
 /* image levels (or regions of them) uploaded as BC7, their bytes, and what they would have taken as RGBA8
    (vk_astc_stats) */
 static u64 g_bc7_levels, g_bc7_bytes, g_bc7_rgba8_bytes;
+/* the encoder's dispatches (vk_astc_dispatches) */
+static u64 g_bc7_dispatches;
 /* the bytes of the ASTC levels decoded to RGBA8 (vk_astc_rgba8_bytes) */
 static u64 g_rgba8_bytes;
 /* The encoder is slow: a small GPU takes about a second over 256 thousand blocks, so a load of many textures queued up
@@ -162,6 +164,7 @@ void vk_astc_stats(u64* levels, u64* bytes, u64* rgba8_bytes) {
     *rgba8_bytes = g_bc7_rgba8_bytes;
 }
 u64 vk_astc_rgba8_bytes(void) { return g_rgba8_bytes; }
+u64 vk_astc_dispatches(void) { return g_bc7_dispatches; }
 
 static VkPipeline astc_pipeline(u32 bw, u32 bh) {
     VkPipeline* pipe = &g_astc_pipes[bw - 4][bh - 4];
@@ -223,8 +226,9 @@ static VkDescriptorSet two_buffers(VkBuffer in, u64 in_off, u64 in_size, VkBuffe
     return set;
 }
 
-int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h, u32 depth, u32 level, u32 layer,
-                   VkAstcRows rows, void* ctx) {
+/* vk_astc_upload's and vk_astc_upload_layers': depth counts the level's slices, or (layered) the layers from layer */
+static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h, u32 depth, u32 level, u32 layer,
+                       int layered, VkAstcRows rows, void* ctx) {
     astc_init();
     const int bc7 = t->f.vk == VK_FORMAT_BC7_UNORM_BLOCK || t->f.vk == VK_FORMAT_BC7_SRGB_BLOCK;
     if (bc7) {
@@ -324,6 +328,7 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h, u32
                 rec_CmdPushConstants(cb, g_bc7_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof q, &q);
                 vk_ck(cb, VK_CK_BC7, cx, cy, nz, w);
                 rec_CmdDispatch(cb, (cx + 63) / 64, cy, nz);
+                g_bc7_dispatches++;
                 scratch_barrier(cb, g_bc7_scratch, USE_WRITE, 0, USE_COPY);
                 from = g_bc7_scratch;
                 row_texels = cx * 4;
@@ -334,11 +339,13 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h, u32
                 scratch_barrier(cb, g_astc_scratch, USE_WRITE, 0, USE_COPY);
                 g_rgba8_bytes += texels;
             }
-            VkBufferImageCopy copy = {.bufferRowLength = row_texels,
-                                      .bufferImageHeight = image_rows,
-                                      .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1},
-                                      .imageOffset = {(i32)x, (i32)(y0 + y * bh), (i32)z},
-                                      .imageExtent = {w, height, nz}};
+            /* a layer after another in the buffer, as slices are */
+            VkBufferImageCopy copy = {
+                .bufferRowLength = row_texels,
+                .bufferImageHeight = image_rows,
+                .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layered ? layer + z : layer, layered ? nz : 1},
+                .imageOffset = {(i32)x, (i32)(y0 + y * bh), layered ? 0 : (i32)z},
+                .imageExtent = {w, height, layered ? 1 : nz}};
             vk_ck(cb, VK_CK_COPY, w, height, nz, level);
             rec_CmdCopyBufferToImage(cb, from, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
             vk_ck(cb, VK_CK_STRIP_DONE, w, height, nz, level);
@@ -356,4 +363,12 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h, u32
         }
     }
     return 1;
+}
+int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y, u32 w, u32 h, u32 depth, u32 level, u32 layer,
+                   VkAstcRows rows, void* ctx) {
+    return astc_upload(cb, t, x, y, w, h, depth, level, layer, 0, rows, ctx);
+}
+int vk_astc_upload_layers(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 level, u32 layer, u32 layers, VkAstcRows rows,
+                          void* ctx) {
+    return astc_upload(cb, t, 0, 0, w, h, layers, level, layer, 1, rows, ctx);
 }

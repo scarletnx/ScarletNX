@@ -183,6 +183,12 @@ it whatever `native_bc` says, and `format.c` then samples BCn as it is only when
 keeps RGBA8 where the device has no 3D BC7 images, as native block formats do. Every 600 frames the log says how many
 levels went up as BC7 and their megabytes against RGBA8's.
 
+An array texture goes up a level at a time over all its layers (`vk_astc_upload_layers`), the layers as a 3D level's
+slices: a strip takes as many as the scratch holds, and the encoder runs once for them. A layer and level at a time, a
+small level gave the encoder too little to fill the GPU and each layer's dispatch waited for the one before: one
+game's arrays of 118 layers of 128x128 in 8 levels took 667 ms of an RX 6700 XT, where a level of one in a dispatch
+takes 13.5 ms, and the game stopped 1.4 s for two of them.
+
 `vk_astc_upload` waits for the GPU once 256 thousand blocks are queued. The encoder is slow on a small GPU, and without
 the wait a load queued up tens of seconds of it and the device was lost in most runs of one game, on a GT 1030, with
 nothing in the validation layer or the kernel's log. Why the depth of the queue does that is not known: it is the
