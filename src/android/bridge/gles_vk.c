@@ -655,7 +655,10 @@ static void surface_free(GlesSurface* s) {
         gles_vk_destroy((GlesGarbage){.buffer = slot->staging.buffer, .memory = slot->staging.memory});
         for (uint32_t k = 0; k < slot->pool_count; ++k) g.vk.vkDestroyDescriptorPool(g.device, slot->pools[k], NULL);
         free(slot->pools);
-        /* the fences, semaphores, pools and command buffers stay: few, and only a device's end frees them */
+        if (slot->cb) g.vk.vkFreeCommandBuffers(g.device, g.commands, 1, &slot->cb);
+        if (slot->fence) g.vk.vkDestroyFence(g.device, slot->fence, NULL);
+        if (slot->acquire) g.vk.vkDestroySemaphore(g.device, slot->acquire, NULL);
+        if (slot->pool) g.vk.vkDestroyDescriptorPool(g.device, slot->pool, NULL);
     }
     swapchain_free(s);
     if (s->swapchain) hle_vulkan_destroy_swapchain(g.device, s->swapchain);

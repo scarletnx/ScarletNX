@@ -36,11 +36,13 @@
 #define GLES_DEVICE_COMMANDS(X)                                                                                        \
     X(vkDeviceWaitIdle)                                                                                                \
     X(vkCreateCommandPool)                                                                                             \
+    X(vkFreeCommandBuffers)                                                                                            \
     X(vkAllocateCommandBuffers)                                                                                        \
     X(vkBeginCommandBuffer)                                                                                            \
     X(vkEndCommandBuffer)                                                                                              \
     X(vkResetCommandBuffer)                                                                                            \
     X(vkCreateFence)                                                                                                   \
+    X(vkDestroyFence)                                                                                                  \
     X(vkWaitForFences)                                                                                                 \
     X(vkResetFences)                                                                                                   \
     X(vkGetFenceStatus)                                                                                                \
