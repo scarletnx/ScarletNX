@@ -220,6 +220,11 @@ nought. Modes 4 and 5 have no p-bits and hold 255 and 0 as they are. Each texel 
 around its projection. All of it is integer arithmetic in the part of GLSL that is also C++, so the tests run the
 same file on the CPU and get the GPU's bytes.
 
+A block stops trying modes once its squared error over all its texels and channels is `SNX_BC7_GOOD_ENOUGH` (16) or less,
+a mean squared error of a quarter, 54 dB, for that block. A hard block still gets the whole search. Within a fit, `Eval` leaves
+a line as soon as it can't win, a second least squares runs only on weights that changed, and a line the box leaves far
+behind the best block gets none. On a GT 1030 one game's first load fell from 36 s to 25 s.
+
 What it costs, as PSNR against what it encodes, on edenprobe's astcimage picture (gradients, hard edges where three
 colours meet in a block, noise, and alpha) decoded from ASTC: 39.9 dB over the picture at 4x4 (gradients 53.1,
 edges 48.9, noise 34.2, alpha 50.9), 40.4 at 6x6, 46.2 at 8x8 and 45.2 at 12x12. Mode 6 alone gave 27.6 at 4x4,

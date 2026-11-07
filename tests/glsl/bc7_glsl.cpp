@@ -29,6 +29,14 @@ static std::vector<glsl::leuvec4> encode(const std::vector<glsl::leuint>& texels
     return blocks;
 }
 
+// the same with the whole search for every block: a block a mode holds comes back exact only from that
+static std::vector<glsl::leuvec4> encode_whole(const std::vector<glsl::leuint>& texels, uint32_t w, uint32_t h) {
+    std::vector<glsl::leuvec4> blocks((size_t)((w + 3) / 4) * ((h + 3) / 4));
+    bc7_encode_cpu_whole(reinterpret_cast<const uint8_t*>(texels.data()), w, h, 1,
+                         reinterpret_cast<uint8_t*>(blocks.data()));
+    return blocks;
+}
+
 // the same by the encoder without modes 4 and 5
 static std::vector<glsl::leuvec4> encode_without_45(const std::vector<glsl::leuint>& texels, uint32_t w, uint32_t h) {
     std::vector<glsl::leuvec4> blocks((size_t)((w + 3) / 4) * ((h + 3) / 4));
@@ -254,7 +262,7 @@ static void exact_lines() {
             texels[(size_t)(t / 4) * 32 + b * 4 + t % 4] = word;
         }
     }
-    const auto blocks = encode(texels, 32, 4, 1);
+    const auto blocks = encode_whole(texels, 32, 4);
     const auto got = decode(blocks.data(), 32, 4);
     known_modes(blocks, "exact lines", nullptr);
     const double db = psnr(texels, got, 32, 0, 0, 32, 4);
@@ -275,7 +283,7 @@ static void partitioned(const char* what, const uint32_t masks[64], uint32_t (*c
     for (uint32_t b = 0; b < 64; b++)
         for (uint32_t t = 0; t < 16; t++)
             texels[(size_t)(t / 4) * 256 + b * 4 + t % 4] = colour(b, masks[b] >> (t * 2) & 3);
-    const auto blocks = encode(texels, 256, 4, 1);
+    const auto blocks = encode_whole(texels, 256, 4);
     const auto got = decode(blocks.data(), 256, 4);
     uint32_t modes[8] = {0};
     known_modes(blocks, what, modes);
@@ -402,7 +410,7 @@ static void exact_dual() {
         }
         want[b] = (kind ? 4u : 5u) | rot << 4 | (kind == 2 ? 1u : 0u) << 6;
     }
-    const auto blocks = encode(texels, 384, 4, 1);
+    const auto blocks = encode_whole(texels, 384, 4);
     const auto got = decode(blocks.data(), 384, 4);
     known_modes(blocks, "exact dual", nullptr);
     for (uint32_t b = 0; b < 96; b++) {
@@ -456,7 +464,7 @@ static void channel_apart() {
                 texels[(size_t)(by * 4 + y) * w + bx * 4 + x] = v;
             }
         }
-    const auto blocks = encode(texels, w, h, 1);
+    const auto blocks = encode_whole(texels, w, h);
     const auto got = decode(blocks.data(), w, h);
     const auto without = decode(encode_without_45(texels, w, h).data(), w, h);
     uint32_t modes[8] = {0}, worst = 0, worst_without = 0;
@@ -478,6 +486,39 @@ static void channel_apart() {
 // a block whose every alpha is 255 comes back with every alpha 255, and one whose every alpha is 0 with every alpha 0,
 // whatever its colours: the p-bit a mode 6 end shares with its colours would otherwise make 254 or 1 of them where
 // that is nearer for the colours
+// A block stops at SNX_BC7_GOOD_ENOUGH or takes the search: no block of a picture of gradients, edges, noise and alpha
+// comes back worse than that or far worse than the whole search brings it, and the picture stays close to it
+static void good_enough() {
+    std::vector<glsl::leuint> texels(128 * 128);
+    for (uint32_t y = 0; y < 128; y++)
+        for (uint32_t x = 0; x < 128; x++) texels[(size_t)y * 128 + x] = picture(x, y);
+    const auto blocks = encode(texels, 128, 128, 1), whole = encode_whole(texels, 128, 128);
+    const auto got = decode(blocks.data(), 128, 128), best = decode(whole.data(), 128, 128);
+    uint32_t over = 0;
+    uint64_t worst = 0;
+    for (uint32_t by = 0; by < 32; by++)
+        for (uint32_t bx = 0; bx < 32; bx++) {
+            uint64_t e = 0, b = 0;
+            for (uint32_t y = by * 4; y < by * 4 + 4; y++)
+                for (uint32_t x = bx * 4; x < bx * 4 + 4; x++)
+                    for (uint32_t c = 0; c < 4; c++) {
+                        const int v = byte_of(texels[y * 128 + x], c);
+                        const int d = v - got[(y * 128 + x) * 4 + c], f = v - best[(y * 128 + x) * 4 + c];
+                        e += uint64_t(d * d);
+                        b += uint64_t(f * f);
+                    }
+            if (e > 16 && e > b + b / 2) over++;
+            if (e > worst) worst = e;
+        }
+    const double db = psnr(texels, got, 128, 0, 0, 128, 128), db_whole = psnr(texels, best, 128, 0, 0, 128, 128);
+    std::printf("good enough: %.2f dB, the whole search %.2f, %u blocks past both limits, worst block %llu\n", db,
+                db_whole, over, (unsigned long long)worst);
+    if (over || db < db_whole - 1.0) {
+        std::fprintf(stderr, "FAIL good enough: %u blocks past both limits, %.2f dB against %.2f\n", over, db, db_whole);
+        failures++;
+    }
+}
+
 static void alpha_kept() {
     std::vector<glsl::leuint> texels(128 * 128);
     for (uint32_t y = 0; y < 128; y++)
@@ -540,7 +581,7 @@ static void same_blocks() {
                                                 encode(opaque, 64, 64, 1), encode_without_45(any, 64, 64)};
     uint64_t h = 0xCBF29CE484222325ull;
     for (const auto& r : runs) h = fnv1a(h, r.data(), r.size() * sizeof r[0]);
-    const uint64_t want = 0x97987257CCF58CADull;
+    const uint64_t want = 0x6E76FB4B1C7205D4ull;
     std::printf("%s the encoder's blocks: digest %016llx, %016llx expected\n", h == want ? "PASS" : "FAIL",
                 (unsigned long long)h, (unsigned long long)want);
     if (h != want) failures++;
@@ -559,6 +600,7 @@ int main() {
     exact_dual();
     channel_apart();
     picture_psnr();
+    good_enough();
     alpha_kept();
     shapes();
     same_blocks();

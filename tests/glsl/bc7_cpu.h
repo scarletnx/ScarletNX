@@ -10,6 +10,8 @@
 extern "C" {
 #endif
 void bc7_encode_cpu(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out);
+/* the same encoder with the whole search for every block (SNX_BC7_GOOD_ENOUGH 0), and */
+void bc7_encode_cpu_whole(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out);
 /* the same encoder without modes 4 and 5, what they are measured against */
 void bc7_encode_cpu_without_45(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out);
 /* the encoder's three subset partition table, two bits a texel */
