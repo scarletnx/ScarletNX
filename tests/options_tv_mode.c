@@ -122,6 +122,7 @@ void options_old_environment_say(void) {}
 NO_SET(vpad_showcase_corner_set)
 NO_SET(stats_corner_set)
 NO_SET(vpad_on_set)
+NO_SET(vpad_skin_choose)
 NO_SET(vpad_place_set)
 NO_SET(backend_touch_mode_set)
 NO_SET(gamepad_background_set)

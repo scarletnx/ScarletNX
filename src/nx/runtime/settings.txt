@@ -452,6 +452,14 @@ setting Controls opacity
     words #%
     step 10
     help Their opacity, in percent
+setting Controls skin
+    key controls_skin
+    text 512
+    default
+    label Skin
+    set vpad_skin_choose
+    help Their look: empty for the built-in one, yorha for ScarletNX's own, or the path of a RetroArch overlay's .cfg
+    help (the first of its pages not named portrait). The game's menu goes round the built-in look and ScarletNX's own
 setting Relative stick center
     key controls_rel_center
     int 0 1

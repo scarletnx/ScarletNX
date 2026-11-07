@@ -3,6 +3,7 @@
 #include "nx/runtime/platform/vpad_skin.h"
 #include "nx/runtime/platform/vpad.h"
 #include "nx/runtime/platform/controls_atlas.h"
+#include "nx/runtime/platform/controls_skins.h"
 #include "nx/runtime/platform/ui.h"
 #include "nx/runtime/platform/log.h"
 #include "common/utilities/common.h"
@@ -27,9 +28,10 @@ typedef struct {
     unsigned (*pair)[2]; /* each line's key and value, as offsets into text */
     int n;
 } Cfg;
-static int cfg_read(Cfg* c, const char* path) {
-    size_t size, lines = 1, i;
-    char *file = (char*)snx_read_file(path, &size), *p, *end;
+/* the .cfg from file, its size bytes (taken, freed here) */
+static int cfg_read(Cfg* c, char* file, size_t size) {
+    size_t lines = 1, i;
+    char *p, *end;
     void* block;
     if (!file) return 0;
     for (i = 0; i < size; ++i) lines += file[i] == '\n' || file[i] == '\r'; /* a line ends at either */
@@ -135,8 +137,10 @@ typedef struct {
     int frames, at[2][2]; /* each frame's place in the skin's rows */
 } Image;
 typedef struct {
-    const char* path;
-    char* dir;
+    const char* path;  /* the .cfg's, or a shipped skin's name, for the log */
+    const char* skin;  /* a shipped skin's name, NULL for a .cfg on disk */
+    char cfg_name[80]; /* a shipped skin's .cfg: its name and .cfg */
+    char* dir;         /* the .cfg's folder, its images' */
     Cfg c;
     unsigned page;
     float aspect, rect[4]; /* the page's: its width over its height, and where it sits on the clear part */
@@ -146,6 +150,28 @@ typedef struct {
     int ni;
 } Load;
 
+/* a file of the skin, name relative to its .cfg's folder: malloc'd, its size into n; NULL when there is none */
+static u8* skin_file(const Load* s, const char* name, size_t* n) {
+    size_t i;
+    char* path;
+    u8* bytes;
+    if (s->skin) {
+        for (i = 0; i < snx_controls_skins_count; ++i)
+            if (!strcmp(snx_controls_skins[i].skin, s->skin) && !strcmp(snx_controls_skins[i].file, name)) {
+                bytes = (u8*)malloc(snx_controls_skins[i].size + 1);
+                if (!bytes) return NULL;
+                memcpy(bytes, snx_controls_skins[i].data, snx_controls_skins[i].size);
+                bytes[snx_controls_skins[i].size] = 0; /* text ends where a file read ends it */
+                *n = snx_controls_skins[i].size;
+                return bytes;
+            }
+        return NULL;
+    }
+    path = snx_path_join(s->dir, name);
+    bytes = path ? snx_read_file(path, n) : NULL;
+    free(path);
+    return bytes;
+}
 static int image_of(Load* s, const char* name) {
     int i;
     for (i = 0; i < s->ni; ++i)
@@ -332,9 +358,8 @@ static SDL_Surface* over(SDL_Surface* base, SDL_Surface* top, const u8 fc[26]) {
     return s;
 }
 static int image_read(Load* s, Image* im) {
-    char* path = snx_path_join(s->dir, im->name);
     size_t n = 0, at = 8;
-    u8 *file = path ? snx_read_file(path, &n) : NULL, *out, fc[2][26];
+    u8 *file = skin_file(s, im->name, &n), *out, fc[2][26];
     u32 frames = 1;
     int ok = 0;
     while (file && at + 12 <= n && be32(file + at) <= n - at - 12) { /* acTL: the frames */
@@ -342,7 +367,7 @@ static int image_read(Load* s, Image* im) {
         at += be32(file + at) + 12;
     }
     if (!file)
-        LOG("vpad skin: %s: the image %s can't be read: the built-in look\n", s->path, path ? path : im->name);
+        LOG("vpad skin: %s: the image %s can't be read: the built-in look\n", s->path, im->name);
     else if (frames != 2) {
         if (frames > 2)
             LOG("vpad skin: %s: %s is an animation of %u frames: its image is drawn still\n", s->path, im->name,
@@ -362,7 +387,6 @@ static int image_read(Load* s, Image* im) {
         LOG("vpad skin: %s: the image %s is not a PNG SDL reads (%s): the built-in look\n", s->path, im->name,
             SDL_GetError());
     free(file);
-    free(path);
     return ok;
 }
 /* every image's frames into rows of the atlas's width, tallest first along shelves; the rows, or 0 */
@@ -526,43 +550,30 @@ static void controls(Load* s, SnxSkinControl at[SNX_VPAD_COUNT], int skin_y) {
         }
 }
 
-int vpad_skin_load(const char* path) {
-    Load* s = (Load*)calloc(1, sizeof(Load));
-    SnxSkinControl at[SNX_VPAD_COUNT];
+/* the skin at s->path (or shipped as s->skin) into at and its texels into *texels, *rows rows: 1, or 0 (logged) */
+static int skin_load(Load* s, SnxSkinControl at[SNX_VPAD_COUNT], u32** texels, int* rows) {
     unsigned pages = 0;
-    int i, rows = 0, skin_y, ok = 0, page_normal;
+    int i, page_normal;
     float page_range, page_alpha;
+    size_t size = 0;
     const char *v, *name = "";
-    u32* texels = NULL;
-    if (!s) {
-        vpad_skin_set(NULL);
+    if (!cfg_read(&s->c, (char*)skin_file(s, s->skin ? s->cfg_name : snx_path_leaf(s->path), &size), size)) {
+        LOG("vpad skin: %s can't be read: the built-in look\n", s->path);
         return 0;
     }
-    s->path = path;
-    memset(at, 0, sizeof at);
-    if (!cfg_read(&s->c, path)) {
-        LOG("vpad skin: %s can't be read: the built-in look\n", path);
-        free(s);
-        vpad_skin_set(NULL);
-        return 0;
-    }
-    s->dir = snx_dirname(path);
     v = get(&s->c, "overlays");
     if (v) pages = (unsigned)strtoul(v, NULL, 10);
-    v = NULL;
     for (s->page = 0; s->page < pages; ++s->page) { /* the first page that is no portrait one */
         name = page_key(&s->c, s->page, "_name");
         if (!name) name = "";
         if (!strstr(name, "portrait")) break;
-        LOG("vpad skin: %s: overlay%u \"%s\" is a portrait page: the controls take the first other\n", path, s->page,
+        LOG("vpad skin: %s: overlay%u \"%s\" is a portrait page: the controls take the first other\n", s->path, s->page,
             name);
     }
     if (!pages || s->page == pages) {
-        LOG("vpad skin: %s has %u pages (overlays), none of them a landscape one: the built-in look\n", path, pages);
-        goto done;
+        LOG("vpad skin: %s has %u pages (overlays), none of them a landscape one: the built-in look\n", s->path, pages);
+        return 0;
     }
-    v = page_key(&s->c, s->page, "_descs");
-    s->nd = 0;
     page_normal = is_true(page_key(&s->c, s->page, "_normalized"));
     page_range = number(page_key(&s->c, s->page, "_range_mod"), 1);
     page_alpha = number(page_key(&s->c, s->page, "_alpha_mod"), 1);
@@ -572,36 +583,63 @@ int vpad_skin_load(const char* path) {
     s->rect[2] = s->rect[3] = 1;
     if ((v = page_key(&s->c, s->page, "_rect")) != NULL &&
         sscanf(v, "%f%*[, ]%f%*[, ]%f%*[, ]%f", &s->rect[0], &s->rect[1], &s->rect[2], &s->rect[3]) != 4) {
-        LOG("vpad skin: %s: overlay%u_rect = \"%s\" is not x,y,w,h: the page is the clear part, 0,0,1,1\n", path,
+        LOG("vpad skin: %s: overlay%u_rect = \"%s\" is not x,y,w,h: the page is the clear part, 0,0,1,1\n", s->path,
             s->page, v);
         s->rect[0] = s->rect[1] = 0;
         s->rect[2] = s->rect[3] = 1;
     }
     if ((v = page_key(&s->c, s->page, "_overlay")) != NULL && *v)
-        LOG("vpad skin: %s: overlay%u's image %s fills the screen, which the controls don't: not drawn\n", path,
+        LOG("vpad skin: %s: overlay%u's image %s fills the screen, which the controls don't: not drawn\n", s->path,
             s->page, v);
     v = page_key(&s->c, s->page, "_descs");
     {
         unsigned descs = v ? (unsigned)strtoul(v, NULL, 10) : 0;
         if (descs > MAX_DESCS) {
-            LOG("vpad skin: %s: overlay%u has %u descriptors: the first %d read\n", path, s->page, descs, MAX_DESCS);
+            LOG("vpad skin: %s: overlay%u has %u descriptors: the first %d read\n", s->path, s->page, descs, MAX_DESCS);
             descs = MAX_DESCS;
         }
         for (i = 0; i < (int)descs; ++i) desc_read(s, i, page_normal, page_range, page_alpha);
     }
     for (i = 0; i < s->ni; ++i)
-        if (!image_read(s, &s->img[i])) goto done;
-    texels = pack(s, &rows);
-    if (!texels) goto done;
-    skin_y = ui_skin_y();
-    controls(s, at, skin_y);
-    ui_skin_set(texels, rows);
-    vpad_skin_set(at);
+        if (!image_read(s, &s->img[i])) return 0;
+    *texels = pack(s, rows);
+    if (!*texels) return 0;
+    controls(s, at, ui_skin_y());
     for (i = 0; i < SNX_VPAD_COUNT; ++i)
-        if (!at[i].pieces) LOG("vpad skin: %s has no %s: the built-in one\n", path, vpad_name(i));
-    LOG("vpad skin: %s, page %u \"%s\": %d images in %d rows of the atlas\n", path, s->page, name, s->ni, rows);
-    ok = 1;
-done:
+        if (!at[i].pieces) LOG("vpad skin: %s has no %s: the built-in one\n", s->path, vpad_name(i));
+    LOG("vpad skin: %s, page %u \"%s\": %d images in %d rows of the atlas\n", s->path, s->page, name, s->ni, *rows);
+    return 1;
+}
+/* a name of the shipped skins (cmake/controls_skins.cmake), NULL for another */
+static const char* shipped(const char* name) {
+    size_t i;
+    for (i = 0; i < snx_controls_skins_count; ++i)
+        if (!strcmp(snx_controls_skins[i].skin, name)) return snx_controls_skins[i].skin;
+    return NULL;
+}
+int vpad_skin_read(const char* value, SnxSkinControl* at) {
+    Load* s;
+    u32* texels = NULL;
+    int i, rows = 0, ok = 0;
+    char names[256] = "", one[64];
+    memset(at, 0, SNX_VPAD_COUNT * sizeof at[0]);
+    ui_skin_set(NULL, 0);
+    if (!*value) return 1; /* the built-in look */
+    if (!strpbrk(value, "/\\") && !shipped(value)) {
+        for (i = 0; vpad_skin_shipped(i, one, sizeof one); ++i)
+            snprintf(names + strlen(names), sizeof names - strlen(names), "%s%s", i ? ", " : "", one);
+        LOG("vpad skin: controls_skin=%s is neither a skin ScarletNX has (%s) nor the path of a RetroArch overlay's "
+            ".cfg: the built-in look\n",
+            value, names);
+        return 0;
+    }
+    s = (Load*)calloc(1, sizeof(Load));
+    if (!s) return 0;
+    s->path = value;
+    s->skin = shipped(value);
+    if (s->skin) snprintf(s->cfg_name, sizeof s->cfg_name, "%s.cfg", s->skin);
+    s->dir = s->skin ? NULL : snx_dirname(value);
+    ok = skin_load(s, at, &texels, &rows);
     for (i = 0; i < s->ni; ++i) {
         if (s->img[i].frame[1] != s->img[i].frame[0]) SDL_DestroySurface(s->img[i].frame[1]);
         SDL_DestroySurface(s->img[i].frame[0]);
@@ -609,6 +647,28 @@ done:
     free(s->dir);
     free(s->c.pair);
     free(s);
-    if (!ok) vpad_skin_set(NULL);
+    if (ok)
+        ui_skin_set(texels, rows);
+    else {
+        free(texels);
+        memset(at, 0, SNX_VPAD_COUNT * sizeof at[0]);
+    }
     return ok;
+}
+int vpad_skin_apply(const u32* sprites, int w, int h) {
+    SnxSkinControl at[SNX_VPAD_COUNT];
+    char value[sizeof g_settings.controls_skin];
+    u32* atlas;
+    int rows = 0, ok;
+    ui_lock(); /* the in-game menu writes it under the lock */
+    snprintf(value, sizeof value, "%s", g_settings.controls_skin);
+    ui_unlock();
+    ok = vpad_skin_read(value, at);
+    atlas = ui_atlas_make(sprites, w, h, &rows);
+    if (!atlas) ui_skin_set(NULL, 0); /* the rows wait for no atlas */
+    ui_lock(); /* the atlas and the controls drawn from it at once: the renderer sees both or neither */
+    if (atlas) ui_atlas_put(atlas, rows);
+    vpad_skin_set(atlas ? at : NULL); /* no atlas made: no rows for a skin's controls to draw from */
+    ui_unlock();
+    return ok && atlas;
 }

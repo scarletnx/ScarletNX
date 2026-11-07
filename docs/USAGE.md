@@ -756,7 +756,11 @@ touch screen. They are on by default on Android and off elsewhere.
 The game's menu (Back on Android, Home on a gamepad, F2) has their page: show them, *Edit layout* (drag a control;
 tap one and size it with the bar on top; *Done* or Back ends it), snap to a grid, scale and opacity, the buttons
 shown, a stick's middle where the finger lands, a D-pad a finger slides on, a buzz on each press (Android), the touch
-screen, and *Reset layout*. The game's `.ini` keeps them: `controls`, `controls_scale`, `controls_opacity`,
+screen, and *Reset layout*. *Skin* goes round their looks: the built-in one and ScarletNX's own, yorha (the
+launcher's yorha theme on the controls). Any [RetroArch overlay](../dist/controls/skins/README.md) is a skin too:
+`controls_skin=` the path of its `.cfg` (the launcher's Settings take it as text), and the controls take its places,
+sizes, images and pressed looks; what it lacks keeps the built-in look, and the log says each part it leaves out. The
+game's `.ini` keeps them: `controls`, `controls_scale`, `controls_opacity`, `controls_skin`,
 `controls_snap`, `controls_rel_center`, `controls_dpad_slide`, `controls_haptics`, a control's place once it
 was moved (`controls_a=0.930 0.470 100`: its middle across the screen and its size in percent), and whether it is
 shown once that changed (`controls_a_shown=0`). The launcher's Settings have the same, but the layout.

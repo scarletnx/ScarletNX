@@ -488,12 +488,13 @@ int main(void) {
     assert(tap(0, 3) == OVERLAY_NONE);
     draw();
     assert(text_at(1, 0, "SCARLETNX  /  CONTROLS") && text_at(1, 3, "\xFE Show controls"));
-    assert(list.q[0].h == 16 * 32 && text_at(C - 2, 12, ">")); /* twelve items: the tallest; Buttons opens a page */
+    assert(list.q[0].h == 16 * 32 &&
+           text_at(C - 2, 13, ">")); /* twelve of its items: the tallest; Buttons opens a page */
     /* named as the .ini's rows name them, in the launcher's order, the game's own actions among them */
-    assert(text_at(1, 4, "\xFE Edit layout") && text_at(1, 5, "\xFE Snap to grid") &&
-           text_at(1, 8, "\xFE Relative stick center"));
-    assert(text_at(1, 11, "\xFE Touch screen") && text_at(1, 12, "\xFE Buttons") &&
-           text_at(1, 13, "\xFE Reset layout"));
+    assert(text_at(1, 4, "\xFE Edit layout") && text_at(1, 5, "\xFE Snap to grid") && text_at(1, 8, "\xFE Skin") &&
+           text_at(1, 9, "\xFE Relative stick center"));
+    assert(text_at(1, 12, "\xFE Touch screen") && text_at(1, 13, "\xFE Buttons") &&
+           text_at(1, 14, "\xFE Reset layout"));
     g_settings.show_controls = 0;
     draw();
     assert(text_at(C - 4, 3, "Off"));
@@ -517,27 +518,50 @@ int main(void) {
     overlay_side(-1);
     assert(g_settings.controls_opacity == 90 && !strcmp(stored, "controls_opacity"));
     overlay_side(1);
+    /* the skin goes round the built-in look and the shipped ones (the right arrow up, the rest of its row down), kept,
+       and the backend told to apply it; a .cfg's path shows its file's name, and goes up to the built-in look, down
+       to the last shipped skin */
+    vpad_skin_changed();
+    draw();
+    assert(text_at(C - 1 - (int)strlen("< Built-in >"), 8, "< Built-in >"));
+    tap(5, C - 2);
+    assert(!strcmp(g_settings.controls_skin, "yorha") && !strcmp(stored, "controls_skin") && vpad_skin_changed());
+    draw();
+    assert(text_at(C - 1 - (int)strlen("< yorha >"), 8, "< yorha >"));
+    tap(5, C - 2);
+    assert(!g_settings.controls_skin[0] && vpad_skin_changed());
+    tap(5, C - 9);
+    assert(!strcmp(g_settings.controls_skin, "yorha"));
+    vpad_ini("controls_skin", "/skins/flat/retropad.cfg");
+    draw();
+    assert(text_at(C - 1 - (int)strlen("< retropad.cfg >"), 8, "< retropad.cfg >"));
+    tap(5, C - 2);
+    assert(!g_settings.controls_skin[0]);
+    vpad_ini("controls_skin", "/skins/flat/retropad.cfg"); /* down from a path: the last shipped skin */
+    tap(5, 3);
+    assert(!strcmp(g_settings.controls_skin, "yorha"));
+    vpad_ini("controls_skin", "");
     /* the toggles; the touch screen goes round its three */
     tap(2, 3);
     assert(g_settings.snap_to_grid && !strcmp(stored, "controls_snap"));
     tap(2, 3);
-    tap(5, 3);
+    tap(6, 3);
     assert(!g_settings.relative_stick_center && !strcmp(stored, "controls_rel_center"));
-    tap(5, 3);
-    tap(8, 3);
+    tap(6, 3);
+    tap(9, 3);
     assert(touch == 2);
     draw();
-    assert(text_at(C - 1 - (int)strlen("Fingers and mouse"), 11, "Fingers and mouse"));
-    tap(8, 3);
+    assert(text_at(C - 1 - (int)strlen("Fingers and mouse"), 12, "Fingers and mouse"));
+    tap(9, 3);
     assert(touch == 0);
     draw();
-    assert(text_at(C - 4, 11, "Off"));
-    tap(8, 3);
+    assert(text_at(C - 4, 12, "Off"));
+    tap(9, 3);
     /* Edit layout is the caller's to do */
     assert(tap(1, 3) == OVERLAY_EDIT);
 
     /* the buttons' page: one hidden and kept, All shows them again; it scrolls to its last item */
-    assert(tap(9, 3) == OVERLAY_NONE);
+    assert(tap(10, 3) == OVERLAY_NONE);
     draw();
     assert(text_at(1, 0, "SCARLETNX  /  BUTTONS") && text_at(1, 4, "\xFE L"));
     log_[0] = 0;

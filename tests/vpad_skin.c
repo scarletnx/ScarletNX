@@ -194,6 +194,13 @@ static u32 texel(int u, int v) {
     return a[(size_t)v * (size_t)w + (size_t)u]; /* the test runs on a little-endian host: the bytes R G B A */
 }
 
+/* the skin at path, its controls put in as vpad_skin_apply does, without an atlas: 1 read, 0 not */
+static int load(const char* path) {
+    SnxSkinControl skin[SNX_VPAD_COUNT];
+    int ok = vpad_skin_read(path, skin);
+    vpad_skin_set(skin);
+    return ok;
+}
 static void test_skin(void) {
     const SnxSkinControl *a, *b, *d, *st;
     const SnxUiQuad* q;
@@ -248,7 +255,7 @@ static void test_skin(void) {
     /* B's place is in the game's .ini: it stays there; the others go where the skin puts them */
     assert(vpad_ini("controls", "1") && vpad_ini("controls_b", "0.250 0.100 100"));
     g_test.logged[0] = 0;
-    assert(vpad_skin_load(at("skin.cfg")));
+    assert(load(at("skin.cfg")));
     assert(said("overlay0 \"portrait\" is a portrait page: the controls take the first other"));
     assert(said("overlay1_desc6 left|up is none of the controls: left out"));
     assert(said("overlay1_desc9 overlay_next is none of the controls: left out"));
@@ -332,7 +339,7 @@ static void test_skin(void) {
 
     /* one that can't be read: the built-in look again, the places back with it, the atlas without the skin's rows */
     g_test.logged[0] = 0;
-    assert(!vpad_skin_load(at("none.cfg")) && said("none.cfg can't be read: the built-in look"));
+    assert(!load(at("none.cfg")) && said("none.cfg can't be read: the built-in look"));
     assert(!vpad_skin(SNX_VPAD_A) && close_to(vpad_config()->at[SNX_VPAD_A].x, 0.93f));
     texel(0, 0);
     ui_atlas(&w, &h, &version);
@@ -341,8 +348,57 @@ static void test_skin(void) {
     text("broken.cfg", "overlays = 1\noverlay0_normalized = true\noverlay0_descs = 1\n"
                        "overlay0_desc0 = \"a,0.9,0.5,radial,0.05,0.1\"\noverlay0_desc0_overlay = gone.png\n");
     g_test.logged[0] = 0;
-    assert(!vpad_skin_load(at("broken.cfg")) && said("gone.png can't be read: the built-in look"));
+    assert(!load(at("broken.cfg")) && said("gone.png can't be read: the built-in look"));
     assert(!vpad_skin(SNX_VPAD_A));
+}
+
+/* controls_skin while the game runs, as the game's menu and a reload set it: the backend sees it changed once, and
+   applying it makes the atlas again with the skin's rows and puts the controls in with it; a finger on a control lets
+   go. Empty is the built-in look; a name ScarletNX doesn't ship, and no path, is said and the built-in look */
+static void test_switch(const char* tests_skin) {
+    const IniOpt* o = ini_find(g_vpad_ini, "controls_skin");
+    int w, h, yorha_h;
+    u32 version, before;
+    char name[64];
+    assert(o && o->type == INI_TEXT && !g_settings.controls_skin[0] && !vpad_skin_changed());
+    assert(vpad_skin_shipped(0, name, sizeof name) && !strcmp(name, "yorha") &&
+           !vpad_skin_shipped(1, name, sizeof name));
+    /* the shipped one, by its name: read from the files compiled in */
+    assert(vpad_ini("controls_skin", "yorha") && vpad_skin_changed() && !vpad_skin_changed());
+    ui_atlas(&w, &h, &before);
+    g_test.logged[0] = 0;
+    assert(vpad_skin_apply(g_test.sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT));
+    assert(said("vpad skin: yorha, page 0 \"landscape\": 20 images in"));
+    ui_atlas(&w, &h, &version);
+    assert(version == before + 1 && h > ui_skin_y() + 1000);
+    yorha_h = h;
+    assert(vpad_skin(SNX_VPAD_A) && vpad_skin(SNX_VPAD_STICK_L) && vpad_skin(SNX_VPAD_DPAD)->pieces == 4);
+    assert(close_to(vpad_config()->at[SNX_VPAD_A].x, 0.93f) && vpad_skin(SNX_VPAD_A)->round);
+    /* held while it changes: let go */
+    assert(vpad_down(1, 1860, 470, safe) && buttons(NULL) == 1);
+    assert(vpad_ini("controls_skin", tests_skin) && vpad_skin_changed());
+    assert(vpad_skin_apply(g_test.sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT));
+    assert(!buttons(NULL) && !vpad_up(1));
+    ui_atlas(&w, &h, &version);
+    assert(version == before + 2 && h < yorha_h && h > ui_skin_y());
+    assert(close_to(vpad_config()->at[SNX_VPAD_A].x, 0.9f) && !vpad_skin(SNX_VPAD_X));
+    /* empty: the built-in look, the atlas without rows of a skin */
+    assert(vpad_ini("controls_skin", "") && vpad_skin_changed());
+    assert(vpad_skin_apply(g_test.sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT));
+    ui_atlas(&w, &h, &version);
+    assert(h == ui_skin_y() && !vpad_skin(SNX_VPAD_A) && close_to(vpad_config()->at[SNX_VPAD_A].x, 0.93f));
+    /* a name ScarletNX doesn't ship */
+    g_test.logged[0] = 0;
+    assert(vpad_ini("controls_skin", "leafy") && vpad_skin_changed());
+    assert(!vpad_skin_apply(g_test.sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT));
+    assert(said("controls_skin=leafy is neither a skin ScarletNX has (yorha) nor the path of a RetroArch overlay's "
+                ".cfg: the built-in look"));
+    assert(!vpad_skin(SNX_VPAD_A));
+    /* no atlas made (no built-in image): no skin's controls either, they would draw from rows it lacks */
+    assert(vpad_ini("controls_skin", "yorha") && vpad_skin_changed());
+    assert(!vpad_skin_apply(NULL, 0, 0) && !vpad_skin(SNX_VPAD_A));
+    assert(vpad_ini("controls_skin", "") && vpad_skin_changed());
+    vpad_skin_apply(g_test.sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT);
     vpad_ini("controls_b", "0.870 0.600 100");
 }
 
@@ -350,7 +406,7 @@ static void test_skin(void) {
 static void test_shipped(const char* path) {
     int c, i;
     g_test.logged[0] = 0;
-    if (!vpad_skin_load(path)) {
+    if (!load(path)) {
         fprintf(stderr, "%s", g_test.logged);
         assert(!"a shipped skin loads");
     }
@@ -370,6 +426,7 @@ int main(int argc, char** argv) {
     snprintf(g_test.dir, sizeof g_test.dir, "%s", argv[1]);
     SDL_CreateDirectory(g_test.dir);
     test_skin();
+    test_switch(at("skin.cfg"));
     for (i = 2; i < argc; ++i) test_shipped(argv[i]);
     printf(
         "vpad_skin: a RetroArch overlay's controls, images, hit areas and pressed looks, and %d shipped skins passed\n",

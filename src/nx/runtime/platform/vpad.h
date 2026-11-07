@@ -52,9 +52,13 @@ SnxVpadConfig* vpad_config(void);
 #define SNX_VPAD_SIZE_MAX 200
 
 void vpad_defaults(SnxVpadConfig* c); /* the default layout: the skin's places (vpad_skin.h), else the built-in ones */
-/* the skin's controls (vpad_skin_load), copied: those with pieces take its look, hit area and default place, which
-   the places no .ini key set move to; NULL for the built-in look, the atlas's skin rows let go too */
+/* the skin's controls (vpad_skin_read), copied, under ui_lock: those with pieces take its look, hit area and default
+   place, which the places no .ini key set move to, and every finger lets go; NULL for the built-in look */
 void vpad_skin_set(const SnxSkinControl at[SNX_VPAD_COUNT]);
+/* controls_skin was read since the last call: 1 once, for the backend to apply it (vpad_skin_apply) */
+int vpad_skin_changed(void);
+/* the shipped skins' names (dist/controls/skins, compiled in), i from 0: 1 with the name in out, 0 past the last */
+int vpad_skin_shipped(int i, char* out, size_t n);
 /* a control's look from the skin, NULL for the built-in one */
 const SnxSkinControl* vpad_skin(int control);
 const char* vpad_name(int control); /* a control's name, as edit mode shows it: "A", "D-pad" */

@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/vpad.h"
 #include "nx/runtime/platform/controls_atlas.h"
+#include "nx/runtime/platform/controls_skins.h"
 #include "nx/runtime/platform/log.h"
 #include <math.h>
 #include <stdio.h>
@@ -54,7 +55,7 @@ typedef char vpad_order_count[ORDER_COUNT == SNX_VPAD_COUNT ? 1 : -1];
 #define DEADZONE   0.5f  /* of the D-pad's half: rEden's */
 
 #define DEF_SIZE    100 /* a control's, in percent */
-#define FIRST_PLACE 7   /* g_vpad_ini's first place row (settings.txt) */
+#define FIRST_PLACE 8   /* g_vpad_ini's first place row (settings.txt) */
 
 /* the layout the settings' places read into (their values in g_settings) */
 static SnxVpadConfig g_vpad;
@@ -97,6 +98,23 @@ static void placed(void) {
         }
     }
 }
+static int g_skin_changed; /* controls_skin read: the main thread applies it */
+void vpad_skin_choose(const IniOpt* o, const char* v) {
+    (void)o;
+    (void)v;
+    __atomic_store_n(&g_skin_changed, 1, __ATOMIC_RELEASE);
+}
+int vpad_skin_changed(void) { return __atomic_exchange_n(&g_skin_changed, 0, __ATOMIC_ACQ_REL); }
+int vpad_skin_shipped(int i, char* out, size_t n) {
+    size_t k;
+    int seen = 0;
+    for (k = 0; k < snx_controls_skins_count; ++k) /* the table is by skin, a skin's files together */
+        if ((!k || strcmp(snx_controls_skins[k].skin, snx_controls_skins[k - 1].skin)) && seen++ == i) {
+            snprintf(out, n, "%s", snx_controls_skins[k].skin);
+            return 1;
+        }
+    return 0;
+}
 const SnxSkinControl* vpad_skin(int control) {
     return control >= 0 && control < SNX_VPAD_COUNT && g_skin[control].pieces ? &g_skin[control] : NULL;
 }
@@ -105,10 +123,8 @@ void vpad_skin_set(const SnxSkinControl at[SNX_VPAD_COUNT]) {
     vpad_release(); /* a finger on a control whose box moves */
     if (at)
         memcpy(g_skin, at, sizeof g_skin);
-    else {
+    else
         memset(g_skin, 0, sizeof g_skin);
-        ui_skin_set(NULL, 0);
-    }
     if (!g_placed) return; /* placed() puts the defaults in on first use */
     for (c = 0; c < SNX_VPAD_COUNT; ++c)
         if (!g_settings.control_place[c][0]) default_place(c, &g_vpad.at[c]);
