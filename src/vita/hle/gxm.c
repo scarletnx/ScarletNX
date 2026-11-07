@@ -429,6 +429,12 @@ static uint32_t release_fragment_program(VitaProcess* p, VitaThread* t) {
     f->shader = NULL;
     return 0;
 }
+static uint32_t add_ref_fragment_program(VitaProcess* p, VitaThread* t) {
+    GxmFragmentProgram* f = p->gxm ? fragment_of(p->gxm, arg(p, t, 1)) : NULL;
+    if (arg(p, t, 0) != GXM_HANDLE_PATCHER || !f) return SCE_GXM_ERROR_INVALID_POINTER;
+    ++f->references;
+    return 0;
+}
 static uint32_t program_check(VitaProcess* p, VitaThread* t) {
     uint32_t program = arg(p, t, 0);
     if (!program) return SCE_GXM_ERROR_INVALID_POINTER;
@@ -949,6 +955,12 @@ static uint32_t parameter_get_category(VitaProcess* p, VitaThread* t) {
 static uint32_t parameter_get_type(VitaProcess* p, VitaThread* t) {
     return gxp_parameter_type(vita_ptr(p, arg(p, t, 0)));
 }
+static uint32_t parameter_get_component_count(VitaProcess* p, VitaThread* t) {
+    return gxp_parameter_components(vita_ptr(p, arg(p, t, 0)));
+}
+static uint32_t parameter_get_array_size(VitaProcess* p, VitaThread* t) {
+    return gxp_parameter_array_size(vita_ptr(p, arg(p, t, 0)));
+}
 static uint32_t vertex_program_get_program(VitaProcess* p, VitaThread* t) {
     GxmVertexProgram* v = p->gxm ? vertex_of(p->gxm, arg(p, t, 0)) : NULL;
     return v ? v->program : 0;
@@ -1066,6 +1078,7 @@ const VitaHle vita_hle_gxm[] = {
     {0xf103af8au, "sceGxmShaderPatcherUnregisterProgram", ok},
     {0xb7bba6d5u, "sceGxmShaderPatcherCreateVertexProgram", create_vertex_program},
     {0x4ed2e49du, "sceGxmShaderPatcherCreateFragmentProgram", create_fragment_program},
+    {0x4cd2d19fu, "sceGxmShaderPatcherAddRefFragmentProgram", add_ref_fragment_program},
     {0xac1ff2dau, "sceGxmShaderPatcherReleaseVertexProgram", release_vertex_program},
     {0xbe2743d1u, "sceGxmShaderPatcherReleaseFragmentProgram", release_fragment_program},
     {0xed8b6c69u, "sceGxmProgramCheck", program_check},
@@ -1128,6 +1141,8 @@ const VitaHle vita_hle_gxm[] = {
     {0x6af88a5du, "sceGxmProgramParameterGetName", parameter_get_name},
     {0x1997dc17u, "sceGxmProgramParameterGetCategory", parameter_get_category},
     {0x7b9023c3u, "sceGxmProgramParameterGetType", parameter_get_type},
+    {0xbd2998d1u, "sceGxmProgramParameterGetComponentCount", parameter_get_component_count},
+    {0xdba8d061u, "sceGxmProgramParameterGetArraySize", parameter_get_array_size},
     {0xbc52320eu, "sceGxmVertexProgramGetProgram", vertex_program_get_program},
     {0xe0e3b3f8u, "sceGxmFragmentProgramGetProgram", fragment_program_get_program},
     {0xb042a4d2u, "sceGxmSetBackDepthFunc", set_back_depth_func},
