@@ -510,8 +510,11 @@ menus of an Ounce game under `--vk_validation=1` against the same run on feat/ou
    pipeline and on any handle given again.
 6. **`[gpu] Let one worker at most make optimized pipelines`**: the bound `PIPE_OPT_WORKERS`, the stats of the draws'
    waits for a worker, and the setting `vk_pipeline_cache` for cold runs.
-7. Not done: step 8, the warm-up of the parts of the programs that a game ships. See
-   [The warm-up of the shipped programs](#the-warm-up-of-the-shipped-programs-measured).
+7. `[vk] Warm the large shipped programs' parts into the pipeline cache`: the pass warms the part of each shipped
+   program whose SPIR-V is 256 KiB or larger (step 8, below). One worker warms at a time (`WARM_WORKERS`), as the
+   optimized pipelines, and the parts are made into `g_pcache` and dropped, so a draw that meets the program later
+   hits the cache by the SPIR-V. A warm-up of every shipped program is still not done: the 7,403 programs would cost
+   about 18 minutes of worker time in a first run (see [The warm-up of the shipped programs](#the-warm-up-of-the-shipped-programs-measured)).
 
 ## Rejected alternatives
 
