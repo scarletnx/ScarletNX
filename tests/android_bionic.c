@@ -6,6 +6,7 @@
 #include "android/bridge/hle.h"
 #include "android/bridge/hle_impl.h"
 #include "android/bridge/host.h"
+#include <locale.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -315,6 +316,47 @@ static void test_signal_sets(void) {
     }
 }
 
+/* ---- locales ---- */
+
+/* bionic's locales: the C locale alone, a name setting only MB_CUR_MAX, and the host's own locale never set */
+static void test_bionic_locales(void) {
+    char host[256];
+    snprintf(host, sizeof host, "%s", setlocale(LC_ALL, NULL));
+    expect_text("setlocale(LC_ALL, NULL)", (const char*)(uintptr_t)CALL("setlocale", 6, 0), "C.UTF-8");
+    expect_int("MB_CUR_MAX from the start", (int64_t)CALL("__ctype_get_mb_cur_max", 0), 4);
+    expect_text("setlocale(LC_ALL, \"\")", (const char*)(uintptr_t)CALL("setlocale", 6, P("")), "C.UTF-8");
+    expect_int("setlocale of a locale bionic lacks", (int64_t)CALL("setlocale", 6, P("pt_BR.UTF-8")), 0);
+    expect_int("and ENOENT", *hle_errno_location(), 2);
+    expect_int("setlocale of category 13", (int64_t)CALL("setlocale", 13, P("C")), 0);
+    expect_int("and EINVAL", *hle_errno_location(), 22);
+    expect_text("setlocale(LC_ALL, \"POSIX\")", (const char*)(uintptr_t)CALL("setlocale", 6, P("POSIX")), "C");
+    expect_int("MB_CUR_MAX in C", (int64_t)CALL("__ctype_get_mb_cur_max", 0), 1);
+    expect_text("setlocale(LC_CTYPE, \"en_US.UTF-8\")", (const char*)(uintptr_t)CALL("setlocale", 0, P("en_US.UTF-8")),
+                "C.UTF-8");
+    expect_int("MB_CUR_MAX in C.UTF-8", (int64_t)CALL("__ctype_get_mb_cur_max", 0), 4);
+    expect_text("the host's locale, after", setlocale(LC_ALL, NULL), host);
+
+    /* a thread's locale_t: bionic's, which the _l functions take */
+    uint64_t c_locale = CALL("newlocale", 0x1fbf, P("C"), 0);
+    expect_int("newlocale(LC_ALL_MASK, \"C\") made one", c_locale != 0, 1);
+    expect_int("the thread's first uselocale gives LC_GLOBAL_LOCALE", (int64_t)CALL("uselocale", c_locale), -1);
+    expect_int("MB_CUR_MAX in it", (int64_t)CALL("__ctype_get_mb_cur_max", 0), 1);
+    expect_int("uselocale(0) asks", (int64_t)CALL("uselocale", 0), (int64_t)c_locale);
+    expect_int("strtoll_l in it", (int64_t)CALL("strtoll_l", P("-123"), 0, 10, c_locale), -123);
+    expect_int("back to the global locale", (int64_t)CALL("uselocale", (uint64_t)-1), (int64_t)c_locale);
+    expect_int("MB_CUR_MAX there", (int64_t)CALL("__ctype_get_mb_cur_max", 0), 4);
+    uint64_t copy = CALL("duplocale", c_locale);
+    CALL("uselocale", copy);
+    expect_int("MB_CUR_MAX of a copy", (int64_t)CALL("__ctype_get_mb_cur_max", 0), 1);
+    CALL("uselocale", (uint64_t)-1);
+    CALL("freelocale", copy);
+    CALL("freelocale", c_locale);
+    expect_int("newlocale of a locale bionic lacks", (int64_t)CALL("newlocale", 0x1fbf, P("de_DE.UTF-8"), 0), 0);
+    expect_int("and ENOENT", *hle_errno_location(), 2);
+    expect_int("newlocale of LC_ALL's own bit", (int64_t)CALL("newlocale", 0x40, P("C"), 0), 0);
+    expect_int("and EINVAL", *hle_errno_location(), 22);
+}
+
 int main(void) {
     test_printf_signed();
     test_sscanf_reads_its_pointers();
@@ -323,6 +365,7 @@ int main(void) {
     test_libm();
     test_getline();
     test_signal_sets();
+    test_bionic_locales();
     if (g_t.failures) {
         fprintf(stderr, "android_bionic: %d failed\n", g_t.failures);
         return 1;

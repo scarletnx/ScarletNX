@@ -2113,7 +2113,7 @@ const HleSymbol hle_posix[] = {
     A(mktime, g_mktime), A(strftime, g_strftime), A(strftime_l, g_strftime), A(alarm, refused),
     A(setenv, g_setenv), A(openlog, nothing), A(closelog, nothing),
 #else
-    P(gmtime), P(gmtime_r), P(localtime), P(localtime_r), P(mktime), P(strftime), P(strftime_l), P(alarm),
+    P(gmtime), P(gmtime_r), P(localtime), P(localtime_r), P(mktime), P(strftime), PH(strftime_l, strftime), P(alarm),
     P(setenv), P(openlog), P(closelog),
 #endif
     K(getpid, 172), K(getppid, 173), K(gettid, 178), K(getuid, 174), K(geteuid, 175), K(getgid, 176),

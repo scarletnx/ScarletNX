@@ -239,6 +239,7 @@ static _Thread_local struct {
     uint64_t compare;
     int error;              /* the guest's errno, where it is not the host's (hle_impl.h) */
     char unknown_error[32]; /* strerror's text of a number bionic has no text for */
+    uint64_t locale;        /* the guest's uselocale, 0 before its first: bionic's LC_GLOBAL_LOCALE */
 } t_hle_libc;
 
 static int compare_guest(const void* a, const void* b) {
@@ -768,9 +769,90 @@ static const unsigned char* ctype_pointer = ctype_table;
 CTYPE_L(CTYPE_L_ADAPTER)
 #define CTYPE_L_ENTRY(name, ascii) {#name "_l", g_##name##_l, NULL},
 
+/* ---- bionic's locales: the C locale alone, its multibyte characters UTF-8 whatever the locale's name. A name only
+   sets MB_CUR_MAX, 4 for UTF-8's and 1 for the others, and a locale_t is bionic's struct of it. The host's locale, the
+   user's, is neither read nor set ---- */
+
+/* bionic's LC_GLOBAL_LOCALE, and its LC_ALL_MASK: each category's bit, LC_CTYPE (0) to LC_IDENTIFICATION (12), but
+   LC_ALL's (6) */
+#define BIONIC_GLOBAL_LOCALE ((uint64_t)-1)
+enum { BIONIC_LC_ALL = 6, BIONIC_LC_LAST = 12, BIONIC_LC_ALL_MASK = 0x1fbf };
+typedef struct {
+    uint64_t mb_cur_max; /* bionic's struct __locale_t: a size_t */
+} BionicLocale;
+static struct {
+    int ascii; /* setlocale's last name was not UTF-8's: MB_CUR_MAX 1. bionic starts in C.UTF-8 */
+} g_bionic_locale;
+
+static bool locale_known(const char* name) {
+    return !strcmp(name, "") || !strcmp(name, "C") || !strcmp(name, "C.UTF-8") || !strcmp(name, "en_US.UTF-8") ||
+           !strcmp(name, "POSIX");
+}
+static bool locale_utf8(const char* name) { return !name[0] || strstr(name, "UTF-8"); }
+static uint64_t mb_cur_max_of(uint64_t locale) {
+    if (locale == BIONIC_GLOBAL_LOCALE) return __atomic_load_n(&g_bionic_locale.ascii, __ATOMIC_RELAXED) ? 1 : 4;
+    return ((const BionicLocale*)(uintptr_t)locale)->mb_cur_max;
+}
+static uint64_t current_locale(void) { return t_hle_libc.locale ? t_hle_libc.locale : BIONIC_GLOBAL_LOCALE; }
+static uint64_t new_locale(uint64_t mb_cur_max) {
+    BionicLocale* l = malloc(sizeof *l);
+    if (!l) {
+        hle_set_errno(GNU_ENOMEM);
+        return 0;
+    }
+    l->mb_cur_max = mb_cur_max;
+    return (uint64_t)(uintptr_t)l;
+}
+/* setlocale(category, name): "C.UTF-8" or "C"; NULL and ENOENT for a locale bionic lacks */
+static void g_setlocale(CPU* c, void* data) {
+    (void)data;
+    int category = (int)X(0);
+    if (category < 0 || category > BIONIC_LC_LAST) {
+        hle_set_errno(GNU_EINVAL);
+        X(0) = 0;
+        return;
+    }
+    if (X(1) && !locale_known(STR(1))) {
+        hle_set_errno(GNU_ENOENT);
+        X(0) = 0;
+        return;
+    }
+    if (X(1)) __atomic_store_n(&g_bionic_locale.ascii, !locale_utf8(STR(1)), __ATOMIC_RELAXED);
+    X(0) = (uint64_t)(uintptr_t)(__atomic_load_n(&g_bionic_locale.ascii, __ATOMIC_RELAXED) ? "C" : "C.UTF-8");
+}
+/* newlocale(mask, name, base): base is left as it is, as bionic's leaves it */
+static void g_newlocale(CPU* c, void* data) {
+    (void)data;
+    if (((int)X(0) & ~BIONIC_LC_ALL_MASK) || !X(1)) {
+        hle_set_errno(GNU_EINVAL);
+        X(0) = 0;
+        return;
+    }
+    if (!locale_known(STR(1))) {
+        hle_set_errno(GNU_ENOENT);
+        X(0) = 0;
+        return;
+    }
+    X(0) = new_locale(locale_utf8(STR(1)) ? 4 : 1);
+}
+static void g_duplocale(CPU* c, void* data) {
+    (void)data;
+    X(0) = new_locale(mb_cur_max_of(X(0)));
+}
+static void g_freelocale(CPU* c, void* data) {
+    (void)data;
+    if (X(0) != BIONIC_GLOBAL_LOCALE) free(PTR(0));
+}
+/* uselocale(locale): the thread's locale before, LC_GLOBAL_LOCALE before the first; 0 only asks */
+static void g_uselocale(CPU* c, void* data) {
+    (void)data;
+    uint64_t old = current_locale();
+    if (X(0)) t_hle_libc.locale = X(0);
+    X(0) = old;
+}
 static void ctype_get_mb_cur_max(CPU* c, void* data) {
     (void)data;
-    X(0) = 4; /* UTF-8, bionic's only multibyte encoding */
+    X(0) = mb_cur_max_of(current_locale());
 }
 
 /* ---- the system properties ---- */
@@ -1138,8 +1220,6 @@ static void g_malloc_usable_size(CPU* c, void* data) {
 #ifdef _WIN32
 /* ---- Windows: what its C runtime has in another form ---- */
 
-/* the C locale, the only one bionic has: newlocale and uselocale give a locale_t that names it */
-
 /* The CRT's free() takes malloc's blocks alone, and malloc aligns to 16. A block aligned past that is malloc'd
    larger, and its address kept with the block's in a table that free(), realloc() and malloc_usable_size() look in
    first */
@@ -1150,12 +1230,7 @@ static struct {
         size_t size;
     } * items;
     size_t count, capacity;
-    unsigned char locale; /* the locale_t that newlocale and uselocale give: the C locale */
-} g_win = {PTHREAD_MUTEX_INITIALIZER, NULL, 0, 0, 0};
-static void c_locale(CPU* c, void* data) {
-    (void)data;
-    X(0) = (uint64_t)(uintptr_t)&g_win.locale;
-}
+} g_win = {PTHREAD_MUTEX_INITIALIZER, NULL, 0, 0};
 
 /* the table's entry of p, removed: its block, or NULL for a block malloc gave */
 static void* aligned_take(void* p, size_t* size) {
@@ -1386,21 +1461,17 @@ const HleSymbol hle_libc[] = {
     /* long is 32 bits on Windows, 64 in bionic */
     PH(strtol, strtoll), PH(strtoul, strtoull), PH(atol, atoll), PH(strtoll_l, strtoll), PH(strtoull_l, strtoull),
 #else
-    P(strtol), P(strtoul), P(atol), P(strtoll_l), P(strtoull_l),
+    P(strtol), P(strtoul), P(atol), PH(strtoll_l, strtoll), PH(strtoull_l, strtoull), /* a locale_t is bionic's */
 #endif
 #if defined(__linux__)
     P(wcslen), P(wmemchr), P(wmemcmp), P(wmemcpy), P(mbrlen), P(mbrtowc), P(mbsnrtowcs), P(mbsrtowcs), P(mbtowc),
-    P(wcrtomb), P(wcsnrtombs), P(towlower), P(iswlower_l),
+    P(wcrtomb), P(wcsnrtombs), P(towlower), PH(iswlower_l, iswlower),
 #else
     WIDE_FUNCTIONS(WIDE_ENTRY)
 #endif
-    /* locales: the host's C locale, the only one bionic has */
-    P(setlocale), P(localeconv),
-#ifdef _WIN32
-    {"newlocale", c_locale, NULL}, {"uselocale", c_locale, NULL}, {"freelocale", nothing, NULL},
-#else
-    P(newlocale), P(freelocale), P(uselocale),
-#endif
+    /* locales: bionic's, the C locale alone */
+    {"setlocale", g_setlocale, NULL}, {"newlocale", g_newlocale, NULL}, {"duplocale", g_duplocale, NULL},
+    {"freelocale", g_freelocale, NULL}, {"uselocale", g_uselocale, NULL}, P(localeconv),
     /* math */
     T(acos, d_d), T(asin, d_d), T(atan, d_d), T(cos, d_d), T(cosh, d_d), T(exp, d_d), T(exp2, d_d), T(log, d_d),
     T(log10, d_d), T(log2, d_d), T(sin, d_d), T(sinh, d_d), T(sqrt, d_d), T(tan, d_d), T(tanh, d_d),
