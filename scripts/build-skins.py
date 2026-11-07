@@ -8,13 +8,16 @@ each, the second frame its pressed look) and the SVGs they are rendered from, in
 images are as many pixels as the built-in sprites (dist/controls/controls.png), and the controls sit where the
 built-in ones do. The yorha skin is the launcher's yorha theme on the controls: its page and ink, thin lines, square
 markers, the inverted bar of a focused row for a pressed control, and the letters of the menus' font
-(src/common/utilities/font.c), drawn pixel by pixel. Needs rsvg-convert and Pillow; --check needs neither: it compares
-the hashes the .cfg holds with this script, the font and the files.
+(src/common/utilities/font.c), drawn pixel by pixel. The line skin is white lines alone, after the look of libretro's
+flat retropad overlay, drawn here from nothing: outlines and letters of one width on the screen, a faint dark edge
+under them for a bright game, and a pressed control filled white with its mark cut in dark. Needs rsvg-convert and
+Pillow; --check needs neither: it compares the hashes each .cfg holds with this script, the font and the files.
 """
 
 import argparse
 import hashlib
 import io
+import math
 from pathlib import Path
 import re
 import subprocess
@@ -246,6 +249,213 @@ def knob(s, pressed):
     return svg(s, s, body)
 
 
+# ---- the line skin: white lines of one width on the screen, as libretro's flat retropad draws its controls
+WHITE = '#FFFFFF'
+DARK = '#000000'
+LINE = 0.0048  # a line's width, of the screen's height (the retropad's buttons' is about 0.005)
+EDGE = 0.28  # the dark edge under every line: its opacity; it is 2.6 lines wide
+PRESSED = 0.88  # a pressed control's white fill
+# the letters, drawn as lines: polylines in a box one high (y down), and each letter's width. An arc is (cx, cy, rx, ry,
+# from, to) in degrees (y down: a growing angle turns clockwise on the screen), drawn every 5 degrees
+GLYPHS_LINE = {
+    'A': (0.76, [[(0, 1), (0.38, 0), (0.76, 1)], [(0.15, 0.66), (0.61, 0.66)]]),
+    'B': (
+        0.64,
+        [
+            [(0.36, 0.48), (0, 0.48), (0, 0), (0.36, 0), ('arc', 0.36, 0.24, 0.24, 0.24, -90, 90)],
+            [(0, 0.48), (0, 1), (0.38, 1), ('arc', 0.38, 0.74, 0.26, 0.26, 90, -90), (0, 0.48)],
+        ],
+    ),
+    'X': (0.7, [[(0, 0), (0.7, 1)], [(0.7, 0), (0, 1)]]),
+    'Y': (0.72, [[(0, 0), (0.36, 0.52), (0.72, 0)], [(0.36, 0.52), (0.36, 1)]]),
+    'L': (0.52, [[(0, 0), (0, 1), (0.52, 1)]]),
+    'R': (
+        0.64,
+        [[(0, 1), (0, 0), (0.36, 0), ('arc', 0.36, 0.25, 0.25, 0.25, -90, 90), (0, 0.5)], [(0.3, 0.5), (0.64, 1)]],
+    ),
+    'Z': (0.62, [[(0, 0), (0.62, 0), (0, 1), (0.62, 1)]]),
+    '3': (0.56, [[('arc', 0.27, 0.25, 0.27, 0.25, 200, 450)], [('arc', 0.28, 0.75, 0.28, 0.25, 270, 520)]]),
+}
+
+
+def glyph_points(item):
+    """an arc's points; any other item is a point already"""
+    if item[0] != 'arc':
+        return [item]
+    _, cx, cy, rx, ry, a0, a1 = item
+    steps = max(2, round(abs(a1 - a0) / 5))
+    angles = (math.radians(a0 + (a1 - a0) * k / steps) for k in range(steps + 1))
+    return [(cx + rx * math.cos(a), cy + ry * math.sin(a)) for a in angles]
+
+
+def line_text(chars, cx, cy, cap):
+    """chars as line glyphs, cap pixels high, their middle at cx, cy: a path's d"""
+    gap = 0.24
+    width = sum(GLYPHS_LINE[c][0] for c in chars) + gap * (len(chars) - 1)
+    x0, y0, d = cx - width * cap / 2, cy - cap / 2, ''
+    for c in chars:
+        w, strokes = GLYPHS_LINE[c]
+        for stroke in strokes:
+            points = [q for item in stroke for q in glyph_points(item)]
+            d += 'M' + 'L'.join(f'{x0 + x * cap:.2f} {y0 + y * cap:.2f}' for x, y in points)
+        x0 += (w + gap) * cap
+    return d
+
+
+class Lines:
+    """a control drawn in lines: its outline (white, and filled white when pressed), the marks on it (white lines and
+    shapes, dark on a pressed one), written over a dark edge as wide as 2.6 lines"""
+
+    def __init__(self, w, h, scale):
+        self.w, self.h = w, h
+        self.lw = LINE * scale  # scale: the image's pixels of the screen's height
+        self.margin = self.lw * 1.3 + 1  # the dark edge of a line along the image's side stays on it
+        self.shape, self.marks, self.solid = None, [], []
+
+    def outline(self, d, width=1.0, pressed=None):
+        """the control's outline; pressed, the shape filled (the outline's own unless an open one gives another)"""
+        self.shape = (d, width, pressed or d)
+
+    def mark(self, d, width=1.0):
+        self.marks.append((d, width))
+
+    def fill(self, d, edge=True):
+        self.solid.append((d, edge))
+
+    def svg(self, pressed, transform=''):
+        lw, body = self.lw, ''
+        edge = f'stroke="{DARK}" stroke-opacity="{EDGE}" stroke-linecap="round" stroke-linejoin="round"'
+        for d, k in [self.shape[:2]] + self.marks:
+            body += f'<path d="{d}" fill="none" {edge} stroke-width="{lw * k * 2.6:.2f}"/>\n'
+        for d, has_edge in self.solid:
+            if has_edge:
+                body += f'<path d="{d}" fill="{DARK}" fill-opacity="{EDGE}" {edge} stroke-width="{lw * 1.6:.2f}"/>\n'
+        if pressed:
+            body += f'<path d="{self.shape[2]}" fill="{WHITE}" fill-opacity="{PRESSED}"/>\n'
+        ink = DARK if pressed else WHITE
+        for (d, k), colour in [(self.shape[:2], WHITE)] + [(m, ink) for m in self.marks]:
+            body += f'<path d="{d}" fill="none" stroke="{colour}" stroke-width="{lw * k:.2f}" stroke-linecap="round" '
+            body += 'stroke-linejoin="round"/>\n'
+        for d, _ in self.solid:
+            body += f'<path d="{d}" fill="{ink}"/>\n'
+        transform = f' transform="{transform}"' if transform else ''
+        return svg(self.w, self.h, f'<g shape-rendering="geometricPrecision"{transform}>\n{body}</g>\n')
+
+
+def circle_d(cx, cy, r):
+    return f'M{cx - r:.2f} {cy:.2f}A{r:.2f} {r:.2f} 0 1 0 {cx + r:.2f} {cy:.2f}A{r:.2f} {r:.2f} 0 1 0 {cx - r:.2f} {cy:.2f}Z'
+
+
+def rounded_d(x0, y0, x1, y1, radii):
+    """a rectangle, its corners' radii top left, top right, bottom right, bottom left"""
+    a, b, c, e = radii
+    return (
+        f'M{x0 + a:.2f} {y0:.2f}H{x1 - b:.2f}A{b:.2f} {b:.2f} 0 0 1 {x1:.2f} {y0 + b:.2f}V{y1 - c:.2f}'
+        f'A{c:.2f} {c:.2f} 0 0 1 {x1 - c:.2f} {y1:.2f}H{x0 + e:.2f}A{e:.2f} {e:.2f} 0 0 1 {x0:.2f} {y1 - e:.2f}'
+        f'V{y0 + a:.2f}A{a:.2f} {a:.2f} 0 0 1 {x0 + a:.2f} {y0:.2f}Z'
+    )
+
+
+def arrowhead_d(cx, cy, size, direction):
+    """a filled arrowhead, size wide, pointing up or down"""
+    h = size * 0.62 * (1 if direction == 'down' else -1)
+    return f'M{cx - size / 2:.2f} {cy - h / 2:.2f}L{cx + size / 2:.2f} {cy - h / 2:.2f}L{cx:.2f} {cy + h / 2:.2f}Z'
+
+
+def line_face(letter, s, size, pressed):
+    """A, B, X and Y: a circle and its letter"""
+    g = Lines(s, s, s / size)
+    g.outline(circle_d(s / 2, s / 2, s / 2 - g.margin))
+    g.mark(line_text(letter, s / 2, s / 2, s * 0.38))
+    return g.svg(pressed)
+
+
+def line_small(mark, s, size, pressed):
+    """+, - and Home in a circle; Capture a rounded square with a circle in it, as the console's"""
+    g = Lines(s, s, s / size)
+    m, c, k = g.margin, s / 2, s * 0.2
+    g.outline(rounded_d(m, m, s - m, s - m, [s * 0.16] * 4) if mark == 'capture' else circle_d(c, c, c - m))
+    if mark == '-':
+        g.mark(f'M{c - k:.2f} {c:.2f}H{c + k:.2f}')
+    elif mark == '+':
+        g.mark(f'M{c - k:.2f} {c:.2f}H{c + k:.2f}M{c:.2f} {c - k:.2f}V{c + k:.2f}')
+    elif mark == 'home':  # a roof over a house
+        g.mark(
+            f'M{c - s * 0.25:.2f} {c + s * 0.02:.2f}L{c:.2f} {c - s * 0.22:.2f}L{c + s * 0.25:.2f} {c + s * 0.02:.2f}'
+        )
+        g.mark(f'M{c - s * 0.16:.2f} {c - s * 0.05:.2f}V{c + s * 0.21:.2f}H{c + s * 0.16:.2f}V{c - s * 0.05:.2f}')
+    else:
+        g.mark(circle_d(c, c, s * 0.15))
+    return g.svg(pressed)
+
+
+def line_click(letter, s, size, pressed):
+    """L3 and R3: a circle, its letter and 3, and an arrowhead under them for the stick's press"""
+    g = Lines(s, s, s / size)
+    g.outline(circle_d(s / 2, s / 2, s / 2 - g.margin))
+    g.mark(line_text(letter + '3', s / 2, s * 0.43, s * 0.24))
+    g.fill(arrowhead_d(s / 2, s * 0.7, s * 0.16, 'down'))
+    return g.svg(pressed)
+
+
+def line_shoulder(letters, w, h, size, right, trigger, pressed):
+    """L, R, ZL and ZR: a rounded bar and its letters; a trigger's outer top corner rounder"""
+    g = Lines(w, h, max(w, h) / size)
+    m = g.margin
+    r = (h - 2 * m) * 0.28
+    big = (h - 2 * m) * 0.62 if trigger else r
+    g.outline(rounded_d(m, m, w - m, h - m, [r, big, r, r] if right else [big, r, r, r]))
+    g.mark(line_text(letters, w / 2, h / 2, h * 0.38))
+    return g.svg(pressed)
+
+
+def line_arm(direction, w, h, size, pressed):
+    """one of the D-pad's four: three sides of its arm, open to the middle, where the next arm's side meets them, and
+    an arrowhead pointing out. Drawn pointing up, then turned"""
+    across, length = (w, h) if direction in ('up', 'down') else (h, w)
+    g = Lines(w, h, DPAD / size)
+    m = g.margin
+    inner = length - across / 2 + m  # the middle square's corner, where two arms' sides meet
+    sides = f'M{m:.2f} {inner:.2f}V{m:.2f}H{across - m:.2f}V{inner:.2f}'
+    g.outline(sides, pressed=sides + 'Z')
+    g.fill(arrowhead_d(across / 2, (inner + m) * 0.42, across * 0.3, 'up'))
+    turn = {
+        'up': '',
+        'down': f'rotate(180 {w / 2} {h / 2})',
+        'left': f'translate(0 {h}) rotate(-90)',
+        'right': f'translate({w} 0) rotate(90)',
+    }
+    return g.svg(pressed, turn[direction])
+
+
+def line_ring(s, size):
+    """a stick's ring: one thin circle"""
+    g = Lines(s, s, s / size)
+    g.outline(circle_d(s / 2, s / 2, s / 2 - g.margin), 0.8)
+    return g.svg(False)
+
+
+def line_knob(s, size, pressed):
+    """a stick's knob, as wide as the ring over 1.66 (as the built-in one): a circle, a smaller one in it filled with
+    dots, as the retropad's knob is; drawn on a canvas as large as the ring, as RetroArch draws a stick's image over
+    the whole stick"""
+    g = Lines(s, s, s / size)
+    r, c = s / 1.66 / 2, s / 2
+    g.outline(circle_d(c, c, r))
+    g.mark(circle_d(c, c, r * 0.58), 0.7)
+    dot, step, dots = g.lw * 0.42, g.lw * 2.6, ''
+    rows = int(r / (step * 0.866)) + 1
+    for j in range(-rows, rows + 1):
+        y = c + j * step * 0.866
+        for i in range(-rows - 1, rows + 2):
+            x = c + (i + (j % 2) * 0.5) * step
+            if math.hypot(x - c, y - c) < r * 0.58 - g.lw * 1.2:
+                dots += f'M{x - dot:.2f} {y:.2f}a{dot:.2f} {dot:.2f} 0 1 0 {2 * dot:.2f} 0a{dot:.2f} {dot:.2f} 0 1 0 '
+                dots += f'{-2 * dot:.2f} 0Z'
+    g.fill(dots, edge=False)
+    return g.svg(pressed)
+
+
 # a control's place and size as the built-in look has them (vpad.c's VPAD_CONTROLS): its middle, and its longer side
 # of the screen's height
 FACE, SMALL, CLICK, BAR = 156, 104, 156, (368, 148)
@@ -293,7 +503,31 @@ CONTROLS = [
 DPAD_AT, DPAD_SIZE = (0.23, 0.78), 0.25
 STICKS = [('analog_left', 0.12, 0.47), ('analog_right', 0.77, 0.78)]
 STICK_SIZE = 0.30
-SKIN = 'yorha'
+SIZE = {image: size for _, image, _, _, _, size, _ in CONTROLS}  # an image's control's longer side, of the screen
+LINE_IMAGES = {  # the line skin's images: their drawings, normal and pressed
+    'a': lambda p: line_face('A', FACE, SIZE['a'], p),
+    'b': lambda p: line_face('B', FACE, SIZE['b'], p),
+    'x': lambda p: line_face('X', FACE, SIZE['x'], p),
+    'y': lambda p: line_face('Y', FACE, SIZE['y'], p),
+    'plus': lambda p: line_small('+', SMALL, SIZE['plus'], p),
+    'minus': lambda p: line_small('-', SMALL, SIZE['minus'], p),
+    'home': lambda p: line_small('home', SMALL, SIZE['home'], p),
+    'capture': lambda p: line_small('capture', SMALL, SIZE['capture'], p),
+    'l3': lambda p: line_click('L', CLICK, SIZE['l3'], p),
+    'r3': lambda p: line_click('R', CLICK, SIZE['r3'], p),
+    'l': lambda p: line_shoulder('L', *BAR, SIZE['l'], False, False, p),
+    'r': lambda p: line_shoulder('R', *BAR, SIZE['r'], True, False, p),
+    'zl': lambda p: line_shoulder('ZL', *BAR, SIZE['zl'], False, True, p),
+    'zr': lambda p: line_shoulder('ZR', *BAR, SIZE['zr'], True, True, p),
+    'up': lambda p: line_arm('up', *ARM, DPAD_SIZE, p),
+    'down': lambda p: line_arm('down', *ARM, DPAD_SIZE, p),
+    'left': lambda p: line_arm('left', ARM[1], ARM[0], DPAD_SIZE, p),
+    'right': lambda p: line_arm('right', ARM[1], ARM[0], DPAD_SIZE, p),
+    'knob': lambda p: line_knob(STICK, STICK_SIZE, p),
+}
+LINE_STILL = {'ring': lambda: line_ring(STICK, STICK_SIZE)}
+# each skin's images, and those with no pressed look
+SKINS = {'line': (LINE_IMAGES, LINE_STILL), 'yorha': (IMAGES, STILL)}
 
 
 def ranges(size, pixels):
@@ -361,23 +595,16 @@ def skin_files(folder):
     return sorted(folder.glob('*.png')) + sorted((folder / 'svg').glob('*.svg'))
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--check', action='store_true', help='fail when the skins were not made by this script')
-    args = parser.parse_args()
-    folder = ROOT / 'dist/controls/skins' / SKIN
-    cfg = folder / f'{SKIN}.cfg'
-    script = hashlib.sha256(lf(Path(__file__)) + b'\0' + lf(FONT)).hexdigest()
-    if args.check:
-        text_ = cfg.read_text()
-        if f'script {script}' not in text_ or f'files {digest(skin_files(folder))}' not in text_:
-            raise SystemExit('dist/controls/skins is not what scripts/build-skins.py makes: run it')
-        return
+def build(skin, script):
+    """skin's SVGs, images and .cfg into dist/controls/skins/<skin>"""
     from PIL import Image
 
+    images, still = SKINS[skin]
+    folder = ROOT / 'dist/controls/skins' / skin
+    cfg = folder / f'{skin}.cfg'
     (folder / 'svg').mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as temporary:
-        for name, draw in IMAGES.items():
+        for name, draw in images.items():
             frames = []
             for pressed in (False, True):
                 source = draw(pressed)
@@ -390,7 +617,7 @@ def main():
             )
             (folder / f'{name}.png').write_bytes(out.getvalue())
             assert Image.open(folder / f'{name}.png').n_frames == 2, name
-        for name, draw in STILL.items():
+        for name, draw in still.items():
             source = draw()
             (folder / 'svg' / f'{name}.svg').write_text(source)
             render(source, *pixels_of(source), temporary).save(folder / f'{name}.png', optimize=True)
@@ -398,7 +625,7 @@ def main():
     head = [
         '# SPDX-License-Identifier: GPL-3.0-or-later',
         '# Copyright 2026 the ScarletNX contributors',
-        "# The on-screen controls' yorha skin, a RetroArch overlay (runtime/platform/vpad_skin.c reads it). Made by",
+        f"# The on-screen controls' {skin} skin, a RetroArch overlay (runtime/platform/vpad_skin.c reads it). Made by",
         '# scripts/build-skins.py from the drawings in svg/: edit the script, not these files.',
         f'# script {script}',
         f'# files {digest(skin_files(folder))}',
@@ -412,9 +639,25 @@ def main():
     cfg.write_text('\n'.join(head + lines) + '\n')
     size = sum(p.stat().st_size for p in folder.glob('*.png'))
     print(
-        f'{cfg.relative_to(ROOT)}: {count} descriptors, {len(IMAGES) + len(STILL)} images, {size} bytes',
+        f'{cfg.relative_to(ROOT)}: {count} descriptors, {len(images) + len(still)} images, {size} bytes',
         file=sys.stderr,
     )
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--check', action='store_true', help='fail when the skins were not made by this script')
+    args = parser.parse_args()
+    script = hashlib.sha256(lf(Path(__file__)) + b'\0' + lf(FONT)).hexdigest()
+    for skin in SKINS:
+        if not args.check:
+            build(skin, script)
+            continue
+        folder = ROOT / 'dist/controls/skins' / skin
+        cfg = folder / f'{skin}.cfg'
+        text_ = cfg.read_text() if cfg.is_file() else ''
+        if f'script {script}' not in text_ or f'files {digest(skin_files(folder))}' not in text_:
+            raise SystemExit(f'dist/controls/skins/{skin} is not what scripts/build-skins.py makes: run it')
 
 
 if __name__ == '__main__':

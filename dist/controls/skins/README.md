@@ -2,9 +2,9 @@
 
 A skin is a [RetroArch overlay](https://docs.libretro.com/development/retroarch/input/overlay/): a `.cfg` and the PNGs it
 names, as libretro's [common-overlays](https://github.com/libretro/common-overlays) are made. The game's `.ini` picks
-one with `controls_skin`: empty for the built-in look, a skin of this folder by its name (`yorha`), or the path of any
-overlay's `.cfg`. The skins here are compiled into the runtime (`cmake/controls_skins.cmake`), so every system has them;
-a change of `controls_skin` while the game runs takes effect at once.
+one with `controls_skin`: empty for the built-in look, a skin of this folder by its name (`line`, `yorha`), or the path
+of any overlay's `.cfg`. The skins here are compiled into the runtime (`cmake/controls_skins.cmake`), so every system
+has them; a change of `controls_skin` while the game runs takes effect at once.
 `src/nx/runtime/platform/vpad_skin.c` reads, of its pages whose name has no `portrait`, the one that gives the most of
 the controls below a look (the first of those: libretro's `retropad.cfg` gives its `landscape-both-analog`, with both
 sticks), placed from 0 to 1 (`normalized = true`):
@@ -20,8 +20,16 @@ sticks), placed from 0 to 1 (`normalized = true`):
 Every other descriptor is left out, said in the log with why, and a control the skin has none for keeps the built-in
 look. Sizes follow the page's `aspect_ratio` (16:9 when it has none).
 
-`yorha/` is ScarletNX's own, drawn by `scripts/build-skins.py` as the launcher's `yorha` theme looks: its page and ink,
-thin lines, square markers, a pressed control inverted as a focused row is, and the letters of the menus' font
-(`src/common/utilities/font.c`) pixel by pixel. The SVGs are in `yorha/svg/`, each rendered as many pixels as the
-built-in sprite of its control. After changing the script, run it and commit what it writes; `--check` (the
-`controls_skins_current` test) fails when the files are not what it and the font make.
+`line/` and `yorha/` are ScarletNX's own, drawn by `scripts/build-skins.py`, every control where the built-in look has
+it:
+
+- `line`: white lines alone, after the look of libretro's flat
+  [retropad](https://github.com/libretro/common-overlays/tree/master/gamepads/flat) (none of its art: the script draws
+  every line, letters included): one line width on the screen, a faint dark edge under the lines for a bright game,
+  sticks as a ring and a knob with a field of dots, and a pressed control filled white with its mark in dark.
+- `yorha`: the launcher's `yorha` theme: its page and ink, thin lines, square markers, a pressed control inverted as a
+  focused row is, and the letters of the menus' font (`src/common/utilities/font.c`) pixel by pixel.
+
+The SVGs are in each skin's `svg/`, each rendered as many pixels as the built-in sprite of its control. After changing
+the script, run it and commit what it writes; `--check` (the `controls_skins_current` test) fails when the files are
+not what it and the font make.

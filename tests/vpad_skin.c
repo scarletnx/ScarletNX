@@ -439,8 +439,9 @@ static void test_switch(const char* tests_skin) {
     u32 version, before;
     char name[64];
     assert(o && o->type == INI_TEXT && !g_settings.controls_skin[0] && !vpad_skin_changed());
-    assert(vpad_skin_shipped(0, name, sizeof name) && !strcmp(name, "yorha") &&
-           !vpad_skin_shipped(1, name, sizeof name));
+    assert(vpad_skin_shipped(0, name, sizeof name) && !strcmp(name, "line"));
+    assert(vpad_skin_shipped(1, name, sizeof name) && !strcmp(name, "yorha") &&
+           !vpad_skin_shipped(2, name, sizeof name));
     /* the shipped one, by its name: read from the files compiled in */
     assert(vpad_ini("controls_skin", "yorha") && vpad_skin_changed() && !vpad_skin_changed());
     ui_atlas(&w, &h, &before);
@@ -452,13 +453,20 @@ static void test_switch(const char* tests_skin) {
     yorha_h = h;
     assert(vpad_skin(SNX_VPAD_A) && vpad_skin(SNX_VPAD_STICK_L) && vpad_skin(SNX_VPAD_DPAD)->pieces == 4);
     assert(close_to(vpad_config()->at[SNX_VPAD_A].x, 0.93f) && vpad_skin(SNX_VPAD_A)->round);
+    /* the other shipped one: its images as large as yorha's, the same rows */
+    assert(vpad_ini("controls_skin", "line") && vpad_skin_changed());
+    g_test.logged[0] = 0;
+    assert(vpad_skin_apply(g_test.sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT));
+    assert(said("vpad skin: line, page 0 \"landscape\": 20 images in"));
+    ui_atlas(&w, &h, &version);
+    assert(version == before + 2 && h == yorha_h && vpad_skin(SNX_VPAD_STICK_R)->knob == 1);
     /* held while it changes: let go */
     assert(vpad_down(1, 1860, 470, safe) && buttons(NULL) == 1);
     assert(vpad_ini("controls_skin", tests_skin) && vpad_skin_changed());
     assert(vpad_skin_apply(g_test.sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT));
     assert(!buttons(NULL) && !vpad_up(1));
     ui_atlas(&w, &h, &version);
-    assert(version == before + 2 && h < yorha_h && h > ui_skin_y());
+    assert(version == before + 3 && h < yorha_h && h > ui_skin_y());
     assert(close_to(vpad_config()->at[SNX_VPAD_A].x, 0.9f) && !vpad_skin(SNX_VPAD_X));
     /* empty: the built-in look, the atlas without rows of a skin */
     assert(vpad_ini("controls_skin", "") && vpad_skin_changed());
@@ -469,8 +477,9 @@ static void test_switch(const char* tests_skin) {
     g_test.logged[0] = 0;
     assert(vpad_ini("controls_skin", "leafy") && vpad_skin_changed());
     assert(!vpad_skin_apply(g_test.sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT));
-    assert(said("controls_skin=leafy is neither a skin ScarletNX has (yorha) nor the path of a RetroArch overlay's "
-                ".cfg: the built-in look"));
+    assert(
+        said("controls_skin=leafy is neither a skin ScarletNX has (line, yorha) nor the path of a RetroArch overlay's "
+             ".cfg: the built-in look"));
     assert(!vpad_skin(SNX_VPAD_A));
     /* no atlas made (no built-in image): no skin's controls either, they would draw from rows it lacks */
     assert(vpad_ini("controls_skin", "yorha") && vpad_skin_changed());
