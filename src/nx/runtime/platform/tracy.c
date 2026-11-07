@@ -505,40 +505,6 @@ static uint16_t g_gpu_query[SNX_TRACY_GPU_CTX];
 
 static int gpu_ctx_ok(int ctx) { return ctx >= 0 && ctx < SNX_TRACY_GPU_CTX; }
 
-/* A GPU zone's source location, cached per name and per connection. The client gives each allocation a block of its
-   own and tells its server of it once, so a zone for a name this connection has already announced takes that one:
-   a render pass's zone would otherwise allocate a block for every pass, and a draw's (vk_gpu_draw_profile) one for
-   every draw. A new connection has a new server, which knows none of the ids before it: the cache is cleared, and
-   the names are announced to it again. */
-#define GPU_NAMES 128
-static struct {
-    char name[64]; /* the zone's name, "" for a slot holding none */
-    uint32_t color;
-    uint64_t srcloc; /* the client's block for it, 0 until one is asked for */
-} g_gpu_name[GPU_NAMES];
-static uint64_t g_gpu_name_conn;
-static uint64_t gpu_zone_srcloc(const char* name, size_t len, uint32_t color, uint64_t conn) {
-    uint64_t srcloc, h;
-    if (conn != g_gpu_name_conn) {
-        g_gpu_name_conn = conn;
-        memset(g_gpu_name, 0, sizeof g_gpu_name);
-    }
-    if (len >= sizeof g_gpu_name[0].name) /* too long to keep: one block, as it was */
-        return ___tracy_alloc_srcloc_name(0, __FILE__, sizeof __FILE__ - 1, __func__, sizeof __func__ - 1, name, len,
-                                          color);
-    h = snx_fnv1a(SNX_FNV_BASIS, name, len) % GPU_NAMES;
-    if (g_gpu_name[h].srcloc && g_gpu_name[h].color == color && !memcmp(g_gpu_name[h].name, name, len + 1))
-        return g_gpu_name[h].srcloc;
-    srcloc =
-        ___tracy_alloc_srcloc_name(0, __FILE__, sizeof __FILE__ - 1, __func__, sizeof __func__ - 1, name, len, color);
-    if (srcloc) { /* a name this slot held before is not the server's any more: this one takes its place */
-        memcpy(g_gpu_name[h].name, name, len + 1);
-        g_gpu_name[h].color = color;
-        g_gpu_name[h].srcloc = srcloc;
-    }
-    return srcloc;
-}
-
 int snx_tracy_gpu_context(int ctx, int64_t gpu_time, float period, int calibrated, const char* name) {
     int announced = 0;
     if (!gpu_ctx_ok(ctx) || !snx_tracy_enter()) return 0;
@@ -561,8 +527,10 @@ uint16_t snx_tracy_gpu_zone_begin(const char* name, uint32_t color, int ctx, uin
     if (ep) *ep = 0;
     if (!gpu_ctx_ok(ctx) || !name || !*name || !snx_tracy_enter()) return 0;
     if (TracyCIsConnected && g_gpu_sent[ctx]) {
-        /* the client copies the name at the allocation, so one srcloc a name is all it needs */
-        u64 srcloc = gpu_zone_srcloc(name, strlen(name), color, snx_tracy_connection_id());
+        /* One block a zone, the client's to free once it has sent it (TracyProfiler's
+           GpuZoneBeginAllocSrcLocSerial): a per-draw name is a new one every draw, which is what this path is for */
+        u64 srcloc = ___tracy_alloc_srcloc_name(0, __FILE__, sizeof __FILE__ - 1, __func__, sizeof __func__ - 1,
+                                                name, strlen(name), color);
         if (srcloc) {
             uint16_t id = (uint16_t)(g_gpu_query[ctx] + 1);
             if (!id) id = 1; /* 0 is the caller's "none" */
