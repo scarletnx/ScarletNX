@@ -152,6 +152,9 @@ typedef struct {
     /* VK_EXT_provoking_vertex's provokingVertexLast: flat inputs take a primitive's last vertex, as the 3D engine's
        PROVOKING_VERTEX (0x5A1) can ask */
     int has_provoking_last;
+    /* VK_EXT_primitive_topology_list_restart: the guest's restart index restarts lists as it does strips (render.c),
+       and patch lists with its patch list feature */
+    int has_list_restart, has_patch_list_restart;
     /* VK_EXT_conservative_rasterization: conservative rasterization (CONSERVATIVE_RASTER, 0x452), dilated by at most
        conservative_extra pixels (maxExtraPrimitiveOverestimationSize) */
     int has_conservative;
