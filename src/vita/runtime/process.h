@@ -82,6 +82,7 @@ enum {
     VITA_WAIT_GXM,        /* object-less: the GPU's queue drained (vita/hle/gxm.c) */
     VITA_WAIT_COND,       /* object, a = the mutex it relocks */
     VITA_WAIT_RWLOCK,     /* object, a = 1 to write, 0 to read */
+    VITA_WAIT_SIGNAL,     /* until sceKernelSendSignal sets the thread's signal_pending */
 };
 typedef struct {
     uint32_t kind, object, a, b, out;
@@ -89,6 +90,12 @@ typedef struct {
     uint64_t deadline; /* host monotonic ns, 0 for none */
 } VitaWait;
 struct VitaProcess;
+struct VitaThread;
+typedef struct {
+    uint32_t lr, sp;
+    uint32_t (*next)(struct VitaProcess* p, struct VitaThread* t, void* context);
+    void* context;
+} VitaCallFrame;
 typedef struct VitaThread {
     SnxArmCPU cpu;
     uint32_t state, uid;
@@ -100,15 +107,18 @@ typedef struct VitaThread {
        with where sceFiberRun writes what the fiber returns to it */
     uint32_t fiber, fiber_out;
     SnxArmCPU own;
-    /* an import calling guest code (vita/hle/hle.h: vita_hle_guest_call): where the import returns to in the end,
-       the stack it was called with, what runs once the guest function returns */
+    /* a guest function called by an import, with nested guest calls supported */
     struct {
-        bool active, redirected;
+        bool active, redirected, in_callback;
         uint32_t lr, sp;
         uint32_t (*next)(struct VitaProcess* p, struct VitaThread* t, void* context);
         void* context;
+        VitaCallFrame stack[16];
+        unsigned depth;
     } call;
     int32_t exit_status;
+    /* sceKernelSendSignal's flag: set until the thread's next sceKernelWaitSignal takes it */
+    bool signal_pending;
     VitaWait wait;
     uint64_t seq; /* when it last ran: the scheduler takes the ready thread that waited longest */
 } VitaThread;
@@ -229,6 +239,8 @@ typedef struct VitaProcess {
     /* the common dialog open (vita/hle/dialog.c): which one (0 for none), its status and the result it ends with */
     struct {
         uint32_t kind, status, result;
+        /* the save data dialog's: the phase it is in, the mode it shows, the slot and the game's pointer for its result */
+        uint32_t substatus, mode, slot, userdata;
     } dialog;
     /* the network's state (vita/hle/net.c), made at its first use */
     struct VitaNet* net;
@@ -275,6 +287,7 @@ uint64_t vita_deadline(VitaProcess* p, uint32_t timeout);
 uint64_t vita_now_ns(void);
 /* the thread ends with status (its waiters are told by their wait) */
 void vita_thread_end(VitaProcess* p, VitaThread* t, int32_t status);
+bool vita_in_module_start(const VitaThread* t);
 
 /* Runs the game until it exits, its window closes or seconds pass (0: no limit): 0, or 1 after a fault (reported) */
 int vita_run(VitaProcess* p, double seconds);

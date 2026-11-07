@@ -125,4 +125,6 @@ uint32_t vita_mp4_unit_size(VitaProcess* p, uint32_t address);
 void vita_fiber_ended(VitaProcess* p, VitaThread* t);
 /* display.c: a vblank: the framebuffer shown, the window's events read. False once the player closed the window */
 bool vita_display_vblank(VitaProcess* p);
+/* misc.c: whether the game made save data slot id */
+bool vita_savedata_slot_exists(VitaProcess* p, uint32_t id);
 #endif

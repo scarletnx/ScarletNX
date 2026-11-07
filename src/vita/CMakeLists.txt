@@ -18,7 +18,7 @@ add_library(snx_vita_program STATIC
     aot/compiler.c aot/load.c
     runtime/process.c runtime/run.c runtime/jit.c runtime/lockstep.c runtime/watch.c
     hle/hle.c hle/kernel.c hle/io.c hle/ctrl.c hle/display.c hle/audio.c hle/misc.c hle/gxm.c hle/heap.c hle/libc.c hle/fiber.c hle/ngs.c
-    hle/mp4.c hle/videodec.c hle/audiodec.c hle/dialog.c hle/net.c hle/trophy.c
+    hle/mp4.c hle/videodec.c hle/audiodec.c hle/dialog.c hle/net.c hle/trophy.c hle/psarc.c
     gpu/present.c gpu/render.c gpu/vk.c "${volk_SOURCE_DIR}/volk.c"
     platform/input.c)
 # FFmpeg: the movies' demuxer and decoders (hle/mp4.c, videodec.c, audiodec.c); scarletnx-filesystem: the game

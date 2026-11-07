@@ -46,8 +46,15 @@ bool vita_display_vblank(VitaProcess* p) {
     return vita_present_vblank(p);
 }
 
+/* sceDisplayGetRefreshRate(float* rate): the screen's 59.94005 Hz */
+static uint32_t get_refresh_rate(VitaProcess* p, VitaThread* t) {
+    uint32_t at = vita_arg(p, t, 0);
+    if (at && vita_mapped(p, at, 4)) vita_write32(p, at, 0x426fc29cu);
+    return 0;
+}
 const VitaHle vita_hle_display[] = {
     {0x7a410b64u, "sceDisplaySetFrameBuf", set_frame_buf},
+    {0xa08ca60du, "sceDisplayGetRefreshRate", get_refresh_rate},
     {0x42ae6bbcu, "sceDisplayGetFrameBuf", get_frame_buf},
     {0x5795e898u, "sceDisplayWaitVblankStart", wait_vblank_start},
     {0x78b41b92u, "sceDisplayWaitVblankStartCB", wait_vblank_start},

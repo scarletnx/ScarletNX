@@ -173,6 +173,90 @@ static void net(VitaProcess* p, VitaThread* t, uint32_t mem, uint32_t end) {
     assert(CALL(n, "sceNpCmpNpId", id, id) == 0);
 }
 
+static void ngs_template1(VitaProcess* p, VitaThread* t, uint32_t mem) {
+    const VitaHle* n = vita_hle_ngs;
+    uint32_t system = mem + 0x2000, params = mem + 0x2100, description = mem + 0x2200;
+    uint32_t required = mem + 0x2300, buffer_info = mem + 0x2400, rack_out = mem + 0x2500;
+    uint32_t patch_info = mem + 0x2600, patch_out = mem + 0x2700, voice_info = mem + 0x2800;
+    uint32_t matrix = mem + 0x2900, delivery = mem + 0x2a00;
+    uint32_t rack_memory = mem + 0x3000, rack_size = 0x40 + 2 * 0x440;
+    uint32_t voice0 = rack_memory + 0x40, voice1 = voice0 + 0x440;
+    uint32_t template = CALL(n, "sceNgsVoiceDefGetTemplate1");
+
+    vita_write32(p, params + 8, 256);
+    vita_write32(p, params + 12, 48000);
+    assert(CALL(n, "sceNgsSystemInit", system, 0x1000, params, mem + 0x2204) == 0);
+    assert(vita_read32(p, mem + 0x2204) == system);
+    vita_write32(p, description, template);
+    vita_write32(p, description + 4, 2);
+    vita_write32(p, description + 8, 2);
+    assert(CALL(n, "sceNgsRackGetRequiredMemorySize", system, description, required) == 0);
+    assert(vita_read32(p, required) == rack_size);
+    vita_write32(p, buffer_info, rack_memory);
+    vita_write32(p, buffer_info + 4, rack_size);
+    assert(CALL(n, "sceNgsRackInit", system, buffer_info, description, rack_out) == 0);
+    assert(vita_read32(p, rack_out) == rack_memory);
+    assert(CALL(n, "sceNgsRackGetVoiceHandle", rack_memory, 0, patch_out) == 0);
+    assert(vita_read32(p, patch_out) == voice0);
+    assert(CALL(n, "sceNgsRackGetVoiceHandle", rack_memory, 1, patch_out) == 0);
+    assert(vita_read32(p, patch_out) == voice1);
+
+    assert(CALL(n, "sceNgsVoiceLockParams", voice0, 9, 0, buffer_info) == 0);
+    assert(vita_read32(p, buffer_info) == voice0 + 0x40 + 9 * 0x60);
+    assert(vita_read32(p, buffer_info + 4) == 0x60);
+    assert(CALL(n, "sceNgsVoiceGetInfo", voice0, voice_info) == 0);
+    assert(vita_read32(p, voice_info + 4) == 10);
+    assert(vita_read32(p, voice_info + 12) == 4);
+
+    vita_write32(p, patch_info, voice0);
+    vita_write32(p, patch_info + 4, 3);
+    vita_write32(p, patch_info + 8, UINT32_MAX);
+    vita_write32(p, patch_info + 12, voice1);
+    vita_write32(p, patch_info + 16, 1);
+    assert(CALL(n, "sceNgsPatchCreateRouting", patch_info, patch_out) == 0);
+    assert(vita_read32(p, patch_out) == voice0 + 0x400 + 3 * 4 * 4);
+    vita_write32(p, matrix, 0x3f800000u);
+    vita_write32(p, matrix + 4, 0);
+    vita_write32(p, matrix + 8, 0);
+    vita_write32(p, matrix + 12, 0x3f800000u);
+    assert(CALL(n, "sceNgsVoicePatchSetVolumesMatrix", vita_read32(p, patch_out), matrix) == 0);
+    assert(CALL(n, "sceNgsPatchGetInfo", vita_read32(p, patch_out), voice_info, delivery) == 0);
+    assert(vita_read32(p, voice_info) == 2 && vita_read32(p, voice_info + 4) == 2);
+    assert(vita_read32(p, voice_info + 8) == 0x3f800000u && vita_read32(p, voice_info + 12) == 0);
+    assert(vita_read32(p, voice_info + 16) == 0 && vita_read32(p, voice_info + 20) == 0x3f800000u);
+    assert(vita_read32(p, delivery) == voice0 && vita_read32(p, delivery + 4) == 3);
+    assert(vita_read32(p, delivery + 8) == 0 && vita_read32(p, delivery + 12) == voice1);
+    assert(vita_read32(p, delivery + 16) == 1);
+    assert(CALL(n, "sceNgsPatchRemoveRouting", vita_read32(p, patch_out)) == 0);
+
+    uint32_t player_params = voice0 + 0x40, samples = mem + 0x2b00, user_data = mem + 0x2b20;
+    assert(CALL(n, "sceNgsVoiceSetModuleCallback", voice0, 10, VITA_RUNTIME_PAGE + 0x20, user_data) ==
+           0x804a0002u);
+    assert(CALL(n, "sceNgsVoiceSetModuleCallback", voice0, 0, VITA_RUNTIME_PAGE + 0x20, user_data) == 0);
+    vita_write32(p, player_params, 0x01015ce6u);
+    vita_write32(p, player_params + 8, samples);
+    vita_write32(p, player_params + 12, 4);
+    vita_write32(p, player_params + 16, 0xffff0000u);
+    vita_write32(p, player_params + 0x38, 0x473b8000u);
+    vita_write32(p, player_params + 0x3c, 0x3f800000u);
+    vita_write32(p, player_params + 0x4c, 2);
+    vita_write32(p, samples, 0x40004000u);
+    assert(CALL(n, "sceNgsVoicePlay", voice0) == 0);
+    assert(CALL(n, "sceNgsSystemUpdate", system) == 0 && t->call.redirected);
+    uint32_t callback_info = t->cpu.r[0];
+    assert(vita_read32(p, callback_info) == voice0);
+    assert(vita_read32(p, callback_info + 4) == rack_memory);
+    assert(vita_read32(p, callback_info + 8) == 0x5ce6u);
+    assert(vita_read32(p, callback_info + 12) == 0);
+    assert(vita_read32(p, callback_info + 16) == 0 && vita_read32(p, callback_info + 20) == 0);
+    assert(vita_read32(p, callback_info + 24) == user_data);
+    vita_hle_call_returned(p, t);
+    assert(!t->call.active);
+    assert(CALL(n, "sceNgsVoiceGetInfo", voice0, voice_info) == 0);
+    assert(vita_read32(p, voice_info) == 0);
+    assert(CALL(n, "sceNgsSystemRelease", system) == 0);
+}
+
 int main(void) {
     char *root = snx_temp_dir(NULL), *folder = root ? snx_path_join(root, "game") : NULL, error[256] = {0};
     assert(folder && !snx_mkdirs(folder));
@@ -189,6 +273,7 @@ int main(void) {
     assert(mem && vita_mapped(p, mem, 0x10000) && !vita_mapped(p, end - 8, 16) && !vita_mapped(p, UNMAPPED, 1));
     save_data(p, t, mem, end);
     net(p, t, mem, end);
+    ngs_template1(p, t, mem);
     vita_process_free(p);
     assert(!snx_remove_tree(root));
     free(folder);

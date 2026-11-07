@@ -20,7 +20,8 @@
 #include <stdlib.h>
 #include <string.h>
 #ifdef _WIN32
-#include <synchapi.h>
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #else
 #include <pthread.h>
 #include <signal.h>
@@ -90,7 +91,7 @@ static void faults_install(unsigned char* base) {
 static const char* wait_name(uint32_t kind) {
     static const char* const names[] = {"a delay", "a semaphore", "a mutex", "a thread's end", "an event flag",
                                         "a vblank", "audio output", "the display queue", "the GPU", "a condition",
-                                        "a reader-writer lock"};
+                                        "a reader-writer lock", "a signal"};
     return kind < sizeof names / sizeof *names ? names[kind] : "?";
 }
 static void report_threads(VitaProcess* p) {
@@ -133,6 +134,49 @@ static void report_stack(VitaProcess* p, const VitaThread* t) {
     }
     putchar('\n');
 }
+/* The code of the last distinct blocks entered (halfwords, to decode: a spin's loop, a bad branch's source), and the
+   words the registers point to (what the loop reads) */
+static void report_code(VitaProcess* p, const VitaThread* t) {
+    uint32_t seen[12], words[13];
+    unsigned count = 0, n = 0;
+    for (unsigned i = HISTORY; i-- > 0 && count < 12;) {
+        uint32_t b = g_history[(g_history_at + i) % HISTORY], at = b & ~1u;
+        bool dup = !b;
+        for (unsigned j = 0; j < count; ++j) dup |= seen[j] == b;
+        if (dup) continue;
+        seen[count++] = b;
+        printf("  code %08" PRIx32 "%s:", at, b & 1 ? " T" : "");
+        for (uint32_t o = 0; o < 64 && vita_mapped(p, at + o, 2); o += 2) printf(" %04" PRIx32, vita_read16(p, at + o));
+        putchar('\n');
+    }
+    for (unsigned r = 0; r < 13; ++r) {
+        uint32_t a = t->cpu.r[r] & ~3u;
+        bool dup = a < 0x70000000u || !vita_mapped(p, a, 32);
+        for (unsigned j = 0; j < n; ++j) dup |= words[j] == a;
+        if (dup) continue;
+        words[n++] = a;
+        printf("  mem %08" PRIx32 " (r%u):", a, r);
+        for (unsigned k = 0; k < 8; ++k) printf(" %08" PRIx32, vita_read32(p, a + k * 4));
+        putchar('\n');
+    }
+}
+/* The loaded export at or below address, in the same segment: a function's start, so a crash inside a library's code
+   says which function it was (look the NID up in the vita-headers database). address of a library without exports
+   (the game's own code) finds nothing */
+static void report_export(const VitaProcess* p, const char* what, uint32_t address) {
+    const VitaExport* best = NULL;
+    for (uint32_t i = 0; i < p->image.export_count; ++i) {
+        const VitaExport* e = &p->image.exports[i];
+        if (e->variable || (e->address & ~1u) > address) continue;
+        if (!best || (e->address & ~1u) > (best->address & ~1u)) best = e;
+    }
+    const VitaSegment* s = best ? vita_image_segment(&p->image, address, 1) : NULL;
+    const VitaSegment* b = best ? vita_image_segment(&p->image, best->address & ~1u, 1) : NULL;
+    if (!s || s != b) return;
+    printf("  %s 0x%08" PRIx32 " is %u bytes into the export NID 0x%08" PRIx32 " (library 0x%08" PRIx32 ") at 0x%08" PRIx32
+           "\n", what, address, (unsigned)(address - (best->address & ~1u)), best->nid, best->library_nid, best->address);
+}
+static void report_state(VitaProcess* p, VitaThread* t);
 static void report_fault(VitaProcess* p, VitaThread* t, const char* what, uint32_t detail) {
     if (!t) {
         printf("*** Crash: %s 0x%08" PRIx32 " outside the game's threads\n", what, detail);
@@ -141,6 +185,12 @@ static void report_fault(VitaProcess* p, VitaThread* t, const char* what, uint32
     const SnxArmCPU* c = &t->cpu;
     printf("*** Crash: %s 0x%08" PRIx32 " in thread \"%s\" at pc 0x%08" PRIx32 "%s\n", what, detail, t->name, c->r[15],
            c->cpsr & SNX_ARM_T ? " (Thumb)" : "");
+    report_export(p, "pc", c->r[15]);
+    report_export(p, "lr", c->r[14]);
+    report_state(p, t);
+}
+static void report_state(VitaProcess* p, VitaThread* t) {
+    const SnxArmCPU* c = &t->cpu;
     printf("  blocks before:");
     for (unsigned i = 0; i < HISTORY; ++i)
         if (g_history[(g_history_at + i) % HISTORY]) printf(" %08" PRIx32, g_history[(g_history_at + i) % HISTORY]);
@@ -150,7 +200,42 @@ static void report_fault(VitaProcess* p, VitaThread* t, const char* what, uint32
                c->r[i], i + 1, c->r[i + 1], i + 2, c->r[i + 2], i + 3, c->r[i + 3]);
     printf("  cpsr 0x%08" PRIx32 " fpscr 0x%08" PRIx32 "\n", c->cpsr, c->fpscr);
     report_stack(p, t);
+    report_code(p, t);
 }
+
+#ifdef _WIN32
+static VitaProcess* volatile crash_process;
+static volatile LONG crash_said;
+static void crash_report(EXCEPTION_POINTERS* e) {
+    VitaProcess* p = crash_process;
+    const EXCEPTION_RECORD* r = e->ExceptionRecord;
+    if (!p || InterlockedExchange(&crash_said, 1)) return;
+    uintptr_t at = r->NumberParameters > 1 ? (uintptr_t)r->ExceptionInformation[1] : 0;
+    uintptr_t base = (uintptr_t)p->mem;
+    printf("*** Host exception 0x%08lx at host pc %p, address %p (%s)\n", (unsigned long)r->ExceptionCode,
+           r->ExceptionAddress, (void*)at,
+           r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && r->NumberParameters > 1
+               ? (r->ExceptionInformation[0] == 1 ? "write" : r->ExceptionInformation[0] == 8 ? "execute" : "read")
+               : "no address");
+    if (at >= base && at < base + VITA_SPACE + 0x10000) report_fault(p, p->current, "data abort at", (uint32_t)(at - base));
+    else report_fault(p, p->current, "host fault, guest address unknown, last pc", 0);
+    report_threads(p);
+    fflush(stdout);
+}
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS* e) {
+    crash_report(e);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+static LONG WINAPI crash_guest_access(EXCEPTION_POINTERS* e) {
+    const EXCEPTION_RECORD* r = e->ExceptionRecord;
+    VitaProcess* p = crash_process;
+    if (p && r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && r->NumberParameters > 1) {
+        uintptr_t at = (uintptr_t)r->ExceptionInformation[1], base = (uintptr_t)p->mem;
+        if (at >= base && at < base + VITA_SPACE + 0x10000) crash_report(e);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+#endif
 
 /* whether t's wait is met (its result set) or timed out, now */
 static bool wait_try(VitaProcess* p, VitaThread* t, uint64_t now) {
@@ -208,9 +293,20 @@ static bool live(const VitaProcess* p) {
 }
 /* an SVC of the current thread: an import, or a trampoline's. False when the run cannot go on */
 static bool svc(VitaProcess* p, VitaThread* t, uint32_t imm) {
-    if (imm < p->image.import_count) {
-        vita_hle_call(p, t, imm);
-        return true;
+    if (imm < VITA_SVC_RUNTIME) {
+        uint32_t pc = t->cpu.r[15], address = 0;
+        bool thumb = !!(t->cpu.cpsr & SNX_ARM_T);
+        for (uint32_t i = 0; i < p->image.import_count; ++i) {
+            const VitaImport* import = &p->image.imports[i];
+            if (import->svc != imm || !!(import->stub & 1) != thumb) continue;
+            address = import->stub & ~1u;
+            if (pc >= address && pc <= address + 8) {
+                vita_hle_call(p, t, i);
+                return true;
+            }
+        }
+        report_fault(p, t, "SVC does not match an imported function", imm);
+        return false;
     }
     switch (imm) {
         case VITA_SVC_THREAD_RETURN: vita_thread_end(p, t, (int32_t)t->cpu.r[0]); return true;
@@ -232,13 +328,17 @@ int vita_run(VitaProcess* p, double seconds) {
     VitaThread* last = NULL; /* the thread that ran the last slice */
 #ifndef _WIN32
     faults_install(p->mem);
-    if (!vita_watch_init(p)) printf("vita: guest memory's writes aren't watched: the GPU copies its memory each time\n");
     if (sigsetjmp(fault_jump, 1)) {
         report_fault(p, running, "data abort at", (uint32_t)fault_address);
         result = 1;
         goto done;
     }
+#else
+    crash_process = p;
+    AddVectoredExceptionHandler(1, crash_guest_access);
+    SetUnhandledExceptionFilter(crash_filter);
 #endif
+    if (!vita_watch_init(p)) printf("vita: guest memory's writes aren't watched: the GPU copies its memory each time\n");
     while (!p->exited) {
         uint64_t now = vita_now_ns(), wake;
         if (now >= p->display.next_ns) {
@@ -319,7 +419,14 @@ done:
         printf("Stopped after %.0f seconds\n", seconds);
     else if (!result)
         printf("Every thread ended\n");
-    if (result || (!p->exited && !closed)) report_threads(p);
+    if (result || !p->exited) report_threads(p);
+    if (!p->exited && (closed || (end && vita_now_ns() >= end)))
+        for (unsigned i = 0; i < VITA_THREADS; ++i) {
+            VitaThread* t = &p->threads[i];
+            if (t->state != VITA_THREAD_READY) continue;
+            printf("  running thread \"%s\":\n", t->name);
+            report_state(p, t);
+        }
     printf("Imports called: %" PRIu64 "\n", p->hle_calls);
     size_t hints = vita_jit_save_hints(p->jit, p->folder);
     if (hints)

@@ -3,12 +3,12 @@
 /* SceNgs, the console's voice synthesizer. The system, its racks and their voices live in the memory the game gives
    them: a voice's handle is the address of its part of its rack's buffer, which holds its modules' parameters (a
    room each, which sceNgsVoiceLockParams hands the game) and its patches' handles. What a voice does is kept here.
-   Each sceNgsSystemUpdate runs a granule (the system's granularity, in frames at 48 kHz): every simple voice playing
-   reads its player's buffers (16-bit PCM or HE-ADPCM), resampled to the system's rate, and mixes them through its
-   patches' volume matrices into the voices they lead to; a master buss's output module then holds the sum as 16-bit
-   stereo, the state data the game sends to its audio port. A player's buffers loop and chain as their loop counts
-   and next indices say, and the voice is available again once it runs out of them. The equalizer, envelope, pauser
-   and filter modules pass the sound unchanged. As the vitasdk headers (MIT) declare, and as Vita3K's ngs/ (GPL-2.0-or-
+   Each sceNgsSystemUpdate runs a granule (the system's granularity, in frames at 48 kHz): every simple voice and
+   Template1 player reads its buffers (16-bit PCM or HE-ADPCM), resampled to the system's rate, and mixes them through
+   its patches' volume matrices into the voices they lead to; a master buss's output module then holds the sum as
+   16-bit stereo, the state data the game sends to its audio port. A player's buffers loop and chain as their loop
+   counts and next indices say, and the voice is available again once it runs out of them. The effect modules pass the
+   sound unchanged. As the vitasdk headers (MIT) declare, and as Vita3K's ngs/ (GPL-2.0-or-
    later) models them: modules/SceNgsUser/SceNgs.cpp, ngs/src/ngs.cpp, scheduler.cpp, route.cpp, modules/player.cpp
    and codec/src/pcm.cpp (HE-ADPCM, from vgmstream's HEVAG decoder) */
 #include "vita/hle/hle.h"
@@ -26,30 +26,47 @@
 #define VOICE_PARAMS  0x40u
 #define MODULE_PARAMS 0x60u  /* a module's room for its parameters, the player's 0x54 bytes the largest */
 #define MODULES       6u     /* a simple voice's: player, equalizer, envelope, pauser, two filters */
+#define TEMPLATE1_MODULES 10u /* player, generator, mixer, equalizer, envelope, distortion, four equalizers */
 #define PATCH_AT      0x300u /* the patches' handles: PATCHES words an output */
+#define TEMPLATE1_OUTPUTS 4u
+#define TEMPLATE1_PATCH_AT (VOICE_PARAMS + TEMPLATE1_MODULES * MODULE_PARAMS)
+#define TEMPLATE1_VOICE_SIZE (TEMPLATE1_PATCH_AT + TEMPLATE1_OUTPUTS * PATCHES * 4u)
 #define PATCHES       4u
 #define OUTPUTS       2u
+#define MAX_OUTPUTS   TEMPLATE1_OUTPUTS
 #define RACKS         16u
 #define VOICES        512u
 #define MOST_GRANULARITY 512u
 #define PLAYER_ID     0x01015ce6u /* SCE_NGS_PLAYER_PARAMS_STRUCT_ID */
+#define PLAYER_MODULE_ID 0x00005ce6u
+#define CALLBACK_INFO_SIZE 28u
+
+enum { PLAYER_END_OF_DATA, PLAYER_SWAPPED_BUFFER, PLAYER_LOOPED_BUFFER };
 
 /* SceNgsVoiceState's flags */
 enum { AVAILABLE = 0, ACTIVE = 1 };
 /* the voice definitions sceNgsVoiceDefGet* return, at the runtime's page a word apart: the game only hands them back */
-enum { DEF_MASTER, DEF_SIMPLE, DEF_REVERB, DEFS };
+enum { DEF_MASTER, DEF_SIMPLE, DEF_REVERB, DEF_TEMPLATE1, DEFS };
 #define DEFINITIONS (VITA_RUNTIME_PAGE + 0x800u)
 
 typedef struct {
     bool used;
     uint32_t destination;   /* the voice's handle */
+    int32_t destination_input;
     float matrix[2][2];     /* [source channel][destination channel] */
 } Patch;
+typedef struct Voice Voice;
 typedef struct {
+    Voice* source;
+    Patch* patch;
+    uint32_t output, subindex;
+} PatchRef;
+struct Voice {
     uint32_t handle;
     unsigned rack;
     uint32_t state, updates;
     bool paused;
+    uint32_t module_callback[TEMPLATE1_MODULES], module_user_data[TEMPLATE1_MODULES];
     /* the player's SceNgsPlayerStates: the byte in its buffer, the buffer, the samples and bytes since its key on,
        and in all; its current buffer's loops so far, and the resampler's place between its last two frames */
     uint32_t player[6], loops;
@@ -59,10 +76,10 @@ typedef struct {
     int16_t decoded[28 * 2];
     unsigned decoded_at, decoded_count;
     int32_t history[2][4];
-    Patch patches[OUTPUTS][PATCHES];
+    Patch patches[MAX_OUTPUTS][PATCHES];
     float input[MOST_GRANULARITY * 2];          /* what the voices patched to it give it this granule */
     unsigned char output[MOST_GRANULARITY * 4]; /* a master buss's: 16-bit stereo */
-} Voice;
+};
 typedef struct {
     uint32_t address, count, channels, kind;
     unsigned first; /* its voices' index in VitaNgs.voices */
@@ -72,6 +89,10 @@ struct VitaNgs {
     Rack racks[RACKS];
     Voice voices[VOICES];
     bool logged_type;
+    bool updating, update_voice_started, callback_end;
+    uint32_t update_order, update_rack, update_voice, update_sample;
+    uint32_t callback_info, callback_reason;
+    float sound[MOST_GRANULARITY * 2];
 };
 
 static uint32_t arg(VitaProcess* p, VitaThread* t, unsigned n) { return vita_arg(p, t, n); }
@@ -85,6 +106,11 @@ static float ld_float(const unsigned char* at) {
     memcpy(&f, &bits, sizeof f);
     return f;
 }
+static void st_float(VitaProcess* p, uint32_t at, float f) {
+    uint32_t bits;
+    memcpy(&bits, &f, sizeof bits);
+    vita_write32(p, at, bits);
+}
 static struct VitaNgs* ngs(VitaProcess* p) {
     if (!p->ngs) p->ngs = calloc(1, sizeof *p->ngs);
     return p->ngs;
@@ -93,33 +119,63 @@ void vita_ngs_free(VitaProcess* p) {
     free(p->ngs);
     p->ngs = NULL;
 }
+static bool definition_kind(uint32_t definition, uint32_t* kind) {
+    if (definition < DEFINITIONS) return false;
+    uint32_t offset = definition - DEFINITIONS;
+    if ((offset & 3) || offset / 4 >= DEFS) return false;
+    *kind = offset / 4;
+    return true;
+}
+static uint32_t voice_size(uint32_t kind) {
+    return kind == DEF_TEMPLATE1 ? TEMPLATE1_VOICE_SIZE : VOICE_SIZE;
+}
+typedef struct {
+    bool pending;
+    uint32_t reason, reason2, pointer;
+} PlayerEvent;
+static uint32_t patch_offset(uint32_t kind) {
+    return kind == DEF_TEMPLATE1 ? TEMPLATE1_PATCH_AT : PATCH_AT;
+}
+static unsigned outputs_of_kind(uint32_t kind) {
+    if (kind == DEF_MASTER) return 1;
+    return kind == DEF_TEMPLATE1 ? TEMPLATE1_OUTPUTS : OUTPUTS;
+}
 static Voice* voice_of(VitaProcess* p, uint32_t handle) {
     struct VitaNgs* n = p->ngs;
     if (!n) return NULL;
     for (unsigned i = 0; i < RACKS; ++i) {
         const Rack* r = &n->racks[i];
-        uint32_t at = handle - r->address - RACK_HEADER;
-        if (r->count && handle >= r->address + RACK_HEADER && at / VOICE_SIZE < r->count && !(at % VOICE_SIZE))
-            return &n->voices[r->first + at / VOICE_SIZE];
+        if (!r->count || handle < r->address + RACK_HEADER) continue;
+        uint32_t at = handle - r->address - RACK_HEADER, size = voice_size(r->kind);
+        if (at / size < r->count && !(at % size)) return &n->voices[r->first + at / size];
     }
     return NULL;
 }
 /* the patch a handle names, from the voice whose part of its rack holds it */
-static Patch* patch_of(VitaProcess* p, uint32_t handle) {
+static PatchRef patch_ref_of(VitaProcess* p, uint32_t handle) {
+    PatchRef ref = {0};
     struct VitaNgs* n = p->ngs;
-    if (!n) return NULL;
+    if (!n) return ref;
     for (unsigned i = 0; i < RACKS; ++i) {
         const Rack* r = &n->racks[i];
         if (!r->count || handle < r->address + RACK_HEADER) continue;
-        uint32_t offset = handle - r->address - RACK_HEADER, index = offset / VOICE_SIZE, in = offset % VOICE_SIZE;
-        if (index >= r->count || in < PATCH_AT || in >= PATCH_AT + OUTPUTS * PATCHES * 4 || in & 3) continue;
-        in = (in - PATCH_AT) / 4;
-        return &n->voices[r->first + index].patches[in / PATCHES][in % PATCHES];
+        uint32_t size = voice_size(r->kind), offset = handle - r->address - RACK_HEADER;
+        uint32_t index = offset / size, in = offset % size, patches = patch_offset(r->kind);
+        if (index >= r->count || in < patches ||
+            in >= patches + outputs_of_kind(r->kind) * PATCHES * 4 || in & 3)
+            continue;
+        ref.source = &n->voices[r->first + index];
+        ref.output = (in - patches) / (PATCHES * 4);
+        ref.subindex = ((in - patches) / 4) % PATCHES;
+        ref.patch = &ref.source->patches[ref.output][ref.subindex];
+        return ref;
     }
-    return NULL;
+    return ref;
 }
 static unsigned modules_of(const struct VitaNgs* n, const Voice* v) {
-    return n->racks[v->rack].kind == DEF_SIMPLE ? MODULES : 2;
+    uint32_t kind = n->racks[v->rack].kind;
+    if (kind == DEF_SIMPLE) return MODULES;
+    return kind == DEF_TEMPLATE1 ? TEMPLATE1_MODULES : 2;
 }
 
 /* ---- the system and its racks ---- */
@@ -145,6 +201,7 @@ static uint32_t system_init(VitaProcess* p, VitaThread* t) {
 }
 static uint32_t system_release(VitaProcess* p, VitaThread* t) {
     (void)t;
+    if (p->ngs && p->ngs->updating) return SCE_NGS_ERROR;
     if (p->ngs) memset(p->ngs, 0, sizeof *p->ngs);
     return 0;
 }
@@ -154,8 +211,10 @@ static uint32_t rack_get_required_memory_size(VitaProcess* p, VitaThread* t) {
     uint32_t description = arg(p, t, 1), out = arg(p, t, 2);
     if (!description || !out) return SCE_NGS_ERROR_INVALID_PARAM;
     int32_t voices = (int32_t)vita_read32(p, description + 4);
-    if (voices <= 0 || voices > 0x10000) return SCE_NGS_ERROR_INVALID_PARAM;
-    vita_write32(p, out, RACK_HEADER + (uint32_t)voices * VOICE_SIZE);
+    uint32_t kind;
+    if (voices <= 0 || voices > 0x10000 || !definition_kind(vita_read32(p, description), &kind))
+        return SCE_NGS_ERROR_INVALID_PARAM;
+    vita_write32(p, out, RACK_HEADER + (uint32_t)voices * voice_size(kind));
     return 0;
 }
 /* sceNgsRackInit(system, SceNgsBufferInfo*, description, rack*): its voices from the first free run of them */
@@ -165,9 +224,9 @@ static uint32_t rack_init(VitaProcess* p, VitaThread* t) {
     if (!n || !buffer || !description || !out) return SCE_NGS_ERROR_INVALID_PARAM;
     uint32_t rack = vita_read32(p, buffer), size = vita_read32(p, buffer + 4);
     uint32_t definition = vita_read32(p, description), voices = vita_read32(p, description + 4);
-    uint32_t kind = (definition - DEFINITIONS) / 4;
-    if (!rack || !voices || voices > VOICES || size < RACK_HEADER + voices * VOICE_SIZE ||
-        !vita_mapped(p, rack, size) || definition < DEFINITIONS || kind >= DEFS)
+    uint32_t kind;
+    if (!rack || !voices || voices > VOICES || !definition_kind(definition, &kind) ||
+        size < RACK_HEADER + voices * voice_size(kind) || !vita_mapped(p, rack, size))
         return SCE_NGS_ERROR_INVALID_PARAM;
     Rack* slot = NULL;
     for (unsigned i = 0; i < RACKS && !slot; ++i)
@@ -178,13 +237,14 @@ static uint32_t rack_init(VitaProcess* p, VitaThread* t) {
         if (n->racks[i].count && n->racks[i].first + n->racks[i].count > first)
             first = n->racks[i].first + n->racks[i].count;
     if (!slot || first + voices > VOICES) return SCE_NGS_ERROR;
-    memset(vita_ptr(p, rack), 0, RACK_HEADER + voices * VOICE_SIZE);
+    uint32_t stride = voice_size(kind);
+    memset(vita_ptr(p, rack), 0, RACK_HEADER + voices * stride);
     vita_write32(p, rack, voices);
     *slot = (Rack){rack, voices, vita_read32(p, description + 8), kind, first};
     for (uint32_t i = 0; i < voices; ++i) {
         Voice* v = &n->voices[first + i];
         memset(v, 0, sizeof *v);
-        v->handle = rack + RACK_HEADER + i * VOICE_SIZE, v->rack = (unsigned)(slot - n->racks);
+        v->handle = rack + RACK_HEADER + i * stride, v->rack = (unsigned)(slot - n->racks);
     }
     vita_write32(p, out, rack);
     return 0;
@@ -199,9 +259,16 @@ static uint32_t rack_release(VitaProcess* p, VitaThread* t) {
 /* sceNgsRackGetVoiceHandle(rack, index, voice*) */
 static uint32_t rack_get_voice_handle(VitaProcess* p, VitaThread* t) {
     uint32_t rack = arg(p, t, 0), index = arg(p, t, 1), out = arg(p, t, 2);
-    if (!rack || !out || index >= vita_read32(p, rack)) return SCE_NGS_ERROR_INVALID_PARAM;
-    vita_write32(p, out, rack + RACK_HEADER + index * VOICE_SIZE);
-    return 0;
+    struct VitaNgs* n = p->ngs;
+    if (!rack || !out) return SCE_NGS_ERROR_INVALID_PARAM;
+    for (unsigned i = 0; n && i < RACKS; ++i) {
+        const Rack* r = &n->racks[i];
+        if (!r->count || r->address != rack) continue;
+        if (index >= r->count) return SCE_NGS_ERROR_INVALID_PARAM;
+        vita_write32(p, out, rack + RACK_HEADER + index * voice_size(r->kind));
+        return 0;
+    }
+    return SCE_NGS_ERROR_INVALID_PARAM;
 }
 static uint32_t master_buss(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
@@ -215,6 +282,10 @@ static uint32_t reverb_buss(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return DEFINITIONS + DEF_REVERB * 4;
 }
+static uint32_t template1(VitaProcess* p, VitaThread* t) {
+    (void)p, (void)t;
+    return DEFINITIONS + DEF_TEMPLATE1 * 4;
+}
 
 /* ---- parameters ---- */
 static uint32_t module_params(uint32_t voice, uint32_t module) { return voice + VOICE_PARAMS + module * MODULE_PARAMS; }
@@ -227,6 +298,17 @@ static uint32_t voice_lock_params(VitaProcess* p, VitaThread* t) {
     vita_write32(p, module_params(voice, module), arg(p, t, 2));
     vita_write32(p, out, module_params(voice, module));
     vita_write32(p, out + 4, MODULE_PARAMS);
+    return 0;
+}
+/* sceNgsVoiceSetModuleCallback(voice, module, callback, user data) */
+static uint32_t voice_set_module_callback(VitaProcess* p, VitaThread* t) {
+    uint32_t module = arg(p, t, 1), callback = arg(p, t, 2);
+    Voice* v = voice_of(p, arg(p, t, 0));
+    if (!v || module >= modules_of(p->ngs, v) ||
+        (callback && !vita_mapped(p, callback & ~1u, 2)))
+        return SCE_NGS_ERROR_INVALID_PARAM;
+    v->module_callback[module] = callback;
+    v->module_user_data[module] = arg(p, t, 3);
     return 0;
 }
 /* sceNgsVoiceSetParamsBlock(voice, block, size, error count*): records of a SceNgsModuleParamHeader (the module, its
@@ -299,7 +381,7 @@ static uint32_t voice_get_info(VitaProcess* p, VitaThread* t) {
     vita_write32(p, out, v->state | (v->paused ? 0x20u : 0));
     vita_write32(p, out + 4, modules_of(p->ngs, v));
     vita_write32(p, out + 8, 1);
-    vita_write32(p, out + 12, kind == DEF_MASTER ? 1 : OUTPUTS);
+    vita_write32(p, out + 12, outputs_of_kind(kind));
     vita_write32(p, out + 16, PATCHES);
     vita_write32(p, out + 20, v->updates);
     return 0;
@@ -313,7 +395,7 @@ static uint32_t voice_get_state_data(VitaProcess* p, VitaThread* t) {
     unsigned char* to = vita_ptr(p, memory);
     memset(to, 0, size);
     uint32_t kind = p->ngs->racks[v->rack].kind;
-    if (kind == DEF_SIMPLE && module == 0)
+    if ((kind == DEF_SIMPLE || kind == DEF_TEMPLATE1) && module == 0)
         for (unsigned i = 0; i < 6 && i * 4 + 4 <= size; ++i) snx_st_le32(to + i * 4, v->player[i]);
     else if (kind == DEF_MASTER && module == 1)
         memcpy(to, v->output, snx_min_u32(size, p->ngs->granularity * 4));
@@ -325,28 +407,55 @@ static uint32_t voice_get_state_data(VitaProcess* p, VitaThread* t) {
    (-1: the first free), the destination voice and its input; the patch's volumes all zero */
 static uint32_t patch_create_routing(VitaProcess* p, VitaThread* t) {
     uint32_t info = arg(p, t, 0), out = arg(p, t, 1);
-    if (!info || !out) return SCE_NGS_ERROR_INVALID_PARAM;
+    if (!info || !out || !vita_mapped(p, info, 20) || !vita_mapped(p, out, 4))
+        return SCE_NGS_ERROR_INVALID_PARAM;
     uint32_t source = vita_read32(p, info), output = vita_read32(p, info + 4), index = vita_read32(p, info + 8);
     uint32_t destination = vita_read32(p, info + 12);
     Voice* v = voice_of(p, source);
-    if (!v || !voice_of(p, destination) || output >= OUTPUTS) return SCE_NGS_ERROR_INVALID_PARAM;
+    if (!v || !voice_of(p, destination) || output >= outputs_of_kind(p->ngs->racks[v->rack].kind))
+        return SCE_NGS_ERROR_INVALID_PARAM;
     if (index == UINT32_MAX)
         for (index = 0; index < PATCHES && v->patches[output][index].used; ++index) continue;
     if (index >= PATCHES) return SCE_NGS_ERROR;
-    v->patches[output][index] = (Patch){true, destination, {{0}}};
-    vita_write32(p, out, source + PATCH_AT + (output * PATCHES + index) * 4);
+    v->patches[output][index] = (Patch){.used = true, .destination = destination,
+                                        .destination_input = (int32_t)vita_read32(p, info + 16)};
+    vita_write32(p, out, source + patch_offset(p->ngs->racks[v->rack].kind) + (output * PATCHES + index) * 4);
+    return 0;
+}
+/* sceNgsPatchGetInfo(patch, audio properties*, delivery info*): both outputs are optional */
+static uint32_t patch_get_info(VitaProcess* p, VitaThread* t) {
+    PatchRef ref = patch_ref_of(p, arg(p, t, 0));
+    uint32_t properties = arg(p, t, 1), delivery = arg(p, t, 2);
+    if (!ref.patch || !ref.patch->used || !voice_of(p, ref.patch->destination) ||
+        (properties && !vita_mapped(p, properties, 24)) || (delivery && !vita_mapped(p, delivery, 20)))
+        return SCE_NGS_ERROR_INVALID_PARAM;
+    Voice* destination = voice_of(p, ref.patch->destination);
+    if (properties) {
+        vita_write32(p, properties, p->ngs->racks[ref.source->rack].channels);
+        vita_write32(p, properties + 4, p->ngs->racks[destination->rack].channels);
+        for (unsigned i = 0; i < 4; ++i)
+            st_float(p, properties + 8 + i * 4, ref.patch->matrix[i / 2][i % 2]);
+    }
+    if (delivery) {
+        vita_write32(p, delivery, ref.source->handle);
+        vita_write32(p, delivery + 4, ref.output);
+        vita_write32(p, delivery + 8, ref.subindex);
+        vita_write32(p, delivery + 12, ref.patch->destination);
+        vita_write32(p, delivery + 16, (uint32_t)ref.patch->destination_input);
+    }
     return 0;
 }
 static uint32_t patch_remove_routing(VitaProcess* p, VitaThread* t) {
-    Patch* patch = patch_of(p, arg(p, t, 0));
-    if (!patch) return SCE_NGS_ERROR_INVALID_PARAM;
-    patch->used = false;
+    PatchRef ref = patch_ref_of(p, arg(p, t, 0));
+    if (!ref.patch) return SCE_NGS_ERROR_INVALID_PARAM;
+    ref.patch->used = false;
     return 0;
 }
 /* sceNgsVoicePatchSetVolumesMatrix(patch, SceNgsVolumeMatrix*): the volume each source channel gives each destination
    channel, [source][destination] */
 static uint32_t patch_set_volumes_matrix(VitaProcess* p, VitaThread* t) {
-    Patch* patch = patch_of(p, arg(p, t, 0));
+    PatchRef ref = patch_ref_of(p, arg(p, t, 0));
+    Patch* patch = ref.patch;
     uint32_t matrix = arg(p, t, 1);
     if (!patch || !matrix || !vita_mapped(p, matrix, 16)) return SCE_NGS_ERROR_INVALID_PARAM;
     const unsigned char* m = vita_ptr(p, matrix);
@@ -422,7 +531,7 @@ static void hevag_decode(Voice* v, const unsigned char* frames, unsigned channel
    data, its bytes, its loops (-1 for ever), the buffer after it), as floats; false once it ran out of them. A buffer
    played to its end starts again until it looped its count, then the next one plays */
 static bool player_frame(VitaProcess* p, Voice* v, const unsigned char* params, unsigned channels, bool adpcm,
-                         float out[2]) {
+                         float out[2], PlayerEvent* event) {
     if (adpcm && v->decoded_at < v->decoded_count) {
         out[0] = (float)v->decoded[v->decoded_at] / 32768.0f;
         out[1] = channels > 1 ? (float)v->decoded[v->decoded_at + 1] / 32768.0f : out[0];
@@ -442,7 +551,27 @@ static bool player_frame(VitaProcess* p, Voice* v, const unsigned char* params, 
         }
         if (at >= bytes || bytes - at < unit) {
             v->player[0] = 0;
-            if (loops != -1 && ++v->loops > (uint32_t)loops) v->loops = 0, v->player[1] = (uint32_t)next;
+            if (loops != -1 && ++v->loops > (uint32_t)loops) {
+                v->loops = 0, v->player[1] = (uint32_t)next;
+                uint32_t callback = v->module_callback[0];
+                if (callback) {
+                    if (next < 0 || next > 3) {
+                        *event = (PlayerEvent){true, PLAYER_END_OF_DATA, 0, 0};
+                    } else {
+                        const unsigned char* next_params = params + 8 + (uint32_t)next * 12;
+                        uint32_t next_data = snx_ld_le32(next_params);
+                        int32_t next_bytes = (int32_t)snx_ld_le32(next_params + 4);
+                        if (!next_data || next_bytes <= 0)
+                            *event = (PlayerEvent){true, PLAYER_END_OF_DATA, 0, 0};
+                        else
+                            *event = (PlayerEvent){true, PLAYER_SWAPPED_BUFFER, (uint32_t)current, next_data};
+                    }
+                    return false;
+                }
+            } else if (v->module_callback[0]) {
+                *event = (PlayerEvent){true, PLAYER_LOOPED_BUFFER, v->loops, data};
+                return false;
+            }
             continue;
         }
         if (!vita_mapped(p, data + at, unit)) return false;
@@ -450,7 +579,7 @@ static bool player_frame(VitaProcess* p, Voice* v, const unsigned char* params, 
         v->player[0] += unit, v->player[3] += unit, v->player[5] += unit;
         if (adpcm) {
             hevag_decode(v, s, channels);
-            return player_frame(p, v, params, channels, true, out);
+            return player_frame(p, v, params, channels, true, out, event);
         }
         out[0] = (float)(int16_t)snx_ld_le16(s) / 32768.0f;
         out[1] = channels > 1 ? (float)(int16_t)snx_ld_le16(s + 2) / 32768.0f : out[0];
@@ -458,40 +587,41 @@ static bool player_frame(VitaProcess* p, Voice* v, const unsigned char* params, 
     }
     return false;
 }
-/* a simple voice's granule into out (stereo floats): its player's frames at the playback frequency and scalar,
-   linearly resampled to the system's rate; false once it finished */
-static bool simple_run(VitaProcess* p, struct VitaNgs* n, Voice* v, float* out) {
+enum { PLAYER_RUN_DONE, PLAYER_RUN_END, PLAYER_RUN_CALLBACK };
+/* a simple voice's granule into n->sound: its player's frames at the playback frequency and scalar, linearly
+   resampled to the system's rate; it stops at a callback so the guest can refill a buffer */
+static unsigned simple_run(VitaProcess* p, struct VitaNgs* n, Voice* v, PlayerEvent* event) {
     const unsigned char* params = vita_ptr(p, module_params(v->handle, 0));
     unsigned channels = params[0x4c] == 1 ? 1 : 2;
-    memset(out, 0, n->granularity * 2 * sizeof *out);
-    if (snx_ld_le32(params) != PLAYER_ID) return false;
+    if (snx_ld_le32(params) != PLAYER_ID) return PLAYER_RUN_END;
     if (params[0x4f] > 1) { /* SceNgsPlayerType: 16-bit PCM (0), HE-ADPCM (1) */
         if (!n->logged_type) printf("vita: an NGS player of type %u is silent\n", (unsigned)params[0x4f]);
         n->logged_type = true;
-        return false;
+        return PLAYER_RUN_END;
     }
     bool adpcm = params[0x4f] == 1;
     float frequency = ld_float(params + 0x38), scalar = ld_float(params + 0x3c);
     float step = (frequency > 0.0f ? frequency / (float)n->rate : 1.0f) * (scalar >= 0.0f ? scalar : 1.0f);
     step = snx_clamp_float(step, 0.0f, 16.0f);
-    bool playing = true;
-    for (uint32_t k = 0; k < n->granularity && playing; ++k) {
-        while (v->phase >= 1.0f && playing) {
+    while (n->update_sample < n->granularity) {
+        while (v->phase >= 1.0f) {
             v->last[0] = v->next[0], v->last[1] = v->next[1];
-            playing = player_frame(p, v, params, channels, adpcm, v->next);
+            *event = (PlayerEvent){0};
+            if (!player_frame(p, v, params, channels, adpcm, v->next, event))
+                return event->pending ? PLAYER_RUN_CALLBACK : PLAYER_RUN_END;
             v->phase -= 1.0f;
         }
-        if (!playing) break;
-        for (unsigned c = 0; c < 2; ++c) out[k * 2 + c] = v->last[c] + (v->next[c] - v->last[c]) * v->phase;
+        for (unsigned c = 0; c < 2; ++c)
+            n->sound[n->update_sample * 2 + c] = v->last[c] + (v->next[c] - v->last[c]) * v->phase;
         v->phase += step;
+        ++n->update_sample;
     }
-    v->player[2] += n->granularity * channels, v->player[4] += n->granularity * channels;
-    return playing;
+    return PLAYER_RUN_DONE;
 }
 /* a voice's granule through its patches into the voices they lead to, as their channels take it */
 static void deliver(VitaProcess* p, struct VitaNgs* n, const Voice* v, const float* sound) {
     bool mono = n->racks[v->rack].channels == 1;
-    for (unsigned o = 0; o < OUTPUTS; ++o)
+    for (unsigned o = 0; o < outputs_of_kind(n->racks[v->rack].kind); ++o)
         for (unsigned i = 0; i < PATCHES; ++i) {
             const Patch* patch = &v->patches[o][i];
             Voice* d = patch->used ? voice_of(p, patch->destination) : NULL;
@@ -506,38 +636,115 @@ static void deliver(VitaProcess* p, struct VitaNgs* n, const Voice* v, const flo
             }
         }
 }
+static uint32_t system_update_continue(VitaProcess* p, VitaThread* t);
+static uint32_t system_update_callback_returned(VitaProcess* p, VitaThread* t, void* context) {
+    struct VitaNgs* n = context;
+    if (!n->callback_info) return SCE_NGS_ERROR;
+    vita_free(p, n->callback_info);
+    n->callback_info = 0;
+    if (!n->updating) return SCE_NGS_ERROR;
+    if (n->callback_reason == PLAYER_END_OF_DATA) {
+        n->callback_end = true;
+        n->update_sample = n->granularity;
+    }
+    return system_update_continue(p, t);
+}
+static uint32_t player_callback(VitaProcess* p, VitaThread* t, struct VitaNgs* n, Voice* v,
+                                const PlayerEvent* event) {
+    const Rack* rack = &n->racks[v->rack];
+    uint32_t callback = v->module_callback[0];
+    uint32_t info = vita_alloc(p, &p->user, CALLBACK_INFO_SIZE, 4);
+    if (!info) {
+        n->updating = false;
+        return SCE_NGS_ERROR;
+    }
+    vita_write32(p, info, v->handle);
+    vita_write32(p, info + 4, rack->address);
+    vita_write32(p, info + 8, PLAYER_MODULE_ID);
+    vita_write32(p, info + 12, event->reason);
+    vita_write32(p, info + 16, event->reason2);
+    vita_write32(p, info + 20, event->pointer);
+    vita_write32(p, info + 24, v->module_user_data[0]);
+    n->callback_info = info;
+    n->callback_reason = event->reason;
+    const uint32_t args[1] = {info};
+    vita_hle_guest_call(p, t, callback, args, 1, system_update_callback_returned, n);
+    if (!t->call.redirected) {
+        vita_free(p, n->callback_info);
+        n->callback_info = 0;
+        n->updating = false;
+        return SCE_NGS_ERROR;
+    }
+    return 0;
+}
+static uint32_t system_update_continue(VitaProcess* p, VitaThread* t) {
+    struct VitaNgs* n = p->ngs;
+    static const uint32_t order[DEFS] = {DEF_SIMPLE, DEF_TEMPLATE1, DEF_REVERB, DEF_MASTER};
+    if (!n || !n->updating) return SCE_NGS_ERROR_INVALID_PARAM;
+    while (n->update_order < DEFS) {
+        if (n->update_rack == RACKS) {
+            ++n->update_order;
+            n->update_rack = n->update_voice = 0;
+            continue;
+        }
+        Rack* rack = &n->racks[n->update_rack];
+        if (!rack->count || rack->kind != order[n->update_order] || n->update_voice == rack->count) {
+            ++n->update_rack;
+            n->update_voice = 0;
+            continue;
+        }
+        Voice* v = &n->voices[rack->first + n->update_voice];
+        if (!n->update_voice_started) {
+            if (v->state != ACTIVE || v->paused) {
+                ++n->update_voice;
+                continue;
+            }
+            n->update_voice_started = true;
+            n->update_sample = 0;
+            memset(n->sound, 0, n->granularity * 2 * sizeof *n->sound);
+            ++v->updates;
+        }
+        if (rack->kind == DEF_MASTER) {
+            for (uint32_t s = 0; s < n->granularity * 2; ++s)
+                snx_st_le16(v->output + s * 2, (uint16_t)(int16_t)snx_clamp_float(v->input[s] * 32768.0f,
+                                                                                 -32768.0f, 32767.0f));
+            n->update_voice_started = false;
+            ++n->update_voice;
+            continue;
+        }
+        bool playing = true;
+        if (rack->kind == DEF_SIMPLE || rack->kind == DEF_TEMPLATE1) {
+            PlayerEvent event = {0};
+            unsigned result = simple_run(p, n, v, &event);
+            if (result == PLAYER_RUN_CALLBACK) return player_callback(p, t, n, v, &event);
+            playing = result == PLAYER_RUN_DONE;
+            const unsigned char* params = vita_ptr(p, module_params(v->handle, 0));
+            unsigned channels = params[0x4c] == 1 ? 1 : 2;
+            v->player[2] += n->granularity * channels, v->player[4] += n->granularity * channels;
+            if (n->callback_end) {
+                playing = false;
+                n->callback_end = false;
+            }
+        } else {
+            memcpy(n->sound, v->input, n->granularity * 2 * sizeof *n->sound);
+        }
+        deliver(p, n, v, n->sound);
+        if (!playing) v->state = AVAILABLE;
+        n->update_voice_started = false;
+        ++n->update_voice;
+    }
+    n->updating = false;
+    return 0;
+}
 /* sceNgsSystemUpdate(system): a granule of every voice playing, the sources before the busses they lead to */
 static uint32_t system_update(VitaProcess* p, VitaThread* t) {
-    (void)t;
     struct VitaNgs* n = p->ngs;
-    if (!n || !n->granularity) return SCE_NGS_ERROR_INVALID_PARAM;
+    if (!n || !n->granularity || n->updating) return SCE_NGS_ERROR_INVALID_PARAM;
     for (unsigned i = 0; i < VOICES; ++i) memset(n->voices[i].input, 0, n->granularity * 2 * sizeof(float));
-    static const uint32_t order[DEFS] = {DEF_SIMPLE, DEF_REVERB, DEF_MASTER};
-    float sound[MOST_GRANULARITY * 2];
-    for (unsigned k = 0; k < DEFS; ++k)
-        for (unsigned r = 0; r < RACKS; ++r) {
-            const Rack* rack = &n->racks[r];
-            if (!rack->count || rack->kind != order[k]) continue;
-            for (uint32_t i = 0; i < rack->count; ++i) {
-                Voice* v = &n->voices[rack->first + i];
-                if (v->state != ACTIVE || v->paused) continue;
-                ++v->updates;
-                if (rack->kind == DEF_MASTER) {
-                    for (uint32_t s = 0; s < n->granularity * 2; ++s)
-                        snx_st_le16(v->output + s * 2, (uint16_t)(int16_t)snx_clamp_float(v->input[s] * 32768.0f,
-                                                                                         -32768.0f, 32767.0f));
-                    continue;
-                }
-                bool playing = true;
-                if (rack->kind == DEF_SIMPLE)
-                    playing = simple_run(p, n, v, sound);
-                else
-                    memcpy(sound, v->input, n->granularity * 2 * sizeof *sound);
-                deliver(p, n, v, sound);
-                if (!playing) v->state = AVAILABLE;
-            }
-        }
-    return 0;
+    n->updating = true;
+    n->update_order = n->update_rack = n->update_voice = n->update_sample = 0;
+    n->update_voice_started = n->callback_end = false;
+    return system_update_continue(p, t);
 }
 
 const VitaHle vita_hle_ngs[] = {
@@ -553,7 +760,9 @@ const VitaHle vita_hle_ngs[] = {
     {0x0d5399cfu, "sceNgsVoiceDefGetSimpleVoice", simple_voice},
     {0x79a121d1u, "sceNgsVoiceDefGetMasterBuss", master_buss},
     {0x9dcf50f5u, "sceNgsVoiceDefGetReverbBuss", reverb_buss},
+    {0xe9b572b7u, "sceNgsVoiceDefGetTemplate1", template1},
     {0xab6bef8fu, "sceNgsVoiceLockParams", voice_lock_params},
+    {0x24e909a8u, "sceNgsVoiceSetModuleCallback", voice_set_module_callback},
     {0x3d46d8a7u, "sceNgsVoiceUnlockParams", ok},
     {0xfb8174b1u, "sceNgsVoiceSetParamsBlock", voice_set_params_block},
     {0xc9b8c0b4u, "sceNgsVoiceGetStateData", voice_get_state_data},
@@ -564,6 +773,7 @@ const VitaHle vita_hle_ngs[] = {
     {0x0e291aadu, "sceNgsVoiceKill", voice_kill},
     {0x9ab87e71u, "sceNgsVoiceBypassModule", ok},
     {0xd668b49cu, "sceNgsPatchCreateRouting", patch_create_routing},
+    {0x98703dbcu, "sceNgsPatchGetInfo", patch_get_info},
     {0xd0c9ae5au, "sceNgsPatchRemoveRouting", patch_remove_routing},
     {0xa0f5402du, "sceNgsVoicePatchSetVolumesMatrix", patch_set_volumes_matrix},
     {0, NULL, NULL},

@@ -464,8 +464,10 @@ static int repeat_offset(T* t, const Operand* op, unsigned index, unsigned which
 static void set_multiplier(T* t, int a, int b, int c, int d) {
     t->repeat_multiplier[0] = a, t->repeat_multiplier[1] = b, t->repeat_multiplier[2] = c, t->repeat_multiplier[3] = d;
 }
+static void reset_repeat_multiplier(T* t) { set_multiplier(t, 2, 2, 2, 2); }
+/* SMLSI increments persist across instructions; reset them only at program/phase boundaries. */
 static void reset_repeats(T* t) {
-    set_multiplier(t, 2, 2, 2, 2);
+    reset_repeat_multiplier(t);
     for (int i = 0; i < 4; ++i)
         for (int j = 0; j < 17; ++j) t->repeat_increase[i][j] = j;
 }
@@ -534,7 +536,7 @@ static bool vmov(T* t, const uint32_t* f) {
         }
         store(t, dest, result, mask, repeat_offset(t, &dest, r, O_DEST, R_SLMSI));
     }
-    reset_repeats(t);
+    reset_repeat_multiplier(t);
     return !t->failed;
 }
 
@@ -564,7 +566,7 @@ static bool vmad(T* t, const uint32_t* f) {
         for (unsigned i = 0; i < a.n; ++i) result.c[i] = ext3(t, t->t_f32, SPV_GLSL_FMA, a.c[i], b.c[i], c.c[i]);
         store(t, dest, result, mask, repeat_offset(t, &dest, r, O_DEST, (int)repeat_mode));
     }
-    reset_repeats(t);
+    reset_repeat_multiplier(t);
     return !t->failed;
 }
 
@@ -678,7 +680,7 @@ static bool vpck(T* t, const uint32_t* f) {
                 v.kind = is_signed_type(dest_type) ? K_INT : K_UINT;
         store(t, dest, v, mask, repeat_offset(t, &dest, r, O_DEST, R_SLMSI));
     }
-    reset_repeats(t);
+    reset_repeat_multiplier(t);
     return !t->failed;
 }
 static bool nothing(T* t, const uint32_t* f) {
@@ -861,7 +863,7 @@ static bool vbw(T* t, const uint32_t* f) {
         }
         store(t, dest, one_value(x, K_UINT), 1, repeat_offset(t, &dest, r, O_DEST, R_SLMSI));
     }
-    reset_repeats(t);
+    reset_repeat_multiplier(t);
     return !t->failed;
 }
 
@@ -1116,7 +1118,7 @@ static bool i32mad(T* t, const uint32_t* f) {
         if (t->failed) break;
         store(t, dest, imad(t, a, b, c), 1, repeat_offset(t, &dest, r, O_DEST, R_SLMSI));
     }
-    reset_repeats(t);
+    reset_repeat_multiplier(t);
     return !t->failed;
 }
 /* I16MAD: p a s n r e d b c k t m f o l h g i j q u v w x */
@@ -1165,7 +1167,7 @@ static bool i32mad2(T* t, const uint32_t* f) {
         /* sn 1 passes src2 through (Vita3K's hardware tests) */
         store(t, dest, sn ? c : imad(t, a, b, c), 1, repeat_offset(t, &dest, r, O_DEST, R_SLMSI));
     }
-    reset_repeats(t);
+    reset_repeat_multiplier(t);
     return !t->failed;
 }
 

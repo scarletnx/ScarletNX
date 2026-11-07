@@ -130,6 +130,35 @@ static uint32_t rtc_set_time_t(VitaProcess* p, VitaThread* t) {
     vita_write32(p, out + 12, 0);
     return 0;
 }
+/* a SceDateTime from seconds since 1970 and microseconds, UTC */
+static void date_from_seconds(VitaProcess* p, uint32_t out, int64_t seconds, uint32_t microseconds) {
+    int64_t days = seconds >= 0 ? seconds / 86400 : -((-seconds + 86399) / 86400), rest = seconds - days * 86400;
+    int64_t z = days + 719468, era = (z >= 0 ? z : z - 146096) / 146097, doe = z - era * 146097;
+    int64_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365, doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    int64_t mp = (5 * doy + 2) / 153, day = doy - (153 * mp + 2) / 5 + 1, month = mp < 10 ? mp + 3 : mp - 9;
+    int64_t year = yoe + era * 400 + (month <= 2);
+    uint16_t f[6] = {(uint16_t)year, (uint16_t)month, (uint16_t)day, (uint16_t)(rest / 3600), (uint16_t)(rest / 60 % 60),
+                     (uint16_t)(rest % 60)};
+    unsigned char* b = vita_ptr(p, out);
+    for (unsigned i = 0; i < 6; ++i) snx_st_le16(b + i * 2, f[i]);
+    vita_write32(p, out + 12, microseconds);
+}
+/* sceRtcSetTick(SceDateTime*, const SceRtcTick*) */
+static uint32_t rtc_set_tick(VitaProcess* p, VitaThread* t) {
+    uint32_t out = vita_arg(p, t, 0), tick = vita_arg(p, t, 1);
+    if (!out || !tick) return SCE_RTC_ERROR_INVALID_POINTER;
+    int64_t since = (int64_t)(((uint64_t)vita_read32(p, tick + 4) << 32 | vita_read32(p, tick)) - UNIX_EPOCH_TICK);
+    int64_t seconds = since >= 0 ? since / 1000000 : -((-since + 999999) / 1000000);
+    date_from_seconds(p, out, seconds, (uint32_t)(since - seconds * 1000000));
+    return 0;
+}
+/* sceRtcSetTime64_t(SceDateTime*, uint64_t time) */
+static uint32_t rtc_set_time64_t(VitaProcess* p, VitaThread* t) {
+    uint32_t out = vita_arg(p, t, 0);
+    if (!out) return SCE_RTC_ERROR_INVALID_POINTER;
+    date_from_seconds(p, out, (int64_t)((uint64_t)vita_arg(p, t, 3) << 32 | vita_arg(p, t, 2)), 0);
+    return 0;
+}
 /* sceRtcGetAccumulativeTime(): microseconds since the process started, 64 bits */
 static uint32_t rtc_get_accumulative_time(VitaProcess* p, VitaThread* t) {
     return vita_return64(t, (vita_now_ns() - p->start_ns) / 1000u);
@@ -252,6 +281,11 @@ static bool slot_read(VitaProcess* p, uint32_t id, unsigned char* param) {
     free(bytes);
     free(path);
     return ok;
+}
+/* whether the game has made slot id (the save data dialog's isExist) */
+bool vita_savedata_slot_exists(VitaProcess* p, uint32_t id) {
+    unsigned char param[SLOT_PARAM_SIZE];
+    return id < SAVEDATA_SLOTS && slot_read(p, id, param);
 }
 /* sceAppUtilSaveDataSlotCreate(id, const SceAppUtilSaveDataSlotParam*, mount point) */
 static uint32_t save_data_slot_create(VitaProcess* p, VitaThread* t) {
@@ -454,12 +488,24 @@ const VitaHle vita_hle_misc[] = {
     {0x811313b3u, "sceRtcGetTickResolution", rtc_get_tick_resolution},
     {0x2f3531ebu, "sceRtcGetDayOfWeek", rtc_get_day_of_week},
     {0x3a332f81u, "sceRtcSetTime_t", rtc_set_time_t},
+    {0xcd89f464u, "sceRtcSetTick", rtc_set_tick},
+    {0xa6c36b6au, "sceRtcSetTime64_t", rtc_set_time64_t},
     {0x258be8ecu, "sceRtcGetAccumulativeTime", rtc_get_accumulative_time},
     {0x3ce187b6u, "scePowerSetConfigurationMode", zero},
     {0x28034ac9u, "sceMotionStartSampling", zero},
     {0x0fd2cda2u, "sceMotionReset", zero},
     {0xbdb32767u, "sceMotionGetState", motion_get_state},
     {0x10b5765fu, "sceAppMgrReceiveSystemEvent", receive_system_event},
+    {0xfff8f7f0u, "sceAppMgrIsGameProgram", one},
+    {0xafceab96u, "sceAppMgrAcquireBgmPort", zero},
+    {0xb18370c2u, "sceTouchEnableTouchForce", zero},
+    {0x76e674d1u, "sceScreenShotEnable", zero},
+    {0x50ae9ff9u, "sceScreenShotDisable", zero},
+    {0x7061665bu, "sceScreenShotSetOverlayImage", zero},
+    {0xcc18fbaeu, "sceKernelChangeThreadVfpException", zero},
+    {0x9379e2d5u, "_sceFiosKernelOverlayGetList", zero},
+    {0xb02e0b26u, "_sceFiosKernelOverlayGetRecommendedScheduler", zero},
+    {0x3e9172eau, "_sceFiosKernelOverlayThreadSetDisabled", zero},
     {0xee0dbed9u, "sceAppUtilReceiveAppEvent", receive_app_event},
     {0xcd7fd67au, "sceAppUtilAppParamGetInt", app_param_get_int},
     {0x7e8fe96au, "sceAppUtilSaveDataSlotCreate", save_data_slot_create},

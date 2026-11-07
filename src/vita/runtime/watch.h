@@ -4,7 +4,7 @@
    again only once they were written. A write the runtime makes itself (the GPU's, recorded) is told; one by the
    game's code or the runtime's C code faults once, which marks the page written and lets the write through. A
    generation counts the writes: a copy keeps the one it was made at, and its memory changed when a page of it was
-   written after, or isn't watched. Off on Windows and before vita_watch_init, where everything is always changed */
+   written after. When tracking is unavailable, every range is treated as changed. */
 #ifndef SNX_VITA_WATCH_H
 #define SNX_VITA_WATCH_H
 #include <stdbool.h>
