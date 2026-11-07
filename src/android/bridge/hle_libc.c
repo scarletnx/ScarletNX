@@ -1404,6 +1404,7 @@ const HleSymbol hle_libc[] = {
     /* math */
     T(acos, d_d), T(asin, d_d), T(atan, d_d), T(cos, d_d), T(cosh, d_d), T(exp, d_d), T(exp2, d_d), T(log, d_d),
     T(log10, d_d), T(log2, d_d), T(sin, d_d), T(sinh, d_d), T(sqrt, d_d), T(tan, d_d), T(tanh, d_d),
+    T(cbrt, d_d), T(expm1, d_d), T(log1p, d_d), T(cbrtf, f_f), T(expm1f, f_f), T(log1pf, f_f),
     T(atan2, d_dd), T(fmod, d_dd), T(hypot, d_dd), T(pow, d_dd),
     T(acosf, f_f), T(asinf, f_f), T(atanf, f_f), T(cosf, f_f), T(expf, f_f), T(exp2f, f_f), T(logf, f_f),
     T(log10f, f_f), T(log2f, f_f), T(sinf, f_f), T(sqrtf, f_f), T(tanf, f_f),
