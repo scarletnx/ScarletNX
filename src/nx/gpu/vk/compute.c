@@ -19,6 +19,7 @@
 #include "nx/gpu/shader/shader.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/gpu/vk/lookup_ways.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/renderer.h"
@@ -1057,10 +1058,19 @@ void vk_dispatch(const DispatchState* d) {
         u32 wseen, code_len; /* vk_ww_now() then, and the bytes of the window */
         CsPipe* p;
     };
-    static struct cs_fast fc[64];
+    static struct cs_fast fc[VK_CSF_SETS * VK_CSF_WAYS]; /* lookup_ways.h */
     u64 pa = d->code;
     u32 epoch = vk_ww_epoch(); /* before the code is checked or read */
-    struct cs_fast* fe = &fc[((pa >> 8) ^ (pa >> 16)) & 63];
+    struct cs_fast *ways = &fc[vk_csf_set(pa) * VK_CSF_WAYS], *fe = NULL;
+    for (u32 w = 0; w < VK_CSF_WAYS && !fe; w++)
+        if (ways[w].p && ways[w].addr == pa && ways[w].lx == lx && ways[w].ly == ly && ways[w].lz == lz &&
+            ways[w].shm == shm)
+            fe = &ways[w];
+    if (!fe) { /* an empty way, else the one used longest ago */
+        fe = &ways[0];
+        for (u32 w = 1; w < VK_CSF_WAYS && fe->p; w++)
+            if (!ways[w].p || (i32)(ways[w].epoch - fe->epoch) < 0) fe = &ways[w];
+    }
     CsPipe* p = fe->p;
     int same = p && fe->addr == pa && fe->lx == lx && fe->ly == ly && fe->lz == lz && fe->shm == shm &&
                vk_cb_reads_hold(&p->cbr, cs_cb_read);
