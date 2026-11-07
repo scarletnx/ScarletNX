@@ -21,8 +21,8 @@ lacks and its 16x16 ones, two columns each, for the letters game titles are writ
 and the wide letters a language shows, and nearest-neighbor
 integer scaling; its words are English or a language compiled into it ([Languages](#languages)). An item of a menu
 has an icon beside its name, 16x16 in the font's stroke (`src/gui/icons.hex`): the menu's, the groups of the Settings and
-their rows that open a screen or do something (the others keep its columns), a game's box's actions, the setup's pages
-and the game's menu's. No font files or localization packages are needed.
+their rows that open a screen or do something (the others keep its columns), a game's box's actions, the setup's pages,
+the game's menu's and the keys of F1's box. No font files or localization packages are needed.
 
 ```sh
 ./build/scarletnx
@@ -620,7 +620,9 @@ as the Status box's and the note at the foot of a Settings box are; the setup's 
 a long one sliding, or wrap over its rows with `[tips] wrap`, the last sliding what does not fit. At the foot the
 screen's keys, the whole width (the setup's beside its tips), in letters a size under the rest's: its own keys, ESC alone
 at the left of the row, **F1** last, which opens a box over the screen with every key it has, those every screen has too
-(the arrows and the mouse, Enter, Space and a click, the pages, Tab and F2), until any key or a click closes it; on a
+(the arrows and the mouse, Enter, Space and a click, the pages, Tab and F2), as the other boxes over a screen are: the
+screen darkened under it, a row a key with its icon, the keys as the foot draws them, OK under them; Up/Down, PgUp/PgDn
+and the wheel go over the rows a short window cannot show, any other key or a click closes it; on a
 phone, the words to tap, whole, in the text's letters, each row of them as tall as a list's row (48 pixels times
 the text's size) for a finger, and so are the tabs. The tips and the keys each in a box with a bar down
 its left (`[tips] box`, `[footer] box`) or on the page, each key with what it does a button as a tab is: a box as the

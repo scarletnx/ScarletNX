@@ -550,7 +550,8 @@ typedef struct App {
     bool folders_from_games;   /* Folders goes back to Games, whose P opened it */
     bool folders_from_menu;    /* and to the menu, whose Folders opened it */
     int half;                  /* the letters in halves of a cell while text_half has them so, else 0: the scale's */
-    bool help_shown;           /* F1's box over the screen: every key it has (screen_said) */
+    bool help_shown;           /* F1's box over the screen: every key it has (screen_keys), a row each */
+    int help_top;              /* its first row shown, where Up/Down and the wheel put it while some do not fit */
     SnxPadScreen pad;          /* the button map's, on the row gamepad_map, A and B as gamepad_swap_ab says */
     SnxPadDrawing pad_drawing; /* as last drawn: what a click or a tap lands on */
     SDL_Gamepad* gamepad;      /* the pad it shows, the first one plugged in, while it is open */
@@ -2885,14 +2886,105 @@ static bool key_own(const char* part) {
     return !strcmp(part, SAY_QUEUE_TAB) || !strcmp(part, SAY_QUEUE_PLAY) || !strcmp(part, SAY_PAD_QUEUE_TAB) ||
            !strcmp(part, SAY_PAD_QUEUE_PLAY);
 }
+/* every word of key (an English sentence's, its words between slashes) one that moves the focus a row or a tile */
+static bool key_moves(const char* key) {
+    static const char* const words[] = {"Up", "Down", "Left", "Right", "Arrows", "D-pad"};
+    const char* at = key;
+    if (!*key) return false;
+    while (*at) {
+        size_t n = strcspn(at, "/"), i;
+        bool known = false;
+        for (i = 0; i < SDL_arraysize(words) && !known; ++i) known = strlen(words[i]) == n && !strncmp(words[i], at, n);
+        if (!known) return false;
+        at += n + (at[n] == '/');
+    }
+    return true;
+}
+#define GUI_HELP_ROWS 32 /* the most keys F1's box shows: every sentence of GUI_SAID_PARTS, a key or more each */
+/* the icon (icons.h) F1's box draws before a key of an English sentence, by what it does: the same verb the same icon
+   on every screen, the keyboard's, a pad's and a finger's. "select" and "choose" by keys that move the focus are moves,
+   by a key that picks a row a pointer's; a key alone ("Refresh.", a finger's word) is its own what. GUI_ICON_NONE for a
+   what the table lacks, which the test of every key sentence in po/scarletnx.pot refuses (a sentence without keys, the
+   setup's, which has no F1, aside) */
+static unsigned key_icon(const char* key, const char* what) {
+    static const struct {
+        const char* what;
+        unsigned icon;
+    } icons[] = {{"move", GUI_ICON_MOVE},
+                 {"key", GUI_ICON_MOVE},
+                 {"row", GUI_ICON_MOVE},
+                 {"setting", GUI_ICON_MOVE},
+                 {"group", GUI_ICON_MOVE},
+                 {"folder", GUI_ICON_MOVE},
+                 {"user", GUI_ICON_MOVE},
+                 {"queue", GUI_ICON_MOVE},
+                 {"scroll", GUI_ICON_MOVE},
+                 {"move, change", GUI_ICON_MOVE},
+                 {"key, change", GUI_ICON_MOVE},
+                 {"row, change", GUI_ICON_MOVE},
+                 {"setting, change", GUI_ICON_MOVE},
+                 {"row, step 1", GUI_ICON_MOVE},
+                 {"user, current user", GUI_ICON_MOVE},
+                 {"open", GUI_ICON_POINTER},
+                 {"change or open", GUI_ICON_POINTER},
+                 {"open or change", GUI_ICON_POINTER},
+                 {"open or remove", GUI_ICON_POINTER},
+                 {"use, add or remove", GUI_ICON_POINTER},
+                 {"apply, type, remove or save", GUI_ICON_POINTER},
+                 {"press", GUI_ICON_POINTER},
+                 {"change", GUI_ICON_SLIDERS_HORIZONTAL},
+                 {"step 1", GUI_ICON_SLIDERS_HORIZONTAL},
+                 {"step 16", GUI_ICON_SLIDERS_HORIZONTAL},
+                 {"play", GUI_ICON_PLAY},
+                 {"recompile", GUI_ICON_HAMMER},
+                 {"mods", GUI_ICON_PACKAGE_PLUS},
+                 {"AOT pack", GUI_ICON_PACKAGE},
+                 {"save states", GUI_ICON_SAVE},
+                 {"save", GUI_ICON_SAVE},
+                 {"refresh", GUI_ICON_REFRESH_CW},
+                 {"back", GUI_ICON_ARROW_LEFT},
+                 {"exit", GUI_ICON_LOG_OUT},
+                 {"abort", GUI_ICON_X},
+                 {"cancel", GUI_ICON_X},
+                 {"take out", GUI_ICON_X},
+                 {"OK", GUI_ICON_CHECK},
+                 {"done", GUI_ICON_CHECK},
+                 {"next", GUI_ICON_CHECK},
+                 {"default", GUI_ICON_ROTATE_CCW},
+                 {"reset", GUI_ICON_ROTATE_CCW},
+                 {"delete", GUI_ICON_TRASH},
+                 {"remove", GUI_ICON_TRASH},
+                 {"add", GUI_ICON_FOLDER_PLUS},
+                 {"edit", GUI_ICON_PENCIL},
+                 {"type", GUI_ICON_PENCIL},
+                 {"rename", GUI_ICON_PENCIL},
+                 {"paste", GUI_ICON_CLIPBOARD_PASTE},
+                 {"pick a file", GUI_ICON_KEY_ROUND},
+                 {"pick a keys file", GUI_ICON_KEY_ROUND},
+                 {"current user", GUI_ICON_USER},
+                 {"downloads, or fetch again", GUI_ICON_HARD_DRIVE_DOWNLOAD},
+                 {"games", GUI_ICON_GAMEPAD_2},
+                 {"screen", GUI_ICON_APP_WINDOW},
+                 {"side box", GUI_ICON_PANEL_RIGHT},
+                 {"folders", GUI_ICON_FOLDER},
+                 {"view", GUI_ICON_EYE},
+                 {"help", GUI_ICON_INFO}};
+    size_t i;
+    if (!*what) what = key;
+    if (!strcmp(what, "select") || !strcmp(what, "choose")) return key_moves(key) ? GUI_ICON_MOVE : GUI_ICON_POINTER;
+    for (i = 0; i < SDL_arraysize(icons); ++i)
+        if (!SDL_strcasecmp(icons[i].what, what)) return icons[i].icon;
+    return GUI_ICON_NONE;
+}
 /* parts' sentences as a translation says them, for a foot (help false): the key back first and a \x1f after it,
    which hints() puts alone at the left, then the sentences of the screen's own keys, F1's last; for F1's box (help)
-   every one. A translation has the sentences with keys of its English in their order (scripts/build-languages.py),
-   so each is known by its English's */
-static const char* keys_said(const char* const* parts, int n, bool pad, bool help, char* out, size_t size) {
+   every one, and with icons each one's icon (key_icon of its English) in icons, max at most. A translation has the
+   sentences with keys of its English in their order (scripts/build-languages.py), so each is known by its English's */
+static const char* keys_said(const char* const* parts, int n, bool pad, bool help, char* out, size_t size,
+                             unsigned* icons, int max) {
     char back[192] = "", kept[1024] = "";
     size_t used = 0;
-    int i;
+    int i, k = 0;
     for (i = 0; i < n; ++i) {
         const char *english = parts[i], *said = snx_tr(parts[i]);
         char key[128], what[256], ekey[128], ewhat[256];
@@ -2907,6 +2999,7 @@ static const char* keys_said(const char* const* parts, int n, bool pad, bool hel
                 continue;
             }
             if (!help && found && key_generic(ekey) && !key_own(parts[i])) continue;
+            if (icons && k < max) icons[k++] = found ? key_icon(ekey, ewhat) : GUI_ICON_NONE;
             used += (size_t)snprintf(kept + used, sizeof kept - SDL_min(used, sizeof kept), "%.*s ", (int)(said - from),
                                      from);
             if (used >= sizeof kept) used = sizeof kept - 1;
@@ -2918,16 +3011,18 @@ static const char* keys_said(const char* const* parts, int n, bool pad, bool hel
         snprintf(out, size, "%s\x1f%s%s", back, kept, snx_tr(pad ? SAY_PAD_HELP : SAY_HELP));
     return out;
 }
-/* the keys of the screen shown: what its foot says (help false: keys_said), or F1's box every one (help) */
+/* the keys of the screen shown: what its foot says (help false: keys_said), or F1's box every one (help), with icons
+   each one's icon in icons, max at most (keys_said) */
 static void queue_said(const App* app, bool pad, const char** parts, int* n);
 #define SAY_SIDE SNX_TR_KEYS("F2: side box.")
-static const char* screen_said(const App* app, bool help, char* out, size_t size) {
+static const char* screen_keys(const App* app, bool help, char* out, size_t size, unsigned* icons, int max) {
     const char *keys = SAY_MENU_KEYS, *parts[GUI_SAID_PARTS];
     int n = 0;
     bool pad = app->pad_driven && !(app->editing && app->form == GUI_FORM_PAD);    /* the button map's speaks of pads */
     if (!app->editing && !app->setup_on && app->menu.view == GUI_LOAD_RECOMPILE) { /* its Tab goes to Games */
         queue_said(app, pad, parts, &n);
 #ifdef SNX_TOUCH_UI
+        if (help && !pad) return keys_said(parts, n, false, true, out, size, icons, max);
         if (!pad) { /* a finger's: the words to tap are the foot, whole */
             size_t used = 0;
             for (int i = 0; i < n && used < size; ++i)
@@ -2986,6 +3081,7 @@ static const char* screen_said(const App* app, bool help, char* out, size_t size
         }
         if (aot_said(app)) said_add(parts, &n, SAY_GAMES_AOT);
 #ifdef SNX_TOUCH_UI
+        if (help) return keys_said(parts, n, false, true, out, size, icons, max);
         { /* a finger's: the words to tap are the foot, whole */
             size_t used = 0;
             int i;
@@ -2998,13 +3094,16 @@ static const char* screen_said(const App* app, bool help, char* out, size_t size
         said_add(parts, &n, SAY_TAB);
 #endif
     }
-    if (!pad) return keys_said(parts, n, false, help, out, size);
+    if (!pad) return keys_said(parts, n, false, help, out, size, icons, max);
     {
         char said[1024];
-        keys_said(parts, n, true, help, said, sizeof said);
+        keys_said(parts, n, true, help, said, sizeof said, icons, max);
         gui_pad_keys_named(said, app->pads.labels, out, size);
         return out;
     }
+}
+static const char* screen_said(const App* app, bool help, char* out, size_t size) {
+    return screen_keys(app, help, out, size, NULL, 0);
 }
 static const char* shown_keys(const App* app, char* out, size_t size) { return screen_said(app, false, out, size); }
 /* the colour picker's box, its rows and the bars of the first three, in pixels */
@@ -12564,25 +12663,118 @@ static void draw_closing(App* app) {
             y += wrap_in(app, text, text.x, y, line, 1, rgb(app->theme.ink)) * cell_h(app);
         }
 }
-/* F1's box over the screen: every key it has (screen_said), a row a sentence, the keys in the focus colour */
+/* ---- F1's box (a pad's Select) over the screen, as the other boxes over it: every key of the screen shown
+   (screen_keys), a row each of ui.txt's scene Help, its icon (key_icon) after the theme's marker, its keys as the foot
+   draws them and what they do two columns after the widest; the OK of scene Files under them. Up/Down, PgUp/PgDn and
+   the wheel go over the rows that do not fit, help_top the first shown; another key, button or finger closes it ---- */
+typedef struct {
+    GuiRect box; /* the whole box, under its head */
+    GuiRect rects[UI_HELP_ITEMS], ok[UI_FILES_ITEMS];
+    UiList lists[UI_HELP_ITEMS]; /* the rows', from help_top, none in focus */
+} GuiHelpBoxes;
+/* F1's box's keys in said, as screen_keys says them, a key and what it does at a time (hint_next), their icons in
+   icons (none past GUI_HELP_ROWS); in *keys the widest keys' columns. How many */
+static int help_said(const App* app, char* said, size_t size, unsigned icons[GUI_HELP_ROWS], int* keys) {
+    char key[128], what[256];
+    const char* at = said;
+    int n = 0;
+    for (int i = 0; i < GUI_HELP_ROWS; ++i) icons[i] = GUI_ICON_NONE;
+    screen_keys(app, true, said, size, icons, GUI_HELP_ROWS);
+    for (*keys = 0; hint_next(&at, key, what, sizeof key); ++n) *keys = SDL_max(*keys, gui_text_cols(key));
+    return n;
+}
+/* the box as wide as its widest row (the marker, the icon and a column, the keys, two columns, what they do) or its
+   title, as tall as its rows and OK, in the middle of the screen; a window too short for it shows the rows that fit
+   from help_top, kept from going past the last */
+static void help_boxes(App* app, GuiHelpBoxes* h) {
+    char said[1024], key[128], what[256];
+    unsigned icons[GUI_HELP_ROWS];
+    const char* at = said;
+    int s = app->scale, keys, n = help_said(app, said, sizeof said, icons, &keys), shown;
+    int longest = SDL_max(16, gui_text_cols(snx_tr("Keys")) + 2), ok_h, rows;
+    GuiRect area;
+    while (hint_next(&at, key, what, sizeof key))
+        longest = SDL_max(longest, gui_text_cols(app->theme.marker) + 3 + keys + 2 + gui_text_cols(what) + 4);
+    ok_h = rows_h(ui_files_layout, ui_files_row, h->ok, UI_FILES_OK, s, 1);
+    rows = rows_h(ui_help_layout, ui_help_row, h->rects, UI_HELP_ROWS, s, n);
+    area = over_rows(app, longest, rows + 6 * s + ok_h, &h->box);
+    ui_help_layout(gui_rect(area.x, area.y, area.w, SDL_max(0, area.h - 6 * s - ok_h)), s, h->rects);
+    ui_files_layout(gui_rect(area.x, area.y + area.h - ok_h, SDL_min(area.w, 26 * cell_w(app)), ok_h), s, h->ok);
+    memset(h->lists, 0, sizeof h->lists);
+    shown = (int)ui_help_shown(h->rects, s, UI_HELP_ROWS);
+    app->help_top = SDL_clamp(app->help_top, 0, SDL_max(0, n - shown));
+    h->lists[UI_HELP_ROWS].first = (size_t)app->help_top;
+    h->lists[UI_HELP_ROWS].focus = SIZE_MAX; /* none: a key closes the box, but those that go over it */
+    h->lists[UI_HELP_ROWS].count = (size_t)n;
+}
+/* a row of F1's box: its icon, then a blank as wide as the widest keys and two columns, where render_help draws the
+   row's keys, then what they do */
+bool ui_help_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info) {
+    char said[1024], key[128], what[256];
+    unsigned icons[GUI_HELP_ROWS];
+    const char* at = said;
+    int keys, n = help_said(app, said, sizeof said, icons, &keys);
+    (void)width; /* the box is as wide as its widest row; in a narrower window a row is cut, "..." at its end */
+    if (row >= (size_t)n) return false;
+    for (size_t i = 0; i <= row; ++i) hint_next(&at, key, what, sizeof key);
+    snprintf(app->row_text, sizeof app->row_text, "%*s%s", keys + 2, "", what);
+    info->label = app->row_text;
+    info->icon = row < GUI_HELP_ROWS ? icons[row] : GUI_ICON_NONE;
+    return true;
+}
+/* a click on the box closes it before a row is hit (pointer), so a row does nothing */
+void ui_help_rows_row_action_cb(App* app, size_t row, uint32_t hit) {
+    (void)app;
+    (void)row;
+    (void)hit;
+}
+/* F1's box's rows step rows on (back for a negative step), as far as the last shows */
+static void help_step(App* app, int step) {
+    GuiHelpBoxes h;
+    app->help_top = SDL_max(0, app->help_top + step);
+    help_boxes(app, &h);
+}
+/* a key that goes over F1's box's rows, Up/Down a row and PgUp/PgDn as many as show: true for those, another closing
+   the box */
+static bool help_key(App* app, SDL_Keycode code) {
+    GuiHelpBoxes h;
+    int shown;
+    help_boxes(app, &h);
+    shown = SDL_max(1, (int)ui_help_shown(h.rects, app->scale, UI_HELP_ROWS));
+    switch (code) {
+        case SDLK_UP: help_step(app, -1); return true;
+        case SDLK_DOWN: help_step(app, 1); return true;
+        case SDLK_PAGEUP: help_step(app, -shown); return true;
+        case SDLK_PAGEDOWN: help_step(app, shown); return true;
+        default: return false;
+    }
+}
+/* the box over the darkened screen, its rows, OK in focus, and each row's keys over its blank: in the focus colour, or
+   on a band of it in the page's where the theme's focus is a bar, as the foot's are */
 static void render_help(App* app) {
     const GuiTheme* t = &app->theme;
+    GuiHelpBoxes h;
+    UiList oks[UI_FILES_ITEMS] = {{0}}; /* OK in focus */
     char said[1024], key[128], what[256];
-    const char* at;
-    int rows = 0, keys = 0, whats = 0, y;
-    GuiRect r, text;
-    screen_said(app, true, said, sizeof said);
-    for (at = said; hint_next(&at, key, what, sizeof key); ++rows) {
-        keys = SDL_max(keys, gui_text_cols(key));
-        whats = SDL_max(whats, gui_text_cols(what));
-    }
-    r = over_rect(app, SDL_min(keys + 2 + whats, app->cols - 4), head_h(app) + rows * cell_h(app) + 8 * app->scale);
-    fill_rect(app, r, t->page); /* over the screen whatever its boxes are */
-    y = pane(app, r, snx_tr("Keys"));
-    text = inner(app, r);
-    for (at = said; hint_next(&at, key, what, sizeof key); y += cell_h(app)) {
-        text_in(app, text, text.x, y, key, rgb(t->focus));
-        text_in(app, text, text.x + (keys + 2) * cell_w(app), y, what, rgb(t->ink));
+    unsigned icons[GUI_HELP_ROWS];
+    const char* at = said;
+    int s = app->scale, w = cell_w(app), keys, shown;
+    help_boxes(app, &h);
+    over_box(app, h.box, snx_tr("Keys"));
+    ui_help_draw(app, h.rects, s, h.lists);
+    ui_files_draw(app, h.ok, s, oks);
+    help_said(app, said, sizeof said, icons, &keys);
+    for (int i = 0; i < app->help_top; ++i) hint_next(&at, key, what, sizeof key);
+    shown = (int)ui_help_shown(h.rects, s, UI_HELP_ROWS);
+    for (int i = 0; i < shown && hint_next(&at, key, what, sizeof key); ++i) {
+        GuiRect b = ui_row_box(app, row_drawn(app, ui_help_row, ui_help_shown, h.rects, UI_HELP_ROWS,
+                                              &h.lists[UI_HELP_ROWS], (size_t)i)),
+                text = inner(app, b);
+        int x = b.x + w / 2 + (gui_text_cols(t->marker) + 3) * w, y = ui_text_y(app, b);
+        int room = SDL_min(gui_text_cols(key) * w, text.x + text.w - x);
+        if (room <= 0) continue;
+        if (t->focus_bar) fill_rect(app, gui_rect(x - s, y, room + 2 * s, cell_h(app)), t->focus);
+        text_in(app, text, x, y, key, rgb(t->focus_bar ? t->page : t->focus));
     }
 }
 static void render(App* app) {
@@ -16912,15 +17104,18 @@ static void event_take(App* app, const SDL_Event* e) {
         if (e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && menu_key_of(&e->key, &key)) ask_key(app, key);
         return;
     }
-    /* F1's box takes every key while it shows, and any closes it */
+    /* F1's box takes every key while it shows: those that go over its rows (help_key) do, any other closes it */
     if (app->help_shown && (e->type == SDL_EVENT_KEY_DOWN || e->type == SDL_EVENT_TEXT_INPUT)) {
-        if (e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat) app->help_shown = false;
+        if (e->type == SDL_EVENT_KEY_DOWN && !help_key(app, e->key.key) && !e->key.repeat) app->help_shown = false;
         return;
     }
     /* F1, or the foot's (a pad's Select): every key of the screen in a box over it; the setup's foot says its own */
     if (e->type == SDL_EVENT_KEY_DOWN && e->key.key == SDLK_F1 && !app->menu.running && !app->finished &&
         !(app->setup_on && !app->editing) && !(app->editing && app->editor.typing)) {
-        if (!e->key.repeat) app->help_shown = true;
+        if (!e->key.repeat) {
+            app->help_shown = true;
+            app->help_top = 0;
+        }
         return;
     }
     /* F2, or the foot's: the side box hidden where it shows, shown where it does not, kept in app.ini */
@@ -17098,6 +17293,10 @@ static void event_take(App* app, const SDL_Event* e) {
         if (app->splash || app->menu.running || app->finished || app->confirm.shown || app->left_shown ||
             (app->editing && app->editor.picking))
             return;
+        if (app->help_shown) { /* F1's box's rows, a notch a row, and nothing under it */
+            help_step(app, -rows);
+            return;
+        }
         if (games_scrolls(app) && !box_shown(app)) { /* three rows a notch, gliding there; the focus stays */
             GuiGamesBoxes g;
             int row_h, total, view;

@@ -1197,6 +1197,39 @@ static void icons_named(void) {
     }
     free(text);
 }
+/* every key of every key sentence in po/scarletnx.pot (the script's list of SNX_TR_KEYS, every platform's) has its icon
+   in F1's box (key_icon): one without is named. A sentence without keys, the setup's, has no F1 */
+static void help_icons_named(void) {
+    size_t size;
+    char* text = (char*)snx_read_file(SNX_GUI_POT, &size);
+    const char* line;
+    int sentences = 0, keys = 0;
+    assert(text);
+    for (line = text; line; line = strchr(line, '\n') ? strchr(line, '\n') + 1 : NULL) {
+        char said[512], key[128], what[256];
+        const char* at = said;
+        if (strncmp(line, "#, snx-keys", 11)) continue;
+        line = strchr(line, '\n') + 1;
+        assert(sscanf(line, "msgid \"%511[^\"]\"", said) == 1);
+        ++sentences;
+        while (hint_next(&at, key, what, sizeof key)) {
+            if (!key[0]) continue;
+            if (key_icon(key, what) == GUI_ICON_NONE) {
+                fprintf(stderr, "\"%s: %s\" of \"%s\" has no icon in main.c's key_icon\n", key, what, said);
+                assert(!"a key's icon");
+            }
+            ++keys;
+        }
+    }
+    free(text);
+    assert(sentences >= 100 && keys >= 240);
+    /* select and choose by keys that move a row are moves, by those that pick one a pointer's; a key alone is a what */
+    assert(key_icon("Up/Down", "select") == GUI_ICON_MOVE && key_icon("D-pad", "choose") == GUI_ICON_MOVE);
+    assert(key_icon("Space/Enter/click", "select") == GUI_ICON_POINTER &&
+           key_icon("Tap", "select") == GUI_ICON_POINTER);
+    assert(key_icon("Refresh", "") == GUI_ICON_REFRESH_CW && key_icon("AOT pack", "") == GUI_ICON_PACKAGE);
+    assert(key_icon("F9", "jump") == GUI_ICON_NONE && key_icon("Refreshing", "") == GUI_ICON_NONE);
+}
 /* a running step's line ends in its progress as the theme says, a done one in OK */
 static void step_line(void) {
     GuiStep s;
@@ -8653,6 +8686,65 @@ int main(int argc, char** argv) {
 #endif
                 assert(strstr(shown_keys(&app, said, sizeof said), "R: recompile.") && strstr(said, "B: AOT pack.") &&
                        strstr(said, "P: folders.") && strstr(said, "ESC: back."));
+                { /* F1's box of them, the most rows it has: an icon each, the keyboard's and a pad's; a window short of
+                     them shows those that fit, Up/Down, PgUp/PgDn and the wheel going over them as far as the last and
+                     moving nothing under it, any other key closing it and doing nothing else */
+                    GuiHelpBoxes h;
+                    SDL_Event e = {0};
+                    unsigned icons[GUI_HELP_ROWS];
+                    char all[1024];
+                    int w, height, keys, n, shown, i;
+                    size_t selected = app.browser.selected;
+                    key(&app, SDLK_F1);
+                    assert(app.help_shown && app.help_top == 0);
+                    render(&app);
+                    n = help_said(&app, all, sizeof all, icons, &keys);
+                    assert(n >= 13 && n <= GUI_HELP_ROWS && keys == gui_text_cols("Left/Right/PgUp/PgDown"));
+                    for (i = 0; i < n; ++i) assert(icons[i] != GUI_ICON_NONE);
+                    shows(&app, "- " ICON_EYE, normal);
+                    shows(&app, "Left/Right/PgUp/PgDown", yellow);
+                    help_boxes(&app, &h);
+                    assert((int)ui_help_shown(h.rects, app.scale, UI_HELP_ROWS) == n); /* all of them */
+                    app.pad_driven = true; /* a pad's buttons, with their icons */
+                    render(&app);
+                    n = help_said(&app, all, sizeof all, icons, &keys);
+                    assert(strstr(all, "Right stick: play.") && strstr(all, "B: back."));
+                    for (i = 0; i < n; ++i) assert(icons[i] != GUI_ICON_NONE);
+                    shows(&app, "Right stick", yellow);
+                    app.pad_driven = false;
+                    assert(SDL_GetWindowSize(app.window, &w, &height));
+                    assert(SDL_SetWindowSize(app.window, w, rows_height(GUI_LEAST_ROWS, app.scale)));
+                    render(&app);
+                    n = help_said(&app, all, sizeof all, icons, &keys);
+                    help_boxes(&app, &h);
+                    shown = (int)ui_help_shown(h.rects, app.scale, UI_HELP_ROWS);
+                    assert(shown > 0 && shown < n);
+                    shows(&app, "play", normal);
+                    hides(&app, "side box", normal); /* the last row */
+                    key(&app, SDLK_DOWN);
+                    key(&app, SDLK_DOWN);
+                    assert(app.help_shown && app.help_top == 2);
+                    key(&app, SDLK_PAGEDOWN);
+                    key(&app, SDLK_DOWN); /* past the last: no further */
+                    assert(app.help_shown && app.help_top == n - shown);
+                    render(&app);
+                    shows(&app, "side box", normal);
+                    hides(&app, "play", normal);
+                    e.type = SDL_EVENT_MOUSE_WHEEL;
+                    e.wheel.integer_y = 1; /* a notch up: a row */
+                    event(&app, &e);
+                    assert(app.help_top == n - shown - 1 && app.browser.selected == selected);
+                    key(&app, SDLK_RETURN); /* closes it, opening nothing */
+                    assert(!app.help_shown && !app.addons_shown && app.browser.selected == selected);
+                    key(&app, SDLK_F1); /* again from its first row */
+                    assert(app.help_shown && app.help_top == 0);
+                    key(&app, SDLK_PAGEUP);
+                    assert(app.help_shown && app.help_top == 0);
+                    key(&app, SDLK_ESCAPE);
+                    assert(!app.help_shown && app.menu.view == GUI_LOAD_GAMES);
+                    assert(SDL_SetWindowSize(app.window, w, height));
+                    render(&app);
+                }
                 app.aot_state = state;
                 app.aot_match = match;
             }
@@ -11593,6 +11685,28 @@ int main(int argc, char** argv) {
                 shows(&app, "Keys", normal);
                 shows(&app, "Arrows/mouse", yellow); /* every key, the foot's and the others */
                 shows(&app, "side box", normal);
+                /* as the boxes over a screen are: the screen under it darkened, a row a key with its icon after the
+                   marker, OK under them in focus */
+                hides(&app, "Settings", normal);
+                shows(&app, "- " ICON_MOVE, normal);
+                shows(&app, "- OK", yellow);
+                {
+                    static const unsigned menu_icons[] = {GUI_ICON_MOVE,    GUI_ICON_POINTER,    GUI_ICON_REFRESH_CW,
+                                                          GUI_ICON_LOG_OUT, GUI_ICON_APP_WINDOW, GUI_ICON_PANEL_RIGHT};
+                    unsigned icons[GUI_HELP_ROWS];
+                    char all[1024];
+                    int keys;
+                    assert(help_said(&app, all, sizeof all, icons, &keys) == (int)SDL_arraysize(menu_icons));
+                    assert(!memcmp(icons, menu_icons, sizeof menu_icons));
+                }
+                { /* the wheel over it moves nothing under it, all its rows showing */
+                    SDL_Event e = {0};
+                    int selected = app.menu.selected;
+                    e.type = SDL_EVENT_MOUSE_WHEEL;
+                    e.wheel.integer_y = -1;
+                    event(&app, &e);
+                    assert(app.help_shown && app.help_top == 0 && app.menu.selected == selected);
+                }
                 mouse_px(&app, x + 4, y + 4, true);
                 assert(!app.help_shown && app.menu.view == GUI_LOAD_NONE);
             }
@@ -11719,6 +11833,21 @@ int main(int argc, char** argv) {
             press_key(&app, "ESC", 0, false, rgb(app.theme.page));
             assert(app.confirm.shown && app.confirm.ask == GUI_ASK_EXIT);
             key(&app, SDLK_ESCAPE);
+            /* F1's box in YoRHa: its head on the band of ink, each key on a band of the focus colour in the page's, as
+               the foot's keys are, what it does in ink on the row's dim */
+            key(&app, SDLK_F1);
+            render(&app);
+            assert(app.help_shown);
+            shows(&app, "Keys", rgb(app.theme.page));
+            shows(&app, "exit", rgb(app.theme.ink));
+            hides(&app, "ESC", rgb(app.theme.focus));
+            {
+                int x, y;
+                assert(find_text(&app, "ESC", rgb(app.theme.page), 1, &x, &y));
+                assert(same_colour(pixel(&app, (float)x, (float)y), rgb(app.theme.focus))); /* the font's blank top */
+            }
+            key(&app, SDLK_ESCAPE);
+            assert(!app.help_shown && !app.confirm.shown);
             app.theme = *gui_theme_builtin("default");
             app.menu.selected = GUI_KEYS;
         }
@@ -13333,6 +13462,7 @@ int main(int argc, char** argv) {
     }
     players_view(&app);
     icons_named();
+    help_icons_named();
     step_line();
     /* a row too long for its box with the labels' column gives the column up first, and is cut only past that: 1280x720
        at 2x leaves a group's rows fewer columns than Vulkan Video's label and a value, and Shadows ends its row whole and
