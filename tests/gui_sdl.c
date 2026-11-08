@@ -3363,7 +3363,7 @@ static void recompile_queue(App* app) {
     }
     app->theme = *gui_theme_builtin("default");
     app->side_box = GUI_SIDE_AUTO;
-    app->background_gentle = false;
+    app->background_mode = GUI_BACKGROUND_FULL;
     free(app->job_log); /* beside the games: Folders' Logs, which may have set it, are gone */
     app->job_log = snx_format("%s-last-recompile.log", app->games_dir);
     recent_open(app, snx_format("%s-recent.txt", app->games_dir)); /* R puts its game first in the recent games */
@@ -3716,24 +3716,29 @@ static void recompile_queue(App* app) {
         assert(app->queue.count == left);
     }
     assert(!app->queue.count && app->menu.view == GUI_LOAD_GAMES && tab_count(app) == GUI_TAB_RECOMPILE);
-    /* Background recompile Gentle: half the AOT threads and a low priority from its start */
-    app->background_gentle = true;
-    go_tab(app, GUI_TAB_GAMES);
-    focus_game(app, names[0]);
-    key(app, SDLK_R);
-    job_started(app);
-    snprintf(line, sizeof line, "threads 4, priority %d", low);
-    assert(noted(&app->job_steps, line) && app->job_low && app->job_threads == 4 && priority_of(job_pid(app)) == low);
-    job_speed(app, said, sizeof said);
-    assert(!strcmp(said, "Gentle, 4 threads"));
-    job_step(app, 50);
-    job_step(app, 75);
-    job_step(app, 100);
-    job_end(app);
-    go_tab(app, GUI_TAB_RECOMPILE);
-    key(app, SDLK_ESCAPE);
-    assert(!app->queue.count);
-    app->background_gentle = false;
+    /* Background recompile Gentle: half the AOT threads and a low priority from its start; Auto the same on battery */
+    for (int way = 0; way < 2; ++way) {
+        app->background_mode = way ? GUI_BACKGROUND_AUTO : GUI_BACKGROUND_GENTLE;
+        app->power_test = way ? 1 : -1;
+        go_tab(app, GUI_TAB_GAMES);
+        focus_game(app, names[0]);
+        key(app, SDLK_R);
+        job_started(app);
+        snprintf(line, sizeof line, "threads 4, priority %d", low);
+        assert(noted(&app->job_steps, line) && app->job_low && app->job_threads == 4 &&
+               priority_of(job_pid(app)) == low);
+        job_speed(app, said, sizeof said);
+        assert(!strcmp(said, way ? "Gentle, on battery, 4 threads" : "Gentle, 4 threads"));
+        job_step(app, 50);
+        job_step(app, 75);
+        job_step(app, 100);
+        job_end(app);
+        go_tab(app, GUI_TAB_RECOMPILE);
+        key(app, SDLK_ESCAPE);
+        assert(!app->queue.count);
+    }
+    app->background_mode = GUI_BACKGROUND_FULL;
+    app->power_test = 0;
     /* B's AOT pack joins the same queue: its row says so, its end what the cache gave */
     {
         UiRowInfo info = {0};
@@ -5237,7 +5242,7 @@ int main(int argc, char** argv) {
         assert(strcmp(id, first_id));
         snprintf(expected, sizeof expected,
                  APP_INI_HEAD "theme = %s\nui_scale = 1\nlanguage = auto\n"
-                              "animations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n"
+                              "animations = 0\nside_box = auto\nbackground_recompile = auto\ndumps_subfolders = on\n"
                               "dumps_main = on\nrecompiled_main = on\n" GAMES_DEFAULTS PROBE_DEFAULTS,
                  id);
         kept = (char*)snx_read_file(app.app_file, &size);
@@ -5283,7 +5288,7 @@ int main(int argc, char** argv) {
             expected, sizeof expected,
             APP_INI_HEAD
             "theme = %s\nui_scale = 2\n"
-            "language = auto\nanimations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n"
+            "language = auto\nanimations = 0\nside_box = auto\nbackground_recompile = auto\ndumps_subfolders = on\n"
             "dumps_main = on\nrecompiled_main = on\n" GAMES_DEFAULTS PROBE_DEFAULTS,
             first_id);
         kept = (char*)snx_read_file(app.app_file, &size);
@@ -5355,7 +5360,7 @@ int main(int argc, char** argv) {
         snprintf(expected, sizeof expected,
                  APP_INI_HEAD
                  "theme = %s\nui_scale = 2\n"
-                 "language = xx\nanimations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n"
+                 "language = xx\nanimations = 0\nside_box = auto\nbackground_recompile = auto\ndumps_subfolders = on\n"
                  "dumps_main = on\nrecompiled_main = on\n" GAMES_DEFAULTS PROBE_DEFAULTS,
                  app.theme.id);
         kept = (char*)snx_read_file(app.app_file, &size);
@@ -5913,35 +5918,73 @@ int main(int argc, char** argv) {
         free(kept);
     }
     key(&app, SDLK_DOWN);
-    /* Background recompile: Full or Gentle, either way, kept in app.ini as recompile_background = full or gentle */
-    assert(app.editor.row == GUI_APP_BACKGROUND && !app.background_gentle && !strcmp(app.app_form.background, "Full"));
+    /* Background recompile: Auto, which says what it is now (Full on the charger, Gentle on battery), Full and Gentle,
+       round either way, kept in app.ini as background_recompile = auto, full or gentle */
+    app.power_test = -1;
+    app_values(&app);
+    assert(app.editor.row == GUI_APP_BACKGROUND && app.background_mode == GUI_BACKGROUND_AUTO &&
+           !strcmp(app.app_form.background, "Auto: Full"));
+    app.power_test = 1;
+    app_values(&app);
+    assert(!strcmp(app.app_form.background, "Auto: Gentle, on battery"));
     key(&app, SDLK_RIGHT);
-    assert(app.background_gentle && !strcmp(app.app_form.background, "Gentle"));
+    assert(app.background_mode == GUI_BACKGROUND_FULL && !strcmp(app.app_form.background, "Full"));
+    key(&app, SDLK_RIGHT);
+    assert(app.background_mode == GUI_BACKGROUND_GENTLE && !strcmp(app.app_form.background, "Gentle"));
     {
         size_t size;
         char* kept = (char*)snx_read_file(app.app_file, &size);
-        assert(kept && strstr(kept, "\nrecompile_background = gentle\n"));
+        assert(kept && strstr(kept, "\nbackground_recompile = gentle\n"));
         free(kept);
     }
     key(&app, SDLK_LEFT);
-    assert(!app.background_gentle && !strcmp(app.app_form.background, "Full"));
+    assert(app.background_mode == GUI_BACKGROUND_FULL && !strcmp(app.app_form.background, "Full"));
+    key(&app, SDLK_LEFT);
+    assert(app.background_mode == GUI_BACKGROUND_AUTO);
+    key(&app, SDLK_LEFT);
+    assert(app.background_mode == GUI_BACKGROUND_GENTLE);
     key(&app, SDLK_RETURN);
-    assert(app.background_gentle);
-    key(&app, SDLK_RETURN);
-    assert(!app.background_gentle);
+    assert(app.background_mode == GUI_BACKGROUND_AUTO);
+    app.power_test = 0;
     /* read back: gentle taken; a word it does not know named, with the one the file leaves in use; an older version's
-       app.ini, without the key, Full as the menu opens, the key written with the next save */
+       recompile_background read while background_recompile has none, its full (the default it wrote) as auto and its
+       gentle as gentle, written again so, said once; an app.ini without either, Auto as the menu opens, the key
+       written with the next save */
     {
         size_t size;
         char *kept = (char*)snx_read_file(app.app_file, &size), *text, said[512];
         assert(kept);
-        text = snx_format("%srecompile_background = gentle\nrecompile_background = slow\n", kept);
+        text = snx_format("%sbackground_recompile = gentle\nbackground_recompile = slow\n", kept);
         assert(!snx_write_file(app.app_file, text, strlen(text)));
         app.message[0] = 0;
         app_load(&app);
-        snprintf(said, sizeof said, "Not used from %s: recompile_background = slow (it keeps gentle)", app.app_file);
-        assert(app.background_gentle && strstr(app.message, said));
+        snprintf(said, sizeof said, "Not used from %s: background_recompile = slow (it keeps gentle)", app.app_file);
+        assert(app.background_mode == GUI_BACKGROUND_GENTLE && strstr(app.message, said));
         free(text);
+        for (int old = 0; old < 2; ++old) {
+            char* again;
+            text = snx_format(APP_INI_HEAD "theme = %s\nrecompile_background = %s\n", app.theme.id,
+                              old ? "gentle" : "full");
+            assert(!snx_write_file(app.app_file, text, strlen(text)));
+            app.background_mode = GUI_BACKGROUND_FULL; /* not what either maps to */
+            app.message[0] = 0;
+            app_load(&app);
+            snprintf(said, sizeof said, "%s: recompile_background = %s is now background_recompile = %s", app.app_file,
+                     old ? "gentle" : "full", old ? "gentle" : "auto");
+            assert(app.background_mode == (old ? GUI_BACKGROUND_GENTLE : GUI_BACKGROUND_AUTO) &&
+                   strstr(app.message, said));
+            again = (char*)snx_read_file(app.app_file, &size);
+            assert(again &&
+                   strstr(again, old ? "\nbackground_recompile = gentle\n" : "\nbackground_recompile = auto\n") &&
+                   !strstr(again, "recompile_background"));
+            app.message[0] = 0;
+            app_load(&app); /* said once: the file has the new key now */
+            assert(!strstr(app.message, "recompile_background"));
+            free(again);
+            free(text);
+        }
+        assert(!snx_write_file(app.app_file, kept, strlen(kept)));
+        app_load(&app);
         /* dumps_subfolders: on its default, off kept, another word said with the one in use */
         assert(strstr(kept, "dumps_subfolders = on\n") && !app.dumps_shallow);
         text = snx_format("%sdumps_subfolders = off\ndumps_subfolders = some\n", kept);
@@ -5974,14 +6017,14 @@ int main(int argc, char** argv) {
         free(text);
         text = snx_format(APP_INI_HEAD "theme = %s\nside_box = auto\n", app.theme.id);
         assert(!snx_write_file(app.app_file, text, strlen(text)));
-        app.background_gentle = false; /* as the menu opens */
+        app.background_mode = GUI_BACKGROUND_AUTO; /* as the menu opens */
         app.message[0] = 0;
         app_load(&app);
-        assert(!app.background_gentle && !strstr(app.message, "recompile_background"));
+        assert(app.background_mode == GUI_BACKGROUND_AUTO && !strstr(app.message, "background_recompile"));
         assert(!app_save(&app));
         free(kept);
         kept = (char*)snx_read_file(app.app_file, &size);
-        assert(kept && strstr(kept, "\nside_box = auto\nrecompile_background = full\n"));
+        assert(kept && strstr(kept, "\nside_box = auto\nbackground_recompile = auto\n"));
         app.message[0] = 0;
         app_values(&app);
         free(text);

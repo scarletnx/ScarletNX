@@ -1345,6 +1345,11 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "%s: recompile_background = %s is now background_recompile = %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "Recent Games not kept: %s could not be written."
 msgstr "未保留最近游戏：无法写入 %s。"
 
@@ -2421,8 +2426,8 @@ msgid "Background recompile"
 msgstr "后台重新编译"
 
 #: src/gui/main.c
-msgid "The Compile tab's: R's, B's and a game's first. Full: every core. Gentle: half of them, at a low priority. Either goes gently while a game plays"
-msgstr "「编译」标签页的任务：按 R 的、按 B 的，以及游戏首次启动时的编译。全速：使用全部核心。轻柔：使用一半核心，低优先级。游戏运行时，两者都会放慢"
+msgid "The Compile tab's: R's, B's and a game's first. Auto: Gentle on battery, Full on the charger. Full: every core. Gentle: half of them, at a low priority. Each goes gently while a game plays"
+msgstr ""
 
 #: src/gui/main.c
 msgid "Theme Editor"
@@ -2481,6 +2486,10 @@ msgstr ""
 #, c-format
 msgid "Auto: %s"
 msgstr "自动：%s"
+
+#: src/gui/main.c
+msgid "Gentle, on battery"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -5766,6 +5775,9 @@ msgstr "启动"
 #: src/nx/runtime/settings.txt
 msgid "LLVM Internals"
 msgstr "LLVM 内部选项"
+
+#~ msgid "The Compile tab's: R's, B's and a game's first. Full: every core. Gentle: half of them, at a low priority. Either goes gently while a game plays"
+#~ msgstr "「编译」标签页的任务：按 R 的、按 B 的，以及游戏首次启动时的编译。全速：使用全部核心。轻柔：使用一半核心，低优先级。游戏运行时，两者都会放慢"
 
 #~ msgid "D-pad: move. A: select. Start: refresh. B: back."
 #~ msgstr "十字键: 移动. A: 选择. Start: 更新. B: 返回."
