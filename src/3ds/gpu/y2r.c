@@ -15,10 +15,6 @@ const int16_t snx_ctr_y2r_standard[4][8] = {
     {0x12A, 0x198, 0xD0, 0x64, 0x204, -0x1BDE, 0x10F2, -0x229B}, /* ITU_Rec601_Scaling */
     {0x12A, 0x1CA, 0x88, 0x36, 0x21C, -0x1F04, 0x99C, -0x2421},  /* ITU_Rec709_Scaling */
 };
-static const uint8_t morton_lut[64] = {0,  1,  4,  5,  16, 17, 20, 21, 2,  3,  6,  7,  18, 19, 22, 23,
-                                       8,  9,  12, 13, 24, 25, 28, 29, 10, 11, 14, 15, 26, 27, 30, 31,
-                                       32, 33, 36, 37, 48, 49, 52, 53, 34, 35, 38, 39, 50, 51, 54, 55,
-                                       40, 41, 44, 45, 56, 57, 60, 61, 42, 43, 46, 47, 58, 59, 62, 63};
 /* the bytes a sample takes in its stream (16-bit inputs carry 8 bits in the first byte) and a pixel in the output */
 static unsigned sample_bytes(const SnxCtrY2rConfig* c) {
     return c->input_format == SNX_CTR_Y2R_422_16 || c->input_format == SNX_CTR_Y2R_420_16 ? 2u : 1u;
@@ -126,7 +122,10 @@ void snx_ctr_y2r_convert(const SnxCtrY2rConfig* c, const SnxCtrY2rBuffer streams
                     case 2: from = (int)rows * 8 - 1 - j; break;
                     default: from = j % (int)rows * 8 + 7 - j / (int)rows; break;
                 }
-                rotated[c->block_alignment ? morton_lut[k] : k] = t[from];
+                /* the tile's pixel k (row k / 8) at its place in the PICA's Morton order */
+                uint32_t at =
+                    c->block_alignment ? snx_ctr_morton_offset((uint32_t)k % 8, (uint32_t)k / 8, 1) : (uint32_t)k;
+                rotated[at] = t[from];
                 ++k;
             }
             if (c->block_alignment) { /* whole strips only: every slot was written */
