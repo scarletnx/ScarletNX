@@ -548,13 +548,21 @@ static void dispatch_state(void) {
     CHECK(!dx_cb_inline(&x, 1).bytes && !dx_cb_inline(&x, DX_CBUFS).bytes);
 }
 
-/* the state a draw carries beside DsState (DrawCall.state_flags): SET_POINT_SIZE (0x546), a float, every draw */
+/* the state a draw carries beside DsState (DrawCall.state_flags): SET_POINT_SIZE (0x546), a float, every draw; the
+   depth bounds (0x3E7 near, 0x3E8 far) while SET_DEPTH_BOUNDS_TEST (0x66F) bit 0 is on */
 static void fixed_state(void) {
     u32 r[REGS] = {0};
     DrawCall dc = {0};
     setf(r, 0x546, 4.0f);
+    setf(r, 0x3E7, 0.25f);
+    setf(r, 0x3E8, 0.75f);
     mx_draw_fixed(r, &dc);
     CHECK(dc.state_flags == DS_DRAW_POINT_SIZE && dc.point_size == 4.0f);
+    r[0x66F] = 1;
+    dc = (DrawCall){0};
+    mx_draw_fixed(r, &dc);
+    CHECK(dc.state_flags == (DS_DRAW_POINT_SIZE | DS_DRAW_DEPTH_BOUNDS));
+    CHECK(dc.depth_bounds[0] == 0.25f && dc.depth_bounds[1] == 0.75f);
 }
 
 int main(void) {

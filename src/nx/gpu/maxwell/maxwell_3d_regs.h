@@ -51,6 +51,8 @@ enum {
     MAXWELL3D_INVALIDATE_TEXTURE_DATA_CACHE = 0x3DD,
     MAXWELL3D_TILED_CACHE_BARRIER = 0x3DF,
     MAXWELL3D_COLOR_MASK_COMMON = 0x3E4,
+    /* depth_bounds: the near bound, then the far, floats */
+    MAXWELL3D_DEPTH_BOUNDS = 0x3E7,
     MAXWELL3D_COLOR_TARGET_MRT_ENABLE = 0x3EB,
     /* draw_texture (12 words, Eden's Regs::DrawTexture): its last, src_y0, starts it */
     MAXWELL3D_DRAW_TEXTURE = 0x420,
@@ -108,6 +110,7 @@ enum {
     MAXWELL3D_GL_CULL_FACE = 0x648,
     MAXWELL3D_VIEWPORT_CLIP_CONTROL = 0x64F,
     MAXWELL3D_RENDER_ENABLE_OVERRIDE = 0x651,
+    MAXWELL3D_DEPTH_BOUNDS_ENABLE = 0x66F,
     MAXWELL3D_LOGIC_OP = 0x671, /* 2 words */
     MAXWELL3D_CLEAR_SURFACE = 0x674,
     MAXWELL3D_COLOR_MASK = 0x680, /* 8 words */
