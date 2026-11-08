@@ -322,7 +322,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     # the shared fonts' stand-ins (cmake/shared_fonts.cmake): Noto Sans subsets for the five text fonts, one per
     # script, because a game asks the font for the characters it draws and the Open Sans Eden ships has none of the
     # CJK ones; and yuzu's controller button glyphs (GPL-2.0-or-later) in the source file Eden keeps them in. The
-    # subsets (SIL OFL 1.1, docs/platforms/nx/shared-fonts.md) are fetched from the commit of this repository that last changed
+    # subsets (SIL OFL 1.1, docs/platforms/nx/filesystem.md) are fetched from the commit of this repository that last changed
     # them, so a checkout, and a project fetching ScarletNX for its recompiler alone, carries none of their 11 MB
     set(snx_noto_url https://raw.githubusercontent.com/scarletnx/ScarletNX/777f377013806bc4cdbbc0306eca6e7e9c835df2/dist/fonts)
     foreach(font IN ITEMS "JP 0941fc22edbe0b3b9e8306d4a2feae5e9c0fbd25942600564cc3edb69da88e62"

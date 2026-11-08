@@ -48,8 +48,8 @@ keeps audits and measurements as they were taken.
   - [IPC interfaces](platforms/nx/ipc.md): the services a game talks to, their language, layout and results
   - [Hooks](platforms/nx/hooks.md): native handlers for functions a game exports, declaring and checking one
   - [NCE](platforms/nx/nce.md): the game's code on an AArch64 host's own CPU, Android's design calls and their limits
-  - [Filesystem](platforms/nx/filesystem.md) and its [shared fonts' stand-ins](platforms/nx/shared-fonts.md)
-  - [NRO files](platforms/nx/nro.md) and [ldr:ro](platforms/nx/ldr-ro.md), the NROs a game loads
+  - [Filesystem](platforms/nx/filesystem.md): paths, saves and file I/O, and the shared fonts' stand-ins
+  - [NRO files](platforms/nx/nro.md): NRO programs, and the NROs a game loads through `ldr:ro`
   - [Networking](platforms/nx/networking.md): sockets, translation tables and their limits
   - [Memory accounting](platforms/nx/memory-accounting.md): the application's memory budget
 - [3DS](platforms/3ds/README.md): the 3DS driver, its status, building and testing
@@ -72,12 +72,11 @@ keeps audits and measurements as they were taken.
 
 - CPU (`layers/cpu/`)
   - [CPU implementation plan](layers/cpu/plan.md): Rosetta 2's design, part by part, applied to ScarletNX
-  - [Working on the plan](layers/cpu/guide.md): setup, rules, and how work is handed back
-  - [First CPU milestone](layers/cpu/simd-milestone.md): one measured SIMD improvement
+  - [Working on the plan](layers/cpu/guide.md): setup, rules, how work is handed back, and the first milestone
 - GPU (`layers/gpu/`)
   - [NVN](layers/gpu/nvn.md): how games draw through NVN, and how the runtime replays it
-  - [GPU-owned guest memory](layers/gpu/ownership.md): the design of memory the GPU keeps, and its phases
-  - [Guest buffers on unified memory](layers/gpu/uma-memory.md)
+  - [GPU-owned guest memory](layers/gpu/ownership.md): the design of memory the GPU keeps, guest buffers on
+    unified memory, and its phases
   - [ASTC compute uploads](layers/gpu/astc.md)
   - [Block linear surfaces and texture conversions on the GPU](layers/gpu/blocklinear.md)
   - [glslc](layers/gpu/glslc.md): GLSL ES into SPIR-V, for the backends that run OpenGL ES programs on Vulkan

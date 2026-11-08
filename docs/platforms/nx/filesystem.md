@@ -7,6 +7,7 @@
 * [Paths](#paths)
 * [State + I/O](#state--io)
 * [Shared fonts](#shared-fonts)
+  * [The Noto stand-ins](#the-noto-stand-ins)
 
 `src/nx/hle/filesystem/fs_tree.{c,h}` indexes `<Game>_data/` once, capturing its absolute base.
 Subsequent game-data lookup, metadata and enumeration use the tree; content I/O requires indexed nodes.
@@ -120,6 +121,41 @@ U+E000 to U+E1FF (buttons, symbols), is not in any free font, so `pl_font.c` giv
 glyphs there: a game's font map that names one gets a glyph instead of a null pointer, and the icon draws
 as nothing. A console font is not touched.
 
-[Shared fonts](shared-fonts.md) has where the subsets came from and how `tools/subset_fonts.py` regenerates them;
-the text is under the SIL Open Font License 1.1 (`dist/licenses/Noto/OFL.txt`). Font substitution can
-change text weight and spacing.
+Font substitution can change text weight and spacing.
+
+### The Noto stand-ins
+
+The console's fonts are the firmware's and cannot be shipped. `cmake/shared_fonts.cmake` takes yuzu's controller
+button glyphs from Eden's source, and `cmake/dependencies.cmake` fetches the four subsets below, pinned by their
+SHA-256, only in a build with the Switch runtime (`SNX_BUILD_NX` without `SNX_TOOLS_ONLY`).
+`cmake/shared_fonts.cmake` compiles them into the runtime.
+
+| File | Slot | Covers |
+| --- | --- | --- |
+| `NotoSansJP-Subset.ttf` | `FontStandard` | ASCII, Latin-1, punctuation, JIS X 0208 (kana and kanji) |
+| `NotoSansSC-Subset.ttf` | `FontChineseSimplified`, `FontExtendedChineseSimplified` | ASCII, Latin-1, punctuation, GB 2312 |
+| `NotoSansTC-Subset.ttf` | `FontChineseTraditional` | ASCII, Latin-1, punctuation, Big5 |
+| `NotoSansKR-Subset.ttf` | `FontKorean` | ASCII, Latin-1, punctuation, KS X 1001 (Hangul and Hanja) |
+
+The four total about 11 MB, which fits the shared memory. The full Noto Sans JP/SC/TC/KR variable fonts do not
+fit, and their pan-CJK sibling is CFF, which the SDK's font parser did not load in a test (the game crashed at
+boot). The subsets are TrueType `glyf` at the Regular weight, the script's standard character set, with hinting
+dropped.
+
+#### Regenerating the subsets
+
+The files the build fetches are the ones commit `777f377013806bc4cdbbc0306eca6e7e9c835df2` of this
+repository kept in `dist/fonts`, and the build takes them from there. `tools/subset_fonts.py` makes them
+from Google Fonts' Noto Sans JP, SC, TC and KR at commit `e7db6ca603fd4862010383ff17ffd6cc4ffac1c0`
+(`ofl/notosansjp`, `ofl/notosanssc`, `ofl/notosanstc`, `ofl/notosanskr`, `NotoSansXX[wght].ttf`). It needs
+`fontTools` and network access, neither of which the build needs:
+
+```sh
+python3 tools/subset_fonts.py --out fonts
+```
+
+It instantiates each variable font at weight 400, keeps ASCII, Latin-1, common punctuation and the
+script's standard set, drops hinting and the variation tables, and writes the four files above. A new
+set is published at a fixed URL (a release asset, or a commit that holds the files), and the URL and the
+four hashes in `cmake/dependencies.cmake` change with it. The
+sources are under the SIL Open Font License 1.1; the text is `dist/licenses/Noto/OFL.txt`.

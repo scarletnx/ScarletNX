@@ -2,7 +2,7 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # CPU implementation plan
 
-**Start here:** [First CPU milestone: one measured SIMD improvement](simd-milestone.md). Profile lane-helper cost,
+**Start here:** [First CPU milestone: one measured SIMD improvement](guide.md#first-milestone-one-measured-simd-improvement). Profile lane-helper cost,
 replace one hot instruction group with exact vector code, and compare the same game scene before and after. That is
 the active implementation scope. The sections below are the supporting backlog, and their phase labels do not require
 finishing every tool or redesign before the first measured change.
@@ -316,7 +316,7 @@ executables call each other through PLT stubs that load a GOT entry and `BR` to 
 `DT_JMPREL` (`loader.c`), so the recompiler does not know those targets, and every call to an import runs the stub's
 `BR` through the lookup. Code a game maps at run time (NROs through `ldr:ro`) lies outside `CPU.disp`, so each call into
 it from outside its unit goes through `rt->miss`, then `variant_resolve`, then the JIT's slot
-(`src/nx/runtime/guest_jit.c`, `docs/platforms/nx/ldr-ro.md`).
+(`src/nx/runtime/guest_jit.c`, `docs/platforms/nx/nro.md`).
 
 **On each host.** All of this is IR, so it applies to every host alike. Direct calls in a large module pass through the
 veneers that AArch64 Mach-O modules get past 128 MiB and the stubs that PowerPC64 modules get past 32 MiB
@@ -644,7 +644,7 @@ I7 reduces state synchronization but leaves one call per lane. It is a prerequis
   reproductions in `tests/` when implementation starts, including both the opaque helper and pure scalar controls.
 - **Size and priority.** L, P1 after I7 and the measurement tools. Land one proven instruction group at a time.
 
-The [first SIMD milestone](simd-milestone.md) turns these ideas into a bounded experiment. Use the
+The [first SIMD milestone](guide.md#first-milestone-one-measured-simd-improvement) turns these ideas into a bounded experiment. Use the
 [conditional performance model](#simd-performance-scenarios), then compare its assumptions with the actual scene.
 
 **How Rosetta informs the design.** The sources below describe observed Rosetta behavior. The final column is the
@@ -1049,7 +1049,7 @@ before the plan's changes pile more on top. S, P0.
 
 ## Order of work
 
-Execute the [first SIMD milestone](simd-milestone.md) first, using only the measurement and correctness tools its
+Execute the [first SIMD milestone](guide.md#first-milestone-one-measured-simd-improvement) first, using only the measurement and correctness tools its
 selected group needs. The table below groups later backlog work. Re-rank it after the milestone's profile and results.
 The full T1 through T6 program is not a prerequisite for that milestone. Keep T5's stronger gates for the ABI/register and
 atomic-loop redesigns identified in the guide.
@@ -1154,7 +1154,7 @@ The readers of the code for this plan found these. Each needs a check against th
   (`jit_service.h`).
 * `docs/platforms/nx/nro.md` says there is no dynamic NRO registration and mentions generated C. `ldr.c` maps NROs at run time
   through the JIT, and LLVM is the only backend.
-* `docs/platforms/nx/ldr-ro.md` gives the cost of a call into an NRO without the `variant_resolve` step (`guest_jit.c`).
+* `docs/platforms/nx/nro.md` gives the cost of a call into an NRO without the `variant_resolve` step (`guest_jit.c`).
 * `jit_cache.h` says the runtime never reads the JIT cache, while `docs/dev/architecture.md` and `guest_jit.c` describe a
   later run loading its units.
 * `ir_profile.c` says it discards duplicate identities, but its loop keeps the first entry of each group after an
