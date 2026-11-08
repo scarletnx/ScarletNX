@@ -213,6 +213,7 @@ if(BUILD_TESTING)
         set_target_properties(snx-test-android-arm32 PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
         target_compile_options(snx-test-android-arm32 PRIVATE -Wall -Wextra -Werror -UNDEBUG)
         add_test(NAME android_arm32 COMMAND snx-test-android-arm32)
+        set_tests_properties(android_arm32 PROPERTIES TIMEOUT 60)
     endif()
     # JNI as the bridge gives it to an app's code (bridge/jni.c), on the JVM of javac's JDK in the test's process: on
     # Linux, where it runs, and not in a sanitizer build, whose runtime has not been tried under HotSpot

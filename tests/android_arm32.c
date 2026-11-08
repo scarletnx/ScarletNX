@@ -18,6 +18,9 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/prctl.h>
+#endif
 
 static struct {
     int failures;
@@ -89,6 +92,21 @@ static void expect_abort(const char* name, const uint32_t* words, unsigned count
     if (pid == 0) {
         dup2(out[1], 2);
         close(out[0]);
+        /* no core of the abort: the child holds the guest's 4 GiB window, which a core_pattern pipe (systemd-coredump,
+           apport) reads whole, as it cannot skip the holes a file seeks over. The limit for a core file, and on Linux
+           not dumpable, as a pipe takes the core whatever the limit. The alarm ends a child that hangs (signal 14) */
+        struct rlimit none = {0, 0};
+        if (setrlimit(RLIMIT_CORE, &none)) {
+            fprintf(stderr, "no zero core limit: %s", strerror(errno));
+            _exit(2);
+        }
+#if defined(__linux__)
+        if (prctl(PR_SET_DUMPABLE, 0)) {
+            fprintf(stderr, "not made undumpable: %s", strerror(errno));
+            _exit(2);
+        }
+#endif
+        alarm(10);
         call(name, words, count);
         _exit(0);
     }
