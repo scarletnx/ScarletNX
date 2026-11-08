@@ -310,12 +310,12 @@ static void test_calls(void) {
     mode_t before = umask(022);
     expect_int("umask gives the mask before", CALL("umask", 077), 022);
     expect_int("umask sets it", umask(before), 077);
-    expect_int("getpgrp", CALL("getpgrp"), getpgrp());
+    expect_int("getpgrp", call("getpgrp", NULL, 0), getpgrp());
     errno = 0;
     expect_int("getpriority", (int32_t)CALL("getpriority", 0, 0), getpriority(PRIO_PROCESS, 0));
     fflush(NULL);
     pid_t pid = fork();
-    if (pid == 0) _exit(CALL("setsid") == (uint32_t)getpid() ? 0 : 1);
+    if (pid == 0) _exit(call("setsid", NULL, 0) == (uint32_t)getpid() ? 0 : 1);
     int status = 0;
     waitpid(pid, &status, 0);
     expect_int("setsid in a child makes its session", WIFEXITED(status) && WEXITSTATUS(status) == 0, 1);
@@ -363,7 +363,7 @@ static void test_stdio(void) {
     struct stat st;
     expect_int("mkdtemp makes a folder", !stat(G(pattern), &st) && S_ISDIR(st.st_mode), 1);
     rmdir(G(pattern));
-    uint32_t page = CALL("getpagesize");
+    uint32_t page = call("getpagesize", NULL, 0);
     expect_int("getpagesize is sysconf(_SC_PAGESIZE)", page, CALL("sysconf", 39));
     expect_int("getpagesize is a power of two from 4096", page >= 4096 && (page & (page - 1)) == 0, 1);
 }
@@ -434,7 +434,7 @@ static void test_multibyte(void) {
     expect_int("wcstombs counts", CALL("wcstombs", 0, wide, 0), 7);
     expect_int("wcstombs", CALL("wcstombs", back, wide, 16), 7);
     expect_text("wcstombs gives the UTF-8 back", G(back), G(utf8));
-    expect_int("MB_CUR_MAX", CALL("__ctype_get_mb_cur_max"), 4);
+    expect_int("MB_CUR_MAX", call("__ctype_get_mb_cur_max", NULL, 0), 4);
 }
 
 /* ---- libm ---- */
