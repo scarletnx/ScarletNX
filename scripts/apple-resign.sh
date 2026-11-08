@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# An iOS IPA (docs/APPLE.md) signed with a developer account's own certificate, and installed on an iPhone, from a Mac
+# An iOS IPA (docs/hosts/apple.md) signed with a developer account's own certificate, and installed on an iPhone, from a Mac
 # with Xcode and no sideloading tool. Run it from Terminal.app on the Mac's own screen: over ssh the keychain is
 # locked and codesign fails with errSecInternalComponent.
 #

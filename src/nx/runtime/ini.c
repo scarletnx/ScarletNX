@@ -300,7 +300,7 @@ const char* ini_renamed(const char* k) {
 }
 void ini_deprecated_head(FILE* f) {
     fprintf(f,
-            "\n[Deprecated]\n; keys an older version used, which do nothing now (docs/DEPRECATIONS.md): delete them, "
+            "\n[Deprecated]\n; keys an older version used, which do nothing now (docs/user/deprecations.md): delete them, "
             "or use Settings > App >\n;   Clean Old Settings in the launcher\n");
 }
 void ini_deprecated_key(FILE* f, const char* key, const char* value) {

@@ -12,7 +12,7 @@ import snx.android.hwui.DisplayList;
 
 /**
  * A frame for the renderer: the tree of RenderNodes flattened into one display list, each node between NODE_BEGIN
- * (its transform in its parent, alpha, size and clips) and NODE_END (docs/android/HWUI.md).
+ * (its transform in its parent, alpha, size and clips) and NODE_END (docs/platforms/android-apps/hwui.md).
  */
 public final class Frame {
     private final DisplayList.Writer w = new DisplayList.Writer();

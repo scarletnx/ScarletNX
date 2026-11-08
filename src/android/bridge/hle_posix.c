@@ -6,7 +6,7 @@
    macOS and Windows also the socket families, levels, options and addresses (BSD's have sa_len), the poll events, the
    mmap flags and struct dirent. The conversions are the GNU ABI's (gnuabi/abi/linux_file.h, linux_net.h) and the
    network stack's (common/network/net_host.h). Windows has no POSIX C library: its CRT, winpthreads and Winsock
-   give what they have, and the rest is a Win32 version or an error (docs/android/NATIVE.md, "Hosts"). The rest is
+   give what they have, and the rest is a Win32 version or an error (docs/platforms/android-apps/native.md, "Hosts"). The rest is
    PASS */
 #if defined(__linux__)
 #define _GNU_SOURCE

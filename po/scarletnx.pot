@@ -3759,7 +3759,7 @@ msgid "now"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Not moved. See docs/DEPRECATIONS.md"
+msgid "Not moved. See docs/user/deprecations.md"
 msgstr ""
 
 #: src/gui/main.c
@@ -3937,7 +3937,7 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "Not moved: run it from its dump once, which makes %s, then move its saves (docs/DEPRECATIONS.md)"
+msgid "Not moved: run it from its dump once, which makes %s, then move its saves (docs/user/deprecations.md)"
 msgstr ""
 
 #: src/gui/main.c

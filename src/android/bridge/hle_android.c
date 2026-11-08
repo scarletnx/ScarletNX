@@ -162,7 +162,7 @@ static void looper_remove_fd(CPU* c, void* data) {
     X(0) = l && host_epoll_ctl(l->epoll, 2 /* EPOLL_CTL_DEL */, (int)X(1), 0, 0) == 0 ? 1 : 0;
 }
 
-/* ---- ASensorManager: a device without sensors (Off in docs/android/INTERFACES.md) ---- */
+/* ---- ASensorManager: a device without sensors (Off in docs/platforms/android-apps/interfaces.md) ---- */
 
 static uint64_t sensor_manager, sensor_queue;
 static void sensor_get_instance(CPU* c, void* data) {

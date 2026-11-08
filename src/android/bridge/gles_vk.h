@@ -3,7 +3,7 @@
 #ifndef SNX_ANDROID_GLES_VK_H
 #define SNX_ANDROID_GLES_VK_H
 /* What GLES 1.1 (hle_gles.c) and GLES 2 and 3 (gles2*.c) share over Vulkan (gles_vk.c): one instance, device and
-   queue, the window surfaces with their swapchains, and the frames that the calls record (docs/android/NATIVE.md,
+   queue, the window surfaces with their swapchains, and the frames that the calls record (docs/platforms/android-apps/native.md,
    "EGL and GLES").
 
    A surface records one frame at a time into the command buffer of a slot. Two slots are in flight. The image of a

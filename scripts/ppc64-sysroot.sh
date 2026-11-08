@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# A PowerPC64 sysroot for the linux-ppc64* presets (docs/PPC64.md), made without root and without running the target's
+# A PowerPC64 sysroot for the linux-ppc64* presets (docs/hosts/ppc64.md), made without root and without running the target's
 # programs: mmdebstrap downloads the packages below with their dependencies and only unpacks them.
 #
 #   scripts/ppc64-sysroot.sh ARCH DIR [--desktop]

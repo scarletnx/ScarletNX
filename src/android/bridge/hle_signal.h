@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #ifndef SNX_ANDROID_HLE_SIGNAL_H
 #define SNX_ANDROID_HLE_SIGNAL_H
-/* The guest's signals (docs/android/NATIVE.md): bionic's sigaction, masks, kill and the waits, over the GNU ABI
+/* The guest's signals (docs/platforms/android-apps/native.md): bionic's sigaction, masks, kill and the waits, over the GNU ABI
    runtime's kernel (src/gnuabi/kernel/kernel.h), which keeps the actions, masks, queues and futexes and writes the
    frame Linux gives a handler (common/runtime/linux_signal.h). They are the guest's alone: the process is the JVM's
    too, whose own signals (SIGSEGV, SIGUSR2, SIGQUIT) the guest never sees or masks, and the host's dispositions and

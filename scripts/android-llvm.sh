@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# LLVM's libraries for one Android ABI, which the recompiler links (docs/ANDROID.md). Only the libraries and headers,
+# LLVM's libraries for one Android ABI, which the recompiler links (docs/hosts/android-app.md). Only the libraries and headers,
 # one code generator: the host's of that ABI.
 #
 #   scripts/android-llvm.sh ABI PREFIX [SOURCE] [-- cmake args]

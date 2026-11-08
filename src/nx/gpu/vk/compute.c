@@ -10,7 +10,7 @@
    stores while it runs and a later CPU write wins.
 
    A queue of its own only waits for compute, so holding signals until results land costs a dispatch's run time,
-   not the rendering backlog's (which made that ordering too slow under the old OpenGL renderer, ROADMAP.md Phase 2).
+   not the rendering backlog's (which made that ordering too slow under the old OpenGL renderer, an old roadmap phase).
    Dispatches that read textures run on the graphics queue, after everything recorded before them. */
 #include <stdlib.h>
 #include <string.h>
@@ -932,7 +932,7 @@ static u32 cs_read_code(u64 pa, u8* dst) {
 
 /* Storage buffers kept on the GPU (the model of Citron Neo's buffer cache, buffer_cache.h's
    BindHostComputeStorageBuffers and MarkWrittenBuffer, Copyright 2022 yuzu Emulator Project and 2025 citron Emulator
-   Project, GPL-3.0-or-later), on the ownership ScarletNX's engines already use (docs/GPU_OWNERSHIP.md), so that the
+   Project, GPL-3.0-or-later), on the ownership ScarletNX's engines already use (docs/layers/gpu/ownership.md), so that the
    guest's own pages are trapped and land only when the CPU touches them, not at a sync point. A range one resource
    holds whole is bound where it is. Any other is copied, the CPU's bytes by the CPU and the GPU's by the GPU
    (vk_guest_read_device): into staging when it is only read, into a resource of its own when it is written, which then

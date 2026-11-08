@@ -101,7 +101,7 @@ static void test_defaults(void) {
     said("Changed in older versions\n  Game settings\n    before  removed or renamed keys");
     {
         char last[256]; /* the last notice, then the steps */
-        snprintf(last, sizeof last, "    now     %s\n  Not moved. See docs/DEPRECATIONS.md\n[Enter] OK ",
+        snprintf(last, sizeof last, "    now     %s\n  Not moved. See docs/user/deprecations.md\n[Enter] OK ",
                  snx_notices[SNX_NOTICES - 1].now);
         said(last);
     }

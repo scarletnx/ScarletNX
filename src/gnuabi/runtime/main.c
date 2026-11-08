@@ -76,7 +76,7 @@ static char** environment(char** changes, size_t change_count) {
 }
 
 /* linux/ of the data folder games/ and work/ are in (snx_data_dir), as the 3DS runtime finds work/3ds. An older
-   version's SNX_LINUX_SYSROOT (docs/DEPRECATIONS.md) still names another for this version, said. Removed with
+   version's SNX_LINUX_SYSROOT (docs/user/deprecations.md) still names another for this version, said. Removed with
    tests/architecture.py's ENV_DEPRECATED row */
 static char* default_sysroot(const char* argv0) {
     const char* named = getenv("SNX_LINUX_SYSROOT");
@@ -85,7 +85,7 @@ static char* default_sysroot(const char* argv0) {
         root = snx_absolute(named);
         fprintf(stderr,
                 "scarletnx-gnuabi: SNX_LINUX_SYSROOT=%s is deprecated, replaced by -L DIR and --sysroot=DIR: this "
-                "run's root is %s (docs/DEPRECATIONS.md)\n",
+                "run's root is %s (docs/user/deprecations.md)\n",
                 named, root ? root : named);
         return root;
     }
@@ -139,13 +139,13 @@ static int posix_options(int sample, const char* host_page) {
     return 0;
 #endif
 }
-/* The variables an older version read for these options (docs/DEPRECATIONS.md): SNX_GNU_STRACE=1 is --strace,
+/* The variables an older version read for these options (docs/user/deprecations.md): SNX_GNU_STRACE=1 is --strace,
    SNX_GNU_SAMPLE --sample-pc and SNX_HOST_PAGE=N --host-page=N for this version, where they did something before and
    the command line gives none of its own; each said, with what the run takes */
 static void old_options(int* strace, int* sample, const char** host_page) {
     const char *trace = getenv("SNX_GNU_STRACE"), *sampled = getenv("SNX_GNU_SAMPLE"), *page = getenv("SNX_HOST_PAGE");
     if (trace) {
-        fprintf(stderr, "scarletnx-gnuabi: SNX_GNU_STRACE=%s is deprecated, %s (docs/DEPRECATIONS.md)\n", trace,
+        fprintf(stderr, "scarletnx-gnuabi: SNX_GNU_STRACE=%s is deprecated, %s (docs/user/deprecations.md)\n", trace,
                 *strace           ? "and --strace is given: this run traces its system calls"
                 : trace[0] == '1' ? "and this run reads it as --strace"
                                   : "and only a value starting with 1 did anything: this run traces no system call");
@@ -155,12 +155,12 @@ static void old_options(int* strace, int* sample, const char** host_page) {
     if (sampled)
         fprintf(stderr,
                 "scarletnx-gnuabi: SNX_GNU_SAMPLE=%s is deprecated, and did nothing on Windows: nothing samples "
-                "the pc (docs/DEPRECATIONS.md)\n",
+                "the pc (docs/user/deprecations.md)\n",
                 sampled);
     if (page)
         fprintf(stderr,
                 "scarletnx-gnuabi: SNX_HOST_PAGE=%s is deprecated, and did nothing on Windows: the runtime "
-                "works in 4096-byte pages (docs/DEPRECATIONS.md)\n",
+                "works in 4096-byte pages (docs/user/deprecations.md)\n",
                 page);
     (void)sample, (void)host_page;
 #else
@@ -168,7 +168,7 @@ static void old_options(int* strace, int* sample, const char** host_page) {
     if (sampled) {
         fprintf(stderr,
                 "scarletnx-gnuabi: SNX_GNU_SAMPLE=%s is deprecated, and this run reads it as --sample-pc "
-                "(docs/DEPRECATIONS.md)\n",
+                "(docs/user/deprecations.md)\n",
                 sampled);
         *sample = 1;
     }
@@ -176,17 +176,17 @@ static void old_options(int* strace, int* sample, const char** host_page) {
     if (*host_page)
         fprintf(stderr,
                 "scarletnx-gnuabi: SNX_HOST_PAGE=%s is deprecated, and --host-page=%s is given: this run takes "
-                "%s (docs/DEPRECATIONS.md)\n",
+                "%s (docs/user/deprecations.md)\n",
                 page, *host_page, *host_page);
     else if (host_page_of(page, &v, &own))
         fprintf(stderr,
                 "scarletnx-gnuabi: SNX_HOST_PAGE=%s is deprecated, and not a power of two from the host's page, "
-                "%llu bytes, to 1048576: the runtime works in %llu-byte pages (docs/DEPRECATIONS.md)\n",
+                "%llu bytes, to 1048576: the runtime works in %llu-byte pages (docs/user/deprecations.md)\n",
                 page, (unsigned long long)own, (unsigned long long)own);
     else {
         fprintf(stderr,
                 "scarletnx-gnuabi: SNX_HOST_PAGE=%s is deprecated, and this run reads it as --host-page=%s "
-                "(docs/DEPRECATIONS.md)\n",
+                "(docs/user/deprecations.md)\n",
                 page, page);
         *host_page = page;
     }
@@ -279,7 +279,7 @@ int snx_gnuabi_main(int argc, char** argv) {
         options_free(changes, change_count, sysroot);
         return 2;
     }
-    /* what an older version read (docs/DEPRECATIONS.md): still these options for this version, under the command
+    /* what an older version read (docs/user/deprecations.md): still these options for this version, under the command
        line's own, each said. Removed with tests/architecture.py's ENV_DEPRECATED rows */
     old_options(&strace, &sample, &host_page);
     if (posix_options(sample, host_page)) {
@@ -294,7 +294,7 @@ int snx_gnuabi_main(int argc, char** argv) {
         fprintf(stderr,
                 "scarletnx-gnuabi: SNX_LLVM_BRANCH_PROFILE=%s is deprecated, replaced by ir_branch_profile, a setting "
                 "of scarletnx's runtime and recompile and not of this one: its JIT runs without branch weights "
-                "(docs/DEPRECATIONS.md)\n",
+                "(docs/user/deprecations.md)\n",
                 old_profile);
     if (!isolated && !sysroot) sysroot = default_sysroot(argv[0]);
     if (!no_cache) {

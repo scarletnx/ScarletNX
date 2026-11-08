@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The menu's side of the iOS and macOS apps (docs/APPLE.md): apple.m, which calls the Swift in dist/apple */
+/* The menu's side of the iOS and macOS apps (docs/hosts/apple.md): apple.m, which calls the Swift in dist/apple */
 #ifndef SNX_GUI_APPLE_H
 #define SNX_GUI_APPLE_H
 #include <stddef.h>

@@ -23,7 +23,7 @@
 #include "common/utilities/bits.h"
 
 /* A GOB, the unit of the block linear layout: 64 bytes wide and 8 rows high, stacked 1 << block_height high in a
-   block (docs/BLOCKLINEAR.md) */
+   block (docs/layers/gpu/blocklinear.md) */
 #define GOB_WIDTH       64u
 #define GOB_HEIGHT_LOG2 3u
 #define GOB_BYTES_LOG2  9u /* 64 x 8 */
@@ -282,7 +282,7 @@ void vic_execute(const u32* r) {
         any |= j.slots[s].on;
     }
     if (!any && !j.tw) return;
-    /* on the GPU, whose result stays there (docs/GPU_OWNERSHIP.md): a job before the renderer is up has nowhere to go */
+    /* on the GPU, whose result stays there (docs/layers/gpu/ownership.md): a job before the renderer is up has nowhere to go */
     if (!g_renderer_up || !g_renderer || !g_renderer->vic_compose) {
         WARN_LIMIT(4, "video: a VIC job before the renderer started, skipped\n");
         return;

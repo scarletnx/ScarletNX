@@ -69,10 +69,10 @@ an edit. A wrong story becomes a fix that is worse than the bug that it was for.
   pick the A/B/X/C list, and AutoSelect takes both. `pid` must be one slot, and the handlers must write the outputs that
   the SDK reads.
 
-  The layout comes from the generator (`tools/swipc/swipc.c`, `docs/IPC.md`). A hand-computed offset is a finding,
-  and so is a dispatcher that unpacks the requests of a declared interface itself. A dispatcher of the service's own
-  that only wraps `I_dispatch` follows docs/IPC.md (a lock around each command, `file_disp` in fs.c, `ro_dispatch` in
-  ldr.c).
+  The layout comes from the generator (`tools/swipc/swipc.c`, `docs/platforms/nx/ipc.md`). A hand-computed offset is
+  a finding, and so is a dispatcher that unpacks the requests of a declared interface itself. A dispatcher of the
+  service's own that only wraps `I_dispatch` follows `docs/platforms/nx/ipc.md` (a lock around each command,
+  `file_disp` in fs.c, `ro_dispatch` in ldr.c).
 
 - **Services**: the answer must be what the console gives, because the SDK asserts on impossible answers (`svcBreak`).
   The game reads the layout of HID shared memory (`hle/services/hid_layout.h`) directly. Thus the order of writes and

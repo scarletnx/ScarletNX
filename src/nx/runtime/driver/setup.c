@@ -118,7 +118,7 @@ static int notices(Ask* a, const SnxSetup* setup) {
         fprintf(a->out, "  %s\n    before  %s\n    now     %s\n", n->what, n->before, n->now);
     }
     if (!any) return 0;
-    fputs("  Not moved. See docs/DEPRECATIONS.md\n[Enter] OK ", a->out);
+    fputs("  Not moved. See docs/user/deprecations.md\n[Enter] OK ", a->out);
     return answer(a, line, sizeof line);
 }
 /* the system's language among the launcher's, by their tags' fit (language_tag.h) to LANG's locale (pt_BR.UTF-8): the

@@ -3762,8 +3762,8 @@ msgid "now"
 msgstr "agora"
 
 #: src/gui/main.c
-msgid "Not moved. See docs/DEPRECATIONS.md"
-msgstr "Nada foi movido. Veja docs/DEPRECATIONS.md"
+msgid "Not moved. See docs/user/deprecations.md"
+msgstr "Nada foi movido. Veja docs/user/deprecations.md"
 
 #: src/gui/main.c
 #, c-format
@@ -3940,8 +3940,8 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "Not moved: run it from its dump once, which makes %s, then move its saves (docs/DEPRECATIONS.md)"
-msgstr "Não movido: rode-o uma vez do dump, o que cria %s, e depois mova os saves (docs/DEPRECATIONS.md)"
+msgid "Not moved: run it from its dump once, which makes %s, then move its saves (docs/user/deprecations.md)"
+msgstr "Não movido: rode-o uma vez do dump, o que cria %s, e depois mova os saves (docs/user/deprecations.md)"
 
 #: src/gui/main.c
 #, c-format

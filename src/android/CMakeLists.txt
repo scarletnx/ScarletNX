@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# The Android app driver (docs/android/README.md): an APK's DEX code translated to JVM classes, run by a JVM beside
+# The Android app driver (docs/platforms/android-apps/README.md): an APK's DEX code translated to JVM classes, run by a JVM beside
 # ScarletNX's own android.* and the HLE of Android's userland, which scarletnx runs as scarletnx-android
 # (src/multicall).
 #
@@ -8,13 +8,13 @@
 #   snx_android_program     the command line (runtime/main.c), the JVM host and the natives
 #   snx_android_framework   ScarletNX's android.* and the runtime's Java side (framework/), a jar beside the program
 # the JIT compiles an app's native code at run time with the LLVM the build links: LLVM 19's code generator crashes on
-# some of an engine's (a trap in its DAG combiner), so the Android driver is built with LLVM 22 (docs/android/README.md)
+# some of an engine's (a trap in its DAG combiner), so the Android driver is built with LLVM 22 (docs/platforms/android-apps/README.md)
 if(SNX_LLVM_VERSION)
     string(REGEX MATCH "^[0-9]+" snx_android_llvm_major "${SNX_LLVM_VERSION}")
     if(snx_android_llvm_major AND snx_android_llvm_major LESS 22)
         message(WARNING "The Android driver is built with LLVM ${SNX_LLVM_VERSION}: build it with LLVM 22 "
                         "(-DSNX_LLVM_CONFIG=), as LLVM ${snx_android_llvm_major}'s code generator crashes on some "
-                        "apps' native code (docs/android/README.md)")
+                        "apps' native code (docs/platforms/android-apps/README.md)")
     endif()
 endif()
 set(snx_android_c_options -pedantic-errors -Wall -Wextra -Werror -Werror=missing-prototypes
@@ -76,7 +76,7 @@ if(NOT WIN32)
     target_link_libraries(snx_android_program PUBLIC Threads::Threads)
 endif()
 
-# The native bridge (bridge/, docs/android/NATIVE.md): the app's AArch64 libraries run through the recompiler library,
+# The native bridge (bridge/, docs/platforms/android-apps/native.md): the app's AArch64 libraries run through the recompiler library,
 # which another driver's tree may have configured already. cpu.h is written in the GNU dialect of C
 if(NOT TARGET scarletnx-recompiler)
     include("${PROJECT_SOURCE_DIR}/cmake/llvm.cmake")

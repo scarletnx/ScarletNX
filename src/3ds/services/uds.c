@@ -461,7 +461,7 @@ void snx_ctr_uds_poll(SnxCtrProcess* p) {
         fprintf(stderr, "3ds uds: peer timed out\n");
     }
 }
-/* The variables an older version read for the room, its password and the nickname (docs/DEPRECATIONS.md), still read
+/* The variables an older version read for the room, its password and the nickname (docs/user/deprecations.md), still read
    for this version, each said once a run. Removed with tests/architecture.py's ENV_DEPRECATED rows */
 enum { OLD_ROOM = 1, OLD_PASSWORD = 2, OLD_NICKNAME = 4 };
 static int old_said(unsigned which) {
@@ -474,7 +474,7 @@ static int room_open(SnxCtrProcess* p) {
     const char* room = getenv("SNX_3DS_ROOM");
     if (room && *room && old_said(OLD_ROOM))
         snx_error("3ds uds: SNX_3DS_ROOM=%s is deprecated, replaced by the room of the launcher's Network settings "
-                  "(\"%s\" there): this run joins %s (docs/DEPRECATIONS.md)",
+                  "(\"%s\" there): this run joins %s (docs/user/deprecations.md)",
                   room, g_settings.eden_room, room);
     if (!room || !*room) room = g_settings.eden_room;
     if (!*room) {
@@ -507,16 +507,16 @@ static int room_open(SnxCtrProcess* p) {
         if (strcmp(name, nickname))
             snx_error("3ds uds: SNX_3DS_NICKNAME is deprecated, with nothing in its place, and has %zu bytes, not 4 to "
                       "20: this run joins as the user's nickname and a random suffix, as later ones do "
-                      "(docs/DEPRECATIONS.md)",
+                      "(docs/user/deprecations.md)",
                       strlen(name));
         else
             snx_error("3ds uds: SNX_3DS_NICKNAME is deprecated, with nothing in its place: this run joins as its "
-                      "value, later ones as the user's nickname and a random suffix (docs/DEPRECATIONS.md)");
+                      "value, later ones as the user's nickname and a random suffix (docs/user/deprecations.md)");
     }
     const char* password = getenv("SNX_3DS_ROOM_PASSWORD");
     if (password && old_said(OLD_PASSWORD))
         snx_error("3ds uds: SNX_3DS_ROOM_PASSWORD is deprecated, replaced by room_password in users/online.ini: this "
-                  "run joins with its value, not online.ini's (docs/DEPRECATIONS.md)");
+                  "run joins with its value, not online.ini's (docs/user/deprecations.md)");
     int why = 0;
     /* The room's title metadata is Switch-specific. Its unknown-title sentinel
        permits a 3DS name without sending an invalid Switch title ID. Actual UDS

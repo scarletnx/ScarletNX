@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The map of guest memory the GPU holds, and the traps over it (docs/GPU_OWNERSHIP.md; the trap model is Skyline's,
+/* The map of guest memory the GPU holds, and the traps over it (docs/layers/gpu/ownership.md; the trap model is Skyline's,
    read for its design). Entries are byte exact and never overlap; a host page with any owned byte on it is armed
    (plat_trap_arm), so every access to it, the guest's or the runtime's, waits while own_fault lands the entries on
    it through the pool's mirror, and the page is let go. Owned memory is always pool pages mapped at one address

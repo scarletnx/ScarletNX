@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* The guest's dynamic linker, as bionic's loads a library (docs/android/NATIVE.md, "Loading"): ELF64 AArch64 shared
+/* The guest's dynamic linker, as bionic's loads a library (docs/platforms/android-apps/native.md, "Loading"): ELF64 AArch64 shared
    objects mapped into the code window, their DT_NEEDED first (the app's own from the library folder, the system's as
    HLE libraries), relocated, and their initializers run. Symbols resolve in the global group, then each library's own
    tree. Every function is safe from any thread: one library loads at a time */

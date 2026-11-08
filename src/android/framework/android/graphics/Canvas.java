@@ -10,7 +10,7 @@ import snx.android.hwui.DisplayList;
 import snx.android.hwui.Text;
 
 /**
- * Draws into a display list (docs/android/HWUI.md): a RenderNode's, a Picture's or a Bitmap's. The matrix and the
+ * Draws into a display list (docs/platforms/android-apps/hwui.md): a RenderNode's, a Picture's or a Bitmap's. The matrix and the
  * clip's bounds are kept here too, for the queries; the renderer draws the operations with Vulkan.
  */
 public class Canvas {

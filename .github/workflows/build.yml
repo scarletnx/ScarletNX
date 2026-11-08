@@ -10,16 +10,17 @@ on:
     # a draft builds and tests as much as a pull request ready for review, so leaving draft starts nothing
     types: [opened, synchronize, reopened]
     # skipped when the change is only in files that no build or test reads. tracked_material.py reads them all and runs
-    # on its own (pr-checks.yml). docs/ARCHITECTURE.md, DEPRECATIONS.md and GUI.md are test inputs: they build
+    # on its own (pr-checks.yml). docs/user/deprecations.md, docs/user/gui.md and docs/layers/cpu/plan.md are test
+    # inputs (tests/setup.c, tests/gui_theme.c, tests/cpu_plan_tools.py), so a change to one of them still builds
     paths:
       - '**'
       - '!**/*.md'
       - '!.claude/**'
       - '!.gitignore'
       - '!.github/ISSUE_TEMPLATE/**'
-      - 'docs/ARCHITECTURE.md'
-      - 'docs/DEPRECATIONS.md'
-      - 'docs/GUI.md'
+      - 'docs/layers/cpu/plan.md'
+      - 'docs/user/deprecations.md'
+      - 'docs/user/gui.md'
   workflow_dispatch:
 
 # Jobs only read the repository. A push to main that builds everywhere becomes a nightly, and a pull request's run a
@@ -1135,7 +1136,7 @@ jobs:
           path: stage
           if-no-files-found: error
 
-  # The Android app (docs/ANDROID.md), both ABIs on one runner, with the runner's Gradle and JDK. LLVM's libraries for an
+  # The Android app (docs/hosts/android-app.md), both ABIs on one runner, with the runner's Gradle and JDK. LLVM's libraries for an
   # ABI take most of an hour, so they are kept until the script that builds them changes (both cold: about two hours).
   # Each ABI packs an APK of its own, then one APK holds both
   android:
@@ -1212,7 +1213,7 @@ jobs:
             echo "SNX_DEPS_CACHE=$ws/.cache/deps"
             echo "SNX_CCACHE_START=$(date +%s)"
           } >> "$GITHUB_ENV"
-      # One key signs every APK, so each installs over the one before (docs/ANDROID.md): the ANDROID_KEYSTORE secret, a
+      # One key signs every APK, so each installs over the one before (docs/hosts/android-app.md): the ANDROID_KEYSTORE secret, a
       # keystore in base64. A fork's pull request has no secrets: its APKs carry the runner's own debug key, said here
       - name: The signing key
         env:
@@ -1323,12 +1324,12 @@ jobs:
           path: ScarletNX-android-arm64-v8a-${{ steps.commit.outputs.short }}.apk
           archive: false
           if-no-files-found: error
-      # The app's unit tests (docs/ANDROID.md), on the stage the APK was packed from: its classes build against SDL's
+      # The app's unit tests (docs/hosts/android-app.md), on the stage the APK was packed from: its classes build against SDL's
       # Java and the icon there. Last, so a test that fails fails the job and still leaves the APKs to try
       - name: Test the app's Java
         run: JAVA_HOME=$JAVA_HOME_21_X64 gradle -p dist/android testDebugUnitTest -Pscarletnx.stage="$PWD/stage"
 
-  # macOS and iOS (docs/APPLE.md), both on one Apple silicon runner with Xcode's Clang and SDKs; FFmpeg, OpenSSL and
+  # macOS and iOS (docs/hosts/apple.md), both on one Apple silicon runner with Xcode's Clang and SDKs; FFmpeg, OpenSSL and
   # SDL3 are built from the pinned sources as everywhere. Until both have built green once, a failure here does not
   # fail the run (continue-on-error), which would hold back the nightly: they are new, and no Mac checked them before
   # CI. iOS builds even when macOS failed, and each one's app is made from its own build alone. Each app carries
@@ -1661,7 +1662,7 @@ jobs:
       - name: Run the zip's scarletnx.exe as a user would
         run: bash source/scripts/check-package.sh package/bin/scarletnx.exe
 
-  # edenprobe's probes (docs/EDENPROBE.md), a release of scarletnx/edenprobe pinned by its sha256, recompiled by the
+  # edenprobe's probes (docs/dev/edenprobe.md), a release of scarletnx/edenprobe pinned by its sha256, recompiled by the
   # Linux install and run on lavapipe: a case of tests/edenprobe/linux-x86_64.txt, the ones that passed before, that no
   # longer passes fails the job. Another release or other mode words want that file written again
   edenprobe:
@@ -1674,7 +1675,7 @@ jobs:
       EDENPROBE_VERSION: v0.10.0
       EDENPROBE_SHA256: 30abbafd40e997334c645d578a3016286fe1b482b2f66f8fc0c7b1e2df5ef5af
       # every family that needs no person or network: headless, the audio family's sound is never played. Not graphics:
-      # its suites write their own GPU command buffers, which draw nothing now that NVN is the GPU path (docs/EDENPROBE.md)
+      # its suites write their own GPU command buffers, which draw nothing now that NVN is the GPU path (docs/dev/edenprobe.md)
       EDENPROBE_MODE: quick notime cpu fs video display kernel audio
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
@@ -1727,7 +1728,7 @@ jobs:
           fi
           exit "$status"
       # edenprobe's main, cases the release has not got yet: beside the release's report it only warns, and a nightly
-      # that cannot be fetched is a warning too (docs/EDENPROBE.md)
+      # that cannot be fetched is a warning too (docs/dev/edenprobe.md)
       - name: Fetch edenprobe's main
         id: main
         if: ${{ !cancelled() }}

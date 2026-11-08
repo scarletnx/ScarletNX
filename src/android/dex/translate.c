@@ -1108,7 +1108,7 @@ static void store_result(Method* m, uint32_t pc, const Insn* in, const char* ret
 
 /* Calls of the JDK that behave otherwise on Android, sent to the runtime's own. An instance method becomes a static
    one with the receiver as its first parameter. System.loadLibrary must load the app's native libraries through the
-   native bridge (docs/android/NATIVE.md), not HotSpot's loader. ByteBuffer.allocateDirect gives a buffer that native
+   native bridge (docs/platforms/android-apps/native.md), not HotSpot's loader. ByteBuffer.allocateDirect gives a buffer that native
    code reaches, which for 32-bit libraries must be in their window */
 typedef struct {
     const char *owner, *name, *desc;
@@ -2111,7 +2111,7 @@ static size_t next_param(const char** p);
 /* A native method's body: a call of the native bridge (snx.android.nativebridge.NativeBridge.invoke*), which runs
    the app's AArch64 code for it. The key names the method ("Lpkg/Class;.name(signature)"), then the object (or the
    class of a static method), the primitive parameters as their bits in a long[], and the references in an
-   Object[]. The result comes back as its bits, or as the reference (docs/android/NATIVE.md, "JNI") */
+   Object[]. The result comes back as its bits, or as the reference (docs/platforms/android-apps/native.md, "JNI") */
 static void write_native_stub(CfPool* pool, CfBuffer* out, const char* class_desc, const char* name, const char* desc,
                               bool is_static) {
     enum { LLOAD = 0x16, FLOAD = 0x17, DLOAD = 0x18, LASTORE = 0x50, L2I = 0x88, LRETURN = 0xad, FRETURN = 0xae,

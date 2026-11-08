@@ -23,7 +23,7 @@ endfunction()
 if(ANDROID OR IOS OR (LLVM_DIR AND NOT SNX_LLVM_CONFIG))
     # Android's and iOS's LLVM (scripts/android-llvm.sh, scripts/apple-llvm.sh) have an llvm-config that only runs on the
     # device, and the Mac's from scripts/apple-llvm.sh and Linux's from scripts/linux-llvm.sh none: their CMake package
-    # instead, named by LLVM_DIR, as pkgsrc's in a NetBSD cross build (docs/NETBSD.md), whose llvm-config runs on NetBSD
+    # instead, named by LLVM_DIR, as pkgsrc's in a NetBSD cross build (docs/hosts/netbsd.md), whose llvm-config runs on NetBSD
     find_package(LLVM REQUIRED CONFIG)
     if(LLVM_LINK_LLVM_DYLIB)
         # a package whose own tools link its one shared library (pkgsrc's, a distribution's) built it with every target,

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The menu's side of the Android app (docs/ANDROID.md) */
+/* The menu's side of the Android app (docs/hosts/android-app.md) */
 #ifndef SNX_GUI_ANDROID_H
 #define SNX_GUI_ANDROID_H
 #include <stddef.h>

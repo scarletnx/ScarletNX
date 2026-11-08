@@ -11,7 +11,7 @@ import android.view.ViewRootImpl;
 
 /**
  * The host window: an SDL window with the runtime's Vulkan renderer (src/android/hwui/render.c), the Abstract of
- * SurfaceFlinger and the input dispatcher in docs/android/INTERFACES.md. Without a display the renderer draws into an
+ * SurfaceFlinger and the input dispatcher in docs/platforms/android-apps/interfaces.md. Without a display the renderer draws into an
  * image of its own (--shot saves one). --headless draws nothing at all.
  *
  * The main looper waits in short steps and reads the window's events between them, since SDL's event queue belongs

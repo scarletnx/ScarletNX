@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# The macOS app and the iOS one (docs/APPLE.md), made by `cmake --install` and packed by CPack. Run on a Mac with Xcode.
+# The macOS app and the iOS one (docs/hosts/apple.md), made by `cmake --install` and packed by CPack. Run on a Mac with Xcode.
 #
 #   cpack --config build/macos/CPackConfig.cmake   ScarletNX-macos-arm64.zip of ScarletNX.app, signed ad hoc
 #   cpack --config build/ios/CPackConfig.cmake     ScarletNX-ios-arm64.ipa, unsigned, for a sideloading tool to sign
@@ -17,7 +17,7 @@
 set(SNX_MOLTENVK "" CACHE PATH "An extracted MoltenVK release whose library the Apple app carries (empty: none)")
 # SNX_KOSMICKRISP is a LunarG Vulkan SDK's macOS folder: lib/libvulkan_kosmickrisp.dylib, lib/libvulkan.1.dylib and
 # share/vulkan/icd.d/'s KosmicKrisp JSON. The macOS app carries the driver, its loader and an ICD JSON whose path is
-# relative, so a game's runtime copy of them works outside the bundle too (docs/APPLE.md). The system's KosmicKrisp
+# relative, so a game's runtime copy of them works outside the bundle too (docs/hosts/apple.md). The system's KosmicKrisp
 # serves a build without it, from Homebrew's mesa or the SDK on the Mac. LunarG's build is self-contained, unlike
 # Homebrew's, which links the prefix's libraries.
 set(SNX_KOSMICKRISP "" CACHE PATH "A LunarG Vulkan SDK's macOS folder whose KosmicKrisp the app carries (empty: none)")

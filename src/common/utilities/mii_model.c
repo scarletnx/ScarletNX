@@ -1265,7 +1265,7 @@ static void astc_block(const u8 t[16][4], u8 out[16]) {
 }
 
 /* ---- the block linear layout of a texture's levels */
-/* a GOB is 64 bytes by 8 rows (docs/BLOCKLINEAR.md); inside it byte x of row y is at mii_gob_x(x) + mii_gob_y(y) */
+/* a GOB is 64 bytes by 8 rows (docs/layers/gpu/blocklinear.md); inside it byte x of row y is at mii_gob_x(x) + mii_gob_y(y) */
 #define MII_GOB_X     64u
 #define MII_GOB_Y     8u
 #define MII_GOB_SHIFT 9

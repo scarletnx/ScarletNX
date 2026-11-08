@@ -7,7 +7,7 @@ import java.nio.ByteOrder;
 /**
  * ART's libcore.io.Memory, which native code and some libraries reach although it is hidden: reads and writes of
  * memory by address (the native bridge's addresses are host addresses) and of byte arrays in a byte order. A shim of
- * the ART internals that apps touch (docs/android/INTERFACES.md).
+ * the ART internals that apps touch (docs/platforms/android-apps/interfaces.md).
  */
 public final class Memory {
     private static final sun.misc.Unsafe U;

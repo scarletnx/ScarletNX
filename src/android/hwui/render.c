@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The libhwui HLE's renderer: a frame's display list (docs/android/HWUI.md) drawn with Vulkan into the SDL window,
+/* The libhwui HLE's renderer: a frame's display list (docs/platforms/android-apps/hwui.md) drawn with Vulkan into the SDL window,
    or into an image of its own without one. The CPU reads the list, keeps the transform and clip stack, and makes
    each shape into triangles in device pixels (path.c). The GPU rasterizes them with 4x MSAA. A convex shape is a fan
    drawn directly. A path, a stroke and glyphs are drawn by stencil then cover: their triangles count the winding
@@ -8,7 +8,7 @@
 
    Once an app's own Vulkan takes the window (render_yield), the frames go into the layer instead: a ring of images,
    cleared to transparent, that the app's device imports and blends over each of its presents (hle_vulkan.c,
-   docs/android/HWUI.md "Over an app's own Vulkan") */
+   docs/platforms/android-apps/hwui.md "Over an app's own Vulkan") */
 #include "android/hwui/render.h"
 #include "android/bridge/hle.h"
 #include "android/bridge/hle_vulkan.h"

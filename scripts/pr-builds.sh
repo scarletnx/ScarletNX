@@ -9,7 +9,7 @@
 #
 # PR may be empty: then it is the open pull request whose head is SHA, and with none there is nothing to link. A job of
 # the run that did not succeed gets a line, by its id in build.yml, but edenprobe, which builds nothing: its line is its
-# result, the notice its job leaves, linked to the run's summary (docs/EDENPROBE.md). The checks of a package as
+# result, the notice its job leaves, linked to the run's summary (docs/dev/edenprobe.md). The checks of a package as
 # installed and the sanitizers' build make no package, so they get none. NEEDS, when set, stands for the run's jobs, in
 # the shape of toJSON(needs). --print writes the comment to stdout and posts nothing. gh needs a token that may read
 # the run's artifacts, jobs and checks, and write on pull requests.

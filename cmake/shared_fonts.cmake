@@ -3,7 +3,7 @@
 # The shared fonts' stand-ins compiled into the runtime (hle/services/pl.c, which uses them when a game folder has no
 # fonts/ of its own): one Noto Sans subset per script the six slots name, U+E000..U+E1FF blanked by pl_font.c, and
 # yuzu's controller button glyphs for FontNintendoExtended, as Eden carries them. cmake/dependencies.cmake fetches the
-# Noto subsets (their generation and licenses are described in docs/SHARED_FONTS.md and docs/CREDITS.md) and the
+# Noto subsets (their generation and licenses are described in docs/platforms/nx/shared-fonts.md and docs/CREDITS.md) and the
 # button glyphs, from Eden's source.
 #
 # The console's shared memory is 0x1100000 bytes and the SDK maps that much, so the five text fonts and the button

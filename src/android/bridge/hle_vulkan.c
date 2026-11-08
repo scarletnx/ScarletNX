@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* libvulkan as a pass-through (docs/android/NATIVE.md, "Vulkan: a pass-through"). The guest calls the host's Vulkan:
+/* libvulkan as a pass-through (docs/platforms/android-apps/native.md, "Vulkan: a pass-through"). The guest calls the host's Vulkan:
    each command it names (through dlsym or vkGet*ProcAddr) is an export that calls the host loader's command of that
    name, which the loader's vkGetInstanceProcAddr gives (it dispatches by the handle, so any instance or device
    works). A guest pointer is a host pointer and the layouts agree on a little-endian LP64 host, so the structures and

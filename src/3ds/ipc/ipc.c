@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
    CTR header/PID/handle descriptor facts referenced against Citra/Azahar
-   ipc.h and kernel/hle_ipc.cpp, GPL-2.0-or-later, revision in docs/3DS.md. */
+   ipc.h and kernel/hle_ipc.cpp, GPL-2.0-or-later, revision in docs/platforms/3ds/README.md. */
 #include "3ds/ipc/ctr_ipc.h"
 #include "3ds/runtime/internal.h"
 #include "common/utilities/endian.h"

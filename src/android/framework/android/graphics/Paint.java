@@ -379,7 +379,7 @@ public class Paint {
 
     // ---- the display list ----
 
-    /** The paint into a display list: the fields the renderer reads (docs/android/HWUI.md). */
+    /** The paint into a display list: the fields the renderer reads (docs/platforms/android-apps/hwui.md). */
     public void write(DisplayList.Writer w) {
         w.i32(color);
         w.u8(style.ordinal());

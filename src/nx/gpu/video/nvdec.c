@@ -357,7 +357,7 @@ static int make_packet(AVPacket* p, const u8* hdr, u32 hn, const u8* s, u32 n) {
 
 /* ---- the picture into its surface */
 /* NV12 planes, block linear, laid out on the GPU (the renderer's nvdec_write), which keeps them there for VIC
-   (docs/GPU_OWNERSHIP.md). 1 when written */
+   (docs/layers/gpu/ownership.md). 1 when written */
 static int write_pic(const AVFrame* f, const PicOut* t) {
     NvdecPic p = {0};
     u64 gob_rows;

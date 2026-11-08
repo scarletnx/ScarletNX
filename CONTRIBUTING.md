@@ -2,7 +2,7 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # Contributing
 
-[Build](docs/BUILD.md) · [development](docs/DEVELOPMENT.md) · [architecture](docs/ARCHITECTURE.md) ·
+[Build](docs/dev/build.md) · [development](docs/dev/development.md) · [architecture](docs/dev/architecture.md) ·
 [agent rules](CLAUDE.md).
 
 ## Game data stays out
@@ -12,7 +12,7 @@ Nothing of a game goes into git, an issue, a pull request or a comment: keys, du
 
 ## Build and check
 
-[BUILD.md](docs/BUILD.md) covers the toolchains. Before a pull request, from the checkout root:
+[Build](docs/dev/build.md) covers the toolchains. Before a pull request, from the checkout root:
 
 ```sh
 cmake -DCMAKE_BUILD_TYPE=Release -Bbuild -S.
@@ -27,8 +27,8 @@ regression tests, and the programs and libraries they run or link, with ASan and
 is not deployed.
 
 A build is not a test. A runtime change is verified by running the game through the scene it affects, and the commit
-says what was run. [DEVELOPMENT.md](docs/DEVELOPMENT.md) has the run and diagnose commands, and
-[TESTING.md](docs/TESTING.md) the form a test report takes: the build, the machine, the scene, the runs and the result.
+says what was run. [Development](docs/dev/development.md) has the run and diagnose commands, and
+[Testing](docs/user/testing.md) the form a test report takes: the build, the machine, the scene, the runs and the result.
 
 ## Commits
 

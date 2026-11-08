@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The 2D engine's blits that the GPU's own image blit can't take (a source that isn't a render target), done on the
-   GPU from memory, the destination kept there (docs/GPU_OWNERSHIP.md). maxwell/fermi2d.c works out which source pixel
+   GPU from memory, the destination kept there (docs/layers/gpu/ownership.md). maxwell/fermi2d.c works out which source pixel
    each destination column and row takes (nearest sampled, scaled); here the source rows the rectangle samples are
    staged as the GPU sees them (guest bytes, what the GPU holds, render targets drawn over them) and taken apart into
    rows, the destination rectangle's rows are gathered through the tables (texconv.comp), a row of the rectangle a

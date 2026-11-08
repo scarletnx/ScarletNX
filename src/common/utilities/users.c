@@ -207,7 +207,7 @@ int snx_users_start(const char* dir, const uint64_t uid[2], const char* nickname
         goto done;
     }
     snx_users_uid_text(uid, hex);
-    text = snx_format("; The console's users (docs/USAGE.md#users), up to 8 in the console's order\n"
+    text = snx_format("; The console's users (docs/user/usage.md#users), up to 8 in the console's order\n"
                       "[user1]\nuid=%s\nnickname=%s\n",
                       hex, nickname);
     if (snx_mkdirs(dir)) {

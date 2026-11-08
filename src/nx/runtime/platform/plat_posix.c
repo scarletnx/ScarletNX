@@ -1025,7 +1025,7 @@ int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
         arg.size = sizeof arg;
         /* no PM_SCAN_CHECK_WPASYNC: a range not registered for the write watch (an owned span, in minor mode for its
            trap: plat_trap_arm) is skipped rather than failing the scan with EPERM. Its consumers use the ownership
-           map (docs/GPU_OWNERSHIP.md) */
+           map (docs/layers/gpu/ownership.md) */
         arg.flags = PM_SCAN_WP_MATCHING;
         arg.start = start;
         arg.end = end;

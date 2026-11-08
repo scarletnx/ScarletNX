@@ -13,9 +13,9 @@ The next session does not see a lesson that stays only in the chat. Put the less
 | A bug pattern that a future change could reintroduce | CLAUDE.md, "Lessons that cost a session" | One bullet: the trap and the rule |
 | A step of a procedure that a session missed | The skill that covers it (`snx-build`, `snx-run`, `snx-crash`, `snx-service`) | An imperative line with the reason |
 | Something that must never happen | `.claude/hooks/guard.py` | A rule with the message to show |
-| A debug script that worked | `tools/`, with a doc string and usage, and a mention in docs/DEVELOPMENT.md | The scratchpad does not stay between sessions |
+| A debug script that worked | `tools/`, with a doc string and usage, and a mention in docs/dev/development.md | The scratchpad does not stay between sessions |
 | Reviewer knowledge (a past bug shape in a domain) | The `.claude/agents/review/snx-*-reviewer.md` of that domain, "Known past-bug shapes" | One bullet |
-| Status, plan, the user's choices | docs/ROADMAP.md, and the session memory for things not in the repo | Absolute dates |
+| Status, plan, the user's choices | docs/dev/roadmap.md, and the session memory for things not in the repo | Absolute dates |
 
 Prove it first. For a rule from one occurrence, write what that occurrence needed, not a general rule. Write the
 general rule only when a second case confirms it. When you find that a lesson is wrong, correct it. Do not add a

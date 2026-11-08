@@ -102,7 +102,7 @@ def main():
         0,
         'settings: fps_limit=fast is not game or a number of frames a second: it keeps game',
     )
-    # an older version's packet trace (docs/DEPRECATIONS.md): still ctr_uds_trace=1, under the command line's own
+    # an older version's packet trace (docs/user/deprecations.md): still ctr_uds_trace=1, under the command line's own
     old = 'SNX_3DS_UDS_PACKET_TRACE'
     run(
         ['--board-info'],

@@ -135,8 +135,8 @@ def downloads(files, download, url, sha, sizes=None, missing=(), why='', updates
     lines += [
         '',
         (
-            f'More in [USAGE.md]({url}/blob/{sha}/docs/USAGE.md) and, for the app, '
-            f'[ANDROID.md]({url}/blob/{sha}/docs/ANDROID.md).'
+            f'More in [the usage guide]({url}/blob/{sha}/docs/user/usage.md) and, for the app, '
+            f'[its page]({url}/blob/{sha}/docs/hosts/android-app.md).'
         ),
     ]
     return lines

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The .ini's deprecated keys (src/nx/runtime/ini.c, docs/DEPRECATIONS.md): which keys they are and what became of each,
+/* The .ini's deprecated keys (src/nx/runtime/ini.c, docs/user/deprecations.md): which keys they are and what became of each,
    the [Deprecated] section as the runtime writes it (the launcher's Clean Old Settings reads it), and the line a run
    says about them */
 #include "nx/runtime/ini.h"
@@ -10,7 +10,7 @@
 
 int main(void) {
     static const char expected[] =
-        "\n[Deprecated]\n; keys an older version used, which do nothing now (docs/DEPRECATIONS.md): delete them, or use "
+        "\n[Deprecated]\n; keys an older version used, which do nothing now (docs/user/deprecations.md): delete them, or use "
         "Settings > App >\n;   Clean Old Settings in the launcher\n; renderer: Vulkan is the only renderer\n"
         "renderer=opengl\n; touch_controls: now controls\ntouch_controls=1\n";
     const char* keys[] = {"renderer", "touch_controls"};

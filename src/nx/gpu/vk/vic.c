@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The VIC composition as a compute shader (gpu/video/vic.comp), and its picture kept on the GPU (docs/GPU_OWNERSHIP.md).
+/* The VIC composition as a compute shader (gpu/video/vic.comp), and its picture kept on the GPU (docs/layers/gpu/ownership.md).
    gpu/video/vic.c hands over the job's planes and its slots' parameters. A job's buffer is device-local and its own:
    the parameters (gpu/video/vic.c's vic_gpu_params) as a uniform buffer at its start, the slots' input planes, then
    the output planes, each the rows the job reads or writes byte for byte as they lie in guest memory (the shader's

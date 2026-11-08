@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!-- Copyright 2026 the ScarletNX contributors -->
-<!-- For signing the iOS app (docs/APPLE.md): the Switch's address space is reserved up front (128 GiB, src/nx/memory),
+<!-- For signing the iOS app (docs/hosts/apple.md): the Switch's address space is reserved up front (128 GiB, src/nx/memory),
      more than an app gets without the extended addressing, and a game's memory goes past the default limit -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">

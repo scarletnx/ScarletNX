@@ -761,7 +761,7 @@ snx_test_target(snx-test-crc32-helper 11)
 target_link_libraries(snx-test-crc32-helper PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME crc32_helper COMMAND snx-test-crc32-helper)
 
-# the NVN header Part C builds on (src/nx/gpu/nvn/nvn.h, h1k421's, MIT) as strict C99, against docs/NVN_HLE.md's fields,
+# the NVN header Part C builds on (src/nx/gpu/nvn/nvn.h, h1k421's, MIT) as strict C99, against docs/layers/gpu/nvn.md's fields,
 # and the NVN functions' types that hookgen makes of gpu/nvn/nvn.hook, against prototypes in NVN's types
 add_executable(snx-test-nvn-header nvn_header.c)
 snx_test_target(snx-test-nvn-header 99)
@@ -1600,7 +1600,7 @@ if(Python3_Interpreter_FOUND)
              COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tracked_material.py" "${PROJECT_SOURCE_DIR}")
     set_tests_properties(tracked_material_self_test tracked_material PROPERTIES SKIP_RETURN_CODE 77)
     # the docs held to the checkout (scripts/check-docs.py): their links and anchors, the ## Index of each long one,
-    # docs/README.md linking every doc, and docs/SETTINGS.md's keys and defaults against src/nx/runtime/settings.txt;
+    # docs/README.md linking every doc, and docs/user/settings.md's keys and defaults against src/nx/runtime/settings.txt;
     # then the checks on checkouts made to fail them
     add_test(NAME docs_check COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/check-docs.py")
     add_test(NAME docs_check_script COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/docs_test.py")
@@ -1797,14 +1797,14 @@ add_executable(snx-test-link-file link_file.c)
 snx_test_target(snx-test-link-file 99)
 target_link_libraries(snx-test-link-file PRIVATE snx_test_common)
 add_test(NAME link_file COMMAND snx-test-link-file)
-# the macOS Vulkan driver a run picks, in folders the test makes: on every system (docs/APPLE.md)
+# the macOS Vulkan driver a run picks, in folders the test makes: on every system (docs/hosts/apple.md)
 add_executable(snx-test-vulkan-driver-pick vulkan_driver_pick.c)
 snx_test_target(snx-test-vulkan-driver-pick 99)
 target_link_libraries(snx-test-vulkan-driver-pick PRIVATE snx_test_common)
 add_test(NAME vulkan_driver_pick COMMAND snx-test-vulkan-driver-pick)
 if(APPLE)
     # MoltenVK and KosmicKrisp, which the app carries and a game's runtime copy (outside the bundle) gets beside it: the
-    # paths, and the KosmicKrisp device of the Mac through its ICD and the loader (docs/APPLE.md)
+    # paths, and the KosmicKrisp device of the Mac through its ICD and the loader (docs/hosts/apple.md)
     add_executable(snx-test-vulkan-driver vulkan_driver.c)
     snx_test_target(snx-test-vulkan-driver 99)
     target_link_libraries(snx-test-vulkan-driver PRIVATE snx_test_common Vulkan::Headers)
@@ -1828,12 +1828,12 @@ if(UNIX)
         add_test(NAME ${name} COMMAND ${target})
     endforeach()
 endif()
-# the setup's files and choices (common/utilities/setup.c), its notices against docs/DEPRECATIONS.md
+# the setup's files and choices (common/utilities/setup.c), its notices against docs/user/deprecations.md
 if(UNIX AND TARGET snx_setup)
     add_executable(snx-test-setup setup.c)
     snx_test_target(snx-test-setup 99)
     target_link_libraries(snx-test-setup PRIVATE snx_setup)
-    target_compile_definitions(snx-test-setup PRIVATE SNX_DEPRECATIONS="${PROJECT_SOURCE_DIR}/docs/DEPRECATIONS.md")
+    target_compile_definitions(snx-test-setup PRIVATE SNX_DEPRECATIONS="${PROJECT_SOURCE_DIR}/docs/user/deprecations.md")
     add_test(NAME setup COMMAND snx-test-setup)
     # the driver's setup in a terminal, its answers from a file
     add_executable(snx-test-setup-terminal setup_terminal.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/setup.c")
@@ -2296,7 +2296,7 @@ snx_test_target(snx-test-runtime-module-abi 99)
 target_link_libraries(snx-test-runtime-module-abi PRIVATE snx_test_common)
 add_test(NAME runtime_module_abi COMMAND snx-test-runtime-module-abi $<TARGET_FILE:scarletnx>
     $<TARGET_FILE:snx-test-module-abi> $<TARGET_FILE:snx-test-module-abi-arm>)
-# edenprobe (docs/EDENPROBE.md) as CI runs it, against its baseline, once with guest buffers copied and once read in
+# edenprobe (docs/dev/edenprobe.md) as CI runs it, against its baseline, once with guest buffers copied and once read in
 # place (vk_memory=2: the path a GPU that shares memory takes, lavapipe's in CI). -DSNX_TEST_EDENPROBE=/path/to/
 # edenprobe.nro, the release that .github/workflows/build.yml pins
 if(SNX_TEST_EDENPROBE AND Python3_Interpreter_FOUND AND NOT CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_NAME STREQUAL "Linux"
@@ -2346,7 +2346,7 @@ elseif(SNX_JEMALLOC AND ANDROID)
     add_test(NAME jemalloc COMMAND "${CMAKE_COMMAND}" "-DPROGRAM=$<TARGET_FILE:scarletnx-run>" "-DNM=${CMAKE_NM}"
         "-DNAMES=${snx_jemalloc_names}" -P "${CMAKE_CURRENT_SOURCE_DIR}/jemalloc.cmake")
 endif()
-# the module contract's layout as recorded when SNX_ABI last rose (docs/ARCHITECTURE.md, Module ABI)
+# the module contract's layout as recorded when SNX_ABI last rose (docs/dev/architecture.md, Module ABI)
 add_executable(snx-test-module-contract module_contract.c)
 snx_test_target(snx-test-module-contract 99)
 add_test(NAME module_contract COMMAND snx-test-module-contract)

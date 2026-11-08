@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
    Serialized, bounded single-core thread contexts; no host threads or JIT.
-   SVC register layout from Azahar kernel/svc_wrapper.h (revision in 3DS.md). */
+   SVC register layout from Azahar kernel/svc_wrapper.h (revision in docs/platforms/3ds/README.md). */
 #include "3ds/runtime/internal.h"
 #include "3ds/board/clock.h"
 #include "common/utilities/endian.h"

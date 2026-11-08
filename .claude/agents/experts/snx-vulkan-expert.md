@@ -61,7 +61,7 @@ layer are part of the result.
 - The layer makes the frame loop much slower. Thus behavior that depends on time (movies, audio sync) can be
   different under it. Judge performance only on runs without it.
 - The headless integration test also runs under it: `(cd build/headless-vk && src/nx/snx-test-vulkan -H
-  --vk_validation=1)`. Run it from the build tree, where it keeps its shader cache (`docs/BUILD.md`).
+  --vk_validation=1)`. Run it from the build tree, where it keeps its shader cache (`docs/dev/build.md`).
 
 ## Expertise to apply
 - **Sync**: execution against memory dependencies, and stage and access masks with synchronization2. Write-after-read

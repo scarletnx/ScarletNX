@@ -73,7 +73,7 @@ int ini_step(const IniOpt* o, int v, int dir);
    between. Into out, NUL-terminated as it fits; the length it needs, without the NUL */
 size_t ini_list_text(const IniSection* sections, int count, char* out, size_t size);
 
-/* a key an older version used, which does nothing now (docs/DEPRECATIONS.md): what became of it, NULL for another */
+/* a key an older version used, which does nothing now (docs/user/deprecations.md): what became of it, NULL for another */
 const char* ini_deprecated(const char* key);
 /* a deprecated key whose values went as they are to another key: that key, NULL for another. A player's pick of it
    (the launcher's Settings) is carried over; the game's .ini also holds defaults an older version wrote, which the

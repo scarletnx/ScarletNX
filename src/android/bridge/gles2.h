@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #ifndef SNX_ANDROID_GLES2_H
 #define SNX_ANDROID_GLES2_H
-/* OpenGL ES 2.0, 3.0 and 3.1 over Vulkan 1.3, as Mesa's zink does it (docs/android/NATIVE.md, "EGL and GLES"), on the
+/* OpenGL ES 2.0, 3.0 and 3.1 over Vulkan 1.3, as Mesa's zink does it (docs/platforms/android-apps/native.md, "EGL and GLES"), on the
    device and surfaces of gles_vk.h:
 
    gles2.c          the contexts, the fixed state (enables, blend, depth, stencil, viewport), the queries of state,

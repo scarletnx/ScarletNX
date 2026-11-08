@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!-- Copyright 2026 the ScarletNX contributors -->
-<!-- ScarletNX.app's (docs/APPLE.md), installed in its Contents with the programs (cmake/apple_package.cmake) -->
+<!-- ScarletNX.app's (docs/hosts/apple.md), installed in its Contents with the programs (cmake/apple_package.cmake) -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>

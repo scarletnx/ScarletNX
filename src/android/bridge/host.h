@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* The host system under the native bridge (docs/android/NATIVE.md, "Hosts"): the calls whose form differs between
+/* The host system under the native bridge (docs/platforms/android-apps/native.md, "Hosts"): the calls whose form differs between
    the hosts the bridge runs on, Linux, FreeBSD, macOS and Windows x64, each with a version for each of them. The
    bridge's other files call these, not the host's own API for the same work */
 

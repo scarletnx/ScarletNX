@@ -179,9 +179,9 @@ int main(void) {
     free(old);
     said = left_said(checkout, expected, file);
     line = snx_format("scarletnx: %s/games was left by an older version: this one keeps it in %s/recompiled "
-                      "(docs/DEPRECATIONS.md)\n"
+                      "(docs/user/deprecations.md)\n"
                       "scarletnx: %s/prod.keys was left by an older version: this one keeps it in %s/prod.keys "
-                      "(docs/DEPRECATIONS.md)\n",
+                      "(docs/user/deprecations.md)\n",
                       checkout, expected, checkout, expected);
     assert(!strcmp(said, line));
     free(line);
@@ -210,7 +210,7 @@ int main(void) {
         free(found);
         said = recompiled_said(dir, file);
         line = snx_format("scarletnx: %s was left by an older version: new games go to %s, and the ones in it still "
-                          "run until they are moved there (docs/DEPRECATIONS.md)\n",
+                          "run until they are moved there (docs/user/deprecations.md)\n",
                           old_games, new_games);
         assert(!strcmp(said, line) && snx_is_dir(made));
         free(line);

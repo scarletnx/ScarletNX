@@ -1237,7 +1237,7 @@ int main(int argc, char** argv) {
         set_env("SNX_WORKFLOW_NAMED", "");
         old_data = snx_format("%s_data", old);
         CHECK(!snx_copy_file(game, old) && !snx_mkdirs(old_data));
-        run(exe, repo, old, log, 1, "", "laid out by an older version: move its files as docs/DEPRECATIONS.md says");
+        run(exe, repo, old, log, 1, "", "laid out by an older version: move its files as docs/user/deprecations.md says");
         set_env("SNX_WORKFLOW_FLAGS", "-r");
         run(exe, repo, old, log, 1, "", "laid out by an older version");
         set_env("SNX_WORKFLOW_FLAGS", "");

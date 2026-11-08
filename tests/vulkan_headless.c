@@ -3733,7 +3733,7 @@ static int check_resident_astc(void) {
 
 /* An ASTC array is uploaded a level at a time over all its layers (vk_astc_upload_layers): a layer and level at a time,
    each layer's encoder dispatch waited for the one before, and one game's arrays of 118 layers of 128x128 in 8 levels
-   took 667 ms of an RX 6700 XT as BC7 (docs/ASTC.md). Held as BC7 (astc_mode 2), the encoder makes its BC7 image
+   took 667 ms of an RX 6700 XT as BC7 (docs/layers/gpu/astc.md). Held as BC7 (astc_mode 2), the encoder makes its BC7 image
    between frames a level at a time too, all the layers in one dispatch; and each layer's image is the one its memory
    makes as a 2D texture on its own, as BC7 and as RGBA8 (astc_mode 1) */
 static int astc_array_levels(int mode) {

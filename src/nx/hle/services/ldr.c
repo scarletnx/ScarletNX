@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* ldr:ro / ro:1, IRoInterface. Behavioral reference: Eden's service/ro/ro.cpp and
-   cmif_serialization.h (see docs/LDR_RO.md). The guest nn::ro linker, not this service, resolves symbols,
+   cmif_serialization.h (see docs/platforms/nx/ldr-ro.md). The guest nn::ro linker, not this service, resolves symbols,
    applies relocations and calls constructors. NRO code is the runtime JIT's (runtime/guest_jit.c: its text joins the
    JIT's images while it is mapped), and the interpreter's without a JIT; fixed-address AOT functions cannot safely be
    rebased by changing their dispatch entries. */

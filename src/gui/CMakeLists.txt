@@ -98,7 +98,7 @@ else()
     endif()
 endif()
 if(APPLE)
-    # the iOS and macOS frontend (docs/APPLE.md), as Android's is MainActivity and android.c: apple.m is the menu's
+    # the iOS and macOS frontend (docs/hosts/apple.md), as Android's is MainActivity and android.c: apple.m is the menu's
     # side, dist/apple/Frontend.swift the system's (iOS's document picker)
     add_library(snx_apple_frontend STATIC "${PROJECT_SOURCE_DIR}/dist/apple/Frontend.swift")
     # Swift 5's checks: the functions apple.m calls run on the main thread, which Swift 6 would want them to prove
@@ -206,7 +206,7 @@ if(BUILD_TESTING)
     add_executable(snx-test-gui-theme "${PROJECT_SOURCE_DIR}/tests/gui_theme.c")
     target_link_libraries(snx-test-gui-theme PRIVATE snx_gui_support scarletnx-common)
     target_compile_definitions(snx-test-gui-theme PRIVATE SNX_GUI_THEMES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/themes")
-    target_compile_definitions(snx-test-gui-theme PRIVATE SNX_GUI_DOCS="${PROJECT_SOURCE_DIR}/docs/GUI.md")
+    target_compile_definitions(snx-test-gui-theme PRIVATE SNX_GUI_DOCS="${PROJECT_SOURCE_DIR}/docs/user/gui.md")
     target_include_directories(snx-test-gui-theme PRIVATE "${PROJECT_BINARY_DIR}/generated")
     add_test(NAME gui_theme COMMAND snx-test-gui-theme)
     add_executable(snx-test-gui-theme-write "${PROJECT_SOURCE_DIR}/tests/gui_theme_write.c")

@@ -280,7 +280,7 @@ static void test_memory_fit_old(void) {
     g_test.write = 1;
     text = open_ini("[Performance]\nmemory_fit=1\n");
     CHECK(strstr(g_test.said, "settings: memory_fit=1, deprecated, is memory_fit_mode=0 (Auto) now "
-                              "(docs/DEPRECATIONS.md)\n"));
+                              "(docs/user/deprecations.md)\n"));
     CHECK(text && strstr(text, "\nmemory_fit_mode=0\n") && strstr(text, "\n[Deprecated]\n") &&
           strstr(text, "\n[Deprecated]\n") < strstr(text, "\nmemory_fit=1\n"));
     again = open_ini(text); /* the next run: memory_fit_mode given, memory_fit not read again */
@@ -289,7 +289,7 @@ static void test_memory_fit_old(void) {
     free(text);
     text = open_ini("[Performance]\nmemory_fit=0\n");
     CHECK(strstr(g_test.said, "settings: memory_fit=0, deprecated, was its default: memory_fit_mode takes its own, 0 "
-                              "(Auto), which fits the game to the device (docs/DEPRECATIONS.md)\n"));
+                              "(Auto), which fits the game to the device (docs/user/deprecations.md)\n"));
     CHECK(text && strstr(text, "\nmemory_fit_mode=0\n"));
     free(text);
     text = open_ini("[Performance]\nmemory_fit=yes\n");
@@ -311,7 +311,7 @@ static void test_astc_bc_old(void) {
     CHECK(options_astc_bc_old("2") == -2 && options_astc_bc_old("") == -2);
     g_test.write = 1;
     text = open_ini("[Graphics]\nastc_bc=1\n");
-    CHECK(strstr(g_test.said, "settings: astc_bc=1, deprecated, is astc_mode=0 (Auto) now (docs/DEPRECATIONS.md)\n"));
+    CHECK(strstr(g_test.said, "settings: astc_bc=1, deprecated, is astc_mode=0 (Auto) now (docs/user/deprecations.md)\n"));
     CHECK(text && strstr(text, "\nastc_mode=0\n") && strstr(text, "\n[Deprecated]\n") &&
           strstr(text, "\n[Deprecated]\n") < strstr(text, "\nastc_bc=1\n"));
     again = open_ini(text); /* the next run: astc_mode given, astc_bc not read again */
@@ -321,7 +321,7 @@ static void test_astc_bc_old(void) {
     text = open_ini("[Graphics]\nastc_bc=0\n");
     CHECK(strstr(g_test.said, "settings: astc_bc=0, deprecated, was its default: astc_mode takes its own, 0 (Auto), "
                               "which holds ASTC textures as RGBA8 or BC7 by the GPU's memory where the GPU samples BCn "
-                              "but not ASTC (docs/DEPRECATIONS.md)\n"));
+                              "but not ASTC (docs/user/deprecations.md)\n"));
     CHECK(text && strstr(text, "\nastc_mode=0\n"));
     free(text);
     text = open_ini("[Graphics]\nastc_bc=yes\n");
@@ -378,7 +378,7 @@ static void test_controls_opacity_old(void) {
     CHECK(!strcmp(g_test.alpha, "50"));
     CHECK(strstr(g_test.said,
                  "settings: controls_opacity=100, deprecated, is controls_alpha=50 now, the same look: the "
-                 "built-in controls' art is opaque (docs/DEPRECATIONS.md)\n"));
+                 "built-in controls' art is opaque (docs/user/deprecations.md)\n"));
     CHECK(text && strstr(text, "\ncontrols_alpha=50\n") && strstr(text, "\n[Deprecated]\n") &&
           strstr(text, "\n[Deprecated]\n") < strstr(text, "\ncontrols_opacity=100\n"));
     snprintf(g_test.alpha, sizeof g_test.alpha, "%s", "not given");
@@ -395,13 +395,13 @@ static void test_controls_opacity_old(void) {
     text = open_ini("[On-screen controls]\ncontrols_opacity=50\n");
     CHECK(!strcmp(g_test.alpha, "50"));
     CHECK(strstr(g_test.said, "settings: controls_opacity=50, deprecated, was its default: controls_alpha takes its "
-                              "own, 50 (docs/DEPRECATIONS.md)\n"));
+                              "own, 50 (docs/user/deprecations.md)\n"));
     CHECK(text && strstr(text, "\ncontrols_alpha=50\n") && strstr(text, "\ncontrols_opacity=50\n"));
     free(text);
     text = open_ini("[On-screen controls]\ncontrols_opacity=most\n");
     CHECK(!strcmp(g_test.alpha, "50"));
     CHECK(strstr(g_test.said, "settings: controls_opacity=most, deprecated, is not a whole number: controls_alpha "
-                              "takes its default, 50 (docs/DEPRECATIONS.md)\n"));
+                              "takes its default, 50 (docs/user/deprecations.md)\n"));
     free(text);
     /* the new key given, the old one is not read */
     text = open_ini("[On-screen controls]\ncontrols_opacity=100\ncontrols_alpha=80\n");
@@ -426,7 +426,7 @@ static void test_vk_descriptors_old_default(void) {
     text = open_ini("[Debug]\nvk_descriptors=0\n");
     CHECK(strstr(g_test.said, "settings: vk_descriptors=0, deprecated, was its default: vk_descriptors_mode takes its "
                               "own, 3 (Automatic), sets on a GPU with memory of its own and heaps on one that shares "
-                              "the system's (docs/DEPRECATIONS.md)\n"));
+                              "the system's (docs/user/deprecations.md)\n"));
     CHECK(text && strstr(text, "\nvk_descriptors_mode=3\n") && strstr(text, "\n[Deprecated]\n") &&
           strstr(text, "\n[Deprecated]\n") < strstr(text, "\nvk_descriptors=0\n"));
     again = open_ini(text); /* the next run: vk_descriptors_mode given, vk_descriptors not read again */
@@ -453,12 +453,12 @@ static void test_vk_descriptors_old(void) {
     g_test.write = 1;
     text = open_ini("[Debug]\nvk_descriptors=1\n");
     CHECK(strstr(g_test.said, "settings: vk_descriptors=1, deprecated, is vk_descriptors_mode=1 (Buffers) now "
-                              "(docs/DEPRECATIONS.md)\n"));
+                              "(docs/user/deprecations.md)\n"));
     CHECK(text && strstr(text, "\nvk_descriptors_mode=1\n"));
     free(text);
     text = open_ini("[Debug]\nvk_descriptors=sets\n");
     CHECK(strstr(g_test.said, "settings: vk_descriptors=sets, deprecated, is not a whole number from 0 to 3: "
-                              "vk_descriptors_mode takes its default, 3 (Automatic) (docs/DEPRECATIONS.md)\n"));
+                              "vk_descriptors_mode takes its default, 3 (Automatic) (docs/user/deprecations.md)\n"));
     CHECK(text && strstr(text, "\nvk_descriptors_mode=3\n"));
     free(text);
     text = open_ini("[Debug]\nvk_descriptors=1\nvk_descriptors_mode=2\n");
@@ -471,7 +471,7 @@ static void test_vk_descriptors_old(void) {
           !strcmp(ini_overridden("vk_descriptors_mode"), "0"));
     CHECK(strstr(g_test.said,
                  "settings: --vk_descriptors=0 is deprecated: this run reads it as --vk_descriptors_mode=0 "
-                 "(Sets) (docs/DEPRECATIONS.md)\n"));
+                 "(Sets) (docs/user/deprecations.md)\n"));
     CHECK(text && strstr(text, "\nvk_descriptors_mode=3\n"));
     free(text);
     ini_override("vk_descriptors_mode", NULL); /* the mapping's, which a run keeps: the next file's own again */
@@ -479,14 +479,14 @@ static void test_vk_descriptors_old(void) {
     text = open_ini("[Debug]\nvk_descriptors_mode=1\n");
     CHECK(!ini_overridden("vk_descriptors_mode"));
     CHECK(strstr(g_test.said, "settings: --vk_descriptors=many, deprecated, is not a whole number from 0 to 3: "
-                              "vk_descriptors_mode=1 this run, the .ini's (docs/DEPRECATIONS.md)\n"));
+                              "vk_descriptors_mode=1 this run, the .ini's (docs/user/deprecations.md)\n"));
     free(text);
     ini_override("vk_descriptors", "1");
     ini_override("vk_descriptors_mode", "2");
     text = open_ini("[Debug]\nvk_descriptors_mode=3\n");
     CHECK(!strcmp(ini_overridden("vk_descriptors_mode"), "2"));
     CHECK(strstr(g_test.said, "settings: --vk_descriptors=1 is deprecated, and the command line gives "
-                              "--vk_descriptors_mode=2 too: vk_descriptors_mode=2 this run (docs/DEPRECATIONS.md)\n"));
+                              "--vk_descriptors_mode=2 too: vk_descriptors_mode=2 this run (docs/user/deprecations.md)\n"));
     free(text);
     ini_override("vk_descriptors", NULL);
     ini_override("vk_descriptors_mode", NULL);

@@ -18,7 +18,7 @@
 #   - for a Linux or NetBSD cross build with Clang (the linux-*-cross and netbsd-*-cross presets): the target triple
 #     and the sysroot, which CMake passes to its own compiles from CMAKE_C_COMPILER_TARGET and CMAKE_SYSROOT and the
 #     others don't get from the compiler's path, and the GCC toolchain whose runtime (crt files, libgcc, libstdc++) Clang links where it isn't
-#     in the sysroot (CMAKE_C_COMPILER_EXTERNAL_TOOLCHAIN: gnu-cross's buildroots, docs/MIPS64.md).
+#     in the sysroot (CMAKE_C_COMPILER_EXTERNAL_TOOLCHAIN: gnu-cross's buildroots, docs/hosts/mips64.md).
 #     SNX_TARGET_LDFLAGS adds what their links need: LLD, as the build machine's ld only knows its own architecture,
 #     or the target's GNU ld.
 # All are empty for the other hosts and builds.
