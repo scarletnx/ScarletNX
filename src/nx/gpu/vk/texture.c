@@ -113,6 +113,27 @@ typedef struct {
     u32 rowb, th, lbh, lbd, gobs_x;
     int layers;
 } LevelSource;
+/* The part of an ASTC level's BC7 key (vk_bc7_level_key) that its guest bytes make: the words that lay its blocks out
+   in guest memory, and those bytes as the CPU has them, of each of nlayers layers. 0 when the GPU holds any of them
+   (they are not here to hash: an owner's pages hold another's bytes until they land) or memory maps them not all. What
+   is pending over them lands first, as a change check's hash has it, which can submit the frame's command buffer */
+static int astc_content(const LevelSource* l, u32 nlayers, u64 content[2]) {
+    const Surf* t = l->t;
+    const u32 layout[8] = {(u32)t->bl, t->bl ? 0 : t->pitch, l->rowb, l->th, l->lbh, l->lbd, l->gobs_x, nlayers};
+    content[0] = content[1] = 0;
+    vk_bc7_content(content, layout, sizeof layout);
+    for (u32 k = 0; k < nlayers; k++) {
+        const u64 gva = l->gva + (u64)k * t->layer_size;
+        for (u64 o = 0; o < l->lsz;) {
+            u64 cpu = 0, n = gmmu_run(gva + o, l->lsz - o, &cpu);
+            if (!n || (own_any() && own_lookup(cpu, n, NULL, 0))) return 0;
+            gmem_need(gva + o, n);
+            vk_bc7_content(content, GP(cpu), n);
+            o += n;
+        }
+    }
+    return 1;
+}
 /* A guest read while staging lands GPU results, and landing can submit the frame's command buffer: the upload's
    commands then belong to the one recording after it, with the image's transfer use established there again */
 static VkCommandBuffer upload_cb(Surf* t, VkCommandBuffer cb) {
@@ -766,6 +787,14 @@ static u32 later_encode(VkCommandBuffer cb, Surf* t, u32 left) {
         const u32 slices = is3d ? (t->depth3d >> l ? t->depth3d >> l : 1) : t->layers;
         const u32 cx = (lw + 3) / 4, cy = (lh + 3) / 4;
         const u64 room = left > used ? left - used : 1, slice_blocks = (u64)cx * cy, row_texels = (u64)lw * 4;
+        const int keyed = l < VK_TEX_MAX_LEVELS && (t->bc7.keyed >> l & 1);
+        /* a level the BC7 cache has: copied from it, a sixteenth of the encoder's cost a block counted */
+        if (keyed && !t->bc7.slice && !t->bc7.row &&
+            vk_bc7_cache_level(cb, t->bc7.img, t->bc7.key[l], l, lw, lh, slices, is3d)) {
+            used += (u32)((slice_blocks * slices + 15) / 16);
+            t->bc7.level++;
+            continue;
+        }
         u32 nz = 1, n;
         if (!t->bc7.row && slice_blocks <= room && row_texels * cy <= cap) {
             /* whole slices, as many as the blocks left and the scratch take */
@@ -790,6 +819,8 @@ static u32 later_encode(VkCommandBuffer cb, Surf* t, u32 left) {
             t->bc7.slice++;
         }
         if (t->bc7.slice == slices) {
+            /* the level whole: its blocks read back for the cache, where it has room for them now */
+            if (keyed) vk_bc7_capture_level(cb, t->bc7.img, t->bc7.key[l], l, lw, lh, slices, is3d);
             t->bc7.slice = 0;
             t->bc7.level++;
         }
@@ -890,6 +921,7 @@ static int tex_upload_(Surf* t) {
     if (t->bricks) return t->upload_valid = resident_upload(t);
     /* held as BC7 and whole: RGBA8 again, made BC7 again between frames */
     if (t->bc7_later && is_bc7(f->vk) && !later_rgba8_again(t)) return t->upload_valid = 0;
+    t->bc7.keyed = 0; /* the BC7 cache's keys of the bytes loaded now, below */
     VkCommandBuffer cb = vk_cmd();
     vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
@@ -914,11 +946,27 @@ static int tex_upload_(Surf* t) {
                             : (u64)t->pitch * th * ld;
             u32 gobs_x = bl_level_gobs_x(rowb, th, ld, t->bh, t->bd, t->tile_w);
             if (f->conv == VKC_ASTC) { /* decoded on the GPU from its block rows, deswizzled on the GPU */
-                complete = up_flush(&u);
                 LevelSource ls = {t, t->gva + at, lsz, rowb, th, lbh, lbd, gobs_x, astc_layers};
+                /* the BC7 cache's key of a level held as BC7, straight (vk_astc_upload takes it) or between frames
+                   (kept for the encoder there), hashed before the upload stages the same bytes */
+                const u32 nlayers = astc_layers ? layers : 1, slices = astc_layers ? layers : ld;
+                const int straight = is_bc7(f->vk), later = t->bc7_later && !straight;
+                u64 content[2];
+                const int keyed = (straight || later) && l < VK_TEX_MAX_LEVELS && vk_astc_cached(lw, lh, slices) &&
+                                  astc_content(&ls, nlayers, content);
+                if (keyed && later) {
+                    const VkFormat bc7 = later_bc7(f->vk);
+                    vk_bc7_level_key(content, lw, lh, is3d ? ld : 1, nlayers, f->bw, f->bh,
+                                     bc7 == VK_FORMAT_BC7_SRGB_BLOCK, vk_bc7_build(lw, lh, is3d ? ld : 1),
+                                     t->bc7.key[l]);
+                    t->bc7.keyed |= 1u << l;
+                }
+                const u64* key_content = keyed && straight ? content : NULL;
+                complete = up_flush(&u); /* after the hash, which can submit: the batch's buffer is the one recording */
                 complete =
-                    complete && (astc_layers ? vk_astc_upload_layers(u.cb, t, lw, lh, l, 0, layers, astc_rows, &ls)
-                                             : vk_astc_upload(u.cb, t, 0, 0, lw, lh, ld, l, layer, astc_rows, &ls));
+                    complete &&
+                    (astc_layers ? vk_astc_upload_layers(u.cb, t, lw, lh, l, 0, layers, astc_rows, &ls, key_content)
+                                 : vk_astc_upload(u.cb, t, 0, 0, lw, lh, ld, l, layer, astc_rows, &ls, key_content));
                 u.scratch = VK_NULL_HANDLE; /* astc_rows may have grown the scratch buffer: asked for again */
                 u.cap = 0;
             } else {
@@ -1614,7 +1662,7 @@ static int level_patch_astc(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u32 
             LevelSource ls = {t, gva + k * block, lsz - k * block, rowb, 8u << lbh, lbh, lbd, 0};
             if (w > lv->lw - tx) w = lv->lw - tx;
             if (h > lv->lh - ty) h = lv->lh - ty;
-            if (!up_flush(u) || !vk_astc_upload(u->cb, t, tx, ty, w, h, 1, lv->level, lv->layer, astc_rows, &ls))
+            if (!up_flush(u) || !vk_astc_upload(u->cb, t, tx, ty, w, h, 1, lv->level, lv->layer, astc_rows, &ls, NULL))
                 return 0;
             u->scratch = VK_NULL_HANDLE; /* astc_rows may have grown the scratch buffer: asked for again */
             u->cap = 0;
@@ -1720,6 +1768,7 @@ static int tex_patch(Surf* t, const TexPieces* p) {
     for (u32 i = 0; i < p->count && ok && t->bl; i++)
         ok = tex_patch_range(&u, p->piece[i].at, p->piece[i].at + p->piece[i].n);
     ok = up_flush(&u) && ok;
+    t->bc7.keyed = 0;       /* its levels' bytes changed: no longer the cache's keys */
     if (ok) later_queue(t); /* an RGBA8 one the encoder starts on again */
     g_tex_loads.partial++;
     g_tex_loads.partial_bytes += g_tex_loads.bytes - bytes;

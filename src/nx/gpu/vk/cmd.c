@@ -316,6 +316,7 @@ static void land_through(u64 value) {
     while (g_landed < value) {
         vk_buf_frame_done(++g_landed);
         vk_gfx_image_frame_done(g_landed);
+        vk_astc_frame_done(g_landed); /* BC7 blocks read back for the cache, before the ring they are in is reused */
     }
 }
 

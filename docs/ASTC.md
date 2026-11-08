@@ -11,6 +11,7 @@
   * [Auto, Exact and BC7](#auto-exact-and-bc7)
   * [Between frames](#between-frames)
   * [The fast build](#the-fast-build)
+  * [The BC7 cache](#the-bc7-cache)
 * [Textures bigger than one allocation](#textures-bigger-than-one-allocation)
 * [Sparse textures](#sparse-textures)
 * [Building the shader](#building-the-shader)
@@ -333,6 +334,41 @@ the time the GPU's):
 
 Random blocks are the fast build's worst case: the blocks that try every mode hold up the invocations beside them.
 On one game's 6x6 albedo an RTX 2080 took 12 to 14 ms for a 4096x4096 level, where the full build took 190.
+### The BC7 cache
+
+The same ASTC bytes always become the same BC7 blocks, and the memory budget's trim evicts textures a game uses again:
+each came back through the decoder and the encoder (one game encoded 6,000 to 14,000 levels in a 150 second run, each
+3 to 5 ms of an RTX 2080). So the blocks of each whole level encoded are kept, as an index in memory and records on
+disk in `shader_cache/<game>.vkbc7`, beside the shader files (`gpu/vk/bc7_cache.c`), from run to run. `pipeline.c`
+opens it where ASTC textures are held as BC7 (`vk_astc_bc7`).
+
+- **The key** is XXH3-128 (`vk_hash128`) of the level's guest bytes, as the CPU has them, and the words that place its
+  blocks in them (block linear or pitch, the GOB block's height and depth, GOBs across, the row's bytes and rows, the
+  layers: `texture.c`'s `astc_content`), then of that hash with the level's size, slices or layers, footprint, sRGB
+  decode mode, the encoder's build and `VK_BC7_ENCODER_VERSION` (`vk_bc7_key`). A level of which the GPU holds any byte
+  (an engine's result, `memory/own.c`) is not keyed, nor one the page table does not map whole, nor a region.
+- **The file's version** is XXH3-128 of the SPIR-V of the deswizzle, the decoder and the encoder's three builds, of
+  `VK_BC7_ENCODER_VERSION`, the GPU's vendor and device, the driver's version and its pipeline cache UUID
+  (`vk_astc_cache_open`). A file of another version starts empty.
+- **Straight to BC7** (`vk_astc_upload` with the key): a hit reads the record's blocks from the file 1 MiB at a time,
+  checks them (XXH3 of each piece, folded) as it copies them into staging, and one copy writes the whole level, every
+  layer or slice, into the image: no decode, no encode. A miss encodes as before and also copies each strip's blocks
+  into their place in the frame's readback ring (`vk_stage_back`), with a barrier to the host after the last strip.
+- **Between frames** (`texture.c`'s `later_encode`): the RGBA8 upload keeps each level's key (`Surf.bc7.key`), and a
+  level the cache has is copied from it into the BC7 image, counted a sixteenth of its blocks against the frame's
+  `VK_BC7_LATER_BLOCKS`; a level the encoder makes whole is copied from the BC7 image into the readback ring
+  (`vk_bc7_capture_level`). A texture whose bytes change in pieces loses its keys until it loads whole again.
+- **Landing:** once the submission is done, `cmd.c`'s landing (`vk_astc_frame_done`) appends the blocks to the file,
+  before the frame's ring is reused. The GPU thread never waits for them. Blocks on their way are bounded to
+  `VK_BC7_CAPTURE_BYTES` (32 MiB), which bounds the ring's growth and is the largest level the cache takes (a 4096x4096
+  level is 16 MiB).
+- **Memory and disk:** only the index stays in RAM, 32 bytes a level, and one 1 MiB buffer for the reads. The file has
+  a bound of `VK_BC7_CACHE_MAX` (4 GiB): a record past it starts the file over. A record a crash cut short ends the
+  reading, and the file is cut there; one that does not check out is dropped and its level encoded again. While the
+  file is open it is locked (`snx_lock_file`): a second process of the same game runs without the cache.
+
+RGBA8 levels are not cached: their decode is the cheap part (about 1 ms a 4096x4096 level on the RTX 2080), and a
+cached one would be four times the bytes to read and copy.
 
 ## Textures bigger than one allocation
 
@@ -428,7 +464,19 @@ separate SPIRV-Tools is needed.
   4, 2 and 1 block rows, with mips, layers, slices and many strips, and compare the GPU's blocks with the same
   encoder run on the CPU over the CPU decoder's texels, byte for byte, in the build the level takes (`vk_bc7_build`).
 - `tex_upload_rows` checks what `texture.c` hands `vk_astc_upload`: an ASTC level's block rows, strip by strip,
-  against the block-linear layout walked byte by byte, and the bands other formats take past the cap.
+  against the block-linear layout walked byte by byte, and the bands other formats take past the cap. It also checks
+  the BC7 cache's key: made only where `vk_astc_cached` says, the same for the same bytes, another for a byte of any
+  layer changed, none where the GPU holds bytes, and kept in the texture for the encoder between frames.
+- `bc7_cache` (ctest, no GPU) checks `bc7_cache.c`: the key changes with each field of the level, its build, every bit
+  of its bytes and every word of its layout; records come back as written, also after the file is opened again; a file
+  of another version starts empty; a changed byte drops its record; a record cut short is cut off; the bound starts the
+  file over; the index grows past 3,000 records; and the file stays locked while it is open.
+- `astc_vulkan` and `astc_vulkan_pieces` upload a level into a new BC7 image three times with the cache's key: strips
+  of 4, 2 and 1 block rows, layers, slices and many strips. The first encodes; the second, and the third after the
+  file is opened again, encode nothing (`vk_astc_stats` counts the levels and the hits, `vk_astc_dispatches` the
+  encoder's dispatches) and their bytes are the first's; a changed block misses; and 100 encodes in one submission
+  are all stored. `vulkan_headless` (`tests/vulkan_astc_later.inc`) stores the levels the encoder makes between frames
+  and gives them to a second texture of the same bytes in its first frame, with no encode.
 - `vulkan_headless` (`tests/vulkan_astc_later.inc`) holds the BC7 images made between frames to the CPU encoder's
   blocks over the RGBA8 texels the texture showed first, byte for byte: a 1024x768 texture in three frames of 32768,
   32768 and 3 blocks, the RGBA8 image freed after them; a 2D array of sides on no block in one frame and one dispatch

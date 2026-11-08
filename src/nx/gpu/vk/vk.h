@@ -714,6 +714,8 @@ typedef struct {
     u64 key; /* view type | swizzle << 4 | format << 20 | stencil << 60 | single mip << 61 (vk_tex_view) */
     VkImageView v;
 } SurfView;
+/* the most levels a texture has: a texture header's count of them is 4 bits */
+#define VK_TEX_MAX_LEVELS 16
 typedef struct Surf {
     u64 gva;
     u32 w, h, layers, levels;
@@ -823,6 +825,10 @@ typedef struct Surf {
         u64 bytes;
         u32 level, slice, row, wgen;
         int queued;
+        /* the BC7 cache's key of each level (keyed: a bit a level), from the guest bytes the RGBA8 image was loaded
+           from: the encoder's levels are read back into the cache, and a level the cache has is copied from it */
+        u32 keyed;
+        u64 key[VK_TEX_MAX_LEVELS][2];
     } bc7;
 } Surf;
 enum { VK_LRU_NONE, VK_LRU_TEX, VK_LRU_RT };
@@ -1141,15 +1147,18 @@ int vk_tc_convert_vi(VkCommandBuffer cb, u32 fmt, u32 w, u32 rows, VkBuffer in, 
    the caller tries again later); rows returns 0 for that too. The caller ends rendering and moves t to
    TRANSFER_DST_OPTIMAL first. A guest read while staging lands GPU results, and landing can submit the frame's
    command buffer, which ends the one cb names: rows then stores the buffer recording now through cb, and the caller
-   records the rest of the strip there */
+   records the rest of the strip there. content: for a whole level into a BC7 image that vk_astc_cached takes, the
+   part of its BC7 key its guest bytes make (texture.c's astc_content), else NULL. With it the level's blocks come from
+   the BC7 cache when they are there, with no decode and no encode, and an encode's blocks go into the cache once its
+   submission is done (vk_astc_frame_done) */
 typedef int (*VkAstcRows)(void* ctx, VkCommandBuffer* cb, u32 z, u32 nz, u32 y, u32 n, VkBuffer* buf, u64* off);
 int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y, u32 w, u32 h, u32 depth, u32 level, u32 layer,
-                   VkAstcRows rows, void* ctx);
+                   VkAstcRows rows, void* ctx, const u64* content);
 /* the same for a whole level of layers layers of a 2D array from layer, as a 3D level's slices: rows's z and nz count
    layers from layer, and a strip takes as many as the scratch holds. A layer at a time, a small level is too little
    work to fill the GPU and each layer's encoder dispatch waits for the one before (docs/ASTC.md) */
 int vk_astc_upload_layers(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 level, u32 layer, u32 layers, VkAstcRows rows,
-                          void* ctx);
+                          void* ctx, const u64* content);
 /* The BC7 blocks of slices z to z + nz of level `level` of src, an RGBA8 image in TRANSFER_SRC_OPTIMAL (w x h texels a
    slice: its layers, or a 3D level's depth slices with is3d), rows texel rows of them from y, a multiple of 4, encoded
    into the same place of dst, a BC7 image of its shape in TRANSFER_DST_OPTIMAL. rows ends on a whole block or at the
@@ -1191,9 +1200,30 @@ void vk_bc7_cache_put(const u64 key[2], const u8* p, u64 size);
 /* hits, records stored, times it started over at its bound, and the file's bytes */
 void vk_bc7_cache_stats(u64* hits, u64* stored, u64* restarts, u64* bytes);
 u64 vk_bc7_strip_texels(void); /* the texels vk_bc7_encode_image takes at once at most */
-/* the image levels (or regions of them) uploaded as BC7 so far, their bytes, and the bytes they would have taken as
-   RGBA8 */
-void vk_astc_stats(u64* levels, u64* bytes, u64* rgba8_bytes);
+/* the image levels (or regions of them) uploaded as BC7 so far, the levels the BC7 cache gave (here or between frames),
+   their bytes, and the bytes they would have taken as RGBA8 */
+void vk_astc_stats(u64* levels, u64* hits, u64* bytes, u64* rgba8_bytes);
+/* The BC7 cache of ASTC levels (astc.c over bc7_cache.c). vk_astc_cache_open: the cache of this game and device in the
+   file at path, its records' version made of the encoder's (and the decoder's) SPIR-V, VK_BC7_ENCODER_VERSION and the
+   GPU and its driver (pipeline.c, where the GPU samples BCn but not ASTC). vk_astc_cached: a level of w x h texels and
+   depth slices or layers goes through it (the cache open, its blocks VK_BC7_CAPTURE_BYTES or less).
+   vk_bc7_level_key: the key of a level of that shape, footprint bw x bh, sRGB decode mode and encoder build (from
+   content, its guest bytes' part). vk_astc_frame_done: the submission sub is done, and the blocks encodes in it read
+   back go into the cache (cmd.c's landing). vk_bc7_cache_level: level `level` of img (TRANSFER_DST_OPTIMAL), w x h
+   texels and slices layers or 3D slices, copied from the cache: 0 when its blocks aren't there.
+   vk_bc7_capture_level: that level's blocks, which the encoder wrote whole (texture.c, between frames), read back for
+   the cache: 0 when there is no room for them now. VK_BC7_CAPTURE_BYTES bounds the blocks read back at once, which
+   bounds the readback ring's growth and is the most a level's blocks are to be cached */
+#define VK_BC7_CAPTURE_BYTES (32ull << 20)
+void vk_astc_cache_open(const char* path);
+int vk_astc_cached(u32 w, u32 h, u32 depth);
+void vk_bc7_level_key(const u64 content[2], u32 w, u32 h, u32 depth, u32 layers, u32 bw, u32 bh, int srgb, u32 build,
+                      u64 key[2]);
+void vk_astc_frame_done(u64 sub);
+int vk_bc7_cache_level(VkCommandBuffer cb, VkImage img, const u64 key[2], u32 level, u32 w, u32 h, u32 slices,
+                       int is3d);
+int vk_bc7_capture_level(VkCommandBuffer cb, VkImage img, const u64 key[2], u32 level, u32 w, u32 h, u32 slices,
+                         int is3d);
 u64 vk_astc_dispatches(void); /* the BC7 encoder's dispatches so far */
 /* Internal ASTC, BC7, block-linear, conversion, multisample and depth-packing pipelines, apart from guest shaders.
    Both functions run under vk_lock. Cumulative time is in nanoseconds, including time inside the driver. */

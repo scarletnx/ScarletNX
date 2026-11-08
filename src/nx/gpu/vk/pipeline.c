@@ -430,6 +430,13 @@ void vk_pipeline_init(void) {
     if (!g_vk_playout) fatal("vulkan: cannot create shader pipeline layout");
     snprintf(g_cache_dir, sizeof g_cache_dir, "%sshader_cache", g_cachedir);
     plat_mkdir(g_cache_dir);
+    /* the BC7 blocks of earlier ASTC encodes, where ASTC textures are held as BC7 (astc.c) */
+    if (vk_astc_bc7()) {
+        char bc7[1200];
+        snprintf(bc7, sizeof bc7, "%s/%s.vkbc7", g_cache_dir, g_exename);
+        snx_path_native(bc7);
+        vk_astc_cache_open(bc7);
+    }
     /* each driver's files apart: a game run with the system's driver, then a package's (gpu_driver), then the
        system's again keeps the first one's */
     pf_driver_tag(g_driver_tag, sizeof g_driver_tag, g_vk.driver_id, g_vk.props.vendorID, g_vk.props.deviceID,
