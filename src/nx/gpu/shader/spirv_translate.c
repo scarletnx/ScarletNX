@@ -1751,6 +1751,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     u32 invocation_id = 0, patch_vertices = 0;
     int position_fix = position_used && last && stage != ST_FS && stage != ST_CS;
     c->window_xy = position_fix && (si->clip_enable & SNX_SH_WINDOW_XY);
+    c->swizzle = position_fix && (si->clip_enable & SNX_SH_SWIZZLE) ? si->clip_enable : 0;
     /* BuiltIn Layer takes the Geometry capability (a geometry program has it; the device's geometryShader) or
        ShaderLayer (its shaderOutputLayer), which a vertex or tessellation program writing the layer needs. A fragment
        program reads it with either. Without one a write is dropped and a read is 0 */

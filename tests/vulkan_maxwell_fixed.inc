@@ -5,8 +5,11 @@
    write, where vulkan_nvn_state.inc's check hands the renderer the NVN path's DrawCall */
 
 /* Vertex 0 the centre of the 8x8 target, window (4, 4); 1 to 3 a triangle over the whole target at clip z -0.5,
-   depth 0.25 in the depth mode from -1 to 1 a channel starts in */
-static const f32 g_mx_fixed_vertices[][4] = {{0, 0, 0, 1}, {-1, -1, -0.5f, 1}, {3, -1, -0.5f, 1}, {-1, 3, -0.5f, 1}};
+   depth 0.25 in the depth mode from -1 to 1 a channel starts in; 4 to 9 the rectangle from clip (-1, 0) to
+   (-0.5, 1), two triangles, which a mirror or a transposition moves elsewhere */
+static const f32 g_mx_fixed_vertices[][4] = {{0, 0, 0, 1},     {-1, -1, -0.5f, 1}, {3, -1, -0.5f, 1}, {-1, 3, -0.5f, 1},
+                                             {-1, 0, 0, 1},    {-0.5f, 0, 0, 1},   {-0.5f, 1, 0, 1},  {-1, 0, 0, 1},
+                                             {-0.5f, 1, 0, 1}, {-1, 1, 0, 1}};
 
 /* a channel drawing into the 8x8 RGBA32F target at gpu + 0x8000 with the vertices above, attribute 0 the position,
    in red (1, 0, 0, 0.5) over a blue clear, as check_nvn_fixed_state draws: the code at gpu, the vertices at
@@ -146,5 +149,46 @@ static int check_maxwell_depth_bounds(void) {
     vk_unlock();
     free(channel);
     puts("PASS 3D engine depth bounds: the buffer's depth tested against them, ends in, off keeps every pixel");
+    return 0;
+}
+
+/* the pixels of columns x0 to x1 and rows y0 to y1 of the 8x8 target, both ends in, as fixed_state_covered's bits */
+static u64 mx_fixed_rect(u32 x0, u32 x1, u32 y0, u32 y1) {
+    u64 bits = 0;
+    for (u32 y = y0; y <= y1; y++)
+        for (u32 x = x0; x <= x1; x++) bits |= 1ull << (y * 8 + x);
+    return bits;
+}
+
+/* The viewport's coordinate swizzle (0x286) moves the picture as the console's does, each of x and y taking the
+   component its code names, negated or not: NegativeY through the viewport's sign, the others in the last stage,
+   where the swap of x and y drew the picture as it was. The rectangle from clip (-1, 0) to (-0.5, 1) under a scale
+   of 4 and offset of 4, y counting down the target's rows from -1 */
+static int check_maxwell_viewport_swizzle(void) {
+    const struct {
+        u32 swizzle;
+        u64 want;
+    } cases[] = {
+        {0x6420, mx_fixed_rect(0, 1, 4, 7)}, /* identity */
+        {0x6430, mx_fixed_rect(0, 1, 0, 3)}, /* NegativeY: the viewport's */
+        {0x6402, mx_fixed_rect(4, 7, 0, 1)}, /* PositiveY into x, PositiveX into y: transposed */
+        {0x6412, mx_fixed_rect(4, 7, 6, 7)}, /* PositiveY into x, NegativeX into y */
+        {0x6403, mx_fixed_rect(0, 3, 0, 1)}, /* NegativeY into x, PositiveX into y */
+    };
+    GpuChannel* channel = NULL;
+    CHECK(!mx_fixed_channel(159, 0x4c2020000ull, HEAP_BASE + 0x5460000, &channel));
+    vk_lock();
+    for (u32 i = 0; i < sizeof cases / sizeof *cases; i++) {
+        channel->r3d[0x286] = cases[i].swizzle;
+        u64 covered;
+        CHECK(!mx_fixed_draw(channel, 4, 4, 6, &covered));
+        if (covered != cases[i].want)
+            fprintf(stderr, "3D engine viewport swizzle %04x covered pixels %016llx, expected %016llx\n",
+                    cases[i].swizzle, (unsigned long long)covered, (unsigned long long)cases[i].want);
+        CHECK(covered == cases[i].want);
+    }
+    vk_unlock();
+    free(channel);
+    puts("PASS 3D engine viewport swizzle: NegativeY, a swap of x and y and swaps with a component negated");
     return 0;
 }

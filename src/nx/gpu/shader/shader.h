@@ -82,7 +82,7 @@ typedef struct {
     u32 attr_int_mask; /* key: vertex attributes of integer formats, and of those the signed ones */
     u32 attr_sint_mask;
     u32 clip_enable; /* key: the clip distances the 3D engine enables (SetUserClipEnable), the only ones written,
-                        SNX_SH_NOT_LAST and SNX_SH_WINDOW_XY */
+                        SNX_SH_NOT_LAST, SNX_SH_WINDOW_XY and SNX_SH_SWIZZLE */
     int uses_position_in, uses_clip_mask, writes_layer, writes_point_size;
     int uses_sample_id; /* SampleId requires sample shading, which native mixed-sample coverage cannot combine */
     int has_discard; /* guest KIL can remove a fragment after its shader starts */
@@ -258,6 +258,11 @@ extern int g_shader_maximal_reconvergence;
    pixels of the surface clip, which the stage takes to clip space by its width and height (the push constant's w,
    vk/render.c) */
 #define SNX_SH_WINDOW_XY (1u << 30)
+/* in clip_enable, the last stage's: it gives its position the viewport coordinate swizzle in bits 8-23 before
+   clipping, as the 3D engine does (DsViewports.swizzle's fields, shifted by SNX_SH_SWIZZLE_SHIFT): one the viewport
+   can't apply (vk/render.c vk_viewport_swizzle_key) */
+#define SNX_SH_SWIZZLE       (1u << 29)
+#define SNX_SH_SWIZZLE_SHIFT 8
 /* the descriptor set of a stage's bindings */
 int shader_vk_set(int stage);
 /* can_flush: how the module gets the console's FP32 flush to zero (FTZ on FADD, FMUL and FFMA). SH_FTZ_EMULATE: a
