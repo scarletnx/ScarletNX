@@ -149,6 +149,8 @@ the game's image read from that image.
   reduction), SSE4.2 CRC32C, VPTERNLOG (BSL/BIT/BIF, signed saturation), PAVGB/PAVGW (rounding halving adds, signed
   ones biased by 0x80), GF2P8AFFINEQB (8-bit shifts, bit reversal); the tricks are wunkolo's (wunkolo.github.io).
 - `src/common/utilities/common.c` and `process.c`: host files/processes; argv-based subprocesses.
+- `src/common/platform/` / `scarletnx-platform`: the host layer every driver shares, without SDL: threads and locks,
+  clocks and sleep, files, address space and shared libraries. The NX runtime's `runtime/platform/` builds on it.
   NX extraction retains its isolated key environment.
 
 Host tooling is strict C99 with SDK fixed-width types, formatting and OS APIs.

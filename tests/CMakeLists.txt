@@ -3041,7 +3041,7 @@ add_test(NAME unattended_script COMMAND snx-test-unattended-script "${CMAKE_CURR
 add_executable(snx-test-deprecated-env deprecated_env.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/deprecated_env.c")
 snx_test_target(snx-test-deprecated-env 11)
 add_test(NAME deprecated_env COMMAND snx-test-deprecated-env)
-# the log's file, early lines, stamps, redirect, limits, fatal and crash mode (platform/plat.c)
+# the log's file, early lines, stamps, redirect, limits, fatal and crash mode (platform/log.c)
 add_executable(snx-test-platform-log platform_log.c "${PROJECT_SOURCE_DIR}/src/common/platform/file.c"
         "${PROJECT_SOURCE_DIR}/src/common/platform/file_map.c" "${PROJECT_SOURCE_DIR}/src/common/platform/file_share.c"
         "${PROJECT_SOURCE_DIR}/src/common/platform/file_replace.c"
