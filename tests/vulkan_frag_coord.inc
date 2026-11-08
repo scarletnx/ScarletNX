@@ -220,6 +220,8 @@ static int check_rt_other_layout(void) {
     GpuChannel* channel = calloc(1, sizeof *channel);
     CHECK(channel);
     channel->id = 126;
+    /* past the 8 MiB the run maps at its start; left mapped, as the target stays in the caches */
+    CHECK(mem_map(cpu, 0x10000, MS_NORMAL, PERM_RW) == 0);
     gmmu_map(target, cpu, 0x10000);
     rt_clear_format(channel, target, 64, 64, 0, 1, 0xD5); /* RGBA8, blue */
     Surf* rt = vk_rt_find(target);
