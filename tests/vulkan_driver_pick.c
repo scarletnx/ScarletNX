@@ -94,6 +94,20 @@ int main(void) {
     refused(&(SnxVulkanPlaces){.program = bare, .prefixes = {empty, NULL}}, "moltenvk", "MoltenVK was not found",
             "beside the program or in its app's Frameworks, in");
 
+    { /* the folder of SDKs the search went through, named as it was given: $HOME/VulkanSDK where HOME is not the
+         user's own folder (a test's), which "~/VulkanSDK" would hide */
+        char* elsewhere = under(root, "elsewhere/VulkanSDK");
+        char said[1024];
+        snprintf(said, sizeof said, "or in a Vulkan SDK under %s", elsewhere);
+        refused(&(SnxVulkanPlaces){.program = bare, .prefixes = {empty, NULL}, .sdks = elsewhere}, "moltenvk",
+                "MoltenVK was not found", said);
+        refused(&(SnxVulkanPlaces){.program = bare, .prefixes = {empty, NULL}, .sdks = elsewhere}, "kosmickrisp",
+                "KosmicKrisp was not found", said);
+        refused(&(SnxVulkanPlaces){.program = bare, .prefixes = {icd_only, NULL}, .sdks = elsewhere}, "kosmickrisp",
+                "KosmicKrisp needs the Vulkan loader", said);
+        free(elsewhere);
+    }
+
     /* kosmickrisp: an ICD and the loader, each the first found; the newest SDK's over an older one */
     picks(&(SnxVulkanPlaces){.program = bare, .prefixes = {empty, brew}, .sdks = sdks}, "kosmickrisp", brew_loader,
           brew_icd, "KosmicKrisp");
