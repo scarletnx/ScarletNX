@@ -402,6 +402,9 @@ separate SPIRV-Tools is needed.
   Without the validation layer installed, the "zero validation errors" line only means that nothing reported an
   error. `build/src/nx/snx-test-astc-vulkan --large` decodes a 2D texture of 11584x11584 (4x4 blocks) and a 3D one of
   512^3 (8x8 blocks), 512 MiB each, past the 256 MiB cap, and compares every byte.
+  `build/src/nx/snx-test-astc-vulkan --bench [file.astc]` times a 4096x4096 level and a 2040x2040 one as RGBA8 and
+  as BC7, in milliseconds, texels and BC7 blocks a second, of random 8x8 blocks or a file's (astcenc's `.astc`)
+  repeated over the level: the encoder's time depends on what it encodes, and random blocks are no game's.
 - `bc7_glsl` (ctest, no GPU) runs `bc7_encode.glsl` on the CPU (`tests/glsl/bc7_cpu.cpp`) and decodes its blocks
   with the CPU reference, `tests/support/bcn.c`: the encoder's 16 weights are the format's, its least squares fit
   gives a line's ends back and a constant alpha its value in every subset of every partition, blocks of one colour,
