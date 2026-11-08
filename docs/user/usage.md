@@ -505,8 +505,8 @@ The driver works in one folder, its data folder, the first of these that applies
 A driver run from its build tree works in the same folder as an installed one: the checkout it was built from is
 not a data folder. `--data DIR`, or `--outdir DIR` for a recompile, keeps a run's files in one folder of your choice.
 
-Each game is a folder of `recompiled/` named by its title ID, `recompiled/0100DA801624E000/` and its files
-`0100DA801624E000*` in it; a program without an ID of its own (an NRO, an ExeFS without NPDM) by its name, and
+Each game is a folder of `recompiled/` named by its title ID, `recompiled/<title ID>/` and its files
+`<title ID>*` in it; a program without an ID of its own (an NRO, an ExeFS without NPDM) by its name, and
 `--name` names any. The game is shown by the name in its `control.nacp` (the window, the recompile, the menu's
 list). The user's data folder and a portable copy's keep each kind of file apart: on Linux the user's in the
 [XDG](https://specifications.freedesktop.org/basedir/latest/) folder of its kind, elsewhere in its own `config/`,

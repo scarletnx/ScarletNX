@@ -258,7 +258,7 @@ games from running:
 
 ## A GPU lockup on MoltenVK
 
-Super Mario Bros. Wonder's opening cutscene sometimes stops the GPU on macOS, and the device is lost. The screen stays
+One game's opening cutscene sometimes stops the GPU on macOS, and the device is lost. The screen stays
 black with the loading flower, and Metal reports `VK_TIMEOUT ... Caused GPU Hang Error`, or
 `VK_ERROR_OUT_OF_DEVICE_MEMORY`. The `gpuEvent` report that macOS writes for the process gives the mechanism:
 `restart_reason_desc` is `firmware-detected lockup`, and `guilty_dm` is 2 or 3. It is not a page fault, and it is not

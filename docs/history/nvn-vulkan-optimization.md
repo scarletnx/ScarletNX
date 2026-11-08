@@ -121,12 +121,12 @@ The input includes invalid/error-color blocks. Fixed order, GPU clocks and cache
 Decoded image payload is 64 MiB versus 16 MiB; actual allocation bytes were not measured in that experiment.
 Exact-pixel ASTC fixtures passed separately; the timed large-texture repetitions do not themselves check pixels.
 
-In TotK 1.4.3, an opening burst with 983 render targets and 103 uploads was observed at 200 ms versus an earlier
-1,619 ms. Route, caches and run state were uncontrolled. This does not assign the difference to this patch.
-Three paired 30-second uncapped runs reached loading screens only. Their median paired FPS ratio was 1.0231,
-with one slower candidate pair. They establish neither gameplay performance nor gameplay rendering correctness.
-Cold graphics compilation and isolated slow frames remained. A separate six-pipeline compile-flag probe found
-no case faster by more than 3% in every paired round; no gameplay flag change is justified by that probe.
+In one game's version 1.4.3, an opening burst with 983 render targets and 103 uploads was observed at 200 ms versus an
+earlier 1,619 ms. Route, caches and run state were uncontrolled. This does not assign the difference to this patch.
+Three paired 30-second uncapped runs reached loading screens only. Their median paired FPS ratio was 1.0231, with one
+slower candidate pair. They establish neither gameplay performance nor gameplay rendering correctness. Cold graphics
+compilation and isolated slow frames remained. A separate six-pipeline compile-flag probe found no case faster by more
+than 3% in every paired round; no gameplay flag change is justified by that probe.
 
 ## Validation recorded before integration
 
@@ -164,8 +164,8 @@ CPU/GPU-owned/pending staging bytes. These correctness runs are not performance 
 
 The standalone filesystem-tree ASan/UBSan run passed 901 checks. Its standalone service runner could not link all
 of its dependencies; the configured filesystem CTests passed. Windows, macOS, mobile and other GPU vendors were
-not checked locally. Khronos validation layers remained unavailable. The interactive TotK observations above came
-from the pre-integration runtime; the player's running process was left open during publication checks.
+not checked locally. Khronos validation layers remained unavailable. The interactive observations of that game above
+came from the pre-integration runtime; the player's running process was left open during publication checks.
 
 ```sh
 cmake --build build --target scarletnx snx-test-vulkan snx-test-astc-vulkan \

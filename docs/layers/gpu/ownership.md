@@ -427,7 +427,7 @@ without an app-managed dma-buf handoff.
 
 #### Measured workload
 
-With the constant-buffer cache enabled, a 600-present Tears of the Kingdom cave interval staged 3,688,879,936
+With the constant-buffer cache enabled, a 600-present interval of a cave scene in one game staged 3,688,879,936
 uncached bytes in 63,098 calls. The largest call was 58,848 bytes and none were zero-filled. The only nonzero-address
 staging-copy path with that cache enabled is `vk_buf_copy_writable` for writable graphics storage buffers in `stage_set`. A
 per-draw wait or allocation is therefore not a viable replacement for the staging ring. The test machine has a
@@ -462,10 +462,10 @@ aliases see the same bytes. The atlas starts after earlier graphics and compute 
 would exceed the device's maximum storage-buffer descriptor range is skipped with a warning, rather than rendered with
 independent snapshots.
 
-The 110-second TotK cave run with graphics writeback and same-frame reuse completed 1,757 frames, compared with 1,754
-for the earlier staging run on this machine. A 600-present interval reused 7,429 GPU buffers but still forced 1,985
-lands, totaling 14.7 seconds of waits. The scenes and shader caches vary, so this is a correctness smoke test, not a
-controlled performance comparison. The resulting cave image still has known cyan rendering artifacts.
+The 110-second run of that cave scene with graphics writeback and same-frame reuse completed 1,757 frames, compared with
+1,754 for the earlier staging run on this machine. A 600-present interval reused 7,429 GPU buffers but still forced
+1,985 lands, totaling 14.7 seconds of waits. The scenes and shader caches vary, so this is a correctness smoke test, not
+a controlled performance comparison. The resulting cave image still has known cyan rendering artifacts.
 
 Vulkan references: [host pointer import](https://docs.vulkan.org/spec/latest/chapters/memory.html#host-external-memory),
 [host/device synchronization](https://docs.vulkan.org/spec/latest/chapters/synchronization.html), and

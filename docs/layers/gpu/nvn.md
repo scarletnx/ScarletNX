@@ -32,8 +32,8 @@ program that writes its own command buffers goes through the Maxwell front end i
 ([Architecture](../../dev/architecture.md#gpu-submitpresent)). This page records what the SDK does, as the investigation found it. Facts
 marked as observations come from one or two titles and are not rules for every SDK version.
 
-Titles referred to: Catherine: Full Body (USA v2.0, "Catherine"), Tears of the Kingdom (v1.0.0, "TotK"), Super Mario
-Odyssey ("Odyssey") and Pokémon Scarlet ("Scarlet").
+The games that this page refers to are game A, game B, game C and game D. The command buffer study read the SDKs of
+game A and game B. Game C has an older SDK than the others.
 
 ## Status and direction
 
@@ -55,7 +55,7 @@ command-buffer functions found how little each call writes on the console:
 | --- | --- |
 | `nvnCommandBufferDrawArrays` | 4: one MME macro call, header `0xa0030e32`, then mode, first, count |
 | `nvnCommandBufferDrawElements` | 6: header `0xa0050e38`, then mode, index address high and low, index type, count |
-| `nvnCommandBufferBindTexture` | 4 or 5 (Catherine): an IMMD macro call `0x80000e0e \| table[stage] << 16` (a per-stage value from an SDK table), `0x8000068b` when the command buffer's byte `+0x6c` is set, then `0x200208e3`, `id*8 + 0x20`, handle |
+| `nvnCommandBufferBindTexture` | 4 or 5 (game A): an IMMD macro call `0x80000e0e \| table[stage] << 16` (a per-stage value from an SDK table), `0x8000068b` when the command buffer's byte `+0x6c` is set, then `0x200208e3`, `id*8 + 0x20`, handle |
 
 `tests/support/nvn_control.c` decodes the arguments of two macros and `nvn_command_gap.c` classifies what methods
 write, both checked against packets captured in their tests.
@@ -226,13 +226,13 @@ control range stays free because direct recording needs no driver control bookke
 
 The SDK exports `nvnBootstrapLoader`, which returns a guest function pointer for an NVN function name. An earlier
 tree had a trace (`nvn_trace=1`) that wrapped the resolvers and counted the calls to each function they resolved.
-Its boot samples resolved about 470 (Catherine) and 530 (TotK) names and called about a third of them. The frequently
+Its boot samples resolved about 470 (game A) and 530 (game B) names and called about a third of them. The frequently
 called shared functions are buffer-address and texture-handle lookups, texture binds, blend and vertex state, and
 command-buffer operations. Counts vary between runs with the same frame limit.
 
 ## Queue and submission observations
 
-| Queue call | Catherine | TotK |
+| Queue call | Game A | Game B |
 | --- | --- | --- |
 | `nvnQueueSubmitCommands` | no GPFIFO submission | no GPFIFO submission |
 | `nvnQueueFenceSync` | none | none |
@@ -243,7 +243,7 @@ command-buffer operations. Counts vary between runs with the same frame limit.
 These are per-call observations, not a guarantee of where the SDK flushes. The queue stages list handles, then walks a
 tagged control stream of GPU work and sync operations, so submission is deferred to a flush or a present.
 
-Catherine's first present issues one six-entry GPFIFO submission: two queue packets, the two recorded command
+Game A's first present issues one six-entry GPFIFO submission: two queue packets, the two recorded command
 segments, then a 58-word queue tail that writes the window origin. The queue packets come from a separate queue-side
 backing, not from the command pool the game supplied. The recorded segments' GPU addresses follow from the command
 buffer's chunk fields (next section).
@@ -252,7 +252,7 @@ buffer's chunk fields (next section).
 
 `NVNcommandBuffer` fields, from disassembly of the two SDKs:
 
-| Field | Catherine | TotK |
+| Field | Game A | Game B |
 | --- | --- | --- |
 | device | `+0x00` | `+0x60` |
 | memory callback, userdata | `+0x08`, `+0x10` | `+0x68`, `+0x70` |
@@ -269,10 +269,10 @@ buffer's chunk fields (next section).
 | space check enabled, BindTexture's `0x68b` word (bytes) | `+0x6d`, `+0x6c` | not observed |
 | reserve margin in words | `+0x70` (u32) | `+0x16` (u8) |
 
-The GPU address of a cursor is chunk GPU base + (cursor - chunk CPU base). TotK caps each range at `0x7ffffc` bytes.
+The GPU address of a cursor is chunk GPU base + (cursor - chunk CPU base). Game B caps each range at `0x7ffffc` bytes.
 
 Command functions are all inlined copies with no shared reserve helper. Each checks whether cursor + n*4 exceeds the
-limit (Catherine checks only when the command buffer's byte `+0x6d` is set) and if so calls a slow path (Catherine `0xd141f20`, TotK `0xd15a754`). The slow path calls the memory callback
+limit (game A checks only when the command buffer's byte `+0x6d` is set) and if so calls a slow path (game A `0xd141f20`, game B `0xd15a754`). The slow path calls the memory callback
 (event 0 for command memory, 1 for control memory), expects it to call `AddCommandMemory` or `AddControlMemory`, and
 asserts if the space is still short.
 
@@ -286,7 +286,7 @@ The control stream:
 - Draws and binds do not touch the control stream. Only flushes (`AddCommandMemory`, `EndRecording`) and compute-stage
   binds (16-byte control items) do. A compute-stage (stage 5) `BindTexture` writes a control item instead of methods.
 
-| Function | Catherine | TotK |
+| Function | Game A | Game B |
 | --- | --- | --- |
 | `nvnCommandBufferInitialize` | `0xd141860` | `0xd15a0a0` |
 | `nvnCommandBufferAddCommandMemory` | `0xd141920` | `0xd15a140` |
@@ -297,38 +297,38 @@ The control stream:
 | `nvnCommandBufferDrawElements` | `0xd163b80` | `0xd1838f0` |
 | `nvnCommandBufferBindTexture` | `0xd1627c0` | `0xd181680` |
 
-`nvnDeviceGetTextureHandle` is `orr w8,w1,w2,lsl #20; sxtw x8,w8; orr x0,x8,#0x100000000; ret` in both (TotK
+`nvnDeviceGetTextureHandle` is `orr w8,w1,w2,lsl #20; sxtw x8,w8; orr x0,x8,#0x100000000; ret` in both (game B
 `0xd165530`): the texture ID in the low 20 bits, the sampler ID in the next 12, and bit 32 set.
 
 ## Other SDK object layouts
 
-Layouts differ between SDK versions, so a getter is safer than an offset. TotK exports builder and view getters
+Layouts differ between SDK versions, so a getter is safer than an offset. Game B exports builder and view getters
 (`nvnMemoryPoolBuilderGet*`, `nvnTextureBuilderGet*`, `nvnTextureViewGet*`). Pure getters such as
 `nvnTextureGetStorageSize`, `GetTextureAddress`, `GetStride` and `GetStorageClass` were also called successfully on a
 copy of the CPU state after `nvnTextureInitialize`. The layouts seen:
 
-- **Memory pool builder:** newer SDKs keep flags, storage and size at `+4`, `+16`, `+24`. Odyssey's older SDK keeps
+- **Memory pool builder:** newer SDKs keep flags, storage and size at `+4`, `+16`, `+24`. Game C's older SDK keeps
   storage, size and flags at `+8`, `+16`, `+24`.
-- **Texture builder:** Odyssey's older layout keeps the pool pointer and storage offset eight bytes earlier than the
-  newer one. Odyssey also passes copies of initialized texture and sampler objects to `SetRenderTargets` and the
+- **Texture builder:** Game C's older layout keeps the pool pointer and storage offset eight bytes earlier than the
+  newer one. Game C also passes copies of initialized texture and sampler objects to `SetRenderTargets` and the
   register calls, so object identity cannot be keyed on the pointer.
-- **Texture view:** TotK's `TextureViewSetDefaults` clears 16 bytes and packs selection and override flags into it
-  (six selection flags, target, format, swizzle with identity `2,3,4,5`, depth mode). Catherine's clears 36 bytes with
-  separate flag and value fields. Odyssey also uses 36 bytes, with a different constructor and the target at `+32`.
+- **Texture view:** Game B's `TextureViewSetDefaults` clears 16 bytes and packs selection and override flags into it
+  (six selection flags, target, format, swizzle with identity `2,3,4,5`, depth mode). Game A's clears 36 bytes with
+  separate flag and value fields. Game C also uses 36 bytes, with a different constructor and the target at `+32`.
 - **Programs:** `nvnProgramSetShaders` passes 16-byte (code, control) pairs. `SetShadersExt` passes 24-byte entries,
   which the SDK splits into those pairs plus an array of third words. Reading the plain pairs as 24-byte entries
   shifts every reference after the first.
 - **Texture handle:** low 20 bits texture ID, next 12 bits sampler ID. `RegisterTexture` writes a 32-byte TIC and
   `RegisterSampler` a 32-byte TSC into the pool's memory. `RegisterImage` writes an image descriptor into the texture
-  pool. Neither Catherine nor TotK exposed a GPU base for the descriptor pools, so the descriptors were read through
+  pool. Neither game A nor game B exposed a GPU base for the descriptor pools, so the descriptors were read through
   the pool's CPU backing.
-- **Vertex state (the same in Catherine and TotK):** an attribute is one 32-bit word with an enable bit, a 5-bit
+- **Vertex state (the same in game A and game B):** an attribute is one 32-bit word with an enable bit, a 5-bit
   stream index, a 14-bit byte offset and a 10-bit format. A stream is two 32-bit words, stride and divisor.
-- **Samplers:** the builder layouts differ between Catherine and TotK, so only explicit setter arguments are reliable.
+- **Samplers:** the builder layouts differ between game A and game B, so only explicit setter arguments are reliable.
 - **`BindProgram`** applies to a stage mask. A later partial bind replaces only its stages.
 
 `ClearColor` is not a no-op when repeated: each call advances the cursor by 48 bytes. A clear to an integer target
-passes float bits (Scarlet passes `0x3f800000`), which reach the Maxwell clear registers unchanged.
+passes float bits (game D passes `0x3f800000`), which reach the Maxwell clear registers unchanged.
 
 ## Shader blobs
 
@@ -339,21 +339,21 @@ passes float bits (Scarlet passes `0x3f800000`), which reach the Maxwell clear r
 | Compute | magic `0x12345679` with the declared code size at `+4`, 0x100 bytes before the code. The QMD's program address is the code, so it is the NVN candidate + 0x100. Local workgroup size and shared memory come from the NVN control object |
 
 - **VertexA and VertexB:** NVN dual vertex programs put the position in VertexA (slot 0) and the varyings in VertexB.
-  In Catherine, a program reference named only VertexA, and VertexB was at the next 0x200-byte code slot. Using
+  In game A, a program reference named only VertexA, and VertexB was at the next 0x200-byte code slot. Using
   VertexA alone produced alpha zero.
 - **Embedded CBUF 1:** compiler-generated constant bank 1 sits in the code section after the program. A header size of
   `0x190` put it at offset `0x200`, and `0x210` at `0x300`. Both matched the Maxwell bank 1 bindings.
   [deko3d's `dk_shader.cpp`](https://github.com/devkitPro/deko3d/blob/master/source/dk_shader.cpp) does the same. For
   compute, the offset comes from the control metadata.
-- **Odyssey** has blobs with a zero size field and a valid magic and SPH. Their bank 1 offset was not established.
+- **Game C** has blobs with a zero size field and a valid magic and SPH. Their bank 1 offset was not established.
 
 ## Constant buffer banks
 
 | Bank | Contents |
 | --- | --- |
-| 0 | SDK-generated. Base vertex and base instance at `0x640` and `0x644`. Storage buffer descriptors (TotK fragment at `0x550`, compute at `0x310`). TotK bound bank 0 once for all five graphics stages, with an ordinary bind before its first submission (an observation) |
+| 0 | SDK-generated. Base vertex and base instance at `0x640` and `0x644`. Storage buffer descriptors (game B fragment at `0x550`, compute at `0x310`). Game B bound bank 0 once for all five graphics stages, with an ordinary bind before its first submission (an observation) |
 | 1 | embedded in the shader blob (above) |
-| 2 | generated texture handles at word `8 + 2*slot`, image handles at word `72 + 2*slot`. Compute texture slot 0 is word 8 in TotK |
+| 2 | generated texture handles at word `8 + 2*slot`, image handles at word `72 + 2*slot`. Compute texture slot 0 is word 8 in game B |
 | 3 + N | application uniform slot N, graphics and compute alike |
 
 The bank 2 layout matches `BindTexture`'s `id*8 + 0x20` byte offset. Maxwell rounds uniform binding sizes up to 256
@@ -368,7 +368,7 @@ Method numbers are 3D engine (subchannel 0) word offsets, and macro calls are me
 | --- | --- |
 | `0x004`-`0x007` | puller semaphore address, payload and operation (release writes memory, acquire reads) |
 | `0x3e0`, `0x68b` | written with zero (cache flush and no-op forms, no memory effect) |
-| `0x4eb` | window origin. Catherine's queue tail changes it from 0 to `0x10` after the first submission |
+| `0x4eb` | window origin. Game A's queue tail changes it from 0 to `0x10` after the first submission |
 | `0x5f2`, `0x5f6` | index buffer address (two words) and index type, before macro 38 |
 | `0x6c0`-`0x6c3` | query address, sequence and report operation |
 | `0x701`, `0x702`, `0x7c0`, `0x7c1` | vertex stream 0 start address and inclusive end |
@@ -381,17 +381,17 @@ Method numbers are 3D engine (subchannel 0) word offsets, and macro calls are me
 | 7 | `0xe0e` | IMMD call with the shader stage, at the start of `BindTexture`: selects the stage's constant buffer (size from scratch `0xd2f + stage`, address from `0xd2a + stage`) for the handle written next |
 | 8 | `0xe10` | blend enables of the eight render targets from bits 8-15 of its argument, after a zero to `0x671` |
 | 9 | `0xe12` | the eight render targets' color masks (`0x680`-`0x687`), two 13-bit halves per argument |
-| 12 | `0xe18` | program bind, five arguments. Selector 1 writes VertexB's code offset, 5 the fragment's, and the third argument is the offset (TotK MME trace) |
-| 16 | `0xe20` | sets a constant buffer write offset in words: `0x154` before a storage descriptor upload of three `0x8e4` words landed at bank 0 + `0x550`. In TotK it began at word `0xfe` of the uploaded MME program |
+| 12 | `0xe18` | program bind, five arguments. Selector 1 writes VertexB's code offset, 5 the fragment's, and the third argument is the offset (game B MME trace) |
+| 16 | `0xe20` | sets a constant buffer write offset in words: `0x154` before a storage descriptor upload of three `0x8e4` words landed at bank 0 + `0x550`. In game B it began at word `0xfe` of the uploaded MME program |
 | 25 | `0xe32` | `DrawArrays` (mode, first, count) |
 | 27, 37 | `0xe36`, `0xe4a` | instanced draw: topology, vertex count, instance count (masked by scratch `0xd1b`), first vertex, base instance. 37 also writes the base instance into the bound constant buffer at `0x644` |
-| 30 | `0xe3c` | instanced indexed draw, TotK's busiest macro: topology, index count, instance count (masked by `0xd1b`), first index, base vertex, base instance |
+| 30 | `0xe3c` | instanced indexed draw, game B's busiest macro: topology, index count, instance count (masked by `0xd1b`), first index, base vertex, base instance |
 | 35 | `0xe46` | writes scratch `0xd38`-`0xd39`, then `0x0d8`-`0x0d9`, from two arguments and scratch `0xd3a` |
 | 28 | `0xe38` | `DrawElements` (mode, index address high and low, index type, count) |
 | 26, 29 | `0xe34`, `0xe3a` | `DrawArraysIndirect` and `DrawElementsIndirect` of NVN 55.15 (one game): after macro 16 with `0x190` (bank 0 + `0x640`), the mode and the record, which the driver splices into the pushbuffer from its GPU address. A capture of the Maxwell path showed the record's base instance at bank 0 + `0x644`. nvn's indirect draws give the vertex program BaseVertex and BaseInstance there (`DrawCall.params`) |
-| 38 | `0xe4c` | the 12-word indexed draw in TotK secondary lists: IMMD `0xe20` (value `0x190`, the base vertex word), index type, index address, then six arguments. Packet word 10 (the fifth argument) is the base vertex |
+| 38 | `0xe4c` | the 12-word indexed draw in game B secondary lists: IMMD `0xe20` (value `0x190`, the base vertex word), index type, index address, then six arguments. Packet word 10 (the fifth argument) is the base vertex |
 
-Slot numbers are TotK's and those written by the studied functions. Another title's upload can number them
+Slot numbers are game B's and those written by the studied functions. Another title's upload can number them
 differently. Register writes made inside a macro are not visible in the pushbuffer, so shader and constant buffer
 state cannot be inferred from direct writes alone.
 
@@ -419,21 +419,21 @@ each confirmed in at least one title:
 | `0x3f` | R11G11B10F | `B10G11R11_UFLOAT_PACK32` |
 
 Also seen, without their enum values recorded: R8, RG8, R16F, D16, D32F, D24S8, BC1, BC2, BC3 and BC4. An sRGB view of
-RGBA8 storage (Odyssey) is a format reinterpretation of one image, not a second image.
+RGBA8 storage (game C) is a format reinterpretation of one image, not a second image.
 
 ## Per-device and per-submission state
 
 - **Depth mode** belongs to the device, not the draw: draws use the device's `[0, 1]` or `[-1, 1]` mapping.
-- **Window origin** cannot come from the device getter. Catherine's getter reports upper left from startup while the
+- **Window origin** cannot come from the device getter. Game A's getter reports upper left from startup while the
   register changes between the first and second submission, written by the queue tail. Its value matters at the
   command segment's position in the submission.
-- **User clip enables** are a register the vertex shader translation depends on. TotK enabled all eight (`0xff`) on
+- **User clip enables** are a register the vertex shader translation depends on. Game B enabled all eight (`0xff`) on
   its cubemap draws, and two other games on every draw. The vertex programs a game ships, translated before its
   draws use them (`prepare_shaders`), take that value, so their keys match those draws.
 - **Render conditions:** `SetRenderEnableConditional` compares query values that puller releases inside the same list
   change between clears. Only an ordered decode of the list can say whether a clear runs. Reading guest memory after
   the list cannot.
-- **Unbound attributes:** TotK enables attributes with no bound stream. The Maxwell renderer supplies `(0,0,0,1)`, and
+- **Unbound attributes:** Game B enables attributes with no bound stream. The Maxwell renderer supplies `(0,0,0,1)`, and
   any NVN path has to match it.
 
 ## Techniques and pitfalls
@@ -454,7 +454,7 @@ Techniques that worked:
 Pitfalls:
 
 - Screenshot hashes are not deterministic across unmodified fixed-frame runs. Compare readbacks of a chosen target.
-- Post-submit comparisons mislead. Surfaces are reused at the same address within a submission (TotK clears and
+- Post-submit comparisons mislead. Surfaces are reused at the same address within a submission (game B clears and
   reuses one depth surface for each cube face), so a later readback describes a different operation.
 - Two uncovered images both read back as zero and compare equal. Check coverage before calling a comparison a match.
 - A probe that submits or finishes the queue changes what it measures. A readback after a draw once masked a missing
@@ -463,7 +463,7 @@ Pitfalls:
   any range over 1 MiB once constant buffer updates wrapped it, every frame, and the probes treated that as a real
   write. Writes are kept per page now (`gpu/maxwell/write_pages.c`), but a write of the same data still
   counts as a write.
-- A zero texture handle (Scarlet binds many) may be an unused slot or a shader-visible null descriptor. Decide from
+- A zero texture handle (game D binds many) may be an unused slot or a shader-visible null descriptor. Decide from
   the shader's texture use, not from the bind.
 - Run counts vary with timing even at the same frame limit. Treat them as samples, not coverage.
 

@@ -880,7 +880,7 @@ channels 1, 6 and 11.
 The 3DS backend has no LAN transport, and ldn_mitm's protocol is for the Switch only. Nothing
 leaves the machine and no room is joined.
 
-No game image or synchronization window is patched. NSMB2 internet co-op still has
+No game image or synchronization window is patched. One game's internet co-op still has
 input-delay and synchronization limits. The development runs with title-specific
 buffering experiments do not establish stock-game WAN compatibility for this backend.
 
