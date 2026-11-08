@@ -18,6 +18,7 @@ set(snx_curl_args
     -DCMAKE_BUILD_TYPE=Release
     -DCMAKE_INSTALL_PREFIX=${snx_curl_prefix}
     -DCMAKE_INSTALL_LIBDIR=lib
+    -DCMAKE_INSTALL_MANDIR=man
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON
     -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER})
 # by path: under the policies of curl's minimum CMake (3.18) a tool named alone, as the cross presets name llvm-ar, is a
