@@ -43,13 +43,15 @@ if(NOT EXISTS "${SNX_JAVA_HOME}/include/jni.h")
                         "SNX_JAVA_HOME to one, or SNX_BUILD_ANDROID=OFF")
 endif()
 
-add_library(snx_android_program STATIC runtime/main.c runtime/jvm.c runtime/app.c runtime/install.c res/axml.c
+add_library(snx_android_program STATIC runtime/main.c runtime/jvm.c runtime/app.c runtime/install.c runtime/audio.c res/axml.c
                                        res/xml_jni.c res/arsc.c
                                        res/asset_jni.c db/sqlite_jni.c hwui/text.c hwui/image.c hwui/path.c
                                        hwui/render.c "${volk_SOURCE_DIR}/volk.c")
-# FFmpeg decodes and encodes the images of BitmapFactory and Bitmap.compress (hwui/image.c)
+# FFmpeg decodes and encodes the images of BitmapFactory and Bitmap.compress (hwui/image.c), and decodes the audio of
+# MediaPlayer and SoundPool, which SDL plays (runtime/audio.c)
 target_link_libraries(snx_android_program PUBLIC snx_android_dex snx_zip snx_sqlite snx_harfbuzz snx_vk_common
-                      FFmpeg::avcodec FFmpeg::swscale SDL3::SDL3 Vulkan::Headers ${CMAKE_DL_LIBS})
+                      FFmpeg::avformat FFmpeg::avcodec FFmpeg::swresample FFmpeg::swscale SDL3::SDL3 Vulkan::Headers
+                      ${CMAKE_DL_LIBS})
 if(NOT WIN32)
     target_link_libraries(snx_android_program PUBLIC m)
 endif()
@@ -67,6 +69,8 @@ target_include_directories(snx_android_program SYSTEM PUBLIC "${SNX_JAVA_HOME}/i
 target_compile_definitions(snx_android_program PRIVATE SNX_JAVA_HOME="${SNX_JAVA_HOME}")
 set_target_properties(snx_android_program PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_compile_options(snx_android_program PRIVATE ${snx_android_c_options})
+# libavformat's avformat.h has an anonymous union, which C11 brought: the file that includes it is C11
+set_source_files_properties(runtime/audio.c TARGET_DIRECTORY snx_android_program PROPERTIES COMPILE_OPTIONS "-std=c11")
 if(NOT WIN32)
     find_package(Threads REQUIRED)
     target_link_libraries(snx_android_program PUBLIC Threads::Threads)
