@@ -13,6 +13,7 @@
 #include "nx/loader/ounce.h"
 #include "common/cpu/recompiler/llvm/elf_defs.h"
 #include "common/utilities/endian.h"
+#include "common/platform/file.h"
 #include <stdlib.h>
 #include <string.h>
 #include <lz4.h>
@@ -1338,7 +1339,7 @@ int snx_dump_program(const char* entry, const char* outdir, char* error, size_t 
                     program.modules[st.sdk].symbols[match[k].symbol].name);
     }
     fprintf(f, "matched %zu %zu %zu %zu %zu\n", nmatch, st.signatures, st.ambiguous, st.repeated, st.skipped);
-    if (fclose(f) || snx_replace(partial, index)) {
+    if (fclose(f) || plat_replace_file(partial, index)) {
         f = NULL;
         fail(error, error_size, snx_format("cannot write %s", index));
         goto done;

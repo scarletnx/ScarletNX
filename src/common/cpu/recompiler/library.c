@@ -25,6 +25,7 @@
 #include "common/cpu/recompiler/workers.h"
 #include "common/utilities/endian.h"
 #include "common/platform/time.h"
+#include "common/platform/file.h"
 #include <llvm-c/Support.h>
 #include <llvm-c/TargetMachine.h>
 #include <stdarg.h>
@@ -869,7 +870,7 @@ static int load_cached(struct snx_recompiler* r, struct snx_recompiled* m, const
 static void save_cached(const char* path, const unsigned char* data, size_t size) {
     static unsigned long serial;
     char* temporary = snx_format("%s.%lu.%lu.tmp", path, (unsigned long)(snx_seconds() * 1000000.0), ++serial);
-    if (!snx_write_file(temporary, data, size) && !snx_replace(temporary, path)) {
+    if (!snx_write_file(temporary, data, size) && !plat_replace_file(temporary, path)) {
         free(temporary);
         return;
     }

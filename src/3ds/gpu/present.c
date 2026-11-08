@@ -22,6 +22,7 @@
 #include "common/gpu/vk/swapchain.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include "common/utilities/window_icon.h"
 #include "snx_settings.h"
 #include <stdio.h>
@@ -254,7 +255,7 @@ static void write_ppm(unsigned screen, unsigned width, unsigned height, const un
     if (!latest)
         ++g_present.dumps;
     else if (closed)
-        (void)snx_replace(staged, path);
+        (void)plat_replace_file(staged, path);
 }
 /* The blit rectangle of a screen in swapchain pixels: in one window the pair scaled to fit and centred, each screen
    centred across the layout; in its own window the screen scaled to fit and centred. False before a layout and a

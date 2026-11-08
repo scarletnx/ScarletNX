@@ -26,6 +26,7 @@
 #include "gnuabi/abi/linux_file.h"
 #include "gnuabi/abi/linux_net.h"
 #include "gnuabi/kernel/kernel.h"
+#include "common/platform/file.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -732,7 +733,7 @@ static void g_truncate(CPU* c, void* data) {
 }
 static void g_pread(CPU* c, void* data) {
     (void)data;
-    X(0) = (uint64_t)host_pread((int)X(0), PTR(1), (size_t)X(2), X(3));
+    X(0) = (uint64_t)plat_pread_fd((int)X(0), PTR(1), (size_t)X(2), X(3));
 }
 /* read and write of a socket go to Winsock, whose sockets the CRT doesn't know */
 static void g_read(CPU* c, void* data) {
@@ -843,7 +844,7 @@ static void* win_mmap(void* address, size_t size, int prot, int flags, int fd, u
     } else
         p = VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     if (!p) return map_failed();
-    if (!(flags & L_MAP_ANONYMOUS) && host_pread(fd, p, size, offset) < 0) {
+    if (!(flags & L_MAP_ANONYMOUS) && plat_pread_fd(fd, p, size, offset) < 0) {
         VirtualFree(p, 0, MEM_RELEASE);
         return map_failed();
     }

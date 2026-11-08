@@ -13,7 +13,8 @@
 #include "common/utilities/build_info.h"
 #include "3ds/audio/output.h"
 #include "3ds/input/input.h"
-#include "common/filesystem/host.h"
+#include "common/platform/file.h"
+#include "common/platform/thread.h"
 #include "snx_settings.h"
 #include <inttypes.h>
 #include <stdio.h>
@@ -151,9 +152,9 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
            checked against the image as any is when it loads */
         char *old = snx_path_join(directory, "hints"), *hints = snx_ctr_game_file(directory, SNX_CTR_HINTS);
         char *native = snx_path_join(directory, "native"), *code = native ? snx_path_join(native, "code.so") : NULL;
-        if (old && hints && snx_is_file(old) && !snx_path_exists(hints)) (void)snx_replace(old, hints);
+        if (old && hints && snx_is_file(old) && !snx_path_exists(hints)) (void)plat_replace_file(old, hints);
         if (code && module_path && snx_is_file(code) && !snx_path_exists(module_path) &&
-            !snx_replace(code, module_path))
+            !plat_replace_file(code, module_path))
             (void)snx_remove_tree(native);
         free(code);
         free(native);

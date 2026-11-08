@@ -9,6 +9,7 @@
 #include "common/cpu/recompiler/llvm/elf_defs.h" /* the ELF names on every host, whose own may have none */
 #include "common/cpu/recompiler/llvm/elf_hash.h"
 #include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -320,10 +321,10 @@ static GuestLibrary* load_file(const char* path, char* error, size_t error_size)
     }
     Elf64_Ehdr eh;
     Elf64_Phdr ph[64];
-    if (host_pread(fd, &eh, sizeof eh, 0) != (int64_t)sizeof eh || memcmp(eh.e_ident, ELFMAG, SELFMAG) ||
+    if (plat_pread_fd(fd, &eh, sizeof eh, 0) != (int64_t)sizeof eh || memcmp(eh.e_ident, ELFMAG, SELFMAG) ||
         eh.e_ident[EI_CLASS] != ELFCLASS64 || eh.e_ident[EI_DATA] != ELFDATA2LSB || eh.e_machine != EM_AARCH64 ||
         eh.e_type != ET_DYN || eh.e_phnum > 64 || eh.e_phentsize != sizeof(Elf64_Phdr) ||
-        host_pread(fd, ph, eh.e_phnum * sizeof *ph, eh.e_phoff) != (int64_t)(eh.e_phnum * sizeof *ph)) {
+        plat_pread_fd(fd, ph, eh.e_phnum * sizeof *ph, eh.e_phoff) != (int64_t)(eh.e_phnum * sizeof *ph)) {
         snprintf(error, error_size, "\"%s\" is not a 64-bit ARM shared library", path);
         close(fd);
         return NULL;
@@ -360,7 +361,7 @@ static GuestLibrary* load_file(const char* path, char* error, size_t error_size)
     l->path = copy(path);
     for (unsigned i = 0; i < eh.e_phnum; ++i) {
         if (ph[i].p_type != PT_LOAD || !ph[i].p_filesz) continue;
-        if (host_pread(fd, (void*)(uintptr_t)(l->base + ph[i].p_vaddr), ph[i].p_filesz, ph[i].p_offset) !=
+        if (plat_pread_fd(fd, (void*)(uintptr_t)(l->base + ph[i].p_vaddr), ph[i].p_filesz, ph[i].p_offset) !=
             (int64_t)ph[i].p_filesz) {
             snprintf(error, error_size, "\"%s\": cannot read its segments", path);
             close(fd);

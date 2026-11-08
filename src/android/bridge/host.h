@@ -42,8 +42,6 @@ int host_dontneed(uint64_t address, uint64_t size);
    nothing done, for such an address. The guest's memory as the kernel checks it (EFAULT, never a fault) */
 bool host_copy_checked(void* to, const void* from, size_t size);
 
-/* pread(2): the bytes read, or -1 and errno */
-int64_t host_pread(int fd, void* buffer, size_t size, uint64_t offset);
 /* close(2) of any descriptor the guest has: a file, a socket (Windows' are not the CRT's), an epoll set */
 int host_close(int fd);
 /* whether fd is a socket (Windows: a SOCKET, whose numbers are not the CRT's descriptors) */

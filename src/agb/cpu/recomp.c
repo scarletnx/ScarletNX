@@ -3,6 +3,7 @@
 #include "agb/cpu/recomp.h"
 #include "agb/board/board.h"
 #include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include "common/utilities/bits.h"
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/arm/exec.h"
@@ -292,7 +293,7 @@ static int emit_module(AgbRecomp* recomp, AgbBoard* board, char* error, size_t e
     if (snx_link(inputs, 2, (const char* const*)names, count, snx_path_leaf(library), &linked, error, error_size))
         goto done;
     tmp = snx_format("%s.tmp", library);
-    if (!tmp || snx_write_file(tmp, linked.data, linked.size) || snx_replace(tmp, library)) {
+    if (!tmp || snx_write_file(tmp, linked.data, linked.size) || plat_replace_file(tmp, library)) {
         snprintf(error, error_size, "cannot write %s", library);
         if (tmp) remove(tmp);
         goto done;

@@ -15,6 +15,7 @@
 #include "vita/runtime/watch.h"
 #include "common/utilities/endian.h"
 #include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include <ctype.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -452,7 +453,7 @@ static uint32_t io_rename(VitaProcess* p, VitaThread* t) {
     char *from = host_path(p, vita_arg(p, t, 0), &from_writable), *to = host_path(p, vita_arg(p, t, 1), &to_writable);
     uint32_t result = !from || !to ? SCE_ERRNO(ENOENT)
                       : !from_writable || !to_writable ? SCE_ERRNO(EACCES)
-                      : snx_replace(from, to) ? SCE_ERRNO(ENOENT)
+                      : plat_replace_file(from, to) ? SCE_ERRNO(ENOENT)
                                               : 0;
     free(from);
     free(to);

@@ -3,6 +3,7 @@
 #include "nx/runtime/driver/container.h"
 #include "nx/runtime/driver/driver.h"
 #include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include "common/utilities/demangle.h"
 #include "common/utilities/logscan.h"
 #include "nx/runtime/driver/extract.h"
@@ -489,7 +490,7 @@ static int ensure_romfs(const char** command, const char* folder, const char* na
     if (!tmpfs && snx_is_dir(ram)) { /* tmpfs's copied into its data folder */
         staged = snx_format("%s.copying", disk);
         rc = (snx_path_exists(staged) && snx_remove_tree(staged)) || snx_copy_tree(ram, staged) ||
-             snx_replace(staged, disk) || snx_remove_tree(work) || snx_remove_tree(marker);
+             plat_replace_file(staged, disk) || snx_remove_tree(work) || snx_remove_tree(marker);
         if (rc) snx_error("cannot copy the RomFS in %s into %s", ram, data);
         goto done;
     }
@@ -1102,7 +1103,7 @@ static int play_dump_at(const char* input, const SnxPaths* paths, unsigned flags
             rc = snx_error("extraction finished without creating %s", pending);
             goto done;
         }
-        if (snx_replace(pending, extracted)) {
+        if (plat_replace_file(pending, extracted)) {
             perror("scarletnx: publishing extraction directory");
             rc = 1;
             goto done;
@@ -1299,7 +1300,7 @@ static char* dump_into_dumps(const char* input, const SnxPaths* paths, int* fail
         printf("Copying %s into dumps/ (%llu MB)\n", leaf, (unsigned long long)(snx_file_size(from) >> 20));
         fflush(stdout);
         part = snx_format("%s.part", to);
-        if (!part || snx_copy_file(from, part) || snx_replace(part, to)) {
+        if (!part || snx_copy_file(from, part) || plat_replace_file(part, to)) {
             snx_error("cannot copy %s into %s", leaf, dumps);
             if (part) snx_remove_tree(part);
             *failed = 1;

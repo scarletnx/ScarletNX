@@ -59,9 +59,7 @@ void vk_pipeline_save(int at_exit) {
         if (f) {
             int ok = fwrite(d, 1, n, f) == n;
             if (fclose(f)) ok = 0;
-            if (ok)
-                plat_replace_file(g_pcache_tmp, g_pcache_path); /* the old cache stays whole until this */
-            else
+            if (!ok || plat_replace_file(g_pcache_tmp, g_pcache_path)) /* the old cache stays whole until this */
                 remove(g_pcache_tmp);
         }
     }

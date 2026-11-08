@@ -5,6 +5,7 @@
 #endif
 #include "common/utilities/run_mark.h"
 #include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -130,7 +131,7 @@ int snx_run_mark_start(const char* folder, void (*seen)(void* data, const SnxRun
     if (f && fclose(f)) failed = 1;
     if (failed)
         snprintf(why, why_size, "%s cannot be written (%s)", fresh, snx_os_error(reason, sizeof reason));
-    else if (snx_replace(fresh, path)) {
+    else if (plat_replace_file(fresh, path)) {
         failed = 1;
         snprintf(why, why_size, "%s cannot be named %s (%s)", fresh, path, snx_os_error(reason, sizeof reason));
     }

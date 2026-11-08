@@ -13,7 +13,7 @@
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/nvn/nvn_tic.h"
 #include "nx/hle/services/nvdrv.h"
-#include "common/filesystem/host.h"
+#include "common/platform/thread.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>

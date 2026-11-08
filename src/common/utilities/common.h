@@ -135,7 +135,6 @@ void snx_vulkan_driver_free(SnxVulkanDriver* driver);
    reason said. Nothing to do, and 0, where the system's loader serves or the program carries none */
 int snx_deploy_vulkan_driver(const char* program, const char* folder);
 int snx_path_within(const char* path, const char* parent);
-int snx_replace(const char* src, const char* dst);
 int snx_list_dir(const char* path, char*** names, size_t* count);
 void snx_free_strings(char** strings, size_t count);
 unsigned char* snx_read_file(const char* path, size_t* size);

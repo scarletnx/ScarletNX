@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "3ds/loader/internal.h"
+#include "common/platform/file.h"
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -296,7 +297,7 @@ SnxCtrExtractResult snx_ctr_extract(const char* input, const char* destination, 
     if ((s.kind == CTR_KIND_CIA && !ctr_cia_contents(&r, &s, stage)) || !ctr_ncch_extract(&r, &s, stage)) goto done;
     /* Detect normal concurrent input edits, including after content validation. */
     if (input_hashed && !ctr_hash_matches(&r, (CtrSpan){0, r.size}, s.input_hash)) goto done;
-    if (snx_path_exists(target) || snx_replace(stage, target)) {
+    if (snx_path_exists(target) || plat_replace_file(stage, target)) {
         ctr_fail(&r, SNX_CTR_EXTRACT_IO, "cannot publish extraction without overwriting an existing output");
         goto done;
     }

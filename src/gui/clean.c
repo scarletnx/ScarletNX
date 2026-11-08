@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "gui/clean.h"
 #include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include "gui/i18n.h"
 #include <ctype.h>
 #include <errno.h>
@@ -98,7 +99,7 @@ static int clean_ini(GuiCleaned* done, const char* path) {
         if (done) { /* staged beside it, then put in place: a crash mid-write leaves it as it was */
             int failed;
             staged = snx_format("%s.new", path);
-            failed = !staged || snx_write_file(staged, text, kept) || snx_replace(staged, path);
+            failed = !staged || snx_write_file(staged, text, kept) || plat_replace_file(staged, path);
             if (failed) {
                 snprintf(what, sizeof what, snx_tr("Not written without [Deprecated]: %s"), strerror(errno));
                 if (staged) remove(staged);
@@ -146,7 +147,7 @@ static int move_entry(GuiCleaned* done, const char* from, const char* to, const 
         snprintf(what, sizeof what, snx_tr("Stays: %s is there"), to);
     else if (!snx_same_disk(from, now))
         snprintf(what, sizeof what, snx_tr("Not moved: %s is on another disk"), now);
-    else if (apply && snx_replace(from, to))
+    else if (apply && plat_replace_file(from, to))
         snprintf(what, sizeof what, snx_tr("Not moved to %s: %s"), to, snx_os_error(why, sizeof why));
     else {
         snprintf(what, sizeof what, apply ? snx_tr("Moved to %s") : snx_tr("Moves to %s"), to);

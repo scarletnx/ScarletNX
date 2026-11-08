@@ -7,6 +7,7 @@
 #include "nx/runtime/driver/container.h"
 #include "nx/loader/loader.h"
 #include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -323,7 +324,7 @@ static int extract_aoc(ExtractState* state) {
     }
     if (file && fclose(file)) failed = 1;
     if (state->said) progress_say(state, 1);
-    if (failed || snx_replace(tmp, path)) {
+    if (failed || plat_replace_file(tmp, path)) {
         failed = snx_error("cannot write the DLC's RomFS image %s", path);
         if (snx_is_file(tmp)) snx_remove_tree(tmp);
     } else {

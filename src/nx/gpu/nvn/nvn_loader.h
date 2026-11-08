@@ -4,7 +4,7 @@
 #define SNX_NVN_LOADER_H
 #include "common/cpu/aarch64/cpu.h"
 #include "common/cpu/arm/arm.h"
-#include "common/filesystem/host.h"
+#include "common/platform/thread.h"
 
 /* the functions the game resolved, by address: each one's name, for the message when one that isn't implemented is
    called, and for a save state's load in a process that hasn't resolved them (nvn_loader_state_install). Filled under

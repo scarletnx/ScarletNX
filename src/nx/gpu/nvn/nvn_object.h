@@ -8,7 +8,7 @@
 #include "nx/gpu/nvn/nvn_obj.h"
 #include "nx/memory/mem.h"
 #include "nx/gpu/shader/shader.h"
-#include "common/filesystem/host.h"
+#include "common/platform/thread.h"
 
 /* A record's snapshot pointers (a texture object copied into the record, tex_snap) that point into the record at src,
    moved to its copy at dst */

@@ -20,6 +20,7 @@
    layer: their NCCHs' own is the same layer a CIA's contents carry, and it is taken off where each NCCH lies, the
    whole image copied through, the copy checked as any image is before it is published. */
 #include "3ds/loader/internal.h"
+#include "common/platform/file.h"
 #include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
@@ -422,7 +423,7 @@ static bool ncch_image(CtrReader* r, const char* keys_path, const char* output, 
     }
     out = NULL;
     if (!verified(r, stage)) goto done;
-    if (snx_replace(stage, output)) {
+    if (plat_replace_file(stage, output)) {
         ctr_fail(r, SNX_CTR_EXTRACT_IO, "cannot move %s to %s", stage, output);
         goto done;
     }
@@ -580,7 +581,7 @@ static bool decrypt(CtrReader* r, const char* keys_path, const char* output, boo
     }
     out = NULL;
     if (!verified(r, stage)) goto done;
-    if (snx_replace(stage, output)) {
+    if (plat_replace_file(stage, output)) {
         ctr_fail(r, SNX_CTR_EXTRACT_IO, "cannot move %s to %s", stage, output);
         goto done;
     }

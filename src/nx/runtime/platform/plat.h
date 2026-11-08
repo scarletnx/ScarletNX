@@ -2,12 +2,12 @@
    Copyright 2026 the ScarletNX contributors */
 /* The operating system under the runtime. plat_sdl.c implements what SDL does the same way everywhere (libraries,
    path queries and the host's power state); common/platform has the clocks and sleeping, and one of plat_posix.c and plat_win32.c the rest
-   (threads, condition variables, the guest's address space, file maps, the crash handler); profiler_win32.c samples
+   (threads, condition variables, the guest's address space, the crash handler); profiler_win32.c samples
    threads on Windows, and the host audio output lives in the window backend. Paths are UTF-8 everywhere. */
 #ifndef SNX_PLAT_H
 #define SNX_PLAT_H
 #include "common/cpu/aarch64/cpu.h"
-#include "common/filesystem/host.h"
+#include "common/platform/file.h"   /* reads, maps and the replace of files */
 #include "common/platform/thread.h" /* PMutex, PCond, waits on a word, plat_tid */
 #include "common/platform/time.h"   /* plat_ns, plat_sleep_ns, the wall clock */
 #include "common/utilities/common.h" /* snx_cpu_count */
@@ -188,25 +188,6 @@ const char* plat_dl_error(void); /* the reason the last plat_dl_open or plat_dl_
    starts), NULL when it hasn't: never loads it */
 void* plat_dl_loaded(const char* name);
 int plat_setenv(const char* name, const char* value); /* for this process and what it loads; 0 on success */
-
-/* ---- files */
-int plat_is_dir(const char* path);
-/* Reads size bytes at off without moving f's position. The count read, short only at the end of the file, or -1 */
-i64 plat_pread(FILE* f, void* buf, u64 size, u64 off);
-typedef struct {
-    const u8* data; /* NULL for an empty file */
-    u64 size;
-    int borrowed; /* set by fs_map_file for a view kept for the whole run: plat_file_unmap then only clears this */
-    int heap;     /* set by fs_map_file for a file read out of the game's dump into memory: plat_file_unmap frees it */
-} PFileMap;
-/* the whole file mapped read-only. 0 (an empty file too), or -1 */
-int plat_file_map(PFileMap* m, const char* path);
-/* the same for a file whose length is already known from an index: size is trusted, the host isn't asked */
-int plat_file_map_sized(PFileMap* m, const char* path, u64 size);
-void plat_file_unmap(PFileMap* m);
-/* Moves tmp over dst atomically, so dst is always either the old or the new file. On failure dst is untouched and
-   tmp deleted: 0, or -1 */
-int plat_replace_file(const char* tmp, const char* dst);
 
 /* Host audio output of interleaved signed 16-bit samples, little-endian as the guest's are, implemented by the window
    backend. plat_audio_open gives a paused stream, or NULL when there is no device (always when headless).

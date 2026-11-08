@@ -14,6 +14,7 @@
 #include "nx/loader/unit_cache.h"
 #include "common/cpu/recompiler/llvm/rtlib_object.h"
 #include "snx_settings.h"
+#include "common/platform/file.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -798,7 +799,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
             if (snx_is_file(tmp)) snx_remove_tree(tmp);
             goto done;
         }
-        if (snx_replace(tmp, build->output)) {
+        if (plat_replace_file(tmp, build->output)) {
             snx_error("packing failed: cannot rename %s to %s: %s", tmp, build->output,
                       snx_os_error(reason, sizeof reason));
             snx_remove_tree(tmp);
@@ -809,7 +810,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
             snx_error("linking failed: %s", error);
             goto done;
         }
-        if (snx_write_file(tmp, linked.data, linked.size) || snx_replace(tmp, build->output)) {
+        if (snx_write_file(tmp, linked.data, linked.size) || plat_replace_file(tmp, build->output)) {
             snx_error("linking failed: cannot write %s", build->output);
             if (snx_is_file(tmp)) snx_remove_tree(tmp);
             goto done;

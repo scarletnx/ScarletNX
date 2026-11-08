@@ -1372,17 +1372,6 @@ int snx_copy_tree(const char* src, const char* dst) {
     if (snx_path_within(dst, src)) return snx_error("copy destination is inside source: %s", dst);
     return copy_tree(src, dst, 0);
 }
-int snx_replace(const char* src, const char* dst) {
-#ifdef _WIN32
-    wchar_t *a = wide(src), *b = wide(dst);
-    int ok = a && b && MoveFileExW(a, b, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
-    free(a);
-    free(b);
-    return !ok;
-#else
-    return rename(src, dst) != 0;
-#endif
-}
 int snx_make_executable(const char* path) {
 #ifdef _WIN32
     (void)path;

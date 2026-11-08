@@ -9,6 +9,7 @@
 #include "nx/hle/hle.h"
 #include "gui/splash.h"
 #include "nx/hle/filesystem/fs.h"
+#include "common/platform/file.h"
 #include <openssl/rand.h>
 #include <time.h>
 
@@ -529,7 +530,7 @@ static int nn_account_IAccountServiceForAdministrator_CompleteUserRegistration(S
 
 /* path moved to to; done[] keeps it to be put back */
 static int acc_trash_move(const char* path, const char* to, char (*done)[2][FS_TREE_PATH_MAX], int* moved) {
-    if (snx_replace(path, to)) return -1;
+    if (plat_replace_file(path, to)) return -1;
     snprintf(done[*moved][0], FS_TREE_PATH_MAX, "%s", path);
     snprintf(done[*moved][1], FS_TREE_PATH_MAX, "%s", to);
     ++*moved;
@@ -628,7 +629,7 @@ static int nn_account_IAccountServiceForAdministrator_DeleteUser(SvcObj* self, c
     goto done;
 back:
     for (i = moved - 1; i >= 0; i--)
-        if (snx_replace(done[i][1], done[i][0]))
+        if (plat_replace_file(done[i][1], done[i][0]))
             WARN("acc: %s could not be put back from %s\n", done[i][0], done[i][1]);
 done:
     if (rc && trash) { /* the Trash's folder made for it, with what went in it first */

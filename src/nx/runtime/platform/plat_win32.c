@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The platform layer on Windows: threads, condition variables, the guest's address space with its write watch, file
-   reads and maps, the environment and the crash handler (plat_sdl.c has the
-   libraries and path queries, common/platform the clocks and sleeping). Paths are UTF-8, converted to wide for the W functions (the
-   manifest's UTF-8 code page makes the A functions and the CRT take UTF-8 too) */
+/* The platform layer on Windows: threads, condition variables, the guest's address space with its write watch, the
+   environment and the crash handler (plat_sdl.c has the libraries and path queries, common/platform the clocks,
+   sleeping and files). Paths are UTF-8, converted to wide for the W functions (the manifest's UTF-8 code page makes
+   the A functions and the CRT take UTF-8 too) */
 #include "nx/runtime/platform/plat.h"
 #include "common/utilities/run_mark.h"
 #include "nx/runtime/main.h"
@@ -377,80 +377,6 @@ void* plat_dl_loaded(const char* name) { return GetModuleHandleA(name); }
 /* ================================================================ environment */
 int plat_setenv(const char* name, const char* value) { return _putenv_s(name, value) ? -1 : 0; }
 
-/* ================================================================ files */
-i64 plat_pread(FILE* f, void* buf, u64 size, u64 off) {
-    HANDLE h = (HANDLE)_get_osfhandle(_fileno(f));
-    u64 got = 0;
-    if (h == INVALID_HANDLE_VALUE || size > (u64)INT64_MAX || off > (u64)INT64_MAX - size) return -1;
-    while (got < size) {
-        OVERLAPPED o;
-        DWORD want = size - got > (1u << 30) ? (1u << 30) : (DWORD)(size - got), n = 0;
-        u64 at = off + got;
-        memset(&o, 0, sizeof o);
-        o.Offset = (DWORD)at;
-        o.OffsetHigh = (DWORD)(at >> 32);
-        if (!ReadFile(h, (u8*)buf + got, want, &n, &o)) {
-            if (GetLastError() == ERROR_HANDLE_EOF) break;
-            return -1;
-        }
-        if (!n) break;
-        got += n;
-    }
-    return (i64)got;
-}
-
-static void file_map_clear(PFileMap* m) {
-    m->data = NULL;
-    m->size = 0;
-    m->borrowed = 0;
-    m->heap = 0;
-}
-static int file_map(PFileMap* m, const char* path, int ask_size, u64 size) {
-    wchar_t* w;
-    HANDLE file, section;
-    void* view;
-    file_map_clear(m);
-    w = snx_host_wpath(path); /* NULL for a path that isn't UTF-8 */
-    if (!w) return -1;
-    /* a folder doesn't open without FILE_FLAG_BACKUP_SEMANTICS, so this is a file. Others may read it, or delete or
-       rename it as on POSIX */
-    file = CreateFileW(w, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
-                       FILE_ATTRIBUTE_NORMAL, NULL);
-    free(w);
-    if (file == INVALID_HANDLE_VALUE) return -1;
-    if (ask_size) {
-        LARGE_INTEGER s;
-        if (!GetFileSizeEx(file, &s) || s.QuadPart < 0) {
-            CloseHandle(file);
-            return -1;
-        }
-        size = (u64)s.QuadPart;
-    }
-    if (size > (u64)SIZE_MAX || size > (u64)INT64_MAX) {
-        CloseHandle(file);
-        return -1;
-    }
-    if (!size) {
-        CloseHandle(file);
-        return 0;
-    }
-    section = CreateFileMappingW(file, NULL, PAGE_READONLY, (DWORD)(size >> 32), (DWORD)size, NULL);
-    view = section ? MapViewOfFile(section, FILE_MAP_READ, 0, 0, (SIZE_T)size) : NULL;
-    if (section) CloseHandle(section); /* the view keeps the section and the file */
-    CloseHandle(file);
-    if (!view) return -1;
-    m->data = (const u8*)view;
-    m->size = size;
-    return 0;
-}
-int plat_file_map(PFileMap* m, const char* path) { return file_map(m, path, 1, 0); }
-int plat_file_map_sized(PFileMap* m, const char* path, u64 size) { return file_map(m, path, 0, size); }
-void plat_file_unmap(PFileMap* m) {
-    if (m->heap)
-        free((void*)m->data);
-    else if (m->data && !m->borrowed) UnmapViewOfFile(m->data);
-    file_map_clear(m);
-}
 /* ================================================================ the crash handler */
 static LONG g_crash_reporting;
 static LONG g_shutdown_said;

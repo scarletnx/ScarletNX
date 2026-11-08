@@ -12,6 +12,7 @@
 #include "common/utilities/ascii.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/cheat_list.h"
 #include "common/utilities/mods.h"
@@ -1473,7 +1474,7 @@ static int app_write(App* app) {
     dir = snx_dirname(app->app_file);
     staged = snx_format("%s.new", app->app_file);
     failed = !dir || !staged || snx_mkdirs(dir) || snx_write_file(staged, text, (size_t)n) ||
-             snx_replace(staged, app->app_file);
+             plat_replace_file(staged, app->app_file);
     if (failed && staged) remove(staged);
     free(dir);
     free(staged);
@@ -5299,7 +5300,7 @@ static void cheats_add(App* app, const char* picked) {
             snprintf(app->message, sizeof app->message, snx_tr("Not added: cannot make %s: %s"), app->cheats_folder,
                      snx_os_error(why, sizeof why));
             say_failure(app, app->message);
-        } else if (snx_write_file(staged, text, size) || snx_replace(staged, to)) {
+        } else if (snx_write_file(staged, text, size) || plat_replace_file(staged, to)) {
             snprintf(app->message, sizeof app->message, snx_tr("Not added: cannot write %s: %s"), to,
                      snx_os_error(why, sizeof why));
             if (snx_path_exists(staged)) snx_remove_tree(staged); /* this copy's alone */

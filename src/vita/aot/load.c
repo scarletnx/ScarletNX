@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "vita/aot/module.h"
 #include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -91,7 +92,7 @@ size_t vita_hints_write(const char* folder, uint32_t* keys, size_t count) {
     count = unique(keys, count);
     for (size_t i = 0; ok && i < count; ++i) ok = fprintf(f, "%08x\n", (unsigned)keys[i]) > 0;
     if (f && fclose(f)) ok = false;
-    ok = ok && !snx_replace(staged, path);
+    ok = ok && !plat_replace_file(staged, path);
     if (!ok && staged) remove(staged);
     free(staged);
     free(path);
