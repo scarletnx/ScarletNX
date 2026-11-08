@@ -161,10 +161,11 @@ interpreter `gpu/shader.c` decode the instructions with the decoder `tools/decod
 and the fragment pipeline generated (`gpu/vk/fsgen.c`), both ported from Azahar's
 shader generators and both written as SPIR-V words directly (`src/common/utilities/spirv_emit.c`, shared with NX), with no
 shader compiler at run time. The output merger is the pipeline's fixed state. A new pipeline
-is made as its first draw needs it, which pauses the game while the driver compiles it; with the
-Switch's `async_pipelines=1` (`--async-pipelines=1`) workers make it instead
-(`pipeline_threads` of them) and the draws that need it are skipped until it is ready, so what
-they draw shows up a few frames late, and the run's end says how many were skipped. The driver
+is made on workers (`pipeline_threads` of them) as its first draw needs it, which goes by the Switch's
+`pipeline_wait` (`--pipeline-wait=N`): `0`, the default, waits for it within half a frame, every wait of the frame from
+that, then skips the draws that need it until it is ready, but for a draw of 6 vertices or fewer, which waits for it
+whole; `2` skips them at once, so what they draw shows up a few frames late; `1` makes it on the game's thread, which
+pauses the game while the driver compiles it. The run's end says how many draws were skipped. The driver
 keeps the pipelines it compiled between runs, as for a Switch game, in
 `shader_cache/vk_pipelines.<driver>.bin` of the game's folder, one file for each driver. The
 file is read before the first draw and written at the end of the run, and also while the game
@@ -177,7 +178,7 @@ Switch's `vk_pipeline_cache=0` neither reads nor writes it, and `3ds_vk_pipeline
 a draw binds its vertex and fragment shaders as shader objects and sets the output merger, the
 vertex layout and the rest as dynamic state, changing only what differs from the draw before it
 in the same recording. A new shader is still compiled as its first draw needs it, or by the
-workers with `async_pipelines=1`, but a scene's few dozen shaders replace its hundreds of
+workers with `pipeline_wait` at `0` or `2`, but a scene's few dozen shaders replace its hundreds of
 pipelines. The driver's binary of each shader is kept between runs in
 `shader_cache/vk_shaders.<driver>.bin`, written as the pipeline cache is, so a later run makes
 each shader from its binary with no compile; the file names the device's shader binary UUID and
@@ -186,7 +187,9 @@ version, and one of another device or driver version is not read. The shared par
 device, and the drivers' bans (`src/common/gpu/vk/extension_bans.txt`) and the other `vk_ext_*`
 settings hold for the 3DS's device as for a Switch game's. `3ds_vk_shader_object` checks the
 binaries' file, and `3ds_vk_draw_pipelines` the draws through pipelines. With shader objects and
-`async_pipelines=1`, a draw whose shaders are still being made is drawn with stand-ins, two
+`pipeline_wait` at `0` (Auto) or `2` (Skip), a draw whose shaders are still being made is drawn at once with
+stand-ins where they draw it as its own would; where they do not, Auto waits for its shaders as for a pipeline
+(within half a frame, a draw of 6 vertices or fewer whole) and Skip skips it. The stand-ins are two
 shaders made once per run. The vertex one (`gpu/vk/shaders/standin.vert`) runs the vertex
 program from a buffer, with `gpu/shader.c`'s flow control and `vsgen.c`'s arithmetic, registers
 and outputs, its config in push constants and the integer attributes in scaled formats, which

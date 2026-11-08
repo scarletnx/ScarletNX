@@ -7815,6 +7815,9 @@ static int run_headless(int argc, char** argv) {
         CHECK(start_log);
         t_plat.log_redirect = start_log;
     }
+    /* every draw here is read back: Wait, where Auto skips a draw whose pipeline took longer than half a frame to make,
+       as a busy machine's lavapipe does (vk_record_wait holds Auto's waits and skips) */
+    g_settings.pipeline_wait = 1;
     video_init("Headless Vulkan fixture", "");
     if (start_log) {
         t_plat.log_redirect = NULL;

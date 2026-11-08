@@ -669,25 +669,76 @@ static void commands_after_draw(SnxCtrMemory* m) {
     fill_over_draw_reload(m);
 }
 static void screens(SnxCtrMemory* m) { present_screens(m, false); }
-/* async_pipelines: a draw whose pipeline is new is skipped while a worker makes it, so its target keeps what it held;
-   once the pipeline is made the same list draws as the CPU reference does, and is not skipped again. The workers are
-   held until the first draw is recorded: with shader objects they get its shaders as they are made, before the draw,
-   and one done by then would leave nothing to skip. Of the three workers the third runs at the system's low priority.
-   The stand-in shaders, which would draw it at once, are off: 3ds_vk_draw_stand_in holds them to the reference */
-static void async_pipelines(SnxCtrMemory* m) {
+/* pipeline_wait=2 (Skip): a draw whose pipeline is new is skipped while a worker makes it, so its target keeps what it
+   held; once the pipeline is made the same list draws as the CPU reference does, and is not skipped again. Auto (0)
+   with no budget left in the frame: a draw of more than 6 vertices is skipped the same way, one of 6 or fewer waits for
+   its pipeline whole and is drawn at once; Auto with the frame's budget waits for the pipeline a worker makes in it */
+static void skip_then_made(SnxCtrMemory* m, const char* name, int wait, unsigned vertices, int64_t budget,
+                           uint64_t want) {
     static unsigned char start[W * H * 4], none[W * H * 4], sw[W * H * 4], sw_depth[W * H * 4], gpu[W * H * 4],
         gpu_depth[W * H * 4];
-    g_settings.async_pipelines = 1;
+    g_settings.pipeline_wait = wait;
+    g_settings.pipeline_threads = 3; /* the third at the system's low priority */
+    static unsigned blend;
+    Scene* s = scene(name, 0, 0xff);
+    /* a blend no other draw here has, for a pipeline of its own: source alpha, then another source factor each */
+    put(&s->list, 0x100, 1u << 8);
+    put(&s->list, 0x101, 0u | 0u << 8 | (6u + blend++ % 4) << 16 | 7u << 20 | 6u << 24 | 7u << 28);
+    triangles(s, vertices / 3);
+    array_draw(s);
+    list_end(&s->list);
+    random_fill(start, sizeof start);
+    setup(m, s, start, none);
+    snx_ctr_vk_pipeline_budget(budget);
+    bool recorded = draw(m, s, &vulkan, gpu, gpu_depth);
+    uint64_t was = snx_ctr_vk_pipelines_wait(), skipped = was;
+    static uint64_t before;
+    skipped -= before;
+    bool as_was = !memcmp(gpu, start, sizeof gpu), ok = recorded && skipped == want && as_was == (want != 0);
+    printf("%-24s %llu draws skipped while the pipeline was made, the target %s: %s\n", name,
+           (unsigned long long)skipped, as_was ? "as it was" : "drawn on", ok ? "ok" : "FAIL");
+    failures += !ok;
+#if defined(__linux__)
+    {
+        int normal, low, other;
+        bool split = thread_nice_settled("3DS pipelines", 2, 1, &normal, &low, &other);
+        printf("%-24s %d workers at the main thread's nice, %d at nice +%d, %d at another: %s\n", name, normal, low,
+               SNX_THREAD_LOW_NICE, other, split ? "ok" : "FAIL");
+        failures += !split;
+    }
+#endif
+    setup(m, s, start, none);
+    bool a = draw(m, s, &software, sw, sw_depth);
+    setup(m, s, start, none);
+    bool b = draw(m, s, &vulkan, gpu, gpu_depth);
+    if (drew(s, a, b)) compare(s, sw, gpu, sw_depth, gpu_depth);
+    before = snx_ctr_vk_pipelines_wait();
+    snx_ctr_vk_pipeline_budget(-1);
+    if (before != was) {
+        printf("%-24s %llu draws skipped once the pipeline was made: FAIL\n", name, (unsigned long long)(before - was));
+        ++failures;
+    }
+    free(s);
+}
+/* with shader objects, pipeline_wait=2 (Skip): a draw whose shaders are new is skipped while a worker makes them, so
+   its target keeps what it held; once they are made the same list draws as the CPU reference does, and is not skipped
+   again. The workers are held until the first draw is recorded: they get its shaders as they are made, before the
+   draw, and one done by then would leave nothing to skip. The stand-ins, which would draw it at once, are not made in
+   this run (pipeline_wait=1 when the renderer started): 3ds_vk_draw_stand_in holds them to the reference */
+static void objects_skip(SnxCtrMemory* m) {
+    static unsigned char start[W * H * 4], none[W * H * 4], sw[W * H * 4], sw_depth[W * H * 4], gpu[W * H * 4],
+        gpu_depth[W * H * 4];
+    g_settings.pipeline_wait = 2;
     g_settings.ctr_stand_in = 0;
     g_settings.pipeline_threads = 3;
-    Scene* s = triangle_scene("async, then made", 6);
+    Scene* s = triangle_scene("skip, then made", 6);
     random_fill(start, sizeof start);
     setup(m, s, start, none);
     snx_ctr_vk_pipelines_hold();
     bool recorded = draw(m, s, &vulkan, gpu, gpu_depth);
     uint64_t skipped = snx_ctr_vk_pipelines_wait();
     bool kept = recorded && skipped == 1 && !memcmp(gpu, start, sizeof gpu);
-    printf("%-24s %llu draws skipped while the pipeline was made, the target %s: %s\n", "async, first draw",
+    printf("%-24s %llu draws skipped while the shaders were made, the target %s: %s\n", "skip, first draw",
            (unsigned long long)skipped, memcmp(gpu, start, sizeof gpu) ? "drawn on" : "as it was",
            kept ? "ok" : "FAIL");
     failures += !kept;
@@ -695,7 +746,7 @@ static void async_pipelines(SnxCtrMemory* m) {
     {
         int normal, low, other;
         bool split = thread_nice_settled("3DS pipelines", 2, 1, &normal, &low, &other);
-        printf("%-24s %d workers at the main thread's nice, %d at nice +%d, %d at another: %s\n", "async, workers",
+        printf("%-24s %d workers at the main thread's nice, %d at nice +%d, %d at another: %s\n", "skip, workers",
                normal, low, SNX_THREAD_LOW_NICE, other, split ? "ok" : "FAIL");
         failures += !split;
     }
@@ -707,7 +758,7 @@ static void async_pipelines(SnxCtrMemory* m) {
     if (drew(s, a, b)) compare(s, sw, gpu, sw_depth, gpu_depth);
     skipped = snx_ctr_vk_pipelines_wait();
     if (skipped != 1) {
-        printf("%-24s %llu draws skipped in all, where the pipeline made before skips none: FAIL\n", s->name,
+        printf("%-24s %llu draws skipped in all, where the shaders made before skip none: FAIL\n", s->name,
                (unsigned long long)skipped);
         ++failures;
     }
@@ -770,6 +821,17 @@ static void pipeline_cache(SnxCtrMemory* m) {
     (void)snx_remove_tree(base);
     free(folder);
     free(base);
+}
+/* pipeline_wait Skip and Auto: through pipelines, or Skip through shader objects where the device has them */
+static void async_pipelines(SnxCtrMemory* m) {
+    if (snx_ctr_vk()->shader_object) {
+        objects_skip(m);
+        return;
+    }
+    skip_then_made(m, "skip, first draw", 2, 18, -1, 1);
+    skip_then_made(m, "auto, none left, 9", 0, 9, 0, 1);
+    skip_then_made(m, "auto, none left, 6", 0, 6, 0, 0);
+    skip_then_made(m, "auto, a second left", 0, 9, 1000000000, 0);
 }
 static void presented_after_draw(SnxCtrMemory* m) {
     present_screens(m, true);
@@ -1675,7 +1737,7 @@ static const Mode modes[] = {
     {"--texture-after-draw", "the textures after a draw", texture_after_draw},
     {"--draw-after-index-copy", "the indices copied before a draw", draw_after_index_copy},
     {"--draw-after-submit", "a draw after a submission", draw_after_submit},
-    {"--async", "the draws with async_pipelines", async_pipelines},
+    {"--async", "the draws with pipeline_wait Skip and Auto", async_pipelines},
     {"--pipeline-cache", "the pipeline cache kept between runs", pipeline_cache},
     {"--shadow", "the shadow maps", shadows}};
 
@@ -1699,6 +1761,9 @@ int main(int argc, char** argv) {
     }
     int vk_memory = test_ctr_vk_memory(&argc, argv);
     test_ctr_vk_extensions(&argc, argv);
+    /* every scene is compared drawn: Wait, where Auto skips a draw whose pipeline took longer than half a frame (the
+       --async mode's scenes set their own) */
+    g_settings.pipeline_wait = 1;
     const Mode* mode = &scenes;
     if (argc > 1) {
         mode = NULL;

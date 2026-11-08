@@ -396,6 +396,7 @@ static const struct {
                       {"vk_heap_budget_mb", "went with no replacement: it was for tests of a GPU with less memory"},
                       {"vk_nv_dedicated_allocation_image_aliasing",
                        "the renderer no longer uses the extension: it lost the GPU on NVIDIA's driver"},
+                      {"async_pipelines", "now pipeline_wait, whose 0 is Auto, 1 Wait (async_pipelines' 0) and 2 Skip"},
                       {NULL, NULL}};
 const char* ini_deprecated(const char* k) {
     int i;

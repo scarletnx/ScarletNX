@@ -428,7 +428,8 @@ if(TARGET snx_ctr_board)
     snx_test_target(snx-test-3ds-vk-draw gnu23)
     target_link_libraries(snx-test-3ds-vk-draw PRIVATE snx_ctr_gpu_reference)
     add_test(NAME 3ds_vk_draw COMMAND snx-test-3ds-vk-draw)
-    # async_pipelines: the draw skipped while its pipeline is made on a worker, then drawn
+    # pipeline_wait: Skip's draw skipped while its pipeline is made on a worker, then drawn; Auto's skipped past the
+    # frame's budget but for a draw of 6 vertices or fewer, which waits, and drawn when made within it
     add_test(NAME 3ds_vk_draw_async COMMAND snx-test-3ds-vk-draw --async)
     # the same two through pipelines, where the device would draw with shader objects (VK_EXT_shader_object)
     add_test(NAME 3ds_vk_draw_pipelines COMMAND snx-test-3ds-vk-draw --vk_ext_shader_object=off)
@@ -2740,6 +2741,15 @@ if(NOT SNX_TOOLS_ONLY)
             add_test(NAME vk_pipeline_save COMMAND snx-test-vk-pipeline-save)
         endif()
     endif()
+    # pipeline_wait on the recording thread (gpu/vk/record.c) against a stand-in GPU and clock: Auto's waits within the
+    # frame's budget, its skips past it, the small draw that waits whole, the budget each frame gives the next; Wait's
+    # and Skip's; the log's line
+    add_executable(snx-test-vk-record-wait vk_record_wait.c tracy_stubs.c
+                   "${PROJECT_SOURCE_DIR}/src/common/gpu/vk/vk_common.c" "${volk_SOURCE_DIR}/volk.c")
+    set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
+    snx_test_target(snx-test-vk-record-wait gnu23)
+    target_link_libraries(snx-test-vk-record-wait PRIVATE snx_nx_flags)
+    add_test(NAME vk_record_wait COMMAND snx-test-vk-record-wait)
     # graphics storage images' write-backs (gpu/vk/image_out.c) against a stand-in GPU: a draw over one whose copy is
     # recorded goes on from it with no read or wait, and they land in order, each over the bytes the last one left
     add_executable(snx-test-vk-image-out vk_image_out.c tracy_stubs.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/image_out.c")

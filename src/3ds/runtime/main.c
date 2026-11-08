@@ -75,9 +75,13 @@ static void usage(FILE* out) {
         "                         --ctr-jit-trace=1 each block compiled while the game runs, --ctr-auto-stub-ipc=0\n"
         "                         stops at a service command the runtime lacks. And the Switch's --vk-memory=N, as\n"
         "                         it means there: 0 has the GPU work on a copy of the RAM in its own memory unless\n"
-        "                         it shares the system's, 1 on the copy, 2 on the RAM in place. --async-pipelines=1\n"
-        "                         skips what a new pipeline draws while it is made, on --pipeline-threads=N threads\n"
-        "                         (0: all the computer's but two, two to twelve). --vk-pipeline-cache=0 neither\n"
+        "                         it shares the system's, 1 on the copy, 2 on the RAM in place. --pipeline-wait=N is\n"
+        "                         what a draw does while its new pipeline or shaders are made, on --pipeline-threads=N\n"
+        "                         threads (0: all the computer's but two, two to twelve): 0 (the default) draws it\n"
+        "                         with the stand-ins where they draw it as its own would, else waits within half a\n"
+        "                         frame, a frame's waits together, then skips its draws but those of 6 vertices or\n"
+        "                         fewer; 1 always waits; 2 skips them, or draws them with the stand-ins.\n"
+        "                         --async-pipelines=1, deprecated, is --pipeline-wait=2. --vk-pipeline-cache=0 neither\n"
         "                         reads nor writes the pipelines or shaders kept between runs (shader_cache of the\n"
         "                         game's folder). --vk-ext-shader-object=off draws through pipelines where the\n"
         "                         device has shader objects, as each --vk-ext-*=off takes an extension away; a\n"
@@ -863,6 +867,18 @@ int snx_ctr_main(int argc, char** argv) {
             const char* value = settings_arg(arg, key, sizeof key);
             const IniOpt* o = NULL;
             bool map = false;
+            if (value && (!strcmp(key, "async_pipelines") || !strcmp(key, "async-pipelines"))) {
+                /* deprecated: its 1 is pipeline_wait's Skip, 0 the Auto */
+                if (strcmp(value, "0") && strcmp(value, "1")) {
+                    fprintf(stderr, "scarletnx-3ds: --async-pipelines=%s, deprecated, is neither 0 nor 1\n", value);
+                    snx_cli_free(&cli);
+                    return 2;
+                }
+                ini_read(ini_find(g_performance_ini, "pipeline_wait"), !strcmp(value, "1") ? "2" : "0");
+                fprintf(stderr, "scarletnx-3ds: --async-pipelines=%s is deprecated: --pipeline-wait=%d (%s) now\n",
+                        value, g_settings.pipeline_wait, g_settings.pipeline_wait ? "Skip" : "Auto");
+                continue;
+            }
             /* the recompile's threads, the Switch's setting: a value it does not take stops here, as there */
             if (value && (!strcmp(key, "aot_threads") || !strcmp(key, "aot_threads_most"))) {
                 o = ini_find(g_recompile_ini, key);

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright 2026 the ScarletNX contributors
-// The PICA200's vertex shader unit as one vertex shader that runs the program from a buffer: what a draw uses while
-// the shader decompiled for its program (vsgen.c) is still being made with async_pipelines, so that the draw is drawn
-// rather than skipped (vk/render.c). The flow control is gpu/shader.c's, ported from Azahar's shader interpreter
+// The PICA200's vertex shader unit as one vertex shader that runs the program from a buffer: what a draw uses while the
+// shader decompiled for its program (vsgen.c) is still being made with pipeline_wait Auto or Skip, so that the draw is
+// drawn rather than skipped (vk/render.c). The flow control is gpu/shader.c's, ported from Azahar's shader interpreter
 // (video_core/shader/shader_interpreter.cpp), with its IF, CALL and LOOP stacks; the arithmetic, the registers' first
 // values and the vertex built from the outputs are vsgen.c's, ported from Azahar's GLSL decompiler and shader generator
 // (GPL-2.0-or-later, Citra Emulator Project / Azahar Emulator Project): multiplication is the host's, RCP and RSQ leave

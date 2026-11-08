@@ -601,13 +601,16 @@ setting Pipeline threads
     help The threads that make the GPU's new pipelines while the game goes on: 0 = all the computer's threads but
     help two, two to twelve; 1 to 32 = that many. Past the first two they run at the system's low priority, so more
     help make a first run's new pipelines sooner and the game's own threads still go first
-setting Async pipelines
-    key async_pipelines
-    int 0 1
+setting Pipeline wait
+    key pipeline_wait
+    int 0 2
     default 0
-    words Off|On
-    help 1 = what a new shader draws is skipped while its pipeline is made, instead of the game waiting for it: no
-    help pause where a new shader first appears, and the things it draws show up a few frames late
+    words Auto|Wait|Skip
+    help What a draw does while its new shader's pipeline is still being made: 0 = Auto, it waits for it within half a
+    help frame of the game's, every wait of the frame from that, and past it the draws are skipped until a later frame
+    help has it, but for a draw of 6 vertices or fewer, which waits for it whole; 1 = Wait, the game always waits for
+    help it, pausing where a new shader first appears; 2 = Skip, never waits, and what the new shader draws shows up a
+    help few frames late. It takes the place of async_pipelines, whose 1 is Skip (docs/user/deprecations.md)
 setting Pipeline libraries
     key pipeline_libraries
     int 0 1
@@ -1914,10 +1917,10 @@ setting CTR stand in
     int 0 2
     default 1
     words Off|On|Every draw
-    help 1 = with async_pipelines=1, on a GPU with shader objects, a draw whose shaders are still being made is drawn
-    help with stand-in shaders, one that runs the vertex program from a buffer and one that reads the texture
-    help environment as it goes, where they draw it as its own would, instead of being skipped; 0 skips it; 2 draws
-    help every draw they draw with them, to test them
+    help 1 = with pipeline_wait at 0 (Auto) or 2 (Skip), on a GPU with shader objects, a draw whose shaders are still
+    help being made is drawn with stand-in shaders, one that runs the vertex program from a buffer and one that reads
+    help the texture environment as it goes, where they draw it as its own would, instead of being skipped; 0 skips it;
+    help 2 draws every draw they draw with them, to test them
 setting CTR GPU trace
     key ctr_gpu_trace
     int 0 1

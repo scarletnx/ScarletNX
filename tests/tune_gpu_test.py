@@ -61,7 +61,7 @@ class TunerTest(unittest.TestCase):
         baseline = {key: values[0] for key, values in tuner.AXES.items()}
         for candidate in tuner.candidates(baseline):
             self.assertEqual(set(candidate), set(tuner.AXES))
-        for setting in ('compute=0', 'async_pipelines=1', 'vk_gpu_profile=1'):
+        for setting in ('compute=0', 'pipeline_wait=0', 'pipeline_wait=2', 'vk_gpu_profile=1'):
             with self.assertRaises(ValueError):
                 tuner.settings_args([setting])
 

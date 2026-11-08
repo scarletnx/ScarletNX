@@ -10,7 +10,9 @@
    deprecated: the
    default an older version wrote in every game's .ini is no pick, so the game runs Automatic and nothing is said over
    its picture; a pick is carried to vk_descriptors_mode, and --vk_descriptors=N is this run's. And the FPS limit's,
-   showcase's and stats's keys: the value now and before it, in the log and the toast alike, and the .ini given it */
+   showcase's and stats's keys: the value now and before it, in the log and the toast alike, and the .ini given it.
+   And async_pipelines, deprecated, read as pipeline_wait: its 1 Skip, its 0 the default every .ini had written,
+   which leaves pipeline_wait's own Auto */
 #include "common/utilities/common.h"
 #include "nx/hle/services/hid.h"
 #include "nx/hle/services/services.h"
@@ -867,6 +869,43 @@ static void test_key_steps(void) {
     free(dir);
 }
 
+/* async_pipelines (0 waited, the default; 1 skipped) in an old .ini: 1 is pipeline_wait's Skip (2), 0 the default every
+   game's .ini had written, which leaves pipeline_wait at its own Auto (0). The file is written with pipeline_wait, and
+   async_pipelines under [Deprecated], which the next run does not read */
+static void test_async_pipelines_old(void) {
+    char *text, *again;
+    CHECK(options_async_pipelines_old("1") == 2 && options_async_pipelines_old("0") == -1);
+    CHECK(options_async_pipelines_old("2") == -2 && options_async_pipelines_old("") == -2);
+    g_test.write = 1;
+    text = open_ini("[Performance]\nasync_pipelines=1\n");
+    CHECK(g_settings.pipeline_wait == 2);
+    CHECK(strstr(g_test.said, "settings: async_pipelines=1, deprecated, is pipeline_wait=2 (Skip) now "
+                              "(docs/user/deprecations.md)\n"));
+    CHECK(text && strstr(text, "\npipeline_wait=2\n") && strstr(text, "\n[Deprecated]\n") &&
+          strstr(text, "\n[Deprecated]\n") < strstr(text, "\nasync_pipelines=1\n"));
+    again = open_ini(text); /* the next run: pipeline_wait given, async_pipelines not read again */
+    CHECK(!strstr(g_test.said, "settings: async_pipelines=") && again && strstr(again, "\npipeline_wait=2\n"));
+    free(again);
+    free(text);
+    text = open_ini("[Performance]\nasync_pipelines=0\n");
+    CHECK(strstr(g_test.said, "settings: async_pipelines=0, deprecated, was its default: pipeline_wait takes its own, "
+                              "0 (Auto), which waits for a new pipeline within a frame's budget "
+                              "(docs/user/deprecations.md)\n"));
+    CHECK(text && strstr(text, "\npipeline_wait=0\n"));
+    free(text);
+    text = open_ini("[Performance]\nasync_pipelines=on\n");
+    CHECK(strstr(g_test.said, "settings: async_pipelines=on, deprecated, is neither 0 nor 1: pipeline_wait takes its "
+                              "default, 0 (Auto) (docs/user/deprecations.md)\n"));
+    CHECK(text && strstr(text, "\npipeline_wait=0\n"));
+    free(text);
+    /* the new key given, the old one is not read */
+    text = open_ini("[Performance]\nasync_pipelines=1\npipeline_wait=1\n");
+    CHECK(!strstr(g_test.said, "settings: async_pipelines=") && g_settings.pipeline_wait == 1 && text &&
+          strstr(text, "\npipeline_wait=1\n"));
+    free(text);
+    g_test.write = 0;
+}
+
 int main(int argc, char** argv) {
     if (argc > 1 && !strncmp(argv[1], "--picks-", 8)) return options_picks(argv[1]);
     if (argc > 1) return options_vk_descriptors_first(argv[1]);
@@ -883,6 +922,7 @@ int main(int argc, char** argv) {
     test_vk_descriptors_old_default();
     test_vk_descriptors_old();
     test_key_steps();
+    test_async_pipelines_old();
     printf("options_tv_mode: ok\n");
     return 0;
 }

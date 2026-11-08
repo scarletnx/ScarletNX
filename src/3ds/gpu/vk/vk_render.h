@@ -81,10 +81,13 @@ void snx_ctr_vk_pipeline_cache_open(const char* directory);
 /* The cache written when a pipeline went into it since: at_exit always, else only after a quiet time with no
    pipeline made, queued or being made, so the write never holds one up. Asked at each frame shown, and at the end */
 void snx_ctr_vk_pipeline_cache_save(bool at_exit);
-/* async_pipelines, for a test: the workers take no job until snx_ctr_vk_pipelines_wait, so a draw finds the pipeline
-   or the shader objects it asked for still to be made, however fast a worker would have made them */
+/* pipeline_wait Auto and Skip, for a test: the workers take no job until snx_ctr_vk_pipelines_wait, so a draw finds
+   the pipeline or the shader objects it asked for still to be made, however fast a worker would have made them */
 void snx_ctr_vk_pipelines_hold(void);
-/* async_pipelines: ends a hold, then waits until the workers have made every pipeline asked for; the draws skipped
-   meanwhile, since the renderer started */
+/* pipeline_wait Auto and Skip: ends a hold, then waits until the workers have made every pipeline asked for; the draws
+   skipped meanwhile, since the renderer started */
 uint64_t snx_ctr_vk_pipelines_wait(void);
+/* pipeline_wait's Auto: what this frame and every frame after may wait for new pipelines, in ns: 0 skips a new
+   pipeline's draws at once but the small ones; -1 puts back half a 60 FPS frame, each frame's (snx_vk_pipeline_budget) */
+void snx_ctr_vk_pipeline_budget(int64_t ns);
 #endif

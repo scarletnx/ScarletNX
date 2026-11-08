@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright 2026 the ScarletNX contributors
 // The PICA200's fragment pipeline as one fragment shader that reads its state from push constants: what a draw uses
-// while the shader generated for its exact state (fsgen.c) is still being made with async_pipelines, so that the draw
-// is drawn rather than skipped (vk/render.c). It follows fsgen.c's lighting, stages, rounding, texture sampling, alpha
-// test, fog, scissor and depth, which follow Azahar's GLSL generator (GPL-2.0-or-later, Citra Emulator Project /
-// Azahar Emulator Project). It draws only what it draws as fsgen.c's shader would: no gas, procedural texture or
-// shadow rendering, and on unit 0 a 2D or projection texture or none (stand_in_draws in render.c). Its interface is
+// while the shader generated for its exact state (fsgen.c) is still being made with pipeline_wait Auto or Skip, so that
+// the draw is drawn rather than skipped (vk/render.c). It follows fsgen.c's lighting, stages, rounding, texture
+// sampling, alpha test, fog, scissor and depth, which follow Azahar's GLSL generator (GPL-2.0-or-later, Citra Emulator
+// Project / Azahar Emulator Project). It draws only what it draws as fsgen.c's shader would: no gas, procedural texture
+// or shadow rendering, and on unit 0 a 2D or projection texture or none (stand_in_draws in render.c). Its interface is
 // fsgen.h's, with the state in push constants (StandIn in render.c).
 #version 450
 

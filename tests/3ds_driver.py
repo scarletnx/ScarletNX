@@ -33,7 +33,8 @@ def main():
     assert '--extract-container' in help_text and 'read where it lies' in help_text
     assert '--ctr-separate-windows=1' in help_text and '--ctr-top-resolution=2' in help_text
     assert '--vk-memory=N' in help_text
-    assert '--async-pipelines=1' in help_text and '--pipeline-threads=N' in help_text
+    assert '--pipeline-wait=N' in help_text and '--pipeline-threads=N' in help_text
+    assert '--async-pipelines=1, deprecated, is --pipeline-wait=2' in help_text
     assert '--gamepad-swap-ab=1' in help_text and '--gamepad-deadzone=N' in help_text
     assert '--gamepad-map=MAP' in help_text and '--touch=N' in help_text
     assert '--vsync=0' in help_text and '--fullscreen=1' in help_text and '--anisotropy=N' in help_text
@@ -71,7 +72,12 @@ def main():
     run(['--backend=gcc'], 2, 'unknown setting: --backend=gcc')  # --key=value is the 3DS tables'
     # and the Switch's the 3DS takes too (vk_memory), never another of the Switch's Debug table
     run(['--board-info', '--vk-memory=1'], 0, 'Old 3DS')
-    run(['--board-info', '--async-pipelines=1', '--pipeline-threads=2'], 0, 'Old 3DS')
+    run(['--board-info', '--pipeline-wait=2', '--pipeline-threads=2'], 0, 'Old 3DS')
+    # async_pipelines, deprecated, taken as pipeline_wait, said, by its key or its name; a value of neither 0 nor 1
+    # refused
+    run(['--board-info', '--async-pipelines=1'], 0, '--async-pipelines=1 is deprecated: --pipeline-wait=2 (Skip) now')
+    run(['--board-info', '--async_pipelines=0'], 0, '--async-pipelines=0 is deprecated: --pipeline-wait=0 (Auto) now')
+    run(['--board-info', '--async-pipelines=yes'], 2, '--async-pipelines=yes, deprecated, is neither 0 nor 1')
     run(['--board-info', '--vk-budget-mb=64'], 2, 'unknown setting: --vk-budget-mb=64')
     # the recompile's threads, the Switch's setting, which the launcher's queue gives every driver: a value it does
     # not take stops the run with the value
