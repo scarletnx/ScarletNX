@@ -715,16 +715,18 @@ static u64 cs_key(const u8* code, u32 flow_base, u32 lx, u32 ly, u32 lz, u32 shm
 }
 static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k,
                        VkCbReader read);
-/* Whether a translation reads other lanes: a GroupNonUniform capability (61 to 68) among those the module starts with.
-   Its lanes are a warp's 32, which the translation finds as its own 32 of a subgroup of 32 or 64; in a subgroup of
-   64 a lane's read of another is a full-wave permute, which RADV makes of two LDS permutes, a permlane64 and a save
-   and restore of exec for each (GFX10 to 11.5), where a subgroup of 32 takes one. One game's video upscaler, whose
-   matrix multiplies (HMMA) gather 16 words a lane each, has blocks of 32x2 and 32x4 that RADV ran in wave64 */
+/* Whether a translation reads other lanes: a GroupNonUniform capability (61 to 68), or CooperativeMatrixKHR (6022:
+   sm86_translate.c's hmma_coop, whose 16x16 matrices take a subgroup of 32 lanes), among those the module starts
+   with. Its lanes are a warp's 32, which the translation finds as its own 32 of a subgroup of 32 or 64; in a
+   subgroup of 64 a lane's read of another is a full-wave permute, which RADV makes of two LDS permutes, a permlane64
+   and a save and restore of exec for each (GFX10 to 11.5), where a subgroup of 32 takes one. One game's video
+   upscaler, whose matrix multiplies (HMMA) gather 16 words a lane each, has blocks of 32x2 and 32x4 that RADV ran in
+   wave64 */
 static int cs_reads_lanes(const u32* spv, size_t words) {
     for (size_t at = 5; at < words;) {
         u32 width = spv[at] >> 16;
         if (!width || at + width > words || (spv[at] & 0xffffu) != 17) break; /* past the OpCapability ones */
-        if (width == 2 && spv[at + 1] >= 61 && spv[at + 1] <= 68) return 1;
+        if (width == 2 && ((spv[at + 1] >= 61 && spv[at + 1] <= 68) || spv[at + 1] == 6022)) return 1;
         at += width;
     }
     return 0;

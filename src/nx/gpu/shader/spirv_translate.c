@@ -141,6 +141,7 @@ int g_shader_draw_parameters = 1;
 int g_shader_quad = 1;
 int g_shader_quad_compute = 1;
 int g_shader_mixed_dot;
+int g_shader_hmma_coop;
 int g_shader_tessellation = 1;
 int g_shader_clock_scopes;
 int g_shader_maximal_reconvergence;
