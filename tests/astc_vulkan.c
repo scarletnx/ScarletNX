@@ -565,7 +565,13 @@ static void run_region(u32 bw, u32 bh, int bc7, u32 w, u32 h, u32 rx, u32 ry, u3
     u8* texels = malloc((size_t)w * h * 4);
     u8* expected = bc7 ? malloc(size) : texels;
     astc_decode_image(b, w, h, bw, bh, texels, 0);
-    if (bc7) bc7_encode_cpu(texels, w, h, 1, expected);
+    /* the encoder's build by the level's size, as astc.c picks it */
+    if (bc7 && (u64)w * h >= VK_BC7_MODE6_TEXELS)
+        bc7_encode_cpu_mode6(texels, w, h, 1, expected);
+    else if (bc7 && (u64)w * h >= VK_BC7_FAST_TEXELS)
+        bc7_encode_cpu_fast(texels, w, h, 1, expected);
+    else if (bc7)
+        bc7_encode_cpu(texels, w, h, 1, expected);
     for (u64 i = 0; i < size; i++)
         if (actual[i] != expected[i])
             fatal("ASTC region %ux%u%s of %ux%u at block (%u, %u), %ux%u blocks: byte %llu expected %u got %u\n", bw,
