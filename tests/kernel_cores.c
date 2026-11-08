@@ -20,6 +20,7 @@ GuestFn* g_disp;
 u64 g_code_lo, g_code_hi, g_code_memory, g_main_stack_size;
 const RtAPI g_rtapi = {.cas128 = snx_runtime_cas128};
 const SnxArmModule* g_arm_mod; /* a 64-bit game */
+int g_ounce; /* main.c's: a Switch program, whose threads find no handle in their TLS (thread.c) */
 const SnxArmRt g_arm_rt;
 void arm_thread_run(KThread* t) { (void)t; }
 /* nce.c, whose NCE no game here is of: thread_run asks it, and a flagged core kicks its thread */
