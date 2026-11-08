@@ -108,6 +108,31 @@ static void expect_abort(const char* name, const uint32_t* words, unsigned count
 }
 #define ABORTS(name, want, ...) expect_abort(name, WORDS(__VA_ARGS__), COUNT(__VA_ARGS__), want)
 
+/* soft-float: a double in two words, a float in one */
+static uint32_t f_bits(float f) {
+    uint32_t b;
+    memcpy(&b, &f, sizeof b);
+    return b;
+}
+static uint64_t d_bits(double d) {
+    uint64_t b;
+    memcpy(&b, &d, sizeof b);
+    return b;
+}
+#define D(d) (uint32_t)d_bits(d), (uint32_t)(d_bits(d) >> 32)
+/* name called with words, its double result from r0 and r1 */
+static uint64_t call64(const char* name, const uint32_t* words, unsigned count) {
+    uint32_t fn = arm32_hle_symbol(name), high = 0;
+    if (!fn) {
+        fprintf(stderr, "android_arm32: the 32-bit bridge has no %s\n", name);
+        g_t.failures++;
+        return 0;
+    }
+    uint32_t low = arm32_call(fn, words, count, &high);
+    return low | (uint64_t)high << 32;
+}
+#define CALL64(name, ...) call64(name, WORDS(__VA_ARGS__), COUNT(__VA_ARGS__))
+
 /* ---- the loader ---- */
 
 static void le16(unsigned char* p, uint16_t v) {
@@ -436,6 +461,57 @@ static void test_stdio(void) {
     expect_int("getpagesize is a power of two from 4096", page >= 4096 && (page & (page - 1)) == 0, 1);
 }
 
+/* ---- numbers from text: bionic's ranges and errno ---- */
+
+static void clear_errno(void) { memset(G(arm32_errno_address()), 0, 4); }
+/* name(s, end, base) for a long: its value, and the characters it read into *used */
+static uint32_t to_long(const char* name, const char* s, int base, uint32_t* used) {
+    uint32_t text_at = text(s), end = zeroed(4);
+    clear_errno();
+    uint32_t v = CALL(name, text_at, end, (uint32_t)base);
+    *used = word_at(end) ? word_at(end) - text_at : 0;
+    return v;
+}
+
+static void test_numbers(void) {
+    uint32_t used;
+    expect_int("strtol of 99999999999", (int32_t)to_long("strtol", "99999999999", 10, &used), INT32_MAX);
+    expect_int("strtol of 99999999999: errno ERANGE", guest_errno(), 34);
+    expect_int("strtol of -99999999999", (int32_t)to_long("strtol", "-99999999999", 10, &used), INT32_MIN);
+    expect_int("strtol of -99999999999: errno ERANGE", guest_errno(), 34);
+    expect_int("strtol of 0x1F in base 0", to_long("strtol", "0x1F", 0, &used), 31);
+    expect_int("strtol of 0x1F in base 0 sets no errno", guest_errno(), 0);
+    expect_int("strtoul of -1", to_long("strtoul", "-1", 10, &used), UINT32_MAX);
+    expect_int("strtoul of -1 sets no errno", guest_errno(), 0);
+    expect_int("strtoul of -2", to_long("strtoul", "-2", 10, &used), 0xfffffffe);
+    expect_int("strtoul of 4294967296", to_long("strtoul", "4294967296", 10, &used), UINT32_MAX);
+    expect_int("strtoul of 4294967296: errno ERANGE", guest_errno(), 34);
+    expect_int("strtoul of -4294967296", to_long("strtoul", "-4294967296", 10, &used), UINT32_MAX);
+    expect_int("strtoul of -4294967296: errno ERANGE", guest_errno(), 34);
+    expect_int("strtoul of \" 017\" in base 0", to_long("strtoul", " 017", 0, &used), 15);
+    expect_int("strtoul of \" 017\" reads 4 characters", used, 4);
+    expect_int("strtoul of \"-x\" reads nothing", to_long("strtoul", "-x", 10, &used) == 0 && used == 0, 1);
+    uint32_t end = zeroed(4), big = text("1e400"), hex = text("0x1.8p3");
+    clear_errno();
+    uint64_t inf = CALL64("strtod", big, end);
+    expect_int("strtod of 1e400", (int64_t)inf, (int64_t)d_bits(HUGE_VAL));
+    expect_int("strtod of 1e400: errno ERANGE", guest_errno(), 34);
+    clear_errno();
+    expect_int("strtod of 0x1.8p3", (int64_t)CALL64("strtod", hex, end), (int64_t)d_bits(12.0));
+    expect_int("strtod of 0x1.8p3 reads it all", word_at(end), hex + 7);
+    expect_int("strtod of 0x1.8p3 sets no errno", guest_errno(), 0);
+    clear_errno();
+    expect_int("atof of 1e400", (int64_t)CALL64("atof", big), (int64_t)d_bits(HUGE_VAL));
+    expect_int("atof of 1e400: errno ERANGE", guest_errno(), 34);
+    clear_errno();
+    expect_int("strtof of 1e50", CALL("strtof", text("1e50"), end), f_bits(HUGE_VALF));
+    expect_int("strtof of 1e50: errno ERANGE", guest_errno(), 34);
+    clear_errno();
+    expect_int("strtoll of 99999999999999999999", (int64_t)CALL64("strtoll", text("99999999999999999999"), end, 10),
+               INT64_MAX);
+    expect_int("strtoll of 99999999999999999999: errno ERANGE", guest_errno(), 34);
+}
+
 /* ---- multibyte characters: UTF-8, as bionic's C.UTF-8 ---- */
 
 static void test_multibyte(void) {
@@ -454,31 +530,7 @@ static void test_multibyte(void) {
     expect_int("MB_CUR_MAX", CALL("__ctype_get_mb_cur_max"), 4);
 }
 
-/* ---- libm, soft-float: a double in two words, a float in one ---- */
-
-static uint32_t f_bits(float f) {
-    uint32_t b;
-    memcpy(&b, &f, sizeof b);
-    return b;
-}
-static uint64_t d_bits(double d) {
-    uint64_t b;
-    memcpy(&b, &d, sizeof b);
-    return b;
-}
-#define D(d) (uint32_t)d_bits(d), (uint32_t)(d_bits(d) >> 32)
-/* name called with words, its double result from r0 and r1 */
-static uint64_t call64(const char* name, const uint32_t* words, unsigned count) {
-    uint32_t fn = arm32_hle_symbol(name), high = 0;
-    if (!fn) {
-        fprintf(stderr, "android_arm32: the 32-bit bridge has no %s\n", name);
-        g_t.failures++;
-        return 0;
-    }
-    uint32_t low = arm32_call(fn, words, count, &high);
-    return low | (uint64_t)high << 32;
-}
-#define CALL64(name, ...) call64(name, WORDS(__VA_ARGS__), COUNT(__VA_ARGS__))
+/* ---- libm ---- */
 
 static void test_libm(void) {
     expect_int("expm1(1e-10)", (int64_t)CALL64("expm1", D(1e-10)), (int64_t)d_bits(expm1(1e-10)));
@@ -678,6 +730,7 @@ int main(void) {
     test_calls();
     test_stdio();
     test_multibyte();
+    test_numbers();
     test_libm();
     test_signals();
     rmdir(g_t.dir);
