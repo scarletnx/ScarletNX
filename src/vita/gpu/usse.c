@@ -89,6 +89,7 @@ typedef struct {
     bool failed;
     uint32_t push; /* the push constant block (vertex) */
     uint32_t samplers[USSE_TEXTURES];
+    uint8_t sampler_dimensions[USSE_TEXTURES];
     uint32_t buffer;    /* the uniform buffers' storage buffer, 0 for none */
     uint32_t terminated; /* the instruction just translated ended its block (KILL) */
     uint32_t frag_depth; /* gl_FragDepth, for a program that writes depth (DEPTHF) */
@@ -464,8 +465,10 @@ static int repeat_offset(T* t, const Operand* op, unsigned index, unsigned which
 static void set_multiplier(T* t, int a, int b, int c, int d) {
     t->repeat_multiplier[0] = a, t->repeat_multiplier[1] = b, t->repeat_multiplier[2] = c, t->repeat_multiplier[3] = d;
 }
+static void reset_repeat_multiplier(T* t) { set_multiplier(t, 2, 2, 2, 2); }
+/* SMLSI increments persist across instructions; reset them only at program/phase boundaries. */
 static void reset_repeats(T* t) {
-    set_multiplier(t, 2, 2, 2, 2);
+    reset_repeat_multiplier(t);
     for (int i = 0; i < 4; ++i)
         for (int j = 0; j < 17; ++j) t->repeat_increase[i][j] = j;
 }
@@ -534,7 +537,7 @@ static bool vmov(T* t, const uint32_t* f) {
         }
         store(t, dest, result, mask, repeat_offset(t, &dest, r, O_DEST, R_SLMSI));
     }
-    reset_repeats(t);
+    reset_repeat_multiplier(t);
     return !t->failed;
 }
 
@@ -564,7 +567,7 @@ static bool vmad(T* t, const uint32_t* f) {
         for (unsigned i = 0; i < a.n; ++i) result.c[i] = ext3(t, t->t_f32, SPV_GLSL_FMA, a.c[i], b.c[i], c.c[i]);
         store(t, dest, result, mask, repeat_offset(t, &dest, r, O_DEST, (int)repeat_mode));
     }
-    reset_repeats(t);
+    reset_repeat_multiplier(t);
     return !t->failed;
 }
 
@@ -678,7 +681,7 @@ static bool vpck(T* t, const uint32_t* f) {
                 v.kind = is_signed_type(dest_type) ? K_INT : K_UINT;
         store(t, dest, v, mask, repeat_offset(t, &dest, r, O_DEST, R_SLMSI));
     }
-    reset_repeats(t);
+    reset_repeat_multiplier(t);
     return !t->failed;
 }
 static bool nothing(T* t, const uint32_t* f) {
@@ -700,7 +703,8 @@ static bool smlsi(T* t, const uint32_t* f) {
 /* ---- the instructions ported second: the ALU (alu.cpp, ialu.cpp), tests (branch_cond.cpp), loads (data.cpp),
    dependent texture reads (texture.cpp) and the special ones (special.cpp) ---- */
 static Type texture_component_type(uint32_t format);
-static uint32_t sampler_of(T* t, unsigned resource);
+static unsigned gxp_sampler_dimension(const T* t, unsigned resource);
+static uint32_t sampler_of(T* t, unsigned resource, unsigned dimension);
 static unsigned texture_components(uint32_t format);
 static Value vector_value(T* t, uint32_t vec, unsigned n, int kind);
 static void store_input(T* t, Bank bank, unsigned offset, Type type, Value v);
@@ -769,6 +773,218 @@ static bool vdp(T* t, const uint32_t* f) {
         store(t, dest, one_value(sum, K_FLOAT), mask, 0);
         mask = ((mask << 1) | (mask >> 3)) & 15;
     }
+    return !t->failed;
+}
+
+static void dual_swizzle(uint8_t out[4], unsigned swizzle, bool extended, bool vec4) {
+    static const uint8_t v4[2][16][4] = {
+        {S4(X, X, X, X), S4(Y, Y, Y, Y), S4(Z, Z, Z, Z), S4(W, W, W, W), S4(X, Y, Z, W), S4(Y, Z, W, W),
+         S4(X, Y, Z, Z), S4(X, X, Y, Z), S4(X, Y, X, Y), S4(X, Y, W, Z), S4(Z, X, Y, W), S4(Z, W, Z, W),
+         S4(0, 0, 0, 0), S4(H, H, H, H), S4(1, 1, 1, 1), S4(2, 2, 2, 2)},
+        {S4(Y, Z, X, W), S4(Z, W, X, Y), S4(X, Z, W, Y), S4(Y, Y, W, W), S4(W, Y, Z, W), S4(W, Z, W, Z),
+         S4(X, Y, Z, X), S4(Z, Z, W, W), S4(X, W, Z, X), S4(Y, Y, Y, X), S4(Y, Y, Y, Z), S4(Z, W, Z, W),
+         S4(Y, Z, X, Z), S4(X, X, Y, Y), S4(X, Z, W, W), S4(X, Y, Z, 1)}};
+    static const uint8_t v3[2][16][4] = {
+        {S3(X, X, X), S3(Y, Y, Y), S3(Z, Z, Z), S3(W, W, W), S3(X, Y, Z), S3(Y, Z, W), S3(X, X, Y), S3(X, Y, X),
+         S3(Y, Y, X), S3(Y, Y, Z), S3(Z, X, Y), S3(X, Z, Y), S3(0, 0, 0), S3(H, H, H), S3(1, 1, 1), S3(2, 2, 2)},
+        {S3(X, Y, Y), S3(Y, X, Y), S3(X, X, Z), S3(Y, X, X), S3(X, Y, 0), S3(X, 1, 0), S3(X, Z, Y), S3(Y, Z, X),
+         S3(Z, Y, X), S3(Z, Z, Y), S3(X, Y, 1), SU, SU, SU, SU, SU}};
+    memcpy(out, vec4 ? v4[extended][swizzle & 15] : v3[extended][swizzle & 15], 4);
+}
+
+enum { DUAL_INTERNAL0, DUAL_INTERNAL1, DUAL_INTERNAL2, DUAL_UNIFIED, DUAL_NONE };
+typedef struct {
+    unsigned sources;
+    bool vector_load, vector_store;
+} DualInfo;
+static const DualInfo dual_info[14] = {
+    {3, true, true},  {2, true, false}, {1, true, false}, {2, true, true},  {2, true, true},
+    {1, true, true},  {1, false, false}, {1, false, false}, {3, false, false}, {2, false, false},
+    {2, false, false}, {2, false, false}, {1, false, false}, {1, false, false}};
+
+static bool dual_op1_layout(unsigned count, unsigned config, uint8_t out[3]) {
+    static const uint8_t layouts[3][4][3] = {
+        {{DUAL_UNIFIED, DUAL_NONE, DUAL_NONE}, {DUAL_INTERNAL0, DUAL_NONE, DUAL_NONE},
+         {DUAL_INTERNAL1, DUAL_NONE, DUAL_NONE}, {DUAL_INTERNAL2, DUAL_NONE, DUAL_NONE}},
+        {{DUAL_UNIFIED, DUAL_INTERNAL1, DUAL_NONE}, {DUAL_INTERNAL0, DUAL_UNIFIED, DUAL_NONE},
+         {DUAL_INTERNAL0, DUAL_INTERNAL1, DUAL_NONE}, {DUAL_NONE, DUAL_NONE, DUAL_NONE}},
+        {{DUAL_UNIFIED, DUAL_INTERNAL1, DUAL_INTERNAL2}, {DUAL_INTERNAL0, DUAL_UNIFIED, DUAL_INTERNAL2},
+         {DUAL_INTERNAL0, DUAL_INTERNAL1, DUAL_UNIFIED}, {DUAL_INTERNAL0, DUAL_INTERNAL1, DUAL_INTERNAL2}}};
+    if (!count || count > 3 || config > 3) return false;
+    memcpy(out, layouts[count - 1][config], 3);
+    return out[0] != DUAL_NONE;
+}
+
+static bool dual_op2_layout(unsigned first_count, unsigned count, unsigned config, uint8_t out[3]) {
+    if (config > 3) return false;
+    out[1] = out[2] = DUAL_NONE;
+    if (first_count == 1) {
+        if (count == 1) {
+            out[0] = config == 0 ? DUAL_INTERNAL0 : DUAL_UNIFIED;
+            return true;
+        }
+        if (count == 2) {
+            static const uint8_t layouts[4][3] = {
+                {DUAL_INTERNAL0, DUAL_INTERNAL1, DUAL_NONE}, {DUAL_UNIFIED, DUAL_INTERNAL1, DUAL_NONE},
+                {DUAL_INTERNAL0, DUAL_UNIFIED, DUAL_NONE}, {DUAL_INTERNAL1, DUAL_UNIFIED, DUAL_NONE}};
+            memcpy(out, layouts[config], 3);
+            return true;
+        }
+        if (count == 3) {
+            static const uint8_t layouts[4][3] = {
+                {DUAL_INTERNAL0, DUAL_INTERNAL1, DUAL_INTERNAL2}, {DUAL_UNIFIED, DUAL_INTERNAL1, DUAL_INTERNAL2},
+                {DUAL_INTERNAL0, DUAL_UNIFIED, DUAL_INTERNAL2}, {DUAL_INTERNAL0, DUAL_UNIFIED, DUAL_INTERNAL1}};
+            memcpy(out, layouts[config], 3);
+            return true;
+        }
+    } else if (first_count == 2) {
+        if (count == 1 && config < 3) {
+            out[0] = config == 0 ? DUAL_INTERNAL0 : config == 1 ? DUAL_INTERNAL1 : DUAL_UNIFIED;
+            return true;
+        }
+        if (count == 2 && config < 3) {
+            static const uint8_t layouts[3][3] = {
+                {DUAL_INTERNAL0, DUAL_INTERNAL2, DUAL_NONE}, {DUAL_INTERNAL1, DUAL_INTERNAL2, DUAL_NONE},
+                {DUAL_INTERNAL2, DUAL_UNIFIED, DUAL_NONE}};
+            memcpy(out, layouts[config], 3);
+            return true;
+        }
+    } else if (first_count == 3 && count == 1) {
+        out[0] = config == 0 ? DUAL_INTERNAL0 : config == 1 ? DUAL_INTERNAL1 : config == 2 ? DUAL_INTERNAL2 : DUAL_UNIFIED;
+        return true;
+    }
+    return false;
+}
+
+static Operand dual_source(T* t, unsigned id, unsigned first_count, const uint32_t* f, Type type,
+                           bool vector_load) {
+    unsigned swizzle, number;
+    Operand op = {0, B_INTERNAL, 0, {SW_X, SW_Y, SW_Z, SW_W}, type};
+    switch (id) {
+        case DUAL_UNIFIED:
+            op = decode_src12(t, f[25], f[15], false, vector_load, vector_load ? 8 : 7);
+            dual_swizzle(op.swizzle, f[7], first_count < 2 && f[20], f[0]);
+            if (first_count < 2 && f[21]) op.flags |= F_ABS;
+            if (f[8]) op.flags |= F_NEG;
+            break;
+        case DUAL_INTERNAL0:
+            number = f[23], swizzle = f[12];
+            op.num = number;
+            dual_swizzle(op.swizzle, swizzle, false, f[0]);
+            break;
+        case DUAL_INTERNAL1:
+            number = f[22], swizzle = f[13];
+            op.num = number;
+            dual_swizzle(op.swizzle, swizzle, f[6], f[0]);
+            if (f[1]) op.flags |= F_NEG;
+            break;
+        case DUAL_INTERNAL2:
+            op.num = first_count >= 2 ? ((f[20] << 1) | f[21]) : 2;
+            break;
+        default:
+            fail(t, "VDUAL source layout");
+            break;
+    }
+    op.type = type;
+    return op;
+}
+
+static Value dual_alu(T* t, unsigned code, Operand src[3], unsigned source_count, unsigned write_mask,
+                      unsigned comp_count_type) {
+    bool dot = code == 1 || code == 2;
+    unsigned source_mask = dual_info[code].vector_load ? (dot ? (comp_count_type ? 15 : 7) : write_mask) : 1;
+    Value a = load(t, src[0], source_mask, 0);
+    Value b = source_count > 1 ? load(t, src[1], source_mask, 0) : (Value){{0}, 0, K_FLOAT};
+    Value c = source_count > 2 ? load(t, src[2], source_mask, 0) : (Value){{0}, 0, K_FLOAT};
+    Value result = {{0}, a.n, K_FLOAT};
+    if (t->failed) return result;
+    switch (code) {
+        case 0:
+        case 8:
+            for (unsigned i = 0; i < a.n; ++i) {
+                uint32_t product = op2(t, SPV_OP_F_MUL, t->t_f32, a.c[i], b.c[i]);
+                result.c[i] = op2(t, SPV_OP_F_ADD, t->t_f32, product, c.c[i]);
+            }
+            break;
+        case 1:
+        case 2:
+            result = one_value(op2(t, SPV_OP_F_MUL, t->t_f32, a.c[0], code == 1 ? b.c[0] : a.c[0]), K_FLOAT);
+            for (unsigned i = 1; i < a.n; ++i)
+                result.c[0] = ext3(t, t->t_f32, SPV_GLSL_FMA, a.c[i], code == 1 ? b.c[i] : a.c[i], result.c[0]);
+            break;
+        case 3:
+        case 10:
+        case 4:
+        case 9:
+        case 11:
+            for (unsigned i = 0; i < a.n; ++i) {
+                if (code == 3 || code == 10) result.c[i] = op2(t, SPV_OP_F_MUL, t->t_f32, a.c[i], b.c[i]);
+                else if (code == 4 || code == 9) result.c[i] = op2(t, SPV_OP_F_ADD, t->t_f32, a.c[i], b.c[i]);
+                else result.c[i] = op2(t, SPV_OP_F_SUB, t->t_f32, a.c[i], ext1(t, t->t_f32, SPV_GLSL_FLOOR, b.c[i]));
+            }
+            break;
+        case 5: result = a; break;
+        case 6:
+        case 7:
+        case 12:
+        case 13:
+            for (unsigned i = 0; i < a.n; ++i) {
+                if (code == 6) result.c[i] = ext1(t, t->t_f32, SPV_GLSL_INVERSE_SQRT, a.c[i]);
+                else if (code == 7) result.c[i] = op2(t, SPV_OP_F_DIV, t->t_f32, cf(t, 1), a.c[i]);
+                else if (code == 12) {
+                    uint32_t exp = ext1(t, t->t_f32, SPV_GLSL_EXP2, a.c[i]);
+                    result.c[i] = SPV(&t->e, SPV_OP_SELECT, t->t_f32, op1(t, SPV_OP_IS_NAN, t->t_bool, exp),
+                                      cf(t, 1), exp);
+                } else
+                    result.c[i] = ext1(t, t->t_f32, SPV_GLSL_LOG2, a.c[i]);
+            }
+            break;
+        default: fail(t, "VDUAL opcode %u", code); break;
+    }
+    return result;
+}
+
+/* The paired vector/scalar operations share their register reads and commit both destinations after evaluating them. */
+static bool vdual(T* t, const uint32_t* f) {
+    unsigned op1_code = ((!f[0] && f[4]) << 3) | f[9], op2_code = (f[10] << 3) | f[18];
+    if (op1_code >= 14 || !op2_code || op2_code >= 14) return fail(t, "VDUAL opcode");
+    const DualInfo op1_info = dual_info[op1_code], op2_info = dual_info[op2_code];
+    unsigned first_count = op1_info.sources;
+    bool unified_vector = (f[11] && op1_info.vector_store) || (!f[11] && op2_info.vector_store);
+    Type type = f[5] ? T_F16 : T_F32;
+
+    Operand internal_dest = {f[16], B_INTERNAL, 0, {SW_X, SW_Y, SW_Z, SW_W}, type};
+    Operand unified_dest = decode_dest(t, f[17], f[14], false, unified_vector, unified_vector ? 8 : 7);
+    unified_dest.type = type;
+    Operand op1_dest = f[11] ? unified_dest : internal_dest;
+    Operand op2_dest = f[11] ? internal_dest : unified_dest;
+
+    uint8_t layout1[3], layout2[3];
+    if (!dual_op1_layout(op1_info.sources, f[19], layout1) ||
+        !dual_op2_layout(op1_info.sources, op2_info.sources, f[19], layout2))
+        return fail(t, "VDUAL source layout");
+
+    unsigned fixed_mask = f[24] | ((f[0] && f[4]) << 3);
+    unsigned op1_mask = f[11] ? (op1_dest.bank == B_INTERNAL ? (f[0] ? 15 : 7)
+                                                              : op1_info.vector_store ? (f[5] ? 15 : 3)
+                                                                                      : (f[5] ? 3 : 1))
+                              : fixed_mask;
+    unsigned op2_mask = f[11] ? fixed_mask
+                              : (op2_dest.bank == B_INTERNAL ? (f[0] ? 15 : 7)
+                                                             : op2_info.vector_store ? (f[5] ? 15 : 3)
+                                                                                     : (f[5] ? 3 : 1));
+    Operand src1[3], src2[3];
+    for (unsigned i = 0; i < op1_info.sources; ++i)
+        src1[i] = dual_source(t, layout1[i], first_count, f, type, op1_info.vector_load);
+    for (unsigned i = 0; i < op2_info.sources; ++i)
+        src2[i] = dual_source(t, layout2[i], first_count, f, type, op2_info.vector_load);
+    if (t->failed) return false;
+
+    Value result1 = dual_alu(t, op1_code, src1, op1_info.sources, op1_mask, f[0]);
+    Value result2 = dual_alu(t, op2_code, src2, op2_info.sources, op2_mask, f[0]);
+    if (t->failed) return false;
+    store(t, op1_dest, result1, op1_mask, 0);
+    store(t, op2_dest, result2, op2_mask, 0);
     return !t->failed;
 }
 
@@ -861,7 +1077,7 @@ static bool vbw(T* t, const uint32_t* f) {
         }
         store(t, dest, one_value(x, K_UINT), 1, repeat_offset(t, &dest, r, O_DEST, R_SLMSI));
     }
-    reset_repeats(t);
+    reset_repeat_multiplier(t);
     return !t->failed;
 }
 
@@ -1116,7 +1332,7 @@ static bool i32mad(T* t, const uint32_t* f) {
         if (t->failed) break;
         store(t, dest, imad(t, a, b, c), 1, repeat_offset(t, &dest, r, O_DEST, R_SLMSI));
     }
-    reset_repeats(t);
+    reset_repeat_multiplier(t);
     return !t->failed;
 }
 /* I16MAD: p a s n r e d b c k t m f o l h g i j q u v w x */
@@ -1165,7 +1381,7 @@ static bool i32mad2(T* t, const uint32_t* f) {
         /* sn 1 passes src2 through (Vita3K's hardware tests) */
         store(t, dest, sn ? c : imad(t, a, b, c), 1, repeat_offset(t, &dest, r, O_DEST, R_SLMSI));
     }
-    reset_repeats(t);
+    reset_repeat_multiplier(t);
     return !t->failed;
 }
 
@@ -1271,7 +1487,7 @@ static bool gather(T* t, uint32_t sampler, uint32_t coord, uint32_t format, Type
     return !t->failed;
 }
 /* SMP: p s n y m r c e f a d l t b g k h i j o q u v. The texture is the dependent sampler src1 names, read at src0
-   (one or two components), its LOD from src2 when lod_mode says */
+   (one, two, or three components), its LOD from src2 when lod_mode says */
 static bool smp(T* t, const uint32_t* f) {
     unsigned src0_ext = f[5], src1_ext = f[6], src2_ext = f[7], fconv = f[8], dim = f[10] + 1, lod_mode = f[11];
     unsigned use_pa = f[12], sb_mode = f[13], src0_type = f[14], src0_bank = f[15], src1_bank = f[17];
@@ -1282,26 +1498,33 @@ static bool smp(T* t, const uint32_t* f) {
     if (src1.bank != B_SA || src1.num >= BANK_WORDS || !t->dependent[src1.num])
         return fail(t, "an SMP whose sampler isn't a dependent one");
     if (sb_mode == 2) return fail(t, "SMP queries");
-    if (dim == 3) return fail(t, "SMP of cube textures");
+    if (dim > 3) return fail(t, "SMP dimension %u", dim);
     unsigned resource = t->dependent[src1.num] - 1u;
+    if (resource >= USSE_TEXTURES) return fail(t, "SMP sampler %u", resource);
     uint32_t format = t->hints->texture_formats[resource];
     Type type = fconv == 2 ? T_F16 : fconv == 3 ? T_F32 : texture_component_type(format);
-    Value c = load(t, src0, dim == 1 ? 1 : 3, 0);
+    Value c = load(t, src0, dim == 1 ? 1 : dim == 2 ? 3 : 7, 0);
     if (t->failed) return false;
     if (c.kind != K_FLOAT) c = to_float(t, c, src0.type, true);
-    uint32_t coord = SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v2f, c.c[0], dim == 1 ? cf(t, 0) : c.c[1]);
-    uint32_t sampler = sampler_of(t, resource), sampled;
+    uint32_t coord = dim == 3 ? SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v3f, c.c[0], c.c[1], c.c[2])
+                              : SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v2f, c.c[0], dim == 1 ? cf(t, 0) : c.c[1]);
+    unsigned sampler_dim = dim == 3 ? SPV_DIM_CUBE : SPV_DIM_2D;
+    uint32_t sampler = sampler_of(t, resource, sampler_dim), sampled;
     Bank bank = use_pa ? (t->secondary ? B_SA : B_PA) : B_TEMP;
+    if (sb_mode == 3 && dim == 3) return fail(t, "SMP cube gather with UV coefficients");
     if (sb_mode) /* the four texels' components: each component of the four, then the next component's */
         return gather(t, sampler, coord, format, type, bank, dest_n, sb_mode == 3);
     Operand src2 = decode_src12(t, src2_n, src2_bank, src2_ext, true, 8);
     src2.type = src0.type;
     bool implicit = t->fragment && (lod_mode == 0 || lod_mode == 1);
     if (lod_mode == 3) { /* gradients */
-        Value dx = load(t, src2, 3, 0), dy = load(t, src2, 12, 0);
+        Value dx = dim == 3 ? load(t, src2, 7, 0) : load(t, src2, 3, 0);
+        Value dy = dim == 3 ? load(t, src2, 7, 1) : load(t, src2, 12, 0);
         if (t->failed) return false;
-        uint32_t gx = SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v2f, dx.c[0], dx.c[1]);
-        uint32_t gy = SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v2f, dy.c[0], dy.c[1]);
+        uint32_t gx = dim == 3 ? SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v3f, dx.c[0], dx.c[1], dx.c[2])
+                               : SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v2f, dx.c[0], dx.c[1]);
+        uint32_t gy = dim == 3 ? SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v3f, dy.c[0], dy.c[1], dy.c[2])
+                               : SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v2f, dy.c[0], dy.c[1]);
         sampled = SPV(&t->e, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, t->t_v4f, sampler, coord, 4u /* Grad */, gx, gy);
     } else if (lod_mode) {
         uint32_t lod = load(t, src2, 1, 0).c[0];
@@ -1357,7 +1580,7 @@ static Pattern patterns[] = {
     {.name = "V16NMAD", .bits = "00010pppsrrydcbawwwwneeeemmoiittkkllffffffzzzzzzzggghhhhhhjjjjjj", .handler = vnmad},
     {.name = "VMAD", .bits = "00011pppsg1oderaaittnwwwwcbfhzkkjjllmmmmmmqqqquuuuvvxyAAAABBBBBB", .handler = vmad},
     {.name = "VDP", .bits = "00011pppsc0oderaagttnwwwwbflllkkhhiijjjjjjzzzzmmmqqqyyyxxxuuuuuu", .handler = vdp},
-    {.name = "VDUAL", .bits = "0010cgsskdtpuuuunaaalriiiiwwwwmmffeebbbbbbbooohhjqvvxxyyyzzzzzzz", .handler = NULL},
+    {.name = "VDUAL", .bits = "0010cgsskdtpuuuunaaalriiiiwwwwmmffeebbbbbbbooohhjqvvxxyyyzzzzzzz", .handler = vdual},
     {.name = "VCOMP", .bits = "00110pppsddyenr-aaaaobbccmmff-ttkk--ggggggg-------hhhhhhh---wwww", .handler = vcomp},
     {.name = "VMOV", .bits = "00111pppstrydecbmmaanoooiwwwwkllffgghhhhjjjjjjqqqqqquuuuuuvvvvvv", .handler = vmov},
     {.name = "VPCK", .bits = "01000pppsnuydercaaaaffftttmmmmbbkkllgggggggoohiijjqqqqqqvwwwwwwx", .handler = vpck},
@@ -1702,14 +1925,30 @@ static Type texture_component_type(uint32_t format) {
         default: return T_U8; /* the 8-bit unsigned ones, palettes, the compressed and YUV formats */
     }
 }
+static unsigned gxp_sampler_dimension(const T* t, unsigned resource) {
+    uint32_t count = snx_ld_le32(t->gxp + GXP_PARAMETER_COUNT);
+    for (uint32_t i = 0; i < count; ++i) {
+        const unsigned char* q = gxp_parameter(t->gxp, i);
+        if (gxp_parameter_category(q) == GXP_CATEGORY_SAMPLER && gxp_parameter_resource(q) == resource)
+            return (gxp_parameter_semantic_index(q) & 0x10) ? SPV_DIM_CUBE : SPV_DIM_2D;
+    }
+    return 0;
+}
 /* texture resource's combined image sampler, loaded (its variable made at its first use) */
-static uint32_t sampler_of(T* t, unsigned resource) {
-    uint32_t image = spv_emit_type_image(&t->e, t->t_f32, SPV_DIM_2D, 0, 0, 0, 1, 0);
+static uint32_t sampler_of(T* t, unsigned resource, unsigned dimension) {
+    if (resource >= USSE_TEXTURES) return fail(t, "sampler %u", resource), cu(t, 0);
+    unsigned declared_dimension = gxp_sampler_dimension(t, resource);
+    if (declared_dimension && declared_dimension != dimension)
+        return fail(t, "sampler %u dimension %u used as %u", resource, declared_dimension, dimension), cu(t, 0);
+    if (t->sampler_dimensions[resource] && t->sampler_dimensions[resource] != dimension)
+        return fail(t, "sampler %u used with multiple dimensions", resource), cu(t, 0);
+    uint32_t image = spv_emit_type_image(&t->e, t->t_f32, dimension, 0, 0, 0, 1, 0);
     uint32_t sampled_type = spv_emit_type_sampled_image(&t->e, image);
     if (!t->samplers[resource]) {
         t->samplers[resource] =
             spv_emit_resource(&t->e, SPV_STORAGE_UNIFORM_CONSTANT, sampled_type, 0, USSE_TEXTURE_BINDING + resource);
         global(t, t->samplers[resource]);
+        t->sampler_dimensions[resource] = (uint8_t)dimension;
     }
     t->out->sampler_mask |= 1u << resource;
     return SPV(&t->e, SPV_OP_LOAD, sampled_type, t->samplers[resource]);
@@ -1813,10 +2052,19 @@ static void fragment_inputs(T* t) {
                 global(t, coords[coord_index]);
             }
             uint32_t coord = SPV(&t->e, SPV_OP_LOAD, t->t_v4f, coords[coord_index]), sampled;
-            uint32_t sampler = sampler_of(t, resource);
+            unsigned dimension = gxp_sampler_dimension(t, resource);
+            if (!dimension) dimension = SPV_DIM_2D;
+            uint32_t sampler = sampler_of(t, resource, dimension);
             if (project >= 0) {
+                if (dimension == SPV_DIM_CUBE) {
+                    fail(t, "projected cube texture inputs");
+                    return;
+                }
                 uint32_t xyp = SPV(&t->e, SPV_OP_VECTOR_SHUFFLE, t->t_v3f, coord, coord, 0, 1, (uint32_t)project);
                 sampled = SPV(&t->e, SPV_OP_IMAGE_SAMPLE_PROJ_IMPLICIT_LOD, t->t_v4f, sampler, xyp);
+            } else if (dimension == SPV_DIM_CUBE) {
+                uint32_t xyz = SPV(&t->e, SPV_OP_VECTOR_SHUFFLE, t->t_v3f, coord, coord, 0, 1, 2);
+                sampled = SPV(&t->e, SPV_OP_IMAGE_SAMPLE_IMPLICIT_LOD, t->t_v4f, sampler, xyz);
             } else {
                 uint32_t xy = SPV(&t->e, SPV_OP_VECTOR_SHUFFLE, t->t_v2f, coord, coord, 0, 1);
                 sampled = SPV(&t->e, SPV_OP_IMAGE_SAMPLE_IMPLICIT_LOD, t->t_v4f, sampler, xy);

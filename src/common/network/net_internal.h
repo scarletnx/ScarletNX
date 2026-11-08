@@ -5,27 +5,15 @@
 #ifndef SNX_NET_INTERNAL_H
 #define SNX_NET_INTERNAL_H
 #include "common/network/net.h"
+#include "common/network/net_host.h"
 #ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <windows.h>
 typedef SOCKET SnxHostFd;
 typedef SRWLOCK SnxLock;
-typedef int snx_socklen;
 #define SNX_BADFD INVALID_SOCKET
 #else
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <poll.h>
 #include <pthread.h>
 typedef int SnxHostFd;
 typedef pthread_mutex_t SnxLock;
-typedef socklen_t snx_socklen;
 #define SNX_BADFD (-1)
 #endif
 
@@ -71,7 +59,6 @@ void snx_net_warn(const char* fmt, ...) /* what the player must hear of */
 #endif
     ;
 int snx_net_host_error(void);       /* the last socket call's error, -SNX_E* */
-int snx_net_errno_from_host(int e); /* a host errno (POSIX) or Winsock error, -SNX_E* */
 int snx_net_close_fd(SnxHostFd fd);
 int snx_net_set_host_nonblocking(SnxHostFd fd);
 /* waits until fd is ready for host_events, timeout_us 0 = forever. 1 ready, -SNX_EAGAIN at the timeout,
@@ -79,13 +66,6 @@ int snx_net_set_host_nonblocking(SnxHostFd fd);
 int snx_net_wait(SnxHostFd fd, short host_events, int64_t timeout_us);
 int snx_net_wait_until(SnxHostFd fd, short host_events, int64_t deadline); /* deadline on snx_net_now_us, 0 none */
 int64_t snx_net_deadline(int64_t timeout_us);                              /* 0 for timeout_us 0 */
-/* the address conversions, 0 or -SNX_EAFNOSUPPORT */
-int snx_net_addr_to_host(const SnxSockAddr* in, struct sockaddr_storage* out, snx_socklen* size);
-int snx_net_addr_from_host(const struct sockaddr* in, snx_socklen size, SnxSockAddr* out);
-int snx_net_domain_to_host(int domain);
-int snx_net_domain_from_host(int domain);
-int snx_net_socktype_to_host(int type); /* -1 for none */
-int snx_net_socktype_from_host(int type);
 /* the host socket's options, for emulated sockets that have a host socket. kept: the stack keeps the option itself
    (timeouts, the read-only ones), it needs no host socket */
 int snx_net_host_setsockopt(SnxSocket* s, int level, int name, const void* value, size_t size);

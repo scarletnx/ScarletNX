@@ -7,6 +7,7 @@
    come back. Textures and render targets are each in a list from the least recently used to the most, which the
    caches' eviction takes from (vk_surf_reclaim): idle ones, and more when device memory nears its budget
    (vk_mem_trim, with the budget from gpu/vk/memory.c). */
+#include "nx/gpu/vk/descriptor_objects.h"
 #include "common/utilities/bits.h"
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +18,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/resource_stats.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/texture/astc_bc.h"
 #include "nx/gpu/texture/blocklinear.h"
@@ -138,6 +140,28 @@ VkImageAspectFlags vk_aspect(const VkFmt* f) {
     return VK_IMAGE_ASPECT_DEPTH_BIT | (f->stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
 }
 
+static void surf_barrier(VkCommandBuffer cb, const Surf* s, VkPipelineStageFlags2 source_stage,
+                          VkAccessFlags2 source_access, VkImageLayout old_layout, VkPipelineStageFlags2 stage,
+                          VkAccessFlags2 access, VkImageLayout layout) {
+    VkSampleLocationEXT positions[16];
+    VkSampleLocationsInfoEXT locations;
+    VkImageMemoryBarrier2 image = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                    .pNext = s->sample_locations_compatible && old_layout != VK_IMAGE_LAYOUT_UNDEFINED
+                                                 ? vk_sample_locations_barrier(&s->sample_locations,
+                                                                               vk_surf_samples(s), &locations,
+                                                                               positions)
+                                                 : NULL,
+                                    .srcStageMask = source_stage, .srcAccessMask = source_access,
+                                    .dstStageMask = stage, .dstAccessMask = access,
+                                    .oldLayout = old_layout, .newLayout = layout,
+                                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = s->img,
+                                    .subresourceRange = {vk_aspect(&s->f), 0, VK_REMAINING_MIP_LEVELS, 0,
+                                                         VK_REMAINING_ARRAY_LAYERS}};
+    VkDependencyInfo dependency = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                    .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &image};
+    rec_CmdPipelineBarrier2(cb, &dependency);
+}
 void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineStageFlags2 stage,
                  VkAccessFlags2 access) {
     int writes = (access & (VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
@@ -152,7 +176,7 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
            extends that visibility to it */
         if (stage & ~s->stage) {
             vk_render_end();
-            vk_barrier(cb, s->img, vk_aspect(&s->f), s->stage ? s->stage : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+            surf_barrier(cb, s, s->stage ? s->stage : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                        layout, stage, access, layout);
         }
         s->stage |= stage;
@@ -160,7 +184,7 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
         return;
     }
     vk_render_end(); /* no barriers on images inside a rendering pass */
-    vk_barrier(cb, s->img, vk_aspect(&s->f), s->stage ? s->stage : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, s->access,
+    surf_barrier(cb, s, s->stage ? s->stage : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, s->access,
                s->layout, stage, access, layout);
     s->layout = layout;
     s->stage = stage;
@@ -189,7 +213,7 @@ int vk_rt_same_layout(const Surf* s, u32 w, u32 h, int bl, u32 bh, u32 pitch) {
     return (w * s->f.bpp + 63) / 64 == (s->w * s->f.bpp + 63) / 64 && bl_height(h, bh) == bl_height(s->h, s->bh);
 }
 /* a surface of w by h pixels with the samples of the sample layout msaa (render targets only: textures have one) */
-static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 bh, u32 pitch, int is_rt, u32 layers,
+static Surf* surf_create_(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 bh, u32 pitch, int is_rt, u32 layers,
                          u32 msaa) {
     Surf* s = calloc(1, sizeof *s);
     if (!s) return NULL;
@@ -216,22 +240,44 @@ static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 b
     if (is_rt) usage |= f.depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     /* the draws rendering to a color target can sample it, in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL (gpu/vk/render.c) */
     if (is_rt && !f.depth && g_vk.has_feedback) usage |= VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
+    /* sRGB has no storage-image format: the ordered blend shader writes the same bytes through a view of the linear
+       twin, which EXTENDED_USAGE allows on an image that stays sRGB. The image's own format must stay the target's:
+       vkCmdBlitImage converts by it, so a linear image blitted to an sRGB one (the presentation's swapchain) is
+       encoded twice and comes out washed out */
+    VkFormat storage_format = vk_srgb_as(f.vk, 0);
+    VkImageCreateFlags flags = 0;
     VkFormatProperties format_props;
-    vkGetPhysicalDeviceFormatProperties(g_vk.phys, f.vk, &format_props);
-    /* storage images of several samples are an optional feature compute and draws don't use: none */
-    if (!msaa && (format_props.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
-        usage |= VK_IMAGE_USAGE_STORAGE_BIT;
-        s->storage_capable = 1;
+    vkGetPhysicalDeviceFormatProperties(g_vk.phys, storage_format, &format_props);
+    if ((!msaa || g_vk.feat.shaderStorageImageMultisample) &&
+        (format_props.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
+        VkImageCreateFlags storage_flags =
+            storage_format != f.vk ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT : 0;
+        VkImageFormatProperties image_props;
+        if (vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, f.vk, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+                                                     usage | VK_IMAGE_USAGE_STORAGE_BIT, storage_flags,
+                                                     &image_props) == VK_SUCCESS) {
+            usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+            flags |= storage_flags;
+            s->storage_capable = 1;
+        }
     }
     /* a multisampled color image's samples move to and from guest memory through views of their raw bytes
        (gpu/vk/msaa.c), when the device renders and samples those with its samples */
     VkFormat raw = VK_FORMAT_UNDEFINED;
-    VkImageCreateFlags flags = 0;
     if (msaa && !f.depth) {
         raw = vk_raw_format(f.bpp);
         VkImageUsageFlags moves = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         if (raw && !vk_ms_supported(raw, moves, 0, msaa)) raw = VK_FORMAT_UNDEFINED;
-        if (raw && raw != f.vk) flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+        if (raw && raw != f.vk) flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+    }
+    if (f.depth && g_vk.sample_locations.available && g_vk.props.limits.standardSampleLocations &&
+        ds_msaa_samples(msaa) <= 16)
+        flags |= VK_IMAGE_CREATE_SAMPLE_LOCATIONS_COMPATIBLE_DEPTH_BIT_EXT;
+    if (msaa && s->storage_capable && !vk_ms_supported(f.vk, usage, flags, msaa)) {
+        /* Optional storage support must not remove an otherwise supported ordinary render target. */
+        usage &= ~VK_IMAGE_USAGE_STORAGE_BIT;
+        flags &= ~VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
+        s->storage_capable = 0;
     }
     if (msaa && !vk_ms_supported(f.vk, usage, flags, msaa)) {
         LOG_LIMIT(4, "vulkan: the GPU makes no %u-sample images of format %d: the target isn't drawn\n",
@@ -243,6 +289,7 @@ static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 b
     s->ms_raw = msaa && (raw || f.vk == VK_FORMAT_D32_SFLOAT || f.vk == VK_FORMAT_D16_UNORM);
     s->type = layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .flags = flags,
                             .imageType = VK_IMAGE_TYPE_2D,
                             .format = f.vk,
                             .extent = {s->sw, s->sh, 1},
@@ -254,6 +301,8 @@ static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 b
                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
     VkViewFormats vf; /* sRGB and linear views, and the raw one */
+    s->sample_locations_compatible = (ii.flags & VK_IMAGE_CREATE_SAMPLE_LOCATIONS_COMPATIBLE_DEPTH_BIT_EXT) != 0;
+    if (s->sample_locations_compatible) s->sample_locations = vk_sample_locations_standard(vk_surf_samples(s));
     vk_view_formats(&ii, &vf, raw);
     /* a scaled target can pass the allocation cap (4x of 4K is 506 MiB in RGBA8). Room is made for it under the
        budget: the caller holds only surfaces it used this present, which stay */
@@ -266,12 +315,22 @@ static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 b
                                 .viewType = s->type,
                                 .format = f.vk,
                                 .subresourceRange = {vk_aspect(&f), 0, 1, 0, layers}};
-    VK_OK(vkCreateImageView(g_vk.dev, &vi, NULL, &s->att));
+    VkImageViewUsageCreateInfo view_usage = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
+                                            .usage = usage & ~VK_IMAGE_USAGE_STORAGE_BIT};
+    if ((usage & VK_IMAGE_USAGE_STORAGE_BIT) && storage_format != f.vk) vi.pNext = &view_usage;
+    VK_OK(vk_image_view_create(g_vk.dev, &vi, NULL, &s->att));
     u32 k = hkey(gva);
     s->next = g_surfh[k];
     g_surfh[k] = s;
     surf_changed(gva);
     if (is_rt) lru_add(s, VK_LRU_RT);
+    return s;
+}
+static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 bh, u32 pitch, int is_rt, u32 layers,
+                         u32 msaa) {
+    VkResourceScope scope = vk_resource_begin();
+    Surf* s = surf_create_(gva, w, h, f, fkey, bl, bh, pitch, is_rt, layers, msaa);
+    vk_resource_end(VK_RESOURCE_SURFACE_CREATE, scope);
     return s;
 }
 
@@ -293,7 +352,7 @@ VkImageView vk_rt_attachment(Surf* s, int srgb_write) {
                                     .viewType = s->type,
                                     .format = linear,
                                     .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, s->layers}};
-        VK_OK(vkCreateImageView(g_vk.dev, &vi, NULL, &s->att_linear));
+        VK_OK(vk_image_view_create(g_vk.dev, &vi, NULL, &s->att_linear));
     }
     return s->att_linear;
 }
@@ -605,7 +664,61 @@ static VkBlMove rt_bl_move(const Surf* s, u32 pitch) {
     }
     return m;
 }
-/* a block linear target loaded: its guest bytes staged as they are, from where they are, and deswizzled on the GPU */
+/* a block linear target's load that found no buffer (what) of bytes for its rows from y of a layer: 0 */
+static int load_fail(const Surf* s, u32 layer, u32 y, const char* what, u64 bytes) {
+    LOG_LIMIT(4,
+              "vulkan: a target at %llx found no %s of %llu bytes for its rows from %u of layer %u: memory's pixels "
+              "there don't reach its image\n",
+              (unsigned long long)s->gva, what, (unsigned long long)bytes, y, layer);
+    return 0;
+}
+/* rows [y, y + n) of a layer of an unscaled single-sampled target, in rows of pitch bytes from the start of buf,
+   copied into its image */
+static void rt_load_rows(VkCommandBuffer cb, Surf* s, VkBuffer buf, u32 pitch, u32 layer, u32 y, u32 n) {
+    VkBufferImageCopy c = {.bufferRowLength = pitch / s->f.bpp,
+                           .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1},
+                           .imageOffset = {0, (i32)y, 0},
+                           .imageExtent = {s->w, n, 1}};
+    vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    rec_CmdCopyBufferToImage(cb, buf, s->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+}
+/* s's layers a band of rows at a time, as flush_parts reads them back: whole rows of blocks, VK_PART_SHARE of the cap
+   at most (a row of blocks at least), as the scratch buffer stays as big as the most asked of it. Each band is staged
+   from where it lies and deswizzled into the start of the scratch buffer: the barrier before its move orders the copy
+   of the band before out of there */
+static int load_bands(Surf* s, u32 pitch) {
+    u32 h = guest_h(s), band = 8u << bl_height(h, s->bh);
+    u32 rows = (u32)(g_vk.alloc_cap / VK_PART_SHARE / pitch) / band * band;
+    if (!rows) rows = band;
+    for (u32 l = 0; l < s->layers; l++)
+        for (u32 y = 0; y < h; y += rows) {
+            VkBlMove m = rt_bl_move(s, pitch);
+            VkBuffer staged, scratch;
+            u64 lo, hi, off, cap;
+            m.y0 = y;
+            m.rows = h - y < rows ? h - y : rows;
+            vk_bl_range(&m, &lo, &hi);
+            u64 from = s->gva + (u64)l * s->layer_size + lo;
+            u8* p = vk_stage_guest_input(from, hi - lo, hi - lo, &staged, &off);
+            if (!p) return load_fail(s, l, y, "staging", hi - lo);
+            vk_guest_read(from, hi - lo, p, staged, off);
+            /* after the read, which may land GPU results and submit: the command buffer, and the scratch buffer if
+               they grew it, are the ones from then */
+            VkCommandBuffer cb = vk_cmd();
+            if (!(scratch = vk_bl_scratch((u64)m.rows * pitch, &cap)))
+                return load_fail(s, l, y, "scratch buffer", (u64)m.rows * pitch);
+            vk_bl_barrier(cb, 1);
+            if (!vk_bl_move(cb, &m, 0, staged, off, scratch, 0)) return 0; /* said there */
+            vk_bl_barrier(cb, 0);
+            rt_load_rows(cb, s, scratch, pitch, l, y, m.rows);
+        }
+    return 1;
+}
+/* a block linear target loaded: its guest bytes staged as they are, from where they are, and deswizzled on the GPU.
+   One whose rows need more than VK_PART_SHARE of the cap goes in bands (load_bands); a multisampled one goes whole,
+   its layers drawn from the guest's layout of them (vk_ms_pack), and so do a scaled one, blitted from an unscaled
+   image, and a volume, its slices one move */
 static int surf_load_bl(Surf* s) {
     u64 sz = rt_bytes(s);
     u32 pitch = (guest_w(s) * s->f.bpp + 15) & ~15u, moves = s->volume ? 1 : s->layers, h = guest_h(s);
@@ -614,8 +727,11 @@ static int surf_load_bl(Surf* s) {
     VkBuffer staged, scratch;
     u64 off;
     vk_render_end();
-    u8* p = vk_stage(sz, vk_stage_align(), &staged, &off);
-    if (!p || !(scratch = vk_bl_scratch(lin, &cap))) return 0;
+    if (lin > g_vk.alloc_cap / VK_PART_SHARE && !s->msaa && s->sw == s->w && s->sh == s->h && !surf_volume(s))
+        return load_bands(s, pitch);
+    u8* p = vk_stage_guest_input(s->gva, sz, sz, &staged, &off);
+    if (!p) return load_fail(s, 0, 0, "staging", sz);
+    if (!(scratch = vk_bl_scratch(lin, &cap))) return load_fail(s, 0, 0, "scratch buffer", lin);
     vk_guest_read(s->gva, sz, p, staged, off); /* what the GPU holds of it copied on the GPU */
     VkCommandBuffer cb = vk_cmd();
     vk_bl_barrier(cb, 1);
@@ -633,7 +749,7 @@ static int surf_load_pitch(Surf* s) {
     VkBuffer buf;
     u64 off;
     vk_render_end();
-    u8* p = vk_stage(as_is ? sz : row * gh * s->layers, vk_stage_align(), &buf, &off);
+    u8* p = vk_stage_guest_input(s->gva, sz, as_is ? sz : row * gh * s->layers, &buf, &off);
     if (!p) return 0;
     if (as_is)
         vk_guest_read(s->gva, sz, p, buf, off);
@@ -648,7 +764,7 @@ static int surf_load_pitch(Surf* s) {
 }
 int vk_ms_load(Surf* s) { return vk_ms_moves(s) && (s->bl ? surf_load_bl(s) : surf_load_pitch(s)); }
 
-void vk_rt_reload(u64 gva) {
+static void rt_reload(u64 gva) {
     Surf* s = vk_rt_find(gva);
     if (!s) return;
     vk_surf_wrote(s); /* the copies of it (crops) are out of date */
@@ -663,7 +779,20 @@ void vk_rt_reload(u64 gva) {
         vk_surf_relist(s);
         return;
     }
-    if (s->bl ? surf_load_bl(s) : surf_load_pitch(s)) rt_loaded(s);
+    if (s->bl ? surf_load_bl(s) : surf_load_pitch(s)) {
+        rt_loaded(s);
+        return;
+    }
+    /* a load that failed left the image behind memory (its old pixels, or some bands of the new ones): undefined
+       until it is drawn to again, as above, so it is never written back over memory */
+    s->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    s->draw_wseen = 0;
+    vk_surf_relist(s);
+}
+void vk_rt_reload(u64 gva) {
+    VkResourceScope scope = vk_resource_begin();
+    rt_reload(gva);
+    vk_resource_end(VK_RESOURCE_RT_RELOAD, scope);
 }
 
 /* a depth target whose Vulkan format holds the guest's bytes (Z32F as D32_SFLOAT, Z16 as D16_UNORM): its depth
@@ -745,16 +874,11 @@ static void flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pi
         }
     }
 }
-/* part of s's pixels into buf at at as flush_bytes says: tightly packed rows, or the guest's block linear layout, the
-   image copied into the scratch buffer and swizzled from there into buf, a layer at layer_size from the last (a band
-   of rows: its rows of blocks, from the first, vk_bl_range). 0 when that can't be done (said) */
-static int flush_record(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, const FlushPart* part) {
-    u32 row = guest_w(s) * s->f.bpp;
-    if (!s->bl) {
-        flush_copy(cb, s, buf, at, row, part);
-        return 1;
-    }
-    u32 pitch = (row + 15) & ~15u, moves = surf_volume(s) ? 1 : part->layers;
+/* part of a block linear target's pixels into buf at at in the guest's layout: the image copied into the scratch
+   buffer and swizzled from there into buf, a layer at layer_size from the last (a band of rows: its rows of blocks,
+   from the first, vk_bl_range). 0 when that can't be done (said) */
+static int flush_swizzle(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, const FlushPart* part) {
+    u32 pitch = (guest_w(s) * s->f.bpp + 15) & ~15u, moves = surf_volume(s) ? 1 : part->layers;
     u64 cap, need = (u64)pitch * part->rows * (surf_volume(s) ? surf_slices(s) : part->layers);
     VkBlMove m = rt_bl_move(s, pitch);
     m.y0 = part->y;
@@ -770,6 +894,38 @@ static int flush_record(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, const
     for (u32 i = 0; i < moves; i++)
         if (!vk_bl_move(cb, &m, 1, buf, at + (u64)i * s->layer_size, scratch, (u64)i * pitch * part->rows)) return 0;
     vk_bl_barrier(cb, 0);
+    return 1;
+}
+/* part of s's pixels into buf at at as flush_bytes says: tightly packed rows, or the guest's block linear layout
+   (flush_swizzle). Rows that need more than VK_PART_SHARE of the cap in scratch go a layer's band at a time, as the
+   scratch buffer stays as big as the most asked of it: whole rows of blocks, each band's bytes where the part's layout
+   has them, the next band's copy into the scratch buffer after the moves out of it (vk_bl_barrier). A volume and a
+   packed depth layer go whole, as flush_parts takes them, and a scaled target too: each band would blit its layer */
+static int flush_record(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, const FlushPart* part) {
+    u32 row = guest_w(s) * s->f.bpp, pitch = (row + 15) & ~15u;
+    u64 limit = g_vk.alloc_cap / VK_PART_SHARE, first, lo, hi;
+    if (!s->bl) {
+        flush_copy(cb, s, buf, at, row, part);
+        return 1;
+    }
+    if ((u64)pitch * part->rows * part->layers <= limit || surf_volume(s) || depth_packs(s) ||
+        (!s->msaa && (s->sw != s->w || s->sh != s->h)))
+        return flush_swizzle(cb, s, buf, at, part);
+    u32 band = 8u << bl_height(guest_h(s), s->bh), rows = (u32)(limit / pitch) / band * band,
+        end = part->y + part->rows;
+    VkBlMove m = rt_bl_move(s, pitch);
+    if (!rows) rows = band;
+    m.y0 = part->y;
+    m.rows = part->rows;
+    vk_bl_range(&m, &first, &hi); /* the part's bytes in buf start at its first row of blocks */
+    for (u32 i = 0; i < part->layers; i++)
+        for (u32 y = part->y; y < end; y += rows) {
+            FlushPart b = {part->layer + i, 1, y, end - y < rows ? end - y : rows};
+            m.y0 = y;
+            m.rows = b.rows;
+            vk_bl_range(&m, &lo, &hi);
+            if (!flush_swizzle(cb, s, buf, at + (u64)i * s->layer_size + (lo - first), &b)) return 0;
+        }
     return 1;
 }
 /* the copies recorded so far done, and their bytes readable by the host */
@@ -1835,8 +1991,10 @@ int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
     return n;
 }
 
-/* a surface's image and views go when the frame being recorded is done (descriptors in it may name them) */
+/* a surface's image and views go when the frame being recorded is done (descriptors in it may name them), the BC7
+   image being made for it too */
 static void surf_free(Surf* s) {
+    vk_tex_later_forget(s);
     surf_changed(s->gva);
     if (s->lru) {
         g_held[lru_kind(s)].n--;
@@ -1895,7 +2053,7 @@ static u64 surf_evict(Surf* s) {
     vk_defer_bytes(bytes);
     return bytes;
 }
-u64 vk_surf_reclaim(int kind, u32 before, u64 want, int lossy) {
+static u64 surf_reclaim(int kind, u32 before, u64 want, int lossy) {
     /* A render target goes with its contents: guest memory has them as of its last write-back. They aren't written to
        memory as they go: memory is shared by targets the GPU drew over one another, parked and freed ones among them,
        and by textures and buffers that copied from them on the GPU, and the renderer doesn't know them all. Writing an
@@ -1935,9 +2093,15 @@ u64 vk_surf_reclaim(int kind, u32 before, u64 want, int lossy) {
     }
     return freed;
 }
+u64 vk_surf_reclaim(int kind, u32 before, u64 want, int lossy) {
+    VkResourceScope scope = vk_resource_begin();
+    u64 freed = surf_reclaim(kind, before, want, lossy);
+    vk_resource_end(VK_RESOURCE_SURFACE_RECLAIM, scope);
+    return freed;
+}
 /* the render targets last used before `before` that later ones drew all over (rt_superseded), from either list: the
    aged one holds those that went there with pixels memory lacked, which draws since may have made lossless */
-u64 vk_rt_reclaim_superseded(u32 before, u64 want) {
+static u64 rt_reclaim_superseded(u32 before, u64 want) {
     u64 freed = 0;
     for (int lru = VK_LRU_RT + LRU_AGED; lru >= VK_LRU_RT && freed < want; lru -= LRU_AGED)
         for (Surf *s = g_lru[lru].head, *n; s && freed < want; s = n) {
@@ -1948,12 +2112,19 @@ u64 vk_rt_reclaim_superseded(u32 before, u64 want) {
         }
     return freed;
 }
+u64 vk_rt_reclaim_superseded(u32 before, u64 want) {
+    VkResourceScope scope = vk_resource_begin();
+    u64 freed = rt_reclaim_superseded(before, want);
+    vk_resource_end(VK_RESOURCE_SURFACE_RECLAIM, scope);
+    return freed;
+}
 
 /* ------------------------------------------------------------ the budget */
-/* A trim that found the images short of memory, where ASTC textures were decoded to RGBA8 (astc_mode=1, Exact) on a
-   GPU that samples BCn but not ASTC: the log suggests astc_mode=0 once a run, with the numbers (snx_astc_bc_suggest).
+/* A trim that found the images short of memory, where ASTC textures are held as RGBA8 (astc_mode=1, Exact, or Auto with
+   the budget for it at start) on a GPU that samples BCn but not ASTC: the log suggests astc_mode=2 (BC7) once a run,
+   with the numbers (snx_astc_bc_suggest).
    Short: an image allocation found no memory (force), the caches left past their budget once all that could go went,
-   or the working set evicted (what the last two presents used, the trim's second step), which the next frames load
+   or the working set evicted (what the last eight presents used, the trim's second step), which the next frames load
    again: a game held slow by eviction */
 static void astc_bc_suggest(int force, u64 extra, u64 usage, u64 budget, u64 freed, u64 working) {
     u64 left = usage > freed ? usage - freed : 0, astc = vk_astc_rgba8_bytes();
@@ -1962,19 +2133,19 @@ static void astc_bc_suggest(int force, u64 extra, u64 usage, u64 budget, u64 fre
               : working       ? SNX_ASTC_SHORT_WORKING_SET
                               : SNX_ASTC_SHORT_NONE;
     char said[128];
-    if (!snx_astc_bc_suggest(!g_settings.astc_mode, g_vk.astc_bc7_could, 0, astc, why)) return;
+    if (!snx_astc_bc_suggest(vk_astc_bc7(), g_vk.astc_bc7_could, 0, astc, why)) return;
     if (why == SNX_ASTC_SHORT_NO_MEMORY)
         snprintf(said, sizeof said, "an image of %llu MB found no memory", (unsigned long long)(extra >> 20));
     else if (why == SNX_ASTC_SHORT_PAST_BUDGET)
         snprintf(said, sizeof said, "the caches stay %llu MB past their budget after a trim",
                  (unsigned long long)((left - budget) >> 20));
     else
-        snprintf(said, sizeof said, "a trim took %llu MB of textures and targets the last two presents used",
+        snprintf(said, sizeof said, "a trim took %llu MB of textures and targets the last eight presents used",
                  (unsigned long long)(working >> 20));
     LOG_LIMIT(
         1,
-        "vulkan: %s, %llu of %llu MB budgeted in use: astc_mode=0 (Settings > Graphics) would hold the %llu MB of "
-        "ASTC textures decoded to RGBA8 in a quarter, as BC7\n",
+        "vulkan: %s, %llu of %llu MB budgeted in use: astc_mode=2 (BC7, Settings > Graphics) would hold the %llu MB "
+        "of ASTC textures decoded to RGBA8 in a quarter, encoded again as BC7 between frames\n",
         said, (unsigned long long)(usage >> 20), (unsigned long long)(budget >> 20), (unsigned long long)(astc >> 20));
 }
 static u64 g_trimmed;   /* statistics: bytes freed for the budget */
@@ -2067,7 +2238,9 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocati
     VkMemoryRequirements2 req = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
     VkResult res;
     SNX_ZONE(z, "vk image create");
+    VkResourceScope query = vk_resource_begin();
     vkGetDeviceImageMemoryRequirements(g_vk.dev, &q, &req);
+    vk_resource_end(VK_RESOURCE_IMAGE_QUERY, query);
     *bytes = req.memoryRequirements.size;
     SNX_ZONE_VALUE(z, *bytes);
     *img = VK_NULL_HANDLE;
@@ -2272,9 +2445,9 @@ static int resolve_depth(Surf* st, const Surf2D* d, int dx, int dy, int dw, int 
                                 .format = st->f.vk,
                                 .subresourceRange = {aspect, 0, 1, 0, 1}};
     VkImageView sv = VK_NULL_HANDLE, tv = VK_NULL_HANDLE;
-    int ok = VK_OK(vkCreateImageView(g_vk.dev, &vi, NULL, &sv));
+    int ok = VK_OK(vk_image_view_create(g_vk.dev, &vi, NULL, &sv));
     vi.image = tmp;
-    ok = ok && VK_OK(vkCreateImageView(g_vk.dev, &vi, NULL, &tv));
+    ok = ok && VK_OK(vk_image_view_create(g_vk.dev, &vi, NULL, &tv));
     vk_defer_image(tmp, tm, sv, tv); /* once the frame's commands that use them are done */
     if (!ok) return 0;
     vk_render_end();

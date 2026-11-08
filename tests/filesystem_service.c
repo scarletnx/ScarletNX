@@ -193,6 +193,11 @@ void am_display_version(char version[16]) {
     memcpy(version, test_display, sizeof test_display);
     version[15] = 0;
 }
+/* am.c's: an account's and the device's save sizes, which this test sets */
+void am_save_data_size(u8 type, i64* normal_size, i64* journal_size) {
+    *normal_size = type == 1 ? 0x1230000 : type == 3 ? 0x450000 : 0;
+    *journal_size = type == 1 ? 0x670000 : type == 3 ? 0x89000 : 0;
+}
 void fatal(const char* format, ...) {
     va_list args;
     va_start(args, format);
@@ -270,6 +275,14 @@ int ipc_bad_request(SvcObj* o, IpcCtx* c) {
 int ipc_bad_objects(SvcObj* o, IpcCtx* c) {
     (void)o, (void)c;
     return RC(10, 235);
+}
+/* the object a request sends in its domain message: the one test_in_object names, with a reference for the caller */
+#define TEST_DOMAIN_MESSAGE 2 /* ipc.c's IPC_DOMAIN_MESSAGE */
+static SvcObj* test_in_object;
+SvcObj* ipc_in_obj(IpcCtx* c, int index) {
+    if (c->is_domain != TEST_DOMAIN_MESSAGE || index || !test_in_object) return NULL;
+    test_in_object->refs++;
+    return test_in_object;
 }
 int stub_ok(SvcObj* obj, IpcCtx* c) {
     fprintf(stderr, "Unexpected stub: %s command %u\n", obj->name, c->cmd);
@@ -397,8 +410,8 @@ static u64 dir_read(SvcObj* dir, unsigned capacity) {
 
 static void test_file_services(SvcObj* fs) {
     fs_command(fs, 0, "/work.bin", 4, 0);
-    fs_command(fs, 0, "/work.bin", 4, FS_EXISTS);
-    fs_command(fs, 0, "/missing/file.bin", 4, FS_NOTFOUND);
+    fs_command(fs, 0, "/work.bin", 4, SNX_RC_FS_PATH_ALREADY_EXISTS);
+    fs_command(fs, 0, "/missing/file.bin", 4, SNX_RC_FS_PATH_NOT_FOUND);
     SvcObj* writer = open_object(fs, 8, "/work.bin", 7);
     SvcObj* reader = open_object(fs, 8, "/work.bin", 1);
     CHECK(get_size(writer) == 4 && get_size(reader) == 4);
@@ -408,15 +421,15 @@ static void test_file_services(SvcObj* fs) {
     const u8 expected[9] = {0, 0, 0, 0, 'h', 'e', 'l', 'l', 'o'};
     CHECK(!memcmp(GP(0x5000), expected, sizeof expected));
     CHECK(GP(0x5000)[9] == 0xcc);
-    write_data(reader, 0, "x", 1, FS_WRITE_NOT_PERMITTED);
-    set_size(reader, 1, FS_WRITE_NOT_PERMITTED);
+    write_data(reader, 0, "x", 1, SNX_RC_FS_WRITE_UNPERMITTED);
+    set_size(reader, 1, SNX_RC_FS_WRITE_UNPERMITTED);
     SvcObj* fixed = open_object(fs, 8, "/work.bin", 3);
-    write_data(fixed, 9, "x", 1, FS_NO_APPEND);
+    write_data(fixed, 9, "x", 1, SNX_RC_FS_FILE_EXTENSION_WITHOUT_OPEN_MODE_ALLOW_APPEND);
     CHECK(get_size(fixed) == 9);
     set_size(writer, 2, 0);
     CHECK(get_size(reader) == 2 && get_size(fixed) == 2);
     CHECK(read_data(reader, 0, 16, 0) == 2);
-    read_data(reader, 3, 1, FS_OUT_OF_RANGE);
+    read_data(reader, 3, 1, SNX_RC_FS_OUT_OF_RANGE);
     set_size(writer, 8192, 0);
     CHECK(get_size(reader) == 8192 && get_size(fixed) == 8192);
     CHECK(read_data(reader, 8191, 1, 0) == 1 && GP(0x5000)[0] == 0);
@@ -438,7 +451,7 @@ static void test_file_services(SvcObj* fs) {
     svcobj_unref(reader);
     svcobj_unref(writer);
     rename_object(fs, 5, "/work.bin", "/renamed.bin", 0);
-    fs_command(fs, 7, "/work.bin", 0, FS_NOTFOUND);
+    fs_command(fs, 7, "/work.bin", 0, SNX_RC_FS_PATH_NOT_FOUND);
     /* GetFileTimeStampRaw (14): the host file's time for created, modified and accessed, and the flag that says so;
        nothing for a name that isn't there */
     {
@@ -453,13 +466,13 @@ static void test_file_services(SvcObj* fs) {
         CHECK(t[0] == t[1] && t[1] == t[2] && t[0] + 60 >= now && t[0] <= now + 60 && r.c.out[0x18] == 1);
         request(&r, 14);
         argument_path(&r, 0, "/work.bin");
-        dispatch(fs, &r, FS_NOTFOUND);
+        dispatch(fs, &r, SNX_RC_FS_PATH_NOT_FOUND);
     }
     reader = open_object(fs, 8, "/renamed.bin", 1);
     CHECK(get_size(reader) == 8192);
     svcobj_unref(reader);
     fs_command(fs, 1, "/renamed.bin", 0, 0);
-    fs_command(fs, 7, "/renamed.bin", 0, FS_NOTFOUND);
+    fs_command(fs, 7, "/renamed.bin", 0, SNX_RC_FS_PATH_NOT_FOUND);
     puts("PASS HLE create/open/write/read/truncate/rename/delete and shared cached size");
 }
 
@@ -595,18 +608,18 @@ static void test_directory_services(SvcObj* fs) {
     SvcObj* fresh = open_object(fs, 9, "/listed", 2);
     CHECK(dir_count(fresh) == 4 && dir_read(fresh, 8) == 4);
     svcobj_unref(fresh);
-    fs_command(fs, 3, "/listed", 0, FS_DIR_NOT_EMPTY);
+    fs_command(fs, 3, "/listed", 0, SNX_RC_FS_DIRECTORY_NOT_EMPTY);
     fs_command(fs, 13, "/listed", 0, 0);
     CHECK(dir_count(dir) == 0);
     fs_command(fs, 3, "/listed", 0, 0);
     Request removed;
     request(&removed, 1);
-    dispatch(dir, &removed, FS_NOTFOUND);
+    dispatch(dir, &removed, SNX_RC_FS_PATH_NOT_FOUND);
     request(&removed, 0);
     output_buffer(&removed, 0x310);
-    dispatch(dir, &removed, FS_NOTFOUND);
+    dispatch(dir, &removed, SNX_RC_FS_PATH_NOT_FOUND);
     svcobj_unref(dir);
-    fs_command(fs, 7, "/listed", 0, FS_NOTFOUND);
+    fs_command(fs, 7, "/listed", 0, SNX_RC_FS_PATH_NOT_FOUND);
     puts("PASS HLE directory cursor/count after create, delete, rename and clean");
 }
 
@@ -615,21 +628,21 @@ static void test_index_and_paths(SvcObj* fs) {
     CHECK(snprintf(path, sizeof path, "%ssdmc/external.bin", g_datadir) < (int)sizeof path);
     FILE* f = fopen(path, "wb");
     CHECK(f != NULL && fwrite("unindexed", 1, 9, f) == 9 && !fclose(f));
-    fs_command(fs, 7, "/external.bin", 0, FS_NOTFOUND);
-    fs_command(fs, 1, "/external.bin", 0, FS_NOTFOUND);
+    fs_command(fs, 7, "/external.bin", 0, SNX_RC_FS_PATH_NOT_FOUND);
+    fs_command(fs, 1, "/external.bin", 0, SNX_RC_FS_PATH_NOT_FOUND);
     Request r;
     request(&r, 8);
     argument32(&r, 0, 1);
     argument_path(&r, 0, "/external.bin");
-    dispatch(fs, &r, FS_NOTFOUND);
+    dispatch(fs, &r, SNX_RC_FS_PATH_NOT_FOUND);
     CHECK(r.c.nout_objs == 0);
     u64 size = 123;
     CHECK(fs_open_read("sdmc/external.bin", &size) == NULL && size == 0);
     CHECK(fs_read_file("sdmc/external.bin", &size) == NULL && size == 0);
     PFileMap map = {0};
     CHECK(fs_map_file("sdmc/external.bin", &map) != 0);
-    fs_command(fs, 7, "/../root/root.txt", 0, FS_DIR_UNOBTAINABLE);
-    fs_command(fs, 7, "romfs:/asset.bin", 0, FS_DIR_UNOBTAINABLE);
+    fs_command(fs, 7, "/../root/root.txt", 0, SNX_RC_FS_DIRECTORY_UNOBTAINABLE);
+    fs_command(fs, 7, "romfs:/asset.bin", 0, SNX_RC_FS_DIRECTORY_UNOBTAINABLE);
     /* A NUL just beyond the descriptor must never make an unterminated path valid. */
     request(&r, 7);
     argument_path(&r, 0, "/seed.bin");
@@ -742,14 +755,14 @@ static void test_virtual_services(SvcObj* fs, SvcObj* proxy) {
     SvcObj* file = open_object(fs, 8, "/virtual.bin", 1);
     CHECK(get_size(file) == sizeof bytes);
     CHECK(read_data(file, 1, 10, 0) == 4 && !memcmp(GP(0x5000), bytes + 1, 4));
-    write_data(file, 0, "x", 1, FS_WRITE_NOT_PERMITTED);
-    set_size(file, 0, FS_WRITE_NOT_PERMITTED);
+    write_data(file, 0, "x", 1, SNX_RC_FS_WRITE_UNPERMITTED);
+    set_size(file, 0, SNX_RC_FS_WRITE_UNPERMITTED);
     Request r;
     request(&r, 8);
     argument32(&r, 0, 3);
     argument_path(&r, 0, "/virtual.bin");
-    dispatch(fs, &r, FS_WRITE_NOT_PERMITTED);
-    fs_command(fs, 1, "/virtual.bin", 0, FS_WRITE_NOT_PERMITTED);
+    dispatch(fs, &r, SNX_RC_FS_WRITE_UNPERMITTED);
+    fs_command(fs, 1, "/virtual.bin", 0, SNX_RC_FS_WRITE_UNPERMITTED);
     svcobj_unref(file);
 
     request(&r, 202);
@@ -1792,8 +1805,8 @@ static void test_save_data(SvcObj* proxy) {
     SvcObj* device = open_save_data(proxy, 51, 3);
     CHECK(tree_has("save/bcat") && tree_has("save/device") && !tree_has("save/temp"));
     fs_command(system, 0, "/system.bin", 4, 0);
-    fs_command(bcat, 7, "/system.bin", 0, FS_NOTFOUND);
-    fs_command(device, 7, "/system.bin", 0, FS_NOTFOUND);
+    fs_command(bcat, 7, "/system.bin", 0, SNX_RC_FS_PATH_NOT_FOUND);
+    fs_command(device, 7, "/system.bin", 0, SNX_RC_FS_PATH_NOT_FOUND);
     CHECK(tree_has("save/system/system.bin"));
     fs_command(system, 1, "/system.bin", 0, 0);
     svcobj_unref(bcat);
@@ -1807,7 +1820,7 @@ static void test_save_data(SvcObj* proxy) {
     /* the first user's, with no save/user and save/system empty, is its folder, made then */
     user = open_user_save(proxy, g_user_id);
     CHECK(tree_has(FIRST_SAVE) && tree_has("save/system"));
-    fs_command(user, 7, "/other-user.bin", 0, FS_NOTFOUND);
+    fs_command(user, 7, "/other-user.bin", 0, SNX_RC_FS_PATH_NOT_FOUND);
     svcobj_unref(user);
     CHECK(test_left_said == 0);
     pm_lock(&g_hle.fs.tree.lock);
@@ -1861,7 +1874,7 @@ static void test_save_data(SvcObj* proxy) {
     fs_command(system, 1, "/slot.bin", 0, 0);
     fs_command(system, 0, "/other.bin", 4, 0);
     user = open_user_save(proxy, g_user_id);
-    fs_command(user, 7, "/other.bin", 0, FS_NOTFOUND);
+    fs_command(user, 7, "/other.bin", 0, SNX_RC_FS_PATH_NOT_FOUND);
     fs_command(user, 0, "/progress.bin", 4, 0);
     svcobj_unref(user);
     CHECK(tree_has("save/system/other.bin") && tree_has(FIRST_SAVE "/progress.bin"));
@@ -2286,6 +2299,130 @@ static void test_save_note(SvcObj* proxy) {
          "an older, the same or another game's not, by the content meta's versions else the display versions'");
 }
 
+/* IMultiCommitManager (fsp-srv's 1200): Add (1) {an IFileSystem, in the domain message} takes 10 file systems, each
+   once; Commit (2) commits each as its own Commit does, an Account and a Device save's notes written, or none when
+   one of them was closed since */
+static u32 multi_add(SvcObj* manager, SvcObj* filesystem) {
+    Request r;
+    u32 rc;
+    request(&r, 1);
+    r.c.is_domain = TEST_DOMAIN_MESSAGE;
+    r.c.nin_objs = 1;
+    test_in_object = filesystem;
+    rc = (u32)manager->dispatch(manager, &r.c);
+    test_in_object = NULL;
+    return rc;
+}
+static void save_note_of(SvcObj* save, char* note, size_t size) {
+    char folder[FS_TREE_PATH_MAX];
+    save_host_folder(save, folder, sizeof folder);
+    snprintf(note, size, "%s.version", folder);
+}
+static void test_multi_commit(SvcObj* proxy) {
+    char user_note[FS_TREE_PATH_MAX + 16], device_note[FS_TREE_PATH_MAX + 16];
+    SvcObj *manager, *user, *device, *more[9];
+    Request r;
+    strcpy(g_settings.save_layout, "game");
+    test_program(0, 0, "1.0.0");
+    request(&r, 1200);
+    dispatch(proxy, &r, 0);
+    CHECK(r.c.nout_objs == 1);
+    manager = r.c.out_objs[0];
+    user = open_user_save(proxy, g_user_id);
+    device = open_save_data(proxy, 51, 3);
+    save_note_of(user, user_note, sizeof user_note);
+    save_note_of(device, device_note, sizeof device_note);
+    remove(user_note);
+    remove(device_note);
+    CHECK(multi_add(manager, user) == 0 && multi_add(manager, device) == 0);
+    CHECK(multi_add(manager, user) == RC(2, 6463));    /* MultiCommitHasOverlappingTargets */
+    CHECK(multi_add(manager, manager) == RC(2, 6001)); /* not a file system: InvalidArgument */
+    CHECK(!host_file(user_note) && !host_file(device_note));
+    request(&r, 2);
+    dispatch(manager, &r, 0);
+    CHECK(host_text(user_note, "program=0100000000010000\ndisplay=1.0.0\n"));
+    CHECK(host_text(device_note, "program=0100000000010000\ndisplay=1.0.0\n"));
+    /* ten at most: MultiCommitFileSystemLimit past them */
+    for (int i = 0; i < 9; i++) more[i] = open_user_save(proxy, g_user_id);
+    for (int i = 0; i < 8; i++) CHECK(multi_add(manager, more[i]) == 0);
+    CHECK(multi_add(manager, more[8]) == RC(2, 6710));
+    /* one of them closed: NotFound, and no note written */
+    svcobj_unref(more[0]);
+    remove(user_note);
+    remove(device_note);
+    request(&r, 2);
+    dispatch(manager, &r, SNX_RC_FS_PATH_NOT_FOUND);
+    CHECK(!host_file(user_note) && !host_file(device_note));
+    for (int i = 1; i < 9; i++) svcobj_unref(more[i]);
+    svcobj_unref(user);
+    svcobj_unref(device);
+    svcobj_unref(manager);
+    g_settings.save_layout[0] = 0;
+    g_gamename[0] = g_exename[0] = 0;
+    puts("PASS the commit of several file systems: ten, each once, their notes written, none when one is closed");
+}
+/* ReadSaveDataFileSystemExtraDataWithMaskBySaveDataAttribute (71) {u8 space id, attribute at 8}, the extra data out
+   in B 0 and the mask in A 0, 0x200 bytes each: the attribute with the game's program when it named none (0x0), the
+   owner at 0x40, an account's or the device's available and journal sizes at 0x58 and 0x60 (am.c's), the rest 0, each
+   byte as the mask keeps it */
+/* the request for a save's extra data: its attribute's program 0 (the game's) unless program, the mask keeping the
+   bytes from..to */
+static void extra_data(SvcObj* proxy, u8 type, const u64* uid, int program, u32 from, u32 to) {
+    Request r;
+    save_request(&r, 71, type, uid);
+    if (!program) memset(r.raw + 8, 0, 8);
+    memset(GP(0x3000), 0, 0x200);
+    memset(GP(0x3000 + from), 0xFF, to - from);
+    r.c.a[0] = (IpcBuf){0x3000, 0x200, 0};
+    r.c.na = 1;
+    output_buffer(&r, 0x200);
+    dispatch(proxy, &r, 0);
+    CHECK(r.c.out_size == 0);
+}
+static void test_extra_data(SvcObj* proxy) {
+    const u8* out = GP(0x5000);
+    Request sent;
+    save_request(&sent, 71, 1, g_user_id);
+    snx_st_le64(sent.raw + 8, 0x0100000000010000ull); /* the attribute as sent, with the game's program */
+    extra_data(proxy, 1, g_user_id, 0, 0, 0x200);
+    CHECK(!memcmp(out, sent.raw + 8, 0x40));
+    CHECK(snx_ld_le64(out + 0x40) == 0x0100000000010000ull && snx_ld_le64(out + 0x48) == 0 &&
+          snx_ld_le32(out + 0x50) == 0 && snx_ld_le32(out + 0x54) == 0);
+    CHECK(snx_ld_le64(out + 0x58) == 0x1230000 && snx_ld_le64(out + 0x60) == 0x670000 && snx_ld_le64(out + 0x68) == 0);
+    for (int i = 0x70; i < 0x200; i++) CHECK(out[i] == 0);
+    /* a program named stays, the owner too; the device's sizes */
+    extra_data(proxy, 3, NULL, 1, 0, 0x200);
+    CHECK(snx_ld_le64(out) == 0x0404040404040404ull && snx_ld_le64(out + 0x40) == 0x0404040404040404ull);
+    CHECK(snx_ld_le64(out + 0x58) == 0x450000 && snx_ld_le64(out + 0x60) == 0x89000);
+    /* a mask that keeps the available size alone */
+    extra_data(proxy, 1, g_user_id, 0, 0x58, 0x60);
+    CHECK(snx_ld_le64(out + 0x58) == 0x1230000);
+    for (int i = 0; i < 0x200; i++)
+        if (i < 0x58 || i >= 0x60) CHECK(out[i] == 0);
+    puts("PASS a save's extra data: its attribute, owner and sizes, each byte as the mask keeps it");
+}
+
+/* fs_sd_write_new, a file the system writes on the SD card (caps' album): its folders made, written through the index,
+   so the game's SD card file system finds it and its data; a second of the same name refused, the first left */
+static void test_sd_write(SvcObj* proxy) {
+    static const char data[] = "a picture";
+    Request r;
+    SvcObj *sd, *file;
+    CHECK(fs_sd_write_new("Nintendo/Album/2026/11/07", "x.jpg", data, sizeof data) == FS_TREE_OK);
+    CHECK(fs_sd_write_new("Nintendo/Album/2026/11/07", "x.jpg", "other", 6) == FS_TREE_EXISTS);
+    CHECK(tree_has("sdmc/Nintendo/Album/2026/11/07/x.jpg"));
+    request(&r, 18); /* OpenSdCardFileSystem */
+    dispatch(proxy, &r, 0);
+    CHECK(r.c.nout_objs == 1);
+    sd = r.c.out_objs[0];
+    file = open_object(sd, 8, "/Nintendo/Album/2026/11/07/x.jpg", 1);
+    CHECK(get_size(file) == sizeof data);
+    CHECK(read_data(file, 0, sizeof data, 0) == sizeof data && !memcmp(GP(0x5000), data, sizeof data));
+    svcobj_unref(file);
+    svcobj_unref(sd);
+    puts("PASS a file written on the SD card: its folders made, found through the index, a second of its name refused");
+}
+
 static void cleanup_service(void) {
     pm_lock(&g_hle.fs.tree.lock);
     for (unsigned i = 0; i < NOPEN; i++)
@@ -2470,7 +2607,7 @@ int main(int argc, char** argv) {
         argument64(&r, 8, 0x10);
         output_buffer(&r, 0x10);
         test_romfs_text[0] = 0;
-        dispatch(storage, &r, cut ? FS_OUT_OF_RANGE : 0);
+        dispatch(storage, &r, cut ? SNX_RC_FS_OUT_OF_RANGE : 0);
         free(said);
         said =
             snx_format("RomFS: could not read the dump at %llx (10 bytes; hactool: Compressed storage entry 0 (NONE, "
@@ -2578,6 +2715,9 @@ int main(int argc, char** argv) {
     test_save_data(proxy);
     test_save_layout(proxy);
     test_save_note(proxy);
+    test_multi_commit(proxy);
+    test_extra_data(proxy);
+    test_sd_write(proxy);
     test_state_temp(proxy);
     test_notifiers_and_program_index(proxy);
     svcobj_unref(fs);

@@ -94,7 +94,7 @@ typedef struct KSession {
     /* NULL until ConvertCurrentObjectToDomain, then set once with an atomic store that other threads' requests load,
        and shared by the session's clones */
     struct Domain* domain;
-    int closed; /* the server closed it: requests answer R_SESSIONCLOSED */
+    int closed; /* the server closed it: requests answer SNX_RC_SVC_SESSION_CLOSED */
 } KSession;
 
 /* A domain's objects, numbered from 1 (id = index + 1): a closed one leaves a hole the next object takes, as sf

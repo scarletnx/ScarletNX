@@ -16,6 +16,7 @@
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vsgen.h"
 #include "common/utilities/bits.h"
+#include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include "snx_settings.h"
 #include <SDL3/SDL_cpuinfo.h>
@@ -246,6 +247,7 @@ static struct {
     SDL_Condition *job_queued, *job_done;
     PipeJob jobs[PIPE_JOBS];
     uint64_t skipped; /* the draws skipped while their pipeline was made */
+    int low_refused;  /* a worker's low priority was refused, which the first one refused says (atomic) */
 } g;
 
 static VkDevice device(void) { return snx_ctr_vk()->device; }
@@ -953,6 +955,9 @@ static VkSampler sampler(uint32_t key) {
         VK_SAMPLER_ADDRESS_MODE_REPEAT,        VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT,
         VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
         VK_SAMPLER_ADDRESS_MODE_REPEAT,        VK_SAMPLER_ADDRESS_MODE_REPEAT};
+    /* the Switch's anisotropy raises a mipmapped texture's linear filtering, a 3D scene's surfaces; nearest filtering
+       (2D art) and a texture without levels keep the game's */
+    float anisotropy = (key & 3) == 3 && (key >> 13 & 15) ? snx_ctr_vk()->anisotropy : 0;
     VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
                               .magFilter = key & 1 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,
                               .minFilter = key >> 1 & 1 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,
@@ -963,6 +968,8 @@ static VkSampler sampler(uint32_t key) {
                               .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                               .minLod = (float)(key >> 9 & 15),
                               .maxLod = (float)(key >> 13 & 15),
+                              .anisotropyEnable = anisotropy > 0,
+                              .maxAnisotropy = anisotropy,
                               .borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK};
     VkSampler s;
     if (vkCreateSampler(device(), &si, NULL, &s) != VK_SUCCESS) return g.sampler_count ? g.samplers[0].sampler : 0;
@@ -1297,9 +1304,15 @@ static VkPipeline make_pipeline(const PipeKey* k, VkShaderModule vs, VkShaderMod
         return VK_NULL_HANDLE;
     return pipeline;
 }
-/* A worker: makes the queued pipelines one by one, until the renderer stops them */
-static int SDLCALL pipe_worker(void* unused) {
-    (void)unused;
+/* A worker: makes the queued pipelines one by one, until the renderer stops them. One past the first two runs at the
+   system's low priority (low, snx_vk_pipeline_low_workers) */
+static int SDLCALL pipe_worker(void* low) {
+    char why[256];
+    if (low && snx_thread_priority_low(why, sizeof why) && !__atomic_exchange_n(&g.low_refused, 1, __ATOMIC_RELAXED))
+        fprintf(
+            stderr,
+            "3ds gpu: a pipeline worker asked for %s, the system's low priority: %s (said for the first one refused)\n",
+            snx_thread_priority_low_name(), why);
     SDL_LockMutex(g.job_lock);
     while (!g.jobs_stop) {
         PipeJob* j = NULL;
@@ -1328,10 +1341,12 @@ static unsigned pipe_workers(void) {
     g.workers_tried = true;
     unsigned n = (unsigned)snx_vk_pipeline_workers(g_settings.pipeline_threads, SDL_GetNumLogicalCPUCores());
     if (n > WORKERS) n = WORKERS;
+    unsigned low = (unsigned)snx_vk_pipeline_low_workers((int)n);
     if ((g.job_lock = SDL_CreateMutex()) && (g.job_queued = SDL_CreateCondition()) &&
         (g.job_done = SDL_CreateCondition()))
         while (g.worker_count < n) {
-            SDL_Thread* t = SDL_CreateThread(pipe_worker, "3DS pipelines", NULL);
+            SDL_Thread* t =
+                SDL_CreateThread(pipe_worker, "3DS pipelines", (void*)(uintptr_t)(g.worker_count >= n - low));
             if (!t) break;
             g.workers[g.worker_count++] = t;
         }

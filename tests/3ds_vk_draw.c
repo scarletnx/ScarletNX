@@ -17,6 +17,7 @@
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include "support/3ds_vk_path.h"
+#include "support/thread_nice.h"
 #include "snx_settings.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -626,12 +627,13 @@ static void commands_after_draw(SnxCtrMemory* m) {
 }
 static void screens(SnxCtrMemory* m) { present_screens(m, false); }
 /* async_pipelines: a draw whose pipeline is new is skipped while a worker makes it, so its target keeps what it held;
-   once the pipeline is made the same list draws as the CPU reference does, and is not skipped again */
+   once the pipeline is made the same list draws as the CPU reference does, and is not skipped again. Of the three
+   workers the third runs at the system's low priority */
 static void async_pipelines(SnxCtrMemory* m) {
     static unsigned char start[W * H * 4], none[W * H * 4], sw[W * H * 4], sw_depth[W * H * 4], gpu[W * H * 4],
         gpu_depth[W * H * 4];
     g_settings.async_pipelines = 1;
-    g_settings.pipeline_threads = 2;
+    g_settings.pipeline_threads = 3;
     Scene* s = triangle_scene("async, then made", 6);
     random_fill(start, sizeof start);
     setup(m, s, start, none);
@@ -642,6 +644,15 @@ static void async_pipelines(SnxCtrMemory* m) {
            (unsigned long long)skipped, memcmp(gpu, start, sizeof gpu) ? "drawn on" : "as it was",
            kept ? "ok" : "FAIL");
     failures += !kept;
+#if defined(__linux__)
+    {
+        int normal, low, other;
+        bool split = thread_nice_settled("3DS pipelines", 2, 1, &normal, &low, &other);
+        printf("%-24s %d workers at the main thread's nice, %d at nice +%d, %d at another: %s\n", "async, workers",
+               normal, low, SNX_THREAD_LOW_NICE, other, split ? "ok" : "FAIL");
+        failures += !split;
+    }
+#endif
     setup(m, s, start, none);
     bool a = draw(m, s, &software, sw, sw_depth);
     setup(m, s, start, none);

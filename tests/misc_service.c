@@ -5,6 +5,7 @@
 #include "nx/hle/services/services_int.h"
 #include <math.h>
 #include <stdarg.h>
+#include <plutovg.h> /* caps' JPEGs read back */
 
 #include "nx/hle/services/acc.c"
 #include "nx/hle/services/users.c"
@@ -27,7 +28,7 @@ const char* ini_deprecated_value(const char* key) {
     (void)key;
     return NULL;
 }
-char g_exedir[1024];
+char g_exedir[1024], g_datadir[1024];
 static unsigned test_checks, test_objects, test_kobjs;
 static u32 test_next_handle = 0x100;
 u64 plat_ns(void) {
@@ -61,6 +62,26 @@ FILE* fs_open_read(const char* path, u64* size) {
         }
     }
     return NULL;
+}
+/* fs.c's: the files caps writes on the SD card, kept here by folder and name, a name there already refused */
+#define TEST_SD_FILES 8
+static struct {
+    char dir[64], name[96];
+    u8* data;
+    u64 size;
+} test_sd[TEST_SD_FILES];
+static int test_sd_files;
+int fs_sd_write_new(const char* dir, const char* name, const void* data, u64 size) {
+    for (int i = 0; i < test_sd_files; i++)
+        if (!strcmp(test_sd[i].dir, dir) && !strcmp(test_sd[i].name, name)) return FS_TREE_EXISTS;
+    if (test_sd_files == TEST_SD_FILES) return FS_TREE_IO;
+    snprintf(test_sd[test_sd_files].dir, sizeof test_sd[0].dir, "%s", dir);
+    snprintf(test_sd[test_sd_files].name, sizeof test_sd[0].name, "%s", name);
+    test_sd[test_sd_files].data = malloc((size_t)size);
+    if (!test_sd[test_sd_files].data) return FS_TREE_NOMEM;
+    memcpy(test_sd[test_sd_files].data, data, (size_t)size);
+    test_sd[test_sd_files++].size = size;
+    return FS_TREE_OK;
 }
 /* the base ID the game's control.nacp numbers its DLCs from (am.c's), 0 for the SDK's default */
 static u64 test_aoc_base;
@@ -1058,7 +1079,8 @@ static void test_nfp_filter(void) {
             argument32(&r, 8, 0xFFFFFFFFu);
             answers[i] = user->dispatch(user, &r.c);
         }
-        CHECK(answers[0] == answers[1] && answers[0] == (initialized ? NFP_DEVICE_NOT_FOUND : NFP_NFC_DISABLED));
+        CHECK(answers[0] == answers[1] &&
+              answers[0] == (initialized ? SNX_RC_NFP_DEVICE_NOT_FOUND : SNX_RC_NFP_NFC_DISABLED));
     }
     svcobj_unref(user);
     svcobj_unref(manager);
@@ -1361,7 +1383,7 @@ static int mii_name_clean(const u8* c) {
    ten where she fits the age, gender and race asked (exactly 3 of mii_own_pick's 30 draws), never where she does not */
 static void test_mii_own(void) {
     static const char* const want[3] = {"Baguette", "Leek Girl", "Phone Girl"};
-    static const u8 hair[3] = {112, 126, 84}, hair_color[3] = {32, 61, 85}, eye_color[3] = {15, 60, 90};
+    static const u8 hair[3] = {112, 126, 84}, hair_color[3] = {34, 61, 85}, eye_color[3] = {29, 60, 90};
     SvcObj* service = new_mii();
     Request r;
     u32 i, j, picks[3] = {0}, own = 0, n = 3000;
@@ -1537,6 +1559,235 @@ static void test_pctl_play_timer(void) {
     svcobj_unref(factory);
 }
 
+/* pctl's IsFreeCommunicationAvailable (1018), no arguments: success, no restriction set */
+static void test_pctl_free_communication(void) {
+    SvcObj *factory = new_pctl(), *pctl;
+    Request r;
+    request(&r, 0);
+    r.c.has_pid = 1;
+    call(factory, &r);
+    CHECK(r.c.nout_objs == 1);
+    pctl = r.c.out_objs[0];
+    request(&r, 1018);
+    call(pctl, &r);
+    CHECK(r.c.out_size == 0);
+    svcobj_unref(pctl);
+    svcobj_unref(factory);
+}
+
+/* IFriendService's GetBlockedUserListIds (10400) {i32 offset, uid at 8, a C buffer of ids}: nobody, the count 0 and
+   the buffer as it was; DeclareOpenOnlinePlaySession (10600) and DeclareCloseOnlinePlaySession (10601) {uid};
+   CheckFriendListAvailability (10120) {uid}: the list there to read, 1; GetPlayHistoryRegistrationKey (10700) {b8
+   include_local, uid at 8, the key's 0x40 bytes in C}: zeros, the bytes past it as they were */
+static void friend_uid(Request* r, u32 off) {
+    argument64(r, off, g_user_id[0]);
+    argument64(r, off + 8, g_user_id[1]);
+}
+static void test_friend_blocked_and_presence(void) {
+    SvcObj *creator = new_friend(), *friends;
+    Request r;
+    request(&r, 0);
+    call(creator, &r);
+    CHECK(r.c.nout_objs == 1);
+    friends = r.c.out_objs[0];
+    memset(g_mem + 0x4000, 0xAB, 0x80);
+    request(&r, 10400);
+    argument32(&r, 0, 0);
+    friend_uid(&r, 8);
+    r.c.c[0] = (IpcBuf){0x4000, 0x80, 0};
+    r.c.nc = 1;
+    call(friends, &r);
+    CHECK(r.c.out_size == 4 && reply32(&r, 0) == 0);
+    for (u32 i = 0; i < 0x80; i++) CHECK(g_mem[0x4000 + i] == 0xAB);
+    for (u32 cmd = 10600; cmd <= 10601; cmd++) {
+        request(&r, cmd);
+        friend_uid(&r, 0);
+        call(friends, &r);
+        CHECK(r.c.out_size == 0);
+    }
+    request(&r, 10120);
+    friend_uid(&r, 0);
+    call(friends, &r);
+    CHECK(r.c.out_size == 4 && r.c.out[0] == 1);
+    memset(g_mem + 0x4000, 0xAB, 0x80);
+    request(&r, 10700);
+    r.raw[0] = 1;
+    friend_uid(&r, 8);
+    r.c.c[0] = (IpcBuf){0x4000, 0x40, 0};
+    r.c.nc = 1;
+    call(friends, &r);
+    CHECK(r.c.out_size == 0);
+    for (u32 i = 0; i < 0x80; i++) CHECK(g_mem[0x4000 + i] == (i < 0x40 ? 0 : 0xAB));
+    svcobj_unref(friends);
+    svcobj_unref(creator);
+}
+
+/* caps:su: SaveScreenShotEx1 (205) {attribute 0x40, u32 report option at 0x40, aruid at 0x48, pid}, the application
+   data in A 0 (0x404 bytes) and the 1280x720 RGBA picture in A 1. Ex0 (203) has the picture in A 0, Ex2 (210) the
+   users in A 0 (0x88) and no pid. The picture is a JPEG on the SD card as the console's album keeps it,
+   Nintendo/Album/YYYY/MM/DD/YYYYMMDDHHMMSSII-<the application ID, 16 zeros>.jpg, with an EXIF segment of its time in
+   place of the JFIF one; the entry {u64 size, u64 hash, AlbumFileDateTime, u8 storage, u8 contents, 5 reserved, u8
+   flags} names its size, time and II. A picture smaller than 1280x720 RGBA is OutOfRange, and nothing is written */
+#define TEST_PICTURE 0x10000ull
+#define TEST_PIXELS  (1280u * 720u)
+/* four quarters of one colour each, as a JPEG keeps them near enough */
+static const u8 test_quarters[4][3] = {{200, 30, 30}, {30, 180, 60}, {40, 50, 210}, {128, 128, 128}};
+static void caps_picture(u8 shade) {
+    for (u32 y = 0; y < 720; y++)
+        for (u32 x = 0; x < 1280; x++) {
+            u8* p = g_mem + TEST_PICTURE + ((u64)y * 1280 + x) * 4;
+            memcpy(p, test_quarters[(y >= 360) * 2 + (x >= 640)], 3);
+            p[0] = (u8)(p[0] + shade);
+            p[3] = 0x80; /* the alpha, which a JPEG has no place for */
+        }
+}
+static void caps_request(Request* r, u32 cmd, u64 picture_size) {
+    request(r, cmd);
+    argument32(r, 4, 1); /* the attribute's orientation */
+    argument32(r, 0xc, 1);
+    argument32(r, 0x40, 1); /* the report option */
+    argument64(r, 0x48, 0x55);
+    r->c.has_pid = cmd != 210;
+    if (cmd == 203) {
+        r->c.a[0] = (IpcBuf){TEST_PICTURE, picture_size, 0};
+        r->c.na = 1;
+    } else {
+        r->c.a[0] = (IpcBuf){0x8000, cmd == 205 ? 0x404 : 0x88, 0};
+        r->c.a[1] = (IpcBuf){TEST_PICTURE, picture_size, 0};
+        r->c.na = 2;
+    }
+}
+/* the file the entry in r's reply names, as the SD card got it: its folder and name from the entry's time and II, its
+   size the entry's, the EXIF time the same, and the picture's quarters in it. The entry's time and II into stamp */
+static void caps_check(Request* r, u8 shade, u8 stamp[8]) {
+    const u8* e = r->c.out;
+    char dir[64], name[96], when[20];
+    const u8 *file, *tiff;
+    plutovg_surface_t* picture;
+    int i;
+    CHECK(r->c.out_size == 0x20);
+    memcpy(stamp, e + 0x10, 8);
+    snprintf(dir, sizeof dir, "Nintendo/Album/%04u/%02u/%02u", (unsigned)snx_ld_le16(e + 0x10), e[0x12], e[0x13]);
+    snprintf(name, sizeof name, "%04u%02u%02u%02u%02u%02u%02u-%016llX0000000000000000.jpg",
+             (unsigned)snx_ld_le16(e + 0x10), e[0x12], e[0x13], e[0x14], e[0x15], e[0x16], e[0x17],
+             (unsigned long long)g_hle.kernel.title_id);
+    snprintf(when, sizeof when, "%04u:%02u:%02u %02u:%02u:%02u", (unsigned)snx_ld_le16(e + 0x10), e[0x12], e[0x13],
+             e[0x14], e[0x15], e[0x16]);
+    for (i = 0; i < test_sd_files && (strcmp(test_sd[i].dir, dir) || strcmp(test_sd[i].name, name)); i++) {}
+    CHECK(i < test_sd_files);
+    file = test_sd[i].data;
+    CHECK(snx_ld_le64(e) == test_sd[i].size && snx_ld_le64(e + 8) == 0);
+    CHECK(e[0x18] == 1 && e[0x19] == 0 && e[0x1f] == 1); /* the SD card's album, a screenshot, flags 1 */
+    /* the start of the image, the EXIF segment and no JFIF one, the end of the image */
+    CHECK(file[0] == 0xFF && file[1] == 0xD8 && file[2] == 0xFF && file[3] == 0xE1 && file[4] == 0 && file[5] == 104);
+    CHECK(!memcmp(file + 6, "Exif\0\0II\x2a\0\x08\0\0\0", 14) && file[108] == 0xFF && file[109] != 0xE0);
+    CHECK(file[test_sd[i].size - 2] == 0xFF && file[test_sd[i].size - 1] == 0xD9);
+    tiff = file + 12;
+    CHECK(snx_ld_le16(tiff + 8) == 2 && snx_ld_le16(tiff + 10) == 0x0132 && snx_ld_le32(tiff + 18) == 38);
+    CHECK(snx_ld_le16(tiff + 22) == 0x8769 && snx_ld_le32(tiff + 30) == 58);
+    CHECK(snx_ld_le16(tiff + 60) == 0x9003 && snx_ld_le32(tiff + 68) == 76);
+    CHECK(!memcmp(tiff + 38, when, 20) && !memcmp(tiff + 76, when, 20));
+    picture = plutovg_surface_load_from_image_data(file, (int)test_sd[i].size);
+    CHECK(picture && plutovg_surface_get_width(picture) == 1280 && plutovg_surface_get_height(picture) == 720);
+    for (i = 0; i < 4; i++) {
+        int x = (i & 1) ? 960 : 320, y = (i & 2) ? 540 : 180;
+        u32 px = ((const u32*)(plutovg_surface_get_data(picture) + (size_t)y * plutovg_surface_get_stride(picture)))[x];
+        int got[3] = {(int)(px >> 16 & 0xFF), (int)(px >> 8 & 0xFF), (int)(px & 0xFF)};
+        for (int k = 0; k < 3; k++) {
+            int want = test_quarters[i][k] + (k ? 0 : shade);
+            CHECK(px >> 24 == 0xFF && got[k] >= want - 6 && got[k] <= want + 6);
+        }
+    }
+    plutovg_surface_destroy(picture);
+}
+static void test_caps(void) {
+    SvcObj* caps = new_capssu();
+    Request r;
+    u8 stamp1[8], stamp2[8], stamp3[8];
+    request(&r, 32); /* SetShimLibraryVersion {u64 version, aruid, pid} */
+    argument64(&r, 0, 1);
+    argument64(&r, 8, 0x55);
+    r.c.has_pid = 1;
+    call(caps, &r);
+    caps_picture(0);
+    caps_request(&r, 205, TEST_PIXELS * 4);
+    call(caps, &r);
+    caps_check(&r, 0, stamp1);
+    caps_picture(10);
+    caps_request(&r, 205, TEST_PIXELS * 4);
+    call(caps, &r);
+    caps_check(&r, 10, stamp2);
+    if (!memcmp(stamp1, stamp2, 7)) CHECK(stamp2[7] == stamp1[7] + 1); /* the same second: the next II */
+    caps_picture(20);
+    caps_request(&r, 203, TEST_PIXELS * 4);
+    call(caps, &r);
+    caps_check(&r, 20, stamp3);
+    caps_picture(30);
+    caps_request(&r, 210, TEST_PIXELS * 4);
+    call(caps, &r);
+    caps_check(&r, 30, stamp3);
+    CHECK(test_sd_files == 4);
+    caps_request(&r, 205, TEST_PIXELS * 4 - 4);
+    CHECK(caps->dispatch(caps, &r.c) == RC(206, 8) && test_sd_files == 4);
+    for (int i = 0; i < test_sd_files; i++) free(test_sd[i].data);
+    test_sd_files = 0;
+    svcobj_unref(caps);
+}
+
+/* olsc:u: Initialize (0) {pid}; a user's GetSaveDataBackupSetting (13) {uid} -> u8, SetSaveDataBackupSettingEnabled
+   (14) {b8 enabled, uid at 8} and VerifySaveDataBackupLicenseAsync (10) {uid}, NotInitialized before it and
+   NullArgument without a user. The license check gives an IAsyncResult done at once: its event signaled, available,
+   and its result account's MembershipRequired (2124-5113), no license there being no online service, which Cancel
+   leaves */
+static void olsc_user(Request* r, u32 cmd, u32 off) {
+    request(r, cmd);
+    argument64(r, off, g_user_id[0]);
+    argument64(r, off + 8, g_user_id[1]);
+}
+static void test_olsc(void) {
+    SvcObj *olsc = new_olsc(), *result;
+    Request r;
+    KObj* event;
+    for (u32 cmd = 10; cmd <= 14; cmd += cmd == 10 ? 3 : 1) {
+        olsc_user(&r, cmd, cmd == 14 ? 8 : 0);
+        CHECK(olsc->dispatch(olsc, &r.c) == RC(179, 101));
+        CHECK(r.c.nout_objs == 0 || !r.c.out_objs[0]); /* no IAsyncResult: what ipc.c drops of a failed reply */
+    }
+    request(&r, 0);
+    r.c.has_pid = 1;
+    call(olsc, &r);
+    request(&r, 13);
+    CHECK(olsc->dispatch(olsc, &r.c) == RC(179, 100));
+    olsc_user(&r, 14, 8);
+    r.raw[0] = 1;
+    call(olsc, &r);
+    CHECK(r.c.out_size == 0);
+    olsc_user(&r, 13, 0);
+    call(olsc, &r);
+    CHECK(r.c.out_size == 4 && reply32(&r, 0) == 0);
+    olsc_user(&r, 10, 0);
+    call(olsc, &r);
+    CHECK(r.c.nout_objs == 1 && !strcmp(r.c.out_objs[0]->name, "nn::olsc::srv::IAsyncResult"));
+    result = r.c.out_objs[0];
+    request(&r, 3);
+    call(result, &r);
+    CHECK(r.c.nout_copy == 1);
+    event = handle_object(r.c.out_copy[0]);
+    CHECK(event->type == KO_EVENT && ((KEvent*)event)->signaled);
+    request(&r, 2);
+    call(result, &r);
+    CHECK(r.c.out_size == 4 && reply32(&r, 0) == 1);
+    request(&r, 0);
+    CHECK(result->dispatch(result, &r.c) == RC(124, 5113));
+    request(&r, 1);
+    call(result, &r);
+    request(&r, 0);
+    CHECK(result->dispatch(result, &r.c) == RC(124, 5113));
+    close_handles();
+    svcobj_unref(result);
+    svcobj_unref(olsc);
+}
+
 /* nim:eca: the server a game opens on its transfer memory and the accessor it takes from it, then whether large
    resources are available */
 static void test_nim(void) {
@@ -1569,7 +1820,7 @@ int main(void) {
     g_settings.tv_mode = 0; /* handheld, as the test was written for */
     hle_init();
     g_hle.kernel.title_id = 0x0100BF00112C0000ull; /* the title the test was written for */
-    g_mem = calloc(1, 0x10000);
+    g_mem = calloc(1, 0x400000);                   /* caps' 1280x720 RGBA picture at 0x10000 */
     CHECK(g_mem != NULL);
     test_mm();
     test_hid();
@@ -1594,6 +1845,10 @@ int main(void) {
     test_mii_latest();
     test_pctl_play_timer();
     test_nim();
+    test_pctl_free_communication();
+    test_friend_blocked_and_presence();
+    test_caps();
+    test_olsc();
     CHECK(test_objects == 0 && test_kobjs == 0);
     free(g_mem);
     printf("misc_service: %u checks passed\n", test_checks);

@@ -10,6 +10,7 @@
 #include "nx/gpu/texture/blocklinear.h"
 #include "nx/gpu/texture/blocklinear_spv.h" /* compiled from blocklinear.comp by the build (cmake/glsl.cmake) */
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/plat.h"
 
 /* blocklinear.comp's push constants, member for member */
 typedef struct {
@@ -18,29 +19,33 @@ typedef struct {
     u32 native;
 } BlParams;
 
-static VkDescriptorSetLayout g_bl_ds;
-static VkPipelineLayout g_bl_layout;
-static VkPipeline g_bl_pipe;
-static VkBuffer g_bl_scratch;
-static VmaAllocation g_bl_mem;
-static u64 g_bl_cap;
+/* the moves' pipeline, and the scratch buffer with its memory and size, and the most asked of it since
+   vk_bl_scratch_asked last read it */
+static struct {
+    VkDescriptorSetLayout ds;
+    VkPipelineLayout layout;
+    VkPipeline pipe;
+    VkBuffer scratch;
+    VmaAllocation mem;
+    u64 cap, asked;
+} g_blocklinear;
 
 static void bl_init(void) {
-    if (g_bl_pipe) return;
+    if (g_blocklinear.pipe) return;
     VkDescriptorSetLayoutBinding bindings[2] = {
         {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
         {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL}};
     VkDescriptorSetLayoutCreateInfo di = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 2, .pBindings = bindings};
-    if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &di, NULL, &g_bl_ds)))
+    if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &di, NULL, &g_blocklinear.ds)))
         fatal("vulkan: cannot create the block linear descriptor layout");
     VkPushConstantRange push = {VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(BlParams)};
     VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                      .setLayoutCount = 1,
-                                     .pSetLayouts = &g_bl_ds,
+                                     .pSetLayouts = &g_blocklinear.ds,
                                      .pushConstantRangeCount = 1,
                                      .pPushConstantRanges = &push};
-    if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &li, NULL, &g_bl_layout)))
+    if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &li, NULL, &g_blocklinear.layout)))
         fatal("vulkan: cannot create the block linear pipeline layout");
     VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
                                    .codeSize = blocklinear_spv_size,
@@ -52,20 +57,28 @@ static void bl_init(void) {
                                                 .stage = VK_SHADER_STAGE_COMPUTE_BIT,
                                                 .module = module,
                                                 .pName = "main"},
-                                      .layout = g_bl_layout};
-    if (!VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, &g_bl_pipe)))
+                                      .layout = g_blocklinear.layout};
+    u64 started = plat_ns();
+    if (!VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, &g_blocklinear.pipe)))
         fatal("vulkan: cannot create the block linear compute pipeline");
+    vk_texture_pipeline_made(plat_ns() - started);
     vkDestroyShaderModule(g_vk.dev, module, NULL); /* the pipeline doesn't need it once made */
 }
 
+u64 vk_bl_scratch_asked(void) {
+    u64 asked = g_blocklinear.asked;
+    g_blocklinear.asked = 0;
+    return asked;
+}
 VkBuffer vk_bl_scratch(u64 size, u64* cap_out) {
-    *cap_out = g_bl_cap;
-    if (size <= g_bl_cap) return g_bl_scratch;
+    if (size > g_blocklinear.asked) g_blocklinear.asked = size;
+    *cap_out = g_blocklinear.cap;
+    if (size <= g_blocklinear.cap) return g_blocklinear.scratch;
     if (size > g_vk.alloc_cap) return VK_NULL_HANDLE;
     /* the old one stays alive until the frame's work that may use it is done */
-    if (g_bl_scratch) vk_defer_buffer(g_bl_scratch, g_bl_mem);
-    g_bl_scratch = VK_NULL_HANDLE;
-    g_bl_cap = 0;
+    if (g_blocklinear.scratch) vk_defer_buffer(g_blocklinear.scratch, g_blocklinear.mem);
+    g_blocklinear.scratch = VK_NULL_HANDLE;
+    g_blocklinear.cap = 0;
     u64 cap = 4ull << 20;
     while (cap < size) cap *= 2;
     if (cap > g_vk.alloc_cap) cap = g_vk.alloc_cap;
@@ -75,14 +88,14 @@ VkBuffer vk_bl_scratch(u64 size, u64* cap_out) {
                                       VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &g_bl_scratch, &g_bl_mem, NULL))) {
-        g_bl_scratch = VK_NULL_HANDLE;
+    if (!VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &g_blocklinear.scratch, &g_blocklinear.mem, NULL))) {
+        g_blocklinear.scratch = VK_NULL_HANDLE;
         *cap_out = 0;
         return VK_NULL_HANDLE;
     }
-    vk_mem_track(g_bl_mem);
-    *cap_out = g_bl_cap = cap;
-    return g_bl_scratch;
+    vk_mem_track(g_blocklinear.mem);
+    *cap_out = g_blocklinear.cap = cap;
+    return g_blocklinear.scratch;
 }
 
 /* bytes from a row of blocks to the next, and from 2^bd slices to the next (gpu.c's bl_yz) */
@@ -141,7 +154,7 @@ int vk_bl_move(VkCommandBuffer cb, const VkBlMove* m, int to_bl, VkBuffer bl, u6
         return 0;
     }
     bl_init();
-    VkDescriptorSet set = vk_desc_alloc(g_bl_ds);
+    VkDescriptorSet set = vk_desc_alloc(g_blocklinear.ds);
     if (!set) return 0;
     VkDescriptorBufferInfo sides[2] = {{bl, bl_off, bl_size}, {lin, lin_off, lin_size}};
     VkWriteDescriptorSet writes[2];
@@ -176,9 +189,10 @@ int vk_bl_move(VkCommandBuffer cb, const VkBlMove* m, int to_bl, VkBuffer bl, u6
         u32 bytes = !tail ? 4 : tail > 4 * i ? tail - 4 * i : 0;
         p.tail_mask[i] = bytes >= 4 ? ~0u : (1u << (bytes * 8)) - 1;
     }
-    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_bl_pipe);
-    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_bl_layout, 0, 1, &set, 0, NULL);
-    rec_CmdPushConstants(cb, g_bl_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_blocklinear.pipe);
+    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_blocklinear.layout, 0, 1, &set, 0, NULL);
+    rec_CmdPushConstants(cb, g_blocklinear.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
+    vk_ck(cb, VK_CK_DESWIZZLE, m->row_bytes, m->rows, m->slices, (u32)to_bl);
     rec_CmdDispatch(cb, gx, gy, m->slices);
     return 1;
 }

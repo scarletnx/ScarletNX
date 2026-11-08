@@ -1,11 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Fixed point size, alpha reference and depth bounds change actual covered pixels. No guest data or shaders. */
-static int nvn_state_pixels(const DsState* state, const DrawCall* call, DrawOwner* owner, u64 target, u32 want) {
-    DrawClear clear = {.color_mask = 15, .color = {0, 0, 0x3f800000, 0x3f800000}};
-    vk_render_clear(state, &clear, owner);
-    vk_render_draw(state, call, owner);
-    vk_render_end();
+/* the pixels of the 8x8 RGBA32F target at target holding the drawn color, float (1, 0, 0, 0.5), in covered: bit
+   y * 8 + x. A pixel neither that nor the clear's blue fails, named with what drew it */
+static int fixed_state_covered(u64 target, const char* what, u64* covered) {
     Surf* surface = vk_rt_find(target);
     VkBuffer buffer;
     u8* pixels = vk_readback_buffer(8 * 8 * 16, &buffer);
@@ -16,21 +14,31 @@ static int nvn_state_pixels(const DsState* state, const DrawCall* call, DrawOwne
     rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
     vk_finish();
     vk_readback_ready();
-    u32 covered = 0;
+    *covered = 0;
     for (u32 i = 0; i < 64; i++) {
         const u8* pixel = pixels + i * 16;
         u32 rgba[4];
         for (u32 c = 0; c < 4; c++) rgba[c] = snx_ld_le32(pixel + c * 4);
         if (rgba[0] == 0x3f800000 && rgba[1] == 0 && rgba[2] == 0 && rgba[3] == 0x3f000000)
-            covered++;
+            *covered |= 1ull << i;
         else if (!(rgba[0] == 0 && rgba[1] == 0 && rgba[2] == 0x3f800000 && rgba[3] == 0x3f800000)) {
-            fprintf(stderr, "NVN fixed state pixel%u float RGBA bits=%08x,%08x,%08x,%08x\n", i, rgba[0], rgba[1],
+            fprintf(stderr, "%s fixed state pixel%u float RGBA bits=%08x,%08x,%08x,%08x\n", what, i, rgba[0], rgba[1],
                     rgba[2], rgba[3]);
             CHECK(0);
         }
     }
-    if (covered != want) fprintf(stderr, "NVN fixed state covered %u pixels, expected %u\n", covered, want);
-    CHECK(covered == want);
+    return 0;
+}
+static int nvn_state_pixels(const DsState* state, const DrawCall* call, DrawOwner* owner, u64 target, u32 want) {
+    DrawClear clear = {.color_mask = 15, .color = {0, 0, 0x3f800000, 0x3f800000}};
+    vk_render_clear(state, &clear, owner);
+    vk_render_draw(state, call, owner);
+    vk_render_end();
+    u64 covered;
+    CHECK(!fixed_state_covered(target, "NVN", &covered));
+    u32 count = (u32)snx_popcount64(covered);
+    if (count != want) fprintf(stderr, "NVN fixed state covered %u pixels, expected %u\n", count, want);
+    CHECK(count == want);
     return 0;
 }
 

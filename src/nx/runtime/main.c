@@ -9,6 +9,7 @@
 #include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
 #include "common/utilities/ini_lines.h"
+#include "common/utilities/run_mark.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_loader.h"
 #include "nx/gpu/nvn/nvn_state.h"
@@ -482,6 +483,33 @@ static const char* game_shown(const char* title, char* name, size_t size, char* 
     }
     free(nacp);
     return kept;
+}
+
+/* a start of the game that did not end with an exit (run_mark.h), in its log, with what the system says of it */
+static void mark_said(void* data, const SnxRunMark* mark) {
+#ifdef __ANDROID__
+    char* cause = backend_exit_reason(mark->pid, mark->started);
+#else
+    const char* cause = "a crash (whose report ends that run's log, in logs/), a kill (by the system for its "
+                        "memory, or by the user) or a power loss, which the system does not name";
+#endif
+    *(int*)data = 1;
+    if (!mark->text)
+        LOG("last start: pid %lld, unknown whether it ended with an exit: %s\n", mark->pid, mark->left);
+    else
+        LOG("last start: %s did not end with an exit: %s\n", mark->text[0] ? mark->text : "a mark with no text", cause);
+    if (mark->text && mark->left) LOG("last start: %s, so the next start says it again\n", mark->left);
+#ifdef __ANDROID__
+    free(cause);
+#endif
+}
+/* the game's start's mark (run_mark.h) in its log's folder, after each start of it that left its own there unended is
+   said. On iOS the game runs under the launcher's, in the launcher's process */
+static void mark_start(void) {
+    char why[1024];
+    int any = 0, made = snx_run_mark_start(g_statedir[0] ? g_statedir : ".", mark_said, &any, why, sizeof why);
+    if (made < 0) LOG("start mark: %s: the next start cannot tell whether this one ended with an exit\n", why);
+    if (!made && !any) LOG("last start: ended with an exit, or none before\n");
 }
 
 /* nothing is moved: a game an older version laid out beside the others (its folder named otherwise) runs where it
@@ -1192,6 +1220,7 @@ int snx_main(int argc, char** argv) {
        a log: it is asked for by a setting, and a run without it is better than no run */
     if (snx_tracy_init(title)) WARN("tracy: no capture this run; it goes on without one\n");
     say_old_layout();
+    mark_start();
     /* before the JIT's first load (jit_init, arm.c's blocks, the GPU's macros), and only when asked: GDB stops the
        game to read each one */
     if (g_opt_gdb && g_settings.gdb_jit_symbols) {

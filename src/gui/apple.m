@@ -3,6 +3,7 @@
 /* The menu's side of the iOS and macOS apps (docs/APPLE.md): the folders, the game the menu plays, and the windows
    SDL's give dist/apple/Frontend.swift to present its pickers and share sheet over */
 #include "gui/apple.h"
+#include "common/utilities/setup.h"
 #include "gui/i18n.h"
 #include "gui/log.h"
 #include <SDL3/SDL.h>
@@ -25,12 +26,20 @@
 #endif
 
 /* dist/apple/Frontend.swift. window is the SDL window's UIWindow or NSWindow; done gets the path picked, NULL for none */
-extern bool snx_apple_pick(void* window, bool folder, void (*done)(void* data, const char* path), void* data);
+extern bool snx_apple_pick(void* window, bool folder, void (*done)(void* data, const char* path), void* data,
+                           void (*log)(const char* line));
 extern bool snx_apple_share(void* window, const char* path);
 /* plat_posix.c: the runtime's power watcher marks a change, which its main thread takes */
 extern void plat_power_mark_changed(void);
 /* plat_posix.c's weak watcher entry, which this file fills on iOS */
 int snx_apple_power_watch(void);
+
+/* the launcher log's lines of this file: the last thermal and power states said, the watch on */
+static struct {
+    long thermal; /* -1 and -1 before the first state line, so a notification with no change says nothing */
+    int low_power;
+    bool watching;
+} g_said = {.thermal = -1, .low_power = -1};
 
 /* the host's power source, for TV mode Auto: iOS's battery state notification. macOS's is plat_posix.c's IOKit one */
 #if TARGET_OS_IPHONE
@@ -290,8 +299,83 @@ void gui_apple_log_start(void) {
                 (unsigned long long)(os_proc_available_memory() >> 20));
         entitlement_lines();
         fprintf(stderr, "app: %s\n", NSBundle.mainBundle.bundleIdentifier.UTF8String);
+        /* a host such as LiveContainer runs the app in its own process, with the app's bundle in another place: the
+           process's program then is not the bundle's */
+        NSString* bundle = NSBundle.mainBundle.bundlePath.stringByResolvingSymlinksInPath;
+        NSString* program = NSProcessInfo.processInfo.arguments.firstObject.stringByResolvingSymlinksInPath;
+        char bundle_shown[1024], program_shown[1024];
+        snx_home_short(bundle.length ? bundle.fileSystemRepresentation : "(none)", bundle_shown, sizeof bundle_shown);
+        snx_home_short(program.length ? program.fileSystemRepresentation : "(none)", program_shown, sizeof program_shown);
+        fprintf(stderr, "  bundle %s\n  program %s\n", bundle_shown, program_shown);
+        if (bundle.length && program.length && ![program hasPrefix:[bundle stringByAppendingString:@"/"]])
+            fprintf(stderr, "host: the app runs inside another app (LiveContainer or similar), as its program is not in "
+                            "its bundle. The document picker can need a fix of that app (LiveContainer: Fix File "
+                            "Picker)\n");
         fprintf(stderr, "documents: %s\n", documents.fileSystemRepresentation);
         if (logs) metrics_start(logs);
+        NSError* error = nil;
+        NSDictionary* room = [documents resourceValuesForKeys:@[
+            NSURLVolumeAvailableCapacityForImportantUsageKey, NSURLVolumeTotalCapacityKey
+        ]
+                                                        error:&error];
+        if (room)
+            fprintf(stderr, "disk: %lld MiB free for the app of %lld MiB\n",
+                    [room[NSURLVolumeAvailableCapacityForImportantUsageKey] longLongValue] >> 20,
+                    [room[NSURLVolumeTotalCapacityKey] longLongValue] >> 20);
+        else
+            fprintf(stderr, "disk: unknown, %s\n",
+                    error.localizedDescription.UTF8String ? error.localizedDescription.UTF8String : "no error given");
+    }
+#endif
+}
+
+static void state_line(void) {
+    long thermal = (long)NSProcessInfo.processInfo.thermalState;
+    int low = NSProcessInfo.processInfo.lowPowerModeEnabled;
+    static const char* const names[] = {"nominal", "fair", "serious", "critical"};
+    if (thermal == g_said.thermal && low == g_said.low_power) return;
+    g_said.thermal = thermal;
+    g_said.low_power = low;
+    gui_log("state: thermal %s, low power mode %s", thermal >= 0 && thermal < 4 ? names[thermal] : "?",
+            low ? "on" : "off");
+}
+/* the center keeps each block observer until its removal, which nothing does: the tokens are not kept */
+void gui_apple_state_watch(void) {
+    if (g_said.watching) return;
+    g_said.watching = true;
+    state_line();
+    NSNotificationCenter* center = NSNotificationCenter.defaultCenter;
+    void (^changed)(NSNotification*) = ^(NSNotification* n) {
+      (void)n;
+      state_line();
+    };
+    [center addObserverForName:NSProcessInfoThermalStateDidChangeNotification
+                        object:nil
+                         queue:NSOperationQueue.mainQueue
+                    usingBlock:changed];
+    [center addObserverForName:NSProcessInfoPowerStateDidChangeNotification
+                        object:nil
+                         queue:NSOperationQueue.mainQueue
+                    usingBlock:changed];
+#if TARGET_OS_IPHONE
+    /* the menu's SDL ends before a game runs in this process, so UIKit's notifications give the lifecycle of both */
+    NSDictionary<NSNotificationName, NSString*>* lifecycle = @{
+        UIApplicationWillResignActiveNotification : @"will enter the background",
+        UIApplicationDidEnterBackgroundNotification : @"is in the background",
+        UIApplicationWillEnterForegroundNotification : @"will enter the foreground",
+        UIApplicationDidBecomeActiveNotification : @"is in the foreground",
+        UIApplicationDidReceiveMemoryWarningNotification : @"has a low memory warning from the system",
+        UIApplicationWillTerminateNotification : @"is ended by the system"
+    };
+    for (NSNotificationName name in lifecycle) {
+        NSString* what = lifecycle[name];
+        [center addObserverForName:name
+                            object:nil
+                             queue:nil
+                        usingBlock:^(NSNotification* n) {
+                          (void)n;
+                          gui_log("lifecycle: the app %s", what.UTF8String);
+                        }];
     }
 #endif
 }
@@ -333,13 +417,17 @@ static void picked(void* data, const char* path) {
     pick_done = NULL;
     if (done) done(pick_data, list, -1);
 }
-int gui_apple_pick(SDL_Window* window, int folder, SDL_DialogFileCallback done, void* data, char* message,
+/* a step of the picker, which the Swift side says */
+static void pick_log(const char* line) { gui_log("%s", line); }
+int gui_apple_pick(SDL_Window* window, int folder, SDL_DialogFileCallback done, void* data, int log, char* message,
                    size_t size) {
     void* native = native_window(window);
-    pick_done = done;
-    pick_data = data;
-    if (native && snx_apple_pick(native, folder != 0, picked, NULL)) return 1;
-    pick_done = NULL;
+    if (native && snx_apple_pick(native, folder != 0, picked, NULL, log ? pick_log : NULL)) {
+        pick_done = done; /* only once it shows: a second picker that Swift refuses keeps the first one's answer */
+        pick_data = data;
+        return 1;
+    }
+    if (log && !native) gui_log("picker: not opened: SDL gives no UIWindow");
     snprintf(message, size, "%s",
              native ? snx_tr("The document picker did not open.") : snx_tr("No window to show the picker over."));
     return 0;

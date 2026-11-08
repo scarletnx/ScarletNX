@@ -84,6 +84,9 @@ ENV_SYSTEM = {
     'SSL_CERT_FILE',
     'SSL_CERT_DIR',
     'SDL_GAMECONTROLLERCONFIG_FILE',
+    # the Vulkan loader's, which name its driver: a Mac's vulkan_driver=auto leaves the driver they name
+    'VK_DRIVER_FILES',
+    'VK_ICD_FILENAMES',
 }
 ENV_SYSTEM_PREFIXES = ('XDG_',)
 # The variables an older version read for what are settings or options now, still read for one version
@@ -614,6 +617,46 @@ def check_sanitizers(repo, build, tests):
     return errors, exempt
 
 
+# a service object's dispatcher or destructor, as the HLE defines one: what a save state holds a pointer to
+SVCOBJ_FN = re.compile(
+    r'^(?:static\s+)?(?:int|void)\s+([A-Za-z_]\w*)\s*\(\s*(?:struct\s+)?SvcObj\s*\*\s*\w*\s*(?:,\s*IpcCtx\s*\*\s*\w*\s*)?\)\s*\{',
+    re.MULTILINE,
+)
+STATE_FN_ENTRY = re.compile(r'STATE_FN\(\s*"(\w+)"\s*,\s*(\w+)\s*\)')
+STATE_FN_TABLE = re.compile(r'STATE_FN_TABLE\(\s*(\w+)\s*,')
+
+
+def check_state_fns(repo):
+    """every dispatcher or destructor of a service object in src/nx/hle that the code stores (its name not called) is in
+    its file's STATE_FN_TABLE, and every such table is one of state_fns.c's TABLES: a save state names the functions
+    a game's objects hold, and can't save one no table names"""
+    errors = []
+    tables_c = without_comments((repo / 'src/nx/runtime/state_fns.c').read_text(encoding='utf-8', errors='replace'))
+    for path in sorted((repo / 'src/nx/hle').rglob('*.c')):
+        source = without_comments(path.read_text(encoding='utf-8', errors='replace'), literals=False)
+        named = without_comments(path.read_text(encoding='utf-8', errors='replace'))
+        shown = path.relative_to(repo).as_posix()
+        entries = {fn for _, fn in STATE_FN_ENTRY.findall(named)}
+        for match in SVCOBJ_FN.finditer(source):
+            name = match.group(1)
+            stored = re.search(
+                r'\b' + re.escape(name) + r'\b(?!\s*\()', source[: match.start()] + source[match.end() :]
+            )
+            if stored and name not in entries:
+                line = source.count('\n', 0, match.start()) + 1
+                errors.append(
+                    f"{shown}:{line}: {name} is stored as a service object's function but is in no STATE_FN_TABLE of "
+                    'this file: a save state of a game holding such an object fails ("has no name in state_fns.h\'s '
+                    'tables"). Add STATE_FN("<file>", ' + name + ") to the file's table"
+                )
+        for table in STATE_FN_TABLE.findall(named):
+            if not re.search(r'&\s*' + re.escape(table) + r'\b', tables_c):
+                errors.append(
+                    f"{shown}: {table} is not one of src/nx/runtime/state_fns.c's TABLES: no save names its functions"
+                )
+    return errors
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[1])
@@ -633,6 +676,7 @@ def main():
         check_sources(args.repo.resolve())
         + check_include_flags(args.repo.resolve())
         + check_environment(args.repo.resolve())
+        + check_state_fns(args.repo.resolve())
     )
     if args.build:
         graph = args.build.resolve() / 'architecture-targets.dot'

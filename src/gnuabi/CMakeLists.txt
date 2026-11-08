@@ -1,8 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
+# the kernel's threads, futexes and signals (kernel/CMakeLists.txt), which the Android bridge uses too
+if(NOT TARGET scarletnx-gnuabi-kernel)
+    add_subdirectory(kernel)
+endif()
+
 add_library(scarletnx-gnuabi STATIC
     abi/syscalls/syscalls.c loader/elf/elf.c memory/memory.c process/process.c
-    signals/signals.c threading/futex.c runtime/runtime.c runtime/execution.c runtime/arm_exec.c runtime/jit.c
+    process/threads.c process/host_signals.c runtime/runtime.c runtime/execution.c runtime/arm_exec.c runtime/jit.c
     process/spawn.c filesystem/vfs.c filesystem/devfs/devfs.c filesystem/tmpfs/tmpfs.c filesystem/procfs/procfs.c
     filesystem/hostfs/hostfs.c
     network/socket.c network/poll.c network/etc.c)
@@ -20,7 +25,8 @@ if(NOT TARGET scarletnx-recompiler)
     add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/llvm" gnuabi-llvm-backend)
     add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler" gnuabi-recompiler-library)
 endif()
-target_link_libraries(scarletnx-gnuabi PUBLIC scarletnx-common scarletnx-net snx_arm_llvm scarletnx-recompiler)
+target_link_libraries(scarletnx-gnuabi PUBLIC scarletnx-gnuabi-kernel scarletnx-common scarletnx-net snx_arm_llvm
+                      scarletnx-recompiler)
 target_link_libraries(scarletnx-gnuabi PUBLIC OpenSSL::SSL)
 target_compile_options(scarletnx-gnuabi PRIVATE -Wall -Wextra -Werror)
 target_compile_definitions(scarletnx-gnuabi PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -67,6 +73,10 @@ if(BUILD_TESTING)
             add_test(NAME gnuabi_process COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/gnuabi_process.py"
                 "${SNX_GNUABI_PROGRAM}")
             set_tests_properties(gnuabi_process PROPERTIES TIMEOUT 300)
+            # threads, futexes and signal handlers, from the freestanding fixtures in tests/gnuabi
+            add_test(NAME gnuabi_threads COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/gnuabi_threads.py" "${SNX_GNUABI_PROGRAM}")
+            set_tests_properties(gnuabi_threads PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
         endif()
     endif()
 endif()

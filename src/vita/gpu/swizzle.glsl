@@ -5,13 +5,13 @@
    loops (renderer/src/texture/format.cpp, GPL-2.0-or-later: swizzled_texture_to_linear_texture,
    resolve_z_order_compressed_image, tiled_texture_to_linear_texture), whose layouts these are.
 
-   An element is a texel, or a 4x4 block of a block-compressed format, 2^es bytes. Element (x, y) of a swizzled
-   texture, w by h elements (powers of two), is at the Morton index of x and y below min(w, h) = 2^k, interleaved y
-   in bit 0, with the larger side's bits above k after them. A tiled texture's 32x32 tiles are each 1024 elements in
-   rows, the tiles in rows of tiles_x. Elements of four bytes or more give a word from one load (a uniform branch on
-   es); smaller ones a byte at a time from up to four elements. Reversed (reverse nonzero, elements of four bytes or
-   more only), linear rows become the texture: each word of the rows goes to its place in dst from dst_base, as a
-   swizzled or tiled color surface's store writes its memory. */
+   An element is a texel, or a 4x4 block of a block-compressed format, usually 2^es bytes. U8U8U8 elements use es 5
+   and take three bytes. Element (x, y) of a swizzled texture, w by h elements (powers of two), is at the Morton index
+   of x and y below min(w, h) = 2^k, interleaved y in bit 0, with the larger side's bits above k after them. A tiled
+   texture's 32x32 tiles are each 1024 elements in rows, the tiles in rows of tiles_x. Elements of four bytes or more
+   give a word from one load (a uniform branch on es); smaller ones a byte at a time from up to four elements.
+   Reversed (reverse nonzero, elements of four bytes or more only), linear rows become the texture: each word of the
+   rows goes to its place in dst from dst_base, as a swizzled or tiled color surface's store writes its memory. */
 
 uint part1by1(uint v) {
     v &= 0x0000ffffu;
@@ -35,6 +35,17 @@ void main() {
     uint w = gl_GlobalInvocationID.x;
     if (w >= words) return;
     uint d = w << 2u;
+    if (es == 5u) {
+        uint v = 0u;
+        for (uint b = 0u; b < 4u; b++) {
+            uint at = d + b, e = at / 3u;
+            if (e >= elements) break;
+            uint s = src_at + source_element(e) * 3u + at - e * 3u;
+            v |= ((src[src_base + (s >> 2u)] >> ((s & 3u) << 3u)) & 0xffu) << (b << 3u);
+        }
+        dst[w] = v;
+        return;
+    }
     if (reverse != 0u) {
         uint shift = es - 2u;
         dst[dst_base + (source_element(d >> es) << shift) + ((d >> 2u) & ((1u << shift) - 1u))] = src[src_base + w];

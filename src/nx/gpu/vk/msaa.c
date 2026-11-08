@@ -14,9 +14,11 @@
    Color goes through views in the unsigned format of the texels' bytes (vk_raw_format), so no bit changes on the way.
    One pipeline per kind, format and sample count, made on first use and kept for the device's lifetime as the other
    internal pipelines are. Under vk_lock, in the frame's command buffer, outside a rendering pass */
+#include "nx/gpu/vk/descriptor_objects.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/msaa_spv.h" /* compiled from msaa.vert and msaa.frag by the build (cmake/glsl.cmake) */
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/plat.h"
 
 enum { MS_UNPACK, MS_UNPACK_DEPTH, MS_PACK, MS_KINDS };
 #define MS_PIPES 32
@@ -68,7 +70,7 @@ static void ms_init(void) {
                               .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                               .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                               .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
-    if (!VK_OK(vkCreateSampler(g_vk.dev, &si, NULL, &g_msaa.sampler)))
+    if (!VK_OK(vk_sampler_create(g_vk.dev, &si, NULL, &g_msaa.sampler)))
         fatal("vulkan: cannot create the multisample moves' sampler");
     g_msaa.vs = ms_module(msaa_vert_spv, msaa_vert_spv_size);
     g_msaa.fs[MS_UNPACK] = ms_module(msaa_unpack_spv, msaa_unpack_spv_size);
@@ -138,7 +140,9 @@ static VkPipeline ms_pipe(u32 kind, VkFormat format, VkSampleCountFlagBits sampl
                                        .pDynamicState = &dy,
                                        .layout = g_msaa.layout};
     VkPipeline p;
+    u64 started = plat_ns();
     if (!VK_OK(vkCreateGraphicsPipelines(g_vk.dev, vk_pipeline_cache(), 1, &pi, NULL, &p))) return VK_NULL_HANDLE;
+    vk_texture_pipeline_made(plat_ns() - started);
     g_msaa.pipe[g_msaa.npipe++] = (MsPipe){kind, format, samples, p};
     return p;
 }
@@ -154,7 +158,7 @@ static VkImageView ms_view(VkImage img, VkFormat format, VkImageAspectFlags aspe
                                 .format = format,
                                 .subresourceRange = {aspect, 0, 1, layer, 1}};
     VkImageView v;
-    return VK_OK(vkCreateImageView(g_vk.dev, &vi, NULL, &v)) ? v : VK_NULL_HANDLE;
+    return VK_OK(vk_image_view_create(g_vk.dev, &vi, NULL, &v)) ? v : VK_NULL_HANDLE;
 }
 
 /* the format s's samples move in: its texels' raw one, or a depth format as it is */

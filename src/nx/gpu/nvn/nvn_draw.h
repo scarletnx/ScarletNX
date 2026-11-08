@@ -24,6 +24,7 @@ struct NvnDraw {
     float blend_color[4], bias[3];    /* the polygon offset's factor, units and clamp */
     u8 discard, depth_clamp, restart, render_off;
     u8 provoking_last, conservative, dilate; /* SetProvokingVertexMode's last vertex, conservative rasterization */
+    u8 subpixel_bias_x, subpixel_bias_y;
     u8 sample_shading;                       /* the bound fragment program's SetSampleShading mode */
     u8 flip;                                 /* the window origin's flip, taken as the queue was initialized */
     float line_width, alpha_ref;
@@ -32,6 +33,7 @@ struct NvnDraw {
     u32 coverage_table_enable;
     u8 coverage_table[16];
     u8 samples; /* the samples-passed counter was reset: the renderer counts it */
+    u32 discard_width[9]; /* view width in pixels, or 0 when whole-surface discard could affect padding or layers */
     u32 restart_index;
     u32 patch_size;                /* control points per tessellation patch, 0 until explicitly set */
     float vp[16][4], depth[16][2]; /* x, y, w, h and near/far for each viewport */
@@ -52,6 +54,8 @@ struct NvnDraw {
     NVNbufferRange tf[4]; /* the transform feedback buffers */
     u8 tf_on;             /* between Begin (or Resume) and End (or Pause) */
     u32 dirty;
+    u32 vp_dirty; /* viewports whose transform, depth range, scissor or swizzle needs conversion */
+    u8 viewport_upper_left; /* device origin used by the last viewport conversion */
     /* The dirty span of each stage's bank 0 and bank 2. Separate spans leave the unchanged banks between writes
        out of the compare and copy at a draw. */
     u16 inl_lo[2][DS_GFX_STAGES], inl_hi[2][DS_GFX_STAGES];

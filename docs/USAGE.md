@@ -144,7 +144,10 @@ takes the place of the one checked before, as installing an older update means p
 game's updates and DLCs under it: opening a game that has some shows its updates as a choice of one (each version
 installed, the newest first, by its version from its own control data, or No update) and its DLCs as boxes to check
 (`DLC 1`, numbered from the base ID the game's control data gives). Save keeps the choice in `addons=` without
-playing, Play keeps it and plays the game, and Back leaves the list as it was.
+playing, Play keeps it and plays the game, and Back leaves the list as it was. A 3DS game's update and DLC CIAs are
+kept the same way by `scarletnx-3ds` (`scarletnx-3ds DLC.cia`, or `--update` with the game); an update there has no
+program of its own, as the game's reads its code, and is listed by its TMD's version (`Update v1040`): see
+[3DS.md](3DS.md).
 
 - **Programs:** an update is recompiled from its own ExeFS into a program beside the game,
   `recompiled/<id>/<id>_<its title ID>v<its version>`, which runs whenever it is checked. Every version of a game's update
@@ -381,9 +384,9 @@ With `--out work/Game` and `--outdir games` as above (without them, see [Folders
 | `recompiled/<id>/<id>[.exe]`, `<id>_code.so/.dll` | Runtime + AOT module |
 | `recompiled/<id>/<id>_data/`, `<id>.ini` | Data/saves (and `control.nacp`) + settings |
 | `recompiled/<id>/<id>_build/` | Generated code, only with `--keep-ir` |
-| `recompiled/<id>/shader_cache/vk_pipelines.bin` | Vulkan pipeline cache |
-| `recompiled/<id>/shader_cache/<id>.vkshaders` | Translated shaders and the pipelines made, made again at the next start, compute pipelines too (before the game starts, from their programs, so a new build or driver compiles them there); packed with zstd as they add up (`compress_shader_cache`) |
-| `recompiled/<id>/shader_cache/<id>.vkshipped` | The shaders found in the game's own files and executables, prepared ahead of time (`prepare_shaders`), each read when the game first draws with it, each packed with zstd on its own (`compress_prepared_shaders`). Unpacked it can be large: one game's 2,700 shaders took 245 MB, another's 18,500 took 2 GB; packed, about a quarter of that |
+| `recompiled/<id>/shader_cache/vk_pipelines.<driver>.bin` | Vulkan pipeline cache, one per driver (`<driver>`: `d<driver ID>-<GPU vendor>-<GPU device>`, and `-<package>` for a `gpu_driver` package's), so going back to a driver finds its own |
+| `recompiled/<id>/shader_cache/<id>.<driver>.vkshaders` | One per driver: translated shaders and the pipelines made, made again at the next start, compute pipelines too (before the game starts, from their programs, so a new build or driver compiles them there); packed with zstd as they add up (`compress_shader_cache`) |
+| `recompiled/<id>/shader_cache/<id>.<driver>.vkshipped` | One per driver: the shaders found in the game's own files and executables, prepared ahead of time (`prepare_shaders`), each read when the game first draws with it, each packed with zstd on its own (`compress_prepared_shaders`). Unpacked it can be large: one game's 2,700 shaders took 245 MB, another's 18,500 took 2 GB; packed, about a quarter of that |
 | `recompiled/<id>/shader_cache/<id>.vkscan` | The game's files found to hold no shaders, so that after an update of ScarletNX or the driver the files aren't all read again to look for them |
 
 ## GDB (Linux)
@@ -530,7 +533,7 @@ list). The user's data folder and a portable copy's keep each kind of file apart
 
 | What | Another `--data`, an `--outdir` | Linux, the user's data folder | A portable copy's, the user's elsewhere |
 | --- | --- | --- | --- |
-| a game: its program, `<id>_code.so`, `<id>_data/` (saves, `control.nacp`), `captures/` | `recompiled/<id>/` | `~/.local/share/scarletnx/recompiled/<id>/` | `recompiled/<id>/` |
+| a game: its program, `<id>_code.so`, `<id>_data/` (saves, `control.nacp`, its SD card `sdmc/` with the pictures it saves to its album in `Nintendo/Album/`, as the console has them), `captures/` | `recompiled/<id>/` | `~/.local/share/scarletnx/recompiled/<id>/` | `recompiled/<id>/` |
 | its settings, `<id>.ini` | `recompiled/<id>/` | `~/.config/scarletnx/recompiled/<id>/` | `config/recompiled/<id>/` |
 | its `<id>.log` (this run's; the 4 before in `logs/<date>.log`) and `threads.txt` | `recompiled/<id>/` | `~/.local/state/scarletnx/recompiled/<id>/` | `state/recompiled/<id>/` |
 | its pipeline cache | `recompiled/<id>/shader_cache/` | `~/.cache/scarletnx/recompiled/<id>/shader_cache/` | `cache/recompiled/<id>/shader_cache/` |
@@ -688,6 +691,12 @@ dead zone in `gamepad_deadzone` and the game's vibration as strong as `gamepad_r
 *Controllers*, which names the pads connected; its *Player* row shows every player's settings (*All*) or one
 player's own Swap A/B, Vibration and Button map. Each connected gamepad uses its own player slot, up to eight.
 Keyboard and on-screen controls also drive player one.
+`gamepad_assign=1` gives the players out as a console does (after Eden's Modern Console): each controller that
+connects is the lowest player free ("P2: Xbox Wireless Controller joined"), and one that leaves keeps its player for
+45 seconds, which it takes back when it returns while another that connects goes past it. Once a player's controller
+has been gone 3 seconds the game pauses ("P2 disconnected: reconnect, or press + on another controller to go on")
+until it returns, or until + is let go on another controller, which goes on without that player. `0`, the default,
+gives them out as each player's `gamepad_p<N>_device` names its controller, the next to connect where it names none.
 `gamepad_joycon_pair=1` makes SDL combine a left and right Joy-Con. Set it to `0` to expose them separately and
 restart the game after changing it.
 
@@ -725,10 +734,14 @@ pad.
 | Q / E / 1 / 3 | L / R / ZL / ZR |
 | Enter / Backspace | Plus / Minus |
 
-F1 help; F2 the game's menu; F3 screenshot; F4 FPS limit off and on; F5 thread dump; F6 showcase on and off;
+F1 a page of the game's menu with these keys and the buttons above, a row each (Up/Down go over it, any other key goes
+back to the game); F2 the game's menu; F3 screenshot; F4 FPS limit off and on; F5 thread dump; F6 showcase on and off;
 F7 save state; F8 load state; F9 next save state slot; F10 60-second Tracy capture (SNX_TRACY builds); F11/Alt+Enter
-fullscreen; F12 stats on and off; Pause pauses the whole game and resumes it (the window's title says "(paused)");
-Escape quit. A window shows at most one image per refresh and drops the rest unless images tear, and the game keeps
+fullscreen; F12 stats on and off; Ctrl+Shift+F12 a RenderDoc capture of the next frame, with RenderDoc in the game
+(`renderdoc`, or a game RenderDoc's program started), as the game's menu's **Capture frame** is, which shows only then;
+Pause pauses the whole game and resumes it (the window's title says "(paused)"); Escape quit. Each of these keys is a
+setting ([Shortcuts](SETTINGS.md#shortcuts)), set in the game's menu's **Shortcuts** page too, and F1 lists them as
+they are set. A window shows at most one image per refresh and drops the rest unless images tear, and the game keeps
 the pace `fps_limit` sets.
 
 A save state is the whole game at one moment, kept in `states/` in the game's folder, one file a slot. F7 saves to
@@ -738,7 +751,8 @@ and a delete ask first. The game waits while the page is open. Before a load the
 listed first, so a load can be undone (`state_auto_backup`). The game's own save files are never part of a state,
 and loading one leaves them as they are. A state loads only into the game, update and mods it was saved with. A newer
 ScarletNX loads it too, unless it changed the recompiled code (`SNX_ABI`) or the layout of what a state holds, and
-then it says so.
+then it says so. A save is refused, saying why, while the game holds what a state can't keep yet: a network
+connection, local play with others, code modules it loaded, or NVN work waiting on the GPU.
 
 In the launcher, S on Games lists the save states of the game in focus, the newest first, with the picture of the one
 in focus beside them. Enter plays the game from that state, and Del deletes it after asking. A state this version
@@ -766,7 +780,7 @@ underlined once the log exists: a click opens it in the system's viewer, the pan
 
 ### On-screen controls
 
-A pad drawn over the game, with rEden's buttons and sizes, laid out as the console's two controllers hold them:
+A pad drawn over the game in white lines, with rEden's sizes, laid out as the console's two controllers hold them:
 sticks, D-pad, A B X Y, L R ZL ZR, plus and minus, the stick buttons, Home (the game's menu) and Capture (a
 screenshot). Fingers press them, the mouse's left button too; a finger that lands off them goes to the game's
 touch screen. They are on by default on Android and off elsewhere.
@@ -774,7 +788,12 @@ touch screen. They are on by default on Android and off elsewhere.
 The game's menu (Back on Android, Home on a gamepad, F2) has their page: show them, *Edit layout* (drag a control;
 tap one and size it with the bar on top; *Done* or Back ends it), snap to a grid, scale and opacity, the buttons
 shown, a stick's middle where the finger lands, a D-pad a finger slides on, a buzz on each press (Android), the touch
-screen, and *Reset layout*. The game's `.ini` keeps them: `controls`, `controls_scale`, `controls_opacity`,
+screen, and *Reset layout*. *Skin* goes round their looks: ScarletNX's own, line (white lines, after libretro's flat
+retropad; the default) and yorha (the launcher's yorha theme on the controls), and the built-in one (rEden's). Any
+[RetroArch overlay](../dist/controls/skins/README.md) is a skin too:
+`controls_skin=` the path of its `.cfg` (the launcher's Settings take it as text), and the controls take its places,
+sizes, images and pressed looks; what it lacks keeps the built-in look, and the log says each part it leaves out. The
+game's `.ini` keeps them: `controls`, `controls_scale`, `controls_alpha`, `controls_skin`,
 `controls_snap`, `controls_rel_center`, `controls_dpad_slide`, `controls_haptics`, a control's place once it
 was moved (`controls_a=0.930 0.470 100`: its middle across the screen and its size in percent), and whether it is
 shown once that changed (`controls_a_shown=0`). The launcher's Settings have the same, but the layout.

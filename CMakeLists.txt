@@ -61,6 +61,29 @@ option(SNX_BUILD_GNUABI "Build the CPU-only Linux AArch64 runtime" ON)
 option(SNX_BUILD_3DS "Build the 3DS driver: extraction, the ARM11 AOT compiler and the runtime" ON)
 option(SNX_BUILD_VITA "Build the PS Vita driver: VPK extraction, the AArch32 AOT compiler and the runtime" ON)
 option(SNX_BUILD_AGB "Build the Game Boy Advance AGB board runtime" ON)
+# the Android app driver runs apps on a desktop's JVM: not in ScarletNX's own Android and iOS apps, which have none.
+# Its native bridge passes the guest's registers as an x86-64 or AArch64 host's (bridge/hle_libc.c)
+# By default only where a JDK 21 or later with include/jni.h is found (cmake/android_jdk.cmake); asked for with none,
+# src/android stops with why
+if(ANDROID OR IOS OR NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|aarch64|arm64|ARM64)$")
+    set(snx_android_default OFF)
+else()
+    include(cmake/android_jdk.cmake)
+    find_package(Java 21 COMPONENTS Development QUIET)
+    snx_android_jdk("${SNX_JAVA_HOME}" "${Java_JAVAC_EXECUTABLE}" "${Java_VERSION}" snx_android_jdk_home
+                    snx_android_jdk_why)
+    if(snx_android_jdk_home)
+        set(snx_android_default ON)
+    else()
+        set(snx_android_default OFF)
+    endif()
+endif()
+option(SNX_BUILD_ANDROID "Build the Android app driver: the DEX translator and the HLE of Android's userland"
+       ${snx_android_default})
+if(NOT SNX_BUILD_ANDROID AND snx_android_jdk_why)
+    message(STATUS "The Android app driver is off: ${snx_android_jdk_why}. Set SNX_BUILD_ANDROID=ON with a JDK 21 or "
+                   "later to build it")
+endif()
 # Reject stale backend selections instead of silently changing an existing build's behavior.
 if(SNX_BUILD_NX AND DEFINED SNX_BACKEND AND NOT SNX_BACKEND STREQUAL "sdl3")
     message(FATAL_ERROR "SNX_BACKEND=${SNX_BACKEND}: SDL3 is now mandatory for the NX runtime. "
@@ -166,9 +189,10 @@ if(NOT SNX_BUILD_NX AND NOT SNX_BUILD_GNUABI)
 endif()
 include(cmake/build_info.cmake) # the window titles' line; the driver stamps games with its commit
 if(SNX_BUILD_3DS)
-    # the window's icon, as the Switch runtime's: made here, as the folder including it first owns snx_window_icon,
-    # and a target of src/3ds compiles only src/3ds (tests/architecture.py)
+    # the window's icon and the gamepads' controls, as the Switch runtime's: made here, as the folder including them
+    # first owns snx_window_icon and snx_pad_sdl, and a target of src/3ds compiles only src/3ds (tests/architecture.py)
     include(cmake/window_icon.cmake)
+    include(cmake/pad_sdl.cmake)
     add_subdirectory(src/3ds)
 endif()
 if(SNX_BUILD_VITA AND NOT SNX_TOOLS_ONLY)
@@ -182,7 +206,8 @@ endif()
 # the program, wherever the build has a driver: it links the drivers' libraries by name, the ones configured below too,
 # by the conditions their folders are configured by here (a build of the host tools has no Vita driver, and with the
 # Switch's tools it stops here)
-if(SNX_BUILD_NX OR SNX_BUILD_3DS OR SNX_BUILD_GNUABI OR SNX_BUILD_AGB OR (SNX_BUILD_VITA AND NOT SNX_TOOLS_ONLY))
+if(SNX_BUILD_NX OR SNX_BUILD_3DS OR SNX_BUILD_GNUABI OR SNX_BUILD_AGB OR SNX_BUILD_ANDROID OR
+   (SNX_BUILD_VITA AND NOT SNX_TOOLS_ONLY))
     add_subdirectory(src/multicall)
 endif()
 if(SNX_TOOLS_ONLY AND SNX_BUILD_NX)
@@ -192,6 +217,9 @@ if(SNX_TOOLS_ONLY AND SNX_BUILD_NX)
 endif()
 if(SNX_BUILD_GNUABI)
     add_subdirectory(src/gnuabi)
+endif()
+if(SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY)
+    add_subdirectory(src/android)
 endif()
 if(SNX_BUILD_AGB)
     # the runner's window icon, made here as the 3DS's is: a target of src/agb compiles only src/agb
@@ -259,6 +287,9 @@ install(FILES LICENSE DESTINATION ${licenses})
 # FFmpeg's with the change made to it (cmake/ffmpeg-vp9-nvdec.patch), which its LGPL wants carried with the binaries
 install(FILES "${FFmpeg_SOURCE_DIR}/COPYING.LGPLv2.1" "${FFmpeg_SOURCE_DIR}/LICENSE.md" cmake/ffmpeg-vp9-nvdec.patch
         DESTINATION ${licenses}/FFmpeg)
+if(TARGET snx_zlib) # in FFmpeg's PNG decoder and encoder
+    install(FILES "${zlib_SOURCE_DIR}/LICENSE" DESTINATION ${licenses}/zlib)
+endif()
 install(FILES dist/licenses/Noto/OFL.txt DESTINATION ${licenses}/Noto) # the shared fonts' stand-ins (pl.c)
 install(FILES dist/licenses/Montserrat/OFL.txt DESTINATION ${licenses}/Montserrat) # the 3DS shared font's stand-in
 install(FILES dist/licenses/Ryujinx/LICENSE.txt DESTINATION ${licenses}/Ryujinx) # the default Miis (misc.c)

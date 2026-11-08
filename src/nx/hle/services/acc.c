@@ -17,11 +17,8 @@
 static int acc_profile_dispatch(SvcObj* o, IpcCtx* c);
 static SvcObj* acc_with(SvcObj* o, int (*dispatch)(SvcObj*, IpcCtx*));
 
-#define ACC_INVALID_USER_ID RC(124, 20)
-#define ACC_INVALID_APPLICATION RC(124, 22)
-#define ACC_INVALID_LENGTH  RC(124, 32)
-#define ACC_UPDATE_FAILED       RC(124, 100) /* rEden's ResultAccountUpdateFailed: the users could not be written */
-#define ACC_UNDER_MAINTENANCE   RC(124, 5249) /* the online account service is not there: "not available right now" */
+/* the users that could not be written answer UserNotExist, 2124-0100: rEden's ResultAccountUpdateFailed */
+
 #define ACC_THUMBNAIL_SIZE  0x24000      /* a save's thumbnail: 256x144 RGBA */
 #define ACC_LAST_EDIT       1546300800   /* the user's profile was last changed on the first day of 2019 */
 #define ACC_EMPTY_TOKEN     0x100        /* the zeros LoadIdTokenCache (19.0.0+) answers with no token */
@@ -86,7 +83,7 @@ static int nn_account_IAccountServiceForApplication_GetLastOpenedUser(SvcObj* se
 static int nn_account_IAccountServiceForApplication_GetProfile(SvcObj* self, const nn_account_Uid* uid,
                                                                SvcObj** profile) {
     (void)self;
-    R_UNLESS(acc_user(uid), ACC_INVALID_USER_ID);
+    R_UNLESS(acc_user(uid), SNX_RC_ACCOUNT_INVALID_USER_ID);
     *profile = acc_with(acc_for_user(nn_account_profile_IProfile_new_data(g_hle.acc.users, g_hle.acc.user_next,
                                                                           "acc profiles and managers"),
                                      uid),
@@ -118,7 +115,7 @@ static int nn_account_IAccountServiceForApplication_GetBaasAccountManagerForAppl
                                                                                         const nn_account_Uid* uid,
                                                                                         SvcObj** manager) {
     (void)self;
-    R_UNLESS(acc_user(uid), ACC_INVALID_USER_ID);
+    R_UNLESS(acc_user(uid), SNX_RC_ACCOUNT_INVALID_USER_ID);
     *manager = acc_for_user(nn_account_baas_IManagerForApplication_new_data(g_hle.acc.users, g_hle.acc.user_next,
                                                                                    "acc profiles and managers"), uid);
     R_SUCCEED();
@@ -156,8 +153,8 @@ static int nn_account_IAccountServiceForApplication_StoreSaveDataThumbnail(SvcOb
                                                                            IpcBuf image) {
     static const nn_account_Uid none;
     (void)self;
-    R_UNLESS(memcmp(uid->v, none.v, sizeof none.v), ACC_INVALID_USER_ID);
-    R_UNLESS(image.size == ACC_THUMBNAIL_SIZE, ACC_INVALID_LENGTH);
+    R_UNLESS(memcmp(uid->v, none.v, sizeof none.v), SNX_RC_ACCOUNT_INVALID_USER_ID);
+    R_UNLESS(image.size == ACC_THUMBNAIL_SIZE, SNX_RC_ACCOUNT_INVALID_ARRAY_LENGTH);
     R_SUCCEED();
 }
 
@@ -174,14 +171,16 @@ static void acc_profile_base(SvcObj* self, nn_account_profile_ProfileBase* base)
 /* the user data (icon, colours, Mii) a program stored, users.ini's user_data: zeros, the default icon, without one */
 static int nn_account_profile_IProfile_Get(SvcObj* self, IpcBuf user_data, nn_account_profile_ProfileBase* base) {
     const SnxUser* u = acc_profile_user(self);
-    R_UNLESS(u, ACC_INVALID_USER_ID); /* deleted since (acc:su 203): rEden answers its profile manager's failure */
+    R_UNLESS(
+        u,
+        SNX_RC_ACCOUNT_INVALID_USER_ID); /* deleted since (acc:su 203): rEden answers its profile manager's failure */
     memcpy(GP(user_data.addr), u->user_data,
            (size_t)(user_data.size < sizeof u->user_data ? user_data.size : sizeof u->user_data));
     acc_profile_base(self, base);
     R_SUCCEED();
 }
 static int nn_account_profile_IProfile_GetBase(SvcObj* self, nn_account_profile_ProfileBase* base) {
-    R_UNLESS(acc_profile_user(self), ACC_INVALID_USER_ID);
+    R_UNLESS(acc_profile_user(self), SNX_RC_ACCOUNT_INVALID_USER_ID);
     acc_profile_base(self, base);
     R_SUCCEED();
 }
@@ -322,7 +321,7 @@ static int nn_account_baas_IManagerForSystemService_GetNetworkServiceLicenseCach
 /* the online account's user resource (130) and verification URL (133) caches, which the system's account pages read:
    the online account service is not there, which they show as not available right now (rEden's answer) */
 static int acc_system_manager_other(SvcObj* self, IpcCtx* c) {
-    if (c->cmd == 130 || c->cmd == 133) R_THROW(ACC_UNDER_MAINTENANCE);
+    if (c->cmd == 130 || c->cmd == 133) R_THROW(SNX_RC_ACCOUNT_UNDER_MAINTENANCE);
     return stub_ok(self, c);
 }
 
@@ -341,7 +340,7 @@ static int nn_account_baas_IAdministrator_IsLinkedWithNintendoAccount(SvcObj* se
 }
 /* the online account's page (290, GetRequestForNintendoAccountUserResourceView): not available right now, as rEden */
 static int acc_administrator_other(SvcObj* self, IpcCtx* c) {
-    if (c->cmd == 290) R_THROW(ACC_UNDER_MAINTENANCE);
+    if (c->cmd == 290) R_THROW(SNX_RC_ACCOUNT_UNDER_MAINTENANCE);
     return stub_ok(self, c);
 }
 
@@ -407,7 +406,7 @@ static int nn_account_IAccountServiceForSystemService_GetBaasAccountManagerForSy
                                                                                             const nn_account_Uid* uid,
                                                                                             SvcObj** manager) {
     (void)self;
-    R_UNLESS(acc_user(uid), ACC_INVALID_USER_ID);
+    R_UNLESS(acc_user(uid), SNX_RC_ACCOUNT_INVALID_USER_ID);
     *manager = acc_for_user(nn_account_baas_IManagerForSystemService_new_data(g_hle.acc.users, g_hle.acc.user_next,
                                                                               "acc profiles and managers"),
                             uid);
@@ -475,7 +474,7 @@ static int nn_account_IAccountServiceForAdministrator_GetBaasAccountAdministrato
                                                                                   const nn_account_Uid* uid,
                                                                                   SvcObj** administrator) {
     (void)self;
-    R_UNLESS(acc_user(uid), ACC_INVALID_USER_ID);
+    R_UNLESS(acc_user(uid), SNX_RC_ACCOUNT_INVALID_USER_ID);
     *administrator = acc_for_user(
         nn_account_baas_IAdministrator_new_data(g_hle.acc.users, g_hle.acc.user_next, "acc profiles and managers"),
         uid);
@@ -484,7 +483,7 @@ static int nn_account_IAccountServiceForAdministrator_GetBaasAccountAdministrato
 /* the system names the application the thumbnail is of: none is no application's */
 static int nn_account_IAccountServiceForAdministrator_StoreSaveDataThumbnail(SvcObj* self, const nn_account_Uid* uid,
                                                                              u64 application_id, IpcBuf image) {
-    R_UNLESS(application_id, ACC_INVALID_APPLICATION);
+    R_UNLESS(application_id, SNX_RC_ACCOUNT_INVALID_APPLICATION);
     return nn_account_IAccountServiceForApplication_StoreSaveDataThumbnail(self, uid, image);
 }
 static int nn_account_IAccountServiceForAdministrator_GetPinCodeLength(SvcObj* self, u32* length) {
@@ -505,7 +504,7 @@ static int nn_account_IAccountServiceForAdministrator_BeginUserRegistration(SvcO
     } while (snx_users_find(v));
     if (snx_users_begin(v, why, sizeof why)) {
         WARN("acc: no user registered: %s\n", why);
-        R_THROW(ACC_UPDATE_FAILED);
+        R_THROW(SNX_RC_ACCOUNT_USER_NOT_EXIST);
     }
     acc_uid_put(uid->v, v);
     R_SUCCEED();
@@ -516,14 +515,14 @@ static int nn_account_IAccountServiceForAdministrator_CompleteUserRegistration(S
     const SnxUser* u = acc_user(uid);
     char why[512];
     (void)self;
-    R_UNLESS(u, ACC_INVALID_USER_ID);
+    R_UNLESS(u, SNX_RC_ACCOUNT_INVALID_USER_ID);
     if (!g_host.acc.users_dir[0]) {
         WARN("acc: the user registered is not written: there is no users folder\n");
-        R_THROW(ACC_UPDATE_FAILED);
+        R_THROW(SNX_RC_ACCOUNT_USER_NOT_EXIST);
     }
     if (snx_users_save(g_host.acc.users_dir, (int)(u - g_users) + 1, why, sizeof why)) {
         WARN("acc: the user registered is not written: %s\n", why);
-        R_THROW(ACC_UPDATE_FAILED);
+        R_THROW(SNX_RC_ACCOUNT_USER_NOT_EXIST);
     }
     R_SUCCEED();
 }
@@ -548,17 +547,17 @@ static int nn_account_IAccountServiceForAdministrator_DeleteUser(SvcObj* self, c
     char *data, *trash = NULL, *section = NULL, *place;
     time_t now = time(NULL);
     const struct tm* utc = gmtime(&now);
-    int number, moved = 0, n, i, rc = ACC_UPDATE_FAILED;
+    int number, moved = 0, n, i, rc = SNX_RC_ACCOUNT_USER_NOT_EXIST;
     (void)self;
-    R_UNLESS(u, ACC_INVALID_USER_ID);
+    R_UNLESS(u, SNX_RC_ACCOUNT_INVALID_USER_ID);
     number = (int)(u - g_users) + 1;
     if (u == snx_users_selected()) {
         WARN("acc: user %d is not deleted: it is the one playing\n", number);
-        R_THROW(ACC_UPDATE_FAILED);
+        R_THROW(SNX_RC_ACCOUNT_USER_NOT_EXIST);
     }
     if (!g_host.acc.users_dir[0]) {
         WARN("acc: user %d is not deleted: there is no users folder\n", number);
-        R_THROW(ACC_UPDATE_FAILED);
+        R_THROW(SNX_RC_ACCOUNT_USER_NOT_EXIST);
     }
     snx_users_uid_text(u->uid, hex);
     data = snx_dirname(g_host.acc.users_dir);
@@ -667,7 +666,7 @@ static int nn_account_IAccountServiceForAdministrator_SetUserPosition(SvcObj* se
     if (!g_host.acc.users_dir[0] || snx_users_move(g_host.acc.users_dir, number, (int)position + 1, why, sizeof why)) {
         WARN("acc: user %d is not moved to place %llu: %s\n", number, (unsigned long long)position,
              g_host.acc.users_dir[0] ? why : "there is no users folder");
-        R_THROW(ACC_UPDATE_FAILED);
+        R_THROW(SNX_RC_ACCOUNT_USER_NOT_EXIST);
     }
     R_SUCCEED();
 }
@@ -676,7 +675,7 @@ static int acc_editor_dispatch(SvcObj* o, IpcCtx* c);
 static int nn_account_IAccountServiceForAdministrator_GetProfileEditor(SvcObj* self, const nn_account_Uid* uid,
                                                                        SvcObj** editor) {
     (void)self;
-    R_UNLESS(acc_user(uid), ACC_INVALID_USER_ID);
+    R_UNLESS(acc_user(uid), SNX_RC_ACCOUNT_INVALID_USER_ID);
     *editor = acc_with(acc_for_user(nn_account_profile_IProfileEditor_new_data(g_hle.acc.users, g_hle.acc.user_next,
                                                                                "acc profiles and managers"),
                                     uid),
@@ -708,18 +707,18 @@ static int acc_store(SvcObj* self, const nn_account_profile_ProfileBase* base, I
     unsigned char data[SNX_USERS_DATA];
     u64 uid[2];
     int number;
-    R_UNLESS(u, ACC_INVALID_USER_ID);
-    R_UNLESS(user_data.size >= SNX_USERS_DATA, ACC_INVALID_LENGTH);
-    R_UNLESS(!image || image->size <= SNX_ACC_PICTURE_MAX, ACC_INVALID_LENGTH);
+    R_UNLESS(u, SNX_RC_ACCOUNT_INVALID_USER_ID);
+    R_UNLESS(user_data.size >= SNX_USERS_DATA, SNX_RC_ACCOUNT_INVALID_ARRAY_LENGTH);
+    R_UNLESS(!image || image->size <= SNX_ACC_PICTURE_MAX, SNX_RC_ACCOUNT_INVALID_ARRAY_LENGTH);
     acc_uid_get(&base->uid, uid);
-    R_UNLESS(uid[0] == who->uid[0] && uid[1] == who->uid[1], ACC_INVALID_USER_ID);
+    R_UNLESS(uid[0] == who->uid[0] && uid[1] == who->uid[1], SNX_RC_ACCOUNT_INVALID_USER_ID);
     memcpy(nickname, base->nickname, SNX_USERS_NICKNAME);
     nickname[SNX_USERS_NICKNAME] = 0;
     memcpy(data, GP(user_data.addr), sizeof data);
     number = (int)(u - g_users) + 1;
     if (!g_host.acc.users_dir[0]) {
         WARN("acc: the profile of user %d is not stored: there is no users folder\n", number);
-        R_THROW(ACC_UPDATE_FAILED);
+        R_THROW(SNX_RC_ACCOUNT_USER_NOT_EXIST);
     }
     if ((strcmp(nickname, u->nickname) && snx_users_rename(g_host.acc.users_dir, number, nickname, why, sizeof why)) ||
         (memcmp(data, u->user_data, sizeof data) &&
@@ -728,7 +727,7 @@ static int acc_store(SvcObj* self, const nn_account_profile_ProfileBase* base, I
                                         sizeof why)) ||
         snx_users_save(g_host.acc.users_dir, number, why, sizeof why)) {
         WARN("acc: the profile of user %d is not stored: %s\n", number, why);
-        R_THROW(ACC_UPDATE_FAILED);
+        R_THROW(SNX_RC_ACCOUNT_USER_NOT_EXIST);
     }
     R_SUCCEED();
 }
@@ -781,3 +780,7 @@ static SvcObj* acc_with(SvcObj* o, int (*dispatch)(SvcObj*, IpcCtx*)) {
 SvcObj* new_acc(void) { return acc_with(nn_account_IAccountServiceForApplication_new(), acc_u0_dispatch); }
 SvcObj* new_acc_system(void) { return acc_with(nn_account_IAccountServiceForSystemService_new(), acc_u1_dispatch); }
 SvcObj* new_acc_admin(void) { return acc_with(nn_account_IAccountServiceForAdministrator_new(), acc_su_dispatch); }
+/* the functions a save state may hold of this file (state_fns.h): the locked dispatchers its objects answer through */
+STATE_FN_TABLE(g_acc_state_fns, STATE_FN("acc", acc_u0_dispatch), STATE_FN("acc", acc_u1_dispatch),
+               STATE_FN("acc", acc_su_dispatch), STATE_FN("acc", acc_profile_dispatch),
+               STATE_FN("acc", acc_editor_dispatch));

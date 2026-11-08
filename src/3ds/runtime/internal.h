@@ -4,6 +4,8 @@
 #define SNX_CTR_PROCESS_INTERNAL_H
 #include "3ds/runtime/ctr_process.h"
 #include "3ds/gpu/y2r.h"
+#include "3ds/audio/csnd.h"
+#include "3ds/audio/dsp.h"
 #include "3ds/kernel/ctr_kernel.h"
 #include "3ds/services/romfs.h"
 #define CTR_HANDLES        256u
@@ -86,6 +88,7 @@ typedef struct {
             uint32_t position; /* CTR_FILE_DIR: the entries Read has given so far */
             void* host;        /* FILE* for CTR_FILE_HOST */
             void* node;        /* FsNode*, retained for the file's lifetime */
+            uint32_t dlc_view; /* CTR_FILE_VIEW: 1 + the dlc_views entry it reads (a DLC's), 0 for the game's own */
         } file;
         struct {
             /* physical: a service block's FCRAM pages (font, GSP, HID); 0 for a block the application made */
@@ -165,6 +168,68 @@ typedef struct {
 typedef struct {
     uint32_t shared, status_event, receive_event, send_event;
 } SnxCtrIrService;
+/* ir:rst's sampling (services/irrst.c): the next sample's deadline, host monotonic ns (0: not running), the period
+   Initialize gave in ms, the entry the next sample is written at, and whether the game asked for the C-stick's raw
+   data */
+typedef struct {
+    uint64_t next_ns;
+    uint32_t period_ms, index;
+    bool raw_c_stick;
+} SnxCtrIrrst;
+/* mic:u's state (services/mic.c): the buffer full event (retained, made at the first request for it), whether
+   sampling runs, its encoding and rate, and the settings a game stored */
+typedef struct {
+    uint32_t event;
+    uint8_t sampling, encoding, sample_rate, gain, power, clamp, allow_shell_closed;
+} SnxCtrMic;
+/* cam:u's state (services/cam.c), as Azahar's Module: three cameras, each with two contexts (its current one the
+   picture's), and two ports, the first the outer left or the inner camera's, the second the outer right one's */
+typedef struct {
+    uint16_t width, height, crop_x0, crop_y0, crop_x1, crop_y1; /* the picture, and its crop of the sensor's */
+    uint8_t flip, effect, format;
+} SnxCtrCamContext;
+typedef struct {
+    SnxCtrCamContext contexts[2];
+    uint8_t context, frame_rate; /* the current context; SetFrameRate's value */
+} SnxCtrCamera;
+typedef struct {
+    uint32_t completion_event, error_event, vsync_event; /* (retained) made at the first request for each */
+    uint64_t vsync_ns, done_ns; /* host monotonic ns of the next vsync and of the receiving's end, 0 for none */
+    int64_t vsync_us[5];        /* the last vsyncs' times, newest first: vsync_count of them */
+    uint32_t vsync_count, dest, dest_size;
+    uint16_t transfer_bytes, x0, y0, x1, y1;
+    uint8_t camera, active, busy, receiving, pending, trimming;
+} SnxCtrCamPort;
+typedef struct {
+    SnxCtrCamera camera[3];
+    SnxCtrCamPort port[2];
+    uint8_t initialized;
+} SnxCtrCam;
+/* csnd:SND's state (services/csnd.c), as Azahar's CSND_SND: the hardware, each session's client (its session object,
+   its shared memory and mutex, retained from Initialize to Shutdown, the state offsets it gave and the channels and
+   capture units it holds), each channel's volumes, the channel sets (bit per channel) the fades work on, the frame
+   being rendered, and the deadlines of the next frame and the next fade step (0: none) */
+#define SNX_CTR_CSND_CLIENTS 4
+typedef struct {
+    uint32_t session, mutex, shared;
+    uint32_t master_state_offset, channel_state_offset, capture_state_offset, direct_sound_offset;
+    uint32_t channel_mask;
+    uint8_t capture_mask;
+} SnxCtrCsndClient;
+typedef struct {
+    uint16_t requested[2], target[2];
+    int32_t current[2], step[2];
+} SnxCtrCsndVolume;
+typedef struct {
+    SnxCtrCsndHw hw;
+    SnxCtrCsndClient clients[SNX_CTR_CSND_CLIENTS];
+    SnxCtrCsndVolume volumes[SNX_CTR_CSND_CHANNELS];
+    uint32_t started, fading, stop_pending, pause_pending;
+    uint8_t capture_in_use[SNX_CTR_CSND_CAPTURES];
+    uint32_t initialized_clients, frame_samples, fade_step;
+    int16_t frame[SNX_CTR_DSP_SAMPLES][2];
+    uint64_t frame_start_ns, next_frame_ns, next_fade_ns;
+} SnxCtrCsnd;
 /* hid:USER's sampling (services/hid.c): each update's next deadline, host monotonic ns (0: not running), the index
    each writes next, how many times the game enabled each sensor, and the circle pad's last two raw positions, which
    each sample averages with */
@@ -176,6 +241,14 @@ typedef struct {
 } SnxCtrHid;
 struct SnxCtrProcess {
     SnxCtrRomfs* romfs; /* runtime-owned immutable host filesystem view */
+    const SnxCtrSource* source; /* the game read where it lies, with its DLC files, which romfs reads too: the
+                                   caller's, open while the process is; NULL for an extraction */
+    struct {
+        uint64_t title;
+        unsigned index;
+        SnxCtrRomfs* view;
+    } dlc_views[32]; /* the RomFS views of the DLC contents the game has opened, made on first open */
+    unsigned dlc_view_count;
     FsTree* tree;       /* the shared NX-style tree: romfs/exefs read-only, sdmc read-write */
     FsNode* sd;         /* the "sdmc" subtree root (read-write) */
     FsNode* save;       /* the "savedata" subtree root (read-write), NULL until the game formats its save data */
@@ -238,6 +311,11 @@ struct SnxCtrProcess {
     struct SnxCtrUds* uds;
     SnxCtrY2rService y2r;
     SnxCtrIrService ir;
+    uint32_t irrst_objects[2]; /* ir:rst's shared memory and its update event, made at its first GetHandles */
+    SnxCtrIrrst irrst;
+    SnxCtrMic mic;
+    SnxCtrCam cam;
+    SnxCtrCsnd csnd;
     uint64_t svc_count, svc_counts[256]; /* all, and each SVC's */
     uint64_t idle_ns, idle_waits;        /* the host time the scheduler slept with no thread to run, and how often */
     /* the codeset GetProcessInfo describes: segments as loaded, BSS, title and name (ExHeader) */

@@ -80,6 +80,7 @@ void svc_core_init(void) {
     nn_nsd_detail_IManager_register(new_nsd);
     nn_nifm_detail_IStaticService_register(new_nifm);
     nn_ssl_sf_ISslService_register(new_ssl);
+    nn_ssl_sf_ISslServiceForSystem_register(new_ssl_system);
 
     nn_apm_IManager_register(new_apm);
     nn_lm_ILogService_register(new_lm);
@@ -90,6 +91,7 @@ void svc_core_init(void) {
     nn_ns_detail_IServiceGetterInterface_register(new_ns);
     nn_prepo_detail_ipc_IPrepoService_register(new_prepo);
     nn_capsrv_sf_IAlbumApplicationService_register(new_caps);
+    nn_capsrv_sf_IScreenShotApplicationService_register(new_capssu);
     nn_err_context_IWriterForApplication_register(new_ectx);
     nn_psm_IPsmServer_register(new_psm);
     nn_fatalsrv_IService_register(new_fatal);
@@ -108,6 +110,7 @@ void svc_core_init(void) {
     nn_audio_detail_IAudioInManager_register(new_audin);
     nn_ngc_detail_IService_register(new_ngc);
     nn_ngct_detail_IService_register(new_ngct);
+    nn_olsc_srv_IOlscServiceForApplication_register(new_olsc);
 
     /* the audio renderer's 5 ms frames and the audio outs' buffers (audio.c), from the start as on the console */
     if (plat_thread(audio_clock, NULL, (size_t)8 << 20)) fatal("Could not start the audio clock's thread");

@@ -5,7 +5,11 @@
    longest inside the box; ? for what is not known; the GPU's share and time a frame from its busy time over a second,
    ? where the renderer can't time it or wasn't at the second before; the graph's title and its guides' labels; the
    graph's bars, a slow frame's in the failure colour; its corner, and beside
-   showcase's box in showcase's corner; a word that is no corner; and off forgetting what it had */
+   showcase's box in showcase's corner; a word that is no corner; and off forgetting what it had. Under the graph,
+   while they apply: RenderDoc's lines (a capture can be taken; the last capture's file, ? where RenderDoc gave none, or
+   its failure in the failure colour) and the debugger's, the box wider for a line that needs it and a file's name cut
+   from its start past the safe area, RenderDoc's lines kept while stats is off; and on Linux and FreeBSD a child the
+   test traces shows the test as its debugger */
 #include "nx/runtime/platform/stats.h"
 #include "nx/runtime/platform/vpad.h"
 #include "nx/runtime/platform/controls_atlas.h"
@@ -17,6 +21,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__linux__) || defined(__FreeBSD__)
+#include <errno.h>
+#include <sys/ptrace.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#define TRACED_CHILD 1
+/* the child asks to be traced by its parent; the parent lets it go on from a stop */
+#if defined(__linux__)
+#define TRACE_ME()    ptrace(PTRACE_TRACEME, 0, NULL, NULL)
+#define TRACE_GO(pid) ptrace(PTRACE_CONT, (pid), NULL, NULL)
+#else
+#define TRACE_ME()    ptrace(PT_TRACE_ME, 0, NULL, 0)
+#define TRACE_GO(pid) ptrace(PT_CONTINUE, (pid), (caddr_t)1, 0)
+#endif
+#endif
 
 /* ui.c's lock and log, and what vpad.c and the Display table name, without the platform layer */
 void pm_lock(PMutex* m) { (void)m; }
@@ -43,7 +63,7 @@ static struct {
     char logged[256];
     SnxUiQuad quads[4096];
     SnxUiList l;
-    char line[STATS_COLS + 1];
+    char line[256]; /* past STATS_COLS: a line under the graph widens the box */
     SnxStatsGpu gpu;
     int menu;
 } g_test = {.menu = 3};
@@ -74,6 +94,7 @@ static void draw(u64 now) {
 static const char* line_at(float x, float y, int cols) {
     int k, i, end = 0;
     float cw = 8.0f * (float)stats_scale(g_test.menu);
+    assert(cols >= 0 && cols < (int)sizeof g_test.line);
     for (k = 0; k < cols; ++k) {
         g_test.line[k] = ' ';
         for (i = 0; i < g_test.l.n; ++i)
@@ -126,6 +147,37 @@ static unsigned icon_at(int k, int at) {
 }
 /* the icon before the box's line k */
 static unsigned icon(int k) { return icon_at(k, 1); }
+/* the line k under the graph, after its icon */
+static const char* note(int k) {
+    int s = stats_scale(g_test.menu);
+    float box[4], cw = 8.0f * (float)s, ch = 16.0f * (float)s;
+    stats_box(safe, s, box);
+    return line_at(box[0] + 4 * cw, box[1] + 8 * ch + 3 * ch / 4 + (float)k * ch, (int)(box[2] / cw) - 4);
+}
+/* the icon before the line k under the graph, drawn in rgba: GUI_ICON_NONE for none */
+static unsigned note_icon(int k, u32 rgba) {
+    int s = stats_scale(g_test.menu), i;
+    float box[4], cw = 8.0f * (float)s, ch = 16.0f * (float)s;
+    stats_box(safe, s, box);
+    for (i = 0; i < g_test.l.n; ++i) {
+        const SnxUiQuad* q = &g_test.quads[i];
+        if (q->uw == 16 && q->vh == 16 && q->v == SNX_CONTROLS_ATLAS_HEIGHT && q->x == box[0] + cw &&
+            q->y == box[1] + 8 * ch + 3 * ch / 4 + (float)k * ch && q->rgba == rgba)
+            return GUI_ICON_FIRST + (unsigned)(q->u - SNX_UI_ICONS_X) / 16;
+    }
+    return GUI_ICON_NONE;
+}
+/* the letters of the line k under the graph drawn in rgba */
+static int note_letters(int k, u32 rgba) {
+    int s = stats_scale(g_test.menu), i, n = 0;
+    float box[4], ch = 16.0f * (float)s;
+    stats_box(safe, s, box);
+    for (i = 0; i < g_test.l.n; ++i)
+        if (g_test.quads[i].uw == 8 && g_test.quads[i].vh == 16 &&
+            g_test.quads[i].y == box[1] + 8 * ch + 3 * ch / 4 + (float)k * ch && g_test.quads[i].rgba == rgba)
+            ++n;
+    return n;
+}
 /* the icons and letters drawn past a cell in from the box's sides: 0 when they all keep it */
 static int past_margin(void) {
     int s = stats_scale(g_test.menu), i, n = 0;
@@ -338,6 +390,140 @@ int main(void) {
     assert(!strcmp(text(0), "? fps  ? ms") && !strcmp(text(1), "cpu ?") && !strcmp(text(2), "ram ?/? MiB") &&
            !bars(&newest));
     assert(!strcmp(gpu_text(), "gpu ?  ? ms") && !strcmp(text(3), "vram ?/? MiB"));
+    /* RenderDoc's lines and the debugger's under the graph, each after its icon; the box a line longer for each, and a
+       quarter line after them */
+    {
+        SnxStatsCapture c = {.ready = 1};
+        float plain = 8 * 32 + 24;
+        draw(at);
+        stats_box(safe, 2, box);
+        assert(box[3] == plain && !note(0)[0]);
+        stats_capture(&c);
+        draw(at);
+        stats_box(safe, 2, box);
+        assert(box[3] == plain + 32 + 8 && box[2] == (34 + 5) * 16); /* the line's 34 letters past STATS_COLS */
+        assert(!strcmp(note(0), "RenderDoc: Ctrl+Shift+F12 captures") && note_icon(0, TEXT_RGBA) == GUI_ICON_IMAGE);
+        /* a capture written: how many, and the last one's file by its name */
+        c.taken = 2;
+        snprintf(c.path, sizeof c.path, "/caps/game_capture_2.rdc");
+        stats_capture(&c);
+        draw(at);
+        assert(!strcmp(note(1), "capture 2: game_capture_2.rdc") && note_icon(1, TEXT_RGBA) == GUI_ICON_SAVE);
+        stats_box(safe, 2, box);
+        assert(box[3] == plain + 2 * 32 + 8 && past_margin() == 0);
+        c.taken = 3;
+        snprintf(c.path, sizeof c.path, "C:\\caps\\game_capture_3.rdc");
+        stats_capture(&c);
+        draw(at);
+        assert(!strcmp(note(1), "capture 3: game_capture_3.rdc"));
+        c.path[0] = 0; /* RenderDoc gave no path */
+        stats_capture(&c);
+        draw(at);
+        assert(!strcmp(note(1), "capture 3: ?"));
+        /* the next one failed: said in the failure colour, its icon too */
+        c.failed = 1;
+        stats_capture(&c);
+        draw(at);
+        assert(!strcmp(note(1), "capture 4 failed") && note_letters(1, FAILURE) == 14 &&
+               note_letters(1, TEXT_RGBA) == 0);
+        assert(note_icon(1, FAILURE) == GUI_ICON_SAVE);
+        /* a debugger: its line last */
+        stats_debugger("gdb");
+        draw(at);
+        assert(!strcmp(note(0), "RenderDoc: Ctrl+Shift+F12 captures") && !strcmp(note(2), "debugger attached: gdb"));
+        assert(note_icon(2, TEXT_RGBA) == GUI_ICON_BUG);
+        stats_box(safe, 2, box);
+        assert(box[3] == plain + 3 * 32 + 8 && box[2] == (34 + 5) * 16 && past_margin() == 0);
+        /* a name the box's letters don't hold: the box wider, the line whole */
+        stats_debugger("lldb-server-123");
+        draw(at);
+        stats_box(safe, 2, box);
+        assert(!strcmp(note(2), "debugger attached: lldb-server-123") && box[2] == (19 + 15 + 5) * 16);
+        assert(past_margin() == 0);
+        /* a file's name past the safe area: the box as wide as the area, the name's start cut, its end shown */
+        stats_debugger("");
+        c.failed = 0;
+        c.taken = 4;
+        snprintf(c.path, sizeof c.path, "/caps/%s_capture_12.rdc",
+                 "a_stem_much_longer_than_any_box_of_the_stats_could_hold_across_the_whole_picture_of_the_game");
+        stats_capture(&c);
+        draw(at);
+        stats_box(safe, 2, box);
+        assert(box[2] == 78 * 16 && box[0] + box[2] <= (float)(safe[0] + safe[2]) - 16 && past_margin() == 0);
+        assert(!strncmp(note(1), "capture 4: ...", 14) && strlen(note(1)) == 73);
+        assert(!strcmp(note(1) + 73 - 15, "_capture_12.rdc"));
+        /* bottom right: the taller box still a gap above the safe area's bottom */
+        stats_corner_set(corner, "br");
+        stats_box(safe, 2, box);
+        assert(box[1] + box[3] == 50 + 720 - 16 && box[0] + box[2] == 100 + 1280 - 16);
+        stats_corner_set(corner, "tl");
+        /* off and on: RenderDoc's lines kept, the debugger forgotten, and read again at the next frame's measure
+           (nothing traces the test) */
+        stats_frame(at += 16 * MS, &g_test.gpu); /* a frame and a measure for off to forget */
+        stats_debugger("gdb");
+        g_settings.stats = 0;
+        stats_frame(at += 16 * MS, &g_test.gpu);
+        g_settings.stats = 1;
+        draw(at);
+        assert(!strcmp(note(0), "RenderDoc: Ctrl+Shift+F12 captures") && !strncmp(note(1), "capture 4: ...", 14));
+        assert(!note(2)[0]);
+        stats_debugger("gdb");
+        stats_frame(at += 16 * MS, &g_test.gpu);
+        draw(at);
+        assert(!strcmp(note(0), "RenderDoc: Ctrl+Shift+F12 captures") && !note(2)[0]);
+        /* the capture key as set, and with none the menu's item */
+        snprintf(g_settings.render_doc_capture_shortcut, sizeof g_settings.render_doc_capture_shortcut, "Pause");
+        draw(at);
+        assert(!strcmp(note(0), "RenderDoc: Pause captures"));
+        g_settings.render_doc_capture_shortcut[0] = 0;
+        draw(at);
+        assert(!strcmp(note(0), "RenderDoc: Capture frame in the menu"));
+        /* none: no lines, the box as before */
+        stats_capture(&(SnxStatsCapture){0});
+        draw(at);
+        stats_box(safe, 2, box);
+        assert(box[3] == plain && box[2] == STATS_COLS * 16 && !note(0)[0]);
+    }
+#ifdef TRACED_CHILD
+    /* a game a debugger traces: the line names it from the frames, as snx_debugger reads it (the test, here) */
+    {
+        int pipe_fd[2], status = 0;
+        char said[128] = {0};
+        pid_t child;
+        assert(!pipe(pipe_fd));
+        child = fork();
+        assert(child >= 0);
+        if (!child) {
+            char name[SNX_DEBUGGER_NAME], want[64];
+            close(pipe_fd[0]);
+            if (TRACE_ME())
+                snprintf(said, sizeof said, "refused %d", errno);
+            else if (!snx_debugger(name, sizeof name))
+                snprintf(said, sizeof said, "no debugger read");
+            else {
+                snprintf(want, sizeof want, "debugger attached: %s", name);
+                g_settings.stats = 0;
+                stats_frame(at += 16 * MS, &g_test.gpu); /* from nothing */
+                g_settings.stats = 1;
+                stats_frame(at += 16 * MS, &g_test.gpu);
+                draw(at);
+                snprintf(said, sizeof said, "%s", strcmp(note(0), want) ? note(0) : "ok");
+            }
+            if (write(pipe_fd[1], said, strlen(said) + 1) < 0) _exit(2);
+            _exit(0);
+        }
+        close(pipe_fd[1]);
+        if (read(pipe_fd[0], said, sizeof said - 1) < 0) said[0] = 0;
+        close(pipe_fd[0]);
+        while (waitpid(child, &status, 0) == child && WIFSTOPPED(status)) TRACE_GO(child);
+        if (!strncmp(said, "refused", 7))
+            printf("the system refused a traced child (%s, errno): the debugger's line is not read here\n", said);
+        else if (strcmp(said, "ok") || !WIFEXITED(status) || WEXITSTATUS(status)) {
+            fprintf(stderr, "a game traced by the test: the line under the graph \"%s\"\n", said);
+            return 1;
+        }
+    }
+#endif
     puts("stats passed");
     return 0;
 }

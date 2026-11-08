@@ -8,12 +8,13 @@
    the new program into the same host process (gnu_spawn_finish_exec), keeping its pid and descriptors.
    Windows has no fork: a vfork child runs in this process until its execve, which starts the new program in a new
    host process (another copy of this runtime) with the child's descriptors, and the parent goes on from its clone
-   call. A plain fork is unsupported there. Signal handlers are recorded but not entered (signals.c); a signal whose
-   default action ends a process ends it, which the parent sees as the host reports it. */
+   call. A plain fork is unsupported there. A fork from a thread copies that thread alone, as Linux's does, with every
+   lock of the runtime held across the host's fork (thread.c). clone with CLONE_THREAD is a thread (thread.c). */
 #ifndef _WIN32
 #define _GNU_SOURCE
 #endif
 #include "gnuabi/process/process.h"
+#include "gnuabi/kernel/signals.h"
 #include "common/utilities/endian.h"
 #include "common/cpu/recompiler/snx_recompiler.h"
 #include "gnuabi/abi/errno/errno.h"
@@ -37,42 +38,30 @@
 #endif
 
 enum {
-CLONE_VM = 0x100,
-CLONE_SIGHAND = 0x800,
-CLONE_VFORK = 0x4000,
-CLONE_THREAD = 0x10000,
-CLONE_SETTLS = 0x80000,
-CLONE_PARENT_SETTID = 0x100000,
-CLONE_CHILD_CLEARTID = 0x200000,
-CLONE_CHILD_SETTID = 0x1000000
+GNU_CLONE_VM = 0x100,
+GNU_CLONE_SIGHAND = 0x800,
+GNU_CLONE_VFORK = 0x4000,
+GNU_CLONE_THREAD = 0x10000,
+GNU_CLONE_SETTLS = 0x80000,
+GNU_CLONE_PARENT_SETTID = 0x100000,
+GNU_CLONE_CHILD_CLEARTID = 0x200000,
+GNU_CLONE_CHILD_SETTID = 0x1000000
 };
 #define ARGUMENTS_MAX 0x200000 /* bytes of arguments and environment, Linux's 2 MiB with the default stack */
 
 /* ---- signals between guest and host numbering ---- */
 #ifndef _WIN32
-static int host_signal(int s) {
-    if (0) { /* ... */ }
-#define LINUX_SIGNAL(guest, name) else if (guest == s) return name;
-#include "gnuabi/abi/linux_signal.inc"
-    return 0;
-}
-static int guest_signal(int s) {
-    if (0) { /* ... */ }
-#define LINUX_SIGNAL(guest, name) else if (name == s) return guest;
-#include "gnuabi/abi/linux_signal.inc"
-    return 0;
-}
 /* a host wait status in Linux's encoding */
 static uint32_t guest_status(int status) {
     if (WIFEXITED(status)) return (uint32_t)(WEXITSTATUS(status) & 0xff) << 8;
     if (WIFSIGNALED(status)) {
 #ifdef WCOREDUMP
-        return (uint32_t)guest_signal(WTERMSIG(status)) | (WCOREDUMP(status) ? 0x80u : 0);
+        return (uint32_t)gnu_guest_signal(WTERMSIG(status)) | (WCOREDUMP(status) ? 0x80u : 0);
 #else
-        return (uint32_t)guest_signal(WTERMSIG(status));
+        return (uint32_t)gnu_guest_signal(WTERMSIG(status));
 #endif
     }
-    if (WIFSTOPPED(status)) return (uint32_t)guest_signal(WSTOPSIG(status)) << 8 | 0x7f;
+    if (WIFSTOPPED(status)) return (uint32_t)gnu_guest_signal(WSTOPSIG(status)) << 8 | 0x7f;
 #ifdef WIFCONTINUED
     if (WIFCONTINUED(status)) return 0xffff;
 #endif
@@ -80,50 +69,15 @@ static uint32_t guest_status(int status) {
 }
 #endif
 
-void gnu_spawn_signal_disposition(int sig, uint64_t handler) {
-#ifdef _WIN32
-    (void)sig;
-    (void)handler;
-#else
-    /* what the guest ignores, the host ignores: a write to a closed pipe then fails with EPIPE instead of ending the
-       runtime, an ignored SIGCHLD leaves no zombies, an ignored SIGINT survives ^C. A handler isn't entered, so the
-       host keeps the default action for it. SIGSEGV and SIGBUS are the runtime's own (execution.c) */
-    int host = host_signal(sig);
-    if (!host || host == SIGKILL || host == SIGSTOP || host == SIGSEGV || host == SIGBUS) return;
-    signal(host, handler == 1 ? SIG_IGN : SIG_DFL);
-#endif
-}
-
-/* default action: 0 terminate, 1 ignore, 2 stop or continue (left to the host) */
-static int default_action(int sig) {
-    if (sig == 17 || sig == 23 || sig == 28) return 1; /* SIGCHLD, SIGURG, SIGWINCH */
-    if (sig == 18 || sig == 19 || sig == 20 || sig == 21 || sig == 22) return 2;
-    return 0;
-}
-
-/* a signal this process sends itself: it ends the process when its action is the default one that does */
-static int64_t signal_self(GnuProcess* p, int sig) {
-    if (sig < 0 || sig > 64) return -GNU_EINVAL;
-    if (!sig) return 0;
-    if (sig != 9 && sig != 19 &&
-        (p->actions[sig].handler != 0 || ((p->signal_mask >> (sig - 1)) & 1) || default_action(sig)))
-        return 0; /* ignored, blocked, or caught by a handler, which is not entered */
-    p->faulted = sig;
-    snprintf(p->diagnostic, sizeof p->diagnostic, "Guest ended by signal %d", sig);
-    p->exited = 1;
-    p->exit_code = 128 + sig;
-    if (p->running) longjmp(p->exit_target, 1);
-    return 0;
-}
 
 void gnu_spawn_exit(GnuProcess* p) {
     fflush(stdout);
     fflush(stderr);
 #ifndef _WIN32
-    if (p->faulted && host_signal(p->faulted)) {
+    if (p->faulted && gnu_host_signal(p->faulted)) {
         /* the parent sees the signal, as it would of the program on Linux; no core of the runtime */
         struct rlimit none = {0, 0};
-        int sig = host_signal(p->faulted);
+        int sig = gnu_host_signal(p->faulted);
         (void)setrlimit(RLIMIT_CORE, &none);
         signal(sig, SIG_DFL);
         if (sig != SIGKILL && sig != SIGSTOP) {
@@ -239,7 +193,7 @@ static int shebang(char*** argv, const unsigned char* image, size_t size, const 
 }
 
 /* execve and execveat: everything that can fail is checked here, before the old program goes */
-static int64_t exec(GnuProcess* p, int dirfd, uint64_t path_address, uint64_t argv_address, uint64_t envp_address,
+static int64_t exec(GnuThread* t, int dirfd, uint64_t path_address, uint64_t argv_address, uint64_t envp_address,
                     uint64_t flags) {
     char path[GNU_VFS_PATH_MAX], guest[GNU_VFS_PATH_MAX], interpreter[GNU_VFS_PATH_MAX];
     unsigned char* image = NULL;
@@ -247,6 +201,7 @@ static int64_t exec(GnuProcess* p, int dirfd, uint64_t path_address, uint64_t ar
     char **argv = NULL, **envp = NULL;
     GnuExec* e;
     int error, depth;
+    GnuProcess* p = gnu_process_of(t);
     if (flags & ~(uint64_t)0x1100) return -GNU_EINVAL; /* AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW */
     if ((error = gnu_memory_read_string(&p->memory, path_address, path, sizeof path))) return error;
     if (!path[0] && !(flags & 0x1000)) return -GNU_ENOENT;
@@ -299,27 +254,45 @@ static int64_t exec(GnuProcess* p, int dirfd, uint64_t path_address, uint64_t ar
 #ifdef _WIN32
     /* the program's own copy of the runtime, with the process's descriptors: a vfork child's parent goes on, any
        other process waits for it and ends with its status, as MSYS2 replaces a process */
-    return gnu_spawn_win32_exec(p, e);
+    return gnu_spawn_win32_exec(t, e);
 #endif
+    /* the point of no return: the other threads go (Linux's de_thread), unless one of them ends the process first */
+    if (!gnu_kernel_claim_stop(&t->k, 2)) {
+        free(e->path);
+        free(e->image);
+        free_strings(e->argv);
+        free_strings(e->envp);
+        free(e);
+        gnu_thread_leave(t);
+        return -GNU_EAGAIN;
+    }
     p->exec = e;
-    longjmp(p->exit_target, 2);
+    if (!t->running) return 0; /* tests */
+    longjmp(t->exit_target, 2);
 }
 
-int gnu_spawn_finish_exec(GnuProcess* p) {
+int gnu_spawn_finish_exec(GnuThread* t) {
+    GnuProcess* p = gnu_process_of(t);
     GnuExec* e = p->exec;
     char error[512];
-    int r, sig;
+    int r;
+    gnu_kernel_stop_others(&t->k, 1);
     p->exec = NULL;
+    gnu_mutex_lock(&p->kernel.lock);
+    t->k.tid = p->kernel.pid; /* the thread that execs takes the process's id, as on Linux */
+    __atomic_store_n(&p->kernel.stopping, 0, __ATOMIC_SEQ_CST);
+    p->kernel.stopper = NULL;
+    gnu_mutex_unlock(&p->kernel.lock);
     gnu_vfs_close_on_exec(&p->vfs);
-    /* handlers go back to the default action; what is ignored stays ignored, as the mask stays */
-    for (sig = 1; sig <= 64; ++sig)
-        if (p->actions[sig].handler > 1) memset(&p->actions[sig], 0, sizeof p->actions[sig]);
-    p->clear_tid = 0;
+    /* handlers go back to the default action; what is ignored stays ignored, as the mask and pending signals stay */
+    gnu_signal_exec(&t->k);
+    t->k.clear_tid = 0;
+    t->k.robust_list = 0;
     gnu_jit_reset(&p->jit);
     gnu_elf_destroy(&p->elf);
     gnu_elf_destroy(&p->interp);
     gnu_memory_destroy(&p->memory);
-    r = gnu_process_load(p, e->path, e->image, e->size, (int)count_strings(e->argv), (const char* const*)e->argv,
+    r = gnu_process_load(p, t, e->path, e->image, e->size, (int)count_strings(e->argv), (const char* const*)e->argv,
                          (const char* const*)e->envp, error, sizeof error);
     if (r) {
         /* past the point of no return: Linux ends the process */
@@ -345,22 +318,30 @@ int gnu_spawn_finish_exec(GnuProcess* p) {
 
 /* ---- clone ---- */
 
-static int64_t clone_process(GnuProcess* p, uint64_t flags, uint64_t stack, uint64_t parent_tid, uint64_t tls,
+static int64_t clone_process(GnuThread* t, uint64_t flags, uint64_t stack, uint64_t parent_tid, uint64_t tls,
                              uint64_t child_tid) {
-    if (flags & (CLONE_THREAD | CLONE_SIGHAND)) return -GNU_ENOSYS; /* threads: one guest thread per process */
-    if ((flags & CLONE_VM) && !(flags & CLONE_VFORK)) return -GNU_EINVAL;
+    if (flags & GNU_CLONE_THREAD) return gnu_thread_clone(t, flags, stack, parent_tid, tls, child_tid);
+    if ((flags & GNU_CLONE_SIGHAND) && !(flags & GNU_CLONE_VM)) return -GNU_EINVAL;
+    /* a process that shares the memory without being a thread: only a vfork's, which execs or exits at once */
+    if ((flags & GNU_CLONE_VM) && !(flags & GNU_CLONE_VFORK)) return -GNU_EINVAL;
 #ifdef _WIN32
-    if (!(flags & CLONE_VFORK)) return -GNU_ENOSYS;
-    return gnu_spawn_win32_vfork(p, flags, stack, parent_tid, tls, child_tid);
+    if (!(flags & GNU_CLONE_VFORK)) return -GNU_ENOSYS;
+    return gnu_spawn_win32_vfork(t, flags, stack, parent_tid, tls, child_tid);
 #else
     {
+        GnuProcess* p = gnu_process_of(t);
         int sync[2] = {-1, -1};
         pid_t pid;
         uint32_t id;
-        if ((flags & CLONE_VFORK) && pipe(sync)) return gnu_host_errno(errno);
+        if ((flags & GNU_CLONE_VFORK) && pipe(sync)) return gnu_host_errno(errno);
         fflush(stdout);
         fflush(stderr);
+        gnu_fork_prepare(p);
         pid = fork();
+        if (pid)
+            gnu_fork_parent(p);
+        else
+            gnu_fork_child(t, (uint32_t)getpid());
         if (pid < 0) {
             int error = gnu_host_errno(errno);
             if (sync[0] >= 0) {
@@ -375,17 +356,16 @@ static int64_t clone_process(GnuProcess* p, uint64_t flags, uint64_t stack, uint
             if (snx_recompiler_forked(p->jit.recompiler)) _exit(127);
             if (sync[0] >= 0) close(sync[0]);
             p->vfork_fd = sync[1];
-            p->pid = p->tid = (uint32_t)getpid();
-            gnu_vfs_set_pid(&p->vfs, p->pid);
-            if (stack) p->cpu.x[31] = stack;
-            if (flags & CLONE_SETTLS) p->cpu.tpidr = tls;
-            id = snx_le32(p->pid);
-            if (flags & CLONE_CHILD_SETTID) (void)gnu_memory_write(&p->memory, child_tid, &id, 4);
-            p->clear_tid = (flags & CLONE_CHILD_CLEARTID) ? child_tid : 0;
+            gnu_vfs_set_pid(&p->vfs, p->kernel.pid);
+            if (stack) t->cpu.x[31] = stack;
+            if (flags & GNU_CLONE_SETTLS) t->cpu.tpidr = tls;
+            id = snx_le32(p->kernel.pid);
+            if (flags & GNU_CLONE_CHILD_SETTID) (void)gnu_memory_write(&p->memory, child_tid, &id, 4);
+            t->k.clear_tid = (flags & GNU_CLONE_CHILD_CLEARTID) ? child_tid : 0;
             return 0;
         }
         id = snx_le32((uint32_t)pid);
-        if (flags & CLONE_PARENT_SETTID) (void)gnu_memory_write(&p->memory, parent_tid, &id, 4);
+        if (flags & GNU_CLONE_PARENT_SETTID) (void)gnu_memory_write(&p->memory, parent_tid, &id, 4);
         if (sync[0] >= 0) {
             char byte;
             close(sync[1]);
@@ -461,7 +441,7 @@ static int64_t waitid_call(GnuProcess* p, const uint64_t a[6]) {
                    : info.si_code == CLD_TRAPPED                                ? 4
                    : info.si_code == CLD_STOPPED                                ? 5
                                                                                 : 6;
-        int status = info.si_code == CLD_EXITED ? info.si_status : guest_signal(info.si_status);
+        int status = info.si_code == CLD_EXITED ? info.si_status : gnu_guest_signal(info.si_status);
         gnu_vfs_put32(out, 17); /* SIGCHLD */
         gnu_vfs_put32(out + 8, (uint32_t)code);
         gnu_vfs_put32(out + 16, (uint32_t)info.si_pid);
@@ -478,35 +458,15 @@ static int64_t waitid_call(GnuProcess* p, const uint64_t a[6]) {
 #endif
 }
 
-static int64_t kill_call(GnuProcess* p, int32_t pid, int sig) {
-    if (sig < 0 || sig > 64) return -GNU_EINVAL;
-    if ((uint32_t)pid == p->pid) return signal_self(p, sig);
-#ifdef _WIN32
-    return gnu_spawn_win32_kill(p, pid, sig);
-#else
-    {
-        int host = sig ? host_signal(sig) : 0;
-        if (sig && !host) return -GNU_EINVAL;
-        return kill((pid_t)pid, host) ? gnu_host_errno(errno) : 0;
-    }
-#endif
-}
-
-bool gnu_spawn_syscall(GnuProcess* p, uint64_t number, const uint64_t a[6], int64_t* result) {
+bool gnu_spawn_syscall(GnuThread* t, uint64_t number, const uint64_t a[6], int64_t* result) {
+    GnuProcess* p = gnu_process_of(t);
     switch (number) {
-        case 220: *result = clone_process(p, a[0], a[1], a[2], a[3], a[4]); return true;
+        case 220: *result = clone_process(t, a[0], a[1], a[2], a[3], a[4]); return true;
         case 435: *result = -GNU_ENOSYS; return true; /* clone3: the C library falls back to clone */
-        case 221: *result = exec(p, GNU_AT_FDCWD, a[0], a[1], a[2], 0); return true;
-        case 281: *result = exec(p, (int)a[0], a[1], a[2], a[3], a[4]); return true;
+        case 221: *result = exec(t, GNU_AT_FDCWD, a[0], a[1], a[2], 0); return true;
+        case 281: *result = exec(t, (int)a[0], a[1], a[2], a[3], a[4]); return true;
         case 260: *result = wait4_call(p, a); return true;
         case 95: *result = waitid_call(p, a); return true;
-        case 129: *result = kill_call(p, (int32_t)a[0], (int)a[1]); return true;
-        case 130: /* tkill(tid, sig) */
-            *result = (uint32_t)a[0] == p->tid ? signal_self(p, (int)a[1]) : -GNU_ESRCH;
-            return true;
-        case 131: /* tgkill(tgid, tid, sig) */
-            *result = (uint32_t)a[0] == p->pid && (uint32_t)a[1] == p->tid ? signal_self(p, (int)a[2]) : -GNU_ESRCH;
-            return true;
         case 59: { /* pipe2(fds, flags) */
             int fds[2];
             int32_t out[2];
@@ -532,16 +492,14 @@ bool gnu_spawn_syscall(GnuProcess* p, uint64_t number, const uint64_t a[6], int6
         case 154: *result = setpgid((pid_t)a[0], (pid_t)a[1]) ? gnu_host_errno(errno) : 0; return true;
         case 155: *result = getpgid((pid_t)a[0]) < 0 ? gnu_host_errno(errno) : getpgid((pid_t)a[0]); return true;
         case 156: *result = getsid((pid_t)a[0]) < 0 ? gnu_host_errno(errno) : getsid((pid_t)a[0]); return true;
-        case 157: *result = setsid() < 0 ? gnu_host_errno(errno) : p->pid; return true;
+        case 157: *result = setsid() < 0 ? gnu_host_errno(errno) : p->kernel.pid; return true;
         case 166: *result = (int64_t)umask((mode_t)(a[0] & 0777)); return true;
-        case 173: *result = getppid(); return true;
 #else
         case 154: *result = 0; return true;
         case 155:
-        case 156: *result = p->pid; return true;
-        case 157: *result = p->pid; return true;
+        case 156: *result = p->kernel.pid; return true;
+        case 157: *result = p->kernel.pid; return true;
         case 166: *result = 022; return true;
-        case 173: *result = 1; return true;
 #endif
     }
     return false;
@@ -561,7 +519,7 @@ void gnu_spawn_set_options(int count, const char* const* options) {
 typedef struct GnuVfork {
     CPU cpu; /* the parent's registers, at its clone call */
     uint64_t clear_tid, signal_mask;
-    GnuSignalAction actions[65];
+    SnxLinuxSigaction actions[65];
     struct GnuVfsTable* descriptors;
     uint32_t pid;
 } GnuVfork;
@@ -586,55 +544,58 @@ static void add_child(GnuProcess* p, uint32_t pid, HANDLE process, uint32_t stat
     ++p->child_count;
 }
 
-int64_t gnu_spawn_win32_vfork(GnuProcess* p, uint64_t flags, uint64_t stack, uint64_t parent_tid, uint64_t tls,
+int64_t gnu_spawn_win32_vfork(GnuThread* t, uint64_t flags, uint64_t stack, uint64_t parent_tid, uint64_t tls,
                               uint64_t child_tid) {
+    GnuProcess* p = gnu_process_of(t);
     GnuVfork* v;
     uint32_t id;
     (void)parent_tid;
     if (p->vfork_parent) return -GNU_EAGAIN; /* one vfork child at a time runs in the process */
     v = (GnuVfork*)calloc(1, sizeof *v);
     if (!v) return -GNU_ENOMEM;
-    v->cpu = p->cpu;
-    v->clear_tid = p->clear_tid;
-    v->signal_mask = p->signal_mask;
-    memcpy(v->actions, p->actions, sizeof v->actions);
-    v->pid = p->pid;
+    v->cpu = t->cpu;
+    v->clear_tid = t->k.clear_tid;
+    v->signal_mask = t->k.signal_mask;
+    memcpy(v->actions, p->kernel.actions, sizeof v->actions);
+    v->pid = p->kernel.pid;
     v->descriptors = gnu_vfs_save_table(&p->vfs);
     if (!v->descriptors) {
         free(v);
         return -GNU_ENOMEM;
     }
-    if (!next_pid) next_pid = p->pid * 16 + 1;
+    if (!next_pid) next_pid = p->kernel.pid * 16 + 1;
     p->vfork_parent = v;
-    p->pid = p->tid = id = next_pid++;
+    p->kernel.pid = t->k.tid = id = next_pid++;
     /* the child returns 0 from clone, on its own stack, with the registers its parent had */
-    if (stack) p->cpu.x[31] = stack;
-    if (flags & CLONE_SETTLS) p->cpu.tpidr = tls;
-    if (flags & CLONE_CHILD_SETTID) (void)gnu_memory_write(&p->memory, child_tid, &id, 4);
-    p->clear_tid = (flags & CLONE_CHILD_CLEARTID) ? child_tid : 0;
+    if (stack) t->cpu.x[31] = stack;
+    if (flags & GNU_CLONE_SETTLS) t->cpu.tpidr = tls;
+    if (flags & GNU_CLONE_CHILD_SETTID) (void)gnu_memory_write(&p->memory, child_tid, &id, 4);
+    t->k.clear_tid = (flags & GNU_CLONE_CHILD_CLEARTID) ? child_tid : 0;
     return 0;
 }
 
 /* the parent again, its clone returning pid: the child's host frames go with a longjmp to the runtime's loop */
-static void resume_parent(GnuProcess* p, uint32_t pid) {
+static void resume_parent(GnuThread* t, uint32_t pid) {
+    GnuProcess* p = gnu_process_of(t);
     GnuVfork* v = p->vfork_parent;
     p->vfork_parent = NULL;
-    p->cpu = v->cpu;
-    p->cpu.x[0] = pid;
-    p->clear_tid = v->clear_tid;
-    p->signal_mask = v->signal_mask;
-    memcpy(p->actions, v->actions, sizeof p->actions);
-    p->pid = p->tid = v->pid;
+    t->cpu = v->cpu;
+    t->cpu.x[0] = pid;
+    t->k.clear_tid = v->clear_tid;
+    t->k.signal_mask = v->signal_mask;
+    memcpy(p->kernel.actions, v->actions, sizeof p->kernel.actions);
+    p->kernel.pid = t->k.tid = v->pid;
     gnu_vfs_restore_table(&p->vfs, v->descriptors);
     free(v);
-    longjmp(p->exit_target, 3);
+    longjmp(t->exit_target, 3);
 }
 
-void gnu_spawn_win32_child_exit(GnuProcess* p, int status) {
-    uint32_t pid = p->pid;
+void gnu_spawn_win32_child_exit(GnuThread* t, int status) {
+    GnuProcess* p = gnu_process_of(t);
+    uint32_t pid = p->kernel.pid;
     p->exited = 0;
     add_child(p, pid, NULL, (uint32_t)(status & 0xff) << 8);
-    resume_parent(p, pid);
+    resume_parent(t, pid);
 }
 
 /* a Windows command line argument, quoted as CommandLineToArgvW reads it back */
@@ -674,7 +635,8 @@ static void quote(wchar_t** line, size_t* used, size_t* capacity, const char* te
     free(w);
 }
 
-int64_t gnu_spawn_win32_exec(GnuProcess* p, GnuExec* e) {
+int64_t gnu_spawn_win32_exec(GnuThread* t, GnuExec* e) {
+    GnuProcess* p = gnu_process_of(t);
     char host[8192], option[64];
     wchar_t self[32768], *line, *environment = NULL;
     size_t used = 0, capacity = 1024, total = 0, at = 0, i;
@@ -747,7 +709,7 @@ int64_t gnu_spawn_win32_exec(GnuProcess* p, GnuExec* e) {
         ExitProcess(code);
     }
     add_child(p, (uint32_t)started.dwProcessId, started.hProcess, 0);
-    resume_parent(p, (uint32_t)started.dwProcessId);
+    resume_parent(t, (uint32_t)started.dwProcessId);
     return 0;
 }
 
@@ -797,7 +759,8 @@ int64_t gnu_spawn_win32_kill(GnuProcess* p, int32_t pid, int sig) {
     for (i = 0; i < p->child_count; ++i)
         if (p->children[i].pid == (uint32_t)pid) {
             if (!sig) return 0;
-            if (p->children[i].process && default_action(sig) == 0)
+            SnxSigDefault action = snx_linux_signal_default(sig);
+            if (p->children[i].process && (action == SNX_SIGDFL_TERM || action == SNX_SIGDFL_CORE))
                 TerminateProcess(p->children[i].process, 128 + (unsigned)sig);
             return 0;
         }

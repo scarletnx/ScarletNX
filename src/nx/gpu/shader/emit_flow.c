@@ -3,6 +3,8 @@
 /* Control flow: the branches, calls, returns, KIL and EXIT, the control stack's pushes and pops, and the structured
    constructs the structure gives */
 #include "nx/gpu/shader/translate.h"
+#include "nx/gpu/shader/advanced_blend_spirv.h"
+#include "nx/gpu/shader/coverage_spirv.h"
 
 /* Remove the nearest token of kind, dropping tokens pushed after it as Maxwell's CRS stack does. */
 void shader_dynamic_pop(DirectCtx* c, u32 stack_ptr, const u32 stack[32], u32 kind_value, u32 fallback, u32* found,
@@ -263,7 +265,6 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     u32 point_size = t->point_size;
     u32 layer_output = t->layer_output;
     u8* attr_private = t->attr_private;
-    u32(*xfb_components)[4] = t->xfb_components;
     int xfb_on = t->xfb_on;
     u32 clip_output = t->clip_output;
     u32 clip_count = t->clip_count;
@@ -391,11 +392,14 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             shader_geometry_passthrough(c, si, in_vertices, vec4, position, position_in, output_attrs, inputs,
                                         point_size, layer_output, i32_type, clip_output, clip_count, primitive_id,
                                         primitive_id_out, position_fix, push, push_pointer);
-        if (xfb_on && stage != ST_GS) shader_xfb_store(c, vec4, output_attrs, attr_private, xfb_components);
+        if (xfb_on && stage != ST_GS) shader_xfb_store(c, t->xfb_out);
         if (position_fix && stage != ST_GS) { /* a geometry program's vertices are fixed as it emits them */
             shader_vertex_position_fix(c, position, push, push_pointer, vec4);
         } else if (stage == ST_FS) {
             u32 reg = 0, output = 0, alpha = zero_f;
+            u32 coverage_mode = si->advanced_blend_mask & SH_COVERAGE_R1
+                ? si->advanced_blend_mask >> SH_COVERAGE_R1_MODE_SHIFT & 3 : 0;
+            u32 coverage_components = (coverage_mode & 1 ? 7u : 0) | (coverage_mode & 2 ? 8u : 0);
             for (u32 rt = 0; rt < 8; rt++) {
                 u32 mask = (target >> (rt * 4)) & 15;
                 if (!mask) continue;
@@ -410,14 +414,49 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                                                        : zero_f;
                     if (rt == 0 && k == 3) alpha = spv_emit_bitcast(&c->emit, c->f32_type, raw);
                 }
+                /* Tests and sample coverage keep the original Location0 alpha. Alpha-to-one precedes ratio-one
+                   color modulation. Integer outputs retain their bits; an integer primary disables alpha-to-one. */
+                if (!integer && !(si->rt_int_mask & 1u) && (si->advanced_blend_mask & SH_ALPHA_TO_ONE))
+                    components[3] = spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f);
+                if (!integer && coverage_components) {
+                    u32 factor16 = si->advanced_blend_mask >> SH_COVERAGE_R1_FACTOR_SHIFT & 31;
+                    u32 factor = spv_emit_constant_f32(&c->emit, c->f32_type, (float)factor16 / 16.0f);
+                    for (u32 k = 0; k < 4; k++)
+                        if (coverage_components & (1u << k))
+                            components[k] = SPV(&c->emit, SPV_OP_F_MUL, c->f32_type, components[k], factor);
+                }
                 u32 color = spv_emit_vec4_construct(&c->emit, color_type, components);
                 spv_emit_store(&c->emit, outputs[output++], color);
             }
-            if (sample_mask_output)
+            if (t->coverage_output) {
+                u32 bits = spv_emit_load(
+                    &c->emit, c->u32_type,
+                    spv_emit_interface_scalar_pointer(&c->emit, 1, c->u32_type, t->coverage, 0, c->zero));
+                u32 values[4] = {bits, c->zero, c->zero, c->zero};
+                u32 color = spv_emit_vec4_construct(&c->emit, vec4_u32, values);
+                if (si->rt_sint_mask & (1u << (si->coverage_to_color - 1)))
+                    color = spv_emit_bitcast(&c->emit, vec4_i32, color);
+                spv_emit_store(&c->emit, t->coverage_output, color);
+            }
+            if (sample_mask_output) {
+                u32 mask = t->guest_sample_mask ? reg_read(c, reg) : 0;
+                if (si->advanced_blend_mask & SH_ALPHA_COVERAGE) {
+                    u32 samples = si->advanced_blend_mask >> 8 & 63;
+                    if (si->advanced_blend_mask & SH_ALPHA_COVERAGE_DITHER) {
+                        u32 coordinate = spv_emit_load(&c->emit, vec4, t->fragcoord);
+                        u32 x = spv_emit_vec4_extract(&c->emit, c->f32_type, coordinate, 0);
+                        u32 y = spv_emit_vec4_extract(&c->emit, c->f32_type, coordinate, 1);
+                        mask = shader_alpha_coverage_dither_spirv(&c->emit, c->f32_type, c->u32_type,
+                            c->bool_type, alpha, samples, mask, x, y);
+                    } else
+                        mask = shader_alpha_coverage_spirv(&c->emit, c->f32_type, c->u32_type, c->bool_type,
+                            alpha, samples, mask);
+                }
                 spv_emit_store(
                     &c->emit,
                     spv_emit_interface_scalar_pointer(&c->emit, 3, c->u32_type, sample_mask_output, 0, c->zero),
-                    reg_read(c, reg));
+                    mask);
+            }
             if (depth_output) spv_emit_store(&c->emit, depth_output, reg_read_as(c, reg + 1, c->f32_type));
             if (push && (target & 15)) shader_alpha_test(c, push, push_pointer, alpha);
         }

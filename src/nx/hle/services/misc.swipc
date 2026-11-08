@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 # The smaller services (misc.c): apm, lm, pctl, friend, ns, prepo, psm, fatal, csrng, mm, nfp, caps, bcat, nim, aoc,
-# irs, mii, ectx, spl, btm, audin. Names and argument types from Switchbrew, libnx and the SDK's own symbols
+# irs, mii, ectx, spl, btm, audin, olsc. Names and argument types from Switchbrew, libnx and the SDK's own symbols
 
 # ================================================================ apm
 type nn::apm::PerformanceMode = i32;
@@ -42,6 +42,8 @@ interface nn::pctl::detail::ipc::IParentalControlService {
     @stub [1002] ConfirmLaunchApplicationPermission(nn::ncm::ApplicationId application_id,
                                                     array<i8, 9> restriction_bitset, b8 nacp_flag);
     @stub [1004] ConfirmSnsPostPermission();
+    # success: no restriction keeps the game from talking to strangers
+    @stub [1018] IsFreeCommunicationAvailable();
     @stub [1031] IsRestrictionEnabled() -> b8 enabled;
     @stub [1032] GetSafetyLevel() -> i32 safety_level;
     @stub [1039] GetFreeCommunicationApplicationListCount() -> i32 count;
@@ -106,9 +108,15 @@ interface nn::friends::detail::ipc::IFriendService {
                                 pid, array<nn::friends::detail::FriendImpl, 6> friends) -> i32 count;
     @stub [10102] UpdateFriendInfo(nn::account::Uid uid, pid, array<nn::account::NetworkServiceAccountId, 9> ids,
                                    array<nn::friends::detail::FriendImpl, 6> friends);
-    # nn::friends::CheckFriendListAvailability: the list of no friends is always there to read
-    [10120] IsFriendListCacheAvailable(nn::account::Uid uid) -> b8 available;
-    # nn::friends::GetPlayHistoryRegistrationKey: a key another console adds a play history with, from no network
+    # nobody is a friend, and the list of none is always there to read
+    [10120] CheckFriendListAvailability(nn::account::Uid uid) -> b8 available;
+    # nobody blocked: a count of 0, and the list as the game sent it
+    @stub [10400] GetBlockedUserListIds(i32 offset, nn::account::Uid uid,
+                                        array<nn::account::NetworkServiceAccountId, 0xa> ids) -> i32 count;
+    # the user playing online, or no longer: no friend server to tell
+    @stub [10600] DeclareOpenOnlinePlaySession(nn::account::Uid uid);
+    @stub [10601] DeclareCloseOnlinePlaySession(nn::account::Uid uid);
+    # the key another console adds a play history with, which only the friend server makes: zeros, with no network
     [10700] GetPlayHistoryRegistrationKey(b8 include_local, nn::account::Uid uid,
                                           buffer<nn::friends::PlayHistoryRegistrationKey, 0x1a> key);
 }
@@ -165,8 +173,46 @@ interface nn::prepo::detail::ipc::IPrepoService is prepo:u, prepo:a, prepo:a2 {
     [10300] GetTransmissionStatus() -> i32 status;
     @stub [10400] GetSystemSessionId() -> u64 id;
 }
-# caps:u, caps:a, caps:su and caps:ss are four interfaces on the console
-interface nn::capsrv::sf::IAlbumApplicationService is caps:u, caps:a, caps:su, caps:ss {
+# caps:u, caps:a and caps:ss are three interfaces on the console
+interface nn::capsrv::sf::IAlbumApplicationService is caps:u, caps:a, caps:ss {
+}
+
+# ================================================================ caps:su
+# the pictures a game saves to the album, 1280x720 RGBA: written as PPM files in the game's captures folder, where F3
+# puts the window's (misc.c's caps_save). The layouts are the SDK's nn::capsrv client's
+type nn::capsrv::ScreenShotAttribute = bytes<0x40, 4>;
+type nn::capsrv::ApplicationData = bytes<0x404, 4>;
+type nn::capsrv::UserIdList = bytes<0x88, 8>;
+type nn::capsrv::AlbumFileDateTime = struct {
+    i16 year;
+    u8 month;
+    u8 day;
+    u8 hour;
+    u8 minute;
+    u8 second;
+    u8 unique_id;
+};
+type nn::capsrv::ApplicationAlbumEntry = struct {
+    u64 size;
+    u64 hash;
+    nn::capsrv::AlbumFileDateTime datetime;
+    u8 storage;
+    u8 contents;
+    bytes<5> reserved;
+    u8 flags;
+};
+
+interface nn::capsrv::sf::IScreenShotApplicationService is caps:su {
+    @stub [32] SetShimLibraryVersion(u64 version, aruid);
+    [203] SaveScreenShotEx0(nn::capsrv::ScreenShotAttribute attribute, u32 report_option, aruid, buffer<u8, 0x45> image)
+        -> nn::capsrv::ApplicationAlbumEntry entry;
+    [205] SaveScreenShotEx1(nn::capsrv::ScreenShotAttribute attribute, u32 report_option, aruid,
+                            buffer<nn::capsrv::ApplicationData, 0x15> data, buffer<u8, 0x45> image)
+        -> nn::capsrv::ApplicationAlbumEntry entry;
+    # the applet resource user id without the client's pid, as the SDK sends this one
+    [210] SaveScreenShotEx2(nn::capsrv::ScreenShotAttribute attribute, u32 report_option, u64 applet_resource_user_id,
+                            buffer<nn::capsrv::UserIdList, 0x15> users, buffer<u8, 0x45> image)
+        -> nn::capsrv::ApplicationAlbumEntry entry;
 }
 interface nn::err::context::IWriterForApplication is ectx:aw {
     [0] CreateContextRegistrar() -> object<nn::err::context::IContextRegistrar> registrar;
@@ -473,4 +519,22 @@ interface nn::ngc::detail::IService is ngc:u {
 interface nn::ngct::detail::IService is ngct:u {
     [0] Match(buffer<u8, 9> text) -> b8 matched;
     [1] Filter(buffer<u8, 9> text, buffer<u8, 0xa> filtered);
+}
+
+# ================================================================ olsc:u: the save data cloud
+# each user's backup setting for the game, and the license check before a game turns backups on, which needs the
+# online service: never there (misc.c's olsc). The layouts are the SDK's nn::olsc client's
+type nn::olsc::SaveDataBackupSetting = u8;
+interface nn::olsc::srv::IOlscServiceForApplication is olsc:u {
+    [0] Initialize(pid);
+    [10] VerifySaveDataBackupLicenseAsync(nn::account::Uid uid) -> object<nn::olsc::srv::IAsyncResult> result;
+    [13] GetSaveDataBackupSetting(nn::account::Uid uid) -> nn::olsc::SaveDataBackupSetting setting;
+    [14] SetSaveDataBackupSettingEnabled(nn::account::Uid uid, b8 enabled);
+}
+# an operation on the online service, done when it is made: its event signaled, and its result the one it ended with
+interface nn::olsc::srv::IAsyncResult {
+    [0] GetResult();
+    [1] Cancel();
+    [2] IsAvailable() -> b8 available;
+    [3] GetSystemEvent() -> handle<copy, event> event;
 }

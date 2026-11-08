@@ -27,20 +27,6 @@
 
 #include "hle/services/audio.swipc.inc"
 
-#define AUDIO_MOD  153 /* nn::audio's results */
-#define HWOPUS_MOD 111
-
-#define AUDIO_NOT_FOUND           RC(AUDIO_MOD, 1)
-#define AUDIO_OPERATION_FAILED    RC(AUDIO_MOD, 2)
-#define AUDIO_BUFFER_COUNT_FULL   RC(AUDIO_MOD, 8)
-#define AUDIO_NOT_SUPPORTED       RC(AUDIO_MOD, 513)
-#define AUDIO_INVALID_HANDLE      RC(AUDIO_MOD, 1536)
-#define AUDIO_INVALID_REVISION    RC(AUDIO_MOD, 1537)
-#define OPUS_INVALID_PACKET       RC(HWOPUS_MOD, 17)
-#define OPUS_OUT_OF_DECODERS      RC(HWOPUS_MOD, 385)
-#define OPUS_INVALID_SAMPLE_RATE  RC(HWOPUS_MOD, 1001)
-#define OPUS_INVALID_CHANNEL_COUNT RC(HWOPUS_MOD, 1002)
-
 #define AUDIO_RATE      48000u /* the DSP's, the only rate an audio out plays at */
 #define AUDIO_FRAME_NS  5000000 /* the DSP's frame */
 /* the newest renderer revision understood: Eden's CurrentRevision, 15, and the Ounce's 16 (REV@, and REv@ with its
@@ -176,7 +162,7 @@ static int nn_audio_detail_IAudioOut_Start(SvcObj* self) {
     AudOut* q = audout_lock(self);
     if (q->started) {
         pm_unlock(&g_host.audio.lk);
-        R_THROW(AUDIO_OPERATION_FAILED);
+        R_THROW(SNX_RC_AUDIO_OPERATION_FAILED);
     }
     q->started = 1;
     q->t0 = guest_ns();
@@ -208,13 +194,13 @@ static int audout_append(SvcObj* self, u64 tag, IpcBuf b) {
     u32 i;
     /* the SDK's first AudioOutBuffer had no data_offset (0x20 bytes): it is 0. Shorter than that, it holds nothing */
     memset(&d, 0, sizeof d);
-    R_UNLESS(b.addr && (!n || guest_ok(b.addr, n, PERM_R)), AUDIO_OPERATION_FAILED);
+    R_UNLESS(b.addr && (!n || guest_ok(b.addr, n, PERM_R)), SNX_RC_AUDIO_OPERATION_FAILED);
     if (n >= 0x20) memcpy(&d, GP(b.addr), (size_t)n);
     snx_le64_array(&d, sizeof d / 8); /* a buffer's contents: the guest's words */
     q = audout_lock(self);
     if (q->nreleased + q->nqueued >= AUDOUT_BUFFERS) {
         pm_unlock(&g_host.audio.lk);
-        R_THROW(AUDIO_BUFFER_COUNT_FULL);
+        R_THROW(SNX_RC_AUDIO_BUFFER_RING_FULL);
     }
     if (q->started && !q->nqueued) { /* idle until now */
         q->t0 = guest_ns();
@@ -353,7 +339,7 @@ static int open_out(const nn_audio_AudioOutParameter* params, IpcBuf name, IpcBu
         n = (u32)(name.size < sizeof want - 1 ? name.size : sizeof want - 1);
         if (guest_ok(name.addr, n, PERM_R)) memcpy(want, GP(name.addr), n);
     }
-    if (want[0] && strcmp(want, audout_name)) R_THROW(AUDIO_NOT_FOUND);
+    if (want[0] && strcmp(want, audout_name)) R_THROW(SNX_RC_AUDIO_NOT_FOUND);
     o = nn_audio_detail_IAudioOut_new_data(g_hle.audio.outs_pool, g_hle.audio.out_next, "audio outs");
     q = o->data;
     switch (params->channel_count) {
@@ -426,7 +412,7 @@ static int nn_audio_detail_IAudioInManager_OpenAudioIn(SvcObj* self, const nn_au
                                                        u32* state, SvcObj** in) {
     (void)self, (void)params, (void)aruid, (void)process, (void)name, (void)name_out;
     (void)sample_rate, (void)channel_count, (void)sample_format, (void)state, (void)in;
-    R_THROW(AUDIO_NOT_FOUND);
+    R_THROW(SNX_RC_AUDIO_NOT_FOUND);
 }
 static int nn_audio_detail_IAudioInManager_OpenAudioInAuto(SvcObj* self, const nn_audio_AudioInParameter* params,
                                                            u64 aruid, u32 process, IpcBuf name, IpcBuf name_out,
@@ -481,7 +467,7 @@ static int nn_audio_detail_IAudioRenderer_Stop(SvcObj* self) {
 }
 /* the event the clock signals after each frame; a renderer the game executes by itself has none */
 static int nn_audio_detail_IAudioRenderer_QuerySystemEvent(SvcObj* self, u32* event) {
-    R_UNLESS(!((AudRen*)self->data)->manual, AUDIO_NOT_SUPPORTED);
+    R_UNLESS(!((AudRen*)self->data)->manual, SNX_RC_AUDIO_NOT_SUPPORTED);
     *event = ev_handle(g_hle.audio.ev);
     R_SUCCEED();
 }
@@ -547,8 +533,8 @@ static int open_renderer(const nn_audio_detail_AudioRendererParameterInternal* p
                          SvcObj** renderer) {
     SvcObj* o;
     AudRen* r;
-    R_UNLESS(revision_number(params->revision) <= AUDIO_REVISION, AUDIO_INVALID_REVISION);
-    R_UNLESS(process, AUDIO_INVALID_HANDLE);
+    R_UNLESS(revision_number(params->revision) <= AUDIO_REVISION, SNX_RC_AUDIO_INVALID_REVISION);
+    R_UNLESS(process, SNX_RC_AUDIO_INVALID_HANDLE);
     o = nn_audio_detail_IAudioRenderer_new_data(g_hle.audio.rens, g_hle.audio.ren_next, "audio renderers");
     r = o->data;
     r->sample_rate = params->sample_rate;
@@ -564,7 +550,7 @@ static int open_renderer(const nn_audio_detail_AudioRendererParameterInternal* p
              (unsigned long)params->effect_count, (unsigned long)params->sink_count,
              (unsigned long)params->sample_rate);
         svcobj_unref(o);
-        R_THROW(AUDIO_OPERATION_FAILED);
+        R_THROW(SNX_RC_AUDIO_OPERATION_FAILED);
     }
     *renderer = o;
     R_SUCCEED();
@@ -585,7 +571,7 @@ static int nn_audio_detail_IAudioRendererManager_OpenAudioRendererForManualExecu
 static int nn_audio_detail_IAudioRendererManager_GetWorkBufferSize(
     SvcObj* self, const nn_audio_detail_AudioRendererParameterInternal* params, u64* size) {
     (void)self;
-    R_UNLESS(revision_number(params->revision) <= AUDIO_REVISION, AUDIO_INVALID_REVISION);
+    R_UNLESS(revision_number(params->revision) <= AUDIO_REVISION, SNX_RC_AUDIO_INVALID_REVISION);
     *size = work_buffer_size(params);
     R_SUCCEED();
 }
@@ -962,11 +948,11 @@ static void hwopus_take(HwOpus* h, const AVFrame* f) {
 static int hwopus_decode(HwOpus* h, const u8* in, u64 in_size, i16* out, u64 out_size, int reset, u32* consumed,
                          u32* samples) {
     u32 size, want;
-    R_UNLESS(in_size >= 8, OPUS_INVALID_PACKET);
+    R_UNLESS(in_size >= 8, SNX_RC_CODEC_LIB_OPUS_INVALID_PACKET);
     size = (u32)in[0] << 24 | (u32)in[1] << 16 | (u32)in[2] << 8 | in[3];
-    R_UNLESS(size && size <= in_size - 8, OPUS_INVALID_PACKET);
+    R_UNLESS(size && size <= in_size - 8, SNX_RC_CODEC_LIB_OPUS_INVALID_PACKET);
     want = opus_packet_48k(in + 8, size) / h->step;
-    R_UNLESS(want && (u64)want * h->channels * 2 <= out_size, OPUS_INVALID_PACKET);
+    R_UNLESS(want && (u64)want * h->channels * 2 <= out_size, SNX_RC_CODEC_LIB_OPUS_INVALID_PACKET);
 #ifndef SNX_NO_H264
     {
         u32 pad;
@@ -975,11 +961,11 @@ static int hwopus_decode(HwOpus* h, const u8* in, u64 in_size, i16* out, u64 out
             avcodec_flush_buffers(h->dec);
             hwopus_restart(h);
         }
-        R_UNLESS(av_new_packet(h->pkt, (int)size) >= 0, OPUS_INVALID_PACKET);
+        R_UNLESS(av_new_packet(h->pkt, (int)size) >= 0, SNX_RC_CODEC_LIB_OPUS_INVALID_PACKET);
         memcpy(h->pkt->data, in + 8, size);
         err = avcodec_send_packet(h->dec, h->pkt);
         av_packet_unref(h->pkt);
-        R_UNLESS(err >= 0, OPUS_INVALID_PACKET);
+        R_UNLESS(err >= 0, SNX_RC_CODEC_LIB_OPUS_INVALID_PACKET);
         while (avcodec_receive_frame(h->dec, h->frame) >= 0) {
             hwopus_take(h, h->frame);
             av_frame_unref(h->frame);
@@ -1030,7 +1016,7 @@ static int decode(SvcObj* self, int reset, IpcBuf input, IpcBuf output, u32* con
     u64 t = plat_ns();
     int rc;
     if (!guest_ok(input.addr, input.size, PERM_R) || !guest_ok(output.addr, output.size, PERM_W))
-        R_THROW(OPUS_INVALID_PACKET);
+        R_THROW(SNX_RC_CODEC_LIB_OPUS_INVALID_PACKET);
     pm_lock(&h->lk);
     rc = hwopus_decode(h, GP(input.addr), input.size, (i16*)GP(output.addr), output.size, reset, consumed, samples);
     pm_unlock(&h->lk);
@@ -1082,10 +1068,11 @@ static int nn_codec_detail_IHardwareOpusDecoder_DecodeInterleavedForMultiStream(
 /* the work buffer: the runtime decodes in host memory and never touches it, so any plausible size will do: 32 KiB,
    and 32 KiB a stream */
 static int work_size(u32 rate, u32 channels, u32 streams, u32 stereo_streams, int multi, u32* size) {
-    if (multi ? !channels || channels > 255 : channels != 1 && channels != 2) R_THROW(OPUS_INVALID_CHANNEL_COUNT);
-    R_UNLESS(opus_rate_ok(rate), OPUS_INVALID_SAMPLE_RATE);
+    if (multi ? !channels || channels > 255 : channels != 1 && channels != 2)
+        R_THROW(SNX_RC_CODEC_INVALID_OPUS_CHANNEL_COUNT);
+    R_UNLESS(opus_rate_ok(rate), SNX_RC_CODEC_INVALID_OPUS_SAMPLE_RATE);
     if (multi && (!streams || stereo_streams > streams || streams + stereo_streams > 255))
-        R_THROW(OPUS_INVALID_SAMPLE_RATE); /* Eden's answer for a bad stream count */
+        R_THROW(SNX_RC_CODEC_INVALID_OPUS_SAMPLE_RATE); /* Eden's answer for a bad stream count */
     *size = 0x8000u + 0x8000u * (multi ? streams : 1);
     R_SUCCEED();
 }
@@ -1097,7 +1084,7 @@ static int open_decoder(u32 rate, u32 channels, u32 streams, u32 stereo_streams,
     pm_lock(&g_host.audio.lk);
     if (hwopus_count() >= SNX_HWOPUS_MAX_DECODERS) {
         pm_unlock(&g_host.audio.lk);
-        R_THROW(OPUS_OUT_OF_DECODERS);
+        R_THROW(SNX_RC_CODEC_OUT_OF_OPUS_DECODERS);
     }
     o = nn_codec_detail_IHardwareOpusDecoder_new_data(g_hle.audio.opus, g_hle.audio.opus_next, "hwopus decoders");
     pm_unlock(&g_host.audio.lk);
@@ -1105,7 +1092,7 @@ static int open_decoder(u32 rate, u32 channels, u32 streams, u32 stereo_streams,
         WARN_LIMIT(4, "hwopus: can't open a decoder of %lu channels at %lu Hz\n", (unsigned long)channels,
                    (unsigned long)rate);
         svcobj_unref(o);
-        R_THROW(OPUS_OUT_OF_DECODERS);
+        R_THROW(SNX_RC_CODEC_OUT_OF_OPUS_DECODERS);
     }
     o->destroy = hwopus_destroy;
     *decoder = o;
@@ -1180,7 +1167,7 @@ static int nn_codec_detail_IHardwareOpusDecoderManager_OpenHardwareOpusDecoderEx
 static int open_multi(IpcBuf params, int ex, SvcObj** decoder) {
     u32 v[4];
     const u8* mapping;
-    R_UNLESS(multi_params(params, ex, v, &mapping), OPUS_OUT_OF_DECODERS);
+    R_UNLESS(multi_params(params, ex, v, &mapping), SNX_RC_CODEC_OUT_OF_OPUS_DECODERS);
     return open_decoder(v[0], v[1], v[2], v[3], mapping, decoder);
 }
 static int nn_codec_detail_IHardwareOpusDecoderManager_OpenHardwareOpusDecoderForMultiStream(

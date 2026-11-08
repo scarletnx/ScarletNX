@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The game's menu: Android's back button, a gamepad's Home, the on-screen Home or F2 opens it over the game, in the
    menu's look (src/gui, the YoRHa theme), drawn by the renderer as quads (ui.h). The same on every platform: the
-   on-screen controls' options (vpad.h), the touch screen's, and Exit */
+   on-screen controls' options (vpad.h), the touch screen's, the runtime's keys (Shortcuts), Capture frame while
+   RenderDoc is in the game (the renderer's capture), and Exit */
 #ifndef SNX_OVERLAY_H
 #define SNX_OVERLAY_H
 #include "nx/runtime/platform/ui.h"
@@ -11,7 +12,8 @@
 #define OVERLAY_COLS_MAX 72 /* and the widest, as far as three quarters of the picture let it */
 #define OVERLAY_ROWS     16 /* the tallest page's: the others are as tall as their items */
 /* what a menu action leaves to its caller: the save state ones for the slot overlay_slot names; the keyboard's box
-   answered (overlay_keyboard_take), or a tap on its line, which asks for the system's keyboard again */
+   answered (overlay_keyboard_take), or a tap on its line, which asks for the system's keyboard again; Capture frame,
+   RenderDoc's capture of the next frame, the menu closed first so the frame is the game's */
 enum {
     OVERLAY_NONE,
     OVERLAY_CLOSE,
@@ -21,7 +23,8 @@ enum {
     OVERLAY_LOAD,
     OVERLAY_DELETE,
     OVERLAY_KEYBOARD,
-    OVERLAY_TYPE
+    OVERLAY_TYPE,
+    OVERLAY_CAPTURE
 };
 
 /* whether it is open, for the renderer's thread too */
@@ -35,10 +38,18 @@ void overlay_place(int sw, int sh, int* x, int* y, int* scale);
 int overlay_select(void);      /* the focused item's action: a page, a setting changed, or an OVERLAY_ for the caller */
 void overlay_move(int rows);   /* the focus up (-1) or down (1), round the page */
 void overlay_scroll(int rows); /* the mouse's wheel: the same, stopping at the ends */
-void overlay_side(int step);   /* the focused setting down (-1) or up (1) */
-int overlay_back(void);        /* the page above; OVERLAY_CLOSE from the first */
+int overlay_side(int step);    /* the focused setting down (-1) or up (1); OVERLAY_CLOSE on F1's page */
+int overlay_back(void);        /* the page above; OVERLAY_CLOSE from the first, and from F1's */
+/* F1: the page of the runtime's keys and the game's buttons on the keyboard, a row each, in place of the page showing,
+   the menu open; OVERLAY_CLOSE when it shows already. Up/Down and the wheel go over its rows; any other key, button
+   or tap is OVERLAY_CLOSE, back to the game: overlay_other for the keys the menu has no other use for */
+/* what F1's page shows besides its rows: the capture key's row while RenderDoc is in the process, and the debugger
+   tracing the process ("" for none) */
+void overlay_keys_extra(int capture, const char* debugger);
+int overlay_keys(void);
+int overlay_other(void);
 /* a button pressed, as the game reads it (one HidNpadButton bit): the D-pad and the left stick move, A selects, B goes
-   back, the rest do nothing. What it did, as overlay_select */
+   back, the rest do nothing but on F1's page. What it did, as overlay_select */
 int overlay_pad(u64 button);
 /* the pads each poll, the on-screen controls and the connected ones: their buttons and sticks at ms. With the menu
    shown, each button pressed since the last call acts as overlay_pad, the left stick past half way as the D-pad; a
@@ -51,6 +62,14 @@ int overlay_controls(u64 buttons, const i32 sticks[4], u64 ms);
    key */
 int overlay_listening(void);
 void overlay_press(int control);
+/* The Shortcuts page, the runtime's keys (hotkeys.h) a row each: a row selected waits for a key, the next one pressed
+   (with its modifiers; a modifier alone waits on) its key, saved in the game's .ini; Esc or Back, B, a move or a tap
+   cancel the wait. A key another row has is refused, said on the page with the key the row keeps. Under ui_lock */
+int overlay_shortcut_listening(void);
+/* a key pressed while it waits: an SDL_Keycode, hotkeys.h's modifiers */
+void overlay_shortcut_key(unsigned key, unsigned mods);
+/* Backspace: on the Shortcuts page the row in focus back to its default key, as a key given; elsewhere overlay_back */
+int overlay_backspace(void);
 /* a tap at x, y on a picture of sw x sh: what it did, OVERLAY_CLOSE outside the panel */
 int overlay_tap(float x, float y, int sw, int sh);
 /* a finger or the mouse (touch.h's SNX_TOUCH_MOUSE) on the open menu, at x, y in the picture's pixels: down on an
@@ -68,6 +87,9 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns);
 #define SNX_OVERLAY_TOAST_MS 3000
 void overlay_toast(const char* text, u64 now_ns);
 int overlay_toasting(u64 now_ns); /* one shows */
+/* the same from any thread, with or without ui_lock (RenderDoc's notices, gpu/vk/renderdoc.c): its time starts as the
+   next frame draws it, the last one given before then shown */
+void overlay_notice(const char* text);
 /* The save states' pages: a row per slot, the focused one's thumbnail beside them, and Save, Load and Delete for one
    (Load and Delete asked first). Slot 0 is the one a load saves over first, which only loads or goes */
 #define OVERLAY_SLOTS_MAX 33

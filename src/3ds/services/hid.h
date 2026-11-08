@@ -9,4 +9,7 @@ struct SnxCtrProcess;
 void snx_ctr_hid_update(struct SnxCtrProcess* p, uint64_t now_ns);
 /* the host monotonic ns of the next sample, UINT64_MAX for none */
 uint64_t snx_ctr_hid_deadline(const struct SnxCtrProcess* p);
+/* A stick's direction bits as the circle pad's (bits 28 to 31: right, left, up, down; ir:rst's C-stick has them four
+   places down), from its raw position x and y: none near the center (Azahar's GetStickDirectionState) */
+uint32_t snx_ctr_hid_stick_directions(int32_t x, int32_t y);
 #endif

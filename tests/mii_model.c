@@ -232,6 +232,28 @@ static void check_textures(const u8* f, u32 size, int mid) {
                         }
                     }
                     CHECK(g > 0 && b > 0 && cn > 0 && cx / cn > w / 2);
+                    /* none of it on the texture's edge, where the SDK's drawing would cut it */
+                    for (p = 0, g = 0; p < bw * h; p++)
+                        g += (p % bw == 0 || p % bw == w - 1 || p / bw == 0 || p / bw == h - 1) &&
+                             g_mii_model.px[4 * p + 3] > 8;
+                    if (g) fprintf(stderr, "%s eye %u: %u texels on the edge\n", mid ? "Mid" : "Low", i, g);
+                    CHECK(g == 0);
+                    /* a plush's eye: big, over a quarter of its texture */
+                    if (cn * 4 < bw * h)
+                        fprintf(stderr, "%s eye %u: %u of %u texels\n", mid ? "Mid" : "Low", i, cn, bw * h);
+                    CHECK(cn * 4 >= bw * h);
+                    /* a catchlight: white (G) with iris (B) to its left and right in its row, not the white around it */
+                    for (p = 0, g = 0; p < bw * h; p++) {
+                        u32 x = p % bw, left = 0, right = 0, d;
+                        if (g_mii_model.px[4 * p + 1] < 200 || g_mii_model.px[4 * p + 2] > 60) continue;
+                        for (d = 1; d <= w / 8; d++) {
+                            left |= x >= d && g_mii_model.px[4 * (p - d) + 2] > 128;
+                            right |= x + d < bw && g_mii_model.px[4 * (p + d) + 2] > 128;
+                        }
+                        g += left && right;
+                    }
+                    if (!g) fprintf(stderr, "%s eye %u: no catchlight in its iris\n", mid ? "Mid" : "Low", i);
+                    CHECK(g > 0);
                 }
                 if (k == 8) /* a mouth: its lips (R) or teeth (G) in some, its outline (A) in all */
                     for (p = 0; p < ((w + 3) / 4 * 4) * h; p++)
@@ -249,6 +271,125 @@ static void check_textures(const u8* f, u32 size, int mid) {
     }
 }
 
+/* vertex n of a hair part made as grids (past its head's grid, on a tail or the ahoge): the middle of what that grid
+   draws at its row */
+static void want_tail_axis(const Shape* grids, u32 n, float out[3]) {
+    u32 g = 0, row;
+    Tail tl;
+    Vec c;
+    while (g + 1 < grids->grids && n >= (grids->ns[g] + 1) * (grids->nt[g] + 1))
+        n -= (grids->ns[g] + 1) * (grids->nt[g] + 1), g++;
+    row = n / (grids->ns[g] + 1);
+    tl = hair_grid_tail(grids->variant, g);
+    c = tail_axis(&tl, (float)row / (float)grids->nt[g]);
+    out[0] = c.x, out[1] = c.y, out[2] = c.z;
+}
+/* a hair part's vertex (column i, row j of grid g) as the SDK reads it, from the inflated part in g_mii_model.raw */
+static void want_hair_at(const Shape* grids, u32 g, u32 i, u32 j, float out[3]) {
+    u32 n = 0, h, c;
+    for (h = 0; h < g; h++) n += (grids->ns[h] + 1) * (grids->nt[h] + 1);
+    n += j * (grids->ns[g] + 1) + i;
+    for (c = 0; c < 3; c++) out[c] = want_half(snx_ld_le16(g_mii_model.raw + 8 * n + 2 * c));
+}
+/* the hair of a shape file (q Q_MID or Q_HIGH) as the SDK reads it. A drill style's tails (112) are drills: along
+   each, at any angle around it, its radius drops at the edge of each turn of its ringlet, at least two of them before
+   its point, and the turns wind along it (the drops of the opposite side fall between this side's, where rings would
+   line up), its rings 30 units or more across, in the High file; the Mid file's, with too few rows for rings,
+   are smooth. A high twin tail's (126), a low one's (19) and a ponytail's (9) is a
+   lock: narrow at its tie, widest between a fifth and three fifths of the way, a quarter of that at its point, and
+   (High) flat, half as thick front to back as it is wide. Every style's fringe ends in pointed locks: its edge's height goes up and down across
+   the front, where an edge without them only rises toward the middle */
+static void check_hair(const u8* f, u32 q) {
+    static const u32 styles[5] = {112, 126, 0, 19, 9};
+    u32 s;
+    for (s = 0; s < 5; s++) {
+        u32 style = styles[s], e = 4 + 12 + 12 + 132 * 4 + style, g, i, j, tips = 0, valleys = 0;
+        const u8* t = f + 0x6c + 0x58 * e;
+        Shape sh = shape_in(S_HAIR_NORMAL, hair_variant(style), q);
+        float edge[4 * HAIR_LOCKS + 1], lo = 1e9f, hi = -1e9f;
+        CHECK(want_inflate(f + snx_ld_le32(t), snx_ld_le32(t + 8), g_mii_model.raw, snx_ld_le32(t + 4)));
+        for (g = 1; g < sh.grids && g <= tail_count(tail_styles[sh.variant - HAIR_VARIANTS].tail); g++) {
+            Tail tl = hair_grid_tail(sh.variant, g);
+            u32 drops[2] = {0, 0}, first[2] = {0, 0}, side;
+            float thickest = 0;
+            for (side = 0; side < 2; side++) { /* the column at angle 0 and the one opposite */
+                float last = 0;
+                i = side * sh.ns[g] / 2;
+                for (j = 0; j <= sh.nt[g]; j++) {
+                    float p[3], r;
+                    Vec c = tail_axis(&tl, (float)j / (float)sh.nt[g]);
+                    want_hair_at(&sh, g, i, j, p);
+                    r = vlen(vsub(vec(p[0], p[1], p[2]), c));
+                    if (r > thickest) thickest = r;
+                    if (j && r < 0.8f * last && (float)j < 0.85f * (float)sh.nt[g]) { /* before its point narrows */
+                        if (!drops[side]) first[side] = j;
+                        drops[side]++;
+                    }
+                    last = r;
+                }
+            }
+            if (style == 126 || style == 19 || style == 9) {
+                float r[64], widest = 0, p[3];
+                u32 at = 0;
+                for (j = 0; j <= sh.nt[g] && j < 64; j++) {
+                    want_hair_at(&sh, g, 0, j, p);
+                    r[j] = vlen(vsub(vec(p[0], p[1], p[2]), tail_axis(&tl, (float)j / (float)sh.nt[g])));
+                    if (r[j] > widest) widest = r[j], at = j;
+                }
+                CHECK(sh.nt[g] < 64 && r[0] < 0.75f * widest && r[sh.nt[g]] < 0.25f * widest && at * 5 >= sh.nt[g] &&
+                      at * 5 <= 3 * sh.nt[g]);
+                if (q) { /* a quarter of the way around, front to back */
+                    want_hair_at(&sh, g, sh.ns[g] / 4, at, p);
+                    CHECK(vlen(vsub(vec(p[0], p[1], p[2]), tail_axis(&tl, (float)at / (float)sh.nt[g]))) <
+                          0.6f * widest);
+                }
+            }
+            if (style == 112 && !q) CHECK(drops[0] == 0 && drops[1] == 0);
+            if (style == 112 && q) {
+                if (drops[0] < 2 || drops[1] < 2 || first[0] == first[1])
+                    fprintf(stderr, "%s hair 112 tail %u: drops %u and %u, first at rows %u and %u\n",
+                            q ? "High" : "Mid", g, drops[0], drops[1], first[0], first[1]);
+                CHECK(drops[0] >= 2 && drops[1] >= 2 && first[0] != first[1]);
+                CHECK(thickest > 15.0f); /* chunky: its rings near half the head's width across */
+            }
+        }
+        /* the edge across the fringe, a fourteenth of the way around each side of its middle (past that it falls toward
+           the sides): its tips (lower than both neighbors) and the valleys between them (higher than both); the Mid
+           file's two columns a lock see the outer tips' outer neighbors already falling, so a tip and two valleys */
+        for (i = 0; i <= sh.ns[0]; i++) {
+            float p[3];
+            want_hair_at(&sh, 0, i, 0, p);
+            edge[i] = p[1];
+        }
+        for (i = 1; i < sh.ns[0]; i++) {
+            float a = fabsf((float)i / (float)sh.ns[0] - 0.5f);
+            if (a > 0.07f) continue;
+            tips += edge[i] < edge[i - 1] && edge[i] < edge[i + 1];
+            valleys += edge[i] > edge[i - 1] && edge[i] > edge[i + 1];
+            if (edge[i] < lo) lo = edge[i];
+            if (edge[i] > hi) hi = edge[i];
+        }
+        if (tips < (q ? 3u : 1u) || tips + valleys < 3 || hi - lo < 1.0f)
+            fprintf(stderr, "%s hair %u: %u lock tips and %u valleys across the front, its edge from %.2f to %.2f\n",
+                    q ? "High" : "Mid", style, tips, valleys, lo, hi);
+        CHECK(tips >= (q ? 3u : 1u) && tips + valleys >= 3 && hi - lo >= 1.0f);
+    }
+}
+
+/* the height where a face's middle line (n points: its height, the texture's v there) has the texture at v, between
+   its two points around it; -1 when none is */
+static float want_line_y(float line[][2], u32 n, float v) {
+    u32 a, b;
+    float best = -1, gap = 1e9f;
+    for (a = 0; a < n; a++)
+        for (b = 0; b < n; b++) {
+            float y0 = line[a][0], y1 = line[b][0], v0 = line[a][1], v1 = line[b][1];
+            if (y1 <= y0 || (v - v0) * (v - v1) > 0 || v0 == v1 || y1 - y0 >= gap) continue;
+            gap = y1 - y0;
+            best = y0 + (y1 - y0) * (v - v0) / (v1 - v0);
+        }
+    return best;
+}
 /* a shape file, high its High quality: the console's largest part of each kind there, which the SDK sizes a Mii
    model's memory with, bounds each of ours */
 static void check_shapes(const u8* f, u32 size, int high) {
@@ -257,13 +398,15 @@ static void check_shapes(const u8* f, u32 size, int high) {
         {0xa4a, 0x18c4, 0x12dc, 0x6088, 0x684, 0x1b78, 0xd0c, 0x10872, 0xb23c, 0x4c, 0xb82, 0xe4},
     };
     u32 k, i, e = 0, largest[12] = {0}, tris = 0;
-    float ty[12];
+    float ty[12], nose_y[12], face_eye_line[12] = {0}, mask_eye[12] = {0}, face_top[12] = {0}, crown_29 = 0;
     CHECK(!memcmp(f, "NFSR", 4) && snx_ld_le32(f + 4) == 1 && snx_ld_le32(f + 8) == size);
-    /* the faceline transforms: the hair's rise, then the nose on the face's front */
+    /* the faceline transforms: the hair's rise, then the nose on the face's front (between the mask's eye and mouth
+       lines, below) */
     for (i = 0; i < 12; i++) {
         const u8* tf = f + 0x6c + 0x58 * 857 + 0x48 * 132 + 0x24 * i;
         ty[i] = f32at(tf + 4);
-        CHECK(f32at(tf) == 0 && fabsf(ty[i]) < 5 && f32at(tf + 16) > 15 && f32at(tf + 16) < 35 && f32at(tf + 20) > 15 &&
+        nose_y[i] = f32at(tf + 16);
+        CHECK(f32at(tf) == 0 && fabsf(ty[i]) < 5 && nose_y[i] > 2 && nose_y[i] < 35 && f32at(tf + 20) > 12 &&
               f32at(tf + 20) < 30);
     }
     for (i = 0; i < 132 * 18; i++) CHECK(isfinite(f32at(f + 0x6c + 0x58 * 857 + 4 * i)));
@@ -271,9 +414,13 @@ static void check_shapes(const u8* f, u32 size, int high) {
         for (i = 0; i < want_shape_counts[k]; i++, e++) {
             const u8* t = f + 0x6c + 0x58 * e;
             u32 off = snx_ld_le32(t), raw = snx_ld_le32(t + 4), stored = snx_ld_le32(t + 8), a, nv, at = 0, n,
-                inward = 0;
+                inward = 0, tail_inward = 0, line_n = 0;
+            float line[64][2];
             u32 aoff[5], asz[5], ioff = snx_ld_le32(t + 0x38), isz = snx_ld_le32(t + 0x3c);
             int hair = k == 7 || k == 8;
+            /* hair's grids as the generator made them: the head's, then its tails' */
+            Shape grids = shape_in(k, shape_variant(k, i), (u32)high);
+            u32 head_nv = (grids.ns[0] + 1) * (grids.nt[0] + 1);
             float box[6], lo[3] = {1e9f, 1e9f, 1e9f}, hi[3] = {-1e9f, -1e9f, -1e9f};
             if (!want_shape_present(k, i)) {
                 CHECK(raw == 0 && stored == 0);
@@ -311,15 +458,23 @@ static void check_shapes(const u8* f, u32 size, int high) {
                     if (pos[c] > hi[c]) hi[c] = pos[c];
                 }
                 CHECK(want_half(snx_ld_le16(p + 6)) == 1.0f && nw >> 30 == 1);
-                /* the parts around the head face out of it, from its middle (0, 30, 2) */
-                if (k <= 1 || k == 3 || k == 4 || k == 7 || k == 8)
+                /* the parts around the head face out of it, from its middle (0, 30, 2); a tail out of its own middle */
+                if (hair && n >= head_nv) {
+                    float around[3];
+                    want_tail_axis(&grids, n, around);
+                    tail_inward +=
+                        nx * (pos[0] - around[0]) + ny * (pos[1] - around[1]) + nz * (pos[2] - around[2]) <= 0;
+                } else if (k <= 1 || k == 3 || k == 4 || k == 7 || k == 8)
                     inward += nx * pos[0] + ny * (pos[1] - 30) + nz * (pos[2] - 2) <= 0;
                 CHECK(fabsf(sqrtf(nx * nx + ny * ny + nz * nz) - 1) < 0.02f);
-                if (k == 2) { /* the mask: the SDK's composed texture 100 units across, its top 80.35 + the rise */
-                    float u = want_half(snx_ld_le16(g_mii_model.raw + aoff[2] + 4 * n)),
-                          v = want_half(snx_ld_le16(g_mii_model.raw + aoff[2] + 4 * n + 2));
-                    CHECK(fabsf(u - (0.5f + pos[0] / 100)) < 0.0012f);
-                    CHECK(fabsf(v - (0.8035f + ty[i] / 100 - pos[1] / 100)) < 0.0012f);
+                if ((k == 1 || k == 2) && fabsf(pos[0]) < 1.5f && pos[2] > 10 && line_n < 64) {
+                    /* the face's middle line: its height and the texture's v there */
+                    line[line_n][0] = pos[1];
+                    line[line_n++][1] = want_half(snx_ld_le16(g_mii_model.raw + aoff[2] + 4 * n + 2));
+                }
+                if (k == 2 && fabsf(pos[1] - 22) < 6 && pos[0] > 10 && pos[2] > 5) { /* beside the eyes: u's scale */
+                    float u = want_half(snx_ld_le16(g_mii_model.raw + aoff[2] + 4 * n));
+                    CHECK(u > 0.5f && (u - 0.5f) * 100 < 0.8f * pos[0]);
                 }
                 if (hair) { /* a tangent across the normal, its sign 1 */
                     const i8* tg = (const i8*)(g_mii_model.raw + aoff[3] + 4 * n);
@@ -327,32 +482,96 @@ static void check_shapes(const u8* f, u32 size, int high) {
                     CHECK(fabsf(d) < 0.08f && tg[3] == 127);
                 }
             }
-            /* hair with tails (7, 8) is part tubes, whose sides toward the head face it; a hat part (3, 4) that is no
-               cap (34 and 57 are) is a tie, band, bow or clip, its facing checked by its triangles alone */
-            if (k == 7 || k == 8)
-                CHECK(inward * 10 <= nv * 3);
-            else if ((k != 3 && k != 4) || i == 34 || i == 57)
+            if (k == 1 ||
+                k == 2) { /* the face's middle line, chin to brow: where the SDK's eye line and mouth line are */
+                float eye = want_line_y(line, line_n, k == 2 ? 0.4635f : 0.325f);
+                if (k == 2) {
+                    float mouth = want_line_y(line, line_n, 0.6435f), above = want_line_y(line, line_n, 0.4135f);
+                    /* a plush's face: the eyes low, the texture there a fifth bigger or more, the mouth close
+                       under them and over the chin */
+                    if (!(eye - ty[i] < 24 && above - eye > 6.0f && mouth > 2 && mouth < eye - 6 && eye - mouth < 15))
+                        fprintf(stderr, "mask %u: eye line at %.1f, 0.05 above it %.1f higher, mouth line at %.1f\n", i,
+                                eye, above - eye, mouth);
+                    CHECK(eye - ty[i] < 24 && above - eye > 6.0f && mouth > 2 && mouth < eye - 6 && eye - mouth < 15);
+                    CHECK(nose_y[i] > mouth && nose_y[i] < eye);
+                    mask_eye[i] = eye;
+                } else
+                    face_eye_line[i] = eye;
+                if (k == 2 && face_eye_line[i] > 0) /* the faceline's texture's eye line with the mask's */
+                    CHECK(fabsf(face_eye_line[i] - mask_eye[i]) < 1.0f);
+            }
+            /* the head's hair faces out of the head and a tail out of its middle; a hat part (3, 4) that is no cap (34
+               and 57 are) is a tie, band, bow or clip, its facing checked by its triangles alone */
+            if (hair) {
+                CHECK(head_nv <= nv && inward * 20 <= head_nv && tail_inward * 20 <= nv - head_nv);
+            } else if ((k != 3 && k != 4) || i == 34 || i == 57)
                 CHECK(inward * 20 <= nv);
             for (a = 0; a < 3; a++) /* the box holds the vertices, to the halves' precision */
                 CHECK(fabsf(box[a] - lo[a]) < 0.05f && fabsf(box[3 + a] - hi[a]) < 0.05f);
-            if (k == 1) /* a faceline in the console's frame: chin at 0, its front near +25 */
-                CHECK(lo[1] > -2 && lo[1] < 2 && hi[2] > 20 && hi[2] < 28 && hi[0] < 30 && lo[2] > -25);
-            if (k ==
-                7) { /* the tail styles' tails: long twin tails (126) below the chin on both sides, a side tail (84)
-                             on one side only, the head's other hair styles no lower than the nape */
-                u32 left = 0, right = 0;
+            /* a faceline in the console's frame: chin at 0, its front near +25; a plush's, a quarter wider than tall or
+               more */
+            if (k == 1) {
+                CHECK(lo[1] > -2 && lo[1] < 2 && hi[2] > 18 && hi[2] < 28 && hi[0] < 38 && lo[2] > -30);
+                if (2 * hi[0] <= 1.25f * hi[1])
+                    fprintf(stderr, "faceline %u: %.1f wide, %.1f tall\n", i, 2 * hi[0], hi[1]);
+                CHECK(2 * hi[0] > 1.25f * hi[1]);
+                face_top[i] = hi[1] - ty[i];
+            }
+            if (k == 7) { /* every style's hair a plush's: thick over the crown, falling straight down both sides of
+                             the face to the jaw and over the nape (its head's grid). The tail styles' tails (their own
+                             grids): long twin tails (126) below the chin on both sides, a side tail (84) on one side
+                             only, the twin drills (112) out from both sides past the hair, and one drill style with an
+                             ahoge over the crown */
+                u32 left = 0, right = 0, out_left = 0, out_right = 0, side_l = 0, side_r = 0, nape = 0;
+                float crown = -1e9f, wide = 0, jaw = 0;
                 for (n = 0; n < nv; n++) {
                     float x = want_half(snx_ld_le16(g_mii_model.raw + 8 * n)),
-                          y = want_half(snx_ld_le16(g_mii_model.raw + 8 * n + 2));
-                    left += x < -26 && y < 30, right += x > 26 && y < 30;
+                          y = want_half(snx_ld_le16(g_mii_model.raw + 8 * n + 2)),
+                          z = want_half(snx_ld_le16(g_mii_model.raw + 8 * n + 4));
+                    if (n < head_nv) {
+                        side_l += x < -26 && y < 12, side_r += x > 26 && y < 12;
+                        nape += z < -15 && fabsf(x) < 8 && y < 8;
+                        if (y > crown) crown = y;
+                        if (fabsf(x) > wide) wide = fabsf(x);
+                    } else {
+                        left += x < -26 && y < 30, right += x > 26 && y < 30;
+                        out_left += x<-wide - 4, out_right += x> wide + 4;
+                    }
                 }
-                if (i == 126) CHECK(lo[1] < 0 && left > 20 && right > 20);
+                if (!side_l || !side_r || !nape || crown - face_top[0] < 5.5f)
+                    fprintf(stderr,
+                            "hair %u: %u and %u vertices beside the jaw, %u over the nape, %.1f over the crown\n", i,
+                            side_l, side_r, nape, crown - face_top[0]);
+                CHECK(side_l && side_r && nape && crown - face_top[0] >= 5.5f);
+                { /* a short style's side (a quarter of the way around): its lowest row as far out as its widest,
+                     nearly, as it falls straight, where hair following the head would narrow with the jaw */
+                    u32 col = 3 * grids.ns[0] / 4, j;
+                    float lowest = want_half(snx_ld_le16(g_mii_model.raw + 8 * col)), most = 0;
+                    for (j = 0; j <= grids.nt[0]; j++) {
+                        float x = want_half(snx_ld_le16(g_mii_model.raw + 8 * (j * (grids.ns[0] + 1) + col)));
+                        if (x > most) most = x;
+                    }
+                    jaw = lowest / most;
+                    if (hair_variant(i) < HAIR_VARIANTS &&
+                        hair_variant(i) % 3 == 0) { /* the short ones, over the jaw */
+                        if (jaw < 0.65f)
+                            fprintf(stderr, "hair %u: its side's lowest %.1f as far out as its widest %.1f\n", i,
+                                    lowest, most);
+                        CHECK(jaw >= 0.65f);
+                    }
+                }
+                if (i == 126) CHECK(lo[1] < 20 && left > 10 && right > 10);
+                if (i == 112 && (out_left <= 10 || out_right <= 10))
+                    fprintf(stderr, "hair 112: %u and %u vertices of its drills past the hair (%.1f)\n", out_left,
+                            out_right, wide);
+                if (i == 112) CHECK(out_left > 10 && out_right > 10);
+                if (i == 29) crown_29 = hi[1];
+                if (i == 112) CHECK(hi[1] > crown_29 + 6); /* its ahoge up from the crown; 29 has none */
                 if (i == 84) CHECK((left > 20) != (right > 20));
-                if (i == 0 || i == 33) CHECK(left == 0 && right == 0);
             }
             if (k == 3) { /* a tie style's hat part is two ties at the sides, no cap; a cap style's covers the crown */
                 if (i == 126) CHECK(lo[0] < -24 && hi[0] > 24 && hi[1] < 62);
-                if (i == 34 || i == 57) CHECK(hi[1] > 65);
+                if (i == 34 || i == 57) CHECK(hi[1] > 57); /* over the thickest hair's crown, 46 + 10.5 */
             }
             /* every index a vertex; every triangle counterclockwise from where its normals face, or flat */
             for (n = 0; n < isz / 2; n += 3) {
@@ -397,7 +616,7 @@ static void check_shapes(const u8* f, u32 size, int high) {
 
 /* a pixel of a picture side pixels wide at the model's (x, y): its RGB */
 static const u8* pic_at(const u8* rgba, int side, float x, float y) {
-    int px = (int)((x + 42.0f) / 84.0f * (float)side), py = (int)((76.0f - y) / 84.0f * (float)side);
+    int px = (int)((x - PIC_X0) / PIC_SPAN * (float)side), py = (int)((PIC_Y1 - y) / PIC_SPAN * (float)side);
     return rgba + 4 * (py * side + px);
 }
 /* count of the pixels in the box (x0, y0)-(x1, y1) of model units that pass is */
@@ -408,57 +627,114 @@ static int pic_count(const u8* rgba, int side, float x0, float y0, float x1, flo
         for (x = x0; x <= x1; x += 0.5f) n += is(pic_at(rgba, side, x, y));
     return n;
 }
-static int is_red_eye(const u8* p) { return p[0] > 110 && p[1] < 60 && p[2] < 60; }
+static int is_red_eye(const u8* p) { return p[0] > 110 && p[0] * 10 > 22 * p[1] && p[0] > p[2] + 50; }
 static int is_white(const u8* p) { return p[0] > 215 && p[1] > 215 && p[2] > 215; }
-static int is_crimson(const u8* p) { return p[0] > 2 * p[1] && p[2] > p[1] && p[0] > 90; }
+static int is_red_hair(const u8* p) { return p[0] > 80 && 2 * p[0] > 3 * p[1] && 5 * p[0] > 7 * p[2]; }
 static int is_teal(const u8* p) { return p[1] > p[0] + 40 && p[2] > p[0] + 30; }
 static const u8* g_pic_corner; /* is_corner's picture */
 static int is_corner(const u8* p) {
     return abs(p[0] - g_pic_corner[0]) < 40 && abs(p[1] - g_pic_corner[1]) < 40 && abs(p[2] - g_pic_corner[2]) < 40;
 }
+/* light: a pixel's R + G + B */
+static int pic_light(const u8* p) { return p[0] + p[1] + p[2]; }
+/* the outline where the fringe meets the face, down the face's middle (no brow there): the hair's last pixel above the
+   face (the first pixel twice as light as the hair at the top, past its shine) over the hair eight pixels higher */
+static float pic_outline(const u8* rgba, int side) {
+    int x = (int)((0 - PIC_X0) / PIC_SPAN * (float)side), y = (int)((PIC_Y1 - 45) / PIC_SPAN * (float)side);
+    int top = pic_light(rgba + 4 * (y * side + x));
+    while (y < side - 1 && pic_light(rgba + 4 * (y * side + x)) < 2 * top) y++;
+    return (float)pic_light(rgba + 4 * ((y - 1) * side + x)) / (float)pic_light(rgba + 4 * ((y - 9) * side + x));
+}
+/* a picture side pixels wide's pixel column at the model's x and row at its y */
+static int pic_px(float x, int side) { return (int)((x - PIC_X0) / PIC_SPAN * (float)side); }
+static int pic_py(float y, int side) { return (int)((PIC_Y1 - y) / PIC_SPAN * (float)side); }
 /* the pictures (snx_mii_picture) of our own Miis: the background of the favorite color, the hair on top and in two
-   tails at the sides, skin in the middle, the eyes in their color with their whites on the face */
+   tails at the sides, skin in the middle, the eyes in their color with their whites on the face, a plush's: big and
+   low, in sight under the fringe, the hair down the sides to the jaw. At 512 pixels: a catchlight in each iris (white
+   with the iris's red on both sides in its row), the hair's shine (brighter than its color lit fully), and an outline
+   where the hair meets the background, darker than both */
 static void check_picture(void) {
-    static u8 rgba[128 * 128 * 4];
+    static u8 rgba[512 * 512 * 4];
     u8 ci[SNX_MII_CHARINFO];
     SnxMiiLook look;
     const u8* p;
-    snx_mii_db_charinfo(0, ci); /* Baguette: crimson twin tails, red eyes, red favorite */
+    int eyes[2];
+    snx_mii_db_charinfo(0, ci); /* Baguette: red twin drills, red eyes, red favorite */
     snx_mii_db_look(0, &look);
     CHECK(snx_mii_picture(ci, &look, 15, rgba) == -1 && snx_mii_picture(ci, &look, 1025, rgba) == -1);
     CHECK(snx_mii_picture(ci, &look, 128, rgba) == 0);
     p = rgba; /* a corner: the background, the favorite red lightened */
     CHECK(p[3] == 255 && p[0] > p[1] + 30 && p[0] > 200);
-    CHECK(is_crimson(pic_at(rgba, 128, 0, 64)));                    /* the crown */
-    p = pic_at(rgba, 128, 0, 28);                                   /* between the eyes and the mouth */
-    CHECK(p[0] > 170 && p[1] > 130 && p[2] > 90 && !is_crimson(p)); /* skin */
-    CHECK(pic_count(rgba, 128, -16, 30, -3, 38, is_red_eye) > 3);   /* an eye, red */
-    CHECK(pic_count(rgba, 128, 3, 30, 16, 38, is_red_eye) > 3);     /* the other */
-    CHECK(pic_count(rgba, 128, -16, 30, 16, 38, is_white) > 3);     /* their whites */
-    CHECK(pic_count(rgba, 128, -40, 0, -27, 30, is_crimson) > 20);  /* a tail at each side */
-    CHECK(pic_count(rgba, 128, 27, 0, 40, 30, is_crimson) > 20);
-    CHECK(pic_count(rgba, 128, -12, 21, 12, 27, is_crimson) == 0); /* no hair over the cheeks, between eyes and mouth */
-    snx_mii_db_charinfo(1, ci);                                    /* Leek Girl: teal */
+    CHECK(is_red_hair(pic_at(rgba, 128, 0, 48)));                    /* the crown */
+    p = pic_at(rgba, 128, 0, 12.5f);                                 /* between the eyes, over the mouth */
+    CHECK(p[0] > 170 && p[1] > 130 && p[2] > 90 && !is_red_hair(p)); /* skin */
+    /* each eye red, low on the face (its middle under the head's), most of its iris in sight under the fringe */
+    eyes[0] = pic_count(rgba, 128, -20, 13, -8, 21, is_red_eye);
+    eyes[1] = pic_count(rgba, 128, 8, 13, 20, 21, is_red_eye);
+    if (eyes[0] < 60 || eyes[1] < 60)
+        fprintf(stderr, "picture: %d and %d of the eyes' red in sight\n", eyes[0], eyes[1]);
+    CHECK(eyes[0] >= 60 && eyes[1] >= 60);
+    CHECK(pic_count(rgba, 128, -20, 13, 20, 21, is_white) > 3);      /* their whites */
+    CHECK(pic_count(rgba, 128, -20, 26, 20, 34, is_red_eye) < 6);    /* nothing of them where a Mii's would be */
+    CHECK(pic_count(rgba, 128, -54, 22, -44, 36, is_red_hair) > 20); /* a drill out from each side, past the hair */
+    CHECK(pic_count(rgba, 128, 44, 22, 54, 36, is_red_hair) > 20);
+    CHECK(pic_count(rgba, 128, -2, 55, 12, 62, is_red_hair) > 2); /* the ahoge over the crown */
+    CHECK(pic_count(rgba, 128, 9, 8, 14, 12, is_red_hair) == 0);  /* no hair over the cheek, under the eye */
+    CHECK(pic_count(rgba, 128, -14, 8, -9, 12, is_red_hair) == 0);
+    CHECK(snx_mii_picture(ci, &look, 512, rgba) == 0);
+    {
+        int side, x, y, glints[2] = {0, 0}, shine = 0, edge = 0;
+        for (side = 0; side < 2; side++) /* each eye's box */
+            for (y = pic_py(21, 512); y <= pic_py(13, 512); y++)
+                for (x = pic_px(side ? 8.0f : -20.0f, 512); x <= pic_px(side ? 20.0f : -8.0f, 512); x++) {
+                    const u8* q = rgba + 4 * (y * 512 + x);
+                    int d, left = 0, right = 0;
+                    if (!is_white(q)) continue;
+                    for (d = 1; d <= 8; d++) {
+                        left |= is_red_eye(q - 4 * d);
+                        right |= is_red_eye(q + 4 * d);
+                    }
+                    glints[side] += left && right;
+                }
+        for (y = pic_py(52, 512); y <= pic_py(30, 512); y++) /* the crown */
+            for (x = pic_px(-15, 512); x <= pic_px(15, 512); x++) {
+                const u8* q = rgba + 4 * (y * 512 + x);
+                shine += is_red_hair(q) && q[0] >= look.hair[0] + 20 && q[1] >= look.hair[1] + 20 &&
+                         q[2] >= look.hair[2] + 20;
+            }
+        /* Alex's outline where the fringe meets the face, darker than the hair above it; a small picture's outline
+           lighter, as a line a pixel wide is more of it */
+        snx_mii_db_charinfo(3, ci);
+        snx_mii_db_look(3, &look);
+        CHECK(snx_mii_picture(ci, &look, 512, rgba) == 0);
+        edge = pic_outline(rgba, 512) < 0.75f && pic_line(32) > pic_line(512) + 0.2f && pic_line(512) == 0.55f;
+        if (!glints[0] || !glints[1] || !shine || !edge)
+            fprintf(stderr, "picture: catchlights %d and %d, shine %d, outline %.2f at 512\n", glints[0], glints[1],
+                    shine, pic_outline(rgba, 512));
+        CHECK(glints[0] > 0 && glints[1] > 0 && shine > 0 && edge);
+    }
+    snx_mii_db_charinfo(1, ci); /* Leek Girl: teal */
     snx_mii_db_look(1, &look);
     CHECK(snx_mii_picture(ci, &look, 128, rgba) == 0);
-    CHECK(is_teal(pic_at(rgba, 128, 0, 64)) && pic_count(rgba, 128, -40, 0, -27, 40, is_teal) > 20);
+    CHECK(is_teal(pic_at(rgba, 128, 0, 48)) && pic_count(rgba, 128, -54, 0, -44, 40, is_teal) > 20);
     snx_mii_db_charinfo(3, ci); /* Alex: short hair, no tails */
     snx_mii_db_look(3, &look);
     CHECK(snx_mii_picture(ci, &look, 128, rgba) == 0);
-    g_pic_corner = rgba; /* nothing of it beside the cheeks: the background there, as in its corner */
-    CHECK(pic_count(rgba, 128, -40, 10, -32, 24, is_corner) > 100 && !is_teal(pic_at(rgba, 128, 0, 64)));
+    g_pic_corner = rgba; /* its hair down both sides of the face to the jaw, nothing of it out past that */
+    CHECK(pic_count(rgba, 128, -54, 0, -47, 20, is_corner) > 100 && !is_teal(pic_at(rgba, 128, 0, 48)));
+    CHECK(!is_corner(pic_at(rgba, 128, -32, 8)) && !is_corner(pic_at(rgba, 128, 32, 8)));
 }
 
 int main(void) {
     /* the console's file of each name, in bytes: the SDK reads a file whole into the game's Mii heap, which a game
        sizes for these, so none of ours is bigger */
     static const u32 console[6] = {0x49e34, 0x4a0b0, 0xa58f0, 0xa5c78, 0xe517c, 0x2bcf40};
-    u32 i, sizes[6];
+    u32 i, sizes[6], rooms[6];
     g_mii_model.inflate = libdeflate_alloc_decompressor();
     if (!g_mii_model.inflate) return 1;
     for (i = 0; i < SNX_MII_MODEL_FILES; i++) {
         char name[32];
-        u32 room = snx_mii_model_write(i, NULL);
+        u32 room = rooms[i] = snx_mii_model_write(i, NULL);
         CHECK(room <= sizeof g_mii_model.files[i]);
         if (room > sizeof g_mii_model.files[i]) return 1;
         sizes[i] = snx_mii_model_write(i, g_mii_model.files[i]);
@@ -482,9 +758,11 @@ int main(void) {
     check_textures(g_mii_model.files[2], sizes[2], 1);
     check_shapes(g_mii_model.files[4], sizes[4], 0);
     check_shapes(g_mii_model.files[5], sizes[5], 1);
+    check_hair(g_mii_model.files[4], Q_MID);
+    check_hair(g_mii_model.files[5], Q_HIGH);
     check_picture();
-    /* the six files with the RomFS's tables fit the room fs.h keeps for them */
-    CHECK(sizes[0] + sizes[2] + sizes[4] + sizes[5] + 0x1000 <= 0x500000);
+    /* the most the four files the copies share take, with the RomFS's tables, fits the room fs.h keeps for them */
+    CHECK(rooms[0] + rooms[2] + rooms[4] + rooms[5] + 0x1000 <= 0x600000);
     libdeflate_free_decompressor(g_mii_model.inflate);
     if (g_mii_model.fails) return 1;
     printf("PASS generated MiiModel: Low %u, Mid %u, shapes Mid %u, High %u bytes\n", sizes[0], sizes[2], sizes[4],

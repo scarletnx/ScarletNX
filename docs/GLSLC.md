@@ -35,7 +35,7 @@ if (snx_glslc_workspace_init(&workspace, malloc(bytes), bytes, &result) != 0)
     fprintf(stderr, "%s\n", result.error);
 
 /* then for each shader; bind, a binding map, is optional */
-GlslcOptions options = {SNX_GLSLC_FRAGMENT, bind, bind_user};
+GlslcOptions options = {SNX_GLSLC_FRAGMENT, bind, bind_user, 0, 0};
 if (snx_glslc_compile(&workspace, &options, source, size, words, SNX_GLSLC_MAX_WORDS, &result) != 0)
     fprintf(stderr, "%u:%u: %s\n", result.line, result.column, result.error);
 ```
@@ -136,8 +136,11 @@ The module is what a Vulkan pipeline takes; the OpenGL ES side of it is the back
   binding it gives, and one without a binding takes the first free binding of set 0, in declaration order.
 - **Loose uniforms** are the members of one block, `gl_DefaultUniformBlock`, laid out as std140. It takes the first
   free binding of set 0 once every other resource is placed, whether by the source, by glslc or by a binding map;
-  the map is not asked about it. Its entry in `result.reflect` has an empty name and that binding, and each
-  uniform's entry its offset in it.
+  the map is not asked about it, unless `GlslcOptions.map_default` is nonzero: then the map places it too, after
+  the other resources, as a uniform block with an empty name and its size. A program's vertex and fragment stages
+  each have a default block, and one Vulkan binding has one descriptor for both stages, so a backend puts the two
+  apart that way. Its entry in `result.reflect` has an empty name and that set and binding, and each uniform's
+  entry its offset in it.
 - **Samplers inside structs.** Vulkan keeps a struct to numbers, so each sampler member of a uniform struct is a
   variable of its own, named `uniform.member` in the module, placed with the shader's other samplers in declaration
   order (by the binding map too). Its `result.reflect` entry, and what the map sees, has the uniform's name and the
@@ -151,8 +154,11 @@ The module is what a Vulkan pipeline takes; the OpenGL ES side of it is the back
   in a block.
 - **Built-ins.** `gl_VertexID` and `gl_InstanceID` are Vulkan's VertexIndex and InstanceIndex: the backend draws with
   a first instance of 0, and a vertex index counts from the first vertex as OpenGL ES's does. Fragment shaders have
-  Vulkan's upper-left origin, so `gl_FragCoord` is Vulkan's: a backend that draws with a negative viewport height sees
-  OpenGL ES's. A texture sampled in a vertex or compute shader without a level reads level 0.
+  Vulkan's upper-left origin, so `gl_FragCoord` is Vulkan's by default. With `GlslcOptions.flip_y`, a fragment shader
+  reads `gl_FragCoord.y` as `y * flip.x + flip.y` and `gl_PointCoord.y` as `y * flip.z + flip.w`, where `flip` is a
+  `vec4` at offset 0 of a push constant block (`gl_ScarletFlip`): main's start copies the two inputs into Private
+  variables that the shader reads. A backend that draws a window with a negative viewport height gives
+  `(-1, height, 1, 0)`, and `(1, 0, -1, 1)` for a framebuffer drawn upright, so both read OpenGL ES's values. A texture sampled in a vertex or compute shader without a level reads level 0.
 - **Precision.** `lowp` and `mediump` variables, `in` parameters and loose uniforms are RelaxedPrecision; the results of
   operations and the members of structs and blocks are not.
 

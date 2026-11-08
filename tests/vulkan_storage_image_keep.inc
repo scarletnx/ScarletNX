@@ -97,8 +97,9 @@ static GpuChannel* imgkeep_channel(u64 address, u64 pool) {
         memcpy(&word, position + i, 4);
         snx_st_le32(bytes + 4 * i, word);
     }
+    /* The storage-only fragment stage needs neither interpolated inputs nor color outputs. */
     if (gmem_write(positions, bytes, sizeof bytes) || storage_write_words(cbuf + 0x120, (const u32[1]){0}, 1) ||
-        !mesh_program(address, vertex, 3, 0) || !mesh_program(address + 0x1000, store, 6, 1)) {
+        !mesh_program(address, vertex, 3, 0) || !mesh_program(address + 0x1000, store, 6, 0)) {
         free(channel);
         return NULL;
     }

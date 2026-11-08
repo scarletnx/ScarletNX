@@ -57,7 +57,9 @@ int gui_settings_always(GuiSettings* settings, const char* key, const char* valu
    versions wrote that a plain row reads otherwise is said in old ("; " between, cut where it ends): its .ini, read as
    the value it starts with ("fullscreen=.ini is no longer a value of Fullscreen: fullscreen=0 now"), and its default
    picked, which a run was given over the game's .ini and is now no pick ("docked=1 is the default of TV mode: no run
-   is given it over the game's .ini"). How many, 0 for none */
+   is given it over the game's .ini"), and the pick of a key renamed (ini.h's ini_renamed) on its new row while the
+   file gives that one none ("vk_descriptors=1 is deprecated: Descriptor buffers is vk_descriptors_mode=1 now"). How
+   many, 0 for none */
 int gui_settings_load(GuiSettings* settings, const char* path, char* old, size_t size);
 /* the rows that are not at their start in path, by section; with the launcher's rows alone (the runtime listed none),
    the keys path holds that no row has after them, as they were, and nonzero for a path it cannot read. 0, else
@@ -106,4 +108,6 @@ const char* gui_settings_extract(const GuiSettings* settings);
 size_t gui_settings_recompile(GuiSettings* settings, int make, const char** argv);
 /* argv's --key=value of the game's setting key when it is picked: its count, 1 or 0 */
 size_t gui_settings_one(GuiSettings* settings, const char* key, const char** argv);
+/* argv's --java-home=DIR for the Android driver when Java home is set: its count, 1 or 0 (empty, the driver's own) */
+size_t gui_settings_java_home(GuiSettings* settings, const char** argv);
 #endif

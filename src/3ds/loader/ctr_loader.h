@@ -34,6 +34,43 @@ SnxCtrExtractResult snx_ctr_extract(const char* input, const char* destination, 
 typedef struct SnxCtrSource SnxCtrSource;
 SnxCtrExtractResult snx_ctr_source_open(const char* input, SnxCtrSource** source, char* error, size_t error_size);
 void snx_ctr_source_close(SnxCtrSource* source);
+/* What a 3DS file is, from its container alone (a CIA's TMD, a cartridge's or an NCCH's header), nothing else read:
+   its title ID, and *version its TMD's title version, -1 for a cartridge image or a bare NCCH, which have none. A
+   game, its update (0x0004000E the ID's high half) and its DLC (0x0004008C) are told apart by it */
+SnxCtrExtractResult snx_ctr_source_identify(const char* input, uint64_t* title, int32_t* version, char* error,
+                                            size_t error_size);
+/* The game with its standalone update (a CIA of title type 0x0004000E, or a bare update NCCH) laid over it, read
+   where it lies: the update's ExHeader, code and RomFS are the game's, and its ExeFS files, then the base's, answer by
+   name, as the console runs an installed update. The update must be this game's (its title ID's low half under
+   0x0004000E), else it is refused; a second one is refused too. An update given to snx_ctr_source_open as the game
+   is refused */
+SnxCtrExtractResult snx_ctr_source_set_update(SnxCtrSource* game, const char* update, char* error, size_t error_size);
+/* A game's add-on content: a DLC CIA (title type 0x0004008C) given beside the game, read where it lies. Its title
+   ID's low half must be the game's (snx_addon_kind's rule). At most SNX_CTR_MAX_DLC files, each a title of its own.
+   Its TMD's contents are NCCHs holding a RomFS, found by their TMD index, as the NCCH archive and am:app name them;
+   a content the CIA leaves out is listed, not present */
+#define SNX_CTR_MAX_DLC 16
+SnxCtrExtractResult snx_ctr_source_add_dlc(SnxCtrSource* game, const char* input, char* error, size_t error_size);
+typedef struct {
+    uint64_t title, size; /* the title, and its TMD's first content's size (Azahar's title info size) */
+    uint16_t version;
+    uint32_t type, count; /* the TMD's title type, and its contents */
+} SnxCtrDlcTitle;
+typedef struct {
+    uint16_t index, type;
+    uint32_t id;
+    uint64_t size;
+    bool present; /* in the CIA, not only in its TMD */
+} SnxCtrDlcContent;
+size_t snx_ctr_source_dlc_count(const SnxCtrSource* source);
+bool snx_ctr_source_dlc_title(const SnxCtrSource* source, size_t i, SnxCtrDlcTitle* out);
+bool snx_ctr_source_dlc_find(const SnxCtrSource* source, uint64_t title, SnxCtrDlcTitle* out);
+/* the i-th content of a DLC title's TMD; false past the last or for a title not given */
+bool snx_ctr_source_dlc_content(const SnxCtrSource* source, uint64_t title, size_t i, SnxCtrDlcContent* out);
+/* the RomFS level 3 of a DLC title's content by its place in the TMD, in the mapping. *found tells whether the CIA
+   holds the content, as one with no RomFS gives NULL with *size 0 */
+const unsigned char* snx_ctr_source_dlc_romfs(const SnxCtrSource* source, uint64_t title, unsigned index,
+                                              uint64_t* size, bool* found);
 uint64_t snx_ctr_source_title(const SnxCtrSource* source);
 /* the game file's modification time, UTC Unix milliseconds, 0 when the host can't say */
 uint64_t snx_ctr_source_mtime(const SnxCtrSource* source);

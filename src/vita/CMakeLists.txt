@@ -4,7 +4,7 @@
 # compiler, src/common/cpu/arm, whose ARMv8 AArch32 holds the Vita's ARMv7-A user mode), and the runtime: the kernel and
 # system libraries answered by NID, sceGxm on the host's Vulkan device
 add_library(snx_vita_loader STATIC loader/inflate.c loader/vpk.c loader/image.c)
-target_link_libraries(snx_vita_loader PUBLIC scarletnx-common OpenSSL::Crypto PRIVATE snx_libdeflate)
+target_link_libraries(snx_vita_loader PUBLIC scarletnx-common snx_zip OpenSSL::Crypto PRIVATE snx_libdeflate)
 target_compile_definitions(snx_vita_loader PRIVATE _FILE_OFFSET_BITS=64 _CRT_SECURE_NO_WARNINGS)
 
 # the USSE translator, which the runtime and snx-vita-usse (the shader corpus' tool) share
@@ -18,7 +18,7 @@ add_library(snx_vita_program STATIC
     aot/compiler.c aot/load.c
     runtime/process.c runtime/run.c runtime/jit.c runtime/lockstep.c runtime/watch.c
     hle/hle.c hle/kernel.c hle/io.c hle/ctrl.c hle/display.c hle/audio.c hle/misc.c hle/gxm.c hle/heap.c hle/libc.c hle/fiber.c hle/ngs.c
-    hle/mp4.c hle/videodec.c hle/audiodec.c hle/dialog.c hle/net.c hle/trophy.c
+    hle/mp4.c hle/videodec.c hle/audiodec.c hle/dialog.c hle/net.c hle/trophy.c hle/psarc.c
     gpu/present.c gpu/render.c gpu/vk.c "${volk_SOURCE_DIR}/volk.c"
     platform/input.c)
 # FFmpeg: the movies' demuxer and decoders (hle/mp4.c, videodec.c, audiodec.c); scarletnx-filesystem: the game

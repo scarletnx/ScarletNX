@@ -280,6 +280,35 @@ int snx_net_init(void) {
     return g_init_result;
 }
 #endif
+struct SnxNetWake {
+    SnxHostFd fd[2];
+};
+static _Thread_local struct {
+    SnxNetWake* wake; /* snx_net_wake_bind's */
+} t_net;
+SnxNetWake* snx_net_wake_new(void) {
+    SnxNetWake* w = calloc(1, sizeof *w);
+    if (w && (snx_net_init() || snx_notifier_open(w->fd))) {
+        free(w);
+        return NULL;
+    }
+    return w;
+}
+void snx_net_wake_free(SnxNetWake* w) {
+    if (!w) return;
+    if (t_net.wake == w) t_net.wake = NULL;
+    snx_net_close_fd(w->fd[0]);
+    snx_net_close_fd(w->fd[1]);
+    free(w);
+}
+void snx_net_wake_signal(SnxNetWake* w) {
+    if (w) snx_notifier_signal(w->fd[1]);
+}
+void snx_net_wake_drain(SnxNetWake* w) {
+    if (w) snx_notifier_drain(w->fd[0]);
+}
+void snx_net_wake_bind(SnxNetWake* w) { t_net.wake = w; }
+
 void snx_net_cancel(void) {
     if (!snx_net_init() && g_cancel[1] != SNX_BADFD) snx_notifier_signal(g_cancel[1]);
 }
@@ -339,29 +368,28 @@ int snx_net_socktype_from_host(int t) {
 #include "common/network/abi/socktype.inc"
     return 0;
 }
-static int level_to_host(int l) {
+int snx_net_level_to_host(int l) {
 #define SNX_NET_LEVEL(name, value, host)                                                                               \
     if (l == value) return host;
 #include "common/network/abi/level.inc"
     return -1;
 }
-static int msg_to_host(int f) {
+int snx_net_msg_to_host(int f) {
     int h = 0;
 #define SNX_NET_MSG(name, value, host)                                                                                 \
     if (f & value) h |= host;
 #include "common/network/abi/msgflag.inc"
     return h;
 }
-#ifndef _WIN32 /* Winsock's recvfrom reports no flags */
-static int msg_from_host(int h) {
+/* Winsock's recvfrom reports no flags: unused there */
+int snx_net_msg_from_host(int h) {
     int f = 0;
 #define SNX_NET_MSG(name, value, host)                                                                                 \
     if ((host) && (h & (host))) f |= value;
 #include "common/network/abi/msgflag.inc"
     return f;
 }
-#endif
-static short poll_to_host(unsigned e) {
+short snx_net_poll_to_host(unsigned e) {
     short h = 0;
 #ifdef _WIN32
 #define SNX_NET_POLL(name, value, host, wsapoll)                                                                       \
@@ -373,7 +401,7 @@ static short poll_to_host(unsigned e) {
 #include "common/network/abi/poll.inc"
     return h;
 }
-static uint16_t poll_from_host(short h) {
+uint16_t snx_net_poll_from_host(short h) {
     uint16_t e = 0;
 #define SNX_NET_POLL(name, value, host, wsapoll)                                                                       \
     if ((host) && (h & (host))) e |= value;
@@ -487,20 +515,24 @@ static int ms_left(int64_t deadline) {
 }
 int snx_net_wait_until(SnxHostFd fd, short events, int64_t deadline) {
     for (;;) {
-        HostPollFd f[2] = {0};
+        HostPollFd f[3] = {0};
         f[0].fd = fd;
         f[0].events = events;
         size_t n = 1;
         if (g_cancel[0] != SNX_BADFD) {
-            f[1].fd = g_cancel[0];
-            f[1].events = POLLIN;
-            n = 2;
+            f[n].fd = g_cancel[0];
+            f[n++].events = POLLIN;
+        }
+        if (t_net.wake) {
+            f[n].fd = t_net.wake->fd[0];
+            f[n++].events = POLLIN;
         }
         int ms = ms_left(deadline);
         int r = host_poll(f, n, ms);
         if (interrupted(r)) continue;
         if (r < 0) return snx_net_host_error();
-        if (n == 2 && f[1].revents) return -SNX_EINTR;
+        for (size_t i = 1; i < n; i++)
+            if (f[i].revents) return -SNX_EINTR;
         if (f[0].revents) return 1;
         if (!ms) return -SNX_EAGAIN;
     }
@@ -614,7 +646,7 @@ static int64_t host_send(SnxSocket* s, const void* data, size_t size, int flags,
         int r = snx_net_addr_to_host(to, &ss, &n);
         if (r) return r;
     }
-    int hflags = msg_to_host(flags) | SNX_SEND_NOSIGNAL;
+    int hflags = snx_net_msg_to_host(flags) | SNX_SEND_NOSIGNAL;
     int dontwait = s->nonblocking || (flags & SNX_MSG_DONTWAIT);
     int64_t deadline = snx_net_deadline(s->sndtimeo_us), total = 0;
     const char* p = data;
@@ -657,14 +689,14 @@ static int64_t host_recv_once(SnxSocket* s, char* p, size_t size, int hflags, Sn
     m.msg_iovlen = 1;
     ssize_t r = recvmsg(s->fd, &m, hflags);
     snx_socklen n = m.msg_namelen;
-    if (r >= 0 && out_flags) *out_flags |= msg_from_host(m.msg_flags);
+    if (r >= 0 && out_flags) *out_flags |= snx_net_msg_from_host(m.msg_flags);
 #endif
     if (r >= 0 && from && (n <= 0 || snx_net_addr_from_host((struct sockaddr*)&ss, n, from)))
         memset(from, 0, sizeof *from); /* a connected stream socket names no sender */
     return r < 0 ? snx_net_host_error() : r;
 }
 static int64_t host_recv(SnxSocket* s, void* data, size_t size, int flags, SnxSockAddr* from, int* out_flags) {
-    int hflags = msg_to_host(flags);
+    int hflags = snx_net_msg_to_host(flags);
     int dontwait = s->nonblocking || (flags & SNX_MSG_DONTWAIT);
     int waitall = (flags & SNX_MSG_WAITALL) && !(flags & SNX_MSG_PEEK) && s->type == SNX_SOCK_STREAM && !dontwait;
     int64_t deadline = snx_net_deadline(s->rcvtimeo_us), total = 0;
@@ -708,13 +740,19 @@ typedef enum {
 static int opt_lookup(int level, int name, int* hlevel, int* hname, OptKind* kind) {
 #define SNX_NET_SOCKOPT(lv_, opt_, value_, kind_)                                                                      \
     if (level == SNX_SOL_##lv_ && name == (value_)) {                                                                  \
-        *hlevel = level_to_host(SNX_SOL_##lv_);                                                                        \
+        *hlevel = snx_net_level_to_host(SNX_SOL_##lv_);                                                                        \
         *hname = opt_;                                                                                                 \
         *kind = K_##kind_;                                                                                             \
         return 0;                                                                                                      \
     }
 #include "common/network/abi/sockopt.inc"
     return -SNX_ENOPROTOOPT;
+}
+int snx_net_sockopt_to_host(int level, int name, int* host_level, int* host_name) {
+    OptKind k;
+    int r = opt_lookup(level, name, host_level, host_name, &k);
+    if (r) return r;
+    return *host_name == SNX_NET_NOOPT || *host_level < 0 ? -SNX_ENOPROTOOPT : 0;
 }
 int snx_net_sockopt_kept(int level, int name) {
     int hl, hn;
@@ -1053,7 +1091,7 @@ int snx_net_poll(SnxPollEntry* e, size_t count, int timeout_ms) {
     int r = snx_net_init();
     if (r) return r;
     HostPollFd stack[64];
-    HostPollFd* f = count + 1 <= 64 ? stack : malloc((count + 1) * sizeof *f);
+    HostPollFd* f = count + 2 <= 64 ? stack : malloc((count + 2) * sizeof *f);
     size_t* idx = malloc((count + 1) * sizeof *idx);
     if (!f || !idx) {
         if (f != stack) free(f);
@@ -1065,7 +1103,7 @@ int snx_net_poll(SnxPollEntry* e, size_t count, int timeout_ms) {
     for (size_t i = 0; i < count; i++) {
         e[i].revents = 0;
         SnxHostFd fd = SNX_BADFD;
-        short hev = poll_to_host(e[i].events);
+        short hev = snx_net_poll_to_host(e[i].events);
         if (e[i].socket) {
             SnxSocket* s = e[i].socket;
             if (s->ops->poll_ready) e[i].revents = s->ops->poll_ready(s, e[i].events, &hev);
@@ -1088,6 +1126,11 @@ int snx_net_poll(SnxPollEntry* e, size_t count, int timeout_ms) {
         f[n].fd = g_cancel[0];
         f[n++].events = POLLIN;
     }
+    if (t_net.wake) {
+        f[n] = (HostPollFd){0};
+        f[n].fd = t_net.wake->fd[0];
+        f[n++].events = POLLIN;
+    }
     int64_t deadline = timeout_ms > 0 ? snx_net_now_us() + (int64_t)timeout_ms * 1000 : 0;
     for (;;) {
         int ms = ready || !timeout_ms ? 0 : timeout_ms < 0 ? -1 : ms_left(deadline);
@@ -1100,13 +1143,15 @@ int snx_net_poll(SnxPollEntry* e, size_t count, int timeout_ms) {
         }
         int hits = 0;
         for (size_t j = 0; j < cancel; j++)
-            if (f[j].revents) e[idx[j]].revents |= poll_from_host(f[j].revents);
+            if (f[j].revents) e[idx[j]].revents |= snx_net_poll_from_host(f[j].revents);
         for (size_t i = 0; i < count; i++) hits += e[i].revents != 0;
         if (hits) {
             r = hits;
             break;
         }
-        if (cancel < n && f[cancel].revents) {
+        int stopped = 0;
+        for (size_t j = cancel; j < n; j++) stopped |= f[j].revents != 0;
+        if (stopped) {
             r = -SNX_EINTR;
             break;
         }

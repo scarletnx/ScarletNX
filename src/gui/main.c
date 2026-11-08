@@ -17,6 +17,7 @@
 #include "common/utilities/state_header.h"
 #include "common/utilities/demangle.h"
 #include "common/utilities/logscan.h"
+#include "common/utilities/run_mark.h"
 #include "gui/aot.h"
 #include "gui/browser.h"
 #include "gui/editor.h"
@@ -33,6 +34,7 @@
 #include "gui/wide.h"
 #include "gui/model.h"
 #include "gui/place.h"
+#include "gui/probe.h"
 #include "gui/queue.h"
 #include "gui/ui.h" /* generated from ui.txt by tools/uigen */
 #include "gui/gui_process.h"
@@ -125,7 +127,16 @@ typedef enum {
     GUI_CHOICES_PICKS
 } GuiChoicesOf;
 /* whose few choices the picks box shows (picks_open) */
-typedef enum { GUI_PICKS_SHARE, GUI_PICKS_FOLDER, GUI_PICKS_DRIVER, GUI_PICKS_ASSET, GUI_PICKS_THEME } GuiPicksOf;
+typedef enum {
+    GUI_PICKS_SHARE,
+    GUI_PICKS_FOLDER,
+    GUI_PICKS_DRIVER,
+    GUI_PICKS_ASSET,
+    GUI_PICKS_THEME,
+    GUI_PICKS_GAME
+} GuiPicksOf;
+/* a finger held this long on a game of Games without moving opens its box (game_box_open), as a right click does */
+#define GUI_HOLD_MS     500
 #define GUI_THEME_PICKS 64 /* the themes the box of themes lists at most, built-ins first */
 /* the lists whose first row App's firsts keeps between frames: Choices' a GuiChoicesOf each, then the others */
 enum {
@@ -231,13 +242,14 @@ typedef struct {
 } GuiDumpIcons;
 /* the App screen's values, as its rows show them, and Folders' (what each row's folder is, past its path) */
 typedef struct {
-    char theme[64], text[64], language[64], animations[16], side[16], background[16], places[48], moves[32];
+    char theme[64], text[64], language[64], animations[16], side[16], background[48], places[48], moves[32];
     char drivers[64], freedreno[32];
     char folder[GUI_FOLDER_ROWS][64];
 } GuiAppForm;
 /* GPU Drivers' values: each row's mark, (*) on the pick */
 #define GUI_DRIVERS_SHOWN 64 /* the packages the page lists; its note says how many more there are */
-#define GUI_DRIVER_ROWS   (GUI_DRIVERS_SHOWN + 4) /* Global, System driver, the packages, Download Driver, Add Driver */
+/* Global, System driver, the packages, Download Driver, Add Driver, then edenprobe's Mode, Run, Continue, Clear */
+#define GUI_DRIVER_ROWS   (GUI_DRIVERS_SHOWN + 8)
 typedef struct {
     char value[GUI_DRIVER_ROWS][8];
 } GuiDriversForm;
@@ -349,6 +361,7 @@ typedef struct App {
     bool recent_unsaved;        /* the list could not be written the last time it changed: the message says so */
     Uint64 clock;               /* fixed time for tests; 0 is the real clock */
     Uint64 fade_ms, leaving_ms; /* a screen fading in from black since; the run fading out since */
+    Uint64 run_started_ms;      /* the menu's run started, for its end's line in the log (run_said) */
     Uint64 entering_ms;         /* the menu fading out since, before a run fades in */
     char* self;    /* the program that runs Switch inputs: the runtime the menu is part of, NULL to look for one */
     char* drivers; /* the folder the other drivers are looked for in first */
@@ -406,12 +419,17 @@ typedef struct App {
     char* job_log;      /* where the running one's output goes, beside run_log; NULL keeps none */
     GuiUsage job_usage; /* its tree alone */
     bool job_aborting;
-    bool job_low;      /* its priority lowered: Background recompile Gentle, or a game playing */
+    bool job_low;      /* its priority lowered: Background recompile Gentle, Auto on battery, or a game playing */
     bool job_kept_low; /* the system refused to raise it again: low until it ends, job_said says why */
     char job_said[160];
     int job_threads;        /* the threads it was started with: 0 for the driver's own count (the AOT threads') */
     int queue_focus;        /* the Compile tab's row, a job of the queue */
-    bool background_gentle; /* app.ini's recompile_background = gentle: every recompile of the queue is */
+    int background_mode; /* app.ini's background_recompile: GUI_BACKGROUND_AUTO (Gentle on battery), FULL or GENTLE */
+    /* the host on its battery, as SDL said it at power_ms (asked again 5 s on, not each frame); power_test, a test's: 1
+       on its battery, -1 on its charger, 0 as SDL says */
+    bool power_battery;
+    Uint64 power_ms;
+    int power_test;
     /* the taskbar's progress as SDL was last given it, the value in percent: none until a recompile runs. What SDL
        said when it could not be shown, "" when it was */
     int taskbar_state, taskbar_value;
@@ -550,7 +568,8 @@ typedef struct App {
     bool folders_from_games;   /* Folders goes back to Games, whose P opened it */
     bool folders_from_menu;    /* and to the menu, whose Folders opened it */
     int half;                  /* the letters in halves of a cell while text_half has them so, else 0: the scale's */
-    bool help_shown;           /* F1's box over the screen: every key it has (screen_said) */
+    bool help_shown;           /* F1's box over the screen: every key it has (screen_keys), a row each */
+    int help_top;              /* its first row shown, where Up/Down and the wheel put it while some do not fit */
     SnxPadScreen pad;          /* the button map's, on the row gamepad_map, A and B as gamepad_swap_ab says */
     SnxPadDrawing pad_drawing; /* as last drawn: what a click or a tap lands on */
     SDL_Gamepad* gamepad;      /* the pad it shows, the first one plugged in, while it is open */
@@ -590,9 +609,17 @@ typedef struct App {
     char drivers_label[GUI_DRIVER_ROWS][300];
     char drivers_about[GUI_DRIVER_ROWS][700];
     int drivers_base;     /* the first package's row */
+    int drivers_tail;     /* Download Driver's row: Add Driver's next, then the launcher's edenprobe Mode and Run */
+    int drivers_continue, drivers_clear; /* Continue's and Clear Crash List's rows, -1 when not shown */
     int driver_off;       /* the package GUI_ASK_DRIVER asks about, its index in drivers */
     Uint32 driver_picked; /* Add Driver's picker's answer */
     SDL_DialogFileFilter driver_filter;
+    /* Run edenprobe (gui/probe.h): edenprobe Mode Full (app.ini's probe_mode), the probe's folder, the launch
+       that plays now (0: none) and the cases the one before ended with */
+    bool probe_full;
+    char* probe_folder;
+    int probe_launch, probe_cases;
+    int probe_row;           /* GPU Drivers' row it was started from, the page shown again as it ends; -1 for none */
     char vk_system[300];     /* the system's Vulkan driver as System driver's row says it, asked once */
     char addons_driver[400]; /* the game box's GPU Driver row: the game's pick, or Global and the launcher's */
     SnxFreedrenoVar fd_vars[SNX_FREEDRENO_MAX]; /* Freedreno Settings' variables as the page edits them */
@@ -627,6 +654,7 @@ typedef struct App {
     char* games_key;     /* [folders] games = as app.ini had it, recompiled = before it was named so: written again */
     char* text_size_key; /* [app] text_size = as app.ini had it, ui_scale = before it was named so: written again */
     char* scale_gone;    /* [app] ui_scale = or text_size = Auto or a part of it, "ui_scale = auto": written again */
+    char* background_key; /* [app] recompile_background = as app.ini had it: written again as background_recompile */
     bool scale_new;      /* no UI scale in app.ini as the start read it: the start's, written by setup_start */
     GuiCleaned cleaned;  /* what it did, in a box over the screen while cleaned_shown, until a key closes it */
     bool cleaned_shown;
@@ -701,6 +729,11 @@ typedef struct App {
     int pick_row; /* the Folders row the box is of */
     /* the box of themes (themes_open): each theme's name in app->themes' order, and the one shown as it opened */
     const char* theme_picks[GUI_THEME_PICKS + 1];
+    const char* game_picks[6]; /* the box of the game in focus on Games (game_box_open): its actions */
+    /* a finger down on Games: when, 0 for none, and whether it was held long enough to open the game's box, which its
+       lift then does not tap */
+    Uint64 hold_ms;
+    bool hold_fired;
     char theme_names[GUI_THEME_PICKS][64];
     char theme_was[64], theme_was_name[64];
     bool (*open_url)(const char* url); /* SDL_OpenURL, which a test takes the place of (show_folder) */
@@ -766,6 +799,7 @@ typedef char gui_entries_in_order[GUI_ENTRY(GUI_LINUX) == UI_MENU_ENTRIES_LOAD_L
                                           GUI_ENTRY(GUI_3DS) == UI_MENU_ENTRIES_LOAD_3DS_GAME &&
                                           GUI_ENTRY(GUI_VITA) == UI_MENU_ENTRIES_LOAD_VITA_VPK &&
                                           GUI_ENTRY(GUI_GBA) == UI_MENU_ENTRIES_LOAD_GBA_ROM &&
+                                          GUI_ENTRY(GUI_ANDROID) == UI_MENU_ENTRIES_LOAD_ANDROID_APK_XAPK &&
                                           GUI_ENTRY(GUI_KEYS) == UI_MENU_ENTRIES_INSTALL_KEYS &&
                                           GUI_ENTRY(GUI_SETTINGS) == UI_MENU_ENTRIES_SETTINGS &&
                                           GUI_ENTRY(GUI_LOG) == UI_MENU_ENTRIES_SHARE_LOG &&
@@ -872,8 +906,8 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_QUEUE_FAILED SNX_TR_NOOP("Back: to Games")
 #else
 #define SAY_MENU         SNX_TR_KEYS("Arrows/mouse: move. Space/Enter/click: select.")
-#define SAY_GAMES        SNX_TR_KEYS("Up/Down: select. Enter/Space: open. Left/Right/PgUp/PgDown: scroll. F5: refresh.")
-#define SAY_GAMES_GRID   SNX_TR_KEYS("Arrows: select. Enter/Space: open. PgUp/PgDown: scroll. F5: refresh.")
+#define SAY_GAMES        SNX_TR_KEYS("Up/Down: move. Enter/Space: open. Left/Right/PgUp/PgDn: scroll. F5: refresh.")
+#define SAY_GAMES_GRID   SNX_TR_KEYS("Arrows: move. Enter/Space: open. PgUp/PgDn: scroll. F5: refresh.")
 /* Games' focused row, each when it can be done there (games_said) */
 #define SAY_GAMES_PLAY   SNX_TR_KEYS("L: play.")
 #define SAY_GAMES_R      SNX_TR_KEYS("R: recompile.")
@@ -919,8 +953,8 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #endif
 /* and what they say while a pad drives the menu (pad_menu.h's keys), on every system: its face's letters as an Xbox
    pad's and a Switch one's name them, a PlayStation pad's shapes in their place (gui_pad_keys_named) */
-#define SAY_PAD_MENU             SNX_TR_KEYS("D-pad: move. A: select. Start: refresh. B: back.")
-#define SAY_PAD_GAMES            SNX_TR_KEYS("D-pad: select. A: open. LT/RT: scroll. Start: refresh. B: back.")
+#define SAY_PAD_MENU             SNX_TR_KEYS("D-pad: move. A: select. Start: refresh. B: exit.")
+#define SAY_PAD_GAMES            SNX_TR_KEYS("D-pad: move. A: open. LT/RT: scroll. Start: refresh. B: back.")
 #define SAY_PAD_GAMES_PLAY       SNX_TR_KEYS("Right stick: play.")
 #define SAY_PAD_GAMES_R          SNX_TR_KEYS("Y: recompile.")
 #define SAY_PAD_GAMES_M          SNX_TR_KEYS("L3: mods.")
@@ -1338,9 +1372,22 @@ static const char* const place_labels[GUI_PLACES] = {SNX_TR_NOOP("Data"), SNX_TR
 /* side_box's words in app.ini, GuiSide's order, and as Settings > App shows them */
 static const char* const side_words[] = {"auto", "on", "off"};
 static const char* const side_names[] = {SNX_TR_NOOP("Auto"), SNX_TR_NOOP("On"), SNX_TR_NOOP("Off")};
-/* recompile_background's, full its default: the queue's recompiles at full speed, or gentle (job_gentle) */
-static const char* const background_words[] = {"full", "gentle"};
-static const char* const background_names[] = {SNX_TR_NOOP("Full"), SNX_TR_NOOP("Gentle")};
+/* background_recompile's, auto its default: the queue's recompiles gentle on battery and at full speed on the charger,
+   always at full speed, or always gentle (job_gentle) */
+enum { GUI_BACKGROUND_AUTO, GUI_BACKGROUND_FULL, GUI_BACKGROUND_GENTLE };
+static const char* const background_words[] = {"auto", "full", "gentle"};
+static const char* const background_names[] = {SNX_TR_NOOP("Auto"), SNX_TR_NOOP("Full"), SNX_TR_NOOP("Gentle")};
+/* a word of background_words, its index; -1 for none */
+static int background_word(const char* value) {
+    for (int w = 0; w < 3; ++w)
+        if (!strcmp(value, background_words[w])) return w;
+    return -1;
+}
+/* recompile_background's word, which background_recompile replaced: full, the default every app.ini wrote, is Auto;
+   gentle is Gentle; -1 for another */
+static int background_old(const char* value) {
+    return !strcmp(value, "full") ? GUI_BACKGROUND_AUTO : !strcmp(value, "gentle") ? GUI_BACKGROUND_GENTLE : -1;
+}
 /* the UI scales older versions had besides 1 to 4, as their app.ini named them, Auto and its parts: read as the
    number a start takes on that screen, said once (docs/DEPRECATIONS.md) */
 static const char* const scale_words_gone[] = {"auto", "0.25", "0.5", "0.75"};
@@ -1392,7 +1439,7 @@ static void games_defaults(App* app, bool ios) {
 /* Settings > App's picks and Games' options written to app_file: 0, else nonzero, said by the caller */
 static int app_write(App* app) {
     char *text, *dir, *staged;
-    size_t size = 256 + 32 * GUI_OPTIONS + sizeof app->gpu_driver + sizeof app->freedreno + 40;
+    size_t size = 256 + 32 * GUI_OPTIONS + sizeof app->gpu_driver + sizeof app->freedreno + 40 + 32;
     int n, failed, i;
     if (!app->app_file || app->look_only) return 0;
     for (i = 0; i < GUI_PLACES; ++i) size += 16 + (app->place[i] ? strlen(app->place[i]) : 0);
@@ -1404,7 +1451,7 @@ static int app_write(App* app) {
                   app->language ? snx_gui_languages[app->language - 1].code : "auto");
     n += snprintf(text + n, size - (size_t)n, "animations = %d\n", !app->animations_off);
     n += snprintf(text + n, size - (size_t)n, "side_box = %s\n", side_words[app->side_box]);
-    n += snprintf(text + n, size - (size_t)n, "recompile_background = %s\n", background_words[app->background_gentle]);
+    n += snprintf(text + n, size - (size_t)n, "background_recompile = %s\n", background_words[app->background_mode]);
     n += snprintf(text + n, size - (size_t)n, "dumps_subfolders = %s\n", app->dumps_shallow ? "off" : "on");
     n += snprintf(text + n, size - (size_t)n, "dumps_main = %s\n", app->dumps_off ? "off" : "on");
     n += snprintf(text + n, size - (size_t)n, "recompiled_main = %s\n", app->recompiled_off ? "off" : "on");
@@ -1414,6 +1461,7 @@ static int app_write(App* app) {
     for (i = 0; i < GUI_OPTIONS; ++i)
         n += snprintf(text + n, size - (size_t)n, "%s = %s\n", option_keys[i].key,
                       option_keys[i].words[app->options[i]]);
+    n += snprintf(text + n, size - (size_t)n, "probe_mode = %s\n", app->probe_full ? "full" : "quick");
     /* Folders' section once one is picked; an empty key is the default */
     for (i = 0; i < GUI_PLACES && !app->place[i]; ++i) {}
     if (i < GUI_PLACES) {
@@ -1478,8 +1526,10 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
     const char* const* dirs = (const char* const*)app->themes_dirs;
     int scale = app->menu.text_size, language = app->language, n = 0, count = 0, moved = 0;
     int options[GUI_OPTIONS];
-    bool still = app->animations_off, gentle = app->background_gentle, kept, scale_read = false;
+    bool still = app->animations_off, kept_new = false, scale_read = false;
+    int background = app->background_mode, kept, old_background = -1;
     bool shallow = app->dumps_shallow, main_off = app->dumps_off, games_off = app->recompiled_off;
+    bool full = app->probe_full;
     int side = app->side_box;
     char driver[sizeof app->gpu_driver], freedreno[sizeof app->freedreno];
     SnxIni ini;
@@ -1496,12 +1546,17 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
     while (snx_ini_next(&ini, &key, &value)) {
         int option = strcmp(ini.section, "app") ? -1 : option_of(key);
         if (option >= 0 && option_word(option, value) >= 0) options[option] = option_word(option, value);
-        if (!strcmp(ini.section, "app") && !strcmp(key, "recompile_background") &&
-            (!strcmp(value, "full") || !strcmp(value, "gentle")))
-            gentle = !strcmp(value, "gentle");
+        if (!strcmp(ini.section, "app") && !strcmp(key, "background_recompile") && background_word(value) >= 0) {
+            background = background_word(value);
+            kept_new = true;
+        }
+        if (!strcmp(ini.section, "app") && !strcmp(key, "recompile_background") && background_old(value) >= 0)
+            old_background = background_old(value);
     }
     free(copy);
-    kept = gentle; /* what a word it does not know leaves in use */
+    /* recompile_background, an older version's, while background_recompile has no word: as it maps, written again */
+    if (!kept_new && old_background >= 0) background = old_background;
+    kept = background; /* what a word it does not know leaves in use */
     snx_ini_start(&ini, text);
     while (snx_ini_next(&ini, &key, &value)) {
         char* end = NULL;
@@ -1553,8 +1608,16 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
                 side = w;
                 continue;
             }
+        } else if (!strcmp(ini.section, "app") && !strcmp(key, "background_recompile")) {
+            if (background_word(value) >= 0) continue; /* taken in the first read */
         } else if (!strcmp(ini.section, "app") && !strcmp(key, "recompile_background")) {
-            if (!strcmp(value, "full") || !strcmp(value, "gentle")) continue; /* taken in the first read */
+            if (background_old(value) >= 0) {
+                if (apply && !kept_new) {
+                    free(app->background_key);
+                    app->background_key = snx_strdup(value);
+                }
+                continue; /* taken in the first read */
+            }
         } else if (!strcmp(ini.section, "app") && !strcmp(key, "animations")) {
             if (!strcmp(value, "0") || !strcmp(value, "1")) {
                 still = !strcmp(value, "0");
@@ -1568,6 +1631,11 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
         } else if (!strcmp(ini.section, "app") && !strcmp(key, "dumps_main")) {
             if (!strcmp(value, "on") || !strcmp(value, "off")) {
                 main_off = !strcmp(value, "off");
+                continue;
+            }
+        } else if (!strcmp(ini.section, "app") && !strcmp(key, "probe_mode")) {
+            if (!strcmp(value, "quick") || !strcmp(value, "full")) {
+                full = !strcmp(value, "full");
                 continue;
             }
         } else if (!strcmp(ini.section, "app") && !strcmp(key, "recompiled_main")) {
@@ -1606,12 +1674,15 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
         if (n < (int)size && option >= 0)
             n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"),
                           option_keys[option].words[options[option]]);
-        else if (n < (int)size && !strcmp(ini.section, "app") && !strcmp(key, "recompile_background"))
+        else if (n < (int)size && !strcmp(ini.section, "app") &&
+                 (!strcmp(key, "background_recompile") || !strcmp(key, "recompile_background")))
             n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"), background_words[kept]);
         else if (n < (int)size && !strcmp(ini.section, "app") && !strcmp(key, "dumps_subfolders"))
             n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"), shallow ? "off" : "on");
         else if (n < (int)size && !strcmp(ini.section, "app") && !strcmp(key, "dumps_main"))
             n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"), main_off ? "off" : "on");
+        else if (n < (int)size && !strcmp(ini.section, "app") && !strcmp(key, "probe_mode"))
+            n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"), full ? "full" : "quick");
         else if (n < (int)size && !strcmp(ini.section, "app") && !strcmp(key, "recompiled_main"))
             n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"), games_off ? "off" : "on");
         else if (n < (int)size && !strcmp(ini.section, "app") && !strcmp(key, "gpu_driver"))
@@ -1635,9 +1706,10 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
     if (apply) app->dumps_shallow = shallow;
     if (apply) app->dumps_off = main_off;
     if (apply) app->recompiled_off = games_off;
+    if (apply) app->probe_full = full;
     if (apply) snprintf(app->gpu_driver, sizeof app->gpu_driver, "%s", driver);
     if (apply) snprintf(app->freedreno, sizeof app->freedreno, "%s", freedreno);
-    if (apply) app->background_gentle = gentle;
+    if (apply) app->background_mode = background;
     if (apply && side != app->side_box) {
         app->side_box = side;
         layout(app);
@@ -1678,9 +1750,10 @@ static void app_load(App* app) {
         m = strlen(app->message);
         snprintf(app->message + m, sizeof app->message - m, snx_tr("Not used from %s: %s"), app->app_file, bad);
     }
-    /* [folders] games = and [app] text_size =, the names an older version wrote, and Auto or a part of it as UI scale:
-       written again as recompiled =, ui_scale = and the number, each said once */
-    if (app->games_key || app->text_size_key || app->scale_gone) {
+    /* [folders] games =, [app] text_size = and recompile_background =, the names an older version wrote, and Auto or a
+       part of it as UI scale: written again as recompiled =, ui_scale =, background_recompile = and the number, each
+       said once */
+    if (app->games_key || app->text_size_key || app->scale_gone || app->background_key) {
         char said[sizeof app->message];
         int failed;
         snprintf(said, sizeof said, "%s", app->message);
@@ -1706,7 +1779,17 @@ static void app_load(App* app) {
             snprintf(said + m, sizeof said - m, snx_tr("%s: %s is no longer a UI scale: ui_scale = %d now"),
                      app->app_file, app->scale_gone, app->menu.text_size);
         }
+        if (!failed && app->background_key) {
+            size_t m = strlen(said);
+            snprintf(said + m, sizeof said - m, "%s", m ? " " : "");
+            m = strlen(said);
+            snprintf(said + m, sizeof said - m,
+                     snx_tr("%s: recompile_background = %s is now background_recompile = %s"), app->app_file,
+                     app->background_key, background_words[app->background_mode]);
+        }
         if (!failed) snprintf(app->message, sizeof app->message, "%s", said);
+        free(app->background_key);
+        app->background_key = NULL;
         free(app->games_key);
         app->games_key = NULL;
         free(app->text_size_key);
@@ -1733,9 +1816,12 @@ static void recent_note(App* app) {
         memmove(at, at + cut, strlen(at + cut) + 1);
     }
 }
-/* a recent game Games shows: a game made, or a Linux program, which runs as it is. A dump not made yet stays in the
-   list, so that its game takes its place once made (recent_as_games), but is not shown: opening it would recompile it */
-static bool recent_game(const GuiRecentGame* r) { return r->prepared || r->driver == GUI_LINUX; }
+/* a load whose file runs as it is, with no game made of it: a Linux program, an Android app */
+static bool runs_as_is(int driver) { return driver == GUI_LINUX || driver == GUI_ANDROID; }
+/* a recent game Games shows: a game made, or a Linux program or an Android app, which runs as it is. A dump not made
+   yet stays in the list, so that its game takes its place once made (recent_as_games), but is not shown: opening it
+   would recompile it */
+static bool recent_game(const GuiRecentGame* r) { return r->prepared || runs_as_is(r->driver); }
 static int recent_games(const App* app) {
     int n = 0;
     for (int i = 0; i < app->recent.count; ++i) n += recent_game(&app->recent.game[i]);
@@ -1829,8 +1915,18 @@ static void games_place(App* app, GuiPlace* p) {
     place_screen(app, p, shown_keys(app, keys, sizeof keys),
                  GUI_SHOWS_STATUS | GUI_SHOWS_TABS | GUI_SHOWS_SIDE | (games_grid(app) ? GUI_SHOWS_WIDE : 0));
 }
-/* the list's entries before the page's games: "Recent Games" and the recent rows, none without recent games */
-static int games_lead(const App* app) { return app->browser.head ? (int)app->browser.head + 1 : 0; }
+/* the heading over the page's games while Recent Games shows rows above them and the games are one group alone, which
+   gui_games_group heads only beside the other: that group's own, Recompiled or Dumps, so that its rows read apart
+   from the recent ones. NULL when there is none to put there (the list is one page: its first entry is the page's) */
+static const char* games_lone_heading(const App* app) {
+    if (!app->browser.head || !app->games.count || gui_games_heading(&app->games, 0)) return NULL;
+    return gui_games_dumps_group(&app->games, 0) ? snx_tr("Dumps") : snx_tr("Recompiled");
+}
+/* the list's entries before the page's games: "Recent Games", the recent rows and the page's lone heading
+   (games_lone_heading), none without recent games */
+static int games_lead(const App* app) {
+    return app->browser.head ? (int)app->browser.head + 1 + (games_lone_heading(app) != NULL) : 0;
+}
 /* one page of all the games, the list's and the grid's, which they scroll: the list by pixels (games_y), the grid by
    its lines */
 static size_t games_page(App* app) { return app->games.count ? app->games.count : 1; }
@@ -2317,7 +2413,8 @@ static const char* ask_question(App* app) {
         case GUI_ASK_MADE:
         case GUI_ASK_STATE:
         case GUI_ASK_CACHE:
-        case GUI_ASK_DRIVER: return app->ask_line;
+        case GUI_ASK_DRIVER:
+        case GUI_ASK_CRASH: return app->ask_line;
         case GUI_ASK_ERROR: return app->error_line;
         case GUI_ASK_CLOSE:
             if (!app->menu.running && !app->finished) return job_leaving(app);
@@ -2743,6 +2840,7 @@ static const char* const ask_choices[][2] = {{SNX_TR_NOOP("Continue"), SNX_TR_NO
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Exit")},
                                              {SNX_TR_NOOP("Play"), SNX_TR_NOOP("Recompile")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Remove")},
+                                             {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Clear")},
                                              {SNX_TR_NOOP("OK"), NULL}};
 /* a question added to GuiAsk takes its choices here, in its place */
 typedef char snx_gui_ask_choices[SDL_arraysize(ask_choices) == GUI_ASK_ERROR + 1 ? 1 : -1];
@@ -2865,9 +2963,9 @@ static int hint_next(const char** s, char* key, char* what, size_t size);
 /* a key every screen has, which F1's box says and a foot leaves out: moving and picking, paging, the tabs, the side
    box, a pad's D-pad, A, LT/RT and LB/RB. key: an English sentence's, its words between slashes */
 static bool key_generic(const char* key) {
-    static const char* const words[] = {"Up",    "Down",  "Left",  "Right", "Arrows", "mouse",  "pad",
-                                        "Space", "Enter", "click", "PgUp",  "PgDn",   "PgDown", "Tab",
-                                        "F2",    "D-pad", "A",     "LT",    "RT",     "LB",     "RB"};
+    static const char* const words[] = {"Up",    "Down",  "Left",  "Right", "Arrows", "mouse", "pad",
+                                        "Space", "Enter", "click", "PgUp",  "PgDn",   "Tab",   "F2",
+                                        "D-pad", "A",     "LT",    "RT",    "LB",     "RB"};
     const char* at = key;
     if (!*key) return false;
     while (*at) {
@@ -2885,31 +2983,131 @@ static bool key_own(const char* part) {
     return !strcmp(part, SAY_QUEUE_TAB) || !strcmp(part, SAY_QUEUE_PLAY) || !strcmp(part, SAY_PAD_QUEUE_TAB) ||
            !strcmp(part, SAY_PAD_QUEUE_PLAY);
 }
+/* every word of key (an English sentence's, its words between slashes) one that moves the focus a row or a tile */
+static bool key_moves(const char* key) {
+    static const char* const words[] = {"Up", "Down", "Left", "Right", "Arrows", "D-pad"};
+    const char* at = key;
+    if (!*key) return false;
+    while (*at) {
+        size_t n = strcspn(at, "/"), i;
+        bool known = false;
+        for (i = 0; i < SDL_arraysize(words) && !known; ++i) known = strlen(words[i]) == n && !strncmp(words[i], at, n);
+        if (!known) return false;
+        at += n + (at[n] == '/');
+    }
+    return true;
+}
+#define GUI_HELP_ROWS 32 /* the most keys F1's box shows: every sentence of GUI_SAID_PARTS, a key or more each */
+/* the icon (icons.h) F1's box draws before a key of an English sentence, by what it does: the same verb the same icon
+   on every screen, the keyboard's, a pad's and a finger's. "select" and "choose" by keys that move the focus are moves,
+   by a key that picks a row a pointer's; a key alone ("Refresh.", a finger's word) is its own what. GUI_ICON_NONE for a
+   what the table lacks, which the test of every key sentence in po/scarletnx.pot refuses (a sentence without keys, the
+   setup's, which has no F1, aside) */
+static unsigned key_icon(const char* key, const char* what) {
+    static const struct {
+        const char* what;
+        unsigned icon;
+    } icons[] = {{"move", GUI_ICON_MOVE},
+                 {"key", GUI_ICON_MOVE},
+                 {"row", GUI_ICON_MOVE},
+                 {"setting", GUI_ICON_MOVE},
+                 {"group", GUI_ICON_MOVE},
+                 {"folder", GUI_ICON_MOVE},
+                 {"user", GUI_ICON_MOVE},
+                 {"queue", GUI_ICON_MOVE},
+                 {"scroll", GUI_ICON_MOVE},
+                 {"move, change", GUI_ICON_MOVE},
+                 {"key, change", GUI_ICON_MOVE},
+                 {"row, change", GUI_ICON_MOVE},
+                 {"setting, change", GUI_ICON_MOVE},
+                 {"row, step 1", GUI_ICON_MOVE},
+                 {"user, current user", GUI_ICON_MOVE},
+                 {"open", GUI_ICON_POINTER},
+                 {"change or open", GUI_ICON_POINTER},
+                 {"open or change", GUI_ICON_POINTER},
+                 {"open or remove", GUI_ICON_POINTER},
+                 {"use, add or remove", GUI_ICON_POINTER},
+                 {"apply, type, remove or save", GUI_ICON_POINTER},
+                 {"press", GUI_ICON_POINTER},
+                 {"change", GUI_ICON_SLIDERS_HORIZONTAL},
+                 {"step 1", GUI_ICON_SLIDERS_HORIZONTAL},
+                 {"step 16", GUI_ICON_SLIDERS_HORIZONTAL},
+                 {"play", GUI_ICON_PLAY},
+                 {"recompile", GUI_ICON_HAMMER},
+                 {"mods", GUI_ICON_PACKAGE_PLUS},
+                 {"AOT pack", GUI_ICON_PACKAGE},
+                 {"save states", GUI_ICON_SAVE},
+                 {"save", GUI_ICON_SAVE},
+                 {"refresh", GUI_ICON_REFRESH_CW},
+                 {"back", GUI_ICON_ARROW_LEFT},
+                 {"exit", GUI_ICON_LOG_OUT},
+                 {"abort", GUI_ICON_X},
+                 {"cancel", GUI_ICON_X},
+                 {"take out", GUI_ICON_X},
+                 {"OK", GUI_ICON_CHECK},
+                 {"done", GUI_ICON_CHECK},
+                 {"next", GUI_ICON_CHECK},
+                 {"default", GUI_ICON_ROTATE_CCW},
+                 {"reset", GUI_ICON_ROTATE_CCW},
+                 {"delete", GUI_ICON_TRASH},
+                 {"remove", GUI_ICON_TRASH},
+                 {"add", GUI_ICON_FOLDER_PLUS},
+                 {"edit", GUI_ICON_PENCIL},
+                 {"type", GUI_ICON_PENCIL},
+                 {"rename", GUI_ICON_PENCIL},
+                 {"paste", GUI_ICON_CLIPBOARD_PASTE},
+                 {"pick a file", GUI_ICON_KEY_ROUND},
+                 {"pick a keys file", GUI_ICON_KEY_ROUND},
+                 {"current user", GUI_ICON_USER},
+                 {"downloads, or fetch again", GUI_ICON_HARD_DRIVE_DOWNLOAD},
+                 {"games", GUI_ICON_GAMEPAD_2},
+                 {"screen", GUI_ICON_APP_WINDOW},
+                 {"side box", GUI_ICON_PANEL_RIGHT},
+                 {"folders", GUI_ICON_FOLDER},
+                 {"view", GUI_ICON_EYE},
+                 {"help", GUI_ICON_INFO}};
+    size_t i;
+    if (!*what) what = key;
+    if (!strcmp(what, "select") || !strcmp(what, "choose")) return key_moves(key) ? GUI_ICON_MOVE : GUI_ICON_POINTER;
+    for (i = 0; i < SDL_arraysize(icons); ++i)
+        if (!SDL_strcasecmp(icons[i].what, what)) return icons[i].icon;
+    return GUI_ICON_NONE;
+}
 /* parts' sentences as a translation says them, for a foot (help false): the key back first and a \x1f after it,
    which hints() puts alone at the left, then the sentences of the screen's own keys, F1's last; for F1's box (help)
-   every one. A translation has the sentences with keys of its English in their order (scripts/build-languages.py),
-   so each is known by its English's */
-static const char* keys_said(const char* const* parts, int n, bool pad, bool help, char* out, size_t size) {
+   every one, the screen's own first, then those every screen has (the key back, and key_generic's where they do no
+   thing of the screen's own), *own (when not NULL) how many of the first; with icons each one's icon (key_icon of its
+   English) in icons, max at most. A translation has the sentences with keys of its English in their order
+   (scripts/build-languages.py), so each is known by its English's */
+static const char* keys_said(const char* const* parts, int n, bool pad, bool help, char* out, size_t size,
+                             unsigned* icons, int max, int* own) {
     char back[192] = "", kept[1024] = "";
     size_t used = 0;
-    int i;
-    for (i = 0; i < n; ++i) {
-        const char *english = parts[i], *said = snx_tr(parts[i]);
-        char key[128], what[256], ekey[128], ewhat[256];
-        for (;;) {
-            const char* from = said;
-            bool found = false;
-            while (*from == ' ') ++from;
-            if (!hint_next(&said, key, what, sizeof key)) break;
-            while (key[0] && !found && hint_next(&english, ekey, ewhat, sizeof ekey)) found = ekey[0] != 0;
-            if (!help && found && !strcmp(ekey, pad ? "B" : "ESC")) {
-                snprintf(back, sizeof back, "%.*s", (int)(said - from), from);
-                continue;
+    int i, k = 0, pass;
+    for (pass = 0; pass < (help ? 2 : 1); ++pass) {
+        if (pass && own) *own = k;
+        for (i = 0; i < n; ++i) {
+            const char *english = parts[i], *said = snx_tr(parts[i]);
+            char key[128], what[256], ekey[128], ewhat[256];
+            for (;;) {
+                const char* from = said;
+                bool found = false, is_back, common;
+                while (*from == ' ') ++from;
+                if (!hint_next(&said, key, what, sizeof key)) break;
+                while (key[0] && !found && hint_next(&english, ekey, ewhat, sizeof ekey)) found = ekey[0] != 0;
+                is_back = found && !strcmp(ekey, pad ? "B" : "ESC");
+                common = is_back || (found && key_generic(ekey) && !key_own(parts[i]));
+                if (!help && is_back) {
+                    snprintf(back, sizeof back, "%.*s", (int)(said - from), from);
+                    continue;
+                }
+                if (help ? common != (pass == 1) : common) continue;
+                if (icons && k < max) icons[k] = found ? key_icon(ekey, ewhat) : GUI_ICON_NONE;
+                ++k;
+                used += (size_t)snprintf(kept + used, sizeof kept - SDL_min(used, sizeof kept), "%.*s ",
+                                         (int)(said - from), from);
+                if (used >= sizeof kept) used = sizeof kept - 1;
             }
-            if (!help && found && key_generic(ekey) && !key_own(parts[i])) continue;
-            used += (size_t)snprintf(kept + used, sizeof kept - SDL_min(used, sizeof kept), "%.*s ", (int)(said - from),
-                                     from);
-            if (used >= sizeof kept) used = sizeof kept - 1;
         }
     }
     if (help)
@@ -2918,16 +3116,18 @@ static const char* keys_said(const char* const* parts, int n, bool pad, bool hel
         snprintf(out, size, "%s\x1f%s%s", back, kept, snx_tr(pad ? SAY_PAD_HELP : SAY_HELP));
     return out;
 }
-/* the keys of the screen shown: what its foot says (help false: keys_said), or F1's box every one (help) */
+/* the keys of the screen shown: what its foot says (help false: keys_said), or F1's box every one (help), the screen's
+   own first and *own of them; with icons each one's icon in icons, max at most (keys_said) */
 static void queue_said(const App* app, bool pad, const char** parts, int* n);
 #define SAY_SIDE SNX_TR_KEYS("F2: side box.")
-static const char* screen_said(const App* app, bool help, char* out, size_t size) {
+static const char* screen_keys(const App* app, bool help, char* out, size_t size, unsigned* icons, int max, int* own) {
     const char *keys = SAY_MENU_KEYS, *parts[GUI_SAID_PARTS];
     int n = 0;
     bool pad = app->pad_driven && !(app->editing && app->form == GUI_FORM_PAD);    /* the button map's speaks of pads */
     if (!app->editing && !app->setup_on && app->menu.view == GUI_LOAD_RECOMPILE) { /* its Tab goes to Games */
         queue_said(app, pad, parts, &n);
 #ifdef SNX_TOUCH_UI
+        if (help && !pad) return keys_said(parts, n, false, true, out, size, icons, max, own);
         if (!pad) { /* a finger's: the words to tap are the foot, whole */
             size_t used = 0;
             for (int i = 0; i < n && used < size; ++i)
@@ -2986,6 +3186,7 @@ static const char* screen_said(const App* app, bool help, char* out, size_t size
         }
         if (aot_said(app)) said_add(parts, &n, SAY_GAMES_AOT);
 #ifdef SNX_TOUCH_UI
+        if (help) return keys_said(parts, n, false, true, out, size, icons, max, own);
         { /* a finger's: the words to tap are the foot, whole */
             size_t used = 0;
             int i;
@@ -2998,13 +3199,16 @@ static const char* screen_said(const App* app, bool help, char* out, size_t size
         said_add(parts, &n, SAY_TAB);
 #endif
     }
-    if (!pad) return keys_said(parts, n, false, help, out, size);
+    if (!pad) return keys_said(parts, n, false, help, out, size, icons, max, own);
     {
         char said[1024];
-        keys_said(parts, n, true, help, said, sizeof said);
+        keys_said(parts, n, true, help, said, sizeof said, icons, max, own);
         gui_pad_keys_named(said, app->pads.labels, out, size);
         return out;
     }
+}
+static const char* screen_said(const App* app, bool help, char* out, size_t size) {
+    return screen_keys(app, help, out, size, NULL, 0, NULL);
 }
 static const char* shown_keys(const App* app, char* out, size_t size) { return screen_said(app, false, out, size); }
 /* the colour picker's box, its rows and the bars of the first three, in pixels */
@@ -3410,6 +3614,80 @@ static void settings_text(const App* app, const char* key, char* out, size_t out
     value = gui_settings_value(&app->settings, key);
     snprintf(out, out_size, "%s", value ? value : "");
 }
+/* Debug's Log level at 2: the launcher logs more of what the system does to the app too, as a phone's runs have no
+   console to watch: each run's start and end (run_said); thermal and power changes on iOS, macOS and Android; the
+   document picker's steps and the app's lifecycle on the Apple apps */
+static int debug_log(const App* app) {
+    char level[16];
+    settings_text(app, "log", level, sizeof level);
+    return SDL_atoi(level) >= 2;
+}
+/* the data folder's disk, no path: "N MiB free of M MiB", or why that is unknown */
+static void disk_room(const App* app, char* out, size_t size) {
+    SnxU64 room = 0, all = 0;
+    char why[256];
+    if (!app->data_dir)
+        snprintf(out, size, "unknown, with no data folder");
+    else if (snx_disk_room(app->data_dir, &room, &all))
+        snprintf(out, size, "unknown, %s", snx_os_error(why, sizeof why));
+    else
+        snprintf(out, size, "%llu MiB free of %llu MiB", (unsigned long long)(room >> 20),
+                 (unsigned long long)(all >> 20));
+}
+/* a run's or a recompile's line in the launcher log (debug_log): what happened to it, its time once it ended
+   (started_ms, 0 for a start), and the data folder's disk then, which a recompile uses up */
+static void run_said(const App* app, const char* kind, const char* what, Uint64 started_ms) {
+    char ended[64] = {0}, disk[128];
+    if (started_ms) snprintf(ended, sizeof ended, ", after %.1f s", (double)(now_ms(app) - started_ms) / 1000);
+    disk_room(app, disk, sizeof disk);
+    gui_log("%s: %s%s; disk: %s", kind, what, ended, disk);
+#ifdef SDL_PLATFORM_IOS
+    char stats[512];
+    gui_apple_stats(stats, sizeof stats); /* the app's memory then: a recompile runs in its process */
+    gui_log("%s: %s", kind, stats);
+#endif
+}
+/* an end's what for run_said, with its status */
+static const char* run_ended(char* out, size_t size, bool aborted, int status) {
+    snprintf(out, size, "%s, status %d", aborted ? "aborted" : "ended", status);
+    return out;
+}
+#ifdef SDL_PLATFORM_APPLE
+/* the data folder's dumps/, keys/ and recompiled/ in the launcher log (debug_log): what the app finds there, its names
+   and sizes. A key file's name and size only, never what it holds */
+static void data_folders_log(const App* app) {
+    static const char* const names[] = {"dumps", "keys", "recompiled"};
+    for (size_t f = 0; app->data_dir && f < SDL_arraysize(names); ++f) {
+        char* dir = snx_path_join(app->data_dir, names[f]);
+        char** list = NULL;
+        size_t n = 0;
+        if (!dir || snx_list_dir(dir, &list, &n)) {
+            gui_log("folders: %s/ cannot be listed", names[f]);
+            free(dir);
+            continue;
+        }
+        char shown[SNX_PATH_SIZE];
+        snx_home_short(dir, shown, sizeof shown);
+        gui_log("folders: %s holds %zu", shown, n);
+        for (size_t i = 0; i < n && i < 64; ++i) { /* shortcut: 64 entries a folder, raise it when a log needs more */
+            char* path = snx_path_join(dir, list[i]);
+            if (path && snx_is_dir(path))
+                gui_log("  %s/", list[i]);
+            else
+                gui_log("  %s, %llu MiB", list[i], path ? (unsigned long long)(snx_file_size(path) >> 20) : 0ull);
+            free(path);
+        }
+        if (n > 64) gui_log("  and %zu more", n - 64);
+        snx_free_strings(list, n);
+        free(dir);
+    }
+    for (int i = 0; i < app->folder_count; ++i) {
+        char shown[SNX_PATH_SIZE];
+        snx_home_short(app->folders[i], shown, sizeof shown);
+        gui_log("folders: also listed %s", shown);
+    }
+}
+#endif
 /* Settings' user, by its uid (user_uid), as users.ini lists them: its number, 0 for a uid no user has; without one
    the deprecated user's number, else 1 */
 static int settings_user(const App* app) {
@@ -4301,11 +4579,20 @@ static void addons_checked_read(const char* folder, const char* name, const GuiG
     free(text);
     free(ini);
 }
-/* the program of the update checked among addons, absolute and owned; NULL with none checked */
+/* whether the add-on named name has a program of its own (snx_addon_own_program): a 3DS game's update has none */
+static bool own_program(const char* name) {
+    char game[17];
+    SnxU64 own = 0, id = 0;
+    snprintf(game, sizeof game, "%s", name);
+    return snx_title_parse(game, &own) && snx_addon_entry_id(own, entry_of(name), &id) &&
+           snx_addon_own_program(own, id);
+}
+/* the program of the update checked among addons, absolute and owned; NULL with none checked, or with one its game's
+   program reads (a 3DS game's) */
 static char* update_program(const GuiGames* addons, const bool* checked) {
     char* program = NULL;
     for (size_t i = 0; i < addons->count; ++i)
-        if (checked[i] && kind_of(addons->names[i]) == SNX_ADDON_UPDATE) {
+        if (checked[i] && kind_of(addons->names[i]) == SNX_ADDON_UPDATE && own_program(addons->names[i])) {
             free(program);
             program = snx_absolute(addons->paths[i]);
         }
@@ -5063,7 +5350,8 @@ static void addons_pick(App* app, int row) {
     else
         SDL_ShowOpenFileDialog(folder_picked, &app->addon_picked, app->window, &app->cheats_filter, 1, NULL, false);
 #elif defined(SDL_PLATFORM_IOS) /* nor any picker there: the document picker (dist/apple), which takes no filter */
-    opened = gui_apple_pick(app->window, folder, folder_picked, &app->addon_picked, why, sizeof why) != 0;
+    opened =
+        gui_apple_pick(app->window, folder, folder_picked, &app->addon_picked, debug_log(app), why, sizeof why) != 0;
 #else
     /* its answer comes as an event even when it cannot open, which says why */
     if (folder)
@@ -6140,8 +6428,9 @@ static const char* item_about(const App* app, int item) {
                                         SNX_TR_NOOP("Runs a Linux ARM program, 64 or 32-bit"),
                                         SNX_TR_NOOP("Recompiles a 3DS game, then runs it"),
                                         SNX_TR_NOOP("Recompiles a PS Vita homebrew .vpk, then runs it"),
-                                        SNX_TR_NOOP("Runs a GBA ROM on the emulated AGB board")};
-    if (item >= GUI_SWITCH && item <= GUI_GBA) return snx_tr(loads[item - GUI_SWITCH]);
+                                        SNX_TR_NOOP("Runs a GBA ROM on the emulated AGB board"),
+                                        SNX_TR_NOOP("Runs an Android app's .apk, .xapk or .apks")};
+    if (item >= GUI_SWITCH && item <= GUI_ANDROID) return snx_tr(loads[item - GUI_SWITCH]);
     if (item == GUI_KEYS) return snx_tr("Installs prod.keys, which games are extracted with");
     if (item == GUI_EXIT) return snx_tr("Closes ScarletNX");
     {
@@ -6201,7 +6490,7 @@ unsigned ui_menu_entries_attr_cb(App* app, size_t row) {
         free(in_use);
     }
     if (row == GUI_LOG && app->log_due) attr |= UI_ATTR_FAILURE | UI_ATTR_BLINK;
-    if (row <= GUI_GBA && (loads_off(app) >> row & 1u)) attr |= UI_ATTR_OFF;
+    if (row <= GUI_ANDROID && (loads_off(app) >> row & 1u)) attr |= UI_ATTR_OFF;
     return attr;
 }
 static void draw_menu(App* app) {
@@ -6232,7 +6521,7 @@ static size_t games_rows(const App* app) { return (size_t)games_lead(app) + gui_
 /* whether Rows' row is a label, which the grid puts on a line of its own: "Recent Games", a group's heading */
 static bool games_row_label(const App* app, size_t row) {
     size_t lead = (size_t)games_lead(app);
-    if (row < lead) return row == 0;
+    if (row < lead) return row == 0 || (row + 1 == lead && games_lone_heading(app));
     return gui_games_heading(&app->games, app->browser.page * app->browser.page_size + row - lead);
 }
 /* the grid's flow over its rows from the first, as tall as they take: where each goes, its line and its column */
@@ -6513,8 +6802,8 @@ static void games_finger(App* app, float x, float y, int phase) {
 static bool box_shown(App* app);
 static void game_label(const App* app, const GuiGames* games, size_t i, char* out, size_t size);
 static void menu_key(App* app, GuiKey key);
-/* Rows' row i as the browser counts it (0 is "Recent Games" over the recent rows): a recent row, else a game of the
-   page */
+/* Rows' row i as the browser counts it (0 is "Recent Games" over the recent rows, and a lone heading follows them): a
+   recent row, else a game of the page */
 static size_t games_selected(const App* app, size_t row) {
     size_t lead = (size_t)games_lead(app);
     return row < lead ? row - 1 : app->browser.head + row - lead;
@@ -6528,6 +6817,11 @@ bool ui_games_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info
     start = app->browser.page * app->browser.page_size;
     if (row == 0 && lead) {
         info->label = snx_tr("Recent Games");
+        info->attr = UI_ATTR_LABEL;
+        return true;
+    }
+    if (row + 1 == lead && games_lone_heading(app)) { /* the games' group under the recent rows */
+        info->label = games_lone_heading(app);
         info->attr = UI_ATTR_LABEL;
         return true;
     }
@@ -6562,9 +6856,9 @@ bool ui_games_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info
     if (i + 1 == items && app->browser.page + 1 < gui_browser_pages(&app->browser)) info->attr |= UI_ATTR_MORE_DOWN;
     return true;
 }
-/* a row hit: the focus on it, and a click opens it; "Recent Games" is no row to take */
+/* a row hit: the focus on it, and a click opens it; "Recent Games" and the heading under its rows are no rows to take */
 void ui_games_rows_row_action_cb(App* app, size_t row, uint32_t hit) {
-    if (row == 0 && games_lead(app)) return;
+    if (row < (size_t)games_lead(app) && games_row_label(app, row)) return;
     app->browser.selected = games_selected(app, row);
     if (hit & UI_HIT_CLICK) menu_key(app, GUI_SELECT);
 }
@@ -6578,8 +6872,10 @@ void ui_games_grid_tiles_row_action_cb(App* app, size_t row, uint32_t hit) {
 /* the focused row of Games: what it is, about it, and a line more for a recent game's or a game's kind */
 static bool game_was_old(const App* app, const char* path);
 static int row_driver(const GuiGames* games, size_t i);
-/* a 3DS game, a Vita VPK or a GBA ROM: a console's package its driver makes a game of */
-static bool package(const char* name) { return gui_is_cia(name) || gui_is_vpk(name) || gui_is_gba(name); }
+/* a 3DS game, a Vita VPK, a GBA ROM or an Android app: a package its driver makes a game of, or runs as it is */
+static bool package(const char* name) {
+    return gui_is_cia(name) || gui_is_vpk(name) || gui_is_gba(name) || gui_is_apk(name);
+}
 /* a made game's kind, by the console its folder says */
 static const char* ready_kind(int driver) {
     return driver == GUI_3DS    ? snx_tr("3DS game, ready to run")
@@ -6606,6 +6902,7 @@ static void game_kind(const App* app, const GuiGames* games, size_t i, char* kin
                  gui_is_cia(name)    ? snx_tr("3DS game, opened with scarletnx-3ds")
                  : gui_is_vpk(name)  ? snx_tr("Vita VPK, opened with scarletnx-vita")
                  : gui_is_gba(name)  ? snx_tr("GBA ROM, played with scarletnx-agb")
+                 : gui_is_apk(name)  ? snx_tr("Android app, run with scarletnx-android")
                  : gui_is_dump(name) ? snx_tr("A dump, prepared when it runs")
                                      /* Games' own rows by what list_games read, another list's from its folder */
                                      : ready_kind(games == &app->games ? app->games_drivers[i] : row_driver(games, i)));
@@ -6624,9 +6921,11 @@ static void recent_kind(const App* app, const GuiRecentGame* r, char* kind, size
             game_kind(app, &app->games, i, kind, size);
             return;
         }
-    /* shown, it is a game made or a Linux program (recent_game) */
+    /* shown, it is a game made, a Linux program or an Android app (recent_game) */
     snprintf(kind, size, "%s",
-             r->driver == GUI_LINUX ? snx_tr("Linux ARM ELF, run with scarletnx-gnuabi") : ready_kind(r->driver));
+             r->driver == GUI_LINUX     ? snx_tr("Linux ARM ELF, run with scarletnx-gnuabi")
+             : r->driver == GUI_ANDROID ? snx_tr("Android app, run with scarletnx-android")
+                                        : ready_kind(r->driver));
 }
 static const char* games_focus(App* app, const GuiGamesBoxes* g, const char** about, char* kind, size_t size) {
     size_t selected = app->browser.selected, head = app->browser.head;
@@ -7153,7 +7452,7 @@ static unsigned drivers_held(void) {
     return gui_drivers_held(SNX_GUI_PROGRAM_DRIVERS);
 #else
     unsigned held = 0;
-    for (int item = GUI_SWITCH; item <= GUI_GBA; ++item)
+    for (int item = GUI_SWITCH; item <= GUI_ANDROID; ++item)
         if (snx_menu_has_driver && snx_menu_has_driver(gui_driver_name(item))) held |= 1u << item;
     return held;
 #endif
@@ -7214,7 +7513,7 @@ static unsigned loads_off(App* app) {
     Uint64 now = SDL_GetTicks();
     if (app->loads_at && key == app->loads_key && now - app->loads_at < 1000) return app->loads_off;
     app->loads_off = 0;
-    for (int item = GUI_SWITCH; item <= GUI_GBA; ++item)
+    for (int item = GUI_SWITCH; item <= GUI_ANDROID; ++item)
         if (!driver_there(app, item)) app->loads_off |= 1u << item;
     app->loads_key = key;
     app->loads_at = SDL_max(now, 1);
@@ -7473,8 +7772,8 @@ static const GuiThemeKey app_keys[] = {
      0, 0, 0, 0, NULL},
     {"", SNX_TR_NOOP("Background recompile"), GUI_KEY_ACTION, offsetof(GuiAppForm, background),
      sizeof(((GuiAppForm*)0)->background), NULL, 0,
-     SNX_TR_NOOP("The Compile tab's: R's, B's and a game's first. Full: every core. Gentle: half of them, at a low "
-                 "priority. Either goes gently while a game plays"),
+     SNX_TR_NOOP("The Compile tab's: R's, B's and a game's first. Auto: Gentle on battery, Full on the charger. Full: "
+                 "every core. Gentle: half of them, at a low priority. Each goes gently while a game plays"),
      0, 0, 0, 0, NULL},
     {"", SNX_TR_NOOP("Theme Editor"), GUI_KEY_ACTION, 0, 0, NULL, 0,
      SNX_TR_NOOP("This theme's keys with a preview, saved as themes/<name>/theme.ini"), 0, 0, 0, 0, NULL},
@@ -7531,6 +7830,7 @@ static void size_shown(const App* app, char* out, size_t n) {
     else
         size_name(app->menu.text_size, out, n);
 }
+static bool on_battery(App* app);
 static void app_values(App* app) {
     GuiAppForm* f = &app->app_form;
     char games[4200], work[4200];
@@ -7543,7 +7843,11 @@ static void app_values(App* app) {
         snprintf(f->language, sizeof f->language, snx_tr("Auto: %s"), snx_gui_languages[snx_tr_language()].name);
     snprintf(f->animations, sizeof f->animations, "%s", app->animations_off ? snx_tr("Off") : snx_tr("On"));
     snprintf(f->side, sizeof f->side, "%s", snx_tr(side_names[app->side_box]));
-    snprintf(f->background, sizeof f->background, "%s", snx_tr(background_names[app->background_gentle]));
+    if (app->background_mode == GUI_BACKGROUND_AUTO) /* and what it is now */
+        snprintf(f->background, sizeof f->background, snx_tr("Auto: %s"),
+                 on_battery(app) ? snx_tr("Gentle, on battery") : snx_tr("Full"));
+    else
+        snprintf(f->background, sizeof f->background, "%s", snx_tr(background_names[app->background_mode]));
     moved = 0;
     for (int i = 0; i < GUI_PLACES; ++i) moved += app->place[i] != NULL;
     if (moved && app->folder_count)
@@ -7840,7 +8144,7 @@ static void folder_answer(App* app, bool taken, bool deep) {
         snprintf(app->editor.note, sizeof app->editor.note, "%s", snx_tr("Not added"));
     free(path);
 }
-/* the system's folder picker answers on its own thread, as the file picker */
+/* a system picker answers on its own thread: its choice comes back to event() as an event of the type at userdata */
 static void SDLCALL folder_picked(void* userdata, const char* const* files, int filter) {
     SDL_Event e;
     (void)filter;
@@ -7876,12 +8180,10 @@ static unsigned group_icon(const char* name) {
     static const struct {
         const char* name;
         unsigned icon;
-    } icons[] = {{"App", GUI_ICON_APP_WINDOW},  {"Launch", GUI_ICON_ROCKET},
-                 {"Game", GUI_ICON_JOYSTICK},   {"Display", GUI_ICON_MONITOR},
-                 {"Graphics", GUI_ICON_IMAGE},  {"3DS", GUI_ICON_MONITOR},
-                 {"Performance", GUI_ICON_GAUGE},
-                 {"Overlay", GUI_ICON_POINTER}, {"Controllers", GUI_ICON_GAMEPAD_2},
-                 {"Network", GUI_ICON_WIFI},    {"User", GUI_ICON_USER},
+    } icons[] = {{"App", GUI_ICON_APP_WINDOW},     {"Launch", GUI_ICON_ROCKET},   {"Game", GUI_ICON_JOYSTICK},
+                 {"Display", GUI_ICON_MONITOR},    {"Graphics", GUI_ICON_IMAGE},  {"3DS", GUI_ICON_MONITOR},
+                 {"Performance", GUI_ICON_GAUGE},  {"Overlay", GUI_ICON_POINTER}, {"Controllers", GUI_ICON_GAMEPAD_2},
+                 {"Shortcuts", GUI_ICON_KEYBOARD}, {"Network", GUI_ICON_WIFI},    {"User", GUI_ICON_USER},
                  {"Debug", GUI_ICON_BUG}};
     for (size_t i = 0; i < SDL_arraysize(icons); ++i)
         if (!strcmp(icons[i].name, name)) return icons[i].icon;
@@ -8099,19 +8401,20 @@ static int folder_entry_row(const App* app, int e, int* group) {
 /* the key Folders' focused row takes, in parts, when it does something there: a place picks another, and one picked
    goes back to its default; an Extra is taken off; Add a folder adds one; Reset to Defaults resets a place picked.
    How many (0 or 1, 2 for a place picked) */
-/* Games' focused row a game's of any console (a recent run's or a listed one's; a heading none, a Linux program none),
-   which R recompiles; *mods when it is a made Switch game, whose mods M opens */
+/* Games' focused row a game's of any console (a recent run's or a listed one's; a heading none, a Linux program or an
+   Android app none), which R recompiles; *mods when it is a made Switch game, whose mods M opens */
 static bool games_game_focus(const App* app, bool* mods) {
     size_t row = app->browser.selected, head = app->browser.head;
     size_t index = app->browser.page * app->browser.page_size + row - head;
     *mods = false;
     if (row < head && (int)row < recent_shown(app)) {
         const GuiRecentGame* r = &app->recent.game[recent_index(app, (int)row)];
-        if (r->driver == GUI_LINUX) return false;
+        if (runs_as_is(r->driver)) return false;
         *mods = r->driver == GUI_SWITCH && !gui_is_dump(r->path);
         return true;
     }
     if (row < head || index >= app->games.count || gui_games_heading(&app->games, index)) return false;
+    if (gui_is_apk(app->games.names[index])) return false;
     *mods = !gui_is_dump(app->games.names[index]) && app->games_drivers[index] == GUI_SWITCH;
     return true;
 }
@@ -8252,6 +8555,51 @@ static int places_keep(App* app, char* const* before, char* note, size_t size) {
              app->app_file);
     return 1;
 }
+/* the launcher log's folder, where its start's mark is too (run_mark.h): logs/ of iOS's Documents, which the Files app
+   shows (gui_apple_start made it), else the state folder (Folders' Logs). Owned; NULL when there is none */
+static char* log_folder(const App* app) {
+#ifdef SDL_PLATFORM_IOS
+    char *documents = SDL_GetCurrentDirectory(), *logs = documents ? snx_path_join(documents, "logs") : NULL;
+    (void)app;
+    SDL_free(documents);
+    return logs;
+#else
+    return menu_folder(app, SNX_USER_STATE, true);
+#endif
+}
+/* a start of the launcher that did not end with an exit (run_mark.h), in its log, with what the system says of it */
+static void mark_said(void* data, const SnxRunMark* mark) {
+#ifdef SDL_PLATFORM_ANDROID
+    char* cause = gui_android_exit_reason(mark->pid, mark->started);
+#elif defined(SDL_PLATFORM_IOS)
+    const char* cause = "the system ended it: a crash, its memory limit (jetsam), or a close from the app switcher";
+#else
+    const char* cause = "a crash, a kill (by the system for its memory, or by the user) or a power loss, which the "
+                        "system does not name";
+#endif
+    *(bool*)data = true;
+    if (!mark->text)
+        gui_log("last start: pid %lld, unknown whether it ended with an exit: %s", mark->pid, mark->left);
+    else
+        gui_log("last start: %s did not end with an exit: %s", mark->text[0] ? mark->text : "a mark with no text",
+                cause);
+    if (mark->text && mark->left) gui_log("last start: %s, so the next start says it again", mark->left);
+#ifdef SDL_PLATFORM_ANDROID
+    free(cause);
+#endif
+}
+/* this launcher's start's mark (run_mark.h) in its log's folder, after each start that left its own there unended is
+   said; moving it, from the folder Logs was before */
+static void mark_start(const App* app, bool moving) {
+    char *folder = log_folder(app), why[1024];
+    bool any = false;
+    snx_run_mark_end();
+    if (!folder || snx_run_mark_start(folder, mark_said, &any, why, sizeof why) < 0)
+        gui_log("start mark: %s: the next start cannot tell whether this one ended with an exit",
+                folder ? why : "no log folder");
+    if (!any && !moving) gui_log("last start: ended with an exit, or none before");
+    free(folder);
+}
 #define GUI_RUN_LOGS 8 /* launchers open at once on one Logs folder, each with run logs of its own */
 /* the run logs of the Logs folder in use, made as the menu opens it (open_files) and as Folders' Logs changes: the
    first pair no other launcher holds, last-run.log and last-recompile.log, else last-run-2.log and last-recompile-2.log
@@ -8262,6 +8610,7 @@ static void run_log_follow(App* app) {
     if (!state) return;
 #ifndef SDL_PLATFORM_IOS /* there in Documents' logs/, which the Files app shows (initialize) */
     if (!app->look_only) gui_log_folder(state);
+    if (!app->look_only && snx_run_mark_held()) mark_start(app, true); /* Logs changed: the mark goes with the log */
 #endif
     if (app->run_locked) snx_unlock_file(app->run_lock);
     app->run_locked = false;
@@ -8433,7 +8782,9 @@ static char* dump_out(const App* app, const char* file, const char* kind) {
     return out;
 }
 /* the games of recompiled/ made from a dump: each one's program, as Games lists it, and the dump its .ini's source=
-   names, else its folder's <name>.source, the link an older version made (snx_game_source) */
+   names, else its folder's <name>.source, the link an older version made (snx_game_source). Or the updates and DLCs
+   installed into those games from a package of their own: each its game's program, and the package its own .ini
+   names */
 typedef struct {
     char* program;
     char* dump;
@@ -8442,43 +8793,55 @@ typedef struct {
     MadeGame* game;
     size_t count;
 } MadeGames;
-/* the games made in dir (recompiled/ or a folder of the Library's recompiled ones), each with the dump it names */
-static void made_read_dir(MadeGames* made, const char* dir) {
-    char** names = NULL;
-    size_t count = 0, i;
-    MadeGame* grown;
-    if (!dir || snx_list_dir(dir, &names, &count) || !count) return;
-    if (!(grown = (MadeGame*)realloc(made->game, (made->count + count) * sizeof *grown))) {
-        snx_free_strings(names, count);
+/* program, owned, made from the dump name's .ini in folder names (snx_game_source), at the end of made; freed when it
+   names none */
+static void made_add(MadeGames* made, const char* folder, const char* name, char* program) {
+    int recorded = 0;
+    char* dump = snx_game_source(folder, name, &recorded);
+    if (!recorded) {
+        free(program);
+        free(dump);
         return;
     }
-    made->game = grown;
+    made->game = (MadeGame*)snx_realloc(made->game, (made->count + 1) * sizeof *made->game);
+    made->game[made->count++] = (MadeGame){program, dump};
+}
+/* the games made in dir (recompiled/ or a folder of the Library's recompiled ones), each with the dump it names; with
+   addons, the updates and DLCs of each instead, by the game's program, each with the package it names. An add-on is
+   its game's <name>_<entry> (gui_game_addons), its title ID the one the driver read from its package's content meta,
+   and its own .ini names that package (source=): a game whose .ini names no dump has them too */
+static void made_read_dir(MadeGames* made, const char* dir, bool addons) {
+    char** names = NULL;
+    size_t count = 0, i, j;
+    if (!dir || snx_list_dir(dir, &names, &count) || !count) return;
     for (i = 0; i < count; ++i) {
-        char *program = gui_folder_game(dir, names[i]), *folder, *dump;
-        int recorded = 0;
+        char *program = gui_folder_game(dir, names[i]), *folder;
+        GuiGames list = {0};
         if (!program) continue;
         folder = snx_path_join(dir, names[i]);
-        dump = snx_game_source(folder, names[i], &recorded);
-        free(folder);
-        if (!recorded) {
+        if (!addons)
+            made_add(made, folder, names[i], program);
+        else {
+            if (gui_game_addons(program, &list))
+                for (j = 0; j < list.count; ++j) made_add(made, folder, list.names[j], snx_strdup(program));
+            gui_games_free(&list);
             free(program);
-            free(dump);
-            continue;
         }
-        made->game[made->count++] = (MadeGame){program, dump};
+        free(folder);
     }
     snx_free_strings(names, count);
 }
 /* the games made in recompiled/ and in the Library's recompiled folders, the places a dump's game is made in
-   (dest_dirs): a game the driver recompiles stays where it is */
-static void made_read(const App* app, MadeGames* made) {
+   (dest_dirs): a game the driver recompiles stays where it is. With addons, their updates and DLCs (made_read_dir) */
+static void made_list(const App* app, MadeGames* made, bool addons) {
     *made = (MadeGames){0};
-    made_read_dir(made, app->games_dir);
+    made_read_dir(made, app->games_dir, addons);
     for (int i = 0; i < app->folder_count; ++i)
         if (app->folders_library[i] == GUI_LIBRARY_RECOMPILED &&
             !(app->games_dir && snx_same_file(app->folders[i], app->games_dir)))
-            made_read_dir(made, app->folders[i]);
+            made_read_dir(made, app->folders[i], addons);
 }
+static void made_read(const App* app, MadeGames* made) { made_list(app, made, false); }
 /* the program of the game made from dump, else NULL */
 #ifdef SDL_PLATFORM_IOS
 /* a file's own name, without its folder */
@@ -8589,20 +8952,26 @@ static char* addon_game(const char* path) {
 }
 /* the recent rows as Games has their games: a dump or a package made into a game of recompiled/ since runs that game's
    program from then on, whichever console's, a run of a game's update's program (Play with the update checked) is the
-   game's own row, which plays it again, and a game of a folder of its own goes by the name Games shows it by, its
-   control.nacp's */
+   game's own row, which plays it again, an update's or a DLC's package installed into a game is that game's row, and a
+   game of a folder of its own goes by the name Games shows it by, its control.nacp's */
 static void recent_as_games(App* app) {
-    MadeGames made;
-    bool changed = false;
+    MadeGames made, addons = {0};
+    bool changed = false, addons_read = false;
     int i;
     made_read(app, &made);
     for (i = app->recent.count - 1; i >= 0; --i) { /* from the oldest: an entry dropped moves none still to look at */
         const GuiRecentGame* r = &app->recent.game[i];
         char* own = r->driver == GUI_SWITCH && r->prepared ? addon_game(r->path) : NULL;
-        const char* program = own ? own : r->driver != GUI_LINUX && !r->prepared ? made_program(&made, r->path) : NULL;
+        const char* program = own ? own : !runs_as_is(r->driver) && !r->prepared ? made_program(&made, r->path) : NULL;
+        if (!program && r->driver == GUI_SWITCH && !r->prepared) { /* the games' add-ons read once, when one is asked */
+            if (!addons_read) made_list(app, &addons, true);
+            addons_read = true;
+            program = made_program(&addons, r->path);
+        }
         if (program && gui_recent_made(&app->recent, i, program)) changed = true;
         free(own);
     }
+    made_free(&addons);
     made_free(&made);
     for (i = 0; i < app->recent.count; ++i) /* one file under two spellings (/var and /private/var) is one game */
         for (int j = i + 1; j < app->recent.count;)
@@ -8671,7 +9040,7 @@ static void open_folder_picker(App* app) {
 #elif defined(SDL_PLATFORM_IOS)
     { /* nor there: the document picker (dist/apple) */
         char message[sizeof app->editor.note - 40];
-        if (gui_apple_pick(app->window, 1, folder_picked, &app->picked_folder, message, sizeof message))
+        if (gui_apple_pick(app->window, 1, folder_picked, &app->picked_folder, debug_log(app), message, sizeof message))
             ;
         else if (app->editing) {
             snprintf(app->editor.note, sizeof app->editor.note, snx_tr("The folder picker could not open: %s"),
@@ -8948,6 +9317,17 @@ static GuiThemeKey page_row(const char* label, size_t at, size_t size, const cha
     GuiThemeKey k = {"", label, GUI_KEY_ACTION, at, size, NULL, 0, about, 0, 0, 0, 0, NULL};
     return k;
 }
+/* whether the probe's last run in folder ended before its summary, Continue's about into about: its build, its cases
+   and its crash list's */
+static bool probe_unfinished(const char* folder, char* about, size_t size) {
+    GuiProbeReport r;
+    if (!gui_probe_read(folder, &r) || r.summary) return false;
+    snprintf(about, size,
+             snx_tr("Goes on with the run of edenprobe %s that ended before its summary, from its journal: cases so "
+                    "far %d, on its crash list %d"),
+             r.build[0] ? r.build : "?", r.cases, gui_probe_crashes(folder));
+    return true;
+}
 /* GPU Drivers' rows: for a game Global first, then System driver, a package each and Add Driver; the pick marked
    (*). The pick: the launcher's (app.ini's gpu_driver), or the game's .ini's gpu_driver= (none: Global). How many */
 static int drivers_fill(App* app) {
@@ -8993,6 +9373,7 @@ static int drivers_fill(App* app) {
         app->drivers_keys[r] = page_row(app->drivers_label[r], offsetof(GuiDriversForm, value) + r * sizeof f->value[0],
                                         sizeof f->value[0], app->drivers_about[r]);
     }
+    app->drivers_tail = r;
     snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("Download Driver"));
     snprintf(app->drivers_about[r], sizeof app->drivers_about[r], "%s",
              snx_tr("The releases of the driver repositories Eden lists, from GitHub: one picked is downloaded and "
@@ -9004,6 +9385,41 @@ static int drivers_fill(App* app) {
              snx_tr("A driver package's zip, a meta.json and the driver's libraries at its top as Turnip's releases "
                     "are: unpacked into gpu_drivers/ of the user's data folder"));
     app->drivers_keys[r] = page_row(app->drivers_label[r], 0, 0, app->drivers_about[r]);
+    /* the launcher's page: edenprobe Mode and Run edenprobe (gui/probe.h) */
+    if (!app->drivers_game) {
+        ++r;
+        snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("edenprobe Mode"));
+        snprintf(app->drivers_about[r], sizeof app->drivers_about[r], "%s",
+                 snx_tr("What Run edenprobe runs. Quick: processor and graphics. Full: also fs (64 MiB written once), "
+                        "video, audio, kernel and display"));
+        snprintf(f->value[r], sizeof f->value[r], "%s", app->probe_full ? snx_tr("Full") : snx_tr("Quick"));
+        app->drivers_keys[r] = page_row(app->drivers_label[r], offsetof(GuiDriversForm, value) + r * sizeof f->value[0],
+                                        sizeof f->value[0], app->drivers_about[r]);
+        ++r;
+        char* folder = app->state_dir ? snx_path_join(app->state_dir, "probe") : NULL;
+        snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("Run edenprobe"));
+        snprintf(app->drivers_about[r], sizeof app->drivers_about[r],
+                 snx_tr("edenprobe's hardware probes played as a game with this GPU driver, in a data folder of their "
+                        "own with the default settings, %s; then their counts"),
+                 folder ? folder : "?");
+        app->drivers_keys[r] = page_row(app->drivers_label[r], 0, 0, app->drivers_about[r]);
+        app->drivers_continue = app->drivers_clear = -1;
+        if (folder && probe_unfinished(folder, app->drivers_about[r + 1], sizeof app->drivers_about[0])) {
+            app->drivers_continue = ++r;
+            snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("Continue"));
+            app->drivers_keys[r] = page_row(app->drivers_label[r], 0, 0, app->drivers_about[r]);
+        }
+        if (folder && gui_probe_crashes(folder)) {
+            app->drivers_clear = ++r;
+            snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("Clear Crash List"));
+            snprintf(app->drivers_about[r], sizeof app->drivers_about[r],
+                     snx_tr("Cases on the crash list, which a run skips as crashed: %d. Cleared, the next run asks "
+                            "them again"),
+                     gui_probe_crashes(folder));
+            app->drivers_keys[r] = page_row(app->drivers_label[r], 0, 0, app->drivers_about[r]);
+        }
+        free(folder);
+    }
     free(own);
     free(ini);
     return r + 1;
@@ -9134,7 +9550,7 @@ static void driver_pick(App* app) {
         return;
     }
 #ifdef SDL_PLATFORM_IOS
-    opened = gui_apple_pick(app->window, 0, folder_picked, &app->driver_picked, why, sizeof why) != 0;
+    opened = gui_apple_pick(app->window, 0, folder_picked, &app->driver_picked, debug_log(app), why, sizeof why) != 0;
 #else
     SDL_ShowOpenFileDialog(folder_picked, &app->driver_picked, app->window, &app->driver_filter, 1, NULL, false);
 #endif
@@ -9223,12 +9639,35 @@ static void picks_open(App* app, GuiPicksOf of);
 static void themes_open(App* app);
 static void picks_key(App* app, GuiKey key);
 static void open_fetch(App* app);
+static void probe_start(App* app, bool continuing);
+static void probe_clear(App* app);
+static void probe_after(App* app);
+static void probe_back(App* app);
 static void driver_select(App* app, int r) {
-    if (r == gui_editor_rows(&app->editor) - 1)
+    if (r == app->drivers_tail + 1)
         driver_pick(app);
-    else if (r == gui_editor_rows(&app->editor) - 2)
+    else if (r == app->drivers_tail)
         open_fetch(app);
-    else if (driver_of(app, r) >= 0) {
+    else if (r == app->drivers_tail + 2) { /* edenprobe Mode: Quick and Full in turn */
+        app->probe_full = !app->probe_full;
+        if (!app_save(app))
+            snprintf(app->editor.note, sizeof app->editor.note, snx_tr("edenprobe Mode: %s"),
+                     app->probe_full ? snx_tr("Full") : snx_tr("Quick"));
+        drivers_show(app, r);
+    } else if (r == app->drivers_tail + 3)
+        probe_start(app, false);
+    else if (r == app->drivers_continue)
+        probe_start(app, true);
+    else if (r == app->drivers_clear) {
+        char* folder = app->state_dir ? snx_path_join(app->state_dir, "probe") : NULL;
+        int cases = folder ? gui_probe_crashes(folder) : 0;
+        snprintf(app->ask_line, sizeof app->ask_line,
+                 cases == 1 ? snx_tr("Clear Crash List? Its case runs again in the next run.")
+                            : snx_tr("Clear Crash List? Its %d cases run again in the next run."),
+                 cases);
+        free(folder);
+        gui_confirm_open(&app->confirm, GUI_ASK_CRASH, false);
+    } else if (driver_of(app, r) >= 0) {
         app->pick_row = r;
         picks_open(app, GUI_PICKS_DRIVER);
     } else
@@ -10139,7 +10578,7 @@ static void app_action(App* app, int row, int step) {
         app->side_box = (app->side_box + (step < 0 ? 2 : 1)) % 3;
         layout(app);
     } else if (row == GUI_APP_BACKGROUND) { /* the one running follows at once (job_priority), its threads as started */
-        app->background_gentle = !app->background_gentle;
+        app->background_mode = (app->background_mode + (step < 0 ? 2 : 1)) % 3;
     } else if (row == GUI_APP_LANGUAGE) {
         app->language = (app->language + (step < 0 ? snx_gui_language_count : 1)) % (snx_gui_language_count + 1);
         language_apply(app);
@@ -11107,9 +11546,9 @@ static unsigned form_icon(const App* app, const GuiEditor* e, int r) {
                : r == GUI_APP_RESET     ? GUI_ICON_ROTATE_CCW
                                         : GUI_ICON_NONE;
     if (e->keys == app->drivers_keys)
-        return r == gui_editor_rows(e) - 1   ? GUI_ICON_PACKAGE_PLUS
-               : r == gui_editor_rows(e) - 2 ? GUI_ICON_HARD_DRIVE_DOWNLOAD
-                                             : GUI_ICON_NONE;
+        return r == app->drivers_tail + 1 ? GUI_ICON_PACKAGE_PLUS
+               : r == app->drivers_tail   ? GUI_ICON_HARD_DRIVE_DOWNLOAD
+                                          : GUI_ICON_NONE;
     if (e->keys == app->folder_keys)
         return !k                                               ? GUI_ICON_ROTATE_CCW /* Reset to Defaults */
                : folder_row(app, r, &at, &group) == GUI_ROW_ADD ? GUI_ICON_FOLDER_PLUS
@@ -12564,25 +13003,144 @@ static void draw_closing(App* app) {
             y += wrap_in(app, text, text.x, y, line, 1, rgb(app->theme.ink)) * cell_h(app);
         }
 }
-/* F1's box over the screen: every key it has (screen_said), a row a sentence, the keys in the focus colour */
+/* ---- F1's box (a pad's Select) over the screen, as the other boxes over it: every key of the screen shown
+   (screen_keys), a row each of ui.txt's scene Help, its icon (key_icon) after the theme's marker, its keys as the foot
+   draws them and what they do two columns after the widest; the screen's own first, then under the title "Every
+   screen" those every screen has (no title where the screen has no keys of its own); the OK of scene Files under
+   them. Up/Down, PgUp/PgDn and the wheel go over the rows
+   that do not fit, help_top the first shown; another key, button or finger closes it ---- */
+#define SAY_EVERY_SCREEN SNX_TR_NOOP("Every screen")
+/* its title: a word of its own, as "Keys" is the key files' (the setup's step and its box), which a language may
+   translate as files of keys */
+#define SAY_SHORTCUTS    SNX_TR_NOOP("Shortcuts")
+typedef struct {
+    char said[1024];               /* the keys as screen_keys says them, a key and what it does at a time (hint_next) */
+    unsigned icons[GUI_HELP_ROWS]; /* each one's icon, none past GUI_HELP_ROWS */
+    int n, own, keys;              /* how many; how many of them, first, the screen's own; the widest keys' columns */
+} GuiHelpKeys;
+typedef struct {
+    GuiRect box; /* the whole box, under its head */
+    GuiRect rects[UI_HELP_ITEMS], ok[UI_FILES_ITEMS];
+    UiList lists[UI_HELP_ITEMS]; /* the rows', from help_top, none in focus */
+} GuiHelpBoxes;
+static void help_keys(const App* app, GuiHelpKeys* k) {
+    char key[128], what[256];
+    const char* at = k->said;
+    for (int i = 0; i < GUI_HELP_ROWS; ++i) k->icons[i] = GUI_ICON_NONE;
+    k->own = 0;
+    screen_keys(app, true, k->said, sizeof k->said, k->icons, GUI_HELP_ROWS, &k->own);
+    for (k->n = k->keys = 0; hint_next(&at, key, what, sizeof key); ++k->n)
+        k->keys = SDL_max(k->keys, gui_text_cols(key));
+}
+/* the title over the keys every screen has, between them and the screen's own: none without either */
+static bool help_titled(const GuiHelpKeys* k) { return k->own > 0 && k->own < k->n; }
+/* the box's rows: a key each, and the title */
+static int help_rows(const GuiHelpKeys* k) { return k->n + help_titled(k); }
+/* row's keys and what they do, and its icon; false for the title */
+static bool help_row(const GuiHelpKeys* k, int row, char* key, char* what, size_t size, unsigned* icon) {
+    const char* at = k->said;
+    int pair = row - (help_titled(k) && row > k->own);
+    if (help_titled(k) && row == k->own) return false;
+    for (int i = 0; i <= pair; ++i) hint_next(&at, key, what, size);
+    *icon = pair < GUI_HELP_ROWS ? k->icons[pair] : GUI_ICON_NONE;
+    return true;
+}
+/* the box as wide as its widest row (the marker, the icon and a column, the keys, two columns, what they do), the
+   title over the keys of every screen or its own, as tall as its rows and OK, in the middle of the screen; a window
+   too short for it shows the rows that fit from help_top, kept from going past the last */
+static void help_boxes(App* app, GuiHelpBoxes* h) {
+    GuiHelpKeys k;
+    char key[128], what[256];
+    const char* at = k.said;
+    int s = app->scale, rows, shown, ok_h, longest;
+    GuiRect area;
+    help_keys(app, &k);
+    rows = help_rows(&k);
+    longest = SDL_max(16, SDL_max(gui_text_cols(snx_tr(SAY_SHORTCUTS)), gui_text_cols(snx_tr(SAY_EVERY_SCREEN))) + 2);
+    while (hint_next(&at, key, what, sizeof key))
+        longest = SDL_max(longest, gui_text_cols(app->theme.marker) + 3 + k.keys + 2 + gui_text_cols(what) + 4);
+    ok_h = rows_h(ui_files_layout, ui_files_row, h->ok, UI_FILES_OK, s, 1);
+    area = over_rows(app, longest, rows_h(ui_help_layout, ui_help_row, h->rects, UI_HELP_ROWS, s, rows) + 6 * s + ok_h,
+                     &h->box);
+    ui_help_layout(gui_rect(area.x, area.y, area.w, SDL_max(0, area.h - 6 * s - ok_h)), s, h->rects);
+    ui_files_layout(gui_rect(area.x, area.y + area.h - ok_h, SDL_min(area.w, 26 * cell_w(app)), ok_h), s, h->ok);
+    memset(h->lists, 0, sizeof h->lists);
+    shown = (int)ui_help_shown(h->rects, s, UI_HELP_ROWS);
+    app->help_top = SDL_clamp(app->help_top, 0, SDL_max(0, rows - shown));
+    h->lists[UI_HELP_ROWS].first = (size_t)app->help_top;
+    h->lists[UI_HELP_ROWS].focus = SIZE_MAX; /* none: a key closes the box, but those that go over it */
+    h->lists[UI_HELP_ROWS].count = (size_t)rows;
+}
+/* a row of F1's box: its icon, then a blank as wide as the widest keys and two columns, where render_help draws the
+   row's keys, then what they do; or the title over the keys every screen has */
+bool ui_help_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info) {
+    GuiHelpKeys k;
+    char key[128], what[256];
+    (void)width; /* the box is as wide as its widest row; in a narrower window a row is cut, "..." at its end */
+    help_keys(app, &k);
+    if (row >= (size_t)help_rows(&k)) return false;
+    if (!help_row(&k, (int)row, key, what, sizeof key, &info->icon)) {
+        info->label = snx_tr(SAY_EVERY_SCREEN);
+        info->attr |= UI_ATTR_TITLE;
+        return true;
+    }
+    snprintf(app->row_text, sizeof app->row_text, "%*s%s", k.keys + 2, "", what);
+    info->label = app->row_text;
+    return true;
+}
+/* a click on the box closes it before a row is hit (pointer), so a row does nothing */
+void ui_help_rows_row_action_cb(App* app, size_t row, uint32_t hit) {
+    (void)app;
+    (void)row;
+    (void)hit;
+}
+/* F1's box's rows step rows on (back for a negative step), as far as the last shows */
+static void help_step(App* app, int step) {
+    GuiHelpBoxes h;
+    app->help_top = SDL_max(0, app->help_top + step);
+    help_boxes(app, &h);
+}
+/* a key that goes over F1's box's rows, Up/Down a row and PgUp/PgDn as many as show: true for those, another closing
+   the box */
+static bool help_key(App* app, SDL_Keycode code) {
+    GuiHelpBoxes h;
+    int shown;
+    help_boxes(app, &h);
+    shown = SDL_max(1, (int)ui_help_shown(h.rects, app->scale, UI_HELP_ROWS));
+    switch (code) {
+        case SDLK_UP: help_step(app, -1); return true;
+        case SDLK_DOWN: help_step(app, 1); return true;
+        case SDLK_PAGEUP: help_step(app, -shown); return true;
+        case SDLK_PAGEDOWN: help_step(app, shown); return true;
+        default: return false;
+    }
+}
+/* the box over the darkened screen, its rows, OK in focus, and each row's keys over its blank: in the focus colour, or
+   on a band of it in the page's where the theme's focus is a bar, as the foot's are */
 static void render_help(App* app) {
     const GuiTheme* t = &app->theme;
-    char said[1024], key[128], what[256];
-    const char* at;
-    int rows = 0, keys = 0, whats = 0, y;
-    GuiRect r, text;
-    screen_said(app, true, said, sizeof said);
-    for (at = said; hint_next(&at, key, what, sizeof key); ++rows) {
-        keys = SDL_max(keys, gui_text_cols(key));
-        whats = SDL_max(whats, gui_text_cols(what));
-    }
-    r = over_rect(app, SDL_min(keys + 2 + whats, app->cols - 4), head_h(app) + rows * cell_h(app) + 8 * app->scale);
-    fill_rect(app, r, t->page); /* over the screen whatever its boxes are */
-    y = pane(app, r, snx_tr("Keys"));
-    text = inner(app, r);
-    for (at = said; hint_next(&at, key, what, sizeof key); y += cell_h(app)) {
-        text_in(app, text, text.x, y, key, rgb(t->focus));
-        text_in(app, text, text.x + (keys + 2) * cell_w(app), y, what, rgb(t->ink));
+    GuiHelpBoxes h;
+    GuiHelpKeys k;
+    UiList oks[UI_FILES_ITEMS] = {{0}}; /* OK in focus */
+    char key[128], what[256];
+    unsigned icon;
+    int s = app->scale, w = cell_w(app), shown;
+    help_boxes(app, &h);
+    over_box(app, h.box, snx_tr(SAY_SHORTCUTS));
+    ui_help_draw(app, h.rects, s, h.lists);
+    ui_files_draw(app, h.ok, s, oks);
+    help_keys(app, &k);
+    shown = SDL_min((int)ui_help_shown(h.rects, s, UI_HELP_ROWS), help_rows(&k) - app->help_top);
+    for (int i = 0; i < shown; ++i) {
+        GuiRect b = ui_row_box(app, row_drawn(app, ui_help_row, ui_help_shown, h.rects, UI_HELP_ROWS,
+                                              &h.lists[UI_HELP_ROWS], (size_t)i)),
+                text = inner(app, b);
+        int x = b.x + w / 2 + (gui_text_cols(t->marker) + 3) * w, y = ui_text_y(app, b), room;
+        if (!help_row(&k, app->help_top + i, key, what, sizeof key, &icon)) continue; /* the title */
+        room = SDL_min(gui_text_cols(key) * w, text.x + text.w - x);
+        if (room <= 0) continue;
+        if (t->focus_bar) fill_rect(app, gui_rect(x - s, y, room + 2 * s, cell_h(app)), t->focus);
+        text_in(app, text, x, y, key, rgb(t->focus_bar ? t->page : t->focus));
     }
 }
 static void render(App* app) {
@@ -12713,6 +13271,9 @@ static int play_as(App* app, const char* asked, bool next) {
     SDL_GetCurrentTime(&app->played_at);
     ok = gui_android_play(argv, app->message, sizeof(app->message));
     if (ok) app->playing = true; /* the queue's recompile goes gently until the menu shows again */
+    app->run_started_ms = SDL_max(now_ms(app), 1);
+    if (debug_log(app))
+        run_said(app, "run", ok ? "starts in the game's activity, a process of its own" : app->message, 0);
     if (ok) {
         free(app->played_game);
         app->played_game = snx_strdup(game);
@@ -12780,6 +13341,11 @@ static void game_end(App* app) {
         snprintf(what, sizeof what, snx_tr("the game wrote no log since it started; the newest is %s"), log);
     else
         end = gui_log_game_end(log, what, sizeof what, lines, sizeof lines);
+    if (debug_log(app)) { /* its status is the game's process's, which this one is not the parent of */
+        char said[sizeof what + 32];
+        snprintf(said, sizeof said, "ended, %s: %s", end >= 0 ? "its log says" : "its log unread", what);
+        run_said(app, "run", said, app->run_started_ms);
+    }
     if (end == SNX_LOG_NONE) {
         free(log);
         return;
@@ -12798,8 +13364,17 @@ static void game_end(App* app) {
    game already, else in its folder of games/, as it cannot open it; whether it opened */
 static int ready(App* app) {
     const GuiStep* made = gui_steps_last(&app->steps, "READY");
-    char* game = made ? gui_ready_game(app->native ? app->file : NULL, app->games_dir, made->detail) : NULL;
-    int ok = game && play(app, game);
+    /* the probe's, in its own data folder */
+    char* games = app->probe_launch ? snx_format("%s/%s/recompiled", app->probe_folder, SNX_PORTABLE_DIR) : NULL;
+    char* game =
+        made ? gui_ready_game(app->native && !games ? app->file : NULL, games ? games : app->games_dir, made->detail)
+             : NULL;
+    int was = app->menu.selected, ok;
+    if (games) app->menu.selected = GUI_SWITCH;
+    ok = game && play(app, game);
+    app->menu.selected = was;
+    if (games && !ok) app->probe_launch = 0;
+    free(games);
     free(game);
     return ok;
 }
@@ -12855,6 +13430,7 @@ static int play(App* app, const char* asked) {
     if (driver) argv[n++] = driver;
     if (freedreno) argv[n++] = freedreno;
     argv[n] = NULL;
+    if (debug_log(app)) run_said(app, "run", "starts in this process once the menu closes", 0);
     gui_apple_play(argv);
     free(driver);
     free(freedreno);
@@ -13328,6 +13904,8 @@ static void change_answer(App* app, GuiAsk ask, bool taken) {
         caches_delete(app);
     else if (ask == GUI_ASK_DRIVER)
         driver_remove(app);
+    else if (ask == GUI_ASK_CRASH)
+        probe_clear(app);
 }
 /* the functions an AOT pack used, from the driver's line, -1 when it printed none */
 static int aot_built(const GuiSteps* steps) {
@@ -13343,7 +13921,26 @@ static void games_back(App* app, const char* path);
 #ifdef SDL_PLATFORM_ANDROID
 static void tell(App* app);
 #endif
+static void game_box_open(App* app);
+static void pointer(App* app, float window_x, float window_y, bool click, bool touch);
+/* a finger held on Games GUI_HOLD_MS without moving: the row under it in focus and its game's box open; a finger that
+   scrolled or went away opens none */
+static void hold_tick(App* app) {
+    int w, h;
+    if (!app->finger || !app->hold_ms || app->hold_fired || now_ms(app) - app->hold_ms < GUI_HOLD_MS) return;
+    if (app->games_held || app->bar_held || app->list_held || app->pick_press) {
+        app->hold_ms = 0;
+        return;
+    }
+    app->hold_ms = 0;
+    SDL_GetWindowSize(app->window, &w, &h);
+    pointer(app, app->finger_x * (float)w, app->finger_y * (float)h, false, false);
+    app->hovering = false; /* a finger hovers nowhere */
+    game_box_open(app);
+    app->hold_fired = app->picks_shown; /* a row that is no game opened none: the lift taps it */
+}
 static void pump(App* app) {
+    hold_tick(app);
     keys_left(app);
     text_left(app);
     setup_keyboard(app);
@@ -13370,6 +13967,10 @@ static void pump(App* app) {
         int status;
         if (gui_process_finished(app->process, &status)) {
             app->menu.running = false;
+            if (debug_log(app)) {
+                char what[64];
+                run_said(app, "run", run_ended(what, sizeof what, app->aborting, status), app->run_started_ms);
+            }
             /* Normal exits wait for acknowledgement. ESC already acknowledged
                an abort, so return straight to the menu after nonblocking reaping. */
             app->finished = !app->aborting;
@@ -13396,6 +13997,20 @@ static void pump(App* app) {
             app->aborting = false;
             app->confirm.shown = false; /* a run that ended while asking has nothing left to abort */
             layout(app);
+            /* the probe's: ESC ends it, and on a phone a failure to make its game, which the run's screen says; a run
+               that ended goes on (probe_after), on a phone once its game has played */
+            if (app->probe_launch && !app->finished) {
+                app->probe_launch = 0;
+                probe_back(app);
+            }
+#if !defined(SDL_PLATFORM_ANDROID) && !defined(SDL_PLATFORM_IOS)
+            if (app->probe_launch) probe_after(app);
+#else
+            if (app->probe_launch && app->abnormal_exit) { /* its screen says why, the menu after it */
+                app->probe_launch = 0;
+                app->probe_row = -1;
+            }
+#endif
 #ifdef SDL_PLATFORM_ANDROID
             /* the game opens in its own activity, over this one: coming back from it is coming back to the menu.
                Android lets no app behind others open one, so then it waits for the menu to show */
@@ -13408,7 +14023,21 @@ static void pump(App* app) {
 #elif defined(SDL_PLATFORM_IOS)
             /* a phone has no ESC to dismiss the end of the run: a prepared game goes back to the menu, where it is
                listed; a failure stays on the screen with its messages */
-            if (!app->abnormal_exit) {
+            if (!app->abnormal_exit && app->probe_launch) { /* the probe's game, made ready: played */
+                char* games = snx_format("%s/%s/recompiled", app->probe_folder, SNX_PORTABLE_DIR);
+                const GuiStep* made = gui_steps_last(&app->steps, "READY");
+                char* game = made ? gui_ready_game(NULL, games, made->detail) : NULL;
+                int was = app->menu.selected;
+                app->menu.selected = GUI_SWITCH;
+                if (!game || !play(app, game)) {
+                    app->probe_launch = 0;
+                    leave_run(app);
+                    probe_back(app);
+                }
+                app->menu.selected = was;
+                free(game);
+                free(games);
+            } else if (!app->abnormal_exit) {
                 recent_made_here(app);
                 recent_as_games(app); /* the game's name, now that it is the entry */
                 list_games(app);      /* the list the run left behind has not the game made */
@@ -13424,7 +14053,10 @@ static void pump(App* app) {
     }
     if (app->played && !app->hidden) {
         app->played = false;
-        if (!next_program(app)) game_end(app); /* a collection's program starting another ended well */
+        if (app->probe_launch)
+            probe_after(app);
+        else if (!next_program(app))
+            game_end(app); /* a collection's program starting another ended well */
     }
 #endif
 #ifdef SDL_PLATFORM_ANDROID
@@ -13599,6 +14231,7 @@ static const char* const* picks_list(const App* app) {
     if (app->picks_of == GUI_PICKS_DRIVER) return driver_picks;
     if (app->picks_of == GUI_PICKS_ASSET) return app->asset_picks;
     if (app->picks_of == GUI_PICKS_THEME) return app->theme_picks;
+    if (app->picks_of == GUI_PICKS_GAME) return app->game_picks;
     kind = folder_row(app, app->pick_row, &at, &group);
     if (kind == GUI_ROW_DUMPS) return app->dumps_off ? main_off_picks : dumps_picks;
     if (kind == GUI_ROW_PLACE && at == GUI_PLACE_GAMES) return app->recompiled_off ? main_off_picks : recompiled_picks;
@@ -13666,7 +14299,12 @@ static void picks_question(App* app, char* out, size_t size, const char** tab) {
            : app->picks_of == GUI_PICKS_DRIVER ? snx_tr("GPU Drivers")
            : app->picks_of == GUI_PICKS_ASSET  ? snx_tr("Download Driver")
            : app->picks_of == GUI_PICKS_THEME  ? (app->theme.dialog == GUI_DIALOG_YORHA ? snx_tr("Theme") : "")
+           : app->picks_of == GUI_PICKS_GAME   ? snx_tr("Game")
                                                : snx_tr("Folders");
+    if (app->picks_of == GUI_PICKS_GAME) { /* the game's name, as its row shows it */
+        snprintf(out, size, "%s", app->pick_text);
+        return;
+    }
     if (app->picks_of == GUI_PICKS_THEME) { /* the line says what the box is: YoRHa's tab names it, the default's
                                                corner has no name beside the line */
         snprintf(out, size, snx_tr("Each theme shows as the focus reaches it: Enter keeps it, ESC goes back to %s"),
@@ -13768,6 +14406,67 @@ static void subfolders_switch(App* app, int kind, int at) {
     open_folders(app, row);
     snprintf(app->editor.note, sizeof app->editor.note, "%s", note);
 }
+/* the game box's actions, as Games' keys name them: Enter's Play, or for a game the queue recompiles its progress on
+   the Compile tab, which Enter shows too; R's Recompile; M's Mods and S's Save States for a made Switch game */
+#define SAY_GAME_PLAY      SNX_TR_NOOP("Play")
+#define SAY_GAME_PROGRESS  SNX_TR_NOOP("View Progress")
+#define SAY_GAME_RECOMPILE SNX_TR_NOOP("Recompile")
+#define SAY_GAME_MODS      SNX_TR_NOOP("Mods")
+#define SAY_GAME_STATES    SNX_TR_NOOP("Save States")
+static void play_focus(App* app);
+static void queue_show(App* app, int i);
+static void recompile_focus(App* app);
+static void mods_focus(App* app);
+static void states_focus(App* app);
+static void game_label(const App* app, const GuiGames* games, size_t i, char* out, size_t size);
+/* the focused row's game, the queue's job for it (-1 for none) and its name as the row shows it in name; 0 for a row
+   that is no game */
+static int game_box_game(App* app, int* queued, char* name, size_t size) {
+    size_t row = app->browser.selected, head = app->browser.head;
+    size_t index = app->browser.page * app->browser.page_size + row - head;
+    const char* path = NULL;
+    if (!games_play_focus(app)) return 0;
+    if (row < head) {
+        const GuiRecentGame* r = &app->recent.game[recent_index(app, (int)row)];
+        path = r->path;
+        snprintf(name, size, "%s", r->name);
+    } else {
+        path = app->games.paths[index];
+        game_label(app, &app->games, index, name, size);
+    }
+    *queued = path ? gui_queue_find(&app->queue, path) : -1;
+    return 1;
+}
+/* the box of the game in focus on Games, which a held finger or a right click opens: its actions (SAY_GAME_*), as
+   its keys have them; none for a row that is no game */
+static void game_box_open(App* app) {
+    bool mods = false;
+    int n = 0, queued;
+    if (!game_box_game(app, &queued, app->pick_text, sizeof app->pick_text)) return;
+    app->game_picks[n++] = queued >= 0 ? SAY_GAME_PROGRESS : SAY_GAME_PLAY;
+    if (games_game_focus(app, &mods)) app->game_picks[n++] = SAY_GAME_RECOMPILE;
+    if (mods) {
+        app->game_picks[n++] = SAY_GAME_MODS;
+        app->game_picks[n++] = SAY_GAME_STATES;
+    }
+    app->game_picks[n] = NULL;
+    picks_open(app, GUI_PICKS_GAME);
+}
+static void game_box_take(App* app, const char* pick) {
+    int queued;
+    char name[sizeof app->pick_text];
+    layout(app); /* the page a resize in the same poll gave */
+    if (!strcmp(pick, SAY_GAME_PROGRESS) && game_box_game(app, &queued, name, sizeof name) && queued >= 0)
+        queue_show(app, queued);
+    else if (!strcmp(pick, SAY_GAME_PLAY) || !strcmp(pick, SAY_GAME_PROGRESS))
+        play_focus(app);
+    else if (!strcmp(pick, SAY_GAME_RECOMPILE))
+        recompile_focus(app);
+    else if (!strcmp(pick, SAY_GAME_MODS))
+        mods_focus(app);
+    else if (!strcmp(pick, SAY_GAME_STATES))
+        states_focus(app);
+}
 /* choice i taken, or none (-1: Back): the logs as one zip, as the one log of before, or their folder opened; a Folders
    row's folder opened, another picked, its default asked for or its Extra taken off */
 static void pick_take(App* app, int i) {
@@ -13785,6 +14484,10 @@ static void pick_take(App* app, int i) {
         return;
     }
     if (i < 0) return;
+    if (app->picks_of == GUI_PICKS_GAME) { /* as its key on Games does */
+        game_box_take(app, app->game_picks[i]);
+        return;
+    }
     if (app->picks_of == GUI_PICKS_ASSET) { /* the asset downloaded */
         fetch_download(app, i);
         return;
@@ -13890,6 +14593,56 @@ static void made_answer(App* app, bool taken, bool second) {
     app->menu.selected = item;
 }
 static void queue_show(App* app, int i);
+/* argv started on the run's screen, the menu fading out, file (owned) the run's, which Recent lists when recent says
+   so; whether it started, the message saying why not */
+static bool run_start(App* app, const char* const* argv, char* file, bool native, bool prepared, bool recent) {
+#ifndef SDL_PLATFORM_ANDROID /* there the data folder's config/, which every game reads (gamepad.c) */
+    pad_mappings_share(app);
+#endif
+#ifdef SDL_PLATFORM_IOS
+    icons_wait(app); /* the one driver thread, a dump's icon's first */
+#endif
+    bool started = gui_process_start(app->process, argv, app->message, sizeof(app->message));
+    app->run_started_ms = SDL_max(now_ms(app), 1);
+    if (debug_log(app)) run_said(app, "run", started ? "starts" : app->message, 0);
+    if (started && app->run_log) {
+        size_t k;
+        if (app->run_out) fclose(app->run_out);
+        app->run_out = snx_fopen(app->run_log, "wb");
+        for (k = 0; app->run_out && argv[k]; ++k) fprintf(app->run_out, "%s%s", k ? " " : "$ ", argv[k]);
+        if (app->run_out) fputc('\n', app->run_out);
+    }
+    gui_steps_reset(&app->steps);
+    app->native = native;
+    /* the menu fades out, then the run fades in */
+    Uint64 now = SDL_max(now_ms(app), 1);
+    app->entering_ms = started && app->theme.fade_out_ms ? now : 0;
+    app->fade_ms = started ? now + (app->entering_ms ? app->theme.fade_out_ms : 0) : 0;
+    app->leaving_ms = 0;
+    if (!started) {
+        free(file);
+        return false;
+    }
+    free(app->file);
+    app->file = file;
+    if (recent && app->recent_file && !gui_recent_add(&app->recent, file, app->menu.selected, prepared))
+        recent_changed(app);
+    app->recent_named = 0;
+    app->menu.view = GUI_LOAD_NONE;
+    app->menu.running = true;
+    app->finished = false;
+    app->abnormal_exit = false;
+    app->message[0] = 0;
+    gui_console_init(&app->console, app->cols - 2, app->rows - 8);
+    app->has_output = true;
+    layout(app);
+#ifdef SDL_PLATFORM_ANDROID
+    /* now, while the menu shows: Android 12 starts no notification's service for an app behind others */
+    app->told_ms = 0;
+    tell(app);
+#endif
+    return true;
+}
 static void launch(App* app, char* absolute, bool prepared) {
     int queued;
     if (!absolute || !snx_is_file(absolute)) {
@@ -13929,7 +14682,7 @@ static void launch(App* app, char* absolute, bool prepared) {
 #endif
     /* a dump, package or ROM a game was made from already: played or recompiled, as the player answers (made_answer;
        DraVee, 2026-10-24) */
-    if (!app->recompile && !app->made_ok && !prepared && app->menu.selected != GUI_LINUX && made_from(app, absolute)) {
+    if (!app->recompile && !app->made_ok && !prepared && !runs_as_is(app->menu.selected) && made_from(app, absolute)) {
         made_ask(app, absolute);
         return;
     }
@@ -13937,7 +14690,7 @@ static void launch(App* app, char* absolute, bool prepared) {
        does: the Compile tab shows it, and it plays once it ended if the tab still shows it (job_play). So does a Switch
        game another build made, which its driver would recompile on the run's screen: its program opened (the one it
        plays, run_program), or its dump with Play answered */
-    bool compile = !app->recompile && !prepared && app->menu.selected != GUI_LINUX && !made_from(app, absolute);
+    bool compile = !app->recompile && !prepared && !runs_as_is(app->menu.selected) && !made_from(app, absolute);
 #ifndef SDL_PLATFORM_IOS /* the games there are packs the app loads, with no stamp */
     if (!compile && !app->recompile && !app->compiled && prepared && app->menu.selected == GUI_SWITCH &&
         gui_game_folder(absolute)) {
@@ -14054,6 +14807,7 @@ static void launch(App* app, char* absolute, bool prepared) {
     }
     if (make) argv[n++] = "-r";
     if (!direct) argv[n++] = game_option ? game_option : run ? run : absolute;
+    if (app->menu.selected == GUI_ANDROID) n += gui_settings_java_home(s, argv + n);
     /* Switch options only, never guest argv for the CPU-only Linux driver or the 3DS one; R's recompile takes no
        option of a run but the game's settings it recompiles with (NCE). The drivers work in the menu's data folder,
        so they list the same games */
@@ -14127,55 +14881,164 @@ static void launch(App* app, char* absolute, bool prepared) {
         free(absolute);
         return;
     }
-#ifndef SDL_PLATFORM_ANDROID /* there the data folder's config/, which every game reads (gamepad.c) */
-    pad_mappings_share(app);
-#endif
-#ifdef SDL_PLATFORM_IOS
-    icons_wait(app); /* the one driver thread, a dump's icon's first */
-#endif
-    bool started = gui_process_start(app->process, argv, app->message, sizeof(app->message));
-    if (started && app->run_log) {
-        size_t k;
-        if (app->run_out) fclose(app->run_out);
-        app->run_out = snx_fopen(app->run_log, "wb");
-        for (k = 0; app->run_out && k < n; ++k) fprintf(app->run_out, "%s%s", k ? " " : "$ ", argv[k]);
-        if (app->run_out) fputc('\n', app->run_out);
-    }
+    run_start(app, argv, absolute, native, prepared, true);
     free(argv);
     free(game_option); /* argv held it until the process started */
     free(run);
     free(out);
     free(app->dest_out); /* the run's, which argv held until here: a next one asks again */
     app->dest_out = NULL;
-    gui_steps_reset(&app->steps);
-    app->native = native;
-    /* the menu fades out, then the run fades in */
-    Uint64 now = SDL_max(now_ms(app), 1);
-    app->entering_ms = started && app->theme.fade_out_ms ? now : 0;
-    app->fade_ms = started ? now + (app->entering_ms ? app->theme.fade_out_ms : 0) : 0;
-    app->leaving_ms = 0;
     free(driver);
-    if (!started) {
-        free(absolute);
+}
+/* ---- Settings > App > GPU Drivers' Run edenprobe (gui/probe.h): edenprobe played as a game, launched again while
+   a launch that ended before the summary added cases, then its counts in a box ---- */
+/* the driver on the probe's NRO, in its data folder, with the launcher's GPU driver: a run's screen, as a game's */
+static void probe_launch(App* app) {
+    char *nro = gui_probe_nro(app->probe_folder), *data = gui_probe_data(app->probe_folder),
+         *driver = find_driver(app, GUI_SWITCH);
+    const char* argv[8];
+    size_t n = 0;
+    int was = app->menu.selected;
+    GuiDriverRun how;
+#ifdef SDL_PLATFORM_IOS /* the app's own driver, which gui_process_start runs on a thread */
+    if (!driver) driver = snx_strdup("scarletnx");
+#endif
+    if (!driver) {
+        driver_missing(app, GUI_SWITCH, app->message, sizeof app->message);
+        app->probe_launch = 0;
+        probe_back(app);
+        say_failure(app, app->message);
+        free(nro);
+        free(data);
         return;
     }
-    free(app->file);
-    app->file = absolute;
-    if (app->recent_file && !gui_recent_add(&app->recent, absolute, app->menu.selected, prepared)) recent_changed(app);
-    app->recent_named = 0;
-    app->menu.view = GUI_LOAD_NONE;
-    app->menu.running = true;
-    app->finished = false;
-    app->abnormal_exit = false;
-    app->message[0] = 0;
-    gui_console_init(&app->console, app->cols - 2, app->rows - 8);
-    app->has_output = true;
-    layout(app);
-#ifdef SDL_PLATFORM_ANDROID
-    /* now, while the menu shows: Android 12 starts no notification's service for an app behind others */
-    app->told_ms = 0;
-    tell(app);
+    argv[n++] = driver;
+    if (driver_run(app, GUI_SWITCH, &how) && how.first) argv[n++] = how.first;
+    argv[n++] = nro;
+    argv[n++] = "--data";
+    argv[n++] = data;
+    free(app->run_driver);
+    free(app->run_freedreno);
+    app->run_driver = gui_run_option("gpu_driver", NULL, app->gpu_driver);
+    app->run_freedreno = gui_run_option("freedreno_env", NULL, app->freedreno);
+    if (app->run_driver) argv[n++] = app->run_driver;
+    if (app->run_freedreno) argv[n++] = app->run_freedreno;
+    argv[n] = NULL;
+    app->menu.selected = GUI_SWITCH; /* a Switch program's run */
+    if (!run_start(app, argv, nro, false, false, false)) {
+        app->probe_launch = 0;
+        probe_back(app);
+        say_failure(app, app->message);
+    }
+    app->menu.selected = was;
+    free(data);
+    free(driver);
+}
+/* Run edenprobe pressed, a new run, or Continue, the last one's going on: the first launch started, said in the log;
+   why not, in the page's note */
+static void probe_start(App* app, bool continuing) {
+    char why[700], words[160], *nro;
+    int cleared = 0;
+    free(app->probe_folder);
+    app->probe_folder = app->state_dir ? snx_path_join(app->state_dir, "probe") : NULL;
+    if (!app->probe_folder) {
+        snprintf(app->editor.note, sizeof app->editor.note, "%s", snx_tr("Run edenprobe: no state folder to run in"));
+        return;
+    }
+#ifdef SDL_PLATFORM_IOS /* the one driver thread */
+    if (jobs_live(app)) {
+        snprintf(app->editor.note, sizeof app->editor.note, "%s",
+                 snx_tr("Run edenprobe: a compile goes; the probes run once the queue ends"));
+        return;
+    }
 #endif
+    nro = gui_probe_nro(app->probe_folder);
+    if (!snx_is_file(nro)) {
+        snprintf(app->editor.note, sizeof app->editor.note,
+                 snx_tr("Run edenprobe needs %s: edenprobe.nro from github.com/scarletnx/edenprobe/releases"), nro);
+        free(nro);
+        return;
+    }
+    free(nro);
+    if (continuing) {
+        GuiProbeReport r;
+        if (!gui_probe_read(app->probe_folder, &r) || r.summary) return; /* the row shows only for one */
+        gui_log("edenprobe: Continue goes on with the run of edenprobe %s in %s, cases so far %d, on its crash list %d",
+                r.build[0] ? r.build : "?", app->probe_folder, r.cases, gui_probe_crashes(app->probe_folder));
+        app->probe_cases = r.cases;
+    } else if (gui_probe_words(app->probe_folder, app->probe_full, snx_build_commit(), words, sizeof words, why,
+                               sizeof why) ||
+               gui_probe_start(app->probe_folder, words, &cleared, why, sizeof why)) {
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Run edenprobe: %s"), why);
+        return;
+    } else {
+        gui_log("edenprobe: Run edenprobe starts a new run in %s, mode %s; cases on the crash list cleared: %d",
+                app->probe_folder, words, cleared);
+        app->probe_cases = -1;
+    }
+    app->probe_launch = 1;
+    app->probe_row = app->editing && app->form == GUI_FORM_DRIVERS ? app->editor.row : -1;
+    app->editing = false; /* the run's screen, its keys its own */
+    probe_launch(app);
+}
+/* the page the probe was started from shown again, its rows as the run left them (Continue, Clear Crash List) */
+static void probe_back(App* app) {
+    int row = app->probe_row;
+    app->probe_row = -1;
+    if (row >= 0) open_drivers(app, NULL, NULL, row);
+}
+/* Clear Crash List taken: the list gone, how many cases it had said in the note and the log */
+static void probe_clear(App* app) {
+    char *folder = app->state_dir ? snx_path_join(app->state_dir, "probe") : NULL, why[700];
+    int cleared = 0;
+    if (!folder) return;
+    if (gui_probe_clear(folder, &cleared, why, sizeof why))
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Clear Crash List: %s"), why);
+    else {
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Crash list cleared, cases: %d"), cleared);
+        gui_log("edenprobe: Clear Crash List cleared %s's crash list, cases: %d", folder, cleared);
+    }
+    free(folder);
+    drivers_show(app, app->editor.row);
+}
+/* a launch of the probe ended (its game's process, or on Android its game's activity): launched again while it adds
+   cases and has no summary, GUI_PROBE_RELAUNCHES times at most, as edenprobe's journal goes on after the case it ended
+   inside; else its counts in a box, over the menu */
+static void probe_after(App* app) {
+    GuiProbeReport r;
+    char said[700], *report;
+    if (!gui_probe_read(app->probe_folder, &r)) { /* the run's lines say why, on its screen or in the log */
+        app->probe_launch = 0;
+        app->probe_row = -1; /* its screen stays, the menu after it */
+        snprintf(app->message, sizeof app->message, snx_tr("edenprobe left no report in %s"), app->probe_folder);
+        say_failure(app, app->message);
+        return;
+    }
+    if (!r.summary && r.cases > app->probe_cases && app->probe_launch <= GUI_PROBE_RELAUNCHES) {
+        gui_log("edenprobe: launch %d ended before the summary, cases so far %d; launching again", app->probe_launch,
+                r.cases);
+        app->probe_cases = r.cases;
+        app->probe_launch++;
+        probe_launch(app);
+        return;
+    }
+    gui_probe_said(&r, said, sizeof said);
+    report = gui_probe_report(app->probe_folder);
+    if (r.summary)
+        snprintf(app->error_line, sizeof app->error_line, snx_tr("%s. The report: %s"), said, report);
+    else if (r.cases > app->probe_cases)
+        snprintf(app->error_line, sizeof app->error_line,
+                 snx_tr("%s after %d launches, the most it takes. The report: %s"), said, app->probe_launch, report);
+    else
+        snprintf(app->error_line, sizeof app->error_line,
+                 snx_tr("%s after %d launches, the last adding no case. The report: %s"), said, app->probe_launch,
+                 report);
+    free(report);
+    gui_log("%s", app->error_line);
+    app->probe_launch = 0;
+    if (app->finished) leave_run(app);
+    probe_back(app);
+    gui_confirm_open(&app->confirm, GUI_ASK_ERROR, false);
 }
 /* the answer to a run's room: Run Anyway, pressed twice, runs it as it was asked; Back runs nothing */
 static void room_answer(App* app, bool taken) {
@@ -14205,8 +15068,21 @@ static bool game_plays(const App* app) {
     return app->menu.running;
 #endif
 }
-/* a recompile of the queue goes gently: Background recompile Gentle, or a game playing */
-static bool job_gentle(const App* app) { return app->background_gentle || game_plays(app); }
+/* the host runs on its battery: SDL's power state, asked every 5 s at most */
+static bool on_battery(App* app) {
+    Uint64 now = SDL_GetTicks();
+    if (app->power_test) return app->power_test > 0;
+    if (!app->power_ms || now - app->power_ms >= 5000) {
+        app->power_battery = SDL_GetPowerInfo(NULL, NULL) == SDL_POWERSTATE_ON_BATTERY;
+        app->power_ms = now ? now : 1;
+    }
+    return app->power_battery;
+}
+/* a recompile of the queue goes gently: Background recompile Gentle, or Auto on battery, or a game playing */
+static bool job_gentle(App* app) {
+    return app->background_mode == GUI_BACKGROUND_GENTLE ||
+           (app->background_mode == GUI_BACKGROUND_AUTO && on_battery(app)) || game_plays(app);
+}
 /* how the one running goes, for the Status box: Full, or Gentle and why (the option, a game playing, a priority the
    system keeps low until it ends), with the threads it was started with when they were halved */
 static void job_speed(App* app, char* out, size_t size) {
@@ -14215,10 +15091,12 @@ static void job_speed(App* app, char* out, size_t size) {
         snprintf(out, size, snx_tr("Gentle until it ends: %s"), app->job_said);
     else if (!app->job_low)
         snprintf(out, size, "%s", snx_tr("Full"));
-    else if (!app->background_gentle)
-        snprintf(out, size, "%s", snx_tr("Gentle, a game plays"));
-    else
+    else if (app->background_mode == GUI_BACKGROUND_GENTLE)
         snprintf(out, size, "%s", snx_tr("Gentle"));
+    else if (app->background_mode == GUI_BACKGROUND_AUTO && on_battery(app))
+        snprintf(out, size, "%s", snx_tr("Gentle, on battery"));
+    else
+        snprintf(out, size, "%s", snx_tr("Gentle, a game plays"));
     n = strlen(out);
     if (app->job_threads && n < size) snprintf(out + n, size - n, snx_tr(", %d threads"), app->job_threads);
     n = strlen(out);
@@ -14267,7 +15145,9 @@ static void job_start(App* app) {
 #ifdef SDL_PLATFORM_IOS
         icons_wait(app); /* the one driver thread, a dump's icon's first */
 #endif
-        if (!gui_process_start(app->job_process, argv, why, sizeof why)) {
+        bool started = gui_process_start(app->job_process, argv, why, sizeof why);
+        if (debug_log(app)) run_said(app, "recompile", started ? "starts" : why, 0);
+        if (!started) {
             job->state = GUI_JOB_FAILED;
             job->status = -1;
             job->ended_ms = SDL_max(now_ms(app), 1);
@@ -14402,6 +15282,10 @@ static void job_ended(App* app, int i, int status) {
     char took[64];
     Uint64 now = SDL_max(now_ms(app), 1);
     gui_steps_finish(&app->job_steps, !failed);
+    if (debug_log(app)) {
+        char what[64];
+        run_said(app, "recompile", run_ended(what, sizeof what, aborted, status), job->started_ms);
+    }
     if (app->job_out) {
         fprintf(app->job_out, "\n[%s, status %d]\n", aborted ? "aborted" : "ended", status);
         fclose(app->job_out);
@@ -14668,6 +15552,7 @@ static int named_driver(const char* name) {
     return gui_is_cia(name)    ? GUI_3DS
            : gui_is_vpk(name)  ? GUI_VITA
            : gui_is_gba(name)  ? GUI_GBA
+           : gui_is_apk(name)  ? GUI_ANDROID
            : gui_is_dump(name) ? GUI_SWITCH
                                : -1;
 }
@@ -14716,6 +15601,9 @@ static void recompile_focus(App* app) {
         snprintf(app->message, sizeof app->message, "%s", snx_tr("No game in focus to recompile."));
     else if (recent && app->recent.game[recent_index(app, (int)row)].driver == GUI_LINUX)
         snprintf(app->message, sizeof app->message, "%s", snx_tr("R recompiles games: a Linux program runs as it is."));
+    else if ((recent && app->recent.game[recent_index(app, (int)row)].driver == GUI_ANDROID) ||
+             (game && gui_is_apk(app->games.names[index])))
+        snprintf(app->message, sizeof app->message, "%s", snx_tr("R recompiles games: an Android app runs as it is."));
     else {
         app->recompile = true;
         if (recent)
@@ -14789,7 +15677,8 @@ static int aot_focus_game(App* app, AotFocus* f) {
         path = app->recent.game[recent_index(app, (int)row)].path;
     } else if (game) {
         if (gui_games_heading(&app->games, index) || gui_is_cia(app->games.names[index]) ||
-            gui_is_vpk(app->games.names[index]) || gui_is_gba(app->games.names[index]))
+            gui_is_vpk(app->games.names[index]) || gui_is_gba(app->games.names[index]) ||
+            gui_is_apk(app->games.names[index]))
             return 0; /* no path */
         path = app->games.paths[index];
     } else {
@@ -15105,23 +15994,15 @@ static void drop(App* app, const char* value, bool text_drop) {
             free(absolute);
     }
 }
-/* the system's file picker answers on its own thread: the choice comes back to event() as an app->picked event */
-static void SDLCALL picker_done(void* userdata, const char* const* files, int filter) {
-    SDL_Event e;
-    (void)filter;
-    SDL_zero(e);
-    e.type = *(const Uint32*)userdata;
-    e.user.data1 = files && files[0] ? SDL_strdup(files[0]) : NULL;
-    SDL_PushEvent(&e);
-}
 static void picked(App* app, const char* uri);
 static void open_picker(App* app) {
     app->keys_done = 0; /* another try: the last one's outcome no longer stands */
     if (!app->picked) app->picked = SDL_RegisterEvents(1);
 #ifdef SDL_PLATFORM_IOS /* SDL has no file dialog there: the document picker (dist/apple) */
-    if (app->picked) gui_apple_pick(app->window, 0, picker_done, &app->picked, app->message, sizeof(app->message));
+    if (app->picked)
+        gui_apple_pick(app->window, 0, folder_picked, &app->picked, debug_log(app), app->message, sizeof(app->message));
 #else
-    if (app->picked) SDL_ShowOpenFileDialog(picker_done, &app->picked, app->window, NULL, 0, NULL, false);
+    if (app->picked) SDL_ShowOpenFileDialog(folder_picked, &app->picked, app->window, NULL, 0, NULL, false);
 #endif
 }
 /* the last max bytes of a file from the first line that starts in them, as text, or "". A home folder cut in two is no
@@ -15917,7 +16798,8 @@ static void menu_key(App* app, GuiKey key) {
     }
     if (pick_screen(app) && key != GUI_SELECT && key != GUI_CANCEL) return; /* nothing there to move to */
     /* a load whose driver is not there opens no screen: it says which driver, looked for again now (#640) */
-    if (key == GUI_SELECT && app->menu.view == GUI_LOAD_NONE && !app->menu.running && app->menu.selected <= GUI_GBA) {
+    if (key == GUI_SELECT && app->menu.view == GUI_LOAD_NONE && !app->menu.running &&
+        app->menu.selected <= GUI_ANDROID) {
         app->loads_at = 0;
         if (loads_off(app) >> app->menu.selected & 1u) {
             driver_missing(app, app->menu.selected, app->message, sizeof app->message);
@@ -15988,7 +16870,7 @@ static void ask_key(App* app, GuiKey key) {
         made_answer(app, key == GUI_SELECT, second);
     else if (ask == GUI_ASK_CLEAN || ask == GUI_ASK_RESET || ask == GUI_ASK_PLACES || ask == GUI_ASK_PLACE ||
              ask == GUI_ASK_FOLDER || ask == GUI_ASK_MOVE || ask == GUI_ASK_STATE || ask == GUI_ASK_CACHE ||
-             ask == GUI_ASK_DRIVER)
+             ask == GUI_ASK_DRIVER || ask == GUI_ASK_CRASH)
         change_answer(app, ask, second);
     else if (ask == GUI_ASK_CLOSE && second) { /* the run ends with the menu, the queue's recompile too */
         if (app->menu.running) abort_run(app);
@@ -16145,6 +17027,7 @@ void ui_menu_entries_load_linux_arm_elf_action_cb(App* app, uint32_t hit) { menu
 void ui_menu_entries_load_3ds_game_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_3DS, hit); }
 void ui_menu_entries_load_vita_vpk_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_VITA, hit); }
 void ui_menu_entries_load_gba_rom_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_GBA, hit); }
+void ui_menu_entries_load_android_apk_xapk_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_ANDROID, hit); }
 void ui_menu_entries_install_keys_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_KEYS, hit); }
 void ui_menu_entries_settings_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_SETTINGS, hit); }
 void ui_menu_entries_share_log_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_LOG, hit); }
@@ -16188,7 +17071,6 @@ static const struct {
                  {SNX_TR_KEY("Right"), SDLK_RIGHT, 0, false},
                  {SNX_TR_KEY("PgUp"), SDLK_PAGEUP, 0, false},
                  {SNX_TR_KEY("PgDn"), SDLK_PAGEDOWN, 0, false},
-                 {SNX_TR_KEY("PgDown"), SDLK_PAGEDOWN, 0, false},
                  {SNX_TR_KEY("Del"), SDLK_DELETE, 0, false},
                  {SNX_TR_KEY("Take out"), SDLK_DELETE, 0, false}, /* a finger's, on the Compile tab */
                  {SNX_TR_KEY("Games"), SDLK_TAB, 0, false},
@@ -16912,15 +17794,18 @@ static void event_take(App* app, const SDL_Event* e) {
         if (e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && menu_key_of(&e->key, &key)) ask_key(app, key);
         return;
     }
-    /* F1's box takes every key while it shows, and any closes it */
+    /* F1's box takes every key while it shows: those that go over its rows (help_key) do, any other closes it */
     if (app->help_shown && (e->type == SDL_EVENT_KEY_DOWN || e->type == SDL_EVENT_TEXT_INPUT)) {
-        if (e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat) app->help_shown = false;
+        if (e->type == SDL_EVENT_KEY_DOWN && !help_key(app, e->key.key) && !e->key.repeat) app->help_shown = false;
         return;
     }
     /* F1, or the foot's (a pad's Select): every key of the screen in a box over it; the setup's foot says its own */
     if (e->type == SDL_EVENT_KEY_DOWN && e->key.key == SDLK_F1 && !app->menu.running && !app->finished &&
         !(app->setup_on && !app->editing) && !(app->editing && app->editor.typing)) {
-        if (!e->key.repeat) app->help_shown = true;
+        if (!e->key.repeat) {
+            app->help_shown = true;
+            app->help_top = 0;
+        }
         return;
     }
     /* F2, or the foot's: the side box hidden where it shows, shown where it does not, kept in app.ini */
@@ -16954,6 +17839,18 @@ static void event_take(App* app, const SDL_Event* e) {
         drop(app, e->drop.data, e->type == SDL_EVENT_DROP_TEXT);
         return; /* SDL3 owns the event's data, unlike SDL2. */
     }
+#ifdef SDL_PLATFORM_APPLE
+    /* a picker's answer, any of the four, in the launcher log (debug_log): what came back, or SDL's error */
+    if (e->type >= SDL_EVENT_USER &&
+        ((app->addon_picked && e->type == app->addon_picked) || (app->driver_picked && e->type == app->driver_picked) ||
+         (app->picked_folder && e->type == app->picked_folder) || (app->picked && e->type == app->picked)) &&
+        debug_log(app)) {
+        char shown[SNX_PATH_SIZE];
+        snx_home_short(e->user.data1 ? (const char*)e->user.data1 : "none", shown, sizeof shown);
+        gui_log("dialog: the answer %s%s%s", shown, e->user.code ? ", an error: " : "",
+                e->user.code && e->user.data2 ? (const char*)e->user.data2 : "");
+    }
+#endif
     /* Add Mod's or Add Cheats' picker's answer: a folder or a file, none, or why it could not open */
     if (app->addon_picked && e->type == app->addon_picked) {
         addons_picked(app, (const char*)e->user.data1, (const char*)e->user.data2, e->user.code != 0);
@@ -17005,6 +17902,7 @@ static void event_take(App* app, const SDL_Event* e) {
     if (app->picked && e->type == app->picked) {
         picked(app, e->user.data1);
         SDL_free(e->user.data1);
+        SDL_free(e->user.data2);
         return;
     }
     if (e->type == SDL_EVENT_FINGER_DOWN && !app->finger) {
@@ -17012,6 +17910,10 @@ static void event_take(App* app, const SDL_Event* e) {
         app->finger = finger_id(&e->tfinger);
         app->finger_x = e->tfinger.x;
         app->finger_y = e->tfinger.y;
+        app->hold_fired = false; /* held on Games, its game's box (hold_tick) */
+        app->hold_ms = app->menu.view == GUI_LOAD_GAMES && !app->editing && !box_shown(app) && !app->picks_shown
+                           ? SDL_max(now_ms(app), (Uint64)1)
+                           : 0;
         SDL_GetWindowSize(app->window, &w, &h);
         app->pick_press = 0;                     /* the finger's own, not a mouse's whose lift was missed */
         if (app->editing && app->editor.picking) /* the picker's bars take a finger as it goes down, to drag */
@@ -17037,6 +17939,14 @@ static void event_take(App* app, const SDL_Event* e) {
             games_finger(app, e->tfinger.x * (float)w, e->tfinger.y * (float)h, 1);
         else
             list_finger(app, e->tfinger.x * (float)w, e->tfinger.y * (float)h, 1);
+        return;
+    }
+    if ((e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_CANCELED) &&
+        finger_id(&e->tfinger) == app->finger && app->hold_fired) { /* held, its game's box shown: no tap */
+        app->finger = 0;
+        app->hold_ms = 0;
+        app->hold_fired = false;
+        app->games_held = app->bar_held = false;
         return;
     }
     if ((e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_CANCELED) &&
@@ -17098,6 +18008,10 @@ static void event_take(App* app, const SDL_Event* e) {
         if (app->splash || app->menu.running || app->finished || app->confirm.shown || app->left_shown ||
             (app->editing && app->editor.picking))
             return;
+        if (app->help_shown) { /* F1's box's rows, a notch a row, and nothing under it */
+            help_step(app, -rows);
+            return;
+        }
         if (games_scrolls(app) && !box_shown(app)) { /* three rows a notch, gliding there; the focus stays */
             GuiGamesBoxes g;
             int row_h, total, view;
@@ -17131,6 +18045,13 @@ static void event_take(App* app, const SDL_Event* e) {
     }
     if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN && e->button.button == SDL_BUTTON_LEFT) {
         pointer(app, e->button.x, e->button.y, true, false);
+        return;
+    }
+    /* a right click on a game of Games: its box, as a finger held there opens it */
+    if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN && e->button.button == SDL_BUTTON_RIGHT &&
+        app->menu.view == GUI_LOAD_GAMES && !app->editing && !box_shown(app) && !app->picks_shown) {
+        pointer(app, e->button.x, e->button.y, false, false); /* the row under it in focus, as the mouse over it does */
+        game_box_open(app);
         return;
     }
     if (e->type == SDL_EVENT_MOUSE_BUTTON_UP && e->button.button == SDL_BUTTON_LEFT) {
@@ -17270,10 +18191,9 @@ static bool initialize(App* app, const char* self) {
 #ifdef SDL_PLATFORM_IOS
     gui_apple_start();
     { /* the log in Documents' logs/, which gui_apple_start made and the Files app shows */
-        char *documents = SDL_GetCurrentDirectory(), *logs = documents ? snx_path_join(documents, "logs") : NULL;
+        char* logs = log_folder(app);
         gui_log_folder(logs);
         free(logs);
-        SDL_free(documents);
     }
 #endif
     if (!SDL_Init(SDL_INIT_VIDEO)) return false;
@@ -17369,6 +18289,7 @@ static void forget(App* app) {
     free(app->home_dir);
     for (int i = 0; i < GUI_PLACES; ++i) free(app->place[i]);
     free(app->work_dir);
+    free(app->probe_folder);
     free(app->state_dir);
     free(app->cache_dir);
     free(app->config_dir);
@@ -17446,6 +18367,24 @@ static void open_files(App* app) {
     drivers_load(app);
     if (!app->look_only)
         gui_log("%s starts, its data folder %s", snx_build_log_line(), app->data_dir ? app->data_dir : "(none)");
+#ifndef SDL_PLATFORM_IOS /* there the banner says it, with the space iOS keeps for the app (apple.m) */
+    if (!app->look_only) {
+        char disk[128];
+        disk_room(app, disk, sizeof disk);
+        gui_log("disk: %s", disk);
+    }
+#endif
+#ifdef SDL_PLATFORM_APPLE
+    if (!app->look_only && debug_log(app)) { /* the level at the start: a later change starts neither */
+        gui_apple_state_watch();
+        data_folders_log(app);
+    }
+#elif defined(SDL_PLATFORM_ANDROID)
+    if (!app->look_only && debug_log(app)) { /* the level at the start: a later change starts it not */
+        char why[512];
+        if (!gui_android_state_watch(why, sizeof why)) gui_log("state: not watched: %s", why);
+    }
+#endif
     if (prefs) run_log_follow(app);  /* in the Logs folder app.ini picked */
     if (prefs) recent_as_games(app); /* by the recompiled/ app.ini picked */
     app->users_dir = snx_users_dir(app->home_dir ? app->home_dir : app->data_dir);
@@ -17539,6 +18478,7 @@ int snx_gui_main(const char* self) {
         return 1;
     }
     open_files(&app); /* here, not in initialize(), so the tests keep their own */
+    mark_start(&app, false);
     setup_start(&app);
     app.games_fresh = true;
     watch_start(&app);
@@ -17564,6 +18504,11 @@ int snx_gui_main(const char* self) {
         SDL_Delay(16);
     }
     cleanup(&app);
+#ifdef SDL_PLATFORM_IOS
+    int played = 0;
+    if (gui_apple_played(&played)) return 0; /* the game picked runs in this process next, under this mark */
+#endif
+    snx_run_mark_end();
     return 0;
 }
 #ifndef SNX_GUI_NO_MAIN /* the menu alone: Android's activity runs it, and a build without the Switch runtime */

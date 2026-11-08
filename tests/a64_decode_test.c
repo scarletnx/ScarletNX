@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The decoder tools/a64dec generates from a64.decode and a64.profile (src/common/cpu/aarch64/decode/): hand-encoded
+/* The decoder tools/decodetree generates from a64.decode and a64.profile (src/common/cpu/aarch64/decode/): hand-encoded
    words, one or more per argument set and format family, with the op, the arguments, the flow and the features
    they need checked against the Arm ARM (DDI 0487, chapter C4 "A64 Instruction Set Encoding" for the encoding
    tables, C6 and C7 for each instruction's fields); the hint group's first match; feature gating between the
@@ -15,6 +15,7 @@
 
 #define SW  SNX_A64_TARGET_SWITCH
 #define MAX SNX_A64_TARGET_MAX
+#define ANDROID SNX_A64_TARGET_ANDROID
 
 static struct {
     int failures;
@@ -167,6 +168,14 @@ static void hints(void) {
     NOP(0), NEEDS(SNX_A64_FEAT_PAUTH);
     DEC(0xd503233fu, SW, NOP);
     DEC(0xd503233fu, MAX, PACIASP);
+    /* an Android phone's target has no FEAT_PAuth: PACIASP and AUTIASP (CRm=0011 op2=101), which an app's arm64
+       libraries sign their returns with, are NOPs as on a phone without it, while its atomics decode */
+    DEC(0xd503233fu, ANDROID, NOP);
+    NOP(1);
+    DEC(0xd50323bfu, ANDROID, NOP);
+    NOP(1);
+    DEC(0xd50323bfu, MAX, AUTIASP);
+    DEC(0xf8e00041u, ANDROID, LDADD);
     /* DMB ISH: CRm=1011 (domain=10 types=11) op2=101 (C6.2.95) */
     DEC(0xd5033bbfu, SW, DSB_DMB);
     A(domain, 2), A(types, 3), NOP(0);

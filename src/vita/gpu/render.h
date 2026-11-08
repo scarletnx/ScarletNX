@@ -25,6 +25,12 @@ bool vita_render_done(VitaProcess* p, uint64_t serial);
 bool vita_render_wait(VitaProcess* p, uint64_t serial);
 bool vita_render_idle(VitaProcess* p, bool wait);
 uint64_t vita_render_submitted(VitaProcess* p);
+/* Flush the current recording, preserving a scene in progress; the returned serial is the last submission. */
+uint64_t vita_render_finish(VitaProcess* p);
+/* A same-format, unkeyed transfer between linear guest buffers, recorded on the GPU. */
+bool vita_render_transfer_copy(VitaProcess* p, uint32_t width, uint32_t height, uint32_t bytes_per_pixel,
+                               uint32_t src_address, uint32_t src_x, uint32_t src_y, int32_t src_stride,
+                               uint32_t dst_address, uint32_t dst_x, uint32_t dst_y, int32_t dst_stride);
 /* sceDisplay's framebuffer (A8B8G8R8, pitch pixels a row) shown in the window from its memory on the GPU; false when it
    can't be now (no renderer, or a scene being recorded) */
 bool vita_render_show(VitaProcess* p, uint32_t address, uint32_t pitch, uint32_t width, uint32_t height);

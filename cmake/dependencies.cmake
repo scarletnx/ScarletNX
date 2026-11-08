@@ -67,6 +67,19 @@ add_library(snx_yyjson STATIC "${yyjson_SOURCE_DIR}/src/yyjson.c")
 target_include_directories(snx_yyjson PUBLIC "${yyjson_SOURCE_DIR}/src")
 snx_quiet(snx_yyjson)
 
+# cgltf (MIT) for the Mii parts a glTF 2.0 model gives (src/common/utilities/mii_gltf.c): its implementation in a
+# target of ours, built quiet
+CPMAddPackage(NAME cgltf VERSION 1.15
+              URL https://github.com/jkuhlmann/cgltf/archive/refs/tags/v1.15.tar.gz
+              URL_HASH SHA256=84e352092e5cd6aab7f66de62ddb66beb5e6f18d412ca9d12950d7a55bfef25a
+              DOWNLOAD_ONLY YES)
+file(CONFIGURE OUTPUT "${PROJECT_BINARY_DIR}/generated/cgltf.c" CONTENT "#define CGLTF_IMPLEMENTATION
+#include \"cgltf.h\"
+")
+add_library(snx_cgltf STATIC "${PROJECT_BINARY_DIR}/generated/cgltf.c")
+target_include_directories(snx_cgltf SYSTEM PUBLIC "${cgltf_SOURCE_DIR}")
+snx_quiet(snx_cgltf)
+
 # xxHash (BSD-2-Clause) for the renderer's content hashes (src/nx/gpu/vk/cmd.c's vk_hash): XXH3, about three times
 # XXH64's speed. src/nx/gpu/vk/xxh3.c builds the dispatcher on x86 (the CPU's SSE2, AVX2 or AVX-512 loop, chosen at
 # run time) and xxhash.c on every other architecture, by the compiler's own macros
@@ -218,7 +231,8 @@ if(SNX_JEMALLOC)
     include("${PROJECT_SOURCE_DIR}/cmake/jemalloc.cmake")
 endif()
 
-if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime)
+if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime OR
+   (SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY))
     CPMAddPackage(NAME Vulkan-Headers VERSION 1.4.367
                   URL https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.367.tar.gz
                   URL_HASH SHA256=0df7d58b5df617e0a6a17dec521af459206719f9c7cb12d05d09275597c16f70
@@ -230,12 +244,8 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime)
                   DOWNLOAD_ONLY YES)
     # the 3DS system archives' open stand-ins (cmake/ctr_system_archives.cmake): the RomFS images
     # B3n30/citra_system_archives makes (GPL-2.0-or-later), as the C arrays Azahar's source holds them in, each at the
-    # commit that last changed it
+    # commit that last changed it. The Mii data is ours (src/common/utilities/mii_model.c), made when a game opens it
     if(SNX_BUILD_3DS)
-        CPMAddPackage(NAME AzaharMiiData VERSION 2019
-                      URL https://raw.githubusercontent.com/azahar-emu/azahar/36ae10f555f73fb4e8d05cb676583efc67ecacef/externals/open_source_archives/include/mii.app.romfs.h
-                      URL_HASH SHA256=4538bb4964ce4449732adc0bbf0faf69d7c054a0eee6d5f1dafce17bad409ad1
-                      DOWNLOAD_ONLY YES DOWNLOAD_NO_EXTRACT YES)
         CPMAddPackage(NAME AzaharCountryList VERSION 2019
                       URL https://raw.githubusercontent.com/azahar-emu/azahar/a1517612d37f17e673849e04673a0f3c146d6208/externals/open_source_archives/include/country_list.app.romfs.h
                       URL_HASH SHA256=bd1c384c9788f99ed2cf9157727820c4c0000f6bbc01843ff8642a32e6f90651
@@ -258,9 +268,42 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime)
     endif()
 endif()
 
-# FFmpeg for the Switch runtime's NVDEC and hwopus, the 3DS DSP's AAC decoder and the Vita's movies. It builds with its
-# own configure and make, which cmake/ffmpeg.cmake runs
-if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime)
+# FFmpeg for the Switch runtime's NVDEC and hwopus, the 3DS DSP's AAC decoder, the Vita's movies and the Android
+# driver's images (src/android/hwui/image.c). It builds with its own configure and make, which cmake/ffmpeg.cmake runs
+if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime OR
+   (SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY))
+    # the Android driver's alone: FFmpeg's image codecs and libswscale (cmake/ffmpeg.cmake), and zlib
+    set(snx_ffmpeg_images OFF)
+    if(SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY)
+        set(snx_ffmpeg_images ON)
+        # zlib (zlib license) for FFmpeg's PNG decoder and encoder, which call its inflate and deflate, and for the
+        # Android driver's libz.so, the NDK's zlib that an app's native code links (src/android/bridge/hle_zlib.c).
+        # libdeflate has no stream interface, so they get zlib itself: static, as libz.a in a folder of its own that
+        # FFmpeg's configure finds with -lz
+        CPMAddPackage(NAME zlib VERSION 1.3.2
+                      URL https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.gz
+                      URL_HASH SHA256=bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16
+                      DOWNLOAD_ONLY YES)
+        set(snx_zlib_sha256 bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16)
+        add_library(snx_zlib STATIC
+            "${zlib_SOURCE_DIR}/adler32.c" "${zlib_SOURCE_DIR}/compress.c" "${zlib_SOURCE_DIR}/crc32.c"
+            "${zlib_SOURCE_DIR}/deflate.c" "${zlib_SOURCE_DIR}/infback.c" "${zlib_SOURCE_DIR}/inffast.c"
+            "${zlib_SOURCE_DIR}/inflate.c" "${zlib_SOURCE_DIR}/inftrees.c" "${zlib_SOURCE_DIR}/trees.c"
+            "${zlib_SOURCE_DIR}/uncompr.c" "${zlib_SOURCE_DIR}/zutil.c" "${zlib_SOURCE_DIR}/gzclose.c"
+            "${zlib_SOURCE_DIR}/gzlib.c" "${zlib_SOURCE_DIR}/gzread.c" "${zlib_SOURCE_DIR}/gzwrite.c")
+        target_include_directories(snx_zlib SYSTEM PUBLIC "${zlib_SOURCE_DIR}")
+        if(NOT WIN32)
+            # what zlib's own configure finds: gz*.c's read, write and close
+            target_compile_definitions(snx_zlib PRIVATE Z_HAVE_UNISTD_H)
+        endif()
+        # position independent: FFmpeg is built with --enable-pic, and the Android runtime is a shared library. The
+        # folder is a generator expression so that a multi-config generator (Xcode) adds no folder for the
+        # configuration to it
+        set(snx_zlib_lib_dir "${PROJECT_BINARY_DIR}/zlib/lib")
+        set_target_properties(snx_zlib PROPERTIES OUTPUT_NAME z POSITION_INDEPENDENT_CODE ON
+                                                  ARCHIVE_OUTPUT_DIRECTORY "$<1:${snx_zlib_lib_dir}>")
+        snx_quiet(snx_zlib)
+    endif()
     set(snx_ffmpeg_sha256 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e)
     CPMAddPackage(NAME FFmpeg VERSION 9.0.2
                   URL https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
@@ -366,7 +409,8 @@ if(CMAKE_SYSTEM_NAME MATCHES "^(FreeBSD|NetBSD)$")
 endif()
 option(SNX_SYSTEM_SDL3 "Use the system's SDL3 from find_package, not CPM's pinned source build"
        ${snx_sdl3_system_default})
-if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_GUI OR SNX_BUILD_3DS OR snx_vita_runtime OR SNX_BUILD_AGB)
+if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_GUI OR SNX_BUILD_3DS OR snx_vita_runtime OR SNX_BUILD_AGB OR
+   (SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY))
     if(SNX_SYSTEM_SDL3)
         find_package(SDL3 3.4.16 CONFIG QUIET)
         if(NOT SDL3_FOUND)
@@ -415,6 +459,38 @@ add_library(snx_libdeflate STATIC
     "${libdeflate_SOURCE_DIR}/lib/crc32.c")
 target_include_directories(snx_libdeflate SYSTEM PUBLIC "${libdeflate_SOURCE_DIR}")
 snx_quiet(snx_libdeflate)
+
+# The Android app driver's text (src/android/hwui/), fetched only for a build with the driver: HarfBuzz (MIT) shapes
+# it and gives the glyphs' outlines and metrics, built from its one-file amalgamation without FreeType. Its default
+# family is the Noto Sans JP subset of the shared fonts (SIL OFL 1.1, above), which has Latin and the math signs too:
+# the same package, so a build with the Switch driver fetches it once
+if(SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY)
+    CPMAddPackage(NAME harfbuzz VERSION 15.0.0
+                  URL https://github.com/harfbuzz/harfbuzz/releases/download/15.0.0/harfbuzz-15.0.0.tar.xz
+                  URL_HASH SHA256=968536e9abd782f07f7954044c0c4020199fcdd39b41d221ec42d2a3be4a44df
+                  DOWNLOAD_ONLY YES)
+    add_library(snx_harfbuzz STATIC "${harfbuzz_SOURCE_DIR}/src/harfbuzz.cc")
+    target_include_directories(snx_harfbuzz SYSTEM PUBLIC "${harfbuzz_SOURCE_DIR}/src")
+    set_target_properties(snx_harfbuzz PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+    snx_quiet(snx_harfbuzz)
+    CPMAddPackage(NAME NotoSansJPSubset VERSION 2026
+                  URL https://raw.githubusercontent.com/scarletnx/ScarletNX/777f377013806bc4cdbbc0306eca6e7e9c835df2/dist/fonts/NotoSansJP-Subset.ttf
+                  URL_HASH SHA256=0941fc22edbe0b3b9e8306d4a2feae5e9c0fbd25942600564cc3edb69da88e62
+                  DOWNLOAD_ONLY YES DOWNLOAD_NO_EXTRACT YES)
+    # SQLite (public domain), the amalgamation, for android.database.sqlite (src/android/db/sqlite_jni.c). Its
+    # options are the ones of Android's own build that apps can see: the FTS3, FTS4 and FTS5 modules, no extension
+    # loading
+    CPMAddPackage(NAME sqlite VERSION 3.54.1
+                  URL https://www.sqlite.org/2026/sqlite-amalgamation-3540100.zip
+                  URL_HASH SHA256=0a9c8e34352dad46006aa82836d5383bff9dc6bc9ce5a60553c05aa30e6ad1f9
+                  DOWNLOAD_ONLY YES)
+    add_library(snx_sqlite STATIC "${sqlite_SOURCE_DIR}/sqlite3.c")
+    target_include_directories(snx_sqlite SYSTEM PUBLIC "${sqlite_SOURCE_DIR}")
+    target_compile_definitions(snx_sqlite PRIVATE SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION SQLITE_ENABLE_FTS3
+                               SQLITE_ENABLE_FTS3_BACKWARDS SQLITE_ENABLE_FTS4 SQLITE_ENABLE_FTS5
+                               SQLITE_DEFAULT_JOURNAL_SIZE_LIMIT=524288)
+    snx_quiet(snx_sqlite)
+endif()
 
 # miniz (MIT) for the launcher's Share Log, the logs in one zip (src/gui/logzip.c): the zip around the deflate
 # libdeflate makes. Its one-file release, miniz.c, built alone, without its stdio functions (the zip is made in memory

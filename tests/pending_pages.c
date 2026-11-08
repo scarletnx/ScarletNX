@@ -9,6 +9,8 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
 /* GPU page -> guest address | 1, for the GPU pages under 1 GiB */
 #define GPU_PAGES (1u << 18)
@@ -72,7 +74,68 @@ static void check(int ok, const char* what) {
     }
 }
 
-int main(void) {
+/* Every subrange around two group boundaries, for every possible single occupied page. A double reference must
+   keep its bit until the last removal; ranges ending on bit 63 also guard against shifts by the word size. */
+static void check_groups(PendPages* t) {
+    const u64 first = 0x10000000ull;
+    for (u32 bit = 0; bit < 128; bit++) {
+        u64 at = first + (u64)bit * 4096;
+        pend_add_va(t, at, 4096, 1);
+        pend_add_va(t, at, 4096, 1);
+        pend_add_va(t, at, 4096, -1);
+        for (u32 a = 0; a < 128; a++)
+            for (u32 b = a; b < 128; b++) {
+                int expected = a <= bit && bit <= b;
+                int got = pend_hit_va(t, first + (u64)a * 4096 + 1, (u64)(b - a + 1) * 4096 - 2);
+                check(got == expected, "an exact partial-group range, with a page still referenced");
+            }
+        pend_add_va(t, at, 4096, -1);
+        check(!pend_hit_va(t, first, 128 * 4096), "the last reference removes its occupied bit");
+    }
+    /* Adjacent groups on opposite sides of a leaf boundary use independent occupancy words. */
+    const u64 edge = 0x20000000ull;
+    pend_add_va(t, edge - 4096, 8192, 1);
+    check(pend_hit_va(t, edge - 4096, 8192) && pend_hit_va(t, edge, 1), "occupied pages across a leaf boundary");
+    check(!pend_hit_va(t, edge - 8192, 4096) && !pend_hit_va(t, edge + 4096, 4096),
+          "unoccupied neighbours across a leaf boundary");
+    pend_add_va(t, edge - 4096, 8192, -1);
+    check(pend_empty(t), "the table is empty after all group tests");
+}
+
+/* Optional CPU benchmark of the actual pending-page query, with correctness checked before timing. The common
+   sparse case has a result elsewhere in the same group: the group cannot be skipped but none of its bytes meet. */
+static int bench_groups(void) {
+    static PendPages table;
+    static const u32 widths[] = {1, 16, 63, 64};
+    const u32 operations = 2000000;
+    const u64 first = 0x10000000ull;
+    pend_add_va(&table, first + 63 * 4096, 4096, 1);
+    for (u32 w = 0; w < sizeof widths / sizeof *widths; w++) {
+        u32 width = widths[w], expected = width == 64;
+        u64 elapsed[5];
+        for (u32 round = 0; round < 5; round++) {
+            u32 hits = 0;
+            clock_t begin = clock();
+            for (u32 i = 0; i < operations; i++) hits += pend_hit_va(&table, first, (u64)width * 4096);
+            elapsed[round] = (u64)(clock() - begin) * 1000000000ull / CLOCKS_PER_SEC;
+            check(hits == operations * expected, "benchmark sparse-group answers");
+        }
+        for (u32 i = 0; i < 5; i++)
+            for (u32 j = i + 1; j < 5; j++)
+                if (elapsed[j] < elapsed[i]) {
+                    u64 swap = elapsed[i];
+                    elapsed[i] = elapsed[j];
+                    elapsed[j] = swap;
+                }
+        printf("GPU_HOTPATH_BENCH workload=pending_pages_%u operations=%u ns=%llu exact=1\n",
+               width, operations, (unsigned long long)elapsed[2]);
+    }
+    pend_add_va(&table, first + 63 * 4096, 4096, -1);
+    return failures != 0;
+}
+
+int main(int argc, char** argv) {
+    if (argc == 2 && !strcmp(argv[1], "--bench")) return bench_groups();
     /* tables that last, as the runtime's: none frees the leaves it makes */
     static PendPages tables[3];
     PendPages* t = &tables[0];
@@ -163,6 +226,7 @@ int main(void) {
 
     /* a range to the top of the address space ends there */
     check(!pend_hit(t, ~0ull - 0xFFF, ~0ull), "a range that would wrap");
+    check_groups(t);
     check(!warnings, "no answer of the GPU pages missed a result");
     if (failures) return 1;
     printf("pending pages: aliases, holes, large ranges and removals\n");

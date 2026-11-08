@@ -16,6 +16,7 @@
    there; a record whose blocks don't check out on a read is dropped from the index, and the level is encoded again.
    The file is locked while it is open (snx_lock_file), so a second game process runs without the cache rather than
    writes the same file */
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include "common/utilities/bits.h"
@@ -47,8 +48,8 @@ typedef struct {
     Bc7Entry* map;
     u32 cap; /* slots in map, a power of two */
     u32 used;
-    u8* piece; /* BC7_PIECE bytes */
     u64 hits, stored, restarts;
+    u8 piece[BC7_PIECE]; /* last: what a close clears ends before it */
 } Bc7Cache;
 static Bc7Cache g_bc7_cache;
 
@@ -123,8 +124,7 @@ void vk_bc7_cache_close(void) {
     fclose(g_bc7_cache.f);
     snx_unlock_file(g_bc7_cache.lock);
     free(g_bc7_cache.map);
-    free(g_bc7_cache.piece);
-    memset(&g_bc7_cache, 0, sizeof g_bc7_cache); /* its path makes it over a kilobyte */
+    memset(&g_bc7_cache, 0, offsetof(Bc7Cache, piece)); /* its path and buffer make it over a megabyte */
 }
 
 /* the cache off from now on, for why (an error writing or reading the file) */
@@ -145,12 +145,11 @@ int vk_bc7_cache_open(const char* path, const u64 version[2], u64 max) {
     g_bc7_cache.f = snx_fopen(path, "r+b");
     if (!g_bc7_cache.f) {
         snx_unlock_file(g_bc7_cache.lock);
-        memset(&g_bc7_cache, 0, sizeof g_bc7_cache);
+        memset(&g_bc7_cache, 0, offsetof(Bc7Cache, piece));
         return 0;
     }
     g_bc7_cache.map = calloc(1024, sizeof *g_bc7_cache.map);
-    g_bc7_cache.piece = malloc(BC7_PIECE);
-    if (!g_bc7_cache.map || !g_bc7_cache.piece) {
+    if (!g_bc7_cache.map) {
         bc7_off("out of memory");
         return 0;
     }
@@ -216,7 +215,7 @@ int vk_bc7_cache_read(const u64 key[2], u8* dst, u64 size) {
         h = bc7_check_step(h, vk_hash_copy(dst + o, g_bc7_cache.piece, n));
     }
     if (rec[0] != key[0] || rec[1] != key[1] || rec[2] != size || h != rec[3]) {
-        LOG_LIMIT(8, "vulkan: a record of the BC7 cache did not check out (dropped)\n");
+        LOG_LIMIT(8, "vulkan: a record of the BC7 cache did not check out: dropped, its level is encoded again\n");
         e->size = 0;
         return 0;
     }

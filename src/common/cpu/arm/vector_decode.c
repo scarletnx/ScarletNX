@@ -53,7 +53,7 @@ static int vfp(uint32_t w, SnxArmVector* v) {
         v->flags = ((w >> 20) & 1 ? AV_LOAD : 0) | (u ? AV_UP : 0) | (p ? AV_PRE : 0) | (wb ? AV_WB : 0);
         v->width = sz ? 64 : 32;
         v->imm = (w & 255) * 4;
-        /* A32 allows a PC base without writeback for stores and VLDM too. Thumb doesn't (thumb_decode.c) */
+        /* A32 allows a PC base without writeback for stores and VLDM too. Thumb doesn't (thumb.c) */
         if (p && !wb) { /* VLDR/VSTR (including literals) */
             v->bytes = v->width / 8;
             return 1;

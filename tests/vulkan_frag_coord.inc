@@ -204,3 +204,55 @@ static int check_frag_coord_origin(void) {
     free(channel);
     return 0;
 }
+
+/* A texture laid out otherwise than the render target at its address is another texture in memory the target once
+   had: one game's 256x1 colour ramp sat at the address of a 2048x4096 depth target it no longer drew to, took that
+   target's corner, and its sky stayed white. A 16x1 pitch linear texture over a 64x64 block linear target holds the
+   bytes memory has where it lies, in its own order (the target's first row lies elsewhere from its 17th byte on); a
+   60x32 block linear one, its rows as many GOBs wide as the target's, is still the target's corner */
+static int check_rt_other_layout(void) {
+    const u64 target = 0xae0000000ull, cpu = HEAP_BASE + 0x1d000000;
+    const u32 rgba8 = 0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16;
+    /* 2D, one level: 16x1 pitch linear in rows of 64 bytes (header 2), 60x32 block linear in blocks one GOB tall (3) */
+    const u32 pitch_tic[8] = {rgba8, (u32)target, (u32)(target >> 32) | 2u << 21, 64 >> 5, 15 | 1u << 23, 0, 0, 0};
+    const u32 bl_tic[8] = {rgba8, (u32)target, (u32)(target >> 32) | 3u << 21, 0, 59 | 1u << 23, 31, 0, 0};
+    u8 bytes[512];
+    GpuChannel* channel = calloc(1, sizeof *channel);
+    CHECK(channel);
+    channel->id = 126;
+    /* past the 8 MiB the run maps at its start; left mapped, as the target stays in the caches */
+    CHECK(mem_map(cpu, 0x10000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(target, cpu, 0x10000);
+    rt_clear_format(channel, target, 64, 64, 0, 1, 0xD5); /* RGBA8, blue */
+    Surf* rt = vk_rt_find(target);
+    CHECK(rt && rt->w == 64 && rt->bl);
+    for (u32 i = 0; i < sizeof bytes; i++) bytes[i] = (u8)(i * 7 + 1);
+    CHECK(!gmem_write(target, bytes, sizeof bytes)); /* the texture the game placed there */
+    vk_lock();
+    Surf* t = vk_tex_from_tic(pitch_tic);
+    CHECK(t && t != rt && !t->is_rt && t->w == 16 && t->h == 1 && !t->bl);
+    VkBuffer buffer;
+    u8* data = vk_readback_buffer(64, &buffer);
+    CHECK(data);
+    vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {16, 1, 1}};
+    rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    vk_finish();
+    vk_readback_ready();
+    for (u32 i = 0; i < 64; i++)
+        if (data[i] != bytes[i]) {
+            printf("FAIL: rt other layout: byte %u of the pitch linear texture is %u, memory has %u\n", i, data[i],
+                   bytes[i]);
+            vk_unlock();
+            free(channel);
+            return 1;
+        }
+    /* a header in the target's own layout, narrower: a corner of it, which a dynamic resolution samples */
+    Surf* corner = vk_tex_from_tic(bl_tic);
+    CHECK(corner && corner->is_rt && corner->w == 60 && corner->h == 32); /* rt_crop: sampled as a target */
+    vk_unlock();
+    printf("rt other layout: a pitch linear texture over a block linear target is loaded from memory\n");
+    free(channel);
+    return 0;
+}

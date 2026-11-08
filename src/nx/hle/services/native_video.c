@@ -380,7 +380,7 @@ static int nn_gsv_INativeVideoCodec_InitializeWithTransferMemory(SvcObj* self, u
                                                                  u32 input_format, u32 output_format) {
     NativeVideoCodec* s = self->data;
     KTmem* m = (KTmem*)h_get_ref(memory, KO_TMEM);
-    R_UNLESS(m, RC(1, 114)); /* InvalidHandle */
+    R_UNLESS(m, SNX_RC_SVC_INVALID_HANDLE);
     if (size > m->size) {
         kobj_unref(&m->o);
         R_THROW(NVIDEO_BAD_ARGUMENT);
@@ -483,7 +483,7 @@ static int nn_gsv_INativeVideoCodec_GetSubmissionEvent(SvcObj* self, u32* event)
     NativeVideoCodec* s = self->data;
     R_UNLESS(s->event, NVIDEO_BAD_STATE);
     *event = ev_handle(s->event);
-    R_UNLESS(*event, RC(1, 105)); /* OutOfHandles */
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static void video_fence(const NativeVideoCodec* s, u32 value, nn_gsv_VideoFence* fence) {
@@ -622,7 +622,7 @@ static int nn_gsv_INativeVideoContext_CreateCodec(SvcObj* self, u32* codec) {
     ((NativeVideoCodec*)obj->data)->encoder = context->encoder;
     obj->destroy = nvideo_codec_destroy;
     *codec = session_new(obj);
-    R_UNLESS(*codec, RC(1, 105)); /* OutOfHandles */
+    R_UNLESS(*codec, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nvideo_context_dispatch(SvcObj* self, IpcCtx* c) {
@@ -636,7 +636,7 @@ int native_video_open(int encoder, u32* session) {
                                   NV->context_next, "native video contexts");
     ((NativeVideoContext*)obj->data)->encoder = encoder != 0;
     *session = session_new(obj);
-    R_UNLESS(*session, RC(1, 105)); /* OutOfHandles */
+    R_UNLESS(*session, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 

@@ -268,7 +268,7 @@ static const struct {
                       {"lossless_scaling", "LSFG went with the OpenGL renderer"},
                       {"lossless_path", "LSFG went with the OpenGL renderer"},
                       {"touch_controls", "now controls"},
-                      {"touch_controls_opacity", "now controls_opacity"},
+                      {"touch_controls_opacity", "now controls_alpha"},
                       {"modo_tv", "now docked"},
                       {"idioma", "now language"},
                       {"resolucion", "now resolution"},
@@ -278,12 +278,24 @@ static const struct {
                       {"cpu_fallback", "the runtime JIT compiles the code the recompiler missed"},
                       {"user", "now user_uid, the uid of the user it named"},
                       {"memory_fit", "now memory_fit_mode, whose 0 is Auto (memory_fit's 1) and 1 Off"},
-                      {"astc_bc", "now astc_mode, whose 0 is Auto (BC7, astc_bc's 1) and 1 Exact (RGBA8)"},
+                      {"astc_bc", "now astc_mode, whose 0 is Auto (astc_bc's 1), 1 Exact (RGBA8) and 2 BC7"},
+                      {"controls_opacity", "now controls_alpha: the built-in art is opaque, its 50 the old 100"},
+                      {"vk_descriptors", "now vk_descriptors_mode, of the same values: the default a .ini wrote, 0 and "
+                                         "later 3, is its Automatic"},
                       {NULL, NULL}};
 const char* ini_deprecated(const char* k) {
     int i;
     for (i = 0; INI_DEPRECATED[i].key; i++)
         if (!strcmp(k, INI_DEPRECATED[i].key)) return INI_DEPRECATED[i].now;
+    return NULL;
+}
+static const struct {
+    const char *key, *now;
+} INI_RENAMED[] = {{"vk_descriptors", "vk_descriptors_mode"}, {NULL, NULL}};
+const char* ini_renamed(const char* k) {
+    int i;
+    for (i = 0; INI_RENAMED[i].key; i++)
+        if (!strcmp(k, INI_RENAMED[i].key)) return INI_RENAMED[i].now;
     return NULL;
 }
 void ini_deprecated_head(FILE* f) {

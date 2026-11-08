@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Opt-in integration test: real renderer, no game data. Works with Mesa lavapipe and no display server. */
+#include "nx/gpu/vk/descriptor_objects.h"
 #include "common/utilities/common.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/cli.h"
@@ -9,8 +10,10 @@
 #include "nx/gpu/maxwell/draw_state.h"
 #include "nx/gpu/renderer.h"
 #include "common/gpu/vk/vk_common.h"
+#include "common/utilities/spirv_emit.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
+#include "nx/gpu/vk/extension_bans.h"
 #include "nx/gpu/shader/shader.h"
 #include "nx/gpu/maxwell/kepler_compute_regs.h"
 #include "nx/gpu/maxwell/engines_int.h"
@@ -28,6 +31,7 @@
 #include "nx/memory/own.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/backend.h"
+#include "nx/runtime/platform/plat.h"
 #include "nx/runtime/ini.h"
 #include "snx_settings.h"
 #include "spirv_emitter_fixture.h"
@@ -36,6 +40,7 @@
 #include "support/nvdec_ref.h"
 #include "support/vic_ref.h"
 #include "support/sm86_ref.h"
+#include "support/thread_nice.h"
 #include <libavutil/buffer.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,6 +59,21 @@
    may not be done; without it the result is GPU-owned, and the read lands it by itself (as #690 has it) */
 static void guest_done(u64 cpu, u64 len) {
     if (vk_uma()) vk_uma_mem_need_cpu(cpu, len);
+}
+/* the BC7 encoder's frames (vk_tex_later_frame) until every ASTC texture held as BC7 is, or until a frame does nothing
+   (a texture whose load failed waits for it): the images a check compares are BC7 then. The frames it took */
+static u32 later_drain(void) {
+    VkLaterStats a, b;
+    u32 frames = 0;
+    for (vk_tex_later_stats(&a); a.waiting; a = b) {
+        vk_lock();
+        vk_tex_later_frame();
+        vk_unlock();
+        frames++;
+        vk_tex_later_stats(&b);
+        if (b.blocks == a.blocks && b.made == a.made && b.waiting == a.waiting) break;
+    }
+    return frames;
 }
 
 /* The fatal path of a lost device runs on the recording thread: record.c's submit_run calls fatal(), whose window
@@ -76,6 +96,68 @@ static int check_recorder_self_sync(void) {
     return 0;
 }
 
+/* A frame's descriptor pool holds VK_POOL_ARRAY_SETS sets of the arrays layouts, not 1024: a driver may make a pool's
+   memory for all it can hold as the pool is made (Qualcomm's: 470 MiB for 1024 sets that all could hold the arrays).
+   Its 1024 sets are for the layouts without them; a pool made because a set with the arrays didn't fit holds
+   VK_POOL_ARRAY_SETS_MORE, and every set of a frame finds a pool */
+static int check_desc_pool_arrays(void) {
+    static const u32 kinds[2] = {VK_POOL_ARRAY_SETS, VK_POOL_ARRAY_SETS_MORE};
+    VkDescriptorPoolSize one[VK_POOL_TYPES], arrayed[VK_POOL_TYPES], sz[VK_POOL_TYPES];
+    vk_pool_sizes(one, 1, 0);
+    vk_pool_sizes(arrayed, 1, 1);
+    for (int kind = 0; kind < 2; kind++) {
+        vk_pool_sizes(sz, 1024, kinds[kind]);
+        for (int k = 0; k < VK_POOL_TYPES; k++) /* a set's own descriptors for each set, the arrays for some */
+            CHECK(sz[k].descriptorCount ==
+                  1024 * one[k].descriptorCount + kinds[kind] * (arrayed[k].descriptorCount - one[k].descriptorCount));
+    }
+    if (!g_shader_texture_arrays || g_vk.has_descriptor_buffers) {
+        puts("descriptor pools: no texture arrays here, or descriptor buffers: the pools' sets only");
+        return 0;
+    }
+    CHECK(arrayed[2].descriptorCount == one[2].descriptorCount + 2 * SNX_TEX_ARRAY);
+    CHECK(VK_POOL_ARRAY_SETS_FOR(g_vk_dslayout[1][1]) == VK_POOL_ARRAY_SETS_MORE &&
+          VK_POOL_ARRAY_SETS_FOR(g_vk_dslayout[0][1]) == VK_POOL_ARRAY_SETS);
+    /* each kind of frame pool as vk_desc_pool_new makes it, and how many sets of each fragment layout it holds */
+    u32 held[2][2];
+    for (int kind = 0; kind < 2; kind++) {
+        vk_pool_sizes(sz, 1024, kinds[kind]);
+        VkDescriptorPoolCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                                         .maxSets = 1024,
+                                         .poolSizeCount = VK_POOL_TYPES,
+                                         .pPoolSizes = sz};
+        for (int arrays = 0; arrays < 2; arrays++) {
+            VkDescriptorPool pool;
+            CHECK(VK_OK(vkCreateDescriptorPool(g_vk.dev, &ci, NULL, &pool)));
+            for (held[kind][arrays] = 0; held[kind][arrays] < 2048; held[kind][arrays]++) {
+                VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                                                  .descriptorPool = pool,
+                                                  .descriptorSetCount = 1,
+                                                  .pSetLayouts = &g_vk_dslayout[arrays][1]};
+                VkDescriptorSet set;
+                if (vkAllocateDescriptorSets(g_vk.dev, &ai, &set) != VK_SUCCESS) break;
+            }
+            vkDestroyDescriptorPool(g_vk.dev, pool, NULL);
+        }
+        /* every set without the arrays fits; how many with them depends on how a driver counts (by type or bytes) */
+        CHECK(held[kind][0] == 1024 && held[kind][1] >= kinds[kind]);
+    }
+    /* more sets with the arrays in one frame than a pool holds: the frame's next pools take them */
+    vk_lock();
+    vk_finish();
+    vk_frame_next();
+    u32 pools = vk_desc_pools(), n = 3 * VK_POOL_ARRAY_SETS_MORE + 1;
+    u64 taken = vk_desc_array_sets();
+    for (u32 i = 0; i < n; i++) CHECK(vk_desc_alloc(g_vk_dslayout[1][1]) != VK_NULL_HANDLE);
+    CHECK(vk_desc_array_sets() >= taken + n);
+    vk_finish();
+    vk_frame_next();
+    vk_unlock();
+    printf("descriptor pools: a frame's holds %u sets without the texture arrays and %u with them (%u and %u when "
+           "made for those); %u with them in one frame were all taken (%u pools made for them)\n",
+           held[0][0], held[0][1], held[1][0], held[1][1], n, vk_desc_pools() - pools);
+    return 0;
+}
 /* Graphics descriptor tables fill the frame's descriptor memory. vk_frame_check, which runs before a draw's setup,
    moves on to the next frame while the tables of one more draw still fit: the setup itself never submits for room */
 static int check_descriptor_room(void) {
@@ -861,6 +943,11 @@ static VkViewport viewport_of(const u32* r, u32 index) {
     mx_draw_viewports(r, &v);
     return vk_viewport_from(&d, &v, index);
 }
+static u32 swizzle_key_of(const u32* r) {
+    DsViewports v;
+    mx_draw_viewports(r, &v);
+    return vk_viewport_swizzle_key(&v);
+}
 static VkFrontFace front_face_of(const u32* r) {
     DsDynamic d;
     mx_draw_dynamic(r, &d);
@@ -883,6 +970,36 @@ static int check_viewport_orientation(void) {
     vp = viewport_of(r, 0);
     CHECK(vp.y == 54 && vp.height == -34 && vp.y + vp.height == 20);
     CHECK(front_face_of(r) == VK_FRONT_FACE_CLOCKWISE);
+    CHECK(!swizzle_key_of(r));
+    /* Any other swizzle is the last stage's, keyed with it, and the viewport keeps the transform's sign: a swap of x
+       and y, and one with NegativeY in it. The bits between the fields are none of theirs */
+    const u32 others[3] = {0x6402, 0x6413, 0xE4AA};
+    for (u32 i = 0; i < 3; i++) {
+        r[0x286] = others[i];
+        vp = viewport_of(r, 0);
+        CHECK(vp.y == 20 && vp.height == 34);
+        CHECK(swizzle_key_of(r) == (SNX_SH_SWIZZLE | (others[i] & DS_SWIZZLE_MASK) << SNX_SH_SWIZZLE_SHIFT));
+    }
+    r[0x286] = 0x6420 | 0x8888;
+    CHECK(!swizzle_key_of(r));
+    /* A program that selects viewport 1 draws it with viewport 0's swizzle when that is the last stage's, and with its
+       own when it is NegativeY and viewport 0's the viewport's too: other than that, the identity */
+    {
+        DsViewports v;
+        r[0x286] = 0x6402;
+        r[0x28e] = 0x6420;
+        mx_draw_viewports(r, &v);
+        CHECK(vk_viewport_swizzle_drawn(&v, 0) == 0x6402 && vk_viewport_swizzle_drawn(&v, 1) == 0x6402);
+        r[0x286] = 0x6420;
+        r[0x28e] = 0x6430;
+        mx_draw_viewports(r, &v);
+        CHECK(vk_viewport_swizzle_drawn(&v, 1) == 0x6430);
+        r[0x28e] = 0x6402;
+        mx_draw_viewports(r, &v);
+        CHECK(vk_viewport_swizzle_drawn(&v, 1) == 0x6420);
+        r[0x28e] = 0;
+    }
+    r[0x286] = 0x6430;
     /* Negative scale and negative coordinate swizzle cancel in the viewport. */
     transform[1] = -17;
     memcpy(&r[0x280], transform, sizeof transform);
@@ -942,6 +1059,9 @@ static int check_viewport_orientation(void) {
         vp = viewport_of(r, i);
         CHECK(vp.x == 0 && vp.y == 0 && vp.width == 64 && vp.height == 48 && vp.minDepth == 0 && vp.maxDepth == 1);
     }
+    r[0x286] = 0x6402;
+    CHECK(!swizzle_key_of(r));
+    r[0x286] = 0x6430;
     r[0x4eb] = 1;
     vp = viewport_of(r, 0);
     CHECK(vp.x == 0 && vp.y == 48 && vp.width == 64 && vp.height == -48);
@@ -989,17 +1109,23 @@ static int gpu_unpack(const VkFmt* f, const u32* src, u32 n, u32* depth, u8* ste
     return 0;
 }
 
-/* astc_mode: Auto (0, the default) gives an ASTC texture a BC7 image where the GPU samples BCn but not ASTC, Exact (1)
-   an RGBA8 one; where the GPU samples ASTC, both keep the game's blocks */
+/* astc_mode: where the GPU samples BCn but not ASTC, an ASTC texture is held as BC7 by BC7 (2), as RGBA8 by Exact (1),
+   and by Auto (0, the default) as the budget at start said (device.c astc_choose: BC7 under 8 GiB); where the GPU
+   samples ASTC, all three keep the game's blocks */
 static int check_astc_mode(void) {
-    for (int mode = 0; mode < 2; mode++) {
+    u64 usage, budget;
+    vk_mem_use(&usage, &budget);
+    for (int mode = 0; mode < 3; mode++) {
         g_settings.astc_mode = mode;
-        const VkFormat want = g_vk.feat.textureCompressionASTC_LDR      ? VK_FORMAT_ASTC_4x4_UNORM_BLOCK
-                              : g_vk.feat.textureCompressionBC && !mode ? VK_FORMAT_BC7_UNORM_BLOCK
-                                                                        : VK_FORMAT_R8G8B8A8_UNORM;
-        CHECK(vk_tic_format(0x40, 0).vk == want);
+        const int bc7 = mode == 2 || (mode == 0 && g_vk.astc_auto_bc7);
+        const VkFormat want = g_vk.feat.textureCompressionASTC_LDR    ? VK_FORMAT_ASTC_4x4_UNORM_BLOCK
+                              : g_vk.feat.textureCompressionBC && bc7 ? VK_FORMAT_BC7_UNORM_BLOCK
+                                                                      : VK_FORMAT_R8G8B8A8_UNORM;
+        CHECK(vk_tic_format(0x40, 0).vk == want && vk_astc_bc7() == bc7);
     }
     g_settings.astc_mode = 0;
+    printf("astc_mode: Auto holds ASTC textures as %s here (a budget of %llu MB now), Exact as RGBA8, BC7 as BC7\n",
+           g_vk.astc_auto_bc7 ? "BC7" : "RGBA8", (unsigned long long)(budget >> 20));
     return 0;
 }
 
@@ -1090,8 +1216,18 @@ static int check_depth_writeback(void) {
         r[0x368] = 0x5A;
         engine_clear(ch, 3);
         vk_render_end();
-        CHECK(vk_rt_find(gva));
+        Surf* zt = vk_rt_find(gva);
+        CHECK(zt);
+        /* its move out of the attachment layout names no sample locations, as they are the standard ones: a barrier
+           that chains them drains the recording thread's ring (one game's depth targets did it every pass) */
+        u64 synced = g_rec_barriers_synced;
         vk_rt_flush(gva);
+        if (g_rec_barriers_synced != synced) {
+            fprintf(stderr, "depth write-back of zeta %#x: %llu barriers waited for the recording thread%s\n",
+                    c[k].zeta, (unsigned long long)(g_rec_barriers_synced - synced),
+                    zt->sample_locations_compatible ? " (the target takes sample locations)" : "");
+            return 1;
+        }
         CHECK(!gmem_read(gva, out, 16 * 16 * c[k].bpp));
         for (u32 i = 0; i < 16 * 16; i++) {
             u32 lo, hi = 0;
@@ -1106,6 +1242,7 @@ static int check_depth_writeback(void) {
     }
     CHECK(mem_unmap(base, 0x40000) == 0);
     free(ch);
+    printf("Depth targets write back with no barrier waiting for the recording thread\n");
     return 0;
 }
 /* A volume of more than 512 Mi texels whose bytes the GPU holds is a texture (a game's light volume, 1664x448x1344 of
@@ -1281,6 +1418,89 @@ static int read_pixel_at(Surf* target, u32 x, u32 y, u8 out[4]) {
 }
 /* a single-layer target's pixel 0 as its image holds it */
 static int read_pixel0(Surf* target, u8 out[4]) { return read_pixel_at(target, 0, 0, out); }
+
+/* A blit from an sRGB target to an sRGB image keeps its bytes, as the presentation's blit to an sRGB swapchain must:
+   vkCmdBlitImage converts by the images' own formats, so a target whose image were its linear twin would be encoded
+   a second time and come out washed out */
+static int check_srgb_blit(void) {
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    u32* r = ch->r3d;
+    r[0x487] = 1;
+    r[0x201] = 0x480000;
+    r[0x202] = 64; /* 16 RGBA pixels, pitch linear */
+    r[0x203] = 16;
+    r[0x204] = 0xD6; /* A8B8G8R8 sRGB */
+    r[0x205] = 0x1000;
+    r[0x206] = 1;
+    r[0x207] = 1024;
+    r[0x56E] = 1;
+    const float color[4] = {0.25f, 0.5f, 0.75f, 1};
+    memcpy(&r[0x360], color, sizeof color);
+    engine_clear(ch, 15 << 2);
+    vk_render_end();
+    Surf* target = vk_rt_find(r[0x201]);
+    CHECK(target && target->f.vk == VK_FORMAT_R8G8B8A8_SRGB);
+    u8 stored[4];
+    CHECK(!read_pixel0(target, stored));
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .imageType = VK_IMAGE_TYPE_2D,
+                            .format = VK_FORMAT_R8G8B8A8_SRGB,
+                            .extent = {16, 16, 1},
+                            .mipLevels = 1,
+                            .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+    VkImage dst;
+    VmaAllocation mem;
+    vk_lock();
+    CHECK(vk_image_create(&ii, &dst, &mem));
+    VkCommandBuffer cb = vk_cmd();
+    vk_surf_use(cb, target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkImageMemoryBarrier2 to_dst = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                    .dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT,
+                                    .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                                    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    .image = dst,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    VkDependencyInfo di = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &to_dst};
+    rec_CmdPipelineBarrier2(cb, &di);
+    VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                        .srcOffsets = {{0, 0, 0}, {16, 16, 1}},
+                        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                        .dstOffsets = {{0, 0, 0}, {16, 16, 1}}};
+    rec_CmdBlitImage(cb, target->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     1, &blit, VK_FILTER_NEAREST);
+    VkBuffer buffer;
+    u8* data = vk_readback_buffer(4, &buffer);
+    CHECK(data);
+    to_dst.srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+    to_dst.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    to_dst.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    to_dst.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    to_dst.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_dst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    rec_CmdPipelineBarrier2(cb, &di);
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {1, 1, 1}};
+    rec_CmdCopyImageToBuffer(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    vk_unlock();
+    vk_finish();
+    vk_readback_ready();
+    for (u32 i = 0; i < 4; i++) {
+        if (abs((int)data[i] - stored[i]) > 1)
+            fprintf(stderr, "srgb blit: byte %u stored %u, blitted %u (encoded twice when above)\n", i, stored[i],
+                    data[i]);
+        CHECK(abs((int)data[i] - stored[i]) <= 1);
+    }
+    vk_lock();
+    vk_image_destroy(dst, mem);
+    vk_unlock();
+    free(ch);
+    return 0;
+}
 
 /* Clears as load ops: a whole-target clear before any draw of its pass is the pass's LOAD_OP_CLEAR, and gives the
    pixels a vkCmdClearAttachments gave. A discarded target's next pass loads it as DONT_CARE, and what that pass writes
@@ -1653,7 +1873,7 @@ static int check_sampler_reduction(void) {
                                 .format = VK_FORMAT_R32_SFLOAT,
                                 .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
     VkImageView view;
-    CHECK(vkCreateImageView(g_vk.dev, &vi, NULL, &view) == VK_SUCCESS);
+    CHECK(vk_image_view_create(g_vk.dev, &vi, NULL, &view) == VK_SUCCESS);
     size_t words = 0;
     u32* code = snx_test_spirv_sample(&words);
     CHECK(code);
@@ -1717,7 +1937,7 @@ static int check_sampler_reduction(void) {
     g_vk.has_minmax_swizzle = 1;
     CHECK(!minmax || vk_tex_bind_sampler(least, swizzled, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) != avg);
     g_vk.has_minmax_swizzle = had_swizzle;
-    vkDestroyImageView(g_vk.dev, view, NULL);
+    vk_image_view_destroy(g_vk.dev, view, NULL);
     vmaDestroyImage(g_vk.vma, image, image_memory);
     return 0;
 }
@@ -2212,6 +2432,7 @@ static Surf* sv_frame(const u32* tic) {
     vk_lock();
     Surf* t = vk_tex_from_tic(tic);
     vk_unlock();
+    later_drain(); /* and the encoder's frames: a texture held as BC7 is */
     return t;
 }
 /* one way in: after it, the next frame's texture is the one made, all of it is memory's, and it loaded at most most
@@ -3173,7 +3394,7 @@ static int check_sparse_pieces_batched(void) {
    mapped tiles and mip tails alone */
 #define RS_TILE 0x10000u
 /* the format such a texture is made in: NVN's, its tile's texels across and down, and its image's blocks (texels
-   across and bytes): RGBA8, or ASTC 4x4 held as BC7 (astc_mode=0, Auto), whose image is compared with the same texture made
+   across and bytes): RGBA8, or ASTC 4x4 held as BC7 (astc_mode=2), whose image is compared with the same texture made
    whole, not with memory */
 typedef struct {
     const char* name;
@@ -3463,6 +3684,7 @@ static int resident_texture(const RsFmt* as, u32 size, u32 layers, u64 gva, u64 
     Surf* whole2 = vk_tex_from_tic(ref2.tic);
     g_vk.resident = had_resident;
     vk_unlock();
+    later_drain(); /* the ASTC ones made whole are BC7 between frames */
     CHECK(t && whole && whole2 && t->levels == r.levels && t->layers == layers);
     VkMemoryRequirements req;
     vkGetImageMemoryRequirements(g_vk.dev, t->img, &req);
@@ -3491,12 +3713,16 @@ static int resident_texture(const RsFmt* as, u32 size, u32 layers, u64 gva, u64 
     CHECK(t->bytes == want + block && !rs_differ("a tile mapped", t, whole, &r));
     CHECK(bytes[1] - bytes[0] == RS_TILE); /* the tile alone (an ASTC one made whole, its memory no longer with
                                                holes, is checked by its hash) */
-    /* a tile unmapped: its memory goes, it reads zeros */
+    /* a tile unmapped: its memory goes, it reads zeros. Each step comes 7 frames (14 presents) after the one before: an
+       ASTC texture made whole and held as BC7, written again within the frames its encode takes and one, is held Exact
+       (texture.c later_soon), RGBA8 where the resident one is BC7 */
+    CHECK(!rs_frames(&r, &ref, t, whole, 7));
     for (u32 j = 0; j < 2; j++) gmmu_space_unmap((j ? ref_gva : gva) + rs_page(&r, at[made + 1]) * RS_TILE, RS_TILE);
     CHECK(!rs_frames(&r, &ref, t, whole, 1));
     CHECK(t->bytes == want && !rs_differ("a tile unmapped", t, whole, &r));
     /* a mip tail unmapped, its memory released and freed once the frames are done; then 4 KiB of it mapped again from
        another page: the tail bound again, likely over the memory it had, and loaded whole, the rest of it zeros */
+    CHECK(!rs_frames(&r, &ref, t, whole, 7));
     for (u32 j = 0; j < 2; j++) gmmu_space_unmap((j ? ref_gva : gva) + rs_page(&r, at[tail]) * RS_TILE, RS_TILE);
     CHECK(!rs_frames(&r, &ref, t, whole, 1));
     const u64 untailed = t->bytes;
@@ -3507,6 +3733,7 @@ static int resident_texture(const RsFmt* as, u32 size, u32 layers, u64 gva, u64 
         vk_cmd();
     }
     vk_unlock();
+    CHECK(!rs_frames(&r, &ref, t, whole, 7));
     for (u32 j = 0; j < 2; j++)
         gmmu_map((j ? ref_gva : gva) + rs_page(&r, at[tail]) * RS_TILE, cpu + (u64)(made + 2) * RS_TILE, 0x1000);
     CHECK(!rs_frames(&r, &ref, t, whole, 1));
@@ -3551,12 +3778,12 @@ static int check_resident_texture(void) {
                             most, n));
     return 0;
 }
-/* the same for an ASTC 4x4 texture held as BC7 (astc_mode=0, Auto), whose tiles of 64x64 blocks are BC7's 256x256 texels:
+/* the same for an ASTC 4x4 texture held as BC7 (astc_mode=2), whose tiles of 64x64 blocks are BC7's 256x256 texels:
    its bound tiles are decoded where they lie, its image the same texture's made whole there and zeros elsewhere */
 static int check_resident_astc(void) {
     const int had = g_settings.astc_mode;
     RsTex probe;
-    g_settings.astc_mode = 0;
+    g_settings.astc_mode = 2;
     rs_make(&probe, &RS_ASTC4, 256, 1, 0xA10000000ull);
     const VkFmt f = vk_tic_format(probe.tic[0], 0);
     if (f.conv != VKC_ASTC || f.vk != VK_FORMAT_BC7_UNORM_BLOCK) {
@@ -3565,14 +3792,15 @@ static int check_resident_astc(void) {
         g_settings.astc_mode = had;
         return 0;
     }
-    /* the decoder's buffers made first, by a texture of its own mapped whole: what the textures below allocate is
-       counted without them */
+    /* the decoder's and the encoder's buffers made first, by a texture of its own mapped whole, made BC7 between
+       frames: what the textures below allocate is counted without them */
     CHECK(mem_map(HEAP_BASE + 0x1200000, probe.lay.size, MS_NORMAL, PERM_RW) == 0);
     gmmu_map(probe.tex.gpu, HEAP_BASE + 0x1200000, probe.lay.size);
     vk_lock();
     CHECK(vk_tex_from_tic(probe.tic));
     vk_finish();
     vk_unlock();
+    later_drain();
     gmmu_space_unmap(probe.tex.gpu, probe.lay.size);
     CHECK(mem_unmap(HEAP_BASE + 0x1200000, probe.lay.size) == 0);
     /* 2048x2048, 12 levels, levels 0 to 3 in tiles: two tiles of level 0, one of level 1 and of level 3, the mip tail;
@@ -3587,6 +3815,85 @@ static int check_resident_astc(void) {
                                   HEAP_BASE + 0x1200000, one, 5);
     failed |= resident_texture(&RS_ASTC4, 512, 1, 0xA40000000ull, 0xA50000000ull, 0xA60000000ull, HEAP_BASE + 0x1200000,
                                most, 5);
+    g_settings.astc_mode = had;
+    return failed;
+}
+
+/* An ASTC array is uploaded a level at a time over all its layers (vk_astc_upload_layers): a layer and level at a time,
+   each layer's encoder dispatch waited for the one before, and one game's arrays of 118 layers of 128x128 in 8 levels
+   took 667 ms of an RX 6700 XT as BC7 (docs/ASTC.md). Held as BC7 (astc_mode 2), the encoder makes its BC7 image
+   between frames a level at a time too, all the layers in one dispatch; and each layer's image is the one its memory
+   makes as a 2D texture on its own, as BC7 and as RGBA8 (astc_mode 1) */
+static int astc_array_levels(int mode) {
+    static const RsFmt as_rgba8 = {"ASTC 4x4 as RGBA8", NVN_FORMAT_RGBA_ASTC_4x4, 256, 1, 4, 1};
+    const RsFmt* as = mode == 1 ? &as_rgba8 : &RS_ASTC4;
+    const u32 layers = 8; /* 7 levels each: rs_image's 64 regions */
+    const u64 cpu = HEAP_BASE + 0x1E000000 + (u64)mode * 0x100000;
+    RsTex arr;
+    g_settings.astc_mode = mode;
+    rs_make(&arr, as, 64, layers, 0xA80000000ull + (u64)mode * 0x1000000);
+    arr.tex.d.flags = 0; /* made whole, as a game's texture is */
+    nvn_tex_layout(&arr.tex.d, &arr.lay);
+    nvn_tic_encode(&arr.tex, NULL, 0, 0, arr.tic);
+    const VkFmt f = vk_tic_format(arr.tic[0], 0);
+    if (f.conv != VKC_ASTC || f.vk != (mode == 1 ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_BC7_UNORM_BLOCK)) {
+        printf("ASTC array levels, %s: the GPU %s, skipped\n", as->name,
+               f.conv != VKC_ASTC ? "samples ASTC as it is" : "holds no such image");
+        return 0;
+    }
+    const u64 size = (arr.lay.size + RS_TILE - 1) / RS_TILE * RS_TILE;
+    CHECK(mem_map(cpu, size, MS_NORMAL, PERM_RW) == 0);
+    for (u64 k = 0; k < size / RS_TILE; k++) rs_fill(&arr, GP(cpu + k * RS_TILE), (u32)k + 3); /* a color a block */
+    gmmu_map(arr.tex.gpu, cpu, size);
+    later_drain(); /* what the checks before left to the encoder */
+    const u64 before = vk_astc_dispatches();
+    vk_lock();
+    Surf* t = vk_tex_from_tic(arr.tic);
+    vk_finish();
+    vk_unlock();
+    const u32 frames = later_drain();
+    const u64 dispatches = vk_astc_dispatches() - before;
+    CHECK(t && t->layers == layers && t->levels == arr.levels);
+    if (dispatches != (mode == 1 ? 0 : arr.levels) || frames != (mode == 1 ? 0u : 1u)) {
+        fprintf(stderr,
+                "ASTC array of %u layers in %u levels, %s: %llu encoder dispatches in %u frames, not %u in %u\n",
+                layers, arr.levels, as->name, (unsigned long long)dispatches, frames, mode == 1 ? 0 : arr.levels,
+                mode == 1 ? 0u : 1u);
+        return 1;
+    }
+    u8* image = rs_image(t, &arr);
+    CHECK(image);
+    u64 at = 0;
+    for (u32 k = 0; k < layers; k++) {
+        RsTex one;
+        rs_make(&one, as, 64, 1, arr.tex.gpu + k * arr.lay.layer_size);
+        one.tex.d.flags = 0;
+        nvn_tex_layout(&one.tex.d, &one.lay);
+        nvn_tic_encode(&one.tex, NULL, 0, 0, one.tic);
+        vk_lock();
+        Surf* o = vk_tex_from_tic(one.tic);
+        vk_unlock();
+        later_drain();
+        u8* alone = o ? rs_image(o, &one) : NULL;
+        const u64 bytes = rs_bytes(&one);
+        if (!alone || memcmp(alone, image + at, (size_t)bytes)) {
+            fprintf(stderr, "ASTC array of %u layers, %s: layer %u's image differs from the texture its memory makes\n",
+                    layers, as->name, k);
+            return 1;
+        }
+        free(alone);
+        at += bytes;
+    }
+    free(image);
+    gmmu_space_unmap(arr.tex.gpu, size);
+    CHECK(mem_unmap(cpu, size) == 0);
+    printf("ASTC array of %u layers, %s: %llu encoder dispatches, each layer as its memory alone makes it\n", layers,
+           as->name, (unsigned long long)dispatches);
+    return 0;
+}
+static int check_astc_array_levels(void) {
+    const int had = g_settings.astc_mode;
+    int failed = astc_array_levels(2) || astc_array_levels(1);
     g_settings.astc_mode = had;
     return failed;
 }
@@ -3653,6 +3960,7 @@ static int resident_in_flight(const RsFmt* as, u64 gva, u64 ref_gva, u64 cpu) {
         g_vk.feat.sparseResidencyImage2D = had2d;
     }
     vk_unlock();
+    later_drain(); /* the ASTC one made whole is BC7 between frames */
     CHECK(t && t->bricks && (!as->astc || (whole && !whole->bricks)));
     CHECK(rs_want(&r, whole, xa, want[0]) && rs_want(&r, whole, xb, want[1]));
     vk_lock();
@@ -3742,7 +4050,10 @@ static int resident_in_flight(const RsFmt* as, u64 gva, u64 ref_gva, u64 cpu) {
     vk_readback_ready();
     memcpy(got[4], back + 64, n);
     vk_unlock();
-    if (as->astc) { /* the texture made whole over the same pages, for what the tile holds now */
+    if (as->astc) {
+        /* the texture made whole over the same pages, for what the tile holds now; written 5 frames after it was made,
+           past the 3 its encode takes and one, as held Exact it would be RGBA8 (texture.c later_soon) */
+        for (int i = 0; i < 4; i++) CHECK(sv_frame(ref.tic) == whole);
         gmmu_map(ref_gva + rs_page(&r, a) * RS_TILE, cpu + 2 * (u64)RS_TILE, RS_TILE);
         CHECK(sv_frame(ref.tic) == whole);
     }
@@ -3766,7 +4077,7 @@ static int resident_in_flight(const RsFmt* as, u64 gva, u64 ref_gva, u64 cpu) {
 static int check_resident_texture_in_flight(void) {
     const int had = g_settings.astc_mode;
     CHECK(!resident_in_flight(&RS_RGBA8, 0x960000000ull, 0, HEAP_BASE + 0x1300000));
-    g_settings.astc_mode = 0; /* held as BC7 where the GPU samples BCn and not ASTC; rs_device_can skips it elsewhere */
+    g_settings.astc_mode = 2; /* held as BC7 where the GPU samples BCn and not ASTC; rs_device_can skips it elsewhere */
     int failed = resident_in_flight(&RS_ASTC4, 0xA70000000ull, 0xA80000000ull, HEAP_BASE + 0x1300000);
     g_settings.astc_mode = had;
     return failed;
@@ -3882,7 +4193,8 @@ static int check_dma_owners(void) {
    linear from a row inside a row of blocks, block linear to pitch with the source's rows of blocks cut by the bands
    and lines past it reading zero, between block heights 8 and 1 GOBs, the remap, a fill, a kept component, the
    source read at submission, and a slice of a volume. They used to be dropped, the destination left with the bytes
-   it had */
+   it had. Copies that fit the cap, up to the byte, take no bands unless their scratch needs more than a quarter of
+   it */
 static int check_dma_bands(void) {
     const u64 cap = g_vk.alloc_cap;
     u64 copies, bands, bytes, copies0, bands0, bytes0;
@@ -3960,13 +4272,54 @@ static int check_dma_bands(void) {
     failed |= dma_case(o);
     u64 one_copies, one_bands, one_bytes;
     vk_dma_stats(&one_copies, &one_bands, &one_bytes);
+    /* lines whose scratch rows need more than a quarter of the cap go in bands that ask for that quarter at most, as
+       the scratch buffer stays as big as the most asked of it: half the cap, the cap exactly (64 KiB of source lines,
+       of the destination's tiles and of scratch rows), also read at submission, and twice it, in bands of up to 32
+       lines, so fewer than 16 of them */
+    static const u32 rows_lines[4] = {64, 128, 128, 256};
+    const u64 quarter = (64 << 10) / VK_PART_SHARE;
+    u64 asked[4], took[4], c, m, b0, b1;
+    int over = 0;
+    o.multi = 1;
+    o.width = o.line_in = o.line_out = 512;
+    o.src = pitch_side(0x1000, 512);
+    o.dst = bl_side(0x40000, 512, 256, 1, 0, 0);
+    for (int i = 0; i < 4; i++) {
+        vk_dma_stats(&c, &b0, &m);
+        o.lines = rows_lines[i];
+        vk_bl_scratch_asked();
+        failed |= i == 2 ? dma_snap_case(o) : dma_case(o);
+        asked[i] = vk_bl_scratch_asked();
+        vk_dma_stats(&c, &b1, &m);
+        took[i] = b1 - b0;
+    }
+    /* the cap exactly with no scratch rows, pitch to pitch: all of it, with no bands */
+    o.dst = pitch_side(0x40000, 512);
+    o.lines = 128;
+    vk_dma_stats(&c, &b0, &m);
+    failed |= dma_case(o);
+    vk_dma_stats(&c, &b1, &m);
     g_vk.alloc_cap = cap;
-    if (failed || copies - copies0 != 9 || bands - bands0 < 9 * 2 || one_copies != copies + 1 || one_bands != bands)
-        fprintf(stderr, "dma bands: failed %d, %llu copies in %llu bands, then %llu copy in %llu bands\n", failed,
-                (unsigned long long)(copies - copies0), (unsigned long long)(bands - bands0),
-                (unsigned long long)(one_copies - copies), (unsigned long long)(one_bands - bands));
+    for (int i = 0; i < 4; i++)
+        if (asked[i] > quarter || (i == 3 && took[i] >= 16)) {
+            fprintf(stderr,
+                    "dma bands: %u lines of 512 bytes into block linear asked for %llu bytes of scratch in %llu bands: "
+                    "%llu at most may stay, in fewer than 16 bands for 256 lines\n",
+                    rows_lines[i], (unsigned long long)asked[i], (unsigned long long)took[i],
+                    (unsigned long long)quarter);
+            over = 1;
+        }
+    if (failed || copies - copies0 != 9 || bands - bands0 < 9 * 2 || one_copies != copies + 1 || one_bands != bands ||
+        b1 != b0)
+        fprintf(stderr,
+                "dma bands: failed %d, %llu copies in %llu bands, then %llu copy in %llu bands, the cap pitch to pitch "
+                "in %llu bands (0 expected)\n",
+                failed, (unsigned long long)(copies - copies0), (unsigned long long)(bands - bands0),
+                (unsigned long long)(one_copies - copies), (unsigned long long)(one_bands - bands),
+                (unsigned long long)(b1 - b0));
     CHECK(!failed && copies - copies0 == 9 && bands - bands0 >= 9 * 2);
     CHECK(one_copies == copies + 1 && one_bands == bands && one_bytes > bytes);
+    CHECK(!over && b1 == b0);
     return 0;
 }
 
@@ -3977,16 +4330,24 @@ static int check_dma_bands(void) {
    every sample once, into an image no bigger than the part (an image past the cap goes in pieces, which lavapipe draws
    into in another layout than it copies from). Each is loaded from guest memory holding a pattern and drawn red only
    (a masked clear), so memory gets red 128 in every pixel's first byte and keeps the pattern in the others, each where
-   the guest's layout has it. They used to stay on the GPU, memory unchanged */
-static int flush_parts_case(u64 gva, u64 cpu, u32 width_reg, u32 h, u32 layout, u32 layers, u32 layer_bytes, u32 msaa) {
+   the guest's layout has it. They used to stay on the GPU, memory unchanged. With load_cap, a block linear one is
+   made over other bytes and drawn, then loaded again from the pattern and written back under a cap of load_cap: in
+   bands of rows, the scratch buffer asked for a quarter of the cap at most each way, as it stays as big as the most
+   asked of it (a write-back of a target that fits the cap goes whole, its swizzle in bands). Those loads used to ask
+   for the whole target, or found no staging past the cap and kept the old pixels, and that write-back asked for the
+   whole target too */
+static u8 flush_pattern(u64 i) { return (u8)(i % 4 ? i * 7 + (i >> 10) * 3 + 1 : (i * 5 + (i >> 9)) & 0x3F); }
+static int flush_parts_case(u64 gva, u64 cpu, u32 width_reg, u32 h, u32 layout, u32 layers, u32 layer_bytes, u32 msaa,
+                            u64 load_cap) {
     GpuChannel* ch = calloc(1, sizeof *ch);
     const u64 cap = g_vk.alloc_cap, size = (u64)layer_bytes * layers;
+    int bad = 0;
     CHECK(ch);
     u32* r = ch->r3d;
     u8* got = (u8*)malloc(size);
     CHECK(got);
     for (u64 i = 0; i < size; i++) /* below 64 in the red bytes */
-        GP(cpu)[i] = (u8)(i % 4 ? i * 7 + (i >> 10) * 3 + 1 : (i * 5 + (i >> 9)) & 0x3F);
+        GP(cpu)[i] = load_cap ? 0x33 : flush_pattern(i);
     r[0x574] = msaa;
     r[0x487] = 1;
     r[0x200] = (u32)(gva >> 32);
@@ -4001,17 +4362,47 @@ static int flush_parts_case(u64 gva, u64 cpu, u32 width_reg, u32 h, u32 layout, 
     memcpy(&r[0x360], red, sizeof red);
     for (u32 l = 0; l < layers; l++) engine_clear(ch, (1 << 2) | (l << 10));
     vk_render_end();
+    if (load_cap) {
+        for (u64 i = 0; i < size; i++) GP(cpu)[i] = flush_pattern(i);
+        g_vk.alloc_cap = load_cap;
+        vk_bl_scratch_asked();
+        vk_rt_reload(gva);
+        u64 asked = vk_bl_scratch_asked();
+        g_vk.alloc_cap = cap;
+        if (!asked || asked > load_cap / VK_PART_SHARE) {
+            fprintf(
+                stderr,
+                "load in bands of layout %#x, %u layers, under a cap of %llu: the scratch buffer was asked for %llu "
+                "bytes, %llu at most may stay\n",
+                layout, layers, (unsigned long long)load_cap, (unsigned long long)asked,
+                (unsigned long long)(load_cap / VK_PART_SHARE));
+            bad = 1;
+        }
+        for (u32 l = 0; l < layers; l++) engine_clear(ch, (1 << 2) | (l << 10));
+        vk_render_end();
+    }
     const Surf* s = vk_rt_find(gva);
     CHECK(s && s->msaa == msaa);
     u64 samples = msaa ? (u64)(s->w << ds_msaa_log2_x(msaa)) * (s->h << ds_msaa_log2_y(msaa)) * layers : 0;
-    u64 unpacked = vk_ms_unpacked();
-    g_vk.alloc_cap = 64 << 10;
+    u64 unpacked = vk_ms_unpacked(), flush_cap = load_cap ? load_cap : 64 << 10;
+    g_vk.alloc_cap = flush_cap;
+    vk_bl_scratch_asked();
     vk_rt_flush(gva);
+    u64 flush_asked = vk_bl_scratch_asked();
     g_vk.alloc_cap = cap;
+    if (!(layout & 0x1000) && flush_asked > flush_cap / VK_PART_SHARE) {
+        fprintf(
+            stderr,
+            "write-back of layout %#x, %u layers, msaa %u under a cap of %llu: the scratch buffer was asked for %llu "
+            "bytes, %llu at most may stay\n",
+            layout, layers, msaa, (unsigned long long)flush_cap, (unsigned long long)flush_asked,
+            (unsigned long long)(flush_cap / VK_PART_SHARE));
+        bad = 1;
+    }
     unpacked = vk_ms_unpacked() - unpacked;
     CHECK(!gmem_read(gva, got, size));
     for (u64 i = 0; i < size; i++) {
-        u8 want = (u8)(i % 4 ? i * 7 + (i >> 10) * 3 + 1 : 128);
+        u8 want = i % 4 ? flush_pattern(i) : 128;
         if (i % 4 ? got[i] != want : abs((int)got[i] - 128) > 1) {
             fprintf(stderr, "write-back in parts of layout %#x, %u layers, msaa %u: byte %llu is %u, not %u\n", layout,
                     layers, msaa, (unsigned long long)i, got[i], want);
@@ -4027,18 +4418,25 @@ static int flush_parts_case(u64 gva, u64 cpu, u32 width_reg, u32 h, u32 layout, 
                 layout, layers, msaa, (unsigned long long)unpacked, (unsigned long long)samples);
         return 1;
     }
-    return 0;
+    return bad;
 }
 static int check_flush_parts(void) {
     const u64 cpu = HEAP_BASE + 0xC00000, gva = 0xB000000ull;
     CHECK(mem_map(cpu, 0x100000, MS_NORMAL, PERM_RW) == 0);
     gmmu_map(gva, cpu, 0x100000);
-    CHECK(!flush_parts_case(gva, cpu, 256, 128, 0, 1, 256 * 128 * 4, 0)); /* block linear, 1 GOB high */
-    CHECK(!flush_parts_case(gva + 0x40000, cpu + 0x40000, 1024, 128, 0x1000, 1, 1024 * 128, 0)); /* pitch linear */
-    CHECK(!flush_parts_case(gva + 0x80000, cpu + 0x80000, 256, 32, 0x1000, 12, 256 * 32, 0));    /* 12 layers */
+    CHECK(!flush_parts_case(gva, cpu, 256, 128, 0, 1, 256 * 128 * 4, 0, 0)); /* block linear, 1 GOB high */
+    CHECK(!flush_parts_case(gva + 0x40000, cpu + 0x40000, 1024, 128, 0x1000, 1, 1024 * 128, 0, 0)); /* pitch linear */
+    CHECK(!flush_parts_case(gva + 0x80000, cpu + 0x80000, 256, 32, 0x1000, 12, 256 * 32, 0, 0));    /* 12 layers */
     /* 2x2 samples a pixel (registers in samples): each band of rows' samples drawn into the guest's layout of them */
-    CHECK(!flush_parts_case(gva + 0xC0000, cpu + 0xC0000, 256, 128, 0, 1, 256 * 128 * 4, DS_MSAA_2X2));
-    CHECK(!flush_parts_case(gva + 0xE0000, cpu + 0xE0000, 768, 128, 0x1000, 1, 768 * 128, DS_MSAA_2X2));
+    CHECK(!flush_parts_case(gva + 0xC0000, cpu + 0xC0000, 256, 128, 0, 1, 256 * 128 * 4, DS_MSAA_2X2, 0));
+    CHECK(!flush_parts_case(gva + 0xE0000, cpu + 0xE0000, 768, 128, 0x1000, 1, 768 * 128, DS_MSAA_2X2, 0));
+    /* loaded and written back in bands: 256x128 under the cap exactly (an 8K RGBA8 target under 256 MiB), 4 of 32
+       rows, and under half of it, 8 of 16 rows; 3 layers of 256x32 in blocks 2 GOBs high under 80 KiB, a band a row
+       of blocks (16 rows: 20 would cut one), 2 a layer */
+    int failed = flush_parts_case(gva + 0x20000, cpu + 0x20000, 256, 128, 0, 1, 256 * 128 * 4, 0, 128 << 10);
+    failed |= flush_parts_case(gva + 0x60000, cpu + 0x60000, 256, 128, 0, 1, 256 * 128 * 4, 0, 64 << 10);
+    failed |= flush_parts_case(gva + 0xA0000, cpu + 0xA0000, 256, 32, 0x10, 3, 256 * 32 * 4, 0, 80 << 10);
+    CHECK(!failed);
     CHECK(mem_unmap(cpu, 0x100000) == 0);
     return 0;
 }
@@ -4167,10 +4565,25 @@ static int check_blit(void) {
    each reading the source rows its rows sample, against the CPU reference: block linear scaled down into block
    linear, bands of 16 rows sampling the source's rows of blocks of 32 anywhere in them; pitch linear scaled up into
    pitch linear; RGBA32F pitch linear into RGBA16F block linear from a row inside a row of blocks, a row of blocks
-   more than a quarter of the cap. They used to be refused, the destination left with the bytes it had */
+   more than a quarter of the cap. They used to be refused, the destination left with the bytes it had. A blit that
+   fits the cap but whose scratch needs more than a quarter of it goes in bands too, each asking for that quarter at
+   most, as the scratch buffer stays as big as the most asked of it: the first one under 512 KiB */
 static int check_blit_bands(void) {
     const u64 cap = g_vk.alloc_cap;
     int failed = 0;
+    g_vk.alloc_cap = 512 << 10;
+    vk_bl_scratch_asked();
+    failed |= blit_case(bl_side(0x1000, 128 * 4, 256, 2, 0, 0), bl_side(0x80000, 128 * 4, 256, 1, 0, 0), 4, 9, 30, 100,
+                        200, 128, 256, 0);
+    u64 asked = vk_bl_scratch_asked();
+    if (asked > (512 << 10) / VK_PART_SHARE) {
+        fprintf(
+            stderr,
+            "blit bands: a blit of 100x200 pixels under a cap of 524288 bytes asked for %llu bytes of scratch, %llu "
+            "at most may stay\n",
+            (unsigned long long)asked, (unsigned long long)((512 << 10) / VK_PART_SHARE));
+        failed = 1;
+    }
     g_vk.alloc_cap = 64 << 10;
     failed |= blit_case(bl_side(0x1000, 128 * 4, 256, 2, 0, 0), bl_side(0x80000, 128 * 4, 256, 1, 0, 0), 4, 9, 30, 100,
                         200, 128, 256, 0);
@@ -4860,6 +5273,7 @@ static int check_uma_page_changes(void) {
 }
 
 #include "vulkan_shader_invalidate.inc"
+#include "vulkan_shader_windows.inc"
 #include "vulkan_shared_clamp.inc"
 #include "vulkan_index_draws.inc"
 #include "vulkan_pass_breaks.inc"
@@ -4869,41 +5283,71 @@ static int check_uma_page_changes(void) {
 #include "vulkan_rect_textures.inc"
 #include "vulkan_owned_readback.inc"
 #include "vulkan_lock_waits.inc"
+#include "vulkan_guest_staging.inc"
 #include "vulkan_storage_suffix.inc"
 #include "vulkan_storage_logged.inc"
 #include "vulkan_mirror.inc"
 #include "vulkan_pending_index.inc"
 #include "vulkan_draw_storage_stages.inc"
 #include "vulkan_mesh_inputs.inc"
+#include "vulkan_shader_stage_images.inc"
+#include "vulkan_cross_stage_blend.inc"
+#include "vulkan_texture_gradients.inc"
+#include "vulkan_txd_uniform.inc"
 #include "vulkan_vertex_input.inc"
 #include "vulkan_frag_coord.inc"
 #include "vulkan_vertex_restride.inc"
 #include "vulkan_msaa.inc"
+#include "vulkan_cross_stage_alias.inc"
+#include "vulkan_draw_texture.inc"
+#include "vulkan_lone_lane.inc"
+#include "vulkan_descriptor_heaps.inc"
+#include "vulkan_sample_raster.inc"
+#include "vulkan_mixed_coverage.inc"
+#include "vulkan_alpha_coverage.inc"
+#include "vulkan_indexed_feedback.inc"
 #include "vulkan_targetless_stores.inc"
 #include "vulkan_storage_image_keep.inc"
 #include "vulkan_uma_imports.inc"
 #include "vulkan_write_tracking.inc"
 #include "vulkan_tex_partial.inc"
+#include "vulkan_astc_later.inc"
 
 #include "vulkan_descriptor_bench.inc"
+#include "vulkan_pipeline_probe.inc"
+#include "vulkan_indexed_map_bench.inc"
 #include "vulkan_nvn_storage.inc"
 #include "vulkan_nvn_compat.inc"
 #include "vulkan_nvn_copy_flags.inc"
 #include "vulkan_nvn_copy_conversions.inc"
 #include "vulkan_nvn_xfb.inc"
 #include "vulkan_nvn_state.inc"
+#include "vulkan_maxwell_fixed.inc"
 #include "vulkan_nvn_events.inc"
 #include "vulkan_nvn_subroutines.inc"
+#include "vulkan_nvn_savestate.inc"
 #include "vulkan_nvn_tess.inc"
 #include "vulkan_nvn_blend.inc"
 #include "vulkan_nvn_advanced_native.inc"
 #include "vulkan_nvn_advanced_shader.inc"
+#include "vulkan_advanced_blend_images.inc"
 #include "vulkan_nvn_blend_equations.inc"
+#include "vulkan_shader_rounding.inc"
+#include "vulkan_integer_half.inc"
+#include "vulkan_texture_half.inc"
 #include "vulkan_nvn_coverage.inc"
 #include "vulkan_mesh_draw.inc"
+#include "vulkan_texture_limits.inc"
+#include "vulkan_nvn_blend_resolve.inc"
+#include "vulkan_nvn_blend_capture.inc"
+#include "vulkan_late_depth_shadow.inc"
+#include "vulkan_capture_bench.inc"
 #include "vulkan_sparse_bench.inc"
 #include "vulkan_storage_lookup_bench.inc"
 #include "vulkan_storage_buffer_keep.inc"
+#include "vulkan_fragment_barrier.inc"
+#include "vulkan_capture_cap.inc"
+#include "vulkan_trim.inc"
 
 /* key's row among the settings the runtime applies itself (options.c's), or NULL */
 static const IniOpt* setting_row(const char* key) {
@@ -4940,7 +5384,91 @@ static int check_map_lands_covered(void) {
     return 0;
 }
 
-int main(int argc, char** argv) {
+/* the ban lines check_vk12_way's stand-in device takes, as the log would say them */
+static void vk12_ban_say(const char* line, int warn) { printf("%s%s\n", warn ? "warning: " : "", line); }
+/* The version the renderer runs at, and on a 1.2 device (vk_api=1.2 makes one of a newer device, as the .ini
+   --settings-ini gives says) the 1.3 commands under their extensions' names and shaders in SPIR-V 1.5: the checks
+   after this one then run the 1.2 way, and the validation layer, given that version, flags any 1.3 use left. What a
+   1.2 device lacks keeps it out, named; a vk_api the renderer takes not is named with the ones it takes */
+static int check_vk12_way(void) {
+    SpvEmitter e;
+    spv_emit_init(&e, 0);
+    u32 version = e.version;
+    spv_emit_destroy(&e);
+    u32 cap = 1;
+    char why[64] = "";
+    CHECK(vk_api_setting("auto", &cap, why, sizeof why) && cap == 0);
+    CHECK(vk_api_setting("1.2", &cap, why, sizeof why) && cap == VK_API_VERSION_1_2);
+    CHECK(!vk_api_setting("1.3", &cap, why, sizeof why) && !strcmp(why, "vk_api=1.3 is not auto or 1.2"));
+    CHECK(!g_vk.api_cap == !strcmp(g_settings.vulkan_api, "auto"));
+    if (g_vk.api_cap) {
+        CHECK(!strcmp(g_settings.vulkan_api, "1.2"));
+        CHECK(g_vk.api < VK_API_VERSION_1_3 && g_vk.api >= VK_API_VERSION_1_2);
+        CHECK(version == 0x00010500u);
+        CHECK(vkCmdPipelineBarrier2 == vkCmdPipelineBarrier2KHR && vkQueueSubmit2 == vkQueueSubmit2KHR);
+        CHECK(vkCmdBeginRendering == vkCmdBeginRenderingKHR && vkCmdSetCullMode == vkCmdSetCullModeEXT);
+        CHECK(vkCmdSetPrimitiveRestartEnable == vkCmdSetPrimitiveRestartEnableEXT);
+        CHECK(vkGetDeviceImageMemoryRequirements == vkGetDeviceImageMemoryRequirementsKHR);
+        CHECK(g_vk.video_family == ~0u && !g_vk.feat12.pNext && g_vk.feat13.synchronization2 &&
+              g_vk.feat13.dynamicRendering && g_vk.feat13.maintenance4);
+    } else {
+        CHECK(g_vk.api >= VK_API_VERSION_1_3 && version == 0x00010600u && g_vk.feat12.pNext == &g_vk.feat13);
+    }
+    /* a device with all of them but dynamic rendering, its store op NONE from the EXT */
+    VkExtensionProperties list[16] = {{0}};
+    static const char* const have[] = {
+        VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,          VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME,
+        VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME,   VK_KHR_MAINTENANCE_4_EXTENSION_NAME,
+        VK_KHR_FORMAT_FEATURE_FLAGS_2_EXTENSION_NAME,     VK_EXT_SHADER_DEMOTE_TO_HELPER_INVOCATION_EXTENSION_NAME,
+        VK_EXT_PIPELINE_CREATION_FEEDBACK_EXTENSION_NAME, VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME};
+    u32 n = sizeof have / sizeof *have;
+    for (u32 i = 0; i < n; i++) snprintf(list[i].extensionName, sizeof list[i].extensionName, "%s", have[i]);
+    SnxVkExtensions ext = {list, n};
+    char names[256];
+    CHECK(vk_1_2_missing(&ext, names, sizeof names) == 1 && !strcmp(names, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME));
+    snprintf(list[n].extensionName, sizeof list[n].extensionName, "%s", VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+    ext.count = n + 1;
+    CHECK(vk_1_2_missing(&ext, names, sizeof names) == 0 && !names[0]);
+    /* and without a store op NONE, two named */
+    ext.list = list + 1;
+    snprintf(list[n - 1].extensionName, sizeof list[n - 1].extensionName, "VK_EXT_not_this");
+    CHECK(vk_1_2_missing(&ext, names, sizeof names) == 2 &&
+          !strcmp(names, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME ", " VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME));
+    /* all of them on a driver the bans keep from dynamic rendering: the filter create_device runs first takes it out,
+       and the device lacks it by name. The table and the device are put back after */
+    ext.list = list;
+    ext.count = n + 1;
+    snprintf(list[n - 1].extensionName, sizeof list[n - 1].extensionName, "%s",
+             VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME);
+    char err[512];
+    CHECK(vk_bans_load("key | action | driver | versions | system | devices | breaks | source | retest | checked | "
+                       "override\n" VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME
+                       " | off | qualcomm | * | any | * | draws nothing | a test | headless: | never | -\n",
+                       err, sizeof err));
+    VkBanDevice banned = {"Adreno (TM) 640",
+                          "Qualcomm Technologies Inc. Adreno Vulkan Driver",
+                          "",
+                          VK_DRIVER_ID_QUALCOMM_PROPRIETARY,
+                          VK_MAKE_VERSION(512, 530, 0),
+                          0x6040001,
+                          SNX_VK_BAN_ANDROID};
+    vk_bans_device(&banned);
+    CHECK(vk_bans_filter(&ext, vk12_ban_say) == 1 && vk_1_2_missing(&ext, names, sizeof names) == 1 &&
+          !strcmp(names, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME));
+    VkPhysicalDeviceDriverProperties driver = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                              .pNext = &driver};
+    vkGetPhysicalDeviceProperties2(g_vk.phys, &properties);
+    VkBanDevice running = {g_vk.props.deviceName,    driver.driverName,   driver.driverInfo, (uint32_t)driver.driverID,
+                           g_vk.props.driverVersion, g_vk.props.deviceID, vk_ban_system()};
+    CHECK(vk_bans_load(snx_vk_extension_bans_text, err, sizeof err));
+    vk_bans_device(&running);
+    printf("PASS the Vulkan %u.%u way: SPIR-V %u.%u, what a 1.2 device lacks named\n", VK_API_VERSION_MAJOR(g_vk.api),
+           VK_API_VERSION_MINOR(g_vk.api), version >> 16, (version >> 8) & 0xff);
+    return 0;
+}
+
+static int run_headless(int argc, char** argv) {
     nvn_init();
     const u32 w = 32, h = 16;
     const u64 address = HEAP_BASE;
@@ -4948,11 +5476,28 @@ int main(int argc, char** argv) {
     char *root, *shot, *ppm;
     setvbuf(stdout, NULL, _IOLBF, 0); /* a CHECK's stderr line lands between whole lines in a log both go to */
     CHECK(!snx_startup_options(argc, argv));
-    int nvn_benchmark = -1;
-    u32 benchmark_sets = 0, benchmark_count = 16, benchmark_images = 0, benchmark_sparse = 0, benchmark_storage = 0;
-    u32 benchmark_image = 0;
+    int nvn_benchmark = -1, indexed_map_benchmark = -1;
+    u32 benchmark_sets = 0, benchmark_count = 16, benchmark_images = 0, benchmark_indexed = 0;
+    u32 benchmark_sparse = 0, benchmark_storage = 0, benchmark_image = 0;
     u32 benchmark_buffer = 0;
     u32 benchmark_passes = 0;
+    const char* pipeline_probe = NULL;
+    int pipeline_probe_disable = 0;
+    /* a game's .ini, opened as a run opens it, before the settings given here go over its values: a copy of it, which
+       ini_open writes again, in a folder of its own (--settings-ini=FILE) */
+    char* ini_dir = NULL;
+    for (int i = 1; i < argc; i++)
+        if (!strncmp(argv[i], "--settings-ini=", 15)) {
+            size_t size;
+            unsigned char* text = snx_read_file(argv[i] + 15, &size);
+            ini_dir = snx_temp_dir(NULL);
+            CHECK(text && ini_dir);
+            char* copy = snx_path_join(ini_dir, "game.ini");
+            CHECK(!snx_write_file(copy, text, size));
+            ini_open(copy);
+            free(copy);
+            free(text);
+        }
     /* the runtime's startup flags (-H), its settings as it takes them (--vk_memory=2, --memory_traps=2,
        --vertex_input_dynamic_state=off), and the benchmarks'. Any other argument stops the run: one dropped unsaid ran
        the checks without it */
@@ -4962,6 +5507,20 @@ int main(int argc, char** argv) {
         unsigned flags = 0;
         char key[64];
         if (snx_cli_flag(argv[i], &flags) == 1) continue;
+        if (!strncmp(argv[i], "--pipeline-probe=", 17)) {
+            pipeline_probe = argv[i] + 17;
+            continue;
+        }
+        if (!strncmp(argv[i], "--settings-ini=", 15)) continue; /* read before the others (above) */
+        if (!strncmp(argv[i], "--pipeline-probe-disable-opt=", 29)) {
+            CHECK(!strcmp(argv[i] + 29, "0") || !strcmp(argv[i] + 29, "1"));
+            pipeline_probe_disable = argv[i][29] - '0';
+            continue;
+        }
+        if (!strncmp(argv[i], "--bench-indexed-map=", 20)) {
+            indexed_map_benchmark = (int)strtol(argv[i] + 20, NULL, 10);
+            continue;
+        }
         if (!strncmp(argv[i], "--nvn-draw-bench=", 17)) {
             nvn_benchmark = (int)strtol(argv[i] + 17, NULL, 10);
             continue;
@@ -4972,6 +5531,10 @@ int main(int argc, char** argv) {
         }
         if (!strncmp(argv[i], "--descriptor-images=", 20)) {
             benchmark_images = (u32)strtoul(argv[i] + 20, NULL, 10);
+            continue;
+        }
+        if (!strncmp(argv[i], "--descriptor-indexed=", 21)) {
+            benchmark_indexed = (u32)strtoul(argv[i] + 21, NULL, 10);
             continue;
         }
         if (!strncmp(argv[i], "--descriptor-count=", 19)) {
@@ -5007,11 +5570,13 @@ int main(int argc, char** argv) {
             o = setting_row(key);
         }
         if (!o) {
-            fprintf(
-                stderr,
-                "snx-test-vulkan: %s is not an option it takes: -H, --KEY=VALUE of the runtime's settings, "
-                "--bench-descriptors=N, --descriptor-images=N, --descriptor-count=N, --bench-sparse-volume, --bench-sparse-texture, --bench-storage-lookup, --bench-storage-image, --bench-storage-buffer, --bench-pass-breaks=N, --nvn-draw-bench=N\n",
-                argv[i]);
+            fprintf(stderr,
+                    "snx-test-vulkan: %s is not an option it takes: -H, --KEY=VALUE of the runtime's settings, "
+                    "--bench-descriptors=N, --descriptor-images=N, --descriptor-indexed=N, --descriptor-count=N, "
+                    "--bench-sparse-volume, --bench-sparse-texture, --bench-storage-lookup, --bench-storage-image, "
+                    "--bench-storage-buffer, --bench-pass-breaks=N, --nvn-draw-bench=N, --bench-indexed-map=N, "
+                    "--pipeline-probe=FILE, --pipeline-probe-disable-opt=0|1, --settings-ini=FILE\n",
+                    argv[i]);
             return 2;
         }
         ini_read(o, eq + 1);
@@ -5030,6 +5595,14 @@ int main(int argc, char** argv) {
     g_settings.vulkan_video_decode = 1; /* a Vulkan Video decode queue where the device has one (lavapipe has none) */
     video_init("Headless Vulkan fixture", "");
     CHECK(g_opt_headless && g_renderer_up && g_vk.dev && !g_vk.surface && !g_vk.swapchain && !g_vk.sc_count);
+    CHECK(!check_vk12_way());
+    if (pipeline_probe) {
+        int result = probe_pipeline_compile(pipeline_probe, pipeline_probe_disable);
+        vk_pipeline_quiesce();
+        CHECK(!snx_remove_tree(root));
+        free(root); free(shot); free(ppm);
+        return result;
+    }
     if (getenv("SNX_TEST_RECORDER_ONLY")) { /* the recording thread's own sync alone, on the driver the loader picks */
         CHECK(!check_recorder_self_sync());
         vk_finish();
@@ -5039,14 +5612,45 @@ int main(int argc, char** argv) {
     }
     CHECK(!check_recorder_self_sync());
     viw_install();
-    if (g_settings.descriptor_buffers && !g_vk.has_descriptor_buffers) {
-        puts("SKIP descriptor-buffer checks: the device does not support this path");
+    /* every check with each draw binding the pipeline linked from its parts and never the one made whole
+       (SNX_TEST_GPL=linked), or with each pipeline made whole as on a device without pipeline libraries (whole) */
+    if (getenv("SNX_TEST_GPL")) {
+        const char* gpl = getenv("SNX_TEST_GPL");
+        if (!strcmp(gpl, "linked")) {
+            if (!g_vk.has_gpl) {
+                puts("SKIP pipelines linked from parts: the device doesn't link them");
+                vk_pipeline_quiesce();
+                CHECK(!snx_remove_tree(root));
+                free(root);
+                free(shot);
+                free(ppm);
+                return 77;
+            }
+            g_vk.gpl_hold = 1;
+        } else if (!strcmp(gpl, "whole"))
+            g_vk.has_gpl = 0;
+        else {
+            fprintf(stderr, "SNX_TEST_GPL=%s is not linked or whole\n", gpl);
+            return 2;
+        }
+    }
+    if ((g_settings.descriptor_buffers == 1 && !g_vk.has_descriptor_buffers) ||
+        (g_settings.descriptor_buffers == 2 && !g_vk.has_descriptor_heaps)) {
+        puts("SKIP selected descriptor backend: the device does not support this path");
         vk_pipeline_quiesce(); /* the shader files' reading thread, before the driver's exit */
         CHECK(!snx_remove_tree(root));
         free(root);
         free(shot);
         free(ppm);
         return 77;
+    }
+    if (indexed_map_benchmark >= 0) {
+        CHECK(indexed_map_benchmark <= 1);
+        int result = bench_indexed_map(indexed_map_benchmark);
+        vk_pipeline_quiesce();
+        CHECK(!snx_remove_tree(root));
+        free(root); free(shot); free(ppm);
+        return result;
     }
     if (nvn_benchmark >= 0) {
         CHECK(nvn_benchmark <= 2);
@@ -5086,7 +5690,7 @@ int main(int argc, char** argv) {
         return result;
     }
     if (benchmark_sets) {
-        int result = bench_descriptors(benchmark_sets, benchmark_count, benchmark_images);
+        int result = bench_descriptors(benchmark_sets, benchmark_count, benchmark_images, benchmark_indexed);
         vk_pipeline_quiesce();
         CHECK(!snx_remove_tree(root));
         free(root);
@@ -5119,6 +5723,8 @@ int main(int argc, char** argv) {
             result = check_nvn_event_order();
         else if (!strcmp(name, "subroutines"))
             result = check_nvn_subroutine_calls();
+        else if (!strcmp(name, "savestate")) /* only so: its load replaces the process's guest memory */
+            result = check_nvn_savestate(shot);
         else if (!strcmp(name, "copies"))
             result = check_nvn_copy_conversions();
         else if (!strcmp(name, "advanced_blend"))
@@ -5127,6 +5733,68 @@ int main(int argc, char** argv) {
             result = check_nvn_advanced_shader();
         else if (!strcmp(name, "blend_equations"))
             result = check_nvn_blend_equations();
+        else if (!strcmp(name, "alpha_coverage"))
+            result = check_alpha_coverage();
+        else if (!strcmp(name, "capture_tiles"))
+            result = bench_capture_tiles();
+        else if (!strcmp(name, "coverage_color"))
+            result = check_coverage_to_color();
+        else if (!strcmp(name, "mixed_coverage"))
+            result = check_mixed_coverage_portable();
+        else if (!strcmp(name, "depth_coverage"))
+            result = check_nvn_depth_coverage();
+        else if (!strcmp(name, "coverage_modulation"))
+            result = check_nvn_coverage();
+        else if (!strcmp(name, "texture_min_lod"))
+            result = check_texture_min_lod();
+        else if (!strcmp(name, "txd_varying"))
+            result = check_txd_varying_offsets();
+        else if (!strcmp(name, "blend_resolve"))
+            result = check_nvn_blend_resolve();
+        else if (!strcmp(name, "blend_capture"))
+            result = check_nvn_blend_capture();
+        else if (!strcmp(name, "fragment_barrier"))
+            result = check_fragment_barrier_backend();
+        else if (!strcmp(name, "capture_cap"))
+            result = check_capture_cap();
+        else if (!strcmp(name, "late_depth_shadow"))
+            result = check_late_depth_shadow();
+        else if (!strcmp(name, "shader_windows"))
+            result = check_shader_read_windows();
+        else if (!strcmp(name, "texture_half"))
+            result = check_texture_half_rounding();
+        else if (!strcmp(name, "cross_stage_alias"))
+            result = check_cross_stage_image_alias();
+        else if (!strcmp(name, "lone_lane"))
+            result = check_lone_lane();
+        else if (!strcmp(name, "cross_stage_blend"))
+            result = check_cross_stage_blend_snapshots();
+        else if (!strcmp(name, "txd_uniform"))
+            result = check_txd_uniform_offsets();
+        else if (!strcmp(name, "indexed_feedback"))
+            result = check_indexed_texture_feedback();
+        else if (!strcmp(name, "texture_gradients"))
+            result = check_texture_gradients();
+        else if (!strcmp(name, "blend_images"))
+            result = check_advanced_blend_images();
+        else if (!strcmp(name, "stage_images"))
+            result = check_shader_stage_images();
+        else if (!strcmp(name, "tessellation"))
+            result = check_nvn_default_tessellation();
+        else if (!strcmp(name, "draw_texture"))
+            result = check_draw_texture();
+        else if (!strcmp(name, "descriptor_heaps"))
+            result = check_descriptor_heaps();
+        else if (!strcmp(name, "indirect_dispatch"))
+            result = check_indirect_dispatch_once();
+        else if (!strcmp(name, "integer_half"))
+            result = check_shader_integer_half_rounding();
+        else if (!strcmp(name, "sample_locations"))
+            result = check_custom_sample_locations();
+        else if (!strcmp(name, "coverage_to_color"))
+            result = check_coverage_to_color();
+        else if (!strcmp(name, "float_rounding"))
+            result = check_shader_float_rounding();
         else {
             fprintf(stderr, "Unknown NVN case: %s\n", name);
             return 2;
@@ -5164,6 +5832,13 @@ int main(int argc, char** argv) {
         vk_pipeline_quiesce();
         CHECK(!viw_report());
         printf("PASS headless Vulkan vertex input only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
+    if (getenv("SNX_TEST_TRIM_ONLY")) { /* the budget's trim alone: a trim that wants everything takes the others' */
+        CHECK(!check_trim_working_set());
+        vk_finish();
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan trim only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
     if (getenv("SNX_TEST_PASS_BREAKS_ONLY")) { /* vulkan_pass_breaks.inc's checks alone */
@@ -5205,13 +5880,17 @@ int main(int argc, char** argv) {
         if (!strcmp(name, "feedback") && ++ran) CHECK(!check_uma_feedback());
         if (!strcmp(name, "publish") && ++ran) CHECK(!check_uma_publish());
         if (!strcmp(name, "dispatch") && ++ran) CHECK(!check_uma_dispatch());
+        if (!strcmp(name, "texture_pending") && ++ran) CHECK(!check_uma_texture_pending());
+        if (!strcmp(name, "dispatch_constants") && ++ran) CHECK(!check_uma_dispatch_constants());
+        if (!strcmp(name, "header_words") && ++ran) CHECK(!check_uma_header_words());
         if (!strcmp(name, "placed") && ++ran) CHECK(!check_uma_placed());
         if (!strcmp(name, "placed_view") && ++ran) CHECK(!check_uma_placed_view());
         if (!strcmp(name, "logged_back") && ++ran) CHECK(!check_uma_logged_back());
         if (!ran) {
             fprintf(stderr,
                     "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants, migrate, way, region_writes, "
-                    "region_merge, writes, feedback, publish, dispatch, placed, placed_view or logged_back\n",
+                    "region_merge, writes, feedback, publish, dispatch, texture_pending, dispatch_constants, "
+                    "header_words, placed, placed_view or logged_back\n",
                     name);
             return 2;
         }
@@ -5229,6 +5908,9 @@ int main(int argc, char** argv) {
         CHECK(!check_uma_feedback());
         CHECK(!check_uma_publish());
         CHECK(!check_uma_dispatch());
+        CHECK(!check_uma_texture_pending());
+        CHECK(!check_uma_dispatch_constants());
+        CHECK(!check_uma_header_words());
         CHECK(!check_uma_placed());
         CHECK(!check_uma_placed_view());
         CHECK(!check_uma_logged_back());
@@ -5270,6 +5952,7 @@ int main(int argc, char** argv) {
     CHECK(!check_landing_wait());
     CHECK(!check_frame_ready());
     CHECK(!check_mapping_landing());
+    CHECK(!check_guest_staging());
     CHECK(!check_owned_writable());
     CHECK(!check_owned_in_place_write());
     CHECK(!check_owned_read_device());
@@ -5290,16 +5973,44 @@ int main(int argc, char** argv) {
     CHECK(!check_nvn_stencil_masks());
     CHECK(!check_nvn_xfb());
     CHECK(!check_nvn_fixed_state());
+    CHECK(!check_maxwell_point_size());
+    CHECK(!check_maxwell_depth_bounds());
+    CHECK(!check_maxwell_viewport_swizzle());
     CHECK(!check_nvn_default_tessellation());
     CHECK(!check_nvn_advanced_blend());
     CHECK(!check_mesh_draws());
     CHECK(!check_nvn_coverage());
+    CHECK(!check_nvn_depth_coverage());
     CHECK(!check_nvn_copy_conversions());
     CHECK(!check_nvn_event_order());
     CHECK(!check_nvn_subroutine_calls());
     CHECK(!check_nvn_advanced_native());
     CHECK(!check_nvn_advanced_shader());
     CHECK(!check_nvn_blend_equations());
+    CHECK(!check_texture_min_lod());
+    CHECK(!check_txd_varying_offsets());
+    CHECK(!check_nvn_blend_resolve());
+    CHECK(!check_nvn_blend_capture());
+    CHECK(!check_late_depth_shadow());
+    CHECK(!check_shader_read_windows());
+    CHECK(!check_texture_half_rounding());
+    CHECK(!check_cross_stage_image_alias());
+    CHECK(!check_cross_stage_blend_snapshots());
+    CHECK(!check_txd_uniform_offsets());
+    CHECK(!check_indexed_texture_feedback());
+    CHECK(!check_texture_gradients());
+    CHECK(!check_advanced_blend_images());
+    CHECK(!check_shader_stage_images());
+    CHECK(!check_custom_sample_locations());
+    CHECK(!check_coverage_to_color());
+    CHECK(!check_mixed_coverage_portable());
+    CHECK(!check_alpha_coverage());
+    CHECK(!check_shader_integer_half_rounding());
+    CHECK(!check_draw_texture());
+    CHECK(!check_descriptor_heaps());
+    CHECK(!check_fragment_barrier_backend());
+    CHECK(!check_capture_cap());
+    CHECK(!check_shader_float_rounding());
     CHECK(!check_storage_image_formats());
     CHECK(!check_volume_surface_atomics());
     CHECK(!check_layered_surface_loads());
@@ -5308,7 +6019,9 @@ int main(int argc, char** argv) {
     CHECK(!check_index_draws());
     CHECK(!check_pass_breaks());
     CHECK(!check_mesh_inputs());
+    CHECK(!check_lone_lane());
     CHECK(!check_frag_coord_origin());
+    CHECK(!check_rt_other_layout());
     CHECK(!check_vertex_restride());
     CHECK(!check_vertex_input_layouts());
     CHECK(!check_vertex_input_file_key());
@@ -5321,6 +6034,7 @@ int main(int argc, char** argv) {
     CHECK(!check_depth_writeback());
     CHECK(!check_big_volume());
     CHECK(!check_srgb_write());
+    CHECK(!check_srgb_blit());
     CHECK(!check_clear_load_op());
     CHECK(!check_sparse_while_submitting());
     CHECK(!check_multisample_shader_gate());
@@ -5331,6 +6045,7 @@ int main(int argc, char** argv) {
     CHECK(!check_saturate());
     CHECK(!check_sampler_reduction());
     CHECK(!check_shader_invalidation());
+    CHECK(!check_indirect_dispatch_once());
     CHECK(!check_shared_clamp());
     CHECK(!check_vic());
     CHECK(!check_vic_chain(shot));
@@ -5350,6 +6065,8 @@ int main(int argc, char** argv) {
     CHECK(!check_sparse_resident_batched());
     CHECK(!check_resident_texture());
     CHECK(!check_resident_astc());
+    CHECK(!check_astc_array_levels());
+    CHECK(!check_astc_later());
     CHECK(!check_resident_texture_in_flight());
     CHECK(!check_sparse_pieces_batched());
     CHECK(!check_dma_untracked_source());
@@ -5368,6 +6085,9 @@ int main(int argc, char** argv) {
     CHECK(!check_uma_feedback());
     CHECK(!check_uma_publish());
     CHECK(!check_uma_dispatch());
+    CHECK(!check_uma_texture_pending());
+    CHECK(!check_uma_dispatch_constants());
+    CHECK(!check_uma_header_words());
     CHECK(!check_uma_placed());
     CHECK(!check_uma_placed_view());
     CHECK(!check_uma_logged_back());
@@ -5381,12 +6101,23 @@ int main(int argc, char** argv) {
     CHECK(!check_write_tracking());
     CHECK(!check_descriptor_room());
     CHECK(!check_sparse_texture());
+    CHECK(!check_desc_pool_arrays());
     /* the pipeline workers: pipeline_threads when given, else all the CPUs but two, two to twelve */
     CHECK(snx_vk_pipeline_workers(0, 8) == 6 && snx_vk_pipeline_workers(0, 12) == 10 &&
           snx_vk_pipeline_workers(0, 4) == 2 && snx_vk_pipeline_workers(0, 0) == 2 &&
           snx_vk_pipeline_workers(0, 64) == 12);
     CHECK(snx_vk_pipeline_workers(5, 12) == 5 && snx_vk_pipeline_workers(32, 4) == 32 &&
           snx_vk_pipeline_workers(1, 64) == 1);
+#if defined(__linux__)
+    if (vk_rec_threaded()) { /* the workers started with the first draws': two at the main thread's nice, the rest low */
+        int n = snx_vk_pipeline_workers(g_settings.pipeline_threads, plat_cpu_count()), low, normal, other;
+        int want_low = snx_vk_pipeline_low_workers(n);
+        int split = thread_nice_settled("Vulkan pipelines", n - want_low, want_low, &normal, &low, &other);
+        printf("pipeline workers: %d at the main thread's nice, %d at nice +%d, %d at another (%d and %d expected)\n",
+               normal, low, SNX_THREAD_LOW_NICE, other, n - want_low, want_low);
+        CHECK(split);
+    }
+#endif
     /* FFmpeg takes the device for Vulkan Video exactly when it has the decode queue */
     AVBufferRef* video_device = g_renderer->nvdec_hw_device();
     CHECK(!video_device == (g_vk.video_family == ~0u));
@@ -5405,18 +6136,20 @@ int main(int argc, char** argv) {
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR = NULL;
     CHECK(!vk_swapchain_create(0));
     u32* pixels = (u32*)(g_mem + address);
-    for (u32 frame = 0; frame < 8; ++frame) {
+    for (u32 frame = 0; frame < 16; ++frame) {
         for (u32 y = 0; y < h; ++y)
             for (u32 x = 0; x < w; ++x) pixels[y * w + x] = 0xff000000u | x | (y << 8) | (frame << 16);
         const i32* region = frame & 1 ? crop : full;
         u32 x0 = frame & 1 ? 4 : 0, y0 = frame & 1 ? 2 : 0;
         u32 width = frame & 1 ? 16 : w, height = frame & 1 ? 8 : h;
         u32 transform = frame >> 1; /* none, horizontal, vertical, both; each with a full image and a crop */
+        u32 output_width = transform & 4 ? height : width, output_height = transform & 4 ? width : height;
         u64 expected = 1469598103934665603ull;
-        for (u32 y = 0; y < height; ++y)
-            for (u32 x = 0; x < width; ++x) {
-                u32 sx = x0 + ((transform & 1) ? width - 1 - x : x);
-                u32 sy = y0 + ((transform & 2) ? height - 1 - y : y);
+        for (u32 y = 0; y < output_height; ++y)
+            for (u32 x = 0; x < output_width; ++x) {
+                u32 rx = transform & 4 ? y : x, ry = transform & 4 ? height - 1 - x : y;
+                u32 sx = x0 + ((transform & 1) ? width - 1 - rx : rx);
+                u32 sy = y0 + ((transform & 2) ? height - 1 - ry : ry);
                 expected = (expected ^ pixels[sy * w + sx]) * 1099511628211ull;
             }
         u64 before = vk_frame_id();
@@ -5427,13 +6160,14 @@ int main(int argc, char** argv) {
         size_t size;
         unsigned char* data = snx_read_file(ppm, &size);
         char header[64];
-        int n = snprintf(header, sizeof header, "P6\n%u %u\n255\n", width, height);
-        CHECK(data && size == (size_t)n + width * height * 3 && !memcmp(data, header, (size_t)n));
-        for (u32 y = 0; y < height; ++y)
-            for (u32 x = 0; x < width; ++x) {
-                unsigned char* p = data + n + (y * width + x) * 3;
-                CHECK(p[0] == x0 + ((transform & 1) ? width - 1 - x : x));
-                CHECK(p[1] == y0 + ((transform & 2) ? height - 1 - y : y));
+        int n = snprintf(header, sizeof header, "P6\n%u %u\n255\n", output_width, output_height);
+        CHECK(data && size == (size_t)n + output_width * output_height * 3 && !memcmp(data, header, (size_t)n));
+        for (u32 y = 0; y < output_height; ++y)
+            for (u32 x = 0; x < output_width; ++x) {
+                u32 rx = transform & 4 ? y : x, ry = transform & 4 ? height - 1 - x : y;
+                unsigned char* p = data + n + (y * output_width + x) * 3;
+                CHECK(p[0] == x0 + ((transform & 1) ? width - 1 - rx : rx));
+                CHECK(p[1] == y0 + ((transform & 2) ? height - 1 - ry : ry));
                 CHECK(p[2] == frame);
             }
         free(data);
@@ -5458,6 +6192,8 @@ int main(int argc, char** argv) {
         CHECK(opt_workers <= 1);
     }
     CHECK(!snx_remove_tree(root));
+    CHECK(!ini_dir || !snx_remove_tree(ini_dir));
+    free(ini_dir);
     free(root);
     free(shot);
     free(ppm);
@@ -5465,6 +6201,12 @@ int main(int argc, char** argv) {
         "PASS headless Vulkan: viewport orientation, 7 VIC compositions, a VIC picture kept on the GPU and "
         "presented from there, NVDEC pictures laid out on the GPU and composed by VIC as the CPU references do, DMA copies and 2D blits on the GPU as theirs, "
         "render targets over one another newest on top, "
-        "8 cropped/transformed readbacks and PPMs, no WSI");
+        "16 cropped/flipped/rotated readbacks and PPMs, no WSI");
     return 0;
+}
+
+int main(int argc, char** argv) {
+    /* Driver cleanup can race its live worker threads after the tests finish. The runtime's exit flushes stdio
+       without unloading those libraries, and preserves the result of every full or selected test path. */
+    plat_exit_now(run_headless(argc, argv));
 }

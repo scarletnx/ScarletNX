@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* audren.c's host side with the DSP stubbed: the output device's volume (audren_volume, from audio.c) on every
-   renderer's host stream, which opens at its first frame, and on one that opens after it */
+   renderer's host stream, which opens at its first frame, and on one that opens after it; RequestUpdate's results */
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/services/audren_dsp.h"
 
@@ -62,9 +62,10 @@ ARState* audren_state_new(const u8* params) {
     return s;
 }
 void audren_state_free(ARState* s) { free(s); }
+static int test_update_result; /* what the DSP's update returns */
 int audren_state_update(ARState* s, const u8* in, u64 in_size, u8* out, u64 out_size) {
     (void)s, (void)in, (void)in_size, (void)out, (void)out_size;
-    return 0;
+    return test_update_result;
 }
 int audren_revision(u32 rev) { return (int)(rev >> 24) - '0'; }
 int audren_frame(ARState* s, i16* stereo) {
@@ -80,6 +81,25 @@ static void play(SvcObj* o) {
 }
 
 void pm_init(PMutex* m) { (void)m; }
+
+/* RequestUpdate (audren_update): InvalidUpdateInfo, 2153-0041, without an update's header, and the DSP's failures as
+   the renderer's results, InvalidUpdateInfo and InsufficientBuffer (2153-0004), any other OperationFailed (2153-0002) */
+static void test_update_results(SvcObj* o) {
+    u8 memory[0x100] = {0};
+    const IpcBuf in = {0x40, 0x40, 0}, out = {0x80, 0x80, 0}, none = {0, 0, 0}, short_in = {0x40, 0x3f, 0};
+    g_mem = memory;
+    CHECK(audren_update(o, none, out) == RC(153, 41) && audren_update(o, in, none) == RC(153, 41));
+    CHECK(audren_update(o, short_in, out) == RC(153, 41));
+    test_update_result = -41;
+    CHECK(audren_update(o, in, out) == RC(153, 41));
+    test_update_result = -4;
+    CHECK(audren_update(o, in, out) == RC(153, 4));
+    test_update_result = -1;
+    CHECK(audren_update(o, in, out) == RC(153, 2));
+    test_update_result = 0;
+    CHECK(audren_update(o, in, out) == 0);
+    g_mem = NULL;
+}
 
 int main(void) {
     hle_init();
@@ -99,6 +119,7 @@ int main(void) {
     CHECK(host_of(&later)->volume == 0.5f);
     audren_volume(1.0f);
     CHECK(host_of(&first)->volume == 1.0f && host_of(&second)->volume == 1.0f && host_of(&later)->volume == 1.0f);
+    test_update_results(&first);
     first.destroy(&first);
     second.destroy(&second);
     later.destroy(&later);

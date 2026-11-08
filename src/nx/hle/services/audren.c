@@ -66,12 +66,14 @@ int audren_update(SvcObj* o, IpcBuf in, IpcBuf out) {
     ARRen* r = audren_of(o);
     int rc;
     u32 rev;
-    R_UNLESS(in.addr && out.addr && in.size >= 0x40, RC(153, 41)); /* not even an update's header */
+    R_UNLESS(in.addr && out.addr && in.size >= 0x40,
+             SNX_RC_AUDIO_INVALID_UPDATE_INFO); /* not even an update's header */
     pm_lock(&g_host.audren.lk);
     rc = audren_state_update(r->s, GP(in.addr), in.size, GP(out.addr), out.size);
     pm_unlock(&g_host.audren.lk);
-    if (rc == -41 || rc == -4) R_THROW(RC(153, -rc));
-    R_UNLESS(rc >= 0, RC(153, 2)); /* OperationFailed */
+    if (rc == -41) R_THROW(SNX_RC_AUDIO_INVALID_UPDATE_INFO);
+    if (rc == -4) R_THROW(SNX_RC_AUDIO_INSUFFICIENT_BUFFER);
+    R_UNLESS(rc >= 0, SNX_RC_AUDIO_OPERATION_FAILED);
     rev = snx_ld_le32(GP(in.addr));
     LOG_LIMIT(1, "audren: the first update, revision REV%d\n", audren_revision(rev));
     R_SUCCEED();

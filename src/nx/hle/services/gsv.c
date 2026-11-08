@@ -43,7 +43,7 @@ static int gsv_camera_none(SvcObj* self, IpcCtx* c) {
         memcpy(&word, c->raw + i, c->raw_size - i < 8 ? c->raw_size - i : 8);
         LOG_LIMIT(16, "gsv:   raw +%#x = %#llx\n", i, (unsigned long long)word);
     }
-    R_THROW(RC(452, 6));
+    R_THROW(SNX_RC_GSV_NO_CAMERA);
 }
 #include "hle/services/gsv.swipc.inc"
 #include "hle/services/nvdrv.swipc.h"
@@ -85,7 +85,7 @@ static int nn_gsv_UserSession_CreateCameraContext(SvcObj* self) {
 static int nn_gsv_UserSession_InitializeCameraContext(SvcObj* self, u64 version, u32* session) {
     (void)self, (void)version;
     *session = session_new(nn_gsv_CameraSession_new());
-    R_UNLESS(*session, 0xD201); /* OutOfHandles */
+    R_UNLESS(*session, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_gsv_UserSession_DestroyCameraContext(SvcObj* self) {
@@ -95,7 +95,7 @@ static int nn_gsv_UserSession_DestroyCameraContext(SvcObj* self) {
 static int nn_gsv_UserSession_OpenGraphicsFrameSession(SvcObj* self, u32* session) {
     (void)self;
     *session = session_new(nn_gsv_GraphicsFrameSession_new());
-    R_UNLESS(*session, 0xD201); /* OutOfHandles */
+    R_UNLESS(*session, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_gsv_GraphicsFrameSession_Ping(SvcObj* self, u64 token, u64* echo) {
@@ -116,7 +116,7 @@ static int nn_gsv_UserSession_CreateChatContext(SvcObj* self) {
 static int nn_gsv_UserSession_InitializeChatContext(SvcObj* self, u32* session) {
     (void)self;
     *session = session_new(nn_gsv_ChatSession_new());
-    R_UNLESS(*session, 0xD201); /* OutOfHandles */
+    R_UNLESS(*session, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_gsv_UserSession_DestroyChatContext(SvcObj* self) {
@@ -141,9 +141,9 @@ static int nn_gsv_UserSession_CreateNativeMemory(SvcObj* self, const u8* request
     (void)self;
     memcpy(&mode, request, 4);
     memcpy(&size, request + 4, 8);
-    R_UNLESS(size && !(size & 0xfff), R_BADSIZE);
+    R_UNLESS(size && !(size & 0xfff), SNX_RC_SVC_INVALID_SIZE);
     LOG("gsv: CreateNativeMemory(mode %u, size %#llx)\n", mode, (unsigned long long)size);
-    R_UNLESS(next_native_memory_handle < sizeof native_memory_size / sizeof native_memory_size[0], R_BADMEMSTATE);
+    R_UNLESS(next_native_memory_handle < sizeof native_memory_size / sizeof native_memory_size[0], SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     *memory_handle = next_native_memory_handle++;
     native_memory_size[*memory_handle] = size;
     R_SUCCEED();
@@ -184,7 +184,7 @@ static int nn_gsv_UserSession_InitializeGraphicsFrameContext(SvcObj* self) {
 static int nn_gsv_UserSession_InitializeSyncptContext(SvcObj* self, u32* session) {
     (void)self;
     *session = session_new(nn_gsv_SyncptSession_new());
-    R_UNLESS(*session, 0xD201); /* OutOfHandles */
+    R_UNLESS(*session, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 /* the syncpoint cache: the game's request page (RW) and the value page (RO) it polls, bound by command 204 */
@@ -211,7 +211,7 @@ static int nn_gsv_UserSession_BindSyncpointMemory(SvcObj* self, u32 rw, u32 ro, 
     static const u32 header[8] = {1, 0, 191, 0x40, 0, 0x640, 8, 0x648}; /* Eden's GraphicsSyncpointCache::Header */
     u32 i;
     (void)self, (void)request;
-    R_UNLESS(rwt && rot, RC(1, 114)); /* InvalidHandle */
+    R_UNLESS(rwt && rot, SNX_RC_SVC_INVALID_HANDLE);
     gsv_sync_rw = rwt->addr;
     gsv_sync_ro = rot->addr;
     kobj_unref(&rwt->o);
@@ -225,7 +225,7 @@ static int nn_gsv_UserSession_BindSyncpointMemory(SvcObj* self, u32 rw, u32 ro, 
     gsv_sync_completed_event = owned_event("gsv:syncpoint completed");
     *request_event = ev_handle(gsv_sync_request_event);
     *completed_event = ev_handle(gsv_sync_completed_event);
-    R_UNLESS(*request_event && *completed_event, 0xD201);
+    R_UNLESS(*request_event && *completed_event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_gsv_UserSession_CreateDisplayContext(SvcObj* self) {
@@ -240,12 +240,12 @@ static int nn_gsv_UserSession_InitializeDisplayContext(SvcObj* self, u64 version
     (void)self;
     LOG("gsv: InitializeDisplayContext(version %#llx)\n", (unsigned long long)version);
     *session = session_new(nn_vi2_IVi2Session_new());
-    R_UNLESS(*session, 0xD201);
+    R_UNLESS(*session, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_gsv_UserSession_SetDisplayLayerImage(SvcObj* self, u32 layer_id, u32 image_handle) {
     (void)self;
-    R_UNLESS(layer_id && image_handle && image_handle < next_native_image_handle, R_BADMEMSTATE);
+    R_UNLESS(layer_id && image_handle && image_handle < next_native_image_handle, SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     R_SUCCEED();
 }
 static int nn_gsv_UserSession_CreateGpuContext(SvcObj* self) {
@@ -265,7 +265,7 @@ static int nn_gsv_UserSession_BindNativeMemory(SvcObj* self, const u8* request) 
     memcpy(&size, request + 12, 8);
     R_UNLESS(memory_handle && memory_handle < sizeof native_memory_size / sizeof native_memory_size[0] &&
                  native_memory_size[memory_handle] >= size && size && !(cpu & 0xfff) && !(size & 0xfff) &&
-                 cpu < AS_END && size <= AS_END - cpu, R_BADMEMSTATE);
+                 cpu < AS_END && size <= AS_END - cpu, SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     native_memory_cpu[memory_handle] = cpu;
     LOG("gsv: BindNativeMemory(%u, %#llx, %#llx)\n", memory_handle, (unsigned long long)cpu,
         (unsigned long long)size);
@@ -278,7 +278,7 @@ static int nn_gsv_UserSession_BindNativeMemoryToCpu(SvcObj* self, u32 memory_han
     R_UNLESS(memory_handle && memory_handle < sizeof native_memory_size / sizeof native_memory_size[0] &&
                  native_memory_size[memory_handle] >= bytes && bytes && !(cpu & 0xfff) && !snx_ld_le64(offset) &&
                  mem_mapped_run(cpu, bytes) == bytes,
-             R_BADMEMSTATE);
+             SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     native_memory_cpu[memory_handle] = cpu;
     LOG("gsv: BindNativeMemoryToCpu(%u, %#llx, %#llx, flags %#llx)\n", memory_handle, (unsigned long long)cpu,
         (unsigned long long)bytes, (unsigned long long)snx_ld_le64(flags));
@@ -302,7 +302,7 @@ u32 gsv_native_image_reserve(u32 count) {
 static int nn_gsv_UserSession_MapNativeImage(SvcObj* self, u32 image, u32 one, u32 address_space, u8 mode, u64* first,
                                              u64* last, nn_gsv_VideoDescriptor* descriptor, u32* flags) {
     (void)self, (void)flags;
-    R_UNLESS(one == 1 && (mode == 1 || mode == 3), R_BADSIZE);
+    R_UNLESS(one == 1 && (mode == 1 || mode == 3), SNX_RC_SVC_INVALID_SIZE);
     return native_video_gpu_map(image, address_space, first, last, descriptor->v);
 }
 static int nn_gsv_UserSession_UnmapNativeImage(SvcObj* self, u32 image, u32 address_space, u64 first, u64 last) {
@@ -379,8 +379,8 @@ static int nn_gsv_UserSession_CreateNativeImage(SvcObj* self, const u8* request,
     (void)self;
     memcpy(&memory_handle, request + 0x44, 4);
     R_UNLESS(memory_handle && memory_handle < sizeof native_memory_size / sizeof native_memory_size[0] &&
-                 native_memory_size[memory_handle], R_BADMEMSTATE);
-    R_UNLESS(next_native_image_handle < sizeof native_images / sizeof native_images[0], R_BADMEMSTATE);
+                 native_memory_size[memory_handle], SNX_RC_SVC_INVALID_CURRENT_MEMORY);
+    R_UNLESS(next_native_image_handle < sizeof native_images / sizeof native_images[0], SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     *image_handle = next_native_image_handle;
     img = &native_images[*image_handle];
     img->memory_handle = memory_handle;
@@ -403,16 +403,16 @@ static int nn_gsv_UserSession_CalculateNativeImageSize(SvcObj* self, const u8* p
        count. This is the firmware layout recovered in Eden's PR #4588 for the Ounce, not a fixed display-sized guess. */
     R_UNLESS(p[0] == 0 && (p[1] == 1 || p[1] == 2) && p[3] == 0 &&
                  p[4] >= 3 && p[4] <= 8 && (p[6] == 1 || p[6] == 4) && p[7] == 1 && p[16],
-             R_BADSIZE);
-    for (u32 i = 8; i < 16; i++) R_UNLESS(p[i] == 0, R_BADSIZE);
+             SNX_RC_SVC_INVALID_SIZE);
+    for (u32 i = 8; i < 16; i++) R_UNLESS(p[i] == 0, SNX_RC_SVC_INVALID_SIZE);
     width = (p[2] & 0xffffu) + 1ull;
     height = (p[2] >> 16) + 1ull;
     pitch_gobs = p[5];
-    R_UNLESS(pitch_gobs >= (width * 4 + 63) / 64 && pitch_gobs <= 4096, R_BADSIZE);
+    R_UNLESS(pitch_gobs >= (width * 4 + 63) / 64 && pitch_gobs <= 4096, SNX_RC_SVC_INVALID_SIZE);
     block_height = 1ull << p[4];
     aligned_height = (height + block_height - 1) & ~(block_height - 1);
     image_size = pitch_gobs * 64 * aligned_height;
-    R_UNLESS(image_size <= (1ull << 48) / p[16], R_BADSIZE);
+    R_UNLESS(image_size <= (1ull << 48) / p[16], SNX_RC_SVC_INVALID_SIZE);
     *size = image_size * p[16];
     R_SUCCEED();
 }
@@ -420,7 +420,7 @@ static int nn_gsv_UserSession_CreateGpuSessionWithRemoteMemory(SvcObj* self, u64
     (void)self;
     LOG("gsv: CreateGpuSessionWithRemoteMemory(version %llu)\n", (unsigned long long)version);
     *session = session_new(nn_gsv_GpuSession_new());
-    R_UNLESS(*session, 0xD201);
+    R_UNLESS(*session, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_gsv_GpuSession_GetEventIdRange(SvcObj* self, u32* min_id, u32* max_id) {
@@ -440,7 +440,7 @@ static int nn_gsv_GpuSession_RequestKUserWorkerSession(SvcObj* self, u32 id) {
 static int nn_gsv_GpuSession_GetKUserWorkerSession(SvcObj* self, u32* session) {
     (void)self;
     *session = session_new(nn_gsv_KUserWorkerSession_new());
-    R_UNLESS(*session, 0xD201);
+    R_UNLESS(*session, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_gsv_GpuSession_CreateGraphicsDevice(SvcObj* self, u64 name, u64 flags, u64 sdk_label, u8* device_type) {
@@ -482,15 +482,15 @@ static int nn_gsv_KUserWorkerSession_CreateGpuMemory(SvcObj* self, const u8* req
     LOG("gsv: CreateGpuMemory(%#llx..%#llx, options %#llx)\n", (unsigned long long)start,
         (unsigned long long)end, (unsigned long long)options);
     /* GSV's end address is inclusive. The SDK supplies the last byte of a page. */
-    R_UNLESS(start <= end && !(start & 0xfff) && (end & 0xfff) == 0xfff && end < AS_END, R_BADADDR);
+    R_UNLESS(start <= end && !(start & 0xfff) && (end & 0xfff) == 0xfff && end < AS_END, SNX_RC_SVC_INVALID_ADDRESS);
     end++;
     for (at = start; at < end;) {
         mem_query(at, &block);
         R_UNLESS(block.addr <= at && block.size && block.addr + block.size > at &&
-                     block.state != MS_FREE && (block.attr & MA_GPU_SHARABLE), R_BADMEMSTATE);
+                     block.state != MS_FREE && (block.attr & MA_GPU_SHARABLE), SNX_RC_SVC_INVALID_CURRENT_MEMORY);
         at = block.addr + block.size < end ? block.addr + block.size : end;
     }
-    R_UNLESS(next_gpu_memory_handle < sizeof gpu_memory / sizeof gpu_memory[0], R_BADMEMSTATE);
+    R_UNLESS(next_gpu_memory_handle < sizeof gpu_memory / sizeof gpu_memory[0], SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     *memory_handle = next_gpu_memory_handle++;
     gpu_memory[*memory_handle] = (GsvGpuMemory){start, end};
     R_SUCCEED();
@@ -512,12 +512,12 @@ static int nn_gsv_KUserWorkerSession_NormalMapGpuMemory4K(SvcObj* self, const u8
     memcpy(&offset, request + 24, 8);
     R_UNLESS(address_space == 1 && memory_handle &&
                  memory_handle < sizeof gpu_memory / sizeof gpu_memory[0] &&
-                 gpu_memory[memory_handle].end > gpu_memory[memory_handle].start, R_BADMEMSTATE);
+                 gpu_memory[memory_handle].end > gpu_memory[memory_handle].start, SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     R_UNLESS(gva <= end && !(gva & 0xfff) && (end & 0xfff) == 0xfff && end < (1ull << GMMU_ADDRESS_SPACE_BITS),
-             R_BADADDR);
+             SNX_RC_SVC_INVALID_ADDRESS);
     size = end - gva + 1;
     R_UNLESS(offset <= gpu_memory[memory_handle].end - gpu_memory[memory_handle].start &&
-                 size <= gpu_memory[memory_handle].end - gpu_memory[memory_handle].start - offset, R_BADSIZE);
+                 size <= gpu_memory[memory_handle].end - gpu_memory[memory_handle].start - offset, SNX_RC_SVC_INVALID_SIZE);
     cpu = gpu_memory[memory_handle].start + offset;
     LOG("gsv: map GPU %#llx..%#llx to memory %u at %#llx\n", (unsigned long long)gva,
         (unsigned long long)end, memory_handle, (unsigned long long)cpu);
@@ -561,8 +561,7 @@ static int nn_gsv_KUserWorkerSession_ExecuteSparseMapRequests(SvcObj* self, cons
    is the first two words, and later fields follow at their word offsets (Eden's packet[k] = raw word k - 2). */
 #define VI2_DEFAULT_DISPLAY 0x00746c7561666564ull /* "default" */
 #define VI2_CLIENTS 16
-#define VI2_MOD 9                                   /* nn::vi's result module */
-#define VI2_NOT_FOUND RC(VI2_MOD, 7)
+#define VI2_NOT_FOUND SNX_RC_VI2_NOT_FOUND
 
 typedef struct {
     u64 token;
@@ -649,7 +648,7 @@ static int nn_vi2_IVi2Session_GetNotificationEvent(SvcObj* self, const u8* reque
     (void)self, (void)request;
     if (!vi2_event) vi2_event = owned_event("vi2:notification");
     *event = ev_handle(vi2_event);
-    R_UNLESS(*event, 0xD201);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_vi2_IVi2Session_ReleaseNotificationEvent(SvcObj* self, const u8* request) {
@@ -658,7 +657,7 @@ static int nn_vi2_IVi2Session_ReleaseNotificationEvent(SvcObj* self, const u8* r
 }
 static int nn_vi2_IVi2Session_GetNotifications(SvcObj* self, IpcBuf out) {
     (void)self;
-    R_UNLESS(out.size >= sizeof vi2_notifications, RC(VI2_MOD, 6));
+    R_UNLESS(out.size >= sizeof vi2_notifications, SNX_RC_VI2_BUFFER_TOO_SMALL);
     memcpy(GP(out.addr), vi2_notifications, sizeof vi2_notifications);
     memset(vi2_notifications, 0, sizeof vi2_notifications);
     if (vi2_event) ev_clear(vi2_event);
@@ -667,10 +666,10 @@ static int nn_vi2_IVi2Session_GetNotifications(SvcObj* self, IpcBuf out) {
 static int nn_vi2_IVi2Session_CreateRequestGroupEvent(SvcObj* self, const u8* request, u32* event) {
     u32 group = snx_ld_le32(request);
     (void)self;
-    R_UNLESS(group < 8, RC(VI2_MOD, 4));
+    R_UNLESS(group < 8, SNX_RC_VI2_INVALID_VALUE);
     if (!vi2_group_events[group]) vi2_group_events[group] = owned_event("vi2:request group");
     *event = ev_handle(vi2_group_events[group]);
-    R_UNLESS(*event, 0xD201);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_vi2_IVi2Session_DuplicateRequestGroupEvent(SvcObj* self, const u8* request, u32 copied, u32* event) {
@@ -678,7 +677,7 @@ static int nn_vi2_IVi2Session_DuplicateRequestGroupEvent(SvcObj* self, const u8*
     (void)self, (void)copied;
     R_UNLESS(group < 8 && vi2_group_events[group], VI2_NOT_FOUND);
     *event = ev_handle(vi2_group_events[group]);
-    R_UNLESS(*event, 0xD201);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_vi2_IVi2Session_ConfigureRequestGroups(SvcObj* self, const u8* request) {
@@ -753,9 +752,9 @@ static int nn_vi2_IVi2Session_RegisterClientState(SvcObj* self, const u8* reques
     u32 second = snx_ld_le32(request + 12);
     u32 slots, i;
     (void)self;
-    R_UNLESS(token && first < 32 && second < 32 && first != second && !vi2_client(token), RC(VI2_MOD, 5));
+    R_UNLESS(token && first < 32 && second < 32 && first != second && !vi2_client(token), SNX_RC_VI2_INVALID_CLIENT);
     slots = (1u << first) | (1u << second);
-    R_UNLESS(!(vi2_client_slots & slots), RC(VI2_MOD, 4));
+    R_UNLESS(!(vi2_client_slots & slots), SNX_RC_VI2_INVALID_VALUE);
     for (i = 0; i < VI2_CLIENTS; i++) {
         if (!vi2_clients[i].token) {
             vi2_clients[i].token = token;
@@ -767,7 +766,7 @@ static int nn_vi2_IVi2Session_RegisterClientState(SvcObj* self, const u8* reques
             return 0;
         }
     }
-    R_THROW(RC(VI2_MOD, 4));
+    R_THROW(SNX_RC_VI2_INVALID_VALUE);
 }
 static int nn_vi2_IVi2Session_UnregisterClientState(SvcObj* self, const u8* request) {
     u64 token = snx_ld_le64(request);
@@ -826,7 +825,7 @@ static int nn_vi2_IVi2Session_PresentClientBuffer(SvcObj* self, const u8* reques
     p = (Vi2Present*)malloc(sizeof *p);
     if (!p) {
         c->available |= 1ull << slot;
-        R_THROW(RC(VI2_MOD, 4));
+        R_THROW(SNX_RC_VI2_INVALID_VALUE);
     }
     p->cpu = native_memory_cpu[img->memory_handle];
     p->w = w;
@@ -988,7 +987,7 @@ void gsv_syncpt_changed(void) {
 }
 static int nn_gsv_SyncptSession_GetEvent(SvcObj* self, u32 slot, u32* event) {
     (void)self;
-    R_UNLESS(slot < SYNC_WAITS, 0xD201);
+    R_UNLESS(slot < SYNC_WAITS, SNX_RC_SVC_OUT_OF_HANDLES);
     /* the service keeps the kernel object id to signal it, and hands the game a handle of its own */
     sync_waits[slot].event = owned_event("gsv:syncpoint");
     *event = ev_handle(sync_waits[slot].event);
@@ -1007,7 +1006,7 @@ static int nn_gsv_SyncptSession_ArmWait(SvcObj* self, const u8* request) {
     memcpy(&slot, request, 4);
     memcpy(&id, request + 4, 4);
     memcpy(&threshold, request + 8, 8);
-    R_UNLESS(slot < SYNC_WAITS, 0xD201);
+    R_UNLESS(slot < SYNC_WAITS, SNX_RC_SVC_OUT_OF_HANDLES);
     sync_waits[slot].id = ~id;
     sync_waits[slot].thresh = (u32)threshold;
     if (sync_waits[slot].event) ev_clear(sync_waits[slot].event); /* a re-arm clears the previous wait's signal */
@@ -1025,7 +1024,7 @@ static int nn_gsv_SyncptSession_ArmWait(SvcObj* self, const u8* request) {
    first wait on an image) */
 static int nn_gsv_SyncptSession_CancelWait(SvcObj* self, u32 slot) {
     (void)self;
-    R_UNLESS(slot < SYNC_WAITS, 0xD201);
+    R_UNLESS(slot < SYNC_WAITS, SNX_RC_SVC_OUT_OF_HANDLES);
     sync_waits[slot].armed = 0;
     if (sync_waits[slot].event) ev_signal(sync_waits[slot].event);
     R_SUCCEED();
@@ -1035,6 +1034,6 @@ static int nn_gsv_UserSession_CreateNvDrv2UserSessionWithRemoteMemory(SvcObj* se
     /* INvDrv2User uses the nvdrv command layouts for Open, Ioctl, Close and QueryEvent. Share those device handlers
        until a command or ioctl with different semantics needs its own implementation. */
     *session = session_new(svcobj_new("nn::nvdrv::INvDrv2User", nns_nvdrv_INvDrvServices_dispatch));
-    R_UNLESS(*session, 0xD201); /* OutOfHandles */
+    R_UNLESS(*session, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }

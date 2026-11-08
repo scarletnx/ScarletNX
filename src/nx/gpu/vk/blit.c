@@ -163,15 +163,21 @@ static int blit(const GpuBlit* b, u32 y, u32 n, const BlitNeeds* need) {
 }
 
 /* A blit too big for one allocation goes in bands of the rectangle's rows (vk_band), each a blit of its own reading
-   the source rows its rows sample. A block linear destination's bands end on its rows of blocks */
+   the source rows its rows sample, and so does one whose scratch needs more than VK_PART_SHARE of the cap, as the
+   scratch buffer stays as big as the most asked of it. A block linear destination's bands end on its rows of blocks */
 static u64 blit_need(const void* user, u32 y, u32 n) {
     BlitNeeds k = blit_needs((const GpuBlit*)user, y, n);
     u64 m = k.sspan > k.dlen ? k.sspan : k.dlen;
     return m > k.used ? m : k.used;
 }
 static int blit_bands(const GpuBlit* b) {
-    VkBands bands = {g_vk.alloc_cap, b->dst.bl ? 8u << b->dst.bh : 1, b->y0, blit_need, b};
     u32 rows = b->y1 - b->y0;
+    VkBands bands = {g_vk.alloc_cap,
+                     b->dst.bl ? 8u << b->dst.bh : 1,
+                     b->y0,
+                     blit_need,
+                     b,
+                     blit_needs(b, 0, rows).used > g_vk.alloc_cap / VK_PART_SHARE};
     for (u32 y = 0, n; y < rows; y += n) {
         u64 most = 0;
         n = vk_band(&bands, y, rows - y, &most);

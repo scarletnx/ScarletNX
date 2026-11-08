@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The A64 decoder tools/a64dec generates from a64.decode and its profile (decode/), for the recompiler */
+/* The A64 decoder tools/decodetree generates from a64.decode and its profile (decode/), for the recompiler */
 #ifndef SNX_A64_DECODER_H
 #define SNX_A64_DECODER_H
 
 #include "common/utilities/common.h"
-#include "a64_decode.h" /* generated into the build folder (cmake/a64dec.cmake) */
+#include "a64_decode.h" /* generated into the build folder (cmake/decodetree.cmake) */
 
 /* The features a decode takes: 0 is the Switch's (SNX_A64_TARGET_SWITCH, the Cortex-A57). EL1 never counts: guest
    code runs at EL0, so ERET, HVC, SMC, HLT and the EL1 MSR immediates decode as UNDEF, as they raise an undefined

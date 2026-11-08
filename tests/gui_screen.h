@@ -51,6 +51,21 @@ static inline const uint8_t* font_rows(int c) { return gui_glyph_rows(c); }
 #define ICON_HARD_DRIVE_DOWNLOAD "\uE023"
 #define ICON_ACTIVITY            "\uE024"
 #define ICON_INFO                "\uE025"
+#define ICON_GPU                 "\uE026"
+#define ICON_MEMORY_STICK        "\uE027"
+#define ICON_LAYERS              "\uE028"
+#define ICON_MOVE                "\uE029"
+#define ICON_SLIDERS_HORIZONTAL  "\uE02A"
+#define ICON_REFRESH_CW          "\uE02B"
+#define ICON_ARROW_LEFT          "\uE02C"
+#define ICON_X                   "\uE02D"
+#define ICON_CHECK               "\uE02E"
+#define ICON_TRASH               "\uE02F"
+#define ICON_PENCIL              "\uE030"
+#define ICON_CLIPBOARD_PASTE     "\uE031"
+#define ICON_PANEL_RIGHT         "\uE032"
+#define ICON_EYE                 "\uE033"
+#define ICON_KEYBOARD            "\uE034"
 static inline void is_icon(const char* text, unsigned icon) {
     const char* at = text;
     assert(gui_utf8_step(&at) == icon && !*at);
@@ -94,6 +109,22 @@ static inline void icons_are(void) {
     is_icon(ICON_HARD_DRIVE_DOWNLOAD, GUI_ICON_HARD_DRIVE_DOWNLOAD);
     is_icon(ICON_ACTIVITY, GUI_ICON_ACTIVITY);
     is_icon(ICON_INFO, GUI_ICON_INFO);
+    is_icon(ICON_GPU, GUI_ICON_GPU);
+    is_icon(ICON_MEMORY_STICK, GUI_ICON_MEMORY_STICK);
+    is_icon(ICON_LAYERS, GUI_ICON_LAYERS);
+    is_icon(ICON_MOVE, GUI_ICON_MOVE);
+    is_icon(ICON_SLIDERS_HORIZONTAL, GUI_ICON_SLIDERS_HORIZONTAL);
+    is_icon(ICON_REFRESH_CW, GUI_ICON_REFRESH_CW);
+    is_icon(ICON_ARROW_LEFT, GUI_ICON_ARROW_LEFT);
+    is_icon(ICON_X, GUI_ICON_X);
+    is_icon(ICON_CHECK, GUI_ICON_CHECK);
+    is_icon(ICON_TRASH, GUI_ICON_TRASH);
+    is_icon(ICON_PENCIL, GUI_ICON_PENCIL);
+    is_icon(ICON_CLIPBOARD_PASTE, GUI_ICON_CLIPBOARD_PASTE);
+    is_icon(ICON_PANEL_RIGHT, GUI_ICON_PANEL_RIGHT);
+    is_icon(ICON_EYE, GUI_ICON_EYE);
+    is_icon(ICON_KEYBOARD, GUI_ICON_KEYBOARD);
+    assert(GUI_ICON_KEYBOARD + 1 == GUI_ICON_END); /* every icon named here */
 }
 /* where a font's pixel k (from a glyph's corner) is read with letters half halves of a cell big: a whole scale s (2 * s
    of them) its block's corner, k * s, so a glyph is found at its corner alone; a half step's pixels, a pixel and two by

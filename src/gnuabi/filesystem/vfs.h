@@ -43,6 +43,11 @@ int gnu_vfs_adopt(GnuVfs* vfs, int fd, int host);
 struct GnuVfsTable;
 struct GnuVfsTable* gnu_vfs_save_table(GnuVfs* vfs);
 void gnu_vfs_restore_table(GnuVfs* vfs, struct GnuVfsTable* table);
+/* the descriptor table's lock, held across a host fork (thread.c) */
+void gnu_vfs_lock(GnuVfs* vfs);
+void gnu_vfs_unlock(GnuVfs* vfs);
+/* a fork's child: the lock again, unlocked (the child's thread is not its owner: its id changed) */
+void gnu_vfs_forked(GnuVfs* vfs);
 bool gnu_vfs_syscall(GnuVfs* vfs, GnuMemory* memory, uint64_t number, const uint64_t args[6], int64_t* result);
 int64_t gnu_vfs_pread(GnuVfs* vfs, int fd, void* destination, size_t length, uint64_t offset);
 
@@ -71,6 +76,11 @@ typedef struct GnuFdInfo {
     const void* identity; /* the open file, which tells a reused descriptor number from the one registered */
 } GnuFdInfo;
 int gnu_vfs_fd_info(GnuVfs* vfs, int fd, GnuFdInfo* out); /* 0 or -GNU_EBADF */
+/* gnu_vfs_fd_info, and the open file (out->identity) held until gnu_vfs_release: a call that uses the descriptor's
+   object or host descriptor after the table's lock (a socket's call, poll, epoll) keeps it open through a close() of
+   another thread, as Linux's file reference does */
+int gnu_vfs_fd_hold(GnuVfs* vfs, int fd, GnuFdInfo* out);
+void gnu_vfs_release(GnuVfs* vfs, const void* identity);
 /* a read-only file the runtime provides (/etc/resolv.conf), its directories made as needed */
 int gnu_vfs_add_file(GnuVfs* vfs, const char* path, const void* data, size_t size);
 #endif

@@ -24,6 +24,11 @@ int main(void) {
            !strcmp(ini_deprecated("modo_tv"), "now docked"));
     assert(!strcmp(ini_deprecated("user"), "now user_uid, the uid of the user it named") &&
            !ini_deprecated("user_uid"));
+    assert(ini_deprecated("vk_descriptors") && strstr(ini_deprecated("vk_descriptors"), "now vk_descriptors_mode") &&
+           !ini_deprecated("vk_descriptors_mode"));
+    /* renamed, of the same values: the launcher carries a pick of it over */
+    assert(ini_renamed("vk_descriptors") && !strcmp(ini_renamed("vk_descriptors"), "vk_descriptors_mode") &&
+           !ini_renamed("memory_fit") && !ini_renamed("vk_descriptors_mode") && !ini_renamed(""));
     assert(!ini_deprecated("resolution") && !ini_deprecated("controls") && !ini_deprecated(""));
     /* the section, word for word */
     f = tmpfile();

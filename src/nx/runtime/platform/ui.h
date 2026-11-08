@@ -25,6 +25,8 @@ typedef struct {
 
 /* a sprite of controls_atlas.h at alpha (0 to 255) */
 void ui_sprite(SnxUiList* l, int sprite, float x, float y, float w, float h, u32 alpha, int turn);
+/* the atlas's texels u, v, uw x vh at x, y, w x h, blended, times rgba: a skin's image (vpad_skin.h) */
+void ui_texels(SnxUiList* l, float x, float y, float w, float h, int u, int v, int uw, int vh, u32 rgba);
 /* a plain rectangle */
 void ui_fill(SnxUiList* l, float x, float y, float w, float h, u32 rgba);
 /* the picture of the user playing (common/utilities/users.h), side pixels square at x, y: drawn SNX_UI_PICTURE texels
@@ -54,6 +56,17 @@ const u8* ui_image_get(u32* version);
    by ui_atlas_done once the renderer has it, both under ui_lock. It is the image's width and SNX_UI_PICTURE rows
    taller. version counts the images given, 0 for none yet */
 void ui_atlas_set(const u32* sprites, int w, int h);
+/* ui_atlas_set in two: the atlas made (NULL for an image of another size), its rows into *rows; then put in under
+   ui_lock, which the caller holds (with what is drawn from it changing at once) */
+u32* ui_atlas_make(const u32* sprites, int w, int h, int* rows);
+void ui_atlas_put(u32* atlas, int rows);
+/* A skin's images (vpad_skin.h), rows of the atlas's width under the picture's: from row ui_skin_y, at most
+   ui_skin_room rows, as the atlas is at most 4096 rows (Vulkan's least maxImageDimension2D). ui_skin_set takes texels
+   (malloc'd, R G B A bytes, straight alpha), NULL for none, for the next atlas made; on the main thread, which makes
+   the atlas (the renderer reads only what ui_atlas_put put in) */
+int ui_skin_y(void);
+int ui_skin_room(void);
+void ui_skin_set(u32* texels, int rows);
 const u32* ui_atlas(int* w, int* h, u32* version);
 void ui_atlas_done(void);
 

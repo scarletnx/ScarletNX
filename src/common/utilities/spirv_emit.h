@@ -41,7 +41,7 @@ typedef struct {
     SpvWords locals;   /* the spv_emit_local variables of the function being written */
     size_t body_start; /* where they go in functions: after its first label (0 outside spv_emit_function) */
     uint32_t next_id;
-    uint32_t version; /* the module's SPIR-V version word, 0x00010600 (1.6) from spv_emit_init */
+    uint32_t version; /* the module's SPIR-V version word, spv_emit_set_version's (1.6 unless set) from spv_emit_init */
     uint32_t glsl;    /* the GLSL.std.450 import, 0 until it is made */
     SpvKnown* known;
     size_t known_count, known_capacity;
@@ -280,8 +280,10 @@ enum {
     SPV_MODE_XFB = 11,
     SPV_MODE_DEPTH_REPLACING = 12,
     SPV_MODE_LOCAL_SIZE = 17,
-    SPV_MODE_DENORM_FLUSH_TO_ZERO = 4460,     /* SPV_KHR_float_controls, its operand the width */
-    SPV_MODE_SIGNED_ZERO_INF_NAN_PRESERVE = 4461 /* SPV_KHR_float_controls, its operand the width */
+    SPV_MODE_DENORM_PRESERVE = 4459,
+    SPV_MODE_DENORM_FLUSH_TO_ZERO = 4460,         /* SPV_KHR_float_controls, its operand the width */
+    SPV_MODE_SIGNED_ZERO_INF_NAN_PRESERVE = 4461, /* SPV_KHR_float_controls, its operand the width */
+    SPV_MODE_ROUNDING_RTE = 4462
 };
 enum {
     SPV_CAPABILITY_SHADER = 1,
@@ -303,8 +305,10 @@ enum {
     SPV_CAPABILITY_GROUP_NON_UNIFORM_QUAD = 68,
     SPV_CAPABILITY_SHADER_LAYER = 69,
     SPV_CAPABILITY_DRAW_PARAMETERS = 4427,
+    SPV_CAPABILITY_DENORM_PRESERVE = 4464,
     SPV_CAPABILITY_DENORM_FLUSH_TO_ZERO = 4465,
     SPV_CAPABILITY_SIGNED_ZERO_INF_NAN_PRESERVE = 4466,
+    SPV_CAPABILITY_ROUNDING_RTE = 4467,
     SPV_CAPABILITY_SHADER_CLOCK_KHR = 5055,
     SPV_CAPABILITY_SHADER_NON_UNIFORM = 5301,
     SPV_CAPABILITY_SAMPLED_IMAGE_ARRAY_NON_UNIFORM_INDEXING = 5307,
@@ -358,6 +362,9 @@ typedef enum {
 } SpvGlsl450Op;
 
 void spv_emit_init(SpvEmitter* e, size_t estimated_function_words);
+/* the SPIR-V version of the modules spv_emit_init starts from then on: 0x00010600 (1.6) until it is set. A Vulkan 1.2
+   device takes 1.5 at most */
+void spv_emit_set_version(uint32_t version);
 void spv_emit_destroy(SpvEmitter* e);
 uint32_t spv_emit_id(SpvEmitter* e);
 /* the GLSL.std.450 import, made on the first call */
@@ -385,6 +392,8 @@ void spv_emit_fragment_origin_upper_left(SpvEmitter* e, uint32_t function);
 void spv_emit_fragment_depth_replacing(SpvEmitter* e, uint32_t function);
 void spv_emit_float_controls(SpvEmitter* e, uint32_t function, int flush_denorms, int preserve_infnan,
                              int preserve_infnan64);
+/* Native half narrowing: RNE, denormal and signed-zero preservation, with matching64-bit modes when required. */
+void spv_emit_half_rounding(SpvEmitter* e, uint32_t function, int linked64);
 void spv_emit_local_size(SpvEmitter* e, uint32_t function, uint32_t x, uint32_t y, uint32_t z);
 void spv_emit_name_str(SpvEmitter* e, uint32_t id, const char* name);
 uint32_t spv_emit_type_void(SpvEmitter* e);
@@ -431,11 +440,15 @@ uint32_t spv_emit_storage_buffer(SpvEmitter* e, uint32_t struct_type, uint32_t s
 uint32_t spv_emit_uniform_vec4_array(SpvEmitter* e, uint32_t vec4_type, uint32_t component_type, uint32_t u32_type,
                                      uint32_t set, uint32_t binding, uint32_t elements,
                                      uint32_t* component_pointer_type);
+/* the same array in a storage buffer that the shader only reads */
+uint32_t spv_emit_readonly_vec4_array(SpvEmitter* e, uint32_t vec4_type, uint32_t component_type, uint32_t u32_type,
+                                      uint32_t set, uint32_t binding, uint32_t elements,
+                                      uint32_t* component_pointer_type);
 uint32_t spv_emit_uniform_component(SpvEmitter* e, uint32_t pointer_type, uint32_t buffer, uint32_t member,
                                     uint32_t element, uint32_t component, uint32_t component_type);
 /* a push constant block: a vec4 at offset, then a 16-byte member of second_type unless it is 0 */
-uint32_t spv_emit_push_vec4(SpvEmitter* e, uint32_t vec4_type, uint32_t f32_type, uint32_t offset,
-                            uint32_t second_type, uint32_t* component_pointer_type);
+uint32_t spv_emit_push_vec4(SpvEmitter* e, uint32_t vec4_type, uint32_t f32_type, uint32_t offset, uint32_t second_type,
+                            uint32_t* component_pointer_type);
 uint32_t spv_emit_push_component_f32(SpvEmitter* e, uint32_t pointer_type, uint32_t block, uint32_t member,
                                      uint32_t component, uint32_t f32_type);
 uint32_t spv_emit_output_vec4(SpvEmitter* e, uint32_t vec4_type, uint32_t location);
@@ -474,6 +487,9 @@ void spv_emit_patch_barrier(SpvEmitter* e, uint32_t u32_type);
 uint32_t spv_emit_sampler_image_array(SpvEmitter* e, uint32_t scalar_type, uint32_t u32_type, uint32_t set,
                                       uint32_t binding, uint32_t type, int array, int shadow, uint32_t count,
                                       uint32_t* sampled_type);
+uint32_t spv_emit_sampler_image_array_ex(SpvEmitter* e, uint32_t scalar_type, uint32_t u32_type, uint32_t set,
+                                         uint32_t binding, uint32_t type, int array, int shadow, int multisample,
+                                         uint32_t count, uint32_t* sampled_type);
 uint32_t spv_emit_sampler_array_element(SpvEmitter* e, uint32_t sampled_type, uint32_t array_variable, uint32_t index);
 uint32_t spv_emit_sampler2d(SpvEmitter* e, uint32_t f32_type, uint32_t set, uint32_t binding, int shadow,
                             uint32_t* sampled_type);
@@ -547,8 +563,8 @@ uint32_t spv_emit_isnan(SpvEmitter* e, uint32_t bool_type, uint32_t value);
 uint32_t spv_emit_select(SpvEmitter* e, uint32_t result_type, uint32_t condition, uint32_t yes, uint32_t no);
 /* a 32-bit float with a subnormal flushed to the zero of its sign, NaN and everything else as it is: with a float test
    when the module preserves signed zeros (SignedZeroInfNanPreserve), else on its bits */
-uint32_t spv_emit_flush_subnormal(SpvEmitter* e, uint32_t f32_type, uint32_t u32_type, uint32_t bool_type, uint32_t glsl,
-                                  uint32_t value, int signed_zeros);
+uint32_t spv_emit_flush_subnormal(SpvEmitter* e, uint32_t f32_type, uint32_t u32_type, uint32_t bool_type,
+                                  uint32_t glsl, uint32_t value, int signed_zeros);
 /* a 32-bit float saturated as the console's .SAT does it: clamped to [0, 1], and +0 for a NaN */
 uint32_t spv_emit_saturate(SpvEmitter* e, uint32_t f32_type, uint32_t u32_type, uint32_t bool_type, uint32_t glsl,
                            uint32_t value);
@@ -584,9 +600,20 @@ uint32_t spv_emit_image_gather_ex(SpvEmitter* e, uint32_t vec4_type, uint32_t sa
 uint32_t spv_emit_sample_image(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type, uint32_t sampler,
                                uint32_t coordinates, uint32_t depth_reference, uint32_t mode, uint32_t level,
                                uint32_t offset, int dynamic_offset);
+/* MinLod is valid with implicit LOD or gradients. It is not valid with the Lod image operand. */
+uint32_t spv_emit_sample_image_min_lod(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type, uint32_t sampler,
+                                       uint32_t coordinates, uint32_t depth_reference, uint32_t mode, uint32_t level,
+                                       uint32_t offset, int dynamic_offset, uint32_t min_lod);
 /* OpImageSampleExplicitLod with the Grad operand (dx and dy) and an optional constant offset */
 uint32_t spv_emit_sample_grad(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type, uint32_t sampler,
                               uint32_t coordinates, uint32_t dx, uint32_t dy, uint32_t offset);
+uint32_t spv_emit_sample_grad_min_lod(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type, uint32_t sampler,
+                                      uint32_t coordinates, uint32_t dx, uint32_t dy, uint32_t offset,
+                                      uint32_t min_lod);
+/* Dynamic Offset requires maintenance8 in Vulkan. The caller gates that enabled device feature. */
+uint32_t spv_emit_sample_grad_offset(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type, uint32_t sampler,
+                                     uint32_t coordinates, uint32_t dx, uint32_t dy, uint32_t offset,
+                                     int dynamic_offset, uint32_t min_lod);
 void spv_emit_no_contraction(SpvEmitter* e, uint32_t result);
 uint32_t spv_emit_storage_access_u32(SpvEmitter* e, uint32_t pointer_type, uint32_t buffer, uint32_t member_index,
                                      uint32_t element_index);
@@ -680,8 +707,8 @@ uint32_t spv_emit_ext(SpvEmitter* e, uint32_t type, uint32_t instruction, const 
 /* the shorthands: SPV(e, opcode, type, operands...) and SPV_VOID(e, opcode, operands...), SPV_EXT(e, type,
    instruction, operands...), each with one operand at least (C99 has no empty variadic arguments): an instruction
    without any is spv_emit_void_op(e, opcode, NULL, 0) */
-#define SPV_ARGS(...) ((const uint32_t[]){__VA_ARGS__}), (sizeof((const uint32_t[]){__VA_ARGS__}) / 4)
+#define SPV_ARGS(...)             ((const uint32_t[]){__VA_ARGS__}), (sizeof((const uint32_t[]){__VA_ARGS__}) / 4)
 #define SPV(e, opcode, type, ...) spv_emit_op((e), (opcode), (type), SPV_ARGS(__VA_ARGS__))
-#define SPV_VOID(e, opcode, ...) spv_emit_void_op((e), (opcode), SPV_ARGS(__VA_ARGS__))
+#define SPV_VOID(e, opcode, ...)  spv_emit_void_op((e), (opcode), SPV_ARGS(__VA_ARGS__))
 #define SPV_EXT(e, type, instruction, ...) spv_emit_ext((e), (type), (instruction), SPV_ARGS(__VA_ARGS__))
 #endif

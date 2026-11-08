@@ -18,6 +18,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/resource_stats.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/runtime/platform/tracy.h"
@@ -1719,6 +1720,13 @@ static void ww_take_changed(void) {
 #define WW_USED_EPOCHS 4 /* the scanner scans the leaves the checks of the last epochs needed */
 static u32 g_wleaf_done[AS_TOP >> WW_LEAF_SHIFT]; /* atomic, stored by the leaf's claimer */
 static u32 g_wleaf_used[AS_TOP >> WW_LEAF_SHIFT]; /* atomic: only a hint for the scanner */
+/* The leaves a check ever needed, a bit each, with a bit for each word that has one. A game's few used leaves can lie
+   far apart: one had 15 under a g_wleaf_top of 18090, and passes that tested every leaf below it were a sixth of the
+   samples of the runtime. Set by the checks under vk_lock, and read by the scanner as a hint like g_wleaf_used */
+#define WW_EVER_WORDS ((AS_TOP >> WW_LEAF_SHIFT) / 64)
+#define WW_EVER_TOPS  (WW_EVER_WORDS / 64)
+static u64 g_wleaf_ever[WW_EVER_WORDS];    /* atomic */
+static u64 g_wleaf_ever_top[WW_EVER_TOPS]; /* atomic */
 static u8 g_wleaf_busy[AS_TOP >> WW_LEAF_SHIFT];  /* atomic: 1 while a scan has claimed the leaf */
 static u32 g_ww_used[WW_USED_EPOCHS];             /* the last epochs + 1 checks needed leaves in, under vk_lock */
 static u32 g_ww_used_i;
@@ -1897,6 +1905,24 @@ static int ww_wanted(u64 l, u32 seen, u32 from) {
     u32 u = __atomic_load_n(&g_wleaf_used[l], __ATOMIC_RELAXED);
     return u && (i32)(u - from) >= 0 && (i32)(__atomic_load_n(&g_wleaf_done[l], __ATOMIC_ACQUIRE) - seen) < 0;
 }
+/* the first leaf at or after l that a check ever needed; n or more when there is none below n */
+static u64 ww_next_ever(u64 l, u64 n) {
+    while (l < n) {
+        u64 w = l >> 6, bits = __atomic_load_n(&g_wleaf_ever[w], __ATOMIC_RELAXED) >> (l & 63);
+        if (bits) return l + snx_ctz64(bits);
+        w++;
+        u64 t = w >> 6;
+        if (t >= WW_EVER_TOPS) return n;
+        u64 words = __atomic_load_n(&g_wleaf_ever_top[t], __ATOMIC_RELAXED) >> (w & 63);
+        while (!words) {
+            if (++t >= WW_EVER_TOPS) return n;
+            w = t << 6;
+            words = __atomic_load_n(&g_wleaf_ever_top[t], __ATOMIC_RELAXED);
+        }
+        l = (w + snx_ctz64(words)) << 6;
+    }
+    return n;
+}
 /* Scans the leaves the checks of the last epochs needed each time an epoch starts, up through memory, and starts over
    for a newer epoch. A check that comes before the scanner got to its leaf scans it itself */
 static void ww_scanner(void* arg) {
@@ -1913,7 +1939,7 @@ static void ww_scanner(void* arg) {
         from = __atomic_load_n(&g_ww_used_from, __ATOMIC_RELAXED);
         for (u64 l = 0, n = __atomic_load_n(&g_wleaf_top, __ATOMIC_RELAXED); l < n;) {
             if (!ww_wanted(l, seen, from)) {
-                l++;
+                l = ww_next_ever(l + 1, n);
                 continue;
             }
             u64 lo = l;
@@ -1965,6 +1991,10 @@ static int ww_take_leaves(u64 lo, u64 hi, u32 seen) {
     for (a = l; a <= hi; a++) {
         if ((i32)(g_wleaf_seen[a] - seen) >= 0) continue;
         __atomic_store_n(&g_wleaf_used[a], seen, __ATOMIC_RELAXED);
+        if (!(__atomic_load_n(&g_wleaf_ever[a >> 6], __ATOMIC_RELAXED) >> (a & 63) & 1)) {
+            __atomic_fetch_or(&g_wleaf_ever[a >> 6], 1ull << (a & 63), __ATOMIC_RELAXED);
+            __atomic_fetch_or(&g_wleaf_ever_top[a >> 12], 1ull << (a >> 6 & 63), __ATOMIC_RELAXED);
+        }
         if ((i32)(__atomic_load_n(&g_wleaf_done[a], __ATOMIC_ACQUIRE) - seen) < 0) {
             if (first > hi) first = a;
             last = a;
@@ -3022,9 +3052,11 @@ static int patch_dirty(u32 i, u64 gva, const u8* host, u64 gw, u32 ws) {
 static int make_own_(u32 i, VkBuffer sb, u64 so);
 /* a buffer of its own being made, as a profiler zone (SNX_TRACY builds) */
 static int make_own(u32 i, VkBuffer sb, u64 so) {
+    VkResourceScope scope = vk_resource_begin();
     SNX_ZONE_V(z, "own buffer", g_vb[i].len);
     int r = make_own_(i, sb, so);
     SNX_ZONE_END(z);
+    vk_resource_end(VK_RESOURCE_BUFFER_CACHE_BUILD, scope);
     return r;
 }
 static int make_own_(u32 i, VkBuffer sb, u64 so) {
@@ -3547,7 +3579,7 @@ void vk_buf_writable_stats(u64* copied, u64* read_back, u64* merged) {
 }
 
 /* buffers not read for twenty seconds, and in 120 presents, go */
-void vk_buf_frame(void) {
+static void buf_frame(void) {
     vk_uma_frame();
     if (g_vk_present % 4) return;
     vk_wlog_trim();
@@ -3646,6 +3678,11 @@ void vk_buf_frame(void) {
         drop_own(i);
         vb_free(i);
     }
+}
+void vk_buf_frame(void) {
+    VkResourceScope scope = vk_resource_begin();
+    buf_frame();
+    vk_resource_end(VK_RESOURCE_BUFFER_MAINTENANCE, scope);
 }
 
 /* a save state's load: every buffer kept of guest memory goes, and their host addresses with it */

@@ -31,6 +31,8 @@ bool gui_is_cia(const char* name) {
 }
 bool gui_is_vpk(const char* name) { return suffix(name, ".vpk"); }
 bool gui_is_gba(const char* name) { return suffix(name, ".gba"); }
+/* an Android app, one APK or a bundle of split APKs (an XAPK, an APKS) that scarletnx-android installs */
+bool gui_is_apk(const char* name) { return suffix(name, ".apk") || suffix(name, ".xapk") || suffix(name, ".apks"); }
 bool gui_is_dump(const char* name) {
     return suffix(name, ".nro") || suffix(name, ".xci") || suffix(name, ".nsp") || suffix(name, ".dxci") ||
            suffix(name, ".dnsp");
@@ -91,7 +93,7 @@ static bool playable(const char* directory, char* name, int kinds) {
     char* path;
     bool listed;
     if (name[0] == '.') return false;
-    if (gui_is_cia(name) || gui_is_vpk(name) || gui_is_gba(name)) {
+    if (gui_is_cia(name) || gui_is_vpk(name) || gui_is_gba(name) || gui_is_apk(name)) {
         if (!(kinds & GUI_GAMES_CIA)) return false;
         path = snx_path_join(directory, name);
         listed = path && snx_is_file(path);
@@ -255,7 +257,8 @@ static size_t addons_of(const char* path, GuiGames* addons) {
         if (listed) stem[n - 5] = 0;
         /* another program of a collection's is no add-on: its game plays it (gui_game_programs) */
         listed = listed && snx_addon_name(leaf, stem, &id) && snx_addon_kind(game, id) != SNX_ADDON_PROGRAM;
-        if (listed && snx_addon_kind(game, id) == SNX_ADDON_UPDATE) {
+        /* an update with a program of its own, listed once it is made; a 3DS game's has none, its game reads it */
+        if (listed && snx_addon_own_program(game, id)) {
 #if defined(__ANDROID__) || defined(SNX_IOS)
             char* file = snx_format("%s" GAME_CODE, stem);
 #elif defined(_WIN32)
@@ -288,7 +291,12 @@ static size_t addons_of(const char* path, GuiGames* addons) {
                 snprintf(text, sizeof text, snx_tr("DLC %s"), title);
             } else if (snx_nacp_version(nacp, size, version, sizeof version))
                 snprintf(text, sizeof text, snx_tr("Update %s"), version);
-            else
+            else if (!snx_addon_own_program(game, id) && snx_addon_version(stem + strlen(leaf) + 1) != SNX_NO_VERSION) {
+                /* a 3DS game's update: its TMD's title version */
+                snprintf(version, sizeof version, "v%llu",
+                         (unsigned long long)snx_addon_version(stem + strlen(leaf) + 1));
+                snprintf(text, sizeof text, snx_tr("Update %s"), version);
+            } else
                 snprintf(text, sizeof text, "%s", snx_tr("Update"));
             free(nacp);
             for (j = addons->count; j > 0 && addon_before(game, stem, addons->names[j - 1]); --j) {
@@ -541,9 +549,9 @@ bool gui_games_add_deep(GuiGames* games, const char* directory, int kinds, int d
     return add_games(games, directory, kinds, games->count, depth, error, size);
 }
 bool gui_games_heading(const GuiGames* games, size_t i) { return i < games->count && !games->paths[i]; }
-static bool dump_entry(const GuiGames* games, size_t i) {
+bool gui_games_dumps_group(const GuiGames* games, size_t i) {
     return gui_is_dump(games->names[i]) || gui_is_cia(games->names[i]) || gui_is_vpk(games->names[i]) ||
-           gui_is_gba(games->names[i]);
+           gui_is_gba(games->names[i]) || gui_is_apk(games->names[i]);
 }
 bool gui_games_group(GuiGames* games, const char* ready, const char* dumps,
                      bool (*made)(const char* path, const void* user), const void* user) {
@@ -553,8 +561,8 @@ bool gui_games_group(GuiGames* games, const char* ready, const char* dumps,
     int group;
     bool ok;
     for (i = 0; i < games->count; ++i) /* no dumps' heading: none of the second group counted, so none moved */
-        if (games->paths[i] && !(dump_entry(games, i) && (!dumps || (made && made(games->paths[i], user)))))
-            in[dump_entry(games, i)]++;
+        if (games->paths[i] && !(gui_games_dumps_group(games, i) && (!dumps || (made && made(games->paths[i], user)))))
+            in[gui_games_dumps_group(games, i)]++;
     memset(&out, 0, sizeof out);
     out.names = (char**)calloc(room, sizeof *out.names);
     out.shown = (char**)calloc(room, sizeof *out.shown);
@@ -563,7 +571,7 @@ bool gui_games_group(GuiGames* games, const char* ready, const char* dumps,
     out.room = room;
     ok = out.names && out.shown && out.paths && out.addons;
     for (group = 0; group < 2 && ok; ++group)
-        if (in[0] && in[1]) { /* one group alone has nothing to be told apart from */
+        if (in[0] && in[1]) { /* one group alone has nothing here to be told apart from (Games' lone heading) */
             heading[group][0] = snx_strdup("");
             heading[group][1] = snx_strdup(group ? dumps : ready);
             ok = heading[group][0] && heading[group][1];
@@ -583,7 +591,8 @@ bool gui_games_group(GuiGames* games, const char* ready, const char* dumps,
             out.shown[n++] = heading[group][1];
         }
         for (i = 0; i < games->count; ++i) {
-            if (!games->paths[i] || (int)dump_entry(games, i) != group) continue; /* an earlier heading goes */
+            if (!games->paths[i] || (int)gui_games_dumps_group(games, i) != group)
+                continue; /* an earlier heading goes */
             if (group && made && made(games->paths[i], user)) continue;
             out.names[n] = games->names[i];
             out.shown[n] = games->shown[i];
@@ -621,7 +630,7 @@ bool gui_games_by_last_opened(GuiGames* games) {
     size_t i, j;
     if (!times) return false;
     for (i = 0; i < games->count; ++i)
-        if (games->paths[i] && !dump_entry(games, i)) { /* a game ready to run: its log's, 0 for none */
+        if (games->paths[i] && !gui_games_dumps_group(games, i)) { /* a game ready to run: its log's, 0 for none */
             char* log = gui_game_log(games->paths[i]);
             if (!log) {
                 free(times);

@@ -73,6 +73,19 @@ typedef struct {
     size_t chunks, body;
     CtrNcch base, over;
 } CtrSource;
+/* A DLC's contents: each TMD content, the present ones NCCHs that hold a RomFS, by its index in the TMD */
+typedef struct {
+    uint16_t index, type;
+    uint32_t id;
+    uint64_t size;
+    bool present;   /* in the CIA's bitmap */
+    CtrSpan level3; /* the RomFS's level 3, where it lies in the file; empty for a content with none or not present */
+} CtrDlcContent;
+typedef struct {
+    CtrDlcContent* contents;
+    size_t count;
+    uint32_t title_type; /* the TMD's */
+} CtrDlc;
 /* where a ticket's or TMD's body starts after its signature type, signature and padding: 0 for an unknown type */
 static inline size_t ctr_signed_body(uint32_t signature) {
     switch (signature) {
@@ -108,6 +121,13 @@ void ctr_cia_free(CtrSource* s);
 bool ctr_ncsd_load(CtrReader* r, CtrSource* s);
 /* a bare NCCH filling the file (.cxi, an .app, homebrew's .hbb) */
 bool ctr_ncch_load(CtrReader* r, CtrSource* s);
+/* A DLC CIA's contents read from its TMD and parsed; s is the loaded CIA */
+bool ctr_dlc_load(CtrReader* r, const CtrSource* s, CtrDlc* d);
+void ctr_dlc_free(CtrDlc* d);
+/* The container alone read, its title ID and a CIA's TMD title version (-1 for none) given: what the file is */
+bool ctr_source_identify(CtrReader* r, uint64_t* title, int32_t* version);
+/* A DLC CIA read: the container, then its contents. Anything that is not a DLC CIA is refused */
+bool ctr_dlc_source_load(CtrReader* r, CtrSource* s, CtrDlc* d);
 /* The container read and its NCCHs parsed: the game by its own header, every check the extraction makes. */
 bool ctr_source_load(CtrReader* r, CtrSource* s);
 void ctr_source_free(CtrSource* s);

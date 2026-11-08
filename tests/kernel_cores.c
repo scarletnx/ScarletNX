@@ -30,6 +30,11 @@ void nce_kick(KThread* t) { (void)t; }
 /* guest_stats.c, which no core here counts for: a thread's start and end */
 void guest_stats_thread_start(u32 ix) { (void)ix; }
 void guest_stats_thread_end(u32 ix) { (void)ix; }
+/* svc.c's resume of a thread a save state restored (thread_resume, which no case here calls): an unoptimized build keeps
+   those calls, and the test links at every level with these, which abort if a case ever reaches them */
+void svc_resume(KThread* t) { (void)t, abort(); }
+void svc_resume_leave(KThread* t) { (void)t, abort(); }
+void svc_service_retry(KThread* t) { (void)t, abort(); }
 /* fatal ends the test, but where the test catches it (fatal_jump set): its message kept, back to the test; the last
    line logged kept too */
 static jmp_buf* fatal_jump;

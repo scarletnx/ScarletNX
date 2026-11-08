@@ -480,6 +480,10 @@ int unattended_done(void) {
 }
 
 void unattended_exit(u64 hash, int w, int h) {
+    /* The game's own interval starts after shader preparation (unattended_start), unlike a harness's process
+       timer. It still includes guest initialization/loading and the final screenshot, not just GPU execution. */
+    if (g_unattended.t0)
+        fprintf(stderr, "\nunattended_ns=%llu\n", (unsigned long long)(plat_ns() - g_unattended.t0));
     if (w > 0 && h > 0)
         fprintf(stderr, "\nframes=%d hash=%016llx %dx%d\n", frames_now(), (unsigned long long)hash, w, h);
     else

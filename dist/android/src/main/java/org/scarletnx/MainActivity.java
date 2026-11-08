@@ -31,6 +31,8 @@ import org.libsdl.app.SDLSurface;
 public class MainActivity extends SDLActivity {
     /** past the request codes SDL counts up from 0 */
     private static final int ASKED_NOTIFICATIONS = 0x10000, ASKED_BATTERY = 0x10001, PICKED_FOLDER = 0x10002;
+    /** the state: line's watch, once a process (stateWatch) */
+    private static DeviceState state;
 
     @Override
     protected String[] getLibraries() {
@@ -136,6 +138,26 @@ public class MainActivity extends SDLActivity {
 
     /** src/gui/android.c: the folder picked, its tree's URI as UTF-8; null for none */
     private static native void folderPicked(byte[] uri);
+
+    /** src/gui/android.c: the launcher log's state: line now and at each change of it, until the process ends */
+    public void stateWatch() {
+        synchronized (MainActivity.class) {
+            if (state != null) return;
+            Context app = getApplicationContext();
+            state = new DeviceState((PowerManager)app.getSystemService(POWER_SERVICE), Build.VERSION.SDK_INT,
+                                    line -> stateSaid(line.getBytes(StandardCharsets.UTF_8)));
+            state.watch(app);
+        }
+    }
+
+    /** src/gui/android.c: a state: line, UTF-8, for the launcher log */
+    private static native void stateSaid(byte[] line);
+
+    /** src/gui/android.c: what Android says of how process pid of the app ended, started at since (ms since 1970, 0
+        when unknown), as UTF-8 */
+    public byte[] exitReason(int pid, long since) {
+        return Exits.of(this, pid, since).getBytes(StandardCharsets.UTF_8);
+    }
 
     /** a stopped game's Share Log (GameActivity, a text log), from the activity that shows it: a file of the data
         folder through DataProvider, another through the media store */

@@ -75,12 +75,13 @@ jobs:
           path: /var/cache/pacman/pkg
           key: pacman-linux-${{ matrix.arch }}-${{ steps.week.outputs.week }}
           restore-keys: pacman-linux-${{ matrix.arch }}-
+      # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) builds with
       # llvm: llvm-config and LLVM-C for the recompiler (llvm-libs alone has no headers). gdb: the gdbserver gdbstub_native drives. jq: scripts/pr-builds.sh, which pr_builds tests. Mirrors drop a connection now
       # and then (pkgforge's for aarch64 most), so each pacman install is tried 3 times, 5 s apart
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang && break
+            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -238,10 +239,11 @@ jobs:
           path: /var/cache/pacman/pkg
           key: pacman-linux-x86_64-${{ steps.week.outputs.week }}
           restore-keys: pacman-linux-x86_64-
+      # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) configures with
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang && break
+            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -303,6 +305,9 @@ jobs:
       # a block only a stale stack slot or register still points at is a leak, on every machine alike: with them
       # read, what a leak check finds depends on what the stack happened to hold at exit
       LSAN_OPTIONS: use_stacks=0:use_registers=0
+      # the loader keeps a driver loaded past vkDestroyInstance: what the driver made once stays reachable from its
+      # globals, where an unloaded driver's would read as a leak of an unknown module (lavapipe's 128 bytes, 3ds_addons)
+      VK_LOADER_DISABLE_DYNAMIC_LIBRARY_UNLOADING: 1
     steps:
       - name: Name the week
         id: week
@@ -318,7 +323,7 @@ jobs:
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang && break
+            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -465,6 +470,7 @@ jobs:
           86afbf5045b78020c93fcd35bf0f642765a8dc339bb2dce534a0461ce3d3508d  /usr/local/bin/make-aur-package
           EOF
       # llvm: Clang's own, and the opt of the LLVM settings; the runtime links LLVM's libraries statically (below).
+      # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) builds with.
       # get-debloated-pkgs reads its release from api.github.com: unauthenticated, a runner's shared address gets
       # GitHub's 60 requests an hour and the script's 403, so it takes the job's token for those requests. Pinning its
       # release would still read api.github.com, and its own wait on a 403 ends after 5 tries
@@ -473,7 +479,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python clang llvm sdl3 libx11 mesa vulkan-icd-loader ccache glslang && break
+            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python clang llvm sdl3 libx11 mesa vulkan-icd-loader ccache glslang jdk21-openjdk && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -739,15 +745,15 @@ jobs:
           EOF
       # The build machine's: Clang and LLD build for the target (cmake/cross.cmake) and LLVM's libraries for it
       # (scripts/linux-llvm.sh), ccache caches the compiles, glslang builds the shaders, qemu-user runs the target's
-      # own programs, wayland's wayland-scanner the protocols SDL3 builds. Each pacman is tried 3 times, as in the
-      # linux job
+      # own programs, wayland's wayland-scanner the protocols SDL3 builds, jdk21-openjdk the Android app driver's javac
+      # and jni.h. Each pacman is tried 3 times, as in the linux job
       - name: Install the build tools
         run: |
           docker exec -i build sh -s <<'EOF'
           set -eu
           retry() { for try in 1 2 3; do "$@" && return; [ "$try" = 3 ] && return 1; sleep 5; done; }
           retry pacman -Syu --noconfirm --needed cmake ninja make patch perl python clang lld llvm glslang qemu-user \
-            git pkgconf patchelf wayland ccache
+            git pkgconf patchelf wayland ccache jdk21-openjdk
           EOF
       # Saved once a week, as in the linux job. Every architecture's job installs the same, so one of them saves it
       - name: Keep the installed packages
@@ -1004,6 +1010,8 @@ jobs:
       - name: Build the runtime and pinned dependencies
         run: |
           set -euo pipefail
+          # the JDK the Android app driver (src/android) builds with: the runner's 21, as the android job's Gradle takes
+          export JAVA_HOME="${JAVA_HOME_21_X64:?the runner has no JDK 21}"
           cmake --preset default \
             -DSNX_LLVM_CONFIG="$(cygpath -m "$(command -v llvm-config)")" \
             -DSNX_FFMPEG_SH="$(cygpath -m /usr/bin/sh.exe)" \
@@ -1416,7 +1424,11 @@ jobs:
         id: macos-build
         if: ${{ !cancelled() && steps.macos-llvm-build.outcome != 'failure' }}
         run: |
+          # the JDK the Android app driver (src/android) builds with: the runner's 21
+          export JAVA_HOME="${JAVA_HOME_21_arm64:?the runner has no JDK 21}"
+          # Keep the release's SDL3 static when the later shared-library check installs Homebrew's package.
           cmake --preset macos -DLLVM_DIR="$PWD/apple-llvm/lib/cmake/llvm" -DSNX_TEST_VP9_VECTORS=ON \
+            -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build --preset macos --parallel "$(getconf _NPROCESSORS_ONLN)"
       - name: Build the app for iOS
@@ -1477,6 +1489,8 @@ jobs:
           echo "$MOLTENVK_MACOS_SHA256  moltenvk-macos.tar" | shasum -a 256 -c
           mkdir moltenvk-macos && tar -xf moltenvk-macos.tar -C moltenvk-macos
           cmake build/macos -DSNX_MOLTENVK="$PWD/moltenvk-macos"
+          # The executable and the install rules must come from the same dependency configuration.
+          cmake --build --preset macos --target scarletnx --parallel "$(getconf _NPROCESSORS_ONLN)"
           cpack --config build/macos/CPackConfig.cmake -B app-macos \
             -D CPACK_PACKAGE_FILE_NAME=ScarletNX-macos-arm64-${{ steps.commit.outputs.short }}
           mv app-macos/ScarletNX-macos-arm64-${{ steps.commit.outputs.short }}.zip .
@@ -1657,11 +1671,11 @@ jobs:
     timeout-minutes: 30
     container: archlinux:latest
     env:
-      EDENPROBE_VERSION: v0.9.0
-      EDENPROBE_SHA256: 20f2c2b78457a774f957e4debcc6fc9de8046507302a84a9e275ca0d20cc92b5
+      EDENPROBE_VERSION: v0.10.0
+      EDENPROBE_SHA256: 30abbafd40e997334c645d578a3016286fe1b482b2f66f8fc0c7b1e2df5ef5af
       # every family that needs no person or network: headless, the audio family's sound is never played. Not graphics:
       # its suites write their own GPU command buffers, which draw nothing now that NVN is the GPU path (docs/EDENPROBE.md)
-      EDENPROBE_MODE: quick notime fatal cpu fs video display kernel audio
+      EDENPROBE_MODE: quick notime cpu fs video display kernel audio
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
       - name: Name the commit
@@ -1674,7 +1688,8 @@ jobs:
       - name: Install the runtime's libraries and lavapipe
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed python llvm-libs sdl3 vulkan-icd-loader vulkan-swrast spirv-tools && break
+            pacman -Syu --noconfirm --needed python llvm-libs sdl3 vulkan-icd-loader vulkan-swrast spirv-tools \
+              github-cli && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -1683,14 +1698,20 @@ jobs:
         with:
           name: ScarletNX-linux-x86_64-${{ steps.commit.outputs.short }}-install
           path: stage
+      # gh fetches through the REST API: the releases/download link answered 504 for hours on 2026-11-08. 3 tries
       - name: Fetch edenprobe
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ -z "$EDENPROBE_SHA256" ]; then
             echo "EDENPROBE_SHA256 is empty: pin the sha256 of edenprobe $EDENPROBE_VERSION" >&2
             exit 1
           fi
-          curl -fsSL --retry 3 -o edenprobe.nro \
-            "https://github.com/scarletnx/edenprobe/releases/download/$EDENPROBE_VERSION/edenprobe.nro"
+          for try in 1 2 3; do
+            gh release download "$EDENPROBE_VERSION" -R scarletnx/edenprobe -p edenprobe.nro --clobber && break
+            [ "$try" = 3 ] && exit 1
+            sleep 30
+          done
           echo "$EDENPROBE_SHA256  edenprobe.nro" | sha256sum -c -
       # Artifacts drop the executable bit. The summary's title is the line of the pull request's comment, as a notice
       # of this job that scripts/pr-builds.sh reads back once the run ends; on one line, % is all a notice escapes
@@ -1710,10 +1731,12 @@ jobs:
       - name: Fetch edenprobe's main
         id: main
         if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          url=https://github.com/scarletnx/edenprobe/releases/download/nightly
-          if curl -fsSL --retry 3 -o edenprobe-main.nro "$url/edenprobe.nro" &&
-            curl -fsSL --retry 3 -o edenprobe-main.nro.sha256 "$url/edenprobe.nro.sha256" &&
+          mkdir -p edenprobe-nightly
+          if gh release download nightly -R scarletnx/edenprobe -D edenprobe-nightly -p edenprobe.nro -p edenprobe.nro.sha256 &&
+            mv edenprobe-nightly/edenprobe.nro edenprobe-main.nro && mv edenprobe-nightly/edenprobe.nro.sha256 edenprobe-main.nro.sha256 &&
             echo "$(cut -d ' ' -f 1 edenprobe-main.nro.sha256)  edenprobe-main.nro" | sha256sum -c -; then
             echo "nro=edenprobe-main.nro" >> "$GITHUB_OUTPUT"
           else

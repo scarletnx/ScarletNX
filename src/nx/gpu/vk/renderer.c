@@ -23,9 +23,11 @@
 #include "nx/runtime/guest_stats.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
+#include "nx/gpu/vk/resource_stats.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
 #include "nx/gpu/vk/pending_pages.h"
+#include "nx/gpu/vk/present_quad.h"
 #include "nx/gpu/renderer.h"
 
 static VkSemaphore g_acquired[VK_FRAMES];
@@ -165,6 +167,7 @@ static int vkr_start(void) {
         LOG("vulkan: this GPU has no anisotropic filtering, so anisotropy=%d does nothing\n", g_vk_anisotropy);
     if (g_vk_scale != 1.0f) LOG("vulkan: render targets at %.2fx\n", g_vk_scale);
     vk_cmd_init();
+    vk_render_upload_cache_reset();
     vk_pipeline_init();
     vk_own_init(); /* GPU engines' results stay on the GPU where guest memory can be trapped (memory/own.c) */
     g_gpu_before_write = vkr_before_write;
@@ -253,10 +256,12 @@ static void vkr_method_barrier(int kind)
 	 * draws that read results of earlier ones get one there (buffer.c
 	 * gfx_gpu_src). Ended here, the pass ended about 120 times a frame in one
 	 * game's open world. Writes that none of those track (stores into guest
-	 * memory read in place) are not covered yet, so only the opt-in
-	 * vk_descriptors setting skips it.
+	 * memory read in place) are not covered yet, so it is skipped only where
+	 * the device runs graphics descriptor buffers or heaps, which the
+	 * vk_descriptors_mode setting asks for: a device that has neither draws with
+	 * descriptor sets and keeps every fragment barrier.
 	 */
-	if (kind == 1 || kind == 3 || (kind == 0 && g_settings.descriptor_buffers))
+	if (kind == 1 || kind == 3 || (kind == 0 && (g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support)))
 		return;
 
 	vk_lock();
@@ -354,7 +359,8 @@ static Surf* cpu_frame(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u32 bh
                                 .arrayLayers = 1,
                                 .samples = VK_SAMPLE_COUNT_1_BIT,
                                 .tiling = VK_IMAGE_TILING_OPTIMAL,
-                                .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                         VK_IMAGE_USAGE_SAMPLED_BIT,
                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
         VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
         if (!VK_OK(vmaCreateImage(g_vk.vma, &ii, &aci, &g_cpu_img->img, &g_cpu_img->mem, NULL))) {
@@ -463,6 +469,7 @@ static void gpu_memory_plots(void) {
 static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 released_ns, u64 period_ns,
                  u32 shown_syncpt) {
     SNX_ZONE(z_show, "vk show");
+    if (transform & 4) { u32 w = fw; fw = fh; fh = w; }
     /* the size the swapchain was made for, not the extent the surface clamped it to: that can stay different */
     int ww, wh, srgb = src ? is_srgb(src->f.vk) : g_sc_srgb, shown = backend_window_shown();
     backend_window_size(&ww, &wh);
@@ -546,9 +553,15 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                                                    {(i32)(g_last_x + g_last_w), (i32)(g_last_y + g_last_h), 1}},
                                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                     .dstOffsets = {{dx, dy, 0}, {dx + (i32)dw, dy + (i32)dh, 1}}};
-                flip_src(&blit, transform); /* render targets stay in guest order */
-                rec_CmdBlitImage(cb, src->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sc,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+                if (transform & 4) {
+                    VkRect2D crop = {{(i32)g_last_x, (i32)g_last_y}, {g_last_w, g_last_h}};
+                    VkRect2D destination = {{dx, dy}, {dw, dh}};
+                    vk_present_quad(src, sc, g_vk.sc_format, g_vk.sc_extent, crop, destination, transform, 1);
+                } else {
+                    flip_src(&blit, transform); /* render targets stay in guest order */
+                    rec_CmdBlitImage(cb, src->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sc,
+                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+                }
             }
             {
                 int safe[4] = {(int)cx, (int)cy, (int)cw, (int)ch};
@@ -566,12 +579,16 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
         static u64 last_present_ns, slow_frames, slowest_ns;
         [[maybe_unused]] static u64 was_drawn; /* the draws plot's base; only the profiler reads it */
         /* the counters as of the last present: a slow frame says what it did, which names what a hitch waited for */
-        static u64 was[12];
-        u64 now_ns = plat_ns(), is[11];
+        static u64 was[15];
+        static VkResourceStats resource_was;
+        VkResourceStats resource_is = g_vk_resource_stats;
+        u64 now_ns = plat_ns(), is[15] = {0};
         vk_pipeline_stats(&is[0], &is[1], &is[2], &is[3], &is[4], &is[5]);
         vk_tex_stats(&is[6], &is[7]);
         is[8] = vk_rt_made();
         is[9] = g_vk_finish_ns / 1000000;
+        vk_texture_pipeline_stats(&is[10], &is[11]);
+        for (u32 k = 0; k < VK_WAIT_N; k++) is[12 + k] = g_vk_wait_ns[k];
         if (last_present_ns) {
             u64 d = now_ns - last_present_ns;
             SNX_PLOT("frame ms", (double)d / 1e6);
@@ -585,10 +602,11 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 SNX_PLOT("submits pending", (double)(sub - done));
                 vk_compute_progress(&csub, &cdone);
                 SNX_PLOT("compute pending", (double)(csub - cdone));
-                SNX_PLOT("dispatches", (double)(g_vk_dispatches - was[10]));
-                was[10] = g_vk_dispatches;
-                SNX_PLOT("compute cpu reads", (double)(g_vk_cs_cpu_reads - was[11]));
-                was[11] = g_vk_cs_cpu_reads;
+                static u64 was_dispatches, was_reads;
+                SNX_PLOT("dispatches", (double)(g_vk_dispatches - was_dispatches));
+                was_dispatches = g_vk_dispatches;
+                SNX_PLOT("compute cpu reads", (double)(g_vk_cs_cpu_reads - was_reads));
+                was_reads = g_vk_cs_cpu_reads;
             }
 #endif
             SNX_PLOT("draws", (double)(g_vk_drawn - was_drawn));
@@ -603,16 +621,41 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 slow_frames++;
                 LOG_LIMIT(200,
                           "vulkan: a %llu ms frame: %llu shaders translated (%llu ms), %llu pipelines made (%llu ms waited "
-                          "for), %llu render targets made, %llu texture uploads (%llu KB), %llu ms in finishes\n",
+                          "for), %llu render targets made, %llu texture uploads (%llu KB), %llu ms in finishes; "
+                          "%llu internal texture pipelines (%llu ms); GPU waits finish/recycle/submit %llu/%llu/%llu ms\n",
                           (unsigned long long)(d / 1000000), (unsigned long long)(is[4] - was[4]),
                           (unsigned long long)(is[5] - was[5]), (unsigned long long)(is[0] - was[0]),
                           (unsigned long long)(is[3] - was[3]), (unsigned long long)(is[8] - was[8]),
                           (unsigned long long)(is[6] - was[6]), (unsigned long long)((is[7] - was[7]) >> 10),
-                          (unsigned long long)(is[9] - was[9]));
+                          (unsigned long long)(is[9] - was[9]),
+                          (unsigned long long)(is[10] - was[10]),
+                          (unsigned long long)((is[11] - was[11]) / 1000000),
+                          (unsigned long long)((is[12 + VK_WAIT_FINISH] - was[12 + VK_WAIT_FINISH]) / 1000000),
+                          (unsigned long long)((is[12 + VK_WAIT_RECYCLE] - was[12 + VK_WAIT_RECYCLE]) / 1000000),
+                          (unsigned long long)((is[12 + VK_WAIT_SUBMIT] - was[12 + VK_WAIT_SUBMIT]) / 1000000));
+                /* These CPU categories exclude nested resource categories. Pipeline and wait counters above can
+                   overlap them, so the two groups must not be added as independent parts of a frame. */
+                for (u32 k = 0; k < VK_RESOURCE_N; k++) {
+                    static const char* const names[VK_RESOURCE_N] = {
+                        [VK_RESOURCE_IMAGE_QUERY] = "image requirements",
+                        [VK_RESOURCE_IMAGE_CREATE] = "image allocation",
+                        [VK_RESOURCE_IMAGE_DESTROY] = "image destruction",
+                        [VK_RESOURCE_SURFACE_CREATE] = "target setup",
+                        [VK_RESOURCE_RT_RELOAD] = "target reload",
+                        [VK_RESOURCE_SURFACE_RECLAIM] = "surface reclaim",
+                        [VK_RESOURCE_BUFFER_MAINTENANCE] = "buffer maintenance",
+                        [VK_RESOURCE_BUFFER_CACHE_BUILD] = "buffer cache build"};
+                    u64 ns = resource_is.ns[k] - resource_was.ns[k];
+                    if (ns >= 1000000)
+                        LOG_LIMIT(400, "vulkan: frame resource CPU: %s %llu ms (%llu calls)\n", names[k],
+                                  (unsigned long long)(ns / 1000000),
+                                  (unsigned long long)(resource_is.calls[k] - resource_was.calls[k]));
+                }
             }
             if (d > slowest_ns) slowest_ns = d;
         }
         memcpy(was, is, sizeof was);
+        resource_was = resource_is;
         last_present_ns = now_ns;
         g_vk_present++;
         {
@@ -636,7 +679,8 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
             LOG("vulkan: %llu draws, %llu skipped (%llu mesh draws, %llu skipped); %llu dispatches in %llu batches "
                 "(%llu ms waiting), %llu skipped%s; "
                 "%llu finishes (%llu ms); %llu reads past queued releases (%llu samples counts written on the GPU); "
-                "%llu descriptor sets written, %llu reused; "
+                "%llu descriptor sets written, %llu reused (%u descriptor pools, %llu sets with texture arrays taken "
+                "from them); "
                 "%llu draws kept the last one's shaders and pipeline (%llu checked), %llu its targets\n",
                 (unsigned long long)g_vk_drawn, (unsigned long long)g_vk_skipped, (unsigned long long)g_vk_mesh_draws,
                 (unsigned long long)(g_vk_mesh_draws - g_vk_mesh_drawn), (unsigned long long)g_vk_dispatches,
@@ -646,9 +690,17 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 (unsigned long long)(g_vk_finish_ns / 1000000),
                 (unsigned long long)__atomic_load_n(&g_vk_release_forwards, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&g_vk_counts_on_gpu, __ATOMIC_RELAXED),
-                (unsigned long long)g_vk_dset_new, (unsigned long long)g_vk_dset_reused,
-                (unsigned long long)g_vk_draw_kept, (unsigned long long)g_vk_draw_checked,
-                (unsigned long long)g_vk_targets_kept);
+                (unsigned long long)g_vk_dset_new, (unsigned long long)g_vk_dset_reused, vk_desc_pools(),
+                (unsigned long long)vk_desc_array_sets(), (unsigned long long)g_vk_draw_kept,
+                (unsigned long long)g_vk_draw_checked, (unsigned long long)g_vk_targets_kept);
+            {
+                static u64 synced_was;
+                if (g_rec_barriers_synced != synced_was)
+                    LOG("vulkan: %llu barriers of the last 600 frames waited for the recording thread to finish its "
+                        "ring, for a structure chained to them\n",
+                        (unsigned long long)(g_rec_barriers_synced - synced_was));
+                synced_was = g_rec_barriers_synced;
+            }
             {
                 u64 pipes, hits, make_ms, pipe_ms, shaders, shader_ms, uploads, upload_bytes, partial, partial_bytes;
                 vk_pipeline_stats(&pipes, &hits, &make_ms, &pipe_ms, &shaders, &shader_ms);
@@ -691,15 +743,30 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                         (unsigned long long)waits, (unsigned long long)wait_ms, (unsigned long long)behind_ms,
                         (unsigned long long)max_ms, opt_workers);
                 }
-                u64 bc7_levels, bc7_hits, bc7_bytes, bc7_rgba8, reads, stored, restarts, file;
+                u64 bc7_levels, bc7_hits, bc7_bytes, bc7_rgba8, cache_reads, cache_stored, cache_restarts, cache_file;
                 vk_astc_stats(&bc7_levels, &bc7_hits, &bc7_bytes, &bc7_rgba8);
-                vk_bc7_cache_stats(&reads, &stored, &restarts, &file);
+                vk_bc7_cache_stats(&cache_reads, &cache_stored, &cache_restarts, &cache_file);
                 if (bc7_levels)
-                    LOG("vulkan: %llu ASTC texture levels or regions uploaded as BC7 (%llu of them from the BC7 cache, "
-                        "which took %llu new and holds %llu MB), %llu MB where RGBA8 takes %llu MB\n",
-                        (unsigned long long)bc7_levels, (unsigned long long)bc7_hits, (unsigned long long)stored,
-                        (unsigned long long)(file >> 20), (unsigned long long)(bc7_bytes >> 20),
-                        (unsigned long long)(bc7_rgba8 >> 20));
+                    LOG("vulkan: %llu ASTC texture levels or regions uploaded straight to BC7, %llu MB where RGBA8 "
+                        "takes %llu MB; %llu encoder dispatches in all\n",
+                        (unsigned long long)bc7_levels, (unsigned long long)(bc7_bytes >> 20),
+                        (unsigned long long)(bc7_rgba8 >> 20), (unsigned long long)vk_astc_dispatches());
+                if (cache_file)
+                    LOG("vulkan: the BC7 cache gave %llu levels and took %llu new; its file holds %llu MB (started over "
+                        "%llu times at %llu MB)\n",
+                        (unsigned long long)bc7_hits, (unsigned long long)cache_stored,
+                        (unsigned long long)(cache_file >> 20), (unsigned long long)cache_restarts,
+                        (unsigned long long)(VK_BC7_CACHE_MAX >> 20));
+                VkLaterStats later;
+                vk_tex_later_stats(&later);
+                if (later.made || later.waiting || later.restarted || later.went_hot)
+                    LOG("vulkan: %llu ASTC textures made BC7 between frames (%llu MB of RGBA8 freed, %llu blocks "
+                        "encoded, %llu encodes started over for a write); %u waiting, %llu MB as RGBA8; %u held "
+                        "Exact for their writes (%llu went so, %llu made BC7 again)\n",
+                        (unsigned long long)later.made, (unsigned long long)(later.freed >> 20),
+                        (unsigned long long)later.blocks, (unsigned long long)later.restarted, later.waiting,
+                        (unsigned long long)(later.waiting_bytes >> 20), later.hot, (unsigned long long)later.went_hot,
+                        (unsigned long long)later.cooled);
                 u64 sparse_binds, sparse_ns;
                 vk_sparse_stats(&sparse_binds, &sparse_ns);
                 if (sparse_binds)
@@ -725,10 +792,11 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 vmaGetHeapBudgets(g_vk.vma, b);
                 vmaGetMemoryProperties(g_vk.vma, &mp);
                 for (u32 q = 0; q < mp->memoryHeapCount && at < sizeof line; q++)
-                    at += (size_t)snprintf(line + at, sizeof line - at, "%s heap %u %llu of %llu MB (%llu ours)",
-                                           q ? "," : "", q, (unsigned long long)(b[q].usage >> 20),
-                                           (unsigned long long)(b[q].budget >> 20),
-                                           (unsigned long long)(b[q].statistics.blockBytes >> 20));
+                    at += (size_t)snprintf(
+                        line + at, sizeof line - at, "%s heap %u %llu of %llu MB (%llu ours, %llu of it allocated)",
+                        q ? "," : "", q, (unsigned long long)(b[q].usage >> 20),
+                        (unsigned long long)(b[q].budget >> 20), (unsigned long long)(b[q].statistics.blockBytes >> 20),
+                        (unsigned long long)(b[q].statistics.allocationBytes >> 20));
                 LOG("vulkan: memory used and budgeted:%s\n", line);
             }
             {
@@ -750,6 +818,11 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 "begun again), %llu through a copy\n",
                 (unsigned long long)g_vk_fb_draws, (unsigned long long)g_vk_fb_barriers,
                 (unsigned long long)g_vk_fb_restarts, (unsigned long long)g_vk_rt_copies);
+            if (g_vk_capture_draws || g_vk_capture_capped)
+                LOG("vulkan: %llu draws captured a primitive at a time (%llu primitives), %llu skipped past %u "
+                    "primitives\n",
+                    (unsigned long long)g_vk_capture_draws, (unsigned long long)g_vk_capture_primitives,
+                    (unsigned long long)g_vk_capture_capped, VK_CAPTURE_PRIMITIVES_MAX);
             LOG("vulkan: %llu rendering passes, %llu clear commands, %llu attachments cleared and %llu left undefined "
                 "by their load op; %llu buffers filled ahead of the passes\n",
                 (unsigned long long)g_vk_passes, (unsigned long long)g_vk_clear_cmds,
@@ -781,6 +854,8 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
             VK_OK(r);
     } else /* not presented: displayed never, once the presents before it are done with */
         vk_display_presented(VK_NULL_HANDLE, 0, game, released_ns, shown_syncpt);
+    /* the BC7 encoder's share of the frame after its present, which it never holds back */
+    vk_tex_later_frame();
     if (recreate && !g_lost && !g_vk.sc_lost) { /* not when this frame's create found the surface lost */
         vk_finish();
         vk_swapchain_create(srgb);
@@ -863,7 +938,8 @@ static const u8* surf_read(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u
                             .arrayLayers = 1,
                             .samples = VK_SAMPLE_COUNT_1_BIT,
                             .tiling = VK_IMAGE_TILING_OPTIMAL,
-                            .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     VkImage tmp;
@@ -887,9 +963,22 @@ static const u8* surf_read(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u
                         .srcOffsets = {{(i32)x, (i32)y, 0}, {(i32)(x + w), (i32)(y + h), 1}},
                         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                         .dstOffsets = {{0, 0, 0}, {(i32)dw, (i32)dh, 1}}};
-    flip_src(&blit, transform); /* screenshots show the window's transform, offscreen and headless presents too */
-    rec_CmdBlitImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, tmp, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                   &blit, dw == w && dh == h ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+    if (transform & 4) {
+        VkRect2D crop = {{(i32)x, (i32)y}, {w, h}}, destination = {{0, 0}, {dw, dh}};
+        /* The raster copy covers the whole temporary image. Its LOAD still requires defined contents. */
+        VkClearColorValue black = {{0, 0, 0, 1}};
+        VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        rec_CmdClearColorImage(cb, tmp, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
+        if (!vk_present_quad(s, tmp, ii.format, (VkExtent2D){dw, dh}, crop, destination, transform,
+                             dw != h || dh != w)) {
+            vk_defer_image(tmp, tmem, VK_NULL_HANDLE, VK_NULL_HANDLE);
+            return NULL;
+        }
+    } else {
+        flip_src(&blit, transform);
+        rec_CmdBlitImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, tmp, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                        &blit, dw == w && dh == h ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+    }
     vk_barrier(cb, tmp, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
@@ -911,7 +1000,8 @@ static const u8* surf_read(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u
 /* a part of a surface, blitted to RGBA8 and read back: its hash, and a .ppm at path if given */
 static u64 surf_save(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, const char* path) {
     u64 hash = 1469598103934665603ull;
-    const u8* px = surf_read(s, x, y, w, h, transform, w, h);
+    u32 dw = transform & 4 ? h : w, dh = transform & 4 ? w : h;
+    const u8* px = surf_read(s, x, y, w, h, transform, dw, dh);
     if (!px) return hash;
     /* the pixels as the device wrote them, little-endian words: the hash is the same on every host */
     for (u64 i = 0; i < (u64)w * h; i++) hash = snx_fnv_step(hash, snx_ld_le32(px + i * 4));
@@ -921,7 +1011,7 @@ static u64 surf_save(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, const c
         FILE* f = fopen(fn, "wb");
         int ok = f != NULL;
         if (f) {
-            fprintf(f, "P6\n%u %u\n255\n", w, h);
+            fprintf(f, "P6\n%u %u\n255\n", dw, dh);
             for (u64 i = 0; i < (u64)w * h && ok; i++) {
                 u8 rgb[3] = {px[i * 4], px[i * 4 + 1], px[i * 4 + 2]};
                 ok = fwrite(rgb, 1, 3, f) == 3;
@@ -1072,6 +1162,7 @@ const Renderer vk_renderer = {
     .present_buffer = vkr_present_buffer,
     .display_wait = vk_display_wait,
     .screenshot = vkr_screenshot,
+    .capture = vk_renderdoc_capture,
     .thumbnail = vkr_thumbnail,
     .refresh = vkr_refresh,
     .save = vk_pipeline_save,

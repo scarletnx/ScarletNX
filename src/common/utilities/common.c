@@ -52,16 +52,21 @@
 #include <sys/sysctl.h>
 #include <sys/user.h> /* struct kinfo_proc */
 #include <pthread_np.h> /* pthread_set_name_np */
+#include <sys/rtprio.h> /* a thread's idle class (snx_thread_priority_low) */
 #endif
 #ifdef __linux__
-#include <sys/prctl.h> /* PR_SET_NAME: a thread's name, without _GNU_SOURCE's pthread_setname_np */
+#include <sys/prctl.h>    /* PR_SET_NAME: a thread's name, without _GNU_SOURCE's pthread_setname_np */
+#include <sys/resource.h> /* a thread's nice (snx_thread_priority_low) */
+#include <sys/syscall.h>  /* SYS_gettid */
 #endif
 #ifdef __APPLE__
+#include <pthread/qos.h> /* a thread's QoS class (snx_thread_priority_low) */
 #include <TargetConditionals.h>
 #include <libkern/OSCacheControl.h> /* sys_icache_invalidate */
 #include <mach-o/dyld.h>
 #include <mach/mach.h>
 #include <sys/sysctl.h> /* sysctlbyname: the physical cores (snx_physical_cores) */
+#include <sys/utsname.h> /* uname: the kernel version, which says whether KosmicKrisp runs */
 #if TARGET_OS_IPHONE
 #include <os/proc.h>
 #endif
@@ -330,16 +335,19 @@ int snx_log_lines(const char* path, const char* text) {
     free(out);
     return failed ? -1 : 0;
 }
-int snx_lock_file(const char* path, intptr_t* lock) {
+/* snx_lock_file's lock, on a file made when it is not there with make, else only on one that is */
+static int lock_file(const char* path, int make, intptr_t* lock) {
 #ifdef _WIN32
     wchar_t* p = wide(path);
     OVERLAPPED past = {0}; /* not far: windef.h defines it */
     HANDLE h = p ? CreateFileW(p, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                               NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL)
+                               NULL, make ? OPEN_ALWAYS : OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL)
                  : INVALID_HANDLE_VALUE;
+    DWORD failed = h == INVALID_HANDLE_VALUE ? GetLastError() : 0;
     free(p);
     if (h == INVALID_HANDLE_VALUE) {
-        errno = EACCES;
+        errno = failed == ERROR_FILE_NOT_FOUND || failed == ERROR_PATH_NOT_FOUND ? ENOENT : EACCES;
+        SetLastError(failed); /* snx_os_error's reason */
         return -1;
     }
     past.OffsetHigh = 0x7fffffffu; /* past any end, so the bytes are never what is locked */
@@ -353,7 +361,7 @@ int snx_lock_file(const char* path, intptr_t* lock) {
     *lock = (intptr_t)h;
     return 0;
 #else
-    int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+    int fd = open(path, O_RDWR | O_CLOEXEC | (make ? O_CREAT : 0), 0644);
     if (fd < 0) return -1;
     if (flock(fd, LOCK_EX | LOCK_NB)) {
         int error = errno;
@@ -365,6 +373,8 @@ int snx_lock_file(const char* path, intptr_t* lock) {
     return 0;
 #endif
 }
+int snx_lock_file(const char* path, intptr_t* lock) { return lock_file(path, 1, lock); }
+int snx_lock_existing(const char* path, intptr_t* lock) { return lock_file(path, 0, lock); }
 void snx_unlock_file(intptr_t lock) {
 #ifdef _WIN32
     CloseHandle((HANDLE)lock); /* its lock with it */
@@ -880,48 +890,403 @@ int snx_symlink(const char* target, const char* link) {
     return symlink(target, link) != 0;
 #endif
 }
-char* snx_vulkan_driver(const char* program) {
-#ifdef __APPLE__
-    /* beside the program: the copy a game's runtime is deployed with (snx_deploy_vulkan_driver), which is outside the
-       app that carries the library; then the app bundle's Frameworks, ../Frameworks from its Contents/MacOS; then the
-       framework an iOS app holds in the bundle itself */
-    static const char* const own[] = {"libMoltenVK.dylib", "../Frameworks/libMoltenVK.dylib",
-                                      "Frameworks/MoltenVK.framework/MoltenVK"};
-    char* dir = snx_dirname(program);
+/* the first of leaves that exists in program's folders: beside it, then ../Frameworks of an app's Contents/MacOS */
+static char* program_file(const char* program, const char* const* leaves, size_t count) {
+    char* dir = program ? snx_dirname(program) : NULL;
     char* path = NULL;
-    for (size_t i = 0; !path && dir && i < sizeof own / sizeof* own; ++i) {
-        char* found = snx_path_join(dir, own[i]);
+    for (size_t i = 0; !path && dir && i < count; ++i) {
+        char* found = snx_path_join(dir, leaves[i]);
         if (found && snx_is_file(found)) path = found;
         else free(found);
     }
     free(dir);
     return path;
+}
+/* the first file of folder whose name holds word and ends with ending: an ICD JSON's name differs between Mesa's
+   Homebrew package and the Vulkan SDK */
+static char* folder_file(const char* folder, const char* word, const char* ending) {
+    char** names = NULL;
+    size_t count = 0, i;
+    char* path = NULL;
+    if (!folder || snx_list_dir(folder, &names, &count)) return NULL;
+    for (i = 0; !path && i < count; ++i) {
+        char* found;
+        if (!strstr(names[i], word) || !snx_ends_with_nocase(names[i], ending)) continue;
+        found = snx_path_join(folder, names[i]);
+        if (found && snx_is_file(found)) path = found;
+        else free(found);
+    }
+    snx_free_strings(names, count);
+    return path;
+}
+/* rel's file under prefix, NULL when the prefix has none */
+static char* prefix_file(const char* prefix, const char* rel) {
+    char* path = snx_path_join(prefix, rel);
+    if (path && !snx_is_file(path)) {
+        free(path);
+        path = NULL;
+    }
+    return path;
+}
+/* the newer version name first: each number of the name compared (1.4.9.0 before 1.4.10.0), then the text */
+static int newer_first(const void* a, const void* b) {
+    const char* x = *(const char* const*)a;
+    const char* y = *(const char* const*)b;
+    while (*x || *y) {
+        unsigned long nx = 0, ny = 0;
+        int digits = 0;
+        while (*x >= '0' && *x <= '9') {
+            nx = nx * 10 + (unsigned long)(*x++ - '0');
+            digits = 1;
+        }
+        while (*y >= '0' && *y <= '9') {
+            ny = ny * 10 + (unsigned long)(*y++ - '0');
+            digits = 1;
+        }
+        if (nx != ny) return nx > ny ? -1 : 1;
+        if (*x == '.') ++x;
+        if (*y == '.') ++y;
+        if (!*x && !*y) break;
+        if (!digits) break;
+    }
+    return strcmp(x, y) < 0 ? 1 : strcmp(x, y) > 0 ? -1 : 0; /* the newer text first */
+}
+/* the folders a Vulkan SDK is installed in under sdks, the newest version first: <version>/macOS, then <version> for
+   an older layout */
+static char** sdk_roots(const char* sdks, size_t* count) {
+    char** versions = NULL;
+    char** roots = NULL;
+    size_t n = 0, cap = 0, i;
+    *count = 0;
+    if (!sdks || !sdks[0] || snx_list_dir(sdks, &versions, &n)) return NULL;
+    if (n > 1) qsort(versions, n, sizeof *versions, newer_first);
+    for (i = 0; i < n; ++i) {
+        char* version = snx_path_join(sdks, versions[i]);
+        char* macos = version ? snx_path_join(version, "macOS") : NULL;
+        const char* two[2] = {macos, version};
+        for (int k = 0; k < 2; ++k) {
+            if (!two[k] || !snx_is_dir(two[k])) continue;
+            if (*count == cap) {
+                cap = cap ? cap * 2 : 4;
+                roots = (char**)snx_realloc(roots, cap * sizeof *roots);
+            }
+            roots[(*count)++] = snx_strdup(two[k]);
+        }
+        free(macos);
+        free(version);
+    }
+    snx_free_strings(versions, n);
+    return roots;
+}
+/* the ICD JSONs under prefix's share/vulkan/icd.d (Homebrew's Mesa, an SDK installed for the whole Mac) */
+static char* prefix_icd(const char* prefix) {
+    char* dir = snx_path_join(prefix, "share/vulkan/icd.d");
+    char* icd = folder_file(dir, "kosmickrisp", ".json");
+    free(dir);
+    return icd;
+}
+static char* sdk_icd(const char* sdks) {
+    size_t count = 0, i;
+    char** roots = sdk_roots(sdks, &count);
+    char* path = NULL;
+    for (i = 0; !path && i < count; ++i) {
+        char* dir = snx_path_join(roots[i], "share/vulkan/icd.d");
+        path = folder_file(dir, "kosmickrisp", ".json");
+        free(dir);
+    }
+    snx_free_strings(roots, count);
+    return path;
+}
+/* the library leaf under a Vulkan SDK's lib (its loader, or MoltenVK's) */
+static char* sdk_library(const char* sdks, const char* leaf) {
+    size_t count = 0, i;
+    char** roots = sdk_roots(sdks, &count);
+    char* path = NULL;
+    for (i = 0; !path && i < count; ++i) {
+        char* rel = snx_path_join("lib", leaf);
+        path = rel ? prefix_file(roots[i], rel) : NULL;
+        free(rel);
+    }
+    snx_free_strings(roots, count);
+    return path;
+}
+/* lib/leaf installed on the Mac: under the first prefix that has it, else in the newest Vulkan SDK */
+static char* installed_library(const SnxVulkanPlaces* at, const char* leaf) {
+    char* rel = snx_path_join("lib", leaf);
+    char* path = NULL;
+    for (size_t i = 0; rel && !path && i < sizeof at->prefixes / sizeof *at->prefixes; ++i)
+        if (at->prefixes[i]) path = prefix_file(at->prefixes[i], rel);
+    free(rel);
+    return path ? path : sdk_library(at->sdks, leaf);
+}
+/* KosmicKrisp's ICD JSON installed on the Mac: under the first prefix that has one, else in the newest Vulkan SDK */
+static char* installed_icd(const SnxVulkanPlaces* at) {
+    char* path = NULL;
+    for (size_t i = 0; !path && i < sizeof at->prefixes / sizeof *at->prefixes; ++i)
+        if (at->prefixes[i]) path = prefix_icd(at->prefixes[i]);
+    return path ? path : sdk_icd(at->sdks);
+}
+/* out, with text past what it holds, cut to size */
+static void append(char* out, size_t size, const char* format, ...) {
+    size_t n = strlen(out);
+    va_list ap;
+    if (n + 1 >= size) return;
+    va_start(ap, format);
+    vsnprintf(out + n, size - n, format, ap);
+    va_end(ap);
+}
+/* the folders a search of sub (lib, share/vulkan/icd.d) went through, for its reason */
+static void looked_in(const SnxVulkanPlaces* at, const char* sub, char* out, size_t size) {
+    int prefixes = 0;
+    snprintf(out, size, "beside the program or in its app's Frameworks");
+    for (size_t i = 0; i < sizeof at->prefixes / sizeof *at->prefixes; ++i)
+        if (at->prefixes[i]) append(out, size, "%s %s/%s", prefixes++ ? " or" : ", in", at->prefixes[i], sub);
+    if (at->sdks && at->sdks[0]) append(out, size, ", or in a Vulkan SDK under %s", at->sdks);
+}
+/* the drivers an app carries, found beside the program (a game's runtime copy, snx_deploy_vulkan_driver) or in its
+   bundle's Frameworks (../Frameworks from Contents/MacOS); MoltenVK also as the framework an iOS app holds */
+static const char* const moltenvk_own[] = {"libMoltenVK.dylib", "../Frameworks/libMoltenVK.dylib",
+                                           "Frameworks/MoltenVK.framework/MoltenVK"};
+static const char* const kosmickrisp_own[] = {"libkosmickrisp_icd.json", "../Frameworks/libkosmickrisp_icd.json"};
+static const char* const loader_own[] = {"libvulkan.1.dylib", "../Frameworks/libvulkan.1.dylib"};
+char* snx_vulkan_driver(const char* program) {
+#ifdef __APPLE__
+    return program_file(program, moltenvk_own, sizeof moltenvk_own / sizeof *moltenvk_own);
 #else
     (void)program;
     return NULL;
 #endif
 }
-int snx_deploy_vulkan_driver(const char* program, const char* folder) {
-    char *from = snx_vulkan_driver(program), why[256];
-    int rc = 0;
-    /* the system's loader serves everywhere else, and a build that carries none (a checkout's) leaves the system's */
-    if (!from) return 0;
-    char* to = snx_path_join(folder, "libMoltenVK.dylib");
-    if (!to) {
-        snx_error("cannot name the Vulkan driver's place in %s", folder);
-        free(from);
+char* snx_vulkan_kosmickrisp_icd(const char* program) {
+#ifdef __APPLE__
+    return program_file(program, kosmickrisp_own, sizeof kosmickrisp_own / sizeof *kosmickrisp_own);
+#else
+    (void)program;
+    return NULL;
+#endif
+}
+void snx_vulkan_driver_free(SnxVulkanDriver* driver) {
+    free(driver->library);
+    free(driver->icd);
+    *driver = (SnxVulkanDriver){0};
+}
+/* the driver d names, for a log line: its library, and the ICD the loader takes */
+static void described(const SnxVulkanPlaces* at, const SnxVulkanDriver* d, char* out, size_t size) {
+    if (d->icd)
+        snprintf(out, size, "%s, ICD %s, through the Vulkan loader %s", d->name, d->icd, d->library);
+    else if (d->library)
+        snprintf(out, size, "%s at %s", d->name, d->library);
+    else
+        snprintf(out, size, "%s", at->system_driver ? at->system_driver : "the system's Vulkan loader");
+}
+/* the files of pick, a driver's name, found; 1, else 0 with the reason */
+static int found_driver(const SnxVulkanPlaces* at, const char* pick, SnxVulkanDriver* out, char* reason,
+                        size_t reason_size) {
+    char where[1024];
+    *out = (SnxVulkanDriver){0};
+    if (!strcmp(pick, "moltenvk")) {
+        out->library = program_file(at->program, moltenvk_own, sizeof moltenvk_own / sizeof *moltenvk_own);
+        if (!out->library) out->library = installed_library(at, "libMoltenVK.dylib");
+        if (!out->library) {
+            looked_in(at, "lib", where, sizeof where);
+            snprintf(reason, reason_size, "MoltenVK was not found: not %s", where);
+            return 0;
+        }
+        out->name = "MoltenVK";
         return 1;
     }
-    /* A second name where the disk allows one, so each game does not hold a copy, else a copy. A read-only app image,
-       and an app macOS translocated, take no second name of the library they carry, which is why the copy follows a
-       link that failed. A name of another app's library is broken rather than written through, which would change that
-       app's library and signature too */
+    if (at->no_kosmickrisp) {
+        snprintf(reason, reason_size, "%s", at->no_kosmickrisp);
+        return 0;
+    }
+    out->icd = program_file(at->program, kosmickrisp_own, sizeof kosmickrisp_own / sizeof *kosmickrisp_own);
+    if (!out->icd) out->icd = installed_icd(at);
+    if (!out->icd) {
+        looked_in(at, "share/vulkan/icd.d", where, sizeof where);
+        snprintf(reason, reason_size, "KosmicKrisp was not found: no ICD %s", where);
+        return 0;
+    }
+    out->library = program_file(at->program, loader_own, sizeof loader_own / sizeof *loader_own);
+    if (!out->library) out->library = installed_library(at, "libvulkan.1.dylib");
+    if (!out->library) {
+        looked_in(at, "lib", where, sizeof where);
+        snprintf(reason, reason_size, "KosmicKrisp needs the Vulkan loader, and none was found %s", where);
+        snx_vulkan_driver_free(out);
+        return 0;
+    }
+    out->name = "KosmicKrisp";
+    return 1;
+}
+/* auto's driver: the one the environment names (VK_DRIVER_FILES), else KosmicKrisp where the Mac has it, else the
+   MoltenVK the app carries, else the system's loader. playing names it, and because says why auto took it */
+static void auto_driver(const SnxVulkanPlaces* at, SnxVulkanDriver* out, char* playing, size_t playing_size,
+                        char* because, size_t because_size) {
+    char cannot[2048] = "";
+    *out = (SnxVulkanDriver){0};
+    because[0] = 0;
+    if (at->system_driver) {
+        out->name = "the system's";
+        snprintf(playing, playing_size, "%s", at->system_driver);
+        return;
+    }
+    if (at->driver_files) {
+        out->library = program_file(at->program, loader_own, sizeof loader_own / sizeof *loader_own);
+        if (!out->library) out->library = installed_library(at, "libvulkan.1.dylib");
+        out->name = "the environment's";
+        snprintf(playing, playing_size, "the driver %s names, through the Vulkan loader %s", at->driver_files,
+                 out->library ? out->library : "SDL finds");
+        snprintf(because, because_size, "vulkan_driver=auto leaves the driver the environment names");
+        return;
+    }
+    if (found_driver(at, "kosmickrisp", out, cannot, sizeof cannot)) {
+        described(at, out, playing, playing_size);
+        snprintf(because, because_size, "vulkan_driver=auto takes KosmicKrisp where the Mac has it");
+        return;
+    }
+    out->library = program_file(at->program, moltenvk_own, sizeof moltenvk_own / sizeof *moltenvk_own);
+    out->name = out->library ? "MoltenVK" : "the system's";
+    described(at, out, playing, playing_size);
+    snprintf(because, because_size, "vulkan_driver=auto%s, and %s", out->library ? "" : ", the app carries no MoltenVK",
+             cannot);
+}
+int snx_vulkan_driver_find(const SnxVulkanPlaces* at, const char* pick, SnxVulkanDriver* out, char* reason,
+                           size_t reason_size) {
+    char playing[2048], because[2560];
+    int asked = pick && pick[0] && strcmp(pick, "auto");
+    *out = (SnxVulkanDriver){0};
+    reason[0] = 0;
+    if (asked) {
+        if (strcmp(pick, "moltenvk") && strcmp(pick, "kosmickrisp")) {
+            snprintf(reason, reason_size, "vulkan_driver=%s is not auto, moltenvk or kosmickrisp", pick);
+            return 0;
+        }
+        if (at->system_driver) {
+            snprintf(reason, reason_size, "%s is a driver of macOS",
+                     strcmp(pick, "moltenvk") ? "KosmicKrisp" : "MoltenVK");
+        } else if (found_driver(at, pick, out, reason, reason_size)) {
+            described(at, out, playing, sizeof playing);
+            snprintf(reason, reason_size, "%s (vulkan_driver=%s)", playing, pick);
+            return 1;
+        }
+    }
+    /* auto, or what plays in place of a driver the Mac has not, said beside the reason */
+    auto_driver(at, out, playing, sizeof playing, because, sizeof because);
+    if (asked) {
+        out->instead = 1;
+        append(reason, reason_size, ": %s plays instead", playing);
+    } else if (because[0]) {
+        snprintf(reason, reason_size, "%s (%s)", playing, because);
+    }
+    return 1;
+}
+int snx_vulkan_kosmickrisp_runs(const char* darwin, char* why, size_t why_size) {
+    char* end = NULL;
+    long major = darwin ? strtol(darwin, &end, 10) : 0;
+    if (!darwin || end == darwin) {
+        snprintf(why, why_size, "KosmicKrisp needs macOS 26 or later, and this Mac's kernel version \"%s\" says none",
+                 darwin ? darwin : "");
+        return 0;
+    }
+    /* Darwin 25 is macOS 26 */
+    if (major < 25) {
+        snprintf(why, why_size, "KosmicKrisp needs macOS 26 or later (Darwin 25), and this Mac runs Darwin %s", darwin);
+        return 0;
+    }
+    return 1;
+}
+int snx_vulkan_driver_choose(const char* program, const char* pick, SnxVulkanDriver* out, char* reason,
+                             size_t reason_size) {
+    SnxVulkanPlaces at = {.program = program};
+#if defined(__APPLE__) && defined(SNX_IOS)
+    at.no_kosmickrisp = "KosmicKrisp is a driver of macOS, not of iOS";
+#elif defined(__APPLE__)
+    const char* home = getenv("HOME");
+    char* sdks = home && home[0] ? snx_path_join(home, "VulkanSDK") : NULL;
+    /* the Vulkan loader's own variables, which name its driver: auto leaves the driver they name */
+    const char* files = getenv("VK_DRIVER_FILES");
+    const char* files_name = "VK_DRIVER_FILES";
+    char driver_files[4096], gate[512];
+    at.prefixes[0] = "/opt/homebrew";
+    at.prefixes[1] = "/usr/local";
+    at.sdks = sdks;
+    if (!files || !files[0]) {
+        files = getenv("VK_ICD_FILENAMES");
+        files_name = "VK_ICD_FILENAMES";
+    }
+    if (files && files[0]) {
+        snprintf(driver_files, sizeof driver_files, "%s=%s", files_name, files);
+        at.driver_files = driver_files;
+    }
+#ifdef __aarch64__
+    struct utsname system;
+    if (uname(&system)) {
+        char error[256];
+        snprintf(gate, sizeof gate, "KosmicKrisp needs macOS 26 or later, and uname could not say this Mac's: %s",
+                 snx_os_error(error, sizeof error));
+        at.no_kosmickrisp = gate;
+    } else if (!snx_vulkan_kosmickrisp_runs(system.release, gate, sizeof gate)) {
+        at.no_kosmickrisp = gate;
+    }
+#else
+    (void)gate;
+    at.no_kosmickrisp = "KosmicKrisp runs on Apple silicon, and this build is for Intel Macs";
+#endif
+#elif defined(__ANDROID__)
+    at.system_driver = "the driver package gpu_driver names, else Android's own";
+#else
+    at.system_driver = "the system's Vulkan loader";
+#endif
+    int found = snx_vulkan_driver_find(&at, pick, out, reason, reason_size);
+#if defined(__APPLE__) && !defined(SNX_IOS)
+    free(sdks);
+#endif
+    return found;
+}
+/* from put in folder under leaf, a second name where the disk allows one, else a copy: a read-only app image, and an
+   app macOS translocated, take no second name of the library they carry. A name of another app's library is broken
+   rather than written through, which would change that app's library and signature too. 0, or 1 with the reason said */
+static int copy_beside(const char* from, const char* folder, const char* leaf) {
+    char error[256];
+    char* to = snx_path_join(folder, leaf);
+    int rc = 0;
+    if (!to) return snx_error("cannot name the Vulkan driver %s in %s", leaf, folder);
     if (snx_is_file(to) && snx_remove_tree(to))
-        rc = snx_error("cannot remove the Vulkan driver at %s: %s", to, snx_os_error(why, sizeof why));
+        rc = snx_error("cannot remove the Vulkan driver at %s: %s", to, snx_os_error(error, sizeof error));
     else if (snx_link_file(from, to) && snx_copy_file(from, to))
-        rc = snx_error("cannot put the Vulkan driver %s in %s: %s", from, folder, snx_os_error(why, sizeof why));
+        rc = snx_error("cannot put the Vulkan driver %s in %s: %s", from, folder, snx_os_error(error, sizeof error));
     free(to);
-    free(from);
+    return rc;
+}
+int snx_deploy_vulkan_driver(const char* program, const char* folder) {
+    int rc = 0;
+#if defined(__APPLE__) && !defined(SNX_IOS)
+    /* KosmicKrisp: the JSON the loader reads, the driver it names and the loader itself go beside it. A build that
+       carries none has nothing to put (a checkout's, and an app built without SNX_KOSMICKRISP) */
+    char* icd = snx_vulkan_kosmickrisp_icd(program);
+    if (icd) {
+        static const char* const parts[] = {"libvulkan_kosmickrisp.dylib", "libvulkan.1.dylib"};
+        char* dir = snx_dirname(icd);
+        for (size_t i = 0; i < sizeof parts / sizeof* parts; ++i) {
+            char* from = dir ? snx_path_join(dir, parts[i]) : NULL;
+            int rc_here = !from || !snx_is_file(from)
+                              ? snx_error("the KosmicKrisp driver %s, which %s carries, is not there", parts[i], program)
+                              : copy_beside(from, folder, parts[i]);
+            if (!rc) rc = rc_here;
+            free(from);
+        }
+        /* the JSON last: its presence in a game's folder says that the driver and its loader are there too */
+        if (!rc) rc = copy_beside(icd, folder, "libkosmickrisp_icd.json");
+        free(dir);
+        free(icd);
+    }
+#endif
+    {
+        char* from = snx_vulkan_driver(program);
+        int rc_here = from ? copy_beside(from, folder, "libMoltenVK.dylib") : 0;
+        /* the system's loader serves everywhere else, and a build that carries none (a checkout's) leaves the system's */
+        if (!rc) rc = rc_here;
+        free(from);
+    }
     return rc;
 }
 int snx_path_within(const char* path, const char* parent) {
@@ -1635,6 +2000,66 @@ SnxU64 snx_process_cpu_ns(void) {
     return (SnxU64)t.tv_sec * 1000000000u + (SnxU64)t.tv_nsec;
 #endif
 }
+long snx_status_tracer(const char* status) {
+    static const char key[] = "TracerPid:";
+    const char* p;
+    for (p = status; (p = strstr(p, key)); p += sizeof key - 1)
+        if (p == status || p[-1] == '\n') { /* the line's own start, not a word inside another line */
+            char* end;
+            long pid = strtol(p + sizeof key - 1, &end, 10); /* past the tab */
+            return end != p + sizeof key - 1 && pid > 0 ? pid : 0;
+        }
+    return 0;
+}
+int snx_debugger(char* name, size_t size) {
+#if defined(__linux__)
+    char status[4096], path[64], comm[SNX_DEBUGGER_NAME];
+    size_t got;
+    long pid;
+    FILE* f = fopen("/proc/self/status", "r");
+    if (!f) return 0;
+    got = fread(status, 1, sizeof status - 1, f); /* TracerPid is among the first lines */
+    fclose(f);
+    status[got] = 0;
+    if (!(pid = snx_status_tracer(status))) return 0;
+    snprintf(name, size, "?"); /* Android's /proc hides other users' processes */
+    snprintf(path, sizeof path, "/proc/%ld/comm", pid);
+    if ((f = fopen(path, "r"))) {
+        if (fgets(comm, sizeof comm, f)) {
+            comm[strcspn(comm, "\n")] = 0;
+            if (comm[0]) snprintf(name, size, "%s", comm);
+        }
+        fclose(f);
+    }
+    return 1;
+#elif defined(__FreeBSD__)
+    struct kinfo_proc proc;
+    size_t got = sizeof proc;
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)getpid()};
+    if (sysctl(mib, 4, &proc, &got, NULL, 0) || got != sizeof proc || proc.ki_tracer <= 0) return 0;
+    snprintf(name, size, "?");
+    mib[3] = proc.ki_tracer;
+    got = sizeof proc;
+    if (!sysctl(mib, 4, &proc, &got, NULL, 0) && got == sizeof proc && proc.ki_comm[0])
+        snprintf(name, size, "%s", proc.ki_comm);
+    return 1;
+#elif defined(__APPLE__)
+    struct kinfo_proc proc = {0};
+    size_t got = sizeof proc;
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)getpid()};
+    if (sysctl(mib, 4, &proc, &got, NULL, 0) || !(proc.kp_proc.p_flag & P_TRACED)) return 0;
+    snprintf(name, size, "?");
+    return 1;
+#elif defined(_WIN32)
+    if (!IsDebuggerPresent()) return 0;
+    snprintf(name, size, "?");
+    return 1;
+#else
+    (void)name;
+    (void)size;
+    return 0;
+#endif
+}
 SnxU64 snx_thread_clock(void) {
 #if defined(_WIN32)
     HANDLE h = NULL;
@@ -1698,6 +2123,89 @@ void snx_thread_name(const char* name) {
     prctl(PR_SET_NAME, (unsigned long)cut, 0, 0, 0);
 #elif defined(__FreeBSD__)
     pthread_set_name_np(pthread_self(), cut);
+#endif
+}
+#if defined(__APPLE__)
+static const char* qos_name(qos_class_t c) {
+    switch (c) {
+        case QOS_CLASS_USER_INTERACTIVE: return "user-interactive";
+        case QOS_CLASS_USER_INITIATED: return "user-initiated";
+        case QOS_CLASS_DEFAULT: return "default";
+        case QOS_CLASS_UTILITY: return "utility";
+        case QOS_CLASS_BACKGROUND: return "background";
+        default: return "unspecified";
+    }
+}
+#endif
+int snx_thread_priority_low(char* why, size_t size) {
+#if defined(_WIN32)
+    char reason[256];
+    if (SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL)) return 0;
+    snx_os_error(reason, sizeof reason);
+    snprintf(why, size, "SetThreadPriority below normal: %s; it runs at thread priority %d (normal is 0)", reason,
+             GetThreadPriority(GetCurrentThread()));
+    return -1;
+#elif defined(__APPLE__)
+    int e = pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+    if (!e) return 0;
+    snprintf(why, size, "pthread_set_qos_class_self_np utility: %s; it runs in the %s QoS class", strerror(e),
+             qos_name(qos_class_self()));
+    return -1;
+#elif defined(__linux__)
+    /* a thread's id given to them, getpriority and setpriority take that thread alone (Android's too); the process's
+       id would name its first thread */
+    id_t tid = (id_t)syscall(SYS_gettid);
+    int now, want;
+    errno = 0;
+    now = getpriority(PRIO_PROCESS, tid);
+    if (now == -1 && errno) {
+        snprintf(why, size, "getpriority of thread %u: %s; its nice is not known", (unsigned)tid, strerror(errno));
+        return -1;
+    }
+    want = now + SNX_THREAD_LOW_NICE < 19 ? now + SNX_THREAD_LOW_NICE : 19;
+    if (want == now) {
+        snprintf(why, size, "nice %d is the lowest there is; it runs at nice %d", now, now);
+        return -1;
+    }
+    if (setpriority(PRIO_PROCESS, tid, want)) {
+        snprintf(why, size, "setpriority nice %d: %s; it runs at nice %d", want, strerror(errno), now);
+        return -1;
+    }
+    return 0;
+#elif defined(__FreeBSD__)
+    /* setpriority's nice is the whole process's here; the idle class is a thread's own */
+    struct rtprio idle = {RTP_PRIO_IDLE, RTP_PRIO_MIN}, now = {0, 0};
+    const char* in;
+    int e;
+    if (!rtprio_thread(RTP_SET, 0, &idle)) return 0;
+    e = errno;
+    in = rtprio_thread(RTP_LOOKUP, 0, &now)           ? "a class rtprio_thread does not say"
+         : RTP_PRIO_BASE(now.type) == RTP_PRIO_NORMAL ? "the timeshare class"
+         : RTP_PRIO_BASE(now.type) == RTP_PRIO_IDLE   ? "the idle class"
+                                                      : "a realtime class";
+    snprintf(why, size,
+             "rtprio_thread idle %d: %s (root, the idletime group with mac_priority, or "
+             "security.bsd.unprivileged_idprio=1 allow it); it runs in %s",
+             RTP_PRIO_MIN, strerror(e), in);
+    return -1;
+#else
+    snprintf(why, size, "this system has no lower priority for one thread here; it runs at the process's own");
+    return -1;
+#endif
+}
+#define LOW_NICE_NAME_(n) "nice +" #n
+#define LOW_NICE_NAME(n)  LOW_NICE_NAME_(n)
+const char* snx_thread_priority_low_name(void) {
+#if defined(_WIN32)
+    return "below normal";
+#elif defined(__APPLE__)
+    return "the utility QoS class";
+#elif defined(__linux__)
+    return LOW_NICE_NAME(SNX_THREAD_LOW_NICE);
+#elif defined(__FreeBSD__)
+    return "the idle class";
+#else
+    return "none on this system";
 #endif
 }
 int snx_threads(SnxThreadInfo* out, int max) {
@@ -2469,11 +2977,22 @@ SnxU64 snx_addon_version(const char* entry) {
     return strlen(entry) > 17 && entry[16] == 'v' ? (SnxU64)strtoull(entry + 17, NULL, 10) : SNX_NO_VERSION;
 }
 int snx_addon_kind(SnxU64 game, SnxU64 id) {
+    if (!id || id == game) return SNX_ADDON_NONE;
+    /* a 3DS application's (0x00040000 its ID's high half): its update has its low half under 0x0004000E, as Azahar's
+       am makes an update's ID, and its add-on content its low half's 28 bits under 0x0004008C, as Azahar's game list
+       finds a game's DLC; nothing else is its */
+    if (game >> 32 == 0x00040000u) {
+        if (id >> 32 == 0x0004000Eu && (id & 0xFFFFFFFFu) == (game & 0xFFFFFFFFu)) return SNX_ADDON_UPDATE;
+        if (id >> 32 == 0x0004008Cu && (id & 0xFFFFFFFFu) == (game & 0x0FFFFFFFu)) return SNX_ADDON_DLC;
+        return SNX_ADDON_NONE;
+    }
     /* the console's rule: an application's patch is its ID with 0x800 added, its other programs follow its ID and
        their patches the patch's; any other add-on of it is content */
-    if (!id || id == game) return SNX_ADDON_NONE;
     if (id == (game | 0x800)) return SNX_ADDON_UPDATE;
     return snx_program_index(game, id) > 0 ? SNX_ADDON_PROGRAM : SNX_ADDON_DLC;
+}
+int snx_addon_own_program(SnxU64 game, SnxU64 id) {
+    return game >> 32 != 0x00040000u && snx_addon_kind(game, id) == SNX_ADDON_UPDATE;
 }
 int snx_program_index(SnxU64 game, SnxU64 id) {
     SnxU64 update = game | 0x800, step;

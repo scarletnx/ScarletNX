@@ -1,0 +1,16 @@
+The files of src/android/framework whose header names the Android Open Source Project follow its source in parts
+(Apache-2.0, LICENSE.txt beside this file). These are the notices of the Android Open Source Project's NOTICE files
+that pertain to them. Their other sections are for code ScarletNX does not carry.
+
+The section for the Android-specific code, as frameworks/base/NOTICE and libcore/NOTICE both carry it
+(https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/NOTICE):
+
+Android Code
+Copyright 2005-2008 The Android Open Source Project
+
+This product includes software developed as part of
+The Android Open Source Project (http://source.android.com).
+
+The notice of Conscrypt (external/conscrypt/NOTICE), the source of android.net.ssl.SSLSockets:
+
+Copyright 2016 The Android Open Source Project

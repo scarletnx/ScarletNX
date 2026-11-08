@@ -13,6 +13,15 @@
 /* a gamepad the system added or removed (its SDL joystick id): opened, closed */
 void gamepad_open(u32 id);
 void gamepad_close(u32 id);
+void gamepad_open_waiting(void); /* the connected gamepads no player took yet, opened where one is free now */
+/* gamepad_assign=1 (connect.h): a player kept for its controller that left, which the game still sees, and the type
+   (SDL_GamepadType) that controller was */
+int gamepad_slot_kept(int slot);
+int gamepad_slot_kept_type(int slot);
+/* each poll, on the main thread, after the input: gamepad_assign=1's pause while a player's controller is gone, its
+   notice, and its end when the controller returns or + (plus, held on any controller) is let go. now_ns:
+   SDL_GetTicksNS's, the clock the gamepads' arrivals and leavings are told by */
+void gamepad_console(int plus, u64 now_ns);
 /* enumerate connected SDL joysticks at startup, or inspect one newly attached joystick */
 void gamepad_scan(void);
 void gamepad_detect(u32 id);

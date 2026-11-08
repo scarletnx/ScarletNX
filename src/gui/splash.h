@@ -29,6 +29,9 @@ void snx_splash_close(SnxSplashDrawing* drawing);
    quality given (1 to 100), handed out through write in pieces; 0 when written */
 typedef void (*SnxSplashWrite)(void* closure, void* data, int size);
 int snx_splash_jpeg(const char* name, int side, int quality, SnxSplashWrite write, void* closure);
+/* width x height pixels of RGBA8, a row after another, their alpha left out, as a JPEG of the quality given (1 to 100)
+   handed out through write in pieces; 0 when written */
+int snx_splash_jpeg_rgba(const void* rgba, int width, int height, int quality, SnxSplashWrite write, void* closure);
 
 /* a user's picture filling a side x side square of pixels, ARGB8888 with the alpha premultiplied, stride bytes a row:
    the middle square of the JPEG (size bytes), or with none Wimsy in Fuddles' colours over white, as acc gives a game.

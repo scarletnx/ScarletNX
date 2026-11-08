@@ -237,6 +237,10 @@ void vk_query_enable(u32 owner, int on) {
     if (!on) end_own(c);
     c->disabled = !on;
 }
+int vk_query_enabled(u32 owner) {
+    QCounter* c = counter(owner, 0);
+    return c && c->started && !c->disabled;
+}
 int vk_query_report(u32 owner, u64 gva, u32 len, u64 ticks) {
     QCounter* c = counter(owner, 0);
     if (!c || !c->started || c->bad || c->whead - c->wtail == QWAIT) return 0;

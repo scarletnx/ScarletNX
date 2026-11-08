@@ -97,7 +97,7 @@ typedef struct {
     u32 next_job; /* where the search for a free slot starts (hle/pool.h) */
     NvnEffect fx[NVN_EFFECTS];
     u32 nfx;
-    u64 unknown; /* the ops logged as not replayed (GPU thread) */
+    u64 unknown[2]; /* the ops logged as not replayed, a bit each (GPU thread) */
     u32 shown;   /* the presents' syncpoint: up by one as each reaches the display, 0 before the first queue */
     u32 present_submitted, present_walked; /* the shared shown syncpoint requires global present order */
     u64 submitted, walked;                 /* nvn_replay_submitted and nvn_replay_walked */

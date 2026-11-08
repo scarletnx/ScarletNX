@@ -48,7 +48,7 @@ static GxmVertexProgram* vertex_of(VitaGxm* g, uint32_t handle) {
 }
 static GxmFragmentProgram* fragment_of(VitaGxm* g, uint32_t handle) {
     uint32_t i = (handle - GXM_HANDLE_FRAGMENT) / GXM_PROGRAM_HANDLE;
-    return handle >= GXM_HANDLE_FRAGMENT && i < GXM_PROGRAMS && g->fragment[i].references ? &g->fragment[i] : NULL;
+    return handle >= GXM_HANDLE_FRAGMENT && i < GXM_FRAGMENT_PROGRAMS && g->fragment[i].references ? &g->fragment[i] : NULL;
 }
 
 /* ---- initialization: the display queue's thread ---- */
@@ -165,6 +165,7 @@ static uint32_t display_queue_finish(VitaProcess* p, VitaThread* t) {
 }
 static uint32_t finish(VitaProcess* p, VitaThread* t) {
     (void)t;
+    vita_render_finish(p);
     if (p->gxm && !vita_render_idle(p, false)) vita_wait(p, (VitaWait){.kind = VITA_WAIT_GXM, .a = 0});
     return 0;
 }
@@ -339,6 +340,8 @@ static uint32_t register_program(VitaProcess* p, VitaThread* t) {
     vita_write32(p, id, program);
     return 0;
 }
+/* sceGxmShaderPatcherGetProgramFromId(id): the program's address is its ID (register_program), so it is the answer */
+static uint32_t get_program_from_id(VitaProcess* p, VitaThread* t) { return arg(p, t, 0); }
 /* sceGxmShaderPatcherCreateVertexProgram(patcher, id, attributes, count, streams, count, *program) */
 static uint32_t create_vertex_program(VitaProcess* p, VitaThread* t) {
     uint32_t program = arg(p, t, 1), attributes = arg(p, t, 2), attribute_count = arg(p, t, 3);
@@ -389,11 +392,11 @@ static uint32_t create_fragment_program(VitaProcess* p, VitaThread* t) {
                                .output_format = arg(p, t, 2),
                                .multisample = arg(p, t, 3),
                                .blend_info = blend ? vita_read32(p, blend) : 0xf}; /* all channels written */
-    uint32_t slot = GXM_PROGRAMS;
-    for (uint32_t i = 0; i < GXM_PROGRAMS; ++i) {
+    uint32_t slot = GXM_FRAGMENT_PROGRAMS;
+    for (uint32_t i = 0; i < GXM_FRAGMENT_PROGRAMS; ++i) {
         GxmFragmentProgram* f = &g->fragment[i];
         if (!f->references) {
-            if (slot == GXM_PROGRAMS) slot = i;
+            if (slot == GXM_FRAGMENT_PROGRAMS) slot = i;
             continue;
         }
         if (f->program == program && f->vertex_program == want.vertex_program &&
@@ -404,7 +407,7 @@ static uint32_t create_fragment_program(VitaProcess* p, VitaThread* t) {
             return 0;
         }
     }
-    if (slot == GXM_PROGRAMS) return SCE_GXM_ERROR_OUT_OF_MEMORY;
+    if (slot == GXM_FRAGMENT_PROGRAMS) return SCE_GXM_ERROR_OUT_OF_MEMORY;
     g->fragment[slot] = want;
     vita_write32(p, out, GXM_HANDLE_FRAGMENT + slot * GXM_PROGRAM_HANDLE);
     return 0;
@@ -425,6 +428,12 @@ static uint32_t release_fragment_program(VitaProcess* p, VitaThread* t) {
     vita_render_idle(p, true);
     vita_render_shader_free(p, f->shader);
     f->shader = NULL;
+    return 0;
+}
+static uint32_t add_ref_fragment_program(VitaProcess* p, VitaThread* t) {
+    GxmFragmentProgram* f = p->gxm ? fragment_of(p->gxm, arg(p, t, 1)) : NULL;
+    if (arg(p, t, 0) != GXM_HANDLE_PATCHER || !f) return SCE_GXM_ERROR_INVALID_POINTER;
+    ++f->references;
     return 0;
 }
 static uint32_t program_check(VitaProcess* p, VitaThread* t) {
@@ -566,6 +575,20 @@ static uint32_t set_cull_mode(VitaProcess* p, VitaThread* t) {
     if (c) c->cull_mode = arg(p, t, 1);
     return 0;
 }
+/* sceGxmSetTwoSidedEnable(context, mode): kept in the context's state, as Vita3K's context->state.two_sided */
+static uint32_t set_two_sided_enable(VitaProcess* p, VitaThread* t) {
+    GxmContext* c = context_of(p, arg(p, t, 0));
+    if (c) c->two_sided = arg(p, t, 1);
+    return 0;
+}
+/* sceGxmSetVisibilityBuffer(context, base, stridePerCore): with no occlusion queries drawn, every primitive counts as
+   visible, so the buffer is filled with ones for all four GPU cores (Vita3K's fallback, "Set all visible") */
+static uint32_t set_visibility_buffer(VitaProcess* p, VitaThread* t) {
+    uint32_t base = arg(p, t, 1), stride = arg(p, t, 2);
+    if (!context_of(p, arg(p, t, 0))) return SCE_GXM_ERROR_INVALID_POINTER;
+    if (base && stride && stride <= 0x100000u && vita_mapped(p, base, 4 * stride)) memset(vita_ptr(p, base), 0xff, 4 * stride);
+    return 0;
+}
 /* sceGxmSetRegionClip(context, mode, xMin, yMin, xMax, yMax) */
 static uint32_t set_region_clip(VitaProcess* p, VitaThread* t) {
     GxmContext* c = context_of(p, arg(p, t, 0));
@@ -682,6 +705,12 @@ static uint32_t set_uniform_data_f(VitaProcess* p, VitaThread* t) {
     bool is_float = type == GXP_TYPE_F32 || type == GXP_TYPE_F16;
     if (gxp_parameter_array_size(q) == 1 || components == 1) {
         if (components == 1) size = 4;
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+        if (type == GXP_TYPE_F32 && size == 4) {
+            memcpy(base + offset * 4, vita_ptr(p, data), count * 4);
+            return 0;
+        }
+#endif
         for (uint32_t i = 0; i < count; ++i)
             put_component(base + (offset + i) * size, components == 1 && type != GXP_TYPE_F32 ? GXP_TYPE_U32 : type,
                           gxp_f32(vita_ptr(p, data + i * 4)));
@@ -689,6 +718,17 @@ static uint32_t set_uniform_data_f(VitaProcess* p, VitaThread* t) {
     }
     unsigned element = components * size, padded = element;
     padded = is_float ? (element + 7) & ~7u : (element + 3) & ~3u;
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    if (type == GXP_TYPE_F32) {
+        for (uint32_t i = 0; i < count;) {
+            uint32_t at = offset + i, vector = at / components, component = at % components, run = components - component;
+            if (run > count - i) run = count - i;
+            memcpy(base + vector * padded + component * 4, vita_ptr(p, data + i * 4), run * 4);
+            i += run;
+        }
+        return 0;
+    }
+#endif
     for (uint32_t i = 0; i < count; ++i) {
         uint32_t at = offset + i, vector = at / components, component = at % components;
         put_component(base + vector * padded + component * size, type, gxp_f32(vita_ptr(p, data + i * 4)));
@@ -759,6 +799,14 @@ static uint32_t texture_init_tiled(VitaProcess* p, VitaThread* t) {
     return texture_init(p, arg(p, t, 0), arg(p, t, 1), arg(p, t, 2), arg(p, t, 3), arg(p, t, 4), arg(p, t, 5),
                         GXM_TEXTURE_TILED);
 }
+static uint32_t texture_init_cube(VitaProcess* p, VitaThread* t) {
+    uint32_t width = arg(p, t, 3), height = arg(p, t, 4);
+    if (!arg(p, t, 0)) return SCE_GXM_ERROR_INVALID_POINTER;
+    if (!width || !height || (width & (width - 1)) || (height & (height - 1)))
+        return SCE_GXM_ERROR_INVALID_ALIGNMENT;
+    return texture_init(p, arg(p, t, 0), arg(p, t, 1), arg(p, t, 2), width, height, arg(p, t, 5),
+                        GXM_TEXTURE_CUBE);
+}
 /* sceGxmTextureInitLinearStrided(texture, data, format, width, height, stride): one level of rows stride bytes apart,
    the stride in 4-byte units less one where the mip filter, min filter, mip count and LOD bias are kept otherwise
    (gxm_texture_stride), its min filter its mag filter */
@@ -786,6 +834,82 @@ static uint32_t texture_set_mip_filter(VitaProcess* p, VitaThread* t) {
     GxmTexture x = texture_read(p, address);
     if (gxm_texture_type(&x) == GXM_TEXTURE_LINEAR_STRIDED) return SCE_GXM_ERROR_UNSUPPORTED;
     gxm_set_bits(&x.w[0], 9, 1, arg(p, t, 1) != 0);
+    texture_write(p, address, &x);
+    return 0;
+}
+/* sceGxmTransferCopy's raw format sizes (bytes per pixel). */
+static uint32_t transfer_bytes_per_pixel(uint32_t format) {
+    switch (format) {
+        case 0x00000000u: return 1; /* U8_R */
+        case 0x00010000u: /* U4U4U4U4_ABGR */
+        case 0x00020000u: /* U1U5U5U5_ABGR */
+        case 0x00030000u: /* U5U6U5_BGR */
+        case 0x00040000u: /* U8U8_GR */
+        case 0x00070000u: /* VYUY422 */
+        case 0x00080000u: /* YVYU422 */
+        case 0x00090000u: /* UYVY422 */
+        case 0x000a0000u: /* YUYV422 */
+        case 0x000f0000u: return 2; /* RAW16 */
+        case 0x00050000u: return 3; /* U8U8U8_BGR */
+        case 0x00060000u: /* U8U8U8U8_ABGR */
+        case 0x000d0000u: /* U2U10U10U10_ABGR */
+        case 0x00110000u: return 4; /* RAW32 */
+        case 0x00120000u: return 8; /* RAW64 */
+        case 0x00130000u: return 16; /* RAW128 */
+        default: return 0;
+    }
+}
+/* sceGxmTransferCopy(width, height, key value/mask/mode, source format/type/address/x/y/stride,
+   destination format/type/address/x/y/stride, sync object/flags, notification) */
+static uint32_t transfer_copy(VitaProcess* p, VitaThread* t) {
+    uint32_t width = arg(p, t, 0), height = arg(p, t, 1);
+    uint32_t src_format = arg(p, t, 5), src_type = arg(p, t, 6), src_address = arg(p, t, 7);
+    uint32_t dst_format = arg(p, t, 11), dst_type = arg(p, t, 12), dst_address = arg(p, t, 13);
+    int32_t src_stride = (int32_t)arg(p, t, 10), dst_stride = (int32_t)arg(p, t, 16);
+    uint32_t bytes = transfer_bytes_per_pixel(src_format);
+    if (!src_address || !dst_address) return SCE_GXM_ERROR_INVALID_POINTER;
+    if ((src_type == 0x00400000u && dst_type == 0x00800000u) ||
+        (src_type == 0x00800000u && dst_type == 0x00400000u) ||
+        (src_type == 0x00800000u && dst_type == 0x00800000u))
+        return SCE_GXM_ERROR_INVALID_VALUE;
+    if (src_format != dst_format || !bytes || src_type || dst_type || arg(p, t, 4) != 0)
+        return SCE_GXM_ERROR_UNSUPPORTED;
+    if (arg(p, t, 17) || arg(p, t, 18)) return SCE_GXM_ERROR_UNSUPPORTED;
+    if (width && height && (src_stride <= 0 || dst_stride <= 0)) return SCE_GXM_ERROR_INVALID_VALUE;
+    uint32_t notification = arg(p, t, 19), notify_address = 0, notify_value = 0;
+    if (notification) {
+        if (!vita_mapped(p, notification, 8)) return SCE_GXM_ERROR_INVALID_POINTER;
+        notify_address = vita_read32(p, notification);
+        notify_value = vita_read32(p, notification + 4);
+        if (notify_address && !vita_mapped(p, notify_address, 4)) return SCE_GXM_ERROR_INVALID_POINTER;
+        if (notify_address && !p->gxm) return SCE_GXM_ERROR_UNINITIALIZED;
+    }
+    if (!vita_render_transfer_copy(p, width, height, bytes, src_address, arg(p, t, 8), arg(p, t, 9), src_stride,
+                                   dst_address, arg(p, t, 14), arg(p, t, 15), dst_stride))
+        return SCE_GXM_ERROR_UNSUPPORTED;
+
+    if (notify_address) {
+        VitaGxm* g = p->gxm;
+        if (g->note_count == GXM_NOTES) {
+            vita_render_wait(p, g->notes[0].serial);
+            notifications_poll(p);
+        }
+        uint64_t serial = g->render ? vita_render_submitted(p) + 1 : 0;
+        g->notes[g->note_count].address = notify_address;
+        g->notes[g->note_count].value = notify_value;
+        g->notes[g->note_count++].serial = serial;
+        notifications_poll(p);
+    }
+    return 0;
+}
+/* sceGxmTextureSetLodBias(texture, bias 0 to 63): a strided texture's bits are its stride's */
+static uint32_t texture_set_lod_bias(VitaProcess* p, VitaThread* t) {
+    uint32_t address = arg(p, t, 0);
+    if (!address) return SCE_GXM_ERROR_INVALID_POINTER;
+    if (arg(p, t, 1) > 63) return SCE_GXM_ERROR_INVALID_VALUE;
+    GxmTexture x = texture_read(p, address);
+    if (gxm_texture_type(&x) == GXM_TEXTURE_LINEAR_STRIDED) return SCE_GXM_ERROR_UNSUPPORTED;
+    gxm_set_bits(&x.w[0], 21, 6, arg(p, t, 1));
     texture_write(p, address, &x);
     return 0;
 }
@@ -922,6 +1046,12 @@ static uint32_t parameter_get_category(VitaProcess* p, VitaThread* t) {
 static uint32_t parameter_get_type(VitaProcess* p, VitaThread* t) {
     return gxp_parameter_type(vita_ptr(p, arg(p, t, 0)));
 }
+static uint32_t parameter_get_component_count(VitaProcess* p, VitaThread* t) {
+    return gxp_parameter_components(vita_ptr(p, arg(p, t, 0)));
+}
+static uint32_t parameter_get_array_size(VitaProcess* p, VitaThread* t) {
+    return gxp_parameter_array_size(vita_ptr(p, arg(p, t, 0)));
+}
 static uint32_t vertex_program_get_program(VitaProcess* p, VitaThread* t) {
     GxmVertexProgram* v = p->gxm ? vertex_of(p->gxm, arg(p, t, 0)) : NULL;
     return v ? v->program : 0;
@@ -1039,6 +1169,7 @@ const VitaHle vita_hle_gxm[] = {
     {0xf103af8au, "sceGxmShaderPatcherUnregisterProgram", ok},
     {0xb7bba6d5u, "sceGxmShaderPatcherCreateVertexProgram", create_vertex_program},
     {0x4ed2e49du, "sceGxmShaderPatcherCreateFragmentProgram", create_fragment_program},
+    {0x4cd2d19fu, "sceGxmShaderPatcherAddRefFragmentProgram", add_ref_fragment_program},
     {0xac1ff2dau, "sceGxmShaderPatcherReleaseVertexProgram", release_vertex_program},
     {0xbe2743d1u, "sceGxmShaderPatcherReleaseFragmentProgram", release_fragment_program},
     {0xed8b6c69u, "sceGxmProgramCheck", program_check},
@@ -1053,6 +1184,9 @@ const VitaHle vita_hle_gxm[] = {
     {0x9eb4380fu, "sceGxmSetVertexTexture", set_vertex_texture},
     {0xfd93209du, "sceGxmSetFrontPolygonMode", set_front_polygon_mode},
     {0xf66ec6feu, "sceGxmSetBackPolygonMode", set_back_polygon_mode},
+    {0x0de9aeb7u, "sceGxmSetTwoSidedEnable", set_two_sided_enable},
+    {0x7767ec49u, "sceGxmSetVisibilityBuffer", set_visibility_buffer},
+    {0xa949a803u, "sceGxmShaderPatcherGetProgramFromId", get_program_from_id},
     {0xe1ca72aeu, "sceGxmSetCullMode", set_cull_mode},
     {0x70c86868u, "sceGxmSetRegionClip", set_region_clip},
     {0x3eb3380bu, "sceGxmSetViewport", set_viewport},
@@ -1066,6 +1200,7 @@ const VitaHle vita_hle_gxm[] = {
     {0x4811aecbu, "sceGxmTextureInitLinear", texture_init_linear},
     {0xd572d547u, "sceGxmTextureInitSwizzled", texture_init_swizzled},
     {0xe6f0db27u, "sceGxmTextureInitTiled", texture_init_tiled},
+    {0x11dc8dc9u, "sceGxmTextureInitCube", texture_init_cube},
     {0x6679bef0u, "sceGxmTextureInitLinearStrided", texture_init_linear_strided},
     {0x1ca9fe0bu, "sceGxmTextureSetMipFilter", texture_set_mip_filter},
     {0x2ea178beu, "sceGxmTextureSetWidth", texture_set_width},
@@ -1082,10 +1217,15 @@ const VitaHle vita_hle_gxm[] = {
     {0xdd6aabfau, "sceGxmTextureSetPalette", texture_set_palette},
     {0x0d189c30u, "sceGxmTextureGetPalette", texture_get_palette},
     {0x4281763eu, "sceGxmTextureSetUAddrMode", texture_set_u_addr_mode},
+    {0x8699ecf4u, "sceGxmTextureSetUAddrModeSafe", texture_set_u_addr_mode},
+    {0xfa22f6ccu, "sceGxmTextureSetVAddrModeSafe", texture_set_v_addr_mode},
+    {0xb65ee6f7u, "sceGxmTextureSetLodBias", texture_set_lod_bias},
     {0x126cdaa3u, "sceGxmTextureSetVAddrMode", texture_set_v_addr_mode},
     {0xec5c26b5u, "sceGxmDisplayQueueAddEntry", display_queue_add_entry},
     {0xb98c5b0du, "sceGxmDisplayQueueFinish", display_queue_finish},
     {0x0733d8aeu, "sceGxmFinish", finish},
+    {0x62312bf8u, "sceGxmTransferCopy", transfer_copy},
+    {0x45229c39u, "sceGxmTransferFinish", finish},
     {0x3d25fce9u, "sceGxmPadHeartbeat", ok},
     {0x04bb3c59u, "sceGxmProgramGetType", program_get_type},
     {0xd5d5fccdu, "sceGxmProgramGetParameterCount", program_get_parameter_count},
@@ -1095,6 +1235,8 @@ const VitaHle vita_hle_gxm[] = {
     {0x6af88a5du, "sceGxmProgramParameterGetName", parameter_get_name},
     {0x1997dc17u, "sceGxmProgramParameterGetCategory", parameter_get_category},
     {0x7b9023c3u, "sceGxmProgramParameterGetType", parameter_get_type},
+    {0xbd2998d1u, "sceGxmProgramParameterGetComponentCount", parameter_get_component_count},
+    {0xdba8d061u, "sceGxmProgramParameterGetArraySize", parameter_get_array_size},
     {0xbc52320eu, "sceGxmVertexProgramGetProgram", vertex_program_get_program},
     {0xe0e3b3f8u, "sceGxmFragmentProgramGetProgram", fragment_program_get_program},
     {0xb042a4d2u, "sceGxmSetBackDepthFunc", set_back_depth_func},

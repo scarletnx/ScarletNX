@@ -1952,8 +1952,7 @@ static void xfb_of(u64 control, u64 serial) {
     e.serial = serial;
     for (u32 i = 0; i < 4; i++) {
         u32 stride = gr16(control + 0x6dc + 2 * (u64)i), groups = c[0x6e8 + i], n = 0;
-        if (c[0x6e4 + i])
-            LOG_LIMIT(1, "nvn: transform feedback into stream %u is captured as stream 0\n", c[0x6e4 + i]);
+        e.x.stream[i] = c[0x6e4 + i];
         e.x.stride[i] = (u16)stride;
         e.x.count[i] = (u8)(stride / 4 > 128 ? 128 : stride / 4);
         for (u32 j = 0; j < groups && j < 0x80; j++) {
@@ -2105,14 +2104,13 @@ i32 nvn_ProgramGetSubtileSize(CPU* c, u64 p) {
 static int sub_span(u32 bytes, u32 offset, u32 count, u32 width) {
     return !(offset & 3) && offset >= 80 && offset <= bytes && count <= (bytes - offset) / width;
 }
-static NvnSubLinkage* sub_linkage(u64 address, const NvnProgram* program, u32* mask) {
-    if (address > ~0ull - 80 || mem_mapped_run(address, 80) < 80) return NULL;
-    const u8* data = GP(address);
-    u32 bytes = snx_ld_le32(data + 20), stage = snx_ld_le32(data + 4);
-    if (snx_ld_le32(data) != 0xfabffabcu || stage > 5 || (*mask & (1u << stage)) || bytes < 80 || bytes > 16u << 20)
-        return NULL;
-    if (address > ~0ull - bytes || mem_mapped_run(address, bytes) < bytes) return NULL;
-    const NvnStage* shader = &program->st[stage];
+/* The fields of the linkage map at data (bytes of it, its stage's program shader), read and checked against its bytes
+   and that stage: 1 with them in *out, 0 for a map whose offsets or targets fall outside them */
+static int sub_linkage_fields(const u8* data, u32 bytes, const NvnStage* shader, NvnSubLinkage* out) {
+    if (bytes < 80 || bytes > 16u << 20 || snx_ld_le32(data) != 0xfabffabcu || snx_ld_le32(data + 4) > 5 ||
+        snx_ld_le32(data + 20) != bytes)
+        return 0;
+    u32 stage = snx_ld_le32(data + 4);
     u32 absolute = snx_ld_le32(data + 28), table = snx_ld_le32(data + 36);
     u32 labels = snx_ld_le32(data + 40), code = snx_ld_le32(data + 48), calls = snx_ld_le32(data + 56);
     u32 call_offset = snx_ld_le32(data + 60), functions = snx_ld_le32(data + 64), targets = snx_ld_le32(data + 68);
@@ -2123,7 +2121,7 @@ static NvnSubLinkage* sub_linkage(u64 address, const NvnProgram* program, u32* m
     if (!shader->data || ((u32)shader->cb << 8) < shader->off || absolute > 1 || !labels || !calls || !entries ||
         table > capacity || entries > capacity - table || !sub_span(bytes, code, labels, 4) ||
         !sub_span(bytes, call_offset, calls, 16))
-        return NULL;
+        return 0;
     u32 major = snx_ld_le32(data + 8), minor = snx_ld_le32(data + 12);
     int sorted = major > 1 || (major == 1 && minor >= 9);
     u32 summed = 0;
@@ -2134,39 +2132,59 @@ static NvnSubLinkage* sub_linkage(u64 address, const NvnProgram* program, u32* m
         if (!n || !array || array > entries - summed || uniform > 0x7fffffffu || array > 0x80000000u - uniform ||
             at > 0x3fffffffu || n > 0x40000000u - at || !sub_span(bytes, functions, at + n, 4) ||
             !sub_span(bytes, targets, at + n, 4))
-            return NULL;
+            return 0;
         for (u32 j = 0; j < n; j++) {
             if (sorted && j &&
                 snx_ld_le32(data + functions + ((size_t)at + j - 1) * 4) >
                     snx_ld_le32(data + functions + ((size_t)at + j) * 4))
-                return NULL;
+                return 0;
             u32 label = snx_ld_le32(data + targets + ((size_t)at + j) * 4);
-            if (label >= labels) return NULL;
+            if (label >= labels) return 0;
             u32 offset = snx_ld_le32(data + code + (size_t)label * 4);
             u32 extent = ((u32)shader->cb << 8) - shader->off;
             u32 magnitude = !absolute && (offset & 0x80000000u) ? 0u - offset : offset;
-            if (offset != ~0u && ((offset & 7) || magnitude >= extent)) return NULL;
+            if (offset != ~0u && ((offset & 7) || magnitude >= extent)) return 0;
         }
         summed += array;
     }
-    if (summed != entries) return NULL;
+    if (summed != entries) return 0;
+    *out = (NvnSubLinkage){.shader = *shader,
+                           .stage = stage,
+                           .absolute = absolute,
+                           .table = table,
+                           .calls = calls,
+                           .entries = entries,
+                           .labels = labels,
+                           .call_offset = call_offset,
+                           .code_offset = code,
+                           .function_offset = functions,
+                           .label_offset = targets,
+                           .bytes = bytes};
+    return 1;
+}
+/* the linkage map at address, of the program's stage it names (one stage not in *mask yet), copied out of guest
+   memory: NULL for a malformed one */
+static NvnSubLinkage* sub_linkage(u64 address, const NvnProgram* program, u32* mask) {
+    if (address > ~0ull - 80 || mem_mapped_run(address, 80) < 80) return NULL;
+    const u8* data = GP(address);
+    u32 bytes = snx_ld_le32(data + 20), stage = snx_ld_le32(data + 4);
+    if (stage > 5 || (*mask & (1u << stage)) || bytes < 80 || bytes > 16u << 20) return NULL;
+    if (address > ~0ull - bytes || mem_mapped_run(address, bytes) < bytes) return NULL;
+    NvnSubLinkage fields;
+    if (!sub_linkage_fields(data, bytes, &program->st[stage], &fields)) return NULL;
     NvnSubLinkage* result = malloc(sizeof *result + bytes);
     if (!result) return NULL;
-    *result = (NvnSubLinkage){.shader = *shader,
-                              .stage = stage,
-                              .absolute = absolute,
-                              .table = table,
-                              .calls = calls,
-                              .entries = entries,
-                              .labels = labels,
-                              .call_offset = call_offset,
-                              .code_offset = code,
-                              .function_offset = functions,
-                              .label_offset = targets,
-                              .bytes = bytes};
+    *result = fields;
     memcpy(result->data, data, bytes);
     *mask |= 1u << stage;
     return result;
+}
+int nvn_sub_linkage_valid(const NvnSubLinkage* l) {
+    NvnSubLinkage f;
+    return sub_linkage_fields(l->data, l->bytes, &l->shader, &f) && f.stage == l->stage && f.absolute == l->absolute &&
+           f.table == l->table && f.calls == l->calls && f.entries == l->entries && f.labels == l->labels &&
+           f.call_offset == l->call_offset && f.code_offset == l->code_offset &&
+           f.function_offset == l->function_offset && f.label_offset == l->label_offset;
 }
 int nvn_ProgramSetSubroutineLinkage(CPU* c, u64 p, i32 n, u64 maps) {
     (void)c;
@@ -2555,9 +2573,8 @@ void nvn_ChannelMaskStateSetChannelMask(CPU* c, u64 s, i32 i, int r, int g, int 
 }
 
 void nvn_MultisampleStateSetDefaults(CPU* c, u64 s) {
-    NvnMultisample o = {0};
+    NvnMultisample o = nvn_multisample_defaults();
     (void)c;
-    o.enable = 1;
     memcpy(GP(s), &o, sizeof o);
 }
 void nvn_MultisampleStateSetMultisampleEnable(CPU* c, u64 s, int enable) {
@@ -2566,6 +2583,7 @@ void nvn_MultisampleStateSetMultisampleEnable(CPU* c, u64 s, int enable) {
 }
 void nvn_MultisampleStateSetSamples(CPU* c, u64 s, i32 n) {
     (void)c;
+    if (n != 0 && n != 1 && n != 2 && n != 4 && n != 8 && n != 16) return;
     NVN_OBJ(NvnMultisample, s)->samples = (u8)n;
 }
 void nvn_MultisampleStateSetAlphaToCoverageEnable(CPU* c, u64 s, int enable) {
@@ -2809,6 +2827,7 @@ int nvn_MultisampleStateGetAlphaToCoverageDither(CPU* c, u64 s) {
 }
 void nvn_MultisampleStateSetRasterSamples(CPU* c, u64 s, i32 n) {
     (void)c;
+    if (n != 0 && n != 2 && n != 4 && n != 8 && n != 16) return;
     MS(s)->raster_samples = (u8)n;
 }
 i32 nvn_MultisampleStateGetRasterSamples(CPU* c, u64 s) {
@@ -2817,6 +2836,7 @@ i32 nvn_MultisampleStateGetRasterSamples(CPU* c, u64 s) {
 }
 void nvn_MultisampleStateSetCoverageModulationMode(CPU* c, u64 s, i32 mode) {
     (void)c;
+    if ((u32)mode > 3) return;
     MS(s)->coverage_mod = (u8)mode;
 }
 i32 nvn_MultisampleStateGetCoverageModulationMode(CPU* c, u64 s) {
@@ -2833,6 +2853,7 @@ int nvn_MultisampleStateGetCoverageToColorEnable(CPU* c, u64 s) {
 }
 void nvn_MultisampleStateSetCoverageToColorOutput(CPU* c, u64 s, i32 output) {
     (void)c;
+    if ((u32)output >= DS_TARGETS_MAX) return;
     MS(s)->cov_to_color_out = (u8)output;
 }
 i32 nvn_MultisampleStateGetCoverageToColorOutput(CPU* c, u64 s) {
@@ -2884,18 +2905,17 @@ void nvn_MultisampleStateGetSampleLocationsGrid(CPU* c, u64 s, u64 w, u64 h) {
     gw32(w, gw);
     gw32(h, gh);
 }
-/* n locations from first on, x and y each in [0, 1] of a pixel: kept as the game's driver keeps them, in sixteenths
-   (clamped to [0, 1], a NaN taken as 0, rounded to the nearest, at most 15). The renderer draws at the standard locations: Vulkan's are programmable only with
-   VK_EXT_sample_locations, which it doesn't use, and a pixel's samples are averaged alike by a resolve */
+/* Location pairs use sixteenths of a pixel. Clamp each component, take NaN as0 and round to nearest, at most15.
+   Reject an invalid range before reading values or changing state. */
 void nvn_MultisampleStateSetSampleLocations(CPU* c, u64 s, i32 first, i32 n, u64 xy) {
     NvnMultisample* o = MS(s);
     i32 i;
     (void)c;
+    if ((u32)first > 16 || n < 0 || (u32)n > 16 - (u32)first || (n && !xy)) return;
     for (i = 0; i < n; i++) {
         f32 v[2];
         u8 q[2];
         int k;
-        if (first + i < 0 || first + i >= 16) continue;
         memcpy(v, GP(xy + 8 * (u64)i), sizeof v);
         for (k = 0; k < 2; k++) {
             f32 t = v[k] >= 0.0f ? v[k] : 0.0f; /* a NaN takes 0 */

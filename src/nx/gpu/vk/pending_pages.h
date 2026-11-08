@@ -9,7 +9,7 @@
 #include "common/cpu/aarch64/cpu.h"
 
 /* Every guest page under 2^40 in a two-level table: leaves of 4096 pages made when a result first covers one, each
-   with a count per page, the pages of each group of 64 that have one, and its pages in all, so a lookup skips what no
+   with a count per page, a bitmap of each group of 64 that have one, and its pages in all, so a lookup skips what no
    result covers. Zeroed is empty. A change is made with vk_lock held, and takes pend_lock too; a lookup holds either
    one (the renderer's threads vk_lock, a thread that must not wait for the renderer pend_lock).
    The same counts are kept again by GPU page, at every GPU page that shows a counted guest page: a page gains them when

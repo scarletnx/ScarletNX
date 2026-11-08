@@ -95,6 +95,16 @@ static int storage_image_case(GpuChannel *channel, const u32 *qmd, u64 address,
 			program_ops[program_count++] = 0x4c98078804b70004ull;
 			continue;
 		}
+		if (mip_case == 7 && i == 8) {
+			/* a second store, through the handle at c[2][0x12c], under a predicate no thread of the dispatch
+			 * takes (the thread ID keeps it in the program): its image slot is there, its header empty */
+			program_ops[program_count++] = 0xf0c8000002170005ull; /* R5 = the thread ID */
+			program_ops[program_count++] = 0x5b6b03800ff70507ull; /* P0 = R5 != RZ */
+			program_ops[program_count++] = 0x4c98078804b70006ull; /* MOV R6, c[2][0x12c] */
+			program_ops[program_count++] = word;
+			program_ops[program_count++] = (word & ~(0xffull << 39 | 15ull << 16)) | 6ull << 39;
+			continue;
+		}
 		if ((mip_case == 4 || mip_case == 5) && i == 8) {
 			program_ops[program_count++] = 0x4c98078804a70006ull; /* output handle */
 			program_ops[program_count++] = 0xdd38000080070008ull | 2ull << 28 | 4ull << 20;
@@ -123,6 +133,10 @@ static int storage_image_case(GpuChannel *channel, const u32 *qmd, u64 address,
 		source_tic[0] |= 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28;
 		source_tic[1] += 4096;
 		CHECK(!storage_write_words(address + 0x21020, source_tic, 8));
+		CHECK(!storage_write_words(address + 0x20000 + 0x12c, (const u32[1]){1}, 1));
+	}
+	if (mip_case == 7) {
+		CHECK(!storage_write_words(address + 0x21020, (const u32[8]){0}, 8));
 		CHECK(!storage_write_words(address + 0x20000 + 0x12c, (const u32[1]){1}, 1));
 	}
 	for (u32 c = 0; c < 4; c++) {
@@ -433,6 +447,10 @@ static int check_storage_image_formats(void)
 		CHECK(!storage_image_case(channel, qmd, address, uint_word, 1, 4, 0, 3, 0, 0, path));
 		completed++;
 	}
+	/* 7: a second image slot with nothing bound, its header empty: the store to the first still runs, with an empty
+	 * image in the second, as one game's program that makes a texture's levels leaves the slots past its last */
+	CHECK(!storage_image_case(channel, qmd, address, uint_word, 1, 4, 27, 3, 0, 0, 7));
+	completed++;
 	/* R32_UINT bit masks a light-tiling pass keeps per tile and adds to across draws, through a header the size
 	 * of the live target */
 	CHECK(!storage_image_case(channel, qmd, address, uint_word, 1, 4, 24, 3, 0, 0, 6));

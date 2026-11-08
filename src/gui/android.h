@@ -33,4 +33,11 @@ int gui_android_open_folder(const char* path, char* message, size_t size);
 void gui_android_running(const char* game, const char* step, int percent);
 /* The run is over: its notification goes, and one saying result stays when that is not NULL */
 void gui_android_ran(const char* result);
+/* What Android says of the end of the app's process pid, started then (seconds since 1970, 0 when unknown), for a
+   start's mark (common/utilities/run_mark.h): MainActivity's exitReason, ApplicationExitInfo from Android 11, else
+   that the system says none. Owned */
+char* gui_android_exit_reason(long long pid, long long started);
+/* The launcher log's state: line now and at each change of the thermal status (Android 10) or of the battery saver,
+   until the process ends, as gui_apple_state_watch's: 1, or 0 with why in message */
+int gui_android_state_watch(char* message, size_t size);
 #endif

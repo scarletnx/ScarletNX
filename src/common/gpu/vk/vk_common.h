@@ -18,14 +18,15 @@ const char* snx_vk_result_str(VkResult r);
 bool snx_vk_has_layer(const char* name);
 bool snx_vk_has_instance_extension(const char* name);
 
-/* An instance of Vulkan 1.3, volk loaded for it. extensions are the window's (SDL's or a backend's). validation adds
-   VK_LAYER_KHRONOS_validation with VK_EXT_debug_utils when it is installed, and a messenger of warnings and errors
-   to debug when that is given, and gpu_assisted asks it for GPU-assisted validation too; portability enumerates
-   portability drivers (MoltenVK) when the loader can */
+/* An instance of Vulkan 1.3, or of api_version when it is given, volk loaded for it. extensions are the window's
+   (SDL's or a backend's). validation adds VK_LAYER_KHRONOS_validation with VK_EXT_debug_utils when it is installed,
+   and a messenger of warnings and errors to debug when that is given, and gpu_assisted asks it for GPU-assisted
+   validation too; portability enumerates portability drivers (MoltenVK) when the loader can */
 typedef struct {
     const char* app_name;
     const char* const* extensions;
     uint32_t extension_count;
+    uint32_t api_version; /* the most Vulkan version the application uses, 0 for 1.3 */
     bool validation, gpu_assisted, portability;
     PFN_vkDebugUtilsMessengerCallbackEXT debug;
 } SnxVkInstanceInfo;
@@ -86,4 +87,7 @@ SnxVkMemoryModel snx_vk_memory_model(VkPhysicalDeviceType type, const VkPhysical
 /* The threads that make new pipelines (pipeline_threads): setting when it is one or more, else all of cpus but two,
    two to twelve */
 int snx_vk_pipeline_workers(int setting, int cpus);
+/* Of that many pipeline workers, the ones past the first two, which run at the system's low priority
+   (snx_thread_priority_low) */
+int snx_vk_pipeline_low_workers(int workers);
 #endif

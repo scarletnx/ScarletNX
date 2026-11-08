@@ -16,6 +16,17 @@
 #include <unistd.h>
 #endif
 
+/* a page's flags, which another thread may change while this one reads them */
+static unsigned page_flags(const GnuMemory* m, uint64_t page) {
+    return __atomic_load_n(&m->pages[page], __ATOMIC_RELAXED);
+}
+static void pages_set(GnuMemory* m, uint64_t first, uint64_t count, unsigned flags) {
+    for (uint64_t i = first; i < first + count; i++)
+        __atomic_store_n(&m->pages[i], (unsigned char)flags, __ATOMIC_RELAXED);
+}
+void gnu_memory_lock(GnuMemory* m) { gnu_mutex_lock(&m->lock); }
+void gnu_memory_unlock(GnuMemory* m) { gnu_mutex_unlock(&m->lock); }
+
 static uint64_t up(uint64_t value) { return (value + GNU_PAGE_SIZE - 1) & ~(uint64_t)(GNU_PAGE_SIZE - 1); }
 static int range(GnuMemory* m, uint64_t address, uint64_t length) {
     return m->base && address >= GNU_PAGE_SIZE && !(address & (GNU_PAGE_SIZE - 1)) && length && length <= m->size &&
@@ -98,6 +109,7 @@ int gnu_memory_init(GnuMemory* m) {
 #endif
     m->pages = calloc((size_t)(m->size / GNU_PAGE_SIZE), 1);
     m->mmap_next = 0x40000000ull;
+    gnu_mutex_init(&m->lock, 1);
     if (!m->base || !m->pages) {
         gnu_memory_destroy(m);
         return -GNU_ENOMEM;
@@ -113,43 +125,54 @@ void gnu_memory_destroy(GnuMemory* m) {
 #endif
     }
     free(m->pages);
+    gnu_mutex_destroy(&m->lock);
     memset(m, 0, sizeof *m);
 }
 void* gnu_memory_access(GnuMemory* m, uint64_t a, size_t n, unsigned p) {
     if (!m->base || a > m->size || n > m->size - a) return NULL;
     if (!n) return m->base + a;
     for (uint64_t i = a / GNU_PAGE_SIZE; i <= (a + n - 1) / GNU_PAGE_SIZE; i++) {
-        if ((m->pages[i] & (GNU_PAGE_MAPPED | p)) != (GNU_PAGE_MAPPED | p)) return NULL;
+        unsigned flags = page_flags(m, i);
+        if ((flags & (GNU_PAGE_MAPPED | p)) != (GNU_PAGE_MAPPED | p)) return NULL;
         /* the runtime (a read() into the buffer) is about to write over compiled code */
-        if ((p & GNU_PROT_WRITE) && (m->pages[i] & GNU_PAGE_CODE)) gnu_memory_code_written(m, i * GNU_PAGE_SIZE);
+        if ((p & GNU_PROT_WRITE) && (flags & GNU_PAGE_CODE)) gnu_memory_code_written(m, i * GNU_PAGE_SIZE);
     }
     return m->base + a;
 }
 void gnu_memory_watch_code(GnuMemory* m, uint64_t a, uint64_t n) {
     if (!n || a >= m->size) return;
     if (n > m->size - a) n = m->size - a;
+    gnu_mutex_lock(&m->lock);
     for (uint64_t i = a / GNU_PAGE_SIZE; i <= (a + n - 1) / GNU_PAGE_SIZE; i++) {
         unsigned flags = m->pages[i];
         if ((flags & (GNU_PAGE_MAPPED | GNU_PROT_WRITE | GNU_PAGE_CODE)) != (GNU_PAGE_MAPPED | GNU_PROT_WRITE)) continue;
         if (host_protect(m, i * GNU_PAGE_SIZE, GNU_PAGE_SIZE, flags & ~GNU_PROT_WRITE & 7u)) continue;
-        m->pages[i] = (unsigned char)(flags | GNU_PAGE_CODE);
+        pages_set(m, i, 1, flags | GNU_PAGE_CODE);
     }
+    gnu_mutex_unlock(&m->lock);
 }
 /* With a host page larger than a guest page, the write makes the whole host page writable: every watched page in it
    is written as far as its code goes, as none of them is protected any more */
+/* Another thread's write to the same page can fault while this one makes it writable: it finds the page writable
+   (not watched) under the lock, and its store is retried as well */
 int gnu_memory_code_written(GnuMemory* m, uint64_t a) {
     uint64_t page = a & ~(uint64_t)(GNU_PAGE_SIZE - 1), host = a & ~(m->host_page - 1);
-    unsigned flags;
     if (a >= m->size) return 0;
-    flags = m->pages[page / GNU_PAGE_SIZE];
-    if (!(flags & GNU_PAGE_CODE)) return 0;
+    gnu_mutex_lock(&m->lock);
+    unsigned flags = m->pages[page / GNU_PAGE_SIZE];
+    if (!(flags & GNU_PAGE_CODE)) {
+        gnu_mutex_unlock(&m->lock);
+        return (flags & (GNU_PAGE_MAPPED | GNU_PROT_WRITE)) == (GNU_PAGE_MAPPED | GNU_PROT_WRITE);
+    }
     for (uint64_t g = host; g < host + m->host_page; g += GNU_PAGE_SIZE) {
         unsigned f = m->pages[g / GNU_PAGE_SIZE];
         if (!(f & GNU_PAGE_CODE)) continue;
-        m->pages[g / GNU_PAGE_SIZE] = (unsigned char)(f & ~GNU_PAGE_CODE);
+        pages_set(m, g / GNU_PAGE_SIZE, 1, f & ~GNU_PAGE_CODE);
         if (m->code_changed) m->code_changed(m->code_context, g, GNU_PAGE_SIZE);
     }
-    return !host_protect(m, page, GNU_PAGE_SIZE, flags & 7u);
+    int ok = !host_protect(m, page, GNU_PAGE_SIZE, flags & 7u);
+    gnu_mutex_unlock(&m->lock);
+    return ok;
 }
 int gnu_memory_read(GnuMemory* m, uint64_t a, void* d, size_t n) {
     void* source = gnu_memory_access(m, a, n, GNU_PROT_READ);
@@ -170,7 +193,7 @@ int gnu_memory_read_string(GnuMemory* m, uint64_t a, char* d, size_t capacity) {
     }
     return -GNU_ENAMETOOLONG;
 }
-int gnu_memory_map(GnuMemory* m, uint64_t a, uint64_t n, unsigned p, int replace) {
+static int map_locked(GnuMemory* m, uint64_t a, uint64_t n, unsigned p, int replace) {
     if (!range(m, a, n) || (p & ~7u)) return -GNU_EINVAL;
     n = up(n);
     if (!replace)
@@ -183,10 +206,10 @@ int gnu_memory_map(GnuMemory* m, uint64_t a, uint64_t n, unsigned p, int replace
     if (host_protect(m, a, n, GNU_PROT_READ | GNU_PROT_WRITE)) return -GNU_ENOMEM;
     memset(m->base + a, 0, (size_t)n);
     if (host_protect(m, a, n, p)) return -GNU_ENOMEM;
-    memset(m->pages + a / GNU_PAGE_SIZE, (int)(GNU_PAGE_MAPPED | p), (size_t)(n / GNU_PAGE_SIZE));
+    pages_set(m, a / GNU_PAGE_SIZE, n / GNU_PAGE_SIZE, GNU_PAGE_MAPPED | p);
     return 0;
 }
-int gnu_memory_unmap(GnuMemory* m, uint64_t a, uint64_t n) {
+static int unmap_locked(GnuMemory* m, uint64_t a, uint64_t n) {
     if (!range(m, a, n)) return -GNU_EINVAL;
     n = up(n);
     code_changes(m, a, n);
@@ -199,10 +222,10 @@ int gnu_memory_unmap(GnuMemory* m, uint64_t a, uint64_t n) {
         if (lo < hi) (void)madvise(m->base + lo, (size_t)(hi - lo), MADV_DONTNEED);
     }
 #endif
-    memset(m->pages + a / GNU_PAGE_SIZE, 0, (size_t)(n / GNU_PAGE_SIZE));
+    pages_set(m, a / GNU_PAGE_SIZE, n / GNU_PAGE_SIZE, 0);
     return 0;
 }
-int gnu_memory_protect(GnuMemory* m, uint64_t a, uint64_t n, unsigned p) {
+static int protect_locked(GnuMemory* m, uint64_t a, uint64_t n, unsigned p) {
     if (!n) return (a & (GNU_PAGE_SIZE - 1)) || (p & ~7u) ? -GNU_EINVAL : 0;
     if (!range(m, a, n) || (p & ~7u)) return -GNU_EINVAL;
     n = up(n);
@@ -210,10 +233,10 @@ int gnu_memory_protect(GnuMemory* m, uint64_t a, uint64_t n, unsigned p) {
         if (!(m->pages[i] & GNU_PAGE_MAPPED)) return -GNU_ENOMEM;
     code_changes(m, a, n);
     if (host_protect(m, a, n, p)) return -GNU_ENOMEM;
-    memset(m->pages + a / GNU_PAGE_SIZE, (int)(GNU_PAGE_MAPPED | p), (size_t)(n / GNU_PAGE_SIZE));
+    pages_set(m, a / GNU_PAGE_SIZE, n / GNU_PAGE_SIZE, GNU_PAGE_MAPPED | p);
     return 0;
 }
-int64_t gnu_memory_mmap(GnuMemory* m, uint64_t a, uint64_t n, unsigned p, uint64_t flags) {
+static int64_t mmap_locked(GnuMemory* m, uint64_t a, uint64_t n, unsigned p, uint64_t flags) {
     const uint64_t fixed = 0x10, noreplace = 0x100000;
     if (!n || n > m->size - GNU_PAGE_SIZE || p & ~7u || (flags & 3) == 0 || (flags & 3) == 3) return -GNU_EINVAL;
     if (!(flags & 0x20)) return -GNU_ENODEV; /* file mappings are handled by the VFS caller */
@@ -221,12 +244,12 @@ int64_t gnu_memory_mmap(GnuMemory* m, uint64_t a, uint64_t n, unsigned p, uint64
         return -GNU_EINVAL;
     n = up(n);
     if (flags & (fixed | noreplace)) {
-        int r = gnu_memory_map(m, a, n, p, (flags & fixed) && !(flags & noreplace));
+        int r = map_locked(m, a, n, p, (flags & fixed) && !(flags & noreplace));
         return r ? r : (int64_t)a;
     }
     a &= ~(uint64_t)(GNU_PAGE_SIZE - 1);
     if (a >= GNU_PAGE_SIZE && a <= m->size - n) {
-        int r = gnu_memory_map(m, a, n, p, 0);
+        int r = map_locked(m, a, n, p, 0);
         if (!r) return (int64_t)a;
     }
     /* Keep mappings below the fixed stack region; search wraps for freed holes. */
@@ -240,7 +263,7 @@ int64_t gnu_memory_mmap(GnuMemory* m, uint64_t a, uint64_t n, unsigned p, uint64
             uint64_t i = candidate / GNU_PAGE_SIZE, last = (candidate + n) / GNU_PAGE_SIZE;
             while (i < last && !(m->pages[i] & GNU_PAGE_MAPPED)) i++;
             if (i == last) {
-                int r = gnu_memory_map(m, candidate, n, p, 0);
+                int r = map_locked(m, candidate, n, p, 0);
                 if (r) return r;
                 m->mmap_next = candidate + n;
                 return (int64_t)candidate;
@@ -250,15 +273,15 @@ int64_t gnu_memory_mmap(GnuMemory* m, uint64_t a, uint64_t n, unsigned p, uint64
     }
     return -GNU_ENOMEM;
 }
-uint64_t gnu_memory_brk(GnuMemory* m, uint64_t requested) {
+static uint64_t brk_locked(GnuMemory* m, uint64_t requested) {
     if (!requested || requested < m->brk_base || requested > m->brk_limit) return m->brk_current;
     uint64_t old_page = up(m->brk_current), new_page = up(requested);
-    if (new_page > old_page && gnu_memory_map(m, old_page, new_page - old_page, 3, 0)) return m->brk_current;
-    if (new_page < old_page && gnu_memory_unmap(m, new_page, old_page - new_page)) return m->brk_current;
+    if (new_page > old_page && map_locked(m, old_page, new_page - old_page, 3, 0)) return m->brk_current;
+    if (new_page < old_page && unmap_locked(m, new_page, old_page - new_page)) return m->brk_current;
     m->brk_current = requested;
     return requested;
 }
-size_t gnu_memory_maps(GnuMemory* m, char* destination, size_t capacity) {
+static size_t maps_locked(GnuMemory* m, char* destination, size_t capacity) {
     size_t used = 0;
     for (uint64_t i = 0; i < m->size / GNU_PAGE_SIZE;) {
         if (!(m->pages[i] & GNU_PAGE_MAPPED)) {
@@ -283,4 +306,41 @@ size_t gnu_memory_maps(GnuMemory* m, char* destination, size_t capacity) {
         }
     }
     return used;
+}
+/* the map's calls, each under its lock */
+int gnu_memory_map(GnuMemory* m, uint64_t a, uint64_t n, unsigned p, int replace) {
+    gnu_mutex_lock(&m->lock);
+    int r = map_locked(m, a, n, p, replace);
+    gnu_mutex_unlock(&m->lock);
+    return r;
+}
+int gnu_memory_unmap(GnuMemory* m, uint64_t a, uint64_t n) {
+    gnu_mutex_lock(&m->lock);
+    int r = unmap_locked(m, a, n);
+    gnu_mutex_unlock(&m->lock);
+    return r;
+}
+int gnu_memory_protect(GnuMemory* m, uint64_t a, uint64_t n, unsigned p) {
+    gnu_mutex_lock(&m->lock);
+    int r = protect_locked(m, a, n, p);
+    gnu_mutex_unlock(&m->lock);
+    return r;
+}
+int64_t gnu_memory_mmap(GnuMemory* m, uint64_t a, uint64_t n, unsigned p, uint64_t flags) {
+    gnu_mutex_lock(&m->lock);
+    int64_t r = mmap_locked(m, a, n, p, flags);
+    gnu_mutex_unlock(&m->lock);
+    return r;
+}
+uint64_t gnu_memory_brk(GnuMemory* m, uint64_t requested) {
+    gnu_mutex_lock(&m->lock);
+    uint64_t r = brk_locked(m, requested);
+    gnu_mutex_unlock(&m->lock);
+    return r;
+}
+size_t gnu_memory_maps(GnuMemory* m, char* destination, size_t capacity) {
+    gnu_mutex_lock(&m->lock);
+    size_t r = maps_locked(m, destination, capacity);
+    gnu_mutex_unlock(&m->lock);
+    return r;
 }

@@ -29,10 +29,12 @@ A dumped game's folder (decrypted, as a console's `ux0:app/<title ID>`) is linke
 copied: `app/` names it and `patch/` its update (`ux0:patch/<title ID>` beside it, or `--patch DIR`), whose files app0:
 shows over the game's and whose eboot.bin is the one compiled. A retail eboot is a fixed-address module (ET_SCE_EXEC)
 without relocations, so discovery starts at every word of the image and every MOVW and MOVT pair that makes a Thumb
-function's address. The libraries the game brings in `sce_module/` (libc, libfios2, libult) aren't loaded: like the
-system's, their functions are the runtime's, by NID. Variables the eboot imports (SceLibc's `_Ctype` and `_Stdout`,
-the C++ exceptions' vtables) get slots in the runtime's page, which the loader relocates the code to and the runtime
-fills.
+function's address. The libraries the game brings in `sce_module/` (libc, libfios2, libsmart, libult) are loaded
+beside the eboot, from `0x71000000` up, and their `module_start` functions run in turn before the game's. Their
+imports of the system's functions are the runtime's, by NID. Variables a module imports (SceLibc's `_Ctype` and
+`_Stdout`, the C++ exceptions' vtables) get slots in the runtime's page, numbered after those of the modules loaded
+before it, which the loader relocates the code to. A slot is filled from a loaded module's export of the variable
+when there is one, and by the runtime when there is none.
 
 The first homebrew it targets is the Lua Vita Tester (lpp-vita with vita2d). It draws its screen, reads the buttons
 and plays its sound test.
@@ -48,7 +50,7 @@ and plays its sound test.
 | The game's own C and C++ libraries (SceLibc, SceLibm, SceLibstdcxx) and the Clib, malloc on a heap in guest memory | `src/vita/hle/libc.c`, `heap.c` |
 | sceGxm on Vulkan: guest memory imported with `VK_EXT_external_memory_host`, USSE programs translated to SPIR-V through `src/common/utilities/spirv_emit.c` | `src/vita/gpu/` (`render.c`, `usse.c`, `vk.c`, `present.c`) |
 | Movies: SceMp4 (MP4 demuxed from memory with libavformat, the file read through the game's callbacks), sceAvcdec (H.264 with libavcodec, the picture laid out in the guest's buffer on the GPU, `picture.comp`), sceAudiodec (AAC and ATRAC9) and SceCodecEngine's memory | `src/vita/hle/` (`mp4.c`, `videodec.c`, `audiodec.c`) |
-| Guest memory's writes: the pages the renderer copied to the GPU (textures, color surfaces, the framebuffer) write-protected, a fault marking a page written and letting the write through, so unchanged memory isn't copied again (`mprotect` and the fault handler; off on Windows, where everything is copied each time) | `src/vita/runtime/watch.c` |
+| Guest memory's writes: the pages the renderer copied to the GPU (textures, color surfaces, the framebuffer) write-protected, a fault marking a page written and letting the write through, so unchanged memory isn't copied again (`mprotect` or `VirtualProtect`, and the fault handler) | `src/vita/runtime/watch.c` |
 | Keyboard, mouse (touch), gamepads and scripted presses (`--script=ms:hex,...`, SceCtrl's button bits, each held for `--press_len=` ms) | `src/vita/platform/input.c` |
 
 The driver's settings (`--key=value`) are the `g_vita_debug_ini` table of `src/nx/runtime/settings.txt`: `vita_hle_trace` prints each import call,
@@ -80,8 +82,9 @@ comparing after M groups). This is how the Thumb backend's bugs this driver ran 
 
 ## Limits
 
-- Color surfaces are A8B8G8R8, linear, or swizzled or tiled (laid out on the GPU both ways, `swizzle.comp`), and
-  stencil is drawn (S8D24). Textures are U8U8U8U8, U8, BC1 to BC3 (UBC1 to UBC3) and linear YUV420 (a movie's
+- Color surfaces are U8U8U8U8, U8U8U8, U16 and F16F16F16F16 (half floats), linear, or swizzled or tiled (laid out on
+  the GPU both ways, `swizzle.comp`), and stencil is drawn (S8D24). Textures are U8U8U8U8, U8U8U8, U8,
+  F16F16F16F16, BC1 to BC3 (UBC1 to UBC3) and linear YUV420 (a movie's
   frames, made RGBA on the GPU, `yuv.comp`), linear, swizzled or tiled (a swizzled or tiled one made linear on the GPU,
   `swizzle.comp`), with their mipmaps laid out as Vita3K does. Other formats, cube textures and MSAA (a scene drawn
   at one sample a pixel) are not yet.
@@ -100,10 +103,11 @@ comparing after M groups). This is how the Thumb backend's bugs this driver ran 
   the next one's first instruction. Not yet: `VDUAL`, `SOP3`, `I8MAD`, stores, calls, texture queries and cube
   reads. Any of these makes the program fail to translate with its name in the log.
 - One guest thread runs at a time.
-- PGF fonts, networking and the common dialogs answer as unavailable.
+- PGF fonts and networking answer as unavailable. The save data dialog answers as finished and draws no screen, and
+  the other common dialogs answer as unavailable.
 - SceNgs plays 16-bit PCM and HE-ADPCM players through their patches into the master buss. Its equalizer, envelope,
-  pauser and filter modules pass the sound unchanged, and module callbacks aren't made. A C++ exception the game
-  throws ends it.
+  pauser and filter modules pass the sound unchanged. The player's callbacks are made (a buffer to refill, the end
+  of the data), and those of the other modules aren't. A C++ exception the game throws ends it.
 
 ## Sources
 

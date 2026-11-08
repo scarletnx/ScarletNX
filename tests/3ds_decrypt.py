@@ -14,7 +14,7 @@ import subprocess
 import sys
 import tempfile
 
-from ctr_fixtures import TITLE, cia, ncsd, ncch, put, titled, UPDATE_TITLE
+from ctr_fixtures import DLC_TITLE, TITLE, cia, dlc_cia, dlc_content, ncsd, ncch, put, titled, UPDATE_TITLE
 
 try:
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -104,8 +104,9 @@ def encrypt_ncch(plain):
     return bytes(out)
 
 
-def encrypt_cia(blob):
-    """the CIA's layer over every present content, and the title key in the ticket under common key 0"""
+def encrypt_cia(blob, title=TITLE):
+    """the CIA's layer over every present content, and the title key in the ticket under common key 0 (the ticket's
+    title ID its IV)"""
     b = bytearray(blob)
     header, cert, tik, tmd, meta, contents = struct.unpack_from('<IHHIIIIQ', b, 0)[0:1] + struct.unpack_from(
         '<IIIIQ', b, 8
@@ -116,7 +117,7 @@ def encrypt_cia(blob):
     at = align(tmd_at + tmd)
     common = scramble(KEYS['x3d'], KEYS['common0'], KEYS['gen'])
     body = tik_at + 0x140
-    b[body + 0x7F : body + 0x8F] = cbc(common, struct.pack('>Q', TITLE) + bytes(8), KEYS['title'])
+    b[body + 0x7F : body + 0x8F] = cbc(common, struct.pack('>Q', title) + bytes(8), KEYS['title'])
     b[body + 0xB1] = 0
     tmd_body = tmd_at + 0x140
     for i in range(struct.unpack_from('>H', b, tmd_body + 0x9E)[0]):
@@ -201,6 +202,23 @@ def main():
         assert p.returncode and not (root / 'wrong').exists(), p.stdout + p.stderr
         # Without keys the driver says where it looked
         run('nokeys', encrypted, None, 3, 'no 3DS keys')
+        # A DLC, its contents alone with no game NCCH, decrypted as a game is and recorded beside its game
+        games = root / 'games'
+        made = subprocess.run(
+            [driver, '-r', '--data', str(root / 'data'), '--outdir', str(games), str(root / 'plain.cia')],
+            capture_output=True, text=True, cwd=root, timeout=60, env=env,
+        )
+        assert made.returncode == 0, made.stdout + made.stderr
+        dlc = root / 'dlc.cia'
+        encrypted_dlc = dlc_cia([(0, encrypt_ncch(dlc_content(file_name='first.txt')))], content_type=1)
+        dlc.write_bytes(encrypt_cia(encrypted_dlc, DLC_TITLE))
+        p = subprocess.run(
+            [driver, '-r', '--data', str(root / 'data'), '--outdir', str(games), '--keys', str(keys), str(dlc)],
+            capture_output=True, text=True, cwd=root, timeout=60, env=env,
+        )
+        text = p.stdout + p.stderr
+        assert p.returncode == 0 and 'Decrypted' in text and f'Recorded the DLC {DLC_TITLE:016X}' in text, text
+        assert f'Playing with the DLC {DLC_TITLE:016X}, read from ' in text and '.decrypted.cia' in text, text
         # A cartridge image and a bare NCCH have no CIA layer: their NCCHs' own is taken off where each lies, the
         # whole image copied through, the game partition and an update partition both
         def files(folder):

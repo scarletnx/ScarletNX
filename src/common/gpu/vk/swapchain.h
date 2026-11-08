@@ -24,15 +24,22 @@ typedef struct {
     VkExtent2D extent;
     VkImage images[SNX_VK_SWAP_IMAGES];
     uint32_t count;
+    VkPresentModeKHR mode; /* its presentation */
 } SnxVkSwapchain;
+/* The presentation for the vsync setting, as every frontend picks it from the surface's modes (count of them): with
+   vsync FIFO, which every surface has; without, mailbox (the newest image at the next refresh), else immediate (at
+   once), else FIFO all the same */
+VkPresentModeKHR snx_vk_present_mode(const VkPresentModeKHR* modes, uint32_t count, bool vsync);
 /* what a swapchain is made of: the formats wanted, in order (the surface's first one when it has none of them), its
-   images' usage, the window's size in pixels and FIFO presentation, an image more than the least */
+   images' usage, the window's size in pixels and its presentation (snx_vk_present_mode: FIFO unless unsynced asks
+   for vsync off), an image more than the least */
 typedef struct {
     VkSurfaceKHR surface;
     const VkFormat* formats;
     uint32_t format_count;
     VkImageUsageFlags usage;
     VkExtent2D window;
+    bool unsynced;
 } SnxVkSwapchainInfo;
 /* The swapchain made anew for the surface's size, in place of the one sc holds (which goes whether or not the new one
    is made, after the device is idle). False with none when it can't be */

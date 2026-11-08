@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "3ds/audio/output.h"
+#include "3ds/board/clock.h"
 #include "common/utilities/endian.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -16,6 +17,7 @@ static struct {
     SDL_AudioStream* stream;
     FILE* wav;
     uint32_t wav_bytes;
+    int pace; /* the clock's pace the device plays at (board/clock.h): the console's until a frame finds another */
 } o;
 
 static void wav_header(uint32_t data_bytes) {
@@ -49,13 +51,33 @@ bool snx_ctr_audio_init(const char* wav_path) {
     return o.stream || o.wav;
 }
 void snx_ctr_audio_frame(const int16_t frame[SNX_CTR_DSP_SAMPLES][2]) {
+    int16_t mixed[SNX_CTR_DSP_SAMPLES][2];
+    snx_ctr_audio_mix_csnd(frame, mixed); /* CSND's samples waiting (mix.c) */
+    frame = (const int16_t (*)[2])mixed;
     unsigned char bytes[FRAME_BYTES];
     for (unsigned i = 0; i < SNX_CTR_DSP_SAMPLES * 2; ++i) {
         uint16_t sample = (uint16_t)frame[i / 2][i % 2];
         bytes[i * 2] = (unsigned char)sample;
         bytes[i * 2 + 1] = (unsigned char)(sample >> 8);
     }
-    if (o.stream && SDL_GetAudioStreamQueued(o.stream) < (int)MAX_QUEUED)
+    /* the frames come at the clock's pace (fps_limit): the device plays them at it, the pitch with it, and with no
+       limit none is played, as they come faster than any device plays them */
+    int pace = snx_ctr_clock_pace();
+    if (o.stream && pace != o.pace) {
+        char limit[16];
+        snx_ctr_clock_text(pace, limit, sizeof limit);
+        if (pace == SNX_CTR_PACE_NONE)
+            fprintf(stderr, "3ds audio: fps_limit=%s runs the game as fast as it goes: its sound is not played\n",
+                    limit);
+        else if (!SDL_SetAudioStreamFrequencyRatio(o.stream, (float)snx_ctr_clock_rate()))
+            fprintf(stderr, "3ds audio: fps_limit=%s: the device cannot play at %.3f times the rate: %s\n", limit,
+                    snx_ctr_clock_rate(), SDL_GetError());
+        else
+            fprintf(stderr, "3ds audio: fps_limit=%s: the sound plays at %.3f times its rate\n", limit,
+                    snx_ctr_clock_rate());
+        o.pace = pace;
+    }
+    if (o.stream && pace != SNX_CTR_PACE_NONE && SDL_GetAudioStreamQueued(o.stream) < (int)MAX_QUEUED)
         (void)SDL_PutAudioStreamData(o.stream, bytes, (int)sizeof bytes);
     if (o.wav && o.wav_bytes < WAV_LIMIT) {
         if (fwrite(bytes, sizeof bytes, 1, o.wav) == 1) {
@@ -67,6 +89,7 @@ void snx_ctr_audio_frame(const int16_t frame[SNX_CTR_DSP_SAMPLES][2]) {
     }
 }
 void snx_ctr_audio_free(void) {
+    snx_ctr_audio_mix_reset();
     if (o.stream) {
         SDL_DestroyAudioStream(o.stream);
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
@@ -78,4 +101,5 @@ void snx_ctr_audio_free(void) {
     o.stream = NULL;
     o.wav = NULL;
     o.wav_bytes = 0;
+    o.pace = SNX_CTR_PACE_CONSOLE;
 }

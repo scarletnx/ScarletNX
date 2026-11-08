@@ -107,7 +107,7 @@ the game's image read from that image.
   it through hactool's storage chains (`snx_hac.h`'s `SnxHacFs`), the sections decrypted, an update's patch applied
   and compressed blocks expanded as they are read. Nothing is cached.
 - `src/nx/loader/loader.c`: NSO/NRO, LZ4, SHA-256, NPDM, MOD0, symbols/relocs/FDEs.
-- `src/common/cpu/aarch64/a64_decoder.c`: the A64 decoder `tools/a64dec` generates from QEMU's `a64.decode` and
+- `src/common/cpu/aarch64/a64_decoder.c`: the A64 decoder `tools/decodetree` generates from QEMU's `a64.decode` and
   ScarletNX's `a64.profile` (`src/common/cpu/aarch64/decode/`): each op's flow and the feature it needs, so a target's
   feature set (the Switch's Cortex-A57 by default) decides what is UNDEF.
 - `src/common/cpu/recompiler/codegen.c`: function/CFG discovery over platform-neutral image views.
@@ -312,7 +312,7 @@ service the runtime doesn't have gets sm's stand-in object, which answers every 
 reaches the submission's fence at once, so a program that writes its own command buffers does not wait forever.
 
 The shader programs a game ships are translated at startup, on the renderer's shader file thread rather than the GPU
-thread, into `<id>.vkshipped` (`prepare_shaders`: before the game's first thread runs, behind main.c's loading screen,
+thread, into `<id>.<driver>.vkshipped` (`prepare_shaders`: before the game's first thread runs, behind main.c's loading screen,
 or in the background as it runs). `gpu/shipped_pass.c` walks the RomFS and the executables' segments, and
 `gpu/shader/shipped.c` finds the programs by NVN's code wrapper (or a bare NVN shader file's layout) in their bytes,
 and in the Yaz0 SARCs whose names list a shader container. In a BNSH, a program's code record names its control

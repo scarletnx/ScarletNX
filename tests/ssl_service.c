@@ -313,6 +313,20 @@ static int ssl_read(SvcObj* c, u32 cmd, u32 size, u32* n) {
     return r;
 }
 
+/* a fatal alert's result: Switchbrew's SslAlert results run 1501 to 1530 in the order of TLS's alerts, SSL 3's
+   no_certificate (41) among them without one of its own; any other alert is InternalError (999) */
+static void test_alerts(void) {
+    static const int tls[] = {0,  10, 20, 21, 22, 30, 40, 41, 42, 43,  44,  45,  46,  47,  48,
+                              49, 50, 51, 60, 70, 71, 80, 86, 90, 100, 110, 111, 112, 113, 114};
+    int alert, i, want;
+    for (alert = 0; alert < 256; alert++) {
+        want = SSL_RESULT(999);
+        for (i = 0; i < (int)(sizeof tls / sizeof tls[0]); i++)
+            if (tls[i] == alert && alert != 41) want = SSL_RESULT(1501 + i);
+        CHECK(alert_result(alert) == want);
+    }
+    CHECK(alert_result(-1) == SSL_RESULT(999) && alert_result(41) == SSL_RESULT(999));
+}
 
 int main(void) {
     hle_init();
@@ -328,6 +342,7 @@ int main(void) {
 #else
     pthread_t thread;
 #endif
+    test_alerts();
     g_mem = calloc(1, 0x40000);
     CHECK(g_mem != NULL);
     network_init();
@@ -567,6 +582,17 @@ int main(void) {
     other = new_context(ssl);
     request(1);
     CHECK(call(ssl) == 0 && reply32(0) == 2);
+    /* ssl:s, the system's: SetInterfaceVersion (5) {u32}, and ssl's own commands, the same contexts counted */
+    {
+        SvcObj* system = new_ssl_system();
+        CHECK(!strcmp(system->name, "nn::ssl::sf::ISslServiceForSystem"));
+        request(5);
+        arg32(0, 4);
+        CHECK(call(system) == 0);
+        request(1);
+        CHECK(call(system) == 0 && reply32(0) == 2);
+        svcobj_unref(system);
+    }
     svcobj_unref(other);
     svcobj_unref(c);
 

@@ -4,6 +4,8 @@
 #include "gnuabi/abi/errno/errno.h"
 #include "gnuabi/runtime/execution.h"
 #include "common/utilities/endian.h"
+#include "gnuabi/kernel/signals.h"
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,6 +65,11 @@ static void executable(unsigned char* bytes, unsigned type) {
     put64(bytes + 112, 4096);
     put32(bytes + 256, 0xd65f03c0);
 }
+/* a system call of thread t with up to five arguments */
+static int64_t sys(GnuThread* t, uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4) {
+    uint64_t a[6] = {a0, a1, a2, a3, a4, 0};
+    return gnu_syscall(t, number, a);
+}
 static void faulting_guest(CPU* cpu, uint64_t entry) {
     (void)entry;
     cpu->x[0] = *(volatile unsigned char*)(cpu->mem + 0x80000);
@@ -74,6 +81,9 @@ int main(int argc, char** argv) {
         CHECK(argc == 2 && !strncmp(argv[1], "--host-page=", 12));
         gnu_memory_host_page(strtoull(argv[1] + 12, NULL, 10));
     }
+    gnu_kernel_init(&p->kernel, &gnu_kernel_ops, p, NULL, 1000);
+    GnuThread* t = gnu_thread_new(p, 1000);
+    CHECK(t);
     CHECK(gnu_memory_init(&p->memory) == 0);
     CHECK(gnu_memory_map(&p->memory, 0x10000, 8192, 3, 0) == 0);
     const char marker[] = "test";
@@ -126,10 +136,10 @@ int main(int argc, char** argv) {
     for (size_t i = 0; i < sizeof bss; i++) CHECK(bss[i] == 0);
     const char* args[] = {"/program", "argument"};
     const char* env[] = {"KEY=value", NULL};
-    CHECK(gnu_process_stack(p, 2, args, env) == 0);
-    CHECK(!(p->cpu.x[31] & 15));
+    CHECK(gnu_process_stack(t, 2, args, env) == 0);
+    CHECK(!(t->cpu.x[31] & 15));
     uint64_t stack[7];
-    CHECK(gnu_memory_read(&p->memory, p->cpu.x[31], stack, sizeof stack) == 0);
+    CHECK(gnu_memory_read(&p->memory, t->cpu.x[31], stack, sizeof stack) == 0);
     for (size_t i = 0; i < 7; i++) stack[i] = snx_le64(stack[i]); /* the guest's words, little-endian on any host */
     CHECK(stack[0] == 2 && stack[3] == 0 && stack[5] == 0 && stack[6] == 3);
     CHECK(gnu_memory_read_string(&p->memory, stack[1], error, sizeof error) == 0 && !strcmp(error, "/program"));
@@ -139,47 +149,124 @@ int main(int argc, char** argv) {
     CHECK(gnu_memory_brk(&p->memory, UINT64_MAX) == initial + 5000);
     CHECK(gnu_memory_brk(&p->memory, initial) == initial);
     CHECK(gnu_vfs_init(&p->vfs) == 0);
-    p->pid = p->tid = 1000;
-    p->cpu.thread = p;
+    p->kernel.pid = 1000;
+    p->kernel.base = p->memory.base; /* the futex words */
     uint64_t a[6] = {0};
-    CHECK(gnu_syscall(p, UINT64_MAX, a) == -GNU_ENOSYS);
-    CHECK(gnu_syscall(p, 172, a) == 1000);
-    CHECK(gnu_syscall(p, 0x1000000acull, a) == 1000);
-    a[0] = p->cpu.x[31] - 512;
-    CHECK(gnu_syscall(p, 160, a) == 0);
+    CHECK(gnu_syscall(t, UINT64_MAX, a) == -GNU_ENOSYS);
+    CHECK(gnu_syscall(t, 172, a) == 1000);
+    CHECK(gnu_syscall(t, 0x1000000acull, a) == 1000);
+    a[0] = t->cpu.x[31] - 512;
+    CHECK(gnu_syscall(t, 160, a) == 0);
     CHECK(gnu_memory_read(&p->memory, a[0] + 4 * 65, error, 65) == 0 && !strcmp(error, "aarch64"));
     a[0] = 0;
-    a[1] = p->cpu.x[31] - 64;
-    CHECK(gnu_syscall(p, 113, a) == 0);
-    a[0] = p->cpu.x[31] - 128;
+    a[1] = t->cpu.x[31] - 64;
+    CHECK(gnu_syscall(t, 113, a) == 0);
+    a[0] = t->cpu.x[31] - 128;
     a[1] = 16;
     a[2] = 0;
-    CHECK(gnu_syscall(p, 278, a) == 16);
+    CHECK(gnu_syscall(t, 278, a) == 16);
     uint32_t futex_value = snx_le32(123);
     CHECK(gnu_memory_write(&p->memory, a[0], &futex_value, 4) == 0);
-    a[0] = p->cpu.x[31] - 128;
+    a[0] = t->cpu.x[31] - 128;
     a[1] = 1;
     a[2] = 0;
-    CHECK(gnu_syscall(p, 98, a) == 0);
+    CHECK(gnu_syscall(t, 98, a) == 0);
     a[1] = 0;
     a[2] = 124;
-    CHECK(gnu_syscall(p, 98, a) == -GNU_EAGAIN);
+    CHECK(gnu_syscall(t, 98, a) == -GNU_EAGAIN);
     a[0] = 1;
     a[1] = 0;
     a[2] = 0;
     a[3] = 7;
-    CHECK(gnu_syscall(p, 134, a) == -GNU_EINVAL);
+    CHECK(gnu_syscall(t, 134, a) == -GNU_EINVAL);
+    /* membarrier: Linux's answers on a host with a barrier on every thread, ENOSYS for every command without one */
+    CHECK(gnu_kernel_membarrier(&p->kernel, false, 0, 0) == -GNU_ENOSYS);  /* QUERY */
+    CHECK(gnu_kernel_membarrier(&p->kernel, false, 16, 0) == -GNU_ENOSYS); /* REGISTER_PRIVATE_EXPEDITED */
+    CHECK(gnu_kernel_membarrier(&p->kernel, false, 1, 0) == -GNU_ENOSYS);  /* GLOBAL */
+    CHECK(gnu_kernel_membarrier(&p->kernel, true, 0, 0) == 0x27f);         /* the commands it has */
+    CHECK(gnu_kernel_membarrier(&p->kernel, true, 0, 1) == -GNU_EINVAL);
+    CHECK(gnu_kernel_membarrier(&p->kernel, true, 8, 0) == -GNU_EPERM); /* PRIVATE_EXPEDITED before its REGISTER */
+    CHECK(gnu_kernel_membarrier(&p->kernel, true, 16, 0) == 0 && gnu_kernel_membarrier(&p->kernel, true, 512, 0) == 16);
+    a[0] = 0;
+    a[1] = 0;
+    CHECK(gnu_syscall(t, 283, a) == (gnu_host_barrier() ? 0x27f : -GNU_ENOSYS));
+    a[0] = 8; /* PRIVATE_EXPEDITED, registered above: the host's barrier where it has one */
+    CHECK(gnu_syscall(t, 283, a) == (gnu_host_barrier() ? 0 : -GNU_ENOSYS));
+    /* the kernel library's calls that need no loader, with Linux's results (system.c, signals.c) */
+    uint64_t at = (t->cpu.x[31] - 4096) & ~4095ull, unmapped = 16, pair[2];
+    unsigned char zero[32] = {0}, buffer[300];
+    CHECK(gnu_memory_write(&p->memory, at, zero, sizeof zero) == 0);
+    /* rt_sigprocmask and rt_sigaction check the size, then read the new value, then check it */
+    CHECK(sys(t, 135, 99, unmapped, 0, 8, 0) == -GNU_EFAULT);
+    CHECK(sys(t, 135, 99, at, 0, 8, 0) == -GNU_EINVAL);
+    CHECK(sys(t, 135, 99, unmapped, 0, 7, 0) == -GNU_EINVAL);
+    CHECK(sys(t, 134, 0, unmapped, 0, 8, 0) == -GNU_EFAULT);
+    CHECK(sys(t, 134, 0, at, 0, 8, 0) == -GNU_EINVAL);
+    CHECK(sys(t, 134, 9, at, 0, 8, 0) == -GNU_EINVAL); /* SIGKILL's action */
+    /* prctl: the name's first 15 bytes, the flags it keeps, and EINVAL for what it has not */
+    static const char name[] = "a-name-of-20-bytes";
+    CHECK(gnu_memory_write(&p->memory, at + 64, name, sizeof name) == 0);
+    CHECK(sys(t, 167, 15, at + 64, 0, 0, 0) == 0 && sys(t, 167, 16, at + 128, 0, 0, 0) == 0);
+    CHECK(gnu_memory_read(&p->memory, at + 128, buffer, 16) == 0 && !memcmp(buffer, "a-name-of-20-by", 16));
+    CHECK(sys(t, 167, 3, 0, 0, 0, 0) == 1 && sys(t, 167, 4, 2, 0, 0, 0) == -GNU_EINVAL);
+    CHECK(sys(t, 167, 4, 0, 0, 0, 0) == 0 && sys(t, 167, 3, 0, 0, 0, 0) == 0 && sys(t, 167, 4, 1, 0, 0, 0) == 0);
+    CHECK(sys(t, 167, 38, 1, 1, 0, 0) == -GNU_EINVAL && sys(t, 167, 39, 0, 0, 0, 0) == 0);
+    CHECK(sys(t, 167, 38, 1, 0, 0, 0) == 0 && sys(t, 167, 39, 0, 0, 0, 0) == 1);
+    CHECK(sys(t, 167, 23, 0, 0, 0, 0) == 1 && sys(t, 167, 23, 41, 0, 0, 0) == -GNU_EINVAL); /* CAPBSET_READ */
+    CHECK(sys(t, 167, 51, 0, 0, 0, 0) == -GNU_EINVAL && sys(t, 167, 1000, 0, 0, 0, 0) == -GNU_EINVAL);
+    /* getrandom: more than one block of the host's, and its flags */
+    CHECK(sys(t, 278, at + 512, sizeof buffer, 0, 0, 0) == (int64_t)sizeof buffer);
+    CHECK(sys(t, 278, at + 512, 16, 6, 0, 0) == -GNU_EINVAL && sys(t, 278, unmapped, 16, 0, 0, 0) == -GNU_EFAULT);
+    /* prlimit64: a table's 256 descriptors, the 8 MiB stack, and its arguments */
+    CHECK(sys(t, 261, 0, 7, 0, at, 0) == 0 && gnu_memory_read(&p->memory, at, pair, 16) == 0);
+    CHECK(snx_le64(pair[0]) == 256 && snx_le64(pair[1]) == 256);
+    CHECK(sys(t, 261, 0, 3, 0, at, 0) == 0 && gnu_memory_read(&p->memory, at, pair, 16) == 0);
+    CHECK(snx_le64(pair[0]) == 0x800000 && snx_le64(pair[1]) == UINT64_MAX);
+    CHECK(sys(t, 261, 0, 16, 0, at, 0) == -GNU_EINVAL && sys(t, 261, 54321, 7, 0, at, 0) == -GNU_ESRCH);
+    pair[0] = snx_le64(10); /* a soft limit above the hard one */
+    pair[1] = snx_le64(5);
+    CHECK(gnu_memory_write(&p->memory, at, pair, 16) == 0 && sys(t, 261, 0, 7, at, 0, 0) == -GNU_EINVAL);
+    /* sched_getaffinity: at least 8 bytes, the host's processors from the first */
+    CHECK(sys(t, 123, 0, 4, at, 0, 0) == -GNU_EINVAL && sys(t, 123, 0, 8, at, 0, 0) == 8);
+    CHECK(gnu_memory_read(&p->memory, at, pair, 8) == 0 && (snx_le64(pair[0]) & 1));
+    /* clock_getres: 1 ns, the coarse clocks' 4 ms, and EINVAL for a clock Linux doesn't have */
+    CHECK(sys(t, 114, 1, at, 0, 0, 0) == 0 && gnu_memory_read(&p->memory, at, pair, 16) == 0);
+    CHECK(pair[0] == 0 && snx_le64(pair[1]) == 1);
+    CHECK(sys(t, 114, 6, at, 0, 0, 0) == 0 && gnu_memory_read(&p->memory, at, pair, 16) == 0);
+    CHECK(snx_le64(pair[1]) == 4000000 && sys(t, 114, 99, at, 0, 0, 0) == -GNU_EINVAL);
+    /* madvise: page-aligned, Linux's advice only, the privileged ones refused */
+    CHECK(sys(t, 233, at, 4096, 4, 0, 0) == 0 && sys(t, 233, at + 1, 4096, 4, 0, 0) == -GNU_EINVAL);
+    CHECK(sys(t, 233, at, 4096, 5, 0, 0) == -GNU_EINVAL && sys(t, 233, at, 4096, 100, 0, 0) == -GNU_EPERM);
+    /* the scheduler: the real-time policies are root's, and their priorities 1 to 99 */
+    snx_st_le32(buffer, 50);
+    CHECK(gnu_memory_write(&p->memory, at, buffer, 4) == 0 && sys(t, 119, 0, 1, at, 0, 0) == -GNU_EPERM);
+    CHECK(sys(t, 119, 0, 0, at, 0, 0) == -GNU_EINVAL && sys(t, 119, (uint64_t)-1, 0, at, 0, 0) == -GNU_EINVAL);
+    CHECK(sys(t, 125, 1, 0, 0, 0, 0) == 99 && sys(t, 126, 0, 0, 0, 0, 0) == 0 && sys(t, 125, 4, 0, 0, 0, 0) < 0);
+    /* sysinfo: a machine with memory, in units of mem_unit */
+    CHECK(sys(t, 179, at, 0, 0, 0, 0) == 0 && gnu_memory_read(&p->memory, at, buffer, 112) == 0);
+    CHECK(snx_ld_le64(buffer + 32) != 0 && snx_ld_le32(buffer + 104) != 0);
     a[0] = 42;
-    gnu_syscall(p, 93, a);
+    gnu_syscall(t, 93, a);
     CHECK(p->exited && p->exit_code == 42);
-    p->cpu.mem = p->memory.base;
+    t->cpu.mem = p->memory.base;
     p->exited = 0;
     CHECK(gnu_jit_init(&p->jit, NULL, error, sizeof error) == 0);
-    gnu_jit_bind(&p->jit, &p->cpu);
+    gnu_jit_bind(&p->jit, &t->cpu);
     gnu_jit_install(&p->jit, 0x400100, faulting_guest);
-    p->cpu.pc = 0x400100;
-    CHECK(gnu_runtime_run(p) == 139);
+    t->cpu.pc = 0x400100;
+    CHECK(gnu_runtime_run(t) == 139);
     CHECK(p->faulted == 11 && strstr(p->diagnostic, "mapped permissions"));
+#ifndef _WIN32
+    /* the kick's host signal (installed by gnu_runtime_run) stays the runtime's whatever the guest does with the signal
+       of its number, which is SIGUSR2 on macOS */
+    CHECK(!gnu_host_mirrored(gnu_thread_kick_signal()) && !gnu_host_mirrored(SIGSEGV) && gnu_host_mirrored(SIGUSR1));
+    int kick_guest = gnu_guest_signal(gnu_thread_kick_signal());
+    if (kick_guest) {
+        struct sigaction now;
+        gnu_host_disposition(p, kick_guest, SNX_SIG_DFL);
+        CHECK(!sigaction(gnu_thread_kick_signal(), NULL, &now) && now.sa_handler != SIG_DFL);
+    }
+#endif
     gnu_process_destroy(p);
     gnu_jit_destroy(&p->jit);
     memset(p, 0, sizeof *p);

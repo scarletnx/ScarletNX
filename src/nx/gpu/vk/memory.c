@@ -41,6 +41,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/resource_stats.h"
 
 #define ALLOC_CAP_DEFAULT (256ull << 20)
 
@@ -402,14 +403,16 @@ int vk_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* me
     VkResult res;
     return vk_image_create_r(ii, img, mem, &res);
 }
-int vk_image_create_r(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, VkResult* res) {
+static int image_create_r(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, VkResult* res) {
     *res = VK_ERROR_UNKNOWN;
     *img = VK_NULL_HANDLE;
     *mem = VK_NULL_HANDLE;
     VkDeviceImageMemoryRequirements q = {.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS,
                                          .pCreateInfo = ii};
     VkMemoryRequirements2 req = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
+    VkResourceScope query = vk_resource_begin();
     vkGetDeviceImageMemoryRequirements(g_vk.dev, &q, &req);
+    vk_resource_end(VK_RESOURCE_IMAGE_QUERY, query);
     if (req.memoryRequirements.size > g_vk.alloc_cap) {
         if (g_vk.sparse) return image_in_pieces(ii, img, res);
         /* without sparse binding the one allocation is the only way: the driver may still take it */
@@ -420,6 +423,12 @@ int vk_image_create_r(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* 
     *res = vmaCreateImage(g_vk.vma, ii, &aci, img, mem, NULL);
     if (VK_OK(*res)) vk_mem_track(*mem);
     return VK_OK(*res);
+}
+int vk_image_create_r(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, VkResult* res) {
+    VkResourceScope scope = vk_resource_begin();
+    int result = image_create_r(ii, img, mem, res);
+    vk_resource_end(VK_RESOURCE_IMAGE_CREATE, scope);
+    return result;
 }
 
 /* ------------------------------------------------------------ sparse residency */
@@ -764,7 +773,7 @@ static int sparse_destroy(VkImage img) {
     return 0;
 }
 
-void vk_image_destroy(VkImage img, VmaAllocation mem) {
+static void image_destroy(VkImage img, VmaAllocation mem) {
     if (mem || !img) {
         vk_mem_untrack(mem);
         vmaDestroyImage(g_vk.vma, img, mem);
@@ -781,6 +790,11 @@ void vk_image_destroy(VkImage img, VmaAllocation mem) {
         }
     if (sparse_destroy(img)) return;
     vkDestroyImage(g_vk.dev, img, NULL); /* made without memory */
+}
+void vk_image_destroy(VkImage img, VmaAllocation mem) {
+    VkResourceScope scope = vk_resource_begin();
+    image_destroy(img, mem);
+    vk_resource_end(VK_RESOURCE_IMAGE_DESTROY, scope);
 }
 
 /* ------------------------------------------------------------ memory only where it is bound */

@@ -1,10 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Save states. A save pauses the game (pause.c), lands what the GPU holds of guest memory, and writes the address
-   space, g_hle, the services' heap memory and the GPU's state into a state file (state_file.c). A load, in the same
-   process, reads and checks all of it first, then ends every guest thread where it stopped (kernel_retire), puts the
-   state's memory, g_hle and GPU in place of the running ones, makes the host's side of the services again for what
-   the state holds, and starts each guest thread again as it stopped (kthread_resume).
+   space, g_hle, the services' heap memory, the GPU's state and the runtime's NVN (g_nvn, gpu/nvn/nvn_save.c) into a
+   state file (state_file.c). A load, in the same process, reads and checks all of it first, then ends every guest
+   thread where it stopped (kernel_retire), puts the state's memory, g_hle, GPU and NVN in place of the running ones,
+   makes the host's side of the services again for what the state holds, and starts each guest thread again as it
+   stopped (kthread_resume).
 
    g_hle is written as it is (tests/hle_flat.c keeps it free of the host's objects), less the fields this file
    rewrites: pointers into g_hle become offsets from it, and functions and the service objects' names their names
@@ -16,6 +17,8 @@
 #include "common/utilities/build_info.h"
 #include "common/utilities/endian.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/nvn/nvn_loader.h"
+#include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/video/host1x.h"
 #include "nx/hle/hle.h"
@@ -179,6 +182,12 @@ static u64 state_schema(void) {
 #undef SCHEMA_WALK
     gpu_state_schema(schema_out, &h);
     return hash = h;
+}
+/* the NVN section's: g_nvn's layout and that of the types it writes raw, which a game whose NVN the runtime runs has */
+static u64 nvn_schema(void) {
+    u64 h = 0xCBF29CE484222325ull ^ sizeof(Nvn);
+    nvn_state_schema(schema_out, &h);
+    return h;
 }
 
 /* ============================================================ the header */
@@ -1182,19 +1191,19 @@ static void video_install(VideoStaged* v) {
 int state_save(const char* path, char* why, size_t whysize) {
     SnxStateHeader h;
     StateWriter* w;
-    Buf hle = {0}, heap = {0}, gpu = {0}, surf = {0}, video = {0}, temp = {0};
-    StateIo gio = buf_io(&gpu), sio = buf_io(&surf), vio = buf_io(&video), tio = buf_io(&temp);
+    Buf hle = {0}, heap = {0}, gpu = {0}, surf = {0}, video = {0}, temp = {0}, nvn = {0};
+    StateIo gio = buf_io(&gpu), sio = buf_io(&surf), vio = buf_io(&video), tio = buf_io(&temp), nio = buf_io(&nvn);
     Names names = {0};
     char folder[sizeof g_exedir + 16];
     u64 t0 = plat_ns(), t_land = 0, t_gather = 0, t_memory = 0;
     u8* thumb = NULL;
-    int r = -1;
+    int r = -1, has_nvn = nvn_loader_active();
     why[0] = 0;
     if (game_pause()) {
         snprintf(why, whysize, "the game didn't stop to be saved");
         return -1;
     }
-    if (savable(why, whysize)) goto resume;
+    if (savable(why, whysize) || (has_nvn && nvn_state_save(&nio, why, whysize))) goto resume;
     /* the frame the player sees, the game held: what the menu and the launcher show of the state */
     thumb = (u8*)malloc((size_t)SNX_UI_IMAGE_W * SNX_UI_IMAGE_H * 4);
     if (thumb && (!g_renderer->thumbnail || g_renderer->thumbnail(thumb, SNX_UI_IMAGE_W, SNX_UI_IMAGE_H))) {
@@ -1221,8 +1230,8 @@ int state_save(const char* path, char* why, size_t whysize) {
     if (!w) goto end;
     if (section_write(w, "HLE", state_schema(), &hle) || names_write(w, &names) || section_write(w, "HEAP", 1, &heap) ||
         section_write(w, "GPU", 1, &gpu) || section_write(w, "VIDEO", 1, &video) ||
-        (surf.n && section_write(w, "SURF", 1, &surf)) || section_write(w, "TEMP", 1, &temp) ||
-        (t_memory = plat_ns(), save_memory(w, why, whysize))) {
+        (has_nvn && section_write(w, "NVN", nvn_schema(), &nvn)) || (surf.n && section_write(w, "SURF", 1, &surf)) ||
+        section_write(w, "TEMP", 1, &temp) || (t_memory = plat_ns(), save_memory(w, why, whysize))) {
         sw_abort(w);
         if (!why[0]) snprintf(why, whysize, "the file couldn't be written");
         goto end;
@@ -1240,6 +1249,7 @@ resume:
     free(surf.p);
     free(video.p);
     free(temp.p);
+    free(nvn.p);
     if (r)
         WARN("state: %s wasn't saved: %s\n", path, why);
     else
@@ -1254,17 +1264,18 @@ resume:
 int state_load(const char* path, char* why, size_t whysize) {
     SnxStateHeader h;
     StateReader* r;
-    Buf hle = {0}, heap = {0}, gpu = {0}, fs_paths = {0}, surf = {0}, video = {0}, temp = {0};
-    StateIo gio = buf_io(&gpu), sio = buf_io(&surf), vio = buf_io(&video), tio = buf_io(&temp), fio;
+    Buf hle = {0}, heap = {0}, gpu = {0}, fs_paths = {0}, surf = {0}, video = {0}, temp = {0}, nvn = {0};
+    StateIo gio = buf_io(&gpu), sio = buf_io(&surf), vio = buf_io(&video), tio = buf_io(&temp), nio = buf_io(&nvn), fio;
     Names names = {0};
     ShmPlan plan;
     GpuStaged* gs = NULL;
+    NvnStaged* ns = NULL;
     FsStaged* fss = NULL;
     VideoStaged vs;
     u8* cur_host[KSHMEM_MAX];
     u64 cur_off[KSHMEM_MAX], cur_size[KSHMEM_MAX], schema = 0, t0 = plat_ns(), t_checked;
     u32 i;
-    int staged = 0, has_temp;
+    int staged = 0, has_temp, has_nvn;
     why[0] = 0;
     memset(&vs, 0, sizeof vs);
     r = sr_open(path, &h, why, whysize);
@@ -1307,6 +1318,22 @@ int state_load(const char* path, char* why, size_t whysize) {
         snprintf(why, whysize, "its video state is damaged");
         goto refuse;
     }
+    /* the runtime's NVN, which a game whose NVN the runtime runs has in its states, from the states that hold it on */
+    has_nvn = !sr_begin(r, "NVN", &schema);
+    if (has_nvn != nvn_loader_active()) {
+        snprintf(why, whysize,
+                 has_nvn ? "it holds NVN state, and this game's NVN doesn't run in the runtime"
+                         : "it was saved without the game's NVN state, by a ScarletNX from before states held it");
+        goto refuse;
+    }
+    if (has_nvn && schema != nvn_schema()) {
+        snprintf(why, whysize, "it holds the game's NVN state in another layout");
+        goto refuse;
+    }
+    if (has_nvn && (section_read(r, "NVN", NULL, &nvn) || !(ns = nvn_state_parse(&nio)))) {
+        snprintf(why, whysize, "its NVN state is damaged");
+        goto refuse;
+    }
     fio = buf_io(&fs_paths);
     if ((fs_paths.n || has_temp) &&
         !(fss = fs_state_resolve(fs_paths.n ? &fio : NULL, has_temp ? &tio : NULL, &((Hle*)hle.p)->fs, why, whysize)))
@@ -1343,6 +1370,7 @@ int state_load(const char* path, char* why, size_t whysize) {
     gpu_mem_written_all();
     if (g_renderer->mem_may_have_changed) g_renderer->mem_may_have_changed();
     gpu_state_install(gs);
+    if (ns) nvn_state_install(ns); /* its queues' renderer side and work went with the reset and the GPU's queue */
     clock_set(h.guest_ns);
     for (i = 0; i < KTHREAD_MAX; i++) {
         KThread* t = &g_hle.thread.threads[i];
@@ -1357,6 +1385,7 @@ int state_load(const char* path, char* why, size_t whysize) {
     free(surf.p);
     free(video.p);
     free(temp.p);
+    free(nvn.p);
     LOG("state: loaded %s (guest time %.3f s) at frame %d in %.0f ms (checked %.0f)\n", path, (double)h.guest_ns / 1e9,
         __atomic_load_n(&g_frames, __ATOMIC_RELAXED), (double)(plat_ns() - t0) / 1e6, (double)(t_checked - t0) / 1e6);
     return 0;
@@ -1364,6 +1393,7 @@ refuse:
     sr_close(r);
     if (staged) staged_free((Hle*)hle.p);
     gpu_state_staged_free(gs);
+    nvn_state_staged_free(ns);
     video_unstage(&vs);
     fs_state_staged_free(fss);
     names_free(&names);
@@ -1373,6 +1403,7 @@ refuse:
     free(surf.p);
     free(video.p);
     free(temp.p);
+    free(nvn.p);
     WARN("state: %s wasn't loaded: %s\n", path, why);
     return -1;
 }

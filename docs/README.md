@@ -35,6 +35,12 @@ ScarletNX yourself, see [Build](./BUILD.md).
 - [PS Vita](./VITA.md): the Vita driver, its shader corpus and its limits
 - [Game Boy Advance](./AGB.md): the AGB board, playing a ROM, its devices and tests
 - [Linux AArch64 programs (GNU ABI)](./GNUABI.md): the sysroot, how code runs, processes and the system calls
+- [Android apps](./android/README.md): `scarletnx-android`, an app's code on a desktop's JVM, running an app and the
+  DEX translator
+  - [Interfaces](./android/INTERFACES.md): each layer of Android an app reaches, and how far the runtime emulates it
+  - [HWUI](./android/HWUI.md): the display lists and their Vulkan renderer
+  - [The native bridge](./android/NATIVE.md): an app's AArch64 libraries run through the recompiler, their imports
+    answered by the host
 
 ## Development
 
@@ -68,6 +74,8 @@ ScarletNX yourself, see [Build](./BUILD.md).
 - [NVN reference](./NVN_HLE.md): how games draw through NVN, and what the traces showed
 - [NVN rendering audit](./GPU_RENDERING_AUDIT.md): corrected state and copy semantics, exact GPU checks, and open gaps
 - [GPU preparation benchmarks](./GPU_HOTPATH_BENCH.md): exact paired tests of CPU work before GPU submission
+- [NVN to Vulkan optimization results](./NVN_VULKAN_OPTIMIZATION_RESULTS.md): measured components, samples and validation
+- [Graphics descriptor measurements](./GPU_DESCRIPTOR_BENCH.md): descriptor backends, cache memory and paired timings
 - [GPU-owned guest memory](./GPU_OWNERSHIP.md): the design of memory the GPU keeps, and its phases
 - [Graphics pipeline libraries](./PIPELINE_LIBRARIES.md): the design of pipelines linked from shader parts, and the
   optimized pipeline made after them

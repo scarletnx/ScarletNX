@@ -9,8 +9,10 @@
 #include "nx/runtime/platform/gamepad.h"
 #include "nx/runtime/platform/touch.h"
 #include "nx/runtime/platform/vpad.h"
+#include "nx/runtime/platform/hotkeys.h"
 #include "nx/runtime/platform/controls_atlas.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/gpu/renderer.h"
 #include "common/utilities/font.h"
 #include "gui/icons.h"
 #include "gui_theme_colors.h"
@@ -32,6 +34,7 @@
 #define FAILURE                                                                                                        \
     (0xFFu << 24 | (SNX_GUI_THEME_YORHA_FAILURE & 0xFFu) << 16 | (SNX_GUI_THEME_YORHA_FAILURE & 0xFF00u) |             \
      (SNX_GUI_THEME_YORHA_FAILURE >> 16 & 0xFFu))
+#include <SDL3/SDL_keycode.h>
 #include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -82,6 +85,14 @@ int gamepad_layout(int i, int labels[4], int* symmetric) {
 unsigned gamepad_held(int i) { return i < 0 ? pads_held[0] | pads_held[1] | pads_held[2] : i < 3 ? pads_held[i] : 0; }
 const char* gamepad_name(int i) { return i >= 0 && i < 3 ? pad_names[i] : NULL; }
 int gamepad_of_player(int slot) { return slot >= 0 && slot < 3 ? pad_of_player[slot] : -1; }
+/* the renderer's RenderDoc: whether a capture can be taken, which shows the menu's Capture frame */
+static int can_capture;
+static int capture(int ask) {
+    (void)ask;
+    return can_capture;
+}
+static const Renderer renderer = {.capture = capture};
+const Renderer* g_renderer = &renderer;
 const IniOpt g_backend_ini[] = {
     {"touch", "2", NULL, INI_INT, 0, &touch, 0, 2, NULL, "Touch screen", "Off|Fingers|Fingers and mouse", 0, 0, 0},
     {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
@@ -194,6 +205,114 @@ static int text_at(int col, int row, const char* text) {
     return 1;
 }
 
+/* whether an icon of gui/icons.h is drawn anywhere */
+static int icon_drawn(unsigned icon) {
+    int i;
+    for (i = 0; i < list.n; ++i)
+        if (list.q[i].u == SNX_UI_ICONS_X + 16 * (icon - GUI_ICON_FIRST) && list.q[i].v == SNX_CONTROLS_ATLAS_HEIGHT)
+            return 1;
+    return 0;
+}
+/* F1's page, from the page showing: the runtime's keys and the game's buttons, a row each with its icon and its keys
+   on a band of ink in the page's colour, none in focus; Up/Down, the D-pad and the wheel go over its rows, each of
+   which fits the narrowest panel; any other key, button or tap goes back to the game, F1 again too, and the other
+   pages keep those keys as they were */
+static void keys_page(void) {
+    const u64 x_button = 1ull << 2, down = 1ull << 15;
+    const i32 still[4] = {0, 0, 0, 0};
+    int was = overlay_shown(), i, n;
+    u32 light, ink;
+    if (!was) overlay_toggle();
+    assert(overlay_keys() == OVERLAY_NONE && overlay_shown());
+    draw();
+    light = list.q[0].rgba; /* the panel, and its head's band */
+    ink = list.q[1].rgba;
+    assert(shows("SCARLETNX  /  KEYS") && shows("Up/Down: the rest. Any other key or button: back to the game."));
+    assert(shows_as("F2, Home", 0, light) && shows_as("the game's menu", 0, ink) && shows_as("F3", 0, light) &&
+           shows_as("a screenshot", 0, ink) && shows_as("F11, Alt+Return", 0, light) && shows("quit the game"));
+    assert(icon_drawn(GUI_ICON_APP_WINDOW) && icon_drawn(GUI_ICON_IMAGE) && icon_drawn(GUI_ICON_LOG_OUT));
+    for (i = 2, n = 0; i < list.n; ++i) /* the widest keys' band: a pixel of the scale past them either side */
+        n += list.q[i].rgba == ink && list.q[i].h == (float)(16 * s) &&
+             list.q[i].w == (float)(8 * s * (int)strlen("F11, Alt+Return") + 2 * s);
+    assert(n == 1);
+    assert(shows("\x19") && !shows("\x18") && !shows("right stick")); /* twelve rows show, the rest under them */
+    for (i = 2; i < list.n; ++i) assert(!(list.q[i].rgba == ink && list.q[i].w == list.q[0].w)); /* none in focus */
+    overlay_move(1);
+    draw();
+    assert(!shows("the game's menu") && shows("a screenshot") && shows("\x18") && shows("\x19"));
+    for (i = 0; i < 40; ++i) assert(overlay_pad(down) == OVERLAY_NONE);
+    draw();
+    assert(shows("right stick") && shows_as("I, J, K, L", 0, light) && icon_drawn(GUI_ICON_JOYSTICK));
+    assert(!shows("\x19") && shows("\x18") && !shows("a screenshot"));
+    overlay_scroll(-100);
+    draw();
+    assert(shows("the game's menu") && !shows("\x18"));
+    /* the narrowest panel, 40 columns: every row inside it, a column short of its edge, where the arrows go */
+    for (n = 0; n < 3; ++n) {
+        int nx, ny, ns;
+        float right;
+        list.n = 0;
+        overlay_draw(&list, 400, 600, 0);
+        overlay_place(400, 600, &nx, &ny, &ns);
+        assert(overlay_cols(400, ns) == OVERLAY_COLS);
+        right = list.q[0].x + list.q[0].w - 8.0f * (float)ns;
+        for (i = 2; i < list.n; ++i) {
+            const SnxUiQuad* q = &list.q[i];
+            int arrow = q->u == SNX_CONTROLS_FONT_X + 0x18 % 16 * 8 || q->u == SNX_CONTROLS_FONT_X + 0x19 % 16 * 8;
+            if (q->w == 8.0f * (float)ns && q->h == 16.0f * (float)ns && q->v >= SNX_CONTROLS_FONT_Y && !arrow)
+                assert(q->x + q->w <= right);
+        }
+        overlay_move(12);
+    }
+    overlay_scroll(-100);
+    /* with RenderDoc in the process, the capture key's row right after F12's; a debugger, its paragraph; neither by
+       default */
+    assert(!shows("capture a frame") && !shows("Debugger"));
+    overlay_keys_extra(1, "gdb");
+    draw();
+    assert(shows_as("Ctrl+Shift+F12", 0, light) && shows("capture a frame") && !shows("Debugger"));
+    for (i = 0; i < 40; ++i) overlay_move(1);
+    draw();
+    assert(shows("right stick") && shows_as("Debugger", 0, light) && shows("gdb")); /* the last row, past the keys */
+    overlay_keys_extra(0, "");
+    overlay_scroll(-100);
+    draw();
+    assert(!shows("capture a frame") && !shows("Debugger"));
+    /* the keys as set: one moved; one with no key left out; the menu's Home without its key; fullscreen's second
+       alone; the capture key's row, with RenderDoc in the process, gone with its key */
+    assert(hotkeys_ini("hotkey_screenshot", "Ctrl+S") && hotkeys_ini("hotkey_quit", "") &&
+           hotkeys_ini("hotkey_menu", "") && hotkeys_ini("hotkey_fullscreen", "") && hotkeys_ini("hotkey_capture", ""));
+    overlay_keys_extra(1, "");
+    draw();
+    assert(shows_as("Ctrl+S", 0, light) && shows("a screenshot") && !shows("F3") && shows_as("Home", 0, light));
+    assert(!shows("F2") && shows_as("Alt+Return", 0, light) && !shows("F11") && !shows("capture a frame"));
+    for (i = 0; i < 40; ++i) overlay_move(1);
+    draw();
+    assert(shows("right stick") && !shows("quit the game"));
+    overlay_scroll(-100);
+    assert(hotkeys_ini("hotkey_screenshot", "F3") && hotkeys_ini("hotkey_quit", "Escape") &&
+           hotkeys_ini("hotkey_menu", "F2") && hotkeys_ini("hotkey_fullscreen", "F11") &&
+           hotkeys_ini("hotkey_capture", "Ctrl+Shift+F12"));
+    overlay_keys_extra(0, "");
+    /* back to the game: any key, button or tap, F1 again */
+    assert(overlay_select() == OVERLAY_CLOSE && overlay_back() == OVERLAY_CLOSE && overlay_side(-1) == OVERLAY_CLOSE);
+    assert(overlay_other() == OVERLAY_CLOSE && overlay_pad(x_button) == OVERLAY_CLOSE &&
+           overlay_keys() == OVERLAY_CLOSE);
+    draw();
+    assert(overlay_tap(5.0f, 5.0f, SW, SH) == OVERLAY_CLOSE &&
+           overlay_tap(list.q[0].x + list.q[0].w / 2, list.q[0].y + list.q[0].h / 2, SW, SH) == OVERLAY_CLOSE &&
+           overlay_tap(list.q[1].x + list.q[1].w / 2, list.q[1].y + list.q[1].h / 2, SW, SH) == OVERLAY_CLOSE);
+    overlay_controls(0, still, 1);
+    assert(overlay_controls(x_button, still, 2) == OVERLAY_CLOSE);
+    overlay_controls(0, still, 3);
+    /* the first page, as the menu opens: X, Left and a key of no use there do nothing */
+    overlay_toggle();
+    overlay_toggle();
+    assert(overlay_other() == OVERLAY_NONE && overlay_pad(x_button) == OVERLAY_NONE && overlay_side(1) == OVERLAY_NONE);
+    draw();
+    assert(shows("SCARLETNX  /  MENU"));
+    if (!was) overlay_toggle();
+}
 /* a stopped panel's texts, Close in focus */
 static SnxOverlayError panel_of(const char* name, const char* msg, const char* how, const char* log, const char* said) {
     SnxOverlayError e;
@@ -437,14 +556,14 @@ int main(void) {
     overlay_toggle();
     assert(overlay_shown());
     /* letters half the screen's height at most, in whole steps, in the middle: a phone held wide, a small window. The
-       page is as tall as its items (five here, under three rows of head, over a blank one), at the scale of the
+       page is as tall as its items (six here, under three rows of head, over a blank one), at the scale of the
        tallest page, and as wide as three quarters of the picture hold, between 40 and 72 columns */
     overlay_place(SW, SH, &px, &py, &s);
     C = overlay_cols(SW, s);
-    assert(s == 2 && C == OVERLAY_COLS_MAX && px == (SW - C * 16) / 2 && py == (SH - 9 * 32) / 2);
+    assert(s == 2 && C == OVERLAY_COLS_MAX && px == (SW - C * 16) / 2 && py == (SH - 10 * 32) / 2);
     assert(overlay_cols(1280, 2) == 60 && overlay_cols(500, 1) == 46 && overlay_cols(400, 1) == OVERLAY_COLS &&
            overlay_cols(3840, 4) == OVERLAY_COLS_MAX);
-    overlay_place(500, 152, &x, &y, &sc);
+    overlay_place(500, 168, &x, &y, &sc);
     assert(sc == 1 && x == (500 - 46 * 8) / 2 && y == 4);
     /* a phone's display scale: the Poco F8 (408 dpi, 2510x1156) and the Pixel 9 (420 dpi) at 3x, where half the
        picture gave 2x; a 4K picture at 100% keeps the 4x half of it gives */
@@ -461,39 +580,137 @@ int main(void) {
     /* the first page: the title on a band of ink, the items under it, the focused one on a band; the page hides the
        game, whose text would show through it */
     draw();
-    assert(list.q[0].w == (float)(C * 16) && list.q[0].h == 9 * 32 && list.q[1].rgba == ink && list.q[1].h == 32);
+    assert(list.q[0].w == (float)(C * 16) && list.q[0].h == 10 * 32 && list.q[1].rgba == ink && list.q[1].h == 32);
     assert(list.q[0].rgba >> 24 == 0xFFu);
-    assert(text_at(C - 2, 3, ">") && text_at(C - 2, 4, ">")); /* a page under each */
+    assert(text_at(C - 2, 3, ">") && text_at(C - 2, 4, ">") && text_at(C - 2, 6, ">")); /* a page under each */
     /* each item its marker, its icon in two cells and one, its name */
     assert(text_at(1, 0, "SCARLETNX  /  MENU") && text_at(1, 3, "\xFE") && icon_at(3, 3, GUI_ICON_POINTER) &&
            text_at(6, 3, "On-screen controls") && icon_at(3, 4, GUI_ICON_GAMEPAD_2) && text_at(6, 4, "Controllers") &&
-           icon_at(3, 5, GUI_ICON_SAVE) && text_at(6, 5, "Save states") && icon_at(3, 6, GUI_ICON_ACTIVITY) &&
-           text_at(6, 6, "Stats") && icon_at(3, 7, GUI_ICON_LOG_OUT) && text_at(1, 7, "\xFE") && text_at(6, 7, "Exit"));
+           icon_at(3, 5, GUI_ICON_SAVE) && text_at(6, 5, "Save states") && icon_at(3, 6, GUI_ICON_KEYBOARD) &&
+           text_at(6, 6, "Shortcuts") && icon_at(3, 7, GUI_ICON_ACTIVITY) && text_at(6, 7, "Stats") &&
+           icon_at(3, 8, GUI_ICON_LOG_OUT) && text_at(1, 8, "\xFE") && text_at(6, 8, "Exit"));
     assert(!icon_at(3, 3, GUI_ICON_SAVE) && !text_at(1, 3, "\xFE On-screen controls"));
     /* Stats: a tap turns it on and keeps it in the game's .ini, as F12 does, and again off */
-    assert(text_at(C - 4, 6, "Off") && !g_settings.stats);
-    assert(tap(3, 3) == OVERLAY_NONE && g_settings.stats && !strcmp(stored, "stats"));
+    assert(text_at(C - 4, 7, "Off") && !g_settings.stats);
+    assert(tap(4, 3) == OVERLAY_NONE && g_settings.stats && !strcmp(stored, "stats"));
     draw();
-    assert(text_at(C - 3, 6, "On"));
-    assert(tap(3, 3) == OVERLAY_NONE && !g_settings.stats);
+    assert(text_at(C - 3, 7, "On"));
+    assert(tap(4, 3) == OVERLAY_NONE && !g_settings.stats);
     /* a tap on Exit exits; on the title, nothing; outside the panel, it closes */
-    assert(tap(4, 3) == OVERLAY_EXIT && tap(-3, 3) == OVERLAY_NONE);
+    assert(tap(5, 3) == OVERLAY_EXIT && tap(-3, 3) == OVERLAY_NONE);
     assert(overlay_tap(5.0f, 5.0f, SW, SH) == OVERLAY_CLOSE);
     /* the focus goes round, from Exit to the first item and back over the top; Back from here closes */
     overlay_move(1);
-    overlay_move(-6);
+    overlay_move(-7);
     assert(overlay_select() == OVERLAY_EXIT && overlay_back() == OVERLAY_CLOSE);
+    /* RenderDoc in the game: Capture frame between Stats and Exit, with the stats box's RenderDoc icon and no page
+       under it, the panel a row taller; a tap is the caller's capture, Exit a row down */
+    can_capture = 1;
+    draw();
+    assert(list.q[0].h == 11 * 32 && icon_at(3, 8, GUI_ICON_IMAGE) && text_at(6, 8, "Capture frame") &&
+           !text_at(C - 2, 8, ">") && text_at(6, 9, "Exit") && icon_at(3, 9, GUI_ICON_LOG_OUT));
+    assert(tap(6, 3) == OVERLAY_EXIT && tap(5, 3) == OVERLAY_CAPTURE && overlay_select() == OVERLAY_CAPTURE);
+    overlay_move(1);
+    assert(overlay_select() == OVERLAY_EXIT);
+    overlay_move(-1);
+    /* without it, none: Exit where it was */
+    can_capture = 0;
+    draw();
+    assert(list.q[0].h == 10 * 32 && text_at(6, 8, "Exit") && !shows("Capture frame"));
+    assert(overlay_select() == OVERLAY_EXIT);
+
+    /* the Shortcuts page: a row a runtime key, its key at the right. Enter (a select) waits for a key, which with its
+       modifiers becomes the row's key, saved in the .ini; a modifier alone waits on; Esc cancels; a key another row
+       has is refused, said in the failure colour with the key the row keeps; Backspace puts the default back, as a
+       key given */
+    log_[0] = 0;
+    assert(tap(3, 3) == OVERLAY_NONE);
+    draw();
+    assert(text_at(1, 0, "SCARLETNX  /  SHORTCUTS") && text_at(1, 3, "\xFE Help") && text_at(C - 3, 3, "F1"));
+    assert(text_at(1, 5, "\xFE Screenshot") && text_at(C - 3, 5, "F3") && list.q[0].h == 16 * 32);
+    assert(shows("Enter, then a key: its new key. Backspace: its default."));
+    overlay_move(2);
+    assert(overlay_select() == OVERLAY_NONE && overlay_shortcut_listening());
+    draw();
+    assert(text_at(C - 12, 5, "Press a key") && shows("Press the key for Screenshot. Esc or B cancels."));
+    overlay_shortcut_key(SDLK_LCTRL, HOTKEY_CTRL);
+    assert(overlay_shortcut_listening() && !log_[0]);
+    overlay_shortcut_key(SDLK_S, HOTKEY_CTRL);
+    assert(!overlay_shortcut_listening() && !strcmp(hotkey_text(HOTKEY_SCREENSHOT), "Ctrl+S"));
+    assert(!strcmp(log_, "hotkey_screenshot=Ctrl+S;"));
+    {
+        int also;
+        assert(hotkey_find(SDLK_S, HOTKEY_CTRL, &also) == HOTKEY_SCREENSHOT && hotkey_find(SDLK_F3, 0, &also) == -1);
+    }
+    draw();
+    assert(text_at(C - 7, 5, "Ctrl+S") && shows("Enter, then a key"));
+    /* Esc, and Android's Back: nothing set, nothing saved, nothing refused (Escape is Quit's) */
+    log_[0] = 0;
+    overlay_select();
+    overlay_shortcut_key(SDLK_ESCAPE, 0);
+    assert(!overlay_shortcut_listening() && !strcmp(hotkey_text(HOTKEY_SCREENSHOT), "Ctrl+S") && !log_[0]);
+    draw();
+    assert(!shows("already does"));
+    overlay_select();
+    overlay_shortcut_key(SDLK_AC_BACK, 0);
+    assert(!overlay_shortcut_listening() && !strcmp(hotkey_text(HOTKEY_SCREENSHOT), "Ctrl+S") && !log_[0]);
+    /* the stats' key: refused, said */
+    overlay_select();
+    overlay_shortcut_key(SDLK_F12, 0);
+    assert(!overlay_shortcut_listening() && !strcmp(hotkey_text(HOTKEY_SCREENSHOT), "Ctrl+S") && !log_[0]);
+    draw();
+    /* (the line under the hint moves the rows a row down: the row in focus by its colour) */
+    assert(shows_as("F12 already does Stats: Screenshot keeps Ctrl+S.", 0, FAILURE) &&
+           shows_as("Ctrl+S", 0, LIGHT_RGBA));
+    /* Help on F3, Screenshot's default: Backspace on Screenshot is refused as that key would be */
+    overlay_move(-2);
+    overlay_select();
+    overlay_shortcut_key(SDLK_F3, 0);
+    assert(!strcmp(hotkey_text(HOTKEY_HELP), "F3") && !strcmp(log_, "hotkey_help=F3;"));
+    overlay_move(2);
+    assert(overlay_backspace() == OVERLAY_NONE && !strcmp(hotkey_text(HOTKEY_SCREENSHOT), "Ctrl+S"));
+    draw();
+    assert(shows("F3 already does Help: Screenshot keeps Ctrl+S."));
+    /* Help back to F1, then Screenshot to F3, each saved */
+    log_[0] = 0;
+    overlay_move(-2);
+    assert(overlay_backspace() == OVERLAY_NONE && !strcmp(hotkey_text(HOTKEY_HELP), "F1"));
+    overlay_move(2);
+    assert(overlay_backspace() == OVERLAY_NONE && !strcmp(hotkey_text(HOTKEY_SCREENSHOT), "F3"));
+    assert(!strcmp(log_, "hotkey_help=F1;hotkey_screenshot=F3;"));
+    draw();
+    assert(!shows("already does"));
+    /* a pad's B, a move and a tap cancel the wait; on the page the next B goes back to the menu, on Shortcuts */
+    overlay_select();
+    assert(overlay_pad(1ull << 1) == OVERLAY_NONE && !overlay_shortcut_listening());
+    draw();
+    assert(text_at(1, 0, "SCARLETNX  /  SHORTCUTS"));
+    overlay_select();
+    overlay_move(1);
+    assert(!overlay_shortcut_listening());
+    overlay_select();
+    assert(tap(0, 3) == OVERLAY_NONE && !overlay_shortcut_listening() && !strcmp(hotkey_text(HOTKEY_HELP), "F1"));
+    draw();
+    assert(text_at(1, 0, "SCARLETNX  /  SHORTCUTS"));
+    /* Backspace on Back, as Back */
+    overlay_scroll(100);
+    assert(overlay_backspace() == OVERLAY_NONE);
+    draw();
+    assert(text_at(1, 0, "SCARLETNX  /  MENU") && overlay_select() == OVERLAY_NONE);
+    draw();
+    assert(text_at(1, 0, "SCARLETNX  /  SHORTCUTS") && overlay_back() == OVERLAY_NONE);
 
     /* the controls' page: each setting shown with its value, changed and kept */
     assert(tap(0, 3) == OVERLAY_NONE);
     draw();
     assert(text_at(1, 0, "SCARLETNX  /  CONTROLS") && text_at(1, 3, "\xFE Show controls"));
-    assert(list.q[0].h == 16 * 32 && text_at(C - 2, 12, ">")); /* twelve items: the tallest; Buttons opens a page */
+    assert(list.q[0].h == 16 * 32 &&
+           text_at(C - 2, 13, ">")); /* twelve of its items: the tallest; Buttons opens a page */
     /* named as the .ini's rows name them, in the launcher's order, the game's own actions among them */
-    assert(text_at(1, 4, "\xFE Edit layout") && text_at(1, 5, "\xFE Snap to grid") &&
-           text_at(1, 8, "\xFE Relative stick center"));
-    assert(text_at(1, 11, "\xFE Touch screen") && text_at(1, 12, "\xFE Buttons") &&
-           text_at(1, 13, "\xFE Reset layout"));
+    assert(text_at(1, 4, "\xFE Edit layout") && text_at(1, 5, "\xFE Snap to grid") && text_at(1, 8, "\xFE Skin") &&
+           text_at(1, 9, "\xFE Relative stick center"));
+    assert(text_at(1, 12, "\xFE Touch screen") && text_at(1, 13, "\xFE Buttons") &&
+           text_at(1, 14, "\xFE Reset layout"));
     g_settings.show_controls = 0;
     draw();
     assert(text_at(C - 4, 3, "Off"));
@@ -515,29 +732,58 @@ int main(void) {
     /* the keys: down from Scale to Opacity, left steps it */
     overlay_move(1);
     overlay_side(-1);
-    assert(g_settings.controls_opacity == 90 && !strcmp(stored, "controls_opacity"));
+    assert(g_settings.controls_alpha == 40 && !strcmp(stored, "controls_alpha"));
     overlay_side(1);
+    /* the skin, line by default, goes round the built-in look and the shipped ones (the right arrow up, the rest of its
+       row down), kept, and the backend told to apply it; a .cfg's path shows its file's name, and goes up to the
+       built-in look, down to the last shipped skin */
+    vpad_skin_changed();
+    draw();
+    assert(text_at(C - 1 - (int)strlen("< line >"), 8, "< line >"));
+    tap(5, C - 2);
+    assert(!strcmp(g_settings.controls_skin, "yorha") && !strcmp(stored, "controls_skin") && vpad_skin_changed());
+    draw();
+    assert(text_at(C - 1 - (int)strlen("< yorha >"), 8, "< yorha >"));
+    tap(5, C - 2);
+    assert(!g_settings.controls_skin[0] && vpad_skin_changed());
+    draw();
+    assert(text_at(C - 1 - (int)strlen("< Built-in >"), 8, "< Built-in >"));
+    tap(5, C - 2);
+    assert(!strcmp(g_settings.controls_skin, "line") && vpad_skin_changed());
+    tap(5, C - 9);
+    assert(!g_settings.controls_skin[0] && vpad_skin_changed());
+    tap(5, C - 9);
+    assert(!strcmp(g_settings.controls_skin, "yorha"));
+    vpad_ini("controls_skin", "/skins/flat/retropad.cfg");
+    draw();
+    assert(text_at(C - 1 - (int)strlen("< retropad.cfg >"), 8, "< retropad.cfg >"));
+    tap(5, C - 2);
+    assert(!g_settings.controls_skin[0]);
+    vpad_ini("controls_skin", "/skins/flat/retropad.cfg"); /* down from a path: the last shipped skin */
+    tap(5, 3);
+    assert(!strcmp(g_settings.controls_skin, "yorha"));
+    vpad_ini("controls_skin", "");
     /* the toggles; the touch screen goes round its three */
     tap(2, 3);
     assert(g_settings.snap_to_grid && !strcmp(stored, "controls_snap"));
     tap(2, 3);
-    tap(5, 3);
+    tap(6, 3);
     assert(!g_settings.relative_stick_center && !strcmp(stored, "controls_rel_center"));
-    tap(5, 3);
-    tap(8, 3);
+    tap(6, 3);
+    tap(9, 3);
     assert(touch == 2);
     draw();
-    assert(text_at(C - 1 - (int)strlen("Fingers and mouse"), 11, "Fingers and mouse"));
-    tap(8, 3);
+    assert(text_at(C - 1 - (int)strlen("Fingers and mouse"), 12, "Fingers and mouse"));
+    tap(9, 3);
     assert(touch == 0);
     draw();
-    assert(text_at(C - 4, 11, "Off"));
-    tap(8, 3);
+    assert(text_at(C - 4, 12, "Off"));
+    tap(9, 3);
     /* Edit layout is the caller's to do */
     assert(tap(1, 3) == OVERLAY_EDIT);
 
     /* the buttons' page: one hidden and kept, All shows them again; it scrolls to its last item */
-    assert(tap(9, 3) == OVERLAY_NONE);
+    assert(tap(10, 3) == OVERLAY_NONE);
     draw();
     assert(text_at(1, 0, "SCARLETNX  /  BUTTONS") && text_at(1, 4, "\xFE L"));
     log_[0] = 0;
@@ -582,7 +828,7 @@ int main(void) {
            left stick past half way as one, goes on after a while, then on and on; with the menu closed, nothing, and
            a press held as it opens does not act */
         assert(overlay_controls(0, still, 1000) == OVERLAY_NONE); /* the focus back on Controllers */
-        overlay_move(1);                                          /* Save states */
+        overlay_move(2);                                          /* Shortcuts */
         assert(overlay_controls(0, down, 1000) == OVERLAY_NONE);  /* to Stats */
         assert(overlay_controls(0, still, 1000) == OVERLAY_NONE); /* let go */
         assert(overlay_controls(0, down, 1000) == OVERLAY_NONE);  /* to Exit */
@@ -597,7 +843,7 @@ int main(void) {
         assert(overlay_controls(1ull << 15, still, 2001 + SNX_OVERLAY_REPEAT_DELAY) == OVERLAY_NONE); /* Save states */
         assert(overlay_controls(1ull << 15, still, 2001 + SNX_OVERLAY_REPEAT_DELAY + SNX_OVERLAY_REPEAT_MS - 1) ==
                OVERLAY_NONE);
-        overlay_move(1); /* past Save states, to Stats */
+        overlay_move(2); /* past Save states and Shortcuts, to Stats */
         assert(overlay_controls(1ull << 0, still, 3000) == OVERLAY_NONE && g_settings.stats); /* A on it */
         g_settings.stats = 0;
         assert(overlay_controls(1ull << 13, still, 3001) == OVERLAY_NONE &&
@@ -835,6 +1081,16 @@ int main(void) {
     draw();
     assert(!overlay_shown() && shows("Saved to slot 2"));
     overlay_toast("", 0); /* none */
+    /* a notice from any thread (RenderDoc's): the notification once the next frame draws it, the last given before
+       then, and taken once */
+    overlay_notice("RenderDoc: written in 2 s: one.rdc (2 KiB)");
+    overlay_notice("RenderDoc: written in 3 s: two.rdc (2 KiB)");
+    assert(!overlay_toasting(0));
+    draw();
+    assert(shows("RenderDoc: written in 3 s: two.rdc (2 KiB)") && !shows("one.rdc") && overlay_toasting(0));
+    overlay_toast("", 0);
+    draw();
+    assert(!list.n);
     overlay_toggle();
     /* closed, it draws nothing; opened again, its first page */
     overlay_toggle();
@@ -1157,9 +1413,10 @@ int main(void) {
         assert(!snx_users_load("/nonexistent/users", 1, why, sizeof why)); /* Player again */
         snx_remove_tree("overlay_users");
     }
+    keys_page();
     keyboard_box();
     puts(
         "overlay: placing, pages, taps, keys, values, scrolling, look, the error's panel, the atlas, the user, a picture "
-        "that does not draw and the keyboard's box passed");
+        "that does not draw, F1's page and the keyboard's box passed");
     return 0;
 }

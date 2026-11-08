@@ -26,6 +26,17 @@ interface nn::ssl::sf::ISslService is ssl {
     @stub [6] FlushSessionCache(u32 type, buffer<u8, 5> host) -> u32 count;
 }
 
+# ssl:s (15.0.0+), the system's: ssl's commands, on the same contexts. Its own (100 to 105, CreateContextForSystem
+# and the sslsrv thread's core mask) are not served
+interface nn::ssl::sf::ISslServiceForSystem is ssl:s {
+    [0] CreateContext(nn::ssl::sf::SslVersion ssl_version, pid) -> object<nn::ssl::sf::ISslContext> context;
+    [1] GetContextCount() -> u32 count;
+    [2] GetCertificates(buffer<u8, 6> certificates, array<nn::ssl::sf::CaCertificateId, 5> ids) -> u32 count;
+    [3] GetCertificateBufSize(array<nn::ssl::sf::CaCertificateId, 5> ids) -> u32 size;
+    @stub [5] SetInterfaceVersion(u32 version);
+    @stub [6] FlushSessionCache(u32 type, buffer<u8, 5> host) -> u32 count;
+}
+
 interface nn::ssl::sf::ISslContext {
     [0] SetOption(nn::ssl::sf::ContextOption option, i32 value);
     [1] GetOption(nn::ssl::sf::ContextOption option) -> i32 value;

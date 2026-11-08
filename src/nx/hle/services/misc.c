@@ -14,15 +14,17 @@
    src/Ryujinx.HLE/HOS/Services/Mii/Helper.cs and Types/StoreData.cs:
    SPDX-FileCopyrightText: Ryujinx Team and Contributors (MIT) */
 /* The smaller services: apm, lm, pctl, friend, ns, prepo, caps, ectx, psm, fatal, csrng, spl, mm, nfp, nfc, bcat,
-   nim, aoc, irs, mii, btm and audin, each as a console offline, with no NFC device or microphone, and the add-on
+   nim, aoc, irs, mii, btm, audin and olsc, each as a console offline, with no NFC device or microphone, and the add-on
    content the data folder holds */
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/filesystem/fs.h"
 #include "common/utilities/mii_db.h"
 #include "common/utilities/users.h"
+#include "gui/splash.h"
 #include <openssl/rand.h>
 #include <stdio.h>
+#include <time.h>
 
 #include "hle/services/misc.swipc.inc"
 
@@ -179,8 +181,6 @@ static int nn_pctl_detail_ipc_IParentalControlService_Unknown1460(SvcObj* self, 
 }
 
 /* ============================================================ friend */
-#define FRIEND_NO_NOTIFICATIONS RC(124, 15) /* account's NoNotifications, which friends answers too */
-
 static int nn_chat_IUserService_OpenUserShim(SvcObj* self, SvcObj** shim) {
     (void)self;
     *shim = nn_chat_IUserShimScopedObject_new();
@@ -248,16 +248,17 @@ static int nn_friends_detail_ipc_IFriendService_GetCompletionEvent(SvcObj* self,
     (void)self;
     return new_event(event, "friend completion", 0);
 }
-/* the user has no friends, and their list of none is always there to read */
-static int nn_friends_detail_ipc_IFriendService_IsFriendListCacheAvailable(SvcObj* self, const nn_account_Uid* uid,
-                                                                          u8* available) {
+/* nobody is a friend, and the list of none is always there to read */
+static int nn_friends_detail_ipc_IFriendService_CheckFriendListAvailability(SvcObj* self, const nn_account_Uid* uid,
+                                                                            u8* available) {
     (void)self, (void)uid;
     *available = 1;
     R_SUCCEED();
 }
-/* a key that only the friends server can make: zeros, which no other console reads, as there is no network */
+/* the key another console adds a play history with, which only the friend server makes: zeros, as there is no
+   network */
 static int nn_friends_detail_ipc_IFriendService_GetPlayHistoryRegistrationKey(SvcObj* self, u8 include_local,
-                                                                             const nn_account_Uid* uid, IpcBuf key) {
+                                                                              const nn_account_Uid* uid, IpcBuf key) {
     (void)self, (void)include_local, (void)uid;
     memset(GP(key.addr), 0, (size_t)key.size);
     R_SUCCEED();
@@ -269,7 +270,7 @@ static int nn_friends_detail_ipc_INotificationService_GetEvent(SvcObj* self, u32
 static int nn_friends_detail_ipc_INotificationService_Pop(SvcObj* self,
                                                          nn_friends_detail_ipc_SizedNotificationInfo* info) {
     (void)self, (void)info;
-    R_THROW(FRIEND_NO_NOTIFICATIONS);
+    R_THROW(SNX_RC_ACCOUNT_NO_NOTIFICATIONS);
 }
 
 /* ============================================================ ns */
@@ -335,6 +336,160 @@ static int nn_err_context_IWriterForApplication_CreateContextRegistrar(SvcObj* s
     (void)self;
     *registrar = nn_err_context_IContextRegistrar_new();
     R_SUCCEED();
+}
+
+/* ============================================================ caps:su: the album on the SD card, as the console's */
+#define SNX_CAPS_WIDTH        1280
+#define SNX_CAPS_HEIGHT       720
+#define SNX_CAPS_BYTES        ((u64)SNX_CAPS_WIDTH * SNX_CAPS_HEIGHT * 4)
+#define SNX_CAPS_SD           1   /* nn::capsrv::AlbumStorage, where the console's album keeps it */
+#define SNX_CAPS_IDS          100 /* the two digits that tell the pictures of one second apart */
+#define SNX_CAPS_QUALITY      90
+#define SNX_CAPS_EXIF         106 /* caps_exif's segment: its marker, its length, "Exif" and 96 bytes of TIFF */
+
+/* the JPEG the splash library writes, gathered */
+typedef struct {
+    u8* data;
+    size_t size, cap;
+} CapsJpeg;
+static void caps_jpeg_write(void* closure, void* data, int size) {
+    CapsJpeg* j = (CapsJpeg*)closure;
+    if (size <= 0) return;
+    if (j->size + (size_t)size > j->cap) {
+        j->cap = (j->size + (size_t)size) * 2;
+        j->data = (u8*)snx_realloc(j->data, j->cap);
+    }
+    memcpy(j->data + j->size, data, (size_t)size);
+    j->size += (size_t)size;
+}
+static void caps_tag(u8* p, u16 tag, u16 type, u32 count, u32 value) {
+    snx_st_le16(p, tag);
+    snx_st_le16(p + 2, type);
+    snx_st_le32(p + 4, count);
+    snx_st_le32(p + 8, value);
+}
+/* the EXIF segment with the time the picture was taken, which the console's capsrv checks against the time in the
+   file's name (Switchbrew's Capture services): DateTime in the first IFD and DateTimeOriginal in the Exif IFD, the
+   "YYYY:MM:DD HH:MM:SS" photo programs sort by. The console's MakerNote, a MAC under its own key, is not there */
+static void caps_exif(u8* out, const char stamp[20]) {
+    u8* tiff = out + 10;                                                  /* the offsets count from the TIFF header */
+    out[0] = 0xFF, out[1] = 0xE1, out[2] = 0, out[3] = SNX_CAPS_EXIF - 2; /* APP1 and its length, big-endian */
+    memcpy(out + 4, "Exif\0\0II\x2A\0\x08\0\0\0", 14);                    /* a little-endian TIFF, its IFD at 8 */
+    snx_st_le16(tiff + 8, 2);
+    caps_tag(tiff + 10, 0x0132, 2, 20, 38); /* DateTime, ASCII */
+    caps_tag(tiff + 22, 0x8769, 4, 1, 58);  /* the Exif IFD's offset */
+    snx_st_le32(tiff + 34, 0);
+    memcpy(tiff + 38, stamp, 20);
+    snx_st_le16(tiff + 58, 1);
+    caps_tag(tiff + 60, 0x9003, 2, 20, 76); /* DateTimeOriginal */
+    snx_st_le32(tiff + 72, 0);
+    memcpy(tiff + 76, stamp, 20);
+}
+
+/* The game's picture, RGBA, as the console's album keeps it: a JPEG with the EXIF segment of its time, on the SD card
+   in Nintendo/Album/YYYY/MM/DD/, named YYYYMMDDHHMMSSII-<32 hex digits>.jpg (Switchbrew's SD Filesystem and Capture
+   services), II telling the pictures of one second apart. The console's 32 digits are the application ID encrypted
+   with its album key, which is not public: here they are the ID itself, then 16 zeros. The entry names the file's
+   size, the local time it was taken and its II */
+static int caps_save(IpcBuf image, nn_capsrv_ApplicationAlbumEntry* entry) {
+    char dir[64], name[96], stamp[32], why[256];
+    time_t now = time(NULL);
+    struct tm t = {0};
+    CapsJpeg jpeg = {0};
+    u8* file;
+    size_t skip, size;
+    u32 n;
+    int r;
+    if (image.size < SNX_CAPS_BYTES) {
+        WARN("caps: the game's picture has %llu bytes, not the %llu of 1280x720 RGBA: it is not saved, and the game is "
+             "told OutOfRange\n",
+             (unsigned long long)image.size, (unsigned long long)SNX_CAPS_BYTES);
+        R_THROW(SNX_RC_CAPSRV_ALBUM_OUT_OF_RANGE);
+    }
+    if (snx_splash_jpeg_rgba(GP(image.addr), SNX_CAPS_WIDTH, SNX_CAPS_HEIGHT, SNX_CAPS_QUALITY, caps_jpeg_write,
+                             &jpeg) ||
+        jpeg.size < 4 || jpeg.data[0] != 0xFF || jpeg.data[1] != 0xD8) {
+        WARN("caps: the game's picture could not be made a JPEG (%zu bytes of it): it is not saved, and the game is "
+             "told FileCountLimit\n",
+             jpeg.size);
+        free(jpeg.data);
+        R_THROW(SNX_RC_CAPSRV_INTERNAL_ALBUM_LIMITATION_FILE_COUNT_LIMIT);
+    }
+#ifdef _WIN32
+    localtime_s(&t, &now);
+#else
+    localtime_r(&now, &t);
+#endif
+    /* the start of the image, then the EXIF segment in place of the JFIF one, as the console's pictures have it */
+    skip = 2;
+    if (jpeg.size > 6 && jpeg.data[2] == 0xFF && jpeg.data[3] == 0xE0)
+        skip += 2 + ((size_t)jpeg.data[4] << 8 | jpeg.data[5]);
+    if (skip > jpeg.size) skip = 2;
+    size = 2 + SNX_CAPS_EXIF + jpeg.size - skip;
+    file = (u8*)snx_alloc(size);
+    memcpy(file, jpeg.data, 2);
+    snprintf(stamp, sizeof stamp, "%04d:%02d:%02d %02d:%02d:%02d", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour,
+             t.tm_min, t.tm_sec);
+    caps_exif(file + 2, stamp);
+    memcpy(file + 2 + SNX_CAPS_EXIF, jpeg.data + skip, jpeg.size - skip);
+    free(jpeg.data);
+    snprintf(dir, sizeof dir, "Nintendo/Album/%04d/%02d/%02d", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday);
+    for (n = 0;; n++) {
+        if (n == SNX_CAPS_IDS) {
+            r = FS_TREE_EXISTS;
+            snprintf(why, sizeof why, "%d pictures of that second are there already", SNX_CAPS_IDS);
+            break;
+        }
+        snprintf(name, sizeof name, "%04d%02d%02d%02d%02d%02d%02u-%016llX%016llX.jpg", t.tm_year + 1900, t.tm_mon + 1,
+                 t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec, (unsigned)n, (unsigned long long)g_hle.kernel.title_id,
+                 0ull);
+        r = fs_sd_write_new(dir, name, file, size);
+        if (r != FS_TREE_EXISTS) {
+            if (r) snx_os_error(why, sizeof why);
+            break;
+        }
+    }
+    free(file);
+    if (r) {
+        WARN("caps: the game's picture could not be written in %ssdmc/%s (%s): the game is told FileCountLimit\n",
+             g_datadir, dir, why);
+        R_THROW(SNX_RC_CAPSRV_INTERNAL_ALBUM_LIMITATION_FILE_COUNT_LIMIT);
+    }
+    LOG("caps: the game saved a picture to %ssdmc/%s/%s\n", g_datadir, dir, name);
+    entry->size = (u64)size;
+    entry->datetime.year = (i16)(t.tm_year + 1900);
+    entry->datetime.month = (u8)(t.tm_mon + 1);
+    entry->datetime.day = (u8)t.tm_mday;
+    entry->datetime.hour = (u8)t.tm_hour;
+    entry->datetime.minute = (u8)t.tm_min;
+    entry->datetime.second = (u8)t.tm_sec;
+    entry->datetime.unique_id = (u8)n;
+    entry->storage = SNX_CAPS_SD;
+    entry->flags = 1; /* what the console's software sets (Switchbrew's ApplicationAlbumEntry) */
+    R_SUCCEED();      /* the hash, a MAC over the entry under the console's key, stays 0, as Eden leaves it */
+}
+static int nn_capsrv_sf_IScreenShotApplicationService_SaveScreenShotEx0(SvcObj* self,
+                                                                        const nn_capsrv_ScreenShotAttribute* attribute,
+                                                                        u32 report_option, u64 aruid, IpcBuf image,
+                                                                        nn_capsrv_ApplicationAlbumEntry* entry) {
+    (void)self, (void)attribute, (void)report_option, (void)aruid;
+    return caps_save(image, entry);
+}
+static int nn_capsrv_sf_IScreenShotApplicationService_SaveScreenShotEx1(SvcObj* self,
+                                                                        const nn_capsrv_ScreenShotAttribute* attribute,
+                                                                        u32 report_option, u64 aruid, IpcBuf data,
+                                                                        IpcBuf image,
+                                                                        nn_capsrv_ApplicationAlbumEntry* entry) {
+    (void)self, (void)attribute, (void)report_option, (void)aruid, (void)data;
+    return caps_save(image, entry);
+}
+static int nn_capsrv_sf_IScreenShotApplicationService_SaveScreenShotEx2(SvcObj* self,
+                                                                        const nn_capsrv_ScreenShotAttribute* attribute,
+                                                                        u32 report_option, u64 applet_resource_user_id,
+                                                                        IpcBuf users, IpcBuf image,
+                                                                        nn_capsrv_ApplicationAlbumEntry* entry) {
+    (void)self, (void)attribute, (void)report_option, (void)applet_resource_user_id, (void)users;
+    return caps_save(image, entry);
 }
 
 /* ============================================================ psm: a full battery, on the charger */
@@ -505,10 +660,6 @@ static int nn_mmnv_IRequest_Get(SvcObj* self, u32 request_id, nn_mmnv_Setting* c
 }
 
 /* ============================================================ nfp, nfc: no device */
-#define NFP_DEVICE_NOT_FOUND RC(115, 64)
-#define NFP_NFC_DISABLED     RC(115, 80)
-#define NFC_DEVICE_NOT_FOUND RC(127, 64)
-#define NFC_NOT_INITIALIZED  RC(127, 77)
 #define NFC_FINALIZED        6 /* nn::nfp::DeviceState of a device that isn't there */
 
 /* an IUser's NfcUser (services_int.h): its nn::nfc::State, and the one availability-change event it hands out */
@@ -523,8 +674,10 @@ static SvcObj* nfc_user(SvcObj* o, const char* name) {
     return o;
 }
 /* what a command on a device answers: there is none */
-static int nfp_device(SvcObj* self) { return nfc_state(self) ? NFP_DEVICE_NOT_FOUND : NFP_NFC_DISABLED; }
-static int nfc_device(SvcObj* self) { return nfc_state(self) ? NFC_DEVICE_NOT_FOUND : NFC_NOT_INITIALIZED; }
+static int nfp_device(SvcObj* self) { return nfc_state(self) ? SNX_RC_NFP_DEVICE_NOT_FOUND : SNX_RC_NFP_NFC_DISABLED; }
+static int nfc_device(SvcObj* self) {
+    return nfc_state(self) ? SNX_RC_NFC_DEVICE_NOT_FOUND : SNX_RC_NFC_NFC_NOT_INITIALIZED;
+}
 
 static int nn_nfp_detail_IUserManager_CreateUserInterface(SvcObj* self, SvcObj** user) {
     (void)self;
@@ -723,7 +876,6 @@ static int nn_nfc_detail_IUser_AttachDeactivateEvent(SvcObj* self, const nn_nfc_
 }
 
 /* ============================================================ bcat: synchronized at once, the cache empty */
-#define BCAT_FAILED_OPEN_ENTITY RC(122, 2)
 #define BCAT_DONE               9 /* nn::bcat::DeliveryCacheProgressStatus */
 
 static int nn_bcat_detail_ipc_IServiceCreator_CreateBcatService(SvcObj* self, u64 pid, SvcObj** service) {
@@ -806,7 +958,7 @@ static int nn_bcat_detail_ipc_IDeliveryCacheStorageService_CreateDirectoryServic
 static int nn_bcat_detail_ipc_IDeliveryCacheFileService_Open(SvcObj* self, const nn_bcat_DirectoryName* directory_name,
                                                             const nn_bcat_FileName* file_name) {
     (void)self, (void)directory_name, (void)file_name;
-    R_THROW(BCAT_FAILED_OPEN_ENTITY);
+    R_THROW(SNX_RC_BCAT_NOT_FOUND);
 }
 static int nn_bcat_detail_ipc_INotifierService_GetEvent(SvcObj* self, u32* event) {
     (void)self;
@@ -827,15 +979,10 @@ static int nn_nim_detail_IShopServiceAccessServer_CreateAccessorInterface(SvcObj
 }
 
 /* ============================================================ aoc:u: the add-on content in system/archives */
-#define AOC_NO_PURCHASED_PRODUCT RC(164, 400) /* nim's shop: NoPurchasedProductInfoAvailable */
-#define AOC_NOT_CONNECTED        RC(110, 300) /* nifm's: the token needs the network */
-
 /* the running game's from its control.nacp (am_aoc_base_id), another application's as the SDK numbers them */
 static u64 aoc_base_id(u64 application_id) {
     return application_id == g_hle.kernel.title_id ? am_aoc_base_id() : snx_nacp_aoc_base(NULL, 0, application_id);
 }
-/* am's ApplicationRecordNotFound, for a list asked from past its end */
-#define SNX_AOC_NO_RECORD RC(128, 37)
 /* An add-on content is installed when its RomFS image is in the data folder as system/archives/<data id>.romfs, the
    file OpenDataStorageByDataId opens, or is a DLC read in place from its dump (fs_aoc_has): data id = base id +
    index, index 1 to 2047. Scanned once: the list does not
@@ -869,7 +1016,7 @@ static i32 aoc_count_of(u64 application_id) {
    console reads it) no record */
 static int aoc_list(i32 offset, i32 count, u64 application_id, IpcBuf indices, i32* out_count) {
     i32 total = aoc_count_of(application_id), n;
-    R_UNLESS((u32)offset <= (u32)total, SNX_AOC_NO_RECORD);
+    R_UNLESS((u32)offset <= (u32)total, SNX_RC_AM_TITLE_ID_NOT_FOUND);
     if ((u32)count > indices.size / 4) count = (i32)(indices.size / 4);
     for (n = 0; n < count && offset + n < total; n++) gw32(indices.addr + 4 * (u64)n, (u32)g_hle.misc.aoc_index[offset + n]);
     *out_count = n;
@@ -947,7 +1094,7 @@ static int nn_aocsrv_detail_IAddOnContentManager_CreateContentsServiceManager(Sv
 static int nn_ec_IContentsServiceManager_RequestContentsAuthorizationToken(SvcObj* self, const u8* nonce, u64 pid,
                                                                           IpcBuf data, u32* event, SvcObj** async) {
     (void)self, (void)nonce, (void)pid, (void)data, (void)event, (void)async;
-    R_THROW(AOC_NOT_CONNECTED);
+    R_THROW(SNX_RC_NIFM_NO_INTERNET_CONNECTION);
 }
 static int nn_ec_IPurchaseEventManager_GetPurchasedEventReadableHandle(SvcObj* self, u32* event) {
     (void)self;
@@ -956,12 +1103,12 @@ static int nn_ec_IPurchaseEventManager_GetPurchasedEventReadableHandle(SvcObj* s
 static int nn_ec_IPurchaseEventManager_PopPurchasedProductInfo(SvcObj* self,
                                                               nn_ec_srv_detail_PurchasedProductInfo* info) {
     (void)self, (void)info;
-    R_THROW(AOC_NO_PURCHASED_PRODUCT);
+    R_THROW(SNX_RC_EC_NO_PURCHASED_PRODUCT_INFO_AVAILABLE);
 }
 static int nn_ec_IPurchaseEventManager_PopPurchasedProductInfoWithUid(SvcObj* self, const nn_account_Uid* uid,
                                                                      nn_ec_srv_detail_PurchasedProductInfo* info) {
     (void)self, (void)uid, (void)info;
-    R_THROW(AOC_NO_PURCHASED_PRODUCT);
+    R_THROW(SNX_RC_EC_NO_PURCHASED_PRODUCT_INFO_AVAILABLE);
 }
 
 /* ============================================================ irs: a shared memory no camera writes to */
@@ -979,10 +1126,6 @@ static int nn_irsensor_IIrSensorServer_GetIrsensorSharedMemoryHandle(SvcObj* sel
 }
 
 /* ============================================================ mii: a fixed database and the six default Miis */
-#define MII_INVALID_ARGUMENT      RC(126, 1)
-#define MII_INVALID_ARGUMENT_SIZE RC(126, 2)
-#define MII_NOT_UPDATED           RC(126, 3)
-#define MII_NOT_FOUND             RC(126, 4)
 #define MII_SOURCE_DATABASE       1 /* nn::mii::SourceFlag::Database */
 #define MII_SOURCE_DEFAULT        2 /* nn::mii::SourceFlag::Default */
 #define MII_NAME                  0x10 /* CharInfo's nickname, UTF-16, after the create id */
@@ -1074,7 +1217,7 @@ static int nn_mii_detail_IStaticService_GetDatabaseService(SvcObj* self, i32 key
 }
 static int nn_mii_detail_IDatabaseService_BuildDefault(SvcObj* self, u32 index, nn_mii_CharInfo* info) {
     (void)self;
-    R_UNLESS(index < 6, MII_INVALID_ARGUMENT);
+    R_UNLESS(index < 6, SNX_RC_MII_INVALID);
     u8 id[16];
     mii_random_id(id);
     snx_mii_default_charinfo(index, id, info->v);
@@ -1096,7 +1239,7 @@ static int mii_give(i32 source_flag, IpcBuf out, u32 size, int store, i32* count
         int is_default = i >= MII_DATABASE_COUNT;
         u64 at = out.addr + (u64)n * size;
         if (!(source_flag & (is_default ? MII_SOURCE_DEFAULT : MII_SOURCE_DATABASE))) continue;
-        if (out.size < (u64)(n + 1) * size) R_THROW(MII_INVALID_ARGUMENT_SIZE);
+        if (out.size < (u64)(n + 1) * size) R_THROW(SNX_RC_MII_BUFFER_TOO_SMALL);
         if (is_default)
             nn_mii_detail_IDatabaseService_BuildDefault(NULL, i - MII_DATABASE_COUNT, &info);
         else
@@ -1132,16 +1275,16 @@ static int nn_mii_detail_IDatabaseService_UpdateLatest(SvcObj* self, const nn_mi
                                                        nn_mii_CharInfo* latest) {
     int index = mii_find(info);
     (void)self;
-    if (!(source_flag & MII_SOURCE_DATABASE) || index < 0) R_THROW(MII_NOT_FOUND);
+    if (!(source_flag & MII_SOURCE_DATABASE) || index < 0) R_THROW(SNX_RC_MII_NOT_FOUND);
     mii_build_database(latest, (u32)index);
-    if (latest->v[MII_TYPE] != info->v[MII_TYPE]) R_THROW(MII_NOT_FOUND);
-    if (!memcmp(latest->v, info->v, sizeof latest->v)) R_THROW(MII_NOT_UPDATED);
+    if (latest->v[MII_TYPE] != info->v[MII_TYPE]) R_THROW(SNX_RC_MII_NOT_FOUND);
+    if (!memcmp(latest->v, info->v, sizeof latest->v)) R_THROW(SNX_RC_MII_NOT_UPDATED);
     R_SUCCEED();
 }
 static int nn_mii_detail_IDatabaseService_GetIndex(SvcObj* self, const nn_mii_CharInfo* info, i32* index) {
     (void)self;
     *index = mii_find(info);
-    R_UNLESS(*index >= 0, MII_NOT_FOUND);
+    R_UNLESS(*index >= 0, SNX_RC_MII_NOT_FOUND);
     R_SUCCEED();
 }
 /* ------------------------------------------------------------ BuildRandom */
@@ -1180,7 +1323,7 @@ static int nn_mii_detail_IDatabaseService_BuildRandom(SvcObj* self, u32 age, u32
     u32 axis_y = 0, index, r, eyebrow_y, flag;
     int i;
     (void)self;
-    if (age > MII_AGE_ALL || gender > MII_GENDER_ALL || race > MII_RACE_ALL) R_THROW(MII_INVALID_ARGUMENT);
+    if (age > MII_AGE_ALL || gender > MII_GENDER_ALL || race > MII_RACE_ALL) R_THROW(SNX_RC_MII_INVALID);
     if (gender != 0 /* Male */ && age != 2 /* Old */ && race != 0 /* Black */) {
         int own = mii_own_pick(mii_random(MII_OWN_ODDS - 1));
         if (own >= 0) {
@@ -1353,6 +1496,63 @@ static int nn_prepo_detail_ipc_IPrepoService_GetTransmissionStatus(SvcObj* self,
     R_SUCCEED();
 }
 
+/* ============================================================ olsc:u: no online service */
+/* a command for a user, on a session Initialize was called on (u[0]) */
+static int olsc_check(const SvcObj* self, const nn_account_Uid* uid) {
+    static const u8 none[sizeof uid->v] = {0};
+    R_UNLESS(self->u[0], SNX_RC_OLSC_NOT_INITIALIZED);
+    R_UNLESS(memcmp(uid->v, none, sizeof none), SNX_RC_OLSC_NULL_ARGUMENT);
+    R_SUCCEED();
+}
+static int nn_olsc_srv_IOlscServiceForApplication_Initialize(SvcObj* self, u64 pid) {
+    (void)pid;
+    self->u[0] = 1;
+    R_SUCCEED();
+}
+/* done when it is made, with no license found: its result (u[0]) is what GetResult answers, account's
+   MembershipRequired. What the license check for backups ends with, no license, there being no online service, is in
+   no public source as an olsc result (Switchbrew lists no code of module 179, nnsdk, skyline's bindings of the SDK, has
+   no olsc, and the SDK's symbols name no olsc result): the closest public one is MembershipRequired, which tells the
+   player backups need a membership */
+static int nn_olsc_srv_IOlscServiceForApplication_VerifySaveDataBackupLicenseAsync(SvcObj* self,
+                                                                                   const nn_account_Uid* uid,
+                                                                                   SvcObj** result) {
+    R_TRY(olsc_check(self, uid));
+    WARN_LIMIT(4, "olsc: the game checks the license for save data backups, which no online service gives here: it "
+                  "ends with 2124-5113, membership required\n");
+    *result = nn_olsc_srv_IAsyncResult_new();
+    (*result)->u[0] = SNX_RC_ACCOUNT_MEMBERSHIP_REQUIRED;
+    R_SUCCEED();
+}
+/* 0 whatever the game set: no backup runs here, and how the console encodes the setting is not public (0 is Eden's
+   answer, Ryubing's 1 and 2 are marked as guesses) */
+static int nn_olsc_srv_IOlscServiceForApplication_GetSaveDataBackupSetting(SvcObj* self, const nn_account_Uid* uid,
+                                                                           nn_olsc_SaveDataBackupSetting* setting) {
+    *setting = 0;
+    return olsc_check(self, uid);
+}
+static int nn_olsc_srv_IOlscServiceForApplication_SetSaveDataBackupSettingEnabled(SvcObj* self,
+                                                                                  const nn_account_Uid* uid,
+                                                                                  u8 enabled) {
+    (void)enabled;
+    return olsc_check(self, uid);
+}
+static int nn_olsc_srv_IAsyncResult_GetResult(SvcObj* self) { return (int)self->u[0]; }
+/* nothing left to stop: the operation ended when it was made */
+static int nn_olsc_srv_IAsyncResult_Cancel(SvcObj* self) {
+    (void)self;
+    R_SUCCEED();
+}
+static int nn_olsc_srv_IAsyncResult_IsAvailable(SvcObj* self, u8* available) {
+    (void)self;
+    *available = 1;
+    R_SUCCEED();
+}
+static int nn_olsc_srv_IAsyncResult_GetSystemEvent(SvcObj* self, u32* event) {
+    (void)self;
+    return new_event(event, "olsc async result", 1);
+}
+
 /* ============================================================ the services' objects */
 SvcObj* new_apm(void) { return nn_apm_IManager_new(); }
 SvcObj* new_lm(void) { return nn_lm_ILogService_new(); }
@@ -1369,6 +1569,7 @@ SvcObj* new_mm(void) { return nn_mmnv_IRequest_new_data(g_hle.misc.mms, g_hle.mi
 SvcObj* new_nfp(void) { return nn_nfp_detail_IUserManager_new(); }
 SvcObj* new_nfc(void) { return nn_nfc_detail_IUserManager_new(); }
 SvcObj* new_caps(void) { return nn_capsrv_sf_IAlbumApplicationService_new(); }
+SvcObj* new_capssu(void) { return nn_capsrv_sf_IScreenShotApplicationService_new(); }
 SvcObj* new_bcat(void) { return nn_bcat_detail_ipc_IServiceCreator_new(); }
 SvcObj* new_nim(void) { return nn_nim_detail_IShopServiceAccessServerInterface_new(); }
 SvcObj* new_aoc(void) { return nn_aocsrv_detail_IAddOnContentManager_new(); }
@@ -1379,6 +1580,7 @@ SvcObj* new_spl(void) { return nn_spl_detail_IGeneralInterface_new(); }
 SvcObj* new_btmu(void) { return nn_btm_IBtmUser_new(); }
 SvcObj* new_ngc(void) { return nn_ngc_detail_IService_new(); }
 SvcObj* new_ngct(void) { return nn_ngct_detail_IService_new(); }
+SvcObj* new_olsc(void) { return nn_olsc_srv_IOlscServiceForApplication_new(); }
 /* the functions a save state may hold of this file (state_fns.h) */
 STATE_FN_TABLE(g_misc_state_fns,
                STATE_FN("misc", nfc_user_destroy));

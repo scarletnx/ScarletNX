@@ -91,8 +91,45 @@ int snx_symlink(const char* target, const char* link);
    MoltenVK beside it (a game's runtime copy), the app bundle's Frameworks, or the framework in an iOS app. NULL
    elsewhere, and when its folders have none (the system's loader, which the app's own bundle finds by itself) */
 char* snx_vulkan_driver(const char* program);
-/* put the Vulkan driver program carries in folder, beside the program a game runs there: its copy of the runtime is
-   outside the app's bundle, where neither SDL's search nor a system's loader reaches the library. 0, or 1 with the
+/* the KosmicKrisp ICD JSON that a program's folders carry, beside the driver and the Vulkan loader it names (an app
+   built with SNX_KOSMICKRISP, or a game's runtime copy of it). NULL when it carries none */
+char* snx_vulkan_kosmickrisp_icd(const char* program);
+/* the Vulkan driver a macOS run picks (the vulkan_driver setting of a game): the library to load, and the ICD JSON
+   when the Vulkan loader must choose the driver for it */
+typedef struct {
+    char* library;    /* the library to load: the driver's, or the loader's that takes icd; NULL for the system's */
+    char* icd;        /* the ICD JSON for the loader (VK_DRIVER_FILES), NULL when library is the driver itself */
+    const char* name; /* "MoltenVK", "KosmicKrisp", or "the system's", for the log */
+    int instead;      /* 1 when it plays in place of the driver asked for, which the Mac has not */
+} SnxVulkanDriver;
+/* where a pick's files are looked for: this system's folders (snx_vulkan_driver_choose), or a test's */
+typedef struct {
+    const char* program;        /* beside it and in its app's Frameworks: what the app carries; NULL for none */
+    const char* prefixes[2];    /* each with lib/ and share/vulkan/icd.d: Homebrew's /opt/homebrew, /usr/local */
+    const char* sdks;           /* the folder of the LunarG Vulkan SDKs, $HOME/VulkanSDK; NULL for none */
+    const char* no_kosmickrisp; /* why KosmicKrisp cannot run on this system, NULL where it can */
+    const char* system_driver;  /* the driver every run takes on a system that is not a Mac's, which the setting does
+                                   not change, as the log names it; NULL on a Mac */
+    const char* driver_files;   /* the Vulkan loader's variable that names a driver, as NAME=value (VK_DRIVER_FILES,
+                                   else VK_ICD_FILENAMES); NULL where the environment names none */
+} SnxVulkanPlaces;
+/* The pick's files, found in at's folders. auto is the driver the environment names (driver_files) through the Vulkan
+   loader, else KosmicKrisp where the Mac has it and can run it (the program's, else an installed one), else the
+   MoltenVK the program's folders carry, else the system's loader; moltenvk and kosmickrisp are that one driver,
+   carried or installed on the Mac. 1 with the driver in out and reason naming it and why, for the log; where the Mac
+   has not the one asked for, auto's plays instead, with instead set and reason saying why and what plays; on another
+   system, the system's driver, which moltenvk and kosmickrisp also take, said as for a driver the Mac has not, and
+   auto said nothing of. 0 for a value that is no driver, with the reason */
+int snx_vulkan_driver_find(const SnxVulkanPlaces* at, const char* pick, SnxVulkanDriver* out, char* reason,
+                           size_t reason_size);
+/* 1 where KosmicKrisp runs on a Mac whose kernel is darwin (uname's release: 25.0.0 is macOS 26), else 0 with why */
+int snx_vulkan_kosmickrisp_runs(const char* darwin, char* why, size_t why_size);
+/* snx_vulkan_driver_find in this system's folders, for the program that runs */
+int snx_vulkan_driver_choose(const char* program, const char* pick, SnxVulkanDriver* out, char* reason,
+                             size_t reason_size);
+void snx_vulkan_driver_free(SnxVulkanDriver* driver);
+/* put the Vulkan drivers program carries in folder, beside the program a game runs there: its copy of the runtime is
+   outside the app's bundle, where neither SDL's search nor a system's loader reaches the libraries. 0, or 1 with the
    reason said. Nothing to do, and 0, where the system's loader serves or the program carries none */
 int snx_deploy_vulkan_driver(const char* program, const char* folder);
 int snx_path_within(const char* path, const char* parent);
@@ -236,6 +273,15 @@ int snx_abort_requested(void);
 SnxU64 snx_footprint(void);
 /* the processor time this process has used, every thread's together, in ns; 0 where the system does not tell */
 SnxU64 snx_process_cpu_ns(void);
+#define SNX_DEBUGGER_NAME 32 /* a debugger's name, as snx_debugger gives it, with its NUL */
+/* the debugger tracing this process now: 1 with its name into name (size bytes), ? where the system says one does but
+   not which (Windows, macOS and iOS) or its name can't be read; 0 for none, and where the system does not tell.
+   Linux and Android read /proc/self/status's TracerPid and the tracer's comm, FreeBSD the process's kinfo_proc. Any
+   thread */
+int snx_debugger(char* name, size_t size);
+/* the tracer's process id in the text of a Linux /proc/<pid>/status, its TracerPid line's: 0 for none, and for a text
+   without the line or a number on it */
+long snx_status_tracer(const char* status);
 /* a thread's time on the processors, which any thread of the process reads: snx_thread_clock gives the calling
    thread's clock, never 0, or 0 where the system gives none; snx_thread_cpu_ns the time its thread has run so far, in
    ns, into *ns, and -1 once the thread has ended; snx_thread_clock_close lets go of the clock (a handle on Windows),
@@ -246,6 +292,20 @@ void snx_thread_clock_close(SnxU64 clock);
 /* names the calling thread for the system, which debuggers, crash reports, the system's tools and snx_threads show:
    Linux and Android keep its first 15 bytes, FreeBSD 19, the others 63 (Windows from 10 1607; earlier ones none) */
 void snx_thread_name(const char* name);
+/* The nice a thread snx_thread_priority_low lowers gets above its own on Linux and Android. Their scheduler shares a
+   busy CPU by weight, 1.25 times less a step of nice (sched_prio_to_weight: 1024 at 0, 110 at 10, 15 at 19): at 10 a
+   game thread at 0 keeps 90% of a CPU it shares with one and is given it first when it wakes, while a pipeline the
+   frame waits on still gets a tenth of it, where at 19 it would crawl at 1.4%. Android's background threads take 10
+   too */
+#define SNX_THREAD_LOW_NICE 10
+/* The calling thread at the system's low priority, where it takes the CPUs only as far as the process's other threads
+   leave them free: on Linux and Android SNX_THREAD_LOW_NICE above the nice it has, 19 at most; on macOS and iOS the
+   utility QoS class; on Windows below normal; on FreeBSD the idle class, which needs root, the idletime group with
+   mac_priority, or security.bsd.unprivileged_idprio=1. 0 when it runs there now; -1 when the system refused it or has
+   none for a thread, with what was asked, the system's reason and the priority the thread runs at instead into why */
+int snx_thread_priority_low(char* why, size_t size);
+/* what snx_thread_priority_low asks of this system, for a log: "nice +10", "the utility QoS class"... */
+const char* snx_thread_priority_low_name(void);
 /* one of the process's threads, as snx_threads reads it */
 typedef struct {
     /* the system's id for it, with its start where the system gives an ended thread's id to a new one (Linux,
@@ -311,6 +371,8 @@ int snx_log_lines(const char* path, const char* text);
    file's bytes stay free to be read and written by anyone: POSIX's flock, which only other locks see, and on Windows a
    lock of one byte past any end the file reaches */
 int snx_lock_file(const char* path, intptr_t* lock);
+/* The same lock on a file that is there, never made: 0, 1, or -1 with errno, ENOENT when it is not there */
+int snx_lock_existing(const char* path, intptr_t* lock);
 void snx_unlock_file(intptr_t lock);
 /* f to offset from its start, past 2 GiB too (fseek takes a long, 32 bits on Windows); 0, or nonzero */
 int snx_seek(FILE* f, SnxU64 offset);
@@ -359,8 +421,13 @@ SnxU64 snx_addon_version(const char* entry);
 enum { SNX_ADDON_NONE, SNX_ADDON_UPDATE, SNX_ADDON_DLC, SNX_ADDON_PROGRAM };
 /* what the title id is to the game: SNX_ADDON_UPDATE for its patch (its ID with 0x800, as the console makes every
    patch's), SNX_ADDON_PROGRAM for another program of its application or that program's patch (snx_program_index),
-   SNX_ADDON_DLC for any other, SNX_ADDON_NONE for the game's own (or 0) */
+   SNX_ADDON_DLC for any other, SNX_ADDON_NONE for the game's own (or 0). A 3DS application's (0x00040000 its ID's high
+   half) has an update, its ID's low half under 0x0004000E, and a DLC, the low half's 28 bits under 0x0004008C, and
+   nothing else: its update's code is the game's own, run by the game's program, which has no other */
 int snx_addon_kind(SnxU64 game, SnxU64 id);
+/* 1 when the update id of game is recompiled into a program of its own, which plays it (a Switch game's); 0 for any
+   other add-on, and for a 3DS game's update, whose code its game's program reads */
+int snx_addon_own_program(SnxU64 game, SnxU64 id);
 /* An application of several programs (a collection whose menu starts each game, nn::oe::ExecuteProgram) numbers them
    from its own ID, as the console does: program i is the application's ID plus i, and that program's patch the
    update's ID plus i. The index is a byte (fs's ProgramIndexMapInfo), 0 the application's own program */

@@ -247,9 +247,10 @@ static void replay(void* ctx, u32 op, u64 payload, u32 size) {
         case OP_REPORT_COUNTER: {
             /* {counter, timestamp}, written in order with the stream, as the 3D engine's reports are (a render enable
                later in the same submission reads it, maxwell/engines.c): samples passed as the renderer counts the
-               queue's draws, else a made-up count where it can't count; the timestamp types put 0 in the counter, as the game's driver writes them (a report
-               of payload 0). One game makes each conditional clear of a target run once a frame that way: it sets the
-               counter to 1, clears when it differs from the word 16 bytes on, and then reports a timestamp over it */
+               queue's draws, else a made-up count where it can't count; the timestamp types put 0 in the counter, as
+               the game's driver writes them (a report of payload 0). One game makes each conditional clear of a target
+               run once a frame that way: it sets the counter to 1, clears when it differs from the word 16 bytes on,
+               and then reports a timestamp over it */
             const NvnPReportCounter* r = NVN_OBJ(const NvnPReportCounter, payload);
             u8 v[16];
             u64 ticks = guest_gpu_ticks();
@@ -266,8 +267,8 @@ static void replay(void* ctx, u32 op, u64 payload, u32 size) {
         }
         default:
             if (!nvn_draw_record(&q->d, op, payload, size) && !nvn_copy_record(op, payload, size, q->stride) &&
-                !(g_nvn.replay.unknown >> op & 1)) {
-                g_nvn.replay.unknown |= 1ull << op; /* each once */
+                !(g_nvn.replay.unknown[op / 64 % 2] >> op % 64 & 1)) {
+                g_nvn.replay.unknown[op / 64 % 2] |= 1ull << op % 64; /* each once */
                 LOG("nvn: records of op %u aren't replayed yet\n", op);
             }
             break;

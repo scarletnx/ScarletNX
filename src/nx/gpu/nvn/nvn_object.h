@@ -116,6 +116,9 @@ void nvn_program_c0(u64 serial, u8 c0[NVN_C0_RECORD]);
 DsMeshKey nvn_program_mesh(u64 serial);
 u32 nvn_program_subroutine(u64 program, i32 stage);
 int nvn_subroutine_apply(u32 linkage, i32 first, i32 count, const i32* values);
+/* whether a linkage map's fields are what its bytes say, every offset and target inside them, as SetSubroutineLinkage
+   checks a map before it keeps it: a save state's are checked again (gpu/nvn/nvn_save.c) */
+int nvn_sub_linkage_valid(const NvnSubLinkage* l);
 /* the game's driver resolved nvnDeviceGetInteger to func: its answers are read from its code (gpu/nvn/nvn_driver.c)
    before the game can ask */
 void nvn_device_driver(u64 func);

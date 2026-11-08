@@ -9,6 +9,7 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | --- | --- |
 | FFmpeg | LGPL-2.1-or-later |
 | dav1d (FFmpeg's AV1 decoder for the Ounce's movies) | BSD-2-Clause |
+| zlib 1.3.2 (in FFmpeg's PNG decoder and encoder, `cmake/dependencies.cmake`) | zlib |
 | libvpx's VP9 test vectors (the WebM project's test data, downloaded for the `nvdec_vp9_*` tests, not shipped) | BSD-3-Clause |
 | jsmolka's gba-tests (test ROMs, downloaded for the `agb_gba_*` tests, not shipped) | MIT |
 | hactool / ConvertUTF (`src/nx/runtime/driver/hactool`, with ScarletNX's changes) | ISC / Unicode license |
@@ -25,20 +26,27 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | jemalloc (the `scarletnx` program's malloc, on Android `libscarletnx-run.so`'s, with `SNX_JEMALLOC`) | BSD-2-Clause |
 | Noto Sans JP, SC, TC and KR Subsets (the shared fonts' stand-ins, fetched by `cmake/dependencies.cmake`, made by `tools/subset_fonts.py` from Google Fonts commit `e7db6ca603fd4862010383ff17ffd6cc4ffac1c0`) | SIL OFL 1.1 ([text](../dist/licenses/Noto/OFL.txt)) |
 | yuzu's controller button glyphs (`font_nintendo_extended.cpp`, as Eden carries it) | GPL-2.0-or-later |
-| The 3DS system archives' open stand-ins (`cmake/ctr_system_archives.cmake`): the Mii data, country list, shared font and bad word list B3n30/citra_system_archives makes (Weiyi Wang's generators), as Azahar carries them | GPL-2.0-or-later |
+| The 3DS system archives' open stand-ins (`cmake/ctr_system_archives.cmake`): the country list, shared font and bad word list B3n30/citra_system_archives makes (Weiyi Wang's generators), as Azahar carries them; the layout of the Mii data's `CFL_Res.dat` and its RomFS (`mii/mii.py`, `mii/mii-archive-format.md`, `common/romfs.py`), which `src/common/utilities/mii_model.c` writes our own parts in | GPL-2.0-or-later |
 | Montserrat and GNU Unifont 10.0.05, the glyphs of the 3DS shared font's stand-in | OFL-1.1 ([text](../dist/licenses/Montserrat/OFL.txt)) / GPL-2.0-or-later with the GNU font embedding exception |
 | LZ4 (the library, `lib/`) | BSD-2-Clause |
 | xxHash 0.8.4 (XXH3 and its x86 dispatcher, the renderer's content hashes: `src/nx/gpu/vk/xxh3.c`) | BSD-2-Clause |
 | Vulkan-Headers | Apache 2.0 |
 | volk / Vulkan Memory Allocator | MIT |
+| KosmicKrisp (Mesa's Vulkan driver on Metal, which the macOS app carries with `SNX_KOSMICKRISP`) | MIT |
+| The Vulkan Loader (the macOS app carries it for KosmicKrisp) | Apache 2.0 |
 | SDL3 | zlib |
 | The AppImage's runtime (uruntime) and launcher (sharun, with Anylinux-sharun's `anylinux.so` and cross-libc-dlopen) | MIT |
 | Tracy (the profiler client, built only with `SNX_TRACY`) | BSD-3-Clause |
 | ENet / zstd (an Eden room's connection and its datagrams, `src/common/network/net_room.c`) | MIT / BSD-3-Clause |
 | miniz 3.1.2 (the zip around the launcher's Share Log, `src/gui/logzip.c`) | MIT |
-| libdeflate 1.26 (every deflate: Share Log's, the Vita driver's VPKs and eboot segments) | MIT |
+| libdeflate 1.26 (every deflate: Share Log's, the Vita driver's VPKs and eboot segments, the Android driver's APKs) | MIT |
+| HarfBuzz 15.0.0 (the Android driver's text shaping, `src/android/hwui/text.c`) | MIT ("Old MIT") |
+| SQLite 3.54.1 (the Android driver's `android.database.sqlite`, `src/android/db/sqlite_jni.c`) | Public domain |
+| OpenJDK (the JVM that the Android driver loads at run time from the installed JDK, not shipped) | GPL-2.0 with the Classpath Exception |
 | libadrenotools / liblinkernsbypass (the GPU drivers a player adds on Android arm64, `cmake/adrenotools.cmake`) | BSD-2-Clause |
 | lunasvg / plutovg (the splash's SVGs and the user's picture) | MIT / MIT, with FreeType's rasterizer and stroker (FreeType License) and stb (MIT or public domain) |
+| The on-screen controls' line skin (`dist/controls/skins/line`), drawn for ScarletNX by `scripts/build-skins.py` after the look of libretro common-overlays' flat retropad (CC-BY-4.0; none of its files are used) | GPL-3.0-or-later |
+| The on-screen controls' yorha skin (`dist/controls/skins/yorha`), drawn for ScarletNX by `scripts/build-skins.py` in the launcher's `yorha` theme's colours and lines, with the menus' font (SeaBIOS `vgafont16`, below) | GPL-3.0-or-later |
 | GUI menu icons (`src/gui/icons.hex`), drawn after Lucide 1.61.0's (some derived from Feather) | GPL-3.0-or-later, after Lucide's ISC and Feather's MIT (in `src/gui/FONT-NOTICE.txt`) |
 | GUI VGA BIOS font (SeaBIOS `vgafont16`, originally Joseph Gil's font collection) | Public domain |
 | GUI Latin letters past CP437 (GNU Unifont 18.0.01's 8x16 glyphs, `src/gui/unifont-latin.hex`, fitted to the VGA font) | GPL-2.0-or-later with the GNU font embedding exception, or OFL-1.1 |
@@ -61,15 +69,25 @@ a source keep that source's copyright lines and license, most with the revision 
 | `src/3ds/services/ldr.c` and `ldr.h` (ldr:ro), `cro.c` and `cro.h` (the CRO format, its relocations, imports and exports) | Azahar (Citra) at `a4b335e`: `src/core/hle/service/ldr_ro/ldr_ro.cpp` and `ldr_ro.h`, `cro_helper.cpp` and `cro_helper.h`; original code copyright 2014 to 2025 Citra Emulator Project / Azahar Emulator Project | GPL-2.0-or-later |
 | `src/3ds/services/font.c` (APT's shared font: the LZ11 decompression, the CFNT relocation and the address it is relocated to) | Azahar (Citra) at `a4b335e` (`core/hle/service/apt/apt.cpp`, `core/hle/service/apt/bcfnt/bcfnt.cpp`) | GPL-2.0-or-later |
 | `src/3ds/services/ir.c` (ir:USER: the shared header and receive queue layout, the events and the answers with no accessory) | Azahar (Citra) at `6e42de8`: `core/hle/service/ir/ir_user.cpp` and `ir_user.h`; original code copyright 2015 to 2025 Citra Emulator Project / Azahar Emulator Project | GPL-2.0-or-later |
+| `src/3ds/services/irrst.c` (ir:rst: its commands, the shared memory's layout, the samples' pace and the C-stick's rim) | Azahar (Citra) at `6e42de8`: `core/hle/service/ir/ir_rst.cpp` and `ir_rst.h`; original code copyright 2015 to 2025 Citra Emulator Project / Azahar Emulator Project | GPL-2.0-or-later |
+| `src/3ds/services/csnd.c` (csnd:SND: its commands, the command lists, the fades, the state written back), `src/3ds/audio/csnd.c` (the CSND hardware: its channels, formats, loops, interpolation and mix) and `src/3ds/audio/mix.c` (CSND's frames mixed into the DSP's) | Azahar (Citra) at `6e42de8`: `core/hle/service/csnd/csnd_snd.cpp` and `csnd_snd.h`, `audio_core/csnd.cpp` and `csnd.h`, `audio_core/dsp_interface.cpp`; original code copyright 2014 to 2026 Citra Emulator Project / Azahar Emulator Project | GPL-2.0-or-later |
+| `src/3ds/services/cam.c` (cam:u: its commands, the ports' and cameras' states, the transfer arithmetic, the latencies and the blank camera's frames) | Azahar (Citra) at `6e42de8`: `core/hle/service/cam/cam.cpp`, `cam.h` and `cam_u.cpp`, `core/frontend/camera/blank_camera.cpp`; original code copyright 2015 to 2025 Citra Emulator Project / Azahar Emulator Project | GPL-2.0-or-later |
+| `src/3ds/services/mic.c` (mic:u: its commands, their replies and the settings kept, with no input device) | Azahar (Citra) at `6e42de8`: `core/hle/service/mic/mic_u.cpp` and `mic_u.h`, `audio_core/null_input.h`; original code copyright 2014 to 2026 Citra Emulator Project / Azahar Emulator Project | GPL-2.0-or-later |
 | `src/vita/hle/gxm.c` (sceGxm's state and its calls' semantics), `src/vita/gpu/usse.c` and `usse_constants.inc` (the USSE shader translator), `src/vita/gpu/gxp.h` (the GXP program layout), `src/vita/gpu/texture.h` (SceGxmTexture's words), `src/vita/gpu/swizzle.glsl` and `tests/glsl/vita_swizzle_glsl.cpp` (the swizzled and tiled texture layouts), `texture_levels` in `src/vita/gpu/render.c` (where a texture's mipmaps lie), `src/vita/hle/audiodec.c` and `videodec.c` (the decoders' structures and their ATRAC9 configuration word), `src/vita/hle/trophy.c` (the trophy calls' error codes and unlock rules) | Vita3K (`modules/SceGxm/`, `shader/`, `gxm/`, `renderer/src/texture/format.cpp`, `modules/SceAudiodec/`, `modules/SceVideodec/`, `modules/SceNpTrophy/SceNpTrophy.cpp`) | GPL-2.0-or-later |
 | `src/vita/hle/ngs.c` (SceNgs's voices, players, patches and master buss, the voice states and the parameter blocks) | Vita3K (`modules/SceNgsUser/SceNgs.cpp`, `ngs/`) | GPL-2.0-or-later |
 | `hevag_decode` and `hevag_coefficients` in `src/vita/hle/ngs.c` (HE-ADPCM) | Vita3K (`codec/src/pcm.cpp`), after vgmstream's HEVAG decoder | GPL-2.0-or-later, vgmstream's ISC-style license |
+| `src/vita/hle/fiber.c` (SceFiber's switching and its result values, where the vitasdk headers are silent) | Vita3K (`SceFiber.cpp`) | GPL-2.0-or-later |
+| `src/vita/hle/kernel.c` (the signals of a thread: a wait that ends at once for a signal sent before it) | Vita3K (`ThreadState::wait_for_signal` and `send_signal`) | GPL-2.0-or-later |
+| `src/vita/hle/hle.c` (the values of SceLibc's `__sce_libcparam` and ScePerf's `_pLibPerfCaptureFlagPtr`) | Vita3K (the `VAR_EXPORT`s of those modules) | GPL-2.0-or-later |
+| `variable_references` in `src/vita/loader/image.c` (the form of a variable import's reference entries) | Vita3K (`EntryFormat1Alt`) | GPL-2.0-or-later |
 | `src/vita/hle/` (the NIDs and the error codes) | vita-headers (`db/`, `include/psp2/`) | MIT |
 | `src/nx/runtime/nce/nce_patch.c` (the instructions that NCE patches, and the ordered forms of the exclusives) | Eden and yuzu (`src/core/arm/nce/patcher.cpp`, `instructions.h`) | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/3ds/gpu/shader.c` and `shader.h` (the instruction fields) | nihstro | BSD-3-Clause |
 | `src/agb/` (the board and its memory, the APU, the PPU, the HLE BIOS, the cartridge and the runner: the files whose header names the mGBA contributors) | mGBA | MPL-2.0 |
 | `src/common/cpu/` (the recompiler's instruction semantics: `recompiler/llvm/ir_int.c`, `ir_ldst.c`, `ir_fpu.c`, `ir_vec.c`, `ir_vec_fp.c` and `ir_vec_crypto.c`, the integer, branch, system, load/store, scalar floating-point and AdvSIMD emitters ported from `translate-a64.c`'s `trans_*` functions, `gengvec.c`, `vec_helper.c` and `translate.c`'s `asimd_imm_const`, and the A32/T32 block compiler) | QEMU's `target/arm/tcg/` | LGPL-2.1-or-later |
-| `src/common/cpu/aarch64/decode/a64.decode` (the A64 encodings, unmodified, from commit `a19f59a`, which `tools/a64dec` generates the decoder from; [README](../src/common/cpu/aarch64/decode/README.md)) | QEMU's `target/arm/tcg/a64.decode` | LGPL-2.1-or-later |
+| `src/common/cpu/aarch64/decode/a64.decode` (the A64 encodings, unmodified, from commit `a19f59a`, which `tools/decodetree` generates the decoder from; [README](../src/common/cpu/aarch64/decode/README.md)) | QEMU's `target/arm/tcg/a64.decode` | LGPL-2.1-or-later |
+| `src/common/cpu/arm/decode/` (`a32.decode`, `a32-uncond.decode`, `t32.decode`, `t16.decode`: the A32, T32 and T16 encodings, unmodified, from commit `a19f59a`, which `tools/decodetree` generates the decoders from; [README](../src/common/cpu/arm/decode/README.md)) and `src/common/cpu/arm/decodetree.h` (the bit operations and the decoders' `!function=` helpers) | QEMU's `target/arm/tcg/` (`*.decode`, `translate.c`) and `include/qemu/bitops.h` | LGPL-2.1-or-later |
+| `tools/decodetree/decodetree.c` (the `.decode` language, its parse, the decode tree and the generated C) | QEMU's `scripts/decodetree.py` | LGPL-2.1-or-later |
 | `src/common/cpu/aarch64/` (`cpu.h`, `cpu_helpers.c` and `helpers/`, the generated code's FP, SIMD, integer and crypto helpers) | QEMU's `target/arm/` and its softfloat, with the SoftFloat-2a notice | LGPL-2.1-or-later, SoftFloat-2a, BSD |
 | `src/common/cpu/aarch64/helpers/vector.c` (the SM4 S-box, GB/T 32907-2016's table) | OpenSSL's `crypto/sm4/sm4.c` | Apache 2.0 |
 | `src/nx/gpu/gpu.c` (the block linear offset), the register layouts of the 3D and compute engines in `tests/support/maxwell_3d_regs.h` and `kepler_compute_regs.h` with their translation in `tests/support/mx_state.c`, and the DMA and 2D engines' CPU references in `tests/support/dma_ref.c` and `fermi2d_ref.c` | Eden and yuzu (`video_core/textures/decoders.cpp`, `engines/`: `maxwell_3d.h`, `kepler_compute.h`, `maxwell_dma.cpp`, `sw_blitter/`) | GPL-3.0-or-later, GPL-2.0-or-later |
@@ -92,6 +110,9 @@ a source keep that source's copyright lines and license, most with the revision 
 | `tests/ipc_message.c` (the HIPC, CMIF and TIPC request builders) | libnx | ISC |
 | `src/common/utilities/gpu_driver.c`, `src/gui/gpu_driver.c`, `src/gui/gpu_driver_fetch.c` and `src/nx/runtime/platform/gpu_driver_load.c` (GPU driver packages: meta.json's fields and size, the zip checked before it is unpacked, the devices that load one, libadrenotools' call; Freedreno Settings' presets; Download Driver's repositories, their releases and the recommendation by Adreno model) | Eden and yuzu (`src/android/app/src/main/java/org/yuzu/yuzu_emu/utils/GpuDriverHelper.kt`, `GpuDriverMetadata.kt`, `NativeFreedrenoConfig.kt`, `fragments/DriverFetcherFragment.kt`, `jni/native.cpp`'s `InitializeGpuDriver` and `SupportsCustomDriver`), the model only | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/gui/i18n.c` (`snx_mo_lookup`, the reader of the menu's catalogs; notice in [`src/gui/MUSL-NOTICE.txt`](../src/gui/MUSL-NOTICE.txt)) | musl (`src/locale/__mo_lookup.c`) | MIT |
+| The files of `src/android/framework/` whose header names the Android Open Source Project (exception messages, and parts of method bodies) | The Android Open Source Project's source of the same classes, as the Android SDK's sources for API level 36 carry it | Apache 2.0 ([text](../dist/licenses/AOSP/LICENSE.txt), [notice](../dist/licenses/AOSP/NOTICE.txt)) |
+| `src/android/framework/android/icu/text/PluralRules.java` (each language's cardinal plural rules) | Unicode CLDR (`common/supplemental/plurals.xml`, version 47, as OpenJDK carries it) | Unicode License v3 ([text](../dist/licenses/Unicode/LICENSE.txt)) |
+| `src/android/framework/org/xmlpull/v1/XmlPullParserException.java` (the message its constructor makes) | XmlPull's API (Stefan Haustein and Aleksander Slominski), as the Android Open Source Project carries it | Public domain |
 | `dist/controls/*.xml`, and `controls.png` made from them | yuzu's Android overlay, as Eden and rEden carry it | GPL-3.0-or-later |
 
 Dynarmic (0BSD) and its GPL-3.0-or-later fork were consulted for the recompiler's instruction semantics. No code was

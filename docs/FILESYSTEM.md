@@ -74,17 +74,22 @@ IPC requests allow 0x300-byte paths excluding NUL. Host limits also apply.
 - Readonly RAM copies: missing system archives become valid empty images at `system/archives/<16-hex-id>.romfs`. No
   persistent host copy. One there in the data directory is served instead.
 - `0100000000000802` (MiiModel), the Mii parts' shapes and textures a game that draws Miis builds their heads from, is
-  generated when absent (`hle/filesystem/mii_model.c`): every shape a parametric surface (the head and the face's front
-  per faceline, 24 hair forms in normal and cap form, tails for the twin-tail and ponytail styles, noses, a beard,
-  the caps, ties, bands, bow and clip of the hat parts, the noseline's and the glasses' quads) and every texture
-  drawn from distance functions (eyes, brows, mouths, glasses, mustaches, beards, lines, make-up, the mole, the
-  noselines, the hats), none of the console's own. Its six files
+  generated when absent (`hle/filesystem/mii_model.c`), every Mii in a plush's look: a wide round head, thick hair
+  falling straight to the jaw, big eyes set low and the mouth close under them (one map of the face takes the features
+  the SDK composes there, on the mask, on the faceline's texture and in the launcher's picture). Every shape is a
+  parametric surface (the head and the face's front
+  per faceline, 24 hair forms in normal and cap form whose edge ends in pointed locks, tails for the twin-tail and
+  ponytail styles (wide flat locks, high or low, the side ponytail and the one at the back too), the curled twin tails as chunky drills, one of
+  them with an ahoge, noses, a beard, the caps, ties, bands, bow and clip of the hat parts, the noseline's and the
+  glasses' quads) and every texture drawn from distance functions (eyes with a
+  catchlight, brows, mouths, glasses, mustaches, beards, lines, make-up, the mole, the noselines, the hats), none of
+  the console's own. Its six files
   (`NXTexture{Low,Mid}{Linear,SRGB}.dat`, `Shape{Mid,High}.dat`, the SRGB copies sharing their Linear ones' bytes, each
   shape with as many quads as fit the console's largest part of its kind in that file) keep the console's
   layout: the part tables with each kind's largest part and alignment, the console's list of parts (which are
   absent), each texture in its format (BC4, BC5 or ASTC 4x4), size and levels, block linear, and each part a zlib
   stream, deflated as the console's are. The SDK reads a file whole into a heap the game sizes for the console's, so
-  none is bigger than the console's of its name. It is about 1.2 MiB, made at the game's first open of it. The
+  none is bigger than the console's of its name. It is about 1.8 MiB, made at the game's first open of it. The
   player's own firmware's (its RomFS as `system/archives/0100000000000802.romfs`) is still served first and looks like
   the console.
 - `0100000000000823` (NgWord2) is the exception: when absent, it is synthesized with firmware 11.0.1's 52-file

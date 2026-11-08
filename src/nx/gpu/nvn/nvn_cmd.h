@@ -42,6 +42,7 @@ typedef struct {
     u64 cb; /* 0: a free slot */
     u64 start, cursor, limit, seen, rec;
     u32 seen_serial, block, pending, grow;
+    u32 command_callback; /* independent of the control-memory callback switch */
     u64 ring_seen;
     u32 ring_recordings, ring_serial, seg_hint;
 } NvnCtl;
@@ -62,7 +63,14 @@ typedef struct {
     NvnSmallFree* given;
     u32 first, n, cap;
 } NvnSmallClass;
-#define NVN_SPILL_BUCKETS 4096 /* the pieces by the 4 KiB page of their anchor */
+/* The pieces by the 256 bytes that hold their anchor, hashed. Short recordings put many pieces on a page of command
+   memory, and the pools lie gigabytes apart: by the page and modulo the table, one game walked 519 of them each time a
+   command buffer looked at what it had written, 13 percent of them in its range */
+#define NVN_SPILL_BUCKETS_LOG2 14
+#define NVN_SPILL_BUCKETS      (1u << NVN_SPILL_BUCKETS_LOG2)
+#define NVN_SPILL_GRANULE      8
+#define NVN_SPILL_PART_BUCKET(part) ((u32)(((u64)(part) * 0x9E3779B97F4A7C15ull) >> (64 - NVN_SPILL_BUCKETS_LOG2)))
+#define NVN_SPILL_BUCKET(a)    NVN_SPILL_PART_BUCKET((u64)(a) >> NVN_SPILL_GRANULE)
 /* the file's state, g_nvn.cmd (gpu/nvn/nvn_state.h), under the lock (the game's threads record into several command
    buffers at once): the segments (append only), the pieces' slots and their buckets, the pieces in use (np), the slots
    ever taken and the first free one, the serial of the last piece cut, the segment the last cut came from, the

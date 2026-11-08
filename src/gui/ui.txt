@@ -24,6 +24,9 @@
 		[button]"Load GBA ROM" {
 			icon = gamepad
 		}
+		[button]"Load Android APK/XAPK" {
+			icon = package-plus
+		}
 		[button]"Install Keys" {
 			icon = key-round
 		}
@@ -126,8 +129,17 @@
 		android.row_height = 48px
 	}
 }
-# the OK under the files of a box over the screen (what an older version left, what Clean Old Settings did): any key,
-# button or finger closes the box before a row is hit, so the row's own action is none (@)
+# F1's box (a pad's Select) over the screen: a row each key of the screen shown says, its icon, the keys as the foot
+# draws them and what they do, the OK of Files under them. Up/Down and the wheel go over the rows that do not fit, any
+# other key, button or finger closes the box before a row is hit, so a row does nothing: not a finger's to tap, a
+# phone's are a computer's height
+[scene]Help {
+	[list]Rows {
+		max_rows = 64
+	}
+}
+# the OK under the files of a box over the screen (what an older version left, what Clean Old Settings did) and under
+# F1's keys: any key, button or finger closes the box before a row is hit, so the row's own action is none (@)
 [scene]Files {
 	[list]Ok {
 		max_rows = 1

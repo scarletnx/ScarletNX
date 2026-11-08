@@ -2,7 +2,8 @@
 # Copyright 2026 the ScarletNX contributors
 # The board, loader and memory libraries need neither the NX runtime nor an Azahar build tree. The driver links LLVM
 # for its compiler, and its presenter and audio output use SDL3 and the Vulkan headers.
-add_library(snx_ctr_board STATIC board/board.c)
+add_library(snx_ctr_board STATIC board/board.c board/clock.c)
+target_link_libraries(snx_ctr_board PUBLIC scarletnx-common) # the clock's host time (snx_seconds)
 set_target_properties(snx_ctr_board PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_compile_options(snx_ctr_board PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 add_library(snx_ctr_memory STATIC memory/memory.c memory/host.c)
@@ -10,14 +11,15 @@ target_link_libraries(snx_ctr_memory PUBLIC snx_ctr_board scarletnx-common)
 add_library(snx_ctr_cpu STATIC cpu/cpu.c)
 target_link_libraries(snx_ctr_cpu PUBLIC snx_ctr_memory)
 add_library(snx_ctr_loader STATIC loader/loader.c loader/cia.c loader/ncsd.c loader/ncch.c loader/romfs.c loader/blz.c
-            loader/tar.c loader/z3ds.c loader/image.c loader/mapped.c loader/decrypt.c)
+            loader/tar.c loader/z3ds.c loader/image.c loader/mapped.c loader/decrypt.c loader/dlc.c)
 # a game read where it lies is mapped as the indexed filesystem maps the files it shares (plat_file_share)
 target_link_libraries(snx_ctr_loader PUBLIC scarletnx-common scarletnx-filesystem OpenSSL::Crypto snx_zstd)
 target_compile_definitions(snx_ctr_loader PRIVATE _FILE_OFFSET_BITS=64 _CRT_SECURE_NO_WARNINGS)
 add_library(snx_ctr_process STATIC runtime/process.c kernel/kernel.c kernel/thread.c aot/dispatch.c ipc/ipc.c
             services/srv.c services/fs.c services/apt.c services/font.c services/ptm.c services/hid.c services/romfs.c
             services/file.c services/gsp.c services/dsp.c services/cfg.c services/system.c services/am.c services/y2r.c
-            services/ldr.c services/cro.c services/swkbd.c services/mii_selector.c services/ir.c)
+            services/ldr.c services/cro.c services/swkbd.c services/mii_selector.c services/ir.c services/irrst.c
+            services/mic.c services/cam.c services/csnd.c)
 # the system archives' stand-ins (cmake/ctr_system_archives.cmake), which services/fs.c serves through the NCCH archive
 target_sources(snx_ctr_process PRIVATE "${PROJECT_BINARY_DIR}/generated/ctr_system_archives.c")
 target_sources(snx_ctr_process PRIVATE services/uds.c)
@@ -27,7 +29,7 @@ add_library(snx_ctr_gpu STATIC gpu/present.c input/input.c gpu/transfer.c gpu/y2
             gpu/vk/vsgen.c gpu/vk/fsgen.c gpu/vk/render.c gpu/pica.c gpu/shader.c gpu/draw.c "${volk_SOURCE_DIR}/volk.c")
 target_include_directories(snx_ctr_gpu PUBLIC "${volk_SOURCE_DIR}")
 target_link_libraries(snx_ctr_gpu PUBLIC snx_ctr_memory scarletnx-common Vulkan::Headers SDL3::SDL3 snx_settings snx_build_info
-                                         snx_window_icon snx_vk_common ${CMAKE_DL_LIBS})
+                                         snx_window_icon snx_vk_common snx_pad_sdl ${CMAKE_DL_LIBS})
 set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
 # the GPU's compute shaders, compiled at build time (cmake/glsl.cmake)
 include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
@@ -41,14 +43,14 @@ endforeach()
 add_library(snx_ctr_gpu_reference STATIC gpu/raster.c gpu/lighting.c gpu/texture.c)
 target_link_libraries(snx_ctr_gpu_reference PUBLIC snx_ctr_gpu m)
 # the HLE DSP, its SDL3 output and the AAC decoder of its binary pipe
-add_library(snx_ctr_audio STATIC audio/dsp.c audio/source.c audio/mixers.c audio/output.c)
+add_library(snx_ctr_audio STATIC audio/dsp.c audio/source.c audio/mixers.c audio/output.c audio/mix.c audio/csnd.c)
 target_link_libraries(snx_ctr_audio PUBLIC snx_ctr_memory SDL3::SDL3)
 target_link_libraries(snx_ctr_audio PRIVATE FFmpeg::avcodec)
 # snx_settings_runtime: g_settings and the 3DS debug table (g_ctr_debug_ini, src/nx/runtime/settings.txt)
 target_link_libraries(snx_ctr_process PUBLIC snx_ctr_cpu snx_ctr_loader scarletnx-filesystem snx_ctr_gpu snx_ctr_audio
                       snx_settings_runtime)
 include("${PROJECT_SOURCE_DIR}/cmake/swipc.cmake")
-snx_swipc(snx_ctr_process CTR ROOT "${CMAKE_CURRENT_SOURCE_DIR}" FILES services/srv.swipc services/fs.swipc services/apt.swipc services/ptm.swipc services/hid.swipc services/file.swipc)
+snx_swipc(snx_ctr_process CTR ROOT "${CMAKE_CURRENT_SOURCE_DIR}" FILES services/srv.swipc services/fs.swipc services/apt.swipc services/ptm.swipc services/hid.swipc services/irrst.swipc services/file.swipc)
 foreach(target snx_ctr_memory snx_ctr_loader snx_ctr_cpu snx_ctr_process snx_ctr_gpu snx_ctr_gpu_reference snx_ctr_audio)
     set_target_properties(${target} PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
     target_compile_options(${target} PRIVATE -Wall -Wextra -Werror=missing-prototypes)

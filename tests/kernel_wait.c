@@ -93,7 +93,7 @@ static void signal_second(KThread* t) {
     kevent_signal(g_ev[1]);
 }
 static void cancel_it(KThread* t) {
-    if (t->wait_kind == 1 && !t->woken) wake(t, R_CANCELLED); /* svc.c's CancelSynchronization */
+    if (t->wait_kind == 1 && !t->woken) wake(t, SNX_RC_SVC_CANCELLED); /* svc.c's CancelSynchronization */
 }
 /* the writable end of an svcCreateEvent pair: it can't be waited on */
 static KObj g_wevent = {KO_WEVENT, 1, 0, "writable event"};
@@ -122,15 +122,15 @@ int main(void) {
     CHECK(h[0] && h[1] && h[0] != h[1] && g_ev[0]->o.refs == 1);
 
     /* no handles: a sleep that never reads the array (the address is junk), named "no handles" in the dump */
-    CHECK(svc_wait_sync(&g_self, 0xFFFFFFFFFFFFull, 0, 0, &idx) == R_TIMEOUT);
+    CHECK(svc_wait_sync(&g_self, 0xFFFFFFFFFFFFull, 0, 0, &idx) == SNX_RC_SVC_TIMED_OUT);
     g_waits = 0;
-    CHECK(svc_wait_sync(&g_self, 0xFFFFFFFFFFFFull, 0, 1000, &idx) == R_TIMEOUT && g_waits == 1);
+    CHECK(svc_wait_sync(&g_self, 0xFFFFFFFFFFFFull, 0, 1000, &idx) == SNX_RC_SVC_TIMED_OUT && g_waits == 1);
     CHECK(!strcmp(g_seen_name, "no handles") && g_self.wait_kind == 0);
     g_during = cancel_it;
-    CHECK(svc_wait_sync(&g_self, 0, 0, -1, &idx) == R_CANCELLED && !g_self.cancel);
+    CHECK(svc_wait_sync(&g_self, 0, 0, -1, &idx) == SNX_RC_SVC_CANCELLED && !g_self.cancel);
 
     /* more than 64 handles, and handles that name nothing to wait on: the whole wait fails, no reference kept */
-    CHECK(kernel_timeouted_wait(65, 0, &idx) == R_OUTOFRANGE);
+    CHECK(kernel_timeouted_wait(65, 0, &idx) == SNX_RC_SVC_OUT_OF_RANGE);
     hw = h_new(&g_wevent);
     ht = h_new(&g_self.o);
     {
@@ -144,7 +144,7 @@ int main(void) {
             two[1] = bad[i];
             put_handles(two, 2);
             refs = g_ev[0]->o.refs;
-            CHECK(kernel_timeouted_wait(2, 0, &idx) == R_BADHANDLE && g_ev[0]->o.refs == refs);
+            CHECK(kernel_timeouted_wait(2, 0, &idx) == SNX_RC_SVC_INVALID_HANDLE && g_ev[0]->o.refs == refs);
         }
     }
 
@@ -157,8 +157,8 @@ int main(void) {
     kevent_clear(g_ev[0]);
     kevent_clear(g_ev[1]);
     g_self.cancel = 1;
-    CHECK(kernel_timeouted_wait(2, 0, &idx) == R_TIMEOUT && g_self.cancel == 1);
-    CHECK(kernel_timeouted_wait(2, 1000, &idx) == R_CANCELLED && g_self.cancel == 0);
+    CHECK(kernel_timeouted_wait(2, 0, &idx) == SNX_RC_SVC_TIMED_OUT && g_self.cancel == 1);
+    CHECK(kernel_timeouted_wait(2, 1000, &idx) == SNX_RC_SVC_CANCELLED && g_self.cancel == 0);
 
     /* signaled while waiting: the index of the object that ended the wait; references only for the wait */
     refs = g_ev[1]->o.refs;
@@ -166,8 +166,8 @@ int main(void) {
     CHECK(kernel_timeouted_wait(2, -1, &idx) == 0 && idx == 1 && g_ev[1]->o.refs == refs && !g_ev[1]->o.nwait && !g_ev[0]->o.nwait);
     kevent_clear(g_ev[1]);
     g_during = cancel_it;
-    CHECK(kernel_timeouted_wait(2, -1, &idx) == R_CANCELLED && idx == ~0u && !g_self.cancel);
-    CHECK(kernel_timeouted_wait(2, 500, &idx) == R_TIMEOUT && idx == ~0u);
+    CHECK(kernel_timeouted_wait(2, -1, &idx) == SNX_RC_SVC_CANCELLED && idx == ~0u && !g_self.cancel);
+    CHECK(kernel_timeouted_wait(2, 500, &idx) == SNX_RC_SVC_TIMED_OUT && idx == ~0u);
 
     /* a join: the thread first among the handles is named in the dump */
     {
@@ -175,7 +175,7 @@ int main(void) {
         two[0] = ht;
         two[1] = h[0];
         put_handles(two, 2);
-        CHECK(kernel_timeouted_wait(2, 1000, &idx) == R_TIMEOUT && g_seen_tid == 0x60 && !g_self.wait_tid);
+        CHECK(kernel_timeouted_wait(2, 1000, &idx) == SNX_RC_SVC_TIMED_OUT && g_seen_tid == 0x60 && !g_self.wait_tid);
         g_self.state = 2; /* it has exited */
         CHECK(kernel_timeouted_wait(2, 1000, &idx) == 0 && idx == 0);
         g_self.state = 0;
@@ -187,16 +187,16 @@ int main(void) {
         CHECK(p && p->type == KO_PROCESS && h_get_ref(H_CUR_THREAD, KO_THREAD) == &g_self.o);
         kobj_unref(p);
         kobj_unref(&g_self.o);
-        CHECK(h_close(H_CUR_PROC) == R_BADHANDLE && h_close(H_CUR_THREAD) == R_BADHANDLE);
+        CHECK(h_close(H_CUR_PROC) == SNX_RC_SVC_INVALID_HANDLE && h_close(H_CUR_THREAD) == SNX_RC_SVC_INVALID_HANDLE);
         CHECK(h_get_ref(H_CUR_PROC, 0) == p && p->refs == 2);
         kobj_unref(p);
     }
 
     /* a closed handle is stale, and the object goes with its last reference */
     kobj_ref(&g_ev[0]->o);
-    CHECK(h_close(h[0]) == 0 && g_ev[0]->o.refs == 1 && h_close(h[0]) == R_BADHANDLE);
+    CHECK(h_close(h[0]) == 0 && g_ev[0]->o.refs == 1 && h_close(h[0]) == SNX_RC_SVC_INVALID_HANDLE);
     put_handles(h, 1);
-    CHECK(kernel_timeouted_wait(1, 0, &idx) == R_BADHANDLE);
+    CHECK(kernel_timeouted_wait(1, 0, &idx) == SNX_RC_SVC_INVALID_HANDLE);
     kobj_unref(&g_ev[0]->o);
 
     printf("kernel_wait: %u checks, %u failed\n", checks, failures);

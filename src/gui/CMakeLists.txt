@@ -52,11 +52,12 @@ target_link_libraries(snx_gui_ui PRIVATE SDL3::SDL3) # its platform macros and k
 set_target_properties(snx_gui_ui PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_compile_options(snx_gui_ui PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 add_library(snx_gui_support STATIC aot.c model.c browser.c steps.c theme.c recent.c editor.c settings.c place.c clean.c
-            queue.c latin.c wide.c log.c logzip.c gpu_driver.c gpu_driver_fetch.c ${gui_process}
+            queue.c latin.c wide.c log.c logzip.c gpu_driver.c gpu_driver_fetch.c probe.c ${gui_process}
             "${PROJECT_BINARY_DIR}/generated/gui_themes.c" "${PROJECT_BINARY_DIR}/generated/gui_glyphs.c"
             "${PROJECT_BINARY_DIR}/generated/gui_titles.c")
 target_link_libraries(snx_gui_support PUBLIC scarletnx-common snx_setup snx_i18n snx_settings snx_miniz PRIVATE snx_libdeflate)
-target_link_libraries(snx_gui_support PRIVATE snx_yyjson) # Download Driver's GitHub lists (gpu_driver_fetch.c)
+# Download Driver's GitHub lists (gpu_driver_fetch.c), edenprobe's report (probe.c)
+target_link_libraries(snx_gui_support PRIVATE snx_yyjson)
 target_include_directories(snx_gui_support PRIVATE "${PROJECT_BINARY_DIR}/generated")
 set_target_properties(snx_gui_support PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_compile_options(snx_gui_support PRIVATE -Wall -Wextra -Werror=missing-prototypes)
@@ -276,9 +277,11 @@ if(BUILD_TESTING)
         endif()
         set_target_properties(snx-test-gui-sdl PROPERTIES LINKER_LANGUAGE CXX)
     endif()
-    # the runtime's sections and pages, each of which has an icon in the Settings
+    # the runtime's sections and pages, each of which has an icon in the Settings; the key sentences, each key of which
+    # has an icon in F1's box
     target_compile_definitions(snx-test-gui-sdl PRIVATE
-                               SNX_GUI_SETTINGS_TXT="${PROJECT_SOURCE_DIR}/src/nx/runtime/settings.txt")
+                               SNX_GUI_SETTINGS_TXT="${PROJECT_SOURCE_DIR}/src/nx/runtime/settings.txt"
+                               SNX_GUI_POT="${PROJECT_SOURCE_DIR}/po/scarletnx.pot")
     # the screens' tests: no file picker of the desktop's, as the portal would open one on the screen, DBus being there
     # without a display. A Mac's TMPDIR, /var/folders/..., is long enough to wrap the paths the screens show, and /var
     # and /tmp are links into /private, which the checks compare as text: /private/tmp is short and real

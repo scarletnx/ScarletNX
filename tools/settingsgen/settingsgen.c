@@ -903,7 +903,10 @@ static void out_row(const Setting* s, int index, const char* key, const char* la
         out_string(def);
     outs(", ");
     out_string(index ? NULL : s->help);
-    out(", %s, %s%s%s, ", s->type == T_INT ? "INI_INT" : s->type == T_FLOAT ? "INI_FLOAT" : "INI_TEXT",
+    out(", %s, %s%s%s, ",
+        s->type == T_INT     ? "INI_INT"
+        : s->type == T_FLOAT ? "INI_FLOAT"
+                             : "INI_TEXT",
         s->startup ? "INI_STARTUP" : "0", s->in_game ? " | INI_IN_GAME" : "", "");
     if (count_of(s)) {
         if (s->type == T_TEXT)

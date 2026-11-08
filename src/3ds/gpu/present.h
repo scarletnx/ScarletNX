@@ -14,6 +14,9 @@ bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir);
    update, DLC), then the build ("ScarletNX <branch> <commit> (<compiler>, <OS> <arch>)"); and the program's icon */
 void snx_ctr_present_title(const char* name, const char* addons);
 bool snx_ctr_present_ready(void);
+/* The screens' window (the top screen's, with Separate screens) fullscreen, as the Switch's fullscreen=1 starts one.
+   F11 or Alt+Enter switches the window it is pressed in, while the game runs */
+void snx_ctr_present_fullscreen(void);
 /* Live window output is active (SDL3 Vulkan window + swapchain). When false, frames still render but only the dumps
    record them. */
 bool snx_ctr_present_windowed(void);

@@ -42,7 +42,14 @@ enum {
     GNU_ENOTEMPTY = 39,
     GNU_ELOOP = 40,
     GNU_EOVERFLOW = 75,
+    GNU_EILSEQ = 84,
     GNU_ENOTSUP = 95,
-    GNU_ETIMEDOUT = 110
+    GNU_ETIMEDOUT = 110,
+    /* the kernel's own results of a call that a signal stopped (include/linux/errno.h), which never reach the
+       guest: the end of the call turns them into EINTR or a restart (signals.c's gnu_signal_deliver) */
+    GNU_ERESTARTSYS = 512,
+    GNU_ERESTARTNOINTR = 513,
+    GNU_ERESTARTNOHAND = 514,
+    GNU_ERESTART_RESTARTBLOCK = 516
 };
 #endif

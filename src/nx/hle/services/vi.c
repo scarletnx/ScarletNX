@@ -18,9 +18,6 @@
 
 #include "hle/services/vi.swipc.inc"
 
-#define VI_OPERATION_FAILED RC(114, 1)
-#define VI_NOT_FOUND        RC(114, 7)
-
 /* android::status_t */
 #define BQ_OK            0
 #define BQ_NEEDS_REALLOC 1
@@ -108,7 +105,7 @@ static ViLayer* vi_binder(i32 binder_id) {
    magic 2, process 1, the binder id, "dispdrv"), with a zero in its object list */
 static int vi_native_window(IpcBuf out, int binder, i64* size) {
     u8 p[0x3c];
-    R_UNLESS(binder, VI_OPERATION_FAILED);
+    R_UNLESS(binder, SNX_RC_VI_OPERATION_FAILED);
     memset(p, 0, sizeof p);
     snx_st_le32(p, 0x28); /* the parcel's header: data size and offset, objects' size and offset */
     snx_st_le32(p + 4, 0x10);
@@ -240,7 +237,7 @@ static void vi_present(void* arg) {
     if (!pitch) pitch = gb32(s, 0x0c) * ((fmt >= 4 && fmt <= 7 && fmt != 5) ? 2 : 4);
     pm_unlock(&g_host.vi.lock);
     if (li == VI_SHOWN)
-        vi_show_buffer(nvmap, offset, w, h, pitch, layout, bhl, fmt, crop, transform & 3, /* the flips; no rotation */
+        vi_show_buffer(nvmap, offset, w, h, pitch, layout, bhl, fmt, crop, transform & 7,
                        (int)(key & 0xff));
     pm_lock(&g_host.vi.lock);
     if (vi_key(li, (int)(key & 0xff)) == key && s->state == SLOT_QUEUED) {
@@ -456,11 +453,11 @@ static void vi_transact(ViLayer* l, u32 code, IpcBuf parcel, IpcBuf reply) {
 /* ============================================================ IHOSBinderDriver */
 static int vi_binder_call(i32 binder_id, u32 code, IpcBuf parcel, IpcBuf reply) {
     ViLayer* l;
-    R_UNLESS(parcel.size >= 16, VI_OPERATION_FAILED); /* not even a parcel's header */
+    R_UNLESS(parcel.size >= 16, SNX_RC_VI_OPERATION_FAILED); /* not even a parcel's header */
     pm_lock(&g_host.vi.lock);
     l = vi_binder(binder_id);
     pm_unlock(&g_host.vi.lock);
-    R_UNLESS(l, VI_NOT_FOUND);
+    R_UNLESS(l, SNX_RC_VI_NOT_FOUND);
     vi_transact(l, code, parcel, reply);
     R_SUCCEED();
 }
@@ -481,7 +478,7 @@ static int nns_hosbinder_IHOSBinderDriver_GetNativeHandle(SvcObj* self, i32 bind
     pm_lock(&g_host.vi.lock);
     l = vi_binder(binder_id);
     pm_unlock(&g_host.vi.lock);
-    R_UNLESS(l, VI_NOT_FOUND);
+    R_UNLESS(l, SNX_RC_VI_NOT_FOUND);
     *event = ev_handle(l->event);
     R_SUCCEED();
 }
@@ -572,7 +569,7 @@ static int vi_display_id(const nn_vi_DisplayName* name, u64* id) {
             *id = i;
             R_SUCCEED();
         }
-    R_THROW(VI_OPERATION_FAILED);
+    R_THROW(SNX_RC_VI_OPERATION_FAILED);
 }
 static int nn_visrv_sf_IApplicationDisplayService_OpenDisplay(SvcObj* self, const nn_vi_DisplayName* name,
                                                               u64* display_id) {
@@ -633,7 +630,7 @@ static int nn_visrv_sf_IApplicationDisplayService_CreateStrayLayer(SvcObj* self,
 static int nn_visrv_sf_IApplicationDisplayService_ConvertScalingMode(SvcObj* self, u32 mode, u64* converted) {
     static const u64 android[] = {3, 0, 1, 2, 4};
     (void)self;
-    R_UNLESS(mode < sizeof android / sizeof android[0], VI_OPERATION_FAILED);
+    R_UNLESS(mode < sizeof android / sizeof android[0], SNX_RC_VI_OPERATION_FAILED);
     *converted = android[mode];
     R_SUCCEED();
 }

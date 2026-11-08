@@ -289,9 +289,17 @@ static bool verified(CtrReader* r, const char* path) {
        decryption itself just wrote */
     CtrReader check = {.error = r->error, .error_size = r->error_size, .quick = true};
     CtrSource s = {0};
+    CtrDlc dlc = {0};
     if (!(check.input = fopen(path, "rb"))) return ctr_fail(r, SNX_CTR_EXTRACT_IO, "cannot read %s", path);
     check.size = snx_file_size(path);
-    bool ok = ctr_source_load(&check, &s) && (s.kind != CTR_KIND_CIA || ctr_cia_contents(&check, &s, NULL));
+    /* a DLC is a CIA of its contents alone, with no game NCCH: checked as one */
+    CtrReader kind = check;
+    uint64_t title = 0;
+    int32_t version;
+    bool ok = ctr_source_identify(&kind, &title, &version) &&
+              ((title >> 32) == 0x0004008c ? ctr_dlc_source_load(&check, &s, &dlc) : ctr_source_load(&check, &s)) &&
+              (s.kind != CTR_KIND_CIA || ctr_cia_contents(&check, &s, NULL));
+    ctr_dlc_free(&dlc);
     ctr_source_free(&s);
     fclose(check.input);
     if (!ok) {

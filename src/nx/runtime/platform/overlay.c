@@ -4,20 +4,37 @@
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/fatal_screen.h"
 #include "nx/runtime/platform/gamepad.h"
+#include "nx/runtime/platform/hotkeys.h"
+#include "nx/runtime/platform/plat.h" /* the notices' lock */
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/platform/vpad.h"
+#include "nx/gpu/renderer.h"
 #include "gui_theme_colors.h"
 #include "gui/icons.h"
 #include "common/utilities/pad_screen.h"
 #include "common/utilities/users.h"
+#include "common/utilities/common.h"
+#include <SDL3/SDL_keycode.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 enum { FIRST = 3, VISIBLE = OVERLAY_ROWS - FIRST - 1 }; /* the items' first row, and how many show at once */
-enum { PAGE_MAIN, PAGE_CONTROLS, PAGE_BUTTONS, PAGE_PADS, PAGE_MAP, PAGE_STATES, PAGE_SLOT, PAGE_ASK };
-enum { M_CONTROLS, M_PADS, M_STATES, M_STATS, M_EXIT, M_COUNT }; /* the first page's items */
+enum {
+    PAGE_MAIN,
+    PAGE_CONTROLS,
+    PAGE_BUTTONS,
+    PAGE_PADS,
+    PAGE_MAP,
+    PAGE_SHORTCUTS,
+    PAGE_STATES,
+    PAGE_SLOT,
+    PAGE_ASK,
+    PAGE_KEYS
+};
+/* the first page's items: Capture frame only while RenderDoc can capture */
+enum { M_CONTROLS, M_PADS, M_STATES, M_SHORTCUTS, M_STATS, M_CAPTURE, M_EXIT, M_COUNT };
 enum { S_SAVE, S_LOAD, S_DELETE, S_BACK, S_COUNT };              /* a slot's page's, the auto slot without Save */
 enum { P_PLAYER, P_SWAP, P_DEADZONE, P_RUMBLE, P_BACKGROUND, P_MAP, P_BACK, P_COUNT }; /* the gamepads' page's */
 /* the controls page's items */
@@ -27,6 +44,7 @@ enum {
     C_SNAP,
     C_SCALE,
     C_OPACITY,
+    C_SKIN,
     C_STICK,
     C_DPAD,
     C_HAPTICS,
@@ -42,7 +60,8 @@ static const char* const CONTROLS[C_COUNT] = {"controls",
                                               "Edit layout",
                                               "controls_snap",
                                               "controls_scale",
-                                              "controls_opacity",
+                                              "controls_alpha",
+                                              "controls_skin",
                                               "controls_rel_center",
                                               "controls_dpad_slide",
                                               "controls_haptics",
@@ -57,6 +76,72 @@ static const char* const PADS[P_COUNT] = {SNX_GAMEPAD_PLAYERS,
                                           "gamepad_background",
                                           SNX_GAMEPAD_MAP,
                                           "Back"};
+/* F1's page: the runtime's keys as set (hotkeys.h; backend/sdl3.c's hotkey and menu_event) and the game's buttons on
+   the keyboard (its keymap), a row each with the icon the launcher's F1 box gives what it does (src/gui/main.c's
+   key_icon): a binding changed there changes here. With the keys at their defaults each row fits the narrowest panel,
+   OVERLAY_COLS, its what after the widest keys */
+static const struct {
+    unsigned icon;
+    int action;      /* a runtime key's (hotkeys.h), whose row shows while it has a key; -1 for the game's buttons */
+    const char* key; /* the game's buttons' keys, or what goes with the runtime key (a controller's Home); NULL none */
+    const char* what;
+} KEYS[] = {{GUI_ICON_APP_WINDOW, HOTKEY_MENU, "Home", "the game's menu"},
+            {GUI_ICON_IMAGE, HOTKEY_SCREENSHOT, NULL, "a screenshot"},
+            {GUI_ICON_GAUGE, HOTKEY_FPS_LIMIT, NULL, "FPS limit off/on"},
+            {GUI_ICON_BUG, HOTKEY_THREAD_DUMP, NULL, "threads to log"},
+            {GUI_ICON_MONITOR, HOTKEY_SHOWCASE, NULL, "showcase off/on"},
+            {GUI_ICON_SAVE, HOTKEY_SAVE_STATE, NULL, "save to the slot"},
+            {GUI_ICON_ROTATE_CCW, HOTKEY_LOAD_STATE, NULL, "load the slot"},
+            {GUI_ICON_LAYERS, HOTKEY_NEXT_SLOT, NULL, "the next slot"},
+            {GUI_ICON_BUG, HOTKEY_TRACY, NULL, "Tracy, 60 s"}, /* a build with SNX_TRACY has its key */
+            {GUI_ICON_PLAY, HOTKEY_PAUSE, NULL, "pause, resume"},
+            {GUI_ICON_MONITOR, HOTKEY_FULLSCREEN, NULL, "fullscreen"}, /* with its second key */
+            {GUI_ICON_ACTIVITY, HOTKEY_STATS, NULL, "stats off/on"},
+            {GUI_ICON_IMAGE, HOTKEY_CAPTURE, NULL, "capture a frame"}, /* while RenderDoc is in the process */
+            {GUI_ICON_LOG_OUT, HOTKEY_QUIT, NULL, "quit the game"},
+            {GUI_ICON_GAMEPAD, -1, "X, Space", "A"},
+            {GUI_ICON_GAMEPAD, -1, "Z, C, V", "B, X, Y"},
+            {GUI_ICON_GAMEPAD, -1, "Q, E", "L, R"},
+            {GUI_ICON_GAMEPAD, -1, "1, 3", "ZL, ZR"},
+            {GUI_ICON_GAMEPAD, -1, "Enter", "plus"},
+            {GUI_ICON_GAMEPAD, -1, "Backspace", "minus"},
+            {GUI_ICON_GAMEPAD_DIRECTIONAL, -1, "Arrows", "D-pad"},
+            {GUI_ICON_JOYSTICK, -1, "W, A, S, D", "left stick"},
+            {GUI_ICON_JOYSTICK, -1, "I, J, K, L", "right stick"}};
+enum { KEYS_COUNT = sizeof KEYS / sizeof *KEYS };
+/* RenderDoc in the process, which shows the capture key's row (overlay_keys_extra), and the debugger's name */
+static int keys_capture;
+static char keys_debugger[32];
+/* KEYS' row i's keys into out (n bytes): the game's buttons', or the runtime key's as set with what goes with it,
+   fullscreen's two together. 0 for a row that doesn't show: a runtime key with none, the capture key's without
+   RenderDoc */
+static int keys_text(int i, char* out, size_t n) {
+    const char *key = KEYS[i].action < 0 ? "" : hotkey_text(KEYS[i].action),
+               *also = KEYS[i].action == HOTKEY_FULLSCREEN ? hotkey_text(HOTKEY_FULLSCREEN_2) : KEYS[i].key;
+    if (KEYS[i].action == HOTKEY_CAPTURE && !keys_capture) return 0;
+    if (!also) also = "";
+    snprintf(out, n, "%s%s%s", key, *key && *also ? ", " : "", also);
+    return *out != 0;
+}
+/* F1's page's rows: KEYS' that show, then the debugger's while one traces the process. Row r's KEYS index, -1 for
+   the debugger's */
+static int keys_rows(void) {
+    char text[OVERLAY_COLS_MAX + 1];
+    int i, n = keys_debugger[0] != 0;
+    for (i = 0; i < KEYS_COUNT; ++i) n += keys_text(i, text, sizeof text);
+    return n;
+}
+static int keys_at(int r) {
+    char text[OVERLAY_COLS_MAX + 1];
+    int i;
+    for (i = 0; i < KEYS_COUNT; ++i)
+        if (keys_text(i, text, sizeof text) && !r--) return i;
+    return -1;
+}
+void overlay_keys_extra(int capture, const char* debugger) {
+    keys_capture = capture != 0;
+    snprintf(keys_debugger, sizeof keys_debugger, "%s", debugger ? debugger : "");
+}
 static int shown, page, focus, top; /* top: the first item showing */
 /* the save state slots listed (slot 0 the auto one), the one a slot's page is for, what its question asks (OVERLAY_LOAD
    or OVERLAY_DELETE), and whether the list is to be read again */
@@ -66,6 +151,9 @@ static u32 slots_gen; /* counts the lists given: the picture is set again */
 static char toast[OVERLAY_COLS_MAX + 1];
 static u64 toast_until;
 static int pad_player; /* the player the gamepads' page shows: 0 every player's, 1 to SNX_GAMEPADS */
+/* the Shortcuts page: its row in focus waits for a key, and what the last key given was refused for ("" none) */
+static int listening;
+static char refused[2 * OVERLAY_COLS_MAX];
 /* the YoRHa menu's colours, from its theme.ini (gui_theme_colors.h), as R G B A bytes; the page hides the game under
    it, whose text would show through its letters */
 #define SNX_OVERLAY_RGBA(rgb, a) ((u32)(a) << 24 | ((rgb) & 0xFFu) << 16 | ((rgb) & 0xFF00u) | ((rgb) >> 16 & 0xFFu))
@@ -77,18 +165,37 @@ static int pad_player; /* the player the gamepads' page shows: 0 every player's,
 
 /* a slot's page's items: the auto slot has no Save */
 static int slot_item(int i) { return slot_at ? i : i + 1; }
+/* the first page's item shown at i: past Stats, Exit where RenderDoc can't capture */
+static int main_item(int i) { return i >= M_CAPTURE && !g_renderer->capture(0) ? i + 1 : i; }
+/* the Shortcuts page's rows: the runtime's keys this build has (hotkeys.h), then Back. The action at row i, -1 for
+   Back */
+static int shortcut(int i) {
+    int a;
+    for (a = 0; a < HOTKEY_COUNT; ++a)
+        if (hotkey_row(a) && !i--) return a;
+    return -1;
+}
+static int shortcuts(void) {
+    int a, n = 0;
+    for (a = 0; a < HOTKEY_COUNT; ++a) n += hotkey_row(a) != NULL;
+    return n;
+}
 static int items(void) {
-    return page == PAGE_MAIN       ? M_COUNT
-           : page == PAGE_CONTROLS ? C_COUNT
-           : page == PAGE_PADS     ? P_COUNT
-           : page == PAGE_STATES   ? nslots + 1
-           : page == PAGE_SLOT     ? S_COUNT - !slot_at
-           : page == PAGE_ASK      ? 2
-                                   : SNX_VPAD_COUNT + 2;
+    return page == PAGE_MAIN        ? M_COUNT - !g_renderer->capture(0)
+           : page == PAGE_SHORTCUTS ? shortcuts() + 1
+           : page == PAGE_CONTROLS  ? C_COUNT
+           : page == PAGE_PADS      ? P_COUNT
+           : page == PAGE_STATES    ? nslots + 1
+           : page == PAGE_SLOT      ? S_COUNT - !slot_at
+           : page == PAGE_ASK       ? 2
+           : page == PAGE_KEYS      ? keys_rows()
+                                    : SNX_VPAD_COUNT + 2;
 }
 static void page_open(int p) {
     page = p;
     focus = top = 0;
+    listening = 0;
+    refused[0] = 0;
     if (p == PAGE_STATES) slots_stale = 1;
 }
 static void keep_in_view(void) {
@@ -104,7 +211,7 @@ static int all_shown(void) {
 static int clamp(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 /* the setting an item is, NULL for an action */
 static const IniOpt* setting(int i) {
-    if (page == PAGE_MAIN) return i == M_STATS ? ini_find(g_display_ini, "stats") : NULL;
+    if (page == PAGE_MAIN) return main_item(i) == M_STATS ? ini_find(g_display_ini, "stats") : NULL;
     if (page == PAGE_CONTROLS) return ini_find(i == C_TOUCH ? g_backend_ini : g_vpad_ini, CONTROLS[i]);
     if (page == PAGE_PADS && i == P_PLAYER) return NULL;
     if (page == PAGE_PADS && pad_player && (i == P_SWAP || i == P_RUMBLE)) { /* the player's own */
@@ -124,15 +231,18 @@ static void label(int i, char* text, size_t size, char* value, size_t vsize) {
     if (o) {
         char word[OVERLAY_COLS];
         snprintf(text, size, "%s", o->name);
-        ini_word(o, *(const int*)o->var, word, sizeof word);
+        if (o->type == INI_TEXT) /* the skin: the built-in look, a shipped skin, or a .cfg's file name */
+            snprintf(word, sizeof word, "%s", *(const char*)o->var ? snx_path_leaf((const char*)o->var) : "Built-in");
+        else
+            ini_word(o, *(const int*)o->var, word, sizeof word);
         snprintf(value, vsize, arrows(o) ? "< %s >" : "%s", word);
         return;
     }
     if (page == PAGE_MAIN) {
-        static const char* const main_items[M_COUNT] = {SNX_VPAD_PAGE, SNX_GAMEPAD_PAGE, "Save states", "Stats",
-                                                        "Exit"};
-        snprintf(text, size, "%s", main_items[i]);
-        if (i != M_EXIT) snprintf(value, vsize, ">");
+        static const char* const main_items[M_COUNT] = {SNX_VPAD_PAGE, SNX_GAMEPAD_PAGE, "Save states", "Shortcuts",
+                                                        "Stats",       "Capture frame",  "Exit"};
+        snprintf(text, size, "%s", main_items[main_item(i)]);
+        if (main_item(i) < M_CAPTURE) snprintf(value, vsize, ">");
         return;
     }
     if (page == PAGE_BUTTONS) {
@@ -159,6 +269,16 @@ static void label(int i, char* text, size_t size, char* value, size_t vsize) {
     }
     if (page == PAGE_ASK) {
         snprintf(text, size, "%s", i ? "Cancel" : ask == OVERLAY_LOAD ? "Load" : "Delete");
+        return;
+    }
+    if (page == PAGE_SHORTCUTS) { /* the key, or the wait for one */
+        int a = shortcut(i);
+        snprintf(text, size, "%s", a < 0 ? "Back" : hotkey_row(a)->name);
+        if (a >= 0)
+            snprintf(value, vsize, "%s",
+                     listening && i == focus ? "Press a key"
+                     : *hotkey_text(a)       ? hotkey_text(a)
+                                             : "None");
         return;
     }
     if (page == PAGE_PADS && i == P_PLAYER) { /* as Eden's tabs: every player's, or one's own */
@@ -219,6 +339,35 @@ static int map_did(int did) {
 }
 static int map_key(int key) { return map_did(snx_pad_screen_key(&map, key)); }
 int overlay_listening(void) { return overlay_shown() && page == PAGE_MAP && map.listening; }
+int overlay_shortcut_listening(void) { return overlay_shown() && page == PAGE_SHORTCUTS && listening; }
+/* the row in focus set to key with mods, saved; refused, and said, where another row has that key */
+static void shortcut_give(unsigned key, unsigned mods) {
+    int a = shortcut(focus), owner;
+    char name[64];
+    if (a < 0) return;
+    refused[0] = 0;
+    if (!hotkey_assign(a, key, mods, &owner)) {
+        vpad_store_opt(hotkey_row(a));
+        return;
+    }
+    hotkey_name(key, mods, name, sizeof name);
+    snprintf(refused, sizeof refused, "%s already does %s: %s keeps %s.", name, hotkey_row(owner)->name,
+             hotkey_row(a)->name, *hotkey_text(a) ? hotkey_text(a) : "no key");
+}
+void overlay_shortcut_key(unsigned key, unsigned mods) {
+    if (!overlay_shortcut_listening() || hotkey_modifier(key)) return; /* a modifier waits for its key */
+    listening = 0;
+    if (key != SDLK_ESCAPE && key != SDLK_AC_BACK) shortcut_give(key, mods);
+}
+int overlay_backspace(void) {
+    unsigned key, mods;
+    char why[160];
+    int a = page == PAGE_SHORTCUTS ? shortcut(focus) : -1;
+    if (a < 0) return overlay_back();
+    listening = 0;
+    if (!hotkey_parse(hotkey_row(a)->def, &key, &mods, why, sizeof why)) shortcut_give(key, mods);
+    return OVERLAY_NONE;
+}
 void overlay_press(int control) {
     if (!overlay_listening()) return;
     map_swallow = 1;
@@ -278,6 +427,20 @@ static void map_draw(SnxUiList* l, int sw, int sh) {
 /* the item i done, or its value stepped (step -1 or 1; 0 for a select, which steps up) */
 static int act(int i, int step) {
     const IniOpt* o = setting(i);
+    if (page == PAGE_KEYS) return OVERLAY_CLOSE; /* F1's: any key, the game again */
+    if (o && o->type == INI_TEXT) { /* the skin: round the built-in look and the shipped skins; a .cfg's path goes to
+                                       the built-in look, or the last skin stepping down */
+        char names[8][64];
+        int n = 1, at = -1, k;
+        names[0][0] = 0;
+        while (n < 8 && vpad_skin_shipped(n - 1, names[n], sizeof names[n])) ++n;
+        for (k = 0; k < n; ++k)
+            if (!strcmp(names[k], (const char*)o->var)) at = k;
+        k = at < 0 ? (step < 0 ? n - 1 : 0) : (at + (step < 0 ? n - 1 : 1)) % n;
+        ini_read(o, names[k]);
+        vpad_store_opt(o);
+        return OVERLAY_NONE;
+    }
     if (o) {
         int* v = (int*)o->var;
         int to = ini_step(o, *v, step ? step : 1);
@@ -304,11 +467,20 @@ static int act(int i, int step) {
     }
     if (page == PAGE_MAIN) {
         if (step) return OVERLAY_NONE;
-        if (i == M_EXIT) return OVERLAY_EXIT;
-        page_open(i == M_PADS ? PAGE_PADS : i == M_STATES ? PAGE_STATES : PAGE_CONTROLS);
+        if (main_item(i) == M_EXIT) return OVERLAY_EXIT;
+        if (main_item(i) == M_CAPTURE) return OVERLAY_CAPTURE;
+        page_open(i == M_PADS        ? PAGE_PADS
+                  : i == M_STATES    ? PAGE_STATES
+                  : i == M_SHORTCUTS ? PAGE_SHORTCUTS
+                                     : PAGE_CONTROLS);
         return OVERLAY_NONE;
     }
     if (step) return OVERLAY_NONE;
+    if (page == PAGE_SHORTCUTS && shortcut(i) >= 0) { /* the next key pressed is its key */
+        listening = 1;
+        refused[0] = 0;
+        return OVERLAY_NONE;
+    }
     if (page == PAGE_STATES && i < nslots) {
         slot_at = i;
         page = PAGE_SLOT;
@@ -375,6 +547,15 @@ void overlay_toast(const char* text, u64 now_ns) {
     toast_until = now_ns + (u64)SNX_OVERLAY_TOAST_MS * 1000000u;
 }
 int overlay_toasting(u64 now_ns) { return toast[0] && now_ns < toast_until; }
+/* overlay_notice's line until the next draw takes it ("" none), under a lock of its own: its callers may hold ui_lock
+   or not */
+static PMutex notice_lock = PMUTEX_INIT;
+static char notice[OVERLAY_COLS_MAX + 1];
+void overlay_notice(const char* text) {
+    pm_lock(&notice_lock);
+    snprintf(notice, sizeof notice, "%s", text);
+    pm_unlock(&notice_lock);
+}
 void overlay_toggle(void) {
     if (!shown) page_open(PAGE_MAIN);
     __atomic_store_n(&shown, !shown, __ATOMIC_RELEASE);
@@ -424,6 +605,8 @@ typedef struct {
     const char* label[VISIBLE];   /* the items showing, from top on */
     unsigned icon[VISIBLE];       /* beside them, gui/icons.h's; GUI_ICON_NONE for none */
     const char* value[VISIBLE];   /* at their right; NULL for none */
+    const char* key[VISIBLE];     /* the keys F1's page names before the label, on a band; NULL for none */
+    int keys;                     /* their column's width: the label after it and two more */
     int items, top, shown, focus; /* all the items, the first showing, how many show, the one in focus */
     int aside;                    /* room at the box's right for a picture (the save states' thumbnail), if it fits */
 } Dialog;
@@ -564,7 +747,14 @@ static void dialog_draw(SnxUiList* l, int sw, int sh, const Dialog* d, DialogRow
         at->h = ch;
         if (!l) continue;
         if (on) ui_fill(l, x, at->y, w, ch, INK);
-        if (d->icon[i]) { /* the marker, the icon's two cells and one, then the label */
+        if (d->key[i]) { /* the marker, the icon, the keys on a band as the launcher's F1 box draws them, the label */
+            ui_text(l, x + cw, at->y, s, "\xFE", on ? LIGHT : INK);
+            ui_icon(l, x + 3 * cw, at->y, s, d->icon[i], on ? LIGHT : INK);
+            ui_fill(l, x + 6 * cw - (float)s, at->y, cw * (float)strlen(d->key[i]) + 2.0f * (float)s, ch,
+                    on ? LIGHT : INK);
+            ui_text(l, x + 6 * cw, at->y, s, d->key[i], on ? INK : LIGHT);
+            ui_text(l, x + cw * (float)(6 + d->keys + 2), at->y, s, d->label[i], on ? LIGHT : INK);
+        } else if (d->icon[i]) { /* the marker, the icon's two cells and one, then the label */
             ui_text(l, x + cw, at->y, s, "\xFE", on ? LIGHT : INK);
             ui_icon(l, x + 3 * cw, at->y, s, d->icon[i], on ? LIGHT : INK);
             ui_text(l, x + 6 * cw, at->y, s, d->label[i], on ? LIGHT : INK);
@@ -739,42 +929,62 @@ int overlay_keyboard_typing(int sw, int sh, OverlayTyping* t) {
 }
 
 int overlay_select(void) { return page == PAGE_MAP ? map_key(SNX_PAD_KEY_SELECT) : act(focus, 0); }
+/* F1's page rows on, back for a negative rows: its rows go by, none in focus, from the first to the last showing */
+static void keys_scroll(int rows) {
+    int n = keys_rows();
+    top = clamp(top + rows, 0, n > VISIBLE ? n - VISIBLE : 0);
+}
 void overlay_move(int rows) {
     int n = items();
+    listening = 0;
     if (page == PAGE_MAP) {
         map_key(rows < 0 ? SNX_PAD_KEY_UP : SNX_PAD_KEY_DOWN);
+        return;
+    }
+    if (page == PAGE_KEYS) {
+        keys_scroll(rows);
         return;
     }
     focus = ((focus + rows) % n + n) % n;
     keep_in_view();
 }
 void overlay_scroll(int rows) {
-    if (page == PAGE_MAP) {
+    listening = 0;
+    if (page == PAGE_MAP || page == PAGE_KEYS) {
         overlay_move(rows);
         return;
     }
     focus = clamp(focus + rows, 0, items() - 1);
     keep_in_view();
 }
-void overlay_side(int step) {
+int overlay_side(int step) {
+    listening = 0;
+    if (page == PAGE_KEYS) return OVERLAY_CLOSE;
     if (page == PAGE_MAP)
         map_key(step < 0 ? SNX_PAD_KEY_LEFT : SNX_PAD_KEY_RIGHT);
     else if (page != PAGE_MAIN)
         act(focus, step);
+    return OVERLAY_NONE;
 }
+int overlay_keys(void) {
+    if (page == PAGE_KEYS) return OVERLAY_CLOSE;
+    page_open(PAGE_KEYS);
+    return OVERLAY_NONE;
+}
+int overlay_other(void) { return page == PAGE_KEYS ? OVERLAY_CLOSE : OVERLAY_NONE; }
 int overlay_pad(u64 button) {
     switch (button) {
         case 1ull << 0: return overlay_select(); /* A */
         case 1ull << 1: return overlay_back();   /* B */
         case 1ull << 12:                         /* the D-pad's left and the left stick's */
-        case 1ull << 16: overlay_side(-1); break;
+        case 1ull << 16: return overlay_side(-1);
         case 1ull << 13: /* up */
         case 1ull << 17: overlay_move(-1); break;
         case 1ull << 14: /* right */
-        case 1ull << 18: overlay_side(1); break;
+        case 1ull << 18: return overlay_side(1);
         case 1ull << 15: /* down */
         case 1ull << 19: overlay_move(1); break;
-        default: break;
+        default: return overlay_other();
     }
     return OVERLAY_NONE;
 }
@@ -803,7 +1013,11 @@ int overlay_controls(u64 buttons, const i32 sticks[4], u64 ms) {
 }
 int overlay_back(void) {
     int from = page;
-    if (page == PAGE_MAIN) return OVERLAY_CLOSE;
+    if (listening) { /* the wait for a key, cancelled */
+        listening = 0;
+        return OVERLAY_NONE;
+    }
+    if (page == PAGE_MAIN || page == PAGE_KEYS) return OVERLAY_CLOSE;
     if (page == PAGE_MAP) return map_key(SNX_PAD_KEY_BACK);
     if (page == PAGE_BUTTONS) {
         page_open(PAGE_CONTROLS);
@@ -816,7 +1030,10 @@ int overlay_back(void) {
         focus = slot_at;
     } else {
         page_open(PAGE_MAIN);
-        focus = from == PAGE_PADS ? M_PADS : from == PAGE_STATES ? M_STATES : M_CONTROLS;
+        focus = from == PAGE_PADS        ? M_PADS
+                : from == PAGE_STATES    ? M_STATES
+                : from == PAGE_SHORTCUTS ? M_SHORTCUTS
+                                         : M_CONTROLS;
     }
     keep_in_view();
     return OVERLAY_NONE;
@@ -827,20 +1044,66 @@ static const char* pads_hint(char* out, size_t size);
 static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*value)[OVERLAY_COLS_MAX + 1], char* pads,
                         size_t size) {
     static const char* const titles[] = {
-        "SCARLETNX  /  MENU",       "SCARLETNX  /  CONTROLS", "SCARLETNX  /  BUTTONS", "SCARLETNX  /  CONTROLLERS", "",
-        "SCARLETNX  /  SAVE STATES"};
-    static const char* const hints[] = {
-        "Back or Home: back to the game.",        "Back: the menu.", "Tap one to show or hide it.", "", "",
-        "The game waits while this page is open."};
+        "SCARLETNX  /  MENU",      "SCARLETNX  /  CONTROLS",   "SCARLETNX  /  BUTTONS", "SCARLETNX  /  CONTROLLERS", "",
+        "SCARLETNX  /  SHORTCUTS", "SCARLETNX  /  SAVE STATES"};
+    static const char* const hints[] = {"Back or Home: back to the game.",
+                                        "Back: the menu.",
+                                        "Tap one to show or hide it.",
+                                        "",
+                                        "",
+                                        "Enter, then a key: its new key. Backspace: its default.",
+                                        "The game waits while this page is open."};
     const OverlaySlot* sl = &slots[slot_at];
     char* title = pads + size / 2;
     int r, n = items();
     memset(d, 0, sizeof *d);
+    if (page == PAGE_KEYS) { /* F1's: the rows go by, none in focus, and any other key goes back to the game */
+        d->title = "SCARLETNX  /  KEYS";
+        d->user = 1;
+        d->para[0].text = "Up/Down: the rest. Any other key or button: back to the game.";
+        d->para[0].rgba = SOFT;
+        d->para[1].text = "The game's buttons by where the keys sit on a US keyboard. A controller's A, B, X and Y sit "
+                          "where the console has them (gamepad_swap_ab=1 swaps A and B).";
+        d->para[1].rgba = SOFT;
+        d->para[1].cut = 1; /* a short picture's rows go to the keys */
+        d->paras = 2;
+        d->items = n;
+        d->top = top;
+        d->focus = -1;
+        d->shown = n - top < VISIBLE ? n - top : VISIBLE;
+        for (r = 0; r < KEYS_COUNT; ++r) /* the widest keys of every row that shows, the ones scrolled away too */
+            if (keys_text(r, *text, sizeof *text))
+                d->keys = (int)strlen(*text) > d->keys ? (int)strlen(*text) : d->keys;
+        for (r = 0; r < d->shown; ++r) {
+            int k = keys_at(top + r);
+            if (k < 0) { /* the debugger's, last */
+                d->key[r] = "Debugger";
+                d->icon[r] = GUI_ICON_BUG;
+                d->label[r] = keys_debugger;
+                continue;
+            }
+            keys_text(k, text[r], sizeof *text);
+            d->key[r] = text[r];
+            d->icon[r] = KEYS[k].icon;
+            d->label[r] = KEYS[k].what;
+        }
+        return;
+    }
     d->title = page < PAGE_SLOT ? titles[page] : title;
     d->user = 1;
     d->para[0].text = page == PAGE_PADS ? pads_hint(pads, size / 2) : page < PAGE_SLOT ? hints[page] : pads;
     d->para[0].rgba = SOFT;
     d->paras = 1;
+    if (page == PAGE_SHORTCUTS && listening && shortcut(focus) >= 0) {
+        snprintf(pads, size / 2, "Press the key for %s. Esc or B cancels.", hotkey_row(shortcut(focus))->name);
+        d->para[0].text = pads;
+    }
+    if (page == PAGE_SHORTCUTS && refused[0]) { /* why the last key given isn't the row's */
+        d->para[1].text = refused;
+        d->para[1].rgba = FAILURE;
+        d->para[1].on = 1;
+        d->paras = 2;
+    }
     if (page >= PAGE_SLOT) {
         char name[16];
         if (slot_at)
@@ -871,11 +1134,12 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
     d->focus = focus;
     d->shown = n - top < VISIBLE ? n - top : VISIBLE;
     for (r = 0; r < d->shown; ++r) {
-        static const unsigned main_icons[M_COUNT] = {GUI_ICON_POINTER, GUI_ICON_GAMEPAD_2, GUI_ICON_SAVE,
-                                                     GUI_ICON_ACTIVITY, GUI_ICON_LOG_OUT};
+        static const unsigned main_icons[M_COUNT] = {GUI_ICON_POINTER,  GUI_ICON_GAMEPAD_2, GUI_ICON_SAVE,
+                                                     GUI_ICON_KEYBOARD, GUI_ICON_ACTIVITY,  GUI_ICON_IMAGE,
+                                                     GUI_ICON_LOG_OUT};
         label(top + r, text[r], sizeof *text, value[r], sizeof *value);
         d->label[r] = text[r];
-        d->icon[r] = page == PAGE_MAIN ? main_icons[top + r] : GUI_ICON_NONE;
+        d->icon[r] = page == PAGE_MAIN ? main_icons[main_item(top + r)] : GUI_ICON_NONE;
         d->value[r] = value[r];
     }
 }
@@ -885,7 +1149,12 @@ int overlay_tap(float x, float y, int sw, int sh) {
     DialogDrawn at;
     int r, col;
     if (!shown && g_overlay.kb_shown) return kb_tap(x, y, sw, sh);
+    if (listening) { /* a tap, no key: the wait cancelled */
+        listening = 0;
+        return OVERLAY_NONE;
+    }
     if (page == PAGE_MAP) return map_did(snx_pad_screen_tap(&map, snx_pad_screen_hit(&map_drawing, x, y)));
+    if (page == PAGE_KEYS) return OVERLAY_CLOSE; /* F1's: any tap, the game again */
     menu_dialog(&d, text, value, pads, sizeof pads);
     dialog_draw(NULL, sw, sh, &d, g_overlay.event_rows, &at);
     if (!overlay_error_hit(&at.box, x, y)) return OVERLAY_CLOSE;
@@ -961,6 +1230,10 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
     char text[VISIBLE][OVERLAY_COLS_MAX + 1], value[VISIBLE][OVERLAY_COLS_MAX + 1], pads[2 * OVERLAY_COLS_MAX + 64];
     Dialog d;
     DialogDrawn at;
+    pm_lock(&notice_lock);
+    if (notice[0]) overlay_toast(notice, now_ns);
+    notice[0] = 0;
+    pm_unlock(&notice_lock);
     if (!shown) { /* the keyboard's box, which the menu goes over */
         if (g_overlay.kb_shown) {
             KbTexts t;

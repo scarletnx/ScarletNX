@@ -593,7 +593,7 @@ static void test_users(void) {
     svcobj_unref(profile);
     /* a uid that is no user's has no profile */
     uid_of("00000000000000040000000000000004", &uid);
-    CHECK(nn_account_IAccountServiceForApplication_GetProfile(NULL, &uid, &profile) == ACC_INVALID_USER_ID);
+    CHECK(nn_account_IAccountServiceForApplication_GetProfile(NULL, &uid, &profile) == SNX_RC_ACCOUNT_INVALID_USER_ID);
     gone(UID2 ".jpg");
     puts("PASS three users: the list, the open user, the selection, nicknames and pictures");
 }
@@ -1037,6 +1037,45 @@ static void test_profile_editor(void) {
     puts("PASS the profile editor: nickname, UserData and picture stored as given, into users.ini at once");
 }
 
+/* every dispatcher acc's objects answer through is in g_acc_state_fns under its own name, or a save state of a game that
+   opened acc can't be saved ("the function at ... has no name in state_fns.h's tables") */
+static const char* test_state_name(int (*dispatch)(SvcObj*, IpcCtx*)) {
+    u32 i;
+    for (i = 0; i < g_acc_state_fns.n; i++)
+        if (g_acc_state_fns.fn[i].fn == (StateFnPtr)dispatch) return g_acc_state_fns.fn[i].name;
+    return "";
+}
+static void test_state_names(void) {
+    SvcObj *u0 = new_acc(), *u1 = new_acc_system(), *su = new_acc_admin(), *profile, *editor;
+    char why[512];
+    Request r;
+    snprintf(g_host.acc.users_dir, sizeof g_host.acc.users_dir, "%s", DIR);
+    put_ini("[user1]\nnickname=Aogo\n");
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
+    request(&r, 5);
+    acc_uid_put(r.raw, g_user_id);
+    call(u0, &r);
+    CHECK(r.c.nout_objs == 1);
+    profile = r.c.out_objs[0];
+    request(&r, 205);
+    acc_uid_put(r.raw, g_user_id);
+    call(su, &r);
+    CHECK(r.c.nout_objs == 1);
+    editor = r.c.out_objs[0];
+    CHECK(!strcmp(test_state_name(u0->dispatch), "acc.acc_u0_dispatch"));
+    CHECK(!strcmp(test_state_name(u1->dispatch), "acc.acc_u1_dispatch"));
+    CHECK(!strcmp(test_state_name(su->dispatch), "acc.acc_su_dispatch"));
+    CHECK(!strcmp(test_state_name(profile->dispatch), "acc.acc_profile_dispatch"));
+    CHECK(!strcmp(test_state_name(editor->dispatch), "acc.acc_editor_dispatch"));
+    svcobj_unref(editor);
+    svcobj_unref(profile);
+    svcobj_unref(su);
+    svcobj_unref(u1);
+    svcobj_unref(u0);
+    gone("users.ini");
+    puts("PASS acc's objects: each one's dispatcher named in g_acc_state_fns, for a save state");
+}
+
 /* DeleteUser (acc:su 203): the user into the Trash of the data folder, trash/user.<uid>.<when>/, its users.ini
    section, picture and saves there, the users after it a place up with the one playing the same; the one playing is
    refused, an unknown uid too; a move that fails puts back what moved, users.ini as it was, no Trash left. A profile
@@ -1464,6 +1503,7 @@ int main(void) {
     test_rename();
     test_refused();
     test_mii();
+    test_state_names();
     gone("users.ini");
     snx_remove_tree(DIR);
     CHECK(test_objects == 0);

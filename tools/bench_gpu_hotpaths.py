@@ -226,6 +226,9 @@ def main(argv=None):
         index = json.loads(args.index.read_text(encoding='utf-8'))
         report['reference_index'] = {'path': str(args.index.resolve()), 'sha256': identity(args.index)['sha256'],
                                      'api_coverage': index.get('api_coverage'), 'scope': 'Static provenance only.'}
+        if index.get('classification') == 'static_contract_and_api_evidence':
+            report['reference_index']['api_inventory_counts'] = index.get('api_inventory', {}).get('counts', {})
+            report['reference_index']['contract_counts'] = index.get('counts', {})
     rng, reference = random.Random(args.seed), None
     try:
         for round_number in range(args.rounds):

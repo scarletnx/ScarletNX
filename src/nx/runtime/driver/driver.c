@@ -173,15 +173,19 @@ static int same_bytes(const char* a, const char* b) {
     if (y) fclose(y);
     return same;
 }
-/* 1 when the runtime a game runs carries a Vulkan driver its folder has not (snx_vulkan_driver): the deploy puts it
-   there, and a folder that lost it gets it again (docs/APPLE.md) */
+/* 1 when the runtime a game runs carries a Vulkan driver its folder has not (snx_vulkan_driver, and KosmicKrisp's
+   ICD): the deploy puts them there, and a folder that lost one gets it again (docs/APPLE.md) */
 static int driver_missing(const char* run, const char* game) {
 #if defined(__APPLE__) && !defined(SNX_IOS)
     char* carried = snx_vulkan_driver(run);
     char* there = carried ? snx_vulkan_driver(game) : NULL;
-    int missing = carried && !there;
+    char* kosmic = snx_vulkan_kosmickrisp_icd(run);
+    char* kosmic_there = kosmic ? snx_vulkan_kosmickrisp_icd(game) : NULL;
+    int missing = (carried && !there) || (kosmic && !kosmic_there);
     free(carried);
     free(there);
+    free(kosmic);
+    free(kosmic_there);
     return missing;
 #else
     (void)run;
@@ -584,26 +588,9 @@ static SnxAddon* checked_addons(const char* folder, const char* name, size_t* co
     free(ini);
     return list;
 }
-/* the add-on of entry checked in the game's addons=, what else is checked kept: an update in place of the one
-   checked, of whichever version (every version of it has the same title ID), so the update installed last is the
-   one played, older or newer. 0, or nonzero with a line saying why */
+/* the add-on of entry checked in the game's addons= (snx_addon_check) */
 static int check_addon(const char* folder, const char* name, const char* entry) {
-    size_t count, i;
-    SnxAddon* list = checked_addons(folder, name, &count);
-    char *ini, *text;
-    SnxU64 id = 0;
-    int rc;
-    snx_addon_entry_id(game_id(name), entry, &id);
-    for (i = 0; i < count && list[i].id != id; i++) continue;
-    if (i == count && count < SNX_ADDONS_MAX) list[count++].id = id;
-    if (i < count && strlen(entry) < sizeof list[i].entry) strcpy(list[i].entry, entry);
-    ini = snx_game_ini(folder, name);
-    text = snx_addons_text(list, count);
-    rc = snx_ini_record(ini, "addons", text);
-    free(text);
-    free(ini);
-    free(list);
-    return rc;
+    return snx_addon_check(folder, name, entry);
 }
 /* the program that plays the game named name in folder: its checked update's, when it has one made, else its own.
    Owned */

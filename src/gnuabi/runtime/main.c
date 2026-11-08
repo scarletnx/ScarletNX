@@ -19,10 +19,6 @@
 #include <unistd.h>
 #endif
 
-/* Guest calls are host calls in the generated code, so the guest's call depth is the host thread's: the guest runs on
-   a thread of its own with a stack of this size, which the host only commits as it is used */
-#define GUEST_STACK ((size_t)1 << 30)
-
 static const char usage[] =
     "Usage: scarletnx-gnuabi [options] [--] ELF [arguments...]\n"
     "Runs Linux AArch64 or AArch32 (A32/Thumb) programs, static or dynamically linked, through the ScarletNX\n"
@@ -44,31 +40,7 @@ static const char usage[] =
     "  -E VAR=VALUE, -U VAR   Set or remove a variable of the guest's environment (the host's otherwise)\n"
     "  -0 ARGV0               The program's argv[0] (default: ELF)\n";
 
-static int run_status;
 static GnuProcess* process;
-
-/* the guest's thread: the process ends here, in a forked child too, where it is the only thread */
-static void guest_main(void) {
-    gnu_start_sampler(process);
-    run_status = gnu_runtime_run(process);
-    if (process->faulted && process->diagnostic[0]) fprintf(stderr, "scarletnx-gnuabi: %s\n", process->diagnostic);
-    OPENSSL_thread_stop(); /* its state for this thread (an execve's random bytes): it ends the process, not itself */
-    gnu_spawn_exit(process);
-}
-#ifdef _WIN32
-static DWORD WINAPI guest_thread(LPVOID unused) {
-    (void)unused;
-    guest_main();
-    return 0;
-}
-#else
-static void* guest_thread(void* unused) {
-    (void)unused;
-    guest_main();
-    return NULL;
-}
-#endif
-
 /* the environment: the host's, with -E and -U applied in order */
 static char** environment(char** changes, size_t change_count) {
 #ifdef _WIN32
@@ -391,25 +363,19 @@ int snx_gnuabi_main(int argc, char** argv) {
 #endif
         if (host >= 0) gnu_vfs_adopt(&process->vfs, adopted_fd[i], host);
     }
+    /* the guest's first thread, with the process's id as its tid. This thread only waits from here: it ends, and the
+       guest's last thread ends the process (thread.c) */
+    GnuThread* first_thread = process->kernel.threads[0]->runtime;
+    first_thread->started = 2;
+    gnu_start_sampler(process);
+    if (gnu_thread_spawn(first_thread)) {
+        fprintf(stderr, "scarletnx-gnuabi: cannot start the guest thread\n");
+        return 2;
+    }
 #ifdef _WIN32
-    HANDLE thread = CreateThread(NULL, GUEST_STACK, guest_thread, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
-    if (!thread) {
-        char why[256];
-        fprintf(stderr, "scarletnx-gnuabi: cannot start the guest thread: %s\n", snx_os_error(why, sizeof why));
-        return 2;
-    }
-    WaitForSingleObject(thread, INFINITE);
+    ExitThread(0);
 #else
-    pthread_attr_t attributes;
-    pthread_t thread;
-    pthread_attr_init(&attributes);
-    pthread_attr_setstacksize(&attributes, GUEST_STACK);
-    int failed = pthread_create(&thread, &attributes, guest_thread, NULL);
-    if (failed) {
-        fprintf(stderr, "scarletnx-gnuabi: cannot start the guest thread: %s\n", strerror(failed));
-        return 2;
-    }
-    pthread_join(thread, NULL);
+    pthread_exit(NULL);
 #endif
-    return run_status; /* not reached: the guest's thread ends the process */
+    return 0; /* not reached */
 }

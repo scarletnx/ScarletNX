@@ -67,7 +67,7 @@ void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layou
    frame before has been on the display for interval refreshes (its swap interval). slot: the buffer's (vi's) */
 void present_pace(u32 interval, int slot);
 /* A frame period (ns) on the display's clock: the nearest whole number of the display's refreshes (refresh, 0 unknown)
-   where that is within 1/32 of it, so a pace kept to it doesn't drift from the display (a 59.94 Hz one), else period */
+   within 1/512 of it, so near-identical clocks (59.94 Hz) do not drift. Incompatible refresh ratios keep period. */
 u64 present_display_period(u64 period, u64 refresh);
 
 #endif

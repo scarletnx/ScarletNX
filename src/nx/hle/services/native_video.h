@@ -23,13 +23,12 @@
 
 /* the results the SDK's codec library knows (module 111): Submit's queue full, which the movie library retries, and
    no output yet, which its own Acquire also answers */
-#define NVIDEO_MODULE       111
-#define NVIDEO_INPUT_FULL   RC(NVIDEO_MODULE, 3603)
-#define NVIDEO_OUTPUT_EMPTY RC(NVIDEO_MODULE, 3604)
-#define NVIDEO_BAD_ARGUMENT RC(NVIDEO_MODULE, 3001)
-#define NVIDEO_BAD_STATE    RC(NVIDEO_MODULE, 3002)
-#define NVIDEO_NOT_FOUND    RC(NVIDEO_MODULE, 3003)
-#define NVIDEO_NO_ROOM      RC(NVIDEO_MODULE, 3004)
+#define NVIDEO_INPUT_FULL   SNX_RC_CODEC_VIDEO_INPUT_FULL
+#define NVIDEO_OUTPUT_EMPTY SNX_RC_CODEC_VIDEO_OUTPUT_EMPTY
+#define NVIDEO_BAD_ARGUMENT SNX_RC_CODEC_VIDEO_INVALID_ARGUMENT
+#define NVIDEO_BAD_STATE    SNX_RC_CODEC_VIDEO_INVALID_STATE
+#define NVIDEO_NOT_FOUND    SNX_RC_CODEC_VIDEO_NOT_FOUND
+#define NVIDEO_NO_ROOM      SNX_RC_CODEC_VIDEO_OUT_OF_SPACE
 
 /* the SDK's MakeDecodeImagePreference kinds: 1 and 4 NV12 (8 bit), which the decoder writes, and 2, 3, 5 and 6 four
    bytes a pixel */

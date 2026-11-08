@@ -383,6 +383,13 @@ static void limits(void) {
     svcobj_unref(o);
     CHECK(!mem_heap_set(0x10000, 0x200000));
 }
+/* fn is g_ldr_state_fns' entry of that name: a save state names an ldr:ro object's dispatcher and destructor by it,
+   and can't save a function no table names */
+static int state_named(StateFnPtr fn, const char* name) {
+    for (u32 i = 0; i < g_ldr_state_fns.n; i++)
+        if (!strcmp(g_ldr_state_fns.fn[i].name, name)) return g_ldr_state_fns.fn[i].fn == fn;
+    return 0;
+}
 int main(int argc, char** argv) {
     if (argc > 1) {
         CHECK(argc == 2 && !strncmp(argv[1], "--host_page=", 12));
@@ -414,6 +421,9 @@ int main(int argc, char** argv) {
     request(4, 0, 0, 0, 0);
     CHECK(call(o) == RO(1030));
     SvcObj* other = new_ro1();
+    CHECK(state_named((StateFnPtr)o->dispatch, "ldr.ro_dispatch"));
+    CHECK(state_named((StateFnPtr)other->dispatch, "ldr.ro_dispatch"));
+    CHECK(state_named((StateFnPtr)o->destroy, "ldr.ro_destroy"));
     request(4, 0, 0, 0, 0);
     CHECK(call(other) == RO(1030));
     svcobj_unref(other);

@@ -41,6 +41,7 @@ SvcObj* new_nifm(void);
 
 /* ssl.c */
 SvcObj* new_ssl(void);
+SvcObj* new_ssl_system(void); /* ssl:s */
 
 /* ldn.c */
 SvcObj* new_ldn(void);

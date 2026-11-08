@@ -44,7 +44,7 @@ if(APPLE)
     target_link_options(snx_core INTERFACE "LINKER:-U,_snx_module_static")
 endif()
 snx_component(kernel hle/hle.c hle/kernel/kernel.c hle/kernel/thread.c hle/kernel/sync.c hle/svc/svc.c hle/svc/svc_mem.c hle/kernel/debug.c
-              memory/mem.c memory/own.c hle/kernel/ipc.c)
+              memory/mem.c memory/own.c hle/kernel/ipc.c hle/result.c)
 # the SVC dispatch, generated from hle/svc/hos.svc
 include("${PROJECT_SOURCE_DIR}/cmake/svcgen.cmake")
 snx_svcgen(snx_kernel)
@@ -79,6 +79,7 @@ target_link_libraries(snx_hle PRIVATE FFmpeg::avcodec OpenSSL::SSL snx_splash)
 snx_component(gpu gpu/gpu.c gpu/maxwell/engines.c gpu/maxwell/mme.c gpu/maxwell/compute.c gpu/maxwell/fermi2d.c gpu/maxwell/dma.c gpu/maxwell/write_pages.c gpu/draw_state.c gpu/maxwell/draw_state.c gpu/maxwell/maxwell3d.c gpu/renderer.c
               gpu/nvn/nvn_loader.c gpu/nvn/nvn_object.c gpu/nvn/nvn_cmd.c gpu/nvn/nvn_queue.c gpu/nvn/nvn_dlss.c
               gpu/nvn/nvn_tex.c gpu/nvn/nvn_driver.c gpu/nvn/nvn_tic.c gpu/nvn/nvn_replay.c gpu/nvn/nvn_draw.c gpu/nvn/nvn_copy.c gpu/nvn/nvn_state.c
+              gpu/nvn/nvn_save.c
               gpu/shipped_pass.c)
 # the NVN functions nvn implements: their adapters and table, generated from gpu/nvn/nvn.hook
 target_link_libraries(snx_gpu PRIVATE snx_zstd) # an Ounce game's .zs shader files (gpu/shipped_pass.c)
@@ -87,14 +88,18 @@ include("${PROJECT_SOURCE_DIR}/cmake/ship_walk.cmake")
 snx_ship_walk(gpu/shipped_pass.c)
 
 include("${PROJECT_SOURCE_DIR}/cmake/controls_atlas.cmake")
+include("${PROJECT_SOURCE_DIR}/cmake/controls_skins.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
 set(platform runtime/platform/plat.c runtime/platform/plat_sdl.c runtime/platform/unattended.c
              runtime/platform/backend/sdl3.c
-             runtime/platform/backend/gamepad.c runtime/platform/tracy.c
-             runtime/platform/hud.c runtime/platform/overlay.c runtime/platform/stats.c runtime/platform/touch.c
-             runtime/platform/ui.c runtime/platform/vpad.c runtime/platform/fatal_screen.c
+             runtime/platform/backend/gamepad.c runtime/platform/connect.c runtime/platform/tracy.c
+             runtime/platform/help.c runtime/platform/hotkeys.c runtime/platform/hud.c runtime/platform/overlay.c
+             runtime/platform/stats.c
+             runtime/platform/touch.c
+             runtime/platform/ui.c runtime/platform/vpad.c runtime/platform/vpad_skin.c
+             runtime/platform/fatal_screen.c
              runtime/platform/prepare_screen.c runtime/platform/gpu_driver_load.c runtime/platform/resources.c
-             "${PROJECT_BINARY_DIR}/generated/controls_png.c")
+             "${PROJECT_BINARY_DIR}/generated/controls_png.c" "${PROJECT_BINARY_DIR}/generated/controls_skins.c")
 if(WIN32)
     list(APPEND platform runtime/platform/plat_win32.c runtime/platform/profiler_win32.c)
 else()
@@ -111,14 +116,19 @@ snx_component(shader gpu/shader/shader.c gpu/shader/decode.c gpu/shader/corpus.c
                      gpu/shader/shared_reach.c gpu/shader/registers.c gpu/shader/forms.c gpu/shader/dataflow.c
                      gpu/shader/emit_int.c gpu/shader/emit_float.c gpu/shader/emit_memory.c gpu/shader/emit_texture.c
                      gpu/shader/emit_io.c gpu/shader/emit_flow.c gpu/shader/emit_thread.c
-                     gpu/shader/sm86_decode.c gpu/shader/sm86_translate.c gpu/shader/advanced_blend_spirv.c)
+                     gpu/shader/sm86_decode.c gpu/shader/sm86_translate.c gpu/shader/advanced_blend_spirv.c
+                     gpu/shader/coverage_spirv.c gpu/shader/capture_tiles_spirv.c gpu/shader/depth_stencil_spirv.c)
 # the opcode enum and decoder, generated from gpu/shader/maxwell_opcodes.def
 include("${PROJECT_SOURCE_DIR}/cmake/shaderdec.cmake")
 snx_shaderdec(snx_shader)
-snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/descriptors.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
+# the drivers known to break an extension or feature, compiled in from gpu/vk/extension_bans.txt
+include("${PROJECT_SOURCE_DIR}/cmake/vk_extension_bans.cmake")
+snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/descriptors.c gpu/vk/descriptor_heaps.c gpu/vk/descriptor_objects.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
                  gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/writelog.c gpu/vk/mirror.c gpu/vk/pipeline.c gpu/vk/pipeline_file.c gpu/vk/render.c gpu/vk/release.c gpu/vk/query.c gpu/vk/xfb.c gpu/vk/display.c gpu/vk/compute.c
-                 gpu/vk/pending_pages.c gpu/vk/image_out.c gpu/vk/depth_pack.c gpu/vk/memory.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/bc7_cache.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/msaa.c gpu/vk/ui.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c gpu/vk/uma.c
-                 gpu/vk/ftz_probe.c gpu/vk/vertex_input.c gpu/vk/pipeline_parts.c gpu/vk/draw_texture.c gpu/vk/tess_passthrough.c
+                 gpu/vk/pending_pages.c gpu/vk/checkpoints.c gpu/vk/image_out.c gpu/vk/depth_pack.c gpu/vk/memory.c gpu/vk/resource_stats.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/bc7_cache.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/msaa.c gpu/vk/ui.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c gpu/vk/uma.c
+                 gpu/vk/ftz_probe.c gpu/vk/vertex_input.c gpu/vk/pipeline_parts.c gpu/vk/extension_bans.c
+                 "${PROJECT_BINARY_DIR}/generated/vk_extension_bans_text.c"
+                 gpu/vk/draw_texture.c gpu/vk/draw_texture_shader.c gpu/vk/tess_passthrough.c gpu/vk/present_quad.c gpu/vk/capture.c gpu/vk/depth_shadow.c
                  "${volk_SOURCE_DIR}/volk.c")
 # the ASTC decoder's, the block linear deswizzle and swizzle's, the texture conversions', the VIC composition's and
 # the render enable predicates' SPIR-V, compiled from their GLSL at build time (cmake/glsl.cmake). The VIC shader is
@@ -153,6 +163,8 @@ snx_glsl_spirv(snx_vk SOURCE gpu/vk/query_compare.comp NAME query_compare_spv
                HEADER nx/gpu/vk/query_compare_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/ftz_probe.comp NAME ftz_probe_spv HEADER nx/gpu/vk/ftz_probe_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/msaa.vert NAME msaa_vert_spv HEADER nx/gpu/vk/msaa_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/present_quad.vert NAME present_quad_vert_spv HEADER nx/gpu/vk/present_quad_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/present_quad.frag NAME present_quad_frag_spv HEADER nx/gpu/vk/present_quad_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/msaa.frag NAME msaa_unpack_spv HEADER nx/gpu/vk/msaa_spv.h DEFINES MS_UNPACK)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/msaa.frag NAME msaa_unpack_depth_spv HEADER nx/gpu/vk/msaa_spv.h
                DEFINES MS_UNPACK_DEPTH)
@@ -228,6 +240,79 @@ if(BUILD_TESTING)
         target_link_libraries(snx-test-shader-direct-regressions PRIVATE Threads::Threads m)
     endif()
     add_test(NAME shader_direct_regressions COMMAND $<TARGET_FILE:snx-test-shader-direct-regressions>)
+    add_executable(snx-test-shader-mixed-sample-safe "${PROJECT_SOURCE_DIR}/tests/shader_mixed_sample_safe.c")
+    snx_test_target(snx-test-shader-mixed-sample-safe 11)
+    target_link_libraries(snx-test-shader-mixed-sample-safe PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-mixed-sample-safe PRIVATE Threads::Threads m)
+    endif()
+    add_test(NAME shader_mixed_sample_safe COMMAND $<TARGET_FILE:snx-test-shader-mixed-sample-safe>)
+    add_executable(snx-test-shader-float-rounding "${PROJECT_SOURCE_DIR}/tests/shader_float_rounding.c")
+    snx_test_target(snx-test-shader-float-rounding 11)
+    target_link_libraries(snx-test-shader-float-rounding PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-float-rounding PRIVATE Threads::Threads m)
+    endif()
+    add_test(NAME shader_float_rounding COMMAND $<TARGET_FILE:snx-test-shader-float-rounding>)
+    add_executable(snx-test-shader-indexed-ms "${PROJECT_SOURCE_DIR}/tests/shader_indexed_ms.c")
+    snx_test_target(snx-test-shader-indexed-ms 11)
+    target_link_libraries(snx-test-shader-indexed-ms PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-indexed-ms PRIVATE Threads::Threads m)
+    endif()
+    add_test(NAME shader_indexed_ms COMMAND $<TARGET_FILE:snx-test-shader-indexed-ms>)
+    add_executable(snx-test-shader-integer-half "${PROJECT_SOURCE_DIR}/tests/shader_integer_half.c")
+    snx_test_target(snx-test-shader-integer-half 11)
+    target_link_libraries(snx-test-shader-integer-half PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-integer-half PRIVATE Threads::Threads m)
+    endif()
+    add_test(NAME shader_integer_half COMMAND $<TARGET_FILE:snx-test-shader-integer-half>)
+    add_executable(snx-test-shader-tcs-dead-outputs "${PROJECT_SOURCE_DIR}/tests/shader_tcs_dead_outputs.c")
+    snx_test_target(snx-test-shader-tcs-dead-outputs 11)
+    target_link_libraries(snx-test-shader-tcs-dead-outputs PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-tcs-dead-outputs PRIVATE Threads::Threads m)
+    endif()
+    add_test(NAME shader_tcs_dead_outputs COMMAND $<TARGET_FILE:snx-test-shader-tcs-dead-outputs>)
+    add_executable(snx-test-shader-blend-images "${PROJECT_SOURCE_DIR}/tests/shader_blend_images.c")
+    snx_test_target(snx-test-shader-blend-images 11)
+    target_link_libraries(snx-test-shader-blend-images PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-blend-images PRIVATE Threads::Threads m)
+    endif()
+    add_test(NAME shader_blend_images COMMAND $<TARGET_FILE:snx-test-shader-blend-images>)
+    add_executable(snx-test-shader-half-native "${PROJECT_SOURCE_DIR}/tests/shader_half_native.c")
+    snx_test_target(snx-test-shader-half-native 11)
+    target_link_libraries(snx-test-shader-half-native PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-half-native PRIVATE Threads::Threads m)
+    endif()
+    add_test(NAME shader_half_native COMMAND $<TARGET_FILE:snx-test-shader-half-native>)
+    add_executable(snx-test-shader-txd-uniform "${PROJECT_SOURCE_DIR}/tests/shader_txd_uniform.c")
+    snx_test_target(snx-test-shader-txd-uniform 11)
+    target_link_libraries(snx-test-shader-txd-uniform PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-txd-uniform PRIVATE Threads::Threads m)
+    endif()
+    add_test(NAME shader_txd_uniform COMMAND $<TARGET_FILE:snx-test-shader-txd-uniform>)
+    add_executable(snx-test-shader-half-packing "${PROJECT_SOURCE_DIR}/tests/shader_half_packing.c")
+    snx_test_target(snx-test-shader-half-packing 11)
+    target_link_libraries(snx-test-shader-half-packing PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-half-packing PRIVATE Threads::Threads m)
+    endif()
+    add_test(NAME shader_half_packing COMMAND $<TARGET_FILE:snx-test-shader-half-packing>)
+    foreach(fixture texture_limits alpha_coverage coverage_resolve blend_resolve known_bits capture_tiles fragment_mask mixed_coverage depth_stencil)
+        string(REPLACE "_" "-" name "${fixture}")
+        add_executable(snx-test-shader-${name} "${PROJECT_SOURCE_DIR}/tests/shader_${fixture}.c")
+        snx_test_target(snx-test-shader-${name} 11)
+        target_link_libraries(snx-test-shader-${name} PRIVATE snx_shader)
+        if(NOT WIN32)
+            target_link_libraries(snx-test-shader-${name} PRIVATE Threads::Threads m)
+        endif()
+        add_test(NAME shader_${fixture} COMMAND $<TARGET_FILE:snx-test-shader-${name}>)
+    endforeach()
     add_executable(snx-test-shader-shared-reach "${PROJECT_SOURCE_DIR}/tests/shader_shared_reach.c")
     snx_test_target(snx-test-shader-shared-reach 11)
     target_link_libraries(snx-test-shader-shared-reach PRIVATE snx_shader)
@@ -277,15 +362,18 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     endif()
     add_test(NAME shader_sm86_gpu COMMAND snx-test-shader-sm86-gpu)
     set_tests_properties(shader_sm86_gpu PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+    # the BC7 encoder run on the CPU (tests/glsl/bc7_cpu.cpp): what the encoder's blocks between frames are held to
+    # (tests/vulkan_astc_later.inc)
     add_executable(snx-test-vulkan "${PROJECT_SOURCE_DIR}/tests/vulkan_headless.c"
         "${PROJECT_SOURCE_DIR}/tests/spirv_emitter_fixture.c" "${PROJECT_SOURCE_DIR}/tests/support/nvdec_ref.c"
         "${PROJECT_SOURCE_DIR}/tests/support/vic_ref.c" "${PROJECT_SOURCE_DIR}/tests/support/dma_ref.c"
         "${PROJECT_SOURCE_DIR}/tests/support/fermi2d_ref.c" "${PROJECT_SOURCE_DIR}/tests/support/half.c"
-        "${PROJECT_SOURCE_DIR}/tests/support/sm86_ref.c")
+        "${PROJECT_SOURCE_DIR}/tests/support/sm86_ref.c" "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp")
     target_include_directories(snx-test-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests")
     target_link_libraries(snx-test-vulkan PRIVATE snx_nx_flags ${components} snx_driver FFmpeg::avutil Threads::Threads
                                                   ${CMAKE_DL_LIBS})
-    target_include_directories(snx-test-vulkan PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/hookgen/snx_gpu")
+    target_include_directories(snx-test-vulkan PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/hookgen/snx_gpu"
+                                                       "${PROJECT_SOURCE_DIR}/tests/glsl")
     set_target_properties(snx-test-vulkan PROPERTIES LINKER_LANGUAGE CXX)
     if(WIN32)
         target_link_libraries(snx-test-vulkan PRIVATE user32)
@@ -298,10 +386,16 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless_mesh COMMAND snx-test-vulkan -H --mesh_draws=1)
     set_tests_properties(vulkan_headless_mesh PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # a save state of a game whose NVN the runtime runs, saved and loaded through state.c: the frame before the save
+    # comes back after the load (tests/vulkan_nvn_savestate.inc). Alone, as the load replaces the guest memory
+    add_test(NAME vulkan_nvn_savestate COMMAND snx-test-vulkan -H)
+    set_tests_properties(vulkan_nvn_savestate PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_NVN_CASE=savestate"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     add_test(NAME vulkan_storage_lookup COMMAND snx-test-vulkan -H --vk_memory=1 --bench-storage-lookup)
     set_tests_properties(vulkan_storage_lookup PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
-    set_tests_properties(vulkan_headless PROPERTIES TIMEOUT 60
+    # 120 as its variants: the aarch64 runner's lavapipe takes 55 to 58 s for it
+    set_tests_properties(vulkan_headless PROPERTIES TIMEOUT 120
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # the recording thread's own vk_rec_sync must return: the fatal path of a lost device calls it from that thread, and
     # a wait there waits for the thread that runs it (record.c). This one needs no shaders, so it runs on any driver,
@@ -315,16 +409,36 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_storage_buffer_keep COMMAND snx-test-vulkan -H --vk_memory=1)
     set_tests_properties(vulkan_storage_buffer_keep PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_BUFFER_KEEP_ONLY=1"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
-    # every check again with graphics descriptors in descriptor buffers (gpu/vk/descriptors.c, vk_descriptors), also
-    # with guest memory read in place, under the validation layer when it is installed. A device without
+    # the budget's trim alone (tests/vulkan_trim.inc): a trim that wants more than everything held would take what the
+    # other checks hold
+    add_test(NAME vulkan_trim COMMAND snx-test-vulkan -H)
+    set_tests_properties(vulkan_trim PROPERTIES TIMEOUT 30 ENVIRONMENT "SNX_TEST_TRIM_ONLY=1"
+        PASS_REGULAR_EXPRESSION "PASS headless Vulkan trim only" FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # every check again with graphics descriptors in descriptor buffers (gpu/vk/descriptors.c, vk_descriptors_mode),
+    # also with guest memory read in place, under the validation layer when it is installed. A device without
     # VK_EXT_descriptor_buffer skips them (77). The layer reports errors only: the targetless-stores check draws with
     # a fragment output and no color target, as the console does, which the layer warns about with sets too
-    add_test(NAME vulkan_headless_descriptor_buffers COMMAND snx-test-vulkan -H --vk_descriptors=1 --vk_validation=1)
+    add_test(NAME vulkan_headless_descriptor_buffers
+        COMMAND snx-test-vulkan -H --vk_descriptors_mode=1 --vk_validation=1)
     add_test(NAME vulkan_headless_descriptor_buffers_uma
-        COMMAND snx-test-vulkan -H --vk_descriptors=1 --vk_memory=2 --vk_validation=1)
+        COMMAND snx-test-vulkan -H --vk_descriptors_mode=1 --vk_memory=2 --vk_validation=1)
     set_tests_properties(vulkan_headless_descriptor_buffers vulkan_headless_descriptor_buffers_uma PROPERTIES
         TIMEOUT 120 SKIP_RETURN_CODE 77 ENVIRONMENT "VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # every check again with graphics descriptors in heaps (vk_descriptors_mode=2), which the default, Automatic, takes
+    # only on a GPU that shares the system's memory: a discrete GPU runs the default with sets. A device without
+    # VK_EXT_descriptor_heap runs buffers or sets again
+    add_test(NAME vulkan_headless_descriptor_heaps COMMAND snx-test-vulkan -H --vk_descriptors_mode=2)
+    set_tests_properties(vulkan_headless_descriptor_heaps PROPERTIES TIMEOUT 120
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # every check again the Vulkan 1.2 way on a newer device, as a game's .ini with vk_api=1.2 asks (gpu/vk/device.c
+    # vk12_extensions): the 1.3 commands by their extensions' names, shaders in SPIR-V 1.5, under the validation layer
+    # when it is installed, which takes the instance's 1.2 as the version and flags any 1.3 use left
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/vulkan_headless_vk12.ini" "[Debug]\nvk_api=1.2\n")
+    add_test(NAME vulkan_headless_vk12 COMMAND snx-test-vulkan -H
+        "--settings-ini=${CMAKE_CURRENT_BINARY_DIR}/vulkan_headless_vk12.ini" --vk_validation=1)
+    set_tests_properties(vulkan_headless_vk12 PROPERTIES TIMEOUT 120
+        ENVIRONMENT "VK_KHRONOS_VALIDATION_REPORT_FLAGS=error" FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again with each vertex layout in its pipeline: the default run sets it as dynamic state where the
     # device has VK_EXT_vertex_input_dynamic_state (gpu/vk/vertex_input.c), and both find each draw's own layout
     add_test(NAME vulkan_headless_vertex_input_off COMMAND snx-test-vulkan -H --vertex_input_dynamic_state=off)
@@ -336,6 +450,16 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         ENVIRONMENT "VK_KHRONOS_VALIDATION_REPORT_FLAGS=error" FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     set_tests_properties(vulkan_headless_vertex_input_off PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # every check again with each draw binding the pipeline linked from its parts, never the one made whole, under the
+    # validation layer when it is installed (gpu/vk/pipeline.c, VK_EXT_graphics_pipeline_library; a device that
+    # doesn't link them skips, 77); and with each pipeline made whole, as a device without them makes it
+    add_test(NAME vulkan_headless_pipeline_library_linked COMMAND snx-test-vulkan -H --vk_validation=1)
+    add_test(NAME vulkan_headless_pipeline_library_whole COMMAND snx-test-vulkan -H)
+    set_tests_properties(vulkan_headless_pipeline_library_linked PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
+        ENVIRONMENT "SNX_TEST_GPL=linked;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    set_tests_properties(vulkan_headless_pipeline_library_whole PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_GPL=whole"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again with guest memory read in place where the device can import it (gpu/vk/uma.c)
     add_test(NAME vulkan_headless_uma COMMAND snx-test-vulkan -H --vk_memory=2)
     set_tests_properties(vulkan_headless_uma PROPERTIES TIMEOUT 60
@@ -344,6 +468,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     # target's baseline cools its pages, or its write-back keeps the CPU's old bytes over its pixels
     add_test(NAME vulkan_headless_hot COMMAND snx-test-vulkan -H --write_tracking=1 --write_tracking_hot=1)
     set_tests_properties(vulkan_headless_hot PROPERTIES TIMEOUT 60
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the checks of guest memory read in place again with the write tracking by page protection: the driver takes an
+    # import's pages for writing, and amdgpu refuses those a scan left protected (VK_ERROR_INVALID_EXTERNAL_HANDLE)
+    add_test(NAME vulkan_uma_hot COMMAND snx-test-vulkan -H --vk_memory=2 --write_tracking=1 --write_tracking_hot=1)
+    set_tests_properties(vulkan_uma_hot PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_UMA_ONLY=1"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # the write tracking's contract alone (tests/vulkan_write_tracking.inc), with each way the host tracks: its own
     # (userfaultfd on Linux), page protection and the fault handler for the tracking and the traps (macOS, FreeBSD,
@@ -396,7 +525,8 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "${PROJECT_SOURCE_DIR}/tests/support/astc.c" gpu/vk/astc.c gpu/vk/bc7_cache.c
         gpu/vk/blocklinear.c gpu/texture/blocklinear.c gpu/vk/texconv.c "${PROJECT_SOURCE_DIR}/tests/support/etc2.c"
         "${PROJECT_SOURCE_DIR}/tests/support/bcn.c"
-        gpu/vk/cmd.c gpu/vk/descriptors.c gpu/vk/memory.c gpu/vk/record.c gpu/vk/vma.cpp ${snx_astc_plat} "${volk_SOURCE_DIR}/volk.c"
+        gpu/vk/cmd.c gpu/vk/descriptors.c gpu/vk/descriptor_heaps.c gpu/vk/descriptor_objects.c
+        gpu/vk/memory.c gpu/vk/resource_stats.c gpu/vk/record.c gpu/vk/checkpoints.c gpu/vk/vma.cpp ${snx_astc_plat} "${volk_SOURCE_DIR}/volk.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/blocklinear_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/bc7_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/bc7_fast_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/bc7_mode6_spv.c"
@@ -413,11 +543,15 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     set_target_properties(snx-test-astc-vulkan PROPERTIES LINKER_LANGUAGE CXX)
     add_test(NAME astc_vulkan COMMAND snx-test-astc-vulkan)
     add_test(NAME astc_vulkan_pieces COMMAND snx-test-astc-vulkan --vk_max_allocation_mb=4)
+    add_test(NAME astc_vulkan_upload_wait COMMAND snx-test-astc-vulkan --upload-wait)
+    add_test(NAME astc_vulkan_upload_retire COMMAND snx-test-astc-vulkan --upload-retire)
+    set_tests_properties(astc_vulkan_upload_wait astc_vulkan_upload_retire PROPERTIES SKIP_RETURN_CODE 77)
     # pieces, and then the line the program prints only once every comparison passed: a pass expression alone
     # passes the test whatever the exit code
     set_tests_properties(astc_vulkan_pieces PROPERTIES PASS_REGULAR_EXPRESSION
                          "memory in pieces.*All ASTC Vulkan comparisons passed")
-    set_tests_properties(astc_vulkan astc_vulkan_pieces PROPERTIES TIMEOUT 300)
+    set_tests_properties(astc_vulkan astc_vulkan_pieces astc_vulkan_upload_wait astc_vulkan_upload_retire
+        PROPERTIES TIMEOUT 300)
 endif()
 if(BUILD_TESTING)
     snx_sanitizer_path() # tests/CMakeLists.txt: this folder's tests

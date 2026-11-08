@@ -11,8 +11,6 @@
 #include "hle/services/set.swipc.inc"
 #include "nx/hle/services/key_code_map.inc"
 
-#define SET_INVALID_LANGUAGE RC(105, 625)
-
 /* nn::settings::Language, in the order of its values, with the region and keyboard layout that go with each */
 static const struct {
     char code[8];
@@ -76,7 +74,7 @@ static int nn_settings_ISettingsServer_GetAvailableLanguageCodes(SvcObj* self, I
 }
 static int nn_settings_ISettingsServer_MakeLanguageCode(SvcObj* self, u32 language, nn_settings_LanguageCode* code) {
     (void)self;
-    R_UNLESS(language < (u32)SET_LANGUAGES, SET_INVALID_LANGUAGE);
+    R_UNLESS(language < (u32)SET_LANGUAGES, SNX_RC_SETTINGS_LANGUAGE_OUT_OF_RANGE);
     memcpy(code->v, set_languages[language].code, 8);
     R_SUCCEED();
 }

@@ -97,7 +97,7 @@ KObj* h_get_ref(u32 h, int type) {
 }
 int h_close(u32 h) {
     KObj* o = handle_object(h);
-    if (!o) return R_BADHANDLE;
+    if (!o) return SNX_RC_SVC_INVALID_HANDLE;
     handles[h - H_BASE] = NULL;
     kobj_unref(o);
     return 0;

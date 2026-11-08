@@ -4,11 +4,15 @@
    the vitasdk headers (MIT) declare them */
 #include "vita/hle/hle.h"
 #include "common/utilities/common.h"
+#include "snx_settings.h"
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 
 #define SCE_KERNEL_ERROR_WAIT_DELETE      0x80028006u
+#define SCE_KERNEL_ERROR_ILLEGAL_THREAD_ID 0x80028022u
+#define SCE_KERNEL_ERROR_ALREADY_SENT     0x80028121u
 #define SCE_KERNEL_ERROR_UNKNOWN_SEMA_ID  0x80028101u
 #define SCE_KERNEL_ERROR_UNKNOWN_MUTEX_ID 0x80028141u
 #define SCE_KERNEL_ERROR_UNKNOWN_EVF_ID   0x800280e1u
@@ -49,6 +53,11 @@ static uint32_t start_thread(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 static uint32_t exit_thread(VitaProcess* p, VitaThread* t) {
+    if (vita_in_module_start(t)) {
+        t->cpu.r[0] = arg(p, t, 0);
+        vita_hle_call_returned(p, t);
+        return t->cpu.r[0];
+    }
     vita_thread_end(p, t, (int32_t)arg(p, t, 0));
     return 0;
 }
@@ -125,6 +134,29 @@ static uint32_t exit_process(VitaProcess* p, VitaThread* t) {
 static uint32_t get_process_id(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 0x10005;
+}
+/* sceKernelGetProcessParam(): the SceProcessParam block the main module exports (NID 0x70fba1e7). libc.suprx's
+   module_start calls this to reach the SceLibcParam (heap size, malloc replacement, main thread's stack and
+   priority), so returning 0 here aborts libc's init and, through vita_module_start_next's chain, the whole run.
+   p->image.process_param is the same block, already relocated into guest memory (image.c's exports() records it
+   from the export with NID 0x70fba1e7, and process.c already reads it for the main thread's stack and priority).
+   Vita3K's sceKernelGetProcessParam returns that same block. */
+static uint32_t get_process_param(VitaProcess* p, VitaThread* t) {
+    static unsigned shown;
+    (void)t;
+    uint32_t pp = p->image.process_param;
+    if (shown < 1) {
+        printf("vita: sceKernelGetProcessParam() -> 0x%08" PRIx32 "\n", pp);
+        if (pp && vita_mapped(p, pp, 0x20)) {
+            printf("vita:   size=%u magic=0x%08x ver=%u name=0x%08x stacksize=0x%08x prio=0x%08x "
+                   "libcparam=0x%08x userproc=0x%08x\n",
+                   vita_read32(p, pp),      vita_read32(p, pp + 4),  vita_read32(p, pp + 8),
+                   vita_read32(p, pp + 0xC), vita_read32(p, pp + 0x10), vita_read32(p, pp + 0x14),
+                   vita_read32(p, pp + 0x18), vita_read32(p, pp + 0x1C));
+        }
+        ++shown;
+    }
+    return pp;
 }
 
 /* ---- semaphores ---- */
@@ -372,8 +404,9 @@ static uint32_t create_cond(VitaProcess* p, VitaThread* t) {
     o->u.cond.mutex = arg(p, t, 2);
     return uid;
 }
-static uint32_t wait_cond(VitaProcess* p, VitaThread* t) {
-    uint32_t uid = arg(p, t, 0);
+/* timeout is the guest's SceUInt32* (0 for none), as VitaWait.timeout and vita_deadline take it: the wait writes the time
+   left back through it */
+static uint32_t cond_wait(VitaProcess* p, VitaThread* t, uint32_t uid, uint32_t timeout) {
     VitaObject* c = vita_object(p, uid, VITA_OBJ_COND);
     if (!c) return SCE_KERNEL_ERROR_UNKNOWN_COND_ID;
     VitaObject* m = vita_object(p, c->u.cond.mutex, VITA_OBJ_MUTEX);
@@ -382,11 +415,11 @@ static uint32_t wait_cond(VitaProcess* p, VitaThread* t) {
     m->u.mutex.owner = 0, m->u.mutex.count = 0;
     hand_over(p, c->u.cond.mutex, m);
     vita_wait(p, (VitaWait){.kind = VITA_WAIT_COND, .object = uid, .a = c->u.cond.mutex, .out = count,
-                            .timeout = arg(p, t, 1), .deadline = vita_deadline(p, arg(p, t, 1))});
+                            .timeout = timeout, .deadline = vita_deadline(p, timeout)});
     return 0;
 }
-static uint32_t signal_cond(VitaProcess* p, VitaThread* t, bool all) {
-    uint32_t uid = arg(p, t, 0);
+static uint32_t wait_cond(VitaProcess* p, VitaThread* t) { return cond_wait(p, t, arg(p, t, 0), arg(p, t, 1)); }
+static uint32_t cond_signal(VitaProcess* p, uint32_t uid, bool all) {
     if (!vita_object(p, uid, VITA_OBJ_COND)) return SCE_KERNEL_ERROR_UNKNOWN_COND_ID;
     VitaThread* first = NULL;
     for (unsigned i = 0; i < VITA_THREADS; ++i) {
@@ -401,10 +434,63 @@ static uint32_t signal_cond(VitaProcess* p, VitaThread* t, bool all) {
     if (first) first->wait.b = 1;
     return 0;
 }
-static uint32_t signal_cond_one(VitaProcess* p, VitaThread* t) { return signal_cond(p, t, false); }
-static uint32_t signal_cond_all(VitaProcess* p, VitaThread* t) { return signal_cond(p, t, true); }
+static uint32_t signal_cond_one(VitaProcess* p, VitaThread* t) { return cond_signal(p, arg(p, t, 0), false); }
+static uint32_t signal_cond_all(VitaProcess* p, VitaThread* t) { return cond_signal(p, arg(p, t, 0), true); }
 static uint32_t delete_cond(VitaProcess* p, VitaThread* t) {
     return delete_object(p, t, VITA_OBJ_COND, SCE_KERNEL_ERROR_UNKNOWN_COND_ID);
+}
+
+/* ---- LwConds: the work area's first word holds the UID of a cond, whose mutex is the LwMutex given at creation ---- */
+static VitaObject* lw_cond(VitaProcess* p, uint32_t work, uint32_t* uid) {
+    *uid = work ? vita_read32(p, work) : 0;
+    return vita_object(p, *uid, VITA_OBJ_COND);
+}
+/* sceKernelCreateLwCond(work, name, attr, LwMutex work, options) */
+static uint32_t create_lw_cond(VitaProcess* p, VitaThread* t) {
+    uint32_t work = arg(p, t, 0), mutex_work = arg(p, t, 3);
+    uint32_t mutex = mutex_work ? vita_read32(p, mutex_work) : 0;
+    if (!vita_object(p, mutex, VITA_OBJ_MUTEX)) return SCE_KERNEL_ERROR_UNKNOWN_MUTEX_ID;
+    char name[32];
+    VitaObject* o;
+    name_of(p, arg(p, t, 1), name);
+    uint32_t uid = vita_object_new(p, VITA_OBJ_COND, name, &o);
+    if (!uid) return SCE_KERNEL_ERROR_NO_MEMORY;
+    o->u.cond.mutex = mutex;
+    vita_write32(p, work, uid);
+    return 0;
+}
+/* sceKernelWaitLwCond(work, uint32_t* timeout): no timeout pointer waits for good */
+static uint32_t wait_lw_cond(VitaProcess* p, VitaThread* t) {
+    uint32_t uid, at = arg(p, t, 1);
+    if (!lw_cond(p, arg(p, t, 0), &uid)) return SCE_KERNEL_ERROR_UNKNOWN_COND_ID;
+    return cond_wait(p, t, uid, at && vita_mapped(p, at, 4) ? at : 0);
+}
+static uint32_t signal_lw_cond(VitaProcess* p, VitaThread* t) {
+    uint32_t uid;
+    return lw_cond(p, arg(p, t, 0), &uid) ? cond_signal(p, uid, false) : SCE_KERNEL_ERROR_UNKNOWN_COND_ID;
+}
+static uint32_t signal_lw_cond_all(VitaProcess* p, VitaThread* t) {
+    uint32_t uid;
+    return lw_cond(p, arg(p, t, 0), &uid) ? cond_signal(p, uid, true) : SCE_KERNEL_ERROR_UNKNOWN_COND_ID;
+}
+/* sceKernelSignalLwCondTo(work, thread UID): that thread's wait, if it waits on the cond */
+static uint32_t signal_lw_cond_to(VitaProcess* p, VitaThread* t) {
+    uint32_t uid;
+    if (!lw_cond(p, arg(p, t, 0), &uid)) return SCE_KERNEL_ERROR_UNKNOWN_COND_ID;
+    for (unsigned i = 0; i < VITA_THREADS; ++i) {
+        VitaThread* w = &p->threads[i];
+        if (w->uid == arg(p, t, 1) && w->state == VITA_THREAD_WAITING && w->wait.kind == VITA_WAIT_COND &&
+            w->wait.object == uid && !w->wait.b)
+            w->wait.b = 1;
+    }
+    return 0;
+}
+static uint32_t delete_lw_cond(VitaProcess* p, VitaThread* t) {
+    uint32_t uid;
+    if (!lw_cond(p, arg(p, t, 0), &uid)) return SCE_KERNEL_ERROR_UNKNOWN_COND_ID;
+    vita_object_delete(p, uid);
+    vita_write32(p, arg(p, t, 0), 0);
+    return 0;
 }
 
 /* ---- reader-writer locks ---- */
@@ -490,6 +576,34 @@ static uint32_t close_object(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 0;
 }
+/* sceKernelWaitSignal(unused, unused, SceUInt32* timeout) and sceKernelSendSignal(thread): a one-bit mailbox on each
+   thread (Vita3K's ThreadState::wait_for_signal and send_signal). A signal sent before the wait ends it at once, with
+   the timeout untouched. libult's idle workers sleep here, so a call that returned at once made them find an empty
+   queue and assert. */
+static uint32_t wait_signal(VitaProcess* p, VitaThread* t) {
+    if (t->signal_pending) {
+        t->signal_pending = false;
+        return 0;
+    }
+    vita_wait(p, (VitaWait){.kind = VITA_WAIT_SIGNAL, .timeout = arg(p, t, 2),
+                            .deadline = vita_deadline(p, arg(p, t, 2))});
+    return 0;
+}
+static uint32_t send_signal(VitaProcess* p, VitaThread* t) {
+    uint32_t uid = arg(p, t, 0);
+    if (!uid) return SCE_KERNEL_ERROR_ILLEGAL_THREAD_ID;
+    VitaThread* target = vita_thread(p, uid);
+    if (!target) return SCE_KERNEL_ERROR_UNKNOWN_THREAD_ID;
+    if (target->signal_pending) return SCE_KERNEL_ERROR_ALREADY_SENT;
+    target->signal_pending = true;
+    return 0;
+}
+/* SceUlobjDbg's two functions (0xd7f0f610, 0xf9c0f5da): libult's debug registration of its user-level objects. Vita3K
+   leaves both unimplemented, as the debugger they report to isn't there */
+static uint32_t ulobj_dbg(VitaProcess* p, VitaThread* t) {
+    (void)p, (void)t;
+    return 0;
+}
 
 bool vita_kernel_wait_try(VitaProcess* p, VitaThread* t, uint64_t now) {
     (void)now;
@@ -529,6 +643,10 @@ bool vita_kernel_wait_try(VitaProcess* p, VitaThread* t, uint64_t now) {
             if (!event_met(p, o, w->a, w->b, w->out)) return false;
             return t->cpu.r[0] = 0, true;
         }
+        case VITA_WAIT_SIGNAL:
+            if (!t->signal_pending) return false;
+            t->signal_pending = false;
+            return t->cpu.r[0] = 0, true;
         case VITA_WAIT_VBLANK: /* b set: the result is the one the call made before waiting */
             if (p->display.vblanks <= w->a) return false;
             if (!w->b) t->cpu.r[0] = 0;
@@ -647,6 +765,7 @@ const VitaHle vita_hle_kernel[] = {
     {0xb295eb61u, "sceKernelGetTLSAddr", get_tls_addr},
     {0x7595d9aau, "sceKernelExitProcess", exit_process},
     {0x9dcb4b7au, "sceKernelGetProcessId", get_process_id},
+    {0x2be3e066u, "sceKernelGetProcessParam", get_process_param},
     {0x1bd67366u, "sceKernelCreateSema", create_sema},
     {0x0c7b834bu, "sceKernelWaitSema", wait_sema},
     {0x174692b4u, "sceKernelWaitSemaCB", wait_sema},
@@ -675,12 +794,27 @@ const VitaHle vita_hle_kernel[] = {
     {0x6ed2e2dcu, "sceKernelSignalCond", signal_cond_one},
     {0xc2e7ac22u, "sceKernelSignalCondAll", signal_cond_all},
     {0x879e6ebdu, "sceKernelDeleteCond", delete_cond},
+    {0x48c7eae6u, "sceKernelCreateLwCond", create_lw_cond},
+    {0xe1878282u, "sceKernelWaitLwCond", wait_lw_cond},
+    {0x3ac63b9au, "sceKernelSignalLwCond", signal_lw_cond},
+    {0xe5241a0cu, "sceKernelSignalLwCondAll", signal_lw_cond_all},
+    {0xfc1a48ebu, "sceKernelSignalLwCondTo", signal_lw_cond_to},
+    {0x721f6cb3u, "sceKernelDeleteLwCond", delete_lw_cond},
+    {0x8fa54b07u, "sceKernelWaitLwCondCB", wait_lw_cond},
+    {0x3148c6b6u, "sceKernelLockLwMutexCB", lock_lw_mutex},
+    {0x2bdaa524u, "sceKernelLockMutexCB", lock_mutex},
+    {0x4ce42ce2u, "sceKernelWaitCondCB", wait_cond},
+    {0xe737b1dfu, "sceKernelWaitEventFlagCB", wait_event_flag},
+    {0x2d4a62b7u, "sceKernelLockReadRWLockCB", lock_read_rw_lock},
+    {0xa4777082u, "sceKernelLockWriteRWLockCB", lock_write_rw_lock},
+    {0xc54941edu, "sceKernelWaitThreadEndCB", wait_thread_end},
     {0xb9d5ebdeu, "sceKernelAllocMemBlock", alloc_mem_block},
     {0xb8ef5818u, "sceKernelGetMemBlockBase", get_mem_block_base},
     {0xa91e15eeu, "sceKernelFreeMemBlock", free_mem_block},
     {0xa33b99d1u, "sceKernelFindMemBlockByAddr", find_mem_block_by_addr},
     {0x87cc580bu, "sceKernelGetFreeMemorySize", get_free_memory_size},
     {0xb110c123u, "sceKernelGetProcessTimeWide", get_process_time_wide},
+    {0x4c4672bfu, "sceKernelGetProcessTime", get_process_time_wide},
     {0xe9f973b1u, "sceKernelGetProcessTimeLow", get_process_time_low},
     {0xf4ee4fa9u, "sceKernelGetSystemTimeWide", get_process_time_wide},
     {0x4b879059u, "sceKernelLibcGettimeofday", libc_gettimeofday},
@@ -694,5 +828,10 @@ const VitaHle vita_hle_kernel[] = {
     {0x8d9c5461u, "sceKernelGetThreadInfo", get_thread_info},
     {0xf1ae5654u, "sceKernelGetThreadCpuAffinityMask", get_thread_cpu_affinity_mask},
     {0x03e23af6u, "sceKernelCloseMutex", close_object},
+    {0xadca94e5u, "sceKernelWaitSignal", wait_signal},
+    {0x24460bb3u, "sceKernelWaitSignalCB", wait_signal},
+    {0xd4c367b2u, "sceKernelSendSignal", send_signal},
+    {0xd7f0f610u, "SceUlobjDbg_D7F0F610", ulobj_dbg},
+    {0xf9c0f5dau, "SceUlobjDbg_F9C0F5DA", ulobj_dbg},
     {0, NULL, NULL},
 };

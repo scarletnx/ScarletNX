@@ -8,6 +8,9 @@
   * [Where it differs from Eden](#where-it-differs-from-eden)
 * [The upload path](#the-upload-path)
 * [Encoded again as BC7](#encoded-again-as-bc7)
+  * [Auto, Exact and BC7](#auto-exact-and-bc7)
+  * [Between frames](#between-frames)
+  * [The fast build](#the-fast-build)
   * [The BC7 cache](#the-bc7-cache)
 * [Textures bigger than one allocation](#textures-bigger-than-one-allocation)
 * [Sparse textures](#sparse-textures)
@@ -173,9 +176,9 @@ is left out, the texture keeps its old hash, and the next check uploads it again
 ## Encoded again as BC7
 
 Most desktop GPUs sample BCn but not ASTC, and a decoded ASTC texture is four bytes a texel where the game's blocks
-take one (4x4) or less. With the `astc_mode` setting at Auto (`0`, the default, a `startup` setting), `format.c`'s
-`TA()` gives such a texture a `VK_FORMAT_BC7_UNORM_BLOCK` or `_SRGB_BLOCK` image in place of RGBA8, and
-`vk_astc_upload` runs a second dispatch after the decode: `src/nx/gpu/texture/bc7.comp`, with its body in
+take one (4x4) or less. Held as BC7 (the `astc_mode` setting, below), `format.c`'s `TA()` gives such a texture a
+`VK_FORMAT_BC7_UNORM_BLOCK` or `_SRGB_BLOCK` image in place of RGBA8, which texture.c makes between frames from an
+RGBA8 one (below), and `vk_astc_upload`, where it uploads straight to BC7, runs a second dispatch after the decode: `src/nx/gpu/texture/bc7.comp`, with its body in
 `bc7_encode.glsl`, encodes the decoded texels into BC7 blocks, an invocation a block, into a second scratch buffer of
 the same size, and the copy writes those blocks into the image. A BC7 strip starts on a row of whole 4x4 blocks, so
 its ASTC block rows are a multiple of 4 / gcd(block height, 4), and whole slices are counted by the blocks' bytes
@@ -184,55 +187,90 @@ it whatever `native_bc` says, and `format.c` then samples BCn as it is only when
 keeps RGBA8 where the device has no 3D BC7 images, as native block formats do. Every 600 frames the log says how many
 levels went up as BC7 and their megabytes against RGBA8's.
 
-BC7 is the default because memory is what a desktop GPU runs short of. As RGBA8, one game's textures took 5.7 GB of a
-5.7 GB budget and were evicted and uploaded again every frame (600 to 1000 ms frames). As BC7 they took 2.5 GB. The
-encode costs most on the first run: the BC7 cache below keeps each level's blocks for the runs after it. BC7 is not
-exact: on one game's 6x6 textures the full build gives 53.8 dB over RGBA, the fast build 50.7, both with a worst
-channel error of 50 (see the tables below). `astc_mode=1` (Exact) decodes to RGBA8 instead, for a player who sees the
-difference, mostly in UI text. The runtime once kept RGBA8 until memory ran short and then took BC7 for the textures
-of 256x256 texels or more. That spent a whole budget before it changed, and the small textures it kept exact were
-1.5% of the bytes in one game's sample.
-
 A texture with holes in its mapping (a game's sparse texture, `texture.c`) is BC7 whatever `astc_mode` says, where the
 GPU samples BCn: one game's are 68 layers of 8192x8192 ASTC 8x8 with seven of them mapped, 1.7 GB each as RGBA8 (16
-times the game's bytes), which took the GPU past its memory. `device.c` turns `textureCompressionBC` on wherever the
-device has it for this. A sparse texture's levels are decoded only in the strips that have memory bound
-(`vk_image_sparse_bound`), in strips as high as the device's sparse blocks.
+times the game's bytes), which took the GPU past its memory. So it goes up straight to BC7, not RGBA8 first and BC7
+between frames (below). `device.c` turns `textureCompressionBC` on wherever the device has it for this. A sparse
+texture's levels are decoded only in the strips that have memory bound (`vk_image_sparse_bound`), in strips as high
+as the device's sparse blocks.
 
-Every level takes the encoder's fast build, `bc7_fast_spv` (`SNX_BC7_FAST` 1: `VK_BC7_FAST_TEXELS` is 0): a block
-whose mode 6 error is 256 or less (squared, summed over its 16 texels and 4 channels: 2 a channel on average) keeps
-mode 6, and only the others try every mode, where the full build keeps mode 6 only when it is exact. A level of
-`VK_BC7_MODE6_TEXELS` (8192x8192) or more takes mode 6 alone, `bc7_mode6_spv` (`SNX_BC7_FAST` 2). On a
-GeForce RTX 2080 an 8192x8192 level of random 8x8 blocks (`snx-test-astc-vulkan --bench`) decoded in 15 ms and
-encoded in 860 ms with every mode and in 48 ms with mode 6 alone; the game above needed about a thousand million
-texels at once.
+An array texture goes up a level at a time over all its layers (`vk_astc_upload_layers`), the layers as a 3D level's
+slices: a strip takes as many as the scratch holds, and the encoder runs once for them. A layer and level at a time, a
+small level gave the encoder too little to fill the GPU and each layer's dispatch waited for the one before: one
+game's arrays of 118 layers of 128x128 in 8 levels took 667 ms of an RX 6700 XT, where a level of one in a dispatch
+takes 13.5 ms, and the game stopped 1.4 s for two of them.
 
-The fast build was mode 6 alone, which holds gradients but not edges: on the picture below gradients at 43 dB, edges
-at 26, noise at 25 and alpha at 40, and on astcenc's normal maps (luminance and alpha apart) errors of up to 239 a
-channel. The threshold keeps 96% of the blocks in mode 6 and most of the full build's quality:
+`vk_astc_upload` waits for the GPU once 256 thousand blocks are queued. The encoder is slow on a small GPU, and without
+the wait a load queued up tens of seconds of it and the device was lost in most runs of one game, on a GT 1030, with
+nothing in the validation layer or the kernel's log. Why the depth of the queue does that is not known: it is the
+driver's. Splitting the work over submissions with no wait did not help, and neither did smaller dispatches.
 
-| One game's ASTC 6x6 textures (25), and astcenc's 4x4, 8x8 and 12x12 encodings of 7 of them (CPU model) | Full | Fast build | Mode 6 alone |
-| --- | --- | --- | --- |
-| 6x6, PSNR over RGBA / worst channel error | 53.8 dB / 50 | 50.7 dB / 50 | 46.5 dB / 147 |
-| 4x4 | 46.6 dB / 65 | 45.9 dB / 65 | 32.9 dB / 239 |
-| 8x8 | 47.6 dB / 50 | 46.7 dB / 50 | 36.2 dB / 231 |
-| 12x12 | 46.4 dB / 68 | 45.7 dB / 68 | 38.0 dB / 196 |
-| The picture below: gradients, edges, noise, alpha | 51.1, 49.0, 29.0, 48.0 | 43.4, 46.8, 29.0, 47.7 | 43.2, 26.2, 25.2, 40.0 |
+### Auto, Exact and BC7
 
-What it costs depends on the content, as the blocks that try every mode are as slow as in the full build and hold up
-the invocations beside them. On the RTX 2080, beside a running game, a 4096x4096 level took (decoding included):
+`astc_mode` (a `startup` setting) says how a GPU that samples BCn but not ASTC holds the ASTC textures it decodes:
 
-| Content | Mode 6 alone | Fast build | Full build (2040x2040, scaled) |
-| --- | --- | --- | --- |
-| One game's ASTC 6x6 albedo | 7 to 11 ms | 12 to 14 ms | 190 ms |
-| One game's ASTC 6x6 packed masks (the worst of its textures tried) | 7 to 8 ms | 85 to 88 ms | 250 ms |
-| astcenc 8x8 normal map | not measured | 256 to 267 ms | not measured |
-| Random 8x8 blocks | 21 to 29 ms | 189 to 196 ms | 260 ms |
+| Value | Name | Held as |
+| --- | --- | --- |
+| `0` | Auto, the default | Exact where the budget of the heap images go to is 8 GiB or more as the device starts, else BC7 |
+| `1` | Exact | RGBA8, as the game's blocks decode, four bytes a texel |
+| `2` | BC7 | RGBA8 at once, then BC7 made between frames, a byte a texel |
 
-With `astc_mode=1`, on a GPU that samples BCn but not ASTC, the log suggests Auto once a run, with the budget, the use
-and the megabytes of ASTC textures decoded to RGBA8, when the images run short (`surface.c`'s `astc_bc_suggest`): an
-image allocation finds no memory, a trim leaves the caches past their budget, or a trim takes what the last two
+Memory is what a desktop GPU runs short of. As RGBA8, one game's textures took 5.7 GB of a 5.7 GB budget and were
+evicted and uploaded again every frame (600 to 1000 ms frames); as BC7 they took 2.5 GB. Another took 3.9 GB of an
+RX 6700 XT's 11.8 GB budget as RGBA8, 0.4 GB more than as BC7, and its frames were smoother so. BC7 is not exact (its
+PSNR is below), mostly seen in UI text. Auto's line (`SNX_ASTC_EXACT_MB` in `gpu/texture/astc_bc.h`) is drawn
+between them: the budget is `VK_EXT_memory_budget`'s (VMA's estimate of 80% of the heap without it), or `vk_budget_mb`
+where that is lower, as `vk_mem_use` gives it, read once after the device is made (`device.c`'s `astc_choose`). The
+log's line says the budget, the line and the choice (an RX 6700 XT's):
+
+```
+vulkan: astc_mode=0 (Auto): heap 1's budget is 11834 MB as the device starts, at least 8192 MB: ASTC textures are decoded to RGBA8, exact, in four times BC7's memory (Exact)
+```
+
+Held as RGBA8 (Exact, or Auto with the budget for it), the log suggests `astc_mode=2` once a run, with the budget, the
+use and the megabytes of ASTC textures decoded to RGBA8, when the images run short (`surface.c`'s `astc_bc_suggest`):
+an image allocation finds no memory, a trim leaves the caches past their budget, or a trim takes what the last eight
 presents used (the working set, which the next frames load again).
+
+### Between frames
+
+Uploading straight to BC7 held the game for the encoder: the encoder makes about 10 million blocks a second on an
+RX 6700 XT, and two arrays coming in one frame cost 30 to 40 ms of it, frames of 50 to 90 ms, where RGBA8 left none
+over 50 ms on the same route. So a texture held as BC7 goes up decoded to RGBA8, which the game samples at once, and
+texture.c (`vk_tex_later_frame`, after each present, in a submission of its own that the present doesn't wait for)
+makes its BC7 image from those texels: `vk_bc7_encode_image` copies a strip of the RGBA8 image into the decoder's
+scratch buffer, where the decode would have left the texels, and encodes it as an upload does, so the blocks are the
+same an upload straight to BC7 makes. A frame encodes `VK_BC7_LATER_BLOCKS` (32768) blocks at most: 3.3 ms of the
+RX 6700 XT, a tenth of a frame at 30 fps. Its strips are whole slices of a level (an array's layers, a 3D level's
+depth slices, as many as the blocks left take), or rows of blocks of one when a slice is more than that; a frame's
+first strip is one row at least. Textures go in the order they were loaded, one at a time. The step does nothing when
+`vk_cmd` would wait for the GPU first, so it never holds the frame after the present.
+
+Once the BC7 image is whole it takes the RGBA8 one's place in the texture, moved to the layout the RGBA8 one was
+sampled in, and the RGBA8 image and its views go once the frames that sample them are done (`vk_defer_image`), three
+quarters of its memory. Meanwhile the texture takes RGBA8's memory and a quarter more for the BC7 image being made.
+
+- Written before its BC7 image is whole (a whole load or pieces, which give it a new write generation): the encoder
+  drops what it made and starts over on the new texels, behind the other textures.
+- Written whole after: an RGBA8 image in the BC7 one's place, loaded at once, and the encoder makes BC7 again. Where
+  no memory is found for it, the texture is left out until a check finds some, as any image that finds none.
+- Written in pieces after: pieces of a frame's blocks or fewer go straight to BC7 (they are decoded and encoded as a
+  region, as above); more load whole as RGBA8 (`later_pieces_whole`).
+- A texture whose memory is bound by tiles (sparse) is BC7 from the start and loaded straight to it, as the tiles
+  of an RGBA8 image don't match the guest's (below).
+- A texture freed leaves the queue, and the BC7 image being made goes with it.
+
+A texture the game writes often is held Exact instead (`later_wrote`): written again before the encoder could make its
+BC7 image and the game sample that a frame, that is no more frames after the write before than the encoder takes for it
+(a frame for each 32768 blocks) and one, it leaves the queue and stays RGBA8, and its writes load as RGBA8 alone,
+pieces too: as BC7 each write would drop the encoder's work, or encode the pieces where the game waits for them. A
+write every frame is held so whatever the texture's size; a 2048x2048 one with its mips, 349,525 BC7 blocks and 11
+frames of the encoder, is held when written every 12 frames or more often. Read unwritten for four times those frames and one, and 30
+frames at least (`later_cool`), it is queued to be made BC7 again: a texture read much and written little stays BC7.
+
+Every 600 frames the log says how many textures were made BC7 between frames, the RGBA8 memory that freed, the blocks
+encoded and the encodes started over, how many textures wait with their RGBA8 memory, and how many are held Exact for
+their writes, went so and were made BC7 again.
 
 The encoder tries each block in the modes that suit it and writes the one with the least squared error. Every
 block takes mode 6, one line through RGBA with 4-bit weights, which holds a block of one gradient closely. An opaque
@@ -266,48 +304,98 @@ NVIDIA's driver; it is 145 KB now, and an 8192x8192 level that took 10.9 seconds
 byte for byte: the old and new files, run on the CPU over 65,536 blocks of noise, opaque noise, edges and two
 colours with alpha, wrote the same bytes, and a broken anchor in the new one showed.
 
+A block stops trying modes once its squared error over all its texels and channels is `SNX_BC7_GOOD_ENOUGH` (16) or less,
+a mean squared error of a quarter, 54 dB, for that block. A hard block still gets the whole search. Within a fit,
+`Eval` leaves a candidate once its partial error proves it cannot win, and a second least squares runs only on
+weights that changed. Quality tests compare against the prior unpruned search and require each block to stay
+within the 16-error allowance or produce no more error than that reference.
+
 What it costs, as PSNR against what it encodes, on edenprobe's astcimage picture (gradients, hard edges where three
 colours meet in a block, noise, and alpha) decoded from ASTC: 39.9 dB over the picture at 4x4 (gradients 53.1,
 edges 48.9, noise 34.2, alpha 50.9), 40.4 at 6x6, 46.2 at 8x8 and 45.2 at 12x12. Mode 6 alone gave 27.6 at 4x4,
 its edges 23.5. Noise is what BC7 holds worst: a block of independent texels is a line or two of them at best.
 
+### The fast build
+
+A level of `VK_BC7_FAST_TEXELS` or more takes the encoder's fast build, `bc7_fast_spv` (`SNX_BC7_FAST` 1): a block
+whose mode 6 error is 256 or less (squared, summed over its 16 texels and 4 channels: 2 a channel as a root mean
+square) keeps mode 6, and only the others try every mode, stopping at `SNX_BC7_GOOD_ENOUGH` as the full build does. A
+level of `VK_BC7_MODE6_TEXELS` (8192x8192) or more takes mode 6 alone, `bc7_mode6_spv` (`SNX_BC7_FAST` 2): a game's
+sparse texture of seven mapped 8192x8192 layers took the full encoder 14 seconds on a GeForce RTX 2080, which mode 6
+alone encodes at 1200 megatexels a second. The build goes by the level's size, not the region's (`vk_bc7_build`), so a
+level loaded in pieces, or made BC7 between frames, encodes each block as its whole upload does. Each build's
+pipeline is made the first time a level asks for it.
+
+Mode 6 alone holds gradients but not edges, a second plane or luminance apart from alpha; the threshold keeps most
+of the full build's quality. PSNR over RGBA and the worst channel error:
+
+| Content | Full | Fast build | Mode 6 alone |
+| --- | --- | --- | --- |
+| The picture below: gradients, edges, noise, alpha (`bc7_glsl`) | 51.1, 49.0, 29.0, 48.0 | 43.4, 46.8, 29.0, 47.7 | 43.2, 26.2, 25.2, 40.0 |
+| Random ASTC 4x4, 6x6, 8x8, 12x12 blocks, 256x256 decoded (CPU model) | 48.58, 42.96, 46.23, 44.45 | 48.56, 42.92, 46.19, 44.39 | not measured |
+| One game's ASTC 6x6 textures, 25 (fuddlesworth, RTX 2080) | 53.8 dB / 50 | 50.7 dB / 50 | 46.5 dB / 147 |
+| astcenc's 4x4, 8x8, 12x12 encodings of 7 of them (same) | 46.6, 47.6, 46.4 | 45.9, 46.7, 45.7 | 32.9, 36.2, 38.0 |
+
+On the random blocks 1.3 to 5.9% of the fast build's blocks differ from the full build's, and 90 to 98% of them are
+mode 6.
+
+`VK_BC7_FAST_TEXELS` is 0: every level takes the fast build. The full build had most of a game's textures, those under
+2048x2048, and a batch of them held a frame for seconds. On an RX 6700 XT (RADV), a level of random 8x8 blocks decoded
+and encoded (`snx-test-astc-vulkan --bench`, two interleaved rounds of four runs after the first; a -O0 test build,
+the time the GPU's):
+
+| Level | Full build | Fast build |
+| --- | --- | --- |
+| 4096x4096 | 103 to 107 ms, 9.8 to 10.2 million BC7 blocks a second | 76 to 80 ms, 13.1 to 13.8 million |
+| 2040x2040 | 23.5 to 24.3 ms, 10.7 to 11.1 million | 17.5 to 18.2 ms, 14.3 to 14.8 million |
+
+Random blocks are the fast build's worst case: the blocks that try every mode hold up the invocations beside them.
+On a GeForce RTX 2080 an 8192x8192 level of random 8x8 blocks decoded in 15 ms and encoded in 860 ms with every mode
+and in 48 ms with mode 6 alone. Beside a running game, a 4096x4096 level took (decoding included):
+
+| Content | Mode 6 alone | Fast build | Full build (2040x2040, scaled) |
+| --- | --- | --- | --- |
+| One game's ASTC 6x6 albedo | 7 to 11 ms | 12 to 14 ms | 190 ms |
+| One game's ASTC 6x6 packed masks (the worst of its textures tried) | 7 to 8 ms | 85 to 88 ms | 250 ms |
+| astcenc 8x8 normal map | not measured | 256 to 267 ms | not measured |
+| Random 8x8 blocks | 21 to 29 ms | 189 to 196 ms | 260 ms |
+
 ### The BC7 cache
 
-The memory budget's trim evicts textures that the game uses again, and each comes back through the encoder: in one
-game 6,000 to 14,000 level encodes in a 150 second run, each 3 to 5 ms of GPU time (up to 149 ms in one frame). The
-same ASTC bytes always become the same BC7 blocks, so the blocks of each encode are kept, in memory as an index and on
-disk as `shader_cache/<game>.vkbc7`, next to the shader files (`gpu/vk/bc7_cache.c`). The file stays from run to run,
-so a later run hits from its start.
+The same ASTC bytes always become the same BC7 blocks, and the memory budget's trim evicts textures a game uses again:
+each came back through the decoder and the encoder (one game encoded 6,000 to 14,000 levels in a 150 second run, each
+3 to 5 ms of an RTX 2080). So the blocks of each whole level encoded are kept, as an index in memory and records on
+disk in `shader_cache/<game>.vkbc7`, beside the shader files (`gpu/vk/bc7_cache.c`), from run to run. `pipeline.c`
+opens it where ASTC textures are held as BC7 (`vk_astc_bc7`).
 
-- **The key** is XXH3-128 (`vk_hash128`) of the level's guest bytes and the words that place its blocks in them
-  (block linear or pitch, the GOB block's height and depth, GOBs across, the row's bytes and rows, the layers:
-  `texture.c`'s `astc_content`), then of that hash with the level's size, slices or layers, footprint, sRGB decode
-  mode, the encoder's build (full, fast or mode 6 alone) and `VK_BC7_ENCODER_VERSION` (`vk_bc7_key`). The bytes are
-  hashed as the CPU has them. A level of which the GPU holds any byte (an engine's result, `memory/own.c`) is not
-  keyed: `vk_guest_peek` gives a pattern that names the owner, not the bytes. A level that the page table does not
-  map whole is not keyed, and neither is a sparse texture's level (only its bound strips are decoded).
-- **The file's version** is XXH3-128 of the SPIR-V of the deswizzle, the decoder and the encoder's three builds (a
-  change to any shader changes it), `VK_BC7_ENCODER_VERSION`, the GPU's vendor and device, the driver's version and
-  its pipeline cache UUID (`vk_astc_cache_open`). A file of another version starts empty.
-- **A hit** (`vk_astc_upload` with the key): the record's blocks are read from the file 1 MiB at a time, checked
-  (XXH3 of each piece, folded) while they are copied into staging, and one copy writes the whole level, every layer or
-  slice, into the image. There is no decode, no encode and no read of the ASTC blocks. A record that does not check
-  out is dropped, and the level is encoded again.
-- **A miss** encodes as before, and also copies each strip's blocks into their place in the frame's readback ring
-  (`vk_stage_back`, host-cached memory), with a barrier to the host after the last strip. When that submission is
-  done, `cmd.c`'s landing (`vk_astc_frame_done`) appends the blocks to the file. The GPU thread never waits for
-  them. Blocks in flight are bounded to `VK_BC7_CAPTURE_BYTES` (32 MiB), which bounds the ring's growth. That is also
-  the largest level the cache takes (a 4096x4096 level is 16 MiB). A larger level is encoded each time, as before
-  (from 8192x8192, it is mode 6 alone).
-- **Memory:** only the index stays in RAM, 32 bytes a level, and one 1 MiB buffer for the reads. The blocks stay in
-  the file (and the system's page cache).
-- **Disk:** the file has a bound of `VK_BC7_CACHE_MAX` (4 GiB). A record that would go past it starts the file over.
-  A record that a crash cut short ends the reading, and the file is cut there. While the file is open, it is locked
-  (`snx_lock_file`). A second process of the same game runs without the cache, so it does not write the same file.
+- **The key** is XXH3-128 (`vk_hash128`) of the level's guest bytes, as the CPU has them, and the words that place its
+  blocks in them (block linear or pitch, the GOB block's height and depth, GOBs across, the row's bytes and rows, the
+  layers: `texture.c`'s `astc_content`), then of that hash with the level's size, slices or layers, footprint, sRGB
+  decode mode, the encoder's build and `VK_BC7_ENCODER_VERSION` (`vk_bc7_key`). A level of which the GPU holds any byte
+  (an engine's result, `memory/own.c`) is not keyed, nor one the page table does not map whole, nor a region, nor a
+  sparse texture's (only its bound strips are decoded).
+- **The file's version** is XXH3-128 of the SPIR-V of the deswizzle, the decoder and the encoder's three builds, of
+  `VK_BC7_ENCODER_VERSION`, the GPU's vendor and device, the driver's version and its pipeline cache UUID
+  (`vk_astc_cache_open`). A file of another version starts empty.
+- **Straight to BC7** (`vk_astc_upload` with the key): a hit reads the record's blocks from the file 1 MiB at a time,
+  checks them (XXH3 of each piece, folded) as it copies them into staging, and one copy writes the whole level, every
+  layer or slice, into the image: no decode, no encode. A miss encodes as before and also copies each strip's blocks
+  into their place in the frame's readback ring (`vk_stage_back`), with a barrier to the host after the last strip.
+- **Between frames** (`texture.c`'s `later_encode`): the RGBA8 upload keeps each level's key (`Surf.bc7.key`), and a
+  level the cache has is copied from it into the BC7 image, counted a sixteenth of its blocks against the frame's
+  `VK_BC7_LATER_BLOCKS`; a level the encoder makes whole is copied from the BC7 image into the readback ring
+  (`vk_bc7_capture_level`). A texture whose bytes change in pieces loses its keys until it loads whole again.
+- **Landing:** once the submission is done, `cmd.c`'s landing (`vk_astc_frame_done`) appends the blocks to the file,
+  before the frame's ring is reused. The GPU thread never waits for them. Blocks on their way are bounded to
+  `VK_BC7_CAPTURE_BYTES` (32 MiB), which bounds the ring's growth and is the largest level the cache takes (a 4096x4096
+  level is 16 MiB). A larger level is encoded each time (from 8192x8192, it is mode 6 alone).
+- **Memory and disk:** only the index stays in RAM, 32 bytes a level, and one 1 MiB buffer for the reads. The file has
+  a bound of `VK_BC7_CACHE_MAX` (4 GiB): a record past it starts the file over. A record a crash cut short ends the
+  reading, and the file is cut there; one that does not check out is dropped and its level encoded again. While the
+  file is open it is locked (`snx_lock_file`): a second process of the same game runs without the cache.
 
-RGBA8 levels are not cached. Their decode is the cheap part: an 8192x8192 level decoded in 15 ms on the RTX 2080,
-about 1 ms per 4096x4096 level. As RGBA8, a cached 4096x4096 level would be 64 MiB to read from the file and to
-copy through staging and across PCIe. That is several times what the decode costs.
+RGBA8 levels are not cached: their decode is the cheap part (about 1 ms a 4096x4096 level on the RTX 2080), and a
+cached one would be four times the bytes to read and copy.
 
 ## Textures bigger than one allocation
 
@@ -331,8 +419,8 @@ The `[Debug]` setting `vk_max_allocation_mb` (`--vk_max_allocation_mb=4` for a r
 
 A sparse texture's memory is mapped a 64 KiB tile at a time; for blocks of 16 bytes a tile is 64x64 of them. Where the
 device has sparse residency of 2D images and reads what isn't bound as zeros, `texture.c` gives such a texture's image
-memory only for its mapped tiles. An ASTC 4x4 one held as BC7 (`astc_bc=1`) takes part: BC7's sparse block is 256x256
-texels, 64x64 blocks of 16 bytes too, so each mapped tile is one block of the image, decoded and encoded on its own as
+memory only for its mapped tiles. An ASTC 4x4 one held as BC7 (`astc_mode`, above) takes part: BC7's sparse block is
+256x256 texels, 64x64 blocks of 16 bytes too, so each mapped tile is one block of the image, decoded and encoded on its own as
 a texture's changed runs are. Other footprints (an 8x8 tile is 2x2 BC7 blocks) and ASTC held as RGBA8 (blocks of
 128x128 texels) keep the whole image, and the log line saying so names the format and the device's block in the
 layout's terms.
@@ -386,34 +474,46 @@ separate SPIRV-Tools is needed.
   Without the validation layer installed, the "zero validation errors" line only means that nothing reported an
   error. `build/src/nx/snx-test-astc-vulkan --large` decodes a 2D texture of 11584x11584 (4x4 blocks) and a 3D one of
   512^3 (8x8 blocks), 512 MiB each, past the 256 MiB cap, and compares every byte.
+  `build/src/nx/snx-test-astc-vulkan --bench [file.astc]` times a 4096x4096 level and a 2040x2040 one as RGBA8 and
+  as BC7, in milliseconds, texels and BC7 blocks a second, of random 8x8 blocks or a file's (astcenc's `.astc`)
+  repeated over the level: the encoder's time depends on what it encodes, and random blocks are no game's.
 - `bc7_glsl` (ctest, no GPU) runs `bc7_encode.glsl` on the CPU (`tests/glsl/bc7_cpu.cpp`) and decodes its blocks
   with the CPU reference, `tests/support/bcn.c`: the encoder's 16 weights are the format's, its least squares fit
   gives a line's ends back and a constant alpha its value in every subset of every partition, blocks of one colour,
   blocks that lie on a line mode 6 holds and blocks each other mode holds (modes 4 and 5 in each rotation and index
   selection) come back exact, blocks with one channel apart come back closer than the same encoder built without
   modes 4 and 5 brings them (`SNX_BC7_MODES_4_5` 0, `bc7_encode_cpu_without_45`), edenprobe's astcimage picture comes
-  back no worse than the PSNR each region is held to (its fast build, `bc7_encode_cpu_fast`, to floors of its own),
-  and a 13x7 image of three slices encodes slice by slice as each alone.
-  `astc_vulkan` checks `vk_astc_as_bc7`: RGBA8 without pressure, BC7 from 256x256 texels under it but never 3D, BC7
-  with holes always. `astc_vulkan` and `astc_vulkan_pieces` also upload random blocks into BC7 images, footprints whose strips step
-  4, 2 and 1 block rows, with mips, layers, slices and many strips, and a level of `VK_BC7_FAST_TEXELS` that the
-  fast build encodes, and compare the GPU's blocks with the same encoder (or its fast build) run on the CPU over the
-  CPU decoder's texels, byte for byte. `--bench [file.astc]` times a 4096x4096 level (the fast build) and a
-  2040x2040 one (the full build) as RGBA8 and as BC7, of random 8x8 blocks or a file's repeated over the level.
+  back no worse than the PSNR each region is held to (the fast build and mode 6 alone to theirs, the fast build
+  keeping mode 6 on more blocks than the full one, mode 6 alone on all), and a 13x7 image of three slices encodes slice
+  by slice as each alone.
+  `astc_vulkan` and `astc_vulkan_pieces` also upload random blocks into BC7 images, footprints whose strips step
+  4, 2 and 1 block rows, with mips, layers, slices and many strips, and compare the GPU's blocks with the same
+  encoder run on the CPU over the CPU decoder's texels, byte for byte, in the build the level takes (`vk_bc7_build`).
+  They do it also for arrays whose layers go up a level at a time, all of them at once (`vk_astc_upload_layers`), as
+  RGBA8 and as BC7.
 - `tex_upload_rows` checks what `texture.c` hands `vk_astc_upload`: an ASTC level's block rows, strip by strip,
   against the block-linear layout walked byte by byte, and the bands other formats take past the cap. It also checks
-  the BC7 cache's key: the key is made only where `vk_astc_cached` says so, a byte of any layer changes it, and no key
-  is made where the GPU holds bytes.
-- `bc7_cache` (ctest, no GPU) checks `bc7_cache.c`. The key changes with each field of the level, its build, every
-  bit of its bytes and every word of its layout, and stays the same for the same inputs. Records come back as
-  written (one read piece or several), also after the file is opened again. A file of another version starts empty.
-  A changed byte on disk drops its record on the read. A record cut short is cut off, and the records before it stay.
-  The bound starts the file over. The index grows past 3,000 records, and the file stays locked while it is open.
-- `astc_vulkan` and `astc_vulkan_pieces` upload a level into a new BC7 image three times, with the cache's key: the
-  full and fast builds, strips of 4, 2 and 1 block rows, layers, slices and many strips. The first upload encodes. The
-  second, and the third after the file is opened again, encode nothing (`vk_astc_stats` counts the levels and the
-  hits), and their image bytes are the same as the first's, byte for byte. A changed block misses. `--bench` also
-  times the cache: an encode that stores, then hits.
+  the BC7 cache's key: made only where `vk_astc_cached` says, the same for the same bytes, another for a byte of any
+  layer changed, none where the GPU holds bytes, and kept in the texture for the encoder between frames.
+- `bc7_cache` (ctest, no GPU) checks `bc7_cache.c`: the key changes with each field of the level, its build, every bit
+  of its bytes and every word of its layout; records come back as written, also after the file is opened again; a file
+  of another version starts empty; a changed byte drops its record; a record cut short is cut off; the bound starts the
+  file over; the index grows past 3,000 records; and the file stays locked while it is open.
+- `astc_vulkan` and `astc_vulkan_pieces` upload a level into a new BC7 image three times with the cache's key: strips
+  of 4, 2 and 1 block rows, layers, slices and many strips. The first encodes; the second, and the third after the
+  file is opened again, encode nothing (`vk_astc_stats` counts the levels and the hits, `vk_astc_dispatches` the
+  encoder's dispatches) and their bytes are the first's; a changed block misses; and 100 encodes in one submission
+  are all stored. `vulkan_headless` (`tests/vulkan_astc_later.inc`) stores the levels the encoder makes between frames
+  and gives them to a second texture of the same bytes in its first frame, with no encode.
+- `vulkan_headless` (`tests/vulkan_astc_later.inc`) holds the BC7 images made between frames to the CPU encoder's
+  blocks over the RGBA8 texels the texture showed first, byte for byte: a 1024x768 texture in three frames of 32768,
+  32768 and 3 blocks, the RGBA8 image freed after them; a 2D array of sides on no block in one frame and one dispatch
+  a level, written whole after and made BC7 again from the new texels; a texture written between its two frames,
+  started over; an array of 40 layers and a 3D texture of 40 slices, cut between two frames; pieces of a BC7 one,
+  straight to BC7 for a block and whole as RGBA8 for 55296 blocks; a texture written 3 frames after its write before
+  queued, 2 after held Exact out of the queue, and queued again once read 30 frames unwritten, not 29; pieces of a BC7
+  one, straight to BC7 3 frames after its write before and whole as RGBA8, held Exact, the next frame; and a texture
+  freed while it is made. `astc_bc_suggest` (ctest, no GPU) holds Auto's line and the three modes.
 
 The CPU decoder was also compared with ARM's astcenc 5.7.0 (`astcenc -dl` and `-dH`, Apache-2.0, a release binary
 used only as a tool), on the same kind of random blocks for every footprint. Every texel agreed within one step of

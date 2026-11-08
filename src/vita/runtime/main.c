@@ -175,12 +175,47 @@ static int play(const char* folder, bool recompile, double seconds, const char* 
         free(module);
         return 1;
     }
-    printf("Module %s: %u imports, module_start 0x%08x\n", image.name, (unsigned)image.import_count,
-           (unsigned)image.module_start);
+    /* Load the game's bundled system modules before compiling. Their code shares the guest address space and
+       their exports are dispatched as guest functions by NID, not replaced with fake success returns. */
+    static const char* const libraries[] = {"libc.suprx", "libfios2.suprx", "libsmart.suprx", "libult.suprx"};
+    for (unsigned i = 0; i < sizeof libraries / sizeof *libraries; ++i) {
+        char path[SNX_PATH_SIZE];
+        int n = snprintf(path, sizeof path, "%s/patch/sce_module/%s", folder, libraries[i]);
+        if (n < 0 || (size_t)n >= sizeof path) continue;
+        if (!snx_is_file(path)) {
+            n = snprintf(path, sizeof path, "%s/app/sce_module/%s", folder, libraries[i]);
+            if (n < 0 || (size_t)n >= sizeof path) continue;
+        }
+        if (!snx_is_file(path)) {
+            n = snprintf(path, sizeof path, "%s/sce_module/%s", folder, libraries[i]);
+            if (n < 0 || (size_t)n >= sizeof path || !snx_is_file(path)) continue;
+        }
+        VitaImage library;
+        uint32_t variable_base = image.variable_count;
+        uint32_t base = 0x71000000u + i * 0x01000000u;
+        if (!vita_image_load_at(path, &library, base, variable_base, error, sizeof error)) {
+            fprintf(stderr, "scarletnx-vita: cannot load %s: %s\n", libraries[i], error);
+            vita_image_free(&image);
+            free(module);
+            return 1;
+        }
+        if (!vita_image_merge(&image, &library, error, sizeof error)) {
+            fprintf(stderr, "scarletnx-vita: cannot link %s: %s\n", libraries[i], error);
+            vita_image_free(&library);
+            vita_image_free(&image);
+            free(module);
+            return 1;
+        }
+        printf("Loaded %s: %u exports, %u imports at 0x%08x\n", libraries[i], library.export_count,
+               library.import_count, base);
+        vita_image_free(&library);
+    }
+    printf("Module %s: %u imports, %u exports, module_start 0x%08x\n", image.name,
+           (unsigned)image.import_count, (unsigned)image.export_count, (unsigned)image.module_start);
     /* An existing module that matches is played as it is, else it is compiled first: decided from its file, before it
        is loaded, which happens once */
     bool current = !recompile && vita_module_current(module, &image);
-    if (!current) printf("Compiling the game's code\n");
+    if (!current) printf("Recompiling %s (Vita AArch32)\n", image.name);
     if ((!current && vita_aot_compile(folder, &image, error, sizeof error)) ||
         !vita_native_open(module, &image, &native, error, sizeof error)) {
         fprintf(stderr, "scarletnx-vita: %s\n", error);
@@ -254,7 +289,7 @@ int snx_vita_main(int argc, char** argv) {
     bool extract_only = false, recompile = false;
     double seconds = 0;
     snx_tool_console();
-    setvbuf(stdout, NULL, _IOLBF, 0);
+    setvbuf(stdout, NULL, _IONBF, 0);
     /* VITA_LOCKSTEP and VITA_LOCKSTEP_STEPS, which an older version read (docs/DEPRECATIONS.md): for this version still
        vita_lockstep and vita_lockstep_steps (0 steps, which compared none, is vita_lockstep=-1), under the command
        line's own, said once it is read. Removed with tests/architecture.py's ENV_DEPRECATED rows */

@@ -779,13 +779,13 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "Up/Down: select. Enter/Space: open. Left/Right/PgUp/PgDown: scroll. F5: refresh."
+msgid "Up/Down: move. Enter/Space: open. Left/Right/PgUp/PgDn: scroll. F5: refresh."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "Arrows: select. Enter/Space: open. PgUp/PgDown: scroll. F5: refresh."
+msgid "Arrows: move. Enter/Space: open. PgUp/PgDn: scroll. F5: refresh."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -1003,13 +1003,13 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "D-pad: move. A: select. Start: refresh. B: back."
+msgid "D-pad: move. A: select. Start: refresh. B: exit."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "D-pad: select. A: open. LT/RT: scroll. Start: refresh. B: back."
+msgid "D-pad: move. A: open. LT/RT: scroll. Start: refresh. B: back."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -1342,6 +1342,11 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "%s: recompile_background = %s is now background_recompile = %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "Recent Games not kept: %s could not be written."
 msgstr ""
 
@@ -1558,6 +1563,10 @@ msgstr ""
 #: src/gui/main.c
 #, snx-key
 msgid "Recompile"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Clear"
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -2114,6 +2123,10 @@ msgid "Runs a GBA ROM on the emulated AGB board"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Runs an Android app's .apk, .xapk or .apks"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Installs prod.keys, which games are extracted with"
 msgstr ""
 
@@ -2170,6 +2183,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "GBA ROM, played with scarletnx-agb"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Android app, run with scarletnx-android"
 msgstr ""
 
 #: src/gui/main.c
@@ -2406,7 +2423,7 @@ msgid "Background recompile"
 msgstr ""
 
 #: src/gui/main.c
-msgid "The Compile tab's: R's, B's and a game's first. Full: every core. Gentle: half of them, at a low priority. Either goes gently while a game plays"
+msgid "The Compile tab's: R's, B's and a game's first. Auto: Gentle on battery, Full on the charger. Full: every core. Gentle: half of them, at a low priority. Each goes gently while a game plays"
 msgstr ""
 
 #: src/gui/main.c
@@ -2465,6 +2482,10 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "Auto: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Gentle, on battery"
 msgstr ""
 
 #: src/gui/main.c
@@ -2916,6 +2937,11 @@ msgid "This build of the launcher reads no Vulkan driver"
 msgstr ""
 
 #: src/gui/main.c
+#, c-format
+msgid "Goes on with the run of edenprobe %s that ended before its summary, from its journal: cases so far %d, on its crash list %d"
+msgstr ""
+
+#: src/gui/main.c
 msgid "The GPU driver Settings > App > GPU Drivers picks for every game"
 msgstr ""
 
@@ -2956,6 +2982,36 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "A driver package's zip, a meta.json and the driver's libraries at its top as Turnip's releases are: unpacked into gpu_drivers/ of the user's data folder"
+msgstr ""
+
+#: src/gui/main.c
+msgid "edenprobe Mode"
+msgstr ""
+
+#: src/gui/main.c
+msgid "What Run edenprobe runs. Quick: processor and graphics. Full: also fs (64 MiB written once), video, audio, kernel and display"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Quick"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Run edenprobe"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "edenprobe's hardware probes played as a game with this GPU driver, in a data folder of their own with the default settings, %s; then their counts"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Clear Crash List"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Cases on the crash list, which a run skips as crashed: %d. Cleared, the next run asks them again"
 msgstr ""
 
 #: src/gui/main.c
@@ -3028,6 +3084,20 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "Not added: %s does not read: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "edenprobe Mode: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Clear Crash List? Its case runs again in the next run."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Clear Crash List? Its %d cases run again in the next run."
 msgstr ""
 
 #: src/gui/main.c
@@ -3829,6 +3899,14 @@ msgid "Nothing to keep: no file of the menu's"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Every screen"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Shortcuts"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "The game starts its program %d, %s, which is not made: Recompile the game to make its programs"
 msgstr ""
@@ -4043,6 +4121,16 @@ msgid "%s: its own games alone are listed, not its subfolders'"
 msgstr ""
 
 #: src/gui/main.c
+msgid "View Progress"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Mods"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "%s has no folder to open"
 msgstr ""
@@ -4063,6 +4151,54 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "The Recompiled Library's Main is off and no Extra of it can take a game: Add to Library on its Main, or add a folder to it, in Settings > App > Folders"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Run edenprobe: no state folder to run in"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Run edenprobe: a compile goes; the probes run once the queue ends"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Run edenprobe needs %s: edenprobe.nro from github.com/scarletnx/edenprobe/releases"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Run edenprobe: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Clear Crash List: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Crash list cleared, cases: %d"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "edenprobe left no report in %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s. The report: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s after %d launches, the most it takes. The report: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s after %d launches, the last adding no case. The report: %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -4195,6 +4331,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "R recompiles games: a Linux program runs as it is."
+msgstr ""
+
+#: src/gui/main.c
+msgid "R recompiles games: an Android app runs as it is."
 msgstr ""
 
 #: src/gui/main.c
@@ -4526,12 +4666,6 @@ msgstr ""
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
-msgid "PgDown"
-msgstr ""
-
-#. A key of the foot's sentences, which a click finds by this word
-#: src/gui/main.c
-#, snx-key
 msgid "Del"
 msgstr ""
 
@@ -4563,12 +4697,6 @@ msgstr ""
 #: src/gui/main.c
 #, snx-key
 msgid "M"
-msgstr ""
-
-#. A key of the foot's sentences, which a click finds by this word
-#: src/gui/main.c
-#, snx-key
-msgid "Mods"
 msgstr ""
 
 #. A key of the foot's sentences, which a click finds by this word
@@ -4795,6 +4923,16 @@ msgstr ""
 #: src/gui/settings.c
 #, c-format
 msgid "%s=%s is the default of %s: no run is given it over the game's .ini"
+msgstr ""
+
+#: src/gui/settings.c
+#, c-format
+msgid "%s=%s is deprecated: %s is %s=%s now"
+msgstr ""
+
+#: src/gui/settings.c
+#, c-format
+msgid "%s=%s is deprecated and no value of %s: %s=%s now"
 msgstr ""
 
 #: src/gui/settings.c
@@ -5192,6 +5330,10 @@ msgid "Load GBA ROM"
 msgstr ""
 
 #: src/gui/ui.txt
+msgid "Load Android APK/XAPK"
+msgstr ""
+
+#: src/gui/ui.txt
 msgid "Install Keys"
 msgstr ""
 
@@ -5407,6 +5549,30 @@ msgstr ""
 msgid "[default] on that value, which no run is given: the game's .ini keeps it"
 msgstr ""
 
+#: src/common/utilities/setup.c
+msgid "Shader caches"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "shader_cache/<id>.vkshaders, <id>.vkshipped, vk_pipelines.bin, every driver's"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "<id>.<driver>.vkshaders, .vkshipped and vk_pipelines.<driver>.bin, started from those"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "The launcher's Background recompile"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "recompile_background = in app.ini, full or gentle"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "background_recompile =, Auto by default: Gentle on battery, Full on the charger"
+msgstr ""
+
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"
 msgstr ""
@@ -5437,6 +5603,14 @@ msgstr ""
 
 #: src/nx/runtime/settings.txt
 msgid "Extract a dump's ExeFS and RomFS into its game's folder. Off, the game reads them from the dump"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "Java home"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "The JDK, 21 or later, that Android apps run on: the folder that holds its lib/server (bin/server on Windows). Empty = the one the build found. Set, the launcher gives it to scarletnx-android as --java-home"
 msgstr ""
 
 #: src/nx/runtime/settings.txt

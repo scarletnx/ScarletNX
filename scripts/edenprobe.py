@@ -9,15 +9,16 @@ headless, its report held against a baseline: how each case ended before. docs/E
                              [--launches N] [--jobs N]
     scripts/edenprobe.py baseline BASELINE... -o FILE
 
-run recompiles the NRO into DIR/work, writes WORDS to its sdmc:/edenprobe/mode, and runs it with -H and its XDG
-folders in DIR/work. A launch that ends before the report's summary, crashed or killed after --timeout seconds without
+run recompiles the NRO into DIR/work, writes WORDS to its sdmc:/edenprobe/mode, with machine=scarletnx@<the runtime's
+commit> beside them for edenprobe's ban list when the NRO knows the word and WORDS name no machine, and runs it with -H
+and its XDG folders in DIR/work. A launch that ends before the report's summary, crashed or killed after --timeout seconds without
 a new report line, is followed by another, which edenprobe goes on from after the case the last one ended inside
 (reported as crashed), until the summary, a launch that adds no case, or --launches. DIR then holds report.jsonl, the
-failures' images/, the recompile's and each launch's log, baseline.txt (this run's passing cases, and those the
---baseline expects to end otherwise that did) and summary.md, which --summary FILE also appends to (CI:
-$GITHUB_STEP_SUMMARY). With --baseline, a case of it that does not end as its line says (pass, or the RESULT of a
-"[RESULT] suite: name" line) is a regression: run exits 1 and names it; a passing case it lacks is listed, to be added.
-A run that never reached its summary exits 1 too.
+failures' images/, the recompile's and each launch's log, baseline.txt (this run's passing cases, those edenprobe's ban
+list skipped as banned, and those the --baseline expects to end otherwise that did) and summary.md, which --summary FILE
+also appends to (CI: $GITHUB_STEP_SUMMARY). With --baseline, a case of it that does not end as its line says (pass, or
+the RESULT of a "[RESULT] suite: name" line) is a regression: run exits 1 and names it; a passing case it lacks is
+listed, to be added. A run that never reached its summary exits 1 too.
 
 With --advisory REPORT, the pinned release's report.jsonl, the NRO is another build (edenprobe's main) and the run never
 fails: its cases REPORT lacks that do not pass, REPORT's passing cases that it does not pass, and what would have failed
@@ -42,6 +43,8 @@ NAME = 'edenprobe'
 EXE = '.exe' if os.name == 'nt' else ''
 # a list longer than this in the summary ends with how many more: the files have them all
 MOST = 60
+# a case edenprobe's ban list skips on this machine: the same in every run of one build, so baseline.txt keeps it
+BANNED = 'skip (banned)'
 
 
 class Failed(Exception):
@@ -214,6 +217,19 @@ def warn(text):
     print(f'::warning title=edenprobe main::{text}')
 
 
+def machine_word(runtime, nro, mode):
+    """machine=scarletnx@<commit> for edenprobe's ban list, the commit from the build line the runtime carries
+    ("ScarletNX <branch> <commit>, committed ..."), and what to say about it; None when the words name a machine or the
+    probe predates the word (its NRO carries no "machine=")"""
+    if re.search(r'(?:^|\s)machine=', mode, re.IGNORECASE) or b'machine=' not in nro.read_bytes():
+        return None, None
+    found = re.search(rb'ScarletNX \S+ ([0-9a-f]{7,}[^,\s]*), committed', runtime.read_bytes())
+    commit = found[1].decode() if found else ''
+    if re.fullmatch(r'[A-Za-z0-9._-]{1,32}', commit):
+        return f'machine=scarletnx@{commit}', None
+    return 'machine=scarletnx', f'machine=scarletnx with no version: {runtime} carries no "ScarletNX <branch> <commit>"'
+
+
 def report_of(sdmc):
     """the report the latest launch writes, which sdmc:/edenprobe/last-run names, or None"""
     last = sdmc / 'last-run'
@@ -283,7 +299,11 @@ def play(args, out):
         return [f'the recompile exited {recompiled.returncode}{made}: recompile.log'], steps, None, None
     sdmc = games / NAME / f'{NAME}_data' / 'sdmc' / 'edenprobe'
     sdmc.mkdir(parents=True, exist_ok=True)
-    (sdmc / 'mode').write_text(' '.join(args.mode.split()) + '\n', encoding='utf-8')
+    mode = ' '.join(args.mode.split())
+    machine, said = machine_word(args.runtime.resolve(), args.nro.resolve(), mode)
+    if said:
+        print(said, flush=True)
+    (sdmc / 'mode').write_text(f'{mode} {machine}\n' if machine else f'{mode}\n', encoding='utf-8')
 
     report, cases = None, -1
     for number in range(1, args.launches + 1):
@@ -339,6 +359,7 @@ def run(args):
             problems.append(f'edenprobe ignored words of the mode: {"; ".join(report.unknown)}')
     if report and report.summary:
         ends = dict.fromkeys(report.passed(), 'pass')
+        ends.update((key, result) for key, result in report.cases.items() if result == BANNED)
         if args.baseline and not args.baseline.is_file():
             problems.append(f"no baseline at {args.baseline}: this run's baseline.txt is the one to put there")
         elif args.baseline:

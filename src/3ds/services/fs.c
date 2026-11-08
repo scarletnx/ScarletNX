@@ -10,6 +10,7 @@
 #include "common/utilities/endian.h"
 #include "3ds/services/archives.h"
 #include "3ds/services/fs.h"
+#include "common/utilities/mii_model.h"
 #include "services/fs.swipc.inc"
 #include <stdio.h>
 #include <stdlib.h>
@@ -209,11 +210,38 @@ static void open_self(SnxCtrIpc* c, const unsigned char path[12]) {
     }
     if (!snx_ctr_fs_file_object(c, CTR_FILE_HOST, 0, 0, host, node) && host) fclose(host);
 }
+/* The Mii data archive, 0004009B00010202: our own Mii parts (common/utilities/mii_model.c's CFL_Res.dat), made at
+   the first open and kept for the runtime's life */
+#define CTR_MII_DATA      0x0004009b00010202ull
+#define CTR_MII_DATA_ROOM 0x200000u
+static struct {
+    unsigned char* mii_data;
+    size_t mii_data_size;
+} g_ctr_fs;
 /* The system titles whose RomFS a stand-in replaces, as Azahar's NCCHArchive::OpenFile picks them: the shared font
-   for the Chinese, Korean and Taiwanese ones too (their text will not show right) */
+   for the Chinese, Korean and Taiwanese ones too (their text will not show right); the Mii data's is ours, made
+   once here (NULL with nothing made when there was no memory, said in the log) */
 static const unsigned char* system_archive(uint64_t title, size_t* size) {
     switch (title) {
-        case 0x0004009b00010202ull: *size = snx_ctr_mii_data_size; return snx_ctr_mii_data;
+        case CTR_MII_DATA:
+            if (!g_ctr_fs.mii_data) {
+                unsigned char* b = calloc(1, CTR_MII_DATA_ROOM);
+                uint32_t n = b ? snx_mii_cfl_romfs(b, CTR_MII_DATA_ROOM) : 0;
+                if (!n) {
+                    fprintf(stderr,
+                            "3ds fs: the Mii data archive %016llx could not be made (%s): the game is told it "
+                            "is not found\n",
+                            (unsigned long long)title, b ? "its parts did not fit, above" : "no memory for 2 MiB");
+                    free(b);
+                    return NULL;
+                }
+                g_ctr_fs.mii_data = b;
+                g_ctr_fs.mii_data_size = n;
+                fprintf(stderr, "3ds fs: provided our Mii parts as the Mii data archive %016llx (%.1f KB)\n",
+                        (unsigned long long)title, (double)n / 1024.0);
+            }
+            *size = g_ctr_fs.mii_data_size;
+            return g_ctr_fs.mii_data;
         case 0x0004009b00010402ull: *size = snx_ctr_country_list_size; return snx_ctr_country_list;
         case 0x0004009b00014002ull:
         case 0x0004009b00014102ull:
@@ -222,6 +250,47 @@ static const unsigned char* system_archive(uint64_t title, size_t* size) {
         case 0x000400db00010302ull: *size = snx_ctr_bad_word_list_size; return snx_ctr_bad_word_list;
         default: return NULL;
     }
+}
+/* A DLC content's RomFS view, made on first open and kept for the process: 1 + its dlc_views entry, 0 when the table
+   is full or the image does not parse */
+static uint32_t dlc_view(SnxCtrProcess* p, uint64_t title, unsigned index, const unsigned char* image, uint64_t size) {
+    for (unsigned i = 0; i < p->dlc_view_count; ++i)
+        if (p->dlc_views[i].title == title && p->dlc_views[i].index == index) return i + 1;
+    if (p->dlc_view_count == sizeof p->dlc_views / sizeof *p->dlc_views) return 0;
+    SnxCtrRomfs* view = NULL;
+    if (!snx_ctr_romfs_open_image(image, size, snx_ctr_source_mtime(p->source), &view)) return 0;
+    p->dlc_views[p->dlc_view_count].title = title;
+    p->dlc_views[p->dlc_view_count].index = index;
+    p->dlc_views[p->dlc_view_count++].view = view;
+    return p->dlc_view_count;
+}
+/* A DLC title's content, its file path the open type (0), the content's place in the TMD and the section (0, the
+   RomFS): its level 3, as the game's own RomFS is given. A content the CIA has not is NotFound, one with no RomFS
+   RomFSNotFound */
+static void open_dlc(SnxCtrIpc* c, uint64_t title, const uint32_t words[3]) {
+    SnxCtrProcess* p = c->process;
+    if (words[0] || words[2]) {
+        c->state = SNX_CTR_IPC_UNSUPPORTED;
+        return;
+    }
+    uint64_t size;
+    bool found;
+    const unsigned char* image = snx_ctr_source_dlc_romfs(p->source, title, words[1], &size, &found);
+    if (!found) {
+        snx_ctr_ipc_error_reply(c, 0xc8804478u); /* NotFound, FS, NotFound, Status */
+        return;
+    }
+    if (!image) {
+        snx_ctr_ipc_error_reply(c, 0xc8804464u); /* RomFSNotFound */
+        return;
+    }
+    uint32_t view = dlc_view(p, title, words[1], image, size);
+    if (!view) {
+        snx_ctr_ipc_error_reply(c, 0xd0401834u);
+        return;
+    }
+    if (snx_ctr_fs_file_object(c, CTR_FILE_VIEW, 0, 0, NULL, NULL))
+        p->objects[snx_ctr_handle_object(p, c->out[3])].data.file.dlc_view = view;
 }
 /* The NCCH archive (0x2345678A): a title's content by its ID, its archive path the title ID, a media type and a
    word, its file path the open type, the content index, the section (0 the RomFS, 1 the code, 2 an ExeFS file) and
@@ -261,8 +330,15 @@ static void open_ncch(SnxCtrIpc* c) {
         snx_ctr_fs_file_object(c, CTR_FILE_VIEW, 0, 0, NULL, NULL);
         return;
     }
+    SnxCtrDlcTitle known;
+    if (p->source && snx_ctr_source_dlc_find(p->source, title, &known)) {
+        open_dlc(c, title, words);
+        return;
+    }
     size_t size = 0;
+    pm_lock(&p->tree->lock); /* the first open of the Mii data makes it, once */
     const unsigned char* stand_in = system_archive(title, &size);
+    pm_unlock(&p->tree->lock);
     if (stand_in && !words[0] && !words[1] && !words[2]) {
         char path[40];
         snprintf(path, sizeof path, "system/%016llx.romfs", (unsigned long long)title);

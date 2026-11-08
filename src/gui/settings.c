@@ -212,6 +212,18 @@ int gui_settings_always(GuiSettings* s, const char* key, const char* value) {
     v->always = 1;
     return 1;
 }
+/* 1 when the file of picks at path gives key a value */
+static int file_gives(const char* path, const char* key) {
+    size_t bytes;
+    char *text = (char*)snx_read_file(path, &bytes), *k, *v;
+    int found = 0;
+    SnxIni ini;
+    if (!text) return 0;
+    snx_ini_start(&ini, text);
+    while (!found && snx_ini_next(&ini, &k, &v)) found = !strcmp(k, key);
+    free(text);
+    return found;
+}
 int gui_settings_load(GuiSettings* s, const char* path, char* old, size_t size) {
     size_t bytes, n = 0;
     char *text = path ? (char*)snx_read_file(path, &bytes) : NULL, *key, *value;
@@ -221,13 +233,21 @@ int gui_settings_load(GuiSettings* s, const char* path, char* old, size_t size) 
     if (!text) return 0;
     snx_ini_start(&ini, text); /* a key names one row whatever its section, as in the game's .ini */
     while (snx_ini_next(&ini, &key, &value)) {
-        int gone, given;
+        int gone, given, moved = 0, taken = 0;
+        const char* to = NULL;
         i = find(s, key);
-        gone = i < s->count && s->values[i].plain && !strcmp(value, ".ini"); /* passed nothing: not a value now */
+        if (i == s->count && (to = ini_renamed(key)) != NULL) { /* a renamed key's pick: its new row's while the file
+                                                                   gives that one none */
+            int row = find(s, to);
+            moved = row < s->count && !file_gives(path, to);
+            if (moved) i = row;
+            taken = moved && set(s, i, value);
+        }
+        gone = !moved && i < s->count && s->values[i].plain && !strcmp(value, ".ini"); /* passed nothing: not a value */
         if (gone) set(s, i, s->values[i].start);
         /* the default picked, which runs were given over the game's .ini: no pick now */
-        given = !gone && gui_settings_set(s, key, value) && s->values[i].plain && !picked(s, i);
-        if ((gone || given) && n < size) n += (size_t)snprintf(old + n, size - n, "%s", count ? "; " : "");
+        given = !moved && !gone && gui_settings_set(s, key, value) && s->values[i].plain && !picked(s, i);
+        if ((gone || given || moved) && n < size) n += (size_t)snprintf(old + n, size - n, "%s", count ? "; " : "");
         if (gone && n < size)
             n += (size_t)snprintf(old + n, size - n, snx_tr("%s=.ini is no longer a value of %s: %s=%s now"), key,
                                   snx_tr(s->keys[i].key), key, s->values[i].start);
@@ -235,7 +255,13 @@ int gui_settings_load(GuiSettings* s, const char* path, char* old, size_t size) 
             n += (size_t)snprintf(old + n, size - n,
                                   snx_tr("%s=%s is the default of %s: no run is given it over the game's .ini"), key,
                                   value, snx_tr(s->keys[i].key));
-        count += gone || given;
+        else if (taken && n < size)
+            n += (size_t)snprintf(old + n, size - n, snx_tr("%s=%s is deprecated: %s is %s=%s now"), key, value,
+                                  snx_tr(s->keys[i].key), to, kept(s, i));
+        else if (moved && n < size)
+            n += (size_t)snprintf(old + n, size - n, snx_tr("%s=%s is deprecated and no value of %s: %s=%s now"), key,
+                                  value, snx_tr(s->keys[i].key), to, kept(s, i));
+        count += gone || given || moved;
     }
     free(text);
     gui_settings_sync(s);
@@ -455,7 +481,7 @@ size_t gui_settings_recompile(GuiSettings* s, int make, const char** argv) {
         const char* value = s->values[i].kind ? NULL : picked(s, i);
         const char* key = s->values[i].key;
         if (!value || !strcmp(key, "gdbstub") || !strcmp(key, "tmpfs") || !strcmp(key, "extract") ||
-            !strcmp(key, "tracy_capture"))
+            !strcmp(key, "tracy_capture") || !strcmp(key, "java_home"))
             continue;
         snprintf(s->values[i].option, sizeof s->values[i].option, "--%s=%s", key, value);
         argv[n++] = s->values[i].option;
@@ -468,6 +494,14 @@ size_t gui_settings_recompile(GuiSettings* s, int make, const char** argv) {
         argv[n++] = s->values[i].option;
     }
     return n;
+}
+size_t gui_settings_java_home(GuiSettings* s, const char** argv) {
+    int i = find(s, "java_home");
+    const char* value = i < s->own ? picked(s, i) : NULL;
+    if (!value) return 0;
+    snprintf(s->values[i].option, sizeof s->values[i].option, "--java-home=%s", value);
+    argv[0] = s->values[i].option;
+    return 1;
 }
 size_t gui_settings_one(GuiSettings* s, const char* key, const char** argv) {
     int i = find(s, key);

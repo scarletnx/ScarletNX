@@ -245,6 +245,19 @@ setting Mesh draws
     words Off|On
     help 1 = an Ounce game's mesh draws (DrawMeshTasks) draw with VK_EXT_mesh_shader, where the GPU has it.
     help Experimental: on one NVIDIA GPU most runs with them ended in a GPU fault. 0 = they are skipped
+setting Vulkan driver
+    key vulkan_driver
+    label Vulkan driver
+    text 16
+    default auto
+    startup
+    words auto=Auto|moltenvk=MoltenVK|kosmickrisp=KosmicKrisp (experimental)
+    help The Vulkan driver a game runs on, on macOS: auto = KosmicKrisp where the Mac has it and runs it (Apple
+    help silicon, macOS 26 or later), else the MoltenVK the app carries, else the system's loader; moltenvk = a
+    help MoltenVK library; kosmickrisp = Mesa's KosmicKrisp through the Vulkan loader (experimental). The log says
+    help which driver runs and why. On every other system the game runs on the system's driver whatever the value (on
+    help Android, gpu_driver's), and the log says so for moltenvk and kosmickrisp. Any other value stops the game,
+    help saying so
 setting Vertex input dynamic state
     key vertex_input_dynamic_state
     text 16
@@ -252,23 +265,34 @@ setting Vertex input dynamic state
     startup
     words auto=Auto|on=On|off=Off
     help How a draw gives the GPU its vertex layout. auto = as dynamic state (VK_EXT_vertex_input_dynamic_state) where
-    help the GPU's driver has it, but NVIDIA's before 580.119.02 and Intel's Windows driver before 27.20.100.0, which
-    help draw it wrong, and on Android, as Eden; on = as dynamic state wherever the driver has it, those too; off = in
-    help the pipeline. Dynamic,
+    help the GPU's driver has it, but on the drivers known to draw it wrong (the extension bans: NVIDIA's before
+    help 580.119.02, Intel's Windows driver before 27.20.100.0, Arm's Mali before r48, Qualcomm's on Android) and on
+    help Android, as Eden; on = as dynamic state wherever the driver has it, those too; off = in the pipeline. Dynamic,
     help one pipeline serves every layout a program is drawn with, so fewer pipelines are made; in the pipeline, each
     help layout takes one of its own. Any other value stops the game, saying so
+setting Vulkan ban ignore
+    label Ignore driver bans
+    key vulkan_ban_ignore
+    text 512
+    default ""
+    startup
+    help Keys of the extension bans (the drivers known to break a Vulkan extension or feature), separated by commas,
+    help whose bans this run goes over, to test again whether the driver still breaks them: VK_KHR_present_id2 or
+    help VK_KHR_present_id2,shaderFloat16. The log says each with the ban it goes over. Empty: every ban holds. A key
+    help the table has not stops the game, naming the nearest ones it has
 setting ASTC mode
     label ASTC textures
     key astc_mode
-    int 0 1
+    int 0 2
     default 0
     startup
-    words Auto|Exact
-    help Auto = on a GPU that samples BCn but not ASTC (most desktop ones), ASTC textures are decoded and then encoded
-    help again as BC7, in a quarter of RGBA8's memory, close to what the blocks decode to but not always the same. A
-    help later run loads them from the BC7 cache. Exact = they are decoded to RGBA8, exactly as the game's blocks
-    help decode, in four times the memory. Where the GPU samples ASTC it does nothing. It takes the place of astc_bc,
-    help whose 1 was Auto
+    words Auto|Exact|BC7
+    help How a GPU that samples BCn but not ASTC (most desktop ones) holds ASTC textures. Auto = Exact where the GPU's
+    help memory budget is 8 GB or more as the game starts, else BC7. Exact = decoded to RGBA8, exactly as the game's
+    help blocks decode, in four times the memory. BC7 = shown at once decoded to RGBA8, then encoded again as BC7 between
+    help frames, a few at a time, into a quarter of RGBA8's memory, close to what the blocks decode to but not always the
+    help same. A later run loads them from the BC7 cache. Where the GPU samples ASTC it does nothing. It takes the place
+    help of astc_bc, whose 1 is Auto
 
 table g_performance_ini
 setting FPS limit
@@ -339,8 +363,8 @@ setting Pipeline threads
     startup
     words Auto|#
     help The threads that make the GPU's new pipelines while the game goes on: 0 = all the computer's threads but
-    help two, two to twelve; 1 to 32 = that many. More make a first run's new pipelines sooner, with less CPU left
-    help for the game
+    help two, two to twelve; 1 to 32 = that many. Past the first two they run at the system's low priority, so more
+    help make a first run's new pipelines sooner and the game's own threads still go first
 setting Async pipelines
     key async_pipelines
     int 0 1
@@ -464,14 +488,23 @@ setting Controls scale
     step 10
     shift 50
     help Their size: 0 to 100, for 50% to 150%
-setting Controls opacity
-    key controls_opacity
+setting Controls alpha
+    key controls_alpha
     int 0 100
-    default 100
+    default 50
     label Opacity
     words #%
     step 10
     help Their opacity, in percent
+setting Controls skin
+    key controls_skin
+    text 512
+    default line
+    label Skin
+    set vpad_skin_choose
+    help Their look: line (white lines) or yorha, ScarletNX's own; empty for the built-in one; or the path of a RetroArch
+    help overlay's .cfg (of its pages not named portrait, the one with the most controls). The game's menu goes round the
+    help built-in look and ScarletNX's own
 setting Relative stick center
     key controls_rel_center
     int 0 1
@@ -555,6 +588,16 @@ setting Pair Joy-Cons
     set gamepad_joycon_pair_set
     words Separate|Together
     help 1 = a left and right Joy-Con play together; restart the game after changing this
+setting Controller assignment
+    key gamepad_assign
+    int 0 1
+    default 0
+    label Assignment
+    words Manual|Console
+    help 0 = each player's controller as gamepad_p<N>_device names it, the next to connect where it names none;
+    help 1 = as a console's (Eden's Modern Console): each controller that connects takes the lowest free player, one
+    help that leaves keeps its player 45 s, the game pauses once one has been gone 3 s until it comes back or + is let
+    help go on another controller, and a notice says each that joins or leaves, with its player
 
 table g_gamepad_map_ini
 setting Button map
@@ -612,6 +655,126 @@ setting Player button map
     set gamepad_player_map_set
     help Player N's map, as gamepad_map; empty = gamepad_map's
 end
+
+# the runtime's keys (platform/hotkeys.c, backend/sdl3.c): F1's help and the game's menu show them
+table g_hotkeys_ini
+setting Help shortcut
+    key hotkey_help
+    text 64
+    default F1
+    label Help
+    set hotkey_set
+    help The key that shows the keys' help, as SDL names it (F1, Pause, Return, Escape, A), after Ctrl+, Alt+, Shift+ or
+    help GUI+ for the modifiers held with it (Ctrl+Shift+F12). Empty: no key. A name SDL doesn't know is refused, said
+    help in the log with the key in effect
+setting Menu shortcut
+    key hotkey_menu
+    text 64
+    default F2
+    label Menu
+    set hotkey_set
+    help The key that opens and closes the game's menu, as hotkey_help's. Back and a controller's Home open it too
+setting Screenshot shortcut
+    key hotkey_screenshot
+    text 64
+    default F3
+    label Screenshot
+    set hotkey_set
+    help The key that takes a screenshot, as hotkey_help's
+setting FPS limit shortcut
+    key hotkey_fps_limit
+    text 64
+    default F4
+    label FPS limit
+    set hotkey_set
+    help The key that turns the FPS limit off and back on, as hotkey_help's
+setting Thread dump shortcut
+    key hotkey_thread_dump
+    text 64
+    default F5
+    label Thread dump
+    set hotkey_set
+    help The key that writes every thread's state to the log, as hotkey_help's
+setting Showcase shortcut
+    key hotkey_showcase
+    text 64
+    default F6
+    label Showcase
+    set hotkey_set
+    help The key that turns showcase on and off, as hotkey_help's
+setting Save state shortcut
+    key hotkey_save_state
+    text 64
+    default F7
+    label Save state
+    set hotkey_set
+    help The key that saves the game's state to the selected slot, as hotkey_help's
+setting Load state shortcut
+    key hotkey_load_state
+    text 64
+    default F8
+    label Load state
+    set hotkey_set
+    help The key that loads the selected slot's state, as hotkey_help's
+setting Next slot shortcut
+    key hotkey_next_slot
+    text 64
+    default F9
+    label Next slot
+    set hotkey_set
+    help The key that selects the next save state slot, as hotkey_help's
+# SNX_TRACY_DEBUG_BEGIN
+setting Tracy capture shortcut
+    key hotkey_tracy
+    text 64
+    default F10
+    label Tracy capture
+    set hotkey_set
+    help The key that records a 60-second Tracy capture, as hotkey_help's
+# SNX_TRACY_DEBUG_END
+setting Pause shortcut
+    key hotkey_pause
+    text 64
+    default Pause
+    label Pause
+    set hotkey_set
+    help The key that pauses the whole game and resumes it, as hotkey_help's
+setting Fullscreen shortcut
+    key hotkey_fullscreen
+    text 64
+    default F11
+    label Fullscreen
+    set hotkey_set
+    help The key that switches fullscreen, as hotkey_help's
+setting Second fullscreen shortcut
+    key hotkey_fullscreen_2
+    text 64
+    default Alt+Return
+    label Fullscreen 2
+    set hotkey_set
+    help A second key that switches fullscreen, as hotkey_help's
+setting Stats shortcut
+    key hotkey_stats
+    text 64
+    default F12
+    label Stats
+    set hotkey_set
+    help The key that turns the stats on and off, as hotkey_help's
+setting RenderDoc capture shortcut
+    key hotkey_capture
+    text 64
+    default Ctrl+Shift+F12
+    label RenderDoc capture
+    set hotkey_set
+    help The key that captures the next frame with RenderDoc while RenderDoc is in the game (renderdoc), as
+    help hotkey_help's
+setting Quit shortcut
+    key hotkey_quit
+    text 64
+    default Escape
+    label Quit
+    set hotkey_set
+    help The key that quits the game, as hotkey_help's
 
 table g_network_ini
 setting Network
@@ -710,6 +873,17 @@ setting Vulkan pipeline cache
     words Off|On
     help 1 = the GPU driver's compiled pipelines are kept between runs (shader_cache/vk_pipelines.bin). 0 = they are
     help neither read nor written: every pipeline is compiled again, as in a first run, to measure that
+setting Vulkan API
+    label Vulkan version
+    key vk_api
+    text 8
+    default auto
+    startup
+    words auto=Auto|1.2=1.2
+    help The Vulkan version the renderer runs at. auto = the device's, up to 1.3: a device with only 1.2 runs the 1.2
+    help way where it has the extensions 1.3 took in. 1.2 = the 1.2 way on a 1.3 device too, to test it: the 1.3
+    help features from those extensions, shaders in SPIR-V 1.5, no Vulkan Video decode. Any other value stops the game,
+    help saying so
 setting Native ASTC
     key native_astc
     int 0 1
@@ -957,6 +1131,14 @@ setting GPU profile
     startup
     words Off|On
     help 1 = the GPU's time per rendering pass, summed per target and logged every 10 seconds (Vulkan timestamps)
+setting GPU checkpoints
+    key vk_checkpoints
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = records what the GPU is doing as it goes (VK_NV_device_diagnostic_checkpoints), and when the device is
+    help lost logs the work each queue reached. Where the driver has no such extension it is only a warning
 setting Guest memory
     key vk_memory
     int 0 2
@@ -987,14 +1169,17 @@ setting NVN storage ordering
     help Deferred records the ordering requirement and emits a Vulkan barrier at the next dependent buffer use.
     help 0 keeps conservative per-draw dependencies for comparisons or command recordings from older builds.
 setting Descriptor buffers
-    key vk_descriptors
-    int 0 1
-    default 0
+    key vk_descriptors_mode
+    int 0 3
+    default 3
     startup
-    words Sets|Buffers
-    help 1 = graphics descriptors use addressable Vulkan buffers when supported, with no descriptor-set allocations.
-    help Compute keeps its own descriptor pools. It also skips the guest's fragment barriers, which the tracking
-    help of targets and buffers orders. 0 = descriptor sets for graphics too, and every fragment barrier
+    words Sets|Buffers|Heaps|Automatic
+    help 3, Automatic, is 2 on a GPU that shares the system's memory (an integrated one, a phone's) and 0 on one with
+    help memory of its own. 2: graphics descriptors in heaps where the device has them, else buffers, else sets.
+    help 1 uses descriptor buffers where supported, else sets. A heap draw whose resource cannot be encoded uses
+    help buffers or sets. Compute keeps its own descriptor pools. With buffers or heaps in use, the guest's fragment
+    help barriers are skipped, which the tracking of targets and buffers orders. 0 = descriptor sets for graphics
+    help too, and every fragment barrier
 setting Vulkan recording thread
     key vk_record
     int 0 1
@@ -1028,8 +1213,9 @@ setting RenderDoc captures
     text 1024
     default ""
     startup
-    help The path's stem of RenderDoc captures (RenderDoc's library is loaded before the Vulkan instance), of the
-    help presents RenderDoc frames names. Empty: RenderDoc isn't loaded
+    help The path's stem of RenderDoc captures (RenderDoc's library is loaded before the Vulkan instance): the capture
+    help key's (hotkey_capture) and the game's menu's of the next frame, and the presents RenderDoc frames names. Empty:
+    help RenderDoc isn't loaded, and a game RenderDoc's program started captures where that program says
 setting RenderDoc frames
     key renderdoc_frames
     text 512
@@ -1321,6 +1507,7 @@ section 3DS: g_ctr_display_ini
 section Performance: g_performance_ini
 section On-screen controls: g_vpad_ini, g_backend_ini, g_vpad_shown_ini/Buttons    backend
 section Controllers: g_gamepad_ini, g_gamepad_map_ini/Button map, g_gamepad_players_ini/Player    backend
+section Shortcuts: g_hotkeys_ini    backend
 section Network: g_network_ini
 section User: g_user_ini
 section Debug: g_debug_ini
@@ -1350,6 +1537,11 @@ setting Extract game container
     default off
     words on=On
     help Extract a dump's ExeFS and RomFS into its game's folder. Off, the game reads them from the dump
+setting Java home
+    key java_home
+    text 192
+    help The JDK, 21 or later, that Android apps run on: the folder that holds its lib/server (bin/server on Windows).
+    help Empty = the one the build found. Set, the launcher gives it to scarletnx-android as --java-home
 # SNX_TRACY_BEGIN
 setting Tracy capture
     key tracy_capture

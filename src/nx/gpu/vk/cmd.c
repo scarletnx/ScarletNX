@@ -6,10 +6,13 @@
    buffers), a ring its storage results are copied back into for the CPU, descriptor pools, and the resources to
    destroy once its work is done; none of them is reused before its last submission has finished. Ending a frame at a
    submit would reset them mid-draw, and wait for the GPU at every submit. */
+#include "nx/gpu/vk/descriptor_objects.h"
 #include <stdlib.h>
 #include <string.h>
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/gpu.h"
+#include "nx/hle/services/nvdrv.h"
+#include "nx/memory/own.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/runtime/platform/plat.h"
@@ -190,8 +193,8 @@ static void dead_push(Frame* f, Dead d) {
 static void dead_free(Frame* f) {
     for (int i = 0; i < f->ndead; i++) {
         Dead* d = &f->dead[i];
-        if (d->v1) vkDestroyImageView(g_vk.dev, d->v1, NULL);
-        if (d->v2) vkDestroyImageView(g_vk.dev, d->v2, NULL);
+        if (d->v1) vk_image_view_destroy(g_vk.dev, d->v1, NULL);
+        if (d->v2) vk_image_view_destroy(g_vk.dev, d->v2, NULL);
         if (d->view) vkDestroyBufferView(g_vk.dev, d->view, NULL);
         if (d->img) vk_image_destroy(d->img, d->mem);
         if (d->buf) {
@@ -296,6 +299,12 @@ void vk_wait_semaphore(VkSemaphore sem, u64 value) {
         VkResult r = vkWaitSemaphores(g_vk.dev, &wi, 1000000000ull);
         if (r != VK_TIMEOUT) {
             VK_OK(r);
+            /* going on would take the wait as done: the next Vulkan call crashes in the driver, and the log blames the
+               game */
+            if (r == VK_ERROR_DEVICE_LOST) {
+                vk_ck_report();
+                fatal("vulkan: the GPU device was lost (driver reset or crash)");
+            }
             return;
         }
         u64 now = 0;
@@ -363,7 +372,7 @@ static void land_through(u64 value) {
     while (g_landed < value) {
         vk_buf_frame_done(++g_landed);
         vk_gfx_image_frame_done(g_landed);
-        vk_astc_frame_done(g_landed);
+        vk_astc_frame_done(g_landed); /* BC7 blocks read back for the cache, before the ring they are in is reused */
     }
     g_rec_unsafe--;
     g_landing = 0;
@@ -409,6 +418,13 @@ static void frame_recycle(Frame* f) {
     vk_rec_frame_reset((u32)(f - g_fr)); /* the slot's sets made on the recording thread too */
     f->icb = 0;
     f->fresh = 0;
+}
+
+int vk_cmd_ready(void) {
+    const Frame* f = &g_fr[g_cur];
+    u64 last = f->last > f->hold ? f->last : f->hold, done = 0;
+    if (f->recording || !f->fresh || !last) return 1;
+    return vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, &done) == VK_SUCCESS && done >= last;
 }
 
 VkCommandBuffer vk_cmd(void) {
@@ -707,6 +723,27 @@ u8* vk_stage_upload(u64 size, u64 align, VkBuffer* buf, u64* off)
 	return stage_alloc(size, align, buf, off, NULL, 0);
 }
 
+/* Guest input read once by a copy or conversion. Keep GPU-owned bytes near the GPU; CPU-only bytes go through
+   host RAM rather than CPU writes through the device's mapped window. Both rings share the frame's fence. */
+u8* vk_stage_guest_input(u64 gva, u64 source_size, u64 bytes, VkBuffer* buf, u64* off) {
+    int gpu = vk_uma_pending(gva, source_size);
+    if (!gpu && own_any())
+        for (u64 o = 0; o < source_size;) {
+            u64 cpu = 0, n = gmmu_run(gva + o, source_size - o, &cpu);
+            if (n) {
+                if (own_lookup(cpu, n, NULL, 0)) {
+                    gpu = 1;
+                    break;
+                }
+            } else {
+                n = 0x1000 - ((gva + o) & 0xfff);
+                if (n > source_size - o) n = source_size - o;
+            }
+            o += n;
+        }
+    return gpu ? vk_stage(bytes, vk_stage_align(), buf, off) : vk_stage_upload(bytes, vk_stage_align(), buf, off);
+}
+
 /* The staging ring can be device-local memory behind the BAR, where every CPU read crosses PCIe uncached: comparing
    a frame's storage results there cost one game most of its GPU thread. The frame's results are copied
    on the GPU into host-cached memory instead, and read from there. */
@@ -784,6 +821,7 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
                                    .value = g_gval + 1,
                                    .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}};
     if (xs) s[1] = *xs;
+    vk_ck(cb, VK_CK_SUBMIT, (u32)why, 0, 0, 0);
     vk_gpuprof_cb_end(cb, why, g_gval + 1);
     /* ended and submitted after its commands, on the recording thread (a submission that fails signals the timeline
        from the host there, so waits for it end) */
@@ -860,6 +898,12 @@ void vk_submit_open(void) {
 }
 void vk_submit_recorded(void) {
     if (g_fr[g_cur].recording) submit_why(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_SUB_OTHER);
+}
+/* What is recorded goes to the GPU, and this waits until the GPU has done it. It lands nothing, so it may run while a
+   draw is set up: that draw starts its setup again on the new submission number */
+void vk_submit_upload_wait(void) {
+    if (g_fr[g_cur].recording) submit(NULL, NULL, 0, VK_SUB_OTHER);
+    timeline_wait(g_gval, VK_WAIT_FINISH);
 }
 void vk_submit_after(VkSemaphore sem, u64 wait, u64 signal) {
     g_after[0] = (VkSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = sem,
@@ -960,12 +1004,17 @@ void vk_frame_hold(u64 frame_id) {
 u32 vk_frame_slot(void) { return g_cur; }
 
 static u32 g_desc_pools; /* the pools that exist: the GPU, recording and compute threads make them */
-VkDescriptorPool vk_desc_pool_new(void) {
-    /* a thousand sets of the stage layout (gpu/vk/pipeline.c), each with all its descriptors: a frame chains more
-       pools when it needs them */
+VkDescriptorPool vk_desc_pool_new(u32 array_sets) {
+    /* a thousand sets of the stage layout (gpu/vk/pipeline.c): a frame chains more pools when it needs them */
+    static u32 said[3]; /* the line of each kind of pool once: compute's, a frame's, a frame's for more arrays */
     VkDescriptorPoolSize sz[VK_POOL_TYPES];
     VkDescriptorPoolCreateInfo ci = {0};
-    vk_pool_sizes(sz, 1024);
+    vk_pool_sizes(sz, 1024, array_sets);
+    if (!__atomic_exchange_n(&said[!array_sets ? 0 : array_sets == VK_POOL_ARRAY_SETS ? 1 : 2], 1, __ATOMIC_RELAXED))
+        LOG("vulkan: descriptor pools of 1024 sets, %u of them with texture arrays: %u uniform and %u storage "
+            "buffers, %u combined image samplers, %u storage images, %u texel buffers, %u sampled images\n",
+            array_sets, sz[0].descriptorCount, sz[1].descriptorCount, sz[2].descriptorCount, sz[3].descriptorCount,
+            sz[4].descriptorCount, sz[5].descriptorCount);
     ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     ci.maxSets = 1024;
     ci.poolSizeCount = VK_POOL_TYPES;
@@ -975,6 +1024,11 @@ VkDescriptorPool vk_desc_pool_new(void) {
     return p;
 }
 u32 vk_desc_pools(void) { return __atomic_load_n(&g_desc_pools, __ATOMIC_RELAXED); }
+static u64 g_desc_array_sets; /* sets of the arrays layouts taken from the frames' pools, for the statistics */
+void vk_desc_taken(VkDescriptorSetLayout layout, u32 n) {
+    if (n && vk_dslayout_arrays(layout)) __atomic_add_fetch(&g_desc_array_sets, n, __ATOMIC_RELAXED);
+}
+u64 vk_desc_array_sets(void) { return __atomic_load_n(&g_desc_array_sets, __ATOMIC_RELAXED); }
 /* count sets of layout from the frame's pools into sets: count, or 1 when a pool can't hold that many, 0 on failure */
 static u32 desc_alloc_n(Frame* f, VkDescriptorSetLayout layout, VkDescriptorSet* sets, u32 count) {
     VkDescriptorSetLayout layouts[SPARE_SETS];
@@ -987,7 +1041,7 @@ static u32 desc_alloc_n(Frame* f, VkDescriptorSetLayout layout, VkDescriptorSet*
                 LOG_LIMIT(1, "vulkan: a frame used all its descriptor pools (draws skipped)\n");
                 return 0;
             }
-            VkDescriptorPool p = vk_desc_pool_new();
+            VkDescriptorPool p = vk_desc_pool_new(VK_POOL_ARRAY_SETS_FOR(layout));
             if (!p) return 0;
             f->pool_d[f->npool++] = p;
         }
@@ -996,7 +1050,10 @@ static u32 desc_alloc_n(Frame* f, VkDescriptorSetLayout layout, VkDescriptorSet*
                                           .descriptorSetCount = count,
                                           .pSetLayouts = layouts};
         VkResult r = vkAllocateDescriptorSets(g_vk.dev, &ai, sets);
-        if (r == VK_SUCCESS) return count;
+        if (r == VK_SUCCESS) {
+            vk_desc_taken(layout, count);
+            return count;
+        }
         if (r != VK_ERROR_OUT_OF_POOL_MEMORY && r != VK_ERROR_FRAGMENTED_POOL) {
             VK_OK(r);
             return 0;

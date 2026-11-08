@@ -61,9 +61,10 @@ bool ctr_cia_load(CtrReader* r, CtrSource* s) {
     uint16_t boot = snx_ld_be16(body + 0xa0);
     if (s->title_id != snx_ld_be64(ticket_id))
         return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "ticket/TMD title ID mismatch");
-    if ((s->title_id >> 32) != 0x00040000)
+    uint32_t type = (uint32_t)(s->title_id >> 32);
+    if (type != 0x00040000 && type != 0x0004000e && type != 0x0004008c)
         return ctr_fail(r, SNX_CTR_EXTRACT_UNSUPPORTED,
-                        "only application CIAs are supported; not updates/DLC/system titles");
+                        "only application, update and DLC CIAs are supported; not system titles");
     if (!s->chunks || !ctr_fits(s->tmd.size, s->body + 0x9c4, s->chunks * 0x30))
         return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "invalid TMD content count");
     const unsigned char* chunks = body + 0x9c4;
@@ -123,7 +124,8 @@ bool ctr_cia_load(CtrReader* r, CtrSource* s) {
     }
     free(ids);
     if (!ok) return false;
-    if (!have_boot || at != content.size || memcmp(present, h + 0x20, sizeof present))
+    /* a DLC has no boot content: its contents are read by index */
+    if ((!have_boot && type != 0x0004008c) || at != content.size || memcmp(present, h + 0x20, sizeof present))
         return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "CIA bitmap/content sizes or boot content do not match TMD");
     return r->quick || (s->input_hashed = ctr_hash(r, (CtrSpan){0, r->size}, s->input_hash));
 }

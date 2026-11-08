@@ -580,6 +580,8 @@ typedef struct {
     uint16_t default_members;
     uint16_t default_binding;
     uint32_t interface[1024]; /* the Input and Output variables, for OpEntryPoint */
+    /* flip_y: gl_FragCoord's [0] and gl_PointCoord's [1] Input variables, and the Private copies the shader reads */
+    uint32_t flip_in[2], flip_copy[2];
     uint32_t interface_count;
     uint32_t resources[GLSLC_MAX_RESOURCES]; /* (set << 16) | binding taken */
     uint32_t nresources;
@@ -604,6 +606,8 @@ typedef struct {
     GlslcResult* result;
     GlslcBindFn bind; /* the backend's binding map, or NULL */
     void* bind_user;
+    int map_default; /* the map places the default uniform block too */
+    int flip_y;      /* gl_FragCoord and gl_PointCoord read through the push constant's flip */
     jmp_buf fail;
     /* the raw scanner */
     uint32_t cur;

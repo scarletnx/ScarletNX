@@ -156,7 +156,9 @@ def main():
         # Requested extraction alone may succeed without a runtime; normal launches stop before AOT.
         run(cia(encrypted=True), 3, 'no 3DS keys')
         run(cia(application=ncch(encrypted=True)), 3, 'no 3DS keys')
-        run(cia(title=0x0004000E01234500), 3, 'updates/DLC/system')
+        run(cia(title=0x0004001001234500), 3, 'not system titles')
+        # an update is read beside its game, never extracted alone
+        run(cia(title=0x0004000E01234500), 2, 'it takes no --update, --output, -x or --extract-container')
         run(cia(ticket_title=TITLE + 1), 1, 'title ID mismatch')
         run(cia(boot=7), 1, 'boot content')
         run(cia(info_ranges=[(0, 2), (1, 2)]), 1, 'overlapping TMD')

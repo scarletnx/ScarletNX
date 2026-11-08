@@ -238,6 +238,42 @@ int main(void) {
         free(ready);
 #undef EXE
     }
+    /* a 3DS game's update and DLC (scarletnx-3ds records each so): an update is its data folder alone, as its game's
+       program reads it, shown by its TMD's version; another game's update is none of its */
+    {
+#ifdef _WIN32
+        static const char program[] = "0004000001234500/0004000001234500.exe";
+#else
+        static const char program[] = "0004000001234500/0004000001234500";
+#endif
+        static const char* const data[] = {"0004000001234500_data", "0004000001234500_0004000E01234500v1040_data",
+                                           "0004000001234500_0004008C01234500_data",
+                                           "0004000001234500_0004000E09999900v16_data"};
+        char *ready = snx_temp_dir(NULL), *path, *folder, *game;
+        GuiGames addons = {0};
+        assert(ready);
+        folder = snx_path_join(ready, "0004000001234500");
+        game = snx_path_join(ready, program);
+        assert(!snx_mkdirs(folder) && !snx_write_file(game, "#!/bin/sh\n", 10) && !snx_make_executable(game));
+        for (size_t i = 0; i < sizeof data / sizeof *data; ++i) {
+            path = snx_path_join(folder, data[i]);
+            assert(!snx_mkdirs(path));
+            free(path);
+        }
+        assert(gui_game_addons(game, &addons) && addons.count == 2);
+        assert(!strcmp(addons.names[0], "0004000001234500_0004000E01234500v1040") &&
+               !strcmp(addons.shown[0], "Update v1040"));
+        path = snx_path_join(folder, "0004000001234500_0004000E01234500v1040_data");
+        assert(!strcmp(addons.paths[0], path));
+        free(path);
+        assert(!strcmp(addons.names[1], "0004000001234500_0004008C01234500") &&
+               !strcmp(addons.shown[1], "DLC 0004008C01234500"));
+        gui_games_free(&addons);
+        free(game);
+        free(folder);
+        assert(!snx_remove_tree(ready));
+        free(ready);
+    }
     /* Repeated scans replace the old list; neither recursion nor execute bits. */
     assert(gui_games_scan(&games, subdir, true, error, sizeof error) && !games.count);
     assert(!snx_remove_tree(dir));

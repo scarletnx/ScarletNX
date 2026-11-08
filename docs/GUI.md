@@ -21,8 +21,8 @@ lacks and its 16x16 ones, two columns each, for the letters game titles are writ
 and the wide letters a language shows, and nearest-neighbor
 integer scaling; its words are English or a language compiled into it ([Languages](#languages)). An item of a menu
 has an icon beside its name, 16x16 in the font's stroke (`src/gui/icons.hex`): the menu's, the groups of the Settings and
-their rows that open a screen or do something (the others keep its columns), a game's box's actions, the setup's pages
-and the game's menu's. No font files or localization packages are needed.
+their rows that open a screen or do something (the others keep its columns), a game's box's actions, the setup's pages,
+the game's menu's and the keys of F1's box. No font files or localization packages are needed.
 
 ```sh
 ./build/scarletnx
@@ -78,8 +78,8 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   focus again. A tap on a finished run returns to the menu, and one on a
   running run's ESC line aborts it. Android's back button is ESC. On a screen packed with
   pixels (a phone) the text takes the display's own scale, as far as the menu still fits.
-- **Load Switch NSP/XCI/NRO**, **Load Linux ARM ELF**, **Load 3DS game**, **Load Vita VPK** and
-  **Load GBA ROM** open a screen as the keys': a click on its blinking **[ Pick or drop a file ]**, or Enter, opens the system's file
+- **Load Switch NSP/XCI/NRO**, **Load Linux ARM ELF**, **Load 3DS game**, **Load Vita VPK**, **Load GBA ROM** and
+  **Load Android APK/XAPK** open a screen as the keys': a click on its blinking **[ Pick or drop a file ]**, or Enter, opens the system's file
   picker (on Linux the desktop's, else zenity's). Dropping a file on the window and Ctrl+V with
   a path work too. ESC returns to the menu. On Android the picker opens at once. A dump is read where it lies
   and takes no room, unless *Extract dump* is on. Then one not extracted yet takes about its size, a Switch
@@ -105,6 +105,10 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
 - **Load GBA ROM** uses `scarletnx-agb`, the AGB board runtime, with the menu's data folder as its `--data`: it makes
   the game's folder of `recompiled/` (named after the ROM's file), its module and its copy of the runtime, and plays
   it in a window. See [AGB board](AGB.md).
+- **Load Android APK/XAPK** uses `scarletnx-android` on an `.apk`, `.xapk` or `.apks` file, with no other argument.
+  The driver installs a bundle of split APKs itself. The app runs as it is, as a Linux program does: nothing is
+  compiled first, and its recent row shows at once. An APK in a games or dumps folder shows in Games, and Enter runs
+  it the same way. R on it says that it runs as it is. See [Android apps](android/README.md).
 - **Install Keys**, immediately after the five load entries, blinks red (the theme's `failure` colour, at its
   `blink_ms`) while no keys are in use, the Switch's or the 3DS's. It prompts you to
   pick a keys file (a click on the blinking **[ Pick or drop a keys file ]** in the middle of
@@ -145,10 +149,11 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   **App** holds **Theme** and **Language**, which Left/Right or Enter go round either way, **UI scale**, a dialog
   (below), **Animations** (On by default, `animations = 1` in `app.ini`: a screen comes in from the
   page's colour and a box's shade comes and goes, 0.15 s each; Off shows each at once), **Side panel** (below, F2 too),
-  **Background recompile** (*Full*, `recompile_background = full` in `app.ini`: the queue's recompiles take every
-  core, or the AOT threads picked; *Gentle*, `gentle`: half of them, at a low priority, ten steps of nice under the
-  launcher's, on Windows the class under the launcher's, for using the computer meanwhile;
-  [the Compile tab](#the-compile-tab)),
+  **Background recompile** (*Auto*, `background_recompile = auto` in `app.ini`: *Gentle* while the computer or
+  phone runs on its battery and *Full* on its charger or with none, asked as a recompile starts and every 5 s while it
+  runs, the row saying what it is now; *Full*, `full`: the queue's recompiles take every core, or the AOT threads
+  picked; *Gentle*, `gentle`: half of them, at a low priority, ten steps of nice under the launcher's, on Windows the
+  class under the launcher's, for using the computer meanwhile; [the Compile tab](#the-compile-tab)),
 **Theme Editor**, which comes
   back to App, and **Folders**, every folder on one screen, the whole of it, a box a group:
   - **App Folders**: **Data** (`recompiled/`, `dumps/`, `themes/` and `prod.keys`), **Settings**, shown only
@@ -180,7 +185,16 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   one named Qualcomm) marked *proprietary, no license*; the one picked is downloaded, its progress in the note, and
   added as Add Driver adds a zip. They load on Android 9 or newer, arm64, with an Adreno GPU (`/dev/kgsl-3d0`): the page's first line says
   what this device is and, anywhere else, why games there use the system driver, and Use is refused there with that
-  line. A game whose package does not load stops, saying why. **Freedreno Settings** sets Mesa's Freedreno and Turnip
+  line. A game whose package does not load stops, saying why. Under them, **edenprobe Mode** (Quick, the default:
+  `quick notime cpu graphics`; Full adds `fs video audio kernel display`) and **Run edenprobe**, which plays
+  [edenprobe](EDENPROBE.md)'s probes as a game with the GPU driver picked here, from `probe/edenprobe.nro` of the
+  Logs folder, in a data folder of its own there (`probe/.scarletnx`: none of your settings, saves or users) with the
+  default settings, and the build as edenprobe's machine (`machine=scarletnx@<commit>`), whose ban list then skips the
+  cases that end ScarletNX every time. A launch that ends before the report's summary is followed by another, up to
+  16, which goes on after the case it ended inside, while each adds cases; ESC ends it. At the end a box says the
+  counts and the suites that failed or crashed, and where the report is. A next press after a whole run starts it
+  over; after one that stopped inside a case (an iOS app ends with its game), it goes on. **Freedreno Settings** sets
+  Mesa's Freedreno and Turnip
   variables (`TU_DEBUG`, `FD_MESA_DEBUG`, `IR3_SHADER_DEBUG`, `FD_RD_DUMP`...) every game starts with: Eden's presets
   first (Debug - CPU Memory, `TU_DEBUG=sysmem`, and the others), a row a variable set (a press, or Del, takes it out),
   **Variable Name** and **Variable Value** typed and **Add Variable**, **Clear All**, then **Save**, which keeps them.
@@ -281,13 +295,15 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   name), `ui_scale` (1 to 4; a start without it takes twice the display's
   scale, as many as fit 16 rows (30 on a phone), and writes it; `text_size` before, still read and written again as
   `ui_scale`, said once; `auto`, `0.25`, `0.5` and `0.75` of older versions read as that number and written again so,
-  said once), `recompile_background` (`full`, the default, or `gentle`; a word it does not know named
-  with the one kept, `recompile_background = slow (it keeps full)`), `dumps_subfolders` (`on`, the default: dumps/'s
+  said once), `background_recompile` (`auto`, the default, `full` or `gentle`; a word it does not know named
+  with the one kept, `background_recompile = slow (it keeps auto)`; `recompile_background` before it, still read
+  while it has none: its `full`, the default every `app.ini` wrote, is `auto`, its `gentle` `gentle`, written again
+  as `background_recompile`, said once), `dumps_subfolders` (`on`, the default: dumps/'s
   subfolders' dumps listed too; `off`: its own alone; Folders' row of it switches it), `dumps_main` (`on`, the default:
   dumps/ listed and made as ScarletNX starts; `off`: neither, Remove from Library's), `recompiled_main` (`on`, the
   default; `off`: recompiled/ not listed, new games going to an Extra), `gpu_driver` (GPU Drivers' pick, a folder of
 `gpu_drivers/`; left out, the system's driver), `freedreno_env` (Freedreno Settings', `NAME=value` with a `;` between
-two; left out, none) and `language` (`auto`, `en` or a
+two; left out, none), `probe_mode` (edenprobe Mode's `quick`, the default, or `full`) and `language` (`auto`, `en` or a
   language's BCP 47
   tag, as `pt-BR` or `zh-Hans-CN`), and once one
   is picked `[folders]` with Folders' `data`, `recompiled`, `work`, `state` (Logs) and `cache` (Caches) (a full path,
@@ -358,7 +374,18 @@ two; left out, none) and `language` (`auto`, `en` or a
   to them. Launchers open at once on one Logs folder each keep their runs' output apart: the first `last-run.log` and
   `last-recompile.log`, the next `last-run-2.log` and `last-recompile-2.log`, and on to 8, each held while its
   launcher is open (a lock on the file, which leaves it to be read); the log says which a launcher took, and Share Log
-  sends its own.
+  sends its own. Each start says how the last ended: `last start: ended with an exit, or none before`, or for each
+  start that left its mark, `last start: pid 4242, started 2026-11-07 10:01:02 did not end with an exit:` and what the
+  system says of it (on Android 11 and later the reason it keeps for that process, [ANDROID](ANDROID.md); elsewhere
+  the system names none). The mark is `.running-<pid>` beside the log, made at the start, held while the launcher
+  runs and deleted at its exit, Logs moving it; a game keeps its own beside its log, which the game's next start says
+  the same way. The start also gives the data folder's disk, `disk: 51200 MiB free of 953344 MiB` (on iOS the
+  banner's, [APPLE](APPLE.md)). Debug's Log level at 2 adds a line at each start and end of a run and of a recompile,
+  with its status, its time and the disk then (`run: ended, status 7, after 12.3 s; disk: ...`); and on Android and
+  the Apple apps each change of the thermal state and of the low power mode (Android's Battery Saver), `state: thermal
+  severe, low power mode on`: Android's seven thermal statuses by Android's names (`none`, `light`, `moderate`,
+  `severe`, `critical`, `emergency`, `shutdown`), as they do not match Apple's four (`nominal`, `fair`, `serious`,
+  `critical`) one to one, and `thermal not reported` below Android 10, which gives none.
 - **Exit** closes the launcher, once asked (ESC on the menu asks too, and while a recompile of the queue runs or waits
   the question names it), a screen saying for half a second which of its
   files it keeps for the next start (Settings, the picks of Settings > App, the libraries' folders, the recent games), a second
@@ -498,8 +525,11 @@ cannot be read is named and the others still listed.
   at a time behind the screens: with none running it starts at once, the Compile tab showing it; else the tips say
   where it waits. A game of the queue says it on its row (`42%`, `next`, `3rd in queue`) and in the side box; Enter
   on it, or R again, shows it on the Compile tab, and it plays once its compile ended. On a Linux
-  program, or another row, R says why it does nothing. **B** builds the focused game's AOT pack from its JIT cache
+  program, an Android app, or another row, R says why it does nothing. **B** builds the focused game's AOT pack from its JIT cache
   ([AOT packs](AOT_PACKS.md)) through the same queue.
+- A finger held on a game half a second without moving, or a right click on it, opens its box: **Play** (**View
+  Progress** for a game of the queue, which shows it on the Compile tab as Enter does), **Recompile** (R), and for a
+  recompiled Switch game **Mods** (M) and **Save States** (S). The finger's lift then taps nothing.
 - **M** (on Android a tap on *Mods* at the foot) opens the box of the recompiled Switch game in focus, recent or on
   the page, that Enter opens for a game with updates, DLCs, mods, cheats or other programs beside it, and for a game
   with none of them too, whose **Add Mod** and **Add Cheats** copy a folder or a `.txt` the system's picker gives
@@ -518,7 +548,7 @@ cannot be read is named and the others still listed.
   one.
 - The list is one page that scrolls, by pixels: past its height a scroll bar at its right, as every list has (below),
   which a click and a finger take. Up/Down move the focus
-  and the rows glide to show it (at once with Animations off); Left/Right and PgUp/PgDown move it a screen of rows,
+  and the rows glide to show it (at once with Animations off); Left/Right and PgUp/PgDn move it a screen of rows,
   stopping at the first and the last; a notch of the wheel glides the rows three rows, the focus staying. The count
   of the games is shown beside them.
 - Empty or missing directories show a diagnostic, and the side box says P adds a folder.
@@ -619,10 +649,13 @@ box. The tips have a row of their own under the head, their letters a half step 
 as the Status box's and the note at the foot of a Settings box are; the setup's go to the foot beside its keys, where they take one row,
 a long one sliding, or wrap over its rows with `[tips] wrap`, the last sliding what does not fit. At the foot the
 screen's keys, the whole width (the setup's beside its tips), in letters a size under the rest's: its own keys, ESC alone
-at the left of the row, **F1** last, which opens a box over the screen with every key it has, those every screen has too
-(the arrows and the mouse, Enter, Space and a click, the pages, Tab and F2), until any key or a click closes it; on a
-phone, the words to tap, whole, in the text's letters, each row of them as tall as a list's row (48 pixels times
-the text's size) for a finger, and so are the tabs. The tips and the keys each in a box with a bar down
+at the left of the row, **F1** last, which opens a box over the screen, Shortcuts, with every key it has, those every
+screen has too (the arrows and the mouse, Enter, Space and a click, the pages, Tab and F2), as the other boxes over a
+screen are: the screen darkened under it, a row a key with its icon, the keys as the foot draws them, the screen's own
+first and those every screen has under the title Every screen (ESC among them; no title where all are those), OK under
+them; Up/Down, PgUp/PgDn and the wheel go over the rows a short window cannot show, any other key or a click closes
+it; on a phone, the words to tap, whole, in the text's letters, each row of them as tall as a list's row (48 pixels
+times the text's size) for a finger, and so are the tabs. The tips and the keys each in a box with a bar down
 its left (`[tips] box`, `[footer] box`) or on the page, each key with what it does a button as a tab is: a box as the
 theme's are (filled in the dim colour, framed in it, or on the foot's band framed in the soft one), its text a column
 inside, a column between two, as tall as a tab where it has a row of its own. Games lists the recent games and the

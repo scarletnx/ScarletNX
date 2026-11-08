@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright 2026 the ScarletNX contributors. Made by scripts/build-skins.py: edit it, not this file -->
+<svg xmlns="http://www.w3.org/2000/svg" width="368" height="148" viewBox="0 0 368 148" shape-rendering="crispEdges">
+<g shape-rendering="geometricPrecision">
+<path d="M45.77 9.83H322.23A35.93 35.93 0 0 1 358.17 45.77V102.23A35.93 35.93 0 0 1 322.23 138.17H45.77A35.93 35.93 0 0 1 9.83 102.23V45.77A35.93 35.93 0 0 1 45.77 9.83Z" fill="none" stroke="#000000" stroke-opacity="0.28" stroke-linecap="round" stroke-linejoin="round" stroke-width="17.66"/>
+<path d="M169.38 45.88L169.38 102.12L198.62 102.12" fill="none" stroke="#000000" stroke-opacity="0.28" stroke-linecap="round" stroke-linejoin="round" stroke-width="17.66"/>
+<path d="M45.77 9.83H322.23A35.93 35.93 0 0 1 358.17 45.77V102.23A35.93 35.93 0 0 1 322.23 138.17H45.77A35.93 35.93 0 0 1 9.83 102.23V45.77A35.93 35.93 0 0 1 45.77 9.83Z" fill="none" stroke="#FFFFFF" stroke-width="6.79" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M169.38 45.88L169.38 102.12L198.62 102.12" fill="none" stroke="#FFFFFF" stroke-width="6.79" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+</svg>

@@ -9,11 +9,6 @@
 
 #include "hle/services/sm.swipc.inc"
 
-#define SM_INVALID_SERVICE_NAME RC(21, 6)
-#define SM_NOT_REGISTERED       RC(21, 7)
-#define SM_NOT_ALLOWED          RC(21, 8)
-#define SM_OUT_OF_HANDLES       0xD201 /* the kernel's OutOfHandles */
-
 /* a name as sm reads it: 1 to 8 characters, NUL-padded, with nothing after the first NUL. Returns the length, or 0
    for a name sm refuses */
 static int sm_name(const nn_sm_ServiceName* in, char out[9]) {
@@ -46,7 +41,7 @@ static int nn_sm_detail_IUserInterface_GetServiceHandle(SvcObj* self, const nn_s
     char s[9];
     SvcObj* o;
     (void)self;
-    R_UNLESS(sm_name(name, s), SM_INVALID_SERVICE_NAME);
+    R_UNLESS(sm_name(name, s), SNX_RC_SM_INVALID_SERVICE_NAME);
     o = svc_open(s);
     if (!o) {
         WARN("sm: %s is not implemented, its commands answer without doing anything\n", s);
@@ -54,7 +49,7 @@ static int nn_sm_detail_IUserInterface_GetServiceHandle(SvcObj* self, const nn_s
     }
     LOGV("sm: GetServiceHandle(%s)\n", s);
     *session = session_new(o); /* the session takes the reference, and drops it when there is no handle for it */
-    return *session ? 0 : SM_OUT_OF_HANDLES;
+    return *session ? 0 : SNX_RC_SVC_OUT_OF_HANDLES;
 }
 
 /* an application's access control lets it host no service, and sm checks it before it looks the name up, so a game
@@ -63,20 +58,20 @@ static int nn_sm_detail_IUserInterface_RegisterService(SvcObj* self, const nn_sm
                                                        i32 max_sessions, u32* port) {
     char s[9];
     (void)self, (void)port;
-    R_UNLESS(sm_name(name, s), SM_INVALID_SERVICE_NAME);
+    R_UNLESS(sm_name(name, s), SNX_RC_SM_INVALID_SERVICE_NAME);
     WARN("sm: the game registers a service of its own, %s (%d sessions%s): NotAllowed\n", s, max_sessions,
          is_light ? ", light" : "");
-    R_THROW(SM_NOT_ALLOWED);
+    R_THROW(SNX_RC_SM_NOT_ALLOWED);
 }
 
 /* only a service's owner may unregister it, and the runtime's services belong to the system */
 static int nn_sm_detail_IUserInterface_UnregisterService(SvcObj* self, const nn_sm_ServiceName* name) {
     char s[9];
     (void)self;
-    R_UNLESS(sm_name(name, s), SM_INVALID_SERVICE_NAME);
-    R_UNLESS(svc_registered(s), SM_NOT_REGISTERED);
+    R_UNLESS(sm_name(name, s), SNX_RC_SM_INVALID_SERVICE_NAME);
+    R_UNLESS(svc_registered(s), SNX_RC_SM_NOT_REGISTERED);
     WARN("sm: the game unregisters %s, which the runtime serves: NotAllowed\n", s);
-    R_THROW(SM_NOT_ALLOWED);
+    R_THROW(SNX_RC_SM_NOT_ALLOWED);
 }
 
 SvcObj* new_sm(void) { return nn_sm_detail_IUserInterface_new(); }

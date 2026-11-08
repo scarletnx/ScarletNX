@@ -82,9 +82,9 @@ int main(int argc, char** argv) {
     /* the launcher's own and the recompiler's (settings.txt's launcher sections), then a row a setting in the list's
        order, the other line left out; a page's row and its All before its settings */
     int tracy = at(&s, "tracy_capture") >= 0; /* the row a runtime without SNX_TRACY does not list */
-    int opt = 3 + tracy;                      /* the optimization level's row, after it */
+    int opt = 4 + tracy;                      /* the optimization level's row, after it */
     assert(s.own > 5 && s.count == s.own + 16 && !strcmp(s.keys[0].key, "GDB stub"));
-    assert(!tracy || at(&s, "tracy_capture") == 3); /* after Extract dump, before the optimization level */
+    assert(!tracy || at(&s, "tracy_capture") == 4); /* after Java home, before the optimization level */
     assert(!strcmp(s.keys[0].section, "Launch") && !strcmp(s.keys[0].about, "Enables gdbstub on port 1234") &&
            words(&s.keys[0]) == 2 && !strcmp(s.values[0].key, "gdbstub"));
     /* shown by its name, kept by its key */
@@ -92,8 +92,15 @@ int main(int argc, char** argv) {
            !strcmp(s.values[1].key, "tmpfs") && words(&s.keys[1]) == 2 && strstr(s.keys[1].about, "RomFS"));
     assert(!strcmp(s.keys[2].section, "Launch") && !strcmp(s.keys[2].key, "Extract dump") &&
            !strcmp(s.values[2].key, "extract") && words(&s.keys[2]) == 2 && strstr(s.keys[2].about, "dump"));
-    assert(!tracy || (!strcmp(s.keys[3].section, "Launch") && !strcmp(s.values[3].key, "tracy_capture") &&
-                      words(&s.keys[3]) == 2 && strstr(s.keys[3].about, "PATH")));
+    /* Java home, a typed folder: --java-home for the Android driver when set, never a recompile option */
+    assert(!strcmp(s.keys[3].section, "Launch") && !strcmp(s.keys[3].key, "Java home") &&
+           !strcmp(s.values[3].key, "java_home") && strstr(s.keys[3].about, "--java-home") &&
+           !gui_settings_java_home(&s, options));
+    assert(gui_settings_set(&s, "java_home", "/opt/jdk") && gui_settings_java_home(&s, options) == 1 &&
+           !strcmp(options[0], "--java-home=/opt/jdk") && !gui_settings_recompile(&s, 0, options) &&
+           gui_settings_set(&s, "java_home", "") && !gui_settings_java_home(&s, options));
+    assert(!tracy || (!strcmp(s.keys[4].section, "Launch") && !strcmp(s.values[4].key, "tracy_capture") &&
+                      words(&s.keys[4]) == 2 && strstr(s.keys[4].about, "PATH")));
     assert(!gui_settings_extract(&s)); /* off: a dump read in place */
     /* the recompiler's: none passed at its default, then --key=value; the optimization level takes 0 to 3 and z, the
        LLVM batch full or ipo, the AOT threads a number (0 the cores), the unit size a number of instructions, the unit
@@ -587,6 +594,41 @@ int main(int argc, char** argv) {
         assert(gui_settings_always(&s, "shape", "1") && !gui_settings_set(&s, "shape", "2"));
         assert(!strcmp(gui_settings_value(&s, "shape"), "1"));
         gui_settings_free(&s);
+        /* a renamed key's pick (ini.h's ini_renamed): its new row's, said once, and the file written with that one
+           alone; a value the row has not is said with the row's; the new key given too, the old one is not read */
+        {
+            const char* descriptors = "Debug\tvk_descriptors_mode\t3\tint\t0\t3\tGraphics descriptors\t"
+                                      "Descriptor buffers\t0=Sets|1=Buffers|2=Heaps|3=Automatic\n";
+            const char* picks = "[Debug]\nvk_descriptors=1\n";
+            assert(!snx_write_file(path, picks, strlen(picks)));
+            assert(!gui_settings_read(&s, descriptors));
+            gui_settings_mark(&s);
+            assert(gui_settings_load(&s, path, old, sizeof old) == 1);
+            assert(!strcmp(old, "vk_descriptors=1 is deprecated: Descriptor buffers is vk_descriptors_mode=1 now"));
+            assert(!strcmp(gui_settings_value(&s, "vk_descriptors_mode"), "1") &&
+                   gui_settings_options(&s, 0, options) == 1 && !strcmp(options[0], "--vk_descriptors_mode=1"));
+            assert(!gui_settings_save(&s, path));
+            text = (char*)snx_read_file(path, &size);
+            assert(text && strstr(text, "\n[Debug]\nvk_descriptors_mode=1\n") && !strstr(text, "vk_descriptors="));
+            free(text);
+            assert(!gui_settings_load(&s, path, old, sizeof old) && !old[0]);
+            gui_settings_free(&s);
+            picks = "[Debug]\nvk_descriptors=7\n";
+            assert(!snx_write_file(path, picks, strlen(picks)));
+            assert(!gui_settings_read(&s, descriptors));
+            gui_settings_mark(&s);
+            assert(gui_settings_load(&s, path, old, sizeof old) == 1 && !gui_settings_value(&s, "vk_descriptors_mode"));
+            assert(!strcmp(old, "vk_descriptors=7 is deprecated and no value of Descriptor buffers: "
+                                "vk_descriptors_mode=3 now"));
+            gui_settings_free(&s);
+            picks = "[Debug]\nvk_descriptors=1\nvk_descriptors_mode=2\n";
+            assert(!snx_write_file(path, picks, strlen(picks)));
+            assert(!gui_settings_read(&s, descriptors));
+            gui_settings_mark(&s);
+            assert(!gui_settings_load(&s, path, old, sizeof old) && !old[0]);
+            assert(!strcmp(gui_settings_value(&s, "vk_descriptors_mode"), "2"));
+            gui_settings_free(&s);
+        }
         assert(!snx_remove_tree(dir));
         free(path);
         free(dir);
@@ -774,24 +816,45 @@ int main(int argc, char** argv) {
         free(dir);
     }
     /* a 3DS game's run gets its own table's picks and the Switch's settings the 3DS takes too (vk_memory,
-       async_pipelines, pipeline_threads) only: a Display setting picked for a Switch game is not one, nor another
-       Debug one */
+       async_pipelines, pipeline_threads, gamepad_swap_ab, gamepad_deadzone, gamepad_map, touch, vsync, fullscreen,
+       anisotropy, fps_limit) only: another Display, Graphics, Debug, Controllers or On-screen controls setting picked for a
+       Switch game is not one */
     {
         static const char ctr[] = "Display\tfullscreen\t0\tint\t0\t1\tWhole screen\tFullscreen\t0=Off|1=On\n"
+                                  "Display\tdocked\t1\tint\t0\t1\tTV\tDocked\t0=Off|1=On\n"
                                   "3DS\tctr_separate_windows\t0\tint\t0\t1\tTwo windows\tSeparate screens\t0=Off|1=On\n"
                                   "3DS\tctr_top_resolution\t1\tint\t1\t16\tScale\tTop screen resolution\t\n"
+                                  "Graphics\tvsync\t1\tint\t0\t1\tNo tearing\tVSync\t0=Off|1=On\n"
+                                  "Graphics\tshadows\t1\tint\t0\t1\tShadow maps\tShadows\t0=Off|1=On\n"
+                                  "Graphics\tanisotropy\t0\tint\t0\t16\tSharper\tAnisotropic filtering\t\n"
                                   "Performance\tasync_pipelines\t0\tint\t0\t1\tNo pause\tAsync pipelines\t0=Off|1=On\n"
                                   "Performance\tpipeline_threads\t0\tint\t0\t32\tThreads\tPipeline threads\t\n"
+                                  "Performance\tfps_limit\tgame\ttext\t0\t0\tThe pace\tFPS limit\t\n"
+                                  "Controllers\tgamepad_swap_ab\t0\tint\t0\t1\tA and B\tSwap A/B\t0=Off|1=On\n"
+                                  "Controllers\tgamepad_deadzone\t20\tint\t0\t90\tDead zone\tStick dead zone\t\n"
+                                  "Controllers\tgamepad_rumble\t100\tint\t0\t100\tHow strongly\tVibration\t\n"
+                                  "Controllers\tgamepad_map\t\ttext\t0\t0\tThe buttons sent\tButton map\t\n"
+                                  "On-screen controls\ttouch\t2\tint\t0\t2\tTouch\tTouch screen\t\n"
+                                  "On-screen controls\tcontrols_haptics\t1\tint\t0\t1\tBuzz\tHaptics\t\n"
                                   "Debug\tvk_memory\t0\tint\t0\t2\tGuest buffers\tGuest memory\t0=Auto|1=Copy|2=UMA\n"
                                   "Debug\tvk_budget_mb\t0\tint\t0\t65536\tBudget\tVulkan budget\t";
         assert(!gui_settings_read(&s, ctr));
         assert(gui_settings_set(&s, "fullscreen", "1") && gui_settings_set(&s, "ctr_separate_windows", "1") &&
                gui_settings_set(&s, "ctr_top_resolution", "2") && gui_settings_set(&s, "async_pipelines", "1") &&
-               gui_settings_set(&s, "pipeline_threads", "2") && gui_settings_set(&s, "vk_memory", "1") &&
-               gui_settings_set(&s, "vk_budget_mb", "512"));
-        assert(gui_settings_ctr_options(&s, options) == 5 && !strcmp(options[0], "--ctr_separate_windows=1") &&
-               !strcmp(options[1], "--ctr_top_resolution=2") && !strcmp(options[2], "--async_pipelines=1") &&
-               !strcmp(options[3], "--pipeline_threads=2") && !strcmp(options[4], "--vk_memory=1"));
+               gui_settings_set(&s, "pipeline_threads", "2") && gui_settings_set(&s, "gamepad_swap_ab", "1") &&
+               gui_settings_set(&s, "gamepad_deadzone", "35") && gui_settings_set(&s, "gamepad_rumble", "50") &&
+               gui_settings_set(&s, "gamepad_map", "south:A east:B") && gui_settings_set(&s, "touch", "1") &&
+               gui_settings_set(&s, "controls_haptics", "0") && gui_settings_set(&s, "vk_memory", "1") &&
+               gui_settings_set(&s, "vk_budget_mb", "512") && gui_settings_set(&s, "vsync", "0") &&
+               gui_settings_set(&s, "shadows", "0") && gui_settings_set(&s, "docked", "0") &&
+               gui_settings_set(&s, "anisotropy", "8") && gui_settings_set(&s, "fps_limit", "120"));
+        assert(gui_settings_ctr_options(&s, options) == 13 && !strcmp(options[0], "--fullscreen=1") &&
+               !strcmp(options[1], "--ctr_separate_windows=1") && !strcmp(options[2], "--ctr_top_resolution=2") &&
+               !strcmp(options[3], "--vsync=0") && !strcmp(options[4], "--anisotropy=8") &&
+               !strcmp(options[5], "--async_pipelines=1") && !strcmp(options[6], "--pipeline_threads=2") &&
+               !strcmp(options[7], "--fps_limit=120") && !strcmp(options[8], "--gamepad_swap_ab=1") &&
+               !strcmp(options[9], "--gamepad_deadzone=35") && !strcmp(options[10], "--gamepad_map=south:A east:B") &&
+               !strcmp(options[11], "--touch=1") && !strcmp(options[12], "--vk_memory=1"));
         gui_settings_free(&s);
     }
     puts("GUI settings: the runtime's list, picks and a run's options passed");

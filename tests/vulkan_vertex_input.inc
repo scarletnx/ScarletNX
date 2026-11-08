@@ -92,6 +92,20 @@ static VKAPI_ATTR VkResult VKAPI_CALL viw_create(VkDevice dev, VkPipelineCache c
         for (u32 d = 0; info[i].pDynamicState && d < info[i].pDynamicState->dynamicStateCount; d++)
             dynamic |= info[i].pDynamicState->pDynamicStates[d] == VK_DYNAMIC_STATE_VERTEX_INPUT_EXT;
         const VkPipelineVertexInputStateCreateInfo* vi = info[i].pVertexInputState;
+        u32 format1 =
+            dynamic || !vi ? 0 : viw_format1(vi->vertexAttributeDescriptionCount, vi->pVertexAttributeDescriptions);
+        /* a pipeline linked from libraries (pipeline.c, VK_EXT_graphics_pipeline_library) has its vertex input in its
+           vertex input library, which the watch saw made */
+        for (const VkBaseInStructure* x = info[i].pNext; x; x = x->pNext) {
+            if (x->sType != VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR) continue;
+            const VkPipelineLibraryCreateInfoKHR* li = (const VkPipelineLibraryCreateInfoKHR*)x;
+            for (u32 l = 0; l < li->libraryCount; l++)
+                for (u32 q = 0; q < g_viw.npipes; q++)
+                    if (g_viw.pipes[q].p == li->pLibraries[l]) {
+                        dynamic |= g_viw.pipes[q].dynamic;
+                        format1 |= g_viw.pipes[q].format1;
+                    }
+        }
         if (g_viw.npipes == VIW_PIPES) {
             g_viw.pipes_over++;
             continue;
@@ -101,19 +115,6 @@ static VKAPI_ATTR VkResult VKAPI_CALL viw_create(VkDevice dev, VkPipelineCache c
                 g_viw.reused++;
                 break;
             }
-        u32 format1 =
-            dynamic || !vi ? 0 : viw_format1(vi->vertexAttributeDescriptionCount, vi->pVertexAttributeDescriptions);
-        /* a link of pipeline libraries (pipeline.c's gpl_link): the vertex input its vertex input library holds */
-        for (const VkBaseInStructure* s = info[i].pNext; s; s = s->pNext) {
-            if (s->sType != VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR) continue;
-            const VkPipelineLibraryCreateInfoKHR* li = (const VkPipelineLibraryCreateInfoKHR*)s;
-            for (u32 l = 0; l < li->libraryCount; l++)
-                for (u32 j = 0; j < g_viw.npipes; j++)
-                    if (g_viw.pipes[j].p == li->pLibraries[l]) {
-                        dynamic |= g_viw.pipes[j].dynamic;
-                        if (g_viw.pipes[j].format1) format1 = g_viw.pipes[j].format1;
-                    }
-        }
         g_viw.pipes[g_viw.npipes].p = out[i];
         g_viw.pipes[g_viw.npipes].dynamic = dynamic;
         g_viw.pipes[g_viw.npipes++].format1 = dynamic ? 0 : format1;

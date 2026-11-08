@@ -77,7 +77,8 @@ int nvn_subroutine_apply(u32 linkage, i32 first, i32 count, const i32* values) {
 }
 /* the texture layout and formats: only the render target records use them */
 u32 nvn_rt_format(u32 format, int* depth) {
-    *depth = 0;
+    *depth = format == NVN_FORMAT_DEPTH32F;
+    if (*depth) return 0x0a;
     return format == NVN_FORMAT_RGBA8 ? 0xD5 : 0; /* compressed formats: no target takes them */
 }
 void nvn_tex_layout(const NvnTexDesc* d, NvnTexLayout* o) {
@@ -106,8 +107,8 @@ u32 nvn_tex_level_gobs(const NvnTexDesc* d, unsigned level) {
     return 0;
 }
 u32 nvn_tex_msaa(int samples) {
-    (void)samples;
-    return 0;
+    return samples == 2 ? DS_MSAA_2X1 : samples == 4 ? DS_MSAA_2X2
+         : samples == 8 ? DS_MSAA_4X2 : samples == 16 ? DS_MSAA_4X4 : DS_MSAA_1X1;
 }
 int nvn_fmt_bpb(int format, int* bw, int* bh) {
     int bc7 = format == NVN_FORMAT_BPTC_UNORM_SRGB, bc1 = format == NVN_FORMAT_RGBA_DXT1;
@@ -628,6 +629,190 @@ static void bench_equal_bindings(void) {
            (unsigned long long)((u64)ticks * 1000000000ull / CLOCKS_PER_SEC), exact);
 }
 
+/* Draws often repeat a viewport and vertex layout. Measure that case and a control that changes one viewport.
+   The control returns to its initial coordinates and checks every state byte except the changed generation. */
+static void geometry_records(void) {
+    NvnPViewports views = {.count = 1, .v = {{10, 20, 320, 240}}};
+    NvnPScissor scissor = {0, 0, 640, 480};
+    NvnPDepthRange depth = {0.125f, 0.875f};
+    NvnPBindVAttr attr = {.count = 1, .st = {NVN_FORMAT_RGBA32F}};
+    NvnPBindVStream stream = {.count = 1, .st = {{16, 0}}};
+    NvnPBindVBuf buffer = {.count = 1, .r = {{0x40000, 4096}}};
+    memcpy(GP(0xb000), &views, sizeof views);
+    memcpy(GP(0xb200), &scissor, sizeof scissor);
+    memcpy(GP(0xb240), &depth, sizeof depth);
+    memcpy(GP(0xb280), &attr, sizeof attr);
+    memcpy(GP(0xb300), &stream, sizeof stream);
+    memcpy(GP(0xb400), &buffer, sizeof buffer);
+}
+static void apply_geometry_records(void) {
+    nvn_draw_record(&d, OP_VIEWPORTS, 0xb000, sizeof(NvnPViewports));
+    nvn_draw_record(&d, OP_SCISSOR, 0xb200, sizeof(NvnPScissor));
+    nvn_draw_record(&d, OP_DEPTH_RANGE, 0xb240, sizeof(NvnPDepthRange));
+    nvn_draw_record(&d, OP_BIND_VATTR, 0xb280, sizeof(NvnPBindVAttr));
+    nvn_draw_record(&d, OP_BIND_VSTREAM, 0xb300, sizeof(NvnPBindVStream));
+    nvn_draw_record(&d, OP_BIND_VBUF, 0xb400, sizeof(NvnPBindVBuf));
+}
+static void bench_geometry(void) {
+    const u32 operations = 1000000;
+    for (u32 change = 0; change < 2; change++) {
+        memset(&d, 0, sizeof d);
+        nvn_draw_init(&d, 0);
+        NvnPDraw draw = {.count = 3, .instances = 1};
+        memcpy(GP(DRAW), &draw, sizeof draw);
+        geometry_records();
+        apply_geometry_records();
+        nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+        DsState expected = d.ds;
+        clock_t start = clock();
+        for (u32 i = 1; i <= operations; i++) {
+            if (change) {
+                float x = 10.0f + (float)(i & 1u);
+                memcpy(GP(0xb000 + offsetof(NvnPViewports, v)), &x, sizeof x);
+                nvn_draw_record(&d, OP_VIEWPORTS, 0xb000, sizeof(NvnPViewports));
+            } else
+                apply_geometry_records();
+            nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+        }
+        clock_t ticks = clock() - start;
+        int generation_changed = expected.gen[DS_VIEWPORTS] != d.ds.gen[DS_VIEWPORTS];
+        if (change) expected.gen[DS_VIEWPORTS] = d.ds.gen[DS_VIEWPORTS];
+        int exact = !memcmp(&d.ds, &expected, sizeof expected) && (change ? generation_changed : !generation_changed);
+        check(exact, "geometry benchmark preserves every state byte and the required generations");
+        printf("GPU_HOTPATH_BENCH workload=%s operations=%u ns=%llu exact=%d\n",
+               change ? "changing-viewport" : "equal-geometry", operations,
+               (unsigned long long)((u64)ticks * 1000000000ull / CLOCKS_PER_SEC), exact);
+    }
+}
+
+static void test_equal_geometry(void) {
+    memset(&d, 0, sizeof d);
+    nvn_draw_init(&d, 0);
+    NvnPDraw draw = {.count = 3, .instances = 1};
+    memcpy(GP(DRAW), &draw, sizeof draw);
+    geometry_records();
+    apply_geometry_records();
+    nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+    DsState expected = d.ds;
+    apply_geometry_records();
+    check(!d.dirty && !d.vp_dirty, "equal geometry records need no state conversion");
+    nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+    check(!memcmp(&d.ds, &expected, sizeof expected), "equal geometry preserves every state byte and generation");
+
+    NvnPViewports views = {.first = 15, .count = 1, .v = {{20, 30, 40, 50}}};
+    memcpy(GP(0xb000), &views, sizeof views);
+    nvn_draw_record(&d, OP_VIEWPORTS, 0xb000, sizeof views);
+    apply_geometry_records();
+    check(d.vp_dirty == (1u << 15), "equal records retain an earlier changed viewport");
+    nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+    check(d.ds.vp.scale[15][0] == 20 && d.ds.vp.translate[15][0] == 40,
+          "the pending viewport reaches the next draw");
+
+    NvnPBindVAttr attr = {0};
+    NvnPBindVStream stream = {0};
+    memcpy(GP(0xb280), &attr, sizeof attr);
+    memcpy(GP(0xb300), &stream, sizeof stream);
+    nvn_draw_record(&d, OP_BIND_VATTR, 0xb280, sizeof attr);
+    nvn_draw_record(&d, OP_BIND_VSTREAM, 0xb300, sizeof stream);
+    nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+    check((d.ds.vfmt.constant & 1) && !d.ds.vfmt.stride[0], "zero counts remove the vertex attribute and stream");
+    geometry_records();
+    apply_geometry_records();
+    nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+    check(!(d.ds.vfmt.constant & 1) && d.ds.vfmt.stride[0] == 16,
+          "larger counts restore retained vertex state bytes");
+
+    u32 origin = __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED);
+    u32 depth = __atomic_load_n(&g_nvn.draw.depth_mode, __ATOMIC_RELAXED);
+    u32 other = origin == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT ? NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT
+                                                         : NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT;
+    u64 generation = d.ds.gen[DS_VIEWPORTS];
+    nvn_draw_device(other, depth);
+    apply_geometry_records();
+    nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+    check(d.ds.vp.scale[0][1] == (other == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT ? -120 : 120) &&
+              d.ds.vp.scale[15][1] == (other == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT ? -25 : 25) &&
+              d.ds.gen[DS_VIEWPORTS] != generation,
+          "equal geometry still observes a changed device origin");
+    nvn_draw_device(origin, depth);
+}
+
+/* Compare incremental conversions with a fresh conversion of all sixteen slots after each kind of update. */
+static void test_partial_viewports(void) {
+    static NvnDraw reference;
+    NvnPViewports views = {.count = 16};
+    NvnPScissors scissors = {.count = 16};
+    NvnPDepthRanges ranges = {.count = 16};
+    NvnPVpSwizzle swizzles = {.count = 16};
+    for (u32 i = 0; i < 16; i++) {
+        views.v[i][0] = (float)i - 8.25f;
+        views.v[i][1] = (float)i + 2.5f;
+        views.v[i][2] = 64 + (float)i;
+        views.v[i][3] = 128 - (float)i;
+        scissors.rect[i][0] = (i32)i - 8;
+        scissors.rect[i][1] = (i32)i - 4;
+        scissors.rect[i][2] = 128;
+        scissors.rect[i][3] = 256;
+        ranges.range[i][0] = (float)i / 64;
+        ranges.range[i][1] = 1.0f - (float)i / 64;
+    }
+    NvnPDraw draw = {.count = 3, .instances = 1};
+    memcpy(GP(DRAW), &draw, sizeof draw);
+    memset(&d, 0, sizeof d);
+    nvn_draw_init(&d, 0);
+    for (u32 step = 0; step <= 64; step++) {
+        u32 slot = step / 4 * 7 % 16;
+        if (!step) {
+            memcpy(GP(0xc000), &views, sizeof views);
+            memcpy(GP(0xc400), &scissors, sizeof scissors);
+            memcpy(GP(0xc600), &ranges, sizeof ranges);
+            memcpy(GP(0xc700), &swizzles, sizeof swizzles);
+            nvn_draw_record(&d, OP_VIEWPORTS, 0xc000, sizeof views);
+            nvn_draw_record(&d, OP_SCISSORS, 0xc400, sizeof scissors);
+            nvn_draw_record(&d, OP_DEPTH_RANGES, 0xc600, sizeof ranges);
+            nvn_draw_record(&d, OP_VP_SWIZZLE, 0xc700, sizeof swizzles);
+        } else if (step % 4 == 0) {
+            views.v[slot][0] += 0.25f;
+            NvnPViewports one = {.first = (i32)slot, .count = 1};
+            memcpy(one.v[0], views.v[slot], sizeof one.v[0]);
+            memcpy(GP(0xb000), &one, sizeof one);
+            nvn_draw_record(&d, OP_VIEWPORTS, 0xb000, sizeof one);
+        } else if (step % 4 == 1) {
+            scissors.rect[slot][0]++;
+            NvnPScissors one = {.first = (i32)slot, .count = 1};
+            memcpy(one.rect[0], scissors.rect[slot], sizeof one.rect[0]);
+            memcpy(GP(0xb000), &one, sizeof one);
+            nvn_draw_record(&d, OP_SCISSORS, 0xb000, sizeof one);
+        } else if (step % 4 == 2) {
+            ranges.range[slot][0] += 0.01f;
+            NvnPDepthRanges one = {.first = (i32)slot, .count = 1};
+            memcpy(one.range[0], ranges.range[slot], sizeof one.range[0]);
+            memcpy(GP(0xb000), &one, sizeof one);
+            nvn_draw_record(&d, OP_DEPTH_RANGES, 0xb000, sizeof one);
+        } else {
+            swizzles.sw[slot][step / 4 % 4] ^= 1;
+            NvnPVpSwizzle one = {.first = (i32)slot, .count = 1};
+            memcpy(one.sw[0], swizzles.sw[slot], sizeof one.sw[0]);
+            memcpy(GP(0xb000), &one, sizeof one);
+            nvn_draw_record(&d, OP_VP_SWIZZLE, 0xb000, sizeof one);
+        }
+        nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+        memset(&reference, 0, sizeof reference);
+        nvn_draw_init(&reference, 0);
+        memcpy(GP(0xc000), &views, sizeof views);
+        memcpy(GP(0xc400), &scissors, sizeof scissors);
+        memcpy(GP(0xc600), &ranges, sizeof ranges);
+        memcpy(GP(0xc700), &swizzles, sizeof swizzles);
+        nvn_draw_record(&reference, OP_VIEWPORTS, 0xc000, sizeof views);
+        nvn_draw_record(&reference, OP_SCISSORS, 0xc400, sizeof scissors);
+        nvn_draw_record(&reference, OP_DEPTH_RANGES, 0xc600, sizeof ranges);
+        nvn_draw_record(&reference, OP_VP_SWIZZLE, 0xc700, sizeof swizzles);
+        nvn_draw_record(&reference, OP_DRAW, DRAW, sizeof draw);
+        check(!memcmp(&d.ds.vp, &reference.ds.vp, sizeof d.ds.vp),
+              "partial viewport conversion matches a full conversion at step %u", step);
+    }
+}
+
 /* Compute stores requested UBO sizes in the VPC but rounds the directly bound constant-buffer window to 256 bytes. */
 static void test_compute_uniform_ranges(void) {
     static const u32 sizes[] = {0, 1, 255, 256, 257, 65535, 65536};
@@ -902,10 +1087,40 @@ static void test_fixed_state(void) {
     nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
     check(!fixed_call.coverage_table_enable && fixed_call.raster_samples == 4 && fixed_call.coverage_mode == 3,
           "a NULL coverage table selects linear modulation without changing the multisample mode");
-    d.ms.raster_samples = 1;
+    d.ms.samples = d.ms.raster_samples = 4;
     nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
-    check(!fixed_call.raster_samples && !fixed_call.coverage_table_enable,
-          "equal raster and color sample counts need no mixed-sample metadata");
+    check(fixed_call.raster_samples == 4 && !fixed_call.coverage_table_enable,
+          "equal raster and color counts retain explicit target-independent state");
+    d.coverage_table_enable = 1;
+    d.coverage_table[0] = 5;
+    nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+    check(fixed_call.raster_samples == 4 && fixed_call.coverage_mode == 3 &&
+              fixed_call.coverage_table_enable && fixed_call.coverage_table[0] == 5,
+          "ratio-one coverage retains its custom coefficient");
+    d.ms.flags = NVN_MS_GRID;
+    d.ms.cov_to_color_out = 7;
+    memset(d.ms.location, 0x12, sizeof d.ms.location);
+    NvnPConservative precision = {.which = 2, .on = 3, .dilate = 8};
+    memcpy(GP(0xb200), &precision, sizeof precision);
+    nvn_draw_record(&d, OP_CONSERVATIVE, 0xb200, sizeof precision);
+    nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+    check(!fixed_call.multisample_flags && !fixed_call.coverage_to_color_output &&
+              !fixed_call.subpixel_bias_x && !fixed_call.subpixel_bias_y &&
+              !memcmp(fixed_call.sample_locations, (const u8[16]){0}, sizeof fixed_call.sample_locations),
+          "disabled sample features and conservative rasterization keep dormant state out of draws");
+    d.conservative = 1;
+    d.ms.flags = NVN_MS_A2C_DITHER | NVN_MS_COV_TO_COLOR | NVN_MS_LOCATIONS | NVN_MS_GRID;
+    nvn_draw_record(&d, OP_DRAW, DRAW, sizeof draw);
+    check(fixed_call.multisample_flags ==
+                  (DS_MS_A2C_DITHER | DS_MS_COVERAGE_TO_COLOR | DS_MS_SAMPLE_LOCATIONS | DS_MS_SAMPLE_GRID) &&
+              fixed_call.coverage_to_color_output == 7 && fixed_call.subpixel_bias_x == 3 &&
+              fixed_call.subpixel_bias_y == 8 &&
+              !memcmp(fixed_call.sample_locations, d.ms.location, sizeof fixed_call.sample_locations),
+          "active sample and conservative precision state reaches direct draws");
+    precision.on = -1;
+    memcpy(GP(0xb200), &precision, sizeof precision);
+    nvn_draw_record(&d, OP_CONSERVATIVE, 0xb200, sizeof precision);
+    check(d.subpixel_bias_x == 3 && d.subpixel_bias_y == 8, "invalid replay precision values preserve state");
     d.xfb.stride[0] = 20;
     for (u32 what = 0; what < 4; what++) {
         NvnPTfState tf = {.what = (i32)what, .control = what < 2 ? 0x70000 : 0};
@@ -1106,9 +1321,99 @@ static void test_compressed_targets(void) {
     }
 }
 
+static void test_depth_sample_layouts(void) {
+    NvnDraw draw;
+    nvn_draw_init(&draw, 7);
+    NvnPDraw call = {.count = 3, .instances = 1};
+    memcpy(GP(0x5800), &call, sizeof call);
+    const u32 color_samples[] = {1, 4, 4, 0}, depth_samples[] = {4, 1, 4, 4};
+    for (u32 test = 0; test < 4; test++) {
+        NvnTexture color = {.magic = NVN_MAGIC('T', 'E', 'X', 0), .gpu = 0x100000};
+        color.d.format = NVN_FORMAT_RGBA8;
+        color.d.target = color_samples[test] > 1 ? NVN_TEXTURE_TARGET_2D_MULTISAMPLE : NVN_TEXTURE_TARGET_2D;
+        color.d.width = 8; color.d.height = 6; color.d.depth = color.d.levels = 1;
+        color.d.samples = (u8)color_samples[test];
+        NvnTexture depth = color;
+        depth.gpu = 0x200000;
+        depth.d.format = NVN_FORMAT_DEPTH32F;
+        depth.d.target = depth_samples[test] > 1 ? NVN_TEXTURE_TARGET_2D_MULTISAMPLE : NVN_TEXTURE_TARGET_2D;
+        depth.d.samples = (u8)depth_samples[test];
+        memcpy(GP(0x4000), &color, NVN_TEX_SNAP);
+        memcpy(GP(0x4800), &depth, NVN_TEX_SNAP);
+        NvnPSetRT targets = {.count = color_samples[test] != 0, .color = {0x4000}, .depth = 0x4800};
+        memcpy(GP(0x5000), &targets, sizeof targets);
+        nvn_draw_record(&draw, OP_SET_RT, 0x5000, sizeof targets);
+        nvn_draw_record(&draw, OP_DRAW, 0x5800, sizeof call);
+        u32 color_mode = nvn_tex_msaa((int)(color_samples[test] ? color_samples[test] : depth_samples[test]));
+        u32 depth_mode = nvn_tex_msaa((int)depth_samples[test]);
+        check(draw.ds.tgt.msaa == color_mode && ds_depth_msaa(&draw.ds.tgt) == depth_mode &&
+                  draw.ds.tgt.depth_msaa == (color_mode == depth_mode ? 0 : depth_mode + 1),
+              "color/depth sample layouts retain their independent counts, case %u", test);
+        check(draw.ds.tgt.depth.gva == depth.gpu &&
+                  draw.ds.tgt.depth.width == 8u << ds_msaa_log2_x(depth_mode) &&
+                  draw.ds.tgt.depth.height == 6u << ds_msaa_log2_y(depth_mode),
+              "depth dimensions retain their own stored sample grid, case %u", test);
+        check(draw.ds.dyn.clip_height == 6, "lower-left clip height counts pixels, case %u", test);
+    }
+    DsTargets inherited = {.msaa = DS_MSAA_2X2};
+    check(ds_depth_msaa(&inherited) == DS_MSAA_2X2 && offsetof(DsTargets, color) == 8 &&
+              sizeof(DsTargets) == 8 + 9 * sizeof(DsSurf),
+          "zero depth-layout sentinel retains legacy construction and target ABI offsets");
+}
+
+/* the samples-passed counter runs on the console from the start: a report with no ResetCounter before it (one game
+   reports at an address and 16 bytes on, around a depth pass, and draws its colour only when the two differ) turns
+   the renderer's counter on and resets it once, then reports the count; a later report only reports */
+#define SAMPLES_OWNER 0x80000001u
+static struct {
+    NvnDraw q; /* big: not on the stack */
+    u32 on, enables, resets, reports;
+    u64 at;
+} g_samples;
+static void count_samples_enable(u32 owner, int on) {
+    check(owner == SAMPLES_OWNER, "samples_enable for owner %#x, not the queue's %#x", owner, SAMPLES_OWNER);
+    g_samples.on = (u32)on;
+    g_samples.enables++;
+}
+static void count_samples_reset(u32 owner) {
+    check(owner == SAMPLES_OWNER, "samples_reset for owner %#x, not the queue's %#x", owner, SAMPLES_OWNER);
+    g_samples.resets++;
+}
+static int count_samples_report(u32 owner, u64 gva, u32 len, u64 ticks) {
+    check(owner == SAMPLES_OWNER && len == 16, "samples_report for owner %#x of %u bytes", owner, len);
+    (void)ticks;
+    g_samples.at = gva;
+    g_samples.reports++;
+    return 1;
+}
+static void test_samples_without_reset(void) {
+    NvnDraw* q = &g_samples.q; /* all zero, as nvn_draw_init wants it */
+    nvn_draw_init(q, SAMPLES_OWNER);
+    g_none.samples_enable = count_samples_enable;
+    g_none.samples_reset = count_samples_reset;
+    g_none.samples_report = count_samples_report;
+    int first = nvn_draw_samples(q, 0x5000, 7);
+    check(first == 1 && g_samples.on && g_samples.enables == 1 && g_samples.resets == 1 && g_samples.reports == 1 &&
+              g_samples.at == 0x5000,
+          "a report before any reset: returned %d, counter on %u, %u enables, %u resets, %u reports, at %#llx", first,
+          g_samples.on, g_samples.enables, g_samples.resets, g_samples.reports, (unsigned long long)g_samples.at);
+    int second = nvn_draw_samples(q, 0x5010, 8);
+    check(second == 1 && g_samples.enables == 1 && g_samples.resets == 1 && g_samples.reports == 2 &&
+              g_samples.at == 0x5010,
+          "the next report: returned %d, %u enables, %u resets, %u reports, at %#llx", second, g_samples.enables,
+          g_samples.resets, g_samples.reports, (unsigned long long)g_samples.at);
+    nvn_draw_free(q);
+    check(!g_samples.on, "the queue's end turns its counter off");
+    g_none.samples_enable = NULL;
+    g_none.samples_reset = NULL;
+    g_none.samples_report = NULL;
+}
+
 int main(int argc, char** argv) {
     nvn_init();
+    test_samples_without_reset();
     test_compressed_targets();
+    test_depth_sample_layouts();
     test_init();
     test_barriers();
     test_bind_program();
@@ -1122,12 +1427,15 @@ int main(int argc, char** argv) {
     test_patch_size();
     test_inline_updates();
     test_equal_bindings();
+    test_equal_geometry();
+    test_partial_viewports();
     test_fixed_state();
     test_channel_masks();
     test_indexed_viewports();
     test_depth_mode_equal_bind();
     if (argc == 2 && !strcmp(argv[1], "--bench")) bench_inline_updates();
     if (argc == 2 && !strcmp(argv[1], "--bench-state")) bench_equal_bindings();
+    if (argc == 2 && !strcmp(argv[1], "--bench-geometry")) bench_geometry();
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;

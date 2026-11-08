@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""Compile the shaders of the on-screen controls and the game's menu (src/nx/gpu/vk/shaders/ui.*) into ui_spv.h.
+"""Compile the shaders of the on-screen controls and the game's menu (src/nx/gpu/vk/shaders/ui.*) into ui_spv.h, as
+SPIR-V 1.5 for Vulkan 1.2, which 1.3 devices take too.
 
 Needs glslc and spirv-val; --check needs neither: it only compares the sources' hash with the one the header holds.
 """
@@ -49,7 +50,7 @@ def main():
                 [
                     'glslc',
                     f'-fshader-stage={stage}',
-                    '--target-env=vulkan1.3',
+                    '--target-env=vulkan1.2',
                     '-O',
                     str(folder / name),
                     '-o',
@@ -57,7 +58,7 @@ def main():
                 ],
                 check=True,
             )
-            subprocess.run(['spirv-val', '--target-env', 'vulkan1.3', str(spv)], check=True)
+            subprocess.run(['spirv-val', '--target-env', 'vulkan1.2', str(spv)], check=True)
             data = spv.read_bytes()
             words = struct.unpack(f'<{len(data) // 4}I', data)
             text += f'static const uint32_t {array}[] = {{\n'

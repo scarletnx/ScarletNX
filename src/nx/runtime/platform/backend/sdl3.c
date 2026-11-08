@@ -23,6 +23,8 @@
 #include "nx/runtime/platform/ui.h"
 #include "nx/runtime/platform/vpad.h"
 #include "nx/runtime/platform/gamepad.h"
+#include "nx/runtime/platform/help.h"
+#include "nx/runtime/platform/hotkeys.h"
 #include "common/utilities/pad_sdl.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -234,7 +236,7 @@ int backend_ini(const char* k, const char* v) {
     /* the in-game menu reads the touch mode, and the renderer the on-screen controls, under ui_lock */
     ui_lock();
     if (o) ini_read(o, v);
-    known = o || vpad_ini(k, v) || gamepad_ini(k, v);
+    known = o || vpad_ini(k, v) || gamepad_ini(k, v) || hotkeys_ini(k, v);
     ui_unlock();
     return known || unattended_ini(k, v);
 }
@@ -378,8 +380,8 @@ void backend_keyboard_hide(u32 ticket) {
     ui_unlock();
 }
 
-/* the on-screen controls' sprites, decoded from the PNG compiled in, to the atlas the renderer uploads */
-static void controls_atlas(void) {
+/* the on-screen controls' sprites, decoded from the PNG compiled in (malloc'd, w x h), NULL when they can't be */
+static u32* controls_sprites(int* w, int* h) {
     SDL_Surface* png = SDL_LoadPNG_IO(SDL_IOFromConstMem(snx_controls_png, snx_controls_png_size), true);
     SDL_Surface* rgba = png ? SDL_ConvertSurface(png, SDL_PIXELFORMAT_RGBA32) : NULL;
     u32* px = rgba ? malloc((size_t)rgba->w * (size_t)rgba->h * 4) : NULL;
@@ -387,12 +389,29 @@ static void controls_atlas(void) {
         for (int y = 0; y < rgba->h; y++)
             memcpy(px + (size_t)y * (size_t)rgba->w, (const u8*)rgba->pixels + (size_t)y * (size_t)rgba->pitch,
                    (size_t)rgba->w * 4);
-        ui_atlas_set(px, rgba->w, rgba->h);
+        *w = rgba->w;
+        *h = rgba->h;
     } else
         WARN("input: the on-screen controls' image could not be read: %s\n", SDL_GetError());
-    free(px);
     SDL_DestroySurface(rgba);
     SDL_DestroySurface(png);
+    return px;
+}
+/* the atlas the renderer uploads, from the sprites and the skin's rows as they are */
+static void controls_atlas(void) {
+    int w = 0, h = 0;
+    u32* px = controls_sprites(&w, &h);
+    if (px) ui_atlas_set(px, w, h);
+    free(px);
+}
+/* controls_skin's skin, its atlas and its controls: when the window opens, and on the main thread each time the
+   setting changes (the game's menu, a reload of the .ini) */
+static void controls_skin(void) {
+    int w = 0, h = 0;
+    u32* px = controls_sprites(&w, &h);
+    vpad_skin_changed();
+    vpad_skin_apply(px, w, h);
+    free(px);
 }
 /* Android's vibrator, which SDL lists as VIBRATOR_SERVICE; a gamepad's motors are no buzz for a finger */
 static void buzzer_open(void) {
@@ -419,7 +438,53 @@ static void renderer_failed(const char* what) {
     if (why && why[0]) fatal("%s: %s.", what, why);
     fatal("%s (see the log). ScarletNX needs a GPU and driver with Vulkan 1.3.", what);
 }
+/* The Vulkan driver this run picked (the game's vulkan_driver, docs/APPLE.md): on a Mac the library SDL loads, and for
+   KosmicKrisp the ICD the Vulkan loader takes; elsewhere the system's, which moltenvk and kosmickrisp also take, said.
+   Once a run, before SDL opens the window or the headless renderer its loader */
+static const SnxVulkanDriver* vulkan_driver(void) {
+    static SnxVulkanDriver pick;
+    static int picked;
+    if (picked) return &pick;
+    picked = 1;
+    const char* asked = g_settings.vulkan_driver;
+#ifdef __APPLE__
+    /* a library SDL already names (SDL_VULKAN_LIBRARY) is the one auto takes, as before the setting: a checkout's test */
+    const char* named = SDL_GetHint(SDL_HINT_VULKAN_LIBRARY);
+    if (named && named[0] && (!asked[0] || !strcmp(asked, "auto"))) {
+        pick.library = snx_strdup(named);
+        pick.name = "SDL_VULKAN_LIBRARY's";
+        LOG("vulkan: the Vulkan library SDL_VULKAN_LIBRARY names, %s (vulkan_driver=auto leaves it)\n", named);
+        return &pick;
+    }
+#endif
+    char reason[4096] = "";
+    char* self = snx_executable(NULL);
+    int found = snx_vulkan_driver_choose(self, asked, &pick, reason, sizeof reason);
+    free(self);
+    /* A value that is no driver stops, as a menu that shows no other would hide the mistake. A driver the system has
+       not plays auto's in its place, so that a game still starts, and the warning names it */
+    if (!found) fatal("%s", reason);
+    if (pick.instead)
+        WARN("vulkan: vulkan_driver=%s: %s\n", asked, reason);
+    else if (reason[0])
+        LOG("vulkan: %s\n", reason);
+#ifdef __APPLE__
+    /* the loader takes the driver its ICD names, and no other */
+    if (pick.icd && setenv("VK_DRIVER_FILES", pick.icd, 1)) {
+        char error[256];
+        LOG("vulkan: VK_DRIVER_FILES=%s could not be set: %s\n", pick.icd, snx_os_error(error, sizeof error));
+        fatal("vulkan: VK_DRIVER_FILES could not be set for KosmicKrisp's ICD (see the log)");
+    }
+    /* the setting's driver over a library SDL_VULKAN_LIBRARY names, which only auto leaves */
+    if (pick.library) SDL_SetHintWithPriority(SDL_HINT_VULKAN_LIBRARY, pick.library, SDL_HINT_OVERRIDE);
+#endif
+    return &pick;
+}
+
 void video_init(const char* title, const char* addons) {
+    /* MoltenVK's library or the KosmicKrisp loader, before SDL opens the window and loads one of its own, or the
+       headless renderer one (docs/APPLE.md); and the setting checked on every system */
+    vulkan_driver();
     if (g_opt_headless) {
         /* No SDL video subsystem: this also works without DISPLAY, WAYLAND_DISPLAY or a seat. */
         unattended_start();
@@ -435,18 +500,6 @@ void video_init(const char* title, const char* addons) {
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
     SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
     SDL_SetHint(SDL_HINT_PEN_MOUSE_EVENTS, "0");
-#ifdef __APPLE__
-    { /* the app's MoltenVK, or the copy deployed beside a game's runtime, which is outside the bundle: SDL's own search
-         finds neither there, and the system may have no loader (docs/APPLE.md). Elsewhere the system's loader */
-        char* self = snx_executable(NULL), *driver = self ? snx_vulkan_driver(self) : NULL;
-        if (driver && !SDL_GetHint(SDL_HINT_VULKAN_LIBRARY)) {
-            SDL_SetHint(SDL_HINT_VULKAN_LIBRARY, driver);
-            LOG("vulkan: the Vulkan driver at %s\n", driver);
-        }
-        free(self);
-        free(driver);
-    }
-#endif
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) fatal("SDL could not start its video: %s", SDL_GetError());
     gamepad_scan();
     /* SDL subsystem initialization belongs to the main thread, before the guest can open audout sessions. */
@@ -475,7 +528,7 @@ void video_init(const char* title, const char* addons) {
     if (!g_win) fatal("SDL could not open a Vulkan window: %s", SDL_GetError());
     snx_window_icon(g_win);
     overlay_set_display_scale(SDL_GetWindowDisplayScale(g_win));
-    controls_atlas();
+    controls_skin();
     vpad_set_store(ini_set);
     buzzer_open();
     SDL_GetWindowSizeInPixels(g_win, &w, &h);
@@ -500,18 +553,15 @@ void* backend_vk_driver(void) {
     void* own = gpu_driver_open();
     if (own) return own;
 #ifdef __APPLE__
-    /* The library the program's folders carry (snx_vulkan_driver), for a run with no window: SDL's own search of the
-       bundle needs its video subsystem, and a game's runtime copy is outside the bundle. It stays loaded for the run,
-       as SDL's does */
+    /* The library this run picked (vulkan_driver), for a run with no window: SDL's own search of the bundle needs its
+       video subsystem, and a game's runtime copy is outside the bundle. It stays loaded for the run, as SDL's does */
     static void* module;
     static int looked;
     if (!looked) {
-        char* self = snx_executable(NULL), *driver = self ? snx_vulkan_driver(self) : NULL;
+        const SnxVulkanDriver* pick = vulkan_driver();
         looked = 1;
-        if (driver && (module = dlopen(driver, RTLD_NOW | RTLD_LOCAL)) != NULL)
-            LOG("vulkan: the Vulkan driver at %s\n", driver);
-        free(self);
-        free(driver);
+        if (pick->library && (module = dlopen(pick->library, RTLD_NOW | RTLD_LOCAL)) != NULL)
+            LOG("vulkan: the Vulkan driver at %s\n", pick->library);
     }
     return module ? (void*)dlsym(module, "vkGetInstanceProcAddr") : NULL;
 #else
@@ -538,35 +588,6 @@ int backend_vk_surface(VkInstance instance, VkSurfaceKHR* surface) {
     LOG("video: no Vulkan surface: %s\n", SDL_GetError());
     return 0;
 }
-/* F1's text. It follows keymap (the game's buttons), hotkey and menu_event (the runtime's keys): a binding changed there
-   changes here */
-static const char* HELP =
-    "Controller: A, B, X and Y sit where the console has them (gamepad_swap_ab=1 swaps A and B). "
-    "Home opens the game's menu.\n\n"
-    "Keyboard, by key position on a US layout:\n"
-    "  Buttons      A: X or Space    B: Z    X: C    Y: V\n"
-    "  Shoulders    L: Q    R: E    ZL: 1    ZR: 3\n"
-    "  Plus, minus  +: Enter    -: Backspace\n"
-    "  D-Pad        the arrow keys\n"
-    "  Left stick   W, A, S and D\n"
-    "  Right stick  I, J, K and L\n\n"
-    "Runtime keys:\n"
-    "  F1  this help\n"
-    "  F2  open or close the game's menu (arrows move, Enter or Space picks, Esc or Backspace goes back)\n"
-    "  F3  take a screenshot\n"
-    "  F4  turn the FPS limit off or back on\n"
-    "  F5  write every thread's state to the log\n"
-    "  F6  turn showcase mode on or off\n"
-    "  F7  save the game's state to the selected slot\n"
-    "  F8  load the selected slot's state\n"
-    "  F9  select the next save state slot\n"
-#if defined(SNX_TRACY)
-    "  F10 record a 60 second Tracy capture\n"
-#endif
-    "  Pause  pause the whole game, and resume it\n"
-    "  F11 or Alt+Enter  switch fullscreen\n"
-    "  F12  turn the stats on or off\n"
-    "  Esc  quit the game";
 
 static PadKind gamepad_kind(int type) {
     switch (type) {
@@ -577,7 +598,7 @@ static PadKind gamepad_kind(int type) {
     }
 }
 
-/* keys -> HidNpadButton bits; 40..47 are the stick keys, turned into axes in video_poll. By scancode, the key's
+/* keys -> HidNpadButton bits, which F1's text lists (help.c); 40..47 are the stick keys, turned into axes in video_poll. By scancode, the key's
    position: the keycode depends on the layout and on the modifiers, so Shift pressed while 1 was held made its release
    a different key, and ZL stayed held */
 static u64 keymap(SDL_Scancode k) {
@@ -662,6 +683,29 @@ static int android_share(const char* path) {
     (*env)->DeleteLocalRef(env, type);
     (*env)->DeleteLocalRef(env, activity);
     return ok;
+}
+#endif
+#ifdef __ANDROID__
+char* backend_exit_reason(long long pid, long long started) {
+    JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+    jobject activity = (jobject)SDL_GetAndroidActivity();
+    jclass type = env && activity ? (*env)->GetObjectClass(env, activity) : NULL;
+    jmethodID ask = type ? (*env)->GetMethodID(env, type, "exitReason", "(IJ)[B") : NULL;
+    jbyteArray text =
+        ask ? (jbyteArray)(*env)->CallObjectMethod(env, activity, ask, (jint)pid, (jlong)started * 1000) : NULL;
+    jsize n = text && !(*env)->ExceptionCheck(env) ? (*env)->GetArrayLength(env, text) : -1;
+    char* said = n >= 0 ? (char*)snx_alloc((size_t)n + 1) : NULL;
+    if (said) {
+        (*env)->GetByteArrayRegion(env, text, 0, n, (jbyte*)said);
+        said[n] = 0;
+    }
+    if (env && (*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (text) (*env)->DeleteLocalRef(env, text);
+    if (type) (*env)->DeleteLocalRef(env, type);
+    if (activity) (*env)->DeleteLocalRef(env, activity);
+    return said ? said
+                : snx_strdup(!env || !activity ? "the system's reason is unknown: no Android activity to ask"
+                                               : "the system's reason is unknown: GameActivity.exitReason failed");
 }
 #endif
 /* Share Log, as the launcher's: scarletnx.log beside the game's log, sent to the app the player picks on Android and
@@ -953,17 +997,37 @@ static void title_paused(int paused) {
     snprintf(title, sizeof title, "%.*s%s", (int)n, t, paused ? mark : "");
     SDL_SetWindowTitle(g_win, title);
 }
-static void hotkey(SDL_Keycode k) {
-    switch (k) {
-        case SDLK_F1: {
-            int fs = g_fullscreen;
-            if (fs) set_fullscreen(0);
-            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "ScarletNX", HELP, g_win);
-            if (fs) set_fullscreen(1);
+static void menu_open(int open);
+/* a key's modifiers as hotkeys.h counts them, either side's */
+static unsigned key_mods(SDL_Keymod m) {
+    return (m & SDL_KMOD_CTRL ? HOTKEY_CTRL : 0u) | (m & SDL_KMOD_ALT ? HOTKEY_ALT : 0u) |
+           (m & SDL_KMOD_SHIFT ? HOTKEY_SHIFT : 0u) | (m & SDL_KMOD_GUI ? HOTKEY_GUI : 0u);
+}
+/* the runtime's key a key press is (hotkeys.h's action), -1 for none: a key two actions are set to does the first's,
+   which the log says */
+static int key_action(const SDL_KeyboardEvent* k) {
+    int also, a = hotkey_find(k->key, key_mods(k->mod), &also);
+    if (a >= 0 && also >= 0 && !k->repeat)
+        WARN_LIMIT(4, "input: %s is %s's and %s's: it does %s's\n", hotkey_text(a), hotkey_row(a)->key,
+                   hotkey_row(also)->key, hotkey_row(a)->key);
+    return a;
+}
+/* a runtime key's action, which the game's menu's F1 page lists (overlay.c's keys_row) with the game's buttons of
+   keymap: a binding changed here changes there. The menu's is menu_event's */
+static void hotkey(int action) {
+    switch (action) {
+        case HOTKEY_HELP: /* the game's menu on its page of keys, over the game as the menu is, fullscreen or not */
+            ui_lock();
+            menu_open(1);
+            {
+                char debugger[SNX_DEBUGGER_NAME];
+                overlay_keys_extra(g_renderer->capture(0), snx_debugger(debugger, sizeof debugger) ? debugger : "");
+            }
+            overlay_keys();
+            ui_unlock();
             break;
-        }
-        case SDLK_F3: g_shot_req = 1; break;
-        case SDLK_F4: {
+        case HOTKEY_SCREENSHOT: g_shot_req = 1; break;
+        case HOTKEY_FPS_LIMIT: {
             /* off and back to the limit the player set (fps_limit=120 stays 120), or to the game's pace when it
                started off */
             static int was = SNX_FPS_GAME;
@@ -983,8 +1047,8 @@ static void hotkey(SDL_Keycode k) {
                 LOG("FPS limit: off\n");
             break;
         }
-        case SDLK_F5: kernel_dump_threads(); break;
-        case SDLK_F6: {
+        case HOTKEY_THREAD_DUMP: kernel_dump_threads(); break;
+        case HOTKEY_SHOWCASE: {
             int on = !__atomic_load_n(&g_settings.showcase, __ATOMIC_RELAXED);
             __atomic_store_n(&g_settings.showcase, on, __ATOMIC_RELAXED); /* a run's --showcase stays out of the file */
             ini_set("showcase", on ? "1" : "0");
@@ -994,10 +1058,10 @@ static void hotkey(SDL_Keycode k) {
                 LOG("showcase: off\n");
             break;
         }
-        case SDLK_F7: state_ask(STATE_SAVE, -1); break;
-        case SDLK_F8: state_ask(STATE_LOAD, -1); break;
-        case SDLK_F9: state_slot_next(); break;
-        case SDLK_F12: {
+        case HOTKEY_SAVE_STATE: state_ask(STATE_SAVE, -1); break;
+        case HOTKEY_LOAD_STATE: state_ask(STATE_LOAD, -1); break;
+        case HOTKEY_NEXT_SLOT: state_slot_next(); break;
+        case HOTKEY_STATS: {
             int on = !__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED);
             __atomic_store_n(&g_settings.stats, on, __ATOMIC_RELAXED);
             ini_set("stats", on ? "1" : "0");
@@ -1008,19 +1072,23 @@ static void hotkey(SDL_Keycode k) {
             break;
         }
 #if defined(SNX_TRACY)
-        case SDLK_F10: snx_tracy_capture_now(); break;
+        case HOTKEY_TRACY: snx_tracy_capture_now(); break;
 #endif
-        case SDLK_F11: set_fullscreen(!g_fullscreen); break;
-        case SDLK_PAUSE:
+        case HOTKEY_FULLSCREEN:
+        case HOTKEY_FULLSCREEN_2: set_fullscreen(!g_fullscreen); break;
+        case HOTKEY_PAUSE:
             game_pause_toggle();
             title_paused(game_paused());
             break;
+        case HOTKEY_CAPTURE: g_renderer->capture(1); break;
+        case HOTKEY_QUIT: g_quit = 1; break;
+        default: break;
     }
 }
 
 /* The game's menu takes the keys, the buttons, the fingers and the mouse while it is open, and the keyboard's box
-   while it shows and the menu doesn't. Back, Home and F2 open and close the menu, and they and Esc end the on-screen
-   controls' edit mode. Under ui_lock: the renderer draws them on its thread */
+   while it shows and the menu doesn't. Back, Home and the menu's key (hotkey_menu, F2) open and close the menu, and
+   they and Esc end the on-screen controls' edit mode. Under ui_lock: the renderer draws them on its thread */
 /* a finger's id, the pen's apart: SDL gives a pen's touch the id 1 on every platform, the id Android and Wayland
    give a first finger and any finger may have, and no real finger's id sets bit 63 */
 static u64 finger_id(const SDL_TouchFingerEvent* f) {
@@ -1048,19 +1116,27 @@ static void overlay_do(int action) {
         menu_open(0);
         vpad_edit(1);
     }
+    if (action == OVERLAY_CAPTURE) { /* the frame after the menu's: the game's own */
+        menu_open(0);
+        g_renderer->capture(1);
+    }
 }
 /* the keyboard's box, under no menu: the text typed, Backspace, Return and Esc, a paste (Ctrl+V, the system key's V
-   on a Mac), and no other key, which would reach the game or a hotkey; Alt+Return still switches fullscreen */
-static int keyboard_event(const SDL_Event* e) {
+   on a Mac), and no other key, which would reach the game or a runtime key; a fullscreen key held with Ctrl, Alt or
+   the system key (Alt+Return), which types nothing, still switches fullscreen. action: the key's runtime key, -1 for
+   none */
+static int keyboard_event(const SDL_Event* e, int action) {
     if (e->type == SDL_EVENT_TEXT_INPUT) {
         overlay_keyboard_type(e->text.text);
         return 1;
     }
+    if ((action == HOTKEY_FULLSCREEN || action == HOTKEY_FULLSCREEN_2) &&
+        (key_mods(e->key.mod) & (HOTKEY_CTRL | HOTKEY_ALT | HOTKEY_GUI)))
+        return 0;
     switch (e->key.key) {
         case SDLK_BACKSPACE: overlay_keyboard_key(OVERLAY_KEY_BACKSPACE); break;
         case SDLK_RETURN:
         case SDLK_KP_ENTER:
-            if (e->key.mod & SDL_KMOD_ALT) return 0;
             if (!e->key.repeat) overlay_keyboard_key(OVERLAY_KEY_ENTER);
             break;
         case SDLK_ESCAPE:
@@ -1077,10 +1153,16 @@ static int keyboard_event(const SDL_Event* e) {
     }
     return 1;
 }
-static int menu_event(const SDL_Event* e) {
+/* action: the key's runtime key (hotkeys.h), -1 for none */
+static int menu_event(const SDL_Event* e, int action) {
     int w, h;
     float d;
-    if ((e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && (e->key.key == SDLK_AC_BACK || e->key.key == SDLK_F2)) ||
+    /* the Shortcuts page's wait: any key is the one it waits for, the menu's too */
+    if (e->type == SDL_EVENT_KEY_DOWN && overlay_shortcut_listening()) {
+        if (!e->key.repeat) overlay_shortcut_key(e->key.key, key_mods(e->key.mod));
+        return 1;
+    }
+    if ((e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && (e->key.key == SDLK_AC_BACK || action == HOTKEY_MENU)) ||
         (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE)) {
         if (vpad_editing())
             vpad_edit(0);
@@ -1094,22 +1176,28 @@ static int menu_event(const SDL_Event* e) {
     }
     if (!overlay_shown() && !overlay_keyboard_shown()) return 0;
     if (!overlay_shown() && (e->type == SDL_EVENT_KEY_DOWN || e->type == SDL_EVENT_TEXT_INPUT))
-        return keyboard_event(e);
-    if (e->type == SDL_EVENT_KEY_DOWN) {
+        return keyboard_event(e, action);
+    if (e->type == SDL_EVENT_KEY_DOWN && action == HOTKEY_HELP) { /* its page of keys, or from there the game again */
+        if (!e->key.repeat) overlay_do(overlay_keys());
+    } else if (e->type == SDL_EVENT_KEY_DOWN) {
         switch (e->key.key) {
             case SDLK_UP: overlay_move(-1); break;
             case SDLK_DOWN: overlay_move(1); break;
-            case SDLK_LEFT: overlay_side(-1); break;
-            case SDLK_RIGHT: overlay_side(1); break;
+            case SDLK_LEFT: overlay_do(overlay_side(-1)); break;
+            case SDLK_RIGHT: overlay_do(overlay_side(1)); break;
             case SDLK_RETURN:
             case SDLK_SPACE:
                 if (!e->key.repeat) overlay_do(overlay_select());
                 break;
             case SDLK_ESCAPE:
-            case SDLK_BACKSPACE:
                 if (!e->key.repeat) overlay_do(overlay_back());
                 break;
-            default: break;
+            case SDLK_BACKSPACE: /* back, and on the Shortcuts page a key's default */
+                if (!e->key.repeat) overlay_do(overlay_backspace());
+                break;
+            default: /* F1's page goes back to the game on any key */
+                if (!e->key.repeat) overlay_do(overlay_other());
+                break;
         }
     } else if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
         /* the pads' presses act on the menu from the poll, with their sticks and the on-screen controls'; the button
@@ -1159,10 +1247,10 @@ static int menu_event(const SDL_Event* e) {
         return 0; /* the window's events, and keys let go: the game still has them */
     return 1;
 }
-static int overlay_event(const SDL_Event* e) {
+static int overlay_event(const SDL_Event* e, int action) {
     int taken;
     ui_lock();
-    taken = menu_event(e);
+    taken = menu_event(e, action);
     ui_unlock();
     return taken;
 }
@@ -1308,8 +1396,9 @@ static void press_pads_held(void) {
 }
 /* What the event is to the prepare screen's press: 1 when the screen takes it. Every pad's buttons and triggers are
    followed, listening or not, so one held from before counts only once let go. While the menu or the controls' edit
-   mode is over the screen, they take what they would take over the game, and nothing presses */
-static int press_event(const SDL_Event* e) {
+   mode is over the screen, they take what they would take over the game, and nothing presses; nor does a runtime key
+   (action, hotkeys.h's; -1 for none), whatever key it is set to */
+static int press_event(const SDL_Event* e, int action) {
     u32* held;
     int bit, listening = g_press.listening && !overlay_shown() && !vpad_editing();
     switch (e->type) {
@@ -1351,7 +1440,7 @@ static int press_event(const SDL_Event* e) {
             return 1;
         }
         case SDL_EVENT_KEY_DOWN:
-            if (!listening || !press_key(&e->key)) return 0;
+            if (!listening || !press_key(&e->key) || action >= 0) return 0;
             g_press.kind = PRESS_KEY;
             g_press.code = e->key.scancode;
             return 1;
@@ -1436,13 +1525,15 @@ void video_poll(void) {
         if (!fatal_screen(left)) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", left, g_win);
         plat_exit_now(1);
     }
+    if (g_win && vpad_skin_changed()) controls_skin(); /* controls_skin set again since the last poll */
     /* the menu, or the keyboard's box, had the controls when this poll began: the press that closes it (B, or A that
        gives the box's line) is in this poll's state */
     int menu_had = overlay_shown() || vpad_editing() || overlay_keyboard_shown();
     if (!g_opt_headless) mouse_hold_update();
     while (!g_opt_headless && SDL_PollEvent(&e)) {
-        if (press_event(&e)) continue;
-        if (overlay_event(&e)) continue;
+        int action = e.type == SDL_EVENT_KEY_DOWN ? key_action(&e.key) : -1; /* the runtime key it is */
+        if (press_event(&e, action)) continue;
+        if (overlay_event(&e, action)) continue;
         switch (e.type) {
             case SDL_EVENT_QUIT: g_quit = 1; break;
             case SDL_EVENT_WINDOW_MINIMIZED:
@@ -1481,28 +1572,21 @@ void video_poll(void) {
                 wsafe_set();
                 break;
             case SDL_EVENT_KEY_DOWN:
-                if (e.key.key == SDLK_ESCAPE) { /* a fresh press: the repeats of the Esc that closed the menu don't */
-                    if (!e.key.repeat) g_quit = 1;
-                    break;
+                /* a runtime key is no button of the game's. A repeat does neither: a key held as the menu closed (which
+                   cleared keys_held) stays from the game until it is let go, and the Esc that closed the menu doesn't
+                   quit. A key with modifiers the setting doesn't name is no runtime key (Alt+F4 also arrives as F4 on
+                   Windows). Ctrl+G, where no runtime key is set to it, lets the game's mouse go or takes it again */
+                if (e.key.repeat) break;
+                if (action >= 0) {
+                    hotkey(action);
+                } else if (e.key.key == SDLK_G && (e.key.mod & SDL_KMOD_CTRL)) {
+                    g_mouse_let_go = !g_mouse_let_go;
+                    pm_lock(&g_host.hid.input_lock);
+                    g_hle.hid.mouse.buttons = 0; /* what it held comes up with it */
+                    pm_unlock(&g_host.hid.input_lock);
+                } else {
+                    keys_held |= keymap(e.key.scancode);
                 }
-                if (e.key.key == SDLK_G && (e.key.mod & SDL_KMOD_CTRL)) {
-                    if (!e.key.repeat) {
-                        g_mouse_let_go = !g_mouse_let_go;
-                        pm_lock(&g_host.hid.input_lock);
-                        g_hle.hid.mouse.buttons = 0; /* what it held comes up with it */
-                        pm_unlock(&g_host.hid.input_lock);
-                    }
-                    break;
-                }
-                if (e.key.key == SDLK_RETURN && (e.key.mod & SDL_KMOD_ALT)) {
-                    if (!e.key.repeat) set_fullscreen(!g_fullscreen);
-                    break;
-                }
-                /* not with Ctrl, Alt or the system key: Alt+F4 also arrives as F4 on Windows */
-                if (!e.key.repeat && !(e.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) hotkey(e.key.key);
-                /* a repeat doesn't press again: a key held as the menu closed (which cleared keys_held) stays from
-                   the game until it is let go */
-                if (!e.key.repeat) keys_held |= keymap(e.key.scancode);
                 break;
             case SDL_EVENT_KEY_UP: keys_held &= ~keymap(e.key.scancode); break;
             case SDL_EVENT_WINDOW_FOCUS_LOST:
@@ -1551,7 +1635,8 @@ void video_poll(void) {
         u64 one_buttons;
         i32 one_sticks[4];
         u32 id = gamepad_slot_id(i);
-        int connected = id != 0;
+        int kept = !id && gamepad_slot_kept(i); /* gamepad_assign=1: the player kept for its controller a while */
+        int connected = id != 0 || kept;
         /* A disconnect and replacement can happen in one poll. Do not send the old player's rumble to the new pad. */
         if (previous_ids[i] != id) {
             __atomic_store_n(&player->rumble[0], 0, __ATOMIC_RELAXED);
@@ -1567,9 +1652,11 @@ void video_poll(void) {
                             __atomic_load_n(&player->rumble[1], __ATOMIC_RELAXED));
         /* each player as its settings say: seen or not, and the kind of controller the game sees */
         __atomic_store_n(&player->connected, (connected && gamepad_player_seen(i)) || i == 0, __ATOMIC_RELAXED);
-        __atomic_store_n(&player->kind,
-                         gamepad_player_kind(i, connected ? gamepad_kind(gamepad_slot_type(i)) : SNX_PAD_FULL_KEY),
-                         __ATOMIC_RELAXED);
+        __atomic_store_n(
+            &player->kind,
+            gamepad_player_kind(i, connected ? gamepad_kind(kept ? gamepad_slot_kept_type(i) : gamepad_slot_type(i))
+                                             : SNX_PAD_FULL_KEY),
+            __ATOMIC_RELAXED);
         player->source_id = id;
         player->buttons = one_buttons;
         player->lx = one_sticks[0];
@@ -1656,6 +1743,7 @@ void video_poll(void) {
     vpad_showcase_input(b, st); /* what the game takes, a replay's included */
     ui_unlock();
     pm_unlock(&g_host.hid.input_lock);
+    gamepad_console(pb >> 10 & 1, SDL_GetTicksNS()); /* out of the input's lock: a pause stops the game's threads */
     keyboard_sync();
 }
 

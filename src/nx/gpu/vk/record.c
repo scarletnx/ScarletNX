@@ -18,6 +18,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
+#include "nx/gpu/vk/descriptor_heaps.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 
@@ -257,7 +258,10 @@ static void submit_run(const void* p) {
     vk_queue_lock(g_vk.gfx);
     VkResult r = vkQueueSubmit2(g_vk.gfx, 1, &si, VK_NULL_HANDLE);
     vk_queue_unlock(g_vk.gfx);
-    if (r == VK_ERROR_DEVICE_LOST) fatal("vulkan: the GPU device was lost (driver reset or crash)");
+    if (r == VK_ERROR_DEVICE_LOST) {
+        vk_ck_report();
+        fatal("vulkan: the GPU device was lost (driver reset or crash)");
+    }
     VK_OK(r);
     /* a timeline of FFmpeg's never reaching its value would hang its decoder for good */
     if (r != VK_SUCCESS && x->ns > 1 && x->s[1].value)
@@ -416,6 +420,7 @@ static void bind_pipeline_run(const void* p) {
     if (pipe) vkCmdBindPipeline(x->cb, x->bp, pipe);
 }
 void rec_CmdBindPipeline(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline p) {
+    if (bp == VK_PIPELINE_BIND_POINT_GRAPHICS) vk_descriptor_heaps_pipeline_state(0);
     if (!rec_on(cb)) {
         VkPipeline pipe = vk_pipeline_resolve(p);
         if (pipe) vkCmdBindPipeline(cb, bp, pipe);
@@ -459,11 +464,13 @@ typedef struct {
 } CpDesc;
 static CpDesc g_cp_desc[CP_LOG];
 static u64 g_cp_seq;
+/* the top bit tells these markers from checkpoints.c's (vk_checkpoints=1), which count up from 1 in the same queues */
+#define CP_MARK ((uintptr_t)1 << (sizeof(uintptr_t) * 8 - 1))
 static void vk_checkpoint(VkCommandBuffer cb, const char* what, u64 key, u64 addr, u32 gx, u32 gy, u32 gz) {
-    if (!g_vk.has_checkpoints) return;
+    if (!g_vk.has_nv_checkpoints) return;
     u64 seq = __atomic_fetch_add(&g_cp_seq, 1, __ATOMIC_RELAXED) & (CP_LOG - 1);
     g_cp_desc[seq] = (CpDesc){what, key, addr, gx, gy, gz};
-    vkCmdSetCheckpointNV(cb, (const void*)(uintptr_t)(seq + 1));
+    vkCmdSetCheckpointNV(cb, (const void*)(CP_MARK | (uintptr_t)(seq + 1)));
 }
 /* A hang or device-lost is usually a GPU fault: read the queues' NV checkpoints (each a draw or dispatch's marker set
    above) so the log names the one that hung. Dumped once: after a device-lost every later VK call fails too */
@@ -498,7 +505,7 @@ static void fault_dump(const char* why) {
 void vk_checkpoint_dump(const char* why) {
     static int dumped;
     fault_dump(why);
-    if (dumped || !g_vk.has_checkpoints) return;
+    if (dumped || !g_vk.has_nv_checkpoints) return;
     dumped = 1;
     VkQueue qs[2] = {g_vk.gfx, g_vk.compute};
     const char* names[2] = {"graphics", "compute"};
@@ -514,7 +521,8 @@ void vk_checkpoint_dump(const char* why) {
         if (!c) continue;
         vkGetQueueCheckpointDataNV(qs[qi], &n, c);
         for (i = 0; i < n; i++) {
-            u64 idx = (u64)(uintptr_t)c[i].pCheckpointMarker;
+            uintptr_t mark = (uintptr_t)c[i].pCheckpointMarker;
+            u64 idx = (mark & CP_MARK) ? (u64)(mark & ~CP_MARK) : 0; /* 0: checkpoints.c's, which vk_ck_report names */
             if (idx >= 1 && idx <= CP_LOG) {
                 CpDesc d = g_cp_desc[idx - 1];
                 LOG("vulkan: %s (%s) checkpoint[%u] stage %#x: %s %016llx code %llx grid %ux%ux%u\n", why, names[qi], i,
@@ -689,6 +697,7 @@ void rec_CmdDispatchIndirectKey(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize o
     rec_CmdDispatchIndirect_raw(cb, buf, off, key, addr);
     if (timed) vk_gpuprof_dispatch_end(cb);
 }
+REC1(CmdSetCheckpointNV, const void*) /* checkpoints.c's markers (vk_checkpoints=1) */
 REC0(CmdEndRendering)
 REC1(CmdSetCullMode, VkCullModeFlags)
 REC1(CmdSetFrontFace, VkFrontFace)
@@ -790,6 +799,11 @@ static void push_run(const void* p) {
 }
 void rec_CmdPushConstants(VkCommandBuffer cb, VkPipelineLayout layout, VkShaderStageFlags stages, u32 offset, u32 size,
                           const void* data) {
+    if (vk_descriptor_heaps_active() && vk_graphics_playout_is(layout)) {
+        rec_CmdPushDataEXT(cb, offset, size, data);
+        return;
+    }
+    vk_descriptor_heaps_invalidate();
     /* the device reads push constants as it reads memory, little-endian: a big-endian host swaps the words */
     if (!rec_on(cb)) {
         u32 le[64];
@@ -810,6 +824,57 @@ void rec_CmdPushConstants(VkCommandBuffer cb, VkPipelineLayout layout, VkShaderS
 
 typedef struct {
     VkCommandBuffer cb;
+    u32 offset, size;
+} HeapPushArgs;
+static void heap_push_run(const void* p) {
+    const HeapPushArgs* x = p;
+    VkPushDataInfoEXT info = {.sType = VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT, .offset = x->offset,
+        .data = {.address = (const u8*)p + REC_AL(sizeof *x), .size = x->size}};
+    vkCmdPushDataEXT(x->cb, &info);
+}
+void rec_CmdPushDataEXT(VkCommandBuffer cb, u32 offset, u32 size, const void* data) {
+    vk_descriptors_invalidate();
+    if (!rec_on(cb)) {
+        u32 le[64];
+        if (SNX_HOST_BE && size <= sizeof le) {
+            memcpy(le, data, size);
+            snx_le32_array(le, size / 4);
+            data = le;
+        }
+        VkPushDataInfoEXT info = {.sType = VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT, .offset = offset,
+                                  .data = {.address = data, .size = size}};
+        vkCmdPushDataEXT(cb, &info);
+        return;
+    }
+    HeapPushArgs* x = rec_push(heap_push_run, REC_AL(sizeof *x) + size);
+    *x = (HeapPushArgs){cb, offset, size};
+    memcpy((u8*)x + REC_AL(sizeof *x), data, size);
+    snx_le32_array((u8*)x + REC_AL(sizeof *x), size / 4);
+    rec_commit();
+}
+typedef struct {
+    VkCommandBuffer cb;
+    VkBindHeapInfoEXT resource, sampler;
+} HeapBindArgs;
+static void heap_bind_run(const void* p) {
+    const HeapBindArgs* x = p;
+    vkCmdBindResourceHeapEXT(x->cb, &x->resource);
+    vkCmdBindSamplerHeapEXT(x->cb, &x->sampler);
+}
+void rec_CmdBindDescriptorHeapsEXT(VkCommandBuffer cb, const VkBindHeapInfoEXT* resource,
+                                  const VkBindHeapInfoEXT* sampler) {
+    vk_descriptors_invalidate();
+    HeapBindArgs args = {cb, *resource, *sampler};
+    if (!rec_on(cb)) {
+        heap_bind_run(&args);
+        return;
+    }
+    HeapBindArgs* x = rec_push(heap_bind_run, sizeof *x);
+    *x = args;
+    rec_commit();
+}
+typedef struct {
+    VkCommandBuffer cb;
     VkPipelineBindPoint bp;
     VkPipelineLayout layout;
     u32 first, n, ndyn;
@@ -828,6 +893,7 @@ static u64 g_set_binds;
 u64 vk_rec_set_binds(void) { return __atomic_load_n(&g_set_binds, __ATOMIC_RELAXED); }
 void rec_CmdBindDescriptorSets(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout layout, u32 first, u32 n,
                                const VkDescriptorSet* sets, u32 ndyn, const u32* dyn) {
+    vk_descriptor_heaps_invalidate();
     __atomic_add_fetch(&g_set_binds, 1, __ATOMIC_RELAXED);
     if (!rec_on(cb)) {
         vkCmdBindDescriptorSets(cb, bp, layout, first, n, sets, ndyn, dyn);
@@ -853,6 +919,7 @@ static void descriptor_buffer_run(const void* p) {
     vkCmdBindDescriptorBuffersEXT(x->cb, 1, &info);
 }
 void rec_CmdBindDescriptorBuffersEXT(VkCommandBuffer cb, VkDeviceAddress address) {
+    vk_descriptor_heaps_invalidate();
     DescriptorBufferArgs args = {cb, address};
     if (!rec_on(cb)) {
         descriptor_buffer_run(&args);
@@ -876,6 +943,7 @@ static void descriptor_offsets_run(const void* p) {
 }
 void rec_CmdSetDescriptorBufferOffsetsEXT(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, u32 count,
                                          const VkDeviceSize* offsets) {
+    vk_descriptor_heaps_invalidate();
     DescriptorOffsetsArgs args = {.cb = cb, .layout = layout, .first = first, .count = count};
     for (u32 i = 0; i < count && i < 5; i++) args.offsets[i] = offsets[i];
     if (!rec_on(cb)) {
@@ -1100,6 +1168,7 @@ static void clear_depth_run(const void* p) {
                                 XFER_REGIONS(x));
 }
 u64 g_rec_xfers, g_rec_barriers; /* copies and blits, and barriers, put in the frame's ring (gpuprof.c's gaps) */
+u64 g_rec_barriers_synced;       /* barriers with a pNext chain, recorded after the ring drained */
 u64 g_rec_xfer_kind[3], g_rec_buf_bytes; /* buffer copies, buffer-image copies, image copies and blits; buffer bytes */
 static void copy_buffer_run(const void* p);
 static u64 copy_bytes(u32 n, const VkBufferCopy* r) {
@@ -1292,7 +1361,10 @@ static int barrier_chained(const VkDependencyInfo* d) {
 void rec_CmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo* d) {
     if (rec_on(cb)) g_rec_barriers++;
     if (!rec_on(cb) || barrier_chained(d)) {
-        if (rec_on(cb)) vk_rec_sync();
+        if (rec_on(cb)) {
+            g_rec_barriers_synced++;
+            vk_rec_sync();
+        }
         vkCmdPipelineBarrier2(cb, d);
         return;
     }
@@ -1330,6 +1402,7 @@ static void rendering_run(const void* p) {
     vkCmdBeginRendering(x->cb, &ri);
 }
 void rec_CmdBeginRendering(VkCommandBuffer cb, const VkRenderingInfo* ri) {
+    vk_ck(cb, VK_CK_PASS, ri->renderArea.extent.width, ri->renderArea.extent.height, ri->colorAttachmentCount, 0);
     int chained = ri->pNext || (ri->pDepthAttachment && ri->pDepthAttachment->pNext) ||
                   (ri->pStencilAttachment && ri->pStencilAttachment->pNext);
     for (u32 i = 0; i < ri->colorAttachmentCount && !chained; i++) chained = ri->pColorAttachments[i].pNext != NULL;
@@ -1389,7 +1462,7 @@ static u32 rec_alloc_n(RecPools* f, VkDescriptorSetLayout layout, VkDescriptorSe
         if (tries == 2) count = 1;
         if (f->ipool == f->npool) {
             if (f->npool == (int)(sizeof f->pool / sizeof f->pool[0])) return 0;
-            if (!(f->pool[f->npool] = vk_desc_pool_new())) return 0;
+            if (!(f->pool[f->npool] = vk_desc_pool_new(VK_POOL_ARRAY_SETS_FOR(layout)))) return 0;
             f->npool++;
         }
         VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -1397,7 +1470,10 @@ static u32 rec_alloc_n(RecPools* f, VkDescriptorSetLayout layout, VkDescriptorSe
                                           .descriptorSetCount = count,
                                           .pSetLayouts = layouts};
         VkResult r = vkAllocateDescriptorSets(g_vk.dev, &ai, sets);
-        if (r == VK_SUCCESS) return count;
+        if (r == VK_SUCCESS) {
+            vk_desc_taken(layout, count);
+            return count;
+        }
         if (r != VK_ERROR_OUT_OF_POOL_MEMORY && r != VK_ERROR_FRAGMENTED_POOL) {
             VK_OK(r);
             return 0;

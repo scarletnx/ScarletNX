@@ -85,18 +85,6 @@ void gmmu_pieces(u64 gva, u64 size, void (*fn)(void* ctx, u64 gva, u64 cpu, u64 
             fn(ctx, g_map.gva[i], g_map.gva[i] - GVA, g_map.n[i]);
 }
 u8* gmem_host(u64 gva, u64 size) { return g_map.count ? NULL : gmem_ptr(gva, size); }
-/* the page table's run at gva for the BC7 key's hash (astc_content): the guest's bytes to their end, at most max */
-u64 gmmu_run(u64 gva, u64 max, u64* cpu) {
-    if (gva < GVA || gva >= guest_end) return 0;
-    *cpu = gva - GVA;
-    return guest_end - gva < max ? guest_end - gva : max;
-}
-void gmem_need(u64 gva, u64 size) { (void)gva, (void)size; }
-static u32 g_owned; /* the owned ranges own_lookup finds, while g_nown */
-u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) {
-    (void)addr, (void)size, (void)out, (void)max;
-    return g_owned;
-}
 #define STAGE (8u << 20)
 #define STAGE_BUF ((VkBuffer)(uintptr_t)0x5157)
 #define SCRATCH_BUF ((VkBuffer)(uintptr_t)0x5C2A)
@@ -114,6 +102,13 @@ u8* vk_stage(u64 size, u64 align, VkBuffer* buf, u64* off) {
     *buf = STAGE_BUF;
     *off = at;
     return stage + at;
+}
+u8* vk_stage_upload(u64 size, u64 align, VkBuffer* buf, u64* off) {
+    return vk_stage(size, align, buf, off);
+}
+u8* vk_stage_guest_input(u64 gva, u64 source_size, u64 bytes, VkBuffer* buf, u64* off) {
+    (void)gva; (void)source_size;
+    return vk_stage_upload(bytes, vk_stage_align(), buf, off);
 }
 u64 vk_stage_align(void) { return 64; }
 /* the scratch buffer the GPU deswizzles and converts into, which a CPU model of those dispatches writes here */
@@ -175,6 +170,20 @@ void rec_CmdClearDepthStencilImage(VkCommandBuffer cb, VkImage img, VkImageLayou
 
 /* ------------------------------------------------ what texture.c reaches otherwise, unused here */
 VkState g_vk;
+/* Uploading into the fixture's existing image never creates views or samplers. Keep the registry boundary
+   explicit, and fail if an upload unexpectedly starts exercising object creation. */
+VkResult vk_image_view_create(VkDevice device, const VkImageViewCreateInfo* info,
+                               const VkAllocationCallbacks* allocation, VkImageView* view) {
+    (void)device, (void)info, (void)allocation, (void)view;
+    fputs("tex_upload_rows: unexpected image view creation\n", stderr);
+    abort();
+}
+VkResult vk_sampler_create(VkDevice device, const VkSamplerCreateInfo* info,
+                            const VkAllocationCallbacks* allocation, VkSampler* sampler) {
+    (void)device, (void)info, (void)allocation, (void)sampler;
+    fputs("tex_upload_rows: unexpected sampler creation\n", stderr);
+    abort();
+}
 _Atomic int g_cs_any;
 u32 g_vk_present;
 static char g_log[1024]; /* the last line logged */
@@ -190,6 +199,70 @@ int vk_ok_(VkResult r, const char* what, const char* file, int line) {
     return r == VK_SUCCESS;
 }
 VkCommandBuffer vk_cmd(void) { return (VkCommandBuffer)(uintptr_t)0xCB; }
+/* the BC7 encoder between frames (texture.c vk_tex_later_frame), which no case here runs: the textures are RGBA8 or
+   held as such. They link at every level, and abort if a case ever reaches them */
+int vk_cmd_ready(void) { abort(); }
+void vk_submit_recorded(void) { abort(); }
+/* the BC7 cache: the key texture.c handed the last vk_astc_upload or vk_astc_upload_layers (keyed 0: none); takes,
+   whether vk_astc_cached takes a level; owner_over, an owner over every range own_lookup is asked about */
+static struct {
+    int keyed, takes, owner_over;
+    u64 content[2];
+} g_astc_key;
+u64 vk_bc7_strip_texels(void) { abort(); }
+/* the BC7 cache (astc.c, bc7_cache.c): it takes a level while g_astc_key.takes says so. The content is the bytes and
+   layout words mixed in by FNV-1a, and the key that with the level's shape, which is all texture.c needs of them */
+int vk_astc_cached(u32 w, u32 h, u32 depth) {
+    (void)w, (void)h, (void)depth;
+    return g_astc_key.takes;
+}
+void vk_bc7_content(u64 content[2], const void* p, u64 n) {
+    for (u64 i = 0; i < n; i++) content[0] = (content[0] ^ ((const u8*)p)[i]) * 0x100000001b3ull;
+    content[1] += n;
+}
+void vk_bc7_level_key(const u64 content[2], u32 w, u32 h, u32 depth, u32 layers, u32 bw, u32 bh, int srgb, u32 build,
+                      u64 key[2]) {
+    key[0] = content[0] ^ ((u64)w << 32 | h);
+    key[1] = content[1] ^ ((u64)depth << 48 | (u64)layers << 32 | bw << 24 | bh << 16 | (u32)srgb << 8 | build);
+}
+u32 vk_bc7_build(u32 w, u32 h, u32 d) {
+    (void)w, (void)h, (void)d;
+    return 1;
+}
+int vk_bc7_cache_level(VkCommandBuffer cb, VkImage img, const u64 key[2], u32 level, u32 w, u32 h, u32 slices,
+                       int is3d) {
+    (void)cb, (void)img, (void)key, (void)level, (void)w, (void)h, (void)slices, (void)is3d;
+    abort();
+}
+int vk_bc7_capture_level(VkCommandBuffer cb, VkImage img, const u64 key[2], u32 level, u32 w, u32 h, u32 slices,
+                         int is3d) {
+    (void)cb, (void)img, (void)key, (void)level, (void)w, (void)h, (void)slices, (void)is3d;
+    abort();
+}
+/* the GPU's page table maps the guest's bytes at the same offset (GP(cpu) is guest + cpu), and an owner is over every
+   range asked while g_astc_key.owner_over is set */
+u64 gmmu_run(u64 gva, u64 max, u64* cpu) {
+    if (gva < GVA || gva >= guest_end) return 0;
+    *cpu = gva - GVA;
+    return guest_end - gva < max ? guest_end - gva : max;
+}
+void gmem_need(u64 gva, u64 size) { (void)gva, (void)size; }
+u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) {
+    (void)addr, (void)size, (void)out, (void)max;
+    return g_astc_key.owner_over;
+}
+int vk_bc7_encode_image(VkCommandBuffer cb, VkImage src, VkImage dst, u32 level, u32 w, u32 h, u32 d, int is3d, u32 z,
+                        u32 nz, u32 y, u32 rows) {
+    (void)cb, (void)src, (void)dst, (void)level, (void)w, (void)h, (void)d, (void)is3d, (void)z, (void)nz, (void)y,
+        (void)rows;
+    abort();
+}
+/* surface.c's, for a storage image over a target, which no case here samples: an unoptimized build keeps the call, and
+   the test links at every level with this, which aborts if a case ever reaches it */
+int vk_rt_same_layout(const Surf* s, u32 w, u32 h, int bl, u32 bh, u32 pitch) {
+    (void)s, (void)w, (void)h, (void)bl, (void)bh, (void)pitch;
+    abort();
+}
 void vk_render_end_at(const char* file, int line) {
     (void)file;
     (void)line;
@@ -213,21 +286,14 @@ static struct {
 static u32 nastc;
 static u64 astc_used;
 static int astc_append;
-/* the BC7 cache: whether it takes the levels, and the key's content of the last upload (given: not NULL) */
-static int g_cached, g_content_given;
-static u64 g_content[2];
-int vk_astc_cached(const Surf* t, u32 w, u32 h, u32 depth) { return (void)t, (void)w, (void)h, (void)depth, g_cached; }
-void vk_bc7_content(u64 content[2], const void* p, u64 n) {
-    content[0] = snx_fnv1a(content[0] ^ SNX_FNV_BASIS, p, (size_t)n);
-    content[1] += n;
+static void astc_key(const u64* content) {
+    g_astc_key.keyed = content != NULL;
+    if (content) memcpy(g_astc_key.content, content, sizeof g_astc_key.content);
 }
 int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h, u32 depth, u32 level, u32 layer,
-                   u32 layers, VkAstcRows rows, void* ctx, const u64* content) {
-    (void)level, (void)layer;
-    g_content_given = content != NULL;
-    if (content) memcpy(g_content, content, sizeof g_content);
-    if (layers > 1 && depth == 1) depth = layers; /* a 2D array's layers, asked for as slices */
+                   VkAstcRows rows, void* ctx, const u64* content) {
     u32 nx = (w + t->f.bw - 1) / t->f.bw, ny = (h + t->f.bh - 1) / t->f.bh;
+    astc_key(content);
     if (nastc < ASTC_CALLS) {
         astc_calls[nastc].x = x, astc_calls[nastc].y = y0, astc_calls[nastc].w = w, astc_calls[nastc].h = h;
         astc_calls[nastc].level = level, astc_calls[nastc].layer = layer, astc_calls[nastc].at = astc_used;
@@ -256,6 +322,32 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h, u32
         }
     return 1;
 }
+/* an ASTC array's level at once (vk_astc_upload_layers): its calls, and its block rows asked for 2 layers and 3 rows at
+   a time, as strips take them, into astc_out layer after layer from astc_used, which goes on past them */
+static u32 nlayered;
+int vk_astc_upload_layers(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 level, u32 layer, u32 layers, VkAstcRows rows,
+                          void* ctx, const u64* content) {
+    u32 nx = (w + t->f.bw - 1) / t->f.bw, ny = (h + t->f.bh - 1) / t->f.bh;
+    (void)level;
+    astc_key(content);
+    nlayered++;
+    for (u32 z = 0; z < layers; z += 2) {
+        u32 nz = layers - z < 2 ? layers - z : 2;
+        for (u32 y = 0; y < ny; y += 3) {
+            u32 n = ny - y < 3 ? ny - y : 3;
+            VkBuffer b;
+            u64 off;
+            CHECK(rows(ctx, &cb, z, nz, y, n, &b, &off) && mem_of(b));
+            for (u32 k = 0; k < nz; k++) {
+                u64 to = astc_used + (((u64)(layer + z + k) * ny + y) * nx * 16);
+                CHECK(to + (u64)n * nx * 16 <= sizeof astc_out);
+                memcpy(astc_out + to, mem_of(b) + off + (u64)k * n * nx * 16, (u64)n * nx * 16);
+            }
+        }
+    }
+    astc_used += (u64)layers * ny * nx * 16;
+    return 1;
+}
 /* a CPU model of the GPU's moves (vk/blocklinear.c) and conversions (vk/texconv.c), done as they are recorded: the
    recorded order is the order the barriers keep. Conversions: RGBA4 only, the format the cases convert */
 /* static u32 moves */
@@ -265,7 +357,9 @@ void vk_bl_barrier(VkCommandBuffer cb, int before) {
     bar_state = before ? 1 : 2;
     if (before) batch_moves = 0;
 }
+static u64 g_scratch_most; /* the most asked of the scratch buffer since it was set to 0 */
 VkBuffer vk_bl_scratch(u64 size, u64* cap) {
+    if (size > g_scratch_most) g_scratch_most = size;
     *cap = SCRATCH < g_vk.alloc_cap ? SCRATCH : g_vk.alloc_cap;
     return size <= *cap ? SCRATCH_BUF : VK_NULL_HANDLE;
 }
@@ -1301,19 +1395,39 @@ int main(void) {
             memcpy(&got, copied + regs[0].bufferOffset + (y * 16 + x) * 4, 4);
             CHECK(got == want);
         }
-    /* past the allocation cap, strips: under 64 KiB a row of the picture's blocks (16 GOBs high, 960 KiB) doesn't
-       fit, so it goes a GOB row (8 rows, 7680 bytes each) at a time, each GOB of it gathered from its block, 17 of
-       them; under 16 KiB the pitch-linear level in strips of 13 rows (its second level fits whole), and under 4 KiB
-       the 3D level (blocks of 2 GOBs high and 2 slices deep, 4096 bytes a row of them) a row of blocks of 2 slices
-       at a time */
+    /* no strip asks the scratch buffer for more than a quarter of the cap, as the buffer stays as big as the most
+       asked of it: a 128x128 RGBA8 level of 64 KiB, the cap, in 4 strips of 32 rows, each asking for its 16 KiB alone.
+       The level went whole, asking for 64 bytes more than the cap: no buffer, and no upload */
     g_vk.alloc_cap = 64 << 10;
+    {
+        Surf q = tex(128, 128, 1, 1, 4, 0, 0, 1);
+        const u64 quarter = (64 << 10) / VK_PART_SHARE;
+        stage_used = copied_used = nregs = 0;
+        copy_bpp = 4;
+        g_scratch_most = 0;
+        int ok = tex_upload(&q);
+        if (!ok || nregs != 4 || g_scratch_most > quarter)
+            fprintf(
+                stderr,
+                "a 128x128 RGBA8 level under a cap of 65536 bytes: upload %s in %u strips (4 expected), the scratch "
+                "buffer asked for %llu bytes, %llu at most may stay\n",
+                ok ? "done" : "failed", nregs, (unsigned long long)g_scratch_most, (unsigned long long)quarter);
+        CHECK(ok && nregs == 4 && g_scratch_most <= quarter);
+        upload_and_check(&q, GUEST, 4); /* every texel where the layout has it */
+    }
+    /* past a quarter of the allocation cap, strips: under 64 KiB a row of the picture's blocks (16 GOBs high,
+       960 KiB) doesn't fit, so it goes a GOB row (8 rows, 7680 bytes each) at a time, each GOB of it gathered from its
+       block, 17 of them; under 16 KiB the pitch-linear level in strips of 13 rows (its second level fits whole), and
+       under 4 KiB the 3D level (blocks of 2 GOBs high and 2 slices deep, 4096 bytes a row of them) a row of blocks of
+       2 slices at a time */
+    g_vk.alloc_cap = (64 << 10) * VK_PART_SHARE;
     upload_and_check(&a, GUEST, 17);
-    g_vk.alloc_cap = 16 << 10;
+    g_vk.alloc_cap = (16 << 10) * VK_PART_SHARE;
     Surf g = tex(300, 40, 1, 2, 4, 0, 0, 0);
     upload_and_check(&g, GUEST, 4);
-    g_vk.alloc_cap = 4 << 10;
+    g_vk.alloc_cap = (4 << 10) * VK_PART_SHARE;
     upload_and_check(&c, GUEST, 4);
-    g_vk.alloc_cap = 16 << 10;
+    g_vk.alloc_cap = (16 << 10) * VK_PART_SHARE;
     /* a converted format is deswizzled and converted strip by strip: a row of blocks (32 rows) takes 4 KiB
        deswizzled and 8 KiB converted, so a strip is one, 10 of them */
     stage_used = copied_used = nregs = 0;
@@ -1345,59 +1459,110 @@ int main(void) {
         for (u32 y = 0; y < 10; y++)
             for (u32 x = 0; x < 15 * 16; x++)
                 CHECK(astc_out[((z * 10 + y) * 15) * 16 + x] == guest[bl_offset(x, y, z, 15 * 16, 10, 1, 1)]);
-    /* the same level as a 2D array of 3 layers 64 KiB apart: asked for at once, each layer's block rows after the last
-       one's, each from its own layer */
-    Surf ka = tex(60, 37, 1, 1, 16, 1, 0, 1);
-    ka.f.bw = ka.f.bh = 4;
-    ka.f.conv = VKC_ASTC;
-    ka.layers = 3;
-    ka.type = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-    ka.layer_size = 0x10000;
-    stage_used = nregs = 0;
-    memset(astc_out, 0, sizeof astc_out);
-    CHECK(tex_upload(&ka) && nregs == 0);
-    for (u32 z = 0; z < 3; z++)
-        for (u32 y = 0; y < 10; y++)
-            for (u32 x = 0; x < 15 * 16; x++)
-                CHECK(astc_out[((z * 10 + y) * 15) * 16 + x] == guest[z * 0x10000 + bl_offset(x, y, 0, 15 * 16, 10, 1, 0)]);
-    /* the BC7 cache's key (astc_content): made where vk_astc_cached says, of every layer's bytes of the level, another
-       byte of any of them another key; none where the GPU holds any of the bytes */
-    CHECK(tex_upload(&ka) && !g_content_given);
-    g_cached = 1;
-    CHECK(tex_upload(&ka) && g_content_given);
-    const u64 c0[2] = {g_content[0], g_content[1]};
-    for (u32 z = 0; z < 3; z++) {
-        guest[z * 0x10000 + 100] ^= 1;
-        CHECK(tex_upload(&ka) && g_content_given && g_content[0] != c0[0]);
-        guest[z * 0x10000 + 100] ^= 1;
+    /* an ASTC array of 5 layers: a level at a time over all of them (one game's arrays of 118 layers took 667 ms of the
+       GPU a layer at a time), each layer's block rows deswizzled from its own block linear surface, a layer_size
+       after the one before */
+    {
+        Surf a = tex(60, 37, 1, 1, 16, 1, 0, 1);
+        a.f.bw = a.f.bh = 4;
+        a.f.conv = VKC_ASTC;
+        a.layers = 5;
+        a.layer_size = bl_layer_size(60, 37, 1, &a.f, 1, 0, 0, 1);
+        a.size = a.layer_size * a.layers;
+        stage_used = nregs = 0;
+        nastc = nlayered = 0;
+        astc_used = 0;
+        CHECK(tex_upload(&a) && nregs == 0 && nlayered == 1 && nastc == 0);
+        for (u32 layer = 0; layer < 5; layer++)
+            for (u32 y = 0; y < 10; y++)
+                for (u32 x = 0; x < 15 * 16; x++)
+                    CHECK(astc_out[((layer * 10 + y) * 15) * 16 + x] ==
+                          guest[layer * a.layer_size + bl_offset(x, y, 0, 15 * 16, 10, 1, 0)]);
+        /* and of 2 levels: a call a level */
+        Surf a2 = tex(60, 37, 1, 2, 16, 1, 0, 1);
+        a2.f = a.f;
+        a2.layers = 3;
+        a2.layer_size = bl_layer_size(60, 37, 1, &a2.f, 1, 0, 0, 2);
+        a2.size = a2.layer_size * a2.layers;
+        stage_used = nregs = 0;
+        nastc = nlayered = 0;
+        astc_used = 0;
+        CHECK(tex_upload(&a2) && nlayered == 2 && nastc == 0);
     }
-    CHECK(tex_upload(&ka) && g_content_given && g_content[0] == c0[0] && g_content[1] == c0[1]);
-    g_nown = 1;
-    CHECK(tex_upload(&ka) && g_content_given && g_content[0] == c0[0]);
-    g_owned = 1;
-    CHECK(tex_upload(&ka) && !g_content_given);
-    g_nown = g_owned = g_cached = 0;
+    /* the BC7 cache's key: of an ASTC array held as BC7 straight, handed to vk_astc_upload_layers only where the cache
+       takes the level (vk_astc_cached), the same for the same bytes, another for a byte of any layer changed, and none
+       where the GPU holds bytes of it (an owner's pages hold another's bytes until they land); of one made BC7 between
+       frames, kept in the texture for the encoder there, which the upload of its RGBA8 image doesn't take */
+    {
+        Surf b = tex(60, 37, 1, 1, 16, 1, 0, 1);
+        b.f.bw = b.f.bh = 4;
+        b.f.conv = VKC_ASTC;
+        b.f.vk = VK_FORMAT_BC7_UNORM_BLOCK;
+        b.layers = 5;
+        b.layer_size = bl_layer_size(60, 37, 1, &b.f, 1, 0, 0, 1);
+        b.size = b.layer_size * b.layers;
+        u64 first[2];
+        g_astc_key.takes = 0;
+        stage_used = nregs = 0, astc_used = 0;
+        CHECK(tex_upload(&b) && !g_astc_key.keyed);
+        g_astc_key.takes = 1;
+        stage_used = nregs = 0, astc_used = 0;
+        CHECK(tex_upload(&b) && g_astc_key.keyed);
+        memcpy(first, g_astc_key.content, sizeof first);
+        stage_used = nregs = 0, astc_used = 0;
+        CHECK(tex_upload(&b) && g_astc_key.keyed && !memcmp(first, g_astc_key.content, sizeof first));
+        guest[3 * b.layer_size + 77] ^= 0x10;
+        stage_used = nregs = 0, astc_used = 0;
+        CHECK(tex_upload(&b) && g_astc_key.keyed && memcmp(first, g_astc_key.content, sizeof first));
+        guest[3 * b.layer_size + 77] ^= 0x10;
+        /* owners elsewhere, none over the level's bytes: the same key */
+        g_nown = 1;
+        stage_used = nregs = 0, astc_used = 0;
+        CHECK(tex_upload(&b) && g_astc_key.keyed && !memcmp(first, g_astc_key.content, sizeof first));
+        g_astc_key.owner_over = 1;
+        stage_used = nregs = 0, astc_used = 0;
+        CHECK(tex_upload(&b) && !g_astc_key.keyed);
+        g_nown = 0, g_astc_key.owner_over = 0;
+        /* between frames: RGBA8 now, the key of each level kept, the same for the same bytes */
+        Surf r = b;
+        r.f.vk = VK_FORMAT_R8G8B8A8_UNORM;
+        r.bc7_later = 1;
+        stage_used = nregs = 0, astc_used = 0;
+        CHECK(tex_upload(&r) && !g_astc_key.keyed && r.bc7.keyed == 1);
+        u64 kept[2];
+        memcpy(kept, r.bc7.key[0], sizeof kept);
+        stage_used = nregs = 0, astc_used = 0;
+        CHECK(tex_upload(&r) && r.bc7.keyed == 1 && !memcmp(kept, r.bc7.key[0], sizeof kept));
+        guest[77] ^= 0x10;
+        stage_used = nregs = 0, astc_used = 0;
+        CHECK(tex_upload(&r) && r.bc7.keyed == 1 && memcmp(kept, r.bc7.key[0], sizeof kept));
+        guest[77] ^= 0x10;
+        g_astc_key.takes = 0;
+        stage_used = nregs = 0, astc_used = 0;
+        CHECK(tex_upload(&r) && r.bc7.keyed == 0);
+        vk_tex_later_forget(&r);
+    }
     /* a sparse texture's levels at least a tile in size have rows of whole tiles (tile_w). RGBA8 tiles of 128x128
        texels (8 GOBs across, blocks 16 high): 200 texels across (13 GOBs) take 16 at level 0, and levels 1 and 2 are
        narrower than a tile. Whole, in rows of blocks under 160 KiB (2 of them), and 8 GOB rows at a time under 64 KiB,
-       each gathered from its blocks (4) */
+       each gathered from its blocks (4); the caps 4 times those, as a strip takes a quarter of one */
     Surf sp = tex(200, 256, 1, 3, 4, 4, 0, 1);
     sp.tile_w = 3;
     upload_and_check(&sp, GUEST, 1);
-    g_vk.alloc_cap = 160 << 10;
+    g_vk.alloc_cap = (160 << 10) * VK_PART_SHARE;
     upload_and_check(&sp, GUEST, 2);
-    g_vk.alloc_cap = 64 << 10;
+    g_vk.alloc_cap = (64 << 10) * VK_PART_SHARE;
     upload_and_check(&sp, GUEST, 4);
     /* a volume's: RGBA8 tiles of 32x32x16 (2 GOBs across, blocks 4 high and 16 deep). 80x64x32 (5 GOBs) takes 6, and
        level 1, 40x32x16, a tile high and deep, 4. Whole, in a row of blocks of a slab under 512 KiB (2), and 4 GOB rows
-       of a slice under 64 KiB (64) */
+       of a slice under 64 KiB (64), the caps 4 times those */
     Surf sv = tex(80, 64, 32, 2, 4, 2, 4, 1);
     sv.tile_w = 1;
     g_vk.alloc_cap = 256ull << 20;
     upload_and_check(&sv, GUEST, 1);
-    g_vk.alloc_cap = 512 << 10;
+    g_vk.alloc_cap = (512 << 10) * VK_PART_SHARE;
     upload_and_check(&sv, GUEST, 2);
-    g_vk.alloc_cap = 64 << 10;
+    g_vk.alloc_cap = (64 << 10) * VK_PART_SHARE;
     upload_and_check(&sv, GUEST, 64);
     g_vk.alloc_cap = 256ull << 20;
     /* its layers are whole tiles apart: 320x256 of 3 levels (24, 16 and 5 GOBs across), 544768 bytes of levels in 9

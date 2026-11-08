@@ -97,7 +97,10 @@ interface nn::fssrv::sf::IEventNotifier {
 }
 interface nn::fssrv::sf::ISaveDataTransferProhibiter {
 }
+# the file systems a game commits together (nn::fs::Commit of several mounts), each committed as its own Commit does
 interface nn::fssrv::sf::IMultiCommitManager {
+    [1] Add(object<nn::fssrv::sf::IFileSystem> filesystem);
+    [2] Commit();
 }
 
 interface nn::fssrv::sf::IFileSystemProxy is fsp-srv {
@@ -151,6 +154,11 @@ interface nn::fssrv::sf::IFileSystemProxy is fsp-srv {
     [61] OpenSaveDataInfoReaderBySaveDataSpaceId(nn::fs::SaveDataSpaceId space_id)
         -> object<nn::fssrv::sf::ISaveDataInfoReader> reader;
     [62] OpenSaveDataInfoReaderOnlyCacheStorage() -> object<nn::fssrv::sf::ISaveDataInfoReader> reader;
+    # the save's nn::fs::SaveDataExtraData (0x200 bytes), each byte as the mask's keeps it: the SDK sets every bit of
+    # the fields it reads
+    [71] ReadSaveDataFileSystemExtraDataWithMaskBySaveDataAttribute(nn::fs::SaveDataSpaceId space_id,
+                                                                    nn::fs::SaveDataAttribute attribute,
+                                                                    buffer<u8, 6> extra_data, buffer<u8, 5> mask);
     [83] OpenSaveDataTransferProhibiter(nn::ncm::ApplicationId application_id)
         -> object<nn::fssrv::sf::ISaveDataTransferProhibiter> prohibiter;
     [100] OpenImageDirectoryFileSystem(u32 storage_id) -> object<nn::fssrv::sf::IFileSystem> filesystem;

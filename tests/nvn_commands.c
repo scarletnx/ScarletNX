@@ -24,7 +24,8 @@ u32 nvn_program_subroutine(u64 program, i32 stage) {
     return 0;
 }
 
-static u8 memory[2 << 20]; /* the runtime's memory past 0x80000 (kmem_alloc): each command buffer cuts from its own segments */
+/* the runtime's memory past 0x80000 (kmem_alloc): each command buffer cuts from its own segments */
+static u8 memory[1 << 22];
 u8* g_mem = memory; /* guest address a is memory + a */
 
 /* the one pool: command memory from 0x10000 on */
@@ -38,9 +39,10 @@ u64 kmem_alloc(u64 size, u32 state, u32 perm) {
     u64 at = g_lent;
     (void)state;
     (void)perm;
-    if (size > sizeof memory - at) { /* past the test's guest memory: fail here, not in a later write */
-        fprintf(stderr, "kmem_alloc: %llu bytes at %llx are past the test's memory\n", (unsigned long long)size,
-                (unsigned long long)at);
+    /* past the array it would write over the test's own data, its count of failures among them */
+    if (size > sizeof memory - at) {
+        fprintf(stderr, "FAIL: the runtime's memory asked for %llu bytes at %llx, past the test's %llu\n",
+                (unsigned long long)size, (unsigned long long)at, (unsigned long long)sizeof memory);
         abort();
     }
     g_lent += size;
@@ -403,6 +405,60 @@ int main(void) {
         check(!found && g_nvn.cmd.np <= before, "the pieces of the recording written over come back");
     }
 
+    /* A ring: command memory given again after it held two recordings or more. Only each recording's JUMP is written
+       in the command bytes the driver counted, at anchors that move from one turn to the next, so the last turn's JUMPs
+       stay where the new ones don't reach: the bytes counted over their recordings give those back, as the driver's
+       own commands would have written over them. Two uniform buffers count 40 bytes for 64 of records; the second
+       turn starts with one, so its JUMPs fall 20 bytes off the first turn's. A range given for one recording keeps the
+       pieces it counts over: a game that reserves ranges goes on calling the recordings in them */
+    {
+        const u64 cbr = 0xc20, mem = 0x10000 + 0xf400;
+        const int ubos[2][3] = {{2, 2, 2}, {1, 2, 2}}; /* anchors 0, 40 and 80; then 0, 20 and 60 */
+        u32 i, first = 0, second = 0;
+        nvn_CommandBufferInitialize(&cpu, cbr, 0);
+        for (int turn = 0; turn < 3; turn++) {
+            nvn_CommandBufferAddCommandMemory(&cpu, cbr, 1, 0xf400, 0x100);
+            for (int r = 0; r < (turn < 2 ? 3 : 1); r++) {
+                nvn_CommandBufferBeginRecording(&cpu, cbr);
+                for (int k = 0; k < (turn < 2 ? ubos[turn][r] : 4); k++)
+                    nvn_CommandBufferBindUniformBuffer(&cpu, cbr, 0, k, 0x605640000ull, 0x100);
+                nvn_CommandBufferEndRecording(&cpu, cbr);
+            }
+            if (turn == 0) continue;
+            for (i = 1; i <= g_nvn.cmd.slots; i++) {
+                first += g_nvn.cmd.p[i].anchor == mem + 40 || g_nvn.cmd.p[i].anchor == mem + 80;
+                second += g_nvn.cmd.p[i].anchor == mem + 20 || g_nvn.cmd.p[i].anchor == mem + 60;
+            }
+            if (turn == 1) {
+                check(!first && second == 2, "the second turn gives back the first's pieces past its JUMPs");
+                second = 0;
+            } else
+                check(!first && second == 2, "a range given for one recording keeps the pieces it counts over");
+        }
+    }
+
+    /* Two command buffers' recordings in the runtime's memory cut from segments of their own, past the small store's
+       16 KiB: a segment comes back when all of its pieces do, and one game's slow ring, beside a fast one, held a piece
+       in every segment. Recorded in turn, each goes on in the segment it last cut from */
+    {
+        const u64 cbx = 0xcc0, cby = 0xd60;
+        u32 seg[4], i;
+        nvn_CommandBufferInitialize(&cpu, cbx, 0);
+        nvn_CommandBufferInitialize(&cpu, cby, 0);
+        for (int r = 0; r < 4; r++) { /* x, y, x, y */
+            const u64 cbk = r & 1 ? cby : cbx;
+            nvn_CommandBufferAddCommandMemory(&cpu, cbk, 1, r & 1 ? 0xf580 : 0xf500, 0x60);
+            nvn_CommandBufferBeginRecording(&cpu, cbk);
+            for (int d = 0; d < 600; d++) nvn_CommandBufferDrawArrays(&cpu, cbk, 4, d, 3);
+            seg[r] = ~0u;
+            for (i = 0; i < g_nvn.cmd.ns; i++)
+                if (g_nvn.cmd.s[i].owner == cbk) seg[r] = i;
+            nvn_CommandBufferEndRecording(&cpu, cbk);
+        }
+        check(seg[0] != ~0u && seg[1] != ~0u && seg[0] == seg[2] && seg[1] == seg[3] && seg[0] != seg[1],
+              "each command buffer cuts from segments of its own");
+    }
+
     /* a piece of the runtime's memory a recording is still cut from: records past those written aren't there yet, so a
        walk of another submission that jumps there ends (nvn_replay.c), and the piece is whole once the recording ends */
     {
@@ -473,6 +529,27 @@ int main(void) {
               "the draw counts in the memory the callback added");
         walk(h4, &a);
         check(a.n == 3 && a.op[2] == OP_DRAW_IDX, "the recording replays whole across the callback's memory");
+
+        int before = g_cb.calls;
+        nvn_CommandBufferSetControlMemoryCallbackEnabled(&cpu, cb4, 0);
+        nvn_CommandBufferSetCommandMemoryCallbackEnabled(&cpu, cb4, 0);
+        nvn_CommandBufferAddCommandMemory(&cpu, cb4, 1, 0x6000, 40);
+        nvn_CommandBufferBeginRecording(&cpu, cb4);
+        nvn_CommandBufferBindTexture(&cpu, cb4, 0, 0, 0x10200102);
+        nvn_CommandBufferBindUniformBuffer(&cpu, cb4, 0, 1, 0x605640000ull, 0x100);
+        nvn_CommandBufferDrawElements(&cpu, cb4, 4, 2, 36, 0x605660140ull);
+        h4 = nvn_CommandBufferEndRecording(&cpu, cb4);
+        check(g_cb.calls == before, "disabled command-memory callback cannot invoke guest code");
+        check(nvn_CommandBufferGetCommandMemoryUsed(&cpu, cb4) == 40,
+              "disabled callback preserves the supplied command-memory bound");
+        walk(h4, &a);
+        check(a.n == 3 && a.op[2] == OP_DRAW_IDX, "callback suppression preserves the recording in runtime memory");
+        nvn_CommandBufferSetCommandMemoryCallbackEnabled(&cpu, cb4, 1);
+        nvn_CommandBufferBeginRecording(&cpu, cb4);
+        nvn_CommandBufferDrawElements(&cpu, cb4, 4, 2, 36, 0x605660140ull);
+        nvn_CommandBufferEndRecording(&cpu, cb4);
+        check(g_cb.calls == before + 1 && g_cb.event == NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_COMMAND_MEMORY,
+              "command-memory callback can be enabled after suppression");
     }
 
     /* a record that doesn't fit with no room for a JUMP: a draw takes all the bytes counted (its size, nobody measured
@@ -643,6 +720,7 @@ int main(void) {
         const u64 cbf = 0x4b000, ctl = 0x4c000;
         int calls = g_cb.calls;
         nvn_CommandBufferInitialize(&cpu, cbf, 0);
+        nvn_CommandBufferSetCommandMemoryCallbackEnabled(&cpu, cbf, 0);
         nvn_CommandBufferAddCommandMemory(&cpu, cbf, 1, 0x2a000, 0x100);
         nvn_CommandBufferSetMemoryCallback(&cpu, cbf, CALLBACK_PC);
         nvn_CommandBufferAddControlMemory(&cpu, cbf, ctl, 0x48);
@@ -653,7 +731,7 @@ int main(void) {
         check(nvn_CommandBufferGetControlMemoryUsed(&cpu, cbf) == 0x38, "the recording takes its 0x38 control bytes");
         nvn_CommandBufferBeginRecording(&cpu, cbf);
         check(g_cb.calls == calls + 1 && g_cb.event == 1 && g_cb.size == 0x100,
-              "a start entry that doesn't fit asks the callback for 0x100 bytes of control memory");
+              "control-memory callback remains enabled when the command-memory callback is disabled");
         nvn_CommandBufferEndRecording(&cpu, cbf);
     }
     /* a range entry in an open block of them is 0x18 bytes, but the driver checks room for 0x20 before it, as for one

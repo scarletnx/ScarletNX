@@ -29,9 +29,11 @@ typedef struct {
 } Program;
 typedef struct {
     VitaImage* image;
+    uint32_t vaddr[16], vsize[16]; /* each loaded program header's link-time address and size (formats 6 to 9's pointers) */
     uint32_t base[16]; /* each program header's load address, by its index (a relocation's segment), 0 for none */
     int loaded[16];    /* the image segment of each program header, -1 for none */
     size_t seed_capacity;
+    uint32_t origin, variable_base;
     char* error;
     size_t error_size;
 } Loader;
@@ -151,27 +153,93 @@ static bool relocate(Loader* l, unsigned code, unsigned symseg, unsigned datseg,
         default: return fail(l, "unknown relocation type %u at 0x%08x", code, P);
     }
 }
+/* The relocation stream's entries have ten formats (vita-toolchain's sce-elf.h, and Vita3K's relocation.cpp, GPL-2.0-or-later),
+   the first word's low nibble naming each. Format 0 is the 12-byte one that names everything. Format 1 is its 8-byte
+   short form. Formats 2 to 9 are deltas on the state that the entries before them left (the patched segment, offset,
+   symbol segment, addend and the two relocation codes), so the SDK's linker packs a long run of MOVW and MOVT pairs and
+   pointers into 4 or 8 bytes each. The state starts empty for each stream */
+typedef struct {
+    unsigned patchseg, symseg, code, code2;
+    uint32_t offset, addend;
+} RelocState;
+/* the code at the state's offset, and a second one dist bytes on (a MOVW's MOVT) when the state has one */
+static bool relocate_pair(Loader* l, const RelocState* st, uint32_t dist) {
+    if (!relocate(l, st->code, st->symseg, st->patchseg, st->offset, st->addend)) return false;
+    return !st->code2 || relocate(l, st->code2, st->symseg, st->patchseg, st->offset + dist, st->addend);
+}
+/* Formats 6 to 9 relocate a pointer the image already holds: the segment whose link-time range has its value says
+   which segment it points into, and its offset there is the addend. A value in none of them keeps the last symbol
+   segment */
+static bool relocate_pointer(Loader* l, RelocState* st) {
+    uint32_t value;
+    if (st->patchseg >= 16 || l->loaded[st->patchseg] < 0 || !word(l->image, l->base[st->patchseg] + st->offset, &value))
+        return fail(l, "pointer relocation at 0x%08x outside its segment", l->base[st->patchseg % 16] + st->offset, 0);
+    uint32_t segment_base = 0;
+    for (unsigned i = 0; i < 16; ++i) {
+        if (l->loaded[i] < 0 || value < l->vaddr[i] || value - l->vaddr[i] >= l->vsize[i]) continue;
+        segment_base = l->vaddr[i];
+        st->symseg = i;
+    }
+    st->code = 2, st->code2 = 0, st->addend = value - segment_base; /* R_ARM_ABS32 */
+    return relocate(l, st->code, st->symseg, st->patchseg, st->offset, st->addend);
+}
 static bool relocate_all(Loader* l, const unsigned char* r, size_t size) {
+    RelocState st = {0};
     for (size_t pos = 0; pos < size;) {
-        if (size - pos < 8) return fail(l, "truncated relocation at %u of %u bytes", (uint32_t)pos, (uint32_t)size);
-        uint32_t type = snx_ld_le32(r + pos), offset, addend, code2 = 0, dist2 = 0;
-        if (type & 15) { /* the short form: the offset split over the two words, a 12-bit addend */
-            uint32_t second = snx_ld_le32(r + pos + 4);
-            offset = (type >> 20) | (second & 0xfffff) << 12;
-            addend = second >> 20;
-            pos += 8;
-        } else {
-            if (size - pos < 12) return fail(l, "truncated relocation at %u of %u bytes", (uint32_t)pos, (uint32_t)size);
-            addend = snx_ld_le32(r + pos + 4);
-            offset = snx_ld_le32(r + pos + 8);
-            code2 = (type >> 20) & 0xff;
-            dist2 = (type >> 28) & 15;
-            pos += 12;
+        uint32_t first = snx_ld_le32(r + pos), format = first & 15, second = 0;
+        static const unsigned char length[16] = {12, 8, 8, 8, 4, 4, 4, 4, 4, 4};
+        if (format > 9) return fail(l, "unknown relocation entry format %u at %u", format, (uint32_t)pos);
+        if (size - pos < length[format]) return fail(l, "truncated relocation at %u of %u bytes", (uint32_t)pos, (uint32_t)size);
+        if (length[format] >= 8) second = snx_ld_le32(r + pos + 4);
+        switch (format) {
+            case 0: /* code, code2 and dist2 (halfwords), then the addend and the offset in whole words */
+                st = (RelocState){.patchseg = (first >> 16) & 15, .symseg = (first >> 4) & 15, .code = (first >> 8) & 0xff,
+                                  .code2 = (first >> 20) & 0xff, .offset = snx_ld_le32(r + pos + 8), .addend = second};
+                if (!relocate_pair(l, &st, ((first >> 28) & 15) * 2)) return false;
+                break;
+            case 1: /* the offset's low 12 bits here and its high 10 in the second word, which has a 22-bit addend */
+                st = (RelocState){.patchseg = (first >> 16) & 15, .symseg = (first >> 4) & 15, .code = (first >> 8) & 0xff,
+                                  .offset = (first >> 20) | (second & 0x3ff) << 12, .addend = second >> 10};
+                if (!relocate_pair(l, &st, 0)) return false;
+                break;
+            case 2: /* a new offset step, symbol segment, code and addend, in the state's patched segment */
+                st.symseg = (first >> 4) & 15, st.code = (first >> 8) & 0xff, st.code2 = 0;
+                st.offset += first >> 16, st.addend = second;
+                if (!relocate_pair(l, &st, 0)) return false;
+                break;
+            case 3: { /* a MOVW and MOVT pair, in Thumb when bit 8 is set: dist2 bytes apart */
+                bool thumb = (first >> 8) & 1;
+                st.symseg = (first >> 4) & 15, st.code = thumb ? 47 : 43, st.code2 = thumb ? 48 : 44;
+                st.offset += (first >> 9) & 0x3ffff, st.addend = second & 0x3fffff;
+                if (!relocate_pair(l, &st, first >> 27)) return false;
+                break;
+            }
+            case 4: /* the same symbol, code and addend, a step on */
+                st.offset += (first >> 4) & 0x7fffff;
+                if (!relocate_pair(l, &st, first >> 27)) return false;
+                break;
+            case 5: { /* two pairs of them: dist1, dist2, dist3, dist4 */
+                st.offset += (first >> 4) & 0x1ff;
+                if (!relocate_pair(l, &st, (first >> 13) & 0x1f)) return false;
+                st.offset += (first >> 18) & 0x1ff;
+                if (!relocate_pair(l, &st, first >> 27)) return false;
+                break;
+            }
+            case 6:
+                st.offset += first >> 4;
+                if (!relocate_pointer(l, &st)) return false;
+                break;
+            default: { /* 7, 8, 9: 4, 7 or 14 word steps of 7, 4 or 2 bits, each a pointer */
+                unsigned bits = format == 7 ? 7 : format == 8 ? 4 : 2;
+                uint32_t steps = first >> 4;
+                do {
+                    st.offset += (steps & ((1u << bits) - 1)) * 4;
+                    if (!relocate_pointer(l, &st)) return false;
+                } while (steps >>= bits);
+                break;
+            }
         }
-        unsigned code = (type >> 8) & 0xff, symseg = (type >> 4) & 15, datseg = (type >> 16) & 15;
-        if (!relocate(l, code, symseg, datseg, offset, addend)) return false;
-        /* a second relocation of the same symbol dist2 halfwords on (a MOVW's MOVT) */
-        if (code2 && !relocate(l, code2, symseg, datseg, offset + dist2 * 2, addend)) return false;
+        pos += length[format];
     }
     return true;
 }
@@ -189,8 +257,14 @@ static bool variable_references(Loader* l, uint32_t references, uint32_t slot) {
         uint32_t kind, offset;
         if (!word(l->image, references + 4 + i * 8, &kind) || !word(l->image, references + 8 + i * 8, &offset))
             return fail(l, "bad variable import references at 0x%08x", references, 0);
-        if ((kind & 0xff) != 1) return fail(l, "variable import reference of form %u at 0x%08x", kind & 0xff, references);
-        if (!relocate(l, (kind >> 8) & 0xff, 15, first, offset, slot)) return false;
+        if ((kind & 0xf) != 1) return fail(l, "variable import reference of form %u at 0x%08x", kind & 0xf, references);
+        /* The entry (Vita3K's EntryFormat1Alt): format in bits 0 to 3, the patched segment in 4 to 7, the relocation's
+           code in 8 to 15 and its addend in 16 to 31. The value written is the variable's address plus that addend:
+           a C++ class's type_info has its vtable pointer as `&_ZTV... + 8`, and a vtable's RTTI pointer is read at
+           vptr[-1], so the addend must stay or the program reads the neighbouring slot's last word instead */
+        unsigned patch = (kind >> 4) & 0xf;
+        if (!relocate(l, (kind >> 8) & 0xff, 15, l->loaded[patch] >= 0 ? patch : first, offset, slot + (kind >> 16)))
+            return false;
     }
     return true;
 }
@@ -229,12 +303,16 @@ static bool imports(Loader* l, uint32_t top, uint32_t end) {
                 uint32_t nid, references, v = 0;
                 if (!word(image, variable_nids + i * 4, &nid) || !word(image, variable_entries + i * 4, &references))
                     return fail(l, "bad import table at 0x%08x", p, 0);
+                /* v walks this module's own table, which starts empty even for a library: a match reuses that slot,
+                   a miss appends one. Slots are numbered after those of the modules loaded before it, which
+                   variable_base counts, or its first would land on the game's */
                 while (v < image->variable_count && image->variables[v].nid != nid) ++v;
                 if (v == image->variable_count) {
-                    if (v == VITA_VARIABLE_COUNT) return fail(l, "more than %u imported variables", v, 0);
+                    if (l->variable_base + v >= VITA_VARIABLE_COUNT)
+                        return fail(l, "more than %u imported variables", l->variable_base + v, 0);
                     image->variables[v] = named;
                     image->variables[v].nid = nid;
-                    image->variables[v].stub = VITA_VARIABLES + v * VITA_VARIABLE_SIZE;
+                    image->variables[v].stub = VITA_VARIABLES + (l->variable_base + v) * VITA_VARIABLE_SIZE;
                     ++image->variable_count;
                 }
                 if (!variable_references(l, references, image->variables[v].stub)) return false;
@@ -246,7 +324,7 @@ static bool imports(Loader* l, uint32_t top, uint32_t end) {
                 if (!pass) continue;
                 VitaImport* import = &image->imports[index];
                 *import = named;
-                import->nid = nid, import->stub = stub;
+                import->nid = nid, import->stub = stub, import->svc = index;
                 unsigned char* code = at(image, stub & ~1u, 4);
                 if (!code) return fail(l, "import stub 0x%08x outside the module", stub, 0);
                 seed_code(l, stub);
@@ -275,17 +353,29 @@ static bool imports(Loader* l, uint32_t top, uint32_t end) {
 }
 static bool exports(Loader* l, uint32_t top, uint32_t end) {
     VitaImage* image = l->image;
+    uint32_t total = 0;
     for (uint32_t p = top; p < end;) {
         const unsigned char* e = at(image, p, 0x20);
         if (!e || snx_ld_le16(e) < 0x20) return fail(l, "bad export table entry at 0x%08x", p, 0);
-        uint32_t count = snx_ld_le16(e + 6) + snx_ld_le32(e + 8) + snx_ld_le32(e + 12), nids = snx_ld_le32(e + 24), entries = snx_ld_le32(e + 28);
+        total += snx_ld_le16(e + 6) + snx_ld_le32(e + 8) + snx_ld_le32(e + 12);
+        p += snx_ld_le16(e);
+    }
+    image->exports = calloc(total ? total : 1, sizeof *image->exports);
+    if (!image->exports) return fail(l, "out of memory", 0, 0);
+    for (uint32_t p = top; p < end;) {
+        const unsigned char* e = at(image, p, 0x20);
+        uint32_t functions = snx_ld_le16(e + 6), variables = snx_ld_le32(e + 8), tls = snx_ld_le32(e + 12);
+        uint32_t count = functions + variables + tls, library_nid = snx_ld_le32(e + 16);
+        uint32_t nids = snx_ld_le32(e + 24), entries = snx_ld_le32(e + 28);
         for (uint32_t i = 0; i < count; ++i) {
             uint32_t nid, value;
             if (!word(image, nids + i * 4, &nid) || !word(image, entries + i * 4, &value))
                 return fail(l, "bad export table at 0x%08x", p, 0);
+            image->exports[image->export_count++] = (VitaExport){nid, library_nid, value, i >= functions};
             if (nid == NID_MODULE_START) image->module_start = value;
             if (nid == NID_MODULE_STOP) image->module_stop = value;
             if (nid == NID_PROCESS_PARAM) image->process_param = value;
+            if (i < functions) seed(l, value);
         }
         p += snx_ld_le16(e);
     }
@@ -348,9 +438,9 @@ static bool programs(Loader* l, const unsigned char* file, size_t size, Program*
     }
     return true;
 }
-bool vita_image_load(const char* path, VitaImage* image, char* error, size_t error_size) {
+bool vita_image_load_at(const char* path, VitaImage* image, uint32_t origin, uint32_t variable_base, char* error, size_t error_size) {
     memset(image, 0, sizeof *image);
-    Loader l = {.image = image, .error = error, .error_size = error_size};
+    Loader l = {.image = image, .error = error, .error_size = error_size, .origin = origin, .variable_base = variable_base};
     for (unsigned i = 0; i < 16; ++i) l.loaded[i] = -1;
     size_t size = 0;
     unsigned char* file = snx_read_file(path, &size);
@@ -368,15 +458,16 @@ bool vita_image_load(const char* path, VitaImage* image, char* error, size_t err
         ok = fail(&l, "eboot.bin is not a Vita module (ELF type 0x%x)", type, 0);
     /* the loaded segments keep their places relative to each other, the first at VITA_LOAD_BASE, or where a
        fixed-address module's are: within the image's range either way */
-    uint32_t first = UINT32_MAX, origin = VITA_LOAD_BASE;
+    uint32_t first = UINT32_MAX;
     for (unsigned i = 0; ok && i < count; ++i)
         if (ph[i].type == PT_LOAD && ph[i].vaddr < first) first = ph[i].vaddr & ~(PAGE - 1);
-    if (type == ET_SCE_EXEC) origin = first;
+    if (type == ET_SCE_EXEC) l.origin = first;
     for (unsigned i = 0; ok && i < count; ++i) {
         if (ph[i].type != PT_LOAD) continue;
-        uint64_t address = (uint64_t)origin + (ph[i].vaddr - first);
+        uint64_t address = (uint64_t)l.origin + (ph[i].vaddr - first);
         if (image->segment_count == VITA_SEGMENTS || ph[i].memsz < ph[i].filesz || !ph[i].memsz ||
-            address < VITA_LOAD_BASE || address + ph[i].memsz > VITA_IMAGE_END) {
+            address < (l.origin < VITA_LOAD_BASE ? 0x70000000u : VITA_LOAD_BASE) ||
+            address + ph[i].memsz > (l.origin < VITA_LOAD_BASE ? 0x80000000u : VITA_IMAGE_END)) {
             ok = fail(&l, "bad loadable segment %u (at 0x%08x)", i, ph[i].vaddr);
             break;
         }
@@ -394,7 +485,7 @@ bool vita_image_load(const char* path, VitaImage* image, char* error, size_t err
             if (s->address < image->segment[j].address + image->segment[j].size &&
                 image->segment[j].address < s->address + s->size)
                 ok = fail(&l, "segments %u and %u overlap", j, image->segment_count);
-        l.base[i] = s->address;
+        l.base[i] = s->address, l.vaddr[i] = ph[i].vaddr, l.vsize[i] = ph[i].memsz;
         l.loaded[i] = (int)image->segment_count++;
     }
     for (unsigned i = 0; ok && i < count; ++i)
@@ -430,10 +521,72 @@ bool vita_image_load(const char* path, VitaImage* image, char* error, size_t err
     if (!ok) vita_image_free(image);
     return ok;
 }
+bool vita_image_load(const char* path, VitaImage* image, char* error, size_t error_size) {
+    return vita_image_load_at(path, image, VITA_LOAD_BASE, 0, error, error_size);
+}
+bool vita_image_merge(VitaImage* image, VitaImage* library, char* error, size_t error_size) {
+    if (image->segment_count + library->segment_count > VITA_SEGMENTS) {
+        snprintf(error, error_size, "too many loaded Vita segments");
+        return false;
+    }
+    for (unsigned i = 0; i < library->segment_count; ++i) {
+        for (unsigned j = 0; j < image->segment_count; ++j) {
+            VitaSegment* a = &image->segment[j], *b = &library->segment[i];
+            if (a->address < (uint64_t)b->address + b->size && b->address < (uint64_t)a->address + a->size) {
+                snprintf(error, error_size, "Vita library segments overlap at 0x%08x", b->address);
+                return false;
+            }
+        }
+        image->segment[image->segment_count++] = library->segment[i];
+        library->segment[i].bytes = NULL;
+    }
+    VitaImport* imports = realloc(image->imports, (image->import_count + library->import_count) * sizeof *imports);
+    if (!imports && library->import_count) { snprintf(error, error_size, "out of memory"); return false; }
+    image->imports = imports;
+    memcpy(image->imports + image->import_count, library->imports, library->import_count * sizeof *imports);
+    image->import_count += library->import_count;
+    VitaImport* variables = realloc(image->variables, (image->variable_count + library->variable_count) * sizeof *variables);
+    if (!variables && library->variable_count) { snprintf(error, error_size, "out of memory"); return false; }
+    image->variables = variables;
+    if (library->variable_count)
+        memcpy(image->variables + image->variable_count, library->variables, library->variable_count * sizeof *variables);
+    image->variable_count += library->variable_count;
+    VitaExport* exports = realloc(image->exports, (image->export_count + library->export_count) * sizeof *exports);
+    if (!exports && library->export_count) { snprintf(error, error_size, "out of memory"); return false; }
+    image->exports = exports;
+    memcpy(image->exports + image->export_count, library->exports, library->export_count * sizeof *exports);
+    image->export_count += library->export_count;
+    uint32_t* seeds = realloc(image->seeds, (image->seed_count + library->seed_count) * sizeof *seeds);
+    if (!seeds && library->seed_count) { snprintf(error, error_size, "out of memory"); return false; }
+    image->seeds = seeds;
+    memcpy(image->seeds + image->seed_count, library->seeds, library->seed_count * sizeof *seeds);
+    image->seed_count += library->seed_count;
+    if (library->module_start && image->library_start_count < 16)
+        image->library_starts[image->library_start_count++] = library->module_start;
+    /* Include every loaded segment in the identity used by the AOT cache. */
+    EVP_MD_CTX* hash = EVP_MD_CTX_new();
+    unsigned length = 0;
+    static const char domain[] = "ScarletNX Vita image identity v1";
+    bool hashed = hash && EVP_DigestInit_ex(hash, EVP_sha256(), NULL) == 1 &&
+                  EVP_DigestUpdate(hash, domain, sizeof domain) == 1;
+    for (unsigned i = 0; hashed && i < image->segment_count; ++i) {
+        unsigned char header[12];
+        snx_st_le32(header, image->segment[i].address);
+        snx_st_le32(header + 4, image->segment[i].size);
+        snx_st_le32(header + 8, image->segment[i].flags);
+        hashed = EVP_DigestUpdate(hash, header, sizeof header) == 1 &&
+                 EVP_DigestUpdate(hash, image->segment[i].bytes, image->segment[i].size) == 1;
+    }
+    hashed = hashed && EVP_DigestFinal_ex(hash, image->identity, &length) == 1 && length == sizeof image->identity;
+    EVP_MD_CTX_free(hash);
+    if (!hashed) { snprintf(error, error_size, "cannot hash loaded Vita modules"); return false; }
+    return true;
+}
 void vita_image_free(VitaImage* image) {
     for (unsigned i = 0; i < image->segment_count; ++i) free(image->segment[i].bytes);
     free(image->imports);
     free(image->variables);
     free(image->seeds);
+    free(image->exports);
     memset(image, 0, sizeof *image);
 }

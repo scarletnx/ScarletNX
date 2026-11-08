@@ -63,7 +63,7 @@ def main():
               'checks': [], 'runs': [], 'rejected': []}
     available = []
     for descriptors, record in itertools.product((0, 1), repeat=2):
-        flags = [f'--vk_descriptors={descriptors}', f'--vk_record={record}']
+        flags = [f'--vk_descriptors_mode={descriptors}', f'--vk_record={record}']
         code, text = run(binary, flags, args.out / f'check-d{descriptors}-r{record}.log')
         if code == 77:
             report['rejected'].append({'descriptors': descriptors, 'record': record, 'reason': 'unsupported backend'})
@@ -80,7 +80,7 @@ def main():
         rng.shuffle(order)
         for candidate in order:
             ordering, descriptors, record = candidate
-            flags = [f'--nvn-draw-bench={ordering}', f'--vk_descriptors={descriptors}', f'--vk_record={record}']
+            flags = [f'--nvn-draw-bench={ordering}', f'--vk_descriptors_mode={descriptors}', f'--vk_record={record}']
             code, text = run(binary, flags, args.out / f'round{round_number + 1}-p{ordering}-d{descriptors}-r{record}.log')
             if code:
                 raise RuntimeError(f'candidate {candidate} failed with {code}')

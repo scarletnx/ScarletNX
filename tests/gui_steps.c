@@ -47,6 +47,18 @@ int main(void) {
     n = gui_step_notes(&s, at(&s, 6), notes, 8); /* the second device line is the GPU step's too */
     assert(n == 2 && !strcmp(notes[0]->text, "vulkan: pipeline cache loaded (662 KB)"));
     assert(gui_step_notes(&s, at(&s, 0), notes, 8) == 0 && gui_step_notes(&s, at(&s, 4), notes, 8) == 0);
+
+    /* Vita's compiler reports completed parallel chunks, not NX function blocks. */
+    gui_steps_reset(&s);
+    feed(&s, "Recompiling PCSG00001 (Vita AArch32)\nDiscovered 1200 blocks (4 addresses were not code)\n", 70);
+    assert(gui_steps_last(&s, "RECOMPILE") && gui_steps_percent(&s) == 0);
+    feed(&s, "Compiled 1/12 chunks of blocks\n", 80);
+    assert(gui_steps_percent(&s) == 8);
+    feed(&s, "Compiled 6/12 chunks of blocks\n", 90);
+    assert(gui_steps_percent(&s) == 50);
+    feed(&s, "Compiled 12/12 chunks of blocks\n", 100);
+    assert(gui_steps_percent(&s) == 100 && at(&s, 0)->value == 12 && at(&s, 0)->total == 12);
+
     gui_steps_reset(&s);
     feed(&s, "a line before any step\n", 1);
     assert(s.notes == 0);

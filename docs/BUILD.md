@@ -36,7 +36,8 @@ Run from checkout root. [Extract/AOT/run](USAGE.md) · [Tests/diagnostics](DEVEL
   MinGW LLVM's `llvm-config` set with `-DSNX_LLVM_CONFIG=/path/to/llvm-config`. CMake fails without it.
 - **Display:** a Vulkan 1.3 driver. Headless runs use Vulkan offscreen and skip SDL video initialization.
   SDL3 remains a required build dependency.
-- **FFmpeg:** required by every NX runtime build. CMake builds the pinned source release.
+- **FFmpeg:** required by every NX runtime build and by the Android driver (its image codec). CMake builds the pinned
+  source release, and with the Android driver its image codecs, libswscale and zlib for its PNG codec.
   Avoid spaces in checkout/cache paths.
 - **OpenSSL:** required by every build with the NX or 3DS loaders (hashes, ciphers, the ssl service's TLS). CMake
   builds the pinned source release with OpenSSL's Configure, which needs **Perl**.
@@ -125,6 +126,11 @@ sudo pkg install git cmake ninja gmake nasm perl5 pkgconf python3 sdl3 llvm libu
 
 The build uses that `sdl3` package by default (`SNX_SYSTEM_SDL3`, see [SDL3 troubleshooting](#sdl3-troubleshooting));
 pass `-DSNX_SYSTEM_SDL3=OFF` for CPM's pinned SDL3 source build instead.
+
+The `llvm` package is LLVM 19, which the Switch, 3DS and Vita drivers build with. The Android driver
+([Android apps](android/README.md)) compiles an app's native code at run time with the same LLVM, and LLVM 19's
+code generator crashes on some of it (a trap in its DAG combiner at an engine's login). Build it with LLVM 22: install
+`llvm22` and pass `-DSNX_LLVM_CONFIG=/usr/local/llvm22/bin/llvm-config` to the configure step.
 
 ### Configure and build
 
@@ -228,6 +234,10 @@ CI's `macOS and iOS (arm64)` job builds the app on every push, and its zip, `Sca
 already has MoltenVK. The app is signed ad hoc, so a downloaded copy may need *Open* from the Finder's menu the first
 time (`xattr -cr ScarletNX.app` clears the quarantine). More on the frontend, the data folder, iOS and what is missing
 in [macOS and iOS](APPLE.md).
+
+   `-DSNX_KOSMICKRISP=<sdk>/macOS` also carries Mesa's KosmicKrisp and its Vulkan loader, from a LunarG Vulkan SDK's
+   macOS folder. `vulkan_driver=auto`, the default, then plays KosmicKrisp on a Mac that runs it (Apple silicon,
+   macOS 26 or later), and the MoltenVK the app carries elsewhere ([macOS and iOS](APPLE.md#kosmickrisp-experimental)).
 
 ## Windows / PowerShell
 

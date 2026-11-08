@@ -46,9 +46,10 @@ typedef struct {
     /* a vertex program's reads of NVN's draw parameters in bank 0 (shader.h SH_CB0_): the push block and pointer type
        whose z says which come from BaseVertex and BaseInstance, and those inputs. 0 when it reads neither */
     u32 dp_push, dp_push_pointer, dp_base_vertex, dp_base_instance;
-    /* the last stage before rasterization takes its position's x and y from pixels (SNX_SH_WINDOW_XY), in
-       shader_vertex_position_fix */
+    /* the last stage before rasterization takes its position's x and y from pixels (SNX_SH_WINDOW_XY), and gives
+       it a viewport swizzle (the key's SNX_SH_SWIZZLE and its fields, else 0), in shader_vertex_position_fix */
     int window_xy;
+    u32 swizzle;
     /* constant buffer words read in the block being written, by bank and offset (a cache: a word that collides is
        read again), and their bitcast to a float, 0 until made. A draw's constant buffers don't change under it */
     struct {
@@ -72,6 +73,7 @@ typedef struct {
        compiler then repeats the loop with no lane left to end it, until the GPU is reset. */
     u32 discarded;
     u32 blend_end;     /* one final fragment epilogue, reached after all guest control flow and alpha tests */
+    u32 primitive_base; /* capture slices preserve the original fragment PrimitiveId through push constants */
     u32 branch_cond;   /* with structured flow, the condition of the branch that ends the block, 0 for always */
     u32 branch_target; /* and the word a BRX that ends it goes to */
 } DirectCtx;
@@ -148,7 +150,13 @@ int shader_half_arithmetic(int op);
 u32 shader_sparse_predicate(u64 w, int op);
 /* dataflow.c */
 int shader_direct_own_pixel_fetch(const u64* insn, u32 n, u32 index);
+int shader_direct_screen_uv(const u64* insn, u32 n, u32 index, u32 x, u32 y);
+u32 shader_direct_screen_out(const u64* insn, u32 n, u32* yneg);
 int shader_direct_track_const(const u64* insn, u32 n, u32 index, u32 reg, u32* value, int depth);
+/* Proven register bits at index: (runtime & *known)==*value, with *value masked by *known. Unknown is0/0.
+   No specialization reads of mutable buffers; predicated or ambiguous definitions are left unknown. */
+int shader_direct_track_known_bits(const u64* insn, u32 n, u32 index, u32 reg, u32* known, u32* value, int depth);
+int shader_direct_track_cbuf_word(const u64* insn, u32 n, u32 index, u32 reg, u32* bank, u32* off, int depth);
 int shader_direct_track_image_handle(const u64* insn, u32 n, u32 index, u32 reg, u32* bank, u32* off, int depth);
 int shader_direct_track_image_handle_pair(const u64* insn, u32 n, u32 index, u32 reg, u32* bank, u32* off, u32* bank2,
                                           u32* off2, int depth);
@@ -185,6 +193,7 @@ u32 shader_half_immediate(DirectCtx* c, u64 w);
 u32 shader_half_fmz(DirectCtx* c, u32 vec2, u32 pair, u32 lhs, u32 rhs, u32 zero_value);
 u32 shader_float_saturate(DirectCtx* c, u32 value, int saturate);
 u32 shader_half_pair_result(DirectCtx* c, u32 vec2, u32 pair, u32 old, u32 merge, int saturate);
+u32 shader_pack_half_rte(DirectCtx* c, u32 pair);
 u32 shader_float_imm20(DirectCtx* c, u64 w);
 u32 shader_float_imm32(DirectCtx* c, u64 w);
 u32 shader_conversion_source_f32(DirectCtx* c, u32 vec2, u64 w, int kind, u32 format);
@@ -223,8 +232,6 @@ int shader_direct_add_typed_slot(ShTex* textures, int* count, u32 off, u32 type,
 void shader_direct_swap_element(DirectCtx* c, int slot);
 u32 shader_texture_float_component(DirectCtx* c, u32 value, u32 scalar, u32 i32_type);
 u32 shader_pack_texture_halves(DirectCtx* c, u32 vec2, u32 first, u32 second);
-u32 shader_direct_offset_coords(DirectCtx* c, u32 coords, u32 offset, u32 coord_count, u32 offset_count, int slot,
-                                u32 level, u32 vec2, u32 vec3, u32 vec2_i32, u32 vec3_i32, u32 i32_type);
 u32 shader_direct_gather_offset(DirectCtx* c, u32 raw, u32 shift, int zero_y, u32 i32_type, u32 vec2_i32);
 void shader_texs_store(DirectCtx* c, u64 w, u32 sample, u32 scalar, int shadow, u32 i32_type, u32 vec2, u32 zero_f);
 /* emit_io.c */
@@ -232,7 +239,21 @@ u32 shader_ipa_interpolation(const u32* sph, u32 input);
 void shader_alpha_test(DirectCtx* c, u32 push, u32 push_pointer, u32 alpha);
 u32 shader_frag_y_origin(DirectCtx* c, u32 push, u32 y);
 void shader_vertex_position_fix(DirectCtx* c, u32 position, u32 push, u32 push_pointer, u32 vec4_type);
-void shader_xfb_store(DirectCtx* c, u32 vec4, const u32* output_attrs, const u8* attr_private, u32 (*components)[4]);
+/* What a program's transform feedback writes at each exit or emitted vertex (shader_xfb_store) */
+typedef struct {
+    int stores; /* by storage buffer stores (g_shader_xfb_stores), else by the extension's decorations */
+    const ShXfb* key;
+    u32 vec4, position;
+    const u32* output_attrs;
+    /* the extension's: the captured outputs' private vec4s and their component outputs */
+    const u8* attr_private;
+    u32 (*components)[4];
+    /* the stores': their storage buffers, a word pointer type, VertexIndex and InstanceIndex */
+    u32 params, buffer[4], pointer, vertex_index, instance_index;
+    const u8* outputs_used;
+    int position_used;
+} XfbOut;
+void shader_xfb_store(DirectCtx* c, const XfbOut* x);
 void shader_geometry_passthrough(DirectCtx* c, const ShaderInfo* si, u32 vertices, u32 vec4, u32 position,
                                  u32 position_in, const u32* outputs, const u32* inputs, u32 point_size, u32 layer,
                                  u32 layer_type, u32 clip, u32 clip_count, u32 primitive_id, u32 primitive_id_out,
@@ -398,13 +419,16 @@ typedef struct {
     u32* input_vec_type;
     u32 position;
     u32* output_attrs;
+    u32 (*stream_capture)[128];
+    u32 stream_mask;
     u32 point_size;
+    u32 point_size_in, clip_input;
     u32 default_point_size;
     u32 layer_output;
     u32 layer_input;
     u32 viewport_output;
     u8* attr_private;
-    u32 (*xfb_components)[4];
+    const XfbOut* xfb_out;
     int xfb_on;
     u32 clip_output;
     u32 clip_count;
@@ -420,8 +444,10 @@ typedef struct {
     u32 patch_vertices;
     int position_fix;
     u32 sample_mask_output;
+    int guest_sample_mask;
     u32 sample_id;
     u32 coverage;
+    u32 coverage_output;
     u32 fragcoord;
     u32 frontface;
     u32 point_coord;
