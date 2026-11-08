@@ -1434,6 +1434,29 @@ static void g_srandom(CPU* c, void* data) {
     pthread_mutex_unlock(&g_random_state.lock);
 }
 
+/* the bridge's own forms of bionic's functions (above), each called with its own type: hle_pass calls through a type
+   of eight integers, which only the host C library's functions, built without -fsanitize=function, can take */
+static void g_strlcpy(CPU* c, void* data) {
+    (void)data;
+    X(0) = hle_strlcpy(PTR(0), STR(1), (size_t)X(2));
+}
+static void g_strerror_r(CPU* c, void* data) {
+    (void)data;
+    X(0) = (uint64_t)(int64_t)hle_strerror_r((int)X(0), PTR(1), (size_t)X(2));
+}
+static void g_basename(CPU* c, void* data) {
+    (void)data;
+    X(0) = (uint64_t)(uintptr_t)hle_basename(STR(0));
+}
+static void g_strsep(CPU* c, void* data) {
+    (void)data;
+    X(0) = (uint64_t)(uintptr_t)hle_strsep(PTR(0), STR(1));
+}
+static void g_strtok_r(CPU* c, void* data) {
+    (void)data;
+    X(0) = (uint64_t)(uintptr_t)hle_strtok_r(PTR(0), STR(1), PTR(2));
+}
+
 /* the host functions that PASS calls: GNU C takes a function's address as a data pointer */
 #define P(name)          {#name, hle_pass, (void*)name}
 #define PH(name, host)   {#name, hle_pass, (void*)host}
@@ -1516,8 +1539,8 @@ const HleSymbol hle_libc[] = {
     {"strerror_l", g_strerror, NULL}, {"__gnu_strerror_r", gnu_strerror_r, NULL},
     P(strncpy), P(strpbrk), P(strrchr), P(strspn), P(strstr), P(strtok),
     P(strtoll), P(strtoull), P(atoi), P(atoll),
-    PH(strlcpy, hle_strlcpy), PH(strerror_r, hle_strerror_r), PH(basename, hle_basename), PH(strsep, hle_strsep),
-    PH(strtok_r, hle_strtok_r),
+    {"strlcpy", g_strlcpy, NULL}, {"strerror_r", g_strerror_r, NULL}, {"basename", g_basename, NULL},
+    {"strsep", g_strsep, NULL}, {"strtok_r", g_strtok_r, NULL},
 #ifdef _WIN32
     /* long is 32 bits on Windows, 64 in bionic */
     PH(strtol, strtoll), PH(strtoul, strtoull), PH(atol, atoll), PH(strtoll_l, strtoll), PH(strtoull_l, strtoull),

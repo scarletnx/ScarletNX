@@ -207,18 +207,17 @@ static void file_pass(CPU* c, void* data) {
 }
 #ifdef _WIN32
 /* long is 32 bits on Windows, off_t and bionic's long are 64: the 64-bit seeks */
-static int file_seek(FILE* f, int64_t offset, int whence) {
-    return _fseeki64(f, offset, whence);
+static void g_fseek(CPU* c, void* data) {
+    (void)data;
+    X(0) = (uint64_t)(int64_t)_fseeki64(hle_file(X(0)), (int64_t)X(1), (int)X(2));
 }
-static int64_t file_tell(FILE* f) {
-    return _ftelli64(f);
+static void g_ftell(CPU* c, void* data) {
+    (void)data;
+    X(0) = (uint64_t)_ftelli64(hle_file(X(0)));
 }
-#undef fseeko
-#undef ftello
-#define fseek  file_seek
-#define fseeko file_seek
-#define ftell  file_tell
-#define ftello file_tell
+#define SEEK_FILE_CALLS(F)
+#else
+#define SEEK_FILE_CALLS(F) F(fseek, 0) F(fseeko, 0) F(ftell, 0) F(ftello, 0)
 #endif
 /* the wide character ones only where wchar_t is bionic's 32 bits */
 #ifdef _WIN32
@@ -228,8 +227,8 @@ static int64_t file_tell(FILE* f) {
 #endif
 #define FILE_CALLS(F)                                                                                                  \
     F(fclose, 0) F(feof, 0) F(ferror, 0) F(clearerr, 0) F(fflush, 0) F(fgets, 2) F(fileno, 0) F(fputc, 1) F(fputs, 1)  \
-    F(fread, 3) F(fwrite, 3) F(fseek, 0) F(fseeko, 0) F(ftell, 0) F(ftello, 0) F(getc, 0) F(ungetc, 1) F(rewind, 0)   \
-    F(setbuf, 0) F(freopen, 2) F(pclose, 0) WIDE_FILE_CALLS(F)
+    F(fread, 3) F(fwrite, 3) F(getc, 0) F(ungetc, 1) F(rewind, 0) F(setbuf, 0) F(freopen, 2) F(pclose, 0)             \
+    SEEK_FILE_CALLS(F) WIDE_FILE_CALLS(F)
 #define FILE_CALL_OBJECT(name, k) static const FileCall fc_##name = {(void*)name, k};
 FILE_CALLS(FILE_CALL_OBJECT)
 #define FILE_CALL_ENTRY(name, k) {#name, file_pass, (void*)&fc_##name},
@@ -2086,6 +2085,7 @@ const HleSymbol hle_posix[] = {
     /* the process's working folder, which the JVM's relative paths share, as Android's do */
     P(chdir),
 #if defined(_WIN32)
+    A(fseek, g_fseek), A(fseeko, g_fseek), A(ftell, g_ftell), A(ftello, g_ftell),
     A(statfs, g_statfs), A(access, g_access_proc), A(fchmod, refused), A(flock, g_flock), A(fsync, g_fsync),
     A(ftruncate, g_ftruncate), A(lseek, g_lseek), A(lseek64, g_lseek), A(mkdir, g_mkdir), A(pipe, g_pipe),
     A(pread, g_pread), A(read, g_read), A(readlink, g_readlink_proc), A(realpath, g_realpath), A(truncate, g_truncate),
