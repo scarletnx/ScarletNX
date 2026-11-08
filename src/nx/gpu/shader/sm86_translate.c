@@ -46,6 +46,8 @@ typedef struct {
     u32 in_attr[32], out_attr[32], position, point_size, fragcoord, color[8], depth;
     u32 vertex_index, instance_index, local_id, group_id, lane_id;
     u32 num_groups, hmma_count; /* NumWorkgroups and the HMMAs so far, for hmma_zero */
+    int coop;                   /* HMMA takes hmma_coop (coop_wanted), and the module the Vulkan memory model */
+    u32 coop_slots, subgroup_id; /* hmma_coop's slots (Workgroup) and SubgroupId */
     u32 push, push_ptr; /* a vertex program's push constant vec4: the base instance, the depth fix (vk/render.c) */
     u32 centroid_mask;  /* the inputs decorated Centroid */
     u32 legacy_fs;      /* a fragment program's legacy varying groups (shader_legacy_group), read as generics 17-31 */
@@ -623,9 +625,10 @@ static u32 gbuf_slot(Ctx* c, u32 key, int write) {
         /* global memory as the console has it: two buffers may be the same bytes (one game binds a range and a part of
            it, writes through one and reads through the other), and another invocation's store is seen. Without these
            the compiler kept a value it had read, and a program waiting on its own store through the other buffer
-           never finished: the GPU's context timed out */
+           never finished: the GPU's context timed out. The Vulkan memory model (c->coop) has no Coherent: there the
+           loads and stores are relaxed atomics instead (mem_word_load), which Mesa makes the same coherent accesses */
         spv_emit_decorate(&c->e, c->gbuf[slot], 20 /* Aliased */, NULL, 0);
-        spv_emit_decorate(&c->e, c->gbuf[slot], 23 /* Coherent */, NULL, 0);
+        if (!c->coop) spv_emit_decorate(&c->e, c->gbuf[slot], 23 /* Coherent */, NULL, 0);
         add_interface(c, c->gbuf[slot]);
     }
     if (write) c->si->gbuf_wmask |= 1u << slot;
@@ -1008,12 +1011,26 @@ static u32 atomic_opcode(u32 type, u32 how) {
                                    SPV_OP_ATOMIC_AND, SPV_OP_ATOMIC_OR, SPV_OP_ATOMIC_XOR, SPV_OP_ATOMIC_EXCHANGE}};
     return type > 1 || how > 8 ? 0 : ops[type][how];
 }
+/* a word of global (buffer), shared (buffer 0) or local (MEM_LOCAL) memory: in a module of the Vulkan memory model, a
+   global word through a relaxed atomic (gbuf_slot's coherence) and a shared one with NonPrivatePointer (which the
+   barriers order for the workgroup's other invocations) */
+static u32 mem_word_load(Ctx* c, u32 buffer, u32 ptr) {
+    if (buffer && buffer != MEM_LOCAL && c->coop) return spv_emit_atomic_load_u32(&c->e, c->t_u32, ptr);
+    return buffer ? spv_emit_load(&c->e, c->t_u32, ptr) : spv_emit_load_nonprivate(&c->e, c->t_u32, ptr);
+}
+static void mem_word_store(Ctx* c, u32 buffer, u32 ptr, u32 value) {
+    if (buffer && buffer != MEM_LOCAL && c->coop)
+        spv_emit_atomic_store_u32(&c->e, c->t_u32, ptr, value);
+    else if (buffer)
+        spv_emit_store(&c->e, ptr, value);
+    else
+        spv_emit_store_nonprivate(&c->e, ptr, value);
+}
 /* a load of mem_type (NAK's MemType) into registers dst on */
 static void mem_load(Ctx* c, u32 buffer, u32 address, u32 type, u32 dst, int uniform_dst) {
     u32 words = type == 5 ? 2 : type == 6 ? 4 : 1;
     for (u32 k = 0; k < words; k++) {
-        u32 ptr = mem_ptr(c, buffer, address, k);
-        u32 v = spv_emit_load(&c->e, c->t_u32, ptr);
+        u32 v = mem_word_load(c, buffer, mem_ptr(c, buffer, address, k));
         if (type < 4) {
             /* a byte or a halfword of the word, sign or zero extended */
             u32 shift = spv_emit_shift_left_u32(
@@ -1060,7 +1077,7 @@ static void mem_store(Ctx* c, u32 buffer, u32 address, u32 type, u32 data) {
     }
     u32 words = type == 5 ? 2 : type == 6 ? 4 : 1;
     for (u32 k = 0; k < words; k++)
-        spv_emit_store(&c->e, mem_ptr(c, buffer, address, k), rd(c, data >= SM86_RZ ? data : data + k));
+        mem_word_store(c, buffer, mem_ptr(c, buffer, address, k), rd(c, data >= SM86_RZ ? data : data + k));
 }
 
 /* ---- task and mesh programs ---- */
@@ -1995,6 +2012,124 @@ static u32 hmma_zero(Ctx* c) {
     u32 never = spv_emit_i_equal(&c->e, c->t_bool, builtin_vec3(c, &c->num_groups, 24, 0), c->zero);
     return spv_emit_select(&c->e, c->t_u32, never, cu(c, group + 1), c->zero);
 }
+/* HMMA on the device's matrix unit (g_shader_hmma_coop): one OpCooperativeMatrixMulAddKHR of 16x16 f16 A and B into
+   a 16x16 f32 accumulator, in place of hmma's 16 B gathers and 32 dot products. SPV_KHR_cooperative_matrix leaves
+   which lane holds which element to the driver, with no query, so the fragments go through shared memory: each
+   subgroup has a slot of its own (SubgroupId) in an array after the program's, where A is row-major (8 words a row
+   of 16 halves), B column-major (8 words a column) and D row-major in f32 (16 words a row). The product has 16
+   columns for HMMA's 8: B's columns 8-15 are whatever the 64 words after its 8 hold (the start of D's), which only
+   reach D's columns 8-15, never read back. The .1688 forms' k of 8 pads to 16 with zeros in A's columns and B's rows
+   8-15, as stale words there could be infinities or NaNs, and 0 times those poisons the sums. The accumulator starts
+   at zero and C is added to the lane's four elements of D after the product: staging C as well (4 stores, 8 loads)
+   cost one game's video upscaler half of the gain. A subgroup barrier comes before the stores (the last HMMA's
+   loads of the slot), between them and the matrix loads, and between D's store and the lanes' loads of it; RADV
+   makes them no instruction, a wave's LDS accesses being in order.
+   The products of two f16 are exact in f32, and the device sums them in f32 inside the instruction, rounded as it
+   does it (RDNA 3.5's is a few f32 places off an FMA chain even on exact sums, as its v_dot2_f32_f16 is); C then adds
+   one rounding, in f32. So both D types keep hmma's bound, that of an f32 sum of the products and C, which an f16 D
+   then rounds to. On a Radeon 890M (RDNA 3.5, RADV) that upscaler's 7 HMMA programs went from 46.6 ms of GPU time a
+   frame to 38.7 (two of them slower, by 4% and 13%), and its movie from 12.6 frames a second to 14.2: the GPU
+   gathers and dot products were most of their instructions, and the matrix unit is idle otherwise */
+#define COOP_B     128u /* the words of a slot: A at 0, B, D */
+#define COOP_D     192u
+#define COOP_WORDS 448u
+/* Whether a program's HMMAs take hmma_coop: a compute program with one, in blocks of whole subgroups of 32 (vk/
+   compute.c asks for subgroups of 32 for a program that reads other lanes, full where x is a multiple of 32; a 16x16
+   matrix takes the subgroup's 32 lanes), with shaderFloat16 for the halves, and with room for the slots after the
+   program's shared memory within the device's (g_shader_hmma_coop). It is the module's choice, as the extension asks
+   for the Vulkan memory model */
+static int coop_wanted(const Ctx* c) {
+    if (!g_shader_hmma_coop || !g_shader_float16 || c->stage != ST_CS || c->si->cs_local[0] <= 0 ||
+        c->si->cs_local[0] % 32)
+        return 0;
+    u32 lanes = (u32)(c->si->cs_local[0] * c->si->cs_local[1] * c->si->cs_local[2]);
+    u32 own = c->si->shared_size > 0 ? (u32)c->si->shared_size : 16384u; /* shared_var's */
+    if (own + lanes / 32 * COOP_WORDS * 4 > (u32)g_shader_hmma_coop) return 0;
+    for (u32 i = 0; i < c->n; i++)
+        if (c->in[i].op == SM86_HMMA) return 1;
+    return 0;
+}
+static void coop_barrier(Ctx* c) {
+    SPV_VOID(&c->e, 224 /* OpControlBarrier */, cu(c, 3), cu(c, 3),
+             cu(c, spv_emit_memory_semantics(&c->e, 0x108)) /* Subgroup, Subgroup, AcquireRelease | Workgroup */);
+}
+static u32 coop_ptr(Ctx* c, u32 index) {
+    return SPV(&c->e, SPV_OP_ACCESS_CHAIN, spv_emit_type_workgroup_pointer(&c->e, c->t_u32), c->coop_slots, index);
+}
+static u32 coop_add(Ctx* c, u32 at, u32 k) { return k ? spv_emit_iadd_u32(&c->e, c->t_u32, at, cu(c, k)) : at; }
+static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 rb, u32 rc) {
+    u32 na = k16 ? 4 : 2, nb = k16 ? 2 : 1, ncd = f32 ? 4 : 2, a[4], b[2], cc[4], k;
+    for (k = 0; k < na; k++) a[k] = rd(c, ra + k);
+    for (k = 0; k < nb; k++) b[k] = rd(c, rb + k);
+    for (k = 0; k < ncd; k++) cc[k] = rd(c, rc + k);
+    spv_emit_capability(&c->e, SPV_CAPABILITY_FLOAT16);
+    spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM);
+    spv_emit_capability(&c->e, 6022 /* CooperativeMatrixKHR */);
+    spv_emit_extension(&c->e, "SPV_KHR_cooperative_matrix");
+    u32 t_h = spv_emit_type_float(&c->e, 16);
+    u32 t_a = spv_emit_type_cooperative_matrix(&c->e, t_h, 3 /* Subgroup */, 16, 16, 0 /* MatrixAKHR */);
+    u32 t_b = spv_emit_type_cooperative_matrix(&c->e, t_h, 3, 16, 16, 1 /* MatrixBKHR */);
+    u32 t_acc = spv_emit_type_cooperative_matrix(&c->e, c->t_f32, 3, 16, 16, 2 /* MatrixAccumulatorKHR */);
+    if (!c->coop_slots) {
+        u32 lanes = (u32)(c->si->cs_local[0] * c->si->cs_local[1] * c->si->cs_local[2]);
+        u32 array = spv_emit_type_array_u32(&c->e, c->t_u32, lanes / 32 * COOP_WORDS);
+        c->coop_slots = spv_emit_workgroup_variable(&c->e, spv_emit_type_workgroup_pointer(&c->e, array));
+        add_interface(c, c->coop_slots);
+    }
+    u32 base = spv_emit_imul_u32(&c->e, c->t_u32, builtin_u32(c, &c->subgroup_id, 40 /* SubgroupId */),
+                                 cu(c, COOP_WORDS));
+    u32 lane = warp_lane(c);
+    u32 g8 = spv_emit_shift_left_u32(&c->e, c->t_u32, spv_emit_shift_right_u32(&c->e, c->t_u32, lane, cu(c, 2)),
+                                     cu(c, 3));
+    u32 t = spv_emit_bitwise_and_u32(&c->e, c->t_u32, lane, cu(c, 3));
+    /* lane l's words (g = l / 4, t = l % 4): A's at 8g + t (+64 row g + 8, +4 columns 8-15), B's at 8g + t (+4 rows
+       8-15), D's at 16g + 2t (+1 the next column, +128 row g + 8) */
+    u32 at_a = spv_emit_iadd_u32(&c->e, c->t_u32, base, spv_emit_iadd_u32(&c->e, c->t_u32, g8, t));
+    u32 at_b = coop_add(c, at_a, COOP_B);
+    u32 at_d = spv_emit_iadd_u32(
+        &c->e, c->t_u32, base,
+        spv_emit_iadd_u32(&c->e, c->t_u32, spv_emit_shift_left_u32(&c->e, c->t_u32, g8, cu(c, 1)),
+                          spv_emit_iadd_u32(&c->e, c->t_u32, spv_emit_shift_left_u32(&c->e, c->t_u32, t, cu(c, 1)),
+                                            cu(c, COOP_D))));
+    coop_barrier(c);
+    static const u32 a_at[4] = {0, 64, 4, 68};
+    for (k = 0; k < 4; k++)
+        spv_emit_store_nonprivate(&c->e, coop_ptr(c, coop_add(c, at_a, a_at[k])), k < na ? a[k] : c->zero);
+    for (k = 0; k < 2; k++)
+        spv_emit_store_nonprivate(&c->e, coop_ptr(c, coop_add(c, at_b, 4 * k)), k < nb ? b[k] : c->zero);
+    coop_barrier(c);
+    u32 ma = SPV(&c->e, 4457 /* OpCooperativeMatrixLoadKHR */, t_a, coop_ptr(c, base), cu(c, 0) /* RowMajorKHR */,
+                 cu(c, 8), 0x20 /* NonPrivatePointer */);
+    u32 mb = SPV(&c->e, 4457, t_b, coop_ptr(c, coop_add(c, base, COOP_B)), cu(c, 1) /* ColumnMajorKHR */, cu(c, 8),
+                 0x20);
+    u32 md = SPV(&c->e, 4459 /* OpCooperativeMatrixMulAddKHR */, t_acc, ma, mb,
+                 spv_emit_const_composite(&c->e, t_acc, (const u32[]){cf(c, 0.0f)}, 1));
+    SPV_VOID(&c->e, 4458 /* OpCooperativeMatrixStoreKHR */, coop_ptr(c, coop_add(c, base, COOP_D)), md, cu(c, 0),
+             cu(c, 16), 0x20);
+    coop_barrier(c);
+    u32 acc[4]; /* row g columns 2t and 2t + 1, row g + 8 the same */
+    for (k = 0; k < 4; k++) {
+        u32 at = coop_add(c, at_d, (k >> 1) * 128 + (k & 1));
+        acc[k] = to_f(c, spv_emit_load_nonprivate(&c->e, c->t_u32, coop_ptr(c, at)));
+    }
+    if (rc < SM86_RZ)
+        for (u32 i = 0; i < 2; i++) {
+            u32 pair = f32 ? 0 : half_pair(c, cc[i]);
+            for (u32 j = 0; j < 2; j++) {
+                u32 addend = f32 ? to_f(c, cc[2 * i + j]) : spv_emit_vec4_extract(&c->e, c->t_f32, pair, j);
+                acc[2 * i + j] = op2(c, SPV_OP_F_ADD, c->t_f32, acc[2 * i + j], addend);
+            }
+        }
+    u32 d = in->dst;
+    if (d >= SM86_RZ) return;
+    if (f32)
+        for (k = 0; k < 4; k++) wr(c, d + k, to_u(c, acc[k]));
+    else
+        for (u32 i = 0; i < 2; i++)
+            wr(c, d + i,
+               SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16,
+                       spv_emit_vec2_construct(&c->e, c->t_v2f, acc[2 * i], acc[2 * i + 1])));
+}
 /* HMMA (0x23c): D = A B + C on the warp's fragments, as PTX's mma.sync.aligned.m16n8k16 (bit 75) or m16n8k8 .row.col
    with f16 A and B, and f16 (bit 76 clear) or f32 C and D (the encodings of CuAssembler's sm_86 records: bits 72-90 8
    16816.F16, 0x18 16816.F32, 0 1688.F16, 0x10 1688.F32; BF16, TF32 and 1684 are other bits). D at 16, A at 24, B at
@@ -2016,6 +2151,10 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
     }
     int k16 = (int)(v >> 3 & 1), f32 = (int)(v >> 4 & 1);
     u32 ra = sm86_field(in, 24, 8), rb = sm86_field(in, 32, 8), rc = sm86_field(in, 64, 8);
+    if (c->coop) {
+        hmma_coop(c, in, k16, f32, ra, rb, rc);
+        return;
+    }
     u32 na = k16 ? 4 : 2, nb = k16 ? 2 : 1, ncd = f32 ? 4 : 2, a[4], b[2], cc[4], k;
     for (k = 0; k < na; k++) a[k] = ra >= SM86_RZ ? c->zero : rd(c, ra + k);
     u32 zero = rb >= SM86_RZ ? 0 : hmma_zero(c);
@@ -2084,7 +2223,7 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
 }
 /* a 16-bit element of shared memory at the byte address, in the low half */
 static u32 shared_u16(Ctx* c, u32 address) {
-    u32 word = spv_emit_load(&c->e, c->t_u32, mem_ptr(c, 0, address, 0));
+    u32 word = spv_emit_load_nonprivate(&c->e, c->t_u32, mem_ptr(c, 0, address, 0));
     u32 shift = spv_emit_shift_left_u32(&c->e, c->t_u32, spv_emit_bitwise_and_u32(&c->e, c->t_u32, address, cu(c, 2)),
                                         cu(c, 3));
     return spv_emit_bitwise_and_u32(&c->e, c->t_u32, spv_emit_shift_right_u32(&c->e, c->t_u32, word, shift),
@@ -2111,7 +2250,7 @@ static void ldsm(Ctx* c, const Sm86Insn* in) {
         if (!trans) {
             u32 row = warp_read(c, addr, spv_emit_iadd_u32(&c->e, c->t_u32, g, cu(c, 8 * m)));
             u32 at = spv_emit_iadd_u32(&c->e, c->t_u32, row, spv_emit_shift_left_u32(&c->e, c->t_u32, t, cu(c, 2)));
-            out[m] = spv_emit_load(&c->e, c->t_u32, mem_ptr(c, 0, at, 0));
+            out[m] = spv_emit_load_nonprivate(&c->e, c->t_u32, mem_ptr(c, 0, at, 0));
         } else {
             u32 r0 =
                 spv_emit_iadd_u32(&c->e, c->t_u32, spv_emit_shift_left_u32(&c->e, c->t_u32, t, cu(c, 1)), cu(c, 8 * m));
@@ -4328,6 +4467,13 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
         SpvEmitter* e = &c->e;
         spv_emit_init(e, (size_t)n * 40 + 512);
         spv_emit_shader_capability(e);
+        /* hmma_coop's matrices, which SPV_KHR_cooperative_matrix allows in a module of the Vulkan memory model only */
+        c->coop = coop_wanted(c);
+        if (c->coop) {
+            e->vulkan_memory_model = 1;
+            spv_emit_capability(e, 5345 /* VulkanMemoryModel */);
+            spv_emit_capability(e, 5346 /* VulkanMemoryModelDeviceScope: the atomics' and MEMBAR.GPU's */);
+        }
         c->glsl = spv_emit_glsl450_import(e);
         c->t_void = spv_emit_type_void(e);
         c->t_bool = spv_emit_type_bool(e);

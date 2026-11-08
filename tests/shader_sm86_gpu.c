@@ -506,6 +506,8 @@ typedef struct {
     int float16;   /* shaderFloat16, enabled */
     int mixed_dot; /* VK_VALVE_shader_mixed_float_dot_product's Float16AccFloat32, enabled */
     int warp32;    /* compute pipelines can require subgroups of 32, whole, as vk/compute.c's do (enabled) */
+    int coop; /* VK_KHR_cooperative_matrix's 16x16x16 f16 product into f32 in subgroup scope, with the Vulkan memory
+                 model, enabled: the device's maxComputeSharedMemorySize, for g_shader_hmma_coop, else 0 */
 } Gpu;
 /* the subgroups of a device's compute stage: their size where they have shuffles, else 0, and *quad whether they
    have quad operations */
@@ -516,6 +518,29 @@ static u32 compute_subgroups(VkPhysicalDevice phys, int* quad) {
     int compute = (sp.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
     *quad = compute && (sp.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT);
     return compute && (sp.supportedOperations & VK_SUBGROUP_FEATURE_SHUFFLE_BIT) ? sp.subgroupSize : 0;
+}
+/* whether the device multiplies 16x16x16 f16 A and B into an f32 accumulator in subgroup scope in compute, as
+   vk/device.c asks for g_shader_hmma_coop */
+static int coop_shape(VkPhysicalDevice phys) {
+    VkPhysicalDeviceCooperativeMatrixPropertiesKHR cp = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_PROPERTIES_KHR};
+    VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &cp};
+    vkGetPhysicalDeviceProperties2(phys, &p2);
+    if (!(cp.cooperativeMatrixSupportedStages & VK_SHADER_STAGE_COMPUTE_BIT) ||
+        !vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR)
+        return 0;
+    VkCooperativeMatrixPropertiesKHR props[64];
+    u32 n = 64;
+    for (u32 i = 0; i < n; i++)
+        props[i] = (VkCooperativeMatrixPropertiesKHR){.sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR};
+    if (vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(phys, &n, props) < 0) return 0;
+    for (u32 i = 0; i < n; i++)
+        if (props[i].MSize == 16 && props[i].NSize == 16 && props[i].KSize == 16 &&
+            props[i].AType == VK_COMPONENT_TYPE_FLOAT16_KHR && props[i].BType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+            props[i].CType == VK_COMPONENT_TYPE_FLOAT32_KHR && props[i].ResultType == VK_COMPONENT_TYPE_FLOAT32_KHR &&
+            !props[i].saturatingAccumulation && props[i].scope == VK_SCOPE_SUBGROUP_KHR)
+            return 1;
+    return 0;
 }
 static int has_device_extension(VkPhysicalDevice phys, const char* name) {
     u32 n = 0;
@@ -577,8 +602,12 @@ static int gpu_open(Gpu* g, int warp) {
     int has_mixed = has_device_extension(g->phys, VK_VALVE_SHADER_MIXED_FLOAT_DOT_PRODUCT_EXTENSION_NAME);
     VkPhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE mixq = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MIXED_FLOAT_DOT_PRODUCT_FEATURES_VALVE};
+    /* and the cooperative matrix product that it takes on the device's matrix unit (g_shader_hmma_coop) */
+    int has_coop = warp && has_device_extension(g->phys, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
+    VkPhysicalDeviceCooperativeMatrixFeaturesKHR coopq = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR, .pNext = has_mixed ? &mixq : NULL};
     VkPhysicalDeviceVulkan13Features v13q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-                                             .pNext = has_mixed ? &mixq : NULL};
+                                             .pNext = has_coop ? (void*)&coopq : has_mixed ? (void*)&mixq : NULL};
     VkPhysicalDeviceVulkan12Features v12q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
                                              .pNext = &v13q};
     VkPhysicalDeviceFeatures2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &v12q};
@@ -590,13 +619,26 @@ static int gpu_open(Gpu* g, int warp) {
                 p13.maxSubgroupSize >= 32 && (p13.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT);
     g->float16 = v12q.shaderFloat16 != 0;
     g->mixed_dot = has_mixed && mixq.shaderMixedFloatDotProductFloat16AccFloat32 && g->float16;
+    g->coop = has_coop && coopq.cooperativeMatrix && g->float16 && v12q.vulkanMemoryModel &&
+                      v12q.vulkanMemoryModelDeviceScope && g->warp32 && coop_shape(g->phys)
+                  ? (int)pp2.properties.limits.maxComputeSharedMemorySize
+                  : 0;
     VkPhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE mix = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MIXED_FLOAT_DOT_PRODUCT_FEATURES_VALVE,
         .shaderMixedFloatDotProductFloat16AccFloat32 = VK_TRUE};
+    VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR,
+        .pNext = g->mixed_dot ? &mix : NULL,
+        .cooperativeMatrix = VK_TRUE};
     VkPhysicalDeviceVulkan12Features v12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-                                            .pNext = g->mixed_dot ? &mix : NULL,
-                                            .shaderFloat16 = (VkBool32)g->float16};
-    const char* mixed_ext = VK_VALVE_SHADER_MIXED_FLOAT_DOT_PRODUCT_EXTENSION_NAME;
+                                            .pNext = g->coop ? (void*)&coop : g->mixed_dot ? (void*)&mix : NULL,
+                                            .shaderFloat16 = (VkBool32)g->float16,
+                                            .vulkanMemoryModel = (VkBool32)(g->coop != 0),
+                                            .vulkanMemoryModelDeviceScope = (VkBool32)(g->coop != 0)};
+    const char* exts[2];
+    u32 next = 0;
+    if (g->mixed_dot) exts[next++] = VK_VALVE_SHADER_MIXED_FLOAT_DOT_PRODUCT_EXTENSION_NAME;
+    if (g->coop) exts[next++] = VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME;
     VkPhysicalDeviceVulkan13Features v13 = {0};
     v13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
     v13.pNext = &v12;
@@ -605,8 +647,7 @@ static int gpu_open(Gpu* g, int warp) {
     VkPhysicalDeviceFeatures2 f2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &v13, features};
     float priority = 1.0f;
     VkDeviceQueueCreateInfo qci = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, NULL, 0, g->family, 1, &priority};
-    VkDeviceCreateInfo dci = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &f2, 0, 1, &qci, 0, NULL,
-                              (u32)g->mixed_dot, g->mixed_dot ? &mixed_ext : NULL, NULL};
+    VkDeviceCreateInfo dci = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &f2, 0, 1, &qci, 0, NULL, next, exts, NULL};
     if (vkCreateDevice(g->phys, &dci, NULL, &g->device) != VK_SUCCESS) return 0;
     volkLoadDevice(g->device);
     vkGetDeviceQueue(g->device, g->family, 0, &g->queue);
@@ -889,8 +930,10 @@ static int run_program(Gpu* g, const char* name, void (*build)(Prog*)) {
    A's row 3 subnormal, whose sums round, compared with sums in double within an f32 sum's error (and an f16 D's last
    place). A sum kept in f16, or a subnormal flushed, is far outside that. The mixed dot product's precision is the
    device's (SPV_VALVE_mixed_float_dot_product: "implementation defined"): RDNA 3.5's v_dot2_f32_f16 is a few f32
-   places off even on the exact sums, within the same bound, so with it every set is held to the bound */
-#define TENSOR_OUT 27u
+   places off even on the exact sums, within the same bound, so with it every set is held to the bound. So is the
+   cooperative matrix product's (g_shader_hmma_coop), whose sums are the device's too: RDNA 3.5's WMMA is a few f32
+   places off on the exact sums as well */
+#define TENSOR_OUT 33u
 static u16 half_bits(float v) { /* v = n / 4, |n| <= 6 * 6 * 16 + 6: exact */
     u32 b;
     memcpy(&b, &v, 4);
@@ -958,10 +1001,10 @@ static void tensor_program(Prog* p, u32 local) {
     emit(p, w);
     emit(p, sm86_fix(0xb1d)); /* BAR.SYNC 0 */
     /* HMMA.16816.F16 R16, R8, R12, RZ, .F16 R18 with C = R14, .F32 R20 with RZ, .F32 R36 with C = R20; HMMA.1688.F32
-       R40, R8, R12, RZ and .F16 R44 with C = R14 */
-    static const u32 hmma[6][3] = {{16, 255, 0x08}, {18, 14, 0x08}, {20, 255, 0x18},
-                                   {36, 20, 0x18},  {40, 255, 0x10}, {44, 14, 0x00}};
-    for (u32 k = 0; k < 6; k++) {
+       R40, R8, R12, RZ, .F16 R44 with C = R14, .F16 R46 with RZ and .F32 R48 with C = R40 */
+    static const u32 hmma[8][3] = {{16, 255, 0x08}, {18, 14, 0x08},  {20, 255, 0x18}, {36, 20, 0x18},
+                                   {40, 255, 0x10}, {44, 14, 0x00}, {46, 255, 0x00}, {48, 40, 0x10}};
+    for (u32 k = 0; k < 8; k++) {
         w = sm86_fix(0x23c);
         f(&w, 16, 8, hmma[k][0]);
         f(&w, 24, 8, 8);
@@ -985,14 +1028,15 @@ static void tensor_program(Prog* p, u32 local) {
     emit(p, w);
     for (u32 k = 0; k < 17; k++) store(p, k, 16 + k);
     for (u32 k = 0; k < 4; k++) store(p, 17 + k, 36 + k);
-    for (u32 k = 0; k < 6; k++) store(p, 21 + k, 40 + k);
+    for (u32 k = 0; k < 12; k++) store(p, 21 + k, 40 + k);
     epilogue(p);
 }
 /* what an output word holds: the bits of an f16 pair, of an f32, or moved bits (LDSM, MOVM) */
 enum { T_PAIR, T_F32, T_BITS };
 static const u8 tensor_kind[TENSOR_OUT] = {T_PAIR, T_PAIR, T_PAIR, T_PAIR, T_F32,  T_F32,  T_F32,  T_F32,  T_BITS,
                                            T_BITS, T_BITS, T_BITS, T_BITS, T_BITS, T_BITS, T_BITS, T_BITS, T_F32,
-                                           T_F32,  T_F32,  T_F32,  T_F32,  T_F32,  T_F32,  T_F32,  T_PAIR, T_PAIR};
+                                           T_F32,  T_F32,  T_F32,  T_F32,  T_F32,  T_F32,  T_F32,  T_PAIR, T_PAIR,
+                                           T_PAIR, T_PAIR, T_F32,  T_F32,  T_F32,  T_F32};
 /* an output's expected value(s) in double and how far from them the device may be (the f32 sum's error): an f32's
    in [0], a pair's halves in [0] and [1] */
 typedef struct {
@@ -1066,6 +1110,9 @@ static void tensor_inputs(u32* in, u32* want, Expect* expect, int exact) {
                     e[21 + 2 * i + j].v[0] = d8[r][n], e[21 + 2 * i + j].tol[0] = t8;
                     e[25 + i].v[j] = d8[r][n] + c[r][n];
                     e[25 + i].tol[j] = t8c + ldexp(fabs(d8[r][n] + c[r][n]), -10) + ldexp(1, -24);
+                    e[27 + i].v[j] = d8[r][n], e[27 + i].tol[j] = t8 + ldexp(fabs(d8[r][n]), -10) + ldexp(1, -24);
+                    /* C is the device's own A B of k 8 (R40) */
+                    e[29 + 2 * i + j].v[0] = 2 * d8[r][n], e[29 + 2 * i + j].tol[0] = 3 * t8;
                 }
 #undef TOL
             if (exact) { /* the sums are exact: their bits */
@@ -1079,9 +1126,12 @@ static void tensor_inputs(u32* in, u32* want, Expect* expect, int exact) {
                     o[4 + k] = fbits((float)f32d[k]);
                     o[17 + k] = fbits((float)(2 * f32d[k]));
                     o[21 + k] = fbits((float)f32d8[k]);
+                    o[29 + k] = fbits((float)(2 * f32d8[k]));
                 }
                 o[25] = HPAIR(d8[g][2 * t] + c[g][2 * t], d8[g][2 * t + 1] + c[g][2 * t + 1]);
                 o[26] = HPAIR(d8[g + 8][2 * t] + c[g + 8][2 * t], d8[g + 8][2 * t + 1] + c[g + 8][2 * t + 1]);
+                o[27] = HPAIR(d8[g][2 * t], d8[g][2 * t + 1]);
+                o[28] = HPAIR(d8[g + 8][2 * t], d8[g + 8][2 * t + 1]);
             }
             /* shared row r of matrix m: lane 8m + r's A words; element j of it, half j % 2 of word j / 2 */
             for (u32 m = 0; m < 4; m++) {
@@ -1109,9 +1159,9 @@ static int tensor_match(u32 k, u32 h, u32 w, const Expect* e, int bits) {
     return 1;
 }
 /* the program in workgroups of local (32: one warp each, 64: two in a subgroup of 64 where the device runs them so,
-   as RADV does, or in two of 32 with warp32), translated with or without quad operations and the mixed dot product,
-   on one set of matrices */
-static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, int exact) {
+   as RADV does, or in two of 32 with warp32), translated with or without quad operations, the mixed dot product and
+   the device's cooperative matrices (coop, in subgroups of 32 only), on one set of matrices */
+static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, int coop, int exact) {
     static Prog p;
     static u32 in[INVOCATIONS * 8], want[INVOCATIONS * TENSOR_OUT], got[INVOCATIONS * TENSOR_OUT];
     static Expect expect[INVOCATIONS * TENSOR_OUT];
@@ -1120,7 +1170,8 @@ static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, i
         "HMMA.F32 d2",    "HMMA.F32 d3",    "LDSM m0",        "LDSM m1",          "LDSM m2",        "LDSM m3",
         "LDSM.T m0",      "LDSM.T m1",      "LDSM.T m2",      "LDSM.T m3",        "MOVM",           "HMMA.F32+C d0",
         "HMMA.F32+C d1",  "HMMA.F32+C d2",  "HMMA.F32+C d3",  "HMMA.1688.F32 d0", "HMMA.1688.F32 d1",
-        "HMMA.1688.F32 d2", "HMMA.1688.F32 d3", "HMMA.1688.F16+C d0", "HMMA.1688.F16+C d1"};
+        "HMMA.1688.F32 d2", "HMMA.1688.F32 d3", "HMMA.1688.F16+C d0", "HMMA.1688.F16+C d1", "HMMA.1688.F16 d0",
+        "HMMA.1688.F16 d1", "HMMA.1688.F32+C d0", "HMMA.1688.F32+C d1", "HMMA.1688.F32+C d2", "HMMA.1688.F32+C d3"};
     memset(&p, 0, sizeof p);
     tensor_program(&p, local);
     memset(expect, 0, sizeof expect);
@@ -1136,10 +1187,13 @@ static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, i
     si.cs_local[0] = (int)local, si.cs_local[1] = si.cs_local[2] = 1;
     si.shared_size = 2048;
     size_t words = 0;
-    int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot, f16_was = g_shader_float16;
+    int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot, f16_was = g_shader_float16,
+        coop_was = g_shader_hmma_coop;
     g_shader_quad_compute = quad, g_shader_mixed_dot = mixed, g_shader_float16 = g->float16;
+    g_shader_hmma_coop = coop ? g->coop : 0;
     u32* spv = sm86_to_spirv(p.code, p.n * 16, ST_CS, NULL, &si, &words);
     g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_float16 = f16_was;
+    g_shader_hmma_coop = coop_was;
     const char* how = exact ? "exact" : "rounded";
     if (!spv) {
         fprintf(stderr, "tensor: not translated: %s\n", si.first_unsupported);
@@ -1158,7 +1212,7 @@ static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, i
         for (u32 k = 0; k < TENSOR_OUT; k++) {
             u32 w = want[i * TENSOR_OUT + k], h = got[i * TENSOR_OUT + k];
             const Expect* e = &expect[i * TENSOR_OUT + k];
-            if (tensor_match(k, h, w, e, exact && !mixed)) continue;
+            if (tensor_match(k, h, w, e, exact && !mixed && !coop)) continue;
             if (bad++ < 24) {
                 if (tensor_kind[k] == T_PAIR)
                     fprintf(stderr, "tensor (%s): lane %u %s: GPU %g %g, expected %g %g\n", how, i, names[k],
@@ -1170,30 +1224,38 @@ static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, i
                     fprintf(stderr, "tensor (%s): lane %u %s: GPU 0x%08x, expected 0x%08x\n", how, i, names[k], h, w);
             }
         }
-    printf("tensor: workgroups of %u, A by %s, products by %s, %s sums: %u instructions, %u outputs x %u invocations "
-           "(subgroups of %u%s), %u differ\n",
-           local, quad ? "quad broadcasts" : "shuffles", mixed ? "mixed dot products" : "unpacking to f32", how, p.n,
-           TENSOR_OUT, INVOCATIONS, warp32 ? 32 : g->subgroup, warp32 ? ", required" : "", bad);
+    const char* products = coop    ? "products by cooperative matrices"
+                           : mixed ? "products by mixed dot products"
+                                   : "products by unpacking to f32";
+    printf("tensor: workgroups of %u, A by %s, %s, %s sums: %u instructions, %u outputs x %u invocations (subgroups "
+           "of %u%s), %u differ\n",
+           local, coop ? "staging" : quad ? "quad broadcasts" : "shuffles", products, how, p.n, TENSOR_OUT,
+           INVOCATIONS, warp32 ? 32 : g->subgroup, warp32 ? ", required" : "", bad);
     return bad == 0;
 }
 /* every way the device can translate them: with what it has, then with neither quads nor the mixed dot product (the
-   fallbacks), each in workgroups of one warp and of two, those also in required subgroups of 32 where it can */
+   fallbacks), each in workgroups of one warp and of two, those also in required subgroups of 32 where it can; and
+   with its cooperative matrices where it has them, in workgroups of one warp and of two in subgroups of 32 */
 static int run_tensor(void) {
     Gpu g = {0};
     if (!gpu_open(&g, 1)) {
         printf("tensor: no device with subgroups of 32 or more lanes and shuffles in compute: skipped\n");
         return 1;
     }
-    printf("tensor device: %s (quads in compute %d, shaderFloat16 %d, mixed dot product %d, subgroups of 32 %d)\n",
-           g.name, g.quad, g.float16, g.mixed_dot, g.warp32);
+    printf("tensor device: %s (quads in compute %d, shaderFloat16 %d, mixed dot product %d, subgroups of 32 %d, "
+           "cooperative matrices %d)\n",
+           g.name, g.quad, g.float16, g.mixed_dot, g.warp32, g.coop != 0);
     int ok = 1;
     for (int fallback = 0; fallback < 2; fallback++)
         for (u32 run = 0; run < 3; run++) { /* 32, 64, 64 in subgroups of 32 */
             if (run == 2 && !g.warp32) continue;
             for (int exact = 1; exact >= 0; exact--)
-                ok &= run_tensor_with(&g, run ? 64 : 32, run == 2, !fallback && g.quad, !fallback && g.mixed_dot,
+                ok &= run_tensor_with(&g, run ? 64 : 32, run == 2, !fallback && g.quad, !fallback && g.mixed_dot, 0,
                                       exact);
         }
+    for (u32 run = 0; run < 2 && g.coop; run++)
+        for (int exact = 1; exact >= 0; exact--)
+            ok &= run_tensor_with(&g, run ? 64 : 32, 1, g.quad, g.mixed_dot, 1, exact);
     vkDestroyDevice(g.device, NULL);
     vkDestroyInstance(g.instance, NULL);
     return ok;

@@ -138,6 +138,8 @@ const char* vk_spirv_unavailable(const u32* spv, size_t words) {
         if (width == 2 && spv[at + 1] == 5283 && !g_vk.has_mesh) return "meshShader is unavailable";
         if (width == 2 && spv[at + 1] == 6912 && !g_shader_mixed_dot)
             return "shaderMixedFloatDotProductFloat16AccFloat32 is unavailable";
+        if (width == 2 && (spv[at + 1] == 6022 || spv[at + 1] == 5345 || spv[at + 1] == 5346) && !g_shader_hmma_coop)
+            return "cooperativeMatrix or the Vulkan memory model is unavailable";
         at += width;
     }
     return NULL;
@@ -2309,10 +2311,11 @@ static void pf_key(char* out, size_t n, size_t* guest) {
     *guest = g > 0 && (size_t)g < n ? (size_t)g : 0;
     if (*guest)
         snprintf(out + *guest, n - *guest,
-                 " %s%s driver=%u api=%u uuid=%s ftz=%d quad=%d,%d mixed_dot=%d sizes=%u,%u vertex_bounds=%d",
+                 " %s%s driver=%u api=%u uuid=%s ftz=%d quad=%d,%d mixed_dot=%d hmma_coop=%d sizes=%u,%u "
+                 "vertex_bounds=%d",
                  snx_build_info(), exe, d->driverVersion, d->apiVersion, uuid, g_vk_ftz, g_shader_quad,
-                 g_shader_quad_compute, g_shader_mixed_dot, (unsigned)sizeof(ShaderInfo), (unsigned)sizeof(PfShader),
-                 g_vk.has_vertex_robustness2);
+                 g_shader_quad_compute, g_shader_mixed_dot, g_shader_hmma_coop, (unsigned)sizeof(ShaderInfo),
+                 (unsigned)sizeof(PfShader), g_vk.has_vertex_robustness2);
 }
 
 void vk_pipeline_file_key(char* out, size_t n, size_t* guest) { pf_key(out, n, guest); }
