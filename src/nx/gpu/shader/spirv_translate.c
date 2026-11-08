@@ -7,6 +7,7 @@
 #include "nx/gpu/shader/advanced_blend_spirv.h"
 #include "nx/gpu/shader/capture_tiles_spirv.h"
 #include "nx/gpu/shader/depth_stencil_spirv.h"
+#include "nx/gpu/shader/write_log.h"
 
 /* Programmable blend owns an ordered storage image. Coverage-only keeps its native integer attachment and kills
    late-failed lanes after the interlock. Every invocation executes one begin/end pair; discarded/helper lanes
@@ -1443,11 +1444,12 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         return NULL;
     }
     int gtags[255] = {0}, ngbuf = 0;
-    u32 gbuf_wmask = 0;
+    u32 gbuf_wmask = 0, gbuf_rmask = 0;
     u32 gbuf_off[16] = {0};
-    /* the first access whose base the tracking lost (0 for none), its register, and whether one of them stores */
+    /* the first access whose base the tracking lost (0 for none), its register, and whether one of them stores or
+       loads */
     u32 untracked_at = 0, untracked_reg = 0;
-    int untracked_store = 0;
+    int untracked_store = 0, untracked_load = 0;
     for (u32 i = 11; i < n; i++) {
         u32 second;
         u32 r;
@@ -1516,6 +1518,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                    among the program's tracked buffers when it runs (shader_global_dynamic) */
                 gb_at[i] = GB_DYNAMIC;
                 untracked_store |= op == O_STG;
+                untracked_load |= op == O_LDG;
                 if (!untracked_at) {
                     untracked_at = i;
                     untracked_reg = a;
@@ -1553,6 +1556,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 }
                 gb_at[i] = (u8)(slot + 1);
                 if (op != O_LDG) gbuf_wmask |= 1u << slot;
+                if (op != O_STG) gbuf_rmask |= 1u << slot; /* a load or an atomic */
                 {
                     u32 bank = SH_GBUF_BANK(descriptor), at = SH_GBUF_OFFSET(descriptor);
                     cbuf_used[bank] = 1;
@@ -1573,8 +1577,16 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         if (gbuf_off[slot] != 0xb0) {
             untracked_at = 0;
             if (untracked_store) gbuf_wmask |= (1u << ngbuf) - 1;
+            if (untracked_load) gbuf_rmask |= (1u << ngbuf) - 1;
         }
     if (untracked_at) return shader_untracked_reject(si, insn, untracked_at, untracked_reg, gb_at, pop_targets);
+    /* a compute program's stores and atomics record the bytes they write in its write log (write_log.c), a part for
+       each buffer it writes, in slot order. Every store to such a buffer must log, or the renderer, which lands only
+       the bytes logged, drops the others */
+    u8 wlog_mark[16] = {0};
+    u8 nmarks = 0;
+    for (int slot = 0; stage == ST_CS && slot < ngbuf; slot++)
+        if (gbuf_wmask >> slot & 1) wlog_mark[slot] = ++nmarks;
 
     /* A zero skip bit forwards that scalar from the input primitive. */
     if (passthrough) {
@@ -2189,6 +2201,11 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         if (stage != ST_CS) {
             c->smap = spv_emit_storage_buffer(&c->emit, gbuf_struct, shader_vk_set(stage), SNX_VKB_SMAP);
             interfaces[count++] = c->smap;
+        }
+        if (nmarks) { /* SNX_VKB_WPAGES is SNX_VKB_SMAP, which a compute program has no other use for */
+            c->wlog = shader_wlog_buffer(&c->emit, c->u32_type, shader_vk_set(stage));
+            interfaces[count++] = c->wlog;
+            memcpy(c->wlog_mark, wlog_mark, sizeof wlog_mark);
         }
     }
     /* what the program's transform feedback writes (shader_xfb_store): with stores, the buffers it stores into */
@@ -2822,6 +2839,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     memcpy(next.img, image_info.img, (size_t)image_info.nimg * sizeof image_info.img[0]);
     next.ngbuf = ngbuf;
     next.gbuf_wmask = gbuf_wmask;
+    next.gbuf_rmask = gbuf_rmask;
+    for (int slot = 0; slot < ngbuf; slot++)
+        if (wlog_mark[slot]) shader_wlog_part(&next, slot);
     memcpy(next.gbuf_cbuf_off, gbuf_off, (size_t)ngbuf * sizeof gbuf_off[0]);
     next.fp32_flush = fp32_flush;
     next.fp32_preserve = fp32_preserve;
