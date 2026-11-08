@@ -62,7 +62,7 @@ typedef struct {
     /* the Vulkan version the renderer runs at: 1.3, or 1.2 with the extensions 1.3 took in (device.c g_vk12), their
        commands under the core names */
     u32 api;
-    u32 api_cap;           /* the most it takes, 0 for 1.3: the tests' --vk-api runs the 1.2 way on a newer device */
+    u32 api_cap;           /* the most it takes, 0 for 1.3: vk_api=1.2 runs the 1.2 way on a newer device */
     u64 shader_generation; /* shader instruction invalidations, separate from memory epochs */
     int has_descriptor_buffers;
     int has_descriptor_heaps;
@@ -200,6 +200,9 @@ const char* vk_start_failure(void);
 /* how many of the extensions a Vulkan 1.2 device runs the renderer with (1.3's, device.c) e lacks, their names in out
    (size bytes, may be 0) comma separated */
 u32 vk_1_2_missing(const SnxVkExtensions* e, char* out, size_t size);
+/* the vk_api setting's text as the most Vulkan version the renderer takes, *cap (0 for auto, the device's up to 1.3):
+   1, or 0 with why (n bytes) naming the value and the ones it takes */
+int vk_api_setting(const char* text, u32* cap, char* why, size_t n);
 /* (re)creates the swapchain at the window's size, in an sRGB format when srgb is set and the surface has one, with
    the present mode the vsync setting asks for, recorded in sc_vsync (show() makes a new one when the setting moves).
    0 while the window has no area (minimized) or its surface can't be queried, the old swapchain staying, or when the

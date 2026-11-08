@@ -831,6 +831,17 @@ setting Vulkan validation layer
     words Off|On
     help 1 = the Vulkan validation layer (VK_LAYER_KHRONOS_validation, the Vulkan SDK's) checks every Vulkan call and
     help logs what it finds. It slows the game down a lot, and a missing layer is only a warning
+setting Vulkan API
+    label Vulkan version
+    key vk_api
+    text 8
+    default auto
+    startup
+    words auto=Auto|1.2=1.2
+    help The Vulkan version the renderer runs at. auto = the device's, up to 1.3: a device with only 1.2 runs the 1.2
+    help way where it has the extensions 1.3 took in. 1.2 = the 1.2 way on a 1.3 device too, to test it: the 1.3
+    help features from those extensions, shaders in SPIR-V 1.5, no Vulkan Video decode. Any other value stops the game,
+    help saying so
 setting Native ASTC
     key native_astc
     int 0 1

@@ -394,10 +394,12 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless_descriptor_heaps COMMAND snx-test-vulkan -H --vk_descriptors=2)
     set_tests_properties(vulkan_headless_descriptor_heaps PROPERTIES TIMEOUT 120
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
-    # every check again the Vulkan 1.2 way (gpu/vk/device.c vk12_extensions) on a newer device: the 1.3 commands by their
-    # extensions' names, shaders in SPIR-V 1.5, under the validation layer when it is installed, which takes the
-    # instance's 1.2 as the version and flags any 1.3 use left
-    add_test(NAME vulkan_headless_vk12 COMMAND snx-test-vulkan -H --vk-api=1.2 --vk_validation=1)
+    # every check again the Vulkan 1.2 way on a newer device, as a game's .ini with vk_api=1.2 asks (gpu/vk/device.c
+    # vk12_extensions): the 1.3 commands by their extensions' names, shaders in SPIR-V 1.5, under the validation layer
+    # when it is installed, which takes the instance's 1.2 as the version and flags any 1.3 use left
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/vulkan_headless_vk12.ini" "[Debug]\nvk_api=1.2\n")
+    add_test(NAME vulkan_headless_vk12 COMMAND snx-test-vulkan -H
+        "--settings-ini=${CMAKE_CURRENT_BINARY_DIR}/vulkan_headless_vk12.ini" --vk_validation=1)
     set_tests_properties(vulkan_headless_vk12 PROPERTIES TIMEOUT 120
         ENVIRONMENT "VK_KHRONOS_VALIDATION_REPORT_FLAGS=error" FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again with each vertex layout in its pipeline: the default run sets it as dynamic state where the
