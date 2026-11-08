@@ -393,6 +393,17 @@ static void test_calls(void) {
     remove(G(in_dir("data")));
 }
 
+/* ---- the shim: every name it sends to the 64-bit bridge has a handler there ---- */
+
+static void test_shim(void) {
+    const char* names[16];
+    unsigned count = arm32_shim_unresolved(names, 16);
+    for (unsigned i = 0; i < count && i < 16; ++i)
+        fprintf(stderr, "android_arm32: the shim sends %s to the 64-bit bridge, which has no handler for it\n",
+                names[i]);
+    expect_int("the shim's names without a 64-bit handler", count, 0);
+}
+
 /* ---- the FORTIFY forms: the function within the buffer, and bionic's abort past it ---- */
 
 static void test_fortify(void) {
@@ -513,6 +524,7 @@ int main(void) {
         return 1;
     }
     test_loader();
+    test_shim();
     test_fortify();
     test_files();
     test_calls();

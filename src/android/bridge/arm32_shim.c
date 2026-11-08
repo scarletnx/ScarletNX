@@ -109,19 +109,26 @@ static uint64_t call64(const HleSymbol* fn, const uint64_t* x, unsigned nx, cons
     return c->x[0];
 }
 
+/* a shim's 64-bit handler, hle_find's at its first call: NULL when the 64-bit bridge has none, which that first call
+   says with the name (the call fails; arm32_shim_unresolved lists them all) */
 static const HleSymbol* find(Shim* s) {
     if (!__atomic_load_n(&s->looked, __ATOMIC_ACQUIRE)) {
-        s->fn = hle_find(s->name);
+        const HleSymbol* fn = hle_find(s->name);
+        s->fn = fn && fn->handler ? fn : NULL;
+        if (!s->fn)
+            fprintf(stderr,
+                    "scarletnx-android: arm32: the 64-bit bridge has no handler for %s: the 32-bit call fails\n",
+                    s->name);
         __atomic_store_n(&s->looked, true, __ATOMIC_RELEASE);
     }
-    return s->fn && s->fn->handler ? s->fn : NULL;
+    return s->fn;
 }
 
 /* the GL buffer bound at a binding point (GL_ARRAY_BUFFER_BINDING, GL_ELEMENT_ARRAY_BUFFER_BINDING) of the current
    context */
+static Shim s_get_integerv = {"glGetIntegerv", "up:v", NULL, false};
 static int32_t gl_binding(uint32_t pname) {
-    static Shim get = {"glGetIntegerv", "up:v", NULL, false};
-    const HleSymbol* fn = find(&get);
+    const HleSymbol* fn = find(&s_get_integerv);
     int32_t value = 0;
     uint64_t x[2] = {pname, (uint64_t)(uintptr_t)&value};
     if (fn) call64(fn, x, 2, NULL, 0);
@@ -131,8 +138,13 @@ static int32_t gl_binding(uint32_t pname) {
 static void shim(SnxArmCPU* c, void* data) {
     Shim* s = data;
     const HleSymbol* fn = find(s);
-    if (!fn) { /* a state that has no effect here, or a call the HLE lacks */
-        R(0) = 0;
+    if (!fn) { /* ENOSYS, and the failure of the result's kind: -1, or NULL for a handle, a string or a pointer */
+        const char* result = strchr(s->kinds, ':');
+        char kind = result ? result[1] : 'v';
+        arm32_set_errno_linux(38);
+        if (kind == 'i' || kind == 'l') R(0) = UINT32_MAX;
+        if (kind == 'l') R(1) = UINT32_MAX;
+        if (kind == 'h' || kind == 's' || kind == 'P') R(0) = 0;
         return;
     }
     uint64_t x[16];
@@ -930,3 +942,19 @@ const Arm32Symbol arm32_shim_symbols[] = {
 };
 
 void arm32_shim_init(void) {}
+
+/* the names the shim sends to the 64-bit bridge that has no handler for them: their count, the first max into names */
+static void unresolved(const char* name, const char** names, unsigned max, unsigned* count) {
+    const HleSymbol* fn = hle_find(name);
+    if (fn && fn->handler) return;
+    if (*count < max) names[*count] = name;
+    ++*count;
+}
+unsigned arm32_shim_unresolved(const char** names, unsigned max) {
+    const Shim* const own[] = {&s_get_integerv, &s_shader_source, &s_attrib_pointerv, &s_choose_config, &s_get_configs};
+    unsigned count = 0;
+    for (const Arm32Symbol* e = arm32_shim_symbols; e->name[0]; ++e)
+        if (e->handler == shim) unresolved(((const Shim*)e->data)->name, names, max, &count);
+    for (size_t i = 0; i < sizeof own / sizeof *own; ++i) unresolved(own[i]->name, names, max, &count);
+    return count;
+}
