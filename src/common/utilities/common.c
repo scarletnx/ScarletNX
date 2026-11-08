@@ -16,6 +16,7 @@
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include "common/utilities/ini_lines.h"
+#include "common/platform/time.h"
 #include <libdeflate.h>
 #include <errno.h>
 #include <limits.h>
@@ -1878,18 +1879,7 @@ char* snx_temp_dir(const char* parent) {
     return path;
 #endif
 }
-double snx_seconds(void) {
-#ifdef _WIN32
-    LARGE_INTEGER frequency, now;
-    QueryPerformanceFrequency(&frequency);
-    QueryPerformanceCounter(&now);
-    return (double)now.QuadPart / (double)frequency.QuadPart;
-#else
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return (double)now.tv_sec + (double)now.tv_nsec / 1e9;
-#endif
-}
+double snx_seconds(void) { return (double)plat_ns() / 1e9; }
 unsigned snx_cpu_count(void) {
 #ifdef _WIN32
     SYSTEM_INFO info;

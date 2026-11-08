@@ -33,16 +33,10 @@ static void test_fail(const char* expression, int line) {
 void pm_init(PMutex* m) { InitializeSRWLock(&m->l); }
 void pm_lock(PMutex* m) { AcquireSRWLockExclusive(&m->l); }
 void pm_unlock(PMutex* m) { ReleaseSRWLockExclusive(&m->l); }
-u64 plat_ns(void) { return (u64)GetTickCount64() * 1000000; }
 #else
 void pm_init(PMutex* m) { CHECK(!pthread_mutex_init(&m->l, NULL)); }
 void pm_lock(PMutex* m) { CHECK(!pthread_mutex_lock(&m->l)); }
 void pm_unlock(PMutex* m) { CHECK(!pthread_mutex_unlock(&m->l)); }
-u64 plat_ns(void) {
-    struct timespec t;
-    clock_gettime(CLOCK_MONOTONIC, &t);
-    return (u64)t.tv_sec * 1000000000 + (u64)t.tv_nsec;
-}
 #endif
 void logf_(int level, const char* format, ...) {
     (void)level;

@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The platform layer on Windows: threads, condition variables, the guest's address space with its write watch, file
-   reads and maps, the environment and the crash handler (plat_sdl.c has the clocks, sleeping,
-   libraries and path queries). Paths are UTF-8, converted to wide for the W functions (the
+   reads and maps, the environment and the crash handler (plat_sdl.c has the
+   libraries and path queries, common/platform the clocks and sleeping). Paths are UTF-8, converted to wide for the W functions (the
    manifest's UTF-8 code page makes the A functions and the CRT take UTF-8 too) */
 #include "nx/runtime/platform/plat.h"
 #include "common/utilities/run_mark.h"
@@ -559,5 +559,3 @@ void plat_install_crash_handler(void) {
     AddVectoredExceptionHandler(1, code_fault);
     SetUnhandledExceptionFilter(crash_filter);
 }
-
-u64 plat_monotonic_ns(void) { return 0; }

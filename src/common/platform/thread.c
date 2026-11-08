@@ -11,7 +11,6 @@
 #include <stdlib.h>
 #include <string.h>
 #if !defined(_WIN32)
-#include <sched.h>
 #include <time.h>
 #include <unistd.h>
 #if defined(__linux__)
@@ -259,7 +258,6 @@ void plat_wait_word(uint32_t* w, uint32_t v, int64_t timeout_ns) {
 }
 void plat_wake_word(uint32_t* w) { WakeByAddressAll(w); }
 
-void plat_yield(void) { SwitchToThread(); }
 uint32_t plat_tid(void) { return (uint32_t)GetCurrentThreadId(); }
 #else
 /* ================================================================ mutexes */
@@ -410,7 +408,6 @@ void plat_wake_word(uint32_t* w) {
 #endif
 }
 
-void plat_yield(void) { sched_yield(); }
 uint32_t plat_tid(void) {
     /* kept per thread: vk_lock asks it on every acquire, thousands of times a frame in one game, and on Linux each was
        a system call */

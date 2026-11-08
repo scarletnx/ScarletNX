@@ -111,7 +111,7 @@ static const u32 x_code[] = {0x58000040u, 0xD65F03C0u, 0x11223344u, 0x55667788u}
 static const u32 q_code[] = {0x9C000040u, 0xD65F03C0u, 0x0A0B0C0Du, 0x01020304u, 0xA1A2A3A4u, 0xB1B2B3B4u};
 #define Q_AT 0xC00u
 
-/* the clock that plat_ns is (plat_sdl.c's SDL_GetTicksNS), which the guest clock follows until the counter's stubs
+/* the clock that plat_ns is (common/platform/time.c's), which the guest clock follows until the counter's stubs
    take it to the host's counter. Twice as fast as CLOCK_MONOTONIC: qemu-user's counter keeps the host clock's pace, so
    only a guest clock that left plat_ns for the counter reads as the stubs do */
 u64 plat_ns(void) {

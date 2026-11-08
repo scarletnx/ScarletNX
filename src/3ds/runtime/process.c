@@ -11,8 +11,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include "common/utilities/common.h"
+#include "common/platform/time.h"
 static bool map(SnxCtrProcess* p, uint32_t va, uint32_t size, unsigned permissions) {
     if (!size) return true;
     if ((uint64_t)p->physical_next + size > p->physical_end ||
@@ -68,30 +68,8 @@ static bool special_mappings(SnxCtrProcess* p, const uint32_t* caps) {
    time, and Azahar gives it the host's (Handler::GetSystemTimeSince1900, daylight saving included). The console
    allows no time before 2000, so an earlier host clock reads as 2000-01-01 as Azahar has it. */
 static bool local_1900_ms(uint64_t* out) {
-    struct timespec now;
-    struct tm local;
-    if (
-#if defined(__ANDROID__) && __ANDROID_API__ < 29
-        clock_gettime(CLOCK_REALTIME, &now)
-#else
-        !timespec_get(&now, TIME_UTC)
-#endif
-    )
-        return false;
-    time_t seconds = now.tv_sec;
-#ifdef _WIN32
-    if (localtime_s(&local, &seconds)) return false;
-#else
-    if (!localtime_r(&seconds, &local)) return false;
-#endif
-    /* days from 1900-01-01 to the local date (the proleptic Gregorian count of H. Hinnant's days_from_civil) */
-    int64_t year = (int64_t)local.tm_year + 1900 - (local.tm_mon < 2);
-    int64_t era = (year >= 0 ? year : year - 399) / 400, of_era = year - era * 400;
-    int64_t month = local.tm_mon < 2 ? local.tm_mon + 10 : local.tm_mon - 2; /* from March */
-    int64_t of_year = (153 * month + 2) / 5 + local.tm_mday - 1;
-    int64_t days = era * 146097 + of_era * 365 + of_era / 4 - of_era / 100 + of_year - 719468 + 25567;
-    int64_t ms = ((days * 24 + local.tm_hour) * 60 + local.tm_min) * 60 + local.tm_sec;
-    ms = ms * 1000 + now.tv_nsec / 1000000;
+    /* the local time in milliseconds since 1970, then the 25567 days from 1900 to 1970 */
+    int64_t ms = plat_unix_ns() / 1000000 + (plat_tz_offset() + INT64_C(2208988800)) * 1000;
     *out = ms > INT64_C(3155673600000) ? (uint64_t)ms : UINT64_C(3155673600000);
     return true;
 }

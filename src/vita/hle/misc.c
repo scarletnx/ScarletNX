@@ -94,13 +94,7 @@ static uint32_t rtc_get_tick(VitaProcess* p, VitaThread* t) {
 static uint32_t rtc_get_current_tick(VitaProcess* p, VitaThread* t) {
     uint32_t out = vita_arg(p, t, 0);
     if (!out) return SCE_RTC_ERROR_INVALID_POINTER;
-    struct timespec now;
-#if defined(__ANDROID__) && __ANDROID_API__ < 29
-    clock_gettime(CLOCK_REALTIME, &now);
-#else
-    timespec_get(&now, TIME_UTC);
-#endif
-    vita_write64(p, out, UNIX_EPOCH_TICK + (uint64_t)now.tv_sec * 1000000u + (uint64_t)now.tv_nsec / 1000u);
+    vita_write64(p, out, UNIX_EPOCH_TICK + (uint64_t)(plat_unix_ns() / 1000));
     return 0;
 }
 static uint32_t rtc_get_tick_resolution(VitaProcess* p, VitaThread* t) {
@@ -161,17 +155,12 @@ static uint32_t rtc_set_time64_t(VitaProcess* p, VitaThread* t) {
 }
 /* sceRtcGetAccumulativeTime(): microseconds since the process started, 64 bits */
 static uint32_t rtc_get_accumulative_time(VitaProcess* p, VitaThread* t) {
-    return vita_return64(t, (vita_now_ns() - p->start_ns) / 1000u);
+    return vita_return64(t, (plat_ns() - p->start_ns) / 1000u);
 }
 /* SceDateTime (16 bytes: year, month, day, hour, minute, second as 16 bits, then microseconds) of now, local time */
 static void date_time_now(unsigned char* b) {
-    struct timespec now;
-#if defined(__ANDROID__) && __ANDROID_API__ < 29
-    clock_gettime(CLOCK_REALTIME, &now);
-#else
-    timespec_get(&now, TIME_UTC);
-#endif
-    time_t seconds = now.tv_sec;
+    int64_t now = plat_unix_ns();
+    time_t seconds = (time_t)(now / 1000000000);
     struct tm tm;
 #ifdef _WIN32
     localtime_s(&tm, &seconds);
@@ -180,7 +169,7 @@ static void date_time_now(unsigned char* b) {
 #endif
     uint16_t f[6] = {(uint16_t)(tm.tm_year + 1900), (uint16_t)(tm.tm_mon + 1), (uint16_t)tm.tm_mday,
                      (uint16_t)tm.tm_hour,          (uint16_t)tm.tm_min,       (uint16_t)tm.tm_sec};
-    uint32_t us = (uint32_t)(now.tv_nsec / 1000);
+    uint32_t us = (uint32_t)(now % 1000000000 / 1000);
     for (unsigned i = 0; i < 6; ++i) snx_st_le16(b + i * 2, f[i]);
     snx_st_le32(b + 12, us);
 }
@@ -200,7 +189,7 @@ static void put_float(VitaProcess* p, uint32_t address, float f) {
 static uint32_t motion_get_state(VitaProcess* p, VitaThread* t) {
     uint32_t out = vita_arg(p, t, 0);
     if (!out) return 0x80360200u; /* SCE_MOTION_ERROR_NULL_PARAMETER */
-    uint64_t us = (vita_now_ns() - p->start_ns) / 1000u;
+    uint64_t us = (plat_ns() - p->start_ns) / 1000u;
     memset(vita_ptr(p, out), 0, 0xf8);
     vita_write32(p, out, (uint32_t)us);
     put_float(p, out + 12, -1.0f);         /* acceleration's z, in g */

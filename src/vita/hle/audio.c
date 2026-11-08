@@ -91,7 +91,7 @@ static uint32_t output(VitaProcess* p, VitaThread* t) {
     Port* port = port_of(p, vita_arg(p, t, 0));
     uint32_t buffer = vita_arg(p, t, 1);
     if (!port) return SCE_AUDIO_OUT_ERROR_INVALID_PORT;
-    uint64_t now = vita_now_ns(), duration = (uint64_t)port->len * 1000000000u / port->freq;
+    uint64_t now = plat_ns(), duration = (uint64_t)port->len * 1000000000u / port->freq;
     if (!buffer) {
         if (port->busy_until > now) vita_wait(p, (VitaWait){.kind = VITA_WAIT_AUDIO, .deadline = port->busy_until});
         return 0;
@@ -151,7 +151,7 @@ static uint32_t set_volume(VitaProcess* p, VitaThread* t) {
 static uint32_t get_rest_sample(VitaProcess* p, VitaThread* t) {
     Port* port = port_of(p, vita_arg(p, t, 0));
     if (!port) return SCE_AUDIO_OUT_ERROR_INVALID_PORT;
-    uint64_t now = vita_now_ns();
+    uint64_t now = plat_ns();
     return port->busy_until > now ? (uint32_t)((port->busy_until - now) * port->freq / 1000000000u) : 0;
 }
 void vita_audio_free(VitaProcess* p) {
@@ -189,7 +189,7 @@ static uint32_t in_input(VitaProcess* p, VitaThread* t) {
     if (!port) return SCE_AUDIO_IN_ERROR_NOT_OPENED;
     if (!dest || !vita_mapped(p, dest, port->len * 2)) return SCE_AUDIO_IN_ERROR_INVALID_PORT_PARAM;
     memset(vita_ptr(p, dest), 0, port->len * 2);
-    uint64_t now = vita_now_ns(), start = port->busy_until > now ? port->busy_until : now;
+    uint64_t now = plat_ns(), start = port->busy_until > now ? port->busy_until : now;
     port->busy_until = start + (uint64_t)port->len * 1000000000u / port->freq;
     vita_wait(p, (VitaWait){.kind = VITA_WAIT_AUDIO, .deadline = port->busy_until});
     return 0;

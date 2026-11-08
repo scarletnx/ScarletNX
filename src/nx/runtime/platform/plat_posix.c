@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The platform layer on Linux, Android, FreeBSD and Apple systems: threads, condition variables, the guest's address
    space with written-page tracking, file reads and maps, the environment and the crash handler
-   (plat_sdl.c has the clocks, sleeping, libraries and path queries) */
+   (plat_sdl.c has the libraries and path queries, common/platform the clocks and
+   sleeping) */
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE /* REG_RIP, pipe2 */
 #endif
@@ -2254,9 +2255,3 @@ void plat_crash_code_module(const void* inside) { (void)inside; }
 void plat_crash_handler_check(void) {}
 
 void plat_prof_start(void) {}
-
-u64 plat_monotonic_ns(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (u64)ts.tv_sec * 1000000000u + (u64)ts.tv_nsec;
-}

@@ -15,15 +15,8 @@
 #include "3ds/services/csnd.h"
 #include "3ds/services/uds.h"
 #include "common/utilities/common.h"
+#include "common/platform/time.h"
 #include <string.h>
-#if defined(_WIN32)
-#include <windows.h>
-#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
-#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002 /* Windows 10 1803 and later */
-#endif
-#else
-#include <time.h>
-#endif
 CtrThread* snx_ctr_thread(SnxCtrProcess* p) { return &p->objects[p->current_thread].data.thread; }
 void snx_ctr_object_release(SnxCtrProcess* p, uint32_t id) {
     if (--p->objects[id].refs) return;
@@ -349,26 +342,7 @@ SnxCtrSvcResult snx_ctr_thread_exit(SnxCtrProcess* p) {
 static void sleep_until(uint64_t deadline) {
     double wait = snx_ctr_clock_wait((double)deadline / 1e9);
     if (!(wait > 0)) return;
-    uint64_t ns = (uint64_t)(wait * 1e9);
-#if defined(_WIN32)
-    /* Sleep() rounds to the system tick (15.6 ms unless raised), far longer than a 4.9 ms audio frame: a high-resolution
-       waitable timer (Windows 10 1803 and later) waits the exact time, Sleep() remains where it is missing */
-    static HANDLE timer;
-    static bool tried;
-    if (!tried) {
-        tried = true;
-        timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
-    }
-    LARGE_INTEGER due;
-    due.QuadPart = -(LONGLONG)(ns / 100); /* relative, in 100 ns units */
-    if (timer && due.QuadPart && SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE))
-        WaitForSingleObject(timer, INFINITE);
-    else
-        Sleep((DWORD)(ns / 1000000 ? ns / 1000000 : 1));
-#else
-    struct timespec ts = {(time_t)(ns / 1000000000), (long)(ns % 1000000000)};
-    nanosleep(&ts, NULL);
-#endif
+    plat_sleep_ns((int64_t)(wait * 1e9));
 }
 /* The cores take turns, each scheduling a slice of its own as Azahar's per-core schedulers do (a slice ends at an SVC
    or after SNX_CTR_POLL_BLOCKS blocks): a busy thread on the system core no longer keeps a waiting one of the

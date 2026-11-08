@@ -1,27 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The platform layer's parts SDL already does the same way on every host: the clocks, sleeping, shared libraries and
-   the path queries. plat_posix.c and plat_win32.c keep what SDL has no call for (condition variables with nanosecond
+/* The platform layer's parts SDL already does the same way on every host: shared libraries, the path queries and
+   the power state. plat_posix.c and plat_win32.c keep what SDL has no call for (condition variables with nanosecond
    deadlines, threads with their alternate stacks, the guest's address space, file maps, the crash handler) */
 #include "nx/runtime/platform/plat.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <string.h>
 
-/* ================================================================ time */
-/* CLOCK_MONOTONIC_RAW on Linux (CLOCK_MONOTONIC on Android), QueryPerformanceCounter on Windows, mach_absolute_time
-   on Apple systems, counted from SDL's first call */
-u64 plat_ns(void) { return SDL_GetTicksNS(); }
-i64 plat_unix_time(void) {
-    SDL_Time t;
-    return SDL_GetCurrentTime(&t) ? (i64)(t / (SDL_Time)SDL_NS_PER_SECOND) : 0;
-}
-i64 plat_tz_offset(void) {
-    SDL_Time t;
-    SDL_DateTime dt;
-    if (!SDL_GetCurrentTime(&t) || !SDL_TimeToDateTime(t, &dt, true)) return 0;
-    return (i64)dt.utc_offset;
-}
+/* ================================================================ power */
 /* SDL_GetPowerInfo reads the host's battery and charger on every platform SDL supports. Only a host on its battery
    is not on its charger; a state it doesn't know (or cannot read) is -1, which TV mode Auto takes as On */
 int plat_power_on_charger(void) {
@@ -32,13 +19,6 @@ int plat_power_on_charger(void) {
     case SDL_POWERSTATE_CHARGED: return 1;
     default: return -1;
     }
-}
-/* a thread's own high-resolution waitable timer on Windows, nanosleep elsewhere */
-void plat_sleep_ns(i64 ns) {
-    if (ns <= 0)
-        plat_yield();
-    else
-        SDL_DelayNS((Uint64)ns);
 }
 
 /* ================================================================ libraries */

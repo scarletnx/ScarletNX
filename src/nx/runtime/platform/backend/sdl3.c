@@ -1695,7 +1695,7 @@ void video_poll(void) {
     vpad_showcase_input(b, st); /* what the game takes, a replay's included */
     ui_unlock();
     pm_unlock(&g_host.hid.input_lock);
-    gamepad_console(pb >> 10 & 1, SDL_GetTicksNS()); /* out of the input's lock: a pause stops the game's threads */
+    gamepad_console(pb >> 10 & 1, plat_ns()); /* out of the input's lock: a pause stops the game's threads */
     keyboard_sync();
 }
 

@@ -24,13 +24,13 @@
 #include "common/cpu/recompiler/llvm/objects_pack.h"
 #include "common/cpu/recompiler/workers.h"
 #include "common/utilities/endian.h"
+#include "common/platform/time.h"
 #include <llvm-c/Support.h>
 #include <llvm-c/TargetMachine.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -261,17 +261,10 @@ int snx_recompiler_set_cache(struct snx_recompiler* r, const char* folder) {
 
 /* ---- RtAPI defaults ---- */
 
+/* the 19.2 MHz counter of the host's plat_ns */
 static uint64_t default_ticks(void) {
-#ifdef _WIN32
-    LARGE_INTEGER frequency, now;
-    QueryPerformanceFrequency(&frequency);
-    QueryPerformanceCounter(&now);
-    return (uint64_t)((double)now.QuadPart * 19200000.0 / (double)frequency.QuadPart);
-#else
-    struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts)) return 0;
-    return (uint64_t)ts.tv_sec * 19200000u + (uint64_t)ts.tv_nsec * 192 / 10000;
-#endif
+    uint64_t ns = plat_ns();
+    return ns / 1000000000u * 19200000u + ns % 1000000000u * 192 / 10000;
 }
 static void default_note_hint(uint64_t pc) { (void)pc; }
 static void default_fpcr_changed(CPU* c) { (void)c; }

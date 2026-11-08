@@ -14,7 +14,7 @@
 static void ctrl_data(VitaProcess* p, uint32_t at, const VitaInput* in) {
     unsigned char* b = vita_ptr(p, at);
     memset(b, 0, 32);
-    vita_write64(p, at, (vita_now_ns() - p->start_ns) / 1000u);
+    vita_write64(p, at, (plat_ns() - p->start_ns) / 1000u);
     vita_write32(p, at + 8, in->buttons);
     b[12] = in->lx, b[13] = in->ly, b[14] = in->rx, b[15] = in->ry;
     static const uint32_t pressure[12] = {VITA_CTRL_UP,       VITA_CTRL_RIGHT,    VITA_CTRL_DOWN,     VITA_CTRL_LEFT,
@@ -56,7 +56,7 @@ static uint32_t touch_peek(VitaProcess* p, VitaThread* t) {
         uint32_t at = data + i * 144;
         unsigned char* b = vita_ptr(p, at);
         memset(b, 0, 144);
-        vita_write64(p, at, (vita_now_ns() - p->start_ns) / 1000u);
+        vita_write64(p, at, (plat_ns() - p->start_ns) / 1000u);
         vita_write32(p, at + 12, down ? 1 : 0);
         if (down) {
             b[16] = 0, b[17] = 128; /* id, force */
