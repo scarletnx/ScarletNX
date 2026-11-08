@@ -3,7 +3,8 @@
 # The Switch (NX)
 
 The Switch runtime (`src/nx/`) plays Switch games. This page lists its layers, with the code and the documents of
-each. The documents of this folder describe the parts that only the Switch has.
+each. The documents of this folder describe the parts that only the Switch has. `scarletnx` takes every one of the
+[common options](../../user/usage.md#common-options) but `--output`.
 
 ## Layers
 

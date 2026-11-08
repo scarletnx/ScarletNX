@@ -52,11 +52,13 @@ build/gnuabi/scarletnx-gnuabi -L ~/aarch64-sysroot ./hello
 
 PROGRAM is a host path. Arguments after it are passed to the guest, with the host's
 environment (`-E VAR=VALUE` sets a variable and `-U VAR` removes one, as with QEMU).
-`-0 ARGV0` replaces the program's `argv[0]`. `--help` lists every option.
+`-0 ARGV0` replaces the program's `argv[0]`. `--help` lists every option. Of the [common options](../../user/usage.md#common-options) of
+every driver, it takes `--data` and `-h`.
 
 | Option | Effect |
 | --- | --- |
 | `-L DIR`, `--sysroot=DIR` | The guest's root (see below) |
+| `--data DIR` | The data folder, whose `linux/` is the guest's root when neither `-L` nor `--sysroot` names one |
 | `--isolated` | No host files: `/tmp` in memory and the program alone as `/program`, the namespace the unit tests use |
 | `--jit` (default) | Compile the guest's code in process as it runs, the only mode |
 | `--jit-cache=DIR`, `--no-jit-cache` | Where compiled code is kept between runs (default `linux-jit` in the user's cache folder) |

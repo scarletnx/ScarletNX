@@ -72,15 +72,17 @@ an option, as these system properties:
 | `snx.android.night` | `true` for the dark theme |
 | `snx.android.data` | The app's data folder: `android/data/<package>` in ScarletNX's data folder when not given |
 
-These options of `scarletnx-android` run an app without a user, as the Switch runtime's `--script` and `--shot` do:
+These options of `scarletnx-android` run an app without a user, as the Switch runtime's `--script` and `--shot` do.
+`--headless` (`-H`) and `--shot` are [common options](../../user/usage.md#common-options), which take a value as
+`--shot PATH` or `--shot=PATH`:
 
 | Option | Meaning |
 | --- | --- |
-| `--headless` | No window: the renderer draws into an image of its own (`--trace-frames` logs each frame) |
-| `--shot=FILE.ppm` | Save frames as binary PPM. `%ld` in the name is the frame's number. An app that draws with Vulkan has its own presents saved: the image of each listed `vkQueuePresentKHR`, read back after the copy that waits for the present's semaphores |
+| `-H`, `--headless` | No window: the renderer draws into an image of its own (`--trace-frames` logs each frame) |
+| `--shot FILE.ppm` | Save frames as binary PPM. `%ld` in the name is the frame's number. An app that draws with Vulkan has its own presents saved: the image of each listed `vkQueuePresentKHR`, read back after the copy that waits for the present's semaphores |
 | `--shot-frame=60,120` | The frames (or the Vulkan presents, the first 1) to save, 60 when not given |
 | `--taps="60:300,672 90:..."` | A finger down at frame 60 at (300, 672) in pixels, and up 3 frames later |
-| `--keys='120:2+3\n\|300:x'` | Text typed from frame 120 on, as key presses of a US keyboard (`\n` is Enter) |
+| `--type='120:2+3\n\|300:x'` | Text typed from frame 120 on, as key presses of a US keyboard (`\n` is Enter). An older version named it `--keys`, which the other drivers use for a key file: `--keys` now stops with a message that names `--type` |
 | `--key-frames=4` | The frames between scripted keys. An app gets a frame or more to take each key, as from a person |
 
 These find what an app does when it stops or runs slowly:

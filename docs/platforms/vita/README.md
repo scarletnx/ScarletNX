@@ -26,8 +26,11 @@ build/scarletnx-vita -x game.vpk                 # extract only
 build/scarletnx-vita --game=~/.local/share/scarletnx/recompiled/LVBT00001 --seconds=30 --shot=/tmp/frame
 ```
 
+`scarletnx-vita` takes the [common options](../../user/usage.md#common-options) that fit it: `-x`, `-r`, `--game`, `--update`, `--data`,
+`--outdir`, `--output`, `--seconds`, `--shot`, `--script` and `-h`, each value as `--option VALUE` or `--option=VALUE`.
+
 A dumped game's folder (decrypted, as a console's `ux0:app/<title ID>`) is linked into the game's folder rather than
-copied: `app/` names it and `patch/` its update (`ux0:patch/<title ID>` beside it, or `--patch DIR`), whose files app0:
+copied: `app/` names it and `patch/` its update (`ux0:patch/<title ID>` beside it, or `--update DIR`, which an older version named `--patch`), whose files app0:
 shows over the game's and whose eboot.bin is the one compiled. A retail eboot is a fixed-address module (ET_SCE_EXEC)
 without relocations, so discovery starts at every word of the image and every MOVW and MOVT pair that makes a Thumb
 function's address. The libraries the game brings in `sce_module/` (libc, libfios2, libsmart, libult) are loaded
