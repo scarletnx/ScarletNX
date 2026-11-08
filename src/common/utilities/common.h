@@ -101,9 +101,19 @@ typedef struct {
     char* icd;        /* the ICD JSON for the loader (VK_DRIVER_FILES), NULL when library is the driver itself */
     const char* name; /* "MoltenVK", "KosmicKrisp", or "the system's", for the log */
 } SnxVulkanDriver;
-/* The pick's files, found. auto is the MoltenVK the program's folders carry, else the system's; moltenvk and
-   kosmickrisp are that one driver, carried or installed on the Mac, and are an error where the Mac has none. 1, else 0
-   with the reason in reason */
+/* where a pick's files are looked for: this system's folders (snx_vulkan_driver_choose), or a test's */
+typedef struct {
+    const char* program;        /* beside it and in its app's Frameworks: what the app carries; NULL for none */
+    const char* prefixes[2];    /* each with lib/ and share/vulkan/icd.d: Homebrew's /opt/homebrew, /usr/local */
+    const char* sdks;           /* the folder of the LunarG Vulkan SDKs, $HOME/VulkanSDK; NULL for none */
+    const char* no_kosmickrisp; /* why KosmicKrisp cannot run on this system, NULL where it can */
+} SnxVulkanPlaces;
+/* The pick's files, found in at's folders. auto is the MoltenVK the program's folders carry, else the system's;
+   moltenvk and kosmickrisp are that one driver, carried or installed on the Mac, and are an error where the Mac has
+   none. 1, else 0 with the reason in reason */
+int snx_vulkan_driver_find(const SnxVulkanPlaces* at, const char* pick, SnxVulkanDriver* out, char* reason,
+                           size_t reason_size);
+/* snx_vulkan_driver_find in this system's folders, for the program that runs */
 int snx_vulkan_driver_choose(const char* program, const char* pick, SnxVulkanDriver* out, char* reason,
                              size_t reason_size);
 void snx_vulkan_driver_free(SnxVulkanDriver* driver);
