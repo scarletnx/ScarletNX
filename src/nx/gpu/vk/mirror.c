@@ -144,7 +144,7 @@ static Gran* gran_bind(u64 g) {
         vk_queue_lock(g_vk.gfx);
         ok = VK_OK(vkQueueBindSparse(g_vk.gfx, 1, &bi, fence));
         vk_queue_unlock(g_vk.gfx);
-        ok = ok && VK_OK(vkWaitForFences(g_vk.dev, 1, &fence, VK_TRUE, UINT64_MAX));
+        ok = ok && vk_wait_fence(fence);
         vkDestroyFence(g_vk.dev, fence, NULL);
     }
     if (!ok) fatal("vulkan: could not bind memory into the GPU mirror");
@@ -842,7 +842,7 @@ static void harvest_left(const u32* left, u32 n) {
         vk_queue_lock(g_vk.gfx);
         ok = VK_OK(vkQueueSubmit(g_vk.gfx, 1, &si, fence));
         vk_queue_unlock(g_vk.gfx);
-        ok = ok && VK_OK(vkWaitForFences(g_vk.dev, 1, &fence, VK_TRUE, UINT64_MAX));
+        ok = ok && vk_wait_fence(fence);
         vkDestroyFence(g_vk.dev, fence, NULL);
     }
     if (!ok || !VK_OK(vmaInvalidateAllocation(g_vk.vma, mem, 0, VK_WHOLE_SIZE)))

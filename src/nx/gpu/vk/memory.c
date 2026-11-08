@@ -620,7 +620,7 @@ static int sparse_submit(const VkBindSparseInfo* bi) {
         vk_queue_lock(g_vk.gfx);
         ok = VK_OK(vkQueueBindSparse(g_vk.gfx, 1, bi, fence));
         vk_queue_unlock(g_vk.gfx);
-        ok = ok && VK_OK(vkWaitForFences(g_vk.dev, 1, &fence, VK_TRUE, UINT64_MAX));
+        ok = ok && vk_wait_fence(fence);
         vkDestroyFence(g_vk.dev, fence, NULL);
     }
     g_sparse_binds++;

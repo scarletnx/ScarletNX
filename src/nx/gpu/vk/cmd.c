@@ -282,11 +282,53 @@ static int bar_room(const VmaBudget* b, u64 add, int back) {
     return budget >= use + (add ? add + size / 16 : 0);
 }
 
+/* A wait for the GPU, in slices of a second. A GPU that stopped (NVIDIA's Xid 109, a context switch timeout) signals
+   nothing, and the driver didn't report the device lost either: the frontend and the release thread waited here for
+   good, the stall report (which the frontend makes) never came, and one game's window froze with no message. Once the
+   semaphore hasn't moved for VK_GPU_STUCK_NS the hang is logged, with its checkpoints and the GPU's fault report, and
+   the run ends */
+#define VK_GPU_STUCK_NS 15000000000ull
+void vk_wait_semaphore(VkSemaphore sem, u64 value) {
+    VkSemaphoreWaitInfo wi = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &sem, .pValues = &value};
+    u64 moved = plat_ns(), seen = 0;
+    for (;;) {
+        VkResult r = vkWaitSemaphores(g_vk.dev, &wi, 1000000000ull);
+        if (r != VK_TIMEOUT) {
+            VK_OK(r);
+            return;
+        }
+        u64 now = 0;
+        if (!VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, sem, &now))) return;
+        if (now != seen) { /* the GPU finished more: a long wait, not a stopped GPU */
+            seen = now;
+            moved = plat_ns();
+        } else if (plat_ns() - moved >= VK_GPU_STUCK_NS) {
+            vk_checkpoint_dump("GPU stopped");
+            fatal("vulkan: the GPU stopped responding: no work finished for %llu s (at submission %llu, waiting for "
+                  "%llu)",
+                  VK_GPU_STUCK_NS / 1000000000ull, (unsigned long long)now, (unsigned long long)value);
+        }
+    }
+}
+
+/* a fence's wait, the same way: no fence of the runtime's own (a bind of sparse memory, a landing) takes seconds */
+int vk_wait_fence(VkFence fence) {
+    u64 t0 = plat_ns();
+    for (;;) {
+        VkResult r = vkWaitForFences(g_vk.dev, 1, &fence, VK_TRUE, 1000000000ull);
+        if (r != VK_TIMEOUT) return VK_OK(r);
+        if (plat_ns() - t0 >= VK_GPU_STUCK_NS) {
+            vk_checkpoint_dump("GPU stopped");
+            fatal("vulkan: the GPU stopped responding: a fence wasn't signaled for %llu s",
+                  VK_GPU_STUCK_NS / 1000000000ull);
+        }
+    }
+}
+
 u64 g_vk_wait_ns[VK_WAIT_N], g_vk_waits[VK_WAIT_N]; /* the GPU thread's alone, which writes them */
 /* kind: VK_WAIT_*, for the statistics */
 static void timeline_wait(u64 value, int kind) {
-    VkSemaphoreWaitInfo wi = {
-        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &g_gsem, .pValues = &value};
     u64 t0 = plat_ns(), done = 0;
     SNX_ZONE_C(z_wait, "vk timeline wait", 0xb05252);
     /* a wait for work already done is no stall */
@@ -294,7 +336,7 @@ static void timeline_wait(u64 value, int kind) {
     int mine = gpu_wait_note("a graphics submission", value);
     if (mine) vk_gpuprof_waited(value, kind);
     SNX_ZONE_V(z, "timeline wait", value);
-    VK_OK(vkWaitSemaphores(g_vk.dev, &wi, UINT64_MAX));
+    vk_wait_semaphore(g_gsem, value);
     SNX_ZONE_END(z);
     gpu_wait_note(NULL, 0);
     if (mine) {

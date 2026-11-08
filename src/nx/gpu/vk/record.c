@@ -467,8 +467,37 @@ static void vk_checkpoint(VkCommandBuffer cb, const char* what, u64 key, u64 add
 }
 /* A hang or device-lost is usually a GPU fault: read the queues' NV checkpoints (each a draw or dispatch's marker set
    above) so the log names the one that hung. Dumped once: after a device-lost every later VK call fails too */
+/* The GPU's own report of what it faulted on (VK_EXT_device_fault): its description, the addresses it names (the
+   instruction's, a read's or a write's) and the driver's codes. A hang names no address, but says it was one */
+static void fault_dump(const char* why) {
+    static const char* const kinds[] = {"none", "read invalid", "write invalid", "execute invalid",
+                                        "instruction pointer unknown", "instruction pointer invalid",
+                                        "instruction pointer fault"};
+    static int dumped;
+    if (dumped || !g_vk.has_fault) return;
+    dumped = 1;
+    VkDeviceFaultCountsEXT n = {.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT};
+    if (vkGetDeviceFaultInfoEXT(g_vk.dev, &n, NULL) < 0) return;
+    VkDeviceFaultAddressInfoEXT* a = n.addressInfoCount ? calloc(n.addressInfoCount, sizeof *a) : NULL;
+    VkDeviceFaultVendorInfoEXT* v = n.vendorInfoCount ? calloc(n.vendorInfoCount, sizeof *v) : NULL;
+    VkDeviceFaultInfoEXT info = {.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT, .pAddressInfos = a, .pVendorInfos = v};
+    n.vendorBinarySize = 0; /* not asked for */
+    if ((!n.addressInfoCount || a) && (!n.vendorInfoCount || v) && vkGetDeviceFaultInfoEXT(g_vk.dev, &n, &info) >= 0) {
+        LOG("vulkan: %s: the GPU reports %s\n", why, info.description);
+        for (u32 i = 0; i < n.addressInfoCount; i++)
+            LOG("vulkan: %s: fault address %#llx (%s, within %#llx)\n", why, (unsigned long long)a[i].reportedAddress,
+                (u32)a[i].addressType < sizeof kinds / sizeof *kinds ? kinds[a[i].addressType] : "another kind",
+                (unsigned long long)a[i].addressPrecision);
+        for (u32 i = 0; i < n.vendorInfoCount; i++)
+            LOG("vulkan: %s: driver fault %s, code %#llx data %#llx\n", why, v[i].description,
+                (unsigned long long)v[i].vendorFaultCode, (unsigned long long)v[i].vendorFaultData);
+    }
+    free(a);
+    free(v);
+}
 void vk_checkpoint_dump(const char* why) {
     static int dumped;
+    fault_dump(why);
     if (dumped || !g_vk.has_checkpoints) return;
     dumped = 1;
     VkQueue qs[2] = {g_vk.gfx, g_vk.compute};

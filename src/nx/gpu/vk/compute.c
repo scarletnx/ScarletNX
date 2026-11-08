@@ -359,15 +359,11 @@ static void cs_submit(void) {
     }
 }
 static void cs_wait(u64 value) {
-    VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-                              .semaphoreCount = 1,
-                              .pSemaphores = &g_vk_csem,
-                              .pValues = &value};
     u64 t0 = plat_ns();
     SNX_ZONE_C(z, "vk compute wait", 0xb05252);
     SNX_ZONE_VALUE(z, value);
     gpu_wait_note("a compute batch", value);
-    VK_OK(vkWaitSemaphores(g_vk.dev, &wi, UINT64_MAX));
+    vk_wait_semaphore(g_vk_csem, value);
     gpu_wait_note(NULL, 0);
     __atomic_add_fetch(&g_vk_cs_wait_ns, plat_ns() - t0, __ATOMIC_RELAXED);
 }

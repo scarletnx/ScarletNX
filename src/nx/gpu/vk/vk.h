@@ -115,6 +115,7 @@ typedef struct {
     int has_xfb;                /* VK_EXT_transform_feedback: draws capture their outputs into guest memory */
     int has_mixed_samples;      /* VK_NV_framebuffer_mixed_samples: coverage at more samples than color storage */
     int has_checkpoints;        /* VK_NV_device_diagnostic_checkpoints: the draw or dispatch a GPU fault hangs on */
+    int has_fault;              /* VK_EXT_device_fault: the GPU's own report of a fault, at a lost device */
     VkAdvancedBlendCaps advanced_blend_caps;
     int has_fragment_interlock; /* ordered pixel storage-image read/modify/write */
     int has_border_color;       /* VK_EXT_custom_border_color */
@@ -447,6 +448,11 @@ u64 vk_last_submit(void);          /* the last submission's number, which its co
 VkSemaphore vk_gfx_timeline(void); /* the timeline those numbers are values of: another queue can wait for one */
 void vk_submit_progress(u64* submitted, u64* done); /* the last submission and the last done (any thread) */
 void vk_wait_submit(u64 value); /* until the GPU has done that submission (any thread, without vk_lock) */
+/* until sem reaches value, in slices: a GPU whose semaphore stops moving for 15 s ends the run with its hang logged
+   (cmd.c), where a wait for good froze the game */
+void vk_wait_semaphore(VkSemaphore sem, u64 value);
+/* until fence is signaled, as vk_wait_semaphore waits: 0 when the device was lost */
+int vk_wait_fence(VkFence fence);
 /* Flush recorded work without frame recycling or guest result callbacks, under
    vk_lock, before an ownership readback uses the graphics queue directly. */
 void vk_submit_for_readback(void);

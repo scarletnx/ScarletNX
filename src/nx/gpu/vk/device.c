@@ -501,6 +501,7 @@ static int create_device(void) {
     int has_mesh = 0;
     int has_mixed_dot = 0; /* VK_VALVE_shader_mixed_float_dot_product: HMMA's pairs of f16 products in one instruction */
     int has_coop = 0;      /* VK_KHR_cooperative_matrix: HMMA on the matrix unit (g_shader_hmma_coop) */
+    int has_fault = 0; /* VK_EXT_device_fault: what the GPU reports of a fault, at a lost device */
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     {
@@ -515,6 +516,7 @@ static int create_device(void) {
         g_vk.has_xfb = snx_vk_extensions_has(&e, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
         g_vk.has_mixed_samples = snx_vk_extensions_has(&e, VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME);
         g_vk.has_checkpoints = snx_vk_extensions_has(&e, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+        has_fault = snx_vk_extensions_has(&e, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
         g_vk.advanced_blend_caps.available = snx_vk_extensions_has(&e, VK_EXT_BLEND_OPERATION_ADVANCED_EXTENSION_NAME);
         g_vk.has_fragment_interlock = snx_vk_extensions_has(&e, VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME);
         g_vk.has_border_color = snx_vk_extensions_has(&e, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
@@ -625,6 +627,7 @@ static int create_device(void) {
     VkPhysicalDeviceMeshShaderFeaturesEXT qmesh = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
     VkPhysicalDeviceVulkan11Features q11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
     VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    VkPhysicalDeviceFaultFeaturesEXT qfault = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
     VkPhysicalDeviceDescriptorBufferFeaturesEXT qdesc = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT qloop = {
@@ -693,7 +696,8 @@ static int create_device(void) {
                            has_present_v2 ? &qtiming : NULL,
                            has_shader_clock ? &qclock : NULL,
                            has_mixed_dot ? &qmixdot : NULL,
-                           has_coop ? &qcoop : NULL};
+                           has_coop ? &qcoop : NULL,
+                           has_fault ? &qfault : NULL};
     snx_vk_chain(query, sizeof query / sizeof *query);
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &f2);
     g_vk.has_present_wait = has_present_id && has_present_wait && qpid.presentId && qpwait.presentWait;
@@ -702,6 +706,7 @@ static int create_device(void) {
     g_vk.has_display_timing = has_google_timing && !g_vk.has_present_wait;
     g_vk.has_vertex_robustness2 = qpipeline.pipelineRobustness && qrobust.robustBufferAccess2;
     g_vk.has_cond_render = has_cond && qcond.conditionalRendering;
+    g_vk.has_fault = has_fault && qfault.deviceFault;
     g_vk.has_provoking_last = has_provoking && qprov.provokingVertexLast;
     g_vk.has_index8 = index8_ext && qindex8.indexTypeUint8;
     mesh_choose(has_mesh, &qmesh, &q13);
@@ -946,6 +951,13 @@ static int create_device(void) {
     if (g_shader_hmma_coop) {
         chain = &fcoop;
         ext[next++] = VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME;
+    }
+    /* a lost device's fault, which vk_checkpoint_dump logs */
+    VkPhysicalDeviceFaultFeaturesEXT ffault = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT, .pNext = chain, .deviceFault = VK_TRUE};
+    if (g_vk.has_fault) {
+        chain = &ffault;
+        ext[next++] = VK_EXT_DEVICE_FAULT_EXTENSION_NAME;
     }
     PortabilityFeatures fport = qport;
     fport.pNext = chain;
