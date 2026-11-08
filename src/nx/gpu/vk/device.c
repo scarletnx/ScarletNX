@@ -298,6 +298,32 @@ static void ban_say(const char* line, int warn) {
         LOG("%s\n", line);
 }
 
+/* the stages whose programs the translator gives subgroup operations, and what VOTE and SHFL do in the others */
+static void log_subgroups(u32 size, VkSubgroupFeatureFlags operations, VkShaderStageFlags stages) {
+    static const struct {
+        VkShaderStageFlags bit;
+        const char* name;
+    } names[] = {{VK_SHADER_STAGE_VERTEX_BIT, "vertex"},
+                 {VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, "control"},
+                 {VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, "evaluation"},
+                 {VK_SHADER_STAGE_GEOMETRY_BIT, "geometry"},
+                 {VK_SHADER_STAGE_FRAGMENT_BIT, "fragment"},
+                 {VK_SHADER_STAGE_COMPUTE_BIT, "compute"}};
+    char with[80] = "", without[80] = "";
+    for (size_t i = 0; i < sizeof names / sizeof *names; i++) {
+        char* list = (g_vk_subgroup_stages & names[i].bit) ? with : without;
+        size_t n = strlen(list);
+        snprintf(list + n, 80 - n, "%s%s", n ? ", " : "", names[i].name);
+    }
+    LOG("vulkan: subgroups of %u lanes, operations %#x, stages %#x: VOTE and SHFL use them in %s programs%s\n", size,
+        (unsigned)operations, (unsigned)stages, with[0] ? with : "no",
+        g_vk_subgroup_stages || !stages ? "" : ", as they need 32 lanes or more, ballot, shuffle and arithmetic");
+    if (without[0])
+        LOG("vulkan: %s programs have no subgroup: a vertex, evaluation or geometry one among them that votes or "
+            "shuffles runs each invocation as lane 0 alone, and a control, fragment or compute one is not translated\n",
+            without);
+}
+
 static int create_device(void) {
     g_vk.phys = snx_vk_best_device(g_vk.instance, VK_API_VERSION_1_3, device_rating, NULL);
     if (!g_vk.phys) {
@@ -336,6 +362,7 @@ static int create_device(void) {
             : 0;
     g_shader_quad = (g_vk_subgroup_stages & VK_SHADER_STAGE_FRAGMENT_BIT) &&
                     (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT);
+    log_subgroups(subgroup.subgroupSize, subgroup.supportedOperations, subgroup.supportedStages);
     g_vk_preserve_infnan = p12.shaderSignedZeroInfNanPreserveFloat32 != 0;
     /* a binding's stride as dynamic state, core in Vulkan 1.3, unless a driver is banned from it (MoltenVK's fails every
        pipeline that lists it): pipeline.c puts the stride in the pipeline then */
