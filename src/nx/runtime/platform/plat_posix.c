@@ -80,98 +80,16 @@
 #define MAP_ANONYMOUS MAP_ANON
 #endif
 
-/* the crash report needs about 12 KiB of stack; a thread whose own stack overflowed has none left */
-#define ALT_STACK_SIZE 32768
-/* below this a thread is a small helper that gets no alternate signal stack */
-#define ALT_STACK_MIN_THREAD ((size_t)256 << 10)
-/* the least stack a thread gets: FreeBSD's PTHREAD_STACK_MIN (2 KiB on amd64) is less than its dynamic linker takes
-   to bind the thread's first call, so never under glibc's 16 KiB */
-#define THREAD_STACK_FLOOR   ((size_t)PTHREAD_STACK_MIN > 16384 ? (size_t)PTHREAD_STACK_MIN : (size_t)16384)
-
 /* ================================================================ threads */
-typedef struct {
-    PThreadFn fn;
-    void* arg;
-    int alt_stack;
-} ThreadStart;
-
-static void alt_stack_off(void) {
-    stack_t ss;
-    memset(&ss, 0, sizeof ss);
-    ss.ss_flags = SS_DISABLE;
-    sigaltstack(&ss, NULL);
-}
-
-/* the alternate stack lives in this frame for as long as fn runs, and is switched off before the frame goes. Not
-   inlined: in thread_start's frame the array would take its room on every thread, the small ones too */
-__attribute__((noinline)) static void run_with_alt_stack(PThreadFn fn, void* arg) {
-    char stack[ALT_STACK_SIZE];
-    stack_t ss;
-    memset(&ss, 0, sizeof ss);
-    ss.ss_sp = stack;
-    ss.ss_size = sizeof stack;
-    sigaltstack(&ss, NULL);
-    fn(arg);
-    alt_stack_off();
-}
-
+/* touches t_plat_posix, which the fault handlers use, before the thread can fault */
 static void wp_thread_start(void);
-static void* thread_start(void* p) {
-    ThreadStart s = *(ThreadStart*)p;
-    free(p);
-    wp_thread_start();
-    if (s.alt_stack)
-        run_with_alt_stack(s.fn, s.arg);
-    else
-        s.fn(s.arg);
-    SDL_CleanupTLS(); /* SDL's per-thread state (plat_sdl.c's calls set its error text) */
-    return NULL;
-}
-
-#if defined(__linux__) && !defined(__ANDROID__)
-/* every CPU the process may use (plat_cpus), which plat_thread gives each thread it starts: one a game thread started
-   would otherwise run only on the share of that thread's core (plat_thread_cpus) */
-static cpu_set_t g_all_cpus;
-#endif
-int plat_thread(PThreadFn fn, void* arg, size_t stack) {
-    ThreadStart* s = malloc(sizeof *s);
-    pthread_attr_t a;
-    pthread_t t;
-    int r;
-    if (!s) return -1;
-    s->fn = fn;
-    s->arg = arg;
-    s->alt_stack = stack == 0 || stack >= ALT_STACK_MIN_THREAD;
-    pthread_attr_init(&a);
-    pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
-#if defined(__linux__) && !defined(__ANDROID__)
-    if (CPU_COUNT(&g_all_cpus)) pthread_attr_setaffinity_np(&a, sizeof g_all_cpus, &g_all_cpus);
-#endif
-    if (stack) {
-        /* smaller than the minimum, setstacksize fails and the default would be used silently */
-        if (stack < THREAD_STACK_FLOOR) stack = THREAD_STACK_FLOOR;
-#if defined(__APPLE__)
-        {
-            size_t page = (size_t)sysconf(_SC_PAGESIZE); /* 16 KiB on Apple silicon; Darwin wants whole pages */
-            stack = (stack + page - 1) / page * page;
-        }
-#endif
-        pthread_attr_setstacksize(&a, stack);
-    }
-    r = pthread_create(&t, &a, thread_start, s);
-    pthread_attr_destroy(&a);
-    if (r) {
-        free(s);
-        errno = r; /* the reason, for what the caller says */
-        return -1;
-    }
-    return 0;
-}
-void plat_thread_exit(void) {
-    /* pthread_exit leaves run_with_alt_stack's frame without returning through it */
-    alt_stack_off();
-    SDL_CleanupTLS();
-    pthread_exit(NULL);
+/* what each thread plat_thread starts (common/platform/thread.c) does here: the fault handlers' state touched before it
+   can fault, and SDL's per-thread state (plat_sdl.c's calls set its error text) ended with it. A constructor, so it is
+   in place before any thread, in the runtime and in each test that compiles this file */
+static void sdl_thread_end(void) { SDL_CleanupTLS(); }
+__attribute__((constructor)) static void plat_posix_threads(void) {
+    static const PThreadHooks hooks = {wp_thread_start, sdl_thread_end};
+    plat_thread_hooks(&hooks);
 }
 
 /* ================================================================ the host's power source */
@@ -310,37 +228,6 @@ int plat_memory_watch(int (*say)(const char* why)) {
 int plat_memory_watch(int (*say)(const char* why)) {
     (void)say;
     return -1;
-}
-#endif
-/* Linux only: Android's CPUs differ in speed, so a fixed share of them would make a core slow */
-#if defined(__linux__) && !defined(__ANDROID__)
-int plat_cpus(int* ids, int max) {
-    int c, n = 0;
-    if (sched_getaffinity(0, sizeof g_all_cpus, &g_all_cpus)) {
-        CPU_ZERO(&g_all_cpus);
-        return 0;
-    }
-    for (c = 0; c < CPU_SETSIZE && n < max; c++)
-        if (CPU_ISSET(c, &g_all_cpus)) ids[n++] = c;
-    return n;
-}
-void plat_thread_cpus(const int* ids, int n) {
-    cpu_set_t s;
-    int i;
-    CPU_ZERO(&s);
-    for (i = 0; i < n; i++) CPU_SET(ids[i], &s);
-    if (sched_setaffinity(0, sizeof s, &s))
-        WARN_LIMIT(1, "Could not move a game thread to its CPUs: %s\n", strerror(errno));
-}
-#else
-int plat_cpus(int* ids, int max) {
-    (void)ids;
-    (void)max;
-    return 0;
-}
-void plat_thread_cpus(const int* ids, int n) {
-    (void)ids;
-    (void)n;
 }
 #endif
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -616,7 +503,6 @@ static u8* g_ww_open_hi[WW_OPEN_N];
 static u32 g_ww_open_live; /* atomic: the published slots, a bit each, read in one load */
 typedef char snx_ww_open_in_a_word[WW_OPEN_N <= 32 ? 1 : -1];
 
-/* touches t_plat_posix, which the fault handlers use, before the thread can fault */
 static void wp_thread_start(void) {
     __atomic_store_n(&t_plat_posix.wp_retried, NULL, __ATOMIC_RELAXED);
     __atomic_store_n(&t_plat_posix.wp_retried_at, 0, __ATOMIC_RELAXED);
@@ -2274,7 +2160,7 @@ void plat_file_unmap(PFileMap* m) {
 }
 /* ================================================================ the crash handler */
 static int g_crash_reporting; /* a thread is reporting a crash */
-static char g_main_alt_stack[ALT_STACK_SIZE];
+static char g_main_alt_stack[PLAT_ALT_STACK_SIZE];
 
 static void* context_pc(void* ctx) {
     ucontext_t* uc = (ucontext_t*)ctx;

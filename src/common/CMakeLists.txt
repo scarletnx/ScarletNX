@@ -57,7 +57,7 @@ endif()
 
 # The host's thread primitives (platform/thread.h) that every driver shares: mutexes, condition variables, waits on
 # a word, thread ids. No guest type, setting or SDL enters this target
-add_library(scarletnx-platform STATIC platform/thread.c)
+add_library(scarletnx-platform STATIC platform/thread.c platform/thread_spawn.c)
 set_target_properties(scarletnx-platform PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON)
 target_compile_options(scarletnx-platform PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_link_libraries(scarletnx-platform PUBLIC Threads::Threads)
@@ -83,7 +83,7 @@ endif()
 add_library(scarletnx-net STATIC network/net.c network/net_icmp.c network/net_event.c network/net_dns.c
     network/net_iface.c)
 target_compile_options(scarletnx-net PRIVATE -Wall -Wextra -Werror=missing-prototypes)
-target_link_libraries(scarletnx-net PUBLIC Threads::Threads)
+target_link_libraries(scarletnx-net PUBLIC scarletnx-platform Threads::Threads)
 if(WIN32)
     target_link_libraries(scarletnx-net PUBLIC ws2_32 iphlpapi)
 elseif(APPLE) # the system resolver's DNS servers (network/net_iface.c)

@@ -2881,6 +2881,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     snx_test_target(snx-test-plat-cpus 11)
     target_link_libraries(snx-test-plat-cpus PRIVATE SDL3::SDL3) # plat_posix.c's threads end SDL's per-thread state
     target_link_libraries(snx-test-plat-cpus PRIVATE scarletnx-common) # plat_posix.c names its threads (snx_thread_name)
+    target_link_libraries(snx-test-plat-cpus PRIVATE scarletnx-platform) # plat_thread, plat_cpus, the waits
     add_test(NAME plat_cpus COMMAND snx-test-plat-cpus)
 endif()
 
@@ -2930,7 +2931,8 @@ if(UNIX)
         "${PROJECT_SOURCE_DIR}/src/nx/hle/svc/svc_mem.c"
         "${PROJECT_SOURCE_DIR}/src/nx/hle/hle.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/plat_posix.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/plat_sdl.c" "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c"
-        "${PROJECT_SOURCE_DIR}/src/common/platform/thread.c")
+        "${PROJECT_SOURCE_DIR}/src/common/platform/thread.c"
+        "${PROJECT_SOURCE_DIR}/src/common/platform/thread_spawn.c")
     snx_test_target(snx-test-memory-alias 11)
     target_link_libraries(snx-test-memory-alias PRIVATE SDL3::SDL3 ${CMAKE_DL_LIBS})
     target_link_libraries(snx-test-memory-alias PRIVATE scarletnx-common) # plat_posix.c names its threads (snx_thread_name)
@@ -2955,7 +2957,8 @@ if(UNIX)
         "${PROJECT_SOURCE_DIR}/src/nx/memory/mem.c" "${PROJECT_SOURCE_DIR}/src/nx/memory/own.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/plat_posix.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/plat_sdl.c" "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c"
-        "${PROJECT_SOURCE_DIR}/src/common/platform/thread.c")
+        "${PROJECT_SOURCE_DIR}/src/common/platform/thread.c"
+        "${PROJECT_SOURCE_DIR}/src/common/platform/thread_spawn.c")
     snx_test_target(snx-test-memory-own 11)
     target_link_libraries(snx-test-memory-own PRIVATE Threads::Threads SDL3::SDL3 ${CMAKE_DL_LIBS})
     target_link_libraries(snx-test-memory-own PRIVATE scarletnx-common) # plat_posix.c names its threads (snx_thread_name)
@@ -3035,7 +3038,8 @@ if(NOT WIN32 AND TARGET SDL3::SDL3) # SDL3 is there with a driver that draws (cm
     # plat_sdl.c)
     add_executable(snx-test-platform-posix platform_posix.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/plat_sdl.c"
         "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c"
-    "${PROJECT_SOURCE_DIR}/src/common/platform/thread.c")
+        "${PROJECT_SOURCE_DIR}/src/common/platform/thread.c"
+        "${PROJECT_SOURCE_DIR}/src/common/platform/thread_spawn.c")
     snx_test_target(snx-test-platform-posix 11)
     target_link_libraries(snx-test-platform-posix PRIVATE SDL3::SDL3 ${CMAKE_DL_LIBS})
     target_link_libraries(snx-test-platform-posix PRIVATE scarletnx-common) # plat_posix.c names its threads (snx_thread_name)
@@ -3075,7 +3079,8 @@ if(WIN32 AND TARGET SDL3::SDL3)
     # the write watch of the reservation, the kernel's writes included (platform/plat_win32.c)
     add_executable(snx-test-platform-win32 platform_win32.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/plat_sdl.c"
         "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c"
-    "${PROJECT_SOURCE_DIR}/src/common/platform/thread.c")
+        "${PROJECT_SOURCE_DIR}/src/common/platform/thread.c"
+        "${PROJECT_SOURCE_DIR}/src/common/platform/thread_spawn.c")
     snx_test_target(snx-test-platform-win32 11)
     target_link_libraries(snx-test-platform-win32 PRIVATE SDL3::SDL3 synchronization powrprof)
     # plat_win32.c names its threads and says the system's reasons (snx_thread_name, snx_os_error)

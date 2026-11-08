@@ -19,49 +19,17 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define STACK_GUARANTEE 32768 /* room for the crash report after a stack overflow */
-#define GUARANTEE_MIN_THREAD ((size_t)256 << 10)
-
 /* ================================================================ threads */
-typedef struct {
-    PThreadFn fn;
-    void* arg;
-    int guarantee;
-} ThreadStart;
-
-static DWORD WINAPI thread_start(LPVOID p) {
-    ThreadStart s = *(ThreadStart*)p;
-    free(p);
-    if (s.guarantee) {
-        ULONG g = STACK_GUARANTEE;
-        SetThreadStackGuarantee(&g);
-    }
-    s.fn(s.arg);
-    SDL_CleanupTLS(); /* SDL's per-thread state, plat_sleep_ns's waitable timer among it */
-    return 0;
+/* what each thread plat_thread starts (common/platform/thread.c) does here: SDL's per-thread state (plat_sleep_ns's
+   waitable timer among it) ended with it, and the sampling profiler given it. A constructor, so it is in place before
+   any thread, in the runtime and in each test that compiles this file */
+static void sdl_thread_end(void) { SDL_CleanupTLS(); }
+static void profile_thread(HANDLE h) {
+    if (g_settings.profiler) plat_prof_add_thread(h);
 }
-
-int plat_thread(PThreadFn fn, void* arg, size_t stack) {
-    ThreadStart* s = malloc(sizeof *s);
-    HANDLE h;
-    if (!s) return -1;
-    s->fn = fn;
-    s->arg = arg;
-    s->guarantee = stack == 0 || stack >= GUARANTEE_MIN_THREAD;
-    h = CreateThread(NULL, stack, thread_start, s, stack ? STACK_SIZE_PARAM_IS_A_RESERVATION : 0, NULL);
-    if (!h) {
-        DWORD why = GetLastError(); /* the reason, for what the caller says */
-        free(s);
-        SetLastError(why);
-        return -1;
-    }
-    if (g_settings.profiler) plat_prof_add_thread(h); /* the profiler takes its own handle */
-    CloseHandle(h);
-    return 0;
-}
-void plat_thread_exit(void) {
-    SDL_CleanupTLS();
-    ExitThread(0);
+__attribute__((constructor)) static void plat_win32_threads(void) {
+    static const PThreadHooks hooks = {NULL, sdl_thread_end, profile_thread};
+    plat_thread_hooks(&hooks);
 }
 
 /* ================================================================ the system's low memory */
@@ -138,15 +106,6 @@ int plat_power_watch(void) {
         ERROR_SUCCESS)
         return -1;
     return 0;
-}
-int plat_cpus(int* ids, int max) {
-    (void)ids;
-    (void)max;
-    return 0;
-}
-void plat_thread_cpus(const int* ids, int n) {
-    (void)ids;
-    (void)n;
 }
 typedef LONG(WINAPI* RtlGetVersionFn)(RTL_OSVERSIONINFOW*);
 void plat_system_info(char* out, size_t cap) {
