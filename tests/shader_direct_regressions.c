@@ -2013,6 +2013,26 @@ static void issue126_shader_modes(void) {
                       "a conditional exit does not hide a handle overwritten on the loop back edge");
         free(code);
     }
+    /* A conditional KIL demotes only the lanes that take it, as a conditional EXIT ends only those. The other lanes
+       carry the handle past it: into a loop, to a forward branch's target, and through a MOV to another register. */
+    const u64 kil = 0xe33000000007000full;
+    const u64 conditional_kills[] = {(kil & ~(0xfull << 16)) | (1ull << 16), (kil & ~31ull) | 13ull};
+    const u64 tex_b_r7 = (tex_b & ~(0xffull << 20)) | (7ull << 20);
+    for (size_t i = 0; i < sizeof conditional_kills / sizeof *conditional_kills; i++) {
+        const u64 kill_loop[] = {0x4c98078800070006ull, conditional_kills[i], tex_b, FMUL_KEEP | 5, back};
+        code = translate(kill_loop, 5, ST_FS, &info, &words, 1);
+        check_translated(code, &info, "a handle survives a predicate or condition-code KIL before a loop");
+        check(code && info.ntex == 1 && info.tex[0].bindless && info.tex[0].bl_cbuf == 2 && info.tex[0].cbuf_off == 0,
+              "the lanes a conditional KIL keeps retain the original handle source");
+        free(code);
+        const u64 kill_across[] = {0x4c98078800070006ull, conditional_kills[i], branch, FMUL_KEEP | 5,
+                                   0x5c98078000670007ull, tex_b_r7};
+        code = translate(kill_across, 6, ST_FS, &info, &words, 1);
+        check_translated(code, &info, "a handle crosses a conditional KIL and a forward branch, then a MOV");
+        check(code && info.ntex == 1 && info.tex[0].bindless && info.tex[0].bl_cbuf == 2 && info.tex[0].cbuf_off == 0,
+              "the handle after a conditional KIL and a MOV is the constant buffer's");
+        free(code);
+    }
     const u64 loop_rewrites[] = {0x4c98078800070006ull, tex_b, FMUL_KEEP | 6, back};
     code = translate(loop_rewrites, 4, ST_FS, &info, &words, 1);
     check_refused(code, &info, "untracked texture handle",
