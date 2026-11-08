@@ -1432,8 +1432,10 @@ void vk_pipeline_quiesce(void) {
 /* the workers, started the first time one is needed: how many there are (g_pj_lock) */
 static int pipe_workers(void) {
     if (!g_pj_started) {
-        int ids[256], n = snx_vk_pipeline_workers(g_settings.pipeline_threads, plat_cpus(ids, 256));
+        int cpus = plat_cpu_count(), n = snx_vk_pipeline_workers(g_settings.pipeline_threads, cpus);
         g_pj_started = 1;
+        LOG("vulkan: pipeline_threads=%d%s: %d workers make the new pipelines, of %d CPUs\n",
+            g_settings.pipeline_threads, g_settings.pipeline_threads ? "" : " (Auto)", n, cpus);
         pc_init(&g_pj_work);
         pc_init(&g_pj_done);
         for (int i = 0; i < n; i++)

@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The host CPUs of plat_posix.c on Linux: plat_cpus lists the process's own, plat_thread_cpus keeps the calling thread
-   on the ones given, and a thread plat_thread starts runs on all of them again, not only on the share of the game
-   thread that started it (thread.c core_pin) */
+/* The host CPUs of plat_posix.c on Linux: plat_cpus lists the process's own and plat_cpu_count counts them,
+   plat_thread_cpus keeps the calling thread on the ones given, and a thread plat_thread starts runs on all of them
+   again, not only on the share of the game thread that started it (thread.c core_pin) */
 #include "nx/runtime/platform/plat_posix.c"
 #include <stdarg.h>
 
@@ -86,6 +86,7 @@ int main(void) {
     CHECK(n == g_nall && !memcmp(ids, g_all, sizeof *ids * (size_t)(n > 0 ? n : 0)),
           "plat_cpus: %d CPUs, the thread %d", n, g_nall);
     CHECK(plat_cpus(ids, 1) == 1 && ids[0] == g_all[0], "plat_cpus with room for 1: CPU %d", ids[0]);
+    CHECK(plat_cpu_count() == g_nall, "plat_cpu_count: %d CPUs, the thread %d", plat_cpu_count(), g_nall);
     if (g_nall < 2) {
         printf("1 host CPU: nothing to restrict, %u checks, %u failed\n", checks, failures);
         return failures != 0;

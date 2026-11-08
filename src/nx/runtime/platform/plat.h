@@ -8,6 +8,7 @@
 #define SNX_PLAT_H
 #include "common/cpu/aarch64/cpu.h"
 #include "common/filesystem/host.h" /* PMutex and the pm_* calls */
+#include "common/utilities/common.h" /* snx_cpu_count */
 #include <stddef.h>
 #include <stdio.h>
 
@@ -49,6 +50,12 @@ int plat_thread(PThreadFn fn, void* arg, size_t stack);
 void plat_thread_exit(void); /* ends the calling thread (one plat_thread started) */
 /* the host CPUs the process may run on, at most max of them, into ids; 0 where the runtime doesn't choose them */
 int plat_cpus(int* ids, int max);
+/* how many host CPUs the process may run on, for workers that run on any of them: plat_cpus's where it lists them
+   (desktop Linux, whose affinity a taskset narrows), else the system's every one (snx_cpu_count). At least 1 */
+static inline int plat_cpu_count(void) {
+    int ids[1024], n = plat_cpus(ids, 1024);
+    return n > 0 ? n : (int)snx_cpu_count();
+}
 /* the calling thread runs only on the n host CPUs in ids */
 void plat_thread_cpus(const int* ids, int n);
 /* the host for the log's header, so a report needn't describe it: "<OS and version>, <CPU>, <n> threads, <n> GB RAM",
