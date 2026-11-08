@@ -20,7 +20,8 @@ public class ActivityManager {
     }
 
     public static class MemoryInfo {
-        public long availMem, totalMem, threshold;
+        /* advertisedMem (API level 34): the memory the device is sold with, which is totalMem here */
+        public long advertisedMem, availMem, totalMem, threshold;
         public boolean lowMemory;
     }
 
@@ -67,6 +68,7 @@ public class ActivityManager {
     public void getMemoryInfo(MemoryInfo outInfo) {
         Runtime r = Runtime.getRuntime();
         outInfo.totalMem = 8L << 30;
+        outInfo.advertisedMem = outInfo.totalMem;
         outInfo.availMem = 4L << 30;
         outInfo.threshold = 256L << 20;
         outInfo.lowMemory = false;

@@ -170,6 +170,12 @@ public final class Parcel {
     public int[] createIntArray() { int n = readInt(); if (n < 0) return null; int[] a = new int[n]; for (int i = 0; i < n; ++i) a[i] = readInt(); return a; }
     public long[] createLongArray() { int n = readInt(); if (n < 0) return null; long[] a = new long[n]; for (int i = 0; i < n; ++i) a[i] = readLong(); return a; }
     public float[] createFloatArray() { int n = readInt(); if (n < 0) return null; float[] a = new float[n]; for (int i = 0; i < n; ++i) a[i] = readFloat(); return a; }
+    /** reads into the array that the caller sized as the written one */
+    public void readStringArray(String[] val) {
+        int n = readInt();
+        if (n != val.length) throw new RuntimeException("bad array lengths");
+        for (int i = 0; i < n; ++i) val[i] = readString();
+    }
     public String[] createStringArray() { int n = readInt(); if (n < 0) return null; String[] a = new String[n]; for (int i = 0; i < n; ++i) a[i] = readString(); return a; }
     public ArrayList<String> createStringArrayList() { int n = readInt(); if (n < 0) return null; ArrayList<String> a = new ArrayList<>(n); for (int i = 0; i < n; ++i) a.add(readString()); return a; }
     public void readStringList(List<String> list) { list.clear(); int n = readInt(); for (int i = 0; i < n; ++i) list.add(readString()); }
@@ -274,6 +280,11 @@ public final class Parcel {
         T[] out = c.newArray(a.length);
         for (int i = 0; i < a.length; ++i) out[i] = (T) a[i];
         return out;
+    }
+    public <T> void readTypedArray(T[] val, Parcelable.Creator<T> c) {
+        T[] a = createTypedArray(c);
+        if (a == null || a.length != val.length) throw new RuntimeException("bad array lengths");
+        System.arraycopy(a, 0, val, 0, a.length);
     }
     @SuppressWarnings("unchecked")
     public <T> void readTypedList(List<T> list, Parcelable.Creator<T> c) {

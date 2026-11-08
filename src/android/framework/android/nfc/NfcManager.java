@@ -5,4 +5,7 @@ package android.nfc;
 /** The NFC service (Off in docs/android/INTERFACES.md). The device has no NFC adapter. */
 public final class NfcManager {
     private NfcManager() {}
+
+    /** the device's adapter: none */
+    public NfcAdapter getDefaultAdapter() { return null; }
 }

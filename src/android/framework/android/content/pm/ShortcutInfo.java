@@ -57,6 +57,10 @@ public final class ShortcutInfo implements android.os.Parcelable {
     public boolean isDeclaredInManifest() { return false; }
     public boolean isImmutable() { return false; }
     public boolean isEnabled() { return enabled; }
+    public static final int SURFACE_LAUNCHER = 1;
+    private int excludedSurfaces;
+    public boolean isExcludedFromSurfaces(int surface) { return (excludedSurfaces & surface) != 0; }
+    public int getExcludedFromSurfaces() { return excludedSurfaces; }
     public boolean hasKeyFieldsOnly() { return false; }
     @Override public int describeContents() { return 0; }
     @Override public void writeToParcel(android.os.Parcel dest, int flags) { dest.writeValue(this); }
@@ -82,6 +86,8 @@ public final class ShortcutInfo implements android.os.Parcelable {
         public Builder setLongLived(boolean longLived) { info.longLived = longLived; return this; }
         public Builder setPerson(android.app.Person person) { return this; }
         public Builder setPersons(android.app.Person[] persons) { return this; }
+        /** the surfaces (SURFACE_LAUNCHER) that do not show the shortcut */
+        public Builder setExcludedFromSurfaces(int surfaces) { info.excludedSurfaces = surfaces; return this; }
         public ShortcutInfo build() {
             if (info.shortLabel == null) throw new IllegalArgumentException("Shortcut must have a short label");
             return info;
