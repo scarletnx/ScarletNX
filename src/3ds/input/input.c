@@ -120,7 +120,8 @@ void snx_ctr_input_read(SnxCtrInput* input) {
     }
     if (g_input.presses) {
         double ms = (snx_ctr_clock_seconds() - g_input.start) * 1000.0;
-        input->buttons |= snx_script_held(g_input.script, g_input.presses, ms, (uint32_t)g_settings.press_length);
+        input->buttons |=
+            (uint32_t)snx_script_held(g_input.script, g_input.presses, ms, (uint32_t)g_settings.press_length);
     }
 }
 bool snx_ctr_input_motion(float accel[3], float gyro[3]) {
