@@ -36,7 +36,7 @@ static void expect(const char* what, VkPhysicalDeviceType type, const VkPhysical
         fprintf(stderr, "%s: %s, %s expected\n", what, names[got], names[want]);
         ++g_model.failures;
     }
-    /* vk_descriptors=3, Automatic, on the device (descriptor_heaps.h): heaps where it shares the system's memory,
+    /* vk_descriptors_mode=3, Automatic, on the device (descriptor_heaps.h): heaps where it shares the system's memory,
        sets on memory of its own; 0, 1 and 2 as they are */
     int automatic = vk_descriptors_auto(3, got == SNX_VK_UMA), wanted = want == SNX_VK_UMA ? 2 : 0;
     if (automatic != wanted || vk_descriptors_auto(0, got == SNX_VK_UMA) != 0 ||

@@ -169,7 +169,7 @@ cmake --build build --target scarletnx snx-test-vulkan snx-test-astc-vulkan \
   snx-test-tex-upload-rows snx-test-vk-resource-stats snx-test-runtime-present \
   snx-test-vk-pipeline-save snx-test-vk-pipeline-probe-flags -j 2
 ctest --test-dir build --output-on-failure -j 1 --timeout 120
-build/src/nx/snx-test-vulkan -H --vk_descriptors=2 --vk_memory=2
+build/src/nx/snx-test-vulkan -H --vk_descriptors_mode=2 --vk_memory=2
 ctest --test-dir build -R '^(docs_check|tracked_material)$' --output-on-failure
 python3 tests/run_filesystem_tree.py --cc clang --sanitize --only tree
 ```

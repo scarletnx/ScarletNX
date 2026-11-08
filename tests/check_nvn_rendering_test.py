@@ -247,7 +247,7 @@ class JobMatrix(unittest.TestCase):
             self.assertEqual(command[:3], [str(self.vulkan), '-H', '--vk_memory=1'])
             self.assertIn('--vk_validation=1', command)
             mode = int(next(arg.split('=')[1] for arg in command if arg.startswith('--vk_record=')))
-            descriptors = int(next(arg.split('=')[1] for arg in command if arg.startswith('--vk_descriptors=')))
+            descriptors = int(next(arg.split('=')[1] for arg in command if arg.startswith('--vk_descriptors_mode=')))
             actual.add((manifest, descriptors, mode))
             self.assertEqual(name.endswith('-record-1'), mode == 1)
         self.assertEqual(actual, {(manifest, descriptors, mode) for _, manifest in self.drivers

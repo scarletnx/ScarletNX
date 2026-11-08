@@ -2,7 +2,7 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # Graphics descriptor measurements
 
-`vk_descriptors=0` selects sets and `1` buffers. `2` selects heaps, else buffers, else sets, by device support. The
+`vk_descriptors_mode=0` selects sets and `1` buffers. `2` selects heaps, else buffers, else sets, by device support. The
 default `3`, Automatic, is `2` on a GPU that shares the system's memory and `0` on one with memory of its own: on a
 discrete GPU heaps write each draw's descriptors on the GPU thread, where sets have the recording thread write them.
 An unencodable heap draw retries with buffers or sets before any draw command. Heap encodings, index tables and buffer descriptors remain immutable until their frame retires.

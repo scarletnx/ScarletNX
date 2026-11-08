@@ -109,7 +109,7 @@ def main(argv=None):
                     cache.mkdir(); temporary.mkdir()
                     env = dict(os.environ, __GL_SHADER_DISK_CACHE='0', MESA_SHADER_CACHE_DISABLE='true',
                                XDG_CACHE_HOME=str(cache), TMPDIR=str(temporary), TEMP=str(temporary), TMP=str(temporary))
-                    command = [str(binary), '-H', '--vk_descriptors=3', f'--pipeline-probe={package["path"]}',
+                    command = [str(binary), '-H', '--vk_descriptors_mode=3', f'--pipeline-probe={package["path"]}',
                                f'--pipeline-probe-disable-opt={disable}']
                     with (work / 'stdout.log').open('w') as stdout, (work / 'stderr.log').open('w') as stderr:
                         result = subprocess.run(command, cwd=work, env=env, stdout=stdout, stderr=stderr,

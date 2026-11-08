@@ -251,7 +251,7 @@ def main():
                 'exact_renderer': []}
     variants, rejected, rows = [], [], []
     for backend, recording in itertools.product(dict.fromkeys(a.backends), (0, 1)):
-        flags = [f'--vk_descriptors={backend}', f'--vk_record={recording}']
+        flags = [f'--vk_descriptors_mode={backend}', f'--vk_record={recording}']
         name = f'{BACKENDS[backend]}-record{recording}'
         print('Exact renderer checks: ' + name, flush=True)
         try:
@@ -278,7 +278,7 @@ def main():
         rng.shuffle(work)
         for (backend, recording), count, images, indexed in work:
             name = f'{BACKENDS[backend]}-record{recording}-d{count}-i{images}-a{indexed}-r{repeat}'
-            command = [str(bench), '-H', f'--vk_descriptors={backend}', f'--vk_record={recording}',
+            command = [str(bench), '-H', f'--vk_descriptors_mode={backend}', f'--vk_record={recording}',
                        f'--bench-descriptors={a.sets}', f'--descriptor-count={count}', f'--descriptor-images={images}',
                        f'--descriptor-indexed={indexed}']
             try:

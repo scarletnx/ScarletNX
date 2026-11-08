@@ -63,7 +63,7 @@ frames does not verify the renderer.
 
 ## Measure descriptor submission
 
-`VK_EXT_descriptor_buffer` is an optional graphics path (`--vk_descriptors=1`). It writes descriptor tables into
+`VK_EXT_descriptor_buffer` is an optional graphics path (`--vk_descriptors_mode=1`). It writes descriptor tables into
 memory owned by each frame, then binds offsets. Image encodings are cached within that frame. It avoids graphics descriptor-set allocation and updates. Compute
 keeps separate pools so its queue can retire work independently. Unsupported devices keep the descriptor-set path.
 The path uses buffer device addresses and waits for a frame's fence and holds before reusing its descriptor memory.

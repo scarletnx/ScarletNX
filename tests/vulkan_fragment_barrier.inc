@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* NVN's fragment barrier (the renderer's barrier kind 0) is skipped only where the device draws with descriptor
-   buffers or heaps. A device that has neither draws with descriptor sets and keeps every one, whatever vk_descriptors
-   asks for. A clear on each side of the barrier shows which: a kept barrier ends the first clear's pass, so the second
-   clear begins another; a skipped one leaves both clears in one pass. */
+/* NVN's fragment barrier (the renderer's barrier kind 0) is skipped only where the device draws with descriptor buffers
+   or heaps. A device that has neither draws with descriptor sets and keeps every one, whatever vk_descriptors_mode asks
+   for. A clear on each side of the barrier shows which: a kept barrier ends the first clear's pass, so the second clear
+   begins another; a skipped one leaves both clears in one pass. */
 static void fragment_barrier_clear(GpuChannel* channel, u64 target) {
     u32* r = channel->r3d;
     const float color[4] = {0.25f, 0.5f, 0.75f, 1};
@@ -50,7 +50,7 @@ static int check_fragment_barrier_backend(void) {
     free(channel);
     if (passes[1] != 2 || passes[0] != (buffers || heaps ? 1u : 2u))
         fprintf(stderr,
-                "fragment barrier with vk_descriptors=3: %llu passes on descriptor sets (2 expected), %llu on "
+                "fragment barrier with vk_descriptors_mode=3: %llu passes on descriptor sets (2 expected), %llu on "
                 "this device's %s (%u expected)\n",
                 (unsigned long long)passes[1], (unsigned long long)passes[0],
                 heaps     ? "heaps"
