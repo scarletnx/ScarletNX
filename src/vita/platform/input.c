@@ -121,7 +121,8 @@ void vita_input_read(VitaInput* input) {
     /* the script's presses: buttons, and the left stick pushed all the way by bits 24 to 27 (right, left, up, down) */
     if (g_input.presses) {
         double ms = (snx_seconds() - g_input.start) * 1000.0;
-        uint32_t mask = snx_script_held(g_input.script, g_input.presses, ms, (uint32_t)g_settings.vita_press_length);
+        uint32_t mask =
+            (uint32_t)snx_script_held(g_input.script, g_input.presses, ms, (uint32_t)g_settings.vita_press_length);
         input->buttons |= mask & SCRIPT_BUTTONS;
         if (mask & SCRIPT_STICK_RIGHT) sticks[0] = 1;
         if (mask & SCRIPT_STICK_LEFT) sticks[0] = -1;

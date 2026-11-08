@@ -12,6 +12,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 #include "common/utilities/ascii.h"
+#include "common/utilities/script.h"
 #include <errno.h>
 #include <limits.h>
 #include <math.h>
@@ -66,33 +67,10 @@ static struct {
     Tas tas;
 } g_unattended;
 
-static int script_parse_press(const char** s, ScriptPress* p) {
-    const char* c = *s;
-    char* end;
-    unsigned long at;
-    unsigned long long mask;
-    if (*c < '0' || *c > '9') return 0;
-    at = strtoul(c, &end, 10);
-    c = end;
-    memset(p, 0, sizeof *p);
-    if (*c == 'f') {
-        p->at_present = 1;
-        c++;
-    }
-    if (*c++ != ':' || at > UINT_MAX) return 0;
-    if (!((*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'f') || (*c >= 'A' && *c <= 'F'))) return 0;
-    mask = strtoull(c, &end, 16);
-    c = end;
-    if (*c && *c != ',') return 0;
-    p->at = (u32)at;
-    p->mask = (u64)mask;
-    *s = *c ? c + 1 : c;
-    return 1;
-}
-
 void unattended_script_set(const IniOpt* o, const char* v) {
-    size_t len = strlen(v), max = 1, n;
-    const char* c;
+    size_t len = strlen(v), n;
+    const char* stop;
+    SnxPress* read;
     ScriptPress* press;
     (void)o;
     if (g_unattended.script.press && !strcmp(g_unattended.script.text, v))
@@ -102,24 +80,21 @@ void unattended_script_set(const IniOpt* o, const char* v) {
         memset(&g_unattended.script, 0, sizeof g_unattended.script);
         return;
     }
-    for (c = v; *c; c++) max += *c == ',';
-    if (max > (SIZE_MAX - len - 1) / sizeof *press) {
-        WARN("unattended: the script is too long, the current one stays\n");
-        return;
-    }
-    press = malloc(max * sizeof *press + len + 1);
+    /* ms:hex or Nf:hex (common/utilities/script.h), any of the 64 bits */
+    n = snx_script_read(v, ~0ull, 1, &read, &stop);
+    press = read && n <= (SIZE_MAX - len - 1) / sizeof *press ? malloc(n * sizeof *press + len + 1) : NULL;
     if (!press) {
+        free(read);
         WARN("unattended: out of memory for the script, the current one stays\n");
         return;
     }
-    for (n = 0, c = v; *c && n < max; n++)
-        if (!script_parse_press(&c, &press[n])) {
-            WARN("unattended: the script stops at \"%s\", which is not ms:hex or Nf:hex\n", c);
-            break;
-        }
+    if (*stop) WARN("unattended: the script stops at \"%s\", which is not ms:hex or Nf:hex\n", stop);
+    for (size_t i = 0; i < n; i++)
+        press[i] = (ScriptPress){.mask = read[i].mask, .at = read[i].at, .at_present = read[i].frame};
+    free(read);
     free(g_unattended.script.press);
     g_unattended.script.press = press;
-    g_unattended.script.text = (char*)(press + max);
+    g_unattended.script.text = (char*)(press + n);
     memcpy(g_unattended.script.text, v, len + 1);
     g_unattended.script.n = n;
 }
