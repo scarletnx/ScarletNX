@@ -22,6 +22,7 @@
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/nvn/nvn_tic.h"
 #include "nx/gpu/nvn/nvn_blend.h"
+#include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/shader/shader.h"
@@ -987,6 +988,9 @@ static void bind_program(NvnDraw* d, u64 payload, u32 size) {
     if ((u32)r.stages & NVN_SHADER_STAGE_COMPUTE_BIT) {
         const NvnStage* st = &r.st[NVN_SHADER_STAGE_COMPUTE];
         d->dx.code = st->data ? st->data + st->off : 0;
+        /* an Ounce program has no NVN header with its size before its code: its constants' offset in the code area,
+           the code's bytes rounded up to 256, bounds it (a Switch program's header does, compute.c's cs_read_code) */
+        d->dx.code_bytes = g_ounce && st->data ? 256u * st->cb : 0;
         d->dx.block[0] = r.block[0], d->dx.block[1] = r.block[1], d->dx.block[2] = r.block[2];
         d->dx.shared = r.off_a;
         nvn_program_c0(r.serial, d->c0rec);
