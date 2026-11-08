@@ -604,6 +604,12 @@ VkDescriptorPool vk_desc_pool_new(u32 array_sets);
 #define VK_POOL_ARRAY_SETS_MORE        256
 #define VK_POOL_ARRAY_SETS_FOR(layout) (vk_dslayout_arrays(layout) ? VK_POOL_ARRAY_SETS_MORE : VK_POOL_ARRAY_SETS)
 u32 vk_desc_pools(void);                 /* the pools that exist, made on any thread */
+/* A frame slot's pools past the most that its last VK_DESC_POOL_USES uses took go, at its reset (vk_desc_pools_keep):
+   a load's burst of sets made pools that its steady frames never reach again. Long, as making a pool again is a
+   hitch: 18-32 ms for a frame's pool on Qualcomm's driver, and with 64 uses a game's steady frames made one again
+   every few seconds */
+#define VK_DESC_POOL_USES 512
+void vk_desc_pools_keep(VkDescriptorPool* pools, int* npool, int* peak, u32* uses, int took);
 void vk_desc_taken(VkDescriptorSetLayout layout, u32 n); /* n sets of layout taken from a frame's pools */
 u64 vk_desc_array_sets(void);                            /* the sets of the arrays layouts taken so far */
 int vk_dslayout_arrays(VkDescriptorSetLayout layout);    /* one of the stage layouts with the texture arrays */

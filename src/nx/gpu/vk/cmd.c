@@ -76,6 +76,8 @@ typedef struct {
     /* descriptor pools, reset when the frame is reused and kept */
     VkDescriptorPool pool_d[64];
     int npool, ipool; /* pool_d[ipool] is the one allocating; the ones after it are reset and waiting */
+    int took, pool_peak; /* the pools this use allocated from, the most of this window's uses (vk_desc_pools_keep) */
+    u32 pool_uses;
     /* sets allocated ahead, a batch per layout at a time: most draws make a new set, and the driver's allocation cost
        is mostly per call */
     struct {
@@ -465,9 +467,12 @@ static void frame_recycle(Frame* f) {
     g_dead_bytes -= f->dead_bytes;
     f->dead_bytes = 0;
     vkResetCommandPool(g_vk.dev, f->pool, 0);
-    /* the pools stay, reset: a frame's draws fill several, and making them again every frame costs */
+    /* the pools stay, reset: a frame's draws fill several, and making them again every frame costs. Only those the
+       slot's recent uses never reached go */
+    vk_desc_pools_keep(f->pool_d, &f->npool, &f->pool_peak, &f->pool_uses, f->took);
     for (int i = 0; i < f->npool; i++) vkResetDescriptorPool(g_vk.dev, f->pool_d[i], 0);
     f->ipool = 0;
+    f->took = 0;
     memset(f->spare, 0, sizeof f->spare);
     vk_devmem_frame(); /* the driver's budgets, asked again */
     pool_recycle(f);
@@ -1205,6 +1210,27 @@ VkDescriptorPool vk_desc_pool_new(u32 array_sets) {
     return p;
 }
 u32 vk_desc_pools(void) { return __atomic_load_n(&g_desc_pools, __ATOMIC_RELAXED); }
+/* Each window of VK_DESC_POOL_USES uses of a slot, the pools past the most one of them took are destroyed (one stays):
+   the slot's work is done when it is reset, so no set of them is in use. A pool's memory is made whole when it is
+   (Qualcomm's: 98 MiB a frame's pool), and a load's burst of sets left pools its steady frames never reach */
+void vk_desc_pools_keep(VkDescriptorPool* pools, int* npool, int* peak, u32* uses, int took) {
+    int keep, n0 = *npool;
+    if (took > *peak) *peak = took;
+    if (++*uses < VK_DESC_POOL_USES) return;
+    keep = *peak > 1 ? *peak : 1;
+    while (*npool > keep) {
+        vkDestroyDescriptorPool(g_vk.dev, pools[--*npool], NULL);
+        pools[*npool] = VK_NULL_HANDLE;
+        __atomic_sub_fetch(&g_desc_pools, 1, __ATOMIC_RELAXED);
+    }
+    if (*npool < n0)
+        LOG_LIMIT(20,
+                  "vulkan: %d of a frame slot's %d descriptor pools went, none of its last %d uses reaching them: %u "
+                  "pools left in all\n",
+                  n0 - *npool, n0, VK_DESC_POOL_USES, vk_desc_pools());
+    *uses = 0;
+    *peak = 0;
+}
 static u64 g_desc_array_sets; /* sets of the arrays layouts taken from the frames' pools, for the statistics */
 void vk_desc_taken(VkDescriptorSetLayout layout, u32 n) {
     if (n && vk_dslayout_arrays(layout)) __atomic_add_fetch(&g_desc_array_sets, n, __ATOMIC_RELAXED);
@@ -1233,6 +1259,7 @@ static u32 desc_alloc_n(Frame* f, VkDescriptorSetLayout layout, VkDescriptorSet*
         VkResult r = vkAllocateDescriptorSets(g_vk.dev, &ai, sets);
         if (r == VK_SUCCESS) {
             vk_desc_taken(layout, count);
+            if (f->ipool + 1 > f->took) f->took = f->ipool + 1;
             return count;
         }
         if (r != VK_ERROR_OUT_OF_POOL_MEMORY && r != VK_ERROR_FRAGMENTED_POOL) {
