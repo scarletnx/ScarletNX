@@ -34,8 +34,12 @@ public class IntentFilter implements android.os.Parcelable {
     public final boolean hasCategory(String category) { return categories.contains(category); }
     public final void addDataScheme(String scheme) { schemes.add(scheme); }
     public final void addDataType(String type) throws MalformedMimeTypeException { types.add(type); }
-    public final void addDataPath(String path, int type) {}
-    public final void addDataAuthority(String host, String port) {}
+    /* the data's authorities and paths, counted though not matched */
+    private final ArrayList<String> authorities = new ArrayList<>(), paths = new ArrayList<>();
+    public final void addDataPath(String path, int type) { paths.add(path); }
+    public final void addDataAuthority(String host, String port) { authorities.add(port != null ? host + ":" + port : host); }
+    public final int countDataAuthorities() { return authorities.size(); }
+    public final int countDataPaths() { return paths.size(); }
     public final void setPriority(int priority) { this.priority = priority; }
     public final int getPriority() { return priority; }
     public final int match(String action, String type, String scheme, android.net.Uri data, java.util.Set<String> categories, String logTag) {

@@ -102,6 +102,12 @@ public class Intent implements Parcelable, Cloneable {
     public Intent(String action, Uri uri, Context packageContext, Class<?> cls) { this(action, uri); component = new ComponentName(packageContext, cls); }
 
     public static Intent createChooser(Intent target, CharSequence title) { Intent i = new Intent(ACTION_CHOOSER); i.putExtra(EXTRA_INTENT, target); return i; }
+    /** a chooser that tells the sender which app the user chose: none is ever chosen here */
+    public static Intent createChooser(Intent target, CharSequence title, android.content.IntentSender sender) {
+        Intent i = createChooser(target, title);
+        if (title != null) i.putExtra(EXTRA_TITLE, title);
+        return i;
+    }
     public static Intent makeMainActivity(ComponentName mainActivity) { Intent i = new Intent(ACTION_MAIN); i.setComponent(mainActivity); i.addCategory(CATEGORY_LAUNCHER); return i; }
     public static Intent makeMainSelectorActivity(String selectorAction, String selectorCategory) {
         Intent i = new Intent(ACTION_MAIN);
@@ -213,6 +219,7 @@ public class Intent implements Parcelable, Cloneable {
     public Parcelable[] getParcelableArrayExtra(String name) { return extras == null ? null : extras.getParcelableArray(name); }
     public <T extends Parcelable> ArrayList<T> getParcelableArrayListExtra(String name) { return extras == null ? null : extras.getParcelableArrayList(name); }
     public Serializable getSerializableExtra(String name) { return extras == null ? null : extras.getSerializable(name); }
+    public <T extends Serializable> T getSerializableExtra(String name, Class<T> clazz) { return extras == null ? null : extras.getSerializable(name, clazz); }
     public ArrayList<Integer> getIntegerArrayListExtra(String name) { return extras == null ? null : extras.getIntegerArrayList(name); }
     public ArrayList<String> getStringArrayListExtra(String name) { return extras == null ? null : extras.getStringArrayList(name); }
     public boolean[] getBooleanArrayExtra(String name) { return extras == null ? null : extras.getBooleanArray(name); }

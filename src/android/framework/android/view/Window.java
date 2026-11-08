@@ -215,6 +215,16 @@ public class Window {
     public void addOnFrameMetricsAvailableListener(OnFrameMetricsAvailableListener listener, android.os.Handler handler) {}
     public void removeOnFrameMetricsAvailableListener(OnFrameMetricsAvailableListener listener) {}
     public void setAllowEnterTransitionOverlap(boolean allow) {}
+    /* the activity transitions, kept: activities change at once here */
+    private android.transition.Transition enterTransition, exitTransition, returnTransition, reenterTransition;
+    public void setEnterTransition(android.transition.Transition transition) { enterTransition = transition; }
+    public android.transition.Transition getEnterTransition() { return enterTransition; }
+    public void setExitTransition(android.transition.Transition transition) { exitTransition = transition; }
+    public android.transition.Transition getExitTransition() { return exitTransition; }
+    public void setReturnTransition(android.transition.Transition transition) { returnTransition = transition; }
+    public android.transition.Transition getReturnTransition() { return returnTransition != null ? returnTransition : enterTransition; }
+    public void setReenterTransition(android.transition.Transition transition) { reenterTransition = transition; }
+    public android.transition.Transition getReenterTransition() { return reenterTransition != null ? reenterTransition : exitTransition; }
     public void setAllowReturnTransitionOverlap(boolean allow) {}
     public void makeActive() {}
     public void setElevation(float elevation) {}

@@ -54,6 +54,31 @@ public class TextUtils {
     public static String[] split(String text, String expression) {
         return text.isEmpty() ? new String[0] : text.split(expression, -1);
     }
+    /**
+     * The template with ^1 to ^9 replaced by the values and ^^ by ^, as Android's (its spans are not kept here, the
+     * text is a String)
+     */
+    public static CharSequence expandTemplate(CharSequence template, CharSequence... values) {
+        if (values.length > 9) throw new IllegalArgumentException("max of 9 values are supported");
+        StringBuilder b = new StringBuilder();
+        String t = template.toString();
+        for (int i = 0; i < t.length(); ++i) {
+            char c = t.charAt(i);
+            if (c != '^' || i + 1 >= t.length()) { b.append(c); continue; }
+            char next = t.charAt(i + 1);
+            if (next == '^') { b.append('^'); ++i; continue; }
+            if (Character.isDigit(next)) {
+                int which = next - '1';
+                if (which < 0 || which >= values.length)
+                    throw new IllegalArgumentException("template requests value ^" + (which + 1) + "; only " + values.length + " provided");
+                b.append(values[which]);
+                ++i;
+                continue;
+            }
+            b.append(c);
+        }
+        return b.toString();
+    }
     public static CharSequence concat(CharSequence... text) {
         StringBuilder b = new StringBuilder();
         for (CharSequence t : text) b.append(t);
