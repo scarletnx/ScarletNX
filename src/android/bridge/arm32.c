@@ -5,6 +5,7 @@
    the loader of ELF32 ARM libraries */
 #define _GNU_SOURCE
 #include "android/bridge/arm32.h"
+#include "android/bridge/hle_impl.h"
 #include "common/cpu/arm/exec.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/common.h"
@@ -570,7 +571,11 @@ static void run(SnxArmCPU* c) {
     }
 }
 
+/* The guest runs in the C locale (hle_locale_enter, as the 64-bit bridge's calls into guest code do): the host's C
+   library that its imports call would take the user's, which the JVM set for the process, with a decimal comma and
+   other names of days and months */
 uint32_t arm32_call(uint32_t fn, const uint32_t* words, unsigned count, uint32_t* high) {
+    hle_locale_enter();
     SnxArmCPU* c = arm32_cpu();
     uint32_t saved[16], saved_cpsr = c->cpsr;
     memcpy(saved, c->r, sizeof saved);
@@ -592,6 +597,7 @@ uint32_t arm32_call(uint32_t fn, const uint32_t* words, unsigned count, uint32_t
     if (high) *high = c->r[1];
     memcpy(c->r, saved, sizeof saved);
     c->cpsr = saved_cpsr;
+    hle_locale_leave();
     return r0;
 }
 
