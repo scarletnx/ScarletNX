@@ -1063,6 +1063,34 @@ static void res_unref_all(VkOwnRes** made, int n) {
         }
 }
 
+/* Whether a program that logs its writes reads and writes its storage buffers in the GPU mirror (mirror.c): each one
+   run of guest memory, at an offset the device binds a storage buffer at. cpu[i]: each buffer's guest address. An
+   Ounce program's buffer is all of the memory mapped from its address, up to 16 MiB (vk_gbuf_desc): made anew for each
+   dispatch, with its input copied in on the CPU and composed over the results before it, the copies took most of one
+   game's GPU thread (hundreds of 16 MiB bindings a frame, at addresses a few KiB apart) */
+static int mirror_plan(const CsPipe* p, int ng, const u64* sa, const u32* ss, u64* cpu) {
+    u64 align = g_vk.props.limits.minStorageBufferOffsetAlignment;
+    int marked = 0;
+    if (!p->si.nmarks || !vk_mirror_on()) return 0;
+    for (int i = 0; i < ng; i++) {
+        cpu[i] = 0;
+        if (!sa[i]) continue;
+        if (gmmu_run(sa[i], ss[i], &cpu[i]) != ss[i] || (cpu[i] & (align - 1))) return 0;
+        /* a buffer written without a log would never land from the mirror: the harvest lands only the bytes logged */
+        if ((p->si.gbuf_wmask >> i & 1) && !p->si.gbuf_mark[i]) return 0;
+        marked |= p->si.gbuf_mark[i] != 0;
+    }
+    return marked;
+}
+/* the results other than the mirror's pending over [gva, gva + len) land, as a read of guest memory has them: the
+   mirror's own are where it reads them */
+static void mirror_need_others(u64 gva, u64 len) {
+    if (g_cs_any) vk_compute_mem_need(gva, len);
+    vk_buf_mem_need(gva, len);
+    vk_gfx_image_mem_need(gva, len);
+    vk_release_need(gva, len);
+}
+
 void vk_dispatch(const DispatchState* d) {
     u32 gx = d->grid[0], gy = d->grid[1], gz = d->grid[2], lx = d->block[0], ly = d->block[1], lz = d->block[2],
         shm = d->shared;
@@ -1279,6 +1307,11 @@ void vk_dispatch(const DispatchState* d) {
     int gfx = vk_uma() || p->si.ntex > 0 || p->si.nimg > 0, overlap = 0, retries = 0;
     /* so does an indirect one: its grid is read where the graphics queue's buffers hold guest memory (vk_buf_get) */
     gfx = gfx || d->indirect != 0;
+    /* and one whose storage buffers are in the GPU mirror, which the graphics queue's submits bring up to date and
+       land (mirror.c, mirror_plan) */
+    u64 mcpu[16];
+    int mir = mirror_plan(p, ng, sa, ss, mcpu);
+    gfx = gfx || mir;
     VkBuffer grid_buf = VK_NULL_HANDLE, cb0_buf = VK_NULL_HANDLE;
     u64 grid_off = 0, cb0_off = 0;
     u32 cb0_range = 0;
@@ -1467,6 +1500,16 @@ rebind:
         log = g_cs_spare;
     }
     u32 wseen = vk_ww_now(); /* before the inputs are read */
+    /* in the mirror, brought up to date: what other work has pending there lands first. Where it can't be (no memory
+       to bind there), the buffers take the copies, as without the mirror */
+    VkBuffer mbuf[16];
+    u64 moff[16];
+    if (mir) {
+        for (int i = 0; i < ng; i++)
+            if (sa[i]) mirror_need_others(sa[i], ss[i]);
+        for (int i = 0; i < ng && mir; i++)
+            if (sa[i]) mir = vk_mirror_slice(sa[i], ss[i], &mbuf[i], &moff[i]);
+    }
     u64 so[16];
     VkBuffer bi_buf[16];
     int chained = 0;
@@ -1476,7 +1519,17 @@ rebind:
         int alias = -1;
         for (int k = 0; k < i && resident && alias < 0; k++)
             if (sa[k] && sa[k] == sa[i] && ss[k] == ss[i]) alias = k; /* one range bound twice names one buffer */
-        if (resident && alias >= 0) {
+        if (mir) {
+            if (sa[i]) {
+                sbuf = mbuf[i];
+                o = moff[i];
+            } else if (!vk_buf_copy(0, ss[i], &sbuf, &o)) {
+                vk_buf_writable_abort();
+                g_cs_skips[CS_SKIP_STORAGE_BUFFER]++;
+                return;
+            }
+            so[i] = o;
+        } else if (resident && alias >= 0) {
             sbuf = bi_buf[alias];
             o = so[alias];
             so[i] = o;
@@ -1847,6 +1900,17 @@ rebind:
         rec_CmdCopyBuffer(cb, grid_buf, cb0_buf, 1, &gc);
         vk_all_barrier(cb);
     }
+    if (mir) { /* after the earlier programs' writes of the mirror, which it may read or write again */
+        VkMemoryBarrier2 mmb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                                .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                                .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                .dstAccessMask =
+                                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT};
+        VkDependencyInfo mdi = {
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mmb};
+        rec_CmdPipelineBarrier2(cb, &mdi);
+    }
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->p);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_vk.cs_playout, 0, 1, &set, 0, NULL);
     if (d->indirect) {
@@ -1854,6 +1918,13 @@ rebind:
     } else {
         vk_ck(cb, VK_CK_DISPATCH, gx, gy, gz, 0);
         rec_CmdDispatch(cb, gx, gy, gz);
+    }
+    if (mir) { /* the bytes its log gives into the mirror's mask, for the submit's harvest to land */
+        VkMirFold f[16];
+        u32 nf = 0;
+        for (int i = 0; i < ng; i++)
+            if (p->si.gbuf_mark[i] && sa[i]) f[nf++] = (VkMirFold){mcpu[i], ss[i], p->si.gbuf_mark[i] - 1u};
+        vk_mirror_fold(cb, vk_wlog_buffer(log), vk_wlog_size(log), f, nf);
     }
     if (log) { /* recorded: the dispatch's reference goes with the work that writes the log */
         g_cs_spare = NULL;

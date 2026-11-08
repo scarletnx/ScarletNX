@@ -215,7 +215,8 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 #define SNX_VKB_FMT      (SNX_VKB_RS + 1)          /* compute: the images' format classes (SNX_FMT) */
 #define SNX_VKB_SMAP     (SNX_VKB_FMT + 1)         /* graphics: storage buffer page indices for aliased bindings */
 /* compute, the same binding, which no compute program reads otherwise: the write log the program's stores record their
-   bytes in (gbuf_mark, SH_WLOG_*), or the GPU mirror's mask, a bit a byte (mirror.c, SNX_VKB_MBASE) */
+   bytes in (gbuf_mark, SH_WLOG_*). With the GPU mirror, a pass after the dispatch puts the log's bits in the mirror's
+   mask (vk/mirror.c vk_mirror_fold) */
 #define SNX_VKB_WPAGES   SNX_VKB_SMAP
 /* compute, the fragment program's binding, which no compute program has: the mask's bases and the buffers' lengths, a
    uniform buffer of 16 bases then 16 lengths, 4 a vec4 (the GPU mirror's, mirror.c; the write log has its bases in the

@@ -1,0 +1,41 @@
+#version 450
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* A dispatch's write log (shader.h's SH_WLOG_*: a part of a flag for each 4 KiB window of a global buffer, then a bit
+   for each of its bytes) into the GPU mirror's mask (vk/mirror.c), a bit for each byte of guest memory, where the
+   buffer is in the mirror: the submit's harvest then lands the bytes the program wrote and no others. A workgroup a
+   window of the part; one whose flag is clear (most) returns. A thread a mask word of its window: its bits past the
+   buffer's length go, and the rest are ORed into the mirror's mask at the buffer's place, shifted by its place in a
+   mask word. Two buffers of one dispatch can overlap, so the ORs are atomic. The log is not changed: the host clears
+   it when its submit is done (vk/writelog.c). CMake compiles it into SPIR-V at build time (cmake/glsl.cmake). */
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer Log {
+    uint log_words[]; /* the dispatch's whole log */
+};
+layout(std430, set = 0, binding = 1) buffer Mask {
+    uint mask[]; /* the mirror's mask, from a word before the buffer's first byte */
+};
+layout(push_constant) uniform Params {
+    uint flags; /* the part's window flags, in words of the log */
+    uint masks; /* the part's mask words, 128 a window */
+    uint base;  /* the mask word of the buffer's first byte */
+    uint shift; /* that byte's bit in it */
+    uint len;   /* the buffer's bytes */
+};
+
+void main() {
+    uint j = gl_WorkGroupID.x, t = gl_LocalInvocationID.x;
+    if (log_words[flags + j] == 0u) return;
+    uint at = j * 4096u + t * 32u; /* the byte of bit 0 of this thread's word, in the buffer */
+    if (at >= len) return;
+    uint m = log_words[masks + j * 128u + t];
+    if (len - at < 32u) m &= (1u << (len - at)) - 1u;
+    if (m == 0u) return;
+    uint w = base + j * 128u + t;
+    atomicOr(mask[w], m << shift);
+    if (shift != 0u) {
+        uint hi = m >> (32u - shift);
+        if (hi != 0u) atomicOr(mask[w + 1u], hi);
+    }
+}

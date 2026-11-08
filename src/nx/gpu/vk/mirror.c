@@ -7,7 +7,8 @@
    and write guest memory where it is, one dispatch after another, as on the console.
 
    - One sparse buffer as big as the guest's address space (vk_mirror_slice), memory bound in granules of MIR_G where
-     bindings are, and a mask beside it, a bit for each byte, which the programs' stores set (SNX_VKB_WPAGES).
+     bindings are, and a mask beside it, a bit for each byte. The programs' stores set bits in the dispatch's write
+     log (SNX_VKB_WPAGES, SH_WLOG_*), and a pass after the dispatch ORs them into the mask (vk_mirror_fold).
    - A shadow in host memory of the guest bytes the mirror was given. The pages the CPU wrote since a granule was
      last brought up to date (write tracking) are compared with it, and only the bytes the CPU changed are copied in:
      the bytes a program wrote there, which haven't landed yet, stay.
@@ -77,7 +78,10 @@ int vk_mirror_on(void) {
     VkMemoryRequirements req[2];
     if (!VK_OK(vkCreateBuffer(g_vk.dev, &bci, NULL, &g_mir.buf))) return 0;
     bci.size = AS_SIZE / 8;
-    bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    /* the mask: what the programs wrote, set by the folds (vk_mirror_fold) and read by the harvest; a copy source for
+       the tests that check it */
+    bci.usage =
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     if (!VK_OK(vkCreateBuffer(g_vk.dev, &bci, NULL, &g_mir.mask))) {
         vkDestroyBuffer(g_vk.dev, g_mir.buf, NULL);
         return 0;
@@ -402,6 +406,10 @@ void vk_mirror_wrote(u64 cpu, u64 len) {
     pend_add_pages(&g_mir_pend, r.first, r.end - 1, 1);
 }
 int vk_mirror_pending(u64 gva, u64 len) { return g_mir.on > 0 && len && pend_hit(&g_mir_pend, gva, len); }
+int vk_mirror_holds(u64 gva, u64 len) {
+    u64 cpu = 0;
+    return g_mir.on > 0 && len && own_any() && gmmu_run(gva, len, &cpu) == len && mirror_owns(cpu, len);
+}
 
 static int range_cmp(const void* a, const void* b) {
     u64 x = ((const MirRange*)a)->first, y = ((const MirRange*)b)->first;
@@ -420,33 +428,40 @@ static u32 ranges_join(MirRange* r, u32 n) {
 }
 
 #include "nx/gpu/vk/mirror_harvest_spv.h" /* compiled from mirror_harvest.comp by the build (cmake/glsl.cmake) */
+#include "nx/gpu/vk/mirror_fold_spv.h"    /* and mirror_fold.comp */
 typedef struct {
     u32 first, room, left, entry;
 } HarvestParams;
-static VkDescriptorSetLayout g_hv_ds;
-static VkPipelineLayout g_hv_layout;
-static VkPipeline g_hv_pipe;
-static void harvest_init(void) {
-    if (g_hv_pipe) return;
+typedef struct {
+    u32 flags, masks, base, shift, len;
+} FoldParams;
+/* a compute pipeline of the mirror's own: its storage buffers, bindings 0 on, and push constants */
+typedef struct {
+    VkDescriptorSetLayout ds;
+    VkPipelineLayout layout;
+    VkPipeline pipe;
+} MirPipe;
+static MirPipe g_hv, g_fold;
+static void pipe_init(MirPipe* mp, const u32* code, u64 code_size, u32 nbind, u32 push_size, const char* what) {
+    if (mp->pipe) return;
     VkDescriptorSetLayoutBinding b[3];
-    for (u32 i = 0; i < 3; i++)
+    for (u32 i = 0; i < nbind; i++)
         b[i] =
             (VkDescriptorSetLayoutBinding){i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL};
     VkDescriptorSetLayoutCreateInfo di = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 3, .pBindings = b};
-    if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &di, NULL, &g_hv_ds)))
-        fatal("vulkan: cannot create the GPU mirror harvest's descriptor layout");
-    VkPushConstantRange push = {VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(HarvestParams)};
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = nbind, .pBindings = b};
+    if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &di, NULL, &mp->ds)))
+        fatal("vulkan: cannot create the GPU mirror %s's descriptor layout", what);
+    VkPushConstantRange push = {VK_SHADER_STAGE_COMPUTE_BIT, 0, push_size};
     VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                      .setLayoutCount = 1,
-                                     .pSetLayouts = &g_hv_ds,
+                                     .pSetLayouts = &mp->ds,
                                      .pushConstantRangeCount = 1,
                                      .pPushConstantRanges = &push};
-    if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &li, NULL, &g_hv_layout)))
-        fatal("vulkan: cannot create the GPU mirror harvest's pipeline layout");
-    if (!VK_OK(snx_vk_compute_pipeline(g_vk.dev, vk_pipeline_cache(), g_hv_layout, mirror_harvest_spv,
-                                       mirror_harvest_spv_size, &g_hv_pipe)))
-        fatal("vulkan: cannot create the GPU mirror harvest's pipeline");
+    if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &li, NULL, &mp->layout)))
+        fatal("vulkan: cannot create the GPU mirror %s's pipeline layout", what);
+    if (!VK_OK(snx_vk_compute_pipeline(g_vk.dev, vk_pipeline_cache(), mp->layout, code, code_size, &mp->pipe)))
+        fatal("vulkan: cannot create the GPU mirror %s's pipeline", what);
 }
 static void barrier(VkCommandBuffer cb, VkPipelineStageFlags2 ss, VkAccessFlags2 sa, VkPipelineStageFlags2 ds,
                     VkAccessFlags2 da) {
@@ -459,19 +474,27 @@ static void barrier(VkCommandBuffer cb, VkPipelineStageFlags2 ss, VkAccessFlags2
     rec_CmdPipelineBarrier2(cb, &d);
 }
 /* records into cb the harvest of the pages of ranges r (joined, sorted) into out (room entries, then the list of pages
-   left, after the work that wrote them): 0 out of descriptors */
+   left, after the work that wrote them): 0 out of descriptors. The sets come from pool, or with none from the frame's
+   (vk_desc_alloc), which starts the frame's command buffer: never inside a landing */
 static int harvest_record(VkCommandBuffer cb, const MirRange* r, u32 n, VkBuffer out, u64 out_at, u64 out_size,
-                          u32 room, u32 entry) {
-    harvest_init();
+                          u32 room, u32 entry, VkDescriptorPool pool) {
+    pipe_init(&g_hv, mirror_harvest_spv, mirror_harvest_spv_size, 3, sizeof(HarvestParams), "harvest");
     rec_CmdFillBuffer(cb, out, out_at, 16, 0);
     barrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT,
             VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
             VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_hv_pipe);
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_hv.pipe);
     for (u32 i = 0; i < n; i++) {
         u64 pages = r[i].end - r[i].first;
-        VkDescriptorSet set = vk_desc_alloc(g_hv_ds);
-        if (!set) return 0;
+        VkDescriptorSet set = VK_NULL_HANDLE;
+        if (pool) {
+            VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                                              .descriptorPool = pool,
+                                              .descriptorSetCount = 1,
+                                              .pSetLayouts = &g_hv.ds};
+            if (!VK_OK(vkAllocateDescriptorSets(g_vk.dev, &ai, &set))) return 0;
+        } else if (!(set = vk_desc_alloc(g_hv.ds)))
+            return 0;
         VkDescriptorBufferInfo info[3] = {{g_mir.mask, r[i].first * 512, pages * 512},
                                           {g_mir.buf, r[i].first * 4096, pages * 4096},
                                           {out, out_at, out_size}};
@@ -485,8 +508,8 @@ static int harvest_record(VkCommandBuffer cb, const MirRange* r, u32 n, VkBuffer
                                           .pBufferInfo = &info[k]};
         vkUpdateDescriptorSets(g_vk.dev, 3, w, 0, NULL);
         HarvestParams p = {(u32)r[i].first, room, MIR_HEAD + room * entry, entry};
-        rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_hv_layout, 0, 1, &set, 0, NULL);
-        rec_CmdPushConstants(cb, g_hv_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
+        rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_hv.layout, 0, 1, &set, 0, NULL);
+        rec_CmdPushConstants(cb, g_hv.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
         rec_CmdDispatch(cb, (u32)pages, 1, 1);
     }
     /* the output to the host; the masks cleared, before later programs set them again */
@@ -497,9 +520,61 @@ static int harvest_record(VkCommandBuffer cb, const MirRange* r, u32 n, VkBuffer
 }
 static u64 out_bytes(u32 room, u64 pages, u32 entry) { return ((u64)MIR_HEAD + (u64)room * entry + pages) * 4; }
 
+void vk_mirror_fold(VkCommandBuffer cb, VkBuffer log, u64 log_size, const VkMirFold* f, u32 n) {
+    u64 salign = g_vk.props.limits.minStorageBufferOffsetAlignment, mask_size = AS_SIZE / 8;
+    if (salign < 4) salign = 4;
+    pipe_init(&g_fold, mirror_fold_spv, mirror_fold_spv_size, 2, sizeof(FoldParams), "fold");
+    /* the dispatch's stores (its log), and the folds before, before the ORs */
+    barrier(cb, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_fold.pipe);
+    for (u32 i = 0; i < n; i++) {
+        /* the mask's binding at a byte the device binds at, before the buffer's first bit */
+        u64 at = (f[i].cpu / 8) & ~(salign - 1), rel = f[i].cpu - at * 8;
+        u64 range = ((rel + f[i].len + 31) / 32 + 1) * 4;
+        u32 windows = (f[i].len + 4095) / 4096;
+        if (range > mask_size - at) range = mask_size - at;
+        if (windows > SH_WPAGE_SLOT) windows = SH_WPAGE_SLOT;
+        if (!windows) continue;
+        VkDescriptorSet set = vk_desc_alloc(g_fold.ds);
+        if (!set) fatal("vulkan: no descriptors to log the GPU mirror's writes"); /* the dispatch is recorded */
+        VkDescriptorBufferInfo info[2] = {{log, 0, log_size}, {g_mir.mask, at, range}};
+        VkWriteDescriptorSet w[2];
+        for (u32 k = 0; k < 2; k++)
+            w[k] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                          .dstSet = set,
+                                          .dstBinding = k,
+                                          .descriptorCount = 1,
+                                          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                          .pBufferInfo = &info[k]};
+        vkUpdateDescriptorSets(g_vk.dev, 2, w, 0, NULL);
+        u32 flags = f[i].part * SH_WLOG_PART;
+        FoldParams p = {flags, flags + SH_WPAGE_SLOT, (u32)(rel / 32), (u32)(rel % 32), f[i].len};
+        rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_fold.layout, 0, 1, &set, 0, NULL);
+        rec_CmdPushConstants(cb, g_fold.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
+        rec_CmdDispatch(cb, windows, 1, 1);
+    }
+    for (u32 i = 0; i < n; i++) vk_mirror_wrote(f[i].cpu, f[i].len); /* pending until the submit's harvest */
+}
+
 void vk_mirror_harvest(VkCommandBuffer cb, u64 submit) {
     if (!g_mir_nnow) return;
+    /* each range written gave its pages a count (vk_mirror_wrote), and the batch takes one away from the pages of each
+       joined range once it is done (vk_mirror_done). Where the ranges met, the joined ones take their own count first,
+       then the written ones lose theirs, so a page never reads as not pending meanwhile. Without it the pages of two
+       buffers that overlap stayed pending for good, and each CPU read of them waited for the GPU. The batch's ranges
+       hold the written ones until then */
+    u32 n0 = g_mir_nnow;
+    MirRange* r = malloc((size_t)n0 * sizeof *r);
+    if (!r) fatal("Out of memory recording the GPU mirror's writes");
+    memcpy(r, g_mir_now, (size_t)n0 * sizeof *r);
     u32 n = ranges_join(g_mir_now, g_mir_nnow);
+    if (n < n0) {
+        for (u32 i = 0; i < n; i++) pend_add_pages(&g_mir_pend, g_mir_now[i].first, g_mir_now[i].end - 1, 1);
+        for (u32 i = 0; i < n0; i++) pend_add_pages(&g_mir_pend, r[i].first, r[i].end - 1, -1);
+    }
+    memcpy(r, g_mir_now, (size_t)n * sizeof *r);
     u64 pages = 0;
     for (u32 i = 0; i < n; i++) pages += g_mir_now[i].end - g_mir_now[i].first;
     u32 room = pages < g_mir_room ? (u32)pages : g_mir_room;
@@ -509,7 +584,7 @@ void vk_mirror_harvest(VkCommandBuffer cb, u64 submit) {
     u64 at;
     VmaAllocation mem;
     u32* p = (u32*)(void*)vk_stage_back(out_bytes(room, pages, entry), &out, &at, &mem);
-    if (!p || !harvest_record(cb, g_mir_now, n, out, at, out_bytes(room, pages, entry), room, entry))
+    if (!p || !harvest_record(cb, g_mir_now, n, out, at, out_bytes(room, pages, entry), room, entry, VK_NULL_HANDLE))
         fatal("vulkan: no memory to land the GPU mirror's writes in");
     if (g_mir_nbatch == g_mir_capbatch) {
         u32 cap = g_mir_capbatch ? g_mir_capbatch * 2 : 16;
@@ -518,9 +593,6 @@ void vk_mirror_harvest(VkCommandBuffer cb, u64 submit) {
         g_mir_batch = grown;
         g_mir_capbatch = cap;
     }
-    MirRange* r = malloc((size_t)n * sizeof *r);
-    if (!r) fatal("Out of memory recording the GPU mirror's writes");
-    memcpy(r, g_mir_now, (size_t)n * sizeof *r);
     g_mir_batch[g_mir_nbatch++] = (MirBatch){submit, r, n, room, entry, pages, p, mem};
     g_mir_nnow = 0;
     g_mir_stats.harvests++;
@@ -730,10 +802,20 @@ static void harvest_left(const u32* left, u32 n) {
     VmaAllocationInfo info;
     if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &out, &mem, &info)))
         fatal("vulkan: no memory to land the GPU mirror's writes in");
+    /* its sets from a pool of its own, freed once it is done: it runs inside a landing (vk_mirror_done), where the
+       frame's sets would start the frame's command buffer (vk_desc_alloc's vk_cmd). Started there, that command buffer
+       outlived the present: the next frame's draws recorded into it after its slot came round again, past the
+       recording thread, and bound their sets at once, which crashed in the driver */
+    VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 * k};
+    VkDescriptorPoolCreateInfo dpi = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = k, .poolSizeCount = 1, .pPoolSizes = &ps};
+    VkDescriptorPool dpool;
+    if (!VK_OK(vkCreateDescriptorPool(g_vk.dev, &dpi, NULL, &dpool)))
+        fatal("vulkan: no descriptor pool to land the GPU mirror's writes");
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     VK_OK(vkBeginCommandBuffer(g_mir_cb, &bi));
-    if (!harvest_record(g_mir_cb, r, k, out, 0, size, n, MIR_ENTRY))
+    if (!harvest_record(g_mir_cb, r, k, out, 0, size, n, MIR_ENTRY, dpool))
         fatal("vulkan: no descriptor set left to land the GPU mirror's writes");
     VK_OK(vkEndCommandBuffer(g_mir_cb));
     VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
@@ -749,6 +831,7 @@ static void harvest_left(const u32* left, u32 n) {
     }
     if (!ok || !VK_OK(vmaInvalidateAllocation(g_vk.vma, mem, 0, VK_WHOLE_SIZE)))
         fatal("vulkan: could not land the GPU mirror's writes");
+    vkDestroyDescriptorPool(g_vk.dev, dpool, NULL); /* its work is done */
     const u32* w = info.pMappedData;
     for (u32 i = 0; i < w[0] && i < n; i++) land_entry(w + MIR_HEAD + i * MIR_ENTRY);
     vmaDestroyBuffer(g_vk.vma, out, mem);
