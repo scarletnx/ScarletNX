@@ -2125,13 +2125,30 @@ texture_from_memory:
         return NULL;
     }
     u32 fkey = (tic[0] & 0x7FFFF) | ((u32)srgb << 31) | ((u32)raw << 30);
+    /* A texture sampled through its sRGB or its linear twin is the same image: its views take the header's sRGB-ness
+       (vk_tex_view, from vk_view_formats' list), as a render target's twins do above. A twin made apart from it held
+       the same bytes twice, and each saw the other's writes only through guest memory: one game's compute program
+       stores a 2560x1440 RGBA8 frame through a linear header and its draw samples it through an sRGB one, and that
+       twin loaded the 15 MB frame from the storage image's owner again every frame (a copy, a deswizzle and an
+       upload). A sampled lookup takes the twin that holds memory's bytes now (nothing written since it was checked,
+       as a storage image right after its publish, vk_tex_note_writeback), else its own, which the check below loads
+       again as before. A storage or raw lookup keeps its own format, which its views need */
+    Surf *same = NULL, *twin = NULL;
     for (Surf* t = vk_surf_first(gva); t; t = t->next) {
         if (t->is_rt || t->gva != gva || t->w != w || t->h != h || t->layers != layers || t->depth3d != d3 ||
-            t->fkey != fkey || t->levels != levels || t->type != vt || t->bl != (u32)bl || t->bh != bh || t->bd != bd ||
+            t->levels != levels || t->type != vt || t->bl != (u32)bl || t->bh != bh || t->bd != bd ||
             t->tile_w != tile_w || t->pitch != pitch || t->layer_size != stride || t->msaa != msaa)
             continue;
-        return tex_check(t, gva);
+        if (t->fkey == fkey) {
+            if (!same) same = t;
+        } else if (!twin && !storage && !raw && t->fkey == (fkey ^ (1u << 31)) && t->f.vk != f.vk &&
+                   vk_srgb_as(t->f.vk, srgb) == f.vk && t->f.conv == f.conv && !t->f.depth)
+            twin = t;
     }
+    if (twin &&
+        (!same || (gpu_mem_dirty_since(same->gw, gva, same->size) && !gpu_mem_dirty_since(twin->gw, gva, twin->size))))
+        same = twin;
+    if (same) return tex_check(same, gva);
     if (!format_samples(f.vk)) return NULL;
     /* this texture's levels in one layer; the layers before the last one take their whole stride. Its levels from the
        base level on, of the base level's size and blocks: of the size of level 0 (gw, gh), a view of one level of a
