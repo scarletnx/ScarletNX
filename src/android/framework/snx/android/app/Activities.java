@@ -21,6 +21,9 @@ public final class Activities {
     private record Record(Activity activity, Activity caller, int requestCode) {}
 
     private static final ArrayList<Record> stack = new ArrayList<>();
+    /* activities below the top that a configuration change needs made again: they are when they come back on top,
+       as Android relaunches an activity that is not visible when it is next shown, in its place in the task */
+    private static final java.util.Set<Activity> relaunchPending = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
     private static final Handler main = new Handler(Looper.getMainLooper());
 
     private Activities() {}
@@ -39,10 +42,45 @@ public final class Activities {
         return r != null ? r.activityInfo : null;
     }
 
+    /** The system's pickers, which every device has: here none, as a picker the user closed */
+    private static final java.util.Set<String> PICKERS = java.util.Set.of(Intent.ACTION_OPEN_DOCUMENT,
+        Intent.ACTION_OPEN_DOCUMENT_TREE, Intent.ACTION_CREATE_DOCUMENT, Intent.ACTION_GET_CONTENT, Intent.ACTION_PICK);
+
+    /**
+     * The picker's answer for a run without a user (--pick=PATH, snx.android.pick): a tree of the directory (the
+     * path's own, or its parent's) for OPEN_DOCUMENT_TREE, the file for the other pickers, as documents of the
+     * shared storage's provider; null (none picked) for none, or for a file a creating picker asks for
+     */
+    private static Intent pick(Intent request) {
+        String path = System.getProperty("snx.android.pick");
+        if (path == null || path.isEmpty() || Intent.ACTION_CREATE_DOCUMENT.equals(request.getAction())) return null;
+        java.io.File f = new java.io.File(path).getAbsoluteFile();
+        if (!f.exists()) return null;
+        String authority = snx.android.provider.ExternalStorageProvider.AUTHORITY;
+        android.net.Uri uri;
+        if (Intent.ACTION_OPEN_DOCUMENT_TREE.equals(request.getAction())) {
+            java.io.File dir = f.isDirectory() ? f : f.getParentFile();
+            uri = android.provider.DocumentsContract.buildTreeDocumentUri(authority, snx.android.provider.ExternalStorageProvider.documentId(dir));
+        } else {
+            if (f.isDirectory()) return null;
+            uri = android.provider.DocumentsContract.buildDocumentUri(authority, snx.android.provider.ExternalStorageProvider.documentId(f));
+        }
+        return new Intent().setData(uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+    }
+
     public static void start(Activity caller, Intent intent, int requestCode, Bundle options) {
         ActivityInfo info = resolve(intent);
+        if (info == null && PICKERS.contains(intent.getAction())) {
+            // the scripted pick (--pick) as DocumentsUI's answer, else RESULT_CANCELED, as Android delivers it when
+            // the user backs out of the picker
+            Intent result = pick(intent);
+            if (caller != null && requestCode >= 0)
+                main.post(() -> caller.performActivityResult(requestCode, result != null ? Activity.RESULT_OK : Activity.RESULT_CANCELED, result));
+            return;
+        }
         if (info == null) throw new android.content.ActivityNotFoundException("No Activity found to handle " + intent);
-        main.post(() -> launch(info, intent, caller, requestCode, null, null));
+        main.post(() -> launch(info, intent, caller, requestCode, null, null, false));
     }
 
     /** The first activity, from the launcher's intent. */
@@ -51,10 +89,12 @@ public final class Activities {
         if (info == null) throw new IllegalStateException("the manifest has no activity " + className);
         Intent intent = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setClassName(info.packageName, info.name)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        launch(info, intent, null, -1, null, null);
+        launch(info, intent, null, -1, null, null, false);
     }
 
-    private static void launch(ActivityInfo info, Intent intent, Activity caller, int requestCode, Bundle saved, Object lastNonConfig) {
+    /** an activity created and resumed on top; a relaunch (recreate) leaves the activity below it as it is */
+    private static void launch(ActivityInfo info, Intent intent, Activity caller, int requestCode, Bundle saved, Object lastNonConfig,
+                               boolean relaunch) {
         String className = info.targetActivity != null ? info.targetActivity : info.name;
         /* the manifest's orientation: Android turns the display before the activity starts */
         snx.android.Device.rotate(info.screenOrientation);
@@ -64,7 +104,7 @@ public final class Activities {
         } catch (ReflectiveOperationException e) {
             throw new RuntimeException("Unable to instantiate activity " + className, e);
         }
-        Record previous = top();
+        Record previous = relaunch ? null : top();
         if (previous != null && !previous.activity().isFinishing()) previous.activity().performPause();
         ContextImpl base = App.context(info.getThemeResource());
         activity.attach(base, App.application(), intent, info, new WindowManagerImpl(activity), lastNonConfig);
@@ -105,8 +145,12 @@ public final class Activities {
         if (r.caller() == next.activity() && r.requestCode() >= 0)
             next.activity().performActivityResult(r.requestCode(), activity.resultCode(), activity.resultData());
         if (wasTop) {
-            next.activity().performStart();
-            next.activity().performResume();
+            if (relaunchPending.remove(next.activity())) {
+                recreate(next.activity());
+            } else {
+                next.activity().performStart();
+                next.activity().performResume();
+            }
         }
     }
 
@@ -126,13 +170,16 @@ public final class Activities {
                 android.content.res.Configuration old = a.appliedConfiguration();
                 int diff = old.diff(config);
                 if (diff == 0) continue;
-                a.applyConfiguration(config);
                 if ((diff & ~a.activityInfo().configChanges) == 0) {
+                    a.applyConfiguration(config);
                     a.onConfigurationChanged(new android.content.res.Configuration(config));
                     android.view.View decor = a.getWindow().peekDecorView();
                     if (decor != null) decor.dispatchConfigurationChanged(new android.content.res.Configuration(config));
-                } else {
+                } else if (r == top()) {
+                    a.applyConfiguration(config);
                     recreate(a);
+                } else {
+                    relaunchPending.add(a);
                 }
             }
         });
@@ -143,16 +190,22 @@ public final class Activities {
         main.post(() -> {
             Record r = record(activity);
             if (r == null) return;
+            relaunchPending.remove(activity);
             activity.setChangingConfigurations(true);
             Bundle state = new Bundle();
-            activity.performPause();
-            activity.performSaveInstanceState(state);
-            activity.performStop();
+            // a stopped one (below the top until now) only saves its state again
+            if (!activity.stoppedState()) {
+                if (activity.isResumed()) activity.performPause();
+                activity.performSaveInstanceState(state);
+                activity.performStop();
+            } else {
+                activity.performSaveInstanceState(state);
+            }
             Object retained = activity.onRetainNonConfigurationInstance();
             activity.performDestroy();
             int index = stack.indexOf(r);
             stack.remove(index);
-            launch(Package.get().activity(activity.getComponentName().getClassName()), activity.getIntent(), r.caller(), r.requestCode(), state, retained);
+            launch(Package.get().activity(activity.getComponentName().getClassName()), activity.getIntent(), r.caller(), r.requestCode(), state, retained, true);
             // launch put it on top: the same place again
             Record made = stack.remove(stack.size() - 1);
             stack.add(index, made);

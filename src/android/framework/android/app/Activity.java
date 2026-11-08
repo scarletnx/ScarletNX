@@ -295,6 +295,8 @@ public class Activity extends ContextThemeWrapper
     public final void performActivityResult(int requestCode, int resultCode, Intent data) { onActivityResult(requestCode, resultCode, data); }
     public final void setChangingConfigurations(boolean changing) { changingConfigurations = changing; }
     public final int resultCode() { return resultCode; }
+    /** whether the activity is stopped (not started, or stopped since): the activity manager's view of it */
+    public final boolean stoppedState() { return stopped; }
     public final Intent resultData() { return resultData; }
     public final ActivityInfo activityInfo() { return info; }
 
