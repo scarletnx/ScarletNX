@@ -10,6 +10,7 @@
 #include "vita/gpu/present.h"
 #include "vita/hle/hle.h"
 #include "vita/loader/vpk.h"
+#include "vita/platform/input.h"
 #include "vita/runtime/process.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
@@ -333,8 +334,8 @@ int snx_vita_main(int argc, char** argv) {
             }
         } else if (!strncmp(a, "--", 2) && strchr(a, '=')) {
             /* the Vita debug table's, --script=, --press_len= and --shot_every= being vita_script, vita_press_len and
-               vita_shot_every (a Switch game's are g_unattended_ini's, whose script the Switch runtime parses), and
-               vulkan_video (which the Vita's AVC decoder doesn't take yet) */
+               vita_shot_every (a Switch game's are g_unattended_ini's, whose script the Switch runtime parses),
+               vulkan_video (which the Vita's AVC decoder doesn't take yet) and gamepad_map */
             char key[64];
             const char* value = ini_arg(a, key, sizeof key);
             const IniOpt* o = NULL;
@@ -346,11 +347,14 @@ int snx_vita_main(int argc, char** argv) {
                 if (!o) o = ini_find(g_debug_ini, key);
                 if (!o && !strcmp(key, "vulkan_video")) o = ini_find(g_graphics_ini, key);
             }
-            if (!o) {
+            if (o)
+                ini_read(o, value);
+            else if (value && !strcmp(key, "gamepad_map")) /* the input's to read, as the 3DS's */
+                vita_input_map(value);
+            else {
                 fprintf(stderr, "scarletnx-vita: unknown setting: %s\n", a);
                 return 2;
             }
-            ini_read(o, value);
         } else if (a[0] == '-' || input) {
             fprintf(stderr, "scarletnx-vita: unexpected argument: %s\n", a);
             usage(stderr);

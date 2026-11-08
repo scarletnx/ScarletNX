@@ -69,4 +69,15 @@ void snx_pad_map_write(const SnxPadMap* map, char* out, size_t size);
 /* the control sending bit, -1 for none */
 int snx_pad_map_find(const SnxPadMap* map, int bit);
 #define SNX_PAD_MAP_TEXT 192 /* room for snx_pad_map_write's text: 165 at most */
+/* what each control sends: the button in its place, own (a map whose unset controls take that) over it, then A and B
+   swapped when swap_ab is set */
+void snx_pad_map_sent(SnxPadMap* map, const SnxPadMap* own, int swap_ab);
+/* The gamepad_map setting's text into *own, for a console whose button for each of the console buttons above is
+   bits[] (0 where it has none, console naming it). A text that does not read keeps *own and says why on stderr, as
+   does each control that sends a button the console lacks */
+void snx_pad_map_setting(SnxPadMap* own, const char* text, const unsigned bits[SNX_PAD_BUTTONS], const char* console);
+/* A stick at x and y past a round dead zone of radius zone, its rim at rim (1, or 32767 for SDL's axes): scaled so the
+   zone's edge is the stick at rest and the rim stays the rim, so a stick pushed along one axis keeps the small part of
+   the other. 0 with x and y zeroed when it is inside the zone, else 1 */
+int snx_pad_dead_zone(double* x, double* y, double zone, double rim);
 #endif

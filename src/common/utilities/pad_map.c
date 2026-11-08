@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "common/utilities/pad_map.h"
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -86,4 +87,43 @@ int snx_pad_map_find(const SnxPadMap* map, int bit) {
     for (int c = 0; c < SNX_PAD_CONTROLS; ++c)
         if (map->bit[c] == bit) return c;
     return -1;
+}
+
+void snx_pad_map_sent(SnxPadMap* map, const SnxPadMap* own, int swap_ab) {
+    SnxPadMap placed;
+    snx_pad_map_position(&placed);
+    *map = *own;
+    snx_pad_map_fill(map, &placed);
+    if (swap_ab) snx_pad_map_swap_ab(map);
+}
+void snx_pad_map_setting(SnxPadMap* own, const char* text, const unsigned bits[SNX_PAD_BUTTONS], const char* console) {
+    SnxPadMap map;
+    char word[64], kept[SNX_PAD_MAP_TEXT];
+    snx_pad_map_unset(&map);
+    if (snx_pad_map_read(&map, text, word, sizeof word)) {
+        snx_pad_map_write(own, kept, sizeof kept);
+        fprintf(
+            stderr,
+            "settings: gamepad_map's \"%s\" is not a control and the button it sends (south:B): it keeps \"%s\"%s\n",
+            word, kept, kept[0] ? "" : ", each control sending the button in its place");
+        return;
+    }
+    *own = map;
+    for (int c = 0; c < SNX_PAD_CONTROLS; ++c)
+        if (map.bit[c] >= 0 && !bits[map.bit[c]]) {
+            const char* button = snx_pad_button_name(map.bit[c]);
+            fprintf(stderr, "settings: gamepad_map's %s:%s sends nothing: the %s has no %s\n", snx_pad_control_key(c),
+                    button, console, button);
+        }
+}
+int snx_pad_dead_zone(double* x, double* y, double zone, double rim) {
+    double r = sqrt(*x * *x + *y * *y);
+    if (r <= zone) {
+        *x = *y = 0;
+        return 0;
+    }
+    double k = ((r < rim ? r : rim) - zone) / (rim - zone) * rim / r;
+    *x *= k;
+    *y *= k;
+    return 1;
 }

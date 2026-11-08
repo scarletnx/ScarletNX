@@ -28,7 +28,7 @@ add_library(snx_vita_program STATIC
 # FFmpeg: the movies' demuxer and decoders (hle/mp4.c, videodec.c, audiodec.c); scarletnx-filesystem: the game
 # module's path as Windows takes it (snx_host_wpath, aot/load.c)
 target_link_libraries(snx_vita_program PUBLIC snx_vita_loader snx_vita_usse scarletnx-filesystem FFmpeg::avformat FFmpeg::avcodec
-                      snx_settings_runtime snx_build_info snx_window_icon snx_vk_common SDL3::SDL3
+                      snx_settings_runtime snx_build_info snx_window_icon snx_vk_common snx_pad_sdl SDL3::SDL3
                       Vulkan::Headers ${CMAKE_DL_LIBS})
 target_include_directories(snx_vita_program PUBLIC "${volk_SOURCE_DIR}")
 # the compute shaders (the texture deswizzle, the decoded pictures' layout, YUV textures, 24-bit color surfaces),
