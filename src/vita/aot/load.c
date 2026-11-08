@@ -3,6 +3,7 @@
 #include "vita/aot/module.h"
 #include "common/utilities/common.h"
 #include "common/platform/file.h"
+#include "common/platform/dl.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,9 +40,12 @@ SnxArmBlock vita_module_block(const VitaModule* m, uint32_t key) {
 }
 bool vita_native_open(const char* path, const VitaImage* image, VitaNative* native, char* error, size_t error_size) {
     *native = (VitaNative){0};
-    native->library = snx_library_open(path, error, error_size);
-    if (!native->library) return false;
-    native->module = snx_library_symbol(native->library, "snx_vita_module_v1");
+    native->library = plat_dl_open(path);
+    if (!native->library) {
+        snprintf(error, error_size, "cannot load %s: %s", path, plat_dl_error());
+        return false;
+    }
+    native->module = plat_dl_sym(native->library, "snx_vita_module_v1");
     if (!vita_module_compatible(native->module, image)) {
         snprintf(error, error_size, "%s was compiled by another build or from another eboot.bin", path);
         vita_native_close(native);
@@ -50,7 +54,7 @@ bool vita_native_open(const char* path, const VitaImage* image, VitaNative* nati
     return true;
 }
 void vita_native_close(VitaNative* native) {
-    if (native->library) snx_library_close(native->library);
+    if (native->library) plat_dl_close(native->library);
     *native = (VitaNative){0};
 }
 static int by_key(const void* a, const void* b) {

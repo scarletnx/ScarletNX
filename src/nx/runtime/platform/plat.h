@@ -7,6 +7,7 @@
 #ifndef SNX_PLAT_H
 #define SNX_PLAT_H
 #include "common/cpu/aarch64/cpu.h"
+#include "common/platform/dl.h"     /* shared libraries */
 #include "common/platform/file.h"   /* reads, maps and the replace of files */
 #include "common/platform/thread.h" /* PMutex, PCond, waits on a word, plat_tid */
 #include "common/platform/time.h"   /* plat_ns, plat_sleep_ns, the wall clock */
@@ -180,13 +181,7 @@ void plat_trap_disarm(u8* p, u64 size);
 void plat_freeze(u8* p, u64 size);
 void plat_thaw(void);
 
-/* ---- shared libraries */
-void* plat_dl_open(const char* path);
-void* plat_dl_sym(void* h, const char* name);
-const char* plat_dl_error(void); /* the reason the last plat_dl_open or plat_dl_sym returned NULL */
-/* the library of that name when the process has it loaded already (RenderDoc's program puts its own in the game it
-   starts), NULL when it hasn't: never loads it */
-void* plat_dl_loaded(const char* name);
+/* ---- the environment */
 int plat_setenv(const char* name, const char* value); /* for this process and what it loads; 0 on success */
 
 /* Host audio output of interleaved signed 16-bit samples, little-endian as the guest's are, implemented by the window

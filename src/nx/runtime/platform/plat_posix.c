@@ -53,7 +53,7 @@
 #include <asm/sigcontext.h> /* the signal frame's ESR record (context_write) */
 #endif
 #endif
-#include <dlfcn.h> /* RTLD_NOLOAD (plat_dl_loaded) */
+#include <dlfcn.h> /* Android's libnativewindow (plat_gpu_buffer) */
 #if defined(__ANDROID__)
 #include <android/hardware_buffer.h>
 #include <jni.h>
@@ -2063,16 +2063,6 @@ static int frozen_wait(void* a, int access) {
 #endif
     }
     return 1;
-}
-
-/* ================================================================ libraries */
-void* plat_dl_loaded(const char* name) {
-#ifdef RTLD_NOLOAD
-    return dlopen(name, RTLD_NOW | RTLD_NOLOAD);
-#else
-    (void)name;
-    return NULL;
-#endif
 }
 
 /* ================================================================ environment */

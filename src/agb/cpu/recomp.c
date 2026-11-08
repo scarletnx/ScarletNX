@@ -9,6 +9,7 @@
 #include "common/cpu/arm/exec.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/llvm/link.h"
+#include "common/platform/dl.h"
 #include <llvm-c/Core.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,7 +30,7 @@ void agb_recomp_init(AgbRecomp* recomp, const char* base) {
 
 void agb_recomp_free(AgbRecomp* recomp) {
     snx_arm_exec_free(recomp->exec);
-    if (recomp->handle) snx_library_close(recomp->handle);
+    if (recomp->handle) plat_dl_close(recomp->handle);
     free(recomp->blocks);
     free(recomp->base);
     *recomp = (AgbRecomp){0};
@@ -64,7 +65,7 @@ static uint64_t code_hash(AgbBoard* board, uint32_t pc, int thumb, size_t count)
 
 static void* module_symbol(void* handle, size_t index) {
     char* name = block_name(index);
-    void* symbol = name ? snx_library_symbol(handle, name) : NULL;
+    void* symbol = name ? plat_dl_sym(handle, name) : NULL;
     free(name);
     return symbol;
 }
@@ -320,7 +321,8 @@ static void* open_module(AgbRecomp* recomp, char* error, size_t error_size) {
     /* a name without a directory would not be looked up in the working directory */
     char* library = strchr(path, '/') || strchr(path, '\\') ? snx_format("%s.so", path) : snx_format("./%s.so", path);
     if (!library) return NULL;
-    void* handle = snx_library_open(library, error, error_size);
+    void* handle = plat_dl_open(library);
+    if (!handle) snprintf(error, error_size, "cannot load %s: %s", library, plat_dl_error());
     free(library);
     if (!handle) return NULL;
     for (size_t i = 1; i <= recomp->count; ++i)
@@ -340,7 +342,7 @@ static void stamp(const AgbRecomp* recomp, unsigned long long* size, unsigned lo
 /* Links every known block into the cached module. */
 static int relink(AgbRecomp* recomp, AgbBoard* board, char* error, size_t error_size) {
     if (recomp->handle) {
-        snx_library_close(recomp->handle);
+        plat_dl_close(recomp->handle);
         recomp->handle = NULL;
     }
     for (size_t i = 1; i <= recomp->count; ++i) {

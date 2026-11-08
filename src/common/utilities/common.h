@@ -25,12 +25,6 @@ char* snx_strdup(const char* s);
 char* snx_format(const char* fmt, ...);
 /* 1 when text ends with ending, ASCII letters of either case alike (a file's extension) */
 int snx_ends_with_nocase(const char* text, const char* ending);
-/* a shared library (a DLL on Windows, its UTF-8 path widened) loaded with its symbols bound now and kept to itself
-   (RTLD_NOW | RTLD_LOCAL); NULL with "cannot load PATH: reason" in error when it can't be */
-void* snx_library_open(const char* path, char* error, size_t error_size);
-/* a symbol of a library snx_library_open loaded, NULL when it has none of that name */
-void* snx_library_symbol(void* library, const char* name);
-void snx_library_close(void* library);
 /* a path's / turned into \ on Windows, the separator its system shows (C:\Users\...); nothing elsewhere */
 void snx_path_native(char* path);
 /* the room of a path made in a caller's buffer: Linux's PATH_MAX, past what Windows takes without its long paths */

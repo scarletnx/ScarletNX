@@ -57,14 +57,14 @@ if(TARGET OpenSSL::Crypto)
 endif()
 
 # The host's thread primitives (platform/thread.h) that every driver shares: mutexes, condition variables, waits on
-# a word, thread ids; the clocks and sleep (platform/time.h); the files (platform/file.h); and the address space
-# (platform/vm.h). No guest type, setting or SDL enters this target
+# a word, thread ids; the clocks and sleep (platform/time.h); the files (platform/file.h); the address space
+# (platform/vm.h); and shared libraries (platform/dl.h). No guest type, setting or SDL enters this target
 add_library(scarletnx-platform STATIC platform/thread.c platform/thread_spawn.c platform/time.c platform/sleep.c
-    platform/file.c platform/file_map.c platform/file_share.c platform/file_replace.c platform/vm.c)
+    platform/file.c platform/file_map.c platform/file_share.c platform/file_replace.c platform/vm.c platform/dl.c)
 set_target_properties(scarletnx-platform PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON)
 target_compile_definitions(scarletnx-platform PRIVATE _FILE_OFFSET_BITS=64 _CRT_SECURE_NO_WARNINGS)
 target_compile_options(scarletnx-platform PRIVATE -Wall -Wextra -Werror=missing-prototypes)
-target_link_libraries(scarletnx-platform PUBLIC Threads::Threads)
+target_link_libraries(scarletnx-platform PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 
 # The same indexed host filesystem and shared immutable file views (platform/file.h) serve NX
 # and CTR. No guest ABI or runtime/platform dependency enters this target.

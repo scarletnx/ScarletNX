@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "3ds/aot/ctr_module.h"
 #include "common/utilities/common.h"
+#include "common/platform/dl.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -10,7 +11,7 @@
 
 void snx_ctr_native_close(SnxCtrNative* native) {
     if (!native) return;
-    if (native->library) snx_library_close(native->library);
+    if (native->library) plat_dl_close(native->library);
     *native = (SnxCtrNative){0};
 }
 bool snx_ctr_native_open(const char* path, const SnxCtrImage* image, SnxCtrNative* native, char* error,
@@ -22,9 +23,12 @@ bool snx_ctr_native_open(const char* path, const SnxCtrImage* image, SnxCtrNativ
         snprintf(error, error_size, "invalid native module request");
         return false;
     }
-    native->library = snx_library_open(path, error, error_size);
-    if (!native->library) return false;
-    native->module = snx_library_symbol(native->library, "snx_ctr_module_v1");
+    native->library = plat_dl_open(path);
+    if (!native->library) {
+        snprintf(error, error_size, "cannot load %s: %s", path, plat_dl_error());
+        return false;
+    }
+    native->module = plat_dl_sym(native->library, "snx_ctr_module_v1");
     if (!snx_ctr_module_compatible(native->module, image)) {
         snprintf(error, error_size, "native module ABI/profile/image identity mismatch");
         snx_ctr_native_close(native);

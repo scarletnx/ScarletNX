@@ -3012,25 +3012,3 @@ int snx_ends_with_nocase(const char* text, const char* ending) {
         if (snx_to_lower(text[n - e + i]) != snx_to_lower(ending[i])) return 0;
     return 1;
 }
-#ifdef _WIN32
-void* snx_library_open(const char* path, char* error, size_t error_size) {
-    wchar_t* w = wide(path);
-    HMODULE library = w ? LoadLibraryW(w) : NULL;
-    if (!library && error_size)
-        snprintf(error, error_size, "cannot load %s: error %lu", path, (unsigned long)GetLastError());
-    free(w);
-    return (void*)library;
-}
-void* snx_library_symbol(void* library, const char* name) {
-    return (void*)(uintptr_t)GetProcAddress((HMODULE)library, name);
-}
-void snx_library_close(void* library) { FreeLibrary((HMODULE)library); }
-#else
-void* snx_library_open(const char* path, char* error, size_t error_size) {
-    void* library = dlopen(path, RTLD_NOW | RTLD_LOCAL);
-    if (!library && error_size) snprintf(error, error_size, "cannot load %s: %s", path, dlerror());
-    return library;
-}
-void* snx_library_symbol(void* library, const char* name) { return dlsym(library, name); }
-void snx_library_close(void* library) { dlclose(library); }
-#endif

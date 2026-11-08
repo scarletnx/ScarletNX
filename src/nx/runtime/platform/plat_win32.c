@@ -371,9 +371,6 @@ void plat_freeze(u8* p, u64 size) {
 }
 void plat_thaw(void) {}
 
-/* ================================================================ libraries */
-void* plat_dl_loaded(const char* name) { return GetModuleHandleA(name); }
-
 /* ================================================================ environment */
 int plat_setenv(const char* name, const char* value) { return _putenv_s(name, value) ? -1 : 0; }
 
