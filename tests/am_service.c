@@ -7,6 +7,7 @@
 
 #include "nx/hle/services/am.c"
 #include "nx/hle/hle.c"
+int g_opt_tv_mode = 1; /* the TV mode in effect, which options.c keeps: TV mode */
 
 extern u64 g_test_offscreen_opened, g_test_offscreen_closed; /* am_service_stubs.c */
 
@@ -595,10 +596,10 @@ static void test_cpu_boost(void) {
     CHECK(nn_am_service_ICommonStateGetter_SetCpuBoostMode(NULL, 1) == 0 && g_test_apm_boost == 1);
     CHECK(nn_am_service_ICommonStateGetter_GetCurrentPerformanceConfiguration(NULL, &config) == 0 &&
           config == 0x00020003u);
-    g_settings.tv_mode = 1;
+    g_opt_tv_mode = 1;
     CHECK(nn_am_service_ICommonStateGetter_GetCurrentPerformanceConfiguration(NULL, &config) == 0 &&
           config == 0x92220009u);
-    g_settings.tv_mode = 0;
+    g_opt_tv_mode = 0;
 }
 
 /* a lock accessor from GetHomeButtonReaderLockAccessor (30) and GetReaderLockAccessorEx (31): its event signaled
@@ -849,7 +850,7 @@ static void test_messages(void) {
     close_handles();
     am_events_release();
 }
-/* the display resolution change event, and the performance mode message, when docked's Auto changes the TV mode */
+/* the display resolution change event, and the performance mode message, when tv_mode's Auto changes the TV mode */
 static void test_display_mode_changed(void) {
     nn_am_AppletMessage m = 0;
     am_init();
@@ -1057,7 +1058,7 @@ static void test_application_proxy(void) {
 }
 
 int main(void) {
-    g_settings.tv_mode = 0; /* handheld, as the test was written for */
+    g_opt_tv_mode = 0; /* handheld, as the test was written for */
     hle_init();
     g_hle.kernel.title_id = 0x0100BF00112C0000ull; /* the title the test was written for */
     test_application_proxy();

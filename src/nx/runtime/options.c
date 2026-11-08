@@ -40,21 +40,30 @@ void options_language_set(const IniOpt* o, const char* v) {
 }
 
 /* ---- TV mode ---- */
-/* the choice in effect, docked's (0 Off, 1 On, 2 Auto) until a step changes it for the run, and Auto's view of the
-   host. g_settings.tv_mode holds the mode in effect, 0 or 1, so every service reads it as it always has */
+/* the choice in effect, tv_mode's (0 Auto, 1 Docked, 2 Handheld), which the .ini keeps (g_settings.tv_mode too),
+   until a step changes it for the run, and Auto's view of the host. g_opt_tv_mode is the mode in effect, 0 handheld
+   or 1 TV, which the services read (snx_tv_mode) */
 static struct {
     int choice;     /* atomic: the game's menu shows it from the renderer's thread */
     int told;       /* the mode the services last heard of: a step there and back is no change */
     int on_charger; /* the host's state at Auto's last read: 1, 0 or -1 */
     int watch;      /* 1 when the platform watches the power source, 0 when Auto polls it */
     u64 poll_next;  /* with no watcher, Auto's next read, in plat_ns */
-} g_tv = {.choice = 1, .told = 1};
+} g_tv = {.told = 1};
+int g_opt_tv_mode = 1;
 /* a host with no watcher: rarely, since a charger is not a thing that changes every second */
 #define TV_POLL_NS (15ull * 1000000000ull)
-/* Auto picks TV mode unless the host runs on its battery. A host whose state cannot be read is on TV mode */
+/* a phone or tablet, whose Auto plays on its own screen */
+#if defined(__ANDROID__) || defined(SNX_IOS)
+#define TV_PHONE 1
+#else
+#define TV_PHONE 0
+#endif
+int options_tv_mode_auto(int phone, int on_charger) { return !phone && on_charger != 0; }
+/* the mode the choice gives now: Auto's asks the host's power state where it is a computer */
 static int tv_mode_now(void) {
-    if (g_tv.choice != 2) return g_tv.choice;
-    return plat_power_on_charger() != 0;
+    if (g_tv.choice) return g_tv.choice == 1;
+    return TV_PHONE ? 0 : options_tv_mode_auto(0, plat_power_on_charger());
 }
 void options_tv_mode_set(const IniOpt* o, const char* v) {
     char* end;
@@ -63,26 +72,31 @@ void options_tv_mode_set(const IniOpt* o, const char* v) {
     if (end == v) return;
     __atomic_store_n(&g_tv.choice, n < 0 ? 0 : n > 2 ? 2 : (int)n, __ATOMIC_RELAXED);
     g_tv.told = tv_mode_now(); /* the mode the game starts in is no change */
-    __atomic_store_n(&g_settings.tv_mode, g_tv.told, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_opt_tv_mode, g_tv.told, __ATOMIC_RELAXED);
 }
-/* Auto's read of the host's power state: the mode it picks in effect, and its line in the log when say asks for it or
+/* Auto's read of a computer's power state: the mode it picks in effect, and its line in the log when say asks for it or
    the state or the mode changed since the last read */
 static void tv_auto_read(int say) {
-    int on = plat_power_on_charger(), mode = on != 0;
+    int on = plat_power_on_charger(), mode = options_tv_mode_auto(0, on);
     if (say || on != g_tv.on_charger || mode != snx_tv_mode()) {
         if (on > 0)
-            LOG("power: the host is on its charger: TV mode Auto picks %s\n", mode ? "TV mode" : "handheld mode");
+            LOG("power: the host is on its charger: tv_mode=0 (Auto) picks %s\n", mode ? "TV mode" : "handheld mode");
         else if (on == 0)
-            LOG("power: the host is on its battery: TV mode Auto picks %s\n", mode ? "TV mode" : "handheld mode");
+            LOG("power: the host is on its battery: tv_mode=0 (Auto) picks %s\n", mode ? "TV mode" : "handheld mode");
         else
-            LOG("power: the host's power state cannot be read: TV mode Auto picks TV mode\n");
+            LOG("power: the host's power state cannot be read: tv_mode=0 (Auto) picks TV mode\n");
     }
     g_tv.on_charger = on;
     if (!g_tv.watch) g_tv.poll_next = plat_ns() + TV_POLL_NS;
-    __atomic_store_n(&g_settings.tv_mode, mode, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_opt_tv_mode, mode, __ATOMIC_RELAXED);
 }
-/* Auto's read now, said in the log, with a change the watcher marked before it */
+/* Auto's read now, said in the log, with a change the watcher marked before it; a phone's Auto is handheld mode */
 static void tv_auto_now(void) {
+    if (TV_PHONE) {
+        LOG("power: tv_mode=0 (Auto) picks handheld mode: a phone or tablet plays on its own screen\n");
+        __atomic_store_n(&g_opt_tv_mode, 0, __ATOMIC_RELAXED);
+        return;
+    }
     if (g_tv.watch) (void)plat_power_take_change();
     tv_auto_read(1);
 }
@@ -96,29 +110,32 @@ static void tv_mode_tell(void) {
     hid_mode_changed();
 }
 void options_tv_mode_start(void) {
-    if (g_tv.choice != 2) return; /* fixed On and Off need no watcher */
-    g_tv.watch = plat_power_watch() == 0;
+    if (g_tv.choice) return; /* Docked and Handheld need no watcher, nor a phone's Auto */
+    if (!TV_PHONE) g_tv.watch = plat_power_watch() == 0;
     tv_auto_now();
     tv_mode_tell();
 }
 void options_tv_mode_update(void) {
-    /* the host read again when its watcher marked a change, or with none every TV_POLL_NS, and nowhere else */
-    if (g_tv.choice == 2 && (g_tv.watch ? plat_power_take_change() : plat_ns() >= g_tv.poll_next)) tv_auto_read(0);
+    /* a computer's Auto reads the host again when its watcher marked a change, or with none every TV_POLL_NS, and
+       nowhere else */
+    if (!g_tv.choice && !TV_PHONE && (g_tv.watch ? plat_power_take_change() : plat_ns() >= g_tv.poll_next))
+        tv_auto_read(0);
     /* a step's mode too: told here, out of the input's lock the menu's pads step under, which hid's change takes */
     tv_mode_tell();
 }
 int options_tv_mode_choice(void) { return __atomic_load_n(&g_tv.choice, __ATOMIC_RELAXED); }
 int options_tv_mode_step(int step, char* text, size_t size) {
-    /* round On (1), Off (0) and Auto (2): forward a value down, from Off round to Auto */
-    int choice = (g_tv.choice + (step < 0 ? 1 : 2)) % 3;
+    /* round Docked (1), Handheld (2) and Auto (0): forward a value up, from Handheld round to Auto */
+    int choice = (g_tv.choice + (step < 0 ? 2 : 1)) % 3;
     char word[16], line[64];
     __atomic_store_n(&g_tv.choice, choice, __ATOMIC_RELAXED);
-    if (choice == 2) {
-        if (!g_tv.watch) g_tv.watch = plat_power_watch() == 0; /* once: on macOS each call starts a thread */
+    if (choice == 0) {
+        if (!TV_PHONE && !g_tv.watch)
+            g_tv.watch = plat_power_watch() == 0; /* once: on macOS each call starts a thread */
         tv_auto_now();
     } else
-        __atomic_store_n(&g_settings.tv_mode, choice, __ATOMIC_RELAXED);
-    ini_word(ini_find(g_display_ini, "docked"), choice, word, sizeof word);
+        __atomic_store_n(&g_opt_tv_mode, choice == 1, __ATOMIC_RELAXED);
+    ini_word(ini_find(g_display_ini, "tv_mode"), choice, word, sizeof word);
     snprintf(line, sizeof line, "TV mode: %s (%s)", word, snx_tv_mode() ? "TV mode" : "handheld mode");
     LOG("%s\n", line);
     if (size) snprintf(text, size, "%s", line);
@@ -616,6 +633,33 @@ static void vk_descriptors_old(void) {
     }
 }
 
+int options_docked_old(const char* old) {
+    if (!strcmp(old, "0")) return 2;
+    if (!strcmp(old, "2")) return 0;
+    if (!strcmp(old, "1")) return -1;
+    return -2;
+}
+/* docked, deprecated for tv_mode, read while the file and the command line give tv_mode none */
+static void docked_old(void) {
+    const char* old = ini_deprecated_value("docked");
+    int now;
+    if (!old || override_of("tv_mode") || store_find("tv_mode")) return;
+    now = options_docked_old(old);
+    if (now == -2)
+        WARN("settings: docked=%s, deprecated, is none of 0, 1 and 2: tv_mode takes its default, 0 (Auto) "
+             "(docs/user/deprecations.md)\n",
+             old);
+    else if (now == -1)
+        WARN("settings: docked=%s, deprecated, was its default: tv_mode takes its own, 0 (Auto), TV mode on a computer "
+             "on its charger, handheld mode on its battery or on a phone (docs/user/deprecations.md)\n",
+             old);
+    else {
+        store_put("tv_mode", now ? "2" : "0");
+        WARN("settings: docked=%s, deprecated, is tv_mode=%d (%s) now (docs/user/deprecations.md)\n", old, now,
+             now ? "Handheld" : "Auto");
+    }
+}
+
 static void say_deprecated(void) {
     const char* keys[STORE_MAX];
     char line[2048];
@@ -701,6 +745,7 @@ void ini_open(const char* path) {
     memory_fit_old();
     astc_bc_old();
     vk_descriptors_old();
+    docked_old();
     n = pending_take(taken);
     say_deprecated();
     apply_all();

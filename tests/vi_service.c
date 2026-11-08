@@ -7,6 +7,7 @@
 
 #include "nx/hle/services/vi.c"
 #include "nx/hle/hle.c"
+int g_opt_tv_mode = 1; /* the TV mode in effect, which options.c keeps: TV mode */
 
 u8* g_mem;
 static unsigned test_checks, test_objects, test_kobjs;
@@ -166,7 +167,7 @@ static u32 transact(u32 code, const void* payload, u32 n) {
 
 
 int main(void) {
-    g_settings.tv_mode = 0; /* handheld, as the test was written for */
+    g_opt_tv_mode = 0; /* handheld, as the test was written for */
     hle_init();
     u8 gbuf[VI_GBUF], req[4 + 4 + 8 + VI_GBUF], q[4 + 8 + VI_QBI];
     u32 v, n;
@@ -178,21 +179,21 @@ int main(void) {
     svc_vi_init();
 
     /* the display's hotplug and mode changed events: one event of each, kept across the asks, and signaled when
-       docked's Auto changes the mode while the game runs */
+       tv_mode's Auto changes the mode while the game runs */
     {
         u32 hotplug = 0, changed = 0;
         CHECK(nn_visrv_sf_IManagerDisplayService_GetDisplayHotplugEvent(NULL, 0, &hotplug) == 0);
         CHECK(nn_visrv_sf_IManagerDisplayService_GetDisplayModeChangedEvent(NULL, 0, &changed) == 0);
         CHECK(hotplug && changed && g_hle.vi.hotplug && g_hle.vi.mode_changed);
         CHECK(!kev(g_hle.vi.hotplug)->signaled && !kev(g_hle.vi.mode_changed)->signaled);
-        g_settings.tv_mode = 1;
+        g_opt_tv_mode = 1;
         vi_vsync_tick();
         CHECK(kev(g_hle.vi.hotplug)->signaled && kev(g_hle.vi.mode_changed)->signaled);
         kev(g_hle.vi.hotplug)->signaled = 0;
         kev(g_hle.vi.mode_changed)->signaled = 0;
         vi_vsync_tick(); /* the same mode again is no change */
         CHECK(!kev(g_hle.vi.hotplug)->signaled && !kev(g_hle.vi.mode_changed)->signaled);
-        g_settings.tv_mode = 0;
+        g_opt_tv_mode = 0;
         vi_vsync_tick();
         CHECK(kev(g_hle.vi.hotplug)->signaled && kev(g_hle.vi.mode_changed)->signaled);
     }
