@@ -19,6 +19,7 @@
 #include "android/hwui/text.h"
 #include "android/res/xml_jni.h"
 #include "android/runtime/app.h"
+#include "android/runtime/fds.h"
 #include "android/runtime/install.h"
 #include "android/runtime/jvm.h"
 #include "common/utilities/common.h"
@@ -187,7 +188,7 @@ static void run_app(Run* run) {
     if (!android_app_register(env) || !android_xml_register(env) || !android_assets_register(env) ||
         !android_sqlite_register(env) || !android_text_register(env) || !android_image_register(env) ||
         !android_render_register(env) || !android_bridge_register(env) || !android_egl_register(env) ||
-        !android_audio_register(env))
+        !android_audio_register(env) || !android_fds_register(env))
         return;
     jclass main_class = (*env)->FindClass(env, "snx/android/Main");
     jmethodID main = main_class ? (*env)->GetStaticMethodID(env, main_class, "main", "([Ljava/lang/String;)V") : NULL;
