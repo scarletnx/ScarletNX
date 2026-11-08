@@ -679,6 +679,10 @@ static void test_pipe2_umask_session(void) {
     expect_int("eventfd read", (int64_t)CALL("read", I32(event), P(&count), 8), 8);
     expect_int("eventfd's count", (int64_t)count, 5);
     CALL("close", I32(event));
+#else
+    SAID_ENOSYS("eventfd", CALL("eventfd", 0, 0));
+#endif
+    /* memfd_create on every host: Linux's own, an unlinked temporary file elsewhere */
     int64_t memory = (int64_t)CALL("memfd_create", P("android_bionic"), 1);
     expect_int("memfd_create", memory >= 0, 1);
     expect_int("memfd write", (int64_t)CALL("write", I32(memory), P("mem"), 3), 3);
@@ -686,10 +690,6 @@ static void test_pipe2_umask_session(void) {
     expect_int("memfd pread", (int64_t)CALL("pread64", I32(memory), P(mem), 3, 0), 3);
     expect_text("memfd's bytes", mem, "mem");
     CALL("close", I32(memory));
-#else
-    SAID_ENOSYS("eventfd", CALL("eventfd", 0, 0));
-    SAID_ENOSYS("memfd_create", CALL("memfd_create", P("android_bionic"), 0));
-#endif
 }
 
 /* getpriority, the kernel's system call: after the bridge started (test_guest_locale), as guest code always runs, for

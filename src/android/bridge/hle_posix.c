@@ -1109,13 +1109,8 @@ static void g_eventfd(CPU* c, void* data) {
     (void)data;
     X(0) = wide_int(eventfd((unsigned)X(0), (int)X(1))); /* EFD_CLOEXEC, EFD_NONBLOCK and EFD_SEMAPHORE are Linux's */
 }
-static void g_memfd_create(CPU* c, void* data) {
-    (void)data;
-    X(0) = wide_int(memfd_create(STR(0), (unsigned)X(1))); /* MFD_CLOEXEC and MFD_ALLOW_SEALING are Linux's */
-}
 #else
 ABSENT(eventfd);
-ABSENT(memfd_create);
 #endif
 #ifdef _WIN32
 ABSENT(chown);
@@ -2451,9 +2446,9 @@ const HleSymbol hle_posix[] = {
     A(pwrite64, g_pwrite), A(pipe2, g_pipe2), A(umask, g_umask_set), A(faccessat, g_faccessat),
     A(unlinkat, g_unlinkat), A(getpriority, g_getpriority), A(mkstemp, g_mkstemp), ABSENT_ENTRY(setsid),
 #if defined(__linux__)
-    A(eventfd, g_eventfd), A(memfd_create, g_memfd_create),
+    A(eventfd, g_eventfd),
 #else
-    ABSENT_ENTRY(eventfd), ABSENT_ENTRY(memfd_create),
+    ABSENT_ENTRY(eventfd),
 #endif
     A(stat, g_stat), A(lstat, g_lstat), A(fstat, g_fstat), A(fstat64, g_fstat), A(close, g_close),
     P(chmod), P(dup), P(dup2), P(isatty), P(rmdir), P(unlink), P(opendir), P(closedir),
