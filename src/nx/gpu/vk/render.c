@@ -2022,7 +2022,10 @@ static void draw_storage_read(const DsState* ds, VkDrawStorage* draw, VkSh* cons
             DsCbBlock in = ds_cb_inline(ds, stage, SH_GBUF_BANK(desc));
             u64 cb = in.bytes ? 0 : ds->bind.cb_addr[stage][SH_GBUF_BANK(desc)];
             if (cb && SH_GBUF_BANK(desc)) vk_buf_mem_need(cb + SH_GBUF_OFFSET(desc), 8);
-            if (cb) vk_gmem_words(cb + SH_GBUF_OFFSET(desc), v, SH_GBUF_BANK(desc) ? 2 : 3);
+            if (cb) { /* words of a constant buffer, not a header: a pending write there is waited for */
+                gmem_read(cb + SH_GBUF_OFFSET(desc), v, SH_GBUF_BANK(desc) ? 8 : 12);
+                snx_le32_array(v, SH_GBUF_BANK(desc) ? 2 : 3);
+            }
             for (u32 w = 0; in.bytes && w < (SH_GBUF_BANK(desc) ? 2u : 3u); w++)
                 v[w] = ds_inline_word(in, SH_GBUF_OFFSET(desc) + 4 * w);
             b->size = vk_gbuf_desc(stage, desc, v, &b->addr);
