@@ -393,6 +393,7 @@ static inline DsCbBlock ds_cb_inline(const DsState* ds, int stage, u32 bank) {
 #define DX_CBUFS 8 /* constant buffer slots of a dispatch */
 typedef struct {
     u64 code;               /* the program's GPU VA */
+    u32 code_bytes;         /* its code's bytes as its control section gives them (rounded up), 0 when not known */
     u32 grid[3];            /* blocks, x y z */
     u32 block[3];           /* threads of a block, x y z */
     u32 shared;             /* shared memory bytes */

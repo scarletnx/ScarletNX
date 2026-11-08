@@ -107,6 +107,12 @@ static u64 g_cval;
 static int g_ar_gfx;
 static u64 g_org_cap;
 u64 g_vk_dispatches, g_vk_cs_batches, g_vk_cs_wait_ns;
+/* A program's window: 80 zero bytes in place of a header, then the bytes of its code that cs_read_code reads, and zeros
+   after them. It takes as much code as a graphics program's window (pipeline.c's SH_CODE): an Ounce game has a
+   compute program of 256,160 bytes. In a window of 64 KiB that program had no end, and each of its dispatches was
+   skipped as not translated */
+#define CS_CODE   0x80000u
+#define CS_WINDOW (CS_CODE + 80u)
 #if defined(SNX_TRACY)
 u64 g_vk_cs_cpu_reads; /* dispatches kept on the compute queue because the CPU reads what they write */
 #endif
@@ -695,11 +701,11 @@ static CsPipe g_cs_alloc_failed = {.failed = 1}; /* out of memory: not cached, r
    tables read through read; *blen: the bytes of the window the program takes */
 static u64 cs_key(const u8* code, u32 flow_base, u32 lx, u32 ly, u32 lz, u32 shm, const CsKey* k, VkCbReader read,
                   u32* blen) {
-    u64 key = vk_shader_hash(code, 0x10000 + 80, blen, read) ^ ((u64)lx << 40) ^ ((u64)ly << 48) ^ ((u64)lz << 56) ^
+    u64 key = vk_shader_hash(code, CS_WINDOW, blen, read) ^ ((u64)lx << 40) ^ ((u64)ly << 48) ^ ((u64)lz << 56) ^
               ((u64)shm << 20) ^ ((u64)k->image << 32) ^ (u64)k->tex_int * 0x9E3779B97F4A7C15ull ^
               (u64)k->tex_sint * 0xC2B2AE3D27D4EB4Full ^ (u64)k->image_sint * 0xA24BAED4963EE407ull ^
               (u64)k->tex_rect * 0x165667B19E3779F9ull;
-    if (shader_absolute_flow(code, 0x10000 + 80)) key ^= (u64)flow_base * 0xD6E8FEB86659FD93ull;
+    if (shader_absolute_flow(code, CS_WINDOW)) key ^= (u64)flow_base * 0xD6E8FEB86659FD93ull;
     for (u32 q = 0; q < SH_MAXTEX; q++) key ^= (u64)k->query[q] * (0x9E3779B97F4A7C15ull + 2 * q + 1) << (q & 15);
     return key;
 }
@@ -712,7 +718,7 @@ static void cs_keep(const CsPipe* p, const u8* code, u32 blen, u32 flow_base, u3
                     const CsKey* k) {
     const u32 launch[5] = {lx, ly, lz, shm, flow_base};
     u32 n = ((blen + 7u) & ~7u) + 64u;
-    if (n > 0x10000 + 80) n = 0x10000 + 80;
+    if (n > CS_WINDOW) n = CS_WINDOW;
     vk_pf_cspipe(p->key, launch, &p->cbr, k, sizeof *k, code, n);
 }
 static CsPipe* cs_pipe(const u8* code, u32 flow_base, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k) {
@@ -744,7 +750,7 @@ static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx,
        otherwise: an access past the array would read and write another word */
     u32 shared_max = g_vk.props.limits.maxComputeSharedMemorySize, shared, reach;
     if (shm > shared_max) {
-        if (!shader_shared_fit(code, 0x10000 + 80, p->si.cs_local, shm, shared_max, &shared, &reach)) {
+        if (!shader_shared_fit(code, CS_WINDOW, p->si.cs_local, shm, shared_max, &shared, &reach)) {
             char upto[48];
             if (reach == SH_SHARED_ANY)
                 snprintf(upto, sizeof upto, "an address it can't bound");
@@ -769,9 +775,9 @@ static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx,
     p->si.tex_rect_mask = k.tex_rect;
     memcpy(p->si.tex_query_hint, k.query, sizeof p->si.tex_query_hint);
     const char* corpus = vk_corpus_dir();
-    if (corpus) shader_corpus_save(corpus, code, blen, 0x10000 + 80, ST_CS, &p->si, key);
+    if (corpus) shader_corpus_save(corpus, code, blen, CS_WINDOW, ST_CS, &p->si, key);
     size_t nw = 0;
-    u32* spv = vk_translate_spirv(code, 0x10000 + 80, ST_CS, &p->si, &nw, read, &p->cbr);
+    u32* spv = vk_translate_spirv(code, CS_WINDOW, ST_CS, &p->si, &nw, read, &p->cbr);
     if (!spv || p->si.unsupported) {
         p->failed = 1;
         LOG("vulkan: compute %016llx not translated: %s\n", (unsigned long long)key,
@@ -864,9 +870,9 @@ static int cs_reads_same(const VkCbReads* a, const VkCbReads* b) {
 int vk_cs_pipe_load(const u32 launch[5], const u32* cbr, u32 ncbr, const u8* vkey, u32 nkey, const u8* code, u32 ncode,
                     int record) {
     CsKey k;
-    if (nkey != sizeof k || ncode > 0x10000 + 80) return 0;
+    if (nkey != sizeof k || ncode > CS_WINDOW) return 0;
     memcpy(&k, vkey, sizeof k);
-    u8* window = calloc(1, 0x10000 + 80);
+    u8* window = calloc(1, CS_WINDOW);
     VkCbRead* reads = ncbr ? malloc(ncbr * sizeof *reads) : NULL;
     if (!window || (ncbr && !reads)) {
         free(window);
@@ -962,13 +968,16 @@ static int cs_code_unchanged(u64 pa, u32 len, u64 gw, u32 wseen) {
     }
     return 1;
 }
-/* Both the initial translation and format specialization use the same bounded program. Returns the bytes of guest
-   memory it read from pa */
-static u32 cs_read_code(u64 pa, u8* dst) {
-    u32 code_size = 0x10000;
+/* Both the initial translation and format specialization use the same bounded program, in the window dst (CS_WINDOW
+   bytes). bytes: the program's code bytes as its front end knows them (DispatchState.code_bytes), 0 when it doesn't.
+   *used: how far dst held bytes other than zero after the last read into it, which only this function sets. Returns
+   the bytes of guest memory it read from pa */
+static u32 cs_read_code(u64 pa, u32 bytes, u8* dst, u32* used) {
     /* NVN puts a header with its program size 0x100 bytes before compute code. Bounded by it, a BRX whose
-       targets aren't resolved can't scan into the unrelated programs that follow in the same window. Other
-       clients keep the whole window. */
+       targets aren't resolved can't scan into the unrelated programs that follow in the same window. An Ounce
+       program has no header: its control section gives its size (bytes). Other clients keep 64 KiB. A program
+       longer than CS_CODE stays cut, and is not translated */
+    u32 code_size = !bytes ? 0x10000 : bytes < CS_CODE ? bytes : CS_CODE;
     u8 header[8];
     if (pa >= 0x100 && gmem_read_code_cpu(pa - 0x100, header, 8) == 8) {
         u32 magic = snx_ld_le32(header), declared = snx_ld_le32(header + 4);
@@ -976,12 +985,15 @@ static u32 cs_read_code(u64 pa, u8* dst) {
             gmem_host(pa, declared))
             code_size = declared;
     }
-    memset(dst, 0, 0x10000 + 80);
+    /* the reads below write all of [80, 80 + code_size), zeros past what they find: only what an earlier, longer
+       program left past that is cleared, not the whole window (8 times the old 64 KiB) at every read */
+    if (*used > 80 + code_size) memset(dst + 80 + code_size, 0, *used - (80 + code_size));
+    *used = 80 + code_size;
     /* what the GPU holds in the window lands only when the program may reach it (gmem_code_cut) */
     u64 cpu = gmem_read_code_cpu(pa, dst + 80, code_size);
     if (cpu < code_size) {
         u32 len;
-        vk_shader_hash(dst, 0x10000 + 80, &len, cs_cb_read);
+        vk_shader_hash(dst, CS_WINDOW, &len, cs_cb_read);
         if (gmem_code_cut(len, 80 + cpu, 80 + code_size)) gmem_read_code(pa, dst + 80, code_size);
     }
     return code_size;
@@ -1162,16 +1174,18 @@ void vk_dispatch(const DispatchState* d) {
         }
     }
     if (!same || fe->shader_generation != g_vk.shader_generation || fe->epoch != epoch) {
-        static u8 code_buf[0x10000 + 80]; /* compute programs have no header: 80 zero bytes stand in for one */
+        static u8 code_buf[CS_WINDOW]; /* compute programs have no header: 80 zero bytes stand in for one */
+        static u32 code_used;
         CsKey unkeyed = {0};
         u32 wseen = vk_ww_now();
         u64 gw = gpu_mem_generation(); /* both before the bytes are read */
-        u32 code_len = cs_read_code(pa, code_buf), reach;
+        u32 code_len = cs_read_code(pa, d->code_bytes, code_buf, &code_used), reach;
+        /* same window and cbuf reads: same program, so skip vk_shader_hash's walk (5% of one game's GPU thread). The
+           window's zeros past what was read are left out */
+        u64 h = vk_hash(code_buf, 80 + (u64)code_len);
         /* the program's own bytes, which its translation reaches: what follows it in the window can change freely */
         vk_shader_hash(code_buf, sizeof code_buf, &reach, cs_cb_read);
         if (reach > 80 && reach - 80 < code_len) code_len = reach - 80;
-        /* same window and cbuf reads: same program, so skip vk_shader_hash's walk (5% of one game's GPU thread) */
-        u64 h = vk_hash(code_buf, sizeof code_buf);
         if (!same || h != fe->code_hash) {
             p = cs_pipe(code_buf, (u32)(pa - 80), lx, ly, lz, shm, unkeyed);
             fe->code_hash = h;
@@ -1233,8 +1247,9 @@ void vk_dispatch(const DispatchState* d) {
             p->keyed->si.tex_sint_mask != ck.tex_sint || (p->keyed->si.rt_sint_mask >> 8) != ck.image_sint ||
             p->keyed->si.tex_rect_mask != ck.tex_rect ||
             memcmp(p->keyed->si.tex_query_hint, ck.query, sizeof ck.query) != 0) {
-            static u8 keyed_code[0x10000 + 80];
-            cs_read_code(pa, keyed_code);
+            static u8 keyed_code[CS_WINDOW];
+            static u32 keyed_used;
+            cs_read_code(pa, d->code_bytes, keyed_code, &keyed_used);
             p->keyed = cs_pipe(keyed_code, (u32)(pa - 80), lx, ly, lz, shm, ck);
         }
         p = p->keyed;
