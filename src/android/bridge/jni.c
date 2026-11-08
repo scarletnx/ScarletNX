@@ -847,8 +847,19 @@ static void JNICALL invoke_v(JNIEnv* env, jclass unused, jstring key, jobject se
     invoke(env, key, self, prims, refs, &result);
 }
 
+static jobject JNICALL allocate_guest(JNIEnv* env, jclass unused, jint capacity, jlongArray address) {
+    (void)unused;
+    return arm32_jni_allocate(env, capacity, address);
+}
+static void JNICALL free_guest(JNIEnv* env, jclass unused, jlong address) {
+    (void)env, (void)unused;
+    if (arm32_active()) arm32_free((uint32_t)address);
+}
+
 bool android_bridge_register(JNIEnv* env) {
     static const JNINativeMethod methods[] = {
+        {(char*)"allocateGuest", (char*)"(I[J)Ljava/nio/ByteBuffer;", (void*)allocate_guest},
+        {(char*)"freeGuest", (char*)"(J)V", (void*)free_guest},
         {(char*)"nativeLoad", (char*)"(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", (void*)native_load},
         {(char*)"invokeJ", (char*)"(Ljava/lang/String;Ljava/lang/Object;[J[Ljava/lang/Object;)J", (void*)invoke_j},
         {(char*)"invokeL",

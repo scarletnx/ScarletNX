@@ -142,6 +142,9 @@ char* arm32_jni_load(JNIEnv* env, const char* path, const char* library_dir);
    type in *result. *found false when no 32-bit library has it */
 uint64_t arm32_jni_invoke(JNIEnv* env, const char* key, jobject self, jlongArray prims, jobjectArray refs,
                           char* result, bool* found);
+/* NativeBridge.allocateGuest: a direct buffer of the window's memory, its guest address in address[0]; NULL when no
+   32-bit library runs */
+jobject arm32_jni_allocate(JNIEnv* env, jint capacity, jlongArray address);
 /* NativeActivity's input queue (arm32_shim.c): a new AInputQueue's guest address, and the events sent to it. A motion's
    fields: device, source, action, flags, meta state, edge flags, button state; then count pointers' ids, tool types
    and 9 axes each (x, y, pressure, size, touch major and minor, tool major and minor, orientation). A key's: device,

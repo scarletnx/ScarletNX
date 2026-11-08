@@ -30,4 +30,10 @@ public final class NativeBridge {
     public static native long invokeJ(String key, Object self, long[] prims, Object[] refs);
     public static native Object invokeL(String key, Object self, long[] prims, Object[] refs);
     public static native void invokeV(String key, Object self, long[] prims, Object[] refs);
+
+    /** A zeroed direct buffer of capacity bytes in the 32-bit bridge's window, its guest address in address[0]; null
+        when no 32-bit library runs */
+    public static native java.nio.ByteBuffer allocateGuest(int capacity, long[] address);
+    public static native void freeGuest(long address);
+
 }
