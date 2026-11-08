@@ -82,12 +82,15 @@ public class MediaPlayer {
 
     /**
      * A path, or a file: URI, is opened as Android opens it before its decoder sees it, so a missing file is
-     * FileNotFoundException; another scheme (http, rtsp) is taken as it is
+     * FileNotFoundException; another scheme (http, rtsp) is taken as it is. A drive's path ("C:\..." or "C:/...") is
+     * a path, not a URI of scheme "C": the app's files have such paths on a Windows host
      */
     public void setDataSource(String path) throws IOException {
         String scheme = Uri.parse(path).getScheme();
-        if (scheme == null || scheme.equals("file")) {
-            try (FileInputStream in = new FileInputStream(scheme == null ? path : Uri.parse(path).getPath())) {
+        boolean drive = path.length() > 2 && (path.charAt(0) | 0x20) >= 'a' && (path.charAt(0) | 0x20) <= 'z'
+            && path.charAt(1) == ':' && (path.charAt(2) == '\\' || path.charAt(2) == '/');
+        if (scheme == null || drive || scheme.equals("file")) {
+            try (FileInputStream in = new FileInputStream(scheme == null || drive ? path : Uri.parse(path).getPath())) {
                 source();
             }
         } else {
