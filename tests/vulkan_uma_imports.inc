@@ -600,8 +600,9 @@ static int check_uma_texture_pending(void) {
     CHECK(!uma_dma(UMA_GH, UMA_GH + 0x10000)); /* written in place by a submit not made yet */
     vk_lock();
     int pending = vk_uma_pending(UMA_GH, 256);
+    const u64 waits = vk_uma_out_waits();
     Surf* again = vk_tex_recheck(t);
-    int waited = !vk_uma_pending(UMA_GH, 256);
+    int waited = vk_uma_out_waits() != waits;
     u8* texels = vk_readback_buffer(256, &rb);
     CHECK(again == t && texels);
     vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
@@ -674,9 +675,10 @@ static int check_uma_dispatch_constants(void) {
     u64 dispatches = g_vk_dispatches;
     vk_lock();
     int pending = vk_uma_pending(later, 256);
+    const u64 waits = vk_uma_out_waits();
     mx_dispatch_state(qmd, channel->rcomp, code, &d);
     vk_dispatch(&d);
-    int ran = g_vk_dispatches == dispatches + 1, waited = !vk_uma_pending(later, 256);
+    int ran = g_vk_dispatches == dispatches + 1, waited = vk_uma_out_waits() != waits;
     vk_unlock();
     CHECK(!gmem_read(stored, word, sizeof word));
     free(channel);
@@ -715,9 +717,10 @@ static int check_uma_header_words(void) {
     CHECK(!uma_dma(UMA_GJ, UMA_GJ + 0x10000)); /* written in place by a submit not made yet */
     vk_lock();
     int pending = vk_uma_pending(UMA_GJ, 256);
+    const u64 waits = vk_uma_out_waits();
     memcpy(now, GP(UMA_J) + 0x20, sizeof now);
     vk_gmem_words(UMA_GJ + 0x20, words, 8);
-    int waited = !vk_uma_pending(UMA_GJ, 256), same = 1;
+    int waited = vk_uma_out_waits() != waits, same = 1;
     for (u32 i = 0; i < 8; i++) same &= words[i] == snx_ld_le32(now + 4 * i);
     vk_finish();
     vk_unlock();

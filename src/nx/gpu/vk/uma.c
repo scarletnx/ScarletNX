@@ -1110,6 +1110,7 @@ int vk_uma_pending_cpu(u64 cpu, u64 len) {
     return g_uma_any && len && pend_hit_pages(&g_uma.out_pages, cpu >> 12, (cpu + len - 1) >> 12);
 }
 u64 vk_uma_out_adds(void) { return g_uma.out_pages.adds; }
+u64 vk_uma_out_waits(void) { return g_uma.out_waits; }
 /* the newest submit with an in-place write over guest memory [cpu, cpu + n), 0 for none */
 static u64 newest_out(u64 cpu, u64 n) {
     for (u32 k = g_uma.nout; k-- > 0;)
