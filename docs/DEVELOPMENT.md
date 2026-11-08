@@ -7,6 +7,7 @@
 * [Measure NVN storage ordering](#measure-nvn-storage-ordering)
 * [Measure descriptor submission](#measure-descriptor-submission)
 * [Search for faster GPU settings](#search-for-faster-gpu-settings)
+* [Compare two settings arms](#compare-two-settings-arms)
 * [Rebuild / checks](#rebuild--checks)
 * [CI checks locally](#ci-checks-locally)
   * [Setup and run time](#setup-and-run-time)
@@ -122,6 +123,41 @@ baseline consistently, the recommendation keeps the baseline.
 With `--reset-save`, the standard `GAME_data/save` folder is copied into the output directory before the search,
 restored before each run, and restored on normal exit or interruption. The backup remains in `original-save` for
 recovery after a machine failure. Without that option, the game can update its saves normally. Keep the output local.
+
+## Compare two settings arms
+
+`tools/ab_game.py` compares two values of an ini key on one scene, in paired runs. It is the local form of a test
+build that selects an implementation path by an ini key, as a phone test does. The two arms run the same game, with
+the same input script or state, so the difference is the setting and not the scene.
+
+```sh
+python3 tools/ab_game.py GAME --a vk_record=1 --b vk_record=0 \
+    --script '15000:1,25000:1' --out .cache/ab-record
+python3 tools/ab_game.py GAME --a vk_memory=0 --b vk_memory=2 \
+    --state SLOT --seconds 60 --warmup 25 --rounds 4 --out .cache/ab-memory
+```
+
+Add `--headless` for an unattended run with no window. Both arms must use the same mode.
+
+Each arm runs once first, to warm the shader, pipeline and JIT caches. Each round then runs one arm and the other,
+in the opposite order from the round before. The measurement is the steady window after `--warmup`, from the
+runtime's five-second rate lines. A run qualifies only when it finishes, presents frames in the window and writes a
+screenshot. The first measured screenshot is the scene reference, and a later run whose image differs past
+`--image-limit` is rejected, because a different view is a different workload. Pillow is optional. Without it the
+screenshots stay `.ppm` files and the image comparison is skipped.
+
+The result is the median of the paired speedups in mean milliseconds a frame. A winner needs every round valid,
+every round on the same side, every round over `--min-improvement` percent, and at least four rounds so the sign
+test is at or below 0.0625. Otherwise the tool keeps the baseline. `results.json` holds every run, its command, the
+measured window and the verdict. The tool does not edit the game's settings or its saves. Do not build or run
+another game during a comparison.
+
+For two builds, pass `--a-exe` and `--b-exe`, each the program of a complete game folder. Keep the saves of the two
+copies equal before the comparison. The tool reads each build's log, so both builds must use the same ABI and the
+same scene. It does not copy saves and it does not repair a scene that differs.
+
+The rate and hitch lines come from the Switch runtime. The 3DS, Vita and GBA drivers write other logs, so this tool
+does not cover them.
 
 ## Rebuild / checks
 
