@@ -11,15 +11,6 @@ close. It follows the conventions of the ScarletNX contributors, with one additi
 
 Read `CLAUDE.md`, `docs/TESTING.md` and `.github/PULL_REQUEST_TEMPLATE.md` first.
 
-## When to open it
-
-The repository belongs to its owner, thegreatgreenstar. A request from him for work is also the sign to open the
-pull request of that work. Push the branch and open its pull request when the work finishes. Do not ask again for
-that pull request.
-
-One request covers one pull request. The sign is not the approval of a force-push, of a second pull request, or of a
-ready mark while a known failure remains. A message that only asks a question is not this sign.
-
 ## The title
 
 The title is `[area] an imperative sentence`. The areas are in `scripts/area-labels.py`. The workflow adds the labels

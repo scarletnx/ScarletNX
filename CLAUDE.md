@@ -241,12 +241,6 @@ the agent can build and run. Only one agent at a time can build and run.
 
 - `origin` is `git@github.com:scarletnx/ScarletNX.git` (public). Push only when the user asks. Never force-push a
   pushed branch.
-- The repository belongs to its owner. A request from him for work is also the sign to open the pull request of that
-  work. Push the branch and open its pull request when the work finishes. Do not ask again for that pull request.
-  The `snx-work-mark` skill gives the title, the body, the evidence and the mark of the agent.
-
-  One request covers one pull request. The sign is not the approval of a force-push, of a second pull request, or of
-  a ready mark while a known failure remains. A message that only asks a question is not this sign.
 - A commit subject starts with an area prefix in brackets (for example, `[gpu]` or `[build]`), then an imperative
   sentence. The body says why, and how you verified the change. Check each claim in the message against the staged
   diff.
