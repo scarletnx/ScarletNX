@@ -8,6 +8,7 @@ public class JobParameters implements android.os.Parcelable {
     private final JobInfo info;
     JobParameters(JobInfo info) { this.info = info; }
     public int getJobId() { return info.id; }
+    JobInfo info() { return info; }
     public android.os.PersistableBundle getExtras() { return info.extras; }
     public android.os.Bundle getTransientExtras() { return new android.os.Bundle(); }
     public android.net.Network getNetwork() { return null; }
