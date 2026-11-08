@@ -7,6 +7,7 @@
 #include "android/bridge/hle.h"
 #include "android/bridge/host.h"
 #include "common/cpu/recompiler/llvm/elf_defs.h" /* the ELF names on every host, whose own may have none */
+#include "common/cpu/recompiler/llvm/elf_hash.h"
 #include "common/utilities/common.h"
 #include <fcntl.h>
 #include <pthread.h>
@@ -82,22 +83,6 @@ static const char* base_name(const char* path) {
 
 /* ---- symbols ---- */
 
-static uint32_t elf_hash(const char* name) {
-    uint32_t h = 0;
-    for (const unsigned char* p = (const unsigned char*)name; *p; ++p) {
-        h = (h << 4) + *p;
-        uint32_t high = h & 0xf0000000u;
-        h ^= high >> 24;
-        h &= ~high;
-    }
-    return h;
-}
-static uint32_t gnu_hash(const char* name) {
-    uint32_t h = 5381;
-    for (const unsigned char* p = (const unsigned char*)name; *p; ++p) h = h * 33 + *p;
-    return h;
-}
-
 /* a symbol the library defines, NULL for none */
 static const Elf64_Sym* defined(const GuestLibrary* l, const char* name) {
     if (l->gnu_hash) {
@@ -106,7 +91,7 @@ static const Elf64_Sym* defined(const GuestLibrary* l, const char* name) {
         const uint64_t* bloom = (const uint64_t*)(h + 4);
         const uint32_t* bucket = (const uint32_t*)(bloom + bloom_size);
         const uint32_t* chain = bucket + buckets;
-        uint32_t hash = gnu_hash(name);
+        uint32_t hash = snx_elf_gnu_hash(name);
         uint64_t word = bloom[(hash / 64) % bloom_size];
         if (!((word >> (hash % 64)) & (word >> ((hash >> shift) % 64)) & 1)) return NULL;
         for (uint32_t i = bucket[hash % buckets]; i >= offset && i; ++i) {
@@ -121,7 +106,7 @@ static const Elf64_Sym* defined(const GuestLibrary* l, const char* name) {
     if (l->hash) {
         uint32_t buckets = l->hash[0];
         const uint32_t *bucket = l->hash + 2, *chain = bucket + buckets;
-        for (uint32_t i = bucket[elf_hash(name) % buckets]; i; i = chain[i]) {
+        for (uint32_t i = bucket[snx_elf_sysv_hash(name) % buckets]; i; i = chain[i]) {
             const Elf64_Sym* s = &l->symbols[i];
             if (!strcmp(l->strings + s->st_name, name) && s->st_shndx != SHN_UNDEF) return s;
         }

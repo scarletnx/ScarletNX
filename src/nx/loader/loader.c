@@ -11,6 +11,7 @@
 #include "nx/loader/hook_routes.h"
 #include "nx/loader/match.h"
 #include "nx/loader/ounce.h"
+#include "common/cpu/recompiler/llvm/elf_defs.h"
 #include "common/utilities/endian.h"
 #include <stdlib.h>
 #include <string.h>
@@ -26,27 +27,8 @@
 #define CODE_END64 0x2000000000ull
 #define CODE_END32 ((SnxU64)0x40000000UL)
 
-/* ELF dynamic tags read (the ones below DT_COUNT by number) */
-#define DT_HASH     4
-#define DT_STRTAB   5
-#define DT_SYMTAB   6
-#define DT_RELA     7
-#define DT_RELASZ   8
-#define DT_RELAENT  9
-#define DT_STRSZ    10
-#define DT_SYMENT   11
-#define DT_REL      17
-#define DT_RELSZ    18
-#define DT_RELENT   19
-#define DT_RELRSZ   35
-#define DT_RELR     36
-#define DT_RELRENT  37
-#define DT_COUNT    38
-#define DT_GNU_HASH 0x6ffffef5UL
-
-#define R_AARCH64_RELATIVE 1027
-#define R_ARM_RELATIVE     23
-#define STT_FUNC           2
+/* the ELF dynamic tags kept by number: those below it, the ones the loader reads but DT_GNU_HASH */
+#define DT_COUNT 38
 
 static const char* const module_names[] = {"rtld",    "main",    "subsdk0", "subsdk1", "subsdk2",
                                            "subsdk3", "subsdk4", "subsdk5", "subsdk6", "subsdk7",
