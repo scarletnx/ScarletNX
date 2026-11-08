@@ -5561,6 +5561,18 @@ msgstr ""
 msgid "<id>.<driver>.vkshaders, .vkshipped and vk_pipelines.<driver>.bin, started from those"
 msgstr ""
 
+#: src/common/utilities/setup.c
+msgid "The launcher's Background recompile"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "recompile_background = in app.ini, full or gentle"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "background_recompile =, Auto by default: Gentle on battery, Full on the charger"
+msgstr ""
+
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"
 msgstr ""
