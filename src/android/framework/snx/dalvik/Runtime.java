@@ -23,6 +23,33 @@ public final class Runtime {
     }
     public static void runtimeLoadLibrary(java.lang.Runtime runtime, String name) { loadLibrary(name); }
 
+    /**
+     * Object.clone of a receiver that the translator does not know to be the caller's own class (translate.c): ART
+     * clones any array so. An array is cloned by its type; another object by its public clone, as a Cloneable class
+     * that overrides it gives one.
+     */
+    public static Object cloneObject(Object o) throws CloneNotSupportedException {
+        if (o == null) throw new NullPointerException("Attempt to invoke virtual method 'Object.clone()' on a null object reference");
+        if (o instanceof Object[] a) return a.clone();
+        if (o instanceof int[] a) return a.clone();
+        if (o instanceof byte[] a) return a.clone();
+        if (o instanceof char[] a) return a.clone();
+        if (o instanceof long[] a) return a.clone();
+        if (o instanceof float[] a) return a.clone();
+        if (o instanceof double[] a) return a.clone();
+        if (o instanceof short[] a) return a.clone();
+        if (o instanceof boolean[] a) return a.clone();
+        try {
+            return o.getClass().getMethod("clone").invoke(o);
+        } catch (NoSuchMethodException | IllegalAccessException e) {
+            throw new CloneNotSupportedException(o.getClass().getName());
+        } catch (java.lang.reflect.InvocationTargetException e) {
+            if (e.getCause() instanceof CloneNotSupportedException c) throw c;
+            if (e.getCause() instanceof RuntimeException r) throw r;
+            throw new RuntimeException(e.getCause());
+        }
+    }
+
     private static final java.lang.ref.Cleaner cleaner = java.lang.ref.Cleaner.create();
     /**
      * ByteBuffer.allocateDirect, which the translator sends here: a buffer in the memory that the app's native code
