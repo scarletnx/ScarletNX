@@ -559,7 +559,14 @@ char* snx_executable(const char* argv0) {
         free(resolved);
         return path;
     }
+#elif defined(__FreeBSD__)
+    /* FreeBSD mounts no /proc by default: the kernel's own record of the process's file */
+    char buf[8192];
+    size_t size = sizeof buf;
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1};
+    if (!sysctl(mib, 4, buf, &size, NULL, 0) && size > 1 && buf[0] == '/') return snx_strdup(buf);
 #endif
+    if (!argv0) return NULL; /* a caller that has no argv[0] (NULL) takes the system's answer alone */
     {
         /* the program's own file, where snx_find_tool keeps the name of a link to it */
         char *found = snx_find_tool(argv0), *file = found ? snx_absolute(found) : NULL;
