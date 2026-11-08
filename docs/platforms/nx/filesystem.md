@@ -9,8 +9,8 @@
 * [Shared fonts](#shared-fonts)
   * [The Noto stand-ins](#the-noto-stand-ins)
 
-`src/nx/hle/filesystem/fs_tree.{c,h}` indexes `<Game>_data/` once, capturing its absolute base.
-Subsequent game-data lookup, metadata and enumeration use the tree; content I/O requires indexed nodes.
+The tree (`src/common/filesystem/tree.c`, which `src/nx/hle/filesystem/fs_tree.h` names for the Switch) indexes
+`<Game>_data/` once, capturing its absolute base. Subsequent game-data lookup, metadata and enumeration use the tree; content I/O requires indexed nodes.
 No host rediscovery. External edits require restart.
 
 Synthetic tree + IPC/RomFS checks, without game data/GPU:
@@ -69,7 +69,7 @@ IPC requests allow 0x300-byte paths excluding NUL. Host limits also apply.
 
 - `FsTree.lock`: tree access, service I/O, shared size cache. Resolve first; record successful host mutations,
   including partial success.
-- Handles retain node identity across rename; detached nodes live until last close. Removed directory handles return `FS_NOTFOUND`.
+- Handles retain node identity across rename; detached nodes live until last close. Removed directory handles return `SNX_RC_FS_PATH_NOT_FOUND`.
 - Live directory cursor: `strcmp` order, last visited name, latched EOF; counts reflect current children.
 - RomFS: prefer indexed `romfs.bin`; otherwise synthesize from `romfs/`.
 - Readonly RAM copies: missing system archives become valid empty images at `system/archives/<16-hex-id>.romfs`. No

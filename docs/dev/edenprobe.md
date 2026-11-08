@@ -71,8 +71,9 @@ Those of the example, which CI runs; edenprobe's
 | `audio` | the audio renderer: resampler, circular buffer, limiter; headless, nothing is played |
 
 Left out: `graphics` (the drawing suites: clears, blending, depth, textures and their formats, queries, blits),
-which write their own GPU command buffers. The runtime's GPU path is NVN, so their submissions draw
-nothing, and each case waits for memory that the GPU would write. `net` (servers the runner does not have), `pad` and `listen` (a person), `stress` (256 MiB lists), `hang`
+which write their own GPU command buffers. They were left out while the runtime had no Maxwell front end, when
+their submissions drew nothing and each case waited for memory that the GPU would write. The front end is back
+(`src/nx/gpu/maxwell/`), and the suites are not in the run yet. `net` (servers the runner does not have), `pad` and `listen` (a person), `stress` (256 MiB lists), `hang`
 (cases that never return on a machine that gets them wrong).
 
 ## In CI
