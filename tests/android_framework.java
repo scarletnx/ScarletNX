@@ -142,13 +142,25 @@ final class AndroidFramework {
                   + " java.io.FileNotFoundException, java.io.FileNotFoundException", got.get());
     }
 
+    /** A name's addresses, or the class of what the lookup threw */
+    private static String resolve(String name) {
+        try {
+            return Arrays.toString(InetAddress.getAllByName(name));
+        } catch (java.net.UnknownHostException e) {
+            return e.getClass().getName();
+        }
+    }
+
     /**
      * Java's name resolver answers the names of Android's /etc/hosts as a device does, whatever the host's own say:
-     * localhost is 127.0.0.1 alone, offline and online. Offline is this JVM, whose resolver the jar's
-     * META-INF/services names; online, another JVM with the driver's snx.android.network=1.
+     * localhost is 127.0.0.1 alone, offline and online, in any case of its letters. Offline, another machine's name
+     * does not resolve. Offline is this JVM, whose resolver the jar's META-INF/services names; online, another JVM
+     * with the driver's snx.android.network=1.
      */
     private static void hostsResolve() throws Exception {
         check("localhost offline", "[localhost/127.0.0.1]", Arrays.toString(InetAddress.getAllByName("localhost")));
+        check("LocalHost offline", "[LocalHost/127.0.0.1]", resolve("LocalHost"));
+        check("another machine's name offline", "java.net.UnknownHostException", resolve("example.com"));
         Path dir = java.nio.file.Files.createTempDirectory("android_framework");
         Path online = dir.resolve("Online.java");
         java.nio.file.Files.writeString(online, "class Online { public static void main(String[] a) throws Exception {"
