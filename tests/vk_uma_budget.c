@@ -23,5 +23,9 @@ int main(void) {
     assert(trims(1700 * MB, vk_uma_budget(driver, 1700 * MB, 1500 * MB, reserve)));
     /* plenty left (a 16 GB device with 14 GB free): the driver's budget stands */
     assert(vk_uma_budget(driver, 1000 * MB, 14000 * MB, vk_uma_reserve(16384 * MB)) == driver);
+    /* VMA's blocks: 32 MiB where the GPU's memory is the system's, 256 MiB on a GPU of its own (a strong PC's is as it
+       was), within a smaller allocation cap either way */
+    assert(vk_mem_block_size(1, 256 * MB) == 32 * MB && vk_mem_block_size(0, 256 * MB) == 256 * MB);
+    assert(vk_mem_block_size(1, 16 * MB) == 16 * MB && vk_mem_block_size(0, 64 * MB) == 64 * MB);
     return 0;
 }

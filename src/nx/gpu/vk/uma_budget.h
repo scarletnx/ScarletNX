@@ -18,4 +18,15 @@ static inline uint64_t vk_uma_budget(uint64_t driver, uint64_t usage, uint64_t a
    killer ended background apps from 1925 MB available and the game at 683 */
 static inline uint64_t vk_uma_reserve(uint64_t system) { return system / 8; }
 
+/* VMA's blocks: 256 MiB, and 32 MiB where the GPU's memory is the system's (uma). A block's room nothing uses, and the
+   one VMA keeps empty of each memory type, are memory there that every other app loses: that phone's 256 MiB blocks
+   held 1312 MB with 263 MB allocated in them in a game's world, where the low memory killer ended the game. A resource
+   past half a block gets memory of its own, which goes back with it. Within cap, the allocations' */
+#define SNX_VK_BLOCK     (256ull << 20)
+#define SNX_VK_UMA_BLOCK (32ull << 20)
+static inline uint64_t vk_mem_block_size(int uma, uint64_t cap) {
+    uint64_t block = uma ? SNX_VK_UMA_BLOCK : SNX_VK_BLOCK;
+    return cap < block ? cap : block;
+}
+
 #endif

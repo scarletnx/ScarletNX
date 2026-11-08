@@ -10,6 +10,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/uma_budget.h"
 #include "nx/gpu/vk/vertex_input.h"
 #include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/gpu/vk/descriptors.h"
@@ -1726,11 +1727,13 @@ static int create_device(void) {
     VmaVulkanFunctions vf = {.vkGetInstanceProcAddr = vkGetInstanceProcAddr,
                              .vkGetDeviceProcAddr = vkGetDeviceProcAddr};
     vk_mem_init(sparse_queue);
-    /* VMA's blocks are 256 MiB at most already, and kept within a smaller cap */
+    u64 block = vk_mem_block_size(g_vk.mem_model == VK_MEM_UMA, g_vk.alloc_cap);
+    LOG("vulkan: memory in blocks of %llu MiB%s\n", (unsigned long long)(block >> 20),
+        g_vk.mem_model == VK_MEM_UMA ? ", as the GPU's memory is the system's" : "");
     VmaAllocatorCreateInfo vai = {.physicalDevice = g_vk.phys,
                                   .device = g_vk.dev,
                                   .instance = g_vk.instance,
-                                  .preferredLargeHeapBlockSize = g_vk.alloc_cap < (256ull << 20) ? g_vk.alloc_cap : 0,
+                                  .preferredLargeHeapBlockSize = block,
                                   .vulkanApiVersion = core13 ? VK_API_VERSION_1_3 : VK_API_VERSION_1_2,
                                   .pVulkanFunctions = &vf,
                                   .flags = g_vk.has_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0};
