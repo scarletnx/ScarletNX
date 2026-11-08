@@ -15,10 +15,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #ifdef _WIN32
+#include <direct.h>
 #include <io.h>
 #else
+#include <signal.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -343,6 +347,103 @@ static void test_getline(void) {
     remove(path);
 }
 
+/* ---- the ones edenprobe's library imports that the HLE once lacked ---- */
+
+/* name called with two doubles or two floats: the result's bits */
+static uint64_t call_dd(const char* name, double a, double b) {
+    call(name, NULL, 0, (double[]){a, b}, 2);
+    uint64_t bits;
+    memcpy(&bits, &g_t.cpu.v[0].df[0], 8);
+    return bits;
+}
+static uint32_t call_ff(const char* name, float a, float b) {
+    g_t.cpu = (CPU){0};
+    memcpy(&g_t.cpu.v[0].f[0], &a, 4);
+    memcpy(&g_t.cpu.v[1].f[0], &b, 4);
+    const HleSymbol* s = find(name);
+    s->handler(&g_t.cpu, s->data);
+    uint32_t bits;
+    memcpy(&bits, &g_t.cpu.v[0].f[0], 4);
+    return bits;
+}
+#ifndef _WIN32
+/* name called with x in a child, which must end on SIGABRT with want in what it printed */
+static void expect_abort(const char* name, const uint64_t* x, size_t nx, const char* want) {
+    int out[2];
+    fflush(NULL);
+    if (pipe(out)) exit(1);
+    pid_t pid = fork();
+    if (pid == 0) {
+        dup2(out[1], 2);
+        close(out[0]);
+        call(name, x, nx, NULL, 0);
+        _exit(0);
+    }
+    close(out[1]);
+    char said[512];
+    size_t got = 0;
+    ssize_t n;
+    while (got < sizeof said - 1 && (n = read(out[0], said + got, sizeof said - 1 - got)) > 0) got += (size_t)n;
+    said[got] = 0;
+    close(out[0]);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    if (!WIFSIGNALED(status) || WTERMSIG(status) != SIGABRT || !strstr(said, want)) {
+        fprintf(stderr, "android_bionic: %s: wanted an abort that says \"%s\", got \"%s\"\n", name, want, said);
+        g_t.failures++;
+    }
+}
+#define ABORTS(name, want, ...)                                                                                        \
+    expect_abort(name, (uint64_t[]){__VA_ARGS__}, sizeof((uint64_t[]){__VA_ARGS__}) / 8, want)
+#endif
+
+static void test_imports_once_missing(void) {
+    expect_int("nextafter(1, 2)", (int64_t)call_dd("nextafter", 1.0, 2.0), 0x3ff0000000000001ll);
+    expect_int("nextafterf(1, 2)", call_ff("nextafterf", 1.0f, 2.0f), 0x3f800001);
+    expect_int("fmax(-0.5, 2)", (int64_t)call_dd("fmax", -0.5, 2.0), 0x4000000000000000ll);
+    expect_int("fmin(-0.5, 2)", (int64_t)call_dd("fmin", -0.5, 2.0), (int64_t)0xbfe0000000000000ull);
+    expect_int("fmaxf(3, -1)", call_ff("fmaxf", 3.0f, -1.0f), 0x40400000);
+    expect_int("fminf(3, -1)", call_ff("fminf", 3.0f, -1.0f), 0xbf800000);
+
+    const char* path = "android_bionic_once_missing.txt";
+    FILE* f = fopen(path, "w+b");
+    if (!f) {
+        fprintf(stderr, "android_bionic: cannot write %s in the working folder\n", path);
+        exit(1);
+    }
+    fputs("xline\nrest", f);
+    rewind(f);
+    expect_int("fgetc", (int64_t)CALL("fgetc", P(f)), 'x');
+    char buffer[16] = "";
+    expect_int("__fgets_chk gives the buffer", (int64_t)CALL("__fgets_chk", P(buffer), 16, P(f), 16),
+               (int64_t)(uintptr_t)buffer);
+    expect_text("__fgets_chk reads the line", buffer, "line\n");
+    const char* hello = "hello";
+    expect_int("__memchr_chk", (int64_t)CALL("__memchr_chk", P(hello), 'l', 5, 8), (int64_t)(uintptr_t)(hello + 2));
+    char copy[8];
+    memset(copy, 'z', sizeof copy);
+    CALL("__strncpy_chk", P(copy), P("hi"), 4, 8);
+    expect_int("__strncpy_chk pads with NULs", !memcmp(copy, "hi\0\0zzzz", 8), 1);
+#ifndef _WIN32
+    ABORTS("__fgets_chk", "fgets: prevented 16-byte write into 8-byte buffer", P(buffer), 16, P(f), 8);
+    ABORTS("__fgets_chk", "fgets: buffer size -1 < 0", P(buffer), I32(-1), P(f), 8);
+    ABORTS("__memchr_chk", "memchr: prevented 9-byte read from 8-byte buffer", P(hello), 'z', 9, 8);
+    ABORTS("__strncpy_chk", "strncpy: prevented 9-byte write into 8-byte buffer", P(copy), P("hi"), 9, 8);
+#endif
+    fclose(f);
+    remove(path);
+
+    char folder[] = "android_bionic_dXXXXXX";
+    expect_int("mkdtemp gives its template", (int64_t)CALL("mkdtemp", P(folder)), (int64_t)(uintptr_t)folder);
+    struct stat st;
+    expect_int("mkdtemp makes a folder", !strstr(folder, "XXXXXX") && !stat(folder, &st), 1);
+#ifdef _WIN32
+    _rmdir(folder);
+#else
+    rmdir(folder);
+#endif
+}
+
 /* ---- signals ---- */
 
 /* sigismember of a set the other set functions made, and the 64-bit forms, which are the same on LP64 */
@@ -578,6 +679,7 @@ int main(void) {
     test_fortified();
     test_libm();
     test_getline();
+    test_imports_once_missing();
     test_signal_sets();
     test_bionic_locales();
     test_offline_names();

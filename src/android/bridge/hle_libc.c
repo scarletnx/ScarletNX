@@ -516,6 +516,25 @@ static void strncpy_chk2(CPU* c, void* data) {
     if (X(2) > X(3)) fortify_fail("strncpy");
     X(0) = (uint64_t)(uintptr_t)strncpy(PTR(0), STR(1), X(2));
 }
+/* bionic's __check_buffer_access: claim bytes read from or written into a buffer of actual bytes; a failure ends the
+   app with the sizes */
+static void check_access(const char* fn, const char* action, uint64_t claim, uint64_t actual) {
+    if (claim <= actual) return;
+    fprintf(stderr, "scarletnx-android: FORTIFY: %s: prevented %llu-byte %s %llu-byte buffer\n", fn,
+            (unsigned long long)claim, action, (unsigned long long)actual);
+    abort();
+}
+/* __memchr_chk(s, c, n, actual) and __strncpy_chk(dst, src, len, dst_len) */
+static void memchr_chk(CPU* c, void* data) {
+    (void)data;
+    check_access("memchr", "read from", X(2), X(3));
+    X(0) = (uint64_t)(uintptr_t)memchr(PTR(0), (int)X(1), X(2));
+}
+static void strncpy_chk(CPU* c, void* data) {
+    (void)data;
+    check_access("strncpy", "write into", X(2), X(3));
+    X(0) = (uint64_t)(uintptr_t)strncpy(PTR(0), STR(1), X(2));
+}
 static void strchr_chk(CPU* c, void* data) {
     (void)data;
     X(0) = (uint64_t)(uintptr_t)strchr(STR(0), (int)X(1));
@@ -1498,6 +1517,8 @@ const HleSymbol hle_libc[] = {
     {"__strlcpy_chk", strlcpy_chk, NULL},
     {"__strcat_chk", strcat_chk, NULL},
     {"__strncpy_chk2", strncpy_chk2, NULL},
+    {"__strncpy_chk", strncpy_chk, NULL},
+    {"__memchr_chk", memchr_chk, NULL},
     {"__strchr_chk", strchr_chk, NULL},
     {"__strrchr_chk", strrchr_chk, NULL},
     {"__read_chk", read_chk, NULL},
@@ -1560,10 +1581,11 @@ const HleSymbol hle_libc[] = {
     T(acos, d_d), T(asin, d_d), T(atan, d_d), T(cos, d_d), T(cosh, d_d), T(exp, d_d), T(exp2, d_d), T(log, d_d),
     T(log10, d_d), T(log2, d_d), T(sin, d_d), T(sinh, d_d), T(sqrt, d_d), T(tan, d_d), T(tanh, d_d),
     T(cbrt, d_d), T(expm1, d_d), T(log1p, d_d), T(cbrtf, f_f), T(expm1f, f_f), T(log1pf, f_f),
-    T(atan2, d_dd), T(fmod, d_dd), T(hypot, d_dd), T(pow, d_dd),
+    T(atan2, d_dd), T(fmod, d_dd), T(hypot, d_dd), T(pow, d_dd), T(nextafter, d_dd), T(fmax, d_dd), T(fmin, d_dd),
     T(acosf, f_f), T(asinf, f_f), T(atanf, f_f), T(cosf, f_f), T(expf, f_f), T(exp2f, f_f), T(logf, f_f),
     T(log10f, f_f), T(log2f, f_f), T(sinf, f_f), T(sqrtf, f_f), T(tanf, f_f),
-    T(atan2f, f_ff), T(fmodf, f_ff), T(powf, f_ff), T(remainderf, f_ff),
+    T(atan2f, f_ff), T(fmodf, f_ff), T(powf, f_ff), T(remainderf, f_ff), T(nextafterf, f_ff), T(fmaxf, f_ff),
+    T(fminf, f_ff),
     T(ldexp, d_di), T(frexp, d_dp), T(modf, d_dp), T(frexpf, f_fp), T(modff, f_fp),
     T(atof, d_p), T(strtod, d_pp), T(strtof, f_pp),
     {"sincos", sincos_d, NULL}, {"sincosf", sincos_f, NULL}, {"difftime", difftime_, NULL},
