@@ -89,7 +89,7 @@ snx_ship_walk(gpu/shipped_pass.c)
 include("${PROJECT_SOURCE_DIR}/cmake/controls_atlas.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/controls_skins.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
-set(platform runtime/platform/plat.c runtime/platform/plat_sdl.c runtime/platform/unattended.c
+set(platform runtime/platform/log.c runtime/platform/plat_sdl.c runtime/platform/unattended.c
              runtime/platform/backend/sdl3.c
              runtime/platform/backend/gamepad.c runtime/platform/connect.c runtime/platform/tracy.c
              runtime/platform/help.c runtime/platform/hotkeys.c runtime/platform/hud.c runtime/platform/overlay.c

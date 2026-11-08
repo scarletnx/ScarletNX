@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The log (platform/plat.c): nothing on disk before the game's module is loaded, the run before's log moved into
+/* The log (platform/log.c): nothing on disk before the game's module is loaded, the run before's log moved into
    logs/ by its date and logs/ kept to the last runs, the lines from before then at the top of the log (only the first
    ones when they don't all fit), the time stamp only at the start of a line, a cut line still ending its line, the
    per-thread redirect, LOG_LIMIT, fatal, the log cut past log_max keeping its start and its end, and crash mode
    reaching the log */
-#include "nx/runtime/platform/plat.c"
+#include "nx/runtime/platform/log.c"
 #include <setjmp.h>
 #include <stdlib.h>
 

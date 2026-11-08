@@ -638,7 +638,7 @@ static void set_fullscreen(int on) {
     else
         LOG("video: fullscreen %s failed: %s\n", on ? "on" : "off", SDL_GetError());
 }
-/* ---- a fatal error's box (plat.c's fatal): the game's menu panel (overlay.c) with the error, what it means and what
+/* ---- a fatal error's box (log.c's fatal): the game's menu panel (overlay.c) with the error, what it means and what
    to do, until the player closes it. The game's renderer lets go of the window first (its device may be what was
    lost), and an SDL renderer of its own draws the panel's quads from the same atlas ---- */
 static char* g_fatal_left; /* an error another thread left for the main thread to show */
@@ -796,7 +796,7 @@ static int fatal_screen(const char* msg) {
     panel.msg = msg;
     panel.how = what;
     panel.focus = SNX_OVERLAY_ERROR_CLOSE;
-    /* the log plat.c writes, in the state folder. Beside the game that is argv[0]'s folder, which may be relative (./
+    /* the log log.c writes, in the state folder. Beside the game that is argv[0]'s folder, which may be relative (./
        for ./MyGame): Share Log and a file URI need an absolute path */
     snprintf(log_path, sizeof log_path, "%s%s.log", g_statedir, g_exename);
     full = snx_absolute(log_path);
@@ -805,7 +805,7 @@ static int fatal_screen(const char* msg) {
 #ifdef __ANDROID__
     snprintf(what, sizeof what, "%s", how);
 #else
-    /* a link only to a log that is there: plat.c makes it once the game's code has loaded, so an error before that has
+    /* a link only to a log that is there: log.c makes it once the game's code has loaded, so an error before that has
        none, and the path stays plain text */
     if (snx_is_file(log_path) && fatal_log_url(log_path, log_url, sizeof log_url)) {
         snprintf(what, sizeof what, "%s", how);
@@ -919,7 +919,7 @@ static int fatal_screen(const char* msg) {
     SDL_DestroyRenderer(r);
     return 1;
 }
-/* plat.c's fatal error: the screen above on the main thread, which owns the window; SDL's box when it can't be drawn.
+/* log.c's fatal error: the screen above on the main thread, which owns the window; SDL's box when it can't be drawn.
    From another thread, the main thread's loop (video_poll) shows it, and this thread waits for the exit; when the main
    thread doesn't come (held up elsewhere), Windows' own box (it takes any thread) and none on Linux: the error is in
    the log and on stderr. Nothing for an unattended run, where nobody would close it */
@@ -1733,7 +1733,7 @@ void frontend_frame(void) {
     int full = log_full_take();
     g_press.listening = 0; /* the game's first thread runs: its presses are its own */
     g_press.kind = PRESS_NONE;
-    if (full) { /* the log's first cut (plat.c), said over the game once */
+    if (full) { /* the log's first cut (log.c), said over the game once */
         snprintf(p, sizeof p, "Log full at %d MiB: older lines cut (Debug > Log size limit)", full);
         ui_lock();
         overlay_toast(p, plat_ns());

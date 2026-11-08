@@ -13241,7 +13241,7 @@ int main(int argc, char** argv) {
             time_t ran = (time(NULL) / 86400 - 1) * 86400 + 43200, made = ran - 2 * 86400;
             char committed[16], *crashed, *built;
             assert(strftime(committed, sizeof committed, "%Y-%m-%d", gmtime(&made)) == 10);
-            /* with CRLF lines, as a game log is on Windows (plat.c writes it in text mode) */
+            /* with CRLF lines, as a game log is on Windows (log.c writes it in text mode) */
             crashed =
                 snx_format("[   0.00] ScarletNX - Some Game\r\n"
                            "[   0.00] build: ScarletNX main 1234abc, committed %s (clang 23.1.3, Windows x86_64)\r\n"
