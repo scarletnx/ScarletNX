@@ -38,7 +38,7 @@ if(NOT gated)
 endif()
 # the game's menu's settings with its names and words, as the launcher shows them; a whole number of few values with
 # its numbers
-foreach(row "Display\tdocked\t1\tint\t0\t2\t1 = TV mode" "Display\tfullscreen\t0\tint\t0\t1\t"
+foreach(row "Display\ttv_mode\t0\tint\t0\t2\t0 = Auto" "Display\tfullscreen\t0\tint\t0\t1\t"
             "Graphics\tresolution\t1\tfloat\t0.25\t16\t" "Performance\tfps_limit\tgame\ttext\t"
             "On-screen controls\tcontrols\t" "\tShow controls\t0=Off|1=On|2=Auto\t\n"
             "\tScale\t0=50%|10=60%|20=70%|30=80%|40=90%|50=100%|60=110%|70=120%|80=130%|90=140%|100=150%\t\n"
@@ -59,7 +59,6 @@ foreach(row "Display\tdocked\t1\tint\t0\t2\t1 = TV mode" "Display\tfullscreen\t0
         message(FATAL_ERROR "scarletnx --settings has no \"${row}\"")
     endif()
 endforeach()
-# TV mode's Auto, the third value docked takes, as the launcher's Settings offer it
 # Vulkan driver's last field: empty on a Mac, "macOS only" on any other system
 if(APPLE_HOST)
     set(vk_only "")
@@ -69,8 +68,9 @@ endif()
 if(NOT list MATCHES "\tVulkan driver\t[^\t\n]*\t${vk_only}\r?\n")
     message(FATAL_ERROR "scarletnx --settings does not end Vulkan driver's line with \"${vk_only}\"")
 endif()
-if(NOT list MATCHES "\nDisplay\tdocked\t[^\n]*\tTV mode\t0=Off\\|1=On\\|2=Auto\t\r?\n")
-    message(FATAL_ERROR "scarletnx --settings does not offer TV mode's Auto")
+# TV mode's Auto, Docked and Handheld, as the launcher's Settings offer them; docked, which it replaced, no row
+if(NOT list MATCHES "\nDisplay\ttv_mode\t[^\n]*\tTV mode\t0=Auto\\|1=Docked\\|2=Handheld\t\r?\n" OR list MATCHES "\tdocked\t")
+    message(FATAL_ERROR "scarletnx --settings does not offer TV mode's Auto, Docked and Handheld, or lists docked")
 endif()
 # a later player's rows have their own help, its first player's: not the Button map's of the player before
 if(NOT list MATCHES "\tgamepad_p2_device\t[^\n]*\tPlayer N's controller" OR list MATCHES "\tgamepad_p2_device\t[^\n]*\tPlayer N's map")
