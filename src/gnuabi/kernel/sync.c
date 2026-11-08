@@ -4,7 +4,19 @@
 #define _GNU_SOURCE /* PTHREAD_MUTEX_RECURSIVE, pthread_condattr_setclock */
 #endif
 #include "gnuabi/kernel/sync.h"
+#include "common/platform/time.h"
 #include <time.h>
+
+/* the guest's CLOCK_MONOTONIC: the host's, which the condition variables wait on (QueryPerformanceCounter's on
+   Windows, which has no CLOCK_MONOTONIC) */
+int64_t gnu_monotonic_ns(void) {
+#ifdef _WIN32
+    return (int64_t)plat_ns();
+#else
+    return (int64_t)plat_monotonic_ns();
+#endif
+}
+int64_t gnu_realtime_ns(void) { return plat_unix_ns(); }
 
 #ifdef _WIN32
 void gnu_mutex_init(GnuMutex* m, int recursive) {
@@ -17,19 +29,6 @@ void gnu_mutex_unlock(GnuMutex* m) { LeaveCriticalSection(&m->section); }
 void gnu_cond_init(GnuCond* c) { InitializeConditionVariable(&c->cond); }
 void gnu_cond_destroy(GnuCond* c) { (void)c; }
 void gnu_cond_broadcast(GnuCond* c) { WakeAllConditionVariable(&c->cond); }
-int64_t gnu_monotonic_ns(void) {
-    LARGE_INTEGER counter, frequency;
-    QueryPerformanceFrequency(&frequency);
-    QueryPerformanceCounter(&counter);
-    return counter.QuadPart / frequency.QuadPart * 1000000000 +
-           counter.QuadPart % frequency.QuadPart * 1000000000 / frequency.QuadPart;
-}
-int64_t gnu_realtime_ns(void) {
-    FILETIME ft;
-    GetSystemTimeAsFileTime(&ft);
-    uint64_t ticks = ((uint64_t)ft.dwHighDateTime << 32 | ft.dwLowDateTime) - 116444736000000000ull;
-    return (int64_t)(ticks * 100);
-}
 int gnu_cond_wait(GnuCond* c, GnuMutex* m, int64_t deadline) {
     DWORD ms = INFINITE;
     if (deadline >= 0) {
@@ -69,16 +68,6 @@ void gnu_cond_init(GnuCond* c) {
 }
 void gnu_cond_destroy(GnuCond* c) { pthread_cond_destroy(&c->cond); }
 void gnu_cond_broadcast(GnuCond* c) { pthread_cond_broadcast(&c->cond); }
-int64_t gnu_monotonic_ns(void) {
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return (int64_t)now.tv_sec * 1000000000 + now.tv_nsec;
-}
-int64_t gnu_realtime_ns(void) {
-    struct timespec now;
-    clock_gettime(CLOCK_REALTIME, &now);
-    return (int64_t)now.tv_sec * 1000000000 + now.tv_nsec;
-}
 int gnu_cond_wait(GnuCond* c, GnuMutex* m, int64_t deadline) {
     if (deadline < 0) {
         pthread_cond_wait(&c->cond, &m->mutex);

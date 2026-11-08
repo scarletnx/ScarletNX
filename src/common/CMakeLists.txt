@@ -16,6 +16,7 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
     set_source_files_properties(runtime/cas128.c PROPERTIES COMPILE_OPTIONS -mcx16)
 endif()
 target_link_libraries(scarletnx-common PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+target_link_libraries(scarletnx-common PUBLIC scarletnx-platform) # the clocks (snx_seconds)
 target_link_libraries(scarletnx-common PRIVATE snx_yyjson) # the GPU driver packages' meta.json (utilities/gpu_driver.c)
 target_link_libraries(scarletnx-common PRIVATE snx_libdeflate) # a control.nacp's titles in deflate (utilities/common.c)
 target_link_libraries(scarletnx-common PRIVATE snx_cgltf) # a glTF model's Mii parts (utilities/mii_gltf.c)
@@ -56,8 +57,8 @@ if(TARGET OpenSSL::Crypto)
 endif()
 
 # The host's thread primitives (platform/thread.h) that every driver shares: mutexes, condition variables, waits on
-# a word, thread ids. No guest type, setting or SDL enters this target
-add_library(scarletnx-platform STATIC platform/thread.c platform/thread_spawn.c)
+# a word, thread ids; and the clocks and sleep (platform/time.h). No guest type, setting or SDL enters this target
+add_library(scarletnx-platform STATIC platform/thread.c platform/thread_spawn.c platform/time.c platform/sleep.c)
 set_target_properties(scarletnx-platform PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON)
 target_compile_options(scarletnx-platform PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_link_libraries(scarletnx-platform PUBLIC Threads::Threads)

@@ -10,6 +10,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/ui.h"
 #include "common/utilities/common.h"
+#include "common/platform/time.h"
 #include "common/utilities/pad_sdl.h"
 #include <SDL3/SDL.h>
 #if (defined(__FreeBSD__) || defined(__linux__)) && !defined(__ANDROID__)
@@ -316,7 +317,7 @@ void gamepad_open(u32 id) {
             return;
         }
         who_of(g, who, sizeof who);
-        i = connect_join(who, busy(), SDL_GetTicksNS());
+        i = connect_join(who, busy(), plat_ns());
         if (i < 0) {
             LOG("input: %s waits: the eight players are taken, or kept for controllers that left\n",
                 SDL_GetGamepadName(g) ? SDL_GetGamepadName(g) : "Gamepad");
@@ -358,7 +359,7 @@ void gamepad_open(u32 id) {
     if (g_settings.controller_assignment) { /* as Eden's hints: which controller joined, and as which player */
         char said[96];
         snprintf(said, sizeof said, "P%d: %s joined", i + 1, g_names[i]);
-        overlay_toast(said, SDL_GetTicksNS());
+        overlay_toast(said, plat_ns());
     }
     ui_unlock();
 }
@@ -372,9 +373,9 @@ void gamepad_close(u32 id) {
             ui_lock();
             if (g_settings.controller_assignment) { /* its player kept for it a while */
                 char said[96];
-                connect_leave(i, SDL_GetTicksNS());
+                connect_leave(i, plat_ns());
                 snprintf(said, sizeof said, "P%d: %s left", i + 1, g_names[i]);
-                overlay_toast(said, SDL_GetTicksNS());
+                overlay_toast(said, plat_ns());
             }
             g_names[i][0] = 0;
             ui_unlock();
@@ -389,7 +390,7 @@ void gamepad_open_waiting(void) { /* a waiting pad takes a freed slot when all e
     for (i = 0; i < n; i++) gamepad_open(ids[i]);
     SDL_free(ids);
 }
-int gamepad_slot_kept(int slot) { return g_settings.controller_assignment && connect_kept(slot, SDL_GetTicksNS()); }
+int gamepad_slot_kept(int slot) { return g_settings.controller_assignment && connect_kept(slot, plat_ns()); }
 int gamepad_slot_kept_type(int slot) {
     return slot >= 0 && slot < SNX_GAMEPADS ? g_left_type[slot] : SDL_GAMEPAD_TYPE_UNKNOWN;
 }

@@ -8,7 +8,6 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 #define SCE_KERNEL_ERROR_WAIT_DELETE      0x80028006u
 #define SCE_KERNEL_ERROR_ILLEGAL_THREAD_ID 0x80028022u
@@ -103,7 +102,7 @@ static uint32_t get_thread_id(VitaProcess* p, VitaThread* t) {
 static uint32_t delay_thread(VitaProcess* p, VitaThread* t) {
     uint64_t delay = (uint64_t)arg(p, t, 0) * 1000u;
     /* a delay of 0 gives the core away, as the console's scheduler does */
-    vita_wait(p, (VitaWait){.kind = VITA_WAIT_DELAY, .deadline = vita_now_ns() + (delay ? delay : 1)});
+    vita_wait(p, (VitaWait){.kind = VITA_WAIT_DELAY, .deadline = plat_ns() + (delay ? delay : 1)});
     return 0;
 }
 static uint32_t get_thread_current_priority(VitaProcess* p, VitaThread* t) {
@@ -723,7 +722,7 @@ static uint32_t get_free_memory_size(VitaProcess* p, VitaThread* t) {
 }
 
 /* ---- time: the process's in microseconds, the wall clock's as the C library asks ---- */
-static uint64_t process_us(VitaProcess* p) { return (vita_now_ns() - p->start_ns) / 1000u; }
+static uint64_t process_us(VitaProcess* p) { return (plat_ns() - p->start_ns) / 1000u; }
 static uint32_t get_process_time_wide(VitaProcess* p, VitaThread* t) { return vita_return64(t, process_us(p)); }
 static uint32_t get_process_time_low(VitaProcess* p, VitaThread* t) {
     (void)t;
@@ -731,15 +730,10 @@ static uint32_t get_process_time_low(VitaProcess* p, VitaThread* t) {
 }
 static uint32_t libc_gettimeofday(VitaProcess* p, VitaThread* t) {
     uint32_t tv = arg(p, t, 0);
-    struct timespec now;
-#if defined(__ANDROID__) && __ANDROID_API__ < 29
-    clock_gettime(CLOCK_REALTIME, &now);
-#else
-    timespec_get(&now, TIME_UTC);
-#endif
+    int64_t now = plat_unix_ns();
     if (tv) {
-        vita_write32(p, tv, (uint32_t)now.tv_sec);
-        vita_write32(p, tv + 4, (uint32_t)(now.tv_nsec / 1000));
+        vita_write32(p, tv, (uint32_t)(now / 1000000000));
+        vita_write32(p, tv + 4, (uint32_t)(now % 1000000000 / 1000));
     }
     if (arg(p, t, 1)) vita_write64(p, arg(p, t, 1), 0); /* UTC, no daylight saving */
     return 0;

@@ -12,7 +12,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <inttypes.h>
 #ifdef _WIN32
 #include <windows.h>
@@ -28,15 +27,6 @@
 #define MAIN_STACK 0x40000u /* the kernel's default when the process parameters name none */
 #define MAIN_PRIORITY 0x10000100u /* SCE_KERNEL_DEFAULT_PRIORITY_USER */
 
-uint64_t vita_now_ns(void) {
-#ifdef _WIN32
-    return (uint64_t)(snx_seconds() * 1e9);
-#else
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
-#endif
-}
 uint16_t vita_read16(VitaProcess* p, uint32_t address) { return snx_ld_le16(p->mem + address); }
 uint32_t vita_read32(VitaProcess* p, uint32_t address) { return snx_ld_le32(p->mem + address); }
 void vita_write16(VitaProcess* p, uint32_t address, uint16_t value) { snx_st_le16(p->mem + address, value); }
@@ -204,7 +194,7 @@ void vita_thread_end(VitaProcess* p, VitaThread* t, int32_t status) {
 }
 uint64_t vita_deadline(VitaProcess* p, uint32_t timeout) {
     if (!timeout) return 0;
-    uint64_t deadline = vita_now_ns() + (uint64_t)vita_read32(p, timeout) * 1000u;
+    uint64_t deadline = plat_ns() + (uint64_t)vita_read32(p, timeout) * 1000u;
     return deadline ? deadline : 1;
 }
 void vita_wait(VitaProcess* p, VitaWait wait) {
@@ -295,7 +285,7 @@ VitaProcess* vita_process_new(const VitaImage* image, const char* folder, char* 
     p->patch = p->folder ? snx_path_join(p->folder, "patch") : NULL;
     p->user = (VitaRegion){VITA_USER_BASE, VITA_USER_END, VITA_USER_BASE};
     p->cdram = (VitaRegion){VITA_CDRAM_BASE, VITA_CDRAM_END, VITA_CDRAM_BASE};
-    p->start_ns = vita_now_ns();
+    p->start_ns = plat_ns();
     p->unknown_logged = calloc(image->import_count ? image->import_count : 1, sizeof *p->unknown_logged);
     p->hle = calloc(image->import_count ? image->import_count : 1, sizeof *p->hle);
     p->hle_export = calloc(image->import_count ? image->import_count : 1, sizeof *p->hle_export);

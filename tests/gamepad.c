@@ -497,14 +497,14 @@ int main(void) {
             if (gamepad_slot_id(i)) SDL_DetachVirtualJoystick(gamepad_slot_id(i));
         pump();
         CHECK(gamepad_ini("gamepad_assign", "1") && g_settings.controller_assignment == 1);
-        gamepad_console(0, SDL_GetTicksNS()); /* the mode's start: none held */
+        gamepad_console(0, plat_ns()); /* the mode's start: none held */
         one = attach(XBOX);
         CHECK(gamepad_slot_id(0) == SDL_GetJoystickID(one) && strstr(toasted, "P1: ") && strstr(toasted, " joined"));
         two = attach(SONY);
         CHECK(gamepad_slot_id(1) == SDL_GetJoystickID(two));
         SDL_DetachVirtualJoystick(SDL_GetJoystickID(two));
         pump();
-        t = SDL_GetTicksNS();
+        t = plat_ns();
         CHECK(!gamepad_slot_connected(1) && gamepad_slot_kept(1) && strstr(toasted, "P2: ") &&
               strstr(toasted, " left"));
         CHECK(gamepad_slot_kept_type(1) == SDL_GAMEPAD_TYPE_PS4);
@@ -521,7 +521,7 @@ int main(void) {
         /* gone again: + held and let go on another goes on without it, its player no longer kept */
         SDL_DetachVirtualJoystick(SDL_GetJoystickID(two));
         pump();
-        t = SDL_GetTicksNS();
+        t = plat_ns();
         gamepad_console(0, t + 3200000000ull);
         CHECK(paused == 1);
         gamepad_console(1, t + 3300000000ull);

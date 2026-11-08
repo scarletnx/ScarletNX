@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The operating system under the runtime. plat_sdl.c implements what SDL does the same way everywhere (the clocks,
-   sleeping, libraries, path queries and the host's power state), and one of plat_posix.c and plat_win32.c the rest
+/* The operating system under the runtime. plat_sdl.c implements what SDL does the same way everywhere (libraries,
+   path queries and the host's power state); common/platform has the clocks and sleeping, and one of plat_posix.c and plat_win32.c the rest
    (threads, condition variables, the guest's address space, file maps, the crash handler); profiler_win32.c samples
    threads on Windows, and the host audio output lives in the window backend. Paths are UTF-8 everywhere. */
 #ifndef SNX_PLAT_H
@@ -9,6 +9,7 @@
 #include "common/cpu/aarch64/cpu.h"
 #include "common/filesystem/host.h"
 #include "common/platform/thread.h" /* PMutex, PCond, waits on a word, plat_tid */
+#include "common/platform/time.h"   /* plat_ns, plat_sleep_ns, the wall clock */
 #include "common/utilities/common.h" /* snx_cpu_count */
 #include <stddef.h>
 #include <stdio.h>
@@ -33,7 +34,6 @@ static inline int plat_cpu_count(void) {
 /* the host for the log's header, so a report needn't describe it: "<OS and version>, <CPU>, <n> threads, <n> GB RAM",
    the CPU left out where the host doesn't name it. Nothing that names the machine or its user */
 void plat_system_info(char* out, size_t cap);
-void plat_sleep_ns(i64 ns); /* 0 or less yields */
 /* C11's _Noreturn, which C99 code (it includes this) has not */
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 #define SNX_NORETURN _Noreturn
@@ -43,14 +43,6 @@ void plat_sleep_ns(i64 ns); /* 0 or less yields */
 /* Ends the process with code at once: stdio is flushed, but atexit handlers don't run and other threads are left
    where they are */
 SNX_NORETURN void plat_exit_now(int code);
-
-/* ---- time */
-u64 plat_ns(void);        /* a monotonic clock in nanoseconds */
-/* the system's CLOCK_MONOTONIC in nanoseconds (Vulkan's VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR), which plat_ns isn't:
-   0 where there is none (Windows) */
-u64 plat_monotonic_ns(void);
-i64 plat_unix_time(void); /* seconds since 1970 UTC */
-i64 plat_tz_offset(void); /* local time minus UTC, in seconds */
 
 /* ---- power */
 /* Whether the host runs from its charger: 1 plugged in, 0 on its battery, -1 when that cannot be read. Call it on the

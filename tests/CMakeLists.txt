@@ -1728,6 +1728,7 @@ add_library(snx_test_common STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities/c
     "${PROJECT_SOURCE_DIR}/src/common/utilities/script.c")
 snx_test_target(snx_test_common 99)
 target_link_libraries(snx_test_common PUBLIC snx_libdeflate) # a control.nacp's titles in deflate
+target_link_libraries(snx_test_common PUBLIC scarletnx-platform) # the clocks (snx_seconds)
 if(WIN32)
     target_link_libraries(snx_test_common PUBLIC advapi32)
 endif()

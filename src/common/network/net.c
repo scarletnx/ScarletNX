@@ -25,7 +25,6 @@
 #include <netinet/tcp.h>
 #include <poll.h>
 #include <sys/ioctl.h>
-#include <time.h>
 #include <unistd.h>
 #endif
 
@@ -114,14 +113,6 @@ void snx_lock_init(SnxLock* l) { InitializeSRWLock(l); }
 void snx_lock_destroy(SnxLock* l) { (void)l; }
 void snx_lock(SnxLock* l) { AcquireSRWLockExclusive(l); }
 void snx_unlock(SnxLock* l) { ReleaseSRWLockExclusive(l); }
-int64_t snx_net_now_us(void) {
-    static LARGE_INTEGER f;
-    LARGE_INTEGER c;
-    if (!f.QuadPart) QueryPerformanceFrequency(&f);
-    QueryPerformanceCounter(&c);
-    return (int64_t)(c.QuadPart / f.QuadPart * 1000000 + c.QuadPart % f.QuadPart * 1000000 / f.QuadPart);
-}
-void snx_net_sleep_us(int64_t us) { Sleep((DWORD)((us + 999) / 1000)); }
 int snx_net_close_fd(SnxHostFd fd) { return closesocket(fd) ? snx_net_host_error() : 0; }
 int snx_net_set_host_nonblocking(SnxHostFd fd) {
     u_long on = 1;
@@ -163,15 +154,6 @@ void snx_lock_init(SnxLock* l) { pthread_mutex_init(l, NULL); }
 void snx_lock_destroy(SnxLock* l) { pthread_mutex_destroy(l); }
 void snx_lock(SnxLock* l) { pthread_mutex_lock(l); }
 void snx_unlock(SnxLock* l) { pthread_mutex_unlock(l); }
-int64_t snx_net_now_us(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
-}
-void snx_net_sleep_us(int64_t us) {
-    struct timespec ts = {(time_t)(us / 1000000), (long)(us % 1000000) * 1000};
-    while (nanosleep(&ts, &ts) && errno == EINTR) {}
-}
 int snx_net_close_fd(SnxHostFd fd) { return close(fd) ? snx_net_host_error() : 0; }
 static void set_cloexec(int fd) { fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC); }
 int snx_net_set_host_nonblocking(SnxHostFd fd) {

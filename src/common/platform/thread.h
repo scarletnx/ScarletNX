@@ -108,7 +108,6 @@ void plat_thread_exit(void); /* ends the calling thread (one plat_thread started
 int plat_cpus(int* ids, int max);
 /* the calling thread runs only on the n host CPUs in ids: 0, or -1 with errno */
 int plat_thread_cpus(const int* ids, int n);
-void plat_yield(void);
 /* the calling thread's id, as the system numbers threads (Linux's gettid, kept per thread). Safe in a signal handler
    once the thread has called it one time */
 uint32_t plat_tid(void);

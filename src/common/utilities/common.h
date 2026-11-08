@@ -266,7 +266,7 @@ unsigned snx_cpu_count(void);
    system says them, else the processors, capped at 75% of that (a reserve of one whole core, or a quarter), so a
    part of the computer stays free; at least 1, never more than snx_cpu_count() */
 unsigned snx_build_threads(void);
-/* seconds on a monotonic clock, for durations */
+/* plat_ns in seconds, for durations */
 double snx_seconds(void);
 /* Address space for code the process writes and then runs: reserved without access, then given access in whole pages.
    snx_vm_protect commits the pages it makes accessible and decommits them with SNX_VM_NONE on Windows. 0 or -1 */

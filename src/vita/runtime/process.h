@@ -5,6 +5,7 @@
 #include "common/cpu/arm/arm.h"
 #include "vita/aot/module.h"
 #include "vita/loader/image.h"
+#include "common/platform/time.h" /* plat_ns, the clock of every deadline here */
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -286,7 +287,6 @@ void vita_thread_start(VitaProcess* p, VitaThread* t, uint32_t r0, uint32_t r1);
 void vita_wait(VitaProcess* p, VitaWait wait);
 /* the current thread's deadline from a guest SceUInt32* timeout in microseconds (0: none) */
 uint64_t vita_deadline(VitaProcess* p, uint32_t timeout);
-uint64_t vita_now_ns(void);
 /* the thread ends with status (its waiters are told by their wait) */
 void vita_thread_end(VitaProcess* p, VitaThread* t, int32_t status);
 bool vita_in_module_start(const VitaThread* t);
