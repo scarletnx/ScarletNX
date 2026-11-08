@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "common/gpu/vk/vk_common.h"
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -27,7 +26,6 @@ const char* snx_vk_result_str(VkResult r) {
         default: return "VkResult";
     }
 }
-
 
 bool snx_vk_has_layer(const char* name) {
     uint32_t n = 0;

@@ -9,7 +9,6 @@
 #include <SDL3/SDL_vulkan.h>
 #include <errno.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 static struct {
