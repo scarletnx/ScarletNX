@@ -263,3 +263,10 @@ flourishes. This rule does not apply to code comments. The Claude files follow A
   set of each shader's own bindings did not stop it, and neither did `MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS=0`
   (`docs/APPLE.md` has the rates). Count the draws that a run skips before you trust a workaround. The runs that did
   not lock up skipped the over-limit draws. Measure an intermittent GPU fault over 8 runs of one route on one save.
+- A moved `#if defined(SNX_TRACY)` pair takes its code out of the other preset. Both presets must build for each commit
+  of a stack, because only the preset that you did not build shows the damage. One pair of mine wrapped the whole body
+  of `cs_put_aside`. The default build then ran the tail of it with uninitialized `b`, `cb` and `dp`. The TXD headless
+  check read back `0xdeadbeef` a day later.
+
+  After you move a pair, strip the `#if defined(SNX_TRACY)` and `#endif` lines from both trees and diff what remains.
+  That shows exactly what the default build compiles.

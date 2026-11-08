@@ -28,6 +28,17 @@ description: "Build the ScarletNX runtime and recompile games correctly. Avoid t
    window.
 2. hactool is our own code, in the tree (`src/nx/runtime/driver/hactool`). `cmake/hactool.cmake` builds it. It runs
    inside `build/scarletnx -x Game.xci`.
+
+## Build every preset of a stack
+
+A commit of a stack can compile in one preset and fail in the other. `snx-tracy` code sits inside
+`#if defined(SNX_TRACY)` pairs, and a pair moved a few lines takes its code out of the other preset with no warning.
+CI builds the `default` preset only, so the profiler preset alone never shows that damage.
+
+Thus, before you push a stack, build and test `default` and `tracy` (and `tracy-deep` where the stack touches the
+profiler), for each commit in order. To see what the `default` preset really compiles, strip the
+`#if defined(SNX_TRACY)` and `#endif` lines from both trees and diff what remains. A layer that restores main's pairs
+must show the default build identical to main's.
 3. The last step of the build copies the runtime to `games/<id>/<name>` for each `games/<id>/<name>_code.so`. These
    are the module of the game and the module of its update (`<id>_<update id>`). For an older version's
    `games/<Game>_code.so`, the step copies the runtime to `games/<Game>` (`cmake/deploy.cmake`). That copy is the
