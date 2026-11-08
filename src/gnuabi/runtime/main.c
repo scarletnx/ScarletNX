@@ -3,6 +3,7 @@
 #include "gnuabi/process/process.h"
 #include "gnuabi/runtime/execution.h"
 #include "gnuabi/runtime/main.h"
+#include "common/utilities/cli.h"
 #include "common/utilities/common.h"
 #include "common/cpu/recompiler/snx_recompiler.h"
 #include <openssl/crypto.h>
@@ -19,13 +20,18 @@
 #include <unistd.h>
 #endif
 
-static const char usage[] =
+/* the common options scarletnx-gnuabi takes (common/utilities/cli.h): the data folder, whose linux/ is the guest's
+   root by default, and the help. A program is run as it is, with no game folder, keys or run of its own */
+static const unsigned gnu_cli = SNX_CLI_BIT(SNX_CLI_DATA) | SNX_CLI_BIT(SNX_CLI_HELP);
+static const char usage_head[] =
     "Usage: scarletnx-gnuabi [options] [--] ELF [arguments...]\n"
     "Runs Linux AArch64 or AArch32 (A32/Thumb) programs, static or dynamically linked, through the ScarletNX\n"
     "recompiler.\n"
-    "\n"
+    "\n";
+static const char usage[] =
+    "GNU ABI options:\n"
     "  -L DIR, --sysroot=DIR  The guest's root: a guest path names DIR's file when DIR has it, the host's\n"
-    "                         otherwise, as with QEMU's -L. The default is linux/ in the data folder\n"
+    "                         otherwise, as with QEMU's -L. The default is linux/ in the data folder (--data)\n"
     "  --isolated             No host files: /tmp in memory, the program alone as /program\n"
     "  --jit-cache=DIR        Where compiled code is kept between runs (default: the user's cache folder)\n"
     "  --no-jit-cache         Keep no compiled code between runs\n"
@@ -39,6 +45,12 @@ static const char usage[] =
     "                         1048576 (not on Windows)\n"
     "  -E VAR=VALUE, -U VAR   Set or remove a variable of the guest's environment (the host's otherwise)\n"
     "  -0 ARGV0               The program's argv[0] (default: ELF)\n";
+
+static void usage_print(FILE* out) {
+    fputs(usage_head, out);
+    snx_cli_help(out, gnu_cli);
+    fputs(usage, out);
+}
 
 static GnuProcess* process;
 /* the environment: the host's, with -E and -U applied in order */
@@ -75,13 +87,13 @@ static char** environment(char** changes, size_t change_count) {
     return env;
 }
 
-/* linux/ of the data folder games/ and work/ are in (snx_data_dir), as the 3DS runtime finds work/3ds. An older
-   version's SNX_LINUX_SYSROOT (docs/user/deprecations.md) still names another for this version, said. Removed with
-   tests/architecture.py's ENV_DEPRECATED row */
-static char* default_sysroot(const char* argv0) {
+/* linux/ of the data folder games/ and work/ are in (given, --data's, else snx_data_dir), as the 3DS runtime finds
+   work/3ds. Without --data, an older version's SNX_LINUX_SYSROOT (docs/user/deprecations.md) still names another for
+   this version, said. Removed with tests/architecture.py's ENV_DEPRECATED row */
+static char* default_sysroot(const char* argv0, const char* given) {
     const char* named = getenv("SNX_LINUX_SYSROOT");
     char *exe, *dir, *data, *root, *checkout;
-    if (named && named[0]) {
+    if (named && named[0] && !given) {
         root = snx_absolute(named);
         fprintf(stderr,
                 "scarletnx-gnuabi: SNX_LINUX_SYSROOT=%s is deprecated, replaced by -L DIR and --sysroot=DIR: this "
@@ -91,9 +103,9 @@ static char* default_sysroot(const char* argv0) {
     }
     exe = snx_executable(argv0);
     dir = exe ? snx_dirname(exe) : NULL;
-    data = snx_data_dir(dir);
+    data = given ? snx_absolute(given) : snx_data_dir(dir);
     root = data ? snx_path_join(data, "linux") : NULL;
-    checkout = snx_checkout(SNX_SOURCE_DIR, SNX_BUILD_DIR, dir);
+    checkout = given ? NULL : snx_checkout(SNX_SOURCE_DIR, SNX_BUILD_DIR, dir);
     if (checkout && data) snx_checkout_left(checkout, data);
     free(checkout);
     free(exe);
@@ -213,14 +225,26 @@ int snx_gnuabi_main(int argc, char** argv) {
     const char* cwd = NULL;
     int first = 1, isolated = 0, no_cache = 0, verbose = 0, strace = 0, sample = 0;
     const char* host_page = NULL; /* --host-page's */
+    const char* data = NULL;      /* --data's */
     if (!changes) return 2;
     while (first < argc && argv[first][0] == '-') {
         const char* option = argv[first];
         const char* value = first + 1 < argc ? argv[first + 1] : NULL;
-        if (!strcmp(option, "--help") || !strcmp(option, "-h")) {
-            fputs(usage, stdout);
+        SnxCliArg common;
+        char error[256];
+        int id = snx_cli_match(argc, argv, &first, gnu_cli, "scarletnx-gnuabi", &common, error, sizeof error);
+        if (id < 0 || id == SNX_CLI_HELP) {
+            if (id < 0)
+                fprintf(stderr, "%s\n", error);
+            else
+                usage_print(stdout);
             options_free(changes, change_count, sysroot);
-            return 0;
+            return id < 0 ? 2 : 0;
+        }
+        if (id == SNX_CLI_DATA) { /* the data folder, whose linux/ is the default root */
+            data = common.value;
+            first++;
+            continue;
         }
         if (!strcmp(option, "--")) {
             first++;
@@ -275,7 +299,7 @@ int snx_gnuabi_main(int argc, char** argv) {
         first++;
     }
     if (first == argc) {
-        fputs(usage, stderr);
+        usage_print(stderr);
         options_free(changes, change_count, sysroot);
         return 2;
     }
@@ -296,7 +320,7 @@ int snx_gnuabi_main(int argc, char** argv) {
                 "of scarletnx's runtime and recompile and not of this one: its JIT runs without branch weights "
                 "(docs/user/deprecations.md)\n",
                 old_profile);
-    if (!isolated && !sysroot) sysroot = default_sysroot(argv[0]);
+    if (!isolated && !sysroot) sysroot = default_sysroot(argv[0], data);
     if (!no_cache) {
         if (cache_option)
             cache = snx_absolute(cache_option);
