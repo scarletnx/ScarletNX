@@ -16,6 +16,7 @@
      in guest memory and in the shadow once it is done (vk_mirror_harvest, vk_mirror_done). The masks are cleared then.
 
    All under vk_lock. */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/gpu.h"
@@ -52,9 +53,15 @@ static struct {
 int vk_mirror_on(void) {
     if (g_mir.on >= 0) return g_mir.on;
     g_mir.on = 0;
+    /* the mirror is one buffer as big as the guest's address space: RADV makes none past 4 GiB, and one past the
+       device's maxBufferSize is invalid (the validation layer says so) */
+    char big[128];
+    snprintf(big, sizeof big, "buffers of %llu bytes at most, where the mirror is %llu",
+             (unsigned long long)g_vk.max_buffer_size, (unsigned long long)AS_SIZE);
     const char* why = vk_uma()                           ? "memory shared with the CPU: read in place"
                       : !g_vk.sparse                     ? "no sparse binding"
                       : !g_vk.feat.sparseResidencyBuffer ? "no sparse residency of buffers"
+                      : g_vk.max_buffer_size < AS_SIZE   ? big
                       : g_vk.props.limits.sparseAddressSpaceSize < AS_SIZE + AS_SIZE / 8 ? "too small an address space"
                       : vk_written_since(g_mem + AS_BASE, 1, 0) < 0                      ? "no write tracking"
                                                                                          : NULL;
