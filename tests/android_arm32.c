@@ -468,10 +468,10 @@ static void test_libm(void) {
     expect_int("fminf(3, -1)", CALL("fminf", f_bits(3.0f), f_bits(-1.0f)), f_bits(-1.0f));
     expect_int("nextafter(1, 2)", (int64_t)CALL64("nextafter", D(1.0), D(2.0)), 0x3ff0000000000001ll);
     expect_int("nextafterf(1, 2)", CALL("nextafterf", f_bits(1.0f), f_bits(2.0f)), 0x3f800001);
-    /* fma keeps the product's rounding error: 0x1.000002p0 * 0x1.fffffcp-1 - 1 */
-    float a = 0x1.000002p0f, b = 0x1.fffffcp-1f;
-    expect_int("fmaf(a, b, -1)", CALL("fmaf", f_bits(a), f_bits(b), f_bits(-1.0f)), f_bits(fmaf(a, b, -1.0f)));
-    expect_int("fmaf is fused", CALL("fmaf", f_bits(a), f_bits(b), f_bits(-1.0f)) != f_bits(a * b - 1.0f), 1);
+    /* fma keeps the product's rounding error: 0x1.000002p0 * 0x1.fffffcp-1 is 1 - 0x1p-46, which a float product
+       rounds to 1, so unfused it gives 0. The result as a constant, as the compiler may fuse a * b - 1 itself */
+    expect_int("fmaf is fused", CALL("fmaf", f_bits(0x1.000002p0f), f_bits(0x1.fffffcp-1f), f_bits(-1.0f)),
+               f_bits(-0x1p-46f));
     expect_int("fma(0.1, 10, -1)", (int64_t)CALL64("fma", D(0.1), D(10.0), D(-1.0)), (int64_t)d_bits(fma(0.1, 10, -1)));
     expect_int("lround(2.5)", (int32_t)CALL("lround", D(2.5)), 3);
     expect_int("lround(-2.5)", (int32_t)CALL("lround", D(-2.5)), -3);
