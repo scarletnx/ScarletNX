@@ -5,8 +5,9 @@
 # Ounce's games, which the native video service decodes (src/nx/hle/services/native_video.c). FFmpeg's own AV1 decoder
 # only parses the stream for a hardware decoder, so a software decode needs dav1d. It builds from the release in
 # cmake/dependencies.cmake with meson and ninja, which it has instead of a CMake build: only the library, at 8 and 16
-# bits a sample (8- and 10-bit streams), with its assembly (NASM's on x86-64). Built on Linux and the BSDs, not in a cross
-# build yet (meson would need a cross file of its own); a runtime without it plays an AV1 movie black. This file is
+# bits a sample (8- and 10-bit streams), with its assembly (NASM's on x86-64). Built on Linux, the BSDs and Windows (MSYS2's
+# meson, as its CI builds), not in a cross build yet (meson would need a cross file of its own); a runtime without it plays
+# an AV1 movie black. This file is
 # included into the top-level scope before cmake/ffmpeg.cmake, which reads snx_dav1d_ready: its variables carry the
 # snx_dav1d_ prefix.
 option(SNX_DAV1D "Build dav1d, for the Ounce's AV1 movies (needs meson and ninja)" ON)
@@ -14,7 +15,7 @@ set(snx_dav1d_ready OFF)
 if(SNX_DAV1D)
     find_program(SNX_MESON meson)
     find_program(SNX_DAV1D_NINJA NAMES ninja ninja-build)
-    if(CMAKE_CROSSCOMPILING OR WIN32 OR APPLE OR ANDROID)
+    if(CMAKE_CROSSCOMPILING OR APPLE OR ANDROID)
         message(STATUS "dav1d: not built for this target yet: AV1 movies play black")
     elseif(NOT SNX_MESON OR NOT SNX_DAV1D_NINJA)
         message(STATUS "dav1d: meson or ninja not found: AV1 movies play black. Install them, or configure with "
@@ -60,7 +61,9 @@ if(snx_dav1d_ready)
     add_library(dav1d::dav1d STATIC IMPORTED GLOBAL)
     set_target_properties(dav1d::dav1d PROPERTIES IMPORTED_LOCATION "${snx_dav1d_prefix}/lib/libdav1d.a"
                                                   INTERFACE_INCLUDE_DIRECTORIES "${snx_dav1d_prefix}/include")
-    # its threads, dlsym (for the C library's thread stack size) and libm
-    target_link_libraries(dav1d::dav1d INTERFACE Threads::Threads m ${CMAKE_DL_LIBS})
+    # its threads, dlsym (for the C library's thread stack size) and libm; on Windows its threads are the system's own
+    if(NOT WIN32)
+        target_link_libraries(dav1d::dav1d INTERFACE Threads::Threads m ${CMAKE_DL_LIBS})
+    endif()
     add_dependencies(dav1d::dav1d dav1d_build)
 endif()
