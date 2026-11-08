@@ -5,7 +5,7 @@
 set(dir "${CMAKE_CURRENT_BINARY_DIR}/unknown-option")
 file(REMOVE_RECURSE "${dir}")
 file(MAKE_DIRECTORY "${dir}")
-foreach(option --resoltion=2 --resolution=2 --seconds=5)
+foreach(option --resoltion=2 --resolution_scale=2 --seconds=5)
     execute_process(COMMAND "${CMAKE_COMMAND}" -E env --unset=DISPLAY --unset=WAYLAND_DISPLAY SDL_VIDEO_DRIVER=dummy
                             "${RUNTIME}" ${option} missing.nro
                     WORKING_DIRECTORY "${dir}" TIMEOUT 20 RESULT_VARIABLE result OUTPUT_VARIABLE out
