@@ -369,13 +369,13 @@ static void enumerate_instance_extensions(CPU* c, void* data) {
 
 /* vkCreateAndroidSurfaceKHR(instance, info, allocator, surface): the host window's surface on the guest's instance,
    or a headless one without a display */
-VkResult hle_vulkan_create_surface(VkInstance instance, VkSurfaceKHR* out) {
+static VkResult make_surface(VkInstance instance, VkSurfaceKHR* out, bool yield) {
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     void* window = window_host ? window_host->window() : NULL;
     VkResult r = VK_ERROR_INITIALIZATION_FAILED;
     /* ScarletNX's renderer gives the window up (a window has one swapchain at a time), and its frames from then on
        go into the layer that the presents blend, with a window or without */
-    if (window_host) window_host->yield();
+    if (yield && window_host) window_host->yield();
     if (window) {
         r = SDL_Vulkan_CreateSurface(window, instance, NULL, &surface) ? VK_SUCCESS : VK_ERROR_INITIALIZATION_FAILED;
     } else {
@@ -387,6 +387,8 @@ VkResult hle_vulkan_create_surface(VkInstance instance, VkSurfaceKHR* out) {
     if (r == VK_SUCCESS) memcpy(out, &surface, sizeof surface);
     return r;
 }
+VkResult hle_vulkan_create_surface(VkInstance instance, VkSurfaceKHR* out) { return make_surface(instance, out, true); }
+VkResult hle_vulkan_probe_surface(VkInstance instance, VkSurfaceKHR* out) { return make_surface(instance, out, false); }
 /* the headless surfaces of SurfaceTextures, the last few: presentable from any graphics queue, as Android's are */
 enum { TEXTURE_SURFACES = 8 };
 static VkSurfaceKHR texture_surfaces[TEXTURE_SURFACES];
