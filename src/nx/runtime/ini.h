@@ -75,6 +75,10 @@ size_t ini_list_text(const IniSection* sections, int count, char* out, size_t si
 
 /* a key an older version used, which does nothing now (docs/DEPRECATIONS.md): what became of it, NULL for another */
 const char* ini_deprecated(const char* key);
+/* a deprecated key whose values went as they are to another key: that key, NULL for another. A player's pick of it
+   (the launcher's Settings) is carried over; the game's .ini also holds defaults an older version wrote, which the
+   runtime reads as their own (options.c) */
+const char* ini_renamed(const char* key);
 /* a deprecated key's value, this run's (--key=value) else the file's, which the runtime maps to what replaced it:
    NULL when neither has it */
 const char* ini_deprecated_value(const char* key);

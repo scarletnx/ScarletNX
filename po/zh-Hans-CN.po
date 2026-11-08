@@ -4916,6 +4916,16 @@ msgid "%s=%s is the default of %s: no run is given it over the game's .ini"
 msgstr "%s=%s 是 %s 的默认值：运行时不再以它覆盖游戏的 .ini"
 
 #: src/gui/settings.c
+#, c-format
+msgid "%s=%s is deprecated: %s is %s=%s now"
+msgstr ""
+
+#: src/gui/settings.c
+#, c-format
+msgid "%s=%s is deprecated and no value of %s: %s=%s now"
+msgstr ""
+
+#: src/gui/settings.c
 msgid "Mixed"
 msgstr "混合"
 

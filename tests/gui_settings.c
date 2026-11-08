@@ -594,6 +594,41 @@ int main(int argc, char** argv) {
         assert(gui_settings_always(&s, "shape", "1") && !gui_settings_set(&s, "shape", "2"));
         assert(!strcmp(gui_settings_value(&s, "shape"), "1"));
         gui_settings_free(&s);
+        /* a renamed key's pick (ini.h's ini_renamed): its new row's, said once, and the file written with that one
+           alone; a value the row has not is said with the row's; the new key given too, the old one is not read */
+        {
+            const char* descriptors = "Debug\tvk_descriptors_mode\t3\tint\t0\t3\tGraphics descriptors\t"
+                                      "Descriptor buffers\t0=Sets|1=Buffers|2=Heaps|3=Automatic\n";
+            const char* picks = "[Debug]\nvk_descriptors=1\n";
+            assert(!snx_write_file(path, picks, strlen(picks)));
+            assert(!gui_settings_read(&s, descriptors));
+            gui_settings_mark(&s);
+            assert(gui_settings_load(&s, path, old, sizeof old) == 1);
+            assert(!strcmp(old, "vk_descriptors=1 is deprecated: Descriptor buffers is vk_descriptors_mode=1 now"));
+            assert(!strcmp(gui_settings_value(&s, "vk_descriptors_mode"), "1") &&
+                   gui_settings_options(&s, 0, options) == 1 && !strcmp(options[0], "--vk_descriptors_mode=1"));
+            assert(!gui_settings_save(&s, path));
+            text = (char*)snx_read_file(path, &size);
+            assert(text && strstr(text, "\n[Debug]\nvk_descriptors_mode=1\n") && !strstr(text, "vk_descriptors="));
+            free(text);
+            assert(!gui_settings_load(&s, path, old, sizeof old) && !old[0]);
+            gui_settings_free(&s);
+            picks = "[Debug]\nvk_descriptors=7\n";
+            assert(!snx_write_file(path, picks, strlen(picks)));
+            assert(!gui_settings_read(&s, descriptors));
+            gui_settings_mark(&s);
+            assert(gui_settings_load(&s, path, old, sizeof old) == 1 && !gui_settings_value(&s, "vk_descriptors_mode"));
+            assert(!strcmp(old, "vk_descriptors=7 is deprecated and no value of Descriptor buffers: "
+                                "vk_descriptors_mode=3 now"));
+            gui_settings_free(&s);
+            picks = "[Debug]\nvk_descriptors=1\nvk_descriptors_mode=2\n";
+            assert(!snx_write_file(path, picks, strlen(picks)));
+            assert(!gui_settings_read(&s, descriptors));
+            gui_settings_mark(&s);
+            assert(!gui_settings_load(&s, path, old, sizeof old) && !old[0]);
+            assert(!strcmp(gui_settings_value(&s, "vk_descriptors_mode"), "2"));
+            gui_settings_free(&s);
+        }
         assert(!snx_remove_tree(dir));
         free(path);
         free(dir);
