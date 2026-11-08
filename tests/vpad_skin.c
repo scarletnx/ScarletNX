@@ -516,8 +516,10 @@ static void test_shipped(const char* path) {
 
 /* the built-in atlas as compiled in, R G B A bytes */
 static SDL_Surface* atlas_png(void) {
-    SDL_Surface *png = SDL_LoadPNG_IO(SDL_IOFromConstMem(snx_controls_png, snx_controls_png_size), true), *s;
-    assert(png && (s = SDL_ConvertSurface(png, SDL_PIXELFORMAT_RGBA32)));
+    SDL_Surface *png = SDL_LoadPNG_IO(SDL_IOFromConstMem(snx_controls_png, snx_controls_png_size), true), *s = NULL;
+    assert(png);
+    s = SDL_ConvertSurface(png, SDL_PIXELFORMAT_RGBA32);
+    assert(s);
     SDL_DestroySurface(png);
     return s;
 }
