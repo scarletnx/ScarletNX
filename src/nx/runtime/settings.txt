@@ -96,7 +96,6 @@ setting GPU driver
     once
     startup
     in-game
-    platform ANDROID
     help The Vulkan driver the game runs with: empty = the system's, else a driver package the launcher's GPU Drivers
     help added, by its folder's name in gpu_drivers/ of the user's data folder. Packages load on Android 9 or newer,
     help arm64, with an Adreno GPU. One that does not load stops the game, saying why. Left out, the launcher passes
