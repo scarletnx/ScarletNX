@@ -9,7 +9,7 @@
 * [References](#references)
 * [Validation](#validation)
 
-This change targets the heap rejection seen during Super Mario Odyssey startup. A
+This change targets the heap rejection that one game met at startup. A
 3200 MiB request was refused because the runtime charged a fixed 256 MiB in
 addition to the requested heap against a 3285 MiB application budget. The game
 subsequently initialized an allocator with a bad buffer. Increasing `memory_gb`

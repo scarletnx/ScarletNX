@@ -3,7 +3,8 @@
 # The NVN investigation
 
 *Snapshot: this page records what the investigation that led to the NVN loader found, as it was found. The code has
-changed since, and the page is not kept up to date. The current design is in [NVN](../layers/gpu/nvn.md).*
+changed since, and the page is not kept up to date. The current design is in [NVN](../layers/gpu/nvn.md), which
+names the games A to D as this page does.*
 
 ## Why the first replay was abandoned
 
@@ -13,11 +14,11 @@ anything. The investigation built about 14,000 lines of opt-in probes: a recorde
 GPU thread, a second Vulkan renderer with its own image cache, and pixel comparisons against the Maxwell path. It
 reached byte-exact intermediate targets in all four titles, but the approach could not become a renderer:
 
-- **Not every command is in a recorded list.** Catherine's `nvnQueuePresentTexture` submits queue-side packets
+- **Not every command is in a recorded list.** Game A's `nvnQueuePresentTexture` submits queue-side packets
   around the recorded command segments, and the tail sets the window-origin register (`0x4eb`) for the next
-  submission. TotK submits 65 depth-writing macro 38 draws in GPFIFO entries that lie outside every recorded command
+  submission. Game B submits 65 depth-writing macro 38 draws in GPFIFO entries that lie outside every recorded command
   span, inside the same `nvnQueueSubmitCommands`. A list of NVN calls cannot reproduce such a submit.
-- **TotK inlines NVN.** `BeginRecording` is inlined in game code at `0x8714394` and `0x87164ac`, which write the same
+- **Game B inlines NVN.** `BeginRecording` is inlined in game code at `0x8714394` and `0x87164ac`, which write the same
   fields as the exported function at `0xd15a480`. Draws, constant-buffer binds and vertex ranges also appear in
   cursor gaps between exported calls. Even `--hook-direct-calls` sees none of this.
 - **Post-submit observation is too late.** Replay ran after `QueueFlush` or the present. By then the 64×64 depth
@@ -63,6 +64,6 @@ and its 4 KiB alignment, and the device flags.
 | A render-target alias of an 8×8 cubemap mip is padded to a 16×8 surface (64-byte GOB rows). The importer accepts that shape and copies the logical extent | `vk/texture.c` `tex_take_drawn` |
 | Depth-only D16 and D32F textures import from render targets through the depth aspect | `vk/texture.c` |
 | Four-byte packed depth/stencil uploads: G24R8 (`0x0e`) and Z24S8 (`0x29`) keep stencil in the low byte, X8Z24 (`0x2a`) and S8Z24 (`0x2b`) depth in the low 24 bits | `vk/texture.c` |
-| A BRX resolves its jump table when the LDC is up to 64 instructions back, with only a short list of instructions that don't write the index register in between and no control flow before it. TotK has the LDC at instruction 93 and the BRX at 125 | `shader/shader.c` (`brx_far_ldc` then, `shader_brx_targets` now) |
+| A BRX resolves its jump table when the LDC is up to 64 instructions back, with only a short list of instructions that don't write the index register in between and no control flow before it. Game B has the LDC at instruction 93 and the BRX at 125 | `shader/shader.c` (`brx_far_ldc` then, `shader_brx_targets` now) |
 | Compute code is bounded by the NVN header's declared size (magic `0x12345679` at code - 0x100), so an unresolved BRX cannot scan into neighboring programs | `vk/compute.c` |
 | Storage results are read back from host-cached memory | `vk/buffer.c`, `vk/cmd.c` |
