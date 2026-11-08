@@ -2215,7 +2215,8 @@ static void test_fragment_per_primitive(const char* dir) {
 /* A fragment program's input that no output of the stage before writes (ShaderInfo.in_unfed_mask) reads 0, 0, 0, 1,
    as the Maxwell translator's does, and the module declares no Input for it, which the stage before would not match
    (VUID-RuntimeSpirv-OpEntryPoint-08743: one game's mesh programs write fewer generics than their fragment programs
-   read) */
+   read). An IPA at the centroid of such an input decorates nothing: the decoration named id 0 before, a module that
+   spirv-val and the validation layer refuse */
 static void test_fragment_unfed(const char* dir) {
     u8 code[16 * 8] = {0};
     u32 n = fragment_program(code), fsph[32] = {0};
@@ -2223,6 +2224,21 @@ static void test_fragment_unfed(const char* dir) {
     fsph[6] = 2;
     fsph[18] = 0xf;
     u32 inputs_of[2] = {0};
+    for (u32 centroid = 0; centroid < 2; centroid++) {
+        code[9] = (u8)((code[9] & ~0x30u) | centroid << 4); /* the IPA's bits 76-77, its InterpLoc: 1 the centroid */
+        ShaderInfo si = {0};
+        si.in_unfed_mask = 1;
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+        CHECK(spv != NULL);
+        if (!spv) return;
+        u32 at[64], found = spv_find(spv, count, 71 /* OpDecorate */, at, 64), zero = 0;
+        for (u32 k = 0; k < found; k++) zero += spv[at[k] + 1] == 0;
+        CHECK(found < 64 && zero == 0);
+        CHECK(keep_module(dir, centroid ? "fs_unfed_centroid" : "fs_unfed_default", spv, count));
+        free(spv);
+    }
+    code[9] &= (u8)~0x30u;
     for (u32 unfed = 0; unfed < 2; unfed++) {
         ShaderInfo si = {0};
         si.in_unfed_mask = unfed;
