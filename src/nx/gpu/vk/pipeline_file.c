@@ -759,12 +759,20 @@ void pf_open(PFile* pf, const char* path, const char* key, size_t guest, PfLoad*
         if (used < size)
             LOG("vulkan: %s: the records past %lu of its %lu bytes were cut short or changed, and are dropped\n", path,
                 (unsigned long)used, (unsigned long)size);
-    } else if (buf && (old_head = pf_same_guest(buf, size, key, guest)) != 0)
-        LOG("vulkan: %s is of another build or driver: its shaders are translated again and its pipelines made "
+    } else if (buf && (old_head = pf_same_guest(buf, size, key, guest)) != 0) {
+        char diff[768];
+        pf_key_diff(diff, sizeof diff, (const char*)buf + 16, pf_get32(buf + 12), key);
+        LOG("vulkan: %s is of another build or driver (%s): its shaders are translated again and its pipelines made "
             "again\n",
-            path);
-    else if (length > 0)
-        LOG("vulkan: %s is of another build, GPU or driver, or unreadable: started over\n", path);
+            path, diff);
+    } else if (length > 0) {
+        char diff[768];
+        if (buf && size >= 16 && !memcmp(buf, PF_MAGIC, 8) && pf_get32(buf + 12) <= size - 16)
+            pf_key_diff(diff, sizeof diff, (const char*)buf + 16, pf_get32(buf + 12), key);
+        else
+            snprintf(diff, sizeof diff, "%ld bytes without this format's header", length);
+        LOG("vulkan: %s started over: its key differs from this GPU's, driver's and build's (%s)\n", path, diff);
+    }
     if (view.data) {
         /* A repair or rebuild must retain its bytes before truncating the file. The warm path needs none afterwards.
            Unmap before opening for writes, also for Windows, whose read-only mapping excludes write handles. */
@@ -816,6 +824,144 @@ void pf_open(PFile* pf, const char* path, const char* key, size_t guest, PfLoad*
     free(owned);
 }
 
+void pf_driver_tag(char* out, size_t n, u32 driver_id, u32 vendor, u32 device, const char* package) {
+    size_t at;
+    int w = snprintf(out, n, "d%u-%04x-%08x", (unsigned)driver_id, (unsigned)vendor, (unsigned)device);
+    if (w < 0 || (size_t)w >= n || !package || !*package) return;
+    at = (size_t)w;
+    out[at++] = '-';
+    /* a package's folder name as a file name keeps it: any other letter is an underscore */
+    for (; *package && at + 1 < n; package++, at++) {
+        char c = *package;
+        out[at] = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' ||
+                          c == '-'
+                      ? c
+                      : '_';
+    }
+    out[at] = 0;
+}
+void pf_driver_path(char* out, size_t n, const char* dir, const char* name, const char* tag, const char* ext) {
+    snprintf(out, n, "%s/%s.%s%s", dir, name, tag, ext);
+}
+
+int pf_adopt(const char* path, const char* legacy, u64* bytes, char* why, size_t n) {
+    FILE *in, *out, *there = fopen(path, "rb");
+    char* tmp;
+    char block[1 << 16];
+    size_t got;
+    int ok = 1;
+    *bytes = 0;
+    if (n) why[0] = 0;
+    if (there) {
+        fclose(there);
+        return 0;
+    }
+    in = fopen(legacy, "rb");
+    if (!in) return 0;
+    tmp = snx_format("%s.%u.tmp", path, pf_pid());
+    out = tmp ? fopen(tmp, "wb") : NULL;
+    if (!out) {
+        snx_os_error(why, n);
+        fclose(in);
+        free(tmp);
+        return -1;
+    }
+    while (ok && (got = fread(block, 1, sizeof block, in)) > 0) {
+        ok = fwrite(block, 1, got, out) == got;
+        *bytes += got;
+    }
+    if (ok && ferror(in)) ok = 0;
+    if (!ok) snx_os_error(why, n); /* the failure's reason, before the cleanup's calls */
+    fclose(in);
+    if (fclose(out) && ok) {
+        snx_os_error(why, n);
+        ok = 0;
+    }
+    if (ok && plat_replace_file(tmp, path)) {
+        snx_os_error(why, n);
+        ok = 0;
+    }
+    if (!ok) remove(tmp);
+    free(tmp);
+    return ok ? 1 : -1;
+}
+
+/* a key's fields: name=value words, and the words with no = (the build's name) as one field, "build" */
+typedef struct {
+    char name[24], value[160];
+} PfField;
+static int pf_fields(const char* key, size_t len, PfField* f, int max) {
+    int count = 0, build = -1;
+    size_t at = 0;
+    while (at < len) {
+        size_t end = at, eq = 0;
+        while (end < len && key[end] != ' ') {
+            if (key[end] == '=' && !eq) eq = end;
+            end++;
+        }
+        size_t wlen = end - at;
+        if (wlen && key[end - 1] == ';') wlen--; /* the guest part's end */
+        if (wlen) {
+            if (eq && eq < at + wlen && count < max) {
+                size_t nl = eq - at, vl = at + wlen - eq - 1;
+                snprintf(f[count].name, sizeof f[count].name, "%.*s", (int)nl, key + at);
+                snprintf(f[count].value, sizeof f[count].value, "%.*s", (int)vl, key + eq + 1);
+                count++;
+            } else if (!eq) {
+                if (build < 0 && count < max) {
+                    build = count++;
+                    snprintf(f[build].name, sizeof f[build].name, "build");
+                    f[build].value[0] = 0;
+                }
+                if (build >= 0) {
+                    size_t have = strlen(f[build].value);
+                    snprintf(f[build].value + have, sizeof f[build].value - have, "%s%.*s", have ? " " : "", (int)wlen,
+                             key + at);
+                }
+            }
+        }
+        at = end + 1;
+    }
+    return count;
+}
+/* the field of f (count of them) that is the nth (from 0) of that name, NULL for none: a key names "sizes" twice */
+static const PfField* pf_field(const PfField* f, int count, const char* name, int nth) {
+    for (int k = 0; k < count; k++)
+        if (!strcmp(f[k].name, name) && nth-- == 0) return &f[k];
+    return NULL;
+}
+static int pf_nth(const PfField* f, int i) {
+    int nth = 0;
+    for (int k = 0; k < i; k++) nth += !strcmp(f[k].name, f[i].name);
+    return nth;
+}
+int pf_key_diff(char* out, size_t n, const char* key, size_t len, const char* want) {
+    PfField was[32], now[32];
+    int nw = pf_fields(key, len, was, 32), nn = pf_fields(want, strlen(want), now, 32), count = 0;
+    size_t at = 0;
+    if (n) out[0] = 0;
+    for (int i = 0; i < nw + nn; i++) {
+        const PfField* a = i < nw ? &was[i] : NULL;
+        const PfField* b = i < nw ? NULL : &now[i - nw];
+        const char* name = a ? a->name : b->name;
+        const char *in_file = a ? a->value : NULL, *in_now = b ? b->value : NULL;
+        if (a) {
+            const PfField* other = pf_field(now, nn, name, pf_nth(was, i));
+            in_now = other ? other->value : NULL;
+        }
+        if (b && pf_field(was, nw, name, pf_nth(now, i - nw))) continue; /* compared from the file's side */
+        if (in_file && in_now && !strcmp(in_file, in_now)) continue;
+        count++;
+        if (at + 1 < n) {
+            int w = snprintf(out + at, n - at, "%s%s %s in the file, %s now", at ? "; " : "", name,
+                             in_file ? in_file : "none", in_now ? in_now : "none");
+            at = w < 0 ? n : at + (size_t)w;
+            if (at >= n) at = n - 1;
+        }
+    }
+    return count;
+}
+
 unsigned pf_pid(void) {
 #if defined(_WIN32)
     return (unsigned)GetCurrentProcessId();
@@ -857,8 +1003,15 @@ void pf_open_mapped(PFile* pf, const char* path, const char* key, PfEach each, v
             each(ctx, type, d + at + PF_REC, len, at);
             at += PF_REC + len;
         }
-    } else if (size)
-        LOG("vulkan: %s is of another build, GPU or driver: started over\n", path);
+    } else if (size) {
+        char diff[768];
+        const u8* d = pf->view.data;
+        if (size >= 16 && !memcmp(d, PF_MAGIC, 8) && pf_get32(d + 12) <= size - 16)
+            pf_key_diff(diff, sizeof diff, (const char*)d + 16, pf_get32(d + 12), key);
+        else
+            snprintf(diff, sizeof diff, "%llu bytes without this format's header", (unsigned long long)size);
+        LOG("vulkan: %s started over: its key differs from this GPU's, driver's and build's (%s)\n", path, diff);
+    }
     if (!at || at < size) {
         /* started over (its header alone), or rewritten without what a crash cut short: written beside it and moved
            over it, so another run that has it mapped keeps reading the old one */

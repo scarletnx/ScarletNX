@@ -162,6 +162,22 @@ void pf_unseal(PFile* pf);
 void pf_close(PFile* pf);
 /* the process's id, for a temporary file of its own: two runs of a game started together would write the same one */
 unsigned pf_pid(void);
+
+/* Each driver keeps a cache of its own (pipeline.c): <dir>/<name>.<tag><ext>, the tag the driver's, so a game run with
+   another driver and then with this one again finds this one's shaders and pipelines. A driver is its ID (VkDriverId),
+   the GPU's vendor and device, and the gpu_driver package it was loaded from (none for the system's), in the letters a
+   file name keeps: d<ID>-<vendor>-<device>[-<package>]. An update of the driver or of ScarletNX keeps the tag, and its
+   file is rebuilt or started over as pf_open says */
+#define PF_TAG 96
+void pf_driver_tag(char* out, size_t n, u32 driver_id, u32 vendor, u32 device, const char* package);
+void pf_driver_path(char* out, size_t n, const char* dir, const char* name, const char* tag, const char* ext);
+/* The file of every driver from before one file each (legacy), copied to path when path is not there: the driver that
+   made it finds its cache there, another starts its file over (pf_open). legacy stays where it is. 1 copied (its bytes
+   in *bytes), 0 nothing to copy (path there, or no legacy), -1 the copy failed (why) */
+int pf_adopt(const char* path, const char* legacy, u64* bytes, char* why, size_t n);
+/* what differs between a file's key (key, len bytes) and want: "name A in the file, B now" for each, "; " between,
+   in out (cut to n), and the count */
+int pf_key_diff(char* out, size_t n, const char* key, size_t len, const char* want);
 void pf_seal(PFile* pf);
 const u8* pf_payload(const PFile* pf, u64 at, u32* len, u64* check, u8** owned);
 

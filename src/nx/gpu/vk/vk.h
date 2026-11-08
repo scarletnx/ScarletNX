@@ -63,6 +63,8 @@ typedef struct {
        commands under the core names */
     u32 api;
     u32 api_cap;           /* the most it takes, 0 for 1.3: vk_api=1.2 runs the 1.2 way on a newer device */
+    u32 driver_id;         /* VkDriverId: whose driver runs, which keeps a shader cache of its own (pipeline.c) */
+    char driver_name[256]; /* its own name for itself (VkPhysicalDeviceDriverProperties) */
     u64 shader_generation; /* shader instruction invalidations, separate from memory epochs */
     int has_descriptor_buffers;
     int has_descriptor_heaps;

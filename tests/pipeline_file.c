@@ -1146,6 +1146,108 @@ static void old_versions(void) {
     remove(PATH);
 }
 
+/* each driver's own file: open path with key, as open_file does PATH */
+static void open_path(PFile* pf, const char* path, const char* key, u32 loaded[2]) {
+    static PfLoad load;
+    load.shader = load_shader;
+    load.pipe = load_pipe;
+    load.shipref = load_shipref;
+    load.source = load_source;
+    load.ctx = &load;
+    load.rebuild = 0;
+    load.cspipe = load_cspipe;
+    memset(&got, 0, sizeof got);
+    got.next_module = 0xD0;
+    memset(pf, 0, sizeof *pf);
+    pm_init(&pf->lock);
+    pf->pack = PF_PACK_UNITS;
+    pf_open(pf, path, key, 0, &load, loaded);
+}
+static long path_size(const char* path) {
+    FILE* f = fopen(path, "rb");
+    long n = -1;
+    if (f && !fseek(f, 0, SEEK_END)) n = ftell(f);
+    if (f) fclose(f);
+    return n;
+}
+/* A driver keeps a file of its own (pipeline.c): a game run with the system's driver, then with a package's, then with
+   the system's again finds the system's shaders, where one file for both started over at each change, and the line
+   says what of the key differed, with both values. The file every driver shared before is copied to a driver's the
+   first time, and kept as it was */
+static void driver_files(void) {
+    const char* key_a = "guest=5 gpu=5143:44050001 features=aaaa caps=11; ScarletNX one driver=100 sizes=1";
+    const char* key_b = "guest=5 gpu=5143:44050001 features=bbbb caps=11; ScarletNX one driver=200 sizes=1";
+    const char* legacy = "pipeline_file_test.legacy.vkshaders";
+    char tag_a[PF_TAG], tag_b[PF_TAG], small[12], a[256], b[256], c[256];
+    PFile pf;
+    u32 loaded[2];
+    u64 bytes = 0;
+    char why[128];
+    pf_driver_tag(tag_a, sizeof tag_a, 8, 0x5143, 0x44050001, "");                     /* Qualcomm's, the system's */
+    pf_driver_tag(tag_b, sizeof tag_b, 18, 0x5143, 0x44050001, "mainline turnip/V32"); /* Turnip, a package */
+    CHECK(!strcmp(tag_a, "d8-5143-44050001"));
+    CHECK(!strcmp(tag_b, "d18-5143-44050001-mainline_turnip_V32"));
+    pf_driver_tag(small, sizeof small, 18, 0x5143, 0x44050001, "pkg");
+    CHECK(strlen(small) == sizeof small - 1);
+    pf_driver_path(a, sizeof a, ".", "pipeline_file_test", tag_a, ".vkshaders");
+    pf_driver_path(b, sizeof b, ".", "pipeline_file_test", tag_b, ".vkshaders");
+    pf_driver_path(c, sizeof c, ".", "pipeline_file_test", "d3-1002-000073df", ".vkshaders");
+    CHECK(!strcmp(a, "./pipeline_file_test.d8-5143-44050001.vkshaders"));
+    remove(a);
+    remove(b);
+    remove(c);
+    remove(legacy);
+    /* the system's driver, then the package's, then the system's again */
+    open_path(&pf, a, key_a, loaded);
+    CHECK(loaded[0] == 0 && pf.f);
+    add_shader(&pf, 0, 0x1111);
+    close_file(&pf);
+    open_path(&pf, b, key_b, loaded);
+    CHECK(loaded[0] == 0 && pf.f);
+    add_shader(&pf, 1, 0x2222);
+    close_file(&pf);
+    open_path(&pf, a, key_a, loaded);
+    CHECK(loaded[0] == 1 && got.nsh == 1);
+    check_shader(0, 0);
+    close_file(&pf);
+    open_path(&pf, b, key_b, loaded);
+    CHECK(loaded[0] == 1 && got.nsh == 1);
+    check_shader(0, 1);
+    close_file(&pf);
+    /* the system driver's file opened with the package's key, as the one file for both was: started over, saying
+       which fields differ and their values in the file and now */
+    logged[0] = 0;
+    open_path(&pf, a, key_b, loaded);
+    CHECK(loaded[0] == 0);
+    CHECK(strstr(logged, "started over: its key differs from this GPU's, driver's and build's (features aaaa in the "
+                         "file, bbbb now; driver 100 in the file, 200 now)"));
+    close_file(&pf);
+    /* a key's build has spaces, and the guest part and the rest both name sizes: each is compared with its own */
+    CHECK(pf_key_diff(why, sizeof why, key_a, strlen(key_a), key_a) == 0 && !why[0]);
+    CHECK(pf_key_diff(why, sizeof why, key_a, strlen(key_a),
+                      "guest=5 gpu=5143:44050001 features=aaaa caps=11; ScarletNX two driver=100 sizes=1") == 1 &&
+          !strcmp(why, "build ScarletNX one in the file, ScarletNX two now"));
+    CHECK(pf_key_diff(why, sizeof why, "a=1 b=2", 7, "a=1 c=3") == 2 &&
+          !strcmp(why, "b 2 in the file, none now; c none in the file, 3 now"));
+    /* the shared file of before, made by the system's driver: copied once to a driver's file, left as it was */
+    open_path(&pf, legacy, key_a, loaded);
+    add_shader(&pf, 2, 0x3333);
+    close_file(&pf);
+    long legacy_size = path_size(legacy);
+    CHECK(pf_adopt(c, legacy, &bytes, why, sizeof why) == 1 && bytes == (u64)legacy_size);
+    CHECK(path_size(c) == legacy_size && path_size(legacy) == legacy_size);
+    open_path(&pf, c, key_a, loaded);
+    CHECK(loaded[0] == 1);
+    check_shader(0, 2);
+    close_file(&pf);
+    CHECK(pf_adopt(c, legacy, &bytes, why, sizeof why) == 0 && bytes == 0); /* the driver's own file is there */
+    remove(legacy);
+    remove(b);
+    CHECK(pf_adopt(b, legacy, &bytes, why, sizeof why) == 0 && path_size(b) < 0); /* nothing to copy */
+    remove(a);
+    remove(c);
+}
+
 int main(void) {
     PFile pf;
     u32 loaded[2];
@@ -1290,6 +1392,7 @@ int main(void) {
     units_bad();
     units_split_source();
     old_versions();
+    driver_files();
     printf("pipeline_file: %u checks passed\n", checks);
     return 0;
 }
