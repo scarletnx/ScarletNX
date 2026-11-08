@@ -58,12 +58,16 @@ public final class Activities {
         if (!f.exists()) return null;
         String authority = snx.android.provider.ExternalStorageProvider.AUTHORITY;
         android.net.Uri uri;
-        if (Intent.ACTION_OPEN_DOCUMENT_TREE.equals(request.getAction())) {
-            java.io.File dir = f.isDirectory() ? f : f.getParentFile();
-            uri = android.provider.DocumentsContract.buildTreeDocumentUri(authority, snx.android.provider.ExternalStorageProvider.documentId(dir));
+        boolean tree = Intent.ACTION_OPEN_DOCUMENT_TREE.equals(request.getAction());
+        if (!tree && f.isDirectory()) return null;
+        // the folder (or the file's folder) as a folder of the shared storage
+        java.io.File folder = snx.android.provider.ExternalStorageProvider.shared(f.isDirectory() ? f : f.getParentFile());
+        if (folder == null) return null;
+        if (tree) {
+            uri = android.provider.DocumentsContract.buildTreeDocumentUri(authority, snx.android.provider.ExternalStorageProvider.documentId(folder));
         } else {
-            if (f.isDirectory()) return null;
-            uri = android.provider.DocumentsContract.buildDocumentUri(authority, snx.android.provider.ExternalStorageProvider.documentId(f));
+            uri = android.provider.DocumentsContract.buildDocumentUri(authority,
+                snx.android.provider.ExternalStorageProvider.documentId(new java.io.File(folder, f.getName())));
         }
         return new Intent().setData(uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
