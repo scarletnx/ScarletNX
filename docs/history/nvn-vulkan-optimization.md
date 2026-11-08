@@ -2,6 +2,9 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # NVN to Vulkan optimization results
 
+*Snapshot: this page records these results, as they were measured. The code has changed since, and the page is not
+kept up to date.*
+
 These results measure specific CPU preparation paths and report separate streaming observations.
 They do not establish an overall gameplay speedup, a 600% improvement, or a win over native NVN.
 No native-console NVN measurement was available.

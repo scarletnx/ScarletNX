@@ -2,6 +2,9 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # NVN rendering audit and synthetic checks
 
+*Snapshot: this page records the NVN rendering audit and its checks, as they were when it was written. The code has
+changed since, and the page is not kept up to date.*
+
 ## Index
 
 * [Scope and fixes](#scope-and-fixes)

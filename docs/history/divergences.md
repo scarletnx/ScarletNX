@@ -2,6 +2,9 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # Cortex-A57 / AArch64 divergences
 
+*Snapshot: this page records the old audit of the instruction semantics, with the figures of its time. The code has
+changed since, and the page is not kept up to date.*
+
 This report is the audit of the instruction semantics the recompiler took from C templates, against Unicorn. The
 templates and the audit harness are retired: the LLVM emitters are ported from QEMU's `translate-a64.c` and keyed
 on the decoder generated from QEMU's `a64.decode` and `a64.profile`, and `tests/llvm_qemu_differential.c` checks them

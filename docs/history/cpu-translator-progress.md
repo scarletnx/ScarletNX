@@ -2,6 +2,9 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # CPU plan implementation and candidate measurements
 
+*Snapshot: this page records the progress of the CPU plan and the measurements of its candidates, as they were
+recorded. The code has changed since, and the page is not kept up to date.*
+
 ## Index
 
 * [Six-item completion](#six-item-completion)

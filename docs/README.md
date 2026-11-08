@@ -100,6 +100,8 @@ Audits and measurements, kept as they were when they were taken. The code has ch
 
 - [Cortex-A57 divergences](history/divergences.md): the old audit of the instruction semantics against Unicorn
 - [CPU progress and measurements](history/cpu-translator-progress.md): preparing plan items and measuring candidates
+- [The NVN investigation](history/nvn-investigation.md): the first replay, the driver's measured answers, and the
+  fixes it left
 - [NVN rendering audit](history/gpu-rendering-audit.md): corrected state and copy semantics, exact GPU checks, and
   open gaps
 - [GPU preparation benchmarks](history/gpu-hotpath-bench.md): exact paired tests of CPU work before GPU submission
@@ -107,6 +109,8 @@ Audits and measurements, kept as they were when they were taken. The code has ch
   validation
 - [Graphics descriptor measurements](history/gpu-descriptor-bench.md): descriptor backends, cache memory and paired
   timings
+- [The 3DS staged roadmap](history/3ds-staged-roadmap.md): the first plan of the 3DS driver, which the parity
+  roadmap replaced
 - [NVDEC H.264 packet submission audit](history/nvdec-audit.md)
 - [Shader corrections, batch 001](history/shader-audit/fixes-001.md)
 
