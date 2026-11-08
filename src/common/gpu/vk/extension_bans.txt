@@ -84,7 +84,7 @@ VK_STENCIL_FACE_BACK_BIT | warn | qualcomm | * | any | * | gives back faces the 
 ClipDistance | warn | qualcomm | * | any | * | fails to make a pipeline whose evaluation stage reads clip distances and writes them on (VK_ERROR_UNKNOWN, its log saying the shader did not compile), and the draws that need it are dropped (seen on an Adreno 830) | edenprobe 0.12.0's geometry suite on an Adreno 830 phone (2026-11-12) | amberlith:geometry: a positive first clip distance passed on by the evaluation stage clips nothing | 2026-11-12 broken on 512.800.48 (Adreno 830) | -
 
 # Presentation
-VK_KHR_present_id2 | off | nvidia | < 595.0.0 | any | * | hangs games at their first frames with present_id2 and present_wait2 (590.48, with Smooth Motion on) | DXVK dxvk_device_info.cpp:610, issue 5507 | new:amberlith:a windowed run with frame_pacing=2 | never | -
+VK_KHR_present_id2 | off | nvidia | < 595.0.0 | any | * | hangs games at their first frames with present_id2 and present_wait2 (590.48, with Smooth Motion on) | DXVK dxvk_device_info.cpp:610, issue 5507 | new:amberlith:a windowed run with frame_pacing_mode=3 | never | -
 
 # Subgroup operations by stage (device.c: the stage leaves the ones whose programs the translator gives ballot, shuffle
 # and arithmetic, and a program of it that votes or shuffles runs each invocation as one lane alone)

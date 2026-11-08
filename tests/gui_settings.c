@@ -805,7 +805,7 @@ int main(int argc, char** argv) {
                !strcmp(key(&s, "volume")->words[0], "Mute") && !strcmp(key(&s, "volume")->words[20], "100%") &&
                !strcmp(key(&s, "volume")->section, "Audio") && !strcmp(on_screen(&s, "volume"), "100% [default]"));
         assert(gui_settings_set(&s, "fullscreen", "0") && gui_settings_set(&s, "touch", "1"));
-        assert(gui_settings_set(&s, "controls", "0") && key(&s, "resolution")->type == GUI_KEY_TEXT);
+        assert(gui_settings_set(&s, "controls", "0") && key(&s, "resolution_scale")->type == GUI_KEY_TEXT);
         /* as the launcher has them: fullscreen Off or On, Off its [default]; the controls Auto, their [default] */
         assert(gui_settings_always(&s, "fullscreen", "0") && gui_settings_always(&s, "controls", "2"));
         gui_settings_mark(&s);
@@ -814,7 +814,7 @@ int main(int argc, char** argv) {
                !strcmp(on_screen(&s, "controls"), "Auto [default]"));
         /* a range as settings.txt has it, a large one to the last digit, which a typed value's dialog says */
         assert(key(&s, "map_limit_mb")->numeric && key(&s, "map_limit_mb")->hi == 1048576.0);
-        assert(key(&s, "resolution")->lo == 0.25 && key(&s, "resolution")->hi == 16.0);
+        assert(key(&s, "resolution_scale")->lo == 0.0 && key(&s, "resolution_scale")->hi == 16.0);
         page = at(&s, "Buttons");
         assert(page > 0 && s.values[page].count == 1 + 17 && !strcmp(s.keys[page + 2].key, "L"));
         /* a setting of some systems alone says where on every other, last on its line: the Mac's Vulkan driver, the

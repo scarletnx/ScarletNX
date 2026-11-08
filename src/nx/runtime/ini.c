@@ -370,7 +370,7 @@ static const struct {
                       {"touch_controls_opacity", "the on-screen controls are opaque"},
                       {"modo_tv", "now docked"},
                       {"idioma", "now language"},
-                      {"resolucion", "now resolution"},
+                      {"resolucion", "now resolution_scale"},
                       {"sombras", "now shadows"},
                       {"perfil", "now profile"},
                       {"gamepad_buttons", "now gamepad_swap_ab; gamepad_map always applies"},
@@ -396,6 +396,8 @@ static const struct {
                       {"vk_heap_budget_mb", "went with no replacement: it was for tests of a GPU with less memory"},
                       {"vk_nv_dedicated_allocation_image_aliasing",
                        "the renderer no longer uses the extension: it lost the GPU on NVIDIA's driver"},
+                      {"frame_pacing", "now frame_pacing_mode, whose 0 is Auto, and 1 to 3 frame_pacing's 0 to 2"},
+                      {"resolution", "now resolution_scale, whose 0 is Auto, and 0.25 to 16 the scale"},
                       {NULL, NULL}};
 const char* ini_deprecated(const char* k) {
     int i;

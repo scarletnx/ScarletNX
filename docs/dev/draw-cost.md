@@ -37,7 +37,7 @@ design, with ideas of our own.
    `vk_shader_hash` and `sm86_hash`, and `vk_mirror_harvest`.
 2. Count the hits and misses of the memos of `tex_resolve` and `cb_get`, and the descriptor sets that `stage_set`
    builds against the sets it finds in its cache.
-3. Compare frame rates at the same internal resolution as other projects (the `resolution` setting).
+3. Compare frame rates at the same internal resolution as other projects (the `resolution_scale` setting).
 
 The order below is a first guess. The profile sets the real order.
 
