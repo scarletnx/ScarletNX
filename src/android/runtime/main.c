@@ -441,6 +441,11 @@ int snx_android_main(int argc, char** argv) {
             apk = argv[i];
         }
     }
+    /* the frames to save, for the Java side to keep presenting a still window until the last (snx.android.ui.Window) */
+    if (shot && option_count < (size_t)argc) {
+        char* d = snx_format("-Dsnx.android.shot_frames=%s", shot_frames ? shot_frames : "60");
+        if (d) options[option_count++] = owned[owned_count++] = d;
+    }
     int status;
     if (!apk) {
         fputs(usage, stderr);

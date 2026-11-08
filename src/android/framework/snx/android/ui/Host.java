@@ -55,6 +55,9 @@ public final class Host {
         present();
     }
 
+    /** the last frame again, for a display that keeps showing it (Window's scripts) */
+    static void refresh() { present(); }
+
     private static void present() {
         Frame frame;
         synchronized (Host.class) {
