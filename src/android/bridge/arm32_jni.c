@@ -56,6 +56,10 @@ static _Thread_local struct {
 } t_frames;
 
 static _Thread_local bool t_attached;
+/* how deep the thread is in the app's native code that Java called: its native methods, the load of its libraries
+   (their constructors and JNI_OnLoad) and NativeActivity's callbacks. FindClass looks in the app's class loader within
+   them, as ART's in the loader of the class that loaded the library */
+static _Thread_local unsigned t_app_calls;
 /* the thread's host JNIEnv: a thread that the guest made is attached the first time, as a daemon, which the JVM's end
    does not wait for */
 static JNIEnv* env_of(void) {
@@ -511,10 +515,24 @@ static void jni_function(SnxArmCPU* c, void* data) {
     }
     switch (i) {
     case 4: R(0) = JNI_VERSION_1_6; break;
-    case 6: { /* FindClass: the app's classes by its loader when the JVM's own finds none */
+    case 6: { /* FindClass: the app's classes by its loader when the JVM's own finds none, within the app's native code.
+                 Elsewhere ART's system class loader, which has no class of the app, throws ClassNotFoundException
+                 where the host's JVM throws NoClassDefFoundError */
         const char* name = (const char*)arm32_host(R(1));
         jclass cls = (*e)->FindClass(e, name);
-        if (!cls) {
+        if (!cls && (*e)->ExceptionCheck(e) && !t_app_calls) {
+            (*e)->ExceptionClear(e);
+            char* dotted = snx_format("%s", name);
+            for (char* p = dotted; p && *p; ++p)
+                if (*p == '/') *p = '.';
+            char* text = snx_format("Didn't find class \"%s\" in the system class loader (no native method of the "
+                                    "app runs on this thread)",
+                                    dotted ? dotted : name);
+            jclass not_found = (*e)->FindClass(e, "java/lang/ClassNotFoundException");
+            if (not_found) (*e)->ThrowNew(e, not_found, text);
+            free(text);
+            free(dotted);
+        } else if (!cls) {
             (*e)->ExceptionClear(e);
             char* dotted = strdup(name);
             for (char* p = dotted; p && *p; ++p)
@@ -815,7 +833,9 @@ uint32_t arm32_jni_activity_create(JNIEnv* e, jobject activity, const char* func
     wr32(a + 36, external ? arm32_strdup(external) : 0);
     uint32_t mark = t_locals.count;
     uint32_t args[3] = {a, 0, 0};
+    ++t_app_calls;
     arm32_call(fn, args, 3, NULL);
+    --t_app_calls;
     t_locals.count = mark;
     t_env = saved;
     return a;
@@ -829,7 +849,9 @@ void arm32_jni_activity_call(JNIEnv* e, uint32_t activity, int callback, uint32_
     t_env = e;
     uint32_t mark = t_locals.count;
     uint32_t args[2] = {activity, argument};
+    ++t_app_calls;
     arm32_call(fn, args, 2, NULL);
+    --t_app_calls;
     t_locals.count = mark;
     t_env = saved;
 }
@@ -851,6 +873,7 @@ char* arm32_jni_load(JNIEnv* e, const char* path, const char* library_dir) {
     t_env = e;
     uint32_t mark = t_locals.count;
     char error[1024];
+    ++t_app_calls;
     Arm32Library* l = arm32_load(path, error, sizeof error);
     char* result = NULL;
     if (!l) {
@@ -865,6 +888,7 @@ char* arm32_jni_load(JNIEnv* e, const char* path, const char* library_dir) {
                 result = snx_format("JNI_ERR returned from JNI_OnLoad in \"%s\"", arm32_library_name(l));
         }
     }
+    --t_app_calls;
     t_locals.count = mark;
     t_env = saved;
     return result;
@@ -946,7 +970,9 @@ uint64_t arm32_jni_invoke(JNIEnv* e, const char* key, jobject self, jlongArray p
         }
     }
     uint32_t high = 0;
+    ++t_app_calls;
     uint32_t r0 = arm32_call(fn, words, n, &high);
+    --t_app_calls;
     uint64_t r = r0;
     switch (*result) {
     case 'Z': r = (r0 & 0xff) != 0; break;
