@@ -87,6 +87,10 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME rtapi_cas128 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/rtapi_cas128.py"
                                        --repo "${PROJECT_SOURCE_DIR}")
 endif()
+# the work that a branch holds and no open pull request carries (scripts/outstanding.py)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME outstanding COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/outstanding.py")
+endif()
 # CLAUDE.md and .claude/ in ASD-STE100 (.claude/skills/ste100), and the checker's own test
 if(Python3_Interpreter_FOUND)
     add_test(NAME claude_ste100 COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/.claude/skills/ste100/check.py" --all)
