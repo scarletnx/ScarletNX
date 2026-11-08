@@ -62,7 +62,8 @@ version 4: word 0 is `0x020c0481` for a vertex program and `0x000c5482` for a fr
 An Ounce control section has `0xC9` at 0x04, where the older formats have 1. Formats 7 and 11 share one layout:
 0x30 the header's bytes (0xd8), 0x38 the code's bytes, 0x3c the constants' bytes, 0x40 the constants' offset (the
 code's bytes rounded up to 256; the constants are bank 1), 0x4c the registers, the stage in the halfword at 0x56, and
-a compute program's workgroup size at 0x58, 0x5c and 0x60. Programs run to 250 KB. A compute program has no NVN
+a compute program's workgroup size at 0x58, 0x5c and 0x60, and its shared memory bytes at 0x64 (0 in most
+programs, up to 0xc000). Programs run to 250 KB. A compute program has no NVN
 header with its size before it, so the renderer reads as many bytes as its constants' offset gives, up to 512 KiB
 (`cs_read_code`). With the Switch's 64 KiB window, one game's compute program of 256,160 bytes had no end in it, and
 each of its dispatches (one workgroup of 32, about one a frame) was skipped as not translated.
