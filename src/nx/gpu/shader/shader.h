@@ -303,6 +303,12 @@ extern int g_shader_quad_compute;
    HMMA sums each pair of f16 products into its f32 accumulator with one OpFDot2MixAcc32VALVE (v_dot2_f32_f16 on AMD)
    instead of unpacking both pairs to f32. 0 offline */
 extern int g_shader_mixed_dot;
+/* VK_KHR_cooperative_matrix's 16x16x16 product of f16 A and B into an f32 accumulator in subgroup scope, in compute,
+   with the Vulkan memory model (vulkanMemoryModel, vulkanMemoryModelDeviceScope) and compute subgroups of 32 that a
+   pipeline can require: the device's maxComputeSharedMemorySize, else 0. An SM86 compute program's HMMAs are then each
+   one OpCooperativeMatrixMulAddKHR on fragments staged in shared memory after the program's (sm86_translate.c's
+   hmma_coop), where the two fit in that size. 0 offline */
+extern int g_shader_hmma_coop;
 /* the Tessellation capability, which also gives a fragment program PrimitiveId without Geometry */
 extern int g_shader_tessellation;
 /* VK_KHR_shader_clock's scopes: bit 0 subgroup, bit 1 device */

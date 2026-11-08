@@ -422,6 +422,32 @@ static int vk12_commands(const char** lacks) {
     return !*lacks;
 }
 
+/* whether the device multiplies 16x16x16 f16 A and B into an f32 accumulator in subgroup scope in compute, as
+   g_shader_hmma_coop asks (VK_KHR_cooperative_matrix: RADV from GFX11) */
+static int coop_f16_f32(VkPhysicalDevice phys) {
+    VkPhysicalDeviceCooperativeMatrixPropertiesKHR cp = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_PROPERTIES_KHR};
+    VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &cp};
+    vkGetPhysicalDeviceProperties2(phys, &p2);
+    if (!(cp.cooperativeMatrixSupportedStages & VK_SHADER_STAGE_COMPUTE_BIT) ||
+        !vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR)
+        return 0;
+    u32 n = 0;
+    vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(phys, &n, NULL);
+    VkCooperativeMatrixPropertiesKHR props[64];
+    if (n > 64) n = 64;
+    for (u32 i = 0; i < n; i++)
+        props[i] = (VkCooperativeMatrixPropertiesKHR){.sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR};
+    vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(phys, &n, props);
+    for (u32 i = 0; i < n; i++)
+        if (props[i].MSize == 16 && props[i].NSize == 16 && props[i].KSize == 16 &&
+            props[i].AType == VK_COMPONENT_TYPE_FLOAT16_KHR && props[i].BType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+            props[i].CType == VK_COMPONENT_TYPE_FLOAT32_KHR && props[i].ResultType == VK_COMPONENT_TYPE_FLOAT32_KHR &&
+            !props[i].saturatingAccumulation && props[i].scope == VK_SCOPE_SUBGROUP_KHR)
+            return 1;
+    return 0;
+}
+
 /* An Ounce's mesh draws (render.c): VK_EXT_mesh_shader's mesh stage, and its task stage when the device has one. The
    programs' lanes are a warp's (sm86.h), so both stages need a required subgroup size of 32 in full subgroups
    (subgroupSizeControl, computeFullSubgroups, requiredSubgroupSizeStages). Without them, or with the experimental
@@ -631,6 +657,7 @@ static int create_device(void) {
     int has_mesh = 0;
     /* VK_VALVE_shader_mixed_float_dot_product: HMMA's pairs of f16 products in one instruction */
     int has_mixed_dot = 0;
+    int has_coop = 0;              /* VK_KHR_cooperative_matrix: HMMA on the matrix unit (g_shader_hmma_coop) */
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
     const char* store_none_ext = NULL; /* a 1.2 device's store op NONE (vk12_store_none) */
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
@@ -685,6 +712,7 @@ static int create_device(void) {
         has_list_restart = snx_vk_extensions_has(&e, VK_EXT_PRIMITIVE_TOPOLOGY_LIST_RESTART_EXTENSION_NAME);
         has_mesh = snx_vk_extensions_has(&e, VK_EXT_MESH_SHADER_EXTENSION_NAME);
         has_mixed_dot = snx_vk_extensions_has(&e, VK_VALVE_SHADER_MIXED_FLOAT_DOT_PRODUCT_EXTENSION_NAME);
+        has_coop = snx_vk_extensions_has(&e, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
         g_vk.has_conservative = snx_vk_extensions_has(&e, VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME);
         g_vk.has_depth_range_unrestricted = snx_vk_extensions_has(&e, VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME);
         has_pipeline_robustness = snx_vk_extensions_has(&e, VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME);
@@ -795,6 +823,8 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MAXIMAL_RECONVERGENCE_FEATURES_KHR};
     VkPhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE qmixdot = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MIXED_FLOAT_DOT_PRODUCT_FEATURES_VALVE};
+    VkPhysicalDeviceCooperativeMatrixFeaturesKHR qcoop = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
     VkPhysicalDevicePipelineRobustnessFeaturesEXT qpipeline = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_ROBUSTNESS_FEATURES_EXT};
     VkPhysicalDeviceRobustness2FeaturesEXT qrobust = {.sType =
@@ -899,7 +929,8 @@ static int create_device(void) {
                            has_present_v2 ? &qpwait2 : NULL,
                            has_present_v2 ? &qtiming : NULL,
                            has_shader_clock ? &qclock : NULL,
-                           has_mixed_dot ? &qmixdot : NULL};
+                           has_mixed_dot ? &qmixdot : NULL,
+                           has_coop ? &qcoop : NULL};
     snx_vk_chain(query, sizeof query / sizeof *query);
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &f2);
     /* without it the shaders do their FP16 work in 32 bits */
@@ -1142,6 +1173,12 @@ static int create_device(void) {
     }
     /* its f16 vectors are Float16's, so shaderFloat16 too */
     g_shader_mixed_dot = has_mixed_dot && qmixdot.shaderMixedFloatDotProductFloat16AccFloat32 && g_shader_float16;
+    /* its f16 matrices are Float16's, its modules the Vulkan memory model's, and its matrices span a subgroup of 32 */
+    g_shader_hmma_coop = has_coop && qcoop.cooperativeMatrix && g_shader_float16 && q12.vulkanMemoryModel &&
+                                 q12.vulkanMemoryModelDeviceScope && g_vk.has_cs_warp32 && coop_f16_f32(g_vk.phys)
+                             ? (int)g_vk.props.limits.maxComputeSharedMemorySize
+                             : 0;
+    f12.vulkanMemoryModel = f12.vulkanMemoryModelDeviceScope = g_shader_hmma_coop != 0;
     g_shader_output_layer = q12.shaderOutputLayer != 0; /* ShaderLayer: a vertex or tessellation program's layer */
     g_shader_viewport_index = have.multiViewport ? 2 | (q12.shaderOutputViewportIndex ? 1 : 0) : 0;
     VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
@@ -1287,6 +1324,14 @@ static int create_device(void) {
     if (g_shader_mixed_dot) {
         chain = &fmixdot;
         ext[next++] = VK_VALVE_SHADER_MIXED_FLOAT_DOT_PRODUCT_EXTENSION_NAME;
+    }
+    VkPhysicalDeviceCooperativeMatrixFeaturesKHR fcoop = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR,
+        .pNext = chain,
+        .cooperativeMatrix = VK_TRUE};
+    if (g_shader_hmma_coop) {
+        chain = &fcoop;
+        ext[next++] = VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME;
     }
     PortabilityFeatures fport = qport;
     fport.pNext = chain;

@@ -2360,6 +2360,168 @@ static void test_warp_matrix(const char* dir) {
     g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was;
 }
 
+/* the memory model a module declares (OpMemoryModel's: 1 GLSL450, 3 Vulkan), whether it declares a capability, and
+   how many OpDecorates of a decoration it has */
+static u32 spv_memory_model(const u32* words, size_t count) {
+    for (size_t i = 5; i < count && words[i] >> 16; i += words[i] >> 16)
+        if ((words[i] & 0xffff) == 14 && words[i] >> 16 == 3) return words[i + 2];
+    return 0;
+}
+static int spv_has_capability(const u32* words, size_t count, u32 capability) {
+    for (size_t i = 5; i < count && words[i] >> 16; i += words[i] >> 16)
+        if ((words[i] & 0xffff) == 17 && words[i + 1] == capability) return 1;
+    return 0;
+}
+static u32 spv_decorations(const u32* words, size_t count, u32 decoration) {
+    u32 found = 0;
+    for (size_t i = 5; i < count && words[i] >> 16; i += words[i] >> 16)
+        found += (words[i] & 0xffff) == 71 && words[i] >> 16 >= 3 && words[i + 2] == decoration;
+    return found;
+}
+/* HMMA on the device's cooperative matrices (g_shader_hmma_coop), in a program that also reads and writes global
+   memory (LDG, STG), stores to shared memory (STS, a byte's by two atomics), adds there (ATOMS), waits (MEMBAR.GPU,
+   BAR.SYNC) and reads it (LDSM), whose barriers and atomics the Vulkan memory model takes too: each HMMA one
+   OpCooperativeMatrixMulAddKHR of two matrices loaded and one stored, with no dot products and no B gathers (LDSM's
+   4 shuffles and MOVM's 2 stay), in a module of the Vulkan memory model, whose global buffer is not Coherent but read
+   and written by atomics. With the flag off, or a block of 16 lanes, too little shared memory left for the slots, no
+   shaderFloat16, the program is hmma's as before; and a program without HMMA stays GLSL450's with the flag on */
+static void test_warp_matrix_coop(const char* dir) {
+    u8 code[16 * 20] = {0};
+    u32 n = 0;
+    Word x = fix(0x919); /* S2R R0, TID.X */
+    set(&x, 72, 8, 0x21);
+    put(code, n++, x);
+    put(code, n++, uldc64(0x20));
+    x = fix(0x981); /* LDG.E R8, [R0.U32 + UR4] */
+    set(&x, 16, 8, 8);
+    set(&x, 24, 8, 0);
+    set(&x, 32, 6, 4);
+    set(&x, 72, 1, 1);
+    set(&x, 73, 3, 4);
+    set(&x, 81, 3, 7);
+    set(&x, 91, 1, 1);
+    put(code, n++, x);
+    x = fix(0x388); /* STS [R0 + 0x40], R8 */
+    set(&x, 24, 8, 0);
+    set(&x, 32, 8, 8);
+    set(&x, 40, 24, 0x40);
+    set(&x, 73, 3, 4);
+    put(code, n++, x);
+    x = fix(0x388); /* STS.U8 [R0 + 0x60], R8 */
+    set(&x, 24, 8, 0);
+    set(&x, 32, 8, 8);
+    set(&x, 40, 24, 0x60);
+    put(code, n++, x);
+    x = fix(0x38c); /* ATOMS.ADD R50, [R0 + 0x80], R8 */
+    set(&x, 16, 8, 50);
+    set(&x, 24, 8, 0);
+    set(&x, 32, 8, 8);
+    set(&x, 40, 24, 0x80);
+    put(code, n++, x);
+    x = fix(0x992); /* MEMBAR.SC.GPU */
+    set(&x, 76, 3, 2);
+    put(code, n++, x);
+    put(code, n++, fix(0xb1d)); /* BAR.SYNC 0 */
+    static const u32 hmma[4][3] = {{16, 14, 0x08}, {20, 24, 0x18}, {28, 255, 0x00}, {32, 36, 0x10}};
+    for (u32 k = 0; k < 4; k++) { /* HMMA dst, R8, R12, C */
+        x = fix(0x23c);
+        set(&x, 16, 8, hmma[k][0]);
+        set(&x, 24, 8, 8);
+        set(&x, 32, 8, 12);
+        set(&x, 64, 8, hmma[k][1]);
+        set(&x, 72, 19, hmma[k][2]);
+        put(code, n++, x);
+    }
+    x = fix(0x83b); /* LDSM.16.M88.4 R40, [R7 + 0x40] */
+    set(&x, 16, 8, 40);
+    set(&x, 24, 8, 7);
+    set(&x, 40, 24, 0x40);
+    set(&x, 72, 2, 2);
+    put(code, n++, x);
+    x = fix(0x23a); /* MOVM.16.MT88 R44, R8 */
+    set(&x, 16, 8, 44);
+    set(&x, 24, 8, 8);
+    put(code, n++, x);
+    x = fix(0x986); /* STG.E [R0.U32 + UR4 + 0x100], R16 */
+    set(&x, 24, 8, 0);
+    set(&x, 32, 8, 16);
+    set(&x, 40, 24, 0x100);
+    set(&x, 64, 6, 4);
+    set(&x, 72, 1, 1);
+    set(&x, 73, 3, 4);
+    set(&x, 91, 1, 1);
+    put(code, n++, x);
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot, coop_was = g_shader_hmma_coop,
+        f16_was = g_shader_float16;
+    /* the translation as each flag and block: 1 when it took the cooperative matrices, 0 when hmma's, -1 failed */
+    for (int coop = 0; coop < 2; coop++)
+        for (int quad = 0; quad < 2; quad++)
+            for (int mixed = 0; mixed < 2; mixed++) {
+                g_shader_quad_compute = quad, g_shader_mixed_dot = mixed, g_shader_hmma_coop = coop ? 65536 : 0;
+                ShaderInfo si = {0};
+                si.cs_local[0] = 32, si.cs_local[1] = 2, si.cs_local[2] = 1;
+                si.shared_size = 49152;
+                size_t count = 0;
+                u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+                CHECK(spv != NULL);
+                if (!spv) {
+                    fprintf(stderr, "warp matrix coop: %s\n", si.first_unsupported);
+                    continue;
+                }
+                u32 products = spv_count(spv, count, 4459), loads = spv_count(spv, count, 4457),
+                    stores = spv_count(spv, count, 4458), shuffles = spv_count(spv, count, 345);
+                u32 dots = spv_count(spv, count, 6916) + spv_count(spv, count, 148);
+                u32 model = spv_memory_model(spv, count), coherent = spv_decorations(spv, count, 23);
+                u32 atomic_rw = spv_count(spv, count, 227) + spv_count(spv, count, 228);
+                if (coop) {
+                    CHECK(products == 4 && loads == 8 && stores == 4 && dots == 0 && shuffles == 6);
+                    CHECK(model == 3 && coherent == 0 && atomic_rw == 2);
+                    CHECK(spv_has_capability(spv, count, 6022) && spv_has_capability(spv, count, 5345) &&
+                          spv_has_capability(spv, count, 5346));
+                } else {
+                    CHECK(products == 0 && loads == 0 && dots == 96 && model == 1 && coherent == 1 && atomic_rw == 0);
+                }
+                if (coop ? products != 4 || model != 3 || coherent || atomic_rw != 2 : products || model != 1)
+                    fprintf(stderr,
+                            "warp matrix coop %d, quad %d, mixed %d: %u products, %u loads, %u stores, %u "
+                            "dots, %u shuffles, memory model %u, %u Coherent, %u atomic loads and stores\n",
+                            coop, quad, mixed, products, loads, stores, dots, shuffles, model, coherent, atomic_rw);
+                char name[32];
+                snprintf(name, sizeof name, "warp_matrix_coop%d%d%d", coop, quad, mixed);
+                CHECK(keep_module(dir, name, spv, count));
+                free(spv);
+            }
+    /* where the cooperative matrices don't fit: a block of 16 lanes, 64 KiB of shared memory but 1 KiB, which the
+       two slots' 3.5 KiB don't fit in, and no shaderFloat16 */
+    g_shader_hmma_coop = 65536, g_shader_quad_compute = 1, g_shader_mixed_dot = 0;
+    for (int k = 0; k < 3; k++) {
+        ShaderInfo si = {0};
+        si.cs_local[0] = k == 0 ? 16 : 32, si.cs_local[1] = k == 0 ? 4 : 2, si.cs_local[2] = 1;
+        si.shared_size = k == 1 ? 65536 - 1024 : 49152;
+        g_shader_float16 = k != 2;
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+        CHECK(spv && spv_count(spv, count, 4459) == 0 && spv_memory_model(spv, count) == 1 &&
+              spv_decorations(spv, count, 23) == 1);
+        free(spv);
+    }
+    g_shader_float16 = f16_was;
+    {
+        u8 plain[16 * 8] = {0};
+        u32 m = compute_program(plain);
+        ShaderInfo si = {0};
+        si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(plain, m * 16, ST_CS, NULL, &si, &count);
+        CHECK(spv && spv_memory_model(spv, count) == 1 && !spv_has_capability(spv, count, 5345));
+        free(spv);
+    }
+    g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_hmma_coop = coop_was;
+}
+
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
     test_alu_forms();
@@ -2404,6 +2566,7 @@ int main(int argc, char** argv) {
     test_fragment_unfed(dir);
     test_uses_isbe();
     test_warp_matrix(dir);
+    test_warp_matrix_coop(dir);
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;

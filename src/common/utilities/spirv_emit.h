@@ -57,6 +57,10 @@ typedef struct {
        block_end_user, so that a user keeping values of its own Function variables in a block stores them there */
     void (*block_end)(void* user);
     void* block_end_user;
+    /* the module is the Vulkan memory model's (OpMemoryModel Vulkan; the user declares VulkanMemoryModel): the
+       barriers' and atomics' acquire and release semantics then also make memory visible and available, as GLSL450
+       implies, and spv_emit_load_nonprivate and spv_emit_store_nonprivate access memory other invocations share */
+    int vulkan_memory_model;
 } SpvEmitter;
 
 typedef enum {
@@ -527,6 +531,8 @@ uint32_t spv_emit_atomic_u32(SpvEmitter* e, uint32_t u32_type, uint32_t opcode, 
 uint32_t spv_emit_atomic_shared_u32(SpvEmitter* e, uint32_t u32_type, uint32_t opcode, uint32_t pointer,
                                     uint32_t value);
 uint32_t spv_emit_atomic_load_u32(SpvEmitter* e, uint32_t u32_type, uint32_t pointer);
+/* OpAtomicStore, Device scope and relaxed, as spv_emit_atomic_load_u32 */
+void spv_emit_atomic_store_u32(SpvEmitter* e, uint32_t u32_type, uint32_t pointer, uint32_t value);
 uint32_t spv_emit_atomic_load_shared_u32(SpvEmitter* e, uint32_t u32_type, uint32_t pointer);
 uint32_t spv_emit_atomic_compare_exchange_shared_u32(SpvEmitter* e, uint32_t u32_type, uint32_t pointer,
                                                      uint32_t desired, uint32_t expected);
@@ -535,6 +541,9 @@ uint32_t spv_emit_atomic_compare_exchange_u32(SpvEmitter* e, uint32_t u32_type, 
 void spv_emit_control_barrier(SpvEmitter* e, uint32_t u32_type);
 /* OpMemoryBarrier in that memory scope (1 Device, 2 Workgroup), with those memory semantics */
 void spv_emit_memory_barrier(SpvEmitter* e, uint32_t u32_type, uint32_t scope, uint32_t semantics);
+/* memory semantics as the module's memory model takes them: in the Vulkan one's, acquire also makes memory visible
+   (MakeVisible) and release makes it available (MakeAvailable), which GLSL450's imply */
+uint32_t spv_emit_memory_semantics(const SpvEmitter* e, uint32_t semantics);
 uint32_t spv_emit_bitfield_insert(SpvEmitter* e, uint32_t u32_type, uint32_t base, uint32_t insert, uint32_t offset,
                                   uint32_t count);
 uint32_t spv_emit_bit_count(SpvEmitter* e, uint32_t u32_type, uint32_t value);
@@ -613,6 +622,11 @@ uint32_t spv_emit_imul_u32(SpvEmitter* e, uint32_t u32_type, uint32_t left, uint
 uint32_t spv_emit_umul_high_u32(SpvEmitter* e, uint32_t u32_type, uint32_t left, uint32_t right);
 void spv_emit_store_u32(SpvEmitter* e, uint32_t pointer, uint32_t value);
 void spv_emit_store(SpvEmitter* e, uint32_t pointer, uint32_t value);
+/* a load or store of Workgroup or StorageBuffer memory that other invocations read or write: NonPrivatePointer in a
+   module of the Vulkan memory model, where without it the barriers don't order the access for them; a plain one in
+   GLSL450's */
+uint32_t spv_emit_load_nonprivate(SpvEmitter* e, uint32_t result_type, uint32_t pointer);
+void spv_emit_store_nonprivate(SpvEmitter* e, uint32_t pointer, uint32_t value);
 void spv_emit_return(SpvEmitter* e);
 void spv_emit_kill(SpvEmitter* e);
 /* OpDemoteToHelperInvocation: the module declares the DemoteToHelperInvocation capability (5379) */
@@ -650,6 +664,10 @@ uint32_t spv_emit_type_image(SpvEmitter* e, uint32_t sampled_type, uint32_t dim,
 uint32_t spv_emit_type_sampled_image(SpvEmitter* e, uint32_t image);
 /* a struct of its own each time (structs are decorated, as blocks): members with their byte offsets */
 uint32_t spv_emit_type_struct(SpvEmitter* e, const uint32_t* members, const uint32_t* offsets, size_t count);
+/* OpTypeCooperativeMatrixKHR (SPV_KHR_cooperative_matrix) of component: its scope (3 Subgroup), rows, columns and
+   use (0 MatrixA, 1 MatrixB, 2 MatrixAccumulator) as numbers, made constants here */
+uint32_t spv_emit_type_cooperative_matrix(SpvEmitter* e, uint32_t component, uint32_t scope, uint32_t rows,
+                                          uint32_t columns, uint32_t use);
 
 /* constants, made once each: 32-bit unsigned and signed integers, 32-bit floats, booleans, composites */
 uint32_t spv_emit_const_u32(SpvEmitter* e, uint32_t value);

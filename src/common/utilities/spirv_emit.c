@@ -1175,6 +1175,12 @@ uint32_t spv_emit_atomic_u32(SpvEmitter* e, uint32_t u32_type, uint32_t opcode, 
     return id;
 }
 
+uint32_t spv_emit_memory_semantics(const SpvEmitter* e, uint32_t semantics) {
+    if (!e->vulkan_memory_model) return semantics;
+    if (semantics & 0xa) semantics |= 0x4000; /* Acquire, AcquireRelease: MakeVisible */
+    if (semantics & 0xc) semantics |= 0x2000; /* Release, AcquireRelease: MakeAvailable */
+    return semantics;
+}
 uint32_t spv_emit_atomic_shared_u32(SpvEmitter* e, uint32_t u32_type, uint32_t opcode, uint32_t pointer,
                                     uint32_t value) {
     assert(opcode == SPV_OP_ATOMIC_EXCHANGE || opcode == SPV_OP_ATOMIC_I_ADD || opcode == 236 ||
@@ -1186,7 +1192,8 @@ uint32_t spv_emit_atomic_shared_u32(SpvEmitter* e, uint32_t u32_type, uint32_t o
     put(&e->functions, id);
     put(&e->functions, pointer);
     put(&e->functions, spv_emit_constant_u32(e, u32_type, 2));     /* Workgroup scope */
-    put(&e->functions, spv_emit_constant_u32(e, u32_type, 0x108)); /* AcquireRelease | WorkgroupMemory */
+    /* AcquireRelease | WorkgroupMemory */
+    put(&e->functions, spv_emit_constant_u32(e, u32_type, spv_emit_memory_semantics(e, 0x108)));
     put(&e->functions, value);
     return id;
 }
@@ -1202,6 +1209,14 @@ uint32_t spv_emit_atomic_load_u32(SpvEmitter* e, uint32_t u32_type, uint32_t poi
     return id;
 }
 
+void spv_emit_atomic_store_u32(SpvEmitter* e, uint32_t u32_type, uint32_t pointer, uint32_t value) {
+    instruction(&e->functions, 228, 5); /* OpAtomicStore */
+    put(&e->functions, pointer);
+    put(&e->functions, spv_emit_constant_u32(e, u32_type, 1)); /* Device scope */
+    put(&e->functions, spv_emit_constant_u32(e, u32_type, 0)); /* Relaxed */
+    put(&e->functions, value);
+}
+
 uint32_t spv_emit_atomic_load_shared_u32(SpvEmitter* e, uint32_t u32_type, uint32_t pointer) {
     uint32_t id = spv_emit_id(e);
     instruction(&e->functions, 227, 6); /* OpAtomicLoad */
@@ -1209,7 +1224,8 @@ uint32_t spv_emit_atomic_load_shared_u32(SpvEmitter* e, uint32_t u32_type, uint3
     put(&e->functions, id);
     put(&e->functions, pointer);
     put(&e->functions, spv_emit_constant_u32(e, u32_type, 2));     /* Workgroup scope */
-    put(&e->functions, spv_emit_constant_u32(e, u32_type, 0x102)); /* Acquire | WorkgroupMemory */
+    /* Acquire | WorkgroupMemory */
+    put(&e->functions, spv_emit_constant_u32(e, u32_type, spv_emit_memory_semantics(e, 0x102)));
     return id;
 }
 
@@ -1221,8 +1237,10 @@ uint32_t spv_emit_atomic_compare_exchange_shared_u32(SpvEmitter* e, uint32_t u32
     put(&e->functions, id);
     put(&e->functions, pointer);
     put(&e->functions, spv_emit_constant_u32(e, u32_type, 2));     /* Workgroup scope */
-    put(&e->functions, spv_emit_constant_u32(e, u32_type, 0x108)); /* AcquireRelease | WorkgroupMemory */
-    put(&e->functions, spv_emit_constant_u32(e, u32_type, 0x102)); /* Acquire | WorkgroupMemory */
+    /* AcquireRelease | WorkgroupMemory */
+    put(&e->functions, spv_emit_constant_u32(e, u32_type, spv_emit_memory_semantics(e, 0x108)));
+    /* Acquire | WorkgroupMemory */
+    put(&e->functions, spv_emit_constant_u32(e, u32_type, spv_emit_memory_semantics(e, 0x102)));
     put(&e->functions, desired);
     put(&e->functions, expected);
     return id;
@@ -1247,12 +1265,13 @@ void spv_emit_control_barrier(SpvEmitter* e, uint32_t u32_type) {
     instruction(&e->functions, 224, 4);                            /* OpControlBarrier */
     put(&e->functions, spv_emit_constant_u32(e, u32_type, 2));     /* Workgroup execution scope */
     put(&e->functions, spv_emit_constant_u32(e, u32_type, 2));     /* Workgroup memory scope */
-    put(&e->functions, spv_emit_constant_u32(e, u32_type, 0x108)); /* AcquireRelease | WorkgroupMemory */
+    /* AcquireRelease | WorkgroupMemory */
+    put(&e->functions, spv_emit_constant_u32(e, u32_type, spv_emit_memory_semantics(e, 0x108)));
 }
 void spv_emit_memory_barrier(SpvEmitter* e, uint32_t u32_type, uint32_t scope, uint32_t semantics) {
     instruction(&e->functions, SPV_OP_MEMORY_BARRIER, 3);
     put(&e->functions, spv_emit_constant_u32(e, u32_type, scope));
-    put(&e->functions, spv_emit_constant_u32(e, u32_type, semantics));
+    put(&e->functions, spv_emit_constant_u32(e, u32_type, spv_emit_memory_semantics(e, semantics)));
 }
 
 uint32_t spv_emit_bitfield_insert(SpvEmitter* e, uint32_t u32_type, uint32_t base, uint32_t insert, uint32_t offset,
@@ -1783,6 +1802,27 @@ void spv_emit_store(SpvEmitter* e, uint32_t pointer, uint32_t value) {
     put(&e->functions, pointer);
     put(&e->functions, value);
 }
+uint32_t spv_emit_load_nonprivate(SpvEmitter* e, uint32_t result_type, uint32_t pointer) {
+    if (!e->vulkan_memory_model) return spv_emit_load(e, result_type, pointer);
+    uint32_t id = spv_emit_id(e);
+    instruction(&e->functions, SPV_OP_LOAD, 5);
+    put(&e->functions, result_type);
+    put(&e->functions, id);
+    put(&e->functions, pointer);
+    put(&e->functions, 0x20); /* NonPrivatePointer */
+    if (e->nonuniform_count && is_nonuniform(e, pointer)) nonuniform(e, id);
+    return id;
+}
+void spv_emit_store_nonprivate(SpvEmitter* e, uint32_t pointer, uint32_t value) {
+    if (!e->vulkan_memory_model) {
+        spv_emit_store(e, pointer, value);
+        return;
+    }
+    instruction(&e->functions, SPV_OP_STORE, 4);
+    put(&e->functions, pointer);
+    put(&e->functions, value);
+    put(&e->functions, 0x20); /* NonPrivatePointer */
+}
 
 void spv_emit_store_u32(SpvEmitter* e, uint32_t pointer, uint32_t value) { spv_emit_store(e, pointer, value); }
 
@@ -1895,6 +1935,12 @@ uint32_t spv_emit_type_array(SpvEmitter* e, uint32_t element, uint32_t length) {
 uint32_t spv_emit_type_pointer(SpvEmitter* e, uint32_t storage, uint32_t type) {
     uint32_t operands[2] = {storage, type};
     return known(e, SPV_OP_TYPE_POINTER, 1, operands, 2);
+}
+uint32_t spv_emit_type_cooperative_matrix(SpvEmitter* e, uint32_t component, uint32_t scope, uint32_t rows,
+                                          uint32_t columns, uint32_t use) {
+    uint32_t operands[5] = {component, spv_emit_const_u32(e, scope), spv_emit_const_u32(e, rows),
+                            spv_emit_const_u32(e, columns), spv_emit_const_u32(e, use)};
+    return known(e, 4456 /* OpTypeCooperativeMatrixKHR */, 1, operands, 5);
 }
 uint32_t spv_emit_type_function(SpvEmitter* e, uint32_t result, const uint32_t* params, size_t count) {
     uint32_t operands[17];
@@ -2097,7 +2143,7 @@ uint32_t* spv_emit_finish(const SpvEmitter* e, size_t* word_count) {
     p += e->imports.count;
     out[p++] = (3u << 16) | SPV_OP_MEMORY_MODEL;
     out[p++] = 0; /* Logical */
-    out[p++] = 1; /* GLSL450 */
+    out[p++] = e->vulkan_memory_model ? 3 : 1; /* Vulkan, GLSL450 */
     for (size_t i = 3; i < sizeof sections / sizeof sections[0]; i++) {
         if (sections[i]->count) memcpy(out + p, sections[i]->words, sections[i]->count * sizeof(uint32_t));
         p += sections[i]->count;
