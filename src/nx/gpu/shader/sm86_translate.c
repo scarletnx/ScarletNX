@@ -2495,6 +2495,9 @@ static u32 mesh_entry(Ctx* c, u32 body) {
     spv_emit_control_barrier(e, c->t_u32);
     if (c->stage == ST_TS) {
         u32 count = spv_emit_load(e, c->t_u32, isbe_ptr(c, payload_var(c), SPV_STORAGE_TASK_PAYLOAD, cu(c, 1)));
+        /* within the device's limit: a count past it is undefined behavior, which can hang the GPU */
+        if (g_shader_mesh_tasks_max)
+            count = spv_emit_glsl_binary(e, c->t_u32, c->glsl, SPV_GLSL_U_MIN, count, cu(c, g_shader_mesh_tasks_max));
         SPV_VOID(e, 5294 /* OpEmitMeshTasksEXT */, count, cu(c, 1), cu(c, 1), payload_var(c));
         spv_emit_function_end(e);
         return fn;

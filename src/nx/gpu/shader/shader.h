@@ -267,6 +267,10 @@ extern int g_shader_mixed_dot;
    one OpCooperativeMatrixMulAddKHR on fragments staged in shared memory after the program's (sm86_translate.c's
    hmma_coop), where the two fit in that size. 0 offline */
 extern int g_shader_hmma_coop;
+/* the most mesh workgroups one task workgroup can launch (maxMeshWorkGroupCount[0] and maxMeshWorkGroupTotalCount,
+   the less of them): a task program's count, read from its payload's header, is clamped to it, as a count past it is
+   undefined behavior that can hang the GPU. 0 offline: not clamped */
+extern u32 g_shader_mesh_tasks_max;
 /* the Tessellation capability, which also gives a fragment program PrimitiveId without Geometry */
 extern int g_shader_tessellation;
 /* VK_KHR_shader_clock's scopes: bit 0 subgroup, bit 1 device */
