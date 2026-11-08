@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Reads at an offset, folders, and UTF-8 paths on Windows (file.h) */
+/* Reads at an offset and folders (file.h) */
 #include "common/platform/file.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -13,22 +13,6 @@
 #else
 #include <sys/stat.h>
 #include <unistd.h>
-#endif
-
-#if defined(_WIN32)
-/* paths are UTF-8 everywhere else. A path that isn't valid UTF-8 names nothing: NULL, rather than a path with
-   replacement characters that could name another file. Freed with free */
-wchar_t* snx_host_wpath(const char* text) {
-    int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, NULL, 0);
-    if (n <= 0) return NULL;
-    wchar_t* wide = malloc((size_t)n * sizeof *wide);
-    if (!wide) return NULL;
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, wide, n) != n) {
-        free(wide);
-        return NULL;
-    }
-    return wide;
-}
 #endif
 
 int64_t plat_pread_fd(int fd, void* buf, uint64_t size, uint64_t off) {

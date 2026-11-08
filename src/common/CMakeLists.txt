@@ -66,6 +66,7 @@ target_compile_definitions(scarletnx-platform PRIVATE _FILE_OFFSET_BITS=64 _CRT_
 target_compile_options(scarletnx-platform PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_link_libraries(scarletnx-platform PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 if(WIN32)
+    target_sources(scarletnx-platform PRIVATE platform/wpath.c) # snx_host_wpath
     target_link_libraries(scarletnx-platform PUBLIC synchronization) # plat_wait_word's WaitOnAddress
 endif()
 
