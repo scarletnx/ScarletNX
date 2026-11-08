@@ -9,6 +9,7 @@
 #include "android/bridge/hle.h"
 #include "android/bridge/hle_impl.h"
 #include "android/bridge/host.h"
+#include "common/platform/file.h"
 #include "common/utilities/ascii.h"
 #include "gnuabi/kernel/kernel.h"
 #include <ctype.h>
@@ -597,7 +598,7 @@ static void read_chk(CPU* c, void* data) {
 static void pread_chk(CPU* c, void* data) {
     (void)data;
     if (X(2) > X(4)) fortify_fail("pread");
-    X(0) = (uint64_t)host_pread((int)X(0), PTR(1), (size_t)X(2), X(3));
+    X(0) = (uint64_t)plat_pread_fd((int)X(0), PTR(1), (size_t)X(2), X(3));
 }
 static void fd_set_chk(CPU* c, void* data) {
     (void)data;
