@@ -401,7 +401,7 @@ static void said(const char* line) {
     size_t n = strlen(g_said);
     snprintf(g_said + n, sizeof g_said - n, "%s\n", line);
 }
-/* The variables an older version read for the room, its password and the nickname (docs/DEPRECATIONS.md): still read
+/* The variables an older version read for the room, its password and the nickname (docs/user/deprecations.md): still read
    over the settings, each said once a run with what the run takes */
 static void old_variables(void) {
     FakeRoom* relay = fake_room_start();
@@ -417,7 +417,7 @@ static void old_variables(void) {
     SnxCtrProcess* p = process(&handle, "OldVariable");
     snprintf(want, sizeof want,
              "3ds uds: SNX_3DS_ROOM=%s is deprecated, replaced by the room of the launcher's Network settings (\"\" "
-             "there): this run joins %s (docs/DEPRECATIONS.md)\n",
+             "there): this run joins %s (docs/user/deprecations.md)\n",
              endpoint, endpoint);
     assert(strstr(g_said, want));
     assert(strstr(g_said, "3ds uds: SNX_3DS_NICKNAME is deprecated, with nothing in its place: this run joins as its "

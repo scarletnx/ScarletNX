@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Guest memory the GPU holds: the renderer's side of memory/own.c (docs/GPU_OWNERSHIP.md). A resource is a
+/* Guest memory the GPU holds: the renderer's side of memory/own.c (docs/layers/gpu/ownership.md). A resource is a
    device-local buffer holding guest bytes in their own layout; an engine that wrote it publishes it over those bytes,
    and the trap lands it when the CPU touches them: copied by the GPU into host-cached memory, waited for (that
    submission only), and copied into the pool's mirror. On a host without traps a publish lands at once. Landing runs

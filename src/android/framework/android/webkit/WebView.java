@@ -10,7 +10,7 @@ import android.util.AttributeSet;
 import android.widget.FrameLayout;
 
 /**
- * A web page's view (Off in docs/android/INTERFACES.md: no web engine). It keeps its settings and clients, and a page
+ * A web page's view (Off in docs/platforms/android-apps/interfaces.md: no web engine). It keeps its settings and clients, and a page
  * it loads starts and finishes empty, as a blank page, so an app's flow goes on: onPageStarted and onPageFinished
  * come, a script's result is "null", and nothing draws.
  */

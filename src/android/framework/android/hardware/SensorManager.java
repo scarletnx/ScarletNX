@@ -10,7 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * The device's sensors: none (Off in docs/android/INTERFACES.md), as a desktop has none, so a registration fails and
+ * The device's sensors: none (Off in docs/platforms/android-apps/interfaces.md), as a desktop has none, so a registration fails and
  * no event comes. The rotation helpers compute what Android's do, from their documented definitions.
  */
 public class SensorManager {

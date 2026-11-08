@@ -508,11 +508,11 @@ static void memory_fit_old(void) {
     else if (now == -1)
         WARN(
             "settings: memory_fit=%s, deprecated, was its default: memory_fit_mode takes its own, 0 (Auto), which fits "
-            "the game to the device (docs/DEPRECATIONS.md)\n",
+            "the game to the device (docs/user/deprecations.md)\n",
             old);
     else {
         store_put("memory_fit_mode", now ? "1" : "0");
-        WARN("settings: memory_fit=%s, deprecated, is memory_fit_mode=%d (%s) now (docs/DEPRECATIONS.md)\n", old, now,
+        WARN("settings: memory_fit=%s, deprecated, is memory_fit_mode=%d (%s) now (docs/user/deprecations.md)\n", old, now,
              now ? "Off" : "Auto");
     }
 }
@@ -534,11 +534,11 @@ static void astc_bc_old(void) {
     else if (now == -1)
         WARN("settings: astc_bc=%s, deprecated, was its default: astc_mode takes its own, 0 (Auto), which holds ASTC "
              "textures as RGBA8 or BC7 by the GPU's memory where the GPU samples BCn but not ASTC "
-             "(docs/DEPRECATIONS.md)\n",
+             "(docs/user/deprecations.md)\n",
              old);
     else {
         store_put("astc_mode", "0");
-        WARN("settings: astc_bc=%s, deprecated, is astc_mode=0 (Auto) now (docs/DEPRECATIONS.md)\n", old);
+        WARN("settings: astc_bc=%s, deprecated, is astc_mode=0 (Auto) now (docs/user/deprecations.md)\n", old);
     }
 }
 
@@ -559,13 +559,13 @@ static void controls_opacity_old(void) {
     v = options_controls_opacity_old(old);
     if (v == -2) {
         WARN("settings: controls_opacity=%s, deprecated, is not a whole number: controls_alpha takes its default, %s "
-             "(docs/DEPRECATIONS.md)\n",
+             "(docs/user/deprecations.md)\n",
              old, o->def);
         return;
     }
     if (v == -1) {
         WARN("settings: controls_opacity=%s, deprecated, was its default: controls_alpha takes its own, %s "
-             "(docs/DEPRECATIONS.md)\n",
+             "(docs/user/deprecations.md)\n",
              old, o->def);
         return;
     }
@@ -573,7 +573,7 @@ static void controls_opacity_old(void) {
     store_put("controls_alpha", now);
     WARN(
         "settings: controls_opacity=%s, deprecated, is controls_alpha=%d now, the same look: the built-in controls' art "
-        "is opaque (docs/DEPRECATIONS.md)\n",
+        "is opaque (docs/user/deprecations.md)\n",
         old, v);
 }
 
@@ -597,23 +597,23 @@ static void vk_descriptors_old(void) {
         if (now == -2)
             WARN(
                 "settings: vk_descriptors=%s, deprecated, is not a whole number from 0 to 3: vk_descriptors_mode takes "
-                "its default, 3 (Automatic) (docs/DEPRECATIONS.md)\n",
+                "its default, 3 (Automatic) (docs/user/deprecations.md)\n",
                 file->value);
         else if (now == -1)
             WARN("settings: vk_descriptors=%s, deprecated, was its default: vk_descriptors_mode takes its own, 3 "
                  "(Automatic), sets on a GPU with memory of its own and heaps on one that shares the system's "
-                 "(docs/DEPRECATIONS.md)\n",
+                 "(docs/user/deprecations.md)\n",
                  file->value);
         else {
             store_put("vk_descriptors_mode", values[now]);
-            WARN("settings: vk_descriptors=%s, deprecated, is vk_descriptors_mode=%d (%s) now (docs/DEPRECATIONS.md)\n",
+            WARN("settings: vk_descriptors=%s, deprecated, is vk_descriptors_mode=%d (%s) now (docs/user/deprecations.md)\n",
                  file->value, now, words[now]);
         }
     }
     if (!given) return;
     if (first) {
         WARN("settings: --vk_descriptors=%s is deprecated, and the command line gives --vk_descriptors_mode=%s too: "
-             "vk_descriptors_mode=%s this run (docs/DEPRECATIONS.md)\n",
+             "vk_descriptors_mode=%s this run (docs/user/deprecations.md)\n",
              given, first, first);
         return;
     }
@@ -621,12 +621,12 @@ static void vk_descriptors_old(void) {
     if (now >= 0) {
         ini_override("vk_descriptors_mode", values[now]);
         WARN("settings: --vk_descriptors=%s is deprecated: this run reads it as --vk_descriptors_mode=%d (%s) "
-             "(docs/DEPRECATIONS.md)\n",
+             "(docs/user/deprecations.md)\n",
              given, now, words[now]);
     } else {
         file = store_find("vk_descriptors_mode");
         WARN("settings: --vk_descriptors=%s, deprecated, is not a whole number from 0 to 3: vk_descriptors_mode=%s "
-             "this run, %s (docs/DEPRECATIONS.md)\n",
+             "this run, %s (docs/user/deprecations.md)\n",
              given, file ? file->value : "3", file ? "the .ini's" : "its default (Automatic)");
     }
 }

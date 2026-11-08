@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# A NetBSD sysroot for the netbsd-x86_64-cross preset (docs/NETBSD.md), made without root from the release's sets and
+# A NetBSD sysroot for the netbsd-x86_64-cross preset (docs/hosts/netbsd.md), made without root from the release's sets and
 # pkgsrc's binary packages, each checked against the SHA512 list it is published with.
 #
 #   scripts/netbsd-sysroot.sh DIR

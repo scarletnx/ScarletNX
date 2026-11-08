@@ -438,7 +438,7 @@ static void renderer_failed(const char* what) {
     if (why && why[0]) fatal("%s: %s.", what, why);
     fatal("%s (see the log). ScarletNX needs a GPU and driver with Vulkan 1.3.", what);
 }
-/* The Vulkan driver this run picked (the game's vulkan_driver, docs/APPLE.md): on a Mac the library SDL loads, and for
+/* The Vulkan driver this run picked (the game's vulkan_driver, docs/hosts/apple.md): on a Mac the library SDL loads, and for
    KosmicKrisp the ICD the Vulkan loader takes; elsewhere the system's, which moltenvk and kosmickrisp also take, said.
    Once a run, before SDL opens the window or the headless renderer its loader */
 static const SnxVulkanDriver* vulkan_driver(void) {
@@ -483,7 +483,7 @@ static const SnxVulkanDriver* vulkan_driver(void) {
 
 void video_init(const char* title, const char* addons) {
     /* MoltenVK's library or the KosmicKrisp loader, before SDL opens the window and loads one of its own, or the
-       headless renderer one (docs/APPLE.md); and the setting checked on every system */
+       headless renderer one (docs/hosts/apple.md); and the setting checked on every system */
     vulkan_driver();
     if (g_opt_headless) {
         /* No SDL video subsystem: this also works without DISPLAY, WAYLAND_DISPLAY or a seat. */
@@ -924,7 +924,7 @@ static int fatal_screen(const char* msg) {
    thread doesn't come (held up elsewhere), Windows' own box (it takes any thread) and none on Linux: the error is in
    the log and on stderr. Nothing for an unattended run, where nobody would close it */
 void win_fatal_box(const char* msg) {
-    /* beside the launcher's log (docs/USAGE.md#folders), whose Share Log sends it, for a game of a data folder: in that
+    /* beside the launcher's log (docs/user/usage.md#folders), whose Share Log sends it, for a game of a data folder: in that
        folder's state folder; another folder's game beside its own log, or before it has one in its folder; on iOS in
        the app's Documents' logs/, which the Files app shows, since a phone shows no stderr */
     {

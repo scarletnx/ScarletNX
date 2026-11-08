@@ -35,7 +35,7 @@ else()
 endif()
 
 # snx_hook_patches(<var>): the game patches, src/nx/patches/*.hook in name order, each a family of address hooks for
-# one game's builds (docs/HOOKS.md) whose handlers are the .c files beside them. A new file reconfigures the build
+# one game's builds (docs/platforms/nx/hooks.md) whose handlers are the .c files beside them. A new file reconfigures the build
 function(snx_hook_patches var)
     file(GLOB found CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/src/nx/patches/*.hook")
     list(SORT found)

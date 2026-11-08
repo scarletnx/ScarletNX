@@ -73,7 +73,7 @@ typedef struct Renderer {
     /* NVN copies choose their filter explicitly; source steps can be negative to mirror an axis. */
     int (*blit_filter)(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy,
                        double sdx, double sdy, int linear);
-    /* the VIC composition (gpu/video/vic.c), on the GPU, its picture kept there (docs/GPU_OWNERSHIP.md): 0 when
+    /* the VIC composition (gpu/video/vic.c), on the GPU, its picture kept there (docs/layers/gpu/ownership.md): 0 when
        the job exceeds the device (it is skipped) */
     int (*vic_compose)(const VicJob* j);
     /* an NVDEC picture laid out in its surfaces on the GPU, kept there as VIC's picture is: 0 when it couldn't be */

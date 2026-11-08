@@ -79,7 +79,7 @@ SnxCtrMemResult snx_ctr_phys_read(SnxCtrMemory* memory, uint32_t pa, void* outpu
 SnxCtrMemResult snx_ctr_phys_write(SnxCtrMemory* memory, uint32_t pa, const void* input, size_t size);
 
 /* Write tracking: what the GPU keeps of guest RAM, by physical page, so the CPU's accesses come to it first (the
-   renderer's surfaces and textures, docs/3DS.md). A page's level, in order:
+   renderer's surfaces and textures, docs/platforms/3ds/README.md). A page's level, in order:
    - NONE: the CPU's.
    - WATCH: the GPU keeps a copy made from it (a decoded texture, a render target as memory has it): writes trap.
    - OWN: the GPU's copy is newer than memory, or GPU writes to it are not done: every access traps.

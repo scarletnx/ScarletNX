@@ -5,7 +5,7 @@
    SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project */
 /* A launch of the DMA copy engine done on the CPU in guest memory, as maxwell/dma.c did it before it went to the GPU:
    the reference the tests hold the renderer's dma_copy to (tests/vulkan_headless.c, tests/gpu_park.c). The runtime
-   copies on the GPU (vk/dma.c, docs/GPU_OWNERSHIP.md), so this file isn't built into it. As Eden's MaxwellDMA splits
+   copies on the GPU (vk/dma.c, docs/layers/gpu/ownership.md), so this file isn't built into it. As Eden's MaxwellDMA splits
    CopyBlockLinearToPitch and CopyPitchToBlockLinear, an operand is read and written by its layout (pitch linear lines
    or block linear GOBs), with the remap between */
 #include <stdlib.h>

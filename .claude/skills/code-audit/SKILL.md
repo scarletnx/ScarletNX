@@ -162,7 +162,7 @@ Frequent patterns for an audit in this repository (the C runtime and recompiler,
 | Find each service command that a file answers | `grep -n '^ *\(@[a-z]* \)*\[[0-9]*\]' src/nx/hle/services/am.swipc` (or the `.swipc` of the service), and the handler `nn_..._Command` in its C file. Each answer must agree with the data that the SDK caller reads (see the `snx-service` skill). |
 | Find each TODO/FIXME/HACK marker | `grep -rn 'TODO\|FIXME\|HACK\|XXX' src tests tools scripts cmake` |
 | Find a stale claim in a comment (for example, "below 192") | `grep -rn "below 192" src` |
-| Find AI-ism punctuation in text that users read | `grep -rn '—' README.md docs/ROADMAP.md <changed user-facing files>`. Then look for a `;` that joins clauses, and for a ` - ` in place of a dash. Do not include code comments and code in backticks. |
+| Find AI-ism punctuation in text that users read | `grep -rn '—' README.md docs/dev/roadmap.md <changed user-facing files>`. Then look for a `;` that joins clauses, and for a ` - ` in place of a dash. Do not include code comments and code in backticks. |
 
 Do not memorise the list. The principle is this: **a finding can say that site A uses this pattern, and that you must also check sites B…N. Then you must do a grep or ast-grep step before you complete the finding.** A refactor-completeness finding without a list of all the matches is incomplete.
 
@@ -225,7 +225,7 @@ Examine each changed line and the context around it against all the dimensions. 
 - **Runtime invariants (this repo)**: The code of the game (and the NVIDIA, CRI and Nintendo SDK code in it) is the specification. A service or device answers as the console does, and the disassembly of the SDK caller shows how (`tools/disasm.py`). Syncpoint ids come from `syncpt_alloc()` and stay below 128. Guest addresses are `u64`.
 
   The code gets to guest memory through `GP()`/`gmem_ptr()`/`gmem_read()`, never through a host pointer that it keeps across a remap. Data that game threads share must have a lock or be atomic, because these threads run truly in parallel on the host. Nothing from a dump goes into git. Quote the rule for each violation.
-- **Prose for users (AI-isms)**: Text that a user reads must read as plain prose that a human wrote. This text is `README.md`, `docs/ROADMAP.md` and commit messages. It is also the messages that the runtime prints for players, and the comments that it writes into the `.ini` of the game. Flag these items and write them again:
+- **Prose for users (AI-isms)**: Text that a user reads must read as plain prose that a human wrote. This text is `README.md`, `docs/dev/roadmap.md` and commit messages. It is also the messages that the runtime prints for players, and the comments that it writes into the `.ini` of the game. Flag these items and write them again:
   - an em-dash (`—`, or its escaped form) that splices clauses or adds an appositive
   - a semicolon that joins two independent clauses
   - a spaced hyphen (` - `) in place of a dash

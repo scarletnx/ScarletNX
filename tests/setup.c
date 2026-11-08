@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* common/utilities/setup.c: setup.ini and what is left to ask, the options that leave the setup out or go through it
    again, the first user's random uid, the fixed uid's saves, the keys found and installed, the .ini and the list of
-   folders written in place, and the notices against docs/DEPRECATIONS.md (SNX_DEPRECATIONS) */
+   folders written in place, and the notices against docs/user/deprecations.md (SNX_DEPRECATIONS) */
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE   700 /* realpath */
 #include "common/utilities/setup.h"
@@ -281,7 +281,7 @@ static void test_files(const char* root) {
     puts("PASS app.ini's keys and folders.txt's lines written in place");
 }
 
-/* every notice names a row of the table of docs/DEPRECATIONS.md's "Now", and every row is some notice's */
+/* every notice names a row of the table of docs/user/deprecations.md's "Now", and every row is some notice's */
 static void test_notices(void) {
     size_t size;
     char *doc = (char*)snx_read_file(SNX_DEPRECATIONS, &size), *at, *end;
@@ -305,7 +305,7 @@ static void test_notices(void) {
     }
     assert(rows >= SNX_NOTICES);
     free(doc);
-    printf("PASS %d notices for the %d rows of DEPRECATIONS.md\n", SNX_NOTICES, rows);
+    printf("PASS %d notices for the %d rows of deprecations.md\n", SNX_NOTICES, rows);
 }
 
 static void test_place(const char* root, const char* home) {

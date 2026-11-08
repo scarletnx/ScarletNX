@@ -338,7 +338,7 @@ void plat_alias_host_free(u8* p, u64 size) {
     (void)p;
     (void)size;
 }
-/* no pool, so no mirror and no traps yet: a GPU result lands at its own fence (docs/GPU_OWNERSHIP.md) */
+/* no pool, so no mirror and no traps yet: a GPU result lands at its own fence (docs/layers/gpu/ownership.md) */
 u8* plat_alias_mirror(void) { return NULL; }
 int plat_thread_in_fault(u32 tid) {
     (void)tid;

@@ -406,12 +406,12 @@ static void apply(GuiTheme* t, const char* section, const char* key, const char*
         set(t, gui_theme_key("head", "loading"), section, key, value, to);
         return;
     }
-    if (!strcmp(section, "body") && (!strcmp(key, "gap") || !strcmp(key, "scroll"))) { /* docs/DEPRECATIONS.md */
+    if (!strcmp(section, "body") && (!strcmp(key, "gap") || !strcmp(key, "scroll"))) { /* docs/user/deprecations.md */
         say(to, snx_tr("[body] %s = %s does nothing: ui.txt lays out the lists now (delete it)"), key, value);
         return;
     }
     if ((!strcmp(section, "head") && !strcmp(key, "place")) || (!strcmp(section, "tips") && !strcmp(key, "place")) ||
-        (!strcmp(section, "body") && !strcmp(key, "sizing"))) { /* docs/DEPRECATIONS.md */
+        (!strcmp(section, "body") && !strcmp(key, "sizing"))) { /* docs/user/deprecations.md */
         say(to, snx_tr("[%s] %s = %s does nothing: ui.txt lays out the screens now (delete it)"), section, key, value);
         return;
     }
@@ -682,7 +682,7 @@ char* gui_theme_write(const GuiTheme* theme, const GuiThemeFile* file) {
         "; ScarletNX GUI theme, format %d: a folder of themes/ holding this file, the folder's name its id. A\n"
         "; folder named like a built-in replaces it. Keys left out, or that cannot be read, keep the base's value;\n"
         "; keys this GUI does not know are left for others (rEden's ErET reads the same file). A comment takes a\n"
-        "; line of its own. docs/GUI.md describes every key. Made with the theme editor in ScarletNX's menu.\n",
+        "; line of its own. docs/user/gui.md describes every key. Made with the theme editor in ScarletNX's menu.\n",
         GUI_THEME_FORMAT);
     for (s = 0; s < sizeof sections / sizeof *sections; ++s) {
         const char* name = sections[s][0];

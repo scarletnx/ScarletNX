@@ -231,8 +231,8 @@ DOC = """# Settings
 
 class Settings(unittest.TestCase):
     def checkout(self, doc=DOC, settings=SETTINGS):
-        index = '# Docs\n\n- [Settings](SETTINGS.md)\n'
-        return Checkout({'src/nx/runtime/settings.txt': settings, 'docs/SETTINGS.md': doc, 'docs/README.md': index})
+        index = '# Docs\n\n- [Settings](user/settings.md)\n'
+        return Checkout({'src/nx/runtime/settings.txt': settings, 'docs/user/settings.md': doc, 'docs/README.md': index})
 
     def test_a_doc_that_says_what_the_code_does(self):
         with self.checkout() as c:
@@ -242,14 +242,14 @@ class Settings(unittest.TestCase):
         with self.checkout(DOC.replace('| `source` | none | Empty text |\n', '')) as c:
             self.assertEqual(
                 c.failures('settings'),
-                ['src/nx/runtime/settings.txt:12: `source` (default empty) has no row in docs/SETTINGS.md'],
+                ['src/nx/runtime/settings.txt:12: `source` (default empty) has no row in docs/user/settings.md'],
             )
 
     def test_a_row_of_a_key_the_code_no_longer_has(self):
         with self.checkout(DOC + '| `docked_old` | `1` | Renamed |\n') as c:
             self.assertEqual(
                 c.failures('settings'),
-                ['docs/SETTINGS.md:12: `docked_old` is no key of src/nx/runtime/settings.txt'],
+                ['docs/user/settings.md:12: `docked_old` is no key of src/nx/runtime/settings.txt'],
             )
 
     def test_a_default_the_code_does_not_have(self):
@@ -258,8 +258,8 @@ class Settings(unittest.TestCase):
             self.assertEqual(
                 c.failures('settings'),
                 [
-                    'docs/SETTINGS.md:5: `docked` says the default is `0`; src/nx/runtime/settings.txt:3 makes it `1`',
-                    'docs/SETTINGS.md:5: `memory_fit` says the default is `0`; '
+                    'docs/user/settings.md:5: `docked` says the default is `0`; src/nx/runtime/settings.txt:3 makes it `1`',
+                    'docs/user/settings.md:5: `memory_fit` says the default is `0`; '
                     'src/nx/runtime/settings.txt:7 makes it `0` (iOS `1`)',
                 ],
             )
@@ -267,7 +267,7 @@ class Settings(unittest.TestCase):
     def test_a_default_cell_it_cannot_read(self):
         with self.checkout(DOC.replace('| `source` | none |', '| `source` | nothing |')) as c:
             self.assertEqual(len(c.failures('settings')), 2)
-            self.assertTrue(c.failures('settings')[0].startswith("docs/SETTINGS.md:6: Default 'nothing' is not one"))
+            self.assertTrue(c.failures('settings')[0].startswith("docs/user/settings.md:6: Default 'nothing' is not one"))
 
     def test_a_platform_it_does_not_know(self):
         with self.checkout(settings=SETTINGS.replace('default-if SNX_IOS 1', 'default-if SNX_PLAN9 1')) as c:
@@ -285,7 +285,7 @@ class Settings(unittest.TestCase):
             self.assertEqual(run.returncode, 1)
             self.assertEqual(
                 run.stderr,
-                'docs/SETTINGS.md:7: `gamepad_p<N>_rumble` says the default is `0`; '
+                'docs/user/settings.md:7: `gamepad_p<N>_rumble` says the default is `0`; '
                 'src/nx/runtime/settings.txt:16 makes it `-10`\ncheck-docs.py: 1 to fix\n',
             )
 

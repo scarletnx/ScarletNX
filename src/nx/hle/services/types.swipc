@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# The types more than one service's interfaces use (docs/IPC.md describes the language). The names are the SDK's.
+# The types more than one service's interfaces use (docs/platforms/nx/ipc.md describes the language). The names are the SDK's.
 
 type nn::applet::AppletResourceUserId = u64;
 type nn::account::Uid = bytes<0x10, 8>;

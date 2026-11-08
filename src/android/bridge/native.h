@@ -5,7 +5,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-/* The native bridge as the driver uses it (docs/android/NATIVE.md) */
+/* The native bridge as the driver uses it (docs/platforms/android-apps/native.md) */
 
 /* the bridge started, with the app's library folder: false with the reason in error */
 bool android_native_start(const char* library_dir, char* error, size_t error_size);

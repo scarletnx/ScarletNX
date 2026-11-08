@@ -322,7 +322,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     # the shared fonts' stand-ins (cmake/shared_fonts.cmake): Noto Sans subsets for the five text fonts, one per
     # script, because a game asks the font for the characters it draws and the Open Sans Eden ships has none of the
     # CJK ones; and yuzu's controller button glyphs (GPL-2.0-or-later) in the source file Eden keeps them in. The
-    # subsets (SIL OFL 1.1, docs/SHARED_FONTS.md) are fetched from the commit of this repository that last changed
+    # subsets (SIL OFL 1.1, docs/platforms/nx/shared-fonts.md) are fetched from the commit of this repository that last changed
     # them, so a checkout, and a project fetching ScarletNX for its recompiler alone, carries none of their 11 MB
     set(snx_noto_url https://raw.githubusercontent.com/scarletnx/ScarletNX/777f377013806bc4cdbbc0306eca6e7e9c835df2/dist/fonts)
     foreach(font IN ITEMS "JP 0941fc22edbe0b3b9e8306d4a2feae5e9c0fbd25942600564cc3edb69da88e62"
@@ -381,7 +381,7 @@ set(SNX_SDL3_FROM_SOURCE OFF)
 # The system's SDL3 from find_package, or CPM's pinned source build. FreeBSD's ports package lags the pin (3.4.16
 # against 3.4.18), so CPM's version check refuses it and builds SDL3 itself: SNX_SYSTEM_SDL3 takes the native package
 # instead, which needs only 3.4.16, the version every SDL call in the tree is in. It is the default on FreeBSD, whose
-# build installs the sdl3 package (docs/BUILD.md), and on NetBSD, whose pkgsrc SDL3 is 3.4.16 too (docs/NETBSD.md); the
+# build installs the sdl3 package (docs/dev/build.md), and on NetBSD, whose pkgsrc SDL3 is 3.4.16 too (docs/hosts/netbsd.md); the
 # pinned source build is had with -DSNX_SYSTEM_SDL3=OFF
 set(snx_sdl3_system_default OFF)
 if(CMAKE_SYSTEM_NAME MATCHES "^(FreeBSD|NetBSD)$")

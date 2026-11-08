@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Optional static AArch64 libc fixture; see docs/NETWORKING.md. Loopback only, no external DNS or ping required. */
+/* Optional static AArch64 libc fixture; see docs/platforms/nx/networking.md. Loopback only, no external DNS or ping required. */
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>

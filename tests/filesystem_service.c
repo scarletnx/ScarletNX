@@ -1843,7 +1843,7 @@ static void test_save_data(SvcObj* proxy) {
     svcobj_unref(user);
     CHECK(tree_has("save/user/progress.bin") && tree_has("save/user/played.bin") && !tree_has(FIRST_SAVE));
     CHECK(test_left_said == 1 && strstr(test_left_text, "save/user, the first user's saves") &&
-          strstr(test_left_text, FIRST_SAVE) && strstr(test_left_text, "DEPRECATIONS.md"));
+          strstr(test_left_text, FIRST_SAVE) && strstr(test_left_text, "deprecations.md"));
     user = open_user_save(proxy, g_user_id);
     svcobj_unref(user);
     CHECK(test_left_said == 1);

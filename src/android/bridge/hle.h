@@ -7,7 +7,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* The system's libraries as HLE (docs/android/NATIVE.md): the symbols that bionic, libandroid, liblog, libdl and the
+/* The system's libraries as HLE (docs/platforms/android-apps/native.md): the symbols that bionic, libandroid, liblog, libdl and the
    graphics libraries export, each a host function or a host object */
 
 typedef struct {

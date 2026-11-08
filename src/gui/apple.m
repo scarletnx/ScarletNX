@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The menu's side of the iOS and macOS apps (docs/APPLE.md): the folders, the game the menu plays, and the windows
+/* The menu's side of the iOS and macOS apps (docs/hosts/apple.md): the folders, the game the menu plays, and the windows
    SDL's give dist/apple/Frontend.swift to present its pickers and share sheet over */
 #include "gui/apple.h"
 #include "common/utilities/setup.h"

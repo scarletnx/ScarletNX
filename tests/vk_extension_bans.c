@@ -435,7 +435,7 @@ static void check_shipped(void) {
                  (unsigned)line, line ? text : "none");
         CHECK(cases[i].banned ? line && !strcmp(text, cases[i].scope) : !line, what);
     }
-    /* the line docs/DEVELOPMENT.md shows, as the filter says it for an NVIDIA driver before 595 */
+    /* the line docs/dev/development.md shows, as the filter says it for an NVIDIA driver before 595 */
     {
         VkExtensionProperties list[2] = {{"VK_KHR_present_id2", 1}, {"VK_KHR_present_wait2", 1}};
         SnxVkExtensions e = {list, 2};
@@ -450,7 +450,7 @@ static void check_shipped(void) {
                         "present_id2 and present_wait2 (590.48, with Smooth Motion on) (DXVK dxvk_device_info.cpp:610, "
                         "issue 5507; extension_bans.txt:",
                         NULL, NULL) >= 0,
-              "the log line docs/DEVELOPMENT.md shows");
+              "the log line docs/dev/development.md shows");
         if (said_with("VK_KHR_present_id2", NULL, NULL) < 0) show_said();
     }
     /* this machine's drivers, RADV and lavapipe: no "off" line holds; RADV's warnings are the lifted bans */

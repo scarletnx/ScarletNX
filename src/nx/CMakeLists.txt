@@ -60,7 +60,7 @@ include("${PROJECT_SOURCE_DIR}/cmake/hookgen.cmake")
 snx_hookgen(snx_hle)
 file(GLOB snx_patch_handlers CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/patches/*.c")
 target_sources(snx_hle PRIVATE ${snx_patch_handlers})
-# the IPC interfaces of the services (docs/IPC.md): their dispatchers are generated, the handlers are in the services'
+# the IPC interfaces of the services (docs/platforms/nx/ipc.md): their dispatchers are generated, the handlers are in the services'
 # files. A type is defined before the files that use it
 include("${PROJECT_SOURCE_DIR}/cmake/swipc.cmake")
 snx_swipc(snx_hle FNS ROOT "${CMAKE_CURRENT_SOURCE_DIR}" FILES

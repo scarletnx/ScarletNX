@@ -8,7 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* The 32-bit native bridge (docs/android/NATIVE.md, "32-bit libraries"): an APK's lib/armeabi-v7a or lib/armeabi
+/* The 32-bit native bridge (docs/platforms/android-apps/native.md, "32-bit libraries"): an APK's lib/armeabi-v7a or lib/armeabi
    libraries, ILP32 ARM code for bionic. Their pointers are 32 bits, so the guest has a window of 4 GiB of its own:
    guest address a is host address arm32_mem + a. The A32 and Thumb block compiler (common/cpu/arm/exec.h) runs the
    code. Imports are addresses at the top of the window, which the dispatch loop gives to host handlers, as the 64-bit

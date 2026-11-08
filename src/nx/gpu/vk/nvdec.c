@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* An NVDEC picture laid out in its surfaces on the GPU, and kept there (docs/GPU_OWNERSHIP.md). FFmpeg decodes on the
+/* An NVDEC picture laid out in its surfaces on the GPU, and kept there (docs/layers/gpu/ownership.md). FFmpeg decodes on the
    CPU, and its planes' rows are staged as they are; or, with the vulkan_video setting (experimental, untested), FFmpeg
    decodes H.264 with Vulkan Video on this device, and its picture's planes are copied out of its image on the GPU.
    The rest is the GPU's: each surface (its current contents: the guest's bytes, or what the GPU holds of them) is

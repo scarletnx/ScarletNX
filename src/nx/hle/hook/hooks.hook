@@ -19,7 +19,7 @@
 # nvn_DeviceFinalize). A handler does what the function is known to do and nothing the game could tell apart.
 # @version limits a hook or a struct to the versions of the module that exports the function (KEY sdk, the default, or
 # nvn; OP >=, >, <=, <, ==), a struct gives a guest struct's layout for those versions, and a handler that uses one
-# takes the layout for its module after the CPU (docs/HOOKS.md, tools/hookgen/hookgen.c). A pure hook's function
+# takes the layout for its module after the CPU (docs/platforms/nx/hooks.md, tools/hookgen/hookgen.c). A pure hook's function
 # depends only on its arguments, the memory they point to and constant data, and changes only its result and its
 # buffers: an addr or pointer argument followed by in[LENGTH], out[LENGTH] or inout[LENGTH] (bytes: a number, or an
 # integer argument times a number plus a number). The hooks_verify setting checks a pure hook against the function's

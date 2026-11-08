@@ -92,7 +92,7 @@ int main(void) {
     CHECK(g_settings.write_tracking == 1, "SNX_WW=signal is not write_tracking=1");
     CHECK(!strcmp(g_test.log,
                   "settings: SNX_WW=signal is deprecated: this run reads it as write_tracking=1, a setting of "
-                  "the game's .ini and of --write_tracking=VALUE (docs/DEPRECATIONS.md)\n"),
+                  "the game's .ini and of --write_tracking=VALUE (docs/user/deprecations.md)\n"),
           "SNX_WW=signal is not said with write_tracking=1");
 
     start();
@@ -123,7 +123,7 @@ int main(void) {
     CHECK(strstr(g_test.log, "settings: SNX_NO_WW=1 is deprecated: this run reads it as write_tracking=2,"),
           "SNX_NO_WW=1 is not said with write_tracking=2");
     CHECK(strstr(g_test.log, "settings: SNX_WW=signal is deprecated, and SNX_NO_WW gives write_tracking first: "
-                             "write_tracking=2 this run (docs/DEPRECATIONS.md)\n"),
+                             "write_tracking=2 this run (docs/user/deprecations.md)\n"),
           "SNX_WW=signal under SNX_NO_WW is not said with write_tracking=2");
 
     /* the command line's own --key comes first */
@@ -134,7 +134,7 @@ int main(void) {
     CHECK(g_settings.memory_traps == 2, "SNX_TRAPS=signal took memory_traps from the command line's 2");
     CHECK(!strcmp(g_test.log,
                   "settings: SNX_TRAPS=signal is deprecated, and the command line gives memory_traps first: "
-                  "memory_traps=2 this run (docs/DEPRECATIONS.md)\n"),
+                  "memory_traps=2 this run (docs/user/deprecations.md)\n"),
           "SNX_TRAPS=signal under the command line is not said with memory_traps=2");
 
     /* a value the runtime never read: the setting is the file's */
@@ -146,7 +146,7 @@ int main(void) {
     CHECK(!g_test.nover, "SNX_WW=yes gave write_tracking a value");
     CHECK(!strcmp(g_test.log,
                   "settings: SNX_WW=yes is deprecated, and only SNX_WW=signal did anything: write_tracking=2 "
-                  "this run (docs/DEPRECATIONS.md)\n"),
+                  "this run (docs/user/deprecations.md)\n"),
           "SNX_WW=yes is not said with the file's write_tracking=2");
 
     start();

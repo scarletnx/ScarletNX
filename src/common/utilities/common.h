@@ -210,7 +210,7 @@ extern const SnxGameFile snx_game_files[SNX_GAME_FILES];
    work/ in the data folder stays, a line on stdout saying so */
 char* snx_work_dir(const char* data_dir);
 /* recompiled/ of a data folder, where the drivers make its games. An older version made them in games/, which stays
-   and is still run from until the player moves it (docs/DEPRECATIONS.md): snx_recompiled_game is game name's folder,
+   and is still run from until the player moves it (docs/user/deprecations.md): snx_recompiled_game is game name's folder,
    recompiled/<name>, else games/<name> when only that one is there; snx_recompiled_left says on stderr that games/ is
    still there */
 char* snx_recompiled_dir(const char* data_dir);
@@ -227,7 +227,7 @@ char* snx_portable_dir(const char* program_dir);
 char* snx_checkout(const char* checkout, const char* build, const char* program_dir);
 /* What an older version kept in the checkout of a build tree's program, its data folder then: games/, work/, the
    keys and scarletnx-gnuabi's sysroot, linux/. snx_checkout_now names where this one keeps each for the data folder data; snx_checkout_left says so on
-   stderr for each still there. Nothing is moved: the player does that (docs/DEPRECATIONS.md) */
+   stderr for each still there. Nothing is moved: the player does that (docs/user/deprecations.md) */
 #define SNX_CHECKOUT_FILES 5
 extern const char* const snx_checkout_files[SNX_CHECKOUT_FILES];
 char* snx_checkout_now(const char* data, int file);
@@ -354,7 +354,7 @@ void snx_set_stage_runner(int (*run)(int argc, char** argv));
 /* As above, but intentional debugger stops do not abort the game. */
 int snx_run_debug_stage(const char* const* argv, const char* cwd, const char* stage);
 FILE* snx_fopen(const char* path, const char* mode);
-/* The launcher's logs, in its state folder (docs/USAGE.md#folders): what it says, a file a day named after this one
+/* The launcher's logs, in its state folder (docs/user/usage.md#folders): what it says, a file a day named after this one
    (gui/log.h's gui_log_console_name; this name the versions before wrote, kept), and a fatal error of it or of a game
    in the other one too */
 #define SNX_CONSOLE_LOG "scarletnx-console.log"

@@ -204,7 +204,7 @@ SnxCtrProcess* snx_ctr_process_new(const SnxCtrImage* image, SnxCtrModel model) 
     p->cpu.state.cpu.fpscr = 0x03c00010u;
     p->objects[2].data.thread.context = p->cpu.state.cpu;
     /* Configuration-page layout and kernel personality facts from Citra/Azahar
-       config_mem.{h,cpp}, memory.cpp (GPL-2.0-or-later, revision in docs/3DS.md).
+       config_mem.{h,cpp}, memory.cpp (GPL-2.0-or-later, revision in docs/platforms/3ds/README.md).
        No firmware is loaded. User mappings are read-only. */
     /* Board AXI WRAM, not application FCRAM: do not charge this kernel page
        to the application's heap quota or alias it to application allocations. */

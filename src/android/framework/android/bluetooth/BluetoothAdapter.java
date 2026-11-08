@@ -4,7 +4,7 @@ package android.bluetooth;
 
 import android.content.Context;
 
-/** The Bluetooth radio (Off in docs/android/INTERFACES.md). The device has none, so getDefaultAdapter answers null. */
+/** The Bluetooth radio (Off in docs/platforms/android-apps/interfaces.md). The device has none, so getDefaultAdapter answers null. */
 public final class BluetoothAdapter {
     public static final int STATE_OFF = 10, STATE_TURNING_ON = 11, STATE_ON = 12, STATE_TURNING_OFF = 13;
     public static final String ACTION_STATE_CHANGED = "android.bluetooth.adapter.action.STATE_CHANGED";

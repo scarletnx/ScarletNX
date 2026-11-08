@@ -1,4 +1,4 @@
-# edenprobe cases, one a line: "suite: name" passes, "[RESULT] suite: name" ends as RESULT (docs/EDENPROBE.md)
+# edenprobe cases, one a line: "suite: name" passes, "[RESULT] suite: name" ends as RESULT (docs/dev/edenprobe.md)
 # build: v0.10.0
 # mode: audio cpu display fs kernel notime quick video
 audio: a 10 kHz voice at half the output rate keeps the level default quality's table gives

@@ -24,7 +24,7 @@
 /* play_dump's: the game made and ready, not played (an update's or a DLC's game, before it) */
 #define PLAY_PREPARE 0x10000u
 /* An app's child process has no window to play in: the driver names the game it made ready, which the app plays
-   (docs/ANDROID.md). The Android and iOS builds; a test of that line sets it elsewhere */
+   (docs/hosts/android-app.md). The Android and iOS builds; a test of that line sets it elsewhere */
 #ifndef SNX_DRIVER_READY
 #if defined(__ANDROID__) || defined(SNX_IOS)
 #define SNX_DRIVER_READY 1
@@ -174,7 +174,7 @@ static int same_bytes(const char* a, const char* b) {
     return same;
 }
 /* 1 when the runtime a game runs carries a Vulkan driver its folder has not (snx_vulkan_driver, and KosmicKrisp's
-   ICD): the deploy puts them there, and a folder that lost one gets it again (docs/APPLE.md) */
+   ICD): the deploy puts them there, and a folder that lost one gets it again (docs/hosts/apple.md) */
 static int driver_missing(const char* run, const char* game) {
 #if defined(__APPLE__) && !defined(SNX_IOS)
     char* carried = snx_vulkan_driver(run);
@@ -1507,7 +1507,7 @@ int snx_driver(int argc, char** argv) {
                             (!(flags & SNX_EXTRACT) && (prepared_game(input, NULL, NULL) || addon_program(input))))));
     if (input && (automatic || (flags & SNX_RECOMP)) && left_beside(input)) {
         result =
-            snx_error("%s was laid out by an older version: move its files as docs/DEPRECATIONS.md says, or run it "
+            snx_error("%s was laid out by an older version: move its files as docs/user/deprecations.md says, or run it "
                       "as it is with --game=%s",
                       input, input);
         goto done;

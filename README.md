@@ -15,30 +15,32 @@ and PS Vita homebrew the same way, and Game Boy Advance ROMs on an emulated AGB 
 ## Download and run
 
 The newest build of `main` for Linux (AppImage), Windows and Android is in
-[scarletnx/nightly](https://github.com/scarletnx/nightly/releases/latest); [Install](docs/INSTALL.md) lists each
+[scarletnx/nightly](https://github.com/scarletnx/nightly/releases/latest); [Install](docs/user/install.md) lists each
 download. Games need a Vulkan 1.3 driver, and keys and games must be dumped from your own console.
 
-Started with no arguments, ScarletNX opens its [launcher](docs/GUI.md): **Install Keys** installs your `prod.keys` for
+Started with no arguments, ScarletNX opens its [launcher](docs/user/gui.md): **Install Keys** installs your `prod.keys` for
 Switch and your `aes_keys.txt` for the encrypted 3DS games, to `~/.switch` and `~/.3ds` (`%USERPROFILE%` on Windows),
 and **Load Switch NSP/XCI/NRO** picks a dump, recompiles it and starts the game. The command line does the same with
-`scarletnx "Game.xci"` ([Usage](docs/USAGE.md)). To build it yourself, see [Build](docs/BUILD.md).
+`scarletnx "Game.xci"` ([Usage](docs/user/usage.md)). To build it yourself, see [Build](docs/dev/build.md).
 
 ## Documentation
 
-- [Install](docs/INSTALL.md): the downloads for each system, keys, and the first start
-- [GUI launcher](docs/GUI.md): the menu, its settings, themes and languages
-- [Usage](docs/USAGE.md): extract, recompile and play from the command line; updates, mods, cheats, folders and users
-- [Settings](docs/SETTINGS.md): every key of a game's `.ini` and of the launcher, with its default
-- [Testing and reporting](docs/TESTING.md): how to test a build, and the form a report takes
-- [Build](docs/BUILD.md): prerequisites and builds on Linux, FreeBSD, macOS and Windows
-- [Development](docs/DEVELOPMENT.md): checks, diagnostics and profiling; [Contributing](CONTRIBUTING.md)
-- [Architecture](docs/ARCHITECTURE.md) and [the recompiler as a library](docs/LIBRARY.md)
-- Platforms: [Android](docs/ANDROID.md), [macOS and iOS](docs/APPLE.md), [PowerPC64](docs/PPC64.md),
-  [RISC-V and LoongArch](docs/RISCV-LOONGARCH.md), [MIPS64](docs/MIPS64.md), [s390x](docs/S390X.md),
-  [NetBSD](docs/NETBSD.md)
-- Other systems: [3DS](docs/3DS.md), [PS Vita](docs/VITA.md), [Game Boy Advance](docs/AGB.md),
-  [Linux AArch64 programs](docs/GNUABI.md), [Android apps](docs/android/README.md) (**Load Android APK/XAPK**)
-- [Every document](docs/README.md), by subject
+- [Install](docs/user/install.md): the downloads for each system, keys, and the first start
+- [GUI launcher](docs/user/gui.md): the menu, its settings, themes and languages
+- [Usage](docs/user/usage.md): extract, recompile and play from the command line, with updates, mods, cheats,
+  folders and users
+- [Settings](docs/user/settings.md): every key of a game's `.ini` and of the launcher, with its default
+- [Testing and reporting](docs/user/testing.md): how to test a build, and the form a report takes
+- [Build](docs/dev/build.md): prerequisites and builds on Linux, FreeBSD, macOS and Windows
+- [Development](docs/dev/development.md): checks, diagnostics and profiling; [Contributing](CONTRIBUTING.md)
+- [Architecture](docs/dev/architecture.md) and [the recompiler as a library](docs/dev/library.md)
+- Hosts: [the Android app](docs/hosts/android-app.md), [macOS and iOS](docs/hosts/apple.md),
+  [PowerPC64](docs/hosts/ppc64.md), [RISC-V and LoongArch](docs/hosts/riscv-loongarch.md),
+  [MIPS64](docs/hosts/mips64.md), [s390x](docs/hosts/s390x.md), [NetBSD](docs/hosts/netbsd.md)
+- Other systems: [3DS](docs/platforms/3ds/README.md), [PS Vita](docs/platforms/vita/README.md),
+  [Game Boy Advance](docs/platforms/agb/README.md), [Linux AArch64 programs](docs/platforms/gnuabi/README.md),
+  [Android apps](docs/platforms/android-apps/README.md) (**Load Android APK/XAPK**)
+- [Every document](docs/README.md), by audience, platform and layer
 
 ## License and credits
 

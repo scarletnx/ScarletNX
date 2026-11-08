@@ -27,7 +27,7 @@
    values live in shared memory, and the partitions' endpoints in registers chosen with selects. Bit replication
    is a multiplication, loops that only walked a fixed handful of fields are written out, and the texel loop does
    the work of two channels in each 32 bit operation. Every shortcut gives the bytes the CPU reference
-   (tests/support/astc.c) gives; docs/ASTC.md lists them with how each was checked. */
+   (tests/support/astc.c) gives; docs/layers/gpu/astc.md lists them with how each was checked. */
 
 /* the integer sequence encodings */
 #define JUST_BITS 0u

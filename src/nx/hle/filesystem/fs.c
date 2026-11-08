@@ -1874,7 +1874,7 @@ static int save_layout_global(void) {
 }
 /* An Account save is save/user.<uid>, the folder of its user (users.c). The fixed uid's (am.c's g_user_id, user 1's
    when users.ini gives it none), while it has none, is the one an older version left, played where it is and said once
-   a run (docs/DEPRECATIONS.md): save/user, from before there were other users, else a nonempty save/system (earlier
+   a run (docs/user/deprecations.md): save/user, from before there were other users, else a nonempty save/system (earlier
    versions read the save type from a byte that is always 0).
    save/user and save/user.<uid> both there is two saves of one user: the game stops and leaves both, for the player to
    keep one. Puts the folder in p, and 1 in *both for that */
@@ -1903,7 +1903,7 @@ static u32 save_user(const nn_fs_SaveDataAttribute* attribute, char* p, size_t n
     if (!save_layout_global()) /* save_layout=global says where it goes itself (save_folder) */
         WARN_LIMIT(1,
                    "fs: %s%s, the first user's saves, was left by an older version: this one keeps them in %s%s. The "
-                   "game plays them where they are until you move the folder there (docs/DEPRECATIONS.md)\n",
+                   "game plays them where they are until you move the folder there (docs/user/deprecations.md)\n",
                    g_datadir, old, g_datadir, p);
     snprintf(p, n, "%s", old);
     R_SUCCEED();
@@ -2136,7 +2136,7 @@ static u32 save_folder(const nn_fs_SaveDataAttribute* attribute, char* p, size_t
             if (mine)
                 WARN("fs: %s%s holds this game's %s save, which save_layout=global keeps in %s%s%s. The game plays it "
                      "where it is until you move the folder there (Settings > App > Move Old Files, "
-                     "docs/DEPRECATIONS.md)\n",
+                     "docs/user/deprecations.md)\n",
                      g_datadir, game, kind, host, sub[0] ? "/" : "", sub);
             else
                 WARN("fs: %s%s%s holds this game's %s save, which save_layout=game keeps in %s%s. The game plays it "

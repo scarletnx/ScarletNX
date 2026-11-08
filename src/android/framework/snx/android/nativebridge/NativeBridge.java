@@ -3,7 +3,7 @@
 package snx.android.nativebridge;
 
 /**
- * The app's native libraries: AArch64 code for bionic, recompiled and run in this process (docs/android/NATIVE.md).
+ * The app's native libraries: AArch64 code for bionic, recompiled and run in this process (docs/platforms/android-apps/native.md).
  * Each library loads once, as Android's linker loads it.
  */
 public final class NativeBridge {

@@ -137,7 +137,7 @@ int snx_setup_read(const char* path, SnxSetup* setup, char* why, size_t why_size
 }
 int snx_setup_done(const char* path, const SnxSetup* setup, char* why, size_t why_size) {
     char *dir = snx_dirname(path), *staged = snx_format("%s.new", path), *text;
-    text = snx_format("; ScarletNX's setup (docs/USAGE.md#setup): the version of the steps it asked and the notices it "
+    text = snx_format("; ScarletNX's setup (docs/user/usage.md#setup): the version of the steps it asked and the notices it "
                       "showed.\n; Delete this file, or run scarletnx --setup, to go through it again\n"
                       "[setup]\nversion = %d\nnotices = %d\n",
                       setup->version > SNX_SETUP_VERSION ? setup->version : SNX_SETUP_VERSION,

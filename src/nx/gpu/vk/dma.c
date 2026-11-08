@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The DMA copy engine on the GPU (maxwell/dma.c hands a launch over), its destination kept there
-   (docs/GPU_OWNERSHIP.md). The destination's bytes the lines lie in (a pitch linear side's lines, a block linear one's
+   (docs/layers/gpu/ownership.md). The destination's bytes the lines lie in (a pitch linear side's lines, a block linear one's
    tiles: the blocks of the lines' GOB columns, a run a row of blocks) are copied as they are now (guest bytes, what
    the GPU holds of them, render targets drawn over them) into a buffer of their own; the source's span is staged the
    same way (or from the copy made at submission, or the buffer cache's). Block linear sides' GOB columns are taken

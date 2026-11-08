@@ -8,7 +8,7 @@
    between its images: those copies are that blit when the source is a render target, and a launch when it isn't.
 
    The CPU's own texel writes (nvnTextureWriteTexels) swizzle into the texture's storage, which is the GPU's work
-   (docs/BLOCKLINEAR.md): the source's bytes are read as the game calls, and the GPU writes them in order with the
+   (docs/layers/gpu/blocklinear.md): the source's bytes are read as the game calls, and the GPU writes them in order with the
    queues' work */
 #include "nx/gpu/nvn/nvn_copy.h"
 #include "nx/gpu/nvn/nvn_draw.h"

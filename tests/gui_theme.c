@@ -79,7 +79,7 @@ static const char* const format_keys[] = {"theme/format",
                                           "splash/page",
                                           "splash/ms",
                                           "splash/chance"};
-/* ErET's keys the GUI reads too (docs/GUI.md) */
+/* ErET's keys the GUI reads too (docs/user/gui.md) */
 static const char* const eret_keys[] = {"colors/texture", "header/ring_side", "loading/title"};
 
 static int same(GuiRgb a, GuiRgb b) { return a.r == b.r && a.g == b.g && a.b == b.b; }
@@ -265,7 +265,7 @@ int main(void) {
            !gui_theme_set(&theme, gui_theme_key("body", "focus"), "middle"));
     assert(!strcmp(said, "[head] size = 9 is more than 3: it takes 3; [body] focus = middle is not color or bar: it "
                          "keeps color"));
-    /* [body] gap and scroll laid out the lists before ui.txt: deprecated, said, nothing taken (docs/DEPRECATIONS.md) */
+    /* [body] gap and scroll laid out the lists before ui.txt: deprecated, said, nothing taken (docs/user/deprecations.md) */
     parse(&theme, "[body]\ngap = 4\nscroll = edge\n");
     assert(!gui_theme_key("body", "gap") && !gui_theme_key("body", "scroll"));
     assert(!strcmp(said, "[body] gap = 4 does nothing: ui.txt lays out the lists now (delete it); [body] scroll = edge "
@@ -352,7 +352,7 @@ int main(void) {
 
     /* the boxes: a file that names none of their keys takes its base's; the tips' and the foot's boxes and its
        style; an unknown word keeps the base's. The title's place, the tips' and the list's sizing do nothing:
-       ui.txt's Screen lays the screens out (docs/DEPRECATIONS.md), each said with its value */
+       ui.txt's Screen lays the screens out (docs/user/deprecations.md), each said with its value */
     parse(&theme, "[theme]\nformat = 1\nbase = default\n[colors]\npage = #102030\n");
     assert(theme.panels == GUI_PANELS_OUTLINE && rgb_is(theme.page, 0x10, 0x20, 0x30));
     parse(&theme, "[theme]\nbase = yorha\n[body]\ncursor = \"> \"\n");
@@ -512,7 +512,7 @@ int main(void) {
     assert(rgb_hex(yorha->run_colors.warning, SNX_GUI_THEME_YORHA_RUN_WARNING));
     assert(rgb_hex(yorha->splash_page, SNX_GUI_THEME_YORHA_SPLASH_PAGE));
     assert((int)def->picture == SNX_GUI_THEME_DEFAULT_PICTURE && (int)yorha->picture == SNX_GUI_THEME_YORHA_PICTURE);
-    /* docs/GUI.md's example reads, and names no key the format lacks */
+    /* docs/user/gui.md's example reads, and names no key the format lacks */
     {
         static char keys[8192];
         size_t size = 0;
@@ -535,7 +535,7 @@ int main(void) {
         for (key = keys; n-- > 0; key += strlen(key) + 1) {
             int known = listed_in(format_keys, sizeof format_keys / sizeof *format_keys, key) ||
                         listed_in(eret_keys, sizeof eret_keys / sizeof *eret_keys, key);
-            if (!known) printf("docs/GUI.md's example has %s (section/key), which theme format 1 lacks\n", key);
+            if (!known) printf("docs/user/gui.md's example has %s (section/key), which theme format 1 lacks\n", key);
             assert(known);
         }
         free(doc);

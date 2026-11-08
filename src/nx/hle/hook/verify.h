@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Verify mode (docs/HOOKS.md): a hook's handler checked against the function's own code, call by call. The two can't
+/* Verify mode (docs/platforms/nx/hooks.md): a hook's handler checked against the function's own code, call by call. The two can't
    both run on the guest's live memory, since a side effect would happen twice, so only a pure hook is verified at run
    time: one whose function depends on nothing but its arguments, the memory they point to and constant data, and
    changes nothing but its result and the memory its out arguments name (hooks.hook's `pure`, with in[...], out[...]

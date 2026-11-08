@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* libEGL (docs/android/NATIVE.md, "EGL and GLES"), for the guest's native code and for Java's EGL10
+/* libEGL (docs/platforms/android-apps/native.md, "EGL and GLES"), for the guest's native code and for Java's EGL10
    (snx.android.opengl.Egl10), which share its objects: a context or surface that Java makes is current for the
    native GLES calls of the same thread, as on Android.
 

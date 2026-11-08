@@ -78,7 +78,7 @@ earlier runs, the screens come in a different order. Thus check the screenshots 
 ## Read the log
 
 In a checkout, the log of the game is `recompiled/<id>/<id>.log`. A data folder keeps it in its state folder
-(`docs/USAGE.md`, "Folders"). The game log and the run log grow to megabytes. Never print a log whole.
+(`docs/user/usage.md`, "Folders"). The game log and the run log grow to megabytes. Never print a log whole.
 
 - `grep -n "Crash\|svcBreak\|FATAL" run1.log` finds the failure. Then use `sed -n` to read the lines around it.
 - The log has no FPS line. To get the average frame rate, divide `frames=N` at the end of a `--seconds` run by the

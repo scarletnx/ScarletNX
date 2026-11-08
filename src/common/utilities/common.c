@@ -145,7 +145,7 @@ void snx_option_renamed(const char* old, const char* now) {
         if (!strcmp(g_common.renamed[i], old)) return;
     if (g_common.renamed_count < sizeof g_common.renamed / sizeof *g_common.renamed)
         g_common.renamed[g_common.renamed_count++] = old;
-    snx_error("%s is %s now: this run takes it as %s (docs/DEPRECATIONS.md)", old, now, now);
+    snx_error("%s is %s now: this run takes it as %s (docs/user/deprecations.md)", old, now, now);
 }
 
 void snx_error_sink(void (*sink)(const char* line)) {
@@ -1668,7 +1668,7 @@ const SnxGameFile snx_game_files[SNX_GAME_FILES] = {{".log", SNX_USER_STATE},
 char* snx_work_dir(const char* data_dir) {
     char *old = snx_path_join(data_dir, "work"), *work = snx_user_path(old, SNX_USER_CACHE);
     if (snx_left_behind(old, work))
-        printf("scarletnx: %s was left by an older version: this one keeps it in %s (docs/DEPRECATIONS.md)\n", old,
+        printf("scarletnx: %s was left by an older version: this one keeps it in %s (docs/user/deprecations.md)\n", old,
                work);
     free(old);
     return work;
@@ -1693,7 +1693,7 @@ void snx_recompiled_left(const char* data_dir) {
     if (old && now && snx_left_behind(old, now))
         fprintf(stderr,
                 "scarletnx: %s was left by an older version: new games go to %s, and the ones in it still run until "
-                "they are moved there (docs/DEPRECATIONS.md)\n",
+                "they are moved there (docs/user/deprecations.md)\n",
                 old, now);
     free(old);
     free(now);
@@ -1742,7 +1742,7 @@ void snx_checkout_left(const char* checkout, const char* data) {
         now = snx_checkout_now(data, i);
         if (old && now && snx_left_behind(old, now))
             fprintf(stderr,
-                    "scarletnx: %s was left by an older version: this one keeps it in %s (docs/DEPRECATIONS.md)\n", old,
+                    "scarletnx: %s was left by an older version: this one keeps it in %s (docs/user/deprecations.md)\n", old,
                     now);
         free(old);
         free(now);

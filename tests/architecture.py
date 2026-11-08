@@ -90,7 +90,7 @@ ENV_SYSTEM = {
 }
 ENV_SYSTEM_PREFIXES = ('XDG_',)
 # The variables an older version read for what are settings or options now, still read for one version
-# (docs/DEPRECATIONS.md), each in the files named here alone. The change that removes one removes its row
+# (docs/user/deprecations.md), each in the files named here alone. The change that removes one removes its row
 ENV_DEPRECATED = {
     'SNX_WW': {'src/nx/runtime/deprecated_env.c'},
     'SNX_NO_WW': {'src/nx/runtime/deprecated_env.c'},

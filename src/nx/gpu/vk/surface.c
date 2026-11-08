@@ -1339,7 +1339,7 @@ static void publish_own(const Surf* s, VkOwnRes* r, u64 size) {
     }
     for (u32 i = 0; i < s->layers; i++) publish_span(s, r, (u64)i * s->layer_size, own);
 }
-/* A storage image's results kept on the GPU (docs/GPU_OWNERSHIP.md), as the DMA engine's destination is: its span
+/* A storage image's results kept on the GPU (docs/layers/gpu/ownership.md), as the DMA engine's destination is: its span
    staged as the GPU sees it into a buffer of its own (the bytes between its texels keep theirs), its texels laid out
    over that in the guest's layout, and the buffer published over its texels and the targets taken in (publish_own,
    rt_retire_over) run by run of guest memory. Nothing waits:

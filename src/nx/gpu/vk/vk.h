@@ -1024,7 +1024,7 @@ void vk_bl_barrier(VkCommandBuffer cb, int before);
 VkBuffer vk_bl_scratch(u64 size, u64* cap);
 u64 vk_bl_scratch_asked(void);
 
-/* owned.c: guest memory the GPU holds (memory/own.c, docs/GPU_OWNERSHIP.md). An engine's result (VIC's planes, a
+/* owned.c: guest memory the GPU holds (memory/own.c, docs/layers/gpu/ownership.md). An engine's result (VIC's planes, a
    DMA copy's destination, a 2D blit's, inline-to-memory) is a resource: a device-local buffer in the guest's own
    layout, published over the guest bytes it holds. The CPU sees it only when it touches those bytes: the trap lands
    it then. vk_own_init after the device and the frames exist: 0 when the host traps guest memory */
@@ -1162,7 +1162,7 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y, u32 w, u32 h, u32 
                    VkAstcRows rows, void* ctx, const u64* content);
 /* the same for a whole level of layers layers of a 2D array from layer, as a 3D level's slices: rows's z and nz count
    layers from layer, and a strip takes as many as the scratch holds. A layer at a time, a small level is too little
-   work to fill the GPU and each layer's encoder dispatch waits for the one before (docs/ASTC.md) */
+   work to fill the GPU and each layer's encoder dispatch waits for the one before (docs/layers/gpu/astc.md) */
 int vk_astc_upload_layers(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 level, u32 layer, u32 layers, VkAstcRows rows,
                           void* ctx, const u64* content);
 /* The BC7 blocks of slices z to z + nz of level `level` of src, an RGBA8 image in TRANSFER_SRC_OPTIMAL (w x h texels a
@@ -1345,7 +1345,7 @@ void vk_tex_frame(void);    /* a frame was presented: evicts what wasn't used fo
    their RGBA8 ones, VK_BC7_LATER_BLOCKS blocks at most, a texture at a time in the order they were loaded, and puts
    each in its texture's place once whole. Nothing when vk_cmd would wait for the GPU first */
 void vk_tex_later_frame(void);
-/* the encoder's blocks a frame: 3.3 ms of an RX 6700 XT, which encodes 10 million a second (docs/ASTC.md), a tenth of
+/* the encoder's blocks a frame: 3.3 ms of an RX 6700 XT, which encodes 10 million a second (docs/layers/gpu/astc.md), a tenth of
    a frame at 30 fps */
 #define VK_BC7_LATER_BLOCKS (1u << 15)
 /* s goes: its place in the queue and the BC7 image being made for it with it (surface.c surf_free) */

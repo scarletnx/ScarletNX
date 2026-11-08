@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* src/nx/gpu/nvn/nvn.h compiles as strict ISO C99, and its objects hold the fields docs/NVN_HLE.md records: the
+/* src/nx/gpu/nvn/nvn.h compiles as strict ISO C99, and its objects hold the fields docs/layers/gpu/nvn.md records: the
    command buffer's, in both SDK layouts read there, end before its reserved size. The NVN functions' types, which
    hookgen makes of gpu/nvn/nvn.hook (the generated gpu/nvn/nvn.hook.h), compile with it and are the C prototypes
    they stand for: each integer at its guest size, a pointer as the type it points to */
@@ -8,7 +8,7 @@
 #include "nx/gpu/nvn/nvn.h"
 #include <stdio.h>
 
-/* the end of the last command buffer field docs/NVN_HLE.md records in each layout: the memory callback's userdata at
+/* the end of the last command buffer field docs/layers/gpu/nvn.md records in each layout: the memory callback's userdata at
    +0x70 (8 bytes) in the newer, the reserve margin at +0x70 (a u32) in the older */
 #define CMDBUF_FIELDS_END_NEW 0x78
 #define CMDBUF_FIELDS_END_OLD 0x74

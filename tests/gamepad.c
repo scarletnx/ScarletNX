@@ -268,7 +268,7 @@ int main(void) {
     CHECK(gamepad_button(SDL_GetJoystickID(xbox), SDL_GAMEPAD_BUTTON_GUIDE) == 0);
 
     /* gamepad_swap_ab=1: A and B swapped, X and Y where the console's are; a key that is none of these is no gamepad
-       key, and gamepad_buttons is one no longer (docs/DEPRECATIONS.md) */
+       key, and gamepad_buttons is one no longer (docs/user/deprecations.md) */
     CHECK(gamepad_ini("gamepad_swap_ab", "1"));
     CHECK(with(xbox, SDL_GAMEPAD_BUTTON_SOUTH) == A);
     CHECK(with(xbox, SDL_GAMEPAD_BUTTON_EAST) == B);

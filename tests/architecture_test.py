@@ -218,17 +218,17 @@ class ArchitectureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
             repo = Path(temporary)
             (repo / '.github/workflows').mkdir(parents=True)
-            (repo / 'docs').mkdir()
+            (repo / 'docs/dev').mkdir(parents=True)
             (repo / '.github/workflows/build.yml').write_text(
                 'run: clang -I src src/a.c\nrun: clang -I src/common/cpu/aarch64 src/b.c\n', encoding='utf-8'
             )
-            (repo / 'docs/DEVELOPMENT.md').write_text('clang -I"src/nx" x.c\nobjcopy -I binary\n', encoding='utf-8')
+            (repo / 'docs/dev/development.md').write_text('clang -I"src/nx" x.c\nobjcopy -I binary\n', encoding='utf-8')
             errors = architecture.check_include_flags(repo)
             self.assertEqual(
                 errors,
                 [
                     '.github/workflows/build.yml:2: -I to a folder of src/; use -I src',
-                    'docs/DEVELOPMENT.md:1: -I to a folder of src/; use -I src',
+                    'docs/dev/development.md:1: -I to a folder of src/; use -I src',
                 ],
             )
 

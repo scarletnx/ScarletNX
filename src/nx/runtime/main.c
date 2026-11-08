@@ -527,7 +527,7 @@ static void say_old_layout(void) {
     for (cut = n; cut && !snx_is_any_separator(full[cut - 1]); cut--) continue;
     if (full && strcmp(full + cut, g_exename))
         WARN("%s/%s and its files were left by an older version: this one keeps them in %s/%s/ "
-             "(docs/DEPRECATIONS.md says how to move them)\n",
+             "(docs/user/deprecations.md says how to move them)\n",
              full, g_exename, full, g_exename);
     free(full);
 }

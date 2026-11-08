@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# Shows that a change for big-endian hosts leaves a little-endian host's code as it was (docs/PPC64.md): it builds
+# Shows that a change for big-endian hosts leaves a little-endian host's code as it was (docs/hosts/ppc64.md): it builds
 # BASE and the working tree with the default preset, then compares
 #   - the disassembly of every object of the project (not of the third-party packages), and
 #   - the code the recompiler makes for an AArch64 program, through each build's scarletnx-gnuabi.

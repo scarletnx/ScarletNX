@@ -2,7 +2,7 @@
 // Copyright 2026 the ScarletNX contributors
 package android.hardware;
 
-/** A sensor of the device (Off in docs/android/INTERFACES.md: the device reports none, so none is made). */
+/** A sensor of the device (Off in docs/platforms/android-apps/interfaces.md: the device reports none, so none is made). */
 public final class Sensor {
     public static final int TYPE_ACCELEROMETER = 1, TYPE_MAGNETIC_FIELD = 2, TYPE_ORIENTATION = 3, TYPE_GYROSCOPE = 4,
         TYPE_LIGHT = 5, TYPE_PRESSURE = 6, TYPE_PROXIMITY = 8, TYPE_GRAVITY = 9, TYPE_LINEAR_ACCELERATION = 10,

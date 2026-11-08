@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# swipc (tools/swipc/swipc.c) generates the IPC dispatchers from the interface definitions (.swipc, docs/IPC.md). It
+# swipc (tools/swipc/swipc.c) generates the IPC dispatchers from the interface definitions (.swipc, docs/platforms/nx/ipc.md). It
 # runs during the build, so a cross build also builds it for the machine doing the build, with that machine's C
 # compiler (SNX_HOST_CC, which FFmpeg's cross build uses too)
 include_guard(GLOBAL)

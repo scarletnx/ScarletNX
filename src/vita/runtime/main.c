@@ -290,7 +290,7 @@ int snx_vita_main(int argc, char** argv) {
     double seconds = 0;
     snx_tool_console();
     setvbuf(stdout, NULL, _IONBF, 0);
-    /* VITA_LOCKSTEP and VITA_LOCKSTEP_STEPS, which an older version read (docs/DEPRECATIONS.md): for this version still
+    /* VITA_LOCKSTEP and VITA_LOCKSTEP_STEPS, which an older version read (docs/user/deprecations.md): for this version still
        vita_lockstep and vita_lockstep_steps (0 steps, which compared none, is vita_lockstep=-1), under the command
        line's own, said once it is read. Removed with tests/architecture.py's ENV_DEPRECATED rows */
     const char *old_at = getenv("VITA_LOCKSTEP"), *old_steps = getenv("VITA_LOCKSTEP_STEPS");
@@ -361,17 +361,17 @@ int snx_vita_main(int argc, char** argv) {
             input = a;
     }
     if (old_at)
-        snx_error("VITA_LOCKSTEP=%s is deprecated, %s: vita_lockstep=%d (docs/DEPRECATIONS.md)", old_at,
+        snx_error("VITA_LOCKSTEP=%s is deprecated, %s: vita_lockstep=%d (docs/user/deprecations.md)", old_at,
                   g_settings.vita_lockstep != old_lockstep ? "and the command line gives vita_lockstep first"
                   : old_none                               ? "and VITA_LOCKSTEP_STEPS=0 compared none"
                                                            : "and this run reads it as --vita_lockstep",
                   g_settings.vita_lockstep);
     if (old_none)
         snx_error("VITA_LOCKSTEP_STEPS=%s is deprecated, and compared no instruction group, which "
-                  "vita_lockstep_steps=0 does not mean (no limit): vita_lockstep=%d (docs/DEPRECATIONS.md)",
+                  "vita_lockstep_steps=0 does not mean (no limit): vita_lockstep=%d (docs/user/deprecations.md)",
                   old_steps, g_settings.vita_lockstep);
     else if (old_steps)
-        snx_error("VITA_LOCKSTEP_STEPS=%s is deprecated, %s: vita_lockstep_steps=%d (docs/DEPRECATIONS.md)", old_steps,
+        snx_error("VITA_LOCKSTEP_STEPS=%s is deprecated, %s: vita_lockstep_steps=%d (docs/user/deprecations.md)", old_steps,
                   g_settings.vita_lockstep_steps != old_lockstep_steps
                       ? "and the command line gives vita_lockstep_steps first"
                       : "and this run reads it as --vita_lockstep_steps",

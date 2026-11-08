@@ -13,7 +13,7 @@
    branch target has the same frame. A value that the code needs as a narrower class gets a checkcast where it is
    used. A dataflow pass decides what the bytecode alone does not tell: whether an if-eqz or if-eq compares numbers
    or references, which array type an aget or aput reads, which register holds an object that new-instance made
-   before its <init>, and when a constructor's this is initialized. docs/android/README.md has the details */
+   before its <init>, and when a constructor's this is initialized. docs/platforms/android-apps/README.md has the details */
 
 typedef struct {
     /* whether the class of descriptor ("Ljava/util/List;") is an interface. The translator asks for the classes a

@@ -1623,7 +1623,7 @@ static int ww_scan_leaves(u64 lo, u64 hi, u32 seen, WwStage* st) {
     }
     return r < 0 ? -1 : 0;
 }
-/* Pages a landing wrote (own.c, docs/GPU_OWNERSHIP.md), with their bytes as it left them. The ownership lets go of
+/* Pages a landing wrote (own.c, docs/layers/gpu/ownership.md), with their bytes as it left them. The ownership lets go of
    them after, which watches them for writes again, and a page just watched reads as written: the next scan reports
    all of them, whatever happened to them. The landing is the GPU's write, counted when its result was published
    (vk_own_publish's gpu_mem_written_cpu) and older than anything drawn over those bytes since. Taken for a CPU write,

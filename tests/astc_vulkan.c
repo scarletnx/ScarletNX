@@ -6,7 +6,7 @@
    from astc.comp and blocklinear.comp. No game assets. Run with
    VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation and
    VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
-   to check synchronization too (docs/ASTC.md). --vk_max_allocation_mb=N lowers
+   to check synchronization too (docs/layers/gpu/astc.md). --vk_max_allocation_mb=N lowers
    the allocation cap, so images in pieces are tested at small sizes; --large
    decodes a 2D and a 3D texture of 512 MiB each. --upload-wait checks a BC7 upload across an internal submission.
    --upload-retire checks that completed uploads do not accumulate toward the encoder's wait threshold. */

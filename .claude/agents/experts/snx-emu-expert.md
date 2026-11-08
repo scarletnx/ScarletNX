@@ -17,7 +17,7 @@ permissions and attributes, and it commits or decommits host pages. Thus an unma
 is to bring the right prior art into that design. Do not transplant the architecture of a different emulator.
 
 ## Project specifics
-- `docs/ARCHITECTURE.md` tells how the parts fit together. `docs/ROADMAP.md` gives the work that is complete and the
+- `docs/dev/architecture.md` tells how the parts fit together. `docs/dev/roadmap.md` gives the work that is complete and the
   plan. Read the relevant parts before you propose anything.
 - The code of the game is the primary reference. Read what the SDK does from the disassembly (`sdk-scout` agent,
   `tools/disasm.py`). Switchbrew documents services and structures. The behavior of a different emulator is

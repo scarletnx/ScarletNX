@@ -121,7 +121,7 @@ not pay for. Build variants from one source with `snx_glsl_spirv(... DEFINES X)`
   a mutation fails there too. That proves that the build made the SPIR-V again (an edit to an include must cause a
   recompile).
 - Write each identity that the shader uses, and how you checked it, in the header comment of the shader. Write them
-  also in its doc (`docs/ASTC.md`, `docs/VIC.md`).
+  also in its doc (`docs/layers/gpu/astc.md`, `docs/layers/media/vic.md`).
 
 ## Measure
 

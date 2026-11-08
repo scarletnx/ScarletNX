@@ -84,7 +84,7 @@ static int user_writable(u64 a, u64 size) {
 
 /* ============================================================ accounting */
 /* The application pool for each memory_gb (Mesosphere's KSystemControl application pool sizes for the 4, 6 and 8 GiB
-   boards), see docs/MEMORY_ACCOUNTING.md */
+   boards), see docs/platforms/nx/memory-accounting.md */
 static u64 pool(void) {
     if (g_settings.memory_gb >= 8) return 6964 * MIB;
     if (g_settings.memory_gb >= 6) return 4916 * MIB;

@@ -173,7 +173,7 @@ def main():
         run(["-L", root, *jit, "--sample-pc", "--host-page=65536"], {}, 42)
         refused = "--host-page=12288 is not a power of two from the host's page"
         run(["-L", root, *jit, "--host-page=12288"], {}, 2, refused)
-        # the variables an older version read (docs/DEPRECATIONS.md), still read
+        # the variables an older version read (docs/user/deprecations.md), still read
         run([*jit], {"SNX_LINUX_SYSROOT": root}, 42, f"SNX_LINUX_SYSROOT={root} is deprecated, replaced by -L DIR")
         run(
             ["-L", root, *jit],

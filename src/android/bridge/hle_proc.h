@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #ifndef SNX_ANDROID_HLE_PROC_H
 #define SNX_ANDROID_HLE_PROC_H
-/* The app's own process files in /proc, as an Android device shows them, on every host (docs/android/NATIVE.md):
+/* The app's own process files in /proc, as an Android device shows them, on every host (docs/platforms/android-apps/native.md):
    cmdline (the package), comm, status (no tracer), stat, maps (the guest's libraries) and the exe link
    (app_process64), of /proc/self, /proc/thread-self and /proc/<the app's pid>. An app's protection reads them, and
    with none (FreeBSD has no /proc by default) or the JVM's (Linux's) an app may go on with a wrong key. Other paths

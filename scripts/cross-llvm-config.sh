@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# The target LLVM's llvm-config for a cross build (SNX_LLVM_CONFIG of the linux-*-cross presets, docs/PPC64.md). The
+# The target LLVM's llvm-config for a cross build (SNX_LLVM_CONFIG of the linux-*-cross presets, docs/hosts/ppc64.md). The
 # sysroot's llvm-config is a program of the target: it runs under the qemu-user of its machine, and the paths it prints
 # that are the target's own (/usr/...) get the sysroot in front, as the build machine reads them there.
 set -eu

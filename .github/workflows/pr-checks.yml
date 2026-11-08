@@ -11,7 +11,7 @@ name: Pull request checks
 # - tracked material and docs: what the tracked files may not hold (tests/tracked_material.py): keys, dumps, the
 #   console maker's name as a word and the names of piracy sites; and the documentation held to the checkout
 #   (scripts/check-docs.py): links and anchors that resolve, the ## Index of each long doc, docs/README.md linking
-#   every doc, and docs/SETTINGS.md saying each key and default settings.txt has. Both read files build.yml skips a
+#   every doc, and docs/user/settings.md saying each key and default settings.txt has. Both read files build.yml skips a
 #   pull request for (those no build or test reads), so they run on every pull request
 # - links: once a Build run of a pull request ends, one comment on the pull request, which each run rewrites, links its
 #   builds and names the jobs that did not build (scripts/pr-builds.sh). A workflow_run shows no check on the pull

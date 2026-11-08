@@ -9,7 +9,7 @@ import java.util.ArrayList;
 /**
  * Drawing operations as bytes, the HLE of libhwui's display lists. A node's list is segments of operations with the
  * child nodes it draws between them, so a frame flattens the tree without parsing an operation. The format is
- * little-endian whatever the host is, as src/android/hwui/render.c reads it. docs/android/HWUI.md lists the
+ * little-endian whatever the host is, as src/android/hwui/render.c reads it. docs/platforms/android-apps/hwui.md lists the
  * operations.
  */
 public final class DisplayList {

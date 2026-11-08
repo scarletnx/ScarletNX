@@ -175,7 +175,7 @@
     },
     {
       "name": "linux-mips64-cross",
-      "displayName": "Linux mips64 big-endian (MIPS64r2, n64), cross-built with Clang, linked with GNU ld; SNX_GCC_TOOLCHAIN names a GCC toolchain outside the sysroot (docs/MIPS64.md)",
+      "displayName": "Linux mips64 big-endian (MIPS64r2, n64), cross-built with Clang, linked with GNU ld; SNX_GCC_TOOLCHAIN names a GCC toolchain outside the sysroot (docs/hosts/mips64.md)",
       "inherits": "linux-cross-base",
       "environment": {
         "PKG_CONFIG_LIBDIR": "$env{SNX_SYSROOT}/usr/lib64/pkgconfig:$env{SNX_SYSROOT}/usr/lib/pkgconfig:$env{SNX_SYSROOT}/usr/share/pkgconfig",
@@ -196,7 +196,7 @@
     },
     {
       "name": "linux-mips64el-cross",
-      "displayName": "Linux mips64el (MIPS64r2, n64), cross-built with Clang, linked with GNU ld; SNX_GCC_TOOLCHAIN names a GCC toolchain outside the sysroot (docs/MIPS64.md)",
+      "displayName": "Linux mips64el (MIPS64r2, n64), cross-built with Clang, linked with GNU ld; SNX_GCC_TOOLCHAIN names a GCC toolchain outside the sysroot (docs/hosts/mips64.md)",
       "inherits": "linux-cross-base",
       "environment": {
         "PKG_CONFIG_LIBDIR": "$env{SNX_SYSROOT}/usr/lib/mips64el-linux-gnuabi64/pkgconfig:$env{SNX_SYSROOT}/usr/lib64/pkgconfig:$env{SNX_SYSROOT}/usr/lib/pkgconfig:$env{SNX_SYSROOT}/usr/share/pkgconfig",
@@ -217,7 +217,7 @@
     },
     {
       "name": "linux-s390x-cross",
-      "displayName": "Linux s390x (z13), cross-built with Clang; SNX_GCC_TOOLCHAIN names a GCC toolchain outside the sysroot (docs/S390X.md)",
+      "displayName": "Linux s390x (z13), cross-built with Clang; SNX_GCC_TOOLCHAIN names a GCC toolchain outside the sysroot (docs/hosts/s390x.md)",
       "inherits": "linux-cross-base",
       "environment": {
         "PKG_CONFIG_LIBDIR": "$env{SNX_SYSROOT}/usr/lib/s390x-linux-gnu/pkgconfig:$env{SNX_SYSROOT}/usr/lib64/pkgconfig:$env{SNX_SYSROOT}/usr/lib/pkgconfig:$env{SNX_SYSROOT}/usr/share/pkgconfig",
@@ -235,7 +235,7 @@
     },
     {
       "name": "netbsd-x86_64-cross",
-      "displayName": "NetBSD 11 x86-64, cross-built with Clang and LLD; SNX_SYSROOT names a sysroot of scripts/netbsd-sysroot.sh (docs/NETBSD.md)",
+      "displayName": "NetBSD 11 x86-64, cross-built with Clang and LLD; SNX_SYSROOT names a sysroot of scripts/netbsd-sysroot.sh (docs/hosts/netbsd.md)",
       "inherits": "base",
       "environment": {
         "PKG_CONFIG_LIBDIR": "$env{SNX_SYSROOT}/usr/pkg/lib/pkgconfig:$env{SNX_SYSROOT}/usr/lib/pkgconfig",
@@ -268,7 +268,7 @@
     },
     {
       "name": "macos",
-      "displayName": "macOS on Apple silicon, Xcode's Clang (docs/APPLE.md)",
+      "displayName": "macOS on Apple silicon, Xcode's Clang (docs/hosts/apple.md)",
       "inherits": "base",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
       "cacheVariables": {
@@ -282,7 +282,7 @@
     },
     {
       "name": "ios",
-      "displayName": "iOS, cross-built on a Mac with Xcode (docs/APPLE.md); LLVM_DIR names scripts/apple-llvm.sh's",
+      "displayName": "iOS, cross-built on a Mac with Xcode (docs/hosts/apple.md); LLVM_DIR names scripts/apple-llvm.sh's",
       "inherits": "base",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
       "cacheVariables": {

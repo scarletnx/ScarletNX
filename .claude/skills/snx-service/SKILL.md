@@ -9,7 +9,7 @@ description: "Implement or fix a high-level-emulated Switch service or device (I
 
 - A `.swipc` file declares the interfaces, and no code dispatches them by hand. Each service file has a `.swipc`
   beside it, in the language of SwIPC. Examples in `src/nx/` are `hle/services/acc.c` with
-  `hle/services/acc.swipc`, `hle/services/network/bsd.swipc` and `hle/filesystem/fs.swipc`. `docs/IPC.md` has the
+  `hle/services/acc.swipc`, `hle/services/network/bsd.swipc` and `hle/filesystem/fs.swipc`. `docs/platforms/nx/ipc.md` has the
   language, the layout that the generator applies, and the C side.
 
   `tools/swipc/swipc.c` generates `<file>.swipc.h` and `<file>.swipc.inc` into

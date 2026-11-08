@@ -164,7 +164,7 @@ void plat_alias_host_free(u8* p, u64 size);
    through before the trapped pages open (memory/own.c). NULL without a pool */
 u8* plat_alias_mirror(void);
 
-/* Traps on pool pages of the reservation (memory/own.c, docs/GPU_OWNERSHIP.md): an access to an armed page, by any
+/* Traps on pool pages of the reservation (memory/own.c, docs/layers/gpu/ownership.md): an access to an armed page, by any
    thread, waits while fault (on a thread of the trap's own, never in a signal handler) gets the page's contents into
    the pool and lets it go on with plat_trap_continue. Linux 5.13 and later use userfaultfd's minor faults on shared
    memory. Other hosts with the pool (older Linux, Android, or memory_traps=1 on any Linux) make the pages

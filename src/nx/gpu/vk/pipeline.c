@@ -2234,7 +2234,7 @@ static void idx_add(u64 hash, int stage, u32 clip, u32 len, u64 qh, u32 len_a, u
 }
 /* The key's clip word the pass translates a stage with, as the draws ask for it (render.c): the clip distances the 3D
    engine enables, all eight (0xff) in the NVN games tried, for the stages that can be the last before rasterization
-   (docs/NVN_HLE.md); SNX_SH_NOT_LAST for tessellation control, which never is; none for fragment */
+   (docs/layers/gpu/nvn.md); SNX_SH_NOT_LAST for tessellation control, which never is; none for fragment */
 static u32 ship_clip(int stage) { return stage == ST_TCS ? SNX_SH_NOT_LAST : stage == ST_FS ? 0 : 0xFFu; }
 /* a key whose words are all zero but the clip word: the keys the pass translates with */
 static int ship_key_only_clip(const u32 mask[26]) {
@@ -2386,7 +2386,7 @@ static int ship_make(const u8* code, u64 h, int stage, u32 len, u64 qh, u32 len_
     return SHIP_NEW;
 }
 /* A VertexA with the VertexB after it, merged as a draw that binds the two merges them (vk_shader_get): the VertexB is
-   the first SPH of one in the 256-byte slots past A's code, where NVN's compiler puts it (docs/NVN_HLE.md). A
+   the first SPH of one in the 256-byte slots past A's code, where NVN's compiler puts it (docs/layers/gpu/nvn.md). A
    VertexA without one, or that won't merge, is SHIP_SKIPPED: no draw asks for it alone */
 static int ship_dual(const u8* sph, size_t avail) {
     u8 *a = ship_window(sph, avail), *b = NULL, *m = NULL;

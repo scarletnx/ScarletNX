@@ -1389,7 +1389,7 @@ static int background_old(const char* value) {
     return !strcmp(value, "full") ? GUI_BACKGROUND_AUTO : !strcmp(value, "gentle") ? GUI_BACKGROUND_GENTLE : -1;
 }
 /* the UI scales older versions had besides 1 to 4, as their app.ini named them, Auto and its parts: read as the
-   number a start takes on that screen, said once (docs/DEPRECATIONS.md) */
+   number a start takes on that screen, said once (docs/user/deprecations.md) */
 static const char* const scale_words_gone[] = {"auto", "0.25", "0.5", "0.75"};
 /* Games' options (GUI_OPTION_*): each one's key in app.ini, its row in the View box, and its two words or three in
    app.ini and as the row shows them, the first its default (games_defaults says where it is not) */
@@ -12727,7 +12727,7 @@ static void setup_notices_box(App* app, GuiRect r) {
         lines[k] = text[k];
         ++k;
     }
-    snprintf(text[k], sizeof text[k], "  %s", snx_tr("Not moved. See docs/DEPRECATIONS.md"));
+    snprintf(text[k], sizeof text[k], "  %s", snx_tr("Not moved. See docs/user/deprecations.md"));
     lines[k] = text[k];
     ++k;
     snprintf(head, sizeof head, snx_tr("Changed %d/%d"), SDL_min(app->setup_top, n - 1) + 1, n);
@@ -13586,7 +13586,7 @@ static void left_count(App* app) {
 /* what older versions left where this one no longer looks, a folder at a time, for the menu to say while it is there:
    the menu's own files' folder (gui/), work/, each game laid out beside the others, a portable copy's games/ beside
    the program (its data in .scarletnx/ now), a build tree's games/, work/ and keys in its checkout. Nothing is moved:
-   the player does that (docs/DEPRECATIONS.md) */
+   the player does that (docs/user/deprecations.md) */
 static void left_behind(App* app) {
     char *config = menu_folder(app, SNX_USER_CONFIG, false), *state = menu_folder(app, SNX_USER_STATE, false);
     char *data = snx_user_data_dir(), *gui = data ? snx_path_join(data, "gui") : NULL, *kept = NULL;
@@ -13733,7 +13733,7 @@ static void clean_old(App* app) {
 /* the moves of Move Old Files, made with apply, else what they would be, an entry each in done: each folder app->left
    names, entry by entry, into the one this version keeps it in; the menu's gui/ split by its files between the config
    and state folders; with the data folder's games/, its games' settings and caches in the config, state and cache
-   folders. A game laid out beside others is not moved: its run from its dump makes its folder (docs/DEPRECATIONS.md).
+   folders. A game laid out beside others is not moved: its run from its dump makes its folder (docs/user/deprecations.md).
    How many entries move */
 static const char* last_part(const char* path) {
     const char* end = path + strlen(path);
@@ -13759,7 +13759,7 @@ static int move_old(App* app, GuiCleaned* done, bool apply) {
         if (!snx_is_dir(old) && data && snx_is_dir(data)) { /* a game laid out beside others */
             snprintf(what, sizeof what,
                      snx_tr("Not moved: run it from its dump once, which makes %s, then move its saves "
-                            "(docs/DEPRECATIONS.md)"),
+                            "(docs/user/deprecations.md)"),
                      now);
             gui_cleaned_add(done, false, old, what);
             free(data);

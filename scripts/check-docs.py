@@ -10,7 +10,7 @@
 - indexes: a document over 100 lines with 3 or more ## and ### sections has an ## Index of them, and any document's
   ## Index lists its sections as they are. --index writes them: an index where it stands, a new one under the title
 - the docs' own index: docs/README.md links every document of docs/
-- settings: each key of src/nx/runtime/settings.txt has a row in a table of docs/SETTINGS.md whose header is
+- settings: each key of src/nx/runtime/settings.txt has a row in a table of docs/user/settings.md whose header is
   | Key | Default |, and its Default cell says the key's default and the one each platform gives it (`0` (iOS `1`));
   each key a row names is one settings.txt has. Several keys in a row take one default each, or one for them all,
   and a name in parentheses in the Key cell is no key (`controls_<ID>` (ID one of `a`, `b`))
@@ -30,7 +30,7 @@ DOCS = ('README.md', 'CONTRIBUTING.md', 'ROADMAP.md', 'docs')
 INDEX_LINES = 100  # a document longer than this carries an ## Index
 INDEX_SECTIONS = 3  # of at least this many sections
 SETTINGS = 'src/nx/runtime/settings.txt'
-SETTINGS_DOC = 'docs/SETTINGS.md'
+SETTINGS_DOC = 'docs/user/settings.md'
 # settings.txt's default-if macros, by the platform a Default cell names
 PLATFORMS = {'SNX_IOS': 'iOS', '__ANDROID__': 'Android'}
 UNSET = object()  # an LLVM option's default: LLVM's own value

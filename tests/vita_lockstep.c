@@ -57,7 +57,7 @@ int main(void) {
     CHECK(vita_lockstep_step(NULL, NULL) == VITA_LOCKSTEP_OFF);
     CHECK(!strcmp(g_test.said,
                   "lockstep: vita_lockstep=7 needs a build configured with -DSNX_VITA_LOCKSTEP=ON: this run "
-                  "checks nothing against Unicorn (docs/VITA.md)\n"));
+                  "checks nothing against Unicorn (docs/platforms/vita/README.md)\n"));
     g_test.said[0] = 0;
     CHECK(vita_lockstep_step(NULL, NULL) == VITA_LOCKSTEP_OFF && !g_test.said[0]); /* once a run */
 
@@ -67,14 +67,14 @@ int main(void) {
     CHECK(g_settings.vita_lockstep == 12 && g_settings.vita_lockstep_steps == 300);
     CHECK(strstr(g_test.said,
                  "VITA_LOCKSTEP=12 is deprecated, and this run reads it as --vita_lockstep: vita_lockstep=12 "
-                 "(docs/DEPRECATIONS.md)\n"));
+                 "(docs/user/deprecations.md)\n"));
     CHECK(strstr(g_test.said, "VITA_LOCKSTEP_STEPS=300 is deprecated, and this run reads it as --vita_lockstep_steps: "
-                              "vita_lockstep_steps=300 (docs/DEPRECATIONS.md)\n"));
+                              "vita_lockstep_steps=300 (docs/user/deprecations.md)\n"));
 
     driver("--vita_lockstep_steps=40"); /* the command line's own comes first */
     CHECK(g_settings.vita_lockstep == 12 && g_settings.vita_lockstep_steps == 40);
     CHECK(strstr(g_test.said, "VITA_LOCKSTEP_STEPS=300 is deprecated, and the command line gives vita_lockstep_steps "
-                              "first: vita_lockstep_steps=40 (docs/DEPRECATIONS.md)\n"));
+                              "first: vita_lockstep_steps=40 (docs/user/deprecations.md)\n"));
 
     set_env("VITA_LOCKSTEP_STEPS", "0"); /* compared no group, where vita_lockstep_steps=0 has no limit */
     driver(NULL);
@@ -83,7 +83,7 @@ int main(void) {
                  "VITA_LOCKSTEP=12 is deprecated, and VITA_LOCKSTEP_STEPS=0 compared none: vita_lockstep=-1"));
     CHECK(strstr(g_test.said,
                  "VITA_LOCKSTEP_STEPS=0 is deprecated, and compared no instruction group, which "
-                 "vita_lockstep_steps=0 does not mean (no limit): vita_lockstep=-1 (docs/DEPRECATIONS.md)\n"));
+                 "vita_lockstep_steps=0 does not mean (no limit): vita_lockstep=-1 (docs/user/deprecations.md)\n"));
 
     set_env("VITA_LOCKSTEP", NULL);
     set_env("VITA_LOCKSTEP_STEPS", NULL);

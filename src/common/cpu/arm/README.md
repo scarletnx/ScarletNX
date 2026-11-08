@@ -156,7 +156,7 @@ independent ARM11 MPCore integer comparisons and the existing A57 integer,
 VFP/NEON and Thumb regression suites. ARM11 Thumb BL halves have C golden tests,
 not a claimed independent differential oracle. The CTR pipeline, built with
 `SNX_BUILD_3DS`, supplies process setup, offline conservative CFG discovery/chunking
-and native module loading/dispatch under `src/3ds/`; see `docs/3DS.md`. The pinned
+and native module loading/dispatch under `src/3ds/`; see `docs/platforms/3ds/README.md`. The pinned
 external SuperTux bootstrap retains the first-SVC CPU-only gate, continues through
 real kernel initialization to ConnectToPort and APT lookup, and runs on past main. Differential tests compare GPRs,
 CPSR and RAM at both boundaries. The second CPU reference uses a test-scripted

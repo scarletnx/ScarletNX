@@ -7,7 +7,7 @@ import java.util.Map;
 import java.util.function.Function;
 
 /**
- * The system services of the process: each one is a local object (Abstract in docs/android/INTERFACES.md), no
+ * The system services of the process: each one is a local object (Abstract in docs/platforms/android-apps/interfaces.md), no
  * binder. A context makes its own the first time it asks (the window manager and the inflater depend on it). The
  * services of absent hardware (Bluetooth, NFC, telecom) are not here: Android gives null for them too.
  */

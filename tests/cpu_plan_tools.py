@@ -27,8 +27,8 @@ tuner = tool('tune_cpu_sequences')
 
 class PlanTests(unittest.TestCase):
     def test_all_items_have_explicit_status(self):
-        items = plan.read_plan(ROOT / 'docs/CPU_TRANSLATOR_PLAN.md')
-        status = json.loads((ROOT / 'docs/cpu_plan_status.json').read_text())
+        items = plan.read_plan(ROOT / 'docs/layers/cpu/plan.md')
+        status = json.loads((ROOT / 'docs/layers/cpu/plan-status.json').read_text())
         self.assertEqual(len(items), 41)
         self.assertEqual(set(items), set(status['items']))
         self.assertEqual(status['items']['L1']['status'], 'retired')
