@@ -661,6 +661,11 @@ add_executable(snx-test-cas128 cas128.c)
 snx_test_target(snx-test-cas128 11)
 target_link_libraries(snx-test-cas128 PRIVATE scarletnx-common Threads::Threads)
 add_test(NAME cas128 COMMAND snx-test-cas128)
+# the drivers' common options (common/utilities/cli.h): their forms, older names, refusals and help
+add_executable(snx-test-cli cli.c)
+snx_test_target(snx-test-cli 99)
+target_link_libraries(snx-test-cli PRIVATE scarletnx-common)
+add_test(NAME cli COMMAND snx-test-cli)
 # bits.h's helpers with the compiler's builtins and 128-bit integer, and in ISO C alone, strict C99
 add_executable(snx-test-bits bits.c)
 snx_test_target(snx-test-bits 99)
