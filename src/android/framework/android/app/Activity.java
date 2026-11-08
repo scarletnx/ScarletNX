@@ -184,6 +184,8 @@ public class Activity extends ContextThemeWrapper
         return v;
     }
     public void setContentView(int layoutResID) { getWindow().setContentView(layoutResID); }
+    /** the preferences of this activity alone: the shared ones named by its class */
+    public android.content.SharedPreferences getPreferences(int mode) { return getSharedPreferences(getLocalClassName(), mode); }
     public void setContentView(View view) { getWindow().setContentView(view); }
     public void setContentView(View view, ViewGroup.LayoutParams params) { getWindow().setContentView(view, params); }
     public void addContentView(View view, ViewGroup.LayoutParams params) { getWindow().addContentView(view, params); }
