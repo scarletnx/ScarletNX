@@ -84,20 +84,8 @@ static int xfb_indirect_init(void) {
                                            .pPushConstantRanges = &push};
         if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &info, NULL, &g_xfb_indirect.layout))) return 0;
     }
-    VkShaderModuleCreateInfo module_info = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-                                            .codeSize = xfb_indirect_spv_size,
-                                            .pCode = xfb_indirect_spv};
-    VkShaderModule module;
-    if (!VK_OK(vkCreateShaderModule(g_vk.dev, &module_info, NULL, &module))) return 0;
-    VkComputePipelineCreateInfo info = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                                        .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                  .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                  .module = module,
-                                                  .pName = "main"},
-                                        .layout = g_xfb_indirect.layout};
-    int made = VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &info, NULL, &g_xfb_indirect.pipeline));
-    vkDestroyShaderModule(g_vk.dev, module, NULL);
-    return made;
+    return VK_OK(snx_vk_compute_pipeline(g_vk.dev, vk_pipeline_cache(), g_xfb_indirect.layout, xfb_indirect_spv,
+                                         xfb_indirect_spv_size, &g_xfb_indirect.pipeline));
 }
 
 int vk_xfb_indirect(u64 control, VkBuffer* arguments, u64* offset) {

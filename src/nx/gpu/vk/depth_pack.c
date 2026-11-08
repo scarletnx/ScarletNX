@@ -47,20 +47,10 @@ static int pack_init(void) {
                                      .pushConstantRangeCount = 1,
                                      .pPushConstantRanges = &push};
     if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &li, NULL, &g_depth_pack.layout))) return 0;
-    VkShaderModuleCreateInfo mi = {
-        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = depth_pack_spv_size, .pCode = depth_pack_spv};
-    VkShaderModule m;
-    if (!VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &m))) return 0;
-    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                                      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                .module = m,
-                                                .pName = "main"},
-                                      .layout = g_depth_pack.layout};
     u64 started = plat_ns();
-    int ok = VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, &g_depth_pack.pipe));
+    int ok = VK_OK(snx_vk_compute_pipeline(g_vk.dev, vk_pipeline_cache(), g_depth_pack.layout, depth_pack_spv,
+                                           depth_pack_spv_size, &g_depth_pack.pipe));
     u64 elapsed = plat_ns() - started;
-    vkDestroyShaderModule(g_vk.dev, m, NULL);
     if (!ok) {
         g_depth_pack.pipe = VK_NULL_HANDLE;
         return 0;

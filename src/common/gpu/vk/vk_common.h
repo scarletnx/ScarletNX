@@ -90,4 +90,13 @@ int snx_vk_pipeline_workers(int setting, int cpus);
 /* Of that many pipeline workers, the ones past the first two, which run at the system's low priority
    (snx_thread_priority_low) */
 int snx_vk_pipeline_low_workers(int workers);
+
+/* a shader module of size bytes of SPIR-V */
+VkResult snx_vk_shader_module(VkDevice dev, const uint32_t* words, size_t size, VkShaderModule* out);
+/* a compute pipeline of module's "main" in layout, spec (NULL for none) giving its specialization constants */
+VkResult snx_vk_module_pipeline(VkDevice dev, VkPipelineCache cache, VkPipelineLayout layout, VkShaderModule module,
+                                const VkSpecializationInfo* spec, VkPipeline* out);
+/* a compute pipeline of size bytes of SPIR-V's "main" in layout, through a module that it frees again */
+VkResult snx_vk_compute_pipeline(VkDevice dev, VkPipelineCache cache, VkPipelineLayout layout, const uint32_t* words,
+                                 size_t size, VkPipeline* out);
 #endif

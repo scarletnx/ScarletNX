@@ -139,9 +139,7 @@ static void astc_init(void) {
                                      .pPushConstantRanges = &push};
     if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &li, NULL, &g_astc_layout)))
         fatal("vulkan: cannot create the ASTC pipeline layout");
-    VkShaderModuleCreateInfo mi = {
-        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = astc_spv_size, .pCode = astc_spv};
-    if (!VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &g_astc_module)))
+    if (!VK_OK(snx_vk_shader_module(g_vk.dev, astc_spv, astc_spv_size, &g_astc_module)))
         fatal("vulkan: cannot load the ASTC shader");
     /* Kept for the device lifetime, like the other internal pipelines. All uses
        are on g_vk.gfx, under vk_lock(), even when uploads originate in compute. */
@@ -200,19 +198,11 @@ static VkPipeline bc7_pipe(u32 build) {
                    {bc7_fast_spv, &bc7_fast_spv_size, "fast"},
                    {bc7_mode6_spv, &bc7_mode6_spv_size, "mode 6"}};
     if (g_bc7_pipes[build]) return g_bc7_pipes[build];
-    VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-                                   .codeSize = *builds[build].size,
-                                   .pCode = builds[build].code};
-    if (!VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &g_bc7_modules[build])))
+    if (!VK_OK(snx_vk_shader_module(g_vk.dev, builds[build].code, *builds[build].size, &g_bc7_modules[build])))
         fatal("vulkan: cannot load the BC7 encoder's %s build", builds[build].name);
-    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                                      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                .module = g_bc7_modules[build],
-                                                .pName = "main"},
-                                      .layout = g_bc7_layout};
     u64 started = plat_ns();
-    if (!VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, &g_bc7_pipes[build])))
+    if (!VK_OK(snx_vk_module_pipeline(g_vk.dev, vk_pipeline_cache(), g_bc7_layout, g_bc7_modules[build], NULL,
+                                      &g_bc7_pipes[build])))
         fatal("vulkan: cannot create the BC7 encoder's %s build", builds[build].name);
     vk_texture_pipeline_made(plat_ns() - started);
     return g_bc7_pipes[build];
@@ -391,15 +381,8 @@ static VkPipeline astc_pipeline(u32 bw, u32 bh) {
     const u32 dims[2] = {bw, bh};
     const VkSpecializationMapEntry entries[2] = {{0, 0, sizeof(u32)}, {1, sizeof(u32), sizeof(u32)}};
     VkSpecializationInfo spec = {.mapEntryCount = 2, .pMapEntries = entries, .dataSize = sizeof dims, .pData = dims};
-    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                                      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                .module = g_astc_module,
-                                                .pName = "main",
-                                                .pSpecializationInfo = &spec},
-                                      .layout = g_astc_layout};
     u64 started = plat_ns();
-    if (!VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, pipe)))
+    if (!VK_OK(snx_vk_module_pipeline(g_vk.dev, vk_pipeline_cache(), g_astc_layout, g_astc_module, &spec, pipe)))
         fatal("vulkan: cannot create the ASTC compute pipeline");
     vk_texture_pipeline_made(plat_ns() - started);
     return *pipe;

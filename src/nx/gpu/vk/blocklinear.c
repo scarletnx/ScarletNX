@@ -45,19 +45,12 @@ static void bl_init(void) {
                                      .pPushConstantRanges = &push};
     if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &li, NULL, &g_blocklinear.layout)))
         fatal("vulkan: cannot create the block linear pipeline layout");
-    VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-                                   .codeSize = blocklinear_spv_size,
-                                   .pCode = blocklinear_spv};
     VkShaderModule module;
-    if (!VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &module))) fatal("vulkan: cannot load the block linear shader");
-    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                                      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                .module = module,
-                                                .pName = "main"},
-                                      .layout = g_blocklinear.layout};
+    if (!VK_OK(snx_vk_shader_module(g_vk.dev, blocklinear_spv, blocklinear_spv_size, &module)))
+        fatal("vulkan: cannot load the block linear shader");
     u64 started = plat_ns();
-    if (!VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, &g_blocklinear.pipe)))
+    if (!VK_OK(snx_vk_module_pipeline(g_vk.dev, vk_pipeline_cache(), g_blocklinear.layout, module, NULL,
+                                      &g_blocklinear.pipe)))
         fatal("vulkan: cannot create the block linear compute pipeline");
     vk_texture_pipeline_made(plat_ns() - started);
     vkDestroyShaderModule(g_vk.dev, module, NULL); /* the pipeline doesn't need it once made */

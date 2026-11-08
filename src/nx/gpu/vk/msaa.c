@@ -41,10 +41,9 @@ static struct {
 } g_msaa;
 
 static VkShaderModule ms_module(const u32* code, u64 size) {
-    VkShaderModuleCreateInfo mi = {
-        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = (size_t)size, .pCode = code};
     VkShaderModule m;
-    if (!VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &m))) fatal("vulkan: cannot load a multisample shader");
+    if (!VK_OK(snx_vk_shader_module(g_vk.dev, code, (size_t)size, &m)))
+        fatal("vulkan: cannot load a multisample shader");
     return m;
 }
 static void ms_init(void) {

@@ -410,18 +410,7 @@ static void depth_attachments(const struct VitaRender* r, const GxmContext* c, b
 /* ---- the renderer ---- */
 #define COMPUTE_PUSH 64u /* the compute shaders' push constants, the largest */
 static bool compute_pipeline(struct VitaRender* r, const u32* words, size_t size, VkPipeline* out) {
-    VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = size, .pCode = words};
-    VkShaderModule module = VK_NULL_HANDLE;
-    if (vkCreateShaderModule(r->vk->device, &mi, NULL, &module) != VK_SUCCESS) return false;
-    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                                      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                .module = module,
-                                                .pName = "main"},
-                                      .layout = r->swizzle_layout};
-    bool ok = vkCreateComputePipelines(r->vk->device, VK_NULL_HANDLE, 1, &ci, NULL, out) == VK_SUCCESS;
-    vkDestroyShaderModule(r->vk->device, module, NULL);
-    return ok;
+    return snx_vk_compute_pipeline(r->vk->device, VK_NULL_HANDLE, r->swizzle_layout, words, size, out) == VK_SUCCESS;
 }
 bool vita_render_init(VitaProcess* p) {
     VitaVk* v = vita_vk();
