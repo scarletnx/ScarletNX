@@ -801,7 +801,12 @@ HANDLER(f_sleep) {
 
 /* ---- signals ---- */
 
-enum { NSIG_ = 65, SA_SIGINFO_ = 4, SA_ONSTACK_ = 0x08000000, SA_RESETHAND_ = 0x80000000, SA_NODEFER_ = 0x40000000 };
+enum { NSIG_ = 65 };
+/* sa_flags' bits, as bionic's: SA_RESETHAND is past an int */
+#define SA_SIGINFO_   0x00000004u
+#define SA_ONSTACK_   0x08000000u
+#define SA_NODEFER_   0x40000000u
+#define SA_RESETHAND_ 0x80000000u
 typedef struct {
     uint32_t handler, flags, mask;
 } Action;

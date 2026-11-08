@@ -492,10 +492,22 @@ static void jni_function(SnxArmCPU* c, void* data) {
         call(c, CALL_NEW, 'L', (int)(i - 28));
         return;
     }
-    if (i >= 95 && i <= 103) return get_field(c, false, TYPES[i - 95]);
-    if (i >= 104 && i <= 112) return set_field(c, false, TYPES[i - 104]);
-    if (i >= 145 && i <= 153) return get_field(c, true, TYPES[i - 145]);
-    if (i >= 154 && i <= 162) return set_field(c, true, TYPES[i - 154]);
+    if (i >= 95 && i <= 103) {
+        get_field(c, false, TYPES[i - 95]);
+        return;
+    }
+    if (i >= 104 && i <= 112) {
+        set_field(c, false, TYPES[i - 104]);
+        return;
+    }
+    if (i >= 145 && i <= 153) {
+        get_field(c, true, TYPES[i - 145]);
+        return;
+    }
+    if (i >= 154 && i <= 162) {
+        set_field(c, true, TYPES[i - 154]);
+        return;
+    }
     if (i >= 175 && i <= 182) {
         R(0) = local_ref(new_array(e, PRIMS[i - 175], (jsize)R(1)));
         return;
