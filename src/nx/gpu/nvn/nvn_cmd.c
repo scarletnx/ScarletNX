@@ -1482,6 +1482,11 @@ void nvn_CommandBufferSetShaderScratchMemory(CPU* c, u64 cb, u64 pool, i64 offse
     (void)offset;
     (void)size;
 }
+void nvn_CommandBufferSetComputeWorkloadPriority(CPU* c, u64 cb, i32 priority) {
+    (void)c;
+    (void)cb;
+    (void)priority;
+}
 void nvn_CommandBufferSetTiledCacheAction(CPU* c, u64 cb, i32 action) {
     (void)c;
     (void)cb;
