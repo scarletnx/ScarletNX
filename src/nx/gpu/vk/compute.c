@@ -1158,10 +1158,12 @@ void vk_dispatch(const DispatchState* d) {
         u32 wseen, code_len; /* vk_ww_now() then, and the bytes of the window */
         CsPipe* p;
     };
-    static struct cs_fast fc[64];
+    /* by the program's address. An Ounce game dispatches a few hundred programs a frame: in 64 entries they put each
+       other out, and almost every dispatch read, hashed and walked its program again (up to 512 KiB, CS_WINDOW) */
+    static struct cs_fast fc[1024];
     u64 pa = d->code;
     u32 epoch = vk_ww_epoch(); /* before the code is checked or read */
-    struct cs_fast* fe = &fc[((pa >> 8) ^ (pa >> 16)) & 63];
+    struct cs_fast* fe = &fc[((pa >> 8) ^ (pa >> 18)) & 1023];
     CsPipe* p = fe->p;
     int same = p && fe->addr == pa && fe->lx == lx && fe->ly == ly && fe->lz == lz && fe->shm == shm &&
                vk_cb_reads_hold(&p->cbr, cs_cb_read);
@@ -1946,7 +1948,10 @@ rebind:
             if (!vk_surf_publish(images[i])) vk_surf_flush(images[i], NULL);
         }
         g_vk_dispatches++;
-        vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+        /* Not one in the GPU mirror: its results land only where the CPU first touches them, and that read submits
+           what is open (vk_mirror_mem_need's finish). Submitted each, one game's Ounce programs made about 300
+           submissions a present, each with a harvest of the mirror, and the GPU idled between them */
+        if (!mir) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
         return;
     }
     /* results visible to the host */
