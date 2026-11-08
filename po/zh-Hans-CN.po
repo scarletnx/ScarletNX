@@ -4124,6 +4124,16 @@ msgid "%s: its own games alone are listed, not its subfolders'"
 msgstr ""
 
 #: src/gui/main.c
+msgid "View Progress"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Mods"
+msgstr "模组"
+
+#: src/gui/main.c
 #, c-format
 msgid "%s has no folder to open"
 msgstr ""
@@ -4691,12 +4701,6 @@ msgstr "AOT 包"
 #, snx-key
 msgid "M"
 msgstr "M"
-
-#. A key of the foot's sentences, which a click finds by this word
-#: src/gui/main.c
-#, snx-key
-msgid "Mods"
-msgstr "模组"
 
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
