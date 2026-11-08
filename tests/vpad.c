@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The on-screen controls (runtime/platform/vpad.c): what fingers on them press, edit mode, the .ini keys, the draw */
+/* The on-screen controls (runtime/platform/vpad.c): what fingers on them press, edit mode, the .ini keys, the draw,
+   and controls=2's Auto by the device's touch screen and gamepads */
 #include "nx/runtime/platform/vpad.h"
 #include <assert.h>
 #include <stdarg.h>
@@ -149,6 +150,32 @@ int main(void) {
     /* off, nothing is taken nor drawn */
     assert(vpad_ini("controls", "0") && !g_settings.show_controls && !vpad_shown());
     assert(!vpad_down(1, mx(SNX_VPAD_A), my(SNX_VPAD_A), safe) && !draw(&l));
+    /* Auto: shown on a touch screen while no gamepad is connected, said; hidden as one connects, a held control let go,
+       said with how many; shown again as the last goes. Hidden on a device with no touch screen */
+    {
+        char said[128];
+        assert(vpad_auto_shown(1, 0) && !vpad_auto_shown(1, 1) && !vpad_auto_shown(0, 0));
+        vpad_auto_said(0, 0, said, sizeof said);
+        assert(!strcmp(said, "controls=2 (Auto): hidden, the device has no touch screen"));
+        vpad_auto_said(1, 2, said, sizeof said);
+        assert(!strcmp(said, "controls=2 (Auto): hidden, 2 gamepads are connected"));
+        assert(vpad_ini("controls", "2") && g_settings.show_controls == 2);
+        vpad_auto(1, 0);
+        assert(vpad_shown() && draw(&l));
+        assert(!strcmp(logged, "controls=2 (Auto): shown, the device has a touch screen and no gamepad\n"));
+        assert(vpad_down(1, mx(SNX_VPAD_A), my(SNX_VPAD_A), safe) && buttons(NULL) == 1);
+        vpad_auto(1, 1);
+        assert(!vpad_shown() && !buttons(NULL) && !draw(&l));
+        assert(!strcmp(logged, "controls=2 (Auto): hidden, 1 gamepad is connected\n"));
+        assert(!vpad_down(2, mx(SNX_VPAD_A), my(SNX_VPAD_A), safe));
+        logged[0] = 0;
+        vpad_auto(1, 2); /* still hidden: no line */
+        assert(!vpad_shown() && !logged[0]);
+        vpad_auto(1, 0);
+        assert(vpad_shown() && strstr(logged, "shown"));
+        assert(vpad_ini("controls", "0") && !vpad_shown()); /* Off whatever the device has */
+        vpad_auto(0, 0);
+    }
     assert(vpad_ini("controls", "1") && g_settings.show_controls);
 
     /* a button held by a finger, then by two; the second lift lets it go. Off the controls, a finger is the game's */

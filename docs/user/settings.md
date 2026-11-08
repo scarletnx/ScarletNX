@@ -213,7 +213,7 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `touch` | `2` | The game's touch screen: `2` fingers and the mouse's left button, `1` fingers, `0` off. A 3DS game takes it too, for its bottom screen (`--touch=N`): one finger or the mouse at a time, the first pressed holding it until it lets go |
 | `controls_<ID>` (ID one of `l`, `r`, `zl`, `zr`, `minus`, `plus`, `capture`, `home`, `l3`, `r3`, `dpad`, `stick_l`, `stick_r`, `a`, `b`, `x`, `y`) | empty | A control's place, written once it is moved or reset: `x y size`, its middle across the screen from 0 to 1 and its size in percent (50 to 200), as `controls_a=0.930 0.470 100` |
 | `controls_<ID>_shown` | `1` | `1` draws the control, `0` hides it; written once it is shown or hidden |
-| `controls` | `0` (Android `1`) | The [on-screen controls](usage.md#on-screen-controls) shown |
+| `controls` | `2` | The [on-screen controls](usage.md#on-screen-controls): `1` shown, `0` hidden, `2` (Auto) shown while the device has a touch screen and no gamepad is connected, hidden while one is; the log says what Auto shows and why as it changes. The launcher gives every run `2` |
 | `controls_snap`, `controls_scale`, `controls_rel_center`, `controls_dpad_slide`, `controls_haptics` | `0`, `50`, `1`, `1`, `1` | As [On-screen controls](usage.md#on-screen-controls) describes them. `controls_scale` runs from `0` to `100` for 50% to 150% |
 
 ## Controllers

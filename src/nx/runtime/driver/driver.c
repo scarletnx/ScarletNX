@@ -67,7 +67,8 @@ static void usage(void) {
          "  --tracy                Start the Tracy client for a GUI connection (SNX_TRACY builds)\n"
          "  --tracy-capture        Record the run with tracy-capture, from Tracy 0.14.1 on PATH (SNX_TRACY builds)");
     puts("  --touch=0|1|2          The game's touch screen: off, fingers, or fingers and the mouse\n"
-         "  --controls=0|1         The on-screen controls: hidden or shown\n"
+         "  --controls=0|1|2       The on-screen controls: hidden, shown, or Auto, shown on a touch screen while no\n"
+         "                         gamepad is connected\n"
          "  --KEY=VALUE            Any setting of the game's .ini, for this run\n"
          "  --settings[=recompile] List the settings, tab-separated");
     puts("  --program N            The program of a collection's application to play (default: 0, its own, the\n"

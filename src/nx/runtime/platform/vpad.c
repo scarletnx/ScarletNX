@@ -136,11 +136,37 @@ void vpad_reset_layout(void) {
    SNX_VPAD_ (VPAD_CONTROLS, which settings.txt's list controls follows). A place deleted from the file while the game
    runs stays where it is until the game starts again: it has no default the reload could put back */
 typedef char vpad_ini_places[SETTINGS_CONTROLS_COUNT == SNX_VPAD_COUNT ? 1 : -1];
+/* controls=2 (Auto): shown while the device has a touch screen and no gamepad (vpad_auto), atomic: the backend's thread
+   writes it, the drawing reads it */
+static int g_auto_shown;
+static int on(void) {
+    int c = __atomic_load_n(&g_settings.show_controls, __ATOMIC_RELAXED);
+    return c == 1 || (c == 2 && __atomic_load_n(&g_auto_shown, __ATOMIC_RELAXED));
+}
+int vpad_auto_shown(int touch, int pads) { return touch && !pads; }
+int vpad_auto_said(int touch, int pads, char* out, size_t n) {
+    if (vpad_auto_shown(touch, pads))
+        return snprintf(out, n, "controls=2 (Auto): shown, the device has a touch screen and no gamepad");
+    if (!touch) return snprintf(out, n, "controls=2 (Auto): hidden, the device has no touch screen");
+    return snprintf(out, n, "controls=2 (Auto): hidden, %d gamepad%s connected", pads, pads == 1 ? " is" : "s are");
+}
+void vpad_auto(int touch, int pads) {
+    static int said = -1;
+    int shown = vpad_auto_shown(touch, pads);
+    char line[128];
+    __atomic_store_n(&g_auto_shown, shown, __ATOMIC_RELAXED);
+    if (__atomic_load_n(&g_settings.show_controls, __ATOMIC_RELAXED) != 2) return;
+    if (!shown) vpad_release();
+    if (said == shown) return; /* said once a change */
+    said = shown;
+    vpad_auto_said(touch, pads, line, sizeof line);
+    LOG("%s\n", line);
+}
 void vpad_on_set(const IniOpt* o, const char* v) {
     ++g_version;
     (void)o;
     (void)v;
-    if (!g_settings.show_controls) vpad_release();
+    if (!on()) vpad_release();
 }
 void vpad_place_set(const IniOpt* o, const char* v) {
     ++g_version; /* x y size, and shown in an older version's */
@@ -316,7 +342,7 @@ int vpad_down(u64 id, float x, float y, const int safe[4]) {
     Finger* f;
     int c;
     placed();
-    if ((!g_settings.show_controls && !g_edit) || finger(id) || g_nfingers == FINGERS) return 0;
+    if ((!on() && !g_edit) || finger(id) || g_nfingers == FINGERS) return 0;
     c = g_edit ? -1 : hit(x, y, safe);
     if (!g_edit && c < 0) return 0;
     f = &g_fingers[g_nfingers++];
@@ -407,7 +433,7 @@ void vpad_edit(int on) {
     g_selected = -1;
 }
 int vpad_editing(void) { return g_edit; }
-int vpad_shown(void) { return g_settings.show_controls || g_edit; }
+int vpad_shown(void) { return on() || g_edit; }
 
 /* The built-in look: each control a shape (ui.h's ui_shape), white, its edge a 32nd of its shorter side (a pixel at
    least) and its label on it; pressed, the shape filled with its label cut out */
@@ -524,7 +550,7 @@ void vpad_draw(SnxUiList* l, const int safe[4], int scale) {
         g_scale = scale;
         ++g_version;
     }
-    if (!g_settings.show_controls && !g_edit) return;
+    if (!on() && !g_edit) return;
     if (!g_drawn.laid || g_drawn.drawn != g_version || memcmp(g_drawn.safe, safe, sizeof g_drawn.safe)) {
         SnxUiList kept = {g_drawn.q, 0, KEPT_QUADS};
         controls_draw(&kept, safe);

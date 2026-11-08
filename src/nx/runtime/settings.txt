@@ -534,12 +534,12 @@ setting JIT optimization
 table g_vpad_ini
 setting Show controls
     key controls
-    int 0 1
-    default 0
-    default-if __ANDROID__ 1
+    int 0 2
+    default 2
     set vpad_on_set
-    words Off|On
-    help The on-screen controls: 1 = shown, 0 = hidden. The game's menu (Back, Home or F2) sets them
+    words Off|On|Auto
+    help The on-screen controls: 1 = shown, 0 = hidden, 2 = Auto: shown while the device has a touch screen and no
+    help gamepad is connected, hidden while one is. The game's menu (Back, Home or F2) sets them
 setting Snap to grid
     key controls_snap
     int 0 1

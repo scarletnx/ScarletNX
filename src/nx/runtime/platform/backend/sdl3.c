@@ -442,6 +442,17 @@ void backend_keyboard_hide(u32 ticket) {
 
 /* the atlas the renderer uploads: when the window opens, and again for the fatal panel */
 static void controls_atlas(void) { ui_atlas_build(); }
+/* controls=2 (Auto): the touch screens SDL knows, or a finger seen on one, and the gamepads connected (vpad_auto) */
+static int g_touch_seen;
+static void controls_auto(void) {
+    int n = 0, pads = 0, touch = g_touch_seen;
+    SDL_TouchID* t = SDL_GetTouchDevices(&n);
+    SDL_JoystickID* g = SDL_GetGamepads(&pads);
+    for (int i = 0; t && i < n && !touch; i++) touch = SDL_GetTouchDeviceType(t[i]) == SDL_TOUCH_DEVICE_DIRECT;
+    SDL_free(t);
+    SDL_free(g);
+    vpad_auto(touch, pads);
+}
 /* Android's vibrator, which SDL lists as VIBRATOR_SERVICE; a gamepad's motors are no buzz for a finger */
 static void buzzer_open(void) {
 #ifdef __ANDROID__
@@ -563,6 +574,7 @@ void video_init(const char* title, const char* addons) {
     overlay_set_fingers(1); /* a screen of fingers, as the launcher's SNX_TOUCH_UI: the menu's rows a finger's */
 #endif
     controls_atlas();
+    controls_auto();
     vpad_set_store(ini_set);
     buzzer_open();
     SDL_GetWindowSizeInPixels(g_sdl3.win, &w, &h);
@@ -1664,6 +1676,13 @@ void video_poll(void) {
                 overlay_set_display_scale(SDL_GetWindowDisplayScale(g_sdl3.win));
                 break;
             case SDL_EVENT_FINGER_DOWN:
+                /* a touch screen SDL only learns of as it is touched */
+                if (!g_touch_seen && SDL_GetTouchDeviceType(e.tfinger.touchID) == SDL_TOUCH_DEVICE_DIRECT) {
+                    g_touch_seen = 1;
+                    controls_auto();
+                }
+                touch_finger(&e);
+                break;
             case SDL_EVENT_FINGER_MOTION:
             case SDL_EVENT_FINGER_UP:
             case SDL_EVENT_FINGER_CANCELED: touch_finger(&e); break;
@@ -1708,10 +1727,12 @@ void video_poll(void) {
             case SDL_EVENT_GAMEPAD_ADDED:
                 gamepad_open(e.gdevice.which);
                 press_pad_held(e.gdevice.which, 1);
+                controls_auto();
                 break;
             case SDL_EVENT_GAMEPAD_REMOVED:
                 gamepad_close(e.gdevice.which);
                 press_pads_held();
+                controls_auto();
                 break;
         }
     }

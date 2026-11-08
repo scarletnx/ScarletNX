@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The on-screen controls: a pad drawn over the game (ui.h) that fingers or the mouse press, with rEden's touch
    overlay's sprites, sizes and options, laid out as the console's two controllers hold them. The same on every
-   platform: on by default on Android, off elsewhere. Kept in the game's .ini (keys controls and controls_*) */
+   platform: Auto by default, shown on a touch screen while no gamepad is connected. Kept in the game's .ini (keys
+   controls and controls_*) */
 #ifndef SNX_VPAD_H
 #define SNX_VPAD_H
 #include "nx/runtime/platform/ui.h"
@@ -56,6 +57,14 @@ void vpad_defaults(SnxVpadConfig* c); /* the default layout */
 void vpad_changed(void);
 /* counts the changes to showcase's place (its corner): what stats' box beside it lays out by */
 u32 vpad_showcase_place_version(void);
+/* controls=2 (Auto): whether the controls show on a device with a touch screen (touch) and pads gamepads connected:
+   while it has one and none is connected */
+int vpad_auto_shown(int touch, int pads);
+/* the log's line on what Auto shows and why, into out; snprintf's count */
+int vpad_auto_said(int touch, int pads, char* out, size_t n);
+/* the device's touch screen and gamepads, as the game starts and as a gamepad comes or goes: what controls=2 shows,
+   said in the log as it changes */
+void vpad_auto(int touch, int pads);
 const char* vpad_name(int control); /* a control's name, as edit mode shows it: "A", "D-pad" */
 /* places, sizes and the shown ones back to their defaults, kept */
 void vpad_reset_layout(void);
