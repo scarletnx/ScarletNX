@@ -621,9 +621,18 @@ static void test_files_second_batch(void) {
     expect_int("it made the name", !strstr(temp, "XXXXXX") && !stat(temp, &st), 1);
     CALL("close", I32(fd));
     remove(temp);
+    /* bionic's rule, 6 X's or more at the end, whatever the host's C library takes (macOS' makes the name as it is) */
     char bad[] = "android_bionic_mYYYYYY";
     expect_int("mkstemp of a template without XXXXXX", (int64_t)CALL("mkstemp", P(bad)), -1);
     expect_int("and EINVAL", *hle_errno_location(), 22);
+    expect_int("nothing made of it", stat(bad, &st), -1);
+    char five[] = "android_bionic_mXXXXX";
+    expect_int("mkstemp of 5 X's", (int64_t)CALL("mkstemp", P(five)), -1);
+    expect_int("and EINVAL", *hle_errno_location(), 22);
+    char folder_five[] = "android_bionic_dXXXXX";
+    expect_int("mkdtemp of 5 X's", (int64_t)CALL("mkdtemp", P(folder_five)), 0);
+    expect_int("and EINVAL", *hle_errno_location(), 22);
+    expect_int("nothing made of it", stat(folder_five, &st), -1);
 }
 
 static void test_pipe2_umask_session(void) {

@@ -274,14 +274,22 @@ static void g_fgets_chk(CPU* c, void* data) {
     }
     X(0) = (uint64_t)(uintptr_t)fgets(PTR(0), size, hle_file(X(2)));
 }
+/* a template mkstemp and mkdtemp take: 6 X's or more at its end, as bionic's (OpenBSD's) code asks, else EINVAL;
+   macOS' C library makes a template with none as it is named */
+static bool temp_template(const char* t) {
+    size_t n = t ? strlen(t) : 0, x = 0;
+    while (x < n && t[n - 1 - x] == 'X') ++x;
+    if (x < 6) hle_set_errno(GNU_EINVAL);
+    return x >= 6;
+}
 /* mkdtemp(template): its XXXXXX made a name and the folder made: the template, or NULL */
 static void g_mkdtemp(CPU* c, void* data) {
     (void)data;
     char* t = PTR(0);
 #ifdef _WIN32
-    bool ok = t && !_mktemp_s(t, strlen(t) + 1) && !_mkdir(t);
+    bool ok = temp_template(t) && !_mktemp_s(t, strlen(t) + 1) && !_mkdir(t);
 #else
-    bool ok = t && mkdtemp(t);
+    bool ok = temp_template(t) && mkdtemp(t);
 #endif
     if (!ok) X(0) = 0;
 }
@@ -1064,9 +1072,7 @@ static void g_mkstemp(CPU* c, void* data) {
     (void)data;
     char* t = PTR(0);
     int fd = -1;
-    if (!t)
-        errno = EINVAL;
-    else if (!_mktemp_s(t, strlen(t) + 1))
+    if (temp_template(t) && !_mktemp_s(t, strlen(t) + 1))
         fd = _open(t, _O_CREAT | _O_EXCL | _O_RDWR | _O_BINARY, _S_IREAD | _S_IWRITE);
     X(0) = wide_int(fd);
 }
@@ -1077,7 +1083,7 @@ static void g_getpgrp(CPU* c, void* data) {
 #else
 static void g_mkstemp(CPU* c, void* data) {
     (void)data;
-    X(0) = wide_int(mkstemp(PTR(0)));
+    X(0) = temp_template(PTR(0)) ? wide_int(mkstemp(PTR(0))) : (uint64_t)-1;
 }
 /* the calls that are the host's own with the guest's arguments, and their int result sign-extended */
 #define HOST_INT(name, call)                                                                                           \
