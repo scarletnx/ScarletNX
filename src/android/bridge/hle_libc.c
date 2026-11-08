@@ -192,6 +192,21 @@ static void d_d(CPU* c, void* fn) { hle_set_d(c, ((double (*)(double))fn)(hle_d(
 static void d_dd(CPU* c, void* fn) { hle_set_d(c, ((double (*)(double, double))fn)(hle_d(c, 0), hle_d(c, 1))); }
 static void f_f(CPU* c, void* fn) { hle_set_f(c, ((float (*)(float))fn)(hle_f(c, 0))); }
 static void f_ff(CPU* c, void* fn) { hle_set_f(c, ((float (*)(float, float))fn)(hle_f(c, 0), hle_f(c, 1))); }
+static void d_ddd(CPU* c, void* fn) {
+    hle_set_d(c, ((double (*)(double, double, double))fn)(hle_d(c, 0), hle_d(c, 1), hle_d(c, 2)));
+}
+static void f_fff(CPU* c, void* fn) {
+    hle_set_f(c, ((float (*)(float, float, float))fn)(hle_f(c, 0), hle_f(c, 1), hle_f(c, 2)));
+}
+/* lround and llround: bionic's long is 64 bits as long long is, which Windows' long is not */
+static void l_d(CPU* c, void* fn) {
+    (void)fn;
+    X(0) = (uint64_t)llround(hle_d(c, 0));
+}
+static void l_f(CPU* c, void* fn) {
+    (void)fn;
+    X(0) = (uint64_t)llroundf(hle_f(c, 0));
+}
 static void d_di(CPU* c, void* fn) { hle_set_d(c, ((double (*)(double, int))fn)(hle_d(c, 0), (int)X(0))); }
 static void d_dp(CPU* c, void* fn) { hle_set_d(c, ((double (*)(double, void*))fn)(hle_d(c, 0), PTR(0))); }
 static void f_fp(CPU* c, void* fn) { hle_set_f(c, ((float (*)(float, void*))fn)(hle_f(c, 0), PTR(0))); }
@@ -534,6 +549,29 @@ static void strncpy_chk(CPU* c, void* data) {
     (void)data;
     check_access("strncpy", "write into", X(2), X(3));
     X(0) = (uint64_t)(uintptr_t)strncpy(PTR(0), STR(1), X(2));
+}
+/* __strncat_chk(dst, src, len, dst_size): strncat that ends the app, as bionic's does, when dst's text and what is
+   appended with its NUL would not fit in dst_size */
+static void strncat_chk(CPU* c, void* data) {
+    (void)data;
+    char* dst = PTR(0);
+    const char* src = STR(1);
+    uint64_t len = X(2), room = X(3);
+    if (len) {
+        size_t used = strnlen(dst, room);
+        if (used >= room) fortify_fail("strlen");
+        room -= used;
+        size_t take = strnlen(src, len);
+        if (take >= room) {
+            fprintf(stderr,
+                    "scarletnx-android: FORTIFY: strncat: prevented write past end of buffer (%llu bytes and a NUL "
+                    "into %llu)\n",
+                    (unsigned long long)take, (unsigned long long)room);
+            abort();
+        }
+        strncat(dst, src, len);
+    }
+    /* x0 still holds dst, which strncat returns */
 }
 static void strchr_chk(CPU* c, void* data) {
     (void)data;
@@ -1519,6 +1557,7 @@ const HleSymbol hle_libc[] = {
     {"__strncpy_chk2", strncpy_chk2, NULL},
     {"__strncpy_chk", strncpy_chk, NULL},
     {"__memchr_chk", memchr_chk, NULL},
+    {"__strncat_chk", strncat_chk, NULL},
     {"__strchr_chk", strchr_chk, NULL},
     {"__strrchr_chk", strrchr_chk, NULL},
     {"__read_chk", read_chk, NULL},
@@ -1582,6 +1621,7 @@ const HleSymbol hle_libc[] = {
     T(log10, d_d), T(log2, d_d), T(sin, d_d), T(sinh, d_d), T(sqrt, d_d), T(tan, d_d), T(tanh, d_d),
     T(cbrt, d_d), T(expm1, d_d), T(log1p, d_d), T(cbrtf, f_f), T(expm1f, f_f), T(log1pf, f_f),
     T(atan2, d_dd), T(fmod, d_dd), T(hypot, d_dd), T(pow, d_dd), T(nextafter, d_dd), T(fmax, d_dd), T(fmin, d_dd),
+    T(fma, d_ddd), T(fmaf, f_fff), T(lround, l_d), T(llround, l_d), T(lroundf, l_f), T(llroundf, l_f),
     T(acosf, f_f), T(asinf, f_f), T(atanf, f_f), T(cosf, f_f), T(expf, f_f), T(exp2f, f_f), T(logf, f_f),
     T(log10f, f_f), T(log2f, f_f), T(sinf, f_f), T(sqrtf, f_f), T(tanf, f_f),
     T(atan2f, f_ff), T(fmodf, f_ff), T(powf, f_ff), T(remainderf, f_ff), T(nextafterf, f_ff), T(fmaxf, f_ff),

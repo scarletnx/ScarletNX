@@ -12,11 +12,15 @@
 #include <xlocale.h> /* uselocale */
 #endif
 #include <stdarg.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#if defined(__linux__)
+#include <sys/resource.h>
+#endif
 #ifdef _WIN32
 #include <direct.h>
 #include <io.h>
@@ -444,6 +448,252 @@ static void test_imports_once_missing(void) {
 #endif
 }
 
+/* ---- the second batch: the file calls, *at, pipe2, links, sessions, fma and lround ---- */
+
+static uint64_t call_ddd(const char* name, double a, double b, double c) {
+    call(name, NULL, 0, (double[]){a, b, c}, 3);
+    uint64_t bits;
+    memcpy(&bits, &g_t.cpu.v[0].df[0], 8);
+    return bits;
+}
+static uint32_t call_fff(const char* name, float a, float b, float c) {
+    g_t.cpu = (CPU){0};
+    memcpy(&g_t.cpu.v[0].f[0], &a, 4);
+    memcpy(&g_t.cpu.v[1].f[0], &b, 4);
+    memcpy(&g_t.cpu.v[2].f[0], &c, 4);
+    const HleSymbol* s = find(name);
+    s->handler(&g_t.cpu, s->data);
+    uint32_t bits;
+    memcpy(&bits, &g_t.cpu.v[0].f[0], 4);
+    return bits;
+}
+static uint64_t call_d(const char* name, double a) { return call(name, NULL, 0, (double[]){a}, 1); }
+static uint64_t call_f(const char* name, float a) {
+    g_t.cpu = (CPU){0};
+    memcpy(&g_t.cpu.v[0].f[0], &a, 4);
+    const HleSymbol* s = find(name);
+    s->handler(&g_t.cpu, s->data);
+    return g_t.cpu.x[0];
+}
+
+static void test_fma_and_lround(void) {
+    expect_int("fma(2, 3, 4)", (int64_t)call_ddd("fma", 2.0, 3.0, 4.0), 0x4024000000000000ll); /* 10 */
+    /* (2^27+1)^2 less 2^54 is 2^28+1; a product rounded before the sum gives 2^28 */
+    double big = 134217729.0;
+    double want = 268435457.0;
+    uint64_t want_bits;
+    memcpy(&want_bits, &want, 8);
+    expect_int("fma keeps the product whole", (int64_t)call_ddd("fma", big, big, -18014398509481984.0),
+               (int64_t)want_bits);
+    expect_int("fmaf(2, 3, 4)", call_fff("fmaf", 2.0f, 3.0f, 4.0f), 0x41200000); /* 10 */
+    expect_int("lround(2.5) goes away from zero", (int64_t)call_d("lround", 2.5), 3);
+    expect_int("lround(-2.5)", (int64_t)call_d("lround", -2.5), -3);
+    expect_int("llround(10000000000.5) past 32 bits", (int64_t)call_d("llround", 10000000000.5), 10000000001ll);
+    expect_int("lround past 32 bits (long is 64)", (int64_t)call_d("lround", -5000000000.25), -5000000000ll);
+    expect_int("lroundf(-0.5)", (int64_t)call_f("lroundf", -0.5f), -1);
+    expect_int("llroundf(2.4)", (int64_t)call_f("llroundf", 2.4f), 2);
+}
+
+/* a descriptor from name through the HLE, which opens it as the guest does */
+enum { G_O_RDWR = 2, G_O_CREAT = 64, G_O_TRUNC = 512, G_O_NONBLOCK = 2048, G_O_CLOEXEC = 524288, G_AT_FDCWD = -100 };
+#define SAID_ENOSYS(what, r)                                                                                           \
+    (expect_int(what, (int64_t)(r), -1), expect_int(what " sets ENOSYS", *hle_errno_location(), 38))
+
+static void test_files_second_batch(void) {
+    const char* path = "android_bionic_more.txt";
+    const char* second = "android_bionic_more_2.txt";
+    const char* folder = "android_bionic_more_dir";
+    remove(path);
+    remove(second);
+    CALL("unlinkat", I32(G_AT_FDCWD), P(folder), 0x200); /* a failed run's leftover */
+    int64_t fd = (int64_t)CALL("open64", P(path), G_O_RDWR | G_O_CREAT | G_O_TRUNC, 0600);
+    expect_int("open64 made a file", fd >= 0, 1);
+    if (fd < 0) return;
+    expect_int("pwrite", (int64_t)CALL("pwrite", I32(fd), P("abcdef"), 6, 0), 6);
+    expect_int("pwrite64 at 2", (int64_t)CALL("pwrite64", I32(fd), P("XY"), 2, 2), 2);
+    char back[8] = "";
+    expect_int("pread64", (int64_t)CALL("pread64", I32(fd), P(back), 6, 0), 6);
+    expect_text("pwrite's bytes", back, "abXYef");
+    expect_int("ftruncate64", (int64_t)CALL("ftruncate64", I32(fd), 3), 0);
+    expect_int("fdatasync", (int64_t)CALL("fdatasync", I32(fd)), 0);
+    memset(back, 0, sizeof back);
+    expect_int("pread64 of the cut file", (int64_t)CALL("pread64", I32(fd), P(back), 6, 0), 3);
+    expect_text("what is left", back, "abX");
+    expect_int("pwrite to -1", (int64_t)CALL("pwrite", I32(-1), P("a"), 1, 0), -1);
+    expect_int("pwrite to -1: EBADF", *hle_errno_location(), 9);
+    CALL("close", I32(fd));
+
+    /* creat: write only, truncating */
+    fd = (int64_t)CALL("creat", P(second), 0600);
+    expect_int("creat", fd >= 0, 1);
+    CALL("close", I32(fd));
+    struct stat st;
+    expect_int("creat made the file", stat(second, &st), 0);
+    expect_int("and it is empty", (int64_t)st.st_size, 0);
+
+    /* openat and __openat_2 against the working folder, faccessat and unlinkat */
+    fd = (int64_t)CALL("openat", I32(G_AT_FDCWD), P(path), 0, 0);
+    expect_int("openat(AT_FDCWD)", fd >= 0, 1);
+    CALL("close", I32(fd));
+    fd = (int64_t)CALL("__openat_2", I32(G_AT_FDCWD), P(path), 0);
+    expect_int("__openat_2", fd >= 0, 1);
+    CALL("close", I32(fd));
+    expect_int("openat of nothing", (int64_t)CALL("openat", I32(G_AT_FDCWD), P("android_bionic_none"), 0, 0), -1);
+    expect_int("and ENOENT", *hle_errno_location(), 2);
+    expect_int("faccessat", (int64_t)CALL("faccessat", I32(G_AT_FDCWD), P(path), 4, 0), 0);
+    expect_int("faccessat of nothing", (int64_t)CALL("faccessat", I32(G_AT_FDCWD), P("android_bionic_none"), 0, 0), -1);
+    expect_int("and ENOENT", *hle_errno_location(), 2);
+    expect_int("faccessat of a flag it lacks", (int64_t)CALL("faccessat", I32(G_AT_FDCWD), P(path), 0, 0x1000), -1);
+    expect_int("and EINVAL", *hle_errno_location(), 22);
+    expect_int("unlinkat of a flag it lacks", (int64_t)CALL("unlinkat", I32(G_AT_FDCWD), P(second), 0x1000), -1);
+    expect_int("and EINVAL", *hle_errno_location(), 22);
+    expect_int("unlinkat", (int64_t)CALL("unlinkat", I32(G_AT_FDCWD), P(second), 0), 0);
+    expect_int("it is gone", stat(second, &st), -1);
+    expect_int("mkdir", (int64_t)CALL("mkdir", P(folder), 0700), 0);
+    expect_int("unlinkat of a folder without AT_REMOVEDIR", (int64_t)CALL("unlinkat", I32(G_AT_FDCWD), P(folder), 0),
+               -1);
+    expect_int("unlinkat AT_REMOVEDIR", (int64_t)CALL("unlinkat", I32(G_AT_FDCWD), P(folder), 0x200), 0);
+    expect_int("the folder is gone", stat(folder, &st), -1);
+#ifndef _WIN32
+    int dirfd = open(".", O_RDONLY);
+    fd = (int64_t)CALL("openat", I32(dirfd), P(path), 0, 0);
+    expect_int("openat of a folder descriptor", fd >= 0, 1);
+    CALL("close", I32(fd));
+    expect_int("faccessat of a folder descriptor", (int64_t)CALL("faccessat", I32(dirfd), P(path), 0, 0), 0);
+    expect_int("fchdir", (int64_t)CALL("fchdir", I32(dirfd)), 0);
+    close(dirfd);
+    expect_int("chown to our own ids", (int64_t)CALL("chown", P(path), I32(getuid()), I32(getgid())), 0);
+    ABORTS("__openat_2", "open(O_CREAT) called without specifying a mode", I32(G_AT_FDCWD), P(path), G_O_CREAT);
+#else
+    SAID_ENOSYS("openat of a folder descriptor", CALL("openat", I32(7), P("relative"), 0, 0));
+    SAID_ENOSYS("fchdir", CALL("fchdir", 0));
+    SAID_ENOSYS("chown", CALL("chown", P(path), 0, 0));
+#endif
+
+    /* links: a hard link reads the same bytes, a second one is EEXIST */
+    expect_int("link", (int64_t)CALL("link", P(path), P(second)), 0);
+    FILE* linked = fopen(second, "rb");
+    expect_int("the link opens", linked != NULL, 1);
+    if (linked) {
+        memset(back, 0, sizeof back);
+        expect_int("and holds the bytes", fread(back, 1, 3, linked), 3);
+        expect_text("the same", back, "abX");
+        fclose(linked);
+    }
+    expect_int("link over a file", (int64_t)CALL("link", P(path), P(second)), -1);
+    expect_int("and EEXIST", *hle_errno_location(), 17);
+    remove(second);
+#ifndef _WIN32
+    expect_int("symlink", (int64_t)CALL("symlink", P(path), P(second)), 0);
+    char target[64] = "";
+    expect_int("readlink of it", (int64_t)CALL("readlink", P(second), P(target), sizeof target - 1),
+               (int64_t)strlen(path));
+    expect_text("symlink's target", target, path);
+    remove(second);
+#else
+    SAID_ENOSYS("symlink", CALL("symlink", P(path), P(second)));
+#endif
+    remove(path);
+
+    /* mkstemp */
+    char temp[] = "android_bionic_mXXXXXX";
+    fd = (int64_t)CALL("mkstemp", P(temp));
+    expect_int("mkstemp", fd >= 0, 1);
+    expect_int("it made the name", !strstr(temp, "XXXXXX") && !stat(temp, &st), 1);
+    CALL("close", I32(fd));
+    remove(temp);
+    char bad[] = "android_bionic_mYYYYYY";
+    expect_int("mkstemp of a template without XXXXXX", (int64_t)CALL("mkstemp", P(bad)), -1);
+    expect_int("and EINVAL", *hle_errno_location(), 22);
+}
+
+static void test_pipe2_umask_session(void) {
+    int fds[2] = {-1, -1};
+    expect_int("pipe2", (int64_t)CALL("pipe2", P(fds), 0), 0);
+    expect_int("pipe2 wrote", (int64_t)CALL("write", I32(fds[1]), P("hi"), 2), 2);
+    char got[4] = "";
+    expect_int("pipe2 read", (int64_t)CALL("read", I32(fds[0]), P(got), 3), 2);
+    expect_text("what the pipe held", got, "hi");
+    CALL("close", I32(fds[0]));
+    CALL("close", I32(fds[1]));
+    expect_int("pipe2 of a flag it lacks", (int64_t)CALL("pipe2", P(fds), 0x1000), -1);
+    expect_int("and EINVAL", *hle_errno_location(), 22);
+#ifdef _WIN32
+    SAID_ENOSYS("pipe2 with O_NONBLOCK", CALL("pipe2", P(fds), G_O_NONBLOCK));
+#else
+    expect_int("pipe2 with both flags", (int64_t)CALL("pipe2", P(fds), G_O_NONBLOCK | G_O_CLOEXEC), 0);
+    for (int i = 0; i < 2; ++i) {
+        expect_int("close-on-exec", fcntl(fds[i], F_GETFD) & FD_CLOEXEC, FD_CLOEXEC);
+        expect_int("non-blocking", (fcntl(fds[i], F_GETFL) & O_NONBLOCK) != 0, 1);
+    }
+    expect_int("a read of an empty one", (int64_t)CALL("read", I32(fds[0]), P(got), 1), -1);
+    expect_int("is EAGAIN", *hle_errno_location(), 11);
+    CALL("close", I32(fds[0]));
+    CALL("close", I32(fds[1]));
+#endif
+
+    uint64_t old = CALL("umask", 077);
+    expect_int("umask gives the one set before", (int64_t)CALL("umask", old), 077);
+    expect_int("umask back", (int64_t)CALL("umask", old), (int64_t)old);
+
+#ifdef _WIN32
+    expect_int("getpgrp is the process", (int64_t)CALL("getpgrp"), (int64_t)host_pid());
+    SAID_ENOSYS("setsid", CALL("setsid"));
+#else
+    expect_int("getpgrp", (int64_t)CALL("getpgrp"), (int64_t)getpgrp());
+    /* a session of its own would take this process from its terminal: a child makes it */
+    fflush(NULL);
+    pid_t pid = fork();
+    if (pid == 0) _exit((pid_t)CALL("setsid") == getpid() ? 0 : 1);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    expect_int("setsid in a child gives its id as the session", WIFEXITED(status) && WEXITSTATUS(status) == 0, 1);
+#endif
+
+#if defined(__linux__)
+    expect_int("getpriority of this process", (int64_t)CALL("getpriority", 0, 0), getpriority(PRIO_PROCESS, 0));
+#else
+    expect_int("getpriority of this process", (int64_t)CALL("getpriority", 0, 0), 0); /* the kernel gives nice 0 */
+#endif
+
+#if defined(__linux__)
+    int64_t event = (int64_t)CALL("eventfd", 5, G_O_NONBLOCK);
+    expect_int("eventfd", event >= 0, 1);
+    uint64_t count = 0;
+    expect_int("eventfd read", (int64_t)CALL("read", I32(event), P(&count), 8), 8);
+    expect_int("eventfd's count", (int64_t)count, 5);
+    CALL("close", I32(event));
+    int64_t memory = (int64_t)CALL("memfd_create", P("android_bionic"), 1);
+    expect_int("memfd_create", memory >= 0, 1);
+    expect_int("memfd write", (int64_t)CALL("write", I32(memory), P("mem"), 3), 3);
+    char mem[4] = "";
+    expect_int("memfd pread", (int64_t)CALL("pread64", I32(memory), P(mem), 3, 0), 3);
+    expect_text("memfd's bytes", mem, "mem");
+    CALL("close", I32(memory));
+#else
+    SAID_ENOSYS("eventfd", CALL("eventfd", 0, 0));
+    SAID_ENOSYS("memfd_create", CALL("memfd_create", P("android_bionic"), 0));
+#endif
+}
+
+static void test_strncat_chk(void) {
+    char buffer[16] = "ab";
+    expect_int("__strncat_chk gives dst", (int64_t)CALL("__strncat_chk", P(buffer), P("cdefg"), 3, 16),
+               (int64_t)(uintptr_t)buffer);
+    expect_text("__strncat_chk appends len bytes", buffer, "abcde");
+    CALL("__strncat_chk", P(buffer), P("xyz"), 0, 16);
+    expect_text("and none for len 0", buffer, "abcde");
+    CALL("__strncat_chk", P(buffer), P("12"), 9, 16);
+    expect_text("and stops at src's NUL", buffer, "abcde12");
+#ifndef _WIN32
+    char tight[8] = "abc";
+    ABORTS("__strncat_chk", "strncat: prevented write past end of buffer (5 bytes and a NUL into 5)", P(tight),
+           P("defgh"), 5, 8);
+    char unterminated[4] = {'a', 'a', 'a', 'a'};
+    ABORTS("__strncat_chk", "strlen: buffer overflow", P(unterminated), P("b"), 1, 4);
+#endif
+}
+
 /* ---- signals ---- */
 
 /* sigismember of a set the other set functions made, and the 64-bit forms, which are the same on LP64 */
@@ -680,6 +930,10 @@ int main(void) {
     test_libm();
     test_getline();
     test_imports_once_missing();
+    test_fma_and_lround();
+    test_files_second_batch();
+    test_pipe2_umask_session();
+    test_strncat_chk();
     test_signal_sets();
     test_bionic_locales();
     test_offline_names();

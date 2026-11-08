@@ -20,6 +20,7 @@ wchar_t* snx_host_wpath(const char* text);
    at the end of the file. The count read, short only at the end of the file, or -1 with errno (EBADF, EINVAL, EIO on
    Windows; pread's elsewhere) */
 int64_t plat_pread_fd(int fd, void* buf, uint64_t size, uint64_t off);
+int64_t plat_pwrite_fd(int fd, const void* buf, uint64_t size, uint64_t off); /* pwrite(2) whole, as plat_pread_fd */
 int64_t plat_pread(FILE* f, void* buf, uint64_t size, uint64_t off); /* plat_pread_fd of f's descriptor */
 int plat_is_dir(const char* path);
 int plat_mkdir(const char* path); /* 0, or -1 */
