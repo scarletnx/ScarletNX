@@ -677,6 +677,72 @@ static int check_uma_texture_pending(void) {
     return 0;
 }
 
+/* A dispatch whose constant buffer an engine's result is being written to in place (one game's dispatches bound 256
+   bytes of constants such a write covered once a frame): the buffer is copied for the dispatch on the GPU, after the
+   write, and nothing waits for the submit that writes it. A compute program stores c[1][0], the result's first word,
+   through an NVN descriptor in cbuf 0, which no write covers */
+#define UMA_K  (HEAP_BASE + 0xd200000)
+#define UMA_GK 0x4ea000000ull
+static int check_uma_dispatch_constants(void) {
+    const u64 cbuf = UMA_GK + 0x1000, later = UMA_GK + 0x3000, stored = UMA_GK + 0x2000, code = UMA_GK + 0x20000;
+    const u64 program[] = {
+        0x001f8000fc0007e0ull,  0x4c98078004470000ull, /* MOV R0, c[0][0x110]: the buffer's address, NVN's descriptor */
+        0x4c98078004570001ull,                         /* MOV R1, c[0][0x114] */
+        0x4c98078400070002ull,                         /* MOV R2, c[1][0x0] */
+        0x001f8000fc0007e0ull,  0xeedc200000070002ull, /* STG.E [R0], R2 */
+        0xe30000000007000full};
+    const u32 descriptor[3] = {(u32)stored, (u32)(stored >> 32), 16};
+    u32 qmd[64] = {0};
+    DispatchState d;
+    VkBuffer r;
+    u64 ro;
+    u8 word[4];
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    GpuChannel* channel = calloc(1, sizeof *channel);
+    CHECK(channel);
+    CHECK(mem_map(UMA_K, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GK, UMA_K, 0x200000);
+    memset(GP(UMA_K), 0, 0x4000);
+    memcpy(GP(UMA_K) + 0x1110, descriptor, sizeof descriptor);
+    memset(GP(UMA_K) + 0x3000, 0x11, 0x100);                         /* cbuf 1 before the write */
+    for (u32 i = 0; i < 256; i++) GP(UMA_K)[0x10000 + i] = (u8)(0x40 + i); /* the engine's result */
+    CHECK(invalidate_write_code(code, program, sizeof program / sizeof *program));
+    qmd[QMD_GRID_DIM_X] = 1;
+    qmd[QMD_GRID_DIM_YZ] = 1 | 1u << 16;
+    qmd[QMD_BLOCK_DIM_X] = 1u << 16;
+    qmd[QMD_BLOCK_DIM_YZ] = 1 | 1u << 16;
+    qmd[QMD_CONST_BUFFER_ENABLE] = 1u | 2u;
+    qmd[QMD_CONST_BUFFER_CONFIG] = (u32)cbuf;
+    qmd[QMD_CONST_BUFFER_CONFIG + 1] = (u32)(cbuf >> 32) | 0x200u << 15;
+    qmd[QMD_CONST_BUFFER_CONFIG + 2] = (u32)later;
+    qmd[QMD_CONST_BUFFER_CONFIG + 3] = (u32)(later >> 32) | 0x100u << 15;
+    vk_lock();
+    CHECK(vk_buf_get_input(later, 256, 4, &r, &ro)); /* a draw reads it in place: an import holds it */
+    int held = vk_uma_held(UMA_K + 0x3000, 256);
+    vk_unlock();
+    CHECK(!uma_dma(later, UMA_GK + 0x10000)); /* written in place by a submit not made yet */
+    u64 dispatches = g_vk_dispatches;
+    vk_lock();
+    int pending = vk_uma_pending(later, 256);
+    mx_dispatch_state(qmd, channel->rcomp, code, &d);
+    vk_dispatch(&d);
+    int ran = g_vk_dispatches == dispatches + 1, waited = !vk_uma_pending(later, 256);
+    vk_unlock();
+    CHECK(!gmem_read(stored, word, sizeof word));
+    free(channel);
+    CHECK(mem_unmap(UMA_K, 0x200000) == 0);
+    if (!held || !pending || !ran || waited || snx_ld_le32(word) != 0x43424140)
+        fprintf(stderr, "dispatch constants: held %d, pending %d, ran %d, waited for the write %d, stored %08x\n", held,
+                pending, ran, waited, snx_ld_le32(word));
+    CHECK(held && pending && ran && !waited && snx_ld_le32(word) == 0x43424140);
+    printf("in place: a dispatch's constant buffer under a pending write in place is copied on the GPU, with no "
+           "wait\n");
+    return 0;
+}
+
 /* Physical memory as GPU memory where it is (placed maps, VK_EXT_map_memory_placed): a window mapped whole is a chunk
    of device memory at its guest address, which the GPU reads and writes in place with no import, the CPU's and the
    GPU's writes each seen by the other; given back and mapped again it reads zero, a new chunk. Write tracking leaves it

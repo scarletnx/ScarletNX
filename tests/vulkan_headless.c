@@ -5789,12 +5789,14 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "publish") && ++ran) CHECK(!check_uma_publish());
         if (!strcmp(name, "dispatch") && ++ran) CHECK(!check_uma_dispatch());
         if (!strcmp(name, "texture_pending") && ++ran) CHECK(!check_uma_texture_pending());
+        if (!strcmp(name, "dispatch_constants") && ++ran) CHECK(!check_uma_dispatch_constants());
         if (!strcmp(name, "placed") && ++ran) CHECK(!check_uma_placed());
         if (!strcmp(name, "placed_view") && ++ran) CHECK(!check_uma_placed_view());
         if (!ran) {
             fprintf(stderr,
                     "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants, migrate, way, region_writes, "
-                    "region_merge, writes, feedback, publish, dispatch, texture_pending, placed or placed_view\n",
+                    "region_merge, writes, feedback, publish, dispatch, texture_pending, dispatch_constants, placed or "
+                    "placed_view\n",
                     name);
             return 2;
         }
@@ -5813,6 +5815,7 @@ static int run_headless(int argc, char** argv) {
         CHECK(!check_uma_publish());
         CHECK(!check_uma_dispatch());
         CHECK(!check_uma_texture_pending());
+        CHECK(!check_uma_dispatch_constants());
         CHECK(!check_uma_placed());
         CHECK(!check_uma_placed_view());
         CHECK(!check_uma_page_changes());
@@ -5980,6 +5983,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_uma_publish());
     CHECK(!check_uma_dispatch());
     CHECK(!check_uma_texture_pending());
+    CHECK(!check_uma_dispatch_constants());
     CHECK(!check_uma_placed());
     CHECK(!check_uma_placed_view());
     CHECK(!check_uma_page_changes());
