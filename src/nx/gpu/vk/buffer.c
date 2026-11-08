@@ -3014,7 +3014,9 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
        an offset the use can't bind (a draw's constants or vertices, a few bytes at any address, where a uniform
        buffer binds at 64), the bytes are copied on the GPU from the mirror into device memory that it can: landing
        them took a submit and a wait for the GPU, 150 a second in one game's menus */
-    if (vk_mirror_pending(gva, len)) {
+    /* So with those it owns, landed only where the CPU touched them: read elsewhere, the CPU's bytes between them were
+       copied again for every draw, 16 MiB a binding, about half of one game's GPU thread */
+    if (vk_mirror_pending(gva, len) || vk_mirror_holds(gva, len)) {
         u64 cpu = 0, a = align ? align : 1;
         VkBuffer mb;
         u64 mo;
