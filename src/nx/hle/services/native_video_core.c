@@ -14,7 +14,7 @@ u32 nvideo_mime(const u8* p, u64 size) {
         const char* name;
         u32 mime;
     } names[] = {{"video/vp9", NVIDEO_MIME_VP9}, {"video/x-vnd.on2.vp8", NVIDEO_MIME_VP8},
-                 {"video/vp8", NVIDEO_MIME_VP8}, {"video/avc", NVIDEO_MIME_H264}};
+                 {"video/vp8", NVIDEO_MIME_VP8}, {"video/avc", NVIDEO_MIME_H264}, {"video/av1", NVIDEO_MIME_AV1}};
     for (u32 i = 0; i < sizeof names / sizeof *names; i++) {
         size_t n = strlen(names[i].name);
         if ((size == n || (size == n + 1 && !p[n])) && !memcmp(p, names[i].name, n)) return names[i].mime;

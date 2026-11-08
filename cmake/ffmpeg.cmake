@@ -7,8 +7,9 @@
 # decoder (cmake/ffmpeg-vp9-nvdec.patch), so it builds from a patched copy of the release in the build tree. Only the
 # decoders NVDEC handles are in (H.264, VP8, VP9), Opus for hwopus (FFmpeg's Opus decoder resamples its SILK layer with
 # libswresample, which is why that library is in), for the 3DS DSP's AAC, and for the Vita AAC, ATRAC9, the MP4 demuxer
-# and H.264's Annex B filter: no programs, other formats, filters, devices, network or autodetected system libraries, so
-# the result needs nothing but libc and builds the same everywhere. All of it is LGPL (no --enable-gpl). It needs a
+# and H.264's Annex B filter, and the Ounce's AV1 through dav1d where cmake/dav1d.cmake builds it (snx_dav1d_ready): no
+# programs, other formats, filters, devices, network or autodetected system libraries, so the result needs nothing but
+# libc (and that dav1d, built from source too) and builds the same everywhere. All of it is LGPL (no --enable-gpl). It needs a
 # POSIX shell and make (gmake on the BSDs), and NASM for the x86-64 assembly. macOS and iOS build it with Xcode's Clang
 # and SDK (cmake/apple.cmake), iOS as a cross build. This file is included into the top-level scope: its variables carry
 # the snx_ffmpeg_ prefix.
@@ -72,6 +73,12 @@ set(snx_ffmpeg_args
     --nm=${CMAKE_NM}
     # FFmpeg's own warnings stay out of the build output
     --extra-cflags=-w)
+# FFmpeg finds dav1d with pkg-config: only in the folder it was installed to, never a dav1d of the system's
+set(snx_ffmpeg_env "")
+if(snx_dav1d_ready)
+    list(APPEND snx_ffmpeg_args --enable-libdav1d --enable-decoder=libdav1d --pkg-config-flags=--static)
+    set(snx_ffmpeg_env "PKG_CONFIG_LIBDIR=${snx_dav1d_prefix}/lib/pkgconfig" "PKG_CONFIG_PATH=")
+endif()
 if((WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux") AND NOT ANDROID)
     # the H.264 decoder's Vulkan Video path, which the vulkan_video setting turns on (src/nx/gpu/vk/nvdec.c). FFmpeg
     # loads Vulkan's functions through the runtime's device (no link to the loader); only the headers are needed
@@ -148,7 +155,7 @@ endif()
 # Built once for every tree that builds it the same way, when SNX_DEPS_CACHE names a folder (cmake/deps_cache.cmake).
 # The install prefix stays out of the key: FFmpeg only quotes it in its configuration string
 snx_deps_cached(ffmpeg snx_ffmpeg_cache "source: ${snx_ffmpeg_sha256}" "patch: ${snx_ffmpeg_patch_sha256}"
-                "configure: ${snx_ffmpeg_args}" "nasm: ${snx_ffmpeg_nasm}")
+                "configure: ${snx_ffmpeg_args}" "nasm: ${snx_ffmpeg_nasm}" "dav1d: ${snx_dav1d_ready} ${snx_dav1d_sha256}")
 if(snx_ffmpeg_cache_FOUND)
     set(snx_ffmpeg_prefix "${snx_ffmpeg_cache_DIR}")
 else()
@@ -158,14 +165,19 @@ else()
         set(snx_ffmpeg_jobs "$ENV{CMAKE_BUILD_PARALLEL_LEVEL}")
     endif()
     include(ExternalProject)
+    set(snx_ffmpeg_depends "")
+    if(snx_dav1d_ready)
+        set(snx_ffmpeg_depends DEPENDS dav1d_build)
+    endif()
     ExternalProject_Add(ffmpeg_build
+        ${snx_ffmpeg_depends}
         SOURCE_DIR "${snx_ffmpeg_src}"
         # configure leaves a src link to its source there: a tree that built the release's own folder before would
         # keep compiling that one
         BINARY_DIR "${PROJECT_BINARY_DIR}/ffmpeg-build-patched"
         INSTALL_DIR "${snx_ffmpeg_prefix}"
-        CONFIGURE_COMMAND "${SNX_FFMPEG_SH}" "${snx_ffmpeg_src}/configure" --prefix=${snx_ffmpeg_prefix}
-                          ${snx_ffmpeg_args}
+        CONFIGURE_COMMAND "${CMAKE_COMMAND}" -E env ${snx_ffmpeg_env} "${SNX_FFMPEG_SH}" "${snx_ffmpeg_src}/configure"
+                          --prefix=${snx_ffmpeg_prefix} ${snx_ffmpeg_args}
         # make install is part of the build step: the libraries below are its byproducts, which Ninja checks again as
         # soon as the step ends. Installed by a later step, a rebuilt FFmpeg still looked unchanged then, and the
         # runtime kept its link to the old one until the next build
@@ -228,8 +240,11 @@ if(TARGET ffmpeg_build)
 endif()
 add_library(FFmpeg::avcodec STATIC IMPORTED GLOBAL)
 set_target_properties(FFmpeg::avcodec PROPERTIES IMPORTED_LOCATION "${snx_ffmpeg_prefix}/lib/libavcodec.a" SYSTEM OFF)
-# the Opus decoder in libavcodec calls libswresample
+# the Opus decoder in libavcodec calls libswresample, and its AV1 decoder dav1d
 target_link_libraries(FFmpeg::avcodec INTERFACE FFmpeg::swresample FFmpeg::avutil)
+if(snx_dav1d_ready)
+    target_link_libraries(FFmpeg::avcodec INTERFACE dav1d::dav1d)
+endif()
 if(TARGET ffmpeg_build)
     add_dependencies(FFmpeg::avcodec ffmpeg_build)
 endif()

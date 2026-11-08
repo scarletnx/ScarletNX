@@ -21,6 +21,7 @@ static void check_mime(void) {
     assert(nvideo_mime((const u8*)"video/vp9", 9) == NVIDEO_MIME_VP9);
     assert(nvideo_mime((const u8*)"video/avc", 10) == NVIDEO_MIME_H264);
     assert(nvideo_mime((const u8*)"video/x-vnd.on2.vp8", 20) == NVIDEO_MIME_VP8);
+    assert(nvideo_mime((const u8*)"video/av1", 10) == NVIDEO_MIME_AV1);
     assert(nvideo_mime((const u8*)"video/vp90", 10) == NVIDEO_MIME_NONE); /* a longer name */
     assert(nvideo_mime((const u8*)"video/vp", 8) == NVIDEO_MIME_NONE);    /* a shorter one */
     assert(nvideo_mime((const u8*)"video/vp9\0x", 11) == NVIDEO_MIME_NONE); /* bytes after the NUL */

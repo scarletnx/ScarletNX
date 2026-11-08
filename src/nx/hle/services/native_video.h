@@ -107,12 +107,14 @@ typedef struct {
         struct AVCodecContext* decoder;
         struct AVFrame* frame; /* a picture received and not yet written: frame->buf[0] set */
         struct AVPacket* packets[NVIDEO_INPUTS];
+        struct AVFrame* black; /* an AV1 stream's picture: no decoder for it, each input comes out black */
+        u32 black_images[NVIDEO_IMAGES], nblack; /* the images painted black already, which stay so */
     } codecs[NVIDEO_CODECS];
 } HostNativeVideo;
 extern const StateFnTable g_native_video_state_fns; /* the functions a save state may hold of native_video.c */
 
 /* ---- native_video_core.c */
-enum { NVIDEO_MIME_NONE, NVIDEO_MIME_VP9, NVIDEO_MIME_VP8, NVIDEO_MIME_H264 };
+enum { NVIDEO_MIME_NONE, NVIDEO_MIME_VP9, NVIDEO_MIME_VP8, NVIDEO_MIME_H264, NVIDEO_MIME_AV1 };
 /* the codec a MIME type names (the SDK's holders send "video/vp9" with its NUL), NVIDEO_MIME_NONE for others */
 u32 nvideo_mime(const u8* p, u64 size);
 /* the layout of the images a preference (16 words: 0, the kind, the extent, 13 zeros) describes, and the bytes count
