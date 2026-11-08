@@ -29,6 +29,9 @@ const char* linker_name(const GuestLibrary* library);
    its program headers in guest memory (count of them) */
 int linker_each(int (*fn)(void* context, uint64_t base, const char* name, uint64_t phdr, unsigned count),
                 void* context);
+/* the address of a TLS module's (1 on) byte at offset, in the calling thread's block of it, made when first asked
+   for; 0 for no such module */
+uint64_t linker_tls_address(unsigned module, uint64_t offset);
 /* the library that holds a guest address, NULL for none */
 GuestLibrary* linker_owner(uint64_t address);
 /* a symbol of the libraries loaded after the one that holds caller (dlsym's RTLD_NEXT) */

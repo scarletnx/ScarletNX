@@ -25,6 +25,11 @@
 #define DT_ANDROID_RELA   0x60000011
 #define DT_ANDROID_RELASZ 0x60000012
 #endif
+#ifndef R_AARCH64_TLS_DTPMOD64
+#define R_AARCH64_TLS_DTPMOD64 1028
+#define R_AARCH64_TLS_DTPREL64 1029
+#define R_AARCH64_TLSDESC      1031
+#endif
 #ifndef DT_RELR
 #define DT_RELR   36
 #define DT_RELRSZ 35
@@ -46,6 +51,7 @@ struct GuestLibrary {
     bool symbolic;
     uint64_t phdr; /* its program headers, in guest memory */
     unsigned phnum;
+    unsigned tls_module; /* its PT_TLS's module (1 on), 0 for none */
 };
 
 static struct {
@@ -182,6 +188,78 @@ static uint64_t resolve(GuestLibrary* l, uint32_t index, bool function, char* er
 
 /* ---- relocations ---- */
 
+/* ---- thread-local storage ----
+   Each library's PT_TLS is a module of dynamic TLS, as bionic gives a dlopen'd library's: each thread gets the
+   module's block (its .tdata image, then zeros for .tbss) the first time it reaches it, through a TLS descriptor's
+   resolver or __tls_get_addr (hle_dl.c). Static TLS (TPREL relocations of an executable's initial-exec model) is
+   not here */
+enum { TLS_MODULES = 256 };
+typedef struct {
+    uint64_t image, filesz, memsz, align;
+} TlsModule;
+static TlsModule tls_modules[TLS_MODULES]; /* written before a module's number is given out, then read only */
+static unsigned tls_count;
+typedef struct {
+    unsigned char* blocks[TLS_MODULES];
+    void* raw[TLS_MODULES];
+} TlsThread;
+static pthread_key_t tls_key;
+static pthread_once_t tls_once = PTHREAD_ONCE_INIT;
+static void tls_thread_free(void* p) {
+    TlsThread* t = p;
+    for (unsigned i = 0; i < TLS_MODULES; ++i) free(t->raw[i]);
+    free(t);
+}
+static void tls_init(void) { pthread_key_create(&tls_key, tls_thread_free); }
+
+uint64_t linker_tls_address(unsigned module, uint64_t offset) {
+    if (!module || module > tls_count) return 0;
+    pthread_once(&tls_once, tls_init);
+    TlsThread* t = pthread_getspecific(tls_key);
+    if (!t) {
+        t = calloc(1, sizeof *t);
+        if (!t) return 0;
+        pthread_setspecific(tls_key, t);
+    }
+    if (!t->blocks[module - 1]) {
+        const TlsModule* m = &tls_modules[module - 1];
+        uint64_t align = m->align > 16 ? m->align : 16;
+        unsigned char* raw = malloc((size_t)(m->memsz + align));
+        if (!raw) return 0;
+        unsigned char* block = (unsigned char*)(((uintptr_t)raw + (align - 1)) & ~(uintptr_t)(align - 1));
+        memcpy(block, (const void*)(uintptr_t)m->image, (size_t)m->filesz);
+        memset(block + m->filesz, 0, (size_t)(m->memsz - m->filesz));
+        t->raw[module - 1] = raw;
+        t->blocks[module - 1] = block;
+    }
+    return (uint64_t)(uintptr_t)t->blocks[module - 1] + offset;
+}
+
+/* a TLS relocation's symbol: its module and its offset in the module's block (the library's own block for none) */
+static bool tls_symbol(const GuestLibrary* l, uint32_t index, unsigned* module, uint64_t* value) {
+    if (!index) {
+        *module = l->tls_module;
+        *value = 0;
+        return l->tls_module != 0;
+    }
+    const Elf64_Sym* s = &l->symbols[index];
+    if (s->st_shndx != SHN_UNDEF) {
+        *module = l->tls_module;
+        *value = s->st_value;
+        return l->tls_module != 0;
+    }
+    const char* name = l->strings + s->st_name;
+    for (const GuestLibrary* o = g.first; o; o = o->next) {
+        const Elf64_Sym* d = o->tls_module ? defined(o, name) : NULL;
+        if (d && ELF64_ST_TYPE(d->st_info) == STT_TLS) {
+            *module = o->tls_module;
+            *value = d->st_value;
+            return true;
+        }
+    }
+    return false;
+}
+
 typedef struct {
     GuestLibrary* l;
     char* error;
@@ -212,6 +290,28 @@ static void apply(Relocating* r, uint64_t offset, uint64_t info, int64_t addend)
         /* the resolver, a guest function, picks the implementation (by the CPU's features, which it reads itself) */
         uint64_t args[1] = {0};
         store64(at, bridge_call(l->base + (uint64_t)addend, args, 1));
+        break;
+    }
+    case R_AARCH64_TLSDESC:
+    case R_AARCH64_TLS_DTPMOD64:
+    case R_AARCH64_TLS_DTPREL64: {
+        unsigned module;
+        uint64_t value;
+        if (!tls_symbol(l, sym, &module, &value)) {
+            snprintf(r->error, r->error_size, "\"%s\": a TLS relocation's symbol %u has no TLS module", l->name, (unsigned)sym);
+            r->failed = true;
+            break;
+        }
+        value += (uint64_t)addend;
+        if (type == R_AARCH64_TLS_DTPMOD64) {
+            store64(at, module);
+        } else if (type == R_AARCH64_TLS_DTPREL64) {
+            store64(at, value);
+        } else {
+            /* the descriptor: the resolver, and its argument (the module above the offset's 48 bits) */
+            store64(at, hle_symbol("__snx_tlsdesc"));
+            store64(at + 8, (uint64_t)module << 48 | (value & 0xffffffffffffull));
+        }
         break;
     }
     default:
@@ -383,6 +483,12 @@ static GuestLibrary* load_file(const char* path, char* error, size_t error_size)
         }
     }
     close(fd);
+    /* its TLS segment, a module */
+    for (unsigned i = 0; i < eh.e_phnum; ++i)
+        if (ph[i].p_type == PT_TLS && ph[i].p_memsz && tls_count < TLS_MODULES) {
+            tls_modules[tls_count] = (TlsModule){l->base + ph[i].p_vaddr, ph[i].p_filesz, ph[i].p_memsz, ph[i].p_align};
+            l->tls_module = ++tls_count;
+        }
 
     /* the dynamic section */
     l->dynamic = (const Elf64_Dyn*)(uintptr_t)(l->base + dyn->p_vaddr);
@@ -443,7 +549,16 @@ static GuestLibrary* load_file(const char* path, char* error, size_t error_size)
     if (relr) apply_relr(l, relr, relr_size / 8);
     if (rela) apply_rela(&r, rela, rela_size / sizeof *rela);
     if (jmprel) apply_rela(&r, jmprel, jmprel_size / sizeof *jmprel);
-    if (r.failed) return NULL;
+    if (r.failed) {
+        /* out of the global group again: a library that did not load has no symbols to give (its code is not
+           the JIT's, and its constructors did not run) */
+        for (GuestLibrary** at = &g.first; *at; at = &(*at)->next)
+            if (*at == l) {
+                *at = l->next;
+                break;
+            }
+        return NULL;
+    }
 
     /* the segments' protections, and their code for the JIT */
     for (unsigned i = 0; i < eh.e_phnum; ++i) {
