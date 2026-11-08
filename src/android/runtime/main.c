@@ -5,6 +5,7 @@
 #include "android/bridge/hle_vulkan.h"
 #include "android/bridge/linker.h"
 #include "android/bridge/hle_signal.h"
+#include "android/runtime/audio.h"
 #include "android/runtime/main.h"
 #include "android/dex/translate.h"
 #include "android/res/asset_jni.h"
@@ -184,7 +185,8 @@ static void run_app(Run* run) {
     run->status = 1;
     if (!android_app_register(env) || !android_xml_register(env) || !android_assets_register(env) ||
         !android_sqlite_register(env) || !android_text_register(env) || !android_image_register(env) ||
-        !android_render_register(env) || !android_bridge_register(env) || !android_egl_register(env))
+        !android_render_register(env) || !android_bridge_register(env) || !android_egl_register(env) ||
+        !android_audio_register(env))
         return;
     jclass main_class = (*env)->FindClass(env, "snx/android/Main");
     jmethodID main = main_class ? (*env)->GetStaticMethodID(env, main_class, "main", "([Ljava/lang/String;)V") : NULL;
@@ -443,6 +445,7 @@ int snx_android_main(int argc, char** argv) {
         status = 2;
     } else {
         android_render_set_options(headless, shot, shot_frames);
+        android_audio_set_headless(headless);
         hle_vulkan_set_shot(shot, shot_frames);
         status = translate ? translate_apk(apk, translate) : run_apk(argv[0], apk, framework, options, option_count);
     }
