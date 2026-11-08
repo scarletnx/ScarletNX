@@ -2048,6 +2048,8 @@ static void ldsm(Ctx* c, const Sm86Insn* in) {
         fail(c, "LDSM variant %#x", sm86_field(in, 72, 20));
         return;
     }
+    shared_var(c); /* before mem_ptr, which bounds the index by its size: as LDS does, for a program whose LDSM comes
+                      before any other access to shared memory */
     u32 imm = sm86_field(in, 40, 24), bias = imm & 0x800000u ? imm | 0xff000000u : imm;
     u32 addr = spv_emit_iadd_u32(&c->e, c->t_u32, rd(c, sm86_field(in, 24, 8)), cu(c, bias));
     u32 lane = warp_lane(c), g = spv_emit_shift_right_u32(&c->e, c->t_u32, lane, cu(c, 2));
