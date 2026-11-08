@@ -926,6 +926,45 @@ MATH1(trunc)
 MATH1(exp2)
 MATH1(log2)
 MATH1(cbrt)
+MATH1(expm1)
+MATH1(log1p)
+#define MATH2(name)                                                                                                    \
+    HANDLER(m_##name) {                                                                                                \
+        UNUSED;                                                                                                        \
+        ret_double(c, name(arg_double(c, 0), arg_double(c, 2)));                                                       \
+    }                                                                                                                  \
+    HANDLER(m_##name##f) {                                                                                             \
+        UNUSED;                                                                                                        \
+        ret_float(c, name##f(arg_float(c, 0), arg_float(c, 1)));                                                       \
+    }
+MATH2(fmax)
+MATH2(fmin)
+MATH2(nextafter)
+HANDLER(m_fma) {
+    UNUSED;
+    ret_double(c, fma(arg_double(c, 0), arg_double(c, 2), arg_double(c, 4)));
+}
+HANDLER(m_fmaf) {
+    UNUSED;
+    ret_float(c, fmaf(arg_float(c, 0), arg_float(c, 1), arg_float(c, 2)));
+}
+/* lround and lroundf give a long, 32 bits here; llround and llroundf a long long in r0 and r1 */
+HANDLER(m_lround) {
+    UNUSED;
+    R(0) = (uint32_t)(int32_t)llround(arg_double(c, 0));
+}
+HANDLER(m_lroundf) {
+    UNUSED;
+    R(0) = (uint32_t)(int32_t)llroundf(arg_float(c, 0));
+}
+HANDLER(m_llround) {
+    UNUSED;
+    set64(c, (uint64_t)llround(arg_double(c, 0)));
+}
+HANDLER(m_llroundf) {
+    UNUSED;
+    set64(c, (uint64_t)llroundf(arg_float(c, 0)));
+}
 HANDLER(m_frexp) {
     UNUSED;
     int e;
@@ -1600,6 +1639,22 @@ const Arm32Symbol arm32_posix_symbols[] = {
     F("log2f", m_log2f),
     F("cbrt", m_cbrt),
     F("cbrtf", m_cbrtf),
+    F("expm1", m_expm1),
+    F("expm1f", m_expm1f),
+    F("log1p", m_log1p),
+    F("log1pf", m_log1pf),
+    F("fmax", m_fmax),
+    F("fmaxf", m_fmaxf),
+    F("fmin", m_fmin),
+    F("fminf", m_fminf),
+    F("nextafter", m_nextafter),
+    F("nextafterf", m_nextafterf),
+    F("fma", m_fma),
+    F("fmaf", m_fmaf),
+    F("lround", m_lround),
+    F("lroundf", m_lroundf),
+    F("llround", m_llround),
+    F("llroundf", m_llroundf),
     F("frexp", m_frexp),
     F("ldexp", m_ldexp),
     F("ldexpf", m_ldexpf),
