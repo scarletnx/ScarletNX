@@ -3525,8 +3525,32 @@ void vk_buf_prefetch(u64 gva, u64 len, int step) {
     if (g_vbi[sl].idx && g_vbi[sl].start == gva && g_vbi[sl].len == (u32)len)
         for (size_t o = 0; o < sizeof(Vb); o += 64) __builtin_prefetch((const char*)&g_vb[g_vbi[sl].idx] + o);
 }
-/* Constant buffers cannot accept the delayed checks used for stable vertex data: a changed word affects this draw. */
+/* A dispatch's read-only storage buffer (compute.c), checked with no delay as a constant buffer is: a changed word
+   changes the program's result. With unified memory it is read where guest memory holds it, as vertices and constant
+   buffers are: the import that holds the range, bound at its offset with no copy (vk_uma_get). An Ounce program binds
+   each of its tensors as the 16 MiB after its address (vk_gbuf_desc), and the dispatches before it wrote them there in
+   place (vk_uma_write); copied, every binding of one took a 16 MiB GPU copy out of the import while those writes were
+   pending, and a hash and a 16 MiB copy on the GPU thread after they were done: about 35 copies, 540 MB and 15 ms of
+   GPU time per frame of one game's upscaled intro movie. Read in place:
+   - the dispatches that wrote the bytes in place before it come first: vk_uma_get records a barrier when the range's
+     pages were written in place since the last one (uma.c's order), and a write in place after it waits for its read
+     the same way (note_read). A logged result written back on the GPU (back_record) has its barrier after the merge;
+   - the CPU's accesses are ordered as for vertices read in place, with no trap: no byte of the range is GPU-owned
+     (range_owned, checked first). A release waits for the submit that last read guest memory in place (vk_uma_bound),
+     so the guest writes the next frame's data there only after the dispatch read it, and a write of the runtime's own
+     on those pages waits for that submit (vk_uma_before_write, the live pages hz_mark stamps);
+   - bytes the renderer holds elsewhere are not read in guest memory: pending results of draws and dispatches are bound
+     or composed where they are (gfx_gpu_src, vk_compute_gpu_src, in buf_get), GPU-owned ranges and the pages the
+     runtime wrote (front) are copied as before, and so are storage images not published yet and queued releases'
+     payloads, over which copy_writable refuses writes in place too: the copy lands them first (gmem_need), which a
+     read in place would miss.
+   At the storage binding's own alignment, which the import's offset must meet (a tensor's address is a multiple of 32
+   bytes), not the staging ring's, which can be larger */
 int vk_buf_get_strict(u64 gva, u64 len, VkBuffer* buf, u64* off) {
+    if (vk_uma() && !(g_gfx_img_any && vk_gfx_image_pending(gva, len)) && !vk_release_pending(gva, len)) {
+        u64 align = g_vk.props.limits.minStorageBufferOffsetAlignment;
+        return buf_get(gva, len, buf, off, 1, align ? align : 1, IN_TRY);
+    }
     return buf_get(gva, len, buf, off, 1, vk_stage_align(), IN_NO);
 }
 /* a constant buffer: read in place where it can be, as vertices are, but the pages the runtime wrote (uma.c's front,

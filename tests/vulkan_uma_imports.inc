@@ -323,12 +323,14 @@ static int check_uma_constants(void) {
 
 /* Storage the GPU writes is written in place (vk_buf_copy_writable): the range bound for writing is the import of its
    guest memory, with no result to land; a later reader on the GPU reads the write in place, after a barrier, and so
-   does one that copied the range before the write; and the runtime's CPU reader waits for the submit */
+   does one that copied the range before the write; and the runtime's CPU reader waits for the submit. A later
+   dispatch's read-only storage binding of it (vk_buf_get_strict), its whole and a part at a storage buffer's alignment,
+   is that import, where the write is, with no copy while the write is pending */
 #define UMA_V  (HEAP_BASE + 0x3400000)
 #define UMA_GV 0x4dd000000ull
 static int check_uma_writes(void) {
-    VkBuffer w, r, c, rb;
-    u64 wo, ro, co;
+    VkBuffer w, r, c, rb, s, t;
+    u64 wo, ro, co, so, to;
     u8 bytes[256];
     if (!vk_uma()) {
         printf("skip: guest memory is copied on this device (vk_memory)\n");
@@ -338,7 +340,7 @@ static int check_uma_writes(void) {
     gmmu_map(UMA_GV, UMA_V, 0x200000);
     memset(GP(UMA_V), 0x91, 0x1000);
     vk_lock();
-    u8* result = vk_readback_buffer(512, &rb);
+    u8* result = vk_readback_buffer(1024, &rb);
     CHECK(result && vk_buf_get(UMA_GV + 0x100, 256, &c, &co)); /* a vertex fetch's copy, before the write */
     CHECK(vk_buf_copy_writable(UMA_GV + 0x100, 256, &w, &wo, 1));
     int inplace = vk_uma_imports(UMA_V, 0x200000) == 1 && !vk_buf_pending(UMA_GV + 0x100, 256);
@@ -348,19 +350,32 @@ static int check_uma_writes(void) {
     uma_read(r, ro, rb, 0);
     CHECK(vk_buf_get(UMA_GV + 0x100, 256, &c, &co)); /* the same fetch after it: not the copy from before */
     uma_read(c, co, rb, 256);
+    int pending = vk_uma_pending(UMA_GV + 0x100, 256);
+    CHECK(vk_buf_get_strict(UMA_GV + 0x100, 256, &s, &so)); /* a later dispatch's read-only storage */
+    CHECK(vk_buf_get_strict(UMA_GV + 0x120, 0xe0, &t, &to)); /* a part, 32 bytes in */
+    int shared = s == w && so == wo && t == w && to == wo + 0x20;
+    uma_read(s, so, rb, 512);
+    VkBufferCopy part = {to, 768, 0xe0};
+    rec_CmdCopyBuffer(vk_cmd(), t, rb, 1, &part);
     vk_unlock();
     CHECK(!gmem_read(UMA_GV + 0x100, bytes, sizeof bytes)); /* the runtime's CPU read: after the write */
     for (u32 i = 0; i < 256; i++) CHECK(bytes[i] == 0x92);
     vk_lock();
     vk_finish();
     vk_readback_ready();
-    for (u32 i = 0; i < 512; i++) CHECK(result[i] == 0x92);
+    for (u32 i = 0; i < 768 + 0xe0; i++) CHECK(result[i] == 0x92);
     vk_unlock();
     CHECK(GP(UMA_V)[0x100] == 0x92 && GP(UMA_V)[0x1ff] == 0x92 && GP(UMA_V)[0xff] == 0x91 && GP(UMA_V)[0x200] == 0x91);
     CHECK(mem_unmap(UMA_V, 0x200000) == 0);
     if (!inplace) fprintf(stderr, "storage write: copied out and landed, not written in place\n");
     CHECK(inplace);
-    printf("in place: storage written where it is in guest memory, read after the write on the GPU and the CPU\n");
+    if (!shared)
+        fprintf(stderr, "storage read: the write pending %d, bound at %p+%llx and %p+%llx, the import at %p+%llx\n",
+                pending, (void*)s, (unsigned long long)so, (void*)t, (unsigned long long)to, (void*)w,
+                (unsigned long long)wo);
+    CHECK(pending && shared);
+    printf("in place: storage written where it is in guest memory, read after the write on the GPU and the CPU, and "
+           "bound for a dispatch's read where it was written\n");
     return 0;
 }
 
