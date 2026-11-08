@@ -91,6 +91,9 @@ typedef struct {
 extern const Arm32Symbol arm32_posix_symbols[];  /* arm32_posix.c: files, processes, time, strings, sockets, zlib */
 extern const Arm32Symbol arm32_thread_symbols[]; /* arm32_thread.c: threads, waits, semaphores, signals, setjmp */
 extern const Arm32Symbol arm32_shim_symbols[];   /* arm32_shim.c: EGL, GLES and ANativeWindow, the 64-bit bridge's */
+/* the names the shim sends to the 64-bit bridge that has no handler for them (their calls fail with ENOSYS): their
+   count, the first max into names */
+unsigned arm32_shim_unresolved(const char** names, unsigned max);
 /* the objects each file exports, by name: their guest address, 0 for none */
 uint32_t arm32_posix_object(const char* name);
 void arm32_posix_init(void);
