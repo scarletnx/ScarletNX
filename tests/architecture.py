@@ -466,7 +466,7 @@ def check_target_sources(repo, build):
                 if not path.is_absolute():
                     path = repo / path
                 path = path.resolve()
-                # the Windows programs' manifest and icon (src/common/platform/runtime.rc), which each program
+                # the Windows programs' manifest and icon (src/common/platform/windows/runtime.rc), which each program
                 # compiles into itself as a source of its own
                 if not path.is_relative_to(src):
                     continue

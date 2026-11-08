@@ -4,4 +4,4 @@
    24 = RT_MANIFEST) and its icon, which Explorer shows and SDL gives the windows (scripts/make-icons.py makes it;
    llvm-rc finds it from this file's folder) */
 1 24 "runtime.manifest"
-1 ICON "../../../dist/icons/wimsy.ico"
+1 ICON "../../../../dist/icons/wimsy.ico"
