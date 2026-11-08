@@ -19,6 +19,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/resource_stats.h"
+#include "nx/gpu/vk/uma_budget.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/texture/astc_bc.h"
 #include "nx/gpu/texture/blocklinear.h"
@@ -2171,6 +2172,15 @@ static u32 g_forced;    /* the present a failed allocation last forced a trim (+
 static u32 g_oom;       /* the present an image allocation last found no memory (+1) */
 static u64 g_oom_bytes; /* the smallest size that found none in that present */
 u64 vk_mem_trimmed(void) { return g_trimmed; }
+/* What the trims gave back (uma_budget.h vk_mem_trim_held): the device memory VMA's blocks held (vk_mem_blocks) when
+   they began, and what they freed since. Held, the caches trim again once the blocks grow past where they were then,
+   memory the system gives again; an allocation that finds no memory trims whatever this says */
+static struct {
+    u64 blocks;  /* the blocks when the trims since began */
+    u64 freed;   /* what they freed since */
+    u64 held;    /* the blocks when the trims stopped, 0 when they go on */
+    u32 present; /* the present they began at: four later, the frames that held what they freed are done */
+} g_given;
 void vk_mem_trim(u64 extra, int force) {
     u64 usage, budget, need = 0;
     if (force) {
@@ -2187,6 +2197,36 @@ void vk_mem_trim(u64 extra, int force) {
         need = extra > gone ? extra - gone : 0;
     } else if (usage <= budget / 100 * 90)
         return;
+    if (!force) {
+        u64 blocks = vk_mem_blocks();
+        if (g_given.held) {
+            if (blocks <= g_given.held) return;
+            LOG_LIMIT(20,
+                      "vulkan: VMA's blocks hold %llu MB, past the %llu MB of when trimming stopped: the caches trim "
+                      "again\n",
+                      (unsigned long long)(blocks >> 20), (unsigned long long)(g_given.held >> 20));
+            g_given.held = 0;
+            g_given.freed = 0;
+        } else if (g_given.freed && g_vk_present - g_given.present >= 4) { /* gone back, or stayed */
+            if (vk_mem_trim_held(g_given.blocks, g_given.freed, blocks)) {
+                u64 back = g_given.blocks > blocks ? g_given.blocks - blocks : 0;
+                g_given.held = blocks;
+                LOG_LIMIT(20,
+                          "vulkan: the trims freed %llu MB and VMA's blocks gave %llu MB of it back (%llu MB held): "
+                          "the caches stop trimming, at %llu of %llu MB budgeted in use, until the blocks grow\n",
+                          (unsigned long long)(g_given.freed >> 20), (unsigned long long)(back >> 20),
+                          (unsigned long long)(blocks >> 20), (unsigned long long)(usage >> 20),
+                          (unsigned long long)(budget >> 20));
+                g_given.freed = 0;
+                return;
+            }
+            g_given.freed = 0;
+        }
+        if (!g_given.freed) {
+            g_given.blocks = blocks;
+            g_given.present = (u32)g_vk_present;
+        }
+    }
     SNX_ZONE_V(z, "vk mem trim", force);
     /* What goes first is what can be had again without loss: textures (loaded again from memory), own buffers (copied
        again), then render targets memory holds. Those unused for a second go down to 80% of the budget, room for what
@@ -2232,6 +2272,7 @@ void vk_mem_trim(u64 extra, int force) {
         short_of = got < want;
     }
     g_trimmed += freed;
+    if (!force) g_given.freed += freed;
     astc_bc_suggest(force, extra, usage, budget, freed, working);
     if (short_of) g_trim_dry = g_vk_present + 1;
     if (freed || short_of)

@@ -27,5 +27,13 @@ int main(void) {
        was), within a smaller allocation cap either way */
     assert(vk_mem_block_size(1, 256 * MB) == 32 * MB && vk_mem_block_size(0, 256 * MB) == 256 * MB);
     assert(vk_mem_block_size(1, 16 * MB) == 16 * MB && vk_mem_block_size(0, 64 * MB) == 64 * MB);
+    /* what trims gave back, with that phone's numbers: 1312 MB of blocks, and trims that freed 120 MB of textures
+       and targets left them at 1312: held. A quarter back or more goes on; under 16 MB freed says nothing */
+    assert(vk_mem_trim_held(1312 * MB, 120 * MB, 1312 * MB));
+    assert(vk_mem_trim_held(1312 * MB, 120 * MB, 1290 * MB));  /* 22 MB back of 120 */
+    assert(!vk_mem_trim_held(1312 * MB, 120 * MB, 1280 * MB)); /* 32 back, a quarter and more */
+    assert(!vk_mem_trim_held(1312 * MB, 120 * MB, 1100 * MB));
+    assert(!vk_mem_trim_held(1312 * MB, 15 * MB, 1312 * MB));
+    assert(vk_mem_trim_held(1312 * MB, 120 * MB, 1400 * MB)); /* the blocks grew meanwhile: none back, held */
     return 0;
 }

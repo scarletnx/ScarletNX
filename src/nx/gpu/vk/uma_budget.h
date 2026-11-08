@@ -29,4 +29,14 @@ static inline uint64_t vk_mem_block_size(int uma, uint64_t cap) {
     return cap < block ? cap : block;
 }
 
+/* What trims give the system back: only a block they empty, the rest staying in the blocks as room the next allocations
+   take. Trims that freed freed bytes (16 MiB or more), with VMA's blocks at blocks_then before them and blocks_now once
+   what they freed was released, and gave back less than a quarter of it only make the next frames load it again, the
+   memory the budget asks for still not the system's: the caches stop trimming (vk_mem_trim) */
+#define SNX_VK_GIVEN_LEAST (16ull << 20)
+static inline int vk_mem_trim_held(uint64_t blocks_then, uint64_t freed, uint64_t blocks_now) {
+    uint64_t back = blocks_then > blocks_now ? blocks_then - blocks_now : 0;
+    return freed >= SNX_VK_GIVEN_LEAST && back < freed / 4;
+}
+
 #endif

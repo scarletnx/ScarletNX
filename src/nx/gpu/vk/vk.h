@@ -266,6 +266,9 @@ int vk_lock_held(void);  /* this thread holds vk_lock */
 /* memory.c. vk_mem_init once the device exists, before the allocator (VMA's blocks are kept within the cap):
    sparse_queue is whether the graphics queue's family can bind sparse memory */
 void vk_mem_init(int sparse_queue);
+/* the device memory VMA's blocks hold in the images' heap: what the system gave, used or not */
+u64 vk_mem_blocks(void);
+
 /* an image with its memory: one VMA allocation in mem, or, past g_vk.alloc_cap, pieces (mem stays VK_NULL_HANDLE).
    0 on failure. Destroyed with vk_image_destroy (vk_defer_image does that), never vmaDestroyImage */
 int vk_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem);

@@ -103,6 +103,12 @@ void vk_mem_untrack(VmaAllocation a) {
 }
 #endif
 
+u64 vk_mem_blocks(void) {
+    VmaBudget b[VK_MAX_MEMORY_HEAPS];
+    vmaGetHeapBudgets(g_vk.vma, b);
+    return b[vk_mem_heap()].statistics.blockBytes;
+}
+
 void vk_mem_init(int sparse_queue) {
     VkPhysicalDeviceMaintenance3Properties m3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES};
     VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &m3};
