@@ -336,11 +336,9 @@ int snx_vita_main(int argc, char** argv) {
                vita_shot_every (a Switch game's are g_unattended_ini's, whose script the Switch runtime parses), and
                vulkan_video (which the Vita's AVC decoder doesn't take yet) */
             char key[64];
-            size_t length = (size_t)(strchr(a, '=') - a - 2);
+            const char* value = ini_arg(a, key, sizeof key);
             const IniOpt* o = NULL;
-            if (length < sizeof key) {
-                memcpy(key, a + 2, length);
-                key[length] = 0;
+            if (value) {
                 o = ini_find(g_vita_debug_ini, !strcmp(key, "script")      ? "vita_script"
                                                : !strcmp(key, "press_len") ? "vita_press_len"
                                                : !strcmp(key, "shot_every") ? "vita_shot_every"
@@ -352,7 +350,7 @@ int snx_vita_main(int argc, char** argv) {
                 fprintf(stderr, "scarletnx-vita: unknown setting: %s\n", a);
                 return 2;
             }
-            ini_read(o, strchr(a, '=') + 1);
+            ini_read(o, value);
         } else if (a[0] == '-' || input) {
             fprintf(stderr, "scarletnx-vita: unexpected argument: %s\n", a);
             usage(stderr);

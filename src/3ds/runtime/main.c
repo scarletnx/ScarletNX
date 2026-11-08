@@ -756,12 +756,10 @@ int snx_ctr_main(int argc, char** argv) {
                --key=value; --script= is ctr_script, a Switch game's name for it. gamepad_map is the input's to read:
                its row's setter keeps the map for a Switch game's pads */
             char key[64];
-            size_t length = (size_t)(strchr(arg, '=') - arg - 2);
+            const char* value = ini_arg(arg, key, sizeof key);
             const IniOpt* o = NULL;
             bool map = false;
-            if (length < sizeof key) {
-                memcpy(key, arg + 2, length);
-                key[length] = 0;
+            if (value) {
                 o = ini_find(g_ctr_display_ini, key);
                 if (!o) o = ini_find(g_ctr_debug_ini, !strcmp(key, "script") ? "ctr_script" : key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_debug_ini, key);
@@ -773,12 +771,12 @@ int snx_ctr_main(int argc, char** argv) {
                 map = !strcmp(key, "gamepad_map");
             }
             if (map)
-                snx_ctr_input_map(strchr(arg, '=') + 1);
+                snx_ctr_input_map(value);
             else if (!o) {
                 fprintf(stderr, "scarletnx-3ds: unknown setting: %s\n", arg);
                 return 2;
             } else
-                ini_read(o, strchr(arg, '=') + 1);
+                ini_read(o, value);
         } else if ((!positional && arg[0] == '-') || input) {
             fprintf(stderr, "scarletnx-3ds: unexpected argument: %s\n", arg);
             usage(stderr);
