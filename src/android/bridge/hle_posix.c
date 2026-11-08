@@ -175,6 +175,11 @@ void hle_posix_init(void) {
 #endif
     read_timezone();
     read_zone_names();
+#ifdef _WIN32
+    /* Winsock before any socket call: a descriptor the guest got from elsewhere then has Winsock's own errors */
+    int e = snx_net_init();
+    if (e) fprintf(stderr, "scarletnx-android: Winsock does not start (%d): the guest's sockets fail\n", e);
+#endif
 }
 
 FILE* hle_file(uint64_t guest) {
