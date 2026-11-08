@@ -433,8 +433,9 @@ void vk_pipeline_init(void) {
     int mapped = !plat_file_map(&data, g_pcache_path) && data.data;
     if (!mapped && legacy && !plat_file_map(&data, legacy) && data.data) {
         mapped = 1;
-        LOG("vulkan: %s is not there yet: the driver's pipelines start from %s, kept as it is\n", g_pcache_path,
-            legacy);
+        LOG("vulkan: %s, the file every driver shared before each had its own, stays where it is, read as the start "
+            "of %s, which is not there yet\n",
+            legacy, g_pcache_path);
     }
     if (mapped) {
         ci.initialDataSize = (size_t)data.size;
@@ -2547,9 +2548,9 @@ static void pf_start_load(void) {
         snx_path_native(legacy);
         int r = pf_adopt(path, legacy, &bytes, why, sizeof why);
         if (r > 0)
-            LOG("vulkan: %s is not there yet: %s, the file every driver shared before each had its own, copied to it "
-                "(%llu KB) and kept as it is\n",
-                path, legacy, (unsigned long long)(bytes >> 10));
+            LOG("vulkan: %s, the file every driver shared before each had its own, stays where it is, copied (%llu "
+                "KB) as the start of %s, which was not there\n",
+                legacy, (unsigned long long)(bytes >> 10), path);
         else if (r < 0)
             WARN("vulkan: cannot copy %s to %s (%s): %s of %s starts empty\n", legacy, path, why,
                  k ? "the shaders of the game's own programs" : "the shader cache", g_vk.driver_name);
