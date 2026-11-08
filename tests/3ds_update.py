@@ -42,6 +42,14 @@ def main():
         assert (
             f'title {TITLE:016x} name PATCHED exheader {UPDATE_TITLE:016x} update-file 1 base-file 0 icon 1' in out
         ), out
+
+        # a console's update: the NCCH under the update's ID, its ExHeader naming the game's program
+        def console_update():
+            header, _ = titled(UPDATE_TITLE)
+            return ncch(patch_header=header, romfs_options={'file_name': 'patched.txt'})
+
+        code, out = run(game, cia(application=console_update(), title=UPDATE_TITLE), 'console')
+        assert code == 0 and f'exheader {TITLE:016x} update-file 1' in out, out
         code, out = run(game, update_ncch(), 'bare')
         assert code == 0 and 'name PATCHED' in out, out
         wrong = 0x0004000E00099900

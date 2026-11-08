@@ -153,8 +153,8 @@ UPDATE_TITLE = (TITLE & 0xFFFFFFFF) | 0x0004000E00000000
 
 def titled(tid):
     """The patches giving an NCCH and its ExHeader another program ID, as an update partition's title has: the
-    NCCH header's at 0x118 and the ExHeader's at 0x200 must both say it, as the loader checks them against each
-    other."""
+    NCCH header's at 0x118 and the ExHeader's at 0x200 (the loader also takes a console update's ExHeader, which
+    names the game's ID)."""
 
     def header(h):
         put(h, 0x118, '<Q', tid)

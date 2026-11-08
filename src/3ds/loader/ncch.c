@@ -66,7 +66,10 @@ static bool parse(CtrReader* r, const CtrSource* s, CtrNcch* n, bool overlay) {
     if (!ctr_read(r, boot, 0x200, exheader, sizeof n->exheader)) return false;
     unsigned char hash[32];
     if (!ctr_sha256(r, exheader, 0x400, hash)) return false;
-    if (memcmp(hash, h + 0x160, 32) || snx_ld_le64(exheader + 0x200) != wanted)
+    /* an update's ExHeader names the program it runs, the game's own ID, as the console's updates do; ours name the
+       update's ID too */
+    uint64_t program = snx_ld_le64(exheader + 0x200), game = (wanted & 0xFFFFFFFFull) | 0x0004000000000000ull;
+    if (memcmp(hash, h + 0x160, 32) || (program != wanted && !((wanted >> 32) == 0x0004000Eu && program == game)))
         return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "ExHeader hash/program ID mismatch");
     if (n->proto) { /* Azahar gives a proto's application the usual priority and the application resource limit */
         if (!exheader[0x20f]) exheader[0x20f] = 0x30;
