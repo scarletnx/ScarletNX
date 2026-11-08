@@ -40,13 +40,20 @@ typedef void (*VkBanSay)(const char* line, int warn);
 
 /* reads text as the table: 1, or 0 with the first error in err (its line, the value and why) */
 int vk_bans_load(const char* text, char* err, size_t n);
+/* vulkan_ban_ignore: the keys whose bans a run goes over, to test again whether a driver still breaks them; list,
+   separated by commas, each a key of the table (every line on it). 1, or 0 with the first key the table has not and
+   the three nearest it has in err. A new load lets them go */
+int vk_bans_ignore(const char* list, char* err, size_t n);
 /* the device the queries below are about */
 void vk_bans_device(const VkBanDevice* d);
-/* the table's line of the "off" ban on key that holds for the device, 0 for none: every line on key that holds is
-   claimed, as the renderer asked for it */
+/* says each key vulkan_ban_ignore names: a warning with the ban it goes over where an off line on it holds for the
+   device, else a line that none does */
+void vk_bans_ignored(VkBanSay say);
+/* the table's line of the "off" ban on key that holds for the device, 0 for none or one vulkan_ban_ignore goes over:
+   every line on key that holds is claimed, as the renderer asked for it */
 uint32_t vk_ban_find(const char* key);
 /* vk_ban_find, and the line that says key is off said where have (the device has it, so it is turned off): 0 where
-   no ban holds or have is 0 */
+   no ban holds, vulkan_ban_ignore goes over it, or have is 0 */
 uint32_t vk_ban(const char* key, int have, VkBanSay say);
 /* line's driver and versions as a sentence's subject: "NVIDIA's driver before 580.119.02", "Qualcomm's driver on
    Android", "Qualcomm's driver on the GPUs 0x6020200, 0x7000201" */
@@ -54,9 +61,9 @@ void vk_ban_scope(uint32_t line, char* out, size_t n);
 /* the scope, what breaks, and where that is known from: "NVIDIA's driver before 580.119.02 breaks dynamic vertex
    input (Eden's ban, ...; extension_bans.txt:42)" */
 void vk_ban_why(uint32_t line, char* out, size_t n);
-/* takes out of e every extension an "off" line without an override holds for, each said; says the "warn" lines that
-   hold for an extension e has and for a feature; the rest (features, overrides) wait for vk_ban and vk_ban_find. How
-   many it took out */
+/* takes out of e every extension an "off" line without an override holds for, but those vulkan_ban_ignore goes over,
+   each said; says the "warn" lines that hold for an extension e has and for a feature; the rest (features, overrides)
+   wait for vk_ban and vk_ban_find. How many it took out */
 uint32_t vk_bans_filter(SnxVkExtensions* e, VkBanSay say);
 /* says each "off" line that holds and nothing claimed */
 void vk_bans_unclaimed(VkBanSay say);

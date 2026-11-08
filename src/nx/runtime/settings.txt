@@ -248,6 +248,16 @@ setting Vertex input dynamic state
     help Android, as Eden; on = as dynamic state wherever the driver has it, those too; off = in the pipeline. Dynamic,
     help one pipeline serves every layout a program is drawn with, so fewer pipelines are made; in the pipeline, each
     help layout takes one of its own. Any other value stops the game, saying so
+setting Vulkan ban ignore
+    label Ignore driver bans
+    key vulkan_ban_ignore
+    text 512
+    default ""
+    startup
+    help Keys of the extension bans (the drivers known to break a Vulkan extension or feature), separated by commas,
+    help whose bans this run goes over, to test again whether the driver still breaks them: VK_KHR_present_id2 or
+    help VK_KHR_present_id2,shaderFloat16. The log says each with the ban it goes over. Empty: every ban holds. A key
+    help the table has not stops the game, naming the nearest ones it has
 setting ASTC mode
     label ASTC textures
     key astc_mode

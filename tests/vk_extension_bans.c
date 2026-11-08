@@ -5,12 +5,15 @@
    banned extension out of a stand-in device's list and leaving one a setting owns; the features asked for, said only
    where the device has them; the "off" lines nothing asked for, said; the log lines naming the key, the device, its
    driver and version, and the line; and the table the build carries, read whole, against the drivers its lines are
-   about.
+   about; and vulkan_ban_ignore read from a game's .ini, a key the table has going over its ban, said with the ban, and
+   one it has not refused with the nearest keys it has.
    Its other uses, for retesting a ban (the workspace's tools/vk-ban-retest.py reads their lines):
      --devices [--table FILE]                     this machine's Vulkan devices, and the lines that hold for each
      --match DRIVER VERSION [SYSTEM [DEVICEID]] [--table FILE]   the lines that hold for a driver given by hand
      --check FILE                                 FILE read as the table: its first error, or that it reads */
 #include "nx/gpu/vk/extension_bans.h"
+#include "nx/runtime/ini.h"
+#include "snx_settings.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -43,6 +46,13 @@ static int said_with(const char* a, const char* b, const char* c) {
         if (strstr(g_test.said[i], a) && (!b || strstr(g_test.said[i], b)) && (!c || strstr(g_test.said[i], c)))
             return (int)i;
     return -1;
+}
+static void say_ini(const char* line) { say(line, 1); }
+/* how many said lines name a */
+static unsigned count_with(const char* a) {
+    unsigned n = 0;
+    for (unsigned i = 0; i < g_test.nsaid; i++) n += strstr(g_test.said[i], a) != NULL;
+    return n;
 }
 static void show_said(void) {
     for (unsigned i = 0; i < g_test.nsaid; i++)
@@ -459,6 +469,120 @@ static void check_shipped(void) {
     }
 }
 
+/* a game's .ini read into the Graphics table as the runtime reads its rows (ini_read) */
+static void read_graphics(const char* text) {
+    char line[700];
+    int graphics = 0;
+    while (*text) {
+        size_t n = strcspn(text, "\n");
+        snprintf(line, sizeof line, "%.*s", (int)n, text);
+        text += n + (text[n] == '\n');
+        if (line[0] == '[') graphics = !strcmp(line, "[Graphics]");
+        char* eq = strchr(line, '=');
+        if (!graphics || line[0] == ';' || !eq) continue;
+        *eq = 0;
+        const IniOpt* o = ini_find(g_graphics_ini, line);
+        if (o) ini_read(o, eq + 1);
+    }
+}
+
+/* vulkan_ban_ignore: its row, a .ini with a key the table has and one with a key it has not, and what each does */
+static void check_ignore(void) {
+    char err[1024] = "";
+    const IniOpt* o = ini_find(g_graphics_ini, "vulkan_ban_ignore");
+    CHECK(o && o->type == INI_TEXT && o->def && !o->def[0] && (o->flags & INI_STARTUP) &&
+              sizeof g_settings.vulkan_ban_ignore == 512,
+          "vulkan_ban_ignore is a startup text of the Graphics table, empty by default");
+    /* a key the table has: present_id2 stays in an NVIDIA 590's list, and the log says over which ban */
+    read_graphics("[Display]\nfullscreen=0\n[Graphics]\nvulkan_ban_ignore=VK_KHR_present_id2\n");
+    CHECK(!strcmp(g_settings.vulkan_ban_ignore, "VK_KHR_present_id2"), "vulkan_ban_ignore reads from the .ini");
+    CHECK(vk_bans_load(snx_vk_extension_bans_text, err, sizeof err), err);
+    CHECK(vk_bans_ignore(g_settings.vulkan_ban_ignore, err, sizeof err), err);
+    VkExtensionProperties list[2] = {{"VK_KHR_present_id2", 1}, {"VK_KHR_present_wait2", 1}};
+    SnxVkExtensions e = {list, 2};
+    VkBanDevice nv = {"NVIDIA GeForce RTX 3060", "NVIDIA", "590.48.01",     VK_DRIVER_ID_NVIDIA_PROPRIETARY,
+                      NV(590u, 48u, 1u),         0x2503,   SNX_VK_BAN_LINUX};
+    vk_bans_device(&nv);
+    g_test.nsaid = 0;
+    vk_bans_ignored(say);
+    CHECK(vk_bans_filter(&e, say) == 0 && e.count == 2, "the ban vulkan_ban_ignore goes over takes nothing out");
+    int over = said_with("vulkan: VK_KHR_present_id2 is not banned on NVIDIA GeForce RTX 3060 (NVIDIA, 590.48.01, "
+                         "driver version 590.48.01): vulkan_ban_ignore=VK_KHR_present_id2 goes over the ban: NVIDIA's "
+                         "driver before 595.0.0 hangs games",
+                         "extension_bans.txt:", NULL);
+    CHECK(over >= 0 && g_test.warned[over], "the key gone over is a warning with the value and the ban");
+    CHECK(said_with("VK_KHR_present_id2 is off", NULL, NULL) < 0, "and not said off");
+    vk_bans_unclaimed(say);
+    CHECK(count_with("VK_KHR_present_id2") == 1, "one line names present_id2 in all");
+    if (count_with("VK_KHR_present_id2") != 1) show_said();
+    /* the same key where no ban on it holds: said plainly, no warning */
+    VkBanDevice nv595 = nv;
+    nv595.driver_version = NV(595u, 0u, 0u);
+    nv595.driver_info = "595.0.00";
+    vk_bans_device(&nv595);
+    g_test.nsaid = 0;
+    vk_bans_ignored(say);
+    CHECK(g_test.nsaid == 1 && !g_test.warned[0] &&
+              said_with("vulkan: VK_KHR_present_id2 is not banned on NVIDIA GeForce RTX 3060 (NVIDIA, 595.0.00, driver "
+                        "version 595.0.00), with or without vulkan_ban_ignore=VK_KHR_present_id2: no off line on it "
+                        "holds there",
+                        NULL, NULL) >= 0,
+          "a key no ban holds for says so");
+    if (g_test.nsaid != 1) show_said();
+    /* the setting's own ban: dynamic vertex input on NVIDIA 575 holds no more */
+    CHECK(vk_bans_ignore("VK_EXT_vertex_input_dynamic_state", err, sizeof err), err);
+    VkBanDevice nv575 = nv;
+    nv575.driver_version = NV(575u, 64u, 5u);
+    vk_bans_device(&nv575);
+    CHECK(vk_ban_find("VK_EXT_vertex_input_dynamic_state") == 0, "vulkan_ban_ignore goes over an owned ban too");
+    CHECK(vk_bans_ignore("", err, sizeof err) && vk_ban_find("VK_EXT_vertex_input_dynamic_state") != 0,
+          "an empty vulkan_ban_ignore lets every ban hold again");
+
+    /* a key the table has not: refused with the key and the nearest ones it has */
+    read_graphics("[Graphics]\nvulkan_ban_ignore=VK_KHR_present_id\n");
+    CHECK(!strcmp(g_settings.vulkan_ban_ignore, "VK_KHR_present_id"), "the wrong key reads from the .ini as written");
+    CHECK(!vk_bans_ignore(g_settings.vulkan_ban_ignore, err, sizeof err) &&
+              strstr(err, "vulkan_ban_ignore=VK_KHR_present_id: VK_KHR_present_id is no key of the extension bans; "
+                          "the nearest it has: VK_KHR_present_id2,"),
+          err);
+    CHECK(!vk_bans_ignore("shaderFloat16, VK_EXT_custom_border_colour", err, sizeof err) &&
+              strstr(err, ": VK_EXT_custom_border_colour is no key of the extension bans; the nearest it has: "
+                          "VK_EXT_custom_border_color,"),
+          err);
+    char longer[600];
+    memset(longer, 'a', sizeof longer - 1);
+    longer[sizeof longer - 1] = 0;
+    CHECK(!vk_bans_ignore(longer, err, sizeof err) &&
+              strstr(err, "vulkan_ban_ignore is 599 bytes, past the 511 it holds"),
+          err);
+
+    /* the stand-in table: an off feature and an off extension gone over, a warning's key, separators */
+    CHECK(vk_bans_load(g_table, err, sizeof err), err);
+    CHECK(vk_bans_ignore(" featureD ,, VK_EXT_b,featureF ", err, sizeof err), err);
+    VkExtensionProperties radv[2] = {{"VK_EXT_b", 1}, {"VK_EXT_j", 1}};
+    SnxVkExtensions er = {radv, 2};
+    device(VK_DRIVER_ID_MESA_RADV, MESA(26u, 0u, 4u), 0x73bf, SNX_VK_BAN_LINUX);
+    g_test.nsaid = 0;
+    vk_bans_ignored(say);
+    CHECK(said_with("vulkan: featureD is not banned on", "goes over the ban: RADV up to 26.0.99", NULL) >= 0 &&
+              said_with("vulkan: VK_EXT_b is not banned on",
+                        "vulkan_ban_ignore= featureD ,, VK_EXT_b,featureF  goes over the ban: RADV from 25.0.3",
+                        NULL) >= 0 &&
+              said_with("vulkan: featureF is not banned on", "no off line on it holds there", NULL) >= 0 &&
+              g_test.nsaid == 3,
+          "each key of the list said once, with the value as given");
+    if (g_test.nsaid != 3) show_said();
+    g_test.nsaid = 0;
+    CHECK(vk_bans_filter(&er, say) == 1 && er.count == 1 && !strcmp(radv[0].extensionName, "VK_EXT_b"),
+          "the filter leaves VK_EXT_b, which both its lines ban, and takes VK_EXT_j");
+    CHECK(vk_ban("featureD", 1, say) == 0 && said_with("featureD is off", NULL, NULL) < 0, "featureD stays on unsaid");
+    vk_bans_unclaimed(say);
+    CHECK(said_with("VK_EXT_b", NULL, NULL) < 0 && said_with("featureD", NULL, NULL) < 0,
+          "a ban gone over is no unclaimed one");
+    CHECK(vk_bans_load(g_table, err, sizeof err) && vk_ban_find("featureD") == 6,
+          "a new load lets every ban hold again");
+}
+
 /* text as a whole file */
 static int read_table(const char* path) {
     FILE* f = fopen(path, "rb");
@@ -598,6 +722,8 @@ int main(int argc, char** argv) {
     check_matching();
     check_filter();
     check_shipped();
+    ini_set_say(say_ini);
+    check_ignore();
     printf("%s: %u checks, %u failed\n", g_test.failures ? "FAIL" : "PASS", g_test.checks, g_test.failures);
     return g_test.failures != 0;
 }

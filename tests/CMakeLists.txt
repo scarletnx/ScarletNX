@@ -2067,11 +2067,11 @@ if(NOT SNX_TOOLS_ONLY)
     add_test(NAME vk_vertex_input COMMAND snx-test-vk-vertex-input)
     # the drivers known to break an extension or feature (gpu/vk/extension_bans.c), with no GPU: the table's errors,
     # each driver's versions at every bound's edge, the filter and the features asked for against stand-in devices,
-    # and the table the build carries. With --devices it lists the lines that hold for this machine's drivers, the
-    # workspace's retest reads that
+    # the table the build carries, and vulkan_ban_ignore read from a .ini. With --devices it lists the lines that hold
+    # for this machine's drivers, the workspace's retest reads that
     if(TARGET snx_vk_common)
         add_executable(snx-test-vk-bans vk_extension_bans.c ${snx_vk_extension_bans_sources}
-                       "${volk_SOURCE_DIR}/volk.c")
+                       "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c" "${volk_SOURCE_DIR}/volk.c")
         set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
         snx_test_target(snx-test-vk-bans 11)
         target_link_libraries(snx-test-vk-bans PRIVATE snx_nx_flags snx_vk_common)
