@@ -97,7 +97,8 @@ static void check_files(void) {
     CHECK(!strcmp(g_settings.vertex_input_dynamic_state, "auto") &&
               vk_vi_mode(g_settings.vertex_input_dynamic_state) == SNX_VK_VI_AUTO,
           "a .ini without the key reads as auto");
-    CHECK(g_settings.resolution_scale == 1.0f && g_settings.shadows == 1, "the old file's other Graphics rows read");
+    CHECK(g_settings.resolution_scale == 0.0f && g_settings.shadows == 1,
+          "the old file's other Graphics rows read, and its resolution, deprecated, leaves resolution_scale's Auto");
     read_graphics("[Graphics]\nvertex_input_dynamic_state=off\n");
     CHECK(vk_vi_mode(g_settings.vertex_input_dynamic_state) == SNX_VK_VI_OFF, "vertex_input_dynamic_state=off reads");
     read_graphics("[Graphics]\nvertex_input_dynamic_state=on\n");

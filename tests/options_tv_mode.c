@@ -661,21 +661,24 @@ static int picks_menu(void) {
 /* a setting read at the start: its pick is the next start's value, this run keeping the one it started with; taken
    out, the next start's is the value without it (the .ini's, else the default), which ini_next_start says */
 static int picks_next(void) {
-    char *ini, *picks, *dir = picks_game("[Graphics]\nresolution=2\n", "[Graphics]\nresolution=1.25\n", &ini, &picks),
-                      next[32];
-    const IniOpt* o = ini_find(g_graphics_ini, "resolution");
+    char *ini, *picks,
+        *dir = picks_game("[Graphics]\nresolution_scale=2\n", "[Graphics]\nresolution_scale=1.25\n", &ini, &picks),
+        next[32];
+    const IniOpt* o = ini_find(g_graphics_ini, "resolution_scale");
     g_test.write = 1;
     ini_open(ini);
     CHECK(o && *(const float*)o->var == 1.25f);
-    CHECK(ini_next_start("resolution", next, sizeof next) && !strcmp(next, "1.25"));
-    ini_set_apply("resolution", "1.5");
-    CHECK(ini_next_start("resolution", next, sizeof next) && !strcmp(next, "1.5") && ini_poll_due());
+    CHECK(ini_next_start("resolution_scale", next, sizeof next) && !strcmp(next, "1.25"));
+    ini_set_apply("resolution_scale", "1.5");
+    CHECK(ini_next_start("resolution_scale", next, sizeof next) && !strcmp(next, "1.5") && ini_poll_due());
     ini_poll(0);
-    CHECK(*(const float*)o->var == 1.25f && ini_next_start("resolution", next, sizeof next) && !strcmp(next, "1.5"));
-    ini_unpick("resolution");
-    CHECK(!ini_next_start("resolution", next, sizeof next) && !next[0]); /* until the poll takes it out */
+    CHECK(*(const float*)o->var == 1.25f && ini_next_start("resolution_scale", next, sizeof next) &&
+          !strcmp(next, "1.5"));
+    ini_unpick("resolution_scale");
+    CHECK(!ini_next_start("resolution_scale", next, sizeof next) && !next[0]); /* until the poll takes it out */
     ini_poll(0);
-    CHECK(ini_next_start("resolution", next, sizeof next) && !strcmp(next, "2") && *(const float*)o->var == 1.25f);
+    CHECK(ini_next_start("resolution_scale", next, sizeof next) && !strcmp(next, "2") &&
+          *(const float*)o->var == 1.25f);
     CHECK(!snx_path_exists(picks) && !ini_next_start("vsync", next, sizeof next));
     CHECK(!snx_remove_tree(dir));
     free(ini);

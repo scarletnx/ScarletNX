@@ -1230,7 +1230,7 @@ int main(void) {
        start) and shows the pick for it; a step saves to the game's picks, applied by the next tick (ini_set_apply): a
        float by a quarter, a text's words round; a text with no words is only read. Back to the entry, then to it */
     {
-        const IniOpt* resolution = ini_find(g_graphics_ini, "resolution");
+        const IniOpt* resolution = ini_find(g_graphics_ini, "resolution_scale");
         const IniOpt* ldn = ini_find(g_network_ini, "ldn");
         assert(resolution && resolution->type == INI_FLOAT && ldn && ldn->type == INI_TEXT);
         *(float*)resolution->var = 1.0f;
@@ -1248,7 +1248,7 @@ int main(void) {
         assert(text_at(1, 0, "SCARLETNX  /  SETTINGS  /  GRAPHICS") && text_at(1, 3, "\xFE Resolution scale (next start)") &&
                shows("< 1 >"));
         picks.applied[0] = 0;
-        assert(overlay_side(1) == OVERLAY_NONE && !strcmp(picks.applied, "resolution=1.25"));
+        assert(overlay_side(1) == OVERLAY_NONE && !strcmp(picks.applied, "resolution_scale=1.25"));
         draw();
         assert(shows("< 1.25 * >") && *(float*)resolution->var == 1.0f); /* the next start's; the run keeps its 1 */
         assert(overlay_back() == OVERLAY_NONE);
