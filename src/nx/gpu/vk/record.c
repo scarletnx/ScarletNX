@@ -646,13 +646,16 @@ void rec_CmdDispatchIndirect(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off)
     rec_CmdDispatchIndirect_raw(cb, buf, off, 0, 0);
     if (timed) vk_gpuprof_dispatch_end(cb);
 }
-/* the game's compute dispatches (compute.c) carry the program's key and code address, so a fault names its shader */
+/* the game's compute dispatches (compute.c) carry the program's key and code address, so a fault names its shader, and
+   vk_gpu_profile sums their time by program */
 void rec_CmdDispatchKey(VkCommandBuffer cb, u32 x, u32 y, u32 z, u64 key, u64 addr) {
+    vk_gpuprof_tag(key);
     int timed = vk_gpuprof_dispatch_begin(cb);
     rec_CmdDispatch_raw(cb, x, y, z, key, addr);
     if (timed) vk_gpuprof_dispatch_end(cb);
 }
 void rec_CmdDispatchIndirectKey(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off, u64 key, u64 addr) {
+    vk_gpuprof_tag(key);
     int timed = vk_gpuprof_dispatch_begin(cb);
     rec_CmdDispatchIndirect_raw(cb, buf, off, key, addr);
     if (timed) vk_gpuprof_dispatch_end(cb);
