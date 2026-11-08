@@ -39,6 +39,7 @@
 #include "support/fermi2d_ref.h"
 #include "support/nvdec_ref.h"
 #include "support/vic_ref.h"
+#include "support/thread_nice.h"
 #include <libavutil/buffer.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -6005,6 +6006,16 @@ static int run_headless(int argc, char** argv) {
           snx_vk_pipeline_workers(0, 64) == 12);
     CHECK(snx_vk_pipeline_workers(5, 12) == 5 && snx_vk_pipeline_workers(32, 4) == 32 &&
           snx_vk_pipeline_workers(1, 64) == 1);
+#if defined(__linux__)
+    if (vk_rec_threaded()) { /* the workers started with the first draws': two at the main thread's nice, the rest low */
+        int n = snx_vk_pipeline_workers(g_settings.pipeline_threads, plat_cpu_count()), low, normal, other;
+        int want_low = snx_vk_pipeline_low_workers(n);
+        int split = thread_nice_settled("Vulkan pipelines", n - want_low, want_low, &normal, &low, &other);
+        printf("pipeline workers: %d at the main thread's nice, %d at nice +%d, %d at another (%d and %d expected)\n",
+               normal, low, SNX_THREAD_LOW_NICE, other, n - want_low, want_low);
+        CHECK(split);
+    }
+#endif
     /* FFmpeg takes the device for Vulkan Video exactly when it has the decode queue */
     AVBufferRef* video_device = g_renderer->nvdec_hw_device();
     CHECK(!video_device == (g_vk.video_family == ~0u));

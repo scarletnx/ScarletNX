@@ -269,3 +269,8 @@ int snx_vk_pipeline_workers(int setting, int cpus) {
     if (n > 12) n = 12;
     return n;
 }
+/* Two workers at normal priority, the two every machine had before Auto counted the CPUs, keep the pipelines the
+   frame waits for while the game plays at that pace. The rest take the CPU time the game's threads leave: all of it
+   in a burst, where the frame waits and the game idles, and what the system gives after the game's threads while it
+   plays */
+int snx_vk_pipeline_low_workers(int workers) { return workers > 2 ? workers - 2 : 0; }
