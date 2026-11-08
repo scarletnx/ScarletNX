@@ -78,6 +78,8 @@ public class Activity extends ContextThemeWrapper
         lastNonConfigurationInstance = lastNonConfig;
         window = new Window(this);
         window.setCallback(this);
+        /* the activity makes the views that its factories leave (a FragmentActivity's fragment containers) */
+        window.getLayoutInflater().setPrivateFactory(this);
         window.setWindowManager(wm, null, info.name);
         windowManager = wm;
         if (info.softInputMode != 0) window.setSoftInputMode(info.softInputMode);

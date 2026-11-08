@@ -264,6 +264,11 @@ public abstract class Layout {
     public final int getLineBottom(int line) { return getLineTop(line + 1); }
     public final int getLineBottom(int line, boolean includeLineSpacing) { return getLineBottom(line); }
     public final int getLineBaseline(int line) { return getLineTop(line + 1) - getLineDescent(line); }
+    /** the line's baseline, with its bounds across the layout's width */
+    public int getLineBounds(int line, android.graphics.Rect bounds) {
+        if (bounds != null) bounds.set(0, getLineTop(line), width, getLineTop(line + 1));
+        return getLineBaseline(line);
+    }
     public int getTopPadding() { return topPadding; }
     public int getBottomPadding() { return bottomPadding; }
     public int getEllipsisStart(int line) { return ellipsisStarts[line]; }

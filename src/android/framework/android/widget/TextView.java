@@ -165,6 +165,7 @@ public class TextView extends View {
     public final void setEditableFactory(Editable.Factory factory) { editableFactory = factory; setText(text); }
     public final void setSpannableFactory(Spannable.Factory factory) { spannableFactory = factory; setText(text); }
     private void textChanged() { layout = null; requestLayout(); invalidate(); }
+    @Override public void setTextAlignment(int textAlignment) { super.setTextAlignment(textAlignment); textChanged(); }
 
     public final void setHint(CharSequence hint) { this.hint = hint; if (text.length() == 0) textChanged(); }
     public final void setHint(int resid) { setHint(getContext().getText(resid)); }
@@ -350,11 +351,53 @@ public class TextView extends View {
     public int getMinLines() { return minLines; }
     public void setMaxWidth(int maxPixels) { maxWidth = maxPixels; textChanged(); }
     public int getMaxWidth() { return maxWidth; }
+    /* a minimum in pixels or in ems (the line height), as Android's; a width in ems is a maximum as well */
+    private int minWidth, minHeight, minEms, maxEms = -1;
+    public void setMinWidth(int minPixels) { minWidth = minPixels; minEms = 0; textChanged(); }
+    public int getMinWidth() { return minWidth; }
+    public void setMinHeight(int minPixels) { minHeight = minPixels; textChanged(); }
+    public int getMinHeight() { return minHeight; }
+    public void setMinEms(int minEms) { this.minEms = minEms; minWidth = 0; textChanged(); }
+    public int getMinEms() { return minEms; }
+    public void setMaxEms(int maxEms) { this.maxEms = maxEms; maxWidth = Integer.MAX_VALUE; textChanged(); }
+    public int getMaxEms() { return maxEms; }
+    public void setEms(int ems) { minEms = maxEms = ems; minWidth = 0; maxWidth = Integer.MAX_VALUE; textChanged(); }
+    public int getLineCount() { return layout != null ? layout.getLineCount() : 0; }
+    /** the baseline of the line, with its bounds in the view's coordinates */
+    public int getLineBounds(int line, android.graphics.Rect bounds) {
+        if (layout == null) { if (bounds != null) bounds.set(0, 0, 0, 0); return 0; }
+        int base = layout.getLineBounds(line, bounds);
+        int dx = getCompoundPaddingLeft(), dy = getTotalPaddingTop();
+        if (bounds != null) bounds.offset(dx, dy);
+        return base + dy;
+    }
+    public float getLetterSpacing() { return paint.getLetterSpacing(); }
+    public void setLetterSpacing(float letterSpacing) { paint.setLetterSpacing(letterSpacing); textChanged(); }
+    public void setImeHintLocales(android.os.LocaleList hintLocales) {}
+    public android.os.LocaleList getImeHintLocales() { return null; }
+    private int marqueeRepeatLimit = 3;
+    public void setMarqueeRepeatLimit(int marqueeLimit) { marqueeRepeatLimit = marqueeLimit; }
+    public int getMarqueeRepeatLimit() { return marqueeRepeatLimit; }
+    /* no cursor is drawn */
+    private android.graphics.drawable.Drawable cursorDrawable;
+    public android.graphics.drawable.Drawable getTextCursorDrawable() { return cursorDrawable; }
+    public void setTextCursorDrawable(android.graphics.drawable.Drawable drawable) { cursorDrawable = drawable; }
+    public void setTextCursorDrawable(int res) { cursorDrawable = res != 0 ? getContext().getDrawable(res) : null; }
     public void setEllipsize(TextUtils.TruncateAt where) { ellipsize = where; textChanged(); }
     public TextUtils.TruncateAt getEllipsize() { return ellipsize; }
     public void setLineSpacing(float add, float mult) { spacingAdd = add; spacingMult = mult; textChanged(); }
     public float getLineSpacingExtra() { return spacingAdd; }
     public float getLineSpacingMultiplier() { return spacingMult; }
+    /** the distance between two lines' baselines: the spacing added to the font's own height, as Android sets it */
+    public void setLineHeight(int lineHeight) {
+        if (lineHeight < 0) throw new IllegalArgumentException("line height must not be negative");
+        int fontHeight = paint.getFontMetricsInt(null);
+        if (lineHeight != fontHeight) setLineSpacing(lineHeight - fontHeight, 1f);
+    }
+    /** setLineHeight in a unit of TypedValue's (API level 34) */
+    public void setLineHeight(int unit, float lineHeight) {
+        setLineHeight(Math.round(android.util.TypedValue.applyDimension(unit, lineHeight, getResources().getDisplayMetrics())));
+    }
     public int getLineHeight() { return Math.round(paint.getFontMetricsInt(null) * spacingMult + spacingAdd); }
     public void setIncludeFontPadding(boolean includepad) { includePad = includepad; textChanged(); }
     public boolean getIncludeFontPadding() { return includePad; }
@@ -496,10 +539,19 @@ public class TextView extends View {
         return t;
     }
     private Layout makeLayout(CharSequence t, int width) {
-        Layout.Alignment align = switch (Gravity.getAbsoluteGravity(gravity, getLayoutDirection()) & Gravity.HORIZONTAL_GRAVITY_MASK) {
-            case Gravity.CENTER_HORIZONTAL -> Layout.Alignment.ALIGN_CENTER;
-            case Gravity.RIGHT -> Layout.Alignment.ALIGN_OPPOSITE;
-            default -> Layout.Alignment.ALIGN_NORMAL;
+        // the text alignment when the view has one, else the gravity's, as Android's TextView
+        boolean rtl = getLayoutDirection() == LAYOUT_DIRECTION_RTL;
+        Layout.Alignment align = switch (getTextAlignment()) {
+            case TEXT_ALIGNMENT_TEXT_START -> Layout.Alignment.ALIGN_NORMAL;
+            case TEXT_ALIGNMENT_TEXT_END -> Layout.Alignment.ALIGN_OPPOSITE;
+            case TEXT_ALIGNMENT_CENTER -> Layout.Alignment.ALIGN_CENTER;
+            case TEXT_ALIGNMENT_VIEW_START -> rtl ? Layout.Alignment.ALIGN_OPPOSITE : Layout.Alignment.ALIGN_NORMAL;
+            case TEXT_ALIGNMENT_VIEW_END -> rtl ? Layout.Alignment.ALIGN_NORMAL : Layout.Alignment.ALIGN_OPPOSITE;
+            default -> switch (Gravity.getAbsoluteGravity(gravity, getLayoutDirection()) & Gravity.HORIZONTAL_GRAVITY_MASK) {
+                case Gravity.CENTER_HORIZONTAL -> Layout.Alignment.ALIGN_CENTER;
+                case Gravity.RIGHT -> Layout.Alignment.ALIGN_OPPOSITE;
+                default -> Layout.Alignment.ALIGN_NORMAL;
+            };
         };
         StaticLayout.Builder b = StaticLayout.Builder.obtain(t, 0, t.length(), paint, Math.max(0, width))
             .setAlignment(align).setLineSpacing(spacingAdd, spacingMult).setIncludePad(includePad)
@@ -525,6 +577,7 @@ public class TextView extends View {
         int padH = getCompoundPaddingLeft() + getCompoundPaddingRight(), padV = getCompoundPaddingTop() + getCompoundPaddingBottom();
         int avail = wmode == MeasureSpec.UNSPECIFIED || horizontallyScrolling ? Integer.MAX_VALUE / 4 : Math.max(0, wsize - padH);
         avail = Math.min(avail, maxWidth == Integer.MAX_VALUE ? avail : Math.max(0, maxWidth - padH));
+        if (maxEms > 0) avail = Math.min(avail, maxEms * getLineHeight());
         CharSequence t = shownText();
         if (autoSizeType == AUTO_SIZE_TEXT_TYPE_UNIFORM && wmode != MeasureSpec.UNSPECIFIED && hmode != MeasureSpec.UNSPECIFIED && autoSizes.length > 0) {
             // the largest available size whose layout fits in the space that the parent gives
@@ -540,8 +593,8 @@ public class TextView extends View {
         int h = shownHeight() + padV;
         if (compound[0] != null) h = Math.max(h, compound[0].getBounds().height() + getPaddingTop() + getPaddingBottom());
         if (compound[2] != null) h = Math.max(h, compound[2].getBounds().height() + getPaddingTop() + getPaddingBottom());
-        w = Math.max(w, getSuggestedMinimumWidth());
-        h = Math.max(h, getSuggestedMinimumHeight());
+        w = Math.max(w, Math.max(getSuggestedMinimumWidth(), minEms > 0 ? minEms * getLineHeight() + padH : minWidth));
+        h = Math.max(h, Math.max(getSuggestedMinimumHeight(), minHeight));
         if (wmode != MeasureSpec.UNSPECIFIED && w > wsize) w = wsize;
         setMeasuredDimension(resolveSize(w, widthMeasureSpec), resolveSize(h, heightMeasureSpec));
         int inner = Math.max(0, getMeasuredWidth() - padH);

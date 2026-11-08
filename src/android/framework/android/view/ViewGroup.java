@@ -154,6 +154,13 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
         addViewInner(child, index, params, preventRequestLayout);
         return true;
     }
+    boolean mRtlChildDirty = true; /* a child, or a view below one, to resolve for the layout direction */
+    @Override void resolveRtlPropertiesIfNeeded() {
+        super.resolveRtlPropertiesIfNeeded();
+        if (!mRtlChildDirty) return;
+        mRtlChildDirty = false;
+        for (int i = 0; i < children.size(); ++i) children.get(i).resolveRtlPropertiesIfNeeded();
+    }
     private void addViewInner(View child, int index, LayoutParams params, boolean preventRequestLayout) {
         if (child.mParent != null)
             throw new IllegalStateException("The specified child already has a parent. You must call removeView() on the child's parent first.");
@@ -162,6 +169,7 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
         if (index < 0 || index > children.size()) index = children.size();
         children.add(index, child);
         child.mParent = this;
+        child.resetRtlProperties();
         if (!preventRequestLayout) child.requestLayout();
         if (mAttachInfo != null) child.dispatchAttachedToWindow(mAttachInfo, getVisibility());
         onViewAdded(child);
@@ -190,7 +198,59 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
     public void removeViews(int start, int count) { removeViewsInLayout(start, count); requestLayout(); invalidate(); }
     public void removeAllViews() { removeAllViewsInLayout(); requestLayout(); invalidate(); }
     public void removeAllViewsInLayout() { while (!children.isEmpty()) removeViewInternal(children.size() - 1); }
-    protected void removeDetachedView(View child, boolean animate) {}
+    /* RecyclerView's: a child taken out of the children and put back, attached to the window all the while; one that
+       stays out is finished with removeDetachedView */
+    protected void attachViewToParent(View child, int index, LayoutParams params) {
+        child.setLayoutParamsQuietly(params);
+        if (index < 0 || index > children.size()) index = children.size();
+        children.add(index, child);
+        child.mParent = this;
+        child.resetRtlProperties();
+        if (mAttachInfo != null && child.mAttachInfo == null) child.dispatchAttachedToWindow(mAttachInfo, getVisibility());
+    }
+    protected void detachViewFromParent(View child) { detachViewFromParent(children.indexOf(child)); }
+    protected void detachViewFromParent(int index) {
+        if (index < 0 || index >= children.size()) return;
+        View child = children.remove(index);
+        if (child == touchTarget) touchTarget = null;
+        child.mParent = null;
+    }
+    protected void detachViewsFromParent(int start, int count) { for (int i = 0; i < count; ++i) detachViewFromParent(start); }
+    protected void detachAllViewsFromParent() { while (!children.isEmpty()) detachViewFromParent(children.size() - 1); }
+    protected void removeDetachedView(View child, boolean animate) {
+        if (child == focusedChild) { child.clearFocus(); focusedChild = null; }
+        if (child.mAttachInfo != null) child.dispatchDetachedFromWindow();
+        onViewRemoved(child);
+        if (hierarchyListener != null) hierarchyListener.onChildViewRemoved(this, child);
+    }
+    /** the view's own state alone, not its children's */
+    protected void dispatchFreezeSelfOnly(android.util.SparseArray<android.os.Parcelable> container) { super.dispatchSaveInstanceState(container); }
+    protected void dispatchThawSelfOnly(android.util.SparseArray<android.os.Parcelable> container) { super.dispatchRestoreInstanceState(container); }
+    /** a rectangle of a descendant's coordinates in this view's, and back */
+    public final void offsetDescendantRectToMyCoords(View descendant, android.graphics.Rect rect) { offsetRect(descendant, rect, true); }
+    public final void offsetRectIntoDescendantCoords(View descendant, android.graphics.Rect rect) { offsetRect(descendant, rect, false); }
+    private void offsetRect(View descendant, android.graphics.Rect rect, boolean toMine) {
+        if (descendant == this) return;
+        int dx = 0, dy = 0;
+        View v = descendant;
+        while (v != null && v != this) {
+            dx += v.mLeft - (v.mParent instanceof View p ? p.mScrollX : 0);
+            dy += v.mTop - (v.mParent instanceof View p ? p.mScrollY : 0);
+            v = v.mParent instanceof View p ? p : null;
+        }
+        if (v != this) throw new IllegalArgumentException("parameter must be a descendant of this view");
+        rect.offset(toMine ? dx : -dx, toMine ? dy : -dy);
+    }
+    public void setChildrenDrawingCacheEnabled(boolean enabled) {}
+    private boolean touchscreenBlocksFocus, layoutSuppressed;
+    public void setTouchscreenBlocksFocus(boolean touchscreenBlocksFocus) { this.touchscreenBlocksFocus = touchscreenBlocksFocus; }
+    public boolean getTouchscreenBlocksFocus() { return touchscreenBlocksFocus; }
+    public void suppressLayout(boolean suppress) { layoutSuppressed = suppress; if (!suppress) requestLayout(); }
+    public boolean isLayoutSuppressed() { return layoutSuppressed; }
+    @Override public ViewGroupOverlay getOverlay() {
+        if (mOverlay == null) mOverlay = new ViewGroupOverlay(this);
+        return (ViewGroupOverlay) mOverlay;
+    }
     private void removeViewInternal(int index) {
         View child = children.get(index);
         if (child == focusedChild) { child.clearFocus(); focusedChild = null; }
@@ -298,9 +358,12 @@ public abstract class ViewGroup extends View implements ViewParent, ViewManager 
     public android.animation.LayoutTransition getLayoutTransition() { return layoutTransition; }
     private android.animation.LayoutTransition layoutTransition;
     protected int getChildDrawingOrder(int childCount, int drawingPosition) { return drawingPosition; }
+    public final int getChildDrawingOrder(int drawingPosition) { return getChildDrawingOrder(getChildCount(), drawingPosition); }
+    private boolean childrenDrawingOrder;
+    protected boolean isChildrenDrawingOrderEnabled() { return childrenDrawingOrder; }
     public void setTransitionGroup(boolean isTransitionGroup) { super.setTransitionGroup(isTransitionGroup); }
     public void setPersistentDrawingCache(int drawingCacheToKeep) {}
-    public void setChildrenDrawingOrderEnabled(boolean enabled) {}
+    protected void setChildrenDrawingOrderEnabled(boolean enabled) { childrenDrawingOrder = enabled; }
 
     // ---- drawing ----
     @Override protected void dispatchDraw(Canvas canvas) {

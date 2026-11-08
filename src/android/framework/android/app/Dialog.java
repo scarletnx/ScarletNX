@@ -7,6 +7,7 @@ import android.content.DialogInterface;
 import android.os.Bundle;
 import android.view.ActionMode;
 import android.view.KeyEvent;
+import android.view.LayoutInflater;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.MotionEvent;
@@ -23,9 +24,23 @@ public class Dialog implements DialogInterface, Window.Callback, KeyEvent.Callba
     private final Window window;
     private final WindowManager windowManager;
     private boolean created, showing, cancelable = true, canceledOnTouchOutside = true;
-    private OnCancelListener onCancel;
-    private OnDismissListener onDismiss;
-    private OnShowListener onShow;
+    /*
+     * The listeners as Android's Dialog keeps them: each a message to the listeners' handler, sent (a copy) when the
+     * dialog shows, is cancelled or is dismissed, so that a listener runs after what sent it, as a message of its
+     * own. setDismissMessage replaces the dismiss listener's
+     */
+    private static final int DISMISS = 0x43, CANCEL = 0x44, SHOW = 0x45;
+    private final android.os.Handler listeners = new android.os.Handler(android.os.Looper.getMainLooper()) {
+        @Override public void handleMessage(android.os.Message msg) {
+            switch (msg.what) {
+                case DISMISS -> ((OnDismissListener) msg.obj).onDismiss(Dialog.this);
+                case CANCEL -> ((OnCancelListener) msg.obj).onCancel(Dialog.this);
+                case SHOW -> ((OnShowListener) msg.obj).onShow(Dialog.this);
+                default -> {}
+            }
+        }
+    };
+    private android.os.Message cancelMessage, showMessage;
     private OnKeyListener onKey;
     private Activity owner;
     private android.os.Message dismissMessage;
@@ -47,13 +62,14 @@ public class Dialog implements DialogInterface, Window.Callback, KeyEvent.Callba
     protected Dialog(Context context, boolean cancelable, OnCancelListener cancelListener) {
         this(context);
         this.cancelable = cancelable;
-        onCancel = cancelListener;
+        setOnCancelListener(cancelListener);
     }
 
     public final Context getContext() { return context; }
     public final Activity getOwnerActivity() { return owner; }
     public final void setOwnerActivity(Activity activity) { owner = activity; }
     public Window getWindow() { return window; }
+    public LayoutInflater getLayoutInflater() { return window.getLayoutInflater(); }
     public android.window.OnBackInvokedDispatcher getOnBackInvokedDispatcher() { return window.getOnBackInvokedDispatcher(); }
     public boolean isShowing() { return showing; }
     public View getCurrentFocus() { return window.getCurrentFocus(); }
@@ -67,9 +83,10 @@ public class Dialog implements DialogInterface, Window.Callback, KeyEvent.Callba
     public void setTitle(int titleId) { setTitle(context.getText(titleId)); }
     public void setCancelable(boolean flag) { cancelable = flag; }
     public void setCanceledOnTouchOutside(boolean cancel) { canceledOnTouchOutside = cancel; }
-    public void setOnCancelListener(OnCancelListener listener) { onCancel = listener; }
-    public void setOnDismissListener(OnDismissListener listener) { onDismiss = listener; }
-    public void setOnShowListener(OnShowListener listener) { onShow = listener; }
+    public void setOnCancelListener(OnCancelListener listener) { cancelMessage = listener != null ? listeners.obtainMessage(CANCEL, listener) : null; }
+    public void setOnDismissListener(OnDismissListener listener) { dismissMessage = listener != null ? listeners.obtainMessage(DISMISS, listener) : null; }
+    public void setOnShowListener(OnShowListener listener) { showMessage = listener != null ? listeners.obtainMessage(SHOW, listener) : null; }
+    public void setCancelMessage(android.os.Message msg) { cancelMessage = msg; }
     public void setOnKeyListener(OnKeyListener listener) { onKey = listener; }
     /** A message that dismiss() sends, once for each dismiss, as Android sends a copy of it. */
     public void setDismissMessage(android.os.Message msg) { dismissMessage = msg; }
@@ -86,7 +103,7 @@ public class Dialog implements DialogInterface, Window.Callback, KeyEvent.Callba
         onStart();
         windowManager.addView(window.getDecorView(), window.getAttributes());
         showing = true;
-        if (onShow != null) onShow.onShow(this);
+        if (showMessage != null) android.os.Message.obtain(showMessage).sendToTarget();
     }
     public void hide() { window.getDecorView().setVisibility(View.GONE); }
     @Override public void dismiss() {
@@ -94,11 +111,10 @@ public class Dialog implements DialogInterface, Window.Callback, KeyEvent.Callba
         windowManager.removeViewImmediate(window.getDecorView());
         showing = false;
         onStop();
-        if (onDismiss != null) onDismiss.onDismiss(this);
         if (dismissMessage != null) android.os.Message.obtain(dismissMessage).sendToTarget();
     }
     @Override public void cancel() {
-        if (onCancel != null) onCancel.onCancel(this);
+        if (cancelMessage != null) android.os.Message.obtain(cancelMessage).sendToTarget();
         dismiss();
     }
     public void onBackPressed() { if (cancelable) cancel(); }
