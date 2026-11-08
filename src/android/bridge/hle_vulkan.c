@@ -55,6 +55,8 @@ static struct {
     pthread_mutex_t lock;
     bool loader;          /* volkInitialize done */
     VkInstance instance;  /* the guest's last, to resolve its commands */
+    VkInstance live[16];  /* the guest's instances that live, the newest last: a command one lacks, another resolves */
+    size_t live_count;
     Command** commands;
     size_t count, capacity;
 } v = {.lock = PTHREAD_MUTEX_INITIALIZER};
@@ -73,7 +75,13 @@ static void* host_command(const char* name) {
                                           "vkEnumerateInstanceLayerProperties", "vkEnumerateInstanceVersion"};
     for (size_t i = 0; i < sizeof globals / sizeof *globals; ++i)
         if (!strcmp(globals[i], name)) return (void*)vkGetInstanceProcAddr(VK_NULL_HANDLE, name);
-    return (void*)vkGetInstanceProcAddr(v.instance, name);
+    /* the guest's last instance, else another that lives: the loader's trampoline of an extension's command exists
+       for an instance that enabled it (a surface's, which an app's instance for listing devices leaves out), and it
+       dispatches by its handle's own instance */
+    void* fn = (void*)vkGetInstanceProcAddr(v.instance, name);
+    for (size_t i = v.live_count; !fn && i-- > 0;)
+        if (v.live[i] != v.instance) fn = (void*)vkGetInstanceProcAddr(v.live[i], name);
+    return fn;
 }
 
 /* The parameters of the commands that take a float, in order, for hle_call (Windows passes by position): from the
@@ -157,6 +165,7 @@ static void debug_messenger_destroy(CPU* c, void* data);
 static void surface_capabilities(CPU* c, void* data);
 static void surface_capabilities2(CPU* c, void* data);
 static void surface_support(CPU* c, void* data);
+static void enumerate_physical_devices(CPU* c, void* data);
 static void queue_present(CPU* c, void* data);
 static void create_device(CPU* c, void* data);
 static void get_device_queue(CPU* c, void* data);
@@ -189,6 +198,7 @@ static const struct {
     {"vkGetPhysicalDeviceSurfaceCapabilitiesKHR", surface_capabilities},
     {"vkGetPhysicalDeviceSurfaceCapabilities2KHR", surface_capabilities2},
     {"vkGetPhysicalDeviceSurfaceSupportKHR", surface_support},
+    {"vkEnumeratePhysicalDevices", enumerate_physical_devices},
     {"vkQueuePresentKHR", queue_present},
     {"vkCreateDevice", create_device},
     {"vkGetDeviceQueue", get_device_queue},
@@ -326,6 +336,7 @@ VkResult hle_vulkan_create_instance(const VkInstanceCreateInfo* in, VkInstance* 
     if (r == VK_SUCCESS) {
         pthread_mutex_lock(&v.lock);
         v.instance = instance;
+        if (v.live_count < sizeof v.live / sizeof *v.live) v.live[v.live_count++] = instance;
         /* the commands resolved for another instance resolve again for this one */
         for (size_t i = 0; i < v.count; ++i) __atomic_store_n(&v.commands[i]->host, NULL, __ATOMIC_RELEASE);
         pthread_mutex_unlock(&v.lock);
@@ -443,7 +454,7 @@ static void window_extent(VkSurfaceCapabilitiesKHR* caps) {
 VkResult hle_vulkan_surface_capabilities(VkPhysicalDevice physical, VkSurfaceKHR surface,
                                          VkSurfaceCapabilitiesKHR* caps) {
     PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR get = (PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR)
-        vkGetInstanceProcAddr(v.instance, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
+        host_command("vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
     VkResult r = get ? get(physical, surface, caps) : VK_ERROR_EXTENSION_NOT_PRESENT;
     if (r == VK_SUCCESS) window_extent(caps);
     return r;
@@ -453,6 +464,70 @@ static void surface_capabilities(CPU* c, void* data) {
     X(0) = (uint64_t)(int64_t)hle_vulkan_surface_capabilities((VkPhysicalDevice)(uintptr_t)X(0),
                                                               (VkSurfaceKHR)(uintptr_t)X(1), PTR(2));
 }
+/* Without a display, the devices that present to a headless surface first (a driver without headless presentation
+   has no present queue for the app's surface, nor its formats): an app that takes the first device then takes one
+   that shows its frames. Each device stays in the list. With a window, the host's order */
+static void present_first(VkInstance instance, VkPhysicalDevice* devices, uint32_t n) {
+    if (n < 2 || (window_host && window_host->window())) return;
+    PFN_vkCreateHeadlessSurfaceEXT make =
+        (PFN_vkCreateHeadlessSurfaceEXT)vkGetInstanceProcAddr(instance, "vkCreateHeadlessSurfaceEXT");
+    PFN_vkDestroySurfaceKHR destroy = (PFN_vkDestroySurfaceKHR)vkGetInstanceProcAddr(instance, "vkDestroySurfaceKHR");
+    PFN_vkGetPhysicalDeviceSurfaceSupportKHR supports =
+        (PFN_vkGetPhysicalDeviceSurfaceSupportKHR)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceSurfaceSupportKHR");
+    PFN_vkGetPhysicalDeviceQueueFamilyProperties families =
+        (PFN_vkGetPhysicalDeviceQueueFamilyProperties)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceQueueFamilyProperties");
+    if (!make || !destroy || !supports || !families) return; /* an instance without surfaces: no order to keep */
+    VkHeadlessSurfaceCreateInfoEXT info = {.sType = VK_STRUCTURE_TYPE_HEADLESS_SURFACE_CREATE_INFO_EXT};
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
+    if (make(instance, &info, NULL, &surface) != VK_SUCCESS) return;
+    VkPhysicalDevice first[32], rest[32];
+    uint32_t nf = 0, nr = 0;
+    for (uint32_t i = 0; i < n && i < 32; ++i) {
+        uint32_t count = 0;
+        families(devices[i], &count, NULL);
+        bool presents = false;
+        for (uint32_t f = 0; f < count && !presents; ++f) {
+            VkBool32 ok = VK_FALSE;
+            presents = supports(devices[i], f, surface, &ok) == VK_SUCCESS && ok;
+        }
+        if (presents) first[nf++] = devices[i];
+        else rest[nr++] = devices[i];
+    }
+    destroy(instance, surface, NULL);
+    memcpy(devices, first, nf * sizeof *devices);
+    memcpy(devices + nf, rest, nr * sizeof *devices);
+}
+/* vkEnumeratePhysicalDevices(instance, count, devices): the host's, in present_first's order */
+static void enumerate_physical_devices(CPU* c, void* data) {
+    (void)data;
+    VkInstance instance = (VkInstance)(uintptr_t)X(0);
+    uint32_t* count = PTR(1);
+    VkPhysicalDevice* out = X(2) ? PTR(2) : NULL;
+    PFN_vkEnumeratePhysicalDevices enumerate =
+        (PFN_vkEnumeratePhysicalDevices)vkGetInstanceProcAddr(instance, "vkEnumeratePhysicalDevices");
+    if (!enumerate) {
+        X(0) = (uint64_t)(int64_t)VK_ERROR_INITIALIZATION_FAILED;
+        return;
+    }
+    VkPhysicalDevice all[32];
+    uint32_t n = 32;
+    VkResult r = enumerate(instance, &n, all);
+    if (r != VK_SUCCESS && r != VK_INCOMPLETE) {
+        X(0) = (uint64_t)(int64_t)r;
+        return;
+    }
+    present_first(instance, all, n);
+    if (!out) {
+        *count = n;
+        X(0) = (uint64_t)(int64_t)VK_SUCCESS;
+        return;
+    }
+    uint32_t k = *count < n ? *count : n;
+    memcpy(out, all, k * sizeof *all);
+    *count = k;
+    X(0) = (uint64_t)(int64_t)(k < n ? VK_INCOMPLETE : VK_SUCCESS);
+}
+
 /* vkGetPhysicalDeviceSurfaceSupportKHR(physical, family, surface, supported): the host's answer, but a SurfaceTexture's
    headless surface is presentable from a graphics family (a driver without headless presentation says no: the GPU's
    probe of an app then finds no present queue) */
@@ -463,11 +538,11 @@ static void surface_support(CPU* c, void* data) {
     VkSurfaceKHR surface = (VkSurfaceKHR)(uintptr_t)X(2);
     VkBool32* supported = PTR(3);
     PFN_vkGetPhysicalDeviceSurfaceSupportKHR get =
-        (PFN_vkGetPhysicalDeviceSurfaceSupportKHR)vkGetInstanceProcAddr(v.instance, "vkGetPhysicalDeviceSurfaceSupportKHR");
+        (PFN_vkGetPhysicalDeviceSurfaceSupportKHR)host_command("vkGetPhysicalDeviceSurfaceSupportKHR");
     VkResult r = get ? get(physical, family, surface, supported) : VK_ERROR_EXTENSION_NOT_PRESENT;
     if (texture_surface(surface) && (r != VK_SUCCESS || !*supported)) {
         PFN_vkGetPhysicalDeviceQueueFamilyProperties families = (PFN_vkGetPhysicalDeviceQueueFamilyProperties)
-            vkGetInstanceProcAddr(v.instance, "vkGetPhysicalDeviceQueueFamilyProperties");
+            host_command("vkGetPhysicalDeviceQueueFamilyProperties");
         uint32_t n = 0;
         if (families) families(physical, &n, NULL);
         VkQueueFamilyProperties* list = n ? calloc(n, sizeof *list) : NULL;
@@ -481,7 +556,7 @@ static void surface_support(CPU* c, void* data) {
 static void surface_capabilities2(CPU* c, void* data) {
     (void)data;
     PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR get = (PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR)
-        vkGetInstanceProcAddr(v.instance, "vkGetPhysicalDeviceSurfaceCapabilities2KHR");
+        host_command("vkGetPhysicalDeviceSurfaceCapabilities2KHR");
     VkResult r = get ? get((VkPhysicalDevice)(uintptr_t)X(0), PTR(1), PTR(2)) : VK_ERROR_EXTENSION_NOT_PRESENT;
     if (r == VK_SUCCESS) window_extent(&((VkSurfaceCapabilities2KHR*)PTR(2))->surfaceCapabilities);
     X(0) = (uint64_t)(int64_t)r;
@@ -540,7 +615,7 @@ void hle_vulkan_set_shot(const char* path, const char* frames) {
 }
 
 static void* vk(const char* name) {
-    return (void*)vkGetInstanceProcAddr(v.instance, name);
+    return (void*)host_command(name);
 }
 /* a command of the guest's instance, as its PFN type */
 #define VKF(name) ((PFN_##name)vk(#name))
@@ -1217,8 +1292,14 @@ void hle_vulkan_destroy_instance(VkInstance instance) {
     /* volk loads no instance's commands here: each is the instance's own (vk) */
     PFN_vkDestroyInstance destroy = (PFN_vkDestroyInstance)vkGetInstanceProcAddr(instance, "vkDestroyInstance");
     pthread_mutex_lock(&v.lock);
+    for (size_t i = 0; i < v.live_count; ++i)
+        if (v.live[i] == instance) {
+            memmove(&v.live[i], &v.live[i + 1], (v.live_count - i - 1) * sizeof *v.live);
+            --v.live_count;
+            break;
+        }
     if (v.instance == instance) {
-        v.instance = VK_NULL_HANDLE;
+        v.instance = v.live_count ? v.live[v.live_count - 1] : VK_NULL_HANDLE;
         for (size_t i = 0; i < v.count; ++i) __atomic_store_n(&v.commands[i]->host, NULL, __ATOMIC_RELEASE);
     }
     pthread_mutex_unlock(&v.lock);
@@ -1432,7 +1513,7 @@ static void queue_present(CPU* c, void* data) {
    mishandle: each is made into the valid call with the effect the phone's driver gives it */
 
 static void* device_command(const char* name) {
-    return (void*)vkGetInstanceProcAddr(v.instance, name);
+    return (void*)host_command(name);
 }
 
 /* a repair, said the first few times */
@@ -1586,7 +1667,7 @@ static void masquerade(VkPhysicalDeviceProperties* p) {
 static void physical_device_properties(CPU* c, void* data) {
     (void)data;
     PFN_vkGetPhysicalDeviceProperties get =
-        (PFN_vkGetPhysicalDeviceProperties)vkGetInstanceProcAddr(v.instance, "vkGetPhysicalDeviceProperties");
+        (PFN_vkGetPhysicalDeviceProperties)host_command("vkGetPhysicalDeviceProperties");
     if (!get) return;
     get((VkPhysicalDevice)(uintptr_t)X(0), PTR(1));
     masquerade(PTR(1));
@@ -1595,7 +1676,7 @@ static void physical_device_properties2(CPU* c, void* data) {
     (void)data;
     VkPhysicalDeviceProperties2* p = PTR(1);
     PFN_vkGetPhysicalDeviceProperties2 get =
-        (PFN_vkGetPhysicalDeviceProperties2)vkGetInstanceProcAddr(v.instance, "vkGetPhysicalDeviceProperties2");
+        (PFN_vkGetPhysicalDeviceProperties2)host_command("vkGetPhysicalDeviceProperties2");
     if (!get) get = (PFN_vkGetPhysicalDeviceProperties2)vkGetInstanceProcAddr(v.instance,
                                                                              "vkGetPhysicalDeviceProperties2KHR");
     if (!get) return;
