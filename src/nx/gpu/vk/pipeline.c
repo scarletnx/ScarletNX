@@ -41,6 +41,7 @@
 
 /* The caches live in shader_cache/ of the game's cache folder (g_cachedir), wherever the runtime was started from */
 static char g_cache_dir[1100], g_pcache_path[1200], g_pcache_tmp[1230];
+static char g_driver_tag[PF_TAG]; /* the driver's, whose files of the cache these are (pf_driver_tag) */
 static int g_pcache_dirty; /* pipelines made since the cache was last written (atomic: it is saved outside vk_lock) */
 static u64 g_pcache_used;  /* plat_ns when a pipeline last went into the cache (atomic) */
 static void pcache_note(void);
@@ -415,17 +416,31 @@ void vk_pipeline_init(void) {
     if (!g_vk_playout) fatal("vulkan: cannot create shader pipeline layout");
     snprintf(g_cache_dir, sizeof g_cache_dir, "%sshader_cache", g_cachedir);
     plat_mkdir(g_cache_dir);
-    snprintf(g_pcache_path, sizeof g_pcache_path, "%s/vk_pipelines.bin", g_cache_dir);
+    /* each driver's files apart: a game run with the system's driver, then a package's (gpu_driver), then the
+       system's again keeps the first one's */
+    pf_driver_tag(g_driver_tag, sizeof g_driver_tag, g_vk.driver_id, g_vk.props.vendorID, g_vk.props.deviceID,
+                  g_settings.gpu_driver);
+    pf_driver_path(g_pcache_path, sizeof g_pcache_path, g_cache_dir, "vk_pipelines", g_driver_tag, ".bin");
     snx_path_native(g_pcache_path);
     /* the temporary name is the process's own: two games running at once would otherwise write the same file */
     snprintf(g_pcache_tmp, sizeof g_pcache_tmp, "%s.%u.tmp", g_pcache_path, pf_pid());
-    /* the driver's compiled pipelines from earlier runs; it ignores data from another device or driver version */
+    /* the driver's compiled pipelines from earlier runs; it ignores data from another device or driver version.
+       Without a file of this driver's, the one every driver wrote before each had its own, left where it is */
     VkPipelineCacheCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
     PFileMap data;
-    if (!plat_file_map(&data, g_pcache_path) && data.data) {
+    char* legacy = snx_format("%s/vk_pipelines.bin", g_cache_dir);
+    if (legacy) snx_path_native(legacy);
+    int mapped = !plat_file_map(&data, g_pcache_path) && data.data;
+    if (!mapped && legacy && !plat_file_map(&data, legacy) && data.data) {
+        mapped = 1;
+        LOG("vulkan: %s is not there yet: the driver's pipelines start from %s, kept as it is\n", g_pcache_path,
+            legacy);
+    }
+    if (mapped) {
         ci.initialDataSize = (size_t)data.size;
         ci.pInitialData = data.data;
     }
+    free(legacy);
     if (!VK_OK(vkCreatePipelineCache(g_vk.dev, &ci, NULL, &g_pcache)) && ci.initialDataSize) {
         ci.initialDataSize = 0;
         ci.pInitialData = NULL;
@@ -2470,13 +2485,21 @@ static void pf_load(void* arg) {
     g_pf.ship.max = SHIP_MAX;
     g_pf.ship.pack = g_settings.compress_prepared_shaders ? PF_PACK_SHADERS : 0;
     g_pf.file.pack = g_settings.compress_shader_cache ? PF_PACK_UNITS : 0;
+    {
+        FILE* there = fopen(g_pf.path, "rb");
+        if (there)
+            fclose(there);
+        else
+            LOG("vulkan: no shader cache of %s (driver %s) yet: %s is made\n", g_vk.driver_name, g_driver_tag,
+                g_pf.path);
+    }
     pf_open_mapped(&g_pf.ship, g_pf.ship_path, key, pf_ship_rec, NULL);
     pf_open(&g_pf.file, g_pf.path, key, guest, &load, loaded);
-    LOG("vulkan: %u shaders and %u pipelines of earlier runs loaded from %s in %llu ms, the pipelines to be made in "
-        "the background, and %u compute pipelines made (%u could not be); %u shaders of the game's own programs in "
-        "%s\n",
-        g_pf.nsh, g_pf.npipe, g_pf.path, (unsigned long long)((plat_ns() - t0) / 1000000), g_pf.ncs, g_pf.ncs_failed,
-        g_pf.nidx, g_pf.ship_path);
+    LOG("vulkan: %u shaders and %u pipelines of earlier runs with %s (driver %s) loaded from %s in %llu ms, the "
+        "pipelines to be made in the background, and %u compute pipelines made (%u could not be); %u shaders of the "
+        "game's own programs in %s\n",
+        g_pf.nsh, g_pf.npipe, g_vk.driver_name, g_driver_tag, g_pf.path,
+        (unsigned long long)((plat_ns() - t0) / 1000000), g_pf.ncs, g_pf.ncs_failed, g_pf.nidx, g_pf.ship_path);
     __atomic_store_n(&g_pf.shaders_total, g_pf.nsh, __ATOMIC_RELAXED);
     __atomic_store_n(&g_pf.pipes_total, g_pf.npipe, __ATOMIC_RELAXED);
     pm_lock(&g_pf.lock);
@@ -2506,12 +2529,32 @@ static void pf_start_load(void) {
     }
     g_pf.on = 1;
     null_fs(); /* made here, before the reading thread uses it */
-    snprintf(g_pf.path, sizeof g_pf.path, "%s/%s.vkshaders", g_cache_dir, g_exename);
-    snprintf(g_pf.ship_path, sizeof g_pf.ship_path, "%s/%s.vkshipped", g_cache_dir, g_exename);
+    pf_driver_path(g_pf.path, sizeof g_pf.path, g_cache_dir, g_exename, g_driver_tag, ".vkshaders");
+    pf_driver_path(g_pf.ship_path, sizeof g_pf.ship_path, g_cache_dir, g_exename, g_driver_tag, ".vkshipped");
     snprintf(g_pf.scan_path, sizeof g_pf.scan_path, "%s/%s.vkscan", g_cache_dir, g_exename);
     snx_path_native(g_pf.path);
     snx_path_native(g_pf.ship_path);
     snx_path_native(g_pf.scan_path);
+    /* the files every driver shared before each had its own: a copy, the first time this driver runs, which its
+       driver's next run finds as its own, and another starts over. Both, as the main file's records point into the
+       shipped one by where its records start */
+    for (int k = 0; k < 2; k++) {
+        const char* path = k ? g_pf.ship_path : g_pf.path;
+        char* legacy = snx_format("%s/%s%s", g_cache_dir, g_exename, k ? ".vkshipped" : ".vkshaders");
+        char why[256];
+        u64 bytes;
+        if (!legacy) continue;
+        snx_path_native(legacy);
+        int r = pf_adopt(path, legacy, &bytes, why, sizeof why);
+        if (r > 0)
+            LOG("vulkan: %s is not there yet: %s, the file every driver shared before each had its own, copied to it "
+                "(%llu KB) and kept as it is\n",
+                path, legacy, (unsigned long long)(bytes >> 10));
+        else if (r < 0)
+            WARN("vulkan: cannot copy %s to %s (%s): %s of %s starts empty\n", legacy, path, why,
+                 k ? "the shaders of the game's own programs" : "the shader cache", g_vk.driver_name);
+        free(legacy);
+    }
     if (g_settings.prepare_shaders) ship_snapshot(); /* before the game's first thread writes its data */
     /* the translator's recursion wants the GPU thread's stack */
     if (plat_thread(pf_load_thread, &g_pf, (size_t)16 << 20)) pf_load(NULL); /* no thread: read here */

@@ -438,7 +438,7 @@ draw it wrong ([the driver bans](#driver-bans)) taking the layout in the key und
 A draw sets the layout when it differs from the one its command buffer has. A new command buffer, a pipeline that
 holds its own layout (the multisample resolves, the on-screen controls) and the renderer's own draws (a clear of some
 color components, which reads no vertices) leave the next draw to set it again. The pipelines kept for the next run
-(`<id>.vkshaders`) are made again when the choice changes: the file's key holds it.
+(`<id>.<driver>.vkshaders`) are made again when the choice changes: the file's key holds it.
 
 ```sh
 "$games/Game/Game" --vertex_input_dynamic_state=off   # a pipeline per layout, to compare

@@ -312,7 +312,7 @@ service the runtime doesn't have gets sm's stand-in object, which answers every 
 reaches the submission's fence at once, so a program that writes its own command buffers does not wait forever.
 
 The shader programs a game ships are translated at startup, on the renderer's shader file thread rather than the GPU
-thread, into `<id>.vkshipped` (`prepare_shaders`: before the game's first thread runs, behind main.c's loading screen,
+thread, into `<id>.<driver>.vkshipped` (`prepare_shaders`: before the game's first thread runs, behind main.c's loading screen,
 or in the background as it runs). `gpu/shipped_pass.c` walks the RomFS and the executables' segments, and
 `gpu/shader/shipped.c` finds the programs by NVN's code wrapper (or a bare NVN shader file's layout) in their bytes,
 and in the Yaz0 SARCs whose names list a shader container. In a BNSH, a program's code record names its control

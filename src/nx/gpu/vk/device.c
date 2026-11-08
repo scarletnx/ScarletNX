@@ -1429,6 +1429,8 @@ static int create_device(void) {
         VkPhysicalDeviceDriverProperties dp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
         VkPhysicalDeviceProperties2 pp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &dp};
         vkGetPhysicalDeviceProperties2(g_vk.phys, &pp);
+        g_vk.driver_id = (u32)dp.driverID;
+        snprintf(g_vk.driver_name, sizeof g_vk.driver_name, "%s", dp.driverName);
         LOG("vulkan: the driver that runs: %s, %s (driver ID %d)\n", dp.driverName, dp.driverInfo, (int)dp.driverID);
     }
     if (g_vk.api_cap && g_vk.props.apiVersion >= VK_API_VERSION_1_3)
