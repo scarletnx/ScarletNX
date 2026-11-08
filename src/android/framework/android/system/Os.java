@@ -15,6 +15,23 @@ public final class Os {
 
     public static StructStat stat(String path) throws ErrnoException { return stat(Paths.get(path), true); }
     public static StructStat lstat(String path) throws ErrnoException { return stat(Paths.get(path), false); }
+    /** a second descriptor of the same open file */
+    public static FileDescriptor dup(FileDescriptor oldFd) throws ErrnoException {
+        int fd = snx.android.os.Fds.dup(snx.android.os.Fds.of(oldFd));
+        if (fd < 0) throw new ErrnoException("dup", -fd);
+        return snx.android.os.Fds.wrap(fd);
+    }
+    /** the descriptor's offset moved: through its channel, which shares the host's offset */
+    public static long lseek(FileDescriptor fd, long offset, int whence) throws ErrnoException {
+        try {
+            java.nio.channels.FileChannel ch = new java.io.FileInputStream(fd).getChannel();
+            long to = whence == OsConstants.SEEK_SET ? offset : whence == OsConstants.SEEK_CUR ? ch.position() + offset : ch.size() + offset;
+            ch.position(to);
+            return to;
+        } catch (java.io.IOException e) {
+            throw new ErrnoException("lseek", OsConstants.EINVAL);
+        }
+    }
     public static StructStat fstat(FileDescriptor fd) throws ErrnoException { throw new ErrnoException("fstat", OsConstants.ENOSYS); }
     private static StructStat stat(Path p, boolean follow) throws ErrnoException {
         LinkOption[] o = follow ? new LinkOption[0] : new LinkOption[] {LinkOption.NOFOLLOW_LINKS};

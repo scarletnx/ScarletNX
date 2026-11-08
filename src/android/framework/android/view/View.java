@@ -1198,6 +1198,9 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
     public boolean onFilterTouchEventForSecurity(MotionEvent event) { return true; }
     public boolean onInterceptTouchEvent(MotionEvent ev) { return false; }
     public void requestPointerCapture() {}
+    /** events delivered as they come rather than once a frame: here they always are */
+    public final void requestUnbufferedDispatch(MotionEvent event) {}
+    public final void requestUnbufferedDispatch(int source) {}
     public void releasePointerCapture() {}
     public boolean hasPointerCapture() { return false; }
     public void setPointerIcon(PointerIcon pointerIcon) { mPointerIcon = pointerIcon; }
