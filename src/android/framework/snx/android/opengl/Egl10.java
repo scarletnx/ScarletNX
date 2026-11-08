@@ -10,7 +10,6 @@ import javax.microedition.khronos.egl.EGLContext;
 import javax.microedition.khronos.egl.EGLDisplay;
 import javax.microedition.khronos.egl.EGLSurface;
 import javax.microedition.khronos.opengles.GL;
-import javax.microedition.khronos.opengles.GL11;
 
 /**
  * JSR 239's EGL over the runtime's EGL (src/android/bridge/hle_egl.c), the one that an app's native code calls too:
@@ -26,8 +25,6 @@ public final class Egl10 implements EGL11 {
         Context(long h) { this.h = h; }
         @Override public GL getGL() { return Gl.INSTANCE; }
     }
-    /** GLES's Java interface: its methods are not here, as the app draws through the native library */
-    private static final class Gl implements GL11 { static final Gl INSTANCE = new Gl(); }
 
     private static final HashMap<Long, Object> objects = new HashMap<>();
 
