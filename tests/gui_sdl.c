@@ -1506,7 +1506,7 @@ static char* debug_settings(void) {
 /* a runtime's list with two of the game's settings the recompile takes too (settings.txt's recompile) */
 static char* recompile_settings(void) {
     return snx_strdup("Display\tfullscreen\t0\tint\t0\t1\t1 = start in fullscreen\t\t0=0|1=1\n"
-                      "Graphics\tresolution\t1\tfloat\t0.25\t16\tInternal 3D resolution\t\t\n"
+                      "Graphics\tresolution_scale\t0\tfloat\t0\t16\tInternal 3D resolution\t\t\n"
                       "Performance\tnce\t1\tint\t0\t1\tThe game's code runs natively\tNCE\t0=Off|1=On\n"
                       "Debug\tslp_vectorizer\t0\tint\t0\t1\tLLVM's SLP vectorizer\tSLP vectorizer\t0=Off|1=On\n");
 }
@@ -5515,7 +5515,7 @@ int main(int argc, char** argv) {
     }
     if (argc == 2 && !strcmp(argv[1], "--settings")) { /* as the runtime lists its settings */
         fputs("Display\tfullscreen\t0\tint\t0\t1\t1 = start in fullscreen\t\t0=0|1=1\n"
-              "Graphics\tresolution\t1\tfloat\t0.25\t16\tInternal 3D resolution\t\t\n"
+              "Graphics\tresolution_scale\t0\tfloat\t0\t16\tInternal 3D resolution\tresolution\t\n"
               "On-screen controls\tcontrols\t2\tint\t0\t2\tThe on-screen controls\tShow controls\t0=Off|1=On|2=Auto\n"
               "On-screen controls/Buttons\tcontrols_a_shown\t\tint\t0\t1\tA control drawn\tA\t0=Hidden|1=Shown\n"
               "On-screen controls/Buttons\tcontrols_b_shown\t\tint\t0\t1\tA control drawn\tB\t0=Hidden|1=Shown\n"
@@ -6406,7 +6406,7 @@ int main(int argc, char** argv) {
     key(&app, SDLK_RETURN);
     /* a number typed; one equal to a whole number as that number; nothing typed the scale's default, shown */
     render(&app);
-    shows(&app, "- resolution    1 [default]", yellow); /* right in its field, not picked: the default */
+    shows(&app, "- resolution    0 [default]", yellow); /* right in its field, not picked: the default */
     assert(!row_marked(&app, app.editor.row));
     assert(!strcmp(form_note(&app), "For the next runs. [default]: as the game's .ini says"));
     key(&app, SDLK_RETURN);
@@ -6425,26 +6425,26 @@ int main(int argc, char** argv) {
         text_px_is(&app, b.field.x + cw / 2, b.field.y + 2 * app.scale, "0.5_", rgb(app.theme.ink),
                    rgb(app.theme.page));
         gui_editor_takes(&app.editor, takes, sizeof takes);
-        assert(!strcmp(takes, "A number from 0.25 to 16, two decimals at most; empty, the default 1"));
+        assert(!strcmp(takes, "A number from 0 to 16, two decimals at most; empty, the default 0"));
         shows(&app, takes, rgb(app.theme.soft));
         shows(&app, "- OK", yellow);
         shows(&app, "- Cancel", normal);
-        assert(SDL_TextInputActive(app.window) && !gui_settings_value(&app.settings, "resolution"));
+        assert(SDL_TextInputActive(app.window) && !gui_settings_value(&app.settings, "resolution_scale"));
         key(&app, SDLK_ESCAPE);
         assert(!app.editor.typing && !SDL_TextInputActive(app.window) &&
-               !gui_settings_value(&app.settings, "resolution"));
+               !gui_settings_value(&app.settings, "resolution_scale"));
         key(&app, SDLK_RETURN);
         typed(&app, "3");
         render(&app);
         typed_place(&app, &b);
         mouse_px(&app, b.c.box.x - 4, b.c.box.y + b.c.box.h / 2, true);
-        assert(!app.editor.typing && !gui_settings_value(&app.settings, "resolution"));
+        assert(!app.editor.typing && !gui_settings_value(&app.settings, "resolution_scale"));
         key(&app, SDLK_RETURN);
         typed(&app, "0.5");
         render(&app);
     }
     key(&app, SDLK_RETURN);
-    assert(setting_is(&app, "resolution", "0.5") && !app.editor.typing && !SDL_TextInputActive(app.window));
+    assert(setting_is(&app, "resolution_scale", "0.5") && !app.editor.typing && !SDL_TextInputActive(app.window));
     key(&app, SDLK_RETURN);
     for (int i = 0; i < 3; ++i) key(&app, SDLK_BACKSPACE);
     typed(&app, "2.0");
@@ -6454,45 +6454,46 @@ int main(int argc, char** argv) {
         typed_place(&app, &b);
         point(&app, choice_box(&app, &b.c, 0), true); /* OK clicked */
     }
-    assert(setting_is(&app, "resolution", "2") && !app.editor.typing);
+    assert(setting_is(&app, "resolution_scale", "2") && !app.editor.typing);
     key(&app, SDLK_RETURN);
     key(&app, SDLK_BACKSPACE);
     key(&app, SDLK_RETURN);
-    assert(setting_is(&app, "resolution", "1"));
+    assert(setting_is(&app, "resolution_scale", "0"));
     render(&app);
-    shows(&app, "- resolution    1 *", yellow); /* the default itself, not [default]: a pick, marked */
+    shows(&app, "- resolution    0 *", yellow); /* the default itself, not [default]: a pick, marked */
     /* past the range: refused, OK leaving its dialog up, saying the value typed and the range, the row as it was;
-       past 4x and under 0.5x in the range: the row's own warning line */
+       past 4x and under 0.5x in the range, but 0 (Auto): the row's own warning line */
     key(&app, SDLK_RETURN);
     key(&app, SDLK_BACKSPACE);
     typed(&app, "20");
     key(&app, SDLK_RETURN);
-    assert(app.editor.typing && setting_is(&app, "resolution", "1"));
-    assert(!strcmp(app.editor.note, "20 is not a number from 0.25 to 16, two decimals at most"));
+    assert(app.editor.typing && setting_is(&app, "resolution_scale", "0"));
+    assert(!strcmp(app.editor.note, "20 is not a number from 0 to 16, two decimals at most"));
     render(&app);
     shows(&app, app.editor.note, rgb(app.theme.warning)); /* in its dialog */
     key(&app, SDLK_BACKSPACE);
     key(&app, SDLK_BACKSPACE);
     typed(&app, "8");
     key(&app, SDLK_RETURN);
-    assert(!app.editor.typing && setting_is(&app, "resolution", "8") && strstr(app.editor.note, "Over 4x"));
+    assert(!app.editor.typing && setting_is(&app, "resolution_scale", "8") && strstr(app.editor.note, "Over 4x"));
     render(&app); /* the row in its warning flash */
     key(&app, SDLK_RETURN);
     key(&app, SDLK_BACKSPACE);
-    typed(&app, "0.05");
+    typed(&app, "0"); /* Auto: no warning */
     key(&app, SDLK_RETURN);
-    assert(app.editor.typing && setting_is(&app, "resolution", "8") && strstr(app.editor.note, "0.05 is not a number"));
-    for (int i = 0; i < 4; ++i) key(&app, SDLK_BACKSPACE);
+    assert(!app.editor.typing && setting_is(&app, "resolution_scale", "0") && !app.editor.note[0]);
+    key(&app, SDLK_RETURN);
+    key(&app, SDLK_BACKSPACE);
     typed(&app, "0.3");
     key(&app, SDLK_RETURN);
-    assert(setting_is(&app, "resolution", "0.3") && strstr(app.editor.note, "Under 0.5x"));
+    assert(setting_is(&app, "resolution_scale", "0.3") && strstr(app.editor.note, "Under 0.5x"));
     render(&app);
     /* a scale that is no whole number and does not halve to 1 gets Eden's line */
     key(&app, SDLK_RETURN);
     for (int i = 0; i < 4; ++i) key(&app, SDLK_BACKSPACE);
     typed(&app, "1.61");
     key(&app, SDLK_RETURN);
-    assert(setting_is(&app, "resolution", "1.61") && strstr(app.editor.note, "Non-standard resolution"));
+    assert(setting_is(&app, "resolution_scale", "1.61") && strstr(app.editor.note, "Non-standard resolution"));
     render(&app);
     key(&app, SDLK_ESCAPE);
     /* the game's menu's settings, named and worded as it shows them; a page's row opens the page, All first */
@@ -8927,20 +8928,20 @@ int main(int argc, char** argv) {
            with it as the list is read, and settings.ini written so, the other picks kept: said once */
         {
             static const char older[] =
-                "[Display]\nfullscreen=.ini\n[Graphics]\nresolution=2\n[On-screen controls]\ncontrols=.ini\n";
+                "[Display]\nfullscreen=.ini\n[Graphics]\nresolution_scale=2\n[On-screen controls]\ncontrols=.ini\n";
             char *before = (char*)snx_read_file(app.settings_file, &size), *said;
             assert(before && !snx_write_file(app.settings_file, older, sizeof older - 1));
             settings_forget(&app);
             app.message[0] = 0;
             assert(settings_of(&app) && setting_is(&app, "fullscreen", "0") && setting_is(&app, "controls", "2"));
-            assert(setting_is(&app, "resolution", "2"));
+            assert(setting_is(&app, "resolution_scale", "2"));
             said = snx_format("%s: fullscreen=.ini is no longer a value of fullscreen: fullscreen=0 now; controls=.ini "
                               "is no longer a value of Show controls: controls=2 now",
                               app.settings_file);
             assert(!strcmp(app.message, said));
             free(said);
             kept = (char*)snx_read_file(app.settings_file, &size);
-            assert(kept && strstr(kept, "[Graphics]\nresolution=2\n") && !strstr(kept, "fullscreen") &&
+            assert(kept && strstr(kept, "[Graphics]\nresolution_scale=2\n") && !strstr(kept, "fullscreen") &&
                    !strstr(kept, "controls"));
             free(kept);
             settings_forget(&app);
@@ -9243,7 +9244,7 @@ int main(int argc, char** argv) {
         settings_forget(&app);
         assert(settings_of(&app) && gui_settings_set(&app.settings, "nce", "0") &&
                gui_settings_set(&app.settings, "slp_vectorizer", "1") &&
-               gui_settings_set(&app.settings, "resolution", "2"));
+               gui_settings_set(&app.settings, "resolution_scale", "2"));
         app.menu.selected = GUI_SWITCH;
         driver_will(got, 0, "Recompiling recompile settings");
         for (r = 0; r < 2; ++r) { /* not made: its first compile; then R on it */
@@ -9252,7 +9253,7 @@ int main(int argc, char** argv) {
             app.recompile = false;
             argv_got = ran(&app, 0);
             assert(has_arg(argv_got, "-r", nro) && has_arg(argv_got, "--nce=0", NULL) &&
-                   has_arg(argv_got, "--slp_vectorizer=1", NULL) && !has_arg(argv_got, "--resolution=2", NULL));
+                   has_arg(argv_got, "--slp_vectorizer=1", NULL) && !has_arg(argv_got, "--resolution_scale=2", NULL));
             free(argv_got);
         }
         driver_will(NULL, 0, NULL);

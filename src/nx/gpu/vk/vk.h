@@ -1022,7 +1022,8 @@ typedef struct Surf {
     } bc7;
 } Surf;
 enum { VK_LRU_NONE, VK_LRU_TEX, VK_LRU_RT };
-/* resolution= in the .ini: render targets are made this much bigger (read once, at startup) */
+/* resolution_scale= in the .ini, or the scale its Auto picks: render targets are made this much bigger (read once, at
+   startup) */
 extern float g_vk_scale;
 u32 vk_sc(u32 v);      /* a size or coordinate scaled, at least 1 */
 float vk_scf(float v); /* the same for viewport values */

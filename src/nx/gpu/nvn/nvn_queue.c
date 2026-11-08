@@ -514,8 +514,9 @@ void nvn_WindowGetHdrContentMetadata(CPU* c, u64 w, u64 max_cll, u64 max_fall) {
 }
 /* A frame's time on the display: the window's interval in refreshes (0: no wait), or what fps_limit says. With the
    game's own pace, where the renderer learns when frames are displayed (renderer.h display_wait: a display clock,
-   FIFO, frame_pacing on), the period goes onto the display's refresh as vi's does (present_display_period), and
-   *paced says the window's textures also wait for the display to show the present after them */
+   FIFO, frame_pacing_mode past Timer), the period goes onto the display's refresh as vi's does
+   (present_display_period), and *paced says the window's textures also wait for the display to show the present
+   after them */
 static u64 present_period(const NvnWindow* o, int* paced) {
     int fps = __atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED);
     u64 period, refresh = 0;
@@ -539,10 +540,10 @@ static u64 present_period(const NvnWindow* o, int* paced) {
    The renderer copies a texture to the display's own image as it presents it, so the display holds none of the
    game's: what the display decides is the pace. The frame is released once the frames presented before it are
    displayed but the last, so one is ready behind the display and none queues behind another, as vi's present_pace
-   keeps it where frames are shown as they come. Where they are held until their refresh (frame_pacing 2), vi's pace
-   waits for the last too, but a game whose frame takes it longer than a period from its release to its present (one
-   that waits for its earlier frames' fences within the frame) then lost a refresh most frames: with the last frame
-   left out, a frame has two periods to get to its refresh, and is held there.
+   keeps it where frames are shown as they come. Where they are held until their refresh (frame_pacing_mode 3), vi's
+   pace waits for the last too, but a game whose frame takes it longer than a period from its release to its present
+   (one that waits for its earlier frames' fences within the frame) then lost a refresh most frames: with the last
+   frame left out, a frame has two periods to get to its refresh, and is held there.
 
    AcquireTexture waits for two things, as the game's driver takes the texture from the display's buffer queue there,
    which never hands back a buffer the display hasn't taken, so a game is never more than its window's textures ahead

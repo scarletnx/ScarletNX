@@ -2026,13 +2026,11 @@ int vk_swapchain_create(int kind) {
 
     /* an image for each frame in flight beyond what the driver keeps: a frame's present waits in the recording ring
        (vk_rec_present) while the next frame acquires, which takes no wait, so with one image fewer it found none.
-       Where the game's pace waits for the display (frame_pacing, FIFO with a display clock), a frame is released only
-       once the one before is displayed, so frames don't queue for the display: one image more than the driver keeps
-       is enough, and more would only let frames that came early (a menu's, fps_limit's) queue */
+       Where the game's pace waits for the display (frame_pacing_mode past Timer, FIFO with a display clock), a frame is
+       released only once the one before is displayed, so frames don't queue for the display: one image more than the
+       driver keeps is enough, and more would only let frames that came early (a menu's, fps_limit's) queue */
     int clock = g_vk.has_present_wait || g_vk.has_display_timing;
-    u32 extra = clock && mode == VK_PRESENT_MODE_FIFO_KHR && __atomic_load_n(&g_settings.frame_pacing, __ATOMIC_RELAXED)
-                    ? 1
-                    : VK_FRAMES;
+    u32 extra = clock && mode == VK_PRESENT_MODE_FIFO_KHR && snx_frame_pacing() ? 1 : VK_FRAMES;
     u32 count = snx_vk_swap_image_count(&caps, extra, VK_SC_MAX);
     VkCompositeAlphaFlagBitsKHR alpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     if (!(caps.supportedCompositeAlpha & alpha)) /* the lowest one it has */

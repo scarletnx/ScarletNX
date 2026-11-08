@@ -9,7 +9,8 @@
    controls_alpha, deprecated, kept under [Deprecated], and the other keys settings.txt dropped. And vk_descriptors,
    deprecated: the
    default an older version wrote in every game's .ini is no pick, so the game runs Automatic and nothing is said over
-   its picture; a pick is carried to vk_descriptors_mode, and --vk_descriptors=N is this run's */
+   its picture; a pick is carried to vk_descriptors_mode, and --vk_descriptors=N is this run's. And the Graphics Autos'
+   rules, and frame_pacing and resolution, deprecated, read as frame_pacing_mode and resolution_scale */
 #include "common/utilities/common.h"
 #include "nx/hle/services/hid.h"
 #include "nx/hle/services/services.h"
@@ -554,6 +555,64 @@ static int options_vk_descriptors_first(const char* which) {
     return 0;
 }
 
+/* Graphics' Autos (Liz, 08/11): anisotropy's 1, frame_pacing_mode's Display, resolution_scale's 1x unless the budget is
+   under 1024 MB (0.75x) or 512 MB (0.5x), a budget not known 1x; frame_pacing_mode as the pacing in effect; a scale
+   past 0 and under 0.25 is 0.25 */
+static void test_graphics_auto(void) {
+    unsigned long long mb = 1ull << 20;
+    const IniOpt* o = ini_find(g_graphics_ini, "resolution_scale");
+    CHECK(SNX_ANISOTROPY_AUTO == 1 && SNX_FRAME_PACING_AUTO == 2);
+    CHECK(snx_resolution_auto(0) == 1.0f && snx_resolution_auto(12000 * mb) == 1.0f);
+    CHECK(snx_resolution_auto(1024 * mb) == 1.0f && snx_resolution_auto(1024 * mb - 1) == 0.75f);
+    CHECK(snx_resolution_auto(512 * mb) == 0.75f && snx_resolution_auto(512 * mb - 1) == 0.5f);
+    CHECK(snx_resolution_auto(1) == 0.5f);
+    g_settings.frame_pacing = 0;
+    CHECK(snx_frame_pacing() == 1);
+    g_settings.frame_pacing = 1;
+    CHECK(snx_frame_pacing() == 0);
+    g_settings.frame_pacing = 3;
+    CHECK(snx_frame_pacing() == 2);
+    g_settings.frame_pacing = 0;
+    CHECK(o && !strcmp(o->def, "0") && o->lo == 0 && o->hi == 16);
+    CHECK(snx_resolution_scale(0.0f, 600 * mb) == 0.75f && snx_resolution_scale(0.0f, 0) == 1.0f);
+    CHECK(snx_resolution_scale(0.1f, 600 * mb) == 0.25f && snx_resolution_scale(2.5f, 1) == 2.5f);
+}
+/* frame_pacing (0 timer, 1 display, the default, 2 held) and resolution (0.25 to 16, 1 by default) in an old .ini: each
+   default every game's .ini had written leaves its new key at Auto; the others are the same pacing or scale */
+static void test_graphics_old(void) {
+    char* text;
+    CHECK(options_frame_pacing_old("0") == 1 && options_frame_pacing_old("2") == 3);
+    CHECK(options_frame_pacing_old("1") == -1 && options_frame_pacing_old("3") == -2);
+    CHECK(options_resolution_old("1") == -1 && options_resolution_old("1.0") == -1 && options_resolution_old("2") == 1);
+    CHECK(options_resolution_old("0.25") == 1 && options_resolution_old("0.2") == -2 &&
+          options_resolution_old("17") == -2 && options_resolution_old("x") == -2);
+    g_test.write = 1;
+    text = open_ini("[Graphics]\nresolution=2\nframe_pacing=2\n");
+    CHECK(strstr(g_test.said,
+                 "settings: resolution=2, deprecated, is resolution_scale=2 now (docs/user/deprecations.md)\n"));
+    CHECK(strstr(g_test.said, "settings: frame_pacing=2, deprecated, is frame_pacing_mode=3 (Display and hold) now "
+                              "(docs/user/deprecations.md)\n"));
+    CHECK(text && strstr(text, "\nresolution_scale=2\n") && strstr(text, "\nframe_pacing_mode=3\n") &&
+          strstr(text, "\n[Deprecated]\n") < strstr(text, "\nresolution=2\n"));
+    free(text);
+    text = open_ini("[Graphics]\nresolution=1\nframe_pacing=1\n");
+    CHECK(strstr(g_test.said,
+                 "settings: resolution=1, deprecated, was its default: resolution_scale takes its own, 0 "
+                 "(Auto), the console's 1x unless the GPU's memory is short (docs/user/deprecations.md)\n"));
+    CHECK(strstr(g_test.said, "settings: frame_pacing=1, deprecated, was its default: frame_pacing_mode takes its own, "
+                              "0 (Auto), 2 (Display) for now (docs/user/deprecations.md)\n"));
+    CHECK(text && strstr(text, "\nresolution_scale=0\n") && strstr(text, "\nframe_pacing_mode=0\n"));
+    free(text);
+    text = open_ini("[Graphics]\nresolution=40\nframe_pacing=0\n");
+    CHECK(strstr(g_test.said,
+                 "settings: resolution=40, deprecated, is no scale from 0.25 to 16: resolution_scale takes "
+                 "its default, 0 (Auto) (docs/user/deprecations.md)\n"));
+    CHECK(strstr(g_test.said, "settings: frame_pacing=0, deprecated, is frame_pacing_mode=1 (Timer) now "
+                              "(docs/user/deprecations.md)\n"));
+    free(text);
+    g_test.write = 0;
+}
+
 int main(int argc, char** argv) {
     if (argc > 1) return options_vk_descriptors_first(argv[1]);
     test_fixed();
@@ -568,6 +627,8 @@ int main(int argc, char** argv) {
     test_dropped_keys_old();
     test_vk_descriptors_old_default();
     test_vk_descriptors_old();
+    test_graphics_auto();
+    test_graphics_old();
     printf("options_tv_mode: ok\n");
     return 0;
 }

@@ -203,7 +203,7 @@ typedef struct Renderer {
        game's frames presented have been displayed (all but one where the display doesn't hold them until their
        refresh, and one more when deadline_ns has passed already), or until deadline_ns (plat_ns), and sets
        *refresh_ns to the display's refresh period (0 not known). 1 when they have; 0 at the deadline; -1 when the
-       renderer can't tell or isn't to (frame_pacing 0, no display clock, a present mode that doesn't show every
+       renderer can't tell or isn't to (frame_pacing_mode 1, no display clock, a present mode that doesn't show every
        frame, nothing presented yet). Any thread; NULL for none */
     int (*display_wait)(u64 deadline_ns, u64* refresh_ns);
     u64 (*screenshot)(const char* path); /* the hash of the frame it saved */

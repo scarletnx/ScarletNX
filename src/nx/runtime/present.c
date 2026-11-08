@@ -46,8 +46,8 @@ void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layou
    DequeueBuffer: the GPU thread never waits for the display. As Ryujinx's SurfaceFlinger paces a swap interval of 0,
    the game's pace with interval 0 does not wait at all.
 
-   Where the renderer knows when frames are displayed (renderer.h display_wait, the frame_pacing setting), the game's
-   pace also goes by the display: a frame is released once the game's frames presented before it have been displayed
+   Where the renderer knows when frames are displayed (renderer.h display_wait, frame_pacing_mode), the game's pace
+   also goes by the display: a frame is released once the game's frames presented before it have been displayed
    (all but one where the display doesn't hold them until their refresh), so none queues for the display behind
    another, and the timer's period follows a near-identical display clock (a 59.94 Hz one). Incompatible refresh
    ratios keep the game's period instead of rounding its frame rate down. A display that stops taking frames leaves
