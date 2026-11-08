@@ -1467,6 +1467,9 @@ typedef struct {
    the mirror, set in the mirror's mask (mirror_fold.comp), and their ranges pending (vk_mirror_wrote). The submit's
    harvest lands those bytes and no others */
 void vk_mirror_fold(VkCommandBuffer cb, VkBuffer log, u64 log_size, const VkMirFold* f, u32 n);
+/* a count of the programs' writes of the mirror recorded so far (each vk_mirror_fold): a read of the mirror in place
+   needs a barrier only after it moved */
+u64 vk_mirror_write_gen(void);
 /* whether pending writes of the mirror are behind [gva, gva + len); a read of guest memory there lands them first */
 int vk_mirror_pending(u64 gva, u64 len);
 /* whether the mirror owns a part of [gva, gva + len), one run of guest memory: written by its programs and landed
