@@ -71,6 +71,21 @@ public class TypedArray implements AutoCloseable {
         out.density = data[i + STYLE_DENSITY];
         out.sourceResourceId = data[i + STYLE_SOURCE_RESOURCE_ID];
         out.string = type == TypedValue.TYPE_STRING ? string(out.assetCookie, out.data) : null;
+        if (type == TypedValue.TYPE_REFERENCE && out.data != 0) {
+            // a reference the tables could not resolve (the framework's, as @android:color/white): what the
+            // resources know of it, else the reference as it is
+            try {
+                TypedValue r = new TypedValue();
+                resources.getValue(out.data, r, true);
+                out.type = r.type;
+                out.data = r.data;
+                out.string = r.string;
+                out.assetCookie = r.assetCookie;
+                out.density = r.density;
+            } catch (Resources.NotFoundException e) {
+                // the reference stays
+            }
+        }
         return true;
     }
 

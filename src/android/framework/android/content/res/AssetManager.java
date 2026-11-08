@@ -56,6 +56,24 @@ public final class AssetManager implements AutoCloseable {
                 out.string = FRAMEWORK_STRINGS[i];
                 return true;
             }
+        for (int i = 0; i < FRAMEWORK_INTEGERS.length; i += 2)
+            if (FRAMEWORK_INTEGERS[i] == resid) {
+                out.type = TypedValue.TYPE_INT_DEC;
+                out.data = FRAMEWORK_INTEGERS[i + 1];
+                out.resourceId = resid;
+                out.assetCookie = 0;
+                out.string = null;
+                return true;
+            }
+        for (int i = 0; i < FRAMEWORK_COLORS.length; i += 2)
+            if (FRAMEWORK_COLORS[i] == resid) {
+                out.type = TypedValue.TYPE_INT_COLOR_ARGB8;
+                out.data = FRAMEWORK_COLORS[i + 1];
+                out.resourceId = resid;
+                out.assetCookie = 0;
+                out.string = null;
+                return true;
+            }
         return false;
     }
 
@@ -76,6 +94,25 @@ public final class AssetManager implements AutoCloseable {
     private static final int[] FRAMEWORK_THEME = {
         0x01010309, 0x01ff0001, // android:attr/alertDialogTheme: @android:style/Theme.Dialog.Alert
     };
+    /* android.R.color's plain colors: the ID, then the ARGB value */
+    private static final int[] FRAMEWORK_COLORS = {
+        0x01060000, 0xffaaaaaa, // darker_gray
+        0x0106000b, 0xffffffff, // white
+        0x0106000c, 0xff000000, // black
+        0x0106000d, 0x00000000, // transparent
+        0x0106000e, 0xff000000, // background_dark
+        0x0106000f, 0xffffffff, // background_light
+    };
+    private static final String[] FRAMEWORK_COLOR_NAMES = {"darker_gray", "white", "black", "transparent",
+                                                           "background_dark", "background_light"};
+    /* android.R.integer's: the ID, then the value */
+    private static final int[] FRAMEWORK_INTEGERS = {
+        0x010e0000, 200, // config_shortAnimTime
+        0x010e0001, 400, // config_mediumAnimTime
+        0x010e0002, 500, // config_longAnimTime
+    };
+    private static final String[] FRAMEWORK_INTEGER_NAMES = {"config_shortAnimTime", "config_mediumAnimTime",
+                                                             "config_longAnimTime"};
     private static final int[] FRAMEWORK_NAMED = {0x01ff0001};
     private static final String[] FRAMEWORK_NAMES = {"android:style/Theme.Dialog.Alert"};
     /* android.R.string's public strings that dialogs use, in English */
@@ -91,6 +128,10 @@ public final class AssetManager implements AutoCloseable {
         String[] strings = {"cancel", "copy", "cut", "no", "ok", "paste", "selectAll", "unknownName", "untitled", "yes"};
         for (int i = 0; name == null && i < FRAMEWORK_STRING_IDS.length; ++i)
             if (FRAMEWORK_STRING_IDS[i] == resid) name = "android:string/" + strings[i];
+        for (int i = 0; name == null && i < FRAMEWORK_INTEGERS.length; i += 2)
+            if (FRAMEWORK_INTEGERS[i] == resid) name = "android:integer/" + FRAMEWORK_INTEGER_NAMES[i / 2];
+        for (int i = 0; name == null && i < FRAMEWORK_COLORS.length; i += 2)
+            if (FRAMEWORK_COLORS[i] == resid) name = "android:color/" + FRAMEWORK_COLOR_NAMES[i / 2];
         return name;
     }
 
