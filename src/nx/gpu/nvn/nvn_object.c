@@ -1794,13 +1794,14 @@ static int stage_of(NvnProgram* o, u64 data, u64 control) {
         st->cb = (u16)(gr32(control + 0x40) >> 8);
         st->cb_size = (u16)((gr32(control + 0x3c) + 0xff) >> 8);
         /* a compute program's workgroup size, at 0x58-0x60 of its section (0 in the graphics ones), and its shared
-           memory bytes at 0x64: 0 in most of one game's programs, 0x800 to 0xc000 in the others. Without it the
-           translator gave each 16 KiB, and those of 48 KiB reached past their shared array */
+           memory's bytes at 0x64 (nvn_section.h): 0 in most of one game's programs, 0x800 to 0xc000 in the
+           others. Without it the translator gave each 16 KiB, and those of 48 KiB reached past their shared
+           array */
         if (st == &o->st[NVN_SHADER_STAGE_COMPUTE]) {
             o->block[0] = (u16)gr32(control + 0x58);
             o->block[1] = (u16)gr32(control + 0x5c);
             o->block[2] = (u16)gr32(control + 0x60);
-            o->off_a = gr32(control + 0x64);
+            o->off_a = nvn_section_shared(GP(control));
         }
         return 1;
     }

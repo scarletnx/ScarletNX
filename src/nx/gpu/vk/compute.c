@@ -718,6 +718,7 @@ static u64 cs_key(const u8* code, u32 flow_base, u32 lx, u32 ly, u32 lz, u32 shm
 }
 static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k,
                        VkCbReader read);
+static int cs_replay_read(u32 idx, u32 off, u32* out);
 /* Whether a translation reads other lanes: a GroupNonUniform capability (61 to 68), or CooperativeMatrixKHR (6022:
    sm86_translate.c's hmma_coop, whose 16x16 matrices take a subgroup of 32 lanes), among those the module starts
    with. Its lanes are a warp's 32, which the translation finds as its own 32 of a subgroup of 32 or 64; in a
@@ -730,6 +731,18 @@ static int cs_reads_lanes(const u32* spv, size_t words) {
         u32 width = spv[at] >> 16;
         if (!width || at + width > words || (spv[at] & 0xffffu) != 17) break; /* past the OpCapability ones */
         if (width == 2 && ((spv[at + 1] >= 61 && spv[at + 1] <= 68) || spv[at + 1] == 6022)) return 1;
+        at += width;
+    }
+    return 0;
+}
+/* whether a translation has shared memory: an OpVariable (59) of the Workgroup storage class (4), which the
+   translation declares when the program addresses shared memory (sm86_translate.c's shared_var) */
+static int cs_uses_shared(const u32* spv, size_t words) {
+    for (size_t at = 5; at < words;) {
+        u32 width = spv[at] >> 16;
+        if (!width || at + width > words) break;
+        if ((spv[at] & 0xffffu) == 59 && width >= 4 && spv[at + 3] == 4) return 1;
+        if ((spv[at] & 0xffffu) == 54) break; /* OpFunction: the variables of the module come before */
         at += width;
     }
     return 0;
@@ -767,6 +780,14 @@ static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx,
     p->si.cs_local[0] = lx;
     p->si.cs_local[1] = ly;
     p->si.cs_local[2] = lz;
+    /* An Ounce program's shared memory is the size its control section declares (nvn_section.h's 0x64), as the
+       console's driver puts it in the QMD, rounded up to the 256 bytes the console allocates in: an access past the
+       declared size would still land in the block's own allocation there. The translation clamps an access past the
+       array to its last word (sm86_translate.c's mem_ptr). One game's video upscaler declares 0x5460 bytes and
+       addresses exactly that; with the 16 KiB a program without a size got before, its tiles folded onto that last
+       word and raced there, and its frames came out as strips of other tiles' bytes. A program that declares 0 and
+       still addresses shared memory gets the translation's 16 KiB, and a log line below says so */
+    if (shm && g_shader_sm86) shm = (shm + 255u) & ~255u;
     p->si.shared_size = (int)shm;
     /* A block may ask for more shared memory than the device gives (48 KiB on the console, 32 KiB on Adreno 6xx to
        8xx). The program then gets the device's size when no access of it can reach past that, and is skipped
@@ -807,6 +828,12 @@ static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx,
             p->si.first_unsupported[0] ? p->si.first_unsupported : "unsupported feature or shader");
         return p;
     }
+    /* not for a pipeline of an earlier run (vk_cs_pipe_load): one saved before the size was read has 0 in its key */
+    if (!shm && g_shader_sm86 && read != cs_replay_read && cs_uses_shared(spv, nw))
+        LOG_LIMIT(8,
+                  "vulkan: compute %016llx declares no shared memory and addresses it: it gets the translation's 16 "
+                  "KiB\n",
+                  (unsigned long long)key);
     u32 image_slots = g_vk.props.limits.maxPerStageDescriptorStorageImages;
     if (image_slots > g_vk.props.limits.maxDescriptorSetStorageImages)
         image_slots = g_vk.props.limits.maxDescriptorSetStorageImages;

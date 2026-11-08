@@ -57,8 +57,14 @@ int main(void) {
     const u32 fragment[] = {0x10000};
     section(s, fragment, 1);
     assert(nvn_section_stage(s) == NVN_SHADER_STAGE_FRAGMENT);
-    const u32 compute[] = {0x50000, 64, 1, 1};
-    section(s, compute, 4);
+    /* a compute program: its workgroup of 32x4x1 and its shared memory, 0x5460 bytes (one game's video upscaler, a
+       108-byte slot a thread from 0x1e60), and one of none */
+    const u32 compute[] = {0x50000, 32, 4, 1, 0x5460};
+    section(s, compute, 5);
     assert(nvn_section_stage(s) == NVN_SHADER_STAGE_COMPUTE);
+    assert(nvn_section_shared(s) == 0x5460);
+    const u32 compute_none[] = {0x50000, 64, 1, 1, 0};
+    section(s, compute_none, 5);
+    assert(nvn_section_shared(s) == 0);
     return 0;
 }
