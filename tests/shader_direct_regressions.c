@@ -51,6 +51,7 @@ static const char* surface_op_paths[7];
 static const char* legacy_paths[4];
 static const char* rect_paths[3];
 static const char* window_paths[3];
+static const char* lone_lane_paths[9];
 static struct {
     char** paths;
     size_t count, capacity;
@@ -4326,6 +4327,111 @@ static void shfl_quad_forms(void) {
     g_shader_quad = 1;
 }
 
+/* VOTE R<d>, P<out>, [!]P<in> in this mode (0 ALL, 1 ANY, 2 EQ) */
+static u64 vote(u32 mode, u32 d, u32 out, u32 in, int negate) {
+    return 0x50D8000000070000ull | (u64)mode << 48 | (u64)out << 45 | (u64)(negate != 0) << 42 | (u64)in << 39 | d;
+}
+static u32* lone_lane_spirv(const u64* instructions, int count, int stage, int can_subgroup, ShaderInfo* info,
+                            size_t* words) {
+    const u32 geometry_sph[3] = {1u << 24, 7u << 24, 3}, none[3] = {0};
+    size_t slots;
+    u64* code = guest_program(instructions, count, stage == ST_GS ? geometry_sph : none, &slots);
+    if (!code) return NULL;
+    memset(info, 0, sizeof *info);
+    info->rt_int_mask = stage == ST_GS ? 3 : 0;
+    if (stage == ST_TCS) info->clip_enable = SNX_SH_NOT_LAST;
+    u32* result = spirv_of(code, slots * sizeof *code, stage, info, words, 1, 1, 1, can_subgroup);
+    free(code);
+    return result;
+}
+/* the module uses no subgroup: no GroupNonUniform capability, instruction or SubgroupLocalInvocationId */
+static int no_subgroup(const u32* code, size_t words) {
+    int found = has_builtin(code, words, 41);
+    for (u32 capability = 61; capability <= 68; capability++) found += count_opcode(code, words, 17, capability);
+    for (u32 opcode = 333; opcode <= 366; opcode++) found += count_opcode(code, words, opcode, 0xffffffffu);
+    return found == 0;
+}
+
+/* A vertex, evaluation or geometry program that votes or shuffles, on a device whose subgroups leave its stage out (an
+   Adreno 830 lists fragment and compute), runs each invocation as lane 0 alone, as the console runs a batch of one
+   vertex or primitive. The forms are those of a game's vertex programs, whose draws were skipped on that phone: a
+   warp-aggregated atomic (the ballot of the live lanes, whose highest adds their count) and a block branched around
+   when the whole warp agrees, plus SHFL and the other votes. Control and fragment programs still need the subgroup */
+static void lone_lane_forms(void) {
+    const u64 aggregated[] = {
+        vote(0, 2, 7, 7, 0),   /* VOTE.ALL R2, PT, PT: the live lanes */
+        0xF0C8000000070001ull, /* S2R R1, SR_LANEID */
+        0x5C30000000270000ull, /* FLO.U32 R0, R2: the highest live lane */
+        0x5C08000000270003ull, /* POPC R3, R2: how many */
+        0x5B64038000170007ull, /* ISETP.EQ.U32.AND P0, PT, R0, R1, PT */
+        0x4C98078004870000ull, /* MOV R0, c[0x0][0x120] */
+        0x4C98078004970001ull, /* MOV R1, c[0x0][0x124] */
+        0xEBF9000000000003ull, /* @P0 RED.E.ADD [R0], R3 */
+    };
+    const u64 uniform[] = {
+        0x5B6503800FF70407ull, /* ISETP.EQ.U32.AND P0, PT, R4, RZ, PT */
+        vote(0, 255, 1, 0, 0), /* VOTE.ALL RZ, P1, P0 */
+        0x0103F8000001F00Aull, /* @P1 MOV32I R10, 1.0 */
+        0xE24000000181000Full, /* @P1 BRA past the next two and their schedule word */
+        0x010400000008F00Aull, /* @!P0 MOV32I R10, 2.0 */
+        0x0103F8000000F00Aull, /* @P0 MOV32I R10, 1.0 */
+        0xEFF07F800807FF0Aull, /* AST a[0x80], R10 */
+    };
+    const u64 others[] = {vote(1, 5, 2, 0, 1), vote(2, 6, 3, 0, 0), shfl(3, 1, 1, 0x1f), shfl(0, 0, 0, 0x1f)};
+    static const struct {
+        int stage;
+        const char* what;
+    } stages[] = {{ST_VS, "a vertex"}, {ST_TES, "an evaluation"}, {ST_GS, "a geometry"}};
+    const struct {
+        const u64* instructions;
+        int count;
+        const char* what;
+    } forms[] = {{aggregated, 8, "a warp-aggregated atomic"},
+                 {uniform, 7, "a branch on VOTE.ALL"},
+                 {others, 4, "VOTE.ANY, VOTE.EQ and SHFL"}};
+    ShaderInfo info;
+    size_t words = 0;
+    char what[160];
+    int fixture = 0;
+    for (size_t s = 0; s < sizeof stages / sizeof *stages; s++)
+        for (size_t f = 0; f < sizeof forms / sizeof *forms; f++) {
+            u32* code = lone_lane_spirv(forms[f].instructions, forms[f].count, stages[s].stage, 0, &info, &words);
+            snprintf(what, sizeof what, "%s in %s program translates without subgroups in its stage", forms[f].what,
+                     stages[s].what);
+            check_translated(code, &info, what);
+            if (code) {
+                snprintf(what, sizeof what, "%s in %s program runs as lane 0 alone: no subgroup in its module",
+                         forms[f].what, stages[s].what);
+                check(no_subgroup(code, words), what);
+                check(!info.primitive_split_safe, "a program that votes is never split into primitives");
+                if (fixture < 9) save_fixture(lone_lane_paths[fixture++], code, words);
+            }
+            free(code);
+            code = lone_lane_spirv(forms[f].instructions, forms[f].count, stages[s].stage, 1, &info, &words);
+            snprintf(what, sizeof what, "%s in %s program uses the subgroup where its stage has it", forms[f].what,
+                     stages[s].what);
+            check_translated(code, &info, what);
+            if (code) check(!no_subgroup(code, words) && count_opcode(code, words, 17, 61) == 1, what);
+            free(code);
+        }
+    /* a control program's invocations are the lanes of one warp, together: a lane alone isn't one of its states */
+    for (size_t f = 0; f < sizeof forms / sizeof *forms; f++) {
+        u32* code = lone_lane_spirv(forms[f].instructions, forms[f].count, ST_TCS, 0, &info, &words);
+        snprintf(what, sizeof what, "%s in a control program still needs the subgroup", forms[f].what);
+        check_refused(code, &info, "subgroup ballot/shuffle unavailable", what);
+        free(code);
+    }
+    u32* code = lone_lane_spirv(others, 4, ST_FS, 0, &info, &words);
+    check_refused(code, &info, "subgroup ballot/shuffle unavailable", "SHFL in a fragment program needs the subgroup");
+    free(code);
+    /* FSWZADD's lanes are a quad's: the lone lane doesn't stand for them */
+    const u64 swizzled[] = {vote(0, 2, 7, 7, 0), fswzadd(0xcc)};
+    code = lone_lane_spirv(swizzled, 2, ST_VS, 0, &info, &words);
+    check_refused(code, &info, "subgroup ballot/shuffle unavailable",
+                  "FSWZADD with lanes that differ keeps the subgroup");
+    free(code);
+}
+
 /* Real TCS builtins and nonzero geometry streams use distinct typed interfaces. */
 static void rendering_stage_features(const char* directory) {
     int point_size_available = g_shader_stage_point_size;
@@ -4455,6 +4561,10 @@ int main(int argc, char** argv) {
             snprintf(name, sizeof name, "window_%d", i);
             window_paths[i] = fixture_path(argv[1], name);
         }
+        for (int i = 0; i < 9; i++) {
+            snprintf(name, sizeof name, "lone_lane_%d", i);
+            lone_lane_paths[i] = fixture_path(argv[1], name);
+        }
         if (g_fixtures.failed) {
             fprintf(stderr, "failed to allocate fixture paths\n");
             return 2;
@@ -4519,6 +4629,7 @@ int main(int argc, char** argv) {
     fswzadd_forms();
     shfl_quad_forms();
     shfl_predicate();
+    lone_lane_forms();
     feedback_own_pixel();
     feedback_screen_uv();
     vertex_screen_out();
