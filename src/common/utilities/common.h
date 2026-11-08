@@ -67,6 +67,8 @@ char* snx_game_folder(const char* repo, const char* outdir, const char* argv0, c
 int snx_parse_seconds(const char* text, double* seconds);
 /* whether path is a full one, from a root (a drive's or a share's on Windows), not one relative to a working folder */
 int snx_path_is_full(const char* path);
+/* the running program's full path, as the system tells it (/proc/self/exe on Linux, KERN_PROC_PATHNAME on FreeBSD),
+   else argv0 found on PATH; NULL when neither says it (argv0 NULL). The caller's to free */
 char* snx_executable(const char* argv0);
 int snx_is_file(const char* path);
 int snx_is_dir(const char* path);
