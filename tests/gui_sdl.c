@@ -4569,7 +4569,7 @@ int main(int argc, char** argv) {
     if (argc == 2 && !strcmp(argv[1], "--settings")) { /* as the runtime lists its settings */
         fputs("Display\tfullscreen\t0\tint\t0\t1\t1 = start in fullscreen\t\t0=0|1=1\n"
               "Graphics\tresolution\t1\tfloat\t0.25\t16\tInternal 3D resolution\t\t\n"
-              "On-screen controls\tcontrols\t0\tint\t0\t1\tThe on-screen controls\tShow controls\t0=Off|1=On\n"
+              "On-screen controls\tcontrols\t2\tint\t0\t2\tThe on-screen controls\tShow controls\t0=Off|1=On|2=Auto\n"
               "On-screen controls/Buttons\tcontrols_a_shown\t\tint\t0\t1\tA control drawn\tA\t0=Hidden|1=Shown\n"
               "On-screen controls/Buttons\tcontrols_b_shown\t\tint\t0\t1\tA control drawn\tB\t0=Hidden|1=Shown\n"
               "User\tuser_uid\t\ttext\t\t\tThe console's user the game plays as, by its uid\tUser uid\t\n",
@@ -4603,14 +4603,14 @@ int main(int argc, char** argv) {
         }
         return status;
     }
-    if (argc == 3 && !strcmp(argv[1], "--fullscreen=1") && !strcmp(argv[2], "--controls=0")) {
+    if (argc == 3 && !strcmp(argv[1], "--fullscreen=1") && !strcmp(argv[2], "--controls=2")) {
         puts("prepared game stdout");
         fputs("prepared game stderr\n", stderr);
         return 0;
     }
     if (argc > 1 && strstr(argv[1], "option flags")) {
         int i = 2;
-        assert(argc == 8 && !strcmp(argv[i++], "--fullscreen=1") && !strcmp(argv[i++], "--controls=0"));
+        assert(argc == 8 && !strcmp(argv[i++], "--fullscreen=1") && !strcmp(argv[i++], "--controls=2"));
         assert(!strcmp(argv[i++], "-S") && !strcmp(argv[i++], "-s"));
         assert(!strcmp(argv[i++], "--data") && argv[i++][0] && i == argc);
         puts("Recompiling option flags\nScarletNX - option flags"); /* the runner's banner: now loading */
@@ -4639,7 +4639,7 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && strstr(argv[1], "folder game")) { /* a game in a folder of its own, through the menu's driver */
         assert(strstr(argv[0], "runtime") && argc == 6 && snx_is_file(argv[1]) && !strcmp(argv[2], "--fullscreen=1") &&
-               !strcmp(argv[3], "--controls=0") && !strcmp(argv[4], "--data") && argv[5][0]);
+               !strcmp(argv[3], "--controls=2") && !strcmp(argv[4], "--data") && argv[5][0]);
         puts("Recompiling folder game (1 modules)\nBuilt folder game\nScarletNX - folder game");
         return 0;
     }
@@ -4654,7 +4654,7 @@ int main(int argc, char** argv) {
         assert(strstr(argv[1], "game with spaces"));
         bool nx = strstr(argv[0], "runtime") != NULL; /* the program the menu is part of */
         if (nx)
-            assert(argc == 6 && !strcmp(argv[2], "--fullscreen=1") && !strcmp(argv[3], "--controls=0") &&
+            assert(argc == 6 && !strcmp(argv[2], "--fullscreen=1") && !strcmp(argv[3], "--controls=2") &&
                    !strcmp(argv[4], "--data") && argv[5][0]);
         else
             assert(argc == 2);
@@ -5527,7 +5527,7 @@ int main(int argc, char** argv) {
         render(&app);
         shows(&app, "Overlay", normal);
         /* the rows' text past the gutter of Buttons' icon */
-        snprintf(line, sizeof line, "-    %-13s %s", "Show controls", "Off [default]"); /* the launcher's choice */
+        snprintf(line, sizeof line, "-    %-13s %s", "Show controls", "Auto [default]"); /* the launcher's choice */
         shows(&app, line, yellow);
         snprintf(line, sizeof line, "- " ICON_LAYOUT_GRID " %-13s %s", "Buttons", ">");
         shows(&app, line, normal);
@@ -7848,10 +7848,10 @@ int main(int argc, char** argv) {
             assert(before && !snx_write_file(app.settings_file, older, sizeof older - 1));
             settings_forget(&app);
             app.message[0] = 0;
-            assert(settings_of(&app) && setting_is(&app, "fullscreen", "0") && setting_is(&app, "controls", "0"));
+            assert(settings_of(&app) && setting_is(&app, "fullscreen", "0") && setting_is(&app, "controls", "2"));
             assert(setting_is(&app, "resolution", "2"));
             said = snx_format("%s: fullscreen=.ini is no longer a value of fullscreen: fullscreen=0 now; controls=.ini "
-                              "is no longer a value of Show controls: controls=0 now",
+                              "is no longer a value of Show controls: controls=2 now",
                               app.settings_file);
             assert(!strcmp(app.message, said));
             free(said);
@@ -8022,7 +8022,7 @@ int main(int argc, char** argv) {
     {
         size_t size;
         char* kept = (char*)snx_read_file(app.run_log, &size);
-        char* line = snx_format("game with spaces;literal.nro --fullscreen=1 --controls=0 --data %s\n", app.data_dir);
+        char* line = snx_format("game with spaces;literal.nro --fullscreen=1 --controls=2 --data %s\n", app.data_dir);
         assert(kept && line && !app.run_out && !strncmp(kept, "$ ", 2) && strstr(kept, line));
         free(line);
         assert(strstr(kept, "driver stdout") && strstr(kept, "driver stderr") && strstr(kept, "\n[ended, status 0]\n"));

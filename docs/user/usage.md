@@ -141,8 +141,8 @@ which then starts fullscreen (not in timed test runs). `--fullscreen=0` starts i
 game's `.ini` decides (`fullscreen=1` starts fullscreen).
 `--touch=0|1|2` is forwarded to the game too: its touch screen takes nothing, the fingers, or the fingers and the
 mouse's left button (the default). The game's menu sets it too; the game's `.ini` keeps its own `touch`.
-`--controls=0|1` likewise hides or shows the [on-screen controls](#on-screen-controls) (on by default on Android);
-the game's `.ini` keeps `controls`. Any other `--key=value` of the game's
+`--controls=0|1|2` likewise hides or shows the [on-screen controls](#on-screen-controls), or shows them on a touch
+screen while no gamepad is connected (`2`, the default); the game's `.ini` keeps `controls`. Any other `--key=value` of the game's
 `.ini` is forwarded as well, for that run (`scarletnx --settings` lists them all), and so are the timed-run ones
 (`--seconds=`, `--shot=`...); any other key stops the run with `unknown option`.
 The game's own executable also takes `-v`, the same as `--log=2`.
@@ -843,7 +843,7 @@ underlined once the log exists: a click opens it in the system's viewer, the pan
 A pad drawn over the game in white lines, with rEden's sizes, laid out as the console's two controllers hold them:
 sticks, D-pad, A B X Y, L R ZL ZR, plus and minus, the stick buttons, Home (the game's menu) and Capture (a
 screenshot). Fingers press them, the mouse's left button too; a finger that lands off them goes to the game's
-touch screen. They are on by default on Android and off elsewhere.
+touch screen. By default (`controls=2`, Auto) they show on a touch screen while no gamepad is connected.
 
 The game's menu (Back on Android, Home on a gamepad, F2) has their page: show them, *Edit layout* (drag a control;
 tap one and size it with the bar on top; *Done* or Back ends it), snap to a grid, scale, the buttons

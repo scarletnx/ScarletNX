@@ -7723,14 +7723,13 @@ static GuiSettings* settings_of(App* app) {
     free(list);
     free(driver);
     /* the launcher's own choices win over the game's .ini, as its items did: Off or On to every run, a phone's on the
-       whole screen, its pad shown */
+       whole screen; the on-screen controls Auto everywhere, shown on a touch screen while no gamepad is connected */
 #if defined(SDL_PLATFORM_ANDROID) || defined(SDL_PLATFORM_IOS)
     gui_settings_always(&app->settings, "fullscreen", "1");
-    gui_settings_always(&app->settings, "controls", "1");
 #else
     gui_settings_always(&app->settings, "fullscreen", "0");
-    gui_settings_always(&app->settings, "controls", "0");
 #endif
+    gui_settings_always(&app->settings, "controls", "2");
     gui_settings_mark(&app->settings);
     /* what older versions wrote that the rows read otherwise (a .ini, a default picked): written without, said once */
     if (gui_settings_load(&app->settings, app->settings_file, old, sizeof old)) {
