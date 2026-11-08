@@ -139,6 +139,18 @@ public class Intent implements Parcelable, Cloneable {
     public Intent setClassName(String packageName, String className) { component = new ComponentName(packageName, className); return this; }
     public Intent setClass(Context packageContext, Class<?> cls) { component = new ComponentName(packageContext, cls); return this; }
     public ComponentName resolveActivity(android.content.pm.PackageManager pm) { return component; }
+    /** The activity that the intent starts: its component's, or the one that the package manager resolves, else null */
+    public android.content.pm.ActivityInfo resolveActivityInfo(android.content.pm.PackageManager pm, int flags) {
+        if (component != null) {
+            try {
+                return pm.getActivityInfo(component, flags);
+            } catch (android.content.pm.PackageManager.NameNotFoundException e) {
+                return null;
+            }
+        }
+        android.content.pm.ResolveInfo info = pm.resolveActivity(this, flags | android.content.pm.PackageManager.MATCH_DEFAULT_ONLY);
+        return info != null ? info.activityInfo : null;
+    }
     public int getFlags() { return flags; }
     public Intent setFlags(int flags) { this.flags = flags; return this; }
     public Intent addFlags(int flags) { this.flags |= flags; return this; }
