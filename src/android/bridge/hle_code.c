@@ -42,13 +42,38 @@ static const uint32_t jump_code[] = {
 };
 enum { SETJMP = 0, LONGJMP = 14 };
 
+/* dlopen(name, flags) as libdl's is: a call of the linker's __loader_dlopen with its own return address as the
+   caller. Code that finds the linker reads it so: liblinkernsbypass (libadrenotools') takes the target of dlopen's
+   first BL as __loader_dlopen and calls it. The BL goes to a veneer beside it, whose literal is the address of the
+   HLE's __loader_dlopen, written at init */
+static const uint32_t dlopen_code[] = {
+    0xa9bf7bfd, /* stp x29, x30, [sp, #-16]! */
+    0x910003fd, /* mov x29, sp */
+    0xaa1e03e2, /* mov x2, x30 */
+    0x94000003, /* bl veneer */
+    0xa8c17bfd, /* ldp x29, x30, [sp], #16 */
+    0xd65f03c0, /* ret */
+    0x58000050, /* veneer: ldr x16, literal */
+    0xd61f0200, /* br x16 */
+    0, 0,       /* literal: __loader_dlopen */
+};
+/* dlopen at an even word after setjmp's and longjmp's, so that its literal is 8-byte aligned */
+enum { DLOPEN = (sizeof jump_code / sizeof *jump_code + 1) & ~1u, LITERAL = DLOPEN + 8 };
+_Static_assert(LITERAL % 2 == 0, "the veneer's literal is 8-byte aligned");
+
 static uint64_t code;
 
 void hle_code_init(void) {
     code = bridge_window_reserve(0x10000, 0x10000);
     if (!code) return;
+    uint32_t words[DLOPEN + sizeof dlopen_code / sizeof *dlopen_code] = {0};
+    memcpy(words, jump_code, sizeof jump_code);
+    memcpy(words + DLOPEN, dlopen_code, sizeof dlopen_code);
+    uint64_t loader = hle_symbol("__loader_dlopen");
+    words[LITERAL] = (uint32_t)loader;
+    words[LITERAL + 1] = (uint32_t)(loader >> 32);
     /* the window is reserved without access: this page is the guest's, readable for the JIT */
-    bridge_map_code(code, jump_code, sizeof jump_code);
+    bridge_map_code(code, words, sizeof words);
 }
 
 uint64_t hle_code_symbol(const char* name) {
@@ -58,5 +83,6 @@ uint64_t hle_code_symbol(const char* name) {
         return code + 4 * SETJMP;
     if (!strcmp(name, "longjmp") || !strcmp(name, "_longjmp") || !strcmp(name, "siglongjmp"))
         return code + 4 * LONGJMP;
+    if (!strcmp(name, "dlopen")) return code + 4 * DLOPEN;
     return 0;
 }

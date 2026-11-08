@@ -6,6 +6,7 @@
 #include "android/bridge/bridge.h"
 #include "android/bridge/hle.h"
 #include "android/bridge/hle_impl.h"
+#include "android/bridge/hle_proc.h"
 #include "android/bridge/linker.h"
 #include <stdlib.h>
 #include <string.h>
@@ -22,7 +23,8 @@ static void set_error(const char* text) {
 static const char* const systems[] = {"libc.so", "libm.so", "libdl.so", "liblog.so", "libandroid.so", "libz.so",
                                       "libEGL.so", "libGLESv1_CM.so", "libGLESv2.so", "libGLESv3.so", "libvulkan.so",
                                       "libOpenSLES.so", "libaaudio.so", "libmediandk.so", "libnativewindow.so",
-                                      "libjnigraphics.so", "libsync.so", "libstdc++.so"};
+                                      "libjnigraphics.so", "libsync.so", "libstdc++.so", "ld-android.so",
+                                      "libdl_android.so"};
 static unsigned char system_handles[sizeof systems / sizeof *systems];
 
 static const char* base_name(const char* path) {
@@ -30,27 +32,80 @@ static const char* base_name(const char* path) {
     return slash ? slash + 1 : path;
 }
 
-static void g_dlopen(CPU* c, void* data) {
-    (void)data;
-    if (!X(0)) {
-        /* the main program: RTLD_DEFAULT's search, through its handle */
-        X(0) = (uint64_t)(uintptr_t)&system_handles[0];
-        return;
-    }
-    const char* name = base_name(STR(0));
+/* a system library's handle, 0 for another name */
+static uint64_t system_handle(const char* path) {
+    const char* name = base_name(path);
     for (size_t i = 0; i < sizeof systems / sizeof *systems; ++i)
-        if (!strcmp(systems[i], name)) {
-            X(0) = (uint64_t)(uintptr_t)&system_handles[i];
-            return;
-        }
+        if (!strcmp(systems[i], name)) return (uint64_t)(uintptr_t)&system_handles[i];
+    return 0;
+}
+bool hle_dl_is_system(const char* name) { return system_handle(name) != 0; }
+
+/* dlopen's handle of a path: the main program for none, a system library's, or the guest library loaded */
+static uint64_t open_library(const char* path) {
+    if (!path) return (uint64_t)(uintptr_t)&system_handles[0]; /* the main program: RTLD_DEFAULT's search */
+    uint64_t system = system_handle(path);
+    if (system) return system;
     char error[1024];
-    GuestLibrary* l = linker_load(STR(0), error, sizeof error);
+    GuestLibrary* l = linker_load(path, error, sizeof error);
     if (!l) {
         char text[1100];
         snprintf(text, sizeof text, "dlopen failed: %s", error);
         set_error(text);
     }
-    X(0) = (uint64_t)(uintptr_t)l;
+    return (uint64_t)(uintptr_t)l;
+}
+static void g_dlopen(CPU* c, void* data) {
+    (void)data;
+    X(0) = open_library(X(0) ? STR(0) : NULL);
+}
+
+/*
+ * The linker's namespaces (libdl_android's and ld-android's __loader_android_* functions, which an app reaches
+ * through dlopen of the linker itself, as liblinkernsbypass does). Every library here is in the process's one
+ * namespace, so a namespace is a name the app keeps, links between them always succeed, and a library loads in any
+ * of them as dlopen loads it.
+ */
+typedef struct {
+    char name[64];
+} Namespace;
+static Namespace exported = {"default"};
+/* (name, ld_library_path, default_library_path, type, permitted_when_isolated_path, parent, caller) */
+static void g_create_namespace(CPU* c, void* data) {
+    (void)data;
+    Namespace* ns = calloc(1, sizeof *ns);
+    if (ns && X(0)) snprintf(ns->name, sizeof ns->name, "%s", STR(0));
+    X(0) = (uint64_t)(uintptr_t)ns;
+}
+static void g_link_namespaces(CPU* c, void* data) {
+    (void)data;
+    X(0) = 1;
+}
+static void g_get_exported_namespace(CPU* c, void* data) {
+    (void)data;
+    X(0) = (uint64_t)(uintptr_t)&exported;
+}
+
+/*
+ * android_dlopen_ext(filename, flags, extinfo): dlopen, in any namespace (ANDROID_DLEXT_USE_NAMESPACE, 0x200). A
+ * library from a descriptor (ANDROID_DLEXT_USE_LIBRARY_FD, 0x10) that is a copy of a system library's file
+ * (hle_proc.h) is that system library; another one loads by its name. android_dlextinfo: flags at 0, library_fd at 28
+ */
+static void g_android_dlopen_ext(CPU* c, void* data) {
+    (void)data;
+    const uint8_t* info = X(2) ? (const uint8_t*)(uintptr_t)X(2) : NULL;
+    uint64_t flags = 0;
+    if (info) memcpy(&flags, info, sizeof flags);
+    if (info && (flags & 0x10)) {
+        int32_t fd;
+        memcpy(&fd, info + 28, sizeof fd);
+        char name[256];
+        if (hle_proc_stub_library(fd, name, sizeof name)) {
+            X(0) = system_handle(name);
+            return;
+        }
+    }
+    X(0) = open_library(X(0) ? STR(0) : NULL);
 }
 
 static void g_dlsym(CPU* c, void* data) {
@@ -120,11 +175,21 @@ static void g_dl_iterate_phdr(CPU* c, void* data) {
 }
 
 const HleSymbol hle_dl[] = {
-    {"dlopen", g_dlopen, NULL},
+    /* dlopen itself is guest code that calls this, as libdl's calls the linker's (hle_code.c) */
+    {"__loader_dlopen", g_dlopen, NULL},
     {"dlsym", g_dlsym, NULL},
     {"dlclose", g_dlclose, NULL},
     {"dlerror", g_dlerror, NULL},
     {"dladdr", g_dladdr, NULL},
     {"dl_iterate_phdr", g_dl_iterate_phdr, NULL},
+    {"android_dlopen_ext", g_android_dlopen_ext, NULL},
+    {"__loader_android_dlopen_ext", g_android_dlopen_ext, NULL},
+    {"__loader_android_create_namespace", g_create_namespace, NULL},
+    {"android_create_namespace", g_create_namespace, NULL},
+    {"__loader_android_link_namespaces", g_link_namespaces, NULL},
+    {"__loader_android_link_namespaces_all_libs", g_link_namespaces, NULL},
+    {"android_link_namespaces", g_link_namespaces, NULL},
+    {"__loader_android_get_exported_namespace", g_get_exported_namespace, NULL},
+    {"android_get_exported_namespace", g_get_exported_namespace, NULL},
     {"", NULL, NULL},
 };

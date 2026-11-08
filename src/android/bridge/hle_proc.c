@@ -5,6 +5,7 @@
 #define _GNU_SOURCE
 #endif
 #include "android/bridge/hle_proc.h"
+#include "android/bridge/hle.h"
 #include "android/bridge/host.h"
 #include "android/bridge/linker.h"
 #include "common/utilities/endian.h"
@@ -41,6 +42,80 @@ static const char* own_file(const char* path) {
     char own[32];
     int n = snprintf(own, sizeof own, "/proc/%u/", (unsigned)host_pid());
     return n > 0 && !strncmp(path, own, (size_t)n) ? path + n : NULL;
+}
+
+/* ---- the system's libraries as files ----
+   /system/lib64/<name> and /system/lib/<name> of a library the HLE is (libvulkan.so, libEGL.so): an ELF shared
+   object of no code whose .dynamic has the library's DT_SONAME. A loader that copies the system's library to load it
+   again (adrenotools' copy of libvulkan.so, its soname patched) reads this; its e_ident's padding marks it, and its
+   string table keeps the name a second time, which android_dlopen_ext of the copy reads back
+   (hle_proc_stub_library) */
+static const char stub_mark[] = "SNXLIB";
+static const char* system_library(const char* path) {
+    static const char* const dirs[] = {"/system/lib64/", "/system/lib/"};
+    for (size_t i = 0; i < 2; ++i) {
+        size_t n = strlen(dirs[i]);
+        if (!strncmp(path, dirs[i], n) && !strchr(path + n, '/') && hle_dl_is_system(path + n)) return path + n;
+    }
+    return NULL;
+}
+static void put16(uint8_t* p, uint16_t v) { snx_st_le16(p, v); }
+static void put32(uint8_t* p, uint32_t v) { snx_st_le32(p, v); }
+static void put64(uint8_t* p, uint64_t v) { snx_st_le64(p, v); }
+static void write_stub(FILE* f, const char* name) {
+    size_t len = strlen(name);
+    size_t strtab = 64, strsize = 1 + 2 * (len + 1);
+    size_t dynamic = (strtab + strsize + 7) & ~(size_t)7, shoff = dynamic + 32;
+    uint8_t out[1024] = {0};
+    if (shoff + 3 * 64 > sizeof out) return;
+    memcpy(out, "\177ELF", 4);
+    out[4] = 2; /* ELFCLASS64 */
+    out[5] = 1; /* little-endian */
+    out[6] = 1; /* EV_CURRENT */
+    memcpy(out + 9, stub_mark, sizeof stub_mark - 1);
+    put16(out + 16, 3);   /* ET_DYN */
+    put16(out + 18, 183); /* EM_AARCH64 */
+    put32(out + 20, 1);
+    put64(out + 40, shoff);
+    put16(out + 52, 64); /* e_ehsize */
+    put16(out + 58, 64); /* e_shentsize */
+    put16(out + 60, 3);  /* e_shnum: none, .dynstr, .dynamic */
+    memcpy(out + strtab + 1, name, len);
+    memcpy(out + strtab + 1 + len + 1, name, len);
+    put64(out + dynamic, 14); /* DT_SONAME */
+    put64(out + dynamic + 8, 1);
+    uint8_t* sh = out + shoff + 64; /* .dynstr */
+    put32(sh + 4, 3);               /* SHT_STRTAB */
+    put64(sh + 24, strtab);
+    put64(sh + 32, strsize);
+    sh += 64; /* .dynamic */
+    put32(sh + 4, 6); /* SHT_DYNAMIC */
+    put64(sh + 8, 2); /* SHF_ALLOC */
+    put64(sh + 24, dynamic);
+    put64(sh + 32, 32);
+    put32(sh + 40, 1); /* sh_link: .dynstr */
+    put64(sh + 56, 16);
+    fwrite(out, 1, shoff + 3 * 64, f);
+}
+bool hle_proc_stub_library(int fd, char* name, size_t size) {
+    uint8_t in[512];
+#ifdef _WIN32
+    (void)fd;
+    (void)in;
+    (void)name;
+    (void)size;
+    return false;
+#else
+    ssize_t n = pread(fd, in, sizeof in, 0);
+    if (n < 66 || memcmp(in, "\177ELF", 4) || memcmp(in + 9, stub_mark, sizeof stub_mark - 1)) return false;
+    size_t first = strnlen((const char*)in + 65, (size_t)n - 65);
+    size_t at = 65 + first + 1;
+    if (at >= (size_t)n) return false;
+    size_t len = strnlen((const char*)in + at, (size_t)n - at);
+    if (at + len >= (size_t)n || len + 1 > size) return false;
+    memcpy(name, in + at, len + 1);
+    return true;
+#endif
 }
 
 /* the 15 bytes of a thread's name the kernel keeps: the package's first */
@@ -93,11 +168,13 @@ static int write_library(void* context, uint64_t base, const char* name, uint64_
 }
 
 int hle_proc_open(const char* path) {
-    const char* file = path ? own_file(path) : NULL;
-    if (!file) return -2;
+    const char* library = path ? system_library(path) : NULL;
+    const char* file = path && !library ? own_file(path) : NULL;
+    if (!file && !library) return -2;
     void (*write)(FILE*) = NULL;
     bool maps = false, command = false, name = false;
-    if (!strcmp(file, "status")) write = write_status;
+    if (library) {}
+    else if (!strcmp(file, "status")) write = write_status;
     else if (!strcmp(file, "stat")) write = write_stat;
     else if (!strcmp(file, "maps")) maps = true;
     else if (!strcmp(file, "cmdline")) command = true;
@@ -105,6 +182,7 @@ int hle_proc_open(const char* path) {
     else return -2;
     FILE* f = tmpfile();
     if (!f) return -1;
+    if (library) write_stub(f, library);
     if (write) write(f);
     if (maps) linker_each(write_library, f);
     if (command) fwrite(g_package, 1, strlen(g_package) + 1, f);
