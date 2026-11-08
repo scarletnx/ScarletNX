@@ -1972,7 +1972,10 @@ rebind:
             if (!vk_surf_publish(images[i])) vk_surf_flush(images[i], NULL);
         }
         g_vk_dispatches++;
-        vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+        /* Not one in the GPU mirror: its results land only where the CPU first touches them, and that read submits
+           what is open (vk_mirror_mem_need's finish). Submitted each, one game's Ounce programs made about 300
+           submissions a present, each with a harvest of the mirror, and the GPU idled between them */
+        if (!mir) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
         return;
     }
     /* results visible to the host */
