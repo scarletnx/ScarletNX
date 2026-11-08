@@ -5564,6 +5564,18 @@ msgstr "shader_cache/<id>.vkshaders、<id>.vkshipped、vk_pipelines.bin，所有
 msgid "<id>.<driver>.vkshaders, .vkshipped and vk_pipelines.<driver>.bin, started from those"
 msgstr "<id>.<driver>.vkshaders、.vkshipped 和 vk_pipelines.<driver>.bin，以上述文件为起点"
 
+#: src/common/utilities/setup.c
+msgid "The launcher's Background recompile"
+msgstr "启动器的后台重新编译"
+
+#: src/common/utilities/setup.c
+msgid "recompile_background = in app.ini, full or gentle"
+msgstr "app.ini 中的 recompile_background =，full 或 gentle"
+
+#: src/common/utilities/setup.c
+msgid "background_recompile =, Auto by default: Gentle on battery, Full on the charger"
+msgstr "background_recompile =，默认为自动：用电池时轻柔，接充电器时全速"
+
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"
 msgstr "gdbstub"
