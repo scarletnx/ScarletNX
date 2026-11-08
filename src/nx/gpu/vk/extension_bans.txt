@@ -66,8 +66,8 @@ shaderInt64 | warn | qualcomm | * | any | * | has 64-bit integers and atomics tu
 VK_KHR_present_id2 | off | nvidia | < 595.0.0 | any | * | hangs games at their first frames with present_id2 and present_wait2 (590.48, with Smooth Motion on) | DXVK dxvk_device_info.cpp:610, issue 5507 | new:edenprobe:a windowed run with frame_pacing=2 | never | -
 
 # Descriptors (without heaps, graphics descriptors use buffers or sets)
-VK_EXT_descriptor_heap | off | amd-proprietary | * | any | * | crashes a game at start with descriptor heaps (Adrenalin 26.7.1 on an RX 7900 XTX) | DXVK 076922bd24 (2026-09-19), issue 5837 | headless:--vk_descriptors=3 | never | -
-VK_EXT_descriptor_heap | warn | nvidia | < 595.84.0 | any | * | runs descriptor heaps slower than its later drivers do | DXVK dxvk_device_info.cpp:506 (b5fadf8e5a, 2026-06-18) | new:headless:--bench-descriptors under vk_descriptors=3 against vk_descriptors=1 | never | -
+VK_EXT_descriptor_heap | off | amd-proprietary | * | any | * | crashes a game at start with descriptor heaps (Adrenalin 26.7.1 on an RX 7900 XTX) | DXVK 076922bd24 (2026-09-19), issue 5837 | headless:--vk_descriptors_mode=3 | never | -
+VK_EXT_descriptor_heap | warn | nvidia | < 595.84.0 | any | * | runs descriptor heaps slower than its later drivers do | DXVK dxvk_device_info.cpp:506 (b5fadf8e5a, 2026-06-18) | new:headless:--bench-descriptors under vk_descriptors_mode=3 against vk_descriptors_mode=1 | never | -
 
 # Pipeline libraries (not used yet)
 VK_EXT_graphics_pipeline_library | off | nvidia | < 531.0.0 | any | * | draws transient glitches with pipeline libraries | ANGLE vk_renderer.cpp:6928, anglebug 42266655 | new:edenprobe:the graphics suites with pipeline libraries on | never | -

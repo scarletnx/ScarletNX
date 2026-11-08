@@ -52,6 +52,11 @@ int options_astc_bc_old(const char* old);
    controls_opacity's reader took it. 50 is -1, controls_alpha's default, as 50 was then controls_opacity's own, which
    the .ini files made since it was had written; -2 for a value that is not a whole number */
 int options_controls_opacity_old(const char* old);
+/* vk_descriptors's value old as vk_descriptors_mode's, whose values are the same (0 Sets, 1 Buffers, 2 Heaps, 3
+   Automatic): the command line's (given 1) as it is, a choice of that run; the .ini's (given 0) as it is but 0 and 3,
+   which are -1, vk_descriptors_mode's default, as 0 was vk_descriptors's own until 3 was, and every game's .ini had
+   written its default; -2 for a value that is not a whole number from 0 to 3 */
+int options_vk_descriptors_old(const char* old, int given);
 /* the path ini_open read, "" before it */
 const char* ini_file(void);
 /* about once a second, from the main loop. final: at exit, where an edit still being saved is left for the next start

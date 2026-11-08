@@ -378,20 +378,21 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_storage_buffer_keep COMMAND snx-test-vulkan -H --vk_memory=1)
     set_tests_properties(vulkan_storage_buffer_keep PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_BUFFER_KEEP_ONLY=1"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
-    # every check again with graphics descriptors in descriptor buffers (gpu/vk/descriptors.c, vk_descriptors), also
-    # with guest memory read in place, under the validation layer when it is installed. A device without
+    # every check again with graphics descriptors in descriptor buffers (gpu/vk/descriptors.c, vk_descriptors_mode),
+    # also with guest memory read in place, under the validation layer when it is installed. A device without
     # VK_EXT_descriptor_buffer skips them (77). The layer reports errors only: the targetless-stores check draws with
     # a fragment output and no color target, as the console does, which the layer warns about with sets too
-    add_test(NAME vulkan_headless_descriptor_buffers COMMAND snx-test-vulkan -H --vk_descriptors=1 --vk_validation=1)
+    add_test(NAME vulkan_headless_descriptor_buffers
+        COMMAND snx-test-vulkan -H --vk_descriptors_mode=1 --vk_validation=1)
     add_test(NAME vulkan_headless_descriptor_buffers_uma
-        COMMAND snx-test-vulkan -H --vk_descriptors=1 --vk_memory=2 --vk_validation=1)
+        COMMAND snx-test-vulkan -H --vk_descriptors_mode=1 --vk_memory=2 --vk_validation=1)
     set_tests_properties(vulkan_headless_descriptor_buffers vulkan_headless_descriptor_buffers_uma PROPERTIES
         TIMEOUT 120 SKIP_RETURN_CODE 77 ENVIRONMENT "VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
-    # every check again with graphics descriptors in heaps (vk_descriptors=2), which the default, Automatic, takes
+    # every check again with graphics descriptors in heaps (vk_descriptors_mode=2), which the default, Automatic, takes
     # only on a GPU that shares the system's memory: a discrete GPU runs the default with sets. A device without
     # VK_EXT_descriptor_heap runs buffers or sets again
-    add_test(NAME vulkan_headless_descriptor_heaps COMMAND snx-test-vulkan -H --vk_descriptors=2)
+    add_test(NAME vulkan_headless_descriptor_heaps COMMAND snx-test-vulkan -H --vk_descriptors_mode=2)
     set_tests_properties(vulkan_headless_descriptor_heaps PROPERTIES TIMEOUT 120
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again the Vulkan 1.2 way on a newer device, as a game's .ini with vk_api=1.2 asks (gpu/vk/device.c

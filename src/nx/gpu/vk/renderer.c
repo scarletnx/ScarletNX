@@ -203,7 +203,7 @@ static void vkr_method_barrier(int kind)
 	 * game's open world. Writes that none of those track (stores into guest
 	 * memory read in place) are not covered yet, so it is skipped only where
 	 * the device runs graphics descriptor buffers or heaps, which the
-	 * vk_descriptors setting asks for: a device that has neither draws with
+	 * vk_descriptors_mode setting asks for: a device that has neither draws with
 	 * descriptor sets and keeps every fragment barrier.
 	 */
 	if (kind == 1 || kind == 3 || (kind == 0 && (g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support)))

@@ -1008,8 +1008,8 @@ static int create_device(void) {
     /* Automatic by where the device's memory is (vk_descriptors_auto) */
     int descriptors = vk_descriptors_auto(g_settings.descriptor_buffers, g_vk.mem_model == VK_MEM_UMA);
     if (descriptors != g_settings.descriptor_buffers)
-        LOG("vulkan: vk_descriptors=%d (Automatic) is %d, %s, on this GPU, which %s\n", g_settings.descriptor_buffers,
-            descriptors, descriptors ? "descriptor heaps" : "descriptor sets",
+        LOG("vulkan: vk_descriptors_mode=%d (Automatic) is %d, %s, on this GPU, which %s\n",
+            g_settings.descriptor_buffers, descriptors, descriptors ? "descriptor heaps" : "descriptor sets",
             g_vk.mem_model == VK_MEM_UMA ? "shares the system's memory" : "has memory of its own");
     g_vk.has_descriptor_buffers = g_vk.has_descriptor_buffers && descriptors;
     if (g_vk.has_descriptor_buffers && !vk_descriptors_memory(g_vk.phys)) {
@@ -1022,7 +1022,7 @@ static int create_device(void) {
         (has_extended_flags && qflags.extendedFlags) || (has_maintenance5 && qmaintenance5.maintenance5));
     g_vk.has_descriptor_heap_support = !heaps_missing && descriptors >= 2;
     if (heaps_missing && descriptors >= 2)
-        LOG("vulkan: vk_descriptors=%d asks for descriptor heaps, which this device has not (%s): graphics "
+        LOG("vulkan: vk_descriptors_mode=%d asks for descriptor heaps, which this device has not (%s): graphics "
             "descriptors use %s\n",
             g_settings.descriptor_buffers, heaps_missing, g_vk.has_descriptor_buffers ? "buffers" : "sets");
     g_vk.has_descriptor_heaps = g_vk.has_descriptor_heap_support;

@@ -583,6 +583,60 @@ static void controls_opacity_old(void) {
         old, v);
 }
 
+int options_vk_descriptors_old(const char* old, int given) {
+    char* end;
+    long v = strtol(old, &end, 10);
+    if (end == old || *end || v < 0 || v > 3) return -2;
+    return !given && (v == 0 || v == 3) ? -1 : (int)v;
+}
+/* vk_descriptors, deprecated for vk_descriptors_mode: the file's read while the file gives vk_descriptors_mode no
+   value, into the store, which the file is written with, so the next run reads vk_descriptors_mode; the command line's
+   this run's vk_descriptors_mode while the command line gives that one none */
+static void vk_descriptors_old(void) {
+    static const char* const values[] = {"0", "1", "2", "3"};
+    static const char* const words[] = {"Sets", "Buffers", "Heaps", "Automatic"};
+    const Entry* file = store_find("vk_descriptors");
+    const char *given = override_of("vk_descriptors"), *first = override_of("vk_descriptors_mode");
+    int now;
+    if (file && !store_find("vk_descriptors_mode")) {
+        now = options_vk_descriptors_old(file->value, 0);
+        if (now == -2)
+            WARN(
+                "settings: vk_descriptors=%s, deprecated, is not a whole number from 0 to 3: vk_descriptors_mode takes "
+                "its default, 3 (Automatic) (docs/DEPRECATIONS.md)\n",
+                file->value);
+        else if (now == -1)
+            WARN("settings: vk_descriptors=%s, deprecated, was its default: vk_descriptors_mode takes its own, 3 "
+                 "(Automatic), sets on a GPU with memory of its own and heaps on one that shares the system's "
+                 "(docs/DEPRECATIONS.md)\n",
+                 file->value);
+        else {
+            store_put("vk_descriptors_mode", values[now]);
+            WARN("settings: vk_descriptors=%s, deprecated, is vk_descriptors_mode=%d (%s) now (docs/DEPRECATIONS.md)\n",
+                 file->value, now, words[now]);
+        }
+    }
+    if (!given) return;
+    if (first) {
+        WARN("settings: --vk_descriptors=%s is deprecated, and the command line gives --vk_descriptors_mode=%s too: "
+             "vk_descriptors_mode=%s this run (docs/DEPRECATIONS.md)\n",
+             given, first, first);
+        return;
+    }
+    now = options_vk_descriptors_old(given, 1);
+    if (now >= 0) {
+        ini_override("vk_descriptors_mode", values[now]);
+        WARN("settings: --vk_descriptors=%s is deprecated: this run reads it as --vk_descriptors_mode=%d (%s) "
+             "(docs/DEPRECATIONS.md)\n",
+             given, now, words[now]);
+    } else {
+        file = store_find("vk_descriptors_mode");
+        WARN("settings: --vk_descriptors=%s, deprecated, is not a whole number from 0 to 3: vk_descriptors_mode=%s "
+             "this run, %s (docs/DEPRECATIONS.md)\n",
+             given, file ? file->value : "3", file ? "the .ini's" : "its default (Automatic)");
+    }
+}
+
 static void say_deprecated(void) {
     const char* keys[STORE_MAX];
     char line[2048];
@@ -643,14 +697,16 @@ void ini_open(const char* path) {
     char why[256];
     snprintf(g_path, sizeof g_path, "%s", path);
     ini_set_say(say_setting);
-    for (i = 0; i < g_nover; i++)
-        if (!snx_setting_known(g_over[i].key)) WARN("--%s is not a setting, so it does nothing\n", g_over[i].key);
+    for (i = 0; i < g_nover; i++) /* --vk_descriptors is read as vk_descriptors_mode, said there */
+        if (!snx_setting_known(g_over[i].key) && strcmp(g_over[i].key, "vk_descriptors"))
+            WARN("--%s is not a setting, so it does nothing\n", g_over[i].key);
     options_old_environment();
     text = snx_read_file(g_path, &size);
     if (!text) snx_os_error(why, sizeof why);
     if (!text && snx_path_exists(g_path)) {
         WARN("settings: cannot read %s (%s): every setting takes its default, and the file is not written over\n",
              g_path, why);
+        vk_descriptors_old(); /* the command line's */
         apply_all();
         options_old_environment_say();
         debug_shown(0);
@@ -666,6 +722,7 @@ void ini_open(const char* path) {
     memory_fit_old();
     astc_bc_old();
     controls_opacity_old();
+    vk_descriptors_old();
     n = pending_take(taken);
     say_deprecated();
     apply_all();

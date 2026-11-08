@@ -153,7 +153,7 @@ def jobs(native, vulkan, drivers, validation=False, record='0'):
                 suffix = f'-record-{mode}' if mode else ''
                 selected.append((f'{label}-descriptors-{descriptors}{suffix}',
                                  [str(vulkan), '-H', '--vk_memory=1', f'--vk_record={mode}',
-                                  f'--vk_descriptors={descriptors}', f'--vk_validation={int(validation)}'],
+                                  f'--vk_descriptors_mode={descriptors}', f'--vk_validation={int(validation)}'],
                                  manifest, GPU_MARKER))
     return selected
 

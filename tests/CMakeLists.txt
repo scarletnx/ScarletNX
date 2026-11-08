@@ -1505,11 +1505,16 @@ snx_test_target(snx-test-ini-deprecated 11)
 add_test(NAME ini_deprecated COMMAND snx-test-ini-deprecated)
 
 # options.c's TV mode Auto over a faked host power source, a key its .ini gives twice, controls_skin's default as a .ini
-# opens and controls_opacity read as controls_alpha; the rest of the runtime stubbed
+# opens, controls_opacity read as controls_alpha and vk_descriptors as vk_descriptors_mode; the rest of the runtime
+# stubbed
 add_executable(snx-test-options-tv-mode options_tv_mode.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/options.c")
 snx_test_target(snx-test-options-tv-mode 23)
 target_link_libraries(snx-test-options-tv-mode PRIVATE scarletnx-common)
 add_test(NAME options_tv_mode COMMAND snx-test-options-tv-mode)
+# vk_descriptors read as vk_descriptors_mode, a startup setting, which only a process's first .ini sets: a process each
+foreach(case old pick cli)
+    add_test(NAME options_vk_descriptors_${case} COMMAND snx-test-options-tv-mode --vk-descriptors-${case})
+endforeach()
 
 add_executable(snx-test-pad-map pad_map.c)
 snx_test_target(snx-test-pad-map 11)

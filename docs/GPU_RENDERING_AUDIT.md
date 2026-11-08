@@ -350,9 +350,9 @@ with no active conditional predicate. Partial views, volumes, other layers and p
 discard may legally preserve contents; this hint can avoid a future attachment load but does not remove stores
 that were already recorded.
 
-`vk_descriptors=0` selects sets, `1` selects descriptor buffers, and `2` prefers `VK_EXT_descriptor_heap`. The default
-`3`, Automatic, is `2` on a GPU that shares the system's memory and `0` on one with memory of its own; `2` selects
-heaps, buffers, then sets according to device support. Existing shader set/binding decorations map to
+`vk_descriptors_mode=0` selects sets, `1` selects descriptor buffers, and `2` prefers `VK_EXT_descriptor_heap`. The
+default `3`, Automatic, is `2` on a GPU that shares the system's memory and `0` on one with memory of its own; `2`
+selects heaps, buffers, then sets according to device support. Existing shader set/binding decorations map to
 separate resource and sampler index runs; heap pipelines use their own push-data state. Auxiliary compute pipelines
 keep legacy descriptor pools. Legacy binds invalidate heap state, and the descriptor-set bind generation forces
 descriptor buffers to be rebound after an auxiliary pass. Pipeline, complete-set and binding caches retain the

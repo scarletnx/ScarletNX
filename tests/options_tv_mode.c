@@ -7,7 +7,9 @@
    key and both values; and memory_fit, deprecated, read from an old .ini as memory_fit_mode while the file gives that
    one none, and the file written with memory_fit_mode and memory_fit under [Deprecated]. And controls_skin: a .ini
    without it opens with line, its default, and one that gives it empty keeps the built-in look. And controls_opacity,
-   deprecated, read from an old .ini as the controls_alpha of the same look */
+   deprecated, read from an old .ini as the controls_alpha of the same look. And vk_descriptors, deprecated: the
+   default an older version wrote in every game's .ini is no pick, so the game runs Automatic and nothing is said over
+   its picture; a pick is carried to vk_descriptors_mode, and --vk_descriptors=N is this run's */
 #include "common/utilities/common.h"
 #include "nx/hle/services/hid.h"
 #include "nx/hle/services/services.h"
@@ -408,7 +410,117 @@ static void test_controls_opacity_old(void) {
     g_test.write = 0;
 }
 
-int main(void) {
+/* the Debug settings over the picture (options_debug) say the descriptors' setting: its key=value, NULL for none */
+static const char* debug_descriptors(void) {
+    static char list[1024];
+    options_debug(INI_CHANGED_NO_TEXT, list, sizeof list);
+    return strstr(list, "vk_descriptors");
+}
+/* vk_descriptors, deprecated: a game's .ini an older version wrote holds its default then, 0 (sets) before Automatic
+   was, 3 after. Neither is a pick: vk_descriptors_mode takes its own, said, and the file is written with it and with
+   vk_descriptors under [Deprecated], which the next run does not read. A startup setting's value is the process's first
+   ini_open's (options_vk_descriptors_first checks it): here the file says what the run read */
+static void test_vk_descriptors_old_default(void) {
+    char *text, *again;
+    g_test.write = 1;
+    text = open_ini("[Debug]\nvk_descriptors=0\n");
+    CHECK(strstr(g_test.said, "settings: vk_descriptors=0, deprecated, was its default: vk_descriptors_mode takes its "
+                              "own, 3 (Automatic), sets on a GPU with memory of its own and heaps on one that shares "
+                              "the system's (docs/DEPRECATIONS.md)\n"));
+    CHECK(text && strstr(text, "\nvk_descriptors_mode=3\n") && strstr(text, "\n[Deprecated]\n") &&
+          strstr(text, "\n[Deprecated]\n") < strstr(text, "\nvk_descriptors=0\n"));
+    again = open_ini(text); /* the next run: vk_descriptors_mode given, vk_descriptors not read again */
+    CHECK(!strstr(g_test.said, "settings: vk_descriptors=") && again && strstr(again, "\nvk_descriptors_mode=3\n"));
+    free(again);
+    free(text);
+    text = open_ini("[Debug]\nvk_descriptors=3\n");
+    CHECK(strstr(g_test.said, "settings: vk_descriptors=3, deprecated, was its default: vk_descriptors_mode takes its "
+                              "own, 3"));
+    CHECK(text && strstr(text, "\nvk_descriptors_mode=3\n"));
+    free(text);
+    g_test.write = 0;
+}
+/* the rest of vk_descriptors: 1 and 2 in an old .ini are picks, carried to vk_descriptors_mode; a value that is no
+   whole number from 0 to 3 leaves it its default; the new key given, the old one is not read. On the command line every
+   value is that run's choice, 0 too, its override of vk_descriptors_mode, and the file keeps its own */
+static void test_vk_descriptors_old(void) {
+    char* text;
+    CHECK(options_vk_descriptors_old("0", 0) == -1 && options_vk_descriptors_old("3", 0) == -1);
+    CHECK(options_vk_descriptors_old("1", 0) == 1 && options_vk_descriptors_old("2", 0) == 2);
+    CHECK(options_vk_descriptors_old("0", 1) == 0 && options_vk_descriptors_old("3", 1) == 3);
+    CHECK(options_vk_descriptors_old("4", 0) == -2 && options_vk_descriptors_old("-1", 1) == -2 &&
+          options_vk_descriptors_old("1.5", 0) == -2 && options_vk_descriptors_old("", 1) == -2);
+    g_test.write = 1;
+    text = open_ini("[Debug]\nvk_descriptors=1\n");
+    CHECK(strstr(g_test.said, "settings: vk_descriptors=1, deprecated, is vk_descriptors_mode=1 (Buffers) now "
+                              "(docs/DEPRECATIONS.md)\n"));
+    CHECK(text && strstr(text, "\nvk_descriptors_mode=1\n"));
+    free(text);
+    text = open_ini("[Debug]\nvk_descriptors=sets\n");
+    CHECK(strstr(g_test.said, "settings: vk_descriptors=sets, deprecated, is not a whole number from 0 to 3: "
+                              "vk_descriptors_mode takes its default, 3 (Automatic) (docs/DEPRECATIONS.md)\n"));
+    CHECK(text && strstr(text, "\nvk_descriptors_mode=3\n"));
+    free(text);
+    text = open_ini("[Debug]\nvk_descriptors=1\nvk_descriptors_mode=2\n");
+    CHECK(!strstr(g_test.said, "settings: vk_descriptors=") && text && strstr(text, "\nvk_descriptors_mode=2\n"));
+    free(text);
+    /* --vk_descriptors=0: Sets this run, said, and no "not a setting"; the file keeps its Automatic */
+    ini_override("vk_descriptors", "0");
+    text = open_ini("[Debug]\nvk_descriptors_mode=3\n");
+    CHECK(!strstr(g_test.said, "is not a setting") && ini_overridden("vk_descriptors_mode") &&
+          !strcmp(ini_overridden("vk_descriptors_mode"), "0"));
+    CHECK(strstr(g_test.said,
+                 "settings: --vk_descriptors=0 is deprecated: this run reads it as --vk_descriptors_mode=0 "
+                 "(Sets) (docs/DEPRECATIONS.md)\n"));
+    CHECK(text && strstr(text, "\nvk_descriptors_mode=3\n"));
+    free(text);
+    ini_override("vk_descriptors_mode", NULL); /* the mapping's, which a run keeps: the next file's own again */
+    ini_override("vk_descriptors", "many");
+    text = open_ini("[Debug]\nvk_descriptors_mode=1\n");
+    CHECK(!ini_overridden("vk_descriptors_mode"));
+    CHECK(strstr(g_test.said, "settings: --vk_descriptors=many, deprecated, is not a whole number from 0 to 3: "
+                              "vk_descriptors_mode=1 this run, the .ini's (docs/DEPRECATIONS.md)\n"));
+    free(text);
+    ini_override("vk_descriptors", "1");
+    ini_override("vk_descriptors_mode", "2");
+    text = open_ini("[Debug]\nvk_descriptors_mode=3\n");
+    CHECK(!strcmp(ini_overridden("vk_descriptors_mode"), "2"));
+    CHECK(strstr(g_test.said, "settings: --vk_descriptors=1 is deprecated, and the command line gives "
+                              "--vk_descriptors_mode=2 too: vk_descriptors_mode=2 this run (docs/DEPRECATIONS.md)\n"));
+    free(text);
+    ini_override("vk_descriptors", NULL);
+    ini_override("vk_descriptors_mode", NULL);
+    g_test.write = 0;
+}
+/* a startup setting is read by the process's first ini_open alone, so each of these is a process of its own
+   (CMakeLists.txt's options_vk_descriptors_*): what the run plays with and says over its picture. old: an older
+   version's .ini with vk_descriptors=0, its default then, plays Automatic with nothing over the picture; pick: its 2,
+   a pick, plays heaps, said; cli: --vk_descriptors=0 plays sets this run */
+static int options_vk_descriptors_first(const char* which) {
+    char* text;
+    g_test.write = 1;
+    if (!strcmp(which, "--vk-descriptors-old")) {
+        text = open_ini("[Debug]\nvk_descriptors=0\n");
+        CHECK(g_settings.descriptor_buffers == 3 && !debug_descriptors());
+    } else if (!strcmp(which, "--vk-descriptors-pick")) {
+        text = open_ini("[Debug]\nvk_descriptors=2\n");
+        CHECK(g_settings.descriptor_buffers == 2 && debug_descriptors() &&
+              !strncmp(debug_descriptors(), "vk_descriptors_mode=2", 21));
+    } else if (!strcmp(which, "--vk-descriptors-cli")) {
+        ini_override("vk_descriptors", "0");
+        text = open_ini("[Debug]\nvk_descriptors_mode=3\n");
+        CHECK(g_settings.descriptor_buffers == 0 && text && strstr(text, "\nvk_descriptors_mode=3\n"));
+    } else {
+        fprintf(stderr, "options_tv_mode: %s is none of --vk-descriptors-old, -pick, -cli\n", which);
+        return 2;
+    }
+    free(text);
+    printf("options_tv_mode %s: ok\n", which);
+    return 0;
+}
+
+int main(int argc, char** argv) {
+    if (argc > 1) return options_vk_descriptors_first(argv[1]);
     test_fixed();
     test_auto_watched();
     test_auto_polled();
@@ -418,6 +530,8 @@ int main(void) {
     test_astc_bc_old();
     test_controls_skin();
     test_controls_opacity_old();
+    test_vk_descriptors_old_default();
+    test_vk_descriptors_old();
     printf("options_tv_mode: ok\n");
     return 0;
 }
