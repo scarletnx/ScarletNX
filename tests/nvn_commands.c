@@ -24,7 +24,7 @@ u32 nvn_program_subroutine(u64 program, i32 stage) {
     return 0;
 }
 
-static u8 memory[1 << 20];
+static u8 memory[1 << 22];
 u8* g_mem = memory; /* guest address a is memory + a */
 
 /* the one pool: command memory from 0x10000 on */
@@ -38,6 +38,12 @@ u64 kmem_alloc(u64 size, u32 state, u32 perm) {
     u64 at = g_lent;
     (void)state;
     (void)perm;
+    /* past the array it would write over the test's own data, its count of failures among them */
+    if (size > sizeof memory - at) {
+        fprintf(stderr, "FAIL: the runtime's memory asked for %llu bytes at %llx, past the test's %llu\n",
+                (unsigned long long)size, (unsigned long long)at, (unsigned long long)sizeof memory);
+        abort();
+    }
     g_lent += size;
     return at;
 }
