@@ -57,6 +57,15 @@ public abstract class Drawable {
      * BitmapDrawable, or a NinePatchDrawable when the PNG has a nine-patch chunk).
      */
     public static Drawable load(Resources res, int id, Resources.Theme theme) {
+        Drawable d = loadResource(res, id, theme);
+        if (d != null && d.sourceRes == null) {
+            d.sourceRes = res;
+            d.sourceId = id;
+            d.sourceTheme = theme;
+        }
+        return d;
+    }
+    private static Drawable loadResource(Resources res, int id, Resources.Theme theme) {
         TypedValue v = new TypedValue();
         res.getValue(id, v, true);
         if (v.type >= TypedValue.TYPE_FIRST_COLOR_INT && v.type <= TypedValue.TYPE_LAST_COLOR_INT)
@@ -121,12 +130,24 @@ public abstract class Drawable {
         Drawable d;
         switch (parser.getName()) {
             case "selector": d = new StateListDrawable(); break;
+            case "animated-selector": d = new AnimatedStateListDrawable(); break;
             case "animation-list": d = new AnimationDrawable(); break;
             case "layer-list": d = new LayerDrawable(); break;
+            case "ripple": d = new RippleDrawable(); break;
             case "shape": d = new GradientDrawable(); break;
+            case "inset": d = new InsetDrawable(); break;
             case "vector": d = new VectorDrawable(); break;
             case "animated-vector": d = new AnimatedVectorDrawable(); break;
+            case "adaptive-icon": d = new AdaptiveIconDrawable(); break;
             case "color": d = new ColorDrawable(); break;
+            case "bitmap": d = new BitmapDrawable(); break;
+            case "nine-patch": {
+                // the nine-patch image of its android:src, loaded as a resource
+                int src = attrs.getAttributeResourceValue(DrawableXml.ANDROID, "src", 0);
+                if (src == 0) throw new XmlPullParserException(parser.getPositionDescription() + ": <nine-patch> requires a valid src attribute");
+                DrawableXml.skip(parser);
+                return r.getDrawable(src, theme);
+            }
             default: throw new XmlPullParserException(parser.getPositionDescription() + ": invalid drawable tag " + parser.getName());
         }
         d.inflate(r, parser, attrs, theme);
@@ -243,5 +264,33 @@ public abstract class Drawable {
     public Insets getOpticalInsets() { return Insets.NONE; }
     public void getOutline(Outline outline) { outline.setRect(getBounds()); outline.setAlpha(0); }
     public Drawable mutate() { return this; }
-    public ConstantState getConstantState() { return null; }
+    /** the constant state of a drawable made in code: a new one like it, by newDrawable(res, theme) */
+    abstract static class Copy extends ConstantState {
+        @Override public Drawable newDrawable() { return newDrawable(null, null); }
+        @Override public Drawable newDrawable(Resources res) { return newDrawable(res, null); }
+        @Override public abstract Drawable newDrawable(Resources res, Resources.Theme theme);
+        @Override public int getChangingConfigurations() { return 0; }
+    }
+    /** whether the drawable was loaded from a resource, whose state getConstantState gives */
+    final boolean fromResource() { return sourceRes != null; }
+
+    /* the resource it was loaded from, which its constant state loads again (Android's share one cache entry) */
+    private Resources sourceRes;
+    private int sourceId;
+    private Resources.Theme sourceTheme;
+    /** a drawable's state for new copies: a resource's loads the resource again; one made in code has none */
+    public ConstantState getConstantState() {
+        if (sourceRes == null) return null;
+        final Resources r = sourceRes;
+        final int id = sourceId;
+        final Resources.Theme t = sourceTheme;
+        return new ConstantState() {
+            @Override public Drawable newDrawable() { return r.getDrawable(id, t); }
+            @Override public Drawable newDrawable(Resources res) { return (res != null ? res : r).getDrawable(id, t); }
+            @Override public Drawable newDrawable(Resources res, Resources.Theme theme) {
+                return (res != null ? res : r).getDrawable(id, theme != null ? theme : t);
+            }
+            @Override public int getChangingConfigurations() { return 0; }
+        };
+    }
 }

@@ -13,7 +13,7 @@ import android.view.Gravity;
 
 /** A bitmap drawn into the bounds. */
 public class BitmapDrawable extends Drawable {
-    private final Bitmap bitmap;
+    private Bitmap bitmap;
     private final Paint paint = new Paint(Paint.FILTER_BITMAP_FLAG);
     private int gravity = Gravity.FILL;
     private Shader.TileMode tileX, tileY;
@@ -21,6 +21,32 @@ public class BitmapDrawable extends Drawable {
 
     public BitmapDrawable(android.content.res.Resources res, Bitmap bitmap) { this.bitmap = bitmap; }
     public BitmapDrawable(Bitmap bitmap) { this.bitmap = bitmap; }
+    BitmapDrawable() {}
+
+    /** android:src, gravity and tileMode */
+    private static final int[] BITMAP_ATTRS = {0x01010119, 0x010100af, 0x01010201};
+
+    /** a <bitmap>: the image of its source, where its gravity puts it, or tiled */
+    @Override public void inflate(android.content.res.Resources r, org.xmlpull.v1.XmlPullParser parser, android.util.AttributeSet attrs,
+                                  android.content.res.Resources.Theme theme) throws org.xmlpull.v1.XmlPullParserException, java.io.IOException {
+        super.inflate(r, parser, attrs, theme);
+        android.content.res.TypedArray a = DrawableXml.obtain(r, theme, attrs, BITMAP_ATTRS);
+        try {
+            int src = a.getResourceId(0, 0);
+            if (src == 0) throw new org.xmlpull.v1.XmlPullParserException(parser.getPositionDescription() + ": <bitmap> requires a valid 'src' attribute");
+            if (r.getDrawable(src, theme) instanceof BitmapDrawable b) bitmap = b.bitmap;
+            gravity = a.getInt(1, Gravity.FILL);
+            int mode = a.getInt(2, -1); // disabled -1, clamp 0, repeat 1, mirror 2
+            if (mode >= 0) {
+                Shader.TileMode t = Shader.TileMode.values()[mode];
+                setTileModeXY(t, t);
+            }
+        } finally {
+            a.recycle();
+        }
+        DrawableXml.skip(parser);
+    }
+
     public final Bitmap getBitmap() { return bitmap; }
     public final Paint getPaint() { return paint; }
     public int getGravity() { return gravity; }

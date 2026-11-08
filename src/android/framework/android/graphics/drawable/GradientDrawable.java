@@ -45,6 +45,129 @@ public class GradientDrawable extends Drawable {
         this.colors = colors;
     }
 
+    private Rect padding;
+    private float centerX = 0.5f, centerY = 0.5f;
+
+    // the attributes of <shape> and its children, by their android.R.attr ids
+    private static final int[] SHAPE_ATTRS = {0x0101019a}; // shape
+    private static final int[] SOLID_ATTRS = {0x010101a5}; // color
+    private static final int[] STROKE_ATTRS = {0x01010159, 0x010101a5, 0x0101022a, 0x0101022b}; // width, color, dashWidth, dashGap
+    private static final int[] CORNERS_ATTRS = {0x010101a8, 0x010101a9, 0x010101aa, 0x010101ab, 0x010101ac}; // radius, top left, top right, bottom left, bottom right
+    private static final int[] PADDING_ATTRS = {0x010101ad, 0x010101ae, 0x010101af, 0x010101b0}; // left, top, right, bottom
+    private static final int[] SIZE_ATTRS = {0x01010159, 0x01010155}; // width, height
+    // startColor, centerColor, endColor, angle, type, centerX, centerY, gradientRadius
+    private static final int[] GRADIENT_ATTRS = {0x0101019d, 0x0101020b, 0x0101019e, 0x010101a0, 0x010101a1, 0x010101a2, 0x010101a3, 0x010101a4};
+
+    /** a <shape>: its kind, then its solid, stroke, corners, padding, size and gradient elements */
+    @Override public void inflate(android.content.res.Resources r, org.xmlpull.v1.XmlPullParser parser, android.util.AttributeSet attrs,
+                                  android.content.res.Resources.Theme theme) throws org.xmlpull.v1.XmlPullParserException, java.io.IOException {
+        super.inflate(r, parser, attrs, theme);
+        android.content.res.TypedArray a = DrawableXml.obtain(r, theme, attrs, SHAPE_ATTRS);
+        try {
+            shape = a.getInt(0, RECTANGLE);
+        } finally {
+            a.recycle();
+        }
+        int depth = parser.getDepth();
+        while (DrawableXml.child(parser, depth)) {
+            switch (parser.getName()) {
+                case "solid" -> {
+                    a = DrawableXml.obtain(r, theme, attrs, SOLID_ATTRS);
+                    ColorStateList c = a.getColorStateList(0);
+                    a.recycle();
+                    setColor(c != null ? c : ColorStateList.valueOf(0));
+                }
+                case "stroke" -> {
+                    a = DrawableXml.obtain(r, theme, attrs, STROKE_ATTRS);
+                    int w = a.getDimensionPixelSize(0, 0);
+                    ColorStateList c = a.getColorStateList(1);
+                    float dashWidth = a.getDimension(2, 0), dashGap = a.getDimension(3, 0);
+                    a.recycle();
+                    strokeColors = c;
+                    setStroke(w, c != null ? c.getColorForState(getState(), c.getDefaultColor()) : 0, dashWidth, dashGap);
+                }
+                case "corners" -> {
+                    a = DrawableXml.obtain(r, theme, attrs, CORNERS_ATTRS);
+                    float all = a.getDimensionPixelSize(0, 0);
+                    float tl = a.getDimensionPixelSize(1, (int) all), tr = a.getDimensionPixelSize(2, (int) all);
+                    float bl = a.getDimensionPixelSize(3, (int) all), br = a.getDimensionPixelSize(4, (int) all);
+                    a.recycle();
+                    if (tl == all && tr == all && bl == all && br == all) setCornerRadius(all);
+                    else setCornerRadii(new float[] {tl, tl, tr, tr, br, br, bl, bl});
+                }
+                case "padding" -> {
+                    a = DrawableXml.obtain(r, theme, attrs, PADDING_ATTRS);
+                    padding = new Rect(a.getDimensionPixelOffset(0, 0), a.getDimensionPixelOffset(1, 0),
+                        a.getDimensionPixelOffset(2, 0), a.getDimensionPixelOffset(3, 0));
+                    a.recycle();
+                }
+                case "size" -> {
+                    a = DrawableXml.obtain(r, theme, attrs, SIZE_ATTRS);
+                    width = a.getDimensionPixelSize(0, -1);
+                    height = a.getDimensionPixelSize(1, -1);
+                    a.recycle();
+                }
+                case "gradient" -> {
+                    a = DrawableXml.obtain(r, theme, attrs, GRADIENT_ATTRS);
+                    int start = a.getColor(0, 0), end = a.getColor(2, 0);
+                    colors = a.hasValue(1) ? new int[] {start, a.getColor(1, 0), end} : new int[] {start, end};
+                    solid = null;
+                    int angle = ((int) a.getFloat(3, 0) % 360 + 360) % 360;
+                    orientation = switch (angle / 45) {
+                        case 1 -> Orientation.BL_TR;
+                        case 2 -> Orientation.BOTTOM_TOP;
+                        case 3 -> Orientation.BR_TL;
+                        case 4 -> Orientation.RIGHT_LEFT;
+                        case 5 -> Orientation.TR_BL;
+                        case 6 -> Orientation.TOP_BOTTOM;
+                        case 7 -> Orientation.TL_BR;
+                        default -> Orientation.LEFT_RIGHT;
+                    };
+                    gradientType = a.getInt(4, LINEAR_GRADIENT);
+                    centerX = DrawableXml.dimensionOrFraction(a, 5, 1, 0.5f);
+                    centerY = DrawableXml.dimensionOrFraction(a, 6, 1, 0.5f);
+                    if (a.hasValue(7)) gradientRadius = DrawableXml.dimensionOrFraction(a, 7, 1, gradientRadius);
+                    a.recycle();
+                    shaderDirty = true;
+                }
+                default -> {}
+            }
+            DrawableXml.skip(parser);
+        }
+    }
+    private ColorStateList strokeColors;
+    /** a resource's, else one of a copy of the shape, its fill, stroke, corners, gradient, size and padding */
+    @Override public ConstantState getConstantState() {
+        if (fromResource()) return super.getConstantState();
+        return new Copy() {
+            @Override public Drawable newDrawable(android.content.res.Resources res, android.content.res.Resources.Theme theme) {
+                GradientDrawable d = new GradientDrawable(orientation, colors != null ? colors.clone() : null);
+                d.shape = shape;
+                d.gradientType = gradientType;
+                d.width = width;
+                d.height = height;
+                d.solid = solid;
+                d.radius = radius;
+                d.radii = radii != null ? radii.clone() : null;
+                d.gradientRadius = gradientRadius;
+                d.centerX = centerX;
+                d.centerY = centerY;
+                d.padding = padding != null ? new Rect(padding) : null;
+                d.strokeColors = strokeColors;
+                if (stroke != null) {
+                    d.stroke = new Paint(stroke);
+                }
+                d.alpha = alpha;
+                return d;
+            }
+        };
+    }
+    @Override public boolean getPadding(Rect out) {
+        if (padding == null) return super.getPadding(out);
+        out.set(padding);
+        return true;
+    }
+
     public void setShape(int shape) { this.shape = shape; invalidateSelf(); }
     public int getShape() { return shape; }
     public void setSize(int width, int height) { this.width = width; this.height = height; invalidateSelf(); }
@@ -98,9 +221,9 @@ public class GradientDrawable extends Drawable {
         if (colors == null || colors.length < 2) return null;
         switch (gradientType) {
             case RADIAL_GRADIENT:
-                return new RadialGradient(r.centerX(), r.centerY(), Math.max(gradientRadius < 1 ? gradientRadius * Math.min(r.width(), r.height()) : gradientRadius, 1e-3f), colors, null, Shader.TileMode.CLAMP);
+                return new RadialGradient(r.left + centerX * r.width(), r.top + centerY * r.height(), Math.max(gradientRadius < 1 ? gradientRadius * Math.min(r.width(), r.height()) : gradientRadius, 1e-3f), colors, null, Shader.TileMode.CLAMP);
             case SWEEP_GRADIENT:
-                return new SweepGradient(r.centerX(), r.centerY(), colors, null);
+                return new SweepGradient(r.left + centerX * r.width(), r.top + centerY * r.height(), colors, null);
             default: {
                 float x0, y0, x1, y1;
                 switch (orientation) {
@@ -120,11 +243,16 @@ public class GradientDrawable extends Drawable {
 
     @Override protected void onBoundsChange(Rect bounds) { shaderDirty = true; }
     @Override protected boolean onStateChange(int[] state) {
-        if (solid == null || !solid.isStateful()) return false;
+        boolean changed = false;
+        if (strokeColors != null && strokeColors.isStateful() && stroke != null) {
+            int c = strokeColors.getColorForState(state, strokeColors.getDefaultColor());
+            if (c != stroke.getColor()) { stroke.setColor(c); changed = true; }
+        }
+        if (solid == null || !solid.isStateful()) return changed;
         shaderDirty = true;
         return true;
     }
-    @Override public boolean isStateful() { return solid != null && solid.isStateful(); }
+    @Override public boolean isStateful() { return (solid != null && solid.isStateful()) || (strokeColors != null && strokeColors.isStateful()); }
 
     @Override public void draw(Canvas canvas) {
         float inset = stroke != null ? stroke.getStrokeWidth() / 2 : 0;

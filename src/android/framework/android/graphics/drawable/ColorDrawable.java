@@ -26,6 +26,16 @@ public class ColorDrawable extends Drawable {
         }
     }
 
+    @Override public void inflate(android.content.res.Resources r, org.xmlpull.v1.XmlPullParser parser, android.util.AttributeSet attrs,
+                                  android.content.res.Resources.Theme theme) throws org.xmlpull.v1.XmlPullParserException, java.io.IOException {
+        super.inflate(r, parser, attrs, theme);
+        android.content.res.TypedArray a = DrawableXml.obtain(r, theme, attrs, new int[] {0x010101a5}); // color
+        try {
+            setColor(a.getColor(0, baseColor));
+        } finally {
+            a.recycle();
+        }
+    }
     public int getColor() { return useColor; }
     public void setColor(int color) {
         if (baseColor != color || useColor != color) {
