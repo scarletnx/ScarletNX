@@ -7,6 +7,8 @@
 #include "gui/i18n.h"
 #include "gui/latin.h"
 #include "gui/wide.h"
+#include "common/utilities/bits.h"
+#include "common/utilities/ascii.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -322,16 +324,15 @@ GuiBrowserAction gui_browser_key_skip(GuiBrowser* browser, GuiKey key, bool (*sk
     }
     return GUI_BROWSER_NONE;
 }
-static int clamp(int n, int maximum) { return n < 1 ? 1 : n > maximum ? maximum : n; }
 void gui_console_init(GuiConsole* console, int cols, int rows) {
     memset(console, 0, sizeof(*console));
     memset(console->cells, ' ', sizeof(console->cells));
-    console->cols = clamp(cols, GUI_MAX_COLS);
-    console->rows = clamp(rows, GUI_MAX_ROWS);
+    console->cols = snx_clamp_int(cols, 1, GUI_MAX_COLS);
+    console->rows = snx_clamp_int(rows, 1, GUI_MAX_ROWS);
 }
 void gui_console_resize(GuiConsole* console, int cols, int rows) {
-    cols = clamp(cols, GUI_MAX_COLS);
-    rows = clamp(rows, GUI_MAX_ROWS);
+    cols = snx_clamp_int(cols, 1, GUI_MAX_COLS);
+    rows = snx_clamp_int(rows, 1, GUI_MAX_ROWS);
     /* Only the visible screen is retained. Resizing is not a scrollback buffer. */
     if (console->row >= rows) {
         int drop = console->row - rows + 1;
@@ -407,13 +408,7 @@ static void feed_byte(GuiConsole* console, unsigned char c) {
 void gui_console_feed(GuiConsole* console, const char* data, size_t size) {
     for (size_t i = 0; i < size; ++i) feed_byte(console, (unsigned char)data[i]);
 }
-static int hex(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-/* size bytes of at, percent-decoded when uri; NULL when a % is not two hex digits, or makes a NUL */
+/* size bytes of at, percent-decoded when uri; NULL when a % is not two snx_hex_value digits, or makes a NUL */
 static char* decoded(const char* at, size_t size, bool uri) {
     const char* end = at + size;
     size_t n = 0;
@@ -421,8 +416,8 @@ static char* decoded(const char* at, size_t size, bool uri) {
     while (out && at < end) {
         unsigned char c = (unsigned char)*at++;
         if (uri && c == '%') {
-            if (end - at < 2 || hex(at[0]) < 0 || hex(at[1]) < 0 ||
-                !(c = (unsigned char)(hex(at[0]) << 4 | hex(at[1])))) {
+            if (end - at < 2 || snx_hex_value(at[0]) < 0 || snx_hex_value(at[1]) < 0 ||
+                !(c = (unsigned char)(snx_hex_value(at[0]) << 4 | snx_hex_value(at[1])))) {
                 free(out);
                 return NULL;
             }

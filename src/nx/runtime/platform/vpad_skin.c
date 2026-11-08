@@ -7,6 +7,7 @@
 #include "nx/runtime/platform/ui.h"
 #include "nx/runtime/platform/log.h"
 #include "common/utilities/common.h"
+#include "common/utilities/endian.h"
 #include <SDL3/SDL.h>
 #include <math.h>
 #include <stdlib.h>
@@ -286,18 +287,11 @@ static u32 crc32_of(const u8* p, size_t n, u32 crc) {
     }
     return ~crc;
 }
-static u32 be32(const u8* p) { return (u32)p[0] << 24 | (u32)p[1] << 16 | (u32)p[2] << 8 | p[3]; }
-static void put32(u8* p, u32 v) {
-    p[0] = (u8)(v >> 24);
-    p[1] = (u8)(v >> 16);
-    p[2] = (u8)(v >> 8);
-    p[3] = (u8)v;
-}
 static size_t chunk(u8* out, const char* type, const u8* data, size_t n) {
-    put32(out, (u32)n);
+    snx_st_be32(out, (u32)n);
     memcpy(out + 4, type, 4);
     if (n) memcpy(out + 8, data, n);
-    put32(out + 8 + n, crc32_of(out + 4, n + 4, 0));
+    snx_st_be32(out + 8 + n, crc32_of(out + 4, n + 4, 0));
     return n + 12;
 }
 static SDL_Surface* decode(const u8* png, size_t n) {
@@ -313,7 +307,7 @@ static SDL_Surface* apng_frame(const u8* file, size_t n, int f, u8* out, u8 fc[2
     size_t at = 8, o = 8, len;
     int frame = -1;
     memcpy(out, SIGNATURE, 8);
-    while (at + 12 <= n && (len = be32(file + at)) <= n - at - 12) {
+    while (at + 12 <= n && (len = snx_ld_be32(file + at)) <= n - at - 12) {
         const u8 *type = file + at + 4, *data = file + at + 8;
         if (!memcmp(type, "IHDR", 4) && len == 13) {
             o += chunk(out + o, "IHDR", data, 13); /* the frame's size goes in once its fcTL is read */
@@ -323,7 +317,7 @@ static SDL_Surface* apng_frame(const u8* file, size_t n, int f, u8* out, u8 fc[2
             if (++frame == f) {
                 memcpy(fc, data, 26);
                 memcpy(out + 16, data + 4, 8); /* IHDR's width and height: the frame's */
-                put32(out + 29, crc32_of(out + 12, 17, 0));
+                snx_st_be32(out + 29, crc32_of(out + 12, 17, 0));
             }
         } else if (frame == f && !memcmp(type, "IDAT", 4)) {
             o += chunk(out + o, "IDAT", data, len);
@@ -337,7 +331,7 @@ static SDL_Surface* apng_frame(const u8* file, size_t n, int f, u8* out, u8 fc[2
 }
 /* frame 1 drawn on frame 0 where its fcTL puts it, as APNG's blend op says: the pressed look whole */
 static SDL_Surface* over(SDL_Surface* base, SDL_Surface* top, const u8 fc[26]) {
-    u32 x0 = be32(fc + 12), y0 = be32(fc + 16), x, y;
+    u32 x0 = snx_ld_be32(fc + 12), y0 = snx_ld_be32(fc + 16), x, y;
     SDL_Surface* s;
     if (top->w > base->w || top->h > base->h || x0 > (u32)(base->w - top->w) || y0 > (u32)(base->h - top->h)) {
         SDL_DestroySurface(top);
@@ -370,9 +364,9 @@ static int image_read(Load* s, Image* im) {
     u8 *file = skin_file(s, im->name, &n), *out, fc[2][26];
     u32 frames = 1;
     int ok = 0;
-    while (file && at + 12 <= n && be32(file + at) <= n - at - 12) { /* acTL: the frames */
-        if (!memcmp(file + at + 4, "acTL", 4) && be32(file + at) == 8) frames = be32(file + at + 8);
-        at += be32(file + at) + 12;
+    while (file && at + 12 <= n && snx_ld_be32(file + at) <= n - at - 12) { /* acTL: the frames */
+        if (!memcmp(file + at + 4, "acTL", 4) && snx_ld_be32(file + at) == 8) frames = snx_ld_be32(file + at + 8);
+        at += snx_ld_be32(file + at) + 12;
     }
     if (!file)
         LOG("vpad skin: %s: the image %s can't be read: the built-in look\n", s->path, im->name);

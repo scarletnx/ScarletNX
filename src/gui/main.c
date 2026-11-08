@@ -9,6 +9,8 @@
 #include <SDL3/SDL_vulkan.h>
 #include <vulkan/vulkan.h> /* GPU Drivers' System driver row: the system's, asked (vk_system_ask) */
 #endif
+#include "common/utilities/ascii.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/common.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/cheat_list.h"
@@ -990,10 +992,8 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
    OK, once in the session; the tips or the note keep it after. Over a run or another question, those alone. In the
    launcher's log once in the session either way */
 static void say_failure(App* app, const char* text) {
-    uint32_t hash = 2166136261u;
-    const char* c;
+    uint32_t hash = snx_fnv1a32(SNX_FNV32_BASIS, text, strlen(text));
     int i;
-    for (c = text; *c; ++c) hash = (hash ^ (unsigned char)*c) * 16777619u;
     for (i = 0; i < app->logged_count && i < (int)SDL_arraysize(app->errors_logged) && app->errors_logged[i] != hash;
          ++i) {}
     if (i == SDL_min(app->logged_count, (int)SDL_arraysize(app->errors_logged))) {
@@ -2083,17 +2083,14 @@ static void render_dests(App* app);
 static void render_picks(App* app);
 /* the game's name as the run knows it: the runner's banner, else the file's own, in capitals */
 static void run_name_of(const GuiSteps* steps, bool native, const char* file, char* out, size_t size) {
-    const char* q;
     size_t n;
     const char* dot;
     const GuiStep *launch = gui_steps_last(steps, "LAUNCH"), *made = gui_steps_last(steps, "RECOMPILE");
     /* a game made already is named by its title ID: its recompile's line says what it is shown as */
-    const char* name = launch ? launch->detail : native && made ? made->detail : file ? file : "";
-    for (q = name; *q; ++q)
-        if (*q == '/' || *q == '\\') name = q + 1;
+    const char* name = snx_path_leaf(launch ? launch->detail : native && made ? made->detail : file ? file : "");
     n = 0;
     dot = launch || (native && made) ? NULL : strrchr(name, '.');
-    for (q = name; *q && q != dot && n + 1 < size; ++q) out[n++] = *q >= 'a' && *q <= 'z' ? (char)(*q - 32) : *q;
+    for (const char* q = name; *q && q != dot && n + 1 < size; ++q) out[n++] = (char)snx_to_upper((unsigned char)*q);
     out[n] = 0;
 }
 /* a step's line: its label, its detail in capitals and its status */
@@ -8843,15 +8840,6 @@ static void made_list(const App* app, MadeGames* made, bool addons) {
 }
 static void made_read(const App* app, MadeGames* made) { made_list(app, made, false); }
 /* the program of the game made from dump, else NULL */
-#ifdef SDL_PLATFORM_IOS
-/* a file's own name, without its folder */
-static const char* leaf_of(const char* path) {
-    const char* leaf = path;
-    for (const char* s = path; *s; ++s)
-        if (*s == '/' || *s == '\\') leaf = s + 1;
-    return leaf;
-}
-#endif
 static const char* made_program(const MadeGames* made, const char* dump) {
     size_t i;
     for (i = 0; i < made->count; ++i)
@@ -8860,7 +8848,8 @@ static const char* made_program(const MadeGames* made, const char* dump) {
     /* a dump picked outside dumps/ was prepared from its copy there, and the picked file may not be readable any more:
        the copy keeps its name */
     for (i = 0; i < made->count; ++i)
-        if (*leaf_of(dump) && !strcmp(leaf_of(made->game[i].dump), leaf_of(dump))) return made->game[i].program;
+        if (*snx_path_leaf(dump) && !strcmp(snx_path_leaf(made->game[i].dump), snx_path_leaf(dump)))
+            return made->game[i].program;
 #endif
     return NULL;
 }
@@ -15532,10 +15521,7 @@ static void open_recent(App* app, int shown, bool play) {
 }
 /* the console a made game's program plays, by its folder's .ini (snx_game_system): the driver that plays it */
 static int program_driver(const char* program) {
-    const char* leaf = program;
-    for (const char* c = program; *c; ++c)
-        if (*c == '/' || *c == '\\') leaf = c + 1;
-    char *folder = snx_dirname(program), *name = snx_strdup(leaf);
+    char *folder = snx_dirname(program), *name = snx_strdup(snx_path_leaf(program));
 #ifdef _WIN32
     if (strlen(name) > 4 && !SDL_strcasecmp(name + strlen(name) - 4, ".exe")) name[strlen(name) - 4] = 0;
 #endif
@@ -15903,13 +15889,10 @@ static void keys_write(App* app, const char* data, size_t size, bool ctr) {
     keys_result(app, ok); /* the keys' screen says it whole in its box */
 }
 static void install_keys(App* app, const char* source) {
-    const char* name = source;
+    const char* name = source ? snx_path_leaf(source) : NULL;
     char* data = NULL;
     size_t size = 0;
     bool ctr = false;
-    if (source)
-        for (const char* p = source; *p; ++p)
-            if (*p == '/' || *p == '\\') name = p + 1;
     /* the name says which console's keys: the same file can only be the Switch's (prod.keys) or the 3DS's (aes_keys.txt),
        each installed where its driver reads them */
     if (source && snx_is_file(source)) {

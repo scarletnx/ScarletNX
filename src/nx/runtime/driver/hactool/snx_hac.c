@@ -13,6 +13,7 @@
 #include "pki.h"
 #include "storage.h"
 #include "xci.h"
+#include "common/utilities/ascii.h"
 
 /* the C library's own here, under the names snx_io.h (included ahead of this file too) gives hactool */
 #undef printf
@@ -103,13 +104,12 @@ void snx_hac_on_exit(void (*cleanup)(void *data), void *data) {
     io.cleanup_data = data;
 }
 
-static int is_hex(char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
 
 const char *snx_hac_message(void) {
     static char said[sizeof io.message];
     size_t i = 0, run, out = 0;
     while (io.message[i]) {
-        for (run = 0; is_hex(io.message[i + run]); run++) {}
+        for (run = 0; snx_is_hex(io.message[i + run]); run++) {}
         if (run >= 16) { /* "..." is no longer than what it stands for */
             memcpy(said + out, "...", 3);
             out += 3;

@@ -1,22 +1,20 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/driver/game_name.h"
+#include "common/utilities/common.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 char* snx_game_title(const char* name, const SnxNpdm* npdm, const char* input) {
-    const char *start, *s;
+    const char* s;
     char *out, *dot;
     size_t n = 0;
     int input_name = 0;
     if (!name && npdm->name[0] && strcmp(npdm->name, "Application")) name = npdm->name;
     if (!name) {
-        start = input;
-        for (s = input; *s; ++s)
-            if (*s == '/' || *s == '\\') start = s + 1;
-        name = start;
+        name = snx_path_leaf(input);
         input_name = 1;
     }
     out = (char*)snx_alloc(strlen(name) + 1);

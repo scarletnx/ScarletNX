@@ -14,6 +14,7 @@
 #include "common/utilities/pad_screen.h"
 #include "common/utilities/users.h"
 #include "common/utilities/common.h"
+#include "common/utilities/bits.h"
 #include <SDL3/SDL_keycode.h>
 #include <math.h>
 #include <stdio.h>
@@ -208,7 +209,6 @@ static int all_shown(void) {
         if (!g_settings.control_shown[c]) return 0;
     return 1;
 }
-static int clamp(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 /* the setting an item is, NULL for an action */
 static const IniOpt* setting(int i) {
     if (page == PAGE_MAIN) return main_item(i) == M_STATS ? ini_find(g_display_ini, "stats") : NULL;
@@ -932,7 +932,7 @@ int overlay_select(void) { return page == PAGE_MAP ? map_key(SNX_PAD_KEY_SELECT)
 /* F1's page rows on, back for a negative rows: its rows go by, none in focus, from the first to the last showing */
 static void keys_scroll(int rows) {
     int n = keys_rows();
-    top = clamp(top + rows, 0, n > VISIBLE ? n - VISIBLE : 0);
+    top = snx_clamp_int(top + rows, 0, n > VISIBLE ? n - VISIBLE : 0);
 }
 void overlay_move(int rows) {
     int n = items();
@@ -954,7 +954,7 @@ void overlay_scroll(int rows) {
         overlay_move(rows);
         return;
     }
-    focus = clamp(focus + rows, 0, items() - 1);
+    focus = snx_clamp_int(focus + rows, 0, items() - 1);
     keep_in_view();
 }
 int overlay_side(int step) {

@@ -6,6 +6,7 @@
 #include "nx/runtime/driver/extract.h"
 #include "nx/runtime/driver/container.h"
 #include "nx/loader/loader.h"
+#include "common/utilities/common.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -126,11 +127,7 @@ static int parse_options(int argc, char** argv, ExtractOptions* options) {
 }
 
 static char* dump_name(const char* path) {
-    const char *p, *base, *dot;
-    base = path;
-    for (p = path; *p; p++)
-        if (*p == '/' || *p == '\\') base = p + 1;
-    dot = strrchr(base, '.');
+    const char *base = snx_path_leaf(path), *dot = strrchr(base, '.');
     if (!dot || dot == base) dot = base + strlen(base);
     return text_copy(base, (size_t)(dot - base));
 }

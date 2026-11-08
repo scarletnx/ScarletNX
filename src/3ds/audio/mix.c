@@ -3,6 +3,7 @@
 /* CSND's frames mixed into the DSP's, as Azahar's DspInterface mixes them (audio_core/dsp_interface.cpp at
    azahar-emu/azahar 6e42de8: OutputCsndFrame and MixCsnd) */
 #include "3ds/audio/output.h"
+#include "common/utilities/bits.h"
 #include <string.h>
 
 #define PENDING (SNX_CTR_DSP_SAMPLES * 4u) /* Azahar's MaxCsndPendingSamples */
@@ -13,12 +14,11 @@ static struct {
     bool alone; /* CSND's own frame going out, not the DSP's */
 } g_mix;
 
-static int16_t clamp16(int32_t v) { return (int16_t)(v < -0x8000 ? -0x8000 : v > 0x7fff ? 0x7fff : v); }
 void snx_ctr_audio_mix_csnd(const int16_t frame[SNX_CTR_DSP_SAMPLES][2], int16_t out[SNX_CTR_DSP_SAMPLES][2]) {
     uint32_t n = g_mix.count < SNX_CTR_DSP_SAMPLES ? g_mix.count : SNX_CTR_DSP_SAMPLES;
     for (unsigned i = 0; i < SNX_CTR_DSP_SAMPLES; ++i)
         for (unsigned side = 0; side < 2; ++side)
-            out[i][side] = i < n ? clamp16(frame[i][side] + g_mix.pending[i][side]) : frame[i][side];
+            out[i][side] = i < n ? snx_clamp_s16(frame[i][side] + g_mix.pending[i][side]) : frame[i][side];
     memmove(g_mix.pending, g_mix.pending + n, (g_mix.count - n) * sizeof *g_mix.pending);
     g_mix.count -= n;
     if (!g_mix.alone) g_mix.dsp_since_csnd += SNX_CTR_DSP_SAMPLES;

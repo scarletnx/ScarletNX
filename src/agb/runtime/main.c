@@ -64,10 +64,7 @@ static int write_shot(const char* path, const uint32_t* framebuffer) {
 
 /* the ROM's file name without its folder and its last extension: the game's folder's name */
 static char* game_name(const char* rom) {
-    const char* leaf = rom;
-    for (const char* c = rom; *c; ++c)
-        if (*c == '/' || *c == '\\') leaf = c + 1;
-    char* name = snx_strdup(leaf);
+    char* name = snx_strdup(snx_path_leaf(rom));
     char* dot = strrchr(name, '.');
     if (dot && dot != name) *dot = 0;
     return name;

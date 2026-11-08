@@ -21,6 +21,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/unattended.h"
 #include "nx/runtime/platform/vpad.h"
+#include "common/utilities/bits.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -221,13 +222,6 @@ static char g_path[1400];
 static int g_started; /* ini_open is done: the startup settings are kept from now on */
 static u64 g_hash;    /* the file as this run last read or wrote it */
 static u64 g_seen;    /* a changed file seen by the last poll, read once a second poll sees it unchanged */
-
-static u64 fnv1a(const unsigned char* p, size_t n) {
-    u64 h = 0xCBF29CE484222325ull;
-    size_t i;
-    for (i = 0; i < n; i++) h = (h ^ p[i]) * 0x100000001B3ull;
-    return h;
-}
 
 static const char* override_of(const char* key) {
     int i;
@@ -484,7 +478,7 @@ static int write_file(void) {
         return -1;
     }
     text = snx_read_file(g_path, &size);
-    g_hash = g_seen = text ? fnv1a(text, size) : 0;
+    g_hash = g_seen = text ? snx_fnv1a(SNX_FNV_BASIS, text, size) : 0;
     free(text);
     return 0;
 }
@@ -716,7 +710,7 @@ void ini_open(const char* path) {
     }
     if (text) {
         store_parse((char*)text);
-        g_hash = g_seen = fnv1a(text, size);
+        g_hash = g_seen = snx_fnv1a(SNX_FNV_BASIS, text, size);
         free(text);
     }
     memory_fit_old();
@@ -756,7 +750,7 @@ void ini_poll(int final) {
         pm_unlock(&g_poll_lock);
         return;
     }
-    h = fnv1a(text, size);
+    h = snx_fnv1a(SNX_FNV_BASIS, text, size);
     if (h != g_hash && (final ? pending : h == g_seen)) {
         /* changed, and settled (seen the same a second before), or the menu's changes are to be saved at exit */
         store_parse((char*)text);

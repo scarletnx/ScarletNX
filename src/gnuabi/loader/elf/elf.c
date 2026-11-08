@@ -3,15 +3,13 @@
 /* Linux ELF64/AArch64 layout, independently decoded rather than host Elf headers. */
 #include "gnuabi/loader/elf/elf.h"
 #include "gnuabi/abi/errno/errno.h"
+#include "common/utilities/endian.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
 #include <errno.h>
 #include <inttypes.h>
-static uint16_t rd16(const unsigned char* p) { return (uint16_t)(p[0] | (unsigned)p[1] << 8); }
-static uint32_t rd32(const unsigned char* p) { return (uint32_t)rd16(p) | (uint32_t)rd16(p + 2) << 16; }
-static uint64_t rd64(const unsigned char* p) { return (uint64_t)rd32(p) | (uint64_t)rd32(p + 4) << 32; }
 static uint64_t down(uint64_t n) { return n & ~4095ull; }
 static uint64_t up(uint64_t n) { return (n + 4095) & ~4095ull; }
 /* One program header, normalized across ELF32 and ELF64 layouts. */
@@ -21,21 +19,21 @@ typedef struct {
 } Phdr;
 static void rd_phdr(const unsigned char* p, unsigned bits, Phdr* h) {
     if (bits == 32) {
-        h->pt = rd32(p);
-        h->offset = rd32(p + 4);
-        h->va = rd32(p + 8);
-        h->filesz = rd32(p + 16);
-        h->memsz = rd32(p + 20);
-        h->flags = rd32(p + 24);
-        h->align = rd32(p + 28);
+        h->pt = snx_ld_le32(p);
+        h->offset = snx_ld_le32(p + 4);
+        h->va = snx_ld_le32(p + 8);
+        h->filesz = snx_ld_le32(p + 16);
+        h->memsz = snx_ld_le32(p + 20);
+        h->flags = snx_ld_le32(p + 24);
+        h->align = snx_ld_le32(p + 28);
     } else {
-        h->pt = rd32(p);
-        h->flags = rd32(p + 4);
-        h->offset = rd64(p + 8);
-        h->va = rd64(p + 16);
-        h->filesz = rd64(p + 32);
-        h->memsz = rd64(p + 40);
-        h->align = rd64(p + 48);
+        h->pt = snx_ld_le32(p);
+        h->flags = snx_ld_le32(p + 4);
+        h->offset = snx_ld_le64(p + 8);
+        h->va = snx_ld_le64(p + 16);
+        h->filesz = snx_ld_le64(p + 32);
+        h->memsz = snx_ld_le64(p + 40);
+        h->align = snx_ld_le64(p + 48);
     }
 }
 static int fail(char* error, size_t cap, const char* format, ...) {
@@ -62,16 +60,16 @@ int gnu_elf_load_at(GnuElf* elf, GnuMemory* m, const void* source, size_t size, 
     unsigned bits = b[4] == 1 ? 32 : b[4] == 2 ? 64 : 0;
     if (!bits) return fail(error, cap, "ELF class %u is neither 1 (32-bit) nor 2 (64-bit)", b[4]);
     elf->bits = bits;
-    uint16_t type = rd16(b + 16), machine = rd16(b + 18);
-    uint16_t phsize = rd16(b + (bits == 32 ? 42 : 54)), phnum = rd16(b + (bits == 32 ? 44 : 56));
-    uint64_t phoff = bits == 32 ? rd32(b + 28) : rd64(b + 32);
-    uint64_t entry = bits == 32 ? rd32(b + 24) : rd64(b + 24);
+    uint16_t type = snx_ld_le16(b + 16), machine = snx_ld_le16(b + 18);
+    uint16_t phsize = snx_ld_le16(b + (bits == 32 ? 42 : 54)), phnum = snx_ld_le16(b + (bits == 32 ? 44 : 56));
+    uint64_t phoff = bits == 32 ? snx_ld_le32(b + 28) : snx_ld_le64(b + 32);
+    uint64_t entry = bits == 32 ? snx_ld_le32(b + 24) : snx_ld_le64(b + 24);
     unsigned want_machine = bits == 32 ? 40 : 183; /* EM_ARM : EM_AARCH64 */
     unsigned want_phsize = bits == 32 ? 32 : 56, want_ehsize = bits == 32 ? 52 : 64;
-    uint16_t ehsize = rd16(b + (bits == 32 ? 40 : 52));
+    uint16_t ehsize = snx_ld_le16(b + (bits == 32 ? 40 : 52));
     if (type != 2 && type != 3) return fail(error, cap, "ELF type %u is neither 2 (EXEC) nor 3 (DYN)", type);
     if (machine != want_machine) return fail(error, cap, "ELF machine %u, not %u", machine, want_machine);
-    if (rd32(b + 20) != 1) return fail(error, cap, "ELF version %u, not 1", rd32(b + 20));
+    if (snx_ld_le32(b + 20) != 1) return fail(error, cap, "ELF version %u, not 1", snx_ld_le32(b + 20));
     if (ehsize != want_ehsize || phsize != want_phsize)
         return fail(error, cap, "ELF header and program header sizes %u and %u, not %u and %u", ehsize, phsize,
                     want_ehsize, want_phsize);

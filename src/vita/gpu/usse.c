@@ -31,6 +31,7 @@
 #define USSE_NAN     NAN
 #define USSE_NEG_NAN (-NAN)
 #include "vita/gpu/usse_constants.inc"
+#include "common/utilities/bits.h"
 
 /* ---- the operand model (usse_types.h) ---- */
 typedef enum {
@@ -2345,11 +2346,7 @@ void usse_shader_free(UsseShader* shader) {
 /* ---- the shader corpus ---- */
 static const char corpus_magic[8] = "SNXGXP1";
 bool usse_corpus_write(const char* folder, const unsigned char* program, size_t size, const UsseHints* hints) {
-    uint64_t h = 0xcbf29ce484222325ull;
-    const unsigned char* parts[2] = {(const unsigned char*)hints, program};
-    size_t sizes[2] = {sizeof *hints, size};
-    for (unsigned k = 0; k < 2; ++k)
-        for (size_t i = 0; i < sizes[k]; ++i) h = (h ^ parts[k][i]) * 0x100000001b3ull;
+    uint64_t h = snx_fnv1a(snx_fnv1a(SNX_FNV_BASIS, hints, sizeof *hints), program, size);
     char path[1200];
     snprintf(path, sizeof path, "%s/%016llx.gxp", folder, (unsigned long long)h);
     snx_path_native(path);

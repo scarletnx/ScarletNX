@@ -362,12 +362,6 @@ static bool index_object(SnxIr* ir, const VitaImage* image, const Block* blocks,
     LLVMDisposeModule(mod);
     return ok;
 }
-static const char* leaf(const char* path) {
-    const char* last = path;
-    for (const char* p = path; *p; ++p)
-        if (*p == '/' || *p == '\\') last = p + 1;
-    return last;
-}
 /* The module: the blocks' chunks, the index and the helpers they call (armlib.c), linked by the backend's own linker
    into the shared library the runtime loads (load.c), which exports the descriptor alone */
 int vita_aot_compile(const char* folder, const VitaImage* image, char* error, size_t error_size) {
@@ -406,7 +400,7 @@ int vita_aot_compile(const char* folder, const VitaImage* image, char* error, si
     if (!index_object(ir, image, d.blocks, d.count, &objects[1], error, error_size)) goto done;
     if (snx_ir_armlib_object('1', &armlib, &armlib_size, error, error_size)) goto done;
     objects[0].data = armlib, objects[0].size = armlib_size;
-    if (snx_link(objects, files, exports, 1, leaf(target), &linked, error, error_size)) goto done;
+    if (snx_link(objects, files, exports, 1, snx_path_leaf(target), &linked, error, error_size)) goto done;
     if (snx_write_file(staged, linked.data, linked.size) || snx_replace(staged, target)) {
         char why[256];
         snprintf(error, error_size, "cannot write %s: %s", target, snx_os_error(why, sizeof why));

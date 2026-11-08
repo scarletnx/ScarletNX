@@ -11,6 +11,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
+#include "common/utilities/ascii.h"
 #include <errno.h>
 #include <limits.h>
 #include <math.h>
@@ -187,11 +188,7 @@ static int tas_hex(const char* s, size_t len, u64* v) {
     u64 x = 0;
     if (!len) return 0;
     for (i = 0; i < len; i++) {
-        char c = s[i];
-        int d = c >= '0' && c <= '9'   ? c - '0'
-                : c >= 'a' && c <= 'f' ? c - 'a' + 10
-                : c >= 'A' && c <= 'F' ? c - 'A' + 10
-                                       : -1;
+        int d = snx_hex_value((unsigned char)s[i]);
         if (d < 0) return 0;
         digits += x || d; /* leading zeros take no bits */
         if (digits > 16) return 0;

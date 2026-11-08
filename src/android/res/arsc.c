@@ -65,13 +65,6 @@ struct ArscTheme {
 
 /* ---- the tables ---- */
 
-static uint32_t ld32(const unsigned char* p) {
-    return snx_ld_le32(p);
-}
-static uint32_t ld16(const unsigned char* p) {
-    return snx_ld_le16(p);
-}
-
 static bool add_chunk(Type* t, const unsigned char* chunk) {
     if (t->chunk_count == t->chunk_capacity) {
         uint32_t capacity = t->chunk_capacity ? t->chunk_capacity * 2 : 4;
@@ -84,28 +77,28 @@ static bool add_chunk(Type* t, const unsigned char* chunk) {
     return true;
 }
 static bool read_package(Package* p, const unsigned char* chunk, uint32_t size) {
-    uint32_t header = ld16(chunk + 2);
+    uint32_t header = snx_ld_le16(chunk + 2);
     if (header < 284 || header > size) return false;
-    p->id = ld32(chunk + 8);
+    p->id = snx_ld_le32(chunk + 8);
     for (int i = 0; i < 127; ++i) { /* the name's UTF-16 units, ASCII in practice */
-        unsigned u = ld16(chunk + 12 + 2 * i);
+        unsigned u = snx_ld_le16(chunk + 12 + 2 * i);
         p->name[i] = (char)(u < 0x80 ? u : '?');
         if (!u) break;
     }
-    uint32_t types = ld32(chunk + 268), keys = ld32(chunk + 276);
+    uint32_t types = snx_ld_le32(chunk + 268), keys = snx_ld_le32(chunk + 276);
     if (types >= size || keys >= size || !res_string_pool(&p->type_names, chunk + types, size - types) ||
         !res_string_pool(&p->keys, chunk + keys, size - keys))
         return false;
     for (uint32_t at = header; at + 8 <= size;) {
         const unsigned char* c = chunk + at;
-        uint32_t type = ld16(c), length = ld32(c + 4);
+        uint32_t type = snx_ld_le16(c), length = snx_ld_le32(c + 4);
         if (length < 8 || length > size - at) return false;
         if ((type == CHUNK_TYPE || type == CHUNK_TYPE_SPEC) && length >= 20) {
             unsigned id = c[8];
             if (id) {
                 Type* t = &p->types[id];
                 if (type == CHUNK_TYPE_SPEC) {
-                    uint32_t count = ld32(c + 12), hdr = ld16(c + 2);
+                    uint32_t count = snx_ld_le32(c + 12), hdr = snx_ld_le16(c + 2);
                     if ((uint64_t)hdr + 4ull * count <= length) {
                         t->spec = c + hdr;
                         t->spec_count = count;
@@ -146,14 +139,14 @@ void arsc_destroy(ArscAssets* a) {
     free(a);
 }
 int32_t arsc_add(ArscAssets* a, const unsigned char* data, size_t size, char* error, size_t error_size) {
-    if (size < 12 || ld16(data) != CHUNK_TABLE || ld32(data + 4) < 12 || ld32(data + 4) > size) {
+    if (size < 12 || snx_ld_le16(data) != CHUNK_TABLE || snx_ld_le32(data + 4) < 12 || snx_ld_le32(data + 4) > size) {
         snprintf(error, error_size, "not a resource table");
         return 0;
     }
     /* a package chunk's header alone is 284 bytes */
-    if (ld32(data + 8) > ld32(data + 4) / 284) {
-        snprintf(error, error_size, "a resource table of %u bytes that names %u packages", (unsigned)ld32(data + 4),
-                 (unsigned)ld32(data + 8));
+    if (snx_ld_le32(data + 8) > snx_ld_le32(data + 4) / 284) {
+        snprintf(error, error_size, "a resource table of %u bytes that names %u packages",
+                 (unsigned)snx_ld_le32(data + 4), (unsigned)snx_ld_le32(data + 8));
         return 0;
     }
     Table* tables = realloc(a->tables, (a->table_count + 1) * sizeof *tables);
@@ -164,9 +157,9 @@ int32_t arsc_add(ArscAssets* a, const unsigned char* data, size_t size, char* er
     a->tables = tables;
     Table* t = &a->tables[a->table_count];
     *t = (Table){0};
-    t->size = ld32(data + 4);
+    t->size = snx_ld_le32(data + 4);
     t->data = malloc(t->size);
-    uint32_t packages = ld32(data + 8);
+    uint32_t packages = snx_ld_le32(data + 8);
     t->packages = calloc((size_t)packages + 1, sizeof *t->packages);
     if (!t->data || !t->packages) {
         free(t->data);
@@ -176,9 +169,9 @@ int32_t arsc_add(ArscAssets* a, const unsigned char* data, size_t size, char* er
     }
     memcpy(t->data, data, t->size);
     bool ok = true;
-    for (uint32_t at = ld16(t->data + 2); ok && at + 8 <= t->size;) {
+    for (uint32_t at = snx_ld_le16(t->data + 2); ok && at + 8 <= t->size;) {
         const unsigned char* c = t->data + at;
-        uint32_t type = ld16(c), length = ld32(c + 4);
+        uint32_t type = snx_ld_le16(c), length = snx_ld_le32(c + 4);
         if (length < 8 || length > t->size - at) break;
         if (type == CHUNK_STRING_POOL && !t->strings.data)
             ok = res_string_pool(&t->strings, c, length);
@@ -216,25 +209,25 @@ typedef struct {
 } Config;
 static Config chunk_config(const unsigned char* chunk) {
     const unsigned char* c = chunk + 20;
-    uint32_t size = ld32(c);
+    uint32_t size = snx_ld_le32(c);
     unsigned char b[64] = {0};
     memcpy(b, c, size < sizeof b ? size : sizeof b);
     Config k = {0};
-    k.mcc = ld16(b + 4);
-    k.mnc = ld16(b + 6);
+    k.mcc = snx_ld_le16(b + 4);
+    k.mnc = snx_ld_le16(b + 6);
     memcpy(k.language, b + 8, 2);
     memcpy(k.country, b + 10, 2);
     k.orientation = b[12];
     k.touchscreen = b[13];
-    k.density = ld16(b + 14);
+    k.density = snx_ld_le16(b + 14);
     k.keyboard = b[16];
     k.navigation = b[17];
-    k.sdk = ld16(b + 24);
+    k.sdk = snx_ld_le16(b + 24);
     k.screen_layout = b[28];
     k.ui_mode = b[29];
-    k.smallest_dp = ld16(b + 30);
-    k.width_dp = ld16(b + 32);
-    k.height_dp = ld16(b + 34);
+    k.smallest_dp = snx_ld_le16(b + 30);
+    k.width_dp = snx_ld_le16(b + 32);
+    k.height_dp = snx_ld_le16(b + 34);
     return k;
 }
 static bool matches(const Config* k, const ArscConfig* d) {
@@ -290,7 +283,8 @@ static bool better(const Config* a, const Config* b, const ArscConfig* d) {
 
 /* entry index's offset in a type chunk, NO_ENTRY for none */
 static uint32_t entry_offset(const unsigned char* chunk, uint32_t index) {
-    uint32_t header = ld16(chunk + 2), size = ld32(chunk + 4), count = ld32(chunk + 12), start = ld32(chunk + 16);
+    uint32_t header = snx_ld_le16(chunk + 2), size = snx_ld_le32(chunk + 4), count = snx_ld_le32(chunk + 12),
+             start = snx_ld_le32(chunk + 16);
     unsigned flags = chunk[9];
     const unsigned char* offsets = chunk + header;
     uint32_t offset;
@@ -299,9 +293,9 @@ static uint32_t entry_offset(const unsigned char* chunk, uint32_t index) {
         uint32_t low = 0, high = count;
         offset = NO_ENTRY;
         while (low < high) {
-            uint32_t mid = low + (high - low) / 2, idx = ld16(offsets + 4 * mid);
+            uint32_t mid = low + (high - low) / 2, idx = snx_ld_le16(offsets + 4 * mid);
             if (idx == index) {
-                offset = ld16(offsets + 4 * mid + 2) * 4u;
+                offset = snx_ld_le16(offsets + 4 * mid + 2) * 4u;
                 break;
             }
             if (idx < index)
@@ -312,12 +306,12 @@ static uint32_t entry_offset(const unsigned char* chunk, uint32_t index) {
         if (offset == NO_ENTRY) return NO_ENTRY;
     } else if (flags & TYPE_OFFSET16) {
         if (index >= count || (uint64_t)header + 2ull * count > size) return NO_ENTRY;
-        uint32_t o = ld16(offsets + 2 * index);
+        uint32_t o = snx_ld_le16(offsets + 2 * index);
         if (o == 0xffff) return NO_ENTRY;
         offset = o * 4;
     } else {
         if (index >= count || (uint64_t)header + 4ull * count > size) return NO_ENTRY;
-        offset = ld32(offsets + 4 * index);
+        offset = snx_ld_le32(offsets + 4 * index);
         if (offset == NO_ENTRY) return NO_ENTRY;
     }
     uint64_t at = (uint64_t)start + offset;
@@ -365,26 +359,26 @@ static bool find_entry(ArscAssets* a, uint32_t resid, Found* f) {
     }
     if (!f->entry) return false;
     f->package = p;
-    f->spec_flags = t->spec && index < t->spec_count ? ld32(t->spec + 4 * index) : 0;
+    f->spec_flags = t->spec && index < t->spec_count ? snx_ld_le32(t->spec + 4 * index) : 0;
     f->density = best.density;
     return true;
 }
 static bool entry_complex(const Found* f) {
-    unsigned flags = ld16(f->entry + 2);
+    unsigned flags = snx_ld_le16(f->entry + 2);
     return !(flags & ENTRY_COMPACT) && (flags & ENTRY_COMPLEX);
 }
 static ResValue entry_value(const Found* f) {
-    unsigned flags = ld16(f->entry + 2);
-    if (flags & ENTRY_COMPACT) return (ResValue){(uint8_t)(flags >> 8), ld32(f->entry + 4)};
-    uint32_t size = ld16(f->entry);
+    unsigned flags = snx_ld_le16(f->entry + 2);
+    if (flags & ENTRY_COMPACT) return (ResValue){(uint8_t)(flags >> 8), snx_ld_le32(f->entry + 4)};
+    uint32_t size = snx_ld_le16(f->entry);
     const unsigned char* v = f->entry + size;
-    const unsigned char* end = f->chunk + ld32(f->chunk + 4);
+    const unsigned char* end = f->chunk + snx_ld_le32(f->chunk + 4);
     if (v + 8 > end) return (ResValue){RES_TYPE_NULL, 0};
-    return (ResValue){v[3], ld32(v + 4)};
+    return (ResValue){v[3], snx_ld_le32(v + 4)};
 }
 static uint32_t entry_key(const Found* f) {
-    unsigned flags = ld16(f->entry + 2);
-    return flags & ENTRY_COMPACT ? ld16(f->entry) : ld32(f->entry + 4);
+    unsigned flags = snx_ld_le16(f->entry + 2);
+    return flags & ENTRY_COMPACT ? snx_ld_le16(f->entry) : snx_ld_le32(f->entry + 4);
 }
 
 bool arsc_get(ArscAssets* a, uint32_t resid, ArscValue* out) {
@@ -452,9 +446,9 @@ static const Bag* make_bag(ArscAssets* a, uint32_t resid, int depth) {
     if (cached && cached->resid == resid) return cached;
     Found f;
     if (depth > MAX_DEPTH || !find_entry(a, resid, &f) || !entry_complex(&f)) return NULL;
-    uint32_t size = ld16(f.entry), parent = ld32(f.entry + 8), count = ld32(f.entry + 12);
+    uint32_t size = snx_ld_le16(f.entry), parent = snx_ld_le32(f.entry + 8), count = snx_ld_le32(f.entry + 12);
     const unsigned char* maps = f.entry + size;
-    const unsigned char* end = f.chunk + ld32(f.chunk + 4);
+    const unsigned char* end = f.chunk + snx_ld_le32(f.chunk + 4);
     if ((uint64_t)(end - maps) < 12ull * count) count = (uint32_t)((end - maps) / 12);
     const Bag* base = parent ? make_bag(a, parent, depth + 1) : NULL;
     uint32_t base_count = base ? base->count : 0;
@@ -472,8 +466,8 @@ static const Bag* make_bag(ArscAssets* a, uint32_t resid, int depth) {
     }
     for (uint32_t i = 0; i < count; ++i) {
         const unsigned char* m = maps + 12 * i;
-        uint32_t key = ld32(m);
-        ArscValue v = {{m[7], ld32(m + 8)}, f.cookie, 0, f.spec_flags, f.density};
+        uint32_t key = snx_ld_le32(m);
+        ArscValue v = {{m[7], snx_ld_le32(m + 8)}, f.cookie, 0, f.spec_flags, f.density};
         /* the key's place in the sorted keys: replaced, or made room for */
         uint32_t low = 0, high = n;
         while (low < high) {
@@ -564,7 +558,7 @@ uint32_t arsc_identifier(ArscAssets* a, const char* package, const char* type, c
             const Type* ty = &pk->types[type_index + 1];
             for (uint32_t c = 0; c < ty->chunk_count; ++c) {
                 const unsigned char* chunk = ty->chunks[c];
-                uint32_t count = ld32(chunk + 12);
+                uint32_t count = snx_ld_le32(chunk + 12);
                 if (chunk[9] & TYPE_SPARSE) count = 0x10000;
                 for (uint32_t i = 0; i < count; ++i) {
                     uint32_t offset = entry_offset(chunk, i);

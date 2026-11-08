@@ -11,6 +11,7 @@
 #include "nx/loader/hook_routes.h"
 #include "nx/loader/match.h"
 #include "nx/loader/ounce.h"
+#include "common/utilities/endian.h"
 #include <stdlib.h>
 #include <string.h>
 #include <lz4.h>
@@ -65,14 +66,6 @@ static int fail(char* error, size_t error_size, char* message) {
     free(message);
     return -1;
 }
-
-static SnxU32 rd16(const unsigned char* p) { return (SnxU32)p[0] | (SnxU32)p[1] << 8; }
-static SnxU32 rd32(const unsigned char* p) {
-    return (SnxU32)p[0] | (SnxU32)p[1] << 8 | (SnxU32)p[2] << 16 | (SnxU32)p[3] << 24;
-}
-static SnxU64 rd64(const unsigned char* p) { return (SnxU64)rd32(p) | (SnxU64)rd32(p + 4) << 32; }
-/* a signed 32-bit field widened to 64 bits, two's complement */
-static SnxU64 sext32(SnxU32 v) { return (SnxU64)v | (v & 0x80000000UL ? 0xFFFFFFFF00000000ull : 0); }
 
 /* whether [offset, offset + length) lies inside [0, total) */
 static int inside(SnxU64 offset, SnxU64 length, SnxU64 total) { return offset <= total && length <= total - offset; }
@@ -159,14 +152,14 @@ static int code_address(const Parse* p, SnxU64 a) {
 }
 
 static SnxU64 word_at(const Parse* p, SnxU64 offset) {
-    return p->word == 8 ? rd64(p->m->image + offset) : rd32(p->m->image + offset);
+    return p->word == 8 ? snx_ld_le64(p->m->image + offset) : snx_ld_le32(p->m->image + offset);
 }
 
 /* MOD0's displacement field at offset `at` from MOD0 (at mod0) as a module offset. bss_end alone may be read unsigned:
    a module of several GiB puts its BSS end more than 2 GiB past MOD0, where the signed reading would land before the
    module's start */
 static int mod0_field(const Parse* p, SnxU64 mod0, unsigned at, int may_be_unsigned, SnxU64* out) {
-    SnxU32 raw = rd32(p->m->image + mod0 + at);
+    SnxU32 raw = snx_ld_le32(p->m->image + mod0 + at);
     SnxU64 magnitude;
     if (!(raw & 0x80000000UL)) {
         *out = mod0 + raw;
@@ -187,7 +180,7 @@ static int read_mod0(Parse* p) {
     SnxMod0* h = &m->mod0;
     SnxU64 at;
     if (m->image_size < 8) return 0;
-    at = rd32(m->image + 4);
+    at = snx_ld_le32(m->image + 4);
     /* no MOD0 is allowed (small homebrew): no dynamic table, nothing to seed from */
     if (!inside(at, MOD0_SIZE, m->image_size) || memcmp(m->image + at, "MOD0", 4)) return 0;
     h->off = at;
@@ -239,21 +232,21 @@ static int symbol_count(Parse* p, const Dynamic* d, SnxU64 entry, SnxU64* count)
     if (d->have[DT_HASH]) {
         if (!inside(d->value[DT_HASH], 8, m->image_size))
             return fail(p->error, p->error_size, snx_format("%s: DT_HASH lies outside the image", m->path));
-        *count = rd32(m->image + d->value[DT_HASH] + 4);
+        *count = snx_ld_le32(m->image + d->value[DT_HASH] + 4);
         return 0;
     }
     if (d->have_gnu_hash) {
         at = d->gnu_hash;
         if (!inside(at, 16, m->image_size))
             return fail(p->error, p->error_size, snx_format("%s: DT_GNU_HASH lies outside the image", m->path));
-        buckets = rd32(m->image + at);
-        first = rd32(m->image + at + 4);
-        blooms = rd32(m->image + at + 8);
+        buckets = snx_ld_le32(m->image + at);
+        first = snx_ld_le32(m->image + at + 4);
+        blooms = snx_ld_le32(m->image + at + 8);
         at += 16 + blooms * p->word;
         if (!inside(at, buckets * 4, m->image_size))
             return fail(p->error, p->error_size, snx_format("%s: DT_GNU_HASH lies outside the image", m->path));
         for (i = 0; i < buckets; ++i)
-            if (rd32(m->image + at + i * 4) > last) last = rd32(m->image + at + i * 4);
+            if (snx_ld_le32(m->image + at + i * 4) > last) last = snx_ld_le32(m->image + at + i * 4);
         if (!last) {
             *count = first;
             return 0;
@@ -265,7 +258,7 @@ static int symbol_count(Parse* p, const Dynamic* d, SnxU64 entry, SnxU64* count)
             SnxU64 link = chains + (last - first) * 4;
             if (!inside(link, 4, m->image_size))
                 return fail(p->error, p->error_size, snx_format("%s: DT_GNU_HASH runs past the image", m->path));
-            if (rd32(m->image + link) & 1) break;
+            if (snx_ld_le32(m->image + link) & 1) break;
         }
         *count = last + 1;
         return 0;
@@ -314,19 +307,19 @@ static int read_symbols(Parse* p, const Dynamic* d) {
     }
     for (i = 0; i < count; ++i) {
         const unsigned char* s = m->image + symtab + i * entry;
-        SnxU32 name = rd32(s);
+        SnxU32 name = snx_ld_le32(s);
         SnxU64 value, size;
         unsigned type, shndx;
         if (p->is64) {
             type = s[4] & 15;
-            shndx = rd16(s + 6);
-            value = rd64(s + 8);
-            size = rd64(s + 16);
+            shndx = snx_ld_le16(s + 6);
+            value = snx_ld_le64(s + 8);
+            size = snx_ld_le64(s + 16);
         } else {
-            value = rd32(s + 4);
-            size = rd32(s + 8);
+            value = snx_ld_le32(s + 4);
+            size = snx_ld_le32(s + 8);
             type = s[12] & 15;
-            shndx = rd16(s + 14);
+            shndx = snx_ld_le16(s + 14);
         }
         if (!name) continue;
         if (name >= strsz || !memchr(m->image + strtab + name, 0, (size_t)(strsz - name))) {
@@ -505,9 +498,9 @@ static int encoded(const unsigned char* image, SnxU64 end, SnxU64* at, unsigned 
     }
     if (size) {
         if (!inside(*at, size, end)) return -1;
-        value = size == 2 ? rd16(image + *at) : size == 4 ? rd32(image + *at) : rd64(image + *at);
+        value = size == 2 ? snx_ld_le16(image + *at) : size == 4 ? snx_ld_le32(image + *at) : snx_ld_le64(image + *at);
         if (size == 2 && (encoding & 0x08) && (value & 0x8000)) value |= ~(SnxU64)0xffff;
-        if (size == 4 && (encoding & 0x08)) value = sext32((SnxU32)value);
+        if (size == 4 && (encoding & 0x08)) value = (SnxU64)snx_sext64(value, 32);
         *at += size;
     }
     switch (encoding & 0x70) {
@@ -527,14 +520,14 @@ static const char* read_cie(const unsigned char* image, SnxU64 size, SnxU64 cie,
     unsigned version;
     *fde_encoding = 0;
     if (!inside(cie, 9, size)) return "CIE outside the image";
-    length = rd32(image + cie);
+    length = snx_ld_le32(image + cie);
     if (!length || length == 0xFFFFFFFFUL) return "unsupported CIE length";
     /* the length, the CIE id, the version and at least the augmentation string's NUL: a shorter length leaves the
        augmentation's search and the FDE's start past the CIE's end */
     if (length < 6) return "truncated CIE";
     end = cie + 4 + length;
     if (!inside(cie, 4 + length, size)) return "CIE outside the image";
-    if (rd32(image + cie + 4)) return "FDE points at another FDE";
+    if (snx_ld_le32(image + cie + 4)) return "FDE points at another FDE";
     version = image[cie + 8];
     if (version != 1 && version != 3) return "unsupported CIE version";
     augmentation = (const char*)image + cie + 9;
@@ -579,11 +572,11 @@ static const char* read_fde(const unsigned char* image, SnxU64 size, SnxU64 fde,
     unsigned encoding;
     const char* why;
     if (!inside(fde, 8, size)) return "FDE outside the image";
-    total = rd32(image + fde);
+    total = snx_ld_le32(image + fde);
     if (!total || total == 0xFFFFFFFFUL) return "unsupported FDE length";
     if (!inside(fde, 4 + total, size)) return "FDE outside the image";
     end = fde + 4 + total;
-    pointer = rd32(image + fde + 4);
+    pointer = snx_ld_le32(image + fde + 4);
     if (!pointer) return "a CIE where an FDE was expected";
     if (pointer > fde + 4) return "CIE outside the image";
     why = read_cie(image, size, fde + 4 - pointer, &encoding);
@@ -619,7 +612,7 @@ static void read_unwind(Parse* p) {
                 why = "the search table runs past .eh_frame_hdr";
                 break;
             }
-            fde = start + sext32(rd32(image + at + i * 8 + 4));
+            fde = start + (SnxU64)snx_sext64(snx_ld_le32(image + at + i * 8 + 4), 32);
             why = read_fde(image, m->image_size, fde, &value, &size);
             if (why) {
                 detail = snx_format("FDE %zu: %s", i, why);
@@ -645,11 +638,11 @@ static int dynamic_fits(const SnxModuleImage* m, unsigned word) {
     SnxU64 at, entry = 2 * (SnxU64)word, tag, syment = 0;
     int seen = 0;
     for (at = m->mod0.dynamic; inside(at, entry, m->image_size); at += entry) {
-        tag = word == 8 ? rd64(m->image + at) : rd32(m->image + at);
+        tag = word == 8 ? snx_ld_le64(m->image + at) : snx_ld_le32(m->image + at);
         if (!tag) return seen && syment == (word == 8 ? 24u : 16u);
         if (tag == DT_SYMENT && !seen) {
             seen = 1;
-            syment = word == 8 ? rd64(m->image + at + 8) : rd32(m->image + at + 4);
+            syment = word == 8 ? snx_ld_le64(m->image + at + 8) : snx_ld_le32(m->image + at + 4);
         }
     }
     return 0;
@@ -758,12 +751,12 @@ static int decode_nso(SnxModuleImage* m, const unsigned char* file, size_t file_
     unsigned i, j;
     if (file_size < NSO_HEADER_SIZE || memcmp(file, "NSO0", 4))
         return fail(error, error_size, snx_format("%s: not an NSO", m->path));
-    flags = rd32(file + 0x0c);
+    flags = snx_ld_le32(file + 0x0c);
     for (i = 0; i < 3; ++i) {
-        file_off[i] = rd32(file + 0x10 + i * 0x10);
-        mem_off[i] = rd32(file + 0x14 + i * 0x10);
-        size[i] = rd32(file + 0x18 + i * 0x10);
-        stored[i] = flags & (1U << i) ? rd32(file + 0x60 + i * 4) : size[i];
+        file_off[i] = snx_ld_le32(file + 0x10 + i * 0x10);
+        mem_off[i] = snx_ld_le32(file + 0x14 + i * 0x10);
+        size[i] = snx_ld_le32(file + 0x18 + i * 0x10);
+        stored[i] = flags & (1U << i) ? snx_ld_le32(file + 0x60 + i * 4) : size[i];
         if (!inside(file_off[i], stored[i], file_size))
             return fail(error, error_size,
                         snx_format("%s: the %s segment lies outside the file", m->path, segment_names[i]));
@@ -810,7 +803,7 @@ static int decode_nso(SnxModuleImage* m, const unsigned char* file, size_t file_
     m->ro_size = size[1];
     m->data_off = mem_off[2];
     m->data_size = size[2];
-    m->bss = rd32(file + 0x3c);
+    m->bss = snx_ld_le32(file + 0x3c);
     set_size(m);
     return 0;
 }
@@ -866,15 +859,15 @@ static int decode_nro(SnxModuleImage* m, const unsigned char* f, SnxU64 file_siz
     SnxU32 image_size, text_off, text_size, ro_off, ro_size, data_off, data_size;
     if (file_size < NRO_HEADER_SIZE || memcmp(f + 0x10, "NRO0", 4))
         return fail(error, error_size, snx_format("%s: not an NRO", m->path));
-    if (rd32(f + 0x1c) & 2)
+    if (snx_ld_le32(f + 0x1c) & 2)
         return fail(error, error_size, snx_format("%s: compressed NRO images are not supported", m->path));
-    image_size = rd32(f + 0x18);
-    text_off = rd32(f + 0x20);
-    text_size = rd32(f + 0x24);
-    ro_off = rd32(f + 0x28);
-    ro_size = rd32(f + 0x2c);
-    data_off = rd32(f + 0x30);
-    data_size = rd32(f + 0x34);
+    image_size = snx_ld_le32(f + 0x18);
+    text_off = snx_ld_le32(f + 0x20);
+    text_size = snx_ld_le32(f + 0x24);
+    ro_off = snx_ld_le32(f + 0x28);
+    ro_size = snx_ld_le32(f + 0x2c);
+    data_off = snx_ld_le32(f + 0x30);
+    data_size = snx_ld_le32(f + 0x34);
     if (image_size < NRO_HEADER_SIZE || image_size > file_size)
         return fail(error, error_size, snx_format("%s: the NRO's image size doesn't fit the file", m->path));
     if (text_off || text_size < NRO_HEADER_SIZE || ro_off != text_size || (SnxU64)ro_off + ro_size != data_off ||
@@ -887,7 +880,7 @@ static int decode_nro(SnxModuleImage* m, const unsigned char* f, SnxU64 file_siz
     m->ro_size = ro_size;
     m->data_off = data_off;
     m->data_size = data_size;
-    m->bss = rd32(f + 0x38);
+    m->bss = snx_ld_le32(f + 0x38);
     memcpy(m->build_id, f + 0x40, 32);
     m->is_nro = 1;
     set_size(m);
@@ -905,8 +898,8 @@ static int read_nro_assets(SnxModuleImage* m, FILE* file, SnxU64 file_size, char
         return fail(error, error_size, snx_format("cannot read %s", m->path));
     if (memcmp(asset, "ASET", 4)) return 0;
     for (i = 0; i < 3; ++i) {
-        off = rd64(asset + 0x08 + i * 0x10);
-        size = rd64(asset + 0x10 + i * 0x10);
+        off = snx_ld_le64(asset + 0x08 + i * 0x10);
+        size = snx_ld_le64(asset + 0x10 + i * 0x10);
         if (size && !inside(off, size, asset_size))
             return fail(error, error_size, snx_format("%s: an ASET section lies outside the file", m->path));
         if (i == 1 && size) {
@@ -968,15 +961,15 @@ int snx_nro_icon(const char* path, unsigned char** icon, size_t* size, char* err
     if (!file) return fail(error, error_size, snx_format("cannot read %s", path));
     if (fread(header, 1, sizeof header, file) != sizeof header || memcmp(header + 0x10, "NRO0", 4))
         rc = fail(error, error_size, snx_format("%s: not an NRO", path));
-    else if ((image = rd32(header + 0x18)) > file_size)
+    else if ((image = snx_ld_le32(header + 0x18)) > file_size)
         rc = fail(error, error_size, snx_format("%s: the NRO's image size doesn't fit the file", path));
     else if (file_size - image < ASET_HEADER_SIZE) /* no assets */
         rc = 1;
     else if (snx_seek(file, image) || fread(asset, 1, sizeof asset, file) != sizeof asset)
         rc = fail(error, error_size, snx_format("cannot read %s", path));
-    else if (memcmp(asset, "ASET", 4) || !(length = rd64(asset + 0x10)))
+    else if (memcmp(asset, "ASET", 4) || !(length = snx_ld_le64(asset + 0x10)))
         rc = 1;
-    else if (!inside(off = rd64(asset + 0x08), length, file_size - image))
+    else if (!inside(off = snx_ld_le64(asset + 0x08), length, file_size - image))
         rc = fail(error, error_size, snx_format("%s: an ASET section lies outside the file", path));
     else {
         *icon = (unsigned char*)snx_alloc((size_t)length);
@@ -1014,8 +1007,8 @@ int snx_parse_npdm(const unsigned char* data, size_t size, SnxNpdm* npdm, char* 
     memset(npdm, 0, sizeof(*npdm));
     if (!data || size < 0x80) return fail(error, error_size, snx_strdup("NPDM: shorter than its header"));
     if (memcmp(data, "META", 4)) return fail(error, error_size, snx_strdup("NPDM: no META magic"));
-    aci = rd32(data + 0x70);
-    aci_size = rd32(data + 0x74);
+    aci = snx_ld_le32(data + 0x70);
+    aci_size = snx_ld_le32(data + 0x74);
     if (!inside(aci, aci_size, size))
         return fail(error, error_size, snx_strdup("NPDM: access-control region exceeds file"));
     if (aci_size < 0x18 || memcmp(data + aci, "ACI0", 4))
@@ -1024,10 +1017,10 @@ int snx_parse_npdm(const unsigned char* data, size_t size, SnxNpdm* npdm, char* 
     npdm->aspace = (data[0x0c] >> 1) & 7;
     npdm->prio = data[0x0e];
     npdm->core = data[0x0f];
-    npdm->stack = rd32(data + 0x1c);
+    npdm->stack = snx_ld_le32(data + 0x1c);
     memcpy(npdm->name, data + 0x20, 16);
     npdm->name[16] = 0;
-    npdm->title_id = rd64(data + aci + 0x10);
+    npdm->title_id = snx_ld_le64(data + aci + 0x10);
     npdm->ounce = snx_npdm_ounce(data, size);
     return 0;
 }

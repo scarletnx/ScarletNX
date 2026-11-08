@@ -120,7 +120,4 @@ void gnu_hostfs_release(GnuOpen* file);
    node: then virtual_path holds that node's absolute guest path, for the virtual nodes' code to use instead */
 bool gnu_hostfs_syscall(GnuVfsState* state, GnuMemory* memory, uint64_t number, const uint64_t args[6],
                         char virtual_path[GNU_VFS_PATH_MAX], int64_t* result);
-void gnu_vfs_put16(unsigned char* bytes, uint16_t value);
-void gnu_vfs_put32(unsigned char* bytes, uint32_t value);
-void gnu_vfs_put64(unsigned char* bytes, uint64_t value);
 #endif
