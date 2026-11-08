@@ -645,6 +645,13 @@ static int create_device(void) {
             snx_vk_extensions_free(&e);
             return 0;
         }
+        { /* every device here has maintenance4 (core in 1.3, required of 1.2 above) */
+            VkPhysicalDeviceMaintenance4Properties m4 = {
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_PROPERTIES};
+            VkPhysicalDeviceProperties2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &m4};
+            vkGetPhysicalDeviceProperties2(g_vk.phys, &q);
+            g_vk.max_buffer_size = m4.maxBufferSize;
+        }
         g_vk.has_divisor = snx_vk_extensions_has(&e, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
         has_vertex_input = snx_vk_extensions_has(&e, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
         has_gpl = snx_vk_extensions_has(&e, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME) &&

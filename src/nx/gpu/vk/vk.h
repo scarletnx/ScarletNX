@@ -152,6 +152,7 @@ typedef struct {
     int has_shader_draw_parameters; /* shaders take an instance's ID from BaseInstance (spirv_translate.c) */
     int has_draw_indirect_count;    /* drawIndirectCount: an indirect draw's count from the GPU's memory */
     u64 alloc_cap;                  /* the most one device memory allocation may be (memory.c) */
+    u64 max_buffer_size;            /* the biggest buffer the device makes (maintenance4's maxBufferSize) */
     int sparse; /* sparseBinding on the graphics queue: images bigger than alloc_cap are bound in pieces */
     /* sparse residency of 2D or 3D images too, what isn't bound reading as zeros: a texture with holes in its mapping
        has memory only where it is mapped (memory.c vk_resident_shape says for which) */
