@@ -193,6 +193,39 @@ static void test_error_texts(void) {
 #endif
 }
 
+/* ---- the bridge's own forms of bionic's functions ---- */
+
+/* strlcpy, basename, strsep and strtok_r, which the host's C library lacks or has in another form, and fseek and
+   ftell of 64-bit offsets (Windows' long is 32 bits): each through the adapter of its own type */
+static void test_own_forms(void) {
+    char out[8];
+    expect_int("strlcpy gives the source's length", (int64_t)CALL("strlcpy", P(out), P("hello"), 3), 5);
+    expect_text("and cuts to the room", out, "he");
+    expect_text("basename drops trailing slashes", (const char*)(uintptr_t)CALL("basename", P("/a/b//")), "b");
+    char list[] = "one,two";
+    char* rest = list;
+    expect_text("strsep's first field", (const char*)(uintptr_t)CALL("strsep", P(&rest), P(",")), "one");
+    expect_text("and the rest", rest, "two");
+    char words[] = "  x y";
+    char* saved = NULL;
+    expect_text("strtok_r's first word", (const char*)(uintptr_t)CALL("strtok_r", P(words), P(" "), P(&saved)), "x");
+    expect_text("its second", (const char*)(uintptr_t)CALL("strtok_r", 0, P(" "), P(&saved)), "y");
+    FILE* f = fopen("android_bionic_seek.txt", "w+b");
+    if (!f) {
+        fprintf(stderr, "android_bionic: cannot write android_bionic_seek.txt in the working folder\n");
+        exit(1);
+    }
+    fputs("0123456789", f);
+    static const char* const seeks[2] = {"fseek", "fseeko"};
+    static const char* const tells[2] = {"ftell", "ftello"};
+    for (int k = 0; k < 2; ++k) {
+        expect_int(seeks[k], (int64_t)CALL(seeks[k], P(f), 3 + (uint64_t)k, 0), 0); /* SEEK_SET */
+        expect_int(tells[k], (int64_t)CALL(tells[k], P(f)), 3 + k);
+    }
+    fclose(f);
+    remove("android_bionic_seek.txt");
+}
+
 /* ---- what the NDK's _FORTIFY_SOURCE calls ---- */
 
 /* send(), recv() and readlink() of a buffer whose size the compiler knows, as __sendto_chk, __recvfrom_chk and
@@ -541,6 +574,7 @@ int main(void) {
     test_printf_signed();
     test_sscanf_reads_its_pointers();
     test_error_texts();
+    test_own_forms();
     test_fortified();
     test_libm();
     test_getline();
