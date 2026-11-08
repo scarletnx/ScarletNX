@@ -1297,7 +1297,8 @@ static char* dump_into_dumps(const char* input, const SnxPaths* paths, int* fail
     char* copy = NULL;
     *failed = 0;
     if (!dumps || !from || !snx_is_file(from) || !snx_is_dump(from) || snx_path_within(from, dumps)) goto done;
-    to = snx_path_join(dumps, snx_path_leaf(input));
+    const char* leaf = snx_path_leaf(input);
+    to = snx_path_join(dumps, leaf);
     if (!to || snx_mkdirs(dumps)) {
         snx_error("cannot make %s", dumps);
         *failed = 1;
