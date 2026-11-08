@@ -13,6 +13,11 @@
 #include <math.h>
 #include <stdarg.h>
 #include <stdlib.h>
+#if defined(_WIN32)
+#include <process.h> /* _getpid */
+#else
+#include <unistd.h> /* getpid */
+#endif
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
 #include "support/astc.h"
@@ -772,11 +777,22 @@ static void bench(u32 w, u32 h, int runs, BenchSource src) {
     free(b);
 }
 
+/* the cache file, this process's own: ctest runs the astc_vulkan entries at once in one directory (--parallel 4 on
+   the CI), and one run's remove or lock took another's file */
+static const char* cache_path(void) {
+    static char path[64];
+#if defined(_WIN32)
+    if (!path[0]) snprintf(path, sizeof path, "astc_vulkan_test.%u.vkbc7", (unsigned)_getpid());
+#else
+    if (!path[0]) snprintf(path, sizeof path, "astc_vulkan_test.%u.vkbc7", (unsigned)getpid());
+#endif
+    return path;
+}
+#define CACHE_PATH cache_path()
 /* The BC7 cache (vk/bc7_cache.c through vk_astc_upload's content): one level of random blocks, all its layers or
    slices at once, uploaded into a new BC7 image each time and read back whole. The first upload encodes, and its blocks
    go into the cache when its submission is done; the second, and a third after the cache's file is opened again as a
    later run does, encode nothing and come out byte for byte as the first; other blocks miss */
-#define CACHE_PATH "astc_vulkan_test.vkbc7"
 typedef struct {
     u32 bw, bh, srgb, w, h, depth, layers;
 } CacheCase;
