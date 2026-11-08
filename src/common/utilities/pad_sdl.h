@@ -28,4 +28,16 @@ void snx_pad_motion_enable(SDL_Gamepad* g, void (*say)(int warn, const char* lin
 /* The accelerometer and gyroscope of g's pair which (SNX_PAD_MOTION_*) as SDL reads them: m/s^2 and rad/s, x to the
    right, y up and z toward the player (SDL_sensor.h). 0 when either is off or has nothing to read */
 int snx_pad_motion_read(SDL_Gamepad* g, int which, float accel[3], float gyro[3]);
+/* An added gamepad of event opened into the first free one of count pads (opened, when not NULL, told of it), a
+   removed one closed; another event is left. snx_pads_close closes every pad open */
+void snx_pads_event(SDL_Gamepad** pads, int count, const SDL_Event* event, void (*opened)(SDL_Gamepad* pad));
+void snx_pads_close(SDL_Gamepad** pads, int count);
+/* a stick's axis, -1 to 1 */
+float snx_pad_axis(SDL_Gamepad* g, SDL_GamepadAxis which);
+/* The console buttons (a bit for each of pad_map.h's) that the window's keys hold, as a Switch game's keyboard has
+   them: X A, Z B, C X, V Y, Q L, E R, 1 ZL, 3 ZR, Enter Plus (not with Alt, which is the window's fullscreen),
+   Backspace Minus and the arrows the D-pad. held is SDL_GetKeyboardState's */
+unsigned snx_pad_keys(const bool* held);
+/* WASD as the left stick and IJKL as the right one, -1 to 1 with y up */
+void snx_pad_key_sticks(const bool* held, float left[2], float right[2]);
 #endif

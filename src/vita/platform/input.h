@@ -33,6 +33,8 @@ typedef struct {
 } VitaInput;
 union SDL_Event;
 void vita_input_init(void);
+/* the gamepad_map setting (pad_map.h's text), which the command line gives */
+void vita_input_map(const char* text);
 void vita_input_event(const union SDL_Event* event);
 void vita_input_read(VitaInput* input);
 void vita_input_free(void);

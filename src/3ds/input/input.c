@@ -24,7 +24,7 @@
 #define UNSET4     SNX_PAD_UNSET, SNX_PAD_UNSET, SNX_PAD_UNSET, SNX_PAD_UNSET
 typedef char input_map_controls[SNX_PAD_CONTROLS == 16 ? 1 : -1]; /* the four UNSET4 of g_input.map */
 /* the 3DS's bit for each of the Switch's buttons a gamepad sends (pad_map.h's), 0 where the 3DS has none */
-static const uint32_t CTR_BITS[SNX_PAD_BUTTONS] = {
+static const unsigned CTR_BITS[SNX_PAD_BUTTONS] = {
     SNX_CTR_PAD_A,      /* A */
     SNX_CTR_PAD_B,      /* B */
     SNX_CTR_PAD_X,      /* X */
@@ -54,26 +54,7 @@ static struct {
     SnxPadMap map; /* gamepad_map's: the controls it names, the others SNX_PAD_UNSET */
 } g_input = {.map = {{UNSET4, UNSET4, UNSET4, UNSET4}}};
 
-void snx_ctr_input_map(const char* text) {
-    SnxPadMap map;
-    char word[64], kept[SNX_PAD_MAP_TEXT];
-    snx_pad_map_unset(&map);
-    if (snx_pad_map_read(&map, text, word, sizeof word)) {
-        snx_pad_map_write(&g_input.map, kept, sizeof kept);
-        fprintf(
-            stderr,
-            "settings: gamepad_map's \"%s\" is not a control and the button it sends (south:B): it keeps \"%s\"%s\n",
-            word, kept, kept[0] ? "" : ", each control sending the button in its place");
-        return;
-    }
-    g_input.map = map;
-    for (int c = 0; c < SNX_PAD_CONTROLS; ++c)
-        if (map.bit[c] >= 0 && !CTR_BITS[map.bit[c]]) {
-            const char* button = snx_pad_button_name(map.bit[c]);
-            fprintf(stderr, "settings: gamepad_map's %s:%s sends nothing: the 3DS has no %s\n", snx_pad_control_key(c),
-                    button, button);
-        }
-}
+void snx_ctr_input_map(const char* text) { snx_pad_map_setting(&g_input.map, text, CTR_BITS, "3DS"); }
 
 void snx_ctr_input_init(void) {
     g_input.start = snx_ctr_clock_seconds();
@@ -88,23 +69,8 @@ static void say_motion(int warn, const char* line) {
     (void)warn;
     fprintf(stderr, "3ds input: %s\n", line);
 }
-void snx_ctr_input_event(const union SDL_Event* event) {
-    if (event->type == SDL_EVENT_GAMEPAD_ADDED) {
-        for (unsigned i = 0; i < INPUT_PADS; ++i)
-            if (g_input.pads[i] && SDL_GetGamepadID(g_input.pads[i]) == event->gdevice.which) return;
-        for (unsigned i = 0; i < INPUT_PADS; ++i)
-            if (!g_input.pads[i]) {
-                g_input.pads[i] = SDL_OpenGamepad(event->gdevice.which);
-                if (g_input.pads[i]) snx_pad_motion_enable(g_input.pads[i], say_motion);
-                break;
-            }
-    } else if (event->type == SDL_EVENT_GAMEPAD_REMOVED)
-        for (unsigned i = 0; i < INPUT_PADS; ++i)
-            if (g_input.pads[i] && SDL_GetGamepadID(g_input.pads[i]) == event->gdevice.which) {
-                SDL_CloseGamepad(g_input.pads[i]);
-                g_input.pads[i] = NULL;
-            }
-}
+static void opened(SDL_Gamepad* pad) { snx_pad_motion_enable(pad, say_motion); }
+void snx_ctr_input_event(const union SDL_Event* event) { snx_pads_event(g_input.pads, INPUT_PADS, event, opened); }
 /* A release keeps the last position: the HID sample keeps it too, with its validity clear */
 void snx_ctr_input_touch(bool pressed, uint32_t x, uint32_t y) {
     g_input.touch = pressed;
@@ -114,44 +80,16 @@ void snx_ctr_input_touch(bool pressed, uint32_t x, uint32_t y) {
     }
 }
 bool snx_ctr_input_touched(void) { return g_input.touch; }
-/* what each control of a pad sends, as a Switch game's pad's (backend/gamepad.c's map_of): the button in its place,
-   gamepad_map over that, then A and B swapped by gamepad_swap_ab */
-static void pad_map(SnxPadMap* map) {
-    SnxPadMap placed;
-    snx_pad_map_position(&placed);
-    *map = g_input.map;
-    snx_pad_map_fill(map, &placed);
-    if (g_settings.swap_a_b) snx_pad_map_swap_ab(map);
-}
-/* A stick at x and y (-1 to 1, y up) as held, past the dead zone and scaled so its edge is the stick at rest and the
-   full circle its rim; it replaces held when it is pushed further, so of several pads and the keys the furthest wins */
+/* A stick at x and y (-1 to 1, y up) as held, past the dead zone; it replaces held when it is pushed further, so of
+   several pads and the keys the furthest wins */
 static void stick(float x, float y, float dead, float held[2]) {
-    float length = sqrtf(x * x + y * y);
-    if (length > dead && length > sqrtf(held[0] * held[0] + held[1] * held[1])) {
-        float scale = (fminf(length, 1) - dead) / (1 - dead) / length;
-        held[0] = x * scale;
-        held[1] = y * scale;
+    double sx = x, sy = y;
+    if (sqrtf(x * x + y * y) > sqrtf(held[0] * held[0] + held[1] * held[1]) && snx_pad_dead_zone(&sx, &sy, dead, 1)) {
+        held[0] = (float)sx;
+        held[1] = (float)sy;
     }
 }
-/* a stick's axis, -1 to 1 */
-static float axis(SDL_Gamepad* pad, SDL_GamepadAxis which) {
-    float v = SDL_GetGamepadAxis(pad, which) / 32767.0f;
-    return v < -1 ? -1 : v;
-}
 void snx_ctr_input_read(SnxCtrInput* input) {
-    static const struct {
-        SDL_Scancode key;
-        uint32_t bit;
-    } keys[] = {
-        {SDL_SCANCODE_X, SNX_CTR_PAD_A},           {SDL_SCANCODE_SPACE, SNX_CTR_PAD_A},
-        {SDL_SCANCODE_Z, SNX_CTR_PAD_B},           {SDL_SCANCODE_C, SNX_CTR_PAD_X},
-        {SDL_SCANCODE_V, SNX_CTR_PAD_Y},           {SDL_SCANCODE_Q, SNX_CTR_PAD_L},
-        {SDL_SCANCODE_E, SNX_CTR_PAD_R},           {SDL_SCANCODE_1, SNX_CTR_PAD_ZL},
-        {SDL_SCANCODE_3, SNX_CTR_PAD_ZR},          {SDL_SCANCODE_RETURN, SNX_CTR_PAD_START},
-        {SDL_SCANCODE_BACKSPACE, SNX_CTR_PAD_SELECT}, {SDL_SCANCODE_LEFT, SNX_CTR_PAD_LEFT},
-        {SDL_SCANCODE_UP, SNX_CTR_PAD_UP},         {SDL_SCANCODE_RIGHT, SNX_CTR_PAD_RIGHT},
-        {SDL_SCANCODE_DOWN, SNX_CTR_PAD_DOWN},
-    };
     *input = (SnxCtrInput){0};
     input->touch = g_input.touch;
     input->touch_x = g_input.touch_x;
@@ -159,25 +97,26 @@ void snx_ctr_input_read(SnxCtrInput* input) {
     /* the window's keys, which SDL keeps for a window with the focus: none without a window */
     const bool* held = SDL_WasInit(SDL_INIT_VIDEO) ? SDL_GetKeyboardState(NULL) : NULL;
     if (held) {
-        /* Alt+Enter is the window's fullscreen (gpu/present.c), not Start */
-        bool alt = SDL_GetModState() & SDL_KMOD_ALT;
-        for (size_t i = 0; i < sizeof keys / sizeof *keys; ++i)
-            if (held[keys[i].key] && !(alt && keys[i].key == SDL_SCANCODE_RETURN)) input->buttons |= keys[i].bit;
-        input->circle[0] = (float)(held[SDL_SCANCODE_D] - held[SDL_SCANCODE_A]);
-        input->circle[1] = (float)(held[SDL_SCANCODE_W] - held[SDL_SCANCODE_S]);
-        input->c_stick[0] = (float)(held[SDL_SCANCODE_L] - held[SDL_SCANCODE_J]);
-        input->c_stick[1] = (float)(held[SDL_SCANCODE_I] - held[SDL_SCANCODE_K]);
+        /* the Switch game's keys (pad_sdl.h), and Space A too */
+        unsigned keys = snx_pad_keys(held);
+        for (int b = 0; b < SNX_PAD_BUTTONS; ++b)
+            if (keys & 1u << b) input->buttons |= CTR_BITS[b];
+        if (held[SDL_SCANCODE_SPACE]) input->buttons |= SNX_CTR_PAD_A;
+        snx_pad_key_sticks(held, input->circle, input->c_stick);
     }
     float dead = (float)g_settings.stick_dead_zone / 100.0f;
+    /* what each control of a pad sends, as a Switch game's pad's (backend/gamepad.c's map_of) */
     SnxPadMap map;
-    pad_map(&map);
+    snx_pad_map_sent(&map, &g_input.map, g_settings.swap_a_b);
     for (unsigned p = 0; p < INPUT_PADS; ++p) {
         SDL_Gamepad* pad = g_input.pads[p];
         if (!pad) continue;
         for (int c = 0; c < SNX_PAD_CONTROLS; ++c)
             if (map.bit[c] >= 0 && snx_pad_held(pad, c)) input->buttons |= CTR_BITS[map.bit[c]];
-        stick(axis(pad, SDL_GAMEPAD_AXIS_LEFTX), -axis(pad, SDL_GAMEPAD_AXIS_LEFTY), dead, input->circle);
-        stick(axis(pad, SDL_GAMEPAD_AXIS_RIGHTX), -axis(pad, SDL_GAMEPAD_AXIS_RIGHTY), dead, input->c_stick);
+        stick(snx_pad_axis(pad, SDL_GAMEPAD_AXIS_LEFTX), -snx_pad_axis(pad, SDL_GAMEPAD_AXIS_LEFTY), dead,
+              input->circle);
+        stick(snx_pad_axis(pad, SDL_GAMEPAD_AXIS_RIGHTX), -snx_pad_axis(pad, SDL_GAMEPAD_AXIS_RIGHTY), dead,
+              input->c_stick);
     }
     if (g_input.presses) {
         double ms = (snx_ctr_clock_seconds() - g_input.start) * 1000.0;
@@ -203,8 +142,7 @@ bool snx_ctr_input_motion(float accel[3], float gyro[3]) {
     return false;
 }
 void snx_ctr_input_free(void) {
-    for (unsigned i = 0; i < INPUT_PADS; ++i)
-        if (g_input.pads[i]) SDL_CloseGamepad(g_input.pads[i]);
+    snx_pads_close(g_input.pads, INPUT_PADS);
     if (g_input.gamepads) SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
     free(g_input.script);
     SnxPadMap map = g_input.map; /* a setting, not the run's: it stays */

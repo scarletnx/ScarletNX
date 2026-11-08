@@ -196,6 +196,7 @@ if(SNX_BUILD_3DS)
     add_subdirectory(src/3ds)
 endif()
 if(SNX_BUILD_VITA AND NOT SNX_TOOLS_ONLY)
+    include(cmake/pad_sdl.cmake) # the gamepads' controls, as the 3DS's
     add_subdirectory(src/vita)
 endif()
 # GLSL ES into SPIR-V (src/glslc), for the backends that run OpenGL ES programs: before the tests, which link it
@@ -222,8 +223,10 @@ if(SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY)
     add_subdirectory(src/android)
 endif()
 if(SNX_BUILD_AGB)
-    # the runner's window icon, made here as the 3DS's is: a target of src/agb compiles only src/agb
+    # the runner's window icon and the gamepads' controls, made here as the 3DS's are: a target of src/agb compiles
+    # only src/agb
     include(cmake/window_icon.cmake)
+    include(cmake/pad_sdl.cmake)
     add_subdirectory(src/agb)
 endif()
 if(SNX_BUILD_GUI)
