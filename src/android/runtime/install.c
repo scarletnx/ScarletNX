@@ -11,8 +11,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* the ABI whose libraries the native bridge runs */
-static const char ABI_DIR[] = "lib/arm64-v8a/";
+/* the ABIs whose libraries the native bridge runs, in the order a 64-bit ARM phone takes them (its
+   ro.product.cpu.abilist): an APK's best one is extracted, into the folder of the bridge that runs it */
+static const struct {
+    const char* dir;    /* in the APK */
+    const char* folder; /* in the app's lib/ */
+} ABIS[] = {{"lib/arm64-v8a/", "arm64"}, {"lib/armeabi-v7a/", "arm"}, {"lib/armeabi/", "arm"}};
+enum { ABI_COUNT = sizeof ABIS / sizeof *ABIS };
 
 static char* copy_text(const char* text) {
     size_t n = strlen(text) + 1;
@@ -76,16 +81,50 @@ static bool manifest_of(const char* apk, char* package, size_t package_size, cha
     return ok;
 }
 
-/* the native libraries of the device's ABI in an APK, extracted into dir */
-static bool extract_libraries(const char* apk, const char* dir, char* error, size_t error_size) {
+/* the best ABI (an index of ABIS) whose libraries an APK has, ABI_COUNT for none */
+static unsigned best_abi(const char* apk) {
+    char error[256];
+    SnxZip* zip = snx_zip_open(apk, error, sizeof error);
+    unsigned best = ABI_COUNT;
+    for (uint32_t i = 0; zip && i < snx_zip_count(zip); ++i) {
+        const char* name = snx_zip_name(zip, i);
+        for (unsigned a = 0; a < best; ++a) {
+            size_t n = strlen(ABIS[a].dir);
+            if (!strncmp(name, ABIS[a].dir, n) && name[n] && !strchr(name + n, '/')) best = a;
+        }
+    }
+    snx_zip_close(zip);
+    return best;
+}
+
+/* the app's library folder, of the best ABI that its APKs have (arm64 when they have none) */
+static bool library_folder(AndroidInstall* out, char* error, size_t error_size) {
+    unsigned best = ABI_COUNT;
+    for (unsigned i = 0; i <= out->split_count; ++i) {
+        unsigned a = best_abi(i ? out->splits[i - 1] : out->base);
+        if (a < best) best = a;
+    }
+    out->abi = best < ABI_COUNT ? best : 0;
+    free(out->library_dir);
+    out->library_dir = snx_format("%s/lib/%s", out->app_dir, ABIS[out->abi].folder);
+    if (!out->library_dir || snx_mkdirs(out->library_dir)) {
+        snprintf(error, error_size, "cannot make the app's library folder in the data folder");
+        return false;
+    }
+    return true;
+}
+
+/* the native libraries of the app's ABI in an APK, extracted into its library folder */
+static bool extract_libraries(const char* apk, const AndroidInstall* app, char* error, size_t error_size) {
     SnxZip* zip = snx_zip_open(apk, error, error_size);
     if (!zip) return false;
     bool ok = true;
-    size_t prefix = sizeof ABI_DIR - 1;
+    const char* abi = ABIS[app->abi].dir;
+    const char* dir = app->library_dir;
+    size_t prefix = strlen(abi);
     for (uint32_t i = 0; ok && i < snx_zip_count(zip); ++i) {
         const char* name = snx_zip_name(zip, i);
-        if (strncmp(name, ABI_DIR, prefix) || !name[prefix] || strchr(name + prefix, '/') ||
-            !snx_zip_safe_name(name))
+        if (strncmp(name, abi, prefix) || !name[prefix] || strchr(name + prefix, '/') || !snx_zip_safe_name(name))
             continue;
         char* path = snx_path_join(dir, name + prefix);
         ok = path && snx_zip_extract(zip, i, path, error, error_size);
@@ -131,10 +170,8 @@ static bool folders(AndroidInstall* out, char* error, size_t error_size) {
     char* data = snx_user_data_dir();
     out->app_dir = data ? snx_format("%s/android/app/%s", data, out->package) : NULL;
     out->data_dir = data ? snx_format("%s/android/data/%s", data, out->package) : NULL;
-    out->library_dir = out->app_dir ? snx_format("%s/lib/arm64", out->app_dir) : NULL;
     free(data);
-    if (!out->app_dir || !out->data_dir || !out->library_dir || snx_mkdirs(out->library_dir) ||
-        snx_mkdirs(out->data_dir)) {
+    if (!out->app_dir || !out->data_dir || snx_mkdirs(out->data_dir)) {
         snprintf(error, error_size, "cannot make the app's folders in the data folder");
         return false;
     }
@@ -243,6 +280,7 @@ static bool from_stamp(const char* bundle, AndroidInstall* out, char* error, siz
         }
         free(lines);
     }
+    if (ok) ok = library_folder(out, error, error_size);
     free(text);
     free(head);
     free(path);
@@ -278,7 +316,7 @@ bool android_install(const char* path, AndroidInstall* out, char* error, size_t 
         char split[256];
         ok = manifest_of(path, out->package, sizeof out->package, split, sizeof split, error, error_size) &&
              folders(out, error, error_size) && add_apk(out, path, "", error, error_size) &&
-             extract_libraries(path, out->library_dir, error, error_size);
+             library_folder(out, error, error_size) && extract_libraries(path, out, error, error_size);
         snx_zip_close(zip);
         if (!ok) android_install_free(out);
         return ok;
@@ -286,8 +324,9 @@ bool android_install(const char* path, AndroidInstall* out, char* error, size_t 
     fprintf(stderr, "scarletnx-android: installing %s\n", path);
     ok = unpack(path, zip, out, error, error_size);
     snx_zip_close(zip);
+    if (ok) ok = library_folder(out, error, error_size);
     for (unsigned i = 0; ok && i <= out->split_count; ++i)
-        ok = extract_libraries(i ? out->splits[i - 1] : out->base, out->library_dir, error, error_size);
+        ok = extract_libraries(i ? out->splits[i - 1] : out->base, out, error, error_size);
     if (ok) write_stamp(path, out);
     else android_install_free(out);
     return ok;

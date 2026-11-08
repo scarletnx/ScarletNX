@@ -16,7 +16,8 @@ typedef struct {
     char* split_names[ANDROID_MAX_SPLITS];
     unsigned split_count;
     char* app_dir;     /* android/app/<package> in the data folder: the bundle's APKs, lib/ */
-    char* library_dir; /* app_dir/lib/arm64: the native libraries of the device's ABI */
+    char* library_dir; /* app_dir/lib/arm64 or lib/arm: the native libraries of the best ABI the app has */
+    unsigned abi;      /* that ABI: 0 arm64-v8a, 1 armeabi-v7a, 2 armeabi */
     char* data_dir;    /* android/data/<package>: the app's own data (Context.getDataDir) */
 } AndroidInstall;
 
