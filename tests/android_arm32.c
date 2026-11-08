@@ -542,6 +542,14 @@ static void test_shim(void) {
         fprintf(stderr, "android_arm32: the shim sends %s to the 64-bit bridge, which has no handler for it\n",
                 names[i]);
     expect_int("the shim's names without a 64-bit handler", count, 0);
+    /* GLES 3's unsigned uniforms (a GLES 3 shader's uint uniforms), the 64-bit bridge's */
+    static const char* const gles3[] = {"glUniform1ui",  "glUniform2ui",  "glUniform3ui",  "glUniform4ui",
+                                        "glUniform1uiv", "glUniform2uiv", "glUniform3uiv", "glUniform4uiv"};
+    for (size_t i = 0; i < sizeof gles3 / sizeof *gles3; ++i) {
+        char what[64];
+        snprintf(what, sizeof what, "%s is an import", gles3[i]);
+        expect_int(what, arm32_hle_symbol(gles3[i]) != 0, 1);
+    }
 }
 
 /* ---- the FORTIFY forms: the function within the buffer, and bionic's abort past it ---- */
