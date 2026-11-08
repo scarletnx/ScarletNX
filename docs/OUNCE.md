@@ -147,6 +147,13 @@ What found it: a RenderDoc capture (the runtime's `renderdoc` setting, run under
 targets and inputs. That showed the texture itself wrong before any draw. Then the texture's guest bytes, decoded
 off line with each order of the GOB's address bits, gave one order with clean block edges.
 
+A game's program that makes a texture's levels from its first has seven image slots, one for each level. The game
+leaves the slots past the texture's last level empty: their handle is 0, and the header there is all zeros. The
+renderer binds an empty storage image there (`vk_null_storage`). Before, it skipped the whole dispatch. One game draws
+its kart's contact shadow as a box that samples a 128x128 texture array with trilinear filtering. Layer 0 is the kart's
+footprint, drawn into level 0 from a 256x256 texture, and this program writes levels 1 to 3. Without them the box read
+zeros at the title camera's distance and drew a dark square under the kart.
+
 ## Driver offsets
 
 The `sdk` module's `.text` loads at `0xbd0c000` with no offset, so a game address `A` is sdk offset `A - 0xbd0c000`.
