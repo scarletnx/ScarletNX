@@ -13,6 +13,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#include <sanitizer/lsan_interface.h>
+#define SNX_BRIDGE_LSAN 1
+#endif
+#endif
 
 /* The window: 2 GiB of address space for the guest's code and its exports, its last 16 MiB the exports' addresses.
    The dispatch table has a slot for each 4 bytes of it */
@@ -271,6 +277,10 @@ bool bridge_init(const char* cache, char* error, size_t error_size) {
     b.window = w;
     b.table = t;
     b.exports = e;
+#ifdef SNX_BRIDGE_LSAN
+    /* the exports keep their names, malloc's, in this mapped table, which LeakSanitizer does not search */
+    __lsan_register_root_region(e, EXPORTS_MAX * sizeof(Export));
+#endif
     b.lo = (uint64_t)(uintptr_t)w;
     b.hi = b.lo + WINDOW_SIZE;
     b.next = b.lo + 0x10000; /* address 0 of the window stays unmapped */
