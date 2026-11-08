@@ -72,6 +72,46 @@ int64_t plat_pread_fd(int fd, void* buf, uint64_t size, uint64_t off) {
 #endif
     return (int64_t)got;
 }
+int64_t plat_pwrite_fd(int fd, const void* buf, uint64_t size, uint64_t off) {
+    if (size > (uint64_t)INT64_MAX || off > (uint64_t)INT64_MAX - size || (uint64_t)(size_t)size != size) {
+        errno = EINVAL;
+        return -1;
+    }
+    uint64_t put = 0;
+#if defined(_WIN32)
+    HANDLE h = (HANDLE)_get_osfhandle(fd);
+    if (h == INVALID_HANDLE_VALUE) {
+        errno = EBADF;
+        return -1;
+    }
+    /* WriteFile of 1 GiB at most at a time, at the OVERLAPPED's offset; the file pointer moves too */
+    while (put < size) {
+        OVERLAPPED o = {0};
+        DWORD want = size - put > (1u << 30) ? (1u << 30) : (DWORD)(size - put), n = 0;
+        uint64_t at = off + put;
+        o.Offset = (DWORD)at;
+        o.OffsetHigh = (DWORD)(at >> 32);
+        if (!WriteFile(h, (const char*)buf + put, want, &n, &o)) {
+            errno = EIO;
+            return put ? (int64_t)put : -1;
+        }
+        if (!n) break;
+        put += n;
+    }
+#else
+    /* pwrite may write less than asked (interrupted, or past 2 GiB on Linux): go on until done */
+    while (put < size) {
+        ssize_t r = pwrite(fd, (const char*)buf + put, (size_t)(size - put), (off_t)(off + put));
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            return put ? (int64_t)put : -1;
+        }
+        if (r == 0) break;
+        put += (uint64_t)r;
+    }
+#endif
+    return (int64_t)put;
+}
 int64_t plat_pread(FILE* f, void* buf, uint64_t size, uint64_t off) {
 #if defined(_WIN32)
     return plat_pread_fd(_fileno(f), buf, size, off);
