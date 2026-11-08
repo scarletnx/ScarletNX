@@ -988,9 +988,45 @@ static u64 tex_hash(const Surf* t) {
     gmmu_pieces(t->gva, t->size, runs_hash, &r);
     return r.h;
 }
+/* A linear texture over memory a shader wrote in place, the write not done yet: its bytes are copied from the
+   import on the GPU, after the write, as hashing them would wait for the submit and all the work before it. One game's
+   exposure histogram, a 64x1 texture one compute program fills and the next reads, held the GPU thread for 20 ms of each
+   30 ms frame with the GPU idle behind it. 1 if it was copied. The hash then matches nothing: the next check that finds
+   the write done loads the memory again */
+static int tex_copy_pending(Surf* t) {
+    const VkFmt* f = &t->f;
+    VkBuffer ib;
+    u64 cpu = 0, io;
+    if (!vk_uma_pending(t->gva, t->size) || t->bl || t->bricks || t->piecewise || t->msaa || t->is_rt || f->depth ||
+        f->conv || vk_tc_converts(f) || f->bw != 1 || f->bh != 1 || !f->bpp || t->levels != 1 || t->layers != 1 ||
+        t->type == VK_IMAGE_VIEW_TYPE_3D || t->pitch % f->bpp || t->pitch < t->w * f->bpp)
+        return 0;
+    vk_uma_gpu_reads(1);        /* the in-place writes are copied below, not waited for */
+    gmem_need(t->gva, t->size); /* anything else pending there lands first */
+    vk_uma_gpu_reads(0);
+    vk_render_end(); /* copies happen outside rendering passes */
+    if (gmmu_run(t->gva, t->size, &cpu) != t->size || !vk_uma_copy_pending(cpu, t->size, &ib, &io) || io % f->bpp)
+        return 0;
+    VkCommandBuffer cb = vk_cmd();
+    VkBufferImageCopy r = {.bufferOffset = io,
+                           .bufferRowLength = t->pitch / f->bpp,
+                           .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                           .imageExtent = {t->w, t->h, 1}};
+    vk_all_barrier(cb); /* the writer's, in stream order */
+    vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    rec_CmdCopyBufferToImage(cb, ib, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
+    t->wgen = vk_surf_gen();
+    t->took_drawn = 0;
+    vk_surf_relist(t);
+    t->upload_valid = 1;
+    t->hash = ~t->hash;
+    return 1;
+}
 /* the texture's memory hashed again, and loaded again when that changed: 1 if it did */
 static int tex_rehash(Surf* t) {
     t->gw = gpu_mem_generation();
+    if (tex_copy_pending(t)) return 1;
     u64 hh = tex_hash(t);
     if (hh == t->hash && t->upload_valid) return 0;
     if (tex_upload(t)) t->hash = hh; /* an incomplete upload keeps the old hash, so the next check retries it */

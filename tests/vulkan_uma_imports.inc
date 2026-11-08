@@ -571,6 +571,112 @@ static int check_uma_dispatch(void) {
     return 0;
 }
 
+/* A linear texture over memory an engine's result is being written to in place (one game's exposure histogram, a
+   64x1 texture one compute program fills and the next reads, in each frame): checked again, the texture takes the
+   result from the import on the GPU, after the write, and nothing waits for the submit that writes it */
+#define UMA_H  (HEAP_BASE + 0xd000000)
+#define UMA_GH 0x4e9000000ull
+static int check_uma_texture_pending(void) {
+    const u32 rgba8 = 0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16;
+    /* 64x1 2D, one level, pitch linear rows of 256 bytes */
+    const u32 tic[8] = {rgba8, (u32)UMA_GH, (u32)(UMA_GH >> 32) | 2u << 21, 256 >> 5, 63 | 1u << 23, 0, 0, 0};
+    VkBuffer r, rb;
+    u64 ro;
+    u8 result[256];
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    CHECK(mem_map(UMA_H, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GH, UMA_H, 0x200000);
+    memset(GP(UMA_H), 0x11, 0x1000);
+    for (u32 i = 0; i < 256; i++) result[i] = GP(UMA_H)[0x10000 + i] = (u8)(i * 3 + 5); /* the engine's result */
+    vk_lock();
+    Surf* t = vk_tex_from_tic(tic);
+    CHECK(t && !t->bl && t->size == 256);
+    CHECK(vk_buf_get_input(UMA_GH, 256, 4, &r, &ro)); /* a draw reads it in place: an import holds it */
+    int held = vk_uma_held(UMA_H, 256);
+    vk_unlock();
+    CHECK(!uma_dma(UMA_GH, UMA_GH + 0x10000)); /* written in place by a submit not made yet */
+    vk_lock();
+    int pending = vk_uma_pending(UMA_GH, 256);
+    Surf* again = vk_tex_recheck(t);
+    int waited = !vk_uma_pending(UMA_GH, 256);
+    u8* texels = vk_readback_buffer(256, &rb);
+    CHECK(again == t && texels);
+    vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {64, 1, 1}};
+    rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rb, 1, &copy);
+    vk_finish();
+    vk_readback_ready();
+    u32 differ = 0;
+    for (u32 i = 0; i < 256; i++) differ += texels[i] != result[i];
+    vk_unlock();
+    CHECK(mem_unmap(UMA_H, 0x200000) == 0);
+    if (!held || !pending || waited || differ)
+        fprintf(stderr,
+                "texture over a write in place: held %d, pending %d, waited for it %d, %u of 256 bytes not the "
+                "result's (first: %u, want %u)\n",
+                held, pending, waited, differ, texels[0], result[0]);
+    CHECK(held && pending && !waited && !differ);
+    printf("in place: a linear texture over a pending write in place takes it on the GPU, with no wait\n");
+    return 0;
+}
+
+/* A linear texture over memory an engine's result is being written to in place (one game's exposure histogram, a
+   64x1 texture one compute program fills and the next reads, in each frame): checked again, the texture takes the
+   result from the import on the GPU, after the write, and nothing waits for the submit that writes it */
+#define UMA_H  (HEAP_BASE + 0xd000000)
+#define UMA_GH 0x4e9000000ull
+static int check_uma_texture_pending(void) {
+    const u32 rgba8 = 0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16;
+    /* 64x1 2D, one level, pitch linear rows of 256 bytes */
+    const u32 tic[8] = {rgba8, (u32)UMA_GH, (u32)(UMA_GH >> 32) | 2u << 21, 256 >> 5, 63 | 1u << 23, 0, 0, 0};
+    VkBuffer r, rb;
+    u64 ro;
+    u8 result[256];
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    CHECK(mem_map(UMA_H, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GH, UMA_H, 0x200000);
+    memset(GP(UMA_H), 0x11, 0x1000);
+    for (u32 i = 0; i < 256; i++) result[i] = GP(UMA_H)[0x10000 + i] = (u8)(i * 3 + 5); /* the engine's result */
+    vk_lock();
+    Surf* t = vk_tex_from_tic(tic);
+    CHECK(t && !t->bl && t->size == 256);
+    CHECK(vk_buf_get_input(UMA_GH, 256, 4, &r, &ro)); /* a draw reads it in place: an import holds it */
+    int held = vk_uma_held(UMA_H, 256);
+    vk_unlock();
+    CHECK(!uma_dma(UMA_GH, UMA_GH + 0x10000)); /* written in place by a submit not made yet */
+    vk_lock();
+    int pending = vk_uma_pending(UMA_GH, 256);
+    Surf* again = vk_tex_recheck(t);
+    int waited = !vk_uma_pending(UMA_GH, 256);
+    u8* texels = vk_readback_buffer(256, &rb);
+    CHECK(again == t && texels);
+    vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {64, 1, 1}};
+    rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rb, 1, &copy);
+    vk_finish();
+    vk_readback_ready();
+    u32 differ = 0;
+    for (u32 i = 0; i < 256; i++) differ += texels[i] != result[i];
+    vk_unlock();
+    CHECK(mem_unmap(UMA_H, 0x200000) == 0);
+    if (!held || !pending || waited || differ)
+        fprintf(stderr,
+                "texture over a write in place: held %d, pending %d, waited for it %d, %u of 256 bytes not the "
+                "result's (first: %u, want %u)\n",
+                held, pending, waited, differ, texels[0], result[0]);
+    CHECK(held && pending && !waited && !differ);
+    printf("in place: a linear texture over a pending write in place takes it on the GPU, with no wait\n");
+    return 0;
+}
+
 /* Physical memory as GPU memory where it is (placed maps, VK_EXT_map_memory_placed): a window mapped whole is a chunk
    of device memory at its guest address, which the GPU reads and writes in place with no import, the CPU's and the
    GPU's writes each seen by the other; given back and mapped again it reads zero, a new chunk. Write tracking leaves it
