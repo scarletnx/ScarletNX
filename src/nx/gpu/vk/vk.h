@@ -1247,6 +1247,13 @@ VkImageView vk_tex_storage_view(Surf* s, VkImageViewType type);
 /* an empty texture of a view type: num 0 float, 1 unsigned, 2 signed integer, 3 depth at 1.0 (shadow samplers);
    ms: a multisampled one (2D and 2D array views, not depth) */
 VkImageView vk_null_view(VkImageViewType type, int num, int ms);
+/* An image slot a program declares whose header is empty (word 0 zero: no format, nothing bound there): a 1x1 storage
+   image of zeros, its format by the slot's kind (ShaderInfo.img[].kind), viewed as type (2D, 2D array or 3D) in
+   *view. The caller makes it ready for its stage (vk_surf_use, layout GENERAL) and writes nothing of it back. NULL
+   when it can't be made */
+Surf* vk_null_storage(VkImageViewType type, int kind, VkImageView* view);
+/* a storage image header with nothing bound: no format and no component types in word 0 */
+static inline int vk_tic_empty(const u32* tic) { return tic[0] == 0; }
 /* the sampler for a TSC: raise lets anisotropy= raise its filtering (a 2D texture with mipmaps), integer gives its
    border color as integers (an integer texture) */
 VkSampler vk_sampler(const u32* tsc, int raise, int integer);
@@ -1778,6 +1785,8 @@ int vk_tic_unnormalized(const u32* tic);
 int vk_image_keyable(const ShaderInfo* si, int i);
 int vk_image_key(const ShaderInfo* si, int i, const u32* tic);
 VkImageView vk_storage_image_view(Surf* t, const ShaderInfo* si, int i, u64* bytes);
+/* the view type of storage image slot i of si: 3D for a volume, 2D array for an array (1D too), else 2D */
+VkImageViewType vk_storage_image_type(const ShaderInfo* si, int i);
 u32 vk_gbuf_desc(int stage, u32 off, const u32* v, u64* addr);
 /* the access a storage image is moved to GENERAL with: image atomics read it as well as write it, and only the
    accesses a barrier names see the writes before it */

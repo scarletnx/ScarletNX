@@ -1484,6 +1484,27 @@ rebind:
                 return;
             }
             vk_gmem_words(tic_base + (h & 0xFFFFF) * 32ull, tic, 8);
+            /* a slot with nothing bound (an empty header): an empty image, which nothing writes back. One game's
+               program that makes a texture's levels from its first has seven image slots, one for each level, and
+               the game leaves those past the texture's last level empty (images 4 to 6 of a texture of 4 levels).
+               Skipped whole for them, the dispatch left levels 1 to 3 zero, and the trilinear lookups of the
+               texture drew a dark square under the game's kart */
+            VkImageView null_view = VK_NULL_HANDLE;
+            Surf* null_image = vk_tic_empty(tic)
+                                   ? vk_null_storage(vk_storage_image_type(&p->si, i), p->si.img[i].kind, &null_view)
+                                   : NULL;
+            if (null_image) {
+                vk_surf_use(vk_cmd(), null_image, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                            VK_STORAGE_IMAGE_ACCESS);
+                ii[p->si.ntex + i] = (VkDescriptorImageInfo){VK_NULL_HANDLE, null_view, VK_IMAGE_LAYOUT_GENERAL};
+                w[nw++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                                 .dstSet = set,
+                                                 .dstBinding = SNX_VKB_IMG + i,
+                                                 .descriptorCount = 1,
+                                                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                 .pImageInfo = &ii[p->si.ntex + i]};
+                continue;
+            }
             Surf* t = vk_tex_from_tic_storage(tic);
             u64 image_bytes;
             VkImageView view = vk_storage_image_view(t, &p->si, i, &image_bytes);
