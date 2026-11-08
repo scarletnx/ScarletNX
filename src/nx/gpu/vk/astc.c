@@ -235,6 +235,12 @@ void vk_astc_cache_open(const char* path) {
                      d->driverVersion, uuid);
     u64 version[2];
     vk_hash128(key, n > 0 && (size_t)n < sizeof key ? (u64)n : 0, version);
+    /* encodes still on their way belong to the file open when they were recorded, not to this one: dropped (their
+       levels are encoded again when they come back). Kept, they landed in the new file at its first landing: a
+       headless test that opened its own file found the levels a texture of the checks before it had encoded, 10 more
+       than its own 9, because the landing that would have stored them in the old file had not come yet */
+    for (u32 i = 0; i < g_astc.ncaptures; i++) g_astc.captures[i].sub = 0;
+    g_astc.captured = 0;
     vk_bc7_cache_open(path, version, VK_BC7_CACHE_MAX);
 }
 
