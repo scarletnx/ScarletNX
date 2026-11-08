@@ -1,0 +1,109 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# The bit patterns are Vita3K's (GPL-2.0-or-later, Copyright (C) 2026 Vita3K team), at Vita3K/Vita3K f68b6ee:
+# shader/src/usse_translator_entry.cpp, with the field names of its translator functions.
+#
+# The USSE instructions of the SGX543 (the Vita's GPU), 64 bits each. tools/decodetree makes decode-usse.inc from this
+# file (src/vita/CMakeLists.txt), and usse.c defines a trans_ function for each pattern. Bit 63 is the left one. The
+# top five bits are the opcode. A field named here is a member of the pattern's arg_ struct, and a "-" bit is one the
+# translator ignores. Where patterns overlap, a { } group tries them in Vita3K's order and the first one wins.
+
+# the 12-bit swizzle of V32NMAD's and V16NMAD's source 1: bits 10-11, 9, 7-8 and 0-6
+%nmad_src1_swiz  53:2 50:1 34:2 15:7
+# LIMM's 32-bit immediate: bits 26-31, 21-25 and 0-20
+%limm_imm        44:6 36:5 0:21
+
+# V32NMAD and V16NMAD: one layout, which they share with their arguments
+&nmad            pred skipinv syncstart dest_ext src1_ext src2_ext src2_swiz nosched mask src1_mod src2_mod dest_bank \
+                 src1_bank src2_bank dest_n alu src1_n src2_n src1_swiz
+# LIMM's, with its immediate unsigned
+&limm            skipinv nosched dest_ext end pred dest_bank dest_n imm:uint32_t
+
+@nmad      ..... pred:3 skipinv:1 .. syncstart:1 dest_ext:1 . src1_ext:1 src2_ext:1 src2_swiz:4 nosched:1 mask:4 \
+           src1_mod:2 src2_mod:1 .. dest_bank:2 src1_bank:2 src2_bank:2 dest_n:6 ....... alu:3 src1_n:6 src2_n:6 \
+           src1_swiz=%nmad_src1_swiz &nmad
+
+# the vector unit
+VMAD2      00000 dat_fmt:1 pred:2 skipinv:1 - src0_swiz2:1 syncstart:1 - src0_abs:1 src1_ext:1 src2_ext:1 \
+           src2_swiz:3 src1_swiz2:1 nosched:1 mask:4 src1_mod:2 src2_mod:2 src0_bank:1 dest_bank:2 src1_bank:2 \
+           src2_bank:2 dest_n:6 src1_swiz01:2 src0_swiz01:2 src0_n:6 src1_n:6 src2_n:6
+V32NMAD    00001 ........................................................... @nmad
+V16NMAD    00010 ........................................................... @nmad
+VMAD       00011 pred:3 skipinv:1 gpi1_swiz_ext:1 1 opcode2:1 dest_ext:1 end:1 src1_ext:1 repeat_mode:2 gpi0_abs:1 \
+           repeat_count:2 nosched:1 mask:4 src1_neg:1 src1_abs:1 gpi1_neg:1 gpi1_abs:1 gpi0_swiz_ext:1 dest_bank:2 \
+           src1_bank:2 gpi0_n:2 dest_n:6 gpi0_swiz:4 gpi1_swiz:4 gpi1_n:2 gpi0_neg:1 src1_swiz_ext:1 src1_swiz:4 \
+           src1_n:6
+VDP        00011 pred:3 skipinv:1 clip_plane_enable:1 0 opcode2:1 dest_ext:1 end:1 src1_ext:1 repeat_mode:2 \
+           gpi0_abs:1 repeat_count:2 nosched:1 mask:4 src1_neg:1 src1_abs:1 clip_plane_n:3 dest_bank:2 src1_bank:2 \
+           gpi0_n:2 dest_n:6 gpi0_swiz:4 src1_swiz_w:3 src1_swiz_z:3 src1_swiz_y:3 src1_swiz_x:3 src1_n:6
+VDUAL      0010 comp_count_type:1 gpi1_neg:1 sv_pred:2 skipinv:1 op1_ext_vec3_or_has_w_vec4:1 type_f16:1 \
+           gpi1_swiz_ext:1 unified_store_swiz:4 unified_store_neg:1 op1:3 op2_ext:1 prim_ustore:1 gpi0_swiz:4 \
+           gpi1_swiz:4 prim_dest_bank:2 unified_store_slot_bank:2 prim_dest_num_gpi:2 prim_dest_num:7 op2:3 \
+           src_config:2 gpi2_slot_num_bit_1:1 gpi2_slot_num_bit_0_or_unified_store_abs:1 gpi1_slot_num:2 \
+           gpi0_slot_num:2 write_mask_non_gpi:3 unified_store_slot_num:7
+VCOMP      00110 pred:3 skipinv:1 dest_type:2 syncstart:1 dest_ext:1 end:1 src1_ext:1 - repeat_count:4 nosched:1 \
+           op:2 src_type:2 src1_mod:2 src_comp:2 - dest_bank:2 src1_bank:2 -- dest_n:7 ------- src1_n:7 --- mask:4
+VMOV       00111 pred:3 skipinv:1 test2:1 comp_sel:1 syncstart:1 dest_ext:1 src0_ext:1 src1_ext:1 src2_ext:1 \
+           move_type:2 repeat_count:2 nosched:1 data_type:3 test1:1 src0_swiz:4 src0_bank:1 dest_bank:2 src1_bank:2 \
+           src2_bank:2 mask:4 dest_n:6 src0_n:6 src1_n:6 src2_n:6
+{
+  VPCK       01000 pred:3 skipinv:1 nosched:1 unknown:1 syncstart:1 dest_ext:1 end:1 src1_ext:1 src2_ext:1 \
+             repeat_count:4 src_fmt:3 dest_fmt:3 mask:4 dest_bank:2 src1_bank:2 src2_bank:2 dest_n:7 sel3:2 scale:1 \
+             sel1:2 sel2:2 src1_n:6 sel0_bit1:1 src2_n:6 sel0_bit0:1
+  VTST       01001 pred:3 skipinv:1 - onceonly:1 syncstart:1 dest_ext:1 src1_neg:1 src1_ext:1 src2_ext:1 prec:1 \
+             vscomp:1 repeat_count:2 sign_test:2 zero_test:2 crcomb_and:1 chan:3 pdst_n:2 dest_bank:2 src1_bank:2 \
+             src2_bank:2 dest_n:7 wben:1 alu_sel:2 alu_op:4 src1_n:7 src2_n:7
+  VTSTMSK    01111 pred:3 skipinv:1 - onceonly:1 syncstart:1 dest_ext:1 src1_neg:1 src1_ext:1 src2_ext:1 prec:1 \
+             vscomp:1 repeat_count:2 sign_test:2 zero_test:2 crcomb_and:1 - mask_type:2 -- dest_bank:2 src1_bank:2 \
+             src2_bank:2 dest_n:7 wben:1 alu_sel:2 alu_op:4 src1_n:7 src2_n:7
+  VBW        01 op_1:3 pred:3 skipinv:1 nosched:1 repeat_sel:1 syncstart:1 dest_ext:1 end:1 src1_ext:1 src2_ext:1 \
+             repeat_count:4 invert:1 rot:5 exth:2 op_2:1 partial:1 dest_bank:2 src1_bank:2 src2_bank:2 dest_n:7 \
+             src2_sel:7 src1_n:7 src2_n:7
+}
+
+# the scalar unit and the integer multiply-adds
+SOP2       10000 pred:2 cmod1:1 skipinv:1 nosched:1 asel1:2 dest_ext:1 end:1 src1_ext:1 src2_ext:1 cmod2:1 count:3 \
+           amod1:1 asel2:2 csel1:3 csel2:3 amod2:1 dest_bank:2 src1_bank:2 src2_bank:2 dest_n:7 src1_mod:1 cop:2 \
+           aop:2 asrc1_mod:1 dest_mod:1 src1_n:7 src2_n:7
+SOP3       10001 -----------------------------------------------------------
+SOP2M      10010 pred:2 mod1:1 skipinv:1 nosched:1 cop:2 dest_ext:1 end:1 src1_ext:1 src2_ext:1 mod2:1 wmask:4 aop:2 \
+           sel1:3 sel2:3 - dest_bank:2 src1_bank:2 src2_bank:2 dest_n:7 ------- src1_n:7 src2_n:7
+I8MAD      10011 -----------------------------------------------------------
+I16MAD     10100 pred:2 abs:1 skipinv:1 nosched:1 src2_neg:1 sel1h:1 dest_ext:1 end:1 src1_ext:1 src2_ext:1 - \
+           repeat_count:3 mode:2 src2_format:2 src1_format:2 sel2h:1 or_shift:2 src0_bank:1 dest_bank:2 src1_bank:2 \
+           src2_bank:2 dest_n:7 src0_n:7 src1_n:7 src2_n:7
+I32MAD     10101 pred:2 src0_high:1 - nosched:1 src1_high:1 src2_high:1 dest_ext:1 end:1 src1_ext:1 src2_ext:1 0 \
+           repeat_count:3 is_signed:1 is_sat:1 00 src2_type:2 000 src0_bank:1 dest_bank:2 src1_bank:2 src2_bank:2 \
+           dest_n:7 src0_n:7 src1_n:7 src2_n:7
+ILLEGAL22  10110-----------------------------------------------------------
+ILLEGAL23  10111-----------------------------------------------------------
+ILLEGAL24  11000-----------------------------------------------------------
+I8MAD2     11001-----------------------------------------------------------
+I32MAD2    11010 pred:3 - nosched:1 sn:2 dest_ext:1 end:1 src1_ext:1 src2_ext:1 src0_ext:1 count:3 00 is_signed:1 \
+           neg1:1 neg2:1 0000 src0_bank:1 dest_bank:2 src1_bank:2 src2_bank:2 dest_n:7 src0_n:7 src1_n:7 src2_n:7
+ILLEGAL27  11011-----------------------------------------------------------
+
+# texture reads, the special instructions (opcode 11111) and loads and stores
+{
+  SMP        11100 pred:3 skipinv:1 nosched:1 - syncstart:1 minpack:1 src0_ext:1 src1_ext:1 src2_ext:1 fconv:2 \
+             mask_count:2 dim:2 lod_mode:2 use_pa:1 sb_mode:2 src0_type:2 src0_bank:1 dest_bank:2 src1_bank:2 \
+             src2_bank:2 dest_n:7 src0_n:7 src1_n:7 src2_n:7
+  PHAS       11111010 sprvv:1 100 end:1 imm:1 src1_ext:1 src2_ext:1 -- mode:1 rate_hi:1 rate_lo_or_nosched:1 \
+             wait_cond:3 temp_count:8 src1_bank:2 src2_bank:2 -------- exe_addr_high:6 src1_n_or_exe_addr_mid:7 \
+             src2_n_or_exe_addr_low:7
+  NOP        11111----000-----------101--------------------------------------
+  BR         11111 pred:3 syncend:1 000 exception:1 ----- pwait:1 sync_ext:1 nosched:1 br_monitor:1 save_link:1 00 \
+             br_type:1 ---------------- any_inst:1 all_inst:1 offset:20
+  SMLSI      11111010--01- nosched:1 -- temp_limit:4 pa_limit:4 sa_limit:4 dest_mode:1 src0_mode:1 src1_mode:1 \
+             src2_mode:1 dest_inc:8 src0_inc:8 src1_inc:8 src2_inc:8
+  SMBO       11111011--01- nosched:1 -- dest_offset:12 src0_offset:12 src1_offset:12 src2_offset:12
+  KILL       11111001--11000000000 pred:2 0000001101111----------------------------
+  LIMM       11111100 skipinv:1 nosched:1 10 dest_ext:1 end:1 ...... pred:3 ..... -- dest_bank:2 ---- dest_n:7 \
+             ..................... imm=%limm_imm &limm
+  DEPTHF     11111011 skipinv:1 -11 src0_ext:1 end:1 src1_ext:1 src2_ext:1 ---- nosched:1 pred:2 --- two_sided:1 \
+             feedback:2 src0_bank:1 -- src1_bank:2 src2_bank:2 dest_n:7 src0_n:7 src1_n:7 src2_n:7
+  SPEC       11111---- special:1 category:2 ----------------------------------------------------
+  VLDST      111 op:2 pred:3 skipinv:1 nosched:1 moe_expand:1 syncstart:1 cache_ext:1 src0_ext:1 src1_ext:1 \
+             src2_ext:1 mask_count:4 addr_mode:2 mode:2 primattr:1 range_enable:1 data_type:2 inc_or_dec:1 \
+             src0_bank:1 cache_bypass:1 drc_sel:1 src1_bank:2 src2_bank:2 dest_n:7 src0_n:7 src1_n:7 src2_n:7
+}

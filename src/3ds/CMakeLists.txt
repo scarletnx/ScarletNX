@@ -28,6 +28,11 @@ target_link_libraries(snx_ctr_process PUBLIC scarletnx-ldn)
 add_library(snx_ctr_gpu STATIC gpu/present.c input/input.c gpu/transfer.c gpu/y2r.c gpu/vk/y2r.c gpu/vk/device.c gpu/vk/transfer.c
             gpu/vk/vsgen.c gpu/vk/fsgen.c gpu/vk/render.c gpu/pica.c gpu/shader.c gpu/draw.c "${volk_SOURCE_DIR}/volk.c")
 target_include_directories(snx_ctr_gpu PUBLIC "${volk_SOURCE_DIR}")
+# the shader interpreter (gpu/shader.c) and the vertex shader decompiler (gpu/vk/vsgen.c) include the decoder
+# tools/decodetree makes from gpu/pica.decode (cmake/decodetree.cmake)
+include("${PROJECT_SOURCE_DIR}/cmake/decodetree.cmake")
+snx_decodetree(snx_ctr_gpu OUTPUT decode-pica.inc DECODE "${CMAKE_CURRENT_SOURCE_DIR}/gpu/pica.decode"
+               OPTIONS --static-decode=decode_pica)
 target_link_libraries(snx_ctr_gpu PUBLIC snx_ctr_memory scarletnx-common Vulkan::Headers SDL3::SDL3 snx_settings snx_build_info
                                          snx_window_icon snx_vk_common snx_pad_sdl ${CMAKE_DL_LIBS})
 set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
