@@ -473,6 +473,10 @@ static int pf_rec_room(PfReader* r) {
     }
     return 0;
 }
+/* a stage a shader record can hold: a draw's, the Ounce's task and mesh stages too (compute pipelines have records of
+   their own, PF_CSPIPE). Only up to the fragment stage, the first task or mesh shader of one game's file ended its
+   reading, and every record after it was dropped: each run made most of its pipelines again */
+static int pf_graphics_stage(u32 stage) { return stage <= ST_MS && stage != ST_CS; }
 /* a pipeline record (len bytes at p) to load when its shaders were all made: 0, or -1 when it isn't one */
 static int pf_pipe_rec(const PfReader* r, const u8* p, u32 len, const PfLoad* load, u32 loaded[2]) {
     PfPipe q;
@@ -520,7 +524,7 @@ static int pf_take(PFile* pf, PfReader* r, u32 type, const u8* p, u32 len, u64 h
             if (len < sizeof s) return -1;
             memcpy(&s, p, sizeof s);
             need = sizeof s + (u64)s.ncbr * 16 + (u64)s.nspv * 4;
-            if (need > len || len - need >= 8 || s.stage > ST_FS || s.nspv < 5) return -1;
+            if (need > len || len - need >= 8 || !pf_graphics_stage(s.stage) || s.nspv < 5) return -1;
         }
         if (pf_rec_room(r)) return -1;
         /* the reads and the words are 8-byte aligned (a mapping, or malloc'd), past the fixed part's multiple of 8. A
@@ -553,7 +557,7 @@ static int pf_retake(PfReader* r, u32 type, const u8* p, u32 len, u64 h, const P
         if (len < sizeof s) return -1;
         memcpy(&s, p, sizeof s);
         need = sizeof s + (u64)s.ncbr * 16 + s.ncode + (s.flags & PF_SRC_XFB ? sizeof xfb : 0);
-        if (need > len || len - need >= 8 || s.stage > ST_FS || s.ncode % 8) return -1;
+        if (need > len || len - need >= 8 || !pf_graphics_stage(s.stage) || s.ncode % 8) return -1;
         if (s.flags & PF_SRC_XFB) memcpy(&xfb, p + sizeof s + (size_t)s.ncbr * 16 + s.ncode, sizeof xfb);
         r->source = load->source(load->ctx, &s, (const u32*)(const void*)(p + sizeof s),
                                  p + sizeof s + (size_t)s.ncbr * 16, s.flags & PF_SRC_XFB ? &xfb : NULL);
