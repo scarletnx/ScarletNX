@@ -4815,6 +4815,16 @@ msgid "%s=%s is the default of %s: no run is given it over the game's .ini"
 msgstr "%s=%s é o padrão de %s: nenhuma execução o recebe acima do .ini do jogo"
 
 #: src/gui/settings.c
+#, c-format
+msgid "%s=%s is deprecated: %s is %s=%s now"
+msgstr "%s=%s está obsoleto: %s agora é %s=%s"
+
+#: src/gui/settings.c
+#, c-format
+msgid "%s=%s is deprecated and no value of %s: %s=%s now"
+msgstr "%s=%s está obsoleto e não é um valor de %s: agora %s=%s"
+
+#: src/gui/settings.c
 msgid "Mixed"
 msgstr "Misto"
 

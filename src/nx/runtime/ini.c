@@ -289,6 +289,15 @@ const char* ini_deprecated(const char* k) {
         if (!strcmp(k, INI_DEPRECATED[i].key)) return INI_DEPRECATED[i].now;
     return NULL;
 }
+static const struct {
+    const char *key, *now;
+} INI_RENAMED[] = {{"vk_descriptors", "vk_descriptors_mode"}, {NULL, NULL}};
+const char* ini_renamed(const char* k) {
+    int i;
+    for (i = 0; INI_RENAMED[i].key; i++)
+        if (!strcmp(k, INI_RENAMED[i].key)) return INI_RENAMED[i].now;
+    return NULL;
+}
 void ini_deprecated_head(FILE* f) {
     fprintf(f,
             "\n[Deprecated]\n; keys an older version used, which do nothing now (docs/DEPRECATIONS.md): delete them, "
