@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The platform layer's parts SDL already does the same way on every host: shared libraries, the path queries and
-   the power state. plat_posix.c and plat_win32.c keep what SDL has no call for (condition variables with nanosecond
+/* The platform layer's parts SDL already does the same way on every host: the path queries and the power state,
+   and Android's cache folder for a module shared storage cannot run. plat_posix.c and plat_win32.c keep what SDL has no call for (condition variables with nanosecond
    deadlines, threads with their alternate stacks, the guest's address space, the crash handler) */
 #include "nx/runtime/platform/plat.h"
 #include <SDL3/SDL.h>
@@ -23,7 +23,9 @@ int plat_power_on_charger(void) {
 
 /* ================================================================ libraries */
 #if defined(__ANDROID__)
-/* Shared storage (/sdcard) is mounted noexec: a module there loads from a copy in the app's cache folder */
+#include <dlfcn.h>
+/* Shared storage (/sdcard) is mounted noexec: a module there loads from a copy in the app's cache folder, which
+   plat_dl_open tries when the system refuses the module's own path */
 static void* dl_open_from_cache(const char* path) {
     const char* cache = SDL_GetAndroidCachePath();
     const char* base = strrchr(path, '/');
@@ -45,24 +47,7 @@ static void* dl_open_from_cache(const char* path) {
     ok = ok && !ferror(in);
     fclose(in);
     if (fclose(out) || !ok) return NULL;
-    return SDL_LoadObject(copy);
+    return dlopen(copy, RTLD_NOW | RTLD_LOCAL);
 }
+__attribute__((constructor)) static void dl_cache_register(void) { plat_dl_fallback(dl_open_from_cache); }
 #endif
-/* dlopen with RTLD_NOW | RTLD_LOCAL, or LoadLibraryW of the UTF-8 path */
-void* plat_dl_open(const char* path) {
-    void* h = SDL_LoadObject(path);
-#if defined(__ANDROID__)
-    if (!h) h = dl_open_from_cache(path);
-#endif
-    return h;
-}
-void* plat_dl_sym(void* h, const char* name) {
-    SDL_FunctionPointer f = SDL_LoadFunction((SDL_SharedObject*)h, name);
-    void* p;
-    memcpy(&p, &f, sizeof p);
-    return p;
-}
-const char* plat_dl_error(void) {
-    const char* e = SDL_GetError();
-    return e && *e ? e : "no error reported";
-}

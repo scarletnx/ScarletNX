@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "android/runtime/jvm.h"
 #include "common/utilities/common.h"
+#include "common/platform/dl.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,9 +41,10 @@ static void* open_jvm(char* error, size_t error_size) {
         snprintf(error, error_size, "out of memory");
         return NULL;
     }
-    char why[512] = "";
-    void* library = snx_is_file(path) ? snx_library_open(path, why, sizeof why) : NULL;
-    if (!library) snprintf(error, error_size, "no JVM at %s (%s): %s", path, why[0] ? why : "no such file", where);
+    int there = snx_is_file(path);
+    void* library = there ? plat_dl_open(path) : NULL;
+    if (!library)
+        snprintf(error, error_size, "no JVM at %s (%s): %s", path, there ? plat_dl_error() : "no such file", where);
     free(path);
     return library;
 }
@@ -52,7 +54,7 @@ bool android_jvm_start(AndroidJvm* jvm, const char* class_path, const char* cons
     *jvm = (AndroidJvm){0};
     jvm->library = open_jvm(error, error_size);
     if (!jvm->library) return false;
-    CreateJavaVM create = (CreateJavaVM)(size_t)snx_library_symbol(jvm->library, "JNI_CreateJavaVM");
+    CreateJavaVM create = (CreateJavaVM)(size_t)plat_dl_sym(jvm->library, "JNI_CreateJavaVM");
     if (!create) {
         snprintf(error, error_size, "the JVM library has no JNI_CreateJavaVM");
         return false;
