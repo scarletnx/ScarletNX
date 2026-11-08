@@ -400,7 +400,10 @@ bool arsc_resolve_reference(ArscAssets* a, ArscValue* v) {
             return true;
         uint32_t resid = v->value.data;
         Found f;
-        if (!find_entry(a, resid, &f)) return false;
+        if (!find_entry(a, resid, &f)) { /* the reference stays, naming what it refers to, as Android's */
+            v->resid = resid;
+            return false;
+        }
         if (entry_complex(&f)) { /* a bag: the reference stays, naming it */
             v->resid = resid;
             v->flags |= f.spec_flags;
@@ -722,9 +725,21 @@ static const ArscValue* style_find(ArscAssets* a, Style* s, uint32_t attr) {
 }
 /* the finished value of an attribute: a theme attribute or a reference resolved; false when it has none */
 static bool finish(ArscTheme* t, ArscValue* v) {
+    /* @null, which aapt writes as a reference to 0: no value, as Android's attribute resolution makes it */
+    if (v->value.type == RES_TYPE_REFERENCE && !v->value.data) return false;
     if (v->value.type == RES_TYPE_NULL && v->value.data != 1) return false;
-    if (t) return arsc_theme_resolve(t, v) && (v->value.type != RES_TYPE_NULL || v->value.data == 1);
-    return true;
+    if (!t) return true;
+    if (v->value.type == RES_TYPE_ATTRIBUTE || v->value.type == RES_TYPE_DYNAMIC_ATTRIBUTE) {
+        ArscValue found;
+        if (!arsc_theme_get(t, v->value.data, &found)) return false;
+        uint32_t flags = v->flags;
+        *v = found;
+        v->flags |= flags;
+    }
+    /* a reference that does not resolve (to the framework's resources, which the tables lack, as
+       @android:id/button1) stays the reference, as Android's ApplyStyle keeps it */
+    arsc_resolve_reference(t->assets, v);
+    return v->value.type != RES_TYPE_NULL || v->value.data == 1;
 }
 void arsc_apply_style(ArscTheme* t, const AxmlParser* xml, uint32_t def_style_attr, uint32_t def_style_res,
                       const uint32_t* attrs, uint32_t count, int32_t* out, int32_t* indices) {
@@ -820,6 +835,8 @@ bool arsc_retrieve_attributes(ArscAssets* a, const AxmlParser* xml, const uint32
         long at = xml ? axml_find_resource(xml, attrs[i]) : -1;
         ArscValue v = {{RES_TYPE_NULL, 0}, -1, 0, 0, 0};
         if (at >= 0) v.value = axml_attribute_value(xml, (uint32_t)at);
+        /* @null (a reference to 0): no value */
+        if (at >= 0 && v.value.type == RES_TYPE_REFERENCE && !v.value.data) v.value = (ResValue){RES_TYPE_NULL, 0};
         if (at >= 0 && v.value.type == RES_TYPE_REFERENCE) arsc_resolve_reference(a, &v);
         if (at >= 0 && (v.value.type != RES_TYPE_NULL || v.value.data == 1)) {
             if (v.cookie == -1 && v.value.type != RES_TYPE_STRING) v.cookie = 0;
