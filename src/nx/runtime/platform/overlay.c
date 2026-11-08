@@ -156,7 +156,7 @@ static const struct {
             {GUI_ICON_IMAGE, HOTKEY_CAPTURE, NULL, "capture a frame"}, /* while RenderDoc is in the process */
             {GUI_ICON_POINTER, HOTKEY_MOUSE, NULL, "Joy-Con mouse on/off"},
             {GUI_ICON_LOG_OUT, HOTKEY_QUIT, NULL, "quit the game"},
-            {GUI_ICON_MONITOR, HOTKEY_TV_MODE, NULL, "TV on/off/auto"},
+            {GUI_ICON_MONITOR, HOTKEY_TV_MODE, NULL, "TV docked/handheld/auto"},
             {GUI_ICON_IMAGE, HOTKEY_UPSCALER, NULL, "upscaler"},
             {GUI_ICON_IMAGE, HOTKEY_ANTI_ALIASING, NULL, "anti-aliasing"},
             {GUI_ICON_GAMEPAD, -1, "X, Space", "A"},
@@ -361,11 +361,11 @@ static const IniOpt* setting(int i) {
     if (page == PAGE_PADS) return ini_find(g_gamepad_ini, PADS[i]);
     return page == PAGE_BUTTONS && i > 0 && i <= SNX_VPAD_COUNT ? &g_vpad_shown_ini[i - 1] : NULL;
 }
-/* the key of item i that the game's picks can hold: a setting's, and TV mode's (docked); NULL for an action */
+/* the key of item i that the game's picks can hold: a setting's, and TV mode's (tv_mode); NULL for an action */
 static const char* pick_key(int i) {
     const IniOpt* o = setting(i);
     if (o) return o->key;
-    return page == PAGE_MAIN && main_item(i) == M_TV_MODE ? "docked" : NULL;
+    return page == PAGE_MAIN && main_item(i) == M_TV_MODE ? "tv_mode" : NULL;
 }
 /* item i set for this game alone, in its picks: its value marked *, Y or Delete back to Global */
 static int picked(int i) {
@@ -514,8 +514,8 @@ static void label(int i, char* text, size_t size, char* value, size_t vsize) {
                                                         "Clean Old Settings", "Exit"};
         char word[OVERLAY_COLS];
         snprintf(text, size, "%s", main_items[main_item(i)]);
-        if (main_item(i) == M_TV_MODE) { /* the choice in effect, in docked's words */
-            ini_word(ini_find(g_display_ini, "docked"), options_tv_mode_choice(), word, sizeof word);
+        if (main_item(i) == M_TV_MODE) { /* the choice in effect, in tv_mode's words */
+            ini_word(ini_find(g_display_ini, "tv_mode"), options_tv_mode_choice(), word, sizeof word);
             snprintf(value, vsize, "%s%s", word, own);
         } else if (main_item(i) < M_CAPTURE)
             snprintf(value, vsize, ">");

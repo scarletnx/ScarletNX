@@ -758,12 +758,12 @@ u64 vi_vsync_period(void) {
     return 1000000000u / (VI_UNLOCKED_HZ * (u64)(1 - interval));
 }
 /* one of the display's vsyncs, vi_vsync_period apart (the main loop): the vsync event, and the mode and hotplug
-   events when docked's Auto changed the mode */
+   events when tv_mode's Auto changed the mode */
 void vi_vsync_tick(void) {
     if (g_hle.vi.vsync) ev_signal(g_hle.vi.vsync);
     gsv_vsync_tick(); /* the Ounce VI2 session's groups */
-    if (g_settings.tv_mode != g_hle.vi.tv_mode) {
-        g_hle.vi.tv_mode = g_settings.tv_mode;
+    if (snx_tv_mode() != g_hle.vi.tv_mode) {
+        g_hle.vi.tv_mode = snx_tv_mode();
         ev_signal(g_hle.vi.mode_changed);
         ev_signal(g_hle.vi.hotplug);
     }
@@ -778,7 +778,7 @@ void svc_vi_init(void) {
     g_hle.vi.vsync = owned_event("vi:vsync");
     g_hle.vi.mode_changed = owned_event("vi:display mode changed");
     g_hle.vi.hotplug = owned_event("vi:display hotplug");
-    g_hle.vi.tv_mode = g_settings.tv_mode; /* the mode the game starts in is no change */
+    g_hle.vi.tv_mode = snx_tv_mode(); /* the mode the game starts in is no change */
     nn_visrv_sf_IApplicationRootService_register(new_vi_u);
     nn_visrv_sf_ISystemRootService_register(new_vi_s);
     nn_visrv_sf_IManagerRootService_register(new_vi_m);

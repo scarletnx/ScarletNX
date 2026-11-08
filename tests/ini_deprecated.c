@@ -21,7 +21,7 @@ int main(void) {
     assert(!strcmp(ini_deprecated("renderer"), "Vulkan is the only renderer"));
     assert(!strcmp(ini_deprecated("lsfg_flow"), "LSFG went with the OpenGL renderer"));
     assert(!strcmp(ini_deprecated("touch_controls"), "now controls") &&
-           !strcmp(ini_deprecated("modo_tv"), "now docked"));
+           !strcmp(ini_deprecated("modo_tv"), "now tv_mode"));
     assert(!strcmp(ini_deprecated("user"), "now user_uid, the uid of the user it named") &&
            !ini_deprecated("user_uid"));
     assert(ini_deprecated("vk_descriptors") && strstr(ini_deprecated("vk_descriptors"), "now vk_descriptors_mode") &&

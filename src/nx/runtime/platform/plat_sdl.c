@@ -10,7 +10,7 @@
 
 /* ================================================================ power */
 /* SDL_GetPowerInfo reads the host's battery and charger on every platform SDL supports. Only a host on its battery
-   is not on its charger; a state it doesn't know (or cannot read) is -1, which TV mode Auto takes as On */
+   is not on its charger; a state it doesn't know (or cannot read) is -1, which tv_mode's Auto takes as TV mode */
 int plat_power_on_charger(void) {
     switch (SDL_GetPowerInfo(NULL, NULL)) {
     case SDL_POWERSTATE_ON_BATTERY: return 0;

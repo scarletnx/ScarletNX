@@ -342,7 +342,7 @@ static void keys_page(void) {
     for (i = 0; i < 40; ++i) assert(overlay_pad(down) == OVERLAY_NONE);
     draw();
     assert(shows("right stick") && shows_as("I, J, K, L", 0, light) && icon_drawn(GUI_ICON_JOYSTICK));
-    assert(shows_as("Ctrl+D", 0, light) && shows("TV on/off/auto"));
+    assert(shows_as("Ctrl+D", 0, light) && shows("TV docked/handheld/auto"));
     /* the last runtime keys, after the TV mode's */
     assert(shows_as("Ctrl+U", 0, light) && shows("upscaler") && shows_as("Ctrl+Shift+A", 0, light) &&
            shows("anti-aliasing"));
@@ -1120,18 +1120,18 @@ int main(void) {
     draw();
     assert(text_at(C - 3, 8, "On"));
     assert(tap(5, 3) == OVERLAY_NONE && !g_settings.stats);
-    /* TV mode: the choice in effect in docked's words, no page under it. A tap or a select steps it on and Left or
+    /* TV mode: the choice in effect in tv_mode's words, no page under it. A tap or a select steps it on and Left or
        Right either way, each press once: a direction held steps it no further, as each step docks or undocks the
        console under the game. Nothing goes to the .ini, the last key stored still Stats' */
-    assert(text_at(C - 3, 7, "On") && !text_at(C - 2, 7, ">"));
+    assert(text_at(C - 7, 7, "Docked") && !text_at(C - 2, 7, ">"));
     assert(tap(4, 3) == OVERLAY_NONE && tv.steps == 1 && tv.last == 1);
     draw();
-    assert(text_at(C - 5, 7, "Auto"));
+    assert(text_at(C - 9, 7, "Handheld"));
     assert(overlay_side(-1) == OVERLAY_NONE && tv.steps == 2 && tv.last == -1);
     assert(overlay_side_held(-1) == OVERLAY_NONE && overlay_side_held(1) == OVERLAY_NONE && tv.steps == 2);
     assert(overlay_select() == OVERLAY_NONE && tv.steps == 3 && tv.last == 1);
     draw();
-    assert(text_at(C - 3, 7, "On") && !strcmp(stored, "stats"));
+    assert(text_at(C - 7, 7, "Docked") && !strcmp(stored, "stats"));
     /* Volume (settings.txt's volume, INI_SLIDER): its icon, its value at the right, a slider a column before the value
        at its widest with room for a game's own * after it, OVERLAY_SLIDER_COLS long, its knob a cell wide at the
        value, in the row's colour: the ink, the
@@ -1193,13 +1193,13 @@ int main(void) {
         assert(overlay_pad(1ull << 3) == OVERLAY_NONE && !strcmp(picks.unpicked, "volume") && !ini_picked("volume"));
         draw();
         assert(text_at(C - 5, 9, "100%") && !shows("100% *") && !shows("*: set for this game alone."));
-        picks.key = "docked";
+        picks.key = "tv_mode";
         ++picks.changes;
         picks.unpicked[0] = 0;
         draw();
-        assert(shows("On *") && overlay_delete() == OVERLAY_NONE && !picks.unpicked[0]); /* Volume in focus: not picked */
+        assert(shows("Docked *") && overlay_delete() == OVERLAY_NONE && !picks.unpicked[0]); /* Volume in focus: not picked */
         overlay_move(-2);                                                          /* to TV mode */
-        assert(overlay_delete() == OVERLAY_NONE && !strcmp(picks.unpicked, "docked") && !ini_picked("docked"));
+        assert(overlay_delete() == OVERLAY_NONE && !strcmp(picks.unpicked, "tv_mode") && !ini_picked("tv_mode"));
         picks.unpicked[0] = 0;
         overlay_move(2);
     }
@@ -1291,13 +1291,13 @@ int main(void) {
     g_settings.stats = 0;
     draw();
     assert(text_at(C - 4, 8, "Off"));
-    tv.choice = 2;
+    tv.choice = 0;
     draw();
     assert(text_at(C - 5, 7, "Auto"));
     tv.choice = 1;
     can_capture = 1;
     draw();
-    assert(text_at(6, 11, "Capture frame") && text_at(C - 3, 7, "On"));
+    assert(text_at(6, 11, "Capture frame") && text_at(C - 7, 7, "Docked"));
     can_capture = 0;
     draw();
     assert(text_at(6, 11, "Exit"));

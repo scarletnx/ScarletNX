@@ -44,8 +44,8 @@ In the game's menu a value the picks hold has `*` after it, and Delete or a cont
 goes back to the launcher's, else the `.ini`'s, at once. Its **Settings** page sets the rest of these sections for the
 game alone ([Usage](usage.md#playing)).
 
-Restart for `docked` (`Auto` follows the host's power while the game runs, and `hotkey_tv_mode` and the game's menu's
-**TV mode** change the mode for the run), `tv_refresh_rate`, `tv_resolution`, `fullscreen`, `transition_screen`, `language`, `resolution`,
+Restart for `tv_mode` (a computer's `Auto` follows its power while the game runs, and `hotkey_tv_mode` and the game's
+menu's **TV mode** change the mode for the run), `tv_refresh_rate`, `tv_resolution`, `fullscreen`, `transition_screen`, `language`, `resolution`,
 `anisotropy`, `hdr_game`, `hdr_paperwhite`, `hdr_peak`, `memory_gb`, `memory_fit_mode`, `heap_max_mb`, `thread_stack_mb`, `map_limit_mb`, `map_limit_files`,
 `airplane_mode`, `ldn`, `room`, `pipeline_threads`, `pipeline_libraries`, `prepare_shaders`, `compress_shader_cache`,
 `compress_prepared_shaders`, `jit_threads`, `vertex_input_dynamic_state`, `astc_mode`, every `vk_ext_*`, and
@@ -74,7 +74,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 
 | Key | Default | Effect |
 | --- | --- | --- |
-| `docked` | `1` | `1` is TV mode, `0` handheld mode (1280x720), `2` Auto: TV mode while the host is on its charger, handheld mode on its battery. Auto switches while the game runs. `hotkey_tv_mode` (Ctrl+D) and the game's menu's **TV mode** step On, Off and Auto for the run, the `.ini`'s value as it was |
+| `tv_mode` | `0` | `0` (Auto) is, on a computer, TV mode while it is on its charger or has no battery and handheld mode (1280x720) on its battery, switching while the game runs; on a phone or tablet, handheld mode on its own screen. The log says what it picks and why. `1` (Docked) is TV mode, `2` (Handheld) handheld mode. It takes the place of `docked`, whose `1` was TV mode and `2` Auto ([Deprecations](deprecations.md)) `hotkey_tv_mode` (Ctrl+D) and the game's menu's **TV mode** step Docked, Handheld and Auto for the run, the `.ini`'s value as it was |
 | `tv_refresh_rate` | `1` | The refresh rates an Ounce game is told its display takes: `0` is 60 Hz, `1` is 120 Hz too where the window's display refreshes at 119 Hz or more, `2` is 120 Hz too on any display. A game that turns 120 Hz on is then paced at 120 frames a second with `fps_limit=game`, and the log says `gsv: the display runs at 120 Hz` |
 | `tv_resolution` | `0` | The picture an Ounce game is told the TV shows in TV mode (its default display resolution): `0` is 1920x1080 (a game's parts made for a 4K TV cost performance, so 4K is the player's choice), `1` is 3840x2160 where the window's display's mode is that large (its pixels, whatever the desktop's scale), else 1920x1080, `2` is 3840x2160 on any display. A Switch game is told 1920x1080 |
 | `fullscreen` | `0` | `1` starts fullscreen, except in timed test runs (`--seconds`, `--frames`). `-f` or `--fullscreen=0` sets it for one run. F11 or Alt+Enter switches without changing it. A 3DS game takes it too (`--fullscreen=1`, not in `--seconds`, `--frames` or `--max-blocks` runs, nor in a `-H` run), with the same keys |
@@ -321,7 +321,7 @@ the key (with its modifiers held); Esc cancels, Backspace puts the default back,
 | `hotkey_capture` | `Ctrl+Shift+F12` | Captures the next frame with RenderDoc while RenderDoc is in the game (`renderdoc`) |
 | `hotkey_mouse` | `Ctrl+G` | With `game_mouse` at `0`, declares an Ounce game's Joy-Con mouse mode, and ends it. At `1`, lets the mouse go from a game that holds it, and holds it again |
 | `hotkey_quit` | `Escape` | Quits the game: a first press warns, and a second within 3 seconds quits |
-| `hotkey_tv_mode` | `Ctrl+D` | Steps the TV mode round On, Off and Auto for the run, as the game's menu's **TV mode** row does; `docked` keeps the `.ini`'s choice |
+| `hotkey_tv_mode` | `Ctrl+D` | Steps the TV mode round Docked, Handheld and Auto for the run, as the game's menu's **TV mode** row does; `tv_mode` keeps the `.ini`'s choice |
 | `hotkey_upscaler` | `Ctrl+U` | Steps the upscaler round Off, Bilinear, AMD FSR 1, NVIDIA NIS and Qualcomm SGSR for the run, said over the game; `upscaler` keeps the `.ini`'s choice |
 | `hotkey_anti_aliasing` | `Ctrl+Shift+A` | Steps the anti-aliasing round Off, Auto, FXAA, SMAA, SSAA 2x and SSAA 4x for the run, said over the game; `anti_aliasing` keeps the `.ini`'s choice |
 

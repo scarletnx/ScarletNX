@@ -243,7 +243,7 @@ def main():
     if a.plan:
         print(json.dumps({'common': common, 'baseline': baseline,
                           'initial_candidates': list(candidates(baseline)),
-                          'quality': {k: ini.get(k) for k in ('resolution', 'shadows', 'docked', 'anisotropy')}}, indent=2))
+                          'quality': {k: ini.get(k) for k in ('resolution', 'shadows', 'tv_mode', 'anisotropy')}}, indent=2))
         return 0
     a.out = a.out.resolve()
     save_path = (exe.parent / (exe.stem + '_data') / 'save').resolve()
