@@ -218,6 +218,23 @@ public class TextView extends View {
     public int getInputType() { return inputType; }
     public void setImeOptions(int imeOptions) { this.imeOptions = imeOptions; }
     public int getImeOptions() { return imeOptions; }
+    /* the input method's action key, its label and id, and options private to an input method: kept for the
+       EditorInfo, which no input method reads here */
+    private CharSequence imeActionLabel;
+    private int imeActionId;
+    private String privateImeOptions;
+    public void setImeActionLabel(CharSequence label, int actionId) { imeActionLabel = label; imeActionId = actionId; }
+    public CharSequence getImeActionLabel() { return imeActionLabel; }
+    public int getImeActionId() { return imeActionId; }
+    public void setPrivateImeOptions(String type) { privateImeOptions = type; }
+    public String getPrivateImeOptions() { return privateImeOptions; }
+    private boolean selectAllOnFocus;
+    /** whether focus selects all the text, as Android's does for an editable one */
+    public void setSelectAllOnFocus(boolean selectAllOnFocus) { this.selectAllOnFocus = selectAllOnFocus; }
+    @Override protected void onFocusChanged(boolean focused, int direction, android.graphics.Rect previouslyFocusedRect) {
+        super.onFocusChanged(focused, direction, previouslyFocusedRect);
+        if (focused && selectAllOnFocus && text instanceof Spannable s) Selection.setSelection(s, 0, s.length());
+    }
     public void setOnEditorActionListener(OnEditorActionListener l) { editorActionListener = l; }
     public void onEditorAction(int actionCode) {
         if (editorActionListener != null && editorActionListener.onEditorAction(this, actionCode, null)) return;
@@ -357,6 +374,12 @@ public class TextView extends View {
     public int getMinWidth() { return minWidth; }
     public void setMinHeight(int minPixels) { minHeight = minPixels; textChanged(); }
     public int getMinHeight() { return minHeight; }
+    private int maxHeight = Integer.MAX_VALUE;
+    public void setMaxHeight(int maxPixels) { maxHeight = maxPixels; textChanged(); }
+    public int getMaxHeight() { return maxHeight; }
+    /** exactly so many pixels tall or wide, as Android's: the minimum and the maximum */
+    public void setHeight(int pixels) { minHeight = maxHeight = pixels; textChanged(); }
+    public void setWidth(int pixels) { minWidth = maxWidth = pixels; minEms = 0; maxEms = -1; textChanged(); }
     public void setMinEms(int minEms) { this.minEms = minEms; minWidth = 0; textChanged(); }
     public int getMinEms() { return minEms; }
     public void setMaxEms(int maxEms) { this.maxEms = maxEms; maxWidth = Integer.MAX_VALUE; textChanged(); }
@@ -594,7 +617,7 @@ public class TextView extends View {
         if (compound[0] != null) h = Math.max(h, compound[0].getBounds().height() + getPaddingTop() + getPaddingBottom());
         if (compound[2] != null) h = Math.max(h, compound[2].getBounds().height() + getPaddingTop() + getPaddingBottom());
         w = Math.max(w, Math.max(getSuggestedMinimumWidth(), minEms > 0 ? minEms * getLineHeight() + padH : minWidth));
-        h = Math.max(h, Math.max(getSuggestedMinimumHeight(), minHeight));
+        h = Math.max(Math.min(h, maxHeight), Math.max(getSuggestedMinimumHeight(), minHeight));
         if (wmode != MeasureSpec.UNSPECIFIED && w > wsize) w = wsize;
         setMeasuredDimension(resolveSize(w, widthMeasureSpec), resolveSize(h, heightMeasureSpec));
         int inner = Math.max(0, getMeasuredWidth() - padH);
