@@ -673,12 +673,6 @@ static void test_pipe2_umask_session(void) {
     SAID_ENOSYS("setsid", CALL("setsid"));
 
 #if defined(__linux__)
-    expect_int("getpriority of this process", (int64_t)CALL("getpriority", 0, 0), getpriority(PRIO_PROCESS, 0));
-#else
-    expect_int("getpriority of this process", (int64_t)CALL("getpriority", 0, 0), 0); /* the kernel gives nice 0 */
-#endif
-
-#if defined(__linux__)
     int64_t event = (int64_t)CALL("eventfd", 5, G_O_NONBLOCK);
     expect_int("eventfd", event >= 0, 1);
     uint64_t count = 0;
@@ -695,6 +689,16 @@ static void test_pipe2_umask_session(void) {
 #else
     SAID_ENOSYS("eventfd", CALL("eventfd", 0, 0));
     SAID_ENOSYS("memfd_create", CALL("memfd_create", P("android_bionic"), 0));
+#endif
+}
+
+/* getpriority, the kernel's system call: after the bridge started (test_guest_locale), as guest code always runs, for
+   the thread's kernel state it takes */
+static void test_getpriority(void) {
+#if defined(__linux__)
+    expect_int("getpriority of this process", (int64_t)CALL("getpriority", 0, 0), getpriority(PRIO_PROCESS, 0));
+#else
+    expect_int("getpriority of this process", (int64_t)CALL("getpriority", 0, 0), 0); /* the kernel gives nice 0 */
 #endif
 }
 
@@ -961,6 +965,7 @@ int main(void) {
     test_offline_names();
     test_localhost();
     test_guest_locale();
+    test_getpriority();
     test_multibyte_strings();
     if (g_t.failures) {
         fprintf(stderr, "android_bionic: %d failed\n", g_t.failures);
