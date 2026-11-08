@@ -13,6 +13,7 @@
 #include "android/bridge/host.h"
 #include "gnuabi/kernel/signals.h"
 #include "common/utilities/endian.h"
+#include "common/platform/thread.h"
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
@@ -287,7 +288,7 @@ void signals_thread_start(GuestSignals* t, CPU* c) {
     t->parked = t->busy = 0;
     t->delivered = 0;
     t->in_export = 0;
-    if (gnu_kernel_thread_add(&s.kernel, &t->k, host_tid(), c, t)) {
+    if (gnu_kernel_thread_add(&s.kernel, &t->k, plat_tid(), c, t)) {
         fprintf(stderr, "scarletnx-android: no memory for a guest thread's signals\n");
         abort();
     }
@@ -550,7 +551,7 @@ static void g_sigaltstack(CPU* c, void* data) {
 static void g_raise(CPU* c, void* data) {
     (void)data;
     /* the handler runs before raise returns, as on Linux */
-    result(c, call6(c, 131, host_pid(), host_tid(), X(0), 0));
+    result(c, call6(c, 131, host_pid(), plat_tid(), X(0), 0));
 }
 static void g_kill(CPU* c, void* data) {
     (void)data;

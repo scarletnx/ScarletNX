@@ -9,6 +9,7 @@
 #include "common/cpu/recompiler/snx_recompiler.h"
 #include "common/utilities/common.h"
 #include "gnuabi/kernel/kernel.h"
+#include "common/platform/thread.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -359,7 +360,7 @@ CPU* bridge_cpu(void) {
     /* the lowest page a guard, as a thread's stack has */
     plat_mem_protect(t->stack, 4096, HOST_NONE);
     t->tls[1 + 5] = b.guard;          /* TLS_SLOT_STACK_GUARD */
-    t->tls[1 + 1] = host_tid(); /* TLS_SLOT_THREAD_ID: bionic keeps its pthread there, read through its API */
+    t->tls[1 + 1] = plat_tid(); /* TLS_SLOT_THREAD_ID: bionic keeps its pthread there, read through its API */
     CPU* c = &t->cpu;
     c->mem = NULL;
     c->rt = &b.rt;

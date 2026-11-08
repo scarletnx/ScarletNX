@@ -12,9 +12,7 @@
    the hosts the bridge runs on, Linux, FreeBSD, macOS and Windows x64, each with a version for each of them. The
    bridge's other files call these, not the host's own API for the same work */
 
-/* the calling thread's id as the host numbers it (Linux's and FreeBSD's tid, macOS's thread id, Windows' thread id),
-   and the process's */
-uint32_t host_tid(void);
+/* the process's id as the host numbers it; the calling thread's is thread.h's plat_tid */
 uint32_t host_pid(void);
 
 /* The address space is common/platform/vm.h's (plat_mem_*). An access: HOST_NONE, or HOST_READ with HOST_WRITE or
