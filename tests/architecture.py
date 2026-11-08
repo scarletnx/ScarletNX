@@ -84,6 +84,9 @@ ENV_SYSTEM = {
     'SSL_CERT_FILE',
     'SSL_CERT_DIR',
     'SDL_GAMECONTROLLERCONFIG_FILE',
+    # the Vulkan loader's, which name its driver: a Mac's vulkan_driver=auto leaves the driver they name
+    'VK_DRIVER_FILES',
+    'VK_ICD_FILENAMES',
 }
 ENV_SYSTEM_PREFIXES = ('XDG_',)
 # The variables an older version read for what are settings or options now, still read for one version

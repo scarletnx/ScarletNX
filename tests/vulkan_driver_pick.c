@@ -89,16 +89,36 @@ int main(void) {
     char* old_icd = make(sdks, "1.4.9.0/macOS/share/vulkan/icd.d/libkosmickrisp_icd.json");
     char* icd_only = under(root, "icd-only"); /* a driver's ICD without the loader it needs */
     char* icd_only_icd = make(icd_only, "share/vulkan/icd.d/kosmickrisp_icd.json");
+    char* mesa = under(root, "mesa"); /* KosmicKrisp and the loader, without MoltenVK */
+    char* mesa_loader = make(mesa, "lib/libvulkan.1.dylib");
+    char* mesa_icd = make(mesa, "share/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json");
     assert(!snx_mkdirs(empty));
 
-    /* auto: the MoltenVK the app carries, else the system's */
-    picks(&(SnxVulkanPlaces){.program = app, .prefixes = {brew, empty}, .sdks = sdks}, "auto", app_moltenvk, NULL,
-          "MoltenVK");
-    picks(&(SnxVulkanPlaces){.program = bare, .prefixes = {brew, empty}, .sdks = sdks}, "", NULL, NULL, "the system's");
+    /* auto: KosmicKrisp where the Mac has it, before the MoltenVK the app carries, and the log line says why */
+    played(&(SnxVulkanPlaces){.program = app, .prefixes = {empty, brew}, .sdks = sdks}, "auto", brew_loader, brew_icd,
+           "KosmicKrisp", 0, "KosmicKrisp, ICD ", "(vulkan_driver=auto takes KosmicKrisp where the Mac has it)");
+    picks(&(SnxVulkanPlaces){.program = bare, .sdks = sdks}, "", sdk_loader, sdk_icd, "KosmicKrisp");
+    /* a Mac that cannot run it (macOS before 26, an Intel build): the app's MoltenVK, the reason said */
+    played(&(SnxVulkanPlaces){.program = app, .prefixes = {brew, NULL}, .no_kosmickrisp = "too old a Mac"}, "auto",
+           app_moltenvk, NULL, "MoltenVK", 0, "MoltenVK at ", "(vulkan_driver=auto, and too old a Mac)");
+    /* none on the Mac: the app's MoltenVK, else the system's loader */
+    played(&(SnxVulkanPlaces){.program = app, .prefixes = {empty, NULL}}, "auto", app_moltenvk, NULL, "MoltenVK", 0,
+           "MoltenVK at ", "(vulkan_driver=auto, and KosmicKrisp was not found: no ICD beside the program");
+    played(&(SnxVulkanPlaces){.program = bare, .prefixes = {empty, NULL}}, "auto", NULL, NULL, "the system's", 0,
+           "the system's Vulkan loader (vulkan_driver=auto, the app carries no MoltenVK, and KosmicKrisp was not found",
+           NULL);
+    /* a driver the environment names (VK_DRIVER_FILES): the loader it goes through, and no ICD of the pick's */
+    played(&(SnxVulkanPlaces){.program = app, .prefixes = {empty, brew}, .driver_files = "VK_DRIVER_FILES=/x/icd.json"},
+           "auto", brew_loader, NULL, "the environment's", 0,
+           "the driver VK_DRIVER_FILES=/x/icd.json names, through the Vulkan loader ",
+           "(vulkan_driver=auto leaves the driver the environment names)");
+    played(&(SnxVulkanPlaces){.program = bare, .prefixes = {empty, NULL}, .driver_files = "VK_ICD_FILENAMES=/x.json"},
+           "auto", NULL, NULL, "the environment's", 0,
+           "the driver VK_ICD_FILENAMES=/x.json names, through the Vulkan loader SDL finds", NULL);
 
     /* moltenvk: the app's, else the first prefix's, else the newest SDK's; none is refused, naming where it looked */
-    picks(&(SnxVulkanPlaces){.program = app, .prefixes = {brew, empty}, .sdks = sdks}, "moltenvk", app_moltenvk, NULL,
-          "MoltenVK");
+    played(&(SnxVulkanPlaces){.program = app, .prefixes = {brew, empty}, .sdks = sdks}, "moltenvk", app_moltenvk, NULL,
+           "MoltenVK", 0, "MoltenVK at ", " (vulkan_driver=moltenvk)");
     picks(&(SnxVulkanPlaces){.program = bare, .prefixes = {empty, brew}, .sdks = sdks}, "moltenvk", brew_moltenvk, NULL,
           "MoltenVK");
     picks(&(SnxVulkanPlaces){.program = bare, .prefixes = {empty, NULL}, .sdks = sdks}, "moltenvk", sdk_moltenvk, NULL,
@@ -106,6 +126,9 @@ int main(void) {
     stands_in(&(SnxVulkanPlaces){.program = bare, .prefixes = {empty, NULL}}, "moltenvk", NULL, NULL, "the system's",
               "MoltenVK was not found: not beside the program or in its app's Frameworks, in",
               ": the system's Vulkan loader plays instead");
+    /* and where the Mac has KosmicKrisp, auto's KosmicKrisp plays in its place */
+    stands_in(&(SnxVulkanPlaces){.program = bare, .prefixes = {mesa, NULL}}, "moltenvk", mesa_loader, mesa_icd,
+              "KosmicKrisp", "MoltenVK was not found", ": KosmicKrisp, ICD ");
 
     { /* the folder of SDKs the search went through, named as it was given: $HOME/VulkanSDK where HOME is not the
          user's own folder (a test's), which "~/VulkanSDK" would hide */
@@ -139,6 +162,8 @@ int main(void) {
         char* app_icd = make(root, "ScarletNX.app/Contents/Frameworks/libkosmickrisp_icd.json");
         picks(&(SnxVulkanPlaces){.program = app, .prefixes = {brew, empty}, .sdks = sdks}, "kosmickrisp", app_loader,
               app_icd, "KosmicKrisp");
+        picks(&(SnxVulkanPlaces){.program = app, .prefixes = {brew, empty}, .sdks = sdks}, "auto", app_loader, app_icd,
+              "KosmicKrisp");
         free(app_loader);
         free(app_icd);
     }
@@ -159,6 +184,16 @@ int main(void) {
     refused(&(SnxVulkanPlaces){.system_driver = "this system's driver"}, "MoltenVK",
             "vulkan_driver=MoltenVK is not auto, moltenvk or kosmickrisp", NULL);
 
+    { /* the Macs KosmicKrisp runs on, by their kernel: Darwin 25 is macOS 26 */
+        char why[512] = "";
+        assert(snx_vulkan_kosmickrisp_runs("25.0.0", why, sizeof why) && !why[0]);
+        assert(snx_vulkan_kosmickrisp_runs("26.1.0", why, sizeof why));
+        assert(!snx_vulkan_kosmickrisp_runs("24.6.0", why, sizeof why));
+        assert(strstr(why, "KosmicKrisp needs macOS 26 or later (Darwin 25), and this Mac runs Darwin 24.6.0"));
+        assert(!snx_vulkan_kosmickrisp_runs("Darwin", why, sizeof why) && strstr(why, "\"Darwin\""));
+        assert(!snx_vulkan_kosmickrisp_runs(NULL, why, sizeof why));
+    }
+
     assert(!snx_remove_tree(root));
     free(root);
     free(app);
@@ -177,6 +212,10 @@ int main(void) {
     free(old_icd);
     free(icd_only);
     free(icd_only_icd);
-    puts("vulkan_driver_pick: auto, moltenvk and kosmickrisp found in the app, the prefixes and the SDKs");
+    free(mesa);
+    free(mesa_loader);
+    free(mesa_icd);
+    puts("vulkan_driver_pick: auto takes KosmicKrisp, then the app's MoltenVK, then the system's; moltenvk and "
+         "kosmickrisp found in the app, the prefixes and the SDKs");
     return 0;
 }

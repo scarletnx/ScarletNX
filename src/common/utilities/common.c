@@ -62,6 +62,7 @@
 #include <mach-o/dyld.h>
 #include <mach/mach.h>
 #include <sys/sysctl.h> /* sysctlbyname: the physical cores (snx_physical_cores) */
+#include <sys/utsname.h> /* uname: the kernel version, which says whether KosmicKrisp runs */
 #if TARGET_OS_IPHONE
 #include <os/proc.h>
 #endif
@@ -1104,29 +1105,80 @@ static int found_driver(const SnxVulkanPlaces* at, const char* pick, SnxVulkanDr
     out->name = "KosmicKrisp";
     return 1;
 }
+/* auto's driver: the one the environment names (VK_DRIVER_FILES), else KosmicKrisp where the Mac has it, else the
+   MoltenVK the app carries, else the system's loader. playing names it, and because says why auto took it */
+static void auto_driver(const SnxVulkanPlaces* at, SnxVulkanDriver* out, char* playing, size_t playing_size,
+                        char* because, size_t because_size) {
+    char cannot[2048] = "";
+    *out = (SnxVulkanDriver){0};
+    because[0] = 0;
+    if (at->system_driver) {
+        out->name = "the system's";
+        snprintf(playing, playing_size, "%s", at->system_driver);
+        return;
+    }
+    if (at->driver_files) {
+        out->library = program_file(at->program, loader_own, sizeof loader_own / sizeof *loader_own);
+        if (!out->library) out->library = installed_library(at, "libvulkan.1.dylib");
+        out->name = "the environment's";
+        snprintf(playing, playing_size, "the driver %s names, through the Vulkan loader %s", at->driver_files,
+                 out->library ? out->library : "SDL finds");
+        snprintf(because, because_size, "vulkan_driver=auto leaves the driver the environment names");
+        return;
+    }
+    if (found_driver(at, "kosmickrisp", out, cannot, sizeof cannot)) {
+        described(at, out, playing, playing_size);
+        snprintf(because, because_size, "vulkan_driver=auto takes KosmicKrisp where the Mac has it");
+        return;
+    }
+    out->library = program_file(at->program, moltenvk_own, sizeof moltenvk_own / sizeof *moltenvk_own);
+    out->name = out->library ? "MoltenVK" : "the system's";
+    described(at, out, playing, playing_size);
+    snprintf(because, because_size, "vulkan_driver=auto%s, and %s", out->library ? "" : ", the app carries no MoltenVK",
+             cannot);
+}
 int snx_vulkan_driver_find(const SnxVulkanPlaces* at, const char* pick, SnxVulkanDriver* out, char* reason,
                            size_t reason_size) {
-    char playing[2048];
+    char playing[2048], because[2560];
+    int asked = pick && pick[0] && strcmp(pick, "auto");
     *out = (SnxVulkanDriver){0};
-    if (pick && pick[0] && strcmp(pick, "auto")) {
+    reason[0] = 0;
+    if (asked) {
         if (strcmp(pick, "moltenvk") && strcmp(pick, "kosmickrisp")) {
             snprintf(reason, reason_size, "vulkan_driver=%s is not auto, moltenvk or kosmickrisp", pick);
             return 0;
         }
-        if (at->system_driver)
+        if (at->system_driver) {
             snprintf(reason, reason_size, "%s is a driver of macOS",
                      strcmp(pick, "moltenvk") ? "KosmicKrisp" : "MoltenVK");
-        else if (found_driver(at, pick, out, reason, reason_size))
+        } else if (found_driver(at, pick, out, reason, reason_size)) {
+            described(at, out, playing, sizeof playing);
+            snprintf(reason, reason_size, "%s (vulkan_driver=%s)", playing, pick);
             return 1;
+        }
     }
     /* auto, or what plays in place of a driver the Mac has not, said beside the reason */
-    out->library =
-        at->system_driver ? NULL : program_file(at->program, moltenvk_own, sizeof moltenvk_own / sizeof *moltenvk_own);
-    out->name = out->library ? "MoltenVK" : "the system's";
-    if (pick && pick[0] && strcmp(pick, "auto")) {
+    auto_driver(at, out, playing, sizeof playing, because, sizeof because);
+    if (asked) {
         out->instead = 1;
-        described(at, out, playing, sizeof playing);
         append(reason, reason_size, ": %s plays instead", playing);
+    } else if (because[0]) {
+        snprintf(reason, reason_size, "%s (%s)", playing, because);
+    }
+    return 1;
+}
+int snx_vulkan_kosmickrisp_runs(const char* darwin, char* why, size_t why_size) {
+    char* end = NULL;
+    long major = darwin ? strtol(darwin, &end, 10) : 0;
+    if (!darwin || end == darwin) {
+        snprintf(why, why_size, "KosmicKrisp needs macOS 26 or later, and this Mac's kernel version \"%s\" says none",
+                 darwin ? darwin : "");
+        return 0;
+    }
+    /* Darwin 25 is macOS 26 */
+    if (major < 25) {
+        snprintf(why, why_size, "KosmicKrisp needs macOS 26 or later (Darwin 25), and this Mac runs Darwin %s", darwin);
+        return 0;
     }
     return 1;
 }
@@ -1134,13 +1186,39 @@ int snx_vulkan_driver_choose(const char* program, const char* pick, SnxVulkanDri
                              size_t reason_size) {
     SnxVulkanPlaces at = {.program = program};
 #if defined(__APPLE__) && defined(SNX_IOS)
-    at.no_kosmickrisp = "KosmicKrisp is a driver of macOS, and this app runs on iOS";
+    at.no_kosmickrisp = "KosmicKrisp is a driver of macOS, not of iOS";
 #elif defined(__APPLE__)
     const char* home = getenv("HOME");
     char* sdks = home && home[0] ? snx_path_join(home, "VulkanSDK") : NULL;
+    /* the Vulkan loader's own variables, which name its driver: auto leaves the driver they name */
+    const char* files = getenv("VK_DRIVER_FILES");
+    const char* files_name = "VK_DRIVER_FILES";
+    char driver_files[4096], gate[512];
     at.prefixes[0] = "/opt/homebrew";
     at.prefixes[1] = "/usr/local";
     at.sdks = sdks;
+    if (!files || !files[0]) {
+        files = getenv("VK_ICD_FILENAMES");
+        files_name = "VK_ICD_FILENAMES";
+    }
+    if (files && files[0]) {
+        snprintf(driver_files, sizeof driver_files, "%s=%s", files_name, files);
+        at.driver_files = driver_files;
+    }
+#ifdef __aarch64__
+    struct utsname system;
+    if (uname(&system)) {
+        char error[256];
+        snprintf(gate, sizeof gate, "KosmicKrisp needs macOS 26 or later, and uname could not say this Mac's: %s",
+                 snx_os_error(error, sizeof error));
+        at.no_kosmickrisp = gate;
+    } else if (!snx_vulkan_kosmickrisp_runs(system.release, gate, sizeof gate)) {
+        at.no_kosmickrisp = gate;
+    }
+#else
+    (void)gate;
+    at.no_kosmickrisp = "KosmicKrisp runs on Apple silicon, and this build is for Intel Macs";
+#endif
 #elif defined(__ANDROID__)
     at.system_driver = "the driver package gpu_driver names, else Android's own";
 #else
