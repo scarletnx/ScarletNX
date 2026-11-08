@@ -6,6 +6,7 @@
 #include "android/bridge/arm32.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <locale.h>
 #include <math.h>
 #include <signal.h>
 #include <stdio.h>
@@ -712,6 +713,39 @@ static void test_fortify(void) {
     close(fds[1]);
 }
 
+/* ---- the C locale: the host's numbers and names never reach the guest ---- */
+
+/* with the host in a locale of a decimal comma when it has one, as the JVM sets the user's */
+static void test_locale(void) {
+    const char* comma = NULL;
+    static const char* const commas[] = {"pt_BR.UTF-8", "de_DE.UTF-8", "fr_FR.UTF-8", "es_ES.UTF-8",
+                                         "it_IT.UTF-8", "ru_RU.UTF-8", "nl_NL.UTF-8"};
+    for (size_t i = 0; i < sizeof commas / sizeof *commas && !comma; ++i)
+        if (setlocale(LC_ALL, commas[i]) && !strcmp(localeconv()->decimal_point, ",")) comma = commas[i];
+    if (!comma) {
+        setlocale(LC_ALL, "C");
+        printf("android_arm32: the host has no locale with a decimal comma: the guest's numbers and names are checked "
+               "in the host's C locale alone\n");
+    }
+    uint32_t out = zeroed(64);
+    CALL("snprintf", out, 64, text("%.2f|%e"), 0, D(3.14159), D(12345.678));
+    expect_text("snprintf of doubles", G(out), "3.14|1.234568e+04");
+    uint32_t d = zeroed(8);
+    expect_int("sscanf of a double", CALL("sscanf", text("3.5 x"), text("%lf"), d), 1);
+    double got;
+    memcpy(&got, G(d), sizeof got);
+    expect_int("sscanf's double times 10", (int64_t)(got * 10), 35);
+    expect_int("strtod of 1.25", (int64_t)CALL64("strtod", text("1.25"), 0), (int64_t)d_bits(1.25));
+    /* bionic's 32-bit struct tm: sec, min, hour, mday, mon, year, wday, yday, isdst, gmtoff, zone */
+    uint32_t tm = zeroed(44);
+    const uint32_t fields[9] = {0, 0, 0, 14, 10, 123, 2, 317, 0}; /* Tuesday 2023-11-14 */
+    memcpy(G(tm), fields, sizeof fields);
+    CALL("strftime", out, 64, text("%a %b %A %B"), tm);
+    expect_text("strftime's names", G(out), "Tue Nov Tuesday November");
+    expect_text("the host's decimal point after", localeconv()->decimal_point, comma ? "," : ".");
+    setlocale(LC_ALL, "C");
+}
+
 int main(void) {
     char error[256];
     if (!arm32_init(error, sizeof error)) {
@@ -731,6 +765,7 @@ int main(void) {
     test_stdio();
     test_multibyte();
     test_numbers();
+    test_locale();
     test_libm();
     test_signals();
     rmdir(g_t.dir);
