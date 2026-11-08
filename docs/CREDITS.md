@@ -9,6 +9,7 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | --- | --- |
 | FFmpeg | LGPL-2.1-or-later |
 | zlib 1.3.2 (in FFmpeg's PNG decoder and encoder, `cmake/dependencies.cmake`) | zlib |
+| dav1d (FFmpeg's AV1 decoder for the Ounce's movies) | BSD-2-Clause |
 | libvpx's VP9 test vectors (the WebM project's test data, downloaded for the `nvdec_vp9_*` tests, not shipped) | BSD-3-Clause |
 | jsmolka's gba-tests (test ROMs, downloaded for the `agb_gba_*` tests, not shipped) | MIT |
 | hactool / ConvertUTF (`src/nx/runtime/driver/hactool`, with ScarletNX's changes) | ISC / Unicode license |
