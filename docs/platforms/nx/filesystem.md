@@ -32,9 +32,9 @@ Top-level directories are drives; global lookup accepts data-relative paths:
 
 `IFileSystem`: mount-relative `/`; reject drive prefixes and escaping `..`. Normalize separators/`.`; case-sensitive.
 Missing `root/` is virtual until mutation. Saves use `save/<type>`, and an Account save its user's
-`save/user.<uid>` (32 hex digits, `users/users.ini`'s, [USAGE](../../user/usage.md#users)). The first user's, while it has no
+`save/user.<uid>` (32 hex digits, `users/users.ini`'s, [Usage](../../user/usage.md#users)). The first user's, while it has no
 folder, is played where an older version left it: `save/user`, the one Account save before there were users, else a
-nonempty `save/system` ([DEPRECATIONS](../../user/deprecations.md)). With `save/user` and its folder both there the game stops
+nonempty `save/system` ([Deprecations](../../user/deprecations.md)). With `save/user` and its folder both there the game stops
 and leaves both, for the player to keep one.
 
 `save_layout=global` (the default) keeps the saves apart from the game, in the data folder's `save/` (`users/`'s

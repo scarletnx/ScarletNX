@@ -63,10 +63,10 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   presses the key when its words all press one. `Arrows`, `mouse`, `pad` and `D-pad` press nothing.
 - The menu, top to bottom: the three loads, **Install Keys**, **Settings**, **Share Log**,
   **Folders**, and **Exit**. The games, and the recent ones, are the Games tab's. A load whose driver
-  is neither beside ScarletNX nor on PATH, as those an app leaves out ([APPLE](../hosts/apple.md)), is greyed out, still there,
+  is neither beside ScarletNX nor on PATH, as those an app leaves out ([macOS and iOS](../hosts/apple.md)), is greyed out, still there,
   and Enter or a tap on it says which driver it misses rather than opening its screen; the drivers are looked for
   again each second, and with F5. On Android the drivers are the ones the app's build put in `libscarletnx.so`
-  ([ANDROID](../hosts/android-app.md)): one it left out says that the app does not include it.
+  ([Android host](../hosts/android-app.md)): one it left out says that the app does not include it.
 - Space, Enter or a left click explicitly activates an item, marking it bright
   pink. Activation is tracked separately from hover/focus, so the activated item
   stays pink while another item is hovered in yellow. Mouse controls also work
@@ -231,7 +231,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   that do not fit, until another key closes it;
   Share Log lists them too. **Move Old Files** (its value how many folders an older version left) asks first, with
   how many entries would move and how many stay, then moves what *Left by older versions* lists an entry at a time
-  (`scarletnx --migrate=yes` without the menu, [USAGE](usage.md#folders)), the same box saying what moved and why the
+  (`scarletnx --migrate=yes` without the menu, [Usage](usage.md#folders)), the same box saying what moved and why the
   rest did not: one already there, one on another disk, a game laid out beside others, which moves from its dump.
   **Reset to Defaults**, the last row, puts every setting of the groups after App back to its default, asking first with how
   many change. A group of settings shows
@@ -248,7 +248,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   that. Where a row's default is none of its words (a control not yet shown or hidden, LLVM's own options),
   `[default]` is a value of its own, the same way. Another value, and a number typed even as its default (Current
   user 1 over a game's `.ini` that has another), goes to every Switch run as `--key=value`, over the `.ini`
-  ([USAGE](usage.md)), and is kept for every game:
+  ([Usage](usage.md)), and is kept for every game:
   what was changed, by the `.ini`'s sections and keys, in `settings.ini` of the config folder on
   Linux (`~/.config/scarletnx/`), else the data folder's `config/`. A run takes a setting from what that
   run picks, then from the game's own picks (to come), then from these, and last from the game's
@@ -267,14 +267,14 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   runs from what it has.
   **Extract dump** passes `--extract-container`, to the Switch and the 3DS driver both. Off, the default,
   nothing of a dump is extracted: the game's `.ini` records the dump, the recompile reads the ExeFS from it, and the
-  game reads its ExeFS and RomFS out of the dump on the fly, decrypting them as it reads ([USAGE](usage.md)). A CIA
+  game reads its ExeFS and RomFS out of the dump on the fly, decrypting them as it reads ([Usage](usage.md)). A CIA
   is read the same way. On, a dump is extracted as before, into the game's folder or with *Extract to tmpfs* into
   tmpfs, which implies it. Turning it off again takes a game's extraction away on its next run.
   **Optimization level** (0, 1, 2, 3 or z, 2 by default) is LLVM's level for the game's code, **AOT threads** the
   threads compiling it (0, the default Auto: the machine's cores with a quarter left free, the physical cores
   where it says them, at most 75%, so a recompile does not make the computer stutter), **Unit cache limit** the GB
   the compiled code units kept
-  for the next recompile may hold (20 by default, 0 for no limit; [USAGE](usage.md)), and the **LLVM Internals** page
+  for the next recompile may hold (20 by default, 0 for no limit; [Usage](usage.md)), and the **LLVM Internals** page
   turns each pass of LLVM's pipelines off and sets the options LLVM's C API takes, its **All** stepping every row. They
   are passed as `--key=value` when the game is recompiled: by **R**, or by a run that has to (a dump played the first
   time, an NRO each time). A game made already keeps its code until then. The first two settings and these reach
@@ -357,13 +357,13 @@ two; left out, none), `probe_mode` (edenprobe Mode's `quick`, the default, or `f
   ended abnormally (not by ESC) it blinks red, as Install Keys does, until its logs are saved or a run ends well.
 - **Folders** opens Settings > App > Folders (ESC comes back to the menu). There Enter, or a tap, on a folder gives
   **Open Folder**, which opens it in the system's file manager (on Android its Files app, the data folder through the
-  app's own storage, [ANDROID](../hosts/android-app.md)), **Change Folder** and **Reset to Default**; on an Extra of a library
+  app's own storage, [Android host](../hosts/android-app.md)), **Change Folder** and **Reset to Default**; on an Extra of a library
   Open Folder and **Remove from Library**; on dumps/ and Settings, Open Folder. A row of the Dumps Library, dumps/ or an
   Extra, also gives **Subfolders**, `(*)` while its subfolders' dumps are listed and `( )` while not: Enter switches
   it, the box staying, kept at once (dumps/ in `app.ini`, an Extra in `folders.txt`). Del still puts a folder back to
   its default, or takes an Extra off.
 - The launcher's log, a file a day, `scarletnx-console-2026-10-28.log` in its state folder (Settings > App > Folders'
-  Logs; on iOS in `logs/` of the app's Documents, [APPLE](../hosts/apple.md)), the 14 newest days kept (a day's first line
+  Logs; on iOS in `logs/` of the app's Documents, [macOS and iOS](../hosts/apple.md)), the 14 newest days kept (a day's first line
   deletes the older ones; the `scarletnx-console.log` older versions wrote stays as it is), holds what it says: its
   start (its build and data folder), each failure
   once in a session (what the box over the screen says, shown or not), the warnings it gives as it opens, a dump whose
@@ -376,11 +376,11 @@ two; left out, none), `probe_mode` (edenprobe Mode's `quick`, the default, or `f
   launcher is open (a lock on the file, which leaves it to be read); the log says which a launcher took, and Share Log
   sends its own. Each start says how the last ended: `last start: ended with an exit, or none before`, or for each
   start that left its mark, `last start: pid 4242, started 2026-11-07 10:01:02 did not end with an exit:` and what the
-  system says of it (on Android 11 and later the reason it keeps for that process, [ANDROID](../hosts/android-app.md); elsewhere
+  system says of it (on Android 11 and later the reason it keeps for that process, [Android host](../hosts/android-app.md); elsewhere
   the system names none). The mark is `.running-<pid>` beside the log, made at the start, held while the launcher
   runs and deleted at its exit, Logs moving it; a game keeps its own beside its log, which the game's next start says
   the same way. The start also gives the data folder's disk, `disk: 51200 MiB free of 953344 MiB` (on iOS the
-  banner's, [APPLE](../hosts/apple.md)). Debug's Log level at 2 adds a line at each start and end of a run and of a recompile,
+  banner's, [macOS and iOS](../hosts/apple.md)). Debug's Log level at 2 adds a line at each start and end of a run and of a recompile,
   with its status, its time and the disk then (`run: ended, status 7, after 12.3 s; disk: ...`); and on Android and
   the Apple apps each change of the thermal state and of the low power mode (Android's Battery Saver), `state: thermal
   severe, low power mode on`: Android's seven thermal statuses by Android's names (`none`, `light`, `moderate`,
@@ -397,7 +397,7 @@ two; left out, none), `probe_mode` (edenprobe Mode's `quick`, the default, or `f
   beside the others in `games/` or a library's Extra (`games/<id>/` now), the data folder's `games/` (`recompiled/` now,
   its games still listed, each row marked `(games/)`, until they are moved), a portable copy's `games/`
   beside the program, and a build tree's `games/`, `work/` and keys in its checkout
-  ([USAGE](usage.md#folders)). Up/Down, PgUp/PgDn and the wheel go over those that do not fit (an arrow at the
+  ([Usage](usage.md#folders)). Up/Down, PgUp/PgDn and the wheel go over those that do not fit (an arrow at the
   right of the first says some are above it, *and N more* the ones under), any other key, click or tap closes it;
   nothing is moved, and it shows again at the next start for as long as they are there.
   **Share Log** lists them all, each with where it goes now. On Android the menu's own files an older version kept
@@ -412,7 +412,7 @@ two; left out, none), `probe_mode` (edenprobe Mode's `quick`, the default, or `f
   game's path. Choosing one runs it again with the driver it was
   loaded with and the options the menu has now; a game whose file is gone leaves the
   list instead. The list is kept in `recent.txt`, beside `last-run.log`, at the root of the menu's state
-  folder ([USAGE](usage.md#folders)): `$XDG_STATE_HOME/scarletnx/` on Linux, by default
+  folder ([Usage](usage.md#folders)): `$XDG_STATE_HOME/scarletnx/` on Linux, by default
   `~/.local/state/scarletnx/`, `%APPDATA%\scarletnx\state\` on Windows, or the data folder's `state/` on Android. An
   older version's, in a `gui/` folder, stay where they are. A line per
   game: `switch`, `linux` or `3ds`, `file` or `games` (a program from recompiled/, run as it is: the token keeps its old name),
@@ -424,14 +424,14 @@ PATH, for `scarletnx-gnuabi` or `scarletnx-3ds`. Files are passed directly
 as argv entries, never through a shell. Spaces, Unicode paths and shell punctuation
 are not evaluated. Local `file://` text drops are decoded, but lists and remote URI
 authorities are rejected. The working directory is not changed and is shown in the
-Status box. See [GNUABI](../platforms/gnuabi/README.md) for supported Linux ELF applications.
+Status box. See [GNU ABI](../platforms/gnuabi/README.md) for supported Linux ELF applications.
 
 ## Setup
 
 The first start opens on the setup, not the menu, a page at a time, each a tab at the top under its number: the
 notices of what older versions did that this one does otherwise (only said, nothing moves:
-[DEPRECATIONS](deprecations.md)), then **Appearance**, **Install**, **Folders**, **Keys** and **User**
-([USAGE](usage.md#setup) has what each asks, the terminal's setup too). Its boxes say what the page is about; its
+[Deprecations](deprecations.md)), then **Appearance**, **Install**, **Folders**, **Keys** and **User**
+([Usage](usage.md#setup) has what each asks, the terminal's setup too). Its boxes say what the page is about; its
 question and choices come as the theme's `[body] options-dialog` places a question ([Themes](#themes)), over the boxes
 without darkening them; its tip, and what a choice did or why it did not, are in the foot. Up/Down (or the mouse)
 move between the choices, Enter takes one and ESC goes back a page, on the first page asking whether to exit. The
@@ -473,7 +473,7 @@ setup, writing nothing.
 on Android, CIA files, which go to the 3DS driver, VPK files, which go to the Vita driver, and GBA ROMs, which go to the
 GBA's. It reads the `recompiled/` of the
 folder the driver works in, which the menu passes it as `--data`: a portable copy's `.scarletnx/` beside the
-AppImage (or the GUI), else the user's data folder, a build tree's menu's too ([USAGE](usage.md#folders)), then each
+AppImage (or the GUI), else the user's data folder, a build tree's menu's too ([Usage](usage.md#folders)), then each
 Extra of Settings > App > Folders. Each game is shown by the name in its `control.nacp`, which the recompile copies into
 its data, else by its folder's or file's name, sorted by it in each folder, with its icon (Wimsy in grey for one with
 none): a game's own, a dump's
@@ -536,10 +536,10 @@ cannot be read is named and the others still listed.
   into the game's mods and cheats, **Open Folder** lists the game's folders to open (its dump's, its own, saves, settings, logs, caches; one
   not there greyed), **Save States** opens the box of its save states that S opens (greyed for a dump, which has
   none; on a phone the way to them, with a tap on *Save states* at the foot), **Clean Cache** deletes its shader
-  and code caches, asked first ([USAGE](usage.md#mods)), and **GPU Driver** and **Freedreno Settings** open
+  and code caches, asked first ([Usage](usage.md#mods)), and **GPU Driver** and **Freedreno Settings** open
   Settings > App's pages for that game alone: GPU Driver's first row, **Global**, follows the launcher's pick, the
   game's own kept as `gpu_driver=` in its `.ini` (nothing: the system's driver); Freedreno Settings with none of its
-  own takes the launcher's. A collection's game ([USAGE](usage.md#collections)) has a **Play Program N** row for
+  own takes the launcher's. A collection's game ([Usage](usage.md#collections)) has a **Play Program N** row for
   each other program it has made, which plays that program directly as Play plays the game's own (its menu, program
   0), the box's picks kept. On
   another row, a dump, a package or another console's game, it says what it opens. The side panel of a recompiled
@@ -556,7 +556,7 @@ cannot be read is named and the others still listed.
 A recompiled game, in a folder of its own (`recompiled/<id>/<id>`), runs with the Settings through the menu's own
 `scarletnx` and is never extracted as a dump: it plays as it is when this build made it with the mods it plays, and
 when another build did, or other mods, it compiles first, where it is, in the queue as a dump's first compile does
-(its `<id>.abi` says which: [USAGE](usage.md#extract--aot--run)), then plays if the Compile tab still shows it. A game
+(its `<id>.abi` says which: [Usage](usage.md#extract--aot--run)), then plays if the Compile tab still shows it. A game
 an older version laid out beside the others runs directly, as every game does on iOS. A game another console's
 driver made says so in its `.ini` (`system=` of `[Game]`: `3ds`, `vita` or `gba`; an older one by
 its layout, a 3DS `.ini`'s `model=`, a Vita folder's `ux0/`): its row says "3DS game, ready to run" and the like, and
@@ -630,9 +630,9 @@ The screens are boxes side by side, nothing over another, the default framing th
 filling them. At the top the tabs, Menu, Games and Settings (and Recompile while its queue holds a recompile), and
 the screen's title after them against the right, and at its right the user games play as
 (Settings > User, which lists them under **Current user**, Left/Right picking, and renames each: Enter types its
-nickname, the rule [USAGE](usage.md#users) gives checked, then written to `users.ini`): a box framed as the others are
+nickname, the rule [Usage](usage.md#users) gives checked, then written to `users.ini`): a box framed as the others are
 holding their nickname and their picture, `users/<uid>.jpg` or Wimsy
-without one ([USAGE](usage.md#users)), square or round (`[head] picture`; `none` for no box). A click on it opens
+without one ([Usage](usage.md#users)), square or round (`[head] picture`; `none` for no box). A click on it opens
 the users over the screen, each with their picture; the one picked is Settings' user from then on, and ESC or a click
 off them leaves it as it was. The head is the same on every screen of one window: when the main screens' titles
 (the menu's, Games', the keys', `SCARLETNX  /  SETTINGS` and while its tab shows `SCARLETNX  /  RECOMPILE`) do not all
@@ -673,7 +673,7 @@ every screen, 20 columns at the least, and a window under 45 columns shows the l
 `side_box = on` (F2) the side box under it; a run's output and the theme editor's keys take three fifths, the side box
 24 columns at the least, under them on a window under 45 columns. The screens are laid out by `src/gui/ui.txt`'s
 Screen and Wide (a theme's `[head] place`, `[tips] place` and `[body] sizing` are deprecated, said as it loads:
-[DEPRECATIONS](deprecations.md)), and so is every list
+[Deprecations](deprecations.md)), and so is every list
 (a theme's `[body] gap` and `[body] scroll` are deprecated too): the menu's, Games',
 the Settings' two, the theme editor's, the choices of a question, of UI scale's dialog, of the Recompile box and of the
 setup's pages, the setup's Appearance rows, the box of users, that of a game's updates, DLCs and mods, and the OK of
@@ -957,7 +957,7 @@ Tools-only builds cannot enable the GUI.
 Supported host platforms are Linux, FreeBSD, Windows (llvm-mingw) and Android (`dist/android`).
 SDL3 handles window creation, keyboard/mouse input, rendering, clipboard and drag-and-drop
 on every host. The platform-specific code only handles child processes and resource
-accounting. See [BUILD](../dev/build.md) for SDL3's desktop dependencies.
+accounting. See [Build](../dev/build.md) for SDL3's desktop dependencies.
 
 The menu's list, Games' and its grid, the Settings', the setup's Appearance, the choices of the questions and the
 setup, the boxes of users, of a game's add-ons and of Games' View, and the OK of a box of files are scenes of

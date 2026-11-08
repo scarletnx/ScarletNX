@@ -125,7 +125,7 @@ size (they shrink together when the rectangle is smaller), and the stretchable o
 ## Over an app's own Vulkan
 
 A game draws into its `SurfaceView`'s surface with its own device and swapchain on the window (the Vulkan
-pass-through, [NATIVE](native.md)). On Android, the surface is below the app's window: the `SurfaceView` clears its
+pass-through, [Native bridge](native.md)). On Android, the surface is below the app's window: the `SurfaceView` clears its
 area of the window to transparent, and the compositor shows the window's views and dialogs over the game. The
 same happens here:
 

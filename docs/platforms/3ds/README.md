@@ -431,7 +431,7 @@ Chinese, Korean and Taiwanese fonts) and the bad word list. The Mii data
 (0004009B00010202) is ScarletNX's own, made at its first open: the Mii parts a
 game's face library builds a head from, `CFL_Res.dat` in the layout the stand-in
 generator's `mii.py` writes, from the same plush shapes and drawings as the Switch's
-MiiModel ([FILESYSTEM](../nx/filesystem.md)), each mesh with no more than the 256
+MiiModel ([Filesystem](../nx/filesystem.md)), each mesh with no more than the 256
 vertices a byte indexes, every texture RGBA4. Another system title is NotFound. Directory sessions read their entries, and FSFILE has
 Flush, priorities and OpenLinkFile. Reads preflight
 the complete guest destination and stage host IO before publication.

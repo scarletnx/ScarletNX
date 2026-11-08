@@ -82,7 +82,7 @@ runtime's own (`/proc/self/exe` and `/proc/self/fd/N` lead to the host files the
 as are the resolver files the network layer provides under `/etc`.
 
 Without `-L`, the sysroot is `linux/` of the data folder `games/` and `work/` are in
-([USAGE](../../user/usage.md#folders)): the portable folder beside a portable copy, the user's data
+([Usage](../../user/usage.md#folders)): the portable folder beside a portable copy, the user's data
 folder otherwise (`~/.local/share/scarletnx` on Linux), from a build tree too. The guest
 path `/usr/lib/libc.a` is then `linux/usr/lib/libc.a`. Nothing in `linux/` is ever committed: it holds whatever
 sysroot and guest toolchains are put there (`.gitignore`). A glibc sysroot such as
