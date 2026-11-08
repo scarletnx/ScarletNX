@@ -1570,7 +1570,9 @@ static void test_pctl_free_communication(void) {
 }
 
 /* IFriendService's GetBlockedUserListIds (10400) {i32 offset, uid at 8, a C buffer of ids}: nobody, the count 0 and
-   the buffer as it was; DeclareOpenOnlinePlaySession (10600) and DeclareCloseOnlinePlaySession (10601) {uid} */
+   the buffer as it was; DeclareOpenOnlinePlaySession (10600) and DeclareCloseOnlinePlaySession (10601) {uid};
+   CheckFriendListAvailability (10120) {uid}: the list there to read, 1; GetPlayHistoryRegistrationKey (10700) {b8
+   include_local, uid at 8, the key's 0x40 bytes in C}: zeros, the bytes past it as they were */
 static void friend_uid(Request* r, u32 off) {
     argument64(r, off, g_user_id[0]);
     argument64(r, off + 8, g_user_id[1]);
@@ -1597,6 +1599,19 @@ static void test_friend_blocked_and_presence(void) {
         call(friends, &r);
         CHECK(r.c.out_size == 0);
     }
+    request(&r, 10120);
+    friend_uid(&r, 0);
+    call(friends, &r);
+    CHECK(r.c.out_size == 4 && r.c.out[0] == 1);
+    memset(g_mem + 0x4000, 0xAB, 0x80);
+    request(&r, 10700);
+    r.raw[0] = 1;
+    friend_uid(&r, 8);
+    r.c.c[0] = (IpcBuf){0x4000, 0x40, 0};
+    r.c.nc = 1;
+    call(friends, &r);
+    CHECK(r.c.out_size == 0);
+    for (u32 i = 0; i < 0x80; i++) CHECK(g_mem[0x4000 + i] == (i < 0x40 ? 0 : 0xAB));
     svcobj_unref(friends);
     svcobj_unref(creator);
 }
