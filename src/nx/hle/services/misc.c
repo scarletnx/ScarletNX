@@ -201,6 +201,21 @@ static int nn_friends_detail_ipc_IFriendService_GetCompletionEvent(SvcObj* self,
     (void)self;
     return new_event(event, "friend completion", 0);
 }
+/* nobody is a friend, and the list of none is always there to read */
+static int nn_friends_detail_ipc_IFriendService_CheckFriendListAvailability(SvcObj* self, const nn_account_Uid* uid,
+                                                                            u8* available) {
+    (void)self, (void)uid;
+    *available = 1;
+    R_SUCCEED();
+}
+/* the key another console adds a play history with, which only the friend server makes: zeros, as there is no
+   network */
+static int nn_friends_detail_ipc_IFriendService_GetPlayHistoryRegistrationKey(SvcObj* self, u8 include_local,
+                                                                              const nn_account_Uid* uid, IpcBuf key) {
+    (void)self, (void)include_local, (void)uid;
+    memset(GP(key.addr), 0, (size_t)key.size);
+    R_SUCCEED();
+}
 static int nn_friends_detail_ipc_INotificationService_GetEvent(SvcObj* self, u32* event) {
     (void)self;
     return new_event(event, "friend notification", 0);
