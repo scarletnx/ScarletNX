@@ -65,6 +65,11 @@ int vk_guest_owned_whole(u64 gva, u64 size, u64* tag) {
     *tag = g_whole_tag;
     return g_whole_tag != 0;
 }
+/* no storage image publishes here: nothing is owned by one */
+int vk_guest_owned_by(u64 gva, u64 size, u64 serial) {
+    (void)gva, (void)size, (void)serial;
+    return 0;
+}
 /* a texture with holes in its mapping (a virtual pool's, mapped a tile at a time): the runs g_map lists are what the
    GPU's page table maps, guest's bytes at the same offset (GP(cpu) is guest + cpu), and no texture is one host run */
 u8* g_mem = guest;

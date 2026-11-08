@@ -567,16 +567,28 @@ void vk_guest_peek(u64 gva, void* dst, u64 size) {
     }
 }
 
-int vk_guest_owned_whole(u64 gva, u64 size, u64* tag) {
-    OwnRange r[2];
+/* the one GPU-owned range that holds all of guest bytes [gva, gva + size), one run of the GPU's page table, in *r: 0
+   when there is none */
+static int owned_one(u64 gva, u64 size, OwnRange* r) {
+    OwnRange o[2];
     u64 cpu = 0;
+    if (gmmu_run(gva, size, &cpu) != size || own_lookup(cpu, size, o, 2) != 1 || o[0].addr != cpu || o[0].size != size)
+        return 0;
+    *r = o[0];
+    return 1;
+}
+int vk_guest_owned_whole(u64 gva, u64 size, u64* tag) {
+    OwnRange r;
     if (!size || !own_any()) return 0;
     gmem_need(gva, size);
-    if (gmmu_run(gva, size, &cpu) != size || own_lookup(cpu, size, r, 2) != 1 || r[0].addr != cpu || r[0].size != size)
-        return 0;
-    *tag =
-        __atomic_load_n(&((const VkOwnRes*)r[0].res)->serial, __ATOMIC_ACQUIRE) * 0x9E3779B97F4A7C15ull ^ r[0].res_off;
+    if (!owned_one(gva, size, &r)) return 0;
+    *tag = __atomic_load_n(&((const VkOwnRes*)r.res)->serial, __ATOMIC_ACQUIRE) * 0x9E3779B97F4A7C15ull ^ r.res_off;
     return 1;
+}
+int vk_guest_owned_by(u64 gva, u64 size, u64 serial) {
+    OwnRange r;
+    return size && serial && own_any() && owned_one(gva, size, &r) &&
+           __atomic_load_n(&((const VkOwnRes*)r.res)->serial, __ATOMIC_ACQUIRE) == serial;
 }
 
 void vk_all_barrier(VkCommandBuffer cb) {
