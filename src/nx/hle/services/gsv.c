@@ -162,6 +162,13 @@ static int nn_gsv_UserSession_BootNativeMemoryManagement(SvcObj* self, u64 mode,
     LOG("gsv: BootNativeMemoryManagement(mode %llu)\n", (unsigned long long)mode);
     R_SUCCEED();
 }
+/* 0: the SDK boots on without command 120, which the runtime doesn't have (gsv.swipc) */
+static int nn_gsv_UserSession_GetPostBootMode(SvcObj* self, u32* mode) {
+    (void)self;
+    *mode = 0;
+    LOG_LIMIT(1, "gsv: GetPostBootMode answers 0: the SDK skips command 120\n");
+    R_SUCCEED();
+}
 static int nn_gsv_UserSession_CreateSyncptContext(SvcObj* self) {
     (void)self;
     R_SUCCEED();
@@ -322,6 +329,13 @@ static int nn_gsv_UserSession_OpenVideoDecoderContext(SvcObj* self, u32* context
 static int nn_gsv_UserSession_OpenVideoDecoderContextWithFlag(SvcObj* self, u8 flag, u32* context) {
     (void)self;
     LOG("gsv: OpenVideoDecoderContextWithFlag(%u)\n", flag);
+    return native_video_open(0, context);
+}
+static int nn_gsv_UserSession_OpenVideoDecoderContextWithVersion(SvcObj* self, u8 flag, const u8* version,
+                                                                 u32* context) {
+    (void)self;
+    LOG("gsv: OpenVideoDecoderContextWithVersion(%u, version %#llx)\n", flag,
+        (unsigned long long)snx_ld_le64(version));
     return native_video_open(0, context);
 }
 static int nn_gsv_UserSession_InitializeVideoEncoder(SvcObj* self) {

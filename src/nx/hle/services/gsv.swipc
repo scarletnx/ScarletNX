@@ -17,6 +17,9 @@ interface nn::gsv::UserSession {
                                 bytes<8, 4> offset);
     # the SDK keeps the answer for CreateNativeMemory (114's flags above)
     [115] BootNativeMemoryManagement(u64 mode) -> u64 attributes;
+    # SDK 22's BootWithRemoteMemory (version 7) asks it right after the boot, with no request: an answer of 1 makes the
+    # SDK send command 120 next, anything else boots on without it. What the mode is isn't known
+    [126] GetPostBootMode() -> u32 mode;
     [201] CreateSyncptContext();
     [202] InitializeSyncptContext() -> handle<copy, session> session;
     # request: one game's SDK sends 0x24 bytes, another's 0x18 (u32 1, u32 0x1ff, u64 rw's size, u64 ro's size). The
@@ -49,6 +52,9 @@ interface nn::gsv::UserSession {
     [902] OpenVideoDecoderContext() -> handle<move, session> context;
     [903] FinalizeVideoDecoder();
     [905] OpenVideoDecoderContextWithFlag(u8 flag) -> handle<move, session> context;
+    # SDK 22's nn::codec::video::detail::InitializeServerContext: the same, with the decoder library's version after
+    # the flag in the next word (one game sends flag 0, version 0x3'00030000)
+    [906] OpenVideoDecoderContextWithVersion(u8 flag, bytes<8, 4> version) -> handle<move, session> context;
     # the decoder's image pools: the images are native images, count of them numbered from image on
     [911] CreateVideoImagePool(nn::gsv::VideoImagePreference preference, u32 count, u32 memory_handle) -> u32 image;
     [912] DestroyVideoImagePool(u32 image);
