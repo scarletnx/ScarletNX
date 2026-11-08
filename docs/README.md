@@ -10,6 +10,7 @@
 * [Shared layers](#shared-layers)
 * [Host systems](#host-systems)
 * [History](#history)
+* [Moved pages](#moved-pages)
 * [License](#license)
 
 New here? Start with [Install](user/install.md), then the [GUI launcher](user/gui.md) or [Usage](user/usage.md). To
@@ -110,6 +111,14 @@ Audits and measurements, kept as they were when they were taken. The code has ch
 - [NVDEC H.264 packet submission audit](history/nvdec-audit.md)
 - [Shader corrections, batch 001](history/shader-audit/fixes-001.md)
 
+## Moved pages
+
+These short pages stay at their old paths, because files that older versions wrote and older release notes link to
+them. Each one points to its new place.
+
+- [USAGE.md](USAGE.md), now [Usage](user/usage.md)
+- [ANDROID.md](ANDROID.md), now [Android host](hosts/android-app.md)
+- [DEPRECATIONS.md](DEPRECATIONS.md), now [Deprecations](user/deprecations.md)
 
 ## License
 
