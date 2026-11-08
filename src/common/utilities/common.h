@@ -110,14 +110,20 @@ typedef struct {
     const char* no_kosmickrisp; /* why KosmicKrisp cannot run on this system, NULL where it can */
     const char* system_driver;  /* the driver every run takes on a system that is not a Mac's, which the setting does
                                    not change, as the log names it; NULL on a Mac */
+    const char* driver_files;   /* the Vulkan loader's variable that names a driver, as NAME=value (VK_DRIVER_FILES,
+                                   else VK_ICD_FILENAMES); NULL where the environment names none */
 } SnxVulkanPlaces;
-/* The pick's files, found in at's folders. auto is the MoltenVK the program's folders carry, else the system's;
-   moltenvk and kosmickrisp are that one driver, carried or installed on the Mac. 1 with the driver in out; where the
-   Mac has not the one asked for, auto's plays instead, with instead set and reason saying why and what plays; on
-   another system, the system's driver, which moltenvk and kosmickrisp also take, said as for a driver the Mac has
-   not. 0 for a value that is no driver, with the reason */
+/* The pick's files, found in at's folders. auto is the driver the environment names (driver_files) through the Vulkan
+   loader, else KosmicKrisp where the Mac has it and can run it (the program's, else an installed one), else the
+   MoltenVK the program's folders carry, else the system's loader; moltenvk and kosmickrisp are that one driver,
+   carried or installed on the Mac. 1 with the driver in out and reason naming it and why, for the log; where the Mac
+   has not the one asked for, auto's plays instead, with instead set and reason saying why and what plays; on another
+   system, the system's driver, which moltenvk and kosmickrisp also take, said as for a driver the Mac has not, and
+   auto said nothing of. 0 for a value that is no driver, with the reason */
 int snx_vulkan_driver_find(const SnxVulkanPlaces* at, const char* pick, SnxVulkanDriver* out, char* reason,
                            size_t reason_size);
+/* 1 where KosmicKrisp runs on a Mac whose kernel is darwin (uname's release: 25.0.0 is macOS 26), else 0 with why */
+int snx_vulkan_kosmickrisp_runs(const char* darwin, char* why, size_t why_size);
 /* snx_vulkan_driver_find in this system's folders, for the program that runs */
 int snx_vulkan_driver_choose(const char* program, const char* pick, SnxVulkanDriver* out, char* reason,
                              size_t reason_size);

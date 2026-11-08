@@ -444,31 +444,40 @@ static void renderer_failed(const char* what) {
 static const SnxVulkanDriver* vulkan_driver(void) {
     static SnxVulkanDriver pick;
     static int picked;
-    if (!picked) {
-        char reason[4096] = "";
-        char* self = snx_executable(NULL);
-        picked = 1;
-        /* A value that is no driver stops, as a menu that shows no other would hide the mistake. A driver the system
-           has not plays auto's in its place, so that a game still starts, and the warning names it */
-        if (!snx_vulkan_driver_choose(self, g_settings.vulkan_driver, &pick, reason, sizeof reason))
-            fatal("%s", reason);
-        if (pick.instead) WARN("vulkan: vulkan_driver=%s: %s\n", g_settings.vulkan_driver, reason);
-        free(self);
+    if (picked) return &pick;
+    picked = 1;
+    const char* asked = g_settings.vulkan_driver;
 #ifdef __APPLE__
-        /* the loader takes the driver its ICD names, and no other */
-        if (pick.icd && setenv("VK_DRIVER_FILES", pick.icd, 1))
-            fatal("vulkan: VK_DRIVER_FILES=%s could not be set", pick.icd);
-        /* an auto run leaves a library SDL already names alone, as it did before the setting (a checkout's test) */
-        if (pick.library && (strcmp(g_settings.vulkan_driver, "auto") || !SDL_GetHint(SDL_HINT_VULKAN_LIBRARY)))
-            SDL_SetHint(SDL_HINT_VULKAN_LIBRARY, pick.library);
-        {
-            const char* library = SDL_GetHint(SDL_HINT_VULKAN_LIBRARY);
-            if (pick.icd) LOG("vulkan: %s, ICD %s, through the Vulkan loader %s\n", pick.name, pick.icd, library);
-            else if (library && library[0]) LOG("vulkan: the Vulkan library at %s\n", library);
-            else LOG("vulkan: %s\n", pick.name);
-        }
-#endif
+    /* a library SDL already names (SDL_VULKAN_LIBRARY) is the one auto takes, as before the setting: a checkout's test */
+    const char* named = SDL_GetHint(SDL_HINT_VULKAN_LIBRARY);
+    if (named && named[0] && (!asked[0] || !strcmp(asked, "auto"))) {
+        pick.library = snx_strdup(named);
+        pick.name = "SDL_VULKAN_LIBRARY's";
+        LOG("vulkan: the Vulkan library SDL_VULKAN_LIBRARY names, %s (vulkan_driver=auto leaves it)\n", named);
+        return &pick;
     }
+#endif
+    char reason[4096] = "";
+    char* self = snx_executable(NULL);
+    int found = snx_vulkan_driver_choose(self, asked, &pick, reason, sizeof reason);
+    free(self);
+    /* A value that is no driver stops, as a menu that shows no other would hide the mistake. A driver the system has
+       not plays auto's in its place, so that a game still starts, and the warning names it */
+    if (!found) fatal("%s", reason);
+    if (pick.instead)
+        WARN("vulkan: vulkan_driver=%s: %s\n", asked, reason);
+    else if (reason[0])
+        LOG("vulkan: %s\n", reason);
+#ifdef __APPLE__
+    /* the loader takes the driver its ICD names, and no other */
+    if (pick.icd && setenv("VK_DRIVER_FILES", pick.icd, 1)) {
+        char error[256];
+        LOG("vulkan: VK_DRIVER_FILES=%s could not be set: %s\n", pick.icd, snx_os_error(error, sizeof error));
+        fatal("vulkan: VK_DRIVER_FILES could not be set for KosmicKrisp's ICD (see the log)");
+    }
+    /* the setting's driver over a library SDL_VULKAN_LIBRARY names, which only auto leaves */
+    if (pick.library) SDL_SetHintWithPriority(SDL_HINT_VULKAN_LIBRARY, pick.library, SDL_HINT_OVERRIDE);
+#endif
     return &pick;
 }
 

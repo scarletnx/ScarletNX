@@ -38,7 +38,7 @@ recompiles through the driver as a child process, with SDL's own file and folder
 the Finder. The app is signed ad hoc, as Apple silicon runs no unsigned code. A copy from a download may need *Open*
 from the Finder's menu the first time.
 
-The Vulkan driver is MoltenVK, Ryujinx's build of it ([V380-Ori/Ryujinx.MoltenVK](https://github.com/V380-Ori/Ryujinx.MoltenVK)),
+The Vulkan driver the apps carry is MoltenVK, Ryujinx's build of it ([V380-Ori/Ryujinx.MoltenVK](https://github.com/V380-Ori/Ryujinx.MoltenVK)),
 which carries the patches an emulator's pipelines need and mainline MoltenVK lacks. Both apps carry it in their
 `Frameworks`, and a game's folder gets that library beside its copy of the runtime (`snx_deploy_runtime`), a second name
 where the disk allows one and a copy where it does not, as a read-only app image or one macOS translocated leaves. A
@@ -46,7 +46,8 @@ game plays as `<data folder>/recompiled/<id>/<id>`, outside the bundle, where SD
 `@executable_path/../Frameworks` reaches nothing. The runtime hands SDL the library its own folder holds
 (`backend/sdl3.c`), and a run with no window loads the same file without SDL's video. The bare `scarletnx` of a
 checkout has no library to deploy and no bundle around it, so it uses the system's Vulkan loader (Homebrew's
-`molten-vk` and `vulkan-loader`).
+`molten-vk` and `vulkan-loader`). Where the Mac has KosmicKrisp, `vulkan_driver=auto` takes it before either
+([below](#kosmickrisp-experimental)).
 
 The 3DS and the Vita's windows open through `common/gpu/vk/window.c`, which names the same library to SDL and takes
 its own entry points from it. One process must hold one copy of MoltenVK: a second copy's `MVKInstance` is a
@@ -56,13 +57,17 @@ loader and SDL took the bundle's library.
 
 ### KosmicKrisp (experimental)
 
-A game can run on [KosmicKrisp](https://docs.mesa3d.org/drivers/kosmickrisp.html) instead, Mesa's Vulkan driver on
-Metal. Set `vulkan_driver = kosmickrisp` in the game's `.ini`, or start it with `--vulkan_driver=kosmickrisp`. The
-option is in Graphics in the launcher's Settings and in the game's menu. The setting also takes `moltenvk`, and `auto`
-keeps the MoltenVK the app carries.
+[KosmicKrisp](https://docs.mesa3d.org/drivers/kosmickrisp.html) is Mesa's Vulkan driver on Metal, and a game runs on
+it where the Mac has it. `vulkan_driver = auto`, the default, takes KosmicKrisp where the Mac has it and runs it, else
+the MoltenVK the app carries, else the system's Vulkan loader. `vulkan_driver = moltenvk` in the game's `.ini`, or
+`--vulkan_driver=moltenvk`, keeps MoltenVK, and `kosmickrisp` asks for KosmicKrisp alone. The option is in Graphics in
+the launcher's Settings and in the game's menu. The first `vulkan:` line of the log names the driver that runs and why.
 
-The support is experimental. A game may draw wrong or stop on KosmicKrisp, and MoltenVK stays the default until the
-support is stable. After that, KosmicKrisp becomes the default on a Mac and MoltenVK the fallback.
+The support is experimental: a game may draw wrong or stop on KosmicKrisp. Nor is one driver the faster everywhere. On
+an M4 Max, with KosmicKrisp vulkan-sdk-1.4.363 and MoltenVK 1.4.2, one game's first cutscene ran at 55 fps on
+KosmicKrisp (48 to 58 over 5 runs) and at about 2 on MoltenVK, which has no `VK_EXT_conditional_rendering`: each
+occlusion-tested draw makes the CPU wait for the GPU (#777). The same game's station scene ran at 48 to 52 fps on
+MoltenVK and 27 on KosmicKrisp; there, `vulkan_driver = moltenvk` is the faster one.
 
 Where KosmicKrisp lacks an extension or a feature that the renderer asks for, the runtime takes the path it has for a
 driver without it, as it does for the features MoltenVK lacks. The game keeps running on KosmicKrisp, and a run does not
@@ -70,23 +75,24 @@ change driver half way. What that costs today: transform feedback is not capture
 own takes the nearest of black and white, wireframe draws solid, and the frame pacing falls back to its timer. One game's
 title screen has run on it, at the frames a second the game caps itself to.
 
-The app's default run loads its MoltenVK directly, as before, so `VK_DRIVER_FILES` has no effect on it. A checkout's run
-uses the system loader, where `VK_DRIVER_FILES` alone selects KosmicKrisp. The setting is the app's way to do the same:
-it gives SDL the Vulkan loader and sets the ICD. SDL and volk take that one library.
+KosmicKrisp runs through the Vulkan loader: the runtime gives SDL the loader and sets `VK_DRIVER_FILES` to the ICD, and
+SDL and volk take that one library. MoltenVK loads directly. `auto` leaves a driver the environment already names: with
+`VK_DRIVER_FILES` (or `VK_ICD_FILENAMES`) set it loads the loader and lets that variable pick, and with
+`SDL_VULKAN_LIBRARY` set it loads that library. `moltenvk` and `kosmickrisp` go over both.
 
-KosmicKrisp needs an Apple silicon Mac with macOS 26 or later, and the Vulkan loader (`VK_DRIVER_FILES`).
-The runtime finds it:
+KosmicKrisp needs an Apple silicon Mac with macOS 26 or later, and the Vulkan loader. `auto` passes over it on an older
+Mac, or in a build for Intel Macs, and the log says why. The runtime finds it:
 
 - beside the program, from an app built with `SNX_KOSMICKRISP` (its own folder holds the driver, its loader and the
   ICD JSON, and a game's folder gets the same three from the deploy), else
-- in Homebrew's `mesa` (`/opt/homebrew/share/vulkan/icd.d`, or `/usr/local` on Intel), else
-- in a LunarG Vulkan SDK under `~/VulkanSDK`.
+- in Homebrew's `mesa` (`/opt/homebrew/share/vulkan/icd.d`, or `/usr/local`), else
+- in a LunarG Vulkan SDK under `$HOME/VulkanSDK`, the newest first.
 
 The loader comes from the same folders, or from `/opt/homebrew/lib/libvulkan.1.dylib` or `/usr/local/lib` when the
 driver and the loader are installed apart. LunarG's build is self-contained, and Homebrew's links the prefix's
 libraries. Homebrew's build can also need a newer macOS than the SDK's, so the SDK's driver is the one to carry. Do not
-put Homebrew's driver in the app. A driver the setting names and the Mac does not have is said in the log, and the
-other driver plays instead, so a game still starts.
+put Homebrew's driver in the app. A driver the setting names and the Mac does not have is a warning in the log, which
+names the driver that plays in its place (auto's), so a game still starts.
 
 The setting is the app's, for its Switch games. The 3DS and Vita frontends take the driver through the Vulkan
 loader, and a Mac without `VK_DRIVER_FILES` gives them MoltenVK. Their own settings do not name a driver yet.
@@ -100,6 +106,7 @@ cmake --preset macos -DLLVM_DIR=$HOME/apple-llvm/macos/lib/cmake/llvm \
 
 The app then carries both drivers. The build takes the SDK's `lib/libvulkan_kosmickrisp.dylib`, its
 `lib/libvulkan.1.dylib` and the API version of its ICD JSON, and writes an ICD JSON whose library path is relative.
+The CI's app is built without it, so on a Mac without Homebrew's `mesa` or the SDK, `auto` plays the app's MoltenVK.
 
 The Vulkan tests run on the driver that the Vulkan loader picks. To run them on KosmicKrisp, name its ICD:
 
@@ -290,8 +297,8 @@ place: the renderer's barriers name the `Surf` a descriptor came from, and a lat
 image through a crop, another view or a guest alias, which is a different Metal resource than the one the barrier
 named. Metal then runs the two together. The missing order is not yet found.
 
-PR #1206 adds `vulkan_driver=kosmickrisp`, so the same route can be run on Mesa's KosmicKrisp, whose Vulkan side has
-none of these limits. It is the driver to compare against while this is open.
+`vulkan_driver=auto` runs the same route on Mesa's KosmicKrisp where the Mac has it, and `vulkan_driver=kosmickrisp`
+asks for it: its Vulkan side has none of these limits, so it is the driver to compare against while this is open.
 
 A device loss from the recording thread also used to hang the process: `submit_run` called `fatal()`, and the window
 release waits for the recording thread in `vk_rec_sync`, so the thread waited for itself and the process spun at full

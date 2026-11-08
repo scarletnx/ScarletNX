@@ -243,10 +243,12 @@ setting Vulkan driver
     default auto
     startup
     words auto=Auto|moltenvk=MoltenVK|kosmickrisp=KosmicKrisp (experimental)
-    help The Vulkan driver a game runs on, on macOS: auto = the MoltenVK the app carries, moltenvk = a MoltenVK
-    help library, kosmickrisp = Mesa's KosmicKrisp through the Vulkan loader (experimental, macOS 26 or later). On
-    help every other system the game runs on the system's driver whatever the value (on Android, gpu_driver's), and
-    help the log says so for moltenvk and kosmickrisp. Any other value stops the game, saying so
+    help The Vulkan driver a game runs on, on macOS: auto = KosmicKrisp where the Mac has it and runs it (Apple
+    help silicon, macOS 26 or later), else the MoltenVK the app carries, else the system's loader; moltenvk = a
+    help MoltenVK library; kosmickrisp = Mesa's KosmicKrisp through the Vulkan loader (experimental). The log says
+    help which driver runs and why. On every other system the game runs on the system's driver whatever the value (on
+    help Android, gpu_driver's), and the log says so for moltenvk and kosmickrisp. Any other value stops the game,
+    help saying so
 setting Vertex input dynamic state
     key vertex_input_dynamic_state
     text 16

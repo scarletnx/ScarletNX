@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The Vulkan drivers an Apple app carries (MoltenVK, and KosmicKrisp with its loader): found beside a program or in its
-   bundle, picked for a run (snx_vulkan_driver_choose), and put beside the runtime copy a game runs, which is outside
+   bundle, picked for a run (snx_vulkan_driver_find), and put beside the runtime copy a game runs, which is outside
    the bundle where SDL finds neither the app's Frameworks nor a system loader (docs/APPLE.md) */
 #define _DARWIN_C_SOURCE /* chflags and UF_IMMUTABLE, which hide behind it in a strict C99 compile */
 #include "common/utilities/common.h"
@@ -37,9 +37,11 @@ static void found(char* path, const char* expected) {
    Apple silicon GPU, and a machine that has neither, or has no mesa or Vulkan SDK, has no ICD to name */
 static void kosmickrisp_device(const char* program) {
     SnxVulkanDriver pick;
-    char reason[512];
-    if (!snx_vulkan_driver_choose(program, "kosmickrisp", &pick, reason, sizeof reason)) {
+    char reason[4096];
+    /* a Mac without it plays auto's driver instead, which is not KosmicKrisp */
+    if (!snx_vulkan_driver_choose(program, "kosmickrisp", &pick, reason, sizeof reason) || pick.instead) {
         printf("vulkan_driver: no KosmicKrisp on this Mac, so no device: %s\n", reason);
+        snx_vulkan_driver_free(&pick);
         return;
     }
     assert(pick.icd && pick.library);
@@ -122,18 +124,21 @@ int main(void) {
     found(snx_vulkan_driver(app_program), app_driver);
     found(snx_vulkan_driver(phone_program), phone_driver);
     assert(!snx_vulkan_driver(plain));
-    { /* the run's pick: auto and moltenvk are the app's MoltenVK; a value that is no driver is refused with the reason */
+    { /* the run's pick in the app's own folders, without the Mac's installs and environment (vulkan_driver_pick's):
+         auto and moltenvk are the app's MoltenVK while it carries no KosmicKrisp; a value that is no driver is refused
+         with the reason */
+        SnxVulkanPlaces at = {.program = app_program};
         SnxVulkanDriver pick;
-        char reason[512];
-        assert(snx_vulkan_driver_choose(app_program, "auto", &pick, reason, sizeof reason));
+        char reason[4096];
+        assert(snx_vulkan_driver_find(&at, "auto", &pick, reason, sizeof reason));
         named(pick.library, app_driver);
         assert(!pick.icd && !strcmp(pick.name, "MoltenVK"));
         snx_vulkan_driver_free(&pick);
-        assert(snx_vulkan_driver_choose(app_program, "moltenvk", &pick, reason, sizeof reason));
+        assert(snx_vulkan_driver_find(&at, "moltenvk", &pick, reason, sizeof reason));
         named(pick.library, app_driver);
-        assert(!pick.icd);
+        assert(!pick.icd && !pick.instead);
         snx_vulkan_driver_free(&pick);
-        assert(!snx_vulkan_driver_choose(app_program, "vulkan", &pick, reason, sizeof reason));
+        assert(!snx_vulkan_driver_find(&at, "vulkan", &pick, reason, sizeof reason));
         assert(strstr(reason, "auto, moltenvk or kosmickrisp") && !pick.library && !pick.icd);
     }
     /* the game's folder gets the app's, and its own copy of the runtime finds it first */
@@ -166,13 +171,18 @@ int main(void) {
     put(app_loader, "the Vulkan loader");
     put(app_kosmickrisp, "Mesa's KosmicKrisp");
     put(app_icd, "the ICD JSON of KosmicKrisp");
-    {
+    { /* and auto takes it before the app's MoltenVK */
+        SnxVulkanPlaces at = {.program = app_program};
         SnxVulkanDriver pick;
-        char reason[512];
-        assert(snx_vulkan_driver_choose(app_program, "kosmickrisp", &pick, reason, sizeof reason));
+        char reason[4096];
+        assert(snx_vulkan_driver_find(&at, "kosmickrisp", &pick, reason, sizeof reason));
         named(pick.library, app_loader);
         named(pick.icd, app_icd);
-        assert(!strcmp(pick.name, "KosmicKrisp"));
+        assert(!strcmp(pick.name, "KosmicKrisp") && !pick.instead);
+        snx_vulkan_driver_free(&pick);
+        assert(snx_vulkan_driver_find(&at, "auto", &pick, reason, sizeof reason));
+        named(pick.library, app_loader);
+        named(pick.icd, app_icd);
         snx_vulkan_driver_free(&pick);
     }
     assert(!snx_deploy_vulkan_driver(app_program, game_dir));
