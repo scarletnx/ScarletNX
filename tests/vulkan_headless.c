@@ -5136,6 +5136,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_msaa.inc"
 #include "vulkan_cross_stage_alias.inc"
 #include "vulkan_draw_texture.inc"
+#include "vulkan_lone_lane.inc"
 #include "vulkan_descriptor_heaps.inc"
 #include "vulkan_sample_raster.inc"
 #include "vulkan_mixed_coverage.inc"
@@ -5476,6 +5477,8 @@ static int run_headless(int argc, char** argv) {
             result = check_texture_half_rounding();
         else if (!strcmp(name, "cross_stage_alias"))
             result = check_cross_stage_image_alias();
+        else if (!strcmp(name, "lone_lane"))
+            result = check_lone_lane();
         else if (!strcmp(name, "cross_stage_blend"))
             result = check_cross_stage_blend_snapshots();
         else if (!strcmp(name, "txd_uniform"))
@@ -5704,6 +5707,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_index_draws());
     CHECK(!check_pass_breaks());
     CHECK(!check_mesh_inputs());
+    CHECK(!check_lone_lane());
     CHECK(!check_frag_coord_origin());
     CHECK(!check_vertex_restride());
     CHECK(!check_vertex_input_layouts());

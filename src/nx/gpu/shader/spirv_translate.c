@@ -324,6 +324,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     int indexed_shadow = 0;
     int has_stack = 0, has_pexit = 0, has_conditional_exit = 0;
     int needs_local = 0, needs_shared = 0, needs_subgroup = 0, needs_atomic_cas = 0, lane_used = 0, needs_quad = 0;
+    int votes = 0, swizzle_lanes = 0; /* VOTE or SHFL; FSWZADD whose lanes take different modes */
     int needs_gather_extended = 0;
     int fp32_flush = 0, fp32_preserve = 0;
     u32 out_reg = 0;
@@ -1385,10 +1386,11 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             needs_derivatives = 1;
         if (stage == ST_FS && shader_helper_side_effect(op->id)) needs_demote = 1;
         if (op->id == O_KIL) has_discard = 1;
-        if (op->id == O_VOTE || op->id == O_SHFL) needs_subgroup = 1;
+        if (op->id == O_VOTE || op->id == O_SHFL) needs_subgroup = votes = 1;
         if (op->id == O_SHFL && stage == ST_FS && g_shader_quad && shader_shfl_quad(insn[i], NULL)) needs_quad = 1;
         /* FSWZADD's lanes in a quad are the subgroup's, as SHFL's are, when they don't all do the same */
-        if (op->id == O_FSWZADD && shader_fswzadd_lanes(insn[i], B(insn[i], 28, 2)) != 15) needs_subgroup = 1;
+        if (op->id == O_FSWZADD && shader_fswzadd_lanes(insn[i], B(insn[i], 28, 2)) != 15)
+            needs_subgroup = swizzle_lanes = 1;
         if (op->id == O_S2R && (B(insn[i], 20, 8) == 0 || (B(insn[i], 20, 8) >= 0x38 && B(insn[i], 20, 8) <= 0x3c)))
             lane_used = 1;
     }
@@ -1397,11 +1399,18 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
        each primitive has its batch to itself), whatever the device's subgroups: a control program's invocations are
        lanes 0 up, its invocation id, and any other's is lane 0. NVN's evaluation programs read SR_LANEID (into a
        register SR_INVOCATION_INFO then overwrites), and on a device without subgroups in that stage (lavapipe) the
-       program wasn't translated and its draws were lost */
-    int lane_model = !needs_subgroup && stage != ST_FS && stage != ST_CS;
+       program wasn't translated and its draws were lost.
+       A vertex, evaluation or geometry program that votes or shuffles, on a device without subgroups in its stage,
+       runs each invocation as a warp whose only active lane is lane 0, as the console runs a batch of one vertex or
+       primitive: its ballot is its own bit, VOTE.ALL and VOTE.ANY are its predicate, VOTE.EQ is true, and SHFL keeps
+       its own value, which is the console's for its own lane or one out of range and as good as any for a lane
+       that runs nothing. Control programs keep the subgroup: their invocations are the lanes of one warp together */
+    int lone_lane = votes && !swizzle_lanes && !can_subgroup && (stage == ST_VS || stage == ST_TES || stage == ST_GS);
+    int lane_model = (!needs_subgroup || lone_lane) && stage != ST_FS && stage != ST_CS;
     int lane_is_invocation = lane_model && stage == ST_TCS;
     if (lane_used && lane_is_invocation) invocation_used = 1;
     if (lane_used && !lane_model) needs_subgroup = 1;
+    if (lone_lane) needs_subgroup = 0;
     if (needs_f16 && (g_shader_half_rounding & 2)) needs_f64 = 1;
     if (!has_exit) return direct_reject(si, "missing exit");
     if (has_pexit && has_conditional_exit) return direct_reject(si, "conditional EXIT with PEXIT token");
@@ -2777,7 +2786,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     next.coverage_early_tests = si->coverage_early_tests;
     next.late_depth = si->late_depth;
     next.capture_outputs = si->capture_outputs;
-    next.primitive_split_safe = stage == ST_VS && !needs_subgroup && !lane_used && !needs_clock;
+    next.primitive_split_safe = stage == ST_VS && !votes && !needs_subgroup && !lane_used && !needs_clock;
     memcpy(next.cs_local, si->cs_local, sizeof next.cs_local);
     next.shared_size = si->shared_size;
     next.attr_int_mask = si->attr_int_mask;
