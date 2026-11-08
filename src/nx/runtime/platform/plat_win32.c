@@ -79,6 +79,7 @@ int plat_memory_watch(int (*say)(const char* why)) {
 static int g_power_changed;
 void plat_power_mark_changed(void) { __atomic_store_n(&g_power_changed, 1, __ATOMIC_RELEASE); }
 int plat_power_take_change(void) { return __atomic_exchange_n(&g_power_changed, 0, __ATOMIC_ACQ_REL); }
+int plat_trim_level_take(void) { return -1; } /* Android's alone */
 /* The system's power setting notification for the AC/DC source: the charger in or out calls this on a system thread.
    The SDK's DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS is not in every _WIN32_WINNT's powrprof.h, so this is the same two
    pointers, and DEVICE_NOTIFY_CALLBACK is 2 (winuser.h) */

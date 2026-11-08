@@ -321,6 +321,8 @@ static int memory_line(const char* why) {
     static u32 said;
     char stats[320], gpu[1024] = "";
     u32 n;
+    /* what the renderer can make again goes at its next frame, at every warning */
+    if (g_renderer && g_renderer->memory_release) g_renderer->memory_release(why);
     if (__atomic_load_n(&said, __ATOMIC_RELAXED) >= MEMORY_LINES ||
         (n = __atomic_fetch_add(&said, 1, __ATOMIC_RELAXED)) >= MEMORY_LINES)
         return 0;
@@ -367,10 +369,31 @@ static bool SDLCALL lifecycle(void* unused, SDL_Event* e) {
         case SDL_EVENT_DID_ENTER_BACKGROUND: LOG("lifecycle: the app is in the background\n"); break;
         case SDL_EVENT_WILL_ENTER_FOREGROUND: LOG("lifecycle: the app will enter the foreground\n"); break;
         case SDL_EVENT_DID_ENTER_FOREGROUND: LOG("lifecycle: the app is in the foreground\n"); break;
-        case SDL_EVENT_LOW_MEMORY:
+        case SDL_EVENT_LOW_MEMORY: {
+            /* Android's level, which GameActivity passed before SDL's event that carries none */
+            static const struct {
+                int level;
+                const char* name;
+            } levels[] = {{80, "TRIM_MEMORY_COMPLETE"},         {60, "TRIM_MEMORY_MODERATE"},
+                          {40, "TRIM_MEMORY_BACKGROUND"},       {20, "TRIM_MEMORY_UI_HIDDEN"},
+                          {15, "TRIM_MEMORY_RUNNING_CRITICAL"}, {10, "TRIM_MEMORY_RUNNING_LOW"},
+                          {5, "TRIM_MEMORY_RUNNING_MODERATE"}};
+            char why[96];
+            int level = plat_trim_level_take();
+            const char* name = "a level this build has no name for";
+            for (size_t i = 0; i < sizeof levels / sizeof *levels; i++)
+                if (level >= levels[i].level) {
+                    name = levels[i].name;
+                    break;
+                }
+            if (level >= 0)
+                snprintf(why, sizeof why, "Android's onTrimMemory, level %d (%s)", level, name);
+            else
+                snprintf(why, sizeof why, "SDL's low memory event");
             LOG("lifecycle: the system warns of low memory\n");
-            memory_line("SDL's low memory event");
+            memory_line(why);
             break;
+        }
         case SDL_EVENT_TERMINATING: LOG("lifecycle: the system is ending the app\n"); break;
         default: break;
     }

@@ -61,6 +61,8 @@ int plat_memory_watch(int (*say)(const char* why));
 int plat_power_take_change(void);
 /* marks a change from a platform watcher's callback (Android's receiver, Apple's notification) */
 void plat_power_mark_changed(void);
+/* the level of Android's last onTrimMemory not yet taken (GameActivity), and clears it; -1 for none, and elsewhere */
+int plat_trim_level_take(void);
 
 /* ---- the guest's address space */
 /* The host's page, which the reservation is committed, decommitted and aliased in: 4 KiB, the Switch's own, on x86-64

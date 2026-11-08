@@ -268,6 +268,13 @@ int vk_lock_held(void);  /* this thread holds vk_lock */
 void vk_mem_init(int sparse_queue);
 /* the device memory VMA's blocks hold in the images' heap: what the system gave, used or not */
 u64 vk_mem_blocks(void);
+/* surface.c: the system's word that its memory runs short (why, its words), from any thread; at the renderer's next
+   present (vk_mem_release_run) the caches free all they can make again that the last two presents didn't use, and
+   four presents later the log says how much went and how far VMA's blocks went down */
+void vk_mem_release_ask(const char* why);
+void vk_mem_release_run(void);
+/* the releases run so far, and what the last freed (textures, buffers, render targets) */
+u32 vk_mem_release_stats(u64 by[3]);
 
 /* an image with its memory: one VMA allocation in mem, or, past g_vk.alloc_cap, pieces (mem stays VK_NULL_HANDLE).
    0 on failure. Destroyed with vk_image_destroy (vk_defer_image does that), never vmaDestroyImage */
