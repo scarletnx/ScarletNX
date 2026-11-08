@@ -9,6 +9,7 @@
    thread asking, and shader results landing on whichever thread reads their memory first. Acquiring a swapchain image
    never waits for the display: with every image still on it or queued for it, that frame isn't shown (counted). */
 #include "common/utilities/bits.h"
+#include "common/utilities/common.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -932,11 +933,7 @@ static u64 surf_save(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, const c
         FILE* f = fopen(fn, "wb");
         int ok = f != NULL;
         if (f) {
-            fprintf(f, "P6\n%u %u\n255\n", dw, dh);
-            for (u64 i = 0; i < (u64)w * h && ok; i++) {
-                u8 rgb[3] = {px[i * 4], px[i * 4 + 1], px[i * 4 + 2]};
-                ok = fwrite(rgb, 1, 3, f) == 3;
-            }
+            ok = !snx_ppm_write(f, dw, dh, px, 4, (ptrdiff_t)dw * 4, SNX_PPM_RGBA);
             ok = fclose(f) == 0 && ok;
         }
         if (!ok) WARN_LIMIT(1, "vulkan: the screenshot %s couldn't be written\n", fn);

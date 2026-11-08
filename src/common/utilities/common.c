@@ -777,6 +777,34 @@ int snx_write_changed(const char* path, const void* data, size_t size) {
     free(old);
     return same ? 0 : snx_write_file(path, data, size);
 }
+int snx_ppm_write(FILE* f, uint32_t width, uint32_t height, const unsigned char* pixels, ptrdiff_t pixel_step,
+                  ptrdiff_t row_step, int order) {
+    if (fprintf(f, "P6\n%u %u\n255\n", (unsigned)width, (unsigned)height) < 0) return -1;
+    unsigned char* line = width ? (unsigned char*)malloc((size_t)width * 3) : NULL;
+    if (width && !line) return -1;
+    int rc = 0;
+    for (uint32_t y = 0; y < height && !rc; ++y) {
+        const unsigned char* row = pixels + (ptrdiff_t)y * row_step;
+        for (uint32_t x = 0; x < width; ++x) {
+            const unsigned char* p = row + (ptrdiff_t)x * pixel_step;
+            unsigned char* out = line + (size_t)x * 3;
+            if (order == SNX_PPM_WORD) {
+                uint32_t word;
+                memcpy(&word, p, sizeof word);
+                out[0] = (unsigned char)word;
+                out[1] = (unsigned char)(word >> 8);
+                out[2] = (unsigned char)(word >> 16);
+            } else {
+                out[0] = p[order == SNX_PPM_BGRA ? 2 : 0];
+                out[1] = p[1];
+                out[2] = p[order == SNX_PPM_BGRA ? 0 : 2];
+            }
+        }
+        rc = fwrite(line, 3, width, f) != width ? -1 : 0;
+    }
+    free(line);
+    return rc;
+}
 int snx_copy_file(const char* src, const char* dst) {
     unsigned char buf[65536];
     FILE* in = snx_fopen(src, "rb");

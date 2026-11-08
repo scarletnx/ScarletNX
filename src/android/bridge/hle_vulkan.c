@@ -1377,13 +1377,8 @@ static void shot_finish(ShotJob* j) {
     snprintf(name, sizeof name, shot.path, j->number);
     FILE* f = (bgra || rgba) ? fopen(name, "wb") : NULL;
     if (f && !((PFN_vkMapMemory)vk("vkMapMemory"))(j->device, j->memory, 0, VK_WHOLE_SIZE, 0, &mapped)) {
-        fprintf(f, "P6\n%u %u\n255\n", j->extent.width, j->extent.height);
-        const unsigned char* p = mapped;
-        size_t pixels = (size_t)j->extent.width * j->extent.height;
-        for (size_t i = 0; i < pixels; ++i, p += 4) {
-            unsigned char rgb[3] = {p[bgra ? 2 : 0], p[1], p[bgra ? 0 : 2]};
-            fwrite(rgb, 1, 3, f);
-        }
+        (void)snx_ppm_write(f, j->extent.width, j->extent.height, mapped, 4, (ptrdiff_t)j->extent.width * 4,
+                            bgra ? SNX_PPM_BGRA : SNX_PPM_RGBA);
         ((PFN_vkUnmapMemory)vk("vkUnmapMemory"))(j->device, j->memory);
         fprintf(stderr, "scarletnx-android: Vulkan present %ld saved in %s\n", j->number, name);
     } else {
