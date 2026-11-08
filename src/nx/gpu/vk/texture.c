@@ -1950,6 +1950,19 @@ static Surf* tex_from_tic(const u32* tic, int raw, int storage) {
         /* a header of another texel size covers other memory than the target's pixels (depth is read through its
            own aspect, whatever the host format's size) */
         if (f.bpp == rt->f.bpp || f.depth || rt->f.depth) {
+            /* A smaller header is a corner of the target only where its pixels lie at the same bytes (dynamic
+               resolution). One laid out otherwise is another texture in memory the target once had, which it doesn't
+               read, and which neither keeps the target alive nor loads it again. One game's 256x1 ramp, at the address
+               of a 2048x4096 depth target gone by, took that target's corner, and its sky stayed white until it was
+               started again */
+            if (!rt->msaa && (rt->w != w || rt->h != h) && !vk_rt_same_layout(rt, w, h, bl, bh, pitch)) {
+                LOG_LIMIT(
+                    30,
+                    "vulkan: a %ux%u texture (%u bytes a texel, depth %d) at the address of the %ux%u render target "
+                    "at %llx (%u bytes a pixel, depth %d) isn't laid out as it is: loaded from memory\n",
+                    w, h, f.bpp, f.depth, rt->w, rt->h, (unsigned long long)gva, rt->f.bpp, rt->f.depth);
+                goto texture_from_memory;
+            }
             vk_rt_note_read(rt);
             if (rt->layout == VK_IMAGE_LAYOUT_UNDEFINED) goto texture_from_memory;
             /* Crops are sampling snapshots, without storage usage or a guest layout for publishing writes: a

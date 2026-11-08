@@ -5791,6 +5791,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_mesh_inputs());
     CHECK(!check_lone_lane());
     CHECK(!check_frag_coord_origin());
+    CHECK(!check_rt_other_layout());
     CHECK(!check_vertex_restride());
     CHECK(!check_vertex_input_layouts());
     CHECK(!check_vertex_input_file_key());
