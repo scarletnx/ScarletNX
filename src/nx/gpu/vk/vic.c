@@ -44,25 +44,16 @@ static void vic_init(void) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &g_vic_ds};
     if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &li, NULL, &g_vic_layout)))
         fatal("vulkan: cannot create the VIC pipeline layout");
-    VkShaderModuleCreateInfo mi = {
-        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = (size_t)vic_spv_size, .pCode = vic_spv};
-    VkShaderModuleCreateInfo mi_unaligned = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-                                             .codeSize = (size_t)vic_unaligned_spv_size,
-                                             .pCode = vic_unaligned_spv};
     /* two builds of the shader: the aligned one is the happy path, the unaligned one handles planes whose rows
        are not word aligned (gpu/video/vic.comp) */
     VkPipeline* pipes[2] = {&g_vic_pipe, &g_vic_pipe_unaligned};
-    const VkShaderModuleCreateInfo* mis[2] = {&mi, &mi_unaligned};
+    const u32* words[2] = {vic_spv, vic_unaligned_spv};
+    const size_t sizes[2] = {(size_t)vic_spv_size, (size_t)vic_unaligned_spv_size};
     for (int i = 0; i < 2; i++) {
         VkShaderModule module;
-        if (!VK_OK(vkCreateShaderModule(g_vk.dev, mis[i], NULL, &module))) fatal("vulkan: cannot load the VIC shader");
-        VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                                          .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                    .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                    .module = module,
-                                                    .pName = "main"},
-                                          .layout = g_vic_layout};
-        int ok = VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, pipes[i]));
+        if (!VK_OK(snx_vk_shader_module(g_vk.dev, words[i], sizes[i], &module)))
+            fatal("vulkan: cannot load the VIC shader");
+        int ok = VK_OK(snx_vk_module_pipeline(g_vk.dev, vk_pipeline_cache(), g_vic_layout, module, NULL, pipes[i]));
         vkDestroyShaderModule(g_vk.dev, module, NULL);
         if (!ok) fatal("vulkan: cannot create the VIC compute pipeline");
     }

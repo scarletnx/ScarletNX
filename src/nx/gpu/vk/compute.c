@@ -745,23 +745,9 @@ static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx,
         p->failed = 1;
         return p;
     }
-    VkShaderModuleCreateInfo mi = {
-        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = nw * 4, .pCode = spv};
-    VkShaderModule m;
-    int ok = VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &m));
-    free(spv);
-    if (!ok) {
+    if (!VK_OK(snx_vk_compute_pipeline(g_vk.dev, vk_pipeline_cache(), g_vk.cs_playout, spv, (size_t)nw * 4, &p->p)))
         p->failed = 1;
-        return p;
-    }
-    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                                      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                .module = m,
-                                                .pName = "main"},
-                                      .layout = g_vk.cs_playout};
-    if (!VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, &p->p))) p->failed = 1;
-    vkDestroyShaderModule(g_vk.dev, m, NULL);
+    free(spv);
     if (!p->failed)
         LOG_LIMIT(12, "vulkan: compute %016llx ready: block %ux%ux%u, %d global buffers, %d textures, %d images\n",
                   (unsigned long long)key, lx, ly, lz, p->si.ngbuf, p->si.ntex, p->si.nimg);
