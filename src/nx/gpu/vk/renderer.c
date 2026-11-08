@@ -693,10 +693,11 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 vmaGetHeapBudgets(g_vk.vma, b);
                 vmaGetMemoryProperties(g_vk.vma, &mp);
                 for (u32 q = 0; q < mp->memoryHeapCount && at < sizeof line; q++)
-                    at += (size_t)snprintf(line + at, sizeof line - at, "%s heap %u %llu of %llu MB (%llu ours)",
-                                           q ? "," : "", q, (unsigned long long)(b[q].usage >> 20),
-                                           (unsigned long long)(b[q].budget >> 20),
-                                           (unsigned long long)(b[q].statistics.blockBytes >> 20));
+                    at += (size_t)snprintf(
+                        line + at, sizeof line - at, "%s heap %u %llu of %llu MB (%llu ours, %llu of it allocated)",
+                        q ? "," : "", q, (unsigned long long)(b[q].usage >> 20),
+                        (unsigned long long)(b[q].budget >> 20), (unsigned long long)(b[q].statistics.blockBytes >> 20),
+                        (unsigned long long)(b[q].statistics.allocationBytes >> 20));
                 LOG("vulkan: memory used and budgeted:%s\n", line);
             }
             {
