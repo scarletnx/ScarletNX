@@ -4,6 +4,7 @@
 
 ## Index
 
+* [Layers](#layers)
 * [Status: stage 1 + stage 2a + stages 2b1–2b4 + initial 3a/3b/FS](#status-stage-1--stage-2a--stages-2b12b4--initial-3a3bfs)
   * [Kernel-bootstrap subset (2b4)](#kernel-bootstrap-subset-2b4)
   * [Initial CTR IPC/services (3a)](#initial-ctr-ipcservices-3a)
@@ -14,6 +15,18 @@
 * [Boundaries and prerequisites for stage 2b](#boundaries-and-prerequisites-for-stage-2b)
 * [Parity roadmap (Azahar)](#parity-roadmap-azahar)
   * [Gaps the F0/F1 audit left to later phases](#gaps-the-f0f1-audit-left-to-later-phases)
+
+## Layers
+
+| Layer | Code | Documents |
+| --- | --- | --- |
+| Loader | CIA, NCSD, NCCH, bundles and z3ds (`src/3ds/loader/`) | this page |
+| CPU | ARM11 code compiled ahead of time through the block compiler (`src/3ds/aot/`, `src/common/cpu/arm/`), and the blocks that the offline pass missed at run time | this page, [Architecture](../../dev/architecture.md) |
+| Kernel and HLE | the kernel (`src/3ds/kernel/`), the CTR IPC and its services (`src/3ds/ipc/`, `src/3ds/services/`), memory (`src/3ds/memory/`) | [CTR IPC and startup services](ipc.md) |
+| GPU | the PICA200 in software (`src/3ds/gpu/`) and on Vulkan (`src/3ds/gpu/vk/`), Y2R | this page |
+| Audio | the DSP and CSND (`src/3ds/audio/`) | this page |
+| Input | HID, the circle pad and the touch screen (`src/3ds/input/`, `src/3ds/services/hid.c`) | this page |
+| Platform | the run (`src/3ds/runtime/`), the board and its clock (`src/3ds/board/`), and the host layer that every driver shares (`src/common/platform/`) | [Build](../../dev/build.md) |
 
 ## Status: stage 1 + stage 2a + stages 2b1–2b4 + initial 3a/3b/FS
 
