@@ -13,8 +13,10 @@ import java.io.FileNotFoundException;
 
 /**
  * The device's shared storage as the system's documents provider shows it (com.android.externalstorage.documents, the
- * one DocumentsUI's pickers answer with): the host's files, a document's ID "primary:" and the host path without its
- * first slash. A tree or a document the picker gives (snx.android.app.Activities, --pick) is one of these.
+ * one DocumentsUI's pickers answer with): the files under Environment.getExternalStorageDirectory(), a document's ID
+ * "primary:" and its path there, as Android's, so that an app that turns an ID into a path (the primary volume's
+ * folder, then the path) finds the same file. A folder the picker gives that is elsewhere on the host is linked into
+ * the shared storage (shared), as if the user had picked it there.
  */
 public final class ExternalStorageProvider extends DocumentsProvider {
     public static final String AUTHORITY = "com.android.externalstorage.documents";
@@ -25,22 +27,53 @@ public final class ExternalStorageProvider extends DocumentsProvider {
     // Document.FLAG_SUPPORTS_WRITE 2, FLAG_SUPPORTS_DELETE 4, FLAG_DIR_SUPPORTS_CREATE 8
     private static final int FILE_FLAGS = 2 | 4, DIR_FLAGS = 4 | 8;
 
-    /** the document ID of a host file */
+    private static File root() { return android.os.Environment.getExternalStorageDirectory().getAbsoluteFile(); }
+
+    /** the document ID of a file in the shared storage, null for one elsewhere */
     public static String documentId(File file) {
-        String path = file.getAbsolutePath();
-        return ROOT + ":" + (path.startsWith("/") ? path.substring(1) : path);
+        String path = file.getAbsolutePath(), root = root().getPath();
+        if (path.equals(root)) return ROOT + ":";
+        if (!path.startsWith(root + "/")) return null;
+        return ROOT + ":" + path.substring(root.length() + 1);
+    }
+    /**
+     * A host file as a file of the shared storage: itself when it is in it, else a link to it in the storage's top
+     * folder, by its name (another name when that one is taken by something else)
+     */
+    public static File shared(File file) {
+        File f = file.getAbsoluteFile();
+        if (documentId(f) != null) return f;
+        File top = root();
+        top.mkdirs();
+        for (int i = 0; i < 100; ++i) {
+            File link = new File(top, i == 0 ? f.getName() : f.getName() + " (" + i + ")");
+            java.nio.file.Path lp = link.toPath();
+            try {
+                if (java.nio.file.Files.isSymbolicLink(lp)) {
+                    if (java.nio.file.Files.readSymbolicLink(lp).equals(f.toPath())) return link;
+                    continue;
+                }
+                if (link.exists()) continue;
+                java.nio.file.Files.createSymbolicLink(lp, f.toPath());
+                return link;
+            } catch (java.io.IOException e) {
+                return null;
+            }
+        }
+        return null;
     }
     private static File fileOf(String documentId) throws FileNotFoundException {
         int colon = documentId != null ? documentId.indexOf(':') : -1;
         if (colon < 0 || !ROOT.equals(documentId.substring(0, colon))) throw new FileNotFoundException("No root for " + documentId);
-        return new File("/" + documentId.substring(colon + 1));
+        String rel = documentId.substring(colon + 1);
+        return rel.isEmpty() ? root() : new File(root(), rel);
     }
 
     @Override public boolean onCreate() { return true; }
 
     @Override public Cursor queryRoots(String[] projection) {
         MatrixCursor c = new MatrixCursor(projection != null ? projection : ROOT_COLUMNS);
-        File root = new File("/");
+        File root = root();
         // Root.FLAG_SUPPORTS_CREATE 1, FLAG_LOCAL_ONLY 2, FLAG_SUPPORTS_IS_CHILD 16
         c.newRow().add("root_id", ROOT).add("flags", 1 | 2 | 16).add("title", "Internal storage")
             .add("document_id", documentId(root)).add("available_bytes", root.getUsableSpace());
@@ -79,7 +112,7 @@ public final class ExternalStorageProvider extends DocumentsProvider {
     }
     @Override public boolean isChildDocument(String parentDocumentId, String documentId) {
         try {
-            String parent = fileOf(parentDocumentId).getAbsolutePath(), child = fileOf(documentId).getAbsolutePath();
+            String parent = fileOf(parentDocumentId).getPath(), child = fileOf(documentId).getPath();
             return child.startsWith(parent.endsWith("/") ? parent : parent + "/");
         } catch (FileNotFoundException e) {
             return false;
@@ -99,10 +132,32 @@ public final class ExternalStorageProvider extends DocumentsProvider {
         if (!made) throw new IllegalStateException("Failed to create " + f);
         return documentId(f);
     }
+    /** a file, or a folder with what it holds */
     @Override public void deleteDocument(String documentId) throws FileNotFoundException {
         File f = fileOf(documentId);
-        if (!f.delete()) throw new IllegalStateException("Failed to delete " + f);
+        if (!delete(f)) throw new IllegalStateException("Failed to delete " + f);
     }
+    private static boolean delete(File f) {
+        File[] children = java.nio.file.Files.isSymbolicLink(f.toPath()) ? null : f.listFiles();
+        if (children != null) for (File c : children) delete(c);
+        return f.delete();
+    }
+    @Override public String copyDocument(String sourceDocumentId, String targetParentDocumentId) throws FileNotFoundException {
+        File from = fileOf(sourceDocumentId), to = new File(fileOf(targetParentDocumentId), from.getName());
+        try {
+            java.nio.file.Files.copy(from.toPath(), to.toPath());
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("Failed to copy " + from, e);
+        }
+        return documentId(to);
+    }
+    @Override public String moveDocument(String sourceDocumentId, String sourceParentDocumentId, String targetParentDocumentId)
+            throws FileNotFoundException {
+        File from = fileOf(sourceDocumentId), to = new File(fileOf(targetParentDocumentId), from.getName());
+        if (!from.renameTo(to)) throw new IllegalStateException("Failed to move " + from);
+        return documentId(to);
+    }
+    @Override public void removeDocument(String documentId, String parentDocumentId) throws FileNotFoundException { deleteDocument(documentId); }
     @Override public String renameDocument(String documentId, String displayName) throws FileNotFoundException {
         File f = fileOf(documentId), to = new File(f.getParentFile(), displayName);
         if (!f.renameTo(to)) throw new IllegalStateException("Failed to rename " + f);
