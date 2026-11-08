@@ -520,7 +520,7 @@ enum {
     OP_PUSH_CONSTANTS,
     OP_COUNT_
 };
-typedef char NvnOpcodeMaskFits[(OP_COUNT_ <= 64) ? 1 : -1];
+typedef char NvnOpcodeMaskFits[(OP_COUNT_ <= 128) ? 1 : -1]; /* nvn_replay.h's unknown[2] */
 /* Scalar and small-array fixed-function state share one opcode. This leaves opcode space for draw operations. */
 enum {
     NVN_SET_ALPHA_REF,
