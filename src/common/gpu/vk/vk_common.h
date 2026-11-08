@@ -99,4 +99,10 @@ VkResult snx_vk_module_pipeline(VkDevice dev, VkPipelineCache cache, VkPipelineL
 /* a compute pipeline of size bytes of SPIR-V's "main" in layout, through a module that it frees again */
 VkResult snx_vk_compute_pipeline(VkDevice dev, VkPipelineCache cache, VkPipelineLayout layout, const uint32_t* words,
                                  size_t size, VkPipeline* out);
+/* the same with subgroups of subgroup lanes (0: the driver's choice), and every one of them whole when full: a program
+   whose lanes are a warp's needs 32 of them in one subgroup. The device must have subgroupSizeControl, subgroup within
+   its sizes for compute, and computeFullSubgroups for full */
+VkResult snx_vk_compute_pipeline_subgroups(VkDevice dev, VkPipelineCache cache, VkPipelineLayout layout,
+                                           const uint32_t* words, size_t size, uint32_t subgroup, bool full,
+                                           VkPipeline* out);
 #endif
