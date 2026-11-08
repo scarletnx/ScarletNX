@@ -200,6 +200,20 @@ if(BUILD_TESTING)
     set_target_properties(snx-test-android-bionic PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
     target_compile_options(snx-test-android-bionic PRIVATE -Wall -Wextra -Werror -UNDEBUG)
     add_test(NAME android_bionic COMMAND snx-test-android-bionic)
+    # the 32-bit bridge (bridge/arm32*.c, which Windows leaves out): its loader on ELF32 libraries the test writes, and
+    # bionic's functions as 32-bit guest code calls them
+    if(NOT WIN32)
+        add_executable(snx-test-android-arm32 "${PROJECT_SOURCE_DIR}/tests/android_arm32.c")
+        if(APPLE)
+            target_link_libraries(snx-test-android-arm32 PRIVATE snx_android_program snx_android_bridge)
+        else()
+            target_link_libraries(snx-test-android-arm32 PRIVATE
+                                  "$<LINK_GROUP:RESCAN,snx_android_program,snx_android_bridge>")
+        endif()
+        set_target_properties(snx-test-android-arm32 PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+        target_compile_options(snx-test-android-arm32 PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+        add_test(NAME android_arm32 COMMAND snx-test-android-arm32)
+    endif()
     # JNI as the bridge gives it to an app's code (bridge/jni.c), on the JVM of javac's JDK in the test's process: on
     # Linux, where it runs, and not in a sanitizer build, whose runtime has not been tried under HotSpot
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT SNX_TEST_SANITIZERS)
@@ -246,6 +260,6 @@ endif()
 
 if(COMMAND snx_sanitizer_path) # tests/CMakeLists.txt: this folder's tests
     snx_test_sanitize(snx-test-bionic-sync snx-test-android-image snx-test-android-host-anon snx-test-android-gles2
-                      snx-test-android-inputs snx-test-android-bionic)
+                      snx-test-android-inputs snx-test-android-bionic snx-test-android-arm32)
     snx_sanitizer_path()
 endif()
