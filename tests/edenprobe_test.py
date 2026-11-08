@@ -32,6 +32,7 @@ def check(what, ok, detail=''):
 # plays the next launch of $FAKE_SCENARIO: appends its lines to the report under sdmc:/edenprobe/runs/<build>, then
 # exits with its status, kills itself with its signal, or hangs. Each call is logged to $FAKE_SCENARIO.log
 FAKE = """
+# the build line a runtime carries: ScarletNX main 1a2b3c4, committed 2026-11-08 (clang 22.1.8, Linux x86_64)
 import json, os, shutil, signal, sys, time
 from pathlib import Path
 scenario = Path(os.environ['FAKE_SCENARIO'])
@@ -150,6 +151,7 @@ with tempfile.TemporaryDirectory() as temporary:
     )
     check('the report and its images are kept', (out / 'report.jsonl').is_file() and (out / 'images').is_dir())
     check('the mode file holds the words', (out.parent / 'mode.seen').read_text() == 'quick notime cpu\n')
+
     recompile, game = (calls + [{'argv': [], 'cwd': '', 'xdg': {}}] * 2)[:2]
     check(
         'the NRO recompiled into the work folder',
@@ -166,6 +168,24 @@ with tempfile.TemporaryDirectory() as temporary:
         'a new pass listed, and not failing the run',
         'Passing and not in' in text and '- `cpu: multiplies`' in text and status == 0,
     )
+
+    # edenprobe's ban list: a probe that knows machine= gets the runtime's commit beside the words; words that name a
+    # machine keep theirs; the probe above, which predates the word, got none
+    old_nro = nro.read_bytes()
+    nro.write_bytes(b'NRO0 a mode parser with machine=%s')
+    status, text, out, calls = run([WHOLE])
+    check(
+        "a probe that knows machine= gets machine=scarletnx@<the runtime's commit>",
+        (out.parent / 'mode.seen').read_text() == 'quick notime cpu machine=scarletnx@1a2b3c4\n',
+        text,
+    )
+    status, text, out, calls = run([WHOLE], mode='quick notime cpu machine=console', baseline=None)
+    check(
+        'words that name a machine keep theirs',
+        (out.parent / 'mode.seen').read_text() == 'quick notime cpu machine=console\n',
+        text,
+    )
+    nro.write_bytes(old_nro)
 
     status, text, out, calls = run([WHOLE], baseline=BASELINE + 'cpu: divides\ncpu: reads the counter\ncpu: gone\n')
     check('a case of the baseline that fails is a regression', status == 1, text)

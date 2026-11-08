@@ -32,6 +32,10 @@ or killed after `--timeout` seconds (600) without a new line in the report, is f
 the case it ended inside, reported as `crashed`. The baseline is lavapipe's: a GPU passes other cases, so on one the
 run says what differs rather than what regressed.
 
+An edenprobe that knows the word (its NRO carries `machine=`) gets `machine=scarletnx@<the runtime's commit>` beside
+the words, the commit from the build line the runtime carries, unless they name a machine: edenprobe's ban list then
+skips as `banned` the cases that end ScarletNX every time, and the word `unban` runs them.
+
 `--setting KEY=VALUE` gives each launch that runtime setting as `--KEY=VALUE`, for example `vk_memory=2` to read guest
 buffers in place, the default on an integrated GPU, where a driver can still refuse the imports and copy. Lavapipe,
 which CI runs on, copies by default: its GPU is the CPU, which can't read pages the runtime traps. To run lavapipe
