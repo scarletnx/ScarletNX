@@ -2,10 +2,8 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # Graphics descriptor measurements
 
-`vk_descriptors_mode=0` selects sets and `1` buffers. `2` selects heaps, else buffers, else sets, by device support. The
-default `3`, Automatic, is `2` on a GPU that shares the system's memory and `0` on one with memory of its own: on a
-discrete GPU heaps write each draw's descriptors on the GPU thread, where sets have the recording thread write them.
-An unencodable heap draw retries with buffers or sets before any draw command. Heap encodings, index tables and buffer descriptors remain immutable until their frame retires.
+*Snapshot: these measurements were taken on the code of their time, and this page is not kept up to date. The
+setting they informed, `vk_descriptors_mode`, is described in [Settings](../user/settings.md).*
 
 Build `snx-test-vulkan` first. Stop builds and other timing jobs, then use a new local output directory:
 
@@ -50,6 +48,26 @@ slots after validating heap state and reports `08117`. Keep those messages in va
 and the [validator's fall-through](https://github.com/KhronosGroup/Vulkan-ValidationLayers/blob/2b27c8bbb93842870f33f83e6892990dfd3bcb4a/layers/core_checks/cc_drawdispatch.cpp#L1672-L1735)
 describe the mismatch. The standalone transition fixture checks output separately; a pixel pass does not make its
 validation log error-free. The renderer adds no workaround state calls or validation suppression.
+
+## Measure descriptor submission
+
+`VK_EXT_descriptor_buffer` is an optional graphics path (`--vk_descriptors_mode=1`). It writes descriptor tables into
+memory owned by each frame, then binds offsets. Image encodings are cached within that frame. It avoids graphics descriptor-set allocation and updates. Compute
+keeps separate pools so its queue can retire work independently. Unsupported devices keep the descriptor-set path.
+The path uses buffer device addresses and waits for a frame's fence and holds before reusing its descriptor memory.
+It does not require `VK_EXT_descriptor_heap`, which is a different extension.
+
+```sh
+cmake --preset default -B build -DSNX_TEST_VULKAN=ON
+cmake --build build --target snx-test-vulkan
+python3 tools/bench_gpu_descriptors.py --out /local/scratch/descriptor-search
+```
+
+This Python benchmark first runs exact renderer checks for descriptor sets and descriptor buffers, each with and
+without the Vulkan recording thread. It then measures shuffled serial rounds with 8 and 32 buffer descriptors per
+table, both alone and with 8 image descriptors. Each batch primes both frame slots before timing. The result includes the recording thread's work. The
+benchmark rejects unsupported paths, failed rendering checks and malformed timings. `winner.json` ranks the measured
+configurations. This is a CPU submission benchmark, not a prediction of game FPS. All data is synthetic.
 
 ## Cache capacity experiments
 

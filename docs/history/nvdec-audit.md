@@ -2,6 +2,9 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # NVDEC H.264 packet submission audit
 
+*Snapshot: this page records this audit of the NVDEC packet submission, as it was when it was written. The code has
+changed since, and the page is not kept up to date.*
+
 Green video can result from damaged decoding or unwritten/stale YUV surfaces. This
 change fixes concrete submission defects in `src/nx/gpu/video/nvdec.c`; without a
 failing game's capture it does not establish which defect caused that game's symptom.

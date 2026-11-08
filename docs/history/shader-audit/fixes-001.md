@@ -2,6 +2,9 @@
 <!-- SPDX-FileCopyrightText: Copyright 2026 ScarletNX contributors -->
 # Shader corrections, batch 001
 
+*Snapshot: this page records this batch of shader corrections, as it was made. The code has changed since, and the
+page is not kept up to date.*
+
 ## Index
 
 * [Corrections](#corrections)
