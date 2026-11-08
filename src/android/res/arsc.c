@@ -668,11 +668,31 @@ uint32_t arsc_theme_styles(const ArscTheme* t, uint32_t* styles, bool* forced, u
     }
     return t->style_count;
 }
+/* What the framework's themes give, which an app's theme inherits on a device (its chain ends in a framework theme,
+   which the tables lack): an attribute of android's that the app's theme does not set. The text appearances are the
+   framework's TextAppearance styles, as Theme.DeviceDefault's: their IDs, which name a style a view then reads */
+static bool framework_theme(uint32_t attr, ArscValue* out) {
+    static const struct {
+        uint32_t attr, style;
+    } defaults[] = {
+        {0x01010034, 0x01030041}, /* textAppearance: @android:style/TextAppearance */
+        {0x01010040, 0x01030042}, /* textAppearanceLarge */
+        {0x01010041, 0x01030044}, /* textAppearanceMedium */
+        {0x01010042, 0x01030046}, /* textAppearanceSmall */
+    };
+    for (size_t i = 0; i < sizeof defaults / sizeof *defaults; ++i)
+        if (defaults[i].attr == attr) {
+            *out = (ArscValue){{RES_TYPE_REFERENCE, defaults[i].style}, 0, defaults[i].style, 0, 0};
+            return true;
+        }
+    return false;
+}
+
 bool arsc_theme_get(ArscTheme* t, uint32_t attr, ArscValue* out) {
     uint32_t flags = 0;
     for (int depth = 0; depth < MAX_DEPTH; ++depth) {
         const ThemeEntry* e = theme_find(t, attr);
-        if (!e) return false;
+        if (!e) return attr >> 24 == 1 && framework_theme(attr, out);
         flags |= e->value.flags;
         if (e->value.value.type == RES_TYPE_ATTRIBUTE) {
             attr = e->value.value.data;
