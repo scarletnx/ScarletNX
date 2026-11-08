@@ -13,7 +13,14 @@
      last 128 bytes are zero. 0 for none. 0x68: that header's bytes (0x80).
    The SPH cannot tell these stages: a task program, and a mesh program without one, have the header of a vertex
    program, and a mesh program after a task program has the header of a tessellation evaluation program, as Mesa's
-   NAK writes them (nak/sph.rs). */
+   NAK writes them (nak/sph.rs).
+   A compute program (stage 5) lays the same words out as its launch: 0x58, 0x5c and 0x60 the workgroup size, 0x64
+   its shared memory's bytes, 0x68 and 0x6c its local memory's and 0x74 its barriers. They are the record the
+   console's driver fills the QMD from, 0x1c into the section: SHARED_MEMORY_SIZE takes 0x64 rounded up to 256, and
+   the SM's shared memory configuration (its 8, 16, 32, 64 or 100 KiB carve-outs) is chosen from that size and the
+   block's registers and warps. The size is exact: one game's video upscaler keeps a 108-byte slot a thread from
+   0x1e60 and declares 0x5460, 0x1e60 + 128 * 108 for its 32x4 block, and its programs that declare 0 have no
+   shared memory instruction. */
 #ifndef SNX_NVN_SECTION_H
 #define SNX_NVN_SECTION_H
 #include "common/cpu/aarch64/cpu.h"
@@ -25,6 +32,9 @@
 
 /* the program's NVN stage (NVN_SHADER_STAGE_*) */
 static inline u32 nvn_section_stage(const u8* s) { return snx_ld_le16(s + 0x56); }
+/* a compute program's shared memory, in bytes: the word the console's driver puts in the QMD. 0 for a program with
+   none */
+static inline u32 nvn_section_shared(const u8* s) { return snx_ld_le32(s + 0x64); }
 
 /* A mesh or task program's fields. Those of the vertices and primitives are 0 for a task program */
 typedef struct {
