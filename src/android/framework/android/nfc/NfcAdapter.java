@@ -3,7 +3,7 @@
 package android.nfc;
 
 /**
- * An NFC adapter (Off in docs/android/INTERFACES.md): the device has none, so getDefaultAdapter gives null, as on a
+ * An NFC adapter (Off in docs/platforms/android-apps/interfaces.md): the device has none, so getDefaultAdapter gives null, as on a
  * device without NFC hardware, and no instance exists.
  */
 public final class NfcAdapter {
