@@ -80,9 +80,39 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
     public static final String AUTOFILL_HINT_PASSWORD = "password", AUTOFILL_HINT_USERNAME = "username",
         AUTOFILL_HINT_EMAIL_ADDRESS = "emailAddress";
     protected static final int[] EMPTY_STATE_SET = {};
+    private TouchDelegate touchDelegate;
+    private float requestedFrameRate;
     protected static final int[] ENABLED_STATE_SET = {0x0101009e};
     protected static final int[] PRESSED_ENABLED_STATE_SET = {0x010100a7, 0x0101009e};
     protected static final int[] FOCUSED_STATE_SET = {0x0101009c};
+    protected static final int[] PRESSED_STATE_SET = {0x010100a7};
+    protected static final int[] SELECTED_STATE_SET = {0x010100a1};
+    protected static final int[] WINDOW_FOCUSED_STATE_SET = {0x0101009d};
+    protected static final int[] PRESSED_FOCUSED_STATE_SET = {0x010100a7, 0x0101009c};
+    protected static final int[] PRESSED_SELECTED_STATE_SET = {0x010100a7, 0x010100a1};
+    protected static final int[] PRESSED_WINDOW_FOCUSED_STATE_SET = {0x010100a7, 0x0101009d};
+    protected static final int[] ENABLED_FOCUSED_STATE_SET = {0x0101009e, 0x0101009c};
+    protected static final int[] ENABLED_SELECTED_STATE_SET = {0x0101009e, 0x010100a1};
+    protected static final int[] ENABLED_WINDOW_FOCUSED_STATE_SET = {0x0101009e, 0x0101009d};
+    protected static final int[] FOCUSED_SELECTED_STATE_SET = {0x0101009c, 0x010100a1};
+    protected static final int[] FOCUSED_WINDOW_FOCUSED_STATE_SET = {0x0101009c, 0x0101009d};
+    protected static final int[] SELECTED_WINDOW_FOCUSED_STATE_SET = {0x010100a1, 0x0101009d};
+    protected static final int[] PRESSED_ENABLED_FOCUSED_STATE_SET = {0x010100a7, 0x0101009e, 0x0101009c};
+    protected static final int[] PRESSED_ENABLED_SELECTED_STATE_SET = {0x010100a7, 0x0101009e, 0x010100a1};
+    protected static final int[] PRESSED_ENABLED_WINDOW_FOCUSED_STATE_SET = {0x010100a7, 0x0101009e, 0x0101009d};
+    protected static final int[] PRESSED_FOCUSED_SELECTED_STATE_SET = {0x010100a7, 0x0101009c, 0x010100a1};
+    protected static final int[] PRESSED_FOCUSED_WINDOW_FOCUSED_STATE_SET = {0x010100a7, 0x0101009c, 0x0101009d};
+    protected static final int[] PRESSED_SELECTED_WINDOW_FOCUSED_STATE_SET = {0x010100a7, 0x010100a1, 0x0101009d};
+    protected static final int[] ENABLED_FOCUSED_SELECTED_STATE_SET = {0x0101009e, 0x0101009c, 0x010100a1};
+    protected static final int[] ENABLED_FOCUSED_WINDOW_FOCUSED_STATE_SET = {0x0101009e, 0x0101009c, 0x0101009d};
+    protected static final int[] ENABLED_SELECTED_WINDOW_FOCUSED_STATE_SET = {0x0101009e, 0x010100a1, 0x0101009d};
+    protected static final int[] FOCUSED_SELECTED_WINDOW_FOCUSED_STATE_SET = {0x0101009c, 0x010100a1, 0x0101009d};
+    protected static final int[] PRESSED_ENABLED_FOCUSED_SELECTED_STATE_SET = {0x010100a7, 0x0101009e, 0x0101009c, 0x010100a1};
+    protected static final int[] PRESSED_ENABLED_FOCUSED_WINDOW_FOCUSED_STATE_SET = {0x010100a7, 0x0101009e, 0x0101009c, 0x0101009d};
+    protected static final int[] PRESSED_ENABLED_SELECTED_WINDOW_FOCUSED_STATE_SET = {0x010100a7, 0x0101009e, 0x010100a1, 0x0101009d};
+    protected static final int[] PRESSED_FOCUSED_SELECTED_WINDOW_FOCUSED_STATE_SET = {0x010100a7, 0x0101009c, 0x010100a1, 0x0101009d};
+    protected static final int[] ENABLED_FOCUSED_SELECTED_WINDOW_FOCUSED_STATE_SET = {0x0101009e, 0x0101009c, 0x010100a1, 0x0101009d};
+    protected static final int[] PRESSED_ENABLED_FOCUSED_SELECTED_WINDOW_FOCUSED_STATE_SET = {0x010100a7, 0x0101009e, 0x0101009c, 0x010100a1, 0x0101009d};
 
     /* the animatable properties, as ObjectAnimator takes them */
     private static android.util.Property<View, Float> property(String name, java.util.function.Function<View, Float> get,
@@ -470,6 +500,12 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
     }
     public void postInvalidate() { post(this::invalidate); }
     public void postInvalidateDelayed(long delayMilliseconds) { postDelayed(this::invalidate, delayMilliseconds); }
+    public void postInvalidateDelayed(long delayMilliseconds, int left, int top, int right, int bottom) { postInvalidateDelayed(delayMilliseconds); }
+    public boolean isShowingLayoutBounds() { return false; }
+    public void setRequestedFrameRate(float frameRate) { requestedFrameRate = frameRate; }
+    public float getRequestedFrameRate() { return requestedFrameRate; }
+    public void setTouchDelegate(TouchDelegate delegate) { touchDelegate = delegate; }
+    public TouchDelegate getTouchDelegate() { return touchDelegate; }
     public void postInvalidateOnAnimation() { postOnAnimation(this::invalidate); }
     public void postInvalidateOnAnimation(int left, int top, int right, int bottom) { postOnAnimation(this::invalidate); }
     public void cancelPendingInputEvents() {}
@@ -1168,6 +1204,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
     public boolean onTouchEvent(MotionEvent event) {
         boolean clickable = mClickable || mLongClickable;
         if (!mEnabled) return clickable;
+        if (touchDelegate != null && touchDelegate.onTouchEvent(event)) return true;
         if (!clickable) return false;
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN: setPressed(true); break;
