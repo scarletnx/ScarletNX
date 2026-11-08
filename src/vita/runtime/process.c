@@ -1,27 +1,16 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
-#define _DEFAULT_SOURCE /* MAP_ANONYMOUS, MAP_NORESERVE */
-#endif
 #include "vita/runtime/process.h"
 #include "vita/runtime/watch.h"
 #include "vita/hle/hle.h"
 #include "vita/loader/vpk.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
+#include "common/platform/vm.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <sys/mman.h>
-#endif
-
-#ifndef MAP_NORESERVE
-#define MAP_NORESERVE 0
-#endif
 
 #define PAGE 0x1000u
 #define MAIN_STACK 0x40000u /* the kernel's default when the process parameters name none */
@@ -45,16 +34,12 @@ bool vita_string(VitaProcess* p, uint32_t address, char* out, size_t size) {
 /* ---- memory: pages made accessible (zero) and taken back ---- */
 static bool commit(VitaProcess* p, uint32_t address, uint32_t size) {
     vita_watch_release(address, size);
-    return !snx_vm_protect(p->mem + address, size, SNX_VM_READ_WRITE);
+    return !plat_mem_protect(p->mem + address, size, PLAT_MEM_READ | PLAT_MEM_WRITE);
 }
 /* inaccessible again, and zero when committed next */
 static void decommit(VitaProcess* p, uint32_t address, uint32_t size) {
     vita_watch_release(address, size);
-#ifdef _WIN32
-    (void)snx_vm_protect(p->mem + address, size, SNX_VM_NONE);
-#else
-    (void)mmap(p->mem + address, size, PROT_NONE, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-#endif
+    (void)plat_mem_decommit(p->mem + address, size);
 }
 bool vita_mapped(VitaProcess* p, uint32_t address, uint32_t size) {
     uint64_t end = (uint64_t)address + size;
@@ -291,7 +276,7 @@ VitaProcess* vita_process_new(const VitaImage* image, const char* folder, char* 
     p->hle_export = calloc(image->import_count ? image->import_count : 1, sizeof *p->hle_export);
     p->hle_export_known = calloc(image->import_count ? image->import_count : 1, sizeof *p->hle_export_known);
     /* the guest's 4 GiB and a guard page past it, inaccessible until committed */
-    p->mem = snx_vm_reserve(VITA_SPACE + 0x10000);
+    p->mem = plat_mem_reserve(VITA_SPACE + 0x10000, 0);
     if (!p->app || !p->ux0 || !p->patch || !p->unknown_logged || !p->hle || !p->hle_export || !p->hle_export_known || !p->mem || !trampolines(p)) {
         snprintf(error, error_size, "cannot reserve the guest's address space");
         goto fail;
@@ -365,7 +350,7 @@ void vita_process_free(VitaProcess* p) {
     vita_trophy_free(p);
     vita_gxm_free(p);
     vita_watch_free();
-    if (p->mem) snx_vm_release(p->mem, VITA_SPACE + 0x10000);
+    if (p->mem) plat_mem_release(p->mem, VITA_SPACE + 0x10000);
     free(p->unknown_logged);
     free(p->hle);
     free(p->hle_export);

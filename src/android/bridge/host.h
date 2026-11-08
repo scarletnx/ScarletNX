@@ -6,6 +6,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "common/platform/vm.h"
+
 /* The host system under the native bridge (docs/platforms/android-apps/native.md, "Hosts"): the calls whose form differs between
    the hosts the bridge runs on, Linux, FreeBSD, macOS and Windows x64, each with a version for each of them. The
    bridge's other files call these, not the host's own API for the same work */
@@ -15,17 +17,9 @@
 uint32_t host_tid(void);
 uint32_t host_pid(void);
 
-/* Address space. A reservation holds addresses with no memory and no access: at address exactly when exact (NULL when
-   it is taken), else anywhere (address 0) or near it. A commit gives a range of a reservation fresh zero read-write
-   memory. Lazy memory is zero read-write memory that costs nothing before it is touched. host_unmap ends a whole
-   reservation or lazy block, by its first address */
-void* host_reserve(uint64_t address, size_t size, bool exact);
-bool host_commit(void* address, size_t size);
-void* host_lazy(size_t size);
-void host_unmap(void* address, size_t size);
-/* access: HOST_NONE, or HOST_READ with HOST_WRITE or not */
-enum { HOST_NONE = 0, HOST_READ = 1, HOST_WRITE = 2 };
-bool host_protect(void* address, size_t size, int access);
+/* The address space is common/platform/vm.h's (plat_mem_*). An access: HOST_NONE, or HOST_READ with HOST_WRITE or
+   not, which plat_mem_protect takes as they are */
+enum { HOST_NONE = PLAT_MEM_NONE, HOST_READ = PLAT_MEM_READ, HOST_WRITE = PLAT_MEM_WRITE };
 
 /* The guest's private anonymous mappings, with the access of each part (HOST_NONE, HOST_READ, with HOST_WRITE or
    not), which the HLE of mmap, mprotect and munmap keeps: host_anon_map records a range (over what it replaces), and

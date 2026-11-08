@@ -174,7 +174,7 @@ if(BUILD_TESTING)
     # the record of the guest's anonymous mappings and its MADV_DONTNEED, which FreeBSD, macOS and Windows take
     add_executable(snx-test-android-host-anon "${PROJECT_SOURCE_DIR}/tests/android_host_anon.c" bridge/host.c)
     target_include_directories(snx-test-android-host-anon PRIVATE "${PROJECT_SOURCE_DIR}/src")
-    target_link_libraries(snx-test-android-host-anon PRIVATE Threads::Threads)
+    target_link_libraries(snx-test-android-host-anon PRIVATE scarletnx-platform Threads::Threads) # plat_mem_protect
     if(WIN32)
         target_link_libraries(snx-test-android-host-anon PRIVATE ws2_32)
     endif()

@@ -6,6 +6,7 @@
    the A functions and the CRT take UTF-8 too) */
 #include "nx/runtime/platform/plat.h"
 #include "common/utilities/run_mark.h"
+#include "common/platform/vm.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
@@ -203,9 +204,8 @@ u8* plat_vm_reserve(u64 size) {
     if (p) g_ww_watched = p;
     return p;
 }
-u8* plat_vm_reserve_unwatched(u64 size) {
-    return vm_reserved(VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE, PAGE_NOACCESS));
-}
+/* at the 64 KiB allocation granularity, which commits any 4 KiB page */
+u8* plat_vm_reserve_unwatched(u64 size) { return (u8*)plat_mem_reserve(size, 0); }
 void plat_vm_track(u8* p, u64 size) {
     if (g_settings.write_tracking == 1)
         WARN("memory: write_tracking=1 (page protection) has no Windows version: %s\n",
@@ -262,12 +262,12 @@ void plat_ww_cool(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
 
 int plat_vm_commit(u8* p, u64 size) {
     /* MEM_COMMIT charges the whole range to the commit limit at once */
-    if (VirtualAlloc(p, (SIZE_T)size, MEM_COMMIT, PAGE_READWRITE)) return 0;
+    if (!plat_mem_protect(p, size, PLAT_MEM_READ | PLAT_MEM_WRITE)) return 0;
     WARN("memory: could not commit %llu KB (error %lu): out of memory or page file\n", (unsigned long long)(size >> 10),
          (unsigned long)GetLastError());
     return -1;
 }
-void plat_vm_decommit(u8* p, u64 size) { VirtualFree(p, (SIZE_T)size, MEM_DECOMMIT); }
+void plat_vm_decommit(u8* p, u64 size) { (void)plat_mem_decommit(p, size); }
 int plat_vm_share(u8* p, int fd, u64 size) {
     (void)p, (void)fd, (void)size;
     errno = ENOSYS;

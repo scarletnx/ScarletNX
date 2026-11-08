@@ -44,7 +44,7 @@ int main(void) {
     p[page] = 1;
 
     /* a part read-only in the middle: it stays read-only, its neighbours writable, all zero */
-    host_protect(p + 4 * page, page, HOST_READ);
+    plat_mem_protect(p + 4 * page, page, HOST_READ);
     host_anon_protect(a + 4 * page, page, HOST_READ);
     assert(host_dontneed(a + 3 * page, 3 * page) == 0);
     assert(all(p + 3 * page, 3 * page, 0));

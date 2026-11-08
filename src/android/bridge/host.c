@@ -4,7 +4,7 @@
    Windows x64, written from each system's documented API (Linux's man-pages, FreeBSD's manual, Apple's
    documentation of the Mach and BSD calls, Microsoft's Win32 documentation) */
 #if defined(__linux__)
-#define _GNU_SOURCE /* MAP_FIXED_NOREPLACE, process_vm_readv, gettid */
+#define _GNU_SOURCE /* process_vm_readv, gettid */
 #endif
 #include "android/bridge/host.h"
 #include <errno.h>
@@ -114,78 +114,6 @@ uint32_t host_pid(void) {
     return (uint32_t)GetCurrentProcessId();
 #else
     return (uint32_t)getpid();
-#endif
-}
-
-/* ---- address space ---- */
-
-void* host_reserve(uint64_t address, size_t size, bool exact) {
-    void* want = (void*)(uintptr_t)address;
-#ifdef _WIN32
-    void* p = VirtualAlloc(want, size, MEM_RESERVE, PAGE_NOACCESS);
-    if (!p && !exact && want) p = VirtualAlloc(NULL, size, MEM_RESERVE, PAGE_NOACCESS);
-    return p;
-#else
-    int flags = MAP_PRIVATE | MAP_ANONYMOUS;
-#ifdef MAP_NORESERVE
-    flags |= MAP_NORESERVE;
-#endif
-#if defined(__linux__) && defined(MAP_FIXED_NOREPLACE)
-    if (exact) flags |= MAP_FIXED_NOREPLACE;
-#elif defined(__FreeBSD__)
-    /* MAP_GUARD: addresses alone, which a later MAP_FIXED map fills. MAP_EXCL: fail where the range is mapped */
-    flags = MAP_GUARD;
-    if (exact) flags |= MAP_FIXED | MAP_EXCL;
-#endif
-    void* p = mmap(want, size, PROT_NONE, flags, -1, 0);
-    if (p == MAP_FAILED) return NULL;
-    /* a Linux older than 4.17 and macOS take the address as a hint */
-    if (exact && p != want) {
-        munmap(p, size);
-        return NULL;
-    }
-    return p;
-#endif
-}
-
-bool host_commit(void* address, size_t size) {
-#ifdef _WIN32
-    return VirtualAlloc(address, size, MEM_COMMIT, PAGE_READWRITE) == address;
-#else
-    return mmap(address, size, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) == address;
-#endif
-}
-
-void* host_lazy(size_t size) {
-#ifdef _WIN32
-    /* committed whole: Windows charges the commit at once, and gives the pages at their first touch */
-    return VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-#else
-    int flags = MAP_PRIVATE | MAP_ANONYMOUS;
-#ifdef MAP_NORESERVE
-    flags |= MAP_NORESERVE;
-#endif
-    void* p = mmap(NULL, size, PROT_READ | PROT_WRITE, flags, -1, 0);
-    return p == MAP_FAILED ? NULL : p;
-#endif
-}
-
-void host_unmap(void* address, size_t size) {
-#ifdef _WIN32
-    (void)size;
-    VirtualFree(address, 0, MEM_RELEASE);
-#else
-    munmap(address, size);
-#endif
-}
-
-bool host_protect(void* address, size_t size, int access) {
-#ifdef _WIN32
-    DWORD old, mode = access & HOST_WRITE ? PAGE_READWRITE : access & HOST_READ ? PAGE_READONLY : PAGE_NOACCESS;
-    return VirtualProtect(address, size, mode, &old) != 0;
-#else
-    int prot = (access & HOST_READ ? PROT_READ : 0) | (access & HOST_WRITE ? PROT_WRITE : 0);
-    return mprotect(address, size, prot) == 0;
 #endif
 }
 

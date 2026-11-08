@@ -4,6 +4,7 @@
 #define _GNU_SOURCE /* syscall */
 #endif
 #include "common/memory/host.h"
+#include "common/platform/vm.h"
 #include <stdio.h>
 #include <string.h>
 #ifdef _WIN32
@@ -138,14 +139,16 @@ bool snx_host_unmap(unsigned char* base, uint64_t at, uint64_t size) {
     return ok;
 }
 #else
+/* an executable page is read: blocks are compiled from it, never run there */
 static int protection(unsigned permissions) {
     return (permissions & (SNX_HOST_READ | SNX_HOST_EXEC) ? PROT_READ : 0) |
            (permissions & SNX_HOST_WRITE ? PROT_WRITE : 0);
 }
-size_t snx_host_page(void) {
-    long page = sysconf(_SC_PAGESIZE);
-    return page > 0 ? (size_t)page : 0;
+static unsigned access_of(unsigned permissions) {
+    return (permissions & (SNX_HOST_READ | SNX_HOST_EXEC) ? PLAT_MEM_READ : 0) |
+           (permissions & SNX_HOST_WRITE ? PLAT_MEM_WRITE : 0);
 }
+size_t snx_host_page(void) { return plat_mem_page(); }
 bool snx_host_memory_new(SnxHostMemory* m, uint64_t size) {
     *m = (SnxHostMemory){0};
     int fd = -1;
@@ -189,24 +192,16 @@ void snx_host_memory_close(SnxHostMemory* m) {
     close((int)m->handle);
     *m = (SnxHostMemory){0};
 }
-unsigned char* snx_host_reserve(uint64_t size) {
-    void* base = mmap(NULL, (size_t)size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    return base == MAP_FAILED ? NULL : base;
-}
-void snx_host_release(unsigned char* base, uint64_t size) { munmap(base, (size_t)size); }
+unsigned char* snx_host_reserve(uint64_t size) { return plat_mem_reserve(size, 0); }
+void snx_host_release(unsigned char* base, uint64_t size) { plat_mem_release(base, size); }
 bool snx_host_map(const SnxHostMemory* m, unsigned char* base, uint64_t at, uint64_t offset, uint64_t size,
                   unsigned permissions) {
     return mmap(base + at, (size_t)size, protection(permissions), MAP_SHARED | MAP_FIXED, (int)m->handle,
                 (off_t)offset) != MAP_FAILED;
 }
-bool snx_host_commit(unsigned char* base, uint64_t at, uint64_t size) {
-    return mmap(base + at, (size_t)size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) !=
-           MAP_FAILED;
-}
+bool snx_host_commit(unsigned char* base, uint64_t at, uint64_t size) { return !plat_mem_commit(base + at, size); }
 bool snx_host_protect(unsigned char* base, uint64_t at, uint64_t size, unsigned permissions) {
-    return !mprotect(base + at, (size_t)size, protection(permissions));
+    return !plat_mem_protect(base + at, size, access_of(permissions));
 }
-bool snx_host_unmap(unsigned char* base, uint64_t at, uint64_t size) {
-    return mmap(base + at, (size_t)size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) != MAP_FAILED;
-}
+bool snx_host_unmap(unsigned char* base, uint64_t at, uint64_t size) { return !plat_mem_decommit(base + at, size); }
 #endif

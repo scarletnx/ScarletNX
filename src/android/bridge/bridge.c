@@ -263,13 +263,13 @@ void bridge_set_keep_ir(const char* folder) {
 bool bridge_init(const char* cache, char* error, size_t error_size) {
     if (b.window) return true;
     /* the window at the same address on every run: the compiled code's cache is keyed by the code's addresses */
-    void* w = host_reserve(WINDOW_ADDRESS, WINDOW_SIZE, true);
+    void* w = plat_mem_reserve_at(WINDOW_ADDRESS, WINDOW_SIZE);
     if (!w) {
         fprintf(stderr, "scarletnx-android: the code window's address is taken: no compiled code is kept\n");
-        w = host_reserve(0, WINDOW_SIZE, false);
+        w = plat_mem_reserve(WINDOW_SIZE, 0);
     }
-    void* t = host_lazy(TABLE_BYTES);
-    void* e = host_lazy(EXPORTS_MAX * sizeof(Export));
+    void* t = plat_mem_alloc(TABLE_BYTES);
+    void* e = plat_mem_alloc(EXPORTS_MAX * sizeof(Export));
     if (!w || !t || !e) {
         snprintf(error, error_size, "cannot reserve the native bridge's code window");
         return false;
@@ -335,9 +335,9 @@ void bridge_add_code(uint64_t address, size_t size) {
 
 void bridge_map_code(uint64_t address, const void* code, size_t size) {
     size_t span = (size + 0xfff) & ~(size_t)0xfff;
-    if (!host_commit((void*)(uintptr_t)address, span)) return;
+    if (plat_mem_commit((void*)(uintptr_t)address, span)) return;
     memcpy((void*)(uintptr_t)address, code, size);
-    host_protect((void*)(uintptr_t)address, span, HOST_READ);
+    plat_mem_protect((void*)(uintptr_t)address, span, HOST_READ);
     bridge_add_code(address, (size + 3) & ~(size_t)3);
 }
 
@@ -351,13 +351,13 @@ CPU* bridge_cpu(void) {
     if (t_thread) return &t_thread->cpu;
     Thread* t = snx_alloc(sizeof *t);
     memset(t, 0, sizeof *t);
-    t->stack = host_lazy(STACK_SIZE);
+    t->stack = plat_mem_alloc(STACK_SIZE);
     if (!t->stack) {
         fprintf(stderr, "scarletnx-android: no memory for a guest stack\n");
         abort();
     }
     /* the lowest page a guard, as a thread's stack has */
-    host_protect(t->stack, 4096, HOST_NONE);
+    plat_mem_protect(t->stack, 4096, HOST_NONE);
     t->tls[1 + 5] = b.guard;          /* TLS_SLOT_STACK_GUARD */
     t->tls[1 + 1] = host_tid(); /* TLS_SLOT_THREAD_ID: bionic keeps its pthread there, read through its API */
     CPU* c = &t->cpu;
@@ -385,7 +385,7 @@ void bridge_thread_end(void) {
     if (!t) return;
     signals_thread_end(&t->signals);
     t_thread = NULL;
-    host_unmap(t->stack, STACK_SIZE);
+    plat_mem_release(t->stack, STACK_SIZE);
     free(t);
 }
 

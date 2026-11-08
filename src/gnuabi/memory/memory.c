@@ -8,12 +8,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
-#include <sys/mman.h>
-#include <unistd.h>
+#include "common/platform/vm.h"
+#ifndef _WIN32
+#include <sys/mman.h> /* madvise */
 #endif
 
 /* a page's flags, which another thread may change while this one reads them */
@@ -33,19 +30,11 @@ static int range(GnuMemory* m, uint64_t address, uint64_t length) {
            address <= m->size - length && up(length) <= m->size - address;
 }
 static int host_protect_pages(GnuMemory* m, uint64_t address, uint64_t length, unsigned permissions) {
-#ifdef _WIN32
-    DWORD previous;
-    DWORD p = (permissions & GNU_PROT_WRITE)                    ? PAGE_READWRITE
-              : (permissions & (GNU_PROT_READ | GNU_PROT_EXEC)) ? PAGE_READONLY
-                                                                : PAGE_NOACCESS;
-    return VirtualProtect(m->base + address, (SIZE_T)length, p, &previous) ? 0 : -GNU_ENOMEM;
-#else
     /* Guest instructions are data: host execution permission is never granted. */
-    int p = permissions & GNU_PROT_WRITE                    ? PROT_READ | PROT_WRITE
-            : permissions & (GNU_PROT_READ | GNU_PROT_EXEC) ? PROT_READ
-                                                            : PROT_NONE;
-    return mprotect(m->base + address, (size_t)length, p) ? -GNU_ENOMEM : 0;
-#endif
+    unsigned p = permissions & GNU_PROT_WRITE                    ? PLAT_MEM_READ | PLAT_MEM_WRITE
+                 : permissions & (GNU_PROT_READ | GNU_PROT_EXEC) ? PLAT_MEM_READ
+                                                                 : PLAT_MEM_NONE;
+    return plat_mem_protect(m->base + address, length, p) ? -GNU_ENOMEM : 0;
 }
 /* What a mapped guest page asks of the host's: its permissions, without write while compiled code is watched on it */
 static unsigned host_wants(unsigned flags) {
@@ -86,27 +75,12 @@ int gnu_memory_init(GnuMemory* m) {
     memset(m, 0, sizeof *m);
     m->size = GNU_ADDRESS_LIMIT;
     m->host_page = GNU_PAGE_SIZE;
-#ifdef _WIN32
-    m->base = VirtualAlloc(NULL, (SIZE_T)m->size, MEM_RESERVE, PAGE_NOACCESS);
-#else
-    {
-        /* --host-page's larger power of two works as a host with those pages (tests) */
-        long host = sysconf(_SC_PAGESIZE);
-        uint64_t extra, head;
-        if (host > (long)GNU_PAGE_SIZE) m->host_page = (uint64_t)host;
-        if (g_memory.host_page > m->host_page) m->host_page = g_memory.host_page;
-        extra = m->host_page - (host > 0 ? (uint64_t)host : GNU_PAGE_SIZE);
-        m->base = mmap(NULL, (size_t)(m->size + extra), PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        if (m->base == MAP_FAILED) {
-            m->base = NULL;
-        } else { /* aligned to the host page, the rest given back */
-            head = (m->host_page - (uint64_t)(uintptr_t)m->base % m->host_page) % m->host_page;
-            if (head) munmap(m->base, (size_t)head);
-            if (extra > head) munmap(m->base + head + m->size, (size_t)(extra - head));
-            m->base += head;
-        }
-    }
+#ifndef _WIN32
+    /* --host-page's larger power of two works as a host with those pages (tests) */
+    if (plat_mem_page() > GNU_PAGE_SIZE) m->host_page = plat_mem_page();
+    if (g_memory.host_page > m->host_page) m->host_page = g_memory.host_page;
 #endif
+    m->base = plat_mem_reserve(m->size, m->host_page); /* aligned to the host page */
     m->pages = calloc((size_t)(m->size / GNU_PAGE_SIZE), 1);
     m->mmap_next = 0x40000000ull;
     gnu_mutex_init(&m->lock, 1);
@@ -117,13 +91,7 @@ int gnu_memory_init(GnuMemory* m) {
     return 0;
 }
 void gnu_memory_destroy(GnuMemory* m) {
-    if (m->base) {
-#ifdef _WIN32
-        VirtualFree(m->base, 0, MEM_RELEASE);
-#else
-        munmap(m->base, (size_t)m->size);
-#endif
-    }
+    if (m->base) plat_mem_release(m->base, m->size);
     free(m->pages);
     gnu_mutex_destroy(&m->lock);
     memset(m, 0, sizeof *m);
@@ -200,9 +168,7 @@ static int map_locked(GnuMemory* m, uint64_t a, uint64_t n, unsigned p, int repl
         for (uint64_t i = a / GNU_PAGE_SIZE; i < (a + n) / GNU_PAGE_SIZE; i++)
             if (m->pages[i] & GNU_PAGE_MAPPED) return -GNU_EEXIST;
     code_changes(m, a, n);
-#ifdef _WIN32
-    if (!VirtualAlloc(m->base + a, (SIZE_T)n, MEM_COMMIT, PAGE_READWRITE)) return -GNU_ENOMEM;
-#endif
+    /* committed by the protect where the host commits (Windows) */
     if (host_protect(m, a, n, GNU_PROT_READ | GNU_PROT_WRITE)) return -GNU_ENOMEM;
     memset(m->base + a, 0, (size_t)n);
     if (host_protect(m, a, n, p)) return -GNU_ENOMEM;
@@ -214,7 +180,7 @@ static int unmap_locked(GnuMemory* m, uint64_t a, uint64_t n) {
     n = up(n);
     code_changes(m, a, n);
 #ifdef _WIN32
-    if (!VirtualFree(m->base + a, (SIZE_T)n, MEM_DECOMMIT)) return -GNU_ENOMEM;
+    if (plat_mem_decommit(m->base + a, n)) return -GNU_ENOMEM;
 #else
     if (host_protect(m, a, n, 0)) return -GNU_ENOMEM;
     { /* the host pages wholly inside: a mapping zeroes its pages anyway, so neighbours' host pages keep theirs */

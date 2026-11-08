@@ -3,6 +3,7 @@
 #include "vita/runtime/process.h"
 #include "vita/runtime/watch.h"
 #include "common/utilities/common.h"
+#include "common/platform/vm.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,9 +23,9 @@ static void guest_write(VitaProcess* p, uint32_t address, unsigned char value) {
 int main(void) {
     VitaProcess* process = calloc(1, sizeof *process);
     assert(process);
-    process->mem = snx_vm_reserve(VITA_SPACE + 0x10000);
+    process->mem = plat_mem_reserve(VITA_SPACE + 0x10000, 0);
     assert(process->mem);
-    assert(!snx_vm_protect(process->mem + WATCH_ADDRESS, WATCH_SIZE, SNX_VM_READ_WRITE));
+    assert(!plat_mem_protect(process->mem + WATCH_ADDRESS, WATCH_SIZE, PLAT_MEM_READ | PLAT_MEM_WRITE));
     assert(vita_watch_init(process));
 
     uint64_t since = vita_watch_protect(WATCH_ADDRESS, WATCH_SIZE);
@@ -42,7 +43,7 @@ int main(void) {
     ((volatile unsigned char*)process->mem)[WATCH_ADDRESS] = 3;
     assert(process->mem[WATCH_ADDRESS] == 3);
     vita_watch_free();
-    snx_vm_release(process->mem, VITA_SPACE + 0x10000);
+    plat_mem_release(process->mem, VITA_SPACE + 0x10000);
     free(process);
     puts("vita_watch: page writes invalidate cached GPU data");
     return 0;

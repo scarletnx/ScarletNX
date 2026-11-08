@@ -94,8 +94,8 @@ static void test_printf_signed(void) {
    pointers its format stores through, and no stack slot past them */
 static void test_sscanf_reads_its_pointers(void) {
     enum { PAGE = 65536 }; /* a multiple of every host's page */
-    unsigned char* m = host_reserve(0, 2 * PAGE, false);
-    if (!m || !host_commit(m, PAGE)) {
+    unsigned char* m = plat_mem_reserve(2 * PAGE, 0);
+    if (!m || plat_mem_commit(m, PAGE)) {
         fprintf(stderr, "android_bionic: no memory for a stack that ends at a page without access\n");
         exit(1);
     }
@@ -119,7 +119,7 @@ static void test_sscanf_reads_its_pointers(void) {
     expect_int("sscanf by position", r, 2);
     expect_int("the first pointer, which %1$d fills from the second number", a, 2);
     g_t.sp = 0;
-    host_unmap(m, 2 * PAGE);
+    plat_mem_release(m, 2 * PAGE);
 
     /* more pointers than the bridge passes: EOF, and the message says so */
     char many[25 * 2 + 1] = "";

@@ -269,10 +269,6 @@ unsigned snx_cpu_count(void);
 unsigned snx_build_threads(void);
 /* plat_ns in seconds, for durations */
 double snx_seconds(void);
-/* Address space for code the process writes and then runs: reserved without access, then given access in whole pages.
-   snx_vm_protect commits the pages it makes accessible and decommits them with SNX_VM_NONE on Windows. 0 or -1 */
-enum { SNX_VM_NONE, SNX_VM_READ, SNX_VM_READ_WRITE, SNX_VM_READ_EXECUTE };
-size_t snx_vm_page_size(void);
 /* A run that cannot be killed (the driver on a thread of the app, where an app may start no process) is stopped by
    asking: the player's abort sets this, and the long loops (the recompiler's units) end early once it is set */
 void snx_abort_request(int on);
@@ -334,9 +330,6 @@ int snx_memory_available(SnxU64* bytes);
 /* the machine's physical memory, in bytes, into *bytes: what the system counts as installed (sysconf's _SC_PHYS_PAGES
    on Linux, Android, FreeBSD, macOS and iOS, GlobalMemoryStatusEx on Windows); whether the system told it */
 int snx_memory_total(SnxU64* bytes);
-void* snx_vm_reserve(size_t size); /* NULL when the system refuses */
-int snx_vm_protect(void* p, size_t size, int access);
-void snx_vm_release(void* p, size_t size);
 /* Makes instructions written to [p, p + size) visible to instruction fetch, once the pages are executable. Another
    core needs nothing more when the pages were never executable before: it cannot hold old instructions for them */
 void snx_vm_flush_code(void* p, size_t size);
