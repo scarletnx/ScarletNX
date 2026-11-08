@@ -443,6 +443,42 @@ static void test_libm(void) {
     expect_int("llroundf(-2.5)", (int64_t)CALL64("llroundf", f_bits(-2.5f)), -3);
 }
 
+/* ---- signals: bionic's 32-bit sigset_t, a bit for each of the signals 1 to 32 ---- */
+
+static uint32_t word_at(uint32_t address) {
+    uint32_t w;
+    memcpy(&w, G(address), sizeof w);
+    return w;
+}
+
+static void test_signals(void) {
+    uint32_t set = zeroed(4);
+    memset(G(set), 0x5a, 4);
+    expect_int("sigemptyset", CALL("sigemptyset", set), 0);
+    expect_int("sigemptyset empties", word_at(set), 0);
+    expect_int("sigaddset SIGUSR1", CALL("sigaddset", set, 10), 0);
+    expect_int("sigaddset SIGHUP", CALL("sigaddset", set, 1), 0);
+    expect_int("sigaddset sets the bits", word_at(set), 1u << 9 | 1u);
+    expect_int("sigismember SIGUSR1", CALL("sigismember", set, 10), 1);
+    expect_int("sigismember SIGUSR2", CALL("sigismember", set, 12), 0);
+    expect_int("sigdelset SIGHUP", CALL("sigdelset", set, 1), 0);
+    expect_int("sigdelset clears its bit", word_at(set), 1u << 9);
+    expect_int("sigaddset of signal 33", (int32_t)CALL("sigaddset", set, 33), -1);
+    expect_int("sigaddset of signal 33: errno EINVAL", guest_errno(), 22);
+    expect_int("sigismember of signal 0", (int32_t)CALL("sigismember", set, 0), -1);
+    expect_int("sigfillset", CALL("sigfillset", set), 0);
+    expect_int("sigfillset fills", word_at(set), UINT32_MAX);
+    /* SIGUSR1 blocked and raised: pending until it is let through. Ignored, so its run does nothing */
+    uint32_t usr1 = zeroed(4), pending = zeroed(4);
+    CALL("sigaddset", usr1, 10);
+    CALL("signal", 10, 1 /* SIG_IGN */);
+    expect_int("sigprocmask blocks SIGUSR1", CALL("sigprocmask", 0 /* SIG_BLOCK */, usr1, 0), 0);
+    expect_int("raise SIGUSR1", CALL("raise", 10), 0);
+    expect_int("sigpending", CALL("sigpending", pending), 0);
+    expect_int("sigpending holds the blocked SIGUSR1", word_at(pending), 1u << 9);
+    CALL("sigprocmask", 1 /* SIG_UNBLOCK */, usr1, 0);
+}
+
 /* ---- the shim: every name it sends to the 64-bit bridge has a handler there ---- */
 
 static void test_shim(void) {
@@ -579,6 +615,7 @@ int main(void) {
     test_files();
     test_calls();
     test_libm();
+    test_signals();
     rmdir(g_t.dir);
     if (g_t.failures) fprintf(stderr, "android_arm32: %d check(s) failed\n", g_t.failures);
     return g_t.failures ? 1 : 0;

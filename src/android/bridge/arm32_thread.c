@@ -982,6 +982,57 @@ HANDLER(s_pthread_sigmask) {
     UNUSED;
     R(0) = set_mask(R(0), R(1), R(2));
 }
+/* bionic's 32-bit sigset_t: an unsigned long, bit signum - 1 for each of the signals 1 to 32. A set that is NULL or a
+   signal outside them is -1 with EINVAL, as bionic gives */
+static bool sig_set(uint32_t set, uint32_t signum, bool needs_signal, uint32_t* bit) {
+    if (!set || (needs_signal && (signum < 1 || signum > 32))) {
+        arm32_set_errno_linux(L_EINVAL);
+        return false;
+    }
+    *bit = needs_signal ? 1u << (signum - 1) : 0;
+    return true;
+}
+/* sigemptyset and sigfillset(set) */
+HANDLER(s_fillset) {
+    uint32_t bit;
+    if (!sig_set(R(0), 0, false, &bit)) {
+        R(0) = UINT32_MAX;
+        return;
+    }
+    wr32(R(0), data ? UINT32_MAX : 0);
+    R(0) = 0;
+}
+/* sigaddset and sigdelset(set, signum) */
+HANDLER(s_addset) {
+    uint32_t bit;
+    if (!sig_set(R(0), R(1), true, &bit)) {
+        R(0) = UINT32_MAX;
+        return;
+    }
+    wr32(R(0), data ? rd32(R(0)) & ~bit : rd32(R(0)) | bit);
+    R(0) = 0;
+}
+/* sigismember(set, signum): 1 or 0 */
+HANDLER(s_ismember) {
+    UNUSED;
+    uint32_t bit;
+    R(0) = sig_set(R(0), R(1), true, &bit) ? (rd32(R(0)) & bit) != 0 : UINT32_MAX;
+}
+/* sigpending(set): the signals sent to the thread that it blocks, so has not run */
+HANDLER(s_pending) {
+    UNUSED;
+    uint32_t bit;
+    if (!sig_set(R(0), 0, false, &bit)) {
+        R(0) = UINT32_MAX;
+        return;
+    }
+    ThreadInfo* t = me();
+    pthread_mutex_lock(&th.lock);
+    uint32_t pending = (uint32_t)t->sent;
+    pthread_mutex_unlock(&th.lock);
+    wr32(R(0), pending);
+    R(0) = 0;
+}
 /* sigsuspend(mask): the mask until a signal runs, then -1 with EINTR */
 HANDLER(s_suspend) {
     UNUSED;
@@ -1291,6 +1342,12 @@ const Arm32Symbol arm32_thread_symbols[] = {
     A("bsd_signal", s_signal, 0),
     A("sigprocmask", s_procmask, 0),
     A("sigsuspend", s_suspend, 0),
+    A("sigemptyset", s_fillset, 0),
+    A("sigfillset", s_fillset, 1),
+    A("sigaddset", s_addset, 0),
+    A("sigdelset", s_addset, 1),
+    A("sigismember", s_ismember, 0),
+    A("sigpending", s_pending, 0),
     A("sigaltstack", s_altstack, 0),
     A("kill", s_kill, 0),
     A("raise", s_raise, 0),
