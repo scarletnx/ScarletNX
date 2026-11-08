@@ -296,6 +296,13 @@ extern int g_shader_xfb_stores;
 #define SH_PUSH_GPU_BASE_INSTANCE 2u
 /* quad operations in fragment programs (the subgroup's QUAD bit): SHFL within a quad reads its helper lanes. 1 offline */
 extern int g_shader_quad;
+/* quad operations in compute programs (the QUAD bit, compute among the subgroup stages): an SM86 HMMA reads its A
+   fragments from the lane's own quad with them, a DPP move on AMD where a shuffle goes through LDS. 1 offline */
+extern int g_shader_quad_compute;
+/* VK_VALVE_shader_mixed_float_dot_product's shaderMixedFloatDotProductFloat16AccFloat32, with shaderFloat16: an SM86
+   HMMA sums each pair of f16 products into its f32 accumulator with one OpFDot2MixAcc32VALVE (v_dot2_f32_f16 on AMD)
+   instead of unpacking both pairs to f32. 0 offline */
+extern int g_shader_mixed_dot;
 /* the Tessellation capability, which also gives a fragment program PrimitiveId without Geometry */
 extern int g_shader_tessellation;
 /* VK_KHR_shader_clock's scopes: bit 0 subgroup, bit 1 device */

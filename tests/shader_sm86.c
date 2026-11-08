@@ -2289,6 +2289,77 @@ static void test_tcs_empty(void) {
     CHECK(!sm86_to_spirv(code, 2 * 16, ST_TCS, sph, &si, &count) && !strstr(si.first_unsupported, "no invocation"));
 }
 
+/* the SPIR-V instructions of opcode op in a module */
+static u32 spv_count(const u32* words, size_t count, u32 op) {
+    u32 found = 0;
+    for (size_t i = 5; i < count && words[i] >> 16; i += words[i] >> 16) found += (words[i] & 0xffff) == op;
+    return found;
+}
+/* whether a module decorates a variable as the built-in */
+static int spv_has_builtin(const u32* words, size_t count, u32 builtin) {
+    for (size_t i = 5; i < count && words[i] >> 16; i += words[i] >> 16)
+        if ((words[i] & 0xffff) == 71 && words[i] >> 16 == 4 && words[i + 2] == 11 && words[i + 3] == builtin) return 1;
+    return 0;
+}
+/* HMMA (16816 and 1688, F16 and F32), LDSM and MOVM with and without the device's quads in compute and its mixed dot
+   product: A's 48 reads are quad broadcasts or shuffles, B's 48, LDSM's 4 and MOVM's 2 stay shuffles, and each pair
+   of products is an OpFDot2MixAcc32VALVE (96) or an OpDot. B's registers are OR'd with hmma_zero's zero, which
+   compares NumWorkgroups.x with 0 */
+static void test_warp_matrix(const char* dir) {
+    u8 code[16 * 8] = {0};
+    static const u32 hmma[4][4] = {{16, 14, 0x08}, {20, 24, 0x18}, {28, 255, 0x00}, {32, 36, 0x10}};
+    u32 n = 0;
+    for (u32 k = 0; k < 4; k++) { /* HMMA dst, R8, R12, C */
+        Word x = fix(0x23c);
+        set(&x, 16, 8, hmma[k][0]);
+        set(&x, 24, 8, 8);
+        set(&x, 32, 8, 12);
+        set(&x, 64, 8, hmma[k][1]);
+        set(&x, 72, 19, hmma[k][2]);
+        put(code, n++, x);
+    }
+    Word x = fix(0x83b); /* LDSM.16.M88.4 R40, [R7 + 0x40] */
+    set(&x, 16, 8, 40);
+    set(&x, 24, 8, 7);
+    set(&x, 40, 24, 0x40);
+    set(&x, 72, 2, 2);
+    put(code, n++, x);
+    x = fix(0x23a); /* MOVM.16.MT88 R44, R8 */
+    set(&x, 16, 8, 44);
+    set(&x, 24, 8, 8);
+    put(code, n++, x);
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    int quad_was = g_shader_quad_compute, mixed_was = g_shader_mixed_dot;
+    for (int quad = 0; quad < 2; quad++)
+        for (int mixed = 0; mixed < 2; mixed++) {
+            g_shader_quad_compute = quad, g_shader_mixed_dot = mixed;
+            ShaderInfo si = {0};
+            si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
+            si.shared_size = 1024;
+            size_t count = 0;
+            u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+            CHECK(spv != NULL);
+            if (!spv) continue;
+            u32 quads = spv_count(spv, count, 365), shuffles = spv_count(spv, count, 345);
+            u32 mixes = spv_count(spv, count, 6916), dots = spv_count(spv, count, 148);
+            CHECK(quads == (quad ? 48u : 0u) && shuffles == (quad ? 54u : 102u));
+            CHECK(mixes == (mixed ? 96u : 0u) && dots == (mixed ? 0u : 96u));
+            CHECK(spv_has_builtin(spv, count, 24) && spv_count(spv, count, 170 /* OpIEqual */) >= 1);
+            if (quads != (quad ? 48u : 0u) || mixes != (mixed ? 96u : 0u))
+                fprintf(stderr,
+                        "warp matrix, quad %d, mixed %d: %u quad broadcasts, %u shuffles, %u mixed dots, %u "
+                        "dots\n",
+                        quad, mixed, quads, shuffles, mixes, dots);
+            char name[32];
+            snprintf(name, sizeof name, "warp_matrix%d%d", quad, mixed);
+            CHECK(keep_module(dir, name, spv, count));
+            free(spv);
+        }
+    g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was;
+}
+
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
     test_alu_forms();
@@ -2332,6 +2403,7 @@ int main(int argc, char** argv) {
     test_fragment_per_primitive(dir);
     test_fragment_unfed(dir);
     test_uses_isbe();
+    test_warp_matrix(dir);
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;

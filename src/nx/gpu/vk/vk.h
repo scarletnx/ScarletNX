@@ -175,6 +175,10 @@ typedef struct {
        subgroups for both stages: an Ounce's mesh draws (render.c). mesh_stages: the stage bits that the sets and the
        push constants of the graphics pipelines' layouts add for them (VK_PUSH_STAGES), 0 without */
     int has_mesh, has_task;
+    /* compute pipelines can ask for subgroups of 32 (subgroupSizeControl and computeFullSubgroups, 32 within the
+       sizes and compute among requiredSubgroupSizeStages): those of the programs that use other lanes' values do
+       (compute.c's cs_make) */
+    int has_cs_warp32;
     VkShaderStageFlags mesh_stages;
     u32 mesh_groups_max; /* the most workgroups a mesh draw launches: maxTaskWorkGroupCount[0], with maxMesh...'s */
     /* maxMeshOutputMemorySize and the granules that sm86_mesh_output_bytes counts vertices and primitives in */
