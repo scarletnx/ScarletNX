@@ -9,6 +9,7 @@
 #include "3ds/board/clock.h"
 #include "3ds/services/uds.h"
 #include "common/utilities/ascii.h"
+#include "common/utilities/cli.h"
 #include "common/utilities/common.h"
 #include "common/platform/file.h"
 #include "common/utilities/game_ini.h"
@@ -27,71 +28,74 @@
 #define SNX_BUILD_DIR NULL
 #endif
 
+/* the common options scarletnx-3ds takes (common/utilities/cli.h): all but --frames, --shot and --headless, as the
+   3DS runtime has no frame count, screenshot or window-less run of its own */
+static const unsigned ctr_cli =
+    SNX_CLI_BIT(SNX_CLI_EXTRACT) | SNX_CLI_BIT(SNX_CLI_EXTRACT_CONTAINER) | SNX_CLI_BIT(SNX_CLI_RECOMPILE) |
+    SNX_CLI_BIT(SNX_CLI_GAME) | SNX_CLI_BIT(SNX_CLI_UPDATE) | SNX_CLI_BIT(SNX_CLI_DATA) | SNX_CLI_BIT(SNX_CLI_OUTDIR) |
+    SNX_CLI_BIT(SNX_CLI_OUTPUT) | SNX_CLI_BIT(SNX_CLI_KEYS) | SNX_CLI_BIT(SNX_CLI_SECONDS) |
+    SNX_CLI_BIT(SNX_CLI_SCRIPT) | SNX_CLI_BIT(SNX_CLI_FULLSCREEN) | SNX_CLI_BIT(SNX_CLI_HELP);
 static void usage(FILE* out) {
     fputs(
         "Usage: scarletnx-3ds [OPTIONS] game\n"
         "       scarletnx-3ds [OPTIONS] --game=recompiled/<title ID>\n"
         "       <title ID> [OPTIONS]   (the game's copy of the runtime, in its folder)\n"
         "       scarletnx-3ds [--model old|new] --board-info\n"
-        "  game            An application CIA, cartridge image or NCCH read where it lies, recompiled if needed,\n"
-        "                  then played: a .cia, a .cci or .3ds cartridge image, or a .cxi, .app or .hbb NCCH. The\n"
-        "                  game's folder is recompiled/<its title ID>, as a Switch game's: its module\n"
-        "                  <title ID>_code.so, its copy of the runtime <title ID>, which plays it from then on, and\n"
-        "                  <title ID>.ini, which names the game (source=) and the console (model=)\n"
-        "  --game=DIR      Play the game in its folder DIR, as its copy of the runtime does\n"
-        "  --extract-container\n"
-        "                  Extract the game into its folder first and play from the extraction\n"
-        "  -x, --extract   Extract only\n"
-        "  -r, --recompile Recompile without playing\n"
-        "  --update FILE   An update or a DLC of the game (its CIA; a bare NCCH for an update), given again for\n"
-        "                  each: recorded beside the game in its folder and checked in its .ini's addons=, as a\n"
-        "                  Switch game's are, then the game played with them. An update or a DLC given alone, as\n"
-        "                  game, is recorded beside its game, made already, the same way\n"
-        "  --model old|new The console to model (default old)\n"
-        "  --keys FILE     The 3DS AES keys, in Azahar's aes_keys.txt format, to decrypt an encrypted game\n"
-        "                  with (default ~/.3ds/aes_keys.txt)\n"
-        "  --repo DIR      The data folder (default: a portable copy's folder, else the user's data\n"
-        "  --data DIR      The data folder (default: a portable copy's folder, else the user's data\n"
-        "                  folder, as scarletnx picks it; the user's keeps work/ in its cache folder)\n"
-        "  --outdir DIR    The folder of the games, in which the game's folder is made (default recompiled/ of\n"
-        "                  the data folder)\n"
-        "  --output DIR    The game's folder itself: its compiled module, SD card and any extraction (default\n"
-        "                  <outdir>/<the title ID>)\n"
-        "  --max-blocks N  Stop after N native blocks (default: run until the game exits or its window\n"
-        "                  closes)\n"
-        "  --seconds N     Stop after N seconds, reporting where each thread is (--seconds=N too)\n"
-        "  --KEY=VALUE     A setting of the 3DS display or debug table (g_ctr_display_ini, g_ctr_debug_ini in\n"
-        "                  src/nx/runtime/settings.txt): --ctr_separate_windows=1 puts each screen in a window of\n"
-        "                  its own, --ctr_top_resolution=2 and --ctr_bottom_resolution=2 render them at twice the\n"
-        "                  console's, --ctr_ipc_trace=1 logs each service request, --ctr_jit_trace=1 each block\n"
-        "                  compiled while the game runs, --script=ms:buttons,... (ctr_script) presses buttons,\n"
-        "                  --ctr_auto_stub_ipc=0 stops at a service command the runtime lacks. And the Switch's\n"
-        "                  --vk_memory=N, as it means there: 0 has the GPU work on a copy of the RAM in its own\n"
-        "                  memory unless it shares the system's, 1 on the copy, 2 on the RAM in place;\n"
-        "                  --async_pipelines=1 skips what a new pipeline draws while it is made, on\n"
-        "                  --pipeline_threads=N threads (0: all the computer's but two, two to twelve);\n"
-        "                  --gamepad_swap_ab=1 swaps a gamepad's A and B, --gamepad_deadzone=N is its sticks'\n"
-        "                  dead zone in percent of their travel (default 20), --gamepad_map=MAP the buttons its\n"
-        "                  controls send (south:B east:A ..., the Switch's names: Plus is Start, Minus Select);\n"
-        "                  --touch=N what reaches the touch screen: 2 a finger or the mouse's left button (the\n"
-        "                  default), 1 a finger, 0 nothing; --vsync=0 shows the newest image at the display's next\n"
-        "                  refresh, or at once, instead of each in turn at its refresh (the default 1);\n"
-        "                  --fullscreen=1 starts the window fullscreen, but for --seconds and --max-blocks runs (F11\n"
-        "                  or Alt+Enter switches it while the game runs); --anisotropy=N (2 to 16) filters a\n"
-        "                  mipmapped texture the game filters linearly anisotropically (default 0: as the game asks);\n"
-        "                  --fps_limit=N runs the game at N/60 of the console's pace (the 3DS shows 60 frames a\n"
-        "                  second), 0 as fast as it goes, game the console's (the default); F4 turns it off and on\n"
-        "  --ipc-stubs L   With --ctr_auto_stub_ipc=0, still answer a service command the runtime lacks with\n"
-        "                  success for the services in L: all, or a comma list of srv, fs, apt, ptm, hid, gsp,\n"
-        "                  cfg, dsp, system. Given more than once, the lists add up\n"
-        "Without --extract-container nothing of the game is extracted: its ExeFS and RomFS are read from the\n"
-        "game itself, mapped read-only. An extraction and a compiled module already there are used as they\n"
-        "are: the ARM11 code is compiled again only when its module is missing or no longer matches the\n"
-        "build or the code. An encrypted game is decrypted once, with the keys, into a copy beside the title's\n"
-        "folder (<folder>.decrypted.cia, <folder>.decrypted.cci), and read from there. A cartridge image whose\n"
-        "game partition carries the game's update is played as that update. The game plays with the update and\n"
-        "DLCs its addons= checks, each read where its record names it (<title ID>_<its entry>.ini, source=); one\n"
-        "whose file is not there is said and left out. A game played from an extraction plays with none.\n",
+        "  game                   An application CIA, cartridge image or NCCH read where it lies, recompiled if\n"
+        "                         needed, then played: a .cia, a .cci or .3ds cartridge image, or a .cxi, .app or\n"
+        "                         .hbb NCCH. The game's folder is recompiled/<its title ID>, as a Switch game's:\n"
+        "                         its module <title ID>_code.so, its copy of the runtime <title ID>, which plays it\n"
+        "                         from then on, and <title ID>.ini, which names the game (source=) and the console\n"
+        "                         (model=)\n",
+        out);
+    snx_cli_help(out, ctr_cli);
+    fputs(
+        "3DS options:\n"
+        "  --model old|new        The console to model (default old)\n"
+        "  --board-info           Print the board of the console --model names, and stop\n"
+        "  --max-blocks N         Stop after N native blocks (default: run until the game exits or its window\n"
+        "                         closes)\n"
+        "  --ipc-stubs L          With --ctr_auto_stub_ipc=0, still answer a service command the runtime lacks with\n"
+        "                         success for the services in L: all, or a comma list of srv, fs, apt, ptm, hid,\n"
+        "                         gsp, cfg, dsp, system. Given more than once, the lists add up\n"
+        "  --KEY=VALUE            A setting of the 3DS display or debug table (g_ctr_display_ini, g_ctr_debug_ini\n"
+        "                         in src/nx/runtime/settings.txt): --ctr_separate_windows=1 puts each screen in a\n"
+        "                         window of its own, --ctr_top_resolution=2 and --ctr_bottom_resolution=2 render\n"
+        "                         them at twice the console's, --ctr_ipc_trace=1 logs each service request,\n"
+        "                         --ctr_jit_trace=1 each block compiled while the game runs, --ctr_auto_stub_ipc=0\n"
+        "                         stops at a service command the runtime lacks. And the Switch's --vk_memory=N, as\n"
+        "                         it means there: 0 has the GPU work on a copy of the RAM in its own memory unless\n"
+        "                         it shares the system's, 1 on the copy, 2 on the RAM in place. --async_pipelines=1\n"
+        "                         skips what a new pipeline draws while it is made, on --pipeline_threads=N threads\n"
+        "                         (0: all the computer's but two, two to twelve). --gamepad_swap_ab=1 swaps a\n"
+        "                         gamepad's A and B, --gamepad_deadzone=N is its sticks' dead zone in percent of\n"
+        "                         their travel (default 20), --gamepad_map=MAP the buttons its controls send\n"
+        "                         (south:B east:A ..., the Switch's names: Plus is Start, Minus Select). --touch=N\n"
+        "                         is what reaches the touch screen: 2 a finger or the mouse's left button (the\n"
+        "                         default), 1 a finger, 0 nothing. --vsync=0 shows the newest image at the\n"
+        "                         display's next refresh, or at once, instead of each in turn at its refresh (the\n"
+        "                         default 1). --fullscreen=1 starts the window fullscreen, but for --seconds and\n"
+        "                         --max-blocks runs (F11 or Alt+Enter switches it while the game runs).\n"
+        "                         --anisotropy=N (2 to 16) filters a mipmapped texture the game filters linearly\n"
+        "                         anisotropically (default 0: as the game asks). --fps_limit=N runs the game at\n"
+        "                         N/60 of the console's pace (the 3DS shows 60 frames a second), 0 as fast as it\n"
+        "                         goes, game the console's (the default), and F4 turns it off and on\n"
+        "\n"
+        "On the 3DS, --update takes an update's or a DLC's CIA (a bare NCCH for an update), given again for each.\n"
+        "It is recorded beside the game in its folder and checked in its .ini's addons=, as a Switch game's are,\n"
+        "then the game is played with it. An update or a DLC given alone, as game, is recorded beside its game,\n"
+        "made already, the same way. --keys takes the 3DS AES keys in Azahar's aes_keys.txt format, to decrypt an\n"
+        "encrypted game with (default ~/.3ds/aes_keys.txt). The user's data folder keeps work/ in its cache folder.\n"
+        "--script=ms:buttons,... is the setting ctr_script.\n"
+        "\n"
+        "Without --extract-container nothing of the game is extracted: its ExeFS and RomFS are read from the game\n"
+        "itself, mapped read-only. An extraction and a compiled module already there are used as they are: the\n"
+        "ARM11 code is compiled again only when its module is missing or no longer matches the build or the code.\n"
+        "An encrypted game is decrypted once, with the keys, into a copy beside the title's folder\n"
+        "(<folder>.decrypted.cia, <folder>.decrypted.cci), and read from there. A cartridge image whose game\n"
+        "partition carries the game's update is played as that update. The game plays with the update and DLCs its\n"
+        "addons= checks, each read where its record names it (<title ID>_<its entry>.ini, source=). One whose file\n"
+        "is not there is said and left out. A game played from an extraction plays with none.\n",
         out);
 }
 /* the extensions a game of this system may have. The loader reads the file's own header, so this is a guard against a
@@ -666,13 +670,9 @@ static int play_folder(char* folder, SnxCtrModel model, bool model_set, const ch
 }
 int snx_ctr_main(int argc, char** argv) {
     SnxCtrModel model = SNX_CTR_OLD;
-    const char *input = NULL, *output = NULL, *outdir = NULL, *repo = NULL, *keys = NULL, *game = NULL;
-    bool info = false, positional = false, extract_only = false, recompile = false, budget_set = false;
-    bool extract_container = false, model_set = false;
-    const char* updates[MAX_UPDATES]; /* --update's files, an update's or a DLC's each */
-    unsigned update_count = 0;
+    const char* input = NULL;
+    bool info = false, positional = false, budget_set = false, model_set = false;
     uint64_t max_blocks = 0; /* no budget */
-    double seconds = 0;      /* no time limit */
     uint32_t ipc_stubs = 0;  /* with ctr_auto_stub_ipc off, every unknown service command stops the run */
     SnxCtrBoard board;
     snx_tool_console();
@@ -682,51 +682,35 @@ int snx_ctr_main(int argc, char** argv) {
        row */
     const char* old_trace = getenv("SNX_3DS_UDS_PACKET_TRACE");
     if (old_trace && !strcmp(old_trace, "1")) g_settings.ctr_uds_trace = 1;
+    SnxCli cli;
+    snx_cli_init(&cli, "scarletnx-3ds", ctr_cli);
     for (int i = 1; i < argc; ++i) {
         const char* arg = argv[i];
+        char error[256];
+        /* the common options first (common/utilities/cli.h): --script and --fullscreen are the settings ctr_script and
+           fullscreen */
+        int common = positional ? 0 : snx_cli_take(&cli, argc, argv, &i, error, sizeof error);
+        if (common < 0 || common == SNX_CLI_HELP) {
+            if (common < 0)
+                fprintf(stderr, "%s\n", error);
+            else
+                usage(stdout);
+            snx_cli_free(&cli);
+            return common < 0 ? 2 : 0;
+        }
+        if (common == SNX_CLI_SCRIPT)
+            ini_read(ini_find(g_ctr_debug_ini, "ctr_script"), cli.value[SNX_CLI_SCRIPT]);
+        else if (common == SNX_CLI_FULLSCREEN)
+            ini_read(ini_find(g_display_ini, "fullscreen"), cli.fullscreen ? "1" : "0");
+        if (common) continue;
         if (!positional && !strcmp(arg, "--"))
             positional = true;
-        else if (!positional && (!strcmp(arg, "--help") || !strcmp(arg, "-h"))) {
-            usage(stdout);
-            return 0;
-        } else if (!positional && !strcmp(arg, "--board-info"))
+        else if (!positional && !strcmp(arg, "--board-info"))
             info = true;
-        else if (!positional && (!strcmp(arg, "-x") || !strcmp(arg, "--extract")))
-            extract_only = true;
-        else if (!positional && !strcmp(arg, "--extract-container"))
-            extract_container = true;
-        else if (!positional && (!strcmp(arg, "-r") || !strcmp(arg, "--recompile") || !strcmp(arg, "--recomp"))) {
-            if (!strcmp(arg, "--recomp")) snx_option_renamed("--recomp", "--recompile");
-            recompile = true;
-        } else if (!positional && (!strcmp(arg, "--output") || !strcmp(arg, "--outdir") || !strcmp(arg, "--repo") ||
-                                   !strcmp(arg, "--data"))) {
-            if (!strcmp(arg, "--repo")) snx_option_renamed("--repo", "--data");
-            if (++i == argc || !*argv[i]) {
-                fprintf(stderr, "scarletnx-3ds: %s requires a directory\n", arg);
-                return 2;
-            }
-            *(!strcmp(arg, "--output") ? &output : !strcmp(arg, "--outdir") ? &outdir : &repo) = argv[i];
-        } else if (!positional && !strncmp(arg, "--game=", 7)) {
-            if (!arg[7]) {
-                fputs("scarletnx-3ds: --game= requires the game's folder\n", stderr);
-                return 2;
-            }
-            game = arg + 7;
-        } else if (!positional && !strcmp(arg, "--keys")) {
-            if (++i == argc || !*argv[i]) {
-                fputs("scarletnx-3ds: --keys requires a file\n", stderr);
-                return 2;
-            }
-            keys = argv[i];
-        } else if (!positional && (!strcmp(arg, "--max-blocks") || !strncmp(arg, "--max-blocks=", 13))) {
+        else if (!positional && (!strcmp(arg, "--max-blocks") || !strncmp(arg, "--max-blocks=", 13))) {
             if (!parse_blocks(arg[12] ? arg + 13 : ++i < argc ? argv[i] : NULL, &max_blocks)) {
                 fputs("scarletnx-3ds: --max-blocks requires a positive number\n", stderr);
-                return 2;
-            }
-            budget_set = true;
-        } else if (!positional && (!strcmp(arg, "--seconds") || !strncmp(arg, "--seconds=", 10))) {
-            if (!snx_parse_seconds(arg[9] ? arg + 10 : ++i < argc ? argv[i] : NULL, &seconds)) {
-                fputs("scarletnx-3ds: --seconds requires a positive number\n", stderr);
+                snx_cli_free(&cli);
                 return 2;
             }
             budget_set = true;
@@ -735,18 +719,13 @@ int snx_ctr_main(int argc, char** argv) {
                 fputs("scarletnx-3ds: --ipc-stubs requires all or a comma list of srv, fs, apt, ptm, hid, gsp, cfg, "
                       "dsp, system, am\n",
                       stderr);
+                snx_cli_free(&cli);
                 return 2;
             }
-        } else if (!positional && (!strcmp(arg, "--update") || !strncmp(arg, "--update=", 9))) {
-            const char* file = arg[8] ? arg + 9 : ++i < argc ? argv[i] : NULL;
-            if (!file || !*file || update_count == MAX_UPDATES) {
-                fprintf(stderr, "scarletnx-3ds: --update requires a file, given %d times at most\n", MAX_UPDATES);
-                return 2;
-            }
-            updates[update_count++] = file;
         } else if (!positional && !strcmp(arg, "--model")) {
             if (++i == argc || (strcmp(argv[i], "old") && strcmp(argv[i], "new"))) {
                 fputs("scarletnx-3ds: --model requires old or new\n", stderr);
+                snx_cli_free(&cli);
                 return 2;
             }
             model = !strcmp(argv[i], "old") ? SNX_CTR_OLD : SNX_CTR_NEW;
@@ -754,15 +733,15 @@ int snx_ctr_main(int argc, char** argv) {
         } else if (!positional && !strncmp(arg, "--", 2) && strchr(arg, '=')) {
             /* a setting of the 3DS display or debug table (g_ctr_display_ini, g_ctr_debug_ini, in
                src/nx/runtime/settings.txt), or one of the Switch's the 3DS takes too (snx_ctr_shared_setting),
-               --key=value; --script= is ctr_script, a Switch game's name for it. gamepad_map is the input's to read:
-               its row's setter keeps the map for a Switch game's pads */
+               --key=value. gamepad_map is the input's to read: its row's setter keeps the map for a Switch game's
+               pads */
             char key[64];
             const char* value = ini_arg(arg, key, sizeof key);
             const IniOpt* o = NULL;
             bool map = false;
             if (value) {
                 o = ini_find(g_ctr_display_ini, key);
-                if (!o) o = ini_find(g_ctr_debug_ini, !strcmp(key, "script") ? "ctr_script" : key);
+                if (!o) o = ini_find(g_ctr_debug_ini, key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_debug_ini, key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_performance_ini, key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_gamepad_ini, key);
@@ -775,16 +754,35 @@ int snx_ctr_main(int argc, char** argv) {
                 snx_ctr_input_map(value);
             else if (!o) {
                 fprintf(stderr, "scarletnx-3ds: unknown setting: %s\n", arg);
+                snx_cli_free(&cli);
                 return 2;
             } else
                 ini_read(o, value);
         } else if ((!positional && arg[0] == '-') || input) {
             fprintf(stderr, "scarletnx-3ds: unexpected argument: %s\n", arg);
             usage(stderr);
+            snx_cli_free(&cli);
             return 2;
         } else
             input = arg;
     }
+    /* the common options' values, --update's checked for room */
+    const char *output = cli.value[SNX_CLI_OUTPUT], *outdir = cli.value[SNX_CLI_OUTDIR];
+    const char *repo = cli.value[SNX_CLI_DATA], *keys = cli.value[SNX_CLI_KEYS], *game = cli.value[SNX_CLI_GAME];
+    bool extract_only = cli.flags & SNX_CLI_BIT(SNX_CLI_EXTRACT);
+    bool recompile = cli.flags & SNX_CLI_BIT(SNX_CLI_RECOMPILE);
+    bool extract_container = cli.flags & SNX_CLI_BIT(SNX_CLI_EXTRACT_CONTAINER);
+    double seconds = cli.seconds; /* 0: no time limit */
+    const char* updates[MAX_UPDATES]; /* --update's files, an update's or a DLC's each */
+    unsigned update_count = 0;
+    if (seconds) budget_set = true;
+    if (cli.update_count > MAX_UPDATES) {
+        fprintf(stderr, "scarletnx-3ds: --update is given %d times at most\n", MAX_UPDATES);
+        snx_cli_free(&cli);
+        return 2;
+    }
+    for (int u = 0; u < cli.update_count; ++u) updates[update_count++] = cli.updates[u];
+    snx_cli_free(&cli);
     /* the Switch's fps_limit, its text as the Switch reads it, the game's clock's pace (board/clock.h) */
     char said[192];
     int pace = snx_ctr_clock_pace();
