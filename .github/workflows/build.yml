@@ -1688,7 +1688,8 @@ jobs:
       - name: Install the runtime's libraries and lavapipe
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed python llvm-libs sdl3 vulkan-icd-loader vulkan-swrast spirv-tools && break
+            pacman -Syu --noconfirm --needed python llvm-libs sdl3 vulkan-icd-loader vulkan-swrast spirv-tools \
+              github-cli && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -1697,14 +1698,20 @@ jobs:
         with:
           name: ScarletNX-linux-x86_64-${{ steps.commit.outputs.short }}-install
           path: stage
+      # gh fetches through the REST API: the releases/download link answered 504 for hours on 2026-11-08. 3 tries
       - name: Fetch edenprobe
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ -z "$EDENPROBE_SHA256" ]; then
             echo "EDENPROBE_SHA256 is empty: pin the sha256 of edenprobe $EDENPROBE_VERSION" >&2
             exit 1
           fi
-          curl -fsSL --retry 3 -o edenprobe.nro \
-            "https://github.com/scarletnx/edenprobe/releases/download/$EDENPROBE_VERSION/edenprobe.nro"
+          for try in 1 2 3; do
+            gh release download "$EDENPROBE_VERSION" -R scarletnx/edenprobe -p edenprobe.nro --clobber && break
+            [ "$try" = 3 ] && exit 1
+            sleep 30
+          done
           echo "$EDENPROBE_SHA256  edenprobe.nro" | sha256sum -c -
       # Artifacts drop the executable bit. The summary's title is the line of the pull request's comment, as a notice
       # of this job that scripts/pr-builds.sh reads back once the run ends; on one line, % is all a notice escapes
@@ -1724,10 +1731,12 @@ jobs:
       - name: Fetch edenprobe's main
         id: main
         if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          url=https://github.com/scarletnx/edenprobe/releases/download/nightly
-          if curl -fsSL --retry 3 -o edenprobe-main.nro "$url/edenprobe.nro" &&
-            curl -fsSL --retry 3 -o edenprobe-main.nro.sha256 "$url/edenprobe.nro.sha256" &&
+          mkdir -p edenprobe-nightly
+          if gh release download nightly -R scarletnx/edenprobe -D edenprobe-nightly -p edenprobe.nro -p edenprobe.nro.sha256 &&
+            mv edenprobe-nightly/edenprobe.nro edenprobe-main.nro && mv edenprobe-nightly/edenprobe.nro.sha256 edenprobe-main.nro.sha256 &&
             echo "$(cut -d ' ' -f 1 edenprobe-main.nro.sha256)  edenprobe-main.nro" | sha256sum -c -; then
             echo "nro=edenprobe-main.nro" >> "$GITHUB_OUTPUT"
           else
