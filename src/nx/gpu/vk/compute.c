@@ -263,6 +263,7 @@ static GpDraw g_cs_draw[CS_DISPATCHES];
 static u32 g_cs_ndraw, g_cs_used, g_cs_lost; /* dispatches timed, the pool's queries they took, the untimed */
 static GpDraw* g_cs_at;                      /* the dispatch being recorded, for its end timestamp */
 /* before the dispatch: its zone, and the timestamp the queue writes as it reaches it */
+#if defined(SNX_TRACY)
 static void cs_dispatch_zone(VkCommandBuffer cb, u64 pipeline, u32 blocks, u32 threads) {
     GpDraw* d;
     char name[64];
@@ -280,6 +281,7 @@ static void cs_dispatch_zone(VkCommandBuffer cb, u64 pipeline, u32 blocks, u32 t
     g_cs_used += 2;
     g_cs_at = d;
 }
+#endif
 /* after it: the timestamp the queue writes as it leaves, which closes the zone the begin opened */
 static void cs_dispatch_end(VkCommandBuffer cb) {
     GpDraw* d = g_cs_at;
@@ -1724,8 +1726,10 @@ rebind:
        pool's is the batch's, which its own land reads back. A dispatch whose results a draw takes is recorded in
        the frame's command buffer instead, whose submission the land does not wait for, so it takes no zone: its
        timestamps would be gone from the pool by the time anything reads it */
+#if defined(SNX_TRACY)
     if (vk_gpuprof_draws_on() && g_cqpool && cb == g_ccb)
         cs_dispatch_zone(cb, (u64)p->p, d->indirect ? 0 : gx * gy * gz, lx * ly * lz);
+#endif
     if (d->indirect) {
         rec_CmdDispatchIndirect(cb, grid_buf, grid_off);
     } else {
