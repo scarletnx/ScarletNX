@@ -877,10 +877,9 @@ int snx_symlink(const char* target, const char* link) {
     return symlink(target, link) != 0;
 #endif
 }
-#ifdef __APPLE__
 /* the first of leaves that exists in program's folders: beside it, then ../Frameworks of an app's Contents/MacOS */
 static char* program_file(const char* program, const char* const* leaves, size_t count) {
-    char* dir = snx_dirname(program);
+    char* dir = program ? snx_dirname(program) : NULL;
     char* path = NULL;
     for (size_t i = 0; !path && dir && i < count; ++i) {
         char* found = snx_path_join(dir, leaves[i]);
@@ -890,8 +889,6 @@ static char* program_file(const char* program, const char* const* leaves, size_t
     free(dir);
     return path;
 }
-#endif
-#if defined(__APPLE__) && !defined(SNX_IOS)
 /* the first file of folder whose name holds word and ends with ending: an ICD JSON's name differs between Mesa's
    Homebrew package and the Vulkan SDK */
 static char* folder_file(const char* folder, const char* word, const char* ending) {
@@ -941,22 +938,17 @@ static int newer_first(const void* a, const void* b) {
     }
     return strcmp(x, y) < 0 ? 1 : strcmp(x, y) > 0 ? -1 : 0; /* the newer text first */
 }
-/* the folders a Vulkan SDK is installed in, the newest version first: ~/VulkanSDK/<version>/macOS, then <version> for
+/* the folders a Vulkan SDK is installed in under sdks, the newest version first: <version>/macOS, then <version> for
    an older layout */
-static char** sdk_roots(size_t* count) {
-    const char* home = getenv("HOME");
-    char* base = home && home[0] ? snx_path_join(home, "VulkanSDK") : NULL;
+static char** sdk_roots(const char* sdks, size_t* count) {
     char** versions = NULL;
     char** roots = NULL;
     size_t n = 0, cap = 0, i;
     *count = 0;
-    if (!base || snx_list_dir(base, &versions, &n)) {
-        free(base);
-        return NULL;
-    }
+    if (!sdks || !sdks[0] || snx_list_dir(sdks, &versions, &n)) return NULL;
     if (n > 1) qsort(versions, n, sizeof *versions, newer_first);
     for (i = 0; i < n; ++i) {
-        char* version = snx_path_join(base, versions[i]);
+        char* version = snx_path_join(sdks, versions[i]);
         char* macos = version ? snx_path_join(version, "macOS") : NULL;
         const char* two[2] = {macos, version};
         for (int k = 0; k < 2; ++k) {
@@ -971,7 +963,6 @@ static char** sdk_roots(size_t* count) {
         free(version);
     }
     snx_free_strings(versions, n);
-    free(base);
     return roots;
 }
 /* the ICD JSONs under prefix's share/vulkan/icd.d (Homebrew's Mesa, an SDK installed for the whole Mac) */
@@ -981,9 +972,9 @@ static char* prefix_icd(const char* prefix) {
     free(dir);
     return icd;
 }
-static char* sdk_icd(void) {
+static char* sdk_icd(const char* sdks) {
     size_t count = 0, i;
-    char** roots = sdk_roots(&count);
+    char** roots = sdk_roots(sdks, &count);
     char* path = NULL;
     for (i = 0; !path && i < count; ++i) {
         char* dir = snx_path_join(roots[i], "share/vulkan/icd.d");
@@ -994,9 +985,9 @@ static char* sdk_icd(void) {
     return path;
 }
 /* the library leaf under a Vulkan SDK's lib (its loader, or MoltenVK's) */
-static char* sdk_library(const char* leaf) {
+static char* sdk_library(const char* sdks, const char* leaf) {
     size_t count = 0, i;
-    char** roots = sdk_roots(&count);
+    char** roots = sdk_roots(sdks, &count);
     char* path = NULL;
     for (i = 0; !path && i < count; ++i) {
         char* rel = snx_path_join("lib", leaf);
@@ -1006,15 +997,48 @@ static char* sdk_library(const char* leaf) {
     snx_free_strings(roots, count);
     return path;
 }
-#endif
+/* lib/leaf installed on the Mac: under the first prefix that has it, else in the newest Vulkan SDK */
+static char* installed_library(const SnxVulkanPlaces* at, const char* leaf) {
+    char* rel = snx_path_join("lib", leaf);
+    char* path = NULL;
+    for (size_t i = 0; rel && !path && i < sizeof at->prefixes / sizeof *at->prefixes; ++i)
+        if (at->prefixes[i]) path = prefix_file(at->prefixes[i], rel);
+    free(rel);
+    return path ? path : sdk_library(at->sdks, leaf);
+}
+/* KosmicKrisp's ICD JSON installed on the Mac: under the first prefix that has one, else in the newest Vulkan SDK */
+static char* installed_icd(const SnxVulkanPlaces* at) {
+    char* path = NULL;
+    for (size_t i = 0; !path && i < sizeof at->prefixes / sizeof *at->prefixes; ++i)
+        if (at->prefixes[i]) path = prefix_icd(at->prefixes[i]);
+    return path ? path : sdk_icd(at->sdks);
+}
+/* out, with text past what it holds, cut to size */
+static void append(char* out, size_t size, const char* format, ...) {
+    size_t n = strlen(out);
+    va_list ap;
+    if (n + 1 >= size) return;
+    va_start(ap, format);
+    vsnprintf(out + n, size - n, format, ap);
+    va_end(ap);
+}
+/* the folders a search of sub (lib, share/vulkan/icd.d) went through, for its reason */
+static void looked_in(const SnxVulkanPlaces* at, const char* sub, char* out, size_t size) {
+    int prefixes = 0;
+    snprintf(out, size, "beside the program or in its app's Frameworks");
+    for (size_t i = 0; i < sizeof at->prefixes / sizeof *at->prefixes; ++i)
+        if (at->prefixes[i]) append(out, size, "%s %s/%s", prefixes++ ? " or" : ", in", at->prefixes[i], sub);
+    if (at->sdks && at->sdks[0]) append(out, size, ", or in a Vulkan SDK under ~/VulkanSDK");
+}
+/* the drivers an app carries, found beside the program (a game's runtime copy, snx_deploy_vulkan_driver) or in its
+   bundle's Frameworks (../Frameworks from Contents/MacOS); MoltenVK also as the framework an iOS app holds */
+static const char* const moltenvk_own[] = {"libMoltenVK.dylib", "../Frameworks/libMoltenVK.dylib",
+                                           "Frameworks/MoltenVK.framework/MoltenVK"};
+static const char* const kosmickrisp_own[] = {"libkosmickrisp_icd.json", "../Frameworks/libkosmickrisp_icd.json"};
+static const char* const loader_own[] = {"libvulkan.1.dylib", "../Frameworks/libvulkan.1.dylib"};
 char* snx_vulkan_driver(const char* program) {
 #ifdef __APPLE__
-    /* beside the program: the copy a game's runtime is deployed with (snx_deploy_vulkan_driver), which is outside the
-       app that carries the library; then the app bundle's Frameworks, ../Frameworks from its Contents/MacOS; then the
-       framework an iOS app holds in the bundle itself */
-    static const char* const own[] = {"libMoltenVK.dylib", "../Frameworks/libMoltenVK.dylib",
-                                      "Frameworks/MoltenVK.framework/MoltenVK"};
-    return program_file(program, own, sizeof own / sizeof* own);
+    return program_file(program, moltenvk_own, sizeof moltenvk_own / sizeof *moltenvk_own);
 #else
     (void)program;
     return NULL;
@@ -1022,9 +1046,7 @@ char* snx_vulkan_driver(const char* program) {
 }
 char* snx_vulkan_kosmickrisp_icd(const char* program) {
 #ifdef __APPLE__
-    /* as MoltenVK's: beside the program (a game's runtime copy), then the app bundle's Frameworks */
-    static const char* const own[] = {"libkosmickrisp_icd.json", "../Frameworks/libkosmickrisp_icd.json"};
-    return program_file(program, own, sizeof own / sizeof* own);
+    return program_file(program, kosmickrisp_own, sizeof kosmickrisp_own / sizeof *kosmickrisp_own);
 #else
     (void)program;
     return NULL;
@@ -1035,72 +1057,72 @@ void snx_vulkan_driver_free(SnxVulkanDriver* driver) {
     free(driver->icd);
     *driver = (SnxVulkanDriver){0};
 }
-int snx_vulkan_driver_choose(const char* program, const char* pick, SnxVulkanDriver* out, char* reason, size_t reason_size) {
+int snx_vulkan_driver_find(const SnxVulkanPlaces* at, const char* pick, SnxVulkanDriver* out, char* reason,
+                           size_t reason_size) {
+    char where[1024];
     *out = (SnxVulkanDriver){0};
     if (!pick || !pick[0] || !strcmp(pick, "auto")) {
-        out->library = snx_vulkan_driver(program);
+        out->library = program_file(at->program, moltenvk_own, sizeof moltenvk_own / sizeof *moltenvk_own);
         out->name = out->library ? "MoltenVK" : "the system's";
         return 1;
     }
     if (!strcmp(pick, "moltenvk")) {
-#ifdef __APPLE__
-        static const char* const system[] = {"/opt/homebrew/lib/libMoltenVK.dylib",
-                                             "/usr/local/lib/libMoltenVK.dylib"};
-        out->library = snx_vulkan_driver(program);
-        for (size_t i = 0; !out->library && i < sizeof system / sizeof* system; ++i)
-            if (snx_is_file(system[i])) out->library = snx_strdup(system[i]);
-#ifndef SNX_IOS
-        if (!out->library) out->library = sdk_library("libMoltenVK.dylib");
-#endif
-#endif
+        out->library = program_file(at->program, moltenvk_own, sizeof moltenvk_own / sizeof *moltenvk_own);
+        if (!out->library) out->library = installed_library(at, "libMoltenVK.dylib");
         if (!out->library) {
-            snprintf(reason, reason_size,
-                     "MoltenVK was not found: not beside the program or in its app's Frameworks, in "
-                     "/opt/homebrew/lib or /usr/local/lib, or in a Vulkan SDK under ~/VulkanSDK");
+            looked_in(at, "lib", where, sizeof where);
+            snprintf(reason, reason_size, "MoltenVK was not found: not %s", where);
             return 0;
         }
         out->name = "MoltenVK";
         return 1;
     }
     if (!strcmp(pick, "kosmickrisp")) {
-#ifdef SNX_IOS
-        snprintf(reason, reason_size, "KosmicKrisp is a driver of macOS, and this app runs on iOS");
-        return 0;
-#elif defined(__APPLE__)
-        static const char* const system[] = {"/opt/homebrew/lib/libvulkan.1.dylib",
-                                             "/usr/local/lib/libvulkan.1.dylib"};
-        out->icd = snx_vulkan_kosmickrisp_icd(program);
-        if (!out->icd) out->icd = prefix_icd("/opt/homebrew");
-        if (!out->icd) out->icd = prefix_icd("/usr/local");
-        if (!out->icd) out->icd = sdk_icd();
-        if (!out->icd) {
-            snprintf(reason, reason_size,
-                     "KosmicKrisp was not found: no ICD beside the program or in its app's Frameworks, in "
-                     "/opt/homebrew/share/vulkan/icd.d or /usr/local/share/vulkan/icd.d, or in a Vulkan SDK under "
-                     "~/VulkanSDK");
+        if (at->no_kosmickrisp) {
+            snprintf(reason, reason_size, "%s", at->no_kosmickrisp);
             return 0;
         }
-        out->library = program_file(program, (const char*[]){"libvulkan.1.dylib", "../Frameworks/libvulkan.1.dylib"},
-                                    2);
-        for (size_t i = 0; !out->library && i < sizeof system / sizeof* system; ++i)
-            if (snx_is_file(system[i])) out->library = snx_strdup(system[i]);
-        if (!out->library) out->library = sdk_library("libvulkan.1.dylib");
+        out->icd = program_file(at->program, kosmickrisp_own, sizeof kosmickrisp_own / sizeof *kosmickrisp_own);
+        if (!out->icd) out->icd = installed_icd(at);
+        if (!out->icd) {
+            looked_in(at, "share/vulkan/icd.d", where, sizeof where);
+            snprintf(reason, reason_size, "KosmicKrisp was not found: no ICD %s", where);
+            return 0;
+        }
+        out->library = program_file(at->program, loader_own, sizeof loader_own / sizeof *loader_own);
+        if (!out->library) out->library = installed_library(at, "libvulkan.1.dylib");
         if (!out->library) {
-            snprintf(reason, reason_size,
-                     "KosmicKrisp needs the Vulkan loader, and none was found beside the program or in its app's "
-                     "Frameworks, in /opt/homebrew/lib or /usr/local/lib, or in a Vulkan SDK under ~/VulkanSDK");
+            looked_in(at, "lib", where, sizeof where);
+            snprintf(reason, reason_size, "KosmicKrisp needs the Vulkan loader, and none was found %s", where);
             snx_vulkan_driver_free(out);
             return 0;
         }
         out->name = "KosmicKrisp";
         return 1;
-#else
-        snprintf(reason, reason_size, "KosmicKrisp is a macOS option");
-        return 0;
-#endif
     }
     snprintf(reason, reason_size, "%s is not auto, moltenvk or kosmickrisp", pick);
     return 0;
+}
+int snx_vulkan_driver_choose(const char* program, const char* pick, SnxVulkanDriver* out, char* reason,
+                             size_t reason_size) {
+    SnxVulkanPlaces at = {.program = program};
+#if defined(__APPLE__) && defined(SNX_IOS)
+    at.no_kosmickrisp = "KosmicKrisp is a driver of macOS, and this app runs on iOS";
+#elif defined(__APPLE__)
+    const char* home = getenv("HOME");
+    char* sdks = home && home[0] ? snx_path_join(home, "VulkanSDK") : NULL;
+    at.prefixes[0] = "/opt/homebrew";
+    at.prefixes[1] = "/usr/local";
+    at.sdks = sdks;
+#else
+    at.program = NULL;
+    at.no_kosmickrisp = "KosmicKrisp is a macOS option";
+#endif
+    int found = snx_vulkan_driver_find(&at, pick, out, reason, reason_size);
+#if defined(__APPLE__) && !defined(SNX_IOS)
+    free(sdks);
+#endif
+    return found;
 }
 /* from put in folder under leaf, a second name where the disk allows one, else a copy: a read-only app image, and an
    app macOS translocated, take no second name of the library they carry. A name of another app's library is broken
