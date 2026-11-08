@@ -837,6 +837,95 @@ static jlong JNICALL j_gl_call(JNIEnv* env, jclass unused, jstring name, jstring
     if (critical) (*env)->ReleasePrimitiveArrayCritical(env, pointer, critical, 0);
     return (jlong)c->x[0];
 }
+/* snx.android.opengl.Gles.call(name, kinds, ints, floats, objects, offsets): GLES20's Java calls, the runtime's GLES
+   function of the name (hle_find's, the current context's for a name of both GLES 1.1 and 2), with its arguments in a
+   CPU's registers as AAPCS64 passes them. kinds: i an integer of ints, f a float of floats, p a pointer, s a string,
+   S an array of one string, each of objects in order. A pointer is a direct buffer's memory or an array's, from its
+   byte offset of offsets, held while the call runs; a string is its modified UTF-8 */
+enum { GLES_OBJECTS = 8 };
+static jlong JNICALL j_gles_call(JNIEnv* env, jclass unused, jstring name, jstring params, jlongArray ints,
+                                 jfloatArray floats, jobjectArray objects, jintArray offsets) {
+    (void)unused;
+    static _Thread_local CPU* c;
+    if (!c && !(c = calloc(1, sizeof *c))) return 0;
+    const char* n = (*env)->GetStringUTFChars(env, name, NULL);
+    const HleSymbol* fn = n ? hle_find(n) : NULL;
+    if (n) (*env)->ReleaseStringUTFChars(env, name, n);
+    if (!fn || !fn->handler) return 0;
+    jlong iv[16] = {0};
+    jfloat fv[16] = {0};
+    jint ov[GLES_OBJECTS] = {0};
+    jsize ni = ints ? (*env)->GetArrayLength(env, ints) : 0, nf = floats ? (*env)->GetArrayLength(env, floats) : 0;
+    jsize no = objects ? (*env)->GetArrayLength(env, objects) : 0;
+    if (ni > 16) ni = 16;
+    if (nf > 16) nf = 16;
+    if (no > GLES_OBJECTS) no = GLES_OBJECTS;
+    if (ni) (*env)->GetLongArrayRegion(env, ints, 0, ni, iv);
+    if (nf) (*env)->GetFloatArrayRegion(env, floats, 0, nf, fv);
+    if (no && offsets) (*env)->GetIntArrayRegion(env, offsets, 0, no, ov);
+    const char* kinds = (*env)->GetStringUTFChars(env, params, NULL);
+    if (!kinds) return 0;
+    /* the objects: the strings first, as no other JNI call may come while an array is held */
+    jobject held[GLES_OBJECTS] = {0};
+    const char* utf[GLES_OBJECTS] = {0};
+    void* critical[GLES_OBJECTS] = {0};
+    uint64_t value[GLES_OBJECTS] = {0};
+    const char* one[GLES_OBJECTS] = {0};
+    unsigned k = 0;
+    for (const char* q = kinds; *q && k < (unsigned)no; ++q)
+        if (*q == 'p' || *q == 's' || *q == 'S') {
+            held[k] = (*env)->GetObjectArrayElement(env, objects, (jsize)k);
+            if ((*q == 's' || *q == 'S') && held[k]) {
+                utf[k] = (*env)->GetStringUTFChars(env, held[k], NULL);
+                one[k] = utf[k];
+                value[k] = *q == 's' ? (uint64_t)(uintptr_t)utf[k] : (uint64_t)(uintptr_t)&one[k];
+            } else if (*q == 'p' && held[k]) {
+                uint8_t* b = (*env)->GetDirectBufferAddress(env, held[k]);
+                if (b) value[k] = (uint64_t)(uintptr_t)(b + ov[k]);
+            }
+            ++k;
+        }
+    k = 0;
+    for (const char* q = kinds; *q && k < (unsigned)no; ++q)
+        if (*q == 'p' || *q == 's' || *q == 'S') {
+            if (*q == 'p' && held[k] && !value[k]) {
+                critical[k] = (*env)->GetPrimitiveArrayCritical(env, held[k], NULL);
+                if (critical[k]) value[k] = (uint64_t)(uintptr_t)((uint8_t*)critical[k] + ov[k]);
+            }
+            ++k;
+        }
+    /* AAPCS64: integers in x0 to x7 and floats in v0 to v7, then each in an 8-byte slot of the stack */
+    uint64_t stack[8] = {0};
+    unsigned nx = 0, nv = 0, ns = 0, ii = 0, fi = 0;
+    k = 0;
+    c->x[31] = (uint64_t)(uintptr_t)stack;
+    for (const char* q = kinds; *q && ns < 8; ++q) {
+        if (*q == 'f') {
+            float f = fi < (unsigned)nf ? fv[fi++] : 0;
+            if (nv < 8) {
+                memset(&c->v[nv], 0, sizeof c->v[nv]);
+                c->v[nv++].f[0] = f;
+            } else {
+                memcpy(&stack[ns++], &f, sizeof f);
+            }
+            continue;
+        }
+        uint64_t v = *q == 'i' ? (uint64_t)(ii < (unsigned)ni ? iv[ii++] : 0) : k < GLES_OBJECTS ? value[k++] : 0;
+        if (nx < 8) c->x[nx++] = v;
+        else stack[ns++] = v;
+    }
+    fn->handler(c, fn->data);
+    jlong r = (jlong)c->x[0];
+    for (unsigned i = GLES_OBJECTS; i-- > 0;)
+        if (critical[i]) (*env)->ReleasePrimitiveArrayCritical(env, held[i], critical[i], 0);
+    for (unsigned i = 0; i < GLES_OBJECTS; ++i) {
+        if (utf[i]) (*env)->ReleaseStringUTFChars(env, held[i], utf[i]);
+        if (held[i]) (*env)->DeleteLocalRef(env, held[i]);
+    }
+    (*env)->ReleaseStringUTFChars(env, params, kinds);
+    return r;
+}
+
 static jstring JNICALL j_gl_get_string(JNIEnv* env, jclass unused, jint name) {
     (void)unused;
     CPU c = {0};
@@ -852,6 +941,13 @@ bool android_egl_register(JNIEnv* env) {
         {(char*)"nativeGetString", (char*)"(I)Ljava/lang/String;", (void*)j_gl_get_string},
     };
     if (!android_jvm_register(env, "snx/android/opengl/Gl", gl_methods, (int)(sizeof gl_methods / sizeof *gl_methods)))
+        return false;
+    static const JNINativeMethod gles_methods[] = {
+        {(char*)"call", (char*)"(Ljava/lang/String;Ljava/lang/String;[J[F[Ljava/lang/Object;[I)J", (void*)j_gles_call},
+        {(char*)"string", (char*)"(I)Ljava/lang/String;", (void*)j_gl_get_string},
+    };
+    if (!android_jvm_register(env, "snx/android/opengl/Gles", gles_methods,
+                              (int)(sizeof gles_methods / sizeof *gles_methods)))
         return false;
     static const JNINativeMethod methods[] = {
         {(char*)"nativeDisplay", (char*)"()J", (void*)j_display},
