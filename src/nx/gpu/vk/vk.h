@@ -300,6 +300,9 @@ void vk_uma_host_barrier(VkCommandBuffer cb, u64 frame); /* at that submit's end
 int vk_uma_pending(u64 gva, u64 len);                    /* an in-place write is pending over GPU range [gva, +len) */
 int vk_uma_pending_cpu(u64 cpu, u64 len);                /* the same by guest address */
 u64 vk_uma_out_adds(void);                               /* in-place writes added so far, as vk_buf_adds counts */
+/* the waits for a submit with an in-place write since the last statistics line (every 600 presents): a test tells by a
+   change in it that a read waited, where a write the GPU finished meanwhile is no longer pending either */
+u64 vk_uma_out_waits(void);
 /* the runtime's CPU is about to read [gva, gva + len): the in-place writes pending there are done first (gmem_need's
    hook), unless the calling thread copies them on the GPU (vk_uma_gpu_reads) */
 void vk_uma_mem_need(u64 gva, u64 len);
