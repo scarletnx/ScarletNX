@@ -254,6 +254,15 @@ int main(void) {
         ini_changed(g_debug_ini, INI_CHANGED_NO_TEXT, list, sizeof list);
         assert(!g_settings.nce_foreign_scan && !strstr(list, "nce_foreign_scan"));
     }
+    { /* a command line's --key=value */
+        char key[8];
+        const char* value = ini_arg("--speed=2", key, sizeof key);
+        assert(value && !strcmp(value, "2") && !strcmp(key, "speed"));
+        assert(!ini_arg("--speed", key, sizeof key) && !ini_arg("-s=1", key, sizeof key));
+        assert(!ini_arg("--too_long=1", key, sizeof key));
+        value = ini_arg("--a=b=c", key, sizeof key);
+        assert(value && !strcmp(value, "b=c") && !strcmp(key, "a"));
+    }
     puts("ini passed");
     return 0;
 }

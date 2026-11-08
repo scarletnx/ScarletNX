@@ -12,6 +12,13 @@ const IniOpt* ini_find(const IniOpt* table, const char* key) {
         if (!strcmp(table->key, key)) return table;
     return NULL;
 }
+const char* ini_arg(const char* arg, char* key, size_t size) {
+    const char* eq = strchr(arg, '=');
+    if (strncmp(arg, "--", 2) || !eq || (size_t)(eq - arg - 2) >= size) return NULL;
+    memcpy(key, arg + 2, (size_t)(eq - arg - 2));
+    key[eq - arg - 2] = 0;
+    return eq + 1;
+}
 
 static void (*g_say)(const char* line);
 void ini_set_say(void (*say)(const char* line)) { g_say = say; }
