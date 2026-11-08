@@ -167,8 +167,9 @@ static void cs_init(void) {
                                     .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE};
     VkSemaphoreCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &st};
     VK_OK(vkCreateSemaphore(g_vk.dev, &sci, NULL, &g_vk_csem));
-    /* the dispatches of a batch: a batch that runs out lands, which resets the pool */
-    g_dpool = vk_desc_pool_new();
+    /* the dispatches of a batch: a batch that runs out lands, which resets the pool. Its sets are the compute
+       layout's, which has no texture arrays */
+    g_dpool = vk_desc_pool_new(0);
 }
 
 /* a bigger arena; only between batches, nothing points into it then */
@@ -417,7 +418,7 @@ static void cs_put_aside(void) {
             .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = 2};
         VK_OK(vkCreateQueryPool(g_vk.dev, &qi, NULL, &b->qpool));
 #endif
-        b->dpool = vk_desc_pool_new();
+        b->dpool = vk_desc_pool_new(0);
     }
     cb = b->cb;
     dp = b->dpool;

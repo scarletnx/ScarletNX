@@ -920,12 +920,17 @@ void vk_frame_hold(u64 frame_id) {
 u32 vk_frame_slot(void) { return g_cur; }
 
 static u32 g_desc_pools; /* the pools that exist: the GPU, recording and compute threads make them */
-VkDescriptorPool vk_desc_pool_new(void) {
-    /* a thousand sets of the stage layout (gpu/vk/pipeline.c), each with all its descriptors: a frame chains more
-       pools when it needs them */
+VkDescriptorPool vk_desc_pool_new(u32 array_sets) {
+    /* a thousand sets of the stage layout (gpu/vk/pipeline.c): a frame chains more pools when it needs them */
+    static u32 said[3]; /* the line of each kind of pool once: compute's, a frame's, a frame's for more arrays */
     VkDescriptorPoolSize sz[VK_POOL_TYPES];
     VkDescriptorPoolCreateInfo ci = {0};
-    vk_pool_sizes(sz, 1024);
+    vk_pool_sizes(sz, 1024, array_sets);
+    if (!__atomic_exchange_n(&said[!array_sets ? 0 : array_sets == VK_POOL_ARRAY_SETS ? 1 : 2], 1, __ATOMIC_RELAXED))
+        LOG("vulkan: descriptor pools of 1024 sets, %u of them with texture arrays: %u uniform and %u storage "
+            "buffers, %u combined image samplers, %u storage images, %u texel buffers, %u sampled images\n",
+            array_sets, sz[0].descriptorCount, sz[1].descriptorCount, sz[2].descriptorCount, sz[3].descriptorCount,
+            sz[4].descriptorCount, sz[5].descriptorCount);
     ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     ci.maxSets = 1024;
     ci.poolSizeCount = VK_POOL_TYPES;
@@ -935,6 +940,11 @@ VkDescriptorPool vk_desc_pool_new(void) {
     return p;
 }
 u32 vk_desc_pools(void) { return __atomic_load_n(&g_desc_pools, __ATOMIC_RELAXED); }
+static u64 g_desc_array_sets; /* sets of the arrays layouts taken from the frames' pools, for the statistics */
+void vk_desc_taken(VkDescriptorSetLayout layout, u32 n) {
+    if (n && vk_dslayout_arrays(layout)) __atomic_add_fetch(&g_desc_array_sets, n, __ATOMIC_RELAXED);
+}
+u64 vk_desc_array_sets(void) { return __atomic_load_n(&g_desc_array_sets, __ATOMIC_RELAXED); }
 /* count sets of layout from the frame's pools into sets: count, or 1 when a pool can't hold that many, 0 on failure */
 static u32 desc_alloc_n(Frame* f, VkDescriptorSetLayout layout, VkDescriptorSet* sets, u32 count) {
     VkDescriptorSetLayout layouts[SPARE_SETS];
@@ -947,7 +957,7 @@ static u32 desc_alloc_n(Frame* f, VkDescriptorSetLayout layout, VkDescriptorSet*
                 LOG_LIMIT(1, "vulkan: a frame used all its descriptor pools (draws skipped)\n");
                 return 0;
             }
-            VkDescriptorPool p = vk_desc_pool_new();
+            VkDescriptorPool p = vk_desc_pool_new(VK_POOL_ARRAY_SETS_FOR(layout));
             if (!p) return 0;
             f->pool_d[f->npool++] = p;
         }
@@ -956,7 +966,10 @@ static u32 desc_alloc_n(Frame* f, VkDescriptorSetLayout layout, VkDescriptorSet*
                                           .descriptorSetCount = count,
                                           .pSetLayouts = layouts};
         VkResult r = vkAllocateDescriptorSets(g_vk.dev, &ai, sets);
-        if (r == VK_SUCCESS) return count;
+        if (r == VK_SUCCESS) {
+            vk_desc_taken(layout, count);
+            return count;
+        }
         if (r != VK_ERROR_OUT_OF_POOL_MEMORY && r != VK_ERROR_FRAGMENTED_POOL) {
             VK_OK(r);
             return 0;

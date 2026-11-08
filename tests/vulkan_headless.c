@@ -94,6 +94,68 @@ static int check_recorder_self_sync(void) {
     return 0;
 }
 
+/* A frame's descriptor pool holds VK_POOL_ARRAY_SETS sets of the arrays layouts, not 1024: a driver may make a pool's
+   memory for all it can hold as the pool is made (Qualcomm's: 470 MiB for 1024 sets that all could hold the arrays).
+   Its 1024 sets are for the layouts without them; a pool made because a set with the arrays didn't fit holds
+   VK_POOL_ARRAY_SETS_MORE, and every set of a frame finds a pool */
+static int check_desc_pool_arrays(void) {
+    static const u32 kinds[2] = {VK_POOL_ARRAY_SETS, VK_POOL_ARRAY_SETS_MORE};
+    VkDescriptorPoolSize one[VK_POOL_TYPES], arrayed[VK_POOL_TYPES], sz[VK_POOL_TYPES];
+    vk_pool_sizes(one, 1, 0);
+    vk_pool_sizes(arrayed, 1, 1);
+    for (int kind = 0; kind < 2; kind++) {
+        vk_pool_sizes(sz, 1024, kinds[kind]);
+        for (int k = 0; k < VK_POOL_TYPES; k++) /* a set's own descriptors for each set, the arrays for some */
+            CHECK(sz[k].descriptorCount ==
+                  1024 * one[k].descriptorCount + kinds[kind] * (arrayed[k].descriptorCount - one[k].descriptorCount));
+    }
+    if (!g_shader_texture_arrays || g_vk.has_descriptor_buffers) {
+        puts("descriptor pools: no texture arrays here, or descriptor buffers: the pools' sets only");
+        return 0;
+    }
+    CHECK(arrayed[2].descriptorCount == one[2].descriptorCount + 2 * SNX_TEX_ARRAY);
+    CHECK(VK_POOL_ARRAY_SETS_FOR(g_vk_dslayout[1][1]) == VK_POOL_ARRAY_SETS_MORE &&
+          VK_POOL_ARRAY_SETS_FOR(g_vk_dslayout[0][1]) == VK_POOL_ARRAY_SETS);
+    /* each kind of frame pool as vk_desc_pool_new makes it, and how many sets of each fragment layout it holds */
+    u32 held[2][2];
+    for (int kind = 0; kind < 2; kind++) {
+        vk_pool_sizes(sz, 1024, kinds[kind]);
+        VkDescriptorPoolCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                                         .maxSets = 1024,
+                                         .poolSizeCount = VK_POOL_TYPES,
+                                         .pPoolSizes = sz};
+        for (int arrays = 0; arrays < 2; arrays++) {
+            VkDescriptorPool pool;
+            CHECK(VK_OK(vkCreateDescriptorPool(g_vk.dev, &ci, NULL, &pool)));
+            for (held[kind][arrays] = 0; held[kind][arrays] < 2048; held[kind][arrays]++) {
+                VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                                                  .descriptorPool = pool,
+                                                  .descriptorSetCount = 1,
+                                                  .pSetLayouts = &g_vk_dslayout[arrays][1]};
+                VkDescriptorSet set;
+                if (vkAllocateDescriptorSets(g_vk.dev, &ai, &set) != VK_SUCCESS) break;
+            }
+            vkDestroyDescriptorPool(g_vk.dev, pool, NULL);
+        }
+        /* every set without the arrays fits; how many with them depends on how a driver counts (by type or bytes) */
+        CHECK(held[kind][0] == 1024 && held[kind][1] >= kinds[kind]);
+    }
+    /* more sets with the arrays in one frame than a pool holds: the frame's next pools take them */
+    vk_lock();
+    vk_finish();
+    vk_frame_next();
+    u32 pools = vk_desc_pools(), n = 3 * VK_POOL_ARRAY_SETS_MORE + 1;
+    u64 taken = vk_desc_array_sets();
+    for (u32 i = 0; i < n; i++) CHECK(vk_desc_alloc(g_vk_dslayout[1][1]) != VK_NULL_HANDLE);
+    CHECK(vk_desc_array_sets() >= taken + n);
+    vk_finish();
+    vk_frame_next();
+    vk_unlock();
+    printf("descriptor pools: a frame's holds %u sets without the texture arrays and %u with them (%u and %u when "
+           "made for those); %u with them in one frame were all taken (%u pools made for them)\n",
+           held[0][0], held[0][1], held[1][0], held[1][1], n, vk_desc_pools() - pools);
+    return 0;
+}
 /* Graphics descriptor tables fill the frame's descriptor memory. vk_frame_check, which runs before a draw's setup,
    moves on to the next frame while the tables of one more draw still fit: the setup itself never submits for room */
 static int check_descriptor_room(void) {
@@ -5885,6 +5947,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_uma_region_merge());
     CHECK(!check_write_tracking());
     CHECK(!check_descriptor_room());
+    CHECK(!check_desc_pool_arrays());
     /* the pipeline workers: pipeline_threads when given, else all the CPUs but two, two to twelve */
     CHECK(snx_vk_pipeline_workers(0, 8) == 6 && snx_vk_pipeline_workers(0, 12) == 10 &&
           snx_vk_pipeline_workers(0, 4) == 2 && snx_vk_pipeline_workers(0, 0) == 2 &&
