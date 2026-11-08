@@ -13,9 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#if !defined(_WIN32)
 #include <sys/mman.h>
-#endif
 
 uint8_t* arm32_mem;
 
@@ -601,10 +599,6 @@ uint32_t arm32_call(uint32_t fn, const uint32_t* words, unsigned count, uint32_t
 
 bool arm32_init(char* error, size_t error_size) {
     if (s.active) return true;
-#if defined(_WIN32)
-    snprintf(error, error_size, "32-bit ARM libraries are not run on Windows yet");
-    return false;
-#else
     int flags = MAP_PRIVATE | MAP_ANON;
 #ifdef MAP_NORESERVE
     flags |= MAP_NORESERVE;
@@ -631,7 +625,6 @@ bool arm32_init(char* error, size_t error_size) {
     s.active = true;
     arm32_hle_init();
     return true;
-#endif
 }
 
 /* code at [lo, hi) of a library, compiled when first reached */

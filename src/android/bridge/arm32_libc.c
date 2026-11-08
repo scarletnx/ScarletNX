@@ -23,9 +23,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
-#if !defined(_WIN32)
 #include <sys/mman.h>
-#endif
 
 #define R(n)    (c->r[n])
 #define P(n)    (arm32_host(c->r[n]))
@@ -748,7 +746,6 @@ HANDLER(f_mmap) {
         R(0) = UINT32_MAX;
         return;
     }
-#if !defined(_WIN32)
     if (!(flags & 0x20) /* MAP_ANONYMOUS */) {
         void* m = mmap(arm32_mem + a, length, PROT_READ | PROT_WRITE,
                        MAP_FIXED | ((flags & 1) ? MAP_SHARED : MAP_PRIVATE), fd, (off_t)offset);
@@ -759,15 +756,12 @@ HANDLER(f_mmap) {
             return;
         }
     }
-#endif
     R(0) = a;
 }
 HANDLER(f_munmap) {
     UNUSED;
-#if !defined(_WIN32)
     /* a file's pages made anonymous again */
     mmap(arm32_mem + R(0), R(1), PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0);
-#endif
     arm32_unmap(R(0), R(1));
     R(0) = 0;
 }
