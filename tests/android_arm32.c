@@ -4,10 +4,13 @@
    bionic's functions as 32-bit guest code calls them, through each import's export and a call into the guest
    (arm32_call), against what bionic gives on Android 16 */
 #include "android/bridge/arm32.h"
+#include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -270,6 +273,126 @@ static void test_files(void) {
     remove(target);
 }
 
+/* the file name's contents, read back by the host */
+static void expect_contents(const char* what, const char* name, const char* want) {
+    char path[160], got[64] = {0};
+    snprintf(path, sizeof path, "%s/%s", g_t.dir, name);
+    FILE* f = fopen(path, "rb");
+    size_t n = f ? fread(got, 1, sizeof got - 1, f) : 0;
+    if (f) fclose(f);
+    got[n] = 0;
+    expect_text(what, got, want);
+}
+/* what a descriptor reads from its start, closed after: the file's contents, "" for none */
+static void expect_reads(const char* what, int32_t fd, const char* want) {
+    char got[64] = {0};
+    ssize_t n = fd > 2 ? pread(fd, got, sizeof got - 1, 0) : -1;
+    if (fd > 2) close(fd);
+    if (n < 0) n = 0;
+    got[n] = 0;
+    expect_text(what, got, want);
+}
+static bool exists(const char* name) {
+    char path[160];
+    struct stat st;
+    snprintf(path, sizeof path, "%s/%s", g_t.dir, name);
+    return !lstat(path, &st);
+}
+
+/* the calls whose 64-bit handler the shim once named and the 64-bit bridge never had */
+static void test_calls(void) {
+    make_file("data", "abcdef");
+    int32_t fd = (int32_t)CALL("open64", in_dir("data"), 2 /* O_RDWR */, 0);
+    expect_int("open64 opens a descriptor of its own", fd > 2, 1);
+    expect_int("pwrite", CALL("pwrite", (uint32_t)fd, text("XY"), 2, 2), 2);
+    expect_contents("pwrite writes at its offset", "data", "abXYef");
+    uint32_t buf = zeroed(16);
+    expect_int("pread64", CALL("pread64", (uint32_t)fd, buf, 3, 0, 3, 0), 3);
+    expect_text("pread64 reads at its offset", G(buf), "Yef");
+    expect_int("pwrite64", CALL("pwrite64", (uint32_t)fd, text("Z"), 1, 0, 0, 0), 1);
+    expect_contents("pwrite64 writes at its offset", "data", "ZbXYef");
+    expect_int("fdatasync", CALL("fdatasync", (uint32_t)fd), 0);
+    expect_int("ftruncate64", CALL("ftruncate64", (uint32_t)fd, 0, 3, 0), 0);
+    expect_contents("ftruncate64 cuts", "data", "ZbX");
+    close(fd);
+
+    uint32_t missing = in_dir("absent");
+    expect_int("openat of a missing file", (int32_t)CALL("openat", (uint32_t)-100, missing, 0, 0), -1);
+    expect_int("openat of a missing file: errno ENOENT", guest_errno(), 2);
+    expect_reads("__openat_2 opens the file", (int32_t)CALL("__openat_2", (uint32_t)-100, in_dir("data"), 0), "ZbX");
+    int dir = open(g_t.dir, O_RDONLY | O_DIRECTORY);
+    expect_reads("openat in a folder's descriptor", (int32_t)CALL("openat", (uint32_t)dir, text("data"), 0, 0), "ZbX");
+    fd = (int32_t)CALL("creat", in_dir("made"), 0600);
+    expect_int("creat makes the file", fd >= 0 && exists("made"), 1);
+    if (fd >= 0) close(fd);
+    expect_int("faccessat of a file", CALL("faccessat", (uint32_t)-100, in_dir("made"), 0, 0), 0);
+    expect_int("faccessat of a missing file", (int32_t)CALL("faccessat", (uint32_t)-100, missing, 0, 0), -1);
+    expect_int("faccessat of a missing file: errno ENOENT", guest_errno(), 2);
+    expect_int("faccessat with a flag Linux lacks", (int32_t)CALL("faccessat", (uint32_t)-100, in_dir("made"), 0, 8),
+               -1);
+    expect_int("faccessat with a flag Linux lacks: errno EINVAL", guest_errno(), 22);
+    expect_int("chown to the same owner", CALL("chown", in_dir("made"), (uint32_t)-1, (uint32_t)-1), 0);
+    expect_int("symlink", CALL("symlink", text("made"), in_dir("made-link")), 0);
+    expect_int("symlink makes a link", exists("made-link"), 1);
+    expect_int("link", CALL("link", in_dir("made"), in_dir("made-hard")), 0);
+    expect_int("link makes a name", exists("made-hard"), 1);
+    expect_int("unlinkat of a file", CALL("unlinkat", (uint32_t)dir, text("made-link"), 0), 0);
+    expect_int("unlinkat removes it", exists("made-link"), 0);
+    mkdirat(dir, "sub", 0700);
+    expect_int("unlinkat of a folder with AT_REMOVEDIR", CALL("unlinkat", (uint32_t)dir, text("sub"), 0x200), 0);
+    expect_int("unlinkat removes the folder", exists("sub"), 0);
+    uint32_t pattern = in_dir("tmpXXXXXX");
+    fd = (int32_t)CALL("mkstemp", pattern);
+    expect_int("mkstemp makes a file", fd >= 0 && strstr(G(pattern), "XXXXXX") == NULL, 1);
+    if (fd >= 0) {
+        close(fd);
+        remove(G(pattern));
+    }
+
+    int here = open(".", O_RDONLY | O_DIRECTORY);
+    expect_int("fchdir", CALL("fchdir", (uint32_t)dir), 0);
+    expect_int("fchdir moves into the folder", access("data", F_OK), 0);
+    if (fchdir(here)) exit(1);
+    close(here);
+    close(dir);
+
+    uint32_t fds = zeroed(8);
+    expect_int("pipe2", CALL("pipe2", fds, 02000000 | 04000), 0);
+    int ends[2];
+    memcpy(ends, G(fds), sizeof ends);
+    expect_int("pipe2's ends are close-on-exec", (fcntl(ends[0], F_GETFD) & FD_CLOEXEC) != 0, 1);
+    expect_int("pipe2's ends do not block", (fcntl(ends[1], F_GETFL) & O_NONBLOCK) != 0, 1);
+    close(ends[0]);
+    close(ends[1]);
+    expect_int("pipe2 with a flag it lacks", (int32_t)CALL("pipe2", fds, 1), -1);
+    expect_int("pipe2 with a flag it lacks: errno EINVAL", guest_errno(), 22);
+
+    mode_t before = umask(022);
+    expect_int("umask gives the mask before", CALL("umask", 077), 022);
+    expect_int("umask sets it", umask(before), 077);
+    expect_int("getpgrp", CALL("getpgrp"), getpgrp());
+    errno = 0;
+    expect_int("getpriority", (int32_t)CALL("getpriority", 0, 0), getpriority(PRIO_PROCESS, 0));
+    fflush(NULL);
+    pid_t pid = fork();
+    if (pid == 0) _exit(CALL("setsid") == (uint32_t)getpid() ? 0 : 1);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    expect_int("setsid in a child makes its session", WIFEXITED(status) && WEXITSTATUS(status) == 0, 1);
+#if defined(__linux__) || defined(__FreeBSD__)
+    fd = (int32_t)CALL("eventfd", 5, 0);
+    uint64_t count = 0;
+    expect_int("eventfd's count", fd >= 0 && read(fd, &count, sizeof count) == 8 ? (int64_t)count : -1, 5);
+    if (fd >= 0) close(fd);
+#else
+    expect_int("eventfd on a host without it", (int32_t)CALL("eventfd", 5, 0), -1);
+    expect_int("eventfd on a host without it: errno ENOSYS", guest_errno(), 38);
+#endif
+    remove(G(in_dir("made")));
+    remove(G(in_dir("made-hard")));
+    remove(G(in_dir("data")));
+}
+
 /* ---- the FORTIFY forms: the function within the buffer, and bionic's abort past it ---- */
 
 static void test_fortify(void) {
@@ -392,6 +515,7 @@ int main(void) {
     test_loader();
     test_fortify();
     test_files();
+    test_calls();
     rmdir(g_t.dir);
     if (g_t.failures) fprintf(stderr, "android_arm32: %d check(s) failed\n", g_t.failures);
     return g_t.failures ? 1 : 0;

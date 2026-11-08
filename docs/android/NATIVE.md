@@ -348,7 +348,8 @@ one beside the 64-bit bridge:
   bionic's message and the sizes. The ones whose arguments are integers and bytes
   (files, descriptors, sockets, the process) are the 64-bit bridge's handlers, called through `arm32_shim.c` with each
   argument put in an AArch64 CPU's registers as AAPCS64 passes them, so `/proc`, errno and the Network setting are as
-  for a 64-bit app. EGL, GLES 1.1 and 2.0 and `ANativeWindow` are the 64-bit bridge's the same way. Their host objects
+  for a 64-bit app; the ones the 64-bit bridge has no handler for (`openat`, `pwrite`, `pread64`, `pipe2`, `eventfd`
+  and the others) are the host's in `arm32_posix.c`. EGL, GLES 1.1 and 2.0 and `ANativeWindow` are the 64-bit bridge's the same way. Their host objects
   are 32-bit handles, and the calls with pointers in memory (`glShaderSource`'s strings, `eglChooseConfig`'s configs)
   and a client array's pointer, which is an offset while a buffer is bound, are converted on their own.
 - **Threads and signals** (`arm32_thread.c`). A guest thread is a host thread with its own CPU state; `pthread_t` is

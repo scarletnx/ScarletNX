@@ -9,6 +9,7 @@
 #include "android/bridge/hle_impl.h"
 #include "common/utilities/endian.h"
 #include <ctype.h>
+#include "gnuabi/abi/linux_file.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -30,6 +31,10 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#if defined(__linux__) || defined(__FreeBSD__)
+#include <sys/eventfd.h>
+#endif
 
 #define R(n)       (c->r[n])
 #define P(n)       (arm32_host(c->r[n]))
@@ -1283,12 +1288,197 @@ HANDLER(sha1_final) {
     }
 }
 
+/* ---- files and the process, the host's calls with ARM's numbers made the host's (the 64-bit bridge has no handler
+   for these) ---- */
+
+/* a host call's result, -1 with the host's errno made the guest's */
+static uint32_t result(long r) {
+    if (r < 0) {
+        arm32_set_errno(errno);
+        return UINT32_MAX;
+    }
+    return (uint32_t)r;
+}
+/* Linux's AT_FDCWD (-100) as the host's */
+static int at_fd(uint32_t fd) { return (int32_t)fd == -100 ? AT_FDCWD : (int)(int32_t)fd; }
+/* Linux's AT_ flags as the host's: AT_SYMLINK_NOFOLLOW (0x100), and 0x200, which is AT_REMOVEDIR for unlinkat and
+   AT_EACCESS for faccessat (host_0x200). False for a bit not in allowed */
+static bool at_flags(uint32_t linux_flags, uint32_t allowed, int host_0x200, int* host) {
+    if (linux_flags & ~allowed) return false;
+    *host = (linux_flags & 0x100 ? AT_SYMLINK_NOFOLLOW : 0) | (linux_flags & 0x200 ? host_0x200 : 0);
+    return true;
+}
+/* the guest's open (arm32_shim.c, the 64-bit bridge's, which answers /proc/self as Android does) with these words */
+static uint32_t guest_open(uint32_t path, uint32_t flags, uint32_t mode) {
+    const uint32_t words[3] = {path, flags, mode};
+    return arm32_call(arm32_hle_symbol("open"), words, 3, NULL);
+}
+/* open64(path, flags, mode): open, as bionic's 32-bit open64 is */
+HANDLER(f_open64) {
+    UNUSED;
+    R(0) = guest_open(R(0), R(1), R(2));
+}
+/* openat(dirfd, path, flags, mode): open for AT_FDCWD or an absolute path, else the host's openat */
+HANDLER(f_openat) {
+    UNUSED;
+    const char* path = S(1);
+    if ((int32_t)R(0) == -100 || (path && path[0] == '/')) {
+        R(0) = guest_open(R(1), R(2), R(3));
+        return;
+    }
+    R(0) = result(openat(at_fd(R(0)), path, gnu_open_flags_to_host(R(2)), (mode_t)R(3)));
+}
+/* creat(path, mode): open with O_WRONLY | O_CREAT | O_TRUNC */
+HANDLER(f_creat) {
+    UNUSED;
+    R(0) = guest_open(R(0), 01101, R(1));
+}
+/* pwrite(fd, buf, count, offset), and pread64 and pwrite64 (data 1) with the offset of 64 bits at words 4 and 5 */
+HANDLER(f_pwrite) {
+    UNUSED;
+    R(0) = result(pwrite((int)R(0), P(1), R(2), (off_t)(int32_t)R(3)));
+}
+HANDLER(f_pread_write64) {
+    int64_t offset = (int64_t)(arm32_word(c, 4) | (uint64_t)arm32_word(c, 5) << 32);
+    R(0) = result(data ? pwrite((int)R(0), P(1), R(2), (off_t)offset) : pread((int)R(0), P(1), R(2), (off_t)offset));
+}
+/* faccessat(dirfd, path, mode, flags): AT_EACCESS (0x200) and AT_SYMLINK_NOFOLLOW (0x100) */
+HANDLER(f_faccessat) {
+    UNUSED;
+    int flags;
+    R(0) = at_flags(R(3), 0x300, AT_EACCESS, &flags) ? result(faccessat(at_fd(R(0)), S(1), (int)R(2), flags))
+                                                     : fail(L_EINVAL);
+}
+/* unlinkat(dirfd, path, flags): AT_REMOVEDIR (0x200) */
+HANDLER(f_unlinkat) {
+    UNUSED;
+    int flags;
+    R(0) = at_flags(R(2), 0x200, AT_REMOVEDIR, &flags) ? result(unlinkat(at_fd(R(0)), S(1), flags)) : fail(L_EINVAL);
+}
+HANDLER(f_fchdir) {
+    UNUSED;
+    R(0) = result(fchdir((int)R(0)));
+}
+/* chown(path, owner, group): -1 leaves one as it is */
+HANDLER(f_chown) {
+    UNUSED;
+    R(0) = result(chown(S(0), (uid_t)R(1), (gid_t)R(2)));
+}
+HANDLER(f_fdatasync) {
+    UNUSED;
+#if defined(__APPLE__)
+    R(0) = result(fsync((int)R(0)));
+#else
+    R(0) = result(fdatasync((int)R(0)));
+#endif
+}
+/* ftruncate64(fd, length): the length of 64 bits in r2 and r3 */
+HANDLER(f_ftruncate64) {
+    UNUSED;
+    R(0) = result(ftruncate((int)R(0), (off_t)(int64_t)(R(2) | (uint64_t)R(3) << 32)));
+}
+HANDLER(f_symlink) {
+    UNUSED;
+    R(0) = result(symlink(S(0), S(1)));
+}
+HANDLER(f_link) {
+    UNUSED;
+    R(0) = result(link(S(0), S(1)));
+}
+/* pipe2(fds, flags): O_CLOEXEC (02000000) and O_NONBLOCK (04000), set on each end; the two descriptors into fds */
+HANDLER(f_pipe2) {
+    UNUSED;
+    uint32_t flags = R(1);
+    if (flags & ~(02000000u | 04000u)) {
+        R(0) = fail(L_EINVAL);
+        return;
+    }
+    int fds[2];
+    if (pipe(fds)) {
+        R(0) = result(-1);
+        return;
+    }
+    for (int i = 0; i < 2; ++i) {
+        if (flags & 02000000u) fcntl(fds[i], F_SETFD, FD_CLOEXEC);
+        if (flags & 04000u) fcntl(fds[i], F_SETFL, fcntl(fds[i], F_GETFL) | O_NONBLOCK);
+        wr32(R(0) + 4 * (uint32_t)i, (uint32_t)fds[i]);
+    }
+    R(0) = 0;
+}
+HANDLER(f_umask) {
+    UNUSED;
+    R(0) = (uint32_t)umask((mode_t)(R(0) & 0777));
+}
+/* mkstemp(template): the X's of the guest's buffer made a name, the file made */
+HANDLER(f_mkstemp) {
+    UNUSED;
+    R(0) = result(mkstemp(P(0)));
+}
+HANDLER(f_getpgrp) {
+    UNUSED;
+    R(0) = (uint32_t)getpgrp();
+}
+HANDLER(f_setsid) {
+    UNUSED;
+    R(0) = result(setsid());
+}
+/* getpriority(which, who): the nice value, which may be -1, so errno tells a failure */
+HANDLER(f_getpriority) {
+    UNUSED;
+    errno = 0;
+    int r = getpriority((int)R(0), (id_t)R(1));
+    if (r == -1 && errno) {
+        R(0) = result(-1);
+        return;
+    }
+    R(0) = (uint32_t)r;
+}
+/* eventfd(initial, flags): EFD_SEMAPHORE (1), EFD_NONBLOCK (04000) and EFD_CLOEXEC (02000000). macOS has none */
+HANDLER(f_eventfd) {
+    UNUSED;
+    if (R(1) & ~(1u | 04000u | 02000000u)) {
+        R(0) = fail(L_EINVAL);
+        return;
+    }
+#if defined(__linux__) || defined(__FreeBSD__)
+    int flags =
+        (R(1) & 1 ? EFD_SEMAPHORE : 0) | (R(1) & 04000 ? EFD_NONBLOCK : 0) | (R(1) & 02000000 ? EFD_CLOEXEC : 0);
+    R(0) = result(eventfd(R(0), flags));
+#else
+    static bool said;
+    if (!said) fprintf(stderr, "scarletnx-android: arm32: eventfd fails with ENOSYS: this host has no eventfd\n");
+    said = true;
+    R(0) = fail(L_ENOSYS);
+#endif
+}
+
 /* ---- the table and the objects ---- */
 
 #define F(n, f) {n, f, NULL}
 #define FD(n, f, d) {n, f, (void*)(uintptr_t)(d)}
 const Arm32Symbol arm32_posix_symbols[] = {
     F("opendir", f_opendir),
+    F("open64", f_open64),
+    F("openat", f_openat),
+    F("creat", f_creat),
+    F("pwrite", f_pwrite),
+    FD("pread64", f_pread_write64, 0),
+    FD("pwrite64", f_pread_write64, 1),
+    F("faccessat", f_faccessat),
+    F("unlinkat", f_unlinkat),
+    F("fchdir", f_fchdir),
+    F("chown", f_chown),
+    F("fdatasync", f_fdatasync),
+    F("ftruncate64", f_ftruncate64),
+    F("symlink", f_symlink),
+    F("link", f_link),
+    F("pipe2", f_pipe2),
+    F("umask", f_umask),
+    F("mkstemp", f_mkstemp),
+    F("getpgrp", f_getpgrp),
+    F("setsid", f_setsid),
+    F("getpriority", f_getpriority),
+    F("eventfd", f_eventfd),
     F("readdir", f_readdir),
     F("closedir", f_closedir),
     F("rewinddir", f_rewinddir),
