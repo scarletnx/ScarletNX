@@ -150,8 +150,11 @@ static u32 create_thread(u64 entry, u64 arg, u64 stack_top, i32 prio, i32 core, 
     if (core == -2) core = g_hle.thread.default_core;
     R_UNLESS(core >= 0 && core < NCORES && ((g_hle.svcmem.core_mask >> core) & 1), SNX_RC_SVC_INVALID_CORE_ID);
     R_UNLESS(valid_prio(prio), SNX_RC_SVC_INVALID_PRIORITY);
+    u32 rc;
     t = kthread_create(entry, arg, stack_top, prio, core);
-    return give_handle(&t->o, out);
+    rc = give_handle(&t->o, out);
+    if (!rc) kthread_set_own_handle(t, *out);
+    return rc;
 }
 static u32 start_thread(u32 h) {
     KThread* t = thread_of(h);
