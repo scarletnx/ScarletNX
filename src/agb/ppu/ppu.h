@@ -14,6 +14,15 @@
 #define AGB_FRAME_LINES     228 /* 160 visible lines, then the vertical blank */
 
 typedef struct AgbBoard AgbBoard;
+/* The scanline buffers the composite pass reads, which the PPU draws one line at a time */
+#define AGB_LAYERS 6 /* BG0 to BG3, OBJ and the backdrop */
+typedef struct {
+    uint16_t color[AGB_LAYERS][AGB_SCREEN_WIDTH]; /* an unused colour bit marks a layer's open pixels */
+    uint8_t obj_pri[AGB_SCREEN_WIDTH];
+    uint8_t obj_mode[AGB_SCREEN_WIDTH]; /* the mode of the sprite that drew the pixel */
+    uint8_t objwin[AGB_SCREEN_WIDTH];   /* the OBJ window layer */
+    uint8_t drawn[AGB_SCREEN_WIDTH];    /* a sprite already owns the pixel */
+} AgbScanline;
 typedef struct {
     uint16_t dispcnt, greenswap;
     uint16_t bgcnt[4], bghofs[4], bgvofs[4];
@@ -27,6 +36,7 @@ typedef struct {
     uint16_t vcount;
     uint32_t dot;                                               /* cycles into the current scanline */
     uint32_t framebuffer[AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT]; /* 0xAABBGGRR words, one scanline at a time */
+    AgbScanline scan; /* the line being drawn */
 } AgbPpu;
 
 /* The register window at 0x04000000 to 0x0400005F, halfword addressed. */
