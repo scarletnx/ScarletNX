@@ -36,4 +36,15 @@ public final class NativeBridge {
     public static native java.nio.ByteBuffer allocateGuest(int capacity, long[] address);
     public static native void freeGuest(long address);
 
+    /** NativeActivity's glue: its ANativeActivity made and the library's function of that name called with it (0 when
+        the native bridge has no glue for the library), then the callbacks that the library set, by their index */
+    public static native long activityCreate(Object activity, String function, String internalPath, String externalPath, int sdk);
+    public static native void activityCall(long activity, int callback, long argument);
+    /** an AInputQueue (0 when the native bridge has none), and the events sent to it */
+    public static native long inputQueueNew();
+    public static native void inputQueueMotion(long queue, int device, int source, int action, int flags, int meta, int buttons,
+                                               int edges, long downNanos, long eventNanos, float xPrecision, float yPrecision,
+                                               int[] ids, int[] tools, float[] axes);
+    public static native void inputQueueKey(long queue, int device, int source, int action, int flags, int keyCode,
+                                            int scanCode, int meta, int repeat, long downNanos, long eventNanos);
 }

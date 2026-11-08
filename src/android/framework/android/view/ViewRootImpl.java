@@ -153,6 +153,8 @@ public final class ViewRootImpl implements ViewParent {
     /** An input event from the host window, on the main thread. */
     public boolean dispatchInputEvent(InputEvent event) {
         if (dead || view == null || view.mAttachInfo == null) return false;
+        /* a NativeActivity's window: the events go to its native input queue, as Android's input dispatcher sends them */
+        if (view instanceof Window.DecorView d && d.window().inputQueue() != null) return d.window().inputQueue().send(event);
         if (event instanceof MotionEvent m) {
             int action = m.getActionMasked();
             if (action == MotionEvent.ACTION_HOVER_MOVE || action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_EXIT)

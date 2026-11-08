@@ -791,6 +791,49 @@ static bool start(JNIEnv* e, const char* library_dir) {
 uint32_t arm32_jni_vm(void) { return j.vm_guest; }
 jobject arm32_jni_ref(uint32_t handle) { return host_ref(handle); }
 
+/* NativeActivity's glue. ANativeActivity on 32-bit ARM: callbacks, vm, env, clazz, internalDataPath,
+   externalDataPath, sdkVersion, instance, assetManager, obbPath (40 bytes); its callbacks, 16 functions. The library
+   sets the callbacks in the function that it is called with */
+uint32_t arm32_jni_activity_create(JNIEnv* e, jobject activity, const char* function, const char* internal,
+                                   const char* external, int sdk) {
+    if (!arm32_active() || !j.started) return 0;
+    uint32_t fn = arm32_symbol(NULL, function);
+    if (!fn) return 0;
+    uint32_t a = arm32_malloc(40), callbacks = arm32_malloc(64);
+    if (!a || !callbacks) return 0;
+    memset(arm32_mem + a, 0, 40);
+    memset(arm32_mem + callbacks, 0, 64);
+    JNIEnv* saved = t_env;
+    t_env = e;
+    wr32(a, callbacks);
+    wr32(a + 4, j.vm_guest);
+    wr32(a + 8, j.env);
+    wr32(a + 12, global_ref((*e)->NewGlobalRef(e, activity), REF_GLOBAL));
+    wr32(a + 16, internal ? arm32_strdup(internal) : 0);
+    wr32(a + 20, external ? arm32_strdup(external) : 0);
+    wr32(a + 24, (uint32_t)sdk);
+    wr32(a + 36, external ? arm32_strdup(external) : 0);
+    uint32_t mark = t_locals.count;
+    uint32_t args[3] = {a, 0, 0};
+    arm32_call(fn, args, 3, NULL);
+    t_locals.count = mark;
+    t_env = saved;
+    return a;
+}
+
+void arm32_jni_activity_call(JNIEnv* e, uint32_t activity, int callback, uint32_t argument) {
+    if (!activity || callback < 0 || callback >= 16) return;
+    uint32_t fn = rd32(rd32(activity) + 4 * (uint32_t)callback);
+    if (!fn) return;
+    JNIEnv* saved = t_env;
+    t_env = e;
+    uint32_t mark = t_locals.count;
+    uint32_t args[2] = {activity, argument};
+    arm32_call(fn, args, 2, NULL);
+    t_locals.count = mark;
+    t_env = saved;
+}
+
 jobject arm32_jni_allocate(JNIEnv* e, jint capacity, jlongArray address) {
     if (!arm32_active() || capacity < 0) return NULL;
     uint32_t a = arm32_malloc((uint32_t)capacity ? (uint32_t)capacity : 1);

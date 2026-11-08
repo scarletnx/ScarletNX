@@ -153,6 +153,11 @@ uint32_t arm32_input_queue_new(void);
 void arm32_input_motion(uint32_t queue, const int32_t* fields, int64_t down, int64_t time, float xprec, float yprec,
                         unsigned count, const int32_t* ids, const int32_t* tools, const float* axes);
 void arm32_input_key(uint32_t queue, const int32_t* fields, int64_t down, int64_t time);
+/* NativeActivity's glue (arm32_jni.c): its ANativeActivity, made and given to the library's function of that name
+   (0 when no loaded 32-bit library has it), and its callbacks by their index in ANativeActivityCallbacks */
+uint32_t arm32_jni_activity_create(JNIEnv* env, jobject activity, const char* function, const char* internal,
+                                   const char* external, int sdk);
+void arm32_jni_activity_call(JNIEnv* env, uint32_t activity, int callback, uint32_t argument);
 /* the guest's JavaVM, for the HLE */
 uint32_t arm32_jni_vm(void);
 #endif
