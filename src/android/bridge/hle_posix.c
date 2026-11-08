@@ -48,6 +48,7 @@
 #include <stdatomic.h>
 #include <sys/utime.h>
 #include <unistd.h>
+#include <windows.h> /* GetTempPathA, GetTempFileNameA */
 #else
 #include <arpa/inet.h>
 #include <dirent.h>
@@ -2326,17 +2327,28 @@ static void kernel_result(CPU* c, long number, unsigned first) {
     }
     X(0) = (uint64_t)(int64_t)r;
 }
-/* memfd_create(name, flags): an anonymous file of the host's, Linux's own there and an unlinked temporary file
-   elsewhere (MFD_CLOEXEC, 1, kept; sealing and huge pages are not). The descriptor, or -1 with the host's errno,
+/* memfd_create(name, flags): an anonymous file of the host's, Linux's own there and a temporary file that goes
+   with its last descriptor elsewhere (MFD_CLOEXEC, 1, kept; sealing and huge pages are not). The descriptor, or -1 with the host's errno,
    which the end of the call takes */
 static int host_memfd(const char* name, uint64_t flags) {
 #if defined(__linux__)
     return memfd_create(name ? name : "", (flags & 1) ? MFD_CLOEXEC : 0);
 #elif defined(_WIN32)
+    /* a file of the temporary folder that goes with its last descriptor (_O_TEMPORARY) */
+    char dir[MAX_PATH], path[MAX_PATH];
+    DWORD n = GetTempPathA(sizeof dir, dir);
     (void)name;
-    (void)flags;
-    errno = ENOSYS;
-    return -1;
+    if (!n || n >= sizeof dir || !GetTempFileNameA(dir, "mfd", 0, path)) {
+        errno = EIO;
+        return -1;
+    }
+    int fd = _open(path, _O_RDWR | _O_BINARY | _O_TEMPORARY | ((flags & 1) ? _O_NOINHERIT : 0));
+    if (fd < 0) {
+        int error = errno;
+        DeleteFileA(path);
+        errno = error;
+    }
+    return fd;
 #else
     (void)name;
     FILE* f = tmpfile();
