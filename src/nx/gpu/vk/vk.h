@@ -1152,8 +1152,9 @@ int vk_bc7_encode_image(VkCommandBuffer cb, VkImage src, VkImage dst, u32 level,
 /* A level of ASTC encoded again as BC7 with VK_BC7_FAST_TEXELS texels or more takes the encoder's fast build, which
    keeps mode 6 where it is close and tries every mode on the other blocks, and one of VK_BC7_MODE6_TEXELS or more its
    build of mode 6 alone (bc7_encode.glsl's SNX_BC7_FAST). vk_bc7_build: the build for a level of w x h texels and d
-   slices of a volume (1 else): 0 the full one, 1 the fast one, 2 mode 6 alone */
-#define VK_BC7_FAST_TEXELS  (2048u * 2048u)
+   slices of a volume (1 else): 0 the full one, 1 the fast one, 2 mode 6 alone. VK_BC7_FAST_TEXELS 0: every level takes
+   the fast build, which a batch of small levels encoded with the full one held a frame for seconds without */
+#define VK_BC7_FAST_TEXELS  0u
 #define VK_BC7_MODE6_TEXELS (8192u * 8192u)
 u32 vk_bc7_build(u32 w, u32 h, u32 d);
 u64 vk_bc7_strip_texels(void); /* the texels vk_bc7_encode_image takes at once at most */
