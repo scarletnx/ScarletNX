@@ -223,6 +223,33 @@ static int check_desc_pool_arrays(void) {
            held[0][0], held[0][1], held[1][0], held[1][1], n, vk_desc_pools() - pools);
     return 0;
 }
+/* A burst of sets in one frame (a load) makes pools the slot's later frames never reach: after a window of
+   VK_DESC_POOL_USES uses of the slot that each take one pool, the others are destroyed */
+static int check_desc_pool_keep(void) {
+    if (g_vk.has_descriptor_buffers) {
+        puts("descriptor pools kept: descriptor buffers here, the frames' pools hold no stage sets");
+        return 0;
+    }
+    vk_lock();
+    vk_finish();
+    vk_frame_next();
+    u32 before = vk_desc_pools();
+    for (u32 i = 0; i < 3 * 1024 + 1; i++) CHECK(vk_desc_alloc(g_vk_dslayout[0][1]) != VK_NULL_HANDLE);
+    u32 burst = vk_desc_pools();
+    for (u32 i = 0; i < 2 * VK_FRAMES * VK_DESC_POOL_USES + VK_FRAMES; i++) {
+        vk_frame_next();
+        CHECK(vk_desc_alloc(g_vk_dslayout[0][1]) != VK_NULL_HANDLE);
+    }
+    u32 after = vk_desc_pools();
+    vk_finish();
+    vk_frame_next();
+    vk_unlock();
+    CHECK(after + 3 <= burst); /* the burst's slot held 4 pools or more, one of them stays */
+    printf(
+        "descriptor pools kept: %u before a burst of 3073 sets, %u after it, %u once %u uses of each slot took one\n",
+        before, burst, after, 2 * VK_DESC_POOL_USES);
+    return 0;
+}
 /* Graphics descriptor tables fill the frame's descriptor memory. vk_frame_check, which runs before a draw's setup,
    moves on to the next frame while the tables of one more draw still fit: the setup itself never submits for room */
 static int check_descriptor_room(void) {
@@ -7357,6 +7384,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_descriptor_room());
     CHECK(!check_sparse_texture());
     CHECK(!check_desc_pool_arrays());
+    CHECK(!check_desc_pool_keep());
     /* the pipeline workers: pipeline_threads when given, else all the CPUs but two, two to twelve */
     CHECK(snx_vk_pipeline_workers(0, 8) == 6 && snx_vk_pipeline_workers(0, 12) == 10 &&
           snx_vk_pipeline_workers(0, 4) == 2 && snx_vk_pipeline_workers(0, 0) == 2 &&
