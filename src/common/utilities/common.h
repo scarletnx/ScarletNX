@@ -292,6 +292,20 @@ void snx_thread_clock_close(SnxU64 clock);
 /* names the calling thread for the system, which debuggers, crash reports, the system's tools and snx_threads show:
    Linux and Android keep its first 15 bytes, FreeBSD 19, the others 63 (Windows from 10 1607; earlier ones none) */
 void snx_thread_name(const char* name);
+/* The nice a thread snx_thread_priority_low lowers gets above its own on Linux and Android. Their scheduler shares a
+   busy CPU by weight, 1.25 times less a step of nice (sched_prio_to_weight: 1024 at 0, 110 at 10, 15 at 19): at 10 a
+   game thread at 0 keeps 90% of a CPU it shares with one and is given it first when it wakes, while a pipeline the
+   frame waits on still gets a tenth of it, where at 19 it would crawl at 1.4%. Android's background threads take 10
+   too */
+#define SNX_THREAD_LOW_NICE 10
+/* The calling thread at the system's low priority, where it takes the CPUs only as far as the process's other threads
+   leave them free: on Linux and Android SNX_THREAD_LOW_NICE above the nice it has, 19 at most; on macOS and iOS the
+   utility QoS class; on Windows below normal; on FreeBSD the idle class, which needs root, the idletime group with
+   mac_priority, or security.bsd.unprivileged_idprio=1. 0 when it runs there now; -1 when the system refused it or has
+   none for a thread, with what was asked, the system's reason and the priority the thread runs at instead into why */
+int snx_thread_priority_low(char* why, size_t size);
+/* what snx_thread_priority_low asks of this system, for a log: "nice +10", "the utility QoS class"... */
+const char* snx_thread_priority_low_name(void);
 /* one of the process's threads, as snx_threads reads it */
 typedef struct {
     /* the system's id for it, with its start where the system gives an ended thread's id to a new one (Linux,

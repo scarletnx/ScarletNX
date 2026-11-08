@@ -352,8 +352,8 @@ setting Pipeline threads
     startup
     words Auto|#
     help The threads that make the GPU's new pipelines while the game goes on: 0 = all the computer's threads but
-    help two, two to twelve; 1 to 32 = that many. More make a first run's new pipelines sooner, with less CPU left
-    help for the game
+    help two, two to twelve; 1 to 32 = that many. Past the first two they run at the system's low priority, so more
+    help make a first run's new pipelines sooner and the game's own threads still go first
 setting Async pipelines
     key async_pipelines
     int 0 1

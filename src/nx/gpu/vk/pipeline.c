@@ -1379,9 +1379,16 @@ static void pipe_job(Pipe* e, int queue) {
     pc_broadcast(&g_pj_done);
     pm_unlock(&g_pj_lock);
 }
-static void pipe_worker(void* arg) {
-    (void)arg;
+static void pipe_worker(void* low) {
     SNX_THREAD_NAME("Vulkan pipelines");
+    if (low) { /* one past the first two (snx_vk_pipeline_low_workers) */
+        char why[256];
+        if (snx_thread_priority_low(why, sizeof why))
+            WARN_LIMIT(1,
+                       "vulkan: a pipeline worker asked for %s, the system's low priority: %s (said for the first "
+                       "one refused)\n",
+                       snx_thread_priority_low_name(), why);
+    }
     for (;;) {
         Pipe* e;
         int queue;
@@ -1433,14 +1440,26 @@ void vk_pipeline_quiesce(void) {
 static int pipe_workers(void) {
     if (!g_pj_started) {
         int cpus = plat_cpu_count(), n = snx_vk_pipeline_workers(g_settings.pipeline_threads, cpus);
+        int low = snx_vk_pipeline_low_workers(n), started[2] = {0, 0};
+        char why[256] = "";
         g_pj_started = 1;
-        LOG("vulkan: pipeline_threads=%d%s: %d workers make the new pipelines, of %d CPUs\n",
-            g_settings.pipeline_threads, g_settings.pipeline_threads ? "" : " (Auto)", n, cpus);
         pc_init(&g_pj_work);
         pc_init(&g_pj_done);
-        for (int i = 0; i < n; i++)
-            if (!plat_thread(pipe_worker, NULL, (size_t)1 << 20)) g_pj_threads++;
+        for (int i = 0; i < n; i++) {
+            int lowered = i >= n - low;
+            if (!plat_thread(pipe_worker, (void*)(uintptr_t)lowered, (size_t)1 << 20))
+                started[lowered]++;
+            else
+                snx_os_error(why, sizeof why);
+        }
+        g_pj_threads = started[0] + started[1];
         g_po_max = g_pj_threads > 1 ? g_pj_threads / 2 : 1;
+        LOG("vulkan: pipeline_threads=%d%s: %d workers make the new pipelines, of %d CPUs: %d at the system's normal "
+            "priority, %d at its low one (%s)\n",
+            g_settings.pipeline_threads, g_settings.pipeline_threads ? "" : " (Auto)", g_pj_threads, cpus, started[0],
+            started[1], snx_thread_priority_low_name());
+        if (g_pj_threads < n)
+            WARN("vulkan: %d of the %d pipeline workers did not start: %s\n", n - g_pj_threads, n, why);
     }
     return g_pj_threads;
 }

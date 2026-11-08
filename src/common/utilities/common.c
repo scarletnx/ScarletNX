@@ -52,11 +52,15 @@
 #include <sys/sysctl.h>
 #include <sys/user.h> /* struct kinfo_proc */
 #include <pthread_np.h> /* pthread_set_name_np */
+#include <sys/rtprio.h> /* a thread's idle class (snx_thread_priority_low) */
 #endif
 #ifdef __linux__
-#include <sys/prctl.h> /* PR_SET_NAME: a thread's name, without _GNU_SOURCE's pthread_setname_np */
+#include <sys/prctl.h>    /* PR_SET_NAME: a thread's name, without _GNU_SOURCE's pthread_setname_np */
+#include <sys/resource.h> /* a thread's nice (snx_thread_priority_low) */
+#include <sys/syscall.h>  /* SYS_gettid */
 #endif
 #ifdef __APPLE__
+#include <pthread/qos.h> /* a thread's QoS class (snx_thread_priority_low) */
 #include <TargetConditionals.h>
 #include <libkern/OSCacheControl.h> /* sys_icache_invalidate */
 #include <mach-o/dyld.h>
@@ -2111,6 +2115,89 @@ void snx_thread_name(const char* name) {
     prctl(PR_SET_NAME, (unsigned long)cut, 0, 0, 0);
 #elif defined(__FreeBSD__)
     pthread_set_name_np(pthread_self(), cut);
+#endif
+}
+#if defined(__APPLE__)
+static const char* qos_name(qos_class_t c) {
+    switch (c) {
+        case QOS_CLASS_USER_INTERACTIVE: return "user-interactive";
+        case QOS_CLASS_USER_INITIATED: return "user-initiated";
+        case QOS_CLASS_DEFAULT: return "default";
+        case QOS_CLASS_UTILITY: return "utility";
+        case QOS_CLASS_BACKGROUND: return "background";
+        default: return "unspecified";
+    }
+}
+#endif
+int snx_thread_priority_low(char* why, size_t size) {
+#if defined(_WIN32)
+    char reason[256];
+    if (SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL)) return 0;
+    snx_os_error(reason, sizeof reason);
+    snprintf(why, size, "SetThreadPriority below normal: %s; it runs at thread priority %d (normal is 0)", reason,
+             GetThreadPriority(GetCurrentThread()));
+    return -1;
+#elif defined(__APPLE__)
+    int e = pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+    if (!e) return 0;
+    snprintf(why, size, "pthread_set_qos_class_self_np utility: %s; it runs in the %s QoS class", strerror(e),
+             qos_name(qos_class_self()));
+    return -1;
+#elif defined(__linux__)
+    /* a thread's id given to them, getpriority and setpriority take that thread alone (Android's too); the process's
+       id would name its first thread */
+    id_t tid = (id_t)syscall(SYS_gettid);
+    int now, want;
+    errno = 0;
+    now = getpriority(PRIO_PROCESS, tid);
+    if (now == -1 && errno) {
+        snprintf(why, size, "getpriority of thread %u: %s; its nice is not known", (unsigned)tid, strerror(errno));
+        return -1;
+    }
+    want = now + SNX_THREAD_LOW_NICE < 19 ? now + SNX_THREAD_LOW_NICE : 19;
+    if (want == now) {
+        snprintf(why, size, "nice %d is the lowest there is; it runs at nice %d", now, now);
+        return -1;
+    }
+    if (setpriority(PRIO_PROCESS, tid, want)) {
+        snprintf(why, size, "setpriority nice %d: %s; it runs at nice %d", want, strerror(errno), now);
+        return -1;
+    }
+    return 0;
+#elif defined(__FreeBSD__)
+    /* setpriority's nice is the whole process's here; the idle class is a thread's own */
+    struct rtprio idle = {RTP_PRIO_IDLE, RTP_PRIO_MIN}, now = {0, 0};
+    const char* in;
+    int e;
+    if (!rtprio_thread(RTP_SET, 0, &idle)) return 0;
+    e = errno;
+    in = rtprio_thread(RTP_LOOKUP, 0, &now)           ? "a class rtprio_thread does not say"
+         : RTP_PRIO_BASE(now.type) == RTP_PRIO_NORMAL ? "the timeshare class"
+         : RTP_PRIO_BASE(now.type) == RTP_PRIO_IDLE   ? "the idle class"
+                                                      : "a realtime class";
+    snprintf(why, size,
+             "rtprio_thread idle %d: %s (root, the idletime group with mac_priority, or "
+             "security.bsd.unprivileged_idprio=1 allow it); it runs in %s",
+             RTP_PRIO_MIN, strerror(e), in);
+    return -1;
+#else
+    snprintf(why, size, "this system has no lower priority for one thread here; it runs at the process's own");
+    return -1;
+#endif
+}
+#define LOW_NICE_NAME_(n) "nice +" #n
+#define LOW_NICE_NAME(n)  LOW_NICE_NAME_(n)
+const char* snx_thread_priority_low_name(void) {
+#if defined(_WIN32)
+    return "below normal";
+#elif defined(__APPLE__)
+    return "the utility QoS class";
+#elif defined(__linux__)
+    return LOW_NICE_NAME(SNX_THREAD_LOW_NICE);
+#elif defined(__FreeBSD__)
+    return "the idle class";
+#else
+    return "none on this system";
 #endif
 }
 int snx_threads(SnxThreadInfo* out, int max) {
