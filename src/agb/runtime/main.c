@@ -53,11 +53,8 @@ static void usage(void) {
 static int write_shot(const char* path, const uint32_t* framebuffer) {
     FILE* file = fopen(path, "wb");
     if (!file) return -1;
-    fprintf(file, "P6\n%d %d\n255\n", AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT);
-    for (int i = 0; i < AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT; ++i) {
-        uint8_t pixel[3] = {(uint8_t)framebuffer[i], (uint8_t)(framebuffer[i] >> 8), (uint8_t)(framebuffer[i] >> 16)};
-        fwrite(pixel, 1, 3, file);
-    }
+    (void)snx_ppm_write(file, AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT, (const unsigned char*)framebuffer, 4,
+                        AGB_SCREEN_WIDTH * 4, SNX_PPM_WORD);
     fclose(file);
     return 0;
 }

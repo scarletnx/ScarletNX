@@ -144,6 +144,14 @@ int snx_file_has_record(const char* path, const void* magic, size_t magic_size, 
                         int (*accept)(const unsigned char* record, const void* context), const void* context);
 int snx_write_file(const char* path, const void* data, size_t size);
 int snx_write_changed(const char* path, const void* data, size_t size);
+/* The orders of the 4 bytes of a pixel that snx_ppm_write reads: R, G, B and one it skips; B, G, R and one skipped; or
+   a 32-bit word in the host's order with red in its low byte, then green and blue */
+enum { SNX_PPM_RGBA, SNX_PPM_BGRA, SNX_PPM_WORD };
+/* A binary PPM (P6) of width by height pixels into f. The first pixel is at pixels, the next one in a row pixel_step
+   bytes on, and the next row row_step bytes on (a step can be negative, as a rotated read takes). 0, or -1 when a
+   write fails */
+int snx_ppm_write(FILE* f, uint32_t width, uint32_t height, const unsigned char* pixels, ptrdiff_t pixel_step,
+                  ptrdiff_t row_step, int order);
 char* snx_temp_dir(const char* parent);
 /* the system's folder for temporary files: TMPDIR, else /tmp; on Windows GetTempPath's */
 char* snx_temp_root(void);

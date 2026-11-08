@@ -10,6 +10,7 @@
    cleared to transparent, that the app's device imports and blends over each of its presents (hle_vulkan.c,
    docs/platforms/android-apps/hwui.md "Over an app's own Vulkan") */
 #include "android/hwui/render.h"
+#include "common/utilities/common.h"
 #include "android/bridge/hle.h"
 #include "android/bridge/hle_vulkan.h"
 #include "android/hwui/draw_frag_spv.h"
@@ -1518,13 +1519,8 @@ static void screenshot(VkImage image) {
         VkMappedMemoryRange range = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = memory,
                                      .size = VK_WHOLE_SIZE};
         vkInvalidateMappedMemoryRanges(r.device, 1, &range);
-        fprintf(f, "P6\n%u %u\n255\n", r.extent.width, r.extent.height);
-        const unsigned char* px = data;
-        bool bgra = r.color_format == VK_FORMAT_B8G8R8A8_UNORM;
-        for (size_t i = 0; i < size; i += 4) {
-            unsigned char rgb[3] = {px[i + (bgra ? 2 : 0)], px[i + 1], px[i + (bgra ? 0 : 2)]};
-            fwrite(rgb, 1, 3, f);
-        }
+        int order = r.color_format == VK_FORMAT_B8G8R8A8_UNORM ? SNX_PPM_BGRA : SNX_PPM_RGBA;
+        (void)snx_ppm_write(f, r.extent.width, r.extent.height, data, 4, (ptrdiff_t)r.extent.width * 4, order);
         vkUnmapMemory(r.device, memory);
         fprintf(stderr, "scarletnx-android: frame %ld saved as %s\n", r.frames, path);
     }
