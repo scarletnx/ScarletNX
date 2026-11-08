@@ -555,8 +555,15 @@ static Point shape[SHAPE_MAX];
 static void draw_rrect(float l, float t, float rr, float b, float rx, float ry, const Paint* p) {
     if (rr < l) { float s = l; l = rr; rr = s; }
     if (b < t) { float s = t; t = b; b = s; }
-    rx = fminf(fmaxf(rx, 0), (rr - l) / 2);
-    ry = fminf(fmaxf(ry, 0), (b - t) / 2);
+    /* radii too big for the sides are scaled down together, as Skia's SkRRect does: a pill of a huge radius stays a
+       pill instead of becoming an ellipse */
+    rx = fmaxf(rx, 0);
+    ry = fmaxf(ry, 0);
+    float scale = 1;
+    if (2 * rx > rr - l) scale = (rr - l) / (2 * rx);
+    if (2 * ry > b - t) scale = fminf(scale, (b - t) / (2 * ry));
+    rx *= scale;
+    ry *= scale;
     if (rx <= 0 || ry <= 0) {
         Point q[4] = {{l, t}, {rr, t}, {rr, b}, {l, b}};
         draw_shape(q, 4, p);
