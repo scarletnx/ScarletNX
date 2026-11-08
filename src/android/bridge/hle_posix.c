@@ -393,6 +393,17 @@ static uint64_t guest_flags(int host) {
 #endif
 }
 #endif
+/* open of the host with Linux's error for a link that O_NOFOLLOW refuses: ELOOP. FreeBSD and DragonFly give EMLINK
+   there, and NetBSD EFTYPE */
+static int open_host(const char* path, int flags, int mode) {
+    int fd = open(path, flags, mode);
+#if defined(__FreeBSD__) || defined(__DragonFly__)
+    if (fd < 0 && errno == EMLINK && (flags & O_NOFOLLOW)) errno = ELOOP;
+#elif defined(__NetBSD__)
+    if (fd < 0 && errno == EFTYPE && (flags & O_NOFOLLOW)) errno = ELOOP;
+#endif
+    return fd;
+}
 static void g_open(CPU* c, void* data) {
     (void)data;
     int own = hle_proc_open(STR(0));
@@ -400,7 +411,7 @@ static void g_open(CPU* c, void* data) {
         X(0) = wide_int(own);
         return;
     }
-    X(0) = wide_int(open(STR(0), open_flags(X(1)), (int)X(2)));
+    X(0) = wide_int(open_host(STR(0), open_flags(X(1)), (int)X(2)));
 }
 static void g_open_2(CPU* c, void* data) {
     (void)data;
@@ -409,7 +420,7 @@ static void g_open_2(CPU* c, void* data) {
         X(0) = wide_int(own);
         return;
     }
-    X(0) = wide_int(open(STR(0), open_flags(X(1))));
+    X(0) = wide_int(open_host(STR(0), open_flags(X(1)), 0));
 }
 
 /* fcntl: Linux's commands. F_DUPFD to F_SETFL are 0 to 4 on every POSIX host */
