@@ -273,8 +273,9 @@ typedef struct {
     /* an indirect draw's record values that the vertex program reads where NVN's driver writes them in constant buffer
        0 (shader.h SH_CB0_): bit 0 the base vertex, bit 1 the base instance (SH_PUSH_GPU_). 0 for none */
     u32 params;
-    /* Fixed-function NVN state that accompanies a draw, outside the serialized DsState ABI. Zero flags keep the
-       existing Maxwell/default behavior. Tessellation levels are outer[4], then inner[2]. */
+    /* Fixed-function state that accompanies a draw, outside the serialized DsState ABI: the NVN path's, and what the
+       3D engine's path reads from its registers for it (maxwell/draw_state.h mx_draw_fixed). Zero flags draw points 1
+       pixel wide. Tessellation levels are outer[4], then inner[2]. */
     u32 state_flags;
     float point_size, depth_bounds[2], tess_levels[6];
     u32 raster_samples, coverage_mode, coverage_table_enable;

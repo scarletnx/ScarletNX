@@ -548,6 +548,15 @@ static void dispatch_state(void) {
     CHECK(!dx_cb_inline(&x, 1).bytes && !dx_cb_inline(&x, DX_CBUFS).bytes);
 }
 
+/* the state a draw carries beside DsState (DrawCall.state_flags): SET_POINT_SIZE (0x546), a float, every draw */
+static void fixed_state(void) {
+    u32 r[REGS] = {0};
+    DrawCall dc = {0};
+    setf(r, 0x546, 4.0f);
+    mx_draw_fixed(r, &dc);
+    CHECK(dc.state_flags == DS_DRAW_POINT_SIZE && dc.point_size == 4.0f);
+}
+
 int main(void) {
     stencil();
     origin();
@@ -566,6 +575,7 @@ int main(void) {
     bindings();
     inline_blocks();
     dispatch_state();
+    fixed_state();
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;

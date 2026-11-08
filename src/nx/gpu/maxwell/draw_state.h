@@ -29,6 +29,8 @@ void mx_draw_index(const u32* r, DsIndex* x);
 void mx_draw_bindings(const u32* r, DsBindings* b);
 /* what transform feedback captures, for programs that DsPrograms.xfb_on says capture */
 void mx_draw_xfb(const u32* r, ShXfb* x);
+/* the state the renderer takes with each draw (DrawCall.state_flags) from the registers r: the point size */
+void mx_draw_fixed(const u32* r, DrawCall* dc);
 /* a clear (CLEAR_SURFACE's word v) and a texture draw (DRAW_TEXTURE) from the registers r */
 void mx_draw_clear(const u32* r, u32 v, DrawClear* c);
 void mx_draw_texture(const u32* r, DrawTexture* t);

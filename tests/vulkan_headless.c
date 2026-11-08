@@ -5119,6 +5119,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_nvn_copy_conversions.inc"
 #include "vulkan_nvn_xfb.inc"
 #include "vulkan_nvn_state.inc"
+#include "vulkan_maxwell_fixed.inc"
 #include "vulkan_nvn_events.inc"
 #include "vulkan_nvn_subroutines.inc"
 #include "vulkan_nvn_savestate.inc"
@@ -5620,6 +5621,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_nvn_stencil_masks());
     CHECK(!check_nvn_xfb());
     CHECK(!check_nvn_fixed_state());
+    CHECK(!check_maxwell_point_size());
     CHECK(!check_nvn_default_tessellation());
     CHECK(!check_nvn_advanced_blend());
     CHECK(!check_nvn_coverage());
