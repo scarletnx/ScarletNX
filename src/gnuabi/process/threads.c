@@ -10,6 +10,7 @@
 #include "gnuabi/process/process.h"
 #include "gnuabi/runtime/execution.h"
 #include "common/network/net.h"
+#include "common/platform/thread.h"
 #include "common/utilities/endian.h"
 #include <openssl/crypto.h>
 #include <stdio.h>
@@ -102,33 +103,9 @@ static void thread_main(GnuThread* t) {
     gnu_thread_free(t);
 }
 
-#ifdef _WIN32
-static DWORD WINAPI host_main(LPVOID t) {
-    thread_main(t);
-    return 0;
-}
-int gnu_thread_spawn(GnuThread* t) {
-    HANDLE h = CreateThread(NULL, GUEST_STACK, host_main, t, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
-    if (!h) return -GNU_EAGAIN;
-    CloseHandle(h); /* nothing joins it */
-    return 0;
-}
-#else
-static void* host_main(void* t) {
-    thread_main(t);
-    return NULL;
-}
-int gnu_thread_spawn(GnuThread* t) {
-    pthread_attr_t attributes;
-    pthread_attr_init(&attributes);
-    pthread_attr_setstacksize(&attributes, GUEST_STACK);
-    pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED);
-    pthread_t host;
-    int failed = pthread_create(&host, &attributes, host_main, t);
-    pthread_attr_destroy(&attributes);
-    return failed ? -GNU_EAGAIN : 0;
-}
-#endif
+static void host_main(void* t) { thread_main(t); }
+/* detached: nothing joins it */
+int gnu_thread_spawn(GnuThread* t) { return plat_thread(host_main, t, GUEST_STACK) ? -GNU_EAGAIN : 0; }
 
 int64_t gnu_thread_clone(GnuThread* parent, uint64_t flags, uint64_t stack, uint64_t parent_tid, uint64_t tls,
                          uint64_t child_tid) {

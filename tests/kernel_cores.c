@@ -180,7 +180,7 @@ int plat_cpus(int* ids, int max) {
     memcpy(ids, snx_kct_host, sizeof *ids * (size_t)n);
     return n;
 }
-void plat_thread_cpus(const int* ids, int n) {
+int plat_thread_cpus(const int* ids, int n) {
     int len = 0;
     pthread_mutex_lock(&snx_kct_lk);
     snx_kct_moved[0] = 0;
@@ -189,6 +189,7 @@ void plat_thread_cpus(const int* ids, int n) {
     strcpy(snx_kct_moved_by[snx_kct_who], snx_kct_moved);
     snx_kct_moves++;
     pthread_mutex_unlock(&snx_kct_lk);
+    return 0;
 }
 /* the threads are the pool's first slots, where the cores' lists find them (kt_at) */
 #define snx_kct_thread (g_hle.thread.threads)

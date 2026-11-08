@@ -82,6 +82,32 @@ int pc_wait(PCond* c, PMutex* m, int64_t timeout_ns);
 void plat_wait_word(uint32_t* w, uint32_t v, int64_t timeout_ns);
 void plat_wake_word(uint32_t* w);
 
+/* ---- threads */
+typedef void (*PThreadFn)(void* arg);
+/* the alternate signal stack of a thread: the crash report needs about 12 KiB, and a thread whose own stack overflowed
+   has none left */
+#define PLAT_ALT_STACK_SIZE 32768
+/* What a driver does on each thread plat_thread starts: start before fn, end after it (and in plat_thread_exit), on
+   the thread itself; created (Windows) on the starting thread with the new thread's handle, which it must not keep
+   without its own copy. Any member may be NULL. Set once, before the first thread; the table must outlive them */
+typedef struct {
+    void (*start)(void);
+    void (*end)(void);
+#if defined(_WIN32)
+    void (*created)(HANDLE h);
+#endif
+} PThreadHooks;
+void plat_thread_hooks(const PThreadHooks* hooks);
+/* A detached thread running fn(arg) on a stack of that many bytes (0: the system's default). A thread with the
+   default stack, or one of 256 KiB or more, gets room for a crash report after its stack overflows (an alternate
+   signal stack, Windows' stack guarantee). 0, or -1 with the reason in errno (GetLastError on Windows) */
+int plat_thread(PThreadFn fn, void* arg, size_t stack);
+void plat_thread_exit(void); /* ends the calling thread (one plat_thread started) */
+/* the host CPUs the process may run on, at most max of them, into ids; 0 where the runtime doesn't choose them (all
+   but Linux; Android's CPUs differ in speed). On Linux each thread plat_thread starts may then run on all of them */
+int plat_cpus(int* ids, int max);
+/* the calling thread runs only on the n host CPUs in ids: 0, or -1 with errno */
+int plat_thread_cpus(const int* ids, int n);
 void plat_yield(void);
 /* the calling thread's id, as the system numbers threads (Linux's gettid, kept per thread). Safe in a signal handler
    once the thread has called it one time */
