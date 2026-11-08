@@ -11,7 +11,8 @@
    version 2 is rebuilt, one of version 1 started over. A file read as its records are used
    (pf_open_mapped) hands each over with where it starts, checks one when it is read (a payload changed on disk doesn't
    check out), drops a record cut short and maps the file as rewritten, leaves one it can't map as it is and never
-   appends to it, and shows what was appended once sealed */
+   appends to it, and shows what was appended once sealed. Where plat_cpus lists no CPUs, the threads that check and
+   unpack a file count the system's */
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -530,6 +531,25 @@ static void check_pipe(int i, int n, u64 vs, u64 tcs, u64 tes, u64 gs, u64 fs) {
     CHECK(got.mods[i][0] == vs && got.mods[i][1] == tcs && got.mods[i][2] == tes && got.mods[i][3] == gs &&
           got.mods[i][4] == fs);
 }
+
+#if defined(__linux__)
+/* The threads that check and unpack a file count the CPUs where plat_cpus lists none (Android's, as every system's
+   but desktop Linux's): two of them during background preparation and up to eight on a loading screen, as where it
+   lists them, never a lone thread for want of a list */
+static void workers(void) {
+    int all = (int)snx_cpu_count(), two = all < 2 ? all : 2, eight = all < 8 ? all : 8;
+    cpus = 0;
+    g_settings.prepare_shaders = 0;
+    CHECK(pf_workers() == two);
+    g_settings.prepare_shaders = 2;
+    CHECK(pf_workers() == eight);
+    cpus = 3;
+    CHECK(pf_workers() == 3);
+    g_settings.prepare_shaders = 0;
+    CHECK(pf_workers() == 2);
+    cpus = 8;
+}
+#endif
 
 /* Large warm caches take the parallel validation path. A bad source at any range boundary still cuts the file at
    that record, before any shader or pipeline after it is handed back. Mapping failure takes the same checked path. */
@@ -1283,6 +1303,9 @@ int main(void) {
     shiprefs();
     rebuilds();
     cspipes();
+#if defined(__linux__)
+    workers();
+#endif
     large_checks();
     units_round_trip();
     units_off();

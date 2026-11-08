@@ -171,7 +171,7 @@ StateWriter* sw_open(const char* path, const SnxStateHeader* h, const u8* thumb,
     pm_init(&w->lk);
     pc_init(&w->cv);
     {
-        int ids[64], cpus = plat_cpus(ids, 64), i, ok = 1;
+        int cpus = plat_cpu_count(), i, ok = 1;
         w->nworkers = cpus > 1 ? (cpus - 1 < WORKERS ? cpus - 1 : WORKERS) : 1;
         for (i = 0; i < RING; i++) {
             w->ring[i].in = (u8*)malloc(CHUNK);
