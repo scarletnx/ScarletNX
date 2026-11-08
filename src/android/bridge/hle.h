@@ -52,6 +52,8 @@ extern const HleSymbol hle_signal[];
 extern const char hle_gpu_name[];
 /* the native window's guest address and its size in pixels (the buffers' when the guest set them) */
 uint64_t hle_android_window(int* width, int* height);
+/* whether an ANativeWindow is a SurfaceTexture's, which shows nowhere (hle_android.c) */
+bool hle_android_is_texture_window(uint64_t window);
 /* bionic's functions that are guest code (hle_code.c): written into the code window once, after bridge_init */
 void hle_code_init(void);
 uint64_t hle_code_symbol(const char* name);
