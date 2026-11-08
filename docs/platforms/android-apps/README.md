@@ -7,10 +7,26 @@ runtime run on a phone, is [ANDROID](../../hosts/android-app.md).) The target is
 
 ## Index
 
+* [Layers](#layers)
 * [Design](#design)
 * [Running an app](#running-an-app)
 * [The DEX translator](#the-dex-translator)
 * [Status](#status)
+
+## Layers
+
+This is the guest platform of Android apps. For the ScarletNX app that plays Switch games on a phone, see
+[Android host](../../hosts/android-app.md).
+
+| Layer | Code | Documents |
+| --- | --- | --- |
+| Loader | the install of an APK, an XAPK or an APKS (`src/android/runtime/install.c`), resources (`src/android/res/`) | [Running an app](#running-an-app) |
+| CPU | DEX code translated to JVM classes (`src/android/dex/`), and native AArch64 or 32-bit libraries through the recompiler (`src/android/bridge/`) | [The DEX translator](#the-dex-translator), [The native bridge](native.md) |
+| Kernel and HLE | the framework (`src/android/framework/`), binder services in the process, SQLite (`src/android/db/`) | [Interfaces](interfaces.md) |
+| GPU | HWUI's display lists on Vulkan (`src/android/hwui/`), EGL, GLES and Vulkan for native code | [HWUI](hwui.md), [The native bridge](native.md) |
+| Audio | `MediaPlayer` and `SoundPool` through FFmpeg and one SDL audio stream (`src/android/runtime/audio.c`) | [Interfaces](interfaces.md) |
+| Input | the mouse as a finger and the keyboard as a hardware keyboard | [Running an app](#running-an-app) |
+| Platform | the JVM, and the host layer that every driver shares (`src/common/platform/`) | [Running an app](#running-an-app) |
 
 ## Design
 

@@ -44,7 +44,7 @@ keeps audits and measurements as they were taken.
 
 ## Guest platforms
 
-- Switch (`platforms/nx/`)
+- [Switch](platforms/nx/README.md): the Switch runtime's layers, and its own parts
   - [IPC interfaces](platforms/nx/ipc.md): the services a game talks to, their language, layout and results
   - [Hooks](platforms/nx/hooks.md): native handlers for functions a game exports, declaring and checking one
   - [NCE](platforms/nx/nce.md): the game's code on an AArch64 host's own CPU, Android's design calls and their limits

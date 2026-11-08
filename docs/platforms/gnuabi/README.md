@@ -2,6 +2,7 @@
 
 ## Index
 
+* [Layers](#layers)
 * [Build and run](#build-and-run)
 * [The sysroot](#the-sysroot)
 * [How code runs](#how-code-runs)
@@ -18,6 +19,16 @@ and answers the program's Linux system calls. Processes the guest starts are hos
 processes, its pipes are host pipes, and its files are the sysroot's or the host's.
 QEMU is an external reference used by tests; it is never the execution engine or a
 dependency of this executable.
+
+## Layers
+
+| Layer | Code | Documents |
+| --- | --- | --- |
+| Loader | the ELF and its dynamic linker from the sysroot (`src/gnuabi/loader/`) | this page |
+| CPU | AArch64 code through the recompiler library and its JIT (`src/gnuabi/runtime/`, `src/common/cpu/recompiler/`), 32-bit code through the block compiler | [The recompiler as a library](../../dev/library.md) |
+| Kernel and HLE | the Linux system calls (`src/gnuabi/kernel/`, `src/gnuabi/abi/`), processes (`src/gnuabi/process/`), memory (`src/gnuabi/memory/`), files (`src/gnuabi/filesystem/`), sockets (`src/gnuabi/network/`) | this page |
+| GPU, audio, input | none: the programs that it runs talk to the host through system calls | |
+| Platform | the host layer that every driver shares (`src/common/platform/`) | [Build](../../dev/build.md) |
 
 ## Build and run
 

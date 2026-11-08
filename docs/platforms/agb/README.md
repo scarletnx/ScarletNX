@@ -2,6 +2,7 @@
 
 ## Index
 
+* [Layers](#layers)
 * [Playing](#playing)
 * [Status](#status)
 * [The display device](#the-display-device)
@@ -28,6 +29,18 @@ build/agb/scarletnx-agb Game.gba
 
 `scarletnx-agb` is also a menu entry of `scarletnx-gui` ("Load GBA ROM"), next
 to the Switch, Linux and 3DS loaders.
+
+## Layers
+
+| Layer | Code | Documents |
+| --- | --- | --- |
+| Loader | the ROM and its header (`src/agb/cartridge/`) | [The ROM header](#the-rom-header) |
+| CPU | the ROM's ARM and Thumb code through the block compiler (`src/agb/cpu/`, `src/common/cpu/arm/`) | [The recompiled ROM](#the-recompiled-rom) |
+| Kernel and HLE | the BIOS calls as board routines (`src/agb/bios/`), the board's memory, DMA, timers and saves (`src/agb/board/`) | [The HLE BIOS](#the-hle-bios), [The memory map](#the-memory-map) |
+| GPU | the display device, drawn on the CPU (`src/agb/ppu/`) | [The display device](#the-display-device) |
+| Audio | the sound hardware and its mixer (`src/agb/apu/`) | [The sound hardware](#the-sound-hardware) |
+| Input | the keypad from the keyboard and gamepads (`src/agb/runtime/host.c`) | [Playing](#playing) |
+| Platform | the SDL window and the run (`src/agb/runtime/`), and the host layer that every driver shares (`src/common/platform/`) | [Build](../../dev/build.md) |
 
 ## Playing
 

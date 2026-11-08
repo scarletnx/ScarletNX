@@ -1,6 +1,9 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!-- Copyright 2026 the ScarletNX contributors -->
-# Android
+# The Android app
+
+This page is about Android as a host: the ScarletNX app that plays Switch games on a phone. Running Android apps
+on a desktop is a guest platform, described in [Android apps](../platforms/android-apps/README.md).
 
 ## Index
 
