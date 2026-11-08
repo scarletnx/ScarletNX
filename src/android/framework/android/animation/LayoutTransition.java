@@ -8,4 +8,7 @@ public class LayoutTransition {
     public void enableTransitionType(int transitionType) {}
     public void disableTransitionType(int transitionType) {}
     public void setDuration(long duration) {}
+    public void setAnimateParentHierarchy(boolean animateParentHierarchy) {}
+    /** No layout change animates here */
+    public boolean isChangingLayout() { return false; }
 }

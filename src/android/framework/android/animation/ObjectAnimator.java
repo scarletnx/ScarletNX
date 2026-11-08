@@ -48,6 +48,39 @@ public final class ObjectAnimator extends ValueAnimator {
         a.setValues(PropertyValuesHolder.ofObject(propertyName, evaluator, values));
         return a;
     }
+    @SafeVarargs
+    public static <T, V> ObjectAnimator ofObject(T target, Property<T, V> property, TypeEvaluator<V> evaluator, V... values) {
+        ObjectAnimator a = new ObjectAnimator(target, property.getName());
+        a.setValues(PropertyValuesHolder.ofObject(property, evaluator, values));
+        return a;
+    }
+    @SafeVarargs
+    public static <T, V, P> ObjectAnimator ofObject(T target, Property<T, P> property, TypeConverter<V, P> converter, TypeEvaluator<V> evaluator, V... values) {
+        ObjectAnimator a = new ObjectAnimator(target, property.getName());
+        a.setValues(PropertyValuesHolder.ofObject(property, converter, evaluator, values));
+        return a;
+    }
+    public static ObjectAnimator ofObject(Object target, String propertyName, TypeConverter<android.graphics.PointF, ?> converter, android.graphics.Path path) {
+        ObjectAnimator a = new ObjectAnimator(target, propertyName);
+        a.setValues(PropertyValuesHolder.ofObject(propertyName, converter, path));
+        return a;
+    }
+    public static <T, V> ObjectAnimator ofObject(T target, Property<T, V> property, TypeConverter<android.graphics.PointF, V> converter, android.graphics.Path path) {
+        ObjectAnimator a = new ObjectAnimator(target, property.getName());
+        a.setValues(PropertyValuesHolder.ofObject(property, converter, path));
+        return a;
+    }
+    /** Two float properties along a path, its x and its y. */
+    public static ObjectAnimator ofFloat(Object target, String xPropertyName, String yPropertyName, android.graphics.Path path) {
+        ObjectAnimator a = new ObjectAnimator(target, null);
+        a.setValues(PropertyValuesHolder.ofPathAxis(xPropertyName, null, path, 0), PropertyValuesHolder.ofPathAxis(yPropertyName, null, path, 1));
+        return a;
+    }
+    public static <T> ObjectAnimator ofFloat(T target, Property<T, Float> xProperty, Property<T, Float> yProperty, android.graphics.Path path) {
+        ObjectAnimator a = new ObjectAnimator(target, null);
+        a.setValues(PropertyValuesHolder.ofPathAxis(null, xProperty, path, 0), PropertyValuesHolder.ofPathAxis(null, yProperty, path, 1));
+        return a;
+    }
     public static ObjectAnimator ofPropertyValuesHolder(Object target, PropertyValuesHolder... values) {
         ObjectAnimator a = new ObjectAnimator(target, null);
         a.setValues(values);
