@@ -26,4 +26,5 @@ public class WebViewClient {
     public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {}
     public void onScaleChanged(WebView view, float oldScale, float newScale) {}
     public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) { return false; }
+    public void onReceivedHttpAuthRequest(WebView view, HttpAuthHandler handler, String host, String realm) { handler.cancel(); }
 }
