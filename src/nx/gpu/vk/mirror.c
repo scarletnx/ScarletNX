@@ -540,6 +540,9 @@ static int harvest_record(VkCommandBuffer cb, const MirRange* r, u32 n, VkBuffer
 }
 static u64 out_bytes(u32 room, u64 pages, u32 entry) { return ((u64)MIR_HEAD + (u64)room * entry + pages) * 4; }
 
+/* the programs' writes of the mirror recorded so far, a count: the GPU thread's */
+static u64 g_mir_gen;
+u64 vk_mirror_write_gen(void) { return g_mir_gen; }
 void vk_mirror_fold(VkCommandBuffer cb, VkBuffer log, u64 log_size, const VkMirFold* f, u32 n) {
     u64 salign = g_vk.props.limits.minStorageBufferOffsetAlignment, mask_size = AS_SIZE / 8;
     if (salign < 4) salign = 4;
@@ -576,6 +579,7 @@ void vk_mirror_fold(VkCommandBuffer cb, VkBuffer log, u64 log_size, const VkMirF
         rec_CmdDispatch(cb, windows, 1, 1);
     }
     for (u32 i = 0; i < n; i++) vk_mirror_wrote(f[i].cpu, f[i].len); /* pending until the submit's harvest */
+    g_mir_gen++; /* a program wrote the mirror: the next read of it in place takes a barrier (vk_mirror_write_gen) */
 }
 
 void vk_mirror_harvest(VkCommandBuffer cb, u64 submit) {

@@ -3195,14 +3195,23 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
         VkBuffer mb;
         u64 mo;
         if (gmmu_run(gva, len, &cpu) == len && vk_mirror_slice(gva, len, &mb, &mo)) {
-            vk_render_end();
             if (!(cpu & (a - 1))) {
-                copy_barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                             VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT);
+                /* the programs' writes before it, once for all the reads after them: a barrier for each binding
+                   ended the rendering pass at nearly every draw, about 470 passes a frame of one game's race, and
+                   the GPU drained at each (30 ms a frame). The mirror's copies of the CPU's bytes take their own
+                   barrier (mirror.c) */
+                static u64 barrier_gen;
+                if (barrier_gen != vk_mirror_write_gen()) {
+                    vk_render_end();
+                    copy_barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                                 VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT);
+                    barrier_gen = vk_mirror_write_gen();
+                }
                 *buf = mb;
                 *off = mo;
                 return 1;
             }
+            vk_render_end(); /* copies happen outside rendering passes */
             if (vk_stage_device(len, a > vk_stage_align() ? a : vk_stage_align(), buf, off)) {
                 copy_barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                              VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
