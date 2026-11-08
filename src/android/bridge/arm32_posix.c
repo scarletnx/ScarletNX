@@ -641,23 +641,49 @@ HANDLER(f_strtok) {
     if (!save) save = arm32_malloc(4);
     R(0) = tok(R(0), S(1), save);
 }
+/* strtoul(s, end, base): an unsigned long of 32 bits, as bionic's: the digits' value, ULONG_MAX and ERANGE past it,
+   then negated after a minus sign ("-1" is ULONG_MAX). The guest's errno is set only when the conversion sets one */
 HANDLER(f_strtoul) {
     UNUSED;
-    char* end;
-    unsigned long long v = strtoull(S(0), &end, (int)R(2));
+    const char* s = S(0);
+    const char* p = s;
+    while (isspace((unsigned char)*p)) ++p;
+    bool negative = *p == '-';
+    const char* digits = *p == '-' || *p == '+' ? p + 1 : p;
+    char* end = (char*)s;
+    uint32_t v = 0;
+    if (*digits != '-' && *digits != '+') {
+        errno = 0;
+        unsigned long long magnitude = strtoull(digits, &end, (int)R(2));
+        int error = errno;
+        if (end == digits) {
+            end = (char*)s; /* no digits: nothing read, the sign neither */
+        } else if (error == ERANGE || magnitude > UINT32_MAX) {
+            v = UINT32_MAX;
+            error = ERANGE;
+        } else {
+            v = negative ? 0u - (uint32_t)magnitude : (uint32_t)magnitude;
+        }
+        if (error) arm32_set_errno(error);
+    }
     if (R(1)) wr32(R(1), inside(end));
-    R(0) = v > UINT32_MAX ? UINT32_MAX : (uint32_t)v;
+    R(0) = v;
 }
+/* strtoll and strtoull (data 1), strtoimax and strtoumax: 64 bits, as the host's */
 HANDLER(f_strtoll) {
     char* end;
+    errno = 0;
     uint64_t v = data ? (uint64_t)strtoull(S(0), &end, (int)R(2)) : (uint64_t)strtoll(S(0), &end, (int)R(2));
+    if (errno) arm32_set_errno(errno);
     if (R(1)) wr32(R(1), inside(end));
     set64(c, v);
 }
 HANDLER(f_strtof) {
     UNUSED;
     char* end;
+    errno = 0;
     float f = strtof(S(0), &end);
+    if (errno) arm32_set_errno(errno);
     if (R(1)) wr32(R(1), inside(end));
     ret_float(c, f);
 }

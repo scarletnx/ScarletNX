@@ -1164,25 +1164,36 @@ HANDLER(f_atoll) {
     UNUSED;
     set64(c, (uint64_t)atoll(S(0)));
 }
+/* strtol(s, end, base): a long of 32 bits, LONG_MIN or LONG_MAX with ERANGE past them; the guest's errno is set only
+   when the conversion sets one, as bionic's is */
 HANDLER(f_strtol) {
     UNUSED;
     char* end;
+    errno = 0;
     long long v = strtoll(S(0), &end, (int)R(2));
-    if (v > INT32_MAX) v = INT32_MAX;
-    if (v < INT32_MIN) v = INT32_MIN;
+    int error = errno;
+    if (v > INT32_MAX) v = INT32_MAX, error = ERANGE;
+    if (v < INT32_MIN) v = INT32_MIN, error = ERANGE;
+    if (error) set_errno(error);
     if (R(1)) wr32(R(1), inside(end));
     R(0) = (uint32_t)(int32_t)v;
 }
+/* strtod(s, end) and atof(s): ERANGE for a result too large or too small */
 HANDLER(f_strtod) {
     UNUSED;
     char* end;
+    errno = 0;
     double d = strtod(S(0), &end);
+    if (errno) set_errno(errno);
     if (R(1)) wr32(R(1), inside(end));
     ret_double(c, d);
 }
 HANDLER(f_atof) {
     UNUSED;
-    ret_double(c, atof(S(0)));
+    errno = 0;
+    double d = strtod(S(0), NULL);
+    if (errno) set_errno(errno);
+    ret_double(c, d);
 }
 
 /* ---- libm (soft-float: a double in two words, a float in one) ---- */
