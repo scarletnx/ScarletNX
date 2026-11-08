@@ -338,8 +338,9 @@ one beside the 64-bit bridge:
   the bridge's too, and an `svc` is a system call of the bridge's (`arm32_syscall`: `cacheflush`, `futex`, `gettid`,
   `tkill`, `clock_gettime`).
 - **The loader** maps the `PT_LOAD` segments, applies `R_ARM_RELATIVE`, `ABS32`, `GLOB_DAT` and `JUMP_SLOT`, finds the
-  symbols by the SysV hash, and runs `DT_INIT` and `DT_INIT_ARRAY`, then `JNI_OnLoad`. `__gnu_Unwind_Find_exidx` gives
-  a library's `PT_ARM_EXIDX`, for C++ exceptions. A `dlopen` handle names its library, and `dlsym` searches it first.
+  symbols by the SysV or the GNU hash (an NDK r28 library for API level 26 has the GNU one alone), and runs `DT_INIT`
+  and `DT_INIT_ARRAY`, then `JNI_OnLoad`. `__gnu_Unwind_Find_exidx` gives a library's `PT_ARM_EXIDX`, for C++
+  exceptions. A `dlopen` handle names its library, and `dlsym` searches it first.
 - **The system's libraries.** `arm32_libc.c` and `arm32_posix.c` have bionic's functions whose arguments have ILP32's
   layouts (`struct stat`, `dirent`, `tm`, `FILE`, `z_stream`, `addrinfo`, the `ctype` tables, the environment), the
   guest's `printf` and `scanf`, libm, liblog, libdl, zlib and SHA-1. The ones whose arguments are integers and bytes

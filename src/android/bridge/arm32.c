@@ -671,6 +671,7 @@ enum {
     DT_JMPREL_ = 23,
     DT_INIT_ARRAY_ = 25,
     DT_INIT_ARRAYSZ_ = 27,
+    DT_GNU_HASH_ = 0x6ffffef5,
 };
 enum { R_ARM_NONE_ = 0, R_ARM_ABS32_ = 2, R_ARM_GLOB_DAT_ = 21, R_ARM_JUMP_SLOT_ = 22, R_ARM_RELATIVE_ = 23 };
 
@@ -679,6 +680,7 @@ struct Arm32Library {
     char* path;
     uint32_t base, size; /* the bias, and the span its segments take */
     uint32_t symtab, strtab, hash, nbucket, nchain;
+    uint32_t gnu_hash; /* DT_GNU_HASH's table, the only one of an NDK r28 library for API level 26 */
     uint32_t exidx, exidx_count;
     Arm32Library* next;
 };
@@ -715,19 +717,53 @@ static uint32_t elf_hash(const char* name) {
     return hv;
 }
 
-/* a symbol a library defines (SysV hash): its address, 0 when it has none */
+/* symbol i of a library: its address when the library defines it under name, else 0 */
+static uint32_t named(const Arm32Library* l, uint32_t i, const char* name) {
+    uint32_t sym = l->symtab + 16 * i;
+    uint16_t shndx = snx_ld_le16(arm32_mem + sym + 14);
+    uint8_t info = arm32_mem[sym + 12];
+    if (!shndx || (info >> 4) == 0 /* local */) return 0;
+    return strcmp((const char*)arm32_mem + l->strtab + rd32(sym), name) ? 0 : l->base + rd32(sym + 4);
+}
+
+/* GNU's hash of a name (DT_GNU_HASH): h * 33 + c from 5381 */
+static uint32_t gnu_hash_of(const char* name) {
+    uint32_t h = 5381;
+    for (const unsigned char* p = (const unsigned char*)name; *p; ++p) h = h * 33 + *p;
+    return h;
+}
+
+/* a symbol a library defines, by its SysV hash or its GNU one: its address, 0 when it has none. The GNU table is
+   nbuckets, symoffset, bloom_size, bloom_shift, the bloom filter's 32-bit words, the buckets, then a hash for each
+   symbol from symoffset on, bit 0 set on the last of a bucket's chain */
 static uint32_t defined(const Arm32Library* l, const char* name) {
-    if (!l->hash || !l->nbucket) return 0;
-    uint32_t hv = elf_hash(name);
-    for (uint32_t i = rd32(l->hash + 8 + 4 * (hv % l->nbucket)); i && i < l->nchain;
-         i = rd32(l->hash + 8 + 4 * l->nbucket + 4 * i)) {
-        uint32_t sym = l->symtab + 16 * i;
-        uint16_t shndx = snx_ld_le16(arm32_mem + sym + 14);
-        uint8_t info = arm32_mem[sym + 12];
-        if (!shndx || (info >> 4) == 0 /* local */) continue;
-        if (!strcmp((const char*)arm32_mem + l->strtab + rd32(sym), name)) return l->base + rd32(sym + 4);
+    if (l->hash && l->nbucket) {
+        uint32_t hv = elf_hash(name);
+        for (uint32_t i = rd32(l->hash + 8 + 4 * (hv % l->nbucket)); i && i < l->nchain;
+             i = rd32(l->hash + 8 + 4 * l->nbucket + 4 * i)) {
+            uint32_t a = named(l, i, name);
+            if (a) return a;
+        }
+        return 0;
     }
-    return 0;
+    if (!l->gnu_hash) return 0;
+    uint32_t nbuckets = rd32(l->gnu_hash), symoffset = rd32(l->gnu_hash + 4);
+    uint32_t bloom_size = rd32(l->gnu_hash + 8), bloom_shift = rd32(l->gnu_hash + 12);
+    if (!nbuckets || !bloom_size) return 0;
+    uint32_t h = gnu_hash_of(name);
+    uint32_t bloom = rd32(l->gnu_hash + 16 + 4 * ((h / 32) % bloom_size));
+    if (!((bloom >> (h % 32)) & (bloom >> ((h >> bloom_shift) % 32)) & 1)) return 0;
+    uint32_t buckets = l->gnu_hash + 16 + 4 * bloom_size, chains = buckets + 4 * nbuckets;
+    uint32_t i = rd32(buckets + 4 * (h % nbuckets));
+    if (i < symoffset) return 0;
+    for (;; ++i) {
+        uint32_t chain = rd32(chains + 4 * (i - symoffset));
+        if ((chain | 1) == (h | 1)) {
+            uint32_t a = named(l, i, name);
+            if (a) return a;
+        }
+        if (chain & 1) return 0;
+    }
 }
 
 uint32_t arm32_symbol(const Arm32Library* library, const char* name) {
@@ -856,6 +892,7 @@ static Arm32Library* load(const char* path, char* error, size_t error_size) {
         uint32_t tag = rd32(d), value = rd32(d + 4);
         switch (tag) {
         case DT_HASH_: l->hash = l->base + value; break;
+        case DT_GNU_HASH_: l->gnu_hash = l->base + value; break;
         case DT_STRTAB_: l->strtab = l->base + value; break;
         case DT_SYMTAB_: l->symtab = l->base + value; break;
         case DT_REL_: rel = l->base + value; break;
