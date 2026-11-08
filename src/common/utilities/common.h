@@ -364,6 +364,8 @@ void snx_unlock_file(intptr_t lock);
 int snx_seek(FILE* f, SnxU64 offset);
 /* f's offset from its start, past 2 GiB too; signed, so that -1 can report an error */
 int64_t snx_tell(FILE* f);
+/* f's file cut to size bytes, past 2 GiB too, with nothing of f's own buffered (its writes flushed); 0, or -1 */
+int snx_cut(FILE* f, SnxU64 size);
 
 /* 1 when the n bytes at text are well-formed UTF-8 (no overlong form, surrogate, or code point past U+10FFFF), else 0
    and the first 16 of them in hex into hex ("2a 9c e3", "..." after when there are more), when hex_size is not 0 */

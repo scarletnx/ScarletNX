@@ -10,10 +10,8 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/pipeline_file.h"
-#if defined(_WIN32)
-#include <io.h> /* _chsize_s */
-#else
-#include <unistd.h> /* getpid, ftruncate */
+#if !defined(_WIN32)
+#include <unistd.h> /* getpid */
 #endif
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <sys/mman.h> /* posix_madvise */
@@ -175,15 +173,6 @@ static u8* pf_header(const char* key, size_t* size) {
     return h;
 }
 
-/* the file cut to size bytes, through f */
-static int pf_cut(FILE* f, u64 size) {
-#if defined(_WIN32)
-    return _chsize_s(_fileno(f), (long long)size) ? -1 : 0;
-#else
-    return ftruncate(fileno(f), (off_t)size) ? -1 : 0;
-#endif
-}
-
 /* The open unit's records (pf->open to the end, whole records), once they reach PF_UNIT_BYTES: read back, checked,
    packed and written over themselves as one PF_UNIT record, the file cut after it, and the next unit opened there.
    Records that can't be read back or don't come out smaller are left unpacked, and the next unit starts after them; a
@@ -238,7 +227,7 @@ static void pf_pack(PFile* pf) {
         memcpy(rec + 8, &h, 8);
     }
     ok = !fseek(rw, (long)pf->open, SEEK_SET) && fwrite(rec, 1, total, rw) == total && !fflush(rw) &&
-         !pf_cut(rw, pf->open + total);
+         !snx_cut(rw, pf->open + total);
     if (!ok) snx_os_error(why, sizeof why);
     if (fclose(rw) && ok) {
         snx_os_error(why, sizeof why);
