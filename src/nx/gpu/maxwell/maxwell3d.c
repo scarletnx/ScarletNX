@@ -189,6 +189,7 @@ void r3d_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u
                    .base_instance = base_instance,
                    .instances = instances,
                    .inline_indices = ch->inline_indices};
+    mx_draw_fixed(ch->r3d, &dc);
     if (verify)
         g_gpu_verify_draw(ch, &dc);
     else

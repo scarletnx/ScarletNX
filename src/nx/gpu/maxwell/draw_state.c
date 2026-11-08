@@ -333,6 +333,12 @@ void mx_draw_index(const u32* r, DsIndex* x) {
 
 /* CLEAR_SURFACE's word v: bit 0 depth, 1 stencil, 2-5 the RGBA mask, 6-9 the color slot, 10-20 the layer. The
    color at 0x360-0x363, depth 0x364, stencil 0x368 */
+/* SET_POINT_SIZE (0x546), the size of a point whose program writes none. A channel starts with 1 (reset_3d) */
+void mx_draw_fixed(const u32* r, DrawCall* dc) {
+    dc->state_flags |= DS_DRAW_POINT_SIZE;
+    memcpy(&dc->point_size, &r[MAXWELL3D_POINT_SIZE], sizeof dc->point_size);
+}
+
 void mx_draw_clear(const u32* r, u32 v, DrawClear* c) {
     memset(c, 0, sizeof *c);
     c->aspects = v & 3;
