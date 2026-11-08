@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Run edenprobe's card and report (gui/probe.c): a new run's card, its mode file's words and no earlier report,
-   journal or crash list; the crash list counted and cleared; a report's counts and suites, a line still being
-   written, and what the box says with and without a summary */
+/* Run edenprobe's card and report (gui/probe.c): a new run's words, with the build's machine= when the NRO knows the
+   word, and its card, the mode file holding them and no earlier report, journal or crash list; the crash list counted
+   and cleared; a report's counts and suites, a line still being written, and what the box says with and without a
+   summary */
 #include "gui/probe.h"
 #include "common/utilities/common.h"
 #include <assert.h>
@@ -42,17 +43,41 @@ static char* text_of(const char* folder, const char* path) {
     "\"crashed\"}\n"
 
 int main(void) {
-    char *root = snx_temp_dir(NULL), *folder, *text, why[512], said[700];
+    char *root = snx_temp_dir(NULL), *folder, *nro, *text, why[512], said[700], words[160];
     int cleared = -1;
     GuiProbeReport r;
     assert(root);
     folder = snx_path_join(root, "probe");
+    nro = gui_probe_nro(folder);
 
-    /* nothing run yet: no report; the card made, quick's words */
+    /* the words: none without the NRO, said with its path; quick's or full's alone for a probe from before machine=;
+       with machine=scarletnx@<the build's commit> for one that knows it, the commit left out when it is unknown or no
+       version edenprobe takes */
+    assert(gui_probe_words(folder, 0, "1a2b3c4", words, sizeof words, why, sizeof why) && strstr(why, nro) &&
+           strstr(why, " cannot be read: "));
+    assert(!snx_mkdirs(folder) && !snx_write_file(nro, "NRO0 mode", 9));
+    assert(!gui_probe_words(folder, 0, "1a2b3c4", words, sizeof words, why, sizeof why) &&
+           !strcmp(words, GUI_PROBE_QUICK));
+    assert(!snx_write_file(nro, "NRO0 mode machine=", 18));
+    assert(!gui_probe_words(folder, 0, "1a2b3c4", words, sizeof words, why, sizeof why) &&
+           !strcmp(words, GUI_PROBE_QUICK " machine=scarletnx@1a2b3c4"));
+    assert(!gui_probe_words(folder, 1, "1a2b3c4-dirty", words, sizeof words, why, sizeof why) &&
+           !strcmp(words, GUI_PROBE_FULL " machine=scarletnx@1a2b3c4-dirty"));
+    assert(!gui_probe_words(folder, 0, "unknown", words, sizeof words, why, sizeof why) &&
+           !strcmp(words, GUI_PROBE_QUICK " machine=scarletnx"));
+    assert(!gui_probe_words(folder, 0, "a b", words, sizeof words, why, sizeof why) &&
+           !strcmp(words, GUI_PROBE_QUICK " machine=scarletnx"));
+    assert(!gui_probe_words(folder, 0, "123456789012345678901234567890123", words, sizeof words, why, sizeof why) &&
+           !strcmp(words, GUI_PROBE_QUICK " machine=scarletnx"));
+    assert(!gui_probe_words(folder, 0, "", words, sizeof words, why, sizeof why) &&
+           !strcmp(words, GUI_PROBE_QUICK " machine=scarletnx"));
+
+    /* nothing run yet: no report; the card made, the mode file holding the words */
     assert(!gui_probe_report(folder) && !gui_probe_read(folder, &r) && !gui_probe_crashes(folder));
-    assert(!gui_probe_start(folder, 0, &cleared, why, sizeof why) && cleared == 0);
+    assert(!gui_probe_start(folder, GUI_PROBE_QUICK " machine=scarletnx@1a2b3c4", &cleared, why, sizeof why) &&
+           cleared == 0);
     text = text_of(folder, "mode");
-    assert(text && !strcmp(text, GUI_PROBE_QUICK "\n"));
+    assert(text && !strcmp(text, GUI_PROBE_QUICK " machine=scarletnx@1a2b3c4\n"));
     free(text);
 
     /* a run that ended inside a case: read; its crash list counted, then cleared */
@@ -78,7 +103,7 @@ int main(void) {
                          "crashed (index 2, blend 1)"));
     /* a new run, full: no earlier report, journal or crash list; the fs family's files kept */
     put(folder, "crashes", "gpu a case\n");
-    assert(!gui_probe_start(folder, 1, &cleared, why, sizeof why) && cleared == 1);
+    assert(!gui_probe_start(folder, GUI_PROBE_FULL, &cleared, why, sizeof why) && cleared == 1);
     assert(!there(folder, "runs") && !there(folder, "crashes") && !there(folder, "last-run") &&
            there(folder, "fs/kept"));
     assert(!gui_probe_report(folder));
@@ -98,11 +123,12 @@ int main(void) {
     {
         char* blocked = snx_path_join(root, "a file");
         assert(!snx_write_file(blocked, "x", 1));
-        assert(gui_probe_start(blocked, 0, &cleared, why, sizeof why) && strstr(why, "the mode file ") &&
+        assert(gui_probe_start(blocked, GUI_PROBE_QUICK, &cleared, why, sizeof why) && strstr(why, "the mode file ") &&
                strstr(why, "a file"));
         free(blocked);
     }
     assert(!snx_remove_tree(root));
+    free(nro);
     free(folder);
     free(root);
     puts("gui_probe: ok");

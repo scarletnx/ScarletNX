@@ -14783,7 +14783,7 @@ static void probe_launch(App* app) {
 /* Run edenprobe pressed, a new run, or Continue, the last one's going on: the first launch started, said in the log;
    why not, in the page's note */
 static void probe_start(App* app, bool continuing) {
-    char why[700], *nro;
+    char why[700], words[160], *nro;
     int cleared = 0;
     free(app->probe_folder);
     app->probe_folder = app->state_dir ? snx_path_join(app->state_dir, "probe") : NULL;
@@ -14812,12 +14812,14 @@ static void probe_start(App* app, bool continuing) {
         gui_log("edenprobe: Continue goes on with the run of edenprobe %s in %s, cases so far %d, on its crash list %d",
                 r.build[0] ? r.build : "?", app->probe_folder, r.cases, gui_probe_crashes(app->probe_folder));
         app->probe_cases = r.cases;
-    } else if (gui_probe_start(app->probe_folder, app->probe_full, &cleared, why, sizeof why)) {
+    } else if (gui_probe_words(app->probe_folder, app->probe_full, snx_build_commit(), words, sizeof words, why,
+                               sizeof why) ||
+               gui_probe_start(app->probe_folder, words, &cleared, why, sizeof why)) {
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Run edenprobe: %s"), why);
         return;
     } else {
         gui_log("edenprobe: Run edenprobe starts a new run in %s, mode %s; cases on the crash list cleared: %d",
-                app->probe_folder, app->probe_full ? GUI_PROBE_FULL : GUI_PROBE_QUICK, cleared);
+                app->probe_folder, words, cleared);
         app->probe_cases = -1;
     }
     app->probe_launch = 1;

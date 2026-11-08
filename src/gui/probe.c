@@ -3,6 +3,7 @@
 #include "gui/probe.h"
 #include "common/utilities/common.h"
 #include <yyjson.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -62,15 +63,46 @@ int gui_probe_clear(const char* folder, int* cleared, char* why, size_t size) {
     free(sdmc);
     return rc;
 }
-int gui_probe_start(const char* folder, int full, int* cleared, char* why, size_t size) {
-    char *sdmc = card(folder), *mode = snx_path_join(sdmc, "mode"), reason[256];
-    const char* words = full ? GUI_PROBE_FULL "\n" : GUI_PROBE_QUICK "\n";
+/* a version edenprobe's machine= takes: 1 to 32 letters, digits, dots, dashes and underscores */
+static int version_word(const char* commit) {
+    size_t n = strlen(commit), i;
+    if (!n || n > 32 || !strcmp(commit, "unknown")) return 0;
+    for (i = 0; i < n; i++)
+        if (!isalnum((unsigned char)commit[i]) && !strchr("._-", commit[i])) return 0;
+    return 1;
+}
+int gui_probe_words(const char* folder, int full, const char* commit, char* words, size_t size, char* why,
+                    size_t why_size) {
+    static const char word[] = "machine=";
+    char *nro = gui_probe_nro(folder), *bytes, reason[256];
+    size_t n = 0, i;
+    int knows = 0;
+    bytes = (char*)snx_read_file(nro, &n);
+    if (!bytes) {
+        snprintf(why, why_size, "%s cannot be read: %s", nro, snx_os_error(reason, sizeof reason));
+        free(nro);
+        return -1;
+    }
+    for (i = 0; !knows && i + sizeof word - 1 <= n; i++) knows = !memcmp(bytes + i, word, sizeof word - 1);
+    free(bytes);
+    free(nro);
+    if (!knows)
+        snprintf(words, size, "%s", full ? GUI_PROBE_FULL : GUI_PROBE_QUICK);
+    else if (version_word(commit))
+        snprintf(words, size, "%s machine=scarletnx@%s", full ? GUI_PROBE_FULL : GUI_PROBE_QUICK, commit);
+    else
+        snprintf(words, size, "%s machine=scarletnx", full ? GUI_PROBE_FULL : GUI_PROBE_QUICK);
+    return 0;
+}
+int gui_probe_start(const char* folder, const char* words, int* cleared, char* why, size_t size) {
+    char *sdmc = card(folder), *mode = snx_path_join(sdmc, "mode"), *line = snx_format("%s\n", words), reason[256];
     int rc = gui_probe_clear(folder, cleared, why, size) || gone(sdmc, "runs", why, size) ||
              gone(sdmc, "last-run", why, size);
-    if (!rc && (snx_mkdirs(sdmc) || snx_write_file(mode, words, strlen(words)))) {
+    if (!rc && (snx_mkdirs(sdmc) || snx_write_file(mode, line, strlen(line)))) {
         snprintf(why, size, "the mode file %s cannot be written: %s", mode, snx_os_error(reason, sizeof reason));
         rc = -1;
     }
+    free(line);
     free(mode);
     free(sdmc);
     return rc ? -1 : 0;

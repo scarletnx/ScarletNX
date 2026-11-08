@@ -2920,13 +2920,17 @@ static void probe_ran(App* app, const char* argv_file) {
     free(go);
 }
 /* GPU Drivers' edenprobe Mode, kept in app.ini's probe_mode, and Run edenprobe: its NRO asked for where it goes; then
-   played through the fake driver in its own data folder with quick's words, launched again after a launch that
-   ended before the summary, its counts in a box; a new run, which a launch that adds no case ends; Continue, shown
-   for that run, going on with it to its summary; Clear Crash List, asked first, shown while a crash list is there */
+   played through the fake driver in its own data folder with quick's words and the build's machine=, which its NRO
+   knows, launched again after a launch that ended before the summary, its counts in a box; a new run, which a launch
+   that adds no case ends; Continue, shown for that run, going on with it to its summary; Clear Crash List, asked
+   first, shown while a crash list is there */
 static void run_edenprobe(App* app, const char* temporary) {
     char *was = app->state_dir, *folder, *nro, *data, *argv_file = snx_path_join(temporary, "probe argv"),
-         *plan = snx_path_join(temporary, "probe plan"), *kept, *mode, *launches, *ini;
+         *plan = snx_path_join(temporary, "probe plan"), *kept, *mode, *launches, *ini, *words;
     size_t size;
+    words = strcmp(snx_build_commit(), "unknown")
+                ? snx_format(GUI_PROBE_QUICK " machine=scarletnx@%s\n", snx_build_commit())
+                : snx_strdup(GUI_PROBE_QUICK " machine=scarletnx\n");
     app->state_dir = snx_path_join(temporary, "probe state");
     folder = snx_path_join(app->state_dir, "probe");
     nro = snx_path_join(folder, "edenprobe.nro");
@@ -2965,7 +2969,7 @@ static void run_edenprobe(App* app, const char* temporary) {
     assert(!app->menu.running && !app->probe_launch && !strcmp(app->editor.note, ini));
     free(ini);
     /* with it: the first launch ends before the summary, the second goes on to it; the box's counts */
-    assert(!snx_mkdirs(folder) && !snx_write_file(nro, "NRO0", 4));
+    assert(!snx_mkdirs(folder) && !snx_write_file(nro, "NRO0 machine=", 13));
     ini = snx_strdup("pass=2\npass=1 fail=astc summary=2,1,0,0\n");
     assert(!snx_write_file(plan, ini, strlen(ini)));
     free(ini);
@@ -2984,7 +2988,7 @@ static void run_edenprobe(App* app, const char* temporary) {
     assert(kept && has_arg(kept, nro, NULL) && has_arg(kept, "--data", data) && !strstr(kept, "-r\n"));
     free(kept);
     kept = (char*)snx_read_file(mode, &size);
-    assert(kept && !strcmp(kept, GUI_PROBE_QUICK "\n"));
+    assert(kept && !strcmp(kept, words));
     free(kept);
     kept = (char*)snx_read_file(launches, &size);
     assert(kept && !strcmp(kept, "2"));
@@ -3014,7 +3018,7 @@ static void run_edenprobe(App* app, const char* temporary) {
     assert(app->confirm.shown &&
            !strncmp(app->error_line, "edenprobe 0.9.0 (abc1234): 2 passed, 0 failed, 0 skipped, 0 crashed. ", 69));
     kept = (char*)snx_read_file(mode, &size);
-    assert(kept && !strcmp(kept, GUI_PROBE_QUICK "\n"));
+    assert(kept && !strcmp(kept, words));
     free(kept);
     app->probe_full = false;
     key(app, SDLK_RETURN);
@@ -3072,6 +3076,7 @@ static void run_edenprobe(App* app, const char* temporary) {
     free(data);
     free(mode);
     free(launches);
+    free(words);
     free(plan);
     free(argv_file);
 }
