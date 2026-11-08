@@ -119,32 +119,34 @@ static int index_half_green(const IndexPixels* px) {
     return px->green >= 6 && px->blue >= 6 && px->green + px->blue == 16 && !px->red;
 }
 
-/* A list whose restart index (3, the red vertex at green vertex 7's corner) comes between its two triangles. Where the
+/* A list whose restart index (0, the red vertex at green vertex 4's corner) comes between its two triangles. Where the
    device restarts lists (VK_EXT_primitive_topology_list_restart, g_vk.has_list_restart) the index ends the first
    triangle's run and the second draws: the whole quad green, as the 3D engine draws it. Without it, the way before the
-   extension: the index is a vertex, and the triangle (3, 5, 6) shows red. 8-bit indices without restart are widened
+   extension: the index is a vertex, and the triangle (0, 5, 6) shows red. Not 3, the red vertex at 7's corner: lavapipe
+   (Mesa 26.2.6) draws 4, 5, 7, 3, 5, 6 all green with no restart at all, where RADV draws (3, 5, 6) red as the rule
+   says, and draws 3, 5, 6, 4, 5, 7 right. 8-bit indices without restart are widened
    with the restart index made 0xFFFF, a vertex out of the buffer, which draws no red: only 16 and 32-bit ones are
    checked that way */
 static int index_list_restart_cases(GpuChannel* channel, u64 target, u64 indices) {
     IndexPixels px;
-    const u32 list[7] = {4, 5, 7, 3, 5, 6, 7};
+    const u32 list[7] = {4, 5, 7, 0, 5, 6, 7};
     const int restarts = g_vk.has_list_restart;
     for (u32 isz = 1; isz <= 4; isz *= 2) {
         if (!restarts && isz == 1) continue;
-        CHECK(!index_buffer(channel, indices, list, 7, isz, 3));
+        CHECK(!index_buffer(channel, indices, list, 7, isz, 0));
         DrawCall call = {.topology = 4, .indexed = 1, .count = 7, .instances = 1};
         CHECK(!index_draw(channel, target, &call, &px));
         if (restarts ? !index_all_green(&px) : !px.red)
-            fprintf(stderr, "list of %u byte indices restarting at 3 (list restart %s): %u green, %u blue, %u red\n",
+            fprintf(stderr, "list of %u byte indices restarting at 0 (list restart %s): %u green, %u blue, %u red\n",
                     isz, restarts ? "on" : "off", px.green, px.blue, px.red);
         CHECK(restarts ? index_all_green(&px) : px.red > 0);
     }
     channel->r3d[0x591] = 1;
-    channel->r3d[0x592] = 3;
+    channel->r3d[0x592] = 0;
     DrawCall call = {.topology = 4, .indexed = 3, .count = 7, .instances = 1, .inline_indices = list};
     CHECK(!index_draw(channel, target, &call, &px));
     if (restarts ? !index_all_green(&px) : !px.red)
-        fprintf(stderr, "inline list restarting at 3 (list restart %s): %u green, %u blue, %u red\n",
+        fprintf(stderr, "inline list restarting at 0 (list restart %s): %u green, %u blue, %u red\n",
                 restarts ? "on" : "off", px.green, px.blue, px.red);
     CHECK(restarts ? index_all_green(&px) : px.red > 0);
     if (restarts) { /* Vulkan's own restart index, read as it is */
