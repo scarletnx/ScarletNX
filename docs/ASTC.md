@@ -220,7 +220,7 @@ vulkan: astc_mode=0 (Auto): heap 1's budget is 11834 MB as the device starts, at
 
 Held as RGBA8 (Exact, or Auto with the budget for it), the log suggests `astc_mode=2` once a run, with the budget, the
 use and the megabytes of ASTC textures decoded to RGBA8, when the images run short (`surface.c`'s `astc_bc_suggest`):
-an image allocation finds no memory, a trim leaves the caches past their budget, or a trim takes what the last two
+an image allocation finds no memory, a trim leaves the caches past their budget, or a trim takes what the last eight
 presents used (the working set, which the next frames load again).
 
 ### Between frames

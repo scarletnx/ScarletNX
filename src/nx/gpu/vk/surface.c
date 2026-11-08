@@ -2096,7 +2096,7 @@ u64 vk_rt_reclaim_superseded(u32 before, u64 want) {
    the budget for it at start) on a GPU that samples BCn but not ASTC: the log suggests astc_mode=2 (BC7) once a run,
    with the numbers (snx_astc_bc_suggest).
    Short: an image allocation found no memory (force), the caches left past their budget once all that could go went,
-   or the working set evicted (what the last two presents used, the trim's second step), which the next frames load
+   or the working set evicted (what the last eight presents used, the trim's second step), which the next frames load
    again: a game held slow by eviction */
 static void astc_bc_suggest(int force, u64 extra, u64 usage, u64 budget, u64 freed, u64 working) {
     u64 left = usage > freed ? usage - freed : 0, astc = vk_astc_rgba8_bytes();
@@ -2112,7 +2112,7 @@ static void astc_bc_suggest(int force, u64 extra, u64 usage, u64 budget, u64 fre
         snprintf(said, sizeof said, "the caches stay %llu MB past their budget after a trim",
                  (unsigned long long)((left - budget) >> 20));
     else
-        snprintf(said, sizeof said, "a trim took %llu MB of textures and targets the last two presents used",
+        snprintf(said, sizeof said, "a trim took %llu MB of textures and targets the last eight presents used",
                  (unsigned long long)(working >> 20));
     LOG_LIMIT(
         1,
@@ -2145,9 +2145,11 @@ void vk_mem_trim(u64 extra, int force) {
     SNX_ZONE_V(z, "vk mem trim", force);
     /* What goes first is what can be had again without loss: textures (loaded again from memory), own buffers (copied
        again), then render targets memory holds. Those unused for a second go down to 80% of the budget, room for what
-       comes next. The working set itself (unused for two presents) goes only to stay under 95%: freeing it to 80%
+       comes next. The working set itself (unused for eight presents) goes only to stay under 95%: freeing it to 80%
        when it alone is bigger made one game load hundreds of textures and targets again every 600 presents under a
-       lowered budget, where staying near the budget costs nothing. Render targets whose pixels exist only here
+       lowered budget, where staying near the budget costs nothing. Two presents took textures a game uses every few
+       frames: of 3,000 it evicted in one game's menus, 2,358 had gone unused for three presents, and each came back
+       at once, a BC7 encode each (astc.c). Render targets whose pixels exist only here
        (memory has older ones: draws aren't written back, see vk_surf_reclaim) and textures that took such pixels lose
        them when they go, so they go only when the lossless steps leave the heap past 90%: those unused for five
        seconds, then, past 95%, those unused for a second and eight presents, the youngest a lossy entry can be. Every
@@ -2158,7 +2160,7 @@ void vk_mem_trim(u64 extra, int force) {
         u32 ms, presents;
         int lossy;
         u32 mark; /* percent of the budget the step frees down to */
-    } steps[] = {{1000, 8, 0, 80}, {0, 2, 0, 95}, {5000, 30, 1, 90}, {1000, 8, 1, 95}};
+    } steps[] = {{1000, 8, 0, 80}, {0, 8, 0, 95}, {5000, 30, 1, 90}, {1000, 8, 1, 95}};
     u64 freed = superseded, by[3] = {0, 0, superseded}, working = 0;
     int short_of = 0;
     for (u32 i = 0; i < sizeof steps / sizeof steps[0]; i++) {
