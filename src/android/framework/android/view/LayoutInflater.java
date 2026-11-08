@@ -71,6 +71,13 @@ public abstract class LayoutInflater {
             while ((type = parser.next()) != XmlPullParser.START_TAG && type != XmlPullParser.END_DOCUMENT) {}
             if (type != XmlPullParser.START_TAG) throw new InflateException(parser.getPositionDescription() + ": No start tag found!");
             AttributeSet attrs = (AttributeSet) parser;
+            if (parser.getName().equals("merge")) {
+                /* a merge's children go into the root, which it needs */
+                if (root == null || !attachToRoot)
+                    throw new InflateException("<merge /> can be used only with a valid ViewGroup root and attachToRoot=true");
+                inflateChildren(parser, root, attrs);
+                return root;
+            }
             View top = createView(root, parser.getName(), attrs);
             ViewGroup.LayoutParams params = root != null ? root.generateLayoutParams(attrs) : null;
             if (params != null && !attachToRoot) top.setLayoutParams(params);
@@ -92,13 +99,30 @@ public abstract class LayoutInflater {
         while (((type = parser.next()) != XmlPullParser.END_TAG || parser.getDepth() > depth) && type != XmlPullParser.END_DOCUMENT) {
             if (type != XmlPullParser.START_TAG) continue;
             String name = parser.getName();
-            if (name.equals("requestFocus") || name.equals("tag") || name.equals("include") || name.equals("merge")) continue;
+            if (name.equals("include")) {
+                /* the layout it names, into the parent: a merge's children, or its root view */
+                int layout = attrs.getAttributeResourceValue(null, "layout", 0);
+                if (layout == 0) throw new InflateException("You must specify a valid layout reference in an <include /> tag");
+                inflate(layout, (ViewGroup) parent, true);
+                skip(parser);
+                continue;
+            }
+            if (name.equals("requestFocus") || name.equals("tag") || name.equals("merge")) {
+                skip(parser);
+                continue;
+            }
             View child = createView(parent, name, attrs);
             ViewGroup group = (ViewGroup) parent;
             ViewGroup.LayoutParams params = group.generateLayoutParams(attrs);
             inflateChildren(parser, child, attrs);
             group.addView(child, params);
         }
+    }
+
+    /** the rest of the element that the parser is at the start of */
+    private static void skip(XmlPullParser parser) throws Exception {
+        int depth = parser.getDepth(), type;
+        while (((type = parser.next()) != XmlPullParser.END_TAG || parser.getDepth() > depth) && type != XmlPullParser.END_DOCUMENT) {}
     }
 
     private View createView(View parent, String name, AttributeSet attrs) throws Exception {
