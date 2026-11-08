@@ -335,6 +335,11 @@ static int nn_socket_sf_IClient_RegisterClientShared(SvcObj* self, const nn_sock
                                                      u64 pid, u64 work_buffer_size, u32* bsd_errno) {
     return bsd_register(self, pid);
 }
+static int nn_socket_sf_IClient_RegisterClientOunce(SvcObj* self, u64 pid, u32 version, u32* bsd_errno) {
+    LOG("bsd: %s registers the process (library version %#x)\n", self->name, version);
+    *bsd_errno = 0;
+    return bsd_register(self, pid);
+}
 static int bsd_socket(Bsd* b, i32 gdom_in, i32 gtype_in, i32 proto_in, int exempt, i32* ret, u32* bsd_errno) {
     u32 gdom = (u32)gdom_in, gtype = (u32)gtype_in, proto = (u32)proto_in;
     int dom = domain_in(gdom), type = (int)(gtype & ~(u32)(BSD_SOCK_NONBLOCK | BSD_SOCK_CLOEXEC));

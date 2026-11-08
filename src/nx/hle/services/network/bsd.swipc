@@ -65,6 +65,9 @@ interface nn::socket::sf::IClient is bsd:u, bsd:a, bsd:s {
     # SDK 8 sends the pid slot alone, SDK 13 a u8 before it: declared as the shorter, which both send at least
     @stub [32] RegisterResourceStatisticsName(buffer<u8, 0x21> name, pid) -> (i32 ret, u32 bsd_errno);
     [33] RegisterClientShared(nn::socket::sf::LibraryConfigData config, pid, u64 work_buffer_size) -> u32 bsd_errno;
+    # the Ounce's SDK (22) registers here instead, from nn::socket::Initialize: the pid and its config's version
+    # (0x1000c), no transfer memory, and the library refuses to start (0x81b) on an errno other than 0
+    [36] RegisterClientOunce(pid, u32 version) -> u32 bsd_errno;
 }
 
 # the interface configuration, which the system's own services use: nothing a game changes
