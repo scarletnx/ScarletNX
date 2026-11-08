@@ -22,6 +22,8 @@
 #define APP_INI_HEAD "; Settings > App and Games' View in the launcher, as they were left\n[app]\n"
 #define GAMES_DEFAULTS                                                                                                 \
     "recent_games = on\ngames_dumps = on\ngames_sort = title\ngames_view = list\ngames_icons = medium\n"
+/* app.ini's probe_mode as edenprobe Mode leaves it by default: Quick */
+#define PROBE_DEFAULTS "probe_mode = quick\n"
 /* the default theme's colours, as the checks below name them */
 static const SDL_Color normal = {220, 220, 220, 255}, yellow = {255, 255, 0, 255}, red = {255, 0, 0, 255},
                        pink = {255, 85, 255, 255}, black = {0, 0, 0, 255};
@@ -2675,8 +2677,9 @@ static void gpu_drivers(App* app, const char* temporary) {
     app->editor.row = GUI_APP_DRIVERS;
     render(app);
     key(app, SDLK_RETURN);
-    /* System driver, picked, and Add Driver; this device's line, which says packages do not load here */
-    assert(app->form == GUI_FORM_DRIVERS && gui_editor_rows(&app->editor) == 3 && !app->editor.row);
+    /* System driver, picked, Download Driver, Add Driver, edenprobe Mode and Run edenprobe; this device's line, which
+       says packages do not load here */
+    assert(app->form == GUI_FORM_DRIVERS && gui_editor_rows(&app->editor) == 5 && !app->editor.row);
     assert(!strcmp(app->drivers_form.value[0], "(*)") && strstr(app->editor.note, "This device: ") &&
            strstr(app->editor.note, "custom drivers load on Android 9 (API 28) or newer"));
     render(app); /* drawn: its rows, the System driver's mark, Add Driver's icon */
@@ -2687,7 +2690,7 @@ static void gpu_drivers(App* app, const char* temporary) {
     driver_picked(app, zip, NULL, false);
     assert(app->packages_count == 1 && !strcmp(app->packages[0].id, "Turnip_v32") && !app->gpu_driver[0]);
     assert(strstr(app->editor.note, "Added Turnip test (Vulkan 1.4.335), in gpu_drivers/Turnip_v32. This device: "));
-    assert(gui_editor_rows(&app->editor) == 4 && !strcmp(app->drivers_form.value[1], "( )"));
+    assert(gui_editor_rows(&app->editor) == 6 && !strcmp(app->drivers_form.value[1], "( )"));
     package = snx_path_join(dir, "Turnip_v32/libvulkan_freedreno.so");
     assert(snx_is_file(package));
     /* its box: Use refused here, saying this device; Remove asked first, then the folder gone */
@@ -2819,7 +2822,7 @@ static void download_driver(App* app, const char* temporary) {
     assert(g_fake_net.zip);
     app->https_get = fake_get;
     open_drivers(app, NULL, NULL, 0);
-    assert(app->form == GUI_FORM_DRIVERS && gui_editor_rows(&app->editor) == 3 && !app->packages_count);
+    assert(app->form == GUI_FORM_DRIVERS && gui_editor_rows(&app->editor) == 5 && !app->packages_count);
     snprintf(app->vk_gpu, sizeof app->vk_gpu, "%s", "Adreno (TM) 740"); /* Eden recommends Mr. Purple T23 */
     app->editor.row = 1; /* Download Driver */
     key(app, SDLK_RETURN);
@@ -2902,6 +2905,175 @@ static void download_driver(App* app, const char* temporary) {
     free(g_fake_net.zip);
     free(zip);
     app->https_get = NULL;
+}
+/* Run edenprobe's launches through the fake driver, each let end as it starts (its .go), until the box */
+static void probe_ran(App* app, const char* argv_file) {
+    char* go = snx_format("%s.go", argv_file);
+    Uint64 until = SDL_GetTicks() + 20000;
+    while (app->probe_launch && SDL_GetTicks() < until) {
+        if (app->menu.running && !snx_is_file(go)) assert(!snx_write_file(go, "", 0));
+        pump(app);
+        SDL_Delay(5);
+    }
+    assert(!app->probe_launch && !app->menu.running && !app->finished);
+    remove(go);
+    free(go);
+}
+/* GPU Drivers' edenprobe Mode, kept in app.ini's probe_mode, and Run edenprobe: its NRO asked for where it goes; then
+   played through the fake driver in its own data folder with quick's words, launched again after a launch that
+   ended before the summary, its counts in a box; a new run, which a launch that adds no case ends; Continue, shown
+   for that run, going on with it to its summary; Clear Crash List, asked first, shown while a crash list is there */
+static void run_edenprobe(App* app, const char* temporary) {
+    char *was = app->state_dir, *folder, *nro, *data, *argv_file = snx_path_join(temporary, "probe argv"),
+         *plan = snx_path_join(temporary, "probe plan"), *kept, *mode, *launches, *ini;
+    size_t size;
+    app->state_dir = snx_path_join(temporary, "probe state");
+    folder = snx_path_join(app->state_dir, "probe");
+    nro = snx_path_join(folder, "edenprobe.nro");
+    data = snx_path_join(folder, ".scarletnx");
+    mode = snx_path_join(data, "recompiled/edenprobe/edenprobe_data/sdmc/edenprobe/mode");
+    launches = snx_path_join(data, "recompiled/edenprobe/edenprobe_data/sdmc/edenprobe/runs/abc1234/launches");
+    open_drivers(app, NULL, NULL, 0);
+    assert(gui_editor_rows(&app->editor) == 5 && !strcmp(app->drivers_label[3], "edenprobe Mode") &&
+           !strcmp(app->drivers_form.value[3], "Quick") && !strcmp(app->drivers_label[4], "Run edenprobe") &&
+           strstr(app->drivers_about[4], folder));
+    render(app);
+    /* edenprobe Mode: Full, kept at once, then Quick again; a word app.ini's probe_mode does not know, named */
+    app->editor.row = 3;
+    key(app, SDLK_RETURN);
+    assert(app->probe_full && !strcmp(app->editor.note, "edenprobe Mode: Full") &&
+           !strcmp(app->drivers_form.value[3], "Full") && app->editor.row == 3);
+    kept = (char*)snx_read_file(app->app_file, &size);
+    assert(kept && strstr(kept, "\nprobe_mode = full\n"));
+    {
+        char* broken = snx_format("%sprobe_mode = slow\n", kept);
+        assert(!snx_write_file(app->app_file, broken, strlen(broken)));
+        app->message[0] = 0;
+        app_load(app);
+        ini = snx_format("Not used from %s: probe_mode = slow (it keeps full)", app->app_file);
+        assert(app->probe_full && !strcmp(app->message, ini));
+        free(ini);
+        free(broken);
+    }
+    free(kept);
+    key(app, SDLK_RETURN);
+    assert(!app->probe_full && !strcmp(app->drivers_form.value[3], "Quick"));
+    /* Run edenprobe without its NRO: where it goes, nothing run */
+    app->editor.row = 4;
+    key(app, SDLK_RETURN);
+    ini = snx_format("Run edenprobe needs %s: edenprobe.nro from github.com/scarletnx/edenprobe/releases", nro);
+    assert(!app->menu.running && !app->probe_launch && !strcmp(app->editor.note, ini));
+    free(ini);
+    /* with it: the first launch ends before the summary, the second goes on to it; the box's counts */
+    assert(!snx_mkdirs(folder) && !snx_write_file(nro, "NRO0", 4));
+    ini = snx_strdup("pass=2\npass=1 fail=astc summary=2,1,0,0\n");
+    assert(!snx_write_file(plan, ini, strlen(ini)));
+    free(ini);
+    set_env("SNX_TEST_PROBE", plan);
+    driver_will(argv_file, 0, "edenprobe");
+    key(app, SDLK_RETURN);
+    assert(app->menu.running && app->probe_launch == 1);
+    render(app);
+    probe_ran(app, argv_file);
+    ini = snx_format("edenprobe 0.9.0 (abc1234): 2 passed, 1 failed (astc 1), 0 skipped, 0 crashed. The report: %s",
+                     data); /* and the run's folder's report in it */
+    assert(app->confirm.shown && app->confirm.ask == GUI_ASK_ERROR && !strncmp(app->error_line, ini, strlen(ini)) &&
+           strstr(app->error_line, "report.jsonl"));
+    free(ini);
+    kept = (char*)snx_read_file(argv_file, &size);
+    assert(kept && has_arg(kept, nro, NULL) && has_arg(kept, "--data", data) && !strstr(kept, "-r\n"));
+    free(kept);
+    kept = (char*)snx_read_file(mode, &size);
+    assert(kept && !strcmp(kept, GUI_PROBE_QUICK "\n"));
+    free(kept);
+    kept = (char*)snx_read_file(launches, &size);
+    assert(kept && !strcmp(kept, "2"));
+    free(kept);
+    render(app);
+    key(app, SDLK_RETURN); /* OK */
+    assert(!app->confirm.shown && app->form == GUI_FORM_DRIVERS);
+    /* again: the whole run's card started over; a launch that adds no case ends it, said */
+    assert(!snx_write_file(plan, "pass=1\n\n", 8));
+    key(app, SDLK_RETURN);
+    probe_ran(app, argv_file);
+    ini = snx_strdup("edenprobe 0.9.0 (abc1234): no summary, 1 case reported after 2 launches, the last adding no "
+                     "case. The report: ");
+    assert(app->confirm.shown && !strncmp(app->error_line, ini, strlen(ini)));
+    free(ini);
+    key(app, SDLK_RETURN);
+    /* Continue, for that run: its third launch goes on to the summary, the mode file as the run had it */
+    assert(gui_editor_rows(&app->editor) == 6 && app->drivers_continue == 5 &&
+           !strcmp(app->drivers_label[5], "Continue") && strstr(app->drivers_about[5], "cases so far 1"));
+    ini = snx_strdup("pass=1\n\npass=1 summary=2,0,0,0\n");
+    assert(!snx_write_file(plan, ini, strlen(ini)));
+    free(ini);
+    app->probe_full = true; /* a Mode changed since: not the run's */
+    app->editor.row = 5;
+    key(app, SDLK_RETURN);
+    probe_ran(app, argv_file);
+    assert(app->confirm.shown &&
+           !strncmp(app->error_line, "edenprobe 0.9.0 (abc1234): 2 passed, 0 failed, 0 skipped, 0 crashed. ", 69));
+    kept = (char*)snx_read_file(mode, &size);
+    assert(kept && !strcmp(kept, GUI_PROBE_QUICK "\n"));
+    free(kept);
+    app->probe_full = false;
+    key(app, SDLK_RETURN);
+    assert(gui_editor_rows(&app->editor) == 5 && app->drivers_continue < 0); /* a whole run: nothing to go on with */
+    /* Clear Crash List: shown while one is there, asked first, Cancel keeping it */
+    {
+        char* crashes = snx_path_join(data, "recompiled/edenprobe/edenprobe_data/sdmc/edenprobe/crashes");
+        assert(!snx_write_file(crashes, "gpu a case\nindex another\n", 25));
+        drivers_show(app, 4);
+        assert(gui_editor_rows(&app->editor) == 6 && app->drivers_clear == 5 &&
+               !strcmp(app->drivers_label[5], "Clear Crash List") && strstr(app->drivers_about[5], ": 2."));
+        app->editor.row = 5;
+        key(app, SDLK_RETURN);
+        assert(app->confirm.shown && app->confirm.ask == GUI_ASK_CRASH &&
+               !strcmp(app->ask_line, "Clear Crash List? Its 2 cases run again in the next run."));
+        render(app);
+        key(app, SDLK_RETURN); /* Cancel */
+        assert(!app->confirm.shown && snx_is_file(crashes));
+        key(app, SDLK_RETURN);
+        key(app, SDLK_RIGHT);
+        key(app, SDLK_RETURN); /* Clear */
+        assert(!app->confirm.shown && !snx_path_exists(crashes) &&
+               !strcmp(app->editor.note, "Crash list cleared, cases: 2") && gui_editor_rows(&app->editor) == 5);
+        free(crashes);
+    }
+    /* ESC ends a run: no launch after it, Continue offered for it */
+    ini = snx_strdup("pass=1\npass=1 summary=2,0,0,0\n");
+    assert(!snx_write_file(plan, ini, strlen(ini)));
+    free(ini);
+    app->editor.row = 4;
+    key(app, SDLK_RETURN);
+    assert(app->menu.running && app->probe_launch == 1);
+    {
+        Uint64 until = SDL_GetTicks() + 3000;
+        while (!snx_is_file(launches) && SDL_GetTicks() < until) SDL_Delay(5); /* its report begun */
+        key(app, SDLK_ESCAPE);
+        while (app->menu.running && SDL_GetTicks() < until) {
+            pump(app);
+            SDL_Delay(5);
+        }
+    }
+    assert(!app->menu.running && !app->probe_launch && !app->confirm.shown && app->drivers_continue == 5);
+    kept = (char*)snx_read_file(launches, &size);
+    assert(kept && !strcmp(kept, "1"));
+    free(kept);
+    remove(argv_file);
+    set_env("SNX_TEST_PROBE", NULL);
+    driver_will(NULL, 0, NULL);
+    key(app, SDLK_ESCAPE);
+    assert(app->form == GUI_FORM_APP);
+    free(app->state_dir);
+    app->state_dir = was;
+    free(folder);
+    free(nro);
+    free(data);
+    free(mode);
+    free(launches);
+    free(plan);
+    free(argv_file);
 }
 /* a game's box's GPU Driver: Global and the launcher's first, then the game's own pick kept in its .ini (System
    driver, gpu_driver= with nothing), Global again taking the key out; its Freedreno Settings start with none of its
@@ -3592,6 +3764,69 @@ static void recompile_queue(App* app) {
 static void wait_taken(const char* path) {
     for (int n = 0; n < 2000 && (!snx_is_file(path) || remove(path)); ++n) SDL_Delay(5);
 }
+/* Run edenprobe's game as the fake driver plays it (SNX_TEST_PROBE): edenprobe's report in the card of the game made
+   in the --data folder, a launch a line of the plan, each line's words "pass=N", "fail=SUITE" and
+   "summary=P,F,S,C"; the launches counted beside the report */
+static void fake_probe(int argc, char** argv) {
+    char *card = NULL, *runs, *report, *counter, *plan, *line, *word, *last, *text;
+    int launch, i;
+    size_t size;
+    for (i = 1; i + 1 < argc; ++i)
+        if (!strcmp(argv[i], "--data"))
+            card = snx_format("%s/recompiled/edenprobe/edenprobe_data/sdmc/edenprobe", argv[i + 1]);
+    assert(card);
+    runs = snx_path_join(card, "runs/abc1234");
+    report = snx_path_join(runs, "report.jsonl");
+    counter = snx_path_join(runs, "launches");
+    last = snx_path_join(card, "last-run");
+    assert(!snx_mkdirs(runs) && !snx_write_file(last, "runs/abc1234\n", 13));
+    text = (char*)snx_read_file(counter, &size);
+    launch = text ? atoi(text) : 0;
+    free(text);
+    text = snx_format("%d", launch + 1);
+    assert(!snx_write_file(counter, text, strlen(text)));
+    free(text);
+    plan = (char*)snx_read_file(getenv("SNX_TEST_PROBE"), &size);
+    assert(plan);
+    for (line = plan, i = 0; i < launch && strchr(line, '\n'); ++i) line = strchr(line, '\n') + 1;
+    if (strchr(line, '\n')) *strchr(line, '\n') = 0;
+    text = snx_strdup(launch ? "" : "{\"type\":\"note\",\"text\":\"edenprobe 0.9.0 (abc1234) starting\"}\n");
+    for (word = strtok(line, " "); word; word = strtok(NULL, " ")) {
+        char* more = NULL;
+        if (!strncmp(word, "pass=", 5))
+            for (i = atoi(word + 5); i > 0; --i) {
+                more =
+                    snx_format("%s{\"type\":\"case\",\"suite\":\"cpu\",\"name\":\"case\",\"result\":\"pass\"}\n", text);
+                free(text);
+                text = more;
+            }
+        else if (!strncmp(word, "fail=", 5))
+            more = snx_format("%s{\"type\":\"case\",\"suite\":\"%s\",\"name\":\"case\",\"result\":\"fail\"}\n", text,
+                              word + 5);
+        else if (!strncmp(word, "summary=", 8)) {
+            int p = 0, f = 0, k = 0, c = 0;
+            assert(sscanf(word + 8, "%d,%d,%d,%d", &p, &f, &k, &c) == 4);
+            more = snx_format("%s{\"type\":\"summary\",\"passed\":%d,\"failed\":%d,\"skipped\":%d,\"crashed\":%d}\n",
+                              text, p, f, k, c);
+        }
+        if (more && !strncmp(word, "pass=", 5)) continue;
+        if (more) {
+            free(text);
+            text = more;
+        }
+    }
+    {
+        FILE* out = fopen(report, "ab");
+        assert(out && fputs(text, out) >= 0 && !fclose(out));
+    }
+    free(text);
+    free(plan);
+    free(last);
+    free(counter);
+    free(report);
+    free(runs);
+    free(card);
+}
 int main(int argc, char** argv) {
 #ifdef _WIN32
     snx_test_crash_said();
@@ -3685,6 +3920,7 @@ int main(int argc, char** argv) {
         assert(kept && !fclose(kept));
         puts(getenv("SNX_TEST_SAY") ? getenv("SNX_TEST_SAY") : "the fake driver ran");
         status = getenv("SNX_TEST_STATUS") ? atoi(getenv("SNX_TEST_STATUS")) : 0;
+        if (getenv("SNX_TEST_PROBE")) fake_probe(argc, argv);
         if (!compiling) { /* a game: let the menu show it running, then the test's finish lets it end */
             char* go = snx_format("%s.go", getenv("SNX_TEST_ARGV"));
             for (int n = 0; n < 100 && !snx_is_file(go); ++n) SDL_Delay(5);
@@ -4622,6 +4858,7 @@ int main(int argc, char** argv) {
     assert(app.form == GUI_FORM_APP && app.editor.row == GUI_APP_THEME && GUI_APP_ROWS == 13);
     gpu_drivers(&app, temporary); /* GPU Drivers and Freedreno Settings, then back to the App's first row */
     download_driver(&app, temporary);
+    run_edenprobe(&app, temporary);
     app.editor.row = GUI_APP_THEME;
     {
         char first[64], line[1024];
@@ -4996,7 +5233,7 @@ int main(int argc, char** argv) {
         snprintf(expected, sizeof expected,
                  APP_INI_HEAD "theme = %s\nui_scale = 1\nlanguage = auto\n"
                               "animations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n"
-                              "dumps_main = on\nrecompiled_main = on\n" GAMES_DEFAULTS,
+                              "dumps_main = on\nrecompiled_main = on\n" GAMES_DEFAULTS PROBE_DEFAULTS,
                  id);
         kept = (char*)snx_read_file(app.app_file, &size);
         assert(kept && size == strlen(expected) && !memcmp(kept, expected, size));
@@ -5042,7 +5279,7 @@ int main(int argc, char** argv) {
             APP_INI_HEAD
             "theme = %s\nui_scale = 2\n"
             "language = auto\nanimations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n"
-            "dumps_main = on\nrecompiled_main = on\n" GAMES_DEFAULTS,
+            "dumps_main = on\nrecompiled_main = on\n" GAMES_DEFAULTS PROBE_DEFAULTS,
             first_id);
         kept = (char*)snx_read_file(app.app_file, &size);
         assert(kept && size == strlen(expected) && !memcmp(kept, expected, size));
@@ -5114,7 +5351,7 @@ int main(int argc, char** argv) {
                  APP_INI_HEAD
                  "theme = %s\nui_scale = 2\n"
                  "language = xx\nanimations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n"
-                 "dumps_main = on\nrecompiled_main = on\n" GAMES_DEFAULTS,
+                 "dumps_main = on\nrecompiled_main = on\n" GAMES_DEFAULTS PROBE_DEFAULTS,
                  app.theme.id);
         kept = (char*)snx_read_file(app.app_file, &size);
         assert(kept && size == strlen(expected) && !memcmp(kept, expected, size));

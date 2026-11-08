@@ -1560,6 +1560,10 @@ msgstr ""
 msgid "Recompile"
 msgstr ""
 
+#: src/gui/main.c
+msgid "Clear"
+msgstr ""
+
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
@@ -2924,6 +2928,11 @@ msgid "This build of the launcher reads no Vulkan driver"
 msgstr ""
 
 #: src/gui/main.c
+#, c-format
+msgid "Goes on with the run of edenprobe %s that ended before its summary, from its journal: cases so far %d, on its crash list %d"
+msgstr ""
+
+#: src/gui/main.c
 msgid "The GPU driver Settings > App > GPU Drivers picks for every game"
 msgstr ""
 
@@ -2964,6 +2973,36 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "A driver package's zip, a meta.json and the driver's libraries at its top as Turnip's releases are: unpacked into gpu_drivers/ of the user's data folder"
+msgstr ""
+
+#: src/gui/main.c
+msgid "edenprobe Mode"
+msgstr ""
+
+#: src/gui/main.c
+msgid "What Run edenprobe runs. Quick: processor and graphics. Full: also fs (64 MiB written once), video, audio, kernel and display"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Quick"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Run edenprobe"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "edenprobe's hardware probes played as a game with this GPU driver, in a data folder of their own with the default settings, %s; then their counts"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Clear Crash List"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Cases on the crash list, which a run skips as crashed: %d. Cleared, the next run asks them again"
 msgstr ""
 
 #: src/gui/main.c
@@ -3036,6 +3075,20 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "Not added: %s does not read: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "edenprobe Mode: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Clear Crash List? Its case runs again in the next run."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Clear Crash List? Its %d cases run again in the next run."
 msgstr ""
 
 #: src/gui/main.c
@@ -4079,6 +4132,54 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "The Recompiled Library's Main is off and no Extra of it can take a game: Add to Library on its Main, or add a folder to it, in Settings > App > Folders"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Run edenprobe: no state folder to run in"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Run edenprobe: a compile goes; the probes run once the queue ends"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Run edenprobe needs %s: edenprobe.nro from github.com/scarletnx/edenprobe/releases"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Run edenprobe: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Clear Crash List: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Crash list cleared, cases: %d"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "edenprobe left no report in %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s. The report: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s after %d launches, the most it takes. The report: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s after %d launches, the last adding no case. The report: %s"
 msgstr ""
 
 #: src/gui/main.c
