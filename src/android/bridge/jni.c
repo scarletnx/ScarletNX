@@ -856,8 +856,57 @@ static void JNICALL free_guest(JNIEnv* env, jclass unused, jlong address) {
     if (arm32_active()) arm32_free((uint32_t)address);
 }
 
+/* NativeActivity's glue and its input queue: the 32-bit bridge's (arm32.h); the 64-bit bridge has none yet */
+static jlong JNICALL activity_create(JNIEnv* env, jclass unused, jobject activity, jstring function, jstring internal,
+                                     jstring external, jint sdk) {
+    (void)unused;
+    if (!arm32_active()) return 0;
+    const char* f = (*env)->GetStringUTFChars(env, function, NULL);
+    const char* in = internal ? (*env)->GetStringUTFChars(env, internal, NULL) : NULL;
+    const char* ex = external ? (*env)->GetStringUTFChars(env, external, NULL) : NULL;
+    uint32_t a = arm32_jni_activity_create(env, activity, f, in, ex, sdk);
+    (*env)->ReleaseStringUTFChars(env, function, f);
+    if (in) (*env)->ReleaseStringUTFChars(env, internal, in);
+    if (ex) (*env)->ReleaseStringUTFChars(env, external, ex);
+    return a;
+}
+static void JNICALL activity_call(JNIEnv* env, jclass unused, jlong activity, jint callback, jlong argument) {
+    (void)unused;
+    if (arm32_active()) arm32_jni_activity_call(env, (uint32_t)activity, callback, (uint32_t)argument);
+}
+static jlong JNICALL input_queue_new(JNIEnv* env, jclass unused) {
+    (void)env, (void)unused;
+    return arm32_active() ? arm32_input_queue_new() : 0;
+}
+static void JNICALL input_queue_motion(JNIEnv* env, jclass unused, jlong queue, jint device, jint source, jint action,
+                                       jint flags, jint meta, jint buttons, jint edges, jlong down, jlong time,
+                                       jfloat xprec, jfloat yprec, jintArray ids, jintArray tools, jfloatArray axes) {
+    (void)unused;
+    jsize n = (*env)->GetArrayLength(env, ids);
+    if (n > 10) n = 10;
+    jint id[10], tool[10];
+    jfloat axis[90];
+    (*env)->GetIntArrayRegion(env, ids, 0, n, id);
+    (*env)->GetIntArrayRegion(env, tools, 0, n, tool);
+    (*env)->GetFloatArrayRegion(env, axes, 0, 9 * n, axis);
+    int32_t fields[7] = {device, source, action, flags, meta, edges, buttons};
+    arm32_input_motion((uint32_t)queue, fields, down, time, xprec, yprec, (unsigned)n, id, tool, axis);
+}
+static void JNICALL input_queue_key(JNIEnv* env, jclass unused, jlong queue, jint device, jint source, jint action,
+                                    jint flags, jint key, jint scan, jint meta, jint repeat, jlong down, jlong time) {
+    (void)env, (void)unused;
+    int32_t fields[8] = {device, source, action, flags, key, scan, meta, repeat};
+    arm32_input_key((uint32_t)queue, fields, down, time);
+}
+
 bool android_bridge_register(JNIEnv* env) {
     static const JNINativeMethod methods[] = {
+        {(char*)"activityCreate",
+         (char*)"(Ljava/lang/Object;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;I)J", (void*)activity_create},
+        {(char*)"activityCall", (char*)"(JIJ)V", (void*)activity_call},
+        {(char*)"inputQueueNew", (char*)"()J", (void*)input_queue_new},
+        {(char*)"inputQueueMotion", (char*)"(JIIIIIIIJJFF[I[I[F)V", (void*)input_queue_motion},
+        {(char*)"inputQueueKey", (char*)"(JIIIIIIIIJJ)V", (void*)input_queue_key},
         {(char*)"allocateGuest", (char*)"(I[J)Ljava/nio/ByteBuffer;", (void*)allocate_guest},
         {(char*)"freeGuest", (char*)"(J)V", (void*)free_guest},
         {(char*)"nativeLoad", (char*)"(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", (void*)native_load},

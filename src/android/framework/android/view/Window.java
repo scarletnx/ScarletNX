@@ -175,6 +175,25 @@ public class Window {
     public boolean isFloating() { return false; }
     public boolean isActive() { return true; }
     public void takeKeyEvents(boolean get) {}
+    /*
+     * The window's surface and input events for native code instead of its views, as NativeActivity asks for them.
+     * The runtime gives a window no surface of its own: it stays with its views, as for the null that Unity's
+     * NativeActivity subclass gives to have its own SurfaceView, and that callback is kept and never called. A taker
+     * of the input queue gets one, when the native bridge has it: the system's events go there (ViewRootImpl)
+     */
+    private SurfaceHolder.Callback2 surfaceTaker;
+    private InputQueue.Callback inputTaker;
+    private InputQueue inputQueue;
+    public void takeSurface(SurfaceHolder.Callback2 callback) { surfaceTaker = callback; }
+    public void takeInputQueue(InputQueue.Callback callback) {
+        if (callback == inputTaker) return;
+        if (inputTaker != null && inputQueue != null) inputTaker.onInputQueueDestroyed(inputQueue);
+        inputTaker = callback;
+        inputQueue = callback != null ? InputQueue.create() : null;
+        if (inputQueue != null) callback.onInputQueueCreated(inputQueue);
+    }
+    /** the queue that the system's input events go to, null for the views */
+    InputQueue inputQueue() { return inputQueue; }
     public void setStatusBarColor(int color) { statusBarColor = color; }
     public int getStatusBarColor() { return statusBarColor; }
     public void setNavigationBarColor(int color) { navigationBarColor = color; }
