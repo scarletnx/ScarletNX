@@ -34,19 +34,24 @@ A draft tells the reader that the work is not ready. Keep the pull request in dr
 Write that failure in the body with its size: the case, the numbers and the plan. Remove the draft flag when the
 failure stops. Also remove it when the body says why the work can merge with the failure.
 
+On a repository that the owner does not own, the draft flag stays until he approves that pull request in the chat. A
+ready mark says that he reviewed the work. An approval to open the pull request is not an approval to mark it ready.
+
 ## The body
 
 Use this order. Leave out a line only where the template says so.
 
-1. The symptom and the change, in one to three sentences. Name the game or the system.
+1. The change and the failure or the gap it closes, in one to three sentences. Name the game or the system.
 2. One bullet for each commit: `[area] subject`, then what it does and why.
 3. `Depends on:` and `Conflicts:` with the pull requests and files. Say how to resolve a conflict.
 4. `Testing:` the exact command, the test names, the result, and the failure on the base commit.
 5. `Not tested:` what the run did not reach.
 6. `Risks:` a known regression with numbers, or `None known`.
 
-The first paragraph answers "what was wrong" before "what you changed". A reader who stops there must still know the
-value of the work.
+The first paragraph starts with the change in plain words. A reader who stops there must know the value of the work.
+Do not open with a `What`, `Why`, `Summary` or `Changes` heading. These words carry no fact, and a heading pushes the
+content down one line. The first line is the change itself. A heading is for a long body only, and it names its own
+subject: `## Testing`, `## Risks`.
 
 ## The evidence
 
@@ -62,14 +67,30 @@ A mark that a person cannot replay is a claim, not evidence.
 
 ## The reply
 
-An agent writes as an agent. A contributor's agent writes `From <its name>:`. This skill adds `(an agent)`, so no
-reader mistakes the writer for a person. Start a reply on a thread that another person owns with `From <agent
-name> (an agent):`.
+An agent writes as an agent. It names itself with one mark, `From <its name> (an agent)`, and the `(an agent)` stops a
+reader who mistakes the writer for a person. This agent's name in this repository is `Vigo`.
+
+The contributors' agents put the mark in one place. A comment starts with it. A pull request or an issue ends with it,
+on a line of its own. Do not put it at both ends of one message.
+
+A comment starts with the mark:
+
+```
+From Vigo (an agent): <the answer in one sentence>.
+```
+
+A pull request or an issue ends with it:
+
+```
+Testing: <the command and its result>.
+
+from Vigo (an agent)
+```
 
 Answer the exact question first. Then give the evidence. Then say what remains. A reply has this shape:
 
 ```
-From <agent name> (an agent): <the answer in one sentence>.
+From Vigo (an agent): <the answer in one sentence>.
 
 Evidence: <the commit, the issue, the log line or the test>.
 Not checked: <what this reply does not cover>.

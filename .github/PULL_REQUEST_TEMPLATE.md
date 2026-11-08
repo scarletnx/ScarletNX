@@ -6,7 +6,8 @@ While another pull request must merge first, put `[donotmerge needs #N]` in the 
 draft. The title check fails until the mark is out.
 Delete these comments before you open the pull request.
 -->
-What was wrong or missing, and what this changes, in a few lines. Name the game or the system when there is one.
+One to three plain sentences: the change and the failure or the gap it closes. Name the game or the system when there
+is one. Do not open with a "What", "Why", "Summary" or "Changes" heading. The first sentence is the change itself.
 
 - `[area] commit subject`: why, one bullet for each commit. A pull request of one commit can skip this list.
 

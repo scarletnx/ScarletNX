@@ -247,9 +247,10 @@ the agent can build and run. Only one agent at a time can build and run.
 - A commit message says what a game did, not which game it was. Comments, docs and test data do the same. Examples
   are "one game's menus", "another's save load" and "a player's log". A title ID is no better than a name.
 - Mark the work as the contributors do. The title is `[area] an imperative sentence`. A pull request that needs
-  another one first holds `[donotmerge needs #N]` in the title and stays in draft. The body gives one bullet for each
-  commit, the exact tests, `Not tested:` and `Risks:`. The `snx-work-mark` skill gives the full shape. An agent says
-  that it is an agent in a reply.
+  another one first holds `[donotmerge needs #N]` in the title and stays in draft. The body opens with the change in
+  plain sentences, never a `What` or `Why` heading. Then it gives one bullet for each commit, the exact tests,
+  `Not tested:` and `Risks:`. The `snx-work-mark` skill gives the full shape, and an agent says that it is an agent in
+  a reply.
 - Stage files by name. Run `git diff --cached --stat` just before the commit. A commit takes all the staged changes,
   also a `git mv` or `git rm` from earlier in the session. A commit ends with the `Co-Authored-By` line that the
   instructions of the session give.
