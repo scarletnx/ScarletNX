@@ -62,6 +62,8 @@ final class SystemServices {
         Map.entry(Context.CREDENTIAL_SERVICE, new Entry(android.credentials.CredentialManager.class, c -> new android.credentials.CredentialManager())),
         Map.entry(Context.PRINT_SERVICE, new Entry(android.print.PrintManager.class, c -> new android.print.PrintManager())),
         Map.entry(Context.VIBRATOR_SERVICE, new Entry(android.os.Vibrator.class, c -> new android.os.Vibrator() {})),
+        Map.entry(Context.VIBRATOR_MANAGER_SERVICE, new Entry(android.os.VibratorManager.class,
+            c -> android.os.VibratorManager.none((android.os.Vibrator) c.getSystemService(Context.VIBRATOR_SERVICE)))),
         Map.entry(Context.WALLPAPER_SERVICE, new Entry(android.app.WallpaperManager.class, android.app.WallpaperManager::getInstance)),
         Map.entry(Context.CAPTIONING_SERVICE, new Entry(android.view.accessibility.CaptioningManager.class, android.view.accessibility.CaptioningManager::new)),
         Map.entry(Context.TEXT_CLASSIFICATION_SERVICE, new Entry(android.view.textclassifier.TextClassificationManager.class, android.view.textclassifier.TextClassificationManager::new)),
