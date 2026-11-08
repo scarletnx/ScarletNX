@@ -743,6 +743,47 @@ static int check_uma_dispatch_constants(void) {
     return 0;
 }
 
+/* Texture and sampler headers are read without waiting for a write in place over them, as no program writes headers
+   (one game's dispatches found such a write over theirs once a frame, and the GPU thread waited 20 ms for it):
+   vk_gmem_words reads the words memory holds as it reads, and the write stays pending */
+#define UMA_J  (HEAP_BASE + 0xd400000)
+#define UMA_GJ 0x4eb000000ull
+static int check_uma_header_words(void) {
+    VkBuffer r;
+    u64 ro;
+    u32 words[8];
+    u8 now[32];
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    CHECK(mem_map(UMA_J, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GJ, UMA_J, 0x200000);
+    for (u32 i = 0; i < 0x100; i++) GP(UMA_J)[i] = (u8)(0x80 + i);           /* the header pool's entries */
+    for (u32 i = 0; i < 0x100; i++) GP(UMA_J)[0x10000 + i] = (u8)(0x20 + i); /* the engine's result */
+    vk_lock();
+    CHECK(vk_buf_get_input(UMA_GJ, 256, 4, &r, &ro)); /* a draw reads it in place: an import holds it */
+    int held = vk_uma_held(UMA_J, 256);
+    vk_unlock();
+    CHECK(!uma_dma(UMA_GJ, UMA_GJ + 0x10000)); /* written in place by a submit not made yet */
+    vk_lock();
+    int pending = vk_uma_pending(UMA_GJ, 256);
+    memcpy(now, GP(UMA_J) + 0x20, sizeof now);
+    vk_gmem_words(UMA_GJ + 0x20, words, 8);
+    int waited = !vk_uma_pending(UMA_GJ, 256), same = 1;
+    for (u32 i = 0; i < 8; i++) same &= words[i] == snx_ld_le32(now + 4 * i);
+    vk_finish();
+    vk_unlock();
+    CHECK(GP(UMA_J)[0] == 0x20 && GP(UMA_J)[0xff] == 0x1f); /* the write, done after the finish */
+    CHECK(mem_unmap(UMA_J, 0x200000) == 0);
+    if (!held || !pending || waited || !same)
+        fprintf(stderr, "header words: held %d, pending %d, waited for the write %d, the words memory's %d\n", held,
+                pending, waited, same);
+    CHECK(held && pending && !waited && same);
+    printf("in place: texture headers under a pending write in place are read with no wait\n");
+    return 0;
+}
+
 /* Physical memory as GPU memory where it is (placed maps, VK_EXT_map_memory_placed): a window mapped whole is a chunk
    of device memory at its guest address, which the GPU reads and writes in place with no import, the CPU's and the
    GPU's writes each seen by the other; given back and mapped again it reads zero, a new chunk. Write tracking leaves it

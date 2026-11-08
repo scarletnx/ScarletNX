@@ -1196,10 +1196,14 @@ int vk_ms_pack(VkCommandBuffer cb, Surf* s, u32 layer, VkBuffer buf, u64 off, u3
 /* surface.c: a multisampled surface's samples loaded from guest memory (a texture's upload): 0 when they can't be */
 int vk_ms_load(Surf* s);
 
-/* n little-endian words of guest memory at gva as host numbers (texture and sampler headers, constant buffer words),
-   as gmem_read reads them */
+/* n little-endian words of a texture or sampler header in guest memory at gva as host numbers, as gmem_read reads them.
+   No program writes headers, so a program's pending write in place that covers them isn't waited for: one game's
+   dispatches found one over their headers in each frame, and the wait held the GPU thread for about 20 ms of each
+   frame with the GPU idle behind it */
 static inline void vk_gmem_words(u64 gva, u32* w, u32 n) {
+    vk_uma_gpu_reads(1);
     gmem_read(gva, w, (u64)n * 4);
+    vk_uma_gpu_reads(0);
     snx_le32_array(w, n);
 }
 
