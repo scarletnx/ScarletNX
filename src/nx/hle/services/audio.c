@@ -29,7 +29,10 @@
 
 #define AUDIO_RATE      48000u /* the DSP's, the only rate an audio out plays at */
 #define AUDIO_FRAME_NS  5000000 /* the DSP's frame */
-#define AUDIO_REVISION  15      /* the newest renderer revision understood (Eden's CurrentRevision) */
+/* the newest renderer revision understood: Eden's CurrentRevision, 15, and the Ounce's 16 (REV@, and REv@ with its
+   lowercase v), which an SDK 22 game asks for. No feature of 16's is known: Eglantine (Eden's Ounce fork) takes its
+   native 16 as 15, and so does the renderer here (audren_dsp.c's features go by revision 15 and earlier) */
+#define AUDIO_REVISION  16
 #define AUDIO_NAME_SIZE 0x100   /* an AudioDeviceName */
 
 static const char audout_name[] = "DeviceOut";
