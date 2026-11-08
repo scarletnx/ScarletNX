@@ -786,6 +786,11 @@ typedef struct Surf {
     /* textures: an ASTC one held as BC7 whose image is RGBA8 until the BC7 encoder has made its BC7 one between frames
        (texture.c vk_tex_later_frame), and again each time the game writes it whole */
     u8 bc7_later;
+    /* held Exact for its writes (texture.c later_wrote): the game wrote it again before the encoder could have made its
+       BC7 image, so it stays RGBA8 until it goes unwritten a while (later_cool); and the present it was last written
+       in, plus one (0: never) */
+    u8 bc7_hot;
+    u32 bc7_wrote;
     /* that BC7 image while it is made (VK_NULL_HANDLE before the encoder starts on it), its memory, and how far the
        encoder got: level, then slice (a layer, or a 3D level's depth slice) and row of BC7 blocks, from the RGBA8
        image's texels of write generation wgen. queued: in the encoder's queue */
@@ -1242,10 +1247,11 @@ void vk_tex_later_frame(void);
 /* s goes: its place in the queue and the BC7 image being made for it with it (surface.c surf_free) */
 void vk_tex_later_forget(Surf* s);
 /* statistics since the start: textures made BC7, the RGBA8 bytes that freed, encodes started over for a write or
-   given up, blocks encoded; and now: textures waiting, the bytes their RGBA8 images take */
+   given up, blocks encoded, textures held Exact for their writes and made BC7 again after; and now: textures waiting,
+   the bytes their RGBA8 images take, textures held Exact for their writes */
 typedef struct {
-    u64 made, freed, restarted, blocks, waiting_bytes;
-    u32 waiting;
+    u64 made, freed, restarted, blocks, waiting_bytes, went_hot, cooled;
+    u32 waiting, hot;
 } VkLaterStats;
 void vk_tex_later_stats(VkLaterStats* s);
 

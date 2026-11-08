@@ -400,10 +400,14 @@ static int tex_partial_astc(const TaCase* a, u32 index) {
        a multiple of 4: its run of blocks, of a block of 16 GOBs at most */
     tp_cpu_write(&x, tp_at(&x, 1, 0, 5, 7), 16);
     failed |= ta_way(&x, "an ASTC block astride BC7 blocks", 0, 8192);
-    /* (b) a DMA copy of 64 bytes (4 ASTC blocks) into level 1 of layer 0 */
+    /* (b) a DMA copy of 64 bytes (4 ASTC blocks) into level 1 of layer 0. Each write comes 3 frames after the one before,
+       past the frame the texture's encode takes and the one after: written sooner, a texture held as BC7 is held Exact
+       and loaded whole (texture.c later_soon), which vulkan_astc_later.inc checks */
+    for (int i = 0; i < 2; i++) tp_frame(&x);
     CHECK(tp_dma_write(&x, tp_level(&x, 0, 1) + 0x400));
     failed |= ta_way(&x, "a DMA copy", 1, 8192);
     /* (c) a byte of the last level of layer 0, in the page of the mip tail's levels */
+    for (int i = 0; i < 2; i++) tp_frame(&x);
     tp_cpu_write(&x, tp_level(&x, 0, x.tex.d.levels - 1), 1);
     failed |= ta_way(&x, "a byte of the mip tail", 2, 8192);
     g_settings.astc_mode = had;

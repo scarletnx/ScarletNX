@@ -251,8 +251,17 @@ quarters of its memory. Meanwhile the texture takes RGBA8's memory and a quarter
   of an RGBA8 image don't match the guest's (below).
 - A texture freed leaves the queue, and the BC7 image being made goes with it.
 
+A texture the game writes often is held Exact instead (`later_wrote`): written again before the encoder could make its
+BC7 image and the game sample that a frame, that is no more frames after the write before than the encoder takes for it
+(a frame for each 32768 blocks) and one, it leaves the queue and stays RGBA8, and its writes load as RGBA8 alone,
+pieces too: as BC7 each write would drop the encoder's work, or encode the pieces where the game waits for them. A
+write every frame is held so whatever the texture's size; a 2048x2048 one with its mips, 349,525 BC7 blocks and 11
+frames of the encoder, is held when written every 12 frames or more often. Read unwritten for four times those frames and one, and 30
+frames at least (`later_cool`), it is queued to be made BC7 again: a texture read much and written little stays BC7.
+
 Every 600 frames the log says how many textures were made BC7 between frames, the RGBA8 memory that freed, the blocks
-encoded and the encodes started over, and how many textures wait with their RGBA8 memory.
+encoded and the encodes started over, how many textures wait with their RGBA8 memory, and how many are held Exact for
+their writes, went so and were made BC7 again.
 
 The encoder tries each block in the modes that suit it and writes the one with the least squared error. Every
 block takes mode 6, one line through RGBA with 4-bit weights, which holds a block of one gradient closely. An opaque
@@ -382,7 +391,10 @@ separate SPIRV-Tools is needed.
   32768 and 3 blocks, the RGBA8 image freed after them; a 2D array of sides on no block in one frame and one dispatch
   a level, written whole after and made BC7 again from the new texels; a texture written between its two frames,
   started over; an array of 40 layers and a 3D texture of 40 slices, cut between two frames; pieces of a BC7 one,
-  straight to BC7 for a block and whole as RGBA8 for 55296 blocks; and a texture freed while it is made. `astc_bc_suggest` (ctest, no GPU) holds Auto's line and the three modes.
+  straight to BC7 for a block and whole as RGBA8 for 55296 blocks; a texture written 3 frames after its write before
+  queued, 2 after held Exact out of the queue, and queued again once read 30 frames unwritten, not 29; pieces of a BC7
+  one, straight to BC7 3 frames after its write before and whole as RGBA8, held Exact, the next frame; and a texture
+  freed while it is made. `astc_bc_suggest` (ctest, no GPU) holds Auto's line and the three modes.
 
 The CPU decoder was also compared with ARM's astcenc 5.7.0 (`astcenc -dl` and `-dH`, Apache-2.0, a release binary
 used only as a tool), on the same kind of random blocks for every footprint. Every texel agreed within one step of
