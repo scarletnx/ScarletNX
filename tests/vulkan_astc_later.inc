@@ -444,6 +444,54 @@ static int al_freed(void) {
     return 0;
 }
 
+/* (h) The BC7 cache (astc.c over bc7_cache.c): the levels the encoder makes go into it once their frames are done, and
+   a second texture of the same bytes, the header's twin at another address, takes them from it in its first frame
+   with no encode: whole at once, its blocks the CPU encoder's of its RGBA8 texels */
+#define AL_CACHE_PATH "vulkan_headless_test.vkbc7"
+static int al_cached(void) {
+    static const AlCase c = {"ASTC 8x8 256x256, cached", NVN_FORMAT_RGBA_ASTC_8x8, 256, 256, 1, 0};
+    AlTex x;
+    u64 levels, hits, hits2, bytes, rgba8, reads, stored, stored2, restarts, file, size = 0;
+    int over;
+    remove(AL_CACHE_PATH);
+    vk_astc_cache_open(AL_CACHE_PATH);
+    vk_bc7_cache_stats(&reads, &stored, &restarts, &file);
+    Surf* t = al_make(&x, &c, 7);
+    CHECK(t && t->bc7.queued && t->bc7.keyed == (1u << x.tex.d.levels) - 1);
+    al_until_done(t, &over);
+    vk_lock();
+    vk_finish(); /* the levels read back land in the cache */
+    vk_unlock();
+    vk_bc7_cache_stats(&reads, &stored2, &restarts, &file);
+    vk_astc_stats(&levels, &hits, &bytes, &rgba8);
+    const u64 encodes = vk_astc_dispatches();
+    Surf* twin = al_frame(x.twin);
+    u8* rgba = twin ? al_image(&x, twin, &size) : NULL;
+    const u64 blocks = al_step();
+    vk_astc_stats(&levels, &hits2, &bytes, &rgba8);
+    const int whole = twin && !twin->bc7.queued && twin->f.vk == VK_FORMAT_BC7_UNORM_BLOCK;
+    int failed = !t->bc7.queued && stored2 - stored == x.tex.d.levels && twin && twin != t && rgba && whole &&
+                         hits2 - hits == x.tex.d.levels && vk_astc_dispatches() == encodes
+                     ? al_differ(&x, "from the cache", twin, rgba)
+                     : 1;
+    if (failed)
+        fprintf(stderr,
+                "ASTC as BC7 between frames, %s: %llu levels stored of %u; the twin %p whole %d after a frame of %llu "
+                "blocks, %llu levels from the cache, %llu encoder dispatches\n",
+                c.name, (unsigned long long)(stored2 - stored), x.tex.d.levels, (void*)twin, whole,
+                (unsigned long long)blocks, (unsigned long long)(hits2 - hits),
+                (unsigned long long)(vk_astc_dispatches() - encodes));
+    else
+        printf("ASTC as BC7 between frames, %s: %u levels stored, and the same bytes elsewhere taken from the cache "
+               "in one frame, with no encode\n",
+               c.name, x.tex.d.levels);
+    free(rgba);
+    vk_bc7_cache_close();
+    remove(AL_CACHE_PATH);
+    al_free(&x);
+    return failed;
+}
+
 static int check_astc_later(void) {
     const int had = g_settings.astc_mode;
     u32 tic[8];
@@ -473,6 +521,7 @@ static int check_astc_later(void) {
     failed |= al_slices(&volume, 6);
     failed |= al_pieces();
     failed |= al_freed();
+    failed |= al_cached();
     g_settings.astc_mode = had;
     return failed;
 }

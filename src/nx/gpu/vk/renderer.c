@@ -659,13 +659,20 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                     (unsigned long long)(partial_bytes >> 20), (unsigned long long)slow_frames,
                     (unsigned long long)(slowest_ns / 1000000));
                 slow_frames = slowest_ns = 0;
-                u64 bc7_levels, bc7_bytes, bc7_rgba8;
-                vk_astc_stats(&bc7_levels, &bc7_bytes, &bc7_rgba8);
+                u64 bc7_levels, bc7_hits, bc7_bytes, bc7_rgba8, cache_reads, cache_stored, cache_restarts, cache_file;
+                vk_astc_stats(&bc7_levels, &bc7_hits, &bc7_bytes, &bc7_rgba8);
+                vk_bc7_cache_stats(&cache_reads, &cache_stored, &cache_restarts, &cache_file);
                 if (bc7_levels)
                     LOG("vulkan: %llu ASTC texture levels or regions uploaded straight to BC7, %llu MB where RGBA8 "
                         "takes %llu MB; %llu encoder dispatches in all\n",
                         (unsigned long long)bc7_levels, (unsigned long long)(bc7_bytes >> 20),
                         (unsigned long long)(bc7_rgba8 >> 20), (unsigned long long)vk_astc_dispatches());
+                if (cache_file)
+                    LOG("vulkan: the BC7 cache gave %llu levels and took %llu new; its file holds %llu MB (started over "
+                        "%llu times at %llu MB)\n",
+                        (unsigned long long)bc7_hits, (unsigned long long)cache_stored,
+                        (unsigned long long)(cache_file >> 20), (unsigned long long)cache_restarts,
+                        (unsigned long long)(VK_BC7_CACHE_MAX >> 20));
                 VkLaterStats later;
                 vk_tex_later_stats(&later);
                 if (later.made || later.waiting || later.restarted)
