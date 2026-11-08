@@ -731,7 +731,7 @@ static u32 later_encode(VkCommandBuffer cb, Surf* t, u32 left) {
             n = cy - t->bc7.row < k ? cy - t->bc7.row : (u32)k;
         }
         const u32 y = t->bc7.row * 4, rows = lh - y < n * 4 ? lh - y : n * 4;
-        if (!vk_bc7_encode_image(cb, t->img, t->bc7.img, l, lw, lh, is3d, t->bc7.slice, nz, y, rows)) break;
+        if (!vk_bc7_encode_image(cb, t->img, t->bc7.img, l, lw, lh, slices, is3d, t->bc7.slice, nz, y, rows)) break;
         used += cx * n * nz;
         if (n == cy)
             t->bc7.slice += nz;

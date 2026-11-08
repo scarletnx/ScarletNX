@@ -119,7 +119,7 @@ static u8* al_expect(const AlTex* x, const u8* rgba, u64* size) {
         for (u32 l = 0; l < x->tex.d.levels; l++) {
             u32 w, h, d;
             al_level(x, l, &w, &h, &d);
-            bc7_encode_cpu(rgba + at, w, h, d, out + to);
+            bc7_encode_cpu_build(vk_bc7_build(w, h, d), rgba + at, w, h, d, out + to); /* the level's build */
             at += al_level_bytes(x, l, 0);
             to += al_level_bytes(x, l, 1);
         }

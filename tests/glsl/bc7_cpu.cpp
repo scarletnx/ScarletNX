@@ -36,6 +36,29 @@ struct EncoderWithout45 : Invocation {
     leuvec4* bc7_blocks;
 #include "nx/gpu/texture/bc7_encode.glsl"
 };
+// the fast build vk/astc.c uses for large levels: mode 6 where it is close, every mode elsewhere, with the stop of
+// the full build
+#undef SNX_BC7_MODES_4_5
+#define SNX_BC7_MODES_4_5 1
+#undef SNX_BC7_GOOD_ENOUGH
+#define SNX_BC7_GOOD_ENOUGH 16
+#undef SNX_BC7_FAST
+#define SNX_BC7_FAST 1
+struct EncoderFast : Invocation {
+    uint width, height, blocks_x, blocks_y;
+    const leuint* rgba;
+    leuvec4* bc7_blocks;
+#include "nx/gpu/texture/bc7_encode.glsl"
+};
+// mode 6 alone, which vk/astc.c uses for the largest levels
+#undef SNX_BC7_FAST
+#define SNX_BC7_FAST 2
+struct EncoderMode6 : Invocation {
+    uint width, height, blocks_x, blocks_y;
+    const leuint* rgba;
+    leuvec4* bc7_blocks;
+#include "nx/gpu/texture/bc7_encode.glsl"
+};
 } // namespace bc7_shader
 
 extern "C" uint32_t bc7_weight_cpu(uint32_t bits, uint32_t index) {
@@ -98,4 +121,22 @@ extern "C" void bc7_encode_cpu_whole_without_45(const uint8_t* rgba, uint32_t w,
 
 extern "C" void bc7_encode_cpu_without_45(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out) {
     encode<bc7_shader::EncoderWithout45>(rgba, w, h, depth, out);
+}
+
+extern "C" void bc7_encode_cpu_fast(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out) {
+    encode<bc7_shader::EncoderFast>(rgba, w, h, depth, out);
+}
+
+extern "C" void bc7_encode_cpu_mode6(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out) {
+    encode<bc7_shader::EncoderMode6>(rgba, w, h, depth, out);
+}
+
+extern "C" void bc7_encode_cpu_build(uint32_t build, const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth,
+                                     uint8_t* out) {
+    if (build == 2)
+        bc7_encode_cpu_mode6(rgba, w, h, depth, out);
+    else if (build == 1)
+        bc7_encode_cpu_fast(rgba, w, h, depth, out);
+    else
+        bc7_encode_cpu(rgba, w, h, depth, out);
 }

@@ -485,7 +485,7 @@ static void run_bc7(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layer
             for (u32 z = 0; z < ld; z++)
                 astc_decode_image(blocks[layer * levels + l] + (size_t)z * nx * ny * 16, lw, lh, bw, bh,
                                   texels + (size_t)z * lw * lh * 4, srgb);
-            bc7_encode_cpu(texels, lw, lh, ld, expected);
+            bc7_encode_cpu_build(vk_bc7_build(lw, lh, ld), texels, lw, lh, ld, expected); /* the level's build */
             for (u64 i = 0; i < size; i++)
                 if (actual[i] != expected[i])
                     fatal("ASTC as BC7 %ux%u srgb=%d %ux%ux%u level %u layer %u: byte %llu (block %llu) expected %u "
@@ -554,7 +554,7 @@ static int upload_wait_case(int retire) {
     for (u32 color = 0; color < 2; color++) {
         u8 texels[64], decoded[64];
         memset(texels, color ? 255 : 0, sizeof texels);
-        bc7_encode_cpu(texels, 4, 4, 1, expected[color]);
+        bc7_encode_cpu_build(vk_bc7_build(4, 4, 1), texels, 4, 4, 1, expected[color]);
         bcn_decode_image(expected[color], 4, 4, BCN_BC7, decoded);
         if (memcmp(texels, decoded, sizeof texels)) fatal("BC7 upload wait: constant-color reference is not exact\n");
     }
@@ -663,7 +663,7 @@ static void run_region(u32 bw, u32 bh, int bc7, u32 w, u32 h, u32 rx, u32 ry, u3
     u8* texels = malloc((size_t)w * h * 4);
     u8* expected = bc7 ? malloc(size) : texels;
     astc_decode_image(b, w, h, bw, bh, texels, 0);
-    if (bc7) bc7_encode_cpu(texels, w, h, 1, expected);
+    if (bc7) bc7_encode_cpu_build(vk_bc7_build(w, h, 1), texels, w, h, 1, expected);
     for (u64 i = 0; i < size; i++)
         if (actual[i] != expected[i])
             fatal("ASTC region %ux%u%s of %ux%u at block (%u, %u), %ux%u blocks: byte %llu expected %u got %u\n", bw,
@@ -1162,6 +1162,8 @@ int main(int argc, char** argv) {
     run_bc7(12, 12, 1, 97, 61, 1, 1, 1);
     run_bc7(6, 6, 0, 61, 37, 9, 1, 1);
     run_bc7(5, 5, 0, 2051, 1101, 1, 1, 1);
+    /* a level of VK_BC7_FAST_TEXELS: the fast build (vk_bc7_build) */
+    run_bc7(8, 8, 1, 2048, 2048, 1, 1, 1);
     /* a region uploaded again: inside the level, at its right and bottom edges, as BC7 and as RGBA8, footprints that
        step 1, 2 and 4 blocks to a 4x4 BC7 block, and a BC7 region off those blocks */
     run_region(4, 4, 1, 97, 61, 2, 1, 3, 2);

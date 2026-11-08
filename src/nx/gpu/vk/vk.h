@@ -1145,9 +1145,17 @@ int vk_astc_upload_layers(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 level, 
 /* The BC7 blocks of slices z to z + nz of level `level` of src, an RGBA8 image in TRANSFER_SRC_OPTIMAL (w x h texels a
    slice: its layers, or a 3D level's depth slices with is3d), rows texel rows of them from y, a multiple of 4, encoded
    into the same place of dst, a BC7 image of its shape in TRANSFER_DST_OPTIMAL. rows ends on a whole block or at the
-   level's edge; nz x rows x w texels fit vk_bc7_strip_texels. 0 when no descriptor set is left */
-int vk_bc7_encode_image(VkCommandBuffer cb, VkImage src, VkImage dst, u32 level, u32 w, u32 h, int is3d, u32 z, u32 nz,
-                        u32 y, u32 rows);
+   level's edge; nz x rows x w texels fit vk_bc7_strip_texels. d: a 3D level's depth slices, which with w and h pick the
+   encoder's build (vk_bc7_build). 0 when no descriptor set is left */
+int vk_bc7_encode_image(VkCommandBuffer cb, VkImage src, VkImage dst, u32 level, u32 w, u32 h, u32 d, int is3d, u32 z,
+                        u32 nz, u32 y, u32 rows);
+/* A level of ASTC encoded again as BC7 with VK_BC7_FAST_TEXELS texels or more takes the encoder's fast build, which
+   keeps mode 6 where it is close and tries every mode on the other blocks, and one of VK_BC7_MODE6_TEXELS or more its
+   build of mode 6 alone (bc7_encode.glsl's SNX_BC7_FAST). vk_bc7_build: the build for a level of w x h texels and d
+   slices of a volume (1 else): 0 the full one, 1 the fast one, 2 mode 6 alone */
+#define VK_BC7_FAST_TEXELS  (2048u * 2048u)
+#define VK_BC7_MODE6_TEXELS (8192u * 8192u)
+u32 vk_bc7_build(u32 w, u32 h, u32 d);
 u64 vk_bc7_strip_texels(void); /* the texels vk_bc7_encode_image takes at once at most */
 /* the image levels (or regions of them) uploaded as BC7 so far, their bytes, and the bytes they would have taken as
    RGBA8 */
