@@ -385,6 +385,16 @@ void vk_cpu_read(u64 cpu, u64 size, u8* host, VkBuffer buf, u64 at) {
     cpu_read(cpu, size, host, buf, at, &any);
     if (any) read_barrier(vk_cmd(), 0);
 }
+/* A run of guest memory [cpu, cpu + n) with writes in place pending (uma.c) that no one import holds whole: its first
+   part, up to an import's edge, so that each part is copied from its import on the GPU after the write, or read as
+   before where no import is, with nothing to wait for. A logged result written back across an import's edge
+   (buffer.c's write-back) left such runs, and waiting for its submit there took all the work recorded before it */
+static u64 inplace_part(u64 cpu, u64 n) {
+    int held;
+    if (!vk_uma_pending_cpu(cpu, n) || vk_uma_held(cpu, n)) return n;
+    u64 part = vk_uma_import_part(cpu, n, &held);
+    return part ? part : n;
+}
 void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) {
     u64 o = 0;
     int any = 0;
@@ -398,8 +408,10 @@ void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) {
             n = 0x1000 - ((gva + o) & 0xFFF);
             if (n > size - o) n = size - o;
             memset(host + o, 0, (size_t)n);
-        } else
+        } else {
+            n = inplace_part(cpu, n);
             cpu_read(cpu, n, host + o, buf, at + o, &any);
+        }
         o += n;
     }
     if (any) read_barrier(vk_cmd(), 0);
@@ -486,8 +498,9 @@ static int guest_read(u64 gva, u64 size, VkBuffer buf, u64 at, int ahead) {
         OwnRange r[16];
         u32 k, i;
         VkBuffer ib;
+        if (n) n = inplace_part(cpu, n);
         /* written in place (uma.c) by a submit not done yet: copied from the import on the GPU, after the write, or
-           waited for where it spans imports */
+           waited for where no import holds it */
         int inplace = n && vk_uma_copy_pending(cpu, n, &ib, &io);
         if (n && !inplace) vk_uma_mem_need_cpu(cpu, n);
         if (inplace) {
