@@ -5622,6 +5622,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_nvn_xfb());
     CHECK(!check_nvn_fixed_state());
     CHECK(!check_maxwell_point_size());
+    CHECK(!check_maxwell_depth_bounds());
     CHECK(!check_nvn_default_tessellation());
     CHECK(!check_nvn_advanced_blend());
     CHECK(!check_nvn_coverage());
