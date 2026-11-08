@@ -7,7 +7,7 @@
     scripts/make-icons.py --check   check them against the SVG and the manifest (no renderer needed)
 
 dist/icons/hicolor/ holds the PNG sizes desktops look for, laid out as installed under share/icons/; wimsy.ico packs
-the Windows sizes for the executables' resources (src/common/platform/runtime.rc); the 128 one is the window
+the Windows sizes for the executables' resources (src/common/platform/windows/runtime.rc); the 128 one is the window
 icon (cmake/window_icon.cmake). Each PNG goes through optipng, keeping it RGBA (the ICO's images must be, and a
 palette came out larger). MANIFEST records the SVG's and every output's SHA-256 and the tools that made them, so a
 changed SVG, or an output edited by hand, fails the check until this runs again. When the tools at hand are the

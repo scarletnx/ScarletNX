@@ -148,7 +148,7 @@ if(TARGET Vulkan::Headers)
 endif()
 if(WIN32 AND NOT SNX_BUILD_NX)
     enable_language(RC)
-    target_sources(scarletnx-gui PRIVATE ../common/platform/runtime.rc)
+    target_sources(scarletnx-gui PRIVATE ../common/platform/windows/runtime.rc)
     # where the resource compiler finds the manifest and the icon; C includes from src/ alone
     target_include_directories(scarletnx-gui PRIVATE
                                "$<$<COMPILE_LANGUAGE:RC>:${CMAKE_CURRENT_SOURCE_DIR}/../common/platform>")
