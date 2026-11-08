@@ -5,7 +5,7 @@
 An APK's `lib/arm64-v8a/*.so` are AArch64 shared libraries for bionic, Android's C library. The native bridge loads
 them into the JVM's own process, runs their code through the recompiler, and answers their imports with host
 functions. Nothing of Android's userland runs: bionic, libandroid, liblog, libdl and the graphics libraries are
-high-level emulation, as [INTERFACES](interfaces.md) plans them. The design follows from the libraries of a large
+high-level emulation, as [Interfaces](interfaces.md) plans them. The design follows from the libraries of a large
 Unity game: a 362 MB engine library with 265 MB of code, 20 smaller ones, and 624 imports from the system.
 
 ## Index
@@ -52,7 +52,7 @@ same loader.
 
 ## Code
 
-Code compiles when it first runs, as the GNU ABI runtime's JIT does it ([GNUABI](../gnuabi/README.md), "How code runs"): a
+Code compiles when it first runs, as the GNU ABI runtime's JIT does it ([GNU ABI](../gnuabi/README.md), "How code runs"): a
 miss in the dispatch table calls `snx_recompile_from` (the recompiler library, `snx_recompiler.h`) for the function and
 the functions it calls, breadth first inside the aligned 64 KiB block of the code window that holds it (a call out of
 the block goes through the table), and fills the table. Compiled code is kept in a cache by a hash of the code, its

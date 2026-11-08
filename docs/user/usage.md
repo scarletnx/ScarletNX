@@ -19,7 +19,7 @@
 * [Playing](#playing)
   * [On-screen controls](#on-screen-controls)
 
-Setup: [BUILD](../dev/build.md). Checkout CWD; own dumps/keys.
+Setup: [Build](../dev/build.md). Checkout CWD; own dumps/keys.
 For the keyboard-controlled SDL3 menu and file drops, see [GUI](gui.md).
 
 ## Extract → AOT → run
@@ -334,7 +334,7 @@ Remaining examples: POSIX.
   for the SLP vectorizer, which `slp_vectorizer` turns on or off for both.
   `--target auto|linux|win64` takes only this host's own system: modules are built for the machine that builds
   them. `--target ios` writes `<id>_code.snxobj` instead, a pack of the code's objects for the iOS app to load into JIT
-  memory (64-bit games only, [APPLE](../hosts/apple.md)); it makes no runtime copy. `--runtime FILE` deploys that runtime instead of the running one, or of the one a tools-only build builds in
+  memory (64-bit games only, [macOS and iOS](../hosts/apple.md)); it makes no runtime copy. `--runtime FILE` deploys that runtime instead of the running one, or of the one a tools-only build builds in
   its checkout's `build/native-recomp` (`build/win64-recomp` on Windows). `-q` (`--quiet`) prints no progress.
   `--keep-c` is the deprecated spelling of `--keep-ir`.
 - **Codegen:** `--no-build` stages data/INI only; `--jit-only` omits AOT functions.
@@ -500,7 +500,7 @@ The driver works in one folder, its data folder, the first of these that applies
 2. a portable copy's: `.scarletnx/` beside the AppImage, or beside the Windows zip's programs, when it is there;
 3. the user's data folder: `~/.local/share/scarletnx` on Linux, `%APPDATA%\scarletnx` on Windows,
    `~/Library/Application Support/scarletnx` on macOS. On Android the app names its own, `.scarletnx/` in its own
-   storage ([ANDROID](../hosts/android-app.md)).
+   storage ([Android host](../hosts/android-app.md)).
 
 A driver run from its build tree works in the same folder as an installed one: the checkout it was built from is
 not a data folder. `--data DIR`, or `--outdir DIR` for a recompile, keeps a run's files in one folder of your choice.
@@ -558,7 +558,7 @@ each run, and an older game runs where it is, its run saying where its folder go
 Each entry of an older folder goes into the folder this version keeps it in, the data folder's `games/` with its games'
 settings, logs and caches in the config, state and cache folders; one already there stays, and one on another disk is
 not moved, each said with both paths, the status 1. A game laid out beside the others is not moved by name: it moves
-as [DEPRECATIONS](deprecations.md) says.
+as [Deprecations](deprecations.md) says.
 
 ## Users
 
@@ -594,10 +594,10 @@ and a launcher that cannot draw it says so and shows Wimsy. The game plays as th
 its uid, empty for `[user1]` (`--user_uid=<uid>` for one run): with one user, the game picks it on its own; with more,
 the game's user selector gets that user. Each user's Account saves are in the data folder's
 `save/user.<uid>/<title ID>/`, every save of a game in the data folder's `save/` as the console keeps them
-(`save_layout=global`, the default, [FILESYSTEM](../platforms/nx/filesystem.md)); with
+(`save_layout=global`, the default, [Filesystem](../platforms/nx/filesystem.md)); with
 `save_layout=game` they are `save/user.<uid>` in the game's `<id>_data/`. A save in the other layout's folder is played
 there until Settings > App > Move Old Files moves it. Those an older version left in a game's `save/user`, of the uid
-`0123456789abcdeffedcba9876543210`, are played there until you move them ([DEPRECATIONS](deprecations.md)). Beside
+`0123456789abcdeffedcba9876543210`, are played there until you move them ([Deprecations](deprecations.md)). Beside
 an Account, Device or BCAT save's folder, `<its folder>.version` names the program and version that last committed it:
 when an older version of the game opens a save a newer one wrote, which a game may not read, the log says both, and so
 does the report if the game crashes or stops. The game's
@@ -616,7 +616,7 @@ nickname lines as it leaves `[user1]`. An empty `user_uid` plays as whoever is `
 ## Setup
 
 The first start goes through a setup: in the launcher's window ([GUI](gui.md#setup)), or in the terminal a dump is
-first run from. It says first what older versions did that this one does otherwise ([DEPRECATIONS](deprecations.md):
+first run from. It says first what older versions did that this one does otherwise ([Deprecations](deprecations.md):
 only said, nothing is moved), then asks:
 
 1. **Appearance**: the launcher's language (app.ini's `language`), starting on the one it has (the system's, until
@@ -783,4 +783,4 @@ keeps the first two in its state folder ([Folders](#folders)). `Game.log` is thi
 in `logs/` beside it, named by when each was last written (`2026-10-28_14-05-33.log`). Past `log_max` (MiB, 1 to
 1024, default 16; [Debug](../dev/development.md)) the log keeps the run's start and its last lines, with a line saying how
 much went between them, and the game's picture says so once.
-Scripts/disasm/shaders: [DEVELOPMENT](../dev/development.md).
+Scripts/disasm/shaders: [Development](../dev/development.md).

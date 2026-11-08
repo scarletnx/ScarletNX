@@ -125,4 +125,4 @@ comparing after M groups). This is how the Thumb backend's bugs this driver ran 
 ## Sources
 
 The GXM semantics, the GXP layout and the USSE translator are ported from Vita3K (GPL-2.0-or-later). The NIDs and
-error codes come from vita-headers (MIT). vios was read as a quick reference. See [CREDITS](../../CREDITS.md).
+error codes come from vita-headers (MIT). vios was read as a quick reference. See [Credits](../../CREDITS.md).

@@ -167,12 +167,12 @@ installation is needed. It still needs your platform's window-system development
   SDL video initialization and run without a display server. The separate headless backend was removed.
   For an old build directory, remove the cached backend selection with `-USNX_BACKEND`.
 - If a controller does not appear, check the game's `input: joystick` lines. A GUID with no gamepad mapping needs
-  an SDL mapping in `gamecontrollerdb.txt`, as described in [USAGE](../user/usage.md). If no joystick appears on Linux,
+  an SDL mapping in `gamecontrollerdb.txt`, as described in [Usage](../user/usage.md). If no joystick appears on Linux,
   check whether `/dev/input/event*` is readable and whether udev marks its event node `ID_INPUT_JOYSTICK=1`.
   The supplied `dist/72-scarletnx-input.rules` grants seat access to recognized joystick event nodes and to the
   hidraw nodes of the console's controllers. Other HIDAPI controllers may need their vendor's own udev rule. On
   FreeBSD the gamepad comes from HIDAPI over libusb or `/dev/uhid*`, never from `/dev/input/event*`: a pad `xb360gp(4)`,
-  `hgame(4)` or `webcamd` claimed is invisible to SDL. See [USAGE](../user/usage.md) for the access rules and the packages. If
+  `hgame(4)` or `webcamd` claimed is invisible to SDL. See [Usage](../user/usage.md) for the access rules and the packages. If
   the gamepad opens but sends no input, compare the log's controller name and GUID with its mapping and test its
   event node with `evtest`.
 
@@ -213,7 +213,7 @@ brew install cmake ninja
    # -> build/macos/{scarletnx,snx-shaderc}
    ```
 
-   `build/macos/scarletnx` runs from the terminal as on Linux ([USAGE](../user/usage.md)). It loads the system's Vulkan
+   `build/macos/scarletnx` runs from the terminal as on Linux ([Usage](../user/usage.md)). It loads the system's Vulkan
    loader, so it needs Homebrew's `molten-vk` and `vulkan-loader`.
 
 3. **The app** (optional), for a double-clickable `ScarletNX.app` that carries its own MoltenVK:
@@ -318,7 +318,7 @@ runtime must not mix with another LLVM build.
    ```
 
 6. Run `build/default/scarletnx.exe` from the CLANG64 shell, which has the DLLs it imports on PATH
-   ([USAGE](../user/usage.md)). For a copy that runs without MSYS2, `cmake --install build/default --prefix stage` puts
+   ([Usage](../user/usage.md)). For a copy that runs without MSYS2, `cmake --install build/default --prefix stage` puts
    `scarletnx.exe` in `stage/bin`. Then copy the DLLs it imports from `/clang64/bin`, as CI's
    "Bundle runtime DLLs and licenses" step does.
 
@@ -329,7 +329,7 @@ cmake --build build
 ```
 
 Default: Ninja + Clang, `RelWithDebInfo` (`-O2 -g`). Runtime relinks deploy `recompiled/Game/Game[.exe]` beside
-matching `Game_code.so/.dll`, in the data folder's `recompiled/` ([USAGE](../user/usage.md#folders)); no-op builds skip deployment. Recompiler/ABI edits require [module rebuilds](development.md).
+matching `Game_code.so/.dll`, in the data folder's `recompiled/` ([Usage](../user/usage.md#folders)); no-op builds skip deployment. Recompiler/ABI edits require [module rebuilds](development.md).
 
 CPM uses [pinned sources](../../cmake/dependencies.cmake) and a shared `.cache/cpm` cache. Archive downloads are
 checked by SHA-256. Offline configuration needs the matching sources already in the cache. Cached sources stay unmodified: FFmpeg's patch goes on a copy in the build tree.
@@ -452,7 +452,7 @@ Extraction needs nothing beside the driver: hactool runs inside it. Recompilatio
 running full runtime; the tools-only build creates one in its checkout's `build/native-recomp`, or accepts
 `--runtime FILE`. A build tree's programs work in the same data folder as an installed copy's: the user's
 (`~/.local/share/scarletnx`, `%APPDATA%\scarletnx` on Windows), and on Linux the XDG config, state and cache folders
-hold its settings, logs and caches ([USAGE](../user/usage.md#folders)). `--data DIR` before the command names another data
+hold its settings, logs and caches ([Usage](../user/usage.md#folders)). `--data DIR` before the command names another data
 folder, `--build-dir DIR` another build tree.
 The menu (`SNX_BUILD_GUI`) needs Python 3 to build its languages (`scripts/build-languages.py`,
 [GUI](../user/gui.md#languages)). Python ≥3.12 is optional for `tools/*.py` diagnostics.

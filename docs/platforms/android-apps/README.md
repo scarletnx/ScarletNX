@@ -3,7 +3,7 @@
 # Android apps
 
 `scarletnx-android` runs Android apps on a desktop. (ScarletNX's own Android app, where the menu and the Switch
-runtime run on a phone, is [ANDROID](../../hosts/android-app.md).) The target is the API of Android 16 (API level 36).
+runtime run on a phone, is [Android host](../../hosts/android-app.md).) The target is the API of Android 16 (API level 36).
 
 ## Index
 
@@ -36,19 +36,19 @@ The layer is thin. An app's code runs on a JVM, and the Android system under it 
   its invocation API. The JVM's JIT compiles them to host code. The translation of a whole app takes under a second,
   so classes are translated as they load and kept in a cache. `--translate=DIR` translates every class ahead of time.
 - **The framework.** `android.*` is ScarletNX's own, a minimal subset that grows with the apps it runs. It is not
-  AOSP's framework, though the files whose header names AOSP follow its source in parts ([CREDITS](../../CREDITS.md)).
+  AOSP's framework, though the files whose header names AOSP follow its source in parts ([Credits](../../CREDITS.md)).
   Its native side is C, the HLE of the userland libraries: libhwui's display lists drawn with Vulkan, libandroidfw's
   resources, binder services in the process, SQLite.
-- **Interfaces.** [INTERFACES](interfaces.md) lists each layer an app reaches, from DEX bytecode to the kernel,
+- **Interfaces.** [Interfaces](interfaces.md) lists each layer an app reaches, from DEX bytecode to the kernel,
   and what the runtime does with it: high-level emulation (HLE), a heavy abstraction onto one host facility, or a
   real implementation where an app subclasses or reads the code itself.
 - **Native code.** An APK's native libraries are AArch64 code for bionic. They are to be recompiled as the GNU ABI
-  runtime does ([GNUABI](../gnuabi/README.md)), with bionic, libandroid, EGL, GLES and Vulkan as hooks that the runtime answers,
+  runtime does ([GNU ABI](../gnuabi/README.md)), with bionic, libandroid, EGL, GLES and Vulkan as hooks that the runtime answers,
   as the NVN hooks of the Switch runtime do. All drawing goes through Vulkan.
 
 An app runs with the rights of the user who starts it, as a native program does: nothing confines it. Its Java code
 runs on the JVM as any Java program's, its native code in the same process (a guest pointer is a host pointer,
-[NATIVE](native.md)), and `open`, `java.io` and `getenv` reach the user's files and environment as they are. Run an app
+[Native bridge](native.md)), and `open`, `java.io` and `getenv` reach the user's files and environment as they are. Run an app
 only where you would run a program from the same source.
 
 ## Running an app
@@ -61,7 +61,7 @@ The configure step warns when the Android driver is built with an older one.
 as a hardware keyboard. `APP` can also be a bundle of a base APK and its splits (an XAPK or an APKS), which is
 installed first, as Android's package manager installs one: its APKs into `android/app/<package>/` of the data
 folder (`base.apk`, `split_<name>.apk`), with the native libraries of `arm64-v8a` in its `lib/arm64/`, or those of
-`armeabi-v7a` or `armeabi` in its `lib/arm/` when the app has no 64-bit ones ([NATIVE](native.md#32-bit-libraries)).
+`armeabi-v7a` or `armeabi` in its `lib/arm/` when the app has no 64-bit ones ([Native bridge](native.md#32-bit-libraries)).
 The app's data folder has a `lib` link to them, as Android's has. A stamp keeps
 the bundle's path and size, so the next run starts at once. The app's own data is in `android/data/<package>/`. The build puts the framework's jar and the font beside the program. `-J OPTION` gives the JVM
 an option, as these system properties:
