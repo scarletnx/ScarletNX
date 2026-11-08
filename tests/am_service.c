@@ -623,6 +623,7 @@ static void test_swkbd(void) {
     /* the box has the game's texts, kind, limits and initial text; "Aé😀" is four UTF-16 units: three at most keeps
        the pair whole, cut before it */
     out = swkbd(3, 0, 0, "Ann");
+    CHECK(log_has("am: library applet 0x11 (mode 0)\n")); /* the game reached the keyboard, in a normal log */
     CHECK(box_shows == shows + 1 && box_shown.max == 3 && box_shown.min == 0 && !strcmp(box_shown.text, "Ann"));
     CHECK(!strcmp(box_shown.ok, "Send") && !strcmp(box_shown.header, "Name") && !strcmp(box_shown.sub, "Up to 8") &&
           !strcmp(box_shown.guide, "Your name") && !box_shown.password && !box_shown.numbers);

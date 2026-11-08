@@ -945,13 +945,13 @@ static SvcObj* am_applet_new(u32 applet_id, u32 mode) {
     a->interactive_ev = owned_event("am:applet interactive out data");
     a->kb_max = SWKBD_TEXT_CHARS - 1;
     o->destroy = am_applet_destroy;
+    if (applet_id == AM_APPLET_SWKBD) LOG("am: library applet %#x (mode %u)\n", applet_id, mode);
     if (!am_is_inline(a)) {
         am_applet_finish(a);
         ev_signal(a->out_ev);
         if (applet_id != AM_APPLET_SWKBD)
             LOG_LIMIT(4, "am: library applet %#x (mode %u) closed right away\n", applet_id, mode);
-    } else
-        LOG("am: library applet %#x (mode %u)\n", applet_id, mode);
+    }
     return o;
 }
 static int nn_am_service_ILibraryAppletCreator_CreateLibraryApplet(SvcObj* self, u32 applet_id,
