@@ -3,9 +3,9 @@
 # Copyright 2026 the ScarletNX contributors
 """scripts/edenprobe.py against a fake runtime that recompiles into a fake game, whose launches write report lines as
 each test asks: a clean run, a regression, a case not run, a new pass, a crash and a hang each followed by another
-launch, a baseline line that expects a crash, launches that add nothing, no report, an exit after the summary, words
-edenprobe ignored, a baseline of another build or mode or none, broken lines; then the baseline of several runs.
-Offline, no GPU."""
+launch, a baseline line that expects a crash, a case the ban list skips, launches that add nothing, no report, an exit
+after the summary, words edenprobe ignored, a baseline of another build or mode or none, broken lines; then the baseline
+of several runs. Offline, no GPU."""
 
 import json
 import os
@@ -245,6 +245,33 @@ with tempfile.TemporaryDirectory() as temporary:
         and "1 of the baseline's 4 cases no longer pass" in text
         and '- `cpu: gone: not run`' in text
         and 'no longer end as it expects' not in text,
+        text,
+    )
+
+    # a case edenprobe's ban list skips on this machine is banned in every run of one build: the run's baseline.txt keeps
+    # it, without the detail, which names the runtime's commit, and a baseline that holds it holds the run to it
+    banned = case('cpu', 'reads the counter', 'skip', tier='none', reason='banned', detail='on scarletnx@1a2b3c4')
+    with_ban = START + CASES[:3] + [banned, summary(2, 1, 1)]
+    status, text, out, calls = run([with_ban])
+    check(
+        "a banned case is in this run's baseline.txt, as banned",
+        (out / 'baseline.txt')
+        .read_text()
+        .endswith('cpu: adds\ncpu: multiplies\n[skip (banned)] cpu: reads the counter\n'),
+        (out / 'baseline.txt').read_text(),
+    )
+    holds = BASELINE + '[skip (banned)] cpu: reads the counter\n'
+    status, text, out, calls = run([with_ban], baseline=holds)
+    check(
+        'a banned case the baseline expects banned ends as it expects',
+        status == 0 and 'All 2 cases of' in text and 'end as it expects (1 skip (banned))' in text,
+        text,
+    )
+    unbanned = [case('cpu', 'reads the counter', 'skip', tier='none', reason='crashed'), summary(2, 1, 0, 1)]
+    status, text, out, calls = run([{'lines': START + CASES[:3], 'signal': 11}, unbanned], baseline=holds)
+    check(
+        'one that runs and ends the program instead, as with no machine named, is a regression',
+        status == 1 and '- `cpu: reads the counter: skip (crashed), expected skip (banned)`' in text,
         text,
     )
 
