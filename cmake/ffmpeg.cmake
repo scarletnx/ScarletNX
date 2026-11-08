@@ -10,6 +10,8 @@
 # the Vita AAC, ATRAC9, the MP4 demuxer and H.264's Annex B filter. With the Android driver (SNX_BUILD_ANDROID), its
 # images (src/android/hwui/image.c) add the PNG, JPEG (mjpeg), WebP, GIF and BMP decoders, the PNG and JPEG encoders, and
 # libswscale for their pixel formats; PNG needs zlib, the build's own static one (snx_zlib in cmake/dependencies.cmake).
+# Its MediaPlayer and SoundPool (src/android/runtime/audio.c) add the MP3, Vorbis, FLAC, PCM and ADPCM decoders and the
+# MP3, Ogg, WAV, FLAC and AAC demuxers.
 # No programs, other formats, filters, devices, network or autodetected system libraries, so
 # the result needs nothing but libc and zlib and builds the same everywhere. All of it is LGPL (no --enable-gpl). It
 # needs a POSIX shell and make (gmake on the BSDs), and NASM for the x86-64 assembly. macOS and iOS build it with
@@ -79,6 +81,12 @@ if(snx_ffmpeg_images)
     # formats
     list(APPEND snx_ffmpeg_args --enable-decoder=png,mjpeg,webp,gif,bmp --enable-encoder=png,mjpeg --enable-zlib
          "--extra-cflags=-I${zlib_SOURCE_DIR}" "--extra-ldflags=-L${snx_zlib_lib_dir}")
+    # MediaPlayer's and SoundPool's audio (src/android/runtime/audio.c): the formats apps ship their sounds and
+    # music in, demuxed from memory
+    list(APPEND snx_ffmpeg_args
+         --enable-decoder=mp3float,vorbis,flac,pcm_u8,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s32le,pcm_f32le,pcm_alaw
+         --enable-decoder=pcm_mulaw,adpcm_ima_wav,adpcm_ms
+         --enable-demuxer=mp3,ogg,wav,flac,aac --enable-parser=mpegaudio,vorbis,flac,aac,opus)
     set(snx_ffmpeg_swscale "${snx_ffmpeg_prefix}/lib/libswscale.a")
     # configure checks for zlib with a link of -lz: the library has to be there before it runs
     set(snx_ffmpeg_depends DEPENDS snx_zlib)
