@@ -1165,6 +1165,31 @@ int vk_bc7_encode_image(VkCommandBuffer cb, VkImage src, VkImage dst, u32 level,
 #define VK_BC7_FAST_TEXELS  0u
 #define VK_BC7_MODE6_TEXELS (8192u * 8192u)
 u32 vk_bc7_build(u32 w, u32 h, u32 d);
+
+/* bc7_cache.c: the BC7 blocks of ASTC levels encoded before, kept across runs in one file, which only an index of
+   points into (a hit reads its record from the file). VK_BC7_ENCODER_VERSION goes into every key: bump it when what
+   the encoder writes changes other than through its SPIR-V (which the file's version holds), as a level's choice of
+   build does. VK_BC7_CACHE_MAX: the file's bound, after which it starts over */
+#define VK_BC7_ENCODER_VERSION 1
+#define VK_BC7_CACHE_MAX       (4ull << 30)
+/* content (two words, zero to start) with n bytes at p mixed in: an ASTC level's guest bytes and its layout's words */
+void vk_bc7_content(u64 content[2], const void* p, u64 n);
+/* what else changes a level's blocks: its size, its slices (depth) or layers, the footprint, the sRGB decode mode and
+   the encoder's build (vk_bc7_build) */
+typedef struct {
+    u32 w, h, depth, layers, bw, bh, srgb, build;
+} VkBc7Level;
+void vk_bc7_key(const u64 content[2], const VkBc7Level* lv, u64 key[2]);
+/* the file at path as the cache, or a new one where it holds another version, bounded to max bytes: 0 when there is
+   no cache (another process holds the file, or it cannot be written) */
+int vk_bc7_cache_open(const char* path, const u64 version[2], u64 max);
+void vk_bc7_cache_close(void);
+u64 vk_bc7_cache_find(const u64 key[2]); /* the bytes of key's blocks, 0 when they aren't there */
+/* key's blocks, size bytes of them, into dst: 0 when they aren't there or don't check out (then dropped) */
+int vk_bc7_cache_read(const u64 key[2], u8* dst, u64 size);
+void vk_bc7_cache_put(const u64 key[2], const u8* p, u64 size);
+/* hits, records stored, times it started over at its bound, and the file's bytes */
+void vk_bc7_cache_stats(u64* hits, u64* stored, u64* restarts, u64* bytes);
 u64 vk_bc7_strip_texels(void); /* the texels vk_bc7_encode_image takes at once at most */
 /* the image levels (or regions of them) uploaded as BC7 so far, their bytes, and the bytes they would have taken as
    RGBA8 */

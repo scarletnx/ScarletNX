@@ -2051,6 +2051,13 @@ if(NOT SNX_TOOLS_ONLY)
     add_executable(snx-test-vk-resource-stats vk_resource_stats.c)
     snx_test_target(snx-test-vk-resource-stats 11)
     add_test(NAME vk_resource_stats COMMAND snx-test-vk-resource-stats)
+    # the BC7 cache of ASTC levels (gpu/vk/bc7_cache.c), without a GPU: every input that changes a level's blocks
+    # changes its key, records come back as written and from the file in a later run, another version or a damaged
+    # record starts the file over or drops the record, a record cut short is cut off, and the bound starts it over
+    add_executable(snx-test-bc7-cache bc7_cache.c tracy_stubs.c)
+    snx_test_target(snx-test-bc7-cache 23)
+    target_link_libraries(snx-test-bc7-cache PRIVATE snx_nx_flags snx_xxhash scarletnx-common)
+    add_test(NAME bc7_cache COMMAND snx-test-bc7-cache)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         # The real cache saver with a fake driver: compilation defers periodic snapshots without losing dirty work.
         # Include only its implementation; sanitizer-retained callback tables make whole-file linker GC unsuitable.
