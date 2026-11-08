@@ -819,6 +819,85 @@ HANDLER(f_towupper) {
     R(0) = R(0) < 128 ? (uint32_t)toupper((int)R(0)) : R(0);
 }
 /* mbrtowc and wcrtomb in UTF-8, as bionic's */
+/* one UTF-8 character at s, as bionic reads one: its length (0 for the NUL) and its code point into *w, or -1 for no
+   UTF-8 (a stray or overlong byte, a surrogate, past U+10FFFF) */
+static int utf8_char(const unsigned char* s, uint32_t* w) {
+    if (s[0] < 0x80) {
+        *w = s[0];
+        return s[0] ? 1 : 0;
+    }
+    int len = (s[0] & 0xe0) == 0xc0 ? 2 : (s[0] & 0xf0) == 0xe0 ? 3 : (s[0] & 0xf8) == 0xf0 ? 4 : 0;
+    if (!len) return -1;
+    uint32_t v = s[0] & (0x7f >> len);
+    for (int i = 1; i < len; ++i) {
+        if ((s[i] & 0xc0) != 0x80) return -1;
+        v = v << 6 | (s[i] & 0x3f);
+    }
+    static const uint32_t least[5] = {0, 0, 0x80, 0x800, 0x10000};
+    if (v < least[len] || (v >= 0xd800 && v < 0xe000) || v > 0x10ffff) return -1;
+    *w = v;
+    return len;
+}
+/* code point w as UTF-8 into b: its length, or -1 for a surrogate or past U+10FFFF */
+static int utf8_put(uint32_t w, unsigned char b[4]) {
+    if ((w >= 0xd800 && w < 0xe000) || w > 0x10ffff) return -1;
+    int n = w < 0x80 ? 1 : w < 0x800 ? 2 : w < 0x10000 ? 3 : 4;
+    if (n == 1) {
+        b[0] = (unsigned char)w;
+        return 1;
+    }
+    for (int i = n - 1; i > 0; --i, w >>= 6) b[i] = (unsigned char)(0x80 | (w & 0x3f));
+    b[0] = (unsigned char)((0xf00 >> n) | w);
+    return n;
+}
+/* mbstowcs(dst, src, n): src's UTF-8 as bionic's 32-bit wchar_t, at most n of them into dst (counted alone when dst is
+   NULL), with a NUL when there is room: the count, or -1 and EILSEQ */
+HANDLER(f_mbstowcs) {
+    UNUSED;
+    const unsigned char* src = P(1);
+    uint32_t dst = R(0), n = R(2), count = 0;
+    while (!dst || count < n) {
+        uint32_t w;
+        int len = utf8_char(src, &w);
+        if (len < 0) {
+            R(0) = fail(84); /* EILSEQ */
+            return;
+        }
+        if (dst) wr32(dst + 4 * count, w);
+        if (!len) break;
+        ++count;
+        src += len;
+    }
+    R(0) = count;
+}
+/* wcstombs(dst, src, n): src's wide characters as UTF-8, at most n bytes into dst (counted alone when dst is NULL),
+   with a NUL when there is room: the bytes, or -1 and EILSEQ */
+HANDLER(f_wcstombs) {
+    UNUSED;
+    uint32_t dst = R(0), src = R(1), n = R(2), out = 0;
+    for (;; src += 4) {
+        uint32_t w = rd32(src);
+        unsigned char b[4];
+        int len = w ? utf8_put(w, b) : 0;
+        if (len < 0) {
+            R(0) = fail(84); /* EILSEQ */
+            return;
+        }
+        if (!len) {
+            if (dst && out < n) arm32_mem[dst + out] = 0;
+            break;
+        }
+        if (dst && out + (uint32_t)len > n) break;
+        if (dst) memcpy(arm32_mem + dst + out, b, (size_t)len);
+        out += (uint32_t)len;
+    }
+    R(0) = out;
+}
+/* MB_CUR_MAX: 4, as bionic's C.UTF-8, the locale every app starts in */
+HANDLER(f_mb_cur_max) {
+    UNUSED;
+    R(0) = 4;
+}
 HANDLER(f_mbrtowc) {
     UNUSED;
     const unsigned char* s = P(1);
@@ -1518,6 +1597,9 @@ const Arm32Symbol arm32_posix_symbols[] = {
     F("setsid", f_setsid),
     F("getpriority", f_getpriority),
     F("eventfd", f_eventfd),
+    F("mbstowcs", f_mbstowcs),
+    F("wcstombs", f_wcstombs),
+    F("__ctype_get_mb_cur_max", f_mb_cur_max),
     F("readdir", f_readdir),
     F("closedir", f_closedir),
     F("rewinddir", f_rewinddir),
