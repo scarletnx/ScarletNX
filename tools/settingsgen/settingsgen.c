@@ -37,7 +37,6 @@ enum { L_NONE, L_PASS, L_BUILDER, L_MACHINE };
 
 typedef struct {
     char *name, *member, *key, *label, *help, *words, *set, *lo, *hi, *def;
-    char* platform; /* MACOS or ANDROID: the menus that show it; NULL for every one */
     char *def_if[DEF_IFS], *def_if_value[DEF_IFS]; /* default-if's, the first that holds taken */
     int def_ifs;
     int type, size, once, startup, in_game, recompile, step, shift, list, repeat, block, table, line;
@@ -488,9 +487,6 @@ static void read_spec(const char* path) {
             s->def_if_value[s->def_ifs++] = dup(strcmp(rest, "\"\"") ? rest : "");
         } else if (!strcmp(word, "once")) {
             s->once = 1;
-        } else if (!strcmp(word, "platform")) {
-            if (strcmp(rest, "MACOS") && strcmp(rest, "ANDROID")) fail(number, "platform MACOS or ANDROID");
-            s->platform = dup(rest);
         } else if (!strcmp(word, "words")) {
             s->words = dup(rest);
         } else if (!strcmp(word, "step")) {
@@ -907,9 +903,11 @@ static void out_row(const Setting* s, int index, const char* key, const char* la
         out_string(def);
     outs(", ");
     out_string(index ? NULL : s->help);
-    out(", %s, %s%s%s, ", s->type == T_INT ? "INI_INT" : s->type == T_FLOAT ? "INI_FLOAT" : "INI_TEXT",
-        s->startup ? "INI_STARTUP" : "0", s->in_game ? " | INI_IN_GAME" : "",
-        s->platform ? (s->platform[0] == 'M' ? " | INI_PLATFORM_MACOS" : " | INI_PLATFORM_ANDROID") : "");
+    out(", %s, %s%s%s, ",
+        s->type == T_INT     ? "INI_INT"
+        : s->type == T_FLOAT ? "INI_FLOAT"
+                             : "INI_TEXT",
+        s->startup ? "INI_STARTUP" : "0", s->in_game ? " | INI_IN_GAME" : "", "");
     if (count_of(s)) {
         if (s->type == T_TEXT)
             out("g_settings.%s[%d]", s->member, index);

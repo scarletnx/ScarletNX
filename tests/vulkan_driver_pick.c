@@ -143,8 +143,21 @@ int main(void) {
         free(app_icd);
     }
 
-    /* a value that is no driver */
-    refused(&(SnxVulkanPlaces){.program = app}, "vulkan", "vulkan is not auto, moltenvk or kosmickrisp", NULL);
+    /* a system that is not a Mac's: its own driver, whatever the value, and never the files a Mac would take */
+    picks(&(SnxVulkanPlaces){.program = app, .prefixes = {brew, NULL}, .system_driver = "this system's driver"}, "auto",
+          NULL, NULL, "the system's");
+    stands_in(&(SnxVulkanPlaces){.program = app, .prefixes = {brew, NULL}, .system_driver = "this system's driver"},
+              "moltenvk", NULL, NULL, "the system's", "MoltenVK is a driver of macOS",
+              ": this system's driver plays instead");
+    stands_in(&(SnxVulkanPlaces){.program = app, .prefixes = {brew, NULL}, .system_driver = "this system's driver"},
+              "kosmickrisp", NULL, NULL, "the system's", "KosmicKrisp is a driver of macOS",
+              ": this system's driver plays instead");
+
+    /* a value that is no driver, on a Mac and elsewhere */
+    refused(&(SnxVulkanPlaces){.program = app}, "vulkan", "vulkan_driver=vulkan is not auto, moltenvk or kosmickrisp",
+            NULL);
+    refused(&(SnxVulkanPlaces){.system_driver = "this system's driver"}, "MoltenVK",
+            "vulkan_driver=MoltenVK is not auto, moltenvk or kosmickrisp", NULL);
 
     assert(!snx_remove_tree(root));
     free(root);

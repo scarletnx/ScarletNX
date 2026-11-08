@@ -34,7 +34,6 @@
 #     label TEXT          the menus' name when it is not NAME (the game's menu shows a page's settings by it)
 #     startup             read when the game starts only
 #     in-game             the game's own (its menu's, or the driver's): the launcher's Settings leave it out
-#     platform MACOS       the menus that list it: a Mac's (not iOS) or Android's (ANDROID); left out, every one
 #     recompile           a game's setting the recompile takes too, as -r's --KEY=VALUE and from a played dump's
 #                         options: its row also in g_recompile_game_ini, which the driver links (one value, no set)
 #     set FUNCTION        called after each read (ini.h's set), declared by settings.h
@@ -243,10 +242,11 @@ setting Vulkan driver
     text 16
     default auto
     startup
-    platform MACOS
     words auto=Auto|moltenvk=MoltenVK|kosmickrisp=KosmicKrisp (experimental)
     help The Vulkan driver a game runs on, on macOS: auto = the MoltenVK the app carries, moltenvk = a MoltenVK
-    help library, kosmickrisp = Mesa's KosmicKrisp through the Vulkan loader (experimental, macOS 26 or later)
+    help library, kosmickrisp = Mesa's KosmicKrisp through the Vulkan loader (experimental, macOS 26 or later). On
+    help every other system the game runs on the system's driver whatever the value (on Android, gpu_driver's), and
+    help the log says so for moltenvk and kosmickrisp. Any other value stops the game, saying so
 setting Vertex input dynamic state
     key vertex_input_dynamic_state
     text 16
