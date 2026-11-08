@@ -151,7 +151,7 @@ if(WIN32 AND NOT SNX_BUILD_NX)
     target_sources(scarletnx-gui PRIVATE ../common/platform/windows/runtime.rc)
     # where the resource compiler finds the manifest and the icon; C includes from src/ alone
     target_include_directories(scarletnx-gui PRIVATE
-                               "$<$<COMPILE_LANGUAGE:RC>:${CMAKE_CURRENT_SOURCE_DIR}/../common/platform>")
+                               "$<$<COMPILE_LANGUAGE:RC>:${CMAKE_CURRENT_SOURCE_DIR}/../common/platform/windows>")
     target_link_options(scarletnx-gui PRIVATE -mwindows -static)
 endif()
 if(SNX_SDL3_FROM_SOURCE AND NOT SNX_BUILD_NX)

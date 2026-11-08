@@ -78,7 +78,7 @@ if(WIN32)
         target_sources(scarletnx PRIVATE "${PROJECT_SOURCE_DIR}/src/common/platform/windows/runtime.rc")
         # where the resource compiler finds the manifest and the icon; C includes from src/ alone
         target_include_directories(scarletnx PRIVATE
-                                   "$<$<COMPILE_LANGUAGE:RC>:${PROJECT_SOURCE_DIR}/src/common/platform>")
+                                   "$<$<COMPILE_LANGUAGE:RC>:${PROJECT_SOURCE_DIR}/src/common/platform/windows>")
     endif()
     if(NOT SNX_TOOLS_ONLY)
         target_link_options(scarletnx PRIVATE -static -mwindows)
