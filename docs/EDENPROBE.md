@@ -5,6 +5,7 @@
 ## Index
 
 * [Running it](#running-it)
+* [On a player's machine](#on-a-players-machine)
 * [The mode words](#the-mode-words)
 * [In CI](#in-ci)
 * [The baseline](#the-baseline)
@@ -39,6 +40,37 @@ without installing it, point `VK_DRIVER_FILES` at its ICD file.
 
 With `-DSNX_TEST_EDENPROBE=/path/to/edenprobe.nro`, ctest runs it as `edenprobe_vk_memory_1` (copied) and
 `edenprobe_vk_memory_2` (in place) against the baseline.
+
+## On a player's machine
+
+```sh
+scarletnx --probe=quick --probe-nro edenprobe.nro [--gpu_driver=ID]
+```
+
+`--probe` runs it headless with the program's own driver, in `probe/` of the state folder
+(`~/.local/state/scarletnx/probe` on Linux). The run's data folder is a portable one there, `probe/.scarletnx`, so it
+reads none of the player's settings, saves or users. `--gpu_driver` and `--freedreno_env` go to each launch, and the
+package `--gpu_driver` names is the player's.
+`quick` writes the mode `quick notime cpu graphics`; `full` adds `fs video audio kernel display`. Neither asks for
+`net`, `service`, `pad`, `listen`, `fatal`, `hang`, `stress` or `game`.
+
+The game made from the NRO stays in the folder and is made again when the NRO or the program changes. Each run starts
+edenprobe's card over, but for the fs family's files: no report, journal or crash list of an earlier run, so a case
+reported as crashed ended this run's program. A launch that ends before the summary, crashed or ended after 600 s
+without a new report line, is followed by another (16 at most), which goes on after the case it ended inside.
+
+It prints the cases as they come (`probe: 412 of 1069 cases`, the whole once a run of that NRO in that mode has ended),
+then the result:
+
+```
+probe: edenprobe 0.9.0 (v0.9.0), sha256 20f2c2b78457a774f957e4debcc6fc9de8046507302a84a9e275ca0d20cc92b5, mode "quick notime cpu graphics", 1 launch, settings: defaults
+probe: 1059 passed, 2 failed (tex8k 2), 8 skipped, 0 crashed
+probe: report /home/user/.local/state/scarletnx/probe/report.jsonl
+```
+
+The folder keeps `report.jsonl`, `summary.txt` (the result's lines), `recompile.log` and each launch's output,
+`launch-N.log`, which is the game's log: the machine's lines and every report line. The exit code is 0 once the report
+reached its summary, whatever its cases, and 1 when it did not.
 
 ## The mode words
 

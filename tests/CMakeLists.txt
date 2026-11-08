@@ -1751,9 +1751,10 @@ add_executable(snx-test-driver driver_workflow.c
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/driver.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/setup.c" "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c"
     "${PROJECT_SOURCE_DIR}/src/nx/loader/match.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/process.c"
-    "${PROJECT_SOURCE_DIR}/src/common/utilities/logscan.c")
+    "${PROJECT_SOURCE_DIR}/src/common/utilities/logscan.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/probe.c")
 snx_test_target(snx-test-driver 99)
-target_link_libraries(snx-test-driver PRIVATE snx_test_common snx_setup snx_lz4 OpenSSL::Crypto snx_demangle snx_nx_module)
+target_link_libraries(snx-test-driver PRIVATE snx_test_common snx_setup snx_lz4 OpenSSL::Crypto snx_demangle snx_nx_module
+                                              snx_yyjson snx_build_info)
 set_target_properties(snx-test-driver PROPERTIES LINKER_LANGUAGE CXX)
 if(APPLE) # driver/setup.c's weak snx_menu_language, as snx_driver has it: ld64 wants it named
     target_link_options(snx-test-driver PRIVATE "LINKER:-U,_snx_menu_language")
@@ -1767,11 +1768,11 @@ if(NOT WIN32)
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/driver.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/setup.c" "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c"
         "${PROJECT_SOURCE_DIR}/src/nx/loader/match.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/process.c"
-        "${PROJECT_SOURCE_DIR}/src/common/utilities/logscan.c")
+        "${PROJECT_SOURCE_DIR}/src/common/utilities/logscan.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/probe.c")
     snx_test_target(snx-test-driver-ready 99)
     target_compile_definitions(snx-test-driver-ready PRIVATE SNX_DRIVER_READY=1)
     target_link_libraries(snx-test-driver-ready PRIVATE snx_test_common snx_setup snx_lz4 OpenSSL::Crypto snx_demangle
-                                                        snx_nx_module)
+                                                        snx_nx_module snx_yyjson snx_build_info)
     set_target_properties(snx-test-driver-ready PROPERTIES LINKER_LANGUAGE CXX)
     if(APPLE)
         target_link_options(snx-test-driver-ready PRIVATE "LINKER:-U,_snx_menu_language")
@@ -1779,6 +1780,14 @@ if(NOT WIN32)
     add_test(NAME driver_ready COMMAND snx-test-driver-ready)
     set_tests_properties(driver_ready PROPERTIES TIMEOUT 60)
 endif()
+# scarletnx --probe (src/nx/runtime/driver/probe.c), the test program its recompiler and its game: launches that crash,
+# hang, write nothing or add nothing, and the command line's refusals
+add_executable(snx-test-driver-probe driver_probe.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/probe.c"
+    "${PROJECT_SOURCE_DIR}/src/common/utilities/process.c")
+snx_test_target(snx-test-driver-probe 99)
+target_link_libraries(snx-test-driver-probe PRIVATE snx_test_common snx_yyjson snx_build_info OpenSSL::Crypto)
+add_test(NAME driver_probe COMMAND snx-test-driver-probe)
+set_tests_properties(driver_probe PROPERTIES TIMEOUT 120)
 add_executable(snx-test-link-file link_file.c)
 snx_test_target(snx-test-link-file 99)
 target_link_libraries(snx-test-link-file PRIVATE snx_test_common)

@@ -302,6 +302,27 @@ int snx_run_stage(const char* const* argv, const char* cwd, const char* stage);
 void snx_set_stage_runner(int (*run)(int argc, char** argv));
 /* As above, but intentional debugger stops do not abort the game. */
 int snx_run_debug_stage(const char* const* argv, const char* cwd, const char* stage);
+/* A program run beside the caller, which watches it and may end it: argv (argv[0] a path, no shell) started in cwd,
+   its input empty and its output and errors written to the file at log, made or emptied first. It stays in the
+   caller's process group (POSIX), so what ends the caller's group ends it; on Windows a job ends it with the caller.
+   No child process on iOS */
+typedef struct {
+    intptr_t process;   /* its pid, or on Windows its process's handle */
+    intptr_t job;       /* Windows: the job it runs in; 0 elsewhere */
+    unsigned long code; /* once it has ended: its exit code */
+    int signal;         /* once it has ended: the signal that ended it (POSIX), 0 for an exit */
+    int ended;
+} SnxChild;
+/* 0 with child filled, or -1 with why saying what failed: the log that cannot be written, the program that does not
+   start, with the system's reason */
+int snx_child_start(SnxChild* child, const char* const* argv, const char* cwd, const char* log, char* why, size_t size);
+/* up to ms milliseconds for it to end: 1 once it has (code and signal set), 0 while it runs, -1 when the system cannot
+   say */
+int snx_child_wait(SnxChild* child, unsigned ms);
+/* ends it at once (SIGKILL; on Windows its job) and waits for it */
+void snx_child_kill(SnxChild* child);
+/* what the system keeps for it, let go once it has ended */
+void snx_child_close(SnxChild* child);
 FILE* snx_fopen(const char* path, const char* mode);
 /* The launcher's logs, in its state folder (docs/USAGE.md#folders): what it says, a file a day named after this one
    (gui/log.h's gui_log_console_name; this name the versions before wrote, kept), and a fatal error of it or of a game

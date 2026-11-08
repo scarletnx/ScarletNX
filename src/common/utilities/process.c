@@ -14,6 +14,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <time.h>
 #endif
 
 #ifdef _WIN32
@@ -267,3 +268,205 @@ int snx_run_stage(const char* const* argv, const char* cwd, const char* stage) {
 int snx_run_debug_stage(const char* const* argv, const char* cwd, const char* stage) {
     return run_stage(argv, cwd, stage, 1);
 }
+
+#ifdef _WIN32
+int snx_child_start(SnxChild* child, const char* const* argv, const char* cwd, const char* log, char* why,
+                    size_t size) {
+    STARTUPINFOEXW startup = {0};
+    PROCESS_INFORMATION process = {0};
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {0};
+    SECURITY_ATTRIBUTES inherit = {0};
+    SIZE_T room = 0;
+    HANDLE job = NULL, output = INVALID_HANDLE_VALUE, input = INVALID_HANDLE_VALUE, handles[2];
+    wchar_t *command = stage_command(argv), *directory = cwd ? stage_wide(cwd) : NULL, *file = stage_wide(log);
+    int rc = -1, listed = 0;
+    memset(child, 0, sizeof *child);
+    inherit.nLength = sizeof inherit;
+    inherit.bInheritHandle = TRUE;
+    if (!command || (cwd && !directory) || !file) {
+        snprintf(why, size, "%s: a path or an argument is not UTF-8", argv[0]);
+        goto done;
+    }
+    output = CreateFileW(file, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &inherit,
+                         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (output == INVALID_HANDLE_VALUE) {
+        snprintf(why, size, "%s cannot be written (Windows error %lu)", log, (unsigned long)GetLastError());
+        goto done;
+    }
+    input = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit, OPEN_EXISTING, 0, NULL);
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    job = CreateJobObjectW(NULL, NULL);
+    InitializeProcThreadAttributeList(NULL, 1, 0, &room);
+    startup.lpAttributeList = (LPPROC_THREAD_ATTRIBUTE_LIST)snx_alloc(room);
+    listed = InitializeProcThreadAttributeList(startup.lpAttributeList, 1, 0, &room);
+    handles[0] = input;
+    handles[1] = output;
+    /* only its own input and output are inherited: a pipe the caller's reader waits on stays the caller's */
+    if (input == INVALID_HANDLE_VALUE || !job ||
+        !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof limits) || !listed ||
+        !UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles,
+                                   sizeof handles, NULL, NULL)) {
+        snprintf(why, size, "cannot set up a process for %s (Windows error %lu)", argv[0],
+                 (unsigned long)GetLastError());
+        goto done;
+    }
+    startup.StartupInfo.cb = sizeof startup;
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = input;
+    startup.StartupInfo.hStdOutput = output;
+    startup.StartupInfo.hStdError = output;
+    /* in its job before it runs, so what it starts is in it too */
+    if (!CreateProcessW(NULL, command, NULL, NULL, TRUE,
+                        CREATE_SUSPENDED | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, NULL, directory,
+                        &startup.StartupInfo, &process)) {
+        snprintf(why, size, "cannot start %s%s%s (Windows error %lu)", argv[0], cwd ? " in " : "", cwd ? cwd : "",
+                 (unsigned long)GetLastError());
+        goto done;
+    }
+    if (!AssignProcessToJobObject(job, process.hProcess) || ResumeThread(process.hThread) == (DWORD)-1) {
+        snprintf(why, size, "cannot start %s in a job (Windows error %lu)", argv[0], (unsigned long)GetLastError());
+        TerminateProcess(process.hProcess, 1);
+        WaitForSingleObject(process.hProcess, INFINITE);
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        goto done;
+    }
+    CloseHandle(process.hThread);
+    child->process = (intptr_t)process.hProcess;
+    child->job = (intptr_t)job;
+    job = NULL;
+    rc = 0;
+done:
+    if (listed) DeleteProcThreadAttributeList(startup.lpAttributeList);
+    free(startup.lpAttributeList);
+    if (job) CloseHandle(job);
+    if (output != INVALID_HANDLE_VALUE) CloseHandle(output);
+    if (input != INVALID_HANDLE_VALUE) CloseHandle(input);
+    free(command);
+    free(directory);
+    free(file);
+    return rc;
+}
+static void child_code(SnxChild* child) {
+    DWORD code = 1;
+    GetExitCodeProcess((HANDLE)child->process, &code);
+    child->code = code;
+    child->signal = 0;
+    child->ended = 1;
+}
+int snx_child_wait(SnxChild* child, unsigned ms) {
+    DWORD waited;
+    if (child->ended) return 1;
+    waited = WaitForSingleObject((HANDLE)child->process, ms);
+    if (waited == WAIT_TIMEOUT) return 0;
+    if (waited != WAIT_OBJECT_0) return -1;
+    child_code(child);
+    return 1;
+}
+void snx_child_kill(SnxChild* child) {
+    if (child->ended) return;
+    TerminateJobObject((HANDLE)child->job, 1);
+    WaitForSingleObject((HANDLE)child->process, INFINITE);
+    child_code(child);
+}
+void snx_child_close(SnxChild* child) {
+    if (child->process) CloseHandle((HANDLE)child->process);
+    if (child->job) CloseHandle((HANDLE)child->job);
+    child->process = child->job = 0;
+}
+#else
+int snx_child_start(SnxChild* child, const char* const* argv, const char* cwd, const char* log, char* why,
+                    size_t size) {
+    /* what failed in the child before its program ran, and errno: 1 entering cwd, 2 starting the program */
+    int report[2], failed[2] = {0, 0}, output, input;
+    ssize_t got;
+    pid_t pid;
+    memset(child, 0, sizeof *child);
+#ifdef SNX_IOS
+    (void)argv;
+    (void)cwd;
+    (void)log;
+    snprintf(why, size, "iOS starts no other program");
+    return -1;
+#endif
+    output = open(log, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (output < 0) {
+        snprintf(why, size, "%s cannot be written: %s", log, strerror(errno));
+        return -1;
+    }
+    input = open("/dev/null", O_RDONLY | O_CLOEXEC);
+    if (input < 0 || pipe(report)) {
+        snprintf(why, size, "cannot set up a process for %s: %s", argv[0], strerror(errno));
+        close(output);
+        if (input >= 0) close(input);
+        return -1;
+    }
+    fcntl(report[0], F_SETFD, FD_CLOEXEC);
+    fcntl(report[1], F_SETFD, FD_CLOEXEC);
+    pid = fork();
+    if (!pid) {
+        int stage = 1;
+        if (dup2(input, 0) < 0 || dup2(output, 1) < 0 || dup2(output, 2) < 0 || (cwd && chdir(cwd))) goto failed;
+        stage = 2;
+        execv(argv[0], (char* const*)argv);
+    failed:
+        failed[0] = stage;
+        failed[1] = errno;
+        if (write(report[1], failed, sizeof failed)) {}
+        _exit(127);
+    }
+    close(report[1]);
+    close(output);
+    close(input);
+    if (pid < 0) {
+        snprintf(why, size, "cannot start %s: %s", argv[0], strerror(errno));
+        close(report[0]);
+        return -1;
+    }
+    /* the report's end closes as the program starts: nothing read is a start */
+    do got = read(report[0], failed, sizeof failed);
+    while (got < 0 && errno == EINTR);
+    close(report[0]);
+    if (got == (ssize_t)sizeof failed) {
+        while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
+        if (failed[0] == 1)
+            snprintf(why, size, "cannot run %s in %s: %s", argv[0], cwd, strerror(failed[1]));
+        else
+            snprintf(why, size, "cannot start %s: %s", argv[0], strerror(failed[1]));
+        return -1;
+    }
+    child->process = pid;
+    return 0;
+}
+static void child_status(SnxChild* child, int status) {
+    child->code = WIFEXITED(status) ? (unsigned long)WEXITSTATUS(status) : 0;
+    child->signal = WIFSIGNALED(status) ? WTERMSIG(status) : 0;
+    child->ended = 1;
+}
+int snx_child_wait(SnxChild* child, unsigned ms) {
+    struct timespec step = {0, 10000000L}; /* 10 ms between looks */
+    unsigned waited = 0;
+    int status;
+    pid_t got;
+    if (child->ended) return 1;
+    for (;;) {
+        got = waitpid((pid_t)child->process, &status, WNOHANG);
+        if (got == (pid_t)child->process) {
+            child_status(child, status);
+            return 1;
+        }
+        if (got < 0 && errno != EINTR) return -1;
+        if (waited >= ms) return 0;
+        nanosleep(&step, NULL);
+        waited += 10;
+    }
+}
+void snx_child_kill(SnxChild* child) {
+    int status = 0;
+    if (child->ended) return;
+    kill((pid_t)child->process, SIGKILL);
+    while (waitpid((pid_t)child->process, &status, 0) < 0 && errno == EINTR) {}
+    child_status(child, status);
+}
+void snx_child_close(SnxChild* child) { child->process = 0; }
+#endif

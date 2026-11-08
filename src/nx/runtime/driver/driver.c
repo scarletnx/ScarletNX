@@ -7,6 +7,7 @@
 #include "common/utilities/logscan.h"
 #include "nx/runtime/driver/extract.h"
 #include "nx/runtime/driver/game_name.h"
+#include "nx/runtime/driver/probe.h"
 #include "nx/runtime/driver/recompile.h"
 #include "nx/runtime/driver/setup.h"
 #include "common/utilities/mods.h"
@@ -94,6 +95,10 @@ static void usage(void) {
     puts("  --scan-log LOG... [--format json|markdown] [--name NAME]\n"
          "                         Summarize a game's log or the launcher's Share Log file: the build,\n"
          "                         the game, how the run ended and where, unimplemented services");
+    puts("  --probe=quick|full --probe-nro FILE [--gpu_driver=ID]\n"
+         "                         Run edenprobe's hardware probes headless in a folder of their own (probe/\n"
+         "                         in the state folder) and print the counts: quick is cpu and graphics,\n"
+         "                         full adds fs, video, audio, kernel and display");
 #ifndef _WIN32
     puts("  -S                     Enable the native GDB stub on localhost:1234\n"
          "  -s                     Enable the stub and stop at startup\n"
@@ -1419,6 +1424,10 @@ int snx_driver(int argc, char** argv) {
     }
     if (!strcmp(argv[1], "--scan-log")) {
         result = snx_logscan_main(argc - 1, argv + 1, snx_demangle);
+        goto done;
+    }
+    if (!strncmp(argv[1], "--probe", 7) && (!argv[1][7] || argv[1][7] == '=' || argv[1][7] == '-')) {
+        result = snx_probe_main(argc, argv);
         goto done;
     }
     rest = (char**)snx_alloc((size_t)(3 * argc + 1) * sizeof(*rest));
