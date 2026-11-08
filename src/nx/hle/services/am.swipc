@@ -222,6 +222,9 @@ interface nn::am::service::ILibraryAppletAccessor {
     @stub [30] GetResult();
     @stub [50] SetOutOfFocusApplicationSuspendingEnabled(b8 enabled);
     @stub [60] PresetLibraryAppletGpuTimeSliceZero();
+    # SDK 20 and 22: StartLibraryApplet calls 90, then waits on 170's event beside the state's (a WaitAny on both).
+    # What they are for isn't known: 170's event is never signaled here, as in Eglantine
+    @stub [90] Unknown90();
     [100] PushInData(object<nn::am::service::IStorage> storage);
     [101] PopOutData() -> object<nn::am::service::IStorage> storage;
     [103] PushInteractiveInData(object<nn::am::service::IStorage> storage);
@@ -230,6 +233,7 @@ interface nn::am::service::ILibraryAppletAccessor {
     [106] GetPopInteractiveOutDataEvent() -> handle<copy, event> event;
     [120] GetLibraryAppletInfo() -> nn::am::service::LibraryAppletInfo info;
     @stub [150] RequestForAppletToGetForeground();
+    [170] GetUnknown170Event() -> handle<copy, event> event;
 }
 
 interface nn::am::service::IStorage {

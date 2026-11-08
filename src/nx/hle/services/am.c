@@ -968,6 +968,7 @@ static void am_applet_destroy(SvcObj* o) {
     kobj_unref(kobj_at(a->state_ev));
     kobj_unref(kobj_at(a->out_ev));
     kobj_unref(kobj_at(a->interactive_ev));
+    kobj_unref(kobj_at(a->unknown170_ev));
 }
 static void am_applet_finish(LibApplet* a) {
     a->completed = 1;
@@ -985,6 +986,7 @@ static SvcObj* am_applet_new(u32 applet_id, u32 mode) {
     a->state_ev = owned_event("am:applet state changed");
     a->out_ev = owned_event("am:applet out data");
     a->interactive_ev = owned_event("am:applet interactive out data");
+    a->unknown170_ev = owned_event("am:applet unknown 170");
     a->kb_max = SWKBD_TEXT_CHARS - 1;
     o->destroy = am_applet_destroy;
     if (!am_is_inline(a)) {
@@ -1731,6 +1733,10 @@ static int nn_am_service_ILibraryAppletAccessor_GetPopOutDataEvent(SvcObj* self,
 }
 static int nn_am_service_ILibraryAppletAccessor_GetPopInteractiveOutDataEvent(SvcObj* self, u32* event) {
     *event = ev_handle(((LibApplet*)self->data)->interactive_ev);
+    R_SUCCEED();
+}
+static int nn_am_service_ILibraryAppletAccessor_GetUnknown170Event(SvcObj* self, u32* event) {
+    *event = ev_handle(((LibApplet*)self->data)->unknown170_ev);
     R_SUCCEED();
 }
 static int nn_am_service_ILibraryAppletAccessor_GetLibraryAppletInfo(SvcObj* self,
