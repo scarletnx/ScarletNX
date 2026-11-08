@@ -54,6 +54,10 @@ names another folder of games, and `--output DIR` the game's folder itself. A ga
 an older version kept in `work/3ds/<the game's name>` moves into its new folder the
 first time it is played, its module and hints renamed.
 
+`scarletnx-3ds` takes the [common options](../../user/usage.md#common-options) but
+`--frames`, `--shot` and `-H`, each value as `--option VALUE` or `--option=VALUE`.
+Its `--script` is the setting `ctr_script`, and `-f` the setting `fullscreen`.
+
 What a file holds is read from its own header, not its name: a CIA's magic at 0, an
 NCSD's at 0x100, a bare NCCH's at 0x100 (`src/3ds/loader/loader.c`). A bundle is a
 tar whose game is its first entry named as a game's, read where it lies in the

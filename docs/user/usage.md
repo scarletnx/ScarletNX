@@ -4,6 +4,7 @@
 
 ## Index
 
+* [Common options](#common-options)
 * [Extract → AOT → run](#extract--aot--run)
   * [Updates and DLC](#updates-and-dlc)
   * [Collections](#collections)
@@ -21,6 +22,38 @@
 
 Setup: [Build](../dev/build.md). Checkout CWD; own dumps/keys.
 For the keyboard-controlled SDL3 menu and file drops, see [GUI](gui.md).
+
+## Common options
+
+Every driver of the program (`scarletnx` for the Switch, `scarletnx-3ds`, `scarletnx-vita`, `scarletnx-agb`,
+`scarletnx-android`, `scarletnx-gnuabi`) reads the options below from one table, `src/common/utilities/cli.c`. Each
+`--help` shows them first, with the same words in the same column, then the driver's own options. Each option that
+takes a value takes it as `--option VALUE` or as `--option=VALUE`. A common option that a driver cannot do stops the
+run with the same message in each driver, `scarletnx-agb does not take --update`. An older name of an option still
+works for now, and the run says once what it is called now ([Deprecations](deprecations.md#now)).
+
+| Option | Meaning | Switch | 3DS | Vita | AGB | Android | GNU ABI |
+|---|---|---|---|---|---|---|---|
+| `-x`, `--extract` | Extract the game, without playing it | yes | yes | yes | | | |
+| `--extract-container` | Extract the game into its folder and play it from there. Without it, the game is read where it lies | yes | yes | | | | |
+| `-r`, `--recompile` (`--recomp`) | Recompile the game, without playing it | yes | yes | yes | yes | | |
+| `--game DIR` | Play the game in its folder DIR (`recompiled/<name>`), as its copy of the runtime does | yes | yes | yes | yes | | |
+| `--update PATH` (`--patch`) | An update or a DLC of the game, played with it. Give it once for each. For the Vita, it is the dumped game's update folder, given once | yes | yes | yes | | | |
+| `--data DIR` (`--repo`) | The data folder ([Folders](#folders)) | yes | yes | yes | yes | | yes |
+| `--outdir DIR` | The folder of the games, in which the game's folder is made (default: `recompiled/` of the data folder) | yes | yes | yes | yes | | |
+| `--output DIR` | The game's folder itself (default: `<outdir>/<the game's name>`) | | yes | yes | yes | | |
+| `--keys FILE` | The console's keys: `prod.keys` for the Switch, Azahar's `aes_keys.txt` for the 3DS | yes | yes | | | | |
+| `--seconds N` | Stop after N seconds | yes | yes | yes | | | |
+| `--frames N` | Stop after N frames (the AGB's run has no window, sound or pacing) | yes | | | yes | | |
+| `--shot PATH` | Save the screen to PATH when the run ends (Android: each frame `--shot-frame` names) | yes | | yes | yes | yes | |
+| `--script SPEC` | Press buttons at times of the run, `MS:BUTTONS,...` (each platform's page names the buttons) | yes | yes | yes | yes | | |
+| `-f`, `--fullscreen[=0\|1]` | Start fullscreen for this run, or windowed with `=0` | yes | yes | | yes | | |
+| `-H`, `--headless` | Run without a window | yes | | | | yes | |
+| `-h`, `--help` | Show the help | yes | yes | yes | yes | yes | yes |
+
+The Switch's `--seconds`, `--frames`, `--shot` and `--script` are settings of the game's run
+([Settings](settings.md)), which reach the game as `--key=value` in both forms. The 3DS's `--script` is its setting
+`ctr_script`, and the Vita's is `vita_script`. The Switch driver also keeps its combined letters, as `-rx` and `-Hs`.
 
 ## Extract → AOT → run
 

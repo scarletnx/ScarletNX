@@ -44,20 +44,25 @@ to the Switch, Linux and 3DS loaders.
 
 ## Playing
 
+`scarletnx-agb` takes the [common options](../../user/usage.md#common-options) that fit it: `-r`, `--game`, `--data`,
+`--outdir`, `--output`, `--frames`, `--shot`, `--script`, `-f` and `-h`, each
+value as `--option VALUE` or `--option=VALUE`.
+
 `scarletnx-agb Game.gba` plays the ROM in a window four times the console's
 screen, scaled by whole steps when it is resized, with the console's sound and
-its 59.73 frames a second. `--fullscreen=1` starts it fullscreen, and F11
+its 59.73 frames a second. `-f` (or `--fullscreen=1`) starts it fullscreen, and F11
 switches. The keyboard is the Switch runtime's: the arrows are the D-pad, X or
 Space A, Z B, Q L, E R, Enter Start and Backspace Select. A gamepad's buttons are
 where the console has them (A east, B south), its shoulders and triggers L and
-R, its left stick the D-pad. `--script=ms:hex,...` presses keys unattended, as the
+R, its left stick the D-pad. `--script ms:hex,...` presses keys unattended, as the
 3DS and Vita drivers take it: each press at its time in ms from the start of the
 run, by the console's frames (the same with a window or without), its keys in
 KEYINPUT's bits (1 A, 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down,
 100 R, 200 L), held for `--press_len=` ms (300).
 
 The game's folder is `recompiled/<name>/` of the data folder (`--data`, else the
-user's), named after the ROM's file, or `<name>/` of `--outdir`. It holds the
+user's), named after the ROM's file, or `<name>/` of `--outdir`, or the folder
+`--output` names. It holds the
 module, the save (`<name>.sav`), a copy of the runtime named after the game
 (`<name>`, `<name>.exe` on Windows) and `<name>.ini`, whose `source=` names the
 ROM and `system=gba` the console the launcher plays it with, as a 3DS or Vita
