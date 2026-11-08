@@ -626,7 +626,8 @@ if(TARGET hactool_internals)
 endif()
 if(UNIX)
     # host.c by itself: shared files, folders and the mutex
-    add_executable(snx-test-fs-host filesystem_host.c "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c")
+    add_executable(snx-test-fs-host filesystem_host.c "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c"
+        "${PROJECT_SOURCE_DIR}/src/common/platform/thread.c")
     snx_test_target(snx-test-fs-host 11)
     target_link_libraries(snx-test-fs-host PRIVATE Threads::Threads)
     add_test(NAME filesystem_host COMMAND snx-test-fs-host WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
@@ -2928,7 +2929,8 @@ if(UNIX)
         "${PROJECT_SOURCE_DIR}/src/nx/memory/mem.c" "${PROJECT_SOURCE_DIR}/src/nx/memory/own.c"
         "${PROJECT_SOURCE_DIR}/src/nx/hle/svc/svc_mem.c"
         "${PROJECT_SOURCE_DIR}/src/nx/hle/hle.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/plat_posix.c"
-        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/plat_sdl.c" "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c")
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/plat_sdl.c" "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c"
+        "${PROJECT_SOURCE_DIR}/src/common/platform/thread.c")
     snx_test_target(snx-test-memory-alias 11)
     target_link_libraries(snx-test-memory-alias PRIVATE SDL3::SDL3 ${CMAKE_DL_LIBS})
     target_link_libraries(snx-test-memory-alias PRIVATE scarletnx-common) # plat_posix.c names its threads (snx_thread_name)
@@ -2952,7 +2954,8 @@ if(UNIX)
     add_executable(snx-test-memory-own memory_own.c
         "${PROJECT_SOURCE_DIR}/src/nx/memory/mem.c" "${PROJECT_SOURCE_DIR}/src/nx/memory/own.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/plat_posix.c"
-        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/plat_sdl.c" "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c")
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/plat_sdl.c" "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c"
+        "${PROJECT_SOURCE_DIR}/src/common/platform/thread.c")
     snx_test_target(snx-test-memory-own 11)
     target_link_libraries(snx-test-memory-own PRIVATE Threads::Threads SDL3::SDL3 ${CMAKE_DL_LIBS})
     target_link_libraries(snx-test-memory-own PRIVATE scarletnx-common) # plat_posix.c names its threads (snx_thread_name)
@@ -3012,7 +3015,8 @@ snx_test_target(snx-test-quad-indices 99)
 target_include_directories(snx-test-quad-indices PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME quad_indices COMMAND snx-test-quad-indices)
 add_executable(snx-test-unattended-script unattended_script.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c"
-    "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c") # plat_mkdir, the slots' folder
+    "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c"
+    "${PROJECT_SOURCE_DIR}/src/common/platform/thread.c") # plat_mkdir, the slots' folder
 snx_test_target(snx-test-unattended-script 11)
 target_link_libraries(snx-test-unattended-script PRIVATE m scarletnx-common) # snx_read_file, snx_fopen
 add_test(NAME unattended_script COMMAND snx-test-unattended-script "${CMAKE_CURRENT_BINARY_DIR}")
@@ -3021,7 +3025,8 @@ add_executable(snx-test-deprecated-env deprecated_env.c "${PROJECT_SOURCE_DIR}/s
 snx_test_target(snx-test-deprecated-env 11)
 add_test(NAME deprecated_env COMMAND snx-test-deprecated-env)
 # the log's file, early lines, stamps, redirect, limits, fatal and crash mode (platform/plat.c)
-add_executable(snx-test-platform-log platform_log.c "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c")
+add_executable(snx-test-platform-log platform_log.c "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c"
+        "${PROJECT_SOURCE_DIR}/src/common/platform/thread.c")
 snx_test_target(snx-test-platform-log 11)
 target_link_libraries(snx-test-platform-log PRIVATE scarletnx-common) # the runs' logs: snx_list_dir, snx_file_time
 add_test(NAME platform_log COMMAND snx-test-platform-log "${CMAKE_CURRENT_BINARY_DIR}")
@@ -3029,7 +3034,8 @@ if(NOT WIN32 AND TARGET SDL3::SDL3) # SDL3 is there with a driver that draws (cm
     # written-page tracking, decommit, pread, file maps, replace, folders, waits and threads (platform/plat_posix.c and
     # plat_sdl.c)
     add_executable(snx-test-platform-posix platform_posix.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/plat_sdl.c"
-        "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c")
+        "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c"
+    "${PROJECT_SOURCE_DIR}/src/common/platform/thread.c")
     snx_test_target(snx-test-platform-posix 11)
     target_link_libraries(snx-test-platform-posix PRIVATE SDL3::SDL3 ${CMAKE_DL_LIBS})
     target_link_libraries(snx-test-platform-posix PRIVATE scarletnx-common) # plat_posix.c names its threads (snx_thread_name)
@@ -3068,7 +3074,8 @@ endif()
 if(WIN32 AND TARGET SDL3::SDL3)
     # the write watch of the reservation, the kernel's writes included (platform/plat_win32.c)
     add_executable(snx-test-platform-win32 platform_win32.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/plat_sdl.c"
-        "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c")
+        "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c"
+    "${PROJECT_SOURCE_DIR}/src/common/platform/thread.c")
     snx_test_target(snx-test-platform-win32 11)
     target_link_libraries(snx-test-platform-win32 PRIVATE SDL3::SDL3 synchronization powrprof)
     # plat_win32.c names its threads and says the system's reasons (snx_thread_name, snx_os_error)

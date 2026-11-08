@@ -55,13 +55,20 @@ if(TARGET OpenSSL::Crypto)
     target_link_libraries(snx_setup PUBLIC scarletnx-common OpenSSL::Crypto)
 endif()
 
+# The host's thread primitives (platform/thread.h) that every driver shares: mutexes, condition variables, waits on
+# a word, thread ids. No guest type, setting or SDL enters this target
+add_library(scarletnx-platform STATIC platform/thread.c)
+set_target_properties(scarletnx-platform PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON)
+target_compile_options(scarletnx-platform PRIVATE -Wall -Wextra -Werror=missing-prototypes)
+target_link_libraries(scarletnx-platform PUBLIC Threads::Threads)
+
 # The same indexed host filesystem and shared immutable file views serve NX
 # and CTR. No guest ABI or runtime/platform dependency enters this target.
 add_library(scarletnx-filesystem STATIC filesystem/tree.c filesystem/host.c)
 set_target_properties(scarletnx-filesystem PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON)
 target_compile_definitions(scarletnx-filesystem PRIVATE _GNU_SOURCE _FILE_OFFSET_BITS=64 _CRT_SECURE_NO_WARNINGS)
 target_compile_options(scarletnx-filesystem PRIVATE -Wall -Wextra -Werror=missing-prototypes)
-target_link_libraries(scarletnx-filesystem PUBLIC Threads::Threads)
+target_link_libraries(scarletnx-filesystem PUBLIC scarletnx-platform Threads::Threads)
 
 # The launcher's HTTPS client (network/https.h) through libcurl, trusting Mozilla's roots compiled in: where the build
 # has OpenSSL, which libcurl's TLS is (cmake/dependencies.cmake)

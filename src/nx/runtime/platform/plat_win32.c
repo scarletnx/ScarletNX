@@ -22,61 +22,6 @@
 #define STACK_GUARANTEE 32768 /* room for the crash report after a stack overflow */
 #define GUARANTEE_MIN_THREAD ((size_t)256 << 10)
 
-/* ================================================================ timer resolution */
-/* The scheduler's default tick is 15.6 ms: asked once for 1 ms before the first timed wait (plat_sleep_ns's
-   high-resolution timer needs none). winmm is loaded here so the runtime doesn't link it */
-static int g_period_asked;
-static void timer_period_1ms(void) {
-    HMODULE winmm;
-    if (__atomic_load_n(&g_period_asked, __ATOMIC_ACQUIRE) || __atomic_exchange_n(&g_period_asked, 1, __ATOMIC_ACQ_REL))
-        return;
-    winmm = LoadLibraryW(L"winmm.dll");
-    if (winmm) {
-        FARPROC f = GetProcAddress(winmm, "timeBeginPeriod");
-        UINT(WINAPI * begin)(UINT);
-        if (f) {
-            memcpy(&begin, &f, sizeof begin);
-            begin(1);
-        }
-    }
-}
-
-/* ================================================================ condition variables */
-void pc_init(PCond* c) { InitializeConditionVariable(&c->c); }
-void pc_signal(PCond* c) { WakeConditionVariable(&c->c); }
-void pc_broadcast(PCond* c) { WakeAllConditionVariable(&c->c); }
-static int cond_wait(PCond* c, PMutex* m, i64 timeout_ns) {
-    DWORD ms = INFINITE;
-    if (timeout_ns >= 0) {
-        /* whole milliseconds rounded up, in u64 so a timeout near INT64_MAX can't overflow, and kept below INFINITE
-           so a long timeout neither wraps in the DWORD nor becomes a wait without end */
-        u64 r = (u64)timeout_ns / 1000000u + ((u64)timeout_ns % 1000000u != 0);
-        ms = r >= (u64)INFINITE ? INFINITE - 1 : (DWORD)r;
-        timer_period_1ms();
-    }
-    if (SleepConditionVariableSRW(&c->c, &m->l, ms, 0)) return 0;
-    return GetLastError() == ERROR_TIMEOUT;
-}
-/* the wait noted while it lasts, for a hang report (pm_waits) */
-int pc_wait(PCond* c, PMutex* m, i64 timeout_ns) {
-    int r;
-    pm_wait_note(m, __builtin_return_address(0), 1);
-    r = cond_wait(c, m, timeout_ns);
-    pm_wait_note(NULL, NULL, 0);
-    return r;
-}
-
-void plat_wait_word(u32* w, u32 v, i64 timeout_ns) {
-    DWORD ms = INFINITE;
-    if (timeout_ns >= 0) {
-        u64 r = (u64)timeout_ns / 1000000u + ((u64)timeout_ns % 1000000u != 0); /* as cond_wait rounds it */
-        ms = r >= (u64)INFINITE ? INFINITE - 1 : (DWORD)r;
-        timer_period_1ms();
-    }
-    WaitOnAddress(w, &v, sizeof v, ms);
-}
-void plat_wake_word(u32* w) { WakeByAddressAll(w); }
-
 /* ================================================================ threads */
 typedef struct {
     PThreadFn fn;
@@ -235,7 +180,6 @@ void plat_system_info(char* out, size_t cap) {
              (unsigned long)GetActiveProcessorCount(ALL_PROCESSOR_GROUPS),
              (unsigned long long)((m.ullTotalPhys + (512ull << 20)) >> 30));
 }
-void plat_yield(void) { SwitchToThread(); }
 void plat_exit_now(int code) {
     fflush(NULL);
     snx_run_mark_end(); /* an exit: TerminateProcess runs no atexit handler */
@@ -437,7 +381,6 @@ void plat_alias_host_free(u8* p, u64 size) {
 }
 /* no pool, so no mirror and no traps yet: a GPU result lands at its own fence (docs/GPU_OWNERSHIP.md) */
 u8* plat_alias_mirror(void) { return NULL; }
-u32 plat_tid(void) { return (u32)GetCurrentThreadId(); }
 int plat_thread_in_fault(u32 tid) {
     (void)tid;
     return -1; /* no traps here */

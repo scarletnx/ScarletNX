@@ -88,108 +88,6 @@
    to bind the thread's first call, so never under glibc's 16 KiB */
 #define THREAD_STACK_FLOOR   ((size_t)PTHREAD_STACK_MIN > 16384 ? (size_t)PTHREAD_STACK_MIN : (size_t)16384)
 
-/* ================================================================ condition variables */
-void pc_init(PCond* c) {
-#if defined(__APPLE__)
-    pthread_cond_init(&c->c, NULL); /* Darwin has no clock attribute: timed waits are relative there */
-#else
-    pthread_condattr_t a;
-    pthread_condattr_init(&a);
-    pthread_condattr_setclock(&a, CLOCK_MONOTONIC); /* deadlines don't move when the wall clock is set */
-    pthread_cond_init(&c->c, &a);
-    pthread_condattr_destroy(&a);
-#endif
-}
-void pc_signal(PCond* c) { pthread_cond_signal(&c->c); }
-void pc_broadcast(PCond* c) { pthread_cond_broadcast(&c->c); }
-static int cond_wait(PCond* c, PMutex* m, i64 timeout_ns) {
-    struct timespec ts;
-    int r;
-    if (timeout_ns < 0) {
-        pthread_cond_wait(&c->c, &m->l);
-        return 0;
-    }
-#if defined(__APPLE__)
-    ts.tv_sec = (time_t)(timeout_ns / 1000000000);
-    ts.tv_nsec = (long)(timeout_ns % 1000000000);
-    r = pthread_cond_timedwait_relative_np(&c->c, &m->l, &ts);
-#else
-    {
-        u64 sec;
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        sec = (u64)timeout_ns / 1000000000u;
-        ts.tv_nsec += (long)((u64)timeout_ns % 1000000000u);
-        if (ts.tv_nsec >= 1000000000L) {
-            ts.tv_nsec -= 1000000000L;
-            sec++;
-        }
-        ts.tv_sec = (time_t)((u64)ts.tv_sec + sec);
-    }
-    r = pthread_cond_timedwait(&c->c, &m->l, &ts);
-#endif
-    return r == ETIMEDOUT;
-}
-/* the wait noted while it lasts, for a hang report (pm_waits) */
-int pc_wait(PCond* c, PMutex* m, i64 timeout_ns) {
-    int r;
-    pm_wait_note(m, __builtin_return_address(0), 1);
-    r = cond_wait(c, m, timeout_ns);
-    pm_wait_note(NULL, NULL, 0);
-    return r;
-}
-
-#if defined(__APPLE__)
-/* libSystem's, which libc++'s atomic waits use too: the public os_sync_wait_on_address needs macOS 14.4 */
-extern int __ulock_wait(u32 operation, void* addr, u64 value, u32 timeout_us);
-extern int __ulock_wake(u32 operation, void* addr, u64 wake_value);
-#define SNX_UL_COMPARE_AND_WAIT 1u
-#define SNX_ULF_WAKE_ALL        0x100u
-#define SNX_ULF_NO_ERRNO        0x1000000u
-#endif
-void plat_wait_word(u32* w, u32 v, i64 timeout_ns) {
-#if defined(__linux__)
-    struct timespec ts;
-    if (timeout_ns >= 0) {
-        ts.tv_sec = (time_t)(timeout_ns / 1000000000);
-        ts.tv_nsec = (long)(timeout_ns % 1000000000);
-    }
-    syscall(SYS_futex, w, FUTEX_WAIT_PRIVATE, v, timeout_ns >= 0 ? &ts : NULL, NULL, 0);
-#elif defined(__FreeBSD__)
-    struct _umtx_time ut = {0};
-    if (timeout_ns < 0) {
-        _umtx_op(w, UMTX_OP_WAIT_UINT_PRIVATE, v, NULL, NULL);
-        return;
-    }
-    ut._timeout.tv_sec = (time_t)(timeout_ns / 1000000000);
-    ut._timeout.tv_nsec = (long)(timeout_ns % 1000000000);
-    ut._clockid = CLOCK_MONOTONIC;
-    _umtx_op(w, UMTX_OP_WAIT_UINT_PRIVATE, v, (void*)(uintptr_t)sizeof ut, &ut);
-#elif defined(__NetBSD__)
-    /* NetBSD's __futex takes Linux's operations, a relative timeout for FUTEX_WAIT included */
-    struct timespec ts;
-    if (timeout_ns >= 0) {
-        ts.tv_sec = (time_t)(timeout_ns / 1000000000);
-        ts.tv_nsec = (long)(timeout_ns % 1000000000);
-    }
-    syscall(SYS___futex, w, FUTEX_WAIT | FUTEX_PRIVATE_FLAG, v, timeout_ns >= 0 ? &ts : NULL, NULL, 0, 0);
-#else
-    /* 0 waits without limit: a timeout is at least a microsecond, and at most what the 32 bits hold */
-    u64 us = timeout_ns < 0 ? 0 : (u64)timeout_ns / 1000u + 1u;
-    __ulock_wait(SNX_UL_COMPARE_AND_WAIT | SNX_ULF_NO_ERRNO, w, v, us > 0xFFFFFFFFu ? 0xFFFFFFFFu : (u32)us);
-#endif
-}
-void plat_wake_word(u32* w) {
-#if defined(__linux__)
-    syscall(SYS_futex, w, FUTEX_WAKE_PRIVATE, INT_MAX, NULL, NULL, 0);
-#elif defined(__FreeBSD__)
-    _umtx_op(w, UMTX_OP_WAKE_PRIVATE, INT_MAX, NULL, NULL);
-#elif defined(__NetBSD__)
-    syscall(SYS___futex, w, FUTEX_WAKE | FUTEX_PRIVATE_FLAG, INT_MAX, NULL, NULL, 0, 0);
-#else
-    __ulock_wake(SNX_UL_COMPARE_AND_WAIT | SNX_ULF_WAKE_ALL | SNX_ULF_NO_ERRNO, w, 0);
-#endif
-}
-
 /* ================================================================ threads */
 typedef struct {
     PThreadFn fn;
@@ -525,7 +423,6 @@ void plat_system_info(char* out, size_t cap) {
     snprintf(out, cap, "%s%s%s, %ld threads, %llu GB RAM", os, *c ? ", " : "", c, threads > 0 ? threads : 0,
              (ram + (512ull << 20)) >> 30);
 }
-void plat_yield(void) { sched_yield(); }
 void plat_exit_now(int code) {
     fflush(NULL);
     snx_run_mark_end(); /* an exit: _exit runs no atexit handler */
@@ -704,9 +601,6 @@ static _Thread_local struct {
     u32 wp_retried_at;
     void* frz_retried; /* the address a thawed write was let go again at once (frozen_wait) */
     int crashed;       /* this thread faulted already */
-#if defined(__linux__)
-    u32 tid; /* plat_tid's */
-#endif
 } t_plat_posix;
 /* a range frozen while it is copied (plat_freeze, below) */
 static u8 *g_frz_lo, *g_frz_hi;
@@ -1745,16 +1639,6 @@ u8* plat_alias_host(u64 off, u64 size) {
 }
 void plat_alias_host_free(u8* p, u64 size) { munmap(p, (size_t)size); }
 static u64 g_alias_size;
-u32 plat_tid(void) {
-#if defined(__linux__)
-    /* kept per thread: vk_lock asks it on every acquire, thousands of times a frame in one game, and each was a
-       system call */
-    if (!t_plat_posix.tid) t_plat_posix.tid = (u32)syscall(SYS_gettid);
-    return t_plat_posix.tid;
-#else
-    return (u32)(uintptr_t)pthread_self();
-#endif
-}
 /* /proc's view of the thread: running (R) is no wait, and a sleep's wait channel names the kernel function it sleeps
    in, handle_userfault for a trap. "0" or nothing when the kernel won't name it (no kallsyms): unknown */
 int plat_thread_in_fault(u32 tid) {
