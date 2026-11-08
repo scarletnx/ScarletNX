@@ -6,6 +6,7 @@
    SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project */
 /* kernel objects and their references, the handle table, waiting on objects and waking, events */
 #include "nx/hle/kernel/kernel_int.h"
+#include "common/utilities/bits.h"
 #include "nx/hle/hle.h"
 #include "nx/runtime/clock.h"
 
@@ -170,6 +171,8 @@ void waiter_add(KObj* o, KThread* t) {
     if (t->nwaits == (int)(sizeof t->waits / sizeof *t->waits)) fatal("A thread waits on more than 64 objects");
     t->waits[t->nwaits++] = kobj_id(o);
     o->nwait++;
+    u32 slot = kt_ix(t) - 1;
+    g_host.kernel.waiting[slot / 64] |= 1ull << (slot % 64);
 }
 void waiter_del(KObj* o, KThread* t) {
     u32 id = kobj_id(o);
@@ -179,25 +182,36 @@ void waiter_del(KObj* o, KThread* t) {
             memmove(t->waits + i, t->waits + i + 1, sizeof *t->waits * (size_t)(t->nwaits - i - 1));
             t->nwaits--;
             o->nwait--;
+            if (!t->nwaits) {
+                u32 slot = kt_ix(t) - 1;
+                g_host.kernel.waiting[slot / 64] &= ~(1ull << (slot % 64));
+            }
             return;
         }
 }
-/* the waiters are found among the threads: few objects have any, and those with one have a handful */
+void kernel_waiters_rebuild(void) {
+    memset(g_host.kernel.waiting, 0, sizeof g_host.kernel.waiting);
+    for (u32 i = 0; i < KTHREAD_MAX; i++)
+        if (g_hle.thread.threads[i].o.type == KO_THREAD && g_hle.thread.threads[i].nwaits)
+            g_host.kernel.waiting[i / 64] |= 1ull << (i % 64);
+}
+/* the waiters are found among the threads in waits (g_host.kernel.waiting): few objects have any, and those with one
+   have a handful. A thread's slot bit can outlive its wait only on a freed slot, which the type check skips */
 static void wake_waiters_nl(KObj* o, int kind) {
-    u32 id;
-    int i, k;
     if (!o->nwait) return;
-    id = kobj_id(o);
-    for (i = 0; i < KTHREAD_MAX; i++) {
-        KThread* w = &g_hle.thread.threads[i];
-        if (w->o.type != KO_THREAD || !w->nwaits ||
-            (kind ? w->wait_kind != kind : w->wait_kind != 1 && w->wait_kind != 5))
-            continue;
-        for (k = 0; k < w->nwaits && w->waits[k] != id; k++) {}
-        if (k == w->nwaits) continue;
-        if (w->wait_kind == 1 && !w->woken) w->wait_key = id;
-        wake(w, 0);
-    }
+    u32 id = kobj_id(o);
+    for (u32 word = 0; word < KTHREAD_MAX / 64; word++)
+        for (u64 bits = g_host.kernel.waiting[word]; bits; bits &= bits - 1) {
+            KThread* w = &g_hle.thread.threads[word * 64 + snx_ctz64(bits)];
+            int k;
+            if (w->o.type != KO_THREAD || !w->nwaits ||
+                (kind ? w->wait_kind != kind : w->wait_kind != 1 && w->wait_kind != 5))
+                continue;
+            for (k = 0; k < w->nwaits && w->waits[k] != id; k++) {}
+            if (k == w->nwaits) continue;
+            if (w->wait_kind == 1 && !w->woken) w->wait_key = id;
+            wake(w, 0);
+        }
 }
 void kobj_wake_nl(KObj* o, int kind) { wake_waiters_nl(o, kind); }
 /* ends t's wait with result. Only the first wake of a wait counts: a thread signaled by an object and then cancelled

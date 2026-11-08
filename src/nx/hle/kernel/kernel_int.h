@@ -54,6 +54,8 @@ void sync_resume(KThread* t);
 int h_close(u32 h);
 void waiter_add(KObj* o, KThread* t);
 void waiter_del(KObj* o, KThread* t);
+/* g_host.kernel.waiting made again from the threads' waits, after a save state put g_hle in place */
+void kernel_waiters_rebuild(void);
 void wake(KThread* t, int result);
 /* A thread blocked in the kernel waits on its word (kt_word), with no lock held: kt_seq reads it before the thread
    checks what it waits for, and kt_wait blocks while the word still holds that value, so a change made after the check
@@ -174,6 +176,10 @@ typedef struct {
 typedef struct {
     PMutex klock;   /* g_klock: every list a waiter or signaller touches */
     PMutex pool_lk; /* the kernel objects' pools, here and in thread.c, svc.c and svc_mem.c */
+    /* the threads that name an object in their waits (nwaits > 0), by slot, under g_klock: where a signal looks for
+       its waiters, never all KTHREAD_MAX threads. Derived from the threads, so a save state never holds it: a load
+       makes it again (kernel_waiters_rebuild) */
+    u64 waiting[KTHREAD_MAX / 64];
 } HostKernel;
 /* thread.c */
 typedef struct {
