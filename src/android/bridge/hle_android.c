@@ -49,16 +49,12 @@ uint64_t hle_android_window(int* width, int* height) {
 }
 
 /* ANativeWindow_fromSurface(env, surface): the window, with the surface's size (Surface.width and height) */
-static void window_from_surface(CPU* c, void* data) {
-    (void)data;
-    JNIEnv* env = bridge_jni_host(X(0));
-    jobject surface = (jobject)(uintptr_t)X(1);
+void* hle_android_window_from_surface(JNIEnv* env, jobject surface) {
     jclass cls = surface ? (*env)->GetObjectClass(env, surface) : NULL;
     jmethodID is_window = cls ? (*env)->GetMethodID(env, cls, "isWindow", "()Z") : NULL;
     if (!is_window || !(*env)->CallBooleanMethod(env, surface, is_window)) {
         (*env)->ExceptionClear(env);
-        X(0) = 0;
-        return;
+        return NULL;
     }
     jint w = (*env)->CallIntMethod(env, surface, (*env)->GetMethodID(env, cls, "width", "()I"));
     jint h = (*env)->CallIntMethod(env, surface, (*env)->GetMethodID(env, cls, "height", "()I"));
@@ -67,7 +63,11 @@ static void window_from_surface(CPU* c, void* data) {
     window.height = h;
     ++window.refs;
     pthread_mutex_unlock(&window_lock);
-    X(0) = (uint64_t)(uintptr_t)&window;
+    return &window;
+}
+static void window_from_surface(CPU* c, void* data) {
+    (void)data;
+    X(0) = (uint64_t)(uintptr_t)hle_android_window_from_surface(bridge_jni_host(X(0)), (jobject)(uintptr_t)X(1));
 }
 static void window_acquire(CPU* c, void* data) {
     (void)data;

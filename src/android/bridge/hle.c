@@ -107,15 +107,19 @@ static bool blocks(const char* name) {
     return false;
 }
 
-uint64_t hle_symbol(const char* name) {
-    uint64_t code = hle_code_symbol(name);
-    if (code) return code;
+const HleSymbol* hle_find(const char* name) {
     pthread_once(&h.once, index_tables);
     HleSymbol key = {name, NULL, NULL};
     const HleSymbol* k = &key;
     const HleSymbol** found = bsearch(&k, h.sorted, h.count, sizeof *h.sorted, by_name);
-    if (!found) return hle_vulkan_symbol(name);
-    const HleSymbol* s = *found;
+    return found ? *found : NULL;
+}
+
+uint64_t hle_symbol(const char* name) {
+    uint64_t code = hle_code_symbol(name);
+    if (code) return code;
+    const HleSymbol* s = hle_find(name);
+    if (!s) return hle_vulkan_symbol(name);
     if (!s->handler) return (uint64_t)(uintptr_t)s->data;
     uint64_t address = bridge_export(s->name, s->handler, s->data);
     if (blocks(s->name)) bridge_export_blocks(address);
