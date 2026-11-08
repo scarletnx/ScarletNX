@@ -100,6 +100,7 @@ typedef struct {
     char* library;    /* the library to load: the driver's, or the loader's that takes icd; NULL for the system's */
     char* icd;        /* the ICD JSON for the loader (VK_DRIVER_FILES), NULL when library is the driver itself */
     const char* name; /* "MoltenVK", "KosmicKrisp", or "the system's", for the log */
+    int instead;      /* 1 when it plays in place of the driver asked for, which the Mac has not */
 } SnxVulkanDriver;
 /* where a pick's files are looked for: this system's folders (snx_vulkan_driver_choose), or a test's */
 typedef struct {
@@ -109,8 +110,9 @@ typedef struct {
     const char* no_kosmickrisp; /* why KosmicKrisp cannot run on this system, NULL where it can */
 } SnxVulkanPlaces;
 /* The pick's files, found in at's folders. auto is the MoltenVK the program's folders carry, else the system's;
-   moltenvk and kosmickrisp are that one driver, carried or installed on the Mac, and are an error where the Mac has
-   none. 1, else 0 with the reason in reason */
+   moltenvk and kosmickrisp are that one driver, carried or installed on the Mac. 1 with the driver in out; where the
+   Mac has not the one asked for, auto's plays instead, with instead set and reason saying why and what plays. 0 for a
+   value that is no driver, with the reason */
 int snx_vulkan_driver_find(const SnxVulkanPlaces* at, const char* pick, SnxVulkanDriver* out, char* reason,
                            size_t reason_size);
 /* snx_vulkan_driver_find in this system's folders, for the program that runs */

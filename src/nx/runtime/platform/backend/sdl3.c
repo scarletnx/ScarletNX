@@ -445,18 +445,15 @@ static const SnxVulkanDriver* vulkan_driver(void) {
     static SnxVulkanDriver pick;
     static int picked;
     if (!picked) {
-        char reason[600];
+        char reason[4096] = "";
         char* self;
         picked = 1;
         self = snx_executable(NULL);
-        if (!snx_vulkan_driver_choose(self, g_settings.vulkan_driver, &pick, reason, sizeof reason)) {
-            /* a driver the Mac has not, or cannot load: the other one plays, said, so that a game still starts. A value
-               that is no driver stops, as a menu that shows no other would hide the mistake (docs/APPLE.md) */
-            if (strcmp(g_settings.vulkan_driver, "kosmickrisp") && strcmp(g_settings.vulkan_driver, "moltenvk"))
-                fatal("%s", reason);
-            WARN("%s. The other driver plays instead\n", reason);
-            if (!snx_vulkan_driver_choose(self, "auto", &pick, reason, sizeof reason)) fatal("%s", reason);
-        }
+        /* A value that is no driver stops, as a menu that shows no other would hide the mistake. A driver the Mac has
+           not plays auto's in its place, so that a game still starts, and the warning names it (docs/APPLE.md) */
+        if (!snx_vulkan_driver_choose(self, g_settings.vulkan_driver, &pick, reason, sizeof reason))
+            fatal("%s", reason);
+        if (pick.instead) WARN("vulkan: vulkan_driver=%s: %s\n", g_settings.vulkan_driver, reason);
         free(self);
         /* the loader takes the driver its ICD names, and no other */
         if (pick.icd && setenv("VK_DRIVER_FILES", pick.icd, 1))

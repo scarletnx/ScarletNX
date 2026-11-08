@@ -36,18 +36,30 @@ static void same_file(const char* path, const char* expected) {
     free(a);
     free(b);
 }
-/* pick, found in at: its library, its ICD and its name */
-static void picks(const SnxVulkanPlaces* at, const char* pick, const char* library, const char* icd, const char* name) {
+/* pick in at: its library, its ICD and its name; instead when that driver plays in place of the one asked for, the
+   reason then holding says and also (NULL for nothing more) */
+static void played(const SnxVulkanPlaces* at, const char* pick, const char* library, const char* icd, const char* name,
+                   int instead, const char* says, const char* also) {
     SnxVulkanDriver d;
     char reason[2048] = "";
     int found = snx_vulkan_driver_find(at, pick, &d, reason, sizeof reason);
-    if (!found) fprintf(stderr, "vulkan_driver_pick: %s refused: %s\n", pick, reason);
+    if (reason[0]) printf("vulkan_driver_pick: %s: %s\n", pick, reason);
     assert(found);
     same_file(d.library, library);
     same_file(d.icd, icd);
     if (strcmp(d.name, name)) fprintf(stderr, "vulkan_driver_pick: %s is %s, expected %s\n", pick, d.name, name);
-    assert(!strcmp(d.name, name));
+    assert(!strcmp(d.name, name) && d.instead == instead);
+    assert(!says || strstr(reason, says));
+    assert(!also || strstr(reason, also));
     snx_vulkan_driver_free(&d);
+}
+static void picks(const SnxVulkanPlaces* at, const char* pick, const char* library, const char* icd, const char* name) {
+    played(at, pick, library, icd, name, 0, NULL, NULL);
+}
+/* pick in at, which the Mac has not: auto's driver plays instead, the reason saying why and naming it */
+static void stands_in(const SnxVulkanPlaces* at, const char* pick, const char* library, const char* icd,
+                      const char* name, const char* says, const char* also) {
+    played(at, pick, library, icd, name, 1, says, also);
 }
 /* pick refused in at, its reason holding says and also (NULL for nothing more) */
 static void refused(const SnxVulkanPlaces* at, const char* pick, const char* says, const char* also) {
@@ -91,20 +103,21 @@ int main(void) {
           "MoltenVK");
     picks(&(SnxVulkanPlaces){.program = bare, .prefixes = {empty, NULL}, .sdks = sdks}, "moltenvk", sdk_moltenvk, NULL,
           "MoltenVK");
-    refused(&(SnxVulkanPlaces){.program = bare, .prefixes = {empty, NULL}}, "moltenvk", "MoltenVK was not found",
-            "beside the program or in its app's Frameworks, in");
+    stands_in(&(SnxVulkanPlaces){.program = bare, .prefixes = {empty, NULL}}, "moltenvk", NULL, NULL, "the system's",
+              "MoltenVK was not found: not beside the program or in its app's Frameworks, in",
+              ": the system's Vulkan loader plays instead");
 
     { /* the folder of SDKs the search went through, named as it was given: $HOME/VulkanSDK where HOME is not the
          user's own folder (a test's), which "~/VulkanSDK" would hide */
         char* elsewhere = under(root, "elsewhere/VulkanSDK");
         char said[1024];
         snprintf(said, sizeof said, "or in a Vulkan SDK under %s", elsewhere);
-        refused(&(SnxVulkanPlaces){.program = bare, .prefixes = {empty, NULL}, .sdks = elsewhere}, "moltenvk",
-                "MoltenVK was not found", said);
-        refused(&(SnxVulkanPlaces){.program = bare, .prefixes = {empty, NULL}, .sdks = elsewhere}, "kosmickrisp",
-                "KosmicKrisp was not found", said);
-        refused(&(SnxVulkanPlaces){.program = bare, .prefixes = {icd_only, NULL}, .sdks = elsewhere}, "kosmickrisp",
-                "KosmicKrisp needs the Vulkan loader", said);
+        stands_in(&(SnxVulkanPlaces){.program = bare, .prefixes = {empty, NULL}, .sdks = elsewhere}, "moltenvk", NULL,
+                  NULL, "the system's", "MoltenVK was not found", said);
+        stands_in(&(SnxVulkanPlaces){.program = bare, .prefixes = {empty, NULL}, .sdks = elsewhere}, "kosmickrisp",
+                  NULL, NULL, "the system's", "KosmicKrisp was not found", said);
+        stands_in(&(SnxVulkanPlaces){.program = bare, .prefixes = {icd_only, NULL}, .sdks = elsewhere}, "kosmickrisp",
+                  NULL, NULL, "the system's", "KosmicKrisp needs the Vulkan loader", said);
         free(elsewhere);
     }
 
@@ -112,12 +125,13 @@ int main(void) {
     picks(&(SnxVulkanPlaces){.program = bare, .prefixes = {empty, brew}, .sdks = sdks}, "kosmickrisp", brew_loader,
           brew_icd, "KosmicKrisp");
     picks(&(SnxVulkanPlaces){.program = bare, .sdks = sdks}, "kosmickrisp", sdk_loader, sdk_icd, "KosmicKrisp");
-    refused(&(SnxVulkanPlaces){.program = bare, .prefixes = {empty, NULL}}, "kosmickrisp", "KosmicKrisp was not found",
-            "no ICD beside the program or in its app's Frameworks, in");
-    refused(&(SnxVulkanPlaces){.program = bare, .prefixes = {icd_only, NULL}}, "kosmickrisp",
-            "KosmicKrisp needs the Vulkan loader", "icd-only/lib");
-    refused(&(SnxVulkanPlaces){.program = bare, .prefixes = {brew, NULL}, .no_kosmickrisp = "not on this system"},
-            "kosmickrisp", "not on this system", NULL);
+    stands_in(&(SnxVulkanPlaces){.program = app, .prefixes = {empty, NULL}}, "kosmickrisp", app_moltenvk, NULL,
+              "MoltenVK", "KosmicKrisp was not found: no ICD beside the program or in its app's Frameworks, in",
+              ": MoltenVK at ");
+    stands_in(&(SnxVulkanPlaces){.program = bare, .prefixes = {icd_only, NULL}}, "kosmickrisp", NULL, NULL,
+              "the system's", "KosmicKrisp needs the Vulkan loader", "icd-only/lib");
+    stands_in(&(SnxVulkanPlaces){.program = app, .prefixes = {brew, NULL}, .no_kosmickrisp = "not on this system"},
+              "kosmickrisp", app_moltenvk, NULL, "MoltenVK", "not on this system: MoltenVK at ", " plays instead");
 
     /* the app that carries KosmicKrisp: its own ICD and loader, before the Mac's */
     {
