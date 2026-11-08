@@ -436,6 +436,24 @@ static void test_stdio(void) {
     expect_int("getpagesize is a power of two from 4096", page >= 4096 && (page & (page - 1)) == 0, 1);
 }
 
+/* ---- multibyte characters: UTF-8, as bionic's C.UTF-8 ---- */
+
+static void test_multibyte(void) {
+    uint32_t utf8 = text("a\xc3\xa7\xf0\x9f\x98\x80"), wide = zeroed(32), back = zeroed(16);
+    expect_int("mbstowcs counts", CALL("mbstowcs", 0, utf8, 0), 3);
+    expect_int("mbstowcs", CALL("mbstowcs", wide, utf8, 8), 3);
+    expect_int("mbstowcs: a", word_at(wide), 0x61);
+    expect_int("mbstowcs: c cedilla", word_at(wide + 4), 0xe7);
+    expect_int("mbstowcs: U+1F600", word_at(wide + 8), 0x1f600);
+    expect_int("mbstowcs ends with a NUL", word_at(wide + 12), 0);
+    expect_int("mbstowcs of a stray byte", (int32_t)CALL("mbstowcs", wide, text("a\xff"), 8), -1);
+    expect_int("mbstowcs of a stray byte: errno EILSEQ", guest_errno(), 84);
+    expect_int("wcstombs counts", CALL("wcstombs", 0, wide, 0), 7);
+    expect_int("wcstombs", CALL("wcstombs", back, wide, 16), 7);
+    expect_text("wcstombs gives the UTF-8 back", G(back), G(utf8));
+    expect_int("MB_CUR_MAX", CALL("__ctype_get_mb_cur_max"), 4);
+}
+
 /* ---- libm, soft-float: a double in two words, a float in one ---- */
 
 static uint32_t f_bits(float f) {
@@ -651,6 +669,7 @@ int main(void) {
     test_files();
     test_calls();
     test_stdio();
+    test_multibyte();
     test_libm();
     test_signals();
     rmdir(g_t.dir);
