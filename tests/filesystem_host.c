@@ -3,7 +3,8 @@
 /* common/filesystem/host.c on its own: shared read-only files (contents, an empty file, a missing one, sizes past
    what a mapping can hold), folders, and the mutex's static initializer and trylock */
 #define _POSIX_C_SOURCE 200809L
-#include "common/filesystem/host.h"
+#include "common/platform/file.h"
+#include "common/platform/thread.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

@@ -8,6 +8,7 @@
    skips the table, so the plain game is unpacked once into the container the loader reads, published only
    complete, and read from then on as that container is. */
 #include "3ds/loader/internal.h"
+#include "common/platform/file.h"
 #include <zstd.h>
 #include <stdlib.h>
 #include <string.h>
@@ -111,7 +112,7 @@ SnxCtrExtractResult snx_ctr_unzstd(const char* input, const char* output, char* 
         goto done;
     }
     out = NULL;
-    if (snx_replace(stage, output)) {
+    if (plat_replace_file(stage, output)) {
         ctr_fail(&r, SNX_CTR_EXTRACT_IO, "cannot move %s to %s", stage, output);
         goto done;
     }

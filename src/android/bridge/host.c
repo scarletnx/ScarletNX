@@ -238,43 +238,6 @@ bool host_copy_checked(void* to, const void* from, size_t size) {
 
 /* ---- descriptors ---- */
 
-int64_t host_pread(int fd, void* buffer, size_t size, uint64_t offset) {
-#ifdef _WIN32
-    HANDLE h = (HANDLE)_get_osfhandle(fd);
-    if (h == INVALID_HANDLE_VALUE) {
-        errno = EBADF;
-        return -1;
-    }
-    /* ReadFile of 4 GiB at most at a time, at the OVERLAPPED's offset */
-    size_t done = 0;
-    while (done < size) {
-        OVERLAPPED at = {0};
-        uint64_t where = offset + done;
-        at.Offset = (DWORD)where;
-        at.OffsetHigh = (DWORD)(where >> 32);
-        DWORD want = size - done > 0x40000000u ? 0x40000000u : (DWORD)(size - done), got = 0;
-        if (!ReadFile(h, (char*)buffer + done, want, &got, &at)) {
-            if (GetLastError() == ERROR_HANDLE_EOF) break;
-            errno = EIO;
-            return -1;
-        }
-        if (!got) break;
-        done += got;
-    }
-    return (int64_t)done;
-#else
-    size_t done = 0;
-    while (done < size) {
-        ssize_t n = pread(fd, (char*)buffer + done, size - done, (off_t)(offset + done));
-        if (n < 0 && errno == EINTR) continue;
-        if (n < 0) return -1;
-        if (!n) break;
-        done += (size_t)n;
-    }
-    return (int64_t)done;
-#endif
-}
-
 bool host_is_socket(int fd) {
 #ifdef _WIN32
     int type = 0, size = sizeof type;

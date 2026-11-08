@@ -1,22 +1,21 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The host side of the indexed filesystem: folders, UTF-8 paths on Windows, and files shared read-only with
-   the host's page cache for the whole run */
-#include "common/filesystem/host.h"
+/* Files shared read-only with the host's page cache for the whole run (file.h) */
+#include "common/platform/file.h"
 #include <stdlib.h>
-#include <string.h>
 #if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <fcntl.h>
 #include <io.h>
+#include <windows.h>
 #else
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#if defined(__linux__)
-#include <sys/syscall.h>
-#endif
 #endif
 
 /* descriptors a shared file may not take: they stay for the files opened on demand (saves, the SD card, unmapped
@@ -24,28 +23,6 @@
 #define SHARE_RESERVE 256
 
 #if defined(_WIN32)
-/* paths are UTF-8 everywhere else. A path that isn't valid UTF-8 names nothing: NULL, rather than a path with
-   replacement characters that could name another file. Freed with free */
-wchar_t* snx_host_wpath(const char* text) {
-    wchar_t* wide;
-    int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, NULL, 0);
-    if (n <= 0) return NULL;
-    wide = malloc((size_t)n * sizeof *wide);
-    if (!wide) return NULL;
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, wide, n) != n) {
-        free(wide);
-        return NULL;
-    }
-    return wide;
-}
-
-int plat_mkdir(const char* path) {
-    wchar_t* wide = snx_host_wpath(path);
-    int ok = wide && CreateDirectoryW(wide, NULL);
-    free(wide);
-    return ok ? 0 : -1;
-}
-
 /* the CRT has room for 8192 descriptors, handed out lowest first */
 #define CRT_DESCRIPTORS 8192
 int plat_file_share(const char* path, uint64_t size, int* fd, const uint8_t** data) {
@@ -91,8 +68,6 @@ void plat_file_unshare(int fd, const uint8_t* data, uint64_t size) {
     if (fd >= 0) _close(fd);
 }
 #else
-int plat_mkdir(const char* path) { return mkdir(path, 0777) ? -1 : 0; }
-
 /* the descriptors the shared files may use: the soft limit, and on macOS no more than OPEN_MAX (10240). Its hard limit is
    "unlimited" and kern.maxfilesperproc (61440) is what stops a process, but a game with 300000 files that mapped up to
    that left SDL unable to open its Vulkan window, with the descriptors still free */

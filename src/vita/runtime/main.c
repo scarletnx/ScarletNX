@@ -14,6 +14,7 @@
 #include "vita/runtime/process.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/ini_lines.h"
 #include "snx_settings.h"
@@ -95,7 +96,7 @@ static bool extract(const char* vpk, const char* folder) {
         if (snx_path_exists(stage)) snx_remove_tree(stage);
         ok = vita_vpk_extract(vpk, stage, error, sizeof error);
         if (!ok) fprintf(stderr, "scarletnx-vita: %s\n", error);
-        if (ok && snx_replace(stage, app)) {
+        if (ok && plat_replace_file(stage, app)) {
             fprintf(stderr, "scarletnx-vita: cannot move %s to %s\n", stage, app);
             ok = false;
         }

@@ -11,7 +11,7 @@
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_state.h"
 #include "gpu/nvn/nvn.hook.h"
-#include "common/filesystem/host.h" /* PMutex */
+#include "common/platform/thread.h" /* PMutex */
 #include "snx_settings.h"
 #include <stdarg.h>
 #include <stdio.h>

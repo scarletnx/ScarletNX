@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "gui/browser.h"
 #include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include "common/utilities/cheat_list.h"
 #include "gui/aot.h"
 #include "common/utilities/mods.h"
@@ -448,7 +449,7 @@ bool gui_copy_mod(const char* from, const char* to, char* why, size_t size) {
         ok = false;
     } else {
         ok = !copy_into(from, staged, 0, why, size);
-        if (ok && snx_replace(staged, to)) {
+        if (ok && plat_replace_file(staged, to)) {
             snprintf(why, size, snx_tr("cannot rename %s to %s: %s"), staged, to, snx_os_error(reason, sizeof reason));
             ok = false;
         }

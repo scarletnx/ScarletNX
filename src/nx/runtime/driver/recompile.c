@@ -24,6 +24,7 @@
 #include "common/utilities/build_info.h"
 #include "common/utilities/mods.h"
 #include "common/utilities/patches.h"
+#include "common/platform/file.h"
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
@@ -166,9 +167,9 @@ int snx_deploy_runtime(const char* run, const char* exe) {
 #ifdef __ANDROID__
     /* the shared storage runs nothing (the game runs on the app's own runtime), and before Android 11 it refuses a
        mode change: there the copy only marks the recompile done */
-    rc = snx_copy_file(run, tmp) || snx_replace(tmp, exe);
+    rc = snx_copy_file(run, tmp) || plat_replace_file(tmp, exe);
 #else
-    rc = snx_copy_file(run, tmp) || snx_make_executable(tmp) || snx_replace(tmp, exe);
+    rc = snx_copy_file(run, tmp) || snx_make_executable(tmp) || plat_replace_file(tmp, exe);
 #endif
     if (rc) {
         snx_error("cannot deploy the runtime %s to %s", run, exe);
@@ -365,7 +366,7 @@ static int copy_data(const SnxProgram* p, const char* dir, int quiet, int tmpfs)
                 if (!quiet) puts("Copying RomFS...");
                 rc = ((snx_is_dir(pending) || snx_is_file(pending) || snx_is_link(pending)) &&
                       snx_remove_tree(pending)) ||
-                     snx_copy_tree(p->romfs_path, pending) || snx_replace(pending, dst);
+                     snx_copy_tree(p->romfs_path, pending) || plat_replace_file(pending, dst);
                 free(pending);
             }
             free(dst);

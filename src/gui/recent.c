@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "gui/recent.h"
 #include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include "gui/model.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -130,7 +131,7 @@ int gui_recent_save(const GuiRecent* recent, const char* file) {
     /* staged beside it, then put in place: a crash mid-write leaves the old list */
     directory = snx_dirname(file);
     staged = snx_format("%s.new", file);
-    failed = !directory || snx_mkdirs(directory) || snx_write_file(staged, text, at) || snx_replace(staged, file);
+    failed = !directory || snx_mkdirs(directory) || snx_write_file(staged, text, at) || plat_replace_file(staged, file);
     if (failed) remove(staged);
     free(directory);
     free(staged);

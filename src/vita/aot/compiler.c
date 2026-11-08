@@ -12,6 +12,7 @@
 #include "common/cpu/recompiler/llvm/link.h"
 #include "common/cpu/recompiler/compile_thread.h"
 #include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include "common/utilities/endian.h"
 #include <llvm-c/Core.h>
 #include <stdio.h>
@@ -401,7 +402,7 @@ int vita_aot_compile(const char* folder, const VitaImage* image, char* error, si
     if (snx_ir_armlib_object('1', &armlib, &armlib_size, error, error_size)) goto done;
     objects[0].data = armlib, objects[0].size = armlib_size;
     if (snx_link(objects, files, exports, 1, snx_path_leaf(target), &linked, error, error_size)) goto done;
-    if (snx_write_file(staged, linked.data, linked.size) || snx_replace(staged, target)) {
+    if (snx_write_file(staged, linked.data, linked.size) || plat_replace_file(staged, target)) {
         char why[256];
         snprintf(error, error_size, "cannot write %s: %s", target, snx_os_error(why, sizeof why));
         (void)remove(staged);

@@ -10,6 +10,7 @@
 #include "common/cpu/recompiler/llvm/link.h"
 #include "common/cpu/recompiler/workers.h"
 #include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include "common/utilities/endian.h"
 #include <llvm-c/Core.h>
 #include <stdio.h>
@@ -399,7 +400,7 @@ int snx_ctr_aot_compile(const char* extracted, const SnxCtrSource* game, char* e
     /* A module from an earlier compile is replaced only once the new one is complete, by a rename over it, so a
        failed publish leaves what was there. On Windows a DLL a running copy of the game has loaded cannot be
        replaced. */
-    if (snx_write_file(staged, linked.data, linked.size) || snx_replace(staged, target)) {
+    if (snx_write_file(staged, linked.data, linked.size) || plat_replace_file(staged, target)) {
         char why[256];
         snprintf(error, error_size, "cannot write %s: %s", target, snx_os_error(why, sizeof why));
         (void)remove(staged);

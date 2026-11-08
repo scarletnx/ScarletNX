@@ -277,7 +277,10 @@ int sw_finish(StateWriter* w, char* why, size_t whysize) {
     fclose(w->f);
     w->f = NULL;
     r = plat_replace_file(w->part, w->path);
-    if (r) why_set(why, whysize, "the file can't be moved into place");
+    if (r) {
+        why_set(why, whysize, "the file can't be moved into place");
+        remove(w->part);
+    }
     writer_free(w);
     return r;
 }

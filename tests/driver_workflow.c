@@ -3,6 +3,7 @@
 /* Exercise the real driver/supervisor with synthetic extraction, compilation and game children. */
 #define _POSIX_C_SOURCE 200809L
 #include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include "common/utilities/setup.h"
 #include "nx/runtime/driver/driver.h"
 #include "nx/runtime/driver/extract.h"
@@ -223,7 +224,7 @@ char* snx_game_stamp(const char* mods) {
 char* snx_own_runtime(const SnxPaths* paths) { return snx_strdup(paths->executable); }
 int snx_deploy_runtime(const char* run, const char* exe) {
     char* tmp = snx_format("%s.tmp", exe);
-    int rc = snx_copy_file(run, tmp) || snx_make_executable(tmp) || snx_replace(tmp, exe);
+    int rc = snx_copy_file(run, tmp) || snx_make_executable(tmp) || plat_replace_file(tmp, exe);
     free(tmp);
     return rc;
 }

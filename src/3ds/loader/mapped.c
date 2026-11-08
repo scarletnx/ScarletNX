@@ -3,7 +3,7 @@
 /* A game read where it lies: the file itself mapped read-only and shared for as long as it is open, checked once as the
    extraction checks it, its ExeFS files and RomFS level 3 handed out as views into the mapping. Nothing is written */
 #include "3ds/loader/internal.h"
-#include "common/filesystem/host.h"
+#include "common/platform/file.h"
 #include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>

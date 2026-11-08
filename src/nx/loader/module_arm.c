@@ -15,6 +15,7 @@
 #include "common/cpu/recompiler/llvm/link.h"
 #include "snx_settings.h"
 #include "common/utilities/endian.h"
+#include "common/platform/file.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -793,7 +794,7 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
         goto done;
     }
     tmp = snx_format("%s.tmp", build->output);
-    if (snx_write_file(tmp, linked.data, linked.size) || snx_replace(tmp, build->output)) {
+    if (snx_write_file(tmp, linked.data, linked.size) || plat_replace_file(tmp, build->output)) {
         snx_error("linking failed: cannot write %s", build->output);
         if (snx_is_file(tmp)) snx_remove_tree(tmp);
         goto done;

@@ -1,9 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The platform layer on Linux, Android, FreeBSD and Apple systems: threads, condition variables, the guest's address
-   space with written-page tracking, file reads and maps, the environment and the crash handler
-   (plat_sdl.c has the libraries and path queries, common/platform the clocks and
-   sleeping) */
+   space with written-page tracking, the environment and the crash handler
+   (plat_sdl.c has the libraries and path queries, common/platform the clocks, sleeping and files) */
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE /* REG_RIP, pipe2 */
 #endif
@@ -2096,69 +2095,6 @@ void* plat_dl_loaded(const char* name) {
 /* ================================================================ environment */
 int plat_setenv(const char* name, const char* value) { return setenv(name, value, 1); }
 
-/* ================================================================ files */
-i64 plat_pread(FILE* f, void* buf, u64 size, u64 off) {
-    int fd = fileno(f);
-    u64 got = 0;
-    if (fd < 0 || size > (u64)INT64_MAX || off > (u64)INT64_MAX - size) return -1;
-    /* pread may return less than asked (past 2 GiB on Linux, or interrupted): go on until done or at the end */
-    while (got < size) {
-        ssize_t r = pread(fd, (u8*)buf + got, (size_t)(size - got), (off_t)(off + got));
-        if (r < 0) {
-            if (errno == EINTR) continue;
-            return -1;
-        }
-        if (r == 0) break;
-        got += (u64)r;
-    }
-    return (i64)got;
-}
-
-static void file_map_clear(PFileMap* m) {
-    m->data = NULL;
-    m->size = 0;
-    m->borrowed = 0;
-    m->heap = 0;
-}
-/* stat_it: the size comes from fstat, and the file must be a regular one; else known is trusted */
-static int file_map(PFileMap* m, const char* path, int stat_it, u64 known) {
-    int fd;
-    u64 size = known;
-    void* p;
-    file_map_clear(m);
-    fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return -1;
-    if (stat_it) {
-        struct stat st;
-        if (fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_size < 0) {
-            close(fd);
-            return -1;
-        }
-        size = (u64)st.st_size;
-    }
-    if (size > (u64)SIZE_MAX || size > (u64)INT64_MAX) {
-        close(fd);
-        return -1;
-    }
-    if (!size) {
-        close(fd);
-        return 0;
-    }
-    p = mmap(NULL, (size_t)size, PROT_READ, MAP_PRIVATE, fd, 0);
-    close(fd); /* the mapping keeps the file */
-    if (p == MAP_FAILED) return -1;
-    m->data = (const u8*)p;
-    m->size = size;
-    return 0;
-}
-int plat_file_map(PFileMap* m, const char* path) { return file_map(m, path, 1, 0); }
-int plat_file_map_sized(PFileMap* m, const char* path, u64 size) { return file_map(m, path, 0, size); }
-void plat_file_unmap(PFileMap* m) {
-    if (m->heap)
-        free((void*)m->data);
-    else if (m->data && !m->borrowed) munmap((void*)m->data, (size_t)m->size);
-    file_map_clear(m);
-}
 /* ================================================================ the crash handler */
 static int g_crash_reporting; /* a thread is reporting a crash */
 static char g_main_alt_stack[PLAT_ALT_STACK_SIZE];

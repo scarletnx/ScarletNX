@@ -10,6 +10,7 @@
 #include "3ds/services/uds.h"
 #include "common/utilities/ascii.h"
 #include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/ini_lines.h"
 #include "snx_settings.h"
@@ -260,7 +261,7 @@ static SnxCtrExtractResult extract_into(const char* input, const char* folder, c
     for (size_t i = 0; i < count; ++i) {
         char *from = snx_path_join(done, names[i]), *to = snx_path_join(folder, names[i]);
         /* only a stopped extraction's part can be in the way: the state has other names */
-        bool moved = !(snx_path_exists(to) && snx_remove_tree(to)) && !snx_replace(from, to);
+        bool moved = !(snx_path_exists(to) && snx_remove_tree(to)) && !plat_replace_file(from, to);
         if (!moved) snprintf(error, error_size, "cannot move %s to %s: %s", from, to, snx_os_error(why, sizeof why));
         free(from);
         free(to);
@@ -448,7 +449,7 @@ static bool write_game_ini(const char* folder, const char* source, SnxCtrModel m
 static void move_old_folder(const char* old, const char* folder) {
     if (!old || snx_is_link(old) || !snx_is_dir(old) || snx_path_exists(folder)) return;
     char *parent = snx_dirname(folder), why[256];
-    if (parent && !snx_mkdirs(parent) && !snx_replace(old, folder))
+    if (parent && !snx_mkdirs(parent) && !plat_replace_file(old, folder))
         printf("Moved the game's saves and SD card from %s to %s\n", old, folder);
     else
         fprintf(stderr, "scarletnx-3ds: the game's saves stay in %s, it cannot move to %s: %s\n", old, folder,
