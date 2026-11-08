@@ -7,6 +7,7 @@
    translator makes each native method of the app call */
 #define _GNU_SOURCE
 #include "android/bridge/args.h"
+#include "android/bridge/arm32.h"
 #include "android/bridge/bridge.h"
 #include "android/bridge/hle.h"
 #include "android/bridge/hle_impl.h"
@@ -690,10 +691,29 @@ static bool start(JNIEnv* env, jstring library_dir) {
 }
 
 /* nativeLoad(path, libraryDir): null when the library loaded and its JNI_OnLoad ran, else dlerror's text */
+/* whether the file at path is an ELF of 32 bits (an armeabi or armeabi-v7a library) */
+static bool elf32(const char* path) {
+    unsigned char ident[5] = {0};
+    FILE* f = fopen(path, "rb");
+    size_t n = f ? fread(ident, 1, sizeof ident, f) : 0;
+    if (f) fclose(f);
+    return n == sizeof ident && !memcmp(ident, "\177ELF", 4) && ident[4] == 1;
+}
+
 static jstring JNICALL native_load(JNIEnv* env, jclass unused, jstring path, jstring library_dir) {
     (void)unused;
     if (!start(env, library_dir)) return (*env)->NewStringUTF(env, "dlopen failed: the native bridge doesn't start");
     const char* p = (*env)->GetStringUTFChars(env, path, NULL);
+    if (elf32(p)) {
+        /* the 32-bit bridge's (arm32.h), with its own window, loader and JNI */
+        const char* dir = library_dir ? (*env)->GetStringUTFChars(env, library_dir, NULL) : NULL;
+        char* error = arm32_jni_load(env, p, dir);
+        if (dir) (*env)->ReleaseStringUTFChars(env, library_dir, dir);
+        (*env)->ReleaseStringUTFChars(env, path, p);
+        jstring text = error && !(*env)->ExceptionCheck(env) ? (*env)->NewStringUTF(env, error) : NULL;
+        free(error);
+        return text;
+    }
     char error[1024];
     guest_env(env);
     /* the JVM's handlers are in place by now: the guest's crash report goes before them */
@@ -735,6 +755,14 @@ static jstring JNICALL native_load(JNIEnv* env, jclass unused, jstring path, jst
    reference (invokeL) or none */
 static uint64_t invoke(JNIEnv* env, jstring key, jobject self, jlongArray prims, jobjectArray refs, char* result) {
     const char* k = (*env)->GetStringUTFChars(env, key, NULL);
+    if (arm32_active()) {
+        bool found = false;
+        uint64_t r = arm32_jni_invoke(env, k, self, prims, refs, result, &found);
+        if (found) {
+            (*env)->ReleaseStringUTFChars(env, key, k);
+            return r;
+        }
+    }
     uint64_t fn = native_function(k);
     char* params = params_of(strchr(k, '('), result);
     if (!fn) {

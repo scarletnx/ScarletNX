@@ -19,6 +19,7 @@ Unity game: a 362 MB engine library with 265 MB of code, 20 smaller ones, and 62
 * [Vulkan: a pass-through](#vulkan-a-pass-through)
 * [EGL and GLES](#egl-and-gles)
 * [Hosts](#hosts)
+* [32-bit libraries](#32-bit-libraries)
 * [Status](#status)
 
 ## Memory: a guest pointer is a host pointer
@@ -313,6 +314,41 @@ builds for FreeBSD, macOS and Windows x64, where they differ:
 
 FreeBSD's and macOS's branches are written from those systems' manuals and have not been compiled. Windows' files
 compile with `clang --target=x86_64-w64-mingw32 -fsyntax-only` and the mingw-w64 headers.
+
+## 32-bit libraries
+
+An APK with no `lib/arm64-v8a` runs its `lib/armeabi-v7a` or `lib/armeabi` libraries: the install takes the best ABI
+the APK has, as a 64-bit phone does, into the app's `lib/arm`. These are ILP32 ARM code for bionic, so a guest pointer
+is 32 bits and cannot be a host pointer. The 32-bit bridge (`arm32.c`, `arm32_libc.c`, `arm32_jni.c`) is a separate
+one beside the 64-bit bridge:
+
+- **Memory.** The guest has a window of 4 GiB of its own: guest address `a` is host address `arm32_mem + a`, its
+  first 64 KiB not mapped. The libraries, the heap (bionic's `malloc` and `mmap`, the bridge's own allocator) and each
+  thread's 8 MiB stack are in it. A file that the guest maps is mapped there.
+- **Code.** The A32 and Thumb block compiler (`common/cpu/arm/exec.h`, the one the GNU ABI runtime's 32-bit programs
+  use) compiles each block when it is first reached. A table for each library's code keeps each address's block, so a
+  thread finds a compiled block without a lock.
+- **Calls.** An import is an address at the top of the window, 8 bytes apart. The dispatch loop gives a call there to
+  its host handler, which reads the arguments as AAPCS lays them out (r0 to r3, then the stack, a 64-bit one at an even
+  word; a float or a double in core registers, as Android's softfp ABI passes them) and returns to `lr`. Linux's kernel
+  helpers at `0xffff0fa0` to `0xffff0fe0` (`__kuser_cmpxchg` and the others, which ARMv5 code calls for its atomics) are
+  the bridge's too.
+- **The loader** maps the `PT_LOAD` segments, applies `R_ARM_RELATIVE`, `ABS32`, `GLOB_DAT` and `JUMP_SLOT`, finds the
+  symbols by the SysV hash, and runs `DT_INIT` and `DT_INIT_ARRAY`, then `JNI_OnLoad`. `__gnu_Unwind_Find_exidx` gives
+  a library's `PT_ARM_EXIDX`, for C++ exceptions.
+- **The system's libraries** are bionic's functions in ILP32's layouts (`struct stat`, `struct tm`, `FILE`, the
+  mutexes and conditions, which are host ones found by the guest's address), the guest's `printf` and `scanf`, libm,
+  liblog and libdl. GLES 1.1 is `hle_gles.c`'s, with each call's arguments put in an AArch64 CPU's registers as AAPCS64
+  passes them, its pointers made host pointers.
+- **JNI.** The guest's `JNIEnv` and `JavaVM` are tables of 32-bit import addresses in the window. A host reference or
+  ID is 64 bits, so the guest gets a 32-bit handle for each: a local reference is an index into the thread's list,
+  which the native method's return or `PopLocalFrame` shortens, a global or a weak one an index into a table, and a
+  method or a field an index into the table of IDs, with the method's signature for the calls with variable arguments.
+  A string's or an array's elements are a copy in the window, written back at its release.
+
+The 32-bit bridge's libc is the set that apps have needed so far, and an import it lacks says so once and returns 0.
+It has no `pthread_create`, signals, sockets, EGL for native code, OpenSL ES or Vulkan yet. An armeabi game engine of
+6 MB (GLES 1.1 through `GLSurfaceView`) runs: its menus, its game and its touches.
 
 ## Status
 
