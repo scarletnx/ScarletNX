@@ -1662,6 +1662,9 @@ endif()
 # the JDK cmake/android_jdk.cmake takes for the Android app driver, and the reason it gives when it takes none
 add_test(NAME android_jdk COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/android-jdk-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/android_jdk_test.cmake")
+# the Android app tells the system it is a game (its game mode and the makers' game launchers)
+add_test(NAME android_manifest COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" -P
+         "${CMAKE_CURRENT_SOURCE_DIR}/android_manifest.cmake")
 # every SNX_ variable a preset of CMakePresets.json sets is one the build reads
 add_test(NAME preset_variables COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" -P
          "${CMAKE_CURRENT_SOURCE_DIR}/preset_variables_test.cmake")
