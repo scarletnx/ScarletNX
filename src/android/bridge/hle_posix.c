@@ -228,7 +228,7 @@ static void g_ftell(CPU* c, void* data) {
 #endif
 #define FILE_CALLS(F)                                                                                                  \
     F(fclose, 0) F(feof, 0) F(ferror, 0) F(clearerr, 0) F(fflush, 0) F(fgets, 2) F(fileno, 0) F(fputc, 1) F(fputs, 1)  \
-    F(fread, 3) F(fwrite, 3) F(getc, 0) F(ungetc, 1) F(rewind, 0) F(setbuf, 0) F(freopen, 2) F(pclose, 0)             \
+    F(fread, 3) F(fwrite, 3) F(getc, 0) F(fgetc, 0) F(ungetc, 1) F(rewind, 0) F(setbuf, 0) F(freopen, 2) F(pclose, 0)             \
     SEEK_FILE_CALLS(F) WIDE_FILE_CALLS(F)
 #define FILE_CALL_OBJECT(name, k) static const FileCall fc_##name = {(void*)name, k};
 FILE_CALLS(FILE_CALL_OBJECT)
@@ -254,6 +254,34 @@ static void g_fwrite_chk(CPU* c, void* data) {
         abort();
     }
     X(0) = fwrite(PTR(0), X(1), X(2), hle_file(X(3)));
+}
+
+/* __fgets_chk(buffer, size, file, buffer_size): fgets, with bionic's checks that the size is not negative and fits
+   the buffer; a failed one ends the app with the sizes, as bionic's __fortify_fatal does */
+static void g_fgets_chk(CPU* c, void* data) {
+    (void)data;
+    int size = (int)X(1);
+    if (size < 0) {
+        fprintf(stderr, "scarletnx-android: FORTIFY: fgets: buffer size %d < 0\n", size);
+        abort();
+    }
+    if ((uint64_t)size > X(3)) {
+        fprintf(stderr, "scarletnx-android: FORTIFY: fgets: prevented %d-byte write into %llu-byte buffer\n", size,
+                (unsigned long long)X(3));
+        abort();
+    }
+    X(0) = (uint64_t)(uintptr_t)fgets(PTR(0), size, hle_file(X(2)));
+}
+/* mkdtemp(template): its XXXXXX made a name and the folder made: the template, or NULL */
+static void g_mkdtemp(CPU* c, void* data) {
+    (void)data;
+    char* t = PTR(0);
+#ifdef _WIN32
+    bool ok = t && !_mktemp_s(t, strlen(t) + 1) && !_mkdir(t);
+#else
+    bool ok = t && mkdtemp(t);
+#endif
+    if (!ok) X(0) = 0;
 }
 
 /* getdelim(line, size, delimiter, file) and getline(line, size, file), POSIX's, on every host (Windows' C runtime has
@@ -2122,7 +2150,7 @@ const HleSymbol hle_posix[] = {
     {"stderr", NULL, &g_posix.guest_stderr},
     {"environ", NULL, &g_posix.environment},
     FILE_CALLS(FILE_CALL_ENTRY)
-    A(__fread_chk, g_fread_chk), A(__fwrite_chk, g_fwrite_chk), A(getdelim, g_getdelim), A(getline, g_getline),
+    A(__fread_chk, g_fread_chk), A(__fwrite_chk, g_fwrite_chk), A(__fgets_chk, g_fgets_chk), A(mkdtemp, g_mkdtemp), A(getdelim, g_getdelim), A(getline, g_getline),
     A(fopen, g_fopen), A(fdopen, g_fdopen), A(rename, g_rename), A(setvbuf, g_setvbuf), P(tmpfile), P(remove),
     A(tmpnam, refused), A(putchar, g_putchar), A(puts, g_puts), A(perror, g_perror), A(popen, g_popen),
     A(open, g_open), A(__open_2, g_open_2), A(fcntl, g_fcntl), A(ioctl, g_ioctl),
