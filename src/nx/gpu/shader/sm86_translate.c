@@ -2049,8 +2049,10 @@ static u32 ballot32(Ctx* c, u32 pred) {
    multiply by w taken back for a perspective input of frequency 0 */
 static u32 ipa_input(Ctx* c, u32 i, u32 k, u32 loc, u32 freq) {
     u32 v = to_f(c, input_load(c, i, k));
-    if (loc == 1 && !(c->centroid_mask & (1u << i))) {
-        /* a variable has one location: centroid when any IPA of the input asks for it */
+    if (loc == 1 && c->in_attr[i] && !(c->centroid_mask & (1u << i))) {
+        /* a variable has one location: centroid when any IPA of the input asks for it. An input that no stage
+           before writes (in_unfed_mask) is a constant with no variable: a decoration of it named id 0, a module
+           that spirv-val and the validation layer refuse */
         spv_emit_decorate(&c->e, c->in_attr[i], 16 /* Centroid */, NULL, 0);
         c->centroid_mask |= 1u << i;
     }
