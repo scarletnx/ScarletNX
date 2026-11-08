@@ -21,7 +21,7 @@ fails.
 
 ```sh
 python3 scripts/edenprobe.py run --runtime build/scarletnx --nro edenprobe.nro --out /tmp/edenprobe \
-    --mode "quick notime fatal cpu fs video display kernel audio" \
+    --mode "quick notime cpu fs video display kernel audio" \
     [--baseline tests/edenprobe/linux-x86_64.txt]
 ```
 
@@ -62,7 +62,6 @@ Those of the example, which CI runs; edenprobe's
 |---|---|
 | `quick` | the run with no one in front of it: every suite named, the report, exit |
 | `notime` | each drawing suite once, no timing passes, no times in the report |
-| `fatal` | the cases that may end the program: SM4, CNTVCT_EL0 and DAIF reads, geometry shaders, BC4 arrays |
 | `cpu` | the processor's instructions |
 | `fs` | the memory card: a 64 MiB file and 256 small ones, written once and read back |
 | `video` | the video image compositor, and the VP9 decoder on libvpx's test vectors |

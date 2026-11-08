@@ -1,6 +1,6 @@
 # edenprobe cases, one a line: "suite: name" passes, "[RESULT] suite: name" ends as RESULT (docs/EDENPROBE.md)
-# build: v0.9.0
-# mode: audio cpu display fatal fs kernel notime quick video
+# build: v0.10.0
+# mode: audio cpu display fs kernel notime quick video
 audio: a 10 kHz voice at half the output rate keeps the level default quality's table gives
 audio: a 10 kHz voice at half the output rate keeps the level high quality's table gives
 audio: a 15 kHz voice at 1.25 times the output rate keeps the level default quality's table gives
@@ -25,8 +25,9 @@ cpu: fcvtzs and fcvtzu with 64 fraction bits scale by 2^64
 cpu: frinta rounds halfway cases away from zero
 cpu: frintx rounds to nearest even and raises inexact
 cpu: mrs cntvct_el0 reads a virtual count that moves with the physical one
-[skip (crashed)] cpu: mrs daif reads nothing outside the four interrupt mask bits
+[skip (banned)] cpu: mrs daif reads nothing outside the four interrupt mask bits
 cpu: sdiv and udiv by zero give zero, 32 and 64 bits
+[skip (banned)] cpu: sm4ekey and sm4e give the SM4 standard's worked example
 cpu: sqdmlal, sqdmlsl and sqdmull double, accumulate and saturate
 cpu: sqrshl and uqrshl round, shift and saturate lanes of every width
 cpu: sqrshrn, uqrshrn and sqrshrun round and narrow scalars
@@ -66,6 +67,7 @@ reference: a bearer token's alphabet, and two id lists compared as sets
 reference: a blend case catches the alpha equation taken from the colour one
 reference: a blend case catches the alpha source factor taken from the colour one
 reference: a centre exactly a margin away is still judged
+reference: a counter clockwise triangle's face under each viewport of the fixed suite
 reference: a draw texture of 16 by 16 at (40, 24) is twelve words from 0x420
 reference: a friend profile is read at the offsets the guest reads it at
 reference: a margin holds back the pixels an edge runs through
@@ -75,6 +77,7 @@ reference: a point on an edge that is neither top nor left is not covered
 reference: a point on the left edge is covered
 reference: a point on the top edge is covered
 reference: a profile slot is judged by its id as well as its fields
+reference: a rectangle lands where each viewport of the fixed suite puts it
 reference: a rectangle moved down or up over itself keeps every source row
 reference: a rectangle moved over itself reads each source texel before it goes
 reference: a rectangle not wholly inside is refused and changes nothing
@@ -101,6 +104,7 @@ reference: an HTTP response head says where its body is and when it is whole
 reference: an RGBA8 texel read as R32_Uint and rotated is its word least significant first
 reference: an address length recvfrom left unset is not answered with
 reference: an aliased move writes what the alias shader writes
+reference: an alpha of 0.5 at three references tells the eight alpha tests apart
 reference: an exterior point is not covered
 reference: an index limit goes high word first
 reference: an inline wait for idle is 0x80000044
@@ -138,6 +142,7 @@ reference: clip space plus y is the top of the target
 reference: clz of each 16-bit lane the cpu suite uses
 reference: clz of each 32-bit lane the cpu suite uses
 reference: clz of each 8-bit lane the cpu suite uses
+reference: depth bounds keep a stored 0.5 at either end and reject it outside
 reference: each blend case's sentence is the arithmetic the reference does
 reference: edge distance is the perpendicular one in pixels
 reference: every byte survives the trip through a normalised float
@@ -196,6 +201,7 @@ reference: pad: the controller answers first, the style case after every button
 reference: pad: the styles and the ids are named as the service names them
 reference: pad: up answers yes, down no, both or neither nothing
 reference: painting cells covers exactly the cells in the mask
+reference: points of size 1, 3, 4 and 8 cover their squares of pixels
 reference: repeating folds every index onto a texel
 reference: sampling a region one texel per pixel moves the texture to its corner
 reference: sched: a case that could not run says why, and the note adds the cases up
@@ -296,6 +302,7 @@ reference: the 16-bit texel 0x8101 is 128 from FP16 and 129 the other two ways
 reference: the 16-bit upper lanes hold answers a lost half cannot give
 reference: the ETC2 builders make the blocks the etc2 suite samples
 reference: the account nobody knows is one no line names
+reference: the alpha tests' names read as the fixed suite's cases do
 reference: the answer the console never gives is refused and named at every pixel
 reference: the bit count agrees with a table of nibbles
 reference: the bit scans agree with counting leading and trailing noughts
@@ -308,6 +315,7 @@ reference: the coherence pattern is the four sums, modulo 256
 reference: the division agrees with a long division done a bit at a time
 reference: the edge operands are where their budgets say
 reference: the fill rule triangles are the two halves of a whole pixel square
+reference: the fixed suite's points put no pixel centre on an edge
 reference: the float edge reference matches the values worked out by hand
 reference: the float judge takes the console's answer, noughts by their sign
 reference: the format conversions invert over every code and round at the ends
@@ -418,6 +426,7 @@ reference: vic: vic_target_clip expects what the script expects
 reference: vic: vic_target_clip_matrix expects what the script expects
 reference: vic: vic_target_odd expects what the script expects
 reference: vic: vic_two_slots expects what the script expects
+reference: viewport 0's y scale of 32 is the words 0x20010281 0x42000000
 reference: vp9: a case's line counts its images and names the first wrong one
 reference: vp9: a job's command words, word by word
 reference: vp9: a picture written block linear reads back as its planes' MD5s
@@ -432,6 +441,7 @@ reference: vp9: two cases are built both ways, the others once
 reference: vp9: two forms say which decodes, and the note adds the cases up
 reference: winding does not change which pixels are covered
 reference: with no margin every pixel is judged
+reference: z of -1, -0.5, 0 and 0.5 are depths 0, 0.25, 0.5 and 0.75 from minus one
 sched: a thread behind a spinning one moves to an idle core of its mask
 sched: a thread that becomes ready at a better priority takes the core from one spinning
 sched: svcSleepThread(0) leaves the thread on its core
@@ -455,7 +465,10 @@ selfcheck: three units above a power of two is three representable values
 selfcheck: three units below a power of two is six representable values
 selfcheck: ulp neighbours are one apart
 selfcheck: ulp zero tolerance rejects a neighbour
-support: Y and X in one edge change neither choice, and A in that edge still begins
+support: Y and X in one edge change nothing, and A in that edge still begins
+support: a ban comes after a crash in this run and before the crash list
+support: a ban's versions are every one, a list, or bounds on dotted numbers
+support: a case banned on this machine is skipped as banned, its line said, until unban
 support: a case inherits neither another case's samples nor a pass's leftovers
 support: a case known to hang is skipped until hang asks, and retry does not run it
 support: a case name becomes the file name it reads like
@@ -464,9 +477,9 @@ support: a case on the crash list is skipped as crashed until retry asks for it
 support: a case reads the work it has done so far, outside the timed passes too
 support: a case that ended this run is skipped even under retry
 support: a case that ended without starting, or started over another, is counted
+support: a case that ends the program runs with no word, and only a crash skips it
 support: a case that put nothing on the graphics unit reports no time
 support: a case the program ended inside is counted apart and in a colour of its own
-support: a case the table names is skipped as may crash until fatal asks for it
 support: a case with no detail is only said to have passed when it did
 support: a case with no picture reports the line it always did
 support: a case with no pictures opens on its whole detail
@@ -497,6 +510,7 @@ support: a list longer than the overview says there is more, whole, where there 
 support: a long group scrolls to keep the selected case on screen
 support: a name with no room for its number gives characters up instead
 support: a name with nothing usable in it still names a file
+support: a new run says how many ban lines hold for its machine, with the version
 support: a passing case leaves no picture unless one was asked for
 support: a perf line says what the summary says, or nothing at all
 support: a picture is written where the line says it is
@@ -572,12 +586,15 @@ support: every screen leaves the countdown its rows and names its buttons
 support: every suite a run reports is shown under its own family
 support: holding the button asks for the detailed mode and never cancels it
 support: left and right move between families on the overview and groups inside
+support: libc, jni and framework are words, and each frontend runs its own families
+support: machine= names the run's machine and its version, and a bad one says the machine in effect
 support: on the results a tapped row is the cursor's, then opened; the bar's boxes do what they say
 support: on the start and resume screens a tapped row is the cursor's, then chosen
 support: only the verdict pass hands a time to a line
 support: punctuation and case leave the file name alone
 support: quit leaves from every level, and a run that kept nothing can leave
 support: several lines written forward are the file, with nothing missing between
+support: source/bans.txt's lines are whole, and the two runs' lines are there
 support: stepping through a group's cases comes round to where it started
 support: the checks that record a crash for this run take it back
 support: the crash list reads the cases it names and nothing else
@@ -596,7 +613,6 @@ support: the listening screen names the part, the take and what to listen for, a
 support: the listening screen shows its steps done in a bar, as the running screen
 support: the log line before a rehearsed case names the suite, pass and case
 support: the longest line a case can make still fits the buffer it is given
-support: the may-crash table names each case once, with its family and why
 support: the median is the middle value, or between the two middle ones
 support: the mode file is read a whole word at a time
 support: the note is cut to its buffer, never past it
@@ -614,15 +630,16 @@ support: the report says what the mode file was and what was not understood
 support: the report tells its watcher each case's start and end, and no one else
 support: the resume screen goes on unless start over is chosen, and a mask chooses nothing
 support: the resume screen shows where it stopped and which choice the cursor is on
+support: the runner names its files under a frontend's root, and refuses one too long
 support: the running screen draws twice a second and counts a step's cases by pass
 support: the running screen shows the step, the case and the steps done in proportion
 support: the screens gather the cases into their suites, families in the order the run met them
-support: the start screen asks only with something to choose, a button a choice
-support: the start screen counts the cases that may crash in the families chosen
+support: the start screen asks only with something to choose, X for the crash list
+support: the start screen draws the cursor's row, each box and icon, and no warning for an empty crash list
 support: the start screen keeps the video, kernel, display and service families the file names, which have no row
 support: the start screen opens on begin the run, every row as the mode file says
 support: the start screen waits ten seconds for a person, and a press keeps it
-support: the start screen warns exactly while a choice that can end the program is on
+support: the start screen warns exactly while the crash list's choice is on
 support: the start screen's menu turns the row under the cursor, listen with audio
 support: the three colours of a verdict are named under the pictures
 support: the time comes after the pictures a case names
@@ -632,7 +649,7 @@ support: the two panels show two pictures and not one twice
 support: the view cycles only on a case that kept pictures
 support: the walk from the overview to a case and back lands where it should
 support: the widest mode goes into the journal whole and a launch goes on in it
-support: the word fatal, and nothing else, asks for the cases that may crash
+support: the word fatal changes nothing, and the mode line says so once
 support: the word hang asks for the cases that hang, and only beside retry for both
 support: the word listen asks for the listening sequence and the audio family
 support: the word noprogress turns the running screen off and nothing else
