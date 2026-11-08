@@ -1108,7 +1108,8 @@ static void store_result(Method* m, uint32_t pc, const Insn* in, const char* ret
 
 /* Calls of the JDK that behave otherwise on Android, sent to the runtime's own. An instance method becomes a static
    one with the receiver as its first parameter. System.loadLibrary must load the app's native libraries through the
-   native bridge (docs/android/NATIVE.md), not HotSpot's loader */
+   native bridge (docs/android/NATIVE.md), not HotSpot's loader. ByteBuffer.allocateDirect gives a buffer that native
+   code reaches, which for 32-bit libraries must be in their window */
 typedef struct {
     const char *owner, *name, *desc;
     const char *to_owner, *to_name;
@@ -1118,6 +1119,7 @@ static const Remap remaps[] = {
     {"Ljava/lang/System;", "load", "(Ljava/lang/String;)V", "Lsnx/dalvik/Runtime;", "load"},
     {"Ljava/lang/Runtime;", "loadLibrary", "(Ljava/lang/String;)V", "Lsnx/dalvik/Runtime;", "runtimeLoadLibrary"},
     {"Ljava/lang/Runtime;", "load", "(Ljava/lang/String;)V", "Lsnx/dalvik/Runtime;", "runtimeLoad"},
+    {"Ljava/nio/ByteBuffer;", "allocateDirect", "(I)Ljava/nio/ByteBuffer;", "Lsnx/dalvik/Runtime;", "allocateDirect"},
 };
 static const Remap* remap_of(const char* owner, const char* name, const char* desc) {
     for (size_t i = 0; i < sizeof remaps / sizeof *remaps; ++i)

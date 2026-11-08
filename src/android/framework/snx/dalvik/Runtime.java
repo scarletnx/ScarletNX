@@ -22,6 +22,22 @@ public final class Runtime {
         snx.android.nativebridge.NativeBridge.load(path);
     }
     public static void runtimeLoadLibrary(java.lang.Runtime runtime, String name) { loadLibrary(name); }
+
+    private static final java.lang.ref.Cleaner cleaner = java.lang.ref.Cleaner.create();
+    /**
+     * ByteBuffer.allocateDirect, which the translator sends here: a buffer in the memory that the app's native code
+     * reaches. A 32-bit library's is its 4 GiB window, so the buffer is there while one runs, and its memory is freed
+     * when the buffer is unreachable; else the JDK's own buffer.
+     */
+    public static java.nio.ByteBuffer allocateDirect(int capacity) {
+        if (capacity < 0) throw new IllegalArgumentException("capacity < 0: (" + capacity + " < 0)");
+        long[] address = new long[1];
+        java.nio.ByteBuffer b = snx.android.nativebridge.NativeBridge.allocateGuest(capacity, address);
+        if (b == null) return java.nio.ByteBuffer.allocateDirect(capacity);
+        long a = address[0];
+        cleaner.register(b, () -> snx.android.nativebridge.NativeBridge.freeGuest(a));
+        return b;
+    }
     public static void runtimeLoad(java.lang.Runtime runtime, String path) { load(path); }
 
     /**

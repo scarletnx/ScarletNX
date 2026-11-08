@@ -791,6 +791,15 @@ static bool start(JNIEnv* e, const char* library_dir) {
 uint32_t arm32_jni_vm(void) { return j.vm_guest; }
 jobject arm32_jni_ref(uint32_t handle) { return host_ref(handle); }
 
+jobject arm32_jni_allocate(JNIEnv* e, jint capacity, jlongArray address) {
+    if (!arm32_active() || capacity < 0) return NULL;
+    uint32_t a = arm32_malloc((uint32_t)capacity ? (uint32_t)capacity : 1);
+    if (!a) return NULL;
+    memset(arm32_mem + a, 0, (size_t)capacity);
+    jlong g = a;
+    (*e)->SetLongArrayRegion(e, address, 0, 1, &g);
+    return (*e)->NewDirectByteBuffer(e, arm32_mem + a, capacity);
+}
 JNIEnv* arm32_jni_env(void) { return env_of(); }
 
 char* arm32_jni_load(JNIEnv* e, const char* path, const char* library_dir) {
