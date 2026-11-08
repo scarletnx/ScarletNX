@@ -835,7 +835,14 @@ static uint32_t send_process(unsigned sig) {
 /* Linux's ARM frame: siginfo_t (128 bytes), then ucontext_t: uc_flags, uc_link, uc_stack (12 bytes), uc_mcontext
    (trap_no, error_code, oldmask, r0 to r10, fp, ip, sp, lr, pc, cpsr, fault_address: 84 bytes), uc_sigmask, and room
    for the rest of bionic's (the padding and the VFP registers) */
-enum { SIGINFO = 128, UC_MCONTEXT = 20, MC_R0 = 12, MC_CPSR = 12 + 16 * 4, UC_SIGMASK = 20 + 84, UCONTEXT = 744 };
+enum {
+    SIGINFO_SIZE = 128,
+    UC_MCONTEXT = 20,
+    MC_R0 = 12,
+    MC_CPSR = 12 + 16 * 4,
+    UC_SIGMASK = 20 + 84,
+    UCONTEXT_SIZE = 744
+};
 
 static void run_one(SnxArmCPU* c, ThreadInfo* t, unsigned sig) {
     pthread_mutex_lock(&action_lock);
@@ -853,9 +860,9 @@ static void run_one(SnxArmCPU* c, ThreadInfo* t, unsigned sig) {
     uint32_t sp = c->r[13];
     bool alt = (a.flags & SA_ONSTACK_) && t->altstack && !t->on_altstack;
     if (alt) sp = t->altstack + t->altstack_size;
-    sp = (sp - SIGINFO - UCONTEXT - 64) & ~7u;
-    uint32_t info = sp + 64, uc = info + SIGINFO;
-    memset(arm32_mem + info, 0, SIGINFO + UCONTEXT);
+    sp = (sp - SIGINFO_SIZE - UCONTEXT_SIZE - 64) & ~7u;
+    uint32_t info = sp + 64, uc = info + SIGINFO_SIZE;
+    memset(arm32_mem + info, 0, SIGINFO_SIZE + UCONTEXT_SIZE);
     wr32(info, sig);
     wr32(info + 8, (uint32_t)-6); /* SI_TKILL */
     wr32(info + 12, (uint32_t)getpid());
