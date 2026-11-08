@@ -379,6 +379,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_storage_buffer_keep COMMAND snx-test-vulkan -H --vk_memory=1)
     set_tests_properties(vulkan_storage_buffer_keep PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_BUFFER_KEEP_ONLY=1"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the budget's trim alone (tests/vulkan_trim.inc): a trim that wants more than everything held would take what the
+    # other checks hold
+    add_test(NAME vulkan_trim COMMAND snx-test-vulkan -H)
+    set_tests_properties(vulkan_trim PROPERTIES TIMEOUT 30 ENVIRONMENT "SNX_TEST_TRIM_ONLY=1"
+        PASS_REGULAR_EXPRESSION "PASS headless Vulkan trim only" FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again with graphics descriptors in descriptor buffers (gpu/vk/descriptors.c, vk_descriptors_mode),
     # also with guest memory read in place, under the validation layer when it is installed. A device without
     # VK_EXT_descriptor_buffer skips them (77). The layer reports errors only: the targetless-stores check draws with

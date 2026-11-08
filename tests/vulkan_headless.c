@@ -5255,6 +5255,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_storage_buffer_keep.inc"
 #include "vulkan_fragment_barrier.inc"
 #include "vulkan_capture_cap.inc"
+#include "vulkan_trim.inc"
 
 /* key's row among the settings the runtime applies itself (options.c's), or NULL */
 static const IniOpt* setting_row(const char* key) {
@@ -5739,6 +5740,13 @@ static int run_headless(int argc, char** argv) {
         vk_pipeline_quiesce();
         CHECK(!viw_report());
         printf("PASS headless Vulkan vertex input only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
+    if (getenv("SNX_TEST_TRIM_ONLY")) { /* the budget's trim alone: a trim that wants everything takes the others' */
+        CHECK(!check_trim_working_set());
+        vk_finish();
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan trim only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
     if (getenv("SNX_TEST_PASS_BREAKS_ONLY")) { /* vulkan_pass_breaks.inc's checks alone */
