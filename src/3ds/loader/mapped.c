@@ -7,7 +7,9 @@
 #include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#include <windows.h> /* GetFileAttributesExA */
+#else
 #include <sys/stat.h>
 #endif
 
