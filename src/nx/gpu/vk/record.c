@@ -435,9 +435,16 @@ static int rec_drop_draw(void) {
         WARN("vulkan: a pipeline couldn't be made: its draws are dropped\n");
     return 1;
 }
+/* the programs of the draws recorded next (rec_draw_tag), which their checkpoints carry: the GPU thread's */
+static u64 g_rec_tag[2];
+void rec_draw_tag(u64 first, u64 second) {
+    g_rec_tag[0] = first;
+    g_rec_tag[1] = second;
+}
 typedef struct {
     VkCommandBuffer cb;
     u32 a1, a2, a3, a4;
+    u64 tag[2];
 } DrawArgs;
 /* NV checkpoints name the draw or dispatch that faults. The marker is a small index into a ring of descriptions the
    recording thread fills, not a string pointer: a string ring of the same size would be overwritten before the GPU (which
@@ -493,17 +500,17 @@ void vk_checkpoint_dump(const char* why) {
 }
 static void draw_run(const void* p) {
     const DrawArgs* x = p;
-    vk_checkpoint(x->cb, "draw", 0, 0, 0, 0, 0);
+    vk_checkpoint(x->cb, "draw", x->tag[0], x->tag[1], 0, 0, 0);
     if (!rec_drop_draw()) vkCmdDraw(x->cb, x->a1, x->a2, x->a3, x->a4);
 }
 void rec_CmdDraw(VkCommandBuffer cb, u32 vertices, u32 instances, u32 first_vertex, u32 first_instance) {
     if (!rec_on(cb)) {
-        vk_checkpoint(cb, "draw", 0, 0, 0, 0, 0);
+        vk_checkpoint(cb, "draw", g_rec_tag[0], g_rec_tag[1], 0, 0, 0);
         vkCmdDraw(cb, vertices, instances, first_vertex, first_instance);
         return;
     }
     DrawArgs* x = rec_push(draw_run, sizeof *x);
-    *x = (DrawArgs){cb, vertices, instances, first_vertex, first_instance};
+    *x = (DrawArgs){cb, vertices, instances, first_vertex, first_instance, {g_rec_tag[0], g_rec_tag[1]}};
     rec_commit();
 }
 typedef struct {
@@ -511,41 +518,44 @@ typedef struct {
     u32 a1, a2, a3;
     i32 a4;
     u32 a5;
+    u64 tag[2];
 } DrawIndexedArgs;
 static void draw_indexed_run(const void* p) {
     const DrawIndexedArgs* x = p;
-    vk_checkpoint(x->cb, "draw_indexed", 0, 0, 0, 0, 0);
+    vk_checkpoint(x->cb, "draw_indexed", x->tag[0], x->tag[1], 0, 0, 0);
     if (!rec_drop_draw()) vkCmdDrawIndexed(x->cb, x->a1, x->a2, x->a3, x->a4, x->a5);
 }
 void rec_CmdDrawIndexed(VkCommandBuffer cb, u32 indices, u32 instances, u32 first_index, i32 vertex_offset,
                         u32 first_instance) {
     if (!rec_on(cb)) {
-        vk_checkpoint(cb, "draw_indexed", 0, 0, 0, 0, 0);
+        vk_checkpoint(cb, "draw_indexed", g_rec_tag[0], g_rec_tag[1], 0, 0, 0);
         vkCmdDrawIndexed(cb, indices, instances, first_index, vertex_offset, first_instance);
         return;
     }
     DrawIndexedArgs* x = rec_push(draw_indexed_run, sizeof *x);
-    *x = (DrawIndexedArgs){cb, indices, instances, first_index, vertex_offset, first_instance};
+    *x = (DrawIndexedArgs){cb, indices, instances, first_index, vertex_offset, first_instance,
+                           {g_rec_tag[0], g_rec_tag[1]}};
     rec_commit();
 }
 /* an Ounce's mesh draw: groups workgroups in a row (render.c) */
 typedef struct {
     VkCommandBuffer cb;
     u32 groups;
+    u64 tag[2];
 } DrawMeshArgs;
 static void draw_mesh_run(const void* p) {
     const DrawMeshArgs* x = p;
-    vk_checkpoint(x->cb, "mesh", 0, 0, 0, 0, 0);
+    vk_checkpoint(x->cb, "mesh", x->tag[0], x->tag[1], 0, 0, 0);
     if (!rec_drop_draw()) vkCmdDrawMeshTasksEXT(x->cb, x->groups, 1, 1);
 }
 void rec_CmdDrawMeshTasks(VkCommandBuffer cb, u32 groups) {
     if (!rec_on(cb)) {
-        vk_checkpoint(cb, "mesh", 0, 0, 0, 0, 0);
+        vk_checkpoint(cb, "mesh", g_rec_tag[0], g_rec_tag[1], 0, 0, 0);
         vkCmdDrawMeshTasksEXT(cb, groups, 1, 1);
         return;
     }
     DrawMeshArgs* x = rec_push(draw_mesh_run, sizeof *x);
-    *x = (DrawMeshArgs){cb, groups};
+    *x = (DrawMeshArgs){cb, groups, {g_rec_tag[0], g_rec_tag[1]}};
     rec_commit();
 }
 /* the indirect draws: kind bit 0 indexed, bit 1 limited by the count at count_buf */
@@ -554,9 +564,10 @@ typedef struct {
     VkBuffer buf, count_buf;
     VkDeviceSize off, count_off;
     u32 kind, max, stride;
+    u64 tag[2];
 } DrawIndirectArgs;
 static void draw_indirect_now(const DrawIndirectArgs* x) {
-    vk_checkpoint(x->cb, "draw_indirect", 0, 0, 0, 0, 0);
+    vk_checkpoint(x->cb, "draw_indirect", x->tag[0], x->tag[1], 0, 0, 0);
     switch (x->kind) {
         case 0: vkCmdDrawIndirect(x->cb, x->buf, x->off, x->max, x->stride); break;
         case 1: vkCmdDrawIndexedIndirect(x->cb, x->buf, x->off, x->max, x->stride); break;
@@ -572,7 +583,7 @@ static void draw_indirect_run(const void* p) {
 void rec_CmdDrawIndirect(VkCommandBuffer cb, int indexed, VkBuffer buf, VkDeviceSize off, VkBuffer count_buf,
                          VkDeviceSize count_off, u32 max, u32 stride) {
     DrawIndirectArgs a = {cb, buf, count_buf, off, count_off, (indexed ? 1u : 0u) | (count_buf ? 2u : 0u), max,
-                          stride};
+                          stride, {g_rec_tag[0], g_rec_tag[1]}};
     if (!rec_on(cb)) {
         draw_indirect_now(&a);
         return;
