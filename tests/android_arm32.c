@@ -6,6 +6,7 @@
 #include "android/bridge/arm32.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -393,6 +394,55 @@ static void test_calls(void) {
     remove(G(in_dir("data")));
 }
 
+/* ---- libm, soft-float: a double in two words, a float in one ---- */
+
+static uint32_t f_bits(float f) {
+    uint32_t b;
+    memcpy(&b, &f, sizeof b);
+    return b;
+}
+static uint64_t d_bits(double d) {
+    uint64_t b;
+    memcpy(&b, &d, sizeof b);
+    return b;
+}
+#define D(d) (uint32_t)d_bits(d), (uint32_t)(d_bits(d) >> 32)
+/* name called with words, its double result from r0 and r1 */
+static uint64_t call64(const char* name, const uint32_t* words, unsigned count) {
+    uint32_t fn = arm32_hle_symbol(name), high = 0;
+    if (!fn) {
+        fprintf(stderr, "android_arm32: the 32-bit bridge has no %s\n", name);
+        g_t.failures++;
+        return 0;
+    }
+    uint32_t low = arm32_call(fn, words, count, &high);
+    return low | (uint64_t)high << 32;
+}
+#define CALL64(name, ...) call64(name, WORDS(__VA_ARGS__), COUNT(__VA_ARGS__))
+
+static void test_libm(void) {
+    expect_int("expm1(1e-10)", (int64_t)CALL64("expm1", D(1e-10)), (int64_t)d_bits(expm1(1e-10)));
+    expect_int("expm1f(1e-5)", CALL("expm1f", f_bits(1e-5f)), f_bits(expm1f(1e-5f)));
+    expect_int("log1p(1e-10)", (int64_t)CALL64("log1p", D(1e-10)), (int64_t)d_bits(log1p(1e-10)));
+    expect_int("log1pf(1e-5)", CALL("log1pf", f_bits(1e-5f)), f_bits(log1pf(1e-5f)));
+    expect_int("fmax(-0.5, 2)", (int64_t)CALL64("fmax", D(-0.5), D(2.0)), (int64_t)d_bits(2.0));
+    expect_int("fmaxf(NAN, 1)", CALL("fmaxf", f_bits(NAN), f_bits(1.0f)), f_bits(1.0f));
+    expect_int("fmin(-0.5, 2)", (int64_t)CALL64("fmin", D(-0.5), D(2.0)), (int64_t)d_bits(-0.5));
+    expect_int("fminf(3, -1)", CALL("fminf", f_bits(3.0f), f_bits(-1.0f)), f_bits(-1.0f));
+    expect_int("nextafter(1, 2)", (int64_t)CALL64("nextafter", D(1.0), D(2.0)), 0x3ff0000000000001ll);
+    expect_int("nextafterf(1, 2)", CALL("nextafterf", f_bits(1.0f), f_bits(2.0f)), 0x3f800001);
+    /* fma keeps the product's rounding error: 0x1.000002p0 * 0x1.fffffcp-1 - 1 */
+    float a = 0x1.000002p0f, b = 0x1.fffffcp-1f;
+    expect_int("fmaf(a, b, -1)", CALL("fmaf", f_bits(a), f_bits(b), f_bits(-1.0f)), f_bits(fmaf(a, b, -1.0f)));
+    expect_int("fmaf is fused", CALL("fmaf", f_bits(a), f_bits(b), f_bits(-1.0f)) != f_bits(a * b - 1.0f), 1);
+    expect_int("fma(0.1, 10, -1)", (int64_t)CALL64("fma", D(0.1), D(10.0), D(-1.0)), (int64_t)d_bits(fma(0.1, 10, -1)));
+    expect_int("lround(2.5)", (int32_t)CALL("lround", D(2.5)), 3);
+    expect_int("lround(-2.5)", (int32_t)CALL("lround", D(-2.5)), -3);
+    expect_int("lroundf(-1.5)", (int32_t)CALL("lroundf", f_bits(-1.5f)), -2);
+    expect_int("llround(1e12 + 0.5)", (int64_t)CALL64("llround", D(1e12 + 0.5)), 1000000000001ll);
+    expect_int("llroundf(-2.5)", (int64_t)CALL64("llroundf", f_bits(-2.5f)), -3);
+}
+
 /* ---- the shim: every name it sends to the 64-bit bridge has a handler there ---- */
 
 static void test_shim(void) {
@@ -528,6 +578,7 @@ int main(void) {
     test_fortify();
     test_files();
     test_calls();
+    test_libm();
     rmdir(g_t.dir);
     if (g_t.failures) fprintf(stderr, "android_arm32: %d check(s) failed\n", g_t.failures);
     return g_t.failures ? 1 : 0;
