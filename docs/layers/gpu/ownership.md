@@ -186,10 +186,15 @@ desktop, `cmd.c`).
 
 ### What the GPU reads in place
 
-Vertex and index ranges and read-only storage buffers (`vk_buf_get_input`, `vk_buf_get_window`). For each range,
-`buf_get` first checks the pending results as before (a graphics or compute result that has not landed, which only
-the GPU holds) and GPU ownership (`own.c`). If guest memory holds the bytes, `vk_uma_get` binds the import that covers
-them, at the range's offset: no hash, no copy, no own buffer, no window.
+Vertex and index ranges and read-only storage buffers (`vk_buf_get_input`, `vk_buf_get_window`), a dispatch's too
+(`vk_buf_get_strict`). For each range, `buf_get` first checks the pending results as before (a graphics or compute
+result that has not landed, which only the GPU holds) and GPU ownership (`own.c`). If guest memory holds the bytes,
+`vk_uma_get` binds the import that covers them, at the range's offset: no hash, no copy, no own buffer, no window. Bytes
+written in place by work not done yet are read there too, after a barrier (`order`, below). A dispatch's read-only
+storage over a storage image not published yet or a queued release's payload is copied, which lands them first, as a
+write in place is refused there. Copied, an Ounce game's tensors, each bound as the 16 MiB after its address and
+written in place by the dispatch before, took a 16 MiB copy out of the import at every binding: in one game's upscaled
+intro movie about 35 copies, 540 MB and 15 ms of GPU time a frame.
 
 What the GPU writes goes there too:
 
@@ -234,7 +239,9 @@ more per MiB imported in one import, from 16 MiB to 512 MiB, and 7.2 us per MiB 
 - Ranges under pending results, and GPU-owned ranges: their bytes are not in guest memory.
 - Textures and render targets: their layout differs from guest memory (block linear, formats the host lacks), so they
   are always made on the GPU from a staging copy.
-- The read-only storage of a dispatch, through `vk_buf_get_strict`: copied.
+- A range that no one import can hold whole, as a 16 MiB storage window reaching into a GPU-owned span (a decoded movie
+  frame, whose pages are in the alias pool, which amdgpu's user pointers refuse): read, copied from its import and its
+  owners; written by a program that logs its writes, merged back after the dispatch (`back_record`).
 
 ### What keeps it correct
 
