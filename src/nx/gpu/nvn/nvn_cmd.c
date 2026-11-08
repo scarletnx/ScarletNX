@@ -130,7 +130,7 @@ static void spill_census(const NvnCmdState* st) {
     enum { SHOWN = 4 };
     typedef struct {
         u64 lo, hi, clo, chi;
-        u32 n, no_command, oldest;
+        u32 n, no_command, marked, in_segments, oldest;
     } Tally;
     Tally* t = calloc(NVN_CTL_SLOTS + 1, sizeof *t);
     u32 live_segs = 0, top[SHOWN] = {0};
@@ -151,6 +151,8 @@ static void spill_census(const NvnCmdState* st) {
         a->chi = q->canchor > a->chi ? q->canchor : a->chi;
         a->oldest = q->serial < a->oldest ? q->serial : a->oldest;
         a->no_command += (q->flags & NVN_PIECE_NO_COMMAND) != 0;
+        a->marked += q->mark != 0;
+        a->in_segments += q->seg < NVN_SPILL_SMALL;
     }
     for (u32 k = 0; k <= NVN_CTL_SLOTS; k++) /* the slots with the most pieces, top[0] first (slot k is k + 1) */
         for (int j = 0; j < SHOWN; j++)
@@ -181,9 +183,9 @@ static void spill_census(const NvnCmdState* st) {
                      (unsigned long long)(o->game_end - o->origin), (unsigned long long)st->ctl[k - 1].start);
         }
         LOG("nvn:   %u pieces of %s: anchors %llx to %llx, control anchors %llx to %llx, the oldest cut %u, %u with "
-            "no command bytes%s\n",
+            "no command bytes, %u with a JUMP, %u in segments%s\n",
             a->n, who, (unsigned long long)a->lo, (unsigned long long)a->hi, (unsigned long long)a->clo,
-            (unsigned long long)a->chi, a->oldest, a->no_command, now);
+            (unsigned long long)a->chi, a->oldest, a->no_command, a->marked, a->in_segments, now);
     }
     free(t);
 }
@@ -193,11 +195,17 @@ static void spill_sweep(NvnCmdState* st);
 static u32 spill_cut(u64 cb, u64 anchor, u32 need, u64* at, u32* piece) {
     NvnCmdState* st = &g_nvn.cmd;
     u64 want = (u64)need + OP_RESERVE, canchor = ctl_anchor(cb);
-    u32 k, i, slot, b;
+    NvnCtl* own = ctl_of(cb);
+    u32 who = CB(cb)->ctl, k, i, slot, b, any;
     if (__atomic_load_n(&st->np, __ATOMIC_RELAXED) >= st->sweep) spill_sweep(st);
     pm_lock(&st->lock);
-    for (i = 0, k = st->ns; i < st->ns; i++) { /* from the segment the last piece came from */
-        u32 t = (st->hint + i) % st->ns;
+    /* From the segment its last piece came from, and only one that holds no other command buffer's pieces: a segment
+       comes back when all of its pieces do, and they do when the ring they are anchored in passes them. One game has a ring
+       that takes 16000 frames to go round beside one that takes far fewer: mixed, a piece of the slow one in nearly
+       every segment held all 4096 of them, with the records of a few MiB in use. Past the last segment, any with room */
+    u32 from = own ? own->seg_hint : st->hint;
+    for (i = 0, k = any = st->ns; i < st->ns; i++) {
+        u32 t = (from + i) % st->ns;
         NvnSpillSeg* q = &st->s[t];
         /* A segment whose pieces all came back is cut from its start again once the GPU thread has read every
            submission made by then: the game may give the memory a recording is anchored in to another command buffer
@@ -206,25 +214,32 @@ static u32 spill_cut(u64 cb, u64 anchor, u32 need, u64* at, u32* piece) {
             q->top = 0;
             q->reset = st->serial;
         }
-        if (!st->s[t].owner && st->s[t].size - st->s[t].top >= want) {
+        if (q->owner || q->size - q->top < want) continue;
+        if (!q->live || q->cutter == who) {
             k = t;
             break;
         }
+        if (any == st->ns) any = t;
     }
+    if (k == st->ns && st->ns == NVN_SPILL_SEGS) k = any;
     if (k == st->ns) {
         u64 size = want > SPILL_SEGMENT / 2 ? (want * 2 + 0xffff) & ~0xffffull : SPILL_SEGMENT, was = st->total;
-        if (st->ns == NVN_SPILL_SEGS)
+        if (st->ns == NVN_SPILL_SEGS) {
+            spill_census(st);
             fatal("nvn: command records past the game's command memory need more than the %u segments of the "
                   "runtime's own memory nvn holds (%llu KiB)",
                   NVN_SPILL_SEGS, (unsigned long long)(st->total >> 10));
+        }
         st->s[k].at = kmem_alloc(size, MS_KERNEL, PERM_RW);
         st->s[k].size = size;
         st->s[k].top = 0;
         st->ns++;
         st->total += size;
-        if ((st->total ^ was) > was) /* a new power of two of the total */
+        if ((st->total ^ was) > was) { /* a new power of two of the total */
             LOG("nvn: %llu KiB of the runtime's memory carry command records past the game's command memory\n",
                 (unsigned long long)(st->total >> 10));
+            if (st->total >> 20 >= 32) spill_census(st);
+        }
     }
     if (st->free)
         st->free = st->p[slot = st->free].next;
@@ -257,6 +272,8 @@ static u32 spill_cut(u64 cb, u64 anchor, u32 need, u64* at, u32* piece) {
         spill_census(st);
     }
     st->hint = k;
+    if (own) own->seg_hint = k;
+    st->s[k].cutter = who;
     st->s[k].owner = cb;
     st->s[k].live++;
     *at = st->s[k].at + st->s[k].top;
@@ -349,10 +366,10 @@ static void piece_drop(NvnCmdState* st, u32 slot) {
    serial before come back: the driver would have written over their recordings. A recording that counted no command
    bytes isn't in command memory: only its control memory gives it back. A recording whose handle is a JUMP in its
    command bytes (spill_link) stays while the JUMP reaches it, as a recording counted over doesn't write all of the
-   bytes it counted, and the game may still call the last: only spill_sweep and a pool's end (before ~0) give it back.
-   Its block would otherwise be taken again at once, where a segment waits for all of its pieces.
+   bytes it counted, and the game may still call the last: only spill_sweep, ring_look and a pool's end (marked) give it
+   back. Its block would otherwise be taken again at once, where a segment waits for all of its pieces.
    The serial of the last piece cut */
-static u32 spill_back(u64 from, u64 to, u32 before, int control) {
+static u32 spill_back(u64 from, u64 to, u32 before, int control, int marked) {
     NvnCmdState* st = &g_nvn.cmd;
     u64 part, last;
     u32 serial;
@@ -374,7 +391,7 @@ static u32 spill_back(u64 from, u64 to, u32 before, int control) {
             u64 a = control ? q->canchor : q->anchor;
             /* not over it, cut since, not in command memory, or reached by its JUMP */
             if (a < from || a >= to || q->serial >= before || (!control && (q->flags & NVN_PIECE_NO_COMMAND)) ||
-                (q->mark && before != ~0u)) {
+                (q->mark && !marked)) {
                 at = control ? &q->cnext : &q->next;
                 continue;
             }
@@ -385,7 +402,7 @@ static u32 spill_back(u64 from, u64 to, u32 before, int control) {
     pm_unlock(&st->lock);
     return serial;
 }
-void nvn_cmd_memory_back(u64 memory, u64 size) { spill_back(memory, memory + size, ~0u, 0); }
+void nvn_cmd_memory_back(u64 memory, u64 size) { spill_back(memory, memory + size, ~0u, 0, 1); }
 int nvn_cmd_unfinished(u64 p) {
     NvnCmdState* st = &g_nvn.cmd;
     u32 k;
@@ -427,8 +444,21 @@ void nvn_cmd_describe(u64 p, char* out, size_t n) {
    from now on are past this look */
 static void written(u64 cb) {
     NvnCmdBuf* o = CB(cb);
-    o->seen_serial = spill_back(o->origin + o->seen, o->origin + o->used, o->seen_serial, 0) + 1;
+    o->seen_serial = spill_back(o->origin + o->seen, o->origin + o->used, o->seen_serial, 0, 0) + 1;
     o->seen = o->used;
+}
+/* A recording ended. Command memory that holds two recordings or more, given again, is a ring: the game is done with what
+   it held, and the bytes counted since reach those recordings. On the console they are gone, but here only a JUMP of 16
+   bytes is written for each recording, at anchors that differ from one turn to the next, so the old JUMPs stay and
+   spill_sweep never gives their pieces back. One game's two rings held every segment there is within five minutes. A
+   range given for one recording isn't looked at: a game that reserves ranges keeps calling the short recordings in them,
+   and bytes counted past the end of one may reach the next, which the driver's own commands wouldn't */
+static void ring_look(u64 cb) {
+    const NvnCmdBuf* o = CB(cb);
+    NvnCtl* t = ctl_of(cb);
+    if (!t || ++t->ring_recordings < 2) return;
+    t->ring_serial = spill_back(o->origin + t->ring_seen, o->origin + o->used, t->ring_serial, 0, 1) + 1;
+    t->ring_seen = o->used;
 }
 /* Control entries of bytes as the driver writes them. When they don't fit in need bytes (the room the driver checks:
    the entry's own bytes, 0x20 for a range entry also when it is 0x18), the game's callback is asked for more first,
@@ -471,7 +501,7 @@ static void ctl_entry(CPU* c, u64 cb, u64 bytes) {
 static void ctl_look(u64 cb) {
     NvnCtl* t = ctl_of(cb);
     if (!t || !t->start) return;
-    t->seen_serial = spill_back(t->seen, t->cursor, t->seen_serial, 1) + 1;
+    t->seen_serial = spill_back(t->seen, t->cursor, t->seen_serial, 1, 0) + 1;
     t->seen = t->cursor;
 }
 
@@ -797,6 +827,12 @@ void nvn_CommandBufferAddCommandMemory(CPU* c, u64 cb, u64 pool, i64 offset, u64
               (unsigned long long)cb, (unsigned long long)size, (unsigned long long)pool);
     if (o->recording == 1 && !o->lent) divert(cb, 0);
     written(cb);
+    NvnCtl* t = ctl_of(cb);
+    if (t) {
+        t->ring_recordings = 0;
+        t->ring_seen = 0;
+        t->ring_serial = o->seen_serial; /* the pieces cut from now on are this turn's */
+    }
     o->origin = memory + (u64)offset;
     o->game_end = o->origin + size;
     o->used = 0;
@@ -892,6 +928,7 @@ u64 nvn_CommandBufferEndRecording(CPU* c, u64 cb) {
     }
     spill_end(cb);
     written(cb);
+    ring_look(cb);
     ctl_look(cb);
     o->recording = 0;
     o->last = 0;
