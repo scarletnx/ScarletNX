@@ -83,9 +83,11 @@ public final class Activities {
                 main.post(() -> caller.performActivityResult(requestCode, result != null ? Activity.RESULT_OK : Activity.RESULT_CANCELED, result));
             return;
         }
-        if (info == null && intent.getAction() != null && intent.getAction().startsWith("android.settings.")) {
-            // a screen of the system's Settings, which every device has: shown and backed out of, RESULT_CANCELED,
-            // as Settings gives (what it would grant, the app has: the permissions it asks for)
+        if (info == null && intent.getAction() != null && (intent.getAction().startsWith("android.settings.")
+                || intent.getAction().equals(android.app.role.RoleManager.ACTION_REQUEST_ROLE))) {
+            // a screen of the system's Settings, which every device has, or its dialog asking for a role: shown and
+            // backed out of, RESULT_CANCELED, as Settings gives (what it would grant, the app has: the permissions it
+            // asks for)
             if (caller != null && requestCode >= 0)
                 main.post(() -> caller.performActivityResult(requestCode, Activity.RESULT_CANCELED, null));
             return;
