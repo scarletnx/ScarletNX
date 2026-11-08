@@ -1028,7 +1028,7 @@ static void looked_in(const SnxVulkanPlaces* at, const char* sub, char* out, siz
     snprintf(out, size, "beside the program or in its app's Frameworks");
     for (size_t i = 0; i < sizeof at->prefixes / sizeof *at->prefixes; ++i)
         if (at->prefixes[i]) append(out, size, "%s %s/%s", prefixes++ ? " or" : ", in", at->prefixes[i], sub);
-    if (at->sdks && at->sdks[0]) append(out, size, ", or in a Vulkan SDK under ~/VulkanSDK");
+    if (at->sdks && at->sdks[0]) append(out, size, ", or in a Vulkan SDK under %s", at->sdks);
 }
 /* the drivers an app carries, found beside the program (a game's runtime copy, snx_deploy_vulkan_driver) or in its
    bundle's Frameworks (../Frameworks from Contents/MacOS); MoltenVK also as the framework an iOS app holds */
