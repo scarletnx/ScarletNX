@@ -108,6 +108,33 @@ class Links(unittest.TestCase):
             self.assertEqual(c.failures('links'), ['docs/A.md:4: B.md: B.md is not there'])
 
 
+class ClaudeFiles(unittest.TestCase):
+    """CLAUDE.md and .claude/ have their links held, not their indexes, and other sessions' worktrees are not read"""
+
+    def test_their_links(self):
+        files = {
+            'CLAUDE.md': '# Rules\n\nSee [the guide](docs/GONE.md).\n',
+            '.claude/skills/x/SKILL.md': '# X\n\nSee [the rules](../../../CLAUDE.md#nope).\n',
+            '.claude/worktrees/other/CLAUDE.md': '# Other\n\n[gone](gone.md)\n',
+        }
+        with Checkout(files) as c:
+            run = c.run()
+            self.assertEqual(run.returncode, 1)
+            self.assertEqual(
+                run.stderr.splitlines()[:-1],
+                [
+                    'CLAUDE.md:3: docs/GONE.md: docs/GONE.md is not there',
+                    '.claude/skills/x/SKILL.md:3: ../../../CLAUDE.md#nope: CLAUDE.md has no heading or name with the '
+                    'anchor #nope',
+                ],
+            )
+
+    def test_no_index_asked_of_them(self):
+        long = f'# Long\n\n## One\n\n## Two\n\n## Three\n\n{LONG}\n'
+        with Checkout({'CLAUDE.md': long, '.claude/skills/x/SKILL.md': long}) as c:
+            self.assertEqual(c.run().returncode, 0)
+
+
 class Indexes(unittest.TestCase):
     def doc(self, index=''):
         return f'# Long\n\n{index}Intro.\n\n## One\n\n### One a\n\n## Two\n\n## Three\n\n{LONG}\n'
