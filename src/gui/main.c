@@ -127,7 +127,16 @@ typedef enum {
     GUI_CHOICES_PICKS
 } GuiChoicesOf;
 /* whose few choices the picks box shows (picks_open) */
-typedef enum { GUI_PICKS_SHARE, GUI_PICKS_FOLDER, GUI_PICKS_DRIVER, GUI_PICKS_ASSET, GUI_PICKS_THEME } GuiPicksOf;
+typedef enum {
+    GUI_PICKS_SHARE,
+    GUI_PICKS_FOLDER,
+    GUI_PICKS_DRIVER,
+    GUI_PICKS_ASSET,
+    GUI_PICKS_THEME,
+    GUI_PICKS_GAME
+} GuiPicksOf;
+/* a finger held this long on a game of Games without moving opens its box (game_box_open), as a right click does */
+#define GUI_HOLD_MS     500
 #define GUI_THEME_PICKS 64 /* the themes the box of themes lists at most, built-ins first */
 /* the lists whose first row App's firsts keeps between frames: Choices' a GuiChoicesOf each, then the others */
 enum {
@@ -720,6 +729,11 @@ typedef struct App {
     int pick_row; /* the Folders row the box is of */
     /* the box of themes (themes_open): each theme's name in app->themes' order, and the one shown as it opened */
     const char* theme_picks[GUI_THEME_PICKS + 1];
+    const char* game_picks[6]; /* the box of the game in focus on Games (game_box_open): its actions */
+    /* a finger down on Games: when, 0 for none, and whether it was held long enough to open the game's box, which its
+       lift then does not tap */
+    Uint64 hold_ms;
+    bool hold_fired;
     char theme_names[GUI_THEME_PICKS][64];
     char theme_was[64], theme_was_name[64];
     bool (*open_url)(const char* url); /* SDL_OpenURL, which a test takes the place of (show_folder) */
@@ -13907,7 +13921,26 @@ static void games_back(App* app, const char* path);
 #ifdef SDL_PLATFORM_ANDROID
 static void tell(App* app);
 #endif
+static void game_box_open(App* app);
+static void pointer(App* app, float window_x, float window_y, bool click, bool touch);
+/* a finger held on Games GUI_HOLD_MS without moving: the row under it in focus and its game's box open; a finger that
+   scrolled or went away opens none */
+static void hold_tick(App* app) {
+    int w, h;
+    if (!app->finger || !app->hold_ms || app->hold_fired || now_ms(app) - app->hold_ms < GUI_HOLD_MS) return;
+    if (app->games_held || app->bar_held || app->list_held || app->pick_press) {
+        app->hold_ms = 0;
+        return;
+    }
+    app->hold_ms = 0;
+    SDL_GetWindowSize(app->window, &w, &h);
+    pointer(app, app->finger_x * (float)w, app->finger_y * (float)h, false, false);
+    app->hovering = false; /* a finger hovers nowhere */
+    game_box_open(app);
+    app->hold_fired = app->picks_shown; /* a row that is no game opened none: the lift taps it */
+}
 static void pump(App* app) {
+    hold_tick(app);
     keys_left(app);
     text_left(app);
     setup_keyboard(app);
@@ -14198,6 +14231,7 @@ static const char* const* picks_list(const App* app) {
     if (app->picks_of == GUI_PICKS_DRIVER) return driver_picks;
     if (app->picks_of == GUI_PICKS_ASSET) return app->asset_picks;
     if (app->picks_of == GUI_PICKS_THEME) return app->theme_picks;
+    if (app->picks_of == GUI_PICKS_GAME) return app->game_picks;
     kind = folder_row(app, app->pick_row, &at, &group);
     if (kind == GUI_ROW_DUMPS) return app->dumps_off ? main_off_picks : dumps_picks;
     if (kind == GUI_ROW_PLACE && at == GUI_PLACE_GAMES) return app->recompiled_off ? main_off_picks : recompiled_picks;
@@ -14265,7 +14299,12 @@ static void picks_question(App* app, char* out, size_t size, const char** tab) {
            : app->picks_of == GUI_PICKS_DRIVER ? snx_tr("GPU Drivers")
            : app->picks_of == GUI_PICKS_ASSET  ? snx_tr("Download Driver")
            : app->picks_of == GUI_PICKS_THEME  ? (app->theme.dialog == GUI_DIALOG_YORHA ? snx_tr("Theme") : "")
+           : app->picks_of == GUI_PICKS_GAME   ? snx_tr("Game")
                                                : snx_tr("Folders");
+    if (app->picks_of == GUI_PICKS_GAME) { /* the game's name, as its row shows it */
+        snprintf(out, size, "%s", app->pick_text);
+        return;
+    }
     if (app->picks_of == GUI_PICKS_THEME) { /* the line says what the box is: YoRHa's tab names it, the default's
                                                corner has no name beside the line */
         snprintf(out, size, snx_tr("Each theme shows as the focus reaches it: Enter keeps it, ESC goes back to %s"),
@@ -14367,6 +14406,67 @@ static void subfolders_switch(App* app, int kind, int at) {
     open_folders(app, row);
     snprintf(app->editor.note, sizeof app->editor.note, "%s", note);
 }
+/* the game box's actions, as Games' keys name them: Enter's Play, or for a game the queue recompiles its progress on
+   the Compile tab, which Enter shows too; R's Recompile; M's Mods and S's Save States for a made Switch game */
+#define SAY_GAME_PLAY      SNX_TR_NOOP("Play")
+#define SAY_GAME_PROGRESS  SNX_TR_NOOP("View Progress")
+#define SAY_GAME_RECOMPILE SNX_TR_NOOP("Recompile")
+#define SAY_GAME_MODS      SNX_TR_NOOP("Mods")
+#define SAY_GAME_STATES    SNX_TR_NOOP("Save States")
+static void play_focus(App* app);
+static void queue_show(App* app, int i);
+static void recompile_focus(App* app);
+static void mods_focus(App* app);
+static void states_focus(App* app);
+static void game_label(const App* app, const GuiGames* games, size_t i, char* out, size_t size);
+/* the focused row's game, the queue's job for it (-1 for none) and its name as the row shows it in name; 0 for a row
+   that is no game */
+static int game_box_game(App* app, int* queued, char* name, size_t size) {
+    size_t row = app->browser.selected, head = app->browser.head;
+    size_t index = app->browser.page * app->browser.page_size + row - head;
+    const char* path = NULL;
+    if (!games_play_focus(app)) return 0;
+    if (row < head) {
+        const GuiRecentGame* r = &app->recent.game[recent_index(app, (int)row)];
+        path = r->path;
+        snprintf(name, size, "%s", r->name);
+    } else {
+        path = app->games.paths[index];
+        game_label(app, &app->games, index, name, size);
+    }
+    *queued = path ? gui_queue_find(&app->queue, path) : -1;
+    return 1;
+}
+/* the box of the game in focus on Games, which a held finger or a right click opens: its actions (SAY_GAME_*), as
+   its keys have them; none for a row that is no game */
+static void game_box_open(App* app) {
+    bool mods = false;
+    int n = 0, queued;
+    if (!game_box_game(app, &queued, app->pick_text, sizeof app->pick_text)) return;
+    app->game_picks[n++] = queued >= 0 ? SAY_GAME_PROGRESS : SAY_GAME_PLAY;
+    if (games_game_focus(app, &mods)) app->game_picks[n++] = SAY_GAME_RECOMPILE;
+    if (mods) {
+        app->game_picks[n++] = SAY_GAME_MODS;
+        app->game_picks[n++] = SAY_GAME_STATES;
+    }
+    app->game_picks[n] = NULL;
+    picks_open(app, GUI_PICKS_GAME);
+}
+static void game_box_take(App* app, const char* pick) {
+    int queued;
+    char name[sizeof app->pick_text];
+    layout(app); /* the page a resize in the same poll gave */
+    if (!strcmp(pick, SAY_GAME_PROGRESS) && game_box_game(app, &queued, name, sizeof name) && queued >= 0)
+        queue_show(app, queued);
+    else if (!strcmp(pick, SAY_GAME_PLAY) || !strcmp(pick, SAY_GAME_PROGRESS))
+        play_focus(app);
+    else if (!strcmp(pick, SAY_GAME_RECOMPILE))
+        recompile_focus(app);
+    else if (!strcmp(pick, SAY_GAME_MODS))
+        mods_focus(app);
+    else if (!strcmp(pick, SAY_GAME_STATES))
+        states_focus(app);
+}
 /* choice i taken, or none (-1: Back): the logs as one zip, as the one log of before, or their folder opened; a Folders
    row's folder opened, another picked, its default asked for or its Extra taken off */
 static void pick_take(App* app, int i) {
@@ -14384,6 +14484,10 @@ static void pick_take(App* app, int i) {
         return;
     }
     if (i < 0) return;
+    if (app->picks_of == GUI_PICKS_GAME) { /* as its key on Games does */
+        game_box_take(app, app->game_picks[i]);
+        return;
+    }
     if (app->picks_of == GUI_PICKS_ASSET) { /* the asset downloaded */
         fetch_download(app, i);
         return;
@@ -17806,6 +17910,10 @@ static void event_take(App* app, const SDL_Event* e) {
         app->finger = finger_id(&e->tfinger);
         app->finger_x = e->tfinger.x;
         app->finger_y = e->tfinger.y;
+        app->hold_fired = false; /* held on Games, its game's box (hold_tick) */
+        app->hold_ms = app->menu.view == GUI_LOAD_GAMES && !app->editing && !box_shown(app) && !app->picks_shown
+                           ? SDL_max(now_ms(app), (Uint64)1)
+                           : 0;
         SDL_GetWindowSize(app->window, &w, &h);
         app->pick_press = 0;                     /* the finger's own, not a mouse's whose lift was missed */
         if (app->editing && app->editor.picking) /* the picker's bars take a finger as it goes down, to drag */
@@ -17831,6 +17939,14 @@ static void event_take(App* app, const SDL_Event* e) {
             games_finger(app, e->tfinger.x * (float)w, e->tfinger.y * (float)h, 1);
         else
             list_finger(app, e->tfinger.x * (float)w, e->tfinger.y * (float)h, 1);
+        return;
+    }
+    if ((e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_CANCELED) &&
+        finger_id(&e->tfinger) == app->finger && app->hold_fired) { /* held, its game's box shown: no tap */
+        app->finger = 0;
+        app->hold_ms = 0;
+        app->hold_fired = false;
+        app->games_held = app->bar_held = false;
         return;
     }
     if ((e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_CANCELED) &&
@@ -17929,6 +18045,13 @@ static void event_take(App* app, const SDL_Event* e) {
     }
     if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN && e->button.button == SDL_BUTTON_LEFT) {
         pointer(app, e->button.x, e->button.y, true, false);
+        return;
+    }
+    /* a right click on a game of Games: its box, as a finger held there opens it */
+    if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN && e->button.button == SDL_BUTTON_RIGHT &&
+        app->menu.view == GUI_LOAD_GAMES && !app->editing && !box_shown(app) && !app->picks_shown) {
+        pointer(app, e->button.x, e->button.y, false, false); /* the row under it in focus, as the mouse over it does */
+        game_box_open(app);
         return;
     }
     if (e->type == SDL_EVENT_MOUSE_BUTTON_UP && e->button.button == SDL_BUTTON_LEFT) {

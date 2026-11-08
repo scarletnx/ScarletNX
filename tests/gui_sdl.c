@@ -305,6 +305,26 @@ static GuiRect entry_box(App* app, int item) {
 static GuiRect games_row_box(const App* app, const GuiGamesBoxes* g, int row) {
     return ui_row_box(app, ui_games_row(g->rects, app->scale, UI_GAMES_ROWS, (size_t)row));
 }
+/* Games' focused row, as drawn */
+static GuiRect focused_game_box(App* app) {
+    GuiGamesBoxes g;
+    size_t row = app->browser.selected, head = app->browser.head;
+    render(app);
+    games_boxes(app, &g);
+    return games_row_box(app, &g, row < head ? (int)row + 1 : g.lead + (int)(row - head));
+}
+/* a right click on pixel x, y of the render */
+static void right_click_px(App* app, int x, int y) {
+    SDL_Event e = {0};
+    float wx, wy;
+    layout(app);
+    assert(SDL_RenderCoordinatesToWindow(app->renderer, (float)x + 0.5f, (float)y + 0.5f, &wx, &wy));
+    e.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+    e.button.button = SDL_BUTTON_RIGHT;
+    e.button.x = wx;
+    e.button.y = wy;
+    event(app, &e);
+}
 static GuiRect game_box(App* app, int i, bool recent) {
     GuiGamesBoxes g;
     layout(app);
@@ -3724,6 +3744,50 @@ static void recompile_queue(App* app) {
         focus_game(app, names[0]);
         key(app, SDLK_R);
         job_started(app);
+        if (!way) { /* the game the queue recompiles: Enter shows its progress on the Compile tab; a right click on it,
+                       or a finger held on it GUI_HOLD_MS, opens its box, View Progress first, which shows it too, and
+                       its lift taps nothing; a finger held less opens none */
+            GuiRect row;
+            go_tab(app, GUI_TAB_GAMES);
+            focus_game(app, names[0]);
+            key(app, SDLK_RETURN);
+            assert(app->menu.view == GUI_LOAD_RECOMPILE && !app->menu.running);
+            go_tab(app, GUI_TAB_GAMES);
+            focus_game(app, names[0]);
+            row = focused_game_box(app);
+            right_click_px(app, row.x + row.w / 2, row.y + row.h / 2);
+            assert(app->picks_shown && app->picks_of == GUI_PICKS_GAME && app->picks.count >= 2);
+            assert(!strcmp(app->game_picks[0], "View Progress") && !strcmp(app->game_picks[1], "Recompile"));
+            render(app);
+            shows(app, "View Progress", yellow);
+            key(app, SDLK_ESCAPE);
+            assert(!app->picks_shown && app->menu.view == GUI_LOAD_GAMES);
+            app->clock = 1000000;
+            finger_px(app, SDL_EVENT_FINGER_DOWN, row.x + row.w / 2, row.y + row.h / 2);
+            app->clock += GUI_HOLD_MS - 1;
+            pump(app);
+            assert(!app->picks_shown);
+            app->clock += 1;
+            pump(app);
+            assert(app->picks_shown && app->picks_of == GUI_PICKS_GAME && app->picks.focus == 0);
+            finger_px(app, SDL_EVENT_FINGER_UP, row.x + row.w / 2, row.y + row.h / 2);
+            assert(app->picks_shown && !app->finger && app->menu.view == GUI_LOAD_GAMES);
+            key(app, SDLK_RETURN); /* View Progress */
+            assert(!app->picks_shown && app->menu.view == GUI_LOAD_RECOMPILE);
+            go_tab(app, GUI_TAB_GAMES);
+            focus_game(app, names[0]);
+            row = focused_game_box(app);
+            finger_px(app, SDL_EVENT_FINGER_DOWN, row.x + row.w / 2, row.y + row.h / 2);
+            app->clock += GUI_HOLD_MS / 2;
+            pump(app);
+            finger_px(app, SDL_EVENT_FINGER_UP, row.x + row.w / 2, row.y + row.h / 2);
+            app->clock += GUI_HOLD_MS;
+            pump(app);
+            assert(!app->picks_shown && !app->finger && !app->hold_fired); /* a tap, no box */
+            app->clock = 0;
+            go_tab(app, GUI_TAB_GAMES);
+            focus_game(app, names[0]);
+        }
         snprintf(line, sizeof line, "threads 4, priority %d", low);
         assert(noted(&app->job_steps, line) && app->job_low && app->job_threads == 4 &&
                priority_of(job_pid(app)) == low);
