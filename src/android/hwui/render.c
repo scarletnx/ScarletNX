@@ -2310,8 +2310,15 @@ static jboolean JNICALL native_has_window(JNIEnv* env, jclass unused) {
     return r.host.window ? JNI_TRUE : JNI_FALSE;
 }
 
+/* Window.nativeAppPresents: the presents of the app's own surface so far (its GLES or Vulkan swapchain's) */
+static jlong JNICALL native_app_presents(JNIEnv* env, jclass unused) {
+    (void)env, (void)unused;
+    return (jlong)hle_vulkan_presents();
+}
+
 bool android_render_register(JNIEnv* env) {
     static const JNINativeMethod methods[] = {
+        {(char*)"nativeAppPresents", (char*)"()J", (void*)native_app_presents},
         {(char*)"nativeOpen", (char*)"(IILjava/lang/String;)Z", (void*)native_open},
         {(char*)"nativePresent", (char*)"(II[BI[I[[I[[B[I)V", (void*)native_present},
         {(char*)"nativePoll", (char*)"([F)I", (void*)native_poll},

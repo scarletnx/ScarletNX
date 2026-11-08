@@ -55,6 +55,40 @@ public final class Window {
         }
     }
 
+    /*
+     * The scripts' frames are the app's own presents once it has them (a GLES or Vulkan surface's), as --shot-frame's
+     * are: a game that draws on its own surface makes few frames of views. A thread follows their count.
+     */
+    private static volatile boolean appFrames;
+    private static native long nativeAppPresents();
+    static {
+        if (tapFrames.length > 0 || keyFrames.length > 0) {
+            Thread follower = new Thread(() -> {
+                long seen = 0;
+                try {
+                    while (true) {
+                        long n;
+                        try {
+                            n = nativeAppPresents();
+                        } catch (UnsatisfiedLinkError e) {
+                            n = 0; /* the class's natives come once the runtime registers them */
+                        }
+                        while (seen < n) {
+                            appFrames = true;
+                            script(++seen);
+                            scriptKeys(seen);
+                        }
+                        Thread.sleep(2);
+                    }
+                } catch (InterruptedException e) {
+                    // no presents to follow
+                }
+            }, "snx-script");
+            follower.setDaemon(true);
+            follower.start();
+        }
+    }
+
     private Window() {}
 
     static synchronized void present(Frame frame) {
@@ -81,8 +115,10 @@ public final class Window {
             nativePresent(frame.width, frame.height, frame.bytes(), frame.size(), info,
                 frame.uploads().toArray(new int[0][]), frame.drawings().toArray(new byte[0][]),
                 android.graphics.Bitmap.takeFreed());
-            script(++frames);
-            scriptKeys(frames);
+            if (!appFrames) {
+                script(++frames);
+                scriptKeys(frames);
+            }
         } catch (UnsatisfiedLinkError e) {
             failed = true;
             android.util.Log.w("snx", "no renderer in this runtime: running headless");
