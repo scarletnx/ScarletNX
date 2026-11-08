@@ -785,7 +785,74 @@ static jboolean JNICALL j_swap_buffers(JNIEnv* env, jclass unused, jlong display
     return swap_buffers((uint64_t)display, (uint64_t)surface);
 }
 
+/* ---- snx.android.opengl.Gl's natives: GL10's Java calls, the GLES 1.1 functions of hle_gles.c ---- */
+
+/* nativeCall(name, params, ints, floats, pointer, byteOffset): the function called as native code calls it, its
+   arguments in a CPU's registers as AAPCS64 passes them (params: i an integer, f a float, p the pointer). The
+   pointer is a direct buffer's memory, or an array's, held while the call runs */
+static jlong JNICALL j_gl_call(JNIEnv* env, jclass unused, jstring name, jstring params, jlongArray ints,
+                               jfloatArray floats, jobject pointer, jint offset) {
+    (void)unused;
+    static _Thread_local CPU* c;
+    if (!c && !(c = calloc(1, sizeof *c))) return 0;
+    const char* n = (*env)->GetStringUTFChars(env, name, NULL);
+    const HleSymbol* fn = NULL;
+    for (const HleSymbol* s = hle_gles; n && s->name[0]; ++s)
+        if (!strcmp(s->name, n)) fn = s;
+    if (n) (*env)->ReleaseStringUTFChars(env, name, n);
+    if (!fn) return 0;
+    jlong iv[16] = {0};
+    jfloat fv[8] = {0};
+    jsize ni = ints ? (*env)->GetArrayLength(env, ints) : 0, nf = floats ? (*env)->GetArrayLength(env, floats) : 0;
+    if (ni > 16) ni = 16;
+    if (nf > 8) nf = 8;
+    if (ni) (*env)->GetLongArrayRegion(env, ints, 0, ni, iv);
+    if (nf) (*env)->GetFloatArrayRegion(env, floats, 0, nf, fv);
+    uint8_t* p = pointer ? (*env)->GetDirectBufferAddress(env, pointer) : NULL;
+    void* critical = NULL;
+    if (pointer && !p) p = critical = (*env)->GetPrimitiveArrayCritical(env, pointer, NULL);
+    if (p) p += offset;
+    const char* kinds = (*env)->GetStringUTFChars(env, params, NULL);
+    /* AAPCS64: integers in x0 to x7 and floats in v0 to v7, then each in an 8-byte slot of the stack */
+    uint64_t stack[8] = {0};
+    unsigned nx = 0, nv = 0, ns = 0, ii = 0, fi = 0;
+    c->x[31] = (uint64_t)(uintptr_t)stack;
+    for (const char* k = kinds; k && *k && ns < 8; ++k) {
+        if (*k == 'f') {
+            float f = fi < (unsigned)nf ? fv[fi++] : 0;
+            if (nv < 8) {
+                memset(&c->v[nv], 0, sizeof c->v[nv]);
+                c->v[nv++].f[0] = f;
+            } else {
+                memcpy(&stack[ns++], &f, sizeof f);
+            }
+            continue;
+        }
+        uint64_t v = *k == 'p' ? (uint64_t)(uintptr_t)p : (uint64_t)(ii < (unsigned)ni ? iv[ii++] : 0);
+        if (nx < 8) c->x[nx++] = v;
+        else stack[ns++] = v;
+    }
+    if (kinds) (*env)->ReleaseStringUTFChars(env, params, kinds);
+    fn->handler(c, fn->data);
+    if (critical) (*env)->ReleasePrimitiveArrayCritical(env, pointer, critical, 0);
+    return (jlong)c->x[0];
+}
+static jstring JNICALL j_gl_get_string(JNIEnv* env, jclass unused, jint name) {
+    (void)unused;
+    CPU c = {0};
+    c.x[0] = (uint64_t)(uint32_t)name;
+    g_gl_get_string(&c, NULL);
+    const char* s = (const char*)(uintptr_t)c.x[0];
+    return s ? (*env)->NewStringUTF(env, s) : NULL;
+}
+
 bool android_egl_register(JNIEnv* env) {
+    static const JNINativeMethod gl_methods[] = {
+        {(char*)"nativeCall", (char*)"(Ljava/lang/String;Ljava/lang/String;[J[FLjava/lang/Object;I)J", (void*)j_gl_call},
+        {(char*)"nativeGetString", (char*)"(I)Ljava/lang/String;", (void*)j_gl_get_string},
+    };
+    if (!android_jvm_register(env, "snx/android/opengl/Gl", gl_methods, (int)(sizeof gl_methods / sizeof *gl_methods)))
+        return false;
     static const JNINativeMethod methods[] = {
         {(char*)"nativeDisplay", (char*)"()J", (void*)j_display},
         {(char*)"nativeInitialize", (char*)"(J[I)Z", (void*)j_initialize},
