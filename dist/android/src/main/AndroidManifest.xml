@@ -18,7 +18,11 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- back goes to SDL as a key (the menu's ESC), not to Android's predictive back. The menu is singleTop: its icon
          brings the task back with a game on top, where singleTask would clear the game away -->
+    <!-- a game to the system: Android's game mode and the makers' game launchers (HyperOS Game Turbo) list it, close
+         what runs behind it and offer their performance mode; isGame for the launchers from before API 26's appCategory -->
     <application
+        android:appCategory="game"
+        android:isGame="true"
         android:label="ScarletNX"
         android:icon="@mipmap/ic_launcher"
         android:theme="@style/ScarletNX"
