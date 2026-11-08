@@ -11,6 +11,9 @@
 VkResult hle_vulkan_create_instance(const VkInstanceCreateInfo* info, VkInstance* out);
 /* vkCreateAndroidSurfaceKHR: the host window's surface, or a headless one without a display */
 VkResult hle_vulkan_create_surface(VkInstance instance, VkSurfaceKHR* out);
+/* a surface of the same kind that leaves the window to ScarletNX's renderer: to choose a device that presents to the
+   window, for a library that draws offscreen first (a pbuffer) */
+VkResult hle_vulkan_probe_surface(VkInstance instance, VkSurfaceKHR* out);
 VkResult hle_vulkan_surface_capabilities(VkPhysicalDevice physical, VkSurfaceKHR surface,
                                          VkSurfaceCapabilitiesKHR* caps);
 VkResult hle_vulkan_create_device(VkPhysicalDevice physical, const VkDeviceCreateInfo* info, VkDevice* out);

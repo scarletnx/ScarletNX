@@ -259,8 +259,9 @@ typedef struct {
 extern GlesVk g_gles_vk;
 
 /* the instance, a surface of the host window (*surface), the device and queue that present to it: once, at the first
-   window surface. Then only a new surface. False when there is no Vulkan device */
-bool gles_vk_device(VkSurfaceKHR* surface);
+   surface. Then only a new surface. A probe's surface (for a pbuffer, which draws offscreen) leaves the window to
+   ScarletNX's renderer. False when there is no Vulkan device */
+bool gles_vk_device(VkSurfaceKHR* surface, bool probe);
 /* the device and instance gone, and every object made on them that the library still keeps: after the last GLES 1.1 and
    2 surface and context (gles2_shutdown). The next surface brings them up again */
 void gles_vk_shutdown(void);
