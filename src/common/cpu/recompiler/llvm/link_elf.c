@@ -13,6 +13,7 @@
    relocates itself: two reserved slots, the GOT_PAGE pages, then the symbols' slots, every one local (its DT_MIPS_*
    tags), so only addresses in data take a dynamic relocation, R_MIPS_REL32 with R_MIPS_64. */
 #include "common/cpu/recompiler/llvm/link_internal.h"
+#include "common/cpu/recompiler/llvm/elf_hash.h"
 #include "common/utilities/bits.h"
 #include <stdint.h>
 #include <stdio.h>
@@ -211,17 +212,6 @@ static void hash_word(unsigned char* p, size_t size, uint64_t value) {
         memcpy(p, &value, 8);
     else
         memcpy(p, &word, 4);
-}
-
-static unsigned long elf_hash(const char* name) {
-    unsigned long h = 0, g;
-    while (*name) {
-        h = (h << 4) + (unsigned char)*name++;
-        g = h & 0xf0000000UL;
-        if (g) h ^= g >> 24;
-        h &= ~g;
-    }
-    return h;
 }
 
 /* a hot section (SNX_LINK_HOT_TEXT) and its rank */
@@ -510,7 +500,7 @@ int snx_link_elf(const SnxLinkInput* inputs, size_t count, const char* const* ex
     hash_word(p, hw, nbucket);
     hash_word(p + hw, hw, nsyms);
     for (size_t i = 0; i < export_count; ++i) {
-        unsigned char* bucket = p + hw * (2 + elf_hash(exports[i]) % nbucket);
+        unsigned char* bucket = p + hw * (2 + snx_elf_sysv_hash(exports[i]) % nbucket);
         /* the chain goes on to the bucket's previous head */
         memcpy(p + hw * (2 + nbucket + i + 1), bucket, hw);
         hash_word(bucket, hw, i + 1);

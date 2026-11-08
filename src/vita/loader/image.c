@@ -5,6 +5,7 @@
    Vita developer wiki's SELF pages */
 #include "vita/loader/image.h"
 #include "vita/loader/inflate.h"
+#include "common/cpu/recompiler/llvm/elf_defs.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include <openssl/evp.h>
@@ -14,7 +15,6 @@
 
 #define ET_SCE_EXEC    0xfe00u
 #define ET_SCE_RELEXEC 0xfe04u
-#define PT_LOAD        1u
 #define PT_SCE_RELA    0x60000000u
 #define NID_MODULE_START  0x935cd196u
 #define NID_MODULE_STOP   0x79f8e492u
