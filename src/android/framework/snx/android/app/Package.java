@@ -97,6 +97,8 @@ public final class Package {
                         a.theme = p.getAttributeResourceValue(ANDROID, "theme", 0);
                         a.launchMode = p.getAttributeIntValue(ANDROID, "launchMode", 0);
                         a.screenOrientation = p.getAttributeIntValue(ANDROID, "screenOrientation", -1);
+                        String parent = p.getAttributeValue(ANDROID, "parentActivityName");
+                        if (parent != null) a.parentActivityName = className(parent);
                         a.configChanges = p.getAttributeIntValue(ANDROID, "configChanges", 0);
                         a.softInputMode = p.getAttributeIntValue(ANDROID, "windowSoftInputMode", 0);
                         activities.add(a);
