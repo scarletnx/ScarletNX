@@ -467,16 +467,26 @@ void vk_barrier(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect, VkPi
                 VkAccessFlags2 dst_access, VkImageLayout to);
 /* a descriptor set from the current frame's pools, freed when the frame is reused */
 VkDescriptorSet vk_desc_alloc(VkDescriptorSetLayout layout);
-VkDescriptorPool vk_desc_pool_new(void); /* a pool for 1024 sets of the stage layouts */
+/* a pool for 1024 sets of the stage or compute layouts, array_sets of them with the texture arrays (vk_pool_sizes). A
+   set a frame's pool can't hold goes to the frame's next pool, made for VK_POOL_ARRAY_SETS of them, or for
+   VK_POOL_ARRAY_SETS_MORE when a set with the arrays is what didn't fit */
+VkDescriptorPool vk_desc_pool_new(u32 array_sets);
+#define VK_POOL_ARRAY_SETS             64
+#define VK_POOL_ARRAY_SETS_MORE        256
+#define VK_POOL_ARRAY_SETS_FOR(layout) (vk_dslayout_arrays(layout) ? VK_POOL_ARRAY_SETS_MORE : VK_POOL_ARRAY_SETS)
 u32 vk_desc_pools(void);                 /* the pools that exist, made on any thread */
+void vk_desc_taken(VkDescriptorSetLayout layout, u32 n); /* n sets of layout taken from a frame's pools */
+u64 vk_desc_array_sets(void);                            /* the sets of the arrays layouts taken so far */
+int vk_dslayout_arrays(VkDescriptorSetLayout layout);    /* one of the stage layouts with the texture arrays */
 /* each heap's use and budget and the descriptor pools, as text for a line: any thread, also one that never calls
    Vulkan */
 void vk_memory_text(char* out, size_t size);
 u64 vk_memory_blocks(void);              /* the bytes of VMA's blocks in all heaps, any thread */
 u32 vk_frame_slot(void);                 /* the frame slot being recorded */
-/* A descriptor pool's sizes (VK_POOL_TYPES entries) for `sets` stage or auxiliary sets (gpu/vk/pipeline.c). */
+/* A descriptor pool's sizes (VK_POOL_TYPES entries) for `sets` stage or auxiliary sets, array_sets of them with the
+   texture arrays (gpu/vk/pipeline.c). */
 #define VK_POOL_TYPES 6 /* uniform/storage buffers, combined textures, storage images/texels, sampled images */
-void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets);
+void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets, u32 array_sets);
 extern u32 g_vk_buffer_image_slots; /* storage texel buffer bindings in a set, from SNX_VKB_IMGBUF */
 VkDescriptorType vk_cbuf_type(u32 slot); /* the descriptor type of a constant buffer slot (g_shader_uniform_cbufs) */
 /* A buffer image: the texels a buffer header describes, bound as a storage texel buffer over their copy. Raw loads

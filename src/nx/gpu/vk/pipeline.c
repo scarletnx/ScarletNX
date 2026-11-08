@@ -252,20 +252,34 @@ static VkDescriptorType binding_type(u32 i) {
            : i < SNX_VKB_RS  ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
                              : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 }
-void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets) {
+/* The bindings from SNX_VKB_TEXARRAY on are in the arrays layouts alone (vk_pipeline_init), and only where the device
+   has texture arrays: a pool counts them for array_sets of its sets. A driver may make a pool's memory for all it can
+   hold when the pool is made: Qualcomm's took 470 MiB for 1024 sets that could all hold the arrays (792 bytes a
+   combined image sampler), where most sets have none */
+void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets, u32 array_sets) {
     static const VkDescriptorType ty[VK_POOL_TYPES] = {
         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE};
     int k;
     for (k = 0; k < VK_POOL_TYPES; k++) {
         u32 n = ty[k] == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ? 2 : 0; /* auxiliary source/validity fetches */
-        u32 i;
-        for (i = 0; i < SNX_VKB_END; i++)
-            if (binding_type(i) == ty[k]) n += (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) ? SNX_TEX_ARRAY : 1;
-        sz[k] = (VkDescriptorPoolSize){ty[k], n * sets};
+        u32 arrays = 0, i;
+        for (i = 0; i < SNX_VKB_END; i++) {
+            if (binding_type(i) != ty[k]) continue;
+            if (i < SNX_VKB_TEXARRAY)
+                n++;
+            else if (g_shader_texture_arrays)
+                arrays += (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) ? SNX_TEX_ARRAY : 1;
+        }
+        sz[k] = (VkDescriptorPoolSize){ty[k], n * sets + arrays * array_sets};
     }
 }
 
+int vk_dslayout_arrays(VkDescriptorSetLayout layout) {
+    for (u32 s = 0; s < 5; s++)
+        if (layout && layout == g_vk_dslayout[1][s]) return g_shader_texture_arrays;
+    return 0;
+}
 int vk_graphics_playout_is(VkPipelineLayout layout) {
     for (u32 i = 0; i < sizeof g_playouts / sizeof g_playouts[0]; i++)
         if (layout && __atomic_load_n(&g_playouts[i], __ATOMIC_ACQUIRE) == layout) return 1;
@@ -387,7 +401,7 @@ void vk_pipeline_init(void) {
     }
     {
         VkDescriptorPoolSize n[VK_POOL_TYPES];
-        vk_pool_sizes(n, 1);
+        vk_pool_sizes(n, 1, 1); /* a set with the arrays */
         const VkPhysicalDeviceLimits* l = &g_vk.props.limits;
         if (n[0].descriptorCount > l->maxPerStageDescriptorUniformBuffers ||
             n[1].descriptorCount > l->maxPerStageDescriptorStorageBuffers ||

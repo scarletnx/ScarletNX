@@ -136,7 +136,12 @@ void crash_report(void* host_pc, void* fault, int sig) {
     (void)fault;
     (void)sig;
 }
-void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets) {
+int vk_dslayout_arrays(VkDescriptorSetLayout layout) {
+    (void)layout;
+    return 0;
+}
+void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets, u32 array_sets) {
+    (void)array_sets;
     sz[0] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sets * 2};
     sz[1] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, sets};
     sz[2] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sets};

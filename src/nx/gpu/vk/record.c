@@ -1229,7 +1229,7 @@ static u32 rec_alloc_n(RecPools* f, VkDescriptorSetLayout layout, VkDescriptorSe
         if (tries == 2) count = 1;
         if (f->ipool == f->npool) {
             if (f->npool == (int)(sizeof f->pool / sizeof f->pool[0])) return 0;
-            if (!(f->pool[f->npool] = vk_desc_pool_new())) return 0;
+            if (!(f->pool[f->npool] = vk_desc_pool_new(VK_POOL_ARRAY_SETS_FOR(layout)))) return 0;
             f->npool++;
         }
         VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -1237,7 +1237,10 @@ static u32 rec_alloc_n(RecPools* f, VkDescriptorSetLayout layout, VkDescriptorSe
                                           .descriptorSetCount = count,
                                           .pSetLayouts = layouts};
         VkResult r = vkAllocateDescriptorSets(g_vk.dev, &ai, sets);
-        if (r == VK_SUCCESS) return count;
+        if (r == VK_SUCCESS) {
+            vk_desc_taken(layout, count);
+            return count;
+        }
         if (r != VK_ERROR_OUT_OF_POOL_MEMORY && r != VK_ERROR_FRAGMENTED_POOL) {
             VK_OK(r);
             return 0;
