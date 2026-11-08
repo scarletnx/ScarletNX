@@ -7,7 +7,8 @@
 #ifndef SNX_PLAT_H
 #define SNX_PLAT_H
 #include "common/cpu/aarch64/cpu.h"
-#include "common/filesystem/host.h" /* PMutex and the pm_* calls */
+#include "common/filesystem/host.h"
+#include "common/platform/thread.h" /* PMutex, PCond, waits on a word, plat_tid */
 #include "common/utilities/common.h" /* snx_cpu_count */
 #include <stddef.h>
 #include <stdio.h>
@@ -21,26 +22,6 @@
 #endif
 #include <windows.h>
 #endif
-
-/* ---- condition variables, used with a PMutex */
-typedef struct {
-#if defined(_WIN32)
-    CONDITION_VARIABLE c;
-#else
-    pthread_cond_t c;
-#endif
-} PCond;
-void pc_init(PCond* c);
-void pc_signal(PCond* c);
-void pc_broadcast(PCond* c);
-/* m held. timeout_ns < 0 waits without limit. Returns 1 when the time ran out, 0 when woken (or spuriously) */
-int pc_wait(PCond* c, PMutex* m, i64 timeout_ns);
-
-/* ---- waiting on a word, with no lock (a futex on Linux): plat_wait_word blocks while *w holds v, for at most
-   timeout_ns (negative: no limit), and may also return early for no reason; plat_wake_word wakes every thread waiting
-   on w. The waker changes *w before it wakes them */
-void plat_wait_word(u32* w, u32 v, i64 timeout_ns);
-void plat_wake_word(u32* w);
 
 /* ---- threads */
 typedef void (*PThreadFn)(void* arg);
@@ -61,7 +42,6 @@ void plat_thread_cpus(const int* ids, int n);
 /* the host for the log's header, so a report needn't describe it: "<OS and version>, <CPU>, <n> threads, <n> GB RAM",
    the CPU left out where the host doesn't name it. Nothing that names the machine or its user */
 void plat_system_info(char* out, size_t cap);
-void plat_yield(void);
 void plat_sleep_ns(i64 ns); /* 0 or less yields */
 /* C11's _Noreturn, which C99 code (it includes this) has not */
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
@@ -202,7 +182,6 @@ u8* plat_alias_mirror(void);
    page) fails with EFAULT instead of waiting, so the runtime opens a range before it hands it to the kernel. tid is
    the faulting thread's plat_tid */
 int plat_trap_init(void (*fault)(u8* p, int write, u32 tid));
-u32 plat_tid(void); /* the calling thread's id, as the system numbers threads */
 /* whether this process's thread tid (plat_tid's) is waiting in a trap now: 1, 0, or -1 when that can't be told */
 int plat_thread_in_fault(u32 tid);
 /* Best-effort fatal diagnostics for the blocked thread, not the trap handler. Never resumes it. */
