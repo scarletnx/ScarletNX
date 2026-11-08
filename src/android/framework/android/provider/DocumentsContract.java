@@ -16,8 +16,15 @@ public final class DocumentsContract {
 
     public static boolean isDocumentUri(android.content.Context context, Uri uri) { return uri != null && uri.getPathSegments().size() >= 2 && "document".equals(uri.getPathSegments().get(0)); }
     public static boolean isTreeUri(Uri uri) { return uri != null && uri.getPathSegments().size() >= 2 && "tree".equals(uri.getPathSegments().get(0)); }
-    public static String getDocumentId(Uri documentUri) { java.util.List<String> p = documentUri.getPathSegments(); return p.size() >= 2 ? p.get(p.size() - 1) : null; }
+    /** the document of .../document/ID or .../tree/TREE/document/ID, as Android's: an IllegalArgumentException for another */
+    public static String getDocumentId(Uri documentUri) {
+        java.util.List<String> p = documentUri.getPathSegments();
+        if (p.size() >= 2 && "document".equals(p.get(0))) return p.get(1);
+        if (p.size() >= 4 && "tree".equals(p.get(0)) && "document".equals(p.get(2))) return p.get(3);
+        throw new IllegalArgumentException("Invalid URI: " + documentUri);
+    }
     public static String getTreeDocumentId(Uri documentUri) { java.util.List<String> p = documentUri.getPathSegments(); return p.size() >= 2 ? p.get(1) : null; }
+    public static Uri buildRootUri(String authority, String rootId) { return new Uri.Builder().scheme("content").authority(authority).appendPath("root").appendPath(rootId).build(); }
     public static Uri buildDocumentUri(String authority, String documentId) { return new Uri.Builder().scheme("content").authority(authority).appendPath("document").appendPath(documentId).build(); }
     public static Uri buildDocumentUriUsingTree(Uri treeUri, String documentId) {
         return new Uri.Builder().scheme("content").authority(treeUri.getAuthority()).appendPath("tree").appendPath(getTreeDocumentId(treeUri)).appendPath("document").appendPath(documentId).build();

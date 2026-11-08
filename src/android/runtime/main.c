@@ -52,6 +52,7 @@ static const char usage[] =
     "  --taps=SCRIPT     \"60:300,672 90:...\": a finger down at frame 60 at (300, 672), up 3 frames later\n"
     "  --keys=TEXT       '120:2+3\\n|300:x': text typed from frame 120 on, as key presses (\\n is Enter)\n"
     "  --key-frames=N    The frames between scripted keys, 4 when not given\n"
+    "  --pick=PATH       What the system's file pickers answer: the file, or for a folder picker its folder\n"
     "\n"
     "Diagnostics:\n"
     "  --trace-frames    Each frame the app's windows make, on stderr\n"
@@ -343,6 +344,7 @@ static const struct {
 } java_options[] = {
     {"--headless", "headless"}, {"--trace-frames", "trace_frames"}, {"--taps", "taps"},
     {"--keys", "keys"},         {"--key-frames", "key_frames"},     {"--log-level", "log_level"},
+    {"--pick", "pick"},
 };
 
 static void free_options(char** options, char** owned, size_t owned_count) {
