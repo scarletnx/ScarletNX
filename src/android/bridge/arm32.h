@@ -38,6 +38,24 @@ uint32_t arm32_call(uint32_t fn, const uint32_t* words, unsigned count, uint32_t
 /* the calling thread's errno and TLS slots, in guest memory */
 uint32_t arm32_errno_address(void);
 
+/* a thread's state: its CPU made with a stack of stack_size bytes the first time (arm32_cpu's is 8 MiB), its pthread_t
+   (its TLS block's address), its id (gettid's), its stack, and its state freed as the thread ends */
+SnxArmCPU* arm32_cpu_with_stack(uint32_t stack_size);
+uint32_t arm32_thread_self(void);
+uint32_t arm32_thread_id(void);
+void arm32_thread_stack(uint32_t* base, uint32_t* size);
+void arm32_thread_end(void);
+/* the signals sent to the calling thread and not run yet, a bit for each (arm32_thread.c): the dispatch loop runs
+   them between blocks with arm32_signals_run, which sets up each handler's frame from c */
+extern _Thread_local uint32_t arm32_pending_signals;
+void arm32_signals_run(SnxArmCPU* c);
+/* a system call that guest code makes (svc): number r7, arguments r0 to r5, the result or -errno (arm32_thread.c) */
+uint32_t arm32_syscall(uint32_t number, const uint32_t args[6]);
+/* the code at [lo, hi) changed: its blocks outside the libraries are compiled again when next reached */
+void arm32_code_changed(uint32_t lo, uint32_t hi);
+/* A32 code of the bridge's own, written into the window and compiled when reached: its address */
+uint32_t arm32_guest_code(const uint32_t* words, unsigned count);
+
 /* the guest's heap: bionic's malloc, in the window. 0 when it is full */
 uint32_t arm32_malloc(uint32_t size);
 uint32_t arm32_memalign(uint32_t align, uint32_t size);
@@ -46,6 +64,8 @@ void arm32_free(uint32_t address);
 /* whole pages of the window, zeroed (mmap's): 0 when it is full */
 uint32_t arm32_map(uint32_t size);
 void arm32_unmap(uint32_t address, uint32_t size);
+/* the pages at [address, address + size) the guest's, zeroed (mmap's MAP_FIXED): false outside the heap */
+bool arm32_map_at(uint32_t address, uint32_t size);
 /* the guest's copy of a host string (arm32_malloc's) */
 uint32_t arm32_strdup(const char* text);
 
@@ -60,6 +80,38 @@ const char* arm32_library_name(const Arm32Library* library);
 uint32_t arm32_exidx(uint32_t pc, int* count);
 /* the library folder that DT_NEEDED and dlopen look in */
 void arm32_set_library_dir(const char* dir);
+
+/* a function or an object that the system's libraries export: a handler with its data, or an object's guest
+   address in data (handler NULL). Each file's table ends with an empty name */
+typedef struct {
+    const char* name;
+    Arm32Handler handler;
+    void* data;
+} Arm32Symbol;
+extern const Arm32Symbol arm32_posix_symbols[];  /* arm32_posix.c: files, processes, time, strings, sockets, zlib */
+extern const Arm32Symbol arm32_thread_symbols[]; /* arm32_thread.c: threads, waits, semaphores, signals, setjmp */
+extern const Arm32Symbol arm32_shim_symbols[];   /* arm32_shim.c: EGL, GLES and ANativeWindow, the 64-bit bridge's */
+/* the objects each file exports, by name: their guest address, 0 for none */
+uint32_t arm32_posix_object(const char* name);
+void arm32_posix_init(void);
+void arm32_thread_init(void);
+void arm32_shim_init(void);
+/* a 64-bit bridge's handler called by its name (hle_find's) with x0 to x7 (and the stack after them): its x0, its
+   errno made the guest's; *found false when the HLE lacks it */
+uint64_t arm32_call64(const char* name, const uint64_t* x, unsigned count, bool* found);
+/* the guest's errno from the host's errno, or from a Linux number */
+void arm32_set_errno(int host_error);
+void arm32_set_errno_linux(int linux_error);
+/* the n'th word of a call's arguments (r0 to r3, then the stack) */
+uint32_t arm32_word(const SnxArmCPU* c, unsigned n);
+/* the host FILE of a guest FILE*, and a guest FILE* for a host one (fdopen's) */
+void* arm32_host_file(uint32_t file);
+uint32_t arm32_guest_file(void* file);
+/* the host object of a guest JNI reference, and the calling thread's host JNIEnv (arm32_jni.c) */
+jobject arm32_jni_ref(uint32_t handle);
+JNIEnv* arm32_jni_env(void);
+/* a thread that the guest made ends: its host JNIEnv detached when the bridge attached it */
+void arm32_jni_thread_end(void);
 
 /* The system's libraries (arm32_libc.c): the guest address of a symbol of bionic, libm, liblog, libdl or GLES 1.1,
    0 for one the HLE lacks */
@@ -90,6 +142,14 @@ char* arm32_jni_load(JNIEnv* env, const char* path, const char* library_dir);
    type in *result. *found false when no 32-bit library has it */
 uint64_t arm32_jni_invoke(JNIEnv* env, const char* key, jobject self, jlongArray prims, jobjectArray refs,
                           char* result, bool* found);
+/* NativeActivity's input queue (arm32_shim.c): a new AInputQueue's guest address, and the events sent to it. A motion's
+   fields: device, source, action, flags, meta state, edge flags, button state; then count pointers' ids, tool types
+   and 9 axes each (x, y, pressure, size, touch major and minor, tool major and minor, orientation). A key's: device,
+   source, action, flags, key code, scan code, meta state, repeat count. Times in nanoseconds */
+uint32_t arm32_input_queue_new(void);
+void arm32_input_motion(uint32_t queue, const int32_t* fields, int64_t down, int64_t time, float xprec, float yprec,
+                        unsigned count, const int32_t* ids, const int32_t* tools, const float* axes);
+void arm32_input_key(uint32_t queue, const int32_t* fields, int64_t down, int64_t time);
 /* the guest's JavaVM, for the HLE */
 uint32_t arm32_jni_vm(void);
 #endif

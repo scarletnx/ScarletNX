@@ -61,10 +61,12 @@ static struct {
 
 typedef struct {
     SnxArmCPU cpu;
-    uint32_t stack;
+    uint32_t stack, stack_size;
     uint32_t tls; /* 64 slots: 0 itself, 1 the thread's id, 2 errno */
 } Thread;
 static _Thread_local Thread* t_thread;
+/* the signals sent to this thread and not run yet (arm32_thread.c): the dispatch loop runs them between blocks */
+_Thread_local uint32_t arm32_pending_signals;
 
 bool arm32_active(void) { return s.active; }
 
@@ -139,6 +141,37 @@ uint32_t arm32_map(uint32_t size) {
     if (a) memset(arm32_mem + a, 0, snx_align_up(size, PAGE));
     return a;
 }
+bool arm32_map_at(uint32_t address, uint32_t size) {
+    if (address < HEAP_LO || address & (PAGE - 1) || !size || (uint64_t)address + size > HEAP_HI) return false;
+    uint32_t end = (uint32_t)snx_align_up((uint64_t)address + size, PAGE);
+    pthread_mutex_lock(&h.lock);
+    /* the free ranges that the pages cut, kept on each side */
+    for (size_t i = 0; i < h.count; ++i) {
+        uint32_t lo = h.free[i].start, hi = h.free[i].start + h.free[i].size;
+        if (hi <= address || lo >= end) continue;
+        if (lo < address && hi > end) {
+            h.free[i].size = address - lo;
+            pthread_mutex_unlock(&h.lock);
+            arm32_unmap(end, hi - end);
+            pthread_mutex_lock(&h.lock);
+            break;
+        }
+        if (lo < address) {
+            h.free[i].size = address - lo;
+        } else if (hi > end) {
+            h.free[i].start = end;
+            h.free[i].size = hi - end;
+        } else {
+            memmove(&h.free[i], &h.free[i + 1], (h.count - i - 1) * sizeof *h.free);
+            --h.count;
+            --i;
+        }
+    }
+    pthread_mutex_unlock(&h.lock);
+    memset(arm32_mem + address, 0, end - address);
+    return true;
+}
+
 void arm32_unmap(uint32_t address, uint32_t size) {
     if (!address || !size) return;
     pthread_mutex_lock(&h.lock);
@@ -288,16 +321,20 @@ uint32_t arm32_export(const char* name, Arm32Handler handler, void* data) {
 
 /* ---- threads ---- */
 
-SnxArmCPU* arm32_cpu(void) {
+SnxArmCPU* arm32_cpu(void) { return arm32_cpu_with_stack(STACK_SIZE); }
+
+SnxArmCPU* arm32_cpu_with_stack(uint32_t stack_size) {
     if (t_thread) return &t_thread->cpu;
     Thread* t = calloc(1, sizeof *t);
-    uint32_t stack = arm32_map(STACK_SIZE);
+    stack_size = (uint32_t)snx_align_up(stack_size < 0x10000 ? 0x10000 : stack_size, PAGE);
+    uint32_t stack = arm32_map(stack_size);
     uint32_t tls = arm32_map(PAGE);
     if (!t || !stack || !tls) {
         fprintf(stderr, "scarletnx-android: arm32: no memory for a thread's guest stack\n");
         abort();
     }
     t->stack = stack;
+    t->stack_size = stack_size;
     t->tls = tls;
     static uint32_t next_id = 1000;
     wr32(tls, tls);
@@ -305,7 +342,7 @@ SnxArmCPU* arm32_cpu(void) {
     t->cpu.cpsr = 0x10;
     t->cpu.mem = arm32_mem;
     t->cpu.mem_size = WINDOW_SIZE;
-    t->cpu.r[13] = stack + STACK_SIZE - 16;
+    t->cpu.r[13] = stack + stack_size - 16;
     t->cpu.tpidruro = tls;
     t_thread = t;
     return &t->cpu;
@@ -314,6 +351,27 @@ SnxArmCPU* arm32_cpu(void) {
 uint32_t arm32_errno_address(void) {
     arm32_cpu();
     return t_thread->tls + 8;
+}
+uint32_t arm32_thread_self(void) {
+    arm32_cpu();
+    return t_thread->tls;
+}
+uint32_t arm32_thread_id(void) {
+    arm32_cpu();
+    return rd32(t_thread->tls + 4);
+}
+void arm32_thread_stack(uint32_t* base, uint32_t* size) {
+    arm32_cpu();
+    *base = t_thread->stack;
+    *size = t_thread->stack_size;
+}
+void arm32_thread_end(void) {
+    Thread* t = t_thread;
+    if (!t) return;
+    t_thread = NULL;
+    arm32_unmap(t->stack, t->stack_size);
+    arm32_unmap(t->tls, PAGE);
+    free(t);
 }
 
 /* ---- the dispatch loop ---- */
@@ -329,6 +387,89 @@ static _Noreturn void guest_fault(const SnxArmCPU* c, const char* what) {
     abort();
 }
 
+/* Code outside the libraries (a JIT's, as Mono's): blocks compiled from where they are, kept by the 4 KiB page they
+   start in, and dropped when the guest says the code changed (the cacheflush system call). A thread's cache of
+   them is good while the generation is the one it was filled at */
+typedef struct {
+    uint32_t key, end; /* key: pc | thumb */
+    SnxArmBlock fn;
+} DynBlock;
+typedef struct DynPage {
+    uint32_t page;
+    DynBlock* blocks;
+    uint32_t count, capacity;
+    struct DynPage* next;
+} DynPage;
+enum { DYN_BUCKETS = 4096, DYN_MAX_BYTES = 1024, THREAD_CACHE = 1024 };
+static struct {
+    DynPage* buckets[DYN_BUCKETS];
+    uint32_t generation;
+} dyn;
+static _Thread_local struct {
+    uint32_t key, generation;
+    SnxArmBlock fn;
+} t_dyn[THREAD_CACHE];
+
+static DynPage* dyn_page(uint32_t page, bool make) {
+    DynPage** at = &dyn.buckets[(page * 2654435761u >> 20) % DYN_BUCKETS];
+    for (DynPage* p = *at; p; p = p->next)
+        if (p->page == page) return p;
+    if (!make) return NULL;
+    DynPage* p = calloc(1, sizeof *p);
+    if (!p) return NULL;
+    p->page = page;
+    p->next = *at;
+    *at = p;
+    return p;
+}
+
+static SnxArmBlock dyn_block(uint32_t pc, int thumb) {
+    uint32_t key = pc | (uint32_t)thumb, slot = (key >> 1) % THREAD_CACHE;
+    uint32_t generation = __atomic_load_n(&dyn.generation, __ATOMIC_ACQUIRE);
+    if (t_dyn[slot].key == key && t_dyn[slot].generation == generation && t_dyn[slot].fn) return t_dyn[slot].fn;
+    pthread_mutex_lock(&s.lock);
+    SnxArmBlock fn = NULL;
+    DynPage* p = dyn_page(pc >> 12, true);
+    for (uint32_t i = 0; p && i < p->count && !fn; ++i)
+        if (p->blocks[i].key == key) fn = p->blocks[i].fn;
+    if (!fn && p && pc >= HEAP_LO && pc < HEAP_HI) {
+        size_t consumed = 0, unit = thumb ? 2 : 4, count = DYN_MAX_BYTES / unit;
+        if (pc + DYN_MAX_BYTES > HEAP_HI) count = (HEAP_HI - pc) / unit;
+        fn = snx_arm_exec_compile(s.exec, arm32_mem + pc, count, pc, thumb, SNX_ARM_PROFILE_A57, 0, &consumed);
+        if (fn && p->count == p->capacity) {
+            uint32_t n = p->capacity ? p->capacity * 2 : 8;
+            DynBlock* b = realloc(p->blocks, n * sizeof *b);
+            if (b) {
+                p->blocks = b;
+                p->capacity = n;
+            }
+        }
+        if (fn && p->count < p->capacity) p->blocks[p->count++] = (DynBlock){key, pc + (uint32_t)(consumed * unit), fn};
+    }
+    generation = dyn.generation;
+    pthread_mutex_unlock(&s.lock);
+    if (fn) {
+        t_dyn[slot].key = key;
+        t_dyn[slot].generation = generation;
+        t_dyn[slot].fn = fn;
+    }
+    return fn;
+}
+
+void arm32_code_changed(uint32_t lo, uint32_t hi) {
+    if (hi <= lo) return;
+    pthread_mutex_lock(&s.lock);
+    uint32_t first = lo > DYN_MAX_BYTES ? (lo - DYN_MAX_BYTES) >> 12 : 0, last = (hi - 1) >> 12;
+    for (uint32_t page = first; page <= last; ++page) {
+        DynPage* p = dyn_page(page, false);
+        for (uint32_t i = 0; p && i < p->count;)
+            if (p->blocks[i].end > lo && (p->blocks[i].key & ~1u) < hi) p->blocks[i] = p->blocks[--p->count];
+            else ++i;
+    }
+    __atomic_add_fetch(&dyn.generation, 1, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&s.lock);
+}
+
 static SnxArmBlock block_at(uint32_t pc, int thumb) {
     unsigned n = __atomic_load_n(&s.range_count, __ATOMIC_ACQUIRE);
     SnxArmBlock* slot = NULL;
@@ -341,6 +482,7 @@ static SnxArmBlock block_at(uint32_t pc, int thumb) {
             break;
         }
     }
+    if (!slot) return dyn_block(pc, thumb);
     pthread_mutex_lock(&s.lock);
     SnxArmBlock b = snx_arm_exec_block(s.exec, s.exec_ranges, s.range_count, pc, thumb, arm32_mem);
     pthread_mutex_unlock(&s.lock);
@@ -402,7 +544,12 @@ static void run(SnxArmCPU* c) {
             pthread_mutex_unlock(&s.lock);
             if (!e.handler) guest_fault(c, "a call to no import");
             e.handler(c, e.data);
-            return_to_lr(c);
+            /* a handler that set the pc (sigsetjmp's, which goes on in guest code) does not return */
+            if (c->r[15] == pc) return_to_lr(c);
+            continue;
+        }
+        if (__atomic_load_n(&arm32_pending_signals, __ATOMIC_RELAXED)) {
+            arm32_signals_run(c);
             continue;
         }
         int thumb = (c->cpsr & SNX_ARM_T) != 0;
@@ -412,9 +559,9 @@ static void run(SnxArmCPU* c) {
         b(c);
         if (c->exit == SNX_ARM_OK) continue;
         if (c->exit == SNX_ARM_SVC) {
-            fprintf(stderr, "scarletnx-android: arm32: a system call %u from 0x%08x, not done: ENOSYS\n", c->r[7],
-                    c->r[15]);
-            c->r[0] = (uint32_t)-38;
+            /* Linux's EABI: the number in r7, the arguments in r0 to r5, the result or -errno in r0 */
+            uint32_t args[6] = {c->r[0], c->r[1], c->r[2], c->r[3], c->r[4], c->r[5]};
+            c->r[0] = arm32_syscall(c->r[7], args);
             continue;
         }
         guest_fault(c, c->exit == SNX_ARM_UNDEFINED     ? "an undefined instruction"
@@ -500,6 +647,14 @@ static void add_code(uint32_t lo, uint32_t hi) {
         if (r->arm && r->thumb) __atomic_store_n(&s.range_count, s.range_count + 1, __ATOMIC_RELEASE);
     }
     pthread_mutex_unlock(&s.lock);
+}
+
+uint32_t arm32_guest_code(const uint32_t* words, unsigned count) {
+    uint32_t a = arm32_map(count * 4);
+    if (!a) return 0;
+    for (unsigned i = 0; i < count; ++i) wr32(a + 4 * i, words[i]);
+    add_code(a, a + count * 4);
+    return a;
 }
 
 /* ---- the loader ---- */
@@ -744,7 +899,8 @@ static Arm32Library* load(const char* path, char* error, size_t error_size) {
 Arm32Library* arm32_load(const char* path, char* error, size_t error_size) {
     static pthread_mutex_t load_lock = PTHREAD_MUTEX_INITIALIZER;
     pthread_mutex_lock(&load_lock);
-    Arm32Library* l = load(path, error, error_size);
+    /* a name alone is a library of the app's folder, as bionic's linker finds it */
+    Arm32Library* l = strchr(path, '/') ? load(path, error, error_size) : load_needed(path, error, error_size);
     pthread_mutex_unlock(&load_lock);
     return l;
 }

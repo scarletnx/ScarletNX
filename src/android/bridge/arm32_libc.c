@@ -36,7 +36,8 @@
 static uint32_t rd32(uint32_t a) { return snx_ld_le32(arm32_mem + a); }
 static void wr32(uint32_t a, uint32_t v) { snx_st_le32(arm32_mem + a, v); }
 /* the n'th argument word, past r3 on the stack */
-static uint32_t word(const SnxArmCPU* c, unsigned n) { return n < 4 ? c->r[n] : rd32(c->r[13] + 4 * (n - 4)); }
+uint32_t arm32_word(const SnxArmCPU* c, unsigned n) { return n < 4 ? c->r[n] : rd32(c->r[13] + 4 * (n - 4)); }
+#define word arm32_word
 static void set64(SnxArmCPU* c, uint64_t v) {
     c->r[0] = (uint32_t)v;
     c->r[1] = (uint32_t)(v >> 32);
@@ -63,7 +64,9 @@ static void ret_float(SnxArmCPU* c, float f) {
     memcpy(&bits, &f, sizeof bits);
     c->r[0] = bits;
 }
-static void set_errno(int host_error) { wr32(arm32_errno_address(), (uint32_t)gnu_host_errno(host_error)); }
+void arm32_set_errno(int host_error) { wr32(arm32_errno_address(), (uint32_t)-gnu_host_errno(host_error)); }
+void arm32_set_errno_linux(int linux_error) { wr32(arm32_errno_address(), (uint32_t)linux_error); }
+#define set_errno arm32_set_errno
 
 /* ---- the guest's printf ---- */
 
@@ -216,7 +219,20 @@ static char* format_alloc(const char* format, Arm32Args* a) {
 
 /* ---- the guest's sscanf ---- */
 
+static int scan_at(const char* input, const char* f, Arm32Args* a, const char** end);
+static int scan_used(const char* input, const char* f, Arm32Args* a, size_t* used) {
+    const char* in = input;
+    int count = scan_at(input, f, a, &in);
+    *used = (size_t)(in - input);
+    return count;
+}
 static int scan(const char* input, const char* f, Arm32Args* a) {
+    const char* in = input;
+    return scan_at(input, f, a, &in);
+}
+
+/* the scan, with where it stopped in *end */
+static int scan_at(const char* input, const char* f, Arm32Args* a, const char** end) {
     const char* in = input;
     int count = 0;
     while (*f) {
@@ -276,7 +292,10 @@ static int scan(const char* input, const char* f, Arm32Args* a) {
             if (p) wr32(p, (uint32_t)(in - input));
             continue;
         }
-        if (!*in) return count ? count : -1;
+        if (!*in) {
+            *end = in;
+            return count ? count : -1;
+        }
         char fmt[300];
         int consumed = -1, r;
         if (conv == 's' || conv == 'c' || conv == '[') {
@@ -321,6 +340,7 @@ static int scan(const char* input, const char* f, Arm32Args* a) {
         else wr32(p, (uint32_t)v);
         ++count;
     }
+    *end = in;
     return count;
 }
 
@@ -347,6 +367,28 @@ static FILE* host_file(uint32_t f) {
         }
     pthread_mutex_unlock(&files.lock);
     return found;
+}
+
+void* arm32_host_file(uint32_t f) { return host_file(f); }
+uint32_t arm32_guest_file(void* file) {
+    FILE* host = file;
+    if (host == stdin) return sF;
+    if (host == stdout) return sF + FILE_SIZE;
+    if (host == stderr) return sF + 2 * FILE_SIZE;
+    uint32_t g = arm32_malloc(FILE_SIZE);
+    pthread_mutex_lock(&files.lock);
+    unsigned i = 0;
+    while (i < MAX_FILES && files.guest[i]) ++i;
+    if (i < MAX_FILES && g) {
+        files.guest[i] = g;
+        files.host[i] = host;
+    }
+    pthread_mutex_unlock(&files.lock);
+    if (i == MAX_FILES && g) {
+        arm32_free(g);
+        g = 0;
+    }
+    return g;
 }
 
 HANDLER(f_fopen) {
@@ -467,36 +509,202 @@ HANDLER(f_sscanf) {
     R(0) = (uint32_t)scan(S(0), S(1), &a);
 }
 
+HANDLER(f_fdopen) {
+    UNUSED;
+    FILE* file = fdopen((int)R(0), S(1));
+    if (!file) {
+        set_errno(errno);
+        R(0) = 0;
+        return;
+    }
+    R(0) = arm32_guest_file(file);
+    if (!R(0)) fclose(file);
+}
+HANDLER(f_fflush) {
+    UNUSED;
+    FILE* file = R(0) ? host_file(R(0)) : NULL;
+    R(0) = (uint32_t)(R(0) && !file ? EOF : fflush(file));
+}
+HANDLER(f_fputs) {
+    UNUSED;
+    FILE* file = host_file(R(1));
+    R(0) = file ? (uint32_t)fputs(S(0), file) : (uint32_t)EOF;
+}
+HANDLER(f_fputc) {
+    UNUSED;
+    FILE* file = host_file(R(1));
+    R(0) = file ? (uint32_t)fputc((int)R(0), file) : (uint32_t)EOF;
+}
+HANDLER(f_putchar) {
+    UNUSED;
+    R(0) = (uint32_t)putchar((int)R(0));
+}
+HANDLER(f_getc) {
+    UNUSED;
+    FILE* file = host_file(R(0));
+    R(0) = file ? (uint32_t)getc(file) : (uint32_t)EOF;
+}
+HANDLER(f_ungetc) {
+    UNUSED;
+    FILE* file = host_file(R(1));
+    R(0) = file ? (uint32_t)ungetc((int)R(0), file) : (uint32_t)EOF;
+}
+HANDLER(f_clearerr) {
+    UNUSED;
+    FILE* file = host_file(R(0));
+    if (file) clearerr(file);
+}
+HANDLER(f_ferror) {
+    UNUSED;
+    FILE* file = host_file(R(0));
+    R(0) = file ? (uint32_t)ferror(file) : 1;
+}
+HANDLER(f_feof) {
+    UNUSED;
+    FILE* file = host_file(R(0));
+    R(0) = file ? (uint32_t)feof(file) : 1;
+}
+HANDLER(f_fileno) {
+    UNUSED;
+    FILE* file = host_file(R(0));
+    R(0) = file ? (uint32_t)fileno(file) : UINT32_MAX;
+}
+/* setvbuf(file, buffer, mode, size): the host's own buffer, whatever the guest gives; the modes are Linux's 0 full,
+   1 line, 2 none */
+HANDLER(f_setvbuf) {
+    UNUSED;
+    FILE* file = host_file(R(0));
+    int mode = R(2) == 0 ? _IOFBF : R(2) == 1 ? _IOLBF : _IONBF;
+    R(0) = file ? (uint32_t)setvbuf(file, NULL, mode, R(3) ? R(3) : BUFSIZ) : UINT32_MAX;
+}
+HANDLER(f_vfprintf) {
+    UNUSED;
+    Arm32Args a;
+    arm32_args_va(&a, R(2));
+    char* text = format_alloc(S(1), &a);
+    FILE* file = host_file(R(0));
+    R(0) = text && file && fputs(text, file) >= 0 ? (uint32_t)strlen(text) : UINT32_MAX;
+    free(text);
+}
+HANDLER(f_vprintf) {
+    UNUSED;
+    Arm32Args a;
+    arm32_args_va(&a, R(1));
+    char* text = format_alloc(S(0), &a);
+    R(0) = text && fputs(text, stdout) >= 0 ? (uint32_t)strlen(text) : UINT32_MAX;
+    free(text);
+}
+HANDLER(f_vsprintf) {
+    UNUSED;
+    Arm32Args a;
+    arm32_args_va(&a, R(2));
+    char* text = format_alloc(S(1), &a);
+    size_t n = text ? strlen(text) : 0;
+    if (text) memcpy(P(0), text, n + 1);
+    R(0) = (uint32_t)n;
+    free(text);
+}
+/* vasprintf(out, format, va_list) and asprintf(out, format, ...): the guest's malloc'd copy */
+HANDLER(f_vasprintf) {
+    UNUSED;
+    Arm32Args a;
+    if (data) arm32_args(&a, c, 2);
+    else arm32_args_va(&a, R(2));
+    char* text = format_alloc(S(1), &a);
+    uint32_t g = text ? arm32_strdup(text) : 0;
+    wr32(R(0), g);
+    R(0) = g ? (uint32_t)strlen(text) : UINT32_MAX;
+    free(text);
+}
+HANDLER(f_vsscanf) {
+    UNUSED;
+    Arm32Args a;
+    arm32_args_va(&a, R(2));
+    R(0) = (uint32_t)scan(S(0), S(1), &a);
+}
+/* fscanf(file, format, ...): the rest of a seekable file scanned, then the file at what the scan took */
+HANDLER(f_fscanf) {
+    UNUSED;
+    FILE* file = host_file(R(0));
+    long at = file ? ftell(file) : -1;
+    if (at < 0) {
+        R(0) = UINT32_MAX;
+        return;
+    }
+    char buffer[65536];
+    size_t n = fread(buffer, 1, sizeof buffer - 1, file);
+    buffer[n] = 0;
+    Arm32Args a;
+    arm32_args(&a, c, 2);
+    size_t used = 0;
+    int r = scan_used(buffer, S(1), &a, &used);
+    fseek(file, at + (long)used, SEEK_SET);
+    R(0) = (uint32_t)r;
+}
+HANDLER(f_perror) {
+    UNUSED;
+    int e = (int)rd32(arm32_errno_address());
+    char text[256];
+    hle_strerror_r(e, text, sizeof text);
+    if (R(0) && *S(0)) fprintf(stderr, "%s: %s\n", S(0), text);
+    else fprintf(stderr, "%s\n", text);
+}
+
+/* bionic's struct stat on 32-bit ARM (the kernel's stat64), 104 bytes */
+static void put_stat(uint8_t* o, const struct stat* st) {
+    memset(o, 0, 104);
+    uint64_t v = (uint64_t)st->st_dev;
+    memcpy(o, &v, 8);
+    snx_st_le32(o + 12, (uint32_t)st->st_ino);
+    snx_st_le32(o + 16, (uint32_t)st->st_mode);
+    snx_st_le32(o + 20, (uint32_t)st->st_nlink);
+    snx_st_le32(o + 24, (uint32_t)st->st_uid);
+    snx_st_le32(o + 28, (uint32_t)st->st_gid);
+    v = (uint64_t)st->st_rdev;
+    memcpy(o + 32, &v, 8);
+    v = (uint64_t)st->st_size;
+    memcpy(o + 48, &v, 8);
+    snx_st_le32(o + 56, (uint32_t)st->st_blksize);
+    v = (uint64_t)st->st_blocks;
+    memcpy(o + 64, &v, 8);
+    snx_st_le32(o + 72, (uint32_t)st->st_atime);
+    snx_st_le32(o + 80, (uint32_t)st->st_mtime);
+    snx_st_le32(o + 88, (uint32_t)st->st_ctime);
+    v = (uint64_t)st->st_ino;
+    memcpy(o + 96, &v, 8);
+}
+HANDLER(f_fstat) {
+    UNUSED;
+    struct stat st;
+    if (fstat((int)R(0), &st)) {
+        set_errno(errno);
+        R(0) = UINT32_MAX;
+        return;
+    }
+    put_stat(P(1), &st);
+    R(0) = 0;
+}
+HANDLER(f_lstat) {
+    UNUSED;
+    struct stat st;
+    if (lstat(S(0), &st)) {
+        set_errno(errno);
+        R(0) = UINT32_MAX;
+        return;
+    }
+    put_stat(P(1), &st);
+    R(0) = 0;
+}
+
 HANDLER(f_stat) {
     UNUSED;
     struct stat st;
     if (stat(S(0), &st)) {
         set_errno(errno);
-        R(0) = (uint32_t)-1;
+        R(0) = UINT32_MAX;
         return;
     }
-    /* bionic's struct stat on 32-bit ARM (the kernel's stat64), 104 bytes */
-    uint8_t* o = P(1);
-    memset(o, 0, 104);
-    uint64_t v = (uint64_t)st.st_dev;
-    memcpy(o, &v, 8);
-    snx_st_le32(o + 12, (uint32_t)st.st_ino);
-    snx_st_le32(o + 16, (uint32_t)st.st_mode);
-    snx_st_le32(o + 20, (uint32_t)st.st_nlink);
-    snx_st_le32(o + 24, (uint32_t)st.st_uid);
-    snx_st_le32(o + 28, (uint32_t)st.st_gid);
-    v = (uint64_t)st.st_rdev;
-    memcpy(o + 32, &v, 8);
-    v = (uint64_t)st.st_size;
-    memcpy(o + 48, &v, 8);
-    snx_st_le32(o + 56, (uint32_t)st.st_blksize);
-    v = (uint64_t)st.st_blocks;
-    memcpy(o + 64, &v, 8);
-    snx_st_le32(o + 72, (uint32_t)st.st_atime);
-    snx_st_le32(o + 80, (uint32_t)st.st_mtime);
-    snx_st_le32(o + 88, (uint32_t)st.st_ctime);
-    v = (uint64_t)st.st_ino;
-    memcpy(o + 96, &v, 8);
+    put_stat(P(1), &st);
     R(0) = 0;
 }
 
@@ -533,7 +741,8 @@ HANDLER(f_mmap) {
     uint32_t length = R(1), flags = R(3);
     int fd = (int32_t)word(c, 4);
     uint32_t offset = word(c, 5);
-    uint32_t a = arm32_map(length);
+    /* MAP_FIXED (0x10): the address the guest names, which it may hold already */
+    uint32_t a = flags & 0x10 ? (arm32_map_at(R(0), length) ? R(0) : 0) : arm32_map(length);
     if (!a) {
         set_errno(ENOMEM);
         R(0) = UINT32_MAX;
@@ -657,6 +866,48 @@ HANDLER(f_memchr) {
     UNUSED;
     R(0) = inside(memchr(P(0), (int)R(1), R(2)));
 }
+/* the wide characters of the C locale, bionic's only one: a byte is its own character */
+HANDLER(f_btowc) {
+    UNUSED;
+    R(0) = (int32_t)R(0) >= 0 && R(0) < 0x80 ? R(0) : UINT32_MAX; /* WEOF */
+}
+HANDLER(f_wctob) {
+    UNUSED;
+    R(0) = R(0) < 0x80 ? R(0) : UINT32_MAX; /* EOF */
+}
+/* wctype(name): bionic's numbers of the classes, 1 alnum to 12 xdigit; 0 for another name */
+static const char* const wctypes[] = {"alnum", "alpha", "blank", "cntrl", "digit", "graph",
+                                      "lower", "print", "punct", "space", "upper", "xdigit"};
+HANDLER(f_wctype) {
+    UNUSED;
+    uint32_t n = 0;
+    for (unsigned i = 0; i < 12 && !n; ++i)
+        if (!strcmp(S(0), wctypes[i])) n = i + 1;
+    R(0) = n;
+}
+HANDLER(f_iswctype) {
+    UNUSED;
+    uint32_t w = R(0);
+    int ch = w < 0x80 ? (int)w : -1;
+    bool r = false;
+    if (ch >= 0) switch (R(1)) {
+        case 1: r = isalnum(ch); break;
+        case 2: r = isalpha(ch); break;
+        case 3: r = ch == ' ' || ch == '\t'; break;
+        case 4: r = iscntrl(ch); break;
+        case 5: r = isdigit(ch); break;
+        case 6: r = isgraph(ch); break;
+        case 7: r = islower(ch); break;
+        case 8: r = isprint(ch); break;
+        case 9: r = ispunct(ch); break;
+        case 10: r = isspace(ch); break;
+        case 11: r = isupper(ch); break;
+        case 12: r = isxdigit(ch); break;
+        default: break;
+        }
+    R(0) = r;
+}
+
 HANDLER(f_toupper) {
     UNUSED;
     R(0) = (uint32_t)toupper((int)R(0));
@@ -818,11 +1069,6 @@ HANDLER(f_clock_gettime) {
     wr32(R(1) + 4, (uint32_t)ts.tv_nsec);
     R(0) = 0;
 }
-HANDLER(f_usleep) {
-    UNUSED;
-    usleep(R(0));
-    R(0) = 0;
-}
 
 HANDLER(f_errno) {
     UNUSED;
@@ -837,12 +1083,6 @@ HANDLER(f_abort) {
     UNUSED;
     fprintf(stderr, "scarletnx-android: arm32: abort() called from 0x%08x\n", c->r[14]);
     abort();
-}
-HANDLER(f_raise) {
-    UNUSED;
-    fprintf(stderr, "scarletnx-android: arm32: raise(%u) called from 0x%08x\n", R(0), c->r[14]);
-    if (R(0) == 6 || R(0) == 11 || R(0) == 4 || R(0) == 7 || R(0) == 8) abort();
-    R(0) = 0;
 }
 HANDLER(f_assert2) {
     UNUSED;
@@ -866,10 +1106,6 @@ HANDLER(f_find_exidx) {
     uint32_t e = arm32_exidx(R(0), &count);
     if (R(1)) wr32(R(1), (uint32_t)count);
     R(0) = e;
-}
-HANDLER(f_getenv) {
-    UNUSED;
-    R(0) = 0;
 }
 
 /* ---- liblog ---- */
@@ -907,6 +1143,10 @@ HANDLER(log_write) {
 static _Thread_local char dl_error[512];
 static _Thread_local bool dl_error_set;
 static uint32_t dl_error_buffer;
+/* a library's handle: its index in the libraries dlopen gave, from 2 on (1 is the system's), as the guest's word */
+enum { MAX_HANDLES = 256 };
+static const Arm32Library* dl_handles[MAX_HANDLES];
+static pthread_mutex_t dl_lock = PTHREAD_MUTEX_INITIALIZER;
 HANDLER(dl_open) {
     UNUSED;
     if (!R(0)) {
@@ -928,12 +1168,27 @@ HANDLER(dl_open) {
         R(0) = 0;
         return;
     }
-    R(0) = 0x10000000u | (uint32_t)(uintptr_t)l % 0x0fffffffu; /* never dereferenced: dlsym searches every library */
+    pthread_mutex_lock(&dl_lock);
+    unsigned i = 0;
+    while (i < MAX_HANDLES && dl_handles[i] && dl_handles[i] != l) ++i;
+    if (i < MAX_HANDLES) dl_handles[i] = l;
+    pthread_mutex_unlock(&dl_lock);
+    R(0) = i < MAX_HANDLES ? i + 2 : 0;
 }
+/* dlsym(handle, name): a library's own symbol, else the system's; RTLD_DEFAULT (0xffffffff), RTLD_NEXT
+   (0xfffffffe) and the system's handle search every library, then the system's */
 HANDLER(dl_sym) {
     UNUSED;
     const char* name = S(1);
-    uint32_t a = arm32_symbol(NULL, name);
+    uint32_t h = R(0), a = 0;
+    if (h >= 2 && h < MAX_HANDLES + 2) {
+        pthread_mutex_lock(&dl_lock);
+        const Arm32Library* l = dl_handles[h - 2];
+        pthread_mutex_unlock(&dl_lock);
+        a = l ? arm32_symbol(l, name) : 0;
+    } else {
+        a = arm32_symbol(NULL, name);
+    }
     if (!a) a = arm32_hle_symbol(name);
     if (!a) {
         snprintf(dl_error, sizeof dl_error, "undefined symbol: %s", name);
@@ -952,179 +1207,8 @@ HANDLER(dl_error_) {
     R(0) = dl_error_buffer;
 }
 
-/* ---- pthread: a guest mutex or condition variable is a host one, found by its address ---- */
-
-typedef struct SyncObject {
-    uint32_t address;
-    bool cond;
-    pthread_mutex_t mutex;
-    pthread_cond_t condition;
-    struct SyncObject* next;
-} SyncObject;
-enum { SYNC_BUCKETS = 1024 };
-static SyncObject* sync_table[SYNC_BUCKETS];
-static pthread_mutex_t sync_lock = PTHREAD_MUTEX_INITIALIZER;
-static SyncObject* sync_object(uint32_t address, bool cond) {
-    unsigned b = (address >> 2) % SYNC_BUCKETS;
-    pthread_mutex_lock(&sync_lock);
-    SyncObject* o = sync_table[b];
-    while (o && (o->address != address || o->cond != cond)) o = o->next;
-    if (!o) {
-        o = calloc(1, sizeof *o);
-        if (!o) abort();
-        o->address = address;
-        o->cond = cond;
-        if (cond) {
-            pthread_cond_init(&o->condition, NULL);
-        } else {
-            /* recursive: bionic's recursive mutex is a value in the guest's word, and a normal one that a thread
-               locks twice deadlocks, which no working app does */
-            pthread_mutexattr_t attr;
-            pthread_mutexattr_init(&attr);
-            pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
-            pthread_mutex_init(&o->mutex, &attr);
-            pthread_mutexattr_destroy(&attr);
-        }
-        o->next = sync_table[b];
-        sync_table[b] = o;
-    }
-    pthread_mutex_unlock(&sync_lock);
-    return o;
-}
-HANDLER(p_mutex_init) {
-    UNUSED;
-    sync_object(R(0), false);
-    R(0) = 0;
-}
-HANDLER(p_mutex_lock) {
-    UNUSED;
-    R(0) = (uint32_t)pthread_mutex_lock(&sync_object(R(0), false)->mutex);
-}
-HANDLER(p_mutex_trylock) {
-    UNUSED;
-    R(0) = pthread_mutex_trylock(&sync_object(R(0), false)->mutex) ? 16 /* EBUSY */ : 0;
-}
-HANDLER(p_mutex_unlock) {
-    UNUSED;
-    R(0) = (uint32_t)pthread_mutex_unlock(&sync_object(R(0), false)->mutex);
-}
-HANDLER(p_cond_wait) {
-    UNUSED;
-    SyncObject* m = sync_object(R(1), false);
-    R(0) = (uint32_t)pthread_cond_wait(&sync_object(R(0), true)->condition, &m->mutex);
-}
-HANDLER(p_cond_broadcast) {
-    UNUSED;
-    R(0) = (uint32_t)pthread_cond_broadcast(&sync_object(R(0), true)->condition);
-}
-HANDLER(p_cond_signal) {
-    UNUSED;
-    R(0) = (uint32_t)pthread_cond_signal(&sync_object(R(0), true)->condition);
-}
-/* keys: 128 of them, each thread's values in a host array */
-enum { KEYS = 128 };
-static uint32_t key_count;
-static _Thread_local uint32_t key_values[KEYS];
-HANDLER(p_key_create) {
-    UNUSED;
-    uint32_t k = __atomic_fetch_add(&key_count, 1, __ATOMIC_RELAXED);
-    if (k >= KEYS) {
-        R(0) = 11; /* EAGAIN */
-        return;
-    }
-    wr32(R(0), k);
-    R(0) = 0;
-}
-HANDLER(p_getspecific) {
-    UNUSED;
-    R(0) = R(0) < KEYS ? key_values[R(0)] : 0;
-}
-HANDLER(p_setspecific) {
-    UNUSED;
-    if (R(0) < KEYS) key_values[R(0)] = R(1);
-    R(0) = R(0) < KEYS ? 0 : 22;
-}
-HANDLER(p_self) {
-    UNUSED;
-    arm32_cpu();
-    R(0) = c->tpidruro;
-}
-
-/* ---- GLES 1.1: hle_gles.c's handlers, with an AArch64 CPU of the call's arguments ---- */
-
-typedef struct {
-    const char* name;
-    const char* params; /* i an integer, p a pointer, f a float */
-    BridgeHandler handler;
-    void* data;
-} GlesCall;
-static GlesCall gles_calls[] = {
-    {"glActiveTexture", "i", NULL, NULL},    {"glAlphaFunc", "if", NULL, NULL},
-    {"glBindTexture", "ii", NULL, NULL},     {"glBlendFunc", "ii", NULL, NULL},
-    {"glClear", "i", NULL, NULL},            {"glClearColor", "ffff", NULL, NULL},
-    {"glClientActiveTexture", "i", NULL, NULL}, {"glColor4f", "ffff", NULL, NULL},
-    {"glColor4ub", "iiii", NULL, NULL},      {"glColorMask", "iiii", NULL, NULL},
-    {"glColorPointer", "iiip", NULL, NULL},  {"glCullFace", "i", NULL, NULL},
-    {"glDeleteTextures", "ip", NULL, NULL},  {"glDepthFunc", "i", NULL, NULL},
-    {"glDepthMask", "i", NULL, NULL},        {"glDisable", "i", NULL, NULL},
-    {"glDisableClientState", "i", NULL, NULL}, {"glDrawArrays", "iii", NULL, NULL},
-    {"glDrawElements", "iiip", NULL, NULL},  {"glDrawTexiOES", "iiiii", NULL, NULL},
-    {"glEnable", "i", NULL, NULL},           {"glEnableClientState", "i", NULL, NULL},
-    {"glFinish", "", NULL, NULL},            {"glFlush", "", NULL, NULL},
-    {"glFrontFace", "i", NULL, NULL},        {"glGenTextures", "ip", NULL, NULL},
-    {"glGetError", "", NULL, NULL},          {"glGetIntegerv", "ip", NULL, NULL},
-    {"glHint", "ii", NULL, NULL},            {"glLineWidth", "f", NULL, NULL},
-    {"glLoadIdentity", "", NULL, NULL},      {"glLoadMatrixf", "p", NULL, NULL},
-    {"glMatrixMode", "i", NULL, NULL},       {"glMultMatrixf", "p", NULL, NULL},
-    {"glOrthof", "ffffff", NULL, NULL},      {"glPixelStorei", "ii", NULL, NULL},
-    {"glPopMatrix", "", NULL, NULL},         {"glPushMatrix", "", NULL, NULL},
-    {"glReadPixels", "iiiiiip", NULL, NULL}, {"glRotatef", "ffff", NULL, NULL},
-    {"glScalef", "fff", NULL, NULL},         {"glScissor", "iiii", NULL, NULL},
-    {"glShadeModel", "i", NULL, NULL},       {"glTexCoordPointer", "iiip", NULL, NULL},
-    {"glTexEnvf", "iif", NULL, NULL},        {"glTexEnvi", "iii", NULL, NULL},
-    {"glTexImage2D", "iiiiiiiip", NULL, NULL}, {"glTexParameterf", "iif", NULL, NULL},
-    {"glTexParameteri", "iii", NULL, NULL},  {"glTexSubImage2D", "iiiiiiiip", NULL, NULL},
-    {"glTranslatef", "fff", NULL, NULL},     {"glVertexPointer", "iiip", NULL, NULL},
-    {"glViewport", "iiii", NULL, NULL},
-};
-static _Thread_local CPU* gles_cpu;
-HANDLER(gles_call) {
-    const GlesCall* g = data;
-    if (!g->handler) return; /* a state that has no effect here (glLineWidth: lines are 1 pixel wide) */
-    if (!gles_cpu) {
-        gles_cpu = calloc(1, sizeof *gles_cpu);
-        if (!gles_cpu) abort();
-    }
-    CPU* x = gles_cpu;
-    /* AAPCS64: integers in x0 to x7 and floats in v0 to v7, then each in an 8-byte slot of the stack */
-    uint64_t stack[8] = {0};
-    unsigned nx = 0, nv = 0, ns = 0;
-    x->x[31] = (uint64_t)(uintptr_t)stack;
-    for (unsigned i = 0; g->params[i] && ns < 8; ++i) {
-        uint32_t w = word(c, i);
-        uint64_t v = g->params[i] == 'p' ? (w ? (uint64_t)(uintptr_t)(arm32_mem + w) : 0)
-                     : g->params[i] == 'f' ? w
-                                           : (uint64_t)(int64_t)(int32_t)w;
-        if (g->params[i] == 'f' && nv < 8) {
-            memset(&x->v[nv], 0, sizeof x->v[nv]);
-            x->v[nv++].s[0] = w;
-        } else if (g->params[i] != 'f' && nx < 8) {
-            x->x[nx++] = v;
-        } else {
-            stack[ns++] = v;
-        }
-    }
-    g->handler(x, g->data);
-    R(0) = (uint32_t)x->x[0];
-}
-
 /* ---- the tables ---- */
 
-typedef struct {
-    const char* name;
-    Arm32Handler handler;
-    void* data;
-} Arm32Symbol;
 static const Arm32Symbol symbols[] = {
     {"fopen", f_fopen, NULL},
     {"fclose", f_fclose, NULL},
@@ -1141,6 +1225,30 @@ static const Arm32Symbol symbols[] = {
     {"vsnprintf", f_vsnprintf, NULL},
     {"sscanf", f_sscanf, NULL},
     {"stat", f_stat, NULL},
+    {"fstat", f_fstat, NULL},
+    {"lstat", f_lstat, NULL},
+    {"fdopen", f_fdopen, NULL},
+    {"fflush", f_fflush, NULL},
+    {"fputs", f_fputs, NULL},
+    {"fputc", f_fputc, NULL},
+    {"putc", f_fputc, NULL},
+    {"putchar", f_putchar, NULL},
+    {"getc", f_getc, NULL},
+    {"fgetc", f_getc, NULL},
+    {"ungetc", f_ungetc, NULL},
+    {"clearerr", f_clearerr, NULL},
+    {"ferror", f_ferror, NULL},
+    {"feof", f_feof, NULL},
+    {"fileno", f_fileno, NULL},
+    {"setvbuf", f_setvbuf, NULL},
+    {"vfprintf", f_vfprintf, NULL},
+    {"vprintf", f_vprintf, NULL},
+    {"vsprintf", f_vsprintf, NULL},
+    {"vasprintf", f_vasprintf, NULL},
+    {"asprintf", f_vasprintf, (void*)1},
+    {"vsscanf", f_vsscanf, NULL},
+    {"fscanf", f_fscanf, NULL},
+    {"perror", f_perror, NULL},
     {"malloc", f_malloc, NULL},
     {"calloc", f_calloc, NULL},
     {"realloc", f_realloc, NULL},
@@ -1231,12 +1339,9 @@ static const Arm32Symbol symbols[] = {
     {"gmtime", f_gmtime, NULL},
     {"gettimeofday", f_gettimeofday, NULL},
     {"clock_gettime", f_clock_gettime, NULL},
-    {"usleep", f_usleep, NULL},
-    {"getenv", f_getenv, NULL},
     {"__errno", f_errno, NULL},
     {"exit", f_exit, NULL},
     {"abort", f_abort, NULL},
-    {"raise", f_raise, NULL},
     {"__assert2", f_assert2, NULL},
     {"__stack_chk_fail", f_stack_chk_fail, NULL},
     {"__cxa_atexit", f_zero, NULL},
@@ -1249,26 +1354,16 @@ static const Arm32Symbol symbols[] = {
     {"dlsym", dl_sym, NULL},
     {"dlclose", f_zero, NULL},
     {"dlerror", dl_error_, NULL},
-    {"pthread_mutex_init", p_mutex_init, NULL},
-    {"pthread_mutex_destroy", f_zero, NULL},
-    {"pthread_mutex_lock", p_mutex_lock, NULL},
-    {"pthread_mutex_trylock", p_mutex_trylock, NULL},
-    {"pthread_mutex_unlock", p_mutex_unlock, NULL},
-    {"pthread_cond_init", f_zero, NULL},
-    {"pthread_cond_destroy", f_zero, NULL},
-    {"pthread_cond_wait", p_cond_wait, NULL},
-    {"pthread_cond_broadcast", p_cond_broadcast, NULL},
-    {"pthread_cond_signal", p_cond_signal, NULL},
-    {"pthread_key_create", p_key_create, NULL},
-    {"pthread_key_delete", f_zero, NULL},
-    {"pthread_getspecific", p_getspecific, NULL},
-    {"pthread_setspecific", p_setspecific, NULL},
-    {"pthread_self", p_self, NULL},
+    {"__aeabi_atexit", f_zero, NULL},
+    {"btowc", f_btowc, NULL},
+    {"wctob", f_wctob, NULL},
+    {"wctype", f_wctype, NULL},
+    {"iswctype", f_iswctype, NULL},
 };
 
-static const char* const system_libraries[] = {"libc.so",  "libm.so",          "libdl.so",  "liblog.so",
-                                               "libstdc++.so", "libGLESv1_CM.so", "libEGL.so", "libz.so",
-                                               "libandroid.so"};
+static const char* const system_libraries[] = {
+    "libc.so",   "libm.so",   "libdl.so",     "liblog.so",      "libstdc++.so",     "libGLESv1_CM.so", "libGLESv2.so",
+    "libGLESv3.so", "libEGL.so", "libz.so", "libandroid.so", "libOpenSLES.so", "libjnigraphics.so"};
 bool arm32_hle_is_system_library(const char* name) {
     for (size_t i = 0; i < sizeof system_libraries / sizeof *system_libraries; ++i)
         if (!strcmp(name, system_libraries[i])) return true;
@@ -1284,22 +1379,27 @@ void arm32_hle_init(void) {
     dl_error_buffer = arm32_malloc(512);
     stack_guard = arm32_malloc(4);
     wr32(stack_guard, 0x5ca2c0de ^ (uint32_t)time(NULL));
-    for (size_t i = 0; i < sizeof gles_calls / sizeof *gles_calls; ++i)
-        for (const HleSymbol* s = hle_gles; s->name[0]; ++s)
-            if (!strcmp(s->name, gles_calls[i].name)) {
-                gles_calls[i].handler = s->handler;
-                gles_calls[i].data = s->data;
-            }
+    arm32_posix_init();
+    arm32_thread_init();
+    arm32_shim_init();
 }
 
+static uint32_t in_table(const Arm32Symbol* table, size_t count, const char* name) {
+    for (size_t i = 0; count ? i < count : table[i].name[0] != 0; ++i)
+        if (!strcmp(table[i].name, name))
+            return table[i].handler ? arm32_export(name, table[i].handler, table[i].data)
+                                    : (uint32_t)(uintptr_t)table[i].data;
+    return 0;
+}
 uint32_t arm32_hle_symbol(const char* name) {
     if (!strcmp(name, "__sF")) return sF;
     if (!strcmp(name, "__stack_chk_guard")) return stack_guard;
-    for (size_t i = 0; i < sizeof symbols / sizeof *symbols; ++i)
-        if (!strcmp(symbols[i].name, name)) return arm32_export(name, symbols[i].handler, symbols[i].data);
-    for (size_t i = 0; i < sizeof gles_calls / sizeof *gles_calls; ++i)
-        if (!strcmp(gles_calls[i].name, name)) return arm32_export(name, gles_call, &gles_calls[i]);
-    return 0;
+    uint32_t a = in_table(symbols, sizeof symbols / sizeof *symbols, name);
+    if (!a) a = in_table(arm32_posix_symbols, 0, name);
+    if (!a) a = in_table(arm32_thread_symbols, 0, name);
+    if (!a) a = in_table(arm32_shim_symbols, 0, name);
+    if (!a) a = arm32_posix_object(name);
+    return a;
 }
 
 HANDLER(missing) {

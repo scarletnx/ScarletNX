@@ -41,7 +41,7 @@ static struct {
         uint32_t fn;
     }* natives;
     uint32_t native_count, native_capacity;
-    jmethodID class_get_name, for_name, signature_of;
+    jmethodID class_get_name, for_name, signature_of, class_for_name;
     jclass runtime;
 } j = {.lock = PTHREAD_MUTEX_INITIALIZER};
 
@@ -55,9 +55,19 @@ static _Thread_local struct {
     uint32_t count, capacity;
 } t_frames;
 
+static _Thread_local bool t_attached;
+/* the thread's host JNIEnv: a thread that the guest made is attached the first time, as a daemon, which the JVM's end
+   does not wait for */
 static JNIEnv* env_of(void) {
-    if (!t_env) (*j.vm)->AttachCurrentThread(j.vm, (void**)&t_env, NULL);
+    if (!t_env && !(*j.vm)->AttachCurrentThreadAsDaemon(j.vm, (void**)&t_env, NULL)) t_attached = true;
     return t_env;
+}
+void arm32_jni_thread_end(void) {
+    if (t_attached) (*j.vm)->DetachCurrentThread(j.vm);
+    t_attached = false;
+    t_env = NULL;
+    t_locals.count = 0;
+    t_frames.count = 0;
 }
 
 /* ---- references ---- */
@@ -441,6 +451,11 @@ static void add_native(const char* key, uint32_t fn) {
     pthread_mutex_unlock(&j.lock);
 }
 
+/* Class.forName(String) loads with its caller's loader, which for a JNI call is the loader of the native method that
+   runs: on Android the app's own class, here NativeBridge's (the framework's). The guest gets
+   snx.dalvik.Runtime.forName(String) in its place, which loads with the app's loader, as jni.c gives it */
+static jmethodID remap_method(jmethodID m) { return m && m == j.class_for_name && j.for_name ? j.for_name : m; }
+
 /* ---- the JNIEnv's functions ---- */
 
 static const char* const names[] = {
@@ -522,7 +537,7 @@ static void jni_function(SnxArmCPU* c, void* data) {
         jobject method = host_ref(R(1));
         jstring sig = (*e)->CallStaticObjectMethod(e, j.runtime, j.signature_of, method);
         const char* s = sig ? (*e)->GetStringUTFChars(e, sig, NULL) : NULL;
-        R(0) = id_of((*e)->FromReflectedMethod(e, method), s);
+        R(0) = id_of(remap_method((*e)->FromReflectedMethod(e, method)), s);
         if (s) (*e)->ReleaseStringUTFChars(e, sig, s);
         break;
     }
@@ -582,7 +597,7 @@ static void jni_function(SnxArmCPU* c, void* data) {
         const char* sig = (const char*)arm32_host(R(3));
         jmethodID m = i == 33 ? (*e)->GetMethodID(e, host_ref(R(1)), name, sig)
                               : (*e)->GetStaticMethodID(e, host_ref(R(1)), name, sig);
-        R(0) = id_of(m, sig);
+        R(0) = id_of(remap_method(m), sig);
         break;
     }
     case 94:
@@ -738,6 +753,9 @@ static bool start(JNIEnv* e, const char* library_dir) {
     (*e)->GetJavaVM(e, &j.vm);
     jclass class_class = (*e)->FindClass(e, "java/lang/Class");
     j.class_get_name = class_class ? (*e)->GetMethodID(e, class_class, "getName", "()Ljava/lang/String;") : NULL;
+    j.class_for_name = class_class ? (*e)->GetStaticMethodID(e, class_class, "forName",
+                                                            "(Ljava/lang/String;)Ljava/lang/Class;")
+                                   : NULL;
     jclass runtime = (*e)->FindClass(e, "snx/dalvik/Runtime");
     j.runtime = runtime ? (*e)->NewGlobalRef(e, runtime) : NULL;
     j.for_name = runtime ? (*e)->GetStaticMethodID(e, runtime, "forName", "(Ljava/lang/String;)Ljava/lang/Class;")
@@ -771,6 +789,9 @@ static bool start(JNIEnv* e, const char* library_dir) {
 }
 
 uint32_t arm32_jni_vm(void) { return j.vm_guest; }
+jobject arm32_jni_ref(uint32_t handle) { return host_ref(handle); }
+
+JNIEnv* arm32_jni_env(void) { return env_of(); }
 
 char* arm32_jni_load(JNIEnv* e, const char* path, const char* library_dir) {
     if (!start(e, library_dir)) return strdup("dlopen failed: the 32-bit native bridge doesn't start");

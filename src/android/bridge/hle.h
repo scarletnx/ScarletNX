@@ -3,6 +3,7 @@
 #ifndef SNX_ANDROID_HLE_H
 #define SNX_ANDROID_HLE_H
 #include "android/bridge/bridge.h"
+#include <jni.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -19,6 +20,11 @@ typedef struct {
 bool hle_is_system_library(const char* name);
 /* the guest address of a system symbol: a function's export, an object's host address; 0 for one the HLE lacks */
 uint64_t hle_symbol(const char* name);
+/* the HLE's entry of a name: its handler (a GLES name's calls the current context's), or an object's address in its
+   data. NULL for one the HLE lacks. The 32-bit bridge's shim calls the handlers (arm32_shim.c) */
+const HleSymbol* hle_find(const char* name);
+/* ANativeWindow_fromSurface: the native window of a Surface that is a window (its size taken), NULL for another */
+void* hle_android_window_from_surface(JNIEnv* env, jobject surface);
 /* an import the HLE lacks: an export that reports it when called and returns 0 */
 uint64_t hle_missing(const char* name);
 
