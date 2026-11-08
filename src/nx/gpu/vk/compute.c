@@ -1933,6 +1933,7 @@ rebind:
     }
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->p);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_vk.cs_playout, 0, 1, &set, 0, NULL);
+    vk_gpuprof_tag(p->key); /* vk_gpu_profile sums the dispatches' time by program */
     if (d->indirect) {
         rec_CmdDispatchIndirect(cb, grid_buf, grid_off);
     } else {
