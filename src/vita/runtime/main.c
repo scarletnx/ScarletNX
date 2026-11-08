@@ -13,6 +13,7 @@
 #include "vita/platform/input.h"
 #include "vita/runtime/process.h"
 #include "common/utilities/build_info.h"
+#include "common/utilities/cli.h"
 #include "common/utilities/common.h"
 #include "common/platform/file.h"
 #include "common/utilities/game_ini.h"
@@ -23,27 +24,33 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* the common options scarletnx-vita takes (common/utilities/cli.h): a VPK is always extracted, and the Vita runtime
+   has no keys, frame count, fullscreen setting or window-less run */
+static const unsigned vita_cli =
+    SNX_CLI_BIT(SNX_CLI_EXTRACT) | SNX_CLI_BIT(SNX_CLI_RECOMPILE) | SNX_CLI_BIT(SNX_CLI_GAME) |
+    SNX_CLI_BIT(SNX_CLI_UPDATE) | SNX_CLI_BIT(SNX_CLI_DATA) | SNX_CLI_BIT(SNX_CLI_OUTDIR) |
+    SNX_CLI_BIT(SNX_CLI_OUTPUT) | SNX_CLI_BIT(SNX_CLI_SECONDS) | SNX_CLI_BIT(SNX_CLI_SHOT) |
+    SNX_CLI_BIT(SNX_CLI_SCRIPT) | SNX_CLI_BIT(SNX_CLI_HELP);
 static void usage(FILE* out) {
-    fputs("Usage: scarletnx-vita [OPTIONS] game.vpk\n"
-          "       scarletnx-vita [OPTIONS] app/<title ID>   (a dumped game's folder)\n"
-          "       scarletnx-vita [OPTIONS] --game=recompiled/<title ID>\n"
-          "       <title ID> [OPTIONS]   (the game's copy of the runtime, in its folder)\n"
-          "  game.vpk        Extract the VPK into its game's folder (recompiled/<its title ID> of the data folder),\n"
-          "                  compile its code if needed, then play. The folder holds app/ (app0:), ux0/ (the\n"
-          "                  memory card), the module <title ID>_code.so and the copy of the runtime that plays it\n"
-          "  --game=DIR      Play the game in its folder DIR, as its copy of the runtime does\n"
-          "  --patch DIR     The dumped game's update (default: patch/<title ID> beside its app/<title ID>)\n"
-          "  -x, --extract   Extract only\n"
-          "  -r, --recompile Compile again, without playing\n"
-          "  --data DIR      The data folder (default: a portable copy's folder, else the user's data folder)\n"
-          "  --outdir DIR    The folder of the games, in which the game's folder is made (default recompiled/)\n"
-          "  --output DIR    The game's folder itself\n"
-          "  --seconds N     Stop after N seconds, reporting where each thread is\n"
-          "  --shot=PATH     Save the last frame shown to PATH.ppm when the run ends\n"
-          "  --KEY=VALUE     A Vita debug setting:\n"
-          "                  --vita_hle_trace=1 logs each import the runtime lacks (2 every call),\n"
-          "                  --vita_gxm_trace=1 each scene, --script=ms:buttons,... (vita_script) presses buttons\n",
-          out);
+    fputs(
+        "Usage: scarletnx-vita [OPTIONS] game.vpk\n"
+        "       scarletnx-vita [OPTIONS] app/<title ID>   (a dumped game's folder)\n"
+        "       scarletnx-vita [OPTIONS] --game=recompiled/<title ID>\n"
+        "       <title ID> [OPTIONS]   (the game's copy of the runtime, in its folder)\n"
+        "  game.vpk               Extract the VPK into its game's folder (recompiled/<its title ID> of the data\n"
+        "                         folder), compile its code if needed, then play. The folder holds app/ (app0:),\n"
+        "                         ux0/ (the memory card), the module <title ID>_code.so and the copy of the runtime\n"
+        "                         that plays it\n",
+        out);
+    snx_cli_help(out, vita_cli);
+    fputs(
+        "Vita options:\n"
+        "  --KEY=VALUE            A Vita debug setting: --vita_hle_trace=1 logs each import the runtime lacks (2\n"
+        "                         every call), --vita_gxm_trace=1 each scene\n"
+        "\n"
+        "On the Vita, --update is the dumped game's update folder (default: patch/<title ID> beside its app/<title\n"
+        "ID>), --shot saves PATH.ppm, and --script=ms:buttons,... is the setting vita_script.\n",
+        out);
 }
 static bool vpk_path(const char* path) {
     size_t n = strlen(path);
@@ -282,14 +289,8 @@ done:
     free(module);
     return status;
 }
-static bool parse_seconds(const char* text, double* seconds) {
-    char* end = NULL;
-    return text && (*seconds = strtod(text, &end)) > 0 && !*end && *seconds <= 1e9;
-}
 int snx_vita_main(int argc, char** argv) {
-    const char *input = NULL, *output = NULL, *outdir = NULL, *repo = NULL, *game = NULL, *shot = NULL, *patch = NULL;
-    bool extract_only = false, recompile = false;
-    double seconds = 0;
+    const char* input = NULL;
     snx_tool_console();
     setvbuf(stdout, NULL, _IONBF, 0);
     /* VITA_LOCKSTEP and VITA_LOCKSTEP_STEPS, which an older version read (docs/user/deprecations.md): for this version still
@@ -303,48 +304,34 @@ int snx_vita_main(int argc, char** argv) {
     else if (old_steps)
         ini_read(ini_find(g_vita_debug_ini, "vita_lockstep_steps"), old_steps);
     int old_lockstep = g_settings.vita_lockstep, old_lockstep_steps = g_settings.vita_lockstep_steps;
+    SnxCli cli;
+    snx_cli_init(&cli, "scarletnx-vita", vita_cli);
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
-        if (!strcmp(a, "--help") || !strcmp(a, "-h")) {
-            usage(stdout);
-            return 0;
-        } else if (!strcmp(a, "-x") || !strcmp(a, "--extract"))
-            extract_only = true;
-        else if (!strcmp(a, "-r") || !strcmp(a, "--recompile") || !strcmp(a, "--recomp")) {
-            if (!strcmp(a, "--recomp")) snx_option_renamed("--recomp", "--recompile");
-            recompile = true;
-        } else if (!strcmp(a, "--output") || !strcmp(a, "--outdir") || !strcmp(a, "--repo") || !strcmp(a, "--data") ||
-                   !strcmp(a, "--patch")) {
-            if (!strcmp(a, "--repo")) snx_option_renamed("--repo", "--data");
-            if (++i == argc || !*argv[i]) {
-                fprintf(stderr, "scarletnx-vita: %s requires a directory\n", a);
-                return 2;
-            }
-            *(!strcmp(a, "--output")   ? &output
-              : !strcmp(a, "--outdir") ? &outdir
-              : !strcmp(a, "--patch")  ? &patch
-                                       : &repo) = argv[i];
-        } else if (!strncmp(a, "--game=", 7) && a[7])
-            game = a + 7;
-        else if (!strncmp(a, "--shot=", 7) && a[7])
-            shot = a + 7;
-        else if (!strcmp(a, "--seconds") || !strncmp(a, "--seconds=", 10)) {
-            if (!parse_seconds(a[9] ? a + 10 : ++i < argc ? argv[i] : NULL, &seconds)) {
-                fputs("scarletnx-vita: --seconds requires a positive number\n", stderr);
-                return 2;
-            }
-        } else if (!strncmp(a, "--", 2) && strchr(a, '=')) {
-            /* the Vita debug table's, --script=, --press_len= and --shot_every= being vita_script, vita_press_len and
-               vita_shot_every (a Switch game's are g_unattended_ini's, whose script the Switch runtime parses),
-               vulkan_video (which the Vita's AVC decoder doesn't take yet) and gamepad_map */
+        char error[256];
+        /* the common options first (common/utilities/cli.h): --script is the setting vita_script */
+        int common = snx_cli_take(&cli, argc, argv, &i, error, sizeof error);
+        if (common < 0 || common == SNX_CLI_HELP) {
+            if (common < 0)
+                fprintf(stderr, "%s\n", error);
+            else
+                usage(stdout);
+            snx_cli_free(&cli);
+            return common < 0 ? 2 : 0;
+        }
+        if (common == SNX_CLI_SCRIPT) ini_read(ini_find(g_vita_debug_ini, "vita_script"), cli.value[SNX_CLI_SCRIPT]);
+        if (common) continue;
+        if (!strncmp(a, "--", 2) && strchr(a, '=')) {
+            /* the Vita debug table's, --press_len= and --shot_every= being vita_press_len and vita_shot_every (a Switch
+               game's are g_unattended_ini's), vulkan_video (which the Vita's AVC decoder doesn't take yet) and
+               gamepad_map */
             char key[64];
             const char* value = ini_arg(a, key, sizeof key);
             const IniOpt* o = NULL;
             if (value) {
-                o = ini_find(g_vita_debug_ini, !strcmp(key, "script")      ? "vita_script"
-                                               : !strcmp(key, "press_len") ? "vita_press_len"
+                o = ini_find(g_vita_debug_ini, !strcmp(key, "press_len")    ? "vita_press_len"
                                                : !strcmp(key, "shot_every") ? "vita_shot_every"
-                                                                           : key);
+                                                                            : key);
                 if (!o) o = ini_find(g_debug_ini, key);
                 if (!o && !strcmp(key, "vulkan_video")) o = ini_find(g_graphics_ini, key);
             }
@@ -354,15 +341,30 @@ int snx_vita_main(int argc, char** argv) {
                 vita_input_map(value);
             else {
                 fprintf(stderr, "scarletnx-vita: unknown setting: %s\n", a);
+                snx_cli_free(&cli);
                 return 2;
             }
         } else if (a[0] == '-' || input) {
             fprintf(stderr, "scarletnx-vita: unexpected argument: %s\n", a);
             usage(stderr);
+            snx_cli_free(&cli);
             return 2;
         } else
             input = a;
     }
+    /* the common options' values: --update is the dumped game's update folder, one */
+    if (cli.update_count > 1) {
+        fputs("scarletnx-vita: --update is given once, the dumped game's update folder\n", stderr);
+        snx_cli_free(&cli);
+        return 2;
+    }
+    const char *output = cli.value[SNX_CLI_OUTPUT], *outdir = cli.value[SNX_CLI_OUTDIR];
+    const char *repo = cli.value[SNX_CLI_DATA], *game = cli.value[SNX_CLI_GAME], *shot = cli.value[SNX_CLI_SHOT];
+    const char* patch = cli.update_count ? cli.updates[0] : NULL;
+    bool extract_only = cli.flags & SNX_CLI_BIT(SNX_CLI_EXTRACT);
+    bool recompile = cli.flags & SNX_CLI_BIT(SNX_CLI_RECOMPILE);
+    double seconds = cli.seconds;
+    snx_cli_free(&cli);
     if (old_at)
         snx_error("VITA_LOCKSTEP=%s is deprecated, %s: vita_lockstep=%d (docs/user/deprecations.md)", old_at,
                   g_settings.vita_lockstep != old_lockstep ? "and the command line gives vita_lockstep first"
