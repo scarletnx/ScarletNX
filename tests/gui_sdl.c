@@ -2178,11 +2178,8 @@ static void add_mod(App* app, const char* temporary) {
     char *to = snx_path_join(mods, "Better Fonts"), *to_first = snx_path_join(mods, "A first"), want[2048];
     const char* cloud = "content://com.example.cloud.documents/tree/abc%3Amods";
     static const int tail[] = {ROW_ADD_MOD,     ROW_MODS_FOLDER, ROW_ADD_CHEATS,  ROW_CHEATS_FOLDER,
-                               ROW_OPEN_FOLDER, ROW_STATES,      ROW_CLEAN_CACHE,
-#ifdef __ANDROID__ /* the GPU driver package and Turnip's variables: no other platform has them */
-                               ROW_GPU_DRIVER,   ROW_FREEDRENO,
-#endif
-                               ROW_SAVE,        ROW_PLAY};
+                               ROW_OPEN_FOLDER, ROW_STATES,      ROW_CLEAN_CACHE, ROW_GPU_DRIVER,
+                               ROW_FREEDRENO,   ROW_SAVE,        ROW_PLAY};
     size_t index = 0;
     int i, nx, ny;
     while (index < app->games.count &&
@@ -2643,7 +2640,6 @@ static void add_cheats(App* app, const char* temporary) {
     free(cheats);
     free(root);
 }
-#ifdef __ANDROID__ /* the Android driver pages and the game box rows */
 /* a GPU driver package's zip, as released: meta.json, an arm64 library (its ELF header) and its folder name's file */
 static char* driver_zip(const char* temporary, const char* name) {
     mz_zip_archive z = {0};
@@ -2943,7 +2939,6 @@ static void game_gpu_driver(App* app) {
     free(ini);
     free(game);
 }
-#endif
 #ifdef SNX_XDG
 /* the message an answer from a picker's own thread leaves, waited for up to 5 seconds */
 static void message_waited(App* app) {
@@ -4624,17 +4619,9 @@ int main(int argc, char** argv) {
     /* App: the theme and the letters, either way round, and the theme editor, which comes back here */
     app.editor.row = 0;
     key(&app, SDLK_RETURN);
-#ifdef __ANDROID__
     assert(app.form == GUI_FORM_APP && app.editor.row == GUI_APP_THEME && GUI_APP_ROWS == 13);
-#else /* the two Android pages are not App's rows */
-    assert(app.form == GUI_FORM_APP && app.editor.row == GUI_APP_THEME && GUI_APP_ROWS == 11);
-#endif
-#ifdef __ANDROID__
     gpu_drivers(&app, temporary); /* GPU Drivers and Freedreno Settings, then back to the App's first row */
-#endif
-#ifdef __ANDROID__
     download_driver(&app, temporary);
-#endif
     app.editor.row = GUI_APP_THEME;
     {
         char first[64], line[1024];
@@ -9015,9 +9002,7 @@ int main(int argc, char** argv) {
                 add_cheats(&app, temporary);
                 key(&app, SDLK_M);
                 assert(app.addons_shown && !app.mods_count && !app.cheats_count);
-#ifdef __ANDROID__
                 game_gpu_driver(&app);
-#endif
                 key(&app, SDLK_ESCAPE);
                 assert(!app.addons_shown && !app.menu.running && app.menu.view == GUI_LOAD_GAMES);
                 { /* and on its row of the recent games: the same box, named as the run named it */
@@ -9268,18 +9253,13 @@ int main(int argc, char** argv) {
                Mod, Open Mods Folder, Add Cheats, Open Cheats Folder, Open Folder, Save States, Clean Cache, GPU Driver,
                Freedreno Settings, Save, Play */
             assert(app.addons_shown && !app.menu.running && app.addons.count == 3 && app.mods_count == 2 &&
-                   app.cheats_count == 3 && addons_rows(&app) == 9 + ADDONS_TAIL);
+                   app.cheats_count == 3 && addons_rows(&app) == 20);
             assert(addons_row(&app, 9) == ROW_ADD_MOD && addons_row(&app, 10) == ROW_MODS_FOLDER &&
                    addons_row(&app, 11) == ROW_ADD_CHEATS && addons_row(&app, 12) == ROW_CHEATS_FOLDER &&
                    addons_row(&app, 13) == ROW_OPEN_FOLDER && addons_row(&app, 14) == ROW_STATES &&
-                   addons_row(&app, 15) == ROW_CLEAN_CACHE
-#ifdef __ANDROID__ /* the GPU driver package and Turnip's variables: no other platform has them */
-                   && addons_row(&app, 16) == ROW_GPU_DRIVER && addons_row(&app, 17) == ROW_FREEDRENO &&
-                   addons_row(&app, 18) == ROW_SAVE && addons_row(&app, 19) == ROW_PLAY
-#else
-                   && addons_row(&app, 16) == ROW_SAVE && addons_row(&app, 17) == ROW_PLAY
-#endif
-                   );
+                   addons_row(&app, 15) == ROW_CLEAN_CACHE && addons_row(&app, 16) == ROW_GPU_DRIVER &&
+                   addons_row(&app, 17) == ROW_FREEDRENO && addons_row(&app, 18) == ROW_SAVE &&
+                   addons_row(&app, 19) == ROW_PLAY);
             build_ids(&app, dirs);
             assert(!app.addons_checked[0] && !app.addons_checked[1] && app.addons_checked[2]);
             assert(app.mods_on[0] && !app.mods_on[1] && !strcmp(app.mods[0], "A mod"));
@@ -9369,8 +9349,8 @@ int main(int argc, char** argv) {
                    !strcmp(app.message,
                            "\"Speed x2|x4\" always runs: a | in its name, which cheats_off= puts between two"));
             /* past Open Folder, Save States, Clean Cache, GPU Driver and Freedreno Settings */
-            for (i = 0; i < addons_rows(&app) - 10; i++) key(&app, SDLK_DOWN);
-            assert(app.addons_focus == addons_rows(&app) - 2); /* Save */
+            for (i = 0; i < 10; i++) key(&app, SDLK_DOWN);
+            assert(app.addons_focus == 18);
             key(&app, SDLK_RETURN);
             assert(!app.addons_shown && !app.menu.running && strstr(app.message, "kept"));
             checked = snx_ini_value(ini, "addons");
@@ -9524,8 +9504,8 @@ int main(int argc, char** argv) {
             key(&app, SDLK_DOWN);
             key(&app, SDLK_DOWN);
             key(&app, SDLK_RETURN);
-            for (i = 0; i < addons_rows(&app) - 3; i++) key(&app, SDLK_DOWN); /* Recompile, the last row */
-            assert(app.addons_focus == addons_rows(&app) - 1);
+            for (i = 0; i < 17; i++) key(&app, SDLK_DOWN); /* Recompile, the last row */
+            assert(app.addons_focus == 19);
             key(&app, SDLK_RETURN);
             assert(!app.addons_shown && !app.menu.running && !app.recompile && gui_queue_running(&app.queue) == 0);
             {
