@@ -34,13 +34,15 @@ int main(void) {
     SnxCtrIpc c;
     call(p, session, 0x00210000u, &c);
     assert(c.out[0] == 0x00210040u && c.out[1] == 0xC8A0D027u);
-    const uint32_t shop[] = {0x000902D0u, 0x00180000u, 0x00250000u}; /* ListContentSetsEx, GetBalance, RefreshServerTime */
+    const uint32_t shop[] = {0x000902D0u, 0x00180000u,
+                             0x00250000u}; /* ListContentSetsEx, GetBalance, RefreshServerTime */
     for (unsigned i = 0; i < sizeof shop / sizeof *shop; ++i) {
         call(p, session, shop[i], &c);
         assert(c.out[0] == ((shop[i] & 0xFFFF0000u) | 0x40u) && c.out[1] == 0xC8A0D027u);
     }
     call(p, session, 0x00030042u, &c); /* SetApplicationId: local, still the unmodeled success */
     assert(c.out[0] == 0x00030040u && c.out[1] == 0);
+    snx_ctr_process_free(p);
     puts("nim:aoc's eShop commands answer 0xC8A0D027, its local ones success");
     return 0;
 }
