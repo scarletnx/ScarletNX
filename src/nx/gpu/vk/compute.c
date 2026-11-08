@@ -97,7 +97,9 @@ static u64 g_cval;
 static int g_ar_gfx;
 static u64 g_org_cap;
 u64 g_vk_dispatches, g_vk_cs_batches, g_vk_cs_wait_ns;
+#if defined(SNX_TRACY)
 u64 g_vk_cs_cpu_reads; /* dispatches kept on the compute queue because the CPU reads what they write */
+#endif
 /* the dispatches skipped, by why: most reasons are logged once, so the counts show which one a game's dispatches keep
    hitting (a program that wasn't translated is skipped every time it is dispatched) */
 enum {
@@ -1263,7 +1265,9 @@ void vk_dispatch(const DispatchState* d) {
         if (!((p->si.gbuf_wmask >> i) & 1) || !sa[i]) continue;
         if ((run = gmmu_run(sa[i], ss[i], &cpu)) && vk_own_cpu_read(cpu, run, CS_CPU_READ_PRESENTS)) {
             resident = 0;
+#if defined(SNX_TRACY)
             g_vk_cs_cpu_reads++; /* the loop exits with it: one a dispatch */
+#endif
         }
     }
     VkOwnRes* made[16] = {0};
