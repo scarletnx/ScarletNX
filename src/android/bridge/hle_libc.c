@@ -8,6 +8,7 @@
 #include "android/bridge/bridge.h"
 #include "android/bridge/hle.h"
 #include "android/bridge/hle_impl.h"
+#include "android/bridge/host.h"
 #include "common/utilities/ascii.h"
 #include "gnuabi/kernel/kernel.h"
 #include <ctype.h>
@@ -534,6 +535,12 @@ static void read_chk(CPU* c, void* data) {
     (void)data;
     if (X(2) > X(3)) fortify_fail("read");
     X(0) = (uint64_t)read((int)X(0), PTR(1), X(2));
+}
+/* __pread_chk(fd, buffer, count, offset, buffer_size) and __pread64_chk: pread, fortified */
+static void pread_chk(CPU* c, void* data) {
+    (void)data;
+    if (X(2) > X(4)) fortify_fail("pread");
+    X(0) = (uint64_t)host_pread((int)X(0), PTR(1), (size_t)X(2), X(3));
 }
 static void fd_set_chk(CPU* c, void* data) {
     (void)data;
@@ -1462,6 +1469,22 @@ static void g_strtok_r(CPU* c, void* data) {
 #define PH(name, host)   {#name, hle_pass, (void*)host}
 #define T(name, adapter) {#name, adapter, (void*)name}
 
+/* reallocarray(p, count, size): realloc of count times size, ENOMEM for a product past SIZE_MAX */
+static void g_reallocarray(CPU* c, void* data) {
+    if (X(2) && X(1) > SIZE_MAX / X(2)) {
+        hle_set_errno(12); /* ENOMEM */
+        X(0) = 0;
+        return;
+    }
+    X(1) *= X(2);
+#ifdef _WIN32
+    g_realloc(c, data);
+#else
+    (void)data;
+    X(0) = (uint64_t)(uintptr_t)realloc(PTR(0), X(1));
+#endif
+}
+
 const HleSymbol hle_libc[] = {
     /* liblog and libandroid */
     {"AThermal_acquireManager", thermal_acquire, NULL},
@@ -1501,6 +1524,8 @@ const HleSymbol hle_libc[] = {
     {"__strchr_chk", strchr_chk, NULL},
     {"__strrchr_chk", strrchr_chk, NULL},
     {"__read_chk", read_chk, NULL},
+    {"__pread_chk", pread_chk, NULL},
+    {"__pread64_chk", pread_chk, NULL},
     {"__FD_SET_chk", fd_set_chk, NULL},
     {"__FD_ISSET_chk", fd_isset_chk, NULL},
     {"__vsnprintf_chk", g_vsnprintf_chk, NULL},
@@ -1524,6 +1549,7 @@ const HleSymbol hle_libc[] = {
     {"__ctype_get_mb_cur_max", ctype_get_mb_cur_max, NULL},
     P(isspace), CTYPE_L(CTYPE_L_ENTRY)
     /* memory */
+    {"reallocarray", g_reallocarray, NULL},
 #if defined(__linux__)
     P(malloc), P(calloc), P(realloc), P(free), P(memalign), P(posix_memalign), P(malloc_usable_size),
 #elif defined(_WIN32)
@@ -1535,7 +1561,7 @@ const HleSymbol hle_libc[] = {
 #endif
     /* strings */
     P(memchr), P(memcmp), P(memcpy), P(memmove), P(memset), P(strcasecmp), P(strcat), P(strchr), P(strcmp),
-    P(strcoll), P(strcpy), P(strcspn), P(strdup), P(strlen), {"strerror", g_strerror, NULL}, P(strncasecmp), P(strncat), P(strncmp),
+    P(strcoll), P(strcpy), P(strcspn), P(strdup), P(strlen), P(strnlen), {"strerror", g_strerror, NULL}, P(strncasecmp), P(strncat), P(strncmp),
     {"strerror_l", g_strerror, NULL}, {"__gnu_strerror_r", gnu_strerror_r, NULL},
     P(strncpy), P(strpbrk), P(strrchr), P(strspn), P(strstr), P(strtok),
     P(strtoll), P(strtoull), P(atoi), P(atoll),
