@@ -213,16 +213,6 @@ static const char* repeated_help(const IniOpt* table, const IniOpt* o) {
     }
     return "";
 }
-/* the platform this build's menus show: a Mac's (not iOS), Android's, or any for every setting */
-static int platform_here(void) {
-#if defined(__APPLE__) && !defined(SNX_IOS)
-    return INI_PLATFORM_MACOS;
-#elif defined(__ANDROID__)
-    return INI_PLATFORM_ANDROID;
-#else
-    return 0;
-#endif
-}
 size_t ini_list_text(const IniSection* sections, int count, char* out, size_t size) {
     static const char* const types[] = {"int", "float", "text"};
     Listing l;
@@ -242,7 +232,6 @@ size_t ini_list_text(const IniSection* sections, int count, char* out, size_t si
                     help = repeated_help(sections[s].table[t], o);
                 /* else none: the one before covers it */
                 if (o->flags & INI_IN_GAME) continue;
-                if ((o->flags & INI_PLATFORM_MASK) && (o->flags & INI_PLATFORM_MASK) != platform_here()) continue;
                 /* the range in its digits, which the launcher's Settings take and say as they read: %g's six cut
                    1048576 to 1.04858e+06 */
                 put(&l, "%s%s%s\t%s\t%s\t%s\t%.15g\t%.15g\t", sections[s].name, sections[s].page[t] ? "/" : "",

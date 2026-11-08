@@ -108,11 +108,14 @@ typedef struct {
     const char* prefixes[2];    /* each with lib/ and share/vulkan/icd.d: Homebrew's /opt/homebrew, /usr/local */
     const char* sdks;           /* the folder of the LunarG Vulkan SDKs, $HOME/VulkanSDK; NULL for none */
     const char* no_kosmickrisp; /* why KosmicKrisp cannot run on this system, NULL where it can */
+    const char* system_driver;  /* the driver every run takes on a system that is not a Mac's, which the setting does
+                                   not change, as the log names it; NULL on a Mac */
 } SnxVulkanPlaces;
 /* The pick's files, found in at's folders. auto is the MoltenVK the program's folders carry, else the system's;
    moltenvk and kosmickrisp are that one driver, carried or installed on the Mac. 1 with the driver in out; where the
-   Mac has not the one asked for, auto's plays instead, with instead set and reason saying why and what plays. 0 for a
-   value that is no driver, with the reason */
+   Mac has not the one asked for, auto's plays instead, with instead set and reason saying why and what plays; on
+   another system, the system's driver, which moltenvk and kosmickrisp also take, said as for a driver the Mac has
+   not. 0 for a value that is no driver, with the reason */
 int snx_vulkan_driver_find(const SnxVulkanPlaces* at, const char* pick, SnxVulkanDriver* out, char* reason,
                            size_t reason_size);
 /* snx_vulkan_driver_find in this system's folders, for the program that runs */

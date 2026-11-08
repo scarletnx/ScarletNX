@@ -1058,13 +1058,13 @@ void snx_vulkan_driver_free(SnxVulkanDriver* driver) {
     *driver = (SnxVulkanDriver){0};
 }
 /* the driver d names, for a log line: its library, and the ICD the loader takes */
-static void described(const SnxVulkanDriver* d, char* out, size_t size) {
+static void described(const SnxVulkanPlaces* at, const SnxVulkanDriver* d, char* out, size_t size) {
     if (d->icd)
         snprintf(out, size, "%s, ICD %s, through the Vulkan loader %s", d->name, d->icd, d->library);
     else if (d->library)
         snprintf(out, size, "%s at %s", d->name, d->library);
     else
-        snprintf(out, size, "the system's Vulkan loader");
+        snprintf(out, size, "%s", at->system_driver ? at->system_driver : "the system's Vulkan loader");
 }
 /* the files of pick, a driver's name, found; 1, else 0 with the reason */
 static int found_driver(const SnxVulkanPlaces* at, const char* pick, SnxVulkanDriver* out, char* reason,
@@ -1110,17 +1110,22 @@ int snx_vulkan_driver_find(const SnxVulkanPlaces* at, const char* pick, SnxVulka
     *out = (SnxVulkanDriver){0};
     if (pick && pick[0] && strcmp(pick, "auto")) {
         if (strcmp(pick, "moltenvk") && strcmp(pick, "kosmickrisp")) {
-            snprintf(reason, reason_size, "%s is not auto, moltenvk or kosmickrisp", pick);
+            snprintf(reason, reason_size, "vulkan_driver=%s is not auto, moltenvk or kosmickrisp", pick);
             return 0;
         }
-        if (found_driver(at, pick, out, reason, reason_size)) return 1;
+        if (at->system_driver)
+            snprintf(reason, reason_size, "%s is a driver of macOS",
+                     strcmp(pick, "moltenvk") ? "KosmicKrisp" : "MoltenVK");
+        else if (found_driver(at, pick, out, reason, reason_size))
+            return 1;
     }
     /* auto, or what plays in place of a driver the Mac has not, said beside the reason */
-    out->library = program_file(at->program, moltenvk_own, sizeof moltenvk_own / sizeof *moltenvk_own);
+    out->library =
+        at->system_driver ? NULL : program_file(at->program, moltenvk_own, sizeof moltenvk_own / sizeof *moltenvk_own);
     out->name = out->library ? "MoltenVK" : "the system's";
     if (pick && pick[0] && strcmp(pick, "auto")) {
         out->instead = 1;
-        described(out, playing, sizeof playing);
+        described(at, out, playing, sizeof playing);
         append(reason, reason_size, ": %s plays instead", playing);
     }
     return 1;
@@ -1136,9 +1141,10 @@ int snx_vulkan_driver_choose(const char* program, const char* pick, SnxVulkanDri
     at.prefixes[0] = "/opt/homebrew";
     at.prefixes[1] = "/usr/local";
     at.sdks = sdks;
+#elif defined(__ANDROID__)
+    at.system_driver = "the driver package gpu_driver names, else Android's own";
 #else
-    at.program = NULL;
-    at.no_kosmickrisp = "KosmicKrisp is a macOS option";
+    at.system_driver = "the system's Vulkan loader";
 #endif
     int found = snx_vulkan_driver_find(&at, pick, out, reason, reason_size);
 #if defined(__APPLE__) && !defined(SNX_IOS)
