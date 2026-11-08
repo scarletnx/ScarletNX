@@ -3,7 +3,9 @@
 /* The emulated network stack (src/common/network) over the host's loopback: blocking emulated on non-blocking host
    sockets, timeouts, poll, options, eventfd, cancellation and the ICMP emulation's fallback. */
 #include "common/network/net.h"
+#include "common/network/net_host.h"
 #include "common/utilities/endian.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -270,8 +272,19 @@ static void names(void) {
     CHECK(n >= 0 && n <= 8);
 }
 
+/* the host's errors as the stack's: Winsock's of a call before WSAStartup is ENETDOWN, not EIO */
+static void errors(void) {
+#ifdef _WIN32
+    CHECK(snx_net_errno_from_host(WSANOTINITIALISED) == -SNX_ENETDOWN);
+    CHECK(snx_net_errno_from_host(WSAENOTSOCK) == -SNX_ENOTSOCK);
+#else
+    CHECK(snx_net_errno_from_host(ENOTSOCK) == -SNX_ENOTSOCK);
+#endif
+}
+
 int main(void) {
     snx_net_set_log(quiet);
+    errors();
     CHECK(!snx_net_init());
     tcp();
     udp();
