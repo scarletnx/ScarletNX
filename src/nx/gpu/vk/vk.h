@@ -795,6 +795,9 @@ typedef struct Surf {
     struct Surf *lru_prev, *lru_next;
     u64 bytes;
     int took_drawn; /* textures: pixels copied from render targets since the last upload (memory may not have them) */
+    /* storage images: the serial of the owner the last publish put over its texels (vk_surf_publish), 0 before one.
+       Bytes that owner still holds are the image's own (texture.c pieces_published) */
+    u64 pub_serial;
     /* textures: vk_rt_take_gen() and wgen when the search for drawn targets over it (texture.c tex_take_drawn) last left
        nothing it could take: it searches again only once either moved */
     u64 take_gen;
@@ -1078,6 +1081,9 @@ void vk_guest_peek(u64 gva, void* dst, u64 size);
 /* 1 when one GPU-owned range holds all of guest bytes [gva, gva + size), one run of the GPU's page table, with *tag its
    identity at gva as vk_guest_peek writes it there (its owner's serial, the offset in it); else 0 */
 int vk_guest_owned_whole(u64 gva, u64 size, u64* tag);
+/* 1 when one GPU-owned range holds all of guest bytes [gva, gva + size), one run of the GPU's page table, and its
+   owner's serial is serial (that owner, not written since it had that serial); else 0. Under vk_lock */
+int vk_guest_owned_by(u64 gva, u64 size, u64 serial);
 /* everything recorded so far done before what follows reads or writes what it did (the engines' steps) */
 void vk_all_barrier(VkCommandBuffer cb);
 /* rows rows of row_bytes from src (rows src_pitch apart) over dst's rows (dst_pitch apart), a region a row */

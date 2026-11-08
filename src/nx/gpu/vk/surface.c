@@ -1291,22 +1291,58 @@ void vk_rt_flush(u64 gva) { vk_surf_flush(vk_rt_find(gva), NULL); }
    compute program every frame, four waits and four landings a frame. Their images keep their pixels, older than
    memory's (the publish stamps the bytes written), so they load memory's before they are used again, as after a
    flush */
-static void rt_retire_over(u64 gva, u64 size) {
+static void publish_span(const Surf* s, VkOwnRes* r, u64 at, u64 n);
+/* With r (s's publish), r is published over each one's bytes once all are retired: publishing one flushes the
+   pending targets over it (vk_rt_before_write_cpu) */
+static void rt_retire_over(u64 gva, u64 size, const Surf* s, VkOwnRes* r) {
     Surf *local[16], **list;
     u32 count;
     if (!pend_hit_va(&g_rt_pages, gva, size)) return;
     count = rt_pending_over(gva, size, local, 16, &list);
-    for (u32 i = 0; i < count; i++) {
-        Surf* t = list[i];
-        if (t->gva < gva || t->gva + rt_bytes(t) > gva + size) continue; /* vk_rt_overlay flushed those */
-        t->mem_wgen = t->wgen;
-        vk_surf_relist(t);
-    }
+    for (u32 pass = 0; pass < (r ? 2u : 1u); pass++)
+        for (u32 i = 0; i < count; i++) {
+            Surf* t = list[i];
+            if (t->gva < gva || t->gva + rt_bytes(t) > gva + size) continue; /* vk_rt_overlay flushed those */
+            if (pass) {
+                publish_span(s, r, t->gva - s->gva, rt_bytes(t));
+                continue;
+            }
+            t->mem_wgen = t->wgen;
+            vk_surf_relist(t);
+        }
     if (list != local) free(list);
+}
+/* r's bytes [at, at + n) of s's span published over the guest memory there, a run of it at a time (an unmapped page
+   takes no write), and stamped written */
+static void publish_span(const Surf* s, VkOwnRes* r, u64 at, u64 n) {
+    for (u64 off = at, end = at + n; off < end;) {
+        u64 cpu = 0, k = gmmu_run(s->gva + off, end - off, &cpu);
+        if (!k) {
+            k = 0x1000 - ((s->gva + off) & 0xFFF);
+            if (k > end - off) k = end - off;
+        } else
+            vk_own_publish(cpu, k, r, off);
+        off += k;
+    }
+    gpu_mem_written(s->gva + at, n);
+}
+/* r published over s's own bytes: each layer's from where it starts (a volume's span whole). The bytes between its
+   layers aren't s's, and keep their owners: published as the GPU saw them, they changed nothing, but they were stamped
+   written all the same, and all that is built from them was loaded again. One game writes each level of its reflection
+   cubes through a view of that level, whose layers are a whole mip chain apart, so each view's span holds the other
+   views' levels: every view and every cube loaded all its memory again each frame, 30 uploads and 12 MB */
+static void publish_own(const Surf* s, VkOwnRes* r, u64 size) {
+    u64 own = rt_layer_bytes(s);
+    if (surf_volume(s) || s->layers < 2 || own >= s->layer_size) {
+        publish_span(s, r, 0, size);
+        return;
+    }
+    for (u32 i = 0; i < s->layers; i++) publish_span(s, r, (u64)i * s->layer_size, own);
 }
 /* A storage image's results kept on the GPU (docs/GPU_OWNERSHIP.md), as the DMA engine's destination is: its span
    staged as the GPU sees it into a buffer of its own (the bytes between its texels keep theirs), its texels laid out
-   over that in the guest's layout, and the buffer published over the span run by run of guest memory. Nothing waits:
+   over that in the guest's layout, and the buffer published over its texels and the targets taken in (publish_own,
+   rt_retire_over) run by run of guest memory. Nothing waits:
    the bytes land when the CPU touches them. A 3D volume a game writes twice a frame and only samples took a wait
    each, a fifth of the run. A pitch-linear one's rows go at the guest's pitch, over the bytes between them as the
    guest has them. 0 when it can't be (pitch-linear rows of part texels, or layers not a pitch's rows apart, no room):
@@ -1316,7 +1352,7 @@ static int surf_publishable(const Surf* s) {
                      (s->layers == 1 || s->layer_size == (u64)s->pitch * guest_h(s)));
 }
 int vk_surf_publish(Surf* s) {
-    u64 size = flush_bytes(s), off = 0;
+    u64 size = flush_bytes(s);
     u32 mem_wgen = s ? s->mem_wgen : 0;
     VkOwnRes* r;
     VkCommandBuffer cb;
@@ -1377,17 +1413,9 @@ int vk_surf_publish(Surf* s) {
     if (kept) vk_all_barrier(cb);
     /* The buffer now holds this image, and the targets under it: publishing it must not flush them again */
     s->mem_wgen = s->wgen;
-    rt_retire_over(s->gva, size);
-    while (off < size) {
-        u64 cpu = 0, n = gmmu_run(s->gva + off, size - off, &cpu);
-        if (!n) { /* an unmapped page takes no write */
-            n = 0x1000 - ((s->gva + off) & 0xFFF);
-            if (n > size - off) n = size - off;
-        } else
-            vk_own_publish(cpu, n, r, off);
-        off += n;
-    }
-    gpu_mem_written(s->gva, size);
+    rt_retire_over(s->gva, size, s, r);
+    publish_own(s, r, size);
+    s->pub_serial = __atomic_load_n(&r->serial, __ATOMIC_ACQUIRE);
     vk_own_res_unref(r);
     /* guest memory (its owner) has the image's pixels now: the texture cache finds them current, by their owner */
     flush_rebase(s, size, kept != 0, gw0);
@@ -1432,7 +1460,7 @@ int vk_surf_keep_begin(Surf* s, VkImageKeep* k) {
         s->mem_wgen = s->wgen; /* a target goes over nothing of its own */
         if (vk_rt_overlay(s->gva, size, r->buf, 0)) vk_all_barrier(vk_cmd());
         s->mem_wgen = mem_wgen;
-        rt_retire_over(s->gva, size);
+        rt_retire_over(s->gva, size, NULL, NULL);
         vk_own_publish(cpu, size, r, 0);
         if (span_owner(cpu, size, &k->off) != r) { /* landed instead (unified memory over it) */
             vk_own_res_unref(r);
