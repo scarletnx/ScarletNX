@@ -266,6 +266,16 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime)
                   URL https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
                   URL_HASH SHA256=${snx_ffmpeg_sha256}
                   DOWNLOAD_ONLY YES)
+    # dav1d (BSD-2-Clause) for the Ounce's AV1 movies, which FFmpeg decodes through it: built with meson and ninja,
+    # which cmake/dav1d.cmake runs, before FFmpeg
+    if(SNX_BUILD_NX)
+        set(snx_dav1d_sha256 686616b7c69eb88d44459391ab25cac13b6647a3b288835c5784e71c1514a5c5)
+        CPMAddPackage(NAME dav1d VERSION 1.5.4
+                      URL https://downloads.videolan.org/pub/videolan/dav1d/1.5.4/dav1d-1.5.4.tar.xz
+                      URL_HASH SHA256=${snx_dav1d_sha256}
+                      DOWNLOAD_ONLY YES)
+        include("${PROJECT_SOURCE_DIR}/cmake/dav1d.cmake")
+    endif()
     include("${PROJECT_SOURCE_DIR}/cmake/ffmpeg.cmake")
 endif()
 

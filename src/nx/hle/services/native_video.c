@@ -161,6 +161,8 @@ static void host_free(NativeVideoCodec* s) {
     avcodec_free_context(&HOST(s)->decoder);
     av_frame_free(&HOST(s)->frame);
     for (u32 i = 0; i < NVIDEO_INPUTS; i++) av_packet_free(&HOST(s)->packets[i]);
+    av_frame_free(&HOST(s)->black);
+    HOST(s)->nblack = 0;
 }
 /* back to a codec that was just made: its decoder, syncpoint, memory and event let go */
 static void codec_reset(NativeVideoCodec* s) {
@@ -265,6 +267,13 @@ static int image_write(const NativeVideoPool* p, u32 id, const AVFrame* f) {
     rgb_matrix(s, f);
     return g_renderer->vic_compose(&j);
 }
+/* whether the stand-in painted the image black already: the picture never changes, and painting it again on the GPU
+   would have every frame's CPU read of it wait for it to land */
+static int painted_black(const NativeVideoCodec* s, u32 id) {
+    for (u32 i = 0; i < HOST(s)->nblack; i++)
+        if (HOST(s)->black_images[i] == id) return 1;
+    return 0;
+}
 /* the image filled with the frame (NULL: the end of the stream, no picture), its output queued and its fence reached */
 static void codec_output(NativeVideoCodec* s, NativeVideoImage* image, const AVFrame* f, u64 timestamp) {
     NativeVideoPool* p = nvideo_pool_find(NV->pools, NVIDEO_POOLS, image->id);
@@ -272,9 +281,10 @@ static void codec_output(NativeVideoCodec* s, NativeVideoImage* image, const AVF
     if (image->wait_id < SYNCPT_IDS && !syncpt_wait(image->wait_id, image->wait_value, 200000000))
         WARN_LIMIT(4, "gsv: video image %u: the game's fence %u on syncpoint %u isn't reached, written anyway\n",
                    image->id, image->wait_value, image->wait_id);
-    if (f && p)
-        image_write(p, image->id, f);
-    else if (f)
+    if (f && p && !(f == HOST(s)->black && painted_black(s, image->id))) {
+        if (image_write(p, image->id, f) && f == HOST(s)->black && HOST(s)->nblack < NVIDEO_IMAGES)
+            HOST(s)->black_images[HOST(s)->nblack++] = image->id;
+    } else if (f && !p)
         WARN_LIMIT(4, "gsv: video image %u has no pool: its picture is dropped\n", image->id);
     u32 props[NVIDEO_PROPS];
     nvideo_props(props, image->id, s->width, s->height, w ? w : s->width, h ? h : s->height, timestamp, !f);
@@ -285,10 +295,27 @@ static void codec_output(NativeVideoCodec* s, NativeVideoImage* image, const AVF
        and CPU reads of the image then follow */
     syncpt_add(s->syncpoint, nvideo_image_fill(s, image, props));
 }
+/* An AV1 stream in a build without dav1d (cmake/dav1d.cmake: not built for its target, or turned off), whose FFmpeg has
+   no AV1 decoder that decodes in software: each input comes out as a black picture with the input's timestamp, and the
+   end of the stream as it is, so the game plays the movie through, black, and goes on */
+static void standin_pump(NativeVideoCodec* s) {
+    NativeVideoImage* image;
+    while (s->started && s->input_count && (image = nvideo_image_next(s))) {
+        NativeVideoInput* in = &s->inputs[s->input_head];
+        codec_output(s, image, in->eos ? NULL : HOST(s)->black, in->timestamp);
+        av_packet_unref(HOST(s)->packets[s->input_head]);
+        nvideo_input_pop(s);
+    }
+}
 /* the decoder fed and its pictures written while images are queued */
 static void codec_pump(NativeVideoCodec* s) {
     AVCodecContext* dec = HOST(s)->decoder;
     AVFrame* frame = HOST(s)->frame;
+    if (HOST(s)->black) {
+        standin_pump(s);
+        submission_event(s);
+        return;
+    }
     while (dec && s->started) {
         NativeVideoImage* image;
         if (frame->buf[0]) {
@@ -379,9 +406,11 @@ static int nn_gsv_INativeVideoCodec_Configure(SvcObj* self, IpcBuf mime, const n
     R_UNLESS(mime.addr && mime.size && mime.size <= 64 && mem_mapped_run(mime.addr, mime.size) == mime.size,
              NVIDEO_BAD_ARGUMENT);
     u32 kind = nvideo_mime(GP(mime.addr), mime.size);
-    enum AVCodecID id = kind == NVIDEO_MIME_VP9 ? AV_CODEC_ID_VP9
-                        : kind == NVIDEO_MIME_VP8 ? AV_CODEC_ID_VP8
-                        : kind == NVIDEO_MIME_H264 ? AV_CODEC_ID_H264 : AV_CODEC_ID_NONE;
+    enum AVCodecID id = kind == NVIDEO_MIME_VP9    ? AV_CODEC_ID_VP9
+                        : kind == NVIDEO_MIME_VP8  ? AV_CODEC_ID_VP8
+                        : kind == NVIDEO_MIME_H264 ? AV_CODEC_ID_H264
+                        : kind == NVIDEO_MIME_AV1  ? AV_CODEC_ID_AV1
+                                                   : AV_CODEC_ID_NONE;
     /* The SDK's H.264 decoder (command 201, codec 0) passes down its caller's buffer here, not a fixed MIME type: read
        as the stream's configuration, which starts with a NUL where it has start codes */
     int h264_config = id == AV_CODEC_ID_NONE && s->codec == 0;
@@ -400,12 +429,28 @@ static int nn_gsv_INativeVideoCodec_Configure(SvcObj* self, IpcBuf mime, const n
         R_THROW(NVIDEO_BAD_ARGUMENT);
     }
     R_UNLESS(cfg->width && cfg->height && cfg->width <= 8192 && cfg->height <= 8192, NVIDEO_BAD_ARGUMENT);
+    /* AV1: dav1d's decoder, the only one this FFmpeg has for it, or the black stand-in in a build without it */
     const AVCodec* codec = avcodec_find_decoder(id);
+    int av1 = id == AV_CODEC_ID_AV1 && !codec;
     AVCodecContext* dec = codec ? avcodec_alloc_context3(codec) : NULL;
-    int ok = dec != NULL;
-    if (ok) {
+    int ok = dec != NULL || av1;
+    if (av1 && (HOST(s)->black = av_frame_alloc())) { /* the stand-in's picture: limited range black */
+        AVFrame* f = HOST(s)->black;
+        f->format = AV_PIX_FMT_YUV420P;
+        f->width = (int)cfg->width;
+        f->height = (int)cfg->height;
+        ok = av_frame_get_buffer(f, 0) >= 0;
+        for (int i = 0; i < 3 && ok; i++)
+            memset(f->data[i], i ? 128 : 16, (size_t)f->linesize[i] * (size_t)(i ? (f->height + 1) / 2 : f->height));
+        if (ok)
+            WARN("gsv: video codec %u: an AV1 stream, which this build has no decoder for: its pictures come out black\n",
+                 codec_index(s));
+    } else if (av1)
+        ok = 0;
+    if (dec) {
         dec->thread_count = 4;
         dec->thread_type = FF_THREAD_SLICE; /* no frame threads: each packet's picture comes out at once */
+        if (id == AV_CODEC_ID_AV1) dec->flags |= AV_CODEC_FLAG_LOW_DELAY; /* dav1d's frame delay 1, for the same */
         dec->pkt_timebase = (AVRational){1, 1000000};
         if (h264_config && (dec->extradata = av_mallocz((size_t)mime.size + AV_INPUT_BUFFER_PADDING_SIZE))) {
             memcpy(dec->extradata, GP(mime.addr), (size_t)mime.size);
@@ -431,7 +476,7 @@ static int nn_gsv_INativeVideoCodec_Configure(SvcObj* self, IpcBuf mime, const n
     s->state = NVIDEO_CONFIGURED;
     submission_event(s);
     LOG("gsv: video codec %u configured: %s %ux%u at %u FPS, inputs of %u bytes at most\n", codec_index(s),
-        codec->name, s->width, s->height, s->frame_rate, s->capacity);
+        codec ? codec->name : "av1 (black stand-in)", s->width, s->height, s->frame_rate, s->capacity);
     R_SUCCEED();
 }
 static int nn_gsv_INativeVideoCodec_GetSubmissionEvent(SvcObj* self, u32* event) {
@@ -501,7 +546,7 @@ static int nn_gsv_INativeVideoCodec_Flush(SvcObj* self) {
 static int nn_gsv_INativeVideoCodec_Stop(SvcObj* self) {
     NativeVideoCodec* s = self->data;
     R_UNLESS(s->state == NVIDEO_CONFIGURED, NVIDEO_BAD_STATE);
-    avcodec_flush_buffers(HOST(s)->decoder);
+    if (HOST(s)->decoder) avcodec_flush_buffers(HOST(s)->decoder);
     av_frame_unref(HOST(s)->frame);
     while (s->input_count) {
         av_packet_unref(HOST(s)->packets[s->input_head]);
