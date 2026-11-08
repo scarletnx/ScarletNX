@@ -12,12 +12,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
-#include <dlfcn.h>
-#endif
 
 #define AGB_RECOMP_ABI 6   /* a map's block names its module function, or none ("-") for a hint */
 #define AGB_BLOCK_MAX  256 /* words compiled per block at most */
@@ -32,17 +26,9 @@ void agb_recomp_init(AgbRecomp* recomp, const char* base) {
     if (recomp->base) strcpy(recomp->base, base);
 }
 
-static void close_module(void* handle) {
-#ifdef _WIN32
-    FreeLibrary((HMODULE)handle);
-#else
-    dlclose(handle);
-#endif
-}
-
 void agb_recomp_free(AgbRecomp* recomp) {
     snx_arm_exec_free(recomp->exec);
-    if (recomp->handle) close_module(recomp->handle);
+    if (recomp->handle) snx_library_close(recomp->handle);
     free(recomp->blocks);
     free(recomp->base);
     *recomp = (AgbRecomp){0};
@@ -77,12 +63,7 @@ static uint64_t code_hash(AgbBoard* board, uint32_t pc, int thumb, size_t count)
 
 static void* module_symbol(void* handle, size_t index) {
     char* name = block_name(index);
-    void* symbol = NULL;
-#ifdef _WIN32
-    if (name) symbol = (void*)GetProcAddress((HMODULE)handle, name);
-#else
-    if (name) symbol = dlsym(handle, name);
-#endif
+    void* symbol = name ? snx_library_symbol(handle, name) : NULL;
     free(name);
     return symbol;
 }
@@ -335,30 +316,12 @@ done:
 /* Loads <base>.so and takes the blocks out of it. */
 static void* open_module(AgbRecomp* recomp, char* error, size_t error_size) {
     const char* path = recomp->base;
-    size_t length = strlen(path);
-    char* library = (char*)malloc(length + 12);
-    void* handle;
-    if (!library) return NULL;
     /* a name without a directory would not be looked up in the working directory */
-    if (strchr(path, '/') || strchr(path, '\\'))
-        sprintf(library, "%s.so", path);
-    else
-        sprintf(library, "./%s.so", path);
-#ifdef _WIN32
-    handle = (void*)LoadLibraryA(library);
-#else
-    handle = dlopen(library, RTLD_NOW | RTLD_LOCAL);
-#endif
+    char* library = strchr(path, '/') || strchr(path, '\\') ? snx_format("%s.so", path) : snx_format("./%s.so", path);
+    if (!library) return NULL;
+    void* handle = snx_library_open(library, error, error_size);
     free(library);
-    if (!handle) {
-#ifndef _WIN32
-        const char* why = dlerror();
-        snprintf(error, error_size, "cannot load the recompiled ROM module: %s", why ? why : "unknown");
-#else
-        snprintf(error, error_size, "cannot load the recompiled ROM module");
-#endif
-        return NULL;
-    }
+    if (!handle) return NULL;
     for (size_t i = 1; i <= recomp->count; ++i)
         recomp->blocks[i].fn =
             recomp->blocks[i].symbol ? (SnxArmBlock)module_symbol(handle, recomp->blocks[i].symbol) : NULL;
@@ -376,7 +339,7 @@ static void stamp(const AgbRecomp* recomp, unsigned long long* size, unsigned lo
 /* Links every known block into the cached module. */
 static int relink(AgbRecomp* recomp, AgbBoard* board, char* error, size_t error_size) {
     if (recomp->handle) {
-        close_module(recomp->handle);
+        snx_library_close(recomp->handle);
         recomp->handle = NULL;
     }
     for (size_t i = 1; i <= recomp->count; ++i) {
