@@ -51,7 +51,7 @@ if(NOT why STREQUAL "" OR NOT text MATCHES "^0 passes")
 endif()
 
 snx_llvm_pipelines("${WORK}/opt-22.1.0-lame" 22.1.0 x86_64-pc-linux-gnu "${WORK}" text why)
-if(NOT why MATCHES "no pipeline for -O1, whose passes LLVM Internals can't turn off: 1 no O1 here" OR why MATCHES "-O[023]")
+if(NOT why MATCHES "no pipeline for -O1, whose passes LLVM Internals can't turn off: 1 no O1 here" OR why MATCHES "for -O[023]")
     message(FATAL_ERROR "the opt that fails on -O1 is not said so, or more is: ${why}")
 endif()
 if(text MATCHES "\n1 " OR NOT text MATCHES "^0 passes.*\n2 passes.*\ns passes.*\nz passes.*\n3 passes")
