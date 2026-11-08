@@ -1488,7 +1488,9 @@ static VkPipeline pipeline(const PipeKey* k, uint32_t count, bool* pending) {
         SDL_UnlockMutex(g.job_lock);
         if (e->job) {
             ++g.pipe_count;
-            if (wait == 0) pipe_job_wait(e, small);
+            /* with the frame's budget spent, a pipeline just handed over is made only where this thread was held up
+               meanwhile: its draw is skipped at once, as Skip's, so the same draws skip on every run */
+            if (wait == 0 && (small || g.budget > 0)) pipe_job_wait(e, small);
             *pending = e->job != 0;
             g.skipped += *pending;
             return e->pipeline;
