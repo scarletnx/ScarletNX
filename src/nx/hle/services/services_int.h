@@ -202,7 +202,7 @@ typedef struct {
 typedef struct {
     u32 obj;
     u32 applet_id, mode;
-    u32 state_ev, out_ev, interactive_ev;
+    u32 state_ev, out_ev, interactive_ev, unknown170_ev; /* unknown170_ev: never signaled (am.swipc) */
     SvcObj* in[AM_IN_DATA]; /* the storages the game pushed, in order (common arguments first) */
     int nin;
     SvcObj* out[AM_OUT_DATA]; /* the interactive replies, oldest first */
