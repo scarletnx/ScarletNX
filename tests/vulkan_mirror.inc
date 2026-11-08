@@ -61,6 +61,75 @@ static int mirror_write(u64 cpu, u32 n, u8 value, int logged) {
     return 0;
 }
 
+/* A dispatch's write log into the mirror's mask (vk_mirror_fold): two buffers of one dispatch, the first at a byte
+   that is not the first of a mask word, the second over it. Only the windows flagged are taken, the bits past a
+   buffer's length go, and the bits of the two buffers meet in the mask */
+static int check_mirror_fold(u64 cpu, u64 gva) {
+    const u64 a = cpu + 0x1005, b = a + 8; /* a: bit 5 of its mask word */
+    const u32 alen = 0x1800, blen = 0x1ff0; /* b inside the 3 pages mapped */
+    static u8 want[0x2100]; /* a byte for each guest byte from cpu + 0x1000 */
+    static u32 words[2 * SH_WLOG_PART];
+    memset(want, 0, sizeof want);
+    memset(words, 0, sizeof words);
+    /* the bits of buffer p for its bytes [from, to), the window flagged or not */
+    u32* part[2] = {words, words + SH_WLOG_PART};
+    const struct {
+        u32 p, from, to, flag;
+    } runs[] = {
+        {0, 0x10, 0x30, 1},     /* across a mask word of the log and two of the mirror's */
+        {0, 0x17f0, 0x1810, 1}, /* past a's length from 0x1800: those go */
+        {1, 0x0, 0x4, 1},       /* b's first bytes, a's 8 to 12 */
+        {1, 0x1100, 0x1104, 0}, /* window 1 of b not flagged: not taken */
+    };
+    for (u32 r = 0; r < sizeof runs / sizeof *runs; r++) {
+        u32* flags = part[runs[r].p];
+        for (u32 x = runs[r].from; x < runs[r].to; x++) {
+            flags[SH_WPAGE_SLOT + x / 32] |= 1u << (x % 32);
+            if (runs[r].flag) flags[x / 4096] = 1;
+            u64 at = (runs[r].p ? b : a) + x;
+            u32 len = runs[r].p ? blen : alen;
+            if (runs[r].flag && x < len) want[at - (cpu + 0x1000)] = 1;
+        }
+    }
+    VkWriteLog* log = vk_wlog_get(2);
+    CHECK(log && vk_wlog_size(log) == sizeof words);
+    VkBuffer src;
+    u64 at;
+    u8* p = vk_stage_upload(sizeof words, 16, &src, &at);
+    CHECK(p);
+    memcpy(p, words, sizeof words);
+    vk_finish(); /* the mask clear of what came before */
+    vk_render_end();
+    VkBufferCopy copy = {at, 0, sizeof words};
+    rec_CmdCopyBuffer(vk_cmd(), src, vk_wlog_buffer(log), 1, &copy);
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                           .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                           .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                           .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT};
+    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    rec_CmdPipelineBarrier2(vk_cmd(), &d);
+    VkMirFold f[2] = {{a, alen, 0}, {b, blen, 1}};
+    vk_mirror_fold(vk_cmd(), vk_wlog_buffer(log), vk_wlog_size(log), f, 2);
+    CHECK(vk_mirror_pending(gva + 0x1005, alen));
+    /* the mask, read before the submit's harvest clears it */
+    static u32 mask[0x2100 / 32];
+    CHECK(!buffer_read(vk_mirror_mask(), (cpu + 0x1000) / 8, sizeof mask, (u8*)mask));
+    for (u32 i = 0; i < sizeof want; i++)
+        if ((mask[i / 32] >> (i % 32) & 1) != want[i]) {
+            fprintf(stderr, "vulkan_headless: mirror fold: the bit of byte %#x is %u, not %u\n", i,
+                    mask[i / 32] >> (i % 32) & 1, want[i]);
+            return 1;
+        }
+    vk_wlog_unref(log);
+    /* the mirror's bytes there are guest memory's: landing the bits changes nothing */
+    vk_mirror_publish();
+    vk_mirror_mem_need(gva + 0x1000, 0x2000);
+    own_acquire(cpu + 0x1000, 0x2000);
+    CHECK(!vk_mirror_pending(gva + 0x1000, 0x2000));
+    return 0;
+}
+
 static int check_mirror(void) {
     const u64 cpu = HEAP_BASE + 0x7c0000, gva = 0xa600000, len = 0x3000;
     static u8 got[0x3000];
@@ -205,6 +274,7 @@ static int check_mirror(void) {
         CHECK(!buffer_read(buf, off, 20, u));
         CHECK(!mirror_expect(u, guest, 20, 4, 8, 0x3c));
     }
+    CHECK(!check_mirror_fold(cpu, gva));
     CHECK(g_vk_validation_messages == validation);
     vk_unlock();
     puts("The GPU mirror takes the bytes the CPU changed and keeps those the GPU wrote; the bytes its programs logged "
