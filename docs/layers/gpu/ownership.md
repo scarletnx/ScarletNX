@@ -217,7 +217,15 @@ more per MiB imported in one import, from 16 MiB to 512 MiB, and 7.2 us per MiB 
   write but run by the GPU after it would read the new constants. The other constant buffers, the ones the game's CPU
   or GPU writes, are read in place (`vk_buf_get_uniform`).
 - Writable storage over bytes the GPU holds elsewhere (a GPU-owned range, a compute or storage image result, a queued
-  release's payload), and a page the runtime wrote (`front`): those land first and are copied, as before.
+  release's payload), and a page the runtime wrote (`front`): those land first and are copied, as before. A
+  dispatch's logged binding (its stores logged, `vk_buf_copy_writable_logged`) that is refused only because an owner
+  holds part of it, or no import can hold part of it (a 2 MiB window with an alias-pool page, which amdgpu's user
+  pointers refuse), is written back on the GPU right after the dispatch instead (`back_record` in `vk/buffer.c`): the
+  bytes its write log marks, and no others, are merged by `wlog_merge.comp` into the import's part in place, into the
+  owner's part, and into whole pages neither holds through an owner made for them, published GPU-owned. Nothing stays
+  pending, so a later reader neither lands it (a `vk_finish`) nor composes it. A run with writes in place pending
+  across an import's edge is then read a part at a time, each from its import on the GPU (`owned.c`'s
+  `inplace_part`), where it was waited for.
 - Ranges under pending results, and GPU-owned ranges: their bytes are not in guest memory.
 - Textures and render targets: their layout differs from guest memory (block linear, formats the host lacks), so they
   are always made on the GPU from a staging copy.

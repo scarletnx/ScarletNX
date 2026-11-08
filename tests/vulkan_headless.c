@@ -5804,11 +5804,12 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "header_words") && ++ran) CHECK(!check_uma_header_words());
         if (!strcmp(name, "placed") && ++ran) CHECK(!check_uma_placed());
         if (!strcmp(name, "placed_view") && ++ran) CHECK(!check_uma_placed_view());
+        if (!strcmp(name, "logged_back") && ++ran) CHECK(!check_uma_logged_back());
         if (!ran) {
             fprintf(stderr,
                     "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants, migrate, way, region_writes, "
                     "region_merge, writes, feedback, publish, dispatch, texture_pending, dispatch_constants, "
-                    "header_words, placed or placed_view\n",
+                    "header_words, placed, placed_view or logged_back\n",
                     name);
             return 2;
         }
@@ -5831,6 +5832,7 @@ static int run_headless(int argc, char** argv) {
         CHECK(!check_uma_header_words());
         CHECK(!check_uma_placed());
         CHECK(!check_uma_placed_view());
+        CHECK(!check_uma_logged_back());
         CHECK(!check_uma_page_changes());
         CHECK(!check_uma());
         CHECK(!check_uma_way());
@@ -6003,6 +6005,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_uma_header_words());
     CHECK(!check_uma_placed());
     CHECK(!check_uma_placed_view());
+    CHECK(!check_uma_logged_back());
     CHECK(!check_uma_page_changes());
     CHECK(!check_rt_overlap());
     CHECK(!check_uma());
