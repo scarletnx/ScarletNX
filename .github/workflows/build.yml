@@ -23,8 +23,8 @@ on:
       - 'docs/user/gui.md'
   workflow_dispatch:
 
-# Jobs only read the repository, and a pull request's failed job cancels the rest of its run (cancel-run). A push to
-# main that builds everywhere becomes a nightly, and a pull request's run a prerelease, in scarletnx/nightly:
+# Jobs only read the repository, and a pull request's failed job has the rest of its run cancelled (cancel-run). A
+# push to main that builds everywhere becomes a nightly, and a pull request's run a prerelease, in scarletnx/nightly:
 # publish.yml does it once this workflow ends
 permissions:
   contents: read
@@ -219,8 +219,9 @@ jobs:
           name: ScarletNX-linux-${{ matrix.arch }}-${{ steps.commit.outputs.short }}-install
           path: stage
       # a pull request's run stops at its first failed job: the jobs done keep their results, and the others are
-      # cancelled instead of building for nothing. Not in a job that may fail (continue-on-error), and a fork's token
-      # can't cancel, so a fork's run goes on
+      # cancelled instead of building for nothing. cancel-run.yml cancels the run once this job has ended failed: a
+      # job that cancels its own run ends cancelled, which hides what failed. Not in a job that may fail
+      # (continue-on-error), and a fork's token can't start it, so a fork's run goes on
       - &cancel-run
         name: Cancel the rest of the run
         if: >-
@@ -229,9 +230,11 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.event.repository.default_branch }}
         run: >-
           curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json'
-          "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel"
+          "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/cancel-run.yml/dispatches"
+          -d "{\"ref\": \"$BRANCH\", \"inputs\": {\"run\": \"$GITHUB_RUN_ID\"}}"
 
   # The cross jobs (appimage-cross) can't run qemu-aarch64 beside a host binary that qemu-user runs: the QEMU side of
   # the A64 differential is recorded here, once, and handed over as an artifact. A job of its own, so the cross jobs
