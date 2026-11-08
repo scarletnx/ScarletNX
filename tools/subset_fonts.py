@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""Makes the shared fonts' Noto Sans stand-ins (see docs/platforms/nx/shared-fonts.md).
+"""Makes the shared fonts' Noto Sans stand-ins (see docs/platforms/nx/filesystem.md).
 
     tools/subset_fonts.py --out DIR
 

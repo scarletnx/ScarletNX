@@ -11,7 +11,7 @@
 * [Compiler diagnostics](#compiler-diagnostics)
 
 The [plan](../layers/cpu/plan.md) contains 41 items. Its full active backlog is the implementation scope,
-starting with the [SIMD milestone](../layers/cpu/simd-milestone.md). This is not a claim that all items are implemented.
+starting with the [SIMD milestone](../layers/cpu/guide.md#first-milestone-one-measured-simd-improvement). This is not a claim that all items are implemented.
 `cpu_plan_status.json` records verified progress separately from unverified existing code, research, deferred and
 retired items. Inspect an item's proof and prerequisites before changing architecture or guest state contracts:
 
