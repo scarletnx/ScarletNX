@@ -822,8 +822,13 @@ static void push_string(Method* m, const char* text) {
 static unsigned class_ref(Method* m, const char* desc) {
     return m->scan ? 0 : pool_check(m, cf_class_descriptor(m->pool, desc));
 }
+static bool is_interface(const Method* m, const char* desc);
+/* A cast that only the JVM's verifier needs, to a value's narrower class where it is used (DEX's own check-cast is
+   not this one). The verifier takes any reference where an interface type is wanted, as ART's does, so a value of
+   an interface type gets no cast: R8 leaves classes that the code stores in a field of an interface type they no
+   longer implement, and a cast to it throws where Android's code runs on */
 static void checkcast(Method* m, const char* desc) {
-    if (!desc || !strcmp(desc, "Ljava/lang/Object;")) return;
+    if (!desc || !strcmp(desc, "Ljava/lang/Object;") || (desc[0] == 'L' && is_interface(m, desc))) return;
     op_u2(m, J_CHECKCAST, class_ref(m, desc), 0);
 }
 
