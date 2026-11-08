@@ -16,13 +16,28 @@ final class WindowManagerImpl implements WindowManager {
 
     WindowManagerImpl(android.content.Context context) { this.context = context; }
 
-    @Override @Deprecated public Display getDefaultDisplay() { return Display.DEFAULT; }
+    /** the display its windows go to, its context's (asked when needed: an activity's has no base when this is made):
+        the host window's, or a virtual one's, which nothing composes */
+    private Display display() {
+        Display d = null;
+        try {
+            d = context != null ? context.getDisplay() : null;
+        } catch (RuntimeException e) {
+            // a context not attached yet
+        }
+        return d != null ? d : Display.DEFAULT;
+    }
+
+    @Override @Deprecated public Display getDefaultDisplay() { return display(); }
     @Override public void addView(View view, ViewGroup.LayoutParams params) {
         if (!(params instanceof WindowManager.LayoutParams lp)) throw new IllegalArgumentException("Params must be WindowManager.LayoutParams");
         synchronized (roots) {
             if (roots.containsKey(view)) throw new IllegalStateException("View " + view + " has already been added to the window manager.");
             view.setLayoutParams(lp);
+            Display display = display();
+            if (!display.isValid()) throw new WindowManager.InvalidDisplayException("Unable to add window: the display " + display + " was removed");
             ViewRootImpl root = new ViewRootImpl(view.getContext() != null ? view.getContext() : context);
+            root.setDisplay(display);
             roots.put(view, root);
             root.setView(view, lp, null);
         }

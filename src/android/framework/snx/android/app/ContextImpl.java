@@ -207,7 +207,18 @@ public final class ContextImpl extends Context {
         context.themeResource = themeResource;
         return context;
     }
-    @Override public Context createDisplayContext(Display display) { return new ContextImpl(resources, deviceProtected); }
+    /** a context of another display: its windows go to that display (WindowManagerImpl), and its metrics are the display's */
+    @Override public Context createDisplayContext(Display display) {
+        if (display == null) throw new IllegalArgumentException("display must not be null");
+        android.util.DisplayMetrics m = new android.util.DisplayMetrics();
+        display.getMetrics(m);
+        ContextImpl context = new ContextImpl(new Resources(resources.getAssets(), m, resources.getConfiguration()), deviceProtected);
+        context.themeResource = themeResource;
+        context.display = display; /* its own outer: its services (the window manager) are the display's */
+        return context;
+    }
+    private Display display = Display.DEFAULT;
+    @Override public Display getDisplay() { return display; }
     @Override public Context createDeviceProtectedStorageContext() { return new ContextImpl(resources, true); }
     @Override public boolean isDeviceProtectedStorage() { return deviceProtected; }
 }

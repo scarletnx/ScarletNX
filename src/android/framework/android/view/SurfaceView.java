@@ -71,14 +71,16 @@ public class SurfaceView extends View {
         if (!want) {
             if (created) {
                 for (SurfaceHolder.Callback c : callbacks()) c.surfaceDestroyed(holder);
-                surface.setWindow(false, 0, 0);
+                if (nowhere()) surface.setNowhere(false, 0, 0);
+                else surface.setWindow(false, 0, 0);
                 created = false;
             }
             return;
         }
         boolean changed = !created || frame.width() != w || frame.height() != h;
         frame.set(0, 0, w, h);
-        surface.setWindow(true, w, h);
+        if (nowhere()) surface.setNowhere(true, w, h);
+        else surface.setWindow(true, w, h);
         if (!created) {
             created = true;
             for (SurfaceHolder.Callback c : callbacks()) c.surfaceCreated(holder);
@@ -89,6 +91,9 @@ public class SurfaceView extends View {
                 if (c instanceof SurfaceHolder.Callback2 c2) c2.surfaceRedrawNeeded(holder);
         }
     }
+
+    /** whether the view's window is on a display that shows nowhere: its surface then is no part of the host window */
+    private boolean nowhere() { return mAttachInfo != null && mAttachInfo.root.offscreen(); }
 
     @Override protected void onAttachedToWindow() {
         super.onAttachedToWindow();

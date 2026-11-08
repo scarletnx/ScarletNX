@@ -15,6 +15,10 @@ public interface WindowManager extends ViewManager {
     default WindowMetrics getMaximumWindowMetrics() { return WindowMetrics.current(); }
     default boolean isCrossWindowBlurEnabled() { return false; }
 
+    class InvalidDisplayException extends RuntimeException {
+        public InvalidDisplayException() {}
+        public InvalidDisplayException(String name) { super(name); }
+    }
     class BadTokenException extends RuntimeException {
         public BadTokenException() {}
         public BadTokenException(String name) { super(name); }
