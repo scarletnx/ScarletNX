@@ -323,32 +323,54 @@ is 32 bits and cannot be a host pointer. The 32-bit bridge (`arm32.c`, `arm32_li
 one beside the 64-bit bridge:
 
 - **Memory.** The guest has a window of 4 GiB of its own: guest address `a` is host address `arm32_mem + a`, its
-  first 64 KiB not mapped. The libraries, the heap (bionic's `malloc` and `mmap`, the bridge's own allocator) and each
-  thread's 8 MiB stack are in it. A file that the guest maps is mapped there.
+  first 64 KiB not mapped. The libraries, the heap (bionic's `malloc` and `mmap`, the bridge's own allocator, with
+  `MAP_FIXED` and `mremap`) and each thread's stack are in it. A file that the guest maps is mapped there. A direct
+  `ByteBuffer` that the app's Java code allocates is in the window too: the translator sends `allocateDirect` to
+  `snx.dalvik.Runtime`, so the native code reaches it, as an audio engine writes its samples into one.
 - **Code.** The A32 and Thumb block compiler (`common/cpu/arm/exec.h`, the one the GNU ABI runtime's 32-bit programs
   use) compiles each block when it is first reached. A table for each library's code keeps each address's block, so a
-  thread finds a compiled block without a lock.
+  thread finds a compiled block without a lock. Code outside the libraries (a JIT's, as Mono's) compiles from where it
+  is, kept by its page, and the `cacheflush` system call drops the blocks of the range it names.
 - **Calls.** An import is an address at the top of the window, 8 bytes apart. The dispatch loop gives a call there to
   its host handler, which reads the arguments as AAPCS lays them out (r0 to r3, then the stack, a 64-bit one at an even
   word; a float or a double in core registers, as Android's softfp ABI passes them) and returns to `lr`. Linux's kernel
   helpers at `0xffff0fa0` to `0xffff0fe0` (`__kuser_cmpxchg` and the others, which ARMv5 code calls for its atomics) are
-  the bridge's too.
+  the bridge's too, and an `svc` is a system call of the bridge's (`arm32_syscall`: `cacheflush`, `futex`, `gettid`,
+  `tkill`, `clock_gettime`).
 - **The loader** maps the `PT_LOAD` segments, applies `R_ARM_RELATIVE`, `ABS32`, `GLOB_DAT` and `JUMP_SLOT`, finds the
   symbols by the SysV hash, and runs `DT_INIT` and `DT_INIT_ARRAY`, then `JNI_OnLoad`. `__gnu_Unwind_Find_exidx` gives
-  a library's `PT_ARM_EXIDX`, for C++ exceptions.
-- **The system's libraries** are bionic's functions in ILP32's layouts (`struct stat`, `struct tm`, `FILE`, the
-  mutexes and conditions, which are host ones found by the guest's address), the guest's `printf` and `scanf`, libm,
-  liblog and libdl. GLES 1.1 is `hle_gles.c`'s, with each call's arguments put in an AArch64 CPU's registers as AAPCS64
-  passes them, its pointers made host pointers.
+  a library's `PT_ARM_EXIDX`, for C++ exceptions. A `dlopen` handle names its library, and `dlsym` searches it first.
+- **The system's libraries.** `arm32_libc.c` and `arm32_posix.c` have bionic's functions whose arguments have ILP32's
+  layouts (`struct stat`, `dirent`, `tm`, `FILE`, `z_stream`, `addrinfo`, the `ctype` tables, the environment), the
+  guest's `printf` and `scanf`, libm, liblog, libdl, zlib and SHA-1. The ones whose arguments are integers and bytes
+  (files, descriptors, sockets, the process) are the 64-bit bridge's handlers, called through `arm32_shim.c` with each
+  argument put in an AArch64 CPU's registers as AAPCS64 passes them, so `/proc`, errno and the Network setting are as
+  for a 64-bit app. EGL, GLES 1.1 and 2.0 and `ANativeWindow` are the 64-bit bridge's the same way. Their host objects
+  are 32-bit handles, and the calls with pointers in memory (`glShaderSource`'s strings, `eglChooseConfig`'s configs)
+  and a client array's pointer, which is an offset while a buffer is bound, are converted on their own.
+- **Threads and signals** (`arm32_thread.c`). A guest thread is a host thread with its own CPU state; `pthread_t` is
+  its TLS block's address. Mutexes, conditions, semaphores, onces and the C++ guards of static objects are host
+  objects found by the guest's address. Every wait waits in slices of 10 ms and runs the signals sent to the thread
+  between them, as Linux interrupts a wait: a garbage collector stops each thread with one. A handler runs between two
+  blocks, or in a wait, in a Linux frame of the guest's stack (`siginfo_t` and a `ucontext_t` whose `uc_mcontext` has
+  the registers, which the handler may change). `setjmp` and `longjmp` are guest code, as they move the guest's
+  registers and stack; `sigsetjmp` keeps the mask.
 - **JNI.** The guest's `JNIEnv` and `JavaVM` are tables of 32-bit import addresses in the window. A host reference or
   ID is 64 bits, so the guest gets a 32-bit handle for each: a local reference is an index into the thread's list,
   which the native method's return or `PopLocalFrame` shortens, a global or a weak one an index into a table, and a
   method or a field an index into the table of IDs, with the method's signature for the calls with variable arguments.
-  A string's or an array's elements are a copy in the window, written back at its release.
+  A string's or an array's elements are a copy in the window, written back at its release. `Class.forName` becomes
+  `snx.dalvik.Runtime.forName`, as for the 64-bit bridge.
+- **NativeActivity.** Its `ANativeActivity_onCreate` (or the function of `android.app.func_name`) runs with an
+  `ANativeActivity` in the window, and the callbacks it sets run at each step of the activity's life. The activity
+  takes its window's input queue: the system's touches and keys go to a native `AInputQueue`, which the looper it is
+  attached to wakes for, and which `AInputQueue_getEvent` and the `AInputEvent` getters read.
 
 The 32-bit bridge's libc is the set that apps have needed so far, and an import it lacks says so once and returns 0.
-It has no `pthread_create`, signals, sockets, EGL for native code, OpenSL ES or Vulkan yet. An armeabi game engine of
-6 MB (GLES 1.1 through `GLSurfaceView`) runs: its menus, its game and its touches.
+It has no OpenSL ES or Vulkan yet, and a host fault in generated code (a JIT's null check) ends the app. Two apps run:
+an armeabi game engine of 6 MB (GLES 1.1 through `GLSurfaceView`), its menus, its game and its touches, and a Unity
+4.7 game for armeabi-v7a (Mono's JIT, GLES 2 through native EGL, input through NativeActivity's queue), its menus and
+a level.
 
 ## Status
 
