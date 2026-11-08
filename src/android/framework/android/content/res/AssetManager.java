@@ -46,7 +46,17 @@ public final class AssetManager implements AutoCloseable {
     }
 
     synchronized boolean getResourceValue(int resid, TypedValue out, boolean resolve) {
-        return nativeGetResourceValue(handle, resid, out, resolve) >= 0;
+        if (nativeGetResourceValue(handle, resid, out, resolve) >= 0) return true;
+        for (int i = 0; i < FRAMEWORK_STRING_IDS.length; ++i)
+            if (FRAMEWORK_STRING_IDS[i] == resid) {
+                out.type = TypedValue.TYPE_STRING;
+                out.data = 0;
+                out.resourceId = resid;
+                out.assetCookie = 0;
+                out.string = FRAMEWORK_STRINGS[i];
+                return true;
+            }
+        return false;
     }
 
     synchronized String getPooledString(int cookie, int index) {
@@ -58,8 +68,30 @@ public final class AssetManager implements AutoCloseable {
         return nativeGetBag(handle, resid);
     }
 
+    /*
+     * The framework's own resources, which no table here holds: the values that the base Theme of Android's framework
+     * gives the attributes that an app's theme leaves to it, and the names of the framework styles among them. Each
+     * style has an ID of type 0xff, which no public framework resource uses.
+     */
+    private static final int[] FRAMEWORK_THEME = {
+        0x01010309, 0x01ff0001, // android:attr/alertDialogTheme: @android:style/Theme.Dialog.Alert
+    };
+    private static final int[] FRAMEWORK_NAMED = {0x01ff0001};
+    private static final String[] FRAMEWORK_NAMES = {"android:style/Theme.Dialog.Alert"};
+    /* android.R.string's public strings that dialogs use, in English */
+    private static final int[] FRAMEWORK_STRING_IDS = {0x01040000, 0x01040001, 0x01040003, 0x01040009, 0x0104000a,
+                                                       0x0104000b, 0x0104000d, 0x0104000e, 0x0104000f, 0x01040013};
+    private static final String[] FRAMEWORK_STRINGS = {"Cancel", "Copy", "Cut", "No", "OK", "Paste", "Select all",
+                                                       "Unknown", "<Untitled>", "Yes"};
+
     synchronized String getResourceName(int resid) {
-        return nativeGetResourceName(handle, resid);
+        String name = nativeGetResourceName(handle, resid);
+        for (int i = 0; name == null && i < FRAMEWORK_NAMED.length; ++i)
+            if (FRAMEWORK_NAMED[i] == resid) name = FRAMEWORK_NAMES[i];
+        String[] strings = {"cancel", "copy", "cut", "no", "ok", "paste", "selectAll", "unknownName", "untitled", "yes"};
+        for (int i = 0; name == null && i < FRAMEWORK_STRING_IDS.length; ++i)
+            if (FRAMEWORK_STRING_IDS[i] == resid) name = "android:string/" + strings[i];
+        return name;
     }
 
     synchronized int getResourceIdentifier(String name, String type, String pkg) {
@@ -87,7 +119,17 @@ public final class AssetManager implements AutoCloseable {
     }
 
     synchronized boolean getThemeValue(long theme, int attr, TypedValue out, boolean resolve) {
-        return nativeThemeGetAttributeValue(theme, attr, out, resolve) >= 0;
+        if (nativeThemeGetAttributeValue(theme, attr, out, resolve) >= 0) return true;
+        for (int i = 0; i < FRAMEWORK_THEME.length; i += 2)
+            if (FRAMEWORK_THEME[i] == attr) {
+                out.type = TypedValue.TYPE_REFERENCE;
+                out.data = FRAMEWORK_THEME[i + 1];
+                out.resourceId = FRAMEWORK_THEME[i + 1];
+                out.assetCookie = 0;
+                out.string = null;
+                return true;
+            }
+        return false;
     }
 
     synchronized int[] getThemeStyles(long theme) {
