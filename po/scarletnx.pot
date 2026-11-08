@@ -5536,6 +5536,18 @@ msgstr ""
 msgid "[default] on that value, which no run is given: the game's .ini keeps it"
 msgstr ""
 
+#: src/common/utilities/setup.c
+msgid "Shader caches"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "shader_cache/<id>.vkshaders, <id>.vkshipped, vk_pipelines.bin, every driver's"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "<id>.<driver>.vkshaders, .vkshipped and vk_pipelines.<driver>.bin, started from those"
+msgstr ""
+
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"
 msgstr ""

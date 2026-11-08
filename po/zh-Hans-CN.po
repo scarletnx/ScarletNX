@@ -5539,6 +5539,18 @@ msgstr "单独的一个值 [默认]，与选中的同一值并列"
 msgid "[default] on that value, which no run is given: the game's .ini keeps it"
 msgstr "[默认] 标在该值上，任何运行都不会收到它：由游戏的 .ini 保持"
 
+#: src/common/utilities/setup.c
+msgid "Shader caches"
+msgstr "着色器缓存"
+
+#: src/common/utilities/setup.c
+msgid "shader_cache/<id>.vkshaders, <id>.vkshipped, vk_pipelines.bin, every driver's"
+msgstr "shader_cache/<id>.vkshaders、<id>.vkshipped、vk_pipelines.bin，所有驱动程序共用"
+
+#: src/common/utilities/setup.c
+msgid "<id>.<driver>.vkshaders, .vkshipped and vk_pipelines.<driver>.bin, started from those"
+msgstr "<id>.<driver>.vkshaders、.vkshipped 和 vk_pipelines.<driver>.bin，以上述文件为起点"
+
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"
 msgstr "gdbstub"

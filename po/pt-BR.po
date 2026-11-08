@@ -5539,6 +5539,18 @@ msgstr "um valor à parte, [padrão], ao lado do mesmo valor escolhido"
 msgid "[default] on that value, which no run is given: the game's .ini keeps it"
 msgstr "[padrão] nesse valor, que nenhuma execução recebe: o .ini do jogo o mantém"
 
+#: src/common/utilities/setup.c
+msgid "Shader caches"
+msgstr "Caches de shader"
+
+#: src/common/utilities/setup.c
+msgid "shader_cache/<id>.vkshaders, <id>.vkshipped, vk_pipelines.bin, every driver's"
+msgstr "shader_cache/<id>.vkshaders, <id>.vkshipped, vk_pipelines.bin, de todos os drivers"
+
+#: src/common/utilities/setup.c
+msgid "<id>.<driver>.vkshaders, .vkshipped and vk_pipelines.<driver>.bin, started from those"
+msgstr "<id>.<driver>.vkshaders, .vkshipped e vk_pipelines.<driver>.bin, iniciados a partir desses"
+
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"
 msgstr "gdbstub"
