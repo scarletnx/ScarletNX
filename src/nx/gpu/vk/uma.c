@@ -943,10 +943,16 @@ static u32 imp_get(u64 cpu, u64 len) {
     }
     Imp m;
     u64 t0 = plat_ns();
+    /* the driver takes the pages for writing, and refuses those a scan protected (write tracking by protection,
+       write_tracking=1 or a host without userfaultfd's): they open for the import, and close once it is in the table,
+       whose pages the scans leave alone from then on (vk_uma_import_in) */
+    const int opened = !g_uma.migrate;
+    if (opened) plat_ww_open(GP(lo), hi - lo);
     const char* why = g_uma.migrate                       ? region_make(&m, lo, hi - lo)
                       : imp_make(&m, lo, hi - lo, GP(lo)) ? NULL
                                                           : snx_vk_result_str(g_uma.import_result);
     if (why) {
+        if (opened) plat_ww_close(GP(lo), hi - lo);
         fail(lo, hi, why);
         return ~0u; /* the imports there stay */
     }
@@ -959,6 +965,7 @@ static u32 imp_get(u64 cpu, u64 len) {
     g_uma.imp[first] = m;
     g_uma.nimp++;
     pm_unlock(&g_uma.lk);
+    if (opened) plat_ww_close(GP(lo), hi - lo);
     return first;
 }
 

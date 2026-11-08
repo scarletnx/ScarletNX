@@ -416,6 +416,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless_hot COMMAND snx-test-vulkan -H --write_tracking=1 --write_tracking_hot=1)
     set_tests_properties(vulkan_headless_hot PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the checks of guest memory read in place again with the write tracking by page protection: the driver takes an
+    # import's pages for writing, and amdgpu refuses those a scan left protected (VK_ERROR_INVALID_EXTERNAL_HANDLE)
+    add_test(NAME vulkan_uma_hot COMMAND snx-test-vulkan -H --vk_memory=2 --write_tracking=1 --write_tracking_hot=1)
+    set_tests_properties(vulkan_uma_hot PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_UMA_ONLY=1"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # the write tracking's contract alone (tests/vulkan_write_tracking.inc), with each way the host tracks: its own
     # (userfaultfd on Linux), page protection and the fault handler for the tracking and the traps (macOS, FreeBSD,
     # Android, older Linux), with its hot pages (write_tracking_hot), unified memory's reads in place, and none (the
