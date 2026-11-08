@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The BC7 blocks of ASTC levels encoded before (astc.c), kept across runs in one file: shader_cache/<game>.vkbc7.
    Where the GPU samples BCn but not ASTC, a level encoded as BC7 costs the GPU 3 to 5 ms (the full encoder on 256x256,
-   the fast build on 4096x4096, docs/ASTC.md), and the memory budget's trim evicts textures that the game then uses
+   the fast build on 4096x4096, docs/layers/gpu/astc.md), and the memory budget's trim evicts textures that the game then uses
    again: one game encoded the same levels 6,000 to 14,000 times in 150 seconds. The blocks never change for the same
    ASTC bytes, so the first encode's blocks are kept, read back from the GPU when its submission is done, and every
    later upload of that level copies them into the image with no decode and no encode.
