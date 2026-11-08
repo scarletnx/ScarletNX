@@ -445,8 +445,7 @@ static void jni_get_java_vm(CPU* c, void* data) {
 /* ---- strings in ART's modified UTF-8, where HotSpot's is CESU-8: a supplementary character (a surrogate pair) is
    UTF-8's 4 bytes, not 6, and NUL C0 80 and a lone surrogate its 3 bytes in both ---- */
 
-/* n UTF-16 units as ART's modified UTF-8 into out (none: counted): its length, without a NUL */
-static size_t art_utf8(const jchar* units, size_t n, unsigned char* out) {
+size_t bridge_art_utf8(const jchar* units, size_t n, unsigned char* out) {
     size_t at = 0;
     for (size_t i = 0; i < n; ++i) {
         uint32_t u = units[i];
@@ -479,24 +478,8 @@ static size_t art_utf8(const jchar* units, size_t n, unsigned char* out) {
     }
     return at;
 }
-/* NewStringUTF(env, bytes): a 4-byte sequence a surrogate pair, as ART reads it, where HotSpot's ends the string at
-   its second byte */
-static void jni_new_string_utf(CPU* c, void* data) {
-    (void)data;
-    JNIEnv* env = host_env(X(0));
-    const unsigned char* b = PTR(1);
-    if (!b) {
-        X(0) = 0;
-        return;
-    }
-    size_t n = strlen((const char*)b), k = 0;
-    jchar* units = malloc((n ? n : 1) * sizeof *units); /* a unit for each byte at most */
-    if (!units) {
-        jclass oom = (*env)->FindClass(env, "java/lang/OutOfMemoryError");
-        if (oom) (*env)->ThrowNew(env, oom, "NewStringUTF: no memory for the string's characters");
-        X(0) = 0;
-        return;
-    }
+size_t bridge_art_units(const unsigned char* b, size_t n, jchar* units) {
+    size_t k = 0;
     for (size_t i = 0; i < n;) {
         uint32_t one = b[i++];
         if (!(one & 0x80)) {
@@ -518,6 +501,27 @@ static void jni_new_string_utf(CPU* c, void* data) {
         units[k++] = (jchar)((cp >> 10) + 0xd7c0);
         units[k++] = (jchar)((cp & 0x3ff) + 0xdc00);
     }
+    return k;
+}
+/* NewStringUTF(env, bytes): a 4-byte sequence a surrogate pair, as ART reads it, where HotSpot's ends the string at
+   its second byte */
+static void jni_new_string_utf(CPU* c, void* data) {
+    (void)data;
+    JNIEnv* env = host_env(X(0));
+    const unsigned char* b = PTR(1);
+    if (!b) {
+        X(0) = 0;
+        return;
+    }
+    size_t n = strlen((const char*)b), k = 0;
+    jchar* units = malloc((n ? n : 1) * sizeof *units); /* a unit for each byte at most */
+    if (!units) {
+        jclass oom = (*env)->FindClass(env, "java/lang/OutOfMemoryError");
+        if (oom) (*env)->ThrowNew(env, oom, "NewStringUTF: no memory for the string's characters");
+        X(0) = 0;
+        return;
+    }
+    k = bridge_art_units(b, n, units);
     X(0) = (uint64_t)(uintptr_t)(*env)->NewString(env, units, (jsize)k);
     free(units);
 }
@@ -528,7 +532,7 @@ static void jni_get_string_utf_length(CPU* c, void* data) {
     jstring s = (jstring)(uintptr_t)X(1);
     jsize n = (*env)->GetStringLength(env, s);
     const jchar* units = (*env)->GetStringChars(env, s, NULL);
-    X(0) = units ? art_utf8(units, (size_t)n, NULL) : 0;
+    X(0) = units ? bridge_art_utf8(units, (size_t)n, NULL) : 0;
     if (units) (*env)->ReleaseStringChars(env, s, units);
 }
 /* GetStringUTFChars(env, string, is_copy): a copy of the bridge's, which ReleaseStringUTFChars frees */
@@ -538,8 +542,8 @@ static void jni_get_string_utf_chars(CPU* c, void* data) {
     jstring s = (jstring)(uintptr_t)X(1);
     jsize n = (*env)->GetStringLength(env, s);
     const jchar* units = (*env)->GetStringChars(env, s, NULL);
-    unsigned char* out = units ? malloc(art_utf8(units, (size_t)n, NULL) + 1) : NULL;
-    if (out) out[art_utf8(units, (size_t)n, out)] = 0;
+    unsigned char* out = units ? malloc(bridge_art_utf8(units, (size_t)n, NULL) + 1) : NULL;
+    if (out) out[bridge_art_utf8(units, (size_t)n, out)] = 0;
     if (units) (*env)->ReleaseStringChars(env, s, units);
     if (units && !out) {
         jclass oom = (*env)->FindClass(env, "java/lang/OutOfMemoryError");
@@ -566,7 +570,7 @@ static void jni_get_string_utf_region(CPU* c, void* data) {
     (*env)->GetStringRegion(env, (jstring)(uintptr_t)X(1), start, length, units);
     if (!(*env)->ExceptionCheck(env)) {
         unsigned char* out = PTR(4);
-        out[art_utf8(units, (size_t)length, out)] = 0;
+        out[bridge_art_utf8(units, (size_t)length, out)] = 0;
     }
     free(units);
 }

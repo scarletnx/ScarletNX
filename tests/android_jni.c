@@ -359,6 +359,39 @@ static void test_find_class32(void) {
     expect_int("32-bit FindClass in a native method of the app finds the app's class", found != NULL, 1);
 }
 
+/* the same as the 64-bit bridge's strings: ART's modified UTF-8 */
+static void test_strings32(void) {
+    JNIEnv* env = g_t.env;
+    static const jchar units[] = {'a', 0xe7, 0xd83d, 0xde00, 0, 'b'};
+    uint32_t guest_units = arm32_malloc(sizeof units);
+    memcpy(arm32_host(guest_units), units, sizeof units);
+    uint32_t s = jni32(g_t.genv32, 163 /* NewString */, guest_units, 6, 0, 0);
+    expect_int("32-bit GetStringUTFLength", jni32(g_t.genv32, GET_STRING_UTF_LENGTH, s, 0, 0, 0), 10);
+    uint32_t copy = arm32_malloc(1);
+    uint32_t chars = jni32(g_t.genv32, GET_STRING_UTF_CHARS, s, copy, 0, 0);
+    char got[64];
+    const unsigned char* bytes = chars ? arm32_host(chars) : NULL;
+    hex(bytes, bytes ? strlen((const char*)bytes) : 0, got, sizeof got);
+    expect_text("32-bit GetStringUTFChars", got, "61c3a7f09f9880c08062");
+    if (chars) jni32(g_t.genv32, RELEASE_STRING_UTF_CHARS, s, chars, 0, 0);
+    uint32_t region = arm32_malloc(16);
+    memset(arm32_host(region), 0xff, 16);
+    const uint32_t args[5] = {g_t.genv32, s, 1, 3, region};
+    arm32_call(word32(word32(g_t.genv32) + 4 * GET_STRING_UTF_REGION), args, 5, NULL);
+    hex(arm32_host(region), 8, got, sizeof got);
+    expect_text("32-bit GetStringUTFRegion of the pair and the cedilla", got, "c3a7f09f988000ff");
+    uint32_t back = jni32(g_t.genv32, NEW_STRING_UTF,
+                          arm32_strdup("a\xc3\xa7\xf0\x9f\x98\x80\xc0\x80"
+                                       "b"),
+                          0, 0, 0);
+    jstring host = back ? arm32_jni_ref(back) : NULL;
+    jsize n = host ? (*env)->GetStringLength(env, host) : -1;
+    expect_int("32-bit NewStringUTF's length in UTF-16 units", n, 6);
+    jchar read[6] = {0};
+    if (n == 6) (*env)->GetStringRegion(env, host, 0, 6, read);
+    expect_int("its units", !memcmp(read, units, sizeof read), 1);
+}
+
 int main(int argc, char** argv) {
     if (argc != 3) {
         fprintf(stderr, "usage: %s FRAMEWORK_JAR JAVA_HOME\n", argv[0]);
@@ -387,6 +420,7 @@ int main(int argc, char** argv) {
     test_strings();
     start_arm32();
     test_find_class32();
+    test_strings32();
     if (g_t.failures) {
         fprintf(stderr, "android_jni: %d failed\n", g_t.failures);
         return 1;

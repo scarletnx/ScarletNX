@@ -7,6 +7,7 @@
    signature, by which the calls with variable arguments read them */
 #define _GNU_SOURCE
 #include "android/bridge/arm32.h"
+#include "android/bridge/jni.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include <pthread.h>
@@ -645,14 +646,32 @@ static void jni_function(SnxArmCPU* c, void* data) {
     case 166:
     case 170:
     case 225: arm32_free(R(2)); break;
-    case 167: R(0) = local_ref((*e)->NewStringUTF(e, (const char*)arm32_host(R(1)))); break;
-    case 168: R(0) = (uint32_t)(*e)->GetStringUTFLength(e, host_ref(R(1))); break;
-    case 169: { /* GetStringUTFChars */
+    /* the strings' modified UTF-8 as ART's (bridge_art_utf8, the 64-bit bridge's), where HotSpot's is CESU-8 */
+    case 167: { /* NewStringUTF */
+        const unsigned char* b = arm32_host(R(1));
+        size_t n = b ? strlen((const char*)b) : 0;
+        jchar* units = b ? malloc((n ? n : 1) * sizeof *units) : NULL;
+        R(0) = units ? local_ref((*e)->NewString(e, units, (jsize)bridge_art_units(b, n, units))) : 0;
+        free(units);
+        break;
+    }
+    case 168: { /* GetStringUTFLength */
         jstring s = host_ref(R(1));
-        const char* text = s ? (*e)->GetStringUTFChars(e, s, NULL) : NULL;
-        R(0) = text ? arm32_strdup(text) : 0;
-        if (text) (*e)->ReleaseStringUTFChars(e, s, text);
+        jsize n = (*e)->GetStringLength(e, s);
+        const jchar* units = (*e)->GetStringChars(e, s, NULL);
+        R(0) = units ? (uint32_t)bridge_art_utf8(units, (size_t)n, NULL) : 0;
+        if (units) (*e)->ReleaseStringChars(e, s, units);
+        break;
+    }
+    case 169: { /* GetStringUTFChars: a copy in the window, which ReleaseStringUTFChars frees */
+        jstring s = host_ref(R(1));
+        jsize n = s ? (*e)->GetStringLength(e, s) : 0;
+        const jchar* units = s ? (*e)->GetStringChars(e, s, NULL) : NULL;
+        uint32_t p = units ? arm32_malloc((uint32_t)bridge_art_utf8(units, (size_t)n, NULL) + 1) : 0;
+        if (p) arm32_mem[p + bridge_art_utf8(units, (size_t)n, arm32_mem + p)] = 0;
+        if (units) (*e)->ReleaseStringChars(e, s, units);
         if (R(2)) arm32_mem[R(2)] = 1;
+        R(0) = p;
         break;
     }
     case 171: R(0) = (uint32_t)(*e)->GetArrayLength(e, host_ref(R(1))); break;
@@ -682,9 +701,18 @@ static void jni_function(SnxArmCPU* c, void* data) {
     case 220: /* GetStringRegion(str, start, len, buf) */
         (*e)->GetStringRegion(e, host_ref(R(1)), (jsize)R(2), (jsize)R(3), (jchar*)arm32_host(word(c, 4)));
         break;
-    case 221:
-        (*e)->GetStringUTFRegion(e, host_ref(R(1)), (jsize)R(2), (jsize)R(3), (char*)arm32_host(word(c, 4)));
+    case 221: { /* GetStringUTFRegion(str, start, len, buf): with a NUL after, as HotSpot's */
+        jsize length = (jsize)R(3);
+        jchar* units = malloc((length > 0 ? (size_t)length : 1) * sizeof *units);
+        if (!units) break;
+        (*e)->GetStringRegion(e, host_ref(R(1)), (jsize)R(2), length, units);
+        if (!(*e)->ExceptionCheck(e)) {
+            uint32_t out = word(c, 4);
+            arm32_mem[out + bridge_art_utf8(units, (size_t)(length > 0 ? length : 0), arm32_mem + out)] = 0;
+        }
+        free(units);
         break;
+    }
     case 222: { /* GetPrimitiveArrayCritical: a copy, as GetArrayElements */
         jarray a = host_ref(R(1));
         char t = array_type(e, a);
