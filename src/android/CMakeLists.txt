@@ -85,7 +85,7 @@ add_library(snx_android_bridge STATIC bridge/bridge.c bridge/host.c bridge/linke
                                       bridge/hle_android.c bridge/hle_vulkan.c
                                       bridge/hle_egl.c bridge/gles_vk.c bridge/hle_gles.c bridge/gles2.c
                                       bridge/gles2_object.c bridge/gles2_program.c bridge/gles2_draw.c
-                                      bridge/hle_zlib.c)
+                                      bridge/hle_zlib.c bridge/arm32.c bridge/arm32_libc.c bridge/arm32_jni.c)
 # the guest's signals, threads and futexes: the GNU ABI runtime's kernel (src/gnuabi/kernel), here too without that
 # runtime
 if(NOT TARGET scarletnx-gnuabi-kernel)
