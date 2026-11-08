@@ -528,6 +528,14 @@ KThread* kthread_create(u64 entry, u64 arg, u64 stack_top, int prio, int core) {
     return t;
 }
 
+/* An Ounce program's thread finds its own handle at 0x110 of its TLS, where the Ounce's kernel puts it: no code of the
+   program writes it there, and its SDK (22 on) takes a lock's owner from it (InternalCriticalSection::
+   IsLockedByCurrentThread), from the C library's first lock on. Left 0, it reads as the owner of every free lock, and
+   the first pthread_mutex_lock of a normal mutex aborts as a relock */
+void kthread_set_own_handle(KThread* t, u32 h) {
+    if (g_ounce && t && t->tls) gw32(t->tls + 0x110, h);
+}
+
 /* the host thread's stack is thread_stack_mb's: the recompiled code makes each guest call a host call, so it has to
    hold as many frames as the guest's stack does, and more bytes for each */
 /* A guest RET sets the pc and returns, and a call whose return address isn't that pc returns too (codegen.c checks
@@ -827,6 +835,7 @@ void kernel_run_main(u64 entry, u64 stack_size, int prio, int core) {
     memcpy(t->name, "main", 5);
     g_hle.thread.main_tid = t->id;
     h = h_new(&t->o);
+    kthread_set_own_handle(t, h);
     t->cpu.x[1] = h;
     t->arm.r[1] = h;
     LOG("main thread: entry %llx, stack %llx (%llu KiB), priority %d, core %d\n", (unsigned long long)entry,
