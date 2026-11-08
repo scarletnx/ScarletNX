@@ -861,6 +861,66 @@ HANDLER(f_memchr) {
     UNUSED;
     R(0) = inside(memchr(P(0), (int)R(1), R(2)));
 }
+/* getdelim(lineptr, n, delim, stream) and getline (delim '\n'): the line, its delimiter and a NUL into the guest's
+   buffer at *lineptr, which grows with the guest's realloc into *n bytes, as bionic's does: the length, or -1 at the end
+   with nothing read (EINVAL for a NULL argument) */
+static uint32_t get_delim(uint32_t line_at, uint32_t n_at, int delim, uint32_t stream) {
+    FILE* f = host_file(stream);
+    if (!line_at || !n_at || !f) {
+        arm32_set_errno_linux(22);
+        return UINT32_MAX;
+    }
+    uint32_t buf = rd32(line_at), size = rd32(n_at), length = 0;
+    for (int ch; (ch = getc(f)) != EOF;) {
+        if (length + 2 > size) {
+            uint32_t grown = size > 60 ? size * 2 : 120, moved = arm32_realloc(buf, grown);
+            if (!moved) {
+                arm32_set_errno_linux(12); /* ENOMEM */
+                return UINT32_MAX;
+            }
+            buf = moved, size = grown;
+            wr32(line_at, buf);
+            wr32(n_at, size);
+        }
+        arm32_mem[buf + length++] = (uint8_t)ch;
+        if (ch == delim) break;
+    }
+    if (!length) return UINT32_MAX;
+    arm32_mem[buf + length] = 0;
+    return length;
+}
+HANDLER(f_getdelim) {
+    UNUSED;
+    R(0) = get_delim(R(0), R(1), (int)R(2), R(3));
+}
+HANDLER(f_getline) {
+    UNUSED;
+    R(0) = get_delim(R(0), R(1), '\n', R(2));
+}
+HANDLER(f_remove) {
+    UNUSED;
+    if (remove(S(0))) {
+        set_errno(errno);
+        R(0) = UINT32_MAX;
+        return;
+    }
+    R(0) = 0;
+}
+/* mkdtemp(template): the X's of the guest's buffer made a name and the folder made; the template, or NULL */
+HANDLER(f_mkdtemp) {
+    UNUSED;
+    if (!mkdtemp(P(0))) {
+        set_errno(errno);
+        R(0) = 0;
+    }
+}
+/* getpagesize(): the guest's sysconf(_SC_PAGESIZE), the 64-bit bridge's (bionic's _SC_PAGESIZE is 39) */
+HANDLER(f_getpagesize) {
+    UNUSED;
+    const uint64_t name = 39;
+    R(0) = (uint32_t)arm32_call64("sysconf", &name, 1, NULL);
+}
+
 /* ---- the FORTIFY forms (_FORTIFY_SOURCE=2, which the NDK turns on): bionic's check of the buffer the compiler knows
    the size of (bionic/libc/bionic/fortify.cpp), then the function. A failed check ends the app as bionic's
    __fortify_fatal does: its message, with the sizes, then abort() ---- */
@@ -1429,6 +1489,11 @@ static const Arm32Symbol symbols[] = {
     {"vsscanf", f_vsscanf, NULL},
     {"fscanf", f_fscanf, NULL},
     {"perror", f_perror, NULL},
+    {"getline", f_getline, NULL},
+    {"getdelim", f_getdelim, NULL},
+    {"remove", f_remove, NULL},
+    {"mkdtemp", f_mkdtemp, NULL},
+    {"getpagesize", f_getpagesize, NULL},
     {"malloc", f_malloc, NULL},
     {"calloc", f_calloc, NULL},
     {"realloc", f_realloc, NULL},
