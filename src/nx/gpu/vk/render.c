@@ -2426,12 +2426,28 @@ static void window_size(const DsDynamic* d, u32* width, u32* height) {
     *width = d->clip_width < w ? d->clip_width : w;
     *height = d->clip_height < h ? d->clip_height : h;
 }
-/* NVB197_SET_VIEWPORT_COORDINATE_SWIZZLE (0x0A18) can negate Y before the scale and offset. A negative Vulkan
-   height implements the same mapping without changing texture coordinates or guest render-target contents.
-   Reference: NVIDIA open-gpu-doc/classes/3d/clb197.h. With the transform off (0x64B) the program's x and y are
-   pixels, which its last stage takes to clip space by the surface clip's size (SNX_SH_WINDOW_XY): every viewport is
-   the surface clip then, depth 0 to 1, the scale, offset and swizzle left to the transform, as Eden's
-   UpdateViewportsState has it. */
+/* NVB197_SET_VIEWPORT_COORDINATE_SWIZZLE (0x0A18 + 32 j) gives each of the position's x, y, z and w one of its four
+   components, negated or not, before clipping, the scale and the offset. NegativeY alone is a negative Vulkan height,
+   the same mapping without changing texture coordinates or guest render-target contents. Any other swizzle the last
+   stage before rasterization applies to the position it writes (shader/emit_io.c shader_vertex_position_fix, keyed
+   by SNX_SH_SWIZZLE): clipped after it as the console clips, and faced as the picture it makes, as Vulkan faces the
+   negative height. One for every viewport, viewport 0's, which a program that writes no viewport index draws with:
+   a viewport the program selects that asks for another draws with it (vk_viewport_swizzle_drawn), and the draw logs
+   both. VK_NV_viewport_swizzle, which would take each viewport's, is not used. Reference: NVIDIA
+   open-gpu-doc/classes/3d/clb197.h. With the transform off (0x64B) the program's x and y are pixels, which its last
+   stage takes to clip space by the surface clip's size (SNX_SH_WINDOW_XY): every viewport is the surface clip then,
+   depth 0 to 1, the scale, offset and swizzle left to the transform, as Eden's UpdateViewportsState has it. */
+u32 vk_viewport_swizzle_key(const DsViewports* v) {
+    u32 s = v->swizzle[0] & DS_SWIZZLE_MASK;
+    if (!v->transform_on || s == DS_SWIZZLE_IDENTITY || s == DS_SWIZZLE_NEGATIVE_Y) return 0;
+    return SNX_SH_SWIZZLE | s << SNX_SH_SWIZZLE_SHIFT;
+}
+u32 vk_viewport_swizzle_drawn(const DsViewports* v, u32 index) {
+    if (index >= DS_VIEWPORTS_MAX) fatal("vulkan: viewport %u of the %u the GPU has", index, DS_VIEWPORTS_MAX);
+    u32 key = vk_viewport_swizzle_key(v), own = v->swizzle[index] & DS_SWIZZLE_MASK;
+    if (key) return key >> SNX_SH_SWIZZLE_SHIFT & DS_SWIZZLE_MASK;
+    return own == DS_SWIZZLE_NEGATIVE_Y ? own : DS_SWIZZLE_IDENTITY;
+}
 VkViewport vk_viewport_from(const DsDynamic* d, const DsViewports* v, u32 index) {
     if (index >= DS_VIEWPORTS_MAX) fatal("vulkan: viewport %u of the %u the GPU has", index, DS_VIEWPORTS_MAX);
     const float* vs = v->scale[index];
@@ -2455,7 +2471,7 @@ VkViewport vk_viewport_from(const DsDynamic* d, const DsViewports* v, u32 index)
         vp.height = -vp.height;
     }
     if (!v->transform_on) return vp;
-    if (((v->swizzle[index] >> 4) & 7) == 3) {
+    if (vk_viewport_swizzle_drawn(v, index) == DS_SWIZZLE_NEGATIVE_Y) {
         vp.y += vp.height;
         vp.height = -vp.height;
     }
@@ -2520,6 +2536,7 @@ typedef struct {
     u32 topology;              /* the draw's, every primitive a patch with tessellation */
     int xfb_on;                /* transform feedback captures */
     int window_xy;             /* the viewport transform is off: the last stage keyed SNX_SH_WINDOW_XY */
+    u32 swizzle;               /* the last stage's viewport swizzle key (vk_viewport_swizzle_key) */
 } DrawShaders;
 /* a draw's vertex layout (vi, which the pipeline key holds too without dynamic vertex input) and its bindings, for
    finding their buffers each draw: binding b reads guest stream key[b] & 31 from its base offset key[b] >> 5 on, with
@@ -2640,6 +2657,7 @@ static int draw_kept(const DsState* ds, u32 topology, u32 epoch) {
     }
     if (s->xfb_on != xfb_wanted(ds->prog.xfb_on)) return 0; /* capture began or ended, or its counters were made */
     if (s->window_xy != !ds->vp.transform_on) return 0; /* the viewports' group keys no shader otherwise */
+    if (s->swizzle != vk_viewport_swizzle_key(&ds->vp)) return 0;
     const VkSh* used[6] = {s->vs, s->tcs, s->tes, s->gs, s->fs0, g_draw.fs};
     for (int i = 0; i < 6; i++)
         if (used[i] && used[i]->cbr.n && !vk_shader_cb_hold(ds, used[i])) return 0;
@@ -2649,7 +2667,7 @@ static int draw_shaders_same(const DrawShaders* a, const DrawShaders* b) {
     return a->vs == b->vs && a->tcs == b->tcs && a->tes == b->tes && a->gs == b->gs && a->fs0 == b->fs0 &&
            a->attr_int == b->attr_int && a->attr_sint == b->attr_sint && a->rt_int == b->rt_int &&
            a->rt_sint == b->rt_sint && a->topology == b->topology && a->xfb_on == b->xfb_on &&
-           a->window_xy == b->window_xy;
+           a->window_xy == b->window_xy && a->swizzle == b->swizzle;
 }
 /* the shaders of the programs, the vertex format and the targets of ds for a draw of topology: 0 when the draw is
    skipped */
@@ -2675,8 +2693,9 @@ static int draw_shaders(const DsState* ds, u32 topology, DrawShaders* o) {
         return 0;              /* patches and adjacency need the stages above */
     if (tes_on) topology = 14; /* every primitive is a patch with tessellation, as Vulkan requires */
     /* a clip distance the program writes clips only when its bit is set, in the last stage before rasterization,
-       which takes its position from pixels with the viewport transform off */
-    clip = p->clip_enable | (ds->vp.transform_on ? 0 : SNX_SH_WINDOW_XY);
+       which takes its position from pixels with the viewport transform off, and applies a swizzle the viewport can't */
+    o->swizzle = vk_viewport_swizzle_key(&ds->vp);
+    clip = p->clip_enable | (ds->vp.transform_on ? 0 : SNX_SH_WINDOW_XY) | o->swizzle;
     /* transform feedback: what the last stage before rasterization captures */
     const ShXfb* xfb = &ds->xfb;
     int xfb_on = xfb_wanted(p->xfb_on), xfb_key = xfb_on;
@@ -3895,10 +3914,11 @@ retry:
     }
     /* the fragment program's samples at a generic's (x / w, y / w) read the own pixel's centre when the vertex program,
        the last stage, writes that generic as the position mapped onto [0, 1] with the y of the viewport's sign:
-       stage_set_ checks the viewport covers the target */
+       stage_set_ checks the viewport covers the target. Not under a swizzle the program applies, which moves the
+       position and not the generic */
     VkViewport screen_vp = {0};
     int screen = fs && fs->si.tex_screen_mask && vs && !tcs && !tes && !gs && !vs->si.writes_viewport &&
-                 ds->vp.transform_on && (vs->si.screen_out_mask >> fs->si.screen_in & 1);
+                 ds->vp.transform_on && !sh.swizzle && (vs->si.screen_out_mask >> fs->si.screen_in & 1);
     if (screen) {
         screen_vp = vk_viewport_from(&ds->dyn, &ds->vp, 0);
         screen = (vs->si.screen_out_yneg_mask >> fs->si.screen_in & 1) ? screen_vp.height < 0 : screen_vp.height > 0;
@@ -4242,6 +4262,12 @@ retry:
                   : g_vk.props.limits.subPixelPrecisionBits; /* the points' nudge below */
     for (u32 i = 0; i < viewports; i++) {
         viewport[i] = vk_viewport_from(&ds->dyn, &ds->vp, i);
+        if (ds->vp.transform_on && vk_viewport_swizzle_drawn(&ds->vp, i) != (ds->vp.swizzle[i] & DS_SWIZZLE_MASK))
+            LOG_LIMIT(4,
+                      "vulkan: viewport %u asks for the coordinate swizzle %04x and draws with %04x: a swizzle other "
+                      "than NegativeY is applied only as viewport 0's (%04x), to every viewport\n",
+                      i, ds->vp.swizzle[i] & DS_SWIZZLE_MASK, vk_viewport_swizzle_drawn(&ds->vp, i),
+                      ds->vp.swizzle[0] & DS_SWIZZLE_MASK);
         /* A point a pixel wide covers the pixel its window position falls in on the console (OpenGL's aliased point
            rule), so one exactly on a pixel border goes to the pixel after it. Vulkan covers the pixels whose center is
            in the point's square, and leaves a center on its edge to the device: RADV takes the pixel before. One game
@@ -4581,7 +4607,7 @@ void vk_render_draw_texture(const DsState* ds, const DrawTexture* texture) {
     state.vp.scale[0][0] = state.vp.translate[0][0] = (float)targets[0]->w * 0.5f;
     state.vp.scale[0][1] = state.vp.translate[0][1] = (float)targets[0]->h * 0.5f;
     state.vp.scale[0][2] = state.vp.translate[0][2] = 0;
-    state.vp.swizzle[0] = 0;
+    state.vp.swizzle[0] = DS_SWIZZLE_IDENTITY;
     state.vp.z_near[0] = 0;
     state.vp.z_far[0] = 1;
     u64 generation = ds_generation_next();

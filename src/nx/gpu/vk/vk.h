@@ -1684,6 +1684,10 @@ void vk_ui_swapchain_gone(void); /* its images' views go before the swapchain do
 void vk_render_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o);
 /* viewport index of a draw's state with the resolution scale, and the draw's facing */
 VkViewport vk_viewport_from(const DsDynamic* d, const DsViewports* v, u32 index);
+/* the viewport coordinate swizzle the last stage before rasterization applies, as its key's SNX_SH_SWIZZLE and
+   fields: 0 where the viewport applies it (render.c). And the swizzle (DS_SWIZZLE_) viewport index draws with */
+u32 vk_viewport_swizzle_key(const DsViewports* v);
+u32 vk_viewport_swizzle_drawn(const DsViewports* v, u32 index);
 VkFrontFace vk_render_front_face(const DsDynamic* d);
 void vk_render_draw_texture(const DsState* ds, const DrawTexture* t);
 void vk_render_discard(const DsState* ds, u32 targets);

@@ -68,13 +68,24 @@ u32 shader_frag_y_origin(DirectCtx* c, u32 push, u32 y) {
                            y);
 }
 
-/* The last stage's position as the rasterizer takes it. With the viewport transform off (SNX_SH_WINDOW_XY) x and y
-   are pixels of the surface clip, the viewport then (vk/render.c): x * 2 / width - 1 and y * 2 / height - 1 take
-   them to clip space, the width and height in bits 0-15 and 16-31 of the push constant's w, as Eden's
-   position_pass.cpp does with its render area. Then z goes from -w..w to 0..w where the push constant's y says the
-   depth mode is -1 to 1 */
+/* The last stage's position as the rasterizer takes it. A viewport coordinate swizzle in the key (SNX_SH_SWIZZLE)
+   gives each component the one its code names, negated by the code's bit 0, before clipping as the 3D engine does.
+   With the viewport transform off (SNX_SH_WINDOW_XY), which no swizzle comes with, x and y are pixels of the surface
+   clip, the viewport then (vk/render.c): x * 2 / width - 1 and y * 2 / height - 1 take them to clip space, the width
+   and height in bits 0-15 and 16-31 of the push constant's w, as Eden's position_pass.cpp does with its render area.
+   Then z goes from -w..w to 0..w where the push constant's y says the depth mode is -1 to 1 */
 void shader_vertex_position_fix(DirectCtx* c, u32 position, u32 push, u32 push_pointer, u32 vec4_type) {
     u32 member = spv_emit_constant_u32(&c->emit, c->u32_type, 0);
+    if (c->swizzle & SNX_SH_SWIZZLE) {
+        u32 value = spv_emit_load(&c->emit, vec4_type, position), swizzled = value;
+        for (u32 k = 0; k < 4; k++) {
+            u32 code = (c->swizzle >> (SNX_SH_SWIZZLE_SHIFT + 4 * k)) & 7;
+            u32 part = spv_emit_vec4_extract(&c->emit, c->f32_type, value, code >> 1);
+            if (code & 1) part = spv_emit_fnegate(&c->emit, c->f32_type, part);
+            swizzled = spv_emit_vec4_insert(&c->emit, vec4_type, swizzled, part, k);
+        }
+        spv_emit_store(&c->emit, position, swizzled);
+    }
     if (c->window_xy) {
         u32 size =
             spv_emit_bitcast(&c->emit, c->u32_type,

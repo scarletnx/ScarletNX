@@ -877,6 +877,11 @@ static VkViewport viewport_of(const u32* r, u32 index) {
     mx_draw_viewports(r, &v);
     return vk_viewport_from(&d, &v, index);
 }
+static u32 swizzle_key_of(const u32* r) {
+    DsViewports v;
+    mx_draw_viewports(r, &v);
+    return vk_viewport_swizzle_key(&v);
+}
 static VkFrontFace front_face_of(const u32* r) {
     DsDynamic d;
     mx_draw_dynamic(r, &d);
@@ -899,6 +904,36 @@ static int check_viewport_orientation(void) {
     vp = viewport_of(r, 0);
     CHECK(vp.y == 54 && vp.height == -34 && vp.y + vp.height == 20);
     CHECK(front_face_of(r) == VK_FRONT_FACE_CLOCKWISE);
+    CHECK(!swizzle_key_of(r));
+    /* Any other swizzle is the last stage's, keyed with it, and the viewport keeps the transform's sign: a swap of x
+       and y, and one with NegativeY in it. The bits between the fields are none of theirs */
+    const u32 others[3] = {0x6402, 0x6413, 0xE4AA};
+    for (u32 i = 0; i < 3; i++) {
+        r[0x286] = others[i];
+        vp = viewport_of(r, 0);
+        CHECK(vp.y == 20 && vp.height == 34);
+        CHECK(swizzle_key_of(r) == (SNX_SH_SWIZZLE | (others[i] & DS_SWIZZLE_MASK) << SNX_SH_SWIZZLE_SHIFT));
+    }
+    r[0x286] = 0x6420 | 0x8888;
+    CHECK(!swizzle_key_of(r));
+    /* A program that selects viewport 1 draws it with viewport 0's swizzle when that is the last stage's, and with its
+       own when it is NegativeY and viewport 0's the viewport's too: other than that, the identity */
+    {
+        DsViewports v;
+        r[0x286] = 0x6402;
+        r[0x28e] = 0x6420;
+        mx_draw_viewports(r, &v);
+        CHECK(vk_viewport_swizzle_drawn(&v, 0) == 0x6402 && vk_viewport_swizzle_drawn(&v, 1) == 0x6402);
+        r[0x286] = 0x6420;
+        r[0x28e] = 0x6430;
+        mx_draw_viewports(r, &v);
+        CHECK(vk_viewport_swizzle_drawn(&v, 1) == 0x6430);
+        r[0x28e] = 0x6402;
+        mx_draw_viewports(r, &v);
+        CHECK(vk_viewport_swizzle_drawn(&v, 1) == 0x6420);
+        r[0x28e] = 0;
+    }
+    r[0x286] = 0x6430;
     /* Negative scale and negative coordinate swizzle cancel in the viewport. */
     transform[1] = -17;
     memcpy(&r[0x280], transform, sizeof transform);
@@ -958,6 +993,9 @@ static int check_viewport_orientation(void) {
         vp = viewport_of(r, i);
         CHECK(vp.x == 0 && vp.y == 0 && vp.width == 64 && vp.height == 48 && vp.minDepth == 0 && vp.maxDepth == 1);
     }
+    r[0x286] = 0x6402;
+    CHECK(!swizzle_key_of(r));
+    r[0x286] = 0x6430;
     r[0x4eb] = 1;
     vp = viewport_of(r, 0);
     CHECK(vp.x == 0 && vp.y == 48 && vp.width == 64 && vp.height == -48);
@@ -5623,6 +5661,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_nvn_fixed_state());
     CHECK(!check_maxwell_point_size());
     CHECK(!check_maxwell_depth_bounds());
+    CHECK(!check_maxwell_viewport_swizzle());
     CHECK(!check_nvn_default_tessellation());
     CHECK(!check_nvn_advanced_blend());
     CHECK(!check_nvn_coverage());
