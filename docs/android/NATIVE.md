@@ -367,7 +367,9 @@ one beside the 64-bit bridge:
   attached to wakes for, and which `AInputQueue_getEvent` and the `AInputEvent` getters read.
 
 The 32-bit bridge's libc is the set that apps have needed so far, and an import it lacks says so once and returns 0.
-It has no OpenSL ES or Vulkan yet, and a host fault in generated code (a JIT's null check) ends the app. Two apps run:
+It has no OpenSL ES or Vulkan yet, and a host fault in generated code (a JIT's null check) ends the app. Windows has
+none of the POSIX layouts it takes bionic's from, so the build leaves the 32-bit bridge out there (`arm32_none.c`) and
+a 32-bit library's load fails with its path. Two apps run:
 an armeabi game engine of 6 MB (GLES 1.1 through `GLSurfaceView`), its menus, its game and its touches, and a Unity
 4.7 game for armeabi-v7a (Mono's JIT, GLES 2 through native EGL, input through NativeActivity's queue), its menus and
 a level.
