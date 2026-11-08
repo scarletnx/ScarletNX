@@ -188,10 +188,12 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   `quick notime cpu graphics`; Full adds `fs video audio kernel display`) and **Run edenprobe**, which plays
   [edenprobe](EDENPROBE.md)'s probes as a game with the GPU driver picked here, from `probe/edenprobe.nro` of the
   Logs folder, in a data folder of its own there (`probe/.scarletnx`: none of your settings, saves or users) with the
-  default settings. A launch that ends before the report's summary is followed by another, up to 16, which goes on
-  after the case it ended inside, while each adds cases; ESC ends it. At the end a box says the counts and the suites
-  that failed or crashed, and where the report is. A next press after a whole run starts it over; after one that
-  stopped inside a case (an iOS app ends with its game), it goes on. **Freedreno Settings** sets Mesa's Freedreno and Turnip
+  default settings, and the build as edenprobe's machine (`machine=scarletnx@<commit>`), whose ban list then skips the
+  cases that end ScarletNX every time. A launch that ends before the report's summary is followed by another, up to
+  16, which goes on after the case it ended inside, while each adds cases; ESC ends it. At the end a box says the
+  counts and the suites that failed or crashed, and where the report is. A next press after a whole run starts it
+  over; after one that stopped inside a case (an iOS app ends with its game), it goes on. **Freedreno Settings** sets
+  Mesa's Freedreno and Turnip
   variables (`TU_DEBUG`, `FD_MESA_DEBUG`, `IR3_SHADER_DEBUG`, `FD_RD_DUMP`...) every game starts with: Eden's presets
   first (Debug - CPU Memory, `TU_DEBUG=sysmem`, and the others), a row a variable set (a press, or Del, takes it out),
   **Variable Name** and **Variable Value** typed and **Add Variable**, **Clear All**, then **Save**, which keeps them.

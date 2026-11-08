@@ -34,10 +34,17 @@ typedef struct {
 char* gui_probe_data(const char* folder);
 char* gui_probe_nro(const char* folder);
 char* gui_probe_report(const char* folder);
+/* a new run's mode file words, full or quick, into words: with machine=scarletnx@<commit> after them when folder's NRO
+   knows the word (it carries "machine="), so edenprobe's ban list skips as banned the cases that end ScarletNX every
+   time, as scripts/edenprobe.py writes it; commit is the build's (snx_build_commit), left out when it is "unknown" or
+   no version edenprobe takes (1 to 32 letters, digits, dots, dashes and underscores). 0, or -1 with why when the NRO
+   cannot be read */
+int gui_probe_words(const char* folder, int full, const char* commit, char* words, size_t size, char* why,
+                    size_t why_size);
 /* Run edenprobe's card: a new run, no report, journal or crash list of an earlier one left (so a case reported as
-   crashed ended this run's program), the mode file written, full or quick; the cases the crash list it took away held
-   into *cleared. 0, or -1 with why saying what and the system's reason */
-int gui_probe_start(const char* folder, int full, int* cleared, char* why, size_t size);
+   crashed ended this run's program), the mode file holding words; the cases the crash list it took away held into
+   *cleared. 0, or -1 with why saying what and the system's reason */
+int gui_probe_start(const char* folder, const char* words, int* cleared, char* why, size_t size);
 /* how many cases the crash list holds: those a run skips as crashed */
 int gui_probe_crashes(const char* folder);
 /* Clear Crash List: the crash list taken away, the cases it held into *cleared; 0, or -1 with why */
