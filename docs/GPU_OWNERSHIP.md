@@ -36,7 +36,9 @@ Render targets stay the renderer's: their pixels reach guest memory only when a 
 targets are the exception, as a game draws into those to read the result on the CPU: each release publishes the ones
 drawn since the last (`vk_rt_publish_linear` in `vk/surface.c`), and storage images are published the same way
 (`vk_surf_publish`): a dispatch's after it, a draw's at the release (`vk_surf_keep_begin` and `vk_surf_keep_end`), where
-the image's span is whole pages the CPU hasn't touched lately and write tracking answers for it. A page the CPU writes
+the image's span is whole pages the CPU hasn't touched lately and write tracking answers for it. A publish takes the
+image's own texels and the targets it copied in, and leaves the bytes between its layers to their owners: a view of one
+level of a mip chain has the other levels there. A page the CPU writes
 between the draw and the release keeps the CPU's bytes. Any other draw's storage image keeps its write-back, which
 reads its bytes before the draw and merges them by the byte. A block linear target the CPU reads gets no write-back
 yet.

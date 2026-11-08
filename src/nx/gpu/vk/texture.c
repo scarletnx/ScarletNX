@@ -1627,6 +1627,37 @@ static int tex_load_pieces(Surf* t) {
     t->upload_valid = 1;
     return tex_patch(t, &p);
 }
+/* p's bytes that are t's: a layer's levels from where the layer starts, each layer_size from the last. A texture of a
+   base level on, as a shader binds one level of a mip chain, has the whole chain's layer as its stride, and the bytes
+   between its layers are the chain's other levels. Writes there (each other level written through a view of its own,
+   surface.c publish_own) aren't the texture's, and loaded all of it when they were more than half its span */
+static void pieces_own(const Surf* t, TexPieces* p) {
+    u64 between = (u64)(t->layers - 1) * t->layer_size;
+    if (p->all || !p->count || t->layers < 2 || t->size <= between || t->size - between >= t->layer_size) return;
+    u64 own = t->size - between;
+    TexPieces q;
+    q.count = 0, q.all = 0;
+    for (u32 i = 0; i < p->count; i++) {
+        u64 at = p->piece[i].at, end = at + p->piece[i].n;
+        for (u64 k = at / t->layer_size; k < t->layers && k * t->layer_size < end; k++) {
+            u64 lo = k * t->layer_size, hi = lo + own;
+            if (lo < at) lo = at;
+            if (hi > end) hi = end;
+            if (lo < hi) pieces_add(&q, lo, hi - lo);
+        }
+    }
+    *p = q;
+}
+/* p without the pieces that t's last publish as a storage image still owns, not written since (vk_guest_owned_by):
+   memory there holds t's own texels. The GPU's records are of pages, and the views of a cube's last levels share
+   theirs: each view's publish marked the others' texels written, and each loaded them again every frame */
+static void pieces_published(const Surf* t, u64 gva, TexPieces* p) {
+    u32 n = 0;
+    if (p->all || !t->pub_serial) return;
+    for (u32 i = 0; i < p->count; i++)
+        if (!vk_guest_owned_by(gva + p->piece[i].at, p->piece[i].n, t->pub_serial)) p->piece[n++] = p->piece[i];
+    p->count = n;
+}
 /* the checks of a texture loaded a piece at a time (tex_can_piece; with holes, or loaded whole): the pages the GPU's
    records and write tracking name since the last ones, loaded once both were asked, so the image holds what either
    found. 0 when write tracking can't tell: checked by contents (an engine's write after that check in the same epoch
@@ -1649,6 +1680,8 @@ static int tex_check_pieces(Surf* t, u64 gva) {
         if (!r.mapped) p.all = 1; /* found through the guest's addresses alone (SNX_ALIAS_CHECK) */
     }
     t->gw = gw;
+    pieces_own(t, &p);
+    pieces_published(t, gva, &p);
     if (p.count || p.all) {
         t->stable = 0;
         tex_patch(t, &p);
@@ -1935,9 +1968,13 @@ texture_from_memory:
         return tex_check(t, gva);
     }
     if (!format_samples(f.vk)) return NULL;
-    /* this texture's levels in one layer; the layers before the last one take their whole stride */
+    /* this texture's levels in one layer; the layers before the last one take their whole stride. Its levels from the
+       base level on, of the base level's size and blocks: of the size of level 0 (gw, gh), a view of one level of a
+       128x128 cube's mip chain took the bytes of a 128x128 level from that level's start in each layer, which reached
+       over the next levels, and loaded each again when another view wrote one of them */
     u64 sz = 0;
-    for (u32 l = 0; l < levels; l++) sz += bl ? bl_level_size(gw, gh, d3, &f, bh, bd, tile_w, l, NULL, NULL) : stride;
+    u32 vw = w << ds_msaa_log2_x(msaa), vh = h << ds_msaa_log2_y(msaa);
+    for (u32 l = 0; l < levels; l++) sz += bl ? bl_level_size(vw, vh, d3, &f, bh, bd, tile_w, l, NULL, NULL) : stride;
     sz += stride * (layers - 1);
     TexRuns runs = {0};
     int holes = 0;
