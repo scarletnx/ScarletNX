@@ -50,6 +50,40 @@ public class StateListDrawable extends DrawableContainer {
         if (idx < 0) idx = state.indexOf(StateSet.WILD_CARD);
         return selectDrawable(idx) || changed;
     }
+    /** android:drawable of an item */
+    private static final int[] ITEM_ATTRS = {0x01010199};
+
+    /** a selector's items: each the state set of its android:state_* attributes and its drawable */
+    @Override public void inflate(Resources r, org.xmlpull.v1.XmlPullParser parser, android.util.AttributeSet attrs, Resources.Theme theme)
+            throws org.xmlpull.v1.XmlPullParserException, java.io.IOException {
+        super.inflate(r, parser, attrs, theme);
+        int depth = parser.getDepth();
+        while (DrawableXml.child(parser, depth)) {
+            if (!parser.getName().equals("item")) {
+                inflateChild(r, parser, attrs, theme);
+                continue;
+            }
+            int[] states = DrawableXml.stateSet(attrs);
+            int id = attrs.getAttributeResourceValue(DrawableXml.ANDROID, "id", 0);
+            android.content.res.TypedArray a = DrawableXml.obtain(r, theme, attrs, ITEM_ATTRS);
+            Drawable d;
+            try {
+                d = DrawableXml.itemDrawable(r, parser, attrs, theme, a, 0);
+            } finally {
+                a.recycle();
+            }
+            if (d != null) addItem(states, d, id);
+        }
+        onStateChange(getState());
+    }
+    /** an item of the list, with its android:id (an animated selector's keyframe) */
+    void addItem(int[] states, Drawable d, int id) { addState(states, d); }
+    /** a child element that is not an item: skipped (an animated selector's transition) */
+    void inflateChild(Resources r, org.xmlpull.v1.XmlPullParser parser, android.util.AttributeSet attrs, Resources.Theme theme)
+            throws org.xmlpull.v1.XmlPullParserException, java.io.IOException {
+        DrawableXml.skip(parser);
+    }
+
     public int getStateCount() { return state.getChildCount(); }
     public int[] getStateSet(int index) { return state.stateSets[index]; }
     public Drawable getStateDrawable(int index) { return state.getChild(index); }

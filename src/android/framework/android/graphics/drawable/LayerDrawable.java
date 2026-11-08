@@ -56,6 +56,53 @@ public class LayerDrawable extends Drawable implements Drawable.Callback {
         }
         invalidateSelf();
     }
+    /** an item's android:drawable, id, left, top, right, bottom, width, height and gravity */
+    private static final int[] ITEM_ATTRS = {0x01010199, 0x010100d0, 0x010101ad, 0x010101ae, 0x010101af, 0x010101b0,
+        0x01010159, 0x01010155, 0x010100af};
+
+    /** a layer list's items, each a layer: its drawable, id, insets, size and gravity */
+    @Override public void inflate(android.content.res.Resources r, org.xmlpull.v1.XmlPullParser parser, android.util.AttributeSet attrs,
+                                  android.content.res.Resources.Theme theme) throws org.xmlpull.v1.XmlPullParserException, java.io.IOException {
+        super.inflate(r, parser, attrs, theme);
+        inflateLayers(r, parser, attrs, theme);
+    }
+    final void inflateLayers(android.content.res.Resources r, org.xmlpull.v1.XmlPullParser parser, android.util.AttributeSet attrs,
+                             android.content.res.Resources.Theme theme) throws org.xmlpull.v1.XmlPullParserException, java.io.IOException {
+        int depth = parser.getDepth();
+        while (DrawableXml.child(parser, depth)) {
+            if (!parser.getName().equals("item")) {
+                DrawableXml.skip(parser);
+                continue;
+            }
+            android.content.res.TypedArray a = DrawableXml.obtain(r, theme, attrs, ITEM_ATTRS);
+            try {
+                int id = a.getResourceId(1, -1);
+                int left = a.getDimensionPixelOffset(2, 0), top = a.getDimensionPixelOffset(3, 0);
+                int right = a.getDimensionPixelOffset(4, 0), bottom = a.getDimensionPixelOffset(5, 0);
+                int width = a.getDimensionPixelSize(6, -1), height = a.getDimensionPixelSize(7, -1);
+                int gravity = a.getInt(8, Gravity.NO_GRAVITY);
+                Drawable d = DrawableXml.itemDrawable(r, parser, attrs, theme, a, 0);
+                if (d == null) continue;
+                Layer l = new Layer();
+                l.drawable = d;
+                l.id = id;
+                l.left = left;
+                l.top = top;
+                l.right = right;
+                l.bottom = bottom;
+                l.width = width;
+                l.height = height;
+                l.gravity = gravity;
+                d.setCallback(this);
+                d.setLayoutDirection(getLayoutDirection());
+                layers.add(l);
+                refresh(l);
+            } finally {
+                a.recycle();
+            }
+        }
+    }
+
     public int getNumberOfLayers() { return layers.size(); }
     public Drawable getDrawable(int index) { return layer(index).drawable; }
     public void setDrawable(int index, Drawable drawable) {
@@ -199,6 +246,41 @@ public class LayerDrawable extends Drawable implements Drawable.Callback {
         for (Layer l : layers) if (l.drawable != null) l.drawable.mutate();
         return this;
     }
+
+    /** a resource's, else one of a copy of the layers (null when a layer has no state to copy) */
+    @Override public ConstantState getConstantState() {
+        if (fromResource()) return super.getConstantState();
+        final ArrayList<Layer> copy = new ArrayList<>();
+        final ArrayList<ConstantState> states = new ArrayList<>();
+        for (Layer l : layers) {
+            ConstantState cs = l.drawable != null ? l.drawable.getConstantState() : null;
+            if (l.drawable != null && cs == null) return null;
+            copy.add(l);
+            states.add(cs);
+        }
+        final int mode = paddingMode;
+        return new Copy() {
+            @Override public Drawable newDrawable(android.content.res.Resources res, android.content.res.Resources.Theme theme) {
+                LayerDrawable d = newEmpty();
+                d.paddingMode = mode;
+                for (int i = 0; i < copy.size(); ++i) {
+                    Layer from = copy.get(i), to = new Layer();
+                    to.drawable = states.get(i) != null ? states.get(i).newDrawable(res, theme) : null;
+                    to.id = from.id; to.gravity = from.gravity; to.width = from.width; to.height = from.height;
+                    to.left = from.left; to.top = from.top; to.right = from.right; to.bottom = from.bottom;
+                    to.start = from.start; to.end = from.end;
+                    if (to.drawable != null) to.drawable.setCallback(d);
+                    d.layers.add(to);
+                }
+                d.copyStateFrom(LayerDrawable.this);
+                return d;
+            }
+        };
+    }
+    /** an empty drawable of this class, for a copy */
+    LayerDrawable newEmpty() { return new LayerDrawable(); }
+    /** what a subclass keeps besides the layers, into a copy */
+    void copyStateFrom(LayerDrawable from) {}
 
     @Override public void invalidateDrawable(Drawable who) { invalidateSelf(); }
     @Override public void scheduleDrawable(Drawable who, Runnable what, long when) { scheduleSelf(what, when); }

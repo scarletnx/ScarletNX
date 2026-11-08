@@ -14,10 +14,35 @@ import android.graphics.Rect;
  */
 public class AdaptiveIconDrawable extends Drawable implements Drawable.Callback {
     private static final float EXTRA_INSET_PERCENTAGE = 1 / 4f;
-    private final Drawable background, foreground;
+    private Drawable background, foreground;
     private final Rect layer = new Rect();
     private final Path mask = new Path();
     private int alpha = 0xff;
+
+    AdaptiveIconDrawable() {}
+
+    /** an adaptive icon's <background> and <foreground>, each its android:drawable or its child element */
+    @Override public void inflate(android.content.res.Resources r, org.xmlpull.v1.XmlPullParser parser, android.util.AttributeSet attrs,
+                                  android.content.res.Resources.Theme theme) throws org.xmlpull.v1.XmlPullParserException, java.io.IOException {
+        super.inflate(r, parser, attrs, theme);
+        int depth = parser.getDepth();
+        while (DrawableXml.child(parser, depth)) {
+            String name = parser.getName();
+            android.content.res.TypedArray a = DrawableXml.obtain(r, theme, attrs, new int[] {0x01010199}); // drawable
+            Drawable d;
+            try {
+                d = DrawableXml.itemDrawable(r, parser, attrs, theme, a, 0);
+            } finally {
+                a.recycle();
+            }
+            if (d == null) continue;
+            if (name.equals("background")) background = d;
+            else if (name.equals("foreground")) foreground = d;
+            else continue;
+            d.setCallback(this);
+        }
+        onBoundsChange(getBounds());
+    }
 
     public AdaptiveIconDrawable(Drawable backgroundDrawable, Drawable foregroundDrawable) { this(backgroundDrawable, foregroundDrawable, null); }
     public AdaptiveIconDrawable(Drawable backgroundDrawable, Drawable foregroundDrawable, Drawable monochromeDrawable) {
