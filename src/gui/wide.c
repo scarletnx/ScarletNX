@@ -7,6 +7,7 @@
 #include "gui/icons.h"
 #include "gui/latin.h"
 #include "gui/titles.h"
+#include "common/utilities/ascii.h"
 
 /* where the titles' glyphs start (gui_menu_glyph): their 8x16 ones after the icons, then their 16x16 ones' halves */
 static int titles(void) { return 256 + gui_latin_count + 2 * gui_wide_count + 2 * GUI_ICON_COUNT; }
@@ -98,7 +99,6 @@ void gui_text_fit(const char* text, int cols, char* out, size_t size) {
     for (n = gui_cols_fit(text, cols - 3); n && text[n - 1] == ' ';) --n; /* "the..." rather than "the ..." */
     snprintf(out, size, "%.*s...", (int)n, text);
 }
-static int separator(char c) { return c == '/' || c == '\\'; }
 /* the columns of text's first n bytes */
 static int prefix_cols(const char* text, size_t n) {
     const char* end = text + n;
@@ -120,7 +120,7 @@ void gui_path_fit(const char* path, int cols, char* out, size_t size) {
     head_cols = prefix_cols(path, first);
     if (head_cols < room) /* the longest end from a separator that leaves the head room */
         for (i = n; i-- > first;)
-            if (separator(path[i]) && whole - prefix_cols(path, i) <= room - head_cols) tail = path + i;
+            if (snx_is_any_separator(path[i]) && whole - prefix_cols(path, i) <= room - head_cols) tail = path + i;
     if (!tail && head_cols < room) /* the last folder or file alone is too long: its last letters */
         tail = gui_cols_skip(path, whole - (room - head_cols));
     if (!tail) { /* no separator to keep: a third of the room for the start */
@@ -128,6 +128,6 @@ void gui_path_fit(const char* path, int cols, char* out, size_t size) {
         tail = gui_cols_skip(path, whole - (room - prefix_cols(path, head)));
     } else /* the start up to the last separator the room left takes */
         for (i = 0; i < first || (i < n && prefix_cols(path, i + 1) <= room - gui_text_cols(tail)); ++i)
-            if (separator(path[i]) || i + 1 == first) head = i + 1;
+            if (snx_is_any_separator(path[i]) || i + 1 == first) head = i + 1;
     snprintf(out, size, "%.*s...%s", (int)head, path, tail);
 }

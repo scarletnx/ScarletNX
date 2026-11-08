@@ -87,19 +87,9 @@ void mcp_put_n(Text* t, const char* p, size_t n) {
     t->p[t->n] = 0;
 }
 void mcp_put(Text* t, const char* p) { mcp_put_n(t, p, strlen(p)); }
-static void hex(char* out, SnxU64 v) {
-    char digits[17];
-    int n = 0;
-    do {
-        digits[n++] = "0123456789abcdef"[v & 15];
-        v >>= 4;
-    } while (v);
-    while (n) *out++ = digits[--n];
-    *out = 0;
-}
 void mcp_put_hex(Text* t, SnxU64 v) {
     char h[17];
-    hex(h, v);
+    snprintf(h, sizeof h, "%llx", (unsigned long long)v);
     mcp_put(t, h);
 }
 void mcp_put_num(Text* t, unsigned long v) {
@@ -360,13 +350,8 @@ static char* nacp_version(const char* game) {
 static void find_states(const Mcp* m, SnxU64 title_id, yyjson_mut_doc* d, yyjson_mut_val* list) {
     static const char* const libraries[] = {"games", "recompiled"};
     char id[17];
-    int l, k;
-    hex(id, title_id);
-    for (k = (int)strlen(id); k < 16; k++) {
-        memmove(id + 1, id, (size_t)k + 1);
-        id[0] = '0';
-    }
-    for (k = 0; id[k]; k++) id[k] = (char)toupper((unsigned char)id[k]);
+    int l;
+    snprintf(id, sizeof id, "%016llX", (unsigned long long)title_id);
     for (l = 0; l < 2; l++) {
         char *folder = snx_format("%s/%s/%s", m->data, libraries[l], id), *dir = snx_path_join(folder, "states");
         char** names = NULL;
@@ -419,13 +404,8 @@ static void find_games(const Mcp* m, SnxU64 title_id, yyjson_mut_doc* d, yyjson_
             if (snx_is_dir(game) && !snx_load_npdm(game, &npdm, error, sizeof error) && npdm.title_id &&
                 (!title_id || npdm.title_id == title_id)) {
                 yyjson_mut_val* g = yyjson_mut_arr_add_obj(d, list);
-                int k;
-                hex(id, npdm.title_id);
-                for (k = (int)strlen(id); k < 16; k++) { /* sixteen digits, upper case, as the logs' header */
-                    memmove(id + 1, id, (size_t)k + 1);
-                    id[0] = '0';
-                }
-                for (k = 0; id[k]; k++) id[k] = (char)toupper((unsigned char)id[k]);
+                /* sixteen digits, upper case, as the logs' header */
+                snprintf(id, sizeof id, "%016llX", (unsigned long long)npdm.title_id);
                 version = nacp_version(game);
                 yyjson_mut_obj_add_strcpy(d, g, "path", game);
                 yyjson_mut_obj_add_strcpy(d, g, "title_id", id);

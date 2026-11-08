@@ -10,13 +10,8 @@
 /* fits its field, and one field of a line: no tab or line break */
 static int fits(const char* text, size_t size) { return strlen(text) < size && !strpbrk(text, "\t\r\n"); }
 static void name_of(const char* path, char* out, size_t size) {
-    const char *base, *p, *dot;
-    size_t n;
-    base = path;
-    for (p = path; *p; ++p)
-        if (*p == '/' || *p == '\\') base = p + 1;
-    dot = strrchr(base, '.');
-    n = dot && dot != base ? (size_t)(dot - base) : strlen(base);
+    const char *base = snx_path_leaf(path), *dot = strrchr(base, '.');
+    size_t n = dot && dot != base ? (size_t)(dot - base) : strlen(base);
     if (n >= size) n = size - 1;
     memcpy(out, base, n);
     out[n] = 0;

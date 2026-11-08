@@ -66,6 +66,7 @@ static TicFormat nvn_format(u32 format) {
         return f;                                                                                                      \
     }
 #include "nx/gpu/nvn/nvn_tic_format.inc"
+#include "common/utilities/bits.h"
     }
     TicFormat none = {0}; /* a format with no entry: no descriptor and no render target, which the callers log */
     return none;
@@ -204,7 +205,6 @@ int nvn_tic_encode(const NvnTexture* t, const NvnView* v, int image, u32 api, u3
 }
 
 /* ---- samplers ---- */
-static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
 /* sRGB's encoding of a linear value, 8 bits (deko3d's, after rygorous) */
 static u32 srgb8(float f) {
     float s;
@@ -226,9 +226,9 @@ void nvn_tsc_encode(const NvnSamplerPar* p, u32 out[8]) {
        hardware's min filter (1 nearest, 2 linear) and mip filter (1 none, 2 nearest, 3 linear) */
     static const u8 minf[6] = {1, 2, 1, 2, 1, 2}, mipf[6] = {1, 1, 2, 2, 3, 3};
     static const u8 aniso[16] = {0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 6, 6, 7};
-    float lo = clampf(p->lod_min, 0.0f, 15.0f), hi = clampf(p->lod_max, 0.0f, 15.0f);
-    u32 bias = (u32)(i32)(clampf(p->lod_bias, -15.0f, 15.0f) * 256.0f) & 0x1fff, i;
-    u32 a = (u32)(clampf(p->anisotropy, 1.0f, 16.0f) + 0.5f) - 1;
+    float lo = snx_clamp_float(p->lod_min, 0.0f, 15.0f), hi = snx_clamp_float(p->lod_max, 0.0f, 15.0f);
+    u32 bias = (u32)(i32)(snx_clamp_float(p->lod_bias, -15.0f, 15.0f) * 256.0f) & 0x1fff, i;
+    u32 a = (u32)(snx_clamp_float(p->anisotropy, 1.0f, 16.0f) + 0.5f) - 1;
     u32 m = p->min_filter < 6 ? p->min_filter : 0;
     if (hi < lo) hi = lo;
     memset(out, 0, 8 * sizeof *out); /* every word: the descriptor goes to guest memory */

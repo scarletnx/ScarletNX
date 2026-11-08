@@ -4,10 +4,6 @@
 #include "common/cpu/arm/arm.h"
 #include "common/utilities/endian.h"
 
-static uint32_t sign_extend(uint32_t value, unsigned bits) {
-    uint32_t sign = 1u << (bits - 1);
-    return (value ^ sign) - sign;
-}
 /* whether control never reaches the instruction after the A32 instruction w when it runs: a branch without link, a
    write to the PC, BKPT. A call returns there, as does an instruction the block compiler leaves to the backend
    (SnxArmRt.undefined), which may run it */
@@ -28,8 +24,9 @@ static void a32_next(SnxArmProfile profile, uint32_t pc, uint32_t w, void (*foun
                      void* context) {
     SnxA32Kind kind = snx_a32_decode_profile(profile, w);
     unsigned cond = w >> 28;
-    if (kind == SNX_A32_BRANCH) found(context, pc + 8 + (sign_extend(w & 0xFFFFFF, 24) << 2), 0);
-    if (kind == SNX_A32_BLX_IMM) found(context, pc + 8 + (sign_extend(w & 0xFFFFFF, 24) << 2) + ((w >> 23) & 2), 1);
+    if (kind == SNX_A32_BRANCH) found(context, pc + 8 + ((uint32_t)snx_sext32(w & 0xFFFFFF, 24) << 2), 0);
+    if (kind == SNX_A32_BLX_IMM)
+        found(context, pc + 8 + ((uint32_t)snx_sext32(w & 0xFFFFFF, 24) << 2) + ((w >> 23) & 2), 1);
     if (!(a32_ends(profile, w) && (cond == 14 || cond == 15))) found(context, pc + 4, 0);
 }
 /* Its instructions are walked as the block compiler walks them, IT state included, to its last one */
@@ -67,11 +64,11 @@ static void thumb_next(SnxArmProfile profile, uint32_t pc, const unsigned char* 
             unsigned i1 = !(((hw2 >> 13) & 1) ^ s), i2 = !(((hw2 >> 11) & 1) ^ s);
             switch (t.op) {
                 case BR_B:
-                    found(context, base + (sign_extend(t.imm, 11) << 1), 1);
+                    found(context, base + ((uint32_t)snx_sext32(t.imm, 11) << 1), 1);
                     ends = 1;
                     break;
                 case BR_BCOND:
-                    found(context, base + (sign_extend(t.imm, 8) << 1), 1);
+                    found(context, base + ((uint32_t)snx_sext32(t.imm, 8) << 1), 1);
                     always = 0;
                     break;
                 case BR_CBZ:
@@ -82,27 +79,28 @@ static void thumb_next(SnxArmProfile profile, uint32_t pc, const unsigned char* 
                 case BR_BL:
                 case BR_BW:
                     found(context,
-                          base + (sign_extend((s << 23) | (i1 << 22) | (i2 << 21) | ((hw1 & 0x3FF) << 11) |
-                                                  (hw2 & 0x7FF),
-                                              24)
+                          base + ((uint32_t)snx_sext32(
+                                      (s << 23) | (i1 << 22) | (i2 << 21) | ((hw1 & 0x3FF) << 11) | (hw2 & 0x7FF), 24)
                                   << 1),
                           1);
                     ends = t.op == BR_BW;
                     break;
                 case BR_BLX_IMM:
                     found(context,
-                          (base & ~3u) + (sign_extend((s << 23) | (i1 << 22) | (i2 << 21) | ((hw1 & 0x3FF) << 11) |
-                                                          (((hw2 >> 1) & 0x3FF) << 1),
-                                                      24)
-                                          << 1),
+                          (base & ~3u) +
+                              ((uint32_t)snx_sext32((s << 23) | (i1 << 22) | (i2 << 21) | ((hw1 & 0x3FF) << 11) |
+                                                        (((hw2 >> 1) & 0x3FF) << 1),
+                                                    24)
+                               << 1),
                           0);
                     break;
                 case BR_BCOND_W:
                     found(context,
-                          base + (sign_extend((s << 19) | (((hw2 >> 11) & 1) << 18) | (((hw2 >> 13) & 1) << 17) |
-                                                  ((hw1 & 0x3F) << 11) | (hw2 & 0x7FF),
-                                              20)
-                                  << 1),
+                          base +
+                              ((uint32_t)snx_sext32((s << 19) | (((hw2 >> 11) & 1) << 18) | (((hw2 >> 13) & 1) << 17) |
+                                                        ((hw1 & 0x3F) << 11) | (hw2 & 0x7FF),
+                                                    20)
+                               << 1),
                           1);
                     always = 0;
                     break;

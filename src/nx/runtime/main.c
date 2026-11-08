@@ -7,6 +7,8 @@
 #include "common/cpu/recompiler/llvm/gdb_jit.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/utilities/build_info.h"
+#include "common/utilities/endian.h"
+#include "common/utilities/ascii.h"
 #include "common/utilities/common.h"
 #include "common/utilities/ini_lines.h"
 #include "common/utilities/run_mark.h"
@@ -94,8 +96,6 @@ typedef const SnxArmModule* (*ArmModuleFn)(void);
 typedef const SnxVariants* (*VariantsFn)(void);
 typedef const SnxRoutes* (*RoutesFn)(void);
 
-static int is_separator(char c) { return c == '/' || c == '\\'; }
-
 /* ---- the game to run ---- */
 
 /* a console dump, by its extension (after the last dot, past any separator), which the driver prepares: the runtime
@@ -145,14 +145,14 @@ static void name_game(const char* from) {
     size_t n, cut;
     snprintf(path, sizeof path, "%s", from);
     n = strlen(path);
-    while (n > 1 && is_separator(path[n - 1])) path[--n] = 0;
+    while (n > 1 && snx_is_any_separator(path[n - 1])) path[--n] = 0;
     if (plat_is_dir(path)) {
-        for (cut = n; cut && !is_separator(path[cut - 1]); cut--) continue;
+        for (cut = n; cut && !snx_is_any_separator(path[cut - 1]); cut--) continue;
         snprintf(base, sizeof base, "%s", path + cut);
         snprintf(path + n, sizeof path - n, "/%s", base);
         n = strlen(path);
     }
-    for (cut = n; cut && !is_separator(path[cut - 1]); cut--) continue;
+    for (cut = n; cut && !snx_is_any_separator(path[cut - 1]); cut--) continue;
     snprintf(g_exename, sizeof g_exename, "%s", path + cut);
     drop_suffix(g_exename, ".exe");
     drop_suffix(g_exename, ".EXE");
@@ -395,8 +395,8 @@ static void addon_init(char* ini, size_t ini_size, char* base, size_t base_size)
     size_t n = dir ? strlen(dir) : 0, cut;
     SnxU64 id = 0;
     base[0] = 0;
-    while (n > 1 && is_separator(dir[n - 1])) dir[--n] = 0;
-    for (cut = n; cut && !is_separator(dir[cut - 1]); cut--) continue;
+    while (n > 1 && snx_is_any_separator(dir[n - 1])) dir[--n] = 0;
+    for (cut = n; cut && !snx_is_any_separator(dir[cut - 1]); cut--) continue;
     if (dir && snx_addon_name(dir + cut, g_exename, &id)) {
         SnxU64 game = 0;
         int kind;
@@ -518,13 +518,13 @@ static void say_old_layout(void) {
     full = snx_absolute(g_exedir[0] ? g_exedir : ".");
     size_t n = full ? strlen(full) : 0, cut;
     for (;;) { /* "games/", "games/." and "games" alike */
-        while (n > 1 && is_separator(full[n - 1])) full[--n] = 0;
-        if (n > 2 && full[n - 1] == '.' && is_separator(full[n - 2]))
+        while (n > 1 && snx_is_any_separator(full[n - 1])) full[--n] = 0;
+        if (n > 2 && full[n - 1] == '.' && snx_is_any_separator(full[n - 2]))
             full[n -= 2] = 0;
         else
             break;
     }
-    for (cut = n; cut && !is_separator(full[cut - 1]); cut--) continue;
+    for (cut = n; cut && !snx_is_any_separator(full[cut - 1]); cut--) continue;
     if (full && strcmp(full + cut, g_exename))
         WARN("%s/%s and its files were left by an older version: this one keeps them in %s/%s/ "
              "(docs/DEPRECATIONS.md says how to move them)\n",
@@ -534,7 +534,6 @@ static void say_old_layout(void) {
 
 /* ---- the program's metadata ---- */
 
-static u32 rd32le(const u8* p) { return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24; }
 
 /* exefs/main.npdm's MMU flags (its byte at 0x0C): the address space type, which decides the layout mem_init sizes
    its blocks in and the loader places the code at. The npdm is read through the fs, which fs_init has just brought
@@ -575,14 +574,14 @@ static void read_npdm(void) {
         free(d);
         return;
     }
-    g_hle.kernel.sysres_size = rd32le(d + 0x14);
-    aci = rd32le(d + 0x70);
-    aci_size = rd32le(d + 0x74);
+    g_hle.kernel.sysres_size = snx_ld_le32(d + 0x14);
+    aci = snx_ld_le32(d + 0x70);
+    aci_size = snx_ld_le32(d + 0x74);
     if (aci < size && aci_size >= 0x38 && aci_size <= size - aci && !memcmp(d + aci, "ACI0", 4)) {
-        caps = rd32le(d + aci + 0x30);
-        caps_size = rd32le(d + aci + 0x34);
+        caps = snx_ld_le32(d + aci + 0x30);
+        caps_size = snx_ld_le32(d + aci + 0x34);
         for (i = 0; caps < aci_size && caps_size <= aci_size - caps && i + 4 <= caps_size; i += 4) {
-            u32 cap = rd32le(d + aci + caps + i), lowest, highest, min_core, max_core;
+            u32 cap = snx_ld_le32(d + aci + caps + i), lowest, highest, min_core, max_core;
             if ((cap & 0xF) != 0x7) continue; /* ThreadInfo: three ones, then a zero */
             lowest = cap >> 4 & 63;
             highest = cap >> 10 & 63;
@@ -1002,7 +1001,7 @@ static void exe_folder(char* out, size_t size) {
     size_t n;
     snprintf(out, size, "%s", g_exedir[0] ? g_exedir : ".");
     n = strlen(out);
-    while (n > 1 && is_separator(out[n - 1])) out[--n] = 0;
+    while (n > 1 && snx_is_any_separator(out[n - 1])) out[--n] = 0;
 }
 /* <game>.next in the game's folder, read and taken away when it names this program, before anything reads the game's
    files: what the program that ended for it handed over. One naming another program is left for that one */
@@ -1010,7 +1009,7 @@ static void handover_take(void) {
     char folder[sizeof g_exedir], path[sizeof g_exedir + 300];
     const char* leaf;
     exe_folder(folder, sizeof folder);
-    for (leaf = folder + strlen(folder); leaf > folder && !is_separator(leaf[-1]); leaf--) continue;
+    for (leaf = folder + strlen(folder); leaf > folder && !snx_is_any_separator(leaf[-1]); leaf--) continue;
     if (snx_path_format(path, sizeof path, "%s/%s.next", folder, leaf)) return;
     g_next_taken = snx_next_read(path, &g_next, g_next_why, sizeof g_next_why);
     if (g_next_taken > 0 && strcmp(g_next.program, g_exename)) { /* another's */

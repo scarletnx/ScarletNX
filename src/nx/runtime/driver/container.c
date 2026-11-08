@@ -3,6 +3,7 @@
 /* Switch dumps through hactool (hactool/snx_hac.h): the keys from their files into hactool's keyset in memory, the
    title keys of the dump's tickets, and the NCAs a game is made from */
 #include "nx/runtime/driver/container.h"
+#include "common/utilities/ascii.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,11 +29,7 @@ static int ascii_name(unsigned char c) {
     return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_';
 }
 
-static int ascii_hex(unsigned char c) {
-    return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f');
-}
 
-static char ascii_lower(char c) { return c >= 'A' && c <= 'Z' ? (char)(c - 'A' + 'a') : c; }
 
 static int has_suffix(const char* text, const char* suffix) {
     size_t a, b, i;
@@ -40,7 +37,7 @@ static int has_suffix(const char* text, const char* suffix) {
     b = strlen(suffix);
     if (a < b) return 0;
     for (i = 0; i < b; i++)
-        if (ascii_lower(text[a - b + i]) != ascii_lower(suffix[i])) return 0;
+        if (snx_to_lower(text[a - b + i]) != snx_to_lower(suffix[i])) return 0;
     return 1;
 }
 
@@ -136,7 +133,7 @@ static int key_line(const char* text, size_t size, KeyLine* line) {
     if (i == size || text[i++] != '=') return 0;
     while (i < size && isspace((unsigned char)text[i])) i++;
     start = i;
-    while (i < size && ascii_hex((unsigned char)text[i])) i++;
+    while (i < size && snx_is_hex((unsigned char)text[i])) i++;
     if (i == start) return 0;
     line->value = text + start;
     line->value_size = i - start;
@@ -171,8 +168,8 @@ static int hex_bytes(const char* text, size_t size, unsigned char* out) {
     size_t i;
     unsigned digit;
     for (i = 0; i < size; i++) {
-        if (!ascii_hex((unsigned char)text[i])) return -1;
-        digit = text[i] <= '9' ? (unsigned)(text[i] - '0') : (unsigned)(ascii_lower(text[i]) - 'a' + 10);
+        if (!snx_is_hex((unsigned char)text[i])) return -1;
+        digit = (unsigned)snx_hex_value((unsigned char)text[i]);
         if (i & 1)
             out[i / 2] = (unsigned char)(out[i / 2] | digit);
         else

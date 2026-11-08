@@ -18,6 +18,17 @@ static inline uint64_t snx_div_up(uint64_t value, uint64_t d) { return (value + 
 
 /* count bits of v from bit at (count below 32) */
 static inline uint32_t snx_bits(uint32_t v, unsigned at, unsigned count) { return (v >> at) & ((1u << count) - 1); }
+/* the low bits of v (1 to 32, or to 64) as a signed number: the bits above are ignored */
+static inline int32_t snx_sext32(uint32_t v, unsigned bits) {
+    uint32_t sign = 1u << (bits - 1);
+    v &= sign - 1 + sign;
+    return v & sign ? -(int32_t)(~v & (sign - 1)) - 1 : (int32_t)v;
+}
+static inline int64_t snx_sext64(uint64_t v, unsigned bits) {
+    uint64_t sign = 1ull << (bits - 1);
+    v &= sign - 1 + sign;
+    return v & sign ? -(int64_t)(~v & (sign - 1)) - 1 : (int64_t)v;
+}
 /* whether length bytes from offset lie inside a range of total bytes, without the sum overflowing */
 static inline int snx_in_range(uint64_t offset, uint64_t length, uint64_t total) {
     return offset <= total && length <= total - offset;
@@ -30,6 +41,8 @@ static inline int snx_ranges_overlap(uint64_t a, uint64_t a_size, uint64_t b, ui
 static inline int snx_clamp_int(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 static inline float snx_clamp_float(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
 static inline double snx_clamp_double(double v, double lo, double hi) { return v < lo ? lo : v > hi ? hi : v; }
+/* a sample saturated to a signed 16-bit one */
+static inline int16_t snx_clamp_s16(int64_t v) { return (int16_t)(v < -32768 ? -32768 : v > 32767 ? 32767 : v); }
 static inline uint32_t snx_min_u32(uint32_t a, uint32_t b) { return a < b ? a : b; }
 static inline uint32_t snx_max_u32(uint32_t a, uint32_t b) { return a > b ? a : b; }
 static inline uint64_t snx_min_u64(uint64_t a, uint64_t b) { return a < b ? a : b; }
@@ -148,6 +161,15 @@ static inline uint64_t snx_fnv_step(uint64_t hash, uint64_t value) { return (has
 static inline uint64_t snx_fnv1a(uint64_t hash, const void* bytes, size_t size) {
     const unsigned char* p = (const unsigned char*)bytes;
     for (size_t i = 0; i < size; ++i) hash = (hash ^ p[i]) * SNX_FNV_PRIME;
+    return hash;
+}
+/* 32-bit FNV-1a, the same way from SNX_FNV32_BASIS */
+#define SNX_FNV32_BASIS 2166136261u
+#define SNX_FNV32_PRIME 16777619u
+static inline uint32_t snx_fnv32_step(uint32_t hash, uint32_t value) { return (hash ^ value) * SNX_FNV32_PRIME; }
+static inline uint32_t snx_fnv1a32(uint32_t hash, const void* bytes, size_t size) {
+    const unsigned char* p = (const unsigned char*)bytes;
+    for (size_t i = 0; i < size; ++i) hash = (hash ^ p[i]) * SNX_FNV32_PRIME;
     return hash;
 }
 

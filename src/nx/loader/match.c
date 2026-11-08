@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/loader/match.h"
 #include "common/utilities/bits.h"
+#include "common/utilities/endian.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -13,10 +14,6 @@ typedef struct {
     SnxU32 symbol, name_len;
 } Sig;
 
-static SnxU32 rd32(const unsigned char* p) {
-    return (SnxU32)p[0] | (SnxU32)p[1] << 8 | (SnxU32)p[2] << 16 | (SnxU32)p[3] << 24;
-}
-
 /* FNV-1a, a word a step, of the n words at code with what a link or a load moves zeroed: the offset of a B or a BL (a call's target
    is laid out elsewhere in each module), the immediate of an ADRP, an ADR and an LDR (literal), and the low 12 bits
    that an ADD or a load or store takes from an ADRP's register in the 8 words before it. A conditional branch keeps
@@ -24,7 +21,7 @@ static SnxU32 rd32(const unsigned char* p) {
 static SnxU64 masked_hash(const unsigned char* code, SnxU64 n) {
     SnxU64 h = SNX_FNV_BASIS, i, j;
     for (i = 0; i < n; ++i) {
-        SnxU32 w = rd32(code + 4 * i);
+        SnxU32 w = snx_ld_le32(code + 4 * i);
         if ((w & 0x7C000000u) == 0x14000000u)
             w &= 0xFC000000u;
         else if ((w & 0x1F000000u) == 0x10000000u)
@@ -33,7 +30,7 @@ static SnxU64 masked_hash(const unsigned char* code, SnxU64 n) {
             w &= 0xFF00001Fu;
         else if ((w & 0xFF800000u) == 0x91000000u || (w & 0x3B000000u) == 0x39000000u)
             for (j = i < 8 ? 0 : i - 8; j < i; ++j) {
-                SnxU32 a = rd32(code + 4 * j);
+                SnxU32 a = snx_ld_le32(code + 4 * j);
                 if ((a & 0x9F000000u) == 0x90000000u && (a & 31) == ((w >> 5) & 31)) {
                     w &= ~(0xFFFu << 10);
                     break;

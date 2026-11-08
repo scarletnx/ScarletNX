@@ -8,6 +8,7 @@
    shifts, masks, selects, 16-bit products, unsigned bit field extracts); any other write leaves its registers holding
    any value, so the bound is never lower than what the program can touch. */
 #include "nx/gpu/shader/translator.h"
+#include "common/utilities/bits.h"
 #include <stdint.h>
 
 typedef struct {
@@ -53,7 +54,6 @@ static Span and_const(Span a, u32 m) {
     if ((m & (m + 1)) == 0 && a.hi <= m) return a; /* m is 2^k - 1, at or above every value */
     return span(0, a.hi < m ? a.hi : m);
 }
-static u32 sext(u32 v, int bits) { return (u32)((i32)(v << (32 - bits)) >> (32 - bits)); }
 /* an operand's 19-bit immediate, bit 56 its sign (integer_right's) */
 static u32 imm19(u64 w) { return B(w, 20, 19) | (B(w, 56, 1) ? 0xFFF80000u : 0); }
 
@@ -214,10 +214,10 @@ static u32 access_end(u64 w, int id, Span base) {
     u32 words;
     if (id == O_LDS || id == O_STS) {
         u32 size = B(w, 48, 3);
-        offset = (i32)sext(B(w, 20, 24), 24);
+        offset = snx_sext32(B(w, 20, 24), 24);
         words = size == 5 ? 2 : size >= 6 ? 4 : 1;
     } else {
-        offset = (i64)(i32)sext(B(w, 30, 22), 22) * 4;
+        offset = (i64)snx_sext32(B(w, 30, 22), 22) * 4;
         words = id == O_ATOMS ? (B(w, 28, 2) >= 2 ? 2 : 1) : (B(w, 52, 4) == 5 ? 2 : 1);
     }
     i64 lo = (i64)base.lo + offset, hi = (i64)base.hi + offset;

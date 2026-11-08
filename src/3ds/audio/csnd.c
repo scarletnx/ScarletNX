@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The CSND sound hardware, ported from Azahar's audio_core/csnd.cpp at azahar-emu/azahar 6e42de8 (csnd.h) */
 #include "3ds/audio/csnd.h"
+#include "common/utilities/bits.h"
 
 #define TICKS_PER_SAMPLE 2048u /* the timer's units an output sample takes */
 #define MIN_PERIOD       0x42u
@@ -147,7 +148,6 @@ static int32_t interpolated(const SnxCtrCsndChannel* ch) {
     int32_t delta = ch->current - ch->previous;
     return (int16_t)(ch->previous + delta * (int32_t)ch->counter / (int32_t)period_of(ch));
 }
-static int16_t clamp16(int64_t v) { return (int16_t)(v < -0x8000 ? -0x8000 : v > 0x7fff ? 0x7fff : v); }
 void snx_ctr_csnd_render(SnxCtrCsndHw* hw, SnxCtrMemory* memory, int16_t (*out)[2], unsigned count) {
     for (unsigned s = 0; s < count; ++s) {
         int32_t left = 0, right = 0;
@@ -172,7 +172,7 @@ void snx_ctr_csnd_render(SnxCtrCsndHw* hw, SnxCtrMemory* memory, int16_t (*out)[
             right += sample * ch->volume[1] >> 15;
         }
         /* the master volume, 0x8000 (unity) */
-        out[s][0] = clamp16(left);
-        out[s][1] = clamp16(right);
+        out[s][0] = snx_clamp_s16(left);
+        out[s][1] = snx_clamp_s16(right);
     }
 }

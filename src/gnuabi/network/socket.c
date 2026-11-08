@@ -49,7 +49,7 @@ static int addr_out(GnuMemory* m, const SnxSockAddr* sa, uint64_t addr, uint64_t
     if ((int32_t)cap < 0) return -GNU_EINVAL;
     uint32_t n = gnu_linux_addr_encode(sa, b);
     if ((e = gnu_memory_write(m, addr, b, cap < n ? cap : n))) return e;
-    gnu_vfs_put32(l, n);
+    snx_st_le32(l, n);
     return gnu_memory_write(m, lenp, l, 4);
 }
 
@@ -123,8 +123,8 @@ static int64_t sys_socketpair(GnuProcess* p, const uint64_t a[6]) {
         return f1;
     }
     unsigned char fds[8];
-    gnu_vfs_put32(fds, (uint32_t)f0);
-    gnu_vfs_put32(fds + 4, (uint32_t)f1);
+    snx_st_le32(fds, (uint32_t)f0);
+    snx_st_le32(fds + 4, (uint32_t)f1);
     return gnu_memory_write(&p->memory, a[3], fds, 8);
 }
 static int64_t sys_bind_connect(GnuProcess* p, SnxSocket* s, const uint64_t a[6], int connect) {
@@ -195,7 +195,7 @@ static int64_t sys_getsockopt(GnuProcess* p, SnxSocket* s, const uint64_t a[6]) 
     if ((r = snx_socket_getsockopt(s, level, name, v, &len))) return r;
     if ((size_t)cap < len) len = (size_t)cap;
     if (len && (r = gnu_memory_write(&p->memory, a[3], v, len))) return r;
-    gnu_vfs_put32(l, (uint32_t)len);
+    snx_st_le32(l, (uint32_t)len);
     return gnu_memory_write(&p->memory, a[4], l, 4);
 }
 
@@ -282,7 +282,7 @@ static int64_t do_recvmsg(GnuProcess* p, SnxSocket* s, uint64_t msg, uint64_t fl
             e = addr_out(&p->memory, &from, h.name, msg + 8);
         }
         if (!e) e = gnu_memory_write(&p->memory, msg + 40, b, 8); /* msg_controllen: no control messages */
-        gnu_vfs_put32(b, gnu_linux_msg_out(out_flags));
+        snx_st_le32(b, gnu_linux_msg_out(out_flags));
         if (!e) e = gnu_memory_write(&p->memory, msg + 48, b, 4);
         if (e) r = e;
     }
@@ -299,7 +299,7 @@ static int64_t sys_mmsg(GnuProcess* p, SnxSocket* s, const uint64_t a[6], int se
         int64_t r = send ? do_sendmsg(p, s, m, f) : do_recvmsg(p, s, m, f);
         if (r < 0) return done ? done : r;
         unsigned char len[4];
-        gnu_vfs_put32(len, (uint32_t)r);
+        snx_st_le32(len, (uint32_t)r);
         if (gnu_memory_write(&p->memory, m + MSGHDR_SIZE, len, 4)) return done ? done : -GNU_EFAULT;
         done++;
     }

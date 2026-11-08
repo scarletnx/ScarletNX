@@ -7,12 +7,9 @@
 #include "common/cpu/recompiler/llvm/jit_cache.h"
 #include "common/utilities/common.h"
 #include "common/utilities/game_ini.h"
+#include "common/utilities/endian.h"
 
 #define AOT_KEY_MAX 8192 /* the key names the host, LLVM and its features: far less */
-
-static uint32_t get32(const unsigned char* p) {
-    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
-}
 
 char* gui_game_kind_dir(const char* folder, const char* name, int kind) {
     static const char* const keys[] = {"config", "state", "cache"}; /* SNX_USER_CONFIG's on */
@@ -60,7 +57,7 @@ int gui_aot_cache_info(const char* path, GuiAotInfo* info) {
         fclose(f);
         return 0;
     }
-    length = get32(head + 8);
+    length = snx_ld_le32(head + 8);
     if (!length || length > AOT_KEY_MAX) {
         fclose(f);
         return 0;

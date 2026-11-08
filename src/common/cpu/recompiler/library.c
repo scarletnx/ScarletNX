@@ -741,11 +741,8 @@ typedef struct {
     uint64_t a, b;
 } CacheKey;
 static void key_bytes(CacheKey* k, const void* data, size_t size) {
-    const unsigned char* p = (const unsigned char*)data;
-    for (size_t i = 0; i < size; ++i) {
-        k->a = (k->a ^ p[i]) * 0x100000001b3ull;
-        k->b = (k->b ^ p[i]) * 0x100000001b3ull;
-    }
+    k->a = snx_fnv1a(k->a, data, size);
+    k->b = snx_fnv1a(k->b, data, size);
 }
 static void key_u64(CacheKey* k, uint64_t v) {
     unsigned char bytes[8];

@@ -4,6 +4,7 @@
 #include "nx/runtime/platform/controls_atlas.h"
 #include "nx/runtime/platform/controls_skins.h"
 #include "nx/runtime/platform/log.h"
+#include "common/utilities/bits.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -151,9 +152,6 @@ void vpad_reset_layout(void) {
     }
 }
 
-static int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
-static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
-static double clampd(double v, double lo, double hi) { return v < lo ? lo : v > hi ? hi : v; }
 /* the settings' table (settings.txt): its settings in the game's menu's order, then a control's place, in the order of
    SNX_VPAD_ (VPAD_CONTROLS, which settings.txt's list controls follows). A place deleted from the file while the game
    runs stays where it is until the game starts again: it has no default the reload could put back */
@@ -172,9 +170,9 @@ void vpad_place_set(const IniOpt* o, const char* v) { /* x y size, and shown in 
         if (end == v && i == 3) break;
         if (end == v || f[i] != f[i]) return; /* not three numbers, or one NaN: the place stays */
     }
-    g_vpad.at[c].x = (float)clampd(f[0], 0, 1);
-    g_vpad.at[c].y = (float)clampd(f[1], 0, 1);
-    g_vpad.at[c].size = (int)clampd(f[2], SNX_VPAD_SIZE_MIN, SNX_VPAD_SIZE_MAX);
+    g_vpad.at[c].x = (float)snx_clamp_double(f[0], 0, 1);
+    g_vpad.at[c].y = (float)snx_clamp_double(f[1], 0, 1);
+    g_vpad.at[c].size = (int)snx_clamp_double(f[2], SNX_VPAD_SIZE_MIN, SNX_VPAD_SIZE_MAX);
     if (i == 4) g_settings.control_shown[c] = f[3] != 0;
 }
 int vpad_ini(const char* key, const char* value) {
@@ -309,7 +307,7 @@ static void bar(const int safe[4], float r[BAR_COUNT][4]) {
 static float grid(const int safe[4]) { return (float)(safe[2] < safe[3] ? safe[2] : safe[3]) / 32; }
 static void resize(int step) {
     if (g_selected < 0) return;
-    g_vpad.at[g_selected].size = clampi(g_vpad.at[g_selected].size + step, SNX_VPAD_SIZE_MIN, SNX_VPAD_SIZE_MAX);
+    g_vpad.at[g_selected].size = snx_clamp_int(g_vpad.at[g_selected].size + step, SNX_VPAD_SIZE_MIN, SNX_VPAD_SIZE_MAX);
     vpad_store_control(g_selected);
 }
 static int edit_down(Finger* f, float x, float y, const int safe[4]) {
@@ -340,8 +338,8 @@ static void edit_move(Finger* f, float x, float y, const int safe[4]) {
         cx = (float)safe[0] + floorf((cx - (float)safe[0]) / g + 0.5f) * g;
         cy = (float)safe[1] + floorf((cy - (float)safe[1]) / g + 0.5f) * g;
     }
-    g_vpad.at[f->control].x = clampf((cx - (float)safe[0]) / (float)safe[2], 0, 1);
-    g_vpad.at[f->control].y = clampf((cy - (float)safe[1]) / (float)safe[3], 0, 1);
+    g_vpad.at[f->control].x = snx_clamp_float((cx - (float)safe[0]) / (float)safe[2], 0, 1);
+    g_vpad.at[f->control].y = snx_clamp_float((cy - (float)safe[1]) / (float)safe[3], 0, 1);
     f->moved = 1;
 }
 
@@ -541,7 +539,7 @@ void vpad_draw(SnxUiList* l, const int safe[4]) {
     placed();
     if (!g_settings.show_controls && !g_edit) return;
     /* in edit mode even a clear pad shows where its controls are */
-    percent = clampi(g_edit && g_settings.controls_alpha < 50 ? 50 : g_settings.controls_alpha, 0, 100);
+    percent = snx_clamp_int(g_edit && g_settings.controls_alpha < 50 ? 50 : g_settings.controls_alpha, 0, 100);
     alpha = (u32)percent * 255 / 100;
     builtin = builtin_alpha(percent);
     if (g_edit) edit_draw(l, safe);

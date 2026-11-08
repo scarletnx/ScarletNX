@@ -11,11 +11,10 @@
 #include "nx/runtime/guest_jit.h"
 #include <openssl/evp.h>
 #include "nx/runtime/nce/nce.h"
+#include "common/utilities/endian.h"
 
 /* each session's RoState, the lock and the session that initialized: g_hle.ldr (services_int.h) */
 
-static u32 ro_u32(const u8* p) { return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24; }
-static u64 ro_u64(const u8* p) { return ro_u32(p) | (u64)ro_u32(p + 4) << 32; }
 static int ro_range(u64 a, u64 size, int nonzero) {
     R_UNLESS(!(a & 0xFFF), SNX_RC_RO_INVALID_ADDRESS);
     if ((nonzero && !size) || (size & 0xFFF) || size > ~a) R_THROW(SNX_RC_RO_INVALID_SIZE);
@@ -51,9 +50,10 @@ static int ro_register_nrr(RoState* s, u64 a, u64 size, int kind) {
     R_UNLESS(size >= 0x350 && size <= 0xFFFFFFFFull && ro_readable(a, size), SNX_RC_RO_INVALID_NRR_IMAGE);
     u8 header[0x350];
     memcpy(header, GP(a), sizeof header);
-    u32 off = ro_u32(header + 0x340), count = ro_u32(header + 0x344);
-    if (memcmp(header, "NRR0", 4) || ro_u32(header + 0x338) != size || ro_u64(header + 0x330) != g_hle.kernel.title_id ||
-        off < sizeof header || off > size || count > (size - off) / 32)
+    u32 off = snx_ld_le32(header + 0x340), count = snx_ld_le32(header + 0x344);
+    if (memcmp(header, "NRR0", 4) || snx_ld_le32(header + 0x338) != size ||
+        snx_ld_le64(header + 0x330) != g_hle.kernel.title_id || off < sizeof header || off > size ||
+        count > (size - off) / 32)
         R_THROW(SNX_RC_RO_INVALID_NRR_IMAGE);
     R_UNLESS(header[0x33c] == kind, SNX_RC_RO_INVALID_NRR_KIND);
     /* Like Eden, no RSA trust-chain verification. Snapshot the hashes, not pointers to mutable guest storage. */
@@ -76,12 +76,13 @@ static int ro_unregister_nrr(RoState* s, u64 a) {
 }
 static int ro_validate_nro(RoState* s, const MemCodeMap* m, u32* text, u32* ro, u32* data) {
     const u8* h = GP(m->base);
-    *text = ro_u32(h + 0x24);
-    *ro = ro_u32(h + 0x2c);
-    *data = ro_u32(h + 0x34);
-    if (memcmp(h + 0x10, "NRO0", 4) || (ro_u32(h + 0x1c) & 2) || ro_u32(h + 0x18) != m->size ||
-        ro_u32(h + 0x38) != m->bss_size || ((*text | *ro | *data) & 0xFFF) || *text < 0x1000 || ro_u32(h + 0x20) ||
-        ro_u32(h + 0x28) != *text || ro_u32(h + 0x30) != (u64)*text + *ro || (u64)*text + *ro + *data != m->size)
+    *text = snx_ld_le32(h + 0x24);
+    *ro = snx_ld_le32(h + 0x2c);
+    *data = snx_ld_le32(h + 0x34);
+    if (memcmp(h + 0x10, "NRO0", 4) || (snx_ld_le32(h + 0x1c) & 2) || snx_ld_le32(h + 0x18) != m->size ||
+        snx_ld_le32(h + 0x38) != m->bss_size || ((*text | *ro | *data) & 0xFFF) || *text < 0x1000 ||
+        snx_ld_le32(h + 0x20) || snx_ld_le32(h + 0x28) != *text || snx_ld_le32(h + 0x30) != (u64)*text + *ro ||
+        (u64)*text + *ro + *data != m->size)
         R_THROW(SNX_RC_RO_INVALID_NRO_IMAGE);
     u8 hash[32];
     if (!EVP_Digest(h, (size_t)m->size, hash, NULL, EVP_sha256(), NULL)) fatal("ldr: SHA-256 failed (out of memory)\n");

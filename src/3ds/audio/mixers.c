@@ -132,13 +132,13 @@ static void downmix(DspFrame frame, uint16_t format, float gain, DspQuadFrame sa
         const int32_t* x = samples[n];
         int16_t left, right;
         if (format == DSP_OUT_MONO)
-            left = right = clamp16(to32((gain * x[0] + gain * x[1] + gain * x[2] + gain * x[3]) / 2));
+            left = right = snx_clamp_s16(to32((gain * x[0] + gain * x[1] + gain * x[2] + gain * x[3]) / 2));
         else { /* stereo, and surround, which is not implemented */
-            left = clamp16(to32(gain * x[0] + gain * x[2]));
-            right = clamp16(to32(gain * x[1] + gain * x[3]));
+            left = snx_clamp_s16(to32(gain * x[0] + gain * x[2]));
+            right = snx_clamp_s16(to32(gain * x[1] + gain * x[3]));
         }
-        frame[n][0] = clamp16((int32_t)frame[n][0] + left);
-        frame[n][1] = clamp16((int32_t)frame[n][1] + right);
+        frame[n][0] = snx_clamp_s16((int32_t)frame[n][0] + left);
+        frame[n][1] = snx_clamp_s16((int32_t)frame[n][1] + right);
     }
 }
 bool dsp_mixers_tick(DspMixers* m, DspConfig* config, const DspIntermediate* read_samples,

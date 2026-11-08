@@ -4,26 +4,20 @@
    instructions decoded from their encoding (the Arm ARM's B, BL, B.cond, CBZ, CBNZ, TBZ, TBNZ and ADR), which LLVM
    prints as offsets */
 #include "nx/runtime/driver/disasm.h"
+#include "common/utilities/bits.h"
 #ifdef SNX_A64_DISASM
 #include <llvm-c/Disassembler.h>
 #include <llvm-c/Target.h>
 #endif
 
-/* the low bits of v as a signed number */
-static int64_t sext(uint64_t v, int bits) {
-    uint64_t sign = (uint64_t)1 << (bits - 1);
-    v &= (sign << 1) - 1;
-    return (int64_t)(v ^ sign) - (int64_t)sign;
-}
-
 /* the address a PC-relative branch or ADR at pc names, 0 for any other instruction */
 static SnxU64 target(SnxU32 w, SnxU64 pc) {
-    if ((w & 0x7c000000u) == 0x14000000u) return pc + (SnxU64)(sext(w, 26) * 4);      /* B, BL */
-    if ((w & 0xff000010u) == 0x54000000u) return pc + (SnxU64)(sext(w >> 5, 19) * 4); /* B.cond */
-    if ((w & 0x7e000000u) == 0x34000000u) return pc + (SnxU64)(sext(w >> 5, 19) * 4); /* CBZ, CBNZ */
-    if ((w & 0x7e000000u) == 0x36000000u) return pc + (SnxU64)(sext(w >> 5, 14) * 4); /* TBZ, TBNZ */
+    if ((w & 0x7c000000u) == 0x14000000u) return pc + (SnxU64)(snx_sext64(w, 26) * 4);      /* B, BL */
+    if ((w & 0xff000010u) == 0x54000000u) return pc + (SnxU64)(snx_sext64(w >> 5, 19) * 4); /* B.cond */
+    if ((w & 0x7e000000u) == 0x34000000u) return pc + (SnxU64)(snx_sext64(w >> 5, 19) * 4); /* CBZ, CBNZ */
+    if ((w & 0x7e000000u) == 0x36000000u) return pc + (SnxU64)(snx_sext64(w >> 5, 14) * 4); /* TBZ, TBNZ */
     if ((w & 0x9f000000u) == 0x10000000u)                                             /* ADR */
-        return pc + (SnxU64)sext(((w >> 5) & 0x7ffffu) << 2 | ((w >> 29) & 3u), 21);
+        return pc + (SnxU64)snx_sext64(((w >> 5) & 0x7ffffu) << 2 | ((w >> 29) & 3u), 21);
     return 0;
 }
 

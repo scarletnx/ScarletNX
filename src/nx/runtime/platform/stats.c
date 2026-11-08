@@ -144,12 +144,6 @@ static void note(StatsNotes* s, unsigned icon, u32 rgba, size_t room, const char
     s->n++;
 }
 /* a path's file name, after its last separator */
-static const char* file_name(const char* path) {
-    const char* name = path;
-    for (; *path; ++path)
-        if (*path == '/' || *path == '\\') name = path + 1;
-    return name;
-}
 /* the lines that apply, in room letters each: RenderDoc's, that a capture can be taken (by the capture key's setting,
    hotkeys.h, or with none the menu's item) and what the last one asked for wrote (its file's name, ? where RenderDoc
    didn't say it) or that it failed, in the failure colour; and the debugger tracing the game */
@@ -168,7 +162,7 @@ static void notes_make(StatsNotes* s, size_t room) {
         snprintf(lead, sizeof lead, "capture %u failed", g_stats.capture.taken + 1);
         note(s, GUI_ICON_SAVE, STATS_SLOW, room, lead, "");
     } else if (g_stats.capture.taken) {
-        const char* name = file_name(g_stats.capture.path);
+        const char* name = snx_path_leaf(g_stats.capture.path);
         snprintf(lead, sizeof lead, "capture %u: ", g_stats.capture.taken);
         note(s, GUI_ICON_SAVE, STATS_TEXT, room, lead, *name ? name : "?");
     }

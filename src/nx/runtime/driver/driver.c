@@ -1287,13 +1287,9 @@ done:
 static char* dump_into_dumps(const char* input, const SnxPaths* paths, int* failed) {
     char *dumps = snx_path_join(paths->repo, "dumps"), *from = snx_absolute(input), *to = NULL, *part = NULL;
     char* copy = NULL;
-    const char* leaf = input;
-    const char* s;
     *failed = 0;
     if (!dumps || !from || !snx_is_file(from) || !snx_is_dump(from) || snx_path_within(from, dumps)) goto done;
-    for (s = input; *s; ++s)
-        if (*s == '/' || *s == '\\') leaf = s + 1;
-    to = snx_path_join(dumps, leaf);
+    to = snx_path_join(dumps, snx_path_leaf(input));
     if (!to || snx_mkdirs(dumps)) {
         snx_error("cannot make %s", dumps);
         *failed = 1;

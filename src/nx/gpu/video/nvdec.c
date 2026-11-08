@@ -25,6 +25,7 @@
 #include "nx/gpu/video/nvdec_regs.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/video/vp9_rebuild.h"
+#include "common/utilities/bits.h"
 #include <libavcodec/avcodec.h>
 #include <libavutil/error.h>
 #include <libavutil/frame.h>
@@ -64,18 +65,6 @@ typedef struct {
     u64 luma, chroma;
     u32 pitch_y, pitch_c, bh, w, h; /* bh: the GOB block height log2; w, h: the surface's picture size */
 } PicOut;
-
-static void wr32(u8* p, u32 off, u32 v) { snx_st_le32(p + off, v); }
-static u32 rd16(const u8* p, u32 off) { return (u32)p[off] | (u32)p[off + 1] << 8; }
-static u32 rd32be(const u8* p) { return (u32)p[0] << 24 | (u32)p[1] << 16 | (u32)p[2] << 8 | p[3]; }
-static u32 min_u32(u32 a, u32 b) { return a < b ? a : b; }
-static u32 max_u32(u32 a, u32 b) { return a > b ? a : b; }
-/* the low b bits of v, as a signed number */
-static int sign_extend(u32 v, u32 b) {
-    u32 m = 1u << (b - 1);
-    v &= (m << 1) - 1;
-    return (int)(v ^ m) - (int)m;
-}
 
 /* ---- FFmpeg's log */
 /* the lines logged, by any decoding thread, and whether the callback is set, each on a cache line of its own */
@@ -231,7 +220,7 @@ static u32 h264_compose_parameter_sets(const u8* s, u8* out, u32 cap) {
         frame_height_in_mbs > MAX_DIM / MB_SIZE || (!frame_mbs_only && frame_height_in_mbs < 2))
         return 0;
     /* as many references as either list's default holds, from Eden's floor of 4 to the standard's 16 */
-    max_num_ref_frames = max_u32(l0, l1) < H264_MAX_REF_FRAMES - 1 ? max_u32(l0, l1) + 1 : H264_MAX_REF_FRAMES;
+    max_num_ref_frames = snx_max_u32(l0, l1) < H264_MAX_REF_FRAMES - 1 ? snx_max_u32(l0, l1) + 1 : H264_MAX_REF_FRAMES;
     if (max_num_ref_frames < H264_MIN_REF_FRAMES) max_num_ref_frames = H264_MIN_REF_FRAMES;
     h264_write_bits(&w, H264_PROFILE_HIGH, 8); /* profile_idc */
     h264_write_bits(&w, 0, 8);                 /* constraint_set flags, reserved_zero_2bits */
@@ -278,9 +267,9 @@ static u32 h264_compose_parameter_sets(const u8* s, u8* out, u32 cap) {
     h264_write_ue(&w, l1);
     h264_write_bit(&w, h264_weighted_pred(lo));
     h264_write_bits(&w, h264_weighted_bipred_idc(hi), 2);
-    h264_write_se(&w, sign_extend(h264_pic_init_qp_minus26_bits(lo), H264_PIC_INIT_QP_MINUS26_BITS));
+    h264_write_se(&w, snx_sext32(h264_pic_init_qp_minus26_bits(lo), H264_PIC_INIT_QP_MINUS26_BITS));
     h264_write_se(&w, 0); /* pic_init_qs_minus26 */
-    h264_write_se(&w, sign_extend(h264_chroma_qp_index_offset_bits(lo), H264_CHROMA_QP_INDEX_OFFSET_BITS));
+    h264_write_se(&w, snx_sext32(h264_chroma_qp_index_offset_bits(lo), H264_CHROMA_QP_INDEX_OFFSET_BITS));
     h264_write_bit(&w, rd32(s, H264_DEBLOCKING_FILTER_CONTROL_PRESENT_FLAG) != 0);
     h264_write_bit(&w, h264_constrained_intra_pred(lo));
     h264_write_bit(&w, rd32(s, H264_REDUNDANT_PIC_CNT_PRESENT_FLAG) != 0);
@@ -296,7 +285,7 @@ static u32 h264_compose_parameter_sets(const u8* s, u8* out, u32 cap) {
             h264_write_bit(&w, i < H264_SCALING_LISTS_8X8);
             if (i < H264_SCALING_LISTS_8X8) h264_write_scaling_list(&w, s + H264_WEIGHT_SCALE_8X8 + 64 * i, 64);
         }
-    h264_write_se(&w, sign_extend(h264_second_chroma_qp_index_offset_bits(lo), H264_CHROMA_QP_INDEX_OFFSET_BITS));
+    h264_write_se(&w, snx_sext32(h264_second_chroma_qp_index_offset_bits(lo), H264_CHROMA_QP_INDEX_OFFSET_BITS));
     h264_write_end(&w);
     if (w.overflow ||
         !(k = h264_nal_unit(out + n, cap - n, h264_nal_header(H264_NAL_REF_IDC_HIGHEST, H264_NAL_PPS), rb, w.bytes)))
@@ -317,7 +306,7 @@ static int is_avcc(const u8* s, u32 n) {
     while (o < n) {
         u32 len;
         if (n - o < AVCC_LENGTH_SIZE + 1) return 0;
-        len = rd32be(s + o);
+        len = snx_ld_be32(s + o);
         if (!len || len > n - o - AVCC_LENGTH_SIZE || !nal_ok(s[o + AVCC_LENGTH_SIZE])) return 0;
         o += AVCC_LENGTH_SIZE + len;
     }
@@ -356,7 +345,7 @@ static int make_packet(AVPacket* p, const u8* hdr, u32 hn, const u8* s, u32 n) {
         memcpy(p->data + o + 3, s, n);
     } else /* each length becomes a 4-byte start code */
         for (i = 0; i < n;) {
-            u32 len = rd32be(s + i);
+            u32 len = snx_ld_be32(s + i);
             p->data[o] = p->data[o + 1] = p->data[o + 2] = 0;
             p->data[o + 3] = 1;
             memcpy(p->data + o + AVCC_LENGTH_SIZE, s + i + AVCC_LENGTH_SIZE, len);
@@ -378,8 +367,9 @@ static int write_pic(const AVFrame* f, const PicOut* t) {
         return 0;
     }
     if (f->width <= 0 || f->height <= 0 || t->bh > MAX_GOB_HEIGHT) return 0;
-    p.w = min_u32(min_u32((u32)f->width, t->w), min_u32(min_u32(t->pitch_y, t->pitch_c / 2 * 2), MAX_DIM));
-    p.h = min_u32(min_u32((u32)f->height, t->h), MAX_DIM);
+    p.w = snx_min_u32(snx_min_u32((u32)f->width, t->w),
+                      snx_min_u32(snx_min_u32(t->pitch_y, t->pitch_c / 2 * 2), MAX_DIM));
+    p.h = snx_min_u32(snx_min_u32((u32)f->height, t->h), MAX_DIM);
     if (!p.w || !p.h) return 0;
     /* the surfaces mapped for their whole block linear extent: whole GOBs wide, whole blocks high */
     gob_rows = 1u << (GOB_HEIGHT_LOG2 + t->bh); /* a block's rows */
@@ -511,10 +501,10 @@ static int send(NvdecCtx* d) {
    for a failure too */
 static void put_status(u8* st, int ok, u32 mbs) {
     if (!st) return;
-    wr32(st, NVDEC_STATUS_MBS_CORRECTLY_DECODED, ok ? mbs : 0);
-    wr32(st, NVDEC_STATUS_MBS_IN_ERROR, ok ? 0 : mbs);
-    wr32(st, NVDEC_STATUS_CYCLE_COUNT, STATUS_CYCLES);
-    wr32(st, NVDEC_STATUS_ERROR_STATUS, !ok);
+    snx_st_le32(st + NVDEC_STATUS_MBS_CORRECTLY_DECODED, ok ? mbs : 0);
+    snx_st_le32(st + NVDEC_STATUS_MBS_IN_ERROR, ok ? 0 : mbs);
+    snx_st_le32(st + NVDEC_STATUS_CYCLE_COUNT, STATUS_CYCLES);
+    snx_st_le32(st + NVDEC_STATUS_ERROR_STATUS, !ok);
 }
 /* a failed job: what it captured goes, so a later second field can't publish stale pixels, and the decoder is sent
    the headers again */
@@ -606,8 +596,8 @@ static void vp9_job(NvdecCtx* d, const u32* r, u8* st) {
     SnxVp9Frame f;
     PicOut t;
     if (s) {
-        mbs = ((rd16(s, VP9_CURRENT_FRAME_WIDTH) + MB_SIZE - 1) / MB_SIZE) *
-              ((rd16(s, VP9_CURRENT_FRAME_HEIGHT) + MB_SIZE - 1) / MB_SIZE);
+        mbs = ((snx_ld_le16(s + VP9_CURRENT_FRAME_WIDTH) + MB_SIZE - 1) / MB_SIZE) *
+              ((snx_ld_le16(s + VP9_CURRENT_FRAME_HEIGHT) + MB_SIZE - 1) / MB_SIZE);
         len = rd32(s, VP9_BITSTREAM_SIZE);
     }
     if (len && len <= MAX_STREAM) body = iova_ptr(nvdec_offset_address(r[NVDEC_FRAME_BITSTREAM_OFFSET]), len);
