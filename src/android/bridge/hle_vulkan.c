@@ -64,9 +64,15 @@ static bool loader(void) {
     return v.loader;
 }
 
-/* the host loader's command: by the guest's instance, or global (the commands before an instance) */
+/* the host loader's command: by the guest's instance, or global (the commands before an instance). A global command
+   is always the loader's own, by no instance: with one, the loader gives NULL for it (Vulkan 1.2.193 on), and an
+   app makes a second instance while its first lives */
 static void* host_command(const char* name) {
     if (!loader()) return NULL;
+    static const char* const globals[] = {"vkCreateInstance", "vkEnumerateInstanceExtensionProperties",
+                                          "vkEnumerateInstanceLayerProperties", "vkEnumerateInstanceVersion"};
+    for (size_t i = 0; i < sizeof globals / sizeof *globals; ++i)
+        if (!strcmp(globals[i], name)) return (void*)vkGetInstanceProcAddr(VK_NULL_HANDLE, name);
     return (void*)vkGetInstanceProcAddr(v.instance, name);
 }
 
@@ -150,6 +156,7 @@ static void debug_messenger(CPU* c, void* data);
 static void debug_messenger_destroy(CPU* c, void* data);
 static void surface_capabilities(CPU* c, void* data);
 static void surface_capabilities2(CPU* c, void* data);
+static void surface_support(CPU* c, void* data);
 static void queue_present(CPU* c, void* data);
 static void create_device(CPU* c, void* data);
 static void get_device_queue(CPU* c, void* data);
@@ -181,6 +188,7 @@ static const struct {
     {"vkDestroyDebugReportCallbackEXT", debug_messenger_destroy},
     {"vkGetPhysicalDeviceSurfaceCapabilitiesKHR", surface_capabilities},
     {"vkGetPhysicalDeviceSurfaceCapabilities2KHR", surface_capabilities2},
+    {"vkGetPhysicalDeviceSurfaceSupportKHR", surface_support},
     {"vkQueuePresentKHR", queue_present},
     {"vkCreateDevice", create_device},
     {"vkGetDeviceQueue", get_device_queue},
@@ -379,8 +387,39 @@ VkResult hle_vulkan_create_surface(VkInstance instance, VkSurfaceKHR* out) {
     if (r == VK_SUCCESS) memcpy(out, &surface, sizeof surface);
     return r;
 }
+/* the headless surfaces of SurfaceTextures, the last few: presentable from any graphics queue, as Android's are */
+enum { TEXTURE_SURFACES = 8 };
+static VkSurfaceKHR texture_surfaces[TEXTURE_SURFACES];
+static unsigned texture_next;
+static bool texture_surface(VkSurfaceKHR surface) {
+    bool found = false;
+    pthread_mutex_lock(&v.lock);
+    for (unsigned i = 0; i < TEXTURE_SURFACES && !found; ++i) found = surface && texture_surfaces[i] == surface;
+    pthread_mutex_unlock(&v.lock);
+    return found;
+}
 static void create_android_surface(CPU* c, void* data) {
     (void)data;
+    /* VkAndroidSurfaceCreateInfoKHR: the window at 24. A SurfaceTexture's shows nowhere: a headless surface, and
+       the renderer keeps the host window */
+    uint64_t window = 0;
+    if (X(1)) memcpy(&window, (const uint8_t*)(uintptr_t)X(1) + 24, sizeof window);
+    if (hle_android_is_texture_window(window)) {
+        VkInstance instance = (VkInstance)(uintptr_t)X(0);
+        PFN_vkCreateHeadlessSurfaceEXT make =
+            (PFN_vkCreateHeadlessSurfaceEXT)vkGetInstanceProcAddr(instance, "vkCreateHeadlessSurfaceEXT");
+        VkHeadlessSurfaceCreateInfoEXT info = {.sType = VK_STRUCTURE_TYPE_HEADLESS_SURFACE_CREATE_INFO_EXT};
+        VkSurfaceKHR surface = VK_NULL_HANDLE;
+        VkResult r = make ? make(instance, &info, NULL, &surface) : VK_ERROR_INITIALIZATION_FAILED;
+        if (r == VK_SUCCESS) {
+            memcpy(PTR(3), &surface, sizeof surface);
+            pthread_mutex_lock(&v.lock);
+            texture_surfaces[texture_next++ % TEXTURE_SURFACES] = surface;
+            pthread_mutex_unlock(&v.lock);
+        }
+        X(0) = (uint64_t)(int64_t)r;
+        return;
+    }
     X(0) = (uint64_t)(int64_t)hle_vulkan_create_surface((VkInstance)(uintptr_t)X(0), PTR(3));
 }
 
@@ -411,6 +450,31 @@ static void surface_capabilities(CPU* c, void* data) {
     (void)data;
     X(0) = (uint64_t)(int64_t)hle_vulkan_surface_capabilities((VkPhysicalDevice)(uintptr_t)X(0),
                                                               (VkSurfaceKHR)(uintptr_t)X(1), PTR(2));
+}
+/* vkGetPhysicalDeviceSurfaceSupportKHR(physical, family, surface, supported): the host's answer, but a SurfaceTexture's
+   headless surface is presentable from a graphics family (a driver without headless presentation says no: the GPU's
+   probe of an app then finds no present queue) */
+static void surface_support(CPU* c, void* data) {
+    (void)data;
+    VkPhysicalDevice physical = (VkPhysicalDevice)(uintptr_t)X(0);
+    uint32_t family = (uint32_t)X(1);
+    VkSurfaceKHR surface = (VkSurfaceKHR)(uintptr_t)X(2);
+    VkBool32* supported = PTR(3);
+    PFN_vkGetPhysicalDeviceSurfaceSupportKHR get =
+        (PFN_vkGetPhysicalDeviceSurfaceSupportKHR)vkGetInstanceProcAddr(v.instance, "vkGetPhysicalDeviceSurfaceSupportKHR");
+    VkResult r = get ? get(physical, family, surface, supported) : VK_ERROR_EXTENSION_NOT_PRESENT;
+    if (texture_surface(surface) && (r != VK_SUCCESS || !*supported)) {
+        PFN_vkGetPhysicalDeviceQueueFamilyProperties families = (PFN_vkGetPhysicalDeviceQueueFamilyProperties)
+            vkGetInstanceProcAddr(v.instance, "vkGetPhysicalDeviceQueueFamilyProperties");
+        uint32_t n = 0;
+        if (families) families(physical, &n, NULL);
+        VkQueueFamilyProperties* list = n ? calloc(n, sizeof *list) : NULL;
+        if (list) families(physical, &n, list);
+        *supported = list && family < n && (list[family].queueFlags & VK_QUEUE_GRAPHICS_BIT) ? VK_TRUE : VK_FALSE;
+        free(list);
+        r = VK_SUCCESS;
+    }
+    X(0) = (uint64_t)(int64_t)r;
 }
 static void surface_capabilities2(CPU* c, void* data) {
     (void)data;

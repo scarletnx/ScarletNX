@@ -12,6 +12,15 @@ public class Surface implements android.os.Parcelable {
     private int width, height;
 
     public Surface() {}
+    /** a surface whose frames go to the texture */
+    public Surface(android.graphics.SurfaceTexture surfaceTexture) {
+        if (surfaceTexture == null) throw new IllegalArgumentException("surfaceTexture must not be null");
+        texture = true;
+        width = height = 1;
+    }
+    /** a SurfaceTexture's: ANativeWindow_fromSurface gives it a window of its own, which shows nowhere */
+    private boolean texture;
+    boolean isTexture() { return texture && valid; }
     void setWindow(boolean window, int width, int height) {
         this.window = window;
         this.width = width;

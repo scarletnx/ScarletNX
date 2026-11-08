@@ -38,6 +38,10 @@ typedef struct {
     int32_t buffer_width, buffer_height, format; /* setBuffersGeometry's, 0 for the window's */
 } NativeWindow;
 static NativeWindow window = {0x5f776e64, 1, 0, 0, 0, 0, 1};
+/* a SurfaceTexture's surface: a window of its own, which shows nowhere (a Vulkan surface of it is headless) */
+static NativeWindow texture_window = {0x5f776e64, 1, 1, 1, 0, 0, 1};
+bool hle_android_is_texture_window(uint64_t w) { return w == (uint64_t)(uintptr_t)&texture_window; }
+static NativeWindow* window_of(uint64_t w) { return hle_android_is_texture_window(w) ? &texture_window : &window; }
 static pthread_mutex_t window_lock = PTHREAD_MUTEX_INITIALIZER;
 
 uint64_t hle_android_window(int* width, int* height) {
@@ -54,7 +58,12 @@ void* hle_android_window_from_surface(JNIEnv* env, jobject surface) {
     jmethodID is_window = cls ? (*env)->GetMethodID(env, cls, "isWindow", "()Z") : NULL;
     if (!is_window || !(*env)->CallBooleanMethod(env, surface, is_window)) {
         (*env)->ExceptionClear(env);
-        return NULL;
+        jmethodID is_texture = cls ? (*env)->GetMethodID(env, cls, "isTexture", "()Z") : NULL;
+        bool texture = is_texture && (*env)->CallBooleanMethod(env, surface, is_texture);
+        (*env)->ExceptionClear(env);
+        if (!texture) return NULL;
+        __atomic_add_fetch(&texture_window.refs, 1, __ATOMIC_RELAXED);
+        return &texture_window;
     }
     jint w = (*env)->CallIntMethod(env, surface, (*env)->GetMethodID(env, cls, "width", "()I"));
     jint h = (*env)->CallIntMethod(env, surface, (*env)->GetMethodID(env, cls, "height", "()I"));
@@ -71,37 +80,47 @@ static void window_from_surface(CPU* c, void* data) {
 }
 static void window_acquire(CPU* c, void* data) {
     (void)data;
-    (void)c;
-    __atomic_add_fetch(&window.refs, 1, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&window_of(X(0))->refs, 1, __ATOMIC_RELAXED);
 }
 static void window_release(CPU* c, void* data) {
     (void)data;
-    (void)c;
-    __atomic_sub_fetch(&window.refs, 1, __ATOMIC_RELAXED);
+    __atomic_sub_fetch(&window_of(X(0))->refs, 1, __ATOMIC_RELAXED);
+}
+/* a window's size: its buffers', else its own */
+static void window_size(uint64_t handle, int* w, int* h) {
+    if (!hle_android_is_texture_window(handle)) {
+        hle_android_window(w, h);
+        return;
+    }
+    pthread_mutex_lock(&window_lock);
+    *w = texture_window.buffer_width ? texture_window.buffer_width : texture_window.width;
+    *h = texture_window.buffer_height ? texture_window.buffer_height : texture_window.height;
+    pthread_mutex_unlock(&window_lock);
 }
 static void window_width(CPU* c, void* data) {
     (void)data;
     int w, h;
-    hle_android_window(&w, &h);
+    window_size(X(0), &w, &h);
     X(0) = (uint64_t)(int64_t)w;
 }
 static void window_height(CPU* c, void* data) {
     (void)data;
     int w, h;
-    hle_android_window(&w, &h);
+    window_size(X(0), &w, &h);
     X(0) = (uint64_t)(int64_t)h;
 }
 static void window_format(CPU* c, void* data) {
     (void)data;
-    X(0) = (uint64_t)(int64_t)window.format;
+    X(0) = (uint64_t)(int64_t)window_of(X(0))->format;
 }
 /* setBuffersGeometry(window, width, height, format): the size the buffers have, scaled to the window; 0 keeps each */
 static void window_set_geometry(CPU* c, void* data) {
     (void)data;
+    NativeWindow* w = window_of(X(0));
     pthread_mutex_lock(&window_lock);
-    window.buffer_width = (int32_t)X(1);
-    window.buffer_height = (int32_t)X(2);
-    if (X(3)) window.format = (int32_t)X(3);
+    w->buffer_width = (int32_t)X(1);
+    w->buffer_height = (int32_t)X(2);
+    if (X(3)) w->format = (int32_t)X(3);
     pthread_mutex_unlock(&window_lock);
     X(0) = 0;
 }
