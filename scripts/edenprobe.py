@@ -9,8 +9,9 @@ headless, its report held against a baseline: how each case ended before. docs/E
                              [--launches N] [--jobs N]
     scripts/edenprobe.py baseline BASELINE... -o FILE
 
-run recompiles the NRO into DIR/work, writes WORDS to its sdmc:/edenprobe/mode, and runs it with -H and its XDG
-folders in DIR/work. A launch that ends before the report's summary, crashed or killed after --timeout seconds without
+run recompiles the NRO into DIR/work, writes WORDS to its sdmc:/edenprobe/mode, with machine=scarletnx@<the runtime's
+commit> beside them for edenprobe's ban list when the NRO knows the word and WORDS name no machine, and runs it with -H
+and its XDG folders in DIR/work. A launch that ends before the report's summary, crashed or killed after --timeout seconds without
 a new report line, is followed by another, which edenprobe goes on from after the case the last one ended inside
 (reported as crashed), until the summary, a launch that adds no case, or --launches. DIR then holds report.jsonl, the
 failures' images/, the recompile's and each launch's log, baseline.txt (this run's passing cases, and those the
@@ -214,6 +215,19 @@ def warn(text):
     print(f'::warning title=edenprobe main::{text}')
 
 
+def machine_word(runtime, nro, mode):
+    """machine=scarletnx@<commit> for edenprobe's ban list, the commit from the build line the runtime carries
+    ("ScarletNX <branch> <commit>, committed ..."), and what to say about it; None when the words name a machine or the
+    probe predates the word (its NRO carries no "machine=")"""
+    if re.search(r'(?:^|\s)machine=', mode, re.IGNORECASE) or b'machine=' not in nro.read_bytes():
+        return None, None
+    found = re.search(rb'ScarletNX \S+ ([0-9a-f]{7,}[^,\s]*), committed', runtime.read_bytes())
+    commit = found[1].decode() if found else ''
+    if re.fullmatch(r'[A-Za-z0-9._-]{1,32}', commit):
+        return f'machine=scarletnx@{commit}', None
+    return 'machine=scarletnx', f'machine=scarletnx with no version: {runtime} carries no "ScarletNX <branch> <commit>"'
+
+
 def report_of(sdmc):
     """the report the latest launch writes, which sdmc:/edenprobe/last-run names, or None"""
     last = sdmc / 'last-run'
@@ -283,7 +297,11 @@ def play(args, out):
         return [f'the recompile exited {recompiled.returncode}{made}: recompile.log'], steps, None, None
     sdmc = games / NAME / f'{NAME}_data' / 'sdmc' / 'edenprobe'
     sdmc.mkdir(parents=True, exist_ok=True)
-    (sdmc / 'mode').write_text(' '.join(args.mode.split()) + '\n', encoding='utf-8')
+    mode = ' '.join(args.mode.split())
+    machine, said = machine_word(args.runtime.resolve(), args.nro.resolve(), mode)
+    if said:
+        print(said, flush=True)
+    (sdmc / 'mode').write_text(f'{mode} {machine}\n' if machine else f'{mode}\n', encoding='utf-8')
 
     report, cases = None, -1
     for number in range(1, args.launches + 1):
