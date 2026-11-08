@@ -36,6 +36,56 @@ public class RemoteViews implements Parcelable, LayoutInflater.Filter, Cloneable
     public RemoteViews(RemoteViews src) { packageName = src.packageName; layoutId = src.layoutId; actions = new ArrayList<>(src.actions); }
     public RemoteViews(Parcel parcel) { packageName = parcel.readString(); layoutId = parcel.readInt(); }
 
+    /** a collection widget's items, given at once (API 31) */
+    public static final class RemoteCollectionItems implements Parcelable {
+        private final long[] ids;
+        private final RemoteViews[] views;
+        private final boolean stableIds;
+        private final int viewTypeCount;
+
+        RemoteCollectionItems(long[] ids, RemoteViews[] views, boolean stableIds, int viewTypeCount) {
+            this.ids = ids;
+            this.views = views;
+            this.stableIds = stableIds;
+            this.viewTypeCount = viewTypeCount;
+        }
+        public int getItemCount() { return ids.length; }
+        public long getItemId(int position) { return ids[position]; }
+        public RemoteViews getItemView(int position) { return views[position]; }
+        public boolean hasStableIds() { return stableIds; }
+        public int getViewTypeCount() { return viewTypeCount; }
+        @Override public int describeContents() { return 0; }
+        @Override public void writeToParcel(Parcel dest, int flags) { dest.writeValue(this); }
+
+        public static final class Builder {
+            private final ArrayList<Long> ids = new ArrayList<>();
+            private final ArrayList<RemoteViews> views = new ArrayList<>();
+            private boolean stableIds;
+            private int viewTypeCount;
+            public Builder() {}
+            public Builder addItem(long id, RemoteViews view) {
+                if (view == null) throw new NullPointerException("view must not be null");
+                ids.add(id);
+                views.add(view);
+                return this;
+            }
+            public Builder setHasStableIds(boolean hasStableIds) { stableIds = hasStableIds; return this; }
+            public Builder setViewTypeCount(int viewTypeCount) { this.viewTypeCount = viewTypeCount; return this; }
+            public RemoteCollectionItems build() {
+                long[] a = new long[ids.size()];
+                for (int i = 0; i < a.length; ++i) a[i] = ids.get(i);
+                return new RemoteCollectionItems(a, views.toArray(new RemoteViews[0]), stableIds, viewTypeCount);
+            }
+        }
+    }
+    /* the collection actions: kept for a host that shows widgets, which this device has none of */
+    public void setRemoteAdapter(int viewId, android.content.Intent intent) {}
+    @Deprecated public void setRemoteAdapter(int appWidgetId, int viewId, android.content.Intent intent) {}
+    public void setRemoteAdapter(int viewId, RemoteCollectionItems items) {}
+    public void setEmptyView(int viewId, int emptyViewId) {}
+    public void setPendingIntentTemplate(int viewId, android.app.PendingIntent pendingIntentTemplate) {}
+    public void setOnClickFillInIntent(int viewId, android.content.Intent fillInIntent) {}
+
     public String getPackage() { return packageName; }
     public int getLayoutId() { return layoutId; }
     @Override @Deprecated public RemoteViews clone() { return new RemoteViews(this); }
