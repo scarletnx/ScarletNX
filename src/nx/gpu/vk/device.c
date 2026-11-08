@@ -316,11 +316,15 @@ static int create_device(void) {
     {
         /* the drivers known to break an extension or feature, read before any is turned on: a table the build
            carries that does not read is the build's fault, and which bans hold would be unknown */
-        char err[512];
+        char err[1024];
         if (!vk_bans_load(snx_vk_extension_bans_text, err, sizeof err)) fatal("vulkan: %s", err);
+        /* the bans a run goes over to test a driver again; a key the table has not stops the game, as the player
+           meant a ban that would otherwise still hold */
+        if (!vk_bans_ignore(g_settings.vulkan_ban_ignore, err, sizeof err)) fatal("settings: %s", err);
         VkBanDevice bd = {g_vk.props.deviceName,    p12.driverName,      p12.driverInfo, (uint32_t)p12.driverID,
                           g_vk.props.driverVersion, g_vk.props.deviceID, vk_ban_system()};
         vk_bans_device(&bd);
+        vk_bans_ignored(ban_say);
     }
     g_vk_subgroup_stages =
         subgroup.subgroupSize >= 32 &&

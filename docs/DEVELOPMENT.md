@@ -465,8 +465,13 @@ Each line that holds is said in the log, with the device, its driver and version
 vulkan: VK_KHR_present_id2 is off on NVIDIA GeForce RTX 3060 (NVIDIA, 590.48.01, driver version 590.48.01): NVIDIA's driver before 595.0.0 hangs games at their first frames with present_id2 and present_wait2 (590.48, with Smooth Motion on) (DXVK dxvk_device_info.cpp:610, issue 5507; extension_bans.txt:66)
 ```
 
-A ban joins the table with its source; one that holds for something the renderer does not use is said as such. To
-see which lines hold for this machine's drivers, or for a driver given by hand:
+A ban joins the table with its source; one that holds for something the renderer does not use is said as such.
+`vulkan_ban_ignore` ([Settings](SETTINGS.md#graphics)) goes over the bans of the keys it lists for one run, to test a
+driver again: `--vulkan_ban_ignore=VK_KHR_present_id2` on the command line, `--setting vulkan_ban_ignore=...` to
+`scripts/edenprobe.py`, the row in a phone's `.ini`. Each key is said, as a warning with the ban it goes over where
+one holds; a key the table has not stops the game with the nearest ones it has. A case that passes with the ban gone
+over, held against the console's or Eden's, is what lifts it. To see which lines hold for this machine's drivers, or
+for a driver given by hand:
 
 ```sh
 build/tests/snx-test-vk-bans --devices                              # each Vulkan device and the lines that hold
@@ -476,7 +481,8 @@ ctest --test-dir build -R 'vk_extension_bans|vk_vertex_input'
 ```
 
 `vk_extension_bans` checks the table's errors, each driver's numbering at every bound's edge, the filter and the
-features asked for against stand-in devices, and reads the table the build carries.
+features asked for against stand-in devices, the table the build carries, and `vulkan_ban_ignore` read from a `.ini`
+with a key the table has and with one it has not.
 
 ## SVCs
 

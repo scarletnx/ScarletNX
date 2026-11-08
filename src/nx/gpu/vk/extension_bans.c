@@ -22,7 +22,7 @@ typedef struct {
     uint32_t at[VK_BAN_FIELDS], size[VK_BAN_FIELDS]; /* each field in g_extension_bans.text */
     uint32_t driver, low, high, systems, gpus[BAN_GPUS], ngpus;
     uint32_t low_at, low_size, high_at, high_size; /* the bounds' versions as the table writes them */
-    unsigned char off, low_bound, high_bound, extension, claimed;
+    unsigned char off, low_bound, high_bound, extension, claimed, ignored; /* ignored: by vulkan_ban_ignore */
 } Ban;
 
 static struct {
@@ -31,6 +31,7 @@ static struct {
     uint32_t count;
     char device[256], driver_name[256], driver_info[256];
     uint32_t driver_id, driver_version, device_id, system;
+    char ignore[512]; /* vulkan_ban_ignore's value, as given */
 } g_extension_bans;
 
 /* the table's names and the log's for each VkDriverId */
@@ -443,6 +444,7 @@ int vk_bans_load(const char* text, char* err, size_t n) {
     int headed = 0;
     char why[400];
     g_extension_bans.count = 0;
+    g_extension_bans.ignore[0] = 0;
     if (size >= BAN_TEXT) {
         snprintf(err, n, "extension_bans.txt is %zu bytes, past the %d this reader holds", size, BAN_TEXT - 1);
         return 0;
@@ -595,6 +597,109 @@ static void say_ban(const Ban* b, int how, VkBanSay say) {
 }
 
 static int key_is(const Ban* b, const char* key) { return field_is(b, VK_BAN_KEY, key); }
+/* an off line that holds and that vulkan_ban_ignore does not go over: what turns its key off */
+static int bans(const Ban* b) { return b->off && !b->ignored && holds(b); }
+
+/* the edit distance from a's size bytes to b's: insertions, deletions and substitutions, for the nearest keys */
+static uint32_t distance(const char* a, uint32_t na, const char* b, uint32_t nb) {
+    uint32_t row[161];
+    if (na > 160) na = 160;
+    if (nb > 160) nb = 160;
+    for (uint32_t j = 0; j <= nb; j++) row[j] = j;
+    for (uint32_t i = 1; i <= na; i++) {
+        uint32_t diagonal = row[0];
+        row[0] = i;
+        for (uint32_t j = 1; j <= nb; j++) {
+            uint32_t up = row[j], best = diagonal + (a[i - 1] != b[j - 1]);
+            if (up + 1 < best) best = up + 1;
+            if (row[j - 1] + 1 < best) best = row[j - 1] + 1;
+            diagonal = up;
+            row[j] = best;
+        }
+    }
+    return row[nb];
+}
+
+/* the first line of each key, in the table's order: 1 for b, 0 for a later line of a key seen before */
+static int first_of_key(uint32_t i) {
+    const Ban* b = &g_extension_bans.bans[i];
+    for (uint32_t k = 0; k < i; k++)
+        if (b->size[VK_BAN_KEY] == g_extension_bans.bans[k].size[VK_BAN_KEY] &&
+            !memcmp(g_extension_bans.text + b->at[VK_BAN_KEY],
+                    g_extension_bans.text + g_extension_bans.bans[k].at[VK_BAN_KEY], b->size[VK_BAN_KEY]))
+            return 0;
+    return 1;
+}
+
+int vk_bans_ignore(const char* list, char* err, size_t n) {
+    uint32_t size = (uint32_t)strlen(list), at = 0, start, item;
+    if (size >= sizeof g_extension_bans.ignore) {
+        snprintf(err, n, "vulkan_ban_ignore is %u bytes, past the %zu it holds", size,
+                 sizeof g_extension_bans.ignore - 1);
+        return 0;
+    }
+    memcpy(g_extension_bans.ignore, list, size + 1);
+    for (uint32_t i = 0; i < g_extension_bans.count; i++) g_extension_bans.bans[i].ignored = 0;
+    while (next_item(list, size, &at, &start, &item)) {
+        int found = 0;
+        for (uint32_t i = 0; i < g_extension_bans.count; i++) {
+            Ban* b = &g_extension_bans.bans[i];
+            if (b->size[VK_BAN_KEY] == item && !memcmp(g_extension_bans.text + b->at[VK_BAN_KEY], list + start, item))
+                b->ignored = 1, found = 1;
+        }
+        if (found) continue;
+        /* the three keys nearest to it, the table's first of equal ones */
+        uint32_t near[3] = {0}, cost[3] = {~0u, ~0u, ~0u};
+        for (uint32_t i = 0; i < g_extension_bans.count; i++) {
+            const Ban* b = &g_extension_bans.bans[i];
+            if (!first_of_key(i)) continue;
+            uint32_t d = distance(list + start, item, g_extension_bans.text + b->at[VK_BAN_KEY], b->size[VK_BAN_KEY]);
+            for (int k = 0; k < 3; k++)
+                if (d < cost[k]) {
+                    for (int m = 2; m > k; m--) cost[m] = cost[m - 1], near[m] = near[m - 1];
+                    cost[k] = d, near[k] = i;
+                    break;
+                }
+        }
+        size_t w = (size_t)snprintf(err, n, "vulkan_ban_ignore=%s: %.*s is no key of the extension bans%s", list,
+                                    (int)item, list + start, g_extension_bans.count ? "; the nearest it has:" : "");
+        for (int k = 0; k < 3 && cost[k] != ~0u && w < n; k++) {
+            const Ban* b = &g_extension_bans.bans[near[k]];
+            w += (size_t)snprintf(err + w, n - w, "%s %.*s", k ? "," : "", (int)b->size[VK_BAN_KEY],
+                                  g_extension_bans.text + b->at[VK_BAN_KEY]);
+        }
+        return 0;
+    }
+    return 1;
+}
+
+void vk_bans_ignored(VkBanSay say) {
+    char line[2048], device[900], why[1100], key[160];
+    device_text(device, sizeof device);
+    for (uint32_t i = 0; i < g_extension_bans.count; i++) {
+        const Ban* b = &g_extension_bans.bans[i];
+        if (!b->ignored || !first_of_key(i)) continue;
+        uint32_t over = 0; /* the first off line on its key that holds, which the setting goes over */
+        for (uint32_t k = i; k < g_extension_bans.count && !over; k++) {
+            const Ban* o = &g_extension_bans.bans[k];
+            if (o->off && holds(o) && o->size[VK_BAN_KEY] == b->size[VK_BAN_KEY] &&
+                !memcmp(g_extension_bans.text + o->at[VK_BAN_KEY], g_extension_bans.text + b->at[VK_BAN_KEY],
+                        b->size[VK_BAN_KEY]))
+                over = o->line;
+        }
+        copy_text(b->at[VK_BAN_KEY], b->size[VK_BAN_KEY], key, sizeof key);
+        if (over) {
+            vk_ban_why(over, why, sizeof why);
+            snprintf(line, sizeof line, "vulkan: %s is not banned on %s: vulkan_ban_ignore=%s goes over the ban: %s",
+                     key, device, g_extension_bans.ignore, why);
+        } else
+            snprintf(line, sizeof line,
+                     "vulkan: %s is not banned on %s, with or without vulkan_ban_ignore=%s: no off line on it holds "
+                     "there",
+                     key, device, g_extension_bans.ignore);
+        say(line, over != 0);
+    }
+}
 
 uint32_t vk_ban_find(const char* key) {
     uint32_t first = 0;
@@ -602,7 +707,7 @@ uint32_t vk_ban_find(const char* key) {
         Ban* b = &g_extension_bans.bans[i];
         if (!key_is(b, key) || !holds(b)) continue;
         b->claimed = 1;
-        if (b->off && !first) first = b->line;
+        if (bans(b) && !first) first = b->line;
     }
     return first;
 }
@@ -621,6 +726,10 @@ uint32_t vk_bans_filter(SnxVkExtensions* e, VkBanSay say) {
         if (!holds(b)) continue;
         if (!b->extension) { /* a feature: its warning now, an off line when the renderer asks */
             if (!b->off) say_ban(b, SAY_WARN, say), b->claimed = 1;
+            continue;
+        }
+        if (b->off && b->ignored) { /* vulkan_ban_ignore goes over it: vk_bans_ignored says so */
+            b->claimed = 1;
             continue;
         }
         uint32_t at = 0;
@@ -643,7 +752,7 @@ uint32_t vk_bans_filter(SnxVkExtensions* e, VkBanSay say) {
 void vk_bans_unclaimed(VkBanSay say) {
     for (uint32_t i = 0; i < g_extension_bans.count; i++) {
         const Ban* b = &g_extension_bans.bans[i];
-        if (b->off && !b->claimed && holds(b)) say_ban(b, SAY_UNCLAIMED, say);
+        if (!b->claimed && bans(b)) say_ban(b, SAY_UNCLAIMED, say);
     }
 }
 
