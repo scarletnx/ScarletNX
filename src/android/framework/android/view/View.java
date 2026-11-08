@@ -50,7 +50,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
     public static final int LAYOUT_DIRECTION_LTR = 0, LAYOUT_DIRECTION_RTL = 1, LAYOUT_DIRECTION_INHERIT = 2,
         LAYOUT_DIRECTION_LOCALE = 3;
     public static final int TEXT_DIRECTION_INHERIT = 0, TEXT_DIRECTION_FIRST_STRONG = 1, TEXT_DIRECTION_LTR = 3;
-    public static final int TEXT_ALIGNMENT_INHERIT = 0, TEXT_ALIGNMENT_GRAVITY = 1;
+    public static final int TEXT_ALIGNMENT_INHERIT = 0, TEXT_ALIGNMENT_GRAVITY = 1, TEXT_ALIGNMENT_TEXT_START = 2,
+        TEXT_ALIGNMENT_TEXT_END = 3, TEXT_ALIGNMENT_CENTER = 4, TEXT_ALIGNMENT_VIEW_START = 5, TEXT_ALIGNMENT_VIEW_END = 6;
     public static final int FOCUSABLE = 0x1, NOT_FOCUSABLE = 0x0, FOCUSABLE_AUTO = 0x10;
     public static final int FOCUS_BACKWARD = 0x01, FOCUS_FORWARD = 0x02, FOCUS_LEFT = 0x11, FOCUS_UP = 0x21,
         FOCUS_RIGHT = 0x42, FOCUS_DOWN = 0x82;
@@ -83,8 +84,25 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
     protected static final int[] PRESSED_ENABLED_STATE_SET = {0x010100a7, 0x0101009e};
     protected static final int[] FOCUSED_STATE_SET = {0x0101009c};
 
-    public static final android.util.Property<View, Float> ALPHA = null, TRANSLATION_X = null, TRANSLATION_Y = null,
-        SCALE_X = null, SCALE_Y = null;
+    /* the animatable properties, as ObjectAnimator takes them */
+    private static android.util.Property<View, Float> property(String name, java.util.function.Function<View, Float> get,
+                                                              java.util.function.BiConsumer<View, Float> set) {
+        return new android.util.Property<View, Float>(Float.class, name) {
+            @Override public Float get(View v) { return get.apply(v); }
+            @Override public void set(View v, Float value) { set.accept(v, value); }
+        };
+    }
+    public static final android.util.Property<View, Float> ALPHA = property("alpha", View::getAlpha, View::setAlpha),
+        TRANSLATION_X = property("translationX", View::getTranslationX, View::setTranslationX),
+        TRANSLATION_Y = property("translationY", View::getTranslationY, View::setTranslationY),
+        TRANSLATION_Z = property("translationZ", View::getTranslationZ, View::setTranslationZ),
+        X = property("x", View::getX, View::setX), Y = property("y", View::getY, View::setY),
+        Z = property("z", View::getZ, View::setZ),
+        ROTATION = property("rotation", View::getRotation, View::setRotation),
+        ROTATION_X = property("rotationX", View::getRotationX, View::setRotationX),
+        ROTATION_Y = property("rotationY", View::getRotationY, View::setRotationY),
+        SCALE_X = property("scaleX", View::getScaleX, View::setScaleX),
+        SCALE_Y = property("scaleY", View::getScaleY, View::setScaleY);
 
     // ---- the tree ----
     protected Context mContext;
@@ -173,13 +191,13 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
         0x010100d0, 0x010100d1, 0x010100dc, 0x010100d4, 0x010100d5, 0x0101053d, 0x0101053e, 0x010100d6, 0x010100d7,
         0x010100d8, 0x010100d9, 0x010103b3, 0x010103b4, 0x0101031f, 0x01010140, 0x0101013f, 0x010100e5, 0x010100e6,
         0x010100da, 0x010100db, 0x01010273, 0x01010322, 0x01010323, 0x010103fa, 0x01010440, 0x01010326, 0x01010327,
-        0x01010328, 0x01010324, 0x01010325};
+        0x01010328, 0x01010324, 0x01010325, 0x010103b1};
     private static final int A_ID = 0, A_TAG = 1, A_VISIBILITY = 2, A_BACKGROUND = 3, A_PADDING = 4,
         A_PADDING_HORIZONTAL = 5, A_PADDING_VERTICAL = 6, A_PADDING_LEFT = 7, A_PADDING_TOP = 8, A_PADDING_RIGHT = 9,
         A_PADDING_BOTTOM = 10, A_PADDING_START = 11, A_PADDING_END = 12, A_ALPHA = 13, A_MIN_HEIGHT = 14,
         A_MIN_WIDTH = 15, A_CLICKABLE = 16, A_LONG_CLICKABLE = 17, A_FOCUSABLE = 18, A_FOCUSABLE_IN_TOUCH_MODE = 19,
         A_CONTENT_DESCRIPTION = 20, A_TRANSLATION_X = 21, A_TRANSLATION_Y = 22, A_TRANSLATION_Z = 23, A_ELEVATION = 24,
-        A_ROTATION = 25, A_ROTATION_X = 26, A_ROTATION_Y = 27, A_SCALE_X = 28, A_SCALE_Y = 29;
+        A_ROTATION = 25, A_ROTATION_X = 26, A_ROTATION_Y = 27, A_SCALE_X = 28, A_SCALE_Y = 29, A_TEXT_ALIGNMENT = 30;
 
     /**
      * A layout's attributes of the View itself, as Android's View constructor reads them from the layout, its style
@@ -190,12 +208,14 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
     private void attributes(Context context, AttributeSet attrs, int defStyleAttr, int defStyleRes) {
         android.content.res.TypedArray a = context.obtainStyledAttributes(attrs, VIEW_ATTRS, defStyleAttr, defStyleRes);
         try {
-            if (a.hasValue(A_ID)) setId(a.getResourceId(A_ID, NO_ID));
-            if (a.hasValue(A_TAG)) setTag(a.getText(A_TAG));
+            // the id, tag and visibility into their fields, as Android's constructor sets them: a subclass's setId
+            // (ConstraintLayout's) uses fields that its own constructor has not set yet
+            if (a.hasValue(A_ID)) mId = a.getResourceId(A_ID, NO_ID);
+            if (a.hasValue(A_TAG)) mTag = a.getText(A_TAG);
             // the attribute's enum: visible 0, invisible 1, gone 2
             if (a.hasValue(A_VISIBILITY)) {
                 int v = a.getInt(A_VISIBILITY, 0);
-                setVisibility(v == 1 ? INVISIBLE : v == 2 ? GONE : VISIBLE);
+                mVisibility = v == 1 ? INVISIBLE : v == 2 ? GONE : VISIBLE;
             }
             if (a.hasValue(A_BACKGROUND)) setBackground(a.getDrawable(A_BACKGROUND));
             int[] pad = {mPaddingLeft, mPaddingTop, mPaddingRight, mPaddingBottom};
@@ -228,6 +248,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
             if (a.hasValue(A_ROTATION_Y)) setRotationY(a.getFloat(A_ROTATION_Y, 0));
             if (a.hasValue(A_SCALE_X)) setScaleX(a.getFloat(A_SCALE_X, 1));
             if (a.hasValue(A_SCALE_Y)) setScaleY(a.getFloat(A_SCALE_Y, 1));
+            if (a.hasValue(A_TEXT_ALIGNMENT)) mTextAlignment = a.getInt(A_TEXT_ALIGNMENT, TEXT_ALIGNMENT_GRAVITY);
         } finally {
             a.recycle();
         }
@@ -395,6 +416,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
         mAttachInfo = null;
     }
 
+    /** the view and its children inflated from a layout, as LayoutInflater calls it */
+    protected void onFinishInflate() {}
     protected void onAttachedToWindow() {}
     protected void onDetachedFromWindow() {}
     protected void onWindowVisibilityChanged(int visibility) {}
@@ -509,12 +532,28 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
         return LAYOUT_DIRECTION_LTR;
     }
     public int getRawLayoutDirection() { return mLayoutDirection; }
-    public void setLayoutDirection(int layoutDirection) { if (mLayoutDirection != layoutDirection) { mLayoutDirection = layoutDirection; requestLayout(); } }
+    public void setLayoutDirection(int layoutDirection) {
+        if (mLayoutDirection != layoutDirection) {
+            mLayoutDirection = layoutDirection;
+            resetRtlSubtree();
+            requestLayout();
+        }
+    }
     public boolean isLayoutDirectionResolved() { return true; }
     public int getTextDirection() { return TEXT_DIRECTION_FIRST_STRONG; }
     public void setTextDirection(int textDirection) {}
-    public int getTextAlignment() { return TEXT_ALIGNMENT_GRAVITY; }
-    public void setTextAlignment(int textAlignment) {}
+    /* the raw alignment is gravity's by default, as Android's; inherit takes the parent's */
+    private int mTextAlignment = TEXT_ALIGNMENT_GRAVITY;
+    public int getTextAlignment() {
+        if (mTextAlignment != TEXT_ALIGNMENT_INHERIT) return mTextAlignment;
+        return mParent instanceof View p ? p.getTextAlignment() : TEXT_ALIGNMENT_GRAVITY;
+    }
+    public void setTextAlignment(int textAlignment) {
+        if (mTextAlignment == textAlignment) return;
+        mTextAlignment = textAlignment;
+        requestLayout();
+        invalidate();
+    }
     public int getOverScrollMode() { return mOverScrollMode; }
     public void setOverScrollMode(int overScrollMode) { mOverScrollMode = overScrollMode; }
 
@@ -563,19 +602,33 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
 
     // ---- background ----
     public Drawable getBackground() { return mBackground; }
-    public void setBackground(Drawable background) {
+    /* setBackground calls setBackgroundDrawable, which does it, as on Android: a subclass may override both
+       (MaterialCardView's setBackground calls setBackgroundDrawable) */
+    /** the view drawn over its siblings: its parent moves it to the end of its children, as Android's */
+    public void bringToFront() {
+        if (mParent != null) mParent.bringChildToFront(this);
+    }
+    public void setBackground(Drawable background) { setBackgroundDrawable(background); }
+    @Deprecated public void setBackgroundDrawable(Drawable background) {
         if (mBackground == background) return;
         if (mBackground != null) mBackground.setCallback(null);
         mBackground = background;
         if (background != null) {
             background.setCallback(this);
+            background.setLayoutDirection(getLayoutDirection());
+            // the drawable's padding becomes the view's, as Android's setBackgroundDrawable sets it (an inset
+            // or a nine-patch background pads the content)
+            android.graphics.Rect padding = new android.graphics.Rect();
+            if (background.getPadding(padding)) {
+                if (getLayoutDirection() == LAYOUT_DIRECTION_RTL) setPadding(padding.right, padding.top, padding.left, padding.bottom);
+                else setPadding(padding.left, padding.top, padding.right, padding.bottom);
+            }
             if (background.isStateful()) background.setState(getDrawableState());
             if (mBackgroundTint != null) background.setTintList(mBackgroundTint);
         }
         requestLayout();
         invalidate();
     }
-    @Deprecated public void setBackgroundDrawable(Drawable background) { setBackground(background); }
     public void setBackgroundColor(int color) {
         if (mBackground instanceof android.graphics.drawable.ColorDrawable c) { c.setColor(color); invalidate(); }
         else setBackground(new android.graphics.drawable.ColorDrawable(color));
@@ -848,7 +901,41 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
     public long getDrawingTime() { return mAttachInfo != null ? mAttachInfo.drawingTime : 0; }
 
     // ---- measure and layout ----
+    /* the layout params resolved for the layout direction, as Android's measure does before it measures, for the
+       whole subtree (a ConstraintLayout's start and end constraints become left and right there, and it reads its
+       children's before they measure). A view added, given params or turned to another direction is resolved again */
+    private ViewGroup.LayoutParams mResolvedParams;
+    private int mResolvedParamsDirection = -1;
+    boolean mRtlResolved;
+    void resolveRtlPropertiesIfNeeded() {
+        if (mRtlResolved) return;
+        mRtlResolved = true;
+        resolveLayoutParams();
+    }
+    /** the view to resolve again, and its ancestors to look down to it */
+    void resetRtlProperties() {
+        mRtlResolved = false;
+        mResolvedParams = null;
+        for (ViewParent p = mParent; p instanceof ViewGroup g && !g.mRtlChildDirty; p = g.getParent()) g.mRtlChildDirty = true;
+    }
+    private void resetRtlSubtree() {
+        resetRtlProperties();
+        if (this instanceof ViewGroup g) {
+            g.mRtlChildDirty = true;
+            for (int i = 0; i < g.getChildCount(); ++i) g.getChildAt(i).resetRtlSubtree();
+        }
+    }
+    private void resolveLayoutParams() {
+        int dir = getLayoutDirection();
+        if (mLayoutParams == null || (mLayoutParams == mResolvedParams && dir == mResolvedParamsDirection)) return;
+        boolean dirChanged = dir != mResolvedParamsDirection;
+        mResolvedParams = mLayoutParams;
+        mResolvedParamsDirection = dir;
+        mLayoutParams.resolveLayoutDirection(dir);
+        if (dirChanged) onRtlPropertiesChanged(dir);
+    }
     public final void measure(int widthMeasureSpec, int heightMeasureSpec) {
+        resolveRtlPropertiesIfNeeded();
         boolean specChanged = widthMeasureSpec != mOldWidthSpec || heightMeasureSpec != mOldHeightSpec;
         if (mForceLayout || specChanged) {
             mMeasuredSet = false;
@@ -947,6 +1034,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
     public void setLayoutParams(ViewGroup.LayoutParams params) {
         if (params == null) throw new NullPointerException("Layout parameters cannot be null");
         mLayoutParams = params;
+        resetRtlProperties(); /* the app may have changed the same params: they are resolved again */
+        resolveRtlPropertiesIfNeeded();
         if (mParent instanceof ViewGroup g) g.onSetLayoutParams(this, params);
         requestLayout();
     }
@@ -1000,6 +1089,39 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
         onDraw(canvas);
         dispatchDraw(canvas);
         onDrawForeground(canvas);
+        if (mOverlay != null) mOverlay.draw(canvas);
+    }
+
+    // ---- what Android's View also keeps ----
+    ViewOverlay mOverlay;
+    /** the drawables (and a ViewGroup's views) drawn over the view after its content, as Android's overlay */
+    public ViewOverlay getOverlay() {
+        if (mOverlay == null) mOverlay = new ViewOverlay(this);
+        return mOverlay;
+    }
+    private android.animation.StateListAnimator mStateListAnimator;
+    public android.animation.StateListAnimator getStateListAnimator() { return mStateListAnimator; }
+    public void setStateListAnimator(android.animation.StateListAnimator animator) { mStateListAnimator = animator; }
+    private float mTransitionAlpha = 1;
+    public float getTransitionAlpha() { return mTransitionAlpha; }
+    public void setTransitionAlpha(float alpha) { if (mTransitionAlpha != alpha) { mTransitionAlpha = alpha; invalidate(); } }
+    private boolean mDuplicateParentState, mScrollContainer;
+    public boolean isDuplicateParentStateEnabled() { return mDuplicateParentState; }
+    public void setDuplicateParentStateEnabled(boolean enabled) { mDuplicateParentState = enabled; refreshDrawableState(); }
+    public void setScrollContainer(boolean isScrollContainer) { mScrollContainer = isScrollContainer; }
+    public boolean isScrollContainer() { return mScrollContainer; }
+    private int mNextFocusLeftId = NO_ID, mNextFocusRightId = NO_ID;
+    public void setNextFocusLeftId(int id) { mNextFocusLeftId = id; }
+    public int getNextFocusLeftId() { return mNextFocusLeftId; }
+    public void setNextFocusRightId(int id) { mNextFocusRightId = id; }
+    public int getNextFocusRightId() { return mNextFocusRightId; }
+    /** no scroll bars are drawn: none to wake */
+    protected boolean awakenScrollBars() { return false; }
+    public int getVerticalFadingEdgeLength() { return 0; }
+    public void setFrameContentVelocity(float pixelsPerSecond) {}
+    public WindowId getWindowId() { return mAttachInfo != null ? WindowId.of(getRootView()) : null; }
+    public static View inflate(Context context, int resource, ViewGroup root) {
+        return LayoutInflater.from(context).inflate(resource, root);
     }
     protected void onDraw(Canvas canvas) {}
     protected void dispatchDraw(Canvas canvas) {}

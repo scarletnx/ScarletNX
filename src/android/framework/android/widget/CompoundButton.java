@@ -63,12 +63,12 @@ public abstract class CompoundButton extends Button implements Checkable {
             if (drawable.isStateful()) drawable.setState(getDrawableState());
             if (buttonTint != null) drawable.setTintList(buttonTint);
             if (buttonTintMode != null) drawable.setTintMode(buttonTintMode);
-            setMinHeight(drawable.getIntrinsicHeight());
+            buttonMinHeight(drawable.getIntrinsicHeight());
         }
         requestLayout();
         invalidate();
     }
-    private void setMinHeight(int h) { if (h > 0) setMinimumHeight(h); }
+    private void buttonMinHeight(int h) { if (h > 0) setMinimumHeight(h); }
     public Drawable getButtonDrawable() { return buttonDrawable; }
     public void setButtonTintList(ColorStateList tint) { buttonTint = tint; if (buttonDrawable != null) buttonDrawable.setTintList(tint); }
     public ColorStateList getButtonTintList() { return buttonTint; }
