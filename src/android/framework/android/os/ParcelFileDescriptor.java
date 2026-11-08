@@ -18,11 +18,24 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
     public static final int MODE_TRUNCATE = 0x04000000;
     public static final int MODE_APPEND = 0x02000000;
 
+    /* the open file: a RandomAccessFile that opened it, or a descriptor made of a host one (fromFd, adoptFd) */
     private final RandomAccessFile file;
-    private boolean detached;
-
-    ParcelFileDescriptor(RandomAccessFile file) { this.file = file; }
-
+    private final FileDescriptor descriptor;
+    private boolean closed;
+    ParcelFileDescriptor(RandomAccessFile file) {
+        this.file = file;
+        FileDescriptor d;
+        try {
+            d = file.getFD();
+        } catch (IOException e) {
+            throw new IllegalStateException(e);
+        }
+        descriptor = d;
+    }
+    private ParcelFileDescriptor(FileDescriptor descriptor) {
+        file = null;
+        this.descriptor = descriptor;
+    }
     public static ParcelFileDescriptor open(File f, int mode) throws FileNotFoundException {
         boolean write = (mode & MODE_WRITE_ONLY) != 0;
         if (!write && !f.exists()) throw new FileNotFoundException(f.getPath());
@@ -36,7 +49,6 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
         }
         return new ParcelFileDescriptor(r);
     }
-
     public static int parseMode(String mode) {
         switch (mode) {
             case "r": return MODE_READ_ONLY;
@@ -47,37 +59,55 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
             default: throw new IllegalArgumentException("Bad mode '" + mode + "'");
         }
     }
-
-    public FileDescriptor getFileDescriptor() {
-        try { return file.getFD(); } catch (IOException e) { throw new IllegalStateException(e); }
+    public FileDescriptor getFileDescriptor() { return descriptor; }
+    /** the host's descriptor, which the app's native code reads as on a device */
+    public int getFd() {
+        if (closed) throw new IllegalStateException("Already closed");
+        return snx.android.os.Fds.of(descriptor);
     }
-
-    /** No host descriptor number reaches Java: a positive placeholder. */
-    public int getFd() { return 3; }
-
     public long getStatSize() {
-        try { return file.length(); } catch (IOException e) { return -1; }
-    }
-
-    public RandomAccessFile file() { return file; }
-
-    @Override public void close() throws IOException { if (!detached) file.close(); }
-    /** The caller owns the descriptor from now on: close() leaves it open. */
-    public int detachFd() {
-        if (detached) throw new IllegalStateException("Already detached");
-        detached = true;
-        return getFd();
-    }
-    /** A descriptor of the host, opened again through /proc/self/fd where the host has it. */
-    public static ParcelFileDescriptor fromFd(int fd) throws IOException {
-        File f = new File("/proc/self/fd/" + fd);
-        if (!f.exists()) throw new IOException("snx: no host descriptor " + fd);
-        try {
-            return new ParcelFileDescriptor(new RandomAccessFile(f, "rw"));
-        } catch (FileNotFoundException e) {
-            return new ParcelFileDescriptor(new RandomAccessFile(f, "r"));
+        if (file != null) {
+            try {
+                return file.length();
+            } catch (IOException e) {
+                return -1;
+            }
         }
+        return snx.android.os.Fds.size(snx.android.os.Fds.of(descriptor));
     }
+    /** the RandomAccessFile that opened the file, null for one made of a descriptor */
+    public RandomAccessFile file() { return file; }
+    @Override public void close() throws IOException {
+        if (closed) return;
+        closed = true;
+        if (file != null) file.close();
+        else new java.io.FileInputStream(descriptor).close();
+    }
+    /**
+     * The caller owns the descriptor from now on, and this object is closed: the descriptor given is a duplicate of
+     * this one's, which closes, so that no Java object (nor its cleaner) closes what the caller owns
+     */
+    public int detachFd() {
+        if (closed) throw new IllegalStateException("Already closed");
+        int fd = snx.android.os.Fds.dup(getFd());
+        if (fd < 0) throw new IllegalStateException("snx: cannot duplicate descriptor " + getFd() + ": errno " + -fd);
+        try {
+            close();
+        } catch (IOException e) {
+            // the duplicate is the caller's either way
+        }
+        return fd;
+    }
+    /** A duplicate of a descriptor of the host, which the caller keeps */
+    public static ParcelFileDescriptor fromFd(int fd) throws IOException {
+        int d = snx.android.os.Fds.dup(fd);
+        if (d < 0) throw new IOException("snx: cannot duplicate descriptor " + fd + ": errno " + -d);
+        return new ParcelFileDescriptor(snx.android.os.Fds.wrap(d));
+    }
+    /** A descriptor of the host, which this object owns from now on */
+    public static ParcelFileDescriptor adoptFd(int fd) { return new ParcelFileDescriptor(snx.android.os.Fds.wrap(fd)); }
+    public static ParcelFileDescriptor dup(FileDescriptor orig) throws IOException { return fromFd(snx.android.os.Fds.of(orig)); }
+    public ParcelFileDescriptor dup() throws IOException { return fromFd(getFd()); }
     /** A Java socket gives no descriptor to duplicate, as a socket without one. */
     public static ParcelFileDescriptor fromDatagramSocket(java.net.DatagramSocket datagramSocket) { return null; }
     @Override public int describeContents() { return CONTENTS_FILE_DESCRIPTOR; }
