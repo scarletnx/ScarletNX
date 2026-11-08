@@ -364,7 +364,8 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_storage_lookup COMMAND snx-test-vulkan -H --vk_memory=1 --bench-storage-lookup)
     set_tests_properties(vulkan_storage_lookup PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
-    set_tests_properties(vulkan_headless PROPERTIES TIMEOUT 60
+    # 120 as its variants: the aarch64 runner's lavapipe takes 55 to 58 s for it
+    set_tests_properties(vulkan_headless PROPERTIES TIMEOUT 120
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # the recording thread's own vk_rec_sync must return: the fatal path of a lost device calls it from that thread, and
     # a wait there waits for the thread that runs it (record.c). This one needs no shaders, so it runs on any driver,
