@@ -199,9 +199,10 @@ VkCommandBuffer vk_cmd(void) { return (VkCommandBuffer)(uintptr_t)0xCB; }
 int vk_cmd_ready(void) { abort(); }
 void vk_submit_recorded(void) { abort(); }
 u64 vk_bc7_strip_texels(void) { abort(); }
-int vk_bc7_encode_image(VkCommandBuffer cb, VkImage src, VkImage dst, u32 level, u32 w, u32 h, int is3d, u32 z, u32 nz,
-                        u32 y, u32 rows) {
-    (void)cb, (void)src, (void)dst, (void)level, (void)w, (void)h, (void)is3d, (void)z, (void)nz, (void)y, (void)rows;
+int vk_bc7_encode_image(VkCommandBuffer cb, VkImage src, VkImage dst, u32 level, u32 w, u32 h, u32 d, int is3d, u32 z,
+                        u32 nz, u32 y, u32 rows) {
+    (void)cb, (void)src, (void)dst, (void)level, (void)w, (void)h, (void)d, (void)is3d, (void)z, (void)nz, (void)y,
+        (void)rows;
     abort();
 }
 /* surface.c's, for a storage image over a target, which no case here samples: an unoptimized build keeps the call, and

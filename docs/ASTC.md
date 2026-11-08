@@ -10,6 +10,7 @@
 * [Encoded again as BC7](#encoded-again-as-bc7)
   * [Auto, Exact and BC7](#auto-exact-and-bc7)
   * [Between frames](#between-frames)
+  * [The fast build](#the-fast-build)
 * [Textures bigger than one allocation](#textures-bigger-than-one-allocation)
 * [Sparse textures](#sparse-textures)
 * [Building the shader](#building-the-shader)
@@ -296,6 +297,30 @@ colours meet in a block, noise, and alpha) decoded from ASTC: 39.9 dB over the p
 edges 48.9, noise 34.2, alpha 50.9), 40.4 at 6x6, 46.2 at 8x8 and 45.2 at 12x12. Mode 6 alone gave 27.6 at 4x4,
 its edges 23.5. Noise is what BC7 holds worst: a block of independent texels is a line or two of them at best.
 
+### The fast build
+
+A level of `VK_BC7_FAST_TEXELS` or more takes the encoder's fast build, `bc7_fast_spv` (`SNX_BC7_FAST` 1): a block
+whose mode 6 error is 256 or less (squared, summed over its 16 texels and 4 channels: 2 a channel as a root mean
+square) keeps mode 6, and only the others try every mode, stopping at `SNX_BC7_GOOD_ENOUGH` as the full build does. A
+level of `VK_BC7_MODE6_TEXELS` (8192x8192) or more takes mode 6 alone, `bc7_mode6_spv` (`SNX_BC7_FAST` 2): a game's
+sparse texture of seven mapped 8192x8192 layers took the full encoder 14 seconds on a GeForce RTX 2080, which mode 6
+alone encodes at 1200 megatexels a second. The build goes by the level's size, not the region's (`vk_bc7_build`), so a
+level loaded in pieces, or made BC7 between frames, encodes each block as its whole upload does. Each build's
+pipeline is made the first time a level asks for it.
+
+Mode 6 alone holds gradients but not edges, a second plane or luminance apart from alpha; the threshold keeps most
+of the full build's quality. PSNR over RGBA and the worst channel error:
+
+| Content | Full | Fast build | Mode 6 alone |
+| --- | --- | --- | --- |
+| The picture below: gradients, edges, noise, alpha (`bc7_glsl`) | 51.1, 49.0, 29.0, 48.0 | 43.4, 46.8, 29.0, 47.7 | 43.2, 26.2, 25.2, 40.0 |
+| Random ASTC 4x4, 6x6, 8x8, 12x12 blocks, 256x256 decoded (CPU model) | 48.58, 42.96, 46.23, 44.45 | 48.56, 42.92, 46.19, 44.39 | not measured |
+| One game's ASTC 6x6 textures, 25 (fuddlesworth, RTX 2080) | 53.8 dB / 50 | 50.7 dB / 50 | 46.5 dB / 147 |
+| astcenc's 4x4, 8x8, 12x12 encodings of 7 of them (same) | 46.6, 47.6, 46.4 | 45.9, 46.7, 45.7 | 32.9, 36.2, 38.0 |
+
+On the random blocks 1.3 to 5.9% of the fast build's blocks differ from the full build's, and 90 to 98% of them are
+mode 6.
+
 ## Textures bigger than one allocation
 
 Some drivers fail device memory allocations past 256 MiB even where `maxMemoryAllocationSize` is larger (NVIDIA's on
@@ -379,11 +404,13 @@ separate SPIRV-Tools is needed.
   blocks that lie on a line mode 6 holds and blocks each other mode holds (modes 4 and 5 in each rotation and index
   selection) come back exact, blocks with one channel apart come back closer than the same encoder built without
   modes 4 and 5 brings them (`SNX_BC7_MODES_4_5` 0, `bc7_encode_cpu_without_45`), edenprobe's astcimage picture comes
-  back no worse than the PSNR each region is held to, and a 13x7 image of three slices encodes slice by slice as each
+  back no worse than the PSNR each region is held to (the fast build and mode 6 alone to theirs, the fast build
+  keeping mode 6 on more blocks than the full one, mode 6 alone on all), and a 13x7 image of three slices encodes slice
+  by slice as each
   alone.
   `astc_vulkan` and `astc_vulkan_pieces` also upload random blocks into BC7 images, footprints whose strips step
   4, 2 and 1 block rows, with mips, layers, slices and many strips, and compare the GPU's blocks with the same
-  encoder run on the CPU over the CPU decoder's texels, byte for byte.
+  encoder run on the CPU over the CPU decoder's texels, byte for byte, in the build the level takes (`vk_bc7_build`).
 - `tex_upload_rows` checks what `texture.c` hands `vk_astc_upload`: an ASTC level's block rows, strip by strip,
   against the block-linear layout walked byte by byte, and the bands other formats take past the cap.
 - `vulkan_headless` (`tests/vulkan_astc_later.inc`) holds the BC7 images made between frames to the CPU encoder's

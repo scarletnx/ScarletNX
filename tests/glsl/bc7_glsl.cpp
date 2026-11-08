@@ -52,6 +52,15 @@ static std::vector<glsl::leuvec4> encode_without_45(const std::vector<glsl::leui
     return blocks;
 }
 
+// the same by the build vk/astc.c picks for a level (1 the fast build, 2 mode 6 alone)
+static std::vector<glsl::leuvec4> encode_build(uint32_t build, const std::vector<glsl::leuint>& texels, uint32_t w,
+                                               uint32_t h) {
+    std::vector<glsl::leuvec4> blocks((size_t)((w + 3) / 4) * ((h + 3) / 4));
+    bc7_encode_cpu_build(build, reinterpret_cast<const uint8_t*>(texels.data()), w, h, 1,
+                         reinterpret_cast<uint8_t*>(blocks.data()));
+    return blocks;
+}
+
 // one slice's blocks decoded back to RGBA8 bytes, w x h
 static std::vector<uint8_t> decode(const glsl::leuvec4* blocks, uint32_t w, uint32_t h) {
     std::vector<uint8_t> out((size_t)w * h * 4);
@@ -355,20 +364,44 @@ static void picture_psnr() {
     const auto blocks = encode(texels, 128, 128, 1);
     const auto got = decode(blocks.data(), 128, 128);
     const auto without = decode(encode_without_45(texels, 128, 128).data(), 128, 128);
-    uint32_t modes[8] = {0};
+    const auto fast_blocks = encode_build(1, texels, 128, 128), mode6_blocks = encode_build(2, texels, 128, 128);
+    const auto fast = decode(fast_blocks.data(), 128, 128), mode6 = decode(mode6_blocks.data(), 128, 128);
+    uint32_t modes[8] = {0}, fast_modes[8] = {0}, mode6_modes[8] = {0};
     known_modes(blocks, "picture", modes);
-    std::printf("picture modes: 1 %u, 2 %u, 3 %u, 4 %u, 5 %u, 6 %u, 7 %u\n", modes[1], modes[2], modes[3], modes[4],
-                modes[5], modes[6], modes[7]);
+    known_modes(fast_blocks, "picture in the fast build", fast_modes);
+    known_modes(mode6_blocks, "picture in mode 6 alone", mode6_modes);
+    std::printf("picture modes: 1 %u, 2 %u, 3 %u, 4 %u, 5 %u, 6 %u, 7 %u; the fast build's 6 %u of 1024\n", modes[1],
+                modes[2], modes[3], modes[4], modes[5], modes[6], modes[7], fast_modes[6]);
+    // the fast build keeps mode 6 on the blocks it holds closely, where the full build looks on: on more of them
+    if (fast_modes[6] <= modes[6]) {
+        std::printf("FAIL the fast build keeps mode 6 on %u blocks of the picture, the full build on %u\n",
+                    fast_modes[6], modes[6]);
+        failures++;
+    }
+    if (mode6_modes[6] != 32 * 32) {
+        std::printf("FAIL the build of mode 6 alone wrote %u blocks of the picture in mode 6 of 1024\n",
+                    mode6_modes[6]);
+        failures++;
+    }
     static const struct {
         const char* name;
         uint32_t x0, y0;
-        double floor;
-    } regions[4] = {{"gradients", 0, 0, 50.8}, {"edges", 64, 0, 48.7}, {"noise", 0, 64, 28.7}, {"alpha", 64, 64, 47.6}};
+        double floor, fast_floor, mode6_floor; /* the full build's, the fast build's and mode 6 alone's */
+    } regions[4] = {{"gradients", 0, 0, 50.8, 43.0, 43.0},
+                    {"edges", 64, 0, 48.7, 46.5, 26.0},
+                    {"noise", 0, 64, 28.7, 28.7, 25.0},
+                    {"alpha", 64, 64, 47.6, 47.4, 39.8}};
     for (const auto& r : regions) {
         const double db = psnr(texels, got, 128, r.x0, r.y0, r.x0 + 64, r.y0 + 64);
-        std::printf("%s %s: %.2f dB, at least %.1f (%.2f without modes 4 and 5)\n", db >= r.floor ? "PASS" : "FAIL",
-                    r.name, db, r.floor, psnr(texels, without, 128, r.x0, r.y0, r.x0 + 64, r.y0 + 64));
-        if (db < r.floor) failures++;
+        const double fast_db = psnr(texels, fast, 128, r.x0, r.y0, r.x0 + 64, r.y0 + 64);
+        const double mode6_db = psnr(texels, mode6, 128, r.x0, r.y0, r.x0 + 64, r.y0 + 64);
+        const bool pass = db >= r.floor && fast_db >= r.fast_floor && mode6_db >= r.mode6_floor;
+        std::printf("%s %s: %.2f dB, at least %.1f (%.2f without modes 4 and 5); the fast build %.2f, at least %.1f; "
+                    "mode 6 alone %.2f, at least %.1f\n",
+                    pass ? "PASS" : "FAIL", r.name, db, r.floor,
+                    psnr(texels, without, 128, r.x0, r.y0, r.x0 + 64, r.y0 + 64), fast_db, r.fast_floor, mode6_db,
+                    r.mode6_floor);
+        if (!pass) failures++;
     }
 }
 
