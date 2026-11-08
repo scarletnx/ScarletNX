@@ -49,7 +49,8 @@ uint64_t hle_android_window(int* width, int* height);
 /* bionic's functions that are guest code (hle_code.c): written into the code window once, after bridge_init */
 void hle_code_init(void);
 uint64_t hle_code_symbol(const char* name);
-/* the copies of the host C library's objects that bionic exports (environ, timezone): once, before a lookup */
+/* the copies of the host C library's objects that bionic exports (environ, timezone), and Windows' Winsock started:
+   once, before a lookup */
 void hle_posix_init(void);
 /* the HLE's state that needs the bridge (the stack guard): once, after bridge_init */
 void hle_libc_init(void);

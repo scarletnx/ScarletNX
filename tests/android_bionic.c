@@ -196,18 +196,39 @@ static void test_error_texts(void) {
 /* ---- what the NDK's _FORTIFY_SOURCE calls ---- */
 
 /* send(), recv() and readlink() of a buffer whose size the compiler knows, as __sendto_chk, __recvfrom_chk and
-   __readlink_chk */
+   __readlink_chk: over a TCP connection on loopback, which every host has (Windows has no socketpair) */
 static void test_fortified(void) {
-    int32_t fds[2] = {-1, -1};
-    expect_int("socketpair(AF_UNIX, SOCK_STREAM)", (int64_t)CALL("socketpair", 1, 1, 0, P(fds)), 0);
-    expect_int("__sendto_chk, send's FORTIFY form", (int64_t)CALL("__sendto_chk", I32(fds[0]), P("abc"), 3, 4, 0, 0, 0),
+    /* first, a descriptor that is no socket: ENOTSOCK, Winsock's own error once the HLE has started it */
+    FILE* file = fopen("android_bionic_notsock.txt", "w+b");
+    if (!file) {
+        fprintf(stderr, "android_bionic: cannot write android_bionic_notsock.txt in the working folder\n");
+        exit(1);
+    }
+    expect_int("__sendto_chk on a file", (int64_t)CALL("__sendto_chk", I32(fileno(file)), P("abc"), 3, 4, 0, 0, 0), -1);
+    expect_int("and ENOTSOCK", *hle_errno_location(), 88);
+    fclose(file);
+    remove("android_bionic_notsock.txt");
+
+    /* AF_INET (2), SOCK_STREAM (1), and Linux's sockaddr_in of 127.0.0.1, port 0 */
+    unsigned char address[16] = {2, 0, 0, 0, 127, 0, 0, 1};
+    uint32_t length = sizeof address;
+    int32_t server = (int32_t)CALL("socket", 2, 1, 0), client = (int32_t)CALL("socket", 2, 1, 0);
+    expect_int("bind, listen and getsockname on loopback",
+               (int64_t)CALL("bind", I32(server), P(address), sizeof address) |
+                   (int64_t)CALL("listen", I32(server), 1) |
+                   (int64_t)CALL("getsockname", I32(server), P(address), P(&length)),
+               0);
+    expect_int("connect", (int64_t)CALL("connect", I32(client), P(address), sizeof address), 0);
+    int32_t accepted = (int32_t)CALL("accept", I32(server), 0, 0);
+    expect_int("__sendto_chk, send's FORTIFY form", (int64_t)CALL("__sendto_chk", I32(client), P("abc"), 3, 4, 0, 0, 0),
                3);
     char got[8] = "";
     expect_int("__recvfrom_chk, recv's (MSG_WAITALL)",
-               (int64_t)CALL("__recvfrom_chk", I32(fds[1]), P(got), 3, sizeof got, 0x100, 0, 0), 3);
+               (int64_t)CALL("__recvfrom_chk", I32(accepted), P(got), 3, sizeof got, 0x100, 0, 0), 3);
     expect_text("what came through", got, "abc");
-    CALL("close", I32(fds[0]));
-    CALL("close", I32(fds[1]));
+    CALL("close", I32(accepted));
+    CALL("close", I32(client));
+    CALL("close", I32(server));
     char link[256];
     int64_t n = (int64_t)CALL("__readlink_chk", P("/proc/self/exe"), P(link), sizeof link - 1, sizeof link);
     link[n > 0 ? n : 0] = 0;
@@ -516,6 +537,7 @@ static void test_localhost(void) {
 }
 
 int main(void) {
+    hle_posix_init(); /* as the HLE's first lookup does */
     test_printf_signed();
     test_sscanf_reads_its_pointers();
     test_error_texts();
