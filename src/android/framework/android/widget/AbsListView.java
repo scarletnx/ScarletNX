@@ -210,5 +210,14 @@ public abstract class AbsListView extends AdapterView<ListAdapter> implements Te
     @Override public void onFilterComplete(int count) {}
     @Override public void onGlobalLayout() {}
     @Override public void onTouchModeChanged(boolean isInTouchMode) {}
+    public int getListPaddingTop() { return getPaddingTop(); }
+    public int getListPaddingBottom() { return getPaddingBottom(); }
+    public int getListPaddingLeft() { return getPaddingLeft(); }
+    public int getListPaddingRight() { return getPaddingRight(); }
+    private boolean selectedChildViewEnabled;
+    public boolean isSelectedChildViewEnabled() { return selectedChildViewEnabled; }
+    public void setSelectedChildViewEnabled(boolean selectedChildViewEnabled) { this.selectedChildViewEnabled = selectedChildViewEnabled; }
+    /** lays the children out again: a layout pass does */
+    protected void layoutChildren() { requestLayout(); }
     @Override public CharSequence getAccessibilityClassName() { return AbsListView.class.getName(); }
 }

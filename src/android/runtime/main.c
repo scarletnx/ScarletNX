@@ -19,6 +19,7 @@
 #include "android/hwui/text.h"
 #include "android/res/xml_jni.h"
 #include "android/runtime/app.h"
+#include "android/runtime/fds.h"
 #include "android/runtime/install.h"
 #include "android/runtime/jvm.h"
 #include "common/utilities/common.h"
@@ -52,6 +53,7 @@ static const char usage[] =
     "  --taps=SCRIPT     \"60:300,672 90:...\": a finger down at frame 60 at (300, 672), up 3 frames later\n"
     "  --keys=TEXT       '120:2+3\\n|300:x': text typed from frame 120 on, as key presses (\\n is Enter)\n"
     "  --key-frames=N    The frames between scripted keys, 4 when not given\n"
+    "  --pick=PATH       What the system's file pickers answer: the file, or for a folder picker its folder\n"
     "\n"
     "Diagnostics:\n"
     "  --trace-frames    Each frame the app's windows make, on stderr\n"
@@ -186,7 +188,7 @@ static void run_app(Run* run) {
     if (!android_app_register(env) || !android_xml_register(env) || !android_assets_register(env) ||
         !android_sqlite_register(env) || !android_text_register(env) || !android_image_register(env) ||
         !android_render_register(env) || !android_bridge_register(env) || !android_egl_register(env) ||
-        !android_audio_register(env))
+        !android_audio_register(env) || !android_fds_register(env))
         return;
     jclass main_class = (*env)->FindClass(env, "snx/android/Main");
     jmethodID main = main_class ? (*env)->GetStaticMethodID(env, main_class, "main", "([Ljava/lang/String;)V") : NULL;
@@ -343,6 +345,7 @@ static const struct {
 } java_options[] = {
     {"--headless", "headless"}, {"--trace-frames", "trace_frames"}, {"--taps", "taps"},
     {"--keys", "keys"},         {"--key-frames", "key_frames"},     {"--log-level", "log_level"},
+    {"--pick", "pick"},
 };
 
 static void free_options(char** options, char** owned, size_t owned_count) {
@@ -438,6 +441,11 @@ int snx_android_main(int argc, char** argv) {
         } else {
             apk = argv[i];
         }
+    }
+    /* the frames to save, for the Java side to keep presenting a still window until the last (snx.android.ui.Window) */
+    if (shot && option_count < (size_t)argc) {
+        char* d = snx_format("-Dsnx.android.shot_frames=%s", shot_frames ? shot_frames : "60");
+        if (d) options[option_count++] = owned[owned_count++] = d;
     }
     int status;
     if (!apk) {

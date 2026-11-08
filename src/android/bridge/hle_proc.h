@@ -7,6 +7,7 @@
    (app_process64), of /proc/self, /proc/thread-self and /proc/<the app's pid>. An app's protection reads them, and
    with none (FreeBSD has no /proc by default) or the JVM's (Linux's) an app may go on with a wrong key. Other paths
    are the host's */
+#include <stdbool.h>
 #include <stddef.h>
 
 /* the app's package name, before its native code runs */
@@ -14,6 +15,9 @@ void hle_proc_set_app(const char* package);
 /* the file at path when it is one of these: a host descriptor of a temporary file with its bytes, at offset 0, or
    -1 and errno. -2 for another path, which the caller gives the host */
 int hle_proc_open(const char* path);
+/* whether the file of fd is one of the system libraries' stubs (/system/lib64/libvulkan.so, a copy of one): its
+   library's name into name */
+bool hle_proc_stub_library(int fd, char* name, size_t size);
 /* readlink of the exe link: its length (no NUL written), or -2 for another path */
 long hle_proc_readlink(const char* path, char* buffer, size_t size);
 #endif

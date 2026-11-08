@@ -29,8 +29,21 @@ struct SnxZip {
     char* names;      /* each name, zero-terminated */
 };
 
+/* a seek and a read as one, under the stream's lock: threads read members of one zip at once (an app's resources
+   on one, its assets on another) */
 static bool read_at(FILE* f, uint64_t offset, void* out, size_t size) {
-    return !snx_seek(f, offset) && fread(out, 1, size, f) == size;
+#ifdef _WIN32
+    _lock_file(f);
+#else
+    flockfile(f);
+#endif
+    bool ok = !snx_seek(f, offset) && fread(out, 1, size, f) == size;
+#ifdef _WIN32
+    _unlock_file(f);
+#else
+    funlockfile(f);
+#endif
+    return ok;
 }
 void snx_zip_close(SnxZip* zip) {
     if (!zip) return;
@@ -219,10 +232,10 @@ bool snx_zip_extract(SnxZip* zip, uint32_t index, const char* path, char* error,
     enum { PIECE = 1 << 20 };
     unsigned char* buffer = malloc(PIECE);
     uint32_t crc = 0;
-    bool ok = out && buffer && !snx_seek(zip->file, data);
+    bool ok = out && buffer;
     for (uint32_t left = m->size; ok && left;) {
         size_t n = left < PIECE ? left : PIECE;
-        ok = fread(buffer, 1, n, zip->file) == n && fwrite(buffer, 1, n, out) == n;
+        ok = read_at(zip->file, data + (m->size - left), buffer, n) && fwrite(buffer, 1, n, out) == n;
         crc = libdeflate_crc32(crc, buffer, n);
         left -= (uint32_t)n;
     }

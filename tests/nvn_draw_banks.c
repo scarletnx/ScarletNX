@@ -1253,8 +1253,57 @@ static void test_depth_sample_layouts(void) {
           "zero depth-layout sentinel retains legacy construction and target ABI offsets");
 }
 
+/* the samples-passed counter runs on the console from the start: a report with no ResetCounter before it (one game
+   reports at an address and 16 bytes on, around a depth pass, and draws its colour only when the two differ) turns
+   the renderer's counter on and resets it once, then reports the count; a later report only reports */
+#define SAMPLES_OWNER 0x80000001u
+static struct {
+    NvnDraw q; /* big: not on the stack */
+    u32 on, enables, resets, reports;
+    u64 at;
+} g_samples;
+static void count_samples_enable(u32 owner, int on) {
+    check(owner == SAMPLES_OWNER, "samples_enable for owner %#x, not the queue's %#x", owner, SAMPLES_OWNER);
+    g_samples.on = (u32)on;
+    g_samples.enables++;
+}
+static void count_samples_reset(u32 owner) {
+    check(owner == SAMPLES_OWNER, "samples_reset for owner %#x, not the queue's %#x", owner, SAMPLES_OWNER);
+    g_samples.resets++;
+}
+static int count_samples_report(u32 owner, u64 gva, u32 len, u64 ticks) {
+    check(owner == SAMPLES_OWNER && len == 16, "samples_report for owner %#x of %u bytes", owner, len);
+    (void)ticks;
+    g_samples.at = gva;
+    g_samples.reports++;
+    return 1;
+}
+static void test_samples_without_reset(void) {
+    NvnDraw* q = &g_samples.q; /* all zero, as nvn_draw_init wants it */
+    nvn_draw_init(q, SAMPLES_OWNER);
+    g_none.samples_enable = count_samples_enable;
+    g_none.samples_reset = count_samples_reset;
+    g_none.samples_report = count_samples_report;
+    int first = nvn_draw_samples(q, 0x5000, 7);
+    check(first == 1 && g_samples.on && g_samples.enables == 1 && g_samples.resets == 1 && g_samples.reports == 1 &&
+              g_samples.at == 0x5000,
+          "a report before any reset: returned %d, counter on %u, %u enables, %u resets, %u reports, at %#llx", first,
+          g_samples.on, g_samples.enables, g_samples.resets, g_samples.reports, (unsigned long long)g_samples.at);
+    int second = nvn_draw_samples(q, 0x5010, 8);
+    check(second == 1 && g_samples.enables == 1 && g_samples.resets == 1 && g_samples.reports == 2 &&
+              g_samples.at == 0x5010,
+          "the next report: returned %d, %u enables, %u resets, %u reports, at %#llx", second, g_samples.enables,
+          g_samples.resets, g_samples.reports, (unsigned long long)g_samples.at);
+    nvn_draw_free(q);
+    check(!g_samples.on, "the queue's end turns its counter off");
+    g_none.samples_enable = NULL;
+    g_none.samples_reset = NULL;
+    g_none.samples_report = NULL;
+}
+
 int main(int argc, char** argv) {
     nvn_init();
+    test_samples_without_reset();
     test_compressed_targets();
     test_depth_sample_layouts();
     test_init();

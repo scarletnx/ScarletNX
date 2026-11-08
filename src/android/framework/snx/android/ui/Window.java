@@ -89,6 +89,47 @@ public final class Window {
         }
     }
 
+    /*
+     * A script's frames are presents, and a still window presents nothing: while a tap, a key or a shot is still to
+     * come and the app has no presents of its own, the last frame is presented again at the display's rate, as a
+     * display keeps showing it.
+     */
+    private static volatile long lastPresent;
+    private static final java.util.concurrent.atomic.AtomicBoolean refreshing = new java.util.concurrent.atomic.AtomicBoolean();
+    static {
+        long end = 0;
+        for (long f : tapFrames) end = Math.max(end, f + 3);
+        for (int i = 0; i < keyFrames.length; ++i) end = Math.max(end, keyFrames[i] + 2L * (keyTexts[i].length() + 1) * keyPace);
+        String shots = System.getProperty("snx.android.shot_frames", "");
+        for (String f : shots.split(",")) {
+            try {
+                end = Math.max(end, Long.parseLong(f.trim()));
+            } catch (NumberFormatException e) {
+                // not a frame
+            }
+        }
+        long last = end;
+        if (last > 0 && !headless) {
+            Thread refresher = new Thread(() -> {
+                try {
+                    while (frames < last) {
+                        Thread.sleep(16);
+                        if (appFrames || !open || SystemClock.uptimeMillis() - lastPresent < 16 || !refreshing.compareAndSet(false, true))
+                            continue;
+                        new android.os.Handler(Looper.getMainLooper()).post(() -> {
+                            refreshing.set(false);
+                            if (SystemClock.uptimeMillis() - lastPresent >= 16) Host.refresh();
+                        });
+                    }
+                } catch (InterruptedException e) {
+                    // no more refreshes
+                }
+            }, "snx-refresh");
+            refresher.setDaemon(true);
+            refresher.start();
+        }
+    }
+
     private Window() {}
 
     static synchronized void present(Frame frame) {
@@ -115,6 +156,7 @@ public final class Window {
             nativePresent(frame.width, frame.height, frame.bytes(), frame.size(), info,
                 frame.uploads().toArray(new int[0][]), frame.drawings().toArray(new byte[0][]),
                 android.graphics.Bitmap.takeFreed());
+            lastPresent = SystemClock.uptimeMillis();
             if (!appFrames) {
                 script(++frames);
                 scriptKeys(frames);

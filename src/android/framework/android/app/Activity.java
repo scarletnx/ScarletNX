@@ -78,6 +78,8 @@ public class Activity extends ContextThemeWrapper
         lastNonConfigurationInstance = lastNonConfig;
         window = new Window(this);
         window.setCallback(this);
+        /* the activity makes the views that its factories leave (a FragmentActivity's fragment containers) */
+        window.getLayoutInflater().setPrivateFactory(this);
         window.setWindowManager(wm, null, info.name);
         windowManager = wm;
         if (info.softInputMode != 0) window.setSoftInputMode(info.softInputMode);
@@ -293,6 +295,8 @@ public class Activity extends ContextThemeWrapper
     public final void performActivityResult(int requestCode, int resultCode, Intent data) { onActivityResult(requestCode, resultCode, data); }
     public final void setChangingConfigurations(boolean changing) { changingConfigurations = changing; }
     public final int resultCode() { return resultCode; }
+    /** whether the activity is stopped (not started, or stopped since): the activity manager's view of it */
+    public final boolean stoppedState() { return stopped; }
     public final Intent resultData() { return resultData; }
     public final ActivityInfo activityInfo() { return info; }
 

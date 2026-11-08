@@ -1006,6 +1006,13 @@ static void render_enable(NvnDraw* d, const NvnPRenderCond* r) {
     }
 }
 int nvn_draw_samples(NvnDraw* d, u64 address, u64 ticks) {
+    /* The console's counter always runs, so a report needs no reset first. One game reports at an address and 16 bytes
+       on, around a depth pass, then draws its colour only when the two differ: it never resets */
+    if (!d->samples && g_renderer->samples_enable && g_renderer->samples_reset) {
+        g_renderer->samples_enable(d->ds.owner, 1);
+        g_renderer->samples_reset(d->ds.owner);
+        d->samples = 1;
+    }
     return d->samples && g_renderer->samples_report && g_renderer->samples_report(d->ds.owner, address, 16, ticks);
 }
 

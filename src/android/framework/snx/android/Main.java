@@ -84,7 +84,25 @@ public final class Main {
         System.exit(status);
     }
 
+    /**
+     * The system properties that Android's runtime reports, which apps read to tell Android from a desktop (libGDX
+     * loads its natives with System.loadLibrary when java.runtime.name names the Android Runtime): ART's name and
+     * version, the vendor, the kernel's system, and the CPU of the app's libraries (a 32-bit app on a 64-bit phone is
+     * armv8l). The JDK's own version properties stay, as the JDK reads them.
+     */
+    private static void properties() {
+        System.setProperty("java.runtime.name", "Android Runtime");
+        System.setProperty("java.vm.name", "Dalvik");
+        System.setProperty("java.vm.version", "2.1.0");
+        System.setProperty("java.vendor", "The Android Project");
+        System.setProperty("java.vm.vendor", "The Android Project");
+        System.setProperty("os.name", "Linux");
+        String dir = snx.android.Apk.libraryDir();
+        System.setProperty("os.arch", dir != null && new java.io.File(dir).getName().equals("arm") ? "armv8l" : "aarch64");
+    }
+
     private static void boot() throws Throwable {
+        properties();
         Network.install();
         android.os.Looper.prepareMainLooper();
         android.content.res.Resources res = android.content.res.Resources.getSystem();

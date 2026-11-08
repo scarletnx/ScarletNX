@@ -28,8 +28,9 @@ public class AssetFileDescriptor implements java.io.Closeable {
     @Override public void close() throws IOException { fd.close(); }
 
     public FileInputStream createInputStream() throws IOException {
-        fd.file().seek(start);
-        return new ParcelFileDescriptor.AutoCloseInputStream(fd);
+        ParcelFileDescriptor.AutoCloseInputStream in = new ParcelFileDescriptor.AutoCloseInputStream(fd);
+        in.getChannel().position(start);
+        return in;
     }
 
     public FileOutputStream createOutputStream() throws IOException {

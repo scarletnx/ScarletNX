@@ -558,7 +558,9 @@ static int resident_upload(Surf* t) {
    with its views when the frames that sample them are done. A write of the texture before then (a whole upload or
    pieces, which give it a new wgen) makes the encoder drop what it made and start over behind the others; one whole
    after it is loaded as RGBA8 again, and pieces of it go straight to BC7 while they are a frame's blocks or fewer.
-   A texture whose memory is bound by tiles (resident_image) is made BC7 and loaded straight to it */
+   A texture the game writes more often than the encoder makes its BC7 image is held Exact instead (later_wrote) until
+   it goes unwritten a while (later_cool). A texture whose memory is bound by tiles (resident_image) is made BC7 and
+   loaded straight to it */
 static int is_bc7(VkFormat f) { return f == VK_FORMAT_BC7_UNORM_BLOCK || f == VK_FORMAT_BC7_SRGB_BLOCK; }
 /* the RGBA8 format a BC7 one is decoded to before it is encoded, and back: the same sRGB */
 static VkFormat later_rgba8(VkFormat bc7) {
@@ -592,10 +594,11 @@ static void tex_info(const Surf* t, VkFormat fmt, VkImageCreateInfo* ii, VkViewF
        raw bytes (gpu/vk/msaa.c) */
     vk_view_formats(ii, vf, t->msaa ? vk_raw_format(t->f.bpp) : VK_FORMAT_UNDEFINED);
 }
-/* the textures whose BC7 images the encoder makes, in the order they were loaded, and what it did */
+/* the textures whose BC7 images the encoder makes, in the order they were loaded, and what it did; the textures held
+   Exact for their writes now */
 static struct {
     Surf** q;
-    u32 n, cap;
+    u32 n, cap, hot;
     VkLaterStats stats;
 } g_later;
 /* the BC7 image made so far for t goes once the frames that wrote it are done */
@@ -611,7 +614,8 @@ static void later_drop_image(Surf* t) {
 }
 /* t's RGBA8 image holds what its BC7 one has to, as of its wgen: queued, the encoder starting from its first block */
 static void later_queue(Surf* t) {
-    if (!t->bc7_later || is_bc7(t->f.vk) || t->bc7.queued) return; /* a queued one starts over on its new wgen */
+    /* a queued one starts over on its new wgen */
+    if (!t->bc7_later || t->bc7_hot || is_bc7(t->f.vk) || t->bc7.queued) return;
     if (g_later.n == g_later.cap) {
         u32 cap = g_later.cap ? g_later.cap * 2 : 256;
         Surf** q = realloc(g_later.q, (size_t)cap * sizeof *q);
@@ -637,7 +641,8 @@ static void later_to_back(void) {
     memmove(g_later.q, g_later.q + 1, (size_t)(g_later.n - 1) * sizeof *g_later.q);
     g_later.q[g_later.n - 1] = t;
 }
-void vk_tex_later_forget(Surf* s) {
+/* s out of the queue, and the BC7 image being made for it with it */
+static void later_unqueue(Surf* s) {
     if (!s->bc7.queued) return;
     u32 i = 0;
     while (i < g_later.n && g_later.q[i] != s) i++;
@@ -648,8 +653,53 @@ void vk_tex_later_forget(Surf* s) {
     later_drop_image(s);
     s->bc7.queued = 0;
 }
+void vk_tex_later_forget(Surf* s) {
+    later_unqueue(s);
+    if (s->bc7_hot) g_later.hot--;
+    s->bc7_hot = 0;
+}
+/* the frames the encoder takes to make t's BC7 image, VK_BC7_LATER_BLOCKS blocks a frame */
+static u32 later_frames(const Surf* t) {
+    const int is3d = t->type == VK_IMAGE_VIEW_TYPE_3D;
+    u64 blocks = 0;
+    for (u32 l = 0; l < t->levels; l++) {
+        const u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1;
+        const u32 slices = is3d ? (t->depth3d >> l ? t->depth3d >> l : 1) : t->layers;
+        blocks += (u64)((lw + 3) / 4) * ((lh + 3) / 4) * slices;
+    }
+    return (u32)((blocks + VK_BC7_LATER_BLOCKS - 1) / VK_BC7_LATER_BLOCKS);
+}
+/* written now, t would be written again before the encoder could make its BC7 image and the game sample that a frame:
+   no more frames since its last write than the encoder takes, plus one. A write a frame is one a frame too many for
+   any texture, and one of 32768 blocks or more takes as many frames as it has of them */
+static int later_soon(const Surf* t) { return t->bc7_wrote && g_vk_present + 1 - t->bc7_wrote <= later_frames(t) + 1; }
+/* t, an ASTC texture held as BC7, written (a whole load or pieces, a new wgen): written again soon, it is held Exact,
+   out of the queue: the encoder's work would be dropped at its next write, and pieces of a BC7 image are encoded where
+   the game waits for them */
+static void later_wrote(Surf* t) {
+    if (!t->bc7_later) return;
+    if (!t->bc7_hot && later_soon(t)) {
+        t->bc7_hot = 1;
+        g_later.hot++;
+        g_later.stats.went_hot++;
+        later_unqueue(t);
+    }
+    t->bc7_wrote = g_vk_present + 1;
+}
+/* t used: held Exact for its writes and unwritten since for four times the frames its encode takes, plus one, and a
+   second at 30 fps at least, it is read more than written: queued to be made BC7 again */
+static void later_cool(Surf* t) {
+    if (!t->bc7_hot) return;
+    const u32 quiet = 4 * (later_frames(t) + 1);
+    if (g_vk_present + 1 - t->bc7_wrote < (quiet > 30 ? quiet : 30)) return;
+    t->bc7_hot = 0;
+    g_later.hot--;
+    g_later.stats.cooled++;
+    later_queue(t);
+}
 void vk_tex_later_stats(VkLaterStats* s) {
     *s = g_later.stats;
+    s->hot = g_later.hot;
     s->waiting = g_later.n;
     s->waiting_bytes = 0;
     for (u32 i = 0; i < g_later.n; i++) s->waiting_bytes += g_later.q[i]->bytes;
@@ -830,6 +880,7 @@ static int tex_upload_(Surf* t) {
     SNX_ZONE_VALUE(z_up, t->size);
     g_tex_loads.uploads++;
     if (!t->bricks) g_tex_loads.bytes += t->size; /* a brick at a time for the others */
+    if (t->upload_valid || !t->bc7_wrote) later_wrote(t); /* the first load, or a write: not a failed one tried again */
     t->upload_valid = 0;
     t->wgen = vk_surf_gen(); /* even a new texture at a reused address invalidates an old target's copy */
     t->took_drawn = 0;       /* memory's own texels again, until tex_take_drawn copies targets in */
@@ -1566,9 +1617,11 @@ static int tex_patch_range(Upload* u, u64 a, u64 b) {
     return 1;
 }
 /* pieces of sum bytes of t, an ASTC texture whose BC7 image the encoder made: more BC7 blocks than it encodes in a
-   frame (vk_tex_later_frame), which would hold the game as long, load whole as RGBA8 */
+   frame (vk_tex_later_frame), which would hold the game as long, or of a texture written soon again (later_soon),
+   which is held Exact from now on, load whole as RGBA8 */
 static int later_pieces_whole(const Surf* t, u64 sum) {
-    return t->bc7_later && is_bc7(t->f.vk) && sum / 16 * t->f.bw * t->f.bh / 16 > VK_BC7_LATER_BLOCKS;
+    return t->bc7_later && is_bc7(t->f.vk) &&
+           (t->bc7_hot || later_soon(t) || sum / 16 * t->f.bw * t->f.bh / 16 > VK_BC7_LATER_BLOCKS);
 }
 /* the pieces p of t loaded again into its image; all of it when they are more than half of it (a whole upload reads
    at most twice their bytes, in fewer moves), when render targets' pixels were copied into it (tex_take_drawn),
@@ -1619,6 +1672,7 @@ static int tex_patch(Surf* t, const TexPieces* p) {
     }
     SNX_ZONE_V(z, "texture pieces", sum);
     g_tex_loads.uploads++;
+    later_wrote(t);
     t->wgen = vk_surf_gen(); /* an image that changed, as an upload's */
     t->hash = 0;             /* no longer the image's: a check by contents loads all of it */
     VkCommandBuffer cb = vk_cmd();
@@ -1750,6 +1804,7 @@ static void tex_settle(Surf* t, u64 gva, int changed, int count) {
    upload failed. gva is its address */
 static Surf* tex_check(Surf* t, u64 gva) {
     vk_surf_touch(t);
+    later_cool(t);
     /* an upload that ran out of memory or staging (here, or a re-upload below) is tried again once a frame. A
        texture is only returned whole */
     if (!t->upload_valid) {
@@ -1950,6 +2005,19 @@ static Surf* tex_from_tic(const u32* tic, int raw, int storage) {
         /* a header of another texel size covers other memory than the target's pixels (depth is read through its
            own aspect, whatever the host format's size) */
         if (f.bpp == rt->f.bpp || f.depth || rt->f.depth) {
+            /* A smaller header is a corner of the target only where its pixels lie at the same bytes (dynamic
+               resolution). One laid out otherwise is another texture in memory the target once had, which it doesn't
+               read, and which neither keeps the target alive nor loads it again. One game's 256x1 ramp, at the address
+               of a 2048x4096 depth target gone by, took that target's corner, and its sky stayed white until it was
+               started again */
+            if (!rt->msaa && (rt->w != w || rt->h != h) && !vk_rt_same_layout(rt, w, h, bl, bh, pitch)) {
+                LOG_LIMIT(
+                    30,
+                    "vulkan: a %ux%u texture (%u bytes a texel, depth %d) at the address of the %ux%u render target "
+                    "at %llx (%u bytes a pixel, depth %d) isn't laid out as it is: loaded from memory\n",
+                    w, h, f.bpp, f.depth, rt->w, rt->h, (unsigned long long)gva, rt->f.bpp, rt->f.depth);
+                goto texture_from_memory;
+            }
             vk_rt_note_read(rt);
             if (rt->layout == VK_IMAGE_LAYOUT_UNDEFINED) goto texture_from_memory;
             /* Crops are sampling snapshots, without storage usage or a guest layout for publishing writes: a
@@ -2163,6 +2231,55 @@ VkImageView vk_null_view(VkImageViewType type, int num, int ms) {
     VkComponentMapping id = {0};
     views[ms][type][num] = vk_tex_view(s, type, 0, &id, 0);
     return views[ms][type][num];
+}
+
+Surf* vk_null_storage(VkImageViewType type, int kind, VkImageView* view) {
+    /* a 2D image for the 2D and 2D array views, a 3D one for the 3D view; by kind, the format of the program's image
+       (shader.h ShaderInfo.img): 0 float, 1 an atomic's R32ui, 2 unsigned, 3 signed */
+    static Surf* imgs[2][4];
+    static const VkFormat fm[4] = {VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32_UINT, VK_FORMAT_R32_UINT, VK_FORMAT_R32_SINT};
+    *view = VK_NULL_HANDLE;
+    if (kind < 0 || kind > 3 ||
+        (type != VK_IMAGE_VIEW_TYPE_2D && type != VK_IMAGE_VIEW_TYPE_2D_ARRAY && type != VK_IMAGE_VIEW_TYPE_3D))
+        return NULL;
+    int is3d = type == VK_IMAGE_VIEW_TYPE_3D;
+    Surf* s = imgs[is3d][kind];
+    if (!s) {
+        s = calloc(1, sizeof *s);
+        if (!s) return NULL;
+        s->w = s->h = s->sw = s->sh = s->levels = s->depth3d = s->layers = 1;
+        s->msaa = DS_MSAA_1X1;
+        s->type = is3d ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+        s->f = (VkFmt){.vk = fm[kind], .bpp = 4, .bw = 1, .bh = 1, .is_int = kind != 0, .sint = kind == 3};
+        s->storage_capable = 1;
+        s->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                .imageType = is3d ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D,
+                                .format = fm[kind],
+                                .extent = {1, 1, 1},
+                                .mipLevels = 1,
+                                .arrayLayers = 1,
+                                .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+        VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        if (!VK_OK(vmaCreateImage(g_vk.vma, &ii, &aci, &s->img, &s->mem, NULL))) {
+            free(s);
+            return NULL;
+        }
+        vk_mem_track(s->mem);
+        vk_render_end(); /* clears happen outside rendering passes */
+        VkCommandBuffer cb = vk_cmd();
+        vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VkClearColorValue z = {{0, 0, 0, 0}};
+        rec_CmdClearColorImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &z, 1, &all);
+        imgs[is3d][kind] = s;
+    }
+    *view = vk_tex_storage_view(s, type);
+    return *view ? s : NULL;
 }
 
 /* ------------------------------------------------------------ samplers */

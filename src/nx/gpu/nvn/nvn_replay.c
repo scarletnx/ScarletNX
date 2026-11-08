@@ -247,10 +247,10 @@ static void replay(void* ctx, u32 op, u64 payload, u32 size) {
         case OP_REPORT_COUNTER: {
             /* {counter, timestamp}, written in order with the stream, as the 3D engine's reports are (a render enable
                later in the same submission reads it, maxwell/engines.c): samples passed as the renderer counts the
-               queue's draws since its reset, else a made-up count, so an occlusion test before any reset finds
-               something drawn; the timestamp types put 0 in the counter, as the game's driver writes them (a report
-               of payload 0). One game makes each conditional clear of a target run once a frame that way: it sets the
-               counter to 1, clears when it differs from the word 16 bytes on, and then reports a timestamp over it */
+               queue's draws, else a made-up count where it can't count; the timestamp types put 0 in the counter, as
+               the game's driver writes them (a report of payload 0). One game makes each conditional clear of a target
+               run once a frame that way: it sets the counter to 1, clears when it differs from the word 16 bytes on,
+               and then reports a timestamp over it */
             const NvnPReportCounter* r = NVN_OBJ(const NvnPReportCounter, payload);
             u8 v[16];
             u64 ticks = guest_ticks();

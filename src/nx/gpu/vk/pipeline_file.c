@@ -101,7 +101,7 @@ static void* pf_check_worker(void* arg) {
 /* the threads that check or unpack a file at once: at most two during background preparation, leaving the guest and
    pipeline workers CPU time */
 static int pf_workers(void) {
-    int ids[8], n = plat_cpus(ids, 8);
+    int n = plat_cpu_count();
     if (n > 8) n = 8;
     if (g_settings.prepare_shaders != 2 && n > 2) n = 2;
     return n;

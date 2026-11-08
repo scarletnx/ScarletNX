@@ -31,7 +31,25 @@ public final class Providers {
         }
     }
 
+    /** the system's providers that an app reaches (the shared storage's documents), made when first asked for */
+    private static ContentProvider system(String authority) {
+        if (!snx.android.provider.ExternalStorageProvider.AUTHORITY.equals(authority)) return null;
+        android.content.pm.ProviderInfo info = new android.content.pm.ProviderInfo();
+        info.authority = authority;
+        info.packageName = "com.android.externalstorage";
+        info.name = snx.android.provider.ExternalStorageProvider.class.getName();
+        info.exported = true;
+        info.grantUriPermissions = true;
+        ContentProvider p = new snx.android.provider.ExternalStorageProvider();
+        p.attachInfo(App.application(), info);
+        byAuthority.put(authority, p);
+        return p;
+    }
+
     static ContentProvider get(String authority) {
-        synchronized (byAuthority) { return byAuthority.get(authority); }
+        synchronized (byAuthority) {
+            ContentProvider p = byAuthority.get(authority);
+            return p != null ? p : system(authority);
+        }
     }
 }

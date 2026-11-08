@@ -250,8 +250,8 @@ static int direct_can_reach(const u64* insn, u32 n, u32 from, u32 use) {
             if (!op) return -1;
             switch (op->id) {
                 /* Lanes that do not take a conditional exit keep their register definitions. */
-                case O_EXIT: fall = !flow_always(insn[k]); break;
-                case O_KIL:
+                case O_EXIT:
+                case O_KIL: fall = !flow_always(insn[k]); break;
                 case O_RET:
                 case O_PRET:
                 case O_PEXIT: fall = 0; break;
@@ -518,8 +518,8 @@ static u64 direct_reaching_writes(const u64* insn, u32 n, u32 use, u32 reg, u32*
             while (d < *ndefs && defs[d] < k) d++;
             if (d < *ndefs && defs[d] == k) out = (B(insn[k], 16, 4) == 7 ? 0 : out) | 1ull << d;
             switch (op->id) {
-                case O_EXIT: fall = !flow_always(insn[k]); break;
-                case O_KIL:
+                case O_EXIT:
+                case O_KIL: fall = !flow_always(insn[k]); break;
                 case O_RET:
                 case O_PRET:
                 case O_PEXIT:

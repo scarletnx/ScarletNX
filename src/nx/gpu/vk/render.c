@@ -1247,9 +1247,14 @@ VkImageView vk_storage_image_view(Surf* t, const ShaderInfo* si, int i, u64* byt
                   : !vk_format_storage_write(t->f.vk) || kind != (t->f.is_int ? t->f.sint ? 3 : 2 : 0))
         return VK_NULL_HANDLE;
     /* a 2D array surface sees every layer of the image, a single layer one too */
-    return vk_tex_storage_view(t, volume                 ? VK_IMAGE_VIEW_TYPE_3D
-                                  : si->img[i].type == 4 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
-                                                         : VK_IMAGE_VIEW_TYPE_2D);
+    return vk_tex_storage_view(t, vk_storage_image_type(si, i));
+}
+VkImageViewType vk_storage_image_type(const ShaderInfo* si, int i) {
+    /* the program's dimension (SUST's: 0 1D, 2 1D array, 3 2D, 4 2D array, 5 3D), a 1D one declared as 2D */
+    u32 type = si->img[i].type;
+    return type == 5                ? VK_IMAGE_VIEW_TYPE_3D
+           : type == 2 || type == 4 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
+                                    : VK_IMAGE_VIEW_TYPE_2D;
 }
 
 u32 vk_gbuf_desc(int stage, u32 off, const u32* v, u64* addr) {
@@ -2298,6 +2303,10 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                                             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                             .pImageInfo = &d.ii[b]};
     }
+    static const VkPipelineStageFlags2 image_stages[5] = {
+        VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT, VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT,
+        VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT, VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT,
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT};
     for (int i = 0; i < s->si.nimg; i++) {
         const u32 bank = s->si.img[i].bindless ? s->si.img[i].bl_cbuf : tcb;
         u64 cba = bank < 18 ? ds->bind.cb_addr[stage][bank] : 0;
@@ -2309,6 +2318,23 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         int kind = s->si.img[i].kind;
         if (s->si.img[i].type == 1) {
             if (!dw_buffer_image(&d, set, stage, i, tic, kind, handle)) return VK_NULL_HANDLE;
+            continue;
+        }
+        /* a slot with nothing bound (an empty header): an empty image, which nothing writes back, as a dispatch
+           takes one (compute.c's vk_dispatch), where the draw was skipped */
+        VkImageView null_view = VK_NULL_HANDLE;
+        Surf* null_image =
+            vk_tic_empty(tic) ? vk_null_storage(vk_storage_image_type(&s->si, i), kind, &null_view) : NULL;
+        if (null_image) {
+            vk_surf_use(vk_cmd(), null_image, VK_IMAGE_LAYOUT_GENERAL, image_stages[stage], VK_STORAGE_IMAGE_ACCESS);
+            u32 binding = SNX_VKB_IMG + (u32)i;
+            d.ii[binding] = (VkDescriptorImageInfo){VK_NULL_HANDLE, null_view, VK_IMAGE_LAYOUT_GENERAL};
+            d.w[d.n++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                                .dstSet = set,
+                                                .dstBinding = binding,
+                                                .descriptorCount = 1,
+                                                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                .pImageInfo = &d.ii[binding]};
             continue;
         }
         Surf* surf = vk_tex_from_tic_storage(tic);
@@ -2353,10 +2379,6 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         images->surf[images->n] = surf;
         images->size[images->n] = (u32)size;
         images->n++;
-        static const VkPipelineStageFlags2 image_stages[5] = {
-            VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT, VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT,
-            VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT, VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT};
         vk_surf_use(vk_cmd(), surf, VK_IMAGE_LAYOUT_GENERAL, image_stages[stage], VK_STORAGE_IMAGE_ACCESS);
         u32 binding = SNX_VKB_IMG + (u32)i;
         d.ii[binding] = (VkDescriptorImageInfo){VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};

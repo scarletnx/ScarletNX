@@ -1342,6 +1342,11 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "%s: recompile_background = %s is now background_recompile = %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "Recent Games not kept: %s could not be written."
 msgstr ""
 
@@ -2418,7 +2423,7 @@ msgid "Background recompile"
 msgstr ""
 
 #: src/gui/main.c
-msgid "The Compile tab's: R's, B's and a game's first. Full: every core. Gentle: half of them, at a low priority. Either goes gently while a game plays"
+msgid "The Compile tab's: R's, B's and a game's first. Auto: Gentle on battery, Full on the charger. Full: every core. Gentle: half of them, at a low priority. Each goes gently while a game plays"
 msgstr ""
 
 #: src/gui/main.c
@@ -2477,6 +2482,10 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "Auto: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Gentle, on battery"
 msgstr ""
 
 #: src/gui/main.c
@@ -4112,6 +4121,16 @@ msgid "%s: its own games alone are listed, not its subfolders'"
 msgstr ""
 
 #: src/gui/main.c
+msgid "View Progress"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Mods"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "%s has no folder to open"
 msgstr ""
@@ -4678,12 +4697,6 @@ msgstr ""
 #: src/gui/main.c
 #, snx-key
 msgid "M"
-msgstr ""
-
-#. A key of the foot's sentences, which a click finds by this word
-#: src/gui/main.c
-#, snx-key
-msgid "Mods"
 msgstr ""
 
 #. A key of the foot's sentences, which a click finds by this word
@@ -5546,6 +5559,18 @@ msgstr ""
 
 #: src/common/utilities/setup.c
 msgid "<id>.<driver>.vkshaders, .vkshipped and vk_pipelines.<driver>.bin, started from those"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "The launcher's Background recompile"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "recompile_background = in app.ini, full or gentle"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "background_recompile =, Auto by default: Gentle on battery, Full on the charger"
 msgstr ""
 
 #: src/nx/runtime/settings.txt

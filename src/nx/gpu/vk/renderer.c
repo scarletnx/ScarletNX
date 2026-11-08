@@ -668,12 +668,14 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                         (unsigned long long)(bc7_rgba8 >> 20), (unsigned long long)vk_astc_dispatches());
                 VkLaterStats later;
                 vk_tex_later_stats(&later);
-                if (later.made || later.waiting || later.restarted)
+                if (later.made || later.waiting || later.restarted || later.went_hot)
                     LOG("vulkan: %llu ASTC textures made BC7 between frames (%llu MB of RGBA8 freed, %llu blocks "
-                        "encoded, %llu encodes started over for a write); %u waiting, %llu MB as RGBA8\n",
+                        "encoded, %llu encodes started over for a write); %u waiting, %llu MB as RGBA8; %u held "
+                        "Exact for their writes (%llu went so, %llu made BC7 again)\n",
                         (unsigned long long)later.made, (unsigned long long)(later.freed >> 20),
                         (unsigned long long)later.blocks, (unsigned long long)later.restarted, later.waiting,
-                        (unsigned long long)(later.waiting_bytes >> 20));
+                        (unsigned long long)(later.waiting_bytes >> 20), later.hot, (unsigned long long)later.went_hot,
+                        (unsigned long long)later.cooled);
                 u64 early_made, early_hits, early_left;
                 vk_pipeline_prewarm_stats(&early_made, &early_hits, &early_left);
                 if (early_made || early_left)

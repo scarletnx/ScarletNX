@@ -1158,6 +1158,7 @@ static void emit_invoke(Method* m, uint32_t pc, const Insn* in, const uint32_t* 
     unsigned reg = 0, arg_slots = 0;
     uint32_t uninit = K_TOP;
     char* redirect = NULL; /* the synthetic constructor a call goes to instead */
+    bool clone_helper = false; /* Object.clone of a receiver the JVM's verifier would refuse it on */
     if (!is_static) {
         if (!in->argc) {
             fail(m, "an invoke with no receiver at %u", (unsigned)pc);
@@ -1183,6 +1184,22 @@ static void emit_invoke(Method* m, uint32_t pc, const Insn* in, const uint32_t* 
             }
             op1(m, J_ALOAD_0, 1);
             uninit = k;
+        } else if (op == 0x6e && !strcmp(owner, "Ljava/lang/Object;") && !strcmp(name, "clone") &&
+                   !strcmp(desc, "()Ljava/lang/Object;")) {
+            /* Object.clone, protected: the JVM allows it of another class's object only on an array, whose clone is
+               public, and ART allows it on any array (R8 rebinds an array's clone to Object's). An array's clone
+               is called on its array type; a receiver whose type is not known to be the caller's class goes to
+               Runtime.cloneObject */
+            load(m, s, V_A, self);
+            const char* t = type_of(m, k);
+            if (t && t[0] == '[') {
+                checkcast(m, t);
+                owner = t;
+            } else if (!t || t[0] != 'L' || !program_subclass(m->program, t, m->class_desc)) {
+                clone_helper = true;
+            } else {
+                checkcast(m, t);
+            }
         } else {
             load(m, s, V_A, self);
             checkcast(m, op == 0x6f ? m->class_desc : op == 0x72 ? owner : receiver_type(m, k, owner));
@@ -1226,6 +1243,22 @@ static void emit_invoke(Method* m, uint32_t pc, const Insn* in, const uint32_t* 
         desc = to;
         owner = remap->to_owner;
         name = remap->to_name;
+        jop = J_INVOKESTATIC;
+        tag = CF_METHODREF;
+    }
+    if (clone_helper) {
+        static const char helper[] = "(Ljava/lang/Object;)Ljava/lang/Object;";
+        char* to = malloc(sizeof helper);
+        if (!to) {
+            fail(m, "out of memory");
+            free(desc);
+            return;
+        }
+        memcpy(to, helper, sizeof helper);
+        free(desc);
+        desc = to;
+        owner = "Lsnx/dalvik/Runtime;";
+        name = "cloneObject";
         jop = J_INVOKESTATIC;
         tag = CF_METHODREF;
     }

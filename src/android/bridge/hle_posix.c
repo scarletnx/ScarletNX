@@ -393,6 +393,17 @@ static uint64_t guest_flags(int host) {
 #endif
 }
 #endif
+/* open of the host with Linux's error for a link that O_NOFOLLOW refuses: ELOOP. FreeBSD and DragonFly give EMLINK
+   there, and NetBSD EFTYPE */
+static int open_host(const char* path, int flags, int mode) {
+    int fd = open(path, flags, mode);
+#if defined(__FreeBSD__) || defined(__DragonFly__)
+    if (fd < 0 && errno == EMLINK && (flags & O_NOFOLLOW)) errno = ELOOP;
+#elif defined(__NetBSD__)
+    if (fd < 0 && errno == EFTYPE && (flags & O_NOFOLLOW)) errno = ELOOP;
+#endif
+    return fd;
+}
 static void g_open(CPU* c, void* data) {
     (void)data;
     int own = hle_proc_open(STR(0));
@@ -400,7 +411,7 @@ static void g_open(CPU* c, void* data) {
         X(0) = wide_int(own);
         return;
     }
-    X(0) = wide_int(open(STR(0), open_flags(X(1)), (int)X(2)));
+    X(0) = wide_int(open_host(STR(0), open_flags(X(1)), (int)X(2)));
 }
 static void g_open_2(CPU* c, void* data) {
     (void)data;
@@ -409,7 +420,7 @@ static void g_open_2(CPU* c, void* data) {
         X(0) = wide_int(own);
         return;
     }
-    X(0) = wide_int(open(STR(0), open_flags(X(1))));
+    X(0) = wide_int(open_host(STR(0), open_flags(X(1)), 0));
 }
 
 /* fcntl: Linux's commands. F_DUPFD to F_SETFL are 0 to 4 on every POSIX host */
@@ -1998,8 +2009,42 @@ static void kernel_result(CPU* c, long number, unsigned first) {
     }
     X(0) = (uint64_t)(int64_t)r;
 }
+/* memfd_create(name, flags): an anonymous file of the host's, Linux's own there and an unlinked temporary file
+   elsewhere (MFD_CLOEXEC, 1, kept; sealing and huge pages are not). The descriptor, or -1 with the host's errno,
+   which the end of the call takes */
+static int host_memfd(const char* name, uint64_t flags) {
+#if defined(__linux__)
+    return memfd_create(name ? name : "", (flags & 1) ? MFD_CLOEXEC : 0);
+#elif defined(_WIN32)
+    (void)name;
+    (void)flags;
+    errno = ENOSYS;
+    return -1;
+#else
+    (void)name;
+    FILE* f = tmpfile();
+    if (!f) return -1;
+    int fd = dup(fileno(f));
+    int error = errno;
+    fclose(f);
+    if (fd < 0) {
+        errno = error;
+        return -1;
+    }
+    if (flags & 1) fcntl(fd, F_SETFD, FD_CLOEXEC);
+    return fd;
+#endif
+}
+static void g_memfd_create(CPU* c, void* data) {
+    (void)data;
+    X(0) = wide_int(host_memfd(X(0) ? STR(0) : NULL, X(1)));
+}
 static void g_syscall(CPU* c, void* data) {
     (void)data;
+    if (X(0) == 279) { /* memfd_create: a descriptor of the host's, as the app's other files are */
+        X(0) = wide_int(host_memfd(X(1) ? (const char*)(uintptr_t)X(1) : NULL, X(2)));
+        return;
+    }
     kernel_result(c, (long)X(0), 1);
 }
 /* a bionic function that is the system call in data, with its arguments */
@@ -2167,6 +2212,7 @@ const HleSymbol hle_posix[] = {
     A(signalfd, refused),
 #endif
     A(syscall, g_syscall),
+    A(memfd_create, g_memfd_create),
     {"tzname", NULL, g_posix.zone_names},
     {"timezone", NULL, &g_posix.timezone_},
     {"daylight", NULL, &g_posix.daylight_},

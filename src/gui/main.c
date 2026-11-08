@@ -127,7 +127,16 @@ typedef enum {
     GUI_CHOICES_PICKS
 } GuiChoicesOf;
 /* whose few choices the picks box shows (picks_open) */
-typedef enum { GUI_PICKS_SHARE, GUI_PICKS_FOLDER, GUI_PICKS_DRIVER, GUI_PICKS_ASSET, GUI_PICKS_THEME } GuiPicksOf;
+typedef enum {
+    GUI_PICKS_SHARE,
+    GUI_PICKS_FOLDER,
+    GUI_PICKS_DRIVER,
+    GUI_PICKS_ASSET,
+    GUI_PICKS_THEME,
+    GUI_PICKS_GAME
+} GuiPicksOf;
+/* a finger held this long on a game of Games without moving opens its box (game_box_open), as a right click does */
+#define GUI_HOLD_MS     500
 #define GUI_THEME_PICKS 64 /* the themes the box of themes lists at most, built-ins first */
 /* the lists whose first row App's firsts keeps between frames: Choices' a GuiChoicesOf each, then the others */
 enum {
@@ -233,7 +242,7 @@ typedef struct {
 } GuiDumpIcons;
 /* the App screen's values, as its rows show them, and Folders' (what each row's folder is, past its path) */
 typedef struct {
-    char theme[64], text[64], language[64], animations[16], side[16], background[16], places[48], moves[32];
+    char theme[64], text[64], language[64], animations[16], side[16], background[48], places[48], moves[32];
     char drivers[64], freedreno[32];
     char folder[GUI_FOLDER_ROWS][64];
 } GuiAppForm;
@@ -410,12 +419,17 @@ typedef struct App {
     char* job_log;      /* where the running one's output goes, beside run_log; NULL keeps none */
     GuiUsage job_usage; /* its tree alone */
     bool job_aborting;
-    bool job_low;      /* its priority lowered: Background recompile Gentle, or a game playing */
+    bool job_low;      /* its priority lowered: Background recompile Gentle, Auto on battery, or a game playing */
     bool job_kept_low; /* the system refused to raise it again: low until it ends, job_said says why */
     char job_said[160];
     int job_threads;        /* the threads it was started with: 0 for the driver's own count (the AOT threads') */
     int queue_focus;        /* the Compile tab's row, a job of the queue */
-    bool background_gentle; /* app.ini's recompile_background = gentle: every recompile of the queue is */
+    int background_mode; /* app.ini's background_recompile: GUI_BACKGROUND_AUTO (Gentle on battery), FULL or GENTLE */
+    /* the host on its battery, as SDL said it at power_ms (asked again 5 s on, not each frame); power_test, a test's: 1
+       on its battery, -1 on its charger, 0 as SDL says */
+    bool power_battery;
+    Uint64 power_ms;
+    int power_test;
     /* the taskbar's progress as SDL was last given it, the value in percent: none until a recompile runs. What SDL
        said when it could not be shown, "" when it was */
     int taskbar_state, taskbar_value;
@@ -640,6 +654,7 @@ typedef struct App {
     char* games_key;     /* [folders] games = as app.ini had it, recompiled = before it was named so: written again */
     char* text_size_key; /* [app] text_size = as app.ini had it, ui_scale = before it was named so: written again */
     char* scale_gone;    /* [app] ui_scale = or text_size = Auto or a part of it, "ui_scale = auto": written again */
+    char* background_key; /* [app] recompile_background = as app.ini had it: written again as background_recompile */
     bool scale_new;      /* no UI scale in app.ini as the start read it: the start's, written by setup_start */
     GuiCleaned cleaned;  /* what it did, in a box over the screen while cleaned_shown, until a key closes it */
     bool cleaned_shown;
@@ -714,6 +729,11 @@ typedef struct App {
     int pick_row; /* the Folders row the box is of */
     /* the box of themes (themes_open): each theme's name in app->themes' order, and the one shown as it opened */
     const char* theme_picks[GUI_THEME_PICKS + 1];
+    const char* game_picks[6]; /* the box of the game in focus on Games (game_box_open): its actions */
+    /* a finger down on Games: when, 0 for none, and whether it was held long enough to open the game's box, which its
+       lift then does not tap */
+    Uint64 hold_ms;
+    bool hold_fired;
     char theme_names[GUI_THEME_PICKS][64];
     char theme_was[64], theme_was_name[64];
     bool (*open_url)(const char* url); /* SDL_OpenURL, which a test takes the place of (show_folder) */
@@ -1352,9 +1372,22 @@ static const char* const place_labels[GUI_PLACES] = {SNX_TR_NOOP("Data"), SNX_TR
 /* side_box's words in app.ini, GuiSide's order, and as Settings > App shows them */
 static const char* const side_words[] = {"auto", "on", "off"};
 static const char* const side_names[] = {SNX_TR_NOOP("Auto"), SNX_TR_NOOP("On"), SNX_TR_NOOP("Off")};
-/* recompile_background's, full its default: the queue's recompiles at full speed, or gentle (job_gentle) */
-static const char* const background_words[] = {"full", "gentle"};
-static const char* const background_names[] = {SNX_TR_NOOP("Full"), SNX_TR_NOOP("Gentle")};
+/* background_recompile's, auto its default: the queue's recompiles gentle on battery and at full speed on the charger,
+   always at full speed, or always gentle (job_gentle) */
+enum { GUI_BACKGROUND_AUTO, GUI_BACKGROUND_FULL, GUI_BACKGROUND_GENTLE };
+static const char* const background_words[] = {"auto", "full", "gentle"};
+static const char* const background_names[] = {SNX_TR_NOOP("Auto"), SNX_TR_NOOP("Full"), SNX_TR_NOOP("Gentle")};
+/* a word of background_words, its index; -1 for none */
+static int background_word(const char* value) {
+    for (int w = 0; w < 3; ++w)
+        if (!strcmp(value, background_words[w])) return w;
+    return -1;
+}
+/* recompile_background's word, which background_recompile replaced: full, the default every app.ini wrote, is Auto;
+   gentle is Gentle; -1 for another */
+static int background_old(const char* value) {
+    return !strcmp(value, "full") ? GUI_BACKGROUND_AUTO : !strcmp(value, "gentle") ? GUI_BACKGROUND_GENTLE : -1;
+}
 /* the UI scales older versions had besides 1 to 4, as their app.ini named them, Auto and its parts: read as the
    number a start takes on that screen, said once (docs/DEPRECATIONS.md) */
 static const char* const scale_words_gone[] = {"auto", "0.25", "0.5", "0.75"};
@@ -1418,7 +1451,7 @@ static int app_write(App* app) {
                   app->language ? snx_gui_languages[app->language - 1].code : "auto");
     n += snprintf(text + n, size - (size_t)n, "animations = %d\n", !app->animations_off);
     n += snprintf(text + n, size - (size_t)n, "side_box = %s\n", side_words[app->side_box]);
-    n += snprintf(text + n, size - (size_t)n, "recompile_background = %s\n", background_words[app->background_gentle]);
+    n += snprintf(text + n, size - (size_t)n, "background_recompile = %s\n", background_words[app->background_mode]);
     n += snprintf(text + n, size - (size_t)n, "dumps_subfolders = %s\n", app->dumps_shallow ? "off" : "on");
     n += snprintf(text + n, size - (size_t)n, "dumps_main = %s\n", app->dumps_off ? "off" : "on");
     n += snprintf(text + n, size - (size_t)n, "recompiled_main = %s\n", app->recompiled_off ? "off" : "on");
@@ -1493,7 +1526,8 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
     const char* const* dirs = (const char* const*)app->themes_dirs;
     int scale = app->menu.text_size, language = app->language, n = 0, count = 0, moved = 0;
     int options[GUI_OPTIONS];
-    bool still = app->animations_off, gentle = app->background_gentle, kept, scale_read = false;
+    bool still = app->animations_off, kept_new = false, scale_read = false;
+    int background = app->background_mode, kept, old_background = -1;
     bool shallow = app->dumps_shallow, main_off = app->dumps_off, games_off = app->recompiled_off;
     bool full = app->probe_full;
     int side = app->side_box;
@@ -1512,12 +1546,17 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
     while (snx_ini_next(&ini, &key, &value)) {
         int option = strcmp(ini.section, "app") ? -1 : option_of(key);
         if (option >= 0 && option_word(option, value) >= 0) options[option] = option_word(option, value);
-        if (!strcmp(ini.section, "app") && !strcmp(key, "recompile_background") &&
-            (!strcmp(value, "full") || !strcmp(value, "gentle")))
-            gentle = !strcmp(value, "gentle");
+        if (!strcmp(ini.section, "app") && !strcmp(key, "background_recompile") && background_word(value) >= 0) {
+            background = background_word(value);
+            kept_new = true;
+        }
+        if (!strcmp(ini.section, "app") && !strcmp(key, "recompile_background") && background_old(value) >= 0)
+            old_background = background_old(value);
     }
     free(copy);
-    kept = gentle; /* what a word it does not know leaves in use */
+    /* recompile_background, an older version's, while background_recompile has no word: as it maps, written again */
+    if (!kept_new && old_background >= 0) background = old_background;
+    kept = background; /* what a word it does not know leaves in use */
     snx_ini_start(&ini, text);
     while (snx_ini_next(&ini, &key, &value)) {
         char* end = NULL;
@@ -1569,8 +1608,16 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
                 side = w;
                 continue;
             }
+        } else if (!strcmp(ini.section, "app") && !strcmp(key, "background_recompile")) {
+            if (background_word(value) >= 0) continue; /* taken in the first read */
         } else if (!strcmp(ini.section, "app") && !strcmp(key, "recompile_background")) {
-            if (!strcmp(value, "full") || !strcmp(value, "gentle")) continue; /* taken in the first read */
+            if (background_old(value) >= 0) {
+                if (apply && !kept_new) {
+                    free(app->background_key);
+                    app->background_key = snx_strdup(value);
+                }
+                continue; /* taken in the first read */
+            }
         } else if (!strcmp(ini.section, "app") && !strcmp(key, "animations")) {
             if (!strcmp(value, "0") || !strcmp(value, "1")) {
                 still = !strcmp(value, "0");
@@ -1627,7 +1674,8 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
         if (n < (int)size && option >= 0)
             n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"),
                           option_keys[option].words[options[option]]);
-        else if (n < (int)size && !strcmp(ini.section, "app") && !strcmp(key, "recompile_background"))
+        else if (n < (int)size && !strcmp(ini.section, "app") &&
+                 (!strcmp(key, "background_recompile") || !strcmp(key, "recompile_background")))
             n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"), background_words[kept]);
         else if (n < (int)size && !strcmp(ini.section, "app") && !strcmp(key, "dumps_subfolders"))
             n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"), shallow ? "off" : "on");
@@ -1661,7 +1709,7 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
     if (apply) app->probe_full = full;
     if (apply) snprintf(app->gpu_driver, sizeof app->gpu_driver, "%s", driver);
     if (apply) snprintf(app->freedreno, sizeof app->freedreno, "%s", freedreno);
-    if (apply) app->background_gentle = gentle;
+    if (apply) app->background_mode = background;
     if (apply && side != app->side_box) {
         app->side_box = side;
         layout(app);
@@ -1702,9 +1750,10 @@ static void app_load(App* app) {
         m = strlen(app->message);
         snprintf(app->message + m, sizeof app->message - m, snx_tr("Not used from %s: %s"), app->app_file, bad);
     }
-    /* [folders] games = and [app] text_size =, the names an older version wrote, and Auto or a part of it as UI scale:
-       written again as recompiled =, ui_scale = and the number, each said once */
-    if (app->games_key || app->text_size_key || app->scale_gone) {
+    /* [folders] games =, [app] text_size = and recompile_background =, the names an older version wrote, and Auto or a
+       part of it as UI scale: written again as recompiled =, ui_scale =, background_recompile = and the number, each
+       said once */
+    if (app->games_key || app->text_size_key || app->scale_gone || app->background_key) {
         char said[sizeof app->message];
         int failed;
         snprintf(said, sizeof said, "%s", app->message);
@@ -1730,7 +1779,17 @@ static void app_load(App* app) {
             snprintf(said + m, sizeof said - m, snx_tr("%s: %s is no longer a UI scale: ui_scale = %d now"),
                      app->app_file, app->scale_gone, app->menu.text_size);
         }
+        if (!failed && app->background_key) {
+            size_t m = strlen(said);
+            snprintf(said + m, sizeof said - m, "%s", m ? " " : "");
+            m = strlen(said);
+            snprintf(said + m, sizeof said - m,
+                     snx_tr("%s: recompile_background = %s is now background_recompile = %s"), app->app_file,
+                     app->background_key, background_words[app->background_mode]);
+        }
         if (!failed) snprintf(app->message, sizeof app->message, "%s", said);
+        free(app->background_key);
+        app->background_key = NULL;
         free(app->games_key);
         app->games_key = NULL;
         free(app->text_size_key);
@@ -7713,8 +7772,8 @@ static const GuiThemeKey app_keys[] = {
      0, 0, 0, 0, NULL},
     {"", SNX_TR_NOOP("Background recompile"), GUI_KEY_ACTION, offsetof(GuiAppForm, background),
      sizeof(((GuiAppForm*)0)->background), NULL, 0,
-     SNX_TR_NOOP("The Compile tab's: R's, B's and a game's first. Full: every core. Gentle: half of them, at a low "
-                 "priority. Either goes gently while a game plays"),
+     SNX_TR_NOOP("The Compile tab's: R's, B's and a game's first. Auto: Gentle on battery, Full on the charger. Full: "
+                 "every core. Gentle: half of them, at a low priority. Each goes gently while a game plays"),
      0, 0, 0, 0, NULL},
     {"", SNX_TR_NOOP("Theme Editor"), GUI_KEY_ACTION, 0, 0, NULL, 0,
      SNX_TR_NOOP("This theme's keys with a preview, saved as themes/<name>/theme.ini"), 0, 0, 0, 0, NULL},
@@ -7771,6 +7830,7 @@ static void size_shown(const App* app, char* out, size_t n) {
     else
         size_name(app->menu.text_size, out, n);
 }
+static bool on_battery(App* app);
 static void app_values(App* app) {
     GuiAppForm* f = &app->app_form;
     char games[4200], work[4200];
@@ -7783,7 +7843,11 @@ static void app_values(App* app) {
         snprintf(f->language, sizeof f->language, snx_tr("Auto: %s"), snx_gui_languages[snx_tr_language()].name);
     snprintf(f->animations, sizeof f->animations, "%s", app->animations_off ? snx_tr("Off") : snx_tr("On"));
     snprintf(f->side, sizeof f->side, "%s", snx_tr(side_names[app->side_box]));
-    snprintf(f->background, sizeof f->background, "%s", snx_tr(background_names[app->background_gentle]));
+    if (app->background_mode == GUI_BACKGROUND_AUTO) /* and what it is now */
+        snprintf(f->background, sizeof f->background, snx_tr("Auto: %s"),
+                 on_battery(app) ? snx_tr("Gentle, on battery") : snx_tr("Full"));
+    else
+        snprintf(f->background, sizeof f->background, "%s", snx_tr(background_names[app->background_mode]));
     moved = 0;
     for (int i = 0; i < GUI_PLACES; ++i) moved += app->place[i] != NULL;
     if (moved && app->folder_count)
@@ -10514,7 +10578,7 @@ static void app_action(App* app, int row, int step) {
         app->side_box = (app->side_box + (step < 0 ? 2 : 1)) % 3;
         layout(app);
     } else if (row == GUI_APP_BACKGROUND) { /* the one running follows at once (job_priority), its threads as started */
-        app->background_gentle = !app->background_gentle;
+        app->background_mode = (app->background_mode + (step < 0 ? 2 : 1)) % 3;
     } else if (row == GUI_APP_LANGUAGE) {
         app->language = (app->language + (step < 0 ? snx_gui_language_count : 1)) % (snx_gui_language_count + 1);
         language_apply(app);
@@ -13857,7 +13921,26 @@ static void games_back(App* app, const char* path);
 #ifdef SDL_PLATFORM_ANDROID
 static void tell(App* app);
 #endif
+static void game_box_open(App* app);
+static void pointer(App* app, float window_x, float window_y, bool click, bool touch);
+/* a finger held on Games GUI_HOLD_MS without moving: the row under it in focus and its game's box open; a finger that
+   scrolled or went away opens none */
+static void hold_tick(App* app) {
+    int w, h;
+    if (!app->finger || !app->hold_ms || app->hold_fired || now_ms(app) - app->hold_ms < GUI_HOLD_MS) return;
+    if (app->games_held || app->bar_held || app->list_held || app->pick_press) {
+        app->hold_ms = 0;
+        return;
+    }
+    app->hold_ms = 0;
+    SDL_GetWindowSize(app->window, &w, &h);
+    pointer(app, app->finger_x * (float)w, app->finger_y * (float)h, false, false);
+    app->hovering = false; /* a finger hovers nowhere */
+    game_box_open(app);
+    app->hold_fired = app->picks_shown; /* a row that is no game opened none: the lift taps it */
+}
 static void pump(App* app) {
+    hold_tick(app);
     keys_left(app);
     text_left(app);
     setup_keyboard(app);
@@ -14148,6 +14231,7 @@ static const char* const* picks_list(const App* app) {
     if (app->picks_of == GUI_PICKS_DRIVER) return driver_picks;
     if (app->picks_of == GUI_PICKS_ASSET) return app->asset_picks;
     if (app->picks_of == GUI_PICKS_THEME) return app->theme_picks;
+    if (app->picks_of == GUI_PICKS_GAME) return app->game_picks;
     kind = folder_row(app, app->pick_row, &at, &group);
     if (kind == GUI_ROW_DUMPS) return app->dumps_off ? main_off_picks : dumps_picks;
     if (kind == GUI_ROW_PLACE && at == GUI_PLACE_GAMES) return app->recompiled_off ? main_off_picks : recompiled_picks;
@@ -14215,7 +14299,12 @@ static void picks_question(App* app, char* out, size_t size, const char** tab) {
            : app->picks_of == GUI_PICKS_DRIVER ? snx_tr("GPU Drivers")
            : app->picks_of == GUI_PICKS_ASSET  ? snx_tr("Download Driver")
            : app->picks_of == GUI_PICKS_THEME  ? (app->theme.dialog == GUI_DIALOG_YORHA ? snx_tr("Theme") : "")
+           : app->picks_of == GUI_PICKS_GAME   ? snx_tr("Game")
                                                : snx_tr("Folders");
+    if (app->picks_of == GUI_PICKS_GAME) { /* the game's name, as its row shows it */
+        snprintf(out, size, "%s", app->pick_text);
+        return;
+    }
     if (app->picks_of == GUI_PICKS_THEME) { /* the line says what the box is: YoRHa's tab names it, the default's
                                                corner has no name beside the line */
         snprintf(out, size, snx_tr("Each theme shows as the focus reaches it: Enter keeps it, ESC goes back to %s"),
@@ -14317,6 +14406,67 @@ static void subfolders_switch(App* app, int kind, int at) {
     open_folders(app, row);
     snprintf(app->editor.note, sizeof app->editor.note, "%s", note);
 }
+/* the game box's actions, as Games' keys name them: Enter's Play, or for a game the queue recompiles its progress on
+   the Compile tab, which Enter shows too; R's Recompile; M's Mods and S's Save States for a made Switch game */
+#define SAY_GAME_PLAY      SNX_TR_NOOP("Play")
+#define SAY_GAME_PROGRESS  SNX_TR_NOOP("View Progress")
+#define SAY_GAME_RECOMPILE SNX_TR_NOOP("Recompile")
+#define SAY_GAME_MODS      SNX_TR_NOOP("Mods")
+#define SAY_GAME_STATES    SNX_TR_NOOP("Save States")
+static void play_focus(App* app);
+static void queue_show(App* app, int i);
+static void recompile_focus(App* app);
+static void mods_focus(App* app);
+static void states_focus(App* app);
+static void game_label(const App* app, const GuiGames* games, size_t i, char* out, size_t size);
+/* the focused row's game, the queue's job for it (-1 for none) and its name as the row shows it in name; 0 for a row
+   that is no game */
+static int game_box_game(App* app, int* queued, char* name, size_t size) {
+    size_t row = app->browser.selected, head = app->browser.head;
+    size_t index = app->browser.page * app->browser.page_size + row - head;
+    const char* path = NULL;
+    if (!games_play_focus(app)) return 0;
+    if (row < head) {
+        const GuiRecentGame* r = &app->recent.game[recent_index(app, (int)row)];
+        path = r->path;
+        snprintf(name, size, "%s", r->name);
+    } else {
+        path = app->games.paths[index];
+        game_label(app, &app->games, index, name, size);
+    }
+    *queued = path ? gui_queue_find(&app->queue, path) : -1;
+    return 1;
+}
+/* the box of the game in focus on Games, which a held finger or a right click opens: its actions (SAY_GAME_*), as
+   its keys have them; none for a row that is no game */
+static void game_box_open(App* app) {
+    bool mods = false;
+    int n = 0, queued;
+    if (!game_box_game(app, &queued, app->pick_text, sizeof app->pick_text)) return;
+    app->game_picks[n++] = queued >= 0 ? SAY_GAME_PROGRESS : SAY_GAME_PLAY;
+    if (games_game_focus(app, &mods)) app->game_picks[n++] = SAY_GAME_RECOMPILE;
+    if (mods) {
+        app->game_picks[n++] = SAY_GAME_MODS;
+        app->game_picks[n++] = SAY_GAME_STATES;
+    }
+    app->game_picks[n] = NULL;
+    picks_open(app, GUI_PICKS_GAME);
+}
+static void game_box_take(App* app, const char* pick) {
+    int queued;
+    char name[sizeof app->pick_text];
+    layout(app); /* the page a resize in the same poll gave */
+    if (!strcmp(pick, SAY_GAME_PROGRESS) && game_box_game(app, &queued, name, sizeof name) && queued >= 0)
+        queue_show(app, queued);
+    else if (!strcmp(pick, SAY_GAME_PLAY) || !strcmp(pick, SAY_GAME_PROGRESS))
+        play_focus(app);
+    else if (!strcmp(pick, SAY_GAME_RECOMPILE))
+        recompile_focus(app);
+    else if (!strcmp(pick, SAY_GAME_MODS))
+        mods_focus(app);
+    else if (!strcmp(pick, SAY_GAME_STATES))
+        states_focus(app);
+}
 /* choice i taken, or none (-1: Back): the logs as one zip, as the one log of before, or their folder opened; a Folders
    row's folder opened, another picked, its default asked for or its Extra taken off */
 static void pick_take(App* app, int i) {
@@ -14334,6 +14484,10 @@ static void pick_take(App* app, int i) {
         return;
     }
     if (i < 0) return;
+    if (app->picks_of == GUI_PICKS_GAME) { /* as its key on Games does */
+        game_box_take(app, app->game_picks[i]);
+        return;
+    }
     if (app->picks_of == GUI_PICKS_ASSET) { /* the asset downloaded */
         fetch_download(app, i);
         return;
@@ -14914,8 +15068,21 @@ static bool game_plays(const App* app) {
     return app->menu.running;
 #endif
 }
-/* a recompile of the queue goes gently: Background recompile Gentle, or a game playing */
-static bool job_gentle(const App* app) { return app->background_gentle || game_plays(app); }
+/* the host runs on its battery: SDL's power state, asked every 5 s at most */
+static bool on_battery(App* app) {
+    Uint64 now = SDL_GetTicks();
+    if (app->power_test) return app->power_test > 0;
+    if (!app->power_ms || now - app->power_ms >= 5000) {
+        app->power_battery = SDL_GetPowerInfo(NULL, NULL) == SDL_POWERSTATE_ON_BATTERY;
+        app->power_ms = now ? now : 1;
+    }
+    return app->power_battery;
+}
+/* a recompile of the queue goes gently: Background recompile Gentle, or Auto on battery, or a game playing */
+static bool job_gentle(App* app) {
+    return app->background_mode == GUI_BACKGROUND_GENTLE ||
+           (app->background_mode == GUI_BACKGROUND_AUTO && on_battery(app)) || game_plays(app);
+}
 /* how the one running goes, for the Status box: Full, or Gentle and why (the option, a game playing, a priority the
    system keeps low until it ends), with the threads it was started with when they were halved */
 static void job_speed(App* app, char* out, size_t size) {
@@ -14924,10 +15091,12 @@ static void job_speed(App* app, char* out, size_t size) {
         snprintf(out, size, snx_tr("Gentle until it ends: %s"), app->job_said);
     else if (!app->job_low)
         snprintf(out, size, "%s", snx_tr("Full"));
-    else if (!app->background_gentle)
-        snprintf(out, size, "%s", snx_tr("Gentle, a game plays"));
-    else
+    else if (app->background_mode == GUI_BACKGROUND_GENTLE)
         snprintf(out, size, "%s", snx_tr("Gentle"));
+    else if (app->background_mode == GUI_BACKGROUND_AUTO && on_battery(app))
+        snprintf(out, size, "%s", snx_tr("Gentle, on battery"));
+    else
+        snprintf(out, size, "%s", snx_tr("Gentle, a game plays"));
     n = strlen(out);
     if (app->job_threads && n < size) snprintf(out + n, size - n, snx_tr(", %d threads"), app->job_threads);
     n = strlen(out);
@@ -17741,6 +17910,10 @@ static void event_take(App* app, const SDL_Event* e) {
         app->finger = finger_id(&e->tfinger);
         app->finger_x = e->tfinger.x;
         app->finger_y = e->tfinger.y;
+        app->hold_fired = false; /* held on Games, its game's box (hold_tick) */
+        app->hold_ms = app->menu.view == GUI_LOAD_GAMES && !app->editing && !box_shown(app) && !app->picks_shown
+                           ? SDL_max(now_ms(app), (Uint64)1)
+                           : 0;
         SDL_GetWindowSize(app->window, &w, &h);
         app->pick_press = 0;                     /* the finger's own, not a mouse's whose lift was missed */
         if (app->editing && app->editor.picking) /* the picker's bars take a finger as it goes down, to drag */
@@ -17766,6 +17939,14 @@ static void event_take(App* app, const SDL_Event* e) {
             games_finger(app, e->tfinger.x * (float)w, e->tfinger.y * (float)h, 1);
         else
             list_finger(app, e->tfinger.x * (float)w, e->tfinger.y * (float)h, 1);
+        return;
+    }
+    if ((e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_CANCELED) &&
+        finger_id(&e->tfinger) == app->finger && app->hold_fired) { /* held, its game's box shown: no tap */
+        app->finger = 0;
+        app->hold_ms = 0;
+        app->hold_fired = false;
+        app->games_held = app->bar_held = false;
         return;
     }
     if ((e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_CANCELED) &&
@@ -17864,6 +18045,13 @@ static void event_take(App* app, const SDL_Event* e) {
     }
     if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN && e->button.button == SDL_BUTTON_LEFT) {
         pointer(app, e->button.x, e->button.y, true, false);
+        return;
+    }
+    /* a right click on a game of Games: its box, as a finger held there opens it */
+    if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN && e->button.button == SDL_BUTTON_RIGHT &&
+        app->menu.view == GUI_LOAD_GAMES && !app->editing && !box_shown(app) && !app->picks_shown) {
+        pointer(app, e->button.x, e->button.y, false, false); /* the row under it in focus, as the mouse over it does */
+        game_box_open(app);
         return;
     }
     if (e->type == SDL_EVENT_MOUSE_BUTTON_UP && e->button.button == SDL_BUTTON_LEFT) {

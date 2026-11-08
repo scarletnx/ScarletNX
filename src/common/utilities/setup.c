@@ -70,7 +70,11 @@ const SnxNotice snx_notices[SNX_NOTICES] = {
     {SNX_TR_NOOP("Shader caches"),
      SNX_TR_NOOP("shader_cache/<id>.vkshaders, <id>.vkshipped, vk_pipelines.bin, every driver's"),
      SNX_TR_NOOP("<id>.<driver>.vkshaders, .vkshipped and vk_pipelines.<driver>.bin, started from those"),
-     "A game's `shader_cache/<id>.vkshaders`", SNX_NOTICE_ALL}};
+     "A game's `shader_cache/<id>.vkshaders`", SNX_NOTICE_ALL},
+    {SNX_TR_NOOP("The launcher's Background recompile"),
+     SNX_TR_NOOP("recompile_background = in app.ini, full or gentle"),
+     SNX_TR_NOOP("background_recompile =, Auto by default: Gentle on battery, Full on the charger"),
+     "`recompile_background =` in `app.ini`", SNX_NOTICE_ALL}};
 int snx_notice_here(int notice) {
     int systems = snx_notices[notice].systems;
 #if defined(__ANDROID__)

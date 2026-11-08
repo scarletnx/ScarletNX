@@ -55,8 +55,16 @@ public final class ViewRootImpl implements ViewParent {
         if (view != null && view.mAttachInfo != null) view.dispatchDetachedFromWindow();
         Host.detach(this);
     }
+    /* the window's place in the display: its root view is laid out there, so that it draws there; events come
+       into the window's own coordinates */
+    private int windowLeft, windowTop;
     int windowX() { return 0; }
     int windowY() { return 0; }
+    private static int windowSpec(int param, int display) {
+        if (param > 0) return View.MeasureSpec.makeMeasureSpec(Math.min(param, display), View.MeasureSpec.EXACTLY);
+        if (param == ViewGroup.LayoutParams.WRAP_CONTENT) return View.MeasureSpec.makeMeasureSpec(display, View.MeasureSpec.AT_MOST);
+        return View.MeasureSpec.makeMeasureSpec(display, View.MeasureSpec.EXACTLY);
+    }
     KeyEvent.DispatcherState keyDispatcherState() { return keyState; }
     WindowInsetsController insetsController() { return insetsController; }
     android.window.OnBackInvokedDispatcher onBackInvokedDispatcher() { return backDispatcher; }
@@ -133,9 +141,18 @@ public final class ViewRootImpl implements ViewParent {
         }
         if (layoutRequested || view.isLayoutRequested()) {
             layoutRequested = false;
-            view.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
-                View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY));
-            view.layout(0, 0, view.getMeasuredWidth(), view.getMeasuredHeight());
+            // the window's size by its params (a wrapping one at most the display's), and its place by its gravity,
+            // as Android's window manager lays a window out: a floating one without a gravity in the middle
+            view.measure(windowSpec(attributes != null ? attributes.width : ViewGroup.LayoutParams.MATCH_PARENT, width),
+                windowSpec(attributes != null ? attributes.height : ViewGroup.LayoutParams.MATCH_PARENT, height));
+            int w = view.getMeasuredWidth(), h = view.getMeasuredHeight();
+            int gravity = attributes != null && attributes.gravity != 0 ? attributes.gravity : Gravity.CENTER;
+            android.graphics.Rect frame = new android.graphics.Rect();
+            Gravity.apply(gravity, w, h, new android.graphics.Rect(0, 0, width, height),
+                attributes != null ? attributes.x : 0, attributes != null ? attributes.y : 0, frame);
+            windowLeft = w >= width ? 0 : frame.left;
+            windowTop = h >= height ? 0 : frame.top;
+            view.layout(windowLeft, windowTop, windowLeft + w, windowTop + h);
             attachInfo.treeObserver.dispatchOnGlobalLayout();
         }
         if (attachInfo.treeObserver.dispatchOnPreDraw()) {
@@ -155,7 +172,12 @@ public final class ViewRootImpl implements ViewParent {
         if (dead || view == null || view.mAttachInfo == null) return false;
         /* a NativeActivity's window: the events go to its native input queue, as Android's input dispatcher sends them */
         if (view instanceof Window.DecorView d && d.window().inputQueue() != null) return d.window().inputQueue().send(event);
-        if (event instanceof MotionEvent m) {
+        if (event instanceof MotionEvent m0) {
+            MotionEvent m = m0;
+            if (windowLeft != 0 || windowTop != 0) {
+                m = MotionEvent.obtain(m0);
+                m.offsetLocation(-windowLeft, -windowTop);
+            }
             int action = m.getActionMasked();
             if (action == MotionEvent.ACTION_HOVER_MOVE || action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_EXIT)
                 return view.dispatchHoverEvent(m);

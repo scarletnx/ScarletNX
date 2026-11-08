@@ -43,7 +43,7 @@ if(NOT EXISTS "${SNX_JAVA_HOME}/include/jni.h")
                         "SNX_JAVA_HOME to one, or SNX_BUILD_ANDROID=OFF")
 endif()
 
-add_library(snx_android_program STATIC runtime/main.c runtime/jvm.c runtime/app.c runtime/install.c runtime/audio.c res/axml.c
+add_library(snx_android_program STATIC runtime/main.c runtime/jvm.c runtime/app.c runtime/fds.c runtime/install.c runtime/audio.c res/axml.c
                                        res/xml_jni.c res/arsc.c
                                        res/asset_jni.c db/sqlite_jni.c hwui/text.c hwui/image.c hwui/path.c
                                        hwui/render.c "${volk_SOURCE_DIR}/volk.c")

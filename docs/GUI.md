@@ -149,10 +149,11 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   **App** holds **Theme** and **Language**, which Left/Right or Enter go round either way, **UI scale**, a dialog
   (below), **Animations** (On by default, `animations = 1` in `app.ini`: a screen comes in from the
   page's colour and a box's shade comes and goes, 0.15 s each; Off shows each at once), **Side panel** (below, F2 too),
-  **Background recompile** (*Full*, `recompile_background = full` in `app.ini`: the queue's recompiles take every
-  core, or the AOT threads picked; *Gentle*, `gentle`: half of them, at a low priority, ten steps of nice under the
-  launcher's, on Windows the class under the launcher's, for using the computer meanwhile;
-  [the Compile tab](#the-compile-tab)),
+  **Background recompile** (*Auto*, `background_recompile = auto` in `app.ini`: *Gentle* while the computer or
+  phone runs on its battery and *Full* on its charger or with none, asked as a recompile starts and every 5 s while it
+  runs, the row saying what it is now; *Full*, `full`: the queue's recompiles take every core, or the AOT threads
+  picked; *Gentle*, `gentle`: half of them, at a low priority, ten steps of nice under the launcher's, on Windows the
+  class under the launcher's, for using the computer meanwhile; [the Compile tab](#the-compile-tab)),
 **Theme Editor**, which comes
   back to App, and **Folders**, every folder on one screen, the whole of it, a box a group:
   - **App Folders**: **Data** (`recompiled/`, `dumps/`, `themes/` and `prod.keys`), **Settings**, shown only
@@ -294,8 +295,10 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   name), `ui_scale` (1 to 4; a start without it takes twice the display's
   scale, as many as fit 16 rows (30 on a phone), and writes it; `text_size` before, still read and written again as
   `ui_scale`, said once; `auto`, `0.25`, `0.5` and `0.75` of older versions read as that number and written again so,
-  said once), `recompile_background` (`full`, the default, or `gentle`; a word it does not know named
-  with the one kept, `recompile_background = slow (it keeps full)`), `dumps_subfolders` (`on`, the default: dumps/'s
+  said once), `background_recompile` (`auto`, the default, `full` or `gentle`; a word it does not know named
+  with the one kept, `background_recompile = slow (it keeps auto)`; `recompile_background` before it, still read
+  while it has none: its `full`, the default every `app.ini` wrote, is `auto`, its `gentle` `gentle`, written again
+  as `background_recompile`, said once), `dumps_subfolders` (`on`, the default: dumps/'s
   subfolders' dumps listed too; `off`: its own alone; Folders' row of it switches it), `dumps_main` (`on`, the default:
   dumps/ listed and made as ScarletNX starts; `off`: neither, Remove from Library's), `recompiled_main` (`on`, the
   default; `off`: recompiled/ not listed, new games going to an Extra), `gpu_driver` (GPU Drivers' pick, a folder of
@@ -524,6 +527,9 @@ cannot be read is named and the others still listed.
   on it, or R again, shows it on the Compile tab, and it plays once its compile ended. On a Linux
   program, an Android app, or another row, R says why it does nothing. **B** builds the focused game's AOT pack from its JIT cache
   ([AOT packs](AOT_PACKS.md)) through the same queue.
+- A finger held on a game half a second without moving, or a right click on it, opens its box: **Play** (**View
+  Progress** for a game of the queue, which shows it on the Compile tab as Enter does), **Recompile** (R), and for a
+  recompiled Switch game **Mods** (M) and **Save States** (S). The finger's lift then taps nothing.
 - **M** (on Android a tap on *Mods* at the foot) opens the box of the recompiled Switch game in focus, recent or on
   the page, that Enter opens for a game with updates, DLCs, mods, cheats or other programs beside it, and for a game
   with none of them too, whose **Add Mod** and **Add Cheats** copy a folder or a `.txt` the system's picker gives

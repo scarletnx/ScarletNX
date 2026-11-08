@@ -95,11 +95,49 @@ public class ImageView extends View {
         if (drawable != null && drawable.isStateful() && drawable.setState(getDrawableState())) invalidateDrawable(drawable);
     }
     @Override protected boolean verifyDrawable(Drawable dr) { return drawable == dr || super.verifyDrawable(dr); }
+    private boolean adjustViewBounds;
+    private int maxWidth = Integer.MAX_VALUE, maxHeight = Integer.MAX_VALUE;
+    /** whether the view's bounds follow the drawable's aspect ratio */
+    public void setAdjustViewBounds(boolean adjustViewBounds) {
+        this.adjustViewBounds = adjustViewBounds;
+        if (adjustViewBounds) setScaleType(ScaleType.FIT_CENTER);
+        requestLayout();
+    }
+    public boolean getAdjustViewBounds() { return adjustViewBounds; }
+    public void setMaxWidth(int maxWidth) { this.maxWidth = maxWidth; requestLayout(); }
+    public int getMaxWidth() { return maxWidth; }
+    public void setMaxHeight(int maxHeight) { this.maxHeight = maxHeight; requestLayout(); }
+    public int getMaxHeight() { return maxHeight; }
     @Override protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         int w = drawable != null ? Math.max(1, drawable.getIntrinsicWidth()) : 0, h = drawable != null ? Math.max(1, drawable.getIntrinsicHeight()) : 0;
-        w = Math.max(w + getPaddingLeft() + getPaddingRight(), getSuggestedMinimumWidth());
-        h = Math.max(h + getPaddingTop() + getPaddingBottom(), getSuggestedMinimumHeight());
+        int padW = getPaddingLeft() + getPaddingRight(), padH = getPaddingTop() + getPaddingBottom();
+        int wmode = MeasureSpec.getMode(widthMeasureSpec), hmode = MeasureSpec.getMode(heightMeasureSpec);
+        if (adjustViewBounds && w > 0 && h > 0 && (wmode != MeasureSpec.EXACTLY || hmode != MeasureSpec.EXACTLY)) {
+            // as Android: the side that may change follows the ratio of the other, within the spec and the maxima
+            float ratio = (float) w / h;
+            int ws = resolveAdjusted(w + padW, maxWidth, widthMeasureSpec), hs = resolveAdjusted(h + padH, maxHeight, heightMeasureSpec);
+            if (wmode != MeasureSpec.EXACTLY) {
+                int nw = Math.round((hs - padH) * ratio) + padW;
+                if (hmode == MeasureSpec.EXACTLY || nw <= ws) ws = resolveAdjusted(nw, maxWidth, widthMeasureSpec);
+            }
+            if (hmode != MeasureSpec.EXACTLY && Math.abs((float) (ws - padW) / Math.max(1, hs - padH) - ratio) > 0.0000001f) {
+                int nh = Math.round((ws - padW) / ratio) + padH;
+                hs = resolveAdjusted(nh, maxHeight, heightMeasureSpec);
+            }
+            setMeasuredDimension(Math.max(ws, getSuggestedMinimumWidth()), Math.max(hs, getSuggestedMinimumHeight()));
+            return;
+        }
+        w = Math.max(Math.min(w + padW, maxWidth), getSuggestedMinimumWidth());
+        h = Math.max(Math.min(h + padH, maxHeight), getSuggestedMinimumHeight());
         setMeasuredDimension(resolveSizeAndState(w, widthMeasureSpec, 0), resolveSizeAndState(h, heightMeasureSpec, 0));
+    }
+    private static int resolveAdjusted(int desired, int max, int spec) {
+        int size = MeasureSpec.getSize(spec);
+        return switch (MeasureSpec.getMode(spec)) {
+            case MeasureSpec.EXACTLY -> size;
+            case MeasureSpec.AT_MOST -> Math.min(Math.min(desired, size), max);
+            default -> Math.min(desired, max);
+        };
     }
     @Override protected void onDraw(Canvas canvas) {
         if (drawable == null) return;
