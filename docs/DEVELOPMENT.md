@@ -13,6 +13,7 @@
 * [Profiling](#profiling)
 * [Shaders](#shaders)
 * [Vertex input](#vertex-input)
+* [Driver bans](#driver-bans)
 * [SVCs](#svcs)
 * [Provenance](#provenance)
 
@@ -431,7 +432,7 @@ state. Where the GPU's driver has `VK_EXT_vertex_input_dynamic_state` and its `v
 each draw sets its layout in the command buffer instead (`vkCmdSetVertexInputEXT`), and one pipeline serves every layout
 of a program: the pipelines kept across runs of one game, 1984 with the layout in the key, come to 1218. The setting
 is `vertex_input_dynamic_state` ([Settings](SETTINGS.md#graphics)): `auto`, `on` or `off`, with the drivers known to
-draw it wrong (`src/nx/gpu/vk/vertex_input.c`) taking the layout in the key under `auto`. The log's
+draw it wrong ([the driver bans](#driver-bans)) taking the layout in the key under `auto`. The log's
 `vulkan: vertex_input_dynamic_state=` line says which a run takes, with the device, its driver and version.
 
 A draw sets the layout when it differs from the one its command buffer has. A new command buffer, a pipeline that
@@ -444,11 +445,38 @@ color components, which reads no vertices) leave the next draw to set it again. 
 ctest --test-dir build -R 'vk_vertex_input|vulkan_headless'
 ```
 
-`vk_vertex_input` checks the setting's values, its row read from a game's `.ini` written before it, the bans against
-stand-in devices and the log line of each case. `vulkan_headless` (`-DSNX_TEST_VULKAN=ON`) watches what every draw
+`vk_vertex_input` checks the setting's values, its row read from a game's `.ini` written before it, the table's bans
+against stand-in devices and the log line of each case. `vulkan_headless` (`-DSNX_TEST_VULKAN=ON`) watches what every draw
 of its checks finds in its command buffer: a draw with a dynamic layout and none set fails it. Its vertex input check
 draws one program with three layouts in one command buffer, and `vulkan_headless_vertex_input_off` runs every check
 again with the layout in the key.
+
+## Driver bans
+
+`src/nx/gpu/vk/extension_bans.txt` is the table of drivers known to break a Vulkan extension or feature: a line per
+ban, with the extension or feature, `off` or `warn`, the driver (its `VkDriverId` by name), the versions in that
+driver's own numbering, the system, the GPUs, what breaks, where that is known from, the case that tests it again, the
+date it was last tested and the setting that turns it on anyway. Its head explains each field. It is compiled in, and
+the device reads it before it turns anything on (`src/nx/gpu/vk/extension_bans.c`): an `off` line takes the extension
+out of the device's list, or the feature off where the renderer can do without it, and a `warn` line is only said.
+Each line that holds is said in the log, with the device, its driver and version and the table's line:
+
+```
+vulkan: VK_KHR_present_id2 is off on NVIDIA GeForce RTX 3060 (NVIDIA, 590.48.01, driver version 590.48.01): NVIDIA's driver before 595.0.0 hangs games at their first frames with present_id2 and present_wait2 (590.48, with Smooth Motion on) (DXVK dxvk_device_info.cpp:610, issue 5507; extension_bans.txt:66)
+```
+
+A ban joins the table with its source; one that holds for something the renderer does not use is said as such. To
+see which lines hold for this machine's drivers, or for a driver given by hand:
+
+```sh
+build/tests/snx-test-vk-bans --devices                              # each Vulkan device and the lines that hold
+build/tests/snx-test-vk-bans --match qualcomm 512.800.48 android    # a phone's driver
+build/tests/snx-test-vk-bans --check src/nx/gpu/vk/extension_bans.txt   # a table being edited: its first error
+ctest --test-dir build -R 'vk_extension_bans|vk_vertex_input'
+```
+
+`vk_extension_bans` checks the table's errors, each driver's numbering at every bound's edge, the filter and the
+features asked for against stand-in devices, and reads the table the build carries.
 
 ## SVCs
 
