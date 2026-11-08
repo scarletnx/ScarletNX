@@ -4,7 +4,7 @@
    Windows x64, written from each system's documented API (Linux's man-pages, FreeBSD's manual, Apple's
    documentation of the Mach and BSD calls, Microsoft's Win32 documentation) */
 #if defined(__linux__)
-#define _GNU_SOURCE /* process_vm_readv, gettid */
+#define _GNU_SOURCE /* process_vm_readv */
 #endif
 #include "android/bridge/host.h"
 #include <errno.h>
@@ -33,10 +33,6 @@
 #elif defined(__FreeBSD__) || defined(__APPLE__)
 #include <sys/event.h>
 #include <sys/time.h>
-#endif
-#if defined(__FreeBSD__)
-#include <pthread_np.h>
-#include <sys/thr.h>
 #endif
 #if defined(__APPLE__)
 #include <mach/mach.h>
@@ -94,20 +90,6 @@ static struct {
 #endif
 
 /* ---- ids ---- */
-
-uint32_t host_tid(void) {
-#if defined(__linux__)
-    return (uint32_t)gettid();
-#elif defined(__FreeBSD__)
-    return (uint32_t)pthread_getthreadid_np();
-#elif defined(__APPLE__)
-    uint64_t id = 0;
-    pthread_threadid_np(NULL, &id);
-    return (uint32_t)id; /* a 64-bit id, unique in the system, whose low half is the guest's tid */
-#elif defined(_WIN32)
-    return (uint32_t)GetCurrentThreadId();
-#endif
-}
 
 uint32_t host_pid(void) {
 #ifdef _WIN32
