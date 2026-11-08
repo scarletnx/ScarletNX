@@ -14,6 +14,11 @@ public class PropertyValuesHolder implements Cloneable {
     private TypeEvaluator evaluator;
     private Method setter, getter;
     private Class<?> setterClass;
+    private TypeConverter converter;
+    /* a path's points, flattened, and the distance along it to each: a value is the point at the fraction of the
+       length, or one of its coordinates (axis 0 or 1) */
+    private float[] pathX, pathY, pathDistance;
+    private int axis = -1;
 
     private PropertyValuesHolder(String propertyName) { this.propertyName = propertyName; }
     private PropertyValuesHolder(Property property) { this.property = property; if (property != null) propertyName = property.getName(); }
@@ -26,6 +31,35 @@ public class PropertyValuesHolder implements Cloneable {
         PropertyValuesHolder h = new PropertyValuesHolder(propertyName);
         h.setObjectValues(values);
         h.setEvaluator(evaluator);
+        return h;
+    }
+    public static <V> PropertyValuesHolder ofObject(Property property, TypeEvaluator<V> evaluator, V... values) {
+        PropertyValuesHolder h = new PropertyValuesHolder(property);
+        h.setObjectValues(values);
+        h.setEvaluator(evaluator);
+        return h;
+    }
+    public static <T, V> PropertyValuesHolder ofObject(Property property, TypeConverter<T, V> converter, TypeEvaluator<T> evaluator, T... values) {
+        PropertyValuesHolder h = ofObject(property, evaluator, values);
+        h.setConverter(converter);
+        return h;
+    }
+    public static PropertyValuesHolder ofObject(String propertyName, TypeConverter<android.graphics.PointF, ?> converter, android.graphics.Path path) {
+        PropertyValuesHolder h = new PropertyValuesHolder(propertyName);
+        h.setPath(path, -1);
+        h.setConverter(converter);
+        return h;
+    }
+    public static <V> PropertyValuesHolder ofObject(Property property, TypeConverter<android.graphics.PointF, V> converter, android.graphics.Path path) {
+        PropertyValuesHolder h = new PropertyValuesHolder(property);
+        h.setPath(path, -1);
+        h.setConverter(converter);
+        return h;
+    }
+    /** A holder of one coordinate of the points of a path, for an animator of two float properties along it. */
+    static PropertyValuesHolder ofPathAxis(String propertyName, Property property, android.graphics.Path path, int axis) {
+        PropertyValuesHolder h = property != null ? new PropertyValuesHolder(property) : new PropertyValuesHolder(propertyName);
+        h.setPath(path, axis);
         return h;
     }
     public static PropertyValuesHolder ofKeyframe(String propertyName, Keyframe... values) {
@@ -52,12 +86,56 @@ public class PropertyValuesHolder implements Cloneable {
         if (n == 1) keyframes[0] = start;
     }
     public void setEvaluator(TypeEvaluator evaluator) { this.evaluator = evaluator; }
+    public void setConverter(TypeConverter converter) { this.converter = converter; }
+    /** The path's contours as one line, a move to the next contour taking none of the length, as Android's does */
+    private void setPath(android.graphics.Path path, int axis) {
+        this.axis = axis;
+        java.util.ArrayList<float[]> points = new java.util.ArrayList<>();
+        android.graphics.PathMeasure measure = new android.graphics.PathMeasure(path, false);
+        float total = 0;
+        float[] pos = new float[2];
+        do {
+            float length = measure.getLength();
+            int steps = length > 0 ? Math.max(1, Math.min(256, (int) Math.ceil(length / 4))) : 0;
+            for (int i = 0; i <= steps; ++i) {
+                float d = length * i / steps;
+                if (!measure.getPosTan(d, pos, null)) break;
+                points.add(new float[] {pos[0], pos[1], total + d});
+            }
+            total += length;
+        } while (measure.nextContour());
+        int n = points.size();
+        pathX = new float[n];
+        pathY = new float[n];
+        pathDistance = new float[n];
+        for (int i = 0; i < n; ++i) {
+            pathX[i] = points.get(i)[0];
+            pathY[i] = points.get(i)[1];
+            pathDistance[i] = points.get(i)[2];
+        }
+        keyframes = new Keyframe[0];
+    }
+    /** The path's point at a fraction of its length */
+    private android.graphics.PointF pathPoint(float t) {
+        int n = pathDistance.length;
+        if (n == 0) return new android.graphics.PointF();
+        float d = Math.max(0, Math.min(1, t)) * pathDistance[n - 1];
+        int i = 1;
+        while (i < n - 1 && pathDistance[i] < d) ++i;
+        if (n == 1) return new android.graphics.PointF(pathX[0], pathY[0]);
+        float span = pathDistance[i] - pathDistance[i - 1], f = span > 0 ? (d - pathDistance[i - 1]) / span : 1;
+        return new android.graphics.PointF(pathX[i - 1] + f * (pathX[i] - pathX[i - 1]), pathY[i - 1] + f * (pathY[i] - pathY[i - 1]));
+    }
     public void setPropertyName(String propertyName) { this.propertyName = propertyName; setter = getter = null; }
     public String getPropertyName() { return propertyName; }
     public void setProperty(Property property) { this.property = property; }
 
     /** The value at an interpolated fraction, between the keyframes around it. */
     Object value(float t) {
+        if (pathDistance != null) {
+            android.graphics.PointF p = pathPoint(t);
+            return axis == 0 ? (Object) p.x : axis == 1 ? (Object) p.y : p;
+        }
         Keyframe[] k = keyframes;
         if (k.length == 0) return null;
         if (k.length == 1) return k[0].getValue();
@@ -96,6 +174,7 @@ public class PropertyValuesHolder implements Cloneable {
     /** Sets the target's property to a value. */
     void apply(Object target, Object value) {
         if (target == null || value == null) return;
+        if (converter != null) value = converter.convert(value);
         if (property != null) { property.set(target, value); return; }
         try {
             if (setter == null || setterClass != target.getClass()) {
