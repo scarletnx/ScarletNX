@@ -243,10 +243,11 @@ static int mirror_owns(u64 cpu, u64 n) {
     return 0;
 }
 /* the owned bytes of [cpu, cpu + n), copied on the GPU from their owners, after the copies from host memory, sixteen
-   owners at a time. The mirror's own are where they belong */
-static void up_owned(u64 cpu, u64 n) {
+   owners at a time. The mirror's own are where they belong. 1 when it recorded a copy */
+static int up_owned(u64 cpu, u64 n) {
     OwnRange o[16];
-    if (!own_any()) return;
+    int copied = 0;
+    if (!own_any()) return 0;
     for (u64 at = cpu, end = cpu + n; at < end;) {
         u32 k = own_lookup(at, end - at, o, 16);
         for (u32 i = 0; i < k && i < 16; i++) {
@@ -254,10 +255,12 @@ static void up_owned(u64 cpu, u64 n) {
             VkBufferCopy c = {o[i].res_off, o[i].addr, o[i].size};
             vk_render_end();
             rec_CmdCopyBuffer(vk_cmd(), ((const VkOwnRes*)o[i].res)->buf, g_mir.buf, 1, &c);
+            copied = 1;
         }
         if (k <= 16) break;
         at = o[15].addr + o[15].size;
     }
+    return copied;
 }
 
 typedef struct {
@@ -319,12 +322,15 @@ int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     u32 now = vk_ww_now(); /* before any byte is read */
     u64 g0 = cpu / MIR_G, g1 = (cpu + len - 1) / MIR_G;
     Up u = {0};
-    int owners = 0;
+    int owners = 0, fresh = 0;
     for (u64 g = g0; g <= g1; g++) {
         Gran* r = g_mir.gran[g];
-        if (!r && !(r = g_mir.gran[g] = gran_bind(g))) {
-            up_end(&u);
-            return 0;
+        if (!r) {
+            if (!(r = g_mir.gran[g] = gran_bind(g))) {
+                up_end(&u);
+                return 0;
+            }
+            fresh = 1; /* its mask cleared */
         }
         u64 base = g * MIR_G;
         u64 lo = cpu > base ? (cpu - base) >> 12 : 0, hi = (cpu + len - base + 4095) >> 12;
@@ -361,10 +367,17 @@ int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
             r->valid[p / 64] |= 1ull << (p % 64);
         }
     }
+    int copied = u.n != 0;
     if (!up_end(&u)) fatal("vulkan: no staging to bring the GPU mirror up to date");
     /* the owners' bytes over the binding, when there are any: copied each time, as an owner's resource changes with
        each write of its producer (own_hash would tell, at the cost of the walk) */
-    if (owners || own_hash(cpu, len, &(u64){0})) up_owned(cpu, len);
+    if ((owners || own_hash(cpu, len, &(u64){0})) && up_owned(cpu, len)) copied = 1;
+    *buf = g_mir.buf;
+    *off = cpu;
+    /* Nothing recorded: the mirror is up to date there, and the barrier after the last copies covers it. One for each
+       binding ended the rendering pass at nearly every draw that reads the mirror: two thirds of the passes of one
+       game's run on another GPU */
+    if (!copied && !fresh) return 1;
     /* the copies, and a new granule's cleared mask, before the work that binds it */
     VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                           .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT,
@@ -374,8 +387,6 @@ int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
     vk_render_end();
     rec_CmdPipelineBarrier2(vk_cmd(), &d);
-    *buf = g_mir.buf;
-    *off = cpu;
     return 1;
 }
 
