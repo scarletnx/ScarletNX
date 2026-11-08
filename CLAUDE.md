@@ -33,7 +33,15 @@ rules that sessions get wrong, and it points to the skills that hold the procedu
   before the pull request.
 - **On battery, run the light checks.** A full build or container run drains the battery and heats the machine. Use
   `preflight --static-only`, or lower `--jobs` and `--cpus`, and connect power for the full gate. Say when a check
-  did not run for power.
+  did not run for power. A heavy command on battery waits for the user. `.claude/hooks/guard.py` blocks it until the
+  command carries `SNX_POWER_OK=1`, which the user gives in the chat only.
+- **Heavy work takes the lock of the machine.** Run it as `scripts/snx-queue.py run --type <type> -- <command>`. The
+  type is `cpu` for a build, a test suite, a recompile and an extract. The type is `gpu-exclusive` for a measured
+  game run, and `gpu-shared` lets two runs share the GPU.
+
+  The lock reads the power state first, then it takes a place in the queue. A larger `--priority` goes sooner, and a
+  second session waits for its turn. `.claude/hooks/guard.py` stops the heavy command of another session until that
+  session takes the queue. `tools/run_game.py` takes the lock by itself.
 - **Find the mechanism.** A fix explains why the game does what it does. It tells what the game or SDK code expects
   (`tools/disasm.py`), and what the runtime gave it instead. Do not tune delays, add retries or add special cases for
   a title ID. Syncpoints above 127 "worked" for a whole session while they overwrote the heap of the game.

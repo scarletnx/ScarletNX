@@ -34,6 +34,20 @@ description: "Build the ScarletNX runtime and recompile games correctly. Avoid t
    binary that runs. The build prints `Runtime deployed to ...` for each copy. If there is no such line, no game got
    the new runtime.
 
+## The lock of the machine
+
+A build, a recompile, an extract and the preflight take the `cpu` type of the queue (`scripts/snx-queue.py`). A build
+during a game run makes a slow build and wrong frame times, and CLAUDE.md forbids it.
+
+```bash
+scripts/snx-queue.py run --type cpu -- cmake --build build
+scripts/snx-queue.py run --type cpu -- python3 scripts/ci-local.py preflight
+scripts/snx-queue.py run --type cpu -- build/scarletnx -r work/<Game>
+```
+
+`scripts/snx-queue.py status` names the holder and the queue. The queue reads the power state first, and it stops on
+battery until the command carries `SNX_POWER_OK=1`.
+
 ## Before a pull request
 
 Run `python3 scripts/ci-local.py preflight` before a pull request. It checks the merge, the docs and agent files, and

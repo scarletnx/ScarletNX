@@ -94,6 +94,8 @@ if(Python3_Interpreter_FOUND)
     if(UNIX)
         add_test(NAME claude_ste100_checker COMMAND sh "${PROJECT_SOURCE_DIR}/.claude/skills/ste100/test/test-check.sh")
     endif()
+    # the lock and queue of the heavy work: the power check, the priority, the shared types and the guard
+    add_test(NAME snx_queue COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/snx_queue.py")
 endif()
 # x86-64, by any of the names hosts give it
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")

@@ -21,6 +21,7 @@ L 40, R 80, ZL 100, ZR 200, Plus 400, Minus 800, Left 1000, Up 2000, Right 4000,
 """
 
 import argparse
+import importlib.util
 import os
 import re
 import subprocess
@@ -28,6 +29,15 @@ import sys
 import tempfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+QUEUE = os.path.join(REPO, 'scripts', 'snx-queue.py')
+
+
+def queue_module():
+    """scripts/snx-queue.py: the lock and queue of the heavy work of this machine (its name has a hyphen)"""
+    spec = importlib.util.spec_from_file_location('snx_queue', QUEUE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def data_folder():
@@ -116,6 +126,11 @@ def main():
     )
     ap.add_argument('--out', help='folder for logs and screenshots')
     ap.add_argument('--dump', help='extracted game folder, to name crash sites (e.g. ~/.cache/scarletnx/work/Game)')
+    ap.add_argument(
+        '--shared', action='store_true', help='share the GPU with other runs (gpu-shared) instead of the GPU alone'
+    )
+    ap.add_argument('--priority', type=int, default=0, help='the place in the queue of the machine: larger is sooner')
+    ap.add_argument('--no-queue', action='store_true', help='run without the lock and queue of the machine')
     ap.add_argument('args', nargs='*', help='more runtime options, e.g. --fps_limit=0 (with or without -- before them)')
     a, unknown = ap.parse_known_args()
     a.args += unknown
@@ -124,35 +139,59 @@ def main():
     folder = os.path.dirname(exe)
     out = a.out or tempfile.mkdtemp(prefix='snx-run-')
     os.makedirs(out, exist_ok=True)
+    queue, hold = None, None
+    if not a.no_queue:
+        queue = queue_module()
+        try:
+            hold = queue.Queue().acquire(
+                'gpu-shared' if a.shared else 'gpu-exclusive',
+                priority=a.priority,
+                reason='a game run (%d runs of %d s)' % (a.runs, a.seconds),
+                on_wait=lambda state: print(
+                    'snx-queue: waiting for the machine (%s)'
+                    % (
+                        '; '.join('%s pid %s' % (h.get('type'), h.get('pid')) for h in state['holders'])
+                        or 'no holder record'
+                    ),
+                    flush=True,
+                ),
+            )
+        except (queue.Refused, queue.Timeout) as e:
+            print(f'run_game: {e}', file=sys.stderr)
+            return 2 if isinstance(e, queue.Refused) else 1
     failed, no_pillow = 0, False
-    for i in range(1, a.runs + 1):
-        log = os.path.join(out, 'run%d.log' % i)
-        shot = os.path.join(out, 'run%d' % i)
-        cmd = [exe, '--seconds=%d' % a.seconds, '--shot=' + shot] + (['--script=' + a.script] if a.script else [])
-        with open(log, 'w') as f:
-            try:
-                # the shader loading screen before the game (prepare_shaders=2) may take up to --seconds itself
-                # before the game's own --seconds start (main.c prepare_wait)
-                r = subprocess.run(
-                    cmd + a.args, cwd=folder, stdout=f, stderr=subprocess.STDOUT, timeout=2 * a.seconds + 60
-                )
-                code = r.returncode
-            except subprocess.TimeoutExpired:
-                code = 'timeout'
-        line, bad = summarize(log, a.dump, a.seconds)
-        failed += bad or code != 0
-        # The runtime writes the last frame as <shot>.ppm; PNG is what an image viewer (or Claude) reads
-        if os.path.isfile(shot + '.ppm'):
-            try:
-                from PIL import Image
+    try:
+        for i in range(1, a.runs + 1):
+            log = os.path.join(out, 'run%d.log' % i)
+            shot = os.path.join(out, 'run%d' % i)
+            cmd = [exe, '--seconds=%d' % a.seconds, '--shot=' + shot] + (['--script=' + a.script] if a.script else [])
+            with open(log, 'w') as f:
+                try:
+                    # the shader loading screen before the game (prepare_shaders=2) may take up to --seconds itself
+                    # before the game's own --seconds start (main.c prepare_wait)
+                    r = subprocess.run(
+                        cmd + a.args, cwd=folder, stdout=f, stderr=subprocess.STDOUT, timeout=2 * a.seconds + 60
+                    )
+                    code = r.returncode
+                except subprocess.TimeoutExpired:
+                    code = 'timeout'
+            line, bad = summarize(log, a.dump, a.seconds)
+            failed += bad or code != 0
+            # The runtime writes the last frame as <shot>.ppm; PNG is what an image viewer (or Claude) reads
+            if os.path.isfile(shot + '.ppm'):
+                try:
+                    from PIL import Image
 
-                Image.open(shot + '.ppm').save(shot + '.png')
-                os.remove(shot + '.ppm')
-            except ImportError:
-                if not no_pillow:
-                    print('Pillow is not installed: the screenshots stay .ppm files', flush=True)
-                no_pillow = True
-        print('run %d: exit %s, %s' % (i, code, line), flush=True)
+                    Image.open(shot + '.ppm').save(shot + '.png')
+                    os.remove(shot + '.ppm')
+                except ImportError:
+                    if not no_pillow:
+                        print('Pillow is not installed: the screenshots stay .ppm files', flush=True)
+                    no_pillow = True
+            print('run %d: exit %s, %s' % (i, code, line), flush=True)
+    finally:
+        if hold is not None:
+            hold.release()
     print('%d of %d runs failed. Logs and screenshots: %s' % (failed, a.runs, out))
     return 1 if failed else 0
 

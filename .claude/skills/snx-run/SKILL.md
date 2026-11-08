@@ -75,6 +75,20 @@ The default script of `run_game.py` is for the boot of one game to its first cut
 16 s, Plus at 18 s, then A at 21, 31, 36, 40 and 44 s. Any other game needs its own `--script`. With save data from
 earlier runs, the screens come in a different order. Thus check the screenshots before you trust a script.
 
+## The lock of the machine
+
+The script takes the lock of the heavy work (`scripts/snx-queue.py`) for all of its runs. The default type is
+`gpu-exclusive`: one run has the GPU alone, and its frame times are true. `--shared` makes the type `gpu-shared`, and
+two such runs share the GPU. A larger `--priority` goes sooner, and `--no-queue` runs without the lock. The lock reads
+the power state before it starts. On battery, the script stops until the command carries `SNX_POWER_OK=1`.
+
+For a run by hand, wrap the command:
+
+```bash
+scripts/snx-queue.py run --type gpu-exclusive --priority 5 --reason "crash 12 of 20" -- <id> --seconds=60 --shot=PATH
+scripts/snx-queue.py status     # the holder, the queue and the power state
+```
+
 ## Read the log
 
 In a checkout, the log of the game is `recompiled/<id>/<id>.log`. A data folder keeps it in its state folder

@@ -12,10 +12,12 @@ and a rule's word inside a quoted string (grep 'a|sudo') doesn't trip it. Here-d
 text, not commands.
 """
 
+import importlib.util
 import json
 import os
 import re
 import shlex
+import subprocess
 import sys
 
 # Files that belong to the game's owner or are made from them: never staged, uploaded or edited
@@ -49,6 +51,26 @@ MSG_PGREP_KILL = (
 )
 MSG_SUDO = 'Do not use sudo. The user installs system packages. Tell the user what you need and why.'
 MSG_UPLOAD = 'Keys, dumps, work/ and games/ (and shader or texture dumps) never leave this machine.'
+
+# Commands that heat the machine and drain its battery: a container VM, a build, a test suite, a game
+HEAVY = {'podman', 'docker', 'ctest', 'ninja', 'make', 'scarletnx', 'snx-shaderc', 'snx-test-gui-sdl'}
+POWER_OK = 'SNX_POWER_OK=1'
+MSG_POWER = (
+    'The machine is on battery, or the user is active on it (a game, a video, their own work). This command is '
+    'heavy: a container VM, a build, a test suite, a game run or a recompile. Ask the user in the chat, and give the '
+    'command, about how long it takes and why. Wait for the answer. Then run it again with '
+    f'{POWER_OK} in front of it. One answer covers that command only.'
+)
+
+# The lock and queue of the heavy work of this machine (scripts/snx-queue.py)
+QUEUE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'scripts',
+                     'snx-queue.py')
+MSG_QUEUE = (
+    'Another session holds the lock of the heavy work of this machine. A build and a game run at the same time give '
+    'wrong frame times and a slow build. Take the queue, which waits for the other job: '
+    '`scripts/snx-queue.py run --type cpu -- <command>` for a build, a test suite, a recompile or an extract, and '
+    '`--type gpu-exclusive` for a measured game run. `scripts/snx-queue.py status` names the holder.'
+)
 
 
 def is_game_path(arg):
@@ -198,6 +220,81 @@ def check_upload(word, args):
     return any(' ' not in s and is_game_path(s) for s in sent)
 
 
+def host_busy():
+    """Why a heavy command needs the permission of the user: 'battery', 'active use', or '' when neither holds."""
+    if not sys.platform.startswith('darwin'):
+        return ''
+    try:
+        batt = subprocess.run(['pmset', '-g', 'batt'], capture_output=True, text=True, timeout=3).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ''
+    if 'Battery Power' in batt:
+        return 'battery power'
+    try:
+        held = subprocess.run(['pmset', '-g', 'assertions'], capture_output=True, text=True, timeout=3).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ''
+    for line in held.splitlines():
+        words = line.split()
+        if len(words) == 2 and words[0] in ('NoDisplaySleepAssertion', 'PreventUserIdleDisplaySleep'):
+            if words[1] == '1':
+                return 'active use'
+    return ''
+
+
+def check_power(command, cmds):
+    """A heavy command on battery, or while the user works on the machine, waits for the permission of the user."""
+    if POWER_OK in command:
+        return None
+    for _, word, args in cmds:
+        if heavy_command(word, args):
+            why = host_busy()
+            if why:
+                return f'{MSG_POWER} (This machine reports {why}.)'
+    return None
+
+
+def heavy_command(word, args):
+    """Whether this simple command heats the machine: a container VM, a build, a test suite, a game run, a recompile."""
+    heavy = word in HEAVY or re.fullmatch(r'[0-9a-f]{16}', word)
+    if word == 'cmake':
+        heavy = '--build' in args
+    elif word == 'scarletnx':
+        heavy = not any(a in ('--scan-log', '--mcp', '--help', '-h') or a.startswith('--scan-log=') for a in args)
+    elif word in ('python3', 'python'):
+        heavy = any(a.endswith('ci-local.py') for a in args) and '--static-only' not in args
+    return bool(heavy)
+
+
+def queue_holder():
+    """The holder of the heavy lock: its description, or '' when the machine is free or the tool is not there."""
+    try:
+        spec = importlib.util.spec_from_file_location('snx_queue', QUEUE)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        queue = module.Queue()
+        if queue.occupancy() == 'none':
+            return ''
+        holders = queue.holders()
+    except Exception:  # a missing tool or a broken state file must not stop every command
+        return ''
+    if not holders:
+        return 'a job that left no record'
+    return '; '.join(f'{h.get("type")} pid {h.get("pid")}' for h in holders)
+
+
+def check_queue(command, cmds):
+    """A heavy command waits for the lock of the heavy work of the machine (scripts/snx-queue.py)."""
+    if 'snx-queue.py' in command:  # the queue itself waits, and it says how long
+        return None
+    if not any(heavy_command(word, args) for _, word, args in cmds):
+        return None
+    holder = queue_holder()
+    if not holder:
+        return None
+    return f'{MSG_QUEUE} The holder is {holder}.'
+
+
 def check_bash(command):
     cmds = list(simple_commands(command))
     for wrappers, word, args in cmds:
@@ -215,7 +312,7 @@ def check_bash(command):
     pgrep_f = any(w == 'pgrep' and any(a == '--full' or 'f' in short_flags(a) for a in args) for _, w, args in cmds)
     if pgrep_f and any(w == 'kill' for _, w, _ in cmds):
         return MSG_PGREP_KILL
-    return None
+    return check_power(command, cmds) or check_queue(command, cmds)
 
 
 def main():
