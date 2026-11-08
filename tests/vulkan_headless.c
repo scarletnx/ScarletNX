@@ -5220,17 +5220,25 @@ static int check_map_lands_covered(void) {
     return 0;
 }
 
-/* The version the renderer runs at, and on a 1.2 device (--vk-api=1.2 makes one of a newer device) the 1.3 commands
-   under their extensions' names and shaders in SPIR-V 1.5: the checks after this one then run the 1.2 way, and the
-   validation layer, given that version, flags any 1.3 use left. What a 1.2 device lacks keeps it out, named */
 /* the ban lines check_vk12_way's stand-in device takes, as the log would say them */
 static void vk12_ban_say(const char* line, int warn) { printf("%s%s\n", warn ? "warning: " : "", line); }
+/* The version the renderer runs at, and on a 1.2 device (vk_api=1.2 makes one of a newer device, as the .ini
+   --settings-ini gives says) the 1.3 commands under their extensions' names and shaders in SPIR-V 1.5: the checks
+   after this one then run the 1.2 way, and the validation layer, given that version, flags any 1.3 use left. What a
+   1.2 device lacks keeps it out, named; a vk_api the renderer takes not is named with the ones it takes */
 static int check_vk12_way(void) {
     SpvEmitter e;
     spv_emit_init(&e, 0);
     u32 version = e.version;
     spv_emit_destroy(&e);
+    u32 cap = 1;
+    char why[64] = "";
+    CHECK(vk_api_setting("auto", &cap, why, sizeof why) && cap == 0);
+    CHECK(vk_api_setting("1.2", &cap, why, sizeof why) && cap == VK_API_VERSION_1_2);
+    CHECK(!vk_api_setting("1.3", &cap, why, sizeof why) && !strcmp(why, "vk_api=1.3 is not auto or 1.2"));
+    CHECK(!g_vk.api_cap == !strcmp(g_settings.vulkan_api, "auto"));
     if (g_vk.api_cap) {
+        CHECK(!strcmp(g_settings.vulkan_api, "1.2"));
         CHECK(g_vk.api < VK_API_VERSION_1_3 && g_vk.api >= VK_API_VERSION_1_2);
         CHECK(version == 0x00010500u);
         CHECK(vkCmdPipelineBarrier2 == vkCmdPipelineBarrier2KHR && vkQueueSubmit2 == vkQueueSubmit2KHR);
@@ -5311,6 +5319,21 @@ static int run_headless(int argc, char** argv) {
     u32 benchmark_passes = 0;
     const char* pipeline_probe = NULL;
     int pipeline_probe_disable = 0;
+    /* a game's .ini, opened as a run opens it, before the settings given here go over its values: a copy of it, which
+       ini_open writes again, in a folder of its own (--settings-ini=FILE) */
+    char* ini_dir = NULL;
+    for (int i = 1; i < argc; i++)
+        if (!strncmp(argv[i], "--settings-ini=", 15)) {
+            size_t size;
+            unsigned char* text = snx_read_file(argv[i] + 15, &size);
+            ini_dir = snx_temp_dir(NULL);
+            CHECK(text && ini_dir);
+            char* copy = snx_path_join(ini_dir, "game.ini");
+            CHECK(!snx_write_file(copy, text, size));
+            ini_open(copy);
+            free(copy);
+            free(text);
+        }
     /* the runtime's startup flags (-H), its settings as it takes them (--vk_memory=2, --memory_traps=2,
        --vertex_input_dynamic_state=off), and the benchmarks'. Any other argument stops the run: one dropped unsaid ran
        the checks without it */
@@ -5324,10 +5347,7 @@ static int run_headless(int argc, char** argv) {
             pipeline_probe = argv[i] + 17;
             continue;
         }
-        if (!strcmp(argv[i], "--vk-api=1.2")) { /* the 1.2 way (device.c vk12_extensions) on a newer device */
-            g_vk.api_cap = VK_API_VERSION_1_2;
-            continue;
-        }
+        if (!strncmp(argv[i], "--settings-ini=", 15)) continue; /* read before the others (above) */
         if (!strncmp(argv[i], "--pipeline-probe-disable-opt=", 29)) {
             CHECK(!strcmp(argv[i] + 29, "0") || !strcmp(argv[i] + 29, "1"));
             pipeline_probe_disable = argv[i][29] - '0';
@@ -5391,7 +5411,7 @@ static int run_headless(int argc, char** argv) {
                     "--bench-descriptors=N, --descriptor-images=N, --descriptor-indexed=N, --descriptor-count=N, "
                     "--bench-sparse-volume, --bench-sparse-texture, --bench-storage-lookup, --bench-storage-image, "
                     "--bench-storage-buffer, --bench-pass-breaks=N, --nvn-draw-bench=N, --bench-indexed-map=N, "
-                    "--pipeline-probe=FILE, --pipeline-probe-disable-opt=0|1, --vk-api=1.2\n",
+                    "--pipeline-probe=FILE, --pipeline-probe-disable-opt=0|1, --settings-ini=FILE\n",
                     argv[i]);
             return 2;
         }
@@ -5935,6 +5955,8 @@ static int run_headless(int argc, char** argv) {
     vk_pipeline_quiesce();
     CHECK(!viw_report());
     CHECK(!snx_remove_tree(root));
+    CHECK(!ini_dir || !snx_remove_tree(ini_dir));
+    free(ini_dir);
     free(root);
     free(shot);
     free(ppm);

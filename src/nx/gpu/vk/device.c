@@ -238,6 +238,15 @@ u32 vk_1_2_missing(const SnxVkExtensions* e, char* out, size_t size) {
     }
     return n;
 }
+int vk_api_setting(const char* text, u32* cap, char* why, size_t n) {
+    if (!strcmp(text, "auto") || !strcmp(text, "1.2")) {
+        *cap = text[0] == 'a' ? 0 : VK_API_VERSION_1_2;
+        return 1;
+    }
+    snprintf(why, n, "vk_api=%s is not auto or 1.2", text);
+    return 0;
+}
+
 /* the version the renderer runs a device of api at: the device's, up to 1.3 (or api_cap) */
 static u32 vk_api_for(u32 api) {
     u32 most = g_vk.api_cap ? g_vk.api_cap : VK_API_VERSION_1_3;
@@ -1382,6 +1391,12 @@ static int create_device(void) {
         vkGetPhysicalDeviceProperties2(g_vk.phys, &pp);
         LOG("vulkan: the driver that runs: %s, %s (driver ID %d)\n", dp.driverName, dp.driverInfo, (int)dp.driverID);
     }
+    if (g_vk.api_cap && g_vk.props.apiVersion >= VK_API_VERSION_1_3)
+        LOG("vulkan: vk_api=1.2 runs the Vulkan 1.2 way on this %u.%u device\n",
+            VK_API_VERSION_MAJOR(g_vk.props.apiVersion), VK_API_VERSION_MINOR(g_vk.props.apiVersion));
+    else if (g_vk.api_cap)
+        LOG("vulkan: vk_api=1.2 on a Vulkan %u.%u device, which runs the 1.2 way as auto would\n",
+            VK_API_VERSION_MAJOR(g_vk.props.apiVersion), VK_API_VERSION_MINOR(g_vk.props.apiVersion));
     if (core13)
         LOG("vulkan: the Vulkan 1.3 way: synchronization2, dynamic rendering and the extended dynamic state are core\n");
     else {
@@ -1667,6 +1682,12 @@ static int start_failed(void) {
 const char* vk_start_failure(void) { return g_vk.start_failure; }
 
 int vk_init(void) {
+    char why[64];
+    u32 cap;
+    /* the instance is made for the version the setting allows, so it is read before. A value it takes not stops the
+       game, as a player who wrote vk_api=1.3 would otherwise play the way they meant to leave */
+    if (!vk_api_setting(g_settings.vulkan_api, &cap, why, sizeof why)) fatal("settings: %s", why);
+    if (cap) g_vk.api_cap = cap;
     pm_init(&g_vklock);
     pm_init(&g_vk.sc_lock);
     if (g_opt_headless) {
