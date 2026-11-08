@@ -931,8 +931,8 @@ int main(int argc, char** argv) {
         run(exe, repo, dump, log, 1, "", "unknown option: --resoltion=2");
         set_env("SNX_WORKFLOW_FLAGS", "--controls_a=0.5 0.5 100 1");
         run(exe, repo, dump, log, 0, "G", NULL);
-        set_env("SNX_WORKFLOW_FLAGS", "--fullscreen=invalid");
-        run(exe, repo, dump, log, 1, "", "unknown option");
+        set_env("SNX_WORKFLOW_FLAGS", "--fullscreen=invalid"); /* the common option's own message (cli.h) */
+        run(exe, repo, dump, log, 1, "", "scarletnx: --fullscreen takes 0 or 1, not invalid");
         set_env("SNX_WORKFLOW_FLAGS", "--fullscreen=0");
         run(exe, repo, dump, log, 0, "G", NULL);
         set_env("SNX_WORKFLOW_FLAGS", "--fullscreen=1");

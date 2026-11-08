@@ -29,6 +29,7 @@
    answer is cut at MAX_LINES lines: the agent's context is the scarce part */
 #include "nx/runtime/driver/mcp.h"
 #include "nx/runtime/driver/mcp_int.h"
+#include "common/utilities/cli.h"
 #include "common/utilities/common.h"
 #include "common/utilities/state_header.h"
 #include "common/utilities/demangle.h"
@@ -127,11 +128,19 @@ static int mcp_open(Mcp* m, int argc, char** argv) {
     char *self, *dir, *work;
     int i;
     memset(m, 0, sizeof *m);
-    for (i = 2; i + 1 < argc; i++)
-        if (!strcmp(argv[i], "--data") || !strcmp(argv[i], "--repo")) {
-            if (!strcmp(argv[i], "--repo")) snx_option_renamed("--repo", "--data");
-            m->data = snx_absolute(argv[++i]);
+    for (i = 2; i < argc; i++) { /* --data DIR or --data=DIR, the common option (common/utilities/cli.h) */
+        SnxCliArg data;
+        char error[256];
+        int common = snx_cli_match(argc, argv, &i, SNX_CLI_BIT(SNX_CLI_DATA), "scarletnx", &data, error, sizeof error);
+        if (common == SNX_CLI_ERROR) {
+            fprintf(stderr, "%s\n", error);
+            return 1;
         }
+        if (common == SNX_CLI_DATA) {
+            free(m->data);
+            m->data = snx_absolute(data.value);
+        }
+    }
     self = snx_executable(argv[0]);
     if (!m->data) {
         dir = self ? snx_dirname(self) : NULL;
@@ -139,7 +148,7 @@ static int mcp_open(Mcp* m, int argc, char** argv) {
         free(dir);
     }
     m->self = self;
-    if (!m->data) return snx_error("--mcp: no data folder (name one with --repo)");
+    if (!m->data) return snx_error("--mcp: no data folder (name one with --data)");
     add_root(m, snx_strdup(m->data));
     add_root(m, snx_user_path(m->data, SNX_USER_STATE));
     m->cache = snx_user_path(m->data, SNX_USER_CACHE);

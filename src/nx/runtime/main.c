@@ -7,6 +7,7 @@
 #include "common/cpu/recompiler/llvm/gdb_jit.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/utilities/build_info.h"
+#include "common/utilities/cli.h"
 #include "common/utilities/endian.h"
 #include "common/utilities/ascii.h"
 #include "common/utilities/common.h"
@@ -1089,6 +1090,12 @@ int snx_main(int argc, char** argv) {
     const SnxModule* mod;
     u64 entry = 0; /* the main thread's, in the module as it runs (nce_module) */
     int status, i;
+    /* --game DIR and the run's settings the drivers share (--seconds N, --frames N, --shot PATH, --script SPEC), given
+       apart, as the --key=value the settings are read as (common/utilities/cli.h) */
+    const unsigned apart = SNX_CLI_BIT(SNX_CLI_GAME) | SNX_CLI_BIT(SNX_CLI_SECONDS) | SNX_CLI_BIT(SNX_CLI_FRAMES) |
+                           SNX_CLI_BIT(SNX_CLI_SHOT) | SNX_CLI_BIT(SNX_CLI_SCRIPT);
+    char** joined = snx_cli_joined(argc, argv, apart, &argc);
+    argv = joined;
     hle_init(); /* before anything, the options included, touches g_hle */
     nvn_init(); /* and g_nvn */
     /* The driver's dump-play options also belong to the runtime when it reads the dump in place. */
@@ -1280,5 +1287,6 @@ int snx_main(int argc, char** argv) {
 done:
     free(keys);
     free(title_keys);
+    free(joined);
     return status;
 }
