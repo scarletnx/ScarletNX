@@ -233,7 +233,7 @@ typedef struct {
 } GuiDumpIcons;
 /* the App screen's values, as its rows show them, and Folders' (what each row's folder is, past its path) */
 typedef struct {
-    char theme[64], text[64], language[64], animations[16], side[16], background[16], places[48], moves[32];
+    char theme[64], text[64], language[64], animations[16], side[16], background[48], places[48], moves[32];
     char drivers[64], freedreno[32];
     char folder[GUI_FOLDER_ROWS][64];
 } GuiAppForm;
@@ -410,12 +410,17 @@ typedef struct App {
     char* job_log;      /* where the running one's output goes, beside run_log; NULL keeps none */
     GuiUsage job_usage; /* its tree alone */
     bool job_aborting;
-    bool job_low;      /* its priority lowered: Background recompile Gentle, or a game playing */
+    bool job_low;      /* its priority lowered: Background recompile Gentle, Auto on battery, or a game playing */
     bool job_kept_low; /* the system refused to raise it again: low until it ends, job_said says why */
     char job_said[160];
     int job_threads;        /* the threads it was started with: 0 for the driver's own count (the AOT threads') */
     int queue_focus;        /* the Compile tab's row, a job of the queue */
-    bool background_gentle; /* app.ini's recompile_background = gentle: every recompile of the queue is */
+    int background_mode; /* app.ini's background_recompile: GUI_BACKGROUND_AUTO (Gentle on battery), FULL or GENTLE */
+    /* the host on its battery, as SDL said it at power_ms (asked again 5 s on, not each frame); power_test, a test's: 1
+       on its battery, -1 on its charger, 0 as SDL says */
+    bool power_battery;
+    Uint64 power_ms;
+    int power_test;
     /* the taskbar's progress as SDL was last given it, the value in percent: none until a recompile runs. What SDL
        said when it could not be shown, "" when it was */
     int taskbar_state, taskbar_value;
@@ -640,6 +645,7 @@ typedef struct App {
     char* games_key;     /* [folders] games = as app.ini had it, recompiled = before it was named so: written again */
     char* text_size_key; /* [app] text_size = as app.ini had it, ui_scale = before it was named so: written again */
     char* scale_gone;    /* [app] ui_scale = or text_size = Auto or a part of it, "ui_scale = auto": written again */
+    char* background_key; /* [app] recompile_background = as app.ini had it: written again as background_recompile */
     bool scale_new;      /* no UI scale in app.ini as the start read it: the start's, written by setup_start */
     GuiCleaned cleaned;  /* what it did, in a box over the screen while cleaned_shown, until a key closes it */
     bool cleaned_shown;
@@ -1352,9 +1358,22 @@ static const char* const place_labels[GUI_PLACES] = {SNX_TR_NOOP("Data"), SNX_TR
 /* side_box's words in app.ini, GuiSide's order, and as Settings > App shows them */
 static const char* const side_words[] = {"auto", "on", "off"};
 static const char* const side_names[] = {SNX_TR_NOOP("Auto"), SNX_TR_NOOP("On"), SNX_TR_NOOP("Off")};
-/* recompile_background's, full its default: the queue's recompiles at full speed, or gentle (job_gentle) */
-static const char* const background_words[] = {"full", "gentle"};
-static const char* const background_names[] = {SNX_TR_NOOP("Full"), SNX_TR_NOOP("Gentle")};
+/* background_recompile's, auto its default: the queue's recompiles gentle on battery and at full speed on the charger,
+   always at full speed, or always gentle (job_gentle) */
+enum { GUI_BACKGROUND_AUTO, GUI_BACKGROUND_FULL, GUI_BACKGROUND_GENTLE };
+static const char* const background_words[] = {"auto", "full", "gentle"};
+static const char* const background_names[] = {SNX_TR_NOOP("Auto"), SNX_TR_NOOP("Full"), SNX_TR_NOOP("Gentle")};
+/* a word of background_words, its index; -1 for none */
+static int background_word(const char* value) {
+    for (int w = 0; w < 3; ++w)
+        if (!strcmp(value, background_words[w])) return w;
+    return -1;
+}
+/* recompile_background's word, which background_recompile replaced: full, the default every app.ini wrote, is Auto;
+   gentle is Gentle; -1 for another */
+static int background_old(const char* value) {
+    return !strcmp(value, "full") ? GUI_BACKGROUND_AUTO : !strcmp(value, "gentle") ? GUI_BACKGROUND_GENTLE : -1;
+}
 /* the UI scales older versions had besides 1 to 4, as their app.ini named them, Auto and its parts: read as the
    number a start takes on that screen, said once (docs/DEPRECATIONS.md) */
 static const char* const scale_words_gone[] = {"auto", "0.25", "0.5", "0.75"};
@@ -1418,7 +1437,7 @@ static int app_write(App* app) {
                   app->language ? snx_gui_languages[app->language - 1].code : "auto");
     n += snprintf(text + n, size - (size_t)n, "animations = %d\n", !app->animations_off);
     n += snprintf(text + n, size - (size_t)n, "side_box = %s\n", side_words[app->side_box]);
-    n += snprintf(text + n, size - (size_t)n, "recompile_background = %s\n", background_words[app->background_gentle]);
+    n += snprintf(text + n, size - (size_t)n, "background_recompile = %s\n", background_words[app->background_mode]);
     n += snprintf(text + n, size - (size_t)n, "dumps_subfolders = %s\n", app->dumps_shallow ? "off" : "on");
     n += snprintf(text + n, size - (size_t)n, "dumps_main = %s\n", app->dumps_off ? "off" : "on");
     n += snprintf(text + n, size - (size_t)n, "recompiled_main = %s\n", app->recompiled_off ? "off" : "on");
@@ -1493,7 +1512,8 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
     const char* const* dirs = (const char* const*)app->themes_dirs;
     int scale = app->menu.text_size, language = app->language, n = 0, count = 0, moved = 0;
     int options[GUI_OPTIONS];
-    bool still = app->animations_off, gentle = app->background_gentle, kept, scale_read = false;
+    bool still = app->animations_off, kept_new = false, scale_read = false;
+    int background = app->background_mode, kept, old_background = -1;
     bool shallow = app->dumps_shallow, main_off = app->dumps_off, games_off = app->recompiled_off;
     bool full = app->probe_full;
     int side = app->side_box;
@@ -1512,12 +1532,17 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
     while (snx_ini_next(&ini, &key, &value)) {
         int option = strcmp(ini.section, "app") ? -1 : option_of(key);
         if (option >= 0 && option_word(option, value) >= 0) options[option] = option_word(option, value);
-        if (!strcmp(ini.section, "app") && !strcmp(key, "recompile_background") &&
-            (!strcmp(value, "full") || !strcmp(value, "gentle")))
-            gentle = !strcmp(value, "gentle");
+        if (!strcmp(ini.section, "app") && !strcmp(key, "background_recompile") && background_word(value) >= 0) {
+            background = background_word(value);
+            kept_new = true;
+        }
+        if (!strcmp(ini.section, "app") && !strcmp(key, "recompile_background") && background_old(value) >= 0)
+            old_background = background_old(value);
     }
     free(copy);
-    kept = gentle; /* what a word it does not know leaves in use */
+    /* recompile_background, an older version's, while background_recompile has no word: as it maps, written again */
+    if (!kept_new && old_background >= 0) background = old_background;
+    kept = background; /* what a word it does not know leaves in use */
     snx_ini_start(&ini, text);
     while (snx_ini_next(&ini, &key, &value)) {
         char* end = NULL;
@@ -1569,8 +1594,16 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
                 side = w;
                 continue;
             }
+        } else if (!strcmp(ini.section, "app") && !strcmp(key, "background_recompile")) {
+            if (background_word(value) >= 0) continue; /* taken in the first read */
         } else if (!strcmp(ini.section, "app") && !strcmp(key, "recompile_background")) {
-            if (!strcmp(value, "full") || !strcmp(value, "gentle")) continue; /* taken in the first read */
+            if (background_old(value) >= 0) {
+                if (apply && !kept_new) {
+                    free(app->background_key);
+                    app->background_key = snx_strdup(value);
+                }
+                continue; /* taken in the first read */
+            }
         } else if (!strcmp(ini.section, "app") && !strcmp(key, "animations")) {
             if (!strcmp(value, "0") || !strcmp(value, "1")) {
                 still = !strcmp(value, "0");
@@ -1627,7 +1660,8 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
         if (n < (int)size && option >= 0)
             n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"),
                           option_keys[option].words[options[option]]);
-        else if (n < (int)size && !strcmp(ini.section, "app") && !strcmp(key, "recompile_background"))
+        else if (n < (int)size && !strcmp(ini.section, "app") &&
+                 (!strcmp(key, "background_recompile") || !strcmp(key, "recompile_background")))
             n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"), background_words[kept]);
         else if (n < (int)size && !strcmp(ini.section, "app") && !strcmp(key, "dumps_subfolders"))
             n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"), shallow ? "off" : "on");
@@ -1661,7 +1695,7 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
     if (apply) app->probe_full = full;
     if (apply) snprintf(app->gpu_driver, sizeof app->gpu_driver, "%s", driver);
     if (apply) snprintf(app->freedreno, sizeof app->freedreno, "%s", freedreno);
-    if (apply) app->background_gentle = gentle;
+    if (apply) app->background_mode = background;
     if (apply && side != app->side_box) {
         app->side_box = side;
         layout(app);
@@ -1702,9 +1736,10 @@ static void app_load(App* app) {
         m = strlen(app->message);
         snprintf(app->message + m, sizeof app->message - m, snx_tr("Not used from %s: %s"), app->app_file, bad);
     }
-    /* [folders] games = and [app] text_size =, the names an older version wrote, and Auto or a part of it as UI scale:
-       written again as recompiled =, ui_scale = and the number, each said once */
-    if (app->games_key || app->text_size_key || app->scale_gone) {
+    /* [folders] games =, [app] text_size = and recompile_background =, the names an older version wrote, and Auto or a
+       part of it as UI scale: written again as recompiled =, ui_scale =, background_recompile = and the number, each
+       said once */
+    if (app->games_key || app->text_size_key || app->scale_gone || app->background_key) {
         char said[sizeof app->message];
         int failed;
         snprintf(said, sizeof said, "%s", app->message);
@@ -1730,7 +1765,17 @@ static void app_load(App* app) {
             snprintf(said + m, sizeof said - m, snx_tr("%s: %s is no longer a UI scale: ui_scale = %d now"),
                      app->app_file, app->scale_gone, app->menu.text_size);
         }
+        if (!failed && app->background_key) {
+            size_t m = strlen(said);
+            snprintf(said + m, sizeof said - m, "%s", m ? " " : "");
+            m = strlen(said);
+            snprintf(said + m, sizeof said - m,
+                     snx_tr("%s: recompile_background = %s is now background_recompile = %s"), app->app_file,
+                     app->background_key, background_words[app->background_mode]);
+        }
         if (!failed) snprintf(app->message, sizeof app->message, "%s", said);
+        free(app->background_key);
+        app->background_key = NULL;
         free(app->games_key);
         app->games_key = NULL;
         free(app->text_size_key);
@@ -7713,8 +7758,8 @@ static const GuiThemeKey app_keys[] = {
      0, 0, 0, 0, NULL},
     {"", SNX_TR_NOOP("Background recompile"), GUI_KEY_ACTION, offsetof(GuiAppForm, background),
      sizeof(((GuiAppForm*)0)->background), NULL, 0,
-     SNX_TR_NOOP("The Compile tab's: R's, B's and a game's first. Full: every core. Gentle: half of them, at a low "
-                 "priority. Either goes gently while a game plays"),
+     SNX_TR_NOOP("The Compile tab's: R's, B's and a game's first. Auto: Gentle on battery, Full on the charger. Full: "
+                 "every core. Gentle: half of them, at a low priority. Each goes gently while a game plays"),
      0, 0, 0, 0, NULL},
     {"", SNX_TR_NOOP("Theme Editor"), GUI_KEY_ACTION, 0, 0, NULL, 0,
      SNX_TR_NOOP("This theme's keys with a preview, saved as themes/<name>/theme.ini"), 0, 0, 0, 0, NULL},
@@ -7771,6 +7816,7 @@ static void size_shown(const App* app, char* out, size_t n) {
     else
         size_name(app->menu.text_size, out, n);
 }
+static bool on_battery(App* app);
 static void app_values(App* app) {
     GuiAppForm* f = &app->app_form;
     char games[4200], work[4200];
@@ -7783,7 +7829,11 @@ static void app_values(App* app) {
         snprintf(f->language, sizeof f->language, snx_tr("Auto: %s"), snx_gui_languages[snx_tr_language()].name);
     snprintf(f->animations, sizeof f->animations, "%s", app->animations_off ? snx_tr("Off") : snx_tr("On"));
     snprintf(f->side, sizeof f->side, "%s", snx_tr(side_names[app->side_box]));
-    snprintf(f->background, sizeof f->background, "%s", snx_tr(background_names[app->background_gentle]));
+    if (app->background_mode == GUI_BACKGROUND_AUTO) /* and what it is now */
+        snprintf(f->background, sizeof f->background, snx_tr("Auto: %s"),
+                 on_battery(app) ? snx_tr("Gentle, on battery") : snx_tr("Full"));
+    else
+        snprintf(f->background, sizeof f->background, "%s", snx_tr(background_names[app->background_mode]));
     moved = 0;
     for (int i = 0; i < GUI_PLACES; ++i) moved += app->place[i] != NULL;
     if (moved && app->folder_count)
@@ -10514,7 +10564,7 @@ static void app_action(App* app, int row, int step) {
         app->side_box = (app->side_box + (step < 0 ? 2 : 1)) % 3;
         layout(app);
     } else if (row == GUI_APP_BACKGROUND) { /* the one running follows at once (job_priority), its threads as started */
-        app->background_gentle = !app->background_gentle;
+        app->background_mode = (app->background_mode + (step < 0 ? 2 : 1)) % 3;
     } else if (row == GUI_APP_LANGUAGE) {
         app->language = (app->language + (step < 0 ? snx_gui_language_count : 1)) % (snx_gui_language_count + 1);
         language_apply(app);
@@ -14914,8 +14964,21 @@ static bool game_plays(const App* app) {
     return app->menu.running;
 #endif
 }
-/* a recompile of the queue goes gently: Background recompile Gentle, or a game playing */
-static bool job_gentle(const App* app) { return app->background_gentle || game_plays(app); }
+/* the host runs on its battery: SDL's power state, asked every 5 s at most */
+static bool on_battery(App* app) {
+    Uint64 now = SDL_GetTicks();
+    if (app->power_test) return app->power_test > 0;
+    if (!app->power_ms || now - app->power_ms >= 5000) {
+        app->power_battery = SDL_GetPowerInfo(NULL, NULL) == SDL_POWERSTATE_ON_BATTERY;
+        app->power_ms = now ? now : 1;
+    }
+    return app->power_battery;
+}
+/* a recompile of the queue goes gently: Background recompile Gentle, or Auto on battery, or a game playing */
+static bool job_gentle(App* app) {
+    return app->background_mode == GUI_BACKGROUND_GENTLE ||
+           (app->background_mode == GUI_BACKGROUND_AUTO && on_battery(app)) || game_plays(app);
+}
 /* how the one running goes, for the Status box: Full, or Gentle and why (the option, a game playing, a priority the
    system keeps low until it ends), with the threads it was started with when they were halved */
 static void job_speed(App* app, char* out, size_t size) {
@@ -14924,10 +14987,12 @@ static void job_speed(App* app, char* out, size_t size) {
         snprintf(out, size, snx_tr("Gentle until it ends: %s"), app->job_said);
     else if (!app->job_low)
         snprintf(out, size, "%s", snx_tr("Full"));
-    else if (!app->background_gentle)
-        snprintf(out, size, "%s", snx_tr("Gentle, a game plays"));
-    else
+    else if (app->background_mode == GUI_BACKGROUND_GENTLE)
         snprintf(out, size, "%s", snx_tr("Gentle"));
+    else if (app->background_mode == GUI_BACKGROUND_AUTO && on_battery(app))
+        snprintf(out, size, "%s", snx_tr("Gentle, on battery"));
+    else
+        snprintf(out, size, "%s", snx_tr("Gentle, a game plays"));
     n = strlen(out);
     if (app->job_threads && n < size) snprintf(out + n, size - n, snx_tr(", %d threads"), app->job_threads);
     n = strlen(out);

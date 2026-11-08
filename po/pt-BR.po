@@ -1345,6 +1345,11 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "%s: recompile_background = %s is now background_recompile = %s"
+msgstr "%s: recompile_background = %s agora é background_recompile = %s"
+
+#: src/gui/main.c
+#, c-format
 msgid "Recent Games not kept: %s could not be written."
 msgstr ""
 
@@ -2421,7 +2426,7 @@ msgid "Background recompile"
 msgstr ""
 
 #: src/gui/main.c
-msgid "The Compile tab's: R's, B's and a game's first. Full: every core. Gentle: half of them, at a low priority. Either goes gently while a game plays"
+msgid "The Compile tab's: R's, B's and a game's first. Auto: Gentle on battery, Full on the charger. Full: every core. Gentle: half of them, at a low priority. Each goes gently while a game plays"
 msgstr ""
 
 #: src/gui/main.c
@@ -2481,6 +2486,10 @@ msgstr ""
 #, c-format
 msgid "Auto: %s"
 msgstr "Auto: %s"
+
+#: src/gui/main.c
+msgid "Gentle, on battery"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
