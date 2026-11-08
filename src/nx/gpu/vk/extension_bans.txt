@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The drivers known to break a Vulkan extension or feature: which driver, which versions, on which system, what breaks,
+# and who found it. The renderer reads this before it turns anything on (gpu/vk/extension_bans.c): an "off" line takes
+# the extension out of the device's list, or turns the feature off where the renderer can do without it, and the log
+# says which, on which device, driver and version, and why. A "warn" line is only said: a ban another project lifted,
+# one not proven for the way this renderer uses the feature, or a part it has no way around. Compiled in
+# (cmake/vk_extension_bans.cmake); tests/vk_extension_bans.c reads it, and "snx-test-vk-bans --devices" lists the lines
+# that hold for this machine's drivers.
+#
+# A line per ban, its fields between |, in the header's order:
+#   key       an extension (VK_EXT_custom_border_color), taken out of the device's list; or a feature, property,
+#             dynamic state, format or call (shaderFloat16, VK_DYNAMIC_STATE_CULL_MODE, an extension's feature as
+#             VK_EXT_extended_dynamic_state3.extendedDynamicState3ColorBlendEquation), turned off where the renderer
+#             asks for it (vk_ban). The log names an "off" line that holds and nothing asked for
+#   action    off or warn
+#   driver    one of the names below (VkDriverId)
+#   versions  * for all of them, or bounds in the driver's own numbering: < V, <= V, >= V, > V, or a lower bound then an
+#             upper one (>= 512.676 < 512.680). NVIDIA's are A.B.C[.D] (580.119.02); Intel's Windows driver gives the
+#             last two of its four numbers (27.20.100.9684 or 100.9684); MoltenVK's are A.B.C (1.2.11); every other
+#             driver's are VK_MAKE_VERSION's A.B.C: Mesa's release (25.0.3; a -devel build is the release before's
+#             .99), Qualcomm's 512.800.48, Arm's r48p0 as 48.0.0, AMD's 2.0.302
+#   system    any, or a list of linux, android, windows, macos, ios, freebsd, openbsd, netbsd
+#   devices   *, or a list of the GPUs' deviceID (VkPhysicalDeviceProperties): 0x6020200 is an Adreno 622
+#   breaks    what goes wrong, as it reads after the driver and its versions: "NVIDIA's driver before 580.119.02 ..."
+#   source    where it is known from: a commit, a file and line at a commit, an issue
+#   retest    the case that tests it again: headless:ARGS (tests/vulkan_headless.c given ARGS), edenprobe:SUITE[: CASE],
+#             or new:headless: or new:edenprobe: and the case still to be written
+#   checked   never, or the date we last tested it and what we saw: 2026-11-04 broken on 512.800.48
+#   override  -, or the setting that turns it on anyway (KEY=VALUE), which the code owning that setting applies
+#
+# Drivers: amd-proprietary amdvlk radv nvidia intel-windows anv powervr qualcomm mali swiftshader ggp broadcom lavapipe
+# moltenvk coreavi juice verisilicon turnip v3dv panvk samsung venus dozen nvk powervr-mesa honeykrisp vulkansc
+# kosmickrisp gfxstream apesoft
+
+key | action | driver | versions | system | devices | breaks | source | retest | checked | override
+
+# Dynamic vertex input (gpu/vk/vertex_input.c: vertex_input_dynamic_state=auto keeps off what holds here, on goes over it)
+VK_EXT_vertex_input_dynamic_state | off | nvidia | < 580.119.02 | any | * | breaks dynamic vertex input | Eden PR 3379 (9b1f6801a5, 2026-02-05) | headless:--vertex_input_dynamic_state=on | never | vertex_input_dynamic_state=on
+VK_EXT_vertex_input_dynamic_state | off | intel-windows | < 27.20.100.0 | any | * | breaks dynamic vertex input | yuzu 279005448a (2022-12-31), kept by Eden | headless:--vertex_input_dynamic_state=on | never | vertex_input_dynamic_state=on
+
+# A vertex binding's stride as dynamic state (pipeline.c puts it in the pipeline instead)
+VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE | off | moltenvk | * | any | * | fails every pipeline that lists it: Metal has no dynamic stride | ScarletNX 5d9691ab2 (2026-10-21) | headless: | 2026-10-21 broken, version not recorded | -
+
+# Float controls (device.c; without them shaders do the same in 32 bits)
+shaderDenormFlushToZeroFloat32 | off | qualcomm | * | any | * | miscompiles shaders that declare DenormFlushToZero for 32 bits: one game's waterfall shader drew its background's colour on an Adreno 740 | ScarletNX 33bf51294 (2026-10-22); Eden PR 4297 (60a474b8df, 2026-08-24) found the same | new:headless:a fragment shader declaring DenormFlushToZero whose FMUL, FADD and FFMA results are read back | 2026-10-22 broken on 512.676 | -

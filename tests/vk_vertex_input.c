@@ -1,11 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* vertex_input_dynamic_state (gpu/vk/vertex_input.c), with no GPU: its values, the setting read from a game's .ini of
-   a version without it and of one with it, the drivers' bans against stand-in devices (each ban, the first version past
-   it, on over it), auto off on Android whatever the driver (Qualcomm's and Turnip there, Qualcomm's elsewhere keeping
-   it), and the log line of every case naming the device, the driver, its version, the value given and the path in
-   effect */
+   a version without it and of one with it, the ban extension_bans.txt holds for stand-in devices (NVIDIA's before
+   580.119.02, on over it), auto off on Android whatever the driver (Qualcomm's and Turnip there, Qualcomm's elsewhere
+   keeping it), and the log line of every case naming the device, the driver, its version, the value given, the path in
+   effect and the ban where one decides */
 #include "nx/gpu/vk/vertex_input.h"
+#include "nx/gpu/vk/extension_bans.h"
 #include "nx/runtime/ini.h"
 #include "snx_settings.h"
 #include <stdio.h>
@@ -117,60 +118,6 @@ static void check_files(void) {
 }
 
 #define NV(major, minor, patch) ((major) << 22 | (minor) << 14 | (patch) << 6)
-#define INTEL_WIN(major, minor) ((major) << 14 | (minor))
-static void check_versions(void) {
-    static const struct {
-        u32 id, v;
-        const char* text;
-    } cases[] = {{VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(580u, 119u, 2u), "580.119.02"},
-                 {VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(575u, 64u, 5u) | 3u, "575.64.05"},
-                 {VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS, INTEL_WIN(101u, 4502u), "101.4502"},
-                 {VK_DRIVER_ID_MESA_RADV, VK_MAKE_VERSION(26u, 1u, 8u), "26.1.8"},
-                 {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, VK_MAKE_VERSION(512u, 676u, 0u), "512.676.0"}};
-    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
-        char got[32], what[96];
-        vk_driver_version_text(cases[i].id, cases[i].v, got, sizeof got);
-        snprintf(what, sizeof what, "driver %u version %#x is %s, not %s", (unsigned)cases[i].id, (unsigned)cases[i].v,
-                 cases[i].text, got);
-        CHECK(!strcmp(got, cases[i].text), what);
-    }
-}
-
-static void check_bans(void) {
-    static const char nvidia[] = "NVIDIA's driver before 580.119.02",
-                      intel[] = "Intel's Windows driver before 27.20.100.0";
-    static const struct {
-        u32 id, v;
-        const char* ban;
-    } cases[] = {
-        {VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(580u, 119u, 1u), nvidia},
-        {VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(580u, 118u, 255u) | 63u, nvidia},
-        {VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(470u, 256u - 1u, 2u), nvidia},
-        {VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(580u, 119u, 2u), NULL},
-        {VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(580u, 119u, 2u) | 1u, NULL},
-        {VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(590u, 48u, 1u), NULL},
-        {VK_DRIVER_ID_NVIDIA_PROPRIETARY, 0xffffffffu, NULL},
-        {VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS, INTEL_WIN(99u, 16383u), intel},
-        {VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS, 0u, intel},
-        {VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS, INTEL_WIN(100u, 0u), NULL},
-        {VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS, INTEL_WIN(101u, 4502u), NULL},
-        /* the same versions of other drivers: no ban */
-        {VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA, 0u, NULL},
-        {VK_DRIVER_ID_MESA_NVK, NV(470u, 1u, 1u), NULL},
-        {VK_DRIVER_ID_MESA_RADV, 0u, NULL},
-        {VK_DRIVER_ID_AMD_PROPRIETARY, 0u, NULL},
-        {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, 0u, NULL},
-        {VK_DRIVER_ID_SAMSUNG_PROPRIETARY, 0u, NULL},
-        {VK_DRIVER_ID_MOLTENVK, 0u, NULL},
-    };
-    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
-        const char* got = vk_vi_ban(cases[i].id, cases[i].v);
-        char what[160];
-        snprintf(what, sizeof what, "driver %u version %#x: ban \"%s\", got \"%s\"", (unsigned)cases[i].id,
-                 (unsigned)cases[i].v, cases[i].ban ? cases[i].ban : "none", got ? got : "none");
-        CHECK(cases[i].ban ? got && !strcmp(got, cases[i].ban) : !got, what);
-    }
-}
 
 /* every mode on a banned driver and a driver without a ban, with the extension, without its feature and without it */
 static void check_choices(void) {
@@ -179,34 +126,56 @@ static void check_choices(void) {
         VkViDevice d;
         const char* version;
         int banned;
+        const char* ban; /* how the log names the ban that holds */
     } devices[] = {
-        {{"NVIDIA GeForce RTX 3060", "NVIDIA", "575.64.05", VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(575u, 64u, 5u), 2, 0},
+        {{"NVIDIA GeForce RTX 3060", "NVIDIA", "575.64.05", VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(575u, 64u, 5u), 2, 0,
+          NULL},
          "575.64.05",
-         1},
+         1,
+         "NVIDIA's driver before 580.119.02 breaks dynamic vertex input ("},
         {{"AMD Radeon RX 6700 XT (RADV NAVI22)", "radv", "Mesa 26.1.8", VK_DRIVER_ID_MESA_RADV,
-          VK_MAKE_VERSION(26u, 1u, 8u), 2, 0},
+          VK_MAKE_VERSION(26u, 1u, 8u), 2, 0, NULL},
          "26.1.8",
-         0},
+         0,
+         NULL},
         /* Android: auto off whatever the driver; the same Qualcomm driver off Android keeps it */
         {{"Adreno (TM) 830", "Qualcomm Technologies Inc. Adreno Vulkan Driver", "Driver Build: 2fbb164246",
-          VK_DRIVER_ID_QUALCOMM_PROPRIETARY, VK_MAKE_VERSION(512u, 800u, 48u), 2, 1},
+          VK_DRIVER_ID_QUALCOMM_PROPRIETARY, VK_MAKE_VERSION(512u, 800u, 48u), 2, 1, NULL},
          "512.800.48",
-         0},
+         0,
+         NULL},
         {{"Turnip Adreno (TM) 830", "turnip Mesa driver", "Mesa 26.0.0", VK_DRIVER_ID_MESA_TURNIP,
-          VK_MAKE_VERSION(26u, 0u, 0u), 2, 1},
+          VK_MAKE_VERSION(26u, 0u, 0u), 2, 1, NULL},
          "26.0.0",
-         0},
+         0,
+         NULL},
         {{"Adreno (TM) 830", "Qualcomm Technologies Inc. Adreno Vulkan Driver", "Driver Build: 2fbb164246",
-          VK_DRIVER_ID_QUALCOMM_PROPRIETARY, VK_MAKE_VERSION(512u, 800u, 48u), 2, 0},
+          VK_DRIVER_ID_QUALCOMM_PROPRIETARY, VK_MAKE_VERSION(512u, 800u, 48u), 2, 0, NULL},
          "512.800.48",
-         0},
+         0,
+         NULL},
     };
+    char err[512] = "";
+    CHECK(vk_bans_load(snx_vk_extension_bans_text, err, sizeof err), err);
     for (size_t d = 0; d < sizeof devices / sizeof *devices; d++)
         for (int has = 0; has <= 2; has++)
             for (int mode = SNX_VK_VI_AUTO; mode <= SNX_VK_VI_OFF; mode++) {
                 VkViDevice dev = devices[d].d;
-                char line[1024], what[1200], value[48];
+                /* the ban as the device asks the table for it */
+                VkBanDevice bd = {dev.device,
+                                  dev.driver_name,
+                                  dev.driver_info,
+                                  dev.driver_id,
+                                  dev.driver_version,
+                                  0,
+                                  dev.android ? SNX_VK_BAN_ANDROID : SNX_VK_BAN_LINUX};
+                char line[2048], what[2200], value[48], ban[1200];
                 int warn = -1;
+                vk_bans_device(&bd);
+                uint32_t ban_line = vk_ban_find("VK_EXT_vertex_input_dynamic_state");
+                if (ban_line) vk_ban_why(ban_line, ban, sizeof ban);
+                CHECK(!ban_line == !devices[d].banned, "the table bans the devices it names");
+                dev.ban = ban_line ? ban : NULL;
                 dev.has = has;
                 int dynamic = vk_vi_choose(mode, &dev, line, sizeof line, &warn);
                 int android = dev.android && mode == SNX_VK_VI_AUTO;
@@ -223,10 +192,10 @@ static void check_choices(void) {
                 CHECK(strstr(line, dynamic ? "as dynamic state" : "a pipeline of its own") &&
                           !strstr(line, dynamic ? "a pipeline of its own" : "as dynamic state"),
                       what);
-                /* a ban is named where it decides, or where on goes over it */
-                int names_ban = strstr(line, "NVIDIA's driver before 580.119.02") != NULL;
-                CHECK(names_ban == (devices[d].banned && has == 2 && mode != SNX_VK_VI_OFF), what);
-                CHECK(!strstr(line, "over the ban") == !(devices[d].banned && dynamic), what);
+                /* a ban is named where it decides, or where on goes over it, with what breaks and the table's line */
+                int names_ban = devices[d].ban && strstr(line, devices[d].ban) && strstr(line, "extension_bans.txt:");
+                CHECK(names_ban == (devices[d].banned && has == 2 && mode != SNX_VK_VI_OFF && !android), what);
+                CHECK(!strstr(line, "over the ban: ") == !(devices[d].banned && dynamic), what);
                 /* Android is named where it decides */
                 CHECK((strstr(line, "off on Android, as Eden") != NULL) == (android && has == 2), what);
                 if (has < 2 && mode != SNX_VK_VI_OFF)
@@ -240,8 +209,6 @@ int main(void) {
     ini_set_say(say);
     check_values();
     check_files();
-    check_versions();
-    check_bans();
     check_choices();
     printf("%s: %u checks, %u failed\n", g_test.failures ? "FAIL" : "PASS", g_test.checks, g_test.failures);
     return g_test.failures != 0;

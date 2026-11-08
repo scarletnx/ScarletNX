@@ -14,6 +14,7 @@
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/descriptor_heaps.h"
 #include "nx/gpu/texture/astc_bc.h"
+#include "nx/gpu/vk/extension_bans.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
 
@@ -289,6 +290,14 @@ static void astc_choose(void) {
         LOG("vulkan: astc_mode=2 (BC7): ASTC textures are %s\n", bc7);
 }
 
+/* a line of the extension bans (extension_bans.h) for the log */
+static void ban_say(const char* line, int warn) {
+    if (warn)
+        WARN("%s\n", line);
+    else
+        LOG("%s\n", line);
+}
+
 static int create_device(void) {
     g_vk.phys = snx_vk_best_device(g_vk.instance, VK_API_VERSION_1_3, device_rating, NULL);
     if (!g_vk.phys) {
@@ -304,6 +313,15 @@ static int create_device(void) {
                                               .pNext = &subgroup};
     VkPhysicalDeviceProperties2 pp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p12};
     vkGetPhysicalDeviceProperties2(g_vk.phys, &pp2);
+    {
+        /* the drivers known to break an extension or feature, read before any is turned on: a table the build
+           carries that does not read is the build's fault, and which bans hold would be unknown */
+        char err[512];
+        if (!vk_bans_load(snx_vk_extension_bans_text, err, sizeof err)) fatal("vulkan: %s", err);
+        VkBanDevice bd = {g_vk.props.deviceName,    p12.driverName,      p12.driverInfo, (uint32_t)p12.driverID,
+                          g_vk.props.driverVersion, g_vk.props.deviceID, vk_ban_system()};
+        vk_bans_device(&bd);
+    }
     g_vk_subgroup_stages =
         subgroup.subgroupSize >= 32 &&
                 (subgroup.supportedOperations & (VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT |
@@ -315,18 +333,17 @@ static int create_device(void) {
     g_shader_quad = (g_vk_subgroup_stages & VK_SHADER_STAGE_FRAGMENT_BIT) &&
                     (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT);
     g_vk_preserve_infnan = p12.shaderSignedZeroInfNanPreserveFloat32 != 0;
-    /* MoltenVK fails every pipeline that lists VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE (Metal's dynamic stride) */
-    g_vk.has_dynamic_stride = p12.driverID != VK_DRIVER_ID_MOLTENVK;
+    /* a binding's stride as dynamic state, core in Vulkan 1.3, unless a driver is banned from it (MoltenVK's fails every
+       pipeline that lists it): pipeline.c puts the stride in the pipeline then */
+    g_vk.has_dynamic_stride = !vk_ban("VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE", 1, ban_say);
     g_vk_preserve_infnan64 = p12.shaderSignedZeroInfNanPreserveFloat64 != 0;
     g_vk.has_minmax_swizzle = p12.filterMinmaxImageComponentMapping != 0;
-    /* 32 bit alone: a device whose denorm modes can't differ per width would need 16 and 64 bit declared too.
-       Qualcomm's driver claims the mode but miscompiles with it: a fragment shader of one game's waterfalls, all of
-       its FMUL, FADD and FFMA FTZ as NVIDIA's compiler made them, drew the background's colour on an Adreno 740
-       (driver 512.676), and right with the execution mode taken out of the same SPIR-V. Its FTZ is done per
-       instruction there, as on a device without the mode */
-    g_vk_flush_denorm = p12.shaderDenormFlushToZeroFloat32 &&
-                        p12.denormBehaviorIndependence != VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE &&
-                        p12.driverID != VK_DRIVER_ID_QUALCOMM_PROPRIETARY;
+    /* 32 bit alone: a device whose denorm modes can't differ per width would need 16 and 64 bit declared too. A driver
+       banned from the mode (Qualcomm's miscompiles with it) has its FTZ done per instruction, as on a device without
+       it */
+    int flush_denorm = p12.shaderDenormFlushToZeroFloat32 &&
+                       p12.denormBehaviorIndependence != VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
+    g_vk_flush_denorm = flush_denorm && !vk_ban("shaderDenormFlushToZeroFloat32", flush_denorm, ban_say);
     /* without it, vk_pipeline_init measures whether the device flushes by itself (vk_ftz_native) */
     if (!g_vk_preserve_infnan) WARN("vulkan: FP32 signed-zero/Inf/NaN preservation unavailable on this GPU\n");
 
@@ -438,6 +455,8 @@ static int create_device(void) {
     {
         SnxVkExtensions e;
         snx_vk_device_extensions(g_vk.phys, &e);
+        /* the extensions a driver is banned from leave the list before anything below reads it */
+        vk_bans_filter(&e, ban_say);
         g_vk.has_divisor = snx_vk_extensions_has(&e, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
         has_vertex_input = snx_vk_extensions_has(&e, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
         g_vk.has_xfb = snx_vk_extensions_has(&e, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
@@ -656,7 +675,9 @@ static int create_device(void) {
            drivers known to draw it wrong (vertex_input.h). A value the setting doesn't take stops the game here, as
            a player who wrote vertex_input_dynamic_state=of would otherwise play with what they meant to turn off */
         int mode = vk_vi_mode(g_settings.vertex_input_dynamic_state), warn;
-        char line[1024];
+        char line[2048], ban[1200];
+        uint32_t ban_line = vk_ban_find(VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
+        if (ban_line) vk_ban_why(ban_line, ban, sizeof ban);
         if (mode < 0)
             fatal("settings: vertex_input_dynamic_state=%s is not auto, on or off",
                   g_settings.vertex_input_dynamic_state);
@@ -671,7 +692,8 @@ static int create_device(void) {
                          (u32)p12.driverID,
                          g_vk.props.driverVersion,
                          has_vertex_input ? (qvertex_input.vertexInputDynamicState ? 2 : 1) : 0,
-                         android};
+                         android,
+                         ban_line ? ban : NULL};
         g_vk.vertex_input_dynamic = vk_vi_choose(mode, &vd, line, sizeof line, &warn);
         if (warn)
             WARN("%s\n", line);
@@ -1120,6 +1142,7 @@ static int create_device(void) {
     else
         LOG("vulkan: draws that sample a color target they render to read a copy of it (no attachment feedback "
             "loops)\n");
+    vk_bans_unclaimed(ban_say); /* a ban on something nothing here asked about, said rather than dropped */
     return 1;
 }
 
