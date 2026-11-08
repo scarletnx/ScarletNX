@@ -122,7 +122,12 @@ static void unpages_locked(uint32_t start, uint32_t size) {
     if (h.count == h.capacity) {
         size_t n = h.capacity ? h.capacity * 2 : 256;
         Range* r = realloc(h.free, n * sizeof *r);
-        if (!r) return; /* the pages are lost, not reused */
+        if (!r) {
+            fprintf(stderr,
+                    "scarletnx-android: arm32: no memory to list 0x%x free bytes at 0x%08x: they are not used again\n",
+                    size, start);
+            return;
+        }
         h.free = r;
         h.capacity = n;
     }
@@ -250,7 +255,7 @@ void arm32_free(uint32_t p) {
         pthread_mutex_unlock(&h.lock);
         return;
     }
-    fprintf(stderr, "scarletnx-android: arm32: free(0x%08x) of no block, ignored\n", p);
+    fprintf(stderr, "scarletnx-android: arm32: free(0x%08x) of an address no allocation gave: nothing is freed\n", p);
 }
 
 uint32_t arm32_memalign(uint32_t align, uint32_t size) {
