@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/driver/container.h"
 #include "nx/runtime/driver/driver.h"
+#include "common/utilities/cli.h"
 #include "common/utilities/common.h"
 #include "common/platform/file.h"
 #include "common/utilities/demangle.h"
@@ -44,46 +45,39 @@ static struct {
 #define PROGRAM_SUFFIX ""
 #endif
 
+/* the common options (common/utilities/cli.h) the driver takes: all but --output, as the game's folder is
+   <outdir>/<title ID> and --out names the dump's extraction. --seconds, --frames, --shot and --script are settings of
+   the game's run, which the runtime reads as --key=value, as it reads --game */
+static const unsigned nx_cli_joined = SNX_CLI_BIT(SNX_CLI_GAME) | SNX_CLI_BIT(SNX_CLI_SECONDS) |
+                                      SNX_CLI_BIT(SNX_CLI_FRAMES) | SNX_CLI_BIT(SNX_CLI_SHOT) |
+                                      SNX_CLI_BIT(SNX_CLI_SCRIPT);
+static const unsigned nx_cli =
+    SNX_CLI_BIT(SNX_CLI_GAME) | SNX_CLI_BIT(SNX_CLI_SECONDS) | SNX_CLI_BIT(SNX_CLI_FRAMES) | SNX_CLI_BIT(SNX_CLI_SHOT) |
+    SNX_CLI_BIT(SNX_CLI_SCRIPT) | SNX_CLI_BIT(SNX_CLI_EXTRACT) | SNX_CLI_BIT(SNX_CLI_EXTRACT_CONTAINER) |
+    SNX_CLI_BIT(SNX_CLI_RECOMPILE) | SNX_CLI_BIT(SNX_CLI_UPDATE) | SNX_CLI_BIT(SNX_CLI_DATA) |
+    SNX_CLI_BIT(SNX_CLI_OUTDIR) | SNX_CLI_BIT(SNX_CLI_KEYS) | SNX_CLI_BIT(SNX_CLI_FULLSCREEN) |
+    SNX_CLI_BIT(SNX_CLI_HEADLESS) | SNX_CLI_BIT(SNX_CLI_HELP);
 static void usage(void) {
     puts("Usage: scarletnx [OPTIONS] INPUT [-- GAME_ARGUMENTS...]\n"
          "  INPUT                  Extract, recompile if needed, then play XCI/NSP/DXCI/DNSP/NRO\n"
-         "  -- GAME_ARGUMENTS...   Everything after the -- goes to the game as given; the options here go\n"
-         "                         before it\n"
-         "  -x, --extract          Extract XCI/NSP/DXCI/DNSP\n"
-         "  -r, --recompile        Recompile ExeFS/NRO, or prepare a dump, without playing\n"
-         "  -H, --headless         Run without a window or swapchain");
-    puts("  --tracy                Start the Tracy client for a GUI connection (SNX_TRACY builds)\n"
+         "  -- GAME_ARGUMENTS...   Everything after the -- goes to the game as given. The options here go\n"
+         "                         before it");
+    snx_cli_help(stdout, nx_cli);
+    puts("Switch options:\n"
+         "  --tracy                Start the Tracy client for a GUI connection (SNX_TRACY builds)\n"
          "  --tracy-capture        Record the run with tracy-capture, from Tracy 0.14.1 on PATH (SNX_TRACY builds)");
-    puts(
-        "  -f, --fullscreen       Start fullscreen for this run (--fullscreen=0: windowed); else the game's .ini decides\n"
-        "  --touch=0|1|2          The game's touch screen: off, fingers, or fingers and the mouse\n"
-        "  --controls=0|1         The on-screen controls: hidden or shown\n"
-        "  --KEY=VALUE            Any setting of the game's .ini, for this run\n"
-        "  --settings[=recompile] List the settings, tab-separated");
+    puts("  --touch=0|1|2          The game's touch screen: off, fingers, or fingers and the mouse\n"
+         "  --controls=0|1         The on-screen controls: hidden or shown\n"
+         "  --KEY=VALUE            Any setting of the game's .ini, for this run\n"
+         "  --settings[=recompile] List the settings, tab-separated");
     puts("  --program N            The program of a collection's application to play (default: 0, its own, the\n"
-         "                         collection's menu); one that is not made plays program 0, said\n"
-         "  --update FILE          An update's or a DLC's dump, played or prepared with the game; once each\n"
-         "  -x -h / -r -h          Extraction / recompilation options\n"
-         "  --game=DIR             Play the recompiled game in DIR (recompiled/<title ID>)");
-    puts("  --extract-container    Extract the dump into the game's data folder; without it the game reads the dump\n"
-         "                         in place\n"
-         "  --tmpfs                Extract to tmpfs, <temp>/scarletnx/work/<title ID> (implies --extract-container)\n"
-         "  -O LEVEL               The recompile's optimization: 0, 1, 2, 3, s or z (default: 2); a game made\n"
+         "                         collection's menu). One that is not made plays program 0, said\n"
+         "  -x -h / -r -h          Extraction / recompilation options");
+    puts("  --tmpfs                Extract to tmpfs, <temp>/scarletnx/work/<title ID> (implies --extract-container)\n"
+         "  -O LEVEL               The recompile's optimization: 0, 1, 2, 3, s or z (default: 2). A game made\n"
          "                         already keeps its code until -r");
-    puts("  --outdir DIR           Where the game's folder goes (default: recompiled/)\n"
-         "  --out DIR              The dump's extraction (default: work/<its name>)\n"
-         "  --data DIR             The data folder: recompiled/, work/ and the keys (default: a\n"
-         "                         .scarletnx folder beside the AppImage or the program,\n"
-         "                         else the user's data folder,\n"
-#ifdef _WIN32
-         "                         %APPDATA%\\scarletnx)");
-#elif defined(__APPLE__)
-         "                         ~/Library/Application Support/scarletnx)");
-#else
-         "                         ~/.local/share/scarletnx)");
-#endif
-    puts("  --keys FILE            prod.keys for this run (default: the data folder, then ~/.switch)\n"
-         "  --title-keys FILE      title.keys for this run, found the same way (optional)");
+    puts("  --out DIR              The dump's extraction (default: work/<its name>)\n"
+         "  --title-keys FILE      title.keys for this run, found as --keys's prod.keys is (optional)");
     puts("  --setup                Go through the setup in the terminal: the language, the install, the\n"
          "                         folders, the keys and the first user (asked by itself the first time\n"
          "                         a terminal runs a dump, or after an update says what changed)\n"
@@ -99,6 +93,19 @@ static void usage(void) {
     puts("  -S                     Enable the native GDB stub on localhost:1234\n"
          "  -s                     Enable the stub and stop at startup\n"
          "Short options may be combined, for example -rx or -Hs.");
+#endif
+    puts("\nOn the Switch, INPUT and --update take dumps (XCI, NSP, DXCI, DNSP), and the game's folder is\n"
+         "<outdir>/<title ID>. --keys takes prod.keys (default: the data folder, then ~/.switch). Without -f or\n"
+         "--fullscreen=0 the game's .ini decides. --headless runs without a window or swapchain. --seconds,\n"
+         "--frames, --shot and --script are settings of the game's run, which reach it as --key=value. The data\n"
+         "folder holds recompiled/, work/ and the keys. Its default is a .scarletnx folder beside the AppImage or\n"
+         "the program, else the user's data folder,"
+#ifdef _WIN32
+         " %APPDATA%\\scarletnx.");
+#elif defined(__APPLE__)
+         " ~/Library/Application Support/scarletnx.");
+#else
+         " ~/.local/share/scarletnx.");
 #endif
 }
 static int is_nro_path(const char* path) {
@@ -1400,7 +1407,10 @@ int snx_driver(int argc, char** argv) {
     const char *prod_keys_flag = NULL, *title_keys_flag = NULL;
     unsigned flags = 0;
     int i, j, n = 0, separator = argc, result = -1, tool_paths = 0, help = 0, parsed, automatic, tmpfs_args = 0;
-    int repo_given = 0, settings = 0, recompiling = 0, taken = 0;
+    int repo_given = 0, settings = 0, recompiling = 0, taken = 0, common;
+    char** joined = NULL;
+    SnxCliArg arg;
+    char error[256];
     previous_keys_override = snx_setup_keys_override_get();
     snx_setup_keys_override_set(NULL, NULL);
 #ifdef SNX_IOS
@@ -1422,6 +1432,9 @@ int snx_driver(int argc, char** argv) {
         result = snx_logscan_main(argc - 1, argv + 1, snx_demangle);
         goto done;
     }
+    /* --game DIR and the run's settings given apart are joined into the --key=value the runtime reads */
+    joined = snx_cli_joined(argc, argv, nx_cli_joined, &argc);
+    argv = joined;
     rest = (char**)snx_alloc((size_t)(3 * argc + 1) * sizeof(*rest));
     setting = rest + argc + 1;
     recompile = setting + argc;
@@ -1430,23 +1443,55 @@ int snx_driver(int argc, char** argv) {
             separator = i;
             break;
         }
-        if (!strcmp(argv[i], "--repo")) snx_option_renamed("--repo", "--data");
-        if (!strcmp(argv[i], "--data") || !strcmp(argv[i], "--repo") || !strcmp(argv[i], "--build-dir")) {
-            int is_repo = strcmp(argv[i], "--build-dir") != 0;
+        /* the common options (common/utilities/cli.h), in the forms the stages after take them: --data here,
+           --update, --outdir and --keys as the option and its value, --game and the run's settings as --key=value
+           (joined above), and the flags */
+        common = snx_cli_match(argc, argv, &i, nx_cli, "scarletnx", &arg, error, sizeof error);
+        if (common < 0) {
+            fprintf(stderr, "%s\n", error);
+            result = 1;
+            goto done;
+        }
+        switch (common) {
+            case 0: break;
+            case SNX_CLI_DATA:
+                tool_paths = 1;
+                repo = arg.value;
+                repo_given = 1;
+                break;
+            case SNX_CLI_UPDATE:
+            case SNX_CLI_OUTDIR:
+            case SNX_CLI_KEYS:
+                rest[n++] = common == SNX_CLI_UPDATE ? "--update" : common == SNX_CLI_OUTDIR ? "--outdir" : "--keys";
+                rest[n++] = (char*)arg.value;
+                break;
+            case SNX_CLI_GAME:
+            case SNX_CLI_SECONDS:
+            case SNX_CLI_FRAMES:
+            case SNX_CLI_SHOT:
+            case SNX_CLI_SCRIPT: rest[n++] = argv[i]; break;
+            case SNX_CLI_HELP:
+                help = 1;
+                rest[n++] = argv[i]; /* -x's and -r's own help */
+                break;
+            case SNX_CLI_FULLSCREEN:
+                flags &= ~(unsigned)(SNX_FULLSCREEN | SNX_WINDOWED); /* the last given wins */
+                flags |= arg.value[0] == '1' ? SNX_FULLSCREEN : SNX_WINDOWED;
+                break;
+            default:
+                flags |= common == SNX_CLI_EXTRACT             ? SNX_EXTRACT
+                         : common == SNX_CLI_RECOMPILE         ? SNX_RECOMP
+                         : common == SNX_CLI_HEADLESS          ? SNX_HEADLESS
+                                                               : SNX_EXTRACT_CONTAINER;
+        }
+        if (common) continue;
+        if (!strcmp(argv[i], "--build-dir")) {
             tool_paths = 1;
             if (++i == argc) {
                 result = snx_error("%s requires a folder", argv[i - 1]);
                 goto done;
             }
-            if (is_repo) {
-                repo = argv[i];
-                repo_given = 1;
-            } else
-                build = argv[i];
-            continue;
-        }
-        if (!strcmp(argv[i], "--extract-container")) {
-            flags |= SNX_EXTRACT_CONTAINER;
+            build = argv[i];
             continue;
         }
         if (!strcmp(argv[i], "--tmpfs")) { /* -r's too, which takes it from rest */
@@ -1726,6 +1771,7 @@ int snx_driver(int argc, char** argv) {
 done:
     free((void*)updates);
     free(rest);
+    free(joined);
     free(r);
     free(b);
     free(exe);
