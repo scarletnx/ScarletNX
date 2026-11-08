@@ -66,9 +66,24 @@ public abstract class Layout {
         TextPaint wp = new TextPaint();
         wp.set(base);
         if (sp == null) return wp;
-        for (MetricAffectingSpan s : sp.getSpans(start, end, MetricAffectingSpan.class)) s.updateMeasureState(wp);
-        if (draw) for (CharacterStyle s : sp.getSpans(start, end, CharacterStyle.class)) s.updateDrawState(wp);
+        for (MetricAffectingSpan s : covering(sp, start, end, MetricAffectingSpan.class)) s.updateMeasureState(wp);
+        if (draw) for (CharacterStyle s : covering(sp, start, end, CharacterStyle.class)) s.updateDrawState(wp);
         return wp;
+    }
+    /**
+     * The spans of a type over some of a run's text. getSpans also gives the empty spans at its ends and the spans
+     * that only touch it, which Android's text drawing (SpanSet) leaves out: a transparent color span that a typing
+     * animation moves to the end would hide the last line
+     */
+    @SuppressWarnings("unchecked")
+    private static <T> T[] covering(Spanned sp, int start, int end, Class<T> type) {
+        T[] all = sp.getSpans(start, end, type);
+        int n = 0;
+        for (T s : all) {
+            int a = sp.getSpanStart(s), b = sp.getSpanEnd(s);
+            if (a < b && a < end && b > start) all[n++] = s;
+        }
+        return n == all.length ? all : java.util.Arrays.copyOf(all, n);
     }
 
     /** Each char's advance with the spans' measures, and each run's font metrics into fm (by char). */
@@ -83,7 +98,7 @@ public abstract class Layout {
             int next = sp != null ? sp.nextSpanTransition(i, end, MetricAffectingSpan.class) : end;
             TextPaint wp = measuring(paint, sp, i, next, false);
             Paint.FontMetricsInt m = wp.getFontMetricsInt();
-            ReplacementSpan[] rep = sp != null ? sp.getSpans(i, next, ReplacementSpan.class) : new ReplacementSpan[0];
+            ReplacementSpan[] rep = sp != null ? covering(sp, i, next, ReplacementSpan.class) : new ReplacementSpan[0];
             if (rep.length > 0) {
                 Paint.FontMetricsInt rm = new Paint.FontMetricsInt();
                 rm.set(m);
@@ -415,7 +430,7 @@ public abstract class Layout {
                     bg.setColor(wp.bgColor);
                     c.drawRect(x, top, x + w, bottom, bg);
                 }
-                ReplacementSpan[] rep = sp != null ? sp.getSpans(i, next, ReplacementSpan.class) : new ReplacementSpan[0];
+                ReplacementSpan[] rep = sp != null ? covering(sp, i, next, ReplacementSpan.class) : new ReplacementSpan[0];
                 if (rep.length > 0) rep[0].draw(c, text, i, next, x, top, baseline, bottom, wp);
                 else c.drawTextRun(text, i, next, i, next, x, baseline + wp.baselineShift, false, wp);
                 x += w;
