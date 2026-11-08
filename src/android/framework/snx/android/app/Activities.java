@@ -79,6 +79,13 @@ public final class Activities {
                 main.post(() -> caller.performActivityResult(requestCode, result != null ? Activity.RESULT_OK : Activity.RESULT_CANCELED, result));
             return;
         }
+        if (info == null && intent.getAction() != null && intent.getAction().startsWith("android.settings.")) {
+            // a screen of the system's Settings, which every device has: shown and backed out of, RESULT_CANCELED,
+            // as Settings gives (what it would grant, the app has: the permissions it asks for)
+            if (caller != null && requestCode >= 0)
+                main.post(() -> caller.performActivityResult(requestCode, Activity.RESULT_CANCELED, null));
+            return;
+        }
         if (info == null) throw new android.content.ActivityNotFoundException("No Activity found to handle " + intent);
         main.post(() -> launch(info, intent, caller, requestCode, null, null, false));
     }
