@@ -1,10 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "vita/gpu/vk.h"
-#include "common/gpu/vk/vk_common.h"
 #include "common/utilities/window_icon.h"
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 static struct {
