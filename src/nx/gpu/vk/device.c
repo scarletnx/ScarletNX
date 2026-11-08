@@ -503,6 +503,10 @@ static int create_device(void) {
     g_shader_quad = (g_vk_subgroup_stages & VK_SHADER_STAGE_FRAGMENT_BIT) &&
                     (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT);
     log_subgroups(subgroup.subgroupSize, subgroup.supportedOperations, subgroup.supportedStages);
+    /* compute has quad operations wherever the bit is and the stage has subgroup operations at all (the quad limit,
+       quadOperationsInAllStages, is about the other stages) */
+    g_shader_quad_compute = (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) &&
+                            (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT);
     g_vk_preserve_infnan = p12.shaderSignedZeroInfNanPreserveFloat32 != 0;
     /* a binding's stride as dynamic state, core in Vulkan 1.3, unless a driver is banned from it (MoltenVK's fails every
        pipeline that lists it): pipeline.c puts the stride in the pipeline then */
@@ -625,6 +629,8 @@ static int create_device(void) {
     int has_maintenance8 = 0;
     int has_vertex_input = 0, has_gpl = 0;
     int has_mesh = 0;
+    /* VK_VALVE_shader_mixed_float_dot_product: HMMA's pairs of f16 products in one instruction */
+    int has_mixed_dot = 0;
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
     const char* store_none_ext = NULL; /* a 1.2 device's store op NONE (vk12_store_none) */
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
@@ -678,6 +684,7 @@ static int create_device(void) {
         has_provoking = snx_vk_extensions_has(&e, VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME);
         has_list_restart = snx_vk_extensions_has(&e, VK_EXT_PRIMITIVE_TOPOLOGY_LIST_RESTART_EXTENSION_NAME);
         has_mesh = snx_vk_extensions_has(&e, VK_EXT_MESH_SHADER_EXTENSION_NAME);
+        has_mixed_dot = snx_vk_extensions_has(&e, VK_VALVE_SHADER_MIXED_FLOAT_DOT_PRODUCT_EXTENSION_NAME);
         g_vk.has_conservative = snx_vk_extensions_has(&e, VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME);
         g_vk.has_depth_range_unrestricted = snx_vk_extensions_has(&e, VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME);
         has_pipeline_robustness = snx_vk_extensions_has(&e, VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME);
@@ -786,6 +793,8 @@ static int create_device(void) {
                                                          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR};
     VkPhysicalDeviceShaderMaximalReconvergenceFeaturesKHR qreconv = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MAXIMAL_RECONVERGENCE_FEATURES_KHR};
+    VkPhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE qmixdot = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MIXED_FLOAT_DOT_PRODUCT_FEATURES_VALVE};
     VkPhysicalDevicePipelineRobustnessFeaturesEXT qpipeline = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_ROBUSTNESS_FEATURES_EXT};
     VkPhysicalDeviceRobustness2FeaturesEXT qrobust = {.sType =
@@ -889,7 +898,8 @@ static int create_device(void) {
                            has_present_v2 ? &qpid2 : NULL,
                            has_present_v2 ? &qpwait2 : NULL,
                            has_present_v2 ? &qtiming : NULL,
-                           has_shader_clock ? &qclock : NULL};
+                           has_shader_clock ? &qclock : NULL,
+                           has_mixed_dot ? &qmixdot : NULL};
     snx_vk_chain(query, sizeof query / sizeof *query);
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &f2);
     /* without it the shaders do their FP16 work in 32 bits */
@@ -939,6 +949,14 @@ static int create_device(void) {
                              : "no VK_EXT_primitive_topology_list_restart");
     g_vk.has_index8 = index8_ext && qindex8.indexTypeUint8;
     mesh_choose(has_mesh, &qmesh, &q13);
+    if (core13) { /* the subgroup sizes are Vulkan 1.3's, as mesh_choose reads them */
+        VkPhysicalDeviceVulkan13Properties p13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES};
+        VkPhysicalDeviceProperties2 pp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p13};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &pp2);
+        g_vk.has_cs_warp32 = q13.subgroupSizeControl && q13.computeFullSubgroups && p13.minSubgroupSize <= 32 &&
+                             p13.maxSubgroupSize >= 32 &&
+                             (p13.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
+    }
     {
         /* each draw's vertex layout as dynamic state, or a pipeline per layout: the setting, then the device and the
            drivers known to draw it wrong (vertex_input.h). A value the setting doesn't take stops the game here, as
@@ -1122,6 +1140,8 @@ static int create_device(void) {
                         p12.shaderSignedZeroInfNanPreserveFloat64))
             g_shader_half_rounding = linked ? 3 : 1;
     }
+    /* its f16 vectors are Float16's, so shaderFloat16 too */
+    g_shader_mixed_dot = has_mixed_dot && qmixdot.shaderMixedFloatDotProductFloat16AccFloat32 && g_shader_float16;
     g_shader_output_layer = q12.shaderOutputLayer != 0; /* ShaderLayer: a vertex or tessellation program's layer */
     g_shader_viewport_index = have.multiViewport ? 2 | (q12.shaderOutputViewportIndex ? 1 : 0) : 0;
     VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
@@ -1131,9 +1151,10 @@ static int create_device(void) {
                                             .maintenance4 = q13.maintenance4,
                                             /* KIL demotes the lane; S2R queries its helper status */
                                             .shaderDemoteToHelperInvocation = VK_TRUE,
-                                            /* the task and mesh stages' subgroups of 32, whole (mesh_choose) */
-                                            .subgroupSizeControl = g_vk.has_mesh,
-                                            .computeFullSubgroups = g_vk.has_mesh};
+                                            /* the task and mesh stages' subgroups of 32, whole (mesh_choose), and
+                                               those of the compute programs that use other lanes' values */
+                                            .subgroupSizeControl = g_vk.has_mesh || g_vk.has_cs_warp32,
+                                            .computeFullSubgroups = g_vk.has_mesh || g_vk.has_cs_warp32};
     void* chain = &f13;
     /* a 1.2 device: those features as its extensions' (vk12_extensions), the 1.3 struct left out */
     VkPhysicalDeviceSynchronization2Features fsync2 = {.sType =
@@ -1258,6 +1279,14 @@ static int create_device(void) {
     if (g_shader_maximal_reconvergence) {
         chain = &freconv;
         ext[next++] = VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME;
+    }
+    VkPhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE fmixdot = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MIXED_FLOAT_DOT_PRODUCT_FEATURES_VALVE,
+        .pNext = chain,
+        .shaderMixedFloatDotProductFloat16AccFloat32 = VK_TRUE};
+    if (g_shader_mixed_dot) {
+        chain = &fmixdot;
+        ext[next++] = VK_VALVE_SHADER_MIXED_FLOAT_DOT_PRODUCT_EXTENSION_NAME;
     }
     PortabilityFeatures fport = qport;
     fport.pNext = chain;

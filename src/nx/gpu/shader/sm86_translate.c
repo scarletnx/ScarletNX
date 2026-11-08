@@ -45,6 +45,7 @@ typedef struct {
     u32 local, local_ptr, local_words; /* LDL and STL's memory: a Function array, made at the start */
     u32 in_attr[32], out_attr[32], position, point_size, fragcoord, color[8], depth;
     u32 vertex_index, instance_index, local_id, group_id, lane_id;
+    u32 num_groups, hmma_count; /* NumWorkgroups and the HMMAs so far, for hmma_zero */
     u32 push, push_ptr; /* a vertex program's push constant vec4: the base instance, the depth fix (vk/render.c) */
     u32 centroid_mask;  /* the inputs decorated Centroid */
     u32 legacy_fs;      /* a fragment program's legacy varying groups (shader_legacy_group), read as generics 17-31 */
@@ -1961,7 +1962,35 @@ static u32 warp_read(Ctx* c, u32 value, u32 j) {
     return SPV(&c->e, 345 /* OpGroupNonUniformShuffle */, c->t_u32, cu(c, 3), value,
                spv_emit_bitwise_or_u32(&c->e, c->t_u32, own, j));
 }
+/* value as lane 4g + p of the invocation's own 32 holds it, g4 = 4g for the reader's own g: a quad broadcast where the
+   stage has quad operations, which AMD makes a DPP move where a shuffle goes through LDS. Vulkan's quad is four
+   invocations of adjacent subgroup ids, the first a multiple of 4, in every stage that has them; so in a subgroup of
+   64 too the reader's quad is lanes 4g to 4g + 3 of its own 32, and quad lane p is lane 4g + p */
+static u32 quad_read(Ctx* c, u32 value, u32 g4, u32 p) {
+    if (c->stage == ST_CS ? g_shader_quad_compute : c->stage == ST_FS && g_shader_quad) {
+        spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM);
+        spv_emit_subgroup_quad_capability(&c->e);
+        return spv_emit_subgroup_quad_u32(&c->e, c->t_u32, value, 0, cu(c, p));
+    }
+    return warp_read(c, value, spv_emit_bitwise_or_u32(&c->e, c->t_u32, g4, cu(c, p)));
+}
 static u32 half_pair(Ctx* c, u32 bits) { return SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_UNPACK_HALF2X16, bits); }
+/* A zero for an HMMA to OR its B registers with before it gathers them, a new one every 8 HMMAs, so that a driver
+   doesn't keep a B fragment's 16 gathered words live from its first HMMA to its last. Mesa merges identical subgroup
+   operations within a block, and one game's video upscaler multiplies one B fragment by many A ones, far apart: with
+   the gathers merged, its programs wanted 420 to 1430 VGPRs, and RADV spilled around nearly every product (a scratch
+   load, a wait and a store each). With them gathered again, their demand fell to 180-300, and ACO's latency estimate
+   by 6 to 40 times. NumWorkgroups.x is never 0 in an invocation that runs (a dispatch of no workgroups runs none),
+   so the OR keeps the value on any driver, and one that proves it 0 only goes back to the merged gathers. The 8 HMMAs
+   that share one keep the reuse among neighbours (a GEMM's step of a few A and B fragments): sharing none made that
+   game's programs that didn't spill 6-25% slower by the estimate, sharing among 32 brought the spills back. Compute
+   only, the stage with NumWorkgroups */
+static u32 hmma_zero(Ctx* c) {
+    u32 group = c->hmma_count++ / 8;
+    if (c->stage != ST_CS) return 0;
+    u32 never = spv_emit_i_equal(&c->e, c->t_bool, builtin_vec3(c, &c->num_groups, 24, 0), c->zero);
+    return spv_emit_select(&c->e, c->t_u32, never, cu(c, group + 1), c->zero);
+}
 /* HMMA (0x23c): D = A B + C on the warp's fragments, as PTX's mma.sync.aligned.m16n8k16 (bit 75) or m16n8k8 .row.col
    with f16 A and B, and f16 (bit 76 clear) or f32 C and D (the encodings of CuAssembler's sm_86 records: bits 72-90 8
    16816.F16, 0x18 16816.F32, 0 1688.F16, 0x10 1688.F32; BF16, TF32 and 1684 are other bits). D at 16, A at 24, B at
@@ -1969,8 +1998,12 @@ static u32 half_pair(Ctx* c, u32 bits) { return SPV_EXT(&c->e, c->t_v2f, SPV_GLS
    (a0) and g + 8 (a1) at columns 2t and 2t + 1, and for k16 the same at columns 2t + 8 and 2t + 9 (a2, a3); B's column
    g at rows 2t and 2t + 1 (b0), for k16 also 2t + 8 and 2t + 9 (b1); C and D's rows g and g + 8 at columns 2t and
    2t + 1, a register for each element in f32 (c0 c1 row g, c2 c3 row g + 8) or a pair for each row in f16. Each lane
-   gathers the A pairs of its two rows from lanes 4g to 4g + 3 and the B pairs of its two columns from lanes 8t + p and
-   8t + 4 + p (32 shuffles for k16), and sums the products in f32, which an f16 D then rounds to */
+   gathers the A pairs of its two rows from its quad, lanes 4g to 4g + 3 (quad_read), and the B pairs of its two
+   columns from lanes 8t + p and 8t + 4 + p (16 shuffles each for k16, of the B registers OR'd with hmma_zero), and
+   sums the products in f32, which an f16 D then rounds to. A product of two f16 is exact in f32, so only the sums
+   round, in f32 for both D types: with the mixed dot product (g_shader_mixed_dot) each pair of products goes into
+   the accumulator in one instruction, rounded as the device does it (RDNA 3.5's is a few f32 places off an FMA chain
+   even on exact sums, within the same bound); without it the pairs are unpacked to f32 and dotted */
 static void hmma(Ctx* c, const Sm86Insn* in) {
     u32 v = sm86_field(in, 72, 19);
     if (v & ~0x18u) {
@@ -1981,12 +2014,25 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
     u32 ra = sm86_field(in, 24, 8), rb = sm86_field(in, 32, 8), rc = sm86_field(in, 64, 8);
     u32 na = k16 ? 4 : 2, nb = k16 ? 2 : 1, ncd = f32 ? 4 : 2, a[4], b[2], cc[4], k;
     for (k = 0; k < na; k++) a[k] = ra >= SM86_RZ ? c->zero : rd(c, ra + k);
-    for (k = 0; k < nb; k++) b[k] = rb >= SM86_RZ ? c->zero : rd(c, rb + k);
+    u32 zero = rb >= SM86_RZ ? 0 : hmma_zero(c);
+    for (k = 0; k < nb; k++) {
+        b[k] = rb >= SM86_RZ ? c->zero : rd(c, rb + k);
+        if (zero) b[k] = spv_emit_bitwise_or_u32(&c->e, c->t_u32, b[k], zero);
+    }
     for (k = 0; k < ncd; k++) cc[k] = rc >= SM86_RZ ? c->zero : rd(c, rc + k);
     u32 lane = warp_lane(c);
     u32 g4 = spv_emit_bitwise_and_u32(&c->e, c->t_u32, lane, cu(c, 28));
     u32 t8 =
         spv_emit_shift_left_u32(&c->e, c->t_u32, spv_emit_bitwise_and_u32(&c->e, c->t_u32, lane, cu(c, 3)), cu(c, 3));
+    /* the pairs as two f16 for OpFDot2MixAcc32VALVE (a bitcast: no instruction), or unpacked to two f32 */
+    int mixed = g_shader_mixed_dot && g_shader_float16;
+    u32 t_v2h = 0;
+    if (mixed) {
+        spv_emit_capability(&c->e, SPV_CAPABILITY_FLOAT16);
+        spv_emit_capability(&c->e, 6912 /* DotProductFloat16AccFloat32VALVE */);
+        spv_emit_extension(&c->e, "SPV_VALVE_mixed_float_dot_product");
+        t_v2h = spv_emit_type_vector(&c->e, spv_emit_type_float(&c->e, 16), 2);
+    }
     u32 acc[2][2]; /* [row g, g + 8][column 2t, 2t + 1] */
     for (u32 i = 0; i < 2; i++) {
         if (f32) {
@@ -1999,18 +2045,25 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
         }
     }
     for (u32 p = 0; p < 4; p++) {
-        u32 la = spv_emit_bitwise_or_u32(&c->e, c->t_u32, g4, cu(c, p));
         u32 lb[2] = {spv_emit_bitwise_or_u32(&c->e, c->t_u32, t8, cu(c, p)),
                      spv_emit_bitwise_or_u32(&c->e, c->t_u32, t8, cu(c, 4 + p))};
         u32 av[4], bv[2][2];
-        for (k = 0; k < na; k++) av[k] = half_pair(c, warp_read(c, a[k], la));
+        for (k = 0; k < na; k++) {
+            u32 bits = quad_read(c, a[k], g4, p);
+            av[k] = mixed ? spv_emit_bitcast(&c->e, t_v2h, bits) : half_pair(c, bits);
+        }
         for (u32 j = 0; j < 2; j++)
-            for (k = 0; k < nb; k++) bv[j][k] = half_pair(c, warp_read(c, b[k], lb[j]));
+            for (k = 0; k < nb; k++) {
+                u32 bits = warp_read(c, b[k], lb[j]);
+                bv[j][k] = mixed ? spv_emit_bitcast(&c->e, t_v2h, bits) : half_pair(c, bits);
+            }
         for (u32 h = 0; h < nb; h++) /* the k halves: A's registers 2h (row g) and 2h + 1 (row g + 8), B's h */
             for (u32 i = 0; i < 2; i++)
                 for (u32 j = 0; j < 2; j++)
-                    acc[i][j] = op2(c, SPV_OP_F_ADD, c->t_f32, acc[i][j],
-                                    op2(c, 148 /* OpDot */, c->t_f32, av[2 * h + i], bv[j][h]));
+                    acc[i][j] = mixed ? SPV(&c->e, 6916 /* OpFDot2MixAcc32VALVE */, c->t_f32, av[2 * h + i], bv[j][h],
+                                            acc[i][j])
+                                      : op2(c, SPV_OP_F_ADD, c->t_f32, acc[i][j],
+                                            op2(c, 148 /* OpDot */, c->t_f32, av[2 * h + i], bv[j][h]));
     }
     u32 d = in->dst;
     if (d >= SM86_RZ) return;

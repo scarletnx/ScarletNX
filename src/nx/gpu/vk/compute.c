@@ -715,6 +715,20 @@ static u64 cs_key(const u8* code, u32 flow_base, u32 lx, u32 ly, u32 lz, u32 shm
 }
 static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k,
                        VkCbReader read);
+/* Whether a translation reads other lanes: a GroupNonUniform capability (61 to 68) among those the module starts with.
+   Its lanes are a warp's 32, which the translation finds as its own 32 of a subgroup of 32 or 64; in a subgroup of
+   64 a lane's read of another is a full-wave permute, which RADV makes of two LDS permutes, a permlane64 and a save
+   and restore of exec for each (GFX10 to 11.5), where a subgroup of 32 takes one. One game's video upscaler, whose
+   matrix multiplies (HMMA) gather 16 words a lane each, has blocks of 32x2 and 32x4 that RADV ran in wave64 */
+static int cs_reads_lanes(const u32* spv, size_t words) {
+    for (size_t at = 5; at < words;) {
+        u32 width = spv[at] >> 16;
+        if (!width || at + width > words || (spv[at] & 0xffffu) != 17) break; /* past the OpCapability ones */
+        if (width == 2 && spv[at + 1] >= 61 && spv[at + 1] <= 68) return 1;
+        at += width;
+    }
+    return 0;
+}
 /* p, made from code (blen bytes of its window), kept in the pipeline file for the next run, which makes it before the
    game asks (vk_cs_pipe_load): the window's bytes the translation reads, with the words after them that a lookahead
    past its last instruction would read, as a graphics shader's source is kept (pipeline.c) */
@@ -798,7 +812,11 @@ static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx,
         p->failed = 1;
         return p;
     }
-    if (!VK_OK(snx_vk_compute_pipeline(g_vk.dev, vk_pipeline_cache(), g_vk.cs_playout, spv, (size_t)nw * 4, &p->p)))
+    /* subgroups of 32 for one that reads other lanes (cs_reads_lanes), whole where the block's x is whole subgroups (as
+       Vulkan asks of the flag) */
+    int warp = g_vk.has_cs_warp32 && cs_reads_lanes(spv, nw);
+    if (!VK_OK(snx_vk_compute_pipeline_subgroups(g_vk.dev, vk_pipeline_cache(), g_vk.cs_playout, spv, (size_t)nw * 4,
+                                                 warp ? 32 : 0, warp && lx % 32 == 0, &p->p)))
         p->failed = 1;
     free(spv);
     if (!p->failed)
