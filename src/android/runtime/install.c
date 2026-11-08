@@ -111,6 +111,14 @@ static bool library_folder(AndroidInstall* out, char* error, size_t error_size) 
         snprintf(error, error_size, "cannot make the app's library folder in the data folder");
         return false;
     }
+    /* the data folder's lib: a link to the library folder, as installd links /data/data/<package>/lib to the app's
+       native libraries. Apps open their own files there by path (one game reads its assets from a libdata_*.so). A
+       link the install made before is made again, as the ABI can change; anything else there is the app's */
+    char* link = snx_path_join(out->data_dir, "lib");
+    if (link && snx_is_link(link)) remove(link);
+    if (link && !snx_path_exists(link) && snx_symlink(out->library_dir, link))
+        fprintf(stderr, "scarletnx-android: cannot link %s to the app's libraries\n", link);
+    free(link);
     return true;
 }
 
