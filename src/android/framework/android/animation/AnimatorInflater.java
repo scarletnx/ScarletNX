@@ -31,6 +31,36 @@ public class AnimatorInflater {
         }
     }
 
+    /** A <selector> of items, each with its states and the animator that runs on entering them. */
+    public static StateListAnimator loadStateListAnimator(Context context, int id) throws Resources.NotFoundException {
+        try (XmlResourceParser p = context.getResources().getAnimation(id)) {
+            StateListAnimator list = new StateListAnimator();
+            int e;
+            while ((e = p.next()) != XmlPullParser.END_DOCUMENT) {
+                if (e != XmlPullParser.START_TAG || !p.getName().equals("item")) continue;
+                // the item's state attributes, negated for a false one, as a drawable's selector reads them
+                java.util.ArrayList<Integer> states = new java.util.ArrayList<>();
+                for (int i = 0; i < p.getAttributeCount(); ++i) {
+                    int name = p.getAttributeNameResource(i);
+                    if (name == 0 || !String.valueOf(p.getAttributeName(i)).startsWith("state_")) continue;
+                    states.add(p.getAttributeBooleanValue(i, false) ? name : -name);
+                }
+                int depth = p.getDepth();
+                Animator animator = null;
+                while ((e = p.next()) != XmlPullParser.END_DOCUMENT && (e != XmlPullParser.END_TAG || p.getDepth() > depth)) {
+                    if (e == XmlPullParser.START_TAG && animator == null) animator = read(context, p);
+                }
+                if (animator != null) list.addState(states.stream().mapToInt(Integer::intValue).toArray(), animator);
+            }
+            return list;
+        } catch (Exception ex) {
+            if (ex instanceof Resources.NotFoundException n) throw n;
+            Resources.NotFoundException n = new Resources.NotFoundException("Can't load state list animator resource ID #0x" + Integer.toHexString(id));
+            n.initCause(ex);
+            throw n;
+        }
+    }
+
     private static Animator read(Context context, XmlResourceParser p) throws Exception {
         String tag = p.getName();
         int depth = p.getDepth();
