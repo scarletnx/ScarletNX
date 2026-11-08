@@ -53,8 +53,9 @@ hook _ZN2nn5codec47GetHardwareOpusDecoderWaitingDecodeRequestCountEPKNS0_23Hardw
 hook _ZN2nn5codec49GetHardwareOpusDecoderExecutingDecodeRequestCountEPKNS0_23HardwareOpusDecoderTypeE(addr decoder) -> i32 = codec_decoder_executing
 hook _ZN2nn5codec49GetHardwareOpusDecoderCompletedDecodeRequestCountEPKNS0_23HardwareOpusDecoderTypeE(addr decoder) -> i32 = codec_decoder_completed
 
-# nn::audio's output streams of the Ounce's SDK (audio_stream.c), which its SDK plays through the audio device manager
-# (auddmg:u) and the audio DSP: played here on the host's output, paced by the audio clock
+# nn::audio's output and input streams of the Ounce's SDK (audio_stream.c), which its SDK plays and records through the
+# audio device manager (auddmg:u) and the audio DSP: played here on the host's output and recorded from a virtual
+# microphone (silence for now), paced by the audio clock
 family audio_stream
 hook _ZN2nn5audio29GetDefaultVirtualOutputDeviceEPNS0_15AudioDeviceNameE(addr name) -> u32 = audio_default_virtual_output
 hook _ZN2nn5audio16OpenOutputStreamEPNS0_16OutputStreamTypeEPNS_2os11SystemEventEPvmRKNS0_15AudioDeviceNameERKNS0_12StreamFormatEiiNS_4util10BitFlagSetILi32ENS0_16OutputStreamFlagEEE(addr stream, addr event, addr work, u64 size, addr device, addr format, i32 capacity, i32 threshold) -> u32 = audio_open_stream_event
@@ -68,3 +69,19 @@ hook _ZN2nn5audio29GetOutputStreamFreeFrameCountEPKNS0_16OutputStreamTypeE(addr 
 hook _ZN2nn5audio17WriteOutputStreamEPNS0_16OutputStreamTypeEPKvi(addr stream, addr data, i32 frames) -> i32 = audio_write_stream
 hook _ZN2nn5audio19SetOutputStreamGainEPNS0_16OutputStreamTypeEfNS_8TimeSpanE(addr stream, f32 gain, i64 fade) = audio_set_stream_gain
 hook _ZN2nn5audio25GetOutputStreamStatisticsEPNS0_16OutputStreamTypeEb(addr stream, bool reset) = audio_stream_statistics
+hook _ZN2nn5audio16OpenOutputStreamEPNS0_16OutputStreamTypeEPNS_2os11SystemEventEPvmRKNS0_15AudioDeviceNameERKNS0_12StreamFormatEii(addr stream, addr event, addr work, u64 size, addr device, addr format, i32 capacity, i32 threshold) -> u32 = audio_open_stream_event
+hook _ZN2nn5audio31GetOutputStreamFilledFrameCountEPKNS0_16OutputStreamTypeE(addr stream) -> i32 = audio_stream_filled_frames
+hook _ZN2nn5audio32GetVirtualOutputDevicePropertiesEPNS0_23VirtualDevicePropertiesERKNS0_15AudioDeviceNameE(addr props, addr name) -> u32 = audio_virtual_output_properties
+hook _ZN2nn5audio23ListVirtualInputDevicesEPNS0_15AudioDeviceNameEi(addr names, i32 count) -> i32 = audio_list_virtual_inputs
+hook _ZN2nn5audio15OpenInputStreamEPNS0_15InputStreamTypeEPvmRKNS0_15AudioDeviceNameERKNS0_12StreamFormatEi(addr stream, addr work, u64 size, addr device, addr format, i32 capacity) -> u32 = audio_open_input
+hook _ZN2nn5audio15OpenInputStreamEPNS0_15InputStreamTypeEPNS_2os11SystemEventEPvmRKNS0_15AudioDeviceNameERKNS0_12StreamFormatEii(addr stream, addr event, addr work, u64 size, addr device, addr format, i32 capacity, i32 threshold) -> u32 = audio_open_input_event
+hook _ZN2nn5audio16StartInputStreamEPNS0_15InputStreamTypeE(addr stream) -> u32 = audio_start_input
+hook _ZN2nn5audio15StopInputStreamEPNS0_15InputStreamTypeE(addr stream) -> u32 = audio_stop_input
+hook _ZN2nn5audio16PurgeInputStreamEPNS0_15InputStreamTypeE(addr stream) -> u32 = audio_purge_input
+hook _ZN2nn5audio16CloseInputStreamEPNS0_15InputStreamTypeE(addr stream) = audio_close_input
+hook _ZN2nn5audio19GetInputStreamStateEPKNS0_15InputStreamTypeE(addr stream) -> u32 = audio_input_state
+hook _ZN2nn5audio30GetInputStreamFilledFrameCountEPKNS0_15InputStreamTypeE(addr stream) -> i32 = audio_input_filled_frames
+hook _ZN2nn5audio28GetInputStreamFreeFrameCountEPKNS0_15InputStreamTypeE(addr stream) -> i32 = audio_input_free_frames
+hook _ZN2nn5audio32GetInputStreamCapacityFrameCountEPKNS0_15InputStreamTypeE(addr stream) -> i32 = audio_input_capacity_frames
+hook _ZN2nn5audio15ReadInputStreamEPNS0_15InputStreamTypeEPvi(addr stream, addr data, i32 frames) -> i32 = audio_read_input
+hook _ZN2nn5audio24GetInputStreamStatisticsEPNS0_15InputStreamTypeEb(addr stream, bool reset) = audio_stream_statistics

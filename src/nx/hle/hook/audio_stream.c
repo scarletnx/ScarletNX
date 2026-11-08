@@ -9,7 +9,12 @@
    played leave the ring for the host's output, converted to signed 16-bit, and the stream's system event, whose
    readable handle OpenOutputStream attaches to the game's nn::os::SystemEvent, is signaled for the room they freed.
    States as the SDK's OutputStreamImpl keeps them: 0 closed, 1 stopped, 2 started. The state is the runtime's, not
-   the guest's: a save state doesn't hold it */
+   the guest's: a save state doesn't hold it.
+
+   The input streams (OpenInputStream, ReadInputStream...) are the console's microphone, through the same manager: one
+   virtual input device, whose started streams fill at their rate in guest time, as the DSP would record, up to their
+   capacity. The host's microphone isn't read yet, so the frames are silence. The devices the SDK asks auddmg:u about
+   (ListVirtualInputDevices, GetVirtualOutputDeviceProperties) are answered here too */
 #include "nx/hle/hook/hook.h"
 #include "hle/hook/hooks.hook.h"
 #include "nx/hle/kernel/kernel.h"
@@ -39,6 +44,7 @@ typedef struct {
     float gain;
     u64 last, carry; /* the clock's last turn (guest ns), and the remainder of frames it owes */
     u64 played, underruns;
+    int input; /* a microphone's stream: no ring, filled counts the frames recorded */
 } Stream;
 
 static PMutex g_lk;
@@ -61,7 +67,12 @@ static void unlock(void) { pm_unlock(&g_lk); }
 
 static Stream* stream_of(u64 guest) {
     for (u32 i = 0; i < STREAMS_MAX; i++)
-        if (g_streams[i].guest == guest && guest) return &g_streams[i];
+        if (g_streams[i].guest == guest && guest && !g_streams[i].input) return &g_streams[i];
+    return NULL;
+}
+static Stream* input_of(u64 guest) {
+    for (u32 i = 0; i < STREAMS_MAX; i++)
+        if (g_streams[i].guest == guest && guest && g_streams[i].input) return &g_streams[i];
     return NULL;
 }
 
@@ -72,6 +83,28 @@ u32 audio_default_virtual_output(CPU* c, u64 name) {
     if (!name) return STREAM_FAILED;
     memset(GP(name), 0, 256);
     memcpy(GP(name), device, sizeof device);
+    return 0;
+}
+
+/* the virtual input device: the console's microphone, one of it, whose name the game hands back to OpenInputStream */
+#define INPUT_DEVICE "VirtualAudioIn"
+i32 audio_list_virtual_inputs(CPU* c, u64 names, i32 count) {
+    (void)c;
+    if (!names || count < 1) return 0;
+    memset(GP(names), 0, 256);
+    memcpy(GP(names), INPUT_DEVICE, sizeof INPUT_DEVICE);
+    return 1;
+}
+/* VirtualDeviceProperties: the name, the latency in ns at 0x100 and the channels at 0x108, as the SDK copies them from
+   auddmg:u's property block (Eglantine's answer to it: stereo, 10 ms). A game sets its streams up by the channels */
+u32 audio_virtual_output_properties(CPU* c, u64 props, u64 name) {
+    u8* p = GP(props);
+    (void)c;
+    if (!props || !name) return STREAM_FAILED;
+    memmove(p, GP(name), 256);
+    p[255] = 0;
+    snx_st_le64(p + 0x100, 10000000ull);
+    snx_st_le32(p + 0x108, 2);
     return 0;
 }
 
@@ -213,6 +246,157 @@ void audio_stream_statistics(CPU* c, u64 stream, int reset) {
     if (c->x[8]) memset(GP(c->x[8]), 0, 0x18);
 }
 
+i32 audio_stream_filled_frames(CPU* c, u64 stream) {
+    Stream* s;
+    i32 n = 0;
+    (void)c;
+    lock();
+    s = stream_of(stream);
+    if (s) n = (i32)s->filled;
+    unlock();
+    return n;
+}
+
+/* ------------------------------------------------------------ input streams: the microphone */
+static u32 open_input(CPU* c, u64 stream, u64 event, u64 format, i32 capacity) {
+    Stream* s;
+    u32 f[3];
+    if (!stream || !format || capacity <= 0) return STREAM_FAILED;
+    memcpy(f, GP(format), sizeof f); /* sample format, channels, rate */
+    if (f[0] < 1 || f[0] > FORMAT_FLOAT || f[1] < 1 || f[1] > 8 || f[2] < 8000 || f[2] > 192000) {
+        WARN_LIMIT(4, "audio: an input stream of format %u, %u channels at %u Hz, which this runtime doesn't record\n",
+                   f[0], f[1], f[2]);
+        return STREAM_FAILED;
+    }
+    lock();
+    s = input_of(stream);
+    if (!s)
+        for (u32 i = 0; i < STREAMS_MAX && !s; i++)
+            if (!g_streams[i].guest) s = &g_streams[i];
+    if (!s) {
+        unlock();
+        WARN_LIMIT(4, "audio: more than %d streams\n", STREAMS_MAX);
+        return STREAM_FAILED;
+    }
+    if (s->event) kobj_unref(&s->event->o);
+    *s = (Stream){0};
+    s->guest = stream;
+    s->input = 1;
+    s->format = f[0];
+    s->channels = f[1];
+    s->rate = f[2];
+    s->sample_bytes = f[0] == FORMAT_FLOAT || f[0] == 4 ? 4 : f[0];
+    s->capacity = (u32)capacity;
+    s->state = STREAM_STOPPED;
+    unlock();
+    if (event) s->event = hook_attach_event(c, event, "audio input stream");
+    LOG("audio: input stream %llx: %u channels at %u Hz, sample format %u, %u frames, silence (no host microphone)\n",
+        (unsigned long long)stream, s->channels, s->rate, s->format, s->capacity);
+    return 0;
+}
+/* OpenInputStream(stream, work, size, device, format, capacity): the work buffer is the SDK's, unused here */
+u32 audio_open_input(CPU* c, u64 stream, u64 work, u64 size, u64 device, u64 format, i32 capacity) {
+    (void)work, (void)size, (void)device;
+    return open_input(c, stream, 0, format, capacity);
+}
+/* OpenInputStream(stream, event, work, size, device, format, capacity, threshold) */
+u32 audio_open_input_event(CPU* c, u64 stream, u64 event, u64 work, u64 size, u64 device, u64 format, i32 capacity,
+                           i32 threshold) {
+    (void)work, (void)size, (void)device, (void)threshold;
+    return open_input(c, stream, event, format, capacity);
+}
+void audio_close_input(CPU* c, u64 stream) {
+    Stream* s;
+    (void)c;
+    lock();
+    s = input_of(stream);
+    if (s) {
+        if (s->event) kobj_unref(&s->event->o);
+        *s = (Stream){0};
+    }
+    unlock();
+}
+u32 audio_start_input(CPU* c, u64 stream) {
+    Stream* s;
+    (void)c;
+    lock();
+    s = input_of(stream);
+    if (s && s->state != STREAM_STARTED) {
+        s->state = STREAM_STARTED;
+        s->last = guest_ns();
+        s->carry = 0;
+    }
+    unlock();
+    return s ? 0 : STREAM_FAILED;
+}
+u32 audio_stop_input(CPU* c, u64 stream) {
+    Stream* s;
+    (void)c;
+    lock();
+    s = input_of(stream);
+    if (s) s->state = STREAM_STOPPED;
+    unlock();
+    return s ? 0 : STREAM_FAILED;
+}
+/* the frames recorded and not read dropped */
+u32 audio_purge_input(CPU* c, u64 stream) {
+    Stream* s;
+    (void)c;
+    lock();
+    s = input_of(stream);
+    if (s) s->filled = 0;
+    unlock();
+    return s ? 0 : STREAM_FAILED;
+}
+u32 audio_input_state(CPU* c, u64 stream) {
+    Stream* s;
+    u32 state;
+    (void)c;
+    lock();
+    s = input_of(stream);
+    state = s ? s->state : 0;
+    unlock();
+    return state;
+}
+/* which: 0 the frames recorded and not read, 1 the room left, 2 the capacity */
+static i32 input_count(u64 stream, int which) {
+    Stream* s;
+    i32 n = 0;
+    lock();
+    s = input_of(stream);
+    if (s) n = (i32)(which == 0 ? s->filled : which == 1 ? s->capacity - s->filled : s->capacity);
+    unlock();
+    return n;
+}
+i32 audio_input_filled_frames(CPU* c, u64 stream) {
+    (void)c;
+    return input_count(stream, 0);
+}
+i32 audio_input_free_frames(CPU* c, u64 stream) {
+    (void)c;
+    return input_count(stream, 1);
+}
+i32 audio_input_capacity_frames(CPU* c, u64 stream) {
+    (void)c;
+    return input_count(stream, 2);
+}
+/* as many recorded frames as asked for and there are, in the stream's format: the count read */
+i32 audio_read_input(CPU* c, u64 stream, u64 data, i32 frames) {
+    Stream* s;
+    i32 n = 0;
+    (void)c;
+    if (frames <= 0 || !data) return 0;
+    lock();
+    s = input_of(stream);
+    if (s) {
+        n = (i32)((u32)frames < s->filled ? (u32)frames : s->filled);
+        memset(GP(data), 0, (size_t)n * s->sample_bytes * s->channels);
+        s->filled -= (u32)n;
+    }
+    unlock();
+    return n;
+}
+
 static i16 sample_s16(const u8* p, u32 format, float gain) {
     float v;
     switch (format) {
@@ -269,6 +453,11 @@ void outstream_tick(u64 now) {
         s->last = now;
         want = owed / 1000000000ull;
         s->carry = owed % 1000000000ull;
+        if (s->input) { /* recorded: the frames its rate gives, as far as its capacity holds them */
+            s->filled = want < s->capacity - s->filled ? s->filled + (u32)want : s->capacity;
+            if (want && s->event) kevent_signal(s->event);
+            continue;
+        }
         n = want < s->filled ? (u32)want : s->filled;
         if (want > s->filled) s->underruns++;
         wide = s->channels > 2 ? 2 : s->channels;
