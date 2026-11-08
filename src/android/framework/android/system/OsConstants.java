@@ -8,6 +8,7 @@ public final class OsConstants {
         ENOTDIR = 20, EISDIR = 21, EINVAL = 22, ENOSPC = 28, ESPIPE = 29, EROFS = 30, ENOSYS = 38, ENOTEMPTY = 39;
     public static final int O_RDONLY = 0, O_WRONLY = 1, O_RDWR = 2, O_CREAT = 64, O_EXCL = 128, O_TRUNC = 512, O_APPEND = 1024;
     public static final int SEEK_SET = 0, SEEK_CUR = 1, SEEK_END = 2;
+    public static final int AF_UNSPEC = 0, AF_UNIX = 1, AF_INET = 2, AF_INET6 = 10;
     public static final int S_IFMT = 0170000, S_IFREG = 0100000, S_IFDIR = 0040000, S_IFLNK = 0120000, S_IRWXU = 0700,
         S_IRUSR = 0400, S_IWUSR = 0200, S_IXUSR = 0100;
     public static final int F_OK = 0, R_OK = 4, W_OK = 2, X_OK = 1;
