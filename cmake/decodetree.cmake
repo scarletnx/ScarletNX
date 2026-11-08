@@ -2,8 +2,9 @@
 # Copyright 2026 the ScarletNX contributors
 # decodetree (tools/decodetree/) generates the instruction decoders from QEMU's .decode files: the A64 decoder from
 # a64.decode and ScarletNX's profile of it (--a64), and QEMU-style decoders, as QEMU's scripts/decodetree.py makes
-# them, for A32, T32 and T16. It runs during the build, so a cross build also builds it for the machine doing the
-# build, with that machine's C compiler (SNX_HOST_CC), as shaderdec.cmake does for shaderdec
+# them, for A32, T32 and T16, and for the GPU shaders of the Vita (USSE, -w 64) and the 3DS (PICA200). It runs during
+# the build, so a cross build also builds it for the machine doing the build, with that machine's C compiler
+# (SNX_HOST_CC), as shaderdec.cmake does for shaderdec
 include_guard(GLOBAL)
 set(snx_decodetree_sources "${PROJECT_SOURCE_DIR}/tools/decodetree/decodetree.c"
                            "${PROJECT_SOURCE_DIR}/tools/decodetree/a64.c")

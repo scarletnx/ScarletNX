@@ -7,9 +7,13 @@ add_library(snx_vita_loader STATIC loader/inflate.c loader/vpk.c loader/image.c)
 target_link_libraries(snx_vita_loader PUBLIC scarletnx-common snx_zip OpenSSL::Crypto PRIVATE snx_libdeflate)
 target_compile_definitions(snx_vita_loader PRIVATE _FILE_OFFSET_BITS=64 _CRT_SECURE_NO_WARNINGS)
 
-# the USSE translator, which the runtime and snx-vita-usse (the shader corpus' tool) share
+# the USSE translator, which the runtime and snx-vita-usse (the shader corpus' tool) share. usse.c includes the
+# decoder tools/decodetree makes from gpu/usse.decode (cmake/decodetree.cmake)
 add_library(snx_vita_usse STATIC gpu/usse.c)
 target_link_libraries(snx_vita_usse PUBLIC scarletnx-common)
+include("${PROJECT_SOURCE_DIR}/cmake/decodetree.cmake")
+snx_decodetree(snx_vita_usse OUTPUT decode-usse.inc DECODE "${CMAKE_CURRENT_SOURCE_DIR}/gpu/usse.decode"
+               OPTIONS -w 64 --static-decode=decode_usse)
 add_executable(snx-vita-usse "${PROJECT_SOURCE_DIR}/tools/snx_vita_usse.c")
 target_link_libraries(snx-vita-usse PRIVATE snx_vita_usse)
 set_target_properties(snx-vita-usse PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")

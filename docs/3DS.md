@@ -138,7 +138,8 @@ turns a video's YUV frames to RGB, converts on the GPU too (`gpu/vk/y2r.c`). Its
 are the application's virtual memory, so each page goes through a table to its
 physical page. `tests/3ds_vk_y2r.c` holds it to the CPU reference `gpu/y2r.c`, ported
 from Azahar's. PICA draws run
-on the GPU too (`gpu/vk/render.c`). The vertex program is decompiled (`gpu/vk/vsgen.c`)
+on the GPU too (`gpu/vk/render.c`). The vertex program is decompiled (`gpu/vk/vsgen.c`; it and the
+interpreter `gpu/shader.c` decode the instructions with the decoder `tools/decodetree` makes from `gpu/pica.decode`)
 and the fragment pipeline generated (`gpu/vk/fsgen.c`), both ported from Azahar's
 shader generators and both written as SPIR-V words directly (`src/common/utilities/spirv_emit.c`, shared with NX), with no
 shader compiler at run time. The output merger is the pipeline's fixed state. A new pipeline
