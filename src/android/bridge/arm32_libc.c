@@ -16,6 +16,7 @@
 #include <fcntl.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -860,6 +861,191 @@ HANDLER(f_memchr) {
     UNUSED;
     R(0) = inside(memchr(P(0), (int)R(1), R(2)));
 }
+/* ---- the FORTIFY forms (_FORTIFY_SOURCE=2, which the NDK turns on): bionic's check of the buffer the compiler knows
+   the size of (bionic/libc/bionic/fortify.cpp), then the function. A failed check ends the app as bionic's
+   __fortify_fatal does: its message, with the sizes, then abort() ---- */
+
+static _Noreturn void fortify_fatal(const char* format, ...) {
+    char text[256];
+    va_list a;
+    va_start(a, format);
+    vsnprintf(text, sizeof text, format, a);
+    va_end(a);
+    fprintf(stderr, "scarletnx-android: arm32: FORTIFY: %s\n", text);
+    abort();
+}
+/* bionic's __check_buffer_access: claim bytes read from or written into a buffer of actual bytes */
+static void check_access(const char* fn, const char* action, uint32_t claim, uint32_t actual) {
+    if (claim > actual) fortify_fatal("%s: prevented %u-byte %s %u-byte buffer", fn, claim, action, actual);
+}
+static uint64_t host_word(uint32_t address) { return (uint64_t)(uintptr_t)arm32_host(address); }
+
+/* __memcpy_chk, __memmove_chk and __memset_chk(dst, ..., count, dst_len) */
+HANDLER(f_memcpy_chk) {
+    check_access("memcpy", "write into", R(2), R(3));
+    f_memcpy(c, data);
+}
+HANDLER(f_memmove_chk) {
+    check_access("memmove", "write into", R(2), R(3));
+    f_memmove(c, data);
+}
+HANDLER(f_memset_chk) {
+    check_access("memset", "write into", R(2), R(3));
+    f_memset(c, data);
+}
+/* __memchr_chk(s, c, n, actual) */
+HANDLER(f_memchr_chk) {
+    check_access("memchr", "read from", R(2), R(3));
+    f_memchr(c, data);
+}
+/* __strlen_chk(s, s_len): the length, which must leave room for the NUL */
+HANDLER(f_strlen_chk) {
+    UNUSED;
+    size_t n = strlen(S(0));
+    if (n >= R(1)) fortify_fatal("strlen: detected read past end of %u-byte buffer", R(1));
+    R(0) = (uint32_t)n;
+}
+/* __strcpy_chk(dst, src, dst_len) */
+HANDLER(f_strcpy_chk) {
+    check_access("strcpy", "write into", (uint32_t)strlen(S(1)) + 1, R(2));
+    f_strcpy(c, data);
+}
+/* __strcat_chk(dst, src, dst_buf_size): dst's string, then src's with its NUL, within the buffer */
+HANDLER(f_strcat_chk) {
+    UNUSED;
+    size_t dst_len = strlen(S(0)), src_len = strlen(S(1));
+    if (dst_len >= R(2)) fortify_fatal("strlen: detected read past end of %u-byte buffer", R(2));
+    if (src_len >= R(2) - dst_len) fortify_fatal("strcat: prevented write past end of %u-byte buffer", R(2));
+    memmove((char*)P(0) + dst_len, S(1), src_len + 1);
+}
+/* __strncpy_chk(dst, src, len, dst_len) */
+HANDLER(f_strncpy_chk) {
+    check_access("strncpy", "write into", R(2), R(3));
+    f_strncpy(c, data);
+}
+/* __strncpy_chk2(dst, src, n, dst_len, src_len): also no read past src's buffer before its NUL */
+HANDLER(f_strncpy_chk2) {
+    UNUSED;
+    uint32_t n = R(2), src_len = word(c, 4);
+    check_access("strncpy", "write into", n, R(3));
+    char* d = P(0);
+    const char* from = S(1);
+    uint32_t i = 0;
+    while (i < n) {
+        if (i >= src_len) fortify_fatal("strncpy: detected read past end of %u-byte buffer", src_len);
+        char ch = from[i];
+        d[i++] = ch;
+        if (!ch) break;
+    }
+    while (i < n) d[i++] = 0;
+}
+/* __strchr_chk and __strrchr_chk(p, ch, s): no read past the s bytes of p's buffer */
+HANDLER(f_strchr_chk) {
+    UNUSED;
+    const char* p = S(0);
+    for (uint32_t i = 0;; ++i) {
+        if (i == R(2)) fortify_fatal("strchr: prevented read past end of %u-byte buffer", R(2));
+        if (p[i] == (char)R(1)) {
+            R(0) = R(0) + i;
+            return;
+        }
+        if (!p[i]) {
+            R(0) = 0;
+            return;
+        }
+    }
+}
+HANDLER(f_strrchr_chk) {
+    UNUSED;
+    const char* p = S(0);
+    uint32_t found = 0;
+    for (uint32_t i = 0;; ++i) {
+        if (i == R(2)) fortify_fatal("strrchr: prevented read past end of %u-byte buffer", R(2));
+        if (p[i] == (char)R(1)) found = R(0) + i;
+        if (!p[i]) {
+            R(0) = found;
+            return;
+        }
+    }
+}
+/* __fgets_chk(dst, supplied_size, stream, dst_len) */
+HANDLER(f_fgets_chk) {
+    if ((int32_t)R(1) < 0) fortify_fatal("fgets: buffer size %d < 0", (int)(int32_t)R(1));
+    check_access("fgets", "write into", R(1), R(3));
+    f_fgets(c, data);
+}
+/* __fread_chk and __fwrite_chk(buf, size, count, stream, buf_size): size * count bytes, which must not overflow (then
+   EOVERFLOW and 0, as bionic's fread gives) */
+HANDLER(f_fread_chk) {
+    uint64_t total = (uint64_t)R(1) * R(2);
+    if (total > UINT32_MAX) {
+        arm32_set_errno_linux(75); /* EOVERFLOW */
+        R(0) = 0;
+        return;
+    }
+    check_access("fread", "write into", (uint32_t)total, word(c, 4));
+    f_fread(c, data);
+}
+HANDLER(f_fwrite_chk) {
+    uint64_t total = (uint64_t)R(1) * R(2);
+    if (total > UINT32_MAX) {
+        arm32_set_errno_linux(75); /* EOVERFLOW */
+        R(0) = 0;
+        return;
+    }
+    check_access("fwrite", "read from", (uint32_t)total, word(c, 4));
+    f_fwrite(c, data);
+}
+/* __vsnprintf_chk(dst, supplied_size, flags, dst_len, format, va) */
+HANDLER(f_vsnprintf_chk) {
+    UNUSED;
+    check_access("vsnprintf", "write into", R(1), R(3));
+    Arm32Args a;
+    arm32_args_va(&a, word(c, 5));
+    R(0) = (uint32_t)arm32_format(R(1) ? P(0) : NULL, R(1), (const char*)arm32_host(word(c, 4)), &a);
+}
+/* __open_2(path, flags) and __openat_2(fd, path, flags): open and openat with no mode, which O_CREAT and O_TMPFILE
+   need (ARM's numbers: O_CREAT 0100, O_TMPFILE 020040000) */
+static void open_2(SnxArmCPU* c, const char* name, uint32_t flags, const uint32_t* words, unsigned count) {
+    if ((flags & 0100) || (flags & 020040000) == 020040000)
+        fortify_fatal("open: called with O_CREAT/O_TMPFILE but no mode (flags 0%o)", flags);
+    R(0) = arm32_call(arm32_hle_symbol(name), words, count, NULL);
+}
+HANDLER(f_open_2) {
+    UNUSED;
+    const uint32_t words[3] = {R(0), R(1), 0};
+    open_2(c, "open", R(1), words, 3);
+}
+HANDLER(f_openat_2) {
+    UNUSED;
+    const uint32_t words[4] = {R(0), R(1), R(2), 0};
+    open_2(c, "openat", R(2), words, 4);
+}
+/* __readlink_chk(path, buf, size, buf_size), __recvfrom_chk(fd, buf, len, buflen, flags, src_addr, addrlen) and
+   __sendto_chk(fd, buf, len, buflen, flags, dest_addr, addrlen): the 64-bit bridge's readlink, recvfrom and sendto
+   after the check, as the shim calls them for the plain forms */
+HANDLER(f_readlink_chk) {
+    UNUSED;
+    if (R(2) > INT32_MAX) fortify_fatal("readlink: size %u > SSIZE_MAX", R(2));
+    check_access("readlink", "write into", R(2), R(3));
+    const uint64_t x[3] = {host_word(R(0)), host_word(R(1)), R(2)};
+    R(0) = (uint32_t)arm32_call64("readlink", x, 3, NULL);
+}
+HANDLER(f_recvfrom_chk) {
+    UNUSED;
+    check_access("recvfrom", "write into", R(2), R(3));
+    const uint64_t x[6] = {(uint64_t)(int64_t)(int32_t)R(0),       host_word(R(1)),       R(2),
+                           (uint64_t)(int64_t)(int32_t)word(c, 4), host_word(word(c, 5)), host_word(word(c, 6))};
+    R(0) = (uint32_t)arm32_call64("recvfrom", x, 6, NULL);
+}
+HANDLER(f_sendto_chk) {
+    UNUSED;
+    check_access("sendto", "read from", R(2), R(3));
+    const uint64_t x[6] = {(uint64_t)(int64_t)(int32_t)R(0),       host_word(R(1)),       R(2),
+                           (uint64_t)(int64_t)(int32_t)word(c, 4), host_word(word(c, 5)), word(c, 6)};
+    R(0) = (uint32_t)arm32_call64("sendto", x, 6, NULL);
+}
+
 /* the wide characters of the C locale, bionic's only one: a byte is its own character */
 HANDLER(f_btowc) {
     UNUSED;
@@ -1255,6 +1441,26 @@ static const Arm32Symbol symbols[] = {
     {"memset", f_memset, NULL},
     {"memcmp", f_memcmp, NULL},
     {"memchr", f_memchr, NULL},
+    {"__memcpy_chk", f_memcpy_chk, NULL},
+    {"__memmove_chk", f_memmove_chk, NULL},
+    {"__memset_chk", f_memset_chk, NULL},
+    {"__memchr_chk", f_memchr_chk, NULL},
+    {"__strlen_chk", f_strlen_chk, NULL},
+    {"__strcpy_chk", f_strcpy_chk, NULL},
+    {"__strcat_chk", f_strcat_chk, NULL},
+    {"__strncpy_chk", f_strncpy_chk, NULL},
+    {"__strncpy_chk2", f_strncpy_chk2, NULL},
+    {"__strchr_chk", f_strchr_chk, NULL},
+    {"__strrchr_chk", f_strrchr_chk, NULL},
+    {"__fgets_chk", f_fgets_chk, NULL},
+    {"__fread_chk", f_fread_chk, NULL},
+    {"__fwrite_chk", f_fwrite_chk, NULL},
+    {"__vsnprintf_chk", f_vsnprintf_chk, NULL},
+    {"__readlink_chk", f_readlink_chk, NULL},
+    {"__recvfrom_chk", f_recvfrom_chk, NULL},
+    {"__sendto_chk", f_sendto_chk, NULL},
+    {"__open_2", f_open_2, NULL},
+    {"__openat_2", f_openat_2, NULL},
     {"__aeabi_memcpy", f_memcpy, NULL},
     {"__aeabi_memcpy4", f_memcpy, NULL},
     {"__aeabi_memcpy8", f_memcpy, NULL},
