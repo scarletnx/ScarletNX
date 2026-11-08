@@ -34,6 +34,7 @@
 #include "gui/wide.h"
 #include "gui/model.h"
 #include "gui/place.h"
+#include "gui/probe.h"
 #include "gui/queue.h"
 #include "gui/ui.h" /* generated from ui.txt by tools/uigen */
 #include "gui/gui_process.h"
@@ -238,7 +239,8 @@ typedef struct {
 } GuiAppForm;
 /* GPU Drivers' values: each row's mark, (*) on the pick */
 #define GUI_DRIVERS_SHOWN 64 /* the packages the page lists; its note says how many more there are */
-#define GUI_DRIVER_ROWS   (GUI_DRIVERS_SHOWN + 4) /* Global, System driver, the packages, Download Driver, Add Driver */
+/* Global, System driver, the packages, Download Driver, Add Driver, then edenprobe's Mode, Run, Continue, Clear */
+#define GUI_DRIVER_ROWS   (GUI_DRIVERS_SHOWN + 8)
 typedef struct {
     char value[GUI_DRIVER_ROWS][8];
 } GuiDriversForm;
@@ -593,9 +595,17 @@ typedef struct App {
     char drivers_label[GUI_DRIVER_ROWS][300];
     char drivers_about[GUI_DRIVER_ROWS][700];
     int drivers_base;     /* the first package's row */
+    int drivers_tail;     /* Download Driver's row: Add Driver's next, then the launcher's edenprobe Mode and Run */
+    int drivers_continue, drivers_clear; /* Continue's and Clear Crash List's rows, -1 when not shown */
     int driver_off;       /* the package GUI_ASK_DRIVER asks about, its index in drivers */
     Uint32 driver_picked; /* Add Driver's picker's answer */
     SDL_DialogFileFilter driver_filter;
+    /* Run edenprobe (gui/probe.h): edenprobe Mode Full (app.ini's probe_mode), the probe's folder, the launch
+       that plays now (0: none) and the cases the one before ended with */
+    bool probe_full;
+    char* probe_folder;
+    int probe_launch, probe_cases;
+    int probe_row;           /* GPU Drivers' row it was started from, the page shown again as it ends; -1 for none */
     char vk_system[300];     /* the system's Vulkan driver as System driver's row says it, asked once */
     char addons_driver[400]; /* the game box's GPU Driver row: the game's pick, or Global and the launcher's */
     SnxFreedrenoVar fd_vars[SNX_FREEDRENO_MAX]; /* Freedreno Settings' variables as the page edits them */
@@ -1396,7 +1406,7 @@ static void games_defaults(App* app, bool ios) {
 /* Settings > App's picks and Games' options written to app_file: 0, else nonzero, said by the caller */
 static int app_write(App* app) {
     char *text, *dir, *staged;
-    size_t size = 256 + 32 * GUI_OPTIONS + sizeof app->gpu_driver + sizeof app->freedreno + 40;
+    size_t size = 256 + 32 * GUI_OPTIONS + sizeof app->gpu_driver + sizeof app->freedreno + 40 + 32;
     int n, failed, i;
     if (!app->app_file || app->look_only) return 0;
     for (i = 0; i < GUI_PLACES; ++i) size += 16 + (app->place[i] ? strlen(app->place[i]) : 0);
@@ -1418,6 +1428,7 @@ static int app_write(App* app) {
     for (i = 0; i < GUI_OPTIONS; ++i)
         n += snprintf(text + n, size - (size_t)n, "%s = %s\n", option_keys[i].key,
                       option_keys[i].words[app->options[i]]);
+    n += snprintf(text + n, size - (size_t)n, "probe_mode = %s\n", app->probe_full ? "full" : "quick");
     /* Folders' section once one is picked; an empty key is the default */
     for (i = 0; i < GUI_PLACES && !app->place[i]; ++i) {}
     if (i < GUI_PLACES) {
@@ -1484,6 +1495,7 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
     int options[GUI_OPTIONS];
     bool still = app->animations_off, gentle = app->background_gentle, kept, scale_read = false;
     bool shallow = app->dumps_shallow, main_off = app->dumps_off, games_off = app->recompiled_off;
+    bool full = app->probe_full;
     int side = app->side_box;
     char driver[sizeof app->gpu_driver], freedreno[sizeof app->freedreno];
     SnxIni ini;
@@ -1574,6 +1586,11 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
                 main_off = !strcmp(value, "off");
                 continue;
             }
+        } else if (!strcmp(ini.section, "app") && !strcmp(key, "probe_mode")) {
+            if (!strcmp(value, "quick") || !strcmp(value, "full")) {
+                full = !strcmp(value, "full");
+                continue;
+            }
         } else if (!strcmp(ini.section, "app") && !strcmp(key, "recompiled_main")) {
             if (!strcmp(value, "on") || !strcmp(value, "off")) {
                 games_off = !strcmp(value, "off");
@@ -1616,6 +1633,8 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
             n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"), shallow ? "off" : "on");
         else if (n < (int)size && !strcmp(ini.section, "app") && !strcmp(key, "dumps_main"))
             n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"), main_off ? "off" : "on");
+        else if (n < (int)size && !strcmp(ini.section, "app") && !strcmp(key, "probe_mode"))
+            n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"), full ? "full" : "quick");
         else if (n < (int)size && !strcmp(ini.section, "app") && !strcmp(key, "recompiled_main"))
             n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"), games_off ? "off" : "on");
         else if (n < (int)size && !strcmp(ini.section, "app") && !strcmp(key, "gpu_driver"))
@@ -1639,6 +1658,7 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
     if (apply) app->dumps_shallow = shallow;
     if (apply) app->dumps_off = main_off;
     if (apply) app->recompiled_off = games_off;
+    if (apply) app->probe_full = full;
     if (apply) snprintf(app->gpu_driver, sizeof app->gpu_driver, "%s", driver);
     if (apply) snprintf(app->freedreno, sizeof app->freedreno, "%s", freedreno);
     if (apply) app->background_gentle = gentle;
@@ -2334,7 +2354,8 @@ static const char* ask_question(App* app) {
         case GUI_ASK_MADE:
         case GUI_ASK_STATE:
         case GUI_ASK_CACHE:
-        case GUI_ASK_DRIVER: return app->ask_line;
+        case GUI_ASK_DRIVER:
+        case GUI_ASK_CRASH: return app->ask_line;
         case GUI_ASK_ERROR: return app->error_line;
         case GUI_ASK_CLOSE:
             if (!app->menu.running && !app->finished) return job_leaving(app);
@@ -2760,6 +2781,7 @@ static const char* const ask_choices[][2] = {{SNX_TR_NOOP("Continue"), SNX_TR_NO
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Exit")},
                                              {SNX_TR_NOOP("Play"), SNX_TR_NOOP("Recompile")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Remove")},
+                                             {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Clear")},
                                              {SNX_TR_NOOP("OK"), NULL}};
 /* a question added to GuiAsk takes its choices here, in its place */
 typedef char snx_gui_ask_choices[SDL_arraysize(ask_choices) == GUI_ASK_ERROR + 1 ? 1 : -1];
@@ -9231,6 +9253,17 @@ static GuiThemeKey page_row(const char* label, size_t at, size_t size, const cha
     GuiThemeKey k = {"", label, GUI_KEY_ACTION, at, size, NULL, 0, about, 0, 0, 0, 0, NULL};
     return k;
 }
+/* whether the probe's last run in folder ended before its summary, Continue's about into about: its build, its cases
+   and its crash list's */
+static bool probe_unfinished(const char* folder, char* about, size_t size) {
+    GuiProbeReport r;
+    if (!gui_probe_read(folder, &r) || r.summary) return false;
+    snprintf(about, size,
+             snx_tr("Goes on with the run of edenprobe %s that ended before its summary, from its journal: cases so "
+                    "far %d, on its crash list %d"),
+             r.build[0] ? r.build : "?", r.cases, gui_probe_crashes(folder));
+    return true;
+}
 /* GPU Drivers' rows: for a game Global first, then System driver, a package each and Add Driver; the pick marked
    (*). The pick: the launcher's (app.ini's gpu_driver), or the game's .ini's gpu_driver= (none: Global). How many */
 static int drivers_fill(App* app) {
@@ -9276,6 +9309,7 @@ static int drivers_fill(App* app) {
         app->drivers_keys[r] = page_row(app->drivers_label[r], offsetof(GuiDriversForm, value) + r * sizeof f->value[0],
                                         sizeof f->value[0], app->drivers_about[r]);
     }
+    app->drivers_tail = r;
     snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("Download Driver"));
     snprintf(app->drivers_about[r], sizeof app->drivers_about[r], "%s",
              snx_tr("The releases of the driver repositories Eden lists, from GitHub: one picked is downloaded and "
@@ -9287,6 +9321,41 @@ static int drivers_fill(App* app) {
              snx_tr("A driver package's zip, a meta.json and the driver's libraries at its top as Turnip's releases "
                     "are: unpacked into gpu_drivers/ of the user's data folder"));
     app->drivers_keys[r] = page_row(app->drivers_label[r], 0, 0, app->drivers_about[r]);
+    /* the launcher's page: edenprobe Mode and Run edenprobe (gui/probe.h) */
+    if (!app->drivers_game) {
+        ++r;
+        snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("edenprobe Mode"));
+        snprintf(app->drivers_about[r], sizeof app->drivers_about[r], "%s",
+                 snx_tr("What Run edenprobe runs. Quick: processor and graphics. Full: also fs (64 MiB written once), "
+                        "video, audio, kernel and display"));
+        snprintf(f->value[r], sizeof f->value[r], "%s", app->probe_full ? snx_tr("Full") : snx_tr("Quick"));
+        app->drivers_keys[r] = page_row(app->drivers_label[r], offsetof(GuiDriversForm, value) + r * sizeof f->value[0],
+                                        sizeof f->value[0], app->drivers_about[r]);
+        ++r;
+        char* folder = app->state_dir ? snx_path_join(app->state_dir, "probe") : NULL;
+        snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("Run edenprobe"));
+        snprintf(app->drivers_about[r], sizeof app->drivers_about[r],
+                 snx_tr("edenprobe's hardware probes played as a game with this GPU driver, in a data folder of their "
+                        "own with the default settings, %s; then their counts"),
+                 folder ? folder : "?");
+        app->drivers_keys[r] = page_row(app->drivers_label[r], 0, 0, app->drivers_about[r]);
+        app->drivers_continue = app->drivers_clear = -1;
+        if (folder && probe_unfinished(folder, app->drivers_about[r + 1], sizeof app->drivers_about[0])) {
+            app->drivers_continue = ++r;
+            snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("Continue"));
+            app->drivers_keys[r] = page_row(app->drivers_label[r], 0, 0, app->drivers_about[r]);
+        }
+        if (folder && gui_probe_crashes(folder)) {
+            app->drivers_clear = ++r;
+            snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("Clear Crash List"));
+            snprintf(app->drivers_about[r], sizeof app->drivers_about[r],
+                     snx_tr("Cases on the crash list, which a run skips as crashed: %d. Cleared, the next run asks "
+                            "them again"),
+                     gui_probe_crashes(folder));
+            app->drivers_keys[r] = page_row(app->drivers_label[r], 0, 0, app->drivers_about[r]);
+        }
+        free(folder);
+    }
     free(own);
     free(ini);
     return r + 1;
@@ -9506,12 +9575,35 @@ static void picks_open(App* app, GuiPicksOf of);
 static void themes_open(App* app);
 static void picks_key(App* app, GuiKey key);
 static void open_fetch(App* app);
+static void probe_start(App* app, bool continuing);
+static void probe_clear(App* app);
+static void probe_after(App* app);
+static void probe_back(App* app);
 static void driver_select(App* app, int r) {
-    if (r == gui_editor_rows(&app->editor) - 1)
+    if (r == app->drivers_tail + 1)
         driver_pick(app);
-    else if (r == gui_editor_rows(&app->editor) - 2)
+    else if (r == app->drivers_tail)
         open_fetch(app);
-    else if (driver_of(app, r) >= 0) {
+    else if (r == app->drivers_tail + 2) { /* edenprobe Mode: Quick and Full in turn */
+        app->probe_full = !app->probe_full;
+        if (!app_save(app))
+            snprintf(app->editor.note, sizeof app->editor.note, snx_tr("edenprobe Mode: %s"),
+                     app->probe_full ? snx_tr("Full") : snx_tr("Quick"));
+        drivers_show(app, r);
+    } else if (r == app->drivers_tail + 3)
+        probe_start(app, false);
+    else if (r == app->drivers_continue)
+        probe_start(app, true);
+    else if (r == app->drivers_clear) {
+        char* folder = app->state_dir ? snx_path_join(app->state_dir, "probe") : NULL;
+        int cases = folder ? gui_probe_crashes(folder) : 0;
+        snprintf(app->ask_line, sizeof app->ask_line,
+                 cases == 1 ? snx_tr("Clear Crash List? Its case runs again in the next run.")
+                            : snx_tr("Clear Crash List? Its %d cases run again in the next run."),
+                 cases);
+        free(folder);
+        gui_confirm_open(&app->confirm, GUI_ASK_CRASH, false);
+    } else if (driver_of(app, r) >= 0) {
         app->pick_row = r;
         picks_open(app, GUI_PICKS_DRIVER);
     } else
@@ -11390,9 +11482,9 @@ static unsigned form_icon(const App* app, const GuiEditor* e, int r) {
                : r == GUI_APP_RESET     ? GUI_ICON_ROTATE_CCW
                                         : GUI_ICON_NONE;
     if (e->keys == app->drivers_keys)
-        return r == gui_editor_rows(e) - 1   ? GUI_ICON_PACKAGE_PLUS
-               : r == gui_editor_rows(e) - 2 ? GUI_ICON_HARD_DRIVE_DOWNLOAD
-                                             : GUI_ICON_NONE;
+        return r == app->drivers_tail + 1 ? GUI_ICON_PACKAGE_PLUS
+               : r == app->drivers_tail   ? GUI_ICON_HARD_DRIVE_DOWNLOAD
+                                          : GUI_ICON_NONE;
     if (e->keys == app->folder_keys)
         return !k                                               ? GUI_ICON_ROTATE_CCW /* Reset to Defaults */
                : folder_row(app, r, &at, &group) == GUI_ROW_ADD ? GUI_ICON_FOLDER_PLUS
@@ -13208,8 +13300,17 @@ static void game_end(App* app) {
    game already, else in its folder of games/, as it cannot open it; whether it opened */
 static int ready(App* app) {
     const GuiStep* made = gui_steps_last(&app->steps, "READY");
-    char* game = made ? gui_ready_game(app->native ? app->file : NULL, app->games_dir, made->detail) : NULL;
-    int ok = game && play(app, game);
+    /* the probe's, in its own data folder */
+    char* games = app->probe_launch ? snx_format("%s/%s/recompiled", app->probe_folder, SNX_PORTABLE_DIR) : NULL;
+    char* game =
+        made ? gui_ready_game(app->native && !games ? app->file : NULL, games ? games : app->games_dir, made->detail)
+             : NULL;
+    int was = app->menu.selected, ok;
+    if (games) app->menu.selected = GUI_SWITCH;
+    ok = game && play(app, game);
+    app->menu.selected = was;
+    if (games && !ok) app->probe_launch = 0;
+    free(games);
     free(game);
     return ok;
 }
@@ -13739,6 +13840,8 @@ static void change_answer(App* app, GuiAsk ask, bool taken) {
         caches_delete(app);
     else if (ask == GUI_ASK_DRIVER)
         driver_remove(app);
+    else if (ask == GUI_ASK_CRASH)
+        probe_clear(app);
 }
 /* the functions an AOT pack used, from the driver's line, -1 when it printed none */
 static int aot_built(const GuiSteps* steps) {
@@ -13811,6 +13914,20 @@ static void pump(App* app) {
             app->aborting = false;
             app->confirm.shown = false; /* a run that ended while asking has nothing left to abort */
             layout(app);
+            /* the probe's: ESC ends it, and on a phone a failure to make its game, which the run's screen says; a run
+               that ended goes on (probe_after), on a phone once its game has played */
+            if (app->probe_launch && !app->finished) {
+                app->probe_launch = 0;
+                probe_back(app);
+            }
+#if !defined(SDL_PLATFORM_ANDROID) && !defined(SDL_PLATFORM_IOS)
+            if (app->probe_launch) probe_after(app);
+#else
+            if (app->probe_launch && app->abnormal_exit) { /* its screen says why, the menu after it */
+                app->probe_launch = 0;
+                app->probe_row = -1;
+            }
+#endif
 #ifdef SDL_PLATFORM_ANDROID
             /* the game opens in its own activity, over this one: coming back from it is coming back to the menu.
                Android lets no app behind others open one, so then it waits for the menu to show */
@@ -13823,7 +13940,21 @@ static void pump(App* app) {
 #elif defined(SDL_PLATFORM_IOS)
             /* a phone has no ESC to dismiss the end of the run: a prepared game goes back to the menu, where it is
                listed; a failure stays on the screen with its messages */
-            if (!app->abnormal_exit) {
+            if (!app->abnormal_exit && app->probe_launch) { /* the probe's game, made ready: played */
+                char* games = snx_format("%s/%s/recompiled", app->probe_folder, SNX_PORTABLE_DIR);
+                const GuiStep* made = gui_steps_last(&app->steps, "READY");
+                char* game = made ? gui_ready_game(NULL, games, made->detail) : NULL;
+                int was = app->menu.selected;
+                app->menu.selected = GUI_SWITCH;
+                if (!game || !play(app, game)) {
+                    app->probe_launch = 0;
+                    leave_run(app);
+                    probe_back(app);
+                }
+                app->menu.selected = was;
+                free(game);
+                free(games);
+            } else if (!app->abnormal_exit) {
                 recent_made_here(app);
                 recent_as_games(app); /* the game's name, now that it is the entry */
                 list_games(app);      /* the list the run left behind has not the game made */
@@ -13839,7 +13970,10 @@ static void pump(App* app) {
     }
     if (app->played && !app->hidden) {
         app->played = false;
-        if (!next_program(app)) game_end(app); /* a collection's program starting another ended well */
+        if (app->probe_launch)
+            probe_after(app);
+        else if (!next_program(app))
+            game_end(app); /* a collection's program starting another ended well */
     }
 #endif
 #ifdef SDL_PLATFORM_ANDROID
@@ -14305,6 +14439,56 @@ static void made_answer(App* app, bool taken, bool second) {
     app->menu.selected = item;
 }
 static void queue_show(App* app, int i);
+/* argv started on the run's screen, the menu fading out, file (owned) the run's, which Recent lists when recent says
+   so; whether it started, the message saying why not */
+static bool run_start(App* app, const char* const* argv, char* file, bool native, bool prepared, bool recent) {
+#ifndef SDL_PLATFORM_ANDROID /* there the data folder's config/, which every game reads (gamepad.c) */
+    pad_mappings_share(app);
+#endif
+#ifdef SDL_PLATFORM_IOS
+    icons_wait(app); /* the one driver thread, a dump's icon's first */
+#endif
+    bool started = gui_process_start(app->process, argv, app->message, sizeof(app->message));
+    app->run_started_ms = SDL_max(now_ms(app), 1);
+    if (debug_log(app)) run_said(app, "run", started ? "starts" : app->message, 0);
+    if (started && app->run_log) {
+        size_t k;
+        if (app->run_out) fclose(app->run_out);
+        app->run_out = snx_fopen(app->run_log, "wb");
+        for (k = 0; app->run_out && argv[k]; ++k) fprintf(app->run_out, "%s%s", k ? " " : "$ ", argv[k]);
+        if (app->run_out) fputc('\n', app->run_out);
+    }
+    gui_steps_reset(&app->steps);
+    app->native = native;
+    /* the menu fades out, then the run fades in */
+    Uint64 now = SDL_max(now_ms(app), 1);
+    app->entering_ms = started && app->theme.fade_out_ms ? now : 0;
+    app->fade_ms = started ? now + (app->entering_ms ? app->theme.fade_out_ms : 0) : 0;
+    app->leaving_ms = 0;
+    if (!started) {
+        free(file);
+        return false;
+    }
+    free(app->file);
+    app->file = file;
+    if (recent && app->recent_file && !gui_recent_add(&app->recent, file, app->menu.selected, prepared))
+        recent_changed(app);
+    app->recent_named = 0;
+    app->menu.view = GUI_LOAD_NONE;
+    app->menu.running = true;
+    app->finished = false;
+    app->abnormal_exit = false;
+    app->message[0] = 0;
+    gui_console_init(&app->console, app->cols - 2, app->rows - 8);
+    app->has_output = true;
+    layout(app);
+#ifdef SDL_PLATFORM_ANDROID
+    /* now, while the menu shows: Android 12 starts no notification's service for an app behind others */
+    app->told_ms = 0;
+    tell(app);
+#endif
+    return true;
+}
 static void launch(App* app, char* absolute, bool prepared) {
     int queued;
     if (!absolute || !snx_is_file(absolute)) {
@@ -14543,57 +14727,162 @@ static void launch(App* app, char* absolute, bool prepared) {
         free(absolute);
         return;
     }
-#ifndef SDL_PLATFORM_ANDROID /* there the data folder's config/, which every game reads (gamepad.c) */
-    pad_mappings_share(app);
-#endif
-#ifdef SDL_PLATFORM_IOS
-    icons_wait(app); /* the one driver thread, a dump's icon's first */
-#endif
-    bool started = gui_process_start(app->process, argv, app->message, sizeof(app->message));
-    app->run_started_ms = SDL_max(now_ms(app), 1);
-    if (debug_log(app)) run_said(app, "run", started ? "starts" : app->message, 0);
-    if (started && app->run_log) {
-        size_t k;
-        if (app->run_out) fclose(app->run_out);
-        app->run_out = snx_fopen(app->run_log, "wb");
-        for (k = 0; app->run_out && k < n; ++k) fprintf(app->run_out, "%s%s", k ? " " : "$ ", argv[k]);
-        if (app->run_out) fputc('\n', app->run_out);
-    }
+    run_start(app, argv, absolute, native, prepared, true);
     free(argv);
     free(game_option); /* argv held it until the process started */
     free(run);
     free(out);
     free(app->dest_out); /* the run's, which argv held until here: a next one asks again */
     app->dest_out = NULL;
-    gui_steps_reset(&app->steps);
-    app->native = native;
-    /* the menu fades out, then the run fades in */
-    Uint64 now = SDL_max(now_ms(app), 1);
-    app->entering_ms = started && app->theme.fade_out_ms ? now : 0;
-    app->fade_ms = started ? now + (app->entering_ms ? app->theme.fade_out_ms : 0) : 0;
-    app->leaving_ms = 0;
     free(driver);
-    if (!started) {
-        free(absolute);
+}
+/* ---- Settings > App > GPU Drivers' Run edenprobe (gui/probe.h): edenprobe played as a game, launched again while
+   a launch that ended before the summary added cases, then its counts in a box ---- */
+/* the driver on the probe's NRO, in its data folder, with the launcher's GPU driver: a run's screen, as a game's */
+static void probe_launch(App* app) {
+    char *nro = gui_probe_nro(app->probe_folder), *data = gui_probe_data(app->probe_folder),
+         *driver = find_driver(app, GUI_SWITCH);
+    const char* argv[8];
+    size_t n = 0;
+    int was = app->menu.selected;
+    GuiDriverRun how;
+#ifdef SDL_PLATFORM_IOS /* the app's own driver, which gui_process_start runs on a thread */
+    if (!driver) driver = snx_strdup("scarletnx");
+#endif
+    if (!driver) {
+        driver_missing(app, GUI_SWITCH, app->message, sizeof app->message);
+        app->probe_launch = 0;
+        probe_back(app);
+        say_failure(app, app->message);
+        free(nro);
+        free(data);
         return;
     }
-    free(app->file);
-    app->file = absolute;
-    if (app->recent_file && !gui_recent_add(&app->recent, absolute, app->menu.selected, prepared)) recent_changed(app);
-    app->recent_named = 0;
-    app->menu.view = GUI_LOAD_NONE;
-    app->menu.running = true;
-    app->finished = false;
-    app->abnormal_exit = false;
-    app->message[0] = 0;
-    gui_console_init(&app->console, app->cols - 2, app->rows - 8);
-    app->has_output = true;
-    layout(app);
-#ifdef SDL_PLATFORM_ANDROID
-    /* now, while the menu shows: Android 12 starts no notification's service for an app behind others */
-    app->told_ms = 0;
-    tell(app);
+    argv[n++] = driver;
+    if (driver_run(app, GUI_SWITCH, &how) && how.first) argv[n++] = how.first;
+    argv[n++] = nro;
+    argv[n++] = "--data";
+    argv[n++] = data;
+    free(app->run_driver);
+    free(app->run_freedreno);
+    app->run_driver = gui_run_option("gpu_driver", NULL, app->gpu_driver);
+    app->run_freedreno = gui_run_option("freedreno_env", NULL, app->freedreno);
+    if (app->run_driver) argv[n++] = app->run_driver;
+    if (app->run_freedreno) argv[n++] = app->run_freedreno;
+    argv[n] = NULL;
+    app->menu.selected = GUI_SWITCH; /* a Switch program's run */
+    if (!run_start(app, argv, nro, false, false, false)) {
+        app->probe_launch = 0;
+        probe_back(app);
+        say_failure(app, app->message);
+    }
+    app->menu.selected = was;
+    free(data);
+    free(driver);
+}
+/* Run edenprobe pressed, a new run, or Continue, the last one's going on: the first launch started, said in the log;
+   why not, in the page's note */
+static void probe_start(App* app, bool continuing) {
+    char why[700], *nro;
+    int cleared = 0;
+    free(app->probe_folder);
+    app->probe_folder = app->state_dir ? snx_path_join(app->state_dir, "probe") : NULL;
+    if (!app->probe_folder) {
+        snprintf(app->editor.note, sizeof app->editor.note, "%s", snx_tr("Run edenprobe: no state folder to run in"));
+        return;
+    }
+#ifdef SDL_PLATFORM_IOS /* the one driver thread */
+    if (jobs_live(app)) {
+        snprintf(app->editor.note, sizeof app->editor.note, "%s",
+                 snx_tr("Run edenprobe: a compile goes; the probes run once the queue ends"));
+        return;
+    }
 #endif
+    nro = gui_probe_nro(app->probe_folder);
+    if (!snx_is_file(nro)) {
+        snprintf(app->editor.note, sizeof app->editor.note,
+                 snx_tr("Run edenprobe needs %s: edenprobe.nro from github.com/scarletnx/edenprobe/releases"), nro);
+        free(nro);
+        return;
+    }
+    free(nro);
+    if (continuing) {
+        GuiProbeReport r;
+        if (!gui_probe_read(app->probe_folder, &r) || r.summary) return; /* the row shows only for one */
+        gui_log("edenprobe: Continue goes on with the run of edenprobe %s in %s, cases so far %d, on its crash list %d",
+                r.build[0] ? r.build : "?", app->probe_folder, r.cases, gui_probe_crashes(app->probe_folder));
+        app->probe_cases = r.cases;
+    } else if (gui_probe_start(app->probe_folder, app->probe_full, &cleared, why, sizeof why)) {
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Run edenprobe: %s"), why);
+        return;
+    } else {
+        gui_log("edenprobe: Run edenprobe starts a new run in %s, mode %s; cases on the crash list cleared: %d",
+                app->probe_folder, app->probe_full ? GUI_PROBE_FULL : GUI_PROBE_QUICK, cleared);
+        app->probe_cases = -1;
+    }
+    app->probe_launch = 1;
+    app->probe_row = app->editing && app->form == GUI_FORM_DRIVERS ? app->editor.row : -1;
+    app->editing = false; /* the run's screen, its keys its own */
+    probe_launch(app);
+}
+/* the page the probe was started from shown again, its rows as the run left them (Continue, Clear Crash List) */
+static void probe_back(App* app) {
+    int row = app->probe_row;
+    app->probe_row = -1;
+    if (row >= 0) open_drivers(app, NULL, NULL, row);
+}
+/* Clear Crash List taken: the list gone, how many cases it had said in the note and the log */
+static void probe_clear(App* app) {
+    char *folder = app->state_dir ? snx_path_join(app->state_dir, "probe") : NULL, why[700];
+    int cleared = 0;
+    if (!folder) return;
+    if (gui_probe_clear(folder, &cleared, why, sizeof why))
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Clear Crash List: %s"), why);
+    else {
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Crash list cleared, cases: %d"), cleared);
+        gui_log("edenprobe: Clear Crash List cleared %s's crash list, cases: %d", folder, cleared);
+    }
+    free(folder);
+    drivers_show(app, app->editor.row);
+}
+/* a launch of the probe ended (its game's process, or on Android its game's activity): launched again while it adds
+   cases and has no summary, GUI_PROBE_RELAUNCHES times at most, as edenprobe's journal goes on after the case it ended
+   inside; else its counts in a box, over the menu */
+static void probe_after(App* app) {
+    GuiProbeReport r;
+    char said[700], *report;
+    if (!gui_probe_read(app->probe_folder, &r)) { /* the run's lines say why, on its screen or in the log */
+        app->probe_launch = 0;
+        app->probe_row = -1; /* its screen stays, the menu after it */
+        snprintf(app->message, sizeof app->message, snx_tr("edenprobe left no report in %s"), app->probe_folder);
+        say_failure(app, app->message);
+        return;
+    }
+    if (!r.summary && r.cases > app->probe_cases && app->probe_launch <= GUI_PROBE_RELAUNCHES) {
+        gui_log("edenprobe: launch %d ended before the summary, cases so far %d; launching again", app->probe_launch,
+                r.cases);
+        app->probe_cases = r.cases;
+        app->probe_launch++;
+        probe_launch(app);
+        return;
+    }
+    gui_probe_said(&r, said, sizeof said);
+    report = gui_probe_report(app->probe_folder);
+    if (r.summary)
+        snprintf(app->error_line, sizeof app->error_line, snx_tr("%s. The report: %s"), said, report);
+    else if (r.cases > app->probe_cases)
+        snprintf(app->error_line, sizeof app->error_line,
+                 snx_tr("%s after %d launches, the most it takes. The report: %s"), said, app->probe_launch, report);
+    else
+        snprintf(app->error_line, sizeof app->error_line,
+                 snx_tr("%s after %d launches, the last adding no case. The report: %s"), said, app->probe_launch,
+                 report);
+    free(report);
+    gui_log("%s", app->error_line);
+    app->probe_launch = 0;
+    if (app->finished) leave_run(app);
+    probe_back(app);
+    gui_confirm_open(&app->confirm, GUI_ASK_ERROR, false);
 }
 /* the answer to a run's room: Run Anyway, pressed twice, runs it as it was asked; Back runs nothing */
 static void room_answer(App* app, bool taken) {
@@ -16410,7 +16699,7 @@ static void ask_key(App* app, GuiKey key) {
         made_answer(app, key == GUI_SELECT, second);
     else if (ask == GUI_ASK_CLEAN || ask == GUI_ASK_RESET || ask == GUI_ASK_PLACES || ask == GUI_ASK_PLACE ||
              ask == GUI_ASK_FOLDER || ask == GUI_ASK_MOVE || ask == GUI_ASK_STATE || ask == GUI_ASK_CACHE ||
-             ask == GUI_ASK_DRIVER)
+             ask == GUI_ASK_DRIVER || ask == GUI_ASK_CRASH)
         change_answer(app, ask, second);
     else if (ask == GUI_ASK_CLOSE && second) { /* the run ends with the menu, the queue's recompile too */
         if (app->menu.running) abort_run(app);
@@ -17810,6 +18099,7 @@ static void forget(App* app) {
     free(app->home_dir);
     for (int i = 0; i < GUI_PLACES; ++i) free(app->place[i]);
     free(app->work_dir);
+    free(app->probe_folder);
     free(app->state_dir);
     free(app->cache_dir);
     free(app->config_dir);

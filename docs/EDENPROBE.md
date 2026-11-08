@@ -5,6 +5,7 @@
 ## Index
 
 * [Running it](#running-it)
+* [From the launcher](#from-the-launcher)
 * [The mode words](#the-mode-words)
 * [In CI](#in-ci)
 * [The baseline](#the-baseline)
@@ -39,6 +40,13 @@ without installing it, point `VK_DRIVER_FILES` at its ICD file.
 
 With `-DSNX_TEST_EDENPROBE=/path/to/edenprobe.nro`, ctest runs it as `edenprobe_vk_memory_1` (copied) and
 `edenprobe_vk_memory_2` (in place) against the baseline.
+
+## From the launcher
+
+Settings > App > GPU Drivers' **Run edenprobe** plays it as a game on a player's machine, any platform, with the GPU
+driver picked there, in a data folder of its own, launched again after a crash as `scripts/edenprobe.py` does, and
+says the counts at the end ([GUI](GUI.md)). Its modes, Quick and Full, never ask for `net`, `service`, `pad`,
+`listen`, `fatal`, `hang`, `stress` or `game`, nor for times.
 
 ## The mode words
 

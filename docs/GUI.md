@@ -184,7 +184,14 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   one named Qualcomm) marked *proprietary, no license*; the one picked is downloaded, its progress in the note, and
   added as Add Driver adds a zip. They load on Android 9 or newer, arm64, with an Adreno GPU (`/dev/kgsl-3d0`): the page's first line says
   what this device is and, anywhere else, why games there use the system driver, and Use is refused there with that
-  line. A game whose package does not load stops, saying why. **Freedreno Settings** sets Mesa's Freedreno and Turnip
+  line. A game whose package does not load stops, saying why. Under them, **edenprobe Mode** (Quick, the default:
+  `quick notime cpu graphics`; Full adds `fs video audio kernel display`) and **Run edenprobe**, which plays
+  [edenprobe](EDENPROBE.md)'s probes as a game with the GPU driver picked here, from `probe/edenprobe.nro` of the
+  Logs folder, in a data folder of its own there (`probe/.scarletnx`: none of your settings, saves or users) with the
+  default settings. A launch that ends before the report's summary is followed by another, up to 16, which goes on
+  after the case it ended inside, while each adds cases; ESC ends it. At the end a box says the counts and the suites
+  that failed or crashed, and where the report is. A next press after a whole run starts it over; after one that
+  stopped inside a case (an iOS app ends with its game), it goes on. **Freedreno Settings** sets Mesa's Freedreno and Turnip
   variables (`TU_DEBUG`, `FD_MESA_DEBUG`, `IR3_SHADER_DEBUG`, `FD_RD_DUMP`...) every game starts with: Eden's presets
   first (Debug - CPU Memory, `TU_DEBUG=sysmem`, and the others), a row a variable set (a press, or Del, takes it out),
   **Variable Name** and **Variable Value** typed and **Add Variable**, **Clear All**, then **Save**, which keeps them.
@@ -291,7 +298,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   dumps/ listed and made as ScarletNX starts; `off`: neither, Remove from Library's), `recompiled_main` (`on`, the
   default; `off`: recompiled/ not listed, new games going to an Extra), `gpu_driver` (GPU Drivers' pick, a folder of
 `gpu_drivers/`; left out, the system's driver), `freedreno_env` (Freedreno Settings', `NAME=value` with a `;` between
-two; left out, none) and `language` (`auto`, `en` or a
+two; left out, none), `probe_mode` (edenprobe Mode's `quick`, the default, or `full`) and `language` (`auto`, `en` or a
   language's BCP 47
   tag, as `pt-BR` or `zh-Hans-CN`), and once one
   is picked `[folders]` with Folders' `data`, `recompiled`, `work`, `state` (Logs) and `cache` (Caches) (a full path,
