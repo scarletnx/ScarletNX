@@ -122,8 +122,35 @@ static int check_targetless_stores(void) {
                 "expected %08x\n",
                 drawn, skipped, snx_ld_le32(after + 8), snx_ld_le32(after + 12), before[3]);
     CHECK(drawn && !skipped && same);
-    puts("targetless draws: a fragment program's store runs, into memory or a buffer image; a program with no store is "
-         "skipped");
+    /* The same store beside a 2D image slot with nothing bound, header 1 of the pool empty, whose store no fragment
+       takes (c[0][0x128] is 0): the draw runs with an empty image there, as a dispatch does */
+    const u64 beside_empty[] = {storage_mov(15, 2),      /* MOV32I R15, 2: the texel */
+                                storage_mov(24, 0x5eed), /* MOV32I R24, 0x5eed */
+                                0x4c9807800487001cull,   /* MOV R28, c[0][0x120] */
+                                0x4c98078004a70005ull,   /* MOV R5, c[0][0x128] */
+                                0x5b6b03800ff70507ull,   /* ISETP.NE P0, R5, RZ */
+                                0x4c98078004970006ull,   /* MOV R6, c[0][0x124] */
+                                0xeb200e0200f70f18ull,   /* SUST.P.RGBA [R15], R24, R28 */
+                                0xeb20030600f00f18ull,   /* @P0 SUST.P.RGBA.2D [R15], R24, R6 */
+                                0xe30000000007000full};
+    CHECK(!storage_write_words(pool + 0x20, (const u32[8]){0}, 8));
+    CHECK(!storage_write_words(cbuf + 0x124, (const u32[2]){1, 0}, 2));
+    CHECK(!storage_write_words(texels, before, 8));
+    CHECK(mesh_program(address + 0x1000, beside_empty, 9, 0));
+    maxwell3d_method(channel, 0x369, 1, 1);
+    r[0x55F] = 1;
+    channel->r3d_dirty = ~0u;
+    targetless_draw(channel, &drawn, &skipped);
+    CHECK(!gmem_read(texels, after, sizeof after));
+    same = 1;
+    for (u32 i = 0; i < 8; i++) same &= snx_ld_le32(after + 4 * i) == (i == 2 ? 0x5eed : before[i]);
+    if (!drawn || skipped || !same)
+        fprintf(stderr,
+                "store beside an empty image slot: drawn %d, skipped %d, texel 2 holds %08x, expected 00005eed\n",
+                drawn, skipped, snx_ld_le32(after + 8));
+    CHECK(drawn && !skipped && same);
+    puts("targetless draws: a fragment program's store runs, into memory or a buffer image, also beside an empty image "
+         "slot; a program with no store is skipped");
     free(channel);
     return 0;
 }

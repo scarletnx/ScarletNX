@@ -2233,6 +2233,55 @@ VkImageView vk_null_view(VkImageViewType type, int num, int ms) {
     return views[ms][type][num];
 }
 
+Surf* vk_null_storage(VkImageViewType type, int kind, VkImageView* view) {
+    /* a 2D image for the 2D and 2D array views, a 3D one for the 3D view; by kind, the format of the program's image
+       (shader.h ShaderInfo.img): 0 float, 1 an atomic's R32ui, 2 unsigned, 3 signed */
+    static Surf* imgs[2][4];
+    static const VkFormat fm[4] = {VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32_UINT, VK_FORMAT_R32_UINT, VK_FORMAT_R32_SINT};
+    *view = VK_NULL_HANDLE;
+    if (kind < 0 || kind > 3 ||
+        (type != VK_IMAGE_VIEW_TYPE_2D && type != VK_IMAGE_VIEW_TYPE_2D_ARRAY && type != VK_IMAGE_VIEW_TYPE_3D))
+        return NULL;
+    int is3d = type == VK_IMAGE_VIEW_TYPE_3D;
+    Surf* s = imgs[is3d][kind];
+    if (!s) {
+        s = calloc(1, sizeof *s);
+        if (!s) return NULL;
+        s->w = s->h = s->sw = s->sh = s->levels = s->depth3d = s->layers = 1;
+        s->msaa = DS_MSAA_1X1;
+        s->type = is3d ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+        s->f = (VkFmt){.vk = fm[kind], .bpp = 4, .bw = 1, .bh = 1, .is_int = kind != 0, .sint = kind == 3};
+        s->storage_capable = 1;
+        s->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                .imageType = is3d ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D,
+                                .format = fm[kind],
+                                .extent = {1, 1, 1},
+                                .mipLevels = 1,
+                                .arrayLayers = 1,
+                                .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+        VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        if (!VK_OK(vmaCreateImage(g_vk.vma, &ii, &aci, &s->img, &s->mem, NULL))) {
+            free(s);
+            return NULL;
+        }
+        vk_mem_track(s->mem);
+        vk_render_end(); /* clears happen outside rendering passes */
+        VkCommandBuffer cb = vk_cmd();
+        vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VkClearColorValue z = {{0, 0, 0, 0}};
+        rec_CmdClearColorImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &z, 1, &all);
+        imgs[is3d][kind] = s;
+    }
+    *view = vk_tex_storage_view(s, type);
+    return *view ? s : NULL;
+}
+
 /* ------------------------------------------------------------ samplers */
 static VkSamplerAddressMode wrap(u32 m) {
     switch (m) {
