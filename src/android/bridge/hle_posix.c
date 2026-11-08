@@ -836,7 +836,6 @@ static void g_close(CPU* c, void* data) {
 
 /* ---- the file calls past open, read and write: *at, pipe2, links, ownership, sessions and the rest ---- */
 
-#if !defined(__linux__)
 /* a function the host has no equal of: ENOSYS, and its name said once on stderr */
 typedef struct {
     const char* name;
@@ -852,7 +851,6 @@ static void absent(CPU* c, void* data) {
 }
 #define ABSENT(name)       static Absent absent_##name = {#name, false}
 #define ABSENT_ENTRY(name) {#name, absent, &absent_##name}
-#endif
 
 /* AT_FDCWD as bionic has it (-100); the host's own value elsewhere (macOS has -2) */
 enum { L_AT_FDCWD = -100 };
@@ -1091,7 +1089,6 @@ HOST_INT(chown, chown(STR(0), (uid_t)X(1), (gid_t)X(2)))
 HOST_INT(fchdir, fchdir((int)X(0)))
 HOST_INT(symlink, symlink(STR(0), STR(1)))
 HOST_INT(link, link(STR(0), STR(1)))
-HOST_INT(setsid, setsid())
 HOST_INT(getpgrp, getpgrp())
 HOST_INT(ftruncate64, ftruncate((int)X(0), (off_t)X(1)))
 #if defined(__APPLE__)
@@ -1118,8 +1115,9 @@ ABSENT(memfd_create);
 ABSENT(chown);
 ABSENT(fchdir);
 ABSENT(symlink);
-ABSENT(setsid);
 #endif
+/* a session of its own would take the whole emulator process from its terminal, and the app is no process of its own */
+ABSENT(setsid);
 
 /* ---- memory maps: executable ones go into the code window, where the JIT finds them ---- */
 
@@ -2445,7 +2443,7 @@ const HleSymbol hle_posix[] = {
     A(open, g_open), A(__open_2, g_open_2), A(fcntl, g_fcntl), A(ioctl, g_ioctl),
     A(open64, g_open), A(openat, g_openat), A(__openat_2, g_openat_2), A(creat, g_creat), A(pwrite, g_pwrite),
     A(pwrite64, g_pwrite), A(pipe2, g_pipe2), A(umask, g_umask_set), A(faccessat, g_faccessat),
-    A(unlinkat, g_unlinkat), A(getpriority, g_getpriority), A(mkstemp, g_mkstemp),
+    A(unlinkat, g_unlinkat), A(getpriority, g_getpriority), A(mkstemp, g_mkstemp), ABSENT_ENTRY(setsid),
 #if defined(__linux__)
     A(eventfd, g_eventfd), A(memfd_create, g_memfd_create),
 #else
@@ -2462,10 +2460,10 @@ const HleSymbol hle_posix[] = {
     A(pread, g_pread), A(read, g_read), A(readlink, g_readlink_proc), A(realpath, g_realpath), A(truncate, g_truncate),
     A(utime, g_utime), A(write, g_write), A(getcwd, g_getcwd), A(readdir, g_readdir),
     A(pread64, g_pread), A(ftruncate64, g_ftruncate), A(fdatasync, g_fsync), A(link, g_link), A(getpgrp, g_getpgrp),
-    ABSENT_ENTRY(chown), ABSENT_ENTRY(fchdir), ABSENT_ENTRY(symlink), ABSENT_ENTRY(setsid),
+    ABSENT_ENTRY(chown), ABSENT_ENTRY(fchdir), ABSENT_ENTRY(symlink),
 #else
     PH(pread64, pread), A(chown, g_chown), A(fchdir, g_fchdir), A(symlink, g_symlink), A(link, g_link),
-    A(setsid, g_setsid), A(getpgrp, g_getpgrp), A(ftruncate64, g_ftruncate64), A(fdatasync, g_fdatasync),
+    A(getpgrp, g_getpgrp), A(ftruncate64, g_ftruncate64), A(fdatasync, g_fdatasync),
     A(access, g_access_proc), P(fchmod), P(flock), P(fsync), P(ftruncate), P(lseek), P(mkdir), P(pipe), P(pread), P(read),
     A(readlink, g_readlink_proc), P(realpath), P(truncate), P(utime), P(write), P(getcwd),
 #if defined(__linux__)

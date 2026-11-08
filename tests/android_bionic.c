@@ -495,7 +495,16 @@ static void test_fma_and_lround(void) {
 }
 
 /* a descriptor from name through the HLE, which opens it as the guest does */
-enum { G_O_RDWR = 2, G_O_CREAT = 64, G_O_TRUNC = 512, G_O_NONBLOCK = 2048, G_O_CLOEXEC = 524288, G_AT_FDCWD = -100 };
+enum {
+    G_O_RDWR = 2,
+    G_O_CREAT = 64,
+    G_O_TRUNC = 512,
+    G_O_NONBLOCK = 2048,
+    G_O_DIRECTORY = 040000,
+    G_O_NOFOLLOW = 0100000,
+    G_O_CLOEXEC = 524288,
+    G_AT_FDCWD = -100
+};
 #define SAID_ENOSYS(what, r)                                                                                           \
     (expect_int(what, (int64_t)(r), -1), expect_int(what " sets ENOSYS", *hle_errno_location(), 38))
 
@@ -585,6 +594,16 @@ static void test_files_second_batch(void) {
     remove(second);
 #ifndef _WIN32
     expect_int("symlink", (int64_t)CALL("symlink", P(path), P(second)), 0);
+    /* the guest's flags (AArch64's values, which x86-64's differ from) reach the host as its own */
+    fd = (int64_t)CALL("openat", I32(G_AT_FDCWD), P("."), G_O_DIRECTORY, 0);
+    expect_int("openat of a folder with O_DIRECTORY", fd >= 0, 1);
+    CALL("close", I32(fd));
+    expect_int("openat of a file with O_DIRECTORY", (int64_t)CALL("openat", I32(G_AT_FDCWD), P(path), G_O_DIRECTORY, 0),
+               -1);
+    expect_int("is ENOTDIR", *hle_errno_location(), 20);
+    expect_int("openat of a symlink with O_NOFOLLOW",
+               (int64_t)CALL("openat", I32(G_AT_FDCWD), P(second), G_O_NOFOLLOW, 0), -1);
+    expect_int("is ELOOP", *hle_errno_location(), 40);
     char target[64] = "";
     expect_int("readlink of it", (int64_t)CALL("readlink", P(second), P(target), sizeof target - 1),
                (int64_t)strlen(path));
@@ -638,17 +657,11 @@ static void test_pipe2_umask_session(void) {
 
 #ifdef _WIN32
     expect_int("getpgrp is the process", (int64_t)CALL("getpgrp"), (int64_t)host_pid());
-    SAID_ENOSYS("setsid", CALL("setsid"));
 #else
     expect_int("getpgrp", (int64_t)CALL("getpgrp"), (int64_t)getpgrp());
-    /* a session of its own would take this process from its terminal: a child makes it */
-    fflush(NULL);
-    pid_t pid = fork();
-    if (pid == 0) _exit((pid_t)CALL("setsid") == getpid() ? 0 : 1);
-    int status = 0;
-    waitpid(pid, &status, 0);
-    expect_int("setsid in a child gives its id as the session", WIFEXITED(status) && WEXITSTATUS(status) == 0, 1);
 #endif
+    /* never the host's: a session of its own would take the emulator from its terminal */
+    SAID_ENOSYS("setsid", CALL("setsid"));
 
 #if defined(__linux__)
     expect_int("getpriority of this process", (int64_t)CALL("getpriority", 0, 0), getpriority(PRIO_PROCESS, 0));
