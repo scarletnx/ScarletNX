@@ -74,9 +74,10 @@ static uint32_t string_of(const char* host) {
 /* ---- the call of a 64-bit handler ---- */
 
 /* A call's kinds, one character for each argument, then ':' and the result's: i an int, u an unsigned int, l a 64-bit
-   one (at an even word, as AAPCS gives it), f a float (in a core register, softfp), p a pointer, h a handle, o open's
-   flags (ARM's numbers, made AArch64's), a GL_ARRAY_BUFFER pointer (an offset while a buffer is bound there) and e a
-   GL_ELEMENT_ARRAY_BUFFER one. Results: v none, i an int, l a 64-bit one, h a handle, s a string, P a pointer into
+   one (at an even word, as AAPCS gives it), f a float (in a core register, softfp), p a pointer, h a handle, a a
+   GL_ARRAY_BUFFER pointer (an offset while a buffer is bound there) and e a GL_ELEMENT_ARRAY_BUFFER one. open's flags
+   are a u: ARM's numbers are AArch64's (O_DIRECTORY 040000, O_NOFOLLOW 0100000, O_DIRECT 0200000, O_LARGEFILE
+   0400000 on both). Results: v none, i an int, l a 64-bit one, h a handle, s a string, P a pointer into
    the guest's window (another is 0). The handler's errno becomes the guest's, as the 64-bit bridge's exports set it */
 typedef struct {
     const char* name;
@@ -147,17 +148,6 @@ static void shim(SnxArmCPU* c, void* data) {
         }
         uint32_t word = arm32_word(c, w++);
         switch (*k) {
-        case 'o': {
-            /* ARM's O_DIRECTORY, O_NOFOLLOW, O_DIRECT and O_LARGEFILE are AArch64's O_DIRECT, O_LARGEFILE,
-               O_DIRECTORY and O_NOFOLLOW */
-            uint32_t f = word & ~0740000u;
-            if (word & 040000) f |= 0200000;
-            if (word & 0100000) f |= 0400000;
-            if (word & 0200000) f |= 040000;
-            if (word & 0400000) f |= 0100000;
-            x[nx++] = f;
-            break;
-        }
         case 'f': v[nv < 8 ? nv++ : 7] = word; break;
         case 'i': x[nx++] = (uint64_t)(int64_t)(int32_t)word; break;
         case 'p': x[nx++] = word ? (uint64_t)(uintptr_t)(arm32_mem + word) : 0; break;
@@ -804,9 +794,9 @@ const Arm32Symbol arm32_shim_symbols[] = {
     S("glVertexPointer", "iuia:v"),
     S("glViewport", "iiii:v"),
     /* bionic's that the 64-bit bridge has with the same arguments: files, descriptors, sockets, the process */
-    S("open", "pou:i"),
-    S("open64", "pou:i"),
-    S("openat", "ipou:i"),
+    S("open", "puu:i"),
+    S("open64", "puu:i"),
+    S("openat", "ipuu:i"),
     S("creat", "pu:i"),
     S("read", "ipu:i"),
     S("write", "ipu:i"),

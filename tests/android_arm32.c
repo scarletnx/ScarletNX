@@ -231,6 +231,45 @@ static void test_loader(void) {
     }
 }
 
+/* ---- files ---- */
+
+/* a host path in the test's folder, made a guest string */
+static uint32_t in_dir(const char* name) {
+    char path[160];
+    snprintf(path, sizeof path, "%s/%s", g_t.dir, name);
+    return text(path);
+}
+static void make_file(const char* name, const char* contents) {
+    char path[160];
+    snprintf(path, sizeof path, "%s/%s", g_t.dir, name);
+    FILE* f = fopen(path, "wb");
+    if (!f || fputs(contents, f) < 0 || fclose(f)) {
+        fprintf(stderr, "android_arm32: cannot write %s\n", path);
+        exit(1);
+    }
+}
+
+static void test_files(void) {
+    /* open's flags are ARM's, which AArch64's are: O_DIRECTORY 040000, O_NOFOLLOW 0100000 */
+    make_file("plain", "plain");
+    char target[160], link_path[160];
+    snprintf(target, sizeof target, "%s/plain", g_t.dir);
+    snprintf(link_path, sizeof link_path, "%s/plain-link", g_t.dir);
+    if (symlink("plain", link_path)) {
+        fprintf(stderr, "android_arm32: cannot make %s\n", link_path);
+        exit(1);
+    }
+    expect_int("open of a file with O_DIRECTORY", (int32_t)CALL("open", in_dir("plain"), 040000, 0), -1);
+    expect_int("open of a file with O_DIRECTORY: errno ENOTDIR", guest_errno(), 20);
+    expect_int("open of a link with O_NOFOLLOW", (int32_t)CALL("open", in_dir("plain-link"), 0100000, 0), -1);
+    expect_int("open of a link with O_NOFOLLOW: errno ELOOP", guest_errno(), 40);
+    int32_t fd = (int32_t)CALL("open", in_dir("plain-link"), 0, 0);
+    expect_int("open of a link follows it", fd >= 0, 1);
+    if (fd >= 0) close(fd);
+    remove(link_path);
+    remove(target);
+}
+
 /* ---- the FORTIFY forms: the function within the buffer, and bionic's abort past it ---- */
 
 static void test_fortify(void) {
@@ -352,6 +391,7 @@ int main(void) {
     }
     test_loader();
     test_fortify();
+    test_files();
     rmdir(g_t.dir);
     if (g_t.failures) fprintf(stderr, "android_arm32: %d check(s) failed\n", g_t.failures);
     return g_t.failures ? 1 : 0;
