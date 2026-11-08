@@ -40,7 +40,7 @@ endif()
 # its numbers
 foreach(row "Display\tdocked\t1\tint\t0\t2\t1 = TV mode" "Display\tfullscreen\t0\tint\t0\t1\t"
             "Graphics\tresolution\t1\tfloat\t0.25\t16\t" "Performance\tfps_limit\tgame\ttext\t"
-            "On-screen controls\tcontrols\t" "\tShow controls\t0=Off|1=On\t\n"
+            "On-screen controls\tcontrols\t" "\tShow controls\t0=Off|1=On|2=Auto\t\n"
             "\tScale\t0=50%|10=60%|20=70%|30=80%|40=90%|50=100%|60=110%|70=120%|80=130%|90=140%|100=150%\t\n"
             "On-screen controls\ttouch\t2\tint\t0\t2\t" "\tTouch screen\t0=Off|1=Fingers|2=Fingers and mouse\t\n"
             "On-screen controls/Buttons\tcontrols_a_shown\t\tint\t0\t1\t" "\tA\t0=Hidden|1=Shown\t\n"
