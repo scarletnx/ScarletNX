@@ -2009,8 +2009,42 @@ static void kernel_result(CPU* c, long number, unsigned first) {
     }
     X(0) = (uint64_t)(int64_t)r;
 }
+/* memfd_create(name, flags): an anonymous file of the host's, Linux's own there and an unlinked temporary file
+   elsewhere (MFD_CLOEXEC, 1, kept; sealing and huge pages are not). The descriptor, or -1 with the host's errno,
+   which the end of the call takes */
+static int host_memfd(const char* name, uint64_t flags) {
+#if defined(__linux__)
+    return memfd_create(name ? name : "", (flags & 1) ? MFD_CLOEXEC : 0);
+#elif defined(_WIN32)
+    (void)name;
+    (void)flags;
+    errno = ENOSYS;
+    return -1;
+#else
+    (void)name;
+    FILE* f = tmpfile();
+    if (!f) return -1;
+    int fd = dup(fileno(f));
+    int error = errno;
+    fclose(f);
+    if (fd < 0) {
+        errno = error;
+        return -1;
+    }
+    if (flags & 1) fcntl(fd, F_SETFD, FD_CLOEXEC);
+    return fd;
+#endif
+}
+static void g_memfd_create(CPU* c, void* data) {
+    (void)data;
+    X(0) = wide_int(host_memfd(X(0) ? STR(0) : NULL, X(1)));
+}
 static void g_syscall(CPU* c, void* data) {
     (void)data;
+    if (X(0) == 279) { /* memfd_create: a descriptor of the host's, as the app's other files are */
+        X(0) = wide_int(host_memfd(X(1) ? (const char*)(uintptr_t)X(1) : NULL, X(2)));
+        return;
+    }
     kernel_result(c, (long)X(0), 1);
 }
 /* a bionic function that is the system call in data, with its arguments */
@@ -2178,6 +2212,7 @@ const HleSymbol hle_posix[] = {
     A(signalfd, refused),
 #endif
     A(syscall, g_syscall),
+    A(memfd_create, g_memfd_create),
     {"tzname", NULL, g_posix.zone_names},
     {"timezone", NULL, &g_posix.timezone_},
     {"daylight", NULL, &g_posix.daylight_},
