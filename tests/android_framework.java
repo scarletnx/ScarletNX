@@ -102,7 +102,8 @@ final class AndroidFramework {
 
     /**
      * MediaPlayer opens a path, or a file: URI, before its decoder sees it: a missing file is FileNotFoundException,
-     * which leaves the player idle. Another scheme goes to the decoder as it is.
+     * which leaves the player idle. Another scheme goes to the decoder as it is. A drive's path (C:\ or C:/, a
+     * Windows host's) is a path on every host, not a URI of scheme C.
      */
     private static void mediaPlayerSources() throws Exception {
         File dir = java.nio.file.Files.createTempDirectory("android_framework").toFile();
@@ -127,15 +128,18 @@ final class AndroidFramework {
                 mp.release();
             }
             got.set(source(missing.getPath()) + ", " + source("file://" + missing.getPath()) + ", "
-                    + source(there.getPath()) + ", " + source("http://localhost:9/missing.ogg") + ", " + again);
+                    + source(there.getPath()) + ", " + source("http://localhost:9/missing.ogg") + ", " + again + ", "
+                    + source("C:\\snx-missing\\missing.ogg") + ", " + source("C:/snx-missing/missing.ogg"));
         });
         t.setDaemon(true);
         t.start();
         t.join(10000);
         there.delete();
         dir.delete();
-        check("MediaPlayer.setDataSource of a missing path, its file: URI, a file, an http: URI, and after the first",
-              "java.io.FileNotFoundException, java.io.FileNotFoundException, returned, returned, then idle", got.get());
+        check("MediaPlayer.setDataSource of a missing path, its file: URI, a file, an http: URI, after the first, and"
+                  + " of a missing drive's path in both Windows forms",
+              "java.io.FileNotFoundException, java.io.FileNotFoundException, returned, returned, then idle,"
+                  + " java.io.FileNotFoundException, java.io.FileNotFoundException", got.get());
     }
 
     /**
