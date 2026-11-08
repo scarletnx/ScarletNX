@@ -44,8 +44,18 @@ public class WebView extends FrameLayout {
     public static void setWebContentsDebuggingEnabled(boolean enabled) {}
     public static void setDataDirectorySuffix(String suffix) {}
     public static String findAddress(String addr) { return null; }
-    /** the WebView provider's package: none, as there is no web engine */
-    public static android.content.pm.PackageInfo getCurrentWebViewPackage() { return null; }
+    /**
+     * The WebView provider's package: AOSP's, whose support library glue (org.chromium.support_lib_glue) is inert as
+     * this WebView is. Its version is a recent one's, as AndroidX WebKit asks of the provider (105 or later) before it
+     * uses some of its features
+     */
+    public static android.content.pm.PackageInfo getCurrentWebViewPackage() {
+        android.content.pm.PackageInfo info = new android.content.pm.PackageInfo();
+        info.packageName = "com.android.webview";
+        info.versionName = "136.0.0.0";
+        info.setLongVersionCode(713600000L);
+        return info;
+    }
     public static void clearClientCertPreferences(Runnable onCleared) { if (onCleared != null) onCleared.run(); }
 
     public WebSettings getSettings() { return settings; }
