@@ -19,8 +19,8 @@ static struct {
     unsigned checks, failures, nsaid;
     char said[32][2048];
     int warned[32];
-    char table[70000];              /* a table read from a file */
-    char many[16000], big[70000];   /* a table of too many lines, and one of too many bytes */
+    char table[70000];            /* a table read from a file */
+    char many[16000], big[70000]; /* a table of too many lines, and one of too many bytes */
 } g_test;
 #define CHECK(c, what)                                                                                                 \
     do {                                                                                                               \
@@ -388,7 +388,17 @@ static void check_shipped(void) {
         {VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS, INTEL_WIN(101u, 4502u), 0, SNX_VK_BAN_WINDOWS,
          "VK_EXT_vertex_input_dynamic_state", 0, NULL},
         {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), 0, SNX_VK_BAN_ANDROID,
+         "VK_EXT_vertex_input_dynamic_state", 1, "Qualcomm's driver on Android"},
+        {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), 0, SNX_VK_BAN_WINDOWS,
          "VK_EXT_vertex_input_dynamic_state", 0, NULL},
+        {VK_DRIVER_ID_MESA_TURNIP, MESA(26u, 0u, 0u), 0, SNX_VK_BAN_ANDROID, "VK_EXT_vertex_input_dynamic_state", 0,
+         NULL},
+        {VK_DRIVER_ID_ARM_PROPRIETARY, MESA(47u, 1u, 0u), 0, SNX_VK_BAN_ANDROID, "VK_EXT_vertex_input_dynamic_state", 1,
+         "Arm's Mali driver before 48.0.0"},
+        {VK_DRIVER_ID_ARM_PROPRIETARY, MESA(47u, 1u, 0u), 0, SNX_VK_BAN_ANDROID,
+         "VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE", 1, "Arm's Mali driver before 48.0.0"},
+        {VK_DRIVER_ID_ARM_PROPRIETARY, MESA(48u, 0u, 0u), 0, SNX_VK_BAN_ANDROID,
+         "VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE", 0, NULL},
         {VK_DRIVER_ID_MOLTENVK, 10211u, 0, SNX_VK_BAN_MACOS, "VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE", 1,
          "MoltenVK"},
         {VK_DRIVER_ID_MESA_KOSMICKRISP, MESA(26u, 0u, 0u), 0, SNX_VK_BAN_MACOS,
@@ -396,6 +406,15 @@ static void check_shipped(void) {
         {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 676u, 0u), 0, SNX_VK_BAN_ANDROID,
          "shaderDenormFlushToZeroFloat32", 1, "Qualcomm's driver"},
         {VK_DRIVER_ID_MESA_TURNIP, MESA(26u, 0u, 0u), 0, SNX_VK_BAN_ANDROID, "shaderDenormFlushToZeroFloat32", 0, NULL},
+        {VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(590u, 48u, 1u), 0, SNX_VK_BAN_LINUX, "VK_KHR_present_id2", 1,
+         "NVIDIA's driver before 595.0.0"},
+        {VK_DRIVER_ID_NVIDIA_PROPRIETARY, NV(595u, 0u, 0u), 0, SNX_VK_BAN_LINUX, "VK_KHR_present_id2", 0, NULL},
+        {VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS, INTEL_WIN(101u, 4502u), 0, SNX_VK_BAN_WINDOWS, "shaderFloat16", 1,
+         "Intel's Windows driver"},
+        {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), 0x6020200, SNX_VK_BAN_ANDROID,
+         "VK_EXT_blend_operation_advanced", 1, "Qualcomm's driver on the GPUs 0x6020200, 0x7000201"},
+        {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), 0x43050a01, SNX_VK_BAN_ANDROID,
+         "VK_EXT_blend_operation_advanced", 0, NULL},
     };
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
         char what[400];
@@ -406,7 +425,25 @@ static void check_shipped(void) {
                  (unsigned)line, line ? text : "none");
         CHECK(cases[i].banned ? line && !strcmp(text, cases[i].scope) : !line, what);
     }
-    /* this machine's drivers, RADV and lavapipe: no "off" line holds */
+    /* the line docs/DEVELOPMENT.md shows, as the filter says it for an NVIDIA driver before 595 */
+    {
+        VkExtensionProperties list[2] = {{"VK_KHR_present_id2", 1}, {"VK_KHR_present_wait2", 1}};
+        SnxVkExtensions e = {list, 2};
+        VkBanDevice d = {"NVIDIA GeForce RTX 3060", "NVIDIA", "590.48.01",     VK_DRIVER_ID_NVIDIA_PROPRIETARY,
+                         NV(590u, 48u, 1u),         0x2503,   SNX_VK_BAN_LINUX};
+        vk_bans_device(&d);
+        g_test.nsaid = 0;
+        CHECK(vk_bans_filter(&e, say) == 1 && e.count == 1 && !strcmp(list[0].extensionName, "VK_KHR_present_wait2"),
+              "present_id2 leaves an NVIDIA 590's list, present_wait2 stays");
+        CHECK(said_with("vulkan: VK_KHR_present_id2 is off on NVIDIA GeForce RTX 3060 (NVIDIA, 590.48.01, driver "
+                        "version 590.48.01): NVIDIA's driver before 595.0.0 hangs games at their first frames with "
+                        "present_id2 and present_wait2 (590.48, with Smooth Motion on) (DXVK dxvk_device_info.cpp:610, "
+                        "issue 5507; extension_bans.txt:",
+                        NULL, NULL) >= 0,
+              "the log line docs/DEVELOPMENT.md shows");
+        if (said_with("VK_KHR_present_id2", NULL, NULL) < 0) show_said();
+    }
+    /* this machine's drivers, RADV and lavapipe: no "off" line holds; RADV's warnings are the lifted bans */
     static const struct {
         uint32_t id, v;
     } here[] = {{VK_DRIVER_ID_MESA_RADV, MESA(26u, 2u, 6u)}, {VK_DRIVER_ID_MESA_LLVMPIPE, MESA(26u, 2u, 6u)}};

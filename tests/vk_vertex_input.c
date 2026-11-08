@@ -2,9 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* vertex_input_dynamic_state (gpu/vk/vertex_input.c), with no GPU: its values, the setting read from a game's .ini of
    a version without it and of one with it, the ban extension_bans.txt holds for stand-in devices (NVIDIA's before
-   580.119.02, on over it), auto off on Android whatever the driver (Qualcomm's and Turnip there, Qualcomm's elsewhere
-   keeping it), and the log line of every case naming the device, the driver, its version, the value given, the path in
-   effect and the ban where one decides */
+   580.119.02, on over it), auto off on Android whatever the driver (Turnip there, Qualcomm's driver elsewhere keeping
+   it), and the log line of every case naming the device, the driver, its version, the value given, the path in effect
+   and the ban where one decides */
 #include "nx/gpu/vk/vertex_input.h"
 #include "nx/gpu/vk/extension_bans.h"
 #include "nx/runtime/ini.h"
@@ -138,12 +138,12 @@ static void check_choices(void) {
          "26.1.8",
          0,
          NULL},
-        /* Android: auto off whatever the driver; the same Qualcomm driver off Android keeps it */
+        /* Android: auto off whatever the driver, Qualcomm's banned there besides; off Android it keeps it */
         {{"Adreno (TM) 830", "Qualcomm Technologies Inc. Adreno Vulkan Driver", "Driver Build: 2fbb164246",
           VK_DRIVER_ID_QUALCOMM_PROPRIETARY, VK_MAKE_VERSION(512u, 800u, 48u), 2, 1, NULL},
          "512.800.48",
-         0,
-         NULL},
+         1,
+         "Qualcomm's driver on Android draws edenprobe's coherence suite wrong with dynamic vertex input ("},
         {{"Turnip Adreno (TM) 830", "turnip Mesa driver", "Mesa 26.0.0", VK_DRIVER_ID_MESA_TURNIP,
           VK_MAKE_VERSION(26u, 0u, 0u), 2, 1, NULL},
          "26.0.0",

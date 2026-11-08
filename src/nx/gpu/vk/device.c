@@ -667,6 +667,8 @@ static int create_device(void) {
                            has_shader_clock ? &qclock : NULL};
     snx_vk_chain(query, sizeof query / sizeof *query);
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &f2);
+    /* without it the shaders do their FP16 work in 32 bits */
+    if (vk_ban("shaderFloat16", q12.shaderFloat16, ban_say)) q12.shaderFloat16 = VK_FALSE;
     g_vk.has_present_wait = has_present_id && has_present_wait && qpid.presentId && qpwait.presentWait;
     g_vk.has_present_timing = g_vk.has_present_wait && has_present_v2 && qpid2.presentId2 && qpwait2.presentWait2 &&
                               qtiming.presentTiming && qtiming.presentAtAbsoluteTime;
