@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The mirror: guest memory in the GPU's memory, at the same offsets, for the storage buffers of the programs that log
-   their writes (an Ounce game's compute programs, sm86_translate.c's mark_written). Each such storage buffer is all of
+   their writes (an Ounce game's compute programs, shader/write_log.c). Each such storage buffer is all of
    the memory mapped from its address, up to 16 MiB: made anew for each dispatch, with its input copied and its result
    copied back, it cost a game most of its CPU and GPU time and gigabytes of rings. In the mirror the programs read
    and write guest memory where it is, one dispatch after another, as on the console.

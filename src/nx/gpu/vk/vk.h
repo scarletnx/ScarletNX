@@ -1384,7 +1384,7 @@ void vk_mirror_stats(u64* granules, u64* harvests, u64* pages, u64* landed, u64*
 u32 vk_write_runs(u64 addr, const u8* res, const VkRun* runs, u32 n, u32 since);
 /* the writer vk_buf_copy_writable bound last logs its writes in part of l: the result it writes lands those of all of
    its writers and no other bytes, once its commit gives it a reference to l. A writer that logs nothing (a draw, a
-   Switch program, a buffer image) has its result compared with its original bytes as before */
+   buffer image) has its result compared with its original bytes as before */
 int vk_buf_copy_writable_logged(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered, VkWriteLog* l, u32 part,
                                 int no_read); /* no_read: the program writes but never reads it, so its input is not
                                                  copied */

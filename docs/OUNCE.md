@@ -86,7 +86,10 @@ renderer binds all of the memory mapped from the address, up to 16 MiB (`vk_gbuf
 So such a program's storage is not made for each dispatch. Its stores log the bytes they write: the translator has
 every store and atomic of a compute program set a bit for each byte it writes in the dispatch's write log
 (`mark_written`, binding `SNX_VKB_WPAGES`, the layout `SH_WLOG_*` in `shader.h`): a part for each buffer it writes,
-a flag for each 4 KiB window of the buffer, then the window's bits. A store past the windows sets none.
+a flag for each 4 KiB window of the buffer, then the window's bits. A store past the windows sets none. The Maxwell
+translator's compute programs log the same way (`write_log.c`, which both translators call), so a Switch game's
+results land from the log too. They don't take the mirror below: in one Switch game, props that a compute program
+culls vanished for single frames with it where the host traps guest memory (`mirror_plan` has the counts).
 
 Where the device has sparse residency of buffers and write tracking is on, the program reads and writes a mirror
 of guest memory in the GPU's memory (`vk/mirror.c`): one sparse buffer as big as the guest's address space, at the
@@ -125,7 +128,7 @@ all of it after the dispatch and copied it back from the GPU, and the per-dispat
 
 Without the mirror (no sparse residency of buffers, memory shared with the CPU, no write tracking) each writer's
 result is made for the dispatch as before and lands from the dispatch's write log (`vk/writelog.c`), which the host
-reads once the submit is done. A writer that logs nothing (a draw, a Switch program, a buffer image) is compared.
+reads once the submit is done. A writer that logs nothing (a draw, a buffer image) is compared.
 
 A byte the CPU writes while the programs' writes are pending, which a program writes too, takes the program's value:
 on the console both reach memory in an order the program left open. Once the submit is done and the page is the
