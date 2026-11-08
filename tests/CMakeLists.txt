@@ -2056,12 +2056,27 @@ if(NOT SNX_TOOLS_ONLY)
         add_test(NAME vk_renderdoc_${case} COMMAND snx-test-vk-renderdoc ${case})
     endforeach()
     # vertex_input_dynamic_state (gpu/vk/vertex_input.c): its values, read from a .ini without it and with it, the
-    # drivers' bans against stand-in devices and the log line of each case
+    # ban the table holds for stand-in devices and the log line of each case
+    include("${PROJECT_SOURCE_DIR}/cmake/vk_extension_bans.cmake")
+    set(snx_vk_extension_bans_sources "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/extension_bans.c"
+                                      "${PROJECT_BINARY_DIR}/generated/vk_extension_bans_text.c")
     add_executable(snx-test-vk-vertex-input vk_vertex_input.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/vertex_input.c"
-                   "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
+                   "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c" ${snx_vk_extension_bans_sources})
     snx_test_target(snx-test-vk-vertex-input 99)
     target_link_libraries(snx-test-vk-vertex-input PRIVATE snx_nx_flags)
     add_test(NAME vk_vertex_input COMMAND snx-test-vk-vertex-input)
+    # the drivers known to break an extension or feature (gpu/vk/extension_bans.c), with no GPU: the table's errors,
+    # each driver's versions at every bound's edge, the filter and the features asked for against stand-in devices,
+    # and the table the build carries. With --devices it lists the lines that hold for this machine's drivers, the
+    # workspace's retest reads that
+    if(TARGET snx_vk_common)
+        add_executable(snx-test-vk-bans vk_extension_bans.c ${snx_vk_extension_bans_sources}
+                       "${volk_SOURCE_DIR}/volk.c")
+        set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
+        snx_test_target(snx-test-vk-bans 11)
+        target_link_libraries(snx-test-vk-bans PRIVATE snx_nx_flags snx_vk_common)
+        add_test(NAME vk_extension_bans COMMAND snx-test-vk-bans)
+    endif()
     # the GPU driver a run asks for (nx/runtime/platform/gpu_driver_load.c) where none loads: Freedreno's variables set,
     # a wrong one, a package asked for here and a folder name that is none stopping the run with why, a run a case
     add_executable(snx-test-gpu-driver-load gpu_driver_load.c
