@@ -12,6 +12,7 @@
 #include "common/cpu/recompiler/llvm/link_internal.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
+#include "common/platform/vm.h"
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -415,7 +416,7 @@ SnxCodeLoader* snx_code_loader_new_toc(size_t reserve, SnxU64 toc, char* error, 
    sizes is NULL */
 static SnxCodeLoader* new_loader(size_t reserve, const size_t* sizes, unsigned machine, uint64_t toc, int shared,
                                  char* error, size_t error_size) {
-    size_t page = snx_vm_page_size(), size[REGIONS];
+    size_t page = plat_mem_page(), size[REGIONS];
     int i;
     if (sizes) {
         /* whole pages, at Windows' 64 KiB allocation granularity, where views of a section go (windows_arena); a region
@@ -488,9 +489,9 @@ static SnxCodeLoader* new_loader(size_t reserve, const size_t* sizes, unsigned m
     }
 #else
 #if defined(__powerpc64__)
-    loader->base = toc ? reserve_near(reserve, toc) : (unsigned char*)snx_vm_reserve(reserve);
+    loader->base = toc ? reserve_near(reserve, toc) : (unsigned char*)plat_mem_reserve(reserve, 0);
 #else
-    loader->base = (unsigned char*)snx_vm_reserve(reserve);
+    loader->base = (unsigned char*)plat_mem_reserve(reserve, 0);
 #endif
     if (!loader->base) {
         snprintf(error, error_size, "cannot reserve %lu MiB of address space for code", (unsigned long)(reserve >> 20));
@@ -536,7 +537,7 @@ void snx_code_loader_free(SnxCodeLoader* loader) {
         for (int i = CODE; i <= RODATA; ++i)
             if (loader->region[i].write && loader->region[i].write != loader->base + loader->region[i].start)
                 munmap(loader->region[i].write, loader->region[i].size);
-        if (loader->base) snx_vm_release(loader->base, loader->reserved); /* the arena's views with it */
+        if (loader->base) plat_mem_release(loader->base, loader->reserved); /* the arena's views with it */
     }
 #endif
     snx_link_names_free(&loader->symbols);
@@ -621,8 +622,8 @@ int snx_code_commit(SnxCodeLoader* loader, uint64_t end, char* error, size_t err
     uint64_t start = (uint64_t)(size_t)loader->base + loader->region[DATA].start;
     uint64_t need = snx_align_up(end - start, loader->page);
     if (need <= loader->committed) return 0;
-    if (snx_vm_protect(loader->region[DATA].write + loader->committed, (size_t)(need - loader->committed),
-                       SNX_VM_READ_WRITE)) {
+    if (plat_mem_protect(loader->region[DATA].write + loader->committed, need - loader->committed,
+                         PLAT_MEM_READ | PLAT_MEM_WRITE)) {
         snprintf(error, error_size, "cannot commit %lu KiB of data memory",
                  (unsigned long)((need - loader->committed) >> 10));
         return -1;

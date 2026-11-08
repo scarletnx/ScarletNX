@@ -8,6 +8,7 @@
 #endif
 #include "nx/runtime/platform/plat.h"
 #include "common/utilities/bits.h"
+#include "common/platform/vm.h"
 #include "common/utilities/run_mark.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/nce/nce.h"
@@ -1106,36 +1107,20 @@ int plat_address_space(u64* mapped, u64* largest_free) {
     *largest_free = hole;
     return 1;
 }
-/* mmap aligns to the host's own page: the reservation takes SNX_PLAT_PAGE_MAX more and trims the rest, so guest
-   addresses sit at the same place in any page plat_vm_page may work in as their host addresses */
-u8* plat_vm_reserve(u64 size) {
-    u64 host = (u64)sysconf(_SC_PAGESIZE), align = SNX_PLAT_PAGE_MAX, extra = align > host ? align - host : 0, head;
-    u8* p = (u8*)mmap(NULL, (size_t)(size + extra), PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-    if (p == (u8*)MAP_FAILED) return NULL;
-    head = (align - (u64)(uintptr_t)p % align) % align;
-    if (head) munmap(p, (size_t)head);
-    if (extra > head) munmap(p + head + size, (size_t)(extra - head));
-    return p + head;
-}
+/* aligned to SNX_PLAT_PAGE_MAX, so guest addresses sit at the same place in any page plat_vm_page may work in as their
+   host addresses */
+u8* plat_vm_reserve(u64 size) { return (u8*)plat_mem_reserve(size, SNX_PLAT_PAGE_MAX); }
 u8* plat_vm_reserve_unwatched(u64 size) {
     (void)size;
     errno = ENOSYS;
     return NULL;
 }
 u8* plat_vm_reserve_at(u64 addr, u64 size) {
-#if defined(MAP_FIXED_NOREPLACE)
-    u8* want = (u8*)(uintptr_t)addr;
+#if defined(MAP_FIXED_NOREPLACE) /* NCE's hosts */
     u8* p;
     if (addr % plat_vm_page()) return NULL;
-    p = (u8*)mmap(want, (size_t)size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE,
-                  -1, 0);
-    if (p == (u8*)MAP_FAILED) return NULL;
-    if (p != want) { /* a kernel before 4.17 takes the flag as a hint */
-        munmap(p, (size_t)size);
-        errno = EEXIST;
-        return NULL;
-    }
-    g_vm_exec = PROT_EXEC;
+    p = (u8*)plat_mem_reserve_at(addr, size);
+    if (p) g_vm_exec = PROT_EXEC;
     return p;
 #else
     (void)addr;
@@ -1147,7 +1132,7 @@ u8* plat_vm_reserve_at(u64 addr, u64 size) {
 int plat_vm_commit(u8* p, u64 size) {
     int r;
     wp_hold(p, size, WP_MAPPED);
-    r = mprotect(p, (size_t)size, PROT_READ | PROT_WRITE | g_vm_exec) ? -1 : 0;
+    r = plat_mem_protect(p, size, PLAT_MEM_READ | PLAT_MEM_WRITE | (g_vm_exec ? PLAT_MEM_EXEC : 0u));
     wp_let(p, size, WP_MAPPED, !r);
     return r;
 }
@@ -1157,9 +1142,7 @@ void plat_vm_decommit(u8* p, u64 size) {
     madvise(p, (size_t)size, MADV_DONTNEED);
     mprotect(p, (size_t)size, PROT_NONE);
 #else
-    /* only Linux's MADV_DONTNEED drops the contents (Darwin's may keep them, FreeBSD's does): fresh pages over the
-       range are certain to read zero */
-    mmap(p, (size_t)size, PROT_NONE, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    (void)plat_mem_decommit(p, size); /* fresh pages: only Linux's MADV_DONTNEED drops the contents */
 #endif
     wp_let(p, size, 0, 1);
 }
@@ -1447,7 +1430,7 @@ int plat_alias_map(u8* p, u64 off, u64 size) {
 int plat_alias_unmap(u8* p, u64 size) {
     int r;
     wp_hold(p, size, 0);
-    r = mmap(p, (size_t)size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0) == MAP_FAILED;
+    r = plat_mem_decommit(p, size);
     wp_let(p, size, 0, !r);
     if (r) return -1;
     ww_remapped(p, size); /* the anonymous mapping is a new one too */

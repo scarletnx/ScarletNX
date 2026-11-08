@@ -935,7 +935,7 @@ static void g_mprotect(CPU* c, void* data) {
     int prot = (int)X(2);
     if (prot & L_PROT_EXEC) bridge_add_code(X(0), X(1) & ~(uint64_t)3);
     int access = (prot & 1 || prot & L_PROT_EXEC ? HOST_READ : 0) | (prot & 2 ? HOST_READ | HOST_WRITE : 0);
-    if (host_protect(PTR(0), X(1), access)) {
+    if (!plat_mem_protect(PTR(0), X(1), (unsigned)access)) {
         host_anon_protect(X(0), X(1), access);
         X(0) = 0;
     } else {

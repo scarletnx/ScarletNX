@@ -4,7 +4,7 @@
 #ifdef __linux__
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE   700
-/* MAP_ANONYMOUS (snx_vm_reserve) is POSIX only since 2024: older glibc and musl define it with this */
+/* the names beyond POSIX, which older glibc and musl define only with this */
 #define _DEFAULT_SOURCE
 #endif
 #ifdef __APPLE__
@@ -17,6 +17,7 @@
 #include "common/utilities/endian.h"
 #include "common/utilities/ini_lines.h"
 #include "common/platform/time.h"
+#include "common/platform/vm.h"
 #include <libdeflate.h>
 #include <errno.h>
 #include <limits.h>
@@ -1963,16 +1964,6 @@ unsigned snx_build_threads(void) {
    loader writes into read-write pages and makes them executable before anything jumps there */
 void snx_abort_request(int on) { g_common.abort_requested = on; }
 int snx_abort_requested(void) { return g_common.abort_requested; }
-size_t snx_vm_page_size(void) {
-#ifdef _WIN32
-    SYSTEM_INFO info;
-    GetSystemInfo(&info);
-    return info.dwPageSize;
-#else
-    long size = sysconf(_SC_PAGESIZE);
-    return size > 0 ? (size_t)size : 4096;
-#endif
-}
 SnxU64 snx_footprint(void) {
 #if defined(__APPLE__)
     task_vm_info_data_t info;
@@ -1986,7 +1977,7 @@ SnxU64 snx_footprint(void) {
     if (!f) return 0;
     if (fscanf(f, "%llu %llu", &pages, &resident) != 2) resident = 0;
     fclose(f);
-    return (SnxU64)resident * snx_vm_page_size();
+    return (SnxU64)resident * plat_mem_page();
 #elif defined(_WIN32)
     PROCESS_MEMORY_COUNTERS info;
     return GetProcessMemoryInfo(GetCurrentProcess(), &info, sizeof info) ? (SnxU64)info.WorkingSetSize : 0;
@@ -1995,7 +1986,7 @@ SnxU64 snx_footprint(void) {
     size_t size = sizeof proc;
     int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)getpid()};
     if (sysctl(mib, 4, &proc, &size, NULL, 0) || size != sizeof proc) return 0;
-    return (SnxU64)proc.ki_rssize * snx_vm_page_size();
+    return (SnxU64)proc.ki_rssize * plat_mem_page();
 #else
     return 0;
 #endif
@@ -2409,7 +2400,7 @@ int snx_memory_available(SnxU64* bytes) {
     if (sysctlbyname("vm.stats.vm.v_free_count", &free_pages, &size, NULL, 0) || size != sizeof free_pages) return 0;
     size = sizeof inactive;
     if (sysctlbyname("vm.stats.vm.v_inactive_count", &inactive, &size, NULL, 0) || size != sizeof inactive) return 0;
-    *bytes = ((SnxU64)free_pages + inactive) * snx_vm_page_size();
+    *bytes = ((SnxU64)free_pages + inactive) * plat_mem_page();
     return 1;
 #else
     (void)bytes;
@@ -2428,40 +2419,6 @@ int snx_memory_total(SnxU64* bytes) {
     if (pages <= 0 || page <= 0) return 0;
     *bytes = (SnxU64)pages * (SnxU64)page;
     return 1;
-#endif
-}
-void* snx_vm_reserve(size_t size) {
-#ifdef _WIN32
-    return VirtualAlloc(NULL, size, MEM_RESERVE, PAGE_NOACCESS);
-#else
-    int flags = MAP_PRIVATE | MAP_ANONYMOUS;
-    void* p;
-#ifdef MAP_NORESERVE
-    flags |= MAP_NORESERVE; /* address space only: no swap is set aside for pages never committed */
-#endif
-    p = mmap(NULL, size, PROT_NONE, flags, -1, 0);
-    return p == MAP_FAILED ? NULL : p;
-#endif
-}
-int snx_vm_protect(void* p, size_t size, int access) {
-#ifdef _WIN32
-    static const DWORD protection[] = {PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, PAGE_EXECUTE_READ};
-    DWORD old;
-    if (access == SNX_VM_NONE) return VirtualFree(p, size, MEM_DECOMMIT) ? 0 : -1;
-    /* reserved pages are committed first: VirtualProtect only changes committed ones */
-    if (!VirtualAlloc(p, size, MEM_COMMIT, PAGE_READWRITE)) return -1;
-    return VirtualProtect(p, size, protection[access], &old) ? 0 : -1;
-#else
-    static const int protection[] = {PROT_NONE, PROT_READ, PROT_READ | PROT_WRITE, PROT_READ | PROT_EXEC};
-    return mprotect(p, size, protection[access]);
-#endif
-}
-void snx_vm_release(void* p, size_t size) {
-#ifdef _WIN32
-    (void)size;
-    VirtualFree(p, 0, MEM_RELEASE);
-#else
-    munmap(p, size);
 #endif
 }
 void snx_vm_flush_code(void* p, size_t size) {

@@ -341,7 +341,7 @@ static GuestLibrary* load_file(const char* path, char* error, size_t error_size)
     lo &= ~(uint64_t)0xfff;
     hi = (hi + 0xffff) & ~(uint64_t)0xffff;
     uint64_t span = hi - lo, at = bridge_window_reserve(span, align);
-    if (!dyn || !at || !host_commit((void*)(uintptr_t)at, span)) {
+    if (!dyn || !at || plat_mem_commit((void*)(uintptr_t)at, span)) {
         snprintf(error, error_size, "\"%s\": %s", path, dyn ? "no room in the code window" : "no PT_DYNAMIC");
         close(fd);
         return NULL;
@@ -436,14 +436,14 @@ static GuestLibrary* load_file(const char* path, char* error, size_t error_size)
         if (ph[i].p_type != PT_LOAD) continue;
         uint64_t s = (l->base + ph[i].p_vaddr) & ~(uint64_t)0xfff;
         uint64_t e = (l->base + ph[i].p_vaddr + ph[i].p_memsz + 0xfff) & ~(uint64_t)0xfff;
-        host_protect((void*)(uintptr_t)s, e - s, access_of(ph[i].p_flags));
+        plat_mem_protect((void*)(uintptr_t)s, e - s, access_of(ph[i].p_flags));
         if (ph[i].p_flags & PF_X) bridge_add_code(l->base + ph[i].p_vaddr, (ph[i].p_memsz + 3) & ~(uint64_t)3);
     }
     for (unsigned i = 0; i < eh.e_phnum; ++i)
         if (ph[i].p_type == PT_GNU_RELRO) {
             uint64_t s = (l->base + ph[i].p_vaddr) & ~(uint64_t)0xfff;
             uint64_t e = (l->base + ph[i].p_vaddr + ph[i].p_memsz) & ~(uint64_t)0xfff;
-            if (e > s) host_protect((void*)(uintptr_t)s, e - s, HOST_READ);
+            if (e > s) plat_mem_protect((void*)(uintptr_t)s, e - s, HOST_READ);
         }
 
     /* its constructors, as bionic runs them: DT_PREINIT_ARRAY (an executable's), DT_INIT, then DT_INIT_ARRAY. Each
