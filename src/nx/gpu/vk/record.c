@@ -415,11 +415,14 @@ VkResult vk_rec_present_result(void) {
            x->a1 = a1; x->a2 = a2; x->a3 = a3; x->a4 = a4; x->a5 = a5; x->a6 = a6; x->a7 = a7;,                      \
            (cb, a1, a2, a3, a4, a5, a6, a7), (x->cb, x->a1, x->a2, x->a3, x->a4, x->a5, x->a6, x->a7))
 
-/* A graphics pipeline may be a stand-in for one a worker is still making (vk_pipeline_get_deferred): it is waited for
-   here, at its bind. One that couldn't be made binds nothing, and the draws after it until the next graphics bind are
-   dropped, as the GPU thread drops a draw without its pipeline (the recording thread's own flag: 1). With
-   async_pipelines one still being made isn't waited for: its draws are dropped the same way (2) until a later frame
-   binds it made. A new shader's compile, 60 to 400 ms on one driver, stalled the frame it first appeared in */
+/* A graphics pipeline may be a stand-in for one a worker is still making (vk_pipeline_get_deferred). One that
+   couldn't be made binds nothing, and the draws after it until the next graphics bind are dropped, as the GPU thread
+   drops a draw without its pipeline (the recording thread's own flag: 1). One still being made goes by pipeline_wait:
+   1 (Wait) waits for it here, at its bind; 2 (Skip) never waits, and its draws are dropped the same way (2) until a
+   later frame binds it made; 0 (Auto) waits for it while the frame's budget lasts (vk_rec_frame: every wait of the
+   frame from one budget), and past it drops its draws as Skip does (3), but for a draw of SNX_VK_SMALL_DRAW vertices or
+   indices or fewer, which waits for it whole and binds it there: a full-screen quad drawn once into a texture would
+   be lost for good. A new shader's compile, 60 to 400 ms on one driver, stalled the frame it first appeared in */
 static int g_rec_unbound;
 static u64 g_rec_dropped, g_rec_skipped;
 typedef struct {
@@ -427,12 +430,52 @@ typedef struct {
     VkPipelineBindPoint bp;
     VkPipeline p;
 } BindPipelineArgs;
+static BindPipelineArgs g_rec_pending; /* Auto: the bind whose draws are dropped (3), for a small draw to wait for */
+static i64 g_rec_budget; /* Auto: ns the frame may still wait for pipelines (vk_rec_frame), on the recording thread */
+static int g_rec_framed; /* a frame gave the budget: before, the first frame's is snx_vk_pipeline_budget(0) */
+/* Auto's waits and skips so far, written on the recording thread and logged from the GPU thread's (atomic) */
+static struct {
+    u64 waits, wait_ns, longest_ns, budget_ns, small, skipped;
+} g_rec_auto;
+static void rec_auto_waited(u64 ns) {
+    __atomic_add_fetch(&g_rec_auto.waits, 1, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&g_rec_auto.wait_ns, ns, __ATOMIC_RELAXED);
+    if (ns > __atomic_load_n(&g_rec_auto.longest_ns, __ATOMIC_RELAXED))
+        __atomic_store_n(&g_rec_auto.longest_ns, ns, __ATOMIC_RELAXED);
+    g_rec_budget -= (i64)ns;
+}
+/* Auto at a bind: the pipeline, waited for while the frame's budget lasts */
+static VkPipeline rec_auto_bind(VkPipeline h, int* pending) {
+    VkPipeline pipe = vk_pipeline_now(h, pending);
+    u64 t0;
+    if (!*pending) return pipe;
+    if (!g_rec_framed) {
+        g_rec_framed = 1;
+        g_rec_budget = snx_vk_pipeline_budget(0);
+        __atomic_store_n(&g_rec_auto.budget_ns, (u64)g_rec_budget, __ATOMIC_RELAXED);
+    }
+    t0 = plat_ns();
+    pipe = vk_pipeline_wait(h, g_rec_budget, pending);
+    rec_auto_waited(plat_ns() - t0);
+    if (*pending)
+        LOG_LIMIT(
+            1,
+            "vulkan: pipeline_wait=0 (Auto): a new pipeline wasn't made within the frame's %lld ms for them: "
+            "its draws are skipped until a later frame has it, but for draws of %d vertices or fewer, which wait\n",
+            (long long)(__atomic_load_n(&g_rec_auto.budget_ns, __ATOMIC_RELAXED) / 1000000), SNX_VK_SMALL_DRAW);
+    return pipe;
+}
 static void bind_pipeline_run(const void* p) {
     const BindPipelineArgs* x = p;
     int graphics = x->bp == VK_PIPELINE_BIND_POINT_GRAPHICS, pending = 0;
-    VkPipeline pipe =
-        graphics && g_settings.async_pipelines ? vk_pipeline_now(x->p, &pending) : vk_pipeline_resolve(x->p);
-    if (graphics) g_rec_unbound = pipe ? 0 : pending ? 2 : 1;
+    int wait = graphics ? __atomic_load_n(&g_settings.pipeline_wait, __ATOMIC_RELAXED) : 1;
+    VkPipeline pipe = wait == 2   ? vk_pipeline_now(x->p, &pending)
+                      : wait == 0 ? rec_auto_bind(x->p, &pending)
+                                  : vk_pipeline_resolve(x->p);
+    if (graphics) {
+        g_rec_unbound = pipe ? 0 : !pending ? 1 : wait == 0 ? 3 : 2;
+        g_rec_pending = *x;
+    }
     if (pipe) vkCmdBindPipeline(x->cb, x->bp, pipe);
 }
 void rec_CmdBindPipeline(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline p) {
@@ -446,12 +489,26 @@ void rec_CmdBindPipeline(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline 
     *x = (BindPipelineArgs){cb, bp, p};
     rec_commit();
 }
-static int rec_drop_draw(void) {
+/* whether a draw of count vertices or indices (UINT32_MAX: an indirect or a mesh one's, not known here) is dropped, its
+   pipeline not bound */
+static int rec_drop_draw(VkCommandBuffer cb, u32 count) {
     if (!g_rec_unbound) return 0;
-    if (g_rec_unbound == 2) {
+    if (g_rec_unbound == 3 && count <= SNX_VK_SMALL_DRAW) {
+        u64 t0 = plat_ns();
+        VkPipeline pipe = vk_pipeline_resolve(g_rec_pending.p);
+        rec_auto_waited(plat_ns() - t0);
+        __atomic_add_fetch(&g_rec_auto.small, 1, __ATOMIC_RELAXED);
+        g_rec_unbound = pipe ? 0 : 1;
+        if (pipe) {
+            vkCmdBindPipeline(cb, g_rec_pending.bp, pipe);
+            return 0;
+        }
+    }
+    if (g_rec_unbound >= 2) {
+        if (g_rec_unbound == 3) __atomic_add_fetch(&g_rec_auto.skipped, 1, __ATOMIC_RELAXED);
         if (g_rec_skipped++ % 1000 == 0)
-            LOG("vulkan: %llu draws skipped while their pipelines were made (async_pipelines)\n",
-                (unsigned long long)g_rec_skipped);
+            LOG("vulkan: %llu draws skipped while their pipelines were made (pipeline_wait=%d)\n",
+                (unsigned long long)g_rec_skipped, g_rec_unbound == 3 ? 0 : 2);
     } else if (!g_rec_dropped++)
         WARN("vulkan: a pipeline couldn't be made: its draws are dropped\n");
     return 1;
@@ -463,6 +520,36 @@ void rec_draw_tag(u64 first, u64 second, u32 sources) {
     g_rec_tag[0] = first;
     g_rec_tag[1] = second;
     g_rec_src = sources;
+}
+/* the frame's budget, on the recording thread */
+static void frame_run(const void* p) {
+    g_rec_framed = 1;
+    g_rec_budget = *(const i64*)p;
+    __atomic_store_n(&g_rec_auto.budget_ns, (u64)g_rec_budget, __ATOMIC_RELAXED);
+}
+void vk_rec_frame(u64 period_ns) {
+    i64 budget = snx_vk_pipeline_budget(period_ns);
+    if (g_rec <= 0) return;
+    *(i64*)rec_push(frame_run, sizeof budget) = budget;
+    rec_commit();
+}
+void vk_rec_pipeline_log(void) {
+    static u64 waits_was, skipped_was, small_was;
+    u64 waits = __atomic_load_n(&g_rec_auto.waits, __ATOMIC_RELAXED),
+        skipped = __atomic_load_n(&g_rec_auto.skipped, __ATOMIC_RELAXED),
+        small = __atomic_load_n(&g_rec_auto.small, __ATOMIC_RELAXED);
+    if (waits == waits_was && skipped == skipped_was && small == small_was) return;
+    waits_was = waits;
+    skipped_was = skipped;
+    small_was = small;
+    LOG("vulkan: pipeline_wait=0 (Auto): %llu binds waited for a pipeline being made, %llu ms in all (the longest %llu "
+        "ms, a frame's budget %llu ms), %llu draws skipped past the budget, %llu draws of %d vertices or fewer waited "
+        "whole\n",
+        (unsigned long long)waits,
+        (unsigned long long)(__atomic_load_n(&g_rec_auto.wait_ns, __ATOMIC_RELAXED) / 1000000),
+        (unsigned long long)(__atomic_load_n(&g_rec_auto.longest_ns, __ATOMIC_RELAXED) / 1000000),
+        (unsigned long long)(__atomic_load_n(&g_rec_auto.budget_ns, __ATOMIC_RELAXED) / 1000000),
+        (unsigned long long)skipped, (unsigned long long)small, SNX_VK_SMALL_DRAW);
 }
 typedef struct {
     VkCommandBuffer cb;
@@ -599,7 +686,7 @@ void vk_checkpoint_dump(const char* why) {
 static void draw_run(const void* p) {
     const DrawArgs* x = p;
     vk_checkpoint(x->cb, "draw", x->tag[0], x->tag[1], x->a1, x->a2, x->src);
-    if (!rec_drop_draw()) vkCmdDraw(x->cb, x->a1, x->a2, x->a3, x->a4);
+    if (!rec_drop_draw(x->cb, x->a1)) vkCmdDraw(x->cb, x->a1, x->a2, x->a3, x->a4);
     vk_checkpoint(x->cb, "the end of draw", x->tag[0], x->tag[1], x->a1, x->a2, x->src);
 }
 void rec_CmdDraw(VkCommandBuffer cb, u32 vertices, u32 instances, u32 first_vertex, u32 first_instance) {
@@ -623,7 +710,7 @@ typedef struct {
 static void draw_indexed_run(const void* p) {
     const DrawIndexedArgs* x = p;
     vk_checkpoint(x->cb, "draw_indexed", x->tag[0], x->tag[1], x->a1, x->a2, x->src);
-    if (!rec_drop_draw()) vkCmdDrawIndexed(x->cb, x->a1, x->a2, x->a3, x->a4, x->a5);
+    if (!rec_drop_draw(x->cb, x->a1)) vkCmdDrawIndexed(x->cb, x->a1, x->a2, x->a3, x->a4, x->a5);
     vk_checkpoint(x->cb, "the end of draw_indexed", x->tag[0], x->tag[1], x->a1, x->a2, x->src);
 }
 void rec_CmdDrawIndexed(VkCommandBuffer cb, u32 indices, u32 instances, u32 first_index, i32 vertex_offset,
@@ -655,7 +742,8 @@ static void draw_mesh_now(const DrawMeshArgs* x) {
         vkCmdDrawMeshTasksEXT(x->cb, x->groups, 1, 1);
 }
 static void draw_mesh_run(const void* p) {
-    if (!rec_drop_draw()) draw_mesh_now((const DrawMeshArgs*)p);
+    const DrawMeshArgs* x = p;
+    if (!rec_drop_draw(x->cb, UINT32_MAX)) draw_mesh_now(x);
 }
 static void rec_draw_mesh(const DrawMeshArgs* a) {
     if (!rec_on(a->cb)) {
@@ -694,7 +782,8 @@ static void draw_indirect_now(const DrawIndirectArgs* x) {
     }
 }
 static void draw_indirect_run(const void* p) {
-    if (!rec_drop_draw()) draw_indirect_now((const DrawIndirectArgs*)p);
+    const DrawIndirectArgs* x = p;
+    if (!rec_drop_draw(x->cb, UINT32_MAX)) draw_indirect_now(x);
 }
 void rec_CmdDrawIndirect(VkCommandBuffer cb, int indexed, VkBuffer buf, VkDeviceSize off, VkBuffer count_buf,
                          VkDeviceSize count_off, u32 max, u32 stride) {

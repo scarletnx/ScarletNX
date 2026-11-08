@@ -51,6 +51,9 @@ int options_astc_bc_old(const char* old);
    which are -1, vk_descriptors_mode's default, as 0 was vk_descriptors's own until 3 was, and every game's .ini had
    written its default; -2 for a value that is not a whole number from 0 to 3 */
 int options_vk_descriptors_old(const char* old, int given);
+/* async_pipelines' value old as pipeline_wait's (0 Auto, 1 Wait, 2 Skip): 1 is 2; 0 is -1, pipeline_wait's default
+   Auto, as 0 was async_pipelines' own, which every game's .ini had written; -2 for any other value */
+int options_async_pipelines_old(const char* old);
 /* the path ini_open read, "" before it */
 const char* ini_file(void);
 /* about once a second, from the main loop. final: at exit, where an edit still being saved is left for the next start

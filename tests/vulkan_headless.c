@@ -6620,6 +6620,9 @@ static int run_headless(int argc, char** argv) {
         }
         g_shader_tex_array = (u32)n;
     }
+    /* every draw here is read back: Wait, where Auto skips a draw whose pipeline took longer than half a frame to make,
+       as a busy machine's lavapipe does (vk_record_wait holds Auto's waits and skips) */
+    g_settings.pipeline_wait = 1;
     video_init("Headless Vulkan fixture", "");
     CHECK(g_opt_headless && g_renderer_up && g_vk.dev && !g_vk.surface && !g_vk.swapchain && !g_vk.sc_count);
     CHECK(!check_vk12_way());

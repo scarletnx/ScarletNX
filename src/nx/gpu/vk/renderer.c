@@ -762,6 +762,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                         (unsigned long long)(g_rec_barriers_synced - synced_was));
                 synced_was = g_rec_barriers_synced;
             }
+            vk_rec_pipeline_log();
             {
                 u64 pipes, hits, make_ms, pipe_ms, shaders, shader_ms, uploads, upload_bytes, partial, partial_bytes;
                 vk_pipeline_stats(&pipes, &hits, &make_ms, &pipe_ms, &shaders, &shader_ms);
@@ -924,6 +925,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
     }
     /* Offscreen frames still submit and advance the frame ring. g_last remains available for readback. */
     vk_submit(wait, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, signal); /* the window's pass, vk_ui_present */
+    vk_rec_frame(game ? period_ns : 0); /* the next frame's budget for new pipelines (pipeline_wait=0) */
     if (game) vk_renderdoc_present(g_vk_present);
     /* after the frame's submission, so that the GPU's piece of a background encode never holds up the present */
     vk_astc_background();

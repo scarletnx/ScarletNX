@@ -16,7 +16,7 @@ bool snx_ctr_title_name(const char* path);
    g_debug_ini, g_performance_ini, g_gamepad_ini, g_gamepad_map_ini and g_backend_ini in src/nx/runtime/settings.txt), as
    --key=value beside the 3DS tables' own: the launcher passes them to a 3DS game's run with those */
 static inline bool snx_ctr_shared_setting(const char* key) {
-    return !strcmp(key, "vk_memory") || !strcmp(key, "async_pipelines") || !strcmp(key, "pipeline_threads") ||
+    return !strcmp(key, "vk_memory") || !strcmp(key, "pipeline_wait") || !strcmp(key, "pipeline_threads") ||
            !strcmp(key, "gamepad_swap_ab") || !strcmp(key, "gamepad_deadzone") || !strcmp(key, "gamepad_map") ||
            !strcmp(key, "touch") || !strcmp(key, "vsync") || !strcmp(key, "fullscreen") || !strcmp(key, "anisotropy") ||
            !strcmp(key, "fps_limit") || !strcmp(key, "vk_pipeline_cache");

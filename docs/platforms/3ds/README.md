@@ -154,10 +154,11 @@ interpreter `gpu/shader.c` decode the instructions with the decoder `tools/decod
 and the fragment pipeline generated (`gpu/vk/fsgen.c`), both ported from Azahar's
 shader generators and both written as SPIR-V words directly (`src/common/utilities/spirv_emit.c`, shared with NX), with no
 shader compiler at run time. The output merger is the pipeline's fixed state. A new pipeline
-is made as its first draw needs it, which pauses the game while the driver compiles it; with the
-Switch's `async_pipelines=1` (`--async_pipelines=1`) workers make it instead
-(`pipeline_threads` of them) and the draws that need it are skipped until it is ready, so what
-they draw shows up a few frames late, and the run's end says how many were skipped. The driver
+is made on workers (`pipeline_threads` of them) as its first draw needs it, which goes by the Switch's
+`pipeline_wait` (`--pipeline_wait=N`): `0`, the default, waits for it within half a frame, every wait of the frame from
+that, then skips the draws that need it until it is ready, but for a draw of 6 vertices or fewer, which waits for it
+whole; `2` skips them at once, so what they draw shows up a few frames late; `1` makes it on the game's thread, which
+pauses the game while the driver compiles it. The run's end says how many draws were skipped. The driver
 keeps the pipelines it compiled between runs, as for a Switch game, in
 `shader_cache/vk_pipelines.<driver>.bin` of the game's folder, one file for each driver. The
 file is read before the first draw and written at the end of the run, and also while the game

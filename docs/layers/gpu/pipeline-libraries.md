@@ -300,7 +300,7 @@ The swap:
 - The `fast` pipeline goes through `vk_defer_call` on the GPU thread when the GPU thread first sees `opt` ready. The
   frame slot that it goes to recycles after its last submission. All binds of `fast` are in that frame or before it,
   because the recording thread drains in order. `opt` is set before `fast` goes, so no resolve reads a freed handle.
-- With `async_pipelines=1`, `vk_pipeline_now` reports pending only while there is no `fast`. Draws skip for the time
+- Where `pipeline_wait` skips, `vk_pipeline_now` reports pending only while there is no `fast`. Draws skip for the time
   of a part compile, not of a whole pipeline.
 
 The lock fixes of 92df965c9 need nothing more. The workers take no `vk_lock`. The recording thread waits at the bind
@@ -547,7 +547,7 @@ menus of an Ounce game under `--vk_validation=1` against the same run on feat/ou
   keep the compiled parts. A binary format of our own would be a second cache to keep in step, with no gain shown.
   It can come back if the cache hit of a part costs too much (see the open questions).
 - **Skip a draw while its pipeline compiles**. It broke one game's menus and 190 edenprobe cases. A draw still never
-  skips. Only `async_pipelines=1` skips, as now.
+  skips. Only `pipeline_wait` skips, as now.
 
 ## What comes from vkd3d-proton
 

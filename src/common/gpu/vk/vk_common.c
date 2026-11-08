@@ -299,6 +299,9 @@ int snx_vk_pipeline_workers(int setting, int cpus) {
    in a burst, where the frame waits and the game idles, and what the system gives after the game's threads while it
    plays */
 int snx_vk_pipeline_low_workers(int workers) { return workers > 2 ? workers - 2 : 0; }
+int64_t snx_vk_pipeline_budget(uint64_t period_ns) {
+    return (int64_t)((period_ns ? period_ns : 1000000000ull / 60) / 2);
+}
 
 VkPipelineCache snx_vk_pipeline_cache_new(VkDevice dev, const VkPhysicalDeviceProperties* props, const void* data,
                                           size_t size, size_t* taken, char* why, size_t n) {
