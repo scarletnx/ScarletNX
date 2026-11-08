@@ -1016,8 +1016,8 @@ The page controller is now connected through an opt-in `SnxArmCheckedCPU`
 callback ABI, while the original CPU block/state ABI is deliberately unchanged.
 The adapter is not linked to the legacy execution runner. The A32 runner in
 `src/common/cpu/arm/exec.c` compiles blocks while a program runs and is **not** used by this pipeline.
-`SNX_3DS_AOT` selects the separate offline compiler and ARM11/checked codegen
-options; shared A57 emission and CPU ABI defaults remain unchanged.
+The offline compiler (`src/3ds/aot/compiler.c`, part of the driver) has its own
+ARM11/checked codegen options; shared A57 emission and CPU ABI defaults remain unchanged.
 
 The tick domain remains 268,111,856 Hz, with 4,481,136 base ticks per frame, as
 in Azahar. New 3DS CPU scaling is a separate future scheduler concern. Interrupts

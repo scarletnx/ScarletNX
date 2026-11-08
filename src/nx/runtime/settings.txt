@@ -1029,9 +1029,10 @@ setting GPU page check
     default 0
     startup
     words Off|On
-    help 1 = the GPU's written pages (gpu/writes.c) and the renderer's pending results (gpu/vk/pending_pages.c), which
-    help the runtime counts by GPU page, are also counted by guest address, and each lookup translates its range
-    help through the GMMU too: the log warns of each write or result only that finds. Slow: for checking those tables
+    help 1 = the GPU's written pages (gpu/maxwell/write_pages.c) and the renderer's pending results
+    help (gpu/vk/pending_pages.c), which the runtime counts by GPU page, are also counted by guest address, and each
+    help lookup translates its range through the GMMU too: the log warns of each write or result only that finds. Slow:
+    help for checking those tables
 setting Draw state check
     key draw_state_check
     int 0 1

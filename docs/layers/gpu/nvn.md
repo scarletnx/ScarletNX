@@ -27,8 +27,9 @@
 Switch games draw through NVN, NVIDIA's graphics API, which runs as guest code. On the console it writes Maxwell
 pushbuffers and submits them through nvdrv. ScarletNX runs the game's NVN calls itself (`src/nx/gpu/nvn/`): the loader
 (`nvn_loader.c`) takes every NVN function the game resolves, the queue replays its recordings on the GPU thread
-(`nvn_replay.c`), and the renderer (`vk/`) draws them. The game's NVN driver never runs past its own name lookup, and
-the runtime has no Maxwell command decoder. This page records what the SDK does, as the investigation found it. Facts
+(`nvn_replay.c`), and the renderer (`vk/`) draws them. The game's NVN driver never runs past its own name lookup. A
+program that writes its own command buffers goes through the Maxwell front end instead
+([Architecture](../../dev/architecture.md#gpu-submitpresent)). This page records what the SDK does, as the investigation found it. Facts
 marked as observations come from one or two titles and are not rules for every SDK version.
 
 Titles referred to: Catherine: Full Body (USA v2.0, "Catherine"), Tears of the Kingdom (v1.0.0, "TotK"), Super Mario
@@ -36,7 +37,7 @@ Odyssey ("Odyssey") and Pokémon Scarlet ("Scarlet").
 
 ## Status and direction
 
-**NVN is the only GPU path.** The loader takes the game's NVN functions at `nvnBootstrapLoader` and the
+**Games that use NVN take the NVN path.** The loader takes the game's NVN functions at `nvnBootstrapLoader` and the
 `nvnDeviceGetProcAddress` it returns: each name's dispatch slot holds the runtime's handler (`gpu/nvn/nvn.hook`), so
 no driver code past its lookup runs, and the driver never sets `nvnPrivate0`, which would send the game's inlined NVN
 code to write command memory itself. A game's first NVN call reads its NVN API version, and the log says whether the
@@ -44,8 +45,10 @@ runtime has measured layouts for it. The runtime runs the calls either way.
 
 An earlier tree decoded the Maxwell pushbuffers that the game's driver wrote (a GPFIFO decoder, the 3D, compute, 2D,
 copy and inline-to-memory engines, and the macro engine with native macros and an LLVM compiler of macros). That path
-is gone. `SUBMIT_GPFIFO` on `/dev/nvhost-gpu` now draws nothing: it logs one warning and reaches the submission's fence
-at once, so a program that writes its own command buffers (homebrew) does not wait forever. A disassembly study of the
+was removed. A Maxwell front end without the macro HLE and the macro compiler came back in `src/nx/gpu/maxwell/` for
+programs that write their own command buffers (OpenGL games, homebrew), which submit them with `SUBMIT_GPFIFO` on
+`/dev/nvhost-gpu`. It interprets every macro. It sees no work of an NVN game, because the game's NVN driver writes no
+command memory. A disassembly study of the
 command-buffer functions found how little each call writes on the console:
 
 | Call | Words written |
@@ -82,7 +85,7 @@ behavior, restrictions and synthetic checks.
 | --- | --- | --- |
 | `tests/support/nvn_control.c` | decoders for the 12-word macro 38 indexed draw and the macro 12 program bind | `tests/nvn_control.c` |
 | `tests/support/nvn_command_gap.c` | classifier of Maxwell method write effects in a span of command words | `tests/nvn_command_gap.c` |
-| `tests/support/mx_state.c` | the 3D and compute engines' registers as the renderer's draw state, for the Vulkan tests that describe draws by register values | `tests/vulkan_headless.c` |
+| `src/nx/gpu/maxwell/draw_state.c` | the 3D and compute engines' registers as the renderer's draw state, for the Maxwell front end and for the Vulkan tests that describe draws by register values | the runtime, and `tests/vulkan_headless.c` |
 
 Every `SNX_NVN_*` variable is gone: these are `[Debug]` settings now. `gpu_trace_target=address[:bytes]` (`vk/render.c`) logs the clears and
 draws that write a render target starting in that range, and replaced the older GPU trace variables.
@@ -458,7 +461,7 @@ Pitfalls:
   descriptor, and a queue finish advanced the frame so that draws were skipped and the result looked better.
 - Bounded logs answer "maybe" when they wrap. The old Maxwell write log (1,024 entries) answered "assume dirty" for
   any range over 1 MiB once constant buffer updates wrapped it, every frame, and the probes treated that as a real
-  write. Writes are kept per page now (`gpu/writes.c`, `gpu/write_pages.c`), but a write of the same data still
+  write. Writes are kept per page now (`gpu/maxwell/write_pages.c`), but a write of the same data still
   counts as a write.
 - A zero texture handle (Scarlet binds many) may be an unused slot or a shader-visible null descriptor. Decide from
   the shader's texture use, not from the bind.

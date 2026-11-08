@@ -207,7 +207,8 @@ accessors.
 
 A function that no symbol names, in one build of one game, is hooked by its module's build ID and its offset in that
 module. Each game's hooks are a spec of their own in `src/nx/patches/`, `<game>.hook`, with their handlers beside it
-in `<game>.c`:
+in `<game>.c`. No game has one yet, so the folder is not in the tree. `src/nx/CMakeLists.txt` still collects its `.c`
+files, and `cmake/hookgen.cmake` its `.hook` files, for the first one:
 
 ```
 family game_frame_rate

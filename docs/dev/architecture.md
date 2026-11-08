@@ -112,7 +112,7 @@ the game's image read from that image.
   feature set (the Switch's Cortex-A57 by default) decides what is UNDEF.
 - `src/common/cpu/recompiler/codegen.c`: function/CFG discovery over platform-neutral image views.
   `src/nx/loader/codegen_view.c` adapts NX images; `module.c` holds what the backends share (the dispatch entry
-  table, chunk labels, progress lines); chunks batch whole functions up to `SNX_CHUNK_INSTRUCTIONS`, 90000 (20000 on Android).
+  table, chunk labels, progress lines); chunks batch whole functions up to `CHUNK_INSTRUCTIONS` (`library.c`), 90000 (20000 on Android).
 - `toolchain.c`: the runtime build for deployment.
 - The code generator, LLVM (`src/common/cpu/recompiler/llvm/`, a required dependency), builds LLVM IR with the
   LLVM-C API: `ir_int.c`, `ir_ldst.c`, `ir_fpu.c` and `ir_vec*.c`, ported from QEMU's `translate-a64.c`, emit each
@@ -141,8 +141,8 @@ the game's image read from that image.
   Logical immediates and SIMD
   immediates are folded; FP arithmetic, compares and conversions run inline on the host's IEEE unit when the result is
   provably the soft-float helper's, flags included (`fast_binary`, `fast_sqrt` and `fast_fma` in `ir_fpu.c`);
-  the AdvSIMD and crypto encodings are inline instead
-  of `snx_simd`, AES as S-box lookups where the host has no AES-NI. Build == host == target: the
+  the AdvSIMD and crypto encodings are inline, not calls
+  to helpers, AES as S-box lookups where the host has no AES-NI. Build == host == target: the
   generated code uses the host's extensions (`snx_ir_host`, from LLVM's host detection), and the runtime library's
   helpers are portable C that LLVM compiles for each module's CPU; nothing is detected at run time. The emitters'
   x86 paths follow the target triple: AES-NI, PCLMULQDQ (PMULL, CRC32 by Barrett
@@ -252,8 +252,13 @@ covers hooks in code the game maps itself (NROs), which only the JIT runs.
 | `hle/kernel/`, `hle/svc/`, `memory/` | Objects, threads, sync, SVC, Switch memory, IPC |
 | `hle/services/`, `hle/filesystem/` | Services, nvdrv, guest filesystem services |
 | `gpu/` and `gpu/nvn/` | Guest memory as the GPU sees it, the GPU thread, NVN (loader, objects, command buffers, replay), shaders, Vulkan renderer |
+| `gpu/maxwell/` | The Maxwell front end for programs that write their own command buffers: the 3D, compute, 2D, DMA and inline-to-memory engines, the macro interpreter, the registers as the draw state, the last GPU write to each page |
 | `gpu/video/` | host1x, NVDEC H.264 and VP9 decoding through FFmpeg, VIC |
 | `runtime/platform/` | Host APIs, SDL3/headless, input, screenshots, timed exit, the in-game menu, the shader loading screen |
+
+The host layer that every driver shares is `src/common/platform/`: threads (`thread.h`, `thread_spawn.c`) and the
+Windows resources now, with the rest of the `plat_*` functions (time, files, memory, libraries, the log) moving there
+from `runtime/platform/`.
 
 ### Guest exec
 
@@ -308,8 +313,12 @@ service the runtime doesn't have gets sm's stand-in object, which answers every 
    own buffers) waits for its fences on the calling thread, then queues the present (`gpu_call`).
    `present_buffer` uses the matching RT and the crop, or converts guest memory.
 
-`/dev/nvhost-gpu`'s `SUBMIT_GPFIFO` draws nothing: there is no Maxwell command decoder. It logs one warning and
-reaches the submission's fence at once, so a program that writes its own command buffers does not wait forever.
+A program that writes its own command buffers (an OpenGL game, homebrew) submits them with `/dev/nvhost-gpu`'s
+`SUBMIT_GPFIFO` (`gpu_submit_gpfifo` in `hle/services/nvdrv.c`). The ioctl promises the fence and queues the entries
+(`gpu_submit`), and the GPU thread runs them through the Maxwell front end: `gpu.c` pulls the GPFIFO and hands each
+method to its engine in `gpu/maxwell/`. The 3D engine's registers make the same draw state as NVN's
+(`maxwell/draw_state.c`), and its draws go to `g_renderer`. The macro engine (`maxwell/mme.c`) interprets every
+macro, with no macro HLE or JIT.
 
 The shader programs a game ships are translated at startup, on the renderer's shader file thread rather than the GPU
 thread, into `<id>.<driver>.vkshipped` (`prepare_shaders`: before the game's first thread runs, behind main.c's loading screen,

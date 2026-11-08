@@ -63,6 +63,6 @@ and its 4 KiB alignment, and the device flags.
 | A render-target alias of an 8×8 cubemap mip is padded to a 16×8 surface (64-byte GOB rows). The importer accepts that shape and copies the logical extent | `vk/texture.c` `tex_take_drawn` |
 | Depth-only D16 and D32F textures import from render targets through the depth aspect | `vk/texture.c` |
 | Four-byte packed depth/stencil uploads: G24R8 (`0x0e`) and Z24S8 (`0x29`) keep stencil in the low byte, X8Z24 (`0x2a`) and S8Z24 (`0x2b`) depth in the low 24 bits | `vk/texture.c` |
-| A BRX resolves its jump table when the LDC is up to 64 instructions back, with only a short list of instructions that don't write the index register in between and no control flow before it. TotK has the LDC at instruction 93 and the BRX at 125 | `shader/shader.c` `brx_far_ldc` |
+| A BRX resolves its jump table when the LDC is up to 64 instructions back, with only a short list of instructions that don't write the index register in between and no control flow before it. TotK has the LDC at instruction 93 and the BRX at 125 | `shader/shader.c` (`brx_far_ldc` then, `shader_brx_targets` now) |
 | Compute code is bounded by the NVN header's declared size (magic `0x12345679` at code - 0x100), so an unresolved BRX cannot scan into neighboring programs | `vk/compute.c` |
 | Storage results are read back from host-cached memory | `vk/buffer.c`, `vk/cmd.c` |

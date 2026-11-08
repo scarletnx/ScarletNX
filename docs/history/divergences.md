@@ -231,8 +231,8 @@ Unicorn comparisons:
 
 ## Evidence and reproduction
 
-The audit harness (`tests/a64_audit.py`) was retired with the templates it
-compared. Its `--report` wrote each word's family, check and mismatch counts
+The audit harness (`a64_audit.py`) was retired with the templates it compared,
+and it is not in this repository's history. Its `--report` wrote each word's family, check and mismatch counts
 and first counterexample, and the totals.
 
 The extended pre-fix portable corpus found **39,153 differences / 704,096

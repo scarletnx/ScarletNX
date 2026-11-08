@@ -1675,7 +1675,8 @@ jobs:
       EDENPROBE_VERSION: v0.10.0
       EDENPROBE_SHA256: 30abbafd40e997334c645d578a3016286fe1b482b2f66f8fc0c7b1e2df5ef5af
       # every family that needs no person or network: headless, the audio family's sound is never played. Not graphics:
-      # its suites write their own GPU command buffers, which draw nothing now that NVN is the GPU path (docs/dev/edenprobe.md)
+      # its suites write their own GPU command buffers, left out while the runtime had no Maxwell front end, and not
+      # added back since it returned (docs/dev/edenprobe.md)
       EDENPROBE_MODE: quick notime cpu fs video display kernel audio
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
