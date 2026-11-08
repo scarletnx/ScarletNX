@@ -21,7 +21,6 @@ static const PThreadHooks* g_hooks; /* plat_thread_hooks's */
 void plat_thread_hooks(const PThreadHooks* hooks) { __atomic_store_n(&g_hooks, hooks, __ATOMIC_RELEASE); }
 
 #if defined(_WIN32)
-#define STACK_GUARANTEE 32768 /* room for the crash report after a stack overflow */
 #define GUARANTEE_MIN_THREAD ((size_t)256 << 10)
 
 /* ================================================================ threads */
@@ -35,7 +34,7 @@ static DWORD WINAPI thread_start(LPVOID p) {
     ThreadStart s = *(ThreadStart*)p;
     free(p);
     if (s.guarantee) {
-        ULONG g = STACK_GUARANTEE;
+        ULONG g = PLAT_STACK_GUARANTEE;
         SetThreadStackGuarantee(&g);
     }
     const PThreadHooks* hk = __atomic_load_n(&g_hooks, __ATOMIC_ACQUIRE);

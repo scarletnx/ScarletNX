@@ -476,7 +476,7 @@ static LONG WINAPI shutdown_note(EXCEPTION_POINTERS* e) {
 }
 
 void plat_install_crash_handler(void) {
-    ULONG g = STACK_GUARANTEE; /* the main thread's room for a report after a stack overflow */
+    ULONG g = PLAT_STACK_GUARANTEE; /* the main thread's room for a report after a stack overflow */
     SetThreadStackGuarantee(&g);
     AddVectoredExceptionHandler(1, shutdown_note);
     AddVectoredExceptionHandler(1, code_fault);

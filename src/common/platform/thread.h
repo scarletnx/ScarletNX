@@ -87,6 +87,8 @@ typedef void (*PThreadFn)(void* arg);
 /* the alternate signal stack of a thread: the crash report needs about 12 KiB, and a thread whose own stack overflowed
    has none left */
 #define PLAT_ALT_STACK_SIZE 32768
+/* the room Windows keeps for the crash report after a thread's stack overflowed (SetThreadStackGuarantee) */
+#define PLAT_STACK_GUARANTEE 32768
 /* What a driver does on each thread plat_thread starts: start before fn, end after it (and in plat_thread_exit), on
    the thread itself; created (Windows) on the starting thread with the new thread's handle, which it must not keep
    without its own copy. Any member may be NULL. Set once, before the first thread; the table must outlive them */
