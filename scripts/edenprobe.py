@@ -14,11 +14,11 @@ commit> beside them for edenprobe's ban list when the NRO knows the word and WOR
 and its XDG folders in DIR/work. A launch that ends before the report's summary, crashed or killed after --timeout seconds without
 a new report line, is followed by another, which edenprobe goes on from after the case the last one ended inside
 (reported as crashed), until the summary, a launch that adds no case, or --launches. DIR then holds report.jsonl, the
-failures' images/, the recompile's and each launch's log, baseline.txt (this run's passing cases, and those the
---baseline expects to end otherwise that did) and summary.md, which --summary FILE also appends to (CI:
-$GITHUB_STEP_SUMMARY). With --baseline, a case of it that does not end as its line says (pass, or the RESULT of a
-"[RESULT] suite: name" line) is a regression: run exits 1 and names it; a passing case it lacks is listed, to be added.
-A run that never reached its summary exits 1 too.
+failures' images/, the recompile's and each launch's log, baseline.txt (this run's passing cases, those edenprobe's ban
+list skipped as banned, and those the --baseline expects to end otherwise that did) and summary.md, which --summary FILE
+also appends to (CI: $GITHUB_STEP_SUMMARY). With --baseline, a case of it that does not end as its line says (pass, or
+the RESULT of a "[RESULT] suite: name" line) is a regression: run exits 1 and names it; a passing case it lacks is
+listed, to be added. A run that never reached its summary exits 1 too.
 
 With --advisory REPORT, the pinned release's report.jsonl, the NRO is another build (edenprobe's main) and the run never
 fails: its cases REPORT lacks that do not pass, REPORT's passing cases that it does not pass, and what would have failed
@@ -43,6 +43,8 @@ NAME = 'edenprobe'
 EXE = '.exe' if os.name == 'nt' else ''
 # a list longer than this in the summary ends with how many more: the files have them all
 MOST = 60
+# a case edenprobe's ban list skips on this machine: the same in every run of one build, so baseline.txt keeps it
+BANNED = 'skip (banned)'
 
 
 class Failed(Exception):
@@ -357,6 +359,7 @@ def run(args):
             problems.append(f'edenprobe ignored words of the mode: {"; ".join(report.unknown)}')
     if report and report.summary:
         ends = dict.fromkeys(report.passed(), 'pass')
+        ends.update((key, result) for key, result in report.cases.items() if result == BANNED)
         if args.baseline and not args.baseline.is_file():
             problems.append(f"no baseline at {args.baseline}: this run's baseline.txt is the one to put there")
         elif args.baseline:
