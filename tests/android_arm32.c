@@ -62,6 +62,13 @@ static uint32_t zeroed(uint32_t size) {
     memset(G(a), 0, size);
     return a;
 }
+static uint32_t word_at(uint32_t address) {
+    uint32_t w;
+    memcpy(&w, G(address), sizeof w);
+    return w;
+}
+/* the guest string at an address, "" for NULL */
+static const char* string_at(uint32_t address) { return address ? G(address) : ""; }
 static uint32_t guest_errno(void) {
     uint32_t e;
     memcpy(&e, G(arm32_errno_address()), sizeof e);
@@ -394,6 +401,41 @@ static void test_calls(void) {
     remove(G(in_dir("data")));
 }
 
+/* ---- getline, getdelim, remove, mkdtemp and getpagesize ---- */
+
+static void test_stdio(void) {
+    FILE* host = tmpfile();
+    if (!host) exit(1);
+    fputs("first\nsecond", host);
+    rewind(host);
+    uint32_t file = arm32_guest_file(host), line = zeroed(4), size = zeroed(4);
+    expect_int("getline of the first line", CALL("getline", line, size, file), 6);
+    expect_text("getline keeps the newline", string_at(word_at(line)), "first\n");
+    expect_int("getline grows the buffer", word_at(size) >= 7, 1);
+    expect_int("getline of the last line", CALL("getline", line, size, file), 6);
+    expect_text("getline of a line with no newline", string_at(word_at(line)), "second");
+    expect_int("getline at the end", (int32_t)CALL("getline", line, size, file), -1);
+    expect_int("getline with no stream", (int32_t)CALL("getline", line, size, 0), -1);
+    expect_int("getline with no stream: errno EINVAL", guest_errno(), 22);
+    rewind(host);
+    expect_int("getdelim to an 'r'", CALL("getdelim", line, size, 'r', file), 3);
+    expect_text("getdelim stops at its delimiter", string_at(word_at(line)), "fir");
+    fclose(host);
+    make_file("gone", "x");
+    expect_int("remove", CALL("remove", in_dir("gone")), 0);
+    expect_int("remove removes", exists("gone"), 0);
+    expect_int("remove of a missing file", (int32_t)CALL("remove", in_dir("gone")), -1);
+    expect_int("remove of a missing file: errno ENOENT", guest_errno(), 2);
+    uint32_t pattern = in_dir("dXXXXXX");
+    expect_int("mkdtemp gives its template", CALL("mkdtemp", pattern), pattern);
+    struct stat st;
+    expect_int("mkdtemp makes a folder", !stat(G(pattern), &st) && S_ISDIR(st.st_mode), 1);
+    rmdir(G(pattern));
+    uint32_t page = CALL("getpagesize");
+    expect_int("getpagesize is sysconf(_SC_PAGESIZE)", page, CALL("sysconf", 39));
+    expect_int("getpagesize is a power of two from 4096", page >= 4096 && (page & (page - 1)) == 0, 1);
+}
+
 /* ---- libm, soft-float: a double in two words, a float in one ---- */
 
 static uint32_t f_bits(float f) {
@@ -444,12 +486,6 @@ static void test_libm(void) {
 }
 
 /* ---- signals: bionic's 32-bit sigset_t, a bit for each of the signals 1 to 32 ---- */
-
-static uint32_t word_at(uint32_t address) {
-    uint32_t w;
-    memcpy(&w, G(address), sizeof w);
-    return w;
-}
 
 static void test_signals(void) {
     uint32_t set = zeroed(4);
@@ -614,6 +650,7 @@ int main(void) {
     test_fortify();
     test_files();
     test_calls();
+    test_stdio();
     test_libm();
     test_signals();
     rmdir(g_t.dir);
