@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+name: Cancel a pull request's Build
+
+# build.yml's cancel-run step starts this when a job of a pull request's Build fails. It runs once that job has ended,
+# so the job keeps its failure, and cancels the rest of the run: a job that cancels its own run ends cancelled, which
+# hid what failed. It cancels only a pull request's Build still going
+on:
+  workflow_dispatch:
+    inputs:
+      run:
+        description: The Build run to cancel, by its id
+        required: true
+
+permissions:
+  actions: write
+
+jobs:
+  cancel:
+    name: Cancel the rest of the run
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ inputs.run }}
+        run: |
+          case "$RUN" in ''|*[!0-9]*) echo "run=$RUN is not a run id: nothing is cancelled"; exit 1;; esac
+          read -r event path status < <(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN" \
+            --jq '"\(.event) \(.path) \(.status)"')
+          if [ "$event" != pull_request ] || [ "$path" != .github/workflows/build.yml ]; then
+            echo "run $RUN is a $event run of $path, not a pull request's Build: it keeps going"
+            exit 1
+          fi
+          if [ "$status" = completed ]; then
+            echo "run $RUN already ended"
+            exit 0
+          fi
+          if ! out=$(gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$RUN/cancel" 2>&1); then
+            echo "$out"
+            now=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN" --jq .status)
+            echo "run $RUN is $now"
+            [ "$now" = completed ] || grep -q 'HTTP 409' <<<"$out" || exit 1
+          fi
+          echo "run $RUN of $GITHUB_REPOSITORY cancelled after its failed job"
