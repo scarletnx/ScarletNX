@@ -343,7 +343,9 @@ one beside the 64-bit bridge:
   exceptions. A `dlopen` handle names its library, and `dlsym` searches it first.
 - **The system's libraries.** `arm32_libc.c` and `arm32_posix.c` have bionic's functions whose arguments have ILP32's
   layouts (`struct stat`, `dirent`, `tm`, `FILE`, `z_stream`, `addrinfo`, the `ctype` tables, the environment), the
-  guest's `printf` and `scanf`, libm, liblog, libdl, zlib and SHA-1. The ones whose arguments are integers and bytes
+  guest's `printf` and `scanf`, libm, liblog, libdl, zlib and SHA-1, and the `_FORTIFY_SOURCE` forms that the NDK
+  turns on (`__memcpy_chk` and the other `__*_chk`, `__open_2`), with bionic's checks: one that fails ends the app with
+  bionic's message and the sizes. The ones whose arguments are integers and bytes
   (files, descriptors, sockets, the process) are the 64-bit bridge's handlers, called through `arm32_shim.c` with each
   argument put in an AArch64 CPU's registers as AAPCS64 passes them, so `/proc`, errno and the Network setting are as
   for a 64-bit app. EGL, GLES 1.1 and 2.0 and `ANativeWindow` are the 64-bit bridge's the same way. Their host objects
