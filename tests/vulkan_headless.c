@@ -3624,12 +3624,16 @@ static int resident_texture(const RsFmt* as, u32 size, u32 layers, u64 gva, u64 
     CHECK(t->bytes == want + block && !rs_differ("a tile mapped", t, whole, &r));
     CHECK(bytes[1] - bytes[0] == RS_TILE); /* the tile alone (an ASTC one made whole, its memory no longer with
                                                holes, is checked by its hash) */
-    /* a tile unmapped: its memory goes, it reads zeros */
+    /* a tile unmapped: its memory goes, it reads zeros. Each step comes 7 frames (14 presents) after the one before: an
+       ASTC texture made whole and held as BC7, written again within the frames its encode takes and one, is held Exact
+       (texture.c later_soon), RGBA8 where the resident one is BC7 */
+    CHECK(!rs_frames(&r, &ref, t, whole, 7));
     for (u32 j = 0; j < 2; j++) gmmu_space_unmap((j ? ref_gva : gva) + rs_page(&r, at[made + 1]) * RS_TILE, RS_TILE);
     CHECK(!rs_frames(&r, &ref, t, whole, 1));
     CHECK(t->bytes == want && !rs_differ("a tile unmapped", t, whole, &r));
     /* a mip tail unmapped, its memory released and freed once the frames are done; then 4 KiB of it mapped again from
        another page: the tail bound again, likely over the memory it had, and loaded whole, the rest of it zeros */
+    CHECK(!rs_frames(&r, &ref, t, whole, 7));
     for (u32 j = 0; j < 2; j++) gmmu_space_unmap((j ? ref_gva : gva) + rs_page(&r, at[tail]) * RS_TILE, RS_TILE);
     CHECK(!rs_frames(&r, &ref, t, whole, 1));
     const u64 untailed = t->bytes;
@@ -3640,6 +3644,7 @@ static int resident_texture(const RsFmt* as, u32 size, u32 layers, u64 gva, u64 
         vk_cmd();
     }
     vk_unlock();
+    CHECK(!rs_frames(&r, &ref, t, whole, 7));
     for (u32 j = 0; j < 2; j++)
         gmmu_map((j ? ref_gva : gva) + rs_page(&r, at[tail]) * RS_TILE, cpu + (u64)(made + 2) * RS_TILE, 0x1000);
     CHECK(!rs_frames(&r, &ref, t, whole, 1));
@@ -3956,7 +3961,10 @@ static int resident_in_flight(const RsFmt* as, u64 gva, u64 ref_gva, u64 cpu) {
     vk_readback_ready();
     memcpy(got[4], back + 64, n);
     vk_unlock();
-    if (as->astc) { /* the texture made whole over the same pages, for what the tile holds now */
+    if (as->astc) {
+        /* the texture made whole over the same pages, for what the tile holds now; written 5 frames after it was made,
+           past the 3 its encode takes and one, as held Exact it would be RGBA8 (texture.c later_soon) */
+        for (int i = 0; i < 4; i++) CHECK(sv_frame(ref.tic) == whole);
         gmmu_map(ref_gva + rs_page(&r, a) * RS_TILE, cpu + 2 * (u64)RS_TILE, RS_TILE);
         CHECK(sv_frame(ref.tic) == whole);
     }

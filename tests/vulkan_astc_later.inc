@@ -6,7 +6,9 @@
    blocks are the CPU encoder's (tests/glsl/bc7_cpu.cpp) over the RGBA8 texels, byte for byte, edges, strips cut at the
    frame's budget, layers and 3D slices across frames included. A texture written before its BC7 image is whole starts over on the
    new texels; one written whole after is RGBA8 again until the encoder is done again, and pieces of it more than a
-   frame's blocks load whole as RGBA8 too, where fewer go straight to BC7. A texture freed leaves the queue */
+   frame's blocks load whole as RGBA8 too, where fewer go straight to BC7. A texture written again before the encoder
+   could make it BC7 is held Exact, out of the queue, even for its pieces, and is made BC7 again once read unwritten
+   for a while. A texture freed leaves the queue */
 #include "bc7_cpu.h"
 
 #define AL_CPU      (HEAP_BASE + 0x1F000000) /* a case's guest memory, AL_SPAN each */
@@ -58,6 +60,11 @@ static Surf* al_frame(const u32* tic) {
     Surf* t = vk_tex_from_tic(tic);
     vk_unlock();
     return t;
+}
+/* n frames that read the texture of a header and write nothing: what a write after them is apart from the one before
+   (texture.c later_soon) */
+static void al_idle(const u32* tic, u32 n) {
+    for (u32 i = 0; i < n; i++) al_frame(tic);
 }
 /* level l's texels across, down and deep */
 static void al_level(const AlTex* x, u32 l, u32* w, u32* h, u32* d) {
@@ -193,27 +200,29 @@ static void al_free(AlTex* x) {
     mem_unmap(x->cpu, AL_SPAN);
 }
 /* t as it is made: RGBA8 the game samples at once, its texels the Exact twin's (astc_mode 1, over the same memory),
-   queued for the encoder. Its RGBA8 texels, malloc'd, in *rgba; 1 when not */
-static int al_shown(AlTex* x, Surf* t, const char* when, u8** rgba) {
+   queued for the encoder, or (hot) held Exact for its writes, out of the queue. Its RGBA8 texels, malloc'd, in *rgba;
+   1 when not */
+static int al_shown_as(AlTex* x, Surf* t, const char* when, u8** rgba, int hot) {
     u64 size = 0, twin_size = 0;
     g_settings.astc_mode = 1;
     Surf* twin = al_frame(x->twin);
     g_settings.astc_mode = 2;
     *rgba = t ? al_image(x, t, &size) : NULL;
     u8* exact = twin ? al_image(x, twin, &twin_size) : NULL;
-    int ok = t && twin && t->upload_valid && t->f.vk == VK_FORMAT_R8G8B8A8_UNORM && t->bc7_later && t->bc7.queued &&
-             twin->f.vk == VK_FORMAT_R8G8B8A8_UNORM && !twin->bc7_later && *rgba && exact && size == twin_size &&
-             !memcmp(*rgba, exact, (size_t)size);
+    int ok = t && twin && t->upload_valid && t->f.vk == VK_FORMAT_R8G8B8A8_UNORM && t->bc7_later &&
+             t->bc7.queued == !hot && t->bc7_hot == hot && twin->f.vk == VK_FORMAT_R8G8B8A8_UNORM && !twin->bc7_later &&
+             *rgba && exact && size == twin_size && !memcmp(*rgba, exact, (size_t)size);
     if (!ok)
         fprintf(stderr,
-                "ASTC as BC7 between frames, %s, %s: the texture %p (format %d, held as BC7 later %d, queued %d, "
-                "loaded %d), its Exact twin %p (format %d), their texels %s\n",
+                "ASTC as BC7 between frames, %s, %s: the texture %p (format %d, held as BC7 later %d, queued %d, held "
+                "Exact for its writes %d, not %d, loaded %d), its Exact twin %p (format %d), their texels %s\n",
                 x->c->name, when, (void*)t, t ? (int)t->f.vk : 0, t ? t->bc7_later : 0, t ? t->bc7.queued : 0,
-                t ? t->upload_valid : 0, (void*)twin, twin ? (int)twin->f.vk : 0,
+                t ? t->bc7_hot : 0, hot, t ? t->upload_valid : 0, (void*)twin, twin ? (int)twin->f.vk : 0,
                 *rgba && exact && size == twin_size && !memcmp(*rgba, exact, (size_t)size) ? "the same" : "differ");
     free(exact);
     return !ok;
 }
+static int al_shown(AlTex* x, Surf* t, const char* when, u8** rgba) { return al_shown_as(x, t, when, rgba, 0); }
 
 /* (a) A 1024x768 ASTC 8x8 texture, 65539 BC7 blocks in 11 levels: frame 1 encodes 128 of level 0's 192 block rows,
    frame 2 the other 64 and levels 1 to 7 to the block, frame 3 the last three; the RGBA8 image stays until then, and
@@ -267,7 +276,7 @@ static int al_frames(void) {
 }
 
 /* (b) A 2D array of 3 layers of 100x60 ASTC 6x5 in 7 levels, sides on no block: a frame, a dispatch a level for its
-   three layers. Then written whole: RGBA8 again at once, the new texels, and BC7 again from them */
+   three layers. Then written whole frames later: RGBA8 again at once, the new texels, and BC7 again from them */
 static int al_layers_again(void) {
     static const AlCase c = {"ASTC 6x5 100x60, 3 layers", NVN_FORMAT_RGBA_ASTC_6x5, 100, 60, 3, 0};
     AlTex x;
@@ -285,8 +294,10 @@ static int al_layers_again(void) {
     }
     int failed = al_differ(&x, "whole", t, rgba);
     free(rgba);
-    /* written whole: RGBA8 at once, of the new blocks */
+    /* written whole past the frame its encode takes and the one after (else it is held Exact, (g)): RGBA8 at once, of
+       the new blocks */
     const VkImage bc7_img = t->img;
+    al_idle(x.tic, 4);
     al_fill(&x);
     CHECK(al_frame(x.tic) == t && t->img != bc7_img);
     failed |= al_shown(&x, t, "written whole after", &rgba);
@@ -301,8 +312,9 @@ static int al_layers_again(void) {
     return failed;
 }
 
-/* (c) A 512x768 ASTC 8x8 texture written whole after the first of its two frames: the encoder drops what it made and
-   starts over on the new texels, two frames again */
+/* (c) A 512x768 ASTC 8x8 texture whose encoder started late (behind other textures, as after a load) written whole
+   after the first of its two frames: the encoder drops what it made and starts over on the new texels, two frames
+   again. Written so long after its load, it is not held Exact */
 static int al_written_between(void) {
     static const AlCase c = {"ASTC 8x8 512x768", NVN_FORMAT_RGBA_ASTC_8x8, 512, 768, 1, 0};
     AlTex x;
@@ -312,6 +324,7 @@ static int al_written_between(void) {
     Surf* t = al_make(&x, &c, 2);
     CHECK(t && !al_shown(&x, t, "made", &rgba));
     free(rgba);
+    al_idle(x.tic, 4);
     CHECK(al_step() == VK_BC7_LATER_BLOCKS && t->bc7.queued && t->bc7.img);
     al_fill(&x);
     CHECK(al_frame(x.tic) == t);
@@ -368,9 +381,10 @@ static int al_slices(const AlCase* c, u32 index) {
     return failed;
 }
 
-/* (e) A 2048x2048 ASTC 12x12 texture made BC7, then written in pieces: an ASTC block goes straight to BC7, its image
-   staying BC7; 96 KiB of level 0, under half the texture but 55296 BC7 blocks, more than a frame's, load whole as
-   RGBA8 that the encoder makes BC7 again. With write tracking only: without it a check by contents loads it whole */
+/* (e) A 2048x2048 ASTC 12x12 texture made BC7, then written in pieces, each more than the 12 frames its encode takes
+   and one after the write before (else it is held Exact, (h)): an ASTC block goes straight to BC7, its image staying
+   BC7; 96 KiB of level 0, under half the texture but 55296 BC7 blocks, more than a frame's, load whole as RGBA8 that
+   the encoder makes BC7 again. With write tracking only: without it a check by contents loads it whole */
 static int al_pieces(void) {
     static const AlCase c = {"ASTC 12x12 2048x2048", NVN_FORMAT_RGBA_ASTC_12x12, 2048, 2048, 1, 0};
     AlTex x;
@@ -383,7 +397,7 @@ static int al_pieces(void) {
     const int tracked = vk_written_since(GP(x.cpu), x.lay.size, 0) >= 0;
     vk_unlock();
     CHECK(al_until_done(t, &over) == 11 && !over && t->f.vk == VK_FORMAT_BC7_UNORM_BLOCK);
-    for (int i = 0; i < 3; i++) CHECK(al_frame(x.tic) == t); /* write tracking's scans take in what was written */
+    al_idle(x.tic, 13); /* write tracking's scans take in what was written too */
     if (!tracked) {
         printf("ASTC as BC7 between frames, %s: no write tracking, pieces skipped\n", c.name);
         al_free(&x);
@@ -398,19 +412,129 @@ static int al_pieces(void) {
                 c.name, (int)t->f.vk, t->bc7.queued);
         return 1;
     }
+    al_idle(x.tic, 13);
     guest_done(x.cpu + 0x10000, 96 << 10);
     for (u32 i = 0; i < 96u << 10; i += 64) GP(x.cpu + 0x10000)[i] ^= 0x5A;
     CHECK(al_frame(x.tic) == t);
-    if (t->f.vk != VK_FORMAT_R8G8B8A8_UNORM || !t->bc7.queued) {
+    if (t->f.vk != VK_FORMAT_R8G8B8A8_UNORM || !t->bc7.queued || t->bc7_hot) {
         fprintf(stderr,
-                "ASTC as BC7 between frames, %s: 96 KiB of it written, its image format %d, queued %d, not RGBA8 "
-                "and queued\n",
-                c.name, (int)t->f.vk, t->bc7.queued);
+                "ASTC as BC7 between frames, %s: 96 KiB of it written, its image format %d, queued %d, held Exact %d, "
+                "not RGBA8, queued and not held\n",
+                c.name, (int)t->f.vk, t->bc7.queued, t->bc7_hot);
         return 1;
     }
     CHECK(al_until_done(t, &over) == 11 && !over && t->f.vk == VK_FORMAT_BC7_UNORM_BLOCK);
     printf("ASTC as BC7 between frames, %s: made BC7 in 11 frames; an ASTC block written went straight to BC7, 96 KiB "
            "loaded whole as RGBA8 and made BC7 again\n",
+           c.name);
+    al_free(&x);
+    return 0;
+}
+
+/* (g) A 512x512 ASTC 8x8 texture, whose encode takes a frame, written whole again and again: 3 frames after the write
+   before it stays queued; 2 frames after, the frame its encode takes and the one after, it is held Exact for its
+   writes, RGBA8 the Exact twin's, out of the queue, and stays so for a write the next frame. Read 29 frames unwritten it
+   is still held; at 30 it is queued again, made BC7 in a frame, the CPU encoder's blocks of its last texels */
+static int al_hot(void) {
+    static const AlCase c = {"ASTC 8x8 512x512, written often", NVN_FORMAT_RGBA_ASTC_8x8, 512, 512, 1, 0};
+    AlTex x;
+    u8* rgba = NULL;
+    VkLaterStats a, b;
+    int over, failed = 0;
+    Surf* t = al_make(&x, &c, 7);
+    CHECK(t && !al_shown(&x, t, "made", &rgba));
+    free(rgba);
+    vk_tex_later_stats(&a);
+    al_idle(x.tic, 1);
+    al_fill(&x);
+    CHECK(al_frame(x.tic) == t);
+    failed |= al_shown_as(&x, t, "written 3 frames after its load", &rgba, 0);
+    free(rgba);
+    al_fill(&x); /* al_shown_as's frame was one */
+    CHECK(al_frame(x.tic) == t);
+    failed |= al_shown_as(&x, t, "written 2 frames after the write before", &rgba, 1);
+    free(rgba);
+    CHECK(al_step() == 0);
+    al_fill(&x);
+    CHECK(al_frame(x.tic) == t);
+    failed |= al_shown_as(&x, t, "written the next frame", &rgba, 1);
+    vk_tex_later_stats(&b);
+    if (b.went_hot != a.went_hot + 1 || b.hot != a.hot + 1) {
+        fprintf(stderr, "ASTC as BC7 between frames, %s: %llu went held Exact, %u held now, not 1 and %u\n", c.name,
+                (unsigned long long)(b.went_hot - a.went_hot), b.hot, a.hot + 1);
+        failed = 1;
+    }
+    /* al_shown_as's frame read only its twin: 28 frames that read it, 29 after its last write, then the 30th */
+    al_idle(x.tic, 28);
+    if (!t->bc7_hot || t->bc7.queued) {
+        fprintf(stderr, "ASTC as BC7 between frames, %s: 29 frames unwritten, held Exact %d, queued %d, not 1 and 0\n",
+                c.name, t->bc7_hot, t->bc7.queued);
+        failed = 1;
+    }
+    al_idle(x.tic, 1);
+    vk_tex_later_stats(&b);
+    if (t->bc7_hot || !t->bc7.queued || b.cooled != a.cooled + 1 || b.hot != a.hot) {
+        fprintf(stderr,
+                "ASTC as BC7 between frames, %s: 30 frames unwritten, held Exact %d, queued %d, %llu made BC7 again, "
+                "%u held, not 0, 1, 1 and %u\n",
+                c.name, t->bc7_hot, t->bc7.queued, (unsigned long long)(b.cooled - a.cooled), b.hot, a.hot);
+        failed = 1;
+    }
+    CHECK(al_until_done(t, &over) == 1 && !over && t->f.vk == VK_FORMAT_BC7_UNORM_BLOCK);
+    failed |= al_differ(&x, "read unwritten, made BC7 again", t, rgba);
+    if (!failed)
+        printf("ASTC as BC7 between frames, %s: written 3 frames apart stays queued, 2 apart held Exact out of the "
+               "queue, read 30 frames unwritten made BC7 again\n",
+               c.name);
+    free(rgba);
+    al_free(&x);
+    return failed;
+}
+
+/* (h) The same texture made BC7, then written in pieces: an ASTC block 3 frames after its last write goes straight to
+   BC7; another the next frame loads it whole as RGBA8, held Exact for its writes, out of the queue: pieces of a texture
+   written often are never encoded where the game waits. With write tracking only */
+static int al_hot_pieces(void) {
+    static const AlCase c = {"ASTC 8x8 512x512, pieces written often", NVN_FORMAT_RGBA_ASTC_8x8, 512, 512, 1, 0};
+    AlTex x;
+    u8* rgba = NULL;
+    int over;
+    Surf* t = al_make(&x, &c, 8);
+    CHECK(t && !al_shown(&x, t, "made", &rgba));
+    free(rgba);
+    vk_lock();
+    const int tracked = vk_written_since(GP(x.cpu), x.lay.size, 0) >= 0;
+    vk_unlock();
+    CHECK(al_until_done(t, &over) == 1 && !over && t->f.vk == VK_FORMAT_BC7_UNORM_BLOCK);
+    al_idle(x.tic, 3);
+    if (!tracked) {
+        printf("ASTC as BC7 between frames, %s: no write tracking, skipped\n", c.name);
+        al_free(&x);
+        return 0;
+    }
+    const VkImage bc7_img = t->img;
+    guest_done(x.cpu + 0x1000, 16);
+    GP(x.cpu + 0x1000)[3] ^= 0x5A;
+    CHECK(al_frame(x.tic) == t);
+    if (t->img != bc7_img || t->f.vk != VK_FORMAT_BC7_UNORM_BLOCK || t->bc7_hot || t->bc7.queued) {
+        fprintf(stderr,
+                "ASTC as BC7 between frames, %s: an ASTC block written 3 frames after, its image format %d, held "
+                "Exact %d, queued %d, not BC7, 0 and 0\n",
+                c.name, (int)t->f.vk, t->bc7_hot, t->bc7.queued);
+        return 1;
+    }
+    guest_done(x.cpu + 0x2000, 16);
+    GP(x.cpu + 0x2000)[3] ^= 0x5A;
+    CHECK(al_frame(x.tic) == t);
+    if (t->f.vk != VK_FORMAT_R8G8B8A8_UNORM || !t->bc7_hot || t->bc7.queued) {
+        fprintf(stderr,
+                "ASTC as BC7 between frames, %s: an ASTC block written the next frame, its image format %d, held "
+                "Exact %d, queued %d, not RGBA8, 1 and 0\n",
+                c.name, (int)t->f.vk, t->bc7_hot, t->bc7.queued);
+        return 1;
+    }
+    printf("ASTC as BC7 between frames, %s: a block 3 frames after its last write went straight to BC7, another the "
+           "next frame loaded it whole as RGBA8, held Exact\n",
            c.name);
     al_free(&x);
     return 0;
@@ -472,6 +596,8 @@ static int check_astc_later(void) {
     failed |= al_slices(&layers, 3);
     failed |= al_slices(&volume, 6);
     failed |= al_pieces();
+    failed |= al_hot();
+    failed |= al_hot_pieces();
     failed |= al_freed();
     g_settings.astc_mode = had;
     return failed;
