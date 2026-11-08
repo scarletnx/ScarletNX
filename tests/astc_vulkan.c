@@ -1162,7 +1162,12 @@ int main(int argc, char** argv) {
     run_bc7(12, 12, 1, 97, 61, 1, 1, 1);
     run_bc7(6, 6, 0, 61, 37, 9, 1, 1);
     run_bc7(5, 5, 0, 2051, 1101, 1, 1, 1);
-    /* a level of VK_BC7_FAST_TEXELS: the fast build (vk_bc7_build) */
+    /* every level takes the fast build, the largest mode 6 alone (vk_bc7_build): the levels above held to it */
+    if (vk_bc7_build(4, 4, 1) != 1 || vk_bc7_build(2040, 2040, 1) != 1 || vk_bc7_build(8191, 8192, 1) != 1 ||
+        vk_bc7_build(8192, 8192, 1) != 2 || vk_bc7_build(512, 512, 256) != 2)
+        fatal("BC7 builds: 4x4 %u, 2040x2040 %u, 8191x8192 %u, 8192x8192 %u, 512x512x256 %u (1 the fast, 2 mode 6)\n",
+              vk_bc7_build(4, 4, 1), vk_bc7_build(2040, 2040, 1), vk_bc7_build(8191, 8192, 1),
+              vk_bc7_build(8192, 8192, 1), vk_bc7_build(512, 512, 256));
     run_bc7(8, 8, 1, 2048, 2048, 1, 1, 1);
     /* a region uploaded again: inside the level, at its right and bottom edges, as BC7 and as RGBA8, footprints that
        step 1, 2 and 4 blocks to a 4x4 BC7 block, and a BC7 region off those blocks */

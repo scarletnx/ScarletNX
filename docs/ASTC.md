@@ -321,6 +321,19 @@ of the full build's quality. PSNR over RGBA and the worst channel error:
 On the random blocks 1.3 to 5.9% of the fast build's blocks differ from the full build's, and 90 to 98% of them are
 mode 6.
 
+`VK_BC7_FAST_TEXELS` is 0: every level takes the fast build. The full build had most of a game's textures, those under
+2048x2048, and a batch of them held a frame for seconds. On an RX 6700 XT (RADV), a level of random 8x8 blocks decoded
+and encoded (`snx-test-astc-vulkan --bench`, two interleaved rounds of four runs after the first; a -O0 test build,
+the time the GPU's):
+
+| Level | Full build | Fast build |
+| --- | --- | --- |
+| 4096x4096 | 103 to 107 ms, 9.8 to 10.2 million BC7 blocks a second | 76 to 80 ms, 13.1 to 13.8 million |
+| 2040x2040 | 23.5 to 24.3 ms, 10.7 to 11.1 million | 17.5 to 18.2 ms, 14.3 to 14.8 million |
+
+Random blocks are the fast build's worst case: the blocks that try every mode hold up the invocations beside them.
+On one game's 6x6 albedo an RTX 2080 took 12 to 14 ms for a 4096x4096 level, where the full build took 190.
+
 ## Textures bigger than one allocation
 
 Some drivers fail device memory allocations past 256 MiB even where `maxMemoryAllocationSize` is larger (NVIDIA's on
