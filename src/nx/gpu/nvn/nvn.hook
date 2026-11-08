@@ -528,6 +528,8 @@ hook nvnCommandBufferSaveZCullData(NVNcommandBuffer* cb, u64 address, usize size
 hook nvnCommandBufferSetAlphaRef(NVNcommandBuffer* cb, f32 ref)
 hook nvnCommandBufferSetBlendColor(NVNcommandBuffer* cb, const f32* rgba)
 hook nvnCommandBufferSetCommandMemoryCallbackEnabled(NVNcommandBuffer* cb, bool on)
+# the Ounce's (API 231): a priority for the compute work recorded after it, which one game passes as 0x20 or 0x21
+hook nvnCommandBufferSetComputeWorkloadPriority(NVNcommandBuffer* cb, i32 priority)
 hook nvnCommandBufferSetConservativeRasterEnable(NVNcommandBuffer* cb, bool on)
 hook nvnCommandBufferSetCopyImageStride(NVNcommandBuffer* cb, isize stride)
 hook nvnCommandBufferSetCopyRowStride(NVNcommandBuffer* cb, isize stride)
