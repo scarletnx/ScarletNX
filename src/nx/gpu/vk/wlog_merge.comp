@@ -1,0 +1,53 @@
+#version 450
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* A logged storage result's bytes written back on the GPU (vk/writelog.c vk_wlog_merge, buffer.c's write-back): the
+   bytes of [from, to) of the binding that one part of a write log marks written (shader.h's SH_WLOG_*), from where the
+   program wrote them into the memory that holds the binding there, and no others. What the CPU's landing of the result
+   writes (vk_wlog_runs, buffer.c land_logged), recorded after the program instead of waiting for it. A workgroup a
+   4 KiB window of the binding: one whose flag is clear (most) returns; a thread a mask word, 32 bytes. Each word of the
+   destination is one thread's, and a word written in part keeps its other bytes. CMake compiles it into SPIR-V at
+   build time (cmake/glsl.cmake). */
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer Src {
+    uint src[]; /* the program's buffer, word sadj the binding's byte `from` */
+};
+layout(std430, set = 0, binding = 1) buffer Dst {
+    uint dst[]; /* where the binding's bytes are kept, word dadj its byte `from` */
+};
+layout(std430, set = 0, binding = 2) readonly buffer Log {
+    uint lg[]; /* the log's part: SLOT window flags, then MASK words a window */
+};
+layout(push_constant) uniform Params {
+    uint first; /* the first window of [from, to) */
+    uint from;  /* the bytes of the binding written back: [from, to), from a multiple of 4 */
+    uint to;
+    uint sadj;
+    uint dadj;
+};
+#define SLOT 4096u
+#define MASK 128u
+
+void main() {
+    uint j = first + gl_WorkGroupID.x, t = gl_LocalInvocationID.x;
+    if (j >= SLOT || lg[j] == 0u) return;
+    uint m = lg[SLOT + j * MASK + t];
+    if (m == 0u) return;
+    uint byte0 = j * 4096u + t * 32u; /* the first byte the mask word stands for */
+    for (uint i = 0u; i < 8u; i++) {
+        uint b = byte0 + i * 4u, bits = (m >> (i * 4u)) & 0xFu;
+        if (bits == 0u || b < from || b >= to) continue;
+        if (b + 4u > to) bits &= (1u << (to - b)) - 1u; /* the bytes past the part's end are another's */
+        if (bits == 0u) continue;
+        uint k = (b - from) >> 2u, s = src[sadj + k];
+        if (bits == 0xFu) {
+            dst[dadj + k] = s;
+            continue;
+        }
+        uint keep = 0u;
+        for (uint q = 0u; q < 4u; q++)
+            if ((bits & (1u << q)) != 0u) keep |= 0xFFu << (q * 8u);
+        dst[dadj + k] = (dst[dadj + k] & ~keep) | (s & keep);
+    }
+}

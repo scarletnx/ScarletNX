@@ -988,3 +988,85 @@ static int check_uma_region_merge(void) {
            "first\n");
     return 0;
 }
+
+/* A logged result the in-place path refuses, its range an import's in part and an owner's in part (buffer.c's
+   back_record): written back on the GPU after its writer, the bytes its log gives and no others, into the import's
+   part of guest memory, into the owner, and into the page neither held (an import made there, or an owner made for
+   it from memory where the driver takes no import with a trapped page in its window). Nothing is left pending, so
+   reading the range lands nothing */
+#define UMA_LB  (HEAP_BASE + 0x7000000)
+#define UMA_GLB 0x4e9000000ull
+/* part 0 of log: runs [from[k], from[k] + n[k]) of a binding of windows windows written, as the GPU logs them: every
+   window's flag and mask, each copied once (logged_mark gives one run a window) */
+static int logged_marks(VkWriteLog* log, const u32* from, const u32* n, u32 runs, u32 windows) {
+    static u32 masks[4][SH_WLOG_MASK];
+    CHECK(windows <= 4);
+    memset(masks, 0, sizeof masks);
+    for (u32 k = 0; k < runs; k++)
+        for (u32 b = from[k]; b < from[k] + n[k]; b++) masks[b / 4096][b % 4096 / 32] |= 1u << (b % 32);
+    for (u32 w = 0; w < windows; w++) {
+        VkBuffer src;
+        u64 at;
+        u8* data = vk_stage_upload(16 + sizeof masks[w], 16, &src, &at);
+        CHECK(data);
+        u32 flag = 0;
+        for (u32 i = 0; i < SH_WLOG_MASK; i++) flag |= masks[w][i] != 0;
+        memcpy(data, &flag, 4);
+        memcpy(data + 16, masks[w], sizeof masks[w]);
+        VkBufferCopy copy[2] = {{at, (u64)w * 4, 4},
+                                {at + 16, ((u64)SH_WPAGE_SLOT + (u64)w * SH_WLOG_MASK) * 4, sizeof masks[w]}};
+        rec_CmdCopyBuffer(vk_cmd(), src, vk_wlog_buffer(log), 2, copy);
+    }
+    return 0;
+}
+static int check_uma_logged_back(void) {
+    const u64 window = 0x200000, edge = UMA_LB + window, page = 0x1000;
+    /* the binding: its first 0xfe0 bytes the import's, then the owner's page, then a page neither holds */
+    const u64 cpu = edge - 0xfe0, gva = UMA_GLB + (cpu - UMA_LB);
+    const u32 len = 0xfe0 + 2 * page;
+    /* written by the program: [from, from + n) of the binding, of which logged bytes are logged */
+    static const u32 from[5] = {0x20, 0xfd0, 0x1100, 0x1801, 0x2400}, n[5] = {0x40, 0x30, 0x10, 0x5, 0x20},
+                     logged[5] = {0x40, 0x30, 0x8, 0x5, 0x20};
+    static const u8 value[5] = {0xa1, 0xa2, 0xa3, 0xa4, 0xa5};
+    static u8 want[0xfe0 + 2 * 0x1000];
+    VkBuffer b, out;
+    u64 bo, at;
+    if (uma_skip()) return 0;
+    CHECK(mem_map(UMA_LB, 2 * window, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GLB, UMA_LB, 2 * window);
+    for (u32 i = 0; i < 2 * window; i++) GP(UMA_LB)[i] = (u8)(i * 13 + 9);
+    vk_lock();
+    u32 validation = g_vk_validation_messages;
+    CHECK(vk_buf_get_input(UMA_GLB + 0x100, 256, 4, &b, &bo) && vk_uma_imports(UMA_LB, window) == 1);
+    VkOwnRes* owner = uma_owner(page, 0x63);
+    CHECK(owner);
+    vk_own_publish_owned(edge, page, owner, 0);
+    for (u32 i = 0; i < len; i++) want[i] = i >= 0xfe0 && i < 0xfe0 + page ? 0x63 : GP(cpu)[i];
+    VkWriteLog* log = vk_wlog_get(1);
+    CHECK(log);
+    CHECK(vk_buf_copy_writable_logged(gva, len, &out, &at, 1, log, 0, 1));
+    for (u32 k = 0; k < 5; k++) { /* the program's stores, recorded before its commit as a dispatch's */
+        CHECK(!owned_test_fill(out, at + from[k], n[k], value[k]));
+        for (u32 i = from[k]; i < from[k] + logged[k]; i++) want[i] = value[k];
+    }
+    CHECK(!logged_marks(log, from, logged, 5, 3)); /* and their marks */
+    vk_buf_writable_commit();
+    vk_buf_log_retire(log);
+    CHECK(!vk_buf_pending(gva, len));
+    vk_finish();
+    vk_unlock();
+    own_acquire(cpu, len);
+    for (u32 i = 0; i < len; i++)
+        if (GP(cpu)[i] != want[i]) {
+            fprintf(stderr, "vulkan_headless: a logged result written back: byte %#x is %#x, not %#x\n", i, GP(cpu)[i],
+                    want[i]);
+            return 1;
+        }
+    CHECK(GP(cpu)[-1] == (u8)((cpu - 1 - UMA_LB) * 13 + 9) && GP(cpu)[len] == (u8)((cpu + len - UMA_LB) * 13 + 9));
+    CHECK(g_vk_validation_messages == validation);
+    vk_own_res_unref(owner);
+    CHECK(mem_unmap(UMA_LB, 2 * window) == 0);
+    printf("in place: a logged result over an import and an owner is written back on the GPU, its logged bytes "
+           "alone\n");
+    return 0;
+}

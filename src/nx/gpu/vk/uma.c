@@ -1193,6 +1193,33 @@ int vk_uma_publish(u64 cpu, u64 len, VkBuffer src, u64 off) {
 int vk_uma_copy_pending(u64 cpu, u64 len, VkBuffer* buf, u64* off) {
     return vk_uma_pending_cpu(cpu, len) && bind(cpu, len, 1, buf, off);
 }
+u64 vk_uma_import_part(u64 cpu, u64 len, int* held) {
+    *held = 0;
+    if (!vk_uma() || !len || g_uma.nchunk) return 0; /* placed memory isn't split here */
+    drop_dead();
+    u32 i = imp_find(cpu);
+    if (i < g_uma.nimp && g_uma.imp[i].cpu <= cpu) {
+        u64 end = g_uma.imp[i].cpu + g_uma.imp[i].size;
+        *held = 1;
+        return end - cpu < len ? end - cpu : len;
+    }
+    return i < g_uma.nimp && g_uma.imp[i].cpu - cpu < len ? g_uma.imp[i].cpu - cpu : len;
+}
+/* The GPU writes guest memory [cpu, cpu + len) where it is, from a program of the runtime's own recorded next
+   (buffer.c's write-back of a logged result, between barriers of the caller's before and after it, as
+   vk_uma_publish's copy): an import holding it, made if there is none and the driver takes the pages, as vk_uma_write
+   binds a shader's. Asked twice: a full table lets its least recently used import go and makes none (imp_get), and
+   the caller would make the part GPU-owned instead, its pages trapped and in the alias pool for good */
+int vk_uma_gpu_write(u64 cpu, u64 len, VkBuffer* buf, u64* off) {
+    return vk_uma() && len && (bind(cpu, len, 4, buf, off) || bind(cpu, len, 4, buf, off));
+}
+/* that write recorded: pending until its submit is done, as a shader's in place (out_add), and the caller's barrier
+   after it orders what reads or writes the bytes next (order) */
+void vk_uma_gpu_wrote(u64 cpu, u64 len) {
+    out_add(0, cpu, len);
+    g_uma.barrier_no += 2;
+    g_uma.barriers += 2;
+}
 /* the pages of [cpu, cpu + len) as read in place by the submit being recorded: once a submit for each range, as draws
    bind the same ranges again and again */
 static void hz_mark(u64 cpu, u64 len) {

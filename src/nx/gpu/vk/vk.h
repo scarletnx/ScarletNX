@@ -317,6 +317,12 @@ int vk_uma_copy_pending(u64 cpu, u64 len, VkBuffer* buf, u64* off);
    (vk_own_publish). 0 elsewhere: then it is published GPU-owned, as without UMA. vk_lock held */
 int vk_uma_publish(u64 cpu, u64 len, VkBuffer src, u64 off);
 int vk_uma_held(u64 cpu, u64 len); /* one import holds guest memory [cpu, cpu + len) now (vk_lock held) */
+/* the first part of guest memory [cpu, cpu + len): up to where the import holding cpu ends (*held 1), or up to where
+   the next import begins when none holds cpu (*held 0). 0 where it can't tell (no unified memory, placed memory).
+   vk_lock held */
+u64 vk_uma_import_part(u64 cpu, u64 len, int* held);
+int vk_uma_gpu_write(u64 cpu, u64 len, VkBuffer* buf, u64* off);
+void vk_uma_gpu_wrote(u64 cpu, u64 len);
 /* placed maps (uma.c): whether the device can map the heap's windows as GPU memory where they are; turning it on
    (returning what it was), which takes the windows the heap and physical memory commit whole from then on; and
    whether one chunk of it holds [cpu, cpu + len) (vk_lock held) */
@@ -1323,6 +1329,11 @@ typedef void (*VkRunFn)(void* user, u32 from, u32 to);
 /* the bytes part of l logs for a binding of size bytes, once its work is done: fn gets each run, in order, runs that
    meet joined. The windows that were written */
 u32 vk_wlog_runs(VkWriteLog* l, u32 part, u32 size, VkRunFn fn, void* user);
+/* the same bytes of [from, to) of the binding written on the GPU, in the command buffer being recorded: from src, where
+   the work wrote the binding from src_off on, into dst, which holds the binding's byte from at dst_off
+   (wlog_merge.comp), every other byte of dst kept. from, to, src_off and dst_off are multiples of 4; the caller orders
+   it after that work and before what uses dst. 0 when it can't be (no descriptor set left), with nothing recorded */
+int vk_wlog_merge(VkWriteLog* l, u32 part, u32 from, u32 to, VkBuffer src, u64 src_off, VkBuffer dst, u64 dst_off);
 void vk_wlog_stats(u64* logs, u64* bytes, u64* in_use, u64* windows);
 void vk_wlog_trim(void); /* the logs the pool hasn't given out for a while go */
 /* The GPU mirror of guest memory (mirror.c): whether it is on, its buffer and its mask (a bit a byte) */
