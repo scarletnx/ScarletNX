@@ -89,7 +89,9 @@ int main(void) {
            low.result ? "refused" : "done", snx_thread_priority_low_name(), plain.after);
     CHECK(priority_now() == main_before, "main is at %d after a thread lowered itself, at %d before", priority_now(),
           main_before);
-    CHECK(plain.after == main_before, "a thread started after runs at %d, main at %d", plain.after, main_before);
+    /* a new thread's own start, not main's: macOS starts one at 21 beside a main thread at 17 */
+    CHECK(plain.after == low.before, "a thread started after runs at %d, the lowered one started at %d", plain.after,
+          low.before);
 #if defined(__linux__)
     {
         /* SNX_THREAD_LOW_NICE above main's, 19 at most; a test run at nice 19 has nowhere lower */
