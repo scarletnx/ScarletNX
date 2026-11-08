@@ -635,6 +635,7 @@ void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps) {
     float box[4], x0, y0, w, h, r[4];
     int c, scale;
     char text[24];
+    const SnxSkinControl* k;
     if (vpad_showcase_box(safe, box) < 0) return;
     x0 = box[0];
     y0 = box[1];
@@ -649,7 +650,18 @@ void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps) {
         r[3] = side * (float)sp[3] / big;
         r[0] = x0 + SHOWCASE[c][0] * w - r[2] / 2;
         r[1] = y0 + SHOWCASE[c][1] * h - r[3] / 2;
-        if (INFO[c].kind == KIND_DPAD)
+        if ((k = vpad_skin(c))) { /* the skin the touch controls wear, as they draw it */
+            u32 held = g_show_buttons >> INFO[c].bit & 1 ? SNX_SKIN_LIT_HELD : 0;
+            if (INFO[c].kind == KIND_DPAD)
+                skin_draw(l, k, r, ((u32)g_show_buttons & (DPAD_LEFT | DPAD_UP | DPAD_RIGHT | DPAD_DOWN)) | held, 0, 0,
+                          alpha);
+            else if (INFO[c].kind == KIND_STICK) {
+                int s = stick_of(c);
+                held = g_show_buttons >> INFO[s ? SNX_VPAD_R3 : SNX_VPAD_L3].bit & 1 ? SNX_SKIN_LIT_HELD : 0;
+                skin_draw(l, k, r, held, g_show_axis[s][0], g_show_axis[s][1], alpha);
+            } else
+                skin_draw(l, k, r, held, 0, 0, alpha);
+        } else if (INFO[c].kind == KIND_DPAD)
             dpad_draw(l, r, alpha, (u32)g_show_buttons & (DPAD_LEFT | DPAD_UP | DPAD_RIGHT | DPAD_DOWN));
         else if (INFO[c].kind == KIND_STICK) {
             int s = stick_of(c);

@@ -511,6 +511,20 @@ static void test_shipped(const char* path) {
             if (k->piece[i].lit) assert(k->piece[i].pu != k->piece[i].u || k->piece[i].pv != k->piece[i].v);
     }
     assert(!said("left out"));
+    /* the showcase wears the skin too, not the built-in look */
+    {
+        const i32 still[4] = {0, 0, 0, 0};
+        const SnxSkinControl* a = vpad_skin(SNX_VPAD_A);
+        g_settings.showcase = 1;
+        vpad_showcase_input(0, still);
+        g_test.list.q = g_test.quads;
+        g_test.list.n = 0;
+        g_test.list.max = 512;
+        vpad_showcase_draw(&g_test.list, safe, -1);
+        g_settings.showcase = 0;
+        assert(drawn(a->piece[0].u, a->piece[0].v));
+        assert(!drawn(snx_controls_sprites[SNX_SPRITE_A][0], snx_controls_sprites[SNX_SPRITE_A][1]));
+    }
     vpad_skin_set(NULL);
 }
 
