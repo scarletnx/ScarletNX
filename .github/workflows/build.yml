@@ -23,10 +23,12 @@ on:
       - 'docs/user/gui.md'
   workflow_dispatch:
 
-# Jobs only read the repository. A push to main that builds everywhere becomes a nightly, and a pull request's run a
-# prerelease, in scarletnx/nightly: publish.yml does it once this workflow ends
+# Jobs only read the repository, and a pull request's failed job cancels the rest of its run (cancel-run). A push to
+# main that builds everywhere becomes a nightly, and a pull request's run a prerelease, in scarletnx/nightly:
+# publish.yml does it once this workflow ends
 permissions:
   contents: read
+  actions: write
 
 # a push to a pull request cancels that pull request's build still running, and a push to main main's: only the newest
 # commit is built, and publish.yml publishes the newest that built everywhere. A tag and a run by hand build every time
@@ -216,6 +218,20 @@ jobs:
         with:
           name: ScarletNX-linux-${{ matrix.arch }}-${{ steps.commit.outputs.short }}-install
           path: stage
+      # a pull request's run stops at its first failed job: the jobs done keep their results, and the others are
+      # cancelled instead of building for nothing. Not in a job that may fail (continue-on-error), and a fork's token
+      # can't cancel, so a fork's run goes on
+      - &cancel-run
+        name: Cancel the rest of the run
+        if: >-
+          failure() && github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name == github.repository
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json'
+          "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel"
 
   # The cross jobs (appimage-cross) can't run qemu-aarch64 beside a host binary that qemu-user runs: the QEMU side of
   # the A64 differential is recorded here, once, and handed over as an artifact. A job of its own, so the cross jobs
@@ -289,6 +305,7 @@ jobs:
         with:
           name: ScarletNX-llvm-qemu-reference-${{ steps.commit.outputs.short }}
           path: build/llvm_qemu_reference.bin
+      - *cancel-run
 
   # x86-64 with ASan and UBSan (SNX_TEST_SANITIZERS): every test, and the programs and libraries of ours it runs or
   # links, built with them (runtime_architecture names any left out), so our code reading memory after it was freed or
@@ -382,6 +399,7 @@ jobs:
           key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Test under the sanitizers
         run: ctest --test-dir build/sanitizers --output-on-failure --parallel 4
+      - *cancel-run
 
   appimage:
     name: Linux AppImage (${{ matrix.arch }})
@@ -551,6 +569,7 @@ jobs:
           path: |
             dist/*.AppImage*
             dist/appinfo
+      - *cancel-run
 
   # The AppImages of hosts no GitHub runner is: cross-built on x86-64 with their linux-<arch>-cross preset
   # (cmake/cross.cmake) against the system root of pkgforge's Arch image of the architecture, then bundled in a
@@ -1135,6 +1154,7 @@ jobs:
           name: ScarletNX-windows-x86_64-${{ steps.commit.outputs.short }}
           path: stage
           if-no-files-found: error
+      - *cancel-run
 
   # The Android app (docs/hosts/android-app.md), both ABIs on one runner, with the runner's Gradle and JDK. LLVM's libraries for an
   # ABI take most of an hour, so they are kept until the script that builds them changes (both cold: about two hours).
@@ -1328,6 +1348,7 @@ jobs:
       # Java and the icon there. Last, so a test that fails fails the job and still leaves the APKs to try
       - name: Test the app's Java
         run: JAVA_HOME=$JAVA_HOME_21_X64 gradle -p dist/android testDebugUnitTest -Pscarletnx.stage="$PWD/stage"
+      - *cancel-run
 
   # macOS and iOS (docs/hosts/apple.md), both on one Apple silicon runner with Xcode's Clang and SDKs; FFmpeg, OpenSSL and
   # SDL3 are built from the pinned sources as everywhere. Until both have built green once, a failure here does not
@@ -1551,6 +1572,7 @@ jobs:
         run: |
           chmod +x dist/*.AppImage
           scripts/check-package.sh dist/*.AppImage
+      - *cancel-run
 
   # The cross-built AppImage as installed, as the appimage-check job runs its own: qemu's binfmt handlers run it, and
   # everything it starts, as a machine of that architecture would
@@ -1661,6 +1683,7 @@ jobs:
           path: package
       - name: Run the zip's scarletnx.exe as a user would
         run: bash source/scripts/check-package.sh package/bin/scarletnx.exe
+      - *cancel-run
 
   # edenprobe's probes (docs/dev/edenprobe.md), a release of scarletnx/edenprobe pinned by its sha256, recompiled by the
   # Linux install and run on lavapipe: a case of tests/edenprobe/linux-x86_64.txt, the ones that passed before, that no
@@ -1762,3 +1785,4 @@ jobs:
             !edenprobe/work
             edenprobe-main
             !edenprobe-main/work
+      - *cancel-run
