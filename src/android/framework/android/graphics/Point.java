@@ -18,4 +18,9 @@ public class Point implements android.os.Parcelable {
     @Override public String toString() { return "Point(" + x + ", " + y + ")"; }
     @Override public int describeContents() { return 0; }
     @Override public void writeToParcel(android.os.Parcel out, int flags) { out.writeInt(x); out.writeInt(y); }
+    public void readFromParcel(android.os.Parcel in) { x = in.readInt(); y = in.readInt(); }
+    public static final android.os.Parcelable.Creator<Point> CREATOR = new android.os.Parcelable.Creator<>() {
+        @Override public Point createFromParcel(android.os.Parcel in) { Point p = new Point(); p.readFromParcel(in); return p; }
+        @Override public Point[] newArray(int size) { return new Point[size]; }
+    };
 }

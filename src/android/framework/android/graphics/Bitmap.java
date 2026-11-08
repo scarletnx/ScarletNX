@@ -263,4 +263,8 @@ public final class Bitmap implements android.os.Parcelable {
     }
     @Override public int describeContents() { return 0; }
     @Override public void writeToParcel(android.os.Parcel p, int flags) { p.writeValue(this); }
+    public static final android.os.Parcelable.Creator<Bitmap> CREATOR = new android.os.Parcelable.Creator<>() {
+        @Override public Bitmap createFromParcel(android.os.Parcel in) { return (Bitmap) in.readValue(null); }
+        @Override public Bitmap[] newArray(int size) { return new Bitmap[size]; }
+    };
 }

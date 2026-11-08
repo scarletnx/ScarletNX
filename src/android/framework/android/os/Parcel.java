@@ -126,6 +126,7 @@ public final class Parcel {
     public void writeMap(Map<?, ?> m) { writeObject(m != null ? new HashMap<>(m) : null); }
     public void writeList(List<?> l) { writeObject(l != null ? new ArrayList<>(l) : null); }
     public void writeValue(Object v) { writeObject(v); }
+    public void writeSparseArray(android.util.SparseArray<?> a) { writeObject(a != null ? a.clone() : null); }
     public void writeTypedObject(Parcelable p, int flags) { writeObject(p); }
     public void writeParcelable(Parcelable p, int flags) { writeObject(p); }
     public void writeTypedList(List<? extends Parcelable> l) { writeList(l); }
@@ -232,6 +233,11 @@ public final class Parcel {
         android.util.SparseBooleanArray a = new android.util.SparseBooleanArray(n);
         for (int i = 0; i < n; ++i) { int key = readInt(); a.append(key, readByte() == 1); }
         return a;
+    }
+    public void readLongArray(long[] dest) {
+        long[] a = createLongArray();
+        if (a == null || a.length != dest.length) throw new RuntimeException("bad array lengths");
+        System.arraycopy(a, 0, dest, 0, a.length);
     }
     public void readIntArray(int[] dest) {
         int[] a = createIntArray();
