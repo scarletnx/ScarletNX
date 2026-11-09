@@ -1120,8 +1120,8 @@ static Surf* capture_sample(Surf* texture) {
 
 /* What a texture handle resolved to, kept while nothing it came from can have changed: the pools' addresses, the
    surface table at the texture's address (vk_surf_epoch_at: tex_from_tic looks nowhere else, and a texture's drawn
-   targets are taken in by vk_tex_recheck at every hit), the CPU's writes the stream can see (vk_ww_epoch), the
-   results pending over guest memory (none was added: g_pend_any.adds) and the GPU's writes to the two headers. With
+   targets are taken in by vk_tex_recheck at every hit), the CPU's writes to the two headers (tex_memo_unwritten), the
+   results pending over what it read (tex_memo_unpended) and the GPU's writes to the two headers. With
    the whole table's epoch, a texture made anywhere dropped them all: 8% of one game's lookups. A draw resolved each
    of its textures again, reading both headers and finding the texture by them: a tenth of the GPU thread in one
    game, for the same few hundred handles every draw. A kept texture is still checked against its memory
@@ -1135,12 +1135,39 @@ typedef struct {
     u64 tic_base, tsc_base, gw, adds;
     u64 t_gva; /* t's address when kept: its bucket of the surface table tells whether t is still there */
     u32 handle, surf_epoch, ww_epoch;
+    u32 wseen; /* vk_ww_now() before the headers were read */
     u32 tic[8], tsc[8];
     Surf* t;
     int rt; /* t is the render target itself, read whole */
 } TexMemo;
 #define TEX_MEMO 4096
 static TexMemo g_tex_memo[TEX_MEMO];
+/* The CPU's writes since m was kept, when the stream's epoch moved: an epoch moves at each submission and each wait
+   that ends, and the CPU writes somewhere in nearly every one. What a handle resolves to comes from its two headers
+   alone, with the rest checked at each hit as tex_from_tic checks it (vk_tex_recheck for a texture's texels, the read
+   check and the defined contents for a render target), so a memo whose headers weren't written stays (1), with the
+   epoch and the baseline brought up to now. In one game's street the epoch dropped 39% of the lookups */
+static int tex_memo_unwritten(TexMemo* m, u64 tic_at, u64 tsc_at, u32 epoch, u32 now) {
+    if (m->ww_epoch == epoch) return 1;
+    if (vk_written_since(gmem_host(tic_at, 32), 32, m->wseen) != 0 ||
+        vk_written_since(gmem_host(tsc_at, 32), 32, m->wseen) != 0)
+        return 0;
+    m->ww_epoch = epoch;
+    m->wseen = now;
+    return 1;
+}
+/* The results added since m was kept, when any was added anywhere: what m read is its two headers and its texture's
+   memory, and while no pending result covers those, it reads them the same (1), with the count brought up to now. The
+   pages pending results cover are counted by GPU page (pend_hit), so this is a few lookups. Dispatches add results all
+   through a frame, and the count dropped 37% of one game's lookups once the epoch no longer did */
+static int tex_memo_unpended(TexMemo* m, u64 tic_at, u64 tsc_at, u64 adds) {
+    if (m->adds == adds) return 1;
+    if (pend_hit(&g_pend_any, tic_at, 32) || pend_hit(&g_pend_any, tsc_at, 32) ||
+        pend_hit(&g_pend_any, m->t->gva, vk_surf_guest_size(m->t)))
+        return 0;
+    m->adds = adds;
+    return 1;
+}
 static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     const DsBindings* b = &ds->bind;
     if (b->smp_mode) {
@@ -1152,7 +1179,8 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     u64 tic_at = tic_base + (handle & 0xFFFFF) * 32ull, tsc_at = tsc_base + ((handle >> 20) & 0xFFF) * 32ull;
     TexMemo* m = &g_tex_memo[(handle * 0x9E3779B1u) >> 20];
     u64 gw = gpu_mem_generation();
-    u32 epoch = vk_ww_epoch(); /* before the headers are read */
+    u32 epoch = vk_ww_epoch(), now = vk_ww_now(); /* before the headers are read */
+    u64 adds = __atomic_load_n(&g_pend_any.adds, __ATOMIC_RELAXED);
     x->handle = handle;
     x->have = 1;
     /* an index past its pool's limit names no header: no texture, or the
@@ -1175,8 +1203,8 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
         return;
     }
     if (m->t && m->ds == ds && m->handle == handle && m->tic_base == tic_base && m->tsc_base == tsc_base &&
-        m->surf_epoch == vk_surf_epoch_at(m->t_gva) && m->ww_epoch == epoch && !g_gfx_img_any &&
-        m->adds == __atomic_load_n(&g_pend_any.adds, __ATOMIC_RELAXED) &&
+        m->surf_epoch == vk_surf_epoch_at(m->t_gva) && tex_memo_unwritten(m, tic_at, tsc_at, epoch, now) &&
+        !g_gfx_img_any && tex_memo_unpended(m, tic_at, tsc_at, adds) &&
         (m->gw == gw || (!gpu_mem_dirty_since(m->gw, tic_at, 32) && !gpu_mem_dirty_since(m->gw, tsc_at, 32)))) {
         m->gw = gw;
         memcpy(x->tic, m->tic, sizeof x->tic);
@@ -1206,10 +1234,11 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
         m->tic_base = tic_base;
         m->tsc_base = tsc_base;
         m->gw = gpu_mem_generation();
-        m->adds = __atomic_load_n(&g_pend_any.adds, __ATOMIC_RELAXED);
+        m->adds = adds;
         m->t_gva = x->t->gva;
         m->surf_epoch = vk_surf_epoch_at(x->t->gva);
         m->ww_epoch = epoch;
+        m->wseen = now;
         memcpy(m->tic, x->tic, sizeof m->tic);
         memcpy(m->tsc, x->tsc, sizeof m->tsc);
         m->t = x->t;
