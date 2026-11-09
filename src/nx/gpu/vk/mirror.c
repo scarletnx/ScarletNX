@@ -599,6 +599,33 @@ void vk_mirror_fold(VkCommandBuffer cb, VkBuffer log, u64 log_size, const VkMirF
     g_mir_gen++; /* a program wrote the mirror: the next read of it in place takes a barrier (vk_mirror_write_gen) */
 }
 
+/* the presents a CPU touch keeps a page's results landing with the submits after it, as compute.c's reads do */
+#define MIR_HOT_PRESENTS 1200
+/* records into cb the harvest of ranges r (n, joined and sorted, which it copies), with entries of entry words, as a
+   batch of submit's */
+static void harvest_batch(VkCommandBuffer cb, u64 submit, const MirRange* r, u32 n, u32 entry) {
+    MirRange* kept = malloc((size_t)n * sizeof *kept);
+    if (!kept) fatal("Out of memory recording the GPU mirror's writes");
+    memcpy(kept, r, (size_t)n * sizeof *kept);
+    u64 pages = 0;
+    for (u32 i = 0; i < n; i++) pages += r[i].end - r[i].first;
+    u32 room = pages < g_mir_room ? (u32)pages : g_mir_room;
+    VkBuffer out;
+    u64 at;
+    VmaAllocation mem;
+    u32* p = (u32*)(void*)vk_stage_back(out_bytes(room, pages, entry), &out, &at, &mem);
+    if (!p || !harvest_record(cb, kept, n, out, at, out_bytes(room, pages, entry), room, entry, VK_NULL_HANDLE))
+        fatal("vulkan: no memory to land the GPU mirror's writes in");
+    if (g_mir_nbatch == g_mir_capbatch) {
+        u32 cap = g_mir_capbatch ? g_mir_capbatch * 2 : 16;
+        MirBatch* grown = realloc(g_mir_batch, (size_t)cap * sizeof *grown);
+        if (!grown) fatal("Out of memory recording the GPU mirror's writes");
+        g_mir_batch = grown;
+        g_mir_capbatch = cap;
+    }
+    g_mir_batch[g_mir_nbatch++] = (MirBatch){submit, kept, n, room, entry, pages, p, mem};
+    g_mir_stats.harvests++;
+}
 void vk_mirror_harvest(VkCommandBuffer cb, u64 submit) {
     if (!g_mir_nnow) return;
     /* each range written gave its pages a count (vk_mirror_wrote), and the batch takes one away from the pages of each
@@ -615,28 +642,40 @@ void vk_mirror_harvest(VkCommandBuffer cb, u64 submit) {
         for (u32 i = 0; i < n; i++) pend_add_pages(&g_mir_pend, g_mir_now[i].first, g_mir_now[i].end - 1, 1);
         for (u32 i = 0; i < n0; i++) pend_add_pages(&g_mir_pend, r[i].first, r[i].end - 1, -1);
     }
-    memcpy(r, g_mir_now, (size_t)n * sizeof *r);
-    u64 pages = 0;
-    for (u32 i = 0; i < n; i++) pages += g_mir_now[i].end - g_mir_now[i].first;
-    u32 room = pages < g_mir_room ? (u32)pages : g_mir_room;
-    /* where the host traps guest memory, the pages stay GPU-owned in the mirror and only their masks come back */
-    u32 entry = own_traps() ? MIR_ENTRY_PAGE : MIR_ENTRY;
-    VkBuffer out;
-    u64 at;
-    VmaAllocation mem;
-    u32* p = (u32*)(void*)vk_stage_back(out_bytes(room, pages, entry), &out, &at, &mem);
-    if (!p || !harvest_record(cb, g_mir_now, n, out, at, out_bytes(room, pages, entry), room, entry, VK_NULL_HANDLE))
-        fatal("vulkan: no memory to land the GPU mirror's writes in");
-    if (g_mir_nbatch == g_mir_capbatch) {
-        u32 cap = g_mir_capbatch ? g_mir_capbatch * 2 : 16;
-        MirBatch* grown = realloc(g_mir_batch, (size_t)cap * sizeof *grown);
-        if (!grown) fatal("Out of memory recording the GPU mirror's writes");
-        g_mir_batch = grown;
-        g_mir_capbatch = cap;
+    free(r);
+    if (!own_traps()) { /* no traps: every page lands with its bytes once done */
+        harvest_batch(cb, submit, g_mir_now, n, MIR_ENTRY);
+        g_mir_nnow = 0;
+        return;
     }
-    g_mir_batch[g_mir_nbatch++] = (MirBatch){submit, r, n, room, entry, pages, p, mem};
+    /* With traps, a page the CPU touched lately (a landing noted it: vk_own_cpu_read) comes back with its bytes and
+       lands in guest memory once done, so that the CPU's next touch finds it there; the others stay GPU-owned in the
+       mirror and only their masks come back (own_entries). Published again each submit, the pages one game's CPU
+       writes beside its programs' results each frame were landed at its touch, about 180 times a second, each a copy
+       and a wait for the GPU on the thread that touched them */
+    u64 cap = 0; /* a piece for each granule at most */
+    for (u32 i = 0; i < n; i++) cap += (g_mir_now[i].end - g_mir_now[i].first + 15) / 16 + 1;
+    MirRange* hot = malloc((size_t)cap * sizeof *hot);
+    MirRange* cold = malloc((size_t)cap * sizeof *cold);
+    if (!hot || !cold) fatal("Out of memory recording the GPU mirror's writes");
+    u32 nhot = 0, ncold = 0;
+    for (u32 i = 0; i < n; i++)
+        for (u64 a = g_mir_now[i].first, e; a < g_mir_now[i].end; a = e) {
+            e = (a / 16 + 1) * 16; /* a granule of vk_own_cpu_read's, 64 KiB */
+            if (e > g_mir_now[i].end) e = g_mir_now[i].end;
+            int touched = vk_own_cpu_read(a << 12, (e - a) << 12, MIR_HOT_PRESENTS);
+            MirRange* list = touched ? hot : cold;
+            u32* nl = touched ? &nhot : &ncold;
+            if (*nl && list[*nl - 1].end == a)
+                list[*nl - 1].end = e;
+            else
+                list[(*nl)++] = (MirRange){a, e};
+        }
+    if (ncold) harvest_batch(cb, submit, cold, ncold, MIR_ENTRY_PAGE);
+    if (nhot) harvest_batch(cb, submit, hot, nhot, MIR_ENTRY);
+    free(hot);
+    free(cold);
     g_mir_nnow = 0;
-    g_mir_stats.harvests++;
 }
 
 /* entry e of an output, whose bytes are the GPU's: the bytes its mask gives into guest memory and the shadow */
