@@ -4770,9 +4770,12 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (argc > 2 && strstr(argv[argv[1][0] == '-' ? 2 : 1], "0100ABCD12340000")) { /* a game or its update */
-        int r = !strcmp(argv[1], "-r");
+        int r = !strcmp(argv[1], "-r"), args = argc;
+        /* a recompile the queue runs gently (on battery) ends with its half of the threads, which the last one given
+           replaces, as the menu's own line says */
+        if (args > 1 && !strncmp(argv[args - 1], "--aot_threads=", 14)) --args;
         assert(strstr(argv[0], "runtime") && snx_is_file(argv[1 + r]));
-        assert(!strcmp(argv[argc - 2], "--data") && argv[argc - 1][0]);
+        assert(!strcmp(argv[args - 2], "--data") && argv[args - 1][0]);
         puts("ScarletNX - an update");
         return 0;
     }
@@ -4784,9 +4787,10 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (argc > 2 && !strcmp(argv[1], "-r") && strstr(argv[2], "folder game")) { /* R on it: recompiled, not played */
-        int i = 3;
+        int i = 3, args = argc;
+        if (args > 1 && !strncmp(argv[args - 1], "--aot_threads=", 14)) --args; /* the Gentle recompile's half */
         assert(strstr(argv[0], "runtime") && snx_is_file(argv[2]));
-        assert(i + 2 == argc && !strcmp(argv[i], "--data") && argv[i + 1][0]);
+        assert(i + 2 == args && !strcmp(argv[i], "--data") && argv[i + 1][0]);
         puts("Recompiling folder game (1 modules)\nBuilt folder game");
         return 0;
     }
