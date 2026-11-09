@@ -354,7 +354,6 @@ void plat_alias_host_free(u8* p, u64 size) {
 }
 /* no pool, so no mirror: the traps land in place (SNX_PLAT_TRAPS_IN_PLACE, plat_trap_fill) */
 u8* plat_alias_mirror(void) { return NULL; }
-u32 plat_tid(void) { return (u32)GetCurrentThreadId(); }
 
 /* ---------------------------------------------------------------- traps (memory/own.c, docs/GPU_OWNERSHIP.md) */
 /* Traps by protection, as Linux's without userfaultfd's minor faults (plat_posix.c), on the reservation's own pages:
@@ -571,3 +570,226 @@ static void trap_thread(void* arg) {
 }
 void plat_trap_waiting(void (*waiting)(u32 tid)) { __atomic_store_n(&g_trap_told, waiting, __ATOMIC_RELEASE); }
 /* a thread waiting in a trap says where; the system tells nothing else here without a debugger */
+void plat_thread_where(u32 tid, char* out, size_t n) {
+    for (u32 k = 0; tid && k < TRAP_WAITERS; k++)
+        if (__atomic_load_n(&g_trap_waiting[k], __ATOMIC_ACQUIRE) == tid) {
+            snprintf(out, n, "waiting in a trap at %p (pc %p)", g_trap_wait_at[k], g_trap_wait_pc[k]);
+            return;
+        }
+    snprintf(out, n, "?");
+}
+int plat_thread_in_fault(u32 tid) {
+    u32 k;
+    if (!__atomic_load_n(&g_trap_bits, __ATOMIC_ACQUIRE)) return -1; /* no traps here */
+    for (k = 0; k < TRAP_WAITERS; k++)
+        if (__atomic_load_n(&g_trap_waiting[k], __ATOMIC_ACQUIRE) == tid) return 1;
+    return __atomic_load_n(&g_trap_unlisted, __ATOMIC_ACQUIRE) ? -1 : 0; /* it may be one not listed */
+}
+static void module_name(HMODULE m, char* out, int size);
+/* the waiter's code address, stack and access as its handler found them, and the module its code is in: no unwind */
+void plat_dump_fault_thread(u32 tid) {
+    u32 k;
+    for (k = 0; k < TRAP_WAITERS; k++)
+        if (__atomic_load_n(&g_trap_waiting[k], __ATOMIC_ACQUIRE) == tid) {
+            HMODULE m = NULL;
+            char name[MAX_PATH * 3];
+            const void* pc = g_trap_wait_pc[k];
+            WARN("ownership-fault: thread %u host-pc=%p host-sp=%p access-address=%p\n", tid, pc, g_trap_wait_sp[k],
+                 g_trap_wait_at[k]);
+            if (pc && GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                             GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                         (LPCWSTR)pc, &m) &&
+                m) {
+                module_name(m, name, (int)sizeof name);
+                WARN("ownership-fault: pc[0] host=%p module=%s+%llx\n", pc, name,
+                     (unsigned long long)((const u8*)pc - (const u8*)m));
+            } else
+                WARN("ownership-fault: pc[0] host=%p module=?\n", pc);
+            return;
+        }
+    WARN("ownership-fault: host context unavailable for thread %u (not waiting in a trap)\n", tid);
+}
+int plat_trap_init(void (*fault)(u8* p, int write, u32 tid)) {
+    u64 words;
+    u64* bits;
+    u32 k;
+    if (!fault || !g_vm_base || !g_vm_size || __atomic_load_n(&g_trap_bits, __ATOMIC_ACQUIRE)) return -1;
+    words = (g_vm_size / 4096 + 63) / 64;
+    bits = (u64*)VirtualAlloc(NULL, (SIZE_T)(words * 8), MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!bits) return -1;
+    for (k = 0; k < TRAP_RING; k++) g_trap_ring[k].seq = k;
+    g_trap_cb = fault;
+    __atomic_store_n(&g_trap_bits, bits, __ATOMIC_RELEASE);
+    if (plat_thread(trap_thread, NULL, 0)) {
+        __atomic_store_n(&g_trap_bits, NULL, __ATOMIC_RELEASE);
+        VirtualFree(bits, 0, MEM_RELEASE);
+        return -1;
+    }
+    /* first in the chain, ahead of the crash handlers installed at startup (code_fault leaves armed pages alone too) */
+    if (!AddVectoredExceptionHandler(1, trap_fault)) return -1; /* the trap thread waits for nothing */
+    return 0;
+}
+int plat_trap_arm(u8* p, u64 size) {
+    u64 lo, hi, i;
+    DWORD old;
+    if (!trap_pages(p, size, &lo, &hi)) return -1;
+    /* marked first: a fault on a page from the moment it is inaccessible finds it armed */
+    for (i = lo; i < hi; i++) __atomic_fetch_or(&g_trap_bits[i >> 6], 1ull << (i & 63), __ATOMIC_SEQ_CST);
+    return VirtualProtect(p, (SIZE_T)size, PAGE_NOACCESS, &old) ? 0 : -1;
+}
+int plat_trap_fill(u8* p, const void* src, u64 size) {
+    const u8* s = (const u8*)src;
+    u8* end = p + size;
+    /* A page at a time: there is no second view to land through, so a page is open while its bytes go in, and a thread
+       that reaches it then without faulting can find it half written. Opened alone, it is open that way for one page's
+       copy. Opening an inaccessible page takes no TLB shootdown, so each is a plain system call */
+    while (p < end) {
+        u8* lo = (u8*)((uintptr_t)p & ~(uintptr_t)4095);
+        u8* hi = lo + 4096;
+        DWORD old;
+        size_t n;
+        if (!VirtualProtect(lo, 4096, PAGE_READWRITE, &old)) return -1;
+        n = (size_t)((hi < end ? hi : end) - p);
+        memcpy(p, s, n);
+        p += n;
+        s += n;
+    }
+    return 0;
+}
+/* ReadProcessMemory on the process itself: a page it can't read fails the call rather than faulting */
+int plat_vm_read(const void* p, void* dst, u64 size) {
+    SIZE_T got = 0;
+    return ReadProcessMemory(GetCurrentProcess(), p, dst, (SIZE_T)size, &got) && got == (SIZE_T)size ? 0 : -1;
+}
+int plat_trap_continue(u8* p, u64 size) {
+    u64 lo, hi;
+    if (!trap_pages(p, size, &lo, &hi)) return -1;
+    trap_open(lo, hi);
+    return 0;
+}
+void plat_trap_disarm(u8* p, u64 size) {
+    u64 lo, hi;
+    if (trap_pages(p, size, &lo, &hi)) trap_open(lo, hi); /* a page not let go yet: open */
+}
+void plat_freeze(u8* p, u64 size) {
+    (void)p;
+    (void)size;
+}
+void plat_thaw(void) {}
+
+/* ================================================================ environment */
+int plat_setenv(const char* name, const char* value) { return _putenv_s(name, value) ? -1 : 0; }
+
+/* ================================================================ the crash handler */
+static LONG g_crash_reporting;
+static LONG g_shutdown_said;
+static LONG g_filter_said;
+/* the game's code module, [lo, hi): plat_crash_code_module's, read by the first-chance handler on any thread */
+static u8* g_code_lo;
+static u8* g_code_hi;
+
+/* the report, once: it ends the process, so another crashing thread waits for that */
+static void crash_once(EXCEPTION_POINTERS* e) {
+    EXCEPTION_RECORD* r = e->ExceptionRecord;
+    void* fault = NULL;
+    if (InterlockedCompareExchange(&g_crash_reporting, 1, 0)) Sleep(INFINITE);
+    log_crash_mode();
+    if ((r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION || r->ExceptionCode == EXCEPTION_IN_PAGE_ERROR) &&
+        r->NumberParameters >= 2)
+        fault = (void*)r->ExceptionInformation[1];
+    crash_report(r->ExceptionAddress, fault, (int)r->ExceptionCode);
+}
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS* e) {
+    crash_once(e);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+/* The exceptions a crash report is made of; a stack overflow is shutdown_note's, as there is no stack left for one */
+static int crash_code(DWORD code) {
+    return code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR ||
+           code == EXCEPTION_ILLEGAL_INSTRUCTION || code == EXCEPTION_PRIV_INSTRUCTION ||
+           code == EXCEPTION_INT_DIVIDE_BY_ZERO || code == EXCEPTION_INT_OVERFLOW;
+}
+/* A fault in the game's code module is reported before anything else sees it. The unhandled-exception filter alone is
+   not enough: the process has one, the last SetUnhandledExceptionFilter's, and a driver may set its own after ours
+   (Intel's igdumdim64 does, which hid Breakpad's reports). The runtime takes no exception in the game's code on
+   Windows but the traps' (trap_fault, first in the chain), so nothing else would handle one */
+static LONG WINAPI code_fault(EXCEPTION_POINTERS* e) {
+    const EXCEPTION_RECORD* r = e->ExceptionRecord;
+    const u8* pc = (const u8*)r->ExceptionAddress;
+    const u8* lo = __atomic_load_n(&g_code_lo, __ATOMIC_ACQUIRE);
+    const u8* hi = __atomic_load_n(&g_code_hi, __ATOMIC_ACQUIRE);
+    /* an access to memory a trap holds is trap_fault's, wherever this handler sits in the chain */
+    if (r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && r->NumberParameters >= 2 &&
+        trap_armed_at((const void*)r->ExceptionInformation[1]))
+        return EXCEPTION_CONTINUE_SEARCH;
+    if (crash_code(r->ExceptionCode) && pc >= lo && pc < hi) crash_once(e);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+/* a module's file name, as UTF-8 without its folder, into out: "?" when Windows doesn't say */
+static void module_name(HMODULE m, char* out, int size) {
+    wchar_t path[MAX_PATH];
+    const wchar_t* name = path;
+    DWORD n = m ? GetModuleFileNameW(m, path, MAX_PATH) : 0;
+    snprintf(out, (size_t)size, "?");
+    if (!n || n >= MAX_PATH) return;
+    for (DWORD i = 0; i < n; i++)
+        if (path[i] == L'\\' || path[i] == L'/') name = path + i + 1;
+    if (!WideCharToMultiByte(CP_UTF8, 0, name, -1, out, size, NULL, NULL)) snprintf(out, (size_t)size, "?");
+}
+
+void plat_crash_code_module(const void* inside) {
+    HMODULE m = NULL;
+    const IMAGE_DOS_HEADER* dos;
+    const IMAGE_NT_HEADERS* nt;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            (LPCWSTR)inside, &m) ||
+        !m) {
+        WARN("crash: no module holds the game's code at %p (Windows error %lu): a fault in it is reported only while "
+             "the crash filter is the runtime's\n",
+             inside, (unsigned long)GetLastError());
+        return;
+    }
+    if (m == GetModuleHandleW(NULL)) return; /* the code linked into the runtime itself: its faults are the filter's */
+    dos = (const IMAGE_DOS_HEADER*)(const void*)m;
+    nt = (const IMAGE_NT_HEADERS*)(const void*)((const u8*)m + dos->e_lfanew);
+    __atomic_store_n(&g_code_hi, (u8*)m + nt->OptionalHeader.SizeOfImage, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_code_lo, (u8*)m, __ATOMIC_RELEASE);
+}
+
+void plat_crash_handler_check(void) {
+    LPTOP_LEVEL_EXCEPTION_FILTER was = SetUnhandledExceptionFilter(crash_filter);
+    void* at;
+    HMODULE m = NULL;
+    char name[MAX_PATH * 3];
+    if (was == crash_filter || InterlockedExchange(&g_filter_said, 1)) return;
+    memcpy(&at, &was, sizeof at); /* ISO C has no conversion from a function pointer to an object's */
+    if (at)
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCWSTR)at, &m);
+    module_name(m, name, (int)sizeof name);
+    WARN("crash: the process's crash filter was %p (in %s), not the runtime's: the runtime's is back\n", at,
+         at ? name : "none, the system's default");
+}
+
+/* Failures that may never reach the filter (the CRT fails fast on a buffer overrun or heap corruption): say so in the
+   log first, once */
+static LONG WINAPI shutdown_note(EXCEPTION_POINTERS* e) {
+    DWORD code = e->ExceptionRecord->ExceptionCode;
+    if ((code == EXCEPTION_STACK_OVERFLOW || code == 0xC0000409u || code == 0xC0000374u) &&
+        !InterlockedExchange(&g_shutdown_said, 1)) {
+        log_crash_mode();
+        logf_(0, "*** Shutdown: exception %08lx at %p (stack/heap) ***\n", (unsigned long)code,
+              e->ExceptionRecord->ExceptionAddress);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+void plat_install_crash_handler(void) {
+    ULONG g = PLAT_STACK_GUARANTEE; /* the main thread's room for a report after a stack overflow */
+    SetThreadStackGuarantee(&g);
+    AddVectoredExceptionHandler(1, shutdown_note);
+    AddVectoredExceptionHandler(1, code_fault);
+    SetUnhandledExceptionFilter(crash_filter);
+}
