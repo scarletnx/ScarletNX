@@ -229,6 +229,8 @@ flourishes. This rule does not apply to code comments. The Claude files follow A
 
 ## Lessons that cost a session
 
+A bug that took more than one attempt to find gets a line here. So does a debug step that worked.
+
 - The stream library of NVIDIA has tables of 128 entries, one entry for each syncpoint
   (`NvRmChannelNumSyncPoints` is a stub that fails). Each syncpoint comes from `syncpt_alloc()` in
   `hle/services/nvdrv.c`.
