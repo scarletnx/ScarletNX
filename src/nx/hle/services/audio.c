@@ -5,7 +5,9 @@
    src/audio_core/out/audio_out_system.cpp, device/audio_buffers.h, opus/decoder_manager.cpp, opus/decoder.cpp,
    renderer/system.cpp, common/feature_support.h):
    SPDX-FileCopyrightText: Copyright 2025-2026 Eden Emulator Project
-   SPDX-FileCopyrightText: Copyright 2018-2024 yuzu Emulator Project (GPL-2.0-or-later) */
+   SPDX-FileCopyrightText: Copyright 2018-2024 yuzu Emulator Project (GPL-2.0-or-later)
+   The hwopus work buffer sizes, from Ryujinx (src/Ryujinx.Horizon/Sdk/Codec/Detail/HardwareOpusDecoderManager.cs):
+   SPDX-FileCopyrightText: Ryujinx Team and Contributors (MIT) */
 /* audout:u, audren:u's service side, IAudioDevice and hwopus, with the audio clock that paces them: every 5 ms it
    renders a frame of each started renderer (audren.c), signals the renderer event, and plays and releases the
    audio outs' buffers at 48 kHz as the console's DSP does. Games sync against that release (CRI's movie player
@@ -1065,31 +1067,30 @@ static int nn_codec_detail_IHardwareOpusDecoder_DecodeInterleavedForMultiStream(
 }
 
 /* ------------------------------------------------------------ hwopus */
-/* The work buffer sizes of the console's hwopus, from Ryujinx (MIT, Ryujinx.Horizon/Sdk/Codec/Detail/
-   HardwareOpusDecoderManager.cs): libopus's decoder state, then the stream and frame buffers. The ExEx commands (8
-   and 9) decode on the DSP, which keeps the decoder's state, so their size has none. One game sizes its sound memory
-   from command 9: with the state in that size, its sound init failed and its load screen never ended */
-static u32 opus_alloc_size(u32 channels) { return channels * 0x800u + 0x4800u; }
-static u32 opus_decoder_size(u32 channels) {
-    u32 celt = (0x2030u + 120u * 4u) * channels + 21u * 16u + 0x54u; /* the decode buffer and overlap, 21 bands */
-    return (opus_alloc_size(channels) | 0x50u) + 0x2160u + celt;     /* the SILK decoder is 0x2160 bytes */
-}
-static u32 opus_multistream_size(u32 streams, u32 stereo_streams) {
-    u32 mono = (u32)snx_align_up(opus_decoder_size(1) - opus_alloc_size(1), 4);
-    u32 stereo = (u32)snx_align_up(opus_decoder_size(2) - opus_alloc_size(2), 4);
-    return mono * (streams - stereo_streams) + stereo * stereo_streams + 0xb920u;
-}
+/* The work buffer sizes of the console's hwopus, from Ryujinx: libopus's decoder state, then the stream and frame
+   buffers. Ryujinx gives the ExEx commands (8 and 9) no decoder state, as a placeholder: the console's value is not
+   known. One game sizes its sound memory from command 9, and with the state in that size its sound init failed. The
+   runtime decodes in host memory and never uses the work buffer, so the opens don't check its size */
+enum {
+    OPUS_STATE_1CH = 0x9564,        /* the decoder (0x5050), SILK (0x2160) and CELT (0x23b4) for one channel */
+    OPUS_STATE_2CH = 0xbf74,        /* 0x5850, 0x2160 and 0x45c4 for two */
+    OPUS_STREAM_1CH = 0x4564,       /* a multistream decoder's mono stream: the state less its 0x5000 decoder */
+    OPUS_STREAM_2CH = 0x6774,       /* a stereo stream: the state less its 0x5800 decoder */
+    OPUS_MULTISTREAM_BASE = 0xb920, /* the multistream decoder itself */
+};
 /* flags: bit 0 asks for frames of 120 ms, not 40 ms. dsp: an ExEx command */
 static int work_size(u32 rate, u32 channels, u32 streams, u32 stereo_streams, int multi, u32 flags, int dsp,
                      u32* size) {
     if (multi ? !channels || channels > 255 : channels != 1 && channels != 2)
         R_THROW(SNX_RC_CODEC_INVALID_OPUS_CHANNEL_COUNT);
     R_UNLESS(opus_rate_ok(rate), SNX_RC_CODEC_INVALID_OPUS_SAMPLE_RATE);
-    if (multi && (!streams || stereo_streams > streams || streams + stereo_streams > 255))
+    if (multi && (!streams || stereo_streams > streams || streams + stereo_streams > channels))
         R_THROW(SNX_RC_CODEC_INVALID_OPUS_SAMPLE_RATE); /* Eden's answer for a bad stream count */
     u32 frame = (u32)snx_align_up(channels * (flags & 1 ? 5760u : 1920u) / (48000u / rate), 64);
-    u32 state = dsp ? 0 : multi ? opus_multistream_size(streams, stereo_streams) : opus_decoder_size(channels);
-    *size = state + (multi ? (u32)snx_align_up(1500u * streams, 64) : 0x600u) + frame;
+    u32 state = channels == 2 ? OPUS_STATE_2CH : OPUS_STATE_1CH;
+    if (multi)
+        state = OPUS_STREAM_1CH * (streams - stereo_streams) + OPUS_STREAM_2CH * stereo_streams + OPUS_MULTISTREAM_BASE;
+    *size = (dsp ? 0 : state) + (multi ? (u32)snx_align_up(1500u * streams, 64) : 0x600u) + frame;
     R_SUCCEED();
 }
 
@@ -1116,12 +1117,13 @@ static int open_decoder(u32 rate, u32 channels, u32 streams, u32 stereo_streams,
 }
 
 /* a multistream parameter buffer: rate, channels, streams, coupled streams, then flags and a reserved word in the Ex
-   form, then the channel mapping */
-static int multi_params(IpcBuf b, int ex, u32 v[4], const u8** mapping) {
+   form, then the channel mapping. v[4] is the flags, 0 without the Ex form */
+static int multi_params(IpcBuf b, int ex, u32 v[5], const u8** mapping) {
     u64 need = ex ? 0x118 : 0x110;
     if (!b.addr || b.size < need || !guest_ok(b.addr, need, PERM_R)) return 0;
-    memcpy(v, GP(b.addr), 16);
-    snx_le32_array(v, 4);
+    memcpy(v, GP(b.addr), ex ? 20 : 16);
+    snx_le32_array(v, ex ? 5 : 4);
+    if (!ex) v[4] = 0;
     *mapping = GP(b.addr + (ex ? 0x18 : 0x10));
     return 1;
 }
@@ -1141,15 +1143,12 @@ static int nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSizeExEx(
     (void)self;
     return work_size(params->sample_rate, params->channel_count, 1, 0, 0, params->flags, 1, size);
 }
-/* parameters too short to read: 64 KiB */
+/* parameters too short to read: the error of the opens */
 static int multi_size(IpcBuf params, int ex, int dsp, u32* size) {
-    u32 v[4];
+    u32 v[5];
     const u8* mapping;
-    if (!multi_params(params, ex, v, &mapping)) {
-        *size = 0x8000u + 0x8000u;
-        R_SUCCEED();
-    }
-    return work_size(v[0], v[1], v[2], v[3], 1, ex ? snx_ld_le32(GP(params.addr + 0x10)) : 0, dsp, size);
+    R_UNLESS(multi_params(params, ex, v, &mapping), SNX_RC_CODEC_OUT_OF_OPUS_DECODERS);
+    return work_size(v[0], v[1], v[2], v[3], 1, v[4], dsp, size);
 }
 static int nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSizeForMultiStream(SvcObj* self, IpcBuf params,
                                                                                       u32* size) {
@@ -1181,7 +1180,7 @@ static int nn_codec_detail_IHardwareOpusDecoderManager_OpenHardwareOpusDecoderEx
     return open_decoder(params->sample_rate, params->channel_count, 1, params->channel_count - 1, NULL, decoder);
 }
 static int open_multi(IpcBuf params, int ex, SvcObj** decoder) {
-    u32 v[4];
+    u32 v[5];
     const u8* mapping;
     R_UNLESS(multi_params(params, ex, v, &mapping), SNX_RC_CODEC_OUT_OF_OPUS_DECODERS);
     return open_decoder(v[0], v[1], v[2], v[3], mapping, decoder);

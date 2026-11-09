@@ -804,7 +804,7 @@ static void test_hwopus(void) {
     IpcCtx c = request(1, le32s(params, 2), sizeof params);
     CHECK(manager->dispatch(manager, &c) == 0 && c.out_size == 4 && reply32(&c, 0) == 0xd474);
     /* the console's sizes (Ryujinx's): the decoder state, then the stream and frame buffers. Parameters too short to
-       read are 64 KiB */
+       read get the error of the opens */
     u32 multi[4] = {48000, 6, 4, 2}, size = 0;
     memset(GP(0x3000), 0, 0x110);
     memcpy(GP(0x3000), multi, sizeof multi);
@@ -814,10 +814,10 @@ static void test_hwopus(void) {
           size == 0x25750);
     /* ExEx (9) decodes on the DSP: no decoder state. One game's sound init takes these two sizes, and fails with the
        state in them */
-    u32 dsp[2][6] = {{48000, 2, 2, 0, 0, 0}, {48000, 2, 1, 1, 0, 0}};
+    u32 exex[2][6] = {{48000, 2, 2, 0, 0, 0}, {48000, 2, 1, 1, 0, 0}};
     for (int i = 0; i < 2; i++) {
         memset(GP(0x3000), 0, 0x118);
-        memcpy(GP(0x3000), dsp[i], sizeof dsp[i]);
+        memcpy(GP(0x3000), exex[i], sizeof exex[i]);
         snx_le32_array(GP(0x3000), 6);
         CHECK(nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSizeForMultiStreamExEx(
                   NULL, buffer(0x3000, 0x118), &size) == 0 &&
@@ -827,8 +827,24 @@ static void test_hwopus(void) {
     CHECK(nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSizeExEx(NULL, &large, &size) == 0 &&
           size == 0x3300);
     CHECK(nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSizeForMultiStream(NULL, buffer(0x3000, 0x10),
-                                                                                     &size) == 0 &&
-          size == 0x10000);
+                                                                                     &size) == RC(111, 385));
+    /* Ex (7) reads the flags at 0x10: frames of 120 ms */
+    u32 ex[6] = {48000, 2, 1, 1, 1, 0};
+    memset(GP(0x3000), 0, 0x118);
+    memcpy(GP(0x3000), ex, sizeof ex);
+    snx_le32_array(GP(0x3000), 6);
+    CHECK(nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSizeForMultiStreamEx(NULL, buffer(0x3000, 0x118),
+                                                                                       &size) == 0 &&
+          size == 0x15394);
+    /* more than the channels in streams: refused */
+    u32 wide[4] = {48000, 2, 2, 1};
+    memcpy(GP(0x3000), wide, sizeof wide);
+    snx_le32_array(GP(0x3000), 4);
+    CHECK(nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSizeForMultiStream(NULL, buffer(0x3000, 0x110),
+                                                                                     &size) != 0);
+    /* 24 kHz: half the frame */
+    nn_codec_detail_HardwareOpusDecoderParameterInternal mono24 = {24000, 1};
+    CHECK(nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSize(NULL, &mono24, &size) == 0 && size == 0x9f24);
     unsigned objects = test_objects;
     SvcObj* decoder;
     CHECK(open_opus(manager, 48000, 3, &decoder) == RC(111, 385));
