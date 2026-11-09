@@ -451,13 +451,21 @@ bool vita_render_init(VitaProcess* p) {
         ok = vkCreateBuffer(v->device, &bi, NULL, &r->staging[s].buffer) == VK_SUCCESS;
         VkMemoryRequirements req;
         if (ok) vkGetBufferMemoryRequirements(v->device, r->staging[s].buffer, &req);
-        VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                                   .allocationSize = ok ? req.size : 0,
-                                   .memoryTypeIndex = ok ? vita_vk_memory_type(req.memoryTypeBits,
-                                                                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                                                                   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-                                                         : 0};
-        ok = ok && vkAllocateMemory(v->device, &ai, NULL, &r->staging[s].memory) == VK_SUCCESS &&
+        /* the shaders read their uniforms from here at each draw: in the device's own memory when the host can write
+           it (a discrete device's BAR window), so the GPU reads them at its memory's speed and not across the bus */
+        static const VkMemoryPropertyFlags wanted[2] = {
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
+        for (unsigned w = 0; ok && w < 2 && !r->staging[s].memory; ++w) {
+            VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                       .allocationSize = req.size,
+                                       .memoryTypeIndex = vita_vk_memory_type(req.memoryTypeBits, wanted[w])};
+            VkDeviceMemory memory = VK_NULL_HANDLE;
+            if (ai.memoryTypeIndex != UINT32_MAX && vkAllocateMemory(v->device, &ai, NULL, &memory) == VK_SUCCESS)
+                r->staging[s].memory = memory;
+        }
+        ok = ok && r->staging[s].memory &&
              vkBindBufferMemory(v->device, r->staging[s].buffer, r->staging[s].memory, 0) == VK_SUCCESS &&
              vkMapMemory(v->device, r->staging[s].memory, 0, STAGING, 0, (void**)&r->staging[s].map) == VK_SUCCESS;
     }
