@@ -441,12 +441,15 @@ static u32 round_sum(Ctx* c, u32 mode, u32 p, u32 q) {
 }
 /* FADD: x + y in mode */
 static u32 float_add(Ctx* c, u32 mode, u32 x, u32 y) {
-    if (mode == 0) return nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_ADD, c->t_f32, x, y));
+    /* A directed mode rounds through doubles, which a device without shaderFloat64 cannot run: it takes the round to
+       nearest the console's own FADD gives, and the shader still runs (its program is not refused) */
+    if (mode == 0 || !g_shader_float64) return nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_ADD, c->t_f32, x, y));
     return round_sum(c, mode, widen(c, x), widen(c, y));
 }
 /* FMUL: x * y * 2^(scale - 4) in mode. The product of two floats is exact in a double */
 static u32 float_mul(Ctx* c, u32 mode, u32 scale, u32 x, u32 y) {
-    if (mode == 0 && scale == 4) return nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, x, y));
+    if ((mode == 0 && scale == 4) || !g_shader_float64)
+        return nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, x, y));
     u32 f64 = f64_type(c);
     u32 d = nocontract(c, op2(c, SPV_OP_F_MUL, f64, widen(c, x), widen(c, y)));
     if (scale != 4) {
@@ -458,7 +461,8 @@ static u32 float_mul(Ctx* c, u32 mode, u32 scale, u32 x, u32 y) {
 /* FFMA: x * y + z in mode. To nearest, a float FMA, as spirv_translate.c writes it. A directed mode rounds the
    exact sum of the product (exact in a double) and z */
 static u32 float_fma(Ctx* c, u32 mode, u32 x, u32 y, u32 z) {
-    if (mode == 0) return spv_emit_glsl_ternary(&c->e, c->t_f32, c->glsl, SPV_GLSL_FMA, x, y, z);
+    if (mode == 0 || !g_shader_float64)
+        return spv_emit_glsl_ternary(&c->e, c->t_f32, c->glsl, SPV_GLSL_FMA, x, y, z);
     u32 product = nocontract(c, op2(c, SPV_OP_F_MUL, f64_type(c), widen(c, x), widen(c, y)));
     return round_sum(c, mode, product, widen(c, z));
 }

@@ -137,6 +137,9 @@ int g_shader_geometry = 1;
 int g_shader_geometry_streams = 1;
 int g_shader_geometry_streams_lines_triangles = 1;
 int g_shader_float16 = 1;
+/* whether the device has shaderFloat64: the translations that keep a rounding exact with doubles keep it in floats
+   without, and the programs still run (sm86_translate.c's float_add) */
+int g_shader_float64 = 1;
 int g_shader_resource_min_lod = 1;
 int g_shader_dynamic_texture_offsets;
 int g_shader_half_rounding;

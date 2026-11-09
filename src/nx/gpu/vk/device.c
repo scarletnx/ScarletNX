@@ -706,6 +706,7 @@ static int create_device(void) {
     WANT(shaderClipDistance);
     WANT(shaderCullDistance);
     WANT(shaderFloat64);
+    g_shader_float64 = want->shaderFloat64 != 0;
     WANT(shaderInt64);
     WANT(shaderInt16);
     WANT(geometryShader);

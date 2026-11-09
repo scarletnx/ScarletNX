@@ -2400,6 +2400,57 @@ static void test_shading_rate(const char* dir) {
     (void)dir;
 }
 
+
+/* Whether a module declares Capability Float64 (OpCapability, 17, with 10): what a device without shaderFloat64 refuses
+   whole, so a program that carries it is a program that draws nothing there */
+static int f64_capability(const u32* spv, size_t n) {
+    size_t at;
+    for (at = 5; at + 1 < n && (spv[at] & 0xffffu) == 17; at += spv[at] >> 16)
+        if ((spv[at] >> 16) == 2 && spv[at + 1] == 10) return 1;
+    return 0;
+}
+/* FADD with a directed rounding mode (FRndMode 1, toward -inf) rounds through doubles, which no Metal device can run:
+   the module declared Float64, the device refused it, and every draw whose fragment program took that path was
+   skipped. Where the device has no shaderFloat64 the translation takes the round to nearest instead, and the module
+   declares no Float64, so the program runs. No word here comes from a game */
+static void test_float64_fallback(const char* dir) {
+    u8 code[16 * 8] = {0};
+    u32 n = 0, fsph[32] = {0};
+    ShaderInfo si = {0};
+    size_t count = 0;
+    int had = g_shader_float64;
+    u32* spv;
+    put(code, n++, mov_imm(0, 0x3f800000u)); /* 1.0 */
+    Word x = alu(0x021, 1, 1, 0);            /* FADD R1, R0, 2^-24 */
+    set(&x, 32, 32, 0x33800000u);
+    set(&x, 78, 2, 1); /* toward -inf */
+    put(code, n++, x);
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+
+    g_shader_float64 = 1; /* a device with it: the exact rounding needs the double, and declares it */
+    spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+    CHECK(spv && f64_capability(spv, count));
+    free(spv);
+
+    g_shader_float64 = 0; /* without it: the same program, in floats, and it runs */
+    memset(&si, 0, sizeof si);
+    spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+    CHECK(spv != NULL);
+    if (spv) {
+        SpvEvalEnv env = {0};
+        CHECK(!f64_capability(spv, count));
+        CHECK(spv_eval(spv, count, &env) == NULL);
+        free(spv);
+    } else
+        fprintf(stderr, "float64 fallback: %s\n", si.first_unsupported);
+    g_shader_float64 = had;
+    (void)dir;
+}
+
 /* LDG.E (no uniform) of type 4 (32 bits) or 5 (64 bits) into dst from [addr + imm], and STG.E of data */
 static Word ldg_nou(u32 dst, u32 addr, u32 imm, u32 type) {
     Word x = fix(0x381);
@@ -3986,6 +4037,7 @@ int main(int argc, char** argv) {
     test_tex_f16(dir);
     test_output_defaults(dir);
     test_fragment_depth(dir);
+    test_float64_fallback(dir);
     test_flow_operand(dir);
     test_global_pointer(dir);
     test_global_indirect(dir);

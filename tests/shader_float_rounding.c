@@ -44,11 +44,12 @@ int main(int argc, char** argv) {
                 at += length;
             }
             /* A conversion with a 64-bit side is the same requirement on either console: this Maxwell program declares
-               Float64, which a device without shaderFloat64 (Metal) refuses whole, as it refused one Ounce game's
-               fragment programs (docs/platforms/nx/ounce.md) */
+               Float64, which a device without shaderFloat64 refuses whole. shader_sm86.c's float64 fallback test holds
+               the other side of it */
             if (f64 != (source == 3)) {
-                fprintf(stderr, "F2F %u\u2192%u mode%u: shaderFloat64 %s, and a 64-bit source %s it\n", source,
-                        destination, mode, f64 ? "declared" : "not declared", f64 ? "did not want" : "wanted");
+                fprintf(stderr, "F2F %u\u2192%u mode%u: shaderFloat64 %s, which a source format of %u %s\n", source,
+                        destination, mode, f64 ? "declared" : "not declared", source,
+                        f64 ? "does not need" : "needs");
                 free(code);
                 return 1;
             }
