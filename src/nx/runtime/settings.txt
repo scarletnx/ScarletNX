@@ -283,15 +283,17 @@ setting Vulkan ban ignore
 setting ASTC mode
     label ASTC textures
     key astc_mode
-    int 0 2
+    int 0 3
     default 0
     startup
-    words Auto|Exact|BC7
+    words Auto|Exact|BC7|BC7 at load
     help How a GPU that samples BCn but not ASTC (most desktop ones) holds ASTC textures. Auto = Exact where the GPU's
     help memory budget is 8 GB or more as the game starts, else BC7. Exact = decoded to RGBA8, exactly as the game's
     help blocks decode, in four times the memory. BC7 = shown at once decoded to RGBA8, then encoded again as BC7 between
     help frames, a few at a time, into a quarter of RGBA8's memory, close to what the blocks decode to but not always the
-    help same. Where the GPU samples ASTC it does nothing. It takes the place of astc_bc, whose 1 is Auto
+    help same. BC7 at load = encoded as BC7 as each texture loads, with no RGBA8 image before it, as feat/ounce does
+    help (temporary, to compare). Where the GPU samples ASTC it does nothing. It takes the place of astc_bc, whose 1 is
+    help Auto
 
 table g_performance_ini
 setting FPS limit

@@ -14,8 +14,9 @@
 #define SNX_ASTC_EXACT_MB 8192ull
 /* 1 where astc_mode's Auto holds them as BC7: a budget of budget bytes, under SNX_ASTC_EXACT_MB MiB */
 static inline int snx_astc_auto_bc7(unsigned long long budget) { return budget < (SNX_ASTC_EXACT_MB << 20); }
-/* 1 where astc_mode mode holds them as BC7, Auto as auto_bc7 says (snx_astc_auto_bc7 of the budget at start) */
-static inline int snx_astc_bc7(int mode, int auto_bc7) { return mode == 2 || (mode == 0 && auto_bc7); }
+/* 1 where astc_mode mode holds them as BC7 (2 between frames, 3 at load), Auto as auto_bc7 says (snx_astc_auto_bc7 of
+   the budget at start) */
+static inline int snx_astc_bc7(int mode, int auto_bc7) { return mode == 2 || mode == 3 || (mode == 0 && auto_bc7); }
 
 /* why the images ran short of memory (vk_mem_trim): an image allocation found none, a trim left the caches past their
    budget, or a trim took textures or targets the last two presents used, the working set, which the next frames load

@@ -353,6 +353,9 @@ static void astc_choose(void) {
             "are %s (%s)\n",
             vk_mem_heap(), (unsigned long long)(budget >> 20), g_vk.astc_auto_bc7 ? "under" : "at least",
             SNX_ASTC_EXACT_MB, g_vk.astc_auto_bc7 ? bc7 : exact, g_vk.astc_auto_bc7 ? "BC7" : "Exact");
+    else if (g_settings.astc_mode == 3)
+        LOG("vulkan: astc_mode=3 (BC7 at load): ASTC textures are encoded as BC7 as they load, a quarter of RGBA8's "
+            "memory\n");
     else
         LOG("vulkan: astc_mode=2 (BC7): ASTC textures are %s\n", bc7);
 }
