@@ -30,6 +30,11 @@ typedef struct {
        VK_NULL_HANDLE when the work reads and writes the RAM in place */
     VkBuffer copy;
     VkDeviceMemory copy_memory;
+    /* the RAM as a copy in the device's host-visible memory, when the driver can neither import it nor move it there
+       (a Mac's MoltenVK): buffer is it, map is where the CPU copies the guest's pages to and from, and guest is the
+       board's own memory of the region. NULL when the RAM is imported or the device's */
+    unsigned char* map;
+    unsigned char* guest;
     uint32_t base, size; /* the physical range it holds */
 } SnxCtrVkRam;
 typedef struct {
@@ -50,6 +55,11 @@ typedef struct {
     bool preserve_infnan;  /* shaderSignedZeroInfNanPreserveFloat32: the generated shaders keep infinities and NaNs */
     bool import_host;      /* VK_EXT_external_memory_host */
     bool export_dmabuf;    /* VK_KHR_external_memory_fd and VK_EXT_external_memory_dma_buf */
+    /* neither: the RAM is a copy in the device's host-visible memory, which the CPU keeps in step with the board's
+       (render.c's copy_in and copy_out) */
+    bool host_shadow;
+    uint64_t shadow_bytes; /* the RAM's copies, and their memory type */
+    uint32_t shadow_type;
     SnxCtrVkRam ram[8];
     unsigned ram_count;
     /* the board's RAM as the device's memory, each region's buffer bound at the region's offset in the RAM;
@@ -67,14 +77,17 @@ SnxCtrVk* snx_ctr_vk(void);
    Switch's setting vk_memory (g_settings.guest_memory), with its meaning: 0 in place on a GPU that shares the system's
    memory (vk_common.h's SNX_VK_UMA) and on the copy on any other, 1 the copy, 2 in place */
 bool snx_ctr_vk_copies(void);
+/* the RAM is a copy in the device's host-visible memory (the device can neither import it nor move it there), and the
+   CPU copies its pages to and from the board's own memory as the GPU uses them */
+bool snx_ctr_vk_shadow(void);
 /* the 3D render scale of a screen of these framebuffer sizes: the CTR top or bottom resolution setting, as far as
    the device's largest image takes (1 before a device, or with none) */
 uint8_t snx_ctr_vk_target_scale(unsigned width, unsigned height);
 /* The device and the window (unless headless or none can be made), with memory's RAM regions its buffers: imported,
-   or, when the driver refuses that, the RAM moved into the device's memory (which says so, and why, on the standard
-   error). Before the guest runs, as the move copies the RAM. False, with the reason in error, when the host has no
-   Vulkan device that can: Vulkan 1.3, 8-bit storage buffers, dynamic rendering, and VK_EXT_external_memory_host or
-   VK_EXT_external_memory_dma_buf, one of which takes the RAM */
+   or, when the driver refuses that, the RAM moved into the device's memory, or, when it cannot take it either, a copy
+   of it in the device's host-visible memory, which the CPU keeps in step with the board's own (render.c). Each says so
+   on the standard error. Before the guest runs, as the move copies the RAM. False, with the reason in error, when the
+   host has no Vulkan device that can: Vulkan 1.3, 8-bit storage buffers and dynamic rendering */
 bool snx_ctr_vk_init(SnxCtrMemory* memory, char* error, size_t error_size);
 void snx_ctr_vk_free(void);
 /* why the last snx_ctr_vk_init failed, without the device's name, which its error adds ("; device <name>, driver
