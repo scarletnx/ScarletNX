@@ -79,14 +79,19 @@ static u64 g_rgba8_bytes;
 static u64 bc7_queued_limit(void) {
     static u64 limit;
     if (!limit) {
-        const VkPhysicalDeviceMemoryProperties* mp;
-        vmaGetMemoryProperties(g_vk.vma, &mp);
-        const u64 heap = mp->memoryHeaps[vk_mem_heap()].size;
-        limit = snx_bc7_queue_blocks(g_settings.bc7_queue, heap, vk_uma());
+        /* the GPU's own memory, its biggest device-local heap; an integrated GPU shares the CPU's */
+        VkPhysicalDeviceMemoryProperties mp;
+        u64 heap = 0;
+        vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
+        for (u32 h = 0; h < mp.memoryHeapCount; h++)
+            if ((mp.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) && mp.memoryHeaps[h].size > heap)
+                heap = mp.memoryHeaps[h].size;
+        const int shared = g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+        limit = snx_bc7_queue_blocks(g_settings.bc7_queue, heap, shared);
         LOG("vulkan: the BC7 encoder queues up to %llu thousand blocks before an upload waits for the GPU (bc7_queue=%d%s, "
             "%llu MB of the GPU's own memory%s)\n",
             (unsigned long long)(limit >> 10), g_settings.bc7_queue, g_settings.bc7_queue ? "" : ", Auto",
-            (unsigned long long)(heap >> 20), vk_uma() ? ", shared with the CPU" : "");
+            (unsigned long long)(heap >> 20), shared ? ", shared with the CPU" : "");
     }
     return limit;
 }

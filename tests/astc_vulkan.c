@@ -538,11 +538,12 @@ static int upload_wait_rows(void* ctx, VkCommandBuffer* pcb, u32 z, u32 nz, u32 
     source->calls++;
     return level_rows(&source->level, pcb, z, nz, y, n, buf, off);
 }
-/* 262656 BC7 blocks: one strip reaches the real 256Ki-block threshold with the default 16MiB scratch, then
+/* 262656 BC7 blocks: one strip reaches a 256Ki-block threshold (bc7_queue=256) with the default 16MiB scratch, then
    another strip must record into a new command buffer. Constant blocks keep the GPU encoder's first fit exact;
    the final block row has a different color, so a missing continuation cannot pass the output comparison. */
 static int upload_wait_case(int retire) {
     const u32 w = retire ? 1024 : 2048, h = retire ? 1024 : 2052, nx = w / 4, ny = h / 4;
+    g_settings.bc7_queue = 256; /* the threshold this case crosses, whatever Auto gives this GPU */
     VkImageFormatProperties props;
     if (!g_vk.feat.textureCompressionBC ||
         vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, VK_FORMAT_BC7_UNORM_BLOCK, VK_IMAGE_TYPE_2D,
