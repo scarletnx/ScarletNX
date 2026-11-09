@@ -49,6 +49,10 @@
 #include <unistd.h>
 #endif
 
+#if defined(__APPLE__) || defined(__FreeBSD__)
+#include <sys/param.h>
+#include <sys/mount.h> /* getmntinfo: the mount points a tree removal stops at */
+#endif
 #ifdef __FreeBSD__
 #include <sys/types.h>
 #include <sys/sysctl.h>
@@ -702,7 +706,7 @@ static int remove_one(const char* path, int dir) {
 #endif
 }
 int snx_remove_empty_dir(const char* path) { return !snx_is_dir(path) || snx_is_link(path) || remove_one(path, 1); }
-int snx_remove_tree(const char* path) {
+static int remove_tree(const char* path) {
     char **names, *p;
     size_t n;
     int rc = 0;
@@ -711,7 +715,7 @@ int snx_remove_tree(const char* path) {
         if (snx_list_dir(path, &names, &n)) return 1;
         for (size_t i = 0; i < n; ++i) {
             p = snx_path_join(path, names[i]);
-            if (snx_remove_tree(p)) rc = 1;
+            if (remove_tree(p)) rc = 1;
             free(p);
         }
         snx_free_strings(names, n);
@@ -720,6 +724,70 @@ int snx_remove_tree(const char* path) {
     if (snx_is_link(path)) dir = 0;
 #endif
     return remove_one(path, dir) || rc;
+}
+char* snx_mount_in(const char* mountinfo, const char* root) {
+    size_t length = strlen(root);
+    const char* line = mountinfo;
+    while (line && *line) {
+        const char *stop = strchr(line, '\n'), *field = line, *last;
+        int spaces = 0;
+        if (!stop) stop = line + strlen(line);
+        while (field < stop && spaces < 4) /* past the first four fields */
+            if (*field++ == ' ') spaces++;
+        for (last = field; last < stop && *last != ' '; last++) continue;
+        if (spaces == 4 && last > field) { /* the fifth, its spaces and backslashes written \040 and \134 */
+            size_t n = (size_t)(last - field), j = 0, k;
+            char* point = (char*)snx_alloc(n + 1);
+            for (k = 0; k < n; k++) {
+                if (field[k] == '\\' && k + 3 < n && field[k + 1] >= '0' && field[k + 1] <= '3' &&
+                    field[k + 2] >= '0' && field[k + 2] <= '7' && field[k + 3] >= '0' && field[k + 3] <= '7') {
+                    point[j++] = (char)((field[k + 1] - '0') << 6 | (field[k + 2] - '0') << 3 | (field[k + 3] - '0'));
+                    k += 3;
+                } else
+                    point[j++] = field[k];
+            }
+            point[j] = 0;
+            if (!strncmp(point, root, length) && (!point[length] || point[length] == '/')) return point;
+            free(point);
+        }
+        line = *stop ? stop + 1 : NULL;
+    }
+    return NULL;
+}
+char* snx_mount_within(const char* path) {
+    char *root = snx_absolute(path), *found = NULL;
+    if (!root) return NULL;
+#if defined(__linux__) || defined(__ANDROID__)
+    {
+        size_t size;
+        char* text = (char*)snx_read_file("/proc/self/mountinfo", &size);
+        found = text ? snx_mount_in(text, root) : NULL;
+        free(text);
+    }
+#elif defined(__APPLE__) || defined(__FreeBSD__)
+    {
+        struct statfs* mounts;
+        size_t length = strlen(root);
+        int n = getmntinfo(&mounts, MNT_NOWAIT), i;
+        for (i = 0; i < n && !found; i++)
+            if (!strncmp(mounts[i].f_mntonname, root, length) &&
+                (!mounts[i].f_mntonname[length] || mounts[i].f_mntonname[length] == '/'))
+                found = snx_strdup(mounts[i].f_mntonname);
+    }
+#endif
+    free(root);
+    return found;
+}
+int snx_remove_tree(const char* path) {
+    char* mount = snx_is_dir(path) && !snx_is_link(path) ? snx_mount_within(path) : NULL;
+    if (mount) { /* nothing removed: what is mounted there is another disk's, or another folder's */
+        snx_error("cannot remove %s: %s is a mount point, another disk or folder mounted there, whose files would go "
+                  "with it. Unmount it first",
+                  path, mount);
+        free(mount);
+        return 1;
+    }
+    return remove_tree(path);
 }
 unsigned char* snx_read_file(const char* path, size_t* size) {
     FILE* f = snx_fopen(path, "rb");

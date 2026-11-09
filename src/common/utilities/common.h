@@ -70,7 +70,15 @@ int snx_is_link(const char* path);
 /* Any existing directory entry, including dangling symlinks and special files. */
 int snx_path_exists(const char* path);
 int snx_mkdirs(const char* path);
+/* path and everything in it removed: refused, said, with nothing removed, when a disk or another folder is mounted at
+   or inside it (snx_mount_within), whose files would go with it */
 int snx_remove_tree(const char* path);
+/* the first mount point that is root or inside it in mountinfo, a /proc/self/mountinfo's text (its fifth field, \040
+   and the other escapes read), owned, else NULL. root absolute, without a trailing separator */
+char* snx_mount_in(const char* mountinfo, const char* root);
+/* the first mount point at or inside path on this system, a disk or a folder mounted there (a bind mount), owned, else
+   NULL. Linux and Android read /proc/self/mountinfo, macOS and FreeBSD getmntinfo; Windows has none of them */
+char* snx_mount_within(const char* path);
 /* the folder at path taken away when it is empty, and only then (0); nonzero, and nothing touched, when it is not */
 int snx_remove_empty_dir(const char* path);
 int snx_copy_file(const char* src, const char* dst);
