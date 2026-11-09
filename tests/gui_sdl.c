@@ -4674,7 +4674,8 @@ int main(int argc, char** argv) {
     }
     if (argc == 9 && !strcmp(argv[3], "-x") && !strcmp(argv[4], "--icon")) { /* a dump's icon, as -x --icon writes it */
         IconJpeg jpeg = {{0}, 0};
-        char* to = snx_path_join(argv[6], "icon.jpg");
+        bool ctr = strstr(argv[0], "scarletnx-3ds") != NULL; /* the 3DS driver's SMDH icon is RGBA */
+        char* to = snx_path_join(argv[6], ctr ? "icon.rgba" : "icon.jpg");
         int rc = 1;
 #ifndef _WIN32
         /* started as the menu starts its drivers (gui_process.h), which works where SDL's processes do not (Android's
@@ -4698,7 +4699,11 @@ int main(int argc, char** argv) {
         free(text);
         if (strstr(argv[8], "hung icon")) /* never answers: the menu stops it */
             SDL_Delay(60000);
-        if (strstr(argv[8], "no icon")) {
+        if (ctr) {
+            unsigned char rgba[48 * 48 * 4];
+            memset(rgba, 0, sizeof rgba);
+            rc = snx_write_file(to, rgba, sizeof rgba);
+        } else if (strstr(argv[8], "no icon")) {
             puts("Reading the dump's Control NCA");
             fflush(stdout);
             fprintf(stderr, "scarletnx: Games shows no icon for %s: it has no Control NCA\n",
@@ -8662,6 +8667,49 @@ int main(int argc, char** argv) {
                 assert(!remove(icon));
                 free(icon);
             }
+            { /* a 3DS game: its .ini's name on its row and the SMDH's icon beside it, drawn at the size of a row's */
+                char *own = snx_path_join(app.games_dir, "0004000001234500"), *ctr, *ini, *icon;
+#ifdef _WIN32
+                ctr = snx_path_join(own, "0004000001234500.exe");
+#else
+                ctr = snx_path_join(own, "0004000001234500");
+#endif
+                ini = snx_path_join(own, "0004000001234500.ini");
+                icon = snx_path_join(own, "icon.rgba");
+                const char* named = "[Game]\nname=A CTR Game\n";
+                unsigned char rgba[48 * 48 * 4];
+                UiRowInfo info = {0};
+                size_t k, lead;
+                assert(own && ctr && ini && icon);
+                assert(!snx_mkdirs(own) && !snx_write_file(ctr, "x", 1) && !snx_make_executable(ctr));
+                assert(!snx_write_file(ini, named, strlen(named)));
+                for (k = 0; k < 48 * 48; ++k) {
+                    rgba[4 * k + 0] = 220;
+                    rgba[4 * k + 1] = 30;
+                    rgba[4 * k + 2] = 30;
+                    rgba[4 * k + 3] = 255;
+                }
+                assert(!snx_write_file(icon, rgba, sizeof rgba));
+                icons_free(&app);
+                list_games(&app);
+                lead = (size_t)games_lead(&app);
+                for (k = 0; k < app.games.count && !(app.games.paths[k] && snx_same_file(app.games.paths[k], ctr)); ++k)
+                    {}
+                assert(k < app.games.count);
+                assert(ui_games_rows_get_row_info(&app, lead + k, 300, &info) && info.label &&
+                       strstr(info.label, "CTR"));
+                assert(info.image && info.image == game_icon(&app, ctr) && info.image != icon_none(&app));
+                { /* its icon file as a row draws it, scaled: the SMDH's red, B, G, R, A in memory */
+                    unsigned char drawn[GUI_ICON_SIDE * GUI_ICON_SIDE * 4];
+                    assert(!rgba_icon(rgba, sizeof rgba, GUI_ICON_SIDE, drawn));
+                    assert(drawn[0] == 30 && drawn[1] == 30 && drawn[2] == 220 && drawn[3] == 255);
+                }
+                snx_remove_tree(own);
+                free(icon);
+                free(ini);
+                free(ctr);
+                free(own);
+            }
             { /* a dump's icon, asked of the driver (-x --icon, through the menu's processes) into the menu's cache: none
                  until it answers, once, then its row's; an answer an older launcher left there (why.txt) is not read. One
                  the driver gives none for is not asked again in the session, its kind saying why and the launcher's log
@@ -8765,6 +8813,29 @@ int main(int argc, char** argv) {
                 free(dir);
                 free(without);
                 free(with);
+                free(cache);
+                free(cache_was);
+            }
+            { /* a 3DS dump's icon is asked of the 3DS driver, which writes its SMDH's icon as icon.rgba */
+                char* cache_was = getenv("XDG_CACHE_HOME") ? snx_strdup(getenv("XDG_CACHE_HOME")) : NULL;
+                char *cache = snx_path_join(temporary, "ctr icon cache"),
+                     *cia = snx_path_join(temporary, "with icon.cia"), *dir, *rgba, *jpg;
+                set_env("XDG_CACHE_HOME", cache);
+                assert(!snx_write_file(cia, "x", 1));
+                icons_free(&app);
+                assert(game_icon(&app, cia) == icon_loading(&app) && app.dump_icons.count == 1);
+                dump_icons_pass(&app.dump_icons);
+                pump(&app);
+                assert(game_icon(&app, cia) && game_icon(&app, cia) != icon_loading(&app));
+                dir = dump_icon_dir(&app, cia);
+                rgba = snx_path_join(dir, "icon.rgba");
+                jpg = snx_path_join(dir, "icon.jpg");
+                assert(snx_is_file(rgba) && !snx_is_file(jpg)); /* the 3DS driver wrote it, not the Switch one */
+                free(jpg);
+                free(rgba);
+                free(dir);
+                set_env("XDG_CACHE_HOME", cache_was);
+                free(cia);
                 free(cache);
                 free(cache_was);
             }
