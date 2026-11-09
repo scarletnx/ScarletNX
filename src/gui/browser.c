@@ -196,6 +196,29 @@ static char* extracted_shown(const char* path, const char* name) {
     if (*text) text[strlen(text) - 1] = 0; /* its / */
     return snx_strdup(text);
 }
+/* whether path is a game's program in the folder named for it, <folder>/<name> (.exe cut, _code.snxobj on iOS): a 3DS
+   game has no <name>_data folder, so gui_game_folder's test does not hold for it */
+bool gui_game_program(const char* path) {
+    char *folder, *name;
+    const char *leaf, *own;
+    bool found;
+    if (!path || !snx_is_file(path) || !(folder = snx_dirname(path))) return false;
+    leaf = folder + strlen(folder);
+    while (leaf > folder && leaf[-1] != '/' && leaf[-1] != '\\') --leaf;
+    own = path + strlen(path);
+    while (own > path && own[-1] != '/' && own[-1] != '\\') --own;
+    name = snx_strdup(own);
+#ifdef _WIN32
+    if (name && suffix(name, ".exe")) name[strlen(name) - 4] = 0;
+#endif
+#ifdef SNX_IOS
+    if (name && suffix(name, "_code.snxobj")) name[strlen(name) - 12] = 0;
+#endif
+    found = name && *name && !strcmp(leaf, name);
+    free(name);
+    free(folder);
+    return found;
+}
 /* what the game at path, named name, is shown as: the name in its <name>_data/control.nacp, which the recompile
    copies there, else name */
 static char* shown_name(const char* path, const char* name) {
@@ -251,9 +274,15 @@ char* gui_game_icon(const char* path) {
         }
     }
     /* a 3DS game has no data folder: its driver writes the SMDH's icon beside the game (icon.rgba) */
-    cut = snx_path_format(icon, sizeof icon, "%s/icon.rgba", folder);
+    if (gui_game_program(path)) {
+        cut = snx_path_format(icon, sizeof icon, "%s/icon.rgba", folder);
+        if (!cut && snx_is_file(icon)) {
+            free(folder);
+            return snx_strdup(icon);
+        }
+    }
     free(folder);
-    return !cut && snx_is_file(icon) ? snx_strdup(icon) : NULL;
+    return NULL;
 }
 /* whether the add-on named a (<game>_<entry>) is listed before b: updates first, the newest version first (one
    without a version last), then the DLCs by title ID */
