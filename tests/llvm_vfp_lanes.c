@@ -202,6 +202,137 @@ static unsigned estimates(int portable) {
     return checks;
 }
 
+/* a value for FRINT32/64: one with a fraction (round_value's), or a neighbour of the range's ends of either sign
+   (an out-of-range one takes the helper's IOC path) */
+static u64 round_int_value(u64* s, int width, int intsize) {
+    static const u32 edges32[] = {0x4F000000u, 0x4EFFFFFFu, 0xCF000000u, 0xCEFFFFFFu};
+    static const u64 edges64[] = {0x41E0000000000000ull, 0x41DFFFFFFFFFFFFFull, 0xC1E0000000000000ull,
+                                  0xC1DFFFFFFFFFFFFFull, 0x43E0000000000000ull, 0x43DFFFFFFFFFFFFFull,
+                                  0xC3E0000000000000ull, 0xC3DFFFFFFFFFFFFFull};
+    u64 pick = next(s);
+    if (pick % 3) return round_value(s, width);
+    if (width == 32) return edges32[pick % (sizeof edges32 / sizeof *edges32)];
+    return edges64[(intsize == 32 ? 0 : 4) + pick % 4];
+}
+
+/* FRINT32Z/X, FRINT64Z/X: every operand class and the ends of the intsize-bit signed range, in each FPCR mode and
+   with FZ, against the helper lane by lane */
+static unsigned round_ints(int portable) {
+    static const struct {
+        const char* name;
+        u32 word;
+        int rm, intsize;
+    } insns[] = {{"FRINT32Z", 0x4E21E820u, 3, 32}, {"FRINT32X", 0x6E21E820u, -1, 32},
+                 {"FRINT64Z", 0x4E21F820u, 3, 64}, {"FRINT64X", 0x6E21F820u, -1, 64}};
+    LlvmSteps steps;
+    char error[1024];
+    unsigned checks = 0, k, i;
+    u64 seed = 0xC2B2AE3D27D4EB4Full;
+    if (llvm_steps_begin(&steps, 1, portable, error, sizeof(error))) return snx_error("%s", error), 0;
+    for (k = 0; k < 4; k++)
+        for (unsigned dbl = 0; dbl < 2; dbl++)
+            llvm_steps_add(&steps, insns[k].word | dbl << 22, 0x1000,
+                           SNX_A64_TARGET_SWITCH | SNX_A64_FEAT_FRINTTS);
+    if (llvm_steps_load(&steps, error, sizeof(error))) return snx_error("%s", error), 0;
+    for (k = 0; k < 4; k++)
+        for (unsigned dbl = 0; dbl < 2; dbl++) {
+            int width = dbl ? 64 : 32, lanes = 128 / width;
+            LlvmStep step = steps.steps[k * 2 + dbl];
+            for (i = 0; i < 10000; i++) {
+                CPU c, ref;
+                RtAPI rt = {.cas128 = snx_runtime_cas128};
+                u64 r = next(&seed), want[4];
+                u32 fpcr = (u32)(r % 4) << 22, fpsr = r & 4 ? 0x10u : 0;
+                int lane;
+                if (r & 8) fpcr = 0;
+                if (r & 16) fpcr |= 1u << 24;
+                if (r & 32) fpcr |= 1u << 25;
+                memset(&c, 0, sizeof c);
+                c.rt = &rt;
+                for (lane = 0; lane < lanes; lane++) set_lane(&c.v[1], width, lane, round_int_value(&seed, width, insns[k].intsize));
+                c.fpcr = fpcr;
+                c.fpsr = fpsr;
+                ref = c;
+                for (lane = 0; lane < lanes; lane++)
+                    want[lane] = snx_fp_round_int_c(&ref, get_lane(&c.v[1], width, lane), width,
+                                                    insns[k].rm < 0 ? (int)(fpcr >> 22 & 3) : insns[k].rm,
+                                                    insns[k].intsize);
+                fesetround(g_host_modes[i % 4]);
+                step(&c);
+                fesetround(FE_TONEAREST);
+                checks++;
+                for (lane = 0; lane < lanes; lane++)
+                    if (get_lane(&c.v[0], width, lane) != (width == 32 ? (u32)want[lane] : want[lane])) break;
+                if ((lane < lanes || c.fpsr != ref.fpsr) && failures++ < 8) {
+                    fprintf(stderr, "%s %s %s, FPCR %08x, FPSR %08x:", portable ? "the portable" : "the host's", insns[k].name,
+                            dbl ? "2D" : "4S", fpcr, fpsr);
+                    for (lane = 0; lane < lanes; lane++)
+                        fprintf(stderr, " [%llx: %llx, expected %llx]",
+                                (unsigned long long)get_lane(&ref.v[1], width, lane),
+                                (unsigned long long)get_lane(&c.v[0], width, lane),
+                                (unsigned long long)(width == 32 ? (u32)want[lane] : want[lane]));
+                    fprintf(stderr, " FPSR %08x, expected %08x\n", c.fpsr, ref.fpsr);
+                }
+            }
+        }
+    llvm_steps_end(&steps);
+    return checks;
+}
+
+/* BFCVTN and BFCVTN2: each single's bfloat16, with every operand class, FPCR's four modes, FZ and DN, and the
+   flags, lane by lane against the helper */
+static unsigned bfcvts(int portable) {
+    static const u32 words[] = {0x0EA16820u, 0x4EA16820u}; /* BFCVTN, BFCVTN2 (Rn 1, Rd 0) */
+    static const u32 edges[] = {0x7F7FFFFFu, 0x7F7F8000u, 0x7F7F7FFFu, 0x7F800000u, 0x7F800001u, 0x7FC12345u,
+                                0xBF7FFFFFu, 0x00000001u, 0x00008000u, 0x80008000u, 0x3F808000u, 0x3F80FFFFu};
+    LlvmSteps steps;
+    char error[1024];
+    unsigned checks = 0, k, i;
+    u64 seed = 0x165667B19E3779F9ull;
+    if (llvm_steps_begin(&steps, 1, portable, error, sizeof(error))) return snx_error("%s", error), 0;
+    for (k = 0; k < 2; k++)
+        llvm_steps_add(&steps, words[k], 0x1000, SNX_A64_TARGET_SWITCH | SNX_A64_FEAT_BF16);
+    if (llvm_steps_load(&steps, error, sizeof(error))) return snx_error("%s", error), 0;
+    for (k = 0; k < 2; k++) {
+        LlvmStep step = steps.steps[k];
+        for (i = 0; i < 20000; i++) {
+            CPU c, ref;
+            RtAPI rt = {.cas128 = snx_runtime_cas128};
+            u64 r = next(&seed), want[4], low = 0;
+            u32 fpcr = (u32)(r % 4) << 22, fpsr = r & 4 ? 0x10u : 0;
+            int lane, bad = 0;
+            if (r & 8) fpcr |= 1u << 24;
+            if (r & 16) fpcr |= 1u << 25;
+            memset(&c, 0, sizeof c);
+            c.rt = &rt;
+            for (lane = 0; lane < 4; lane++)
+                set_lane(&c.v[1], 32, lane, (r >> 5) % 3 ? lane_value(&seed, 32) : edges[next(&seed) % (sizeof edges / sizeof *edges)]);
+            c.v[0].d[0] = next(&seed);
+            c.v[0].d[1] = next(&seed);
+            low = c.v[0].d[0];
+            c.fpcr = fpcr;
+            c.fpsr = fpsr;
+            ref = c;
+            for (lane = 0; lane < 4; lane++) want[lane] = snx_fp_bfcvt_c(&ref, get_lane(&c.v[1], 32, lane));
+            step(&c);
+            checks++;
+            for (lane = 0; lane < 4; lane++)
+                if (c.v[0].h[(k ? 4 : 0) + lane] != (u16)want[lane]) bad = 1;
+            if (k ? c.v[0].d[0] != low : c.v[0].d[1] != 0) bad = 1;
+            if ((bad || c.fpsr != ref.fpsr) && failures++ < 8) {
+                fprintf(stderr, "%s BFCVTN%s, FPCR %08x, FPSR %08x:", portable ? "the portable" : "the host's", k ? "2" : "", fpcr, fpsr);
+                for (lane = 0; lane < 4; lane++)
+                    fprintf(stderr, " [%08x: %04x, expected %04x]", ref.v[1].s[lane], c.v[0].h[(k ? 4 : 0) + lane],
+                            (u16)want[lane]);
+                fprintf(stderr, " low %016llx/%016llx, FPSR %08x, expected %08x\n",
+                        (unsigned long long)c.v[0].d[0], (unsigned long long)ref.v[0].d[0], c.fpsr, ref.fpsr);
+            }
+        }
+    }
+    llvm_steps_end(&steps);
+    return checks;
+}
+
 int main(void) {
     const char* forms[2] = {"the host's", "the portable"};
     unsigned checks = 0;
@@ -384,6 +515,8 @@ int main(void) {
             }
         llvm_steps_end(&steps);
         checks += estimates(portable);
+        checks += round_ints(portable);
+        checks += bfcvts(portable);
     }
     printf("Vector FP fast paths through the LLVM steps: %u checks, %d failed\n", checks, failures);
     return failures != 0;

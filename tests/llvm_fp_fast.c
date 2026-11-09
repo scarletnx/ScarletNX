@@ -46,6 +46,11 @@ static const Insn g_insns[] = {
     {"FRINTX 2D", 0x6E619820u, 1, 0, 1, 1},  {"FRINTA S", 0x1E264020u, 0, 0, 1, 1},
     {"FRINTA D", 0x1E664020u, 1, 0, 1, 1},   {"FRINTA 4S", 0x6E218820u, 0, 0, 1, 1},
     {"FRINTA 2D", 0x6E618820u, 1, 0, 1, 1},  {"FCVTAS W S", 0x1E240020u, 0, 0, 1, 1},
+    {"FRINT32Z 4S", 0x4E21E820u, 0, 0, 1, 1}, {"FRINT32X 4S", 0x6E21E820u, 0, 0, 1, 1},
+    {"FRINT32Z 2D", 0x4E61E820u, 1, 0, 1, 1}, {"FRINT32X 2D", 0x6E61E820u, 1, 0, 1, 1},
+    {"FRINT64Z 4S", 0x4E21F820u, 0, 0, 1, 1}, {"FRINT64X 4S", 0x6E21F820u, 0, 0, 1, 1},
+    {"FRINT64Z 2D", 0x4E61F820u, 1, 0, 1, 1}, {"FRINT64X 2D", 0x6E61F820u, 1, 0, 1, 1},
+    {"BFCVTN 4H", 0x0EA16820u, 0, 0, 0, 1},  {"BFCVTN2 8H", 0x4EA16820u, 0, 0, 0, 1},
     {"FCVTAU 4S", 0x6E21C820u, 0, 0, 1, 1},  {"FRECPE S", 0x5EA1D820u, 0, 0, 0, 1},
     {"FRECPE D", 0x5EE1D820u, 1, 0, 0, 1},   {"FRSQRTE S", 0x7EA1D820u, 0, 0, 0, 1},
     {"FRSQRTE D", 0x7EE1D820u, 1, 0, 0, 1},  {"FRECPE 4S", 0x4EA1D820u, 0, 0, 0, 1},
@@ -160,7 +165,8 @@ int main(void) {
             size_t at;
             probes[k][i] = NULL;
             if ((g_insns[i].fma && !fma) || (g_insns[i].round && !round)) continue;
-            at = llvm_steps_add(&s, g_insns[i].word, 0x1000, 0);
+            at = llvm_steps_add(&s, g_insns[i].word, 0x1000,
+                                SNX_A64_TARGET_SWITCH | SNX_A64_FEAT_FRINTTS | SNX_A64_FEAT_BF16);
             LLVMAddAttributeAtIndex(s.fns[at], LLVMAttributeFunctionIndex,
                                     LLVMCreateEnumAttribute(s.ir->ctx, LLVMGetEnumAttributeKindForName("alwaysinline", 12), 0));
             snprintf(name, sizeof(name), "probe_%u_%u", k, i);
