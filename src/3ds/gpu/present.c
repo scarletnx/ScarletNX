@@ -587,7 +587,8 @@ void snx_ctr_present_report(void) {
     if (!g_present.up) return;
     SnxCtrVkTraffic t = snx_ctr_vk_traffic();
     char copies[96] = "", unshown[80] = "";
-    if (snx_ctr_vk_copies())
+    bool copied = snx_ctr_vk_copies() || snx_ctr_vk_shadow(); /* the shadow copies each page too */
+    if (copied)
         snprintf(copies, sizeof copies, "; %.1f MiB copied in from the RAM and %.1f MiB back",
                  (double)t.copied_in / 1048576.0, (double)t.copied_out / 1048576.0);
     if (g_present.unshown)
@@ -597,7 +598,7 @@ void snx_ctr_present_report(void) {
            "%llu CPU accesses to its pages trapped\n",
            (unsigned long long)g_present.decoded[0], (unsigned long long)g_present.decoded[1], unshown,
            (double)t.read / 1048576.0, (double)t.written / 1048576.0,
-           snx_ctr_vk_copies() ? "its copy of the RAM" : "the RAM", copies, (unsigned long long)t.traps);
+           copied ? "its copy of the RAM" : "the RAM", copies, (unsigned long long)t.traps);
 }
 void snx_ctr_present_free(void) {
     if (!g_present.up) return;

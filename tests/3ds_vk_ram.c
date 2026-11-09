@@ -55,6 +55,11 @@ static int start(int vk_memory) {
     char why[1024];
     if (snx_ctr_vk_init(g_m, why, sizeof why)) {
         test_ctr_vk_memory_taken(vk_memory);
+        if (snx_ctr_vk_shadow()) { /* the guest's bytes are not the buffer's: this test's premise is that they are */
+            printf("the RAM is a copy in the device's host-visible memory: the buffer is not the guest's memory\n");
+            snx_ctr_vk_free();
+            return 77;
+        }
         return 0; /* how it took the RAM: device.c's line on the standard error */
     }
     const char* reason = snx_ctr_vk_error();

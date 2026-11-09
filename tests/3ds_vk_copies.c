@@ -69,7 +69,7 @@ int main(int argc, char** argv) {
         return 77;
     }
     test_ctr_vk_memory_taken(vk_memory);
-    g_copies.copies = snx_ctr_vk_copies();
+    g_copies.copies = snx_ctr_vk_copies() || snx_ctr_vk_shadow(); /* the shadow copies each page too */
     for (uint32_t i = 0; i < SPAN / 4; ++i) pattern[i] = 0x10000000u + i;
     if (snx_ctr_phys_write(m, SOURCE, pattern, SPAN) != SNX_CTR_MEM_OK) return 1;
     g_copies.last = snx_ctr_vk_traffic();

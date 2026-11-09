@@ -28,9 +28,18 @@ static inline int test_ctr_vk_memory(int* argc, char** argv) {
     argv[kept] = NULL;
     return given;
 }
-/* once the device started: the path given (1 the copy, 2 in place) is the one it took, else the test ends, status 1 */
+/* once the device started: the path given (1 the copy, 2 in place) is the one it took, else the test ends, status 1;
+   a device that can take the RAM neither way works on a copy in its host-visible memory, which answers for 1 and not
+   for 2, where the test has nothing to check */
 static inline void test_ctr_vk_memory_taken(int given) {
-    if (given <= 0 || snx_ctr_vk_copies() == (given == 1)) return;
+    if (given <= 0) return;
+    if (snx_ctr_vk_shadow()) {
+        if (given == 1) return;
+        fprintf(stderr, "vk_memory=2 asks for the RAM in place, and the device keeps a copy of it in its host-visible "
+                        "memory instead: no in-place path here\n");
+        exit(77);
+    }
+    if (snx_ctr_vk_copies() == (given == 1)) return;
     fprintf(stderr, "vk_memory=%d, and the device's work is %s\n", given,
             snx_ctr_vk_copies() ? "on a copy of the RAM" : "on the RAM in place");
     exit(1);

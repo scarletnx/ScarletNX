@@ -610,6 +610,7 @@ static void count(uint32_t pa, uint64_t size, int kept, int dirty) {
    recorded or in flight reads or writes a stale page's copy: it went stale on a CPU write, which waited for them */
 static void copy_in(uint32_t pa, uint64_t size, uint64_t serial) {
     VkCommandBuffer uploads = VK_NULL_HANDLE;
+    bool shadow = snx_ctr_vk_shadow();
     uint64_t end = (uint64_t)pa + size;
     for (uint64_t at = pa & ~4095u; at < end;) {
         PageState* page = page_state((uint32_t)at);
@@ -626,9 +627,13 @@ static void copy_in(uint32_t pa, uint64_t size, uint64_t serial) {
             page->copy = COPY_SAME;
             page->read = serial;
         }
-        if (!uploads) uploads = snx_vk_ring_uploads(&snx_ctr_vk()->ring);
-        VkBufferCopy c = {offset, offset, run - at};
-        vkCmdCopyBuffer(uploads, ram->buffer, ram->copy, 1, &c);
+        if (shadow)
+            memcpy(ram->map + (at - ram->base), ram->guest + (at - ram->base), (size_t)(run - at));
+        else {
+            if (!uploads) uploads = snx_vk_ring_uploads(&snx_ctr_vk()->ring);
+            VkBufferCopy c = {offset, offset, run - at};
+            vkCmdCopyBuffer(uploads, ram->buffer, ram->copy, 1, &c);
+        }
         g.traffic.copied_in += run - at;
         at = run;
     }
@@ -640,18 +645,18 @@ static void gpu_uses(uint32_t pa, uint64_t size, bool write) {
     if (!size || !snx_ctr_vk()) return;
     snx_ctr_vk_commands(); /* the open recording's slot */
     uint64_t serial = snx_ctr_vk_serial();
-    bool copies = snx_ctr_vk_copies();
+    bool copies = snx_ctr_vk_copies(), shadow = snx_ctr_vk_shadow();
     if (write)
         g.traffic.written += size;
     else
         g.traffic.read += size;
-    if (copies) copy_in(pa, size, serial);
+    if (copies || shadow) copy_in(pa, size, serial);
     for (uint64_t at = pa & ~4095u; at < (uint64_t)pa + size; at += 4096) {
         PageState* page = page_state((uint32_t)at);
         if (!page) continue;
         if (write) {
             page->write = serial;
-            if (copies) page->copy = COPY_NEWER;
+            if (copies || shadow) page->copy = COPY_NEWER;
         } else
             page->read = serial;
     }
@@ -925,6 +930,7 @@ bool snx_ctr_vk_target_image(uint32_t pa, unsigned width, unsigned height, unsig
 static void copy_out(uint32_t pa) {
     VkDeviceSize offset;
     const SnxCtrVkRam* ram = snx_ctr_vk_ram(pa, 4096, &offset);
+    bool shadow = snx_ctr_vk_shadow();
     uint32_t first = pa, last = pa;
     for (unsigned n = 0; n < 256 && first > ram->base && page_state(first - 4096)->copy == COPY_NEWER; ++n)
         first -= 4096;
@@ -932,15 +938,23 @@ static void copy_out(uint32_t pa) {
                          page_state(last + 4096)->copy == COPY_NEWER;
          ++n)
         last += 4096;
-    VkCommandBuffer cb = snx_ctr_vk_commands();
-    end_rendering(); /* a copy is not recorded inside a target's pass */
-    snx_ctr_vk_barrier(cb);
-    VkBufferCopy c = {first - ram->base, first - ram->base, (VkDeviceSize)last + 4096 - first};
-    vkCmdCopyBuffer(cb, ram->copy, ram->buffer, 1, &c);
-    (void)snx_ctr_vk_finish();
-    g.traffic.copied_out += c.size;
+    VkDeviceSize bytes = (VkDeviceSize)last + 4096 - first;
+    if (shadow) {
+        /* the GPU's writes done, then the guest's own memory gets them */
+        (void)snx_ctr_vk_finish();
+        memcpy(ram->guest + (first - ram->base), ram->map + (first - ram->base), (size_t)bytes);
+        g.traffic.copied_out += bytes;
+    } else {
+        VkCommandBuffer cb = snx_ctr_vk_commands();
+        end_rendering(); /* a copy is not recorded inside a target's pass */
+        snx_ctr_vk_barrier(cb);
+        VkBufferCopy c = {first - ram->base, first - ram->base, bytes};
+        vkCmdCopyBuffer(cb, ram->copy, ram->buffer, 1, &c);
+        (void)snx_ctr_vk_finish();
+        g.traffic.copied_out += c.size;
+    }
     for (uint64_t at = first; at <= last; at += 4096) page_state((uint32_t)at)->copy = COPY_SAME;
-    levels(first, c.size);
+    levels(first, bytes);
 }
 void snx_ctr_vk_sync(uint32_t pa, uint32_t size, bool write) {
     if (!size || !snx_ctr_vk()) return;
@@ -963,6 +977,10 @@ void snx_ctr_vk_track(void* context, uint32_t pa, SnxCtrTrackLevel level) {
     } else { /* the CPU writes it: after the GPU's reads of it, and what the GPU made of it is stale, its copy too */
         PageState* page = page_state(pa);
         if (page && page->read) (void)snx_ctr_vk_wait(page->read, UINT64_MAX);
+        if (page && page->copy == COPY_NEWER) { /* the GPU wrote it and its level is not raised yet: the CPU wins */
+            if (page->write) (void)snx_ctr_vk_wait(page->write, UINT64_MAX);
+            page->copy = COPY_STALE;
+        }
         stale(pa, 4096);
         if (page && page->copy == COPY_SAME) page->copy = COPY_STALE;
     }
@@ -1999,9 +2017,14 @@ void snx_ctr_vk_render_retire(unsigned slot, uint64_t serial) {
    device is gone */
 static void copy_every_page_back(void) {
     const SnxCtrVk* v = snx_ctr_vk();
-    if (!g.pages || !snx_ctr_vk_copies()) return;
+    bool shadow = snx_ctr_vk_shadow();
+    if (!g.pages || !(snx_ctr_vk_copies() || shadow)) return;
     uint32_t index = 0;
     bool copied = false;
+    if (shadow) { /* the GPU's submissions done, without recording what is open: nothing writes the copy the CPU reads */
+        uint64_t last = snx_ctr_vk_serial();
+        if (last > 1) (void)snx_ctr_vk_wait(last - 1, UINT64_MAX);
+    }
     for (unsigned i = 0; i < v->ram_count; ++i) {
         const SnxCtrVkRam* ram = &v->ram[i];
         for (uint32_t at = 0; at < ram->size;) {
@@ -2012,6 +2035,12 @@ static void copy_every_page_back(void) {
             }
             if (run == at) {
                 at += 4096;
+                continue;
+            }
+            if (shadow) {
+                memcpy(ram->guest + at, ram->map + at, run - at);
+                g.traffic.copied_out += run - at;
+                at = run;
                 continue;
             }
             VkCommandBuffer cb = snx_ctr_vk_commands();
