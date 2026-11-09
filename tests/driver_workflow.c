@@ -39,6 +39,17 @@ static int event(char stage) {
     CHECK(log != NULL);
     CHECK(fputc(stage, log) != EOF);
     CHECK(!fclose(log));
+    if (stage == 'G' && getenv("SNX_WORKFLOW_REMAKE") && *getenv("SNX_WORKFLOW_REMAKE")) {
+        /* the first game run says its code is another build's; the driver recompiles and runs it again */
+        FILE* seen = snx_fopen(getenv("SNX_WORKFLOW_LOG"), "r");
+        int count = 0, c;
+        if (seen) {
+            while ((c = fgetc(seen)) != EOF)
+                if (c == 'G') ++count;
+            fclose(seen);
+        }
+        if (count == 1) return SNX_EXIT_REMAKE;
+    }
     if (!fail || fail[0] != stage || !strcmp(mode, "missing")) return 0;
 #ifndef _WIN32
     if (!strcmp(mode, "interrupt")) raise(SIGINT);
@@ -942,6 +953,12 @@ int main(int argc, char** argv) {
         CHECK(!snx_remove_tree(kept_runtime));
         free(kept_runtime);
     }
+
+    /* the runtime refuses the game's code as another build's of the dump: the driver recompiles it and plays it
+       again, without the person running the same command twice */
+    set_env("SNX_WORKFLOW_REMAKE", "1");
+    run(exe, repo, dump, log, 0, "GRG", "made from other content: recompiling");
+    set_env("SNX_WORKFLOW_REMAKE", "");
 
     /* Missing/mismatched/malformed ABI stamps are never trusted, nor one another build wrote with the same ABI: an
        older version's ABI alone, another commit's, or this one's cut short or with more after it. The run says the

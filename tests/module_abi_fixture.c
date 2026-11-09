@@ -27,6 +27,8 @@ static const char* fixture_title(void) {
 #ifdef SNX_TEST_MODULE_ARM
 SNX_EXPORT const SnxArmModule* snx_module_arm(void) {
     g_module_abi_fixture.program.name = "main";
+    g_module_abi_fixture.program.base = 0x10000000;
+    g_module_abi_fixture.program.size = 0x1000;
     g_module_abi_fixture.arm.abi = fixture_abi();
     g_module_abi_fixture.arm.nmods = 1;
     g_module_abi_fixture.arm.mods = &g_module_abi_fixture.program;
@@ -36,6 +38,8 @@ SNX_EXPORT const SnxArmModule* snx_module_arm(void) {
 #else
 SNX_EXPORT const SnxModule* snx_module(void) {
     g_module_abi_fixture.program.name = "main";
+    g_module_abi_fixture.program.base = 0x10000000;
+    g_module_abi_fixture.program.size = 0x1000;
     g_module_abi_fixture.module.abi = fixture_abi();
     g_module_abi_fixture.module.nmods = 1;
     g_module_abi_fixture.module.mods = &g_module_abi_fixture.program;
