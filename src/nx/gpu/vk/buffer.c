@@ -2975,53 +2975,73 @@ static void drop_own(u32 i) {
    (vk_buf_get_window) made it hash and copy all of it, again at each submit until it held still for two checks. In
    one game's underground, where terrain streams in as the player moves, that was most of each hitch */
 #define PATCH_MIN (256u << 10)
-#define PATCH_RUNS 64
+/* The runs are copied as they are, however many: past 64 of them, they were joined into one copy from the first to the
+   end of the last, and a Switch game's city street, whose CPU writes pages all over a 64 MiB window of indices, copied
+   about 50 MB a frame that way, a quarter of its GPU thread. One patch is made at a time (vk_lock), in g_patch_r: its
+   first 256 runs in g_patch_r0, more in memory of its own */
 typedef struct {
     const u8* src;
-    VkBufferCopy r[PATCH_RUNS];
     u32 n;
-    u64 bytes;
+    int whole; /* no room for the runs: from the first to the end of the last, in one copy (r[0]) */
 } Patch;
+static VkBufferCopy g_patch_r0[256];
+static VkBufferCopy* g_patch_r = g_patch_r0;
+static u32 g_patch_cap = sizeof g_patch_r0 / sizeof *g_patch_r0;
 static void patch_note(void* user, u64 at, u64 n) {
     Patch* p = user;
-    if (p->n < PATCH_RUNS) p->r[p->n] = (VkBufferCopy){0, at, n};
-    p->n++;
-    p->bytes += n;
+    if (p->whole) {
+        g_patch_r[0].size = at + n - g_patch_r[0].dstOffset;
+        return;
+    }
+    if (p->n && g_patch_r[p->n - 1].dstOffset + g_patch_r[p->n - 1].size == at) { /* touching the last: one */
+        g_patch_r[p->n - 1].size += n;
+        return;
+    }
+    if (p->n == g_patch_cap) {
+        u32 cap = g_patch_cap * 2;
+        VkBufferCopy* r = cap <= g_patch_cap        ? NULL
+                          : g_patch_r == g_patch_r0 ? malloc((size_t)cap * sizeof *r)
+                                                    : realloc(g_patch_r, (size_t)cap * sizeof *r);
+        if (r && g_patch_r == g_patch_r0) memcpy(r, g_patch_r0, sizeof g_patch_r0);
+        if (!r) { /* the runs so far and this one in one copy */
+            p->whole = 1;
+            g_patch_r[0].size = at + n - g_patch_r[0].dstOffset;
+            p->n = 1;
+            return;
+        }
+        g_patch_r = r;
+        g_patch_cap = cap;
+    }
+    g_patch_r[p->n++] = (VkBufferCopy){0, at, n};
 }
 static int patch_apply(const Vb* e, Patch* pt);
 static int patch_own(u32 i, const u8* host, u32 since) {
     Vb* e = &g_vb[i];
     Patch pt = {.src = host};
     vk_written_runs(host, e->len, since, patch_note, &pt);
-    if (pt.n > PATCH_RUNS) { /* scattered: from the first written byte to the end of the last run, in one copy */
-        u64 o = (u64)(host - g_mem), a = pt.r[0].dstOffset, b = e->len;
-        for (u64 pg = (o + e->len - 1) >> 12; pg > o >> 12 && !page_written(pg, since); pg--) b = (pg << 12) - o;
-        pt.r[0] = (VkBufferCopy){0, a, b - a};
-        pt.n = 1;
-        pt.bytes = b - a;
-    }
     return patch_apply(e, &pt);
 }
 /* pt's runs of the entry's bytes (pt->src) copied over its own buffer: staged, then copied on the GPU */
-static int patch_apply(const Vb* e, Patch* pt0) {
-    Patch pt = *pt0;
+static int patch_apply(const Vb* e, Patch* pt) {
+    VkBufferCopy* r = g_patch_r;
     VkBuffer sb;
-    u64 so, at = 0;
+    u64 so, at = 0, bytes = 0;
     u8* p;
-    if (!pt.n) return 1;
-    if (!(p = vk_stage_upload(pt.bytes, vk_stage_align(), &sb, &so))) return 0;
-    for (u32 k = 0; k < pt.n; k++) {
-        memcpy(p + at, pt.src + pt.r[k].dstOffset, pt.r[k].size);
-        pt.r[k].srcOffset = so + at;
-        at += pt.r[k].size;
+    if (!pt->n) return 1;
+    for (u32 k = 0; k < pt->n; k++) bytes += r[k].size; /* a whole one's span is more than its runs */
+    if (!(p = vk_stage_upload(bytes, vk_stage_align(), &sb, &so))) return 0;
+    for (u32 k = 0; k < pt->n; k++) {
+        memcpy(p + at, pt->src + r[k].dstOffset, r[k].size);
+        r[k].srcOffset = so + at;
+        at += r[k].size;
     }
-    if (copy_stats_on()) g_copy_owned += pt.bytes;
+    if (copy_stats_on()) g_copy_owned += bytes;
     vk_render_end(); /* copies happen outside rendering passes */
     /* the draws recorded and submitted before read the old bytes, and an earlier patch wrote them: both are done
        before the copy writes */
     copy_barrier(VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
                  VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    rec_CmdCopyBuffer(vk_cmd(), sb, e->buf, pt.n, pt.r);
+    rec_CmdCopyBuffer(vk_cmd(), sb, e->buf, pt->n, r);
     copy_barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                  VK_ACCESS_2_MEMORY_READ_BIT);
     return 1;
@@ -3048,11 +3068,6 @@ static int patch_dirty(u32 i, u64 gva, const u8* host, u64 gw, u32 ws) {
             patch_note(&pt, a, b - a);
         }
         in = d;
-    }
-    if (pt.n > PATCH_RUNS) { /* scattered: from the first dirty byte to the end of the range, in one copy */
-        pt.r[0] = (VkBufferCopy){0, pt.r[0].dstOffset, e->len - pt.r[0].dstOffset};
-        pt.n = 1;
-        pt.bytes = pt.r[0].size;
     }
     return patch_apply(e, &pt);
 }
