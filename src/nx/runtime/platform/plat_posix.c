@@ -29,6 +29,7 @@
 #include <unistd.h>
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
+#include <pthread/qos.h>
 #include <sys/ucontext.h>
 #if !TARGET_OS_IPHONE
 #include <IOKit/ps/IOPowerSources.h>
@@ -444,6 +445,16 @@ void plat_thread_cpus(const int* ids, int n) {
     (void)n;
 }
 #endif
+void plat_thread_idle(void) {
+#if defined(__linux__)
+    /* below nice 19, which still takes a share of a CPU a game thread wants: SCHED_IDLE runs only where none does */
+    struct sched_param p = {0};
+    if (sched_setscheduler(0, SCHED_IDLE, &p))
+        WARN_LIMIT(1, "Could not lower a background thread: %s\n", strerror(errno));
+#elif defined(__APPLE__)
+    pthread_set_qos_class_self_np(QOS_CLASS_BACKGROUND, 0);
+#endif
+}
 #if defined(__linux__) && !defined(__ANDROID__)
 /* the text after "key" (and a '=' or ':' with the spaces around it) on the first line of path that starts with it,
    unquoted; out empty when there's none */

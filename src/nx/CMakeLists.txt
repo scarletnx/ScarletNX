@@ -117,7 +117,7 @@ include("${PROJECT_SOURCE_DIR}/cmake/shaderdec.cmake")
 snx_shaderdec(snx_shader)
 snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/descriptors.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
                  gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/writelog.c gpu/vk/mirror.c gpu/vk/pipeline.c gpu/vk/pipeline_file.c gpu/vk/render.c gpu/vk/release.c gpu/vk/query.c gpu/vk/xfb.c gpu/vk/display.c gpu/vk/compute.c
-                 gpu/vk/pending_pages.c gpu/vk/image_out.c gpu/vk/depth_pack.c gpu/vk/memory.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/bc7_cache.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/msaa.c gpu/vk/ui.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c gpu/vk/uma.c
+                 gpu/vk/pending_pages.c gpu/vk/image_out.c gpu/vk/depth_pack.c gpu/vk/memory.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/bc7_cache.c gpu/texture/astc_cpu.c gpu/texture/bc7_encode_cpu.cpp gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/msaa.c gpu/vk/ui.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c gpu/vk/uma.c
                  gpu/vk/ftz_probe.c gpu/vk/vertex_input.c gpu/vk/pipeline_parts.c gpu/vk/draw_texture.c gpu/vk/tess_passthrough.c
                  "${volk_SOURCE_DIR}/volk.c")
 # the ASTC decoder's, the block linear deswizzle and swizzle's, the texture conversions', the VIC composition's and
@@ -136,6 +136,10 @@ snx_glsl_spirv(snx_vk SOURCE gpu/texture/bc7.comp NAME bc7_fast_spv HEADER nx/gp
                DEFINES SNX_BC7_FAST=1)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/bc7.comp NAME bc7_mode6_spv HEADER nx/gpu/texture/bc7_spv.h
                DEFINES SNX_BC7_FAST=2)
+# mode 6 from its first line alone: a very large level's quick encode, until the background's fast build is in the
+# cache (gpu/vk/astc.c)
+snx_glsl_spirv(snx_vk SOURCE gpu/texture/bc7.comp NAME bc7_quick_spv HEADER nx/gpu/texture/bc7_spv.h
+               DEFINES SNX_BC7_FAST=3)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/blocklinear.comp NAME blocklinear_spv HEADER nx/gpu/texture/blocklinear_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_spv HEADER nx/gpu/texture/texconv_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/video/vic.comp NAME vic_spv HEADER nx/gpu/video/vic_spv.h)
@@ -393,13 +397,14 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         set(snx_astc_plat runtime/platform/plat_posix.c runtime/platform/plat_sdl.c)
     endif()
     add_executable(snx-test-astc-vulkan "${PROJECT_SOURCE_DIR}/tests/astc_vulkan.c" "${PROJECT_SOURCE_DIR}/tests/tracy_stubs.c"
-        "${PROJECT_SOURCE_DIR}/tests/support/astc.c" gpu/vk/astc.c gpu/vk/bc7_cache.c
+        gpu/texture/astc_cpu.c gpu/texture/bc7_encode_cpu.cpp gpu/vk/astc.c gpu/vk/bc7_cache.c
         gpu/vk/blocklinear.c gpu/texture/blocklinear.c gpu/vk/texconv.c "${PROJECT_SOURCE_DIR}/tests/support/etc2.c"
         "${PROJECT_SOURCE_DIR}/tests/support/bcn.c"
         gpu/vk/cmd.c gpu/vk/descriptors.c gpu/vk/memory.c gpu/vk/record.c gpu/vk/vma.cpp ${snx_astc_plat} "${volk_SOURCE_DIR}/volk.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/blocklinear_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/bc7_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/bc7_fast_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/bc7_mode6_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/bc7_quick_spv.c"
         "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp")
     target_include_directories(snx-test-astc-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests/glsl")
     target_link_libraries(snx-test-astc-vulkan PRIVATE snx_nx_flags scarletnx-filesystem snx_xxhash Threads::Threads

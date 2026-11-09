@@ -51,6 +51,10 @@ void plat_thread_exit(void); /* ends the calling thread (one plat_thread started
 int plat_cpus(int* ids, int max);
 /* the calling thread runs only on the n host CPUs in ids */
 void plat_thread_cpus(const int* ids, int n);
+/* the calling thread runs only where a CPU has nothing else to run: background work the game must not wait for (the
+   BC7 encodes of vk/astc.c). Linux's and Android's SCHED_IDLE, macOS's and iOS's background QoS class, Windows' idle
+   priority; nothing elsewhere */
+void plat_thread_idle(void);
 /* the host for the log's header, so a report needn't describe it: "<OS and version>, <CPU>, <n> threads, <n> GB RAM",
    the CPU left out where the host doesn't name it. Nothing that names the machine or its user */
 void plat_system_info(char* out, size_t cap);

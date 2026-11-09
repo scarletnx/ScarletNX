@@ -18,6 +18,9 @@
    writes the same file */
 #include <stdlib.h>
 #include <string.h>
+#if defined(__linux__)
+#include <fcntl.h>
+#endif
 #include "common/utilities/bits.h"
 #include "common/utilities/common.h"
 #include "nx/runtime/platform/log.h"
@@ -189,6 +192,12 @@ int vk_bc7_cache_open(const char* path, const u64 version[2], u64 max) {
         bc7_off("a record cut short could not be cut off");
         return 0;
     }
+#if defined(__linux__)
+    /* a hit reads one level's records, wherever they lie: the kernel's readahead past them (64 MiB a read on one USB
+       disk of 40 MB/s) took that disk from the game's own reads for seconds while a very large level's pieces loaded
+       (astc.c's bg_load) */
+    posix_fadvise(fileno(g_bc7_cache.f), 0, 0, POSIX_FADV_RANDOM);
+#endif
     LOG("vulkan: the BC7 cache %s holds %u levels of %llu MB\n", path, g_bc7_cache.used,
         (unsigned long long)(bytes >> 20));
     return 1;

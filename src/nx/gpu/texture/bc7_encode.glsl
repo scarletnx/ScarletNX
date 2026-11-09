@@ -75,9 +75,16 @@ uint sh_mask;
 /* the fast build (1), for large uploads (vk/astc.c): a block whose mode 6 error is SNX_BC7_ENOUGH or less keeps it,
    the others try every mode; 2 is mode 6 alone, for the largest. The full build keeps mode 6 only where it is exact. 256 is the squared error summed over the
    16 texels and 4 channels, 2 a channel on average: on one game's ASTC textures 96% of the blocks kept mode 6, and the
-   worst error of mode 6 alone (147 to 239 a channel) came down to that of the full build (50 to 68) */
+   worst error of mode 6 alone (147 to 239 a channel) came down to that of the full build (50 to 68). 3 is mode 6
+   from its first line alone, the box pulled in (SNX_BC7_LINES): the quick encode of a very large level, which the
+   frame that first needs it waits for, until the background's fast build takes its place (vk/astc.c) */
 #ifndef SNX_BC7_FAST
 #define SNX_BC7_FAST 0
+#endif
+#if SNX_BC7_FAST == 3
+#define SNX_BC7_LINES 1u
+#else
+#define SNX_BC7_LINES 4u
 #endif
 #define SNX_BC7_ENOUGH (SNX_BC7_FAST == 1 ? 256u : 0u)
 /* modes 4 and 5 are tried unless this is 0: tests/glsl/bc7_glsl.cpp builds the encoder without them as well, to
@@ -416,7 +423,7 @@ void FitSubset(uint s) {
     /* the lines tried, in turn: the box pulled in, the box, then a least squares fit to the weights chosen, twice.
        One call of Try in a loop, not one a line: the compiler inlines each call, and the copies' registers (the
        whole encoder's, as each shape inlines this too) made the GPU spill and run fewer blocks at once */
-    for (uint step = 0u; step < 4u; step++) {
+    for (uint step = 0u; step < SNX_BC7_LINES; step++) {
         int e0 = a0 + i0, e1 = a1 + i1, e2 = a2 + i2, e3 = a3 + i3;
         int f0 = b0 - i0, f1 = b1 - i1, f2 = b2 - i2, f3 = b3 - i3;
         if (step == 1u) {
@@ -737,7 +744,7 @@ uvec4 Encode() {
     uint first = 0u, second = 1u, third = 0u;
     for (uint j = 0u; j < jobs; j++) {
         if (j == 1u) {
-            if (SNX_BC7_FAST == 2 || best_err <= SNX_BC7_ENOUGH) break;
+            if (SNX_BC7_FAST == 2 || SNX_BC7_FAST == 3 || best_err <= SNX_BC7_ENOUGH) break;
             BlockSums();
             const uint alpha = opaque ? 0u : 1u;
             uint f_cost = 0xFFFFFFFFu, s_cost = 0xFFFFFFFFu;

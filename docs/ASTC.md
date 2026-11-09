@@ -9,6 +9,7 @@
 * [The upload path](#the-upload-path)
 * [Encoded again as BC7](#encoded-again-as-bc7)
   * [The BC7 cache](#the-bc7-cache)
+  * [Very large levels](#very-large-levels)
 * [Textures bigger than one allocation](#textures-bigger-than-one-allocation)
 * [Sparse textures](#sparse-textures)
 * [Building the shader](#building-the-shader)
@@ -16,9 +17,10 @@
 
 ASTC textures are decoded on the GPU by a compute shader, `src/nx/gpu/texture/astc.comp` with its body in
 `astc_decode.glsl`. It is a GLSL port of Eden's `src/video_core/host_shaders/astc_decoder.comp` (GPL-3.0-or-later, with yuzu's GPL-2.0-or-later parts). The
-CPU decoder in `tests/support/astc.c` is a C port of Eden's `src/video_core/textures/astc.cpp`, which
-carries the University of North Carolina at Chapel Hill's Apache-2.0 decoder (FasTC). The runtime does not link
-the CPU decoder. The tests use it as the reference the shader must match byte for byte.
+CPU decoder in `src/nx/gpu/texture/astc_cpu.c` is a C port of Eden's `src/video_core/textures/astc.cpp`, which
+carries the University of North Carolina at Chapel Hill's Apache-2.0 decoder (FasTC). The tests use it as the
+reference the shader must match byte for byte, and the runtime runs it only for the background encodes on the CPU
+([Very large levels](#very-large-levels)).
 
 ## The shader
 
@@ -42,7 +44,8 @@ where the loop took about 45.
 `astc.comp` holds only the declarations: the workgroup size, the footprint, the push constants, the two buffers and
 the tile in shared memory (39 words a block, 9984 bytes). The decoder is `astc_decode.glsl`, which it includes, written in the part
 of GLSL that is also C++ so that the tests run the same file on the CPU (see Tests). The rules are at the top of
-`tests/glsl/glsl.hpp`.
+`src/nx/gpu/texture/glsl.hpp` (`tests/glsl/glsl.hpp` includes it), which the runtime's BC7 encodes on the CPU run
+the encoder's body through too.
 
 ### Written for the machine
 
@@ -205,7 +208,9 @@ mode 6, and only the others try every mode, where the full build keeps mode 6 on
 `VK_BC7_MODE6_TEXELS` (8192x8192) or more takes mode 6 alone, `bc7_mode6_spv` (`SNX_BC7_FAST` 2). On a
 GeForce RTX 2080 an 8192x8192 level of random 8x8 blocks (`snx-test-astc-vulkan --bench`) decoded in 15 ms and
 encoded in 860 ms with every mode and in 48 ms with mode 6 alone; the game above needed about a thousand million
-texels at once.
+texels at once. Both rules count a layer, as a sparse texture's layers are loaded one at a time. A level that is not
+sparse and has `astc_quick_mtexels` megatexels or more, all its layers counted, takes the quick build instead and the
+fast build later ([Very large levels](#very-large-levels)).
 
 The fast build was mode 6 alone, which holds gradients but not edges: on the picture below gradients at 43 dB, edges
 at 26, noise at 25 and alpha at 40, and on astcenc's normal maps (luminance and alpha apart) errors of up to 239 a
@@ -297,8 +302,8 @@ so a later run hits from its start.
   (`vk_stage_back`, host-cached memory), with a barrier to the host after the last strip. When that submission is
   done, `cmd.c`'s landing (`vk_astc_frame_done`) appends the blocks to the file. The GPU thread never waits for
   them. Blocks in flight are bounded to `VK_BC7_CAPTURE_BYTES` (32 MiB), which bounds the ring's growth. That is also
-  the largest level the cache takes (a 4096x4096 level is 16 MiB). A larger level is encoded each time, as before
-  (from 8192x8192, it is mode 6 alone).
+  the largest whole level the cache takes (a 4096x4096 level is 16 MiB). A very large level goes in pieces instead
+  (below), and a larger one with the quick encode off (`astc_quick_mtexels=0`) is encoded each time, as before.
 - **Memory:** only the index stays in RAM, 32 bytes a level, and one 1 MiB buffer for the reads. The blocks stay in
   the file (and the system's page cache).
 - **Disk:** the file has a bound of `VK_BC7_CACHE_MAX` (4 GiB). A record that would go past it starts the file over.
@@ -308,6 +313,88 @@ so a later run hits from its start.
 RGBA8 levels are not cached. Their decode is the cheap part: an 8192x8192 level decoded in 15 ms on the RTX 2080,
 about 1 ms per 4096x4096 level. As RGBA8, a cached 4096x4096 level would be 64 MiB to read from the file and to
 copy through staging and across PCIe. That is several times what the decode costs.
+
+
+### Very large levels
+
+One game's first 3D frame uploads two 1365x1365 ASTC 4x4 arrays of 90 layers: their first levels are 168 MB of BC7
+blocks each, 447 megatexels with their mips. Its blocks are the encoder's worst kind, most of them trying every mode,
+and the fast build took a Radeon 890M 92 ms a strip of two layers: the frame took 10.1 seconds, and in one submission
+it had reset the GPU (amdgpu's 2 second job timeout, which `split_before` now keeps every submission well under). The
+rules above counted one layer (1.9 megatexels), and the levels were past what the cache took, so every run paid it
+again. A level of `astc_quick_mtexels` megatexels or more (8 by default: a 4096x2048 level, or two layers of
+2048x2048), every layer of a 2D array and every slice of a 3D level counted, now goes another way:
+
+- **Now:** the frame that needs it takes the quick build, `bc7_quick_spv` (`SNX_BC7_FAST` 3): mode 6 from its first
+  line alone, the bounding box pulled in, where mode 6 alone also tries the box and two least squares fits. The two
+  arrays took 0.46 s of the GPU in all (258 dispatches of 1.8 ms, the smaller levels' fast build included), where mode
+  6 alone took 1.1 s and the fast build 10.1; the frames that uploaded them took 0.42 and 0.47 s. Beside each strip's
+  decode, its ASTC blocks, as the decoder read them, are copied on the GPU into the level's snapshot, a buffer in host
+  memory (`bg_job_new`, at most 1 GiB of them at once).
+- **In the background:** the fast build is made from the snapshot, never from guest memory again, so what is stored
+  under the key is what the key names even when the game changes, moves or drops the texture meanwhile. The level is
+  cut in pieces of at most 256 KiB of blocks (`Bc7Pieces`): whole layers or slices when one is smaller, else bands of
+  block rows, whose height is a multiple of the rows that start on a row of ASTC blocks too. The level's size and
+  footprint alone place them, and each is a record of the cache under a key of its own (the level's key, with the
+  fast build's, and where the piece lies), so the cache takes a level of any size. With `astc_background=2`, the
+  default, the GPU encodes one piece after each present, in a submission of its own after the frame's
+  (`vk_astc_background`), the next once that one is done. Each piece also goes into the texture, while it holds the
+  upload the background started from: another upload of that level, a copy of render targets into it or its end
+  (`vk_astc_forget`) stops that, and the pieces then go to the cache alone. This run shows the better blocks as they
+  come, and a texture uploaded again before the end (an eviction) finds its piece in the cache, or the background
+  goes on into the new image.
+- **The next run:** an upload whose pieces are all in the cache copies them into the image, with no decode and no
+  encode. One piece missing (a run ended before the background did) encodes the level quickly again, and the
+  background makes only the missing pieces. The reads run on the GPU thread, which the frame waits for: 21 ms for a
+  168 MB level in the system's page cache, but 4.2 s from that laptop's game disk, an NVMe drive in a USB enclosure
+  that reads 40 MB/s (`dd iflag=direct`: it runs at USB 2 speed). So a frame's hits read for 100 ms at most
+  (`BG_HIT_NS`): past that a level is encoded quickly, and the pieces the cache holds load into the texture after
+  the presents that follow, 2 ms of reads after each (at least a piece: 6.5 ms from that disk), `vk_astc_background`.
+  The file is read without the kernel's readahead (`POSIX_FADV_RANDOM`, on Linux): that disk's (64 MiB) streamed the
+  loads at its full 40 MB/s, which starved the game's own reads, 2.4 frames a second while the 1890 pieces loaded in
+  15 s; without it they take 100 s, a piece a frame, at 4 frames a second for the scene's first 10 s and its usual
+  rate after. With the file out of the page cache the scene's worst frame was still 3 s, of which the very large
+  levels took 0.1 s; the rest is not measured apart, and is likely the whole levels the cache gives the scene's other
+  textures (some 60 MB, read that way since the cache began) and the game's own reads from the same disk.
+
+On the 890M in that game's first 3D scene (the 3D picture is wrong there for other reasons, and its frame rate climbs
+over the scene's first 40 seconds as the game streams):
+
+| | Before | GPU background (first run) | Cache hit (next run) | CPU background, 2 threads (first run) |
+| --- | --- | --- | --- | --- |
+| The frame that uploads the arrays | 10,123 ms | 417 ms, then 471 | under 250 ms (the hits: 56 ms of the GPU thread, the pieces in the page cache) | 422 ms, then 474 |
+| Frames a second, 37 to 87 s after the scene starts | 15.4 | 15.0 | 15.9 | 13.8 |
+| Frames a second, 87 to 137 s after | 16.0 | 15.2 | 17.9 | 14.0 |
+| The background | none | 133 s for 1890 pieces, 2 to 10 ms of the GPU a frame, 13 s of GPU time in all | none | 62% done after 230 s, 416 s of CPU time |
+
+The GPU had room: before, it was busy 27 ms of each 57 ms frame, and a piece of the background made that 36. The frame
+rates' differences are within what runs vary by: runs without any background gave 15.4 to 17.9 in the same windows.
+Copying each piece into the texture as well (the build after these runs) left the background's cost a frame and its
+length (138 s) the same. The game was run capped to four CPUs (a cgroup quota of 400%), as all our test runs are: its
+own threads took 2 to 2.3 of them in that scene, so even two workers at idle priority used up the cap and held the
+game back, and six (a quarter of the 24 threads, `astc_background_threads=0`) brought it down to 3 to 6 frames a
+second. Without such a cap, idle priority leaves the game its CPUs, but the cost stays: on that game's blocks a Zen 5
+core encodes 0.7 megatexels a second, so the two arrays take 10 minutes of CPU time where the GPU spends 13 seconds,
+with the power and fan noise that come with it. `astc_background=1` is for a game that the GPU holds back, on a
+computer with cores to spare. Its blocks are the GPU's byte for byte (integer arithmetic only), so they are stored
+under the same keys: the CPU decoder (`astc_cpu.c`) and the encoder's body run through `glsl.hpp`
+(`gpu/texture/bc7_encode_cpu.cpp`), which the tests hold to the GPU's bytes.
+
+Why 8 megatexels: at that game's rate (25 ns a texel, most blocks trying every mode), the fast build of a level under
+it costs the frame at most about 200 ms on the 890M, and a tenth of that on blocks mode 6 holds (an albedo map); a game
+has many 2048x2048 levels (4 megatexels), which keep the fast build and the whole level's record of the cache, records earlier
+runs made included. Each quick level shows the quick build until the background reaches its pieces, one a frame, so
+a lower bound (4 takes those in) trades those levels' first frames' hitches for their quick blocks a while longer.
+That game's arrays are past either bound: their levels of 160, 40 and 10 megatexels go quick, the next (2.5) takes
+the fast build. A level between 8 megatexels and `VK_BC7_CAPTURE_BYTES` that earlier runs cached whole is encoded
+quickly once more, and its pieces stored, as its old record is not the pieces'.
+
+The pieces of the two arrays' quick levels, 450 MB, took the cache's file from 181 to 631 MB (1890 records more in
+its index, 32 bytes each in memory).
+
+| The quick build on edenprobe's astcimage picture | Gradients | Edges | Noise | Alpha |
+| --- | --- | --- | --- | --- |
+| PSNR, against mode 6 alone | 42.7 dB (43.2) | 23.1 (26.2) | 24.7 (25.2) | 32.4 (40.0) |
 
 ## Textures bigger than one allocation
 
@@ -358,7 +445,7 @@ separate SPIRV-Tools is needed.
   illegal block at each error exit, HDR partitions, color data cut short inside a trit or quint group under every
   value of the unallocated bits, the color value limits, void extents with their bounds in and out of order, and
   astcenc's blocks.
-- `astc_glsl` (ctest, no GPU) runs `astc_decode.glsl` on the CPU through `tests/glsl/glsl.hpp`, compiled as C++, and
+- `astc_glsl` (ctest, no GPU) runs `astc_decode.glsl` on the CPU through `glsl.hpp`, compiled as C++, and
   compares it byte for byte with the CPU decoder: all 14 footprints in both decode modes, random blocks through all
   2048 block modes, sizes that are not a multiple of the footprint, strips of several slices, and all 7 tile
   shapes. Each invocation of a workgroup runs on a thread of its own and they meet at a `std::barrier`, so a race
@@ -392,8 +479,9 @@ separate SPIRV-Tools is needed.
   blocks that lie on a line mode 6 holds and blocks each other mode holds (modes 4 and 5 in each rotation and index
   selection) come back exact, blocks with one channel apart come back closer than the same encoder built without
   modes 4 and 5 brings them (`SNX_BC7_MODES_4_5` 0, `bc7_encode_cpu_without_45`), edenprobe's astcimage picture comes
-  back no worse than the PSNR each region is held to (its fast build, `bc7_encode_cpu_fast`, to floors of its own),
-  and a 13x7 image of three slices encodes slice by slice as each alone.
+  back no worse than the PSNR each region is held to (its fast build, `bc7_encode_cpu_fast`, its build of mode 6 alone
+  and its quick build, `bc7_encode_cpu_quick`, to floors of their own), and a 13x7 image of three slices encodes slice
+  by slice as each alone.
   `astc_vulkan` checks `vk_astc_as_bc7`: RGBA8 without pressure, BC7 from 256x256 texels under it but never 3D, BC7
   with holes always. `astc_vulkan` and `astc_vulkan_pieces` also upload random blocks into BC7 images, footprints whose strips step
   4, 2 and 1 block rows, with mips, layers, slices and many strips, and a level of `VK_BC7_FAST_TEXELS` that the
@@ -414,6 +502,14 @@ separate SPIRV-Tools is needed.
   second, and the third after the file is opened again, encode nothing (`vk_astc_stats` counts the levels and the
   hits), and their image bytes are the same as the first's, byte for byte. A changed block misses. `--bench` also
   times the cache: an encode that stores, then hits.
+- `astc_vulkan` and `astc_vulkan_pieces` also upload very large levels (`astc_quick_mtexels=1` there, a megatexel):
+  bands of block rows of 4x4 and 6x6 blocks (whose bands step 3 rows) and pieces of several layers, once with the
+  background on the CPU and once on the GPU. The first upload's image is the quick build of the CPU decoder's texels,
+  byte for byte, and the level goes to the background; once it is done (`vk_astc_background_drain`), the next upload,
+  and one after the file is opened again, copy the pieces, which are the fast build of the whole level byte for byte:
+  the CPU's and the GPU's pieces are the same. An image kept alive while the background runs ends up with the fast
+  build too, from the pieces it copied into it. On the GPU, a background stopped after one piece leaves it in the
+  cache, and the next makes only the others.
 
 The CPU decoder was also compared with ARM's astcenc 5.7.0 (`astcenc -dl` and `-dH`, Apache-2.0, a release binary
 used only as a tool), on the same kind of random blocks for every footprint. Every texel agreed within one step of

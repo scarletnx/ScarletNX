@@ -269,6 +269,35 @@ setting ASTC mode
     help later run loads them from the BC7 cache. Exact = they are decoded to RGBA8, exactly as the game's blocks
     help decode, in four times the memory. Where the GPU samples ASTC it does nothing. It takes the place of astc_bc,
     help whose 1 was Auto
+setting ASTC quick Mtexels
+    label Very large ASTC textures from (megatexels)
+    key astc_quick_mtexels
+    int 0 4096
+    default 8
+    words Never|#
+    help With ASTC textures as BC7 (Auto), a texture level of this many megatexels or more, all its layers counted
+    help (8 = 4096x2048, or two layers of 2048x2048), is encoded quickly where the game first needs it, with softer
+    help edges, and its better version is made in the background (ASTC background): it replaces the quick one as it
+    help comes and is kept in the BC7 cache, which the next run loads. 0 = never: every level takes the better encode
+    help at once, which can stop the game for seconds on a big texture array
+setting ASTC background
+    label Better ASTC textures made by
+    key astc_background
+    int 0 2
+    default 2
+    words Nobody|CPU|GPU
+    help Who makes the better version of the very large ASTC textures encoded quickly (ASTC quick Mtexels): 2 = the
+    help GPU, a piece after each frame; 1 = worker threads that run only where a CPU has nothing else to do, for a game
+    help the GPU holds back on a computer with cores to spare (one game's took them 10 minutes of CPU time where the
+    help GPU took 13 seconds); 0 = nobody: they stay as they were encoded quickly
+setting ASTC background threads
+    label Threads for better ASTC textures
+    key astc_background_threads
+    int 0 32
+    default 0
+    words Auto|#
+    help The worker threads of ASTC background's CPU: 0 = a quarter of the computer's threads, one to eight;
+    help 1 to 32 = that many. They take only CPUs the game leaves idle
 
 table g_performance_ini
 setting FPS limit

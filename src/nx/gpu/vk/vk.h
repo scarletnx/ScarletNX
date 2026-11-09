@@ -463,6 +463,8 @@ void vk_submit_open(void);
    frame keeps its slot, so a draw's or a dispatch's setup can call it (they set themselves up again after a submit).
    The caller records the rest in the next vk_cmd, a new command buffer */
 void vk_submit_split(void);
+/* the same for a piece of a background encode, after a present's submission (astc.c), counted apart */
+void vk_submit_background(void);
 /* the renderer's ready (renderer.h): the GPU's work on the slot the next frame records in, waited for without vk_lock
    (none when this thread holds it) */
 void vk_frame_ready(void);
@@ -1160,8 +1162,27 @@ typedef int (*VkAstcRows)(void* ctx, VkCommandBuffer* cb, u32 z, u32 nz, u32 y, 
 int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h, u32 depth, u32 level, u32 layer, u32 layers,
                    VkAstcRows rows, void* ctx, const u64* content);
 /* whether a level of t of w x h texels and depth slices or layers goes through the BC7 cache: a BC7 image of a texture
-   mapped whole, the cache open, and blocks of VK_BC7_CAPTURE_BYTES or less */
+   mapped whole, the cache open, and blocks of VK_BC7_CAPTURE_BYTES or less, or a very large level (astc_quick_mtexels),
+   whose fast build goes in pieces */
 int vk_astc_cached(const Surf* t, u32 w, u32 h, u32 depth);
+/* The background encodes of very large levels (astc.c), after a present's submission (vk_lock): the pieces the
+   workers encoded stored, the levels whose pieces are all stored ended (their snapshots freed), and with
+   astc_background=2 a piece encoded on the GPU in a submission of its own once the last one is done */
+void vk_astc_background(void);
+/* until every background encode is done (tests: there are no presents) */
+void vk_astc_background_drain(void);
+/* t's image no longer holds what the upload of a level wrote there (another upload of it), or of any (~0u: t is freed):
+   the background encodes of those levels go on, into the cache alone */
+void vk_astc_forget(const Surf* t, u32 level);
+/* very large levels encoded quickly, those given to the background and those it finished, those still in it, and
+   those whose fast build came from the cache; the pieces stored, the workers' CPU time, the pieces the GPU encoded,
+   those loaded from the cache after a hit ran out of time, and the workers started */
+typedef struct {
+    u64 quick, made, finished, pending, hits, stored, cpu_ns, gpu_pieces, loaded, threads;
+} VkAstcBackground;
+void vk_astc_background_stats(VkAstcBackground* s);
+/* the time a very large level's hit may take reading its pieces, ns (astc.c's BG_HIT_NS; tests set it) */
+extern u64 g_vk_astc_hit_ns;
 /* the BC7 cache of this game and device in the file at path, its records' version made of the encoder's (and the
    decoder's) SPIR-V, VK_BC7_ENCODER_VERSION and the GPU and its driver (pipeline.c, where the GPU samples BCn but not
    ASTC) */
@@ -1899,7 +1920,7 @@ void vk_gpuprof_pass_begin(VkCommandBuffer cb, const Surf* rt, const Surf* zt);
 void vk_gpuprof_pass_end(VkCommandBuffer cb);
 /* why cmd.c submitted the frame's commands: a present, a vk_finish, the 1 ms of recording a submission holds at most
    (vk_frame_check), a readback of GPU-owned memory, the end of a frame's slot, a long piece of work cut into
-   submissions (vk_submit_split), or anything else */
+   submissions (vk_submit_split), a background encode's piece (vk_submit_background), or anything else */
 enum {
     VK_SUB_OTHER,
     VK_SUB_PRESENT,
@@ -1908,6 +1929,7 @@ enum {
     VK_SUB_READBACK,
     VK_SUB_FRAME,
     VK_SUB_SPLIT,
+    VK_SUB_BACKGROUND,
     VK_SUB_N
 };
 /* what the GPU thread waits for the graphics timeline for: a vk_finish, a frame slot's previous use, or one submission
@@ -1926,8 +1948,26 @@ int vk_gpuprof_op_begin(VkCommandBuffer cb, u32 kind, u64 key, u64 bytes);
 void vk_gpuprof_op_end(VkCommandBuffer cb);
 const void* vk_gpuprof_base(void);
 int vk_gpuprof_profiled(VkCommandBuffer cb); /* cb is the frame's command buffer the profile times */
-#define VK_PROF_ASTC 1 /* the ASTC decode (astc.comp) */
-#define VK_PROF_BC7  2 /* its BC7 encode (bc7.comp) */
+/* the renderer's own compute pipelines, a tag each, which gpuprof.c names: small numbers, which no program's key is in
+   practice. A dispatch recorded with no tag counts as VK_PROF_NONE */
+enum {
+    VK_PROF_NONE,
+    VK_PROF_ASTC,            /* the ASTC decode (astc.comp) */
+    VK_PROF_BC7,             /* its BC7 encode (bc7.comp) */
+    VK_PROF_BC7_BACKGROUND,  /* a very large level's decode and fast build in the background (astc.c) */
+    VK_PROF_MIRROR_FOLD,     /* a dispatch's write log into the GPU mirror's mask (mirror_fold.comp) */
+    VK_PROF_MIRROR_HARVEST,  /* the mirror's pages written in a submit, out for landing (mirror_harvest.comp) */
+    VK_PROF_WLOG_MERGE,      /* a logged result written back on the GPU (wlog_merge.comp) */
+    VK_PROF_BL_MOVE,         /* a block linear move (blocklinear.c) */
+    VK_PROF_DEPTH_PACK,      /* a depth target packed into guest layout (depth_pack.comp) */
+    VK_PROF_TEXCONV,         /* a texture format converted (texconv.comp) */
+    VK_PROF_VIC,             /* a VIC composition (vic.c) */
+    VK_PROF_XFB_INDIRECT,    /* a transform feedback counter's draw arguments (xfb_indirect.comp) */
+    VK_PROF_QUERY_PREDICATE, /* the queries' predicates (query_predicate.comp) */
+    VK_PROF_QUERY_COMPARE,   /* a query compare (query_compare.comp) */
+    VK_PROF_QUERY_COUNT,     /* the queries' counts (query_count.comp) */
+    VK_PROF_N
+};
 void vk_gpuprof_cb_begin(VkCommandBuffer cb);
 void vk_gpuprof_cb_end(VkCommandBuffer cb, int why, u64 value);
 void vk_gpuprof_waited(u64 value, int kind);

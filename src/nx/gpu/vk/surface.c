@@ -1838,6 +1838,7 @@ int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
 /* a surface's image and views go when the frame being recorded is done (descriptors in it may name them) */
 static void surf_free(Surf* s) {
     surf_changed(s->gva);
+    vk_astc_forget(s, ~0u); /* the background encodes of its levels stop writing into it */
     if (s->lru) {
         g_held[lru_kind(s)].n--;
         g_held[lru_kind(s)].bytes -= s->bytes;

@@ -202,6 +202,7 @@ void plat_thread_cpus(const int* ids, int n) {
     (void)ids;
     (void)n;
 }
+void plat_thread_idle(void) { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE); }
 typedef LONG(WINAPI* RtlGetVersionFn)(RTL_OSVERSIONINFOW*);
 void plat_system_info(char* out, size_t cap) {
     static const char key[] = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";

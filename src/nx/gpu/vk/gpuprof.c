@@ -540,7 +540,8 @@ int vk_gpuprof_clock(i64* cpu, i64* gpu) {
 /* the graphics queue's busy and idle time over the report's window, a frame (present) at a time, and the CPU's waits
    for the GPU by kind (cmd.c) */
 static void gp_idle_report(void) {
-    static const char* const why[VK_SUB_N] = {"other", "present", "finish", "1 ms", "readback", "frame end", "split"};
+    static const char* const why[VK_SUB_N] = {"other",    "present",   "finish", "1 ms",
+                                              "readback", "frame end", "split",  "background"};
     static const char* const wait[VK_WAIT_N] = {"finish", "frame slot reuse", "a release or result's submit"};
     static u64 wait0[VK_WAIT_N], waits0[VK_WAIT_N], cs0;
     u64 now = plat_ns(), presents = (u32)(g_vk_present - g_present0), wall = now - g_t0;
@@ -631,6 +632,22 @@ static void gp_report(void) {
     /* the dispatches by tag: compute programs by key (vulkan: compute KEY ready), the ASTC decode and BC7 encode, and
        the renderer's own (0) */
     if (g_disps) {
+        static const char* const own[VK_PROF_N] = {[VK_PROF_NONE] = "untagged",
+                                                   [VK_PROF_ASTC] = "the ASTC decode",
+                                                   [VK_PROF_BC7] = "the BC7 encode",
+                                                   [VK_PROF_BC7_BACKGROUND] = "the background's ASTC decode and BC7 "
+                                                                              "encode",
+                                                   [VK_PROF_MIRROR_FOLD] = "the GPU mirror's fold",
+                                                   [VK_PROF_MIRROR_HARVEST] = "the GPU mirror's harvest",
+                                                   [VK_PROF_WLOG_MERGE] = "the write log's merge",
+                                                   [VK_PROF_BL_MOVE] = "a block linear move",
+                                                   [VK_PROF_DEPTH_PACK] = "the depth pack",
+                                                   [VK_PROF_TEXCONV] = "a texture conversion",
+                                                   [VK_PROF_VIC] = "a VIC composition",
+                                                   [VK_PROF_XFB_INDIRECT] = "transform feedback's draw arguments",
+                                                   [VK_PROF_QUERY_PREDICATE] = "the queries' predicates",
+                                                   [VK_PROF_QUERY_COMPARE] = "a query compare",
+                                                   [VK_PROF_QUERY_COUNT] = "the queries' counts"};
         static GpDKey ds[GP_DKEYS];
         memcpy(ds, g_dkey, sizeof ds);
         qsort(ds, GP_DKEYS, sizeof *ds, dkey_cmp);

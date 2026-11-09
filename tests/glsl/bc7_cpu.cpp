@@ -46,6 +46,16 @@ struct EncoderMode6 : Invocation {
     leuvec4* bc7_blocks;
 #include "nx/gpu/texture/bc7_encode.glsl"
 };
+// mode 6 from one line, vk/astc.c's quick encode of a very large level
+#undef SNX_BC7_FAST
+#define SNX_BC7_FAST 3
+#undef SNX_BC7_LINES
+struct EncoderQuick : Invocation {
+    uint width, height, blocks_x, blocks_y;
+    const leuint* rgba;
+    leuvec4* bc7_blocks;
+#include "nx/gpu/texture/bc7_encode.glsl"
+};
 } // namespace bc7_shader
 
 extern "C" uint32_t bc7_weight_cpu(uint32_t bits, uint32_t index) {
@@ -109,4 +119,8 @@ extern "C" void bc7_encode_cpu_fast(const uint8_t* rgba, uint32_t w, uint32_t h,
 
 extern "C" void bc7_encode_cpu_mode6(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out) {
     encode<bc7_shader::EncoderMode6>(rgba, w, h, depth, out);
+}
+
+extern "C" void bc7_encode_cpu_quick(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out) {
+    encode<bc7_shader::EncoderQuick>(rgba, w, h, depth, out);
 }
