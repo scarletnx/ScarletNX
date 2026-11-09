@@ -3698,6 +3698,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         case SM86_LDSM: ldsm(c, in); return;
         case SM86_MOVM: movm(c, in); return;
         case SM86_KILL:
+            c->si->has_discard = 1; /* the renderer tests depth before the program only for one that keeps its pixels */
             spv_emit_capability(&c->e, SPV_CAPABILITY_DEMOTE_TO_HELPER_INVOCATION);
             spv_emit_demote(&c->e);
             return;
