@@ -236,11 +236,10 @@ void DecodeSequence(uint kind, uint b, uint count) {
     }
 }
 
+/* the partition hash of the ASTC specification: its p -= p << 17, p += p << 7, p += p << 4 are one multiply by
+   (1 - 2^17)(1 + 2^7)(1 + 2^4) = 4007528593 mod 2^32, the same for every input */
 uint Hash52(uint p) {
-    p ^= p >> 15u;
-    p -= p << 17u;
-    p += p << 7u;
-    p += p << 4u;
+    p = (p ^ (p >> 15u)) * 4007528593u;
     p ^= p >> 5u;
     p += p << 16u;
     p ^= p >> 7u;
