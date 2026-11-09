@@ -74,8 +74,10 @@ page cache.
   trap lets go is mapped with `UFFDIO_CONTINUE` and registered for write tracking again while no scan runs: it reads as
   written once, with what the woken thread writes.
 - `UFFD_USER_MODE_ONLY` (needed without privileges) means a system call that reads or writes an owned page from the
-  kernel gets EFAULT rather than a fault. Every system call that takes a guest pointer (files, sockets, TLS) and
-  `pread`/`pwrite` on the pool first acquires the range (`own_acquire`).
+  kernel gets EFAULT rather than a fault. Every system call that takes a guest pointer and `pread`/`pwrite` on the
+  pool first acquires the range (`own_acquire`): fs.c's IFile Read and Write and IStorage Read (the RomFS, a DLC's,
+  a file's), bsd.c's receives and sends. The rest copy through host buffers or touch guest memory in user mode
+  (TLS through OpenSSL, DNS, LDN, audio, the services' replies), which faults and lands.
 - Kernel features: minor faults on shmem 5.13, user mode only 5.11, write tracking's asynchronous write protect and
   `PAGEMAP_SCAN` 6.7. Debian 13 (6.12) has all of them.
 - To be settled by tests before anything depends on it: a minor fault still arrives on a span that write tracking
@@ -91,9 +93,56 @@ macOS have no alias pool yet, so no mirror and no traps.
 
 ## Windows, macOS
 
-- Windows: `VirtualProtect(PAGE_NOACCESS)` on every view of an owned span and a vectored exception handler, which runs
-  in normal context on the faulting thread. The mirror needs the alias pool, which Windows doesn't have yet:
-  placeholders (`VirtualAlloc2`) and pagefile section views (`MapViewOfFile3`).
+- Windows traps by protection, as Linux's `memory_traps=1` does, but with no alias pool and so no mirror
+  (`SNX_PLAT_TRAPS_IN_PLACE`, `plat_win32.c`); `memory_traps` 0 and 1 both mean this there, and 2 none.
+  - Guest memory is one `VirtualAlloc` reservation with the write watch, and a view of mapped memory (MapMemory, code
+    memory) is a copy, so a page has one address the CPU can reach. Owned memory stays the reservation's own pages
+    (`mem_own_prepare` without the pool: one run, its "pool offset" its address). mem.c lands what it copies under its
+    lock first (a copy view written back, code memory mapped or unmapped), as it can't fault there.
+  - `plat_trap_arm` marks the pages in a bitmap (a bit per 4 KiB page of the reservation) and makes them
+    `PAGE_NOACCESS`. A vectored exception handler, first in the chain (the crash handlers leave armed pages alone),
+    takes an access violation on an armed page (`ExceptionInformation[1]` the address, `[0]` read or write) on the
+    faulting thread, posts the page to the trap thread through the same lock-free ring as Linux's signal handler, and
+    waits (`WaitOnAddress`) until a trap lets pages go; then it continues execution, and the access goes again. A
+    fault on a page let go between the fault and the handler goes again; the same fault again with no page opened
+    since is no trap's, and goes on to the crash handlers, and so does one that faults 4096 times in a row while other
+    traps open pages (said once, with the page's state: an inaccessible page no trap holds is a bug). The trap
+    thread's own fault is never waited for. `plat_thread_where` says which threads wait in a trap, and where.
+  - A landing can't go through a mirror: own.c lands into a staging copy while the pages stay trapped, then
+    `plat_trap_fill` opens them a page at a time, each just before its bytes go in, and let_go wakes the waiters. A
+    thread that touches a page while its bytes are going in, without faulting, can see it half written: the one
+    difference from the mirror's landing. The window is one page's memcpy, after a wait for the GPU of milliseconds
+    in which every other access faults and waits, so it takes a thread that first reaches the page in that very
+    moment: `tests/memory_own.c`'s stress, eight threads reading 32 pages at random as fast as they can, starting while
+    the landing runs, finds about 25 of its 320,000 reads there, each the owner's byte once the landing is done. Each
+    page opened is a system call (opening an inaccessible page takes no TLB shootdown): a 2 MiB landing makes 512 of
+    them. Every entry on a page a landing opens lands with it (`close_pages_nl`), so no opened page shows an owner's
+    stale bytes. A page let go is written once (an atomic OR of 0), so the write watch reports it, as Linux's tracking
+    reports a page let go.
+  - The CPU's bytes on a trapped page can't be read through a mirror either. An edge page, armed with CPU bytes on
+    it, keeps a copy of them (its shadow) from when it was first armed: no CPU write changes them while it is armed.
+    `own_stage` reads the shadow; a page without one (bytes `own_drop` uncovered on a page an owner keeps) lands before
+    `own_stage` reads it. Neither a shadow's copy nor its read faults with a lock of ours held: the copy is taken with
+    `ReadProcessMemory` (`plat_vm_read`, which fails rather than faults), and a read of it goes through a buffer of the
+    thread's. The write watch's scan leaves armed pages out, and the landed pages' bytes that the write tracking
+    compares later (`vk_ww_landed`) are read with `plat_vm_read` too, as such a page may be trapped again or given
+    back.
+  - A system call over an armed page fails rather than faulting: `ReadFile` into one and `WriteFile` from one with
+    `ERROR_NOACCESS`, Winsock with `WSAEFAULT`, as Linux's with `EFAULT`. The runtime acquires every range it hands
+    the kernel (below). Code in a system DLL that reads or writes guest memory in user mode (SDL's audio queue, OpenSSL,
+    `WideCharToMultiByte`) faults into the handler like the guest does.
+- On an RTX 5080 (Windows 11, driver 621.14, resizable BAR, guest buffers copied), one Ounce game's intro movie
+  (`--vk_gpu_profile=1`, the same 600 presents): 16.7 frames a second without traps, 54 to 55 with them. The GPU's
+  frame, first pass to last, 56.0 ms against 16.1; its dispatches and copies 19.7 ms against 6.4, the GPU mirror's
+  harvest 11.5 ms against 1.4. With `--vk_buffer_stats=1` the mirror landed 47.7 GB in 600 presents without traps
+  (11.6 million pages written), 40 MB with them; storage images and the mirror's pages stay GPU-owned. What still
+  lands, about 1,000 times in 600 presents, is the movie's pictures: the native video service writes each one into
+  its image on the GPU (`nvdec_write`, NV12 at a pitch of 2048: 2.2 MB of luma and 1.1 MB of chroma), and the game's
+  CPU reads it, so on a discrete GPU it comes back. A GPU that shares memory writes them in place and lands nothing.
+  The screenshots match the run without traps. One run in about thirty stopped during loading (no frame for 15 s,
+  three guest threads at one light message queue, two of them waiting in a trap whose message the trap thread never
+  took: it was blocked in an earlier landing). It was not seen again in about thirty more runs, with empty shader
+  caches as the stopped run had, or with every thread's stack dumped when a stop came; the cause is not found.
 - macOS: Mach exception ports deliver the fault to a handler thread with the faulting thread suspended (the
   userfaultfd shape), and `mach_vm_remap` gives a mirror.
 - A host with no correct trap doesn't make ranges GPU-owned: a producer's results are copied at its own fence into
@@ -144,12 +193,12 @@ macOS have no alias pool yet, so no mirror and no traps.
   Use the build revision printed at startup and that build's unstripped binary/debug symbols to resolve addresses;
   a file offset must be translated through the ELF load segments before using it as an addr2line address.
   See https://man7.org/linux/man-pages/man5/proc_pid_syscall.5.html for the blocked-thread register format.
-- Landing is a memcpy into the mirror. A producer's GPU copy keeps the range's layout (block linear surfaces are
-  swizzled on the GPU), and covers the range's padding: it is filled from guest memory when the producer takes the
-  range.
+- Landing is a memcpy into the mirror (on Windows into the trapped pages in place, opened as it goes). A producer's
+  GPU copy keeps the range's layout (block linear surfaces are swizzled on the GPU), and covers the range's padding:
+  it is filled from guest memory when the producer takes the range.
 - The runtime's reads land only the bytes they read. `gmem_read` (`copy_runs`) reads a run none of whose bytes are
-  owned through `own_stage`, which reads a trapped page through the mirror, so an owner beside the run on its pages
-  stays on the GPU. A shader's code window (`gmem_read_code_cpu`) stops at the first owned byte, and lands only when
+  owned through `own_stage`, which reads a trapped page through the mirror (on Windows its shadow), so an owner beside
+  the run on its pages stays on the GPU. A shader's code window (`gmem_read_code_cpu`) stops at the first owned byte, and lands only when
   the program reaches that byte (`gmem_code_cut`). Before, each of these landed GPU results in one game several times
   a frame.
 
@@ -457,10 +506,10 @@ Nothing of the game leaves the machine: the steps below compare numbers and scre
    own readers of what it writes (the shader translator, MME macros) would land every GPU-owned copy of it again.
    `vulkan_headless` holds the DMA engine and the 2D blit to `dma_ref.c` and `fermi2d_ref.c` on lavapipe.
 5. Windows and the other hosts. Linux without minor faults and Android trap by protection now (`memory_traps=1`
-   tests that path on any Linux). Windows, macOS and FreeBSD need the alias pool first (placeholders and section
-   views on Windows, a shared memory object on the others). Until then their `plat_trap_*` fail, and a published
-   result lands at once (a readback per result, correct and slow). The setting `memory_traps=2` makes a Linux host
-   take that path, to measure and test it there.
+   tests that path on any Linux), and so does Windows, landing in place with no pool ([above](#windows-macos);
+   `tests/memory_own.c` runs there too). macOS and FreeBSD need the alias pool first (a shared memory object). Until
+   then their `plat_trap_*` fail, and a published result lands at once (a readback per result, correct and slow). The
+   setting `memory_traps=2` makes a Linux or Windows host take that path, to measure and test it there.
 6. Started: memory the CPU and the GPU share (above). Guest vertex, index and read-only storage ranges are read in
    place on a GPU that shares memory (`vk_memory`), and so are constant buffers but the pages the runtime wrote;
    writable storage, transform feedback and the engines' results are written there in place, and dispatches run on the

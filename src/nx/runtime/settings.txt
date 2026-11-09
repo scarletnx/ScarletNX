@@ -855,10 +855,10 @@ setting Memory traps
     startup
     words Auto|Protection|Off
     help How the runtime traps guest memory the GPU owns until the CPU touches it (docs/GPU_OWNERSHIP.md). 0 =
-    help userfaultfd's minor faults where Linux has them, else page protection; none yet on Windows, macOS and
-    help FreeBSD. 1 = page protection and the fault handler, as Android and Linux before 5.13 trap (Linux and Android
-    help only: elsewhere it says so at start). 2 = none: a GPU result lands in guest memory at its fence, to measure
-    help and test that path
+    help userfaultfd's minor faults where Linux has them, else page protection, which Windows uses with an exception
+    help handler; none yet on macOS and FreeBSD. 1 = page protection and the fault handler, as Android, Linux before
+    help 5.13 and Windows trap (Linux, Android and Windows only: elsewhere it says so at start). 2 = none: a GPU result
+    help lands in guest memory at its fence, to measure and test that path
 setting Host page size
     key host_page
     int 0 1048576

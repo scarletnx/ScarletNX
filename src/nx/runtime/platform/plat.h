@@ -137,7 +137,8 @@ void plat_gpu_buffer_free(int fd, void* handle, u64 size);
    owner reads as the guest's. It reads with read(2) into a buffer of its own, so a crash handler may call it */
 int plat_vm_foreign(u64 lo, u64 hi, int (*own)(u64 a, u64 b), char* out, size_t size);
 /* Calls cb for each run of pages in [p, p + size) written since they were last scanned, and watches them again.
-   -1 when the host can't tell (the caller then compares contents). Linux 6.7 and later use userfaultfd's asynchronous
+   -1 when the host can't tell (the caller then compares contents). A page a trap holds is not reported: its consumers
+   look the ownership up, and it reads as written once let go. Linux 6.7 and later use userfaultfd's asynchronous
    write protection with PAGEMAP_SCAN, Windows the write watch of the reservation. The other POSIX hosts (macOS,
    FreeBSD, Android, older Linux) protect what a scan reported and take the first write to it in the fault handler;
    write_tracking=1 takes that path on any Linux, and write_tracking=2 turns all of them off */
@@ -189,10 +190,25 @@ u8* plat_alias_mirror(void);
    the pool and lets it go on with plat_trap_continue. Linux 5.13 and later use userfaultfd's minor faults on shared
    memory. Other hosts with the pool (older Linux, Android, or memory_traps=1 on any Linux) make the pages
    inaccessible, and the faulting thread waits in the signal handler while the trap's thread lands them. Without the
-   pool plat_trap_init says -1. An access from the kernel (a system call given a pointer into an armed
-   page) fails with EFAULT instead of waiting, so the runtime opens a range before it hands it to the kernel. tid is
-   the faulting thread's plat_tid */
+   pool plat_trap_init says -1, but where traps land in place (SNX_PLAT_TRAPS_IN_PLACE). An access from the kernel (a
+   system call given a pointer into an armed page) fails with EFAULT (Windows: ERROR_NOACCESS) instead of waiting, so
+   the runtime opens a range before it hands it to the kernel. tid is the faulting thread's plat_tid */
 int plat_trap_init(void (*fault)(u8* p, int write, u32 tid));
+/* Windows traps the reservation's own pages, as it has no pool and so no mirror (memory_traps 0 and 1 alike):
+   VirtualProtect makes them inaccessible, a vectored exception handler waits on the faulting thread while the trap's
+   thread lands them, and the landing writes the GPU's bytes in place (plat_trap_fill) before the pages let go */
+#if defined(_WIN32)
+#define SNX_PLAT_TRAPS_IN_PLACE 1
+#else
+#define SNX_PLAT_TRAPS_IN_PLACE 0
+#endif
+/* size bytes from src written at p, into armed pages that stay armed (their waiters wait on): each run of pages opened
+   just before its bytes go in. An in-place landing's (SNX_PLAT_TRAPS_IN_PLACE): 0, or -1, and always -1 elsewhere */
+int plat_trap_fill(u8* p, const void* src, u64 size);
+/* size bytes of the reservation at p copied to dst without faulting: 0, or -1 when some of them can't be read now (a
+   trap holds them, or they were given back). Windows, for an in-place landing's pages (gpu/vk/buffer.c); -1
+   elsewhere, whose landings are read through the mirror */
+int plat_vm_read(const void* p, void* dst, u64 size);
 /* waiting(tid) as soon as the traps learn that thread tid waits in a fault, before the fault callback of its page
    runs: a landing may wait for the GPU for seconds, and the faults that come meanwhile wait behind it. The kernel
    lets the thread's emulated core go there (kthread_fault_lend). Set at startup, before plat_trap_init. Optional */
