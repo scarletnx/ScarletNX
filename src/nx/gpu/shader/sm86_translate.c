@@ -76,6 +76,7 @@ typedef struct {
     /* a task or mesh program's ISBE (isbe_var): a mesh program's attribute area and map (Workgroup), a task
        payload (TaskPayloadWorkgroupEXT), their words, and LocalInvocationIndex */
     u32 isbe_attr, isbe_map, payload, isbe_attr_words, isbe_map_words, payload_words, local_index;
+    u32 mesh_first; /* the uniform buffer of an indirect mesh draw's first group (workgroup_index) */
     u32 vertex_words, primitive_words; /* the output words of a vertex and of a primitive (omap_words) */
     u32 prim_attr[32];                 /* a mesh program's per-primitive generic outputs */
     int soft_ftz;                      /* FTZ instructions flush their operands and results here (sm86_to_spirv_ftz) */
@@ -1316,7 +1317,21 @@ static u32 map_var(Ctx* c) { return isbe_var(c, &c->isbe_map, SPV_STORAGE_WORKGR
 static u32 workgroup_index(Ctx* c) {
     u32 id = builtin_vec3(c, &c->group_id, 26, 0);
     if (c->stage == ST_MS && c->si->mesh.has_task) return id;
-    return spv_emit_iadd_u32(&c->e, c->t_u32, id, to_u(c, push_component(c, 0)));
+    /* an indirect draw's first group: the record's, in the uniform buffer at SNX_VKB_RS (SH_PUSH_GPU_MESH_FIRST) */
+    if (!c->mesh_first) {
+        c->mesh_first = spv_emit_uniform_vec4_array(&c->e, c->t_v4u, c->t_u32, c->t_u32, (u32)shader_vk_set(c->stage),
+                                                    SNX_VKB_RS, 1, &c->cbuf_ptr);
+        add_interface(c, c->mesh_first);
+    }
+    u32 flags = to_u(c, push_component(c, 2));
+    u32 gpu = spv_emit_i_not_equal(&c->e, c->t_bool,
+                                   spv_emit_bitwise_and_u32(&c->e, c->t_u32, flags, cu(c, SH_PUSH_GPU_MESH_FIRST)),
+                                   c->zero);
+    u32 first = spv_emit_select(
+        &c->e, c->t_u32, gpu,
+        spv_emit_uniform_component(&c->e, c->cbuf_ptr, c->mesh_first, c->zero, c->zero, c->zero, c->t_u32),
+        to_u(c, push_component(c, 0)));
+    return spv_emit_iadd_u32(&c->e, c->t_u32, id, first);
 }
 /* ISBERD and ISBEWR (NAK's sm70_encode.rs): the offset register at 24-31, the data register at 32-39 (ISBEWR), the
    immediate offset at 40-55, the size at 74-75 (U8 0, U16 1, B32 2), the access at 76-77 (MAP 0, PATCH 1, PRIM 2,
