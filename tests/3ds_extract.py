@@ -65,6 +65,27 @@ def main():
         # A finished extraction is used again, untouched, as the Switch driver does
         assert p.returncode == 0 and 'Using the extraction' in p.stdout and 'Extracting' not in p.stdout
         assert before == {p.relative_to(output): p.read_bytes() for p in output.rglob('*') if p.is_file()}
+        # --icon writes the SMDH's 48x48 icon as RGBA, which Games draws a dump's row by, as the Switch driver's
+        # -x --icon writes its icon.jpg
+        smdh = bytearray(0x36c0)
+        smdh[0:4] = b'SMDH'
+        for i, ch in enumerate('A Tested Title'):
+            put(smdh, 0x8 + 0x200 + i * 2, '<H', ord(ch))
+        put(smdh, 0x24C0, '<H', 0xF800)  # red, the large icon's first pixel
+        source.write_bytes(cia(application=ncch(icon=bytes(smdh))))
+        icon_dir = root / 'icon'
+        env = {**os.environ, 'HOME': str(root), 'USERPROFILE': str(root)}
+        p = subprocess.run([driver, '-x', '--icon', '--out', str(icon_dir), str(source)], capture_output=True,
+                           text=True, timeout=20, env=env)
+        assert p.returncode == 0, (p.returncode, p.stdout, p.stderr)
+        rgba = (icon_dir / 'icon.rgba').read_bytes()
+        assert len(rgba) == 48 * 48 * 4 and rgba[0:4] == bytes([255, 0, 0, 255]), rgba[:4]
+        # a game with no SMDH has no icon to write, and says so
+        source.write_bytes(plain)
+        p = subprocess.run([driver, '-x', '--icon', '--out', str(root / 'icon-none'), str(source)],
+                           capture_output=True, text=True, timeout=20, env=env)
+        assert p.returncode == 1 and 'no SMDH icon' in p.stderr, (p.returncode, p.stderr)
+        assert not (root / 'icon-none').exists()
         # Signature-dependent body positions, absent content and optional metadata.
         for sig in [0x10000, 0x10001, 0x10002, 0x10003, 0x10004, 0x10005]:
             run(cia(signature=sig, with_meta=False))
