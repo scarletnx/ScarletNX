@@ -17,8 +17,10 @@ static int g_failed;
         }                                                                                                              \
     } while (0)
 
+#ifdef __linux__ /* the refusal said, which only a Linux run sees: /proc is its mount point */
 static char g_said[2048];
 static void said(const char* line) { snprintf(g_said, sizeof g_said, "%s", line); }
+#endif
 
 /* found is the mount point snx_mount_in gives root in text, or none when NULL */
 static void expect(const char* text, const char* root, const char* found) {
