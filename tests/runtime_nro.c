@@ -138,7 +138,8 @@ static void nso_fixture(void) {
     info.is_nro = 0;
 }
 static void rejected(void) {
-    CHECK(loader_load() == -1);
+    int rc = loader_load();
+    CHECK(rc == -1 || rc == -2); /* invalid, or another build of the file the descriptor names */
     CHECK(maps == 1 && unmaps == 1 && !permissions && !g_code_memory);
     for (size_t i = info.base; i < info.base + info.size; ++i) CHECK(guest[i] == 0xcc);
 }
