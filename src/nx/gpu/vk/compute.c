@@ -363,15 +363,11 @@ static void cs_submit(void) {
     }
 }
 static void cs_wait(u64 value) {
-    VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-                              .semaphoreCount = 1,
-                              .pSemaphores = &g_vk_csem,
-                              .pValues = &value};
     u64 t0 = plat_ns();
     SNX_ZONE_C(z, "vk compute wait", 0xb05252);
     SNX_ZONE_VALUE(z, value);
     gpu_wait_note("a compute batch", value);
-    VK_OK(vkWaitSemaphores(g_vk.dev, &wi, UINT64_MAX));
+    vk_wait_semaphore(g_vk_csem, value);
     gpu_wait_note(NULL, 0);
     __atomic_add_fetch(&g_vk_cs_wait_ns, plat_ns() - t0, __ATOMIC_RELAXED);
 }
@@ -1086,11 +1082,16 @@ static void res_unref_all(VkOwnRes** made, int n) {
    run of guest memory, at an offset the device binds a storage buffer at. cpu[i]: each buffer's guest address. An
    Ounce program's buffer is all of the memory mapped from its address, up to 16 MiB (vk_gbuf_desc): made anew for each
    dispatch, with its input copied in on the CPU and composed over the results before it, the copies took most of one
-   game's GPU thread (hundreds of 16 MiB bindings a frame, at addresses a few KiB apart) */
+   game's GPU thread (hundreds of 16 MiB bindings a frame, at addresses a few KiB apart).
+   A Switch program logs its writes too (shader/write_log.c), but its buffers have the size the game binds, and it
+   doesn't take the mirror: with it, one Switch game's props (a table's umbrella, plants, a wall's glow) vanished for
+   one frame in 3 to 9 of 250 shots in each of three runs, and in none of 250 without it (two runs) or with it where the
+   host doesn't trap guest memory (memory_traps=2). What of the mirror's GPU-owned pages (vk_mirror_publish) loses
+   them is not found yet */
 static int mirror_plan(const CsPipe* p, int ng, const u64* sa, const u32* ss, u64* cpu) {
     u64 align = g_vk.props.limits.minStorageBufferOffsetAlignment;
     int marked = 0;
-    if (!p->si.nmarks || !vk_mirror_on()) return 0;
+    if (!p->si.nmarks || !g_shader_sm86 || !vk_mirror_on()) return 0;
     for (int i = 0; i < ng; i++) {
         cpu[i] = 0;
         if (!sa[i]) continue;
@@ -1167,7 +1168,10 @@ void vk_dispatch(const DispatchState* d) {
         u32 wseen, code_len; /* vk_ww_now() then, and the bytes of the window */
         CsPipe* p;
     };
-    static struct cs_fast fc[VK_CSF_SETS * VK_CSF_WAYS]; /* lookup_ways.h */
+    /* by the program's address (lookup_ways.h). An Ounce game dispatches a few hundred programs a frame: in 64 entries
+       they put each other out, and almost every dispatch read, hashed and walked its program again (up to 512 KiB,
+       CS_WINDOW) */
+    static struct cs_fast fc[VK_CSF_SETS * VK_CSF_WAYS];
     u64 pa = d->code;
     u32 epoch = vk_ww_epoch(); /* before the code is checked or read */
     struct cs_fast *ways = &fc[vk_csf_set(pa) * VK_CSF_WAYS], *fe = NULL;
@@ -1578,8 +1582,10 @@ rebind:
             o = so[i] = chain[i] >= 0 ? (u64)chain[i] : arena_alloc(ss[i]);
             if (chain[i] >= 0)
                 ; /* written by an earlier dispatch of the batch, read in place */
-            else if (sa[i] && (!p->si.gbuf_mark[i] || ((p->si.gbuf_rmask >> i) & 1)))
-                gmem_read(sa[i], g_ar_ptr + o, ss[i]); /* read, or not logged (gbuf_rmask is the SM86 translator's) */
+            /* read: its bytes copied in. So are those of one written and not logged: its result is what differs from
+               them after the dispatch, and a store of the bytes zeroed in their place would differ from nothing */
+            else if (sa[i] && (((p->si.gbuf_rmask >> i) & 1) || !(log && p->si.gbuf_mark[i])))
+                gmem_read(sa[i], g_ar_ptr + o, ss[i]);
             else {
                 if (sa[i]) gmem_need(sa[i], ss[i]); /* write-only: results pending there land, but nothing is read */
                 memset(g_ar_ptr + o, 0, ss[i]);
@@ -1930,12 +1936,11 @@ rebind:
     }
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->p);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_vk.cs_playout, 0, 1, &set, 0, NULL);
-    vk_gpuprof_tag(p->key); /* vk_gpu_profile sums the dispatches' time by program */
     if (d->indirect) {
-        rec_CmdDispatchIndirect(cb, grid_buf, grid_off);
+        rec_CmdDispatchIndirectKey(cb, grid_buf, grid_off, p->key, pa);
     } else {
         vk_ck(cb, VK_CK_DISPATCH, gx, gy, gz, 0);
-        rec_CmdDispatch(cb, gx, gy, gz);
+        rec_CmdDispatchKey(cb, gx, gy, gz, p->key, pa);
     }
     if (mir) { /* the bytes its log gives into the mirror's mask, for the submit's harvest to land */
         VkMirFold f[16];

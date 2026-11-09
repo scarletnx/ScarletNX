@@ -409,7 +409,8 @@ int nvn_MemoryPoolInitialize(CPU* c, u64 p, u64 b) {
     va = gmmu_space_alloc(lead + o.size, NVN_POOL_ALIGN);
     if (va && o.memory) gmmu_space_map(va, o.memory - lead, lead + o.size);
     nvn_wait_end();
-    if (!va) fatal("nvn: no GPU address space left for a memory pool of %llx bytes", (unsigned long long)o.size);
+    if (!va)
+        fatal("nvn: no GPU address space left for a memory pool of %llx bytes", (unsigned long long)o.size);
     o.gpu = va + lead;
     memcpy(GP(p), &o, sizeof o);
     LOGV("nvn: memory pool %llx: %llx, %llx bytes at GPU %llx, flags %#x\n", (unsigned long long)p,
@@ -2002,8 +2003,8 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
     NvnProgram* o = NVN_OBJ(NvnProgram, p);
     u64 last = 0; /* the control section of the last stage before rasterization */
     u64 tess_controls[2] = {0};
-    u32 subroutine_mask = 0;
     NvnOunceEntry ounce = {0};
+    u32 subroutine_mask = 0;
     i32 i, last_rank = -1;
     if (n < 0 || n > 6) {
         LOG_LIMIT(8, "nvn: nvnProgramSetShaders with %d stages\n", n);
@@ -2047,8 +2048,8 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
     o->sample_shading = (u16)((o->sample_shading & 0xff) | (o->sample_shading & 0xff) << 8);
     if (last) xfb_of(last, o->serial);
     tess_of(tess_controls, o->serial);
-    sub_program(o->serial, subroutine_mask);
     ounce_of(&ounce, o->serial);
+    sub_program(o->serial, subroutine_mask);
     return 1;
 }
 int nvn_ProgramSetShaders(CPU* c, u64 p, i32 n, u64 sd) {

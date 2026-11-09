@@ -254,6 +254,17 @@ flourishes. This rule does not apply to code comments. The Claude files follow A
   not the tag that you check out after it. The libraries are now CPM packages (`cmake/dependencies.cmake`), each a
   release URL with its SHA-256. A bump changes both, and the build checks the hash against the download. The
   `OPTIONS` of CPM become cache variables of the whole build.
+- An Ounce game does not use Maxwell shaders. Its shaders are SM86 SASS, with 128-bit instructions.
+  A previous session matched Maxwell tables against the wrong bytes. It recorded "Maxwell SASS" as a fact, and that
+  was wrong.
+
+  Before you trust a match of an ISA, find the end of a program in the bytes. On SM86, EXIT is `0x794d`, and a BRA
+  to itself comes after it. `docs/platforms/nx/ounce.md` has the facts of the Ounce that the captures prove.
+- `g_frames` counts presents, not frames with content. A hash that changes does not show that a frame has content.
+  Look at the count of draws and skipped draws in the log, or take a screenshot.
+- An Ounce game calls about 170 NVN functions that the Switch does not have. `tools/nvn_missing.py work/Game`
+  lists the functions that `nvn.hook` does not implement for the API version of the game. Read the body of each
+  function in the driver before you write its handler. Many are setters that store at a fixed offset.
 - A check of `tests/gui_sdl.c` can fail on Windows alone because of the state that an `#ifdef SNX_XDG` block
   leaves. Those blocks run on Linux only. One of them presses ESC on the Keys page, and ESC clears `app->message`
   before the next check reads the tips. CMake registers `gui_sdl_events` only when `NOT APPLE`, so the Mac builds

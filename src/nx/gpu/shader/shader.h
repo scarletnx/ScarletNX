@@ -114,9 +114,9 @@ typedef struct {
     u32 gbuf_wmask; /* global buffers the program writes */
     u32 gbuf_rmask; /* global buffers the program reads (a load or atomic: its input must be copied for them) */
     /* The program's write log (SNX_VKB_WPAGES, SH_WLOG_*): every store and atomic of a compute program to global
-       buffer i records the bytes it writes in the log's part gbuf_mark[i] - 1 (0: none), parts numbered in the order
-       the program's first store to each buffer was translated, nmarks of them. gbuf_marks has bit i set when
-       gbuf_mark[i] is */
+       buffer i records the bytes it writes in the log's part gbuf_mark[i] - 1 (0: none), nmarks of them, numbered in
+       the order of the program's first store to each buffer (sm86_translate.c) or of the buffers (the Maxwell
+       translator). gbuf_marks has bit i set when gbuf_mark[i] is (write_log.c) */
     u32 gbuf_marks;
     u8 gbuf_mark[16];
     u8 nmarks;
@@ -171,15 +171,15 @@ typedef struct {
        ShTex type (0 1D, 1 2D, 2 3D, 3 cube), + 4 for an array; 0 when nothing is known yet */
     u8 tex_query_hint[SH_MAXTEX];
     u64 tex_query_mask;
-    int mixed_sample_invariant; /* proof: guest FS values and discard decisions do not depend on an invocation */
-    u32 late_depth; /* key: ordered GPU depth/stencil shadow operations after guest fragment code */
-    u32 capture_outputs; /* key: capture validity location2..7; zero retains the original location1 interface */
-    int primitive_split_safe; /* proof: vertex values do not depend on subgroup/lane/clock invocation groups */
     ShMesh mesh; /* key (task and mesh programs) */
     /* the generics that go to the fragment program per primitive: of a mesh program, the per-primitive outputs that
        translation found (in out_mask too); and key (fragment programs), the inputs that the draw's mesh program
        writes per primitive, which the module declares PerPrimitiveEXT */
     u32 prim_mask;
+    int mixed_sample_invariant; /* proof: guest FS values and discard decisions do not depend on an invocation */
+    u32 late_depth; /* key: ordered GPU depth/stencil shadow operations after guest fragment code */
+    u32 capture_outputs; /* key: capture validity location2..7; zero retains the original location1 interface */
+    int primitive_split_safe; /* proof: vertex values do not depend on subgroup/lane/clock invocation groups */
 } ShaderInfo;
 /* The graphics cache packs these explicit fragment-only fields above its eight image-format bits. */
 enum { SH_FS_LATE_DEPTH = 1u, SH_FS_CAPTURE_SHIFT = 1, SH_FS_CONFIG_MASK = 15u };
@@ -230,15 +230,15 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 #define SH_WPAGE_SLOT    4096u /* the windows of a global buffer: 16 MiB, the most vk_gbuf_desc binds */
 #define SH_WLOG_MASK     128u  /* the mask words of a window: a bit for each of its 4096 bytes */
 #define SH_WLOG_PART     (SH_WPAGE_SLOT * (1u + SH_WLOG_MASK))
-#define SNX_VKB_ROOT     (SNX_VKB_SMAP + 1)        /* an Ounce program's root tables, banks 24 to 31 (SH_ROOT_BYTES) */
-#define SNX_VKB_IMGBUF   (SNX_VKB_ROOT + 1)        /* 8 buffer images (compute, vertex, fragment) */
-#define SNX_VKB_BLEND    SNX_VKB_IMG            /* fragment: ordered blend uses IMG+nimg, after the guest images */
-#define SNX_VKB_CAPTURE  (SNX_VKB_IMGBUF + 8)   /* fragment: sparse capture tile flags and dispatch list */
-#define SNX_VKB_TEXARRAY (SNX_VKB_CAPTURE + 1)  /* up to SNX_TEX_ARRAY distinct indexed handles */
-#define SNX_VKB_TEXFUNCS (SNX_VKB_TEXARRAY + 1) /* their depth compare functions */
-#define SNX_VKB_TEXDEPTH (SNX_VKB_TEXFUNCS + 1) /* their depth views */
-#define SNX_VKB_TEXMAP   (SNX_VKB_TEXDEPTH + 1) /* table and element to compact descriptor index */
-#define SNX_VKB_END      (SNX_VKB_TEXMAP + 1)   /* one past the last binding */
+#define SNX_VKB_ROOT     (SNX_VKB_SMAP + 1)      /* an Ounce program's root tables, banks 24 to 31 (SH_ROOT_BYTES) */
+#define SNX_VKB_IMGBUF   (SNX_VKB_ROOT + 1)      /* 8 buffer images (compute, vertex, fragment) */
+#define SNX_VKB_BLEND    SNX_VKB_IMG             /* fragment: ordered blend uses IMG+nimg, after the guest images */
+#define SNX_VKB_CAPTURE  (SNX_VKB_IMGBUF + 8)    /* fragment: sparse capture tile flags and dispatch list */
+#define SNX_VKB_TEXARRAY (SNX_VKB_CAPTURE + 1)   /* up to SNX_TEX_ARRAY distinct indexed handles */
+#define SNX_VKB_TEXFUNCS (SNX_VKB_TEXARRAY + 1)  /* their depth compare functions */
+#define SNX_VKB_TEXDEPTH (SNX_VKB_TEXFUNCS + 1)  /* their depth views */
+#define SNX_VKB_TEXMAP   (SNX_VKB_TEXDEPTH + 1)  /* table and element to compact descriptor index */
+#define SNX_VKB_END      (SNX_VKB_TEXMAP + 1)    /* one past the last binding */
 /* Transform feedback by stores (g_shader_xfb_stores), in the global buffer slots after a program's own (at most
    SNX_XFB_GBUF_MAX): the parameters (first vertex, first instance, vertices an instance and a draw capture), then the
    4 buffers from where the capture starts */
@@ -309,6 +309,10 @@ extern int g_shader_mixed_dot;
    one OpCooperativeMatrixMulAddKHR on fragments staged in shared memory after the program's (sm86_translate.c's
    hmma_coop), where the two fit in that size. 0 offline */
 extern int g_shader_hmma_coop;
+/* the most mesh workgroups one task workgroup can launch (maxMeshWorkGroupCount[0] and maxMeshWorkGroupTotalCount,
+   the less of them): a task program's count, read from its payload's header, is clamped to it, as a count past it is
+   undefined behavior that can hang the GPU. 0 offline: not clamped */
+extern u32 g_shader_mesh_tasks_max;
 /* the Tessellation capability, which also gives a fragment program PrimitiveId without Geometry */
 extern int g_shader_tessellation;
 /* VK_KHR_shader_clock's scopes: bit 0 subgroup, bit 1 device */

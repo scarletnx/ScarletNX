@@ -345,9 +345,17 @@ static void land_pages(u64 lo, u64 hi) {
         }
     pm_unlock(&g_own_lk);
     if (!any) return;
-    /* the GPU's work first, with no lock held: under the producer's lock, every thread that takes it waited too */
-    if (g_hooks.wait)
+    /* the GPU's work first, with no lock held: under the producer's lock, every thread that takes it waited too
+       (in one game's menus a landing held it 7.9 s, waiting for a draw's pipeline, and the GPU thread and the
+       game's memory thread with it). Once: an entry published again meanwhile lands under the lock, as before */
+    if (g_hooks.wait) {
         g_hooks.wait(writer);
+        if (!region_owned(lo, hi)) return;
+        pm_lock(&g_own_lk);
+        any = owned_nl(lo, hi);
+        pm_unlock(&g_own_lk);
+        if (!any) return;
+    }
     producer_lock();
     pm_lock(&g_own_lk);
     for (;;) {
@@ -359,7 +367,8 @@ static void land_pages(u64 lo, u64 hi) {
             producer_unlock();
             return;
         }
-        /* what one publish made lands whole (it is split by the pool's runs) */
+        /* what one publish made lands whole (it is split by the pool's runs): the entries beside these that continue
+           them, of the same resource, are landed with them: one wait for the GPU rather than one a piece */
         while (first && g_own[first - 1].res == g_own[first].res && g_own[first - 1].hi == g_own[first].lo &&
                !g_own[first - 1].landing)
             first--, n++;
@@ -395,18 +404,25 @@ static void land_pages(u64 lo, u64 hi) {
             if (plat_trap_fill(GP(r[i].addr), dst[i], r[i].size))
                 fatal("Could not land GPU-owned memory at %llx (%llu bytes)", (unsigned long long)r[i].addr,
                       (unsigned long long)r[i].size);
+    /* the landed pages through the mirror, still trapped: no thread can write them before let_go below. An entry is
+       a run of pool pages, so its pages lie in the mirror as they do in guest memory, the edges' CPU bytes too.
+       Without a mirror, the pages that plat_trap_fill filled */
     if (g_hooks.landed)
         for (i = 0; i < n; i++) {
             u64 plo = r[i].addr & ~(g_page - 1), phi = (r[i].addr + r[i].size + g_page - 1) & ~(g_page - 1);
             g_hooks.landed(plo, phi - plo, mirror ? dst[i] - (r[i].addr - plo) : GP(plo));
         }
     pm_lock(&g_own_lk);
+    /* The snapshot is a consecutive run of entries, and the producer's lock prevents another owner coming between
+       them while they land. Remove the run at once, including empty gaps, instead of moving the suffix n times. */
     cut_nl(r[0].addr, r[n - 1].addr + r[n - 1].size, &rel);
     pc_broadcast(&g_own_cv);
     pm_unlock(&g_own_lk);
     free(r);
     free(dst);
     stage_put(stage);
+    /* the pages go before the resources: no page is left armed with no entry on it past this landing (own_stage
+       reads such a page directly) */
     let_go(elo & ~(g_page - 1), (ehi + g_page - 1) & ~(g_page - 1));
     res_release(&rel);
     producer_unlock();

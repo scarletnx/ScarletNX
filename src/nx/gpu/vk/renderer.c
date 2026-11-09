@@ -730,6 +730,33 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                     (unsigned long long)(partial_bytes >> 20), (unsigned long long)slow_frames,
                     (unsigned long long)(slowest_ns / 1000000));
                 slow_frames = slowest_ns = 0;
+                if (g_vk.has_gpl) {
+                    u64 made[4], hits[4], make_ms[4], links, link_ms, opts, opt_ms;
+                    vk_pipeline_lib_stats(made, hits, make_ms, &links, &link_ms, &opts, &opt_ms);
+                    LOG("vulkan: pipeline libraries: %llu pre-rasterization and %llu fragment shader parts made (%llu "
+                        "and %llu from the cache, %llu and %llu ms), %llu vertex input and %llu fragment output parts "
+                        "(%llu ms); %llu links (%llu ms); %llu optimized pipelines made in the background (%llu ms)\n",
+                        (unsigned long long)made[1], (unsigned long long)made[2], (unsigned long long)hits[1],
+                        (unsigned long long)hits[2], (unsigned long long)make_ms[1], (unsigned long long)make_ms[2],
+                        (unsigned long long)made[0], (unsigned long long)made[3],
+                        (unsigned long long)(make_ms[0] + make_ms[3]), (unsigned long long)links,
+                        (unsigned long long)link_ms, (unsigned long long)opts, (unsigned long long)opt_ms);
+                    u64 warm_made, warm_hit, warm_ms;
+                    vk_pipeline_lib_warm_stats(&warm_made, &warm_hit, &warm_ms);
+                    if (warm_made)
+                        LOG("vulkan: %llu shipped programs' parts warmed ahead of their draws (%llu from the cache, "
+                            "%llu ms)\n",
+                            (unsigned long long)warm_made, (unsigned long long)warm_hit,
+                            (unsigned long long)warm_ms);
+                    u64 waits, wait_ms, behind_ms, max_ms;
+                    int opt_workers;
+                    vk_pipeline_lib_waits(&waits, &wait_ms, &behind_ms, &max_ms, &opt_workers);
+                    LOG("vulkan: %llu new pipelines of draws waited %llu ms for a worker (%llu ms of it with every "
+                        "worker busy and one or more on an optimized pipeline), the longest %llu ms; %d worker(s) at "
+                        "most on optimized pipelines\n",
+                        (unsigned long long)waits, (unsigned long long)wait_ms, (unsigned long long)behind_ms,
+                        (unsigned long long)max_ms, opt_workers);
+                }
                 u64 bc7_levels, bc7_hits, bc7_bytes, bc7_rgba8, cache_reads, cache_stored, cache_restarts, cache_file;
                 vk_astc_stats(&bc7_levels, &bc7_hits, &bc7_bytes, &bc7_rgba8);
                 vk_bc7_cache_stats(&cache_reads, &cache_stored, &cache_restarts, &cache_file);
@@ -754,6 +781,11 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                         (unsigned long long)later.blocks, (unsigned long long)later.restarted, later.waiting,
                         (unsigned long long)(later.waiting_bytes >> 20), later.hot, (unsigned long long)later.went_hot,
                         (unsigned long long)later.cooled);
+                u64 sparse_binds, sparse_ns;
+                vk_sparse_stats(&sparse_binds, &sparse_ns);
+                if (sparse_binds)
+                    LOG("vulkan: %llu sparse binds of the textures mapped in part (%llu ms waited for)\n",
+                        (unsigned long long)sparse_binds, (unsigned long long)(sparse_ns / 1000000));
                 u64 early_made, early_hits, early_left;
                 vk_pipeline_prewarm_stats(&early_made, &early_hits, &early_left);
                 if (early_made || early_left)
@@ -761,16 +793,6 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                         "still to make\n",
                         (unsigned long long)early_made, (unsigned long long)early_hits,
                         (unsigned long long)early_left);
-                static VkGplStats gpl_said;
-                VkGplStats gpl;
-                vk_pipeline_library_stats(&gpl);
-                if (gpl.parts != gpl_said.parts || gpl.whole != gpl_said.whole || gpl.whole_left)
-                    LOG("vulkan: %llu pipeline parts made (%llu ms), %llu pipelines linked from them (%llu ms), %llu "
-                        "of those made whole in the background (%llu ms), %llu still to make whole\n",
-                        (unsigned long long)gpl.parts, (unsigned long long)gpl.part_ms, (unsigned long long)gpl.links,
-                        (unsigned long long)gpl.link_ms, (unsigned long long)gpl.whole,
-                        (unsigned long long)gpl.whole_ms, (unsigned long long)gpl.whole_left);
-                gpl_said = gpl;
             }
             {
                 /* each memory heap's use and the driver's budget for it (VK_EXT_memory_budget), and our own memory in
@@ -1032,6 +1054,8 @@ static int vkr_thumbnail(u8* rgba, u32 w, u32 h) {
 
 /* the stall watchdog: the releases queued and how far the submissions they wait for have got */
 static void vk_report_stall(void) {
+    static u64 last_gdone, last_cdone;
+    static int have;
     u64 n, gate, cgate, gsub, gdone, csub, cdone;
     vk_release_queued(&n, &gate, &cgate);
     vk_submit_progress(&gsub, &gdone);
@@ -1041,6 +1065,12 @@ static void vk_report_stall(void) {
          (unsigned long long)n, (unsigned long long)gate, (unsigned long long)cgate, (unsigned long long)gdone,
          (unsigned long long)gsub, (unsigned long long)cdone, (unsigned long long)csub,
          (unsigned long long)vk_rec_behind());
+    /* a wedge is a GPU whose done count stopped moving, not merely one that is behind: name its last draw then */
+    if (have && ((gdone < gsub && gdone == last_gdone) || (cdone < csub && cdone == last_cdone)))
+        vk_checkpoint_dump("stall");
+    last_gdone = gdone;
+    last_cdone = cdone;
+    have = 1;
 }
 static void vkr_idle(void) {
     vk_lock();

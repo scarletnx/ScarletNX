@@ -11,7 +11,7 @@
 
 #define VK_SHA_SET_BITS 12 /* draws: 4096 sets */
 #define VK_SHA_WAYS     4
-#define VK_CSF_SETS     64 /* dispatches */
+#define VK_CSF_SETS     256 /* dispatches: an Ounce game dispatches a few hundred programs a frame */
 #define VK_CSF_WAYS     4
 
 /* Fibonacci hashing (Knuth's multiplicative hashing): 2^64 divided by the golden ratio. A key times it keeps, in the

@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* Constant buffers, local, shared and global memory and their atomics */
 #include "nx/gpu/shader/translate.h"
+#include "nx/gpu/shader/write_log.h"
 
 /* a shared memory word index kept inside the array the shader declares: out of range is undefined on the console,
    and past an OpTypeArray in SPIR-V. A vertex of an input or output array is kept inside it the same way */
@@ -150,13 +151,22 @@ u32 shader_gbuf_word_index(DirectCtx* c, int stage, u32 slot, u32 word) {
     return spv_emit_select(&c->emit, c->u32_type, no_map, word, mapped);
 }
 
-u32 shader_global_atomic_pointer(DirectCtx* c, int stage, u32 slot, u32 base_off, u32 a, u64 w) {
+/* a compute program's store or atomic of bytes bytes at byte offset into global buffer slot, recorded in its write
+   log (write_log.c): the renderer lands those bytes and no others */
+static void log_written(DirectCtx* c, int stage, u32 slot, u32 offset, u32 bytes) {
+    if (stage != ST_CS || !c->wlog || !c->wlog_mark[slot]) return;
+    shader_wlog_store(&c->emit, c->u32_type, c->bool_type, c->wlog, c->wlog_mark[slot] - 1u, offset, bytes);
+}
+
+/* the word an atomic of global buffer slot operates on, and its byte offset into the buffer in *offset */
+u32 shader_global_atomic_pointer(DirectCtx* c, int stage, u32 slot, u32 base_off, u32 a, u64 w, u32* offset) {
     u32 base = shader_cbuf_read_dynamic(c, SH_GBUF_BANK(base_off),
                                         spv_emit_constant_u32(&c->emit, c->u32_type, SH_GBUF_OFFSET(base_off)));
     u32 immediate = (u32)((i32)(B(w, 28, 20) << 12) >> 12);
     u32 address = spv_emit_iadd_u32(&c->emit, c->u32_type, reg_read(c, a),
                                     spv_emit_constant_u32(&c->emit, c->u32_type, immediate));
     address = spv_emit_isub_u32(&c->emit, c->u32_type, address, base);
+    *offset = address;
     u32 word =
         spv_emit_shift_right_u32(&c->emit, c->u32_type, address, spv_emit_constant_u32(&c->emit, c->u32_type, 2));
     return spv_emit_storage_access_u32(&c->emit, c->gbuf_pointer, c->gbuf[slot], c->zero,
@@ -229,6 +239,7 @@ void shader_global_dynamic(DirectCtx* c, int stage, u64 w, int op, const u32* gb
         spv_emit_selection_merge(&c->emit, merge_label);
         spv_emit_branch_conditional(&c->emit, inside, then_label, merge_label);
         spv_emit_label(&c->emit, then_label);
+        if (op == O_STG) log_written(c, stage, (u32)slot, relative, words * 4);
         for (k = 0; k < words; k++) {
             u32 word = spv_emit_iadd_u32(&c->emit, c->u32_type,
                                          spv_emit_shift_right_u32(&c->emit, c->u32_type, relative,
@@ -450,6 +461,7 @@ void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             spv_emit_shift_right_u32(&c->emit, c->u32_type, address, spv_emit_constant_u32(&c->emit, c->u32_type, 2));
         u32 words = B(w, 48, 3) == 5 ? 2 : B(w, 48, 3) >= 6 ? 4 : 1;
         u32 size = B(w, 48, 3);
+        if (op == O_STG) log_written(c, stage, slot, address, size < 2 ? 1 : size < 4 ? 2 : words * 4);
         for (u32 k = 0; k < words; k++) {
             u32 word =
                 k ? spv_emit_iadd_u32(&c->emit, c->u32_type, index, spv_emit_constant_u32(&c->emit, c->u32_type, k))
@@ -497,7 +509,9 @@ void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         }
     } else if (op == O_ATOM_CAS) {
         u32 slot = gb_at[i] - 1;
-        u32 pointer = shader_global_atomic_pointer(c, stage, slot, gbuf_off[slot], a, w);
+        u32 offset;
+        u32 pointer = shader_global_atomic_pointer(c, stage, slot, gbuf_off[slot], a, w, &offset);
+        log_written(c, stage, slot, offset, 4);
         reg_write(
             c, d,
             spv_emit_atomic_compare_exchange_u32(&c->emit, c->u32_type, pointer, reg_read(c, b + 1), reg_read(c, b)));
@@ -509,7 +523,9 @@ void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                                                               reg_read(c, b)));
     } else if (op == O_RED || op == O_ATOM) {
         u32 slot = gb_at[i] - 1;
-        u32 pointer = shader_global_atomic_pointer(c, stage, slot, gbuf_off[slot], a, w);
+        u32 offset;
+        u32 pointer = shader_global_atomic_pointer(c, stage, slot, gbuf_off[slot], a, w, &offset);
+        log_written(c, stage, slot, offset, 4); /* each one 32 bits (shader_global_atomic_opcode) */
         u32 value = reg_read(c, op == O_RED ? d : b);
         u32 atomic_opcode = shader_global_atomic_opcode(w, op == O_RED);
         u32 prior;

@@ -288,19 +288,19 @@ typedef struct GfxOut {
     /* earlier pending results were copied into buf on the GPU when it was made (gfx_overlay, atlas_fill): org holds
        guest memory without them until each lands (out_rebase) */
     int composed;
-    /* kept on the GPU (keep_new): the owner of the range's bytes, which its draws write in place, with a reference;
-       the range from keep_off on in it. It has no original bytes and lands nothing: the trap lands the owner */
-    VkOwnRes* keep;
-    u64 keep_off;
-    u32 wseen; /* the write tracking clock before org was read (vk_ww_now): copyable_span skips comparing pages since */
-    u64 seq;   /* its place in g_out's order: higher is later (g_outx.seq when it went to the end) */
+    u32 wseen; /* the write tracking clock before its input was read (vk_ww_now): copyable_span skips comparing pages since */
     /* of a logged result, its writers' logs, each holding a reference: part of log gives the bytes that writer wrote
        of [at, at + len) */
     struct OutLog {
         VkWriteLog* log;
         u32 part, at, len;
-    }* logs;
+    } * logs;
     u32 nlogs, caplogs;
+    /* kept on the GPU (keep_new): the owner of the range's bytes, which its draws write in place, with a reference;
+       the range from keep_off on in it. It has no original bytes and lands nothing: the trap lands the owner */
+    VkOwnRes* keep;
+    u64 keep_off;
+    u64 seq;   /* its place in g_out's order: higher is later (g_outx.seq when it went to the end) */
     struct GfxOut* next;
     /* being set up to be written back on the GPU once its dispatch is recorded (back_record), never pending */
     int back;
@@ -596,7 +596,6 @@ void vk_buf_writable_abort(void) {
     while (g_prep) {
         GfxOut* o = g_prep;
         g_prep = o->next;
-        if (o->keep) vk_own_res_unref(o->keep); /* a made owner stays published: it holds memory's bytes */
         out_free(o);
     }
     g_prep_tail = NULL;
@@ -824,6 +823,7 @@ static void out_free(GfxOut* o) {
     for (u32 k = 0; k < o->nlogs; k++) vk_wlog_unref(o->logs[k].log);
     free(o->logs);
     if (o->org_alloc) free(o->org);
+    if (o->keep) vk_own_res_unref(o->keep); /* a made owner stays published: it holds memory's bytes */
     free(o);
 }
 /* The frame fence has signaled. Its stage allocations still exist here; cmd.c frees them only after this call. */
@@ -873,9 +873,10 @@ void vk_buf_frame_done(u64 frame) {
         g_nchg = 0;
         if (!o->org)
             land_logged(o);
-        else
+        else {
             vk_write_changed_runs(o->addr, o->ptr, o->org, o->size, chg_add, o);
-        g_buffer.wstat.merged++;
+            g_buffer.wstat.merged++;
+        }
         out_pages(o, -1);
         out_rebase_later(o, done);
         if (copy_stats_on()) {
@@ -1064,6 +1065,9 @@ static void mem_need_reason(u64 gva, u64 len, int reason) {
     OutList l;
     u64 local[16], *rmap = NULL;
     if (!g_gfx_any || t_buffer.out_landing || !len) return;
+    /* asked first without the lock, which another thread may hold: results are added on the GPU thread, so a miss
+       here can only be one another thread has landed since. A hit is asked again with it */
+    if (reason != WB_MAP && !pend_hit(&g_out_pages, gva, len)) return;
     vk_lock();
     if (reason != WB_MAP && !pend_hit(&g_out_pages, gva, len)) {
         vk_unlock();
@@ -1200,14 +1204,6 @@ static void read_untracked(u64 gva, u8* dst, u64 len) {
         len -= n;
     }
 }
-/* A kept result's bytes are still where its draws wrote them: the owner it writes holds all of its range, as its bind
-   left it. The CPU touching them landed that owner, after those draws, and let go of it: a draw writing it again would
-   write bytes nothing lands */
-static int keep_intact(const GfxOut* o) {
-    OwnRange r[2];
-    return own_lookup(o->cpu, o->size, r, 2) == 1 && r[0].res == o->keep && r[0].addr == o->cpu &&
-           r[0].size == o->size && r[0].res_off == o->keep_off;
-}
 /* whether n bytes of guest memory (host, as write tracking watches them; untracked, the same read without a trap) still
    hold org, written answering vk_written_since since a snapshot: 0, all of them; 1, those of the pages it saw written
    alone, as the others do; -1 (no tracking), all compared. A storage range of an Ounce program is all of the memory
@@ -1228,6 +1224,14 @@ static int org_holds(const u8* host, const u8* untracked, const u8* org, u64 n, 
     OrgRuns r = {untracked, org, 1};
     vk_written_runs(host, n, since, org_run, &r);
     return r.same;
+}
+/* A kept result's bytes are still where its draws wrote them: the owner it writes holds all of its range, as its bind
+   left it. The CPU touching them landed that owner, after those draws, and let go of it: a draw writing it again would
+   write bytes nothing lands */
+static int keep_intact(const GfxOut* o) {
+    OwnRange r[2];
+    return own_lookup(o->cpu, o->size, r, 2) == 1 && r[0].res == o->keep && r[0].addr == o->cpu &&
+           r[0].size == o->size && r[0].res_off == o->keep_off;
 }
 /* a pending result can be copied over guest memory on the GPU: this frame's staging or the last one's still holds
    it, and the guest hasn't written the bytes it covers in [lo, hi) since it was snapshotted (a kept one: its owner
@@ -1561,8 +1565,8 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
         if (writable) {
             match->written = g_buffer.order.writes + 1;
             g_buffer.order.reused_write = 1;
-            if (match->keep) vk_own_res_wrote(match->keep); /* a landing waits for this submission's draw */
             g_src_match = match;
+            if (match->keep) vk_own_res_wrote(match->keep); /* a landing waits for this submission's draw */
         } else {
             /* A later in-place writer must wait for this read at the front end's execution-order point.
                An abandoned setup may leave the flag set, which only adds a conservative barrier. */

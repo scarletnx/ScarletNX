@@ -78,6 +78,8 @@ keeps audits and measurements as they were taken.
   - [NVN](layers/gpu/nvn.md): how games draw through NVN, and how the runtime replays it
   - [GPU-owned guest memory](layers/gpu/ownership.md): the design of memory the GPU keeps, guest buffers on
     unified memory, and its phases
+  - [Graphics pipeline libraries](layers/gpu/pipeline-libraries.md): the design of pipelines linked from shader parts,
+    and the optimized pipeline made after them
   - [ASTC compute uploads](layers/gpu/astc.md)
   - [Block linear surfaces and texture conversions on the GPU](layers/gpu/blocklinear.md)
   - [glslc](layers/gpu/glslc.md): GLSL ES into SPIR-V, for the backends that run OpenGL ES programs on Vulkan
