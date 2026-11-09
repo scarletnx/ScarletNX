@@ -124,6 +124,9 @@ typedef struct VitaThread {
     bool signal_pending;
     VitaWait wait;
     uint64_t seq; /* when it last ran: the scheduler takes the ready thread that waited longest */
+    /* the vblank its last sceDisplayWaitVblankStart wait ended at, or 0 before the first. The next such wait counts
+       from there, so a frame that ran late loses none of its next wait */
+    uint64_t vblank_wake;
     /* when the scheduler first saw it ready, 0 while it is not, for the guard against starving a thread */
     uint64_t ready_ns;
 } VitaThread;

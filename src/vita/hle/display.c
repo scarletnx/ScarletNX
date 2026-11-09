@@ -38,8 +38,27 @@ static uint32_t wait_vblank(VitaProcess* p, VitaThread* t, uint32_t count) {
     vita_wait(p, (VitaWait){.kind = VITA_WAIT_VBLANK, .a = (uint32_t)p->display.vblanks + (count ? count - 1 : 0)});
     return 0;
 }
-static uint32_t wait_vblank_start(VitaProcess* p, VitaThread* t) { return wait_vblank(p, t, 1); }
-static uint32_t wait_vblank_start_multi(VitaProcess* p, VitaThread* t) { return wait_vblank(p, t, vita_arg(p, t, 0)); }
+/* A game paces itself by waiting count vblanks once a frame. The console waits from the call, so a frame whose work runs
+   past a vblank waits one more and a game that fits 30 frames a second there drops to 20. A wait here counts from the
+   vblank the thread's last wait ended at. A frame that ran late then waits only for the vblank it was due at, or not at
+   all when that has passed, and the next wait counts from where this one ended. A thread that has not waited for more
+   than twice count vblanks waits from the call as before */
+static uint32_t pace_vblank(VitaProcess* p, VitaThread* t, uint32_t count) {
+    uint64_t now = p->display.vblanks, n = count ? count : 1, target = now + n;
+    if (t->vblank_wake && now <= t->vblank_wake + 2 * n && t->vblank_wake + n < target) target = t->vblank_wake + n;
+    p->pacer = t;
+    if (target <= now) {
+        t->vblank_wake = now;
+        return 0;
+    }
+    t->vblank_wake = target;
+    vita_wait(p, (VitaWait){.kind = VITA_WAIT_VBLANK, .a = (uint32_t)(target - 1)});
+    return 0;
+}
+static uint32_t wait_vblank_start(VitaProcess* p, VitaThread* t) { return pace_vblank(p, t, 1); }
+static uint32_t wait_vblank_start_multi(VitaProcess* p, VitaThread* t) { return pace_vblank(p, t, vita_arg(p, t, 0)); }
+static uint32_t wait_set_frame_buf(VitaProcess* p, VitaThread* t) { return wait_vblank(p, t, 1); }
+static uint32_t wait_set_frame_buf_multi(VitaProcess* p, VitaThread* t) { return wait_vblank(p, t, vita_arg(p, t, 0)); }
 
 bool vita_display_vblank(VitaProcess* p) {
     vita_gxm_poll(p);
@@ -59,7 +78,7 @@ const VitaHle vita_hle_display[] = {
     {0x5795e898u, "sceDisplayWaitVblankStart", wait_vblank_start},
     {0x78b41b92u, "sceDisplayWaitVblankStartCB", wait_vblank_start},
     {0xdd0a13b8u, "sceDisplayWaitVblankStartMulti", wait_vblank_start_multi},
-    {0x9423560cu, "sceDisplayWaitSetFrameBuf", wait_vblank_start},
-    {0x7d9864a8u, "sceDisplayWaitSetFrameBufMulti", wait_vblank_start_multi},
+    {0x9423560cu, "sceDisplayWaitSetFrameBuf", wait_set_frame_buf},
+    {0x7d9864a8u, "sceDisplayWaitSetFrameBufMulti", wait_set_frame_buf_multi},
     {0, NULL, NULL},
 };
