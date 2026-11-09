@@ -2106,6 +2106,12 @@ VkImageView vk_storage_image_view(Surf* t, const ShaderInfo* si, int i, u64* byt
 /* the view type of storage image slot i of si: 3D for a volume, 2D array for an array (1D too), else 2D */
 VkImageViewType vk_storage_image_type(const ShaderInfo* si, int i);
 u32 vk_gbuf_desc(int stage, u32 off, const u32* v, u64* addr);
+/* The handles of si's texture slots that the program loads from memory (SNX_TEX_MEMORY), into out[i] for slot i (0 for
+   the others): ShaderInfo.memh run by sm86_eval with io (sm86.h). Returns how many. vk_memh_mem is io's guest memory
+   reader, a pending write landed first */
+struct Sm86EvalIo;
+u32 vk_memory_handles(const ShaderInfo* si, const struct Sm86EvalIo* io, u32* out);
+int vk_memh_mem(void* user, u64 address, u32* words, u32 count);
 /* the access a storage image is moved to GENERAL with: image atomics read it as well as write it, and only the
    accesses a barrier names see the writes before it */
 #define VK_STORAGE_IMAGE_ACCESS (VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)

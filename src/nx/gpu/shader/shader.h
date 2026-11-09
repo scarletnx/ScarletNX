@@ -35,6 +35,22 @@ typedef struct {
     u16 stride, count;
 } ShTex;
 #define SH_HANDLE_IMM 255 /* ShTex.bl2_cbuf of a handle's half that is a constant (the sampler's, from a MOV32I) */
+/* An Ounce program's handle that it loads from memory (ShTex.flags): one game's material programs take each texture's
+   handle from a table whose address is in cbuf 0 (LDG.64, then R2UR into the uniform register pair of a TEX whose
+   handle is in a uniform register, or a TEX.B's handle register). The translation keeps the instructions that compute
+   it (ShaderInfo.memh) where all they read is the draw's, and the slot names the value the handle is, a probe
+   (SH_PROBE): cbuf_off the texture's word, and with bl2 set, bl2_off the sampler's index, a separate word (the uniform
+   register after the texture's). The renderer runs them (sm86_eval) and binds the handle as a constant buffer's */
+#define SNX_TEX_MEMORY   8
+/* a value of ShaderInfo.memh: the register (uniform or not) as instruction insn of the list leaves it */
+#define SH_PROBE(insn, uniform, reg) ((u32)(insn) << 9 | (u32)(uniform) << 8 | (u32)(reg))
+#define SH_PROBE_INSN(p)    ((p) >> 9)
+#define SH_PROBE_UNIFORM(p) ((p) >> 8 & 1u)
+#define SH_PROBE_REG(p)     ((p) & 0xffu)
+#define SH_MEMH_MAX         64 /* instructions of ShaderInfo.memh */
+/* the probe of a handle whose instructions the renderer can't run before the draw (its address differs from invocation
+   to invocation): the slot is bound as no texture, which samples zeros (ShaderInfo.memh_none counts them) */
+#define SH_PROBE_NONE       0xFFFFFFFEu
 /* whether two indexed slots read the same handle table the same way */
 static inline int shader_same_indexed_table(const ShTex* a, const ShTex* b) {
     return a->bl_cbuf == b->bl_cbuf && a->cbuf_off == b->cbuf_off && a->flags == b->flags && a->type == b->type &&
@@ -189,6 +205,12 @@ typedef struct {
     u32 late_depth; /* key: ordered GPU depth/stencil shadow operations after guest fragment code */
     u32 capture_outputs; /* key: capture validity location2..7; zero retains the original location1 interface */
     int primitive_split_safe; /* proof: vertex values do not depend on subgroup/lane/clock invocation groups */
+    /* An Ounce program's instructions that compute its texture handles from memory (SNX_TEX_MEMORY slots), in program
+       order, each its lo and hi words: the integer ALU, constant buffer and global loads that sm86_eval runs */
+    u64 memh[SH_MEMH_MAX][2];
+    u32 nmemh;
+    u32 memh_none;     /* texture instructions whose handle from memory is SH_PROBE_NONE, */
+    char memh_why[64]; /* and why the first is */
 } ShaderInfo;
 /* The graphics cache packs these explicit fragment-only fields above its eight image-format bits. */
 enum { SH_FS_LATE_DEPTH = 1u, SH_FS_CAPTURE_SHIFT = 1, SH_FS_CONFIG_MASK = 15u };

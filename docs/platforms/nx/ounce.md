@@ -158,6 +158,28 @@ import limits and the ownership model above don't allow.
 `RED` and `ATOMG` of `F32` add (`.FTZ.RN`) are one `OpAtomicFAddEXT` where the device has
 `shaderBufferFloat32AtomicAdd`, else a loop of compare and exchange on the word's bits.
 
+A texture's handle may come from memory too. One game's material programs take each texture's from a table of
+materials in a storage buffer: an `LDG.E.64` at a record that the draw's constant buffers pick (in one program
+`c[0][0x520] + ((c[4][0x88] & 0xfffff) + c[5][0x2ec]) * 32 + 0x18`, with a `SEL` on an `ISETP` of the index's top
+bits), then `R2UR` into the uniform register pair of a `TEX`, `TLD`, `TLD4` or `TXQ` whose handle is in a uniform
+register (0xf60, 0xf66, 0xf63, 0xf6f: the texture's word, then the sampler's index, the word `>> 20`), or into a
+`TEX.B`'s handle register. The translator refused these programs: about 320 draws a frame of the first 3D scene, which
+was then a white screen. It now keeps the instructions that make each such handle in `ShaderInfo.memh`, where every
+value they read is the draw's (constant buffer words, immediates, and words loaded from addresses made of them), and
+the slot names the value that is the handle (`SNX_TEX_MEMORY`, `SH_PROBE` in `shader.h`): a register as one of those
+instructions leaves it. Each value one of them reads has one unguarded writer before it on every path, and no other
+kept instruction between the two writes it, so the list run in program order gives what the program computes. The
+renderer runs it on the CPU for each draw (`sm86_eval` in `gpu/shader/sm86_eval.c`, the translation's arithmetic,
+which a test checks against the translated program), on the draw's constant buffers and guest memory, a pending write
+there landed first, and binds the handle as a constant buffer's (`memh_handle` in `vk/render.c`, `vk_memory_handles`
+for dispatches). As with `gbuf_pointer`, a word the GPU writes later in the stream than the draw is recorded is read
+as it was then: the material tables are the CPU's, but a table a program wrote in the same frame would give the
+older handles. A handle whose address differs from invocation to invocation (one game's lights and decals: a cell of
+a grid in world space, then the cell's list, in a loop) is bound as no texture, which samples zeros
+(`SH_PROBE_NONE`), and the log names the program once: the draw goes on without it. An array of the pool's textures
+indexed on the GPU would sample them, but the renderer would have to make each texture such a handle can name, which
+no draw tells it.
+
 ## Surfaces
 
 An Ounce game's block linear surfaces use another GOB: bits 5 and 6 of a byte's offset in it are swapped, so x
