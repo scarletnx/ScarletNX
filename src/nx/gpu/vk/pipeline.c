@@ -148,6 +148,8 @@ const char* vk_spirv_unavailable(const u32* spv, size_t words) {
             return "shaderMixedFloatDotProductFloat16AccFloat32 is unavailable";
         if (width == 2 && (spv[at + 1] == 6022 || spv[at + 1] == 5345 || spv[at + 1] == 5346) && !g_shader_hmma_coop)
             return "cooperativeMatrix or the Vulkan memory model is unavailable";
+        if (width == 2 && spv[at + 1] == 6033 && !g_shader_float_atomic_add)
+            return "shaderBufferFloat32AtomicAdd is unavailable";
         at += width;
     }
     return NULL;

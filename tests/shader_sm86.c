@@ -1971,6 +1971,190 @@ static void test_flow_operand(const char* dir) {
     (void)dir;
 }
 
+/* F2IP dst, a, b, c with the flags of bits 72-79 (0x04 .U8.F32.NTZ, 0x14 .S8, 0x1c .S8.RELU), CuAssembler's sm_86
+   records' encoding (0x243) */
+static Word f2ip(u32 dst, u32 a, u32 b, u32 c, u32 flags) {
+    Word x = alu(0x043, 1, dst, a);
+    set(&x, 32, 8, b);
+    set(&x, 64, 8, c);
+    set(&x, 72, 8, flags);
+    return x;
+}
+/* F2IP packs two floats as bytes, rounded to the nearest even, saturated, NaN 0, with c's low half above them (PTX's
+   cvt.pack: d = c << 16 | a << 8 | b). R0: .U8 of 1.5 (2) and 300 (255) under c 0xabcd1234; R1: .U8 of 2.5 (2, a
+   tie) and -3 (0); R2: .S8 of -200 (-128) and NaN (0); R3: .S8.RELU of -5 (0) and 126.6 (127) */
+static void test_f2ip(const char* dir) {
+    u8 code[16 * 20] = {0};
+    u32 n = 0;
+    static const float in[8] = {1.5f, 300.0f, 2.5f, -3.0f, -200.0f, 0.0f, -5.0f, 126.6f};
+    for (u32 k = 0; k < 8; k++) put(code, n++, mov_imm(4 + k, k == 5 ? 0x7fc00000u : f2u(in[k])));
+    put(code, n++, mov_imm(12, 0xabcd1234u));
+    put(code, n++, f2ip(0, 4, 5, 12, 0x04));
+    put(code, n++, f2ip(1, 6, 7, 255, 0x04));
+    put(code, n++, f2ip(2, 8, 9, 255, 0x14));
+    put(code, n++, f2ip(3, 10, 11, 255, 0x1c));
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    Sm86Insn d = dec(f2ip(0, 4, 5, 12, 0x04));
+    CHECK(d.op == SM86_F2IP && d.form == 1);
+    u32 out[4];
+    int ran = run_fs_at(code, n, 0, NULL, 0, out);
+    int ok = ran && out[0] == 0x123402ffu && out[1] == 0x200u && out[2] == 0x8000u && out[3] == 0x7fu;
+    CHECK(ok);
+    if (!ok) fprintf(stderr, "f2ip: %08x %08x %08x %08x\n", out[0], out[1], out[2], out[3]);
+    /* a flag it doesn't know (bit 73) is refused */
+    put(code, 13, f2ip(3, 10, 11, 255, 0x06));
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+    CHECK(!spv && strstr(si.first_unsupported, "F2IP with flags 0x6"));
+    free(spv);
+    put(code, 13, f2ip(3, 10, 11, 255, 0x1c));
+    si = (ShaderInfo){0};
+    spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+    if (spv) CHECK(keep_module(dir, "fs_f2ip", spv, count));
+    free(spv);
+}
+
+/* ULDC of a byte or a halfword (types 0-3, NAK's MemType as LDC's), indexed by a uniform register or not, into UR, then
+   MOV R, UR. Bank 1's words 4 and 5 are 0x80f1e2d3 and 0xc4b5a697. R0: ULDC.U8 c[1][0x11] (0xe2); R1: ULDC.IDX.S8
+   c[1][UR4 + 0x12] with UR4 = 1 (0x80 sign extended); R2: ULDC.IDX.U16 c[1][UR4 - 1 + 0x16] (0xc4b5, the signed
+   offset of 0xffff); R3: ULDC.S16 c[1][0x14] (0xa697 sign extended), as one game's compute program walks a byte code */
+static Word uldc_small(u32 ud, u32 bank, u32 off, u32 type, int indexed, u32 ur) {
+    Word x = fix(indexed ? 0xabb : 0xab9);
+    set(&x, 16, 6, ud);
+    if (indexed) set(&x, 24, 6, ur);
+    cbuf(&x, bank, off);
+    set(&x, 73, 3, type);
+    return x;
+}
+static Word mov_ur(u32 dst, u32 ur) {
+    Word x = alu(0x002, 6, dst, 255);
+    set(&x, 32, 6, ur);
+    set(&x, 91, 1, 1);
+    return x;
+}
+static void test_uldc_small(const char* dir) {
+    u8 code[16 * 14] = {0};
+    u32 n = 0;
+    put(code, n++, ualu(0x082, 4, 0, 1)); /* UMOV UR4, 1 */
+    put(code, n++, uldc_small(5, 1, 0x11, 0, 0, 63));
+    put(code, n++, uldc_small(6, 1, 0x12, 1, 1, 4));
+    put(code, n++, uldc_small(7, 1, 0x16 + 0xffffu, 2, 1, 4));
+    put(code, n++, uldc_small(8, 1, 0x14, 3, 0, 63));
+    for (u32 k = 0; k < 4; k++) put(code, n++, mov_ur(k, 5 + k));
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    static const u32 cb1[6] = {0, 0, 0, 0, 0x80f1e2d3u, 0xc4b5a697u};
+    u32 out[4];
+    int ran = run_fs_at(code, n, 0, cb1, 6, out);
+    int ok = ran && out[0] == 0xe2 && out[1] == 0xffffff80u && out[2] == 0xc4b5 && out[3] == 0xffffa697u;
+    CHECK(ok);
+    if (!ok) fprintf(stderr, "uldc small: %08x %08x %08x %08x\n", out[0], out[1], out[2], out[3]);
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+    if (spv) CHECK(keep_module(dir, "fs_uldc_small", spv, count));
+    free(spv);
+}
+
+/* SHFL with c in a register (0x989 the lane an immediate, 0x389 a register, the register at 64): c's bits 8-12 split
+   the lanes into segments and bits 0-4 clamp the lane, as the immediate's. The evaluator runs one lane, so a shuffle
+   that holds reads its own value: what is checked is the predicate, which says whether the source lane is inside,
+   R0 1.0 where it is. Cases: SHFL.UP by 1 with c 0x1800 (segments of 8) at lane 8, whose lane 7 is the segment
+   before (false), and at lane 9 (true); SHFL.IDX of R6 = 5 with c 0x1f03 (every lane a segment of its own) at lane 2,
+   which reads lane 2 (true); SHFL.UP by 1 with c RZ at lane 0 (false); SHFL.IDX of R6 = 30 with c 4 (lanes 0 to 4)
+   at lane 20 (false); SHFL.DOWN by 2 with c 7 at lane 3, lane 5 (true) */
+static Word shfl_creg(u32 dst, u32 pd, u32 value, int lane_reg, u32 lane, u32 creg, u32 mode) {
+    Word x = fix(lane_reg ? 0x389 : 0x989);
+    set(&x, 16, 8, dst);
+    set(&x, 24, 8, value);
+    if (lane_reg)
+        set(&x, 32, 8, lane);
+    else
+        set(&x, 53, 5, lane);
+    set(&x, 58, 2, mode);
+    set(&x, 64, 8, creg);
+    set(&x, 81, 3, pd);
+    return x;
+}
+static Word sel_reg(u32 dst, u32 a, u32 pred) { /* SEL dst, a, RZ, pred: a where pred holds */
+    Word x = alu(0x007, 1, dst, a);
+    set(&x, 32, 8, 255);
+    set(&x, 87, 3, pred);
+    return x;
+}
+static void test_shfl_creg(const char* dir) {
+    static const struct {
+        u32 lane, lane_reg, lane_value, creg_value, mode, want;
+    } cases[] = {
+        {8, 0, 1, 0x1800, 1, 0}, {9, 0, 1, 0x1800, 1, 1},   {2, 1, 5, 0x1f03, 0, 1},
+        {0, 0, 1, 0, 1, 0},      {20, 1, 30, 0x0004, 0, 0}, /* IDX lane 30 past the clamp 4 of one segment of 32 */
+        {3, 0, 2, 0x0007, 2, 1},                            /* DOWN by 2 from lane 3: 5 <= 7 */
+    };
+    for (u32 i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        u8 code[16 * 12] = {0};
+        u32 n = 0;
+        put(code, n++, mov_imm(4, 0x1234));
+        put(code, n++, mov_imm(5, cases[i].creg_value));
+        put(code, n++, mov_imm(6, cases[i].lane_value));
+        put(code, n++, mov_imm(9, f2u(1.0f)));
+        put(code, n++,
+            shfl_creg(8, 0, 4, (int)cases[i].lane_reg, cases[i].lane_reg ? 6 : cases[i].lane_value,
+                      cases[i].creg_value ? 5 : 255, cases[i].mode));
+        put(code, n++, sel_reg(0, 9, 0));
+        put(code, n++, exit_insn());
+        put(code, n, bra(n, n, 7, 0));
+        n++;
+        u32 out[4];
+        int ran = run_fs_at(code, n, cases[i].lane, NULL, 0, out);
+        u32 want = cases[i].want ? f2u(1.0f) : 0;
+        CHECK(ran && out[0] == want);
+        if (!ran || out[0] != want) fprintf(stderr, "shfl c register, case %u: %08x, %08x expected\n", i, out[0], want);
+        if (i == 0) {
+            u32 fsph[32] = {0};
+            fsph[0] = sph0(2, 5);
+            fsph[18] = 0xf;
+            ShaderInfo si = {0};
+            size_t count = 0;
+            u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+            if (spv) CHECK(keep_module(dir, "fs_shfl_creg", spv, count));
+            free(spv);
+        }
+    }
+}
+
+/* S2R R0, SR 0x84 (NAK's NAK_SV_VARIABLE_RATE): a fragment's width in bits 8-15 and height in bits 16-23, 1 and 1 as
+   the runtime shades every pixel, which the game's PRMT R, R, 0x7771, RZ takes the width of. A vertex program's is
+   refused */
+static void test_shading_rate(const char* dir) {
+    u8 code[16 * 4] = {0};
+    Word x = fix(0x919);
+    set(&x, 16, 8, 0);
+    set(&x, 72, 8, 0x84);
+    put(code, 0, x);
+    put(code, 1, exit_insn());
+    put(code, 2, bra(2, 2, 7, 0));
+    u32 out[4];
+    CHECK(run_fs_at(code, 3, 0, NULL, 0, out) && out[0] == 0x10100u);
+    u32 vsph[32] = {0};
+    vsph[0] = sph0(1, 1);
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, 3 * 16, ST_VS, vsph, &si, &count);
+    CHECK(!spv && strstr(si.first_unsupported, "0x84 outside a fragment program"));
+    free(spv);
+    (void)dir;
+}
+
 /* LDG.E (no uniform) of type 4 (32 bits) or 5 (64 bits) into dst from [addr + imm], and STG.E of data */
 static Word ldg_nou(u32 dst, u32 addr, u32 imm, u32 type) {
     Word x = fix(0x381);
@@ -1990,31 +2174,50 @@ static Word stg_nou(u32 addr, u32 imm, u32 data) {
     set(&x, 73, 3, 4);
     return x;
 }
+/* IADD3 dst, a, b, RZ with no carries (form 1) */
+static Word iadd3(u32 dst, u32 a, u32 b) {
+    Word x = alu(0x010, 1, dst, a);
+    set(&x, 32, 8, b);
+    set(&x, 64, 8, 255);
+    set(&x, 81, 3, 7);
+    set(&x, 84, 3, 7);
+    set(&x, 87, 4, 7);
+    set(&x, 77, 4, 7);
+    return x;
+}
 /* Pointers from memory, as one game's vertex program that clears indirect draws: R2 is the buffer that c[0][0x110]
    holds (0x1_0000_1000), whose words 0-5 are three pointers. The first, base + 0x40, is inside it: the STG through
    it writes word 0x12 and the LDG reads word 0x10. The second, below the base, and the third, base + 0x1_0000_0040
-   (the same low word of the difference), are in no buffer: the STG is dropped and the LDG reads 0 */
+   (the same low word of the difference), are in no buffer: the STG is dropped and the LDG reads 0. The pointers are
+   read at R14 = R2 + R15 (0), which isn't the base itself: an address the program computes, which global_dynamic
+   compares with its buffers (an LDG.64 at the base itself plus an offset names a buffer of its own:
+   test_global_indirect) */
 static void test_global_pointer(const char* dir) {
-    u8 code[16 * 16] = {0};
+    u8 code[16 * 18] = {0};
     Word m = alu(0x002, 5, 2, 255);
     cbuf(&m, 0, 0x110);
     put(code, 0, m);
     m = alu(0x002, 5, 3, 255);
     cbuf(&m, 0, 0x114);
     put(code, 1, m);
-    put(code, 2, ldg_nou(4, 2, 0, 5));
-    put(code, 3, ldg_nou(8, 2, 8, 5));
-    put(code, 4, ldg_nou(12, 2, 16, 5));
-    put(code, 5, mov_imm(6, 7));
-    put(code, 6, mov_imm(7, 9));
-    put(code, 7, mov_imm(11, 5));
-    put(code, 8, stg_nou(4, 8, 6));
-    put(code, 9, stg_nou(12, 0xc, 7));
-    put(code, 10, ldg_nou(10, 4, 0, 4));
-    put(code, 11, ldg_nou(11, 8, 0, 4));
-    put(code, 12, ast(0x70, 10, 2));
-    put(code, 13, exit_insn());
-    put(code, 14, bra(14, 14, 7, 0));
+    put(code, 2, mov_imm(15, 0));
+    put(code, 3, iadd3(14, 2, 15));
+    m = alu(0x002, 1, 15, 255); /* MOV R15, R3 */
+    set(&m, 32, 8, 3);
+    put(code, 4, m);
+    put(code, 5, ldg_nou(4, 14, 0, 5));
+    put(code, 6, ldg_nou(8, 14, 8, 5));
+    put(code, 7, ldg_nou(12, 14, 16, 5));
+    put(code, 8, mov_imm(6, 7));
+    put(code, 9, mov_imm(7, 9));
+    put(code, 10, mov_imm(11, 5));
+    put(code, 11, stg_nou(4, 8, 6));
+    put(code, 12, stg_nou(12, 0xc, 7));
+    put(code, 13, ldg_nou(10, 4, 0, 4));
+    put(code, 14, ldg_nou(11, 8, 0, 4));
+    put(code, 15, ast(0x70, 10, 2));
+    put(code, 16, exit_insn());
+    put(code, 17, bra(17, 17, 7, 0));
     u32 vsph[32] = {0};
     vsph[0] = sph0(1, 1);
     static u32 bank0[1024], buffer[64];
@@ -2034,7 +2237,7 @@ static void test_global_pointer(const char* dir) {
     for (u32 k = 0; k < 16; k++) smap[k] = ~0u;
     env.ubo[SNX_VKB_SMAP] = smap;
     env.ubo_words[SNX_VKB_SMAP] = 48;
-    int ran = run_stage(ST_VS, code, 15, vsph, &env);
+    int ran = run_stage(ST_VS, code, 18, vsph, &env);
     int ok = ran && buffer[0x12] == 7 && buffer[0x13] == 0 && env.position[0] == 0x1234 && env.position[1] == 0;
     CHECK(ok);
     if (!ok)
@@ -2042,9 +2245,234 @@ static void test_global_pointer(const char* dir) {
                 env.position[1]);
     ShaderInfo si = {0};
     size_t count = 0;
-    u32* spv = sm86_to_spirv(code, 15 * 16, ST_VS, vsph, &si, &count);
+    u32* spv = sm86_to_spirv(code, 18 * 16, ST_VS, vsph, &si, &count);
     CHECK(spv && si.ngbuf == 1 && si.gbuf_cbuf_off[0] == 0x110 && (si.gbuf_wmask & 1));
     if (spv) CHECK(keep_module(dir, "global_pointer", spv, count));
+    free(spv);
+}
+
+/* LDG.E.64 (the uniform form) into dst from [UR + imm], RZ the register */
+static Word ldg_uniform64(u32 dst, u32 ur, u32 imm) {
+    Word x = fix(0x981);
+    set(&x, 16, 8, dst);
+    set(&x, 24, 8, 255);
+    set(&x, 32, 6, ur);
+    set(&x, 40, 24, imm);
+    set(&x, 72, 1, 1);
+    set(&x, 73, 3, 5);
+    set(&x, 81, 3, 7);
+    set(&x, 91, 1, 1);
+    return x;
+}
+/* MOV dst, src under the predicate (negated with negate) */
+static Word mov_if(u32 dst, u32 src, u32 pred, int negate) {
+    Word x = alu(0x002, 1, dst, 255);
+    set(&x, 32, 8, src);
+    set(&x, 12, 3, pred);
+    set(&x, 15, 1, (u64)negate);
+    return x;
+}
+/* Pointers loaded from a table, as one game's material and compute programs do: c[0][0x40] holds the table's address
+   (0x1_0000_0000), whose words 2-3 and 4-5 hold A (0x3_2000_0000) and B (0x5_0000_0000), far from it. An LDG.64 at the
+   table's address itself plus 8 or 16 names a buffer of its own whose address is in memory (SH_GBUF_INDIRECT, the
+   renderer binds the memory mapped from the pointer). R4 = A and R6 = B: R14 = A[0x20] and the stores to B + 4 and
+   B + 8 reach them by their own buffers. P0 picks R8:R9 = P0 ? B : A, then IMAD.WIDE R10 = 3 * 16 + R8:R9 and the
+   LDG of [R10 + 4]: either pointer, so the address is compared with each buffer when it runs (global_dynamic), the
+   two indirect ones among them. Word 13 of A holds 0xabc and of B 0xdef: B's word 1 gets the one P0 picks */
+static void test_global_indirect(const char* dir) {
+    for (u32 pick_b = 0; pick_b < 2; pick_b++) {
+        u8 code[16 * 18] = {0};
+        u32 n = 0;
+        put(code, n++, uldc64(0x40));
+        put(code, n++, ldg_uniform64(4, 4, 8));
+        put(code, n++, ldg_uniform64(6, 4, 16));
+        put(code, n++, mov_imm(12, 3));
+        put(code, n++, setp_const(0, pick_b ? 0 : 1));
+        put(code, n++, mov_if(8, 4, 0, 1));
+        put(code, n++, mov_if(9, 5, 0, 1));
+        put(code, n++, mov_if(8, 6, 0, 0));
+        put(code, n++, mov_if(9, 7, 0, 0));
+        Word w = alu(0x025, 4, 10, 12); /* IMAD.WIDE.U32 R10, R12, 16, R8 */
+        set(&w, 32, 32, 16);
+        set(&w, 64, 8, 8);
+        put(code, n++, w);
+        put(code, n++, ldg_nou(13, 10, 4, 4));
+        put(code, n++, ldg_nou(14, 4, 0x20, 4));
+        Word st = stg_nou(6, 4, 13);
+        put(code, n++, st);
+        st = stg_nou(6, 8, 14);
+        put(code, n++, st);
+        put(code, n++, exit_insn());
+        put(code, n, bra(n, n, 7, 0));
+        n++;
+        ShaderInfo si = {0};
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+        CHECK(spv != NULL);
+        if (!spv) {
+            fprintf(stderr, "global indirect: %s\n", si.first_unsupported);
+            continue;
+        }
+        u32 want[3] = {0x40, 0x40u | 1u << 31 | 1u << 21, 0x40u | 1u << 31 | 2u << 21};
+        CHECK(si.ngbuf == 3 && si.gbuf_wmask == 4);
+        for (int k = 0; k < 3 && k < si.ngbuf; k++) CHECK(si.gbuf_cbuf_off[k] == want[k]);
+        CHECK(SH_GBUF_INDIRECT(si.gbuf_cbuf_off[2]) && SH_GBUF_CELL(si.gbuf_cbuf_off[2]) == 16 &&
+              SH_GBUF_PARENT(si.gbuf_cbuf_off[2]) == 0x40);
+        static u32 bank0[1024], table[64], a[64], b[64], log[2 * SH_WLOG_PART];
+        memset(table, 0, sizeof table);
+        memset(a, 0, sizeof a);
+        memset(b, 0, sizeof b);
+        bank0[0x40 / 4] = 0, bank0[0x44 / 4] = 1;
+        table[2] = 0x20000000, table[3] = 3;
+        table[4] = 0, table[5] = 5;
+        a[13] = 0xabc, a[8] = 0x777;
+        b[13] = 0xdef;
+        SpvEvalEnv env = {0};
+        env.ubo[SNX_VKB_CB] = bank0;
+        env.ubo_words[SNX_VKB_CB] = 1024;
+        env.ubo[SNX_VKB_SSBO] = table;
+        env.ubo_words[SNX_VKB_SSBO] = 64;
+        env.ubo[SNX_VKB_SSBO + 1] = a;
+        env.ubo_words[SNX_VKB_SSBO + 1] = 64;
+        env.ubo[SNX_VKB_SSBO + 2] = b;
+        env.ubo_words[SNX_VKB_SSBO + 2] = 64;
+        env.ubo[SNX_VKB_WPAGES] = log;
+        env.ubo_words[SNX_VKB_WPAGES] = 2 * SH_WLOG_PART;
+        const char* why = spv_eval(spv, count, &env);
+        int ok = !why && b[1] == (pick_b ? 0xdefu : 0xabcu) && b[2] == 0x777 && a[1] == 0;
+        CHECK(ok);
+        if (!ok)
+            fprintf(stderr, "global indirect (%s): %s, B words %x %x\n", pick_b ? "B" : "A", why ? why : "ran", b[1],
+                    b[2]);
+        CHECK(keep_module(dir, pick_b ? "global_indirect_b" : "global_indirect_a", spv, count));
+        free(spv);
+    }
+}
+
+/* TEX, TLD, TLD4 and TXQ with the handle in a uniform register (0xf60, 0xf66, 0xf63, 0xf6f), as CuAssembler's sm_86
+   records encode "TEX.SCR.LL.DC R34, R8, R2, R6, UR4, 2D", "TLD.SCR.LZ R4, R14, R6, UR4, 2D", "TLD4.SCR.A
+   R16, R2, R48, UR4, 2D" and "TXQ R35, R20, UR12, TEX_HEADER_DIMENSION, 0x2": the register at 40-45. A handle that
+   a program loads from memory (LDG.64, R2UR, UMOV) names no slot: refused with where it comes from */
+static void test_uniform_handle(const char* dir) {
+    static const struct {
+        u64 hi, lo;
+        u32 op, ur;
+    } forms[] = {{0x00000000099e4f08ull, 0x3000040602227f60ull, SM86_TEX_U, 4},
+                 {0x00000000089e0f04ull, 0x30000406060e7f66ull, SM86_TLD_U, 4},
+                 {0x00000000099e0f10ull, 0x3000043030027f63ull, SM86_TLD4_U, 4},
+                 {0x00000000080002ffull, 0x00000c0014237f6full, SM86_TXQ_U, 12}};
+    for (u32 i = 0; i < sizeof forms / sizeof forms[0]; i++) {
+        Sm86Insn in;
+        CHECK(sm86_decode(forms[i].lo, forms[i].hi, &in) && in.op == forms[i].op &&
+              sm86_field(&in, 40, 6) == forms[i].ur && sm86_field(&in, 91, 1));
+    }
+    u8 code[16 * 8] = {0};
+    u32 n = 0;
+    put(code, n++, uldc64(0x40));
+    put(code, n++, ldg_uniform64(4, 4, 8));
+    Word x = fix(0x3c2); /* R2UR UR6, R4 */
+    set(&x, 16, 6, 6);
+    set(&x, 24, 8, 4);
+    put(code, n++, x);
+    x = ualu(0x082, 8, 0, 0); /* UMOV UR8, UR6 (form 6) */
+    set(&x, 9, 3, 6);
+    set(&x, 32, 6, 6);
+    set(&x, 64, 6, 63);
+    put(code, n++, x);
+    Word t = {{forms[0].lo, forms[0].hi}};
+    set(&t, 40, 6, 8);
+    put(code, n++, t);
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+    CHECK(!spv && strstr(si.first_unsupported, "TEX (uniform handle) whose handle comes from LDG"));
+    if (spv || !strstr(si.first_unsupported, "from LDG")) fprintf(stderr, "uniform handle: %s\n", si.first_unsupported);
+    free(spv);
+    (void)dir;
+}
+
+/* a global access of the uniform form at [UR + imm] (RZ the register, UR a pair: bit 72): RED (0x98e), ATOMG (0x9a8)
+   or STG (0x986) of the register data, of type (bits 73-75) and operation (87-90) */
+static Word global_uniform(u32 opcode, u32 dst, u32 ur, u32 imm, u32 data, u32 type, u32 how) {
+    Word x = fix(opcode);
+    set(&x, 16, 8, dst);
+    set(&x, 24, 8, 255);
+    set(&x, 32, 8, data);
+    set(&x, 40, 24, imm);
+    set(&x, 64, 6, ur);
+    set(&x, 72, 1, 1);
+    set(&x, 73, 3, type);
+    set(&x, 87, opcode == 0x98e ? 3 : 4, how);
+    set(&x, 91, 1, 1);
+    return x;
+}
+/* RED.E.ADD.F32.FTZ.RN [UR4 + 4], R2 and ATOMG.E.ADD.F32.FTZ.RN R5, [UR4 + 8], R3, then STG [UR4 + 0xc], R5 (NAK's
+   AtomType F32 is 3), as one game's compute programs sum positions: words 1 and 2 of the buffer go from 0.5 and 1.0
+   to 2.0 and 3.25, and word 3 gets 1.0, the word ATOMG found. With the device's float atomics an OpAtomicFAddEXT,
+   else a loop of compare and exchange (one lane alone here: the GPU test races many) */
+static void test_atomic_fadd(const char* dir) {
+    for (int native = 0; native < 2; native++) {
+        u8 code[16 * 8] = {0};
+        u32 n = 0;
+        put(code, n++, uldc64(0x20));
+        put(code, n++, mov_imm(2, f2u(1.5f)));
+        put(code, n++, mov_imm(3, f2u(2.25f)));
+        put(code, n++, global_uniform(0x98e, 0, 4, 4, 2, 3, 0));
+        put(code, n++, global_uniform(0x9a8, 5, 4, 8, 3, 3, 0));
+        put(code, n++, global_uniform(0x986, 0, 4, 0xc, 5, 4, 0));
+        put(code, n++, exit_insn());
+        put(code, n, bra(n, n, 7, 0));
+        n++;
+        g_shader_float_atomic_add = native;
+        ShaderInfo si = {0};
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+        g_shader_float_atomic_add = 0;
+        CHECK(spv != NULL);
+        if (!spv) {
+            fprintf(stderr, "atomic fadd: %s\n", si.first_unsupported);
+            continue;
+        }
+        u32 at[4];
+        CHECK(spv_find(spv, count, 6035 /* OpAtomicFAddEXT */, at, 4) == (native ? 2u : 0u));
+        CHECK(spv_find(spv, count, 230 /* OpAtomicCompareExchange */, at, 4) == (native ? 0u : 2u));
+        CHECK(si.ngbuf == 1 && si.gbuf_cbuf_off[0] == 0x20 && si.gbuf_wmask == 1 && si.gbuf_rmask == 1);
+        static u32 bank0[1024], buffer[16], log[SH_WLOG_PART];
+        memset(buffer, 0, sizeof buffer);
+        bank0[0x20 / 4] = 0x1000, bank0[0x24 / 4] = 2;
+        buffer[1] = f2u(0.5f), buffer[2] = f2u(1.0f);
+        SpvEvalEnv env = {0};
+        env.ubo[SNX_VKB_CB] = bank0;
+        env.ubo_words[SNX_VKB_CB] = 1024;
+        env.ubo[SNX_VKB_SSBO] = buffer;
+        env.ubo_words[SNX_VKB_SSBO] = 16;
+        env.ubo[SNX_VKB_WPAGES] = log;
+        env.ubo_words[SNX_VKB_WPAGES] = SH_WLOG_PART;
+        const char* why = spv_eval(spv, count, &env);
+        int ok = !why && buffer[1] == f2u(2.0f) && buffer[2] == f2u(3.25f) && buffer[3] == f2u(1.0f);
+        CHECK(ok);
+        if (!ok)
+            fprintf(stderr, "atomic fadd (%s): %s, words %08x %08x %08x\n", native ? "native" : "loop",
+                    why ? why : "ran", buffer[1], buffer[2], buffer[3]);
+        CHECK(keep_module(dir, native ? "cs_fadd_native" : "cs_fadd_loop", spv, count));
+        free(spv);
+    }
+    /* another operation of an F32 atomic is refused by name */
+    u8 code[16 * 4] = {0};
+    put(code, 0, uldc64(0x20));
+    put(code, 1, global_uniform(0x98e, 0, 4, 4, 2, 3, 1));
+    put(code, 2, exit_insn());
+    put(code, 3, bra(3, 3, 7, 0));
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, 4 * 16, ST_CS, NULL, &si, &count);
+    CHECK(!spv && strstr(si.first_unsupported, "RED of type 3, operation 1"));
     free(spv);
 }
 
@@ -2715,6 +3143,13 @@ int main(int argc, char** argv) {
     test_fragment_depth(dir);
     test_flow_operand(dir);
     test_global_pointer(dir);
+    test_global_indirect(dir);
+    test_f2ip(dir);
+    test_uldc_small(dir);
+    test_shfl_creg(dir);
+    test_shading_rate(dir);
+    test_atomic_fadd(dir);
+    test_uniform_handle(dir);
     test_mesh(dir);
     test_task(dir);
     test_mesh_after_task(dir);

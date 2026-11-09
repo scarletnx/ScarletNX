@@ -53,6 +53,10 @@ SM86_OP(F2I64, 0x111, SM86_K_ALU, SM86_F_B, "F2I.64")
 SM86_OP(I2F, 0x106, SM86_K_ALU, SM86_F_B, "I2F")
 SM86_OP(I2F64, 0x112, SM86_K_ALU, SM86_F_B, "I2F.64")
 SM86_OP(I2FP, 0x045, SM86_K_ALU, SM86_F_B, "I2FP")
+/* F2IP (0x243): two floats to 8-bit integers, packed. Form 1 alone: a at 24, b at 32, c at 64, as CuAssembler's sm_86
+   records "F2IP.U8.F32.NTZ R9, RZ, R4, RZ" (0x00000000000004ff_00000004ff097243) and "F2IP.S8.F32.NTZ R6, R15, R6,
+   R4" give */
+SM86_OP(F2IP, 0x043, SM86_K_ALU, 0x02u, "F2IP")
 SM86_OP(FRND, 0x107, SM86_K_ALU, SM86_F_B, "FRND")
 SM86_OP(FRND64, 0x113, SM86_K_ALU, SM86_F_B, "FRND.F64")
 /* integer */
@@ -167,6 +171,15 @@ SM86_OP(TXD, 0xb6c, SM86_K_FIX, 0, "TXD")
 SM86_OP(TXD_B, 0x36d, SM86_K_FIX, 0, "TXD.B")
 SM86_OP(TXQ, 0xb6f, SM86_K_FIX, 0, "TXQ")
 SM86_OP(TXQ_B, 0x370, SM86_K_FIX, 0, "TXQ.B")
+/* TEX, TLD, TLD4 and TXQ with the handle in a uniform register: the constant buffer codes with bit 10, the register at
+   40-45 in place of the constant buffer's reference, bit 91 set, the rest of the fields theirs. CuAssembler's sm_86
+   records: "TEX.SCR.LL.DC R34, R8, R2, R6, UR4, 2D" (0x00000000099e4f08_3000040602227f60) and "TXQ R35, R20, UR12,
+   TEX_HEADER_DIMENSION, 0x2" (0x00000000080002ff_00000c0014237f6f). One game's programs take the handle from memory:
+   an LDG.64 of a table of handles, R2UR, then UR + 1 = UR >> 20, the sampler's index */
+SM86_OP(TEX_U, 0xf60, SM86_K_FIX, 0, "TEX (uniform handle)")
+SM86_OP(TLD_U, 0xf66, SM86_K_FIX, 0, "TLD (uniform handle)")
+SM86_OP(TLD4_U, 0xf63, SM86_K_FIX, 0, "TLD4 (uniform handle)")
+SM86_OP(TXQ_U, 0xf6f, SM86_K_FIX, 0, "TXQ (uniform handle)")
 SM86_OP(SULD_P, 0xb97, SM86_K_FIX, 0, "SULD.P")
 SM86_OP(SULD_P_B, 0x998, SM86_K_FIX, 0, "SULD.P.B")
 SM86_OP(SULD_D, 0xb99, SM86_K_FIX, 0, "SULD.D")
