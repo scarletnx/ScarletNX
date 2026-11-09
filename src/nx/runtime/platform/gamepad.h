@@ -36,8 +36,11 @@ void gamepad_motion(int slot, PadMotion out[2]);
 u64 gamepad_button(u32 id, int button);
 /* legacy combined rumble, played on every open gamepad that can vibrate */
 void gamepad_rumble(u32 left, u32 right);
-/* one guest player's vibration (hid.h's PadState.rumble), played on that slot's gamepad each frame */
-void gamepad_rumble_slot(int slot, u32 left, u32 right);
+/* one guest player's vibration (hid.h's PadState.rumble), played on that slot's gamepad each poll at now_ns
+   (plat_ns). hz: the frequencies the game asked for, in Hz (left low, left high, right low, right high). A Switch
+   controller that SDL's HIDAPI driver owns plays them as HD rumble: a Pro Controller each side on its own actuator, a
+   single Joy-Con each band of the stronger side on its one. Others play the amplitudes */
+void gamepad_rumble_slot(int slot, u32 left, u32 right, const float hz[4], u64 now_ns);
 /* the settings are g_settings' (settings.txt: swap_a_b, stick_dead_zone, vibration, background_input, pair_joy_cons,
    button_map), kept in the game's .ini; the game's menu changes them under ui_lock. What gamepad_map reads into: */
 typedef struct {

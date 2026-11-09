@@ -952,7 +952,8 @@ static u32 hid_amplitude(float a) {
     if (a >= 1.0f) return 65535;
     return (u32)(a * 65535.0f);
 }
-/* what the frontend plays for the motor behind the handle (hid.h's PadState.rumble). Under the lock */
+/* what the frontend plays for the motor behind the handle: hid.h's PadState.rumble, and the frequencies, which it
+   reads with the amplitudes under the lock. Under the lock */
 static void hid_vibrate(u32 handle, const nn_hid_VibrationValue* v) {
     int p, motor;
     if (!hid_handle_device(handle, &p, &motor)) return;

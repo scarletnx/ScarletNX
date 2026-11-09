@@ -1729,6 +1729,22 @@ void video_poll(void) {
     u64 pb;
     input_key_sticks(k, st);
     i32 lx = st[0], ly = st[1], rx = st[2], ry = st[3];
+    /* each player's vibration as one request of the game, amplitudes with their frequencies (left low, left high,
+       right low, right high): hid_vibrate writes them under hid's lock, which comes before input_lock. None while the
+       game is paused */
+    u32 rumble[SNX_GAMEPADS][2] = {{0}};
+    float hz[SNX_GAMEPADS][4] = {{0}};
+    if (!game_paused()) {
+        pm_lock(&g_host.hid.lock);
+        for (int i = 0; i < SNX_GAMEPADS; i++)
+            for (int m = 0; m < 2; m++) {
+                rumble[i][m] =
+                    __atomic_load_n(&(i ? &g_hle.hid.pad_extra[i - 1] : &g_hle.hid.pad1)->rumble[m], __ATOMIC_RELAXED);
+                hz[i][2 * m] = g_hle.hid.vibration[i][m].freq_low;
+                hz[i][2 * m + 1] = g_hle.hid.vibration[i][m].freq_high;
+            }
+        pm_unlock(&g_host.hid.lock);
+    }
     pm_lock(&g_host.hid.input_lock);
     touch_lift();
     /* Each SDL slot is one guest Npad. Keyboard, scripted and on-screen input also drive No1. */
@@ -1744,6 +1760,7 @@ void video_poll(void) {
         if (g_sdl3.previous_ids[i] != id) {
             __atomic_store_n(&player->rumble[0], 0, __ATOMIC_RELAXED);
             __atomic_store_n(&player->rumble[1], 0, __ATOMIC_RELAXED);
+            rumble[i][0] = rumble[i][1] = 0;
             if (i)
                 g_sdl3.menu_held_extra[i - 1] = 0;
             else
@@ -1751,8 +1768,7 @@ void video_poll(void) {
             g_sdl3.previous_ids[i] = id;
         }
         gamepad_state_slot(i, &one_buttons, one_sticks);
-        gamepad_rumble_slot(i, __atomic_load_n(&player->rumble[0], __ATOMIC_RELAXED),
-                            __atomic_load_n(&player->rumble[1], __ATOMIC_RELAXED));
+        gamepad_rumble_slot(i, rumble[i][0], rumble[i][1], hz[i], plat_ns());
         /* each player as its settings say: seen or not, and the kind of controller the game sees */
         __atomic_store_n(&player->connected, (connected && gamepad_player_seen(i)) || i == 0, __ATOMIC_RELAXED);
         __atomic_store_n(
