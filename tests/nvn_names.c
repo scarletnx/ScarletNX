@@ -653,6 +653,27 @@ static void test_geometry_stream_metadata(void) {
     nvn_CommandBufferFinalize(NULL, CMDBUF);
 }
 
+/* A program of a game other than an Ounce one: its object keeps the game's own bytes past NvnProgram's first 0x78
+   (NVN_PROGRAM_SWITCH_BYTES), as one game keeps its code area's GPU address at 0x80 and adds the stages' offsets to
+   it before SetShaders. Zeroed, that address made its SetShaders take programs at their offsets alone */
+static void test_program_object_bytes(void) {
+    const u64 control = 0xa000, pairs = 0xc000;
+    const u32 values[4] = {0};
+    u8 game[0xc0 - 0x78];
+    memset(game, 0xee, sizeof game);
+    memcpy(GP(PROGRAM + 0x78), game, sizeof game);
+    check(nvn_ProgramInitialize(NULL, PROGRAM, DEVICE), "a program of a game before the Ounce");
+    check(!memcmp(GP(PROGRAM + 0x78), game, sizeof game), "Initialize writes nothing past the program's 0x78 bytes");
+    tess_control(control, NVN_SHADER_STAGE_VERTEX, 16, values, 0);
+    gw64(pairs, 0x4da720000ull);
+    gw64(pairs + 8, control);
+    check(nvn_ProgramSetShaders(NULL, PROGRAM, 1, pairs), "its vertex program's SetShaders");
+    check(!memcmp(GP(PROGRAM + 0x78), game, sizeof game), "SetShaders writes nothing past the program's 0x78 bytes");
+    check(NVN_OBJ(NvnProgram, PROGRAM)->st[NVN_SHADER_STAGE_VERTEX].data == 0x4da720000ull &&
+              NVN_OBJ(NvnProgram, PROGRAM)->st[NVN_SHADER_STAGE_VERTEX].off == 0x30,
+          "the vertex stage's code area and its program's offset in it");
+}
+
 /* ---- the device and its debug API */
 /* An Ounce compute program's c[0] record (nvn_program_c0): kept for the program's SetShaders, and not in or past its
    object, which is 0xa0 bytes on the Ounce (the driver's nvnProgramInitialize zeroes that many). A queue that
@@ -1271,6 +1292,7 @@ int main(void) {
     test_ounce_program_records();
     test_geometry_stream_metadata();
     test_subroutines();
+    test_program_object_bytes();
     test_texture();
     test_array_surface();
     test_sampler();

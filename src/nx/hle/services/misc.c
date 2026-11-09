@@ -193,6 +193,52 @@ static int nn_chat_IUserShimScopedObject_GetChattingEvent(SvcObj* self, u32* eve
     return new_event(event, "chat chatting", 0);
 }
 
+/* ============================================================ ntc: the network clock, with no network */
+static int nn_ntc_detail_service_IStaticService_OpenEnsureNetworkClockAvailabilityService(SvcObj* self,
+                                                                                          u32 event_clear_mode,
+                                                                                          u32 mode, SvcObj** service) {
+    (void)self;
+    LOGV("ntc: OpenEnsureNetworkClockAvailabilityService(clear mode %u, mode %u)\n", event_clear_mode, mode);
+    *service = nn_ntc_detail_service_IEnsureNetworkClockAvailabilityService_new();
+    R_SUCCEED();
+}
+static int nn_ntc_detail_service_IStaticService_SuspendAutonomicTimeCorrection(SvcObj* self) {
+    (void)self;
+    R_SUCCEED();
+}
+static int nn_ntc_detail_service_IStaticService_ResumeAutonomicTimeCorrection(SvcObj* self) {
+    (void)self;
+    R_SUCCEED();
+}
+static int nn_ntc_detail_service_IEnsureNetworkClockAvailabilityService_StartTask(SvcObj* self) {
+    (void)self;
+    R_SUCCEED();
+}
+/* signaled: the task is done the moment it starts */
+static int nn_ntc_detail_service_IEnsureNetworkClockAvailabilityService_GetFinishNotificationEvent(SvcObj* self,
+                                                                                                   u32* event) {
+    (void)self;
+    return new_event(event, "ntc network clock", 1);
+}
+static int nn_ntc_detail_service_IEnsureNetworkClockAvailabilityService_GetResult(SvcObj* self) {
+    (void)self;
+    R_SUCCEED();
+}
+static int nn_ntc_detail_service_IEnsureNetworkClockAvailabilityService_Cancel(SvcObj* self) {
+    (void)self;
+    R_SUCCEED();
+}
+static int nn_ntc_detail_service_IEnsureNetworkClockAvailabilityService_IsProcessing(SvcObj* self, u8* processing) {
+    (void)self;
+    *processing = 0;
+    R_SUCCEED();
+}
+static int nn_ntc_detail_service_IEnsureNetworkClockAvailabilityService_GetServerTime(SvcObj* self, i64* t) {
+    (void)self;
+    *t = (i64)time(NULL);
+    R_SUCCEED();
+}
+
 /* The console asks its video encoder for these sizes, so they can't be read off its code. Nothing here ever writes to
    the game's work buffers, so they only have to agree: the SDK divides the memory it is given by the three a guest takes,
    and aborts if that comes to none */
@@ -1561,6 +1607,7 @@ SvcObj* new_lm(void) { return nn_lm_ILogService_new(); }
 SvcObj* new_pctl(void) { return nn_pctl_detail_ipc_IParentalControlServiceFactory_new(); }
 SvcObj* new_friend(void) { return nn_friends_detail_ipc_IServiceCreator_new(); }
 SvcObj* new_chat(void) { return nn_chat_IUserService_new(); }
+SvcObj* new_ntc(void) { return nn_ntc_detail_service_IStaticService_new(); }
 SvcObj* new_stpl(void) { return nn_streamplay_IUserService_new(); }
 SvcObj* new_ns(void) { return nn_ns_detail_IServiceGetterInterface_new(); }
 SvcObj* new_prepo(void) { return nn_prepo_detail_ipc_IPrepoService_new(); }

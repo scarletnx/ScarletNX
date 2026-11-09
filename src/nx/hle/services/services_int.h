@@ -94,6 +94,7 @@ SvcObj* new_lm(void);
 SvcObj* new_pctl(void);
 SvcObj* new_friend(void);
 SvcObj* new_chat(void);
+SvcObj* new_ntc(void);
 SvcObj* new_stpl(void);
 SvcObj* new_ns(void);
 SvcObj* new_prepo(void);

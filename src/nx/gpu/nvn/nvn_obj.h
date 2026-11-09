@@ -204,18 +204,23 @@ typedef struct {
 typedef struct {
     u32 value, declared;
 } NvnTessStage;
-/* st: by NVN shader stage (NVN_SHADER_STAGE_*, the Ounce's task and mesh stages too). off_a: a dual vertex
+/* st: by NVN shader stage (NVN_SHADER_STAGE_*), the Ounce's task and mesh stages last. off_a: a dual vertex
    program's VertexA (0 for none), or a compute program's shared memory bytes; block: a compute program's workgroup
    size */
 /* sample_shading: SetSampleShading's mode (NVN_SAMPLE_SHADING_*), which the program's draws take */
 #define NVN_STAGES (NVN_SHADER_STAGE_MESH + 1)
 typedef struct {
     u32 magic, off_a;
-    NvnStage st[NVN_STAGES];
     u64 serial;
     u16 block[3], sample_shading;
+    NvnStage st[NVN_STAGES];
 } NvnProgram;
 NVN_FITS(NvnProgram, 0x98);
+/* the bytes of NvnProgram in the object of a game other than an Ounce one, whose stages end at the fragment stage:
+   one game keeps its own fields from byte 0x80 of its program object (its code area's GPU address, which it adds the
+   stages' offsets to before SetShaders) */
+#define NVN_PROGRAM_SWITCH_BYTES (offsetof(NvnProgram, st) + NVN_SHADER_STAGE_TASK * sizeof(NvnStage))
+typedef char nvn_fits_NvnProgramSwitch[NVN_PROGRAM_SWITCH_BYTES <= 0x78 ? 1 : -1];
 /* The Ounce's compute program (API 231) and the driver's record of its c[0], bytes 0xa8-0xbb of its format 11
    control section, which its macro 0xeac reads: [0] the kind, 1 for the packed c[0] below; [1-8] the words of root
    table 0-7 (push constants); [9] uniform buffers; [10] storage buffers; [11] textures; [12] separate textures;
