@@ -966,6 +966,8 @@ snx_test_target(snx-test-llvm-promote-sync 99)
 target_link_libraries(snx-test-llvm-promote-sync PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME llvm_promote_sync COMMAND snx-test-llvm-promote-sync)
 add_test(NAME llvm_promote_sync_portable COMMAND snx-test-llvm-promote-sync --portable)
+add_test(NAME llvm_promote_sync_abi COMMAND snx-test-llvm-promote-sync --abi-contract)
+add_test(NAME llvm_promote_sync_abi_portable COMMAND snx-test-llvm-promote-sync --portable --abi-contract)
 
 add_executable(snx-test-llvm-fp-reply-abi llvm_fp_reply_abi.c)
 snx_test_target(snx-test-llvm-fp-reply-abi 11)
@@ -2190,8 +2192,11 @@ if(NOT WIN32)
         add_test(NAME llvm_qemu_differential_avx2 COMMAND snx-test-llvm-qemu-differential "${SNX_QEMU_AARCH64}"
                  "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/llvm_qemu_avx2" "${snx_lqd_expected}" --quiet
                  --without-avx512)
+        add_test(NAME llvm_qemu_differential_abi COMMAND snx-test-llvm-qemu-differential "${SNX_QEMU_AARCH64}"
+                 "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/llvm_qemu_abi" "${snx_lqd_expected}"
+                 --quiet --abi-contract)
         set_tests_properties(llvm_qemu_differential_jit llvm_qemu_differential_portable llvm_qemu_differential_generic
-                             PROPERTIES TIMEOUT 600)
+                             llvm_qemu_differential_abi PROPERTIES TIMEOUT 600)
         set_tests_properties(llvm_qemu_differential_avx2 PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
         if(SNX_TEST_LLVM_SWEEP)
             add_test(NAME llvm_qemu_differential_sweep COMMAND snx-test-llvm-qemu-differential "${SNX_QEMU_AARCH64}"

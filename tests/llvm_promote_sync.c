@@ -1563,15 +1563,26 @@ static int check_units(int count, char** paths) {
 }
 
 int main(int argc, char** argv) {
-    int portable = argc > 1 && !strcmp(argv[1], "--portable");
-    if (argc > 2 && !strcmp(argv[1], "--check")) return check_units(argc - 2, argv + 2);
-    if (argc > 2 || (argc == 2 && !portable)) {
-        fprintf(stderr, "usage: snx-test-llvm-promote-sync [--portable] | --check UNIT.ll...\n");
+    int portable = 0, abi_contract = 0, a = 1;
+    for (; a < argc; ++a) {
+        if (!strcmp(argv[a], "--portable"))
+            portable = 1;
+        else if (!strcmp(argv[a], "--abi-contract"))
+            abi_contract = 1;
+        else
+            break;
+    }
+    if (a < argc && !strcmp(argv[a], "--check")) return check_units(argc - a - 1, argv + a + 1);
+    if (a != argc) {
+        fprintf(stderr,
+                "usage: snx-test-llvm-promote-sync [--portable] [--abi-contract] | --check UNIT.ll...\n");
         return 2;
     }
+    if (abi_contract) snx_ir_abi_contract(1);
     cases(portable);
     corpus(portable, 200);
-    printf("register promotion at every boundary%s: %d cases, %s\n", portable ? " (portable)" : "",
-           g_promote_sync.cases, g_promote_sync.failures ? "FAILED" : "passed");
+    printf("register promotion at every boundary%s%s: %d cases, %s\n", portable ? " (portable)" : "",
+           abi_contract ? " (abi contract)" : "", g_promote_sync.cases,
+           g_promote_sync.failures ? "FAILED" : "passed");
     return g_promote_sync.failures != 0;
 }

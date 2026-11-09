@@ -973,6 +973,17 @@ setting FPSR flags
     help invalid, and the saturation flag QC) as the console raises them, which costs every such operation a test of
     help its result. 0 = only the results are the console's: a game that never reads FPSR (few do) runs its floating
     help point and saturating arithmetic faster. It applies to the next recompile, and to the JIT's next run
+setting ABI contract
+    key abi_contract
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    recompile
+    help 1 = the game's calls follow the AArch64 procedure call standard, so the recompiler keeps the callee-saved
+    help registers in their host locations across a call and does not store the caller-saved ones that are dead
+    help after it. A checking mode in tests reports a function that does not preserve them. It applies to the next
+    help recompile, and to the JIT's next run
 setting Volatile load/stores
     key volatile_memory
     int 0 1

@@ -220,45 +220,248 @@ static SnxA64Flow decode(const SnxCodegen* codegen, SnxU32 word, SnxA64Insn* ins
     return insn->flow;
 }
 
-/* whether a BR on reg follows within a few instructions of address: the address taken there is a jump table's base,
-   a place in the function its cases are reached from, not a function */
-static int jump_table_base(SnxCodegen* codegen, SnxU64 address, SnxU32 reg) {
-    for (unsigned i = 1; i <= 6; ++i) {
-        SnxU32 after;
-        if (!snx_codegen_word(codegen, address + (SnxU64)i * 4, &after)) return 0;
-        if ((after & 0xfffffc1fUL) == 0xd61f0000UL) return ((after >> 5) & 31) == reg; /* BR */
-        if (snx_a64_flow(after, codegen->features) != SNX_A64_FLOW_PLAIN) return 0;
+/* ---- jump tables: the address-load-plus-branch shapes compilers emit for a switch ---- */
+
+/* where a BR reads its cases: the table's base, the entry's width and sign, the index register, and the ADD that turns
+   an entry into an address (its shift and extension; none when the table holds absolute addresses) */
+typedef struct {
+    SnxU64 base;
+    SnxU64 load; /* the entry load's address, the bound's search starts there */
+    unsigned index_reg, base_reg;
+    unsigned width; /* entry bytes */
+    unsigned scale; /* the ADD's left shift of the entry */
+    unsigned ext;   /* 1 UXTW, 2 SXTW, 0 the 64-bit entry */
+    int sign;       /* the load sign-extends the entry */
+    int absolute;   /* the entry is the target, not an offset from base */
+} JumpTable;
+
+#define SNX_JUMP_TABLE_MAX 256 /* a switch with more cases is followed to here */
+
+static int is_br(SnxU32 word) { return (word & 0xfffffc1fUL) == 0xd61f0000UL; }
+
+/* the sign-extended value of the low bits of value */
+static int64_t sign_extend(SnxU64 value, unsigned bits) {
+    SnxU64 sign = (SnxU64)1 << (bits - 1);
+    return (int64_t)((value ^ sign) - sign);
+}
+
+/* a load of a table entry, LDR/LDRB/LDRH/LDRSW/LDRSB/LDRSH [base, index, ...]; width and sign are the entry's */
+static int table_load(SnxU32 word, unsigned* base, unsigned* index, unsigned* entry, unsigned* width, int* sign) {
+    unsigned size, opc;
+    if ((word & 0x3c200c00UL) != 0x38200800UL) return 0; /* load/store register, register offset, V=0 */
+    size = (word >> 30) & 3;
+    opc = (word >> 22) & 3;
+    if (!opc || (size == 3 && opc != 1) || (size == 2 && opc == 3)) return 0; /* a store, PRFM, PRFM's 64-bit form */
+    *base = (word >> 5) & 31;
+    *index = (word >> 16) & 31;
+    *entry = word & 31;
+    *width = 1u << size;
+    *sign = opc >= 2;
+    return 1;
+}
+
+/* ADD Xrd, Xrn, Xrm with the entry rm shifted; ext says the ADD extends rm from 32 bits */
+static int table_add(SnxU32 word, unsigned* rd, unsigned* rn, unsigned* rm, unsigned* scale, unsigned* ext) {
+    if ((word & 0xff208000UL) == 0x8b000000UL) { /* ADD (shifted register) */
+        unsigned shift = (word >> 22) & 3, amount = (word >> 10) & 63;
+        if (shift || amount > 3) return 0;
+        *rd = word & 31;
+        *rn = (word >> 5) & 31;
+        *rm = (word >> 16) & 31;
+        *scale = amount;
+        *ext = 0;
+        return 1;
+    }
+    if ((word & 0xff200000UL) == 0x8b200000UL) { /* ADD (extended register) */
+        unsigned option = (word >> 13) & 7, amount = (word >> 10) & 7;
+        if (amount > 3 || (option != 2 && option != 3 && option != 6)) return 0;
+        *rd = word & 31;
+        *rn = (word >> 5) & 31;
+        *rm = (word >> 16) & 31;
+        *scale = amount;
+        *ext = option == 2 ? 1 : option == 6 ? 2 : 0;
+        return 1;
     }
     return 0;
 }
 
-/* The address the instruction at address puts in a register, 0 for none and for a jump table's base: ADR's, or an
-   ADD's of the page an ADRP a few instructions before put in its source (the linker relaxes such a pair into a NOP and
-   an ADR when the target is near). Code takes function pointers this way, for a callback or a call through a
-   register. Ender Magnolia's main, which has unwind info for a seventh of its text, reaches four fifths of the
-   functions it misses only through them */
-static SnxU64 taken_address(SnxCodegen* codegen, SnxU64 address, SnxU32 word) {
+/* The address the instruction at address puts in a register, 0 for none: ADR's, or an ADD of the page an ADRP a few
+   instructions before put in its source (the linker relaxes such a pair into a NOP and an ADR when the target is
+   near). Code takes function pointers this way, for a callback or a call through a register. Ender Magnolia's main,
+   which has unwind info for a seventh of its text, reaches four fifths of the functions it misses only through them */
+static SnxU64 address_value(SnxCodegen* codegen, SnxU64 address, SnxU32 word, unsigned* reg) {
     if ((word & 0x9f000000UL) == 0x10000000UL) { /* ADR */
-        if (jump_table_base(codegen, address, word & 31)) return 0;
         SnxU64 imm = ((SnxU64)((word >> 5) & 0x7ffffUL) << 2) | ((word >> 29) & 3);
+        *reg = word & 31;
         return address + (imm & 0x100000UL ? imm | ~(SnxU64)0x1fffffUL : imm);
     }
-    if ((word & 0xff800000UL) != 0x91000000UL || jump_table_base(codegen, address, word & 31))
-        return 0; /* ADD Xd, Xn, #imm12 */
-    SnxU32 reg = (word >> 5) & 31;
+    if ((word & 0xff800000UL) != 0x91000000UL) return 0; /* ADD Xd, Xn, #imm12 */
+    *reg = word & 31;
+    SnxU32 source = (word >> 5) & 31;
     for (unsigned i = 1; i <= 8 && address >= (SnxU64)i * 4; ++i) {
         SnxU32 before;
         if (!snx_codegen_word(codegen, address - (SnxU64)i * 4, &before)) return 0;
-        if ((before & 0x9f000000UL) == 0x90000000UL && (before & 31) == reg) { /* ADRP */
+        if ((before & 0x9f000000UL) == 0x90000000UL && (before & 31) == source) { /* ADRP */
             SnxU64 imm = ((SnxU64)((before >> 5) & 0x7ffffUL) << 2) | ((before >> 29) & 3);
             if (imm & 0x100000UL) imm |= ~(SnxU64)0x1fffffUL;
             return ((address - (SnxU64)i * 4) & ~(SnxU64)0xfff) + (imm << 12) +
                    ((SnxU64)((word >> 10) & 0xfff) << ((word & (1UL << 22)) ? 12 : 0));
         }
         /* the register written in between (or perhaps only stored: bits 0-4 are Rt too), or a way in from elsewhere */
-        if ((before & 31) == reg || snx_a64_flow(before, codegen->features) != SNX_A64_FLOW_PLAIN) return 0;
+        if ((before & 31) == source || snx_a64_flow(before, codegen->features) != SNX_A64_FLOW_PLAIN) return 0;
     }
     return 0;
+}
+
+/* whether the address a plain instruction at address takes is a jump table's base: an entry load from the register
+   and a BR on the entry, or on the base plus the entry, follows within a few instructions */
+static int jump_table_base(SnxCodegen* codegen, SnxU64 address, SnxU32 reg) {
+    for (unsigned i = 1; i <= 8; ++i) {
+        SnxU32 after;
+        unsigned base, index, entry, width, rd, rn, rm, scale, ext;
+        int sign;
+        if (!snx_codegen_word(codegen, address + (SnxU64)i * 4, &after)) return 0;
+        if (is_br(after)) return ((after >> 5) & 31) == reg; /* adr x, table; ...; br x */
+        if (table_load(after, &base, &index, &entry, &width, &sign) && base == reg) {
+            /* ldr xentry, [reg, ...]; add xrd, reg, xentry; br xrd, or br xentry for an absolute table */
+            for (unsigned j = i + 1; j <= i + 3; ++j) {
+                SnxU32 next;
+                if (!snx_codegen_word(codegen, address + (SnxU64)j * 4, &next)) return 0;
+                if (!sign && is_br(next) && ((next >> 5) & 31) == entry) return 1;
+                if (table_add(next, &rd, &rn, &rm, &scale, &ext) && rn == reg && rm == entry) {
+                    SnxU32 br;
+                    if (snx_codegen_word(codegen, address + (SnxU64)(j + 1) * 4, &br) && is_br(br) &&
+                        ((br >> 5) & 31) == rd)
+                        return 1;
+                }
+            }
+        }
+        if (snx_a64_flow(after, codegen->features) != SNX_A64_FLOW_PLAIN) return 0;
+    }
+    return 0;
+}
+
+/* taken_address's: 0 for a jump table's base, a place in the function its cases are reached from, not a function */
+static SnxU64 taken_address(SnxCodegen* codegen, SnxU64 address, SnxU32 word) {
+    unsigned reg;
+    SnxU64 target = address_value(codegen, address, word, &reg);
+    return target && !jump_table_base(codegen, address, reg) ? target : 0;
+}
+
+/* whether the BR at address dispatches through a jump table, filling in where its cases are */
+static int jump_table_shape(SnxCodegen* codegen, SnxU64 address, SnxU32 word, JumpTable* table) {
+    SnxU32 before, next;
+    unsigned rd, rn, rm, scale, ext, base, index, entry, width;
+    int sign;
+    memset(table, 0, sizeof(*table));
+    if (!snx_codegen_word(codegen, address - 4, &before)) return 0;
+    if (table_add(before, &rd, &rn, &rm, &scale, &ext) && rd == ((word >> 5) & 31)) {
+        table->base_reg = rn;
+        table->scale = scale;
+        table->ext = ext;
+        for (unsigned i = 2; i <= 5; ++i) {
+            if (!snx_codegen_word(codegen, address - (SnxU64)i * 4, &next)) return 0;
+            if (table_load(next, &base, &index, &entry, &width, &sign)) {
+                if (entry != rm || base != rn) return 0;
+                table->load = address - (SnxU64)i * 4;
+                table->index_reg = index;
+                table->width = width;
+                table->sign = sign;
+                break;
+            }
+            if (snx_a64_flow(next, codegen->features) != SNX_A64_FLOW_PLAIN) return 0;
+        }
+        if (!table->width) return 0;
+    } else if (table_load(before, &base, &index, &entry, &width, &sign) && entry == ((word >> 5) & 31) &&
+               width == 8 && !sign) {
+        /* ldr xentry, [base, ...]; br xentry: absolute addresses */
+        table->base_reg = base;
+        table->load = address - 4;
+        table->index_reg = index;
+        table->width = width;
+        table->absolute = 1;
+    } else
+        return 0;
+    for (unsigned i = 1; i <= 8; ++i) { /* the base's own address: ADR, or ADRP and an ADD */
+        SnxU32 setup;
+        unsigned written;
+        SnxU64 value;
+        if (table->load < (SnxU64)i * 4 || !snx_codegen_word(codegen, table->load - (SnxU64)i * 4, &setup)) return 0;
+        value = address_value(codegen, table->load - (SnxU64)i * 4, setup, &written);
+        if (value && written == table->base_reg) {
+            table->base = value;
+            return 1;
+        }
+        if (snx_a64_flow(setup, codegen->features) != SNX_A64_FLOW_PLAIN) return 0;
+    }
+    return 0;
+}
+
+/* an image read, not only the text: a jump table sits in .rodata */
+static int image_read(SnxCodegen* codegen, SnxU64 address, unsigned width, SnxU64* value) {
+    for (size_t i = 0; i < codegen->module_count; ++i) {
+        const SnxCodeImage* m = &codegen->modules[i];
+        if (!m->image || address < m->base || address - m->base > m->image_size ||
+            m->image_size - (size_t)(address - m->base) < width)
+            continue;
+        const unsigned char* p = m->image + (address - m->base);
+        *value = width == 1 ? p[0] : width == 2 ? snx_ld_le16(p) : width == 4 ? snx_ld_le32(p) : snx_ld_le64(p);
+        return 1;
+    }
+    return 0;
+}
+
+/* the entries the compare guarding the table bounds: cases + 1, or 0 when there is no such compare */
+static unsigned table_bound(SnxCodegen* codegen, SnxU64 load, unsigned index_reg) {
+    for (unsigned i = 1; i <= 16 && load >= (SnxU64)i * 4; ++i) {
+        SnxU32 word;
+        SnxA64Flow flow;
+        if (!snx_codegen_word(codegen, load - (SnxU64)i * 4, &word)) break;
+        if (((word & 0xff800000UL) == 0x71000000UL || (word & 0xff800000UL) == 0xf1000000UL) &&
+            ((word >> 5) & 31) == index_reg && (word & 31) == 31) { /* CMP Wn, #imm or Xn, #imm */
+            SnxU64 imm = (word >> 10) & 0xfff;
+            if (word & (1UL << 22)) imm <<= 12;
+            return imm < SNX_JUMP_TABLE_MAX ? (unsigned)imm + 1 : SNX_JUMP_TABLE_MAX;
+        }
+        flow = snx_a64_flow(word, codegen->features);
+        if (flow != SNX_A64_FLOW_PLAIN && flow != SNX_A64_FLOW_BC) break;
+    }
+    return 0;
+}
+
+size_t snx_codegen_jump_table(SnxCodegen* codegen, SnxU64 address, SnxU64* targets, size_t capacity) {
+    JumpTable table;
+    SnxU32 word;
+    unsigned limit;
+    size_t count = 0;
+    if (!capacity || !snx_codegen_word(codegen, address, &word) || !is_br(word) ||
+        !jump_table_shape(codegen, address, word, &table))
+        return 0;
+    limit = table_bound(codegen, table.load, table.index_reg);
+    for (unsigned i = 0; i < (limit ? limit : SNX_JUMP_TABLE_MAX) && count < capacity; ++i) {
+        SnxU64 raw, target;
+        int64_t value;
+        int found = 0;
+        if (!image_read(codegen, table.base + (SnxU64)i * table.width, table.width, &raw)) break;
+        value = table.sign ? sign_extend(raw, table.width * 8) : (int64_t)raw;
+        if (table.ext == 1)
+            value = (int64_t)(SnxU32)value;
+        else if (table.ext == 2)
+            value = (int64_t)(int32_t)value;
+        target = table.absolute ? (SnxU64)value
+                                : table.base + (SnxU64)(value * ((int64_t)1 << table.scale));
+        if ((target & 3) || !snx_codegen_module(codegen, target)) {
+            if (limit) continue; /* not code: the switch's default, or the next table's word */
+            break;               /* no bound: the table ends where the code does */
+        }
+        for (size_t k = 0; k < count; ++k)
+            if (targets[k] == target) {
+                found = 1;
+                break;
+            }
+        if (!found) targets[count++] = target;
+    }
+    return count;
 }
 
 static int sorted_has(const Addresses* sorted, SnxU64 address) {
@@ -303,7 +506,13 @@ static Addresses explore(SnxCodegen* codegen, SnxU64 start, const Known* known, 
                     break;
                 } else if (work && snx_codegen_module(codegen, target))
                     push(work, target);
-            } else if (kind == SNX_A64_FLOW_BR || kind == SNX_A64_FLOW_RET || kind == SNX_A64_FLOW_BRK)
+            } else if (kind == SNX_A64_FLOW_BR) {
+                SnxU64 targets[SNX_JUMP_TABLE_MAX];
+                size_t n = snx_codegen_jump_table(codegen, address, targets, SNX_JUMP_TABLE_MAX);
+                for (size_t k = 0; k < n; ++k)
+                    if (!is_known(known, targets[k])) push(&todo, targets[k]);
+                break;
+            } else if (kind == SNX_A64_FLOW_RET || kind == SNX_A64_FLOW_BRK)
                 break;
             else if (work && inner && kind == SNX_A64_FLOW_PLAIN) {
                 SnxU64 target = taken_address(codegen, address, word);
@@ -333,6 +542,20 @@ static void mark_leader(SnxFunction* function, SnxU64 address) {
     }
 }
 
+/* the leader for an address a function reaches indirectly (a jump table's case) in whichever function holds it: a
+   function explored without unwind information stops before it, and the JIT's pieces can split it from the branch */
+static void mark_entry(SnxCodegen* codegen, SnxU64 address) {
+    size_t lo = 0, hi = codegen->function_count;
+    while (lo < hi) {
+        size_t middle = lo + (hi - lo) / 2;
+        if (codegen->functions[middle].start <= address)
+            lo = middle + 1;
+        else
+            hi = middle;
+    }
+    if (lo) mark_leader(&codegen->functions[lo - 1], address);
+}
+
 static void leaders(SnxCodegen* codegen, const AddressSet* extra, const AddressSet* hints) {
     for (size_t i = 0; i < codegen->function_count; ++i) {
         SnxFunction* f = &codegen->functions[i];
@@ -350,6 +573,11 @@ static void leaders(SnxCodegen* codegen, const AddressSet* extra, const AddressS
             if (kind == SNX_A64_FLOW_B || kind == SNX_A64_FLOW_BC)
                 mark_leader(f, snx_a64_branch_target(&insn, address));
             if (kind == SNX_A64_FLOW_BL || kind == SNX_A64_FLOW_BLR) mark_leader(f, address + 4);
+            if (kind == SNX_A64_FLOW_BR) {
+                SnxU64 targets[SNX_JUMP_TABLE_MAX];
+                size_t n = snx_codegen_jump_table(codegen, address, targets, SNX_JUMP_TABLE_MAX);
+                for (size_t k = 0; k < n; ++k) mark_entry(codegen, targets[k]);
+            }
             previous_terminal = kind == SNX_A64_FLOW_B || kind == SNX_A64_FLOW_BR || kind == SNX_A64_FLOW_RET ||
                                 kind == SNX_A64_FLOW_BRK || kind == SNX_A64_FLOW_UNDEF;
         }

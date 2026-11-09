@@ -54,6 +54,8 @@ int snx_codegen_analyze_from(SnxCodegen* codegen, const SnxCodeImage* modules, s
 void snx_codegen_free(SnxCodegen* codegen);
 SnxCodeImage* snx_codegen_module(SnxCodegen* codegen, SnxU64 address);
 int snx_codegen_word(SnxCodegen* codegen, SnxU64 address, SnxU32* word);
+/* the case targets of the jump table the BR at address dispatches through, up to capacity; 0 when it is not one */
+size_t snx_codegen_jump_table(SnxCodegen* codegen, SnxU64 address, SnxU64* targets, size_t capacity);
 SnxU64 snx_function_address(const SnxFunction* function, size_t index);
 int snx_function_contains(const SnxFunction* function, SnxU64 address);
 const SnxFunction* snx_codegen_function(const SnxCodegen* codegen, SnxU64 address);

@@ -246,6 +246,26 @@ static Set changed(int env) {
     set_add(&s, SLOT_FPSR);
     return s;
 }
+static Set set_and(Set a, Set b) {
+    a.w[0] &= b.w[0];
+    a.w[1] &= b.w[1];
+    return a;
+}
+static Set gpr_range(unsigned first, unsigned last) {
+    Set s = {0};
+    for (unsigned r = first; r <= last; ++r) set_add(&s, r);
+    return s;
+}
+/* AAPCS64 at a guest call: X0-X18 and X30, NZCV, the vector registers and FPSR may change; X19-X29, SP and FPCR are
+   preserved */
+static Set abi_call_changed(void) {
+    Set s = gpr_range(0, 18);
+    set_add(&s, 30);
+    for (unsigned f = SLOT_FLAGS; f < SLOT_V; ++f) set_add(&s, f);
+    for (unsigned v = SLOT_V; v < SLOT_FPCR; ++v) set_add(&s, v);
+    set_add(&s, SLOT_FPSR);
+    return s;
+}
 
 /* the dirty registers after a block's events, from those before it; with record, what each site stores */
 static Set dirty_through(const Block* block, const Event* events, Site* sites, int record, Set dirty) {
@@ -343,11 +363,21 @@ void ir_summaries_free(SnxIr* ir) {
 
 /* what a site sees and changes: a direct call of a summarized guest function the registers its summary reads or
    writes (changing those it writes), an ENV helper FPCR and FPSR (changing FPSR), any other call or return every
-   register */
+   register. Under abi_contract, a summarized guest call changes only the caller-saved registers: X19-X29, SP and FPCR
+   stay in their host locations. It needs a summary, which a callee that reaches the runtime (an SVC, a poll, MSR
+   FPCR's hook, an indirect call) has none of: the runtime may change every register, callee-saved ones too */
 static void site_sets(const SnxIr* ir, LLVMValueRef inst, Set* see, Set* change) {
     if (LLVMIsACallInst(inst) && LLVMGetTailCallKind(inst) != LLVMTailCallKindMustTail) {
         LLVMValueRef callee = LLVMGetCalledValue(inst);
         const Summary* summary = callee && LLVMIsAFunction(callee) ? summary_of(ir, callee) : NULL;
+        if (ir->abi_contract && summary) {
+            /* the caller-saved registers the callee writes are reloaded, and the reload may take the caller's value
+               (a way through the callee that does not write one), so the call stores them too */
+            *change = set_and(summary->writes, abi_call_changed());
+            see->w[0] = summary->reads.w[0] | change->w[0];
+            see->w[1] = summary->reads.w[1] | change->w[1];
+            return;
+        }
         if (summary) {
             see->w[0] = summary->reads.w[0] | summary->writes.w[0];
             see->w[1] = summary->reads.w[1] | summary->writes.w[1];
@@ -360,6 +390,8 @@ static void site_sets(const SnxIr* ir, LLVMValueRef inst, Set* see, Set* change)
             return;
         }
     }
+    /* a return keeps every register it wrote visible: the runtime may look at the CPU structure as soon as the code
+       returns to it, and the top-level caller is not a translated function that keeps the callee-saved ones itself */
     *see = seen(0);
     *change = changed(0);
 }

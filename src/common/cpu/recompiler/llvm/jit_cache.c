@@ -163,10 +163,10 @@ char* snx_jit_cache_key(char opt, int hook, int svc, SnxU64 guest) {
         /* dec: the decoding (a64.decode and its profile) and a64: the guest's features choose what each word does */
         snprintf(key, n,
                  "abi=%d obj=%d llvm=%s triple=%s rtlib=%016llx dec=%016llx a64=%016llx cpu=%s opt=%c hook=%d svc=%d "
-                 "slp=%d fpsr=%d volatile=%d features=%s",
+                 "slp=%d fpsr=%d volatile=%d contract=%d features=%s",
                  SNX_ABI, SNX_IR_OBJECT_VERSION, LLVM_VERSION_STRING, triple, (unsigned long long)rtlib,
                  (unsigned long long)snx_a64_decoder_hash(), (unsigned long long)snx_a64_features(guest), cpu, opt,
-                 hook, svc, snx_ir_slp(), snx_ir_fpsr_exact(), snx_ir_volatile(), features);
+                 hook, svc, snx_ir_slp(), snx_ir_fpsr_exact(), snx_ir_volatile(), snx_ir_abi_contract_on(), features);
     }
     LLVMDisposeMessage(cpu);
     LLVMDisposeMessage(features);
