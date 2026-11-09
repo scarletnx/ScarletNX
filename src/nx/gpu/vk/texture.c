@@ -1114,12 +1114,14 @@ static int tex_upload_(Surf* t) {
                 LevelSource ls = {t, t->gva + at, lsz, rowb, th, lbh, lbd, gobs_x, astc_layers};
                 /* the BC7 cache's key of a level held as BC7, straight (vk_astc_upload takes it) or between frames
                    (kept for the encoder there), hashed before the upload stages the same bytes. Not a sparse
-                   texture's, which memory maps not whole */
+                   texture's, which memory maps not whole. A very large level straight to BC7 goes into the cache in
+                   pieces whatever its size (vk_astc_quick) */
                 const u32 nlayers = astc_layers ? layers : 1, slices = astc_layers ? layers : ld;
                 const int straight = is_bc7(f->vk), later = t->bc7_later && !straight;
                 u64 content[2];
                 const int keyed = (straight || later) && !t->sparse && l < VK_TEX_MAX_LEVELS &&
-                                  vk_astc_cached(lw, lh, slices) && astc_content(&ls, nlayers, content);
+                                  (vk_astc_cached(lw, lh, slices) || (straight && vk_astc_quick(lw, lh, slices))) &&
+                                  astc_content(&ls, nlayers, content);
                 if (keyed && later) {
                     const VkFormat bc7 = later_bc7(f->vk);
                     vk_bc7_level_key(content, lw, lh, is3d ? ld : 1, nlayers, f->bw, f->bh,

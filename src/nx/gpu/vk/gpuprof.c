@@ -535,7 +535,8 @@ int vk_gpuprof_clock(i64* cpu, i64* gpu) {
 /* the graphics queue's busy and idle time over the report's window, a frame (present) at a time, and the CPU's waits
    for the GPU by kind (cmd.c) */
 static void gp_idle_report(void) {
-    static const char* const why[VK_SUB_N] = {"other", "present", "finish", "1 ms", "readback", "frame end"};
+    static const char* const why[VK_SUB_N] = {"other",    "present",   "finish",    "1 ms",
+                                              "readback", "frame end", "background"};
     static const char* const wait[VK_WAIT_N] = {"finish", "frame slot reuse", "a release or result's submit"};
     static u64 wait0[VK_WAIT_N], waits0[VK_WAIT_N], cs0;
     u64 now = plat_ns(), presents = (u32)(g_vk_present - g_present0), wall = now - g_t0;
@@ -654,6 +655,8 @@ static void gp_report(void) {
         static const char* const own[VK_PROF_N] = {[VK_PROF_NONE] = "untagged",
                                                    [VK_PROF_ASTC] = "the ASTC decode",
                                                    [VK_PROF_BC7] = "the BC7 encode",
+                                                   [VK_PROF_BC7_BACKGROUND] = "the background's ASTC decode and BC7 "
+                                                                              "encode",
                                                    [VK_PROF_MIRROR_FOLD] = "the GPU mirror's fold",
                                                    [VK_PROF_MIRROR_HARVEST] = "the GPU mirror's harvest",
                                                    [VK_PROF_WLOG_MERGE] = "the write log's merge",

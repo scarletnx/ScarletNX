@@ -525,6 +525,8 @@ int vk_wait_fence(VkFence fence);
 void vk_submit_for_readback(void);
 /* the same without waiting for the recording thread: the commands being recorded, if any, handed to it (vk_lock) */
 void vk_submit_open(void);
+/* the same for a piece of a background encode, after a present's submission (astc.c), counted apart */
+void vk_submit_background(void);
 /* the renderer's ready (renderer.h): the GPU's work on the slot the next frame records in, waited for without vk_lock
    (none when this thread holds it) */
 void vk_frame_ready(void);
@@ -1273,7 +1275,8 @@ int vk_bc7_encode_image(VkCommandBuffer cb, VkImage src, VkImage dst, u32 level,
 /* A level of ASTC encoded again as BC7 with VK_BC7_FAST_TEXELS texels or more takes the encoder's fast build, which
    keeps mode 6 where it is close and tries every mode on the other blocks, and one of VK_BC7_MODE6_TEXELS or more its
    build of mode 6 alone (bc7_encode.glsl's SNX_BC7_FAST). vk_bc7_build: the build for a level of w x h texels and d
-   slices of a volume (1 else): 0 the full one, 1 the fast one, 2 mode 6 alone. VK_BC7_FAST_TEXELS 0: every level takes
+   slices of a volume (1 else): 0 the full one, 1 the fast one, 2 mode 6 alone (3, the quick one, is astc.c's for a very
+   large level: vk_astc_quick). VK_BC7_FAST_TEXELS 0: every level takes
    the fast build, which a batch of small levels encoded with the full one held a frame for seconds without. The fast
    build is about 15 times faster than the full one, for the loss that docs/layers/gpu/astc.md measures (50.7 vs 53.8
    dB) */
@@ -1332,6 +1335,29 @@ int vk_bc7_cache_level(VkCommandBuffer cb, VkImage img, const u64 key[2], u32 le
 int vk_bc7_capture_level(VkCommandBuffer cb, VkImage img, const u64 key[2], u32 level, u32 w, u32 h, u32 slices,
                          int is3d);
 u64 vk_astc_dispatches(void); /* the BC7 encoder's dispatches so far */
+/* A very large level (astc_quick_mtexels or more megatexels, every layer of a 2D array and slice of a 3D level
+   counted) held as BC7 at load takes the encoder's quick build in the frame that uploads it, and its fast build is made
+   in the background (astc.c). vk_astc_quick: whether a level of w x h texels and depth slices or layers is one, with
+   the BC7 cache open, whose fast build goes into the cache in pieces whatever its size (texture.c keys it as it keys a
+   level vk_astc_cached takes). vk_astc_background: after a present's submission (vk_lock), the pieces the workers
+   encoded stored, the levels whose pieces are all stored ended (their snapshots freed), and with astc_background=2 a
+   piece encoded on the GPU in a submission of its own once the last one is done. vk_astc_background_drain: until every
+   background encode is done (tests: there are no presents). vk_astc_forget: t's image no longer holds what the upload
+   of a level wrote there (another upload of it), or of any (~0u: t is freed), so the background encodes of those
+   levels go on into the cache alone. g_vk_astc_hit_ns: the time a very large level's hit may take reading its pieces,
+   ns (astc.c's BG_HIT_NS; tests set it) */
+int vk_astc_quick(u32 w, u32 h, u32 depth);
+void vk_astc_background(void);
+void vk_astc_background_drain(void);
+void vk_astc_forget(const Surf* t, u32 level);
+/* very large levels encoded quickly, those given to the background and those it finished, those still in it, and
+   those whose fast build came from the cache; the pieces stored, the workers' CPU time, the pieces the GPU encoded,
+   those loaded from the cache after a hit ran out of time, and the workers started */
+typedef struct {
+    u64 quick, made, finished, pending, hits, stored, cpu_ns, gpu_pieces, loaded, threads;
+} VkAstcBackground;
+void vk_astc_background_stats(VkAstcBackground* s);
+extern u64 g_vk_astc_hit_ns;
 /* Internal ASTC, BC7, block-linear, conversion, multisample and depth-packing pipelines, apart from guest shaders.
    Both functions run under vk_lock. Cumulative time is in nanoseconds, including time inside the driver. */
 void vk_texture_pipeline_made(u64 ns);
@@ -2101,8 +2127,18 @@ extern u64 g_vk_passes, g_vk_clear_cmds, g_vk_clear_loads, g_vk_dontcare_loads;
 void vk_gpuprof_pass_begin(VkCommandBuffer cb, const Surf* rt, const Surf* zt);
 void vk_gpuprof_pass_end(VkCommandBuffer cb);
 /* why cmd.c submitted the frame's commands: a present, a vk_finish, the 1 ms of recording a submission holds at most
-   (vk_frame_check), a readback of GPU-owned memory, the end of a frame's slot, or anything else */
-enum { VK_SUB_OTHER, VK_SUB_PRESENT, VK_SUB_FINISH, VK_SUB_PERIODIC, VK_SUB_READBACK, VK_SUB_FRAME, VK_SUB_N };
+   (vk_frame_check), a readback of GPU-owned memory, the end of a frame's slot, a background encode's piece
+   (vk_submit_background), or anything else */
+enum {
+    VK_SUB_OTHER,
+    VK_SUB_PRESENT,
+    VK_SUB_FINISH,
+    VK_SUB_PERIODIC,
+    VK_SUB_READBACK,
+    VK_SUB_FRAME,
+    VK_SUB_BACKGROUND,
+    VK_SUB_N
+};
 /* what the GPU thread waits for the graphics timeline for: a vk_finish, a frame slot's previous use, or one submission
    (a release's gate, a result's landing: vk_wait_submit) */
 enum { VK_WAIT_FINISH, VK_WAIT_RECYCLE, VK_WAIT_SUBMIT, VK_WAIT_N };
@@ -2125,6 +2161,7 @@ enum {
     VK_PROF_NONE,
     VK_PROF_ASTC,            /* the ASTC decode (astc.comp) */
     VK_PROF_BC7,             /* its BC7 encode (bc7.comp) */
+    VK_PROF_BC7_BACKGROUND,  /* a very large level's decode and fast build in the background (astc.c) */
     VK_PROF_MIRROR_FOLD,     /* a dispatch's write log into the GPU mirror's mask (mirror_fold.comp) */
     VK_PROF_MIRROR_HARVEST,  /* the mirror's pages written in a submit, out for landing (mirror_harvest.comp) */
     VK_PROF_WLOG_MERGE,      /* a logged result written back on the GPU (wlog_merge.comp) */

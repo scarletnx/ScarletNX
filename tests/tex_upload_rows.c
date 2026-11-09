@@ -216,6 +216,11 @@ int vk_astc_cached(u32 w, u32 h, u32 depth) {
     (void)w, (void)h, (void)depth;
     return g_astc_key.takes;
 }
+/* a very large level, whose pieces the cache takes whatever its size (astc_quick_mtexels): none here */
+int vk_astc_quick(u32 w, u32 h, u32 depth) {
+    (void)w, (void)h, (void)depth;
+    return 0;
+}
 void vk_bc7_content(u64 content[2], const void* p, u64 n) {
     for (u64 i = 0; i < n; i++) content[0] = (content[0] ^ ((const u8*)p)[i]) * 0x100000001b3ull;
     content[1] += n;

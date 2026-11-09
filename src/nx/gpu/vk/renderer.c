@@ -781,6 +781,17 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                         (unsigned long long)later.blocks, (unsigned long long)later.restarted, later.waiting,
                         (unsigned long long)(later.waiting_bytes >> 20), later.hot, (unsigned long long)later.went_hot,
                         (unsigned long long)later.cooled);
+                VkAstcBackground bg;
+                vk_astc_background_stats(&bg);
+                if (bg.quick || bg.hits)
+                    LOG("vulkan: %llu very large ASTC levels encoded quickly, %llu given their fast build in the "
+                        "background (%llu done, %llu going: %llu pieces stored, %llu ms of the CPU on %llu threads, "
+                        "%llu pieces on the GPU, %llu loaded from the cache), %llu whose fast build came from the "
+                        "cache\n",
+                        (unsigned long long)bg.quick, (unsigned long long)bg.made, (unsigned long long)bg.finished,
+                        (unsigned long long)bg.pending, (unsigned long long)bg.stored,
+                        (unsigned long long)(bg.cpu_ns / 1000000), (unsigned long long)bg.threads,
+                        (unsigned long long)bg.gpu_pieces, (unsigned long long)bg.loaded, (unsigned long long)bg.hits);
                 u64 sparse_binds, sparse_ns;
                 vk_sparse_stats(&sparse_binds, &sparse_ns);
                 if (sparse_binds)
@@ -853,6 +864,8 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
     /* Offscreen frames still submit and advance the frame ring. g_last remains available for readback. */
     vk_submit(wait, VK_PIPELINE_STAGE_2_CLEAR_BIT, signal);
     if (game) vk_renderdoc_present(g_vk_present);
+    /* after the frame's submission, so that the GPU's piece of a background encode never holds up the present */
+    vk_astc_background();
     vk_frame_next(); /* every show used this frame's slot and acquire semaphore, the menu's own too */
     if (signal) {
         /* after the frame's submission, whose semaphore it waits on, without waiting for its recording */
