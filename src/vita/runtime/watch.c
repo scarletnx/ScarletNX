@@ -183,6 +183,7 @@ bool vita_watch_changed(uint32_t address, uint32_t size, uint64_t since) {
             return true;
     return false;
 }
+uint64_t vita_watch_epoch(void) { return __atomic_load_n(&g_watch.now, __ATOMIC_ACQUIRE); }
 void vita_watch_written(uint32_t address, uint32_t size) {
     uint64_t first, last;
     if (!span(address, size, &first, &last)) return;
