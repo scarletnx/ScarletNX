@@ -3025,7 +3025,11 @@ if(WIN32 AND TARGET SDL3::SDL3)
     add_executable(snx-test-memory-own memory_own.c
         "${PROJECT_SOURCE_DIR}/src/nx/memory/mem.c" "${PROJECT_SOURCE_DIR}/src/nx/memory/own.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/plat_win32.c"
-        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/plat_sdl.c" "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c")
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/plat_sdl.c" "${PROJECT_SOURCE_DIR}/src/common/platform/file.c"
+        "${PROJECT_SOURCE_DIR}/src/common/platform/file_map.c" "${PROJECT_SOURCE_DIR}/src/common/platform/file_share.c"
+        "${PROJECT_SOURCE_DIR}/src/common/platform/file_replace.c" "${PROJECT_SOURCE_DIR}/src/common/platform/wpath.c"
+        "${PROJECT_SOURCE_DIR}/src/common/platform/thread.c"
+        "${PROJECT_SOURCE_DIR}/src/common/platform/thread_spawn.c")
     snx_test_target(snx-test-memory-own 11)
     target_link_libraries(snx-test-memory-own PRIVATE Threads::Threads pthread SDL3::SDL3 synchronization powrprof)
     target_link_libraries(snx-test-memory-own PRIVATE scarletnx-common) # plat_win32.c names its threads
