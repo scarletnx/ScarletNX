@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "3ds/runtime/internal.h"
 #include "3ds/board/clock.h"
+#include "3ds/loader/smdh.h"
 #include "common/utilities/endian.h"
 #include "3ds/gpu/pica.h"
 #include "3ds/services/dsp.h"
@@ -236,39 +237,6 @@ bool snx_ctr_process_mount_fs(SnxCtrProcess* p, const char* directory) { return 
 bool snx_ctr_process_mount_source(SnxCtrProcess* p, const char* directory, const SnxCtrSource* game) {
     return game && mount(p, directory, game);
 }
-/* The SMDH's short title, for the window: one of the 16 languages' 0x200-byte entries (short title, 0x40 UTF-16LE
-   units, then the long one and the publisher), English (1) first, then the others in order, as UTF-8 */
-static void smdh_title(const unsigned char* smdh, char out[192]) {
-    out[0] = 0;
-    for (unsigned order = 0; order < 16 && !out[0]; ++order) {
-        const unsigned char* s = smdh + 8 + 0x200 * (order == 0 ? 1 : order == 1 ? 0 : order);
-        size_t n = 0;
-        for (unsigned i = 0; i < 0x40; ++i) {
-            uint32_t cp = (uint32_t)s[i * 2] | (uint32_t)s[i * 2 + 1] << 8;
-            if (!cp) break;
-            if (cp >= 0xd800 && cp < 0xdc00 && i + 1 < 0x40) { /* a surrogate pair */
-                uint32_t low = (uint32_t)s[i * 2 + 2] | (uint32_t)s[i * 2 + 3] << 8;
-                if (low >= 0xdc00 && low < 0xe000) {
-                    cp = 0x10000 + ((cp - 0xd800) << 10) + (low - 0xdc00);
-                    ++i;
-                }
-            }
-            if (cp == '\n') cp = ' '; /* a title broken over two lines is one in a window's */
-            unsigned char u[4];
-            unsigned len = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
-            if (len == 1)
-                u[0] = (unsigned char)cp;
-            else {
-                for (unsigned k = len - 1; k > 0; --k, cp >>= 6) u[k] = (unsigned char)(0x80 | (cp & 0x3f));
-                u[0] = (unsigned char)((len == 2 ? 0xc0 : len == 3 ? 0xe0 : 0xf0) | cp);
-            }
-            if (n + len >= 192) break;
-            memcpy(out + n, u, len);
-            n += len;
-        }
-        out[n] = 0;
-    }
-}
 static bool mount(SnxCtrProcess* p, const char* directory, const SnxCtrSource* game) {
     if (!p || !directory || !*directory || p->tree) return false;
     p->source = game;
@@ -329,7 +297,7 @@ static bool mount(SnxCtrProcess* p, const char* directory, const SnxCtrSource* g
         return false;
     }
     p->sd = sd;
-    /* the regions the title's SMDH (ExeFS icon) says it runs in, which pick the console's (services/cfg.c) */
+/* the regions the title's SMDH (ExeFS icon) says it runs in, which pick the console's (services/cfg.c) */
     unsigned char smdh[0x2020];
     uint64_t smdh_size = 0;
     const unsigned char* icon = game ? snx_ctr_source_exefs(game, "icon", &smdh_size) : NULL;
@@ -340,7 +308,7 @@ static bool mount(SnxCtrProcess* p, const char* directory, const SnxCtrSource* g
         if (f) fclose(f);
         free(path);
     }
-    if (icon && smdh_size >= 0x201c && !memcmp(icon, "SMDH", 4)) smdh_title(icon, p->title);
+    if (icon) snx_ctr_smdh_title(icon, (size_t)smdh_size, p->title, sizeof p->title);
     if (icon && smdh_size >= 0x201c && !memcmp(icon, "SMDH", 4))
         p->region_lockout = snx_ld_le32(icon + 0x2018);
     /* the save data a run formatted before */
