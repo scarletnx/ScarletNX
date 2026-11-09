@@ -7,6 +7,15 @@
 #include <stdio.h>
 #include <string.h>
 
+static void put_units(unsigned char* smdh, unsigned language, const unsigned* units, size_t count) {
+    unsigned char* entry = smdh + 0x8 + 0x200u * language;
+    size_t i;
+    memset(entry, 0, 0x80);
+    for (i = 0; i < count && i < 0x40; ++i) {
+        entry[i * 2] = (unsigned char)units[i];
+        entry[i * 2 + 1] = (unsigned char)(units[i] >> 8);
+    }
+}
 static void put_title(unsigned char* smdh, unsigned language, const char* text) {
     unsigned char* entry = smdh + 0x8 + 0x200u * language;
     size_t i;
@@ -56,6 +65,19 @@ int main(void) {
     assert(!strcmp(title, "Two "));
     snx_ctr_smdh_title(smdh, 0x2000, title, sizeof title);
     assert(!title[0]); /* no SMDH, no title */
+    /* a carriage return is a space too, and a surrogate with no pair is U+FFFD; a pair is one character */
+    {
+        static const unsigned cr[] = {'A', '\r', 'B'}, lone[] = {0xd800, 'X'}, pair[] = {0xd800, 0xdc00};
+        put_units(smdh, 1, cr, 3);
+        snx_ctr_smdh_title(smdh, sizeof smdh, title, sizeof title);
+        assert(!strcmp(title, "A B"));
+        put_units(smdh, 1, lone, 2);
+        snx_ctr_smdh_title(smdh, sizeof smdh, title, sizeof title);
+        assert(!strcmp(title, "\xEF\xBF\xBDX"));
+        put_units(smdh, 1, pair, 2);
+        snx_ctr_smdh_title(smdh, sizeof smdh, title, sizeof title);
+        assert(!strcmp(title, "\xF0\x90\x80\x80"));
+    }
     /* the titles end before the icons: an ExeFS icon read in part still names the game, and has no icon */
     put_title(smdh, 1, "Partial");
     snx_ctr_smdh_title(smdh, 0x2020, title, sizeof title);

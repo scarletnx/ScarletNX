@@ -138,7 +138,7 @@ static bool deploy_runtime(const char* directory, const char* runtime, char* err
     return placed >= 0;
 }
 /* The SMDH of the game at directory: from the source when it is open, else from the extraction's exefs/icon. buffer is
-   its room, 0x2020 bytes; *size its bytes. NULL when the game has none */
+   its room, the whole SMDH, 0x36c0 bytes; *size its bytes. NULL when the game has none */
 static const unsigned char* game_smdh(const char* directory, const SnxCtrSource* game, unsigned char* buffer,
                                       uint64_t* size) {
     const unsigned char* icon = game ? snx_ctr_source_exefs(game, "icon", size) : NULL;
@@ -148,9 +148,9 @@ static const unsigned char* game_smdh(const char* directory, const SnxCtrSource*
         size_t got = f ? fread(buffer, 1, 0x36c0, f) : 0;
         if (f) fclose(f);
         free(path);
-        if (got >= 0x201c) icon = buffer, *size = got;
+        if (got >= SNX_CTR_SMDH_TITLES_SIZE) icon = buffer, *size = got;
     }
-    return icon && *size >= 0x201c && !memcmp(icon, "SMDH", 4) ? icon : NULL;
+    return icon && *size >= SNX_CTR_SMDH_TITLES_SIZE && !memcmp(icon, "SMDH", 4) ? icon : NULL;
 }
 /* What the launcher shows the game by: the SMDH's short title in its .ini (name=), which Games reads, and its 48x48 icon
    as RGBA beside it (icon.rgba), which the menu draws. A game with no SMDH is named by the dump it was made from, and
@@ -160,17 +160,18 @@ static void game_metadata(const char* directory, const SnxCtrSource* game, char*
     uint64_t size = 0;
     const unsigned char* icon = game_smdh(directory, game, smdh, &size);
     char* ini;
-    bool named = false; /* the SMDH gave the title: a game with none is named by its dump for the line alone */
     title[0] = 0;
     if (icon) snx_ctr_smdh_title(icon, (size_t)size, title, title_size);
-    named = title[0] != 0;
-    if (icon && !snx_ctr_smdh_icon(icon, (size_t)size, rgba)) {
+    bool named = title[0] != 0; /* the SMDH gave the title: a game with none is named by its dump for the line alone */
+    {
         char* file = snx_path_join(directory, "icon.rgba");
-        if (file) {
+        if (file && icon && !snx_ctr_smdh_icon(icon, (size_t)size, rgba)) {
             if (snx_write_file(file, rgba, sizeof rgba))
                 fprintf(stderr, "scarletnx-3ds: cannot write %s\n", file);
-            free(file);
+        } else if (file && snx_is_file(file)) { /* the game has no icon now: the launcher must not draw the old one */
+            (void)snx_remove_tree(file);
         }
+        free(file);
     }
     /* the launcher's .ini, which is the config folder's for a game in the data folder: the game's own keeps source=,
        model= and system= alone */

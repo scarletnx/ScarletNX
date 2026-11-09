@@ -50,7 +50,7 @@ static size_t title_of(const unsigned char* entry, char* out, size_t out_size) {
 void snx_ctr_smdh_title(const unsigned char* smdh, size_t size, char* out, size_t out_size) {
     /* the titles alone end before the icons: an ExeFS icon read in part still names the game */
     if (out_size) out[0] = 0;
-    if (!smdh || size < SMDH_TITLES + 16 * SMDH_TITLE_SIZE || memcmp(smdh, "SMDH", 4) || out_size < 2) return;
+    if (!smdh || size < SNX_CTR_SMDH_TITLES_SIZE || memcmp(smdh, "SMDH", 4) || out_size < 2) return;
     for (unsigned order = 0; order < 16; ++order) {
         /* English (1) first, then Japanese (0), then the others as the SMDH lists them */
         unsigned language = order == 0 ? 1 : order == 1 ? 0 : order;
