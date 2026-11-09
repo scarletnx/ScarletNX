@@ -50,7 +50,8 @@ void gui_games_free(GuiGames* games);
 /* The bytes of the files under path, in its folders too, links not followed: 0 for no such folder, or "". It stops,
    with what it counted, once *stop is set by another thread */
 uint64_t gui_tree_size(const char* path, const int* stop);
-/* An NRO, XCI or NSP (or a decrypted one) by its name: a dump the driver prepares, not a game ready to run */
+/* An NRO, XCI or NSP (or a decrypted one) by its name: a dump the driver prepares, not a game ready to run. So is an
+   extracted game's folder (snx_extracted_game), which a library lists by its folder's name and a / after it */
 bool gui_is_dump(const char* name);
 /* A game's program in a folder of its own beside its data (<name>/<name>, .exe on Windows, and <name>/<name>_data/),
    or an update's or a DLC's beside it (<name>/<name>_<its title ID>), as the recompile lays games out: the driver

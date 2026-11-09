@@ -264,7 +264,9 @@ msgstr ""
 msgid "Text, up to %u bytes"
 msgstr ""
 
-#: src/gui/editor.c
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/editor.c src/gui/main.c
+#, snx-key
 msgid "Folder"
 msgstr "Pasta"
 
@@ -1382,6 +1384,24 @@ msgstr "P: pastas."
 #, snx-keys
 msgid "V: view."
 msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Folder."
+msgstr "Pasta."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "P: pick a folder."
+msgstr "P: escolher pasta."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Y: pick a folder."
+msgstr "Y: escolher pasta."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c

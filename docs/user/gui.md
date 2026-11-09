@@ -81,7 +81,9 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
 - **Load Switch NSP/XCI/NRO**, **Load Linux ARM ELF**, **Load 3DS game**, **Load Vita VPK**, **Load GBA ROM** and
   **Load Android APK/XAPK** open a screen as the keys': a click on its blinking **[ Pick or drop a file ]**, or Enter, opens the system's file
   picker (on Linux the desktop's, else zenity's). Dropping a file on the window and Ctrl+V with
-  a path work too. ESC returns to the menu. On Android the picker opens at once. A dump is read where it lies
+  a path work too. On the Switch's, **P** (on a phone a tap on *Folder* at the foot, on a pad Y) opens the system's
+  folder picker instead, for an extracted game's folder (`exefs/` with its `main`, beside its `romfs/`), which plays as
+  a dump does, read where it is; dropping that folder works too. ESC returns to the menu. On Android the picker opens at once. A dump is read where it lies
   and takes no room, unless *Extract dump* is on. Then one not extracted yet takes about its size, a Switch
   dump's extracted straight into its game's folder (as much again only with an **Extractions** folder picked, which
   keeps a copy, and in the temporary folder with *Extract to tmpfs*); when its disks have less free, the menu says how
@@ -482,7 +484,10 @@ none for says why after its kind (the side box, the tips), and the launcher's lo
 next start asks again. Only immediate files are listed:
 executables (execute permission on UNIX, `.exe` on Windows), `.cia`, `.cci`, `.3ds`, `.cxi`, `.app`, `.hbb`, `.bcci`, `.bcxi`, `.bcia`, `.zcci`, `.zcxi` and `.zcia` files
 (case-insensitive, no execute permission needed), which run with the 3DS driver, and `.vpk` files, which run with the Vita driver. Hidden files, shared libraries and
-directories are excluded. The folders are looked at once a second while the menu is open (their
+directories are excluded.
+A library with Dumps on also lists each extracted game's folder in it (`exefs/` with its `main`), among the dumps and
+named by its folder with a `/` after it: shown by its `control.nacp`'s name, else by the title ID of its
+`exefs/main.npdm`. The folders are looked at once a second while the menu is open (their
 names only), so a game put in or taken out shows in the open list; a folder that
 cannot be read is named and the others still listed.
 

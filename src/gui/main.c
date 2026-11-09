@@ -475,6 +475,7 @@ typedef struct App {
     size_t games_seen;
     Uint64 games_tick, games_last_ms;
     Uint32 picked;                    /* the event a file from the system's picker comes back as */
+    bool picking_folder;              /* that picker asked for a folder, the Switch's Open's (open_game_folder) */
     SDL_Texture* splash;              /* the boot's splash, its drawing splash_side pixels square, until splash_until */
     const SnxSplashSvg* splash_svg;   /* the boot's pick: Wimsy, or one of dist/splash's */
     SnxSplashDrawing* splash_drawing; /* it, read once; NULL: the icon shows */
@@ -1329,6 +1330,10 @@ static void footer(App* app, int row, int rows, GuiRgb page, GuiRgb ink, GuiRgb 
 }
 /* the screen a file is picked or dropped on: the keys', and a load option's */
 static int pick_screen(const App* app) { return app->menu.view == GUI_LOAD_KEYS || app->menu.view == GUI_LOAD_DROP; }
+/* the Switch's Open screen, which also picks an extracted game's folder (open_game_folder) */
+static int folder_pick_screen(const App* app) {
+    return app->menu.view == GUI_LOAD_DROP && app->menu.active == GUI_SWITCH;
+}
 /* the menu's screen, a run or not */
 static GuiScreen menu_screen(const App* app) {
     return app->menu.view == GUI_LOAD_GAMES  ? GUI_SCREEN_GAMES
@@ -1902,6 +1907,13 @@ static void debug_focus_update(App* app);
 #define SAY_GAMES_FOLDERS SNX_TR_KEYS("P: folders.")
 #define SAY_GAMES_VIEW    SNX_TR_KEYS("V: view.")
 #endif
+/* the Switch's Open screen: an extracted game's folder, picked instead of a file */
+#ifdef SNX_TOUCH_UI
+#define SAY_PICK_FOLDER SNX_TR_KEYS("Folder.")
+#else
+#define SAY_PICK_FOLDER SNX_TR_KEYS("P: pick a folder.")
+#endif
+#define SAY_PAD_PICK_FOLDER SNX_TR_KEYS("Y: pick a folder.")
 #define SAY_BACK     SNX_TR_KEYS("ESC: back.")
 #define SAY_HELP     SNX_TR_KEYS("F1: help.")
 #define SAY_PAD_HELP SNX_TR_KEYS("Select: help.")
@@ -3056,6 +3068,7 @@ static unsigned key_icon(const char* key, const char* what) {
                  {"paste", GUI_ICON_CLIPBOARD_PASTE},
                  {"pick a file", GUI_ICON_KEY_ROUND},
                  {"pick a keys file", GUI_ICON_KEY_ROUND},
+                 {"pick a folder", GUI_ICON_FOLDER},
                  {"current user", GUI_ICON_USER},
                  {"downloads, or fetch again", GUI_ICON_HARD_DRIVE_DOWNLOAD},
                  {"games", GUI_ICON_GAMEPAD_2},
@@ -3153,6 +3166,7 @@ static const char* screen_keys(const App* app, bool help, char* out, size_t size
                                                     : SAY_PAD_MENU;
         if (app->editing && app->form == GUI_FORM_FOLDERS) folders_said(app, true, parts, &n);
         if (!app->editing && app->menu.view == GUI_LOAD_GAMES) games_said(app, true, parts, &n);
+        if (!app->editing && folder_pick_screen(app)) said_add(parts, &n, SAY_PAD_PICK_FOLDER);
         said_add(parts, &n, keys);
         if (app->editing) settings_said(app, true, parts, &n);
         if (aot_said(app)) said_add(parts, &n, SAY_PAD_GAMES_AOT);
@@ -3177,6 +3191,7 @@ static const char* screen_keys(const App* app, bool help, char* out, size_t size
         if (app->editing && app->form == GUI_FORM_FOLDERS) folders_said(app, false, parts, &n);
         if (!app->editing && app->menu.view == GUI_LOAD_GAMES) games_said(app, false, parts, &n);
         said_add(parts, &n, keys);
+        if (!app->editing && folder_pick_screen(app)) said_add(parts, &n, SAY_PICK_FOLDER);
         if (app->editing) settings_said(app, false, parts, &n);
         if (!app->editing && app->menu.view == GUI_LOAD_GAMES) {
             said_add(parts, &n, SAY_GAMES_FOLDERS); /* to add a folder */
@@ -14633,9 +14648,14 @@ static bool run_start(App* app, const char* const* argv, char* file, bool native
 #endif
     return true;
 }
+/* what Open, a drop or a list opens: a file, or for the Switch an extracted game's folder, which its driver plays as a
+   dump */
+static bool openable(const App* app, const char* path) {
+    return path && (snx_is_file(path) || (app->menu.selected == GUI_SWITCH && snx_extracted_game(path)));
+}
 static void launch(App* app, char* absolute, bool prepared) {
     int queued;
-    if (!absolute || !snx_is_file(absolute)) {
+    if (!openable(app, absolute)) {
         snprintf(app->message, sizeof(app->message), "%s",
                  snx_tr("That path is not a readable file. Try again or press ESC."));
         free(absolute);
@@ -15979,8 +15999,29 @@ static void drop(App* app, const char* value, bool text_drop) {
     }
 }
 static void picked(App* app, const char* uri);
+/* the Switch's Open: an extracted game's folder picked, which goes as a dropped one does (picked) */
+static void open_game_folder(App* app) {
+    app->keys_done = 0;
+    app->picking_folder = true;
+    if (!app->picked) app->picked = SDL_RegisterEvents(1);
+    if (!app->picked) return;
+#if defined(SDL_PLATFORM_ANDROID)
+    {
+        char why[200];
+        if (!gui_android_pick_folder(folder_picked, &app->picked, why, sizeof why)) {
+            snprintf(app->message, sizeof app->message, snx_tr("The folder picker could not open: %s"), why);
+            say_failure(app, app->message);
+        }
+    }
+#elif defined(SDL_PLATFORM_IOS)
+    gui_apple_pick(app->window, 1, folder_picked, &app->picked, debug_log(app), app->message, sizeof(app->message));
+#else
+    SDL_ShowOpenFolderDialog(folder_picked, &app->picked, app->window, NULL, false);
+#endif
+}
 static void open_picker(App* app) {
     app->keys_done = 0; /* another try: the last one's outcome no longer stands */
+    app->picking_folder = false;
     if (!app->picked) app->picked = SDL_RegisterEvents(1);
 #ifdef SDL_PLATFORM_IOS /* SDL has no file dialog there: the document picker (dist/apple) */
     if (app->picked)
@@ -17068,6 +17109,7 @@ static const struct {
                  {SNX_TR_KEY("Mods"), SDLK_M, 0, false},
                  {SNX_TR_KEY("P"), SDLK_P, 0, false},
                  {SNX_TR_KEY("Folders"), SDLK_P, 0, false},
+                 {SNX_TR_KEY("Folder"), SDLK_P, 0, false}, /* a finger's, on the Switch's Open screen */
                  {SNX_TR_KEY("V"), SDLK_V, 0, false},
                  {SNX_TR_KEY("View"), SDLK_V, 0, false},
                  {SNX_TR_KEY("S"), SDLK_S, 0, false},
@@ -17396,7 +17438,8 @@ static void picked(App* app, const char* uri) {
     if (uri && !path) path = gui_android_document_file(uri);
 #endif
     if (!uri)
-        snprintf(app->message, sizeof(app->message), "%s", snx_tr("No file was picked."));
+        snprintf(app->message, sizeof(app->message), "%s",
+                 app->picking_folder ? snx_tr("No folder was picked.") : snx_tr("No file was picked."));
     else if (!path) {
         snprintf(app->message, sizeof(app->message), snx_tr(SAY_PICK_UNREAD), uri);
         keys_result(app, false);
@@ -18052,6 +18095,13 @@ static void event_take(App* app, const SDL_Event* e) {
             ask_key(app, key);
         else if (key == GUI_CANCEL)
             cancel(app);
+        return;
+    }
+    /* P, or a pad's Y, on the Switch's Open screen: a folder picked */
+    if ((e->key.key == SDLK_P || e->key.key == SDLK_R) && !e->key.repeat &&
+        !(e->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI)) && folder_pick_screen(app) &&
+        !app->menu.running && !app->finished) {
+        open_game_folder(app);
         return;
     }
     if (e->key.key == SDLK_V && (e->key.mod & SDL_KMOD_CTRL) &&
