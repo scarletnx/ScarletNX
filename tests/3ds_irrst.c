@@ -9,6 +9,7 @@
 #include "3ds/services/irrst.h"
 #include "common/utilities/endian.h"
 #include "support/3ds_guest.h"
+#include "support/sdl_real_pads.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,7 +28,6 @@ static int checks;
 enum { INDEX = 0x10, ENTRIES = 0x18, ENTRY_SIZE = 0x10 };
 #define C_RIGHT (1u << 24)
 #define C_UP    (1u << 26)
-#define PAD_IDS "0x045e/0x02ea" /* the virtual pad's vendor and product: a real pad plugged in stays out */
 
 /* a field of 2 or 4 bytes of ir:rst's shared memory, little endian, as the game reads it */
 static uint32_t shared(SnxCtrProcess* p, uint32_t offset, unsigned size) {
@@ -60,7 +60,7 @@ static uint32_t sample(SnxCtrProcess* p) {
 
 int main(void) {
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
-    SDL_SetHint(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT, PAD_IDS);
+    sdl_real_pads_hide();
     CHECK(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD));
     snx_ctr_input_init();
     SDL_VirtualJoystickDesc d;

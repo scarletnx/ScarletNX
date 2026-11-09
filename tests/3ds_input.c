@@ -5,6 +5,7 @@
    gamepad_swap_ab, and the circle pad and the C-stick past gamepad_deadzone, scaled to their rims */
 #include "3ds/input/input.h"
 #include "snx_settings.h"
+#include "support/sdl_real_pads.h"
 #include <SDL3/SDL.h>
 #include <math.h>
 #include <stdio.h>
@@ -20,11 +21,9 @@ static int checks;
         }                                                                                                              \
     } while (0)
 
-/* the virtual pad, by the vendor and product SDL tells an Xbox pad's layout from: only it is read, a real pad plugged
-   in stays out */
+/* the virtual pad, by the vendor and product SDL tells an Xbox pad's layout from */
 #define PAD_VENDOR  0x045e
 #define PAD_PRODUCT 0x02ea
-#define PAD_IDS     "0x045e/0x02ea"
 
 /* the window's loop (gpu/present.c's pump), for the gamepads */
 static void pump(void) {
@@ -75,7 +74,7 @@ static bool near(float a, float b) { return fabsf(a - b) < 0.002f; }
 
 int main(void) {
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
-    SDL_SetHint(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT, PAD_IDS);
+    sdl_real_pads_hide();
     CHECK(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD));
     SDL_Window* window = SDL_CreateWindow("3ds input", 64, 64, 0); /* the dummy driver's, with the focus */
     CHECK(window != NULL);
