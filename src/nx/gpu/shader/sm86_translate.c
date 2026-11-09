@@ -966,7 +966,11 @@ static void track_step(Ctx* c, u32 i, TrackState* s) {
     /* the destination: the key, or none for any other write (the high word of a pair takes none either) */
     u32 d = uniform || op == SM86_ULDC || op == SM86_UMOV || op == SM86_R2UR ? sm86_field(in, 16, 6) : in->dst;
     int to_uniform = uniform || op == SM86_ULDC || op == SM86_R2UR || op == SM86_S2UR || op == SM86_ULDC_IDX;
-    int wide = op == SM86_ULDC || op == SM86_LDC || op == SM86_IMAD_WIDE || op == SM86_UIMAD_WIDE;
+    /* a 64-bit result's high word takes no key: ULDC's and LDC's of type 5 alone. A ULDC of one word took the key of
+       the register after its own, and one game's material program lost UR7, c[0][0x530] + 0x30, to a ULDC UR6 of a
+       word a thousand instructions before its LDG */
+    int wide = ((op == SM86_ULDC || op == SM86_LDC) && sm86_field(in, 73, 3) == 5) || op == SM86_IMAD_WIDE ||
+               op == SM86_UIMAD_WIDE;
     if (!found) key = 0, exact = 0;
     if (to_uniform) {
         track_write(c, s, 1, d, key, exact, dyn, (u16)op, always);
