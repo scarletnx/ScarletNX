@@ -40,6 +40,15 @@ void plat_dump_fault_thread(u32 tid) { (void)tid; }
 int plat_trap_arm(u8* p, u64 n) { (void)p; (void)n; return 0; }
 int plat_trap_continue(u8* p, u64 n) { (void)p; (void)n; return 0; }
 void plat_trap_disarm(u8* p, u64 n) { (void)p; (void)n; }
+/* as on Linux, the fixture lands through its mirror: no trap lands in place, nor is a landed page read in place */
+int plat_trap_fill(u8* p, const void* src, u64 size) {
+    (void)p, (void)src, (void)size;
+    return -1;
+}
+int plat_vm_read(const void* p, void* dst, u64 size) {
+    (void)p, (void)dst, (void)size;
+    return -1;
+}
 int mem_pool_offset(u64 a, u64* off) { *off = a; return 0; }
 int mem_own_prepare(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n) {
     CHECK(max > 0);
