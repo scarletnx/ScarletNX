@@ -329,6 +329,34 @@ static VkDescriptorSet two_buffers(VkBuffer in, u64 in_off, u64 in_size, VkBuffe
     return set;
 }
 
+/* The texels decoded (and encoded as BC7) in the submission recording now, g_split_sub. A submission is one job of the
+   kernel's GPU scheduler, which takes the GPU for hung and resets it when a job runs past its timeout (amdgpu's is 2
+   seconds). One game's first 3D frame uploads two 1365x1365 ASTC arrays of 90 layers each as BC7: with their smaller
+   levels 110 strips, whose encodes took a Radeon 890M 92 ms each, 10 seconds in all. In one submission the GPU's ring
+   was reset and the device lost. A strip that would take a submission past ASTC_SUBMIT_TEXELS goes in the next one
+   (vk_submit_split). A strip has 4 Mi texels at most (g_astc.cap's RGBA8). 1 when it submitted: the strip's
+   commands then go in the new command buffer (vk_cmd), as rows gives one only after a submission of its own. The
+   image keeps the layout its caller made, whose barrier orders the copies of the later submissions too */
+#define ASTC_SUBMIT_TEXELS (4ull << 20)
+static u64 g_split_sub, g_split_texels;
+static int split_before(u64 texels) {
+    int split = 0;
+    if (g_split_sub != vk_submit_number()) { /* submitted since: that submission's texels are the GPU's */
+        g_split_sub = vk_submit_number();
+        g_split_texels = 0;
+    }
+    if (g_split_texels && g_split_texels + texels > ASTC_SUBMIT_TEXELS) {
+        LOG_LIMIT(1, "vulkan: ASTC uploads of more than %llu Mi texels go to the GPU in several submissions\n",
+                  (unsigned long long)(ASTC_SUBMIT_TEXELS >> 20));
+        vk_submit_split();
+        g_split_sub = vk_submit_number();
+        g_split_texels = 0;
+        split = 1;
+    }
+    g_split_texels += texels;
+    return split;
+}
+
 int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h, u32 depth, u32 level, u32 layer,
                    u32 layers, VkAstcRows rows, void* ctx, const u64* content) {
     /* layers of a 2D array: decoded as the slices of a volume are, each strip of them copied at once */
@@ -424,6 +452,7 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h, u32
             u32 height = h - y * bh < n * bh ? h - y * bh : n * bh;
             u64 size = row_in * n * nz, offset, texels = (u64)w * height * nz * 4;
             if (sh && !vk_image_sparse_bound(t->img, layer, level, y * bh, y * bh + height, z, z + nz, 0)) continue;
+            if (split_before((u64)w * height * nz)) cb = vk_cmd();
             VkBuffer input;
             VkDescriptorSet set = rows(ctx, &cb, z, nz, y, n, &input, &offset)
                                       ? two_buffers(input, offset, size, g_astc.scratch, texels)

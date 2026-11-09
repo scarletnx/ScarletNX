@@ -540,7 +540,7 @@ int vk_gpuprof_clock(i64* cpu, i64* gpu) {
 /* the graphics queue's busy and idle time over the report's window, a frame (present) at a time, and the CPU's waits
    for the GPU by kind (cmd.c) */
 static void gp_idle_report(void) {
-    static const char* const why[VK_SUB_N] = {"other", "present", "finish", "1 ms", "readback", "frame end"};
+    static const char* const why[VK_SUB_N] = {"other", "present", "finish", "1 ms", "readback", "frame end", "split"};
     static const char* const wait[VK_WAIT_N] = {"finish", "frame slot reuse", "a release or result's submit"};
     static u64 wait0[VK_WAIT_N], waits0[VK_WAIT_N], cs0;
     u64 now = plat_ns(), presents = (u32)(g_vk_present - g_present0), wall = now - g_t0;

@@ -858,6 +858,11 @@ void vk_submit_for_readback(void) {
 void vk_submit_open(void) {
     if (g_fr[g_cur].recording) submit(NULL, NULL, 0, VK_SUB_READBACK);
 }
+/* vk_submit_open's, counted apart. It takes what the next submission waits for (vk_submit_after's, the sparse binds
+   made since the last), as any submission does */
+void vk_submit_split(void) {
+    if (g_fr[g_cur].recording) submit(NULL, NULL, 0, VK_SUB_SPLIT);
+}
 void vk_submit_recorded(void) {
     if (g_fr[g_cur].recording) submit_why(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_SUB_OTHER);
 }

@@ -458,6 +458,11 @@ int vk_wait_fence(VkFence fence);
 void vk_submit_for_readback(void);
 /* the same without waiting for the recording thread: the commands being recorded, if any, handed to it (vk_lock) */
 void vk_submit_open(void);
+/* the commands being recorded, if any, handed to the GPU as a submission of their own between two pieces of one long
+   piece of work (astc.c's strips), so that no submission runs past the driver's job timeout. Nothing lands and the
+   frame keeps its slot, so a draw's or a dispatch's setup can call it (they set themselves up again after a submit).
+   The caller records the rest in the next vk_cmd, a new command buffer */
+void vk_submit_split(void);
 /* the renderer's ready (renderer.h): the GPU's work on the slot the next frame records in, waited for without vk_lock
    (none when this thread holds it) */
 void vk_frame_ready(void);
@@ -1893,8 +1898,18 @@ extern u64 g_vk_passes, g_vk_clear_cmds, g_vk_clear_loads, g_vk_dontcare_loads;
 void vk_gpuprof_pass_begin(VkCommandBuffer cb, const Surf* rt, const Surf* zt);
 void vk_gpuprof_pass_end(VkCommandBuffer cb);
 /* why cmd.c submitted the frame's commands: a present, a vk_finish, the 1 ms of recording a submission holds at most
-   (vk_frame_check), a readback of GPU-owned memory, the end of a frame's slot, or anything else */
-enum { VK_SUB_OTHER, VK_SUB_PRESENT, VK_SUB_FINISH, VK_SUB_PERIODIC, VK_SUB_READBACK, VK_SUB_FRAME, VK_SUB_N };
+   (vk_frame_check), a readback of GPU-owned memory, the end of a frame's slot, a long piece of work cut into
+   submissions (vk_submit_split), or anything else */
+enum {
+    VK_SUB_OTHER,
+    VK_SUB_PRESENT,
+    VK_SUB_FINISH,
+    VK_SUB_PERIODIC,
+    VK_SUB_READBACK,
+    VK_SUB_FRAME,
+    VK_SUB_SPLIT,
+    VK_SUB_N
+};
 /* what the GPU thread waits for the graphics timeline for: a vk_finish, a frame slot's previous use, or one submission
    (a release's gate, a result's landing: vk_wait_submit) */
 enum { VK_WAIT_FINISH, VK_WAIT_RECYCLE, VK_WAIT_SUBMIT, VK_WAIT_N };
