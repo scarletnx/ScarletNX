@@ -43,6 +43,9 @@ typedef struct {
     /* each valid page's write tracking clock before it was last brought up to date: only a binding's own pages are,
        as the others may not be mapped any more */
     u32 synced[MIR_PAGES];
+    /* the pages [ck_lo, ck_hi) all valid and brought up to date in the stream's epoch ck_epoch (vk_ww_epoch): a binding
+       inside them needs nothing more in that epoch (vk_mirror_slice). Emptied when a page loses its shadow */
+    u32 ck_epoch, ck_lo, ck_hi;
 } Gran;
 
 /* the guest pages programs wrote in the mirror that haven't landed (vk_mirror_wrote to vk_mirror_done) */
@@ -321,7 +324,7 @@ static void diff_run(void* user, u64 at, u64 n) {
 int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     u64 cpu = 0;
     if (!vk_mirror_on() || !len || gmmu_run(gva, len, &cpu) != len || cpu + len > AS_SIZE) return 0;
-    u32 now = vk_ww_now(); /* before any byte is read */
+    u32 now = vk_ww_now(), epoch = vk_ww_epoch(); /* before any byte is read */
     u64 g0 = cpu / MIR_G, g1 = (cpu + len - 1) / MIR_G;
     Up u = {0};
     int owners = 0, fresh = 0;
@@ -337,6 +340,11 @@ int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
         u64 base = g * MIR_G;
         u64 lo = cpu > base ? (cpu - base) >> 12 : 0, hi = (cpu + len - base + 4095) >> 12;
         if (hi > MIR_PAGES) hi = MIR_PAGES;
+        /* brought up to date in this epoch already: the CPU's writes since are a later submission's to see, as every
+           cache that trusts a check for its epoch has them (vk_ww_epoch). A draw binds the same 16 MiB ranges as the
+           draws before it, and the walks below over their 4096 pages, three of them at each binding, were 8% of an
+           Ounce game's GPU thread */
+        if (r->ck_epoch == epoch && r->ck_lo <= lo && hi <= r->ck_hi) continue;
         /* the binding's valid pages written since the oldest of them was brought up to date: the bytes the CPU
            changed, those that differ from the shadow (a page brought up to date later compares equal). Owned pages
            aren't watched: their owners are copied in below */
@@ -358,15 +366,27 @@ int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
         for (u64 p = lo; p < hi; p++) r->synced[p] = now;
         /* the binding's pages not given yet: whole, guest memory's bytes, an owned part's left for its owner. One the
            mirror owns has its bytes there already */
+        int whole = 1; /* every page of [lo, hi) valid after this */
         for (u64 p = lo; p < hi; p++) {
             if (r->valid[p / 64] >> (p % 64) & 1) continue;
             u64 a = base + p * 4096;
-            if (mirror_owns(a, 4096)) continue;
+            if (mirror_owns(a, 4096)) { /* filled at a binding after it lands */
+                whole = 0;
+                continue;
+            }
             OwnRange o[16];
             u8* dst = up_bytes(&u, a, 4096);
             if (own_stage(a, 4096, dst, o, 16)) owners = 1;
             memcpy(r->shadow + p * 4096, dst, 4096);
             r->valid[p / 64] |= 1ull << (p % 64);
+        }
+        if (whole && r->ck_epoch == epoch && lo <= r->ck_hi && r->ck_lo <= hi) { /* touching this epoch's: one */
+            if (lo < r->ck_lo) r->ck_lo = (u32)lo;
+            if (hi > r->ck_hi) r->ck_hi = (u32)hi;
+        } else if (whole) {
+            r->ck_epoch = epoch;
+            r->ck_lo = (u32)lo;
+            r->ck_hi = (u32)hi;
         }
     }
     int copied = u.n != 0;
@@ -854,7 +874,9 @@ void vk_mirror_landed(u64 cpu, u64 size) {
     for (u64 pg = cpu >> 12, e = (cpu + size - 1) >> 12; pg <= e; pg++) {
         u64 g = (pg << 12) / MIR_G, p = ((pg << 12) % MIR_G) >> 12;
         Gran* r = g < g_mir.granules ? g_mir.gran[g] : NULL;
-        if (r) r->valid[p / 64] &= ~(1ull << (p % 64));
+        if (!r) continue;
+        r->valid[p / 64] &= ~(1ull << (p % 64));
+        r->ck_lo = r->ck_hi = 0;
     }
 }
 /* the pages an output couldn't take, copied by a pass of their own on a command buffer of the mirror's, waited for,
