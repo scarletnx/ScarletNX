@@ -878,6 +878,29 @@ static void test_image_kinds(const char* dir) {
     }
 }
 
+/* A fragment program's KILL says so in has_discard, which the renderer reads before it tests depth ahead of the
+   program; one without a KILL leaves it 0 */
+static void test_kill_discard(void) {
+    for (u32 k = 0; k < 2; k++) {
+        u8 code[16 * 4] = {0};
+        u32 n = 0, fsph[32] = {0};
+        Word x = fix(0x95b); /* KILL */
+        set(&x, 87, 3, 7);
+        if (k) put(code, n++, x);
+        put(code, n++, exit_insn());
+        put(code, n, bra(n, n, 7, 0));
+        n++;
+        fsph[0] = sph0(2, 5);
+        fsph[18] = 0xf;
+        ShaderInfo si = {0};
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+        CHECK(spv != NULL && si.has_discard == (int)k);
+        if (!spv || si.has_discard != (int)k) fprintf(stderr, "kill discard %u: has_discard %d\n", k, si.has_discard);
+        free(spv);
+    }
+}
+
 /* the root tables, banks 24 to 31, as one uniform buffer: R0 = TID.X; UR4:UR5 = c[0][0x20];
    R2 = c[25][0x10]; [R0 + UR4] = R2. Table 1's word 4 is byte 0x110 of the buffer */
 static void test_root_tables(const char* dir) {
@@ -2612,6 +2635,7 @@ int main(int argc, char** argv) {
     test_alu_group(dir);
     test_compute_forms(dir);
     test_image_kinds(dir);
+    test_kill_discard();
     test_root_tables(dir);
     test_texel_offsets(dir);
     test_global_flow(dir);
