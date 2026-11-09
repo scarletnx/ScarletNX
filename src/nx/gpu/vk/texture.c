@@ -476,6 +476,58 @@ static i64 resident_page(const Surf* t, u64 o, u64* end) {
     *end = base + t->layer_size;
     return -1;
 }
+/* A level whose device blocks are lower than its blocks of GOBs (an ASTC texture decoded: its 64 KiB tile in 8x8
+   blocks is 512 texels high, an RGBA8 device block 128) stacks them down to one block of GOBs, which is one range of
+   the guest's layout with the blocks of GOBs beside it: its brick_bytes units are that range's shares, and a stack's
+   device blocks are bound together where memory maps any of its bytes. 1 where the level is whole stacks: a 2D ASTC
+   texture, rows a whole number of GOBs that divides its block of GOBs, its device blocks down a whole number of stacks */
+static int resident_stacks(const Surf* t, u32 rows, u32 lbh, u32 down) {
+    const u32 unit = 8u << lbh;
+    return t->f.conv == VKC_ASTC && t->type != VK_IMAGE_VIEW_TYPE_3D && rows && rows % 8 == 0 && rows < unit &&
+           unit % rows == 0 && down % (unit / rows) == 0;
+}
+/* the device blocks level l of such a texture stacks (resident_stacks), 1 where its blocks of GOBs are as high */
+static u32 resident_stack(const Surf* t, u32 l) {
+    u32 lbh, lbd, rows = t->grain.height / t->f.bh;
+    bl_level_blocks(t->h, 1, &t->f, t->bh, t->bd, l, &lbh, &lbd);
+    return rows && rows < 8u << lbh ? (8u << lbh) / rows : 1;
+}
+/* want, the units of such a texture in the guest's order (resident_page), as the device's blocks (dev, the order
+   vk_image_resident takes), or back (to_guest): a stack's blocks the most of its units, and its units the most of its
+   blocks. 0 when no level stacks, both orders the same */
+static int resident_order(const Surf* t, u8* want, u8* dev, int to_guest) {
+    const VkExtent3D g = t->grain;
+    u32 l, at = 0;
+    for (l = 0; l < t->tail_first && resident_stack(t, l) == 1; l++) {}
+    if (l == t->tail_first) return 0;
+    for (u32 layer = 0; layer < t->layers; layer++)
+        for (l = 0; l < t->tail_first; l++) {
+            const u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1, k = resident_stack(t, l);
+            const u32 bx = (lw + g.width - 1) / g.width, by = (lh + g.height - 1) / g.height;
+            for (u32 u = 0; u < bx * by / k; u++) {
+                const u32 x = u % bx, row = u / bx * k;
+                u8 v = 0;
+                for (u32 j = 0; j < k; j++) {
+                    const u8 w = to_guest ? dev[at + (row + j) * bx + x] : want[at + u * k + j];
+                    v = w > v ? w : v;
+                }
+                for (u32 j = 0; j < k; j++) {
+                    if (to_guest)
+                        want[at + u * k + j] = v;
+                    else
+                        dev[at + (row + j) * bx + x] = v;
+                }
+            }
+            at += bx * by;
+        }
+    for (u32 i = t->layers * t->bricks; i < resident_pages(t); i++) {
+        if (to_guest)
+            want[i] = dev[i];
+        else
+            dev[i] = want[i];
+    }
+    return 1;
+}
 /* the pages of such a texture that memory maps any byte of */
 typedef struct {
     const Surf* t;
@@ -498,10 +550,16 @@ static int resident_bind_mapped(Surf* t, u8* want) {
     u32 n = 0, pages = resident_pages(t);
     u64 bytes;
     gmmu_pieces(t->gva, t->size, page_mapped, &m);
-    for (u32 i = 0; i < pages; i++) n += want[i];
+    u8* dev = malloc(pages);
+    if (!dev) return 0;
+    const int stacked = resident_order(t, want, dev, 0);
+    if (!stacked) memcpy(dev, want, pages);
+    for (u32 i = 0; i < pages; i++) n += dev[i];
     /* room made under the budget, a mip tail counted as a brick */
     if ((u64)n * t->brick_bytes > t->bytes) vk_mem_trim((u64)n * t->brick_bytes - t->bytes, 0);
-    int ok = vk_image_resident(t->img, want, pages, &bytes);
+    int ok = vk_image_resident(t->img, dev, pages, &bytes);
+    if (!stacked || !resident_order(t, want, dev, 1)) memcpy(want, dev, pages);
+    free(dev);
     vk_surf_bytes(t, bytes);
     return ok;
 }
@@ -580,8 +638,8 @@ static int resident_upload(Surf* t) {
    pieces, which give it a new wgen) makes the encoder drop what it made and start over behind the others; one whole
    after it is loaded as RGBA8 again, and pieces of it go straight to BC7 while they are a frame's blocks or fewer.
    A texture the game writes more often than the encoder makes its BC7 image is held Exact instead (later_wrote) until
-   it goes unwritten a while (later_cool). A texture whose memory is bound by tiles (resident_image) is made BC7 and
-   loaded straight to it */
+   it goes unwritten a while (later_cool). A texture whose memory is bound by tiles (resident_image), or that has holes
+   in its mapping, is made BC7 and loaded straight to it */
 static int is_bc7(VkFormat f) { return f == VK_FORMAT_BC7_UNORM_BLOCK || f == VK_FORMAT_BC7_SRGB_BLOCK; }
 /* the RGBA8 format a BC7 one is decoded to before it is encoded, and back: the same sRGB */
 static VkFormat later_rgba8(VkFormat bc7) {
@@ -1187,9 +1245,9 @@ static u32 level_layout(const Surf* t, u32 l, u32* lbh, u32* lbd) {
 }
 /* t's image with memory only where it is mapped (vk_image_create_resident), when the device binds it in bricks that
    are each one range of the guest's layout: whole blocks of GOBs side by side in one row of them, as a sparse
-   texture's 64 KiB tile is (nvn_tex_layout). Each level before the device's mip tail is then rows of whole bricks, the
-   n-th brick_bytes of a layer the device's n-th block of it, and the levels from the mip tail on the rest of the
-   layer. tex_upload binds a brick or a mip tail where memory maps any of its bytes. An ASTC one's tile is the
+   texture's 64 KiB tile is (nvn_tex_layout), or a stack of them is (resident_stacks). Each level before the device's
+   mip tail is then rows of whole bricks, the n-th brick_bytes of a layer the device's n-th block of it (or the n-th
+   share of a stack's range, resident_order), and the levels from the mip tail on the rest of the layer. tex_upload binds a brick or a mip tail where memory maps any of its bytes. An ASTC one's tile is the
    device's block where it is held as BC7 and its footprint is 4x4: 64x64 blocks of 16 bytes either way */
 static int resident_image(Surf* t, const VkImageCreateInfo* ii) {
     const VkFmt* f = &t->f;
@@ -1213,7 +1271,8 @@ static int resident_image(Surf* t, const VkImageCreateInfo* ii) {
     for (; l < s.tail_first; l++) {
         const u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1, ld = d3 >> l ? d3 >> l : 1;
         const u32 bx = (lw + g.width - 1) / g.width, gobs = level_layout(t, l, &lbh, &lbd);
-        if (!across || across % 64 || rows != 8u << lbh || g.depth != 1u << lbd || gobs != bx * (across / 64)) break;
+        if (!across || across % 64 || g.depth != 1u << lbd || gobs != bx * (across / 64)) break;
+        if (rows != 8u << lbh && !resident_stacks(t, rows, lbh, (lh + g.height - 1) / g.height)) break;
         bricks += bx * ((lh + g.height - 1) / g.height) * ((ld + g.depth - 1) / g.depth);
     }
     if (!s.tail_first || l < s.tail_first || (t->layers > 1 && t->layer_size % brick_bytes)) {
@@ -1289,8 +1348,9 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
         vk_surf_add(t);
         return t;
     }
-    /* held as BC7: RGBA8 until the encoder has made its BC7 image between frames (vk_tex_later_frame) */
-    if (f.conv == VKC_ASTC && is_bc7(f.vk)) {
+    /* held as BC7: RGBA8 until the encoder has made its BC7 image between frames (vk_tex_later_frame), but one with
+       holes, whose RGBA8 image would take memory for its holes as well */
+    if (f.conv == VKC_ASTC && is_bc7(f.vk) && !holes) {
         t->bc7_later = 1;
         t->f.vk = later_rgba8(f.vk);
         tex_info(t, t->f.vk, &ii, &vf, &t->storage_capable);
@@ -2233,6 +2293,11 @@ texture_from_memory:
         gmmu_pieces(gva, sz, tex_run, &runs);
         holes = runs.mapped < sz;
     }
+    /* an ASTC texture with holes in its mapping held as BC7 whatever Auto chose where the device samples BCn: a game's
+       sparse one is 68 layers of 8192x8192, 341 MB a mapped layer as RGBA8, which filled a 12 GB GPU, 85 as BC7 */
+    if (holes && f.conv == VKC_ASTC && g_vk.feat.textureCompressionBC &&
+        (f.vk == VK_FORMAT_R8G8B8A8_UNORM || f.vk == VK_FORMAT_R8G8B8A8_SRGB))
+        f.vk = f.vk == VK_FORMAT_R8G8B8A8_SRGB ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK;
     Surf* t = tex_create(gva, w, h, layers, d3, levels, vt, f, fkey, bl, bh, bd, tile_w, pitch, stride, msaa, holes);
     if (!t) return NULL;
     t->size = sz;
