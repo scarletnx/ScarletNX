@@ -17,6 +17,9 @@ void vita_watch_free(void);
 uint64_t vita_watch_protect(uint32_t address, uint32_t size);
 /* whether a page of [address, address + size) was written since generation since, or isn't watched */
 bool vita_watch_changed(uint32_t address, uint32_t size, uint64_t since);
+/* the generation of the newest write anywhere. A range vita_watch_changed found unchanged stays so while this number
+   does: a page leaves the protected state only by a write, which counts one */
+uint64_t vita_watch_epoch(void);
 /* a write the runtime records into the range (a GPU store): its pages written, their protection kept */
 void vita_watch_written(uint32_t address, uint32_t size);
 /* the range writable again and written: before the system writes it (a file read), and when it is committed or
