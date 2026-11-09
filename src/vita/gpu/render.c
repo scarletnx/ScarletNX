@@ -68,6 +68,9 @@ typedef struct {
        written after; the scene it was drawn with last, the oldest going when the cache is full */
     bool synced;
     uint64_t since, used;
+    /* the watch epoch (vita_watch_epoch) plus one at which its memory was last found unchanged: a draw at the same
+       epoch needn't look at the pages again. 0: not found so */
+    uint64_t clean;
 } Texture;
 /* swizzle.comp's, yuv.comp's, picture.comp's and rgb24.comp's push constants, member for member */
 typedef struct {
@@ -1537,7 +1540,10 @@ static Texture* texture_for(struct VitaRender* r, VitaProcess* p, VkCommandBuffe
     }
     uint32_t span = (uint32_t)span64;
     bool drawn_over = r->rendering && overlaps_color(r, data, span);
-    if (!t->synced || vita_watch_changed(data, span, t->since) || drawn_over) {
+    /* read before the pages are, so a write that lands meanwhile makes the next draw look again */
+    uint64_t epoch = vita_watch_epoch() + 1;
+    if (!t->synced || drawn_over || (t->clean != epoch && vita_watch_changed(data, span, t->since))) {
+        t->clean = 0;
         VkDeviceSize at;
         const Import* m = buffer_of(r, p, data, span, &at);
         if (!m) {
@@ -1619,7 +1625,8 @@ static Texture* texture_for(struct VitaRender* r, VitaProcess* p, VkCommandBuffe
         if (complete) t->since = vita_watch_protect(data, span);
         rendering_resume(r, cb);
         if (!complete) return NULL;
-    }
+    } else
+        t->clean = epoch;
     t->used = r->scene;
     return t;
 }
