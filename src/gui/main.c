@@ -235,8 +235,7 @@ typedef struct {
     SDL_Thread* thread;
     char* driver;   /* the program asked, and the data folder its keys are found by */
     char* driver3ds; /* the 3DS driver, for a 3DS dump's icon, "" when the build has none */
-    char* driver_first;   /* the driver's name, for a program that holds several (gui_driver_run) */
-    char* driver3ds_first;
+    char* driver3ds_first; /* the 3DS driver's name, for a program that holds several (gui_driver_run) */
     char* repo;
     char* dumps[GUI_DUMP_ASKS]; /* each owned, with its folder in the cache beside it */
     char* dirs[GUI_DUMP_ASKS];
@@ -3849,8 +3848,8 @@ static int rgba_icon(const unsigned char* bytes, size_t size, int side, void* pi
     for (y = 0; y < side; ++y)
         for (x = 0; x < side; ++x) {
             const unsigned char* s = src + 4 * ((size_t)(y * 48 / side) * 48 + (size_t)(x * 48 / side));
-            Uint32* p = (Uint32*)(out + 4 * ((size_t)y * side + x));
-            *p = (Uint32)255 << 24 | (Uint32)s[0] << 16 | (Uint32)s[1] << 8 | s[2];
+            Uint32 argb = (Uint32)255 << 24 | (Uint32)s[0] << 16 | (Uint32)s[1] << 8 | s[2];
+            memcpy(out + 4 * ((size_t)y * side + x), &argb, sizeof argb);
         }
     return 0;
 }
@@ -3930,9 +3929,13 @@ static bool icon_ask_start(GuiDumpIcons* d, GuiIconAsk* a, char* dump, char* dir
     /* a 3DS dump's icon is its SMDH, which only the 3DS driver reads */
     bool ctr = gui_is_cia(snx_path_leaf(dump));
     const char* driver = ctr ? d->driver3ds : d->driver;
-    const char* first = ctr ? d->driver3ds_first : d->driver_first;
-    const char* args[11];
+    const char* first = ctr ? d->driver3ds_first : NULL; /* the Switch driver is the program's default */
+    const char* args[12];
     int n = 0;
+    if (!driver || !d->repo) {
+        icon_failed_keep(d, dump, dir, snx_tr("Cannot start the run: out of memory"), NULL);
+        return false;
+    }
     args[n++] = driver;
     if (first) args[n++] = first; /* the name, to a program that holds several drivers */
     args[n++] = "--data";
@@ -4065,20 +4068,17 @@ static bool dump_icon_ask(App* app, const char* dump, const char* dir) {
     bool ctr = gui_is_cia(snx_path_leaf(dump));
     if (ctr && !d->driver3ds) { /* a 3DS dump's icon is its SMDH, which only the 3DS driver reads */
         GuiDriverRun how;
-        char* found = find_driver(app, GUI_3DS);
-        d->driver3ds = found ? found : snx_strdup("");
+        d->driver3ds = find_driver(app, GUI_3DS);
         if (driver_run(app, GUI_3DS, &how) && how.first) d->driver3ds_first = snx_strdup(how.first);
     }
-    if (ctr && (!d->driver3ds || !d->driver3ds[0])) {
+    if (ctr && !d->driver3ds) {
         char why[256];
         driver_missing(app, GUI_3DS, why, sizeof why);
         icon_failed_keep(d, dump, dir, why, NULL);
         return false;
     }
     if (!ctr && !d->driver) {
-        GuiDriverRun how;
         d->driver = find_driver(app, GUI_SWITCH);
-        if (driver_run(app, GUI_SWITCH, &how) && how.first) d->driver_first = snx_strdup(how.first);
 #ifdef SDL_PLATFORM_IOS /* the app's own, which gui_process_start runs on a thread: its name is only argv[0] */
         if (!d->driver) d->driver = snx_strdup("scarletnx");
 #endif
@@ -4182,7 +4182,6 @@ static void dump_icons_stop(App* app) {
     free(d->failed);
     free(d->driver);
     free(d->driver3ds);
-    free(d->driver_first);
     free(d->driver3ds_first);
     free(d->repo);
     if (d->wake) SDL_DestroyCondition(d->wake);

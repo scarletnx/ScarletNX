@@ -214,6 +214,9 @@ bool gui_game_program(const char* path) {
 #ifdef SNX_IOS
     if (name && suffix(name, "_code.snxobj")) name[strlen(name) - 12] = 0;
 #endif
+#ifdef __ANDROID__
+    if (name && suffix(name, GAME_CODE)) name[strlen(name) - strlen(GAME_CODE)] = 0;
+#endif
     found = name && *name && !strcmp(leaf, name);
     free(name);
     free(folder);

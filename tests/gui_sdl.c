@@ -4366,10 +4366,13 @@ int main(int argc, char** argv) {
         free(step);
         return 0;
     }
-    if (argc == 9 && !strcmp(argv[3], "-x") && !strcmp(argv[4], "--icon")) { /* a dump's icon, as -x --icon writes it */
+    if ((argc == 9 || argc == 10) && !strcmp(argv[argc == 10 ? 4 : 3], "-x") &&
+        !strcmp(argv[argc == 10 ? 5 : 4], "--icon")) { /* a dump's icon, as -x --icon writes it */
         IconJpeg jpeg = {{0}, 0};
-        bool ctr = strstr(argv[0], "scarletnx-3ds") != NULL; /* the 3DS driver's SMDH icon is RGBA */
-        char* to = snx_path_join(argv[6], ctr ? "icon.rgba" : "icon.jpg");
+        /* the 3DS driver's SMDH icon is RGBA; its name is argv[1] when the menu is the multicall program */
+        bool ctr = strstr(argv[0], "scarletnx-3ds") != NULL || (argc == 10 && strstr(argv[1], "scarletnx-3ds"));
+        const char* out = argv[argc == 10 ? 7 : 6], *dump = argv[argc == 10 ? 9 : 8];
+        char* to = snx_path_join(out, ctr ? "icon.rgba" : "icon.jpg");
         int rc = 1;
 #ifndef _WIN32
         /* started as the menu starts its drivers (gui_process.h), which works where SDL's processes do not (Android's
@@ -4380,17 +4383,16 @@ int main(int argc, char** argv) {
             return 9;
         }
 #endif
-        if (strstr(argv[8], "hung icon")) /* never answers: the menu stops it */
+        if (strstr(dump, "hung icon")) /* never answers: the menu stops it */
             SDL_Delay(60000);
         if (ctr) {
             unsigned char rgba[48 * 48 * 4];
-            memset(rgba, 0, sizeof rgba);
+            memset(rgba, 0xff, sizeof rgba); /* opaque, so the row draws it */
             rc = snx_write_file(to, rgba, sizeof rgba);
-        } else if (strstr(argv[8], "no icon")) {
+        } else if (strstr(dump, "no icon")) {
             puts("Reading the dump's Control NCA");
             fflush(stdout);
-            fprintf(stderr, "scarletnx: Games shows no icon for %s: it has no Control NCA\n",
-                    argv[8]); /* as snx_error */
+            fprintf(stderr, "scarletnx: Games shows no icon for %s: it has no Control NCA\n", dump); /* as snx_error */
         } else
             rc = snx_splash_jpeg("wimsy-fuddles", 32, 90, icon_jpeg_write, &jpeg) ||
                  snx_write_file(to, jpeg.data, (size_t)jpeg.size);
@@ -8382,14 +8384,16 @@ int main(int argc, char** argv) {
                 lead = (size_t)games_lead(&app);
                 for (k = 0; k < app.games.count && !(app.games.paths[k] && snx_same_file(app.games.paths[k], ctr)); ++k)
                     {}
-                assert(k < app.games.count);
+                assert(k < app.games.count && k < app.browser.page_size);
                 assert(ui_games_rows_get_row_info(&app, lead + k, 300, &info) && info.label &&
                        strstr(info.label, "CTR"));
                 assert(info.image && info.image == game_icon(&app, ctr) && info.image != icon_none(&app));
-                { /* its icon file as a row draws it, scaled: the SMDH's red, B, G, R, A in memory */
+                { /* its icon file as a row draws it, scaled: the SMDH's red as the renderer's ARGB word */
                     unsigned char drawn[GUI_ICON_SIDE * GUI_ICON_SIDE * 4];
+                    Uint32 argb;
                     assert(!rgba_icon(rgba, sizeof rgba, GUI_ICON_SIDE, drawn));
-                    assert(drawn[0] == 30 && drawn[1] == 30 && drawn[2] == 220 && drawn[3] == 255);
+                    memcpy(&argb, drawn, sizeof argb);
+                    assert(argb == 0xFFDC1E1Eu);
                 }
                 snx_remove_tree(own);
                 free(icon);

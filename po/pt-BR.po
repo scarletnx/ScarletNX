@@ -1620,12 +1620,12 @@ msgid "No user shown: %s"
 msgstr "Nenhum usuário mostrado: %s"
 
 #: src/gui/main.c
-#, c-format
-msgid "%s cannot be made: %s"
+msgid "Cannot start the run: out of memory"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Cannot start the run: out of memory"
+#, c-format
+msgid "%s cannot be made: %s"
 msgstr ""
 
 #: src/gui/main.c
