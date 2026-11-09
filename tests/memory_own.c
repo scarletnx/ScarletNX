@@ -8,7 +8,10 @@
    process, the write watch's scan skips owned spans, and threads faulting at once on many pages while owners come
    and go read every owner's bytes. Skips (77) where the host has no traps. Debug settings come as the runtime takes
    them, --key=value (--write_tracking=1, --memory_traps=1: the protection's paths); with memory_traps=2, or 1 and no
-   pool, it checks only that the log says why there are no traps */
+   pool, it checks only that the log says why there are no traps.
+   On Windows (platform/plat_win32.c) the traps are page protection and a vectored exception handler on the
+   reservation's own pages, with no pool: landings write in place, a view is a copy, and ReadFile or WriteFile over an
+   owned page fails with ERROR_NOACCESS until it is acquired */
 #include "nx/memory/mem.h"
 #include "nx/runtime/nce/nce.h"
 #include "nx/memory/own.h"
@@ -22,12 +25,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(_WIN32)
+#include <process.h>
+#else
 #include <sys/resource.h>
 #include <sys/wait.h>
+#include <unistd.h>
+#endif
 #if defined(__linux__)
 #include <sys/prctl.h>
 #endif
-#include <unistd.h>
 
 static unsigned checks;
 static int diagnostic_log;
@@ -84,6 +91,9 @@ void crash_report(void* host_pc, void* fault, int sig) {
     (void)fault;
     (void)sig;
 }
+#if defined(_WIN32)
+void plat_prof_add_thread(HANDLE h) { (void)h; } /* profiler_win32.c's: no profiler here */
+#endif
 /* the renderer's side of host memory changes: nothing to land here */
 void (*g_gpu_mapping_begin)(u64, u64, int);
 void (*g_gpu_mapping_end)(void);
@@ -255,6 +265,70 @@ static void test_freeze(void) {
 }
 
 /* the kernel can't fault owned memory in: a system call fails until the range is acquired */
+#if defined(_WIN32)
+/* WriteFile reading owned memory and ReadFile writing it fail with ERROR_NOACCESS, and land nothing; acquired, both go */
+static void test_syscall(void) {
+    u64 a = region(R0 + 0x200000, 0x4000);
+    Res *r = res_new(0x1000, 0x30), *w = res_new(0x1000, 0x50);
+    HANDLE rd, wr;
+    DWORD n = 0;
+    u8 buf[16];
+    int lands = g_lands;
+    CHECK(CreatePipe(&rd, &wr, NULL, 0x10000));
+    CHECK(own_begin(a + 0x1000, 0x1000, r, 0) == 0 && own_begin(a + 0x2000, 0x1000, w, 0) == 0);
+    SetLastError(0);
+    CHECK(!WriteFile(wr, GP(a + 0x1000), 16, &n, NULL) && GetLastError() == ERROR_NOACCESS && g_lands == lands);
+    own_acquire(a + 0x1000, 16);
+    CHECK(WriteFile(wr, GP(a + 0x1000), 16, &n, NULL) && n == 16 && ReadFile(rd, buf, 16, &n, NULL) && n == 16);
+    CHECK(buf[0] == 0x30 && buf[15] == 0x3F);
+    /* into owned memory: refused, the owner still there, until acquired */
+    CHECK(WriteFile(wr, "0123456789abcdef", 16, &n, NULL) && n == 16);
+    SetLastError(0);
+    CHECK(!ReadFile(rd, GP(a + 0x2000), 16, &n, NULL) && GetLastError() == ERROR_NOACCESS);
+    {
+        OwnRange o;
+        CHECK(own_lookup(a + 0x2000, 0x1000, &o, 1) == 1 && o.res == w);
+    }
+    own_acquire(a + 0x2000, 16);
+    { /* whatever the failed read left in the pipe, then a read into the acquired page */
+        DWORD avail = 0;
+        u8 drain[64];
+        if (PeekNamedPipe(rd, NULL, 0, NULL, &avail, NULL) && avail) CHECK(ReadFile(rd, drain, avail, &n, NULL));
+    }
+    CHECK(WriteFile(wr, "ghijklmnopqrstuv", 16, &n, NULL) && n == 16);
+    CHECK(ReadFile(rd, GP(a + 0x2000), 16, &n, NULL) && n == 16);
+    CHECK(GP(a + 0x2000)[0] == 'g' && GP(a + 0x2000)[15] == 'v' && GP(a + 0x2000)[16] == (u8)(0x50 + 16));
+    CloseHandle(rd);
+    CloseHandle(wr);
+    /* a file's read into owned memory, as fs.c's (its fread reads the kernel's way, ReadFile, into the buffer) */
+    {
+        char dir[MAX_PATH], path[MAX_PATH];
+        HANDLE f;
+        Res* r3 = res_new(0x2000, 0x90);
+        CHECK(GetTempPathA(sizeof dir, dir) && GetTempFileNameA(dir, "own", 0, path));
+        f = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                        FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, NULL);
+        CHECK(f != INVALID_HANDLE_VALUE);
+        CHECK(WriteFile(f, GP(a + 0x1000), 0x1000, &n, NULL) && n == 0x1000); /* acquired above: the CPU's bytes */
+        CHECK(own_begin(a + 0x2000, 0x2000, r3, 0) == 0);
+        lands = g_lands;
+        SetFilePointer(f, 0, NULL, FILE_BEGIN);
+        SetLastError(0);
+        CHECK(!ReadFile(f, GP(a + 0x2800), 0x1000, &n, NULL) && GetLastError() == ERROR_NOACCESS && g_lands == lands);
+        own_acquire(a + 0x2800, 0x1000);
+        CHECK(g_lands == lands + 1 && refs(r3) == 0);
+        SetFilePointer(f, 0, NULL, FILE_BEGIN);
+        CHECK(ReadFile(f, GP(a + 0x2800), 0x1000, &n, NULL) && n == 0x1000);
+        CHECK(GP(a + 0x2800)[0] == 0x30 && GP(a + 0x27FF)[0] == (u8)(0x90 + 0x7FF) &&
+              GP(a + 0x3800)[0] == (u8)(0x90 + 0x1800));
+        CloseHandle(f);
+        res_free(r3);
+    }
+    CHECK(mem_unmap(a, 0x4000) == 0 && refs(r) == 0 && refs(w) == 0);
+    res_free(r);
+    res_free(w);
+}
+#else
 static void test_syscall(void) {
     u64 a = region(R0 + 0x200000, 0x4000);
     Res* r = res_new(0x1000, 0x30);
@@ -271,6 +345,7 @@ static void test_syscall(void) {
     CHECK(mem_unmap(a, 0x4000) == 0);
     res_free(r);
 }
+#endif
 
 /* dropping and unmapping let go without landing */
 static void test_drop(void) {
@@ -346,6 +421,26 @@ static void test_stage(void) {
     res_free(r2);
 }
 
+/* bytes own_drop uncovered on a page an owner keeps trapped: staging reads them as the CPU left them. Through the
+   mirror nothing lands; in place (Windows) the page has no copy of them (it was the owner's whole when armed), so it
+   lands first */
+static void test_stage_dropped(void) {
+    u64 a = region(R0 + 0xD00000, 0x3000), i;
+    Res* r = res_new(0x1000, 0x70);
+    int lands;
+    u8 dst[0x200];
+    CHECK(own_begin(a + 0x1000, 0x1000, r, 0) == 0);
+    own_drop(a + 0x1000, 0x100);
+    lands = g_lands;
+    memset(dst, 0xEE, sizeof dst);
+    CHECK(own_stage(a + 0x1000, 0x100, dst, NULL, 0) == 0);
+    CHECK(g_lands == lands + (plat_alias_mirror() ? 0 : 1));
+    for (i = 0; i < 0x100; i++) CHECK(dst[i] == (u8)(0x11 + 0x1000 + i)); /* the CPU's copy, as test_drop_sparse */
+    CHECK(GP(a)[0x1100] == r->data[0x100] && GP(a)[0x10FF] == (u8)(0x11 + 0x10FF));
+    CHECK(mem_unmap(a, 0x3000) == 0 && refs(r) == 0);
+    res_free(r);
+}
+
 /* a second mapping of owned memory lands it first: owned memory has one */
 static void test_view(void) {
     u64 a = region(R0 + 0x400000, 0x4000), v = STACK_BASE + 0x100000;
@@ -355,6 +450,20 @@ static void test_view(void) {
     CHECK(mem_alias_begin(a, 0x4000) == 0);
     CHECK(mem_alias_map(v, a, 0x4000, MS_STACK, PERM_RW) == 0);
     CHECK(g_lands == lands + 1 && refs(r) == 0 && GP(v)[0x1001] == 0x91 && GP(a)[0x1001] == 0x91);
+    if (!mem_pool_active()) {
+        /* without the pool (Windows) a view is a copy, one mapping of pages of its own, which can be owned. Unmapped
+           with its copy written back, what the GPU holds of it lands first, outside the memory lock */
+        Res* r2 = res_new(0x1000, 0xB0);
+        CHECK(own_begin(v + 0x2000, 0x1000, r2, 0) == 0);
+        lands = g_lands;
+        CHECK(mem_alias_unmap(v, 0x4000, a) == 0);
+        CHECK(g_lands == lands + 1 && refs(r2) == 0 && GP(a)[0x2005] == 0xB5 && GP(a)[0x1001] == 0x91);
+        mem_alias_end(a, 0x4000);
+        CHECK(mem_unmap(a, 0x4000) == 0);
+        res_free(r);
+        res_free(r2);
+        return;
+    }
     /* nor is a view's memory owned: own_begin refuses it, and the producer lands it itself */
     CHECK(own_begin(a + 0x1000, 0x1000, r, 0) == -1 && own_begin(v, 0x1000, r, 0) == -1);
     CHECK(mem_alias_unmap(v, 0x4000, 0) == 0);
@@ -365,6 +474,65 @@ static void test_view(void) {
 
 /* a fault on the thread holding the producer's lock is the runtime's bug: it ends the process, not hangs. In a
    process of its own (this test run again: a forked one has no traps, which aren't inherited) */
+#if defined(_WIN32)
+/* the child: its stderr to the file SNX_TEST_BUSY_OUT names, no error box for the abort, and a watchdog in place of
+   alarm */
+static DWORD WINAPI busy_watchdog(LPVOID arg) {
+    (void)arg;
+    Sleep(10000);
+    fprintf(stderr, "busy child: no abort within 10 s\n");
+    fflush(stderr);
+    TerminateProcess(GetCurrentProcess(), 9);
+    return 0;
+}
+static int busy_child(int write, int restricted) {
+    u64 a = region(R0 + 0x500000, 0x2000);
+    Res* r = res_new(0x1000, 0x10);
+    const char* out = getenv("SNX_TEST_BUSY_OUT");
+    HANDLE t;
+    (void)restricted;
+    if (out && !freopen(out, "w", stderr)) return 6;
+    setvbuf(stderr, NULL, _IONBF, 0);
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+    t = CreateThread(NULL, 0, busy_watchdog, NULL, 0, NULL);
+    if (t) CloseHandle(t);
+    diagnostic_log = 1;
+    if (own_begin(a, 0x1000, r, 0)) return 2;
+    g_busy_tid = plat_tid();
+    fprintf(stderr, "(an abort with the thread and address is expected next)\n");
+    if (write) *(volatile u8*)GP(a) = 0x42;
+    if (GP(a)[3] == 0x13) return 3; /* the fault must not be answered */
+    return 4;
+}
+static void test_busy(const char* self, int write, int restricted) {
+    char out[MAX_PATH], dir[MAX_PATH], report[32768];
+    const char* mode = restricted ? "--busy-private" : write ? "--busy-write" : "--busy";
+    const char* args[sizeof g_settings_given / sizeof *g_settings_given + 3] = {self, mode};
+    FILE* f;
+    size_t n;
+    intptr_t status;
+    CHECK(GetTempPathA(sizeof dir, dir) && GetTempFileNameA(dir, "own", 0, out));
+    CHECK(_putenv_s("SNX_TEST_BUSY_OUT", out) == 0);
+    memcpy(args + 2, g_settings_given, (size_t)g_settings_count * sizeof *args);
+    status = _spawnv(_P_WAIT, self, args);
+    _putenv_s("SNX_TEST_BUSY_OUT", "");
+    f = fopen(out, "rb");
+    CHECK(f != NULL);
+    n = fread(report, 1, sizeof report - 1, f);
+    report[n] = 0;
+    fclose(f);
+    DeleteFileA(out);
+    if (status != 3) fprintf(stderr, "busy child: exit %lld, its output:\n%s\n", (long long)status, report);
+    CHECK(status == 3); /* abort's */
+    CHECK(strstr(report, write ? "access=write" : "access=read") != NULL);
+    CHECK(strstr(report, "ownership-fault: owner guest=[") != NULL);
+    CHECK(strstr(report, "resource-offset=0 landing=0") != NULL);
+    CHECK(strstr(report, "own_acquire first") != NULL);
+    CHECK(strstr(report, "host-pc=") || strstr(report, "unavailable"));
+    if (strstr(report, "host-pc=")) CHECK(strstr(report, "ownership-fault: pc[0] host="));
+}
+#else
 static int busy_child(int write, int restricted) {
     u64 a = region(R0 + 0x500000, 0x2000);
     Res* r = res_new(0x1000, 0x10);
@@ -417,6 +585,7 @@ static void test_busy(const char* self, int write, int restricted) {
     CHECK(strstr(report, "host-pc=") || strstr(report, "unavailable"));
     if (strstr(report, "host-pc=")) CHECK(strstr(report, "ownership-fault: pc[0] host="));
 }
+#endif
 
 /* a landing lets its pages go before it releases the resources: the trap thread lands this one (the main thread's
    read faults), and its release reads the landed page, which would fault on the trap thread itself, with nothing to
@@ -534,10 +703,17 @@ static void test_let_go_watched(void) {
     res_free(r);
 }
 
-/* many threads fault on many owned pages at once while the owners change between rounds */
-#define THREADS 8
+/* many threads fault on many owned pages at once while the owners change between rounds. In place (no mirror:
+   Windows) a page is open while a landing fills it, so a thread that reaches it then without faulting (a reader
+   started late, its first read on a page already filling) can read its old bytes: those reads are noted, and each
+   such byte must be the owner's once the landing is done. Through a mirror no read may */
+#define THREADS   8
+#define STALE_MAX 4096
 static u64 g_sa;
 static int g_round;
+static u64 g_stale[STALE_MAX]; /* the offsets read stale, in place */
+static int g_nstale;           /* atomic */
+static int g_stale_total;
 static void* reader(void* arg) {
     u32 seed = (u32)(uintptr_t)arg * 2654435761u + (u32)g_round;
     int i;
@@ -545,7 +721,10 @@ static void* reader(void* arg) {
         u64 off;
         seed = seed * 1103515245u + 12345u;
         off = (seed >> 4) % 0x20000;
-        CHECK(GP(g_sa)[off] == (u8)(g_round * 7 + off));
+        if (GP(g_sa)[off] == (u8)(g_round * 7 + off)) continue;
+        CHECK(!plat_alias_mirror()); /* a mirror's landing is never seen half written */
+        int k = __atomic_fetch_add(&g_nstale, 1, __ATOMIC_RELAXED);
+        if (k < STALE_MAX) g_stale[k] = off;
     }
     return NULL;
 }
@@ -562,11 +741,19 @@ static void test_stress(void) {
         }
         for (i = 0; i < THREADS; i++) pthread_create(&t[i], NULL, reader, (void*)(uintptr_t)(i + 1));
         for (i = 0; i < THREADS; i++) pthread_join(t[i], NULL);
-        own_acquire(g_sa, 0x20000); /* what no reader touched */
+        own_acquire(g_sa, 0x20000); /* what no reader touched, and the landing a reader may still be in */
         CHECK(refs(r) == 0);
+        for (i = 0; i < (u64)g_nstale && i < STALE_MAX; i++)
+            CHECK(GP(g_sa)[g_stale[i]] == (u8)(g_round * 7 + g_stale[i]));
+        g_stale_total += g_nstale;
+        g_nstale = 0;
         res_free(r);
     }
     CHECK(mem_unmap(g_sa, 0x20000) == 0);
+    if (g_stale_total)
+        printf("memory_own: %d of %d reads reached a page while a landing filled it in place, and read its old byte "
+               "(each the owner's once landed)\n",
+               g_stale_total, 20 * THREADS * 2000);
 }
 
 int main(int argc, char** argv) {
@@ -592,14 +779,17 @@ int main(int argc, char** argv) {
         ini_read(ini_find(g_debug_ini, key), eq + 1);
         g_settings_given[g_settings_count++] = argv[i];
     }
+#if !defined(_WIN32)
     if (sysconf(_SC_PAGESIZE) != 4096) {
         printf("skipped: this host's pages are %ld bytes, and the pool needs 4 KiB ones\n", sysconf(_SC_PAGESIZE));
         return 77;
     }
+#endif
     mem_init();
     if (own_init(&h)) {
         /* none asked for, or none the protection can make without the pool: the log says which, with the value */
-        if (g_settings.memory_traps == 2 || (g_settings.memory_traps == 1 && !g_settings.alias_pool)) {
+        if (g_settings.memory_traps == 2 ||
+            (g_settings.memory_traps == 1 && !g_settings.alias_pool && !SNX_PLAT_TRAPS_IN_PLACE)) {
             CHECK(strstr(g_log, g_settings.memory_traps == 2
                                     ? "memory: no traps (memory_traps=2): GPU engines land"
                                     : "memory: no traps (memory_traps=1, page protection, has none on this host)"));
@@ -620,10 +810,20 @@ int main(int argc, char** argv) {
     test_drop();
     test_drop_sparse();
     test_stage();
+    test_stage_dropped();
     test_view();
+#if defined(_WIN32)
+    {
+        static char self[MAX_PATH];
+        CHECK(GetModuleFileNameA(NULL, self, sizeof self) > 0);
+        test_busy(self, 0, 0);
+        test_busy(self, 1, 0);
+    }
+#else
     test_busy("/proc/self/exe", 0, 0);
     test_busy("/proc/self/exe", 1, 0);
     test_busy("/proc/self/exe", 0, 1);
+#endif
     test_release_order();
     test_republish_after_landing();
     test_busy_unowned();

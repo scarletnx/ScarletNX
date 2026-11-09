@@ -155,6 +155,11 @@ void plat_exit_now(int code) {
 static u8* g_ww_base;
 static u64 g_ww_size;
 static u8* g_ww_watched; /* plat_vm_reserve's reservation, when it has the watch */
+/* plat_vm_track's reservation, whose pages the traps arm (below) */
+static u8* g_vm_base;
+static u64 g_vm_size;
+static int trap_armed_at(const void* a);
+static void trap_forget(u8* p, u64 size);
 
 static int g_host_page_said; /* plat_vm_page told why it refused host_page */
 u64 plat_vm_page(void) {
@@ -207,6 +212,8 @@ u8* plat_vm_reserve(u64 size) {
 /* at the 64 KiB allocation granularity, which commits any 4 KiB page */
 u8* plat_vm_reserve_unwatched(u64 size) { return (u8*)plat_mem_reserve(size, 0); }
 void plat_vm_track(u8* p, u64 size) {
+    g_vm_base = p; /* mem_init runs before any thread that traps */
+    g_vm_size = size;
     if (g_settings.write_tracking == 1)
         WARN("memory: write_tracking=1 (page protection) has no Windows version: %s\n",
              p == g_ww_watched ? "the reservation's write watch tracks writes, as write_tracking=0 does"
@@ -233,7 +240,10 @@ int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
         ULONG gran = 4096;
         if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, (void*)(uintptr_t)start, (SIZE_T)(end - start), pages, &n, &gran))
             return -1;
-        for (k = 0; k < n; k++) cb((u8*)pages[k], gran);
+        /* a page a trap holds is not reported: its consumers look the ownership up, and it reads as written once the
+           trap lets it go (trap_open writes it) */
+        for (k = 0; k < n; k++)
+            if (!trap_armed_at(pages[k])) cb((u8*)pages[k], gran);
         if (n < sizeof pages / sizeof *pages) return 0;
     }
     return -1; /* pages may be left unreported: the caller compares contents */
@@ -261,13 +271,17 @@ void plat_ww_cool(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
 }
 
 int plat_vm_commit(u8* p, u64 size) {
+    trap_forget(p, size); /* readable and writable from here: no trap's (mem.c lets go of owners first) */
     /* MEM_COMMIT charges the whole range to the commit limit at once */
     if (!plat_mem_protect(p, size, PLAT_MEM_READ | PLAT_MEM_WRITE)) return 0;
     WARN("memory: could not commit %llu KB (error %lu): out of memory or page file\n", (unsigned long long)(size >> 10),
          (unsigned long)GetLastError());
     return -1;
 }
-void plat_vm_decommit(u8* p, u64 size) { (void)plat_mem_decommit(p, size); }
+void plat_vm_decommit(u8* p, u64 size) {
+    (void)plat_mem_decommit(p, size);
+    trap_forget(p, size);
+}
 int plat_vm_share(u8* p, int fd, u64 size) {
     (void)p, (void)fd, (void)size;
     errno = ENOSYS;
@@ -338,152 +352,222 @@ void plat_alias_host_free(u8* p, u64 size) {
     (void)p;
     (void)size;
 }
-/* no pool, so no mirror and no traps yet: a GPU result lands at its own fence (docs/layers/gpu/ownership.md) */
+/* no pool, so no mirror: the traps land in place (SNX_PLAT_TRAPS_IN_PLACE, plat_trap_fill) */
 u8* plat_alias_mirror(void) { return NULL; }
-void plat_trap_waiting(void (*waiting)(u32 tid)) { (void)waiting; /* no traps here */ }
-void plat_thread_where(u32 tid, char* out, size_t n) {
-    (void)tid;
-    snprintf(out, n, "?");
-}
-int plat_thread_in_fault(u32 tid) {
-    (void)tid;
-    return -1; /* no traps here */
-}
-void plat_dump_fault_thread(u32 tid) {
-    WARN("ownership-fault: host context unavailable for thread %u on this platform\n", tid);
-}
-int plat_trap_init(void (*fault)(u8* p, int write, u32 tid)) {
-    (void)fault;
-    return -1;
-}
-int plat_trap_arm(u8* p, u64 size) {
-    (void)p;
-    (void)size;
-    return -1;
-}
-int plat_trap_continue(u8* p, u64 size) {
-    (void)p;
-    (void)size;
-    return -1;
-}
-void plat_trap_disarm(u8* p, u64 size) {
-    (void)p;
-    (void)size;
-}
-void plat_freeze(u8* p, u64 size) {
-    (void)p;
-    (void)size;
-}
-void plat_thaw(void) {}
+u32 plat_tid(void) { return (u32)GetCurrentThreadId(); }
 
-/* ================================================================ environment */
-int plat_setenv(const char* name, const char* value) { return _putenv_s(name, value) ? -1 : 0; }
+/* ---------------------------------------------------------------- traps (memory/own.c, docs/GPU_OWNERSHIP.md) */
+/* Traps by protection, as Linux's without userfaultfd's minor faults (plat_posix.c), on the reservation's own pages:
+   plat_trap_arm makes them inaccessible (VirtualProtect) and marks them in a bitmap, a bit per 4 KiB page. A guest
+   access to one raises an access violation, which the vectored exception handler (trap_fault) takes first, on the
+   faulting thread in its ordinary context: it posts the page to the trap thread, which calls the fault callback, and
+   waits (WaitOnAddress) until some trap lets pages go (g_trap_gen moves); then the access goes again, and faults again
+   if its page is still held. The callback lands the page (plat_trap_fill writes the GPU's bytes in place, there being
+   no mirror) and calls plat_trap_continue, which opens the pages and wakes the waiters. A system call given an armed
+   page fails (ERROR_NOACCESS, WSAEFAULT) rather than faulting: the runtime lands what it hands the kernel first
+   (own_acquire). The handler runs nothing but atomics and the waits */
+static u64* g_trap_bits; /* atomic: a bit per 4 KiB page of [g_vm_base, g_vm_base + g_vm_size), set while armed */
+static void (*g_trap_cb)(u8* p, int write, u32 tid);
+static void (*g_trap_told)(u32 tid); /* plat_trap_waiting's */
+static u32 g_trap_thread;            /* atomic: the trap thread's id, which never waits on a trap */
+#define TRAP_RING 256u
+typedef struct {
+    u8* p;
+    u32 tid, seq; /* seq: the Vyukov queue's turn */
+    int write;
+} TrapMsg;
+static TrapMsg g_trap_ring[TRAP_RING];
+static u32 g_trap_head;   /* atomic: the next slot a fault claims */
+static u32 g_trap_tail;   /* the trap thread's */
+static u32 g_trap_posted; /* atomic, a word to wait on: moves with each message */
+static u32 g_trap_gen;    /* atomic, a word to wait on: moves when a trap lets pages go */
+static u32 g_trap_opened; /* atomic: moves before pages a trap held become accessible (trap_fault's retry) */
+#define TRAP_WAITERS 256
+static u32 g_trap_waiting[TRAP_WAITERS]; /* atomic: the threads waiting in a trap, for plat_thread_in_fault */
+static u32 g_trap_unlisted;              /* atomic: threads waiting with no room in that table, which makes it unsure */
+/* what each listed waiter faulted at, for plat_dump_fault_thread: its code's address, its stack's and the access's */
+static const void* g_trap_wait_pc[TRAP_WAITERS];
+static const void* g_trap_wait_sp[TRAP_WAITERS];
+static const void* g_trap_wait_at[TRAP_WAITERS];
+/* the address a fault on a page no trap held was let go again at, and g_trap_opened then: the same fault again with
+   no page opened since is no trap's. Pages opened by other traps in between let it go again, but not past
+   TRAP_RETRIES times in a row: a page inaccessible with no trap on it (a bug) is reported then, not spun on */
+#define TRAP_RETRIES 4096u
+static _Thread_local const void* t_trap_retried;
+static _Thread_local u32 t_trap_retried_at;
+static _Thread_local u32 t_trap_retries;
+static int g_trap_stray_said;
 
-/* ================================================================ the crash handler */
-static LONG g_crash_reporting;
-static LONG g_shutdown_said;
-static LONG g_filter_said;
-/* the game's code module, [lo, hi): plat_crash_code_module's, read by the first-chance handler on any thread */
-static u8* g_code_lo;
-static u8* g_code_hi;
-
-/* the report, once: it ends the process, so another crashing thread waits for that */
-static void crash_once(EXCEPTION_POINTERS* e) {
-    EXCEPTION_RECORD* r = e->ExceptionRecord;
-    void* fault = NULL;
-    if (InterlockedCompareExchange(&g_crash_reporting, 1, 0)) Sleep(INFINITE);
-    log_crash_mode();
-    if ((r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION || r->ExceptionCode == EXCEPTION_IN_PAGE_ERROR) &&
-        r->NumberParameters >= 2)
-        fault = (void*)r->ExceptionInformation[1];
-    crash_report(r->ExceptionAddress, fault, (int)r->ExceptionCode);
+/* the bit of the page at a: 1 with its index in *i, or 0 outside the reservation (or without traps) */
+static int trap_index(const void* a, u64* i) {
+    const u64* bits = __atomic_load_n(&g_trap_bits, __ATOMIC_ACQUIRE);
+    if (!bits || (const u8*)a < g_vm_base || (u64)((const u8*)a - g_vm_base) >= g_vm_size) return 0;
+    *i = (u64)((const u8*)a - g_vm_base) >> 12;
+    return 1;
 }
-static LONG WINAPI crash_filter(EXCEPTION_POINTERS* e) {
-    crash_once(e);
-    return EXCEPTION_EXECUTE_HANDLER;
+static int trap_bit(u64 i) { return (int)(__atomic_load_n(&g_trap_bits[i >> 6], __ATOMIC_SEQ_CST) >> (i & 63) & 1); }
+static int trap_armed_at(const void* a) {
+    u64 i;
+    return trap_index(a, &i) && trap_bit(i);
 }
-
-/* The exceptions a crash report is made of; a stack overflow is shutdown_note's, as there is no stack left for one */
-static int crash_code(DWORD code) {
-    return code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR ||
-           code == EXCEPTION_ILLEGAL_INSTRUCTION || code == EXCEPTION_PRIV_INSTRUCTION ||
-           code == EXCEPTION_INT_DIVIDE_BY_ZERO || code == EXCEPTION_INT_OVERFLOW;
+/* the pages [*lo, *hi) of [p, p + size), whole 4 KiB pages in the reservation: 1, or 0 when they aren't */
+static int trap_pages(const u8* p, u64 size, u64* lo, u64* hi) {
+    if (!size || ((uintptr_t)p | size) & 4095 || !trap_index(p, lo) || size > g_vm_size - (u64)(p - g_vm_base))
+        return 0;
+    *hi = *lo + (size >> 12);
+    return 1;
 }
-/* A fault in the game's code module is reported before anything else sees it. The unhandled-exception filter alone is
-   not enough: the process has one, the last SetUnhandledExceptionFilter's, and a driver may set its own after ours
-   (Intel's igdumdim64 does, which hid Breakpad's reports). The runtime takes no exception in the game's code on
-   Windows (the write watch and the traps don't fault there), so nothing else would handle one */
-static LONG WINAPI code_fault(EXCEPTION_POINTERS* e) {
-    const u8* pc = (const u8*)e->ExceptionRecord->ExceptionAddress;
-    const u8* lo = __atomic_load_n(&g_code_lo, __ATOMIC_ACQUIRE);
-    const u8* hi = __atomic_load_n(&g_code_hi, __ATOMIC_ACQUIRE);
-    if (crash_code(e->ExceptionRecord->ExceptionCode) && pc >= lo && pc < hi) crash_once(e);
-    return EXCEPTION_CONTINUE_SEARCH;
+static void trap_wake(void) {
+    __atomic_fetch_add(&g_trap_gen, 1, __ATOMIC_SEQ_CST);
+    WakeByAddressAll(&g_trap_gen);
 }
-
-/* a module's file name, as UTF-8 without its folder, into out: "?" when Windows doesn't say */
-static void module_name(HMODULE m, char* out, int size) {
-    wchar_t path[MAX_PATH];
-    const wchar_t* name = path;
-    DWORD n = m ? GetModuleFileNameW(m, path, MAX_PATH) : 0;
-    snprintf(out, (size_t)size, "?");
-    if (!n || n >= MAX_PATH) return;
-    for (DWORD i = 0; i < n; i++)
-        if (path[i] == L'\\' || path[i] == L'/') name = path + i + 1;
-    if (!WideCharToMultiByte(CP_UTF8, 0, name, -1, out, size, NULL, NULL)) snprintf(out, (size_t)size, "?");
-}
-
-void plat_crash_code_module(const void* inside) {
-    HMODULE m = NULL;
-    const IMAGE_DOS_HEADER* dos;
-    const IMAGE_NT_HEADERS* nt;
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            (LPCWSTR)inside, &m) ||
-        !m) {
-        WARN("crash: no module holds the game's code at %p (Windows error %lu): a fault in it is reported only while "
-             "the crash filter is the runtime's\n",
-             inside, (unsigned long)GetLastError());
-        return;
+/* the armed pages of [lo, hi) open (readable and writable), written once so the write watch reports them (a page a
+   trap lets go reads as written, as on the other hosts), let go, and their waiters woken. Under own.c's trap lock, or
+   on one thread (a test's) */
+static void trap_open(u64 lo, u64 hi) {
+    u64 i = lo, run, k;
+    int any = 0;
+    while (i < hi) {
+        DWORD old;
+        u8* a;
+        if (!trap_bit(i)) {
+            i++;
+            continue;
+        }
+        for (run = i + 1; run < hi && trap_bit(run); run++) {}
+        a = g_vm_base + (i << 12);
+        if (!VirtualProtect(a, (SIZE_T)((run - i) << 12), PAGE_READWRITE, &old)) {
+            /* given back meanwhile (decommitted): nothing to open, and the bits go below */
+            if (GetLastError() != ERROR_INVALID_ADDRESS)
+                fatal("Could not let trapped guest memory go at %p (Windows error %lu)", (void*)a,
+                      (unsigned long)GetLastError());
+        } else
+            for (k = i; k < run; k++) __atomic_fetch_or(g_vm_base + (k << 12), (u8)0, __ATOMIC_RELAXED);
+        /* before the bits go: a fault that raced this finds the count moved, and goes again (trap_fault) */
+        __atomic_fetch_add(&g_trap_opened, 1, __ATOMIC_SEQ_CST);
+        for (k = i; k < run; k++) __atomic_fetch_and(&g_trap_bits[k >> 6], ~(1ull << (k & 63)), __ATOMIC_SEQ_CST);
+        any = 1;
+        i = run;
     }
-    if (m == GetModuleHandleW(NULL)) return; /* the code linked into the runtime itself: its faults are the filter's */
-    dos = (const IMAGE_DOS_HEADER*)(const void*)m;
-    nt = (const IMAGE_NT_HEADERS*)(const void*)((const u8*)m + dos->e_lfanew);
-    __atomic_store_n(&g_code_hi, (u8*)m + nt->OptionalHeader.SizeOfImage, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_code_lo, (u8*)m, __ATOMIC_RELEASE);
+    if (any) trap_wake();
 }
-
-void plat_crash_handler_check(void) {
-    LPTOP_LEVEL_EXCEPTION_FILTER was = SetUnhandledExceptionFilter(crash_filter);
-    void* at;
-    HMODULE m = NULL;
-    char name[MAX_PATH * 3];
-    if (was == crash_filter || InterlockedExchange(&g_filter_said, 1)) return;
-    memcpy(&at, &was, sizeof at); /* ISO C has no conversion from a function pointer to an object's */
-    if (at)
-        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           (LPCWSTR)at, &m);
-    module_name(m, name, (int)sizeof name);
-    WARN("crash: the process's crash filter was %p (in %s), not the runtime's: the runtime's is back\n", at,
-         at ? name : "none, the system's default");
+/* [p, p + size) committed or decommitted by mem.c: none of it is armed any more (its owners were let go first; a
+   page left marked would keep a waiter waiting, and keep it from the scans) */
+static void trap_forget(u8* p, u64 size) {
+    u64 lo, hi, i;
+    int any = 0;
+    if (!__atomic_load_n(&g_trap_bits, __ATOMIC_ACQUIRE) || !size) return;
+    if (!trap_index(p, &lo)) return;
+    if (size > g_vm_size - (u64)(p - g_vm_base)) size = g_vm_size - (u64)(p - g_vm_base);
+    hi = (u64)(p + size - g_vm_base + 4095) >> 12;
+    for (i = lo; i < hi; i++)
+        if (trap_bit(i)) {
+            if (!any) __atomic_fetch_add(&g_trap_opened, 1, __ATOMIC_SEQ_CST);
+            __atomic_fetch_and(&g_trap_bits[i >> 6], ~(1ull << (i & 63)), __ATOMIC_SEQ_CST);
+            any = 1;
+        }
+    if (any) trap_wake();
 }
-
-/* Failures that may never reach the filter (the CRT fails fast on a buffer overrun or heap corruption): say so in the
-   log first, once */
-static LONG WINAPI shutdown_note(EXCEPTION_POINTERS* e) {
-    DWORD code = e->ExceptionRecord->ExceptionCode;
-    if ((code == EXCEPTION_STACK_OVERFLOW || code == 0xC0000409u || code == 0xC0000374u) &&
-        !InterlockedExchange(&g_shutdown_said, 1)) {
-        log_crash_mode();
-        logf_(0, "*** Shutdown: exception %08lx at %p (stack/heap) ***\n", (unsigned long)code,
-              e->ExceptionRecord->ExceptionAddress);
+/* in the handler: page i is held by a trap. Posts it and waits for a trap to let pages go */
+static void trap_wait(u64 i, int write, const void* at, const CONTEXT* c) {
+    u32 gen = __atomic_load_n(&g_trap_gen, __ATOMIC_SEQ_CST), tid = (u32)GetCurrentThreadId(), pos, k, none = 0;
+    int slot = -1;
+    TrapMsg* m;
+    for (k = 0; k < TRAP_WAITERS && slot < 0; k++, none = 0)
+        if (__atomic_compare_exchange_n(&g_trap_waiting[k], &none, tid, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED))
+            slot = (int)k;
+    if (slot >= 0) {
+#if defined(_M_X64) || defined(__x86_64__)
+        g_trap_wait_pc[slot] = (const void*)(uintptr_t)c->Rip;
+        g_trap_wait_sp[slot] = (const void*)(uintptr_t)c->Rsp;
+#elif defined(_M_ARM64) || defined(__aarch64__)
+        g_trap_wait_pc[slot] = (const void*)(uintptr_t)c->Pc;
+        g_trap_wait_sp[slot] = (const void*)(uintptr_t)c->Sp;
+#else
+        (void)c;
+#endif
+        g_trap_wait_at[slot] = at;
+    } else
+        __atomic_fetch_add(&g_trap_unlisted, 1, __ATOMIC_ACQ_REL);
+    for (;;) { /* a slot whose turn it is: a full ring waits for the trap thread */
+        pos = __atomic_load_n(&g_trap_head, __ATOMIC_RELAXED);
+        m = &g_trap_ring[pos % TRAP_RING];
+        k = __atomic_load_n(&m->seq, __ATOMIC_ACQUIRE);
+        if (k == pos) {
+            if (__atomic_compare_exchange_n(&g_trap_head, &pos, pos + 1, 1, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) break;
+        } else if ((i32)(k - pos) < 0)
+            SwitchToThread();
     }
-    return EXCEPTION_CONTINUE_SEARCH;
+    m->p = g_vm_base + (i << 12);
+    m->tid = tid;
+    m->write = write;
+    __atomic_store_n(&m->seq, pos + 1, __ATOMIC_RELEASE);
+    __atomic_fetch_add(&g_trap_posted, 1, __ATOMIC_SEQ_CST);
+    WakeByAddressSingle(&g_trap_posted);
+    while (trap_bit(i) && __atomic_load_n(&g_trap_gen, __ATOMIC_SEQ_CST) == gen)
+        WaitOnAddress(&g_trap_gen, &gen, sizeof gen, INFINITE);
+    if (slot >= 0)
+        __atomic_store_n(&g_trap_waiting[slot], 0, __ATOMIC_RELEASE);
+    else
+        __atomic_fetch_sub(&g_trap_unlisted, 1, __ATOMIC_RELEASE);
 }
-
-void plat_install_crash_handler(void) {
-    ULONG g = PLAT_STACK_GUARANTEE; /* the main thread's room for a report after a stack overflow */
-    SetThreadStackGuarantee(&g);
-    AddVectoredExceptionHandler(1, shutdown_note);
-    AddVectoredExceptionHandler(1, code_fault);
-    SetUnhandledExceptionFilter(crash_filter);
+/* The vectored exception handler, ahead of the crash handlers (code_fault, crash_filter): an access violation in the
+   reservation on an armed page waits for its landing and goes again. One on a page armed when it faulted but let go
+   since goes again at once; the same fault again with no page opened meanwhile is no trap's, and goes on to the crash
+   handlers. ExceptionInformation[0] is 0 for a read, 1 for a write, 8 for an execution */
+static LONG WINAPI trap_fault(EXCEPTION_POINTERS* e) {
+    const EXCEPTION_RECORD* r = e->ExceptionRecord;
+    const void* a;
+    u64 i;
+    u32 opened;
+    if (r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || r->NumberParameters < 2) return EXCEPTION_CONTINUE_SEARCH;
+    a = (const void*)r->ExceptionInformation[1];
+    if (!trap_index(a, &i)) return EXCEPTION_CONTINUE_SEARCH;
+    /* the trap thread's own fault would wait for itself: a bug in a landing, reported as a crash */
+    if ((u32)GetCurrentThreadId() == __atomic_load_n(&g_trap_thread, __ATOMIC_ACQUIRE))
+        return EXCEPTION_CONTINUE_SEARCH;
+    if (trap_bit(i)) {
+        trap_wait(i, r->ExceptionInformation[0] == 1, a, e->ContextRecord);
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    opened = __atomic_load_n(&g_trap_opened, __ATOMIC_SEQ_CST);
+    if (t_trap_retried == a) {
+        if (t_trap_retried_at == opened) return EXCEPTION_CONTINUE_SEARCH;
+        if (++t_trap_retries >= TRAP_RETRIES) {
+            MEMORY_BASIC_INFORMATION m;
+            if (!InterlockedExchange((LONG*)&g_trap_stray_said, 1) && VirtualQuery(a, &m, sizeof m) == sizeof m)
+                WARN("memory: %p faulted %u times in a row with no trap armed on its page (state %lx, protection %lx), "
+                     "while other traps let pages go: no trap's\n",
+                     a, t_trap_retries, (unsigned long)m.State, (unsigned long)m.Protect);
+            t_trap_retries = 0;
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+    } else
+        t_trap_retries = 0;
+    t_trap_retried = a;
+    t_trap_retried_at = opened;
+    return EXCEPTION_CONTINUE_EXECUTION;
 }
+static void trap_thread(void* arg) {
+    (void)arg;
+    SNX_THREAD_NAME("memory traps");
+    __atomic_store_n(&g_trap_thread, (u32)GetCurrentThreadId(), __ATOMIC_RELEASE);
+    for (;;) {
+        u32 seen = __atomic_load_n(&g_trap_posted, __ATOMIC_SEQ_CST);
+        for (;;) {
+            TrapMsg* m = &g_trap_ring[g_trap_tail % TRAP_RING];
+            TrapMsg got;
+            void (*told)(u32);
+            if (__atomic_load_n(&m->seq, __ATOMIC_ACQUIRE) != g_trap_tail + 1) break;
+            got = *m;
+            __atomic_store_n(&m->seq, g_trap_tail + TRAP_RING, __ATOMIC_RELEASE);
+            g_trap_tail++;
+            told = __atomic_load_n(&g_trap_told, __ATOMIC_ACQUIRE);
+            if (told) told(got.tid);
+            g_trap_cb(got.p, got.write, got.tid);
+        }
+        WaitOnAddress(&g_trap_posted, &seen, sizeof seen, INFINITE);
+    }
+}
+void plat_trap_waiting(void (*waiting)(u32 tid)) { __atomic_store_n(&g_trap_told, waiting, __ATOMIC_RELEASE); }
+/* a thread waiting in a trap says where; the system tells nothing else here without a debugger */

@@ -3019,6 +3019,23 @@ if(UNIX)
     set_tests_properties(memory_own_signal_ww memory_own_signal_traps memory_own_signal_both memory_own_no_traps
                          memory_own_signal_traps_no_pool PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
 endif()
+if(WIN32 AND TARGET SDL3::SDL3)
+    # GPU-owned memory over Windows' traps (platform/plat_win32.c): page protection and the vectored exception
+    # handler on the reservation's own pages, landings in place, views that are copies, ReadFile and WriteFile refused
+    add_executable(snx-test-memory-own memory_own.c
+        "${PROJECT_SOURCE_DIR}/src/nx/memory/mem.c" "${PROJECT_SOURCE_DIR}/src/nx/memory/own.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/plat_win32.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/plat_sdl.c" "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c")
+    snx_test_target(snx-test-memory-own 11)
+    target_link_libraries(snx-test-memory-own PRIVATE Threads::Threads pthread SDL3::SDL3 synchronization powrprof)
+    target_link_libraries(snx-test-memory-own PRIVATE scarletnx-common) # plat_win32.c names its threads
+    add_test(NAME memory_own COMMAND snx-test-memory-own)
+    # memory_traps=1 is the same protection there; 2 has none, and the log says so
+    add_test(NAME memory_own_protection COMMAND snx-test-memory-own --memory_traps=1)
+    add_test(NAME memory_own_no_traps COMMAND snx-test-memory-own --memory_traps=2)
+    set_tests_properties(memory_own memory_own_protection memory_own_no_traps
+                         PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+endif()
 
 endif() # SNX_BUILD_NX
 

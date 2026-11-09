@@ -1993,6 +1993,20 @@ void plat_trap_disarm(u8* p, u64 size) {
 #endif
 }
 
+/* the landing writes through the pool's mirror here: no trap lands in place, nor is a landed page read in place */
+int plat_trap_fill(u8* p, const void* src, u64 size) {
+    (void)p;
+    (void)src;
+    (void)size;
+    return -1;
+}
+int plat_vm_read(const void* p, void* dst, u64 size) {
+    (void)p;
+    (void)dst;
+    (void)size;
+    return -1;
+}
+
 /* ---- a range frozen while it is copied: a write to it waits in the signal handler (fault_signal) for the thaw */
 static int frozen_wait(void* a, int access);
 

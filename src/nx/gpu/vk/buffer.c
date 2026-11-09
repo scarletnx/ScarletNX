@@ -1810,7 +1810,8 @@ static int ww_scan_leaves(u64 lo, u64 hi, u32 seen, WwStage* st) {
    newer than every baseline, it had targets drawn there after the publish give their pixels up for memory's older
    bytes: one game's reflection array, drawn whole over the memory of the previous one, kept seven layers of it, NaN
    included. So a report of such a page counts only when its bytes are not the landing's any more. They are read
-   through the pool's mirror, which no trap covers, and the entry goes with the report: the scan protected the page */
+   through the pool's mirror, which no trap covers, or in place where there is none (landed_unchanged), and the entry
+   goes with the report: the scan protected the page */
 typedef struct {
     u64 page, hash;  /* the 4K page's number, and its bytes' vk_hash after the landing */
     const u8* bytes; /* its place in the mirror */
@@ -1854,6 +1855,17 @@ static void landed_sort(void) {
     g_wland_n = n;
     g_wland_sorted = 1;
 }
+/* whether a landed page still holds the landing's bytes. Where traps land in place (no mirror: Windows) they are the
+   page's own, read without faulting: an owner may hold it again, or mem.c have given it back, and its report counts */
+static int landed_unchanged(const WwLanded* l) {
+    u8 page[4096];
+    const u8* bytes = l->bytes;
+    if (!plat_alias_mirror()) {
+        if (plat_vm_read(GP(l->page << 12), page, sizeof page)) return 0;
+        bytes = page;
+    }
+    return vk_hash(bytes, 4096) == l->hash;
+}
 /* what a scan found written, [o, e), marked but for the landed pages on it that still hold the landing's bytes. Every
    entry on it goes (no bytes until ww_take_scanned drops them) */
 static void ww_mark_scanned(u64 o, u64 e) {
@@ -1869,7 +1881,7 @@ static void ww_mark_scanned(u64 o, u64 e) {
     for (u32 i = lo; i < g_wland_n && g_wland[i].page << 12 < e; i++) {
         u64 a = g_wland[i].page << 12;
         if (!g_wland[i].bytes) continue;
-        if (a + 4096 <= e && vk_hash(g_wland[i].bytes, 4096) == g_wland[i].hash) {
+        if (a + 4096 <= e && landed_unchanged(&g_wland[i])) {
             if (a > at) ww_mark_range(at, a);
             at = a + 4096;
         }
