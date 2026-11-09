@@ -731,7 +731,7 @@ int main(void) {
         unsigned char pixels[48 * 48 * 4];
         char* shown;
         assert(d && folder && program && ini && icon);
-        assert(!snx_mkdirs(folder) && !snx_write_file(program, "x", 1) && !chmod(program, 0755));
+        assert(!snx_mkdirs(folder) && !snx_write_file(program, "x", 1) && !snx_make_executable(program));
         assert(!snx_write_file(ini, named, strlen(named)));
         shown = gui_game_shown(program);
         assert(shown && !strcmp(shown, "A Tested Title"));
