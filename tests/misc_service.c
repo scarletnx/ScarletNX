@@ -815,6 +815,35 @@ static void test_apm(void) {
     svcobj_unref(apm);
 }
 
+/* ntc, the network clock with no network: OpenEnsureNetworkClockAvailabilityService (0) {clear mode, mode} gives an
+   object (an Ounce game's menus used the one a stand-in never gave back), whose task is done as it starts: its finish
+   event an event, IsProcessing (4) 0, GetServerTime (5) the host's time */
+static void test_ntc(void) {
+    SvcObj* ntc = new_ntc();
+    Request r;
+    request(&r, 0);
+    argument32(&r, 0, 0);
+    argument32(&r, 4, 1);
+    call(ntc, &r);
+    CHECK(r.c.nout_objs == 1);
+    SvcObj* s = r.c.out_objs[0];
+    request(&r, 0);
+    call(s, &r);
+    request(&r, 1);
+    call(s, &r);
+    CHECK(r.c.nout_copy == 1 && handle_object(r.c.out_copy[0])->type == KO_EVENT);
+    request(&r, 4);
+    call(s, &r);
+    CHECK(r.c.out_size >= 1 && r.c.out[0] == 0);
+    const i64 before = (i64)time(NULL);
+    request(&r, 5);
+    call(s, &r);
+    const i64 t = (i64)snx_ld_le64(r.c.out);
+    CHECK(r.c.out_size == 8 && t >= before && t <= (i64)time(NULL) + 1);
+    svcobj_unref(s);
+    svcobj_unref(ntc);
+}
+
 /* StoreSaveDataThumbnail (110) {uid}: a thumbnail of 0x24000 bytes for the user is taken; one of another size is
    InvalidArrayLength, one for a user id of nought InvalidUserId */
 static void test_acc_thumbnail(void) {
@@ -1829,6 +1858,7 @@ int main(void) {
     test_mii_default();
     test_acc_thumbnail();
     test_apm();
+    test_ntc();
     test_ngc();
     test_mm_full();
     test_nfp();
