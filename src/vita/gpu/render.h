@@ -24,6 +24,9 @@ uint64_t vita_render_end_scene(VitaProcess* p, GxmContext* c);
 bool vita_render_done(VitaProcess* p, uint64_t serial);
 bool vita_render_wait(VitaProcess* p, uint64_t serial);
 bool vita_render_idle(VitaProcess* p, bool wait);
+/* whether a submission is still on the GPU: what a thread waiting for the GPU is released by, which nothing the
+   scheduler knows of announces, so it looks again soon rather than at the next vblank */
+bool vita_render_pending(VitaProcess* p);
 uint64_t vita_render_submitted(VitaProcess* p);
 /* Flush the current recording, preserving a scene in progress; the returned serial is the last submission. */
 uint64_t vita_render_finish(VitaProcess* p);

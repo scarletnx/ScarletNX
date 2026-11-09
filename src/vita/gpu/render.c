@@ -816,6 +816,10 @@ bool vita_render_idle(VitaProcess* p, bool wait) {
     if (wait) return vita_vk_wait(r->vk->ring.submitted);
     return vita_vk_poll() >= r->vk->ring.submitted;
 }
+bool vita_render_pending(VitaProcess* p) {
+    struct VitaRender* r = render_of(p);
+    return r && vita_vk_poll() < r->vk->ring.submitted;
+}
 uint64_t vita_render_finish(VitaProcess* p) {
     struct VitaRender* r = render_of(p);
     if (!r || !r->vk->ring.recording) return r ? r->vk->ring.submitted : 0;

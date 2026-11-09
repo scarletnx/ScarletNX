@@ -12,6 +12,7 @@
 #include "vita/runtime/lockstep.h"
 #include "vita/runtime/watch.h"
 #include "vita/hle/hle.h"
+#include "vita/gpu/render.h"
 #include "common/utilities/common.h"
 #include "snx_settings.h"
 #include <inttypes.h>
@@ -291,6 +292,7 @@ static VitaThread* schedule(VitaProcess* p, uint64_t now, uint64_t* wake) {
     }
     return starved ? starved : top;
 }
+#define GPU_POLL_NS 200000u /* the longest sleep with a submission on the GPU */
 static void sleep_until(uint64_t when) {
     uint64_t now = plat_ns();
     if (when > now) plat_sleep_ns((int64_t)(when - now));
@@ -393,7 +395,10 @@ int vita_run(VitaProcess* p, double seconds) {
         VitaThread* t = schedule(p, now, &wake);
         if (!t) {
             if (!live(p)) break; /* every thread ended */
-            sleep_until(wake < p->display.next_ns ? wake : p->display.next_ns);
+            uint64_t until = wake < p->display.next_ns ? wake : p->display.next_ns;
+            /* a thread may be waiting for the GPU, which nothing here announces: look again soon, not at the vblank */
+            if (vita_render_pending(p) && now + GPU_POLL_NS < until) until = now + GPU_POLL_NS;
+            sleep_until(until);
             continue;
         }
         /* a thread resumed after another ran: its exclusive monitor cleared, as the kernel's context switch clears it
