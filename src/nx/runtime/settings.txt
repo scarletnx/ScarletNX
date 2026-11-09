@@ -295,6 +295,15 @@ setting ASTC mode
     help same. BC7 at load = encoded as BC7 as each texture loads, with no RGBA8 image before it, as feat/ounce does
     help (temporary, to compare). Where the GPU samples ASTC it does nothing. It takes the place of astc_bc, whose 1 is
     help Auto
+setting BC7 queue
+    key bc7_queue
+    int 0 16384
+    default 0
+    startup
+    words Auto|#
+    help The thousands of blocks the BC7 encoder may have queued on the GPU before an upload waits for it to do them.
+    help 0 = by the GPU's own memory: 256 for every 2 GB of it, from 256 to 4096, and 256 on a GPU that shares the
+    help computer's memory (a GT 1030, 2 GB, lost the device with more queued). 1 to 16384 = that many thousand
 
 table g_performance_ini
 setting FPS limit
