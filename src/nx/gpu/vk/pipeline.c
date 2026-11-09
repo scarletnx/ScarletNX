@@ -222,6 +222,11 @@ u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si
     return result;
 }
 
+/* an SM86 program's key: its bytes up to its end, len (0 with no program there: the bytes of a header, so each such
+   program keeps a key of its own) */
+static u64 sm86_hash(const u8* code, u32 max_bytes, u32 len) {
+    return snx_fnv1a(SNX_FNV_BASIS, code, len ? len : max_bytes < SM86_SPH_BYTES ? max_bytes : SM86_SPH_BYTES);
+}
 /* shader_hash with the jump tables of BRX read through read, as the translation reads them: without a reader the
    length stops at the first EXIT and leaves out code only a jump table reaches */
 u64 vk_shader_hash(const u8* code, u32 max_bytes, u32* out_len, VkCbReader read) {
@@ -230,7 +235,7 @@ u64 vk_shader_hash(const u8* code, u32 max_bytes, u32* out_len, VkCbReader read)
         /* with no program there, the bytes of a header: each such program keeps a key of its own */
         u32 len = sm86_program(code, max_bytes, &p) ? p.code + p.size : 0;
         *out_len = len;
-        return snx_fnv1a(SNX_FNV_BASIS, code, len ? len : max_bytes < SM86_SPH_BYTES ? max_bytes : SM86_SPH_BYTES);
+        return sm86_hash(code, max_bytes, len);
     }
     pm_lock(&g_xlate_lock);
     int (*old)(u32, u32, u32*) = g_shader_cb_read;
@@ -565,7 +570,9 @@ static int code_hash(u64 gva, u32 len, u64* hash) {
    unrelated storage image beside a tiny shader and wait for the GPU. Hash against the full zero-padded window so
    forward branch targets still prevent an early EXIT from ending the scan. Reaching a prefix boundary grows it. */
 void vk_shader_read_code(u64 gva, u8* code, u32* len, VkCbReader read) {
-    u32 prefix = 256;
+    /* an SM86 program's end is found by decoding it (sm86_find_programs), so a prefix too short to hold it would be
+       decoded again at each doubling: its window whole at once, as feat/ounce reads it */
+    u32 prefix = g_shader_sm86 ? SH_CODE : 256;
     memset(code, 0, SH_CODE);
     for (;;) {
         u64 cpu = gmem_read_code_cpu(gva, code, prefix);
@@ -865,8 +872,9 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
         }
         free(a);
     }
-    u32 mlen;
-    u64 h = vk_shader_hash(code, SH_CODE, &mlen, sh_cb_read);
+    /* an SM86 program, never merged, is hashed as vk_shader_read_code hashed it: its decode once */
+    u32 mlen = len;
+    u64 h = g_shader_sm86 && !gva_a ? sm86_hash(code, SH_CODE, len) : vk_shader_hash(code, SH_CODE, &mlen, sh_cb_read);
     mask[20] = shader_absolute_flow(code, mlen) ? (u32)gva : 0;
     VkSh* s = NULL;
     /* one made for the same program: its whole code hashes the same (the merged program's, and each part's with its
