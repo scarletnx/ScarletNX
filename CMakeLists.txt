@@ -28,6 +28,9 @@ if(NOT CMAKE_C_COMPILER_ID MATCHES "^(Apple)?Clang$" OR NOT CMAKE_CXX_COMPILER_I
                         "(${CMAKE_C_COMPILER}). Use a preset, or -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ "
                         "in a new build folder.")
 endif()
+# ccache or sccache, when installed and not named already: optional, and no build depends on either
+# (cmake/compiler_cache.cmake)
+include(cmake/compiler_cache.cmake)
 # The Apple apps are what `cmake --install` makes (cmake/apple_package.cmake): on macOS the prefix is ScarletNX.app's
 # Contents, the programs in its MacOS/ and share/ beside them; on iOS share/ goes in the app the build makes. Over
 # GNUInstallDirs' defaults, which a build folder configured before keeps in its cache
