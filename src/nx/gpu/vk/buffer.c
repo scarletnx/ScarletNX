@@ -899,8 +899,8 @@ void vk_buf_frame_done(u64 frame) {
     vk_uma_frame_done(frame);
 }
 /* At the frame's submit: its storage results are copied into host-cached memory (vk_stage_back), where landing them
-   compares bytes quickly. A result whose copy can't be allocated is read where the shader wrote it, as a logged one
-   is. A kept one stays in its owner */
+   compares bytes quickly, or takes a logged one's runs. A result whose copy can't be allocated is read where the
+   shader wrote it. A kept one stays in its owner */
 void vk_buf_host_barrier(VkCommandBuffer cb, u64 frame) {
     vk_uma_host_barrier(cb, frame);
     vk_mirror_harvest(cb, frame); /* the pages the submit's programs wrote in the GPU mirror */
@@ -923,9 +923,10 @@ void vk_buf_host_barrier(VkCommandBuffer cb, u64 frame) {
     VkBuffer src = VK_NULL_HANDLE, dst = VK_NULL_HANDLE;
     for (GfxOut* o = first; o; o = o->next) {
         if (o->frame != frame || o->keep) continue;
-        /* a logged result is read where its shader wrote it: only the bytes its writers logged, a few windows of a
-           binding of up to 16 MiB, which copying whole crossed PCIe for every dispatch */
-        if (!o->org) continue;
+        /* a logged one too, whole: where its shader wrote it, the output ring, can be device memory behind the BAR,
+           and the CPU's reads of its logged runs there were 19% of a Switch game's GPU thread in its street (728
+           results a frame of 3.8 KB on average, all logged since the Maxwell programs log their stores). An Ounce
+           program's 16 MiB bindings, which made this one take its runs in place, are in the GPU mirror */
         VkBuffer back;
         u64 at;
         VmaAllocation mem;
