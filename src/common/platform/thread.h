@@ -110,6 +110,10 @@ void plat_thread_exit(void); /* ends the calling thread (one plat_thread started
 int plat_cpus(int* ids, int max);
 /* the calling thread runs only on the n host CPUs in ids: 0, or -1 with errno */
 int plat_thread_cpus(const int* ids, int n);
+/* the calling thread runs only where a CPU has nothing else to run: background work the game must not wait for (the
+   BC7 encodes of nx/gpu/vk/astc.c). Linux's and Android's SCHED_IDLE, macOS's and iOS's background QoS class, Windows'
+   idle priority, nothing elsewhere: 0, or -1 with errno (GetLastError on Windows) */
+int plat_thread_idle(void);
 /* the calling thread's id, as the system numbers threads (Linux's gettid, kept per thread). Safe in a signal handler
    once the thread has called it one time */
 uint32_t plat_tid(void);

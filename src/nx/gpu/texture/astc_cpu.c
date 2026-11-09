@@ -6,13 +6,14 @@
    SPDX-FileCopyrightText: 2016 The University of North Carolina at Chapel Hill
    The University of North Carolina at Chapel Hill's part (FasTC's decoder, http://gamma.cs.unc.edu/FasTC/):
    SPDX-License-Identifier: Apache-2.0 */
-/* ASTC decoding on the CPU, the reference for the compute shader astc.comp. It follows Eden's CPU decoder, and
+/* ASTC decoding on the CPU: the reference the tests hold the compute shader astc.comp to, byte for byte, and the decoder
+   of vk/astc.c's background encodes on the CPU, whose blocks must be the GPU's. It follows Eden's CPU decoder, and
    differs from it where Eden's shader and CPU decoder disagree, so that both give the same bytes: a block whose
    mode and weights leave no room for its color data is an error (as in the shader), and texels are converted to
    8 bits the way astc.comp does it (as a UNORM16 value rounded to nearest), in integers. Where Eden decodes HDR
    endpoints and makes errors transparent black, this follows the LDR profile, as the hardware's decode is taken
    to: errors and HDR partitions are opaque magenta. */
-#include "astc.h"
+#include "nx/gpu/texture/astc_cpu.h"
 #include <string.h>
 
 /* a little-endian bit stream over one 16 byte block: bits past the end read as zero */

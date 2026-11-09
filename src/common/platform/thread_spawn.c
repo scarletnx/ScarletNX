@@ -15,6 +15,9 @@
 #include <signal.h>
 #include <unistd.h>
 #endif
+#if defined(__APPLE__)
+#include <pthread/qos.h>
+#endif
 
 /* ================================================================ threads */
 static const PThreadHooks* g_hooks; /* plat_thread_hooks's */
@@ -79,6 +82,7 @@ int plat_thread_cpus(const int* ids, int n) {
     (void)n;
     return 0;
 }
+int plat_thread_idle(void) { return SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE) ? 0 : -1; }
 #else
 /* below this a thread is a small helper that gets no alternate signal stack */
 #define ALT_STACK_MIN_THREAD ((size_t)256 << 10)
@@ -204,4 +208,17 @@ int plat_thread_cpus(const int* ids, int n) {
     return 0;
 }
 #endif
+int plat_thread_idle(void) {
+#if defined(__linux__)
+    /* below nice 19, which still takes a share of a CPU a game thread wants: SCHED_IDLE runs only where none does */
+    struct sched_param p = {0};
+    return sched_setscheduler(0, SCHED_IDLE, &p) ? -1 : 0;
+#elif defined(__APPLE__)
+    const int r = pthread_set_qos_class_self_np(QOS_CLASS_BACKGROUND, 0); /* an error number, not errno */
+    if (r) errno = r;
+    return r ? -1 : 0;
+#else
+    return 0;
+#endif
+}
 #endif

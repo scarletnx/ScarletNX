@@ -304,6 +304,36 @@ setting BC7 queue
     help The thousands of blocks the BC7 encoder may have queued on the GPU before an upload waits for it to do them.
     help 0 = by the GPU's own memory: 256 for every 2 GB of it, from 256 to 4096, and 256 on a GPU that shares the
     help computer's memory (a GT 1030, 2 GB, lost the device with more queued). 1 to 16384 = that many thousand
+setting ASTC quick Mtexels
+    label Very large ASTC textures from (megatexels)
+    key astc_quick_mtexels
+    int 0 4096
+    default 8
+    words Never|#
+    help With ASTC textures encoded as BC7 as they load (Auto for an Ounce game, or BC7 at load), a texture level of
+    help this many megatexels or more, all its layers counted (8 = 4096x2048, or two layers of 2048x2048), is encoded
+    help quickly where the game first needs it, with softer edges, and its better version is made in the background
+    help (ASTC background): it replaces the quick one as it comes and is kept in the BC7 cache, which the next run loads.
+    help 0 = never: every level takes the better encode at once, which can stop the game for seconds on a big texture
+    help array
+setting ASTC background
+    label Better ASTC textures made by
+    key astc_background
+    int 0 2
+    default 2
+    words Nobody|CPU|GPU
+    help Who makes the better version of the very large ASTC textures encoded quickly (ASTC quick Mtexels): 2 = the
+    help GPU, a piece after each frame; 1 = worker threads that run only where a CPU has nothing else to do, for a game
+    help the GPU holds back on a computer with cores to spare (one game's took them 10 minutes of CPU time where the
+    help GPU took 13 seconds); 0 = nobody: they stay as they were encoded quickly
+setting ASTC background threads
+    label Threads for better ASTC textures
+    key astc_background_threads
+    int 0 32
+    default 0
+    words Auto|#
+    help The worker threads of ASTC background's CPU: 0 = a quarter of the computer's threads, one to eight;
+    help 1 to 32 = that many. They take only CPUs the game leaves idle
 
 table g_performance_ini
 setting FPS limit

@@ -2647,13 +2647,13 @@ else()
     add_test(NAME a64_ported_cases COMMAND snx-test-a64-ported)
 endif()
 
-add_executable(snx-test-astc astc_decode.c support/astc.c)
+add_executable(snx-test-astc astc_decode.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/astc_cpu.c")
 snx_test_target(snx-test-astc 23)
 add_test(NAME astc_decode COMMAND snx-test-astc)
 # the generated MiiModel archive (hle/filesystem/mii_model.c, which the test includes): its tables against the
 # console's part list and layout, every part's zlib stream, its textures decoded by the CPU references against what
 # they were drawn from, its shapes' attributes and triangles, each file no bigger than the console's
-add_executable(snx-test-mii-model mii_model.c support/astc.c support/bcn.c
+add_executable(snx-test-mii-model mii_model.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/astc_cpu.c" support/bcn.c
                "${PROJECT_SOURCE_DIR}/src/common/utilities/mii_db.c"
                "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/blocklinear.c") # g_gob_native, which the layout reads
 snx_test_target(snx-test-mii-model 99)
@@ -2676,7 +2676,7 @@ if(NOT WIN32)
 endif()
 add_test(NAME mii_cfl COMMAND snx-test-mii-cfl)
 # the ASTC shader's GLSL run on the CPU (tests/glsl/glsl.hpp) against the same decoder: no GPU needed
-add_executable(snx-test-astc-glsl glsl/astc_glsl.cpp support/astc.c)
+add_executable(snx-test-astc-glsl glsl/astc_glsl.cpp "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/astc_cpu.c")
 snx_test_target(snx-test-astc-glsl 23)
 target_include_directories(snx-test-astc-glsl PRIVATE glsl)
 add_test(NAME astc_glsl COMMAND snx-test-astc-glsl)
@@ -2759,7 +2759,7 @@ target_include_directories(snx-test-texconv-glsl PRIVATE glsl)
 add_test(NAME texconv_glsl COMMAND snx-test-texconv-glsl)
 
 # single blocks from rEden's ASTC decoder tests, against edenprobe's and astcenc's texels (astc_blocks.c)
-add_executable(snx-test-astc-blocks astc_blocks.c support/astc.c)
+add_executable(snx-test-astc-blocks astc_blocks.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/astc_cpu.c")
 snx_test_target(snx-test-astc-blocks 23)
 add_test(NAME astc_blocks COMMAND snx-test-astc-blocks)
 

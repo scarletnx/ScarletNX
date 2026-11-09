@@ -20,7 +20,10 @@ void bc7_encode_cpu_without_45(const uint8_t* rgba, uint32_t w, uint32_t h, uint
 void bc7_encode_cpu_fast(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out);
 /* mode 6 alone (SNX_BC7_FAST 2), which vk/astc.c uses for the largest levels */
 void bc7_encode_cpu_mode6(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out);
-/* the build vk/astc.c picks for a level (vk_bc7_build: 0 the full one, 1 the fast one, 2 mode 6 alone) */
+/* mode 6 from one line (SNX_BC7_FAST 3), vk/astc.c's quick encode of a very large level */
+void bc7_encode_cpu_quick(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out);
+/* the build vk/astc.c picks for a level (vk_bc7_build: 0 the full one, 1 the fast one, 2 mode 6 alone; 3 the quick
+   one, a very large level's) */
 void bc7_encode_cpu_build(uint32_t build, const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out);
 /* the encoder's three subset partition table, two bits a texel */
 uint32_t bc7_partition3_cpu(uint32_t partition);
