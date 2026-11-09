@@ -1913,6 +1913,64 @@ static void test_fragment_depth(const char* dir) {
     (void)dir;
 }
 
+/* ISETP.GE.U32.AND Pd, PT, RZ, imm, PT: Pd true for imm 0, false for 1 */
+static Word setp_const(u32 pd, u32 imm) {
+    Word x = alu(0x00c, 4, 255, 255);
+    set(&x, 32, 32, imm);
+    set(&x, 76, 3, 6);
+    set(&x, 81, 3, pd);
+    set(&x, 84, 3, 7);
+    set(&x, 87, 3, 7);
+    return x;
+}
+/* A BRA's or an EXIT's predicate operand (bits 87-89, 90 negates it) holds with the guard: the instruction takes effect
+   only where both do. One game's interface programs end @P0 EXIT P1, P0 their KILL's switch and P1 its test, before
+   the MOVs to the colour's registers: with the operand left out every lane with P0 exited with R0-R3 unwritten, and
+   the title screen drew nothing. Colour 0 is R0-R3, 0.25 before the instruction and 0.75 after it when it falls
+   through. Cases: the guard (P0, true), the operand (P1, 7 for none), its negation, P1's value, and whether it's a BRA
+   over the MOVs instead of an EXIT */
+static void test_flow_operand(const char* dir) {
+    static const struct {
+        u32 guard, operand, negate, p1, bra, exits;
+    } cases[] = {
+        {0, 1, 0, 0, 0, 0}, /* @P0 EXIT P1, P1 false: no exit */
+        {0, 1, 0, 1, 0, 1}, /* @P0 EXIT P1, P1 true */
+        {0, 1, 1, 0, 0, 1}, /* @P0 EXIT !P1, P1 false */
+        {7, 1, 0, 0, 0, 0}, /* EXIT P1, P1 false: the block goes on */
+        {7, 1, 0, 1, 0, 1}, /* EXIT P1, P1 true */
+        {0, 7, 0, 0, 0, 1}, /* @P0 EXIT */
+        {0, 1, 0, 0, 1, 0}, /* @P0 BRA P1, P1 false: not taken */
+        {0, 1, 0, 1, 1, 1}, /* @P0 BRA P1, P1 true */
+        {7, 1, 1, 1, 1, 0}, /* BRA !P1, P1 true: not taken */
+    };
+    for (u32 i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        u8 code[16 * 16] = {0};
+        u32 n = 0;
+        for (u32 r = 0; r < 4; r++) put(code, n++, mov_imm(r, f2u(0.25f)));
+        put(code, n++, setp_const(0, 0));
+        put(code, n++, setp_const(1, cases[i].p1 ? 0 : 1));
+        Word x = cases[i].bra ? bra(n, n + 5, cases[i].guard, 0) : exit_insn();
+        set(&x, 12, 3, cases[i].guard);
+        set(&x, 87, 3, cases[i].operand);
+        set(&x, 90, 1, cases[i].negate);
+        put(code, n++, x);
+        for (u32 r = 0; r < 4; r++) put(code, n++, mov_imm(r, f2u(0.75f)));
+        put(code, n++, exit_insn());
+        put(code, n, bra(n, n, 7, 0));
+        n++;
+        u32 fsph[32] = {0};
+        fsph[0] = sph0(2, 5);
+        fsph[18] = 0xf;
+        SpvEvalEnv env = {0};
+        int ran = run_stage(ST_FS, code, n, fsph, &env);
+        u32 want = f2u(cases[i].exits ? 0.25f : 0.75f);
+        CHECK(ran && env.out[0][0] == want && env.out[0][3] == want);
+        if (!ran || env.out[0][0] != want)
+            fprintf(stderr, "flow operand, case %u: colour %08x, %08x expected\n", i, env.out[0][0], want);
+    }
+    (void)dir;
+}
+
 /* LDG.E (no uniform) of type 4 (32 bits) or 5 (64 bits) into dst from [addr + imm], and STG.E of data */
 static Word ldg_nou(u32 dst, u32 addr, u32 imm, u32 type) {
     Word x = fix(0x381);
@@ -2655,6 +2713,7 @@ int main(int argc, char** argv) {
     test_tex_f16(dir);
     test_output_defaults(dir);
     test_fragment_depth(dir);
+    test_flow_operand(dir);
     test_global_pointer(dir);
     test_mesh(dir);
     test_task(dir);

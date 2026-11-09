@@ -80,6 +80,22 @@ static inline u32 sm86_field(const Sm86Insn* in, unsigned lo, unsigned n) {
     return (u32)(v & ((1ull << n) - 1));
 }
 
+/* A BRA's or an EXIT's predicate operand, bits 87-89 with 90 its negation (PT when it has none), which the assembler
+   writes after the mnemonic: @P0 EXIT P1, @!P1 BRA !P2, target. The instruction takes effect only where its guard and
+   this predicate both hold. The compiler exits the lanes a KILL took so: P1 = a < e && P0, @P1 KILL, then P1 = a < e
+   and @P0 EXIT P1 before the outputs' MOVs */
+static inline int sm86_has_cond(const Sm86Insn* in) { return in->op == SM86_BRA || in->op == SM86_EXIT; }
+/* whether the instruction runs in every lane: its guard PT, and a BRA's or an EXIT's operand PT too */
+static inline int sm86_always(const Sm86Insn* in) {
+    return in->pred == SM86_PT && !in->pred_not &&
+           (!sm86_has_cond(in) || (sm86_field(in, 87, 3) == SM86_PT && !sm86_field(in, 90, 1)));
+}
+/* whether it runs in none: its guard !PT, or a BRA's or an EXIT's operand !PT */
+static inline int sm86_never(const Sm86Insn* in) {
+    return (in->pred == SM86_PT && in->pred_not) ||
+           (sm86_has_cond(in) && sm86_field(in, 87, 3) == SM86_PT && sm86_field(in, 90, 1));
+}
+
 /* Decodes the instruction lo, hi into *out: 1 when the opcode is known, 0 when it is not (out->op is SM86_NONE, the
    rest is filled as far as the common fields go) */
 int sm86_decode(u64 lo, u64 hi, Sm86Insn* out);
