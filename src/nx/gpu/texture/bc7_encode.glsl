@@ -156,7 +156,7 @@ void SetShape(uint ns, uint part) {
         sh_pbits = P3[part];
         const uint an = ANCHORS[part];
         sh_anchor1 = (an >> 4u) & 15u;
-        sh_anchor2 = (an >> 8u) & 15u;
+        sh_anchor2 = an >> 8u; /* ANCHORS holds 12 bits, so no mask (ucas) */
     }
 }
 
@@ -173,13 +173,15 @@ bool IsAnchor(uint k) {
     return k == 0u || k == sh_anchor1 || k == sh_anchor2;
 }
 
-/* the weight of index i: BC7's 2, 3 and 4-bit tables (0 21 43 64; 0 9 18 27 37 46 55 64; 0 4 9 13 ... 60 64), a byte
-   each of constant words. They are (i * 64 + top / 2) / top for top = 2^bits - 1, a division by a value that is no
-   constant where the encoder calls this, for every texel of every line it tries */
+/* the weight of index i: BC7's 2, 3 and 4-bit tables (0 21 43 64; 0 9 18 27 37 46 55 64; 0 4 9 13 ... 60 64). They
+   are (i * 64 + top / 2) / top for top = 2^bits - 1, and equal (i * K + 32) >> 6 with K = 4095 / top (1365, 585, 273;
+   4095 = 3^2 5 7 13 is a multiple of each top): one multiply where the encoder calls this, for every texel of every
+   line it tries. K depends on sh_ib alone, so the select leaves the loops that call this (ucas: exhaustive equiv
+   against the tables, every i < 2^bits of bits 2, 3 and 4). It relies on i <= top: Eval's weights are in 0 to top,
+   and fit_lo and fit_hi hold only the weights of an Eval that ran to its end */
 uint Weight(uint i) {
-    const uint w4 = i < 8u ? (i < 4u ? 0x0D090400u : 0x1E1A1511u) : (i < 12u ? 0x2F2B2622u : 0x403C3733u);
-    const uint w = sh_ib == 4u ? w4 : sh_ib == 3u ? (i < 4u ? 0x1B120900u : 0x40372E25u) : 0x402B1500u;
-    return (w >> ((i & 3u) * 8u)) & 0xFFu;
+    const uint k = sh_ib == 4u ? 273u : sh_ib == 3u ? 585u : 1365u;
+    return (i * k + 32u) >> 6u;
 }
 
 uint Index(uint lo, uint hi, uint k) {
@@ -191,10 +193,11 @@ uint StoredBits() {
     return sh_cb + (sh_pk != 0u ? 1u : 0u);
 }
 
-/* an n-bit stored channel as the decoder widens it to 8 bits: its top bits again below it */
+/* an n-bit stored channel as the decoder widens it to 8 bits: its top bits again below it. For n = 8 the second term is
+   v >> 8 = 0, and v < 2^n keeps the result under 256, so neither a branch nor a mask is needed (ucas: exhaustive equiv
+   over n = 5 to 8, every v < 2^n) */
 uint Widen(uint v, uint n) {
-    if (n == 8u) return v;
-    return ((v << (8u - n)) | (v >> (2u * n - 8u))) & 0xFFu;
+    return (v << (8u - n)) | (v >> (2u * n - 8u));
 }
 
 /* the stored ends as the decoder reads them, an RGBA8 word, alpha 255 where the shape stores none */
@@ -204,25 +207,22 @@ uint Decoded(uint stored) {
     return word | ((sh_alpha != 0u ? Widen(Ch(stored, 3u), n) : 255u) << 24u);
 }
 
-/* the stored value of n bits (its lowest the p-bit p when the shape has p-bits) that widens nearest to t */
+/* the stored value of n bits (its lowest the p-bit p when the shape has p-bits) that widens nearest to t, the lower on
+   a tie. It is guess - 1 or guess without p-bits; with them guess when its parity is p, else guess - 1 or guess + 1:
+   two candidates, compared once (ucas: exhaustive equiv with the search of guess - 2 to guess + 2, over t 0 to 255, n 5
+   to 8, both p and with and without p-bits) */
 uint Quant(int t, uint p) {
     const uint n = StoredBits();
-    const uint top = (1u << n) - 1u;
-    const int guess = (t * int(top) + 127) / 255;
-    uint best = 0u;
-    int best_d = 1000;
-    for (int d = -2; d <= 2; d++) {
-        const int c = guess + d;
-        if (c < 0 || c > int(top)) continue;
-        if (sh_pk != 0u && (uint(c) & 1u) != p) continue;
-        const int e = int(Widen(uint(c), n)) - t;
-        const int a = e < 0 ? -e : e;
-        if (a < best_d) {
-            best_d = a;
-            best = uint(c);
-        }
-    }
-    return best;
+    const int top = int((1u << n) - 1u);
+    const int guess = (t * top + 127) / 255;
+    const bool other = sh_pk != 0u && (uint(guess) & 1u) != p;
+    int lo = sh_pk == 0u || other ? guess - 1 : guess;
+    const int hi = other ? guess + 1 : guess;
+    lo = lo < 0 ? hi : lo;
+    /* hi = top + 1 (guess = top of the wrong parity) widens past 255 and never wins, so it needs no clamp (ucas: the
+       function-level pass, exhaustive over Quant's every call) */
+    const int el = int(Widen(uint(lo), n)) - t, eh = int(Widen(uint(hi), n)) - t;
+    return uint(abs(el) <= abs(eh) ? lo : hi);
 }
 
 uint QuantWord(int r, int g, int b, int a, uint p) {
@@ -233,7 +233,10 @@ uint TexelError(uint p, uint q0, uint q1, uint w) {
     uint e = 0u;
     for (uint c = 0u; c < 4u; c++) {
         if (((sh_mask >> c) & 1u) == 0u) continue;
-        const int v = int(((64u - w) * Ch(q0, c) + w * Ch(q1, c) + 32u) >> 6u) - int(Ch(p, c));
+        /* ((64 - w) a + w b + 32) >> 6 = a + ((w (b - a) + 32) >> 6), the shift arithmetic: one multiply (ucas:
+           exhaustive equiv over a, b 0 to 255 and w 0 to 64) */
+        const int a0 = int(Ch(q0, c));
+        const int v = a0 + ((int(w) * (int(Ch(q1, c)) - a0) + 32) >> 6) - int(Ch(p, c));
         e += uint(v * v);
     }
     return e;
@@ -263,8 +266,9 @@ uint Eval(uint s, uint q0, uint q1) {
             const int t = clamp((int(Ch(p, 0u)) - int(Ch(q0, 0u))) * dr + (int(Ch(p, 1u)) - int(Ch(q0, 1u))) * dg +
                                     (int(Ch(p, 2u)) - int(Ch(q0, 2u))) * db + (int(Ch(p, 3u)) - int(Ch(q0, 3u))) * da,
                                 0, dd);
+            /* t <= dd keeps t64 <= 64 ((64 dd + dd / 2) / dd = 64), so (t64 top + 32) / 64 <= top: no min */
             const uint t64 = uint((t * 64 + dd / 2) / dd);
-            i = min((t64 * top + 32u) / 64u, top);
+            i = (t64 * top + 32u) / 64u;
         }
         uint bi = i;
         uint be = TexelError(p, q0, q1, Weight(i));
@@ -308,9 +312,9 @@ uint PAllowed(uint s) {
 }
 
 /* a candidate line for subset s, a0 to a3 one end and b0 to b3 the other (RGBA, 0 to 255): each p-bit choice the
-   shape and the subset allow, the best kept in fit_ */
-void Try(uint s, int a0, int a1, int a2, int a3, int b0, int b1, int b2, int b3) {
-    const uint allowed = PAllowed(s);
+   shape and the subset allow (allowed, PAllowed(s): FitSubset reads it once, as nothing it depends on changes between
+   its lines), the best kept in fit_ */
+void Try(uint s, uint allowed, int a0, int a1, int a2, int a3, int b0, int b1, int b2, int b3) {
     for (uint pp = 0u; pp < 4u; pp++) {
         const uint p0 = pp & 1u, p1 = sh_pk == 2u ? pp >> 1u : p0;
         if (sh_pk != 2u && (pp >> 1u) != 0u) continue;
@@ -423,6 +427,7 @@ void FitSubset(uint s) {
     /* a sixteenth in from each end: the box's corners lie past the texels on any line not along an axis */
     const int i0 = (b0 - a0) / 16, i1 = (b1 - a1) / 16, i2 = (b2 - a2) / 16, i3 = (b3 - a3) / 16;
     fit_err = 0xFFFFFFFFu;
+    const uint allowed = PAllowed(s);
     uint seen_lo = 0u, seen_hi = 0u;
     /* the lines tried, in turn: the box pulled in, the box, then a least squares fit to the weights chosen, twice.
        One call of Try in a loop, not one a line: the compiler inlines each call, and the copies' registers (the
@@ -439,14 +444,18 @@ void FitSubset(uint s) {
             if (step == 3u && fit_lo == seen_lo && fit_hi == seen_hi) break;
             seen_lo = fit_lo;
             seen_hi = fit_hi;
-            const int det = Fit(s);
-            if (det <= 0) break;
-            /* Solve's sums for every channel in one pass over the texels */
+            /* Fit's sums and Solve's for every channel in one pass over the texels */
+            fit_n = 0;
+            fit_w = 0;
+            fit_w2 = 0;
             int v0 = 0, v1 = 0, v2 = 0, v3 = 0, w0 = 0, w1 = 0, w2 = 0, w3 = 0;
             for (uint k = 0u; k < 16u; k++) {
                 if (SubsetOf(k) != s) continue;
                 const int w = int(Weight(Index(fit_lo, fit_hi, k)));
                 const uint p = px[k];
+                fit_n++;
+                fit_w += w;
+                fit_w2 += w * w;
                 v0 += int(Ch(p, 0u));
                 v1 += int(Ch(p, 1u));
                 v2 += int(Ch(p, 2u));
@@ -456,6 +465,8 @@ void FitSubset(uint s) {
                 w2 += w * int(Ch(p, 2u));
                 w3 += w * int(Ch(p, 3u));
             }
+            const int det = fit_n * fit_w2 - fit_w * fit_w;
+            if (det <= 0) break;
             e0 = SolveEnd(0u, 0u, det, v0, w0);
             e1 = SolveEnd(1u, 0u, det, v1, w1);
             e2 = SolveEnd(2u, 0u, det, v2, w2);
@@ -465,7 +476,7 @@ void FitSubset(uint s) {
             f2 = SolveEnd(2u, 1u, det, v2, w2);
             f3 = SolveEnd(3u, 1u, det, v3, w3);
         }
-        Try(s, e0, e1, e2, e3, f0, f1, f2, f3);
+        Try(s, allowed, e0, e1, e2, e3, f0, f1, f2, f3);
     }
 }
 
@@ -850,8 +861,9 @@ uvec4 Encode() {
             } else {
                 best_rot = rot;
                 best_isb = isb;
-                best_s0[0] = (s0 & 0xFFFFFFu) | (fit_s0 & 0xFF000000u);
-                best_s1[0] = (s1 & 0xFFFFFFu) | (fit_s1 & 0xFF000000u);
+                /* the colour's ends store no alpha (sh_alpha 0), so they need no mask (ucas) */
+                best_s0[0] = s0 | (fit_s0 & 0xFF000000u);
+                best_s1[0] = s1 | (fit_s1 & 0xFF000000u);
                 best_lo2 = fit_lo;
                 best_hi2 = fit_hi;
             }
