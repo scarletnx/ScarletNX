@@ -242,6 +242,10 @@ typedef struct {
     VkSemaphore timeline;
     u64 value;
 } Submit;
+/* the graphics timeline value of the last submission vkQueueSubmit2 took (atomic): the GPU has that work. A value
+   handed to the ring after it is not on the GPU yet (vk_wait_semaphore) */
+static u64 g_gfx_queued;
+u64 vk_rec_gfx_queued(void) { return __atomic_load_n(&g_gfx_queued, __ATOMIC_ACQUIRE); }
 static void submit_run(const void* p) {
     const Submit* x = p;
     VkCommandBufferSubmitInfo c[2] = {{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = x->up},
@@ -259,6 +263,8 @@ static void submit_run(const void* p) {
     vk_queue_lock(g_vk.gfx);
     VkResult r = vkQueueSubmit2(g_vk.gfx, 1, &si, VK_NULL_HANDLE);
     vk_queue_unlock(g_vk.gfx);
+    if (r == VK_SUCCESS && x->timeline == vk_gfx_timeline())
+        __atomic_store_n(&g_gfx_queued, x->value, __ATOMIC_RELEASE);
     if (r == VK_ERROR_DEVICE_LOST) {
         vk_ck_report();
         fatal("vulkan: the GPU device was lost (driver reset or crash)");

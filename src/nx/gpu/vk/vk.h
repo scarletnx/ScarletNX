@@ -582,6 +582,7 @@ extern u32 g_vk_present;
 void vk_rec_init(void);
 int vk_rec_threaded(void); /* the frame's commands go through the recording thread */
 u64 vk_rec_behind(void);   /* bytes of commands handed to the recording thread and not recorded yet (any thread) */
+u64 vk_rec_gfx_queued(void); /* the graphics timeline value of the last submission on the queue (any thread) */
 void vk_rec_begin(VkCommandBuffer cb); /* begins cb, the frame's command buffer from now on */
 void vk_rec_begin_upload(VkCommandBuffer cb); /* begins cb, the submission's upload command buffer (vk_cmd_upload) */
 /* ends and submits up (the upload command buffer, VK_NULL_HANDLE for none) and then cb with those semaphores (s[0]
