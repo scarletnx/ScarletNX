@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "3ds/aot/ctr_module.h"
+#include "3ds/loader/smdh.h"
 #include "3ds/aot/ctr_compile.h"
 #include "3ds/aot/ctr_jit.h"
 #include "3ds/aot/ctr_discover.h"
@@ -142,18 +143,58 @@ static bool deploy_runtime(const char* directory, const char* runtime, char* err
     free(copy);
     return placed >= 0;
 }
+/* The SMDH of the game at directory: from the source when it is open, else from the extraction's exefs/icon. buffer is
+   its room, 0x2020 bytes; *size its bytes. NULL when the game has none */
+static const unsigned char* game_smdh(const char* directory, const SnxCtrSource* game, unsigned char* buffer,
+                                      uint64_t* size) {
+    const unsigned char* icon = game ? snx_ctr_source_exefs(game, "icon", size) : NULL;
+    if (!icon) {
+        char* path = snx_path_join(directory, "exefs/icon");
+        FILE* f = path ? fopen(path, "rb") : NULL;
+        *size = 0;
+        if (f && fread(buffer, 1, 0x2020, f) == 0x2020) icon = buffer, *size = 0x2020;
+        if (f) fclose(f);
+        free(path);
+    }
+    return icon && *size >= 0x201c && !memcmp(icon, "SMDH", 4) ? icon : NULL;
+}
+/* What the launcher shows the game by: the SMDH's short title in its .ini (name=), which Games reads, and its 48x48 icon
+   as RGBA beside it (icon.rgba), which the menu draws. A game with no SMDH is named by the dump it was made from, and
+   has no icon. title is that name, "" when neither has one */
+static void game_metadata(const char* directory, const SnxCtrSource* game, char* title, size_t title_size) {
+    unsigned char smdh[0x2020], rgba[48 * 48 * 4];
+    uint64_t size = 0;
+    const unsigned char* icon = game_smdh(directory, game, smdh, &size);
+    char* ini;
+    title[0] = 0;
+    if (icon) snx_ctr_smdh_title(icon, (size_t)size, title, title_size);
+    if (icon && !snx_ctr_smdh_icon(icon, (size_t)size, rgba)) {
+        char* file = snx_path_join(directory, "icon.rgba");
+        if (file) {
+            if (snx_write_file(file, rgba, sizeof rgba))
+                fprintf(stderr, "scarletnx-3ds: cannot write %s\n", file);
+            free(file);
+        }
+    }
+    /* the launcher's .ini, which is the config folder's for a game in the data folder: the game's own keeps source=,
+       model= and system= alone */
+    ini = snx_game_ini(directory, snx_path_leaf(directory));
+    if (ini && title[0]) (void)snx_ini_record(ini, "name", title);
+    free(ini);
+}
 int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel model, uint64_t limit, double seconds,
                     unsigned flags, uint32_t ipc_stubs, const char* runtime, char* error, size_t error_size) {
     SnxCtrImage image = {0};
     SnxCtrProcess* process = NULL;
     SnxCtrJit* jit = NULL;
     SnxCtrNative native = {0};
-    char *module_path = NULL, *frames = NULL, *wav = NULL;
+    char *module_path = NULL, *frames = NULL, *wav = NULL, title[192];
     int result = 1;
     if (!(game ? snx_ctr_image_from_source(game, &image, error, error_size)
               : snx_ctr_image_load(directory, &image, error, error_size)))
         goto done;
     module_path = snx_ctr_game_file(directory, SNX_CTR_MODULE_SUFFIX);
+    game_metadata(directory, game, title, sizeof title);
     {
         /* an older version's hints and module (native/code.so), under the names a Switch game's have: the module is
            checked against the image as any is when it loads */
@@ -171,7 +212,7 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
     /* like the Switch driver's recompile: only when needed, an existing module is no error. Decided from the module's
        file, before it is loaded, which happens once */
     if ((flags & SNX_CTR_RECOMPILE) || !snx_ctr_module_current(module_path, &image)) {
-        printf("Recompiling ARM11 (offline static AOT)\n");
+        printf("Recompiling %s (offline static AOT)\n", title[0] ? title : "the game");
         int status = snx_ctr_aot_compile(directory, game, error, error_size);
         if (status) {
             result = status == 3 ? 3 : 1;
