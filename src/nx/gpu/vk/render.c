@@ -32,6 +32,7 @@
 #include "nx/gpu/texture/texconv_modes.glsl"
 #include "nx/gpu/vk/draw_texture.h"
 #include "nx/gpu/vk/draw_texture_shader.h"
+#include "nx/gpu/vk/lookup_ways.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/vk/tess_passthrough.h"
 #include "nx/gpu/vk/quad_indices.h"
@@ -1138,10 +1139,16 @@ typedef struct {
     u32 wseen; /* vk_ww_now() before the headers were read */
     u32 tic[8], tsc[8];
     Surf* t;
-    int rt; /* t is the render target itself, read whole */
+    int rt;   /* t is the render target itself, read whole */
+    u32 used; /* g_tex_memo_use when last found or kept: the way used longest ago makes room */
 } TexMemo;
-#define TEX_MEMO 4096
-static TexMemo g_tex_memo[TEX_MEMO];
+/* by the handle, in sets of TEX_MEMO_WAYS ways. With one way in 4096 slots, a handle that shared its slot with another
+   one the draws used too put it out each time: 9% of an Ounce game's lookups in a race and 22% of a Switch game's in
+   its street resolved a handle again that way. A miss doesn't take a way unless what it found is kept */
+#define TEX_MEMO_SET_BITS 11
+#define TEX_MEMO_WAYS     4
+static TexMemo g_tex_memo[1u << TEX_MEMO_SET_BITS][TEX_MEMO_WAYS];
+static u32 g_tex_memo_use;
 /* The CPU's writes since m was kept, when the stream's epoch moved: an epoch moves at each submission and each wait
    that ends, and the CPU writes somewhere in nearly every one. What a handle resolves to comes from its two headers
    alone, with the rest checked at each hit as tex_from_tic checks it (vk_tex_recheck for a texture's texels, the read
@@ -1177,7 +1184,12 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     }
     u64 tic_base = b->tex_pool, tsc_base = b->smp_pool;
     u64 tic_at = tic_base + (handle & 0xFFFFF) * 32ull, tsc_at = tsc_base + ((handle >> 20) & 0xFFF) * 32ull;
-    TexMemo* m = &g_tex_memo[(handle * 0x9E3779B1u) >> 20];
+    TexMemo* set = g_tex_memo[((u64)handle * VK_FIB_MULT) >> (64 - TEX_MEMO_SET_BITS)];
+    TexMemo* m = NULL;
+    for (u32 w = 0; w < TEX_MEMO_WAYS && !m; w++)
+        if (set[w].t && set[w].handle == handle && set[w].ds == ds && set[w].tic_base == tic_base &&
+            set[w].tsc_base == tsc_base)
+            m = &set[w];
     u64 gw = gpu_mem_generation();
     u32 epoch = vk_ww_epoch(), now = vk_ww_now(); /* before the headers are read */
     u64 adds = __atomic_load_n(&g_pend_any.adds, __ATOMIC_RELAXED);
@@ -1202,11 +1214,11 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
                   handle, b->tex_max, b->smp_max);
         return;
     }
-    if (m->t && m->ds == ds && m->handle == handle && m->tic_base == tic_base && m->tsc_base == tsc_base &&
-        m->surf_epoch == vk_surf_epoch_at(m->t_gva) && tex_memo_unwritten(m, tic_at, tsc_at, epoch, now) &&
+    if (m && m->surf_epoch == vk_surf_epoch_at(m->t_gva) && tex_memo_unwritten(m, tic_at, tsc_at, epoch, now) &&
         !g_gfx_img_any && tex_memo_unpended(m, tic_at, tsc_at, adds) &&
         (m->gw == gw || (!gpu_mem_dirty_since(m->gw, tic_at, 32) && !gpu_mem_dirty_since(m->gw, tsc_at, 32)))) {
         m->gw = gw;
+        m->used = ++g_tex_memo_use;
         memcpy(x->tic, m->tic, sizeof x->tic);
         memcpy(x->tsc, m->tsc, sizeof x->tsc);
         if (m->rt) {
@@ -1225,9 +1237,15 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     vk_gmem_words(tic_at, x->tic, 8);
     vk_gmem_words(tsc_at, x->tsc, 8);
     x->t = vk_tex_from_tic(x->tic);
-    m->t = NULL;
+    if (m) m->t = NULL; /* what it held is gone: kept again below if it can be */
     Surf* at = x->t ? vk_rt_find(x->t->gva) : NULL;
     if (x->t && (x->t->is_rt ? x->t == at : !at)) {
+        if (!m) { /* an empty way, else the one used longest ago */
+            m = &set[0];
+            for (u32 w = 1; w < TEX_MEMO_WAYS && m->t; w++)
+                if (!set[w].t || (i32)(set[w].used - m->used) < 0) m = &set[w];
+        }
+        m->used = ++g_tex_memo_use;
         m->rt = x->t->is_rt;
         m->ds = ds;
         m->handle = handle;
