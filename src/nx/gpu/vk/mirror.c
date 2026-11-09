@@ -8,7 +8,8 @@
 
    - One sparse buffer as big as the guest's address space (vk_mirror_slice), memory bound in granules of MIR_G where
      bindings are, and a mask beside it, a bit for each byte. The programs' stores set bits in the dispatch's write
-     log (SNX_VKB_WPAGES, SH_WLOG_*), and a pass after the dispatch ORs them into the mask (vk_mirror_fold).
+     log (SNX_VKB_WPAGES, SH_WLOG_*), and a pass after the dispatch ORs them into the mask (vk_mirror_fold). The log
+     is in the GPU's memory, and cleared on the GPU after the pass (writelog.c's vk_wlog_get_gpu).
    - A shadow in host memory of the guest bytes the mirror was given. The pages the CPU wrote since a granule was
      last brought up to date (write tracking) are compared with it, and only the bytes the CPU changed are copied in:
      the bytes a program wrote there, which haven't landed yet, stay.
@@ -541,6 +542,7 @@ static int harvest_record(VkCommandBuffer cb, const MirRange* r, u32 n, VkBuffer
         HarvestParams p = {(u32)r[i].first, room, MIR_HEAD + room * entry, entry};
         rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_hv.layout, 0, 1, &set, 0, NULL);
         rec_CmdPushConstants(cb, g_hv.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
+        vk_gpuprof_tag(VK_PROF_MIRROR_HARVEST);
         rec_CmdDispatch(cb, (u32)pages, 1, 1);
     }
     /* the output to the host; the masks cleared, before later programs set them again */
@@ -587,6 +589,7 @@ void vk_mirror_fold(VkCommandBuffer cb, VkBuffer log, u64 log_size, const VkMirF
         FoldParams p = {flags, flags + SH_WPAGE_SLOT, (u32)(rel / 32), (u32)(rel % 32), f[i].len};
         rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_fold.layout, 0, 1, &set, 0, NULL);
         rec_CmdPushConstants(cb, g_fold.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
+        vk_gpuprof_tag(VK_PROF_MIRROR_FOLD);
         rec_CmdDispatch(cb, windows, 1, 1);
     }
     for (u32 i = 0; i < n; i++) vk_mirror_wrote(f[i].cpu, f[i].len); /* pending until the submit's harvest */
@@ -635,6 +638,17 @@ void vk_mirror_harvest(VkCommandBuffer cb, u64 submit) {
 
 /* entry e of an output, whose bytes are the GPU's: the bytes its mask gives into guest memory and the shadow */
 static int bit(const u32* m, u32 b) { return m[b / 32] >> (b % 32) & 1; }
+/* the first clear bit of a page's mask from b on, 4096 for none: a word at a time. Found a bit at a time, the runs of
+   the 24,000 pages one game's upscaler writes a frame took about 30 ms of their landing's 51 (a GPU without memory
+   traps lands every page the mirror's programs write) */
+static u32 run_end(const u32* m, u32 b) {
+    while (b < 4096) {
+        u32 clear = ~m[b / 32] >> (b % 32);
+        if (clear) return b + snx_ctz32(clear);
+        b = (b / 32 + 1) * 32;
+    }
+    return 4096;
+}
 static void land_entry(const u32* e) {
     u64 cpu = (u64)e[0] << 12;
     const u32* mask = e + 4;
@@ -649,8 +663,7 @@ static void land_entry(const u32* e) {
             continue;
         }
         a += snx_ctz32(rest);
-        u32 b = a + 1;
-        while (b < 4096 && bit(mask, b)) b++;
+        u32 b = run_end(mask, a + 1);
         own_acquire(cpu + a, b - a);
         vk_rt_before_write_cpu(cpu + a, b - a);
         memcpy(GP(cpu + a), data + a, b - a);

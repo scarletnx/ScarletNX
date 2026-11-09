@@ -93,7 +93,10 @@ of guest memory in the GPU's memory (`vk/mirror.c`): one sparse buffer as big as
 same offsets, with a mask beside it, a bit for each byte, memory bound in granules of 2 MiB where bindings are.
 Windows over the same guest memory are the same bytes, and the programs run one after another on the graphics queue,
 as on the console. After each dispatch a pass ORs the bits its log gives into the mask at each buffer's place, the
-bits past the buffer's length dropped (`mirror_fold.comp`, `vk_mirror_fold`). A merge of the main branch had lost the
+bits past the buffer's length dropped (`mirror_fold.comp`, `vk_mirror_fold`). Only the GPU reads such a log, so it is in
+the GPU's memory (`vk_wlog_get_gpu`) and cleared there after the pass (`vk_wlog_clear`). In host memory each store's
+log write, a store and an atomic OR, crossed the bus on a discrete GPU: on an RTX 5080 one upscaler program took
+47 ms a dispatch for 0.14 ms, and each pass, which read the log, 14 ms for 0.3 ms. A merge of the main branch had lost the
 dispatch's side of the mirror for a while: each writing dispatch made its 16 MiB buffers again, its input copied on
 the CPU and composed on the GPU over the results before it, hundreds of them a frame at addresses a few KiB apart,
 and one game's races ran at about one frame a second.

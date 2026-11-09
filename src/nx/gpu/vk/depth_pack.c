@@ -113,6 +113,7 @@ int vk_depth_pack(VkCommandBuffer cb, const Surf* s, u32 layer, VkBuffer buf, u6
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_depth_pack.pipe);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_depth_pack.layout, 0, 1, &set, 0, NULL);
     rec_CmdPushConstants(cb, g_depth_pack.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
+    vk_gpuprof_tag(VK_PROF_DEPTH_PACK);
     rec_CmdDispatch(cb, (w + 7) / 8, (h + 7) / 8, 1);
     barrier(cb, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
             VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
