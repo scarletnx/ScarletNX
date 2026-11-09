@@ -650,10 +650,11 @@ When none of the three ways is there, the 3DS device does not start, and its err
 three reasons (which call refused which region, the `VkResult`), then the device and driver.
 The CPU side, the AOT modules and the settings still run; the game ends at its first GX
 command that needs the GPU (a command list, fill, display transfer or texture copy), with
-that error as the run's last line. `3ds_vk_ram` checks the RAM on whatever device there
-is: what the guest wrote reaches the GPU, a GPU fill shows in every guest view, a store through
-the flat space reaches the GPU, and the RAM outlives the device; `3ds_memory_adopt` checks the
-move with a memfd standing in for the dma-buf, on every host.
+that error as the run's last line. `3ds_vk_ram` checks the RAM on whatever device imports it or
+holds it as its own memory (a device that keeps a copy skips it, its buffer not being the
+guest's): what the guest wrote reaches the GPU, a GPU fill shows in every guest view, a store
+through the flat space reaches the GPU, and the RAM outlives the device; `3ds_memory_adopt`
+checks the move with a memfd standing in for the dma-buf, on every host.
 
 Audio runs on a high-level DSP (`src/3ds/audio/`, ported from Azahar's HLE audio core):
 dsp::DSP (`services/dsp.c`) takes the application's pipe writes, interrupt events, the
@@ -757,12 +758,15 @@ the services in L (`all`, or a comma list of `srv`, `fs`, `apt`, `ptm`, `hid`, `
 `cfg`, `dsp`, `system`, `am`) with success instead of stopping. Given more than once,
 the lists add up. It only changes a
 run, so it is refused with `--board-info`, `-x` and `-r`.
+`--icon --out DIR` writes the game's SMDH icon as RGBA into DIR (`icon.rgba`, what the
+launcher draws a dump's row by), with `-x` and `--data` as the launcher asks for it, and
+nothing else. An encrypted game is decrypted first, into `work/3ds`, as a run of it is.
 `Guest ExitProcess: r0=...` prints a register diagnostic, **not a POSIX guest exit
 status**. When the last thread ends with ExitThread the driver prints
 `Guest's last thread exited` instead. Exit codes:
 
-- 0: help/info, extract-only or compile-only (`-r`) success, a guest that exited
-  or a window that was closed.
+- 0: help/info, extract-only, compile-only (`-r`) or icon-only (`--icon`) success, a
+  guest that exited or a window that was closed.
 - 1: malformed data, IO or limit failure, ABI mismatch or guest fault.
 - 2: invalid CLI arguments or a missing/non-game file path.
 - 3: unsupported format, ISA or SVC, a failed compile, the text-size cap, a
