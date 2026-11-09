@@ -131,6 +131,7 @@ static void vb_free(u32 idx) {
     g_vbfree = idx;
     g_vblive--;
 }
+#define PATCH_RUNS0 256 /* the runs a patch holds before it needs memory of its own (patch_note) */
 static struct {
     u32 head, tail;
     u32 n;
@@ -154,6 +155,12 @@ static struct {
     struct {
         u64 copied, read_back, merged, kept;
     } wstat, wstat_seen;
+    /* the runs of the patch being made (patch_note): in r0, or in more (cap of them) once they didn't fit */
+    struct {
+        VkBufferCopy r0[PATCH_RUNS0];
+        VkBufferCopy* more;
+        u32 cap;
+    } patch;
 } g_buffer;
 /* why keep_new turned a writable binding away (temporary diagnosis of the writeback cost) */
 enum { KF_NONE, KF_TRAPS_OFF, KF_UMA, KF_EMPTY, KF_UNALIGNED, KF_NOT_CONTIG, KF_CPU_READ, KF_N };
@@ -2977,42 +2984,38 @@ static void drop_own(u32 i) {
 #define PATCH_MIN (256u << 10)
 /* The runs are copied as they are, however many: past 64 of them, they were joined into one copy from the first to the
    end of the last, and a Switch game's city street, whose CPU writes pages all over a 64 MiB window of indices, copied
-   about 50 MB a frame that way, a quarter of its GPU thread. One patch is made at a time (vk_lock), in g_patch_r: its
-   first 256 runs in g_patch_r0, more in memory of its own */
+   about 50 MB a frame that way, a quarter of its GPU thread. One patch is made at a time (vk_lock), in g_buffer.patch */
 typedef struct {
     const u8* src;
     u32 n;
-    int whole; /* no room for the runs: from the first to the end of the last, in one copy (r[0]) */
+    int whole; /* no room for the runs: from the first to the end of the last, in one copy (the first run's) */
 } Patch;
-static VkBufferCopy g_patch_r0[256];
-static VkBufferCopy* g_patch_r = g_patch_r0;
-static u32 g_patch_cap = sizeof g_patch_r0 / sizeof *g_patch_r0;
+static VkBufferCopy* patch_runs(void) { return g_buffer.patch.more ? g_buffer.patch.more : g_buffer.patch.r0; }
 static void patch_note(void* user, u64 at, u64 n) {
     Patch* p = user;
+    VkBufferCopy* r = patch_runs();
     if (p->whole) {
-        g_patch_r[0].size = at + n - g_patch_r[0].dstOffset;
+        r[0].size = at + n - r[0].dstOffset;
         return;
     }
-    if (p->n && g_patch_r[p->n - 1].dstOffset + g_patch_r[p->n - 1].size == at) { /* touching the last: one */
-        g_patch_r[p->n - 1].size += n;
+    if (p->n && r[p->n - 1].dstOffset + r[p->n - 1].size == at) { /* touching the last: one */
+        r[p->n - 1].size += n;
         return;
     }
-    if (p->n == g_patch_cap) {
-        u32 cap = g_patch_cap * 2;
-        VkBufferCopy* r = cap <= g_patch_cap        ? NULL
-                          : g_patch_r == g_patch_r0 ? malloc((size_t)cap * sizeof *r)
-                                                    : realloc(g_patch_r, (size_t)cap * sizeof *r);
-        if (r && g_patch_r == g_patch_r0) memcpy(r, g_patch_r0, sizeof g_patch_r0);
-        if (!r) { /* the runs so far and this one in one copy */
+    u32 cap = g_buffer.patch.more ? g_buffer.patch.cap : PATCH_RUNS0;
+    if (p->n == cap) {
+        VkBufferCopy* more = cap * 2 <= cap ? NULL : realloc(g_buffer.patch.more, (size_t)cap * 2 * sizeof *more);
+        if (!more) { /* the runs so far and this one in one copy */
             p->whole = 1;
-            g_patch_r[0].size = at + n - g_patch_r[0].dstOffset;
+            r[0].size = at + n - r[0].dstOffset;
             p->n = 1;
             return;
         }
-        g_patch_r = r;
-        g_patch_cap = cap;
+        if (!g_buffer.patch.more) memcpy(more, g_buffer.patch.r0, sizeof g_buffer.patch.r0);
+        g_buffer.patch.more = r = more;
+        g_buffer.patch.cap = cap * 2;
     }
-    g_patch_r[p->n++] = (VkBufferCopy){0, at, n};
+    r[p->n++] = (VkBufferCopy){0, at, n};
 }
 static int patch_apply(const Vb* e, Patch* pt);
 static int patch_own(u32 i, const u8* host, u32 since) {
@@ -3023,7 +3026,7 @@ static int patch_own(u32 i, const u8* host, u32 since) {
 }
 /* pt's runs of the entry's bytes (pt->src) copied over its own buffer: staged, then copied on the GPU */
 static int patch_apply(const Vb* e, Patch* pt) {
-    VkBufferCopy* r = g_patch_r;
+    VkBufferCopy* r = patch_runs();
     VkBuffer sb;
     u64 so, at = 0, bytes = 0;
     u8* p;

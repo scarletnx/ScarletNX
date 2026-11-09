@@ -1140,15 +1140,17 @@ typedef struct {
     u32 tic[8], tsc[8];
     Surf* t;
     int rt;   /* t is the render target itself, read whole */
-    u32 used; /* g_tex_memo_use when last found or kept: the way used longest ago makes room */
+    u32 used; /* g_tex_memo.use when last found or kept: the way used longest ago makes room */
 } TexMemo;
 /* by the handle, in sets of TEX_MEMO_WAYS ways. With one way in 4096 slots, a handle that shared its slot with another
    one the draws used too put it out each time: 9% of an Ounce game's lookups in a race and 22% of a Switch game's in
    its street resolved a handle again that way. A miss doesn't take a way unless what it found is kept */
 #define TEX_MEMO_SET_BITS 11
 #define TEX_MEMO_WAYS     4
-static TexMemo g_tex_memo[1u << TEX_MEMO_SET_BITS][TEX_MEMO_WAYS];
-static u32 g_tex_memo_use;
+static struct {
+    TexMemo set[1u << TEX_MEMO_SET_BITS][TEX_MEMO_WAYS];
+    u32 use; /* counts the lookups that found or kept a way */
+} g_tex_memo;
 /* The CPU's writes since m was kept, when the stream's epoch moved: an epoch moves at each submission and each wait
    that ends, and the CPU writes somewhere in nearly every one. What a handle resolves to comes from its two headers
    alone, with the rest checked at each hit as tex_from_tic checks it (vk_tex_recheck for a texture's texels, the read
@@ -1184,7 +1186,7 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     }
     u64 tic_base = b->tex_pool, tsc_base = b->smp_pool;
     u64 tic_at = tic_base + (handle & 0xFFFFF) * 32ull, tsc_at = tsc_base + ((handle >> 20) & 0xFFF) * 32ull;
-    TexMemo* set = g_tex_memo[((u64)handle * VK_FIB_MULT) >> (64 - TEX_MEMO_SET_BITS)];
+    TexMemo* set = g_tex_memo.set[((u64)handle * VK_FIB_MULT) >> (64 - TEX_MEMO_SET_BITS)];
     TexMemo* m = NULL;
     for (u32 w = 0; w < TEX_MEMO_WAYS && !m; w++)
         if (set[w].t && set[w].handle == handle && set[w].ds == ds && set[w].tic_base == tic_base &&
@@ -1218,7 +1220,7 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
         !g_gfx_img_any && tex_memo_unpended(m, tic_at, tsc_at, adds) &&
         (m->gw == gw || (!gpu_mem_dirty_since(m->gw, tic_at, 32) && !gpu_mem_dirty_since(m->gw, tsc_at, 32)))) {
         m->gw = gw;
-        m->used = ++g_tex_memo_use;
+        m->used = ++g_tex_memo.use;
         memcpy(x->tic, m->tic, sizeof x->tic);
         memcpy(x->tsc, m->tsc, sizeof x->tsc);
         if (m->rt) {
@@ -1245,7 +1247,7 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
             for (u32 w = 1; w < TEX_MEMO_WAYS && m->t; w++)
                 if (!set[w].t || (i32)(set[w].used - m->used) < 0) m = &set[w];
         }
-        m->used = ++g_tex_memo_use;
+        m->used = ++g_tex_memo.use;
         m->rt = x->t->is_rt;
         m->ds = ds;
         m->handle = handle;
