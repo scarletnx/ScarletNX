@@ -39,6 +39,8 @@
 #include "nx/gpu/texture/astc_spv.h" /* compiled from astc.comp by the build (cmake/glsl.cmake) */
 #include "nx/gpu/texture/bc7_spv.h"  /* compiled from bc7.comp */
 #include "nx/gpu/texture/blocklinear_spv.h"
+#include "nx/gpu/texture/astc_bc.h"
+#include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 
@@ -74,7 +76,20 @@ static u64 g_rgba8_bytes;
    tens of seconds of it ahead of the GPU, and the device was lost in most runs, with no error in the validation layer
    and no fault in the kernel's log. Past this many blocks an upload waits for the GPU to do them. A wait costs little,
    as the game is held by what the GPU has to do anyway. Splitting them over submissions with no wait did not help */
-#define BC7_QUEUED_BLOCKS (1u << 18)
+static u64 bc7_queued_limit(void) {
+    static u64 limit;
+    if (!limit) {
+        const VkPhysicalDeviceMemoryProperties* mp;
+        vmaGetMemoryProperties(g_vk.vma, &mp);
+        const u64 heap = mp->memoryHeaps[vk_mem_heap()].size;
+        limit = snx_bc7_queue_blocks(g_settings.bc7_queue, heap, vk_uma());
+        LOG("vulkan: the BC7 encoder queues up to %llu thousand blocks before an upload waits for the GPU (bc7_queue=%d%s, "
+            "%llu MB of the GPU's own memory%s)\n",
+            (unsigned long long)(limit >> 10), g_settings.bc7_queue, g_settings.bc7_queue ? "" : ", Auto",
+            (unsigned long long)(heap >> 20), vk_uma() ? ", shared with the CPU" : "");
+    }
+    return limit;
+}
 /* The submission that will include the last counted encoder. Completed uploads do not contribute to the limit:
    retaining their blocks across frames made a small later upload flush and wait for unrelated graphics work. */
 static struct {
@@ -585,7 +600,7 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
             if (bc7) {
                 g_bc7_queued.blocks += (u64)cx * ((height + 3) / 4) * nz;
                 g_bc7_queued.until = vk_last_submit() + 1;
-                if (g_bc7_queued.blocks >= BC7_QUEUED_BLOCKS) {
+                if (g_bc7_queued.blocks >= bc7_queued_limit()) {
                     g_bc7_queued.blocks = 0;
                     vk_submit_upload_wait();
                     /* This upload continues after the submission too. Rows callbacks may only stage bytes;

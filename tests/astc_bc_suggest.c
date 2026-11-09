@@ -25,5 +25,13 @@ int main(void) {
         assert(!snx_astc_bc_suggest(0, 1, 0, 0, why));        /* no ASTC texture decoded: nothing it would hold */
     }
     assert(!snx_astc_bc_suggest(0, 1, 0, 300 * MB, SNX_ASTC_SHORT_NONE)); /* the images had room */
+    /* the BC7 encoder's queue: the setting's thousands, else 256 thousand a 2 GiB of the GPU's own memory, from 256
+       thousand (a GT 1030's 2 GB, or memory shared with the CPU) to 4 million (an RX 6700 XT's 12 GB gives 1.5) */
+    assert(snx_bc7_queue_blocks(512, 12288 * MB, 0) == 512ull << 10);
+    assert(snx_bc7_queue_blocks(0, 12288 * MB, 1) == 256ull << 10);
+    assert(snx_bc7_queue_blocks(0, 2048 * MB, 0) == 256ull << 10 && snx_bc7_queue_blocks(0, 1024 * MB, 0) == 256ull
+                                                                                                                 << 10);
+    assert(snx_bc7_queue_blocks(0, 12288 * MB, 0) == 1536ull << 10);
+    assert(snx_bc7_queue_blocks(0, 65536 * MB, 0) == 4096ull << 10);
     return 0;
 }

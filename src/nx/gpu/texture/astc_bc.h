@@ -29,4 +29,19 @@ static inline int snx_astc_bc_suggest(int bc7, int bc, int astc, unsigned long l
     return why != SNX_ASTC_SHORT_NONE && !bc7 && bc && !astc && astc_bytes;
 }
 
+/* The blocks the BC7 encoder may have queued on the GPU before an upload waits for it to do them (bc7_queue, in
+   thousands; 0 is Auto): Auto gives 256 thousand for every 2 GiB of the GPU's own memory, heap bytes, from 256
+   thousand to 4 million, and 256 thousand to a GPU that shares the CPU's memory (uma). A GT 1030 (2 GB) lost the
+   device past 256 thousand, a second of its encoder; an RX 6700 XT (12 GB) encodes about 10 million a second, and
+   waited 2 s a minute at 256 thousand in one game's loads */
+#define SNX_BC7_QUEUE_MIN (256ull << 10)
+#define SNX_BC7_QUEUE_MAX (4096ull << 10)
+static inline unsigned long long snx_bc7_queue_blocks(int setting, unsigned long long heap, int uma) {
+    unsigned long long n;
+    if (setting > 0) return (unsigned long long)setting << 10;
+    if (uma) return SNX_BC7_QUEUE_MIN;
+    n = SNX_BC7_QUEUE_MIN * (heap / (2ull << 30));
+    return n < SNX_BC7_QUEUE_MIN ? SNX_BC7_QUEUE_MIN : n > SNX_BC7_QUEUE_MAX ? SNX_BC7_QUEUE_MAX : n;
+}
+
 #endif
