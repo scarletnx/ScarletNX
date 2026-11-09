@@ -75,6 +75,24 @@ interface nn::chat::IUserShimScopedObject {
     [1] GetChattingEvent() -> handle<copy, event> event;
 }
 
+# ntc, the network clock (Switchbrew's NTC services). Nothing goes on the network: the task that makes the network clock
+# available is done as it is asked for, its event signaled from the start, and the server's time is the host's. One
+# Ounce game opens it from its menus and used the object command 0 gave back
+interface nn::ntc::detail::service::IStaticService is ntc {
+    [0] OpenEnsureNetworkClockAvailabilityService(u32 event_clear_mode, u32 mode)
+        -> object<nn::ntc::detail::service::IEnsureNetworkClockAvailabilityService> service;
+    [100] SuspendAutonomicTimeCorrection();
+    [101] ResumeAutonomicTimeCorrection();
+}
+interface nn::ntc::detail::service::IEnsureNetworkClockAvailabilityService {
+    [0] StartTask();
+    [1] GetFinishNotificationEvent() -> handle<copy, event> event;
+    [2] GetResult();
+    [3] Cancel();
+    [4] IsProcessing() -> b8 processing;
+    [5] GetServerTime() -> i64 time;
+}
+
 # GameShare, which the console's chat module hosts too. A game can ask for its sizes at boot whether it shares or not, and
 # the SDK takes the object from command 0 and the memory from command 300 before any of it. No session ever starts:
 # what else a game asks of these answers as an undeclared command does. The names are guesses from the SDK's callers
