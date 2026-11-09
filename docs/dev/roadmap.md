@@ -25,7 +25,8 @@ Implemented: Clang/CMake, Linux/Windows CI, SDL3/Vulkan, shader caches, componen
 - **Updates and DLC:** checked with synthetic dumps and a homebrew game laid out as an update with DLCs, not yet with
   a real game's update or DLC: an update's Patch RomFS read at run time, and a game's own aoc:u calls.
 - **Host:** vsync during Win32 window drags, native Windows/gamepad coverage.
-- **Performance:** runtime/guest profiling, Vulkan measurements, broader title coverage.
+- **Performance:** runtime/guest profiling, Vulkan measurements, broader title coverage. The CPU cost of each draw
+  on the GPU thread sets the frame rate now: [the plan](draw-cost.md).
 
 Commands: [development](development.md).
 

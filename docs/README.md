@@ -40,6 +40,7 @@ keeps audits and measurements as they were taken.
 - [The recompiler as a library](dev/library.md): building, using and the limits of `libscarletnx-recompiler`
 - [edenprobe](dev/edenprobe.md): the hardware probes CI runs against a baseline
 - [Status and roadmap](dev/roadmap.md): what is next
+- [The CPU cost of a draw](dev/draw-cost.md): the plan to cut the GPU thread's work for each draw
 - [Contributing](../CONTRIBUTING.md): game data, checks, commits and pull requests
 
 ## Guest platforms
