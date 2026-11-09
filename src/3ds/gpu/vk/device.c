@@ -14,13 +14,14 @@
 static struct {
     SnxCtrVk vk;
     int up;
-    char error[768];  /* why the last snx_ctr_vk_init failed (an import refused, then the device's memory's reason) */
+    char error[768];  /* why the last snx_ctr_vk_init failed (an import refused, then the device's memory's and the
+                         copy's reasons) */
     char device[512]; /* the device it chose and its driver, "" before one */
 } g_device;
 
 SnxCtrVk* snx_ctr_vk(void) { return g_device.up ? &g_device.vk : NULL; }
 bool snx_ctr_vk_copies(void) { return g_device.up && g_device.vk.ram_count && g_device.vk.ram[0].copy; }
-bool snx_ctr_vk_shadow(void) { return g_device.up && g_device.vk.host_shadow; }
+bool snx_ctr_vk_shadow(void) { return g_device.up && g_device.vk.host_shadow && g_device.vk.ram_count; }
 const char* snx_ctr_vk_error(void) { return g_device.error; }
 
 bool snx_ctr_vk_window(uint32_t pa, uint64_t size, SnxCtrVkWindow* w, uint32_t* inside) {
@@ -517,6 +518,7 @@ static void choose_path(SnxCtrVk* v, SnxCtrMemory* memory) {
    with why in error, and nothing of it left */
 static bool shadow_ram(SnxCtrVk* v, SnxCtrMemory* memory, char* error, size_t error_size) {
     const SnxCtrProfile* profile = snx_ctr_memory_profile(memory);
+    bool have_type = false;
     for (size_t i = 0; i < profile->region_count; ++i) {
         unsigned char* guest = snx_ctr_memory_region(memory, i);
         const SnxCtrRegion* r = &profile->regions[i];
@@ -579,7 +581,10 @@ static bool shadow_ram(SnxCtrVk* v, SnxCtrMemory* memory, char* error, size_t er
         }
         ram->guest = guest;
         v->shadow_bytes += req.size;
-        if (!v->shadow_type) v->shadow_type = type; /* the regions' buffers are alike: the first one's type says it */
+        if (!have_type) { /* the regions' buffers are alike: the first one's type says it */
+            v->shadow_type = type;
+            have_type = true;
+        }
     }
     return true;
 }
@@ -666,7 +671,6 @@ static bool init(SnxCtrMemory* memory, char* error, size_t error_size) {
         } else {
             char why[256], copy_why[256];
             snx_ctr_vk_device_ram_error(&f, snx_ctr_memory_profile(memory)->regions[f.region].name, why, sizeof why);
-            v->host_shadow = true;
             if (!shadow_ram(v, memory, copy_why, sizeof copy_why)) {
                 snprintf(error, error_size,
                          "%s; nor can the board's RAM be the device's memory: %s; nor a copy in its host-visible "
@@ -675,6 +679,7 @@ static bool init(SnxCtrMemory* memory, char* error, size_t error_size) {
                 snx_ctr_vk_free();
                 return false;
             }
+            v->host_shadow = true;
         }
     }
     choose_path(v, memory);

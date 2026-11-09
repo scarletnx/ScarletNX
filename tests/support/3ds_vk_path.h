@@ -37,6 +37,7 @@ static inline void test_ctr_vk_memory_taken(int given) {
         if (given == 1) return;
         fprintf(stderr, "vk_memory=2 asks for the RAM in place, and the device keeps a copy of it in its host-visible "
                         "memory instead: no in-place path here\n");
+        snx_ctr_vk_free();
         exit(77);
     }
     if (snx_ctr_vk_copies() == (given == 1)) return;

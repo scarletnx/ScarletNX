@@ -977,10 +977,8 @@ void snx_ctr_vk_track(void* context, uint32_t pa, SnxCtrTrackLevel level) {
     } else { /* the CPU writes it: after the GPU's reads of it, and what the GPU made of it is stale, its copy too */
         PageState* page = page_state(pa);
         if (page && page->read) (void)snx_ctr_vk_wait(page->read, UINT64_MAX);
-        if (page && page->copy == COPY_NEWER) { /* the GPU wrote it and its level is not raised yet: the CPU wins */
-            if (page->write) (void)snx_ctr_vk_wait(page->write, UINT64_MAX);
-            page->copy = COPY_STALE;
-        }
+        if (page && page->copy == COPY_NEWER) /* the GPU wrote it and its level is not raised yet: its bytes land */
+            copy_out(pa);
         stale(pa, 4096);
         if (page && page->copy == COPY_SAME) page->copy = COPY_STALE;
     }
@@ -2021,7 +2019,10 @@ static void copy_every_page_back(void) {
     if (!g.pages || !(snx_ctr_vk_copies() || shadow)) return;
     uint32_t index = 0;
     bool copied = false;
-    if (shadow) { /* the GPU's submissions done, without recording what is open: nothing writes the copy the CPU reads */
+    /* The GPU's submissions done, without recording what is open: nothing writes the copy the CPU reads. Work the
+       open recording holds and never submitted is dropped, and a page it wrote is copied back from the copy, which
+       already holds the guest's bytes (copy_in put them there, or the page was the same): only that work is lost */
+    if (shadow) {
         uint64_t last = snx_ctr_vk_serial();
         if (last > 1) (void)snx_ctr_vk_wait(last - 1, UINT64_MAX);
     }

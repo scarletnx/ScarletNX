@@ -168,7 +168,9 @@ int main(void) {
     if (snx_ctr_vk_init(m, why, sizeof why)) {
         const SnxCtrVk* v = snx_ctr_vk();
         assert(!snx_ctr_vk_error()[0]);
-        if (v->ram_memory)
+        if (snx_ctr_vk_shadow())
+            printf("the device started, the RAM a copy in its host-visible memory\n");
+        else if (v->ram_memory)
             printf("the device started, the RAM its memory (type %u, a dma-buf)\n", v->ram_type);
         else
             printf("the device started, every RAM region imported\n");
