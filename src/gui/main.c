@@ -1429,13 +1429,10 @@ static bool recent_on(const App* app) { return app->options[GUI_OPTION_RECENT] =
 static bool dumps_on(const App* app) { return app->options[GUI_OPTION_DUMPS] == 0; }
 static bool by_last_opened(const App* app) { return app->options[GUI_OPTION_SORT] == 1; }
 static bool games_grid(const App* app) { return app->options[GUI_OPTION_VIEW] == 1; }
-/* the options before app.ini names them: each its first word, Icon size Medium, but on iOS (ios) Recent Games and
-   Dumps off, as a phone keeps the games made in the app's recompiled/, which Games lists whole (a second list of them
-   only repeats it), and prepares a dump from the Menu */
-static void games_defaults(App* app, bool ios) {
+/* the options before app.ini names them: each its first word, Icon size Medium, on each system */
+static void games_defaults(App* app) {
     memset(app->options, 0, sizeof app->options);
     app->options[GUI_OPTION_ICONS] = 1; /* Medium */
-    if (ios) app->options[GUI_OPTION_RECENT] = app->options[GUI_OPTION_DUMPS] = 1;
 }
 /* Settings > App's picks and Games' options written to app_file: 0, else nonzero, said by the caller */
 static int app_write(App* app) {
@@ -18147,11 +18144,7 @@ static bool paths_start(App* app, const char* self) {
 static bool initialize(App* app, const char* self) {
     SDL_WindowFlags flags;
     memset(app, 0, sizeof(*app));
-#ifdef SDL_PLATFORM_IOS
-    games_defaults(app, true);
-#else
-    games_defaults(app, false);
-#endif
+    games_defaults(app);
     app->menu.selected = GUI_SWITCH; /* the first item until Games shows */
     app->clean_found = -1;
 #ifdef SNX_TOUCH_UI
