@@ -5,6 +5,7 @@
 * [The GPU path](#the-gpu-path)
 * [The platform](#the-platform)
   * [GameChat's images and the camera](#gamechats-images-and-the-camera)
+* [Built-in fonts](#built-in-fonts)
 * [Shaders](#shaders)
 * [Surfaces](#surfaces)
 * [Driver offsets](#driver-offsets)
@@ -69,6 +70,22 @@ The camera session (gsv 602) answers each command but 21 with result 0xdc4 (modu
 with no camera. The game's own camera module accepts it from command 3 (the camera "Default") and from command 29,
 which it sends again and again. Command 21 must give an event, which the module attaches as a system event. The module
 stops if 21 fails. With no camera, the event is never signaled.
+
+## Built-in fonts
+
+An Ounce game's SDK has `nn::pl::GetBuiltInFontData(BuiltInFontDataOunce*, BuiltInFontTypeOunce, bool)` beside the
+shared fonts' calls. It asks `pl` with two commands (`pl.c`):
+
+- **2010**, with the font's type in the request's first byte and a bool in the second. The reply's raw data is a found
+  byte, then at +4 the font's 12 bytes: two bytes that the SDK copies to the caller's `BuiltInFontDataOunce`, the
+  font's offset at +8 of the reply and its size at +0xc. The SDK reads the font's bytes as a u64 at +4 and a u32 at
+  +0xc, and it fills the caller's structure only when the found byte is 1.
+- **2000**, once, at the first font that 2010 finds: a `u32` size and a copy handle of the shared memory that holds
+  the fonts. The SDK maps that memory read-only and stops when the command fails. The pointer it gives the game is
+  the base of that mapping plus the offset of 2010.
+
+The fonts are the shared fonts of commands 0 to 6: each is a plain TrueType font after its header, so the same memory
+answers both. `tests/pl_fonts.c` sends both commands through the dispatcher.
 
 ## Shaders
 
