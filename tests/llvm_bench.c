@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* Speed of the generated code. Each kernel is AArch64 assembly (assembled with CLANG's aarch64 target), recompiled by
    the CLI, and run AOT with x19 iterations.
-     llvm_bench SCARLETNX REPO CLANG [--iterations N] [--kernel NAME] [-O LEVEL]
+     llvm_bench SCARLETNX REPO CLANG [--iterations N] [--kernel NAME] [-O LEVEL] [--abi-contract] [--stats]
    Prints one line per kernel: seconds and ns per iteration. */
 #include "common/utilities/common.h"
 #include "common/cpu/aarch64/cpu.h"
@@ -18,45 +18,72 @@
 
 typedef struct {
     const char *name, *source;
+    u64 (*checksum)(u64 iterations); /* x1 at the end, NULL when the kernel leaves no checkable result */
 } Kernel;
+
+/* the switch kernel's sum: indices 0..7 select 10, 20, 30, 40 and the default 99 four times */
+static u64 switch_sum(u64 iterations) {
+    static const unsigned per[8] = {10, 20, 30, 40, 99, 99, 99, 99};
+    u64 sum = iterations / 8 * 496, i;
+    for (i = 0; i < iterations % 8; ++i) sum += per[i];
+    return sum;
+}
 
 /* each kernel: main at 0x80 loops x19 times and returns through x30 = 0; x3 points at scratch memory */
 static const Kernel kernels[] = {
     {"rsqrte", "main:\n fmov v1.4s, #1.5\nloop:\n frsqrte v1.4s, v1.4s\n"
                " frsqrte v1.4s, v1.4s\n frsqrte v1.4s, v1.4s\n frsqrte v1.4s, v1.4s\n"
-               " subs x19, x19, #1\n b.ne loop\n str q1, [x3]\n ret\n"},
+               " subs x19, x19, #1\n b.ne loop\n str q1, [x3]\n ret\n", NULL},
     {"rsqrte-mixed", "main:\n fmov v1.4s, #1.5\n mov v1.s[2], wzr\nloop:\n"
                      " frsqrte v0.4s, v1.4s\n eor v3.16b, v3.16b, v0.16b\n"
                      " frsqrte v0.4s, v1.4s\n eor v3.16b, v3.16b, v0.16b\n"
-                     " subs x19, x19, #1\n b.ne loop\n str q3, [x3]\n ret\n"},
+                     " subs x19, x19, #1\n b.ne loop\n str q3, [x3]\n ret\n", NULL},
     {"integer", "main:\n mov x1, #0\n mov x2, #1\nloop:\n add x1, x1, x2\n eor x2, x2, x1, lsl #3\n"
                 " and x4, x1, #0xff00ff00ff00ff00\n orr x5, x4, #0x3\n adds x6, x5, x2\n csel x7, x6, x1, mi\n"
                 " ubfx x8, x7, #5, #17\n madd x1, x8, x2, x1\n str x1, [x3, #8]\n ldr x9, [x3, #8]\n"
                 " add x2, x2, x9, lsr #7\n and w10, w2, #0x7ffffff0\n eor x2, x2, x10\n tbz x2, #5, 1f\n"
-                " sub x2, x2, #3\n1:\n subs x19, x19, #1\n b.ne loop\n ret\n"},
+                " sub x2, x2, #3\n1:\n subs x19, x19, #1\n b.ne loop\n ret\n", NULL},
     {"fp", "main:\n fmov d0, #1.0\n fmov d1, #1.5\n fmov d2, #0.5\n fmov s3, #2.0\n fmov s4, #1.25\nloop:\n"
            " fadd d0, d0, d2\n fmul d5, d0, d1\n fdiv d6, d5, d1\n fsub d0, d6, d2\n fmadd d7, d0, d1, d2\n"
            " fsqrt d8, d7\n fmul d0, d0, d2\n fadd d0, d0, d8\n fadd s3, s3, s4\n fdiv s3, s3, s4\n"
            " fmul s5, s3, s4\n fsub s3, s5, s3\n fcvtzs x9, d8\n scvtf d9, x9\n fcmp d9, d8\n cset x10, gt\n"
-           " add x1, x1, x10\n subs x19, x19, #1\n b.ne loop\n ret\n"},
+           " add x1, x1, x10\n subs x19, x19, #1\n b.ne loop\n ret\n", NULL},
     {"simd", "main:\n fmov v2.4s, #1.5\n fmov v1.4s, #0.5\n movi v5.4s, #3\n movi v6.4s, #1\nloop:\n"
              " fadd v1.4s, v1.4s, v2.4s\n fmul v3.4s, v1.4s, v2.4s\n fmla v4.4s, v3.4s, v2.4s\n"
              " fdiv v1.4s, v3.4s, v2.4s\n add v5.4s, v5.4s, v6.4s\n st1 {v5.4s}, [x3]\n ld1 {v6.4s}, [x3]\n"
              " uzp1 v7.4s, v5.4s, v6.4s\n cnt v8.16b, v7.16b\n rbit v9.16b, v8.16b\n add v6.4s, v6.4s, v9.4s\n"
-             " dup v10.4s, w19\n eor v4.16b, v4.16b, v10.16b\n subs x19, x19, #1\n b.ne loop\n ret\n"},
+             " dup v10.4s, w19\n eor v4.16b, v4.16b, v10.16b\n subs x19, x19, #1\n b.ne loop\n ret\n", NULL},
     {"crypto", "main:\n dup v1.2d, x3\n dup v0.4s, w3\nloop:\n aese v0.16b, v1.16b\n aesmc v0.16b, v0.16b\n"
                " aesd v2.16b, v1.16b\n aesimc v2.16b, v2.16b\n pmull v3.1q, v0.1d, v1.1d\n pmull2 v4.1q, v0.2d, v1.2d\n"
                " fmov x6, d3\n crc32x w5, w5, x6\n crc32cx w7, w7, x6\n crc32b w5, w5, w6\n crc32ch w7, w7, w6\n"
-               " eor v1.16b, v1.16b, v4.16b\n eor v2.16b, v2.16b, v3.16b\n subs x19, x19, #1\n b.ne loop\n ret\n"},
+               " eor v1.16b, v1.16b, v4.16b\n eor v2.16b, v2.16b, v3.16b\n subs x19, x19, #1\n b.ne loop\n ret\n", NULL},
     {"tricks", "main:\n movi v1.4s, #7\n movi v2.2d, #0xff\n movi v3.16b, #200\n dup v4.16b, w3\nloop:\n"
                " sqadd v5.4s, v5.4s, v1.4s\n sqsub v6.2d, v6.2d, v2.2d\n uqadd v7.16b, v7.16b, v3.16b\n"
                " srhadd v8.16b, v8.16b, v4.16b\n urhadd v9.8h, v9.8h, v3.8h\n bsl v10.16b, v4.16b, v3.16b\n"
                " bif v11.16b, v5.16b, v4.16b\n rbit v12.16b, v8.16b\n ushr v13.16b, v7.16b, #3\n"
                " sshr v14.16b, v8.16b, #2\n rbit x9, x19\n crc32x w5, w5, x9\n crc32w w6, w6, w19\n"
-               " ursra v15.16b, v12.16b, #5\n eor v4.16b, v4.16b, v13.16b\n subs x19, x19, #1\n b.ne loop\n ret\n"},
+               " ursra v15.16b, v12.16b, #5\n eor v4.16b, v4.16b, v13.16b\n subs x19, x19, #1\n b.ne loop\n ret\n", NULL},
     {"calls", "main:\n mov x21, x30\n adr x20, f2\n mov x1, #0\nloop:\n bl f1\n blr x20\n subs x19, x19, #1\n"
               " b.ne loop\n mov x30, x21\n ret\n bl f2\nf1:\n add x1, x1, #1\n eor x2, x2, x1, ror #7\n ret\n"
-              "f2:\n add x2, x2, x1, lsl #2\n ret\n"},
+              "f2:\n add x2, x2, x1, lsl #2\n ret\n", NULL},
+    /* the callee saves and restores two callee-saved registers, which the caller keeps live across the call: under
+       abi_contract the caller reloads neither, without it it reloads both after every call */
+    {"calls-saved", "main:\n mov x21, x30\n mov x20, #0\n mov x22, #0\nloop:\n bl f\n"
+                    " eor x20, x20, x19\n add x22, x22, x20\n eor x20, x20, x22, ror #7\n"
+                    " add x22, x22, x19, lsl #2\n eor x20, x20, x22, lsr #3\n add x22, x22, x20\n"
+                    " subs x19, x19, #1\n b.ne loop\n mov x30, x21\n ret\n"
+                    "f:\n stp x20, x22, [sp, #-16]!\n add x20, x20, #1\n add x22, x22, #2\n"
+                    " ldp x20, x22, [sp], #16\n ret\n", NULL},
+    /* a bounded switch: indices 0..7, four cases and the default. The cases are reached only through the table, so a
+       discovery that stops at the BR compiles none of them and the dispatch's default misses at run time */
+    {"switch", "main:\n mov x20, #0\n mov x1, #0\nloop:\n and w0, w20, #7\n bl dispatch\n"
+               " add x1, x1, x0\n add x20, x20, #1\n subs x19, x19, #1\n b.ne loop\n str x1, [x3]\n ret\n"
+               "dispatch:\n cmp w0, #3\n b.hi def\n adr x2, table\n ldrsw x4, [x2, w0, uxtw #2]\n"
+               " add x4, x2, x4\n br x4\n"
+               "c0:\n mov w0, #10\n ret\nc1:\n mov w0, #20\n ret\nc2:\n mov w0, #30\n ret\nc3:\n mov w0, #40\n ret\n"
+               "def:\n mov w0, #99\n ret\n"
+               " .p2align 2\ntable:\n .word c0-table\n .word c1-table\n .word c2-table\n .word c3-table\n",
+     switch_sum},
 };
 
 #define MEMORY 0x40000
@@ -154,7 +181,7 @@ int main(int argc, char** argv) {
     size_t k;
     u64 iterations = 2000000;
     char *root, *text = NULL;
-    int a;
+    int a, abi_contract = 0, stats = 0;
     if (argc < 4) return 2;
     for (a = 4; a < argc; ++a) {
         if (a + 1 < argc && !strcmp(argv[a], "--iterations"))
@@ -163,6 +190,10 @@ int main(int argc, char** argv) {
             only = argv[++a];
         else if (a + 1 < argc && !strcmp(argv[a], "-O"))
             opt = argv[++a];
+        else if (!strcmp(argv[a], "--abi-contract"))
+            abi_contract = 1;
+        else if (!strcmp(argv[a], "--stats"))
+            stats = 1;
         else
             return snx_error("unknown argument %s", argv[a]);
     }
@@ -224,17 +255,33 @@ int main(int argc, char** argv) {
             rargs[n++] = out;
             rargs[n++] = "--runtime";
             rargs[n++] = argv[1];
-            rargs[n++] = "-q";
+            rargs[n++] = stats ? "--ir_stats=1" : "-q";
             if (opt) {
                 rargs[n++] = "-O";
                 rargs[n++] = opt;
             }
+            if (abi_contract) rargs[n++] = "--abi_contract=1";
             rargs[n] = NULL;
             if (snx_run(rargs, root, NULL, &text) || run(module, image, sizeof(image), iterations, &result, &seconds)) {
                 fprintf(stderr, "%s failed\n%s\n", kernels[k].name, text ? text : "");
                 ++failures;
-            } else
+            } else {
+                if (kernels[k].checksum && result.x[1] != kernels[k].checksum(iterations)) {
+                    fprintf(stderr, "%s: x1=%llx, expected %llx\n", kernels[k].name, (unsigned long long)result.x[1],
+                            (unsigned long long)kernels[k].checksum(iterations));
+                    ++failures;
+                }
                 printf("%-8s %8.3f s %8.2f ns/iteration\n", kernels[k].name, seconds, seconds * 1e9 / (double)iterations);
+            }
+            if (stats && text) {
+                char* line = text;
+                while (line && *line) {
+                    char* end = strchr(line, '\n');
+                    size_t len = end ? (size_t)(end - line) : strlen(line);
+                    if (len > 8 && strstr(line, "IR stats")) printf("  %.*s\n", (int)len, line);
+                    line = end ? end + 1 : NULL;
+                }
+            }
             fflush(stdout);
             free(text);
             text = NULL;

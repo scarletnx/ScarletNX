@@ -157,6 +157,7 @@ typedef struct SnxIr {
     int windows;
     int promote; /* ir_promote_registers at this level (O1 and above): at O0 SROA and mem2reg leave its slots on
                     the stack */
+    unsigned abi_contract : 1; /* the setting abi_contract: guest BL and BLR sites follow AAPCS64 (ir_promote.c) */
     const SnxIrFeatures* features;
     SnxIrStats stats;
     SnxU64 dump_pc, dump_instruction_pc;
@@ -246,6 +247,11 @@ void snx_ir_diagnostics(int stats, const char* dump_pc);
    carry it */
 void snx_ir_volatile_memory(int on);
 int snx_ir_volatile(void);
+/* Whether guest calls follow AAPCS64 at BL and BLR sites (the setting abi_contract, off by default): on, promotion
+   keeps the callee-saved registers in their host locations across a call and does not store the caller-saved ones
+   that are dead after it. Once per process, before any module is made; the caches' keys carry it */
+void snx_ir_abi_contract(int on);
+int snx_ir_abi_contract_on(void);
 /* opt is the -O letter: 0,1,2,3,s,z */
 SnxIr* snx_ir_new(const char* name, char opt, char* error, size_t error_size);
 /* the same for code the JIT loader loads into this process (code_loader.h): the host's target, CPU and calling

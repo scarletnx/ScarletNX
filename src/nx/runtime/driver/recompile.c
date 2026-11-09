@@ -703,6 +703,7 @@ static int make_program(const MakeArgs* a, int index) {
         snx_ir_slp_vectorizer(g_settings.slp_vectorizer);
         snx_ir_fpsr_flags(g_settings.fpsr_flags);
         snx_ir_volatile_memory(g_settings.volatile_load_stores);
+        snx_ir_abi_contract(g_settings.abi_contract);
         snx_ir_diagnostics(g_settings.ir_stats, g_settings.ir_dump_pc);
         old_branch_profile();
         snx_ir_branch_profile(g_settings.ir_branch_profile);

@@ -26,6 +26,7 @@ static struct {
     int region_budget; /* snx_ir_init's, of the greedy allocator's growRegion */
     int fpsr_loose; /* snx_ir_fpsr_flags(0)'s */
     int volatile_memory; /* snx_ir_volatile_memory's */
+    int abi_contract; /* snx_ir_abi_contract's */
     int mips_tail_calls; /* snx_ir_init's, of LLVM's MIPS tail calls */
     int stats, dump;     /* snx_ir_diagnostics's: ir_stats, and whether ir_dump_pc names a function */
     SnxU64 dump_pc;
@@ -95,6 +96,8 @@ int snx_ir_slp(void) { return !g_ir.slp_off; }
 void snx_ir_fpsr_flags(int exact) { g_ir.fpsr_loose = !exact; }
 int snx_ir_fpsr_exact(void) { return !g_ir.fpsr_loose; }
 void snx_ir_volatile_memory(int on) { g_ir.volatile_memory = on != 0; }
+void snx_ir_abi_contract(int on) { g_ir.abi_contract = on != 0; }
+int snx_ir_abi_contract_on(void) { return g_ir.abi_contract; }
 void snx_ir_diagnostics(int stats, const char* dump_pc) {
     char* end = NULL;
     g_ir.stats = stats != 0;
@@ -262,6 +265,7 @@ static SnxIr* new_ir(const char* name, char opt, const char* target_triple, int 
     SnxIr* ir = (SnxIr*)calloc(1, sizeof(*ir));
     if (!ir) return NULL;
     ir->promote = opt != '0';
+    ir->abi_contract = g_ir.abi_contract;
     ir->stats.enabled = g_ir.stats;
     ir->dump_pc = g_ir.dump_pc;
     ir->dump_function = g_ir.dump;

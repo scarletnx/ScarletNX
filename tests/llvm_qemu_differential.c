@@ -991,7 +991,8 @@ int main(int argc, char** argv) {
     const char *expected_path, *reference_path = NULL, *record_path = NULL;
     size_t states, samples, rounds, nwords, nitems = 0, i, k, nsteps = 0, compared = 0, mismatched = 0,
                                                     no_emitter = 0, nexpected;
-    int sweep = 0, update = 0, jit = 0, portable = LLVM_STEPS_HOST, a, failed = 0, reference = 0, no_avx512 = 0;
+    int sweep = 0, update = 0, jit = 0, abi = 0, portable = LLVM_STEPS_HOST, a, failed = 0, reference = 0,
+        no_avx512 = 0;
     static const char* const forms[] = {"host", "portable", "generic"}; /* the emitters', by LLVM_STEPS_ value */
     u32* words = NULL;
     Item* items;
@@ -1028,9 +1029,10 @@ int main(int argc, char** argv) {
         a = 5;
     } else {
         fputs("usage: snx-test-llvm-qemu-differential QEMU RUNNER DIR EXPECTED [--sweep] [--states N] [--seed N] "
-              "[--quiet] [--update] [--jit] [--portable | --generic] [--without-avx512] [--record FILE]\n"
+              "[--quiet] [--update] [--jit] [--abi-contract] [--portable | --generic] [--without-avx512] "
+              "[--record FILE]\n"
               "       snx-test-llvm-qemu-differential DIR EXPECTED --reference FILE [--quiet] [--update] [--jit] "
-              "[--portable | --generic] [--without-avx512]\n"
+              "[--abi-contract] [--portable | --generic] [--without-avx512]\n"
               "       snx-test-llvm-qemu-differential --skip REASON\n",
               stderr);
         return 2;
@@ -1048,6 +1050,8 @@ int main(int argc, char** argv) {
             jit = 1;
         else if (!strcmp(argv[a], "--without-avx512"))
             no_avx512 = 1;
+        else if (!strcmp(argv[a], "--abi-contract"))
+            abi = 1;
         else if (!strcmp(argv[a], "--portable") || !strcmp(argv[a], "--generic")) {
             int form = !strcmp(argv[a], "--portable") ? LLVM_STEPS_PORTABLE : LLVM_STEPS_GENERIC;
             if (portable && portable != form)
@@ -1077,6 +1081,7 @@ int main(int argc, char** argv) {
             return 77;
         }
     }
+    if (abi) snx_ir_abi_contract(1);
     if (reference) {
         size_t size = 0;
         u64 window, window_size, pc, seed, pad;

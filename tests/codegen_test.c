@@ -200,6 +200,102 @@ static void address_taken_shifted_test(void) {
     snx_codegen_free(&codegen);
 }
 
+/* A switch into a table outside the text: compare, bound, the table's address, the entry load, the entry's ADD and
+   the BR. Without an FDE the function's discovery stops at the BR, so unless it follows the table the cases are
+   neither compiled into the function nor leaders, and the dispatch's default would miss at run time */
+static void jump_table_test(void) {
+    static const SnxU32 words[] = {
+        0x71000C1FUL, /* cmp w0, #3 */
+        0x540001E8UL, /* b.hi 0x40: the default */
+        0x90000001UL, /* adrp x1, base's page */
+        0x91020021UL, /* add x1, x1, #0x80: the table */
+        0xB8A05822UL, /* ldrsw x2, [x1, w0, uxtw #2] */
+        0x8B020022UL, /* add x2, x1, x2: an entry is a byte offset from the table */
+        0xD61F0040UL, /* br x2 */
+        0x52800020UL, /* case 0: mov w0, #1 */
+        0x1400000AUL, /* b 0x48 */
+        0x52800040UL, /* case 1 */
+        0x14000008UL, /* b 0x48 */
+        0x52800060UL, /* case 2 */
+        0x14000006UL, /* b 0x48 */
+        0x52800080UL, /* case 3 */
+        0x14000004UL, /* b 0x48 */
+        0xD503201FUL, /* nop */
+        0x52800000UL, /* default: mov w0, #0 */
+        0x14000001UL, /* b 0x48 */
+        0xD65F03C0UL, /* 0x48: ret */
+    };
+    static const SnxU64 cases[] = {0x1C, 0x24, 0x2C, 0x34}; /* case 0..3 in the function */
+    unsigned char image[0x100];
+    SnxProgram program;
+    SnxModuleImage module;
+    SnxCodegen codegen;
+    SnxU64 targets[8];
+    const SnxFunction* function;
+    size_t i, n;
+    memset(image, 0, sizeof(image));
+    for (i = 0; i < sizeof(words) / sizeof(words[0]); ++i) put32(image, i * 4, words[i]);
+    for (i = 0; i < 4; ++i) put32(image, 0x80 + i * 4, (SnxU32)(cases[i] - 0x80)); /* table: case - table */
+    setup_program(&program, &module, image, sizeof(image));
+    module.text_size = sizeof(words) * 4; /* the table is .rodata, outside the text */
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze a jump table");
+    function = snx_codegen_function(&codegen, SNX_CODE_BASE);
+    n = snx_codegen_jump_table(&codegen, SNX_CODE_BASE + 0x18, targets, 8);
+    check(n == 4, "the table's four cases");
+    for (i = 0; i < n; ++i) check(targets[i] == SNX_CODE_BASE + cases[i], "the case the table's entry names");
+    check(function && function->count == 18, "the cases are compiled into the function"); /* the dead NOP stays out */
+    for (i = 0; i < 4; ++i) check(function && has_leader(function, SNX_CODE_BASE + cases[i]), "a case is a leader");
+    check(!snx_codegen_function(&codegen, SNX_CODE_BASE + 0x80), "the table is not a function");
+    /* an entry outside the text is not followed: the bound still holds the four entries, but one is not code */
+    snx_codegen_free(&codegen);
+    put32(image, 0x88, 0x1000);
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze a table with a bad entry");
+    function = snx_codegen_function(&codegen, SNX_CODE_BASE);
+    check(snx_codegen_jump_table(&codegen, SNX_CODE_BASE + 0x18, targets, 8) == 3, "an entry outside the text is skipped");
+    check(function && !has_leader(function, SNX_CODE_BASE + 0x2C), "a case outside the text is not a leader");
+    snx_codegen_free(&codegen);
+}
+
+/* The sign-extended byte table GCC emits when the cases are close: ADR, LDRSB, ADD (SXTW, shift) and BR, the table
+   inside the text; the ADD's shift and the load's sign both apply */
+static void jump_table_sign_test(void) {
+    static const SnxU32 words[] = {
+        0x7100041FUL, /* cmp w0, #1 */
+        0x54000128UL, /* b.hi 0x28 */
+        0x10000142UL, /* adr x2, 0x30: the table */
+        0x38E04841UL, /* ldrsb w1, [x2, w0, uxtw] */
+        0x8B21C842UL, /* add x2, x2, w1, sxtw #2 */
+        0xD61F0040UL, /* br x2 */
+        0x52800020UL, /* case 0: mov w0, #1 */
+        0xD65F03C0UL, /* ret */
+        0x52800040UL, /* case 1: mov w0, #2 */
+        0xD65F03C0UL, /* ret */
+        0x52800000UL, /* default: mov w0, #0 */
+        0xD65F03C0UL, /* ret */
+    };
+    unsigned char image[0x40];
+    SnxProgram program;
+    SnxModuleImage module;
+    SnxCodegen codegen;
+    SnxU64 targets[8];
+    const SnxFunction* function;
+    size_t i;
+    memset(image, 0, sizeof(image));
+    for (i = 0; i < sizeof(words) / sizeof(words[0]); ++i) put32(image, i * 4, words[i]);
+    image[0x30] = 0xFA; /* (0x18 - 0x30) / 4, as the ADD's #2 scales it */
+    image[0x31] = 0xFC; /* (0x20 - 0x30) / 4 */
+    setup_program(&program, &module, image, sizeof(image));
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze a sign-extended table");
+    function = snx_codegen_function(&codegen, SNX_CODE_BASE);
+    check(snx_codegen_jump_table(&codegen, SNX_CODE_BASE + 0x14, targets, 8) == 2, "the sign-extended table's two cases");
+    check(targets[0] == SNX_CODE_BASE + 0x18 && targets[1] == SNX_CODE_BASE + 0x20, "a scaled signed entry's case");
+    check(function && has_leader(function, SNX_CODE_BASE + 0x18) && has_leader(function, SNX_CODE_BASE + 0x20),
+          "the signed table's cases are leaders");
+    check(function && function->count == 12, "the signed table's cases are in the function");
+    check(!snx_codegen_function(&codegen, SNX_CODE_BASE + 0x30), "the sign table inside the text is not a function");
+    snx_codegen_free(&codegen);
+}
+
 static void large_range_test(void) {
     SnxProgram program;
     SnxModuleImage module;
@@ -1070,6 +1166,8 @@ int main(void) {
     analysis_test();
     address_taken_test();
     address_taken_shifted_test();
+    jump_table_test();
+    jump_table_sign_test();
     large_range_test();
     semantics_test();
     poll_test();
