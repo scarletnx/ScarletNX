@@ -118,6 +118,9 @@ typedef struct {
     /* astc_mode's Auto holds the ASTC textures it decodes as BC7: the device started with a budget under
        SNX_ASTC_EXACT_MB (gpu/texture/astc_bc.h). vk_astc_bc7 says what the mode in effect holds them as */
     int astc_auto_bc7;
+    /* ASTC held as BC7 is encoded as each texture loads, with no RGBA8 image before it: astc_mode=3, or its Auto for an
+       Ounce program, as feat/ounce holds them (texture.c's tex_create) */
+    int astc_at_load;
     /* VK_EXT_vertex_input_dynamic_state in effect (vertex_input.h's choice): each draw sets its vertex layout, which
        pipelines leave out of their keys */
     int vertex_input_dynamic;

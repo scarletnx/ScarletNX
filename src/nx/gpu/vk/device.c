@@ -347,8 +347,12 @@ static void astc_choose(void) {
     }
     if (!g_vk.feat.textureCompressionBC) return; /* RGBA8, which the warning above says */
     vk_mem_use(&usage, &budget);
-    g_vk.astc_auto_bc7 = snx_astc_auto_bc7(budget);
-    if (g_settings.astc_mode == 0)
+    g_vk.astc_auto_bc7 = g_shader_sm86 || snx_astc_auto_bc7(budget);
+    g_vk.astc_at_load = g_settings.astc_mode == 3 || (g_settings.astc_mode == 0 && g_shader_sm86);
+    if (g_settings.astc_mode == 0 && g_shader_sm86)
+        LOG("vulkan: astc_mode=0 (Auto): an Ounce program: ASTC textures are encoded as BC7 as they load, a quarter of "
+            "RGBA8's memory (BC7 at load)\n");
+    else if (g_settings.astc_mode == 0)
         LOG("vulkan: astc_mode=0 (Auto): heap %d's budget is %llu MB as the device starts, %s %llu MB: ASTC textures "
             "are %s (%s)\n",
             vk_mem_heap(), (unsigned long long)(budget >> 20), g_vk.astc_auto_bc7 ? "under" : "at least",
