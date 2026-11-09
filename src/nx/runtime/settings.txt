@@ -1723,7 +1723,7 @@ setting Extract to tmpfs
     default off
     words on=On
     help Extract to tmpfs, in memory (the temporary folder's scarletnx/work/<title ID>), which the game reads its RomFS
-    help from. On Linux and FreeBSD, a folder that is not a tmpfs reads the dump in place and says which filesystem it is on
+    help from
 setting Extract game container
     label Extract dump
     key extract
