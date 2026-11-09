@@ -1897,10 +1897,10 @@ static void surface(Ctx* c, const Sm86Insn* in) {
         }
         slot = si->nimg++;
         /* the kind, as spirv_translate.c's rule for a bindless image: an R32ui image for an atomic (1); else the
-           renderer's key, bit 8 + slot of rt_int_mask for a format of the other class, gives a float image (0) or
-           an unsigned one (2), and of rt_sint_mask a signed one (3) */
-        u32 kind = atomic ? 1 : si->rt_int_mask & (1u << (8 + slot)) ? 0 : 2;
-        if (!atomic && (si->rt_sint_mask & (1u << (8 + slot)))) kind = 3;
+           renderer's key, bit slot of img_int_mask for a format of the other class, gives a float image (0) or an
+           unsigned one (2), and of img_sint_mask a signed one (3) */
+        u32 kind = atomic ? 1 : si->img_int_mask & (1u << slot) ? 0 : 2;
+        if (!atomic && (si->img_sint_mask & (1u << slot))) kind = 3;
         si->img[slot].cbuf_off = off;
         si->img[slot].type = (u8)type;
         si->img[slot].bindless = 1;

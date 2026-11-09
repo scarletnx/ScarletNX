@@ -838,8 +838,9 @@ static void test_compute_forms(const char* dir) {
 }
 
 /* SUST.P to a 2D image with its handle in c[0][0x30], and SULD.P from it, by the kind of the renderer's key: the
-   bindless rule of spirv_translate.c gives 2 (unsigned) without bit 8 of rt_int_mask, 0 (float) with it, and 3
-   (signed) with bit 8 of rt_sint_mask. ShaderInfo.img[].type is the dimension code, 3 for 2D */
+   bindless rule of spirv_translate.c gives 2 (unsigned) without bit 0 of img_int_mask, 0 (float) with it, and 3
+   (signed) with bit 0 of img_sint_mask, the masks compute.c and pipeline.c key a program by. rt_int_mask's bit 8,
+   where the key was before, changes nothing. ShaderInfo.img[].type is the dimension code, 3 for 2D */
 static void test_image_kinds(const char* dir) {
     u8 code[16 * 4] = {0};
     Word x = fix(0xb9b); /* SUST.P.2D.RGBA [R0], R4, c[0][0x30] */
@@ -864,8 +865,9 @@ static void test_image_kinds(const char* dir) {
     for (u32 k = 0; k < 3; k++) {
         ShaderInfo si = {0};
         si.cs_local[0] = si.cs_local[1] = si.cs_local[2] = 1;
-        if (k == 1) si.rt_sint_mask = 1u << 8;
-        if (k == 2) si.rt_int_mask = 1u << 8;
+        si.rt_int_mask = si.rt_sint_mask = 1u << 8;
+        if (k == 1) si.img_sint_mask = 1;
+        if (k == 2) si.img_int_mask = 1;
         size_t count = 0;
         u32* spv = sm86_to_spirv(code, 4 * 16, ST_CS, NULL, &si, &count);
         CHECK(spv != NULL);
