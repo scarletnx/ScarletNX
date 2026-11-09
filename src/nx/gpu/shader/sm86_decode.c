@@ -227,8 +227,7 @@ int sm86_find_programs(const u8* data, u32 size, Sm86Program* out, int max) {
                 if (t != 0xffffffffu && t > last_call) last_call = t;
             }
             sm86_decode(snx_ld_le64(data + 16 * (size_t)j + 16), snx_ld_le64(data + 16 * (size_t)j + 24), &b);
-            if (b.op == SM86_BRA && b.pred == SM86_PT && !b.pred_not && sm86_branch_target(&b, j + 1) == j + 1 &&
-                j + 1 >= last_call)
+            if (b.op == SM86_BRA && sm86_always(&b) && sm86_branch_target(&b, j + 1) == j + 1 && j + 1 >= last_call)
                 break;
         }
         if (j + 1 >= n) {
@@ -250,7 +249,7 @@ int sm86_find_programs(const u8* data, u32 size, Sm86Program* out, int max) {
             }
             Sm86Insn e;
             sm86_decode(snx_ld_le64(data + 16 * (size_t)last), snx_ld_le64(data + 16 * (size_t)last + 8), &e);
-            p.complete = (e.op == SM86_EXIT || e.op == SM86_BRA) && e.pred == SM86_PT && !e.pred_not;
+            p.complete = (e.op == SM86_EXIT || e.op == SM86_BRA) && sm86_always(&e);
             p.size = (last + 1 - i) * 16;
             out[found++] = p;
             i = last + 1;

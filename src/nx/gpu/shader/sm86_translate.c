@@ -211,6 +211,14 @@ static u32 saturate(Ctx* c, u32 v, int on) {
     u32 low = spv_emit_glsl_binary(&c->e, c->t_f32, c->glsl, SPV_GLSL_F_MIN, v, cf(c, 1.0f));
     return spv_emit_select(&c->e, c->t_f32, positive, low, cf(c, 0.0f));
 }
+/* where an instruction runs: its guard, and a BRA's or an EXIT's predicate operand (sm86_has_cond) as well. One game's
+   interface programs exit the lanes their KILL took with @P0 EXIT P1: with P1 left out, every lane of a draw with P0
+   set exited before the MOVs to its outputs, and the whole title screen drew transparent black */
+static u32 guard(Ctx* c, const Sm86Insn* in) {
+    u32 v = prd(c, in->pred, in->pred_not, 0), p = sm86_field(in, 87, 3), negate = sm86_field(in, 90, 1);
+    if (!sm86_has_cond(in) || (p == SM86_PT && !negate)) return v;
+    return op2(c, SPV_OP_LOGICAL_AND, c->t_bool, v, prd(c, p, negate, 0));
+}
 static u32 combine(Ctx* c, u32 set_op, u32 x, u32 acc) {
     switch (set_op) {
         case 0: return op2(c, SPV_OP_LOGICAL_AND, c->t_bool, x, acc);
@@ -1206,10 +1214,10 @@ static void isbe(Ctx* c, const Sm86Insn* in) {
 
 /* ---- textures and surfaces ---- */
 
-/* whether the instruction at k goes on to k + 1: not after a BRA, BRX or EXIT that always leaves, nor a RET */
+/* whether the instruction at k goes on to k + 1: not after a BRA, BRX or EXIT that always leaves (its operand too,
+   sm86_always), nor a RET */
 static int falls_through(const Sm86Insn* in) {
-    int always = in->pred == SM86_PT && !in->pred_not;
-    return !((in->op == SM86_BRA || is_brx(in->op) || in->op == SM86_EXIT) && always) && in->op != SM86_RET;
+    return !((in->op == SM86_BRA || is_brx(in->op) || in->op == SM86_EXIT) && sm86_always(in)) && in->op != SM86_RET;
 }
 static u32 brx_targets(Ctx* c, u32 i, u32* targets, u32 max);
 /* the instructions that jump to each one, build_structure's edges: a BRA's target, a BRX's cases. Returns 0 when it
@@ -1219,7 +1227,7 @@ static int flow_sources(Ctx* c) {
     u32 n = c->n, total = 0, t[64];
     for (u32 i = 0; i < n; i++) {
         const Sm86Insn* in = &c->in[i];
-        if (in->pred == SM86_PT && in->pred_not) continue;
+        if (sm86_never(in)) continue;
         if (in->op == SM86_BRA) total++;
         else if (is_brx(in->op))
             total += brx_targets(c, i, t, 64);
@@ -1235,7 +1243,7 @@ static int flow_sources(Ctx* c) {
     for (int pass = 0; pass < 2; pass++)
         for (u32 i = 0; i < n; i++) {
             const Sm86Insn* in = &c->in[i];
-            if (in->pred == SM86_PT && in->pred_not) continue;
+            if (sm86_never(in)) continue;
             u32 count = 0;
             if (in->op == SM86_BRA) t[count++] = sm86_branch_target(in, i);
             else if (is_brx(in->op))
@@ -4064,7 +4072,7 @@ static ShStructure* build_structure(Ctx* c) {
     leader[0] = 1;
     for (u32 i = 0; i < n && !c->failed; i++) {
         const Sm86Insn* in = &c->in[i];
-        int never = in->pred == SM86_PT && in->pred_not;
+        int never = sm86_never(in);
         if (in->op == SM86_BRA && !never) {
             u32 t = sm86_branch_target(in, i);
             if (t >= n) {
@@ -4084,7 +4092,7 @@ static ShStructure* build_structure(Ctx* c) {
             for (u32 k = 0; k < count; k++) leader[cases[ncases + k]] = 1;
             ncases += count;
             leader[i + 1] = 1;
-        } else if ((in->op == SM86_EXIT && in->pred == SM86_PT && !in->pred_not) || in->op == SM86_RET)
+        } else if ((in->op == SM86_EXIT && sm86_always(in)) || in->op == SM86_RET)
             leader[i + 1] = 1;
     }
     u32 nb = 0;
@@ -4105,7 +4113,7 @@ static ShStructure* build_structure(Ctx* c) {
         for (u32 b = 0; b < nb; b++) {
             u32 end = b + 1 < nb ? start[b + 1] : n, last = end - 1;
             const Sm86Insn* in = &c->in[last];
-            int always = in->pred == SM86_PT && !in->pred_not, never = in->pred == SM86_PT && in->pred_not;
+            int always = sm86_always(in), never = sm86_never(in);
             sw_first[b] = nsw;
             if (in->op == SM86_BRA && !never) {
                 succ[2 * b] = block_of[sm86_branch_target(in, last)];
@@ -4146,7 +4154,9 @@ static ShStructure* build_structure(Ctx* c) {
 static Sm86Insn make_bra(const Sm86Insn* in, u32 ip, u32 target) {
     u64 field = (((u64)target - (u64)ip - 1) * 4) & ((1ull << 48) - 1);
     u64 lo = 0x947u | (u64)in->pred << 12 | (u64)in->pred_not << 15 | field << 34;
-    u64 hi = field >> 30 | 7ull << 23 | 7ull << 46 | 7ull << 49; /* condition PT, no barriers */
+    /* a BRA keeps its predicate operand (sm86_has_cond), a CALL's or a RET's is PT; no barriers */
+    u64 cond = in->op == SM86_BRA ? sm86_field(in, 87, 4) : 7;
+    u64 hi = field >> 30 | cond << 23 | 7ull << 46 | 7ull << 49;
     Sm86Insn out;
     sm86_decode(lo, hi, &out);
     return out;
@@ -4164,8 +4174,8 @@ static Sm86Insn* inline_calls(Ctx* c, Sm86Insn* insn, u32* count) {
     for (u32 i = 0, copies = 0; i < n; i++) {
         if (out[i].op != SM86_CALL) continue;
         u32 entry = sm86_branch_target(&out[i], i), end = entry;
-        while (end < n && !(out[end].op == SM86_BRA && out[end].pred == SM86_PT && !out[end].pred_not &&
-                            sm86_branch_target(&out[end], end) == end))
+        while (end < n &&
+               !(out[end].op == SM86_BRA && sm86_always(&out[end]) && sm86_branch_target(&out[end], end) == end))
             end++;
         if (entry >= *count || end >= *count || ++copies > 64) {
             fail(c, "CALL to 0x%x that the inlining can't take", entry * 16);
@@ -4547,7 +4557,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             }
             for (u32 i = se.body_start; i < se.body_end && !c->failed; i++) {
                 const Sm86Insn* in = &insn[i];
-                int always = in->pred == SM86_PT && !in->pred_not, never = in->pred == SM86_PT && in->pred_not;
+                int always = sm86_always(in), never = sm86_never(in);
                 if (never) continue;
                 if (is_brx(in->op)) { /* the block's end: SHS_SWITCH takes the target's instruction */
                     u32 index = in->op == SM86_BRXU ? urd(c, sm86_field(in, 24, 6)) : rd(c, sm86_field(in, 24, 8));
@@ -4556,7 +4566,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
                     continue;
                 }
                 if (in->op == SM86_BRA) { /* the block's end: SHS_IF takes its condition */
-                    c->branch_cond = always ? 0 : prd(c, in->pred, in->pred_not, 0);
+                    c->branch_cond = always ? 0 : guard(c, in);
                     continue;
                 }
                 if (in->op == SM86_EXIT && always) {
@@ -4567,7 +4577,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
                 }
                 u32 merge = 0;
                 if (!always) {
-                    u32 cond = prd(c, in->pred, in->pred_not, 0), then = spv_emit_id(e);
+                    u32 cond = guard(c, in), then = spv_emit_id(e);
                     merge = spv_emit_id(e);
                     spv_emit_selection_merge(e, merge);
                     spv_emit_branch_conditional(e, cond, then, merge);
