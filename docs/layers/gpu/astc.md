@@ -363,7 +363,7 @@ opens it where ASTC textures are held as BC7 (`vk_astc_bc7`).
   `VK_BC7_CAPTURE_BYTES` (32 MiB), which bounds the ring's growth and is the largest level the cache takes (a 4096x4096
   level is 16 MiB).
 - **Memory and disk:** only the index stays in RAM, 32 bytes a level, and one 1 MiB buffer for the reads. The file has
-  a bound of `VK_BC7_CACHE_MAX` (4 GiB): a record past it starts the file over. A record a crash cut short ends the
+  a bound of `VK_BC7_CACHE_MAX` (8 GiB): a record past it starts the file over. A record a crash cut short ends the
   reading, and the file is cut there; one that does not check out is dropped and its level encoded again. While the
   file is open it is locked (`snx_lock_file`): a second process of the same game runs without the cache.
 
