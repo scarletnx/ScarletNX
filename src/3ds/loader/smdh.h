@@ -6,6 +6,10 @@
 #define SNX_CTR_SMDH_H
 #include <stddef.h>
 
+/* the end of the 16 titles, 0x200 bytes each from 0x8: an SMDH read in part still names a game from here, while the
+   icon needs the whole of it */
+#define SNX_CTR_SMDH_TITLES_SIZE 0x2008
+
 /* whether data is an SMDH: its magic, and the whole of it, the two icons included */
 int snx_ctr_smdh_valid(const unsigned char* smdh, size_t size);
 /* the SMDH's short title as UTF-8: English first, then Japanese, then the other languages in order; "" when none has

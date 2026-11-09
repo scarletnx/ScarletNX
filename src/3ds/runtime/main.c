@@ -55,7 +55,7 @@ static void usage(FILE* out) {
         "  --model old|new        The console to model (default old)\n"
         "  --board-info           Print the board of the console --model names, and stop\n"
         "  --icon                 Write the game's SMDH icon as RGBA into --out DIR (icon.rgba, what Games draws),\n"
-        "                         and nothing else\n"
+        "                         with -x and --data as the launcher asks for it\n"
         "  --out DIR              Where --icon writes it\n"
         "  --max-blocks N         Stop after N native blocks (default: run until the game exits or its window\n"
         "                         closes)\n"
@@ -336,7 +336,13 @@ static int write_icon(const char* input, const char* out, const char* keys, cons
         fprintf(stderr, "scarletnx-3ds: --icon takes the game's file and --out DIR\n");
         goto done;
     }
-    if (readable_game(input, kept, keys, &readable)) goto done;
+    {
+        int read = readable_game(input, kept, keys, &readable);
+        if (read) {
+            status = read; /* 3: a format this build does not take, as a run of it says */
+            goto done;
+        }
+    }
     if (snx_ctr_source_open(readable, &source, error, sizeof error) != SNX_CTR_EXTRACT_OK) {
         fprintf(stderr, "scarletnx-3ds: %s\n", error);
         goto done;
@@ -849,6 +855,12 @@ int snx_ctr_main(int argc, char** argv) {
         return 2;
     }
     for (int u = 0; u < cli.update_count; ++u) updates[update_count++] = cli.updates[u];
+    if (icon_out && !icon) {
+        fputs("scarletnx-3ds: --out needs --icon\n", stderr);
+        usage(stderr);
+        snx_cli_free(&cli);
+        return 2;
+    }
     if (icon) {
         int status = 2;
         const char* refused = NULL;

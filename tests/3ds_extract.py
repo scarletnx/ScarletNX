@@ -156,6 +156,12 @@ def main():
         ini = dict(line.split('=', 1) for line in (expected / f'{name}.ini').read_text().splitlines())
         assert ini.get('ctr_top_resolution') == '2' and ini.get('custom') == '1', ini
         assert not (data / 'work/3ds/input with spacesliteral').exists()
+        # a game with an SMDH, played: the launcher's .ini gets its name, and the icon is written beside it
+        run(cia(application=ncch(icon=bytes(smdh))), 0, 'Guest ExitProcess', extra=('--repo', str(data)),
+            explicit=False)
+        named = expected / f'{name}.ini'  # a --repo outside the user's data folder is its own launcher .ini
+        assert named.is_file() and 'name=A Tested Title' in named.read_text(), named
+        assert (data / 'recompiled' / name / 'icon.rgba').stat().st_size == 48 * 48 * 4
         # the copy plays its game alone, from the CIA its .ini names, with what --script= and --seconds= set
         env = {**os.environ, 'HOME': str(root), 'USERPROFILE': str(root)}
         p = subprocess.run([str(expected / name), '--script=100:1', '--seconds=20'], capture_output=True, text=True,

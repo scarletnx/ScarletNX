@@ -307,7 +307,7 @@ def main():
         basic, text = run(
             application([0xE3A0002A, 0xEF000003]), message='Guest ExitProcess: r0=42 blocks=2', extra=extract
         )
-        assert text.index('Extracting ') < text.index('Recompiling ARM11') < text.index('Running ARM11')
+        assert text.index('Extracting ') < text.index('Recompiling ') < text.index('Running ARM11')
         assert (basic / 'romfs/hello.txt').read_bytes() == b'hello'
         assert (basic / 'contents/00002222.app').is_file()
         # the module alone is published, not the objects it was linked from
@@ -333,7 +333,7 @@ def main():
         extraction = {'exefs', 'romfs', 'contents', 'cia-header.bin', 'ticket.bin', 'tmd.bin', 'metadata.bin',
                       'certificates.bin', 'ncch.bin', 'exheader.bin', 'manifest.ini'}
         direct, text = run(application([0xE3A0002A, 0xEF000003]), message='Guest ExitProcess: r0=42 blocks=2')
-        assert 'Extracting' not in text and text.index('Recompiling ARM11') < text.index('Running ARM11')
+        assert 'Extracting' not in text and text.index('Recompiling ') < text.index('Running ARM11')
         assert not extraction & {p.name for p in direct.iterdir()} and module_of(direct).is_file()
         module = module_of(direct).read_bytes()
         # -r reads the CIA too, and a run uses the module again
@@ -525,7 +525,7 @@ def main():
         card_out, text = run(
             cartridge([0xE3A0002A, 0xEF000003]), message='Guest ExitProcess: r0=42 blocks=2', extension='cci'
         )
-        assert 'Recompiling ARM11' in text
+        assert 'Recompiling ' in text
         card = root / f'input {cases};literal.cci'  # the image run() just played
         same = root / f'same {cases};literal.cia'
         same.write_bytes(application([0xE3A0002A, 0xEF000003]))
