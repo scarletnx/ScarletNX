@@ -60,14 +60,15 @@ int vk_mirror_on(void) {
     g_mir.on = 0;
     /* the mirror is one buffer as big as the guest's address space: one past the device's maxBufferSize is invalid
        (the validation layer says so), yet RADV, whose maxBufferSize is 4 GiB, makes and runs it sparse, as feat/ounce
-       does: vk_mirror_past_limit (on by default) makes it there, else its results land through the CPU */
+       does: vk_mirror_past_limit (on by default) makes it there, else its results land through the CPU. Never with the
+       validation layer on, whose report would name it on every run, above the errors it is there to show */
     char big[128];
     snprintf(big, sizeof big, "buffers of %llu bytes at most, where the mirror is %llu",
              (unsigned long long)g_vk.max_buffer_size, (unsigned long long)AS_SIZE);
     const char* why = vk_uma()                           ? "memory shared with the CPU: read in place"
                       : !g_vk.sparse                     ? "no sparse binding"
                       : !g_vk.feat.sparseResidencyBuffer ? "no sparse residency of buffers"
-                      : g_vk.max_buffer_size < AS_SIZE && !g_settings.gpu_mirror_past_limit ? big
+                      : g_vk.max_buffer_size < AS_SIZE && (!g_settings.gpu_mirror_past_limit || g_settings.vulkan_validation_layer) ? big
                       : g_vk.props.limits.sparseAddressSpaceSize < AS_SIZE + AS_SIZE / 8 ? "too small an address space"
                       : vk_written_since(g_mem + AS_BASE, 1, 0) < 0                      ? "no write tracking"
                                                                                          : NULL;
