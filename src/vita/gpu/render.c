@@ -94,6 +94,26 @@ typedef struct {
     uint64_t key;
     VkPipeline pipeline;
 } Pipeline;
+/* what the graphics bind point of the open recording holds, so a draw that changes none of it records nothing for it.
+   Forgotten (zeroed) when a scene begins and when its rendering resumes: a submit may have put a new command buffer
+   under it, which holds none of this */
+typedef struct {
+    bool dynamic; /* viewport to push hold the last draw's */
+    VkViewport viewport;
+    VkRect2D scissor;
+    uint32_t stencil[3]; /* reference, compare mask, write mask */
+    UssePush push;
+    VkPipeline pipeline;
+    VkDescriptorSet set; /* and what it was written with: */
+    VkDescriptorImageInfo images[USSE_TEXTURES];
+    VkDeviceSize ranges[2]; /* its two uniform buffers' sizes */
+    VkImageView input;      /* its color input attachment */
+    VkBuffer vertex[GXM_STREAMS];
+    VkDeviceSize vertex_at[GXM_STREAMS];
+    VkBuffer index;
+    VkDeviceSize index_at;
+    VkIndexType index_type;
+} Bound;
 struct VitaRender {
     VitaVk* vk;
     Import imports[IMPORTS];
@@ -131,6 +151,7 @@ struct VitaRender {
     uint32_t shown;
     uint64_t shown_since;
     unsigned shown_skips;
+    Bound bound;
 };
 
 static struct VitaRender* render_of(VitaProcess* p) { return p->gxm ? p->gxm->render : NULL; }
@@ -732,6 +753,7 @@ void vita_render_begin_scene(VitaProcess* p, GxmContext* c) {
                           .pStencilAttachment = r->depth && r->depth->stencil ? &stencil : NULL};
     vkCmdBeginRendering(cb, &ri);
     r->rendering = true;
+    r->bound = (Bound){0};
 }
 uint64_t vita_render_end_scene(VitaProcess* p, GxmContext* c) {
     struct VitaRender* r = render_of(p);
@@ -1299,6 +1321,7 @@ static void rendering_resume(struct VitaRender* r, VkCommandBuffer cb) {
                           .pDepthAttachment = r->depth ? &depth : NULL,
                           .pStencilAttachment = r->depth && r->depth->stencil ? &stencil : NULL};
     vkCmdBeginRendering(cb, &ri);
+    r->bound = (Bound){0}; /* cb may be a new command buffer, and the work between did bind things of its own */
 }
 static uint32_t round_up(uint32_t v, uint32_t a) { return (v + a - 1) / a * a; }
 static uint32_t power_of_two(uint32_t v) {
@@ -1522,6 +1545,7 @@ static Texture* texture_for(struct VitaRender* r, VitaProcess* p, VkCommandBuffe
             for (unsigned i = 1; i < TEXTURES; ++i)
                 if (r->textures[i].used < free_slot->used) free_slot = &r->textures[i];
             vita_vk_wait(r->vk->ring.submitted);
+            r->bound = (Bound){0}; /* its set may hold the view that goes */
             vkDestroyImageView(r->vk->device, free_slot->view, NULL);
             vkDestroyImage(r->vk->device, free_slot->image, NULL);
             vkFreeMemory(r->vk->device, free_slot->memory, NULL);
@@ -1656,6 +1680,12 @@ static uint32_t stage_uniforms(struct VitaRender* r, VitaProcess* p, const UsseS
     r->staging[slot].used = at + size;
     return (uint32_t)at;
 }
+/* stream i's vertex buffer, unless the recording already holds it there */
+static void bind_vertex(Bound* b, VkCommandBuffer cb, unsigned i, VkBuffer buffer, VkDeviceSize at) {
+    if (b->vertex[i] == buffer && b->vertex_at[i] == at) return;
+    vkCmdBindVertexBuffers(cb, i, 1, &buffer, &at);
+    b->vertex[i] = buffer, b->vertex_at[i] = at;
+}
 /* a draw recorded into the scene, or why it isn't */
 static const char* draw(VitaProcess* p, GxmContext* c, uint32_t primitive, uint32_t index_format, uint32_t indices,
                         uint32_t count, uint32_t instances) {
@@ -1713,42 +1743,57 @@ static const char* draw(VitaProcess* p, GxmContext* c, uint32_t primitive, uint3
         once(r, 19, "a fragment program reads its pixel's color, which this device can't give it in place");
         return "its program reads its pixel's color";
     }
-    VkDescriptorSet set = vita_vk_set(r->set_layout);
+    unsigned slot = vita_vk_slot();
+    VkDescriptorBufferInfo buffers[2] = {{r->staging[slot].buffer, 0, vs->meta.buffer_words ? vs->meta.buffer_words * 4 : 4},
+                                         {r->staging[slot].buffer, 0, fs->meta.buffer_words ? fs->meta.buffer_words * 4 : 4}};
+    VkDescriptorImageInfo own = {VK_NULL_HANDLE, r->color->view, color_layout(r)};
+    /* The set of the draw before, when it holds what this one reads: the buffers are the staging ring's, whose offsets
+       are dynamic, so a run of draws on the same textures and program sizes (a sprite batch) shares one set and
+       allocates and writes none */
+    Bound* b = &r->bound;
+    VkImageView input = fs->meta.reads_color ? own.imageView : VK_NULL_HANDLE;
+    bool same = b->set && b->input == input && b->ranges[0] == buffers[0].range && b->ranges[1] == buffers[1].range;
+    for (unsigned i = 0; same && i < USSE_TEXTURES; ++i)
+        same = b->images[i].sampler == images[i].sampler && b->images[i].imageView == images[i].imageView;
+    VkDescriptorSet set = same ? b->set : vita_vk_set(r->set_layout);
     if (!set) {
         once(r, 12, "out of descriptor sets");
         return "out of descriptor sets";
     }
-    unsigned slot = vita_vk_slot();
-    VkDescriptorBufferInfo buffers[2] = {{r->staging[slot].buffer, 0, vs->meta.buffer_words ? vs->meta.buffer_words * 4 : 4},
-                                         {r->staging[slot].buffer, 0, fs->meta.buffer_words ? fs->meta.buffer_words * 4 : 4}};
-    VkWriteDescriptorSet writes[3 + USSE_TEXTURES];
-    VkDescriptorImageInfo own = {VK_NULL_HANDLE, r->color->view, color_layout(r)};
-    if (fs->meta.reads_color)
-        writes[0] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                           .dstSet = set,
-                                           .dstBinding = USSE_COLOR_BINDING,
-                                           .descriptorCount = 1,
-                                           .descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
-                                           .pImageInfo = &own};
-    unsigned n = fs->meta.reads_color ? 1u : 0u;
-    for (unsigned i = 0; i < 2; ++i)
-        writes[n++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                             .dstSet = set,
-                                             .dstBinding = i,
-                                             .descriptorCount = 1,
-                                             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
-                                             .pBufferInfo = &buffers[i]};
-    for (unsigned i = 0; i < USSE_TEXTURES; ++i)
-        if (images[i].imageView)
+    if (!same) {
+        VkWriteDescriptorSet writes[3 + USSE_TEXTURES];
+        unsigned n = 0;
+        if (fs->meta.reads_color)
             writes[n++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                                  .dstSet = set,
-                                                 .dstBinding = USSE_TEXTURE_BINDING + i,
+                                                 .dstBinding = USSE_COLOR_BINDING,
                                                  .descriptorCount = 1,
-                                                 .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                                 .pImageInfo = &images[i]};
-    vkUpdateDescriptorSets(r->vk->device, n, writes, 0, NULL);
+                                                 .descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+                                                 .pImageInfo = &own};
+        for (unsigned i = 0; i < 2; ++i)
+            writes[n++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                                 .dstSet = set,
+                                                 .dstBinding = i,
+                                                 .descriptorCount = 1,
+                                                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                                                 .pBufferInfo = &buffers[i]};
+        for (unsigned i = 0; i < USSE_TEXTURES; ++i)
+            if (images[i].imageView)
+                writes[n++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                                     .dstSet = set,
+                                                     .dstBinding = USSE_TEXTURE_BINDING + i,
+                                                     .descriptorCount = 1,
+                                                     .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                                     .pImageInfo = &images[i]};
+        vkUpdateDescriptorSets(r->vk->device, n, writes, 0, NULL);
+        b->set = set, b->input = input, b->ranges[0] = buffers[0].range, b->ranges[1] = buffers[1].range;
+        for (unsigned i = 0; i < USSE_TEXTURES; ++i) b->images[i] = images[i];
+    }
     uint32_t offsets[2] = {vertex_at, fragment_at};
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    if (b->pipeline != pipeline) {
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        b->pipeline = pipeline;
+    }
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, r->layout, 0, 1, &set, 2, offsets);
     /* without rasterization-order access, the color the earlier draws wrote is made visible to this one's reads, which
        is as far as Vulkan orders them (overlapping primitives of one draw read each other's colors undefined) */
@@ -1770,7 +1815,6 @@ static const char* draw(VitaProcess* p, GxmContext* c, uint32_t primitive, uint3
         viewport.height = 2 * c->viewport_scale[1];
         push.z_offset = c->viewport_offset[2], push.z_scale = c->viewport_scale[2];
     }
-    vkCmdSetViewport(cb, 0, 1, &viewport);
     VkRect2D scissor = {{0, 0}, {r->width, r->height}};
     /* SceGxmRegionClipMode: none, all (0x40000000: nothing drawn), outside (0x80000000: drawing inside the rectangle
        only), inside (drawn whole, as Vita3K does) */
@@ -1781,12 +1825,28 @@ static const char* draw(VitaProcess* p, GxmContext* c, uint32_t primitive, uint3
         uint32_t y1 = c->clip_y1 + 1 < r->height ? c->clip_y1 + 1 : r->height;
         scissor = (VkRect2D){{(int32_t)x0, (int32_t)y0}, {x1 > x0 ? x1 - x0 : 0, y1 > y0 ? y1 - y0 : 0}};
     }
-    vkCmdSetScissor(cb, 0, 1, &scissor);
     /* sceGxmSetFrontStencilRef's reference and sceGxmSetFrontStencilFunc's compare and write masks */
-    vkCmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, c->stencil_ref[0] & 0xffu);
-    vkCmdSetStencilCompareMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, c->stencil_masks[0][0] & 0xffu);
-    vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, c->stencil_masks[0][1] & 0xffu);
-    push_constants(cb, r->layout, VK_SHADER_STAGE_VERTEX_BIT, &push, sizeof push);
+    uint32_t stencil[3] = {c->stencil_ref[0] & 0xffu, c->stencil_masks[0][0] & 0xffu, c->stencil_masks[0][1] & 0xffu};
+    /* each of these only when it differs from what the recording holds from the draw before */
+    if (!b->dynamic || memcmp(&b->viewport, &viewport, sizeof viewport)) {
+        vkCmdSetViewport(cb, 0, 1, &viewport);
+        b->viewport = viewport;
+    }
+    if (!b->dynamic || memcmp(&b->scissor, &scissor, sizeof scissor)) {
+        vkCmdSetScissor(cb, 0, 1, &scissor);
+        b->scissor = scissor;
+    }
+    if (!b->dynamic || memcmp(b->stencil, stencil, sizeof stencil)) {
+        vkCmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, stencil[0]);
+        vkCmdSetStencilCompareMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, stencil[1]);
+        vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, stencil[2]);
+        memcpy(b->stencil, stencil, sizeof stencil);
+    }
+    if (!b->dynamic || memcmp(&b->push, &push, sizeof push)) {
+        push_constants(cb, r->layout, VK_SHADER_STAGE_VERTEX_BIT, &push, sizeof push);
+        b->push = push;
+    }
+    b->dynamic = true;
     VkBuffer set_buffer = VK_NULL_HANDLE;
     VkDeviceSize set_at = 0;
     for (unsigned i = 0; i < vp->stream_count; ++i) {
@@ -1795,7 +1855,7 @@ static const char* draw(VitaProcess* p, GxmContext* c, uint32_t primitive, uint3
         if (!m && !c->streams[i] && set_buffer) {
             /* a stream the game never set (its program declares more streams than it reads from): the pipeline wants
                a buffer bound for it, and nothing the program reads is in it */
-            vkCmdBindVertexBuffers(cb, i, 1, &set_buffer, &set_at);
+            bind_vertex(b, cb, i, set_buffer, set_at);
             continue;
         }
         if (!m) {
@@ -1803,7 +1863,7 @@ static const char* draw(VitaProcess* p, GxmContext* c, uint32_t primitive, uint3
                        "vertex stream %u at 0x%08" PRIx32 " is not mapped for the GPU", i, c->streams[i]);
             return "a vertex stream unmapped";
         }
-        vkCmdBindVertexBuffers(cb, i, 1, &m->buffer, &at);
+        bind_vertex(b, cb, i, m->buffer, at);
         set_buffer = m->buffer, set_at = at;
     }
     VkDeviceSize at = 0;
@@ -1812,7 +1872,11 @@ static const char* draw(VitaProcess* p, GxmContext* c, uint32_t primitive, uint3
         once_value(r, 14, indices, "indices at 0x%08" PRIx32 " are not mapped for the GPU", indices);
         return "its indices unmapped";
     }
-    vkCmdBindIndexBuffer(cb, m->buffer, at, index_format ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);
+    VkIndexType index_type = index_format ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
+    if (b->index != m->buffer || b->index_at != at || b->index_type != index_type) {
+        vkCmdBindIndexBuffer(cb, m->buffer, at, index_type);
+        b->index = m->buffer, b->index_at = at, b->index_type = index_type;
+    }
     vkCmdDrawIndexed(cb, count, instances, 0, 0, 0);
     return NULL;
 }
