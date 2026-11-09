@@ -890,8 +890,8 @@ jobs:
           retry pacman -Sy --noconfirm
           if pacman -Si openssl-3 >/dev/null 2>&1; then libraries="$libraries openssl-3"; fi
           retry pacman -Su --noconfirm --needed $libraries
-          curl -fsSL --retry 8 --retry-delay 5 --retry-all-errors --connect-timeout 30 -o /usr/local/bin/quick-sharun "$QUICK_SHARUN"
-          curl -fsSL --retry 8 --retry-delay 5 --retry-all-errors --connect-timeout 30 -o /usr/local/bin/get-debloated-pkgs "$DEBLOATED_PACKAGES"
+          curl -fsSL --retry 12 --retry-delay 15 --retry-all-errors --connect-timeout 30 -o /usr/local/bin/quick-sharun "$QUICK_SHARUN"
+          curl -fsSL --retry 12 --retry-delay 15 --retry-all-errors --connect-timeout 30 -o /usr/local/bin/get-debloated-pkgs "$DEBLOATED_PACKAGES"
           chmod +x /usr/local/bin/quick-sharun /usr/local/bin/get-debloated-pkgs
           printf '%s  %s\n' "$QUICK_SHARUN_SHA" /usr/local/bin/quick-sharun \
                            "$DEBLOATED_PACKAGES_SHA" /usr/local/bin/get-debloated-pkgs | sha256sum -c
@@ -905,8 +905,8 @@ jobs:
         run: |
           docker exec -i -e QUICK_SHARUN -e QUICK_SHARUN_SHA -e APPIMAGETOOL_URL -e APPIMAGETOOL_SHA build sh -s <<'EOF'
           set -eu
-          curl -fsSL --retry 8 --retry-delay 5 --retry-all-errors --connect-timeout 30 -o /usr/local/bin/quick-sharun "$QUICK_SHARUN"
-          curl -fsSL --retry 8 --retry-delay 5 --retry-all-errors --connect-timeout 30 -o /usr/local/bin/appimagetool "$APPIMAGETOOL_URL"
+          curl -fsSL --retry 12 --retry-delay 15 --retry-all-errors --connect-timeout 30 -o /usr/local/bin/quick-sharun "$QUICK_SHARUN"
+          curl -fsSL --retry 12 --retry-delay 15 --retry-all-errors --connect-timeout 30 -o /usr/local/bin/appimagetool "$APPIMAGETOOL_URL"
           chmod +x /usr/local/bin/quick-sharun /usr/local/bin/appimagetool
           printf '%s  %s\n' "$QUICK_SHARUN_SHA" /usr/local/bin/quick-sharun \
                            "$APPIMAGETOOL_SHA" /usr/local/bin/appimagetool | sha256sum -c
@@ -919,7 +919,7 @@ jobs:
         run: |
           docker exec -i -e MKDWARFS build sh -s <<'EOF'
           set -eu
-          curl -fsSL --retry 8 --retry-delay 5 --retry-all-errors --connect-timeout 30 -o /usr/local/bin/dwarfs-universal "$MKDWARFS"
+          curl -fsSL --retry 12 --retry-delay 15 --retry-all-errors --connect-timeout 30 -o /usr/local/bin/dwarfs-universal "$MKDWARFS"
           echo '50891c38ba359db8271819a6cbf6aaa8068681523f0c4f2b8242007a45edaa28  /usr/local/bin/dwarfs-universal' |
             sha256sum -c
           chmod +x /usr/local/bin/dwarfs-universal
@@ -1067,11 +1067,20 @@ jobs:
       # from its pacman database; the AppImage itself is compressed on the build machine
       - name: Bundle the AppImage
         run: |
-          docker exec -i target sh -s <<'EOF'
+          for try in 1 2 3; do
+            if docker exec -i target sh -s <<'EOF'
           set -eu
+          rm -f "${TMPDIR:-/tmp}"/cross-libc-dlopen-*.tar
           cp -a /src/stage/. /
           SKIP_APPIMAGE=1 scripts/make-appimage.sh
           EOF
+            then
+              break
+            fi
+            [ "$try" = 3 ] && exit 1
+            echo "the bundle failed; trying again in 30 seconds" >&2
+            sleep 30
+          done
       - name: Make the AppImage
         run: |
           docker exec -i -e GITHUB_REPOSITORY -e GITHUB_REF_TYPE -e VERSION="$(git describe --always --dirty)" \
@@ -1693,7 +1702,7 @@ jobs:
       - name: Make the macOS app
         if: ${{ !cancelled() && steps.macos-build.outcome == 'success' }}
         run: |
-          curl -fL --retry 8 --retry-delay 5 --retry-all-errors --connect-timeout 30 -o moltenvk-macos.tar \
+          curl -fL --retry 12 --retry-delay 15 --retry-all-errors --connect-timeout 30 -o moltenvk-macos.tar \
             "https://github.com/V380-Ori/Ryujinx.MoltenVK/releases/download/$MOLTENVK_RELEASE/MoltenVK-macos.tar"
           echo "$MOLTENVK_MACOS_SHA256  moltenvk-macos.tar" | shasum -a 256 -c
           mkdir moltenvk-macos && tar -xf moltenvk-macos.tar -C moltenvk-macos
@@ -1714,7 +1723,7 @@ jobs:
       - name: Make the IPA
         if: ${{ !cancelled() && steps.ios-build.outcome == 'success' }}
         run: |
-          curl -fL --retry 8 --retry-delay 5 --retry-all-errors --connect-timeout 30 -o moltenvk-ios.tar \
+          curl -fL --retry 12 --retry-delay 15 --retry-all-errors --connect-timeout 30 -o moltenvk-ios.tar \
             "https://github.com/V380-Ori/Ryujinx.MoltenVK/releases/download/$MOLTENVK_RELEASE/MoltenVK-ios.tar"
           echo "$MOLTENVK_IOS_SHA256  moltenvk-ios.tar" | shasum -a 256 -c
           mkdir moltenvk-ios && tar -xf moltenvk-ios.tar -C moltenvk-ios
