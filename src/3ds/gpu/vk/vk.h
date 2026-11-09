@@ -12,7 +12,9 @@
    The board's RAM regions (FCRAM, VRAM, DSP RAM, the New 3DS's extra RAM) are the host memory the guest runs in, a
    buffer of the device's each: the host's memory imported (VK_EXT_external_memory_host), or, where the driver will
    not import it (RADV takes no shared memory), the device's own memory, host-visible and cached, whose dma-buf the RAM
-   moves into (VK_EXT_external_memory_dma_buf, snx_ctr_memory_adopt), every guest view of a page a map of it. On a GPU
+   moves into (VK_EXT_external_memory_dma_buf, snx_ctr_memory_adopt), every guest view of a page a map of it. A device
+   that takes neither keeps a copy of the RAM in its host-visible memory, which the CPU fills and reads back by page
+   (SnxCtrVk.host_shadow). On a GPU
    that shares the system's memory, vertex and index data, textures, render targets' load and store, transfers and the
    shown framebuffers are read and written there in place, and nothing of them is copied by the CPU. A discrete GPU
    would read and write each of those bytes across the bus, every time: it works on a copy of the RAM in its own
