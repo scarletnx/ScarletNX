@@ -1264,13 +1264,20 @@ VkImageViewType vk_storage_image_type(const ShaderInfo* si, int i) {
 
 u32 vk_gbuf_desc(int stage, u32 off, const u32* v, u64* addr) {
     u32 size = stage == ST_VS && off == 0xb0 ? 16 : v[2];
+    u64 cpu = 0;
     *addr = ((u64)v[1] << 32) | v[0];
+    /* An address with nothing mapped there is no buffer, as address 0 is: it reads zeros and its writes land nowhere,
+       as the copies of guest memory gave it before. The program cannot access it, or it would fault on the console.
+       An Ounce game's dispatches leave such an address in a slot, and the GPU mirror took no dispatch with one: each
+       copied its written buffers on the CPU instead, about 230 MB a second of one race */
     if (!shader_gbuf_sized(stage, off) && off != 0xb0) {
         /* a bare address in the program's own constant buffer has no size beside it: the memory mapped from it on,
            whole words, to the cap below (Eden binds such a buffer to the end of its mapping, at most 8 MiB) */
-        u64 cpu = 0;
-        size = *addr ? (u32)gmmu_run(*addr, 16u << 20, &cpu) & ~3u : 0;
-    }
+        u64 run = *addr ? gmmu_run(*addr, 16u << 20, &cpu) : 0;
+        if (!run) *addr = 0;
+        size = (u32)run & ~3u;
+    } else if (*addr && !gmmu_run(*addr, 1, &cpu))
+        *addr = 0;
     if (!size) size = 16;
     if (size > (16u << 20)) size = 16u << 20;
     return (size + 3) & ~3u;
