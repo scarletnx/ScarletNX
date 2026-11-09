@@ -34,7 +34,7 @@ static uint32_t get_frame_buf(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 static uint32_t wait_vblank(VitaProcess* p, VitaThread* t, uint32_t count) {
-    (void)t;
+    p->pacer = t;
     vita_wait(p, (VitaWait){.kind = VITA_WAIT_VBLANK, .a = (uint32_t)p->display.vblanks + (count ? count - 1 : 0)});
     return 0;
 }

@@ -259,9 +259,15 @@ static bool wait_try(VitaProcess* p, VitaThread* t, uint64_t now) {
     }
     return false;
 }
-/* the thread to run next, or NULL when none can now: *wake is then when one may (UINT64_MAX: never by time) */
+/* how long a ready thread waits behind the others before it goes first */
+#define STARVE_NS 24000000u
+/* the thread to run next, or NULL when none can now. *wake is then when one may (UINT64_MAX for never by time). The
+   highest priority goes first (a smaller number, and a relative one such as 0x10000100 counts as the default's 160).
+   Among equals the thread that paces the frames goes first, whose work ends them, and then the one that waited
+   longest, as the others run on cores of their own on the console. A thread ready for STARVE_NS goes before all */
 static VitaThread* schedule(VitaProcess* p, uint64_t now, uint64_t* wake) {
-    VitaThread* best = NULL;
+    VitaThread *top = NULL, *starved = NULL;
+    uint32_t top_rank = 0;
     *wake = UINT64_MAX;
     for (unsigned i = 0; i < VITA_THREADS; ++i) {
         VitaThread* t = &p->threads[i];
@@ -273,9 +279,17 @@ static VitaThread* schedule(VitaProcess* p, uint64_t now, uint64_t* wake) {
             t->state = VITA_THREAD_READY;
         }
         if (t->state == VITA_THREAD_WAITING && t->wait.deadline && t->wait.deadline < *wake) *wake = t->wait.deadline;
-        if (t->state == VITA_THREAD_READY && (!best || t->seq < best->seq)) best = t;
+        if (t->state != VITA_THREAD_READY) {
+            t->ready_ns = 0;
+            continue;
+        }
+        if (!t->ready_ns) t->ready_ns = now;
+        if (now - t->ready_ns > STARVE_NS && (!starved || t->ready_ns < starved->ready_ns)) starved = t;
+        uint32_t rank = t->priority >= 0x10000000u ? 160u : t->priority;
+        if (!top || rank < top_rank || (rank == top_rank && (t == p->pacer || (top != p->pacer && t->seq < top->seq))))
+            top = t, top_rank = rank;
     }
-    return best;
+    return starved ? starved : top;
 }
 static void sleep_until(uint64_t when) {
     uint64_t now = plat_ns();
@@ -388,6 +402,7 @@ int vita_run(VitaProcess* p, double seconds) {
         if (t != last) t->cpu.exclusive_valid = 0;
         p->current = running = last = t;
         t->seq = ++p->seq;
+        t->ready_ns = 0;
 #ifndef _WIN32
         fault_armed = 1;
 #endif

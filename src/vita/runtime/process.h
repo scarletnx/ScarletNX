@@ -124,6 +124,8 @@ typedef struct VitaThread {
     bool signal_pending;
     VitaWait wait;
     uint64_t seq; /* when it last ran: the scheduler takes the ready thread that waited longest */
+    /* when the scheduler first saw it ready, 0 while it is not, for the guard against starving a thread */
+    uint64_t ready_ns;
 } VitaThread;
 _Static_assert(offsetof(VitaThread, poll) == VITA_POLL_OFFSET, "the blocks find the poll count by this offset");
 
@@ -214,6 +216,8 @@ typedef struct VitaProcess {
     VitaAllocation allocations[VITA_ALLOCATIONS];
     VitaRegion user, cdram;
     VitaThread* current;
+    /* the thread that last waited for a vblank, which paces the frames */
+    VitaThread* pacer;
     uint64_t seq;
     uint64_t start_ns;
     /* the display: the framebuffer sceDisplaySetFrameBuf last set, the vblanks so far and the next one's time */
