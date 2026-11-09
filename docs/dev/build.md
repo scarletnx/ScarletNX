@@ -36,6 +36,8 @@ Run from checkout root. [Extract/AOT/run](../user/usage.md) · [Tests/diagnostic
   MinGW LLVM's `llvm-config` set with `-DSNX_LLVM_CONFIG=/path/to/llvm-config`. CMake fails without it.
 - **Display:** a Vulkan 1.3 driver. Headless runs use Vulkan offscreen and skip SDL video initialization.
   SDL3 remains a required build dependency.
+- **Compiler cache (optional):** `ccache`, or `sccache` when `ccache` is not found, makes a cold build after a
+  clean faster. The build works without either.
 - **FFmpeg:** required by every NX runtime build and by the Android driver (its image codec). CMake builds the pinned
   source release, and with the Android driver its image codecs, libswscale and zlib for its PNG codec.
   Avoid spaces in checkout/cache paths.
@@ -288,7 +290,7 @@ runtime must not mix with another LLVM build.
    ```
 
    Python builds the menu's languages; spirv-tools is only for the `shader_direct` test. CI also installs ccache, which
-   isn't needed here.
+   is optional here, as sccache is.
 3. Clone to a path without spaces:
 
    ```sh
@@ -342,6 +344,13 @@ FFmpeg, OpenSSL and jemalloc build with their own configure and make, in each bu
 or env) naming a folder, a tree reuses a finished build there whose inputs match (source, configure line, compiler, C
 headers and the cmake file that builds it, see [deps_cache.cmake](../../cmake/deps_cache.cmake)) and publishes the ones
 it builds, so other trees and branches skip them. A change to any input is a new folder; old ones are only left behind.
+
+A compiler cache is optional. At configure, `ccache` is used for the C and C++ compiles when it is found, and
+`sccache` is used when `ccache` is not found. With neither installed the build compiles as it does without one. The
+cache helps a cold build after a clean, while Ninja already reuses the objects of an incremental build.
+`-DSNX_COMPILER_CACHE=off` disables it, `-DSNX_COMPILER_CACHE=ccache` or `sccache` chooses one, and an explicit
+`-DCMAKE_C_COMPILER_LAUNCHER` or `-DCMAKE_CXX_COMPILER_LAUNCHER` is used as given (CI does this with `ccache`). `ccache`
+comes first because it is faster for local C and C++ than `sccache`, which suits a shared or remote cache.
 
 ## Build variants
 
