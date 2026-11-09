@@ -345,6 +345,53 @@ int main(void) {
         snx_remove_tree(d);
         free(d);
     }
+    /* an extracted game's folder in a library (exefs/ with its main), listed with the dumps by its folder's name and a
+       /, which gui_is_dump takes as a dump's: shown by its control.nacp's name, else its title ID from its NPDM. A
+       folder without exefs/main is a folder of games, and none is listed unasked (GUI_GAMES_RUN) */
+    {
+        GuiGames g = {0};
+        char* d = snx_temp_dir(NULL);
+        static const char* const files[] = {"base/exefs/main", "named/exefs/main", "named/control.nacp",
+                                            "plain/notes.txt"};
+        unsigned char meta[0xa0] = {0}, *nacp = (unsigned char*)calloc(1, 0x4000);
+        size_t k, base = 2, named = 2;
+        assert(d && nacp);
+        for (k = 0; k < sizeof files / sizeof *files; ++k) {
+            char *path = snx_path_join(d, files[k]), *parent = path ? snx_dirname(path) : NULL;
+            assert(parent && !snx_mkdirs(parent) && !snx_write_file(path, "fixture", 7));
+            free(parent);
+            free(path);
+        }
+        memcpy(meta, "META", 4);
+        meta[0x70] = 0x80; /* the ACI0 at 0x80, its title ID 16 bytes on */
+        memcpy(meta + 0x80, "ACI0", 4);
+        for (k = 0; k < 8; ++k) meta[0x90 + k] = (unsigned char)(0x0100ABCD12345000ull >> (8 * k));
+        memcpy(nacp, "Named Game", 10);
+        {
+            char *npdm = snx_path_join(d, "base/exefs/main.npdm"), *title = snx_path_join(d, "named/control.nacp");
+            assert(!snx_write_file(npdm, meta, sizeof meta) && !snx_write_file(title, nacp, 0x4000));
+            free(npdm);
+            free(title);
+        }
+        assert(gui_games_add(&g, d, GUI_GAMES_RUN, error, sizeof error) && g.count == 0);
+        gui_games_free(&g);
+        assert(gui_games_add(&g, d, GUI_GAMES_DUMP, error, sizeof error) && g.count == 2);
+        for (k = 0; k < g.count; ++k) {
+            if (!strcmp(g.names[k], "base/")) base = k;
+            if (!strcmp(g.names[k], "named/")) named = k;
+        }
+        assert(base < 2 && named < 2 && gui_is_dump(g.names[base]) && gui_games_dumps_group(&g, named));
+        assert(!strcmp(g.shown[base], "0100ABCD12345000") && !strcmp(g.shown[named], "Named Game"));
+        {
+            char* path = snx_path_join(d, "base");
+            assert(path && !strcmp(g.paths[base], path));
+            free(path);
+        }
+        gui_games_free(&g);
+        snx_remove_tree(d);
+        free(nacp);
+        free(d);
+    }
     /* a deep library: folders of dumps, then its own dumps (snx_list_dir sorts: "folder" before "game"), every game
        listed however many each folder holds. A folder's scan once sized the lists for its own games alone, smaller
        than what its parent still had to add, and the parent wrote past their end */

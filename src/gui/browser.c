@@ -36,7 +36,7 @@ bool gui_is_gba(const char* name) { return suffix(name, ".gba"); }
 bool gui_is_apk(const char* name) { return suffix(name, ".apk") || suffix(name, ".xapk") || suffix(name, ".apks"); }
 bool gui_is_dump(const char* name) {
     return suffix(name, ".nro") || suffix(name, ".xci") || suffix(name, ".nsp") || suffix(name, ".dxci") ||
-           suffix(name, ".dnsp");
+           suffix(name, ".dnsp") || suffix(name, "/");
 }
 bool gui_game_folder(const char* path) {
     char *folder = snx_dirname(path), *name, data[SNX_PATH_SIZE];
@@ -169,9 +169,37 @@ static char* folder_game(const char* directory, const char* name, int kinds) {
     return path;
 }
 char* gui_folder_game(const char* directory, const char* name) { return folder_game(directory, name, GUI_GAMES_RUN); }
+/* an extracted game's folder at path shown: the name in its control.nacp, else its title ID, which its ExeFS's NPDM
+   gives, as a dump without a name; its folder's name for one without either */
+static char* extracted_shown(const char* path, const char* name) {
+    char nacp[SNX_PATH_SIZE], npdm[SNX_PATH_SIZE], text[0x200], *exefs = snx_extracted_part(path, 0);
+    unsigned char* bytes = NULL;
+    size_t size = 0;
+    if (!snx_path_format(nacp, sizeof nacp, "%s/control.nacp", path) && snx_is_file(nacp))
+        bytes = (unsigned char*)snx_read_file(nacp, &size);
+    if (bytes && snx_nacp_name(bytes, size, text, sizeof text)) {
+        free(bytes);
+        free(exefs);
+        return snx_strdup(text);
+    }
+    free(bytes);
+    bytes = exefs && !snx_path_format(npdm, sizeof npdm, "%s/main.npdm", exefs) && snx_is_file(npdm)
+                ? (unsigned char*)snx_read_file(npdm, &size)
+                : NULL;
+    free(exefs);
+    if (bytes && snx_title_text(snx_npdm_title(bytes, size), text)) {
+        free(bytes);
+        return snx_strdup(text);
+    }
+    free(bytes);
+    snprintf(text, sizeof text, "%s", name);
+    if (*text) text[strlen(text) - 1] = 0; /* its / */
+    return snx_strdup(text);
+}
 /* what the game at path, named name, is shown as: the name in its <name>_data/control.nacp, which the recompile
    copies there, else name */
 static char* shown_name(const char* path, const char* name) {
+    if (suffix(name, "/")) return extracted_shown(path, name);
     char *folder = snx_dirname(path), *stem = snx_strdup(name), *shown = NULL, nacp[SNX_PATH_SIZE], text[0x200];
     unsigned char* bytes;
     size_t size = 0;
@@ -501,6 +529,16 @@ static bool add_games(GuiGames* games, const char* directory, int kinds, size_t 
         char* path = folder_game(directory, names[i], kinds);
         char* shown;
         if (!path && playable(directory, names[i], kinds)) path = snx_path_join(directory, names[i]);
+        if (!path && (kinds & GUI_GAMES_DUMP) && names[i][0] != '.') { /* an extracted game's folder: named with a / */
+            char* sub = snx_path_join(directory, names[i]);
+            if (sub && snx_extracted_game(sub)) {
+                char* named = snx_format("%s/", names[i]);
+                free(names[i]);
+                names[i] = named;
+                path = sub;
+            } else
+                free(sub);
+        }
         if (!path && depth > 0 && names[i][0] != '.') { /* a folder of games, not one */
             char* sub = snx_path_join(directory, names[i]);
             if (sub && snx_is_dir(sub)) add_games(games, sub, kinds, first, depth - 1, error, 0);

@@ -7233,6 +7233,36 @@ int main(int argc, char** argv) {
             while (SDL_PollEvent(&answer)) event(&app, &answer);
         }
         assert(app.menu.view == GUI_LOAD_DROP && !strcmp(app.message, "No file was picked."));
+        { /* P picks a folder there, an extracted game's, as the foot says; its picker answers none here too */
+            char said[512];
+            SDL_Event answer;
+            assert(strstr(shown_keys(&app, said, sizeof said), "P: pick a folder."));
+            app.message[0] = 0;
+            key(&app, SDLK_P);
+            while (SDL_PollEvent(&answer)) event(&app, &answer);
+            assert(app.menu.view == GUI_LOAD_DROP && !strcmp(app.message, "No folder was picked."));
+            key(&app, SDLK_RETURN); /* the file's picker again says a file */
+            while (SDL_PollEvent(&answer)) event(&app, &answer);
+            assert(!strcmp(app.message, "No file was picked."));
+        }
+    }
+    /* an extracted game's folder opens on the Switch's Open screen, as a dump does: a folder without exefs/main, or
+       another console's load, still says it is no readable file */
+    {
+        char *folder = snx_path_join(temporary, "extracted game"), *exefs = snx_path_join(folder, "exefs");
+        char* main_file = snx_path_join(exefs, "main");
+        int selected = app.menu.selected;
+        assert(!snx_mkdirs(exefs));
+        app.menu.selected = GUI_SWITCH;
+        assert(!openable(&app, folder));
+        assert(!snx_write_file(main_file, "main", 4) && openable(&app, folder) && openable(&app, input));
+        app.menu.selected = GUI_LINUX;
+        assert(!openable(&app, folder));
+        app.menu.selected = selected;
+        assert(!snx_remove_tree(folder));
+        free(main_file);
+        free(exefs);
+        free(folder);
     }
     /* the NRO made already: opening it plays it, as below (a game not made compiles first) */
     char* input_made = made_game(&app, input, "game with spaces");
