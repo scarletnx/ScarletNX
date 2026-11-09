@@ -210,6 +210,18 @@ static char* shown_name(const char* path, const char* name) {
                 : NULL;
     if (bytes && snx_nacp_name(bytes, size, text, sizeof text)) shown = snx_strdup(text);
     free(bytes);
+    /* the name the driver recorded for a game whose dump carries none: a title ID says nothing */
+    if (!shown && folder && stem) {
+        char* ini = snx_game_ini(folder, stem);
+        if (ini) shown = snx_ini_value(ini, "name");
+        free(ini);
+    }
+    /* the driver's own .ini beside the game, as the 3DS driver writes it (its folder is not divided from the config) */
+    if (!shown && folder && stem) {
+        char* ini = snx_format("%s/%s.ini", folder, stem);
+        if (ini) shown = snx_ini_value(ini, "name");
+        free(ini);
+    }
     free(stem);
     free(folder);
     return shown ? shown : snx_strdup(name);
@@ -227,11 +239,19 @@ char* gui_game_icon(const char* path) {
     char *folder, icon[SNX_PATH_SIZE];
     const char* leaf;
     int cut;
-    if (!path || !gui_game_folder(path)) return NULL;
-    folder = snx_dirname(path);
+    if (!path || !(folder = snx_dirname(path))) return NULL;
     leaf = folder + strlen(folder);
     while (leaf > folder && leaf[-1] != '/' && leaf[-1] != '\\') --leaf;
-    cut = snx_path_format(icon, sizeof icon, "%s/%s_data/icon.jpg", folder, leaf);
+    /* a game the recompile made has its icon in its data folder (the Switch driver's control.nacp's icon.jpg) */
+    if (gui_game_folder(path)) {
+        cut = snx_path_format(icon, sizeof icon, "%s/%s_data/icon.jpg", folder, leaf);
+        if (!cut && snx_is_file(icon)) {
+            free(folder);
+            return snx_strdup(icon);
+        }
+    }
+    /* a 3DS game has no data folder: its driver writes the SMDH's icon beside the game (icon.rgba) */
+    cut = snx_path_format(icon, sizeof icon, "%s/icon.rgba", folder);
     free(folder);
     return !cut && snx_is_file(icon) ? snx_strdup(icon) : NULL;
 }

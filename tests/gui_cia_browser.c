@@ -525,5 +525,53 @@ int main(void) {
         snx_remove_tree(d);
         free(d);
     }
+    /* a game whose dump carries no control.nacp: the launcher shows the name the driver recorded for it, not the title
+       ID the folder is named by */
+    {
+        char *d = snx_temp_dir(NULL), *folder = d ? snx_path_join(d, "delta") : NULL;
+        char *program = folder ? snx_path_join(folder, "delta") : NULL;
+        char *ini = folder ? snx_path_join(folder, "delta.ini") : NULL;
+        char* shown;
+        assert(d && folder && program && ini && !snx_mkdirs(folder));
+        assert(!snx_write_file(program, "#!/bin/sh\n", 10));
+        assert(!snx_ini_record(ini, "name", "Delta's Game"));
+        shown = gui_game_shown(program);
+        assert(shown && !strcmp(shown, "Delta's Game"));
+        free(shown);
+        snx_remove_tree(d);
+        free(ini);
+        free(program);
+        free(folder);
+        free(d);
+    }
+    /* a game the driver named in its own .ini, as the 3DS driver does, and the icon it writes beside it: Games shows
+       that name rather than the folder's title ID, and draws the icon */
+    {
+        char *d = snx_temp_dir(NULL), *folder = d ? snx_path_join(d, "A Tested Title") : NULL,
+             *program = folder ? snx_path_join(folder, "A Tested Title") : NULL,
+             *ini = folder ? snx_path_join(folder, "A Tested Title.ini") : NULL,
+             *icon = folder ? snx_path_join(folder, "icon.rgba") : NULL;
+        const char* named = "[Game]\nname=A Tested Title\n";
+        unsigned char pixels[48 * 48 * 4];
+        char* shown;
+        assert(d && folder && program && ini && icon);
+        assert(!snx_mkdirs(folder) && !snx_write_file(program, "x", 1) && !chmod(program, 0755));
+        assert(!snx_write_file(ini, named, strlen(named)));
+        shown = gui_game_shown(program);
+        assert(shown && !strcmp(shown, "A Tested Title"));
+        free(shown);
+        assert(!gui_game_icon(program)); /* no icon beside it yet */
+        memset(pixels, 0xff, sizeof pixels);
+        assert(!snx_write_file(icon, (const char*)pixels, sizeof pixels));
+        shown = gui_game_icon(program);
+        assert(shown && !strcmp(shown, icon));
+        free(shown);
+        snx_remove_tree(d);
+        free(icon);
+        free(ini);
+        free(program);
+        free(folder);
+        free(d);
+    }
     return 0;
 }

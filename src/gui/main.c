@@ -3836,6 +3836,24 @@ static SDL_Texture* mii_texture(App* app, int mii, int side, bool* failed) {
     free(rgba);
     return texture;
 }
+/* The 3DS driver's icon of a game (icon.rgba): its SMDH's 48x48 icon as RGBA, rows top down, scaled nearest to side
+   pixels square with B, G, R, A in memory as the renderer takes them. 0 when drawn, 1 when bytes are not that icon */
+static int rgba_icon(const unsigned char* bytes, size_t size, int side, void* pixels) {
+    const unsigned char* src = bytes;
+    unsigned char* out = (unsigned char*)pixels;
+    int x, y;
+    if (!bytes || size != 48 * 48 * 4) return 1;
+    for (y = 0; y < side; ++y)
+        for (x = 0; x < side; ++x) {
+            const unsigned char* s = src + 4 * ((size_t)(y * 48 / side) * 48 + (size_t)(x * 48 / side));
+            unsigned char* p = out + 4 * ((size_t)y * side + x);
+            p[0] = s[2];
+            p[1] = s[1];
+            p[2] = s[0];
+            p[3] = 255;
+        }
+    return 0;
+}
 /* the icon of the game whose program is at path, as its row shows it: its icon.jpg drawn once, then kept; NULL for
    a game without one. One that does not draw is said, with its file, and shows none */
 /* the folder in the cache a dump's icon goes in: icons/ of the menu's cache, named by a hash of the dump's path, size
@@ -4246,7 +4264,9 @@ static SDL_Texture* game_icon(App* app, const char* path) {
     }
     jpeg = file ? snx_read_file(file, &size) : NULL;
     pixels = jpeg ? malloc((size_t)GUI_ICON_SIDE * GUI_ICON_SIDE * 4) : NULL;
-    if (pixels && snx_splash_picture(jpeg, size, GUI_ICON_SIDE, 0, pixels, GUI_ICON_SIDE * 4))
+    if (pixels && (file && strlen(file) >= 5 && !strcmp(file + strlen(file) - 5, ".rgba")
+                       ? rgba_icon(jpeg, size, GUI_ICON_SIDE, pixels)
+                       : snx_splash_picture(jpeg, size, GUI_ICON_SIDE, 0, pixels, GUI_ICON_SIDE * 4)))
         snprintf(app->message, sizeof app->message, snx_tr("%s could not be drawn: the game shows Wimsy in grey"),
                  file);
     else if (pixels) {
@@ -6871,7 +6891,7 @@ bool ui_games_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info
                                                                                              : "",
                  queued);
         info->label = label;
-        if (r) info->image = r->driver == GUI_SWITCH ? game_icon(app, r->path) : NULL;
+        if (r) info->image = game_icon(app, r->path);
         if (!r) info->image = icon_more(app);                /* Show More's cover */
         if (r && !info->image) info->image = icon_none(app); /* a game with none of its own */
         return true;
@@ -9012,9 +9032,8 @@ static void recent_as_games(App* app) {
             } else
                 ++j;
     for (i = 0; i < app->recent.count; ++i) {
-        char* shown = app->recent.game[i].driver == GUI_SWITCH && gui_game_folder(app->recent.game[i].path)
-                          ? gui_game_shown(app->recent.game[i].path)
-                          : NULL;
+        /* a game made, whichever console's: its own name in its .ini, else its folder's, as Games shows it */
+        char* shown = app->recent.game[i].prepared ? gui_game_shown(app->recent.game[i].path) : NULL;
         if (shown && gui_recent_rename(&app->recent, app->recent.game[i].path, shown)) changed = true;
         free(shown);
     }
