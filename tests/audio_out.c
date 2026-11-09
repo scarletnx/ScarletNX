@@ -802,15 +802,30 @@ static void test_hwopus(void) {
     SvcObj* manager = new_hwopus();
     u32 params[2] = {48000, 2};
     IpcCtx c = request(1, le32s(params, 2), sizeof params);
-    CHECK(manager->dispatch(manager, &c) == 0 && c.out_size == 4 && reply32(&c, 0) == 0x10000);
-    /* multistream: 32 KiB, and 32 KiB a stream; parameters too short to read are one stream's */
+    CHECK(manager->dispatch(manager, &c) == 0 && c.out_size == 4 && reply32(&c, 0) == 0xd474);
+    /* the console's sizes (Ryujinx's): the decoder state, then the stream and frame buffers. Parameters too short to
+       read are 64 KiB */
     u32 multi[4] = {48000, 6, 4, 2}, size = 0;
     memset(GP(0x3000), 0, 0x110);
     memcpy(GP(0x3000), multi, sizeof multi);
     snx_le32_array(GP(0x3000), 4);
     CHECK(nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSizeForMultiStream(NULL, buffer(0x3000, 0x110),
                                                                                      &size) == 0 &&
-          size == 0x28000);
+          size == 0x25750);
+    /* ExEx (9) decodes on the DSP: no decoder state. One game's sound init takes these two sizes, and fails with the
+       state in them */
+    u32 dsp[2][6] = {{48000, 2, 2, 0, 0, 0}, {48000, 2, 1, 1, 0, 0}};
+    for (int i = 0; i < 2; i++) {
+        memset(GP(0x3000), 0, 0x118);
+        memcpy(GP(0x3000), dsp[i], sizeof dsp[i]);
+        snx_le32_array(GP(0x3000), 6);
+        CHECK(nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSizeForMultiStreamExEx(
+                  NULL, buffer(0x3000, 0x118), &size) == 0 &&
+              size == (i ? 0x1500u : 0x1ac0u));
+    }
+    nn_codec_detail_HardwareOpusDecoderParameterInternalEx large = {48000, 2, 1, 0}; /* frames of 120 ms */
+    CHECK(nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSizeExEx(NULL, &large, &size) == 0 &&
+          size == 0x3300);
     CHECK(nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSizeForMultiStream(NULL, buffer(0x3000, 0x10),
                                                                                      &size) == 0 &&
           size == 0x10000);
