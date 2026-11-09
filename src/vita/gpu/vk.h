@@ -12,7 +12,11 @@
    guest's memory the GPU uses is imported as buffers (VK_EXT_external_memory_host), so surfaces, vertices, textures and
    the shown framebuffer are read and written in place on the GPU and nothing of them is copied by the CPU. Work is
    recorded into a command buffer until it is submitted, a few submissions in flight, each with a serial */
-#define VITA_VK_SLOTS 3
+/* a scene is one submission and the display's copy another, so a game with several passes a frame fills the slots
+   within one: the host thread waits for the oldest submission when it begins the next recording, and a slot more lets
+   it run that much further ahead of the GPU (the ring's most, SNX_VK_RING_SLOTS). Each slot costs the renderer's
+   staging and linear rings (render.c) */
+#define VITA_VK_SLOTS 4
 typedef struct {
     SnxVkWindow host; /* the window (none headless), the instance and the surface */
     VkPhysicalDevice phys;
