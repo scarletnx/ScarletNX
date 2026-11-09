@@ -939,6 +939,17 @@ static int play_dump_at(const char* input, const SnxPaths* paths, unsigned flags
         snx_error("--out and --tmpfs cannot go together: --tmpfs puts the extraction in tmpfs");
         goto done;
     }
+    if (tmpfs) { /* a temporary folder on a disk fills it: this extraction reads the dump in place */
+        char* root = snx_temp_root();
+        char fs[48];
+        int on = root ? snx_tmpfs_check(root, fs, sizeof fs) : -1;
+        if (!on) {
+            printf("Extract to tmpfs: %s is on %s, not a tmpfs: the dump is read in place\n", root, fs);
+            tmpfs = 0;
+            extract = (flags & (SNX_EXTRACT_CONTAINER | SNX_EXTRACT)) != 0;
+        }
+        free(root);
+    }
     if (nupdates) { /* the game made first, then each update or DLC made and checked, then the game played with them */
         SnxU64 title, own, of_game;
         char of[17], *program;

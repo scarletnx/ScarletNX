@@ -94,7 +94,8 @@ no recompile, and a game run without it again has that extraction taken away, as
 copy of it; an NRO has no extraction to name.
 `--tmpfs` extracts to tmpfs instead, and implies `--extract-container`: `<temp>/scarletnx/work/<title ID>` (`$TMPDIR`,
 else `/tmp`; the temporary folder on Windows), where the game reads its RomFS from while its ExeFS and saves stay in
-`recompiled/<id>/<id>_data/`. The game's folder gets `<id>.tmpfs` while its RomFS is in tmpfs. A run extracts the RomFS again
+`recompiled/<id>/<id>_data/`. On Linux and FreeBSD, when that folder is not a tmpfs, the driver says which filesystem it is on
+and reads the dump in place instead, so a disk is not filled. The game's folder gets `<id>.tmpfs` while its RomFS is in tmpfs. A run extracts the RomFS again
 from the dump the game records when the system emptied tmpfs, and moves it between tmpfs and the game's folder when
 `--tmpfs` is given or left out. A game that records no dump says *Can't be extracted to tmpfs: the game's settings name
 no dump it was made from*. `-r --tmpfs` on an extraction leaves its RomFS where it is.
