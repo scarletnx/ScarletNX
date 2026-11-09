@@ -1350,7 +1350,7 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
     }
     /* held as BC7: RGBA8 until the encoder has made its BC7 image between frames (vk_tex_later_frame), but one with
        holes, whose RGBA8 image would take memory for its holes as well */
-    if (f.conv == VKC_ASTC && is_bc7(f.vk) && !holes && g_settings.astc_mode != 3) {
+    if (f.conv == VKC_ASTC && is_bc7(f.vk) && !holes && !g_vk.astc_at_load) {
         t->bc7_later = 1;
         t->f.vk = later_rgba8(f.vk);
         tex_info(t, t->f.vk, &ii, &vf, &t->storage_capable);
