@@ -328,9 +328,14 @@ separate textures at 0x168 + 8 r, separate samplers at 0x568 + 8 r. One mesh pro
 vertex stage's: the draw state keeps them apart (`DS_TASK` and `DS_MESH` in `gpu/draw_state.h`), and bank 0 of each
 stage is 0x870 bytes.
 
-`DrawMeshTasksIndirect` gives the GPU two words of the indirect buffer (a GPFIFO entry of 2 words after macro 0x31).
-Vulkan's indirect mesh draw reads three, x, y and z, and has no first workgroup, so the renderer skips the indirect
-forms and logs it once.
+`DrawMeshTasksIndirect` gives the GPU two words of the indirect buffer (a GPFIFO entry of 2 words after macro 0x31),
+`{count, first}` as `NV_mesh_shader`'s `DrawMeshTasksIndirectCommandNV` has them. A compute program writes them in the
+same frame. Vulkan's indirect mesh draw reads three, x, y and z, and has no first workgroup, so the renderer copies
+the record on the GPU into one of the frame's staging, `{count, 1, 1}` and the first workgroup a uniform buffer's
+alignment after it (`mesh_indirect` in `vk/render.c`), which it binds at `SNX_VKB_RS` of the task or mesh stage: where
+the push constant's z has `SH_PUSH_GPU_MESH_FIRST`, the task program, or the mesh program without one, takes its first
+workgroup from there. The copy ends the rendering pass. In the first 3D scene of one game about 30 mesh draws a frame
+are indirect; the 3D form's and the multi-draws, which no run calls, are still skipped.
 
 With `mesh_draws` on, an RTX 2080 faulted in most menu runs: Xid 31 (`GPCCLIENT_GCC`, reads of addresses that no
 memory backs), then Xid 109 and a lost device. NV diagnostic checkpoints put each hang in a draw with a task program,
@@ -403,6 +408,13 @@ the game asks for.
    x. The periodic `vulkan:` stats line counts the mesh draws and those skipped. The storage writes of the two
    stages are in the barriers before their results land (`buffer.c`'s `out_stages`).
 
+On a Radeon 890M (RADV, Mesa 26.2.5) the mesh draws, direct and indirect, ran without a fault in every run so far,
+the menus and the first 3D scene. With `RADV_DEBUG=hang`, which waits for each draw (`syncshaders`), the first mesh
+draws of the menus hung the GPU twice, once with every task draw of 0 workgroups (the gfx ring, then a compute ring
+timed out; the dump's compute IB held an `ACQUIRE_MEM` and `NOP`s, with the shader engines idle): a task program's
+draw is a gang submission, its task stage on an ACE queue, which that option's waits stall. Don't take it to a run
+with mesh draws.
+
 With `mesh_draws=1` the draws translate and draw, with no `not translated` line and no validation message of their
 own, but 6 of 7 runs through the menus on an RTX 2080 (driver 615.78.08) ended in a GPU fault: Xid 109 (context switch
 timeout) and Xid 31 (MMU faults of `GPCCLIENT_GCC`, reads at addresses such as `0xfffff079_ad3f2000`), then
@@ -422,7 +434,8 @@ sure. So the setting stays off.
 - The cause of the GPU faults with `mesh_draws=1`. Next checks: the per-primitive outputs and the fragment
   program's `PerPrimitiveEXT` inputs (with their interpolation decorations), the primitive indices against the vertex
   count, and a RenderDoc capture of the first faulting draw.
-- The record of `DrawMeshTasksIndirect` (two words, probably count and first) and the 3D forms' (x, y, z), for a
-  pass on the GPU that makes Vulkan's records of them. No run so far calls them.
+- The 3D form's indirect record (x, y, z), and whether `DrawMeshTasksIndirect`'s is `{count, first}`, as the
+  renderer takes it, or the other way round (a GPU-written record, which the CPU can't see when it records the draw;
+  the pictures with it look right).
 - The texture keys of task and mesh programs: their integer, rectangle and queried textures do not key a variant yet,
   as the vertex program's do (`vs_tex_variant`).

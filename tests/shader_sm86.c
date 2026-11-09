@@ -2579,9 +2579,11 @@ static void test_mesh(const char* dir) {
         static u32 position[40 * 4], generic1[40 * 4], generic0[2 * 4], indices[2 * 3];
         memset(position, 0xee, sizeof position);
         SpvEvalEnv env = {0};
+        static u32 first_ubo[4]; /* SNX_VKB_RS, which only an indirect draw's flag reads (test_task) */
         env.builtin[26][0] = 2; /* WorkgroupId.x, after the draw's first group 5 */
         env.push[0] = 5;
         env.push[1] = fix_depth ? f2u(1.0f) : 0;
+        env.ubo[SNX_VKB_RS] = first_ubo, env.ubo_words[SNX_VKB_RS] = 4;
         env.arrays[32] = position, env.array_words[32] = 40 * 4;
         env.arrays[1] = generic1, env.array_words[1] = 40 * 4;
         env.arrays[0] = generic0, env.array_words[0] = 2 * 4;
@@ -2622,7 +2624,10 @@ static void test_task(const char* dir) {
     n++;
     u32 sph[32] = {0};
     sph[0] = sph0(1, 1);
-    for (u32 first = 0; first < 6; first += 5) {
+    /* the draw's first group 0 and 5 in the push constant's x, then 5 as an indirect draw's: from the uniform buffer at
+       SNX_VKB_RS, where the push constant's z says so (its x is then not read) */
+    for (u32 variant = 0; variant < 3; variant++) {
+        u32 first = variant ? 5 : 0;
         ShaderInfo si = {0};
         si.mesh.threads = 1;
         si.mesh.payload = 0x20;
@@ -2635,8 +2640,11 @@ static void test_task(const char* dir) {
         }
         if (!first) CHECK(keep_module(dir, "ts", spv, count));
         SpvEvalEnv env = {0};
+        u32 first_ubo[4] = {variant == 2 ? first : 0x777, 0, 0, 0};
         env.builtin[26][0] = 2;
-        env.push[0] = first;
+        env.push[0] = variant == 2 ? 99 : first;
+        env.push[2] = variant == 2 ? SH_PUSH_GPU_MESH_FIRST : 0;
+        env.ubo[SNX_VKB_RS] = first_ubo, env.ubo_words[SNX_VKB_RS] = 4;
         env.payload[1] = 77;
         const char* why = spv_eval(spv, count, &env);
         free(spv);
