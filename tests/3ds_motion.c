@@ -8,6 +8,7 @@
 #include "3ds/runtime/internal.h"
 #include "3ds/services/hid.h"
 #include "support/3ds_guest.h"
+#include "support/sdl_real_pads.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,7 +23,6 @@ static int checks;
         }                                                                                                              \
     } while (0)
 
-#define PAD_IDS "0x057e/0x2009" /* the virtual pads' vendor and product: a real pad plugged in stays out */
 #define G       9.80665f        /* SDL's m/s^2 a g */
 /* hid:USER's shared memory: each sensor's index, entries and raw entry */
 enum { ACCEL_INDEX = 0x118, ACCEL_ENTRIES = 0x128, ACCEL_RAW = 0x120, GYRO_INDEX = 0x168, GYRO_ENTRIES = 0x178 };
@@ -85,7 +85,7 @@ static bool is(const int16_t* got, int16_t x, int16_t y, int16_t z, int16_t rx, 
 
 int main(void) {
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
-    SDL_SetHint(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT, PAD_IDS);
+    sdl_real_pads_hide();
     CHECK(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD));
     snx_ctr_input_init();
     unsigned char code[0x3000] = {0};

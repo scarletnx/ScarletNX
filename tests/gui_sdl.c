@@ -5,6 +5,7 @@
 #include "gui/main.c"
 #define SNX_SCREEN_TEST "gui_sdl.c"
 #include "gui_screen.h"
+#include "support/sdl_real_pads.h"
 #include "common/cpu/aarch64/cpu.h" /* SNX_ABI, which a save state names */
 #include <assert.h>
 #include <miniz.h> /* Share Log's zip, read back */
@@ -1074,7 +1075,7 @@ static void button_map(App* app) {
     const SnxPadShape* box;
     float x = 0, y = 0; /* mingw's assert returns, as far as the compiler knows */
     int page = -1, focus;
-    SDL_SetHint(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT, "0x045e/0x02ea"); /* a real pad plugged in stays out */
+    sdl_real_pads_hide();
     settings_forget(app);
     assert(!gui_settings_read(&app->settings, list));
     gui_settings_mark(&app->settings);

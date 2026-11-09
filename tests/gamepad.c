@@ -11,6 +11,7 @@
 #include "nx/runtime/pause.h"
 #include "common/utilities/common.h"
 #include "common/utilities/pad_sdl.h" /* snx_pad_slot */
+#include "support/sdl_real_pads.h"
 #include <SDL3/SDL.h>
 #include <string.h>
 #include <stdio.h>
@@ -61,15 +62,13 @@ static int checks;
 
 /* HidNpadButton bits */
 enum { A = 1, B = 2, X = 4, Y = 8, ZL = 1 << 8, ZR = 1 << 9, PLUS = 1 << 10, LEFT = 1 << 12, UP = 1 << 13 };
-/* the virtual pads, by the vendor and product SDL tells their layout from: only they are read, a real pad plugged in
-   stays out */
+/* the virtual pads, by the vendor and product SDL tells their layout from */
 #define XBOX      0x045e, 0x02ea
 #define SWITCH    0x057e, 0x2009
 #define SONY      0x054c, 0x09cc
 #define GAMECUBE  0x057e, 0x0337
 #define JOY_LEFT  0x057e, 0x2006
 #define JOY_RIGHT 0x057e, 0x2007
-#define PADS_IDS  "0x045e/0x02ea,0x057e/0x2009,0x054c/0x09cc,0x057e/0x0337,0x057e/0x2006,0x057e/0x2007"
 
 /* the backend's event loop (sdl3.c's video_poll), for the gamepads */
 static void pump(void) {
@@ -164,7 +163,7 @@ int main(void) {
     SDL_Window* w;
     i32 s[4];
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
-    SDL_SetHint(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT, PADS_IDS);
+    sdl_real_pads_hide();
     CHECK(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD));
     w = SDL_CreateWindow("gamepad", 64, 64, 0);
     CHECK(w != NULL && SDL_GetKeyboardFocus() == w);
