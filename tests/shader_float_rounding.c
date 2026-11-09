@@ -28,6 +28,7 @@ int main(int argc, char** argv) {
                 free(code);
                 return 1;
             }
+            int f64 = 0;
             for (size_t at = 5; at < words;) {
                 u32 length = code[at] >> 16;
                 if (!length || length > words - at) {
@@ -39,7 +40,17 @@ int main(int argc, char** argv) {
                     free(code);
                     return 1;
                 }
+                if ((code[at] & 0xffff) == 17 && length == 2 && code[at + 1] == 10) f64 = 1;
                 at += length;
+            }
+            /* A conversion with a 64-bit side is the same requirement on either console: this Maxwell program declares
+               Float64, which a device without shaderFloat64 (Metal) refuses whole, as it refused one Ounce game's
+               fragment programs (docs/platforms/nx/ounce.md) */
+            if (f64 != (source == 3)) {
+                fprintf(stderr, "F2F %u\u2192%u mode%u: shaderFloat64 %s, and a 64-bit source %s it\n", source,
+                        destination, mode, f64 ? "declared" : "not declared", f64 ? "did not want" : "wanted");
+                free(code);
+                return 1;
             }
             if (argc == 2) {
                 char path[4096];
@@ -56,6 +67,6 @@ int main(int argc, char** argv) {
             }
             free(code);
         }
-    puts("PASS float narrowing:12 actual Maxwell modules without an Int64 requirement");
+    puts("PASS float narrowing:12 actual Maxwell modules, no Int64 requirement, Float64 exactly on the 64-bit ones");
     return 0;
 }
