@@ -183,6 +183,10 @@ The skills in `.claude/skills/`:
 - `game-tag`: the opaque tag that stands for a game in a commit message, an issue or a doc (`tools/game_tag.py`). It
   also checks a text for titles and title IDs.
 
+Audit a branch before you show it. Run `code-audit` in read-only passes until a pass finds nothing new. Fix each
+finding, build, and run the tests. Then run one more pass over the files that changed. The findings, and the runs that
+proved the fixes, go into the pull request body.
+
 The agents in `.claude/agents/` keep disassembly and logs out of the main context:
 
 - `crash-triage` (read-only): symbolizes and disassembles a crash, and reports the mechanism with its evidence.
