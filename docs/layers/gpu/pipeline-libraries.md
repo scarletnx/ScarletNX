@@ -171,7 +171,7 @@ FS part must have one, and it must also match (06636, 06637). So:
 
 The layouts now are `vk_playout(arrays)`. They are 32 at most, one for each value of the five bits of `arrays`. Set
 N is `g_vk_dslayout[bit N][N]`, by `shader_vk_set`: set 0 vertex (and compute), set 1 fragment, sets 2 to 4
-tessellation control, tessellation evaluation and geometry. There is one push constant range of 80 bytes for
+tessellation control, tessellation evaluation and geometry. There is one push constant range of 128 bytes for
 `VK_PUSH_STAGES`.
 
 A link with a PR part and an FS part must use layouts that agree. Without `VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT`,
@@ -519,10 +519,11 @@ menus of an Ounce game under `--vk_validation=1` against the same run on feat/ou
 6. **`[gpu] Let one worker at most make optimized pipelines`**: the bound `PIPE_OPT_WORKERS`, the stats of the draws'
    waits for a worker, and the setting `vk_pipeline_cache` for cold runs.
 7. `[vk] Warm the large shipped programs' parts into the pipeline cache`: the pass warms the part of each shipped
-   program whose SPIR-V is 256 KiB or larger (step 8, below). One worker warms at a time (`WARM_WORKERS`), as the
-   optimized pipelines, and the parts are made into `g_pipeline.pcache` and dropped, so a draw that meets the program later
-   hits the cache by the SPIR-V. A warm-up of every shipped program is still not done: the 7,403 programs would cost
-   about 18 minutes of worker time in a first run (see [The warm-up of the shipped programs](#the-warm-up-of-the-shipped-programs-measured)).
+   vertex or fragment program whose SPIR-V is 256 KiB or larger (step 8, below). One worker warms at a time
+   (`WARM_WORKERS`), as the optimized pipelines, and the parts are made into `g_pipeline.pcache` and dropped, so a draw
+   that meets the program later hits the cache by the SPIR-V. A warm-up of every shipped program is still not done: the
+   7,403 programs would cost about 18 minutes of worker time in a first run (see
+   [The warm-up of the shipped programs](#the-warm-up-of-the-shipped-programs-measured)).
 
 ## Rejected alternatives
 

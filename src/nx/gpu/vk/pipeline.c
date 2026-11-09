@@ -1558,10 +1558,14 @@ static VkPipelineLayout part_layout(u32 part, u32 arrays) {
     if (made) return made;
     pm_lock(&g_pipeline.playout_lock);
     if (!*l) {
-        VkDescriptorSetLayout sets[5] = {0};
+        VkDescriptorSetLayout sets[5];
         u32 n = fs ? 2 : g_vk_stage_sets;
+        /* a stage that is not this part's takes no set: the graphicsPipelineLibrary feature allows a null there
+           (VUID-VkPipelineLayoutCreateInfo-graphicsPipelineLibrary-06753), and a real but empty set would not be
+           compatible with the union the link needs (VUID-VkGraphicsPipelineCreateInfo-flags-06729 when it optimizes
+           at link time, 06730 when it does not). docs/layers/gpu/pipeline-libraries.md, "Layouts" */
         for (u32 s = 0; s < n; s++)
-            if ((s == 1) == fs) sets[s] = g_vk_dslayout[(arrays >> s) & 1][s];
+            sets[s] = (s == 1) == fs ? g_vk_dslayout[(arrays >> s) & 1][s] : VK_NULL_HANDLE;
         VkPushConstantRange pc = {VK_PUSH_STAGES, 0, 128}; /* vk_playout's: a link's parts take its push constants */
         VkPipelineLayoutCreateInfo pl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                          .flags = VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT,
@@ -2794,6 +2798,12 @@ static u8* ship_window(const u8* p, size_t avail) {
    (seconds). The program's indexed bit and its clip word are the ship pass's guesses, so a draw whose key differs
    still translates and compiles its own, as now (docs/layers/gpu/pipeline-libraries.md, step 8) */
 static void ship_warm(int stage, int indexed, const u32* spv, u32 nw) {
+    /* A part exists only with pipeline libraries (g_vk.has_gpl): a device without them makes every pipeline whole, and
+       a part made there is a library create the driver was never promised — MoltenVK dereferences the null
+       rasterization state of a fragment part and takes the process down */
+    if (!g_vk.has_gpl) return;
+    /* a control program shares the pre-rasterization part with the vertex program, so it is warmed with its draw */
+    if (stage != ST_VS && stage != ST_FS) return;
     VkShaderModule mod = vk_module_spv(spv, nw);
     if (!mod) return;
     WarmItem* w = calloc(1, sizeof *w);
@@ -2805,7 +2815,7 @@ static void ship_warm(int stage, int indexed, const u32* spv, u32 nw) {
         w->part = VK_PART_PR;
         w->src.vs = mod;
         w->src.arrays = indexed ? (1u << shader_vk_set(ST_VS)) : 0;
-    } else { /* ST_FS: the pass makes no other stage */
+    } else if (stage == ST_FS) {
         w->part = VK_PART_FS;
         w->src.fs = mod;
         w->src.arrays = indexed ? (1u << shader_vk_set(ST_FS)) : 0;
