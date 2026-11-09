@@ -38,6 +38,11 @@ def main():
     assert '--fps_limit=N' in help_text and '--aot_threads=N' in help_text
     run(['--board-info', '--extract-container'], 2, 'Usage:')
     run(['-x', '-r', 'game.cia'], 2, 'Usage:')
+    # --icon takes the game and --out DIR, and nothing else; the folder may not be an option or empty
+    run(['-x', '--icon', 'game.cia'], 2, 'Usage:')
+    run(['-x', '--icon', '--out', '--', 'game.cia'], 2, 'requires a folder')
+    run(['-x', '--icon', '--out=', 'game.cia'], 2, 'requires a folder')
+    run(['-x', '--icon', '--out', 'icon', '--output', 'out', 'game.cia'], 2, 'Usage:')
     run(['-r', '--max-blocks', '5', 'game.cia'], 2, 'Usage:')
     run(['--board-info', '-r'], 2, 'Usage:')
     run(['--output'], 2, 'requires a directory')

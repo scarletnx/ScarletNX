@@ -97,6 +97,7 @@ def ncch(
     encrypted=False,
     patch_header=None,
     code_blob=None,
+    icon=b'ICON',
 ):
     exheader = bytearray(0x800)
     exheader[:8] = b'TESTCTR\0'
@@ -116,15 +117,16 @@ def ncch(
     stored = repeat_blz(len(code)) if compressed else bytes(code)
     if code_blob is not None:
         stored = code_blob
-    exefs = bytearray(align(0x200 + align(len(stored), 512) + 4, 512))
+    icon = bytes(icon)
+    exefs = bytearray(align(0x200 + align(len(stored), 512) + len(icon), 512))
     exefs[:8] = b'.code\0\0\0'
     put(exefs, 8, '<II', 0, len(stored))
     exefs[16:24] = b'icon\0\0\0\0'
-    put(exefs, 24, '<II', align(len(stored), 512), 4)
+    put(exefs, 24, '<II', align(len(stored), 512), len(icon))
     exefs[0x200 : 0x200 + len(stored)] = stored
-    exefs[0x200 + align(len(stored), 512) : 0x204 + align(len(stored), 512)] = b'ICON'
+    exefs[0x200 + align(len(stored), 512) : 0x200 + align(len(stored), 512) + len(icon)] = icon
     exefs[0x1E0:0x200] = sha(stored)
-    exefs[0x1C0:0x1E0] = sha(b'ICON')
+    exefs[0x1C0:0x1E0] = sha(icon)
     if patch_exefs:
         patch_exefs(exefs)
     rom = romfs(**(romfs_options or {})) if with_romfs else b''

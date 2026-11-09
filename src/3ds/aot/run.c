@@ -151,10 +151,10 @@ static const unsigned char* game_smdh(const char* directory, const SnxCtrSource*
     if (!icon) {
         char* path = snx_path_join(directory, "exefs/icon");
         FILE* f = path ? fopen(path, "rb") : NULL;
-        *size = 0;
-        if (f && fread(buffer, 1, 0x2020, f) == 0x2020) icon = buffer, *size = 0x2020;
+        size_t got = f ? fread(buffer, 1, 0x36c0, f) : 0;
         if (f) fclose(f);
         free(path);
+        if (got >= 0x201c) icon = buffer, *size = got;
     }
     return icon && *size >= 0x201c && !memcmp(icon, "SMDH", 4) ? icon : NULL;
 }
@@ -162,12 +162,14 @@ static const unsigned char* game_smdh(const char* directory, const SnxCtrSource*
    as RGBA beside it (icon.rgba), which the menu draws. A game with no SMDH is named by the dump it was made from, and
    has no icon. title is that name, "" when neither has one */
 static void game_metadata(const char* directory, const SnxCtrSource* game, char* title, size_t title_size) {
-    unsigned char smdh[0x2020], rgba[48 * 48 * 4];
+    unsigned char smdh[0x36c0], rgba[48 * 48 * 4];
     uint64_t size = 0;
     const unsigned char* icon = game_smdh(directory, game, smdh, &size);
     char* ini;
+    bool named = false; /* the SMDH gave the title: a game with none is named by its dump for the line alone */
     title[0] = 0;
     if (icon) snx_ctr_smdh_title(icon, (size_t)size, title, title_size);
+    named = title[0] != 0;
     if (icon && !snx_ctr_smdh_icon(icon, (size_t)size, rgba)) {
         char* file = snx_path_join(directory, "icon.rgba");
         if (file) {
@@ -179,7 +181,13 @@ static void game_metadata(const char* directory, const SnxCtrSource* game, char*
     /* the launcher's .ini, which is the config folder's for a game in the data folder: the game's own keeps source=,
        model= and system= alone */
     ini = snx_game_ini(directory, snx_path_leaf(directory));
-    if (ini && title[0]) (void)snx_ini_record(ini, "name", title);
+    if (!title[0] && ini) { /* no SMDH: the dump's own name says more than the title ID the folder is named by */
+        char* source = snx_ini_value(ini, "source"), *leaf = source ? snx_dump_name(source) : NULL;
+        if (leaf) snprintf(title, title_size, "%s", leaf);
+        free(leaf);
+        free(source);
+    }
+    if (ini && named) (void)snx_ini_record(ini, "name", title);
     free(ini);
 }
 int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel model, uint64_t limit, double seconds,
