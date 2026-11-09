@@ -34,7 +34,7 @@ char* snx_game_title(const char* name, const SnxNpdm* npdm, const char* input) {
     return out;
 }
 char* snx_game_shown(const char* name, const SnxProgram* program, char* why, size_t why_size) {
-    char shown[0x200];
+    char shown[0x200], text[17];
     SnxU64 id;
     if (why_size) why[0] = 0;
     /* a title ID names the game's files, as the driver names a dump's game read in place; nobody calls it that */
@@ -42,6 +42,13 @@ char* snx_game_shown(const char* name, const SnxProgram* program, char* why, siz
         snx_nacp_name_why(program->nacp, program->nacp_size, shown, sizeof shown, program->nacp ? why : NULL,
                           program->nacp ? why_size : 0))
         return snx_strdup(shown);
+    /* an extracted game's folder is named by whoever extracted it (base, exefs): a game with no name of its own, its
+       control.nacp's or its NPDM's (one other than the SDK's "Application"), shows by its title ID instead, as a dump
+       whose control.nacp gives none */
+    if (!name && program->entry_path && snx_is_dir(program->entry_path) &&
+        (!program->npdm.name[0] || !strcmp(program->npdm.name, "Application")) &&
+        snx_title_text(program->npdm.title_id, text))
+        return snx_strdup(text);
     return snx_game_title(name, &program->npdm, program->entry_path);
 }
 char* snx_game_name(const char* name, const SnxNpdm* npdm, const char* input) {

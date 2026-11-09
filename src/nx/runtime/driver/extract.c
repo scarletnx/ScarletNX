@@ -7,6 +7,7 @@
 #include "nx/runtime/driver/container.h"
 #include "nx/loader/loader.h"
 #include "common/utilities/common.h"
+#include "common/utilities/game_ini.h"
 #include "common/platform/file.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,7 +31,8 @@ typedef struct {
 } ExtractState;
 
 static void extract_help(void) {
-    puts("Usage: scarletnx -x BASE.xci|BASE.nsp|BASE.dxci|BASE.dnsp [options]\n"
+    puts("Usage: scarletnx -x BASE.xci|BASE.nsp|BASE.dxci|BASE.dnsp|FOLDER [options]\n"
+         "  FOLDER, an extracted game (exefs/, romfs/), is copied into --out as it is\n"
          "  --update FILE       Apply a same-title update during extraction, or add a DLC's RomFS image\n"
          "  --name NAME         Output name (default: base dump stem)\n"
          "  --out DIR           Output folder (default: work/NAME of the data folder)\n"
@@ -427,6 +429,76 @@ static void hactool_exit(void* data) {
     cleanup(state, 1);
 }
 
+/* src's files copied into dst, made, the progress row said as they go. Each file is read and written byte by byte, with
+   no link or rename between them, so the two may be on different disks; a link in src is followed */
+static int copy_counted(const char* src, const char* dst, ExtractState* state) {
+    char** names = NULL;
+    size_t count = 0, i;
+    int rc = 0;
+    if (snx_mkdirs(dst)) return snx_error("cannot create %s", dst);
+    if (snx_list_dir(src, &names, &count)) return snx_error("cannot list %s", src);
+    for (i = 0; !rc && i < count; i++) {
+        char *from = snx_path_join(src, names[i]), *to = snx_path_join(dst, names[i]);
+        if (!from || !to)
+            rc = snx_error("cannot resolve %s in %s", names[i], src);
+        else if (snx_is_dir(from))
+            rc = copy_counted(from, to, state);
+        else if (snx_copy_file(from, to))
+            rc = snx_error("cannot copy %s to %s", from, to);
+        else
+            progress_tick(state->written + snx_file_size(from), state);
+        free(from);
+        free(to);
+    }
+    snx_free_strings(names, count);
+    return rc;
+}
+/* -x of an extracted game (snx_extracted_game): its exefs/, romfs/, control.nacp and icon.jpg copied into --out,
+   where an extraction puts them, which Extract dump and Extract to tmpfs ask of a game read from its folder. 0, or
+   nonzero with a line saying why */
+static int copy_extracted(const ExtractOptions* options) {
+    static const char *const parts[] = {"exefs", "romfs"}, *const files[] = {"control.nacp", "icon.jpg"};
+    ExtractState state;
+    unsigned long count = 0, folders = 0;
+    char *from = NULL, *to = NULL;
+    int i, rc = 0;
+    if (options->update || options->program || options->name || options->icon)
+        return snx_error("%s is an extracted game, copied as it is: --update, --program, --name and --icon take a dump",
+                         options->base);
+    if (!options->out) return snx_error("-x of the extracted game %s needs --out DIR to copy it into", options->base);
+    if (snx_path_within(options->out, options->base) || snx_path_within(options->base, options->out))
+        return snx_error("--out %s and the extracted game %s are one inside the other", options->out, options->base);
+    memset(&state, 0, sizeof state);
+    for (i = 0; i < 2; i++)
+        if ((from = snx_extracted_part(options->base, i)) != NULL) {
+            tree_count(from, &count, &folders, &state.total);
+            free(from);
+        }
+    printf("Copying %s (%lu MB) into %s\n", options->base, (unsigned long)(state.total >> 20), options->out);
+    state.said_at = snx_seconds();
+    for (i = 0; !rc && i < 2; i++) {
+        from = snx_extracted_part(options->base, i);
+        to = snx_path_join(options->out, parts[i]);
+        if (!from) /* no RomFS: a game that has none */
+            rc = !i ? snx_error("%s has no exefs/ to copy", options->base) : 0;
+        else if (!to || (snx_path_exists(to) && snx_remove_tree(to)))
+            rc = snx_error("cannot replace %s/%s", options->out, parts[i]);
+        else
+            rc = copy_counted(from, to, &state);
+        free(from);
+        free(to);
+    }
+    for (i = 0; !rc && i < 2; i++) {
+        from = snx_path_join(options->base, files[i]);
+        to = snx_path_join(options->out, files[i]);
+        if (from && snx_is_file(from) && (!to || snx_copy_file(from, to)))
+            rc = snx_error("cannot copy %s to %s", from, to ? to : options->out);
+        free(from);
+        free(to);
+    }
+    if (!rc) progress_say(&state, 1);
+    return rc;
+}
 int snx_extract(int argc, char** argv, const SnxPaths* paths) {
     ExtractOptions options;
     ExtractState state;
@@ -434,6 +506,7 @@ int snx_extract(int argc, char** argv, const SnxPaths* paths) {
     int result;
     result = parse_options(argc, argv, &options);
     if (result) return result == 2 ? 0 : 1;
+    if (snx_extracted_game(options.base)) return copy_extracted(&options) ? 1 : 0;
     if (!paths || !paths->repo) return snx_error("-x needs the data folder (--repo)");
     if (!options.keys) options.keys = paths->keys;
     if (!options.title_keys) options.title_keys = paths->title_keys;

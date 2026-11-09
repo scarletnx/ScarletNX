@@ -2655,6 +2655,52 @@ int main(int argc, char** argv) {
         return 0;
     }
 #endif
+    /* source= an extracted game's folder, outside the data folder: its ExeFS and RomFS read where they are, read-only;
+       one that is not there is said to be a folder, with the settings that name it */
+    if (argc == 4 && (!strcmp(argv[3], "folder-source") || !strcmp(argv[3], "folder-gone"))) {
+        int gone = !strcmp(argv[3], "folder-gone");
+        char *source, *ini = snx_absolute(ini_file()), *said = NULL;
+        u64 size = 0;
+        u8* bytes;
+        FsNode* node;
+        CHECK(!snx_mkdirs("folder-data/Game_data") && !snx_mkdirs("Extracted game/exefs") &&
+              !snx_mkdirs("Extracted game/romfs/sub"));
+        CHECK(!snx_write_file("Extracted game/exefs/main", "main", 4) &&
+              !snx_write_file("Extracted game/romfs/asset.bin", "romfs test", 10) &&
+              !snx_write_file("Extracted game/romfs/sub/deep.bin", "deep", 4));
+        source = snx_absolute(gone ? "Moved game" : "Extracted game");
+        CHECK(source && ini && strlen(source) < sizeof g_settings.game_dump);
+        strcpy(g_settings.game_dump, source);
+        strcpy(g_datadir, "folder-data/Game_data/");
+        test_fs_text[0] = 0;
+        fs_init(NULL, NULL);
+        if (gone) {
+            said = snx_format("fs: the game's folder %s, its source= setting, is not there; its settings are %s\n",
+                              source, ini);
+            if (strcmp(test_fs_text, said)) fprintf(stderr, "said:     %sexpected: %s", test_fs_text, said);
+            CHECK(!strcmp(test_fs_text, said) && fs_read_file("romfs/asset.bin", &size) == NULL);
+        } else {
+            bytes = fs_read_file("exefs/main", &size);
+            CHECK(bytes && size == 4 && !memcmp(bytes, "main", 4));
+            free(bytes);
+            bytes = fs_read_file("romfs/sub/deep.bin", &size);
+            CHECK(bytes && size == 4 && !memcmp(bytes, "deep", 4));
+            free(bytes);
+            pm_lock(&g_hle.fs.tree.lock);
+            CHECK(!fs_tree_lookup(&g_hle.fs.tree, NULL, "romfs/asset.bin", &node) && node->readonly);
+            CHECK(fs_tree_remove(&g_hle.fs.tree, NULL, "romfs/asset.bin", 0, 0, 0) == FS_TREE_READONLY);
+            pm_unlock(&g_hle.fs.tree.lock);
+            CHECK(snx_is_file("Extracted game/romfs/asset.bin") && !snx_path_exists("folder-data/Game_data/romfs"));
+        }
+        free(source);
+        free(ini);
+        free(said);
+        cleanup_service();
+        free(g_mem);
+        printf("PASS %u checks: a game read from %s\n", test_checks,
+               gone ? "a folder that is not there says so" : "its extracted folder in place");
+        return 0;
+    }
     if (argc == 4 && (!strcmp(argv[3], "mods") || !strcmp(argv[3], "mods-image") || !strcmp(argv[3], "mods-stale"))) {
         int image = !strcmp(argv[3], "mods-image"), stale = !strcmp(argv[3], "mods-stale");
         mods_write(image, stale);

@@ -149,6 +149,41 @@ char* snx_game_source(const char* folder, const char* name, int* recorded) {
     if (recorded) *recorded = snx_is_link(path) || snx_path_exists(path);
     return snx_strdup(path);
 }
+char* snx_extracted_part(const char* path, int romfs) {
+    static const char* const names[2][2] = {{"exefs", "ExeFS"}, {"romfs", "RomFS"}};
+    for (int i = 0; i < 2; i++) {
+        char* part = snx_path_join(path, names[romfs != 0][i]);
+        if (part && snx_is_dir(part)) return part;
+        free(part);
+    }
+    return NULL;
+}
+int snx_extracted_game(const char* path) {
+    char *exefs = path && snx_is_dir(path) ? snx_extracted_part(path, 0) : NULL, *main;
+    size_t n;
+    int found;
+    main = exefs ? snx_path_join(exefs, "main") : NULL;
+    found = main && snx_is_file(main);
+    free(main);
+    free(exefs);
+    n = found ? strlen(path) : 0;
+    while (n && (path[n - 1] == '/' || path[n - 1] == '\\')) n--;
+    if (n > 5 && !strncmp(path + n - 5, "_data", 5)) { /* a recompiled game's own, beside its stamp */
+        char* stamp = snx_format("%.*s.abi", (int)(n - 5), path);
+        found = !stamp || !snx_is_file(stamp);
+        free(stamp);
+    }
+    return found;
+}
+const char* snx_source_kind(const char* source) {
+    static const char* const dumps[] = {".xci", ".nsp", ".dxci", ".dnsp", ".nro"};
+    size_t i;
+    if (!source || snx_is_dir(source)) return "folder";
+    if (snx_is_file(source)) return "dump";
+    for (i = 0; i < sizeof dumps / sizeof *dumps; i++) /* not there: by its name */
+        if (snx_ends_with_nocase(source, dumps[i])) return "dump";
+    return "folder";
+}
 int snx_record_source(const char* folder, const char* name, const char* dump) {
     char* ini = snx_game_ini(folder, name);
     int rc = snx_ini_record(ini, "source", dump);

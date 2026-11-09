@@ -284,9 +284,9 @@ static int load_dump(const char* dump, const char* update, int index, const SnxP
     snx_dump_close(&opened);
     return rc;
 }
-/* a game made from its dump read in place: what an extraction left in its data folder taken away, as the runtime would
-   read it over the dump */
-static int drop_extraction(const char* dir, int quiet) {
+/* a game made from its dump, or an extracted game's folder (kind "dump" or "folder"), read in place: what an
+   extraction left in its data folder taken away, as the runtime would read it over the source */
+static int drop_extraction(const char* dir, const char* kind, int quiet) {
     static const char* const parts[] = {"exefs", "romfs", "romfs.bin", "romfs.copying"};
     char* part;
     size_t i;
@@ -294,12 +294,20 @@ static int drop_extraction(const char* dir, int quiet) {
     for (i = 0; !rc && i < sizeof parts / sizeof *parts; ++i) {
         part = snx_path_join(dir, parts[i]);
         if (snx_path_exists(part) || snx_is_link(part)) {
-            if (!quiet) printf("Removing %s: the game reads it from its dump\n", part);
+            if (!quiet) printf("Removing %s: the game reads it from its %s\n", part, kind);
             rc = snx_remove_tree(part);
         }
         free(part);
     }
     return rc || snx_mkdirs(dir);
+}
+/* 1 when input is the extracted game the game's .ini names as its source= (snx_extracted_game), which it reads in
+   place */
+static int recorded_source(const char* folder, const char* game, const char* input) {
+    char* source = snx_extracted_game(input) ? snx_game_source(folder, game, NULL) : NULL;
+    int same = source && snx_same_file(source, input);
+    free(source);
+    return same;
 }
 /* the game's data folder: its ExeFS (or NRO) and RomFS, the RomFS left where it is with tmpfs */
 static int copy_data(const SnxProgram* p, const char* dir, int quiet, int tmpfs) {
@@ -601,9 +609,12 @@ static int make_program(const MakeArgs* a, int index) {
         printf("Recompiling %s, program %d of %d (%zu modules)\n", title, index, a->programs, program.module_count);
     else if (!compile.quiet)
         printf("Recompiling %s (%zu modules)\n", title, program.module_count);
-    /* an add-on's files: its dump, read in place, or what the driver extracts into its data folder */
+    /* an add-on's files: its dump, read in place, or what the driver extracts into its data folder. An extracted game
+       the game's .ini names as its source= is read in place as a dump is: nothing of it copied */
     if (addon ? snx_mkdirs(data)
-              : dump ? drop_extraction(data, compile.quiet) : copy_data(&program, data, compile.quiet, tmpfs)) {
+        : dump || (!tmpfs && !index && recorded_source(folder, game, input))
+            ? drop_extraction(data, dump ? "dump" : "folder", compile.quiet)
+            : copy_data(&program, data, compile.quiet, tmpfs)) {
         snx_error("cannot stage game data in %s", data);
         goto done;
     }
