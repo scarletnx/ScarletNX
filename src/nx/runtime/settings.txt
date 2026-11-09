@@ -866,6 +866,16 @@ setting Vulkan validation layer
     help 1 = the Vulkan validation layer (VK_LAYER_KHRONOS_validation, the Vulkan SDK's) checks every Vulkan call and
     help logs what it finds. It slows the game down a lot, and a missing layer is only a warning. 2 = also GPU-assisted
     help validation, which finds out-of-bounds and unwritten descriptor accesses in shaders, and is slower again
+setting GPU mirror past limit
+    key vk_mirror_past_limit
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = the GPU mirror of guest memory, where an Ounce game's programs read and write their storage, is made even
+    help where it is bigger than the device's maxBufferSize, as feat/ounce makes it: RADV (4 GiB) makes and runs it,
+    help though the validation layer calls it invalid. 0 = only where it fits; elsewhere the storage results land
+    help through the CPU, several times slower in one game. Temporary, to compare
 setting Vulkan API
     label Vulkan version
     key vk_api
