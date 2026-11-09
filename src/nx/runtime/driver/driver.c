@@ -1762,12 +1762,22 @@ int snx_driver(int argc, char** argv) {
     paths.source = source;
     paths.keys = keys_path;
     paths.title_keys = title_keys_path;
-    if (automatic)
-        result =
-            play_dump(input, &paths, flags, outdir, out, opt, recompiling, recompile, settings, setting,
-                      separator < argc ? argc - separator - 1 : 0, argv + (separator < argc ? separator + 1 : argc),
-                      updates, nupdates);
-    else
+    if (automatic) {
+        int game_argc = separator < argc ? argc - separator - 1 : 0;
+        char** game_argv = argv + (separator < argc ? separator + 1 : argc);
+        result = play_dump(input, &paths, flags, outdir, out, opt, recompiling, recompile, settings, setting, game_argc,
+                           game_argv, updates, nupdates);
+        if (result == SNX_EXIT_REMAKE) {
+            /* the game's code was made from another copy of the game: recompile it from its dump, then play it */
+            printf("The game's recompiled code was made from other content: recompiling it before it plays\n");
+            fflush(stdout);
+            result = play_dump(input, &paths, flags | SNX_RECOMP, outdir, out, opt, recompiling, recompile, settings,
+                               setting, game_argc, game_argv, updates, nupdates);
+            if (!result)
+                result = play_dump(input, &paths, flags, outdir, out, opt, recompiling, recompile, settings, setting,
+                                   game_argc, game_argv, updates, nupdates);
+        }
+    } else
         result = (flags & SNX_RECOMP) ? snx_recompile_game(n, rest, &paths) : snx_extract(n, rest, &paths);
 done:
     free((void*)updates);

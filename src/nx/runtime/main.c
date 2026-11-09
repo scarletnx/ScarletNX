@@ -1260,7 +1260,14 @@ int snx_main(int argc, char** argv) {
     dispatch_init();
     if (g_arm_mod) arm_dispatch_init();
     load_hints();
-    if (loader_load()) fatal("Could not load the game executables. See the .log for details.");
+    {
+        int loaded = loader_load();
+        if (loaded == -2)
+            fatal_code(SNX_EXIT_REMAKE,
+                       "The game's recompiled code was made from another copy of the game: recompile it, or remove "
+                       "its folder");
+        if (loaded) fatal("Could not load the game executables. See the .log for details.");
+    }
     nce_init(); /* the patches of native code, before the hooks take their functions */
     kernel_load_symbols();
     hook_install(); /* before NVN, which takes what a slot holds, and the JIT, which reads the slots */

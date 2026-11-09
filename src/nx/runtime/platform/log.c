@@ -352,7 +352,7 @@ void log_error_line(const char* line) {
     WARN("%s\n", line);
 }
 
-void fatal(const char* fmt, ...) {
+void fatal_code(int status, const char* fmt, ...) {
     char msg[LINE_MAX_];
     va_list ap;
     va_start(ap, fmt);
@@ -362,9 +362,19 @@ void fatal(const char* fmt, ...) {
     logf_(0, "FATAL: %s\n", msg);
 #if !defined(_WIN32)
     /* from the crash handler: a box or a flush could wait on a lock the crashed code holds */
-    if (__atomic_load_n(&g_crashing, __ATOMIC_SEQ_CST)) _exit(1);
+    if (__atomic_load_n(&g_crashing, __ATOMIC_SEQ_CST)) _exit(status);
 #endif
-    /* everywhere, since a player started from a desktop entry sees no console and no log */
-    win_fatal_box(msg);
-    plat_exit_now(1);
+    /* everywhere, since a player started from a desktop entry sees no console and no log. A remake is the driver's
+       to answer, and a box would hold it */
+    if (status != SNX_EXIT_REMAKE) win_fatal_box(msg);
+    plat_exit_now(status);
+}
+
+void fatal(const char* fmt, ...) {
+    char msg[LINE_MAX_];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    fatal_code(1, "%s", msg);
 }

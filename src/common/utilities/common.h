@@ -355,6 +355,10 @@ FILE* snx_fopen(const char* path, const char* mode);
    in the other one too */
 #define SNX_CONSOLE_LOG "scarletnx-console.log"
 #define SNX_ERROR_LOG   "scarletnx-error.log"
+/* The runtime's exit status when its recompiled code was made from another copy of the game: the driver recompiles
+   the game from its dump and plays it again. Nothing else exits with it */
+#define SNX_EXIT_REMAKE 75
+
 /* The line a game's runtime prints as it makes the game's log, on the console and in the log, before the log's
    absolute path: the launcher's Share Log takes the last run's game log from it, whatever the program is named */
 #define SNX_LOG_WRITTEN "log: written to "
