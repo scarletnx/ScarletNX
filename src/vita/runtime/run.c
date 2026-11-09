@@ -29,6 +29,8 @@
 
 /* blocks between the scheduler's looks: a few milliseconds of a game's code */
 #define SLICE_BLOCKS 20000u
+/* the backward edges the blocks a slice chains through may take, which ends it when they run out */
+#define SLICE_EDGES  2048
 #define VBLANK_NS    16683333u /* 59.94 Hz */
 #define CACHE_SLOTS  65536u
 
@@ -389,7 +391,8 @@ int vita_run(VitaProcess* p, double seconds) {
 #ifndef _WIN32
         fault_armed = 1;
 #endif
-        for (unsigned n = 0; n < SLICE_BLOCKS && p->current == t; ++n) {
+        t->poll = SLICE_EDGES;
+        for (unsigned n = 0; n < SLICE_BLOCKS && p->current == t && t->poll > 0; ++n) {
             uint32_t pc = t->cpu.r[15];
             bool thumb = !!(t->cpu.cpsr & SNX_ARM_T);
             VitaLockstep checked = vita_lockstep_step(p, t);

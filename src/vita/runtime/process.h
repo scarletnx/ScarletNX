@@ -99,6 +99,8 @@ typedef struct {
 } VitaCallFrame;
 typedef struct VitaThread {
     SnxArmCPU cpu;
+    /* backward edges the chained blocks may still take this slice, counted down by the blocks themselves */
+    int32_t poll;
     uint32_t state, uid;
     char name[32];
     uint32_t entry, priority, attr, stack, stack_size, stack_block, tls;
@@ -123,6 +125,7 @@ typedef struct VitaThread {
     VitaWait wait;
     uint64_t seq; /* when it last ran: the scheduler takes the ready thread that waited longest */
 } VitaThread;
+_Static_assert(offsetof(VitaThread, poll) == VITA_POLL_OFFSET, "the blocks find the poll count by this offset");
 
 enum {
     VITA_OBJ_FREE,

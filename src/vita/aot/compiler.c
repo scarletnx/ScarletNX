@@ -25,9 +25,13 @@
 #endif
 
 #define CHUNK_BLOCKS 512u
+/* the most blocks one block goes on to, a branch's target and the code after it */
+#define SUCCESSORS   2u
 
 typedef struct {
     uint32_t key, units;
+    uint32_t next[SUCCESSORS]; /* the keys it may go on to */
+    uint32_t next_count;
 } Block;
 typedef struct {
     const VitaImage* image;
@@ -95,6 +99,22 @@ static void queue(void* context, uint32_t address, int thumb) {
     }
     d->work[d->work_count++] = key;
 }
+/* a block's successors as discovery meets them, queued and kept on the block for chaining */
+typedef struct {
+    Discovery* d;
+    Block* block;
+} Found;
+static void found(void* context, uint32_t address, int thumb) {
+    Found* f = context;
+    size_t units;
+    queue(f->d, address, thumb);
+    if (address & (thumb ? 1u : 3u) || !code_at(f->d->image, address, thumb, &units) || !units) return;
+    uint32_t key = address | (thumb ? 1u : 0u);
+    Block* b = f->block;
+    for (uint32_t i = 0; i < b->next_count; ++i)
+        if (b->next[i] == key) return;
+    if (b->next_count < SUCCESSORS) b->next[b->next_count++] = key;
+}
 static void queue_pointer(Discovery* d, uint32_t pointer) { queue(d, pointer & ~1u, (int)(pointer & 1)); }
 /* the block compiler's input: the guest's little-endian code as host integers, the caller's to free */
 static void* units_of(const unsigned char* code, size_t count, int thumb) {
@@ -152,8 +172,9 @@ static bool discover(Discovery* d, const char* folder, char* error, size_t error
             }
             d->blocks = grown, d->capacity = capacity;
         }
-        d->blocks[d->count++] = (Block){key, (uint32_t)consumed};
-        snx_arm_successors(SNX_ARM_PROFILE_A9, key & ~1u, code, consumed, count, (int)(key & 1), queue, d);
+        d->blocks[d->count++] = (Block){.key = key, .units = (uint32_t)consumed};
+        Found f = {d, &d->blocks[d->count - 1]};
+        snx_arm_successors(SNX_ARM_PROFILE_A9, key & ~1u, code, consumed, count, (int)(key & 1), found, &f);
     }
     LLVMDisposeModule(scratch);
     LLVMContextDispose(context);
@@ -207,11 +228,98 @@ static void work_unlock(Work* w) {
     pthread_mutex_unlock(&w->lock);
 #endif
 }
+/* Block chaining. A block that ends where another block of the module starts goes on to it by a tail call, instead
+   of returning to the runtime's loop to look it up. Each return of the block becomes a return when it set an exit
+   (an SVC, a fault), else for each successor a musttail call when r15 and the Thumb state are its own, else a return.
+   A successor at or before the block's start (every loop has one) first counts down the thread's poll, and the block
+   returns when it runs out, so the loop gets to run the vblank and the other threads */
+static bool has_block(const Block* blocks, size_t count, uint32_t key) {
+    size_t lo = 0, hi = count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (blocks[mid].key == key) return true;
+        if (blocks[mid].key < key)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return false;
+}
+static void chain_block(SnxIr* ir, LLVMModuleRef mod, LLVMValueRef fn, uint32_t key, const uint32_t* next,
+                        size_t count) {
+    LLVMTypeRef block_type = LLVMFunctionType(ir->t_void, &ir->t_ptr, 1, 0);
+    LLVMValueRef cpu = LLVMGetParam(fn, 0);
+    LLVMValueRef* rets = malloc((LLVMCountBasicBlocks(fn) + 1) * sizeof *rets);
+    size_t nrets = 0;
+    if (!rets) return;
+    for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(fn); bb; bb = LLVMGetNextBasicBlock(bb)) {
+        LLVMValueRef t = LLVMGetBasicBlockTerminator(bb);
+        if (t && LLVMGetInstructionOpcode(t) == LLVMRet) rets[nrets++] = t;
+    }
+    /* one tail for all of them, which takes a block's exits back out */
+    LLVMBasicBlockRef tail = LLVMAppendBasicBlockInContext(ir->ctx, fn, "chain"),
+                      go = LLVMAppendBasicBlockInContext(ir->ctx, fn, "next"),
+                      out = LLVMAppendBasicBlockInContext(ir->ctx, fn, "out");
+    for (size_t i = 0; i < nrets; ++i) {
+        LLVMPositionBuilderBefore(ir->b, rets[i]);
+        LLVMBuildBr(ir->b, tail);
+        LLVMInstructionEraseFromParent(rets[i]);
+    }
+    free(rets);
+    LLVMPositionBuilderAtEnd(ir->b, out);
+    LLVMBuildRetVoid(ir->b);
+    LLVMPositionBuilderAtEnd(ir->b, tail);
+    LLVMValueRef c =
+        LLVMBuildGEP2(ir->b, ir->t_i8, cpu, (LLVMValueRef[]){ir_i64(ir, offsetof(SnxArmCPU, exit))}, 1, "");
+    c = LLVMBuildICmp(ir->b, LLVMIntEQ, LLVMBuildLoad2(ir->b, ir->t_i32, c, ""), ir_i32(ir, SNX_ARM_OK), "");
+    LLVMBuildCondBr(ir->b, c, go, out);
+    LLVMPositionBuilderAtEnd(ir->b, go);
+    LLVMValueRef pc =
+        LLVMBuildGEP2(ir->b, ir->t_i8, cpu, (LLVMValueRef[]){ir_i64(ir, offsetof(SnxArmCPU, r) + 15 * 4)}, 1, "");
+    pc = LLVMBuildLoad2(ir->b, ir->t_i32, pc, "");
+    LLVMValueRef t =
+        LLVMBuildGEP2(ir->b, ir->t_i8, cpu, (LLVMValueRef[]){ir_i64(ir, offsetof(SnxArmCPU, cpsr))}, 1, "");
+    t = LLVMBuildAnd(ir->b, LLVMBuildLoad2(ir->b, ir->t_i32, t, ""), ir_i32(ir, SNX_ARM_T), "");
+    for (size_t k = 0; k < count; ++k) {
+        LLVMBasicBlockRef call = LLVMAppendBasicBlockInContext(ir->ctx, fn, "call"),
+                          miss = LLVMAppendBasicBlockInContext(ir->ctx, fn, "other");
+        c = LLVMBuildAnd(ir->b, LLVMBuildICmp(ir->b, LLVMIntEQ, pc, ir_i32(ir, next[k] & ~1u), ""),
+                         LLVMBuildICmp(ir->b, LLVMIntEQ, t, ir_i32(ir, next[k] & 1 ? SNX_ARM_T : 0), ""), "");
+        LLVMBuildCondBr(ir->b, c, call, miss);
+        LLVMPositionBuilderAtEnd(ir->b, call);
+        if ((next[k] & ~1u) <= (key & ~1u)) {
+            LLVMBasicBlockRef run = LLVMAppendBasicBlockInContext(ir->ctx, fn, "run");
+            LLVMValueRef at =
+                LLVMBuildGEP2(ir->b, ir->t_i8, cpu, (LLVMValueRef[]){ir_i64(ir, VITA_POLL_OFFSET)}, 1, "");
+            LLVMValueRef left = LLVMBuildSub(ir->b, LLVMBuildLoad2(ir->b, ir->t_i32, at, ""), ir_i32(ir, 1), "");
+            LLVMBuildStore(ir->b, left, at);
+            LLVMBuildCondBr(ir->b, LLVMBuildICmp(ir->b, LLVMIntSGT, left, ir_i32(ir, 0), ""), run, out);
+            LLVMPositionBuilderAtEnd(ir->b, run);
+        }
+        char name[24];
+        block_name(name, next[k]);
+        LLVMValueRef target = LLVMGetNamedFunction(mod, name);
+        if (!target) {
+            target = LLVMAddFunction(mod, name, block_type);
+            LLVMSetVisibility(target, LLVMHiddenVisibility);
+        }
+        LLVMValueRef site = LLVMBuildCall2(ir->b, block_type, target, &cpu, 1, "");
+        LLVMSetTailCallKind(site, LLVMTailCallKindMustTail);
+        LLVMBuildRetVoid(ir->b);
+        LLVMPositionBuilderAtEnd(ir->b, miss);
+    }
+    LLVMBuildBr(ir->b, out);
+}
 static bool chunk(SnxIr* ir, Work* w, unsigned index, char* error, size_t size) {
     LLVMModuleRef mod = new_module(ir);
     size_t begin = (size_t)index * CHUNK_BLOCKS, end = begin + CHUNK_BLOCKS;
     if (end > w->count) end = w->count;
     bool ok = true;
+    LLVMValueRef* fns = calloc(end - begin + 1, sizeof *fns);
+    if (!fns) {
+        snprintf(error, size, "out of memory");
+        ok = false;
+    }
     for (size_t i = begin; ok && i < end; ++i) {
         char name[24];
         size_t consumed = 0;
@@ -224,7 +332,18 @@ static bool chunk(SnxIr* ir, Work* w, unsigned index, char* error, size_t size) 
             break;
         }
         LLVMSetVisibility(fn, LLVMHiddenVisibility);
+        fns[i - begin] = fn;
     }
+    /* every block of the chunk exists now, so a successor in it is found by name, and one in another chunk is a
+       declaration the linker resolves */
+    for (size_t i = begin; ok && i < end; ++i) {
+        uint32_t next[SUCCESSORS];
+        size_t n = 0;
+        for (uint32_t k = 0; k < w->blocks[i].next_count; ++k)
+            if (has_block(w->blocks, w->count, w->blocks[i].next[k])) next[n++] = w->blocks[i].next[k];
+        if (n) chain_block(ir, mod, fns[i - begin], w->blocks[i].key, next, n);
+    }
+    free(fns);
     unsigned char* object = NULL;
     ok = ok && !snx_ir_module_object(ir, mod, '1', &object, &w->objects[index].size, error, size);
     w->objects[index].data = object;
