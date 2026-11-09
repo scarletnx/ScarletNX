@@ -99,6 +99,8 @@ bool gui_game_folder(const char* path);
 /* The program of the game in directory/name, a folder of its own as gui_game_folder has it (<name>/<name>, .exe on
    Windows, <name>_code.so on Android), as Games lists it: owned, else NULL */
 char* gui_folder_game(const char* directory, const char* name);
+/* whether path is a game's program in the folder named for it, <folder>/<name> (.exe cut): a 3DS game's shape */
+bool gui_game_program(const char* path);
 /* What Games shows the game whose program is at path as, a game of a folder of its own: the name in its
    <name>_data/control.nacp, or a Vita game's TITLE in its sce_sys/param.sfo, else its folder's name. Owned */
 char* gui_game_shown(const char* path);

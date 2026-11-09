@@ -233,7 +233,10 @@ typedef struct {
     SDL_Mutex* lock;
     SDL_Condition* wake;
     SDL_Thread* thread;
-    char* driver; /* the program asked, and the data folder its keys are found by */
+    char* driver;   /* the program asked, and the data folder its keys are found by */
+    char* driver3ds; /* the 3DS driver, for a 3DS dump's icon, "" when the build has none */
+    char* driver_first;   /* the driver's name, for a program that holds several (gui_driver_run) */
+    char* driver3ds_first;
     char* repo;
     char* dumps[GUI_DUMP_ASKS]; /* each owned, with its folder in the cache beside it */
     char* dirs[GUI_DUMP_ASKS];
@@ -3866,11 +3869,8 @@ static int rgba_icon(const unsigned char* bytes, size_t size, int side, void* pi
     for (y = 0; y < side; ++y)
         for (x = 0; x < side; ++x) {
             const unsigned char* s = src + 4 * ((size_t)(y * 48 / side) * 48 + (size_t)(x * 48 / side));
-            unsigned char* p = out + 4 * ((size_t)y * side + x);
-            p[0] = s[2];
-            p[1] = s[1];
-            p[2] = s[0];
-            p[3] = 255;
+            Uint32* p = (Uint32*)(out + 4 * ((size_t)y * side + x));
+            *p = (Uint32)255 << 24 | (Uint32)s[0] << 16 | (Uint32)s[1] << 8 | s[2];
         }
     return 0;
 }
@@ -3947,7 +3947,23 @@ static void last_line(const char* text, char* out, size_t size) {
 /* a dump's ask started: the driver's process, its output read from then on; false when it could not start, kept as
    failed then */
 static bool icon_ask_start(GuiDumpIcons* d, GuiIconAsk* a, char* dump, char* dir) {
-    const char* args[] = {d->driver, "--data", d->repo, "-x", "--icon", "--out", dir, "--", dump, NULL};
+    /* a 3DS dump's icon is its SMDH, which only the 3DS driver reads */
+    bool ctr = gui_is_cia(snx_path_leaf(dump));
+    const char* driver = ctr ? d->driver3ds : d->driver;
+    const char* first = ctr ? d->driver3ds_first : d->driver_first;
+    const char* args[11];
+    int n = 0;
+    args[n++] = driver;
+    if (first) args[n++] = first; /* the name, to a program that holds several drivers */
+    args[n++] = "--data";
+    args[n++] = d->repo;
+    args[n++] = "-x";
+    args[n++] = "--icon";
+    args[n++] = "--out";
+    args[n++] = dir;
+    args[n++] = "--";
+    args[n++] = dump;
+    args[n] = NULL;
     char why[256];
     *a = (GuiIconAsk){0};
     a->dump = dump;
@@ -3988,6 +4004,12 @@ static bool icon_ask_poll(GuiDumpIcons* d, GuiIconAsk* a) {
     if (!gui_process_finished(a->process, &status)) return false;
     {
         char* icon = snx_path_join(a->dir, "icon.jpg");
+        char* rgba = snx_path_join(a->dir, "icon.rgba"); /* the 3DS driver writes its SMDH's icon so */
+        if (!snx_is_file(icon) && rgba && snx_is_file(rgba)) {
+            free(icon);
+            icon = rgba;
+            rgba = NULL;
+        }
         if (late || status || (!snx_is_file(icon) && !dlc_dir(a->dir))) {
             last_line(a->said, line, sizeof line);
             if (late)
@@ -4002,6 +4024,7 @@ static bool icon_ask_poll(GuiDumpIcons* d, GuiIconAsk* a) {
             icon_failed_keep(d, a->dump, a->dir, why,
                              strcmp(why, line) || strstr(a->said, line) != a->said ? a->said : NULL);
         }
+        free(rgba);
         free(icon);
     }
     gui_process_destroy(a->process);
@@ -4050,6 +4073,7 @@ static int SDLCALL dump_icons_run(void* data) {
     return 0;
 }
 static char* find_driver(const App* app, int item);
+static bool driver_run(const App* app, int item, GuiDriverRun* run);
 static void driver_missing(const App* app, int item, char* out, size_t size);
 static unsigned loads_off(App* app);
 /* a dump's icon to ask the driver for, once: false when it cannot be asked (the queue full, or no driver, kept as why
@@ -4065,8 +4089,24 @@ static bool dump_icon_ask(App* app, const char* dump, const char* dir) {
         return false;
     }
     if (!d->wait_ms) d->wait_ms = GUI_ICON_WAIT;
-    if (!d->driver) {
+    if (!d->repo) d->repo = snx_strdup(app->data_dir);
+    bool ctr = gui_is_cia(snx_path_leaf(dump));
+    if (ctr && !d->driver3ds) { /* a 3DS dump's icon is its SMDH, which only the 3DS driver reads */
+        GuiDriverRun how;
+        char* found = find_driver(app, GUI_3DS);
+        d->driver3ds = found ? found : snx_strdup("");
+        if (driver_run(app, GUI_3DS, &how) && how.first) d->driver3ds_first = snx_strdup(how.first);
+    }
+    if (ctr && (!d->driver3ds || !d->driver3ds[0])) {
+        char why[256];
+        driver_missing(app, GUI_3DS, why, sizeof why);
+        icon_failed_keep(d, dump, dir, why, NULL);
+        return false;
+    }
+    if (!ctr && !d->driver) {
+        GuiDriverRun how;
         d->driver = find_driver(app, GUI_SWITCH);
+        if (driver_run(app, GUI_SWITCH, &how) && how.first) d->driver_first = snx_strdup(how.first);
 #ifdef SDL_PLATFORM_IOS /* the app's own, which gui_process_start runs on a thread: its name is only argv[0] */
         if (!d->driver) d->driver = snx_strdup("scarletnx");
 #endif
@@ -4076,8 +4116,6 @@ static bool dump_icon_ask(App* app, const char* dump, const char* dir) {
             icon_failed_keep(d, dump, dir, why, NULL);
             return false;
         }
-        free(d->repo);
-        d->repo = snx_strdup(app->data_dir);
     }
     SDL_LockMutex(d->lock);
     for (i = 0; i < d->count && strcmp(d->dirs[i], dir); ++i) {}
@@ -4171,6 +4209,9 @@ static void dump_icons_stop(App* app) {
     }
     free(d->failed);
     free(d->driver);
+    free(d->driver3ds);
+    free(d->driver_first);
+    free(d->driver3ds_first);
     free(d->repo);
     if (d->wake) SDL_DestroyCondition(d->wake);
     if (d->lock) SDL_DestroyMutex(d->lock);
@@ -4192,9 +4233,13 @@ static char* icon_file(App* app, const char* path, bool* loading) {
             break;
         }
     for (leaf = path + strlen(path); leaf > path && leaf[-1] != '/' && leaf[-1] != '\\'; --leaf) continue;
-    if (!gui_is_dump(leaf)) return gui_game_icon(path);
+    if (!gui_is_dump(leaf) && !gui_is_cia(leaf)) return gui_game_icon(path); /* a 3DS game's icon is asked too */
     if (!(dir = dump_icon_dir(app, path))) return NULL;
     file = snx_path_join(dir, "icon.jpg");
+    if (!snx_is_file(file)) { /* the 3DS driver's icon is icon.rgba */
+        free(file);
+        file = snx_path_join(dir, "icon.rgba");
+    }
     if (!snx_is_file(file)) {
         if (!icon_failed(&app->dump_icons, dir, why, sizeof why) && !dlc_dir(dir) &&
             (*loading = dump_icon_ask(app, path, dir)) && app->dump_icons.live)
@@ -4351,7 +4396,7 @@ static SDL_Texture* game_icon(App* app, const char* path) {
 }
 /* why the dump at path shows no icon, the driver's answer in this session, into out: false when none was given */
 static bool dump_icon_why(const App* app, const char* path, char* out, size_t size) {
-    char* dir = gui_is_dump(path) ? dump_icon_dir(app, path) : NULL;
+    char* dir = gui_is_dump(path) || gui_is_cia(path) ? dump_icon_dir(app, path) : NULL;
     bool failed = dir && icon_failed(&app->dump_icons, dir, out, size);
     free(dir);
     return failed;
@@ -7066,7 +7111,7 @@ static void game_kind(const App* app, const GuiGames* games, size_t i, char* kin
                                      /* Games' own rows by what list_games read, another list's from its folder */
                                      : ready_kind(games == &app->games ? app->games_drivers[i] : row_driver(games, i)));
     n = strlen(kind);
-    if (!games->addons[i] && gui_is_dump(name) && games->paths[i])
+    if (!games->addons[i] && (gui_is_dump(name) || gui_is_cia(name)) && games->paths[i])
         n += icon_why_said(app, games->paths[i], kind + n, size - n);
     if (game_was_old(app, games->paths[i]))
         snprintf(kind + n, size - n, "%s",
@@ -9136,7 +9181,9 @@ static void recent_as_games(App* app) {
                 ++j;
     for (i = 0; i < app->recent.count; ++i) {
         /* a game made, whichever console's: its own name in its .ini, else its folder's, as Games shows it */
-        char* shown = app->recent.game[i].prepared ? gui_game_shown(app->recent.game[i].path) : NULL;
+        char* shown = app->recent.game[i].prepared && gui_game_program(app->recent.game[i].path)
+                          ? gui_game_shown(app->recent.game[i].path)
+                          : NULL;
         if (shown && gui_recent_rename(&app->recent, app->recent.game[i].path, shown)) changed = true;
         free(shown);
     }
