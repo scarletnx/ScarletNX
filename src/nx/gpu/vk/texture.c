@@ -1198,8 +1198,12 @@ void vk_tex_dma_seen(Surf** hit, int n) {
     for (int i = 0; i < n; i++) hit[i]->gw = gpu_mem_generation();
 }
 
+static int tex_tracked(const Surf* t);
 void vk_tex_note_writeback(Surf* t) {
-    t->hash = tex_hash(t);
+    /* its image is guest memory's bytes as written back. Where write tracking watches that memory, tex_check asks it
+       and hashes only a texture it says the CPU wrote, which then loads anyway: no hash now, 0, which a check by its
+       contents takes as changed. Hashing every write-back's texels took a tenth of the GPU thread in an Ounce game */
+    t->hash = tex_tracked(t) ? 0 : tex_hash(t);
     t->gw = gpu_mem_generation();
     t->wseen = vk_ww_now();
     t->checked = g_vk_present;
@@ -1581,6 +1585,8 @@ static int tex_written_since(const Surf* t, u64 gva, TexPieces* p) {
     gmmu_pieces(gva, t->size, tex_run, &r);
     return r.written;
 }
+/* whether write tracking watches t's memory, so a check can ask it rather than hash the texels */
+static int tex_tracked(const Surf* t) { return tex_written_since(t, t->gva, NULL) >= 0; }
 static void tex_dirty_piece(void* ctx, u64 at, u64 n) {
     TexRuns* r = ctx;
     r->mapped += n;
