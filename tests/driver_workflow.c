@@ -1142,7 +1142,14 @@ int main(int argc, char** argv) {
        with it off. Windows makes links only with the right to (developer mode), which a runner may not have */
 #ifndef _WIN32
     {
-        char *folder = snx_path_join(repo, "recompiled/0100ABCD12345000"), *temp = snx_path_join(root, "tmp");
+        char *folder = snx_path_join(repo, "recompiled/0100ABCD12345000"),
+#ifdef __linux__
+             /* the driver refuses a temporary folder that is not a tmpfs: a Linux test uses the one system it has */
+            *temp = snx_is_dir("/dev/shm") ? snx_format("/dev/shm/snx-test-%ld", (long)getpid())
+                                           : snx_path_join(root, "tmp");
+#else
+             *temp = snx_path_join(root, "tmp");
+#endif
         char *work = snx_path_join(temp, "scarletnx/work/0100ABCD12345000"), *ram = snx_path_join(work, "romfs/data");
         char *disk = snx_format("%s/0100ABCD12345000_data/romfs/data", folder);
         char *link = snx_format("%s/0100ABCD12345000.source", folder);
@@ -1188,6 +1195,7 @@ int main(int argc, char** argv) {
         folder = snx_path_join(repo, "recompiled/Test game");
         set_env("SNX_WORKFLOW_GAMES", folder);
         free(folder);
+        CHECK(!snx_remove_tree(temp));
         free(temp);
         free(work);
         free(ram);
@@ -1195,6 +1203,44 @@ int main(int argc, char** argv) {
         free(link);
         free(marker);
         free(ini);
+    }
+#endif
+#ifdef __linux__
+    { /* a temporary folder on a disk: the driver says so and reads the dump in place, making no extraction */
+        const char* extract_env = getenv("SNX_WORKFLOW_EXTRACT");
+        char* old_extract = extract_env ? snx_strdup(extract_env) : NULL;
+        char* cwd = snx_absolute(".");
+        char* temp = cwd ? snx_format("%s/snx-test-not-tmpfs-%ld", cwd, (long)getpid()) : NULL;
+        char* work = temp ? snx_path_join(temp, "scarletnx/work") : NULL;
+        char* folder = snx_path_join(repo, "recompiled/Test game");
+        char* program = snx_path_join(folder, "Test game");
+        CHECK(temp && !snx_mkdirs(temp));
+        if (snx_tmpfs_check(temp, NULL, 0) == 0) {
+            set_env("TMPDIR", temp);
+            reset(repo, dump);
+            set_env("SNX_WORKFLOW_MODE", "exit");
+            set_env("SNX_WORKFLOW_DUMP", dump);
+            set_env("SNX_WORKFLOW_GAMES", folder);
+            set_env("SNX_WORKFLOW_EXTRACT", ""); /* --tmpfs alone, not an explicit extraction */
+            set_env("SNX_WORKFLOW_FLAGS", "--tmpfs");
+            set_env("SNX_WORKFLOW_TMPFS", ""); /* the driver no longer passes it */
+            run(exe, repo, dump, log, 0, "RG", "not a tmpfs: the dump is read in place");
+            CHECK(!snx_is_dir(work) && snx_is_file(program));
+            set_env("SNX_WORKFLOW_OUT", "");
+            set_env("SNX_WORKFLOW_FLAGS", "");
+            set_env("SNX_WORKFLOW_TMPFS", "");
+            set_env("SNX_WORKFLOW_DUMP", "");
+            set_env("SNX_WORKFLOW_GAMES", folder);
+        } else
+            puts("tmpfs warning: skipped, the test's folder is a tmpfs");
+        set_env("SNX_WORKFLOW_EXTRACT", old_extract ? old_extract : "");
+        free(old_extract);
+        CHECK(!snx_remove_tree(temp));
+        free(temp);
+        free(work);
+        free(folder);
+        free(program);
+        free(cwd);
     }
 #endif
     /* NROs bypass extraction even with a stale same-stem work directory or game executable. */

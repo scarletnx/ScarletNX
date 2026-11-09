@@ -161,6 +161,9 @@ char* snx_temp_root(void);
 /* Extract to tmpfs: where a game's extraction goes, <temp root>/scarletnx/work/<title ID as snx_title_text writes it>,
    and its RomFS is read from when the game's data folder has none. NULL for a title ID that is no game's own */
 char* snx_tmpfs_work(SnxU64 title);
+/* 1 when path is on a tmpfs, 0 when it is not, -1 when this system does not say. fs, when not NULL, gets the
+   filesystem's name, or its number when it has no name here */
+int snx_tmpfs_check(const char* path, char* fs, size_t fs_size);
 char* snx_user_data_dir(void);
 /* Systems that follow the XDG Base Directory spec, where settings, state and caches have folders of their own */
 #if !defined(_WIN32) && !defined(__APPLE__) && !defined(__ANDROID__)

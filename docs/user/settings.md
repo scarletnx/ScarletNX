@@ -397,7 +397,7 @@ The launcher's own settings, and the recompiler's, which the launcher and the dr
 | Key | Default | Effect |
 | --- | --- | --- |
 | `gdbstub` | `off` | `on` starts the game with the GDB stub on port 1234 ([GDB](usage.md#gdb-linux)) |
-| `tmpfs` | `off` | `on` extracts to tmpfs, in memory (the temporary folder's `scarletnx/work/<title ID>`), which the game reads its RomFS from (`--tmpfs`) |
+| `tmpfs` | `off` | `on` extracts to tmpfs, in memory (the temporary folder's `scarletnx/work/<title ID>`), which the game reads its RomFS from (`--tmpfs`); on Linux and FreeBSD, a temporary folder that is not a tmpfs reads the dump in place instead |
 | `extract` | `off` | `on` extracts a dump's ExeFS and RomFS into its game's folder (`--extract-container`). Off, the game reads them from the dump |
 | `java_home` | empty | The JDK, 21 or later, that Android apps run on: the folder that holds its `lib/server` (`bin/server` on Windows). Empty is the one the build found; set, the launcher gives it to `scarletnx-android` as `--java-home` |
 | `tracy_capture` | `off` | `on` records Switch runs to `captures/` beside the game and opens the trace in the profiler when the run ends, in a build with `SNX_TRACY`; `tracy-capture` must be on PATH. Off, the client does not start, and F10 starts a 60-second capture |

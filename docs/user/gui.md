@@ -275,7 +275,8 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   runtime's stub on port 1234 waiting for the debugger at startup (UNIX only), and **Extract to tmpfs**
   passes `--tmpfs`: a dump's extraction goes to `/tmp/scarletnx/work/<title ID>` (`$TMPDIR` when set, the
   temporary folder on Windows) instead of the game's folder, and the game reads its RomFS from there, its ExeFS and
-  saves staying in its folder. Off, the default, it is extracted to disk. The room a run asks about is then the temporary
+  saves staying in its folder. On Linux and FreeBSD, when that folder is not a tmpfs, the run says which filesystem it is
+  on and reads the dump in place instead, so a disk is not filled. Off, the default, it is extracted to disk. The room a run asks about is then the temporary
   folder's, without the second copy. Either way the game's `.ini` records the dump as `source=`, which the RomFS is
   extracted again from when tmpfs was emptied (a reboot), or moved by when the setting changes. A game that records
   none (made before, without the `<name>.source` link older versions made) says it can't be extracted to tmpfs and

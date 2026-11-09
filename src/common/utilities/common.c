@@ -64,6 +64,10 @@
 #include <sys/prctl.h>    /* PR_SET_NAME: a thread's name, without _GNU_SOURCE's pthread_setname_np */
 #include <sys/resource.h> /* a thread's nice (snx_thread_priority_low) */
 #include <sys/syscall.h>  /* SYS_gettid */
+#include <sys/vfs.h>      /* statfs and f_type (snx_tmpfs_check) */
+#endif
+#ifdef __FreeBSD__
+#include <sys/mount.h> /* statfs and f_fstypename (snx_tmpfs_check) */
 #endif
 #ifdef __APPLE__
 #include <pthread/qos.h> /* a thread's QoS class (snx_thread_priority_low) */
@@ -1897,6 +1901,47 @@ char* snx_tmpfs_work(SnxU64 title) {
     free(work);
     free(root);
     return path;
+}
+int snx_tmpfs_check(const char* path, char* fs, size_t fs_size) {
+#if defined(__linux__)
+    struct statfs s;
+    if (statfs(path, &s)) {
+        if (fs && fs_size) snprintf(fs, fs_size, "unknown");
+        return -1;
+    }
+    if (fs && fs_size) {
+        const char* name = NULL;
+        switch ((unsigned long)s.f_type) {
+            case 0x01021994UL: name = "tmpfs"; break;   /* TMPFS_MAGIC */
+            case 0x858458F6UL: name = "ramfs"; break;   /* RAMFS_MAGIC */
+            case 0x2FC12FC1UL: name = "zfs"; break;     /* ZFS_SUPER_MAGIC */
+            case 0xEF53UL: name = "ext4"; break;        /* EXT4_SUPER_MAGIC */
+            case 0x9123683EUL: name = "btrfs"; break;   /* BTRFS_SUPER_MAGIC */
+            case 0x58465342UL: name = "xfs"; break;     /* XFS_SUPER_MAGIC */
+            case 0x794C7630UL: name = "overlay"; break; /* OVERLAYFS_SUPER_MAGIC */
+            case 0x6969UL: name = "nfs"; break;         /* NFS_SUPER_MAGIC */
+            case 0x65735546UL: name = "fuse"; break;    /* FUSE_SUPER_MAGIC */
+            default: break;
+        }
+        if (name)
+            snprintf(fs, fs_size, "%s", name);
+        else
+            snprintf(fs, fs_size, "filesystem 0x%lx", (unsigned long)s.f_type);
+    }
+    return s.f_type == 0x01021994UL;
+#elif defined(__FreeBSD__)
+    struct statfs s;
+    if (statfs(path, &s)) {
+        if (fs && fs_size) snprintf(fs, fs_size, "unknown");
+        return -1;
+    }
+    if (fs && fs_size) snprintf(fs, fs_size, "%s", s.f_fstypename);
+    return !strcmp(s.f_fstypename, "tmpfs");
+#else
+    (void)path;
+    if (fs && fs_size) snprintf(fs, fs_size, "unknown");
+    return -1; /* macOS and Windows have no tmpfs to name */
+#endif
 }
 char* snx_temp_dir(const char* parent) {
     char* path;

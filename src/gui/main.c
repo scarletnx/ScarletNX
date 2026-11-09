@@ -9020,12 +9020,34 @@ static void recent_as_games(App* app) {
     }
     if (changed) recent_changed(app);
 }
+/* 1 when the temporary folder is a tmpfs, or this system does not say (macOS and Windows keep their old behaviour) */
+static bool tmpfs_here(void) {
+    char* root = snx_temp_root();
+    char fs[48];
+    int on = root ? snx_tmpfs_check(root, fs, sizeof fs) : -1;
+    free(root);
+    return on != 0;
+}
+/* the bytes of the Switch dumps waiting or running in the queue that extract to the same folders, file excluded */
+static uint64_t queued_extractions(const App* app, const char* file) {
+    uint64_t total = 0;
+    for (int i = 0; i < app->queue.count; ++i) {
+        const GuiJob* job = &app->queue.job[i];
+        if (job->state != GUI_JOB_WAITING && job->state != GUI_JOB_RUNNING) continue;
+        if (job->kind == GUI_JOB_AOT || job->console != GUI_SWITCH) continue;
+        const char* path = gui_queue_file(&app->queue, i);
+        if (!path || !strcmp(path, file) || !snx_is_file(path)) continue;
+        uint64_t size = snx_file_size(path);
+        total = size > (uint64_t)-1 - total ? (uint64_t)-1 : total + size;
+    }
+    return total;
+}
 /* room on the disks for file's run (gui_room), not extracted yet; else room_line says what it takes. With Extract game
    container off a dump is read in place and takes no room. On, a Switch dump is extracted straight into its game's
    folder, or the temporary folder with Extract to tmpfs; only into an extractions folder picked is it kept, and its
    game made from a copy. The free space is room_free in tests */
 static bool room_fits(App* app, const char* file) {
-    bool nx = app->menu.selected == GUI_SWITCH, tmpfs = nx && gui_settings_tmpfs(settings_of(app));
+    bool nx = app->menu.selected == GUI_SWITCH, tmpfs = nx && gui_settings_tmpfs(settings_of(app)) && tmpfs_here();
     if (!tmpfs && !gui_settings_extract(settings_of(app))) return true; /* read in place: nothing extracted */
     bool kept = !nx || (app->place[GUI_PLACE_WORK] && !tmpfs), fits = true;
     char *out, *temp = tmpfs ? snx_temp_root() : NULL, need_text[32], left_text[32];
@@ -9037,9 +9059,15 @@ static bool room_fits(App* app, const char* file) {
         return true;
     }
     out = dump_out(app, file, nx ? NULL : app->menu.selected == GUI_VITA ? "vita" : "3ds");
-    if (kept ? !snx_is_dir(out) : !made_from(app, file)) /* else extracted already, and its game made with it */
-        fits = gui_room(snx_file_size(file), nx && kept, app->room_free ? app->room_free : free_space(work),
-                        app->room_free ? app->room_free : free_space(games), snx_same_disk(work, games), &need, &left);
+    if (kept ? !snx_is_dir(out) : !made_from(app, file)) { /* else extracted already, and its game made with it */
+        uint64_t queued = queued_extractions(app, file);
+        uint64_t work_free = app->room_free ? app->room_free : free_space(work),
+                 games_free = app->room_free ? app->room_free : free_space(games);
+        bool shared = snx_same_disk(work, games);
+        work_free = work_free > queued ? work_free - queued : 0;
+        if (shared) games_free = games_free > queued ? games_free - queued : 0;
+        fits = gui_room(snx_file_size(file), nx && kept, work_free, games_free, shared, &need, &left);
+    }
     free(temp);
     if (!fits) {
         gui_size_text(need_text, sizeof need_text, need);
