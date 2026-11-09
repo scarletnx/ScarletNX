@@ -1427,9 +1427,15 @@ int vk_buf_copy(u64 gva, u64 len, VkBuffer* buf, u64* off);
 /* ordered=0 only for a front end that supplies execution and shader-data barriers explicitly. */
 /* A compute program's write log (writelog.c, shader.h's SH_WLOG_*): host memory the GPU writes, from a pool. get
    gives a clear one of parts parts with one reference, the caller's; put gives back one no recorded work used; unref
-   drops a reference, and the last, once the work that wrote it is done, clears what was written and gives it back */
+   drops a reference, and the last, once the work that wrote it is done, clears what was written and gives it back.
+   get_gpu gives one in the GPU's memory, for work whose log only the GPU reads (the mirror's folds): its readers are
+   recorded, then vk_wlog_clear clears it on the GPU, in the same command buffer; the CPU never reads it
+   (vk_wlog_runs refuses it), and unref only gives it back */
 typedef struct VkWriteLog VkWriteLog;
 VkWriteLog* vk_wlog_get(u32 parts);
+VkWriteLog* vk_wlog_get_gpu(u32 parts);
+int vk_wlog_on_gpu(const VkWriteLog* l);
+void vk_wlog_clear(VkCommandBuffer cb, VkWriteLog* l);
 VkBuffer vk_wlog_buffer(const VkWriteLog* l);
 u64 vk_wlog_size(const VkWriteLog* l);
 void vk_wlog_ref(VkWriteLog* l);
@@ -2037,8 +2043,8 @@ enum { VK_SUB_OTHER, VK_SUB_PRESENT, VK_SUB_FINISH, VK_SUB_PERIODIC, VK_SUB_READ
 enum { VK_WAIT_FINISH, VK_WAIT_RECYCLE, VK_WAIT_SUBMIT, VK_WAIT_N };
 extern u64 g_vk_wait_ns[VK_WAIT_N], g_vk_waits[VK_WAIT_N]; /* cmd.c: the GPU thread's waits, by kind */
 /* Each dispatch recorded into the frame's command buffer, timed (record.c's rec_CmdDispatch): begin before it, 1 when
-   it is timed, end after it. tag names the next one: a compute program's key, or a VK_PROF_* constant; untagged it is
-   one of the renderer's own */
+   it is timed, end after it. tag names the next one: a compute program's key, or the VK_PROF_* of one of the
+   renderer's own pipelines */
 int vk_gpuprof_dispatch_begin(VkCommandBuffer cb);
 void vk_gpuprof_dispatch_end(VkCommandBuffer cb);
 void vk_gpuprof_tag(u64 key);
@@ -2048,8 +2054,25 @@ int vk_gpuprof_op_begin(VkCommandBuffer cb, u32 kind, u64 key, u64 bytes);
 void vk_gpuprof_op_end(VkCommandBuffer cb);
 const void* vk_gpuprof_base(void);
 int vk_gpuprof_profiled(VkCommandBuffer cb); /* cb is the frame's command buffer the profile times */
-#define VK_PROF_ASTC 1                       /* the ASTC decode (astc.comp) */
-#define VK_PROF_BC7  2                       /* its BC7 encode (bc7.comp) */
+/* the renderer's own compute pipelines, a tag each, which gpuprof.c names: small numbers, which no program's key is in
+   practice. A dispatch recorded with no tag counts as VK_PROF_NONE */
+enum {
+    VK_PROF_NONE,
+    VK_PROF_ASTC,            /* the ASTC decode (astc.comp) */
+    VK_PROF_BC7,             /* its BC7 encode (bc7.comp) */
+    VK_PROF_MIRROR_FOLD,     /* a dispatch's write log into the GPU mirror's mask (mirror_fold.comp) */
+    VK_PROF_MIRROR_HARVEST,  /* the mirror's pages written in a submit, out for landing (mirror_harvest.comp) */
+    VK_PROF_WLOG_MERGE,      /* a logged result written back on the GPU (wlog_merge.comp) */
+    VK_PROF_BL_MOVE,         /* a block linear move (blocklinear.c) */
+    VK_PROF_DEPTH_PACK,      /* a depth target packed into guest layout (depth_pack.comp) */
+    VK_PROF_TEXCONV,         /* a texture format converted (texconv.comp) */
+    VK_PROF_VIC,             /* a VIC composition (vic.c) */
+    VK_PROF_XFB_INDIRECT,    /* a transform feedback counter's draw arguments (xfb_indirect.comp) */
+    VK_PROF_QUERY_PREDICATE, /* the queries' predicates (query_predicate.comp) */
+    VK_PROF_QUERY_COMPARE,   /* a query compare (query_compare.comp) */
+    VK_PROF_QUERY_COUNT,     /* the queries' counts (query_count.comp) */
+    VK_PROF_N
+};
 void vk_gpuprof_cb_begin(VkCommandBuffer cb);
 void vk_gpuprof_cb_end(VkCommandBuffer cb, int why, u64 value);
 void vk_gpuprof_waited(u64 value, int kind);

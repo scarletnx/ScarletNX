@@ -116,6 +116,7 @@ int vk_xfb_indirect(u64 control, VkBuffer* arguments, u64* offset) {
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_xfb_indirect.pipeline);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_xfb_indirect.layout, 0, 1, &set, 0, NULL);
     rec_CmdPushConstants(cb, g_xfb_indirect.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof first, &first);
+    vk_gpuprof_tag(VK_PROF_XFB_INDIRECT);
     rec_CmdDispatch(cb, 1, 1, 1);
     xfb_barrier(cb, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                 VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_COPY_BIT,

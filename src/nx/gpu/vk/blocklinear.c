@@ -186,6 +186,7 @@ int vk_bl_move(VkCommandBuffer cb, const VkBlMove* m, int to_bl, VkBuffer bl, u6
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_blocklinear.layout, 0, 1, &set, 0, NULL);
     rec_CmdPushConstants(cb, g_blocklinear.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
     vk_ck(cb, VK_CK_DESWIZZLE, m->row_bytes, m->rows, m->slices, (u32)to_bl);
+    vk_gpuprof_tag(VK_PROF_BL_MOVE);
     rec_CmdDispatch(cb, gx, gy, m->slices);
     return 1;
 }

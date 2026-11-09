@@ -273,6 +273,7 @@ static int compose(const VicJob* j, u32 r0, u32 r1, const VicBand* v) {
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, vic_gpu_aligned(j) ? g_vic_pipe : g_vic_pipe_unaligned);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_vic_layout, 0, 1, &set, 0, NULL);
     /* a workgroup composes a tile of output pixels, over the target rectangle only: nothing else is written */
+    vk_gpuprof_tag(VK_PROF_VIC);
     rec_CmdDispatch(cb, (p.job.tx1 - p.job.gx0 + VIC_TILE_W - 1) / VIC_TILE_W,
                     (p.job.ty0 + p.job.th - p.job.gy0 + VIC_TILE_H - 1) / VIC_TILE_H, 1);
     /* what reads the picture next (a copy into a texture or the display, a landing) sees the shader's writes */
