@@ -156,6 +156,17 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBi
                      "going to the queue with the next submission (not counted)\n");
         return VK_FALSE;
     }
+    /* The layers up to 1.4.363 add a stage's input and output clip distances against
+       maxCombinedClipAndCullDistances, which limits each: a tessellation or geometry stage that passes eight planes on
+       read 16 against 8. Their 99fd2cb576 ("layers: Fix clip cull") counts each on its own, with the CTS case
+       dEQP-VK.clipping.user_defined.clip_cull_distance.vert_geom as its test. Only those stages have both, and each of
+       ours declares eight at most, so the check stays where it applies */
+    if (d->pMessageIdName && !strcmp(d->pMessageIdName, "VUID-RuntimeSpirv-maxCombinedClipAndCullDistances-00710") &&
+        d->pMessage && (strstr(d->pMessage, "TESSELLATION_") || strstr(d->pMessage, "GEOMETRY_BIT"))) {
+        LOG_LIMIT(4, "vulkan: the validation layers add a tessellation or geometry stage's input and output clip "
+                     "distances, which their later versions count on their own (not counted)\n");
+        return VK_FALSE;
+    }
     g_vk_validation_messages++;
     if (sev & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
         WARN("vulkan validation: %s\n", d->pMessage);
