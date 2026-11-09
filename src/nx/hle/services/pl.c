@@ -206,8 +206,9 @@ static int nn_pl_detail_IPlatformServiceManager_GetSharedFontInOrderOfPriorityFo
     (void)self, (void)language_code;
     return pl_in_order(font_codes, offsets, sizes, loaded, count);
 }
-/* the built-in fonts a later SDK asks for: the shared fonts, each already a plain TrueType font past its header, so
-   the same memory answers */
+/* The built-in fonts a later SDK asks for (nn::pl::GetBuiltInFontData): the shared fonts, each already a plain TrueType
+   font past its header, so the same memory answers. The SDK takes that memory itself, once, with this command at the
+   first font it is told of, maps it and stops when the command fails */
 static int nn_pl_detail_IPlatformServiceManager_GetBuiltInFontSharedMemory(SvcObj* self, u32* size,
                                                                            u32* shared_memory) {
     (void)self;
@@ -218,12 +219,14 @@ static int nn_pl_detail_IPlatformServiceManager_GetBuiltInFontSharedMemory(SvcOb
 }
 /* where a font is in that memory. The SDK reads data as a u64 at 4 of the reply and a u32 at 12, and fills the caller's
    font only when found is 1: the base of the memory it mapped (2000) plus the offset at 4 of data, and the size at 8.
-   It copies data's first two bytes to the caller's font too; what they mean is not known, and they stay 0 */
+   It copies data's first two bytes to the caller's font too: the first is 1, the value one game ran with, and what
+   they mean is not known */
 static int nn_pl_detail_IPlatformServiceManager_GetBuiltInFontData(SvcObj* self, u8 font_type, u8 flag, u8* found,
                                                                    u8* data) {
     (void)self, (void)flag;
     if (font_type >= PL_FONTS || !g_hle.pl.font_size[font_type]) R_SUCCEED(); /* found stays 0 */
     *found = 1;
+    data[0] = 1;
     snx_st_le32(data + 4, g_hle.pl.font_off[font_type]);
     snx_st_le32(data + 8, g_hle.pl.font_size[font_type]);
     R_SUCCEED();

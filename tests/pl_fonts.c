@@ -196,7 +196,8 @@ static void built_in_fonts(void) {
             CHECK(!memcmp(c.out, none, sizeof none));
             continue;
         }
-        CHECK(c.out[0] == 1 && !memcmp(c.out + 1, none, 7)); /* found, the padding, and the font's first bytes */
+        CHECK(c.out[0] == 1 && !memcmp(c.out + 1, none, 3)); /* found, and the padding up to the font's bytes */
+        CHECK(snx_ld_le32(c.out + 4) == 1);
         CHECK(snx_ld_le32(c.out + 8) == command_u32(3, type) && snx_ld_le32(c.out + 8) != 0);
         CHECK(snx_ld_le32(c.out + 12) == command_u32(2, type) && snx_ld_le32(c.out + 12) != 0);
         CHECK(truetype(snx_ld_le32(c.out + 8)));

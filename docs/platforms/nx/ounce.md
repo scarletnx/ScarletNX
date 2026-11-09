@@ -4,6 +4,7 @@
 
 * [The GPU path](#the-gpu-path)
 * [The platform](#the-platform)
+* [Built-in fonts](#built-in-fonts)
 * [Shaders](#shaders)
 * [Surfaces](#surfaces)
 * [Driver offsets](#driver-offsets)
@@ -47,6 +48,22 @@ runtime read the same NPDM, and `g_ounce` is the one flag. It gives the game the
 
 `tools/nvn_missing.py work/Game` lists the NVN functions of a game's driver that `nvn.hook` doesn't implement for its
 API version.
+
+## Built-in fonts
+
+An Ounce game's SDK has `nn::pl::GetBuiltInFontData(BuiltInFontDataOunce*, BuiltInFontTypeOunce, bool)` beside the
+shared fonts' calls. It asks `pl` with two commands (`pl.c`):
+
+- **2010**, with the font's type in the request's first byte and a bool in the second. The reply's raw data is a found
+  byte, then at +4 the font's 12 bytes: two bytes that the SDK copies to the caller's `BuiltInFontDataOunce`, the
+  font's offset at +8 of the reply and its size at +0xc. The SDK reads the font's bytes as a u64 at +4 and a u32 at
+  +0xc, and it fills the caller's structure only when the found byte is 1.
+- **2000**, once, at the first font that 2010 finds: a `u32` size and a copy handle of the shared memory that holds
+  the fonts. The SDK maps that memory read-only and stops when the command fails. The pointer it gives the game is
+  the base of that mapping plus the offset of 2010.
+
+The fonts are the shared fonts of commands 0 to 6: each is a plain TrueType font after its header, so the same memory
+answers both. `tests/pl_fonts.c` sends both commands through the dispatcher.
 
 ## Shaders
 
@@ -179,6 +196,11 @@ a grid in world space, then the cell's list, in a loop) is bound as no texture, 
 (`SH_PROBE_NONE`), and the log names the program once: the draw goes on without it. An array of the pool's textures
 indexed on the GPU would sample them, but the renderer would have to make each texture such a handle can name, which
 no draw tells it.
+
+On a device without `shaderFloat64`, a fragment program that rounds through a double is refused as a whole, and its
+draws are skipped. `g_shader_float64` makes the translation take the nearest round in floats instead, so the program
+runs. KosmicKrisp budgets 2025 MB of this Mac's 24 GB heap, so a game of this size logs allocations that fail even now
+that it draws. MoltenVK reports 18 GB and logs none.
 
 ## Surfaces
 
