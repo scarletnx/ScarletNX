@@ -1904,6 +1904,9 @@ static VkDescriptorSet stage_set(const DsState* ds, int stage, VkSh* s, Surf** r
     SNX_ZONE_END(z);
     return set;
 }
+/* an indirect mesh draw's first group, which mesh_indirect copied for the draw: the uniform buffer stage_set binds */
+static VkBuffer g_mesh_first;
+static u64 g_mesh_first_off;
 static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro,
                                   u32* fb, u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images) {
     VkDescriptorSetLayout layout = g_vk_dslayout[s->indexed][shader_vk_set(s->stage)];
@@ -1948,6 +1951,10 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     u64 co;
     if (stage == 4 && frame_consts(&cb, &co))
         dw_buffer(&d, set, SNX_VKB_RS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, cb, co, 16);
+    /* a task or mesh program's first group of an indirect draw (mesh_indirect), any 16 bytes for a direct one */
+    if ((stage == DS_TASK || stage == DS_MESH) && (g_mesh_first || frame_consts(&cb, &co)))
+        dw_buffer(&d, set, SNX_VKB_RS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, g_mesh_first ? g_mesh_first : cb,
+                  g_mesh_first ? g_mesh_first_off : co, 16);
     if (stage == ST_FS && s->si.advanced_blend) {
         if (!n || !rt[0]) return VK_NULL_HANDLE;
         VkImageView view = vk_tex_storage_view(rt[0], VK_IMAGE_VIEW_TYPE_2D);
@@ -3106,6 +3113,42 @@ static int index_convert(const DrawCall* dc, int inline_indices, u64 ia, u32 isz
     return 1;
 }
 
+/* An indirect mesh draw's record (DrawMeshTasksIndirect), its two words {count, first} as NV_mesh_shader's
+   DrawMeshTasksIndirectCommandNV has them, which the driver hands the GPU as they are: guest memory the GPU reads
+   (vk_buf_get), often a compute program's result. Vulkan's record is {x, y, z} and has no first group, so the words are
+   copied on the GPU into one of this frame's staging, {count, 1, 1} at *off of *buf and first a uniform buffer's
+   alignment after it, which the task program or the mesh program without one adds to its workgroup ID
+   (SH_PUSH_GPU_MESH_FIRST, g_mesh_first that stage_set binds at SNX_VKB_RS). The copy ends the rendering pass, as an
+   index conversion does. 0 when the record can't be had */
+static int mesh_indirect(const DrawCall* dc, VkBuffer* buf, u64* off) {
+    VkBuffer src;
+    u64 at, align = g_vk.props.limits.minUniformBufferOffsetAlignment;
+    if (align < 16) align = 16;
+    if ((dc->indirect & 3) || !vk_buf_get(dc->indirect, 8, &src, &at)) return 0;
+    u8* p = vk_stage(2 * align, align, buf, off);
+    if (!p) return 0;
+    static const u32 record[4] = {0, 1, 1, 0};
+    memset(p, 0, (size_t)(2 * align));
+    memcpy(p, record, sizeof record);
+    snx_le32_array(p, 4); /* the device reads them little-endian */
+    vk_render_end(); /* copies happen outside rendering passes */
+    VkCommandBuffer cb = vk_cmd();
+    /* the program or copy that wrote the record before the copy reads it, and the draw after it */
+    index_barrier(cb,
+                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT |
+                      VK_PIPELINE_STAGE_2_COPY_BIT,
+                  VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+                  VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkBufferCopy c[2] = {{at, *off, 4}, {at + 4, *off + align, 4}};
+    rec_CmdCopyBuffer(cb, src, *buf, 2, c);
+    index_barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT |
+                      (g_vk.has_task ? VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT : 0),
+                  VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_UNIFORM_READ_BIT);
+    g_mesh_first = *buf;
+    g_mesh_first_off = *off + align;
+    return 1;
+}
 /* An indirect draw's arguments, and its count: guest memory as buffers the GPU reads (vk_buf_get), which hold a
    compute program's or an earlier draw's results where they are. 0 when they can't be had or drawn here */
 static int indirect_args(const DrawCall* dc, int indexed, VkBuffer* abuf, u64* aoff, VkBuffer* cbuf, u64* coff) {
@@ -3168,15 +3211,18 @@ static void render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
     VkDescriptorSet bset[3];
     if (!count || !instances) return;
     vk_frame_check();
+    g_mesh_first = VK_NULL_HANDLE; /* an indirect mesh draw's first group is this draw's (mesh_indirect) */
     /* an Ounce's mesh draw: the mesh program reads the vertex stage's set and push constants and has bindings of its
        own, the task program the tessellation control stage's set (shader_vk_set) */
     int mesh = dc->mesh != 0, vs_bind = mesh ? DS_MESH : 0;
     if (mesh) {
         g_vk_mesh_draws++;
-        if (dc->indirect || count > g_vk.mesh_groups_max) {
+        /* an indirect one of one record of two words (mesh_indirect), not the 3D form's x y z or a multi-draw's */
+        if ((dc->indirect && (dc->stride != 8 || dc->indirect_count || dc->draw_count > 1)) ||
+            count > g_vk.mesh_groups_max) {
             if (g_vk.has_mesh)
                 LOG_LIMIT(1, "vulkan: %s (skipped)\n",
-                          dc->indirect ? "an indirect mesh draw, whose records the renderer doesn't read yet"
+                          dc->indirect ? "an indirect mesh draw of the 3D form, or of several records"
                                        : "a mesh draw of more workgroups than this GPU launches");
             g_vk_skipped++;
             return;
@@ -3472,7 +3518,8 @@ retry:
        read where they are) */
     VkBuffer abuf = VK_NULL_HANDLE, cntbuf = VK_NULL_HANDLE;
     u64 aoff = 0, cntoff = 0;
-    if (dc->indirect && !indirect_args(dc, indexed, &abuf, &aoff, &cntbuf, &cntoff)) {
+    if (dc->indirect &&
+        (mesh ? !mesh_indirect(dc, &abuf, &aoff) : !indirect_args(dc, indexed, &abuf, &aoff, &cntbuf, &cntoff))) {
         g_vk_skipped++;
         return;
     }
@@ -3937,8 +3984,9 @@ retry:
               : dc->indirect                     ? 0
                                                  : base_instance - ds->dyn.depth_word;
     memcpy(&pc[0], &pc0, sizeof(u32));
-    /* an indirect draw's draw parameters that the vertex program takes from its record (DrawCall.params) */
-    u32 params = dc->indirect ? dc->params : 0;
+    /* an indirect draw's draw parameters that the vertex program takes from its record (DrawCall.params), and an
+       indirect mesh draw's first group, which the task or mesh program takes from SNX_VKB_RS */
+    u32 params = mesh && dc->indirect ? SH_PUSH_GPU_MESH_FIRST : dc->indirect ? dc->params : 0;
     memcpy(&pc[2], &params, sizeof(u32));
     pc[4] = ds->dyn.alpha_test ? 1.0f : 0.0f;
     pc[5] = (float)ds->dyn.alpha_func;
@@ -3985,7 +4033,9 @@ retry:
     }
     pred_begin(cb, o->pred);
     rec_draw_tag(vs ? vs->hash : 0, fs ? fs->hash : 0); /* the vertex or mesh program, the fragment program */
-    if (mesh)
+    if (mesh && dc->indirect)
+        rec_CmdDrawMeshTasksIndirect(cb, abuf, aoff);
+    else if (mesh)
         rec_CmdDrawMeshTasks(cb, count);
     else if (dc->indirect) {
         if (indexed) rec_CmdBindIndexBuffer(cb, ibuf, ioff, itype);

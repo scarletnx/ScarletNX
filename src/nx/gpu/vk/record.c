@@ -567,25 +567,40 @@ void rec_CmdDrawIndexed(VkCommandBuffer cb, u32 indices, u32 instances, u32 firs
     rec_commit();
 }
 /* an Ounce's mesh draw: groups workgroups in a row (render.c) */
+/* a mesh draw of groups workgroups, or with buf the one record {x, y, z} at off there (vkCmdDrawMeshTasksIndirectEXT) */
 typedef struct {
     VkCommandBuffer cb;
+    VkBuffer buf;
+    VkDeviceSize off;
     u32 groups;
     u64 tag[2];
 } DrawMeshArgs;
-static void draw_mesh_run(const void* p) {
-    const DrawMeshArgs* x = p;
+static void draw_mesh_now(const DrawMeshArgs* x) {
     vk_checkpoint(x->cb, "mesh", x->tag[0], x->tag[1], 0, 0, 0);
-    if (!rec_drop_draw()) vkCmdDrawMeshTasksEXT(x->cb, x->groups, 1, 1);
+    if (x->buf)
+        vkCmdDrawMeshTasksIndirectEXT(x->cb, x->buf, x->off, 1, 16);
+    else
+        vkCmdDrawMeshTasksEXT(x->cb, x->groups, 1, 1);
 }
-void rec_CmdDrawMeshTasks(VkCommandBuffer cb, u32 groups) {
-    if (!rec_on(cb)) {
-        vk_checkpoint(cb, "mesh", g_rec_tag[0], g_rec_tag[1], 0, 0, 0);
-        vkCmdDrawMeshTasksEXT(cb, groups, 1, 1);
+static void draw_mesh_run(const void* p) {
+    if (!rec_drop_draw()) draw_mesh_now((const DrawMeshArgs*)p);
+}
+static void rec_draw_mesh(const DrawMeshArgs* a) {
+    if (!rec_on(a->cb)) {
+        draw_mesh_now(a);
         return;
     }
     DrawMeshArgs* x = rec_push(draw_mesh_run, sizeof *x);
-    *x = (DrawMeshArgs){cb, groups, {g_rec_tag[0], g_rec_tag[1]}};
+    *x = *a;
     rec_commit();
+}
+void rec_CmdDrawMeshTasks(VkCommandBuffer cb, u32 groups) {
+    DrawMeshArgs a = {cb, VK_NULL_HANDLE, 0, groups, {g_rec_tag[0], g_rec_tag[1]}};
+    rec_draw_mesh(&a);
+}
+void rec_CmdDrawMeshTasksIndirect(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off) {
+    DrawMeshArgs a = {cb, buf, off, 0, {g_rec_tag[0], g_rec_tag[1]}};
+    rec_draw_mesh(&a);
 }
 /* the indirect draws: kind bit 0 indexed, bit 1 limited by the count at count_buf */
 typedef struct {

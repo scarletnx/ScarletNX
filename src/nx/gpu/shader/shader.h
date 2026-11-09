@@ -252,6 +252,11 @@ extern int g_shader_draw_parameters;
 #define SH_CB0_BASE_INSTANCE      0x644u
 #define SH_PUSH_GPU_BASE_VERTEX   1u
 #define SH_PUSH_GPU_BASE_INSTANCE 2u
+/* An Ounce's indirect mesh draw (DrawMeshTasksIndirect): its first workgroup is in its record, on the GPU. Where the
+   push constant's z has this bit, a task program, or a mesh program without one, adds the word at SNX_VKB_RS (a
+   uniform buffer the renderer copies the record's first word into, vk/render.c's mesh_indirect) to its workgroup ID in
+   place of the push constant's x */
+#define SH_PUSH_GPU_MESH_FIRST    4u
 /* quad operations in fragment programs (the subgroup's QUAD bit): SHFL within a quad reads its helper lanes. 1 offline */
 extern int g_shader_quad;
 /* quad operations in compute programs (the QUAD bit, compute among the subgroup stages): an SM86 HMMA reads its A
