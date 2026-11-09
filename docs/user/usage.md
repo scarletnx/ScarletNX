@@ -103,6 +103,17 @@ This forces recompilation, even if a cached executable exists, and extracts noth
 given. `scarletnx -r --outdir games -- "Game.xci"` recompiles straight from a dump the same way, reading its ExeFS in
 place. `-rx` (`-r -x` on Windows) prepares it extracted, as `-r --extract-container` does. `-x` alone only extracts.
 
+An extracted game's folder, one whose `exefs/` holds the game's `main` (beside its `romfs/` and `control.nacp` when it
+has them, as `-x` or hactool lays one out), plays and prepares as a dump does: `./build/scarletnx "Game/"`, or
+`-r "Game/"`. The game is named by the title ID of its `exefs/main.npdm`, and shown by its `control.nacp`'s name, else
+by that ID. Nothing of it is copied by default: the `.ini` records the folder as `source=`, and each run reads the
+ExeFS and RomFS from it, on whatever disk it is. `--extract-container` copies it into the game's data folder and
+`--tmpfs` into tmpfs instead, as they extract a dump; `-x --out DIR -- "Game/"` copies it alone. Moving or deleting the
+folder stops the game, the run naming it, until it is back or `source=` names its new place. `--out` names a dump's
+extraction, and is refused for a folder. Removing a game's files never goes through a folder where a disk or another
+folder is mounted (a RomFS bind-mounted into a game's data folder): the run stops naming the mount, to be unmounted
+first.
+
 A game made already plays the same way, named by its folder or its program: `./build/scarletnx recompiled/<id>` (or
 `recompiled/<id>/<id>`) runs it, recompiled first where it is when a build of another ABI made it, from what its `<id>_data/`
 keeps (the ExeFS or the NRO: no dump, keys or extraction), or from the dump its `.ini` records when it was

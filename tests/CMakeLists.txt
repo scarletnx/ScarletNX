@@ -607,6 +607,9 @@ if(TARGET hactool_internals)
     add_test(NAME filesystem_addon_overlay COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> addon-overlay)
     add_test(NAME filesystem_mods COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> mods)
     add_test(NAME filesystem_mods_stale COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> mods-stale)
+    add_test(NAME filesystem_folder_source
+             COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> folder-source)
+    add_test(NAME filesystem_folder_gone COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> folder-gone)
     if(NOT WIN32) # the dump's link: Windows makes one only with the right to
         add_test(NAME filesystem_dump COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump)
         add_test(NAME filesystem_dump_source COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-source)

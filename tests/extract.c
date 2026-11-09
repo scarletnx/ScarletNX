@@ -582,6 +582,31 @@ int main(int argc, char** argv) {
     scratch = snx_temp_dir(NULL);
     CHECK(scratch != NULL);
     programs(scratch);
+    { /* -x of an extracted game's folder: its exefs/, romfs/ and control.nacp copied into --out as they are, with no
+         data folder or keys; --update takes a dump, and an --out inside the folder is refused, each said */
+        char *game = snx_path_join(scratch, "extracted game"), *out = snx_path_join(scratch, "copied game");
+        char *inside = snx_path_join(game, "romfs/out"), *said = g_extract.said, *part;
+        char *args[] = {"--out", out, "--", game}, *update[] = {"--update", "x.nsp", "--out", out, "--", game};
+        char* nested[] = {"--out", inside, "--", game};
+        static const char* const files[] = {"exefs/main", "exefs/main.npdm", "romfs/a/b.bin", "control.nacp"};
+        for (i = 0; i < sizeof files / sizeof *files; i++) {
+            char* parent;
+            part = snx_path_join(game, files[i]);
+            parent = part ? snx_dirname(part) : NULL;
+            CHECK(parent && !snx_mkdirs(parent) && !snx_write_file(part, files[i], strlen(files[i])));
+            free(parent);
+            free(part);
+        }
+        snx_error_sink(said_line);
+        CHECK(!snx_extract(4, args, NULL));
+        for (i = 0; i < sizeof files / sizeof *files; i++) CHECK(file_is(out, files[i], files[i], strlen(files[i])));
+        CHECK(snx_extract(6, update, NULL) != 0 && strstr(said, "--update, --program, --name and --icon take a dump"));
+        CHECK(snx_extract(4, nested, NULL) != 0 && strstr(said, "are one inside the other"));
+        snx_error_sink(NULL);
+        free(game);
+        free(out);
+        free(inside);
+    }
     CHECK(self != NULL && scratch != NULL);
     for (i = 0; i < sizeof scenarios / sizeof scenarios[0]; i++) {
         directory = snx_path_join(scratch, scenarios[i].mode);

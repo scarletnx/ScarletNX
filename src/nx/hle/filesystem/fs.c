@@ -129,6 +129,31 @@ static void data_repo(char* repo, size_t size) {
     free(path);
 }
 
+/* source= an extracted game (snx_extracted_game): its ExeFS and RomFS read where they are, read-only, as a dump's are,
+   on whatever disk the folder is. A game without a RomFS of its own runs without one, the log saying so. Under
+   tree.lock, at startup */
+static void folder_open(const char* folder) {
+    static const char* const names[] = {"exefs", "romfs"};
+    FsNode* node;
+    FsTreeResult r;
+    char* part;
+    int i;
+    for (i = 0; i < 2; i++) {
+        if (!fs_tree_lookup(&g_hle.fs.tree, NULL, names[i], &node)) continue; /* the data folder's own */
+        part = snx_extracted_part(folder, i);
+        if (!part && !i)
+            fatal("The game's folder %s, its source= setting, has no exefs/ to read the game's program from", folder);
+        if (!part) {
+            LOG("fs: the game's folder %s has no romfs/: the game runs without a RomFS\n", folder);
+            continue;
+        }
+        r = fs_tree_graft(&g_hle.fs.tree, names[i], part);
+        if (r != FS_TREE_OK) fatal("Could not index %s, the game's %s (error %d)", part, i ? "RomFS" : "ExeFS", r);
+        free(part);
+    }
+    LOG("fs: ExeFS and RomFS read from the folder %s\n", folder);
+}
+
 /* Extract dump off: a data folder without an ExeFS of its own reads its ExeFS and RomFS from the dump the
    game was made from, mapped read-only for the whole run: source= in its .ini, else the dump <folder>/<name>.source
    beside <name>_data links to, as older versions recorded it; a line names both when neither is. Nothing of it is
@@ -165,16 +190,24 @@ static void dump_open(const char* keys, const char* title_keys) {
     data[n - 5] = 0;
     source = g_settings.game_dump[0] ? snx_strdup(g_settings.game_dump) : snx_format("%s.source", data);
     free(data);
+    if (kind != SNX_ADDON_UPDATE && snx_extracted_game(source)) {
+        folder_open(source);
+        free(source);
+        goto done;
+    }
     if (!snx_is_file(source)) {
         ini = snx_absolute(ini_file()); /* a game beside its .ini runs in its folder: "./Game.ini" */
         /* the loader also takes the main module from the data folder's root, as older versions put it */
         if (addon && kind == SNX_ADDON_UPDATE)
-            fatal("The update reads its files over the game's dump, and %s names %s: play the game's dump to record "
-                  "it",
-                  ini ? ini : ini_file(), g_settings.game_dump[0] ? "a dump that is not there" : "none (source=)");
+            fatal("The update reads its files over the game's dump, and %s names %s: %s", ini ? ini : ini_file(),
+                  !g_settings.game_dump[0]                   ? "none (source=)"
+                  : snx_extracted_game(g_settings.game_dump) ? "the game's folder, which has no update's files to read"
+                                                             : "a dump that is not there",
+                  snx_extracted_game(g_settings.game_dump) ? "extract the update with Extract dump"
+                                                           : "play the game's dump to record it");
         if (g_settings.game_dump[0])
-            WARN("fs: the game's dump %s, its source= setting, is not there; its settings are %s\n", source,
-                 ini ? ini : ini_file());
+            WARN("fs: the game's %s %s, its source= setting, is not there; its settings are %s\n",
+                 snx_source_kind(source), source, ini ? ini : ini_file());
         else if (fs_tree_lookup(&g_hle.fs.tree, NULL, "main", &node) &&
                  fs_tree_lookup(&g_hle.fs.tree, NULL, "main.nro", &node))
             WARN("fs: the game has no ExeFS in %sexefs/ and no dump to read it from: %s sets no source=, and %s is not "

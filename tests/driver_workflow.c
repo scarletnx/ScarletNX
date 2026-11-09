@@ -165,6 +165,17 @@ int snx_extract(int argc, char** argv, const SnxPaths* paths) {
         return event('E');
     }
     CHECK(argc == 4 && !strcmp(argv[0], "--out") && !strcmp(argv[2], "--"));
+    if (snx_extracted_game(argv[3])) { /* an extracted game's folder, copied as it is (extract.c's copy_extracted) */
+        static const char* const parts[] = {"exefs", "romfs"};
+        size_t k;
+        for (k = 0; k < 2; ++k) {
+            char *from = snx_path_join(argv[3], parts[k]), *to = snx_path_join(argv[1], parts[k]);
+            CHECK(!snx_path_exists(to) && (!snx_is_dir(from) || !snx_copy_tree(from, to)));
+            free(from);
+            free(to);
+        }
+        return event('E');
+    }
     CHECK(snx_is_file(argv[3]));
     partial = snx_path_join(argv[1], "exefs"); /* into a game's data folder: what an extraction left taken away */
     CHECK(!snx_path_exists(partial));
@@ -213,6 +224,13 @@ static int dump_input(const char* input) {
     size_t n = strlen(input);
     return snx_is_file(input) && !(n > 4 && input[n - 4] == '.' && (input[n - 3] | 32) == 'n' &&
                                    (input[n - 2] | 32) == 'r' && (input[n - 1] | 32) == 'o');
+}
+/* an extracted game the game's .ini names as its source=, which recompile.c reads in place as a dump */
+static int recorded_folder(const char* folder, const char* name, const char* input) {
+    char* source = snx_extracted_game(input) ? snx_game_source(folder, name, NULL) : NULL;
+    int same = source && snx_same_file(source, input);
+    free(source);
+    return same;
 }
 /* this build's stamp: ABI 4, made from commit abc1234 */
 #define SNX_WORKFLOW_STAMP "4\nabc1234\n"
@@ -297,7 +315,7 @@ static int addon_recompile(int argc, char** argv, const SnxPaths* paths) {
 }
 int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     char *game, *partial, *name, *folder;
-    int rc, tmpfs;
+    int rc, tmpfs, in_place;
     check_key_paths(paths);
     if (addon_mode()) return addon_recompile(argc, argv, paths);
     /* Extract to tmpfs: the RomFS left in the extraction */
@@ -376,10 +394,12 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     folder = snx_path_join(argv[1], name);
     CHECK(!snx_mkdirs(folder));
     partial = snx_format("%s/%s_data/exefs", folder, name);
-    /* the extraction's ExeFS in it, as the recompile stages it; a dump's stays in the dump, its data folder empty */
+    /* the extraction's ExeFS in it, as the recompile stages it; a dump's, or a folder's read in place, stays where it
+       is, its data folder empty */
+    in_place = dump_input(argv[3]) || (!tmpfs && recorded_folder(folder, name, argv[3]));
     CHECK(!snx_mkdirs(partial));
-    if (dump_input(argv[3])) CHECK(!snx_remove_tree(partial));
-    {
+    if (in_place) CHECK(!snx_remove_tree(partial));
+    if (!in_place) {
         static const char* const files[] = {"main", "main.npdm"};
         size_t k;
         for (k = 0; k < 2; ++k) {
@@ -392,7 +412,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     free(partial);
     { /* and its RomFS, unless it stays in tmpfs or is there already */
         char *from = snx_path_join(argv[3], "romfs"), *to = snx_format("%s/%s_data/romfs", folder, name);
-        if (!tmpfs && snx_is_dir(from) && !snx_is_dir(to)) CHECK(!snx_copy_tree(from, to));
+        if (!tmpfs && !in_place && snx_is_dir(from) && !snx_is_dir(to)) CHECK(!snx_copy_tree(from, to));
         free(from);
         free(to);
     }
@@ -686,6 +706,32 @@ static int collection_child(const char* named) {
     free(path);
     return event(named ? 'P' : 'G');
 }
+#if !SNX_DRIVER_READY && !defined(_WIN32)
+/* an extracted game's folder, as a dump's extraction lays one out: exefs/ with its main and an NPDM of title ID
+   0100ABCD12345000, and romfs/ */
+static void write_extracted(const char* folder) {
+    char *exefs = snx_path_join(folder, "exefs"), *main = snx_path_join(exefs, "main");
+    char *npdm = snx_path_join(exefs, "main.npdm"), *data = snx_path_join(folder, "romfs/data");
+    char* romfs = snx_path_join(folder, "romfs");
+    unsigned char meta[0xa0];
+    SnxU64 id = 0x0100ABCD12345000ull;
+    int i;
+    memset(meta, 0, sizeof meta);
+    memcpy(meta, "META", 4);
+    meta[12] = 1;
+    meta[0x70] = 0x80; /* the ACI0 at 0x80 */
+    meta[0x74] = 0x20; /* its size */
+    memcpy(meta + 0x80, "ACI0", 4);
+    for (i = 0; i < 8; ++i) meta[0x90 + i] = (unsigned char)(id >> (8 * i));
+    CHECK(!snx_mkdirs(exefs) && !snx_mkdirs(romfs) && !snx_write_file(main, "main", 4) &&
+          !snx_write_file(npdm, meta, sizeof meta) && !snx_write_file(data, "data", 4));
+    free(exefs);
+    free(main);
+    free(npdm);
+    free(data);
+    free(romfs);
+}
+#endif
 static void reset(const char* repo, const char* dump) {
     CHECK(!snx_remove_tree(repo));
     CHECK(!snx_mkdirs(repo));
@@ -1332,6 +1378,88 @@ int main(int argc, char** argv) {
         free(own);
         free(stamp);
         free(moved);
+    }
+#endif
+    /* An extracted game's folder (exefs/, romfs/), outside the data folder: played and prepared as a dump is. Extract
+       dump off, the default: read where it is, its .ini naming it as source=, nothing of it copied; on, copied into
+       the data folder by -x, and off again that copy is taken away; Extract to tmpfs copies it there. A game whose
+       folder moved says which folder is not there; --out goes with a dump only, and a folder without an exefs/ is
+       none */
+#ifndef _WIN32
+    {
+        char *source = snx_path_join(root, "Extracted game"), *moved = snx_format("%s.moved", source);
+        char *own = snx_path_join(repo, "recompiled/0100ABCD12345000"), *temp = snx_path_join(root, "tmp");
+        char *data = snx_path_join(own, "0100ABCD12345000_data"), *exefs = snx_path_join(data, "exefs");
+        char *romfs = snx_path_join(data, "romfs"), *program = snx_path_join(own, "0100ABCD12345000");
+        char *work = snx_path_join(temp, "scarletnx/work/0100ABCD12345000"), *ram = snx_path_join(work, "romfs/data");
+        char *marker = snx_path_join(own, "0100ABCD12345000.tmpfs"), *empty = snx_path_join(root, "Not a game");
+        CHECK(!snx_path_exists(source) || !snx_remove_tree(source));
+        write_extracted(source);
+        CHECK(!snx_mkdirs(temp) && !snx_mkdirs(empty));
+        set_env("TMPDIR", temp);
+        set_env("SNX_WORKFLOW_MODE", "exit");
+        set_env("SNX_WORKFLOW_GAMES", own);
+        set_env("SNX_WORKFLOW_EXTRACT", "");
+        set_env("SNX_WORKFLOW_SOURCE", source); /* the recompile reads the folder itself */
+        reset(repo, dump);
+        run(exe, repo, source, log, 0, "RG", NULL);
+        CHECK(snx_is_file(program) && !snx_path_exists(exefs) && !snx_path_exists(romfs));
+        CHECK(records_dump(own, "0100ABCD12345000", source));
+        run(exe, repo, source, log, 0, "G", NULL);
+        run(exe, repo, program, log, 0, "G", NULL);
+        set_env("SNX_WORKFLOW_EXTRACT", "1");
+        run(exe, repo, source, log, 0, "EG", NULL);
+        CHECK(snx_is_dir(exefs));
+        {
+            char* copied = snx_path_join(romfs, "data");
+            CHECK(snx_is_file(copied));
+            free(copied);
+        }
+        set_env("SNX_WORKFLOW_EXTRACT", "");
+        run(exe, repo, program, log, 0, "G", "the game reads it from its folder");
+        CHECK(!snx_path_exists(exefs) && !snx_path_exists(romfs));
+        CHECK(!rename(source, moved));
+        run(exe, repo, program, log, 1, "", "cannot read the game from its folder");
+        CHECK(!rename(moved, source));
+        set_env("SNX_WORKFLOW_FLAGS", "-r");
+        reset(repo, dump);
+        run(exe, repo, source, log, 0, "R", NULL);
+        CHECK(!snx_path_exists(exefs) && records_dump(own, "0100ABCD12345000", source));
+        /* Extract to tmpfs: the folder copied there, its ExeFS staged in the data folder by the recompile */
+        set_env("SNX_WORKFLOW_SOURCE", "");
+        set_env("SNX_WORKFLOW_FLAGS", "--tmpfs");
+        set_env("SNX_WORKFLOW_TMPFS", "1");
+        reset(repo, dump);
+        run(exe, repo, source, log, 0, "ERG", NULL);
+        CHECK(snx_is_file(ram) && !snx_path_exists(romfs) && snx_is_file(marker));
+        CHECK(records_dump(own, "0100ABCD12345000", source));
+        CHECK(!snx_remove_tree(work) && !rename(source, moved)); /* a reboot, and the folder moved */
+        run(exe, repo, program, log, 0, "G", "The game cannot be extracted to tmpfs: its folder");
+        CHECK(!rename(moved, source));
+        run(exe, repo, program, log, 0, "EG", NULL);
+        CHECK(snx_is_file(ram));
+        set_env("SNX_WORKFLOW_FLAGS", "");
+        set_env("SNX_WORKFLOW_TMPFS", "");
+        set_env("SNX_WORKFLOW_OUT", temp);
+        run(exe, repo, source, log, 1, "", "--out names where a dump is extracted");
+        set_env("SNX_WORKFLOW_OUT", "");
+        run(exe, repo, empty, log, 1, "", "holds no main: neither a dump nor an extracted game");
+        free(own);
+        own = snx_path_join(repo, "recompiled/Test game");
+        set_env("SNX_WORKFLOW_GAMES", own);
+        CHECK(!snx_remove_tree(source) && !snx_remove_tree(empty));
+        free(source);
+        free(moved);
+        free(own);
+        free(temp);
+        free(data);
+        free(exefs);
+        free(romfs);
+        free(program);
+        free(work);
+        free(ram);
+        free(marker);
+        free(empty);
     }
 #endif
     /* Updates and DLCs: an update's dump made into its own program beside the game made already, a DLC's recorded with

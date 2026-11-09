@@ -412,6 +412,8 @@ static int extract_game(const char** command, const char* dump, const char* upda
     if (failed) return snx_error("extraction finished without creating %s/%s", target, made);
     return snx_remove_tree(marker) ? snx_error("cannot remove %s", marker) : 0;
 }
+/* the source a game is made from there to read or extract: its dump, or the extracted game's folder */
+static int source_there(const char* source) { return source && (snx_is_file(source) || snx_extracted_game(source)); }
 /* Extract dump off: a game read from its dump in place, source (recorded: 1 when its .ini or its old link
    names one, snx_game_source), takes away what an extraction left in its data folder, and in tmpfs (by the title ID of
    its ExeFS's npdm, its marker said so). A game whose dump is not there keeps its extraction, a line saying so, and
@@ -424,16 +426,16 @@ static int drop_extraction(const char* data, const char* source, int recorded, c
     size_t i, size;
     int rc = 0, extracted;
     if (!recorded) return 0; /* made from no dump: an NRO, an ExeFS folder */
-    if (!snx_is_file(source)) {
+    if (!source_there(source)) {
         exefs = snx_path_join(data, "exefs");
         extracted = snx_is_dir(exefs);
         free(exefs);
         if (extracted)
-            printf("Runs from its extraction: its dump %s is not there\n", source);
+            printf("Runs from its extraction: its %s %s is not there\n", snx_source_kind(source), source);
         else
-            rc = snx_error("cannot read the game from its dump: %s is not there. Put it back, or play it with "
+            rc = snx_error("cannot read the game from its %s: %s is not there. Put it back, or play it with "
                            "--extract-container",
-                           source);
+                           snx_source_kind(source), source);
         return rc;
     }
     text = snx_is_file(marker) ? snx_read_file(npdm, &size) : NULL;
@@ -444,7 +446,7 @@ static int drop_extraction(const char* data, const char* source, int recorded, c
     for (i = 0; !rc && i < sizeof parts / sizeof *parts; ++i) {
         part = snx_path_join(data, parts[i]);
         if (snx_path_exists(part) || snx_is_link(part)) {
-            printf("Removing %s: the game reads it from its dump\n", part);
+            printf("Removing %s: the game reads it from its %s\n", part, snx_source_kind(source));
             rc = snx_remove_tree(part);
         }
         free(part);
@@ -475,7 +477,7 @@ static int ensure_romfs(const char** command, const char* folder, const char* na
         goto done;
     }
     exefs = snx_path_join(data, "exefs");
-    if (!snx_is_dir(exefs) && snx_is_file(source)) { /* made from its dump in place: extracted now */
+    if (!snx_is_dir(exefs) && source_there(source)) { /* made from its dump in place: extracted now */
         rc = extract_game(command, source, NULL, data, "exefs", extracting, paths, 0);
         if (rc) goto done;
     }
@@ -501,10 +503,10 @@ static int ensure_romfs(const char** command, const char* folder, const char* na
         if (rc) snx_error("cannot copy the RomFS in %s into %s", ram, data);
         goto done;
     }
-    if (!snx_is_file(source)) {
+    if (!source_there(source)) {
         if (recorded)
-            printf("The game cannot be extracted %s: its dump %s is not there\n",
-                   tmpfs ? "to tmpfs" : "again from tmpfs's emptied copy", source);
+            printf("The game cannot be extracted %s: its %s %s is not there\n",
+                   tmpfs ? "to tmpfs" : "again from tmpfs's emptied copy", snx_source_kind(source), source);
         else
             printf(
                 "The game cannot be extracted %s: its .ini names no dump (source=). Play the dump once to record it\n",
@@ -969,6 +971,12 @@ static int play_dump_at(const char* input, const SnxPaths* paths, unsigned flags
         free(program);
         goto done;
     }
+    if (!prepared && !nro && out && dump && snx_extracted_game(dump)) {
+        snx_error("--out names where a dump is extracted, and %s is an extracted game: it is played where it is, or "
+                  "copied into its game's folder with --extract-container",
+                  input);
+        goto done;
+    }
     if (!prepared && !nro && out && dump && snx_is_file(dump)) { /* an update's or a DLC's goes into its own data folder */
         SnxU64 title, of_game;
         if (snx_extract_title(dump, paths, &title, &of_game, NULL, NULL)) goto done;
@@ -987,13 +995,26 @@ static int play_dump_at(const char* input, const SnxPaths* paths, unsigned flags
     if (!prepared && !nro && !out) {
         SnxU64 title, version;
         char text[17], *data, *extracting, *exefs;
-        int fresh;
-        if (!dump || !snx_is_file(dump)) {
-            snx_error("%s is not a file", input);
+        int fresh, extracted_game = dump && snx_extracted_game(dump);
+        if (!dump || (!extracted_game && !snx_is_file(dump))) {
+            if (dump && snx_is_dir(dump))
+                snx_error("%s is a folder whose exefs/ holds no main: neither a dump nor an extracted game", input);
+            else
+                snx_error("%s is not a file", input);
             goto done;
         }
         games = outdir ? snx_absolute(outdir) : snx_recompiled_dir(paths->repo);
-        if (!games || snx_extract_title(dump, paths, &title, &owner, &version, &programs)) goto done;
+        if (!games) goto done;
+        if (extracted_game) { /* a game, by the title ID of its ExeFS's NPDM: no update or DLC is one */
+            if (snx_load_npdm(dump, &npdm, error, sizeof error)) {
+                rc = snx_error("%s", error);
+                goto done;
+            }
+            title = owner = npdm.title_id;
+            version = SNX_NO_VERSION;
+            programs = 1;
+        } else if (snx_extract_title(dump, paths, &title, &owner, &version, &programs))
+            goto done;
         if (snx_addon_kind(owner, title) != SNX_ADDON_NONE) { /* recompiled/<game>/<game>_<its entry> */
             char of[17], own[32];
             snx_title_text(owner, of);
@@ -1052,7 +1073,7 @@ static int play_dump_at(const char* input, const SnxPaths* paths, unsigned flags
             free(source);
             /* made from its dump read in place, else from what its _data keeps */
             source = snx_is_dir(exefs) ? NULL : snx_game_source(folder, name, NULL);
-            if (source && !snx_is_file(source)) {
+            if (source && !source_there(source)) {
                 free(source);
                 source = NULL;
             }
@@ -1550,7 +1571,7 @@ int snx_driver(int argc, char** argv) {
     /* a game made already is played or, with -r, recompiled where it is */
     automatic = input && (!(flags & (SNX_EXTRACT | SNX_RECOMP)) ||
                           ((flags & SNX_RECOMP) &&
-                           (container_path(input) ||
+                           (container_path(input) || snx_extracted_game(input) ||
                             (!(flags & SNX_EXTRACT) && (prepared_game(input, NULL, NULL) || addon_program(input))))));
     if (input && (automatic || (flags & SNX_RECOMP)) && left_beside(input)) {
         result =

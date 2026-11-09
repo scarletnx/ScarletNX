@@ -28,6 +28,15 @@ char* snx_game_source(const char* folder, const char* name, int* recorded);
 /* dump, absolute, as source= in [Game] of the game's .ini, the file made when there is none and left as it is when it
    names dump already. 0, or nonzero with a line saying why */
 int snx_record_source(const char* folder, const char* name, const char* dump);
+/* An extracted game: a folder whose exefs/ (or ExeFS/) holds its main module, beside its romfs/ (or RomFS/) and
+   control.nacp when it has them, as an extraction lays one out, on any disk. It is played and recompiled as a dump is,
+   and read in place the same way, source= naming it. A recompiled game's own data folder (<name>_data beside its
+   <name>.abi) is none */
+int snx_extracted_game(const char* path);
+/* an extracted game's ExeFS folder (romfs 0) or RomFS folder (romfs 1), owned: NULL for one it has not */
+char* snx_extracted_part(const char* path, int romfs);
+/* what a game's source= names, for a line about it: "folder" for an extracted game, there or not, else "dump" */
+const char* snx_source_kind(const char* source);
 
 /* the console a game's folder plays, as system= in [Game] of the .ini in it, <folder>/<name>.ini, says: the launcher
    picks the driver, the options and what R does by it, and cmake/deploy.cmake the runtime it copies there. A folder

@@ -531,6 +531,11 @@ static void test_nacp(const char* root, const char* exefs) {
     shown = snx_game_shown(NULL, &program, NULL, 0);
     CHECK(!strcmp(shown, "Synthetic Loader"));
     free(shown);
+    /* an NPDM with the SDK's name: the folder shows by its title ID, never by the name it was extracted to */
+    snprintf(program.npdm.name, sizeof program.npdm.name, "%s", "Application");
+    shown = snx_game_shown(NULL, &program, NULL, 0);
+    CHECK(program.npdm.title_id == 0x123456789abcdef0ull && !strcmp(shown, "123456789ABCDEF0"));
+    free(shown);
     shown = snx_game_shown("123456789ABCDEF0", &program, NULL, 0);
     CHECK(!strcmp(shown, "123456789ABCDEF0"));
     free(shown);
