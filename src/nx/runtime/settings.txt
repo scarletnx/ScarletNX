@@ -884,7 +884,8 @@ setting GPU mirror past limit
     help 1 = the GPU mirror of guest memory, where an Ounce game's programs read and write their storage, is made even
     help where it is bigger than the device's maxBufferSize, as feat/ounce makes it: RADV (4 GiB) makes and runs it,
     help though the validation layer calls it invalid. 0 = only where it fits; elsewhere the storage results land
-    help through the CPU, several times slower in one game. Temporary, to compare
+    help through the CPU, several times slower in one game. With vk_validation on it is made only where it fits,
+    help as the layer would report it. Temporary, to compare
 setting Vulkan API
     label Vulkan version
     key vk_api
