@@ -98,6 +98,7 @@ static int check_mesh_draws(void) {
     state->vp.scale[0][0] = state->vp.scale[0][1] = state->vp.translate[0][0] = state->vp.translate[0][1] = 4;
     state->vp.z_far[0] = 1;
     state->vp.swizzle[0] = 0x6420;
+    state->rkey.sample_mask = ~0u; /* every sample, as the 3D engine starts (nvn_draw.c): pipelines apply it always */
     state->dyn.clip_height = 8;
     state->dyn.depth_mode = 1; /* near at 0: the positions' depths are the targets' */
     state->dyn.depth_test = state->dyn.depth_write = 1;

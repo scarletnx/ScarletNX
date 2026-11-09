@@ -622,6 +622,27 @@ int vk_image_resident(VkImage img, u8* want, u32 n, u64* bytes) {
     }
     return 1;
 }
+/* sparse residency: none here either */
+int vk_image_create_sparse(const VkImageCreateInfo* ii, VkImage* img) {
+    (void)ii, (void)img;
+    return 0;
+}
+const VkSparseShape* vk_image_sparse_shape(VkImage img) {
+    (void)img;
+    return NULL;
+}
+int vk_image_sparse_bind(VkImage img, const u8* bits, u64* bytes) {
+    (void)img, (void)bits, (void)bytes;
+    return -1;
+}
+u64 vk_image_sparse_need(VkImage img, const u8* bits) {
+    (void)img, (void)bits;
+    return 0;
+}
+int vk_image_sparse_bound(VkImage img, u32 layer, u32 level, u32 y0, u32 y1, u32 z0, u32 z1, int all) {
+    (void)img, (void)layer, (void)level, (void)y0, (void)y1, (void)z0, (void)z1, (void)all;
+    return 1;
+}
 void vk_surf_bytes(Surf* s, u64 bytes) { s->bytes = bytes; }
 void vk_mem_trim(u64 extra, int force) { (void)extra, (void)force; }
 /* the block linear layout: GOBs of 64 bytes by 8 rows in blocks of 1 << bh by 1 << bd GOBs, gob_w of them across a
@@ -1497,7 +1518,11 @@ int main(void) {
         stage_used = nregs = 0, astc_used = 0;
         CHECK(tex_upload(&b) && g_astc_key.keyed && memcmp(first, g_astc_key.content, sizeof first));
         guest[3 * b.layer_size + 77] ^= 0x10;
-        g_nown = 1, g_astc_key.owner_over = 1;
+        /* owners elsewhere, none over the level's bytes: the same key */
+        g_nown = 1;
+        stage_used = nregs = 0, astc_used = 0;
+        CHECK(tex_upload(&b) && g_astc_key.keyed && !memcmp(first, g_astc_key.content, sizeof first));
+        g_astc_key.owner_over = 1;
         stage_used = nregs = 0, astc_used = 0;
         CHECK(tex_upload(&b) && !g_astc_key.keyed);
         g_nown = 0, g_astc_key.owner_over = 0;

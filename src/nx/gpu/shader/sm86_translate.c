@@ -13,6 +13,7 @@
 #include <stddef.h>
 #include "nx/gpu/shader/sm86.h"
 #include "nx/gpu/shader/translator.h"
+#include "nx/gpu/shader/write_log.h"
 #include "common/utilities/spirv_emit.h"
 #include <stdarg.h>
 
@@ -654,45 +655,21 @@ static void mark_read(Ctx* c, u32 key) {
         }
 }
 /* A compute program's store of bytes bytes (1, 2, 4, 8 or 16) at byte offset into global buffer key records them in
-   the write log (ShaderInfo.gbuf_mark, SH_WLOG_*): a plain store of 1 into its window's flag, as every store of a
-   window writes the same, and an atomic OR of its bytes' bits into that window's mask, which other invocations OR
-   into too. The offset is taken as aligned to the size, as the GPU requires of every global access, so its bits are
-   in one mask word. A store past the windows sets the last window's flag and no bit. The renderer lands the bytes
-   logged and no others: an Ounce program's buffer is all of the memory mapped from its address, up to 16 MiB, and
-   finding what changed by comparing its bytes with a copy taken before the dispatch was most of one game's CPU time */
+   the write log (ShaderInfo.gbuf_mark, write_log.c's shader_wlog_store). The renderer lands the bytes logged and no
+   others: an Ounce program's buffer is all of the memory mapped from its address, up to 16 MiB, and finding what
+   changed by comparing its bytes with a copy taken before the dispatch was most of one game's CPU time */
 static void mark_written(Ctx* c, u32 key, u32 offset, u32 bytes) {
     int slot = -1;
     if (c->stage != ST_CS) return;
     for (int i = 0; i < c->si->ngbuf; i++)
         if (c->si->gbuf_cbuf_off[i] == key) slot = i;
     if (slot < 0) return;
-    if (!c->si->gbuf_mark[slot]) c->si->gbuf_mark[slot] = ++c->si->nmarks;
-    u32 part = (u32)(c->si->gbuf_mark[slot] - 1) * SH_WLOG_PART;
+    u32 part = shader_wlog_part(c->si, slot);
     if (!c->wpages) {
-        u32 array = spv_emit_type_runtime_array(&c->e, c->t_u32, 4);
-        u32 structure = spv_emit_type_struct_one(&c->e, array);
-        c->wpages = spv_emit_storage_buffer(&c->e, structure, (u32)shader_vk_set(c->stage), SNX_VKB_WPAGES);
+        c->wpages = shader_wlog_buffer(&c->e, c->t_u32, (u32)shader_vk_set(c->stage));
         add_interface(c, c->wpages);
     }
-    u32 ptr_type = spv_emit_type_storage_pointer(&c->e, c->t_u32);
-    u32 at = spv_emit_bitwise_and_u32(&c->e, c->t_u32, offset, cu(c, ~(bytes - 1)));
-    u32 window = spv_emit_shift_right_u32(&c->e, c->t_u32, at, cu(c, 12)), last = cu(c, SH_WPAGE_SLOT - 1);
-    u32 past = spv_emit_u_less(&c->e, c->t_bool, last, window);
-    window = spv_emit_select(&c->e, c->t_u32, past, last, window);
-    u32 flag = spv_emit_iadd_u32(&c->e, c->t_u32, window, cu(c, part));
-    spv_emit_store(&c->e, spv_emit_storage_access_u32(&c->e, ptr_type, c->wpages, c->zero, flag), cu(c, 1));
-    u32 word = spv_emit_iadd_u32(
-        &c->e, c->t_u32,
-        spv_emit_iadd_u32(&c->e, c->t_u32, spv_emit_imul_u32(&c->e, c->t_u32, window, cu(c, SH_WLOG_MASK)),
-                          spv_emit_shift_right_u32(
-                              &c->e, c->t_u32, spv_emit_bitwise_and_u32(&c->e, c->t_u32, at, cu(c, 4095)), cu(c, 5))),
-        cu(c, part + SH_WPAGE_SLOT));
-    u32 bits = spv_emit_shift_left_u32(&c->e, c->t_u32, cu(c, (u32)((1ull << bytes) - 1)),
-                                       spv_emit_bitwise_and_u32(&c->e, c->t_u32, at, cu(c, 31)));
-    bits = spv_emit_select(&c->e, c->t_u32, past, cu(c, 0), bits);
-    spv_emit_atomic_u32(&c->e, c->t_u32, SPV_OP_ATOMIC_OR,
-                        spv_emit_storage_access_u32(&c->e, ptr_type, c->wpages, c->zero, word), bits);
-    c->si->gbuf_marks |= 1u << slot;
+    shader_wlog_store(&c->e, c->t_u32, c->t_bool, c->wpages, part, offset, bytes);
 }
 /* LDG and STG, as spirv_translate.c's global memory: the buffer is the one whose 64-bit address the constant buffer
    word that track_globals found holds (ShaderInfo.gbuf_cbuf_off), and the byte offset into it is the address less
@@ -773,8 +750,10 @@ static void global_dynamic(Ctx* c, const Sm86Insn* in, int uniform_form, int loa
         u32 offset = lo32(c, relative);
         if (load)
             mem_load(c, buffer, offset, type, in->dst, 0);
-        else
+        else {
+            mark_written(c, keys[k], offset, type < 2 ? 1 : type < 4 ? 2 : type == 4 ? 4 : type == 5 ? 8 : 16);
             mem_store(c, buffer, offset, type, sm86_field(in, 32, 8));
+        }
         spv_emit_branch(&c->e, merges[k]);
         spv_emit_label(&c->e, other);
     }
@@ -2502,6 +2481,9 @@ static u32 mesh_entry(Ctx* c, u32 body) {
     spv_emit_control_barrier(e, c->t_u32);
     if (c->stage == ST_TS) {
         u32 count = spv_emit_load(e, c->t_u32, isbe_ptr(c, payload_var(c), SPV_STORAGE_TASK_PAYLOAD, cu(c, 1)));
+        /* within the device's limit: a count past it is undefined behavior, which can hang the GPU */
+        if (g_shader_mesh_tasks_max)
+            count = spv_emit_glsl_binary(e, c->t_u32, c->glsl, SPV_GLSL_U_MIN, count, cu(c, g_shader_mesh_tasks_max));
         SPV_VOID(e, 5294 /* OpEmitMeshTasksEXT */, count, cu(c, 1), cu(c, 1), payload_var(c));
         spv_emit_function_end(e);
         return fn;

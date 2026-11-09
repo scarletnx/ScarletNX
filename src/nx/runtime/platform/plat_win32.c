@@ -355,7 +355,7 @@ void plat_alias_host_free(u8* p, u64 size) {
 /* no pool, so no mirror: the traps land in place (SNX_PLAT_TRAPS_IN_PLACE, plat_trap_fill) */
 u8* plat_alias_mirror(void) { return NULL; }
 
-/* ---------------------------------------------------------------- traps (memory/own.c, docs/GPU_OWNERSHIP.md) */
+/* --------------------------------------------------------------- traps (memory/own.c, docs/layers/gpu/ownership.md) */
 /* Traps by protection, as Linux's without userfaultfd's minor faults (plat_posix.c), on the reservation's own pages:
    plat_trap_arm makes them inaccessible (VirtualProtect) and marks them in a bitmap, a bit per 4 KiB page. A guest
    access to one raises an access violation, which the vectored exception handler (trap_fault) takes first, on the

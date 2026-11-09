@@ -186,6 +186,8 @@ static int check_mirror(void) {
     CHECK(vk_mirror_slice(gva + 0x100000, 0x1000, &buf, &off));
     CHECK(off == cpu + 0x1000);
 
+    /* the CPU's touch above is old now (vk_own_cpu_read's 1200 presents): the page takes the published path below */
+    g_vk_present += 1200;
     /* written by a program: pending, then once its submit is done the page it wrote stays the mirror's, GPU-owned,
        with the byte the CPU wrote beside the program's meanwhile taken into it; nothing lands until the CPU touches the
        page (where the host traps guest memory), then the page lands whole. The bytes the program didn't log are guest
@@ -245,6 +247,30 @@ static int check_mirror(void) {
         static u8 m[0x3000];
         CHECK(!mirror_read(cpu, len, m));
         CHECK(!mirror_expect(m, GP(cpu), len, 0, 0, 0));
+    }
+
+    /* touched lately (the landing above): a program's write to the page comes back with the submit's harvest and lands
+       in guest memory once it is done, the bytes it logged and no others, with no owner left over the page and no
+       landing of a trap when the CPU reads it */
+    {
+        static u8 before[0x1000];
+        memcpy(before, GP(cpu), sizeof before);
+        CHECK(!mirror_write(cpu + 0x300, 8, 0x3c, 1));
+        CHECK(!mirror_write(cpu + 0x308, 8, 0xc3, 0)); /* not logged: guest memory keeps its bytes */
+        vk_mirror_wrote(cpu, 0x1000);
+        u64 lands = own_landings();
+        vk_finish();
+        vk_mirror_publish();
+        OwnRange o[2];
+        CHECK(!vk_mirror_pending(gva, 0x1000) && !own_lookup(cpu, 0x1000, o, 2) && own_landings() == lands);
+        for (u32 i = 0; i < 0x1000; i++) {
+            u8 want = i >= 0x300 && i < 0x308 ? 0x3c : before[i];
+            if (GP(cpu)[i] != want) {
+                fprintf(stderr, "vulkan_headless: mirror: hot byte %#x is %#x, not %#x\n", i, GP(cpu)[i], want);
+                CHECK(0);
+            }
+        }
+        CHECK(own_landings() == lands);
     }
 
     /* more pages written than the harvest's room (64 at first): those past it land by a pass of their own */

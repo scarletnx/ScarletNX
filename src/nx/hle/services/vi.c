@@ -709,6 +709,7 @@ static int nn_visrv_sf_IManagerDisplayService_GetDisplayModeChangedEvent(SvcObj*
 /* the main loop's 60 Hz: the display's vsync, and the mode and hotplug events when docked's Auto changed the mode */
 void vi_vsync_tick(void) {
     if (g_hle.vi.vsync) ev_signal(g_hle.vi.vsync);
+    gsv_vsync_tick(); /* the Ounce VI2 session's groups */
     if (g_settings.tv_mode != g_hle.vi.tv_mode) {
         g_hle.vi.tv_mode = g_settings.tv_mode;
         ev_signal(g_hle.vi.mode_changed);

@@ -24,6 +24,7 @@ u32 nvn_program_subroutine(u64 program, i32 stage) {
     return 0;
 }
 
+/* the runtime's memory past 0x80000 (kmem_alloc): each command buffer cuts from its own segments */
 static u8 memory[1 << 22];
 u8* g_mem = memory; /* guest address a is memory + a */
 

@@ -47,7 +47,14 @@ void vk_pipeline_save(int at_exit) {
                 g_pf.nidx);
         }
     }
-    if (!g_pcache || !__atomic_exchange_n(&g_pcache_dirty, 0, __ATOMIC_RELAXED)) {
+    /* vk_pipeline_cache=0: the driver's cache is neither read nor written, its size only logged at the end */
+    if (!g_settings.vulkan_pipeline_cache && at_exit && g_pcache) {
+        size_t n = 0;
+        if (vkGetPipelineCacheData(g_vk.dev, g_pcache, &n, NULL) == VK_SUCCESS)
+            LOG("vulkan: the pipeline cache of this run holds %zu KB (vk_pipeline_cache=0: not written)\n", n >> 10);
+    }
+    if (!g_pcache || !g_settings.vulkan_pipeline_cache ||
+        !__atomic_exchange_n(&g_pcache_dirty, 0, __ATOMIC_RELAXED)) {
         pm_unlock(&g_psave);
         return;
     }

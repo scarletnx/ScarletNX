@@ -724,7 +724,7 @@ static SnxU64 first_site(const NceSites* s, SnxU64 lo, SnxU64 hi) {
 /* the stubs placed as the runtime places them (nce.c's nce_init: the trap, then each site in order), into pools of
    scratch memory: 0, or -1 with the first site that no pool reaches in *miss */
 static int place(const NceRange* ranges, size_t n, const NceSites* s, SnxU64* miss) {
-    static const NceEnv env = {0x10, 1, 0, 1, 0, 1, 0}; /* any: the stubs' sizes and reach do not depend on it */
+    static const NceEnv env = {0x10, 1, 0, 1, 0, 1, 0, 0, 0, 0}; /* any: the stubs' sizes and reach do not depend on it */
     NcePool* pools = (NcePool*)snx_alloc((n ? n : 1) * sizeof *pools);
     SnxU64 trap;
     int r = 0;

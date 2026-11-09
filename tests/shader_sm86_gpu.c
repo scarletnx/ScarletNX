@@ -5,9 +5,12 @@
    the captured compute programs, run on 64 invocations of chosen inputs, every output word compared. It takes a CPU
    device (lavapipe) when the loader has one, else the first device; the warp's matrix instructions, which need
    subgroups of 32 lanes or more, the first device that has them. Opt-in with SNX_TEST_VULKAN, as vulkan_headless.
+   Also the Maxwell translators' write log (spirv_translate.c, emit_memory.c, spirv_compute.c): two Maxwell compute
+   programs whose stores and atomics must log the bytes they write as the SM86 programs' do (maxwell_log).
    No word here comes from a game. */
 #include "nx/gpu/shader/sm86.h"
 #include "support/sm86_ref.h"
+#include "common/utilities/endian.h"
 #include <volk.h>
 #include <math.h>
 #include <stdio.h>
@@ -608,9 +611,7 @@ static int gpu_open(Gpu* g, int warp) {
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR coopq = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR, .pNext = has_mixed ? &mixq : NULL};
     VkPhysicalDeviceVulkan13Features v13q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-                                             .pNext = has_coop    ? (void*)&coopq
-                                                      : has_mixed ? (void*)&mixq
-                                                                  : NULL};
+                                             .pNext = has_coop ? (void*)&coopq : has_mixed ? (void*)&mixq : NULL};
     VkPhysicalDeviceVulkan12Features v12q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
                                              .pNext = &v13q};
     VkPhysicalDeviceFeatures2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &v12q};
@@ -634,9 +635,7 @@ static int gpu_open(Gpu* g, int warp) {
         .pNext = g->mixed_dot ? &mix : NULL,
         .cooperativeMatrix = VK_TRUE};
     VkPhysicalDeviceVulkan12Features v12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-                                            .pNext = g->coop        ? (void*)&coop
-                                                     : g->mixed_dot ? (void*)&mix
-                                                                    : NULL,
+                                            .pNext = g->coop ? (void*)&coop : g->mixed_dot ? (void*)&mix : NULL,
                                             .shaderFloat16 = (VkBool32)g->float16,
                                             .vulkanMemoryModel = (VkBool32)(g->coop != 0),
                                             .vulkanMemoryModelDeviceScope = (VkBool32)(g->coop != 0)};
@@ -699,17 +698,17 @@ static u32 g_unflagged;
 static u32 g_groups = GROUPS;
 /* gpu_run's pipeline in subgroups of 32, whole, as vk/compute.c makes those of the programs that read other lanes */
 static int g_warp32;
-/* Runs the module with cbuf 0 and the global buffers that si names (each a buffer of the bytes at in or out): 0 when
-   Vulkan fails */
-static int gpu_run(Gpu* g, const u32* spv, size_t words, const ShaderInfo* si, const u32* cb0, const u32* in,
-                   u32 in_bytes, u32* out, u32 out_bytes) {
+/* Runs the module with cbuf 0 (its first cb0_bytes) and the global buffers that si names (each a buffer of the bytes at
+   in, or at out for the one whose address is at out_off of cbuf 0): 0 when Vulkan fails */
+static int gpu_run(Gpu* g, const u32* spv, size_t words, const ShaderInfo* si, const u32* cb0, u32 cb0_bytes,
+                   u32 out_off, const u32* in, u32 in_bytes, u32* out, u32 out_bytes) {
     Buf cb = {0}, gb[2] = {{0}}, marks = {0};
     int ok = buf_make(g, &cb, 65536, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
     if (ok && si->gbuf_marks) /* a part for each buffer the program logs, its bases being in the program */
         ok = buf_make(g, &marks, (u32)si->nmarks * SH_WLOG_PART * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    if (ok) memcpy(cb.map, cb0, 256);
+    if (ok) memcpy(cb.map, cb0, cb0_bytes);
     for (int k = 0; k < si->ngbuf && ok; k++) {
-        int is_out = si->gbuf_cbuf_off[k] == 0x28;
+        int is_out = si->gbuf_cbuf_off[k] == out_off;
         ok = buf_make(g, &gb[k], is_out ? out_bytes : in_bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         if (ok) memcpy(gb[k].map, is_out ? (const void*)out : (const void*)in, is_out ? out_bytes : in_bytes);
     }
@@ -738,15 +737,16 @@ static int gpu_run(Gpu* g, const u32* spv, size_t words, const ShaderInfo* si, c
     ok = ok && vkCreateShaderModule(g->device, &smci, NULL, &sm) == VK_SUCCESS;
     VkPipelineShaderStageRequiredSubgroupSizeCreateInfo warp32 = {
         VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO, NULL, 32};
-    VkComputePipelineCreateInfo cpci = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                                        NULL,
-                                        0,
-                                        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, g_warp32 ? &warp32 : NULL,
-                                         g_warp32 ? VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT : 0,
-                                         VK_SHADER_STAGE_COMPUTE_BIT, sm, "main", NULL},
-                                        pl,
-                                        VK_NULL_HANDLE,
-                                        0};
+    VkComputePipelineCreateInfo cpci = {
+        VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        NULL,
+        0,
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, g_warp32 ? &warp32 : NULL,
+         g_warp32 ? VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT : 0, VK_SHADER_STAGE_COMPUTE_BIT, sm,
+         "main", NULL},
+        pl,
+        VK_NULL_HANDLE,
+        0};
     ok = ok && vkCreateComputePipelines(g->device, VK_NULL_HANDLE, 1, &cpci, NULL, &pipe) == VK_SUCCESS;
     VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}};
     VkDescriptorPoolCreateInfo dpci = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, NULL, 0, 1, 2, sizes};
@@ -800,7 +800,7 @@ static int gpu_run(Gpu* g, const u32* spv, size_t words, const ShaderInfo* si, c
              vkWaitForFences(g->device, 1, &fence, VK_TRUE, 10000000000ull) == VK_SUCCESS;
     }
     for (int k = 0; k < si->ngbuf && ok; k++)
-        if (si->gbuf_cbuf_off[k] == 0x28) memcpy(out, gb[k].map, out_bytes);
+        if (si->gbuf_cbuf_off[k] == out_off) memcpy(out, gb[k].map, out_bytes);
     g_unflagged = 0;
     for (int k = 0; k < 2; k++) {
         memset(g_masks[k], 0, sizeof g_masks[k]);
@@ -871,7 +871,7 @@ static int run_program(Gpu* g, const char* name, void (*build)(Prog*)) {
         fprintf(stderr, "%s: not translated: %s\n", name, si.first_unsupported);
         return 0;
     }
-    int ok = si.ngbuf == 2 && gpu_run(g, spv, words, &si, cb0, in, sizeof in, got, out_bytes);
+    int ok = si.ngbuf == 2 && gpu_run(g, spv, words, &si, cb0, sizeof cb0, 0x28, in, sizeof in, got, out_bytes);
     free(spv);
     if (!ok) {
         fprintf(stderr, "%s: Vulkan failed\n", name);
@@ -1006,7 +1006,7 @@ static void tensor_program(Prog* p, u32 local) {
     emit(p, sm86_fix(0xb1d)); /* BAR.SYNC 0 */
     /* HMMA.16816.F16 R16, R8, R12, RZ, .F16 R18 with C = R14, .F32 R20 with RZ, .F32 R36 with C = R20; HMMA.1688.F32
        R40, R8, R12, RZ, .F16 R44 with C = R14, .F16 R46 with RZ and .F32 R48 with C = R40 */
-    static const u32 hmma[8][3] = {{16, 255, 0x08}, {18, 14, 0x08}, {20, 255, 0x18}, {36, 20, 0x18},
+    static const u32 hmma[8][3] = {{16, 255, 0x08}, {18, 14, 0x08},  {20, 255, 0x18}, {36, 20, 0x18},
                                    {40, 255, 0x10}, {44, 14, 0x00}, {46, 255, 0x00}, {48, 40, 0x10}};
     for (u32 k = 0; k < 8; k++) {
         w = sm86_fix(0x23c);
@@ -1079,7 +1079,7 @@ static void tensor_inputs(u32* in, u32* want, Expect* expect, int exact) {
                     }
                 }
             }
-#define PAIR(x, y)  ((u32)(x) | (u32)(y) << 16)
+#define PAIR(x, y) ((u32)(x) | (u32)(y) << 16)
 #define HPAIR(x, y) PAIR(half_bits((float)(x)), half_bits((float)(y)))
         u32* frag = in + (size_t)warp * 32 * 8;
         for (u32 l = 0; l < 32; l++) {
@@ -1169,39 +1169,13 @@ static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, i
     static Prog p;
     static u32 in[INVOCATIONS * 8], want[INVOCATIONS * TENSOR_OUT], got[INVOCATIONS * TENSOR_OUT];
     static Expect expect[INVOCATIONS * TENSOR_OUT];
-    static const char* names[TENSOR_OUT] = {"HMMA.F16 d0",
-                                            "HMMA.F16 d1",
-                                            "HMMA.F16+C d0",
-                                            "HMMA.F16+C d1",
-                                            "HMMA.F32 d0",
-                                            "HMMA.F32 d1",
-                                            "HMMA.F32 d2",
-                                            "HMMA.F32 d3",
-                                            "LDSM m0",
-                                            "LDSM m1",
-                                            "LDSM m2",
-                                            "LDSM m3",
-                                            "LDSM.T m0",
-                                            "LDSM.T m1",
-                                            "LDSM.T m2",
-                                            "LDSM.T m3",
-                                            "MOVM",
-                                            "HMMA.F32+C d0",
-                                            "HMMA.F32+C d1",
-                                            "HMMA.F32+C d2",
-                                            "HMMA.F32+C d3",
-                                            "HMMA.1688.F32 d0",
-                                            "HMMA.1688.F32 d1",
-                                            "HMMA.1688.F32 d2",
-                                            "HMMA.1688.F32 d3",
-                                            "HMMA.1688.F16+C d0",
-                                            "HMMA.1688.F16+C d1",
-                                            "HMMA.1688.F16 d0",
-                                            "HMMA.1688.F16 d1",
-                                            "HMMA.1688.F32+C d0",
-                                            "HMMA.1688.F32+C d1",
-                                            "HMMA.1688.F32+C d2",
-                                            "HMMA.1688.F32+C d3"};
+    static const char* names[TENSOR_OUT] = {
+        "HMMA.F16 d0",    "HMMA.F16 d1",    "HMMA.F16+C d0",  "HMMA.F16+C d1",    "HMMA.F32 d0",    "HMMA.F32 d1",
+        "HMMA.F32 d2",    "HMMA.F32 d3",    "LDSM m0",        "LDSM m1",          "LDSM m2",        "LDSM m3",
+        "LDSM.T m0",      "LDSM.T m1",      "LDSM.T m2",      "LDSM.T m3",        "MOVM",           "HMMA.F32+C d0",
+        "HMMA.F32+C d1",  "HMMA.F32+C d2",  "HMMA.F32+C d3",  "HMMA.1688.F32 d0", "HMMA.1688.F32 d1",
+        "HMMA.1688.F32 d2", "HMMA.1688.F32 d3", "HMMA.1688.F16+C d0", "HMMA.1688.F16+C d1", "HMMA.1688.F16 d0",
+        "HMMA.1688.F16 d1", "HMMA.1688.F32+C d0", "HMMA.1688.F32+C d1", "HMMA.1688.F32+C d2", "HMMA.1688.F32+C d3"};
     memset(&p, 0, sizeof p);
     tensor_program(&p, local);
     memset(expect, 0, sizeof expect);
@@ -1230,7 +1204,7 @@ static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, i
         return 0;
     }
     g_groups = INVOCATIONS / local, g_warp32 = warp32;
-    int ok = si.ngbuf == 2 && gpu_run(g, spv, words, &si, cb0, in, sizeof in, got, sizeof got);
+    int ok = si.ngbuf == 2 && gpu_run(g, spv, words, &si, cb0, sizeof cb0, 0x28, in, sizeof in, got, sizeof got);
     g_groups = GROUPS, g_warp32 = 0;
     free(spv);
     if (!ok) {
@@ -1259,11 +1233,8 @@ static int run_tensor_with(Gpu* g, u32 local, int warp32, int quad, int mixed, i
                                    : "products by unpacking to f32";
     printf("tensor: workgroups of %u, A by %s, %s, %s sums: %u instructions, %u outputs x %u invocations (subgroups "
            "of %u%s), %u differ\n",
-           local,
-           coop   ? "staging"
-           : quad ? "quad broadcasts"
-                  : "shuffles",
-           products, how, p.n, TENSOR_OUT, INVOCATIONS, warp32 ? 32 : g->subgroup, warp32 ? ", required" : "", bad);
+           local, coop ? "staging" : quad ? "quad broadcasts" : "shuffles", products, how, p.n, TENSOR_OUT,
+           INVOCATIONS, warp32 ? 32 : g->subgroup, warp32 ? ", required" : "", bad);
     return bad == 0;
 }
 /* every way the device can translate them: with what it has, then with neither quads nor the mixed dot product (the
@@ -1294,6 +1265,156 @@ static int run_tensor(void) {
     return ok;
 }
 
+/* ---- a Maxwell compute program's write log ----
+   Its stores and atomics into the buffer at c[0][0x310] log the bytes they write, every one and no other, in the
+   layout of the SM86 programs' (shader.h's SH_WLOG_*), and its load from the buffer at c[0][0x320] logs nothing: the
+   renderer lands the bytes logged and no others (vk/compute.c), so a store that logs fewer loses bytes, and one that
+   logs more lands bytes over the CPU's. Each is run on the GPU and its log read back, as gpu_run reads the SM86
+   programs' */
+#define MX_SCHED 0x001F8000FC0007E0ull /* a scheduling word: words 10, 14, 18... of a program */
+#define MX_EXIT  0xE30000000007000Full
+#define MX_OUT   0x310u /* cbuf 0's first storage buffer descriptor (shader_gbuf_sized): the program's output */
+#define MX_IN    0x320u /* the next: its input */
+#define MX_BYTES 8192u
+static u64 mx_mov_c(u32 d, u32 off) { return 0x4C98078000070000ull | (u64)(off / 4) << 20 | d; }
+static u64 mx_mov32i(u32 d, u32 v) { return 0x0100000000071000ull | (u64)v << 20 | d; }
+/* LDG.E and STG.E of size (0 U8, 2 U16, 4 32, 5 64, 6 128) with Rd at [Ra + imm] */
+static u64 mx_ldg(u32 d, u32 a, u32 imm) { return 0xEED4200000070000ull | (u64)imm << 20 | a << 8 | d; }
+static u64 mx_stg(u32 size, u32 d, u32 a, u32 imm) {
+    return 0xEED8200000070000ull | (u64)size << 48 | (u64)imm << 20 | a << 8 | d;
+}
+/* RED.E.ADD.U32 [Ra + imm], Rd; ATOM.E.ADD.U32 Rd, [Ra + imm], Rb; ATOM.E.CAS.32 Rd, [Ra + imm], Rb (compares Rb,
+   writes Rb + 1). Their offsets are bits 28 to 47 */
+static u64 mx_red(u32 d, u32 a, u32 imm) { return 0xEBF9000000070000ull | (u64)imm << 28 | a << 8 | d; }
+static u64 mx_atom(u32 d, u32 a, u32 b, u32 imm) {
+    return 0xED01000000070000ull | (u64)imm << 28 | b << 20 | a << 8 | d;
+}
+static u64 mx_cas(u32 d, u32 a, u32 b, u32 imm) {
+    return 0xEEF1000000070000ull | (u64)imm << 28 | b << 20 | a << 8 | d;
+}
+/* the program's bytes: the 80-byte header (no compute program reads it), then the instructions, a scheduling word
+   before every three, and an EXIT */
+static u32 mx_program(u8* code, const u64* insn, u32 n) {
+    u32 at = 10;
+    memset(code, 0, 8 * 64);
+    for (u32 i = 0; i <= n; i++) {
+        if ((at - 10) % 4 == 0) snx_st_le64(code + 8 * at++, MX_SCHED);
+        snx_st_le64(code + 8 * at++, i < n ? insn[i] : MX_EXIT);
+    }
+    return (at + 4) * 8; /* and zeros after the EXIT, as a program's window has the next program's words */
+}
+typedef struct {
+    u32 from, n; /* the bytes [from, from + n) of the output */
+} MxRun;
+static int maxwell_log_run(Gpu* g, const char* name, const u64* insn, u32 n, int simple, const MxRun* runs, u32 nruns,
+                           const u32* want_words, u32 nwant) {
+    static u8 code[8 * 64];
+    u32 bytes = mx_program(code, insn, n);
+    ShaderInfo si = {0};
+    si.cs_local[0] = LOCAL, si.cs_local[1] = si.cs_local[2] = 1;
+    size_t words = 0;
+    /* the simple compute translator takes the program, or the full one does when the simple one refuses it */
+    u32* spv = simple ? shader_compute_to_spirv(code, bytes, &si, &words, 0, 1)
+                      : shader_to_spirv(code, bytes, ST_CS, &si, &words, 0, 1, 1, 1);
+    if (!spv || si.unsupported) {
+        fprintf(stderr, "%s: not translated: %s\n", name, si.first_unsupported);
+        free(spv);
+        return 0;
+    }
+    if (!simple) {
+        ShaderInfo other = {0};
+        other.cs_local[0] = LOCAL, other.cs_local[1] = other.cs_local[2] = 1;
+        size_t other_words = 0;
+        u32* taken = shader_compute_to_spirv(code, bytes, &other, &other_words, 0, 1);
+        if (taken) {
+            fprintf(stderr, "%s: the simple translator takes it, which this case is not for\n", name);
+            free(taken);
+            free(spv);
+            return 0;
+        }
+    }
+    int out = si.ngbuf == 2 ? si.gbuf_cbuf_off[1] == MX_OUT : -1, in = out == 1 ? 0 : 1;
+    if (out < 0 || si.gbuf_cbuf_off[in] != MX_IN || si.gbuf_wmask != 1u << out ||
+        si.gbuf_rmask != (1u << in | (u32)!simple << out) || si.gbuf_marks != 1u << out || si.nmarks != 1 ||
+        si.gbuf_mark[out] != 1 || si.gbuf_mark[in]) {
+        fprintf(stderr, "%s: %d buffers, written %x, read %x, logged %x (%u parts, the output's %u, the input's %u)\n",
+                name, si.ngbuf, si.gbuf_wmask, si.gbuf_rmask, si.gbuf_marks, si.nmarks,
+                out >= 0 ? si.gbuf_mark[out] : 0, out >= 0 ? si.gbuf_mark[in] : 0);
+        free(spv);
+        return 0;
+    }
+    u32 cb0[(MX_IN + 16) / 4] = {0};
+    cb0[MX_OUT / 4] = (u32)VA_OUT, cb0[MX_OUT / 4 + 1] = (u32)(VA_OUT >> 32), cb0[MX_OUT / 4 + 2] = MX_BYTES;
+    cb0[MX_IN / 4] = (u32)VA_IN, cb0[MX_IN / 4 + 1] = (u32)(VA_IN >> 32), cb0[MX_IN / 4 + 2] = 16;
+    u32 input[4] = {0x0badf00du, 1, 2, 3};
+    static u32 got[MX_BYTES / 4];
+    for (u32 i = 0; i < MX_BYTES / 4; i++) got[i] = FILL;
+    int ok = gpu_run(g, spv, words, &si, cb0, sizeof cb0, MX_OUT, input, sizeof input, got, MX_BYTES);
+    free(spv);
+    if (!ok) {
+        fprintf(stderr, "%s: Vulkan failed\n", name);
+        return 0;
+    }
+    u32 wrong = 0, first = ~0u, logged = 0;
+    for (u32 k = 0; k < 2; k++)
+        for (u32 b = 0; b < LOG_BYTES; b++) {
+            int want = 0;
+            for (u32 r = 0; r < nruns && (int)k == out; r++) want |= b >= runs[r].from && b < runs[r].from + runs[r].n;
+            int have = g_masks[k][b / 32] >> (b % 32) & 1;
+            logged += (u32)have;
+            if (want != have && !wrong++) first = k * LOG_BYTES + b;
+        }
+    if (wrong || g_unflagged) {
+        fprintf(stderr, "%s: %u bytes logged, %u wrong (the first at 0x%x), %u windows logged with no flag\n", name,
+                logged, wrong, first, g_unflagged);
+        return 0;
+    }
+    u32 bad = 0;
+    for (u32 i = 0; i + 1 < nwant; i += 2)
+        if (got[want_words[i] / 4] != want_words[i + 1] && bad++ < 8)
+            fprintf(stderr, "%s: the word at 0x%x is 0x%08x, not 0x%08x\n", name, want_words[i], got[want_words[i] / 4],
+                    want_words[i + 1]);
+    printf("%s: %u bytes logged, as stored; %u words checked, %u wrong\n", name, logged, nwant / 2, bad);
+    return bad == 0;
+}
+static int maxwell_log(Gpu* g) {
+    /* every form of store and atomic the full translator takes: 32, 8, 16, 64 and 128 bits, the last in the
+       buffer's second window, a load's value stored, RED, ATOM and ATOM.CAS */
+    const u64 full[] = {
+        mx_mov_c(4, MX_IN),         mx_mov_c(2, MX_OUT),        mx_mov32i(8, 0x11223344u), mx_mov32i(9, 0x55667788u),
+        mx_mov32i(10, 0x99aabbccu), mx_mov32i(11, 0xddeeff00u), mx_mov32i(12, 1),          mx_mov32i(14, FILL),
+        mx_mov32i(15, 5),           mx_ldg(16, 4, 0),           mx_stg(4, 8, 2, 0x10),     mx_stg(0, 8, 2, 0x21),
+        mx_stg(2, 9, 2, 0x32),      mx_stg(5, 8, 2, 0x48),      mx_stg(6, 8, 2, 0x1010),   mx_stg(4, 16, 2, 0x90),
+        mx_red(12, 2, 0x80),        mx_atom(13, 2, 12, 0x84),   mx_cas(17, 2, 14, 0x88)};
+    const MxRun full_runs[] = {{0x10, 4}, {0x21, 1}, {0x32, 2}, {0x48, 8}, {0x1010, 16}, {0x90, 4}, {0x80, 12}};
+    const u32 full_words[] = {0x10,   0x11223344u,
+                              0x20,   0x4400u | (FILL & ~0xff00u),
+                              0x30,   0x7788u << 16 | (FILL & 0xffffu),
+                              0x48,   0x11223344u,
+                              0x4c,   0x55667788u,
+                              0x1010, 0x11223344u,
+                              0x101c, 0xddeeff00u,
+                              0x90,   0x0badf00du,
+                              0x80,   FILL + INVOCATIONS,
+                              0x84,   FILL + INVOCATIONS,
+                              0x88,   5,
+                              0x8c,   FILL};
+    int ok = maxwell_log_run(g, "maxwell log", full, sizeof full / sizeof *full, 0, full_runs,
+                             sizeof full_runs / sizeof *full_runs, full_words, sizeof full_words / sizeof *full_words);
+    /* the simple compute translator (spirv_compute.c): its 32, 64 and 128-bit stores, and a load's value stored */
+    const u64 simple[] = {mx_mov_c(4, MX_IN),        mx_mov_c(2, MX_OUT),        mx_mov32i(8, 0x11223344u),
+                          mx_mov32i(9, 0x55667788u), mx_mov32i(10, 0x99aabbccu), mx_mov32i(11, 0xddeeff00u),
+                          mx_ldg(16, 4, 0),          mx_stg(4, 8, 2, 0x10),      mx_stg(5, 8, 2, 0x48),
+                          mx_stg(6, 8, 2, 0x1010),   mx_stg(4, 16, 2, 0x90)};
+    const MxRun simple_runs[] = {{0x10, 4}, {0x48, 8}, {0x1010, 16}, {0x90, 4}};
+    const u32 simple_words[] = {0x10,        0x11223344u, 0x14,        FILL, 0x4c,
+                                0x55667788u, 0x1018,      0x99aabbccu, 0x90, 0x0badf00du};
+    ok &= maxwell_log_run(g, "maxwell log (simple)", simple, sizeof simple / sizeof *simple, 1, simple_runs,
+                          sizeof simple_runs / sizeof *simple_runs, simple_words,
+                          sizeof simple_words / sizeof *simple_words);
+    return ok;
+}
+
 int main(void) {
     Gpu g = {0};
     if (!gpu_open(&g, 0)) {
@@ -1305,8 +1426,8 @@ int main(void) {
     ok &= run_program(&g, "float", float_program);
     ok &= run_program(&g, "flow", flow_program);
     ok &= run_program(&g, "wide", wide_program);
-
     ok &= run_program(&g, "stores", stores_program);
+    ok &= maxwell_log(&g);
     vkDestroyDevice(g.device, NULL);
     vkDestroyInstance(g.instance, NULL);
     /* on a device of its own, which volk's functions are then loaded for */

@@ -3,12 +3,14 @@
 /* Compute shaders are decoded directly to SPIR-V. Unsupported encodings reject the whole program. */
 #include "common/utilities/spirv_emit.h"
 #include "nx/gpu/shader/translator.h"
+#include "nx/gpu/shader/write_log.h"
 
 typedef struct {
     SpvEmitter e;
     u32 u, f, b, zero, yes, no, glsl;
     u32 reg[255], pred[7], carry;
     u32 cb[18], cbptr[18], gb[16], gbptr;
+    u32 wlog; /* the write log (write_log.c), 0 for a program that writes no global buffer */
     u32 group, local;
 } CsDirect;
 
@@ -208,7 +210,10 @@ static u32* compute_to_spirv(const u8* code, const u64* words, u32 max_bytes, Sh
             cb_used[0] = 1;
             u32 off = meta.gbuf_cbuf_off[gi];
             if ((off | 15u) + 1 > cb_max[0]) cb_max[0] = (off | 15u) + 1;
-            if (id == O_STG) meta.gbuf_wmask |= 1u << gi;
+            if (id == O_STG)
+                meta.gbuf_wmask |= 1u << gi;
+            else
+                meta.gbuf_rmask |= 1u << gi;
             u32 count = B(w, 48, 3) == 5 ? 2 : B(w, 48, 3) == 6 ? 4 : 1;
             if (d != 255 && d + count > 255) {
                 unsupported(si, "global memory register range");
@@ -225,6 +230,9 @@ static u32* compute_to_spirv(const u8* code, const u64* words, u32 max_bytes, Sh
         unsupported(si, "compute control flow or FP32 mode");
         return NULL;
     }
+    /* the stores record the bytes they write in the write log, a part for each buffer written, in slot order */
+    for (int i = 0; i < meta.ngbuf; i++)
+        if (meta.gbuf_wmask >> i & 1) shader_wlog_part(&meta, i);
     CsDirect* c = calloc(1, sizeof *c);
     if (!c) return NULL;
     spv_emit_init(&c->e, (size_t)n * 30 + 256);
@@ -241,7 +249,7 @@ static u32* compute_to_spirv(const u8* code, const u64* words, u32 max_bytes, Sh
     c->zero = cu(c, 0);
     c->yes = spv_emit_constant_bool(&c->e, c->b, 1);
     c->no = spv_emit_constant_bool(&c->e, c->b, 0);
-    u32 interfaces[36], ninterface = 0;
+    u32 interfaces[37], ninterface = 0;
     if (needs_group) interfaces[ninterface++] = c->group = spv_emit_builtin_input_vec3(&c->e, v3, 26);
     if (needs_local) interfaces[ninterface++] = c->local = spv_emit_builtin_input_vec3(&c->e, v3, 27);
     for (u32 i = 0; i < 18; i++)
@@ -261,6 +269,7 @@ static u32* compute_to_spirv(const u8* code, const u64* words, u32 max_bytes, Sh
             interfaces[ninterface++] = c->gb[i];
         }
     }
+    if (meta.nmarks) interfaces[ninterface++] = c->wlog = shader_wlog_buffer(&c->e, c->u, 0);
     spv_emit_compute_entry_str(&c->e, fn, "main", interfaces, ninterface);
     spv_emit_local_size(&c->e, fn, meta.cs_local[0], meta.cs_local[1], meta.cs_local[2]);
     spv_emit_float_controls(&c->e, fn, flush && can_flush == SH_FTZ_MODE, can_preserve, 0);
@@ -393,6 +402,7 @@ static u32* compute_to_spirv(const u8* code, const u64* words, u32 max_bytes, Sh
             addr = spv_emit_isub_u32(&c->e, c->u, addr, cbread(c, 0, meta.gbuf_cbuf_off[gi]));
             u32 index = spv_emit_shift_right_u32(&c->e, c->u, addr, cu(c, 2));
             u32 count = B(w, 48, 3) == 5 ? 2 : B(w, 48, 3) == 6 ? 4 : 1;
+            if (id == O_STG) shader_wlog_store(&c->e, c->u, c->b, c->wlog, meta.gbuf_mark[gi] - 1u, addr, count * 4);
             for (u32 k = 0; k < count; k++) {
                 u32 ix = k ? spv_emit_iadd_u32(&c->e, c->u, index, cu(c, k)) : index;
                 u32 ptr = spv_emit_storage_access_u32(&c->e, c->gbptr, c->gb[gi], c->zero, ix);

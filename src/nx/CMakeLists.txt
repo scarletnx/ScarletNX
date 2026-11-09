@@ -115,8 +115,9 @@ snx_component(shader gpu/shader/shader.c gpu/shader/decode.c gpu/shader/corpus.c
                      gpu/shader/spirv_translate.c gpu/shader/spirv_compute.c gpu/shader/structure.c
                      gpu/shader/shared_reach.c gpu/shader/registers.c gpu/shader/forms.c gpu/shader/dataflow.c
                      gpu/shader/emit_int.c gpu/shader/emit_float.c gpu/shader/emit_memory.c gpu/shader/emit_texture.c
-                     gpu/shader/emit_io.c gpu/shader/emit_flow.c gpu/shader/emit_thread.c gpu/shader/advanced_blend_spirv.c gpu/shader/coverage_spirv.c gpu/shader/capture_tiles_spirv.c gpu/shader/depth_stencil_spirv.c
-                     gpu/shader/sm86_decode.c gpu/shader/sm86_translate.c)
+                     gpu/shader/emit_io.c gpu/shader/emit_flow.c gpu/shader/emit_thread.c
+                     gpu/shader/sm86_decode.c gpu/shader/sm86_translate.c gpu/shader/advanced_blend_spirv.c
+                     gpu/shader/coverage_spirv.c gpu/shader/capture_tiles_spirv.c gpu/shader/depth_stencil_spirv.c gpu/shader/write_log.c)
 # the opcode enum and decoder, generated from gpu/shader/maxwell_opcodes.def
 include("${PROJECT_SOURCE_DIR}/cmake/shaderdec.cmake")
 snx_shaderdec(snx_shader)
@@ -125,7 +126,7 @@ include("${PROJECT_SOURCE_DIR}/cmake/vk_extension_bans.cmake")
 snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/descriptors.c gpu/vk/descriptor_heaps.c gpu/vk/descriptor_objects.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
                  gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/writelog.c gpu/vk/mirror.c gpu/vk/pipeline.c gpu/vk/pipeline_file.c gpu/vk/render.c gpu/vk/release.c gpu/vk/query.c gpu/vk/xfb.c gpu/vk/display.c gpu/vk/compute.c
                  gpu/vk/pending_pages.c gpu/vk/checkpoints.c gpu/vk/image_out.c gpu/vk/depth_pack.c gpu/vk/memory.c gpu/vk/resource_stats.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/bc7_cache.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/msaa.c gpu/vk/ui.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c gpu/vk/uma.c
-                 gpu/vk/ftz_probe.c gpu/vk/vertex_input.c gpu/vk/extension_bans.c gpu/vk/pipeline_library.c
+                 gpu/vk/ftz_probe.c gpu/vk/vertex_input.c gpu/vk/pipeline_parts.c gpu/vk/extension_bans.c
                  "${PROJECT_BINARY_DIR}/generated/vk_extension_bans_text.c"
                  gpu/vk/draw_texture.c gpu/vk/draw_texture_shader.c gpu/vk/tess_passthrough.c gpu/vk/present_quad.c gpu/vk/capture.c gpu/vk/depth_shadow.c
                  "${volk_SOURCE_DIR}/volk.c")
@@ -367,7 +368,7 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "${PROJECT_SOURCE_DIR}/tests/spirv_emitter_fixture.c" "${PROJECT_SOURCE_DIR}/tests/support/nvdec_ref.c"
         "${PROJECT_SOURCE_DIR}/tests/support/vic_ref.c" "${PROJECT_SOURCE_DIR}/tests/support/dma_ref.c"
         "${PROJECT_SOURCE_DIR}/tests/support/fermi2d_ref.c" "${PROJECT_SOURCE_DIR}/tests/support/half.c"
-        "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/support/sm86_ref.c")
+        "${PROJECT_SOURCE_DIR}/tests/support/sm86_ref.c" "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp")
     target_include_directories(snx-test-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests")
     target_link_libraries(snx-test-vulkan PRIVATE snx_nx_flags ${components} snx_driver FFmpeg::avutil Threads::Threads
                                                   ${CMAKE_DL_LIBS})
@@ -381,14 +382,14 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     endif()
     target_link_libraries(snx-test-vulkan PRIVATE SDL3::SDL3)
     add_test(NAME vulkan_headless COMMAND snx-test-vulkan -H)
+    # an Ounce game's mesh draws, which the experimental mesh_draws setting turns on (check_mesh_draws)
+    add_test(NAME vulkan_headless_mesh COMMAND snx-test-vulkan -H --mesh_draws=1)
+    set_tests_properties(vulkan_headless_mesh PROPERTIES TIMEOUT 60
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # a save state of a game whose NVN the runtime runs, saved and loaded through state.c: the frame before the save
     # comes back after the load (tests/vulkan_nvn_savestate.inc). Alone, as the load replaces the guest memory
     add_test(NAME vulkan_nvn_savestate COMMAND snx-test-vulkan -H)
     set_tests_properties(vulkan_nvn_savestate PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_NVN_CASE=savestate"
-        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
-    # an Ounce game's mesh draws, which the experimental mesh_draws setting turns on (check_mesh_draws)
-    add_test(NAME vulkan_headless_mesh COMMAND snx-test-vulkan -H --mesh_draws=1)
-    set_tests_properties(vulkan_headless_mesh PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     add_test(NAME vulkan_storage_lookup COMMAND snx-test-vulkan -H --vk_memory=1 --bench-storage-lookup)
     set_tests_properties(vulkan_storage_lookup PROPERTIES TIMEOUT 60
@@ -441,6 +442,12 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     # every check again with each vertex layout in its pipeline: the default run sets it as dynamic state where the
     # device has VK_EXT_vertex_input_dynamic_state (gpu/vk/vertex_input.c), and both find each draw's own layout
     add_test(NAME vulkan_headless_vertex_input_off COMMAND snx-test-vulkan -H --vertex_input_dynamic_state=off)
+    # every check again under the validation layer with graphics pipeline libraries (pipeline_libraries=1, where the
+    # device has them) and without them: the parts, their layouts and their dynamic state checked by the layer
+    add_test(NAME vulkan_headless_libraries COMMAND snx-test-vulkan -H --pipeline_libraries=1 --vk_validation=1)
+    add_test(NAME vulkan_headless_libraries_off COMMAND snx-test-vulkan -H --pipeline_libraries=0 --vk_validation=1)
+    set_tests_properties(vulkan_headless_libraries vulkan_headless_libraries_off PROPERTIES TIMEOUT 120
+        ENVIRONMENT "VK_KHRONOS_VALIDATION_REPORT_FLAGS=error" FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     set_tests_properties(vulkan_headless_vertex_input_off PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again with each draw binding the pipeline linked from its parts, never the one made whole, under the

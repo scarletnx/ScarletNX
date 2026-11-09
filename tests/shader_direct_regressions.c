@@ -856,6 +856,46 @@ static void global_buffers(void) {
     free(code);
 }
 
+/* A compute program's stores and atomics to a global buffer log the bytes they write (write_log.c, SH_WLOG_*), as the
+   SM86 translator's do: the buffer it writes takes the log's first part, one it only loads from none, and each store
+   and atomic ORs its bits into the log (OpAtomicOr, 241). A graphics program logs nothing. shader_sm86_gpu runs such
+   programs and checks the bits */
+static void compute_write_log(void) {
+    const u64 program[] = {
+        0x4C9807800C870004ull, /* MOV R4, c[0][0x320] */
+        0x4C9807800C470002ull, /* MOV R2, c[0][0x310] */
+        0xEED4200000070410ull, /* LDG.E R16, [R4] */
+        0xEED8200000270208ull, /* STG.E.U8 [R2 + 0x2], R8 */
+        0xEBF9000000070208ull, /* RED.E.ADD [R2], R8 */
+        0xED01000040870209ull, /* ATOM.E.ADD R9, [R2 + 0x4], R8 */
+        0xEEF100008087020Aull, /* ATOM.E.CAS R10, [R2 + 0x8], R8 */
+    };
+    ShaderInfo info;
+    size_t words = 0;
+    u32* code = translate(program, 7, ST_CS, &info, &words, 1);
+    check_translated(code, &info, "a compute program's stores and atomics translate");
+    if (code) {
+        int out = info.ngbuf == 2 && info.gbuf_cbuf_off[1] == 0x310 ? 1 : 0;
+        check(info.ngbuf == 2 && out == 1 && info.gbuf_wmask == 2 && info.gbuf_rmask == 3 && info.gbuf_marks == 2 &&
+                  info.nmarks == 1 && info.gbuf_mark[1] == 1 && !info.gbuf_mark[0],
+              "the buffer a compute program writes takes a part of its write log, one it only reads none");
+        check(count_opcode(code, words, 241, 0xffffffffu) == 4, "each store and atomic ORs its bytes into the log");
+    }
+    free(code);
+    const u64 store[] = {0x4C9807800C470002ull, 0xEEDC200000070208ull}; /* MOV R2, c[0][0x310]; STG.E [R2], R8 */
+    code = translate(store, 2, ST_CS, &info, &words, 1);
+    check(code && !info.unsupported && info.gbuf_marks == 1 && info.nmarks == 1 && info.gbuf_mark[0] == 1 &&
+              !info.gbuf_rmask && count_opcode(code, words, 241, 0xffffffffu) == 1,
+          "the simple compute translator's store logs its bytes, its buffer not read");
+    free(code);
+    const u64 fragment[] = {0x4C98078014470002ull, 0xEEDC200000070208ull}; /* MOV R2, c[0][0x510]; STG.E [R2], R8 */
+    code = translate(fragment, 2, ST_FS, &info, &words, 1);
+    check(code && !info.unsupported && (info.gbuf_wmask & 1) && !info.gbuf_marks && !info.nmarks &&
+              count_opcode(code, words, 241, 0xffffffffu) == 0,
+          "a graphics program's store logs nothing");
+    free(code);
+}
+
 static void float_controls(void) {
     const u64 cases[][2] = {{FMUL_FTZ, FMUL_FTZ},
                             {FMUL_FTZ, FADD_KEEP},
@@ -4601,6 +4641,7 @@ int main(int argc, char** argv) {
     f2i_modifiers();
     flag_transfers();
     global_buffers();
+    compute_write_log();
     float_controls();
     precise_math();
     f2f_half_rounding();

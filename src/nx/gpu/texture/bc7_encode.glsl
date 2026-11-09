@@ -73,9 +73,10 @@ uint sh_ib;
 uint sh_mask;
 
 /* the fast build (1), for large levels (vk/astc.c): a block whose mode 6 error is SNX_BC7_ENOUGH or less keeps it, the
-   others try every mode; 2 is mode 6 alone, for the largest. 256 is the squared error summed over the 16 texels and 4
-   channels, 2 a channel as a root mean square: on one game's ASTC textures 96% of the blocks kept mode 6, and the worst
-   error of mode 6 alone (147 to 239 a channel) came down to that of the full build (50 to 68) */
+   others try every mode; 2 is mode 6 alone, for the largest. The full build keeps mode 6 only where it is exact. 256 is
+   the squared error summed over the 16 texels and 4 channels, 2 a channel as a root mean square: on one game's ASTC
+   textures 96% of the blocks kept mode 6, and the worst error of mode 6 alone (147 to 239 a channel) came down to that
+   of the full build (50 to 68) */
 #ifndef SNX_BC7_FAST
 #define SNX_BC7_FAST 0
 #endif
@@ -468,6 +469,36 @@ void FitSubset(uint s) {
     }
 }
 
+/* fits every subset of a shape (mode, subsets, partition, colour bits, alpha stored, p-bits, index bits) and keeps
+   it as best_ when its error is the least so far; it stops at a subset whose error already passes the best */
+void TryShape(uint mode, uint ns, uint part, uint cb, uint alpha, uint pk, uint ib) {
+    SetShape(ns, part);
+    sh_cb = cb;
+    sh_alpha = alpha;
+    sh_pk = pk;
+    sh_ib = ib;
+    sh_mask = 15u;
+    uint err = 0u, lo = 0u, hi = 0u;
+    for (uint s = 0u; s < ns; s++) {
+        FitSubset(s);
+        err += fit_err;
+        if (err >= best_err) return;
+        cand_s0[s] = fit_s0;
+        cand_s1[s] = fit_s1;
+        lo |= fit_lo;
+        hi |= fit_hi;
+    }
+    best_err = err;
+    best_mode = mode;
+    best_part = part;
+    best_lo = lo;
+    best_hi = hi;
+    for (uint s = 0u; s < 3u; s++) {
+        best_s0[s] = cand_s0[s];
+        best_s1[s] = cand_s1[s];
+    }
+}
+
 /* swaps each texel's alpha with red (rot 1), green (2) or blue (3), as the decoder of modes 4 and 5 does after
    interpolating: a second swap undoes the first */
 void Rotate(uint rot) {
@@ -477,6 +508,46 @@ void Rotate(uint rot) {
         const uint p = px[k];
         px[k] = (p & ~(0xFF000000u | (0xFFu << sh))) | ((p >> 24u) << sh) | (((p >> sh) & 0xFFu) << 24u);
     }
+}
+
+/* mode 4 or 5 in rotation rot, kept as best_ when its error is the least so far: the colour's line (red, green and
+   blue, mode 4's 5 bits or mode 5's 7) fitted first, then the alpha's (6 bits or 8) unless the colour's error already
+   passes the best. Mode 5's weights are 2-bit; mode 4 gives one of the two 3-bit weights, the colour when isb is 1 */
+void TryDual(uint mode, uint rot, uint isb) {
+    Rotate(rot);
+    SetShape(1u, 0u);
+    sh_pk = 0u;
+    uint err = 0u, s0 = 0u, s1 = 0u, lo = 0u, hi = 0u;
+    /* the colour, then the alpha: one call of FitSubset (see FitSubset) */
+    for (uint pass = 0u; pass < 2u; pass++) {
+        const bool colour = pass == 0u;
+        sh_mask = colour ? 7u : 8u;
+        sh_alpha = colour ? 0u : 1u;
+        sh_cb = mode == 4u ? (colour ? 5u : 6u) : (colour ? 7u : 8u);
+        sh_ib = mode == 4u && (isb != 0u) == colour ? 3u : 2u;
+        FitSubset(0u);
+        if (!colour) break;
+        err = fit_err;
+        s0 = fit_s0;
+        s1 = fit_s1;
+        lo = fit_lo;
+        hi = fit_hi;
+        if (err >= best_err) break;
+    }
+    if (err < best_err && err + fit_err < best_err) {
+        best_err = err + fit_err;
+        best_mode = mode;
+        best_part = 0u;
+        best_rot = rot;
+        best_isb = isb;
+        best_s0[0] = (s0 & 0xFFFFFFu) | (fit_s0 & 0xFF000000u);
+        best_s1[0] = (s1 & 0xFFFFFFu) | (fit_s1 & 0xFF000000u);
+        best_lo = lo;
+        best_hi = hi;
+        best_lo2 = fit_lo;
+        best_hi2 = fit_hi;
+    }
+    Rotate(rot);
 }
 
 /* the block's sums for Spread, over every texel: the count is 16; the sums of squares, then of each channel (alpha
@@ -669,7 +740,7 @@ uvec4 Encode() {
     opaque = true;
     for (uint k = 0u; k < 16u; k++) opaque = opaque && Ch(px[k], 3u) == 255u;
     best_err = 0xFFFFFFFFu;
-    /* The shapes tried, in turn, each a job of one loop that fits them all with one call of FitSubset (see FitSubset):
+    /* The shapes tried, in turn, one call of TryShape and one of TryDual for all of them (see FitSubset):
        job 0, mode 6: one subset, RGBA, 7 bits and a p-bit an end, 4-bit weights. Unless it is exact, then the two
        partitions of two subsets that spread least (and the one of three) in the modes with subsets: an opaque block
        mode 1 (two subsets, RGB, 6 bits an end and a p-bit a subset, 3-bit weights) and mode 3 (7 bits and a p-bit an

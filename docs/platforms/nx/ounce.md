@@ -86,7 +86,10 @@ renderer binds all of the memory mapped from the address, up to 16 MiB (`vk_gbuf
 So such a program's storage is not made for each dispatch. Its stores log the bytes they write: the translator has
 every store and atomic of a compute program set a bit for each byte it writes in the dispatch's write log
 (`mark_written`, binding `SNX_VKB_WPAGES`, the layout `SH_WLOG_*` in `shader.h`): a part for each buffer it writes,
-a flag for each 4 KiB window of the buffer, then the window's bits. A store past the windows sets none.
+a flag for each 4 KiB window of the buffer, then the window's bits. A store past the windows sets none. The Maxwell
+translator's compute programs log the same way (`write_log.c`, which both translators call), so a Switch game's
+results land from the log too. They don't take the mirror below: in one Switch game, props that a compute program
+culls vanished for single frames with it where the host traps guest memory (`mirror_plan` has the counts).
 
 Where the device has sparse residency of buffers and write tracking is on, the program reads and writes a mirror
 of guest memory in the GPU's memory (`vk/mirror.c`): one sparse buffer as big as the guest's address space, at the
@@ -96,7 +99,10 @@ as on the console. After each dispatch a pass ORs the bits its log gives into th
 bits past the buffer's length dropped (`mirror_fold.comp`, `vk_mirror_fold`). Only the GPU reads such a log, so it is in
 the GPU's memory (`vk_wlog_get_gpu`) and cleared there after the pass (`vk_wlog_clear`). In host memory each store's
 log write, a store and an atomic OR, crossed the bus on a discrete GPU: on an RTX 5080 one upscaler program took
-47 ms a dispatch for 0.14 ms, and each pass, which read the log, 14 ms for 0.3 ms.
+47 ms a dispatch for 0.14 ms, and each pass, which read the log, 14 ms for 0.3 ms. A merge of the main branch had
+lost the dispatch's side of the mirror for a while: each writing dispatch made its 16 MiB buffers again, its input
+copied on the CPU and composed on the GPU over the results before it, hundreds of them a frame at addresses a few KiB
+apart, and one game's races ran at about one frame a second.
 A host shadow keeps the guest bytes each page was given. When a buffer is bound, its pages the CPU wrote since
 (write tracking) are compared with the shadow, and only the bytes the CPU changed are copied in, so the bytes the
 programs wrote there and haven't landed stay. At each submit a pass lists the pages written in it, those with mask
@@ -124,7 +130,7 @@ all of it after the dispatch and copied it back from the GPU, and the per-dispat
 
 Without the mirror (no sparse residency of buffers, memory shared with the CPU, no write tracking) each writer's
 result is made for the dispatch as before and lands from the dispatch's write log (`vk/writelog.c`), which the host
-reads once the submit is done. A writer that logs nothing (a draw, a Switch program, a buffer image) is compared.
+reads once the submit is done. A writer that logs nothing (a draw, a buffer image) is compared.
 
 A byte the CPU writes while the programs' writes are pending, which a program writes too, takes the program's value:
 on the console both reach memory in an order the program left open. Once the submit is done and the page is the
@@ -146,6 +152,13 @@ What found it: a RenderDoc capture (the runtime's `renderdoc` setting, run under
 `SDL_VIDEO_DRIVER=x11`, because RenderDoc has no Wayland surfaces) and `qrenderdoc --python` to save each pass's
 targets and inputs. That showed the texture itself wrong before any draw. Then the texture's guest bytes, decoded
 off line with each order of the GOB's address bits, gave one order with clean block edges.
+
+A game's program that makes a texture's levels from its first has seven image slots, one for each level. The game
+leaves the slots past the texture's last level empty: their handle is 0, and the header there is all zeros. The
+renderer binds an empty storage image there (`vk_null_storage`). Before, it skipped the whole dispatch. One game draws
+its kart's contact shadow as a box that samples a 128x128 texture array with trilinear filtering. Layer 0 is the kart's
+footprint, drawn into level 0 from a 256x256 texture, and this program writes levels 1 to 3. Without them the box read
+zeros at the title camera's distance and drew a dark square under the kart.
 
 ## Driver offsets
 

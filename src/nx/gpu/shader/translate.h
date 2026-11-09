@@ -66,6 +66,10 @@ typedef struct {
     u32 swapped;                   /* 1 + the slot whose sampler is an array element for this instruction */
     u32 image[8], image_type[8];
     u32 gbuf[16], gbuf_pointer, smap, subgroup_lane_input;
+    /* a compute program's write log (write_log.c, 0 for none), and its part for each global buffer + 1 (0: none): every
+       store and atomic records the bytes it writes there */
+    u32 wlog;
+    u8 wlog_mark[16];
     int quad; /* quad operations are declared: shader_shfl_quad's SHFL are ones */
     /* A fragment program with flow discards nothing inside its loop: a KIL or a failed alpha test sets this bool,
        an EXIT ends the loop for the lane, and the lane is discarded after it. A demote or a kill in the loop lets a
@@ -206,7 +210,7 @@ u32 shader_cbuf_word(DirectCtx* c, u64 w);
 u32 shader_cbuf_read(DirectCtx* c, u64 w);
 u32 shader_cbuf_read_dynamic(DirectCtx* c, u32 bank, u32 address);
 u32 shader_gbuf_word_index(DirectCtx* c, int stage, u32 slot, u32 word);
-u32 shader_global_atomic_pointer(DirectCtx* c, int stage, u32 slot, u32 base_off, u32 a, u64 w);
+u32 shader_global_atomic_pointer(DirectCtx* c, int stage, u32 slot, u32 base_off, u32 a, u64 w, u32* offset);
 u32 shader_shared_atomic_index(DirectCtx* c, u32 a, u64 w, u32 shared_words);
 void shader_global_dynamic(DirectCtx* c, int stage, u64 w, int op, const u32* gbuf_off, int ngbuf);
 /* emit_texture.c */

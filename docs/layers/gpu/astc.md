@@ -187,6 +187,13 @@ it whatever `native_bc` says, and `format.c` then samples BCn as it is only when
 keeps RGBA8 where the device has no 3D BC7 images, as native block formats do. Every 600 frames the log says how many
 levels went up as BC7 and their megabytes against RGBA8's.
 
+A texture with holes in its mapping (a game's sparse texture, `texture.c`) is BC7 whatever `astc_mode` says, where the
+GPU samples BCn: one game's are 68 layers of 8192x8192 ASTC 8x8 with seven of them mapped, 1.7 GB each as RGBA8 (16
+times the game's bytes), which took the GPU past its memory. So it goes up straight to BC7, not RGBA8 first and BC7
+between frames (below). `device.c` turns `textureCompressionBC` on wherever the device has it for this. A sparse
+texture's levels are decoded only in the strips that have memory bound (`vk_image_sparse_bound`), in strips as high
+as the device's sparse blocks.
+
 An array texture goes up a level at a time over all its layers (`vk_astc_upload_layers`), the layers as a 3D level's
 slices: a strip takes as many as the scratch holds, and the encoder runs once for them. A layer and level at a time, a
 small level gave the encoder too little to fill the GPU and each layer's dispatch waited for the one before: one
@@ -287,6 +294,16 @@ nought. Modes 4 and 5 have no p-bits and hold 255 and 0 as they are. Each texel 
 around its projection. All of it is integer arithmetic in the part of GLSL that is also C++, so the tests run the
 same file on the CPU and get the GPU's bytes.
 
+The encoder is written for the code the GPU runs, not only for what it computes. Each partition is read from its
+table once a shape (`SetShape`), into registers: the tables are arrays indexed by a value that differs between
+invocations, which the GPU keeps in local memory, and reading them for each texel of each fit made a block with
+subsets cost hundreds of times one without. Each body is called from one place, in a loop: the shapes and modes 4 and
+5 are jobs of one loop in `Encode`, a subset's four candidate lines one loop in `FitSubset`, and the least squares
+fit sums every channel in one pass. glslang inlines every call, and the copies came to 1.2 MB of machine code for
+NVIDIA's driver; it is 145 KB now, and an 8192x8192 level that took 10.9 seconds takes 0.86. The blocks are the same,
+byte for byte: the old and new files, run on the CPU over 65,536 blocks of noise, opaque noise, edges and two
+colours with alpha, wrote the same bytes, and a broken anchor in the new one showed.
+
 A block stops trying modes once its squared error over all its texels and channels is `SNX_BC7_GOOD_ENOUGH` (16) or less,
 a mean squared error of a quarter, 54 dB, for that block. A hard block still gets the whole search. Within a fit,
 `Eval` leaves a candidate once its partial error proves it cannot win, and a second least squares runs only on
@@ -333,7 +350,16 @@ the time the GPU's):
 | 2040x2040 | 23.5 to 24.3 ms, 10.7 to 11.1 million | 17.5 to 18.2 ms, 14.3 to 14.8 million |
 
 Random blocks are the fast build's worst case: the blocks that try every mode hold up the invocations beside them.
-On one game's 6x6 albedo an RTX 2080 took 12 to 14 ms for a 4096x4096 level, where the full build took 190.
+On a GeForce RTX 2080 an 8192x8192 level of random 8x8 blocks decoded in 15 ms and encoded in 860 ms with every mode
+and in 48 ms with mode 6 alone. Beside a running game, a 4096x4096 level took (decoding included):
+
+| Content | Mode 6 alone | Fast build | Full build (2040x2040, scaled) |
+| --- | --- | --- | --- |
+| One game's ASTC 6x6 albedo | 7 to 11 ms | 12 to 14 ms | 190 ms |
+| One game's ASTC 6x6 packed masks (the worst of its textures tried) | 7 to 8 ms | 85 to 88 ms | 250 ms |
+| astcenc 8x8 normal map | not measured | 256 to 267 ms | not measured |
+| Random 8x8 blocks | 21 to 29 ms | 189 to 196 ms | 260 ms |
+
 ### The BC7 cache
 
 The same ASTC bytes always become the same BC7 blocks, and the memory budget's trim evicts textures a game uses again:
@@ -346,7 +372,8 @@ opens it where ASTC textures are held as BC7 (`vk_astc_bc7`).
   blocks in them (block linear or pitch, the GOB block's height and depth, GOBs across, the row's bytes and rows, the
   layers: `texture.c`'s `astc_content`), then of that hash with the level's size, slices or layers, footprint, sRGB
   decode mode, the encoder's build and `VK_BC7_ENCODER_VERSION` (`vk_bc7_key`). A level of which the GPU holds any byte
-  (an engine's result, `memory/own.c`) is not keyed, nor one the page table does not map whole, nor a region.
+  (an engine's result, `memory/own.c`) is not keyed, nor one the page table does not map whole, nor a region, nor a
+  sparse texture's (only its bound strips are decoded).
 - **The file's version** is XXH3-128 of the SPIR-V of the deswizzle, the decoder and the encoder's three builds, of
   `VK_BC7_ENCODER_VERSION`, the GPU's vendor and device, the driver's version and its pipeline cache UUID
   (`vk_astc_cache_open`). A file of another version starts empty.
@@ -361,7 +388,7 @@ opens it where ASTC textures are held as BC7 (`vk_astc_bc7`).
 - **Landing:** once the submission is done, `cmd.c`'s landing (`vk_astc_frame_done`) appends the blocks to the file,
   before the frame's ring is reused. The GPU thread never waits for them. Blocks on their way are bounded to
   `VK_BC7_CAPTURE_BYTES` (32 MiB), which bounds the ring's growth and is the largest level the cache takes (a 4096x4096
-  level is 16 MiB).
+  level is 16 MiB). A larger level is encoded each time (from 8192x8192, it is mode 6 alone).
 - **Memory and disk:** only the index stays in RAM, 32 bytes a level, and one 1 MiB buffer for the reads. The file has
   a bound of `VK_BC7_CACHE_MAX` (8 GiB): a record past it starts the file over. A record a crash cut short ends the
   reading, and the file is cut there; one that does not check out is dropped and its level encoded again. While the
@@ -458,11 +485,12 @@ separate SPIRV-Tools is needed.
   modes 4 and 5 brings them (`SNX_BC7_MODES_4_5` 0, `bc7_encode_cpu_without_45`), edenprobe's astcimage picture comes
   back no worse than the PSNR each region is held to (the fast build and mode 6 alone to theirs, the fast build
   keeping mode 6 on more blocks than the full one, mode 6 alone on all), and a 13x7 image of three slices encodes slice
-  by slice as each
-  alone.
+  by slice as each alone.
   `astc_vulkan` and `astc_vulkan_pieces` also upload random blocks into BC7 images, footprints whose strips step
   4, 2 and 1 block rows, with mips, layers, slices and many strips, and compare the GPU's blocks with the same
   encoder run on the CPU over the CPU decoder's texels, byte for byte, in the build the level takes (`vk_bc7_build`).
+  They do it also for arrays whose layers go up a level at a time, all of them at once (`vk_astc_upload_layers`), as
+  RGBA8 and as BC7.
 - `tex_upload_rows` checks what `texture.c` hands `vk_astc_upload`: an ASTC level's block rows, strip by strip,
   against the block-linear layout walked byte by byte, and the bands other formats take past the cap. It also checks
   the BC7 cache's key: made only where `vk_astc_cached` says, the same for the same bytes, another for a byte of any

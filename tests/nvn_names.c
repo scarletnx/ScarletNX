@@ -1289,10 +1289,10 @@ int main(void) {
     pool_init();
     test_command_buffer();
     test_tessellation_metadata();
+    test_ounce_program_records();
     test_geometry_stream_metadata();
     test_subroutines();
     test_program_object_bytes();
-    test_ounce_program_records();
     test_texture();
     test_array_surface();
     test_sampler();

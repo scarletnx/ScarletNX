@@ -201,12 +201,13 @@ static int check_texture_gradients(void) {
             u32 observed = snx_ld_le32(actual);
             if (observed == gradient_float_bits(c->expected))
                 puts("PASS NVN cube minified edge probe: rho4, expected2002, observed2002 exact=1");
-            else if (driver.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY &&
-                     properties.properties.driverVersion == 0x99d38200u &&
-                     observed == gradient_float_bits(2001)) {
-                /* Known615.78.08 host discrepancy. Keep it visible as incomplete coverage, never as a passed oracle. */
+            else if (driver.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY && observed == gradient_float_bits(2001)) {
+                /* NVIDIA's known host discrepancy, from 615.78.08 on (620.70.6 gives the same 2001). Keep it visible as
+                   incomplete coverage, never as a passed oracle */
                 probe_skipped++;
-                puts("SKIP NVN cube minified edge probe: NVIDIA615.78.08, rho4, expected2002, observed2001");
+                u32 v = properties.properties.driverVersion;
+                printf("SKIP NVN cube minified edge probe: NVIDIA %u.%u.%u, rho4, expected2002, observed2001\n", v >> 22,
+                       (v >> 14) & 0xff, (v >> 6) & 0xff);
             } else {
                 fprintf(stderr, "Cube minified edge probe: driver%u version%08x observed%08x expected%08x\n",
                         (u32)driver.driverID, properties.properties.driverVersion, observed,

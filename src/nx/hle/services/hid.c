@@ -536,7 +536,7 @@ static void hid_mouse_update(u64 now) {
 }
 static int hid_mouse_memory(u32 handle, u64 size, u64 need, u32* object, u64* guest, const char* what) {
     KTmem* t = (KTmem*)h_get_ref(handle, KO_TMEM);
-    R_UNLESS(t, SNX_RC_SVC_INVALID_HANDLE);
+    R_UNLESS(t, SNX_RC_SVC_INVALID_HANDLE); /* the kernel's InvalidHandle */
     LOG("hid: %s at %llx, %llu bytes\n", what, (unsigned long long)t->addr, (unsigned long long)size);
     if (size < need || t->size < need) {
         WARN("hid: %s's memory has %llu bytes, %llu are written\n", what, (unsigned long long)t->size,

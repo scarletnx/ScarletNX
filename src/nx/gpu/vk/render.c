@@ -16,11 +16,12 @@
 #include "nx/gpu/maxwell/draw_state.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/shader/shader.h"
-#include "nx/gpu/shader/advanced_blend_spirv.h"
 #include "nx/gpu/shader/sm86.h"
+#include "nx/gpu/shader/advanced_blend_spirv.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/descriptor_heaps.h"
 #include "nx/gpu/vk/capture.h"
@@ -564,6 +565,7 @@ static void feedback_done(u32 read, u32 write) {
 }
 
 /* every dynamic state at a neutral value, for draws of our own */
+static void pr_dynamic(VkCommandBuffer cb, const PipeKey* k, int fresh);
 static void plain_state(VkCommandBuffer cb, VkRect2D sc) {
     vk_render_forget_state(); /* every state set here, differently from a draw */
     VkViewport vp = {0, 0, (float)g_rp.ext.width, (float)g_rp.ext.height, 0, 1};
@@ -592,6 +594,8 @@ static void plain_state(VkCommandBuffer cb, VkRect2D sc) {
     rec_CmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0);
     if (g_vk.has_feedback_dynamic) rec_CmdSetAttachmentFeedbackLoopEnableEXT(cb, VK_IMAGE_ASPECT_NONE);
     if (g_vk.vertex_input_dynamic) rec_CmdSetVertexInputEXT(cb, 0, NULL, 0, NULL); /* our draws read no vertices */
+    const PipeKey plain = {.polygon = VK_POLYGON_MODE_FILL}; /* the clears' keys: fill, no clamp, no tessellation */
+    pr_dynamic(cb, &plain, 1);
 }
 
 /* a channel's render enable predicate (gpu.h render_pred, 0 none) around one of its draws or clears, inside the
@@ -1396,8 +1400,8 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
 static VkSh* fs_variant(const DsState* ds, u64 addr, VkSh* s0, const FsKey* fk) {
     if (!fk->tm && !fk->rm && !fk->rs && !fk->dm && !fk->unfed && !fk->rect && !fk->queried && !fk->advanced_blend && !fk->advanced_mask && !fk->config)
         return s0;
-    return vk_shader_get_ex(ds, addr, 0, ST_FS, fk->tm, fk->ts, fk->rm, fk->rs, fk->prim, fk->dm, fk->df, fk->unfed, fk->rect,
-                            NULL, fk->queried ? fk->query : NULL, fk->advanced_blend, fk->advanced_mask,
+    return vk_shader_get_ex(ds, addr, 0, ST_FS, fk->tm, fk->ts, fk->rm, fk->rs, fk->prim, fk->dm, fk->df, fk->unfed,
+                            fk->rect, NULL, fk->queried ? fk->query : NULL, fk->advanced_blend, fk->advanced_mask,
                             fk->rm >> 8, fk->rs >> 8, fk->config);
 }
 /* whether slots a and b read their handles from the same words (tex_handle) */
@@ -1740,11 +1744,14 @@ static struct {
    as a storage buffer's result does, bound as a storage texel buffer */
 static int dw_buffer_image(DescWrites* d, VkDescriptorSet set, int stage, int i, const u32* tic, int kind, u32 handle) {
     VkBufImg bi;
-    if ((u32)i >= g_vk.buffer_image_slots[stage] || !vk_buffer_image(tic, kind, &bi)) {
+    /* the slots of the set the program takes: a mesh program the vertex stage's, a task program the tessellation
+       control stage's (vk_set_stages) */
+    u32 slots = g_vk.buffer_image_slots[stage == DS_MESH ? ST_VS : stage == DS_TASK ? ST_TCS : stage];
+    if ((u32)i >= slots || !vk_buffer_image(tic, kind, &bi)) {
         LOG_LIMIT(4,
                   "vulkan: unsupported buffer image (draw skipped): handle %08x, header word 0 %08x, slot %d of the "
                   "%u this GPU binds\n",
-                  handle, tic[0], i, g_vk.buffer_image_slots[stage]);
+                  handle, tic[0], i, slots);
         return 0;
     }
     VkBuffer b;
@@ -2332,10 +2339,12 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                                             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                             .pImageInfo = &d.ii[b]};
     }
-    static const VkPipelineStageFlags2 image_stages[5] = {
+    /* by the bindings' stage (DsBindings): an Ounce's task and mesh programs' last */
+    static const VkPipelineStageFlags2 image_stages[DS_GFX_STAGES] = {
         VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT, VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT,
         VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT, VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT,
-        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT};
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT,
+        VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT};
     for (int i = 0; i < s->si.nimg; i++) {
         const u32 bank = s->si.img[i].bindless ? s->si.img[i].bl_cbuf : tcb;
         u64 cba = bank < 18 ? ds->bind.cb_addr[stage][bank] : 0;
@@ -2440,6 +2449,7 @@ static struct {
     VkDescriptorSet sets[5];
     u64 set_binds; /* vk_rec_set_binds when sets were: a set bound the old way since unbinds descriptor buffers */
     u32 fb, cull, front, topo, restart, discard, bias_on, dt, dw, dcmp, dbounds, st;
+    u32 polygon, clamp, provoking, conservative, patch; /* g_vk.dyn_pr's, as PipeKey holds them */
     VkViewport vp[GUEST_VIEWPORTS];
     VkRect2D sc[GUEST_VIEWPORTS];
     u32 viewports;
@@ -2465,6 +2475,26 @@ static struct {
         }                                                                                                              \
     } while (0)
 void vk_render_forget_state(void) { g_dyn.cb = 0; }
+/* the pre-rasterization state a pipeline of libraries takes as dynamic (g_vk.dyn_pr), from the key it was made for:
+   what a whole pipeline holds of k, the draw sets (fresh: all of it) */
+static void pr_dynamic(VkCommandBuffer cb, const PipeKey* k, int fresh) {
+    u32 d = g_vk.dyn_pr;
+    if (d & VK_DYN_PR_POLYGON) DYN(polygon, k->polygon, rec_CmdSetPolygonModeEXT(cb, (VkPolygonMode)k->polygon));
+    if (d & VK_DYN_PR_DEPTH_CLAMP)
+        DYN(clamp, k->depth_clamp, rec_CmdSetDepthClampEnableEXT(cb, k->depth_clamp ? VK_TRUE : VK_FALSE));
+    if (d & VK_DYN_PR_PROVOKING)
+        DYN(provoking, k->provoking_last,
+            rec_CmdSetProvokingVertexModeEXT(cb, k->provoking_last ? VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT
+                                                                   : VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT));
+    if (d & VK_DYN_PR_CONSERVATIVE)
+        DYN(conservative, k->conservative, {
+            rec_CmdSetConservativeRasterizationModeEXT(cb, k->conservative
+                                                               ? VK_CONSERVATIVE_RASTERIZATION_MODE_OVERESTIMATE_EXT
+                                                               : VK_CONSERVATIVE_RASTERIZATION_MODE_DISABLED_EXT);
+            rec_CmdSetExtraPrimitiveOverestimationSizeEXT(cb, vk_conservative_extra(k->conservative));
+        });
+    if ((d & VK_DYN_PR_PATCH) && k->tes) DYN(patch, k->patch, rec_CmdSetPatchControlPointsEXT(cb, k->patch));
+}
 u64 g_vk_drawn, g_vk_skipped, g_vk_mesh_draws, g_vk_mesh_drawn;
 u64 g_vk_capture_draws, g_vk_capture_primitives, g_vk_capture_capped;
 
@@ -4051,7 +4081,8 @@ retry:
         screen_vp = vk_viewport_from(&ds->dyn, &ds->vp, 0);
         screen = (vs->si.screen_out_yneg_mask >> fs->si.screen_in & 1) ? screen_vp.height < 0 : screen_vp.height > 0;
     }
-    VkDescriptorSet vset = stage_set(ds, vs_bind, vs, rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, &images, NULL, &xfb_stores);
+    VkDescriptorSet vset =
+        stage_set(ds, vs_bind, vs, rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, &images, NULL, &xfb_stores);
     VkDescriptorSet fset =
         fs ? stage_set(ds, 4, fs, rt, zt, n, &zt_ro, &fb, &scaled, res, &storage, &images, screen ? &screen_vp : NULL, NULL)
            : VK_NULL_HANDLE;
@@ -4063,7 +4094,8 @@ retry:
     for (b = 0; b < 3; b++) {
         bset[b] = VK_NULL_HANDLE;
         if (!between[b]) continue;
-        bset[b] = stage_set(ds, mesh ? DS_TASK : b + 1, between[b], rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, &images, NULL, NULL);
+        bset[b] = stage_set(ds, mesh ? DS_TASK : b + 1, between[b], rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage,
+                            &images, NULL, NULL);
         if (!bset[b]) bset_ok = 0;
     }
     if (!vset || (fs && !fset) || !bset_ok) {
@@ -4368,6 +4400,7 @@ retry:
             g_dyn.vi_set = 0;
         }
     }
+    if (g_vk.dyn_pr) pr_dynamic(cb, k, fresh);
     vk_descriptor_heaps_pipeline_state(g_vk.has_descriptor_heaps);
     if (g_vk.has_feedback_dynamic)
         DYN(fb, fb ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_NONE,
@@ -4621,6 +4654,7 @@ retry:
         rec_CmdBeginTransformFeedbackEXT(cb, 0, xcount, from, counter_offs);
     }
     pred_begin(cb, o->pred);
+    rec_draw_tag(vs ? vs->hash : 0, fs ? fs->hash : 0); /* the vertex or mesh program, the fragment program */
     if (mesh)
         rec_CmdDrawMeshTasks(cb, count);
     else if (dc->indirect) {
@@ -4632,6 +4666,7 @@ retry:
     } else
         rec_CmdDraw(cb, count, instances, first, base_instance);
     pred_end(cb, o->pred);
+    rec_draw_tag(0, 0); /* the runtime's own draws after it (clears, blits) name no program */
     if (xcount) {
         rec_CmdEndTransformFeedbackEXT(cb, 0, xcount, counters, counter_offs);
         o->xfb_started = (u8)((o->xfb_started | xbound) & 15);

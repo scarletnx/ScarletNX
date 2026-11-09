@@ -2114,6 +2114,12 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-vertex-input 99)
     target_link_libraries(snx-test-vk-vertex-input PRIVATE snx_nx_flags)
     add_test(NAME vk_vertex_input COMMAND snx-test-vk-vertex-input)
+    # graphics pipeline libraries (gpu/vk/pipeline_parts.c): the choice from the setting and stand-in devices, each
+    # condition that turns them off named, and the dynamic pre-rasterization state each device member gives
+    add_executable(snx-test-vk-pipeline-parts vk_pipeline_parts.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pipeline_parts.c")
+    snx_test_target(snx-test-vk-pipeline-parts 23)
+    target_link_libraries(snx-test-vk-pipeline-parts PRIVATE snx_nx_flags)
+    add_test(NAME vk_pipeline_parts COMMAND snx-test-vk-pipeline-parts)
     # the drivers known to break an extension or feature (gpu/vk/extension_bans.c), with no GPU: the table's errors,
     # each driver's versions at every bound's edge, the filter and the features asked for against stand-in devices,
     # the table the build carries, and vulkan_ban_ignore read from a .ini. With --devices it lists the lines that hold
@@ -2126,13 +2132,6 @@ if(NOT SNX_TOOLS_ONLY)
         target_link_libraries(snx-test-vk-bans PRIVATE snx_nx_flags snx_vk_common)
         add_test(NAME vk_extension_bans COMMAND snx-test-vk-bans)
     endif()
-    # pipelines linked from parts (gpu/vk/pipeline_library.c): the device's choice and its log line against stand-in
-    # devices, and each dynamic state's part
-    add_executable(snx-test-vk-pipeline-library vk_pipeline_library.c
-                   "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pipeline_library.c" ${snx_vk_extension_bans_sources})
-    snx_test_target(snx-test-vk-pipeline-library 99)
-    target_link_libraries(snx-test-vk-pipeline-library PRIVATE snx_nx_flags)
-    add_test(NAME vk_pipeline_library COMMAND snx-test-vk-pipeline-library)
     # the GPU driver a run asks for (nx/runtime/platform/gpu_driver_load.c) where none loads: Freedreno's variables set,
     # a wrong one, a package asked for here and a folder name that is none stopping the run with why, a run a case
     add_executable(snx-test-gpu-driver-load gpu_driver_load.c
@@ -2644,7 +2643,7 @@ add_test(NAME astc_decode COMMAND snx-test-astc)
 # they were drawn from, its shapes' attributes and triangles, each file no bigger than the console's
 add_executable(snx-test-mii-model mii_model.c support/astc.c support/bcn.c
                "${PROJECT_SOURCE_DIR}/src/common/utilities/mii_db.c"
-               "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/blocklinear.c")
+               "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/blocklinear.c") # g_gob_native, which the layout reads
 snx_test_target(snx-test-mii-model 99)
 target_include_directories(snx-test-mii-model PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-mii-model PRIVATE snx_libdeflate) # mii_model.c deflates the parts, the test inflates

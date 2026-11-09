@@ -68,6 +68,7 @@ static void reset(void) {
     now = PCACHE_QUIET_NS + 1;
 }
 int main(void) {
+    g_settings.vulkan_pipeline_cache = 1; /* its default: the cache is written */
     g_pcache = (VkPipelineCache)(uintptr_t)1;
     snprintf(g_pcache_path, sizeof g_pcache_path, "pipeline_save_test.bin");
     snprintf(g_pcache_tmp, sizeof g_pcache_tmp, "pipeline_save_test.tmp");

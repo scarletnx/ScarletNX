@@ -292,9 +292,9 @@ setting ASTC mode
     help starts, else BC7. Exact = decoded to RGBA8, exactly as the game's
     help blocks decode, in four times the memory. BC7 = shown at once decoded to RGBA8, then encoded again as BC7 between
     help frames, a few at a time, into a quarter of RGBA8's memory, close to what the blocks decode to but not always the
-    help same. BC7 at load = encoded as BC7 as each texture loads, with no RGBA8 image before it, as feat/ounce does
-    help (temporary, to compare). Where the GPU samples ASTC it does nothing. It takes the place of astc_bc, whose 1 is
-    help Auto
+    help same. A later run loads them from the BC7 cache. BC7 at load = encoded as BC7 as each texture loads, with no
+    help RGBA8 image before it, as feat/ounce does (temporary, to compare). Where the GPU samples ASTC it does
+    help nothing. It takes the place of astc_bc, whose 1 is Auto
 setting BC7 queue
     key bc7_queue
     int 0 16384
@@ -383,6 +383,15 @@ setting Async pipelines
     words Off|On
     help 1 = what a new shader draws is skipped while its pipeline is made, instead of the game waiting for it: no
     help pause where a new shader first appears, and the things it draws show up a few frames late
+setting Pipeline libraries
+    key pipeline_libraries
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = where the GPU has graphics pipeline libraries, a new pipeline links parts of its shaders that compile
+    help once, and an optimized one is made in the background: a new state of a known shader no longer stalls the
+    help game for a compile. 0 = each pipeline compiles its shaders whole
 setting Prepare shaders
     key prepare_shaders
     int 0 2
@@ -875,6 +884,14 @@ setting Vulkan validation layer
     help 1 = the Vulkan validation layer (VK_LAYER_KHRONOS_validation, the Vulkan SDK's) checks every Vulkan call and
     help logs what it finds. It slows the game down a lot, and a missing layer is only a warning. 2 = also GPU-assisted
     help validation, which finds out-of-bounds and unwritten descriptor accesses in shaders, and is slower again
+setting Vulkan pipeline cache
+    key vk_pipeline_cache
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = the GPU driver's compiled pipelines are kept between runs (shader_cache/vk_pipelines.bin). 0 = they are
+    help neither read nor written: every pipeline is compiled again, as in a first run, to measure that
 setting GPU mirror past limit
     key vk_mirror_past_limit
     int 0 1
